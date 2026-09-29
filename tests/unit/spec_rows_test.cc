@@ -356,6 +356,18 @@ TEST_F(SpecRowsTest, TheFloatVectorKernelsColumnsAreItsOneColumnLaunches) {
   EXPECT_FALSE(kg::MulMatVecFRows(launch(), Place(ggml_mul_mat(c(), w, wide))).has_value());
 }
 
+TEST_F(SpecRowsTest, SelectedDraftArgmaxMapsBackToOriginalTokenIds) {
+  ggml_tensor* logits = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 4, 2),
+                              std::vector<float>{0, 5, 5, 1, 0, 1, 2, 7});
+  ggml_tensor* ids = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, 1, 4),
+                           std::vector<std::int32_t>{0, 65537, 129280, 248319});
+  ggml_tensor* selected = Place(kg::Argmax(c(), logits));
+  ggml_tensor* mapped = Place(ggml_get_rows(c(), ids, selected));
+  Launched(kg::RunArgmax(launch(), selected), "selected head argmax");
+  Launched(kg::GetRows(launch(), mapped), "draft token map");
+  EXPECT_EQ(Download<std::int32_t>(mapped), (std::vector<std::int32_t>{65537, 248319}));
+}
+
 TEST_F(SpecRowsTest, ArgmaxTakesTheLowestIndexAmongEqualMaximaAndNeverANan) {
   constexpr std::int64_t kN = 129280;
   constexpr std::int64_t kRows = 5;

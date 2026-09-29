@@ -94,6 +94,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Qwen3.8 greedy MTP decoding chooses depth two or three from acceptance;
+  state restore preserves the schedule. Draft confidence is computed only
+  when requested. The experimental importer can prepare a selected BF16
+  draft head and original token-ID map from an external vocabulary list.
 - Sampling with `top_k = 1` uses the greedy path, including speculative
   verification, avoiding candidate selection and random draws while keeping
   parameter and logit validation and the same token choices.

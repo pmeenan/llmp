@@ -3,24 +3,26 @@
 
 # Qwen3.8 MTP draft-head selection (2026-09-29)
 
-This study isolates the draft-head difference raised by the owner while
-closing M3's long-context MTP gap. Draft depth is fixed at 3. It follows
+This study examines the draft-head difference raised by the owner while
+closing M3's long-context MTP gap. The original width controls fix depth
+at 3; the native selected-head trial also tests adaptive depth. It follows
 the [MTP sweep](../qwen38-mtp/README.md) and
 [long-context diagnosis](../long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth).
 The measurement question is whether Mia's selected vocabulary helps beyond
 choosing a deeper draft window.
 
-The selected list is worth a native trial: at fixed depth 3 it was 12.6%
-faster than our prefix in Mia's engine at 128K, with higher acceptance;
-8K was tied. The continuations differ, and jitLLM's selected head has not
-been implemented or measured, so this is a lead rather than a native gain.
+The selected list is now implemented and tested in jitLLM. Its 12.6% gain
+was in Mia's engine; the native same-depth trial at 128K is tied at depth 2
+and 4.9% slower at depth 3. The prefix remains the default. Increasing
+native depth from 2 to 3 helps this prompt more than changing vocabulary;
+the runtime now chooses between these depths from observed acceptance.
 Our native width control also rejects a full head: it was 12.7% slower.
 
 ## What the implementations actually do
 
 jitLLM's default draft head is a view of the first 65,536 BF16 rows of the
-target's head, with no extra weight allocation. It returns the winning token
-and its probability (the latter serves the experimental adaptive window).
+target's head, with no extra weight allocation. It returns the winning token;
+its probability is computed only when a caller requests confidence.
 The IDs are a prefix, not a ranking of model-output frequencies.
 
 Mia's pinned
@@ -33,10 +35,9 @@ and monotonic scaling/softcap. This is a smaller matrix product with a token
 map; it is not a separate trained draft head or a special quantized kernel.
 The MTP block and final mixer still come from the checkpoint in both engines.
 
-One further difference is unmeasured: jitLLM's graph computes and copies the
-draft probability even when the runtime asks only for draft IDs. Mia's greedy
-path takes argmax alone. Making confidence optional is a separate small lead;
-this study does not attribute a speed gap to it.
+The native trial also makes confidence optional: runtime greedy drafting
+skips the probability reduction and copy. These measurements combine that
+change with the new depth controls; they do not isolate its speed gain.
 
 Mia's
 [list generator](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark/blob/b8439110eec0230facbe4ddf0dffe01b8f769be0/files/build_draft_vocab.py)
@@ -60,8 +61,8 @@ description of Mia's head as full vocabulary was wrong.
 
 The selected weight matrix is 28% smaller than our prefix. That is a computed
 size difference, not measured traffic or a measured jitLLM speedup.
-Packing it would also require an extra allocation and token-ID map, unlike
-the current view.
+The native optional head adds this weight allocation and a 188,688-byte
+I32 token map. The default prefix continues to share the target weights.
 
 ## Native width control at 128K
 
@@ -133,14 +134,86 @@ nor a full-answer quality comparison was measured. Acceptance reflects
 both vocabulary choice and the resulting different continuation. These
 two retrieval prompts also do not establish English/code corpus coverage.
 
+## Native selected-head and depth trial
+
+On `spark-b`, the same checkpoint and target as above, with the independently
+implemented importer, token-map gather and optional-confidence graph. The
+importer packs selected BF16 rows and original I32 IDs into a separate
+drafter artifact. It validates and pins the supplied list; the runtime
+checks the map before GPU indexing. Every draft is verified by the target.
+Mia's external list is used as experimental data and is not shipped.
+
+The fixed-depth calibration uses the same 128,799-token prompt, context
+131,072, 4,096-row prefill chunks and 128 greedy outputs, one run per case.
+These short-generation harness rates differ from the runtime's earlier
+512-output ladder; their absolute rates should not be mixed.
+
+| Head | Depth | Draft ms/step | Verify ms/step | Decode tok/s |
+| --- | ---: | ---: | ---: | ---: |
+| Prefix | 2 | 6.740 | 50.345 | 39.370 |
+| Selected | 2 | 6.101 | 50.106 | 39.295 |
+| Prefix | 3 | 9.602 | 56.538 | 44.223 |
+| Selected | 3 | 8.669 | 56.428 | 42.060 |
+
+The selected head reduces the draft job's cost by about 9.5%, while verify
+cost stays essentially unchanged. Its end-to-end rate is 0.2% lower at
+depth 2 and 4.9% lower at depth 3; neither reaches D-085's 10% threshold.
+The prefix's depth-3 rate is 12.3% higher than depth 2 on this prompt.
+This single run per setting does not establish a corpus-wide preference.
+Whole prefix-step costs are 57.603 / 66.786 ms at depths 2 / 3, the
+measured ratio behind the policy's 1.16 calibration.
+
+The runtime's adaptive greedy policy compares kept tokens per calibrated
+step cost at depths 2 and 3. It starts with four depth-3 observations, then four depth-2 observations,
+uses an acceptance EWMA, requires a 3% predicted advantage to switch, and
+periodically probes the other depth. The depth-3/depth-2 cost ratio is 1.16
+from the prefix calibration above. The policy uses no clock readings, is
+saved with a conversation snapshot, and survives swaps. Seeded sampling
+continues to use fixed depth 2; a three-row chunk bound also keeps depth 2.
+
+The initial adaptive trial (depth 2 explored first) generates 128 outputs with two timed passes;
+the second replays the first pass's depths and draft proposals as a controlled
+timing pass. At 8K (7,586 prompt tokens) the prefix is 40.236 / 42.635 tok/s and
+the selected head 39.992 / 42.376. At 256K (258,633 prompt tokens), the
+prefix is 51.096 / 51.931 and the selected head 53.068 / 53.927. The 256K
+policy uses depth 3 for 32 of 36 prefix steps and 31 of 35 selected steps.
+Both heads match all 128 own plain-greedy tokens and their controlled passes
+agree, without graph refusals or reported problems. Peak memory
+drop is 87.66 / 87.80 GiB at 256K. These rates do not establish that
+selected vocabulary is generally faster; continuation acceptance is prompt
+dependent, and the measured differences remain below 10%.
+
+At 64K (64,110 coding-prompt tokens), forced rejections cover keeping no
+draft, one draft and two drafts. Both heads have 54 rejected steps and
+zero state differences from their controls. Each has one own plain/speculative
+near-tie among 160 teacher-forced outputs (margins 0.0284 / 0.0172, existing
+bound 1.0), with no violations. The swap controls leave a rejected step's
+commit pending, swap to the FP16 fixture and back, and continue with the
+saved adaptive policy. Both produce identical state, logits and tokens to
+their uninterrupted controls; 10 / 12 graphs survive.
+
+Exploration order matters on the 128K prompt: starting at depth 2 settled
+there and reached 40.402 / 40.908 tok/s (prefix) and 39.620 / 39.900
+(selected). The final policy explores depth 3 first. Its prefix rate is
+44.285 / 44.994 tok/s, with 35 depth-3 and eight depth-2 steps; selected
+is 41.413 / 41.879, with 39 depth-3 and eight depth-2 steps. These fresh
+passes replay depths but recompute all draft proposals; the repeats agree
+exactly. This prefix
+trial exceeds the recorded Mia rate of 43.475, although the runtime's
+512-output ladder remains to be rerun. It matches 126 of 128 own
+teacher-forced greedy tokens, with two near-ties (largest margin 0.0359,
+existing bound 1.0), no violations, and exact replay. Selected matches
+all 128. Neither reports a
+problem. The changed schedule changes near-tie continuations, so these
+are separate native trials, not matched-output acceptance comparisons.
+
 ## Recommendation
 
-Add a native selected-vocabulary trial alongside adaptive depth and cheaper
-verify rows. Pack BF16 rows once, retain the original token-ID map and
-verify every draft with the target. Use an independently produced list
-under the existing license disposition, and test acceptance and quality on
-representative English/code continuations before changing the default.
-The current prefix remains the default; no selected list is shipped here.
+Keep the prefix default and use acceptance to choose draft depth. The
+optional selected-head import path enables further trials with externally
+supplied, pinned lists. Broader English/code continuations are needed before
+changing the default; no selected list is shipped here. Verify rows remain
+the larger direct timing target.
 
 Do not widen to the full head. Do not assume a 28% traffic reduction or
 the reference's 12.6% rate improvement transfers to jitLLM: the native
@@ -154,6 +227,11 @@ remains a larger direct timing target.
   `c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93`.
 - Native drafter artifact:
   `056a750e3a90be3ae6a4b12bb963ce45290aaa6f52b5ba9799e777d491f80aea`.
+- Native selected drafter used in the new trial:
+  `e0876d69b8677bbecd83523a7fdf4d8cf1ef86c249447760b7de94efcae3f1e2`;
+  source list SHA-256 as below, packed BF16 rows and original I32 IDs.
+  Re-importing with the final converter changes the artifact identity;
+  the pin-validation fixes do not change these tested tensor bytes.
 - Checkpoint: `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4` at
   `925d7be6c14c6c9442ef83e8f05b5a3c39304f69`.
 - Mia recipe: `b8439110eec0230facbe4ddf0dffe01b8f769be0`.
@@ -185,10 +263,45 @@ remains a larger direct timing target.
   harness gates at 110 GiB free and excludes any existing compute process
   or running container before each load. Both loads started with 117.2 GiB
   free. The recipe uses its existing checkpoint cache through `HF_HOME`.
+- New native raw results: `spark-b:~/scratch/m3-curated/128k-{prefix2,curated2,prefix3,curated3}/spec.json`
+  (fixed calibration, job `m3-qwen-curated-128`, 16:48:48–17:08:10 EDT),
+  and `final-{prefix,curated}-{8k,256k,forced,swap}/spec.json`
+  (job `m3-qwen-curated-final2`, 17:15:25–17:51:44 EDT). Its mislabeled
+  128K rows actually used the 8K input and are excluded. All loads gate
+  at 105 GiB available with no existing GPU model process. SDK
+  `aarch64-e0a0c85c42806fb1`, CUDA 13.4.92, GB10 sm_121, driver 580.178.04.
+- Correct 128K adaptive trials: `spark-b:~/scratch/m3-curated/final-{prefix,curated}-128k/spec.json`
+  (depth 2 first, job `m3-qwen-curated-final128`, 17:52:08–18:00:37 EDT),
+  and `fresh-{prefix,curated}-128k/spec.json` (final depth-3-first policy,
+  fresh draft proposals in both passes, job `m3-qwen-fresh-final2`,
+  18:31:33–18:40:19 EDT).
+- New trial replay inputs on `spark-b`, one `decode` entry, messages unchanged:
+  `~/scratch/m3-curated/prompts-8k.json`, SHA-256
+  `26df3204068fbf83f6610d54ae2268cb6bffae322bbe6e764a4072fade3ad0b9`;
+  `~/scratch/qwen-draft-head/prompts-128k.json`, SHA-256
+  `7713ffcb26fbf674ebc67dd91a7230a603101990c00a0d82acd18bd5f63504ae`;
+  `~/scratch/m3-curated/prompts-256k.json`, SHA-256
+  `0089ad268538cb8783db3a71774a22ad3b9d6f73446e37190172f83d88fe0e43`;
+  `~/.local/share/jitllm/m3lc2/deep.json`, SHA-256
+  `5cee70e802ebbe5fcd2bb21ac0aca48dec1dedaecc4ac0c05779b3c582cd4686`.
+  The 8K source is the reference input above; 256K is the phase-1 retrieval
+  input, SHA-256 `c0e707dc67deab215bf53d4573406da4851c28bab943a937ad2eb39976aff538`.
+- Swap fixture: artifact `b93cdc326ba4f4c1c71da613503ecd848cd2a0caf122214f26e04588a12a9073`,
+  `~/.local/share/jitllm/p2-fp16exec-20260927/control-tokens.txt`, expected
+  logits SHA-256 `bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571`.
 
 Native command: `jitllm_qwen38_spec --check greedy --tokens 128 --repeats 1
 --only deep128k --context 131072 --draft 3 --draft-vocab N`, with the artifact,
 tokenizer, replay prompt, and output paths above; N is 65,536 or 0 (full).
+
+New native command: `jitllm_qwen38_spec --qwen38-artifact STORE/TARGET
+--drafter STORE/HEAD --tokenizer CHECKPOINT/tokenizer.json --prompts REPLAY
+--only deepRUNG --context CONTEXT --prefill-chunk 4096 --check greedy
+--tokens 128 --repeats 2 --draft 3 --adaptive-depth on --out OUT`.
+The calibration uses `--repeats 1 --adaptive-depth off --draft 2|3`.
+The coding controls use `--only deep64k --context 65536 --tokens 160
+--repeats 1 --check forced|swap`; swap also supplies the pinned FP16
+fixture, control tokens and expected digest recorded in the external steps.
 
 Reference command: `longctx.py vllm OUT PROMPT8K PROMPT128K --port 18150
 --tokens 128 --top 0 --ready-timeout 1800 --start START --stop STOP`.

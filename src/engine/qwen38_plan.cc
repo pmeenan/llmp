@@ -153,7 +153,12 @@ void BindQwen38MtpWeights(const Qwen38Model& m, kg::Qwen38MtpGraph& g) {
     bind(t.bf16, r.bf16);
   };
   kg::TensorArena::Bind(g.token_embd, m.places.resource(m.binding->token_embd.index));
-  kg::TensorArena::Bind(g.output, m.places.resource(m.binding->output.index));
+  if (d.selected_head()) {
+    bind(g.output, d.draft_output);
+    bind(g.draft_ids, d.draft_ids);
+  } else {
+    kg::TensorArena::Bind(g.output, m.places.resource(m.binding->output.index));
+  }
   bind(g.fc_embd, d.fc_embd);
   bind(g.fc_hidden, d.fc_hidden);
   bind(g.norm_embd, d.norm_embd);

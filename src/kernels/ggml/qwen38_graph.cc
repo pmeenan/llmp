@@ -73,7 +73,7 @@ class Builder {
     ggml_tensor* probability = nullptr;  // I32 [1]: the draft's softmax probability's F32 bits
   };
   MtpOut MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, ggml_tensor* hidden, bool head,
-                 std::int64_t head_rows);
+                 std::int64_t head_rows, bool confidence);
   const std::vector<ggml_tensor*>& expanded() const { return expanded_; }
   // Whether this shape's QSA selection runs on the device (no host masks).
   bool SelectsOnDevice() const { return DeviceSelect(); }
@@ -1309,7 +1309,7 @@ void Builder::Build() {
 // pass, the decoder layer's delayed combine done before the final mixer
 // (GatedResidual.combine_and_mix).
 Builder::MtpOut Builder::MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, ggml_tensor* hidden,
-                                 bool head, std::int64_t head_rows) {
+                                 bool head, std::int64_t head_rows, bool confidence) {
   const std::int64_t nt = s_.rows;
   const std::int64_t width = p_.width;
   const std::int64_t hc = p_.hc;
@@ -1351,14 +1351,19 @@ Builder::MtpOut Builder::MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, g
   // The argmax and its probability (the drafter's confidence, which an
   // adaptive window reads): the draft is the first I32, the probability's
   // bits the second.
-  ggml_tensor* both = Argmax(c_, ggml_mul_mat(c_, w, mixed), true);
+  ggml_tensor* both = Argmax(c_, ggml_mul_mat(c_, w, mixed), confidence);
   Expand(res);
   Expand(both);
   ggml_tensor* draft = ggml_view_1d(c_, both, 1, 0);
-  ggml_tensor* probability = ggml_view_1d(c_, both, 1, sizeof(std::int32_t));
+  ggml_tensor* probability = confidence ? ggml_view_1d(c_, both, 1, sizeof(std::int32_t)) : nullptr;
+  if (m.draft_ids != nullptr) {
+    draft = ggml_reshape_1d(c_, ggml_get_rows(c_, m.draft_ids, draft), 1);
+  }
   Name(draft, "mtp_draft", 0);
   Expand(draft);
-  Expand(probability);
+  if (probability != nullptr) {
+    Expand(probability);
+  }
   return {.streams = last, .draft = draft, .probability = probability};
 }
 
@@ -1389,10 +1394,11 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
     std::uint64_t expert_stride) {
   const Qwen38MtpShape& s = shape;
   const std::int64_t ratio = profile.indexer_ratio;
+  const auto head_rows = drafter.selected_head() ? drafter.draft_output.ne[1] : profile.vocab;
   if (s.rows <= 0 || s.passes <= 0 || s.passes > 8 || s.cells <= 0 || s.n_kv < 256 ||
       s.n_kv > s.cells || s.n_kv % 256 != 0 || s.hidden_row < 0 || s.hidden_rows <= 0 ||
       s.hidden_row + s.rows > s.hidden_rows || (s.passes > 1 && !s.head) || s.head_rows < 0 ||
-      s.head_rows > std::int64_t{profile.vocab} || ratio <= 0) {
+      std::cmp_greater(s.head_rows, head_rows) || ratio <= 0) {
     return Rejected("not an MTP drafter shape its state holds");
   }
   const bool past_budget = s.n_kv > std::int64_t{profile.indexer_budget} + ratio - 1;
@@ -1421,12 +1427,20 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
         std::tuple{&m.output_hc_down, &drafter.output_hc_down, "output_hc_down"},
         std::tuple{&m.output_hc_up, &drafter.output_hc_up, "output_hc_up"},
         std::tuple{&m.token_embd, &target.token_embd, "token_embd"},
-        std::tuple{&m.output, &target.output, "output"}}) {
+        std::tuple{&m.output, drafter.selected_head() ? &drafter.draft_output : &target.output,
+                   "output"}}) {
     auto made = Leaf(c, *t, role);
     if (!made) {
       return std::unexpected(made.error());
     }
     *into = *made;
+  }
+  if (drafter.selected_head()) {
+    auto made = Leaf(c, drafter.draft_ids, "draft_ids");
+    if (!made) {
+      return std::unexpected(made.error());
+    }
+    m.draft_ids = *made;
   }
   m.streams = ggml_new_tensor_2d(c, GGML_TYPE_F32, profile.hc_width(), s.hidden_rows);
   const std::size_t row = m.streams->nb[1];
@@ -1463,11 +1477,13 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
     if (s.qsa_select && !b.SelectsOnDevice()) {
       return Rejected("the drafter selects on the device only (its shapes' blocks)");
     }
-    const Builder::MtpOut out = b.MtpPass(m, tokens, hidden, s.head, s.head_rows);
+    const Builder::MtpOut out = b.MtpPass(m, tokens, hidden, s.head, s.head_rows, s.confidence);
     expanded.insert(expanded.end(), b.expanded().begin(), b.expanded().end());
     if (s.head) {
       m.drafts.push_back(out.draft);
-      m.probabilities.push_back(out.probability);
+      if (out.probability != nullptr) {
+        m.probabilities.push_back(out.probability);
+      }
       hidden = ggml_reshape_2d(c, out.streams, profile.hc_width(), 1);
       tokens = out.draft;
     }

@@ -254,6 +254,10 @@ jitllm_gtest(tokenizer_models_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;m
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 
 # Greedy and seeded sampling (execution/sampling.h).
+add_executable(adaptive_depth_test adaptive_depth_test.cc)
+target_link_libraries(adaptive_depth_test PRIVATE jitllm_execution)
+jitllm_gtest(adaptive_depth_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(sampling_test sampling_test.cc)
 target_link_libraries(sampling_test PRIVATE jitllm_sampling)
 jitllm_gtest(sampling_test TEST_PREFIX unit. PROPERTIES LABELS unit)

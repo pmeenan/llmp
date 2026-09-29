@@ -702,6 +702,18 @@ one and removes it. The source must remain available (D-018).
   the target's `token_embd.weight` and `output.weight`, so the target's
   artifact is neither re-imported nor changed
   ([qwen38-mtp](experiments/qwen38-mtp/README.md#import)).
+  The experimental importer accepts a selected draft vocabulary with
+  `--draft-vocab-ids FILE`: ascending original decimal token IDs, one per
+  line. It packs the corresponding BF16 target-head rows as
+  `draft_output.weight` (dimensions `[hidden, selected]`) and an I32
+  `draft_output.ids` map (dimensions `[1, selected]`) in the drafter.
+  Both tensors must be present together; binding checks their shapes,
+  and load checks map bounds and strict ordering before unchecked device
+  indexing. The list is a hashed source with a metadata copy; the command
+  requires its size and SHA-256 in the supplied pins file. Without them the drafter uses the
+  target head's first 65,536 rows. These are ordinary v0 tensors, not a
+  container-schema change; list selection and its license are the
+  importer's responsibility.
 - **Model-parallel sharding** (TP/EP partitioning, one artifact per rank or
   sliced at load) is deferred with a deadline of M4 entry, where each node
   holds its own shard on disk. It depends on M4's sharding design, and v0

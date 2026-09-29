@@ -937,6 +937,35 @@ std::vector<md::Qwen38Resource> MtpLike() {
   return r;
 }
 
+TEST(Qwen38Test, SelectedDraftHeadRequiresAMatchingTokenMap) {
+  const auto& p = md::Qwen38Flash();
+  auto resources = MtpLike();
+  resources.push_back({.roles = {"draft_output.weight"}, .type = "BF16", .ne = {2560, 3}});
+  EXPECT_FALSE(md::BindQwen38Mtp(p, "qwen4exp-mtp", resources));
+  resources.push_back({.roles = {"draft_output.ids"}, .type = "I32", .ne = {1, 3}});
+  auto bound = md::BindQwen38Mtp(p, "qwen4exp-mtp", resources);
+  ASSERT_TRUE(bound.has_value()) << Why(bound);
+  EXPECT_TRUE(bound->selected_head());
+  EXPECT_EQ(bound->draft_ids.ne, (std::vector<std::uint64_t>{1, 3}));
+  for (auto wrong : {0U, 4U, p.vocab + 1}) {
+    auto bad = resources;
+    bad[bad.size() - 2].ne[1] = wrong;
+    EXPECT_FALSE(md::BindQwen38Mtp(p, "qwen4exp-mtp", bad));
+  }
+  resources.back().type = "F32";
+  EXPECT_FALSE(md::BindQwen38Mtp(p, "qwen4exp-mtp", resources));
+  resources.back().type = "I32";
+  resources.erase(resources.end() - 2);
+  EXPECT_FALSE(md::BindQwen38Mtp(p, "qwen4exp-mtp", resources));
+}
+
+TEST(Qwen38Test, DraftIdsAreBoundedAndPreserveLowestTokenTieBreaking) {
+  EXPECT_TRUE(md::CheckQwen38DraftIds(std::vector<std::int32_t>{0, 17, 248319}, 248320));
+  for (const auto& bad : {std::vector<std::int32_t>{}, {-1, 3}, {0, 248320}, {3, 3}, {7, 2}}) {
+    EXPECT_FALSE(md::CheckQwen38DraftIds(bad, 248320));
+  }
+}
+
 TEST(Qwen38Test, BindsTheMtpDrafterAndRefusesWhatDiffers) {
   const md::Qwen38Profile& p = md::Qwen38Flash();
   const std::vector<md::Qwen38Resource> resources = MtpLike();

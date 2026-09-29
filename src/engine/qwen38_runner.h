@@ -106,7 +106,8 @@ struct Qwen38Options {
   // speculation.
   std::filesystem::path drafter;
   // Drafts a step (the drafter's passes) and the draft head's rows (the
-  // lowest token IDs; 0: the whole vocabulary). The defaults were the
+  // lowest token IDs or a selected head's ascending IDs; 0: every row).
+  // The defaults were the
   // fastest of depths 2–3 and 32,768 rows to the whole vocabulary on
   // `prose` and `code` (docs/experiments/qwen38-mtp/).
   std::uint32_t draft_rows = 2;
@@ -191,7 +192,7 @@ class Qwen38Runner final : public PagedModel {
   // `probabilities` each draft's softmax probability over the draft head's
   // rows (the drafter's confidence; an adaptive window's input).
   Status Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts,
-               std::vector<float>* probabilities = nullptr);
+               std::vector<float>* probabilities = nullptr, std::uint32_t passes = 0);
   // A verify: history[n_past, end) the anchor and the drafts (history as
   // Chunk's), at most draft_rows + 1 rows; every row's argmax (the lowest
   // index among equals, on the device) and, with `logits`, every row's
@@ -293,7 +294,7 @@ class Qwen38Runner final : public PagedModel {
   std::expected<std::pair<kernels::ggml::Qwen38MtpShape, std::vector<model::Qwen38ChunkInputs>>,
                 std::string>
   MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
-            std::int64_t hidden_row) const;
+            std::int64_t hidden_row, bool confidence = false) const;
 
   PagedNode& node_;
   const Qwen38Options& o_;
@@ -326,7 +327,8 @@ class Qwen38Runner final : public PagedModel {
   PleStats ple_;
 
   void* logits_ = nullptr;
-  void* hash_host_ = nullptr;  // pinned: the hash constants, read back
+  void* hash_host_ = nullptr;       // pinned: the hash constants, read back
+  void* draft_ids_host_ = nullptr;  // pinned: selected head's token map, checked after loading
   std::vector<PagedWeights::Range> unwritten_;
   std::uint64_t* scrub_ = nullptr;  // pinned: Scrub's ranges
   std::uint64_t activation_bytes_ = 0;

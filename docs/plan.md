@@ -907,7 +907,14 @@ it appears.
           well-accepted answer, levers the depth chosen by acceptance,
           a cheaper verify row, and the selected draft vocabulary
           ([draft-head study](experiments/qwen38-draft-head/README.md));
-          256K not re-run on the final build);
+          runtime ladder still to be rerun). *Adaptive depth and selected-head
+          import implemented 2026-09-29:* native depth 2–3 chosen by observed
+          acceptance, deterministic across saved/restored runs. The 128K
+          128-output harness trial reaches 44.3–45.0 tok/s with the prefix
+          head; the externally supplied curated list reaches 41.4–41.9,
+          so the prefix stays default. Curated 256K, rejection and swap
+          controls are included in the study; final runtime timing remains
+          part of the extrapolation gate;
         - sparse flash-attention prefill for both models (llama.cpp
           #29298 and #28770);
         - DeepSeek's compressed attention and indexer at depth;

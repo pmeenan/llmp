@@ -293,7 +293,7 @@ Status Qwen38Runner::Setup() {
            {std::tuple{o_.context - o_.max_rows - 1, o_.max_rows, 1U, false},
             std::tuple{o_.context - verify - o_.draft_rows, verify, o_.draft_rows, true},
             std::tuple{unselected - unselected_rows, unselected_rows, 1U, false}}) {
-        auto shaped = MtpInputs(from, rows, passes, head, head ? 1 : 0);
+        auto shaped = MtpInputs(from, rows, passes, head, head ? 1 : 0, head);
         if (!shaped) {
           return std::unexpected(shaped.error());
         }
@@ -334,6 +334,13 @@ Status Qwen38Runner::Setup() {
   runs_.SetStaging(*inputs, input_bytes);
   logits_ = *logits;
   hash_host_ = *hash;
+  if (dbinding_.selected_head()) {
+    auto ids = resources_.Pinned(dbinding_.draft_ids.ne[1] * sizeof(std::int32_t));
+    if (!ids) {
+      return Error("pinned staging for the draft vocabulary IDs");
+    }
+    draft_ids_host_ = *ids;
+  }
   landing_ = static_cast<std::byte*>(*landing);
   sources_ = static_cast<std::uint32_t*>(*sources);
   ple_count_ = sources_ + slots_;
@@ -542,6 +549,7 @@ Status Qwen38Runner::Bind() {
 // ------------------------------------------------------------------ work
 
 Status Qwen38Runner::ReadPleHash() {
+  hash_checked_ = false;
   const md::Qwen38Layer& l = binding_.layers[profile_.ple_layer];
   const std::array<const md::Qwen38Tensor*, 3> parts = {&l.ple_multipliers, &l.ple_head_offsets,
                                                         &l.ple_head_vocab};
@@ -579,6 +587,29 @@ Status Qwen38Runner::ReadPleHash() {
     return std::unexpected(hash.error());
   }
   hash_ = std::move(*hash);
+  if (dbinding_.selected_head()) {
+    const auto count = static_cast<std::size_t>(dbinding_.draft_ids.ne[1]);
+    const auto address = model_.places.mtp_resource(dbinding_.draft_ids.index);
+    if (auto r = node_.Job(
+            everything_,
+            [this, address, count](providers::NativeStream stream) {
+              return providers::CopyAsync(stream, draft_ids_host_, Pointer(address),
+                                          count * sizeof(std::int32_t),
+                                          providers::CopyKind::kDeviceToHost)
+                             .ok()
+                         ? sc::JobResult::kQueued
+                         : sc::JobResult::kUnknown;
+            },
+            "reading the draft vocabulary", stream_);
+        !r) {
+      return r;
+    }
+    if (auto checked = md::CheckQwen38DraftIds(
+            {static_cast<const std::int32_t*>(draft_ids_host_), count}, profile_.vocab);
+        !checked) {
+      return checked;
+    }
+  }
   hash_checked_ = true;
   return {};
 }
@@ -758,7 +789,7 @@ Status Qwen38Runner::Usable() const {
 
 std::expected<std::pair<kg::Qwen38MtpShape, std::vector<md::Qwen38ChunkInputs>>, std::string>
 Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
-                        std::int64_t hidden_row) const {
+                        std::int64_t hidden_row, bool confidence) const {
   const std::uint64_t end = std::uint64_t{first} + rows + passes - 1;
   if (rows == 0 || passes == 0 || end > mtp_layout_.context) {
     return Error(std::format("a draft of {} passes after {} rows at {} passes the context", passes,
@@ -775,16 +806,21 @@ Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t p
     }
     ins.push_back(std::move(*in));
   }
-  const kg::Qwen38MtpShape shape{.rows = rows,
-                                 .passes = passes,
-                                 .n_kv = n_kv,
-                                 .cells = mtp_layout_.cells,
-                                 .qsa_select = ins.front().qsa_select,
-                                 .qsa_blocks = ins.front().qsa_select ? ins.front().qsa.blocks : 0,
-                                 .head = head,
-                                 .head_rows = o_.draft_vocab,
-                                 .hidden_row = hidden_row,
-                                 .hidden_rows = mtp_layout_.hidden_rows};
+  const kg::Qwen38MtpShape shape{
+      .rows = rows,
+      .passes = passes,
+      .n_kv = n_kv,
+      .cells = mtp_layout_.cells,
+      .qsa_select = ins.front().qsa_select,
+      .qsa_blocks = ins.front().qsa_select ? ins.front().qsa.blocks : 0,
+      .head = head,
+      .head_rows = static_cast<std::int64_t>(
+          dbinding_.selected_head()
+              ? std::min<std::uint64_t>(o_.draft_vocab, dbinding_.draft_ids.ne[1])
+              : o_.draft_vocab),
+      .confidence = confidence,
+      .hidden_row = hidden_row,
+      .hidden_rows = mtp_layout_.hidden_rows};
   return std::pair{shape, std::move(ins)};
 }
 
@@ -946,7 +982,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
 }
 
 Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts,
-                           std::vector<float>* probabilities) {
+                           std::vector<float>* probabilities, std::uint32_t passes) {
   if (!speculative()) {
     return Error("drafting needs the drafter");
   }
@@ -970,7 +1006,11 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
       return Error(std::format("token {} is outside the vocabulary", t));
     }
   }
-  auto shaped = MtpInputs(n - rows, rows, o_.draft_rows, true, 1);
+  passes = passes == 0 ? o_.draft_rows : passes;
+  if (passes > o_.draft_rows) {
+    return Error("a draft past the configured maximum depth");
+  }
+  auto shaped = MtpInputs(n - rows, rows, passes, true, 1, probabilities != nullptr);
   if (!shaped) {
     return std::unexpected(shaped.error());
   }

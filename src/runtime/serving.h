@@ -299,6 +299,8 @@ class Llm : public Served {
   virtual std::uint64_t drafter_state_bytes() const = 0;
   virtual std::uint32_t cursor() const { return 0; }
   virtual void set_cursor(std::uint32_t /*value*/) {}
+  virtual void SaveDecodingState() {}
+  virtual void RestoreDecodingState() {}
 
   // During Generate: whether it samples, the token for a row's logits at
   // a position in the conversation (greedy: the argmax), and whether the

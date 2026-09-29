@@ -116,6 +116,13 @@ sample instead (a `temperature` above 0): seeded, each token drawn at its
 position in the conversation (execution/sampling.h), and when speculating
 each draft accepted by speculative sampling (`VerifyDraft`), so the
 tokens are distributed as plain sampling's; a seed repeats a reply.
+Qwen3.8 greedy speculation chooses depth two or three using a moving
+acceptance average and a measured relative step cost of 1.16. It tries
+four complete steps at each depth, then probes the other depth for four
+steps after 32 observations; a change needs a predicted 3% gain. Output-
+or context-truncated verifies do not train the policy. Its schedule is
+saved with conversation state, independent of timing. Seeded sampling
+keeps depth two, as does a configured prefill chunk of only three rows.
 Generation stops at the template's end-of-turn tokens, the token limit, or
 when the route ends it (a stop string, the client gone, the backend
 stalled, a non-streaming request's deadline, the runtime stopping;

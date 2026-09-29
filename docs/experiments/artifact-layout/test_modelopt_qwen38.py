@@ -799,6 +799,58 @@ class MtpTests(unittest.TestCase):
             with self.subTest(key=key, value=value), self.assertRaisesRegex(ValueError, "MTP"):
                 self.build()
 
+    def test_selected_head_rows_and_original_ids_are_packed_exactly(self):
+        vocab = MTP_CONFIG["text_config"]["vocab_size"]
+        width = MTP_CONFIG["text_config"]["hidden_size"]
+        raw = small_bf16(vocab * width, 876)
+        self.tensors["lm_head.weight"] = ("BF16", [vocab, width], raw)
+        for p in self.paths:
+            p.unlink()
+        self.paths = write_checkpoint(self.dir, self.tensors, config=MTP_CONFIG, split=1)
+        ids = [0, 2, 3, vocab - 1]
+        selection = self.dir / "selection.txt"
+        selection.write_text("".join(f"{i}\n" for i in ids))
+        final, _ = self.build(draft_vocab_ids=selection)
+        manifest, index = LAYOUT.verify(final)
+        resources = {r["name"]: r for r in index["resources"]}
+        def read(name):
+            r = resources[name]
+            g = index["groups"][r["group"]]
+            shard = index["shards"][g["shard"]]
+            with (final / shard["path"]).open("rb") as f:
+                f.seek(shard["data_offset"] + g["offset"] + r["offset"])
+                return f.read(r["bytes"])
+        self.assertEqual(read("draft_output.weight"),
+                         b"".join(raw[i * 2 * width:(i + 1) * 2 * width] for i in ids))
+        self.assertEqual(read("draft_output.ids"), struct.pack("<4i", *ids))
+        self.assertEqual((final / f"meta/{selection.name}").read_bytes(), selection.read_bytes())
+        source = next(s for s in manifest["source"] if s["name"] == selection.name)
+        self.assertEqual(source["sha256"], hashlib.sha256(selection.read_bytes()).hexdigest())
+        self.assertEqual(resources["draft_output.ids"]["repr"]["ne"], [1, 4])
+
+    def test_invalid_draft_vocabulary_is_refused_before_writing(self):
+        for data in (b"", b"-1\n", b"2\n2\n", b"3\n2\n", b"9999999\n", b"1 2\n",
+                     b"\xff\n", b"1\n\n"):
+            with self.subTest(data=data), self.assertRaises(ValueError):
+                MO.draft_vocabulary(data, 16)
+        self.assertEqual(MO.draft_vocabulary(b"0\n1\n15\n", 16), [0, 1, 15])
+
+    def test_a_supplied_selection_pin_is_not_replaced_by_the_current_file(self):
+        width = MTP_CONFIG["text_config"]["hidden_size"]
+        vocab = MTP_CONFIG["text_config"]["vocab_size"]
+        self.tensors["lm_head.weight"] = ("BF16", [vocab, width], small_bf16(vocab * width, 876))
+        for p in self.paths:
+            p.unlink()
+        self.paths = write_checkpoint(self.dir, self.tensors, config=MTP_CONFIG, split=1)
+        selection = self.dir / "selection.txt"
+        selection.write_bytes(b"0\n2\n")
+        sources = [*self.paths, self.dir / "config.json"]
+        expected = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
+        expected[selection.name] = hashlib.sha256(b"0\n1\n").hexdigest()
+        with self.assertRaisesRegex(ValueError, "sources differ"):
+            self.build(draft_vocab_ids=selection, expected=expected)
+        self.assertFalse((self.dir / "store").exists())
+
     def test_import_m3_imports_the_drafter_from_its_pins(self):
         files = [{"path": f"Q/{p.name}", "bytes": p.stat().st_size,
                   "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in self.paths]
@@ -813,6 +865,40 @@ class MtpTests(unittest.TestCase):
         manifest, _ = LAYOUT.verify(artifact)
         self.assertEqual(manifest["model"]["architecture"], "qwen4exp-mtp")
         self.assertTrue(manifest["converter"]["version"].endswith("+mtp"))
+
+    def test_cli_selected_head_honors_the_list_pin_and_requires_one(self):
+        width = MTP_CONFIG["text_config"]["hidden_size"]
+        vocab = MTP_CONFIG["text_config"]["vocab_size"]
+        self.tensors["lm_head.weight"] = ("BF16", [vocab, width], small_bf16(vocab * width, 876))
+        for p in self.paths:
+            p.unlink()
+        self.paths = write_checkpoint(self.dir, self.tensors, config=MTP_CONFIG, split=1)
+        selection = self.dir / "selection.txt"
+        selection.write_bytes(b"0\n1\n")
+        identities = [*self.paths, self.dir / "config.json", selection]
+        files = [{"path": f"Q/{p.name}", "bytes": p.stat().st_size,
+                  "sha256": hashlib.sha256(p.read_bytes()).hexdigest()} for p in identities]
+        pins = self.dir / "pins.json"
+        out = self.dir / "cli-selected"
+        args = ["import_m3.py", "drafter", str(out), str(pins), "q", *map(str, self.paths),
+                "--draft-vocab-ids", str(selection)]
+        pins.write_text(json.dumps({"models": [{"id": "q", "files": files}]}))
+        selection.write_bytes(b"0\n2\n")  # valid, same length, different content
+        with self.assertRaisesRegex(ValueError, "sources differ"):
+            import_m3.main(args)
+        self.assertFalse(out.exists())
+        selection.write_bytes(b"0\n1\n")
+        pins.write_text(json.dumps({"models": [{"id": "q", "files": files[:-1]}]}))
+        with self.assertRaises(SystemExit):
+            import_m3.main(args)
+        self.assertFalse(out.exists())
+        pins.write_text(json.dumps({"models": [{"id": "q", "files": files}]}))
+        import_m3.main(args)
+        (artifact,) = [p for p in out.iterdir() if p.name != ".staging"]
+        manifest, index = LAYOUT.verify(artifact)
+        self.assertTrue(any(r["name"] == "draft_output.ids" for r in index["resources"]))
+        self.assertEqual(next(s["sha256"] for s in manifest["source"]
+                              if s["name"] == selection.name), files[-1]["sha256"])
 
 
 if __name__ == "__main__":

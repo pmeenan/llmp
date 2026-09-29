@@ -422,6 +422,19 @@ std::expected<Qwen38Binding, std::string> BindQwen38(const Qwen38Profile& profil
   return bound;
 }
 
+std::expected<void, std::string> CheckQwen38DraftIds(std::span<const std::int32_t> ids,
+                                                     std::uint32_t vocab) {
+  if (ids.empty() || ids.size() > vocab) {
+    return Refused("an empty or oversized draft vocabulary");
+  }
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    if (ids[i] < 0 || std::cmp_greater_equal(ids[i], vocab) || (i > 0 && ids[i - 1] >= ids[i])) {
+      return Refused("draft vocabulary IDs must be in range and strictly ascending");
+    }
+  }
+  return {};
+}
+
 std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(
     const Qwen38Profile& p, std::string_view architecture,
     std::span<const Qwen38Resource> resources) {
@@ -442,6 +455,16 @@ std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(
   wants.Ggml("output_hc_norm.weight", "F32", {p.hc_width()}, &b.output_hc_norm);
   wants.Ggml("output_hc_down.weight", "BF16", {p.hc_width(), p.hc_rank}, &b.output_hc_down);
   wants.Ggml("output_hc_up.weight", "BF16", {p.hc_rank, p.hc_width()}, &b.output_hc_up);
+  for (const Qwen38Resource& r : resources) {
+    if (std::ranges::contains(r.roles, "draft_output.weight")) {
+      if (r.ne.size() != 2 || r.ne[1] == 0 || r.ne[1] > p.vocab) {
+        return Refused("draft_output.weight has no bounded draft vocabulary");
+      }
+      wants.Ggml("draft_output.weight", "BF16", {w, r.ne[1]}, &b.draft_output);
+      wants.Ggml("draft_output.ids", "I32", {1, r.ne[1]}, &b.draft_ids);
+      break;
+    }
+  }
   // One full-attention layer, its routed experts in the CUTLASS layout.
   AddLayer(wants, p, "blk.0.", 0, b.layer, true, true);
   if (auto matched = Match(p, want, resources, "Qwen3.8's MTP drafter"); !matched) {

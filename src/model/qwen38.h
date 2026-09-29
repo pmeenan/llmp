@@ -356,6 +356,10 @@ struct Qwen38MtpBinding {
   Qwen38Layer layer;
   Qwen38Tensor fc_embd, fc_hidden, norm_embd, norm_hidden;
   Qwen38Tensor output_hc_norm, output_hc_down, output_hc_up;
+  // Optional paired selected BF16 head and I32 [1, rows] original token IDs.
+  // IDs are strictly ascending, checked after loading before any draft.
+  Qwen38Tensor draft_output, draft_ids;
+  bool selected_head() const { return !draft_output.type.empty(); }
 };
 
 // Refused, naming the tensor, as BindQwen38 is, and if `architecture` is
@@ -365,6 +369,9 @@ std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(
     std::span<const Qwen38Resource> resources);
 std::expected<Qwen38MtpBinding, std::string> BindQwen38Mtp(const Qwen38Profile& profile,
                                                            const artifact::Artifact& artifact);
+
+std::expected<void, std::string> CheckQwen38DraftIds(std::span<const std::int32_t> ids,
+                                                     std::uint32_t vocab);
 
 // The drafter's state, one region: its layer's F16 K and V caches and F32
 // indexer keys (a cell per position, as the target's QSA layers'), its BF16

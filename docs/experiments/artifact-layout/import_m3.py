@@ -21,7 +21,7 @@ M3's imports need around it without copying or changing it:
   (model_index.json, the scheduler and processor files) kept verbatim.
 
   python3 import_m3.py build OUT PINS MODEL_ID SOURCE...
-  python3 import_m3.py drafter OUT PINS MODEL_ID SOURCE...
+  python3 import_m3.py drafter OUT PINS MODEL_ID SOURCE... [--draft-vocab-ids FILE]
   python3 import_m3.py component OUT PINS MODEL_ID CHECKPOINT ROLE [--meta REL]...
   python3 import_m3.py compose OUT PINS MODEL_ID CHECKPOINT ROLE=ID... [--meta REL]...
   python3 import_m3.py verify ARTIFACT
@@ -432,13 +432,24 @@ def main(argv):
         print(layout.build(p, src, out, paths, (), converter=converter(), expected_sources=expected))
     elif cmd == "drafter" and len(args) >= 4:
         out, pins, model_id, paths = args[0], args[1], args[2], args[3:]
+        ids_path = None
+        if "--draft-vocab-ids" in paths:
+            i = paths.index("--draft-vocab-ids")
+            if i + 2 != len(paths) or i == 0:
+                raise SystemExit("--draft-vocab-ids FILE follows the drafter's shards")
+            ids_path = paths[i + 1]
+            paths = paths[:i]
         if any(Path(p).suffix != ".safetensors" for p in paths):
             raise SystemExit("drafter takes Qwen3.8's safetensors shards that hold the MTP block")
         modelopt, digest = load_modelopt()
-        expected = pinned_sources(pins, model_id, [*paths, str(Path(paths[0]).parent / "config.json")])
+        identities = [*paths, str(Path(paths[0]).parent / "config.json")]
+        if ids_path is not None:
+            identities.append(ids_path)
+        expected = pinned_sources(pins, model_id, identities)
         conv = {"name": CONVERTER_NAME,
                 "version": f"{converter()['version']}+modelopt_qwen38-{digest[:16]}+mtp"}
-        final, _ = modelopt.build(layout, out, paths, expected=expected, converter=conv, mtp=True)
+        final, _ = modelopt.build(layout, out, paths, expected=expected, converter=conv, mtp=True,
+                                 draft_vocab_ids=ids_path)
         print(final)
     elif cmd == "component" and len(args) >= 5:
         rest, metas = _split_meta(args)

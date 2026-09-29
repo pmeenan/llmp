@@ -130,7 +130,8 @@ constexpr std::array<Kernel::Entry, 92> kKernels = {{
      .operation = execution::Operation::kGetRows,
      .variant = "ggml_cuda_op_get_rows: F32 rows through k_get_rows_float_vec on 16-byte "
                 "vectors, aligned rows and at least 128 blocks, else k_get_rows_float; BF16 rows "
-                "through k_get_rows_float<nv_bfloat16, float>; upstream launch configuration",
+                "through k_get_rows_float<nv_bfloat16, float>; I32 rows keep their type; "
+                "upstream launch configuration",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGetRows(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return GetRows(launch, n[0]); }},

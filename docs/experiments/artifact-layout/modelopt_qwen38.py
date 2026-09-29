@@ -722,7 +722,36 @@ def check_mtp_config(cfg, doc):
         raise ValueError("config.json: the MTP layer's rope_theta differs from the model's")
 
 
-def plan_mtp(layout, cfg, src, shard_target=None):
+def draft_vocabulary(data, vocab):
+    """Ascending original token IDs: order also preserves argmax tie breaking."""
+    if len(data) > 12 * vocab or not data:
+        raise ValueError("draft vocabulary is empty or too large")
+    lines = data.splitlines()
+    if len(lines) > vocab or any(not line or not line.isdigit() for line in lines):
+        raise ValueError("draft vocabulary must contain one decimal token ID per line")
+    ids = [int(line) for line in lines]
+    if any(i >= vocab or i > 0x7fffffff for i in ids):
+        raise ValueError("draft vocabulary token ID is outside the vocabulary")
+    if any(a >= b for a, b in zip(ids, ids[1:])):
+        raise ValueError("draft vocabulary token IDs must be strictly ascending")
+    return ids
+
+
+def selected_rows(src, tensor, ids, width):
+    """Bounded reads of consecutive selected BF16 rows, without a full-head copy."""
+    row_bytes = 2 * width
+    at = 0
+    while at < len(ids):
+        end = at + 1
+        while (end < len(ids) and ids[end] == ids[end - 1] + 1 and
+               (end - at) * row_bytes < 4 << 20):
+            end += 1
+        yield src.read(dict(tensor, offset=tensor["offset"] + ids[at] * row_bytes,
+                            nbytes=(end - at) * row_bytes))
+        at = end
+
+
+def plan_mtp(layout, cfg, src, shard_target=None, draft_ids=None):
     """The MTP drafter artifact's groups, members and expert arrays: its
     layer (group `layer`, layer 0), its 512 expert groups and its head (the
     final mixer), every source tensor's shape and type checked and every
@@ -846,6 +875,14 @@ def plan_mtp(layout, cfg, src, shard_target=None):
     head["members"].append(bf16_matrix("output_hc_up.weight",
                                        "mtp.hyper_connection_mixer.input_mix_weight_up.weight",
                                        cfg.hc_dim, cfg.hc_rank))
+    if draft_ids is not None:
+        ids = draft_vocabulary(draft_ids, cfg.vocab)
+        tensor = get("lm_head.weight", "BF16", [cfg.vocab, h])
+        head["members"].append(member("draft_output.weight", _ggml("BF16", [h, len(ids)]),
+                                      lambda s: selected_rows(s, tensor, ids, h)))
+        packed_ids = struct.pack(f"<{len(ids)}i", *ids)
+        head["members"].append(member("draft_output.ids", _ggml("I32", [1, len(ids)]),
+                                      lambda s: packed_ids))
     # Every MTP tensor has a place; the given sources hold nothing else the
     # drafter should have read.
     skipped = [n for n in src.tensors if n.startswith("mtp.") and n not in used]
@@ -1073,7 +1110,7 @@ def _hash_files(paths, extra=()):
 
 
 def build(layout, out_root, shard_paths, expected=None, converter=None, shard_target=None, workers=8,
-          mtp=False):
+          mtp=False, draft_vocab_ids=None):
     """Plans, writes, verifies and publishes the artifact; returns its path.
     With `mtp`, the MTP drafter's artifact (plan_mtp) from the shards given,
     which must hold every mtp.* tensor.
@@ -1092,12 +1129,31 @@ def build(layout, out_root, shard_paths, expected=None, converter=None, shard_ta
     config_bytes = config_path.read_bytes()
     doc = json.loads(config_bytes, object_pairs_hook=_unique_keys)
     cfg = Config(doc)
+    ids_path, ids_bytes = None, None
+    if draft_vocab_ids is not None:
+        if not mtp:
+            raise ValueError("a draft vocabulary needs an MTP drafter import")
+        ids_path = Path(draft_vocab_ids)
+        if not layout.NAME.fullmatch(ids_path.name) or ids_path.name in names + [config_path.name]:
+            raise ValueError("draft vocabulary file name is unsafe or duplicates a source")
+        # A bounded read, then the same bytes are planned, hashed and kept.
+        with ids_path.open("rb") as f:
+            ids_bytes = f.read(12 * cfg.vocab + 1)
+        draft_vocabulary(ids_bytes, cfg.vocab)
     if mtp:
         check_mtp_config(cfg, doc)
     src = Sources(layout, paths)
     try:
-        p = plan_mtp(layout, cfg, src, shard_target) if mtp else plan(layout, cfg, src, shard_target)
+        p = (plan_mtp(layout, cfg, src, shard_target, ids_bytes) if mtp else
+             plan(layout, cfg, src, shard_target))
         identity = paths + [str(config_path)]
+        metas = [("meta/config.json", config_path)]
+        if ids_path is not None:
+            identity.append(str(ids_path))
+            metas.append((f"meta/{ids_path.name}", ids_path))
+            if expected is not None:
+                expected = dict(expected)
+                expected.setdefault(ids_path.name, hashlib.sha256(ids_bytes).hexdigest())
         headers = [(part["path"], 0, part["header_len"]) for part in src.parts]
         sources, ranges = _hash_files(identity, headers)
         for part in src.parts:
@@ -1105,6 +1161,8 @@ def build(layout, out_root, shard_paths, expected=None, converter=None, shard_ta
                 raise ValueError(f"{part['path']}: header changed after planning")
         if sources[config_path.name][1] != hashlib.sha256(config_bytes).hexdigest():
             raise ValueError("config.json changed after planning")
+        if ids_path is not None and sources[ids_path.name][1] != hashlib.sha256(ids_bytes).hexdigest():
+            raise ValueError("draft vocabulary changed after planning")
         if expected is not None and {n: d for n, (_, d) in sources.items()} != expected:
             raise ValueError("sources differ from their recorded identities")
         converter = converter or {"name": "artifact-layout/modelopt_qwen38.py", "version": "test"}
@@ -1119,7 +1177,7 @@ def build(layout, out_root, shard_paths, expected=None, converter=None, shard_ta
                 work.unlink()
             elif work.exists():
                 shutil.rmtree(work)
-            mbytes = write(layout, p, src, work, converter, sources, [("meta/config.json", config_path)],
+            mbytes = write(layout, p, src, work, converter, sources, metas,
                            workers=workers)
             if _hash_files(identity)[0] != sources:
                 raise ValueError("a source changed during import")

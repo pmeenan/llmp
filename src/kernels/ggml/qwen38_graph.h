@@ -288,9 +288,9 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
 // the next position, its token the previous pass's draft and its streams
 // the previous pass's last row's combined streams (vLLM's scheme A). A
 // pass's draft is the argmax of its last row's logits over the head's
-// first `head_rows` rows (a draft vocabulary: a lowest-token-ID prefix,
-// chosen by the measured sweep, not a model-output frequency ranking;
-// 0: the whole vocabulary), the lowest ID among equals. Without `head` (a
+// first `head_rows` rows (a lowest-token-ID prefix, or a prepared selected
+// head with a map back to original token IDs; 0: every available row), the
+// lowest token ID among equals. Without `head` (a
 // prefill pass) nothing past the caches' writes is computed.
 struct Qwen38MtpShape {
   std::int64_t rows = 0;  // pass 0's
@@ -301,6 +301,7 @@ struct Qwen38MtpShape {
   std::int64_t qsa_blocks = 0;
   bool head = false;
   std::int64_t head_rows = 0;
+  bool confidence = false;       // also return each draft's softmax probability
   std::int64_t hidden_row = 0;   // pass 0's first streams row
   std::int64_t hidden_rows = 0;  // the streams' rows
 
@@ -333,6 +334,7 @@ struct Qwen38MtpGraph {
   // The target's token table and head.
   ggml_tensor* token_embd = nullptr;
   ggml_tensor* output = nullptr;
+  ggml_tensor* draft_ids = nullptr;  // optional I32 [1, selected rows]
   ggml_tensor* streams = nullptr;    // F32 [hc_width, hidden_rows]: the drafter's state
   std::vector<ggml_tensor*> drafts;  // I32 [1] a pass (with its head)
   // I32 [1] a pass: its draft's softmax probability over the draft head's

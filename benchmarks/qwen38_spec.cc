@@ -105,6 +105,7 @@
 #include "base/sha256.h"
 #include "chat/chat.h"
 #include "engine_names.h"
+#include "execution/adaptive_depth.h"
 #include "execution/sampling.h"
 #include "fp16_runner.h"
 #include "model/qwen38.h"
@@ -239,6 +240,7 @@ struct Options {
   // draft always, each later one only while the drafter's probability for
   // it is at least this (its own default 0.3).
   double window = 0.0;
+  bool adaptive_depth = false;
   std::filesystem::path sampled;
   std::string only;
   std::optional<std::uint32_t> poll_us;
@@ -251,6 +253,7 @@ struct Prompt {
 
 // One speculative step's record.
 struct Step {
+  std::uint32_t depth = 0;   // passes actually run, before output/verify truncation
   std::uint32_t pos = 0;     // the anchor's position
   std::uint32_t rows = 0;    // the verify's rows
   std::uint32_t kept = 0;    // rows kept: the anchor and the accepted drafts
@@ -263,6 +266,8 @@ struct Step {
 // A generation: the tokens after the prompt (the first from the prefill)
 // and the logits each was chosen from (the first's: the prefill's last row).
 struct Generation {
+  // NOLINTNEXTLINE(readability-redundant-member-init): aggregate resets need explicit construction
+  ex::AdaptiveDepth depth{};
   std::vector<std::int32_t> tokens;
   std::vector<std::vector<float>> logits;
   std::vector<Step> steps;
@@ -282,6 +287,8 @@ struct Forcing {
   // A control: per step, the other run's drafts, with its forced one made
   // wrong differently (the same rows; different tokens after the kept).
   const std::vector<Step>* control = nullptr;
+  // Own repeats replay only the depth schedule; fresh drafts stay visible.
+  const std::vector<Step>* depths = nullptr;
   bool fingerprint = false;
   // Keep every token's logits (a check's); otherwise a greedy run reads its
   // verdicts' argmaxes alone, as a greedy client would (a sampler always
@@ -293,6 +300,7 @@ struct Forcing {
   // commit and restore stay pending (and its state is not fingerprinted):
   // the swap check swaps with them owed.
   bool settle = true;
+  const ex::AdaptiveDepth* initial_depth = nullptr;
 };
 
 class Harness {
@@ -716,6 +724,8 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
   auto pos = static_cast<std::uint32_t>(prompt.ids.size());
   const std::uint32_t vocab = qwen_.vocab();
   const std::uint32_t k = qwen_.draft_rows();
+  ex::AdaptiveDepth depth =
+      forcing.initial_depth != nullptr ? *forcing.initial_depth : ex::AdaptiveDepth(k);
   const auto choose = [&](std::span<const float> row, std::uint32_t at) -> std::int32_t {
     if (sampling == nullptr) {
       return Argmax(row);
@@ -741,7 +751,17 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
     const auto left = static_cast<std::uint32_t>(count - out.tokens.size());
     const auto drafting = Clock::now();
     std::vector<float> probabilities;
-    if (auto r = qwen_.Draft(history, step.drafts, o_.window > 0.0 ? &probabilities : nullptr);
+    auto passes = k;
+    if (forcing.depths != nullptr && index < forcing.depths->size()) {
+      passes = (*forcing.depths)[index].depth;
+    } else if (forcing.control != nullptr && index < forcing.control->size()) {
+      passes = (*forcing.control)[index].depth;
+    } else if (o_.adaptive_depth && sampling == nullptr) {
+      passes = depth.Choose();
+    }
+    step.depth = passes;
+    if (auto r =
+            qwen_.Draft(history, step.drafts, o_.window > 0.0 ? &probabilities : nullptr, passes);
         !r) {
       return r;
     }
@@ -807,6 +827,9 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
     if (auto r = Judge(step, argmax, logits, pos, history, sampling, seed, scratch, out); !r) {
       return r;
     }
+    if (o_.adaptive_depth && sampling == nullptr && forcing.control == nullptr) {
+      depth.Observe(passes, step.kept, rows == passes + 1 && o_.window == 0.0);
+    }
     // Unsettled, the last step's commit stays owed (reading the state would
     // run it).
     const bool last = out.tokens.size() >= count || out.steps.size() + 1 >= forcing.max_steps;
@@ -823,6 +846,7 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
     }
   }
   out.decode_seconds = Seconds(Clock::now() - start);
+  out.depth = depth;
   // The last verify's tokens may run past `count` (a run stopped by
   // max_steps has fewer, and keeps them all).
   if (out.tokens.size() > count) {
@@ -864,13 +888,17 @@ Status Harness::Greedy() {
       // client does (their tokens checked).
       const bool keep = r < 2;
       std::vector<float> first;
-      if (auto run = InRequest("a speculative generation",
-                               [&]() -> Status {
-                                 if (auto p = Prefill(prompt, true, first); !p) {
-                                   return p;
-                                 }
-                                 return Speculate(prompt, count, first, {.logits = keep}, spec);
-                               });
+      if (auto run = InRequest(
+              "a speculative generation",
+              [&]() -> Status {
+                if (auto p = Prefill(prompt, true, first); !p) {
+                  return p;
+                }
+                return Speculate(prompt, count, first,
+                                 {.depths = o_.adaptive_depth && r > 0 ? &first_run.steps : nullptr,
+                                  .logits = keep},
+                                 spec);
+              });
           !run) {
         return run;
       }
@@ -913,7 +941,9 @@ Status Harness::Greedy() {
     // Acceptance by draft position: how often draft i was accepted.
     std::vector<std::uint64_t> by_position(qwen_.draft_rows(), 0);
     std::vector<std::uint64_t> offered(qwen_.draft_rows(), 0);
+    std::map<std::uint32_t, std::uint64_t> depths;
     for (const Step& s : spec.steps) {
+      ++depths[s.depth];
       for (std::uint32_t i = 0; i + 1 < s.rows; ++i) {
         ++offered[i];
         by_position[i] += i + 1 < s.kept ? 1 : 0;
@@ -927,6 +957,10 @@ Status Harness::Greedy() {
                          : 0.0);
     }
     const double per_step_ms = 1000.0 / static_cast<double>(spec.verifies);
+    std::string depths_json;
+    for (const auto& [depth, steps] : depths) {
+      depths_json += std::format("{}\"{}\":{}", depths_json.empty() ? "" : ",", depth, steps);
+    }
     std::println(
         "{}: {} prompt tokens, {} generated; plain {:.2f} tok/s, speculative [{}] tok/s; "
         "acceptance {:.3f} ({} of {}; by position [{}]), {:.2f} tokens a verify; a step: draft "
@@ -950,12 +984,12 @@ Status Harness::Greedy() {
     results_.push_back(std::format(
         R"({{"check":"greedy","prompt":"{}","prompt_tokens":{},"generated":{},"plain_tok_s":{:.3f},)"
         R"("spec_tok_s":[{}],"drafted":{},"accepted":{},"acceptance":{:.4f},)"
-        R"("acceptance_by_position":[{}],"verifies":{},)"
+        R"("acceptance_by_position":[{}],"verifies":{},"draft_depths":{{{}}},)"
         R"("step_ms":{{"draft":{:.3f},"verify":{:.3f},"all":{:.3f}}},"text":{},)"
         R"("prompt_ids":[{}],"plain_tokens":[{}],"spec_tokens":[{}],)"
         R"("plain_logits_sha256":"{}","spec_logits_sha256":"{}"}})",
         prompt.id, prompt.ids.size(), count, plain_rate, rates_json, spec.drafted, spec.accepted,
-        acceptance, positions_json, spec.verifies, spec.draft_seconds * per_step_ms,
+        acceptance, positions_json, spec.verifies, depths_json, spec.draft_seconds * per_step_ms,
         spec.verify_seconds * per_step_ms, spec.decode_seconds * per_step_ms, escaped,
         ids(prompt.ids), ids(plain.tokens), ids(spec.tokens), LogitsDigest(plain.logits),
         LogitsDigest(first_run.logits.empty() ? spec.logits : first_run.logits)));
@@ -968,7 +1002,10 @@ Status Harness::Greedy() {
 // after the kept ones.
 Status Harness::Forced() {
   // The first chat prompt, or --only's (a chat or decode prompt).
-  const Prompt* chosen = &chat_.front();
+  if (chat_.empty() && decode_.empty()) {
+    return Error("the rejection check needs a prompt");
+  }
+  const Prompt* chosen = chat_.empty() ? &decode_.front() : &chat_.front();
   if (!o_.only.empty()) {
     chosen = nullptr;
     for (const std::vector<Prompt>* set : {&chat_, &decode_}) {
@@ -1167,7 +1204,10 @@ Status Harness::Swap() {
   if (!with_fp16()) {
     return Error("the swap check needs the FP16 fixture (--fp16-artifact, --fp16-tokens)");
   }
-  const Prompt& prompt = chat_.front();
+  if (chat_.empty() && decode_.empty()) {
+    return Error("the swap check needs a prompt");
+  }
+  const Prompt& prompt = chat_.empty() ? decode_.front() : chat_.front();
   const std::uint32_t count = o_.tokens;
   // All rejected, one accepted, as drafted (depth 2), in turn.
   const auto wrong = [](std::size_t step, std::uint32_t, std::uint32_t rows) -> std::int32_t {
@@ -1246,7 +1286,11 @@ Status Harness::Swap() {
             };
             const auto remaining = static_cast<std::uint32_t>(count - before.tokens.size() + 1);
             return Speculate(rest, remaining, before.logits.back(),
-                             {.wrong = wrong_after, .fingerprint = true, .logits = true}, after);
+                             {.wrong = wrong_after,
+                              .fingerprint = true,
+                              .logits = true,
+                              .initial_depth = &before.depth},
+                             after);
           });
       !r) {
     return r;
@@ -1541,15 +1585,16 @@ Status Harness::Write() {
   const jb::Dsv4GraphStats& d = qwen_.draft_stats();
   std::ofstream(o_.out / "spec.json")
       << std::format(
-             R"({{"check":"{}","draft_rows":{},"draft_vocab":{},"load_seconds":{:.2f},)"
+             R"({{"check":"{}","draft_rows":{},"draft_vocab":{},"adaptive_depth":{},"load_seconds":{:.2f},)"
              R"("read_bytes":{},"drafter_read_bytes":{},"peak_memavailable_drop_bytes":{},)"
              R"("graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{},"dropped":{}}},)"
              R"("draft_graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{}}},)"
              R"("ple_seconds":{:.3f},"results":[{}],"problems":[{}]}})",
-             o_.check, o_.qwen.draft_rows, o_.qwen.draft_vocab, load_seconds_,
-             qwen_.weight_read_bytes(), qwen_.drafter_read_bytes(), drop, g.eager, g.captured,
-             g.replayed, g.refused, g.dropped, d.eager, d.captured, d.replayed, d.refused,
-             qwen_.ple().seconds, all, problems)
+             o_.check, o_.qwen.draft_rows, o_.qwen.draft_vocab,
+             o_.adaptive_depth ? "true" : "false", load_seconds_, qwen_.weight_read_bytes(),
+             qwen_.drafter_read_bytes(), drop, g.eager, g.captured, g.replayed, g.refused,
+             g.dropped, d.eager, d.captured, d.replayed, d.refused, qwen_.ple().seconds, all,
+             problems)
       << '\n';
   std::println(
       "peak MemAvailable drop: {:.2f} GiB; graphs {} replayed, {} captured, {} refused ({})",
@@ -1599,6 +1644,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = number(o.tokens) && o.tokens >= 2;
     } else if (a == "--context") {
       ok = number(o.qwen.context);
+    } else if (a == "--prefill-chunk") {
+      ok = number(o.qwen.max_rows) && o.qwen.max_rows >= 1;
     } else if (a == "--graphs") {
       o.qwen.graphs = v == "on";
       ok = v == "on" || v == "off";
@@ -1606,6 +1653,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = number(o.qwen.draft_rows) && o.qwen.draft_rows >= 1;
     } else if (a == "--draft-vocab") {
       ok = number(o.qwen.draft_vocab);
+    } else if (a == "--adaptive-depth") {
+      o.adaptive_depth = v == "on";
+      ok = v == "on" || v == "off";
     } else if (a == "--repeats") {
       ok = number(o.repeats) && o.repeats >= 1;
     } else if (a == "--margin") {
@@ -1642,8 +1692,10 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "usage: jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE "
         "--prompts FILE --out DIR --check greedy|forced|swap|sampled-plain|sampled-spec "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
-        "[--draft-vocab N] [--repeats N] [--margin B] [--seeds N] [--sampled FILE] [--only ID] "
-        "[--poll-us N] [--window P] [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect "
+        "[--draft-vocab N] [--adaptive-depth on|off] [--repeats N] [--margin B] [--seeds N] "
+        "[--sampled FILE] [--only ID] "
+        "[--poll-us N] [--window P] [--prefill-chunk N] [--fp16-artifact DIR --fp16-tokens FILE "
+        "--fp16-expect "
         "SHA256]");
   }
   std::filesystem::create_directories(o.out);

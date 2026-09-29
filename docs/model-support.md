@@ -192,7 +192,7 @@ not used. The options each renderer supports and refuses are in
   | Mode | Where |
   | --- | --- |
   | Greedy, plain | runtime (`--plain`) and harnesses |
-  | Greedy, speculative with MTP (depth 2, 65,536 draft rows) | runtime (the default with a drafter) and `jitllm_qwen38_spec` |
+  | Greedy, speculative with MTP (adaptive depth 2–3, 65,536 draft rows) | runtime (the default with a drafter) and `jitllm_qwen38_spec --draft 3 --adaptive-depth on` |
   | Seeded sampling, plain and speculative | `jitllm_qwen38_spec`; the runtime's chat route (`temperature` > 0, D-097), the same sampler, not yet checked there |
   | Exact (reference) form, `--exact` | harness only (`jitllm_qwen38_exec`); speculation has no exact mode |
 
@@ -258,7 +258,15 @@ not used. The options each renderer supports and refuses are in
 - **Checkpoint:** the same pinned checkpoint (its last shard and
   `config.json`).
 - **Artifact:** v0 `056a750e…`, its own artifact; binds the target's token
-  table and head at load.
+  table and head at load. An optional imported selected head stores BF16
+  `draft_output.weight` and strictly ascending original token IDs in
+  `draft_output.ids`; neither changes the target artifact. No vocabulary
+  list ships with jitLLM. See the [draft-head study](experiments/qwen38-draft-head/README.md).
+- **Depth:** greedy chooses between two and three passes from observed
+  acceptance and a calibrated step-cost ratio, with bounded exploration.
+  The policy is conversation state: restore preserves its schedule, and
+  wall time never affects it. Seeded sampling retains depth two. A
+  three-row prefill chunk retains the earlier depth-two path.
 - **Components:** drafter only; runs with Qwen3.8 Flash Next.
 - **Template and tokenizer:** its target's.
 - **Verified:** greedy speculation equal to plain greedy except near-ties

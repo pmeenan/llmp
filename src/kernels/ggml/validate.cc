@@ -541,10 +541,13 @@ std::expected<void, KernelFailure> CheckGetRows(const ggml_tensor* node) {
   const ggml_tensor* rows = node->src[0];
   const ggml_tensor* ids = node->src[1];
   // F32 rows (the FP16 plan's output rows) or BF16 rows (the EXL3 plan's
-  // embedding table, widened exactly), gathered into F32.
+  // embedding table, widened exactly), gathered into F32; or I32 token
+  // maps, gathered without conversion.
   const bool bf16 = rows->type == GGML_TYPE_BF16;
-  if ((!IsF32(rows) && !bf16) || !IsF32(node) || ids->type != GGML_TYPE_I32) {
-    return Rejected("get_rows gathers F32 or BF16 rows by I32 ids into F32");
+  const bool i32 = rows->type == GGML_TYPE_I32;
+  if ((!IsF32(rows) && !bf16 && !i32) || (i32 ? node->type != GGML_TYPE_I32 : !IsF32(node)) ||
+      ids->type != GGML_TYPE_I32) {
+    return Rejected("get_rows gathers F32 or BF16 into F32, or I32 into I32, by I32 ids");
   }
   const std::uint64_t element = bf16 ? sizeof(ggml_bf16_t) : sizeof(float);
   if (AnyEmpty({node, rows, ids}) || !AllSane({node, rows, ids})) {

@@ -24,6 +24,7 @@
 #include "engine/dsv4_runner.h"
 #include "engine/qwen38_runner.h"
 #include "engine/qwen_image_runner.h"
+#include "execution/adaptive_depth.h"
 #include "model/dsv4.h"
 #include "model/qwen38.h"
 #include "platform/crash_policy.h"
@@ -373,6 +374,7 @@ class Qwen38 final : public Llm {
     options_.graphs = true;
     if (speculate_) {
       options_.drafter = roles.installed / drafter_id_;
+      options_.draft_rows = max_rows_ >= 4 ? 3 : 2;
     }
   }
 
@@ -498,8 +500,11 @@ class Qwen38 final : public Llm {
     if (pos + runner_.draft_rows() > options_.context) {
       return Error("the drafts would pass the context");
     }
+    // Sampling's position keys keep their existing fixed draft schedule.
+    // Greedy chooses its depth from deterministic acceptance observations.
+    const auto depth = sampling() || runner_.draft_rows() < 3 ? 2U : depth_.Choose();
     std::vector<std::int32_t> drafts;
-    if (auto r = runner_.Draft(all, drafts); !r) {
+    if (auto r = runner_.Draft(all, drafts, nullptr, depth); !r) {
       return r;
     }
     // The verify: the anchor and its drafts, within the tokens left.
@@ -565,16 +570,24 @@ class Qwen38 final : public Llm {
       }
     }
     drafted += rows - 1;
+    if (!sampling()) {
+      depth_.Observe(depth, m + 1, rows == depth + 1);
+    }
     return {};
   }
   Status Settle() override { return runner_.Rollback(); }
-  Status ClearState() override { return runner_.Clear(); }
+  Status ClearState() override {
+    depth_ = execution::AdaptiveDepth(3);
+    return runner_.Clear();
+  }
   std::uint64_t target_state_base() const override { return runner_.state_base(); }
   std::uint64_t target_state_bytes() const override { return runner_.state_bytes(); }
   std::uint64_t drafter_state_base() const override { return runner_.drafter_state_base(); }
   std::uint64_t drafter_state_bytes() const override { return runner_.drafter_state_bytes(); }
   std::uint32_t cursor() const override { return runner_.pending_rows(); }
   void set_cursor(std::uint32_t value) override { runner_.set_pending_rows(value); }
+  void SaveDecodingState() override { saved_depth_ = depth_; }
+  void RestoreDecodingState() override { depth_ = saved_depth_; }
 
  private:
   std::string artifact_id_;
@@ -584,6 +597,8 @@ class Qwen38 final : public Llm {
   fs::path store_;
   engine::Qwen38Options options_;  // before the runner, which keeps a reference
   engine::Qwen38Runner runner_;
+  execution::AdaptiveDepth depth_{3};
+  execution::AdaptiveDepth saved_depth_{3};
 };
 
 // The Qwen-Image-2.1 pipeline (engine/qwen_image_runner.h).
@@ -967,6 +982,7 @@ Status Llm::SaveState(void* host) {
   }
   saved_history_ = history_;
   saved_cursor_ = cursor();
+  SaveDecodingState();
   return {};
 }
 
@@ -990,6 +1006,7 @@ Status Llm::RestoreState(void* host) {
   }
   history_ = saved_history_;
   set_cursor(saved_cursor_);
+  RestoreDecodingState();
   needs_clear_ = false;
   return {};
 }
