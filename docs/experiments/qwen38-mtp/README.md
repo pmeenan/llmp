@@ -100,11 +100,12 @@ commit region is never spilled; it stays mapped across a swap, and a
 commit still owed at the swap runs at the next job after it.
 
 **The draft vocabulary.** The draft head computes only the first N rows of
-the target's head (FR-Spec's idea; a view, no copy). Qwen's byte-level BPE
-numbers tokens by merge order, so low IDs are the frequent ones. This is
-derived from the tokenizer's own order; it does not use Mia's
-AGPL-licensed 47k list. A smaller head only costs acceptance, never
-correctness: the verify decides every token.
+the target's head (FR-Spec's idea; a view, no copy). This token-ID prefix is
+a heuristic chosen by the sweep below, not a ranking of the model's output
+frequencies. It does not use Mia's AGPL-licensed 47k list. A smaller head
+can change acceptance, never the verify's authority over each token.
+The [draft-head study](../qwen38-draft-head/README.md) checks this difference
+separately from draft depth.
 
 **Depth.** Mia's launch drafts 3 tokens. Here each verify row adds
 4.7–5.8 ms to the step (mostly its own 10 experts; the dense weights are
@@ -358,8 +359,9 @@ each row selects for itself, are the difference.
   between the draft job and the verify job. Chaining the two jobs would
   need the rows of every candidate token prefetched, or the 28.8 GB n-gram
   table resident.
-- **Depth 2 and a 65,536-row draft head**, measured (above), not Mia's
-  depth 3 and full head.
+- **Depth 2 and a 65,536-row draft head**, measured (above). Mia's recorded
+  comparator used depth 3 and its curated 47,172-row head; the earlier
+  description of that head as full vocabulary was incorrect.
 - **The grouped expert product was tried and dropped.** A variant that
   read each distinct expert once for every verify row that chose it,
   bit-identical per slot, was slower on the GB10: 21.5–21.9 ms a

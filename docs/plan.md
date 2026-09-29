@@ -904,8 +904,10 @@ it appears.
           262,144 ([long-context phase 2](experiments/long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth));
           open: MTP 0.91× / 0.96× Mia's MTP 3 at 128K / 256K (a step
           costs the same at depth; at 128K the draft depth caps a
-          well-accepted answer, lever the depth chosen by acceptance
-          and a cheaper verify row; 256K not re-run on the final build);
+          well-accepted answer, levers the depth chosen by acceptance,
+          a cheaper verify row, and the selected draft vocabulary
+          ([draft-head study](experiments/qwen38-draft-head/README.md));
+          256K not re-run on the final build);
         - sparse flash-attention prefill for both models (llama.cpp
           #29298 and #28770);
         - DeepSeek's compressed attention and indexer at depth;

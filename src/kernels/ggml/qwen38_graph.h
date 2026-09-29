@@ -288,8 +288,8 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
 // the next position, its token the previous pass's draft and its streams
 // the previous pass's last row's combined streams (vLLM's scheme A). A
 // pass's draft is the argmax of its last row's logits over the head's
-// first `head_rows` rows (a draft vocabulary: the lowest token IDs, which
-// the checkpoint's BPE numbers in merge order, so the most frequent first;
+// first `head_rows` rows (a draft vocabulary: a lowest-token-ID prefix,
+// chosen by the measured sweep, not a model-output frequency ranking;
 // 0: the whole vocabulary), the lowest ID among equals. Without `head` (a
 // prefill pass) nothing past the caches' writes is computed.
 struct Qwen38MtpShape {

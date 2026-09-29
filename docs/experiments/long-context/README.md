@@ -915,8 +915,9 @@ answer's first 32 tokens, so acceptance is coarse): a speculative step
 costs the same at depth. At MTP depth 2 a step is 60.4 ms at 8K and 60.7
 ms at 128K (the drafter's passes 7.8 → 8.3 ms, the verify 52.0 → 51.8
 ms); acceptance 0.55 at 8K and 0.69 at 128K (by position 0.77 / 0.62),
-2.07 and 2.38 tokens a step. So the 128K gap is the depth, not a cost
-that grows with the context: that answer accepts well (Mia's MTP 3
+2.07 and 2.38 tokens a step. This short-answer diagnosis identifies a
+depth cap rather than a cost that grows with context: that answer accepts
+well (Mia's MTP 3
 accepted 0.69 of its drafts, 3.07 tokens a step at about 63 ms, from its
 phase 1 rate), and depth 2 takes at most 3 tokens a step. MTP depth 3
 at 128K: 3.10 tokens a step, 72.1 ms (drafter 11.8, verify 59.7), 43.0
@@ -927,7 +928,11 @@ fourth, the routed experts each row adds; Mia's MTP 3 step costs about
 only 0.44, so there the gap is not acceptance: 256K ran on the
 intermediate build, whose plain step was 5% slower (44.7 against 42.6
 ms), and was not re-run. Levers: the draft depth chosen by acceptance
-(depth 3 when it runs high), and a cheaper verify row.
+(depth 3 when it runs high), a cheaper verify row, and the draft head's
+selected vocabulary. Mia's actual head is a curated 47,172-row BF16 product,
+while jitLLM uses the first 65,536 rows; the
+[draft-head study](../qwen38-draft-head/README.md) measures that distinction
+at fixed depth. The 32-token diagnosis alone does not isolate it.
 
 ### Where the time goes now
 
