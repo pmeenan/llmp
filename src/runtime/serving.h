@@ -12,8 +12,9 @@
 //   alone), its runner set up on its own stream, its tokenizer and chat
 //   renderer found (D-067: a template runs only if a native renderer has
 //   its hash), the shared workspace mapped at the largest model's need, and
-//   the scheduler started with the budget of everything fixed plus the
-//   largest model's weights, which must fit the host's available memory.
+//   the scheduler started with a physical cap from available memory,
+//   leaving room for host-built chunk inputs and a 6 GiB guard. The
+//   largest model's weights must fit beside the fixed allocations.
 //   Nothing is paged yet: a model's weights come in when it is first
 //   activated.
 // - One model is resident at a time (M3's full swap). Activating another
@@ -56,6 +57,7 @@
 #include "chat/chat.h"
 #include "config/node_config.h"
 #include "config/storage_roles.h"
+#include "engine/live_state.h"
 #include "engine/paged_node.h"
 #include "execution/sampling.h"
 #include "runtime/commands.h"
@@ -276,6 +278,7 @@ class Llm : public Served {
   std::uint64_t state_snapshot_bytes() const;
   Status SaveState(void* host);
   Status RestoreState(void* host);
+  void InvalidateStateSnapshot() { saved_valid_ = false; }
 
   std::vector<catalog::ExtentId> state() const override = 0;
 
@@ -293,10 +296,16 @@ class Llm : public Served {
   // Runs any pending restore or commit (the last verify's).
   virtual Status Settle() = 0;
   virtual Status ClearState() = 0;
+  virtual bool StateUsable() const = 0;
+  virtual Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) = 0;
   virtual std::uint64_t target_state_base() const = 0;
   virtual std::uint64_t target_state_bytes() const = 0;
   virtual std::uint64_t drafter_state_base() const = 0;
   virtual std::uint64_t drafter_state_bytes() const = 0;
+  virtual std::uint64_t used_state_bytes() const = 0;
+  virtual std::vector<engine::LiveState::Range> used_state_ranges() const = 0;
+  virtual Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) = 0;
+  virtual Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) = 0;
   virtual std::uint32_t cursor() const { return 0; }
   virtual void set_cursor(std::uint32_t /*value*/) {}
   virtual void SaveDecodingState() {}
@@ -329,6 +338,8 @@ class Llm : public Served {
   bool needs_clear_ = false;
   std::vector<std::int32_t> saved_history_;
   std::uint32_t saved_cursor_ = 0;
+  std::vector<engine::LiveState::Range> saved_ranges_;
+  bool saved_valid_ = false;
   std::optional<std::int32_t> think_start_;
   std::optional<std::int32_t> think_end_;
   // The running generation's sampling, if it samples.
@@ -359,11 +370,13 @@ class Server {
   Server& operator=(Server&&) = delete;
   ~Server();
 
-  // Registers every configured model (above), and with `snapshot` pinned
-  // host memory for the largest LLM's conversation state (snapshot()), for
+  // Registers every configured model (above), and with `snapshot` enables
+  // a lazy pinned copy of initialized LLM state (snapshot()), for
   // a check that saves a state and puts it back. Once.
   Status Start(bool snapshot);
   void* snapshot() const { return snapshot_; }
+  Status SaveSnapshot(Llm& model);
+  Status RestoreSnapshot(Llm& model);
   // Every model's memory released and the node torn down. Once; the
   // destructor stops the node's threads if it never ran.
   Status TearDown();
@@ -420,6 +433,10 @@ class Server {
   std::uint64_t host_inputs_ = 0;
   std::uint64_t workspace_ = 0;
   void* snapshot_ = nullptr;
+  std::uint64_t snapshot_capacity_ = 0;
+  bool snapshot_enabled_ = false;
+  bool snapshot_unproven_ = false;
+  Llm* snapshot_model_ = nullptr;
   scheduler::SchedulerStats swap_before_;  // the counters at the last Activate
   // Models whose conversation state was spilled by a swap out (and is
   // restored when they come back).

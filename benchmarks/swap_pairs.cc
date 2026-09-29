@@ -1582,7 +1582,8 @@ Status Swapper::Run() {
   // fit together: a full swap is the only way in.
   const std::uint64_t fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
   const std::uint64_t budget =
-      fixed + (std::max(a_->weights().size(), b_->weights().size()) * ts::kPagedExtent);
+      fixed + node_.StateCapacity() +
+      (std::max(a_->weights().size(), b_->weights().size()) * ts::kPagedExtent);
   if (auto r = node_.Start(Bytes(budget)); !r) {
     return r;
   }

@@ -608,6 +608,29 @@ std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p
   return s;
 }
 
+std::expected<std::vector<StateRange>, std::string> Qwen38UsedState(const Qwen38Profile& p,
+                                                                    const Qwen38StateLayout& state,
+                                                                    std::uint32_t positions) {
+  if (positions > state.context || p.indexer_ratio == 0) {
+    return Refused("used state passes the Qwen3.8 context");
+  }
+  using K = Qwen38StateTensor::Kind;
+  const std::uint64_t read = std::min<std::uint64_t>(state.cells, Pad(positions, 256));
+  std::vector<StateRange> ranges;
+  for (const Qwen38StateTensor& t : state.tensors) {
+    std::uint64_t rows = t.ne1;
+    if (t.kind == K::kK || t.kind == K::kV || t.kind == K::kIndexerK) {
+      rows = std::min(t.ne1, read);
+    } else if (t.kind == K::kIndexerBlocks) {
+      rows = std::min(t.ne1, (read + p.indexer_ratio - 1) / p.indexer_ratio);
+    }
+    if (rows != 0) {
+      ranges.push_back({.offset = t.offset, .bytes = t.ne0 * rows * (t.f16 ? 2 : 4)});
+    }
+  }
+  return ranges;
+}
+
 std::uint32_t Qwen38MostRows(std::uint32_t context, bool host_masks) {
   if (context == 0 ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {

@@ -229,6 +229,9 @@ class Catalog {
   // RESIDENT -> NONRESIDENT for a pinned extent whose owner has freed it,
   // once nothing holds it. The owner proves its retirement.
   std::expected<void, CatalogError> ReleasePinned(ExtentId extent);
+  // Preflight for removing an owner's pinned allocation: no logical
+  // resource, lease or registration may still name it. Does not mutate.
+  std::expected<void, CatalogError> CanRetirePinned(ExtentId extent) const;
 
   std::expected<ResourceId, CatalogError> AddResource(std::span<const Range> ranges);
   std::expected<void, CatalogError> RemoveResource(ResourceId resource);
@@ -268,6 +271,10 @@ class Catalog {
   // preserving them. Artifact contents are immutable (evict them instead),
   // and pinned ones belong to their owner.
   std::expected<void, CatalogError> InvalidateContents(ExtentId extent);
+  // Discards the saved contents of an unheld NONRESIDENT kPreserve extent.
+  // Its next materialization starts a new content generation. An owner
+  // replaces its external source before making it readable again.
+  std::expected<void, CatalogError> ForgetPreserved(ExtentId extent);
   // A writer, holding the sole lease and with no registrations live,
   // replaced a kPreserve extent's contents in place: the content generation
   // advances, so closures taken before cannot lease the new contents. The

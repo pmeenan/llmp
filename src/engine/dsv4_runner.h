@@ -161,6 +161,12 @@ class Dsv4Runner final : public PagedModel {
   // After Run. The state zeroed (a job leasing it), the drafter's ring
   // too, and any pending restore dropped.
   Status Clear();
+  bool state_usable() const { return !live_.quarantined(); }
+  Status ReserveStateThrough(std::uint32_t positions) { return EnsureState(positions); }
+  std::vector<LiveState::Range> used_state_ranges() const { return live_.used_ranges(); }
+  std::uint64_t used_state_bytes() const { return live_.used_bytes(); }
+  Status SaveUsedState(void* host, std::span<const LiveState::Range> ranges);
+  Status RestoreUsedState(void* host, std::span<const LiveState::Range> ranges);
   // One chunk of `tokens` after n_past: the last row's logits in `logits`
   // (every row's, rows × vocab, for kVerify).
   // With `meanwhile`, the chunk's job is submitted without waiting, and
@@ -338,6 +344,8 @@ class Dsv4Runner final : public PagedModel {
   std::expected<ggml_tensor*, std::string> DraftRowsNode(std::uint32_t n, const void* drafts);
   // A verify's snapshot: the ranges it writes, saved.
   Status PlanSnapshot(const model::Dsv4ChunkInputs& in);
+  Status RefreshClosures();
+  Status EnsureState(std::uint32_t positions);
 
   PagedNode& node_;
   const Dsv4Options& o_;

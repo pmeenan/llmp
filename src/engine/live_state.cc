@@ -5,7 +5,9 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <format>
+#include <limits>
 #include <system_error>
 #include <utility>
 
@@ -37,8 +39,21 @@ LiveState::Status LiveState::Add(PagedNode& node, std::string name, std::uint64_
                                  int owner) {
   Region& region = regions_.emplace_back();
   region.bytes = bytes;
-  return node.MapResident(region.mapped, std::move(name), bytes, providers::BackingKind::kDevice,
-                          catalog::MemoryClass::kLiveState, catalog::Recovery::kPreserve, owner);
+  auto mapped =
+      node.MapResident(region.mapped, std::move(name), bytes, providers::BackingKind::kDevice,
+                       catalog::MemoryClass::kLiveState, catalog::Recovery::kPreserve, owner);
+  region.used.assign(region.mapped.extents.size(), 1);
+  return mapped;
+}
+
+LiveState::Status LiveState::AddGrowing(PagedNode& node, std::string name, std::uint64_t bytes,
+                                        int owner) {
+  Region& region = regions_.emplace_back();
+  region.bytes = bytes;
+  auto reserved = node.ReserveState(region.mapped, std::move(name), bytes, owner);
+  region.growing = true;
+  region.used.assign(region.mapped.extents.size(), 0);
+  return reserved;
 }
 
 std::uint64_t LiveState::base(std::size_t region) const {
@@ -60,9 +75,139 @@ std::uint64_t LiveState::total_bytes() const {
 std::vector<ExtentId> LiveState::extents() const {
   std::vector<ExtentId> all;
   for (const Region& r : regions_) {
+    for (std::size_t i = 0; i < r.mapped.extents.size(); ++i) {
+      if (r.used[i] != 0) {
+        all.push_back(r.mapped.extents[i]);
+      }
+    }
+  }
+  return all;
+}
+
+std::vector<ExtentId> LiveState::reserved_extents() const {
+  std::vector<ExtentId> all;
+  for (const Region& r : regions_) {
     all.insert(all.end(), r.mapped.extents.begin(), r.mapped.extents.end());
   }
   return all;
+}
+
+std::vector<LiveState::Range> LiveState::used_ranges() const {
+  std::vector<Range> ranges;
+  for (std::size_t ri = 0; ri < regions_.size(); ++ri) {
+    const Region& r = regions_[ri];
+    for (std::size_t i = 0; i < r.used.size(); ++i) {
+      const std::uint64_t offset = i * kExtent;
+      if (r.used[i] != 0 && offset < r.bytes) {
+        ranges.push_back(
+            {.region = ri, .offset = offset, .bytes = std::min(kExtent, r.bytes - offset)});
+      }
+    }
+  }
+  return ranges;
+}
+
+std::uint64_t LiveState::used_bytes() const {
+  std::uint64_t total = 0;
+  for (const Range& r : used_ranges()) {
+    total += r.bytes;
+  }
+  return total;
+}
+
+std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const Range> ranges,
+                                                const catalog::Closure* keep) {
+  // Validate the complete request before making any range resident.
+  std::vector<std::pair<std::size_t, std::size_t>> fresh;
+  for (const Range& range : ranges) {
+    if (range.region >= regions_.size()) {
+      return Error("a used state range names no region");
+    }
+    const Region& r = regions_[range.region];
+    if (range.offset > r.bytes || range.bytes > r.bytes - range.offset) {
+      return Error("a used state range is outside its layout");
+    }
+    if (range.bytes == 0) {
+      continue;
+    }
+    const auto first = static_cast<std::size_t>(range.offset / kExtent);
+    const auto last = static_cast<std::size_t>((range.offset + range.bytes - 1) / kExtent);
+    for (std::size_t i = first; i <= last; ++i) {
+      if (r.used[i] == 0) {
+        fresh.emplace_back(range.region, i);
+      }
+    }
+  }
+  std::ranges::sort(fresh);
+  const auto [begin, end] = std::ranges::unique(fresh);
+  fresh.erase(begin, end);
+  if (fresh.empty()) {
+    return false;
+  }
+  std::vector<ExtentId> loading = extents();
+  if (keep != nullptr) {
+    for (const auto& [id, generation] : keep->extents) {
+      (void)generation;
+      loading.push_back(id);
+    }
+  }
+  for (const auto& [ri, i] : fresh) {
+    if (regions_[ri].sources.size() != regions_[ri].mapped.extents.size()) {
+      return Error("a growing region has no registered zero source");
+    }
+    loading.push_back(regions_[ri].mapped.extents[i]);
+  }
+  catalog::Closure closure;
+  auto described = node.Call(
+      [&]() -> Status {
+        auto of = node.catalog().ClosureOfExtents(loading);
+        if (!of) {
+          return Error("a growing state's closure");
+        }
+        closure = std::move(*of);
+        return {};
+      },
+      "describing growing state");
+  if (!described) {
+    return std::unexpected(described.error());
+  }
+  sc::AcquireReport report;
+  auto loaded = node.Acquire(closure, report, "initializing conversation state");
+  // A kPreserve extent with no write-back source cannot be reclaimed
+  // here: its initial load is complete, and no job has used it yet.
+  // Switch to preservation before exposing it to a model's closure.
+  auto registered = node.Call(
+      [&]() -> Status {
+        for (const auto& [ri, i] : fresh) {
+          Region& r = regions_[ri];
+          const auto view = node.catalog().Describe(r.mapped.extents[i]);
+          if (!view || view->state == catalog::ExtentState::kQuarantined) {
+            Quarantine();
+          }
+          if (!view || view->state != catalog::ExtentState::kResident) {
+            continue;  // a failed load may have initialized only some extents
+          }
+          r.used[i] = 1;  // retain completed pages for clearing and teardown
+          r.sources[i].write_back = true;
+          auto set = node.scheduler().SetSource(r.mapped.extents[i], r.sources[i]);
+          if (!set) {
+            return Error(std::format("a state's initialized write-back place: {}",
+                                     sc::ToString(set.error())));
+          }
+        }
+        return {};
+      },
+      "registering initialized conversation state");
+  if (!registered) {
+    Quarantine();
+    return std::unexpected(registered.error());
+  }
+  if (!loaded) {
+    // A clean capacity refusal precedes model dispatch. Existing state
+    // remains valid; completed fresh zero pages are registered above.
+    return std::unexpected(loaded.error());
+  }
+  return true;
 }
 
 LiveState::Status LiveState::RegisterSpill(PagedNode& node,
@@ -74,6 +219,17 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node,
                              std::generic_category().message(opened.error())));
   }
   spill_fd_ = *opened;
+  std::uint64_t file_bytes = 0;
+  for (const Region& r : regions_) {
+    if (r.mapped.bytes >
+        static_cast<std::uint64_t>(std::numeric_limits<off_t>::max()) - file_bytes) {
+      return Error("the state's spill file exceeds its offset range");
+    }
+    file_bytes += r.mapped.bytes;
+  }
+  if (::ftruncate(spill_fd_, static_cast<off_t>(file_bytes)) != 0) {
+    return Error("sizing the sparse conversation spill file");
+  }
   std::uint64_t slot = 0;
   for (Region& region : regions_) {
     Mapped& mapped = region.mapped;
@@ -87,7 +243,7 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node,
                                       .offset = Bytes(i * kExtent),
                                       .size = Bytes(kExtent),
                                       .allocation_class = node.device_class()},
-          .write_back = true};
+          .write_back = region.used[i] != 0};
       auto set = node.scheduler().SetSource(mapped.extents[i], source);
       if (!set) {
         return Error(std::format("the state's write-back place: {}", sc::ToString(set.error())));
@@ -97,6 +253,156 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node,
     mapped.backings.clear();  // the VMM lane releases them on eviction (D-033)
   }
   return {};
+}
+
+LiveState::Status LiveState::Retain(PagedNode& node, std::span<const Range> ranges) {
+  std::vector<std::vector<std::uint8_t>> wanted;
+  wanted.reserve(regions_.size());
+  for (const Region& r : regions_) {
+    wanted.emplace_back(r.used.size(), 0);
+  }
+  for (const Range& range : ranges) {
+    if (range.region >= regions_.size()) {
+      return Error("a retained state range names no region");
+    }
+    const Region& r = regions_[range.region];
+    if (range.offset > r.bytes || range.bytes > r.bytes - range.offset) {
+      return Error("a retained state range is outside its layout");
+    }
+    if (range.bytes == 0) {
+      continue;
+    }
+    const auto first = static_cast<std::size_t>(range.offset / kExtent);
+    const auto last = static_cast<std::size_t>((range.offset + range.bytes - 1) / kExtent);
+    for (std::size_t i = first; i <= last; ++i) {
+      if (r.used[i] == 0) {
+        return Error("a retained state range was not initialized");
+      }
+      wanted[range.region][i] = 1;
+    }
+  }
+  std::vector<std::pair<std::size_t, std::size_t>> removed;
+  std::vector<ExtentId> drop;
+  for (std::size_t ri = 0; ri < regions_.size(); ++ri) {
+    const Region& r = regions_[ri];
+    for (std::size_t i = 0; i < r.used.size(); ++i) {
+      if (r.used[i] != 0 && wanted[ri][i] == 0) {
+        removed.emplace_back(ri, i);
+        drop.push_back(r.mapped.extents[i]);
+      }
+    }
+  }
+  if (drop.empty()) {
+    return {};
+  }
+  auto invalidated = node.Call(
+      [&]() -> Status {
+        for (const ExtentId id : drop) {
+          const auto view = node.catalog().Describe(id);
+          if (!view || view->leases != 0 || view->registrations != 0 ||
+              (view->state != catalog::ExtentState::kResident &&
+               view->state != catalog::ExtentState::kNonresident)) {
+            return Error("a state being trimmed is held or has an operation in flight");
+          }
+        }
+        for (const ExtentId id : drop) {
+          if (node.catalog().Describe(id)->state == catalog::ExtentState::kResident &&
+              !node.catalog().InvalidateContents(id)) {
+            return Error("invalidating a state's discarded tail");
+          }
+        }
+        return {};
+      },
+      "trimming conversation state");
+  if (!invalidated) {
+    return invalidated;
+  }
+  quarantined_ = true;
+  if (auto evicted = node.Evict(drop); !evicted) {
+    return evicted;
+  }
+  for (const auto& [ri, i] : removed) {
+    if (!platform::DiscardFileRange(spill_fd_, regions_[ri].sources[i].read.offset, kExtent)) {
+      return Error("discarding a state's saved tail");
+    }
+  }
+  auto forgotten = node.Call(
+      [&]() -> Status {
+        for (const auto& [ri, i] : removed) {
+          Region& r = regions_[ri];
+          if (!node.catalog().ForgetPreserved(r.mapped.extents[i])) {
+            return Error("forgetting a state's discarded tail");
+          }
+          r.sources[i].write_back = false;
+          if (!node.scheduler().SetSource(r.mapped.extents[i], r.sources[i])) {
+            return Error("restoring the initial source of a discarded state tail");
+          }
+          r.used[i] = 0;
+        }
+        return {};
+      },
+      "forgetting discarded conversation state");
+  if (!forgotten) {
+    return forgotten;
+  }
+  quarantined_ = false;
+  return {};
+}
+
+LiveState::Status LiveState::Copy(PagedNode& node, const catalog::Closure& fence,
+                                  std::uint32_t stream, void* host, std::span<const Range> ranges,
+                                  bool to_host) {
+  std::uint64_t total = 0;
+  for (const Range& range : ranges) {
+    if (range.region >= regions_.size() || range.offset > bytes(range.region) ||
+        range.bytes > bytes(range.region) - range.offset ||
+        range.bytes > std::numeric_limits<std::uint64_t>::max() - total) {
+      return Error("a state snapshot range is outside its layout");
+    }
+    if (range.bytes != 0) {
+      const Region& r = regions_[range.region];
+      const auto first = static_cast<std::size_t>(range.offset / kExtent);
+      const auto last = static_cast<std::size_t>((range.offset + range.bytes - 1) / kExtent);
+      for (std::size_t i = first; i <= last; ++i) {
+        if (r.used[i] == 0) {
+          return Error("a state snapshot would touch an unused extent");
+        }
+      }
+    }
+    total += range.bytes;
+  }
+  if (total == 0) {
+    return {};
+  }
+  if (host == nullptr) {
+    return Error("a state snapshot has no host buffer");
+  }
+  auto posted = node.Job(
+      fence,
+      [&, host, to_host](providers::NativeStream native) {
+        std::uint64_t at = 0;
+        for (const Range& range : ranges) {
+          if (range.bytes == 0) {
+            continue;
+          }
+          void* device = Pointer(base(range.region) + range.offset);
+          auto* pinned = static_cast<std::byte*>(host) + at;
+          const auto copied = to_host ? providers::CopyAsync(native, pinned, device, range.bytes,
+                                                             providers::CopyKind::kDeviceToHost)
+                                      : providers::CopyAsync(native, device, pinned, range.bytes,
+                                                             providers::CopyKind::kHostToDevice);
+          if (!copied.ok()) {
+            return sc::JobResult::kUnknown;
+          }
+          at += range.bytes;
+        }
+        return sc::JobResult::kQueued;
+      },
+      to_host ? "saving used conversation state" : "restoring used conversation state", stream);
+  if (!posted) {
+    node.KeepPinned(host);
+  }
+  return posted;
 }
 
 void LiveState::CheckPlaces(const sc::Scheduler& scheduler, PlaceCheck& check) const {
@@ -112,10 +418,86 @@ void LiveState::CheckPlaces(const sc::Scheduler& scheduler, PlaceCheck& check) c
 
 LiveState::Status LiveState::Clear(PagedNode& node, const catalog::Closure& fence,
                                    std::uint32_t stream, std::string_view what) {
+  if (!regions_.empty() &&
+      std::ranges::all_of(regions_, [](const Region& r) { return r.growing; })) {
+    // Jobs have completed before this call. End the request's lease before
+    // invalidating its state; do not reload an evicted conversation to clear it.
+    if (node.InRequest(stream)) {
+      if (auto ended = node.EndRequest(stream); !ended) {
+        return ended;
+      }
+    }
+    quarantined_ = true;
+    const auto used = extents();
+    auto discarded = node.Call(
+        [&]() -> Status {
+          for (const ExtentId id : used) {
+            auto view = node.catalog().Describe(id);
+            if (!view || view->leases != 0 || view->registrations != 0 ||
+                (view->state != catalog::ExtentState::kResident &&
+                 view->state != catalog::ExtentState::kNonresident)) {
+              return Error("a state being cleared is held or has an operation in flight");
+            }
+          }
+          for (const ExtentId id : used) {
+            if (node.catalog().Describe(id)->state == catalog::ExtentState::kResident &&
+                !node.catalog().InvalidateContents(id)) {
+              return Error("invalidating a conversation state");
+            }
+          }
+          return {};
+        },
+        "discarding conversation state");
+    if (!discarded) {
+      return discarded;
+    }
+    if (auto evicted = node.Evict(used); !evicted) {
+      return evicted;
+    }
+    auto forgotten = node.Call(
+        [&]() -> Status {
+          for (const ExtentId id : used) {
+            if (!node.catalog().ForgetPreserved(id)) {
+              return Error("forgetting a conversation state's saved contents");
+            }
+          }
+          for (Region& r : regions_) {
+            for (std::size_t i = 0; i < r.sources.size(); ++i) {
+              r.sources[i].write_back = false;
+              if (!node.scheduler().SetSource(r.mapped.extents[i], r.sources[i])) {
+                return Error("restoring a growing state's initial source");
+              }
+            }
+          }
+          return {};
+        },
+        "forgetting conversation state");
+    if (!forgotten) {
+      return forgotten;
+    }
+    std::uint64_t file_bytes = 0;
+    for (const Region& r : regions_) {
+      file_bytes += r.mapped.bytes;
+    }
+    if (::ftruncate(spill_fd_, 0) != 0 ||
+        ::ftruncate(spill_fd_, static_cast<off_t>(file_bytes)) != 0) {
+      return Error("clearing the sparse conversation spill file");
+    }
+    for (Region& r : regions_) {
+      std::ranges::fill(r.used, 0);
+    }
+    restore_count_ = 0;
+    commit_keep_ = 0;
+    save_count_ = 0;
+    saved_.clear();
+    verify_rows_ = 0;
+    quarantined_ = false;
+    return {};
+  }
   std::vector<std::pair<std::uint64_t, std::uint64_t>> zeroed;
   zeroed.reserve(regions_.size());
-  for (const Region& r : regions_) {
-    zeroed.emplace_back(r.mapped.base, r.bytes);
+  for (const Range& range : used_ranges()) {
+    zeroed.emplace_back(base(range.region) + range.offset, range.bytes);
   }
   restore_count_ = 0;
   commit_keep_ = 0;
@@ -142,19 +524,45 @@ LiveState::Status LiveState::Clear(PagedNode& node, const catalog::Closure& fenc
   return {};
 }
 
-void* LiveState::HostCopy() { return HavePinned(host_copy_, total_bytes()) ? host_copy_ : nullptr; }
+void* LiveState::HostCopy(PagedNode& node, std::uint64_t bytes) {
+  if (host_copy_unproven_) {
+    return nullptr;
+  }
+  bytes = bytes == 0 ? total_bytes() : bytes;
+  bytes = std::max<std::uint64_t>(bytes, 256);
+  if (host_copy_ != nullptr && host_capacity_ >= bytes) {
+    return host_copy_;
+  }
+  if (host_copy_ != nullptr) {
+    if (!node.FreePinned(host_copy_)) {
+      return nullptr;
+    }
+    host_copy_ = nullptr;
+    host_capacity_ = 0;
+  }
+  std::vector<ExtentId> staging;
+  auto allocated = node.Pinned(bytes, kShared, staging);
+  if (!allocated) {
+    return nullptr;
+  }
+  host_node_ = &node;
+  host_copy_ = *allocated;
+  host_capacity_ = bytes;
+  return host_copy_;
+}
 
 LiveState::Status LiveState::Read(PagedNode& node, const catalog::Closure& fence,
                                   std::uint32_t stream, std::string_view what,
                                   std::span<std::vector<std::byte>* const> out) {
-  auto* host = static_cast<std::byte*>(HostCopy());
+  const std::vector<Range> ranges = used_ranges();
+  auto* host = static_cast<std::byte*>(HostCopy(node, std::max<std::uint64_t>(used_bytes(), 256)));
   if (host == nullptr) {
     return Error("pinned host memory for the state's copy");
   }
   std::vector<std::pair<std::uint64_t, std::uint64_t>> reads;  // base, bytes
-  reads.reserve(regions_.size());
-  for (const Region& r : regions_) {
-    reads.emplace_back(r.mapped.base, r.bytes);
+  reads.reserve(ranges.size());
+  for (const Range& range : ranges) {
+    reads.emplace_back(base(range.region) + range.offset, range.bytes);
   }
   auto posted = node.Job(
       fence,
@@ -172,13 +580,19 @@ LiveState::Status LiveState::Read(PagedNode& node, const catalog::Closure& fence
       },
       what, stream);
   if (!posted) {
+    HostCopyUnproven();
     return posted;
   }
-  std::uint64_t at = 0;
   for (std::size_t i = 0; i < out.size(); ++i) {
-    const std::uint64_t n = bytes(i);
-    out[i]->assign(host + at, host + at + n);
-    at += n;
+    out[i]->assign(static_cast<std::size_t>(bytes(i)), std::byte{0});
+  }
+  std::uint64_t at = 0;
+  for (const Range& range : ranges) {
+    if (range.region < out.size()) {
+      std::copy_n(host + at, static_cast<std::size_t>(range.bytes),
+                  out[range.region]->data() + range.offset);
+    }
+    at += range.bytes;
   }
   return {};
 }
@@ -331,8 +745,12 @@ void LiveState::Release(providers::VmmProvider& memory, std::vector<std::string>
     }
   }
   if (host_copy_ != nullptr) {
-    providers::FreePinned(host_copy_);
+    if (host_copy_unproven_) {
+      problems.emplace_back("the state's pinned copy retained until exit: completion unproven");
+    }
     host_copy_ = nullptr;
+    host_node_ = nullptr;
+    host_capacity_ = 0;
   }
   if (spill_fd_ >= 0) {
     (void)::close(spill_fd_);  // unnamed: nothing outlives the process

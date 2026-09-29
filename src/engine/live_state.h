@@ -5,7 +5,7 @@
 // of a runner that holds what a conversation has computed:
 //
 // - Regions of live state (D-068: the target's caches and recurrent state,
-//   then a drafter's), each laid out by the model (model/*.h) and mapped at
+//   then a drafter's), each laid out by the model (model/*.h) and reserved at
 //   setup before the weights' places, so a closure (sorted by identity)
 //   restores the state before paging the weights in. Every extent is
 //   kPreserve with a write-back place, a 2 MiB range of one unnamed
@@ -23,10 +23,8 @@
 //   (Qwen3.8's recurrent state), so the state is what a verify of the kept
 //   rows alone would have left. A failed verify is undone whole.
 //
-// Where the later long-context work plugs in: a region's bytes are its
-// layout's (`bytes`, what Clear zeroes and Read reads); growing a region
-// with use (mapping, spilling and restoring only the extents in use) is a
-// change here and in the model's layout, not in each runner. Turn-boundary
+// A growing region keeps its layout's virtual bytes; only initialized
+// extents have backing and spill contents. Turn-boundary
 // checkpoints of recurrent or indexer state are saved ranges kept across
 // jobs, the snapshot's mechanism with a longer life.
 
@@ -77,6 +75,27 @@ class LiveState {
   // A region of `bytes` (its layout's; mapped in whole extents), after the
   // ones before it. Before the weights' places are reserved.
   Status Add(PagedNode& node, std::string name, std::uint64_t bytes, int owner);
+  // A stable virtual reservation with no backing until Use names a range.
+  // Its sparse spill file initially supplies zero bytes; initialized
+  // extents thereafter have the same write-back contract as Add's.
+  Status AddGrowing(PagedNode& node, std::string name, std::uint64_t bytes, int owner);
+  struct Range {
+    std::size_t region = 0;
+    std::uint64_t offset = 0;
+    std::uint64_t bytes = 0;
+  };
+  // Materializes the extents intersecting these ranges, without changing
+  // any previous contents or addresses. True when the used set grew.
+  std::expected<bool, std::string> Use(PagedNode& node, std::span<const Range> ranges,
+                                       const catalog::Closure* keep = nullptr);
+  // Drops initialized extents outside these already-used ranges, without
+  // reloading them or writing them back. Called between jobs, with no
+  // request lease on the state. Its saved file ranges return to sparse zeros.
+  Status Retain(PagedNode& node, std::span<const Range> ranges);
+  // Copies only these initialized ranges, packed in their given order,
+  // between state and the caller's sufficiently large pinned buffer.
+  Status Copy(PagedNode& node, const catalog::Closure& fence, std::uint32_t stream, void* host,
+              std::span<const Range> ranges, bool to_host);
   std::size_t regions() const { return regions_.size(); }
   // A region's address and its layout's bytes; 0 for a region not added.
   std::uint64_t base(std::size_t region) const;
@@ -84,6 +103,12 @@ class LiveState {
   std::uint64_t total_bytes() const;
   // Every extent, region by region.
   std::vector<catalog::ExtentId> extents() const;
+  // Every extent of the virtual reservations, including unused ones:
+  // sources and address pins are registered once, at setup.
+  std::vector<catalog::ExtentId> reserved_extents() const;
+  // Used extents in region order, bounded to each layout's bytes.
+  std::vector<Range> used_ranges() const;
+  std::uint64_t used_bytes() const;
 
   // After the node's Start: each extent's write-back place in an unnamed
   // direct-I/O spill file in `directory`, region by region.
@@ -103,7 +128,15 @@ class LiveState {
               std::string_view what, std::span<std::vector<std::byte>* const> out);
   // Pinned host memory of total_bytes() (allocated on first use; null if
   // that failed): Read's copy, and a harness's scratch.
-  void* HostCopy();
+  void* HostCopy(PagedNode& node, std::uint64_t bytes = 0);
+  // A failed copy may still own the DMA destination. Keep it until exit
+  // and refuse subsequent reuse, even when the requested size is smaller.
+  void HostCopyUnproven() {
+    host_copy_unproven_ = true;
+    if (host_node_ != nullptr) {
+      host_node_->KeepPinned(host_copy_);
+    }
+  }
 
   // ------------------------------------------------------------- the guard
 
@@ -169,14 +202,19 @@ class LiveState {
  private:
   struct Region {
     Mapped mapped;
+    bool growing = false;
     std::uint64_t bytes = 0;                     // the layout's
     std::vector<scheduler::PageSource> sources;  // registered, by extent
+    std::vector<std::uint8_t> used;
   };
 
   std::string model_;
   std::vector<Region> regions_;
   int spill_fd_ = -1;
   void* host_copy_ = nullptr;
+  PagedNode* host_node_ = nullptr;
+  std::uint64_t host_capacity_ = 0;
+  bool host_copy_unproven_ = false;
   bool quarantined_ = false;
 
   std::uint64_t snapshot_base_ = 0;

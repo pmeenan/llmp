@@ -465,6 +465,35 @@ std::expected<Dsv4StateLayout, std::string> Dsv4State(const Dsv4Profile& p, std:
   return s;
 }
 
+std::expected<std::vector<StateRange>, std::string> Dsv4UsedState(const Dsv4StateLayout& state,
+                                                                  std::uint32_t positions) {
+  if (positions > state.context) {
+    return Refused("used state passes the DeepSeek context");
+  }
+  using K = Dsv4StateTensor::Kind;
+  std::vector<StateRange> ranges;
+  for (const Dsv4StateTensor& t : state.tensors) {
+    std::uint64_t rows = t.ne1;
+    bool compressed = false;
+    if (t.kind == K::kRawK && state.window == Dsv4Window::kFull) {
+      rows = std::min(t.ne1, Pad(positions, 256));
+    } else if (t.kind == K::kCsaK || t.kind == K::kLidK || t.kind == K::kHcaK) {
+      const std::uint64_t ratio = t.kind == K::kHcaK ? kDsv4HcaRatio : kDsv4CsaRatio;
+      const std::uint64_t visible = (std::uint64_t{positions} + ratio - 1) / ratio;
+      rows = std::min(t.ne1, std::max<std::uint64_t>(256, Pad(visible, 256)));
+      compressed = true;
+    }
+    const std::uint64_t row_bytes = t.ne0 * (t.f16 ? 2 : 4);
+    if (rows != 0) {
+      ranges.push_back({.offset = t.offset, .bytes = rows * row_bytes});
+    }
+    if (compressed && rows < t.ne1) {
+      ranges.push_back({.offset = t.offset + ((t.ne1 - 1) * row_bytes), .bytes = row_bytes});
+    }
+  }
+  return ranges;
+}
+
 std::uint32_t Dsv4MostRows(const Dsv4Profile& p, std::uint32_t context) {
   if (!ProfileIsSane(p) || context == 0 ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {

@@ -168,11 +168,12 @@ Status Qwen38Runner::Setup() {
 
   // The state first: its extents come before the weights' in a closure, so
   // a swap back restores it before paging the weights in.
-  if (auto r = live_.Add(node_, "the Qwen3.8 state", layout_.bytes, owner_); !r) {
+  if (auto r = live_.AddGrowing(node_, "the Qwen3.8 state", layout_.bytes, owner_); !r) {
     return r;
   }
   if (speculative()) {
-    if (auto r = live_.Add(node_, "the Qwen3.8 MTP drafter's state", mtp_layout_.bytes, owner_);
+    if (auto r =
+            live_.AddGrowing(node_, "the Qwen3.8 MTP drafter's state", mtp_layout_.bytes, owner_);
         !r) {
       return r;
     }
@@ -449,7 +450,10 @@ Status Qwen38Runner::Register() {
   }
   // D-090, for every model: the places stay put for the model's life
   // (never unpinned; the pins go with the scheduler).
-  if (auto pinned = node_.scheduler().PinPlaces(managed_extents()); !pinned) {
+  auto pinned_extents = weights();
+  const auto reserved = live_.reserved_extents();
+  pinned_extents.insert(pinned_extents.end(), reserved.begin(), reserved.end());
+  if (auto pinned = node_.scheduler().PinPlaces(pinned_extents); !pinned) {
     return Error(std::format("pinning Qwen3.8's places: {}", sc::ToString(pinned.error())));
   }
   return {};
@@ -478,19 +482,34 @@ Status Qwen38Runner::CheckPlaces() {
   return {};
 }
 
-Status Qwen38Runner::Bind() {
-  auto& catalog = node_.catalog();
-  std::vector<ExtentId> all = weights();
-  const std::vector<ExtentId> live = live_.extents();
-  all.insert(all.end(), live.begin(), live.end());
-  for (const Mapped* mapped :
-       std::initializer_list<const Mapped*>{&node_.activations(), &node_.pool()}) {
-    all.insert(all.end(), mapped->extents.begin(), mapped->extents.end());
+Status Qwen38Runner::RefreshClosures() {
+  auto refreshed = node_.Call(
+      [&]() -> Status {
+        auto& catalog = node_.catalog();
+        std::vector<ExtentId> all = weights();
+        const std::vector<ExtentId> live = live_.extents();
+        all.insert(all.end(), live.begin(), live.end());
+        for (const Mapped* mapped :
+             std::initializer_list<const Mapped*>{&node_.activations(), &node_.pool()}) {
+          all.insert(all.end(), mapped->extents.begin(), mapped->extents.end());
+        }
+        const std::vector<ExtentId> own = resources_.extents();
+        all.insert(all.end(), own.begin(), own.end());
+        everything_ = catalog.ClosureOfExtents(all).value();
+        fence_ = catalog.ClosureOfExtents(state()).value();
+        return {};
+      },
+      "refreshing Qwen3.8's used state closure");
+  if (!refreshed) {
+    return refreshed;
   }
-  const std::vector<ExtentId> own = resources_.extents();
-  all.insert(all.end(), own.begin(), own.end());
-  everything_ = catalog.ClosureOfExtents(all).value();
-  fence_ = catalog.ClosureOfExtents(state()).value();
+  return node_.RefreshRequest(stream_, everything_);
+}
+
+Status Qwen38Runner::Bind() {
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    return refreshed;
+  }
   model_.places.resource = [this](std::uint32_t resource) {
     return weights_.resource_address(resource);
   };
@@ -635,8 +654,52 @@ Status Qwen38Runner::Scrub(std::uint8_t value, bool slabs, bool dense) {
 }
 
 Status Qwen38Runner::Clear() {
+  const bool open = node_.InRequest(stream_);
   pending_rows_ = 0;
-  return live_.Clear(node_, fence_, stream_, "clearing the Qwen3.8 state");
+  if (auto cleared = live_.Clear(node_, fence_, stream_, "clearing the Qwen3.8 state"); !cleared) {
+    return cleared;
+  }
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    return refreshed;
+  }
+  return open ? node_.BeginRequest(stream_, everything_, "a cleared Qwen3.8 conversation")
+              : Status{};
+}
+
+Status Qwen38Runner::EnsureState(std::uint32_t positions) {
+  auto needed = md::Qwen38UsedState(profile_, layout_, positions);
+  if (!needed) {
+    return std::unexpected(needed.error());
+  }
+  std::vector<LiveState::Range> ranges;
+  for (const auto& range : *needed) {
+    ranges.push_back({.region = kTarget, .offset = range.offset, .bytes = range.bytes});
+  }
+  if (speculative()) {
+    const auto cells = std::min<std::uint64_t>(mtp_layout_.cells, Round(positions, 256));
+    const std::uint64_t kv_row = std::uint64_t{profile_.head_dim} * profile_.kv_heads * 2;
+    const std::uint64_t indexer_row = std::uint64_t{profile_.indexer_head_dim} * 4;
+    const std::uint64_t blocks = (cells + profile_.indexer_ratio - 1) / profile_.indexer_ratio;
+    ranges.push_back({.region = kDrafter, .offset = mtp_layout_.k, .bytes = cells * kv_row});
+    ranges.push_back({.region = kDrafter, .offset = mtp_layout_.v, .bytes = cells * kv_row});
+    ranges.push_back(
+        {.region = kDrafter, .offset = mtp_layout_.indexer, .bytes = cells * indexer_row});
+    ranges.push_back({.region = kDrafter,
+                      .offset = mtp_layout_.blocks,
+                      .bytes = blocks * profile_.indexer_head_dim * 2});
+    ranges.push_back({.region = kDrafter,
+                      .offset = mtp_layout_.hidden,
+                      .bytes = mtp_layout_.bytes - mtp_layout_.hidden});
+  }
+  auto used = live_.Use(node_, ranges, &everything_);
+  if (!used) {
+    if (auto refreshed = RefreshClosures(); !refreshed) {
+      live_.Quarantine();
+      return Error(std::format("{}; {}", used.error(), refreshed.error()));
+    }
+    return std::unexpected(used.error());
+  }
+  return *used ? RefreshClosures() : Status{};
 }
 
 std::expected<Qwen38Runner::ChunkPlans::Entry*, std::string> Qwen38Runner::Planned(
@@ -845,6 +908,9 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
   if (!in) {
     return std::unexpected(in.error());
   }
+  if (auto used = EnsureState(n_past + rows); !used) {
+    return used;
+  }
   auto slots = ReadRows(*in);
   if (!slots) {
     return std::unexpected(slots.error());
@@ -1014,6 +1080,9 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
   if (!shaped) {
     return std::unexpected(shaped.error());
   }
+  if (auto used = EnsureState(n + passes - 1); !used) {
+    return used;
+  }
   auto planned = PlannedMtp(shaped->first);
   if (!planned) {
     return std::unexpected(planned.error());
@@ -1099,6 +1168,9 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   auto in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, false);
   if (!in) {
     return std::unexpected(in.error());
+  }
+  if (auto used = EnsureState(n_past + rows); !used) {
+    return used;
   }
   auto slots = ReadRows(*in);
   if (!slots) {
@@ -1273,6 +1345,45 @@ Status Qwen38Runner::Release() {
         "process's end");
   }
   return support::Joined(problems);
+}
+
+Status Qwen38Runner::SaveUsedState(void* host, std::span<const LiveState::Range> ranges) {
+  return live_.Copy(node_, fence_, stream_, host, ranges, true);
+}
+
+Status Qwen38Runner::RestoreUsedState(void* host, std::span<const LiveState::Range> ranges) {
+  if (host == nullptr &&
+      std::ranges::any_of(ranges, [](const LiveState::Range& r) { return r.bytes != 0; })) {
+    return Error("the conversation snapshot has no source buffer");
+  }
+  const bool requested = node_.InRequest(stream_);
+  if (requested) {
+    if (auto ended = node_.EndRequest(stream_); !ended) {
+      return ended;
+    }
+  }
+  auto prepared = [&]() -> Status {
+    if (auto used = live_.Use(node_, ranges, &everything_); !used) {
+      return std::unexpected(used.error());
+    }
+    return live_.Retain(node_, ranges);
+  }();
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    return refreshed;
+  }
+  if (requested) {
+    if (auto opened = node_.BeginRequest(stream_, everything_, "restored conversation"); !opened) {
+      return opened;
+    }
+  }
+  if (!prepared) {
+    return prepared;
+  }
+  auto copied = live_.Copy(node_, fence_, stream_, host, ranges, false);
+  if (!copied) {
+    live_.Quarantine();
+  }
+  return copied;
 }
 
 }  // namespace jitllm::engine

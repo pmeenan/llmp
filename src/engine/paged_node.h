@@ -277,6 +277,9 @@ class PagedNode {
   catalog::DomainId domain() const { return domain_; }
   scheduler::Scheduler& scheduler() { return *scheduler_; }
   base::Bytes budget() const { return budget_; }
+  // The physical bytes needed if all registered live-state ceilings were
+  // used. A harness may budget this without mapping any unused state.
+  std::uint64_t StateCapacity() const;
   bool threaded() const { return !threads_.empty(); }
   bool inline_lanes() const { return settings_.inline_lanes; }
   bool coalesce() const { return settings_.coalesce; }
@@ -290,9 +293,18 @@ class PagedNode {
   Status MapResident(Mapped& mapped, std::string name, std::uint64_t bytes,
                      providers::BackingKind kind, catalog::MemoryClass memory_class,
                      catalog::Recovery recovery, int owner);
-  // Pinned host memory, cataloged as staging. Before Run; freed at Close.
+  // Reserves a live-state region and catalogs its extents without physical
+  // backing. Each extent is materialized through its registered page source
+  // before a job reads or writes it. Before Start.
+  Status ReserveState(Mapped& mapped, std::string name, std::uint64_t bytes, int owner);
+  // Pinned host memory, cataloged as staging. After Run, added on the
+  // scheduler's thread and refused beyond the execution budget.
   std::expected<void*, std::string> Pinned(std::uint64_t bytes, int owner,
                                            std::vector<catalog::ExtentId>& staging);
+  // Caller proves no access is in flight. Removes its staging extent.
+  Status FreePinned(void* pointer);
+  // Unknown completion: retain the allocation until process exit.
+  void KeepPinned(void* pointer);
   // A model's own storage ring, at its end. With reads still in flight
   // (stalled ones, which may yet land), the ring and the pinned memory
   // (from Pinned) those reads write are kept to the process's end, neither
@@ -305,11 +317,14 @@ class PagedNode {
   void AddSpan(const Span& span) { spans_.push_back(span); }
   void EraseSpans(const std::function<bool(const Span&)>& which) { std::erase_if(spans_, which); }
   void SortSpans();
-  // Every byte of the range lies in cataloged, resident spans of device
-  // memory of one class, each `owner`'s or shared; returns that class.
-  // Read while no page-in or eviction runs.
-  std::optional<catalog::MemoryClass> Covered(std::uint64_t address, std::uint64_t bytes,
-                                              int owner) const;
+  // Every byte lies in cataloged spans of device memory of one class,
+  // each `owner`'s or shared; returns that class. Normally also requires
+  // residency. A live-state tensor may describe its entire virtual cache:
+  // resident=false checks that reservation, while its model materializes
+  // the actual read/write ranges before dispatch. Read without concurrent
+  // page-in or eviction.
+  std::optional<catalog::MemoryClass> Covered(std::uint64_t address, std::uint64_t bytes, int owner,
+                                              bool resident = true) const;
 
   // Posts a program and waits for it to be destroyed. It refers to `done`,
   // and a job it queues may refer to the caller's frame, so this never
@@ -346,6 +361,9 @@ class PagedNode {
   // task holds its lease on `closure` (copied). Refused if one is open
   // there already.
   Status BeginRequest(std::uint32_t stream, const catalog::Closure& closure, std::string_view what);
+  // If a request is open, replaces its lease between completed steps.
+  // Growing state calls this only when its set of initialized extents changes.
+  Status RefreshRequest(std::uint32_t stream, const catalog::Closure& closure);
   // Ends it: its lease released (no step is in flight between Jobs), its
   // extents resident. Its task's failure, if it failed.
   Status EndRequest(std::uint32_t stream);
@@ -376,6 +394,9 @@ class PagedNode {
  private:
   // A request open on a stream: its task's channel and ProgramDone, and a
   // sorted copy of its closure.
+  Status MapRegion(Mapped& mapped, std::string name, std::uint64_t bytes,
+                   providers::BackingKind kind, catalog::MemoryClass memory_class,
+                   catalog::Recovery recovery, int owner, bool resident);
   struct OpenRequest {
     std::string what;
     catalog::Closure closure;

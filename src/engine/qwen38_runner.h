@@ -177,6 +177,12 @@ class Qwen38Runner final : public PagedModel {
   // The state zeroed (a job leasing it), the drafter's too, and any pending
   // commit dropped.
   Status Clear();
+  bool state_usable() const { return !live_.quarantined(); }
+  Status ReserveStateThrough(std::uint32_t positions) { return EnsureState(positions); }
+  std::vector<LiveState::Range> used_state_ranges() const { return live_.used_ranges(); }
+  std::uint64_t used_state_bytes() const { return live_.used_bytes(); }
+  Status SaveUsedState(void* host, std::span<const LiveState::Range> ranges);
+  Status RestoreUsedState(void* host, std::span<const LiveState::Range> ranges);
   // One chunk: history[n_past, end) after n_past (history holds every token
   // from position 0); the last row's logits in `logits`. With `inject`
   // (speculating), the drafter's streams and its pass over the chunk too.
@@ -289,6 +295,8 @@ class Qwen38Runner final : public PagedModel {
   void Settle(bool saved, bool wrote, bool unknown);
   // The live state's, and the n-gram hash checked and no row reads stalled.
   Status Usable() const;
+  Status RefreshClosures();
+  Status EnsureState(std::uint32_t positions);
   // The drafter's shape and pass inputs for `rows` rows from `first` and
   // `passes` - 1 single rows after them.
   std::expected<std::pair<kernels::ggml::Qwen38MtpShape, std::vector<model::Qwen38ChunkInputs>>,

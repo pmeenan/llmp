@@ -113,9 +113,10 @@ void CheckCoverage(const PagedNode& node, int owner, std::span<ggml_tensor* cons
   };
   const auto expect = [&](const ggml_tensor* t, const ggml_tensor* consumer) {
     ++coverage.tensors;
+    const MemoryClass expected = kind_of(t);
     const std::optional<MemoryClass> covered =
-        node.Covered(Address(t->data), ggml_nbytes(t), owner);
-    if (covered != kind_of(t) && coverage.violations++ == 0) {
+        node.Covered(Address(t->data), ggml_nbytes(t), owner, expected != MemoryClass::kLiveState);
+    if (covered != expected && coverage.violations++ == 0) {
       coverage.first_violation = std::format(
           "{}{} ({} {} [{}, {}, {}, {}], {} bytes at {:#x}, read by {} {})", classes.what, t->name,
           ggml_op_desc(t), ggml_type_name(t->type), t->ne[0], t->ne[1], t->ne[2], t->ne[3],

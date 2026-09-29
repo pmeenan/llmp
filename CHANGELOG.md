@@ -13,6 +13,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- LLM conversation state allocates and spills only used cache extents;
+  long context ceilings no longer allocate the whole cache at registration.
 - The `jitllm` command, with `--version`: the product version (`X.Y.Z` for a
   release, `X.Y.Z-dev.N+g<commit>` otherwise), the commit, the license
   profile, the SDK identity and the target. The build receipt records the

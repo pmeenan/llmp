@@ -365,6 +365,34 @@ TEST(Qwen38Test, NgramRowsFollowLlamaCppsHash) {
             rows_of((55 * 3) ^ (44 * 5), (55 * 3) ^ (44 * 5) ^ (eos * 7)));
 }
 
+TEST(Qwen38Test, GrowingStateCoversPaddedAttentionAndFixedRecurrentState) {
+  const auto& p = md::Qwen38Flash();
+  auto state = md::Qwen38State(p, 262144, 4096, false);
+  ASSERT_TRUE(state) << Why(state);
+  auto ranges = md::Qwen38UsedState(p, *state, 257);
+  ASSERT_TRUE(ranges) << Why(ranges);
+  const auto covered = [&](std::uint64_t offset, std::uint64_t bytes) {
+    return std::ranges::any_of(*ranges, [&](const md::StateRange& r) {
+      return offset >= r.offset && offset - r.offset <= r.bytes &&
+             bytes <= r.bytes - (offset - r.offset);
+    });
+  };
+  using K = md::Qwen38StateTensor::Kind;
+  for (const auto& t : state->tensors) {
+    const auto row = t.ne0 * (t.f16 ? 2 : 4);
+    if (t.kind == K::kK || t.kind == K::kV || t.kind == K::kIndexerK) {
+      EXPECT_TRUE(covered(t.offset, 512 * row));
+      EXPECT_FALSE(covered(t.offset + (512 * row), row));
+    } else if (t.kind == K::kIndexerBlocks) {
+      EXPECT_TRUE(covered(t.offset, 128 * row));
+      EXPECT_FALSE(covered(t.offset + (128 * row), row));
+    } else {
+      EXPECT_TRUE(covered(t.offset, t.bytes));
+    }
+  }
+  EXPECT_FALSE(md::Qwen38UsedState(p, *state, 262145));
+}
+
 TEST(Qwen38Test, TheStateIsBoundedAndSized) {
   const md::Qwen38Profile& p = md::Qwen38Flash();
   auto s = md::Qwen38State(p, 4000, 512);

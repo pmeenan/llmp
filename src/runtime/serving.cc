@@ -255,10 +255,11 @@ class Dsv4 final : public Llm {
   }
   std::string extra() const override {
     return std::format(
-        R"({{"architecture":"deepseek4","speculation":{},"coverage_tensors":{},)"
+        R"({{"used_state_bytes":{},"architecture":"deepseek4","speculation":{},"coverage_tensors":{},)"
         R"("slab_padding":{},"state_bytes":{},"drafter_state_bytes":{},"graphs":{}}})",
-        speculate_ ? "\"dspark\"" : "null", runner_.coverage_tensors(), runner_.slab_padding(),
-        runner_.state_bytes(), runner_.drafter_state_bytes(), GraphJson(graphs()));
+        runner_.used_state_bytes(), speculate_ ? "\"dspark\"" : "null", runner_.coverage_tensors(),
+        runner_.slab_padding(), runner_.state_bytes(), runner_.drafter_state_bytes(),
+        GraphJson(graphs()));
   }
   void Defaults(chat::Conversation& c) const override {
     // As llama-server's /apply-template rendered the references' prompts:
@@ -334,6 +335,26 @@ class Dsv4 final : public Llm {
   Status Settle() override { return runner_.Rollback(); }
   Status ClearState() override { return runner_.Clear(); }
   std::uint64_t target_state_base() const override { return runner_.state_base(); }
+  std::uint64_t used_state_bytes() const override { return runner_.used_state_bytes(); }
+  bool StateUsable() const override { return runner_.state_usable(); }
+  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
+    auto rows = speculate_
+                    ? std::min({options_.draft_rows + 1, options_.max_verify, left, context_ - pos})
+                    : 1U;
+    while (rows > 1 && !model::Dsv4SameWidths(runner_.state_layout(), pos, rows)) {
+      --rows;
+    }
+    return runner_.ReserveStateThrough(pos + rows);
+  }
+  std::vector<engine::LiveState::Range> used_state_ranges() const override {
+    return runner_.used_state_ranges();
+  }
+  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
+    return runner_.SaveUsedState(host, ranges);
+  }
+  Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
+    return runner_.RestoreUsedState(host, ranges);
+  }
   std::uint64_t target_state_bytes() const override { return runner_.state_bytes(); }
   std::uint64_t drafter_state_base() const override { return runner_.drafter_state_base(); }
   std::uint64_t drafter_state_bytes() const override { return runner_.drafter_state_bytes(); }
@@ -472,13 +493,14 @@ class Qwen38 final : public Llm {
   std::string extra() const override {
     const engine::PleStats& p = runner_.ple();
     return std::format(
-        R"({{"architecture":"qwen4exp","speculation":{},"coverage_tensors":{},)"
+        R"({{"used_state_bytes":{},"architecture":"qwen4exp","speculation":{},"coverage_tensors":{},)"
         R"("slab_padding":{},"state_bytes":{},"drafter_state_bytes":{},"ple_table_bytes":{},)"
         R"("ple":{{"chunks":{},"lookups":{},"rows":{},"reads":{},"read_bytes":{},)"
         R"("seconds":{:.6f}}},"graphs":{}}})",
-        speculate_ ? "\"mtp\"" : "null", runner_.coverage_tensors(), runner_.slab_padding(),
-        runner_.state_bytes(), runner_.drafter_state_bytes(), runner_.table_bytes(), p.chunks,
-        p.lookups, p.rows, p.reads, p.read_bytes, p.seconds, GraphJson(graphs()));
+        runner_.used_state_bytes(), speculate_ ? "\"mtp\"" : "null", runner_.coverage_tensors(),
+        runner_.slab_padding(), runner_.state_bytes(), runner_.drafter_state_bytes(),
+        runner_.table_bytes(), p.chunks, p.lookups, p.rows, p.reads, p.read_bytes, p.seconds,
+        GraphJson(graphs()));
   }
   void Defaults(chat::Conversation& /*c*/) const override {
     // The template's own defaults (thinking on), as the oracle's /tokenize
@@ -497,12 +519,12 @@ class Qwen38 final : public Llm {
   Status SpecStep(std::span<const std::int32_t> all, std::uint32_t pos, std::uint32_t left,
                   std::vector<std::int32_t>& kept, std::vector<std::vector<float>>* logits,
                   std::uint64_t& drafted) override {
-    if (pos + runner_.draft_rows() > options_.context) {
-      return Error("the drafts would pass the context");
-    }
     // Sampling's position keys keep their existing fixed draft schedule.
     // Greedy chooses its depth from deterministic acceptance observations.
     const auto depth = sampling() || runner_.draft_rows() < 3 ? 2U : depth_.Choose();
+    if (depth > options_.context - pos) {
+      return Error("the drafts would pass the context");
+    }
     std::vector<std::int32_t> drafts;
     if (auto r = runner_.Draft(all, drafts, nullptr, depth); !r) {
       return r;
@@ -581,6 +603,30 @@ class Qwen38 final : public Llm {
     return runner_.Clear();
   }
   std::uint64_t target_state_base() const override { return runner_.state_base(); }
+  std::uint64_t used_state_bytes() const override { return runner_.used_state_bytes(); }
+  bool StateUsable() const override { return runner_.state_usable(); }
+  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
+    if (!speculate_) {
+      return runner_.ReserveStateThrough(pos + 1);
+    }
+    const auto depth = sampling() || runner_.draft_rows() < 3 ? 2U : depth_.Choose();
+    if (depth > context_ - pos) {
+      return Error("the drafts would pass the context");
+    }
+    const auto verify_rows = std::min({depth + 1, left, context_ - pos});
+    // Draft reprocesses tokens ending before the anchor; its final pass
+    // ends at pos + depth - 1. Verify includes the anchor itself.
+    return runner_.ReserveStateThrough(pos + std::max(depth - 1, verify_rows));
+  }
+  std::vector<engine::LiveState::Range> used_state_ranges() const override {
+    return runner_.used_state_ranges();
+  }
+  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
+    return runner_.SaveUsedState(host, ranges);
+  }
+  Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
+    return runner_.RestoreUsedState(host, ranges);
+  }
   std::uint64_t target_state_bytes() const override { return runner_.state_bytes(); }
   std::uint64_t drafter_state_base() const override { return runner_.drafter_state_base(); }
   std::uint64_t drafter_state_bytes() const override { return runner_.drafter_state_bytes(); }
@@ -813,16 +859,25 @@ Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& la
         std::format("{} tokens do not fit {}'s context of {}", all.size(), name_, context_));
   }
   last.clear();
+  auto completed = static_cast<std::uint32_t>(history_.size());
   auto ran = RunPrefillChunks(
       static_cast<std::uint32_t>(history_.size()), static_cast<std::uint32_t>(all.size()),
       max_rows_,
       [&](std::uint32_t at, std::uint32_t n) {
-        return RunChunk(std::span(all).first(at + n), at, speculate_, last);
+        auto chunk = RunChunk(std::span(all).first(at + n), at, speculate_, last);
+        if (chunk) {
+          completed = at + n;
+        }
+        return chunk;
       },
       go_on);
   if (!ran) {
-    needs_clear_ = true;
-    history_.clear();
+    needs_clear_ = !StateUsable();
+    if (needs_clear_) {
+      history_.clear();
+    } else {
+      history_.assign(all.begin(), all.begin() + completed);
+    }
     last.clear();
     return Error(std::format("{}'s prefill: {}", name_, ran.error()));
   }
@@ -888,12 +943,19 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
   auto pos = static_cast<std::uint32_t>(history_.size());
   const auto start = Clock::now();
   Status ran;
+  bool failed_prefix_valid = false;
   while (!out.stopped && !out.cancelled && out.tokens.size() < options.max_tokens) {
     if (pos + 1 >= context_) {
       ran = Error(std::format("{}'s conversation reached its context of {}", name_, context_));
+      failed_prefix_valid = true;
       break;
     }
     const auto left = static_cast<std::uint32_t>(options.max_tokens - out.tokens.size());
+    if (auto prepared = PrepareDecodeState(pos, left); !prepared) {
+      ran = prepared;
+      failed_prefix_valid = StateUsable();
+      break;
+    }
     std::vector<std::int32_t> kept;
     if (speculate_) {
       ran =
@@ -908,6 +970,8 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
         auto next = Choose(row, pos + 1);
         if (!next) {
           ran = std::unexpected(next.error());
+          ++pos;  // the anchor was processed before sampling failed
+          failed_prefix_valid = StateUsable();
         } else {
           kept = {*next};
           if (options.keep_logits) {
@@ -939,8 +1003,13 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
   out.decode_seconds = Seconds(Clock::now() - start);
   sampling_.reset();
   if (!ran) {
-    needs_clear_ = true;
-    history_.clear();
+    if (failed_prefix_valid && Settle()) {
+      history_.assign(all.begin(), all.begin() + pos);
+      needs_clear_ = false;
+    } else {
+      needs_clear_ = true;
+      history_.clear();
+    }
     return ran;
   }
   history_.assign(all.begin(), all.begin() + pos);
@@ -958,51 +1027,38 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
   return {};
 }
 
-std::uint64_t Llm::state_snapshot_bytes() const {
-  return target_state_bytes() + drafter_state_bytes();
-}
+std::uint64_t Llm::state_snapshot_bytes() const { return used_state_bytes(); }
 
 Status Llm::SaveState(void* host) {
+  saved_valid_ = false;
   if (auto r = Settle(); !r) {
     return r;
   }
-  engine::PagedModel& p = paged();
-  if (auto r = node_->Copy(p.stream(), p.fence_closure(), target_state_base(), host,
-                           target_state_bytes(), true, "saving a conversation state");
-      !r) {
+  auto ranges = used_state_ranges();
+  if (auto r = SaveUsedState(host, ranges); !r) {
     return r;
   }
-  if (drafter_state_bytes() != 0) {
-    if (auto r = node_->Copy(p.stream(), p.fence_closure(), drafter_state_base(),
-                             static_cast<std::byte*>(host) + target_state_bytes(),
-                             drafter_state_bytes(), true, "saving a drafter's state");
-        !r) {
-      return r;
-    }
-  }
+  saved_ranges_ = std::move(ranges);
   saved_history_ = history_;
   saved_cursor_ = cursor();
   SaveDecodingState();
+  saved_valid_ = true;
   return {};
 }
 
 Status Llm::RestoreState(void* host) {
+  if (!saved_valid_) {
+    return Error("no completed conversation snapshot to restore");
+  }
+  if (host == nullptr && !saved_ranges_.empty()) {
+    return Error("the conversation snapshot has no source buffer");
+  }
   if (auto r = Settle(); !r) {
     return r;
   }
-  engine::PagedModel& p = paged();
-  if (auto r = node_->Copy(p.stream(), p.fence_closure(), target_state_base(), host,
-                           target_state_bytes(), false, "restoring a conversation state");
-      !r) {
+  if (auto r = RestoreUsedState(host, saved_ranges_); !r) {
+    needs_clear_ = true;
     return r;
-  }
-  if (drafter_state_bytes() != 0) {
-    if (auto r = node_->Copy(p.stream(), p.fence_closure(), drafter_state_base(),
-                             static_cast<std::byte*>(host) + target_state_bytes(),
-                             drafter_state_bytes(), false, "restoring a drafter's state");
-        !r) {
-      return r;
-    }
   }
   history_ = saved_history_;
   set_cursor(saved_cursor_);
@@ -1069,6 +1125,56 @@ Status Server::Make(const config::ModelEntry& entry, int index) {
   return {};
 }
 
+Status Server::SaveSnapshot(Llm& model) {
+  if (!snapshot_enabled_ || snapshot_unproven_) {
+    return Error("the diagnostic snapshot is disabled or its completion is unproven");
+  }
+  if (snapshot_model_ != nullptr) {
+    snapshot_model_->InvalidateStateSnapshot();
+    snapshot_model_ = nullptr;
+  }
+  const auto bytes = std::max<std::uint64_t>(model.state_snapshot_bytes(), 256);
+  if (bytes > snapshot_capacity_) {
+    if (auto freed = node_.FreePinned(snapshot_); !freed) {
+      return freed;
+    }
+    snapshot_ = nullptr;
+    snapshot_capacity_ = 0;
+    const auto available = MemorySampler::Available();
+    if (available != 0 && (available < host_inputs_ + kUncountedMargin ||
+                           bytes > available - host_inputs_ - kUncountedMargin)) {
+      return Error("initialized state snapshot would exceed the memory guard");
+    }
+    std::vector<catalog::ExtentId> staging;
+    auto allocated = node_.Pinned(bytes, engine::kShared, staging);
+    if (!allocated) {
+      return std::unexpected(allocated.error());
+    }
+    snapshot_ = *allocated;
+    snapshot_capacity_ = bytes;
+  }
+  auto saved = model.SaveState(snapshot_);
+  if (!saved) {
+    snapshot_unproven_ = true;
+    node_.KeepPinned(snapshot_);
+  } else {
+    snapshot_model_ = &model;
+  }
+  return saved;
+}
+
+Status Server::RestoreSnapshot(Llm& model) {
+  if (!snapshot_enabled_ || snapshot_unproven_ || snapshot_model_ != &model) {
+    return Error("the diagnostic snapshot is disabled or its completion is unproven");
+  }
+  auto restored = model.RestoreState(snapshot_);
+  if (!restored) {
+    snapshot_unproven_ = true;
+    node_.KeepPinned(snapshot_);
+  }
+  return restored;
+}
+
 Status Server::Start(bool snapshot) {
   if (started_) {
     return Error("the server started already");
@@ -1092,7 +1198,6 @@ Status Server::Start(bool snapshot) {
   std::uint64_t activations = 0;
   std::uint64_t pool = 0;
   std::uint64_t largest = 0;
-  std::uint64_t state = 0;
   std::uint64_t host_inputs = 0;
   for (const auto& m : models_) {
     const auto started = Clock::now();
@@ -1106,7 +1211,6 @@ Status Server::Start(bool snapshot) {
     std::string chunks;
     if (m->llm()) {
       const auto& l = static_cast<Llm&>(*m);
-      state = std::max(state, l.state_snapshot_bytes());
       chunks = std::format("; prefill chunks of {} rows", l.max_rows());
       if (l.configured_rows() && *l.configured_rows() != l.max_rows()) {
         chunks += std::format(
@@ -1123,14 +1227,7 @@ Status Server::Start(bool snapshot) {
     return r;
   }
   workspace_ = activations + pool;
-  if (snapshot && state != 0) {
-    std::vector<catalog::ExtentId> staging;
-    auto pinned = node_.Pinned(state, engine::kShared, staging);
-    if (!pinned) {
-      return std::unexpected(pinned.error());
-    }
-    snapshot_ = *pinned;
-  }
+  snapshot_enabled_ = snapshot;
   // The budget (D-050's B): everything mapped for the node's life (the zone,
   // each model's own memory, the workspace, the staging) and the largest
   // model's weights, so a full swap is the only way in.
@@ -1148,6 +1245,15 @@ Status Server::Start(bool snapshot) {
                                      .fixed = fixed_});
       !guard) {
     return std::unexpected(guard.error());
+  }
+  // State is charged as it grows. Keep the physical execution cap below
+  // the measured available memory, leaving host-built inputs and the
+  // uncounted margin outside it. A virtual context ceiling need not fit
+  // before it is used; a growth that cannot fit its active closure fails.
+  if (available != 0) {
+    budget_ = fixed_ + ((available - host_inputs - kUncountedMargin) / kExtent * kExtent);
+  } else {
+    budget_ += node_.StateCapacity();
   }
   if (auto r = node_.Start(base::Bytes(budget_)); !r) {
     return r;

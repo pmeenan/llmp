@@ -81,6 +81,10 @@ std::expected<DirectFile, int> OpenForDirectRead(int dir, const char* name,
 // close-on-exec, gone once closed (Linux's O_TMPFILE), so nothing outlives
 // the process. errno on failure.
 std::expected<int, int> OpenUnnamedDirectFile(const std::filesystem::path& directory);
+// Drops a spill range without changing the file length. Future reads of
+// that range return zero; adjacent saved state remains intact. No I/O on
+// the range may still be in flight. errno on failure.
+std::expected<void, int> DiscardFileRange(int fd, std::uint64_t offset, std::uint64_t bytes);
 
 }  // namespace jitllm::platform
 

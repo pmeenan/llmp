@@ -42,6 +42,12 @@ namespace jitllm::model {
 
 using base::Bytes;
 
+// A byte range inside one model-owned state region.
+struct StateRange {
+  std::uint64_t offset = 0;
+  std::uint64_t bytes = 0;
+};
+
 // What a representation can do, as a bit set.
 enum class StateCapability : std::uint8_t {
   kAppend = 1U << 0U,

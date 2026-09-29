@@ -258,6 +258,11 @@ std::expected<Dsv4StateLayout, std::string> Dsv4State(const Dsv4Profile& profile
                                                       std::uint32_t context, std::uint32_t max_rows,
                                                       Dsv4Window window = Dsv4Window::kFull);
 
+// The cache prefixes and fixed ring/scratch ranges a chunk ending at
+// `positions` may touch. The dummy compressed row is always included.
+std::expected<std::vector<StateRange>, std::string> Dsv4UsedState(const Dsv4StateLayout& state,
+                                                                  std::uint32_t positions);
+
 // The widest chunk Dsv4State admits at `context` (either window: a ring is
 // never larger than the full cache, and holds any chunk the full cache
 // does): the context, and the full cache's cells less the window (0 when
@@ -325,12 +330,6 @@ std::expected<Dsv4CompPlan, std::string> Dsv4CompressorPlan(std::uint32_t ratio,
                                                             std::uint32_t rows);
 
 // ---------------------------------------------------------------- speculation
-
-// A byte range of the state region.
-struct StateRange {
-  std::uint64_t offset = 0;
-  std::uint64_t bytes = 0;
-};
 
 // Every state byte a chunk writes, by what writes it (D-068 truncation for
 // a speculative verify): row i's own writes (its position's window cell in

@@ -526,7 +526,7 @@ Status Table::Pair(Served& a, Served& b) {
                                        if (auto s = l.Prefill(context, last); !s) {
                                          return s;
                                        }
-                                       if (auto s = l.SaveState(server_.snapshot()); !s) {
+                                       if (auto s = server_.SaveSnapshot(l); !s) {
                                          return s;
                                        }
                                        digest = Sha256(std::span(
@@ -535,7 +535,7 @@ Status Table::Pair(Served& a, Served& b) {
                                        if (auto s = l.Generate(last, continuation, reference); !s) {
                                          return s;
                                        }
-                                       return l.RestoreState(server_.snapshot());
+                                       return server_.RestoreSnapshot(l);
                                      });
           !r) {
         return r;
@@ -619,9 +619,7 @@ Status Table::Pair(Served& a, Served& b) {
       // The restored state against the state A left with, byte for byte;
       // outside the timed parts.
       const auto hashing = Clock::now();
-      if (auto r =
-              server_.InRequest(a, [&]() -> Status { return l.SaveState(server_.snapshot()); });
-          !r) {
+      if (auto r = server_.InRequest(a, [&]() -> Status { return server_.SaveSnapshot(l); }); !r) {
         return r;
       }
       ba.state_exact = Sha256(std::span(static_cast<const std::byte*>(server_.snapshot()),

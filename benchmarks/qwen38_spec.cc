@@ -1510,8 +1510,9 @@ Status Harness::Run() {
     return r;
   }
   const std::uint64_t fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+  // State diagnostics keep a cataloged pinned copy alongside the device state.
   const std::uint64_t budget =
-      fixed +
+      fixed + (2 * node_.StateCapacity()) +
       ((qwen_.weights().size() + (with_fp16() ? fp16_.weights().size() : 0)) * ts::kPagedExtent);
   if (auto r = node_.Start(Bytes(budget)); !r) {
     return r;

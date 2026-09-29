@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <format>
+#include <limits>
 #include <print>
 #include <span>
 #include <utility>
@@ -227,6 +228,20 @@ Status PagedNode::MapWorkspace(std::uint64_t activations, std::uint64_t pool) {
 Status PagedNode::MapResident(Mapped& mapped, std::string name, std::uint64_t bytes,
                               providers::BackingKind kind, MemoryClass memory_class,
                               catalog::Recovery recovery, int owner) {
+  return MapRegion(mapped, std::move(name), bytes, kind, memory_class, recovery, owner, true);
+}
+
+Status PagedNode::ReserveState(Mapped& mapped, std::string name, std::uint64_t bytes, int owner) {
+  return MapRegion(mapped, std::move(name), bytes, providers::BackingKind::kDevice,
+                   MemoryClass::kLiveState, catalog::Recovery::kPreserve, owner, false);
+}
+
+Status PagedNode::MapRegion(Mapped& mapped, std::string name, std::uint64_t bytes,
+                            providers::BackingKind kind, MemoryClass memory_class,
+                            catalog::Recovery recovery, int owner, bool resident) {
+  if (bytes > std::numeric_limits<std::uint64_t>::max() - kPagedExtent + 1) {
+    return Error("a region's size overflows its extent alignment");
+  }
   mapped.name = std::move(name);
   mapped.bytes =
       (std::max<std::uint64_t>(bytes, 1) + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
@@ -239,20 +254,22 @@ Status PagedNode::MapResident(Mapped& mapped, std::string name, std::uint64_t by
   const std::size_t allocation_class =
       kind == providers::BackingKind::kDevice ? device_class_ : host_class_;
   for (std::uint64_t at = 0; at < mapped.bytes; at += kPagedExtent) {
-    auto backing = memory_->Create(allocation_class, Bytes(kPagedExtent));
-    if (!backing) {
-      return Error(std::format("backing {}: {}", mapped.name, backing.error().detail));
-    }
-    mapped.backings.push_back(*backing);
-    if (auto map = memory_->Map(*reservation, Bytes(at), *backing); !map) {
-      return Error(std::format("mapping {}: {}", mapped.name, map.error().detail));
+    if (resident) {
+      auto backing = memory_->Create(allocation_class, Bytes(kPagedExtent));
+      if (!backing) {
+        return Error(std::format("backing {}: {}", mapped.name, backing.error().detail));
+      }
+      mapped.backings.push_back(*backing);
+      if (auto map = memory_->Map(*reservation, Bytes(at), *backing); !map) {
+        return Error(std::format("mapping {}: {}", mapped.name, map.error().detail));
+      }
     }
     auto extent = catalog_.AddExtent({.domain = domain_,
                                       .memory_class = memory_class,
                                       .recovery = recovery,
                                       .size = Bytes(kPagedExtent),
                                       .content = {}},
-                                     true);
+                                     resident);
     if (!extent) {
       return Error(std::format("cataloging {}", mapped.name));
     }
@@ -264,39 +281,117 @@ Status PagedNode::MapResident(Mapped& mapped, std::string name, std::uint64_t by
              .device = kind == providers::BackingKind::kDevice,
              .owner = owner});
   }
-  if (auto access = memory_->SetAccess(*reservation, Bytes(0), Bytes(mapped.bytes),
-                                       providers::Access::kReadWrite);
-      !access) {
-    return Error(std::format("access to {}: {}", mapped.name, access.error().detail));
+  if (resident) {
+    if (auto access = memory_->SetAccess(*reservation, Bytes(0), Bytes(mapped.bytes),
+                                         providers::Access::kReadWrite);
+        !access) {
+      return Error(std::format("access to {}: {}", mapped.name, access.error().detail));
+    }
   }
   return {};
 }
 
 std::expected<void*, std::string> PagedNode::Pinned(std::uint64_t bytes, int owner,
                                                     std::vector<ExtentId>& staging) {
-  auto allocated = providers::AllocatePinned(std::max<std::uint64_t>(bytes, 256));
+  bytes = std::max<std::uint64_t>(bytes, 256);
+  if (scheduler_ != nullptr) {
+    auto fits = Call(
+        [&]() -> Status {
+          const auto occupancy = catalog_.OccupancyOf(domain_).Total().value();
+          return occupancy > budget_.value() || bytes > budget_.value() - occupancy
+                     ? Error("pinned staging exceeds the execution budget")
+                     : Status{};
+        },
+        "checking pinned staging capacity");
+    if (!fits) {
+      return std::unexpected(fits.error());
+    }
+  }
+  auto allocated = providers::AllocatePinned(bytes);
   if (!allocated) {
     return Error("pinned memory");
   }
   void* const pointer = *allocated;
-  pinned_.push_back(pointer);
-  auto extent = catalog_.AddExtent({.domain = domain_,
-                                    .memory_class = MemoryClass::kStaging,
-                                    .recovery = catalog::Recovery::kPinned,
-                                    .size = Bytes(bytes),
-                                    .content = {}},
-                                   true);
-  if (!extent) {
-    return Error("cataloging the staging");
+  auto register_memory = [&]() -> Status {
+    if (scheduler_ != nullptr) {
+      const auto occupancy = catalog_.OccupancyOf(domain_).Total().value();
+      if (occupancy > budget_.value() || bytes > budget_.value() - occupancy) {
+        return Error("pinned staging exceeds the execution budget");
+      }
+    }
+    auto extent = catalog_.AddExtent({.domain = domain_,
+                                      .memory_class = MemoryClass::kStaging,
+                                      .recovery = catalog::Recovery::kPinned,
+                                      .size = Bytes(bytes),
+                                      .content = {}},
+                                     true);
+    if (!extent) {
+      return Error("cataloging the staging");
+    }
+    staging.push_back(*extent);
+    AddSpan({.base = Address(pointer),
+             .size = bytes,
+             .extent = *extent,
+             .memory_class = MemoryClass::kStaging,
+             .device = false,
+             .owner = owner});
+    if (scheduler_ != nullptr) {
+      SortSpans();
+    }
+    return {};
+  };
+  auto registered =
+      scheduler_ == nullptr ? register_memory() : Call(register_memory, "pinned staging");
+  if (!registered) {
+    providers::FreePinned(pointer);
+    return std::unexpected(registered.error());
   }
-  staging.push_back(*extent);
-  AddSpan({.base = Address(pointer),
-           .size = bytes,
-           .extent = *extent,
-           .memory_class = MemoryClass::kStaging,
-           .device = false,
-           .owner = owner});
+  pinned_.push_back(pointer);
   return pointer;
+}
+
+void PagedNode::KeepPinned(void* pointer) {
+  if (const auto at = std::ranges::find(pinned_, pointer); at != pinned_.end()) {
+    pinned_.erase(at);
+    kept_pinned_.push_back(pointer);
+  }
+}
+
+Status PagedNode::FreePinned(void* pointer) {
+  if (pointer == nullptr) {
+    return {};
+  }
+  if (std::ranges::find(pinned_, pointer) == pinned_.end()) {
+    return Error("the pinned allocation is not owned or its completion is unproven");
+  }
+  ExtentId extent;
+  auto checked = Call(
+      [&]() -> Status {
+        const auto span = std::ranges::find(spans_, Address(pointer), &Span::base);
+        if (span == spans_.end() || span->device || span->memory_class != MemoryClass::kStaging) {
+          return Error("no pinned staging extent at this address");
+        }
+        if (!catalog_.CanRetirePinned(span->extent)) {
+          return Error("pinned staging is still held or referenced");
+        }
+        extent = span->extent;
+        return {};
+      },
+      "checking retired pinned staging");
+  if (!checked) {
+    return checked;
+  }
+  providers::FreePinned(pointer);
+  std::erase(pinned_, pointer);
+  return Call(
+      [&]() -> Status {
+        if (!catalog_.ReleasePinned(extent) || !catalog_.RemoveExtent(extent)) {
+          return Error("forgetting retired pinned staging");
+        }
+        EraseSpans([&](const Span& s) { return s.extent == extent; });
+        return {};
+      },
+      "forgetting pinned staging");
 }
 
 bool PagedNode::RetireRing(std::unique_ptr<providers::Storage> ring,
@@ -318,9 +413,19 @@ bool PagedNode::RetireRing(std::unique_ptr<providers::Storage> ring,
 
 void PagedNode::SortSpans() { std::ranges::sort(spans_, {}, &Span::base); }
 
-std::optional<MemoryClass> PagedNode::Covered(std::uint64_t address, std::uint64_t bytes,
-                                              int owner) const {
-  if (bytes == 0) {
+std::uint64_t PagedNode::StateCapacity() const {
+  std::uint64_t bytes = 0;
+  for (const Span& span : spans_) {
+    if (span.device && span.memory_class == MemoryClass::kLiveState) {
+      bytes += span.size;
+    }
+  }
+  return bytes;
+}
+
+std::optional<MemoryClass> PagedNode::Covered(std::uint64_t address, std::uint64_t bytes, int owner,
+                                              bool resident) const {
+  if (bytes == 0 || bytes > std::numeric_limits<std::uint64_t>::max() - address) {
     return std::nullopt;
   }
   std::optional<MemoryClass> found;
@@ -338,7 +443,7 @@ std::optional<MemoryClass> PagedNode::Covered(std::uint64_t address, std::uint64
       return std::nullopt;
     }
     const auto view = catalog_.Describe(span->extent);
-    if (!view || view->state != catalog::ExtentState::kResident) {
+    if (!view || (resident && view->state != catalog::ExtentState::kResident)) {
       return std::nullopt;
     }
     found = span->memory_class;
@@ -715,6 +820,18 @@ Status PagedNode::BeginRequest(std::uint32_t stream, const catalog::Closure& clo
   }
   requests_.emplace(stream, std::move(open));
   return {};
+}
+
+Status PagedNode::RefreshRequest(std::uint32_t stream, const catalog::Closure& closure) {
+  const auto open = requests_.find(stream);
+  if (open == requests_.end() || open->second->closure.extents == closure.extents) {
+    return {};
+  }
+  const std::string what = open->second->what;
+  if (auto ended = EndRequest(stream); !ended) {
+    return ended;
+  }
+  return BeginRequest(stream, closure, what);
 }
 
 Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::Closure& closure,

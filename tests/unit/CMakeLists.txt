@@ -187,6 +187,11 @@ if(JITLLM_CUDA)
   target_link_libraries(slab_layout_test PRIVATE jitllm_engine)
   jitllm_gpu_gtest(slab_layout_test)
 
+  add_executable(live_state_test live_state_test.cc)
+  target_link_libraries(live_state_test PRIVATE jitllm_engine)
+  jitllm_gpu_gtest(live_state_test
+                   ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
   # Qwen3.8's n-gram rows read on demand (engine/ple_rows.h): the read
   # plan on the host, and the reads and the gather kernel on a GB10.
   add_executable(ple_rows_test ple_rows_test.cc)

@@ -281,6 +281,22 @@ std::expected<ResourceId, CatalogError> Catalog::AddResource(std::span<const Ran
   return id;
 }
 
+std::expected<void, CatalogError> Catalog::CanRetirePinned(ExtentId extent) const {
+  const ExtentRecord* record = Extent(extent);
+  if (record == nullptr) {
+    return std::unexpected(CatalogError::kUnknownId);
+  }
+  const auto& view = record->view;
+  if (view.state != ExtentState::kResident || view.descriptor.recovery != Recovery::kPinned ||
+      record->resources != 0) {
+    return std::unexpected(CatalogError::kWrongState);
+  }
+  if (view.leases != 0 || view.registrations != 0) {
+    return std::unexpected(CatalogError::kHeld);
+  }
+  return {};
+}
+
 std::expected<void, CatalogError> Catalog::RemoveResource(ResourceId resource) {
   const Resource* found = resources_.Find(resource);
   if (found == nullptr) {
@@ -494,6 +510,24 @@ std::expected<void, CatalogError> Catalog::InvalidateContents(ExtentId extent) {
   }
   Advance(view.content_generation);
   view.discarded = true;
+  return {};
+}
+
+std::expected<void, CatalogError> Catalog::ForgetPreserved(ExtentId extent) {
+  ExtentRecord* record = Extent(extent);
+  if (record == nullptr) {
+    return std::unexpected(CatalogError::kUnknownId);
+  }
+  ExtentView& view = record->view;
+  if (view.state != ExtentState::kNonresident || view.descriptor.recovery != Recovery::kPreserve) {
+    return std::unexpected(CatalogError::kWrongState);
+  }
+  if (view.leases != 0 || view.registrations != 0) {
+    return std::unexpected(CatalogError::kHeld);
+  }
+  Advance(view.content_generation);
+  view.preserved = false;
+  view.discarded = false;
   return {};
 }
 

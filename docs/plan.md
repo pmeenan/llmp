@@ -922,7 +922,11 @@ it appears.
         - the prefill chunk policy at depth.
       - *State that grows with the conversation*, not reserved at the
         ceiling, so a long ceiling costs memory only when used. Spill and
-        restore move only the used state.
+        restore move only the used state. *Implemented 2026-09-29*
+        ([growing state](experiments/growing-state/README.md)): stable
+        virtual addresses, initialized extents only, sparse spill and
+        packed controls; both models registered at 262K, swapping exact
+        8K state under 10 s. Maximum-context timing remains at the gate.
       - *Turn-to-turn reuse at long context:* a coding agent resends the
         whole conversation each turn. The runtime reuses the longest common
         prefix of the previous turn's state, including when a client drops
@@ -1130,9 +1134,9 @@ family" guide, and its long-context scaling work.
       - planning, capture and launch binding are GGML-only, so a family
         run on EXL3 (or another non-GGML backend) needs a step family of
         its own that plugs into the same skeleton;
-      - runners assume one target and at most one drafter;
-      - state regions are mapped whole at setup (long context's growing
-        state changes this in M3).
+      - runners assume one target and at most one drafter.
+      M3's growing-state work has closed the setup allocation gap for
+      DeepSeek and Qwen3.8: stable virtual regions, backing only when used.
 - [ ] **Kernels:** operations new to a family come from GGML first, with
       our own kernels on measured need (D-053). Upstream findings go to
       docs/upstream/.

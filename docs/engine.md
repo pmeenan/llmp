@@ -35,7 +35,7 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | Part | File | What it does | The runner supplies |
 | --- | --- | --- | --- |
 | Weights | `paged_weights.h` | Opens an artifact and its shards for direct reads; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`, `ExpertSlab`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
-| Live state | `live_state.h` | The conversation state's regions (mapped before the weights, so a swap restores state first), their write-back places in an unnamed direct-I/O spill file, clear, read, the pinned places, the quarantine; a verify's snapshot: saves, accept, the owed restore and the model's commit hook, rollback, and undoing a failed verify | The state layout's bytes per region; which ranges a verify writes; a commit kernel if kept rows need one |
+| Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify | The state layout and each step's used ranges; which ranges a verify writes; a commit kernel if kept rows need one |
 | Planned shapes | `planned.h` | `PlannedGraph<Graph>`, `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, capped), `RoomForGraph` (the graph cap, D-090), `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
 | Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts) and what it copies out |
 | Resources | `runner_resources.h` | The runner's own device memory (pinned), pinned staging, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry, and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
@@ -66,7 +66,8 @@ joined problems).
    `AwaitingAccept`, finds or plans its shape (`PlanCache::Find`, else plan,
    `BindPlanned`, `CheckCoverage`, `Add`), decides whether to capture
    (`PlanRuns::CaptureDue` plus the model's rule, then `RoomForGraph`), and
-   posts one job that queues what the live state owes (`QueueOwed`), a
+   materializes its used ranges (`LiveState::Use`) and renews the request
+   closure if new extents were initialized, then posts one job that queues what the live state owes (`QueueOwed`), a
    verify's saves (`QueueSaves`), and the run (`GraphRuns::Queue`). A
    failure settles the state (`LiveState::Settle`: a verify undone, else a
    quarantine); success counts the path (`Count`).
@@ -122,10 +123,10 @@ rather than works around:
   own kernels as Qwen-Image's are) composes the weights, resources and
   live state but runs and captures its own steps, as the image runner
   does.
-- **State mapped whole.** Each live-state region is its layout's bytes,
-  mapped and spilled whole; how the layout divides them (full caches,
-  sliding-window rings, recurrent and convolution state, one region or
-  several) is the model's. A verify's writes are ranges by row, and state
+- **State access described by the model.** Each live-state region reserves
+  its layout's virtual bytes. DeepSeek and Qwen3.8 materialize only the
+  extents their padded cache prefixes and fixed rings or recurrent state
+  use; page-in, spill and restore follow that initialized set. A verify's writes are ranges by row, and state
   a verify rewrites whole (recurrent) is restored and then rebuilt for the
   kept rows by the commit hook, as Qwen3.8's is.
 - **One target and one drafter.** Regions, weights and plan caches are the
@@ -134,11 +135,14 @@ rather than works around:
 
 ## Where the long-context work goes
 
-- **State that grows with use**: a live-state region's bytes are the
-  layout's today and are mapped whole at setup; mapping, spilling and
-  restoring only the extents in use is a change to `LiveState` (regions
-  that grow, sources registered as they do) and to each model's layout,
-  not to each runner's spill code.
+- **State that grows with use**: `LiveState::AddGrowing` reserves stable
+  virtual addresses; `Use` materializes named ranges before dispatch.
+  Sources and graph address pins are registered once, with sparse zeros
+  for unused extents. Initialized extents gain write-back; `Retain` drops
+  discarded tail pages and their saved bytes. Model footprint functions
+  cover padded attention reads, dummy cells and fixed rings. Packed
+  snapshots carry only used pages. A clean capacity refusal preserves the
+  completed prefix; uncertain completion quarantines it.
 - **Turn-boundary checkpoints** of recurrent or indexer state: a
   checkpoint is a set of saved ranges kept across jobs, the verify
   snapshot's mechanism with a longer life, and belongs beside it in

@@ -4,6 +4,7 @@
 #include "platform/direct_io.h"
 
 #include <fcntl.h>
+#include <linux/falloc.h>
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
@@ -17,6 +18,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -202,6 +204,19 @@ std::expected<DirectIoFacts, std::string> ProbeDirectIo(const std::filesystem::p
         std::format("a direct read in {} did not return what was written", directory.string()));
   }
   return facts;
+}
+
+std::expected<void, int> DiscardFileRange(int fd, std::uint64_t offset, std::uint64_t bytes) {
+  const auto limit = static_cast<std::uint64_t>(std::numeric_limits<off_t>::max());
+  if (fd < 0 || offset > limit || bytes > limit - offset || offset % kDirectIoAlignment != 0 ||
+      bytes % kDirectIoAlignment != 0) {
+    return std::unexpected(EINVAL);
+  }
+  if (bytes != 0 && ::fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+                                static_cast<off_t>(offset), static_cast<off_t>(bytes)) != 0) {
+    return std::unexpected(errno);
+  }
+  return {};
 }
 
 }  // namespace jitllm::platform

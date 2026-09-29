@@ -391,6 +391,32 @@ TEST_F(CatalogTest, ReplacingContentsRequiresExclusiveAccess) {
 
 // Artifact contents are never replaced in place; a reload restores them
 // at the same content generation.
+TEST_F(CatalogTest, ForgettingSavedStateInvalidatesOldClosuresAndCannotForgetImmutableContents) {
+  const auto state = catalog_
+                         .AddExtent({.domain = domain_,
+                                     .memory_class = MemoryClass::kLiveState,
+                                     .recovery = Recovery::kPreserve,
+                                     .size = 2_MiB,
+                                     .content = {}})
+                         .value();
+  Load(state);
+  EXPECT_EQ(Failed(catalog_.ForgetPreserved(state)), CatalogError::kWrongState);
+  const auto before = Of({state});
+  const auto ticket = catalog_.BeginEvict(state, true).value();
+  EXPECT_EQ(Failed(catalog_.ForgetPreserved(state)), CatalogError::kWrongState);
+  ASSERT_TRUE(catalog_.CompleteEvict(ticket));
+  ASSERT_TRUE(catalog_.Describe(state)->preserved);
+  const auto generation = catalog_.Describe(state)->content_generation;
+  ASSERT_TRUE(catalog_.ForgetPreserved(state));
+  EXPECT_FALSE(catalog_.Describe(state)->preserved);
+  EXPECT_GT(catalog_.Describe(state)->content_generation, generation);
+  EXPECT_EQ(catalog_.OccupancyOf(domain_).Total(), Bytes());
+  Load(state);
+  EXPECT_EQ(Failed(catalog_.AcquireLease(before)), CatalogError::kStaleContent);
+  EXPECT_EQ(Failed(catalog_.ForgetPreserved(Weights(7))), CatalogError::kWrongState);
+  EXPECT_EQ(Failed(catalog_.ForgetPreserved({})), CatalogError::kUnknownId);
+}
+
 TEST_F(CatalogTest, ArtifactContentsAreNotReplaced) {
   const ExtentId extent = Weights(0);
   Load(extent);

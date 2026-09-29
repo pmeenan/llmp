@@ -1729,8 +1729,9 @@ Status Harness::Run() {
     return r;
   }
   const std::uint64_t fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
+  // State diagnostics keep a cataloged pinned copy alongside the device state.
   const std::uint64_t budget =
-      fixed +
+      fixed + (2 * node_.StateCapacity()) +
       ((dsv4_.weights().size() + (with_fp16() ? fp16_.weights().size() : 0)) * ts::kPagedExtent);
   if (auto r = node_.Start(Bytes(budget)); !r) {
     return r;
@@ -1761,6 +1762,25 @@ Status Harness::Run() {
   std::println("loaded: {} bytes ({} the drafter's) in {:.2f} s", dsv4_.weight_read_bytes(),
                dsv4_.drafter_read_bytes(), load_seconds_);
   if (auto r = dsv4_.CheckHashRouting(); !r) {
+    return r;
+  }
+  // A standalone draft from the empty prefix must initialize its ring
+  // before dispatch, including after Clear released growing state.
+  if (auto r = dsv4_.Clear(); !r) {
+    return r;
+  }
+  std::vector<std::int32_t> empty_drafts;
+  if (auto r = dsv4_.Draft(0, 0, empty_drafts); !r) {
+    return r;
+  }
+  if (empty_drafts.size() != o_.dsv4.draft_rows ||
+      std::ranges::any_of(empty_drafts, [&](std::int32_t t) {
+        return t < 0 || std::cmp_greater_equal(t, dsv4_.vocab());
+      })) {
+    return Error("a standalone empty-prefix draft returned invalid tokens");
+  }
+  std::println("empty-prefix standalone draft: {} valid tokens", empty_drafts.size());
+  if (auto r = dsv4_.Clear(); !r) {
     return r;
   }
   Status checked;

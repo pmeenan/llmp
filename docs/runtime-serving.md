@@ -81,14 +81,18 @@ startup steps (anchor, configuration, process lock, storage roles,
 platform), then register every configured
 model on one paged node: its artifacts opened, its runner set up on its own
 stream, its tokenizer and renderer found, the shared workspace mapped at the
-largest model's need, and the scheduler started with the budget of
-everything fixed (the zone, each model's own memory, the workspace, the
-staging) plus the largest model's weights, which must fit what the host has
-available with the largest chunk inputs a model builds on the host (one
-model runs at a time; bounded by the staging they are sized for) and a
-6 GiB margin for what else the catalog does not count (decode graphs, the driver's and
-cuBLAS's own memory; [long-context](experiments/long-context/README.md#memory-and-the-guards-margin)).
-No weights are paged yet.
+largest model's need. The scheduler's physical cap is the fixed allocations
+plus the post-setup available memory, less the largest host-built chunk
+inputs and a 6 GiB guard, rounded down to 2 MiB extents. Fixed allocations,
+weights, used state and dynamic staging are charged within that cap; the
+largest model's weights must fit beside the fixed allocations at admission.
+The guard covers memory outside the catalog (decode graphs, the driver and
+cuBLAS; [long-context](experiments/long-context/README.md#memory-and-the-guards-margin)).
+Conversation ceilings reserve virtual addresses; backing grows in 2 MiB
+extents with each padded cache prefix. The budget admits that growth from
+the remaining physical capacity, preserving the guard. Spill and restore
+move only initialized extents. Diagnostic snapshots allocate cataloged,
+pinned staging lazily and copy only used pages. No weights are paged yet.
 
 One model is resident at a time (M3's full swap). Activating another
 (`Server::Activate`) is one `SwapProgram`: the resident LLM's conversation
@@ -613,9 +617,6 @@ to it alone. `deadline_cap_seconds` 14,400 (60 to 86,400).
   re-prefills all ~61K tokens every turn (43 s); one that sends it back
   prefills only the new ones (0.2–0.3 s)
   ([long-context](experiments/long-context/README.md#turn-to-turn-reuse)).
-- Per-token prefill and decode cost grows with the context (dense
-  attention over every cached cell; the long-context report's gaps 1 and
-  2), so a long prompt is slow: DeepSeek prefills about 230 tok/s at 64K,
-  and a 128K prompt takes longer than the 600 s deadline the route had
-  until 2026-09-29 (it now runs on while it makes progress,
-  [above](#progress-and-deadlines)).
+- Long-context prefill and decode are now nearly flat with depth on the
+  fast plans ([long-context phase 2](experiments/long-context/README.md));
+  the progress watchdog lets long prefills continue while they make progress.

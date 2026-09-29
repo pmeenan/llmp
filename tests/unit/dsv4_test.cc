@@ -205,6 +205,37 @@ TEST(Dsv4Test, BindsTheGgufsTensorsAndRefusesWhatDiffers) {
   }
 }
 
+TEST(Dsv4Test, GrowingStateCoversTheRingPaddedPrefixAndCompressedDummyCells) {
+  auto state = md::Dsv4State(md::Dsv4Flash(), 262144, 2048, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state) << Why(state);
+  auto ranges = md::Dsv4UsedState(*state, 1025);
+  ASSERT_TRUE(ranges) << Why(ranges);
+  const auto covered = [&](std::uint64_t offset, std::uint64_t bytes) {
+    return std::ranges::any_of(*ranges, [&](const md::StateRange& r) {
+      return offset >= r.offset && offset - r.offset <= r.bytes &&
+             bytes <= r.bytes - (offset - r.offset);
+    });
+  };
+  using K = md::Dsv4StateTensor::Kind;
+  for (const auto& t : state->tensors) {
+    const auto row = t.ne0 * (t.f16 ? 2 : 4);
+    if (t.kind == K::kRawK) {
+      EXPECT_TRUE(covered(t.offset, t.bytes));
+    } else if (t.kind == K::kCsaK || t.kind == K::kLidK) {
+      // ceil(1025/4)=257 cells; attention reads through padded cell 511.
+      EXPECT_TRUE(covered(t.offset, 512 * row));
+      EXPECT_FALSE(covered(t.offset + 512 * row, row));
+      EXPECT_TRUE(covered(t.offset + (t.ne1 - 1) * row, row));
+    } else if (t.kind == K::kHcaK) {
+      EXPECT_TRUE(covered(t.offset, 256 * row));
+      EXPECT_TRUE(covered(t.offset + (t.ne1 - 1) * row, row));
+    } else {
+      EXPECT_TRUE(covered(t.offset, t.bytes));
+    }
+  }
+  EXPECT_FALSE(md::Dsv4UsedState(*state, 262145));
+}
+
 TEST(Dsv4Test, TheStateIsBoundedAndSizedAsLlamaCppSizesIt) {
   const md::Dsv4Profile& p = md::Dsv4Flash();
   auto s = md::Dsv4State(p, 4096, 512);

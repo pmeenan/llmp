@@ -117,11 +117,11 @@ Status Dsv4Runner::Setup() {
   }
   // The state first: its extents come before the weights' in a closure, so
   // a swap back restores it before paging the weights in.
-  if (auto r = live_.Add(node_, "the DeepSeek state", layout_.bytes, owner_); !r) {
+  if (auto r = live_.AddGrowing(node_, "the DeepSeek state", layout_.bytes, owner_); !r) {
     return r;
   }
   if (speculative()) {
-    if (auto r = live_.Add(node_, "the DSpark ring", dlayout_.bytes, owner_); !r) {
+    if (auto r = live_.AddGrowing(node_, "the DSpark ring", dlayout_.bytes, owner_); !r) {
       return r;
     }
   }
@@ -353,7 +353,10 @@ Status Dsv4Runner::Register() {
     return r;
   }
   // D-090: the places every graph will name stay put for the model's life.
-  if (auto pinned = node_.scheduler().PinPlaces(managed_extents()); !pinned) {
+  auto pinned_extents = weights();
+  const auto reserved = live_.reserved_extents();
+  pinned_extents.insert(pinned_extents.end(), reserved.begin(), reserved.end());
+  if (auto pinned = node_.scheduler().PinPlaces(pinned_extents); !pinned) {
     return Error(std::format("pinning DeepSeek's places: {}", sc::ToString(pinned.error())));
   }
   return {};
@@ -382,32 +385,47 @@ Status Dsv4Runner::CheckPlaces() {
   return {};
 }
 
-Status Dsv4Runner::Bind() {
-  auto& catalog = node_.catalog();
-  // What every job but a draft's leases beside the weights: the state, the
-  // workspace, the model's own memory and staging.
-  std::vector<ExtentId> common = live_.extents();
-  for (const Mapped* mapped :
-       std::initializer_list<const Mapped*>{&node_.activations(), &node_.pool()}) {
-    common.insert(common.end(), mapped->extents.begin(), mapped->extents.end());
+Status Dsv4Runner::RefreshClosures() {
+  auto refreshed = node_.Call(
+      [&]() -> Status {
+        auto& catalog = node_.catalog();
+        // What every job but a draft's leases beside the weights: the state, the
+        // workspace, the model's own memory and staging.
+        std::vector<ExtentId> common = live_.extents();
+        for (const Mapped* mapped :
+             std::initializer_list<const Mapped*>{&node_.activations(), &node_.pool()}) {
+          common.insert(common.end(), mapped->extents.begin(), mapped->extents.end());
+        }
+        const std::vector<ExtentId> own = resources_.extents();
+        common.insert(common.end(), own.begin(), own.end());
+        std::vector<ExtentId> all = weights();
+        all.insert(all.end(), common.begin(), common.end());
+        everything_ = catalog.ClosureOfExtents(all).value();
+        fence_ = catalog.ClosureOfExtents(state()).value();
+        if (speculative()) {
+          // A draft reads the drafter's weights, the target's head (its group)
+          // and token table; its job restores a verify's rows first (both states
+          // and the snapshot).
+          const std::uint32_t head = weights_.artifact().resources()[binding_.output.index].group;
+          std::vector<ExtentId> draft = dweights_.extents();
+          const std::vector<ExtentId> target = weights_.ExtentsWhere(
+              [head](std::uint32_t group, bool host) { return host || group == head; });
+          draft.insert(draft.end(), target.begin(), target.end());
+          draft.insert(draft.end(), common.begin(), common.end());
+          draft_closure_ = catalog.ClosureOfExtents(draft).value();
+        }
+        return {};
+      },
+      "refreshing DeepSeek's used state closure");
+  if (!refreshed) {
+    return refreshed;
   }
-  const std::vector<ExtentId> own = resources_.extents();
-  common.insert(common.end(), own.begin(), own.end());
-  std::vector<ExtentId> all = weights();
-  all.insert(all.end(), common.begin(), common.end());
-  everything_ = catalog.ClosureOfExtents(all).value();
-  fence_ = catalog.ClosureOfExtents(state()).value();
-  if (speculative()) {
-    // A draft reads the drafter's weights, the target's head (its group)
-    // and token table; its job restores a verify's rows first (both states
-    // and the snapshot).
-    const std::uint32_t head = weights_.artifact().resources()[binding_.output.index].group;
-    std::vector<ExtentId> draft = dweights_.extents();
-    const std::vector<ExtentId> target = weights_.ExtentsWhere(
-        [head](std::uint32_t group, bool host) { return host || group == head; });
-    draft.insert(draft.end(), target.begin(), target.end());
-    draft.insert(draft.end(), common.begin(), common.end());
-    draft_closure_ = catalog.ClosureOfExtents(draft).value();
+  return node_.RefreshRequest(stream_, everything_);
+}
+
+Status Dsv4Runner::Bind() {
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    return refreshed;
   }
   model_.places.resource = [this](std::uint32_t resource) {
     return weights_.resource_address(resource);
@@ -432,7 +450,38 @@ Status Dsv4Runner::Bind() {
 // ------------------------------------------------------------------ work
 
 Status Dsv4Runner::Clear() {
-  return live_.Clear(node_, fence_, stream_, "clearing the DeepSeek state");
+  const bool open = node_.InRequest(stream_);
+  if (auto cleared = live_.Clear(node_, fence_, stream_, "clearing the DeepSeek state"); !cleared) {
+    return cleared;
+  }
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    return refreshed;
+  }
+  return open ? node_.BeginRequest(stream_, everything_, "a cleared DeepSeek conversation")
+              : Status{};
+}
+
+Status Dsv4Runner::EnsureState(std::uint32_t positions) {
+  auto needed = md::Dsv4UsedState(layout_, positions);
+  if (!needed) {
+    return std::unexpected(needed.error());
+  }
+  std::vector<LiveState::Range> ranges;
+  for (const auto& range : *needed) {
+    ranges.push_back({.region = kTarget, .offset = range.offset, .bytes = range.bytes});
+  }
+  if (speculative()) {
+    ranges.push_back({.region = kDrafter, .offset = 0, .bytes = dlayout_.bytes});
+  }
+  auto used = live_.Use(node_, ranges, &everything_);
+  if (!used) {
+    if (auto refreshed = RefreshClosures(); !refreshed) {
+      live_.Quarantine();
+      return Error(std::format("{}; {}", used.error(), refreshed.error()));
+    }
+    return std::unexpected(used.error());
+  }
+  return *used ? RefreshClosures() : Status{};
 }
 
 Status Dsv4Runner::CheckHashRouting() {
@@ -609,6 +658,9 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
   if (!in) {
     return std::unexpected(in.error());
   }
+  if (auto used = EnsureState(n_past + rows); !used) {
+    return used;
+  }
   const bool verify = kind == Dsv4ChunkKind::kVerify;
   md::DsparkInjection inject;
   if (kind != Dsv4ChunkKind::kPlain) {
@@ -753,6 +805,9 @@ Status Dsv4Runner::Draft(std::uint32_t pos0, std::int32_t anchor,
   if (!in) {
     return std::unexpected(in.error());
   }
+  if (auto used = EnsureState(pos0); !used) {
+    return used;
+  }
   auto planned = PlannedDraft();
   if (!planned) {
     return std::unexpected(planned.error());
@@ -873,6 +928,9 @@ Status Dsv4Runner::DraftVerify(std::uint32_t pos, std::int32_t anchor, std::uint
   auto block = md::DsparkBlock(dprofile_, dlayout_, pos, anchor, o_.draft_rows);
   if (!block) {
     return std::unexpected(block.error());
+  }
+  if (auto used = EnsureState(pos + rows); !used) {
+    return used;
   }
   auto dplanned = PlannedDraft();
   if (!dplanned) {
@@ -1038,7 +1096,7 @@ std::expected<std::uint64_t, std::string> Dsv4Runner::CheckDeviceEmbedding() {
     return Error("the state's host copy is shorter than a batch of rows");
   }
   // The state's host copy holds each batch's rows.
-  void* const host = live_.HostCopy();
+  void* const host = live_.HostCopy(node_, out_bytes);
   if (host == nullptr) {
     return Error("pinned host memory for the lookups' rows");
   }
@@ -1084,6 +1142,9 @@ std::expected<std::uint64_t, std::string> Dsv4Runner::CheckDeviceEmbedding() {
         },
         "looking up embedding rows", stream_);
     if (!posted || !failed.empty()) {
+      if (!posted) {
+        live_.HostCopyUnproven();
+      }
       return Error(failed.empty() ? posted.error() : failed);
     }
     // The host's lookup, as every chunk makes it.
@@ -1099,6 +1160,45 @@ std::expected<std::uint64_t, std::string> Dsv4Runner::CheckDeviceEmbedding() {
     checked += std::min<std::uint64_t>(kBatch, profile_.vocab - first);
   }
   return checked;
+}
+
+Status Dsv4Runner::SaveUsedState(void* host, std::span<const LiveState::Range> ranges) {
+  return live_.Copy(node_, fence_, stream_, host, ranges, true);
+}
+
+Status Dsv4Runner::RestoreUsedState(void* host, std::span<const LiveState::Range> ranges) {
+  if (host == nullptr &&
+      std::ranges::any_of(ranges, [](const LiveState::Range& r) { return r.bytes != 0; })) {
+    return Error("the conversation snapshot has no source buffer");
+  }
+  const bool requested = node_.InRequest(stream_);
+  if (requested) {
+    if (auto ended = node_.EndRequest(stream_); !ended) {
+      return ended;
+    }
+  }
+  auto prepared = [&]() -> Status {
+    if (auto used = live_.Use(node_, ranges, &everything_); !used) {
+      return std::unexpected(used.error());
+    }
+    return live_.Retain(node_, ranges);
+  }();
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    return refreshed;
+  }
+  if (requested) {
+    if (auto opened = node_.BeginRequest(stream_, everything_, "restored conversation"); !opened) {
+      return opened;
+    }
+  }
+  if (!prepared) {
+    return prepared;
+  }
+  auto copied = live_.Copy(node_, fence_, stream_, host, ranges, false);
+  if (!copied) {
+    live_.Quarantine();
+  }
+  return copied;
 }
 
 Status Dsv4Runner::ReadState(std::vector<std::byte>& target, std::vector<std::byte>& drafter) {

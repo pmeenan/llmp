@@ -929,7 +929,8 @@ Status Swapper::Run() {
   // evict by policy, not for want of room.
   const std::uint64_t fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
   const std::uint64_t budget =
-      fixed + ((dsv4_.weights().size() + fp16_.weights().size()) * ts::kPagedExtent);
+      fixed + node_.StateCapacity() +
+      ((dsv4_.weights().size() + fp16_.weights().size()) * ts::kPagedExtent);
   if (auto r = node_.Start(Bytes(budget)); !r) {
     return r;
   }
