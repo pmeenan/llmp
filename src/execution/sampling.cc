@@ -96,16 +96,13 @@ std::expected<Scan, SamplingError> ScanLogits(std::span<const float> logits) {
 }  // namespace
 
 std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits) {
-  if (auto c = ScanLogits(logits); !c) {
-    return std::unexpected(c.error());
+  const auto scan = ScanLogits(logits);
+  if (!scan) {
+    return std::unexpected(scan.error());
   }
-  std::size_t best = 0;
-  for (std::size_t i = 1; i < logits.size(); ++i) {
-    if (logits[i] > logits[best]) {
-      best = i;
-    }
-  }
-  return static_cast<std::int32_t>(best);
+  // The validating scan already found the maximum; its first occurrence
+  // is the lowest ID among ties.
+  return static_cast<std::int32_t>(std::ranges::find(logits, scan->max) - logits.begin());
 }
 
 namespace {
@@ -301,7 +298,7 @@ std::expected<std::int32_t, SamplingError> Sample(std::span<const float> logits,
   if (!ParamsValid(p)) {
     return std::unexpected(SamplingError::kInvalidParams);
   }
-  if (p.temperature == 0) {
+  if (p.temperature == 0 || p.top_k == 1) {
     return Greedy(logits);
   }
   auto scan = ScanLogits(logits);
@@ -319,7 +316,7 @@ std::expected<DraftVerdict, SamplingError> VerifyDraft(std::span<const float> lo
   if (!ParamsValid(p)) {
     return std::unexpected(SamplingError::kInvalidParams);
   }
-  if (p.temperature == 0) {
+  if (p.temperature == 0 || p.top_k == 1) {
     auto greedy = Greedy(logits);
     if (!greedy) {
       return std::unexpected(greedy.error());

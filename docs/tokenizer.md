@@ -218,6 +218,32 @@ speculative verifier can redraw any position, and a restored request
 continues exactly. NaN or +infinity logits and out-of-range parameters are
 refused. The Philox implementation passes Random123's known-answer vectors.
 
+With `top_k = 1`, both `Sample` and `VerifyDraft` take the greedy path
+after parameter validation: the highest logit is the only kept token,
+whatever the valid temperature, min-p or top-p. They still validate every
+logit and break ties by the lower ID, but build no candidates and draw no
+random numbers. Verification accepts exactly that token and otherwise
+returns it as the replacement.
+
+Measured on `spark-b`'s CPU, `spark-native` RelWithDebInfo with SDK
+`aarch64-e0a0c85c42806fb1`, before (`a9c3e93`) and after the shortcut
+(2026-09-29): `jitllm_sampling_bench --draws 200`, row seed 42, three
+alternating before/after passes. These are medians of the pass medians,
+including parameter and logit validation, at temperature 1 and top-k 1:
+
+| Vocabulary | Synthetic row | Sample, before → after (ms) | VerifyDraft, before → after (ms) |
+| --- | --- | --- | --- |
+| DeepSeek, 129,280 | peaked | 0.192 → 0.154 | 0.192 → 0.154 |
+| DeepSeek, 129,280 | flat | 0.193 → 0.168 | 0.193 → 0.169 |
+| Qwen3.8, 248,320 | peaked | 0.365 → 0.296 | 0.365 → 0.296 |
+| Qwen3.8, 248,320 | flat | 0.367 → 0.311 | 0.367 → 0.311 |
+
+`Greedy` reuses the maximum from validation and finds its first
+occurrence, instead of computing the argmax again: temperature-0 draws
+fell from 0.369 to 0.154–0.168 ms at DeepSeek's vocabulary and from
+0.710 to 0.296–0.310 ms at Qwen3.8's. These are sampler timings on
+synthetic rows, not end-to-end decode measurements.
+
 A draw never sorts the vocabulary. The weights are float exponentials
 relative to the most likely token's; the uniform number picks a token by
 inverse CDF over the kept tokens: in ID order without truncation; top-k

@@ -66,7 +66,10 @@ int main(int argc, char** argv) {
       }
     }
   }
-  const std::array<Case, 7> cases = {{
+  const std::array<Case, 10> cases = {{
+      {.name = "T=0 greedy", .params = {.temperature = 0}, .verify = false},
+      {.name = "T=1 top_k=1", .params = {.top_k = 1}, .verify = false},
+      {.name = "T=1 top_k=1 verify", .params = {.top_k = 1}, .verify = true},
       {.name = "T=1", .params = {}, .verify = false},
       {.name = "T=1 verify", .params = {}, .verify = true},
       {.name = "T=1 top_p=0.95", .params = {.top_p = 0.95F}, .verify = false},

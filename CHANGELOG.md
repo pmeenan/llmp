@@ -94,6 +94,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Sampling with `top_k = 1` uses the greedy path, including speculative
+  verification, avoiding candidate selection and random draws while keeping
+  parameter and logit validation and the same token choices.
 - DeepSeek V4 Flash's per-token cost no longer grows with the
   conversation: its window cache is a ring of the window and a prefill
   chunk, its attention reads only each token's window and the indexer's

@@ -15,6 +15,7 @@
 #include <limits>
 #include <map>
 #include <numbers>
+#include <utility>
 #include <vector>
 
 #include "expected_error.h"
@@ -73,6 +74,67 @@ TEST(Sample, TemperatureZeroIsGreedy) {
   const std::vector<float> logits = {0.1F, 0.9F, 0.3F};
   for (std::uint64_t p = 0; p < 20; ++p) {
     EXPECT_EQ(ex::Sample(logits, {.temperature = 0}, {5, 0, p}, scratch), 1);
+  }
+}
+
+TEST(Sampling, TopKOneIsGreedyForSamplesAndDraftVerdicts) {
+  std::vector<ex::SamplingCandidate> scratch;
+  const std::array<std::vector<float>, 4> rows = {{
+      {0.1F, 0.9F, 0.3F},
+      {-INFINITY, 3.0F, 3.0F, -1.0F},  // ties choose the lower ID
+      {-INFINITY, 3.0F, -INFINITY},    // just one finite logit
+      {0.0F},
+  }};
+  for (const auto& logits : rows) {
+    const auto greedy = ex::Greedy(logits);
+    ASSERT_TRUE(greedy.has_value());
+    for (const float temperature : {0.0F, std::numeric_limits<float>::denorm_min(), 0.6F,
+                                    std::numeric_limits<float>::max()}) {
+      const ex::SamplingParams params{.temperature = temperature,
+                                      .top_k = 1,
+                                      .top_p = std::numeric_limits<float>::denorm_min(),
+                                      .min_p = 1.0F};
+      for (std::uint64_t s = 0; s < 20; ++s) {
+        const ex::SamplingKey key{.seed = s, .stream = s + 1, .position = s + 2};
+        EXPECT_EQ(ex::Sample(logits, params, key, scratch), greedy);
+        for (std::int32_t draft = -1; std::cmp_less_equal(draft, logits.size()); ++draft) {
+          const auto verdict = ex::VerifyDraft(logits, draft, params, key, scratch);
+          ASSERT_TRUE(verdict.has_value());
+          EXPECT_EQ(verdict->accepted, draft == *greedy);
+          EXPECT_EQ(verdict->token, *greedy);
+        }
+      }
+    }
+  }
+  EXPECT_EQ(scratch.capacity(), 0U);  // no candidate storage allocated
+}
+
+TEST(Sampling, TopKOneStillValidatesParametersAndLogits) {
+  std::vector<ex::SamplingCandidate> scratch;
+  for (ex::SamplingParams params :
+       {ex::SamplingParams{.temperature = -1.0F}, ex::SamplingParams{.temperature = NAN},
+        ex::SamplingParams{.temperature = INFINITY}, ex::SamplingParams{.top_p = 0.0F},
+        ex::SamplingParams{.top_p = 1.5F}, ex::SamplingParams{.top_p = NAN},
+        ex::SamplingParams{.min_p = -0.1F}, ex::SamplingParams{.min_p = 1.5F},
+        ex::SamplingParams{.min_p = NAN}}) {
+    params.top_k = 1;
+    // Parameters must be checked even before invalid logits.
+    for (const auto& logits : {std::vector<float>{0.0F, 1.0F}, std::vector<float>{NAN}}) {
+      EXPECT_EQ(Failed(ex::Sample(logits, params, {}, scratch)), ex::SamplingError::kInvalidParams);
+      EXPECT_EQ(Failed(ex::VerifyDraft(logits, 1, params, {}, scratch)),
+                ex::SamplingError::kInvalidParams);
+    }
+  }
+  for (const auto& logits : {std::vector<float>{}, std::vector<float>{-INFINITY, -INFINITY}}) {
+    EXPECT_EQ(Failed(ex::Sample(logits, {.top_k = 1}, {}, scratch)), ex::SamplingError::kNoLogits);
+    EXPECT_EQ(Failed(ex::VerifyDraft(logits, 0, {.top_k = 1}, {}, scratch)),
+              ex::SamplingError::kNoLogits);
+  }
+  for (const auto& logits : {std::vector<float>{1.0F, NAN}, std::vector<float>{1.0F, INFINITY}}) {
+    EXPECT_EQ(Failed(ex::Sample(logits, {.top_k = 1}, {}, scratch)),
+              ex::SamplingError::kInvalidLogits);
+    EXPECT_EQ(Failed(ex::VerifyDraft(logits, 0, {.top_k = 1}, {}, scratch)),
+              ex::SamplingError::kInvalidLogits);
   }
 }
 

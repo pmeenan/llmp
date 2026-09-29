@@ -6,9 +6,11 @@
 //
 // Greedy takes the highest logit, the lowest ID among equals (as
 // torch.argmax and llama.cpp's greedy sampler do). Sampling applies, in
-// order: temperature (0 means greedy), top-k, softmax, min-p, top-p; then
-// draws from what remains with one uniform number, by inverse CDF over the
-// kept tokens in a fixed order. Nothing sorts the vocabulary (a draw is a
+// order: temperature (0 means greedy), top-k, softmax, min-p, top-p.
+// Top-k 1 also takes the greedy path after validating the parameters,
+// without candidates or random draws. Otherwise sampling draws from what
+// remains with one uniform number, by inverse CDF over the kept tokens in
+// a fixed order. Nothing sorts the vocabulary (a draw is a
 // few linear passes; docs/tokenizer.md#sampling has its cost): top-k keeps
 // the k highest logits in one pass, ranked by logit then by ID, so ties
 // never depend on sort stability; min-p is a threshold; top-p buckets the
@@ -80,7 +82,8 @@ std::expected<std::int32_t, SamplingError> Sample(std::span<const float> logits,
 // token drawn from that distribution without it, renormalized. Either way
 // the token is distributed as Sample's. The acceptance draws UniformAt with
 // the key's stream xor kAcceptStream, the replacement the key itself.
-// Temperature 0 accepts exactly the greedy token, and otherwise gives it.
+// Temperature 0 or top-k 1 accepts exactly the greedy token, and otherwise
+// gives it.
 struct DraftVerdict {
   bool accepted = false;
   std::int32_t token = 0;  // the draft if accepted, else its replacement
