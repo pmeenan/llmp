@@ -323,3 +323,5 @@ growing state, turn reuse and the ds4 study. M3.5 (model families, the
 owner's approved 13 plus legacy fixtures and Bonsai, formats with EXL3
 in focus, concurrent batching) follows M3, before M4. Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).
+For the current M3 optimization run, the owner deferred workstation checks
+to the end (2026-09-29); each slice still gets its Spark check set.

@@ -92,6 +92,10 @@ downgrade a heavy-path change to the light loop on their own.
   behaviour. Review and challenge rounds iterate on the Spark set; a round
   that finds only low-severity issues fixes them without another round.
   Never run two check tiers on one tree at once.
+  *Owner override, 2026-09-29:* during the current M3 optimization run,
+  keep per-slice checks on the Sparks and defer all x86 workstation checks
+  until the implementations are settled at the end. Checked, reviewed
+  slices may commit in the meantime; no package ships before the owed checks.
 - **Nothing over 10 minutes by default (D-085).** Any command, run,
   session or batch expected to take more than 10 minutes of wall time,
   waits included, runs only when its result is needed now: it decides a
