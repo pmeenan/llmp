@@ -1259,6 +1259,12 @@ quantized drafters matched to EXL3 targets (M3.5's EXL3 work).
 **Oracles and comparators,** under M3's rule (cross-quantization is speed
 and memory only):
 
+Also study and measure the owner's additional
+[Kindling GLM reference](m4-references.md), pinned provisionally on
+2026-09-29. Its NVFP4 TP2 recipe is a speed/memory comparator for the
+EXL3 target; re-pin and audit it at entry, and distinguish its dense-layer
+requantization from optimizations at unchanged quality.
+
 | Model | Correctness oracle (same format) | Performance comparators | Cross-quantization (speed and memory only) |
 | --- | --- | --- | --- |
 | GLM-5.3 Flash | Mia's EXL3 configuration | Mia's configuration | TensorFold (MLX 4-bit) |
