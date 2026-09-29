@@ -2034,6 +2034,14 @@ say this. The review pass and the heavy path are unchanged: a commit request
 does not waive them unless the human waives the review explicitly, as
 workflow.md already allows for trivial changes.
 
+**Owner amendment, 2026-09-29.** "During the M3 work, you're allowed to
+commit, just not push." This is standing authorization for the main agent
+to commit completed M3 tasks without a new request for each one. The
+review and check gates, one commit per completed task, current branch and
+the bans on subagent commits, pushes, tags, amendments and history
+rewrites still apply. This authorization ends at M3's gate; later work
+needs a direct request for the change at hand unless the owner extends it.
+
 **Reopen if.** Agents commit something the user did not ask for, or other
 contributors join and need a merge policy.
 

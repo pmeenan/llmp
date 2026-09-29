@@ -4,8 +4,8 @@
 # Development workflow
 
 How AI agents and the human developer collaborate on this repository.
-Complements the root `AGENTS.md` rules (especially: agents commit only when
-the user directly asks).
+Complements the root `AGENTS.md` rules (especially: commits need the user's
+authorization; the main agent has standing authorization during M3).
 
 jitLLM is a single-developer project that is meant to be consumed externally
 (D-016). The process is sized for that: heavier than a personal project,
@@ -33,9 +33,11 @@ the main agent to).
    targeted tests and the Spark check set (not the full tiers), and
    reports a review note the same way. A clean review is a valid result and
    is stated as such.
-3. **Commit.** The human reads both notes and the diff at whatever depth the
-   change warrants, and commits, or directly asks the main agent to commit
-   it (D-075). No agent commits otherwise.
+3. **Commit.** The human commits or authorizes the main agent to commit
+   (D-075), with both notes and the diff available for review at whatever
+   depth the change warrants. During M3, the owner's standing authorization
+   covers completed tasks; otherwise the main agent needs a direct request
+   for the change at hand. No other agent commits.
 
 The human may explicitly waive step 2 for a specific trivial change (a typo, a
 doc-only status update). Agents never waive it themselves.
@@ -64,10 +66,12 @@ downgrade a heavy-path change to the light loop on their own.
 
 ## Ground rules
 
-- **Commits happen only on the user's direct request** (D-075): only the
-  main agent commits, only what the user asked it to, and only reviewed,
-  checked work. Subagents never commit, and no agent pushes, tags, amends or
-  rewrites history. Otherwise the working tree is the handoff.
+- **Commits need the user's authorization** (D-075): during M3, the main
+  agent has standing authorization to commit completed tasks (owner,
+  2026-09-29); otherwise a direct request covers the change at hand only.
+  Only the main agent commits, and only reviewed, checked work. Subagents
+  never commit, and no agent pushes, tags, amends or rewrites history.
+  Without authorization the working tree is the handoff.
 - **One commit per completed task.** A plan task stays on its worktree
   through build, review, challenge, fixes, checks and docs, then lands as
   one commit. Separate commits are only for pre-registrations that a
