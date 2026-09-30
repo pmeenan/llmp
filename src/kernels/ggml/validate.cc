@@ -540,16 +540,16 @@ std::expected<void, KernelFailure> CheckGetRows(const ggml_tensor* node) {
   }
   const ggml_tensor* rows = node->src[0];
   const ggml_tensor* ids = node->src[1];
-  // F32 rows (the FP16 plan's output rows) or BF16 rows (the EXL3 plan's
-  // embedding table, widened exactly), gathered into F32; or I32 token
+  // F32 rows, F16 APE tables, or BF16 embedding tables, gathered into F32; or I32 token
   // maps, gathered without conversion.
   const bool bf16 = rows->type == GGML_TYPE_BF16;
+  const bool f16 = rows->type == GGML_TYPE_F16;
   const bool i32 = rows->type == GGML_TYPE_I32;
-  if ((!IsF32(rows) && !bf16 && !i32) || (i32 ? node->type != GGML_TYPE_I32 : !IsF32(node)) ||
-      ids->type != GGML_TYPE_I32) {
-    return Rejected("get_rows gathers F32 or BF16 into F32, or I32 into I32, by I32 ids");
+  if ((!IsF32(rows) && !bf16 && !f16 && !i32) ||
+      (i32 ? node->type != GGML_TYPE_I32 : !IsF32(node)) || ids->type != GGML_TYPE_I32) {
+    return Rejected("get_rows gathers F32, F16 or BF16 into F32, or I32 into I32, by I32 ids");
   }
-  const std::uint64_t element = bf16 ? sizeof(ggml_bf16_t) : sizeof(float);
+  const std::uint64_t element = bf16 || f16 ? sizeof(ggml_fp16_t) : sizeof(float);
   if (AnyEmpty({node, rows, ids}) || !AllSane({node, rows, ids})) {
     return Rejected("get_rows on an empty or unmeasurable tensor");
   }

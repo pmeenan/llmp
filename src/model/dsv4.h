@@ -134,10 +134,10 @@ struct Dsv4Resource {
 
 // Binds every tensor the profile reads to the resource of that role (an
 // expert array for the routed experts), which must have its shape exactly
-// and a type of its kind (F32 for norms, scales and biases, I32 for the hash
-// tables, a GGML matrix type otherwise); refused, naming the tensor, if one
-// is missing or differs, if `architecture` is not "deepseek4", or if a
-// resource is bound to a role the architecture does not read.
+// and a type of its kind (F32 for norms, scales and biases, F32 or F16 for
+// APE tables, I32 for the hash tables, a GGML matrix type otherwise); refused, naming the tensor,
+// if one is missing or differs, if `architecture` is not "deepseek4", or if a resource is bound to
+// a role the architecture does not read.
 std::expected<Dsv4Binding, std::string> BindDsv4(const Dsv4Profile& profile,
                                                  std::string_view architecture,
                                                  std::span<const Dsv4Resource> resources);

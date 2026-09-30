@@ -859,6 +859,9 @@ inline constexpr std::int64_t kDsv4LidScratch = std::int64_t{128} << 20;
 // at most half of K's, not only past upstream's 4,096 cells; the cells
 // gathered are the mask's either way.
 inline constexpr int kFlashAttnSparseParam = 5;
+// Dispatch-local only: a copied node records the explicit launch choice.
+// Builders never set it; primitive/reference launches always clear it.
+inline constexpr int kFlashAttnWideSparseParam = 6;
 inline void SetFlashAttnSparseAny(ggml_tensor* node) { node->op_params[kFlashAttnSparseParam] = 1; }
 // `q` F32 [128, 64, rows] (rows and heads 8-byte aligned), `k` F16 [128,
 // n_kv] (the indexer's cache, rows 16-byte aligned), `w` F32 [64, rows],

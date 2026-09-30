@@ -75,6 +75,12 @@ std::expected<void, KernelFailure> CheckMulMatQ(const ggml_tensor* node);
 // (mmq.cu:207-212, mmvq.cu:1418-1423). One sample only.
 std::expected<void, KernelFailure> CheckMulMatIdQ(const ggml_tensor* node);
 
+// Two expert products with the same non-FP4 type, shape, activation and
+// routing tensors. Both outputs remain distinct; only maps and the
+// type-specific quantized activation preparation are shared.
+std::expected<void, KernelFailure> CheckMulMatIdQPair(const ggml_tensor* first,
+                                                      const ggml_tensor* second);
+
 // A ggml_mul_mat node carrying GGML_HINT_SRC0_IS_HADAMARD, which upstream
 // runs as a fast Walsh-Hadamard transform of the activations
 // (fwht.cu:61-101, ggml-cuda.cu:1826-1829): F32 activations and output of

@@ -842,6 +842,19 @@ it appears.
 
       If it holds up, ds4 becomes a DeepSeek baseline beside llama.cpp,
       a same-format comparator on its GGUF.
+      *Study in progress* ([report](experiments/ds4-study/README.md)):
+      source/GGUF pinned, the same IQ2_XXS/Q2_K weights and F16 APE tables
+      imported and run natively, fresh-process cold rungs to 128,817 IDs
+      measured, and matched 4K profiles captured. Shared sparse query
+      gathers and paired expert preparation retain F16 caches and their
+      original weights; native 8K prefill changes from 500 to 625 tok/s.
+      Default ds4 has FP8 KV/FP4 indexer caches; its F32 control leaves a
+      large product gap too. Wide sparse dispatch is opt-in for measured
+      fast shapes because disjoint D512 lists regress. Cross-model and
+      format controls are in the report. Remaining: a genuinely compiled
+      compact expert-product experiment and any useful measured adoption;
+      ds4 is a same-weight harness comparator, not a cache-equivalent
+      quality or runtime/DSpark baseline yet.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

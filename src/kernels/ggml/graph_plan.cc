@@ -228,6 +228,16 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         if (!path) {
           return Rejected(std::format("{}: {}", Where(graph, i), path.error().detail));
         }
+        if (device.pair_experts && *path == QuantMulMatPath::kTile && i + 1 < graph.size()) {
+          ggml_tensor* second = graph[i + 1];
+          if (CheckMulMatIdQPair(node, second)) {
+            const auto second_path = device.quant(second);
+            if (second_path && *second_path == QuantMulMatPath::kTile) {
+              add(Operation::kMulMatId, kMulMatIdQPair, i, {node, second}, 2);
+              break;
+            }
+          }
+        }
         add(Operation::kMulMatId, *path == QuantMulMatPath::kVector ? kMulMatIdVecQ : kMulMatIdQ, i,
             {node}, 1);
         break;
@@ -263,7 +273,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         break;
       case GGML_OP_GET_ROWS:
         add(Operation::kGetRows,
-            node->src[0]->type == GGML_TYPE_F32 || node->src[0]->type == GGML_TYPE_BF16
+            node->src[0]->type == GGML_TYPE_F32 || node->src[0]->type == GGML_TYPE_F16 ||
+                    node->src[0]->type == GGML_TYPE_BF16
                 ? kGetRowsName
                 : kGetRowsExtName,
             i, {node}, 1);
@@ -484,7 +495,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                           "512 only",
                           Where(graph, i)));
         }
-        add(Operation::kFlashAttn, kFlashAttnMmaName, i, {node}, 1);
+        add(Operation::kFlashAttn,
+            device.wide_sparse_attention ? kFlashAttnMmaWideName : kFlashAttnMmaName, i, {node}, 1);
         break;
       default:
         return Rejected(std::format("{}: no implementation of this operation", Where(graph, i)));

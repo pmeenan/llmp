@@ -38,9 +38,9 @@ using detail::Product;
 using detail::Rejected;
 using detail::Span;
 
-constexpr std::array<ggml_type, 8> kQuantizedWeightTypes = {
-    GGML_TYPE_Q8_0,   GGML_TYPE_Q4_K,    GGML_TYPE_Q5_K,  GGML_TYPE_Q6_K,
-    GGML_TYPE_IQ2_XS, GGML_TYPE_IQ3_XXS, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4,
+constexpr std::array<ggml_type, 10> kQuantizedWeightTypes = {
+    GGML_TYPE_Q8_0,    GGML_TYPE_Q4_K,  GGML_TYPE_Q5_K,  GGML_TYPE_Q6_K, GGML_TYPE_IQ2_XS,
+    GGML_TYPE_IQ3_XXS, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4, GGML_TYPE_Q2_K, GGML_TYPE_IQ2_XXS,
 };
 
 // MarkRowPaddingReadable's bit: above every GGML_TENSOR_FLAG_* (ggml.h).
@@ -233,6 +233,27 @@ std::expected<void, KernelFailure> CheckMulMatIdQ(const ggml_tensor* node) {
   return {};
 }
 
+std::expected<void, KernelFailure> CheckMulMatIdQPair(const ggml_tensor* first,
+                                                      const ggml_tensor* second) {
+  if (auto checked = CheckMulMatIdQ(first); !checked) {
+    return checked;
+  }
+  if (auto checked = CheckMulMatIdQ(second); !checked) {
+    return checked;
+  }
+  const ggml_tensor* a = first->src[0];
+  const ggml_tensor* b = second->src[0];
+  if (a->type != b->type || a->type == GGML_TYPE_MXFP4 || a->type == GGML_TYPE_NVFP4 ||
+      first->src[1] != second->src[1] || first->src[2] != second->src[2] ||
+      !std::ranges::equal(a->ne, b->ne) || !std::ranges::equal(first->ne, second->ne)) {
+    return Rejected("paired expert products need one non-FP4 type, shapes, activation and ids");
+  }
+  if (Overlap(first, second) || Overlap(first, b) || Overlap(second, a)) {
+    return Rejected("paired expert outputs overlap each other or the other weights");
+  }
+  return {};
+}
+
 std::expected<void, KernelFailure> CheckMulMatHadamard(const ggml_tensor* node) {
   if (node == nullptr || node->op != GGML_OP_MUL_MAT || node->src[0] == nullptr || !Bound(node) ||
       !Bound(node->src[1])) {
@@ -396,8 +417,8 @@ std::expected<void, KernelFailure> CheckConcat(const ggml_tensor* node) {
                               : ggml_is_contiguous(a) && ggml_is_contiguous(b);
   const auto plane = Product({node->ne[0], node->ne[1], node->ne[2]});
   if (!plane || *plane / 256 >= kInt32Max ||
-      (!dense && (std::cmp_greater(node->ne[1], kInt32Max) || node->ne[2] > 65535 ||
-                  node->ne[3] > 65535))) {
+      (!dense &&
+       (std::cmp_greater(node->ne[1], kInt32Max) || node->ne[2] > 65535 || node->ne[3] > 65535))) {
     return Rejected("concat beyond the kernels' grid");
   }
   if (!AlignedEverywhere(a, size) || !AlignedEverywhere(b, size) || !Aligned(node, size)) {

@@ -55,7 +55,7 @@ class GgmlExtValidateTest : public ::testing::Test {
 };
 
 TEST_F(GgmlExtValidateTest, QuantizedProductsTakeTheCompiledTypesAtWholeRowSteps) {
-  EXPECT_EQ(kg::QuantizedWeightTypes().size(), 8U);
+  EXPECT_EQ(kg::QuantizedWeightTypes().size(), 10U);
   for (const ggml_type type : kg::QuantizedWeightTypes()) {
     EXPECT_TRUE(kg::IsQuantizedWeightType(type)) << ggml_type_name(type);
     ggml_tensor* w = New(type, 4096, 256);
@@ -118,6 +118,33 @@ TEST_F(GgmlExtValidateTest, ExpertProductsFollowMulMatIdsShapes) {
   Refused(kg::CheckMulMatIdQ(
       Bound(ggml_mul_mat_id(c(), New(GGML_TYPE_IQ2_XS, 4096, 2048, 4), x, ids))));
   Refused(kg::CheckMulMatIdQ(Bound(ggml_mul_mat(c(), New(GGML_TYPE_Q8_0, 4096, 8), x))));
+}
+
+TEST_F(GgmlExtValidateTest, PairedExpertsRequireMatchingInputsAndDisjointOutputs) {
+  auto* input = New(GGML_TYPE_F32, 512, 1, 40);
+  auto* ids = New(GGML_TYPE_I32, 2, 40);
+  auto* a = New(GGML_TYPE_IQ2_XXS, 512, 128, 16);
+  auto* b = New(GGML_TYPE_IQ2_XXS, 512, 128, 16);
+  auto* first = Bound(ggml_mul_mat_id(c(), a, input, ids));
+  auto* second = Bound(ggml_mul_mat_id(c(), b, input, ids));
+  Accepted(kg::CheckMulMatIdQPair(first, second));
+  Refused(kg::CheckMulMatIdQPair(nullptr, second));
+  Refused(kg::CheckMulMatIdQPair(first, first));
+  Refused(kg::CheckMulMatIdQPair(
+      first, Bound(ggml_mul_mat_id(c(), New(GGML_TYPE_IQ2_XS, 512, 128, 16), input, ids))));
+  Refused(kg::CheckMulMatIdQPair(
+      first, Bound(ggml_mul_mat_id(c(), b, New(GGML_TYPE_F32, 512, 1, 40), ids))));
+  Refused(kg::CheckMulMatIdQPair(first,
+                                 Bound(ggml_mul_mat_id(c(), b, input, New(GGML_TYPE_I32, 2, 40)))));
+  Refused(kg::CheckMulMatIdQPair(
+      first, Bound(ggml_mul_mat_id(c(), New(GGML_TYPE_IQ2_XXS, 512, 256, 16), input, ids))));
+  TensorArena::Bind(first, reinterpret_cast<std::uintptr_t>(b->data));
+  Refused(kg::CheckMulMatIdQPair(first, second));
+  for (const auto type : {GGML_TYPE_MXFP4, GGML_TYPE_NVFP4}) {
+    auto* x = Bound(ggml_mul_mat_id(c(), New(type, 512, 128, 16), input, ids));
+    auto* y = Bound(ggml_mul_mat_id(c(), New(type, 512, 128, 16), input, ids));
+    Refused(kg::CheckMulMatIdQPair(x, y));
+  }
 }
 
 TEST_F(GgmlExtValidateTest, TheHadamardProductNeedsItsHintAndARowTheTransformTakes) {

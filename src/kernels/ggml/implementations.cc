@@ -83,7 +83,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 92> kKernels = {{
+constexpr std::array<Kernel::Entry, 94> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -128,10 +128,11 @@ constexpr std::array<Kernel::Entry, 92> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return MulMatCublas(launch, n[0]); }},
     {.name = "ggml.get_rows",
      .operation = execution::Operation::kGetRows,
-     .variant = "ggml_cuda_op_get_rows: F32 rows through k_get_rows_float_vec on 16-byte "
-                "vectors, aligned rows and at least 128 blocks, else k_get_rows_float; BF16 rows "
-                "through k_get_rows_float<nv_bfloat16, float>; I32 rows keep their type; "
-                "upstream launch configuration",
+     .variant =
+         "ggml_cuda_op_get_rows: F32 rows through k_get_rows_float_vec on 16-byte "
+         "vectors, aligned rows and at least 128 blocks, else k_get_rows_float; F16 and BF16 rows "
+         "through k_get_rows_float<half or nv_bfloat16, float>; I32 rows keep their type; "
+         "upstream launch configuration",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGetRows(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return GetRows(launch, n[0]); }},
@@ -255,6 +256,13 @@ constexpr std::array<Kernel::Entry, 92> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMulMatIdQ(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatQ(launch, n[0]); }},
+    {.name = "jitllm.mul_mat_id.mmq_pair",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "two ordinary MMQ expert products sharing one routing map and type-specific "
+                "Q8 preparation, preserving each weight/output stride and sequential fixup",
+     .arity = 2,
+     .check = [](ConstNodes n) { return CheckMulMatIdQPair(n[0], n[1]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQPair(launch, n[0], n[1]); }},
     {.name = "ggml.sub",
      .operation = execution::Operation::kSub,
      .variant = "ggml_cuda_op_sub: k_bin_bcast<op_sub, float, float, float>; upstream launch "
@@ -409,6 +417,13 @@ constexpr std::array<Kernel::Entry, 92> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckFlashAttnMma(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMma(launch, n[0]); }},
+    {.name = "jitllm.flash_attn_ext.mma_wide",
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "explicit sparse query-union choice at D256/512, one or eight query columns; "
+                "original per-query masks and F16 KV, stream-k with fixup",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckFlashAttnMma(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMma(launch, n[0], true); }},
     {.name = "ggml.flash_attn_ext.mma_d128",
      .operation = execution::Operation::kFlashAttn,
      .variant = "ggml_cuda_flash_attn_ext_mma_f16_case<128, 128, 8, 16, 32 or 64, 1> as "

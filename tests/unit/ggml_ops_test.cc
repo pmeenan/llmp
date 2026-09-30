@@ -391,6 +391,27 @@ constexpr std::array<std::int32_t, kRows> kPicks = {7, 0, 3, 3, 6};
 constexpr std::array<std::int64_t, kRows> kSlots = {9, 2, 15, 0, 4};
 constexpr std::uint16_t kPoisonHalf = 0x7e00;  // an F16 NaN no kernel writes
 
+TEST_F(GgmlOpsTest, F16ApeRowsWidenExactlyAcrossMemoryDomains) {
+  const auto source = Halves(29, kWidth * 8, 4.0f);
+  const std::vector<std::int32_t> picks(kPicks.begin(), kPicks.end());
+  std::vector<float> want;
+  for (const auto row : picks) {
+    for (std::int64_t col = 0; col < kWidth; ++col) {
+      want.push_back(ggml_fp16_to_fp32(source[static_cast<std::size_t>((row * kWidth) + col)]));
+    }
+  }
+  for (const auto memory : {Memory::kCudaMalloc, Memory::kDeviceVmm, Memory::kHostVmm}) {
+    auto arena = TensorArena::Create(8).value();
+    auto launch = Launcher();
+    auto* rows =
+        Place(memory, ggml_new_tensor_2d(arena.context(), GGML_TYPE_F16, kWidth, 8), source);
+    auto* ids = Place(memory, ggml_new_tensor_1d(arena.context(), GGML_TYPE_I32, kRows), picks);
+    auto* gathered = Place(memory, ggml_get_rows(arena.context(), rows, ids));
+    Launched(jitllm::kernels::ggml::GetRows(*launch, gathered), "F16 APE gather");
+    EXPECT_EQ(Bits(Download(gathered)), Bits(want));
+  }
+}
+
 class GgmlOpsMemoryTest : public GgmlOpsTest {
  protected:
   Outputs Run(Memory memory) {

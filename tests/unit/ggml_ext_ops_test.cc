@@ -54,6 +54,7 @@
 #include "execution/registry.h"
 #include "expected_error.h"
 #include "ggml.h"
+#include "kernels/ggml/executor.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops_ext.h"
@@ -285,7 +286,9 @@ TEST_F(GgmlExtOpsTest, QuantizedProductsMatchTheReferenceAsUpstreamRoutesThem) {
     ggml_type type;
     std::int64_t k;
   };
-  const std::array<Case, 7> cases = {{{GGML_TYPE_Q8_0, 4096},
+  const std::array<Case, 9> cases = {{{GGML_TYPE_Q8_0, 4096},
+                                      {GGML_TYPE_Q2_K, 2048},
+                                      {GGML_TYPE_IQ2_XXS, 4096},
                                       {GGML_TYPE_Q4_K, 4096},
                                       {GGML_TYPE_Q5_K, 4096},
                                       {GGML_TYPE_Q6_K, 2048},
@@ -343,7 +346,9 @@ TEST_F(GgmlExtOpsTest, ExpertProductsMatchTheReferenceAsUpstreamRoutesThem) {
     std::int64_t k;
     bool broadcast;
   };
-  const std::array<Case, 3> cases = {{{GGML_TYPE_IQ2_XS, 4096, true},
+  const std::array<Case, 5> cases = {{{GGML_TYPE_IQ2_XXS, 4096, true},
+                                      {GGML_TYPE_Q2_K, 2048, false},
+                                      {GGML_TYPE_IQ2_XS, 4096, true},
                                       {GGML_TYPE_IQ3_XXS, 2048, false},
                                       {GGML_TYPE_MXFP4, 2048, false}}};
   for (const Case& test : cases) {
@@ -395,6 +400,120 @@ TEST_F(GgmlExtOpsTest, ExpertProductsMatchTheReferenceAsUpstreamRoutesThem) {
   }
 }
 
+TEST_F(GgmlExtOpsTest, ExpertProductsCoverSkewedRoutingAndEmptyExperts) {
+  constexpr std::int64_t kExperts = 64;
+  constexpr std::int64_t kUsed = 2;
+  constexpr std::int64_t kOut = 128;
+  constexpr std::int64_t kInner = 512;
+  constexpr std::int64_t kTokens = 257;
+  for (const ggml_type type : {GGML_TYPE_IQ2_XXS, GGML_TYPE_Q2_K, GGML_TYPE_Q8_0}) {
+    for (const bool broadcast : {true, false}) {
+      const auto weights = Quantize(type, kInner, kOut * kExperts, 37);
+      auto* w = Place(ggml_new_tensor_3d(c(), type, kInner, kOut, kExperts), weights.bytes);
+      const std::int64_t rows_in = broadcast ? 1 : kUsed;
+      const auto x = Normal(38, static_cast<std::size_t>(kInner * rows_in * kTokens));
+      auto* input = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kInner, rows_in, kTokens), x);
+      std::vector<std::int32_t> ids;
+      for (std::int64_t t = 0; t < kTokens; ++t) {
+        ids.push_back(0);  // one expert has many full tiles and a partial tail
+        ids.push_back(static_cast<std::int32_t>(1 + (t % 31)));  // others are empty
+      }
+      auto* id_tensor = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, kTokens), ids);
+      auto* product = Place(ggml_mul_mat_id(c(), w, input, id_tensor));
+      const std::string what =
+          std::string(ggml_type_name(type)) + (broadcast ? " broadcast" : " slots");
+      Launched(kg::MulMatQ(launch(), product), what);
+      std::vector<double> want(static_cast<std::size_t>(kOut * kUsed * kTokens));
+      for (std::int64_t t = 0; t < kTokens; ++t) {
+        for (std::int64_t s = 0; s < kUsed; ++s) {
+          const auto expert = ids[static_cast<std::size_t>((t * kUsed) + s)];
+          for (std::int64_t r = 0; r < kOut; ++r) {
+            double sum = 0;
+            for (std::int64_t i = 0; i < kInner; ++i) {
+              sum +=
+                  weights.values[static_cast<std::size_t>((((expert * kOut) + r) * kInner) + i)] *
+                  x[static_cast<std::size_t>((((t * rows_in) + (broadcast ? 0 : s)) * kInner) + i)];
+            }
+            want[static_cast<std::size_t>((((t * kUsed) + s) * kOut) + r)] = sum;
+          }
+        }
+      }
+      ExpectNmse(Download(product), want, kMulMatNmse, what);
+    }
+  }
+}
+
+TEST_F(GgmlExtOpsTest, PairedExpertPreparationMatchesSeparateProductsExactly) {
+  constexpr std::int64_t kInner = 512;
+  constexpr std::int64_t kOut = 128;
+  constexpr std::int64_t kExperts = 16;
+  constexpr std::int64_t kUsed = 2;
+  constexpr std::int64_t kTokens = 257;
+  for (const auto type : kg::QuantizedWeightTypes()) {
+    if (type == GGML_TYPE_MXFP4 || type == GGML_TYPE_NVFP4) {
+      continue;
+    }
+    for (const bool broadcast : {true, false}) {
+      std::array<ggml_tensor*, 2> weights{};
+      for (std::size_t wi = 0; wi < weights.size(); ++wi) {
+        auto quantized = Quantize(type, kInner, kOut * kExperts, static_cast<unsigned>(51 + wi));
+        auto* w = ggml_new_tensor_3d(c(), type, kInner, kOut, kExperts);
+        const std::size_t slice = w->nb[2];
+        const std::size_t unit = std::lcm(ggml_type_size(type), std::size_t{16});
+        ASSERT_NE(unit, 0U);
+        const std::size_t stride = ((slice + (3000 * wi) + unit - 1) / unit) * unit;
+        w->nb[2] = stride;
+        w->nb[3] = stride * kExperts;
+        std::vector<std::uint8_t> padded(ggml_nbytes(w), 0xAB);
+        for (std::size_t e = 0; e < static_cast<std::size_t>(kExperts); ++e) {
+          std::memcpy(padded.data() + (e * stride), quantized.bytes.data() + (e * slice), slice);
+        }
+        weights[wi] = Place(w, padded);
+      }
+      const auto slots = broadcast ? 1 : kUsed;
+      auto* input = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kInner, slots, kTokens),
+                          Normal(53, static_cast<std::size_t>(kInner * slots * kTokens)));
+      std::vector<std::int32_t> ids;
+      for (std::int64_t t = 0; t < kTokens; ++t) {
+        ids.push_back(0);
+        ids.push_back(static_cast<std::int32_t>(1 + (t % 7)));
+      }
+      auto* routing = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, kTokens), ids);
+      auto* first = Place(ggml_mul_mat_id(c(), weights[0], input, routing));
+      auto* second = Place(ggml_mul_mat_id(c(), weights[1], input, routing));
+      const std::string what =
+          std::string(ggml_type_name(type)) + (broadcast ? " broadcast" : " slots");
+      Launched(kg::MulMatQ(launch(), first), what);
+      const auto want_first = Download(first);
+      Launched(kg::MulMatQ(launch(), second), what);
+      const auto want_second = Download(second);
+      const auto scratch = kg::PlanMulMatIdQPair(launch(), first, second);
+      ASSERT_TRUE(scratch.has_value()) << what << ": " << scratch.error().detail;
+      ASSERT_EQ(cudaMemset(first->data, 0xFF, ggml_nbytes(first)), cudaSuccess);
+      ASSERT_EQ(cudaMemset(second->data, 0xFF, ggml_nbytes(second)), cudaSuccess);
+      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+      launch().ResetScratchPeak();
+      Launched(kg::MulMatIdQPair(launch(), first, second), what);
+      EXPECT_LE(launch().scratch_peak().value(), *scratch);
+      EXPECT_EQ(Download(first), want_first) << what;
+      EXPECT_EQ(Download(second), want_second) << what;
+      const std::array<ggml_tensor*, 2> nodes = {first, second};
+      auto choices = kg::DeviceChoicesOf(launch());
+      const auto primitive = kg::PlanGraph(nodes, false, choices);
+      ASSERT_TRUE(primitive.has_value()) << what << ": " << primitive.error().detail;
+      ASSERT_EQ(primitive->steps.size(), 2U);
+      EXPECT_EQ(primitive->steps[0].implementation, kg::kMulMatIdQ);
+      EXPECT_EQ(primitive->steps[1].implementation, kg::kMulMatIdQ);
+      choices.pair_experts = true;
+      const auto plan = kg::PlanGraph(nodes, false, choices);
+      ASSERT_TRUE(plan.has_value()) << what << ": " << plan.error().detail;
+      ASSERT_EQ(plan->steps.size(), 1U);
+      EXPECT_EQ(plan->steps[0].implementation, kg::kMulMatIdQPair);
+      EXPECT_EQ(plan->steps[0].nodes.size(), 2U);
+    }
+  }
+}
+
 // The resident expert layout (M3; docs/artifact-format.md#executable-views):
 // the repacked expert groups laid out at a uniform stride S, a whole number
 // of blocks, with other bytes between the slices, give mul_mat_id's stock
@@ -409,7 +528,9 @@ TEST_F(GgmlExtOpsTest, ExpertsAtAUniformStrideComputeWhatThePackedLayoutComputes
     std::int64_t k;
     bool broadcast;
   };
-  const std::array<Case, 3> cases = {{{GGML_TYPE_IQ2_XS, 4096, true},
+  const std::array<Case, 5> cases = {{{GGML_TYPE_IQ2_XXS, 4096, true},
+                                      {GGML_TYPE_Q2_K, 2048, false},
+                                      {GGML_TYPE_IQ2_XS, 4096, true},
                                       {GGML_TYPE_IQ3_XXS, 2048, false},
                                       {GGML_TYPE_MXFP4, 2048, false}}};
   for (const Case& test : cases) {
@@ -1304,14 +1425,15 @@ TEST_F(GgmlExtOpsTest, HyperConnectionsMatchTheReference) {
 // ---- Flash attention ----
 
 struct Attention {
-  std::int64_t head;
-  std::int64_t heads;
-  std::int64_t kv_heads;
-  std::int64_t rows;
-  std::int64_t cells;
-  bool sinks;
-  std::int32_t n_kv_max;  // > 0: at most this many unmasked cells per row
-  const char* name;
+  std::int64_t head{};
+  std::int64_t heads{};
+  std::int64_t kv_heads{};
+  std::int64_t rows{};
+  std::int64_t cells{};
+  bool sinks{};
+  std::int32_t n_kv_max{};  // > 0: at most this many unmasked cells per row
+  const char* name{};
+  int sparse_pattern = 0;  // 0: random, 1: identical lists, 2: disjoint lists
 };
 
 TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionMatchesTheReference) {
@@ -1319,14 +1441,22 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionMatchesTheReference) {
   // V, with sinks; one row, a few, a chunk, and one row over a long
   // compressed cache whose mask leaves at most 256 cells (sparse). Qwen3.8:
   // D = 256, 24 heads over 2 KV heads.
-  const std::array<Attention, 7> cases = {{
+  const std::array<Attention, 15> cases = {{
       {512, 64, 1, 1, 512, true, 0, "deepseek decode"},
       {512, 64, 1, 3, 512, true, 0, "deepseek 3 rows"},
       {512, 64, 1, 9, 768, true, 0, "deepseek 9 rows"},
       {512, 64, 1, 1, 4096, true, 256, "deepseek sparse"},
+      {512, 64, 1, 8, 4096, true, 256, "deepseek sparse tile"},
+      {512, 64, 1, 17, 4096, true, 256, "deepseek sparse partial and empty tail"},
       {256, 24, 2, 1, 512, false, 0, "qwen3.8 decode"},
       {256, 24, 2, 2, 512, false, 0, "qwen3.8 2 rows"},
       {256, 24, 2, 20, 1024, false, 0, "qwen3.8 20 rows"},
+      {256, 24, 2, 1, 4096, false, 128, "D256 sparse decode"},
+      {256, 24, 2, 17, 4096, false, 128, "D256 sparse partial tile"},
+      {512, 64, 1, 13, 4096, true, 128, "D512 overlapping lists and finite bias", 1},
+      {512, 64, 1, 17, 4096, true, 128, "D512 disjoint lists and dummy cells", 2},
+      {256, 24, 2, 13, 4096, false, 128, "D256 overlapping lists and finite bias", 1},
+      {256, 24, 2, 17, 4096, false, 128, "D256 disjoint lists and dummy cells", 2},
   }};
   const auto n = [](std::int64_t count) { return static_cast<std::size_t>(count); };
   for (const Attention& test : cases) {
@@ -1342,11 +1472,19 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionMatchesTheReference) {
     std::mt19937 random(164);  // NOLINT(bugprone-random-generator-seed): reproducible
     for (std::int64_t r = 0; r < test.rows; ++r) {
       if (test.n_kv_max > 0) {
+        if (test.sinks && test.rows > 1 && r == test.rows - 1) {
+          continue;  // a tile with no visible cells must still produce zeros
+        }
         std::vector<std::int64_t> chosen(n(test.cells));
         std::ranges::iota(chosen, 0);
-        std::shuffle(chosen.begin(), chosen.end(), random);
-        for (std::int64_t i = 0; i < test.n_kv_max; ++i) {
-          mask[n((r * test.cells) + chosen[n(i)])] = 0.0f;
+        if (test.sparse_pattern == 0) {
+          std::shuffle(chosen.begin(), chosen.end(), random);
+        }
+        const auto count = test.sparse_pattern == 0 ? test.n_kv_max : test.n_kv_max - (r % 17);
+        for (std::int64_t i = 0; i < count; ++i) {
+          const auto cell = test.sparse_pattern == 2 ? ((r % 8) * test.n_kv_max) + i : chosen[n(i)];
+          mask[n((r * test.cells) + cell)] =
+              test.sparse_pattern == 0 ? 0.0f : -static_cast<float>((r + i) % 7) / 8.0f;
         }
       } else {
         const std::int64_t visible = test.cells - test.rows + r + 1 - 37;
@@ -1378,16 +1516,34 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionMatchesTheReference) {
       ggml_flash_attn_ext_set_n_kv_max(node, test.n_kv_max);
     }
     Place(node);
-    const auto plan = kg::PlanFlashAttnMma(launch(), node);
+    const std::array<ggml_tensor*, 1> nodes = {node};
+    auto choices = kg::DeviceChoicesOf(launch());
+    const auto primitive = kg::PlanGraph(nodes, false, choices);
+    ASSERT_TRUE(primitive.has_value()) << test.name;
+    ASSERT_EQ(primitive->steps.size(), 1U);
+    EXPECT_EQ(primitive->steps[0].implementation, kg::kFlashAttnMmaName);
+    choices.wide_sparse_attention = true;
+    const auto wide = kg::PlanGraph(nodes, false, choices);
+    ASSERT_TRUE(wide.has_value()) << test.name;
+    ASSERT_EQ(wide->steps.size(), 1U);
+    EXPECT_EQ(wide->steps[0].implementation, kg::kFlashAttnMmaWideName);
+    const auto original = kg::PlanFlashAttnMma(launch(), node);
+    ASSERT_TRUE(original.has_value()) << test.name;
+    EXPECT_EQ(original->sparse, test.n_kv_max > 0 && test.head == 512) << test.name;
+    if (original->sparse) {
+      EXPECT_EQ(original->columns, 1) << test.name;
+    }
+    const auto plan = kg::PlanFlashAttnMma(launch(), node, true);
     ASSERT_TRUE(plan.has_value()) << test.name << ": " << plan.error().detail;
     EXPECT_EQ(plan->sparse, test.n_kv_max > 0) << test.name;
-    EXPECT_EQ(plan->columns, test.n_kv_max > 0 || test.rows <= 1 ? 1
-                             : test.rows <= 2                    ? 2
-                             : test.rows <= 4                    ? 4
-                                                                 : 8)
+    EXPECT_EQ(plan->columns, test.n_kv_max > 0 ? (test.rows > 4 ? 8 : 1)
+                             : test.rows <= 1  ? 1
+                             : test.rows <= 2  ? 2
+                             : test.rows <= 4  ? 4
+                                               : 8)
         << test.name;
     launch().ResetScratchPeak();
-    Launched(kg::FlashAttnMma(launch(), node), test.name);
+    Launched(kg::FlashAttnMma(launch(), node, true), test.name);
     EXPECT_LE(launch().scratch_peak().value(), plan->scratch) << test.name;
     const auto got = Download(node);
 
@@ -1748,8 +1904,9 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
     std::int64_t head, heads, kv_heads, rows, cells;
     std::int32_t n_kv_max;
   };
-  for (const Fa& fa : {Fa{512, 64, 1, 1, 256, 0}, Fa{512, 64, 1, 1, 4096, 128},
-                       Fa{512, 64, 1, 9, 512, 0}, Fa{256, 24, 2, 5, 256, 0}}) {
+  for (const Fa& fa :
+       {Fa{512, 64, 1, 1, 256, 0}, Fa{512, 64, 1, 1, 4096, 128}, Fa{512, 64, 1, 17, 4096, 128},
+        Fa{256, 24, 2, 17, 4096, 128}, Fa{512, 64, 1, 9, 512, 0}, Fa{256, 24, 2, 5, 256, 0}}) {
     const auto n = [](std::int64_t count) { return static_cast<std::size_t>(count); };
     std::vector<float> mask(n(fa.cells * fa.rows), -std::numeric_limits<float>::infinity());
     for (std::int64_t r = 0; r < fa.rows; ++r) {
@@ -1789,13 +1946,13 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
                 .outputs = {node},
                 .plan =
                     [node](const LaunchContext& l) -> std::expected<std::uint64_t, KernelFailure> {
-                  auto plan = kg::PlanFlashAttnMma(l, node);
+                  auto plan = kg::PlanFlashAttnMma(l, node, true);
                   if (!plan) {
                     return std::unexpected(plan.error());
                   }
                   return plan->scratch;
                 },
-                .run = [node](LaunchContext& l) { return kg::FlashAttnMma(l, node); }};
+                .run = [node](LaunchContext& l) { return kg::FlashAttnMma(l, node, true); }};
           });
   }
 
@@ -1892,12 +2049,13 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
   using jitllm::execution::Operation;
   const std::vector<jitllm::execution::Implementation> declared = kg::Implementations();
   const auto registry = jitllm::execution::Registry::Create(declared).value();
-  const std::array<std::pair<const char*, Operation>, 28> expected = {{
+  const std::array<std::pair<const char*, Operation>, 29> expected = {{
       {"ggml.mul_mat.mmvq", Operation::kMatMul},
       {"ggml.mul_mat.mmq", Operation::kMatMul},
       {"ggml.mul_mat.fwht", Operation::kMatMul},
       {"ggml.mul_mat_id.mmvq", Operation::kMulMatId},
       {"ggml.mul_mat_id.mmq", Operation::kMulMatId},
+      {"jitllm.mul_mat_id.mmq_pair", Operation::kMulMatId},
       {"ggml.sub", Operation::kSub},
       {"ggml.div", Operation::kDiv},
       {"ggml.scale", Operation::kScale},
@@ -1929,7 +2087,7 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
     const auto kernel = kg::Kernel::Bind(registry.at(index));
     ASSERT_TRUE(kernel.has_value()) << name;
     EXPECT_EQ(kernel->name(), name);
-    EXPECT_EQ(kernel->arity(), 1U) << name;
+    EXPECT_EQ(kernel->arity(), std::string_view(name) == kg::kMulMatIdQPair ? 2U : 1U) << name;
   }
   // A bound kernel checks and runs its node: scale through the registry.
   const auto scale = kg::Kernel::Bind(declared[registry.Find("ggml.scale").value_or(0)]).value();

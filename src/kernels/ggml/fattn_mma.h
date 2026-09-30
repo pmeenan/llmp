@@ -29,8 +29,9 @@ struct MmaKernelShape {
   int blocks_per_sm = 0;  // occupancy at the case's threads and shared memory
 };
 
-// For columns 1, 2, 4 or 8 (and, at 512, sparse only with one column).
-std::expected<MmaKernelShape, std::string> FlashAttnMmaShape256(int columns, int device);
+// For columns 1, 2, 4 or 8; sparse cases have one or eight columns.
+std::expected<MmaKernelShape, std::string> FlashAttnMmaShape256(int columns, bool sparse,
+                                                                int device);
 std::expected<MmaKernelShape, std::string> FlashAttnMmaShape512(int columns, bool sparse,
                                                                 int device);
 

@@ -57,7 +57,7 @@ std::expected<void, KernelFailure> CheckMulMatF(const ggml_tensor* node);
 // outside is an out-of-bounds access, so the plan that uploads them owns
 // that bound.
 
-// A ggml_get_rows node: F32 or BF16 rows gathered by I32 ids into F32
+// A ggml_get_rows node: F32, F16 or BF16 rows gathered by I32 ids into F32
 // (ggml_cuda_op_get_rows, getrows.cu:442-459); BF16 is widened exactly.
 std::expected<void, KernelFailure> CheckGetRows(const ggml_tensor* node);
 // Which kernel get_rows' launcher chooses for a node CheckGetRows accepts:

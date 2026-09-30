@@ -1837,6 +1837,8 @@ bool VecQWeights(const ggml_tensor* w) {
 
 bool VecQType(ggml_type type) {
   switch (type) {
+    case GGML_TYPE_Q2_K:
+    case GGML_TYPE_IQ2_XXS:
     case GGML_TYPE_Q8_0:
     case GGML_TYPE_MXFP4:
     case GGML_TYPE_Q4_K:

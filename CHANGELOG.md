@@ -13,6 +13,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- DeepSeek V4 Flash's community IQ2_XXS/Q2_K GGUFs run natively, including
+  F16 attention-compressor APE tables, without requantizing their weights.
 - LLM turns reuse stable checkpoints when clients remove earlier reasoning,
   with two private disk checkpoints per model and a 24-hour reuse limit.
 - LLM conversation state allocates and spills only used cache extents;
@@ -98,6 +100,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- DeepSeek fast prefill can share sparse KV gathers across eight queries
+  and expert input preparation across gate/up products, retaining F16
+  caches and the original quantized weights. Primitive/reference plans
+  keep their original dispatch choices.
 - Models default to 262,144 tokens of context (was 8,704). DeepSeek V4
   Flash accepts up to its trained 1,048,576-token ceiling; Qwen3.8 Flash
   Next remains capped at 262,144, checked before model allocation. Growing

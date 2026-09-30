@@ -329,6 +329,37 @@ sinks bound (RE-030).
 - **Proposed action:** none; revisit if CCCL's segmented top-k lands with a
   determinism option.
 
+## Shared sparse gathers across query tiles
+
+- **Status:** narrow backport carried in
+  `0003-jitllm-wide-sparse-attention.patch`; no new upstream fix.
+- **Source:** [#28770](https://github.com/ggml-org/llama.cpp/pull/28770),
+  merge `3cf03257f219afbe7334045ff7c6a06ac68c627d`, and
+  [#29298](https://github.com/ggml-org/llama.cpp/pull/29298), merge
+  `dc9879cf66aeb5c2f7c38e9578e6a5f38c497865`, MIT. The compact-mask
+  implementation is in `src/kernels/ggml/fattn_mma.cu` with GGML credit.
+- **Adaptation:** one bounded ascending union and live count per query
+  tile, with each query's original mask still applied to gathered cells.
+  The pinned MMA configuration, swizzle and KV precision remain. Enable
+  its existing D512 eight-query case as well as upstream's D256 case;
+  jitLLM's explicit sparse marker permits smaller caches. Partial query
+  tiles are bounded. The header backport is used by jitLLM's own
+  launchers; GGML's original `fattn.cu` is not compiled.
+- **Evidence:** [ds4 study](../experiments/ds4-study/README.md): native
+  8K prefill 16.375 to 13.204 seconds, own forced repeats exact, 32K
+  perplexity -0.215%. Random overlapping and disjoint lists, partial
+  tiles, empty sink rows, finite mask biases and scratch/domain bounds
+  match the FP64 reference. The reduction change moves some logits;
+  the existing oracle near-tie bound remains fixed.
+- **Scope:** DeepSeek's fast sparse attention and the D256 reference
+  capability. Selection defaults off: the old D512 one-query and D256
+  dense choices remain the primitive/reference defaults. Only measured
+  DeepSeek fast planners enable wide unions; fully disjoint D512 lists
+  regress in the cross-shape control. Qwen3.8's default `jitllm.qsa.attn`
+  is independent.
+- **Proposed action:** none upstream; take the full backport with the
+  planned pin bump after re-auditing the remaining launch arithmetic.
+
 ## Upstream changes to adopt
 
 Checked 2026-09-29 at master `8019dc563`.
@@ -338,8 +369,7 @@ Checked 2026-09-29 at master `8019dc563`.
   DGX Spark 1.23× at 64K depth and 1.42× at 128K. jitLLM's DeepSeek fast plan now
   gathers every layer's cells with the pinned kernel's one-row sparse case
   (its own condition in `fattn_mma.cu`, long-context phase 2), flat with
-  depth; #29298's wide tiles, which gather a tile's union once, may still
-  cut its prefill attention (746 ms of a 2,048-row chunk at 64K).
+  depth; the ds4-study slice now carries the wide union backport above.
 - **Sparse flash attention for Qwen3.8**
   ([#28770](https://github.com/ggml-org/llama.cpp/pull/28770)): 1.08–1.26×
   prefill and 1.03–1.18× decode at 10K–100K. Not needed from upstream
@@ -357,12 +387,13 @@ Checked 2026-09-29 at master `8019dc563`.
   ([#29227](https://github.com/ggml-org/llama.cpp/pull/29227)): hit by
   Qwen3.8 past ~147K tokens (RE-037, worked around by a chunk bound).
 
-All speedups are as reported upstream, not measured by jitLLM.
+The speedups in this list are reported upstream; the separate backport
+entry above has jitLLM's measurements.
 
 **Cost of bumping the whole pin:** two hunks of 0001 no longer apply
 (`common.cuh` and the `mmq.cu` switch); `launch_fattn`'s host arithmetic,
 which jitLLM's plans record, needs a re-audit; and the D 512 retune changes
 attention numerics, so the DeepSeek llama.cpp baselines must be re-run.
 
-**Recommendation:** port sparse prefill attention as its own slice when
-long context matters. Bump the whole pin at the M3→M4 boundary.
+**Recommendation:** keep the narrow sparse prefill backport. Bump the
+whole pin at the M3→M4 boundary.

@@ -22,7 +22,17 @@ DECL_FATTN_MMA_F16_CASE(256, 256, 8, 8);
 
 namespace jitllm::kernels::ggml::detail {
 
-std::expected<MmaKernelShape, std::string> FlashAttnMmaShape256(int columns, int device) {
+std::expected<MmaKernelShape, std::string> FlashAttnMmaShape256(int columns, bool sparse,
+                                                                int device) {
+  if (sparse) {
+    if (columns == 1) {
+      return MmaShape<256, 1, true>(device);
+    }
+    if (columns == 8) {
+      return MmaShape<256, 8, true>(device);
+    }
+    return std::unexpected(std::string("the sparse D=256 MMA case has one or eight columns"));
+  }
   switch (columns) {
     case 1:
       return MmaShape<256, 1, false>(device);

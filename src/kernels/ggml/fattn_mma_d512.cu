@@ -7,8 +7,8 @@
 // dispatcher (fattn_mma.cu) launches, instantiated as GGML's
 // template-instances/fattn-mma-f16-instance-ncols1_*-ncols2_8.cu do at
 // llama.cpp b29c606e2, and built with GGML's device flags (CMakeLists.txt).
-// The one-column case also holds the sparse kernel, which gathers only the
-// unmasked cells.
+// The one- and eight-column cases also hold the sparse kernel, which
+// gathers the tile's union of unmasked cells.
 
 #include <expected>
 #include <string>
@@ -27,10 +27,13 @@ namespace jitllm::kernels::ggml::detail {
 std::expected<MmaKernelShape, std::string> FlashAttnMmaShape512(int columns, bool sparse,
                                                                 int device) {
   if (sparse) {
-    if (columns != 1) {
-      return std::unexpected(std::string("the sparse D=512 MMA case has one column"));
+    if (columns == 1) {
+      return MmaShape<512, 1, true>(device);
     }
-    return MmaShape<512, 1, true>(device);
+    if (columns == 8) {
+      return MmaShape<512, 8, true>(device);
+    }
+    return std::unexpected(std::string("the sparse D=512 MMA case has one or eight columns"));
   }
   switch (columns) {
     case 1:

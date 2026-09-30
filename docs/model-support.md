@@ -33,6 +33,7 @@ no model is there yet, so measured speeds are given as headlines only.
 | Model | Role | Status | Level |
 | --- | --- | --- | --- |
 | [DeepSeek V4 Flash 0731](#deepseek-v4-flash-0731) UD-Q2_K_XL | target | Served (M3) | paged-correct |
+| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Harness-only | resident-correct, short oracle trajectories |
 | [DSpark](#dspark) for DeepSeek V4 Flash 0731 (Q8_0) | drafter | Served (M3), with its target | paged-correct |
 | [Qwen3.8 Flash Next](#qwen38-flash-next) NVFP4 | target | Served (M3) | paged-correct, one accepted greedy divergence (below) |
 | [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
@@ -152,6 +153,21 @@ not used. The options each renderer supports and refuses are in
   - DeepSeek's own `tokenizer.json` differs from the GGUF's tokenizer on
     2 of 184 corpus items (Unicode 16.0 emoji); jitLLM follows llama.cpp
     and serves the GGUF's.
+
+## DeepSeek V4 community IQ2_XXS
+
+The [ds4 study](experiments/ds4-study/README.md) imports
+`antirez/deepseek-v4-gguf@f71f23d552d664e523b422157b2befbf74040380`'s
+`DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf`
+as artifact `cd39d504…`. IQ2_XXS gate/up, Q2_K down and F16 compressor
+APE tables retain their original bytes and precision. Plain greedy runs
+in the resident native harness through 128,817 prompt tokens, with F16
+caches. On the recorded 8K trajectory all 32 argmaxes agree with ds4,
+including its F32-cache control, and native forced repeats are bit
+identical. A 32K own-plan PPL control is within the existing 3% gate.
+ds4's default caches use FP8/FP4, so same weights alone do not establish
+equivalent cache policies. This variant has no runtime chat, DSpark,
+swap/restore or seeded-sampling evidence in this study.
 
 ## DSpark
 

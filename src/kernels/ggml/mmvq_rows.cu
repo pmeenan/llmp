@@ -82,6 +82,10 @@ constexpr __device__ VecDot RowsVecDot(ggml_type type) {
   switch (type) {
     case GGML_TYPE_Q8_0:
       return vec_dot_q8_0_q8_1;
+    case GGML_TYPE_Q2_K:
+      return vec_dot_q2_K_q8_1;
+    case GGML_TYPE_IQ2_XXS:
+      return vec_dot_iq2_xxs_q8_1;
     case GGML_TYPE_MXFP4:
       return vec_dot_mxfp4_q8_1;
     case GGML_TYPE_Q4_K:
@@ -103,6 +107,10 @@ constexpr __host__ __device__ int RowsVdr(ggml_type type) {
   switch (type) {
     case GGML_TYPE_Q8_0:
       return VDR_Q8_0_Q8_1_MMVQ;
+    case GGML_TYPE_Q2_K:
+      return VDR_Q2_K_Q8_1_MMVQ;
+    case GGML_TYPE_IQ2_XXS:
+      return VDR_IQ2_XXS_Q8_1_MMVQ;
     case GGML_TYPE_MXFP4:
       return VDR_MXFP4_Q8_1_MMVQ;
     case GGML_TYPE_Q4_K:
@@ -405,6 +413,8 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
 
 bool RowsType(ggml_type type) {
   switch (type) {
+    case GGML_TYPE_Q2_K:
+    case GGML_TYPE_IQ2_XXS:
     case GGML_TYPE_Q8_0:
     case GGML_TYPE_MXFP4:
     case GGML_TYPE_Q4_K:
@@ -568,6 +578,12 @@ void LaunchSwitchType(ggml_type type, const RowsArgs& a, bool per_token, int cc,
   switch (type) {
     case GGML_TYPE_Q8_0:
       LaunchType<GGML_TYPE_Q8_0>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_Q2_K:
+      LaunchType<GGML_TYPE_Q2_K>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_IQ2_XXS:
+      LaunchType<GGML_TYPE_IQ2_XXS>(a, per_token, cc, warp_size, stream);
       break;
     case GGML_TYPE_MXFP4:
       LaunchType<GGML_TYPE_MXFP4>(a, per_token, cc, warp_size, stream);

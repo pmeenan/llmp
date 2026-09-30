@@ -57,13 +57,23 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
 std::expected<void, KernelFailure> MulMatVecQ(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* node);
 
+// The same ordinary MMQ products, in order, with one shared preparation of
+// the routing maps and type-specific Q8 activations (ds4's paired MoE
+// technique). Both products retain their own weight/output strides and
+// sequential fixup workspace. No arithmetic or downstream GLU is fused.
+std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContext& launch,
+                                                              const ggml_tensor* first,
+                                                              const ggml_tensor* second);
+std::expected<void, KernelFailure> MulMatIdQPair(LaunchContext& launch, ggml_tensor* first,
+                                                 ggml_tensor* second);
+
 // Row-invariant products for a speculative verify (D-092; mmvq_rows.cu):
 // every output column of a quantized product (up to kRowsMaxColumns
 // activation columns, or tokens of a mul_mat_id) is computed with the
 // arithmetic of GGML's one-column MMVQ launch, so a verify's row equals the
 // decode step it stands for bit for bit; a dense block still reads its
 // weight rows once for every column. Weights of the types jitLLM's models
-// bring (Q8_0, Q4_K, Q5_K, Q6_K, IQ2_XS, IQ3_XXS, MXFP4); the scratch is
+// bring (Q8_0, Q2_K, Q4_K, Q5_K, Q6_K, IQ2_XXS, IQ2_XS, IQ3_XXS, MXFP4); the scratch is
 // MMVQ's Q8_1 activations.
 inline constexpr std::int64_t kRowsMaxColumns = 8;
 std::expected<std::uint64_t, KernelFailure> PlanMulMatVecQRows(const LaunchContext& launch,
@@ -129,6 +139,11 @@ std::expected<void, KernelFailure> HcPost(LaunchContext& launch, ggml_tensor* no
 // A node jitllm_ops.h's SetFlashAttnSparseAny marks takes the sparse gather
 // whenever its n_kv_max cells are at most half of K's, not only past
 // upstream's 4,096.
+// An explicit wide_sparse choice permits D256 sparse and shares the
+// union of up to eight queries at D256/512. It keeps every original
+// per-query mask. Disjoint lists can regress; unknown shapes default to
+// the original path. The graph planner records the choice as a distinct
+// implementation, so its scratch plan and launch agree.
 struct FlashAttnMmaPlan {
   int head = 0;     // D
   int columns = 0;  // ncols1
@@ -138,8 +153,10 @@ struct FlashAttnMmaPlan {
   std::uint64_t scratch = 0;
 };
 std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchContext& launch,
-                                                                const ggml_tensor* node);
-std::expected<void, KernelFailure> FlashAttnMma(LaunchContext& launch, ggml_tensor* node);
+                                                                const ggml_tensor* node,
+                                                                bool wide_sparse = false);
+std::expected<void, KernelFailure> FlashAttnMma(LaunchContext& launch, ggml_tensor* node,
+                                                bool wide_sparse = false);
 
 // The same kernels at head dimension 128 without grouping and without a
 // mask (validate_ext.h CheckFlashAttnMma128): the instance

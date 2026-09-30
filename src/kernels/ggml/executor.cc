@@ -77,6 +77,8 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
       planned = PlanMulMatVecQRows(launch, step.nodes.front());
     } else if (step.implementation == kMulMatQ || step.implementation == kMulMatIdQ) {
       planned = PlanMulMatQ(launch, step.nodes.front());
+    } else if (step.implementation == kMulMatIdQPair) {
+      planned = PlanMulMatIdQPair(launch, step.nodes[0], step.nodes[1]);
     } else if (step.implementation == kTopKName) {
       planned = PlanTopK(launch, step.nodes.front());
     } else if (step.implementation == kDsv4LidTopKName) {
@@ -89,8 +91,10 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
       planned = PlanQsaTopK(step.nodes.front());
     } else if (step.implementation == kQsaAttnName) {
       planned = PlanQsaAttn(step.nodes.front());
-    } else if (step.implementation == kFlashAttnMmaName) {
-      auto attention = PlanFlashAttnMma(launch, step.nodes.front());
+    } else if (step.implementation == kFlashAttnMmaName ||
+               step.implementation == kFlashAttnMmaWideName) {
+      auto attention = PlanFlashAttnMma(launch, step.nodes.front(),
+                                        step.implementation == kFlashAttnMmaWideName);
       if (!attention) {
         return std::unexpected(attention.error());
       }

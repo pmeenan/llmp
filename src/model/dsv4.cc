@@ -38,7 +38,8 @@ std::uint64_t Pad(std::uint64_t n, std::uint64_t to) { return (n + to - 1) / to 
 
 // What a bound tensor's type must be.
 enum class Kind : std::uint8_t {
-  kF32,     // norms, scales, biases, sinks, APE tables
+  kF32,     // norms, scales, biases, sinks
+  kFloat,   // APE lookup tables: F32 or F16, gathered into F32
   kI32,     // the hash layers' token-to-expert tables
   kMatrix,  // anything a product or a lookup reads: F32, F16, BF16 or block-quantized
 };
@@ -52,6 +53,8 @@ bool TypeFits(Kind kind, std::string_view type) {
   switch (kind) {
     case Kind::kF32:
       return type == "F32";
+    case Kind::kFloat:
+      return type == "F32" || type == "F16";
     case Kind::kI32:
       return type == "I32";
     case Kind::kMatrix:
@@ -64,6 +67,8 @@ std::string_view KindName(Kind kind) {
   switch (kind) {
     case Kind::kF32:
       return "F32";
+    case Kind::kFloat:
+      return "F32 or F16";
     case Kind::kI32:
       return "I32";
     case Kind::kMatrix:
@@ -225,7 +230,7 @@ std::expected<Dsv4Binding, std::string> BindDsv4Roles(const Dsv4Profile& p,
       const std::uint64_t coff = l.ratio == kDsv4CsaRatio ? 2 : 1;
       add(n + "attn_compressor_kv.weight", Kind::kMatrix, {width, coff * head}, &l.comp_kv);
       add(n + "attn_compressor_gate.weight", Kind::kMatrix, {width, coff * head}, &l.comp_gate);
-      add(n + "attn_compressor_ape.weight", Kind::kF32, {coff * head, l.ratio}, &l.comp_ape);
+      add(n + "attn_compressor_ape.weight", Kind::kFloat, {coff * head, l.ratio}, &l.comp_ape);
       add(n + "attn_compressor_norm.weight", Kind::kF32, {head}, &l.comp_norm);
     }
     if (l.ratio == kDsv4CsaRatio) {
@@ -235,7 +240,7 @@ std::expected<Dsv4Binding, std::string> BindDsv4Roles(const Dsv4Profile& p,
       add(n + "indexer.proj.weight", Kind::kMatrix, {width, p.indexer_heads}, &l.idx_proj);
       add(n + "indexer_compressor_kv.weight", Kind::kMatrix, {width, 2 * ih}, &l.idx_comp_kv);
       add(n + "indexer_compressor_gate.weight", Kind::kMatrix, {width, 2 * ih}, &l.idx_comp_gate);
-      add(n + "indexer_compressor_ape.weight", Kind::kF32, {2 * ih, kDsv4CsaRatio},
+      add(n + "indexer_compressor_ape.weight", Kind::kFloat, {2 * ih, kDsv4CsaRatio},
           &l.idx_comp_ape);
       add(n + "indexer_compressor_norm.weight", Kind::kF32, {ih}, &l.idx_comp_norm);
     }

@@ -15,6 +15,7 @@
 #include <climits>
 #include <cstdint>
 #include <expected>
+#include <initializer_list>
 #include <string>
 #include <utility>
 
@@ -22,13 +23,16 @@
 #include "common.cuh"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"
+#include "mmid.cuh"
 #include "mmq.cuh"
 #include "mmvq.cuh"
+#include "quantize.cuh"
 
 // The weight types CheckMulMatQ admits must be those whose MMQ instance
 // units the build compiles (third_party/patches/ggml/0002), or mmq.cu's
 // switch would reach its abort.
-#if !defined(GGML_JITLLM_MMQ_Q8_0) || !defined(GGML_JITLLM_MMQ_Q4_K) ||      \
+#if !defined(GGML_JITLLM_MMQ_Q2_K) || !defined(GGML_JITLLM_MMQ_IQ2_XXS) ||   \
+    !defined(GGML_JITLLM_MMQ_Q8_0) || !defined(GGML_JITLLM_MMQ_Q4_K) ||      \
     !defined(GGML_JITLLM_MMQ_Q5_K) || !defined(GGML_JITLLM_MMQ_Q6_K) ||      \
     !defined(GGML_JITLLM_MMQ_IQ2_XS) || !defined(GGML_JITLLM_MMQ_IQ3_XXS) || \
     !defined(GGML_JITLLM_MMQ_MXFP4) || !defined(GGML_JITLLM_MMQ_NVFP4)
@@ -274,6 +278,140 @@ std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* n
   return launch.Run(base::Bytes(*scratch), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* ids = node->op == GGML_OP_MUL_MAT_ID ? node->src[2] : nullptr;
     ggml_cuda_mul_mat_q(context, node->src[0], node->src[1], ids, node);
+  });
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContext& launch,
+                                                              const ggml_tensor* first,
+                                                              const ggml_tensor* second) {
+  if (auto checked = CheckMulMatIdQPair(first, second); !checked) {
+    return std::unexpected(checked.error());
+  }
+  auto a = PlanMulMatQ(launch, first);
+  if (!a) {
+    return std::unexpected(a.error());
+  }
+  auto b = PlanMulMatQ(launch, second);
+  if (!b) {
+    return std::unexpected(b.error());
+  }
+  // Maps and quantization match; each ordinary product returns its fixup
+  // allocation before the next draws it. The high-water mark is unchanged.
+  return std::max(*a, *b);
+}
+
+std::expected<void, KernelFailure> MulMatIdQPair(LaunchContext& launch, ggml_tensor* first,
+                                                 ggml_tensor* second) {
+  auto scratch = PlanMulMatIdQPair(launch, first, second);
+  if (!scratch) {
+    return std::unexpected(scratch.error());
+  }
+  return launch.Run(base::Bytes(*scratch), [first, second](ggml_backend_cuda_context& context) {
+    // Host preparation from GGML mmq.cu: the same inverse broadcast map
+    // and scatter quantization feed two ordinary MMQ launches. This is
+    // ds4's paired-preparation technique without its SoA repack or fused
+    // early route weighting.
+    const ggml_tensor* weights = first->src[0];
+    const ggml_tensor* input = first->src[1];
+    const ggml_tensor* ids = first->src[2];
+    const auto type = weights->type;
+    const auto used = ids->ne[0];
+    const auto tokens = input->ne[2];
+    const auto rows = tokens * used;
+    const auto padded = GGML_PAD(input->ne[0], MATRIX_ROW_PADDING);
+    cudaStream_t stream = context.stream();
+    ggml_cuda_pool_alloc<std::int32_t> ids_src(context.pool(), static_cast<std::size_t>(rows));
+    ggml_cuda_pool_alloc<std::int32_t> ids_dst(context.pool(), static_cast<std::size_t>(rows));
+    ggml_cuda_pool_alloc<std::int32_t> bounds(context.pool(),
+                                              static_cast<std::size_t>(weights->ne[2] + 1));
+    const bool broadcast = input->ne[1] == 1 && used > 1;
+    ggml_cuda_launch_mm_ids_helper(
+        static_cast<const std::int32_t*>(ids->data), ids_src.get(), ids_dst.get(), bounds.get(),
+        static_cast<int>(weights->ne[2]), static_cast<int>(tokens), static_cast<int>(used),
+        static_cast<int>(input->ne[1]), static_cast<int>(ids->nb[1] / sizeof(std::int32_t)),
+        static_cast<int>(input->nb[2] / input->nb[1]), broadcast, stream);
+    CUDA_CHECK(cudaGetLastError());
+    const int cc = ggml_cuda_info().devices[context.device].cc;
+    const auto j_max = ggml_cuda_mmq_get_J_max(type, weights->ne[1] % 128 != 0, cc, input->ne[1]);
+    const auto bytes =
+        static_cast<std::size_t>(rows * padded) * sizeof(block_q8_1_mmq) / QK8_1_MMQ +
+        static_cast<std::size_t>(j_max) * sizeof(block_q8_1_mmq);
+    ggml_cuda_pool_alloc<char> quantized(context.pool(), bytes);
+    const auto* x = static_cast<const float*>(input->data);
+    const auto s11 = static_cast<std::int64_t>(input->nb[1] / sizeof(float));
+    const auto s12 = static_cast<std::int64_t>(input->nb[2] / sizeof(float));
+    const auto s13 = static_cast<std::int64_t>(input->nb[3] / sizeof(float));
+    if (broadcast) {
+      quantize_scatter_mmq_q8_1_cuda(x, ids_src.get(), quantized.get(), type, input->ne[0], s12,
+                                     padded, tokens, rows, static_cast<int>(used), stream);
+    } else {
+      quantize_mmq_q8_1_cuda(x, ids_src.get(), quantized.get(), type, input->ne[0], s11, s12, s13,
+                             padded, rows, 1, 1, stream);
+    }
+    CUDA_CHECK(cudaGetLastError());
+    const auto sy2 = input->ne[1] * padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
+                     (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
+    const auto sy3 = tokens * sy2;
+    const auto ncols_opt = GGML_CUDA_CC_IS_RDNA3_0(cc) || GGML_CUDA_CC_IS_RDNA4(cc)
+                               ? (rows + weights->ne[2] - 1) / weights->ne[2]
+                               : tokens;
+    for (ggml_tensor* output : {first, second}) {
+      const ggml_tensor* w = output->src[0];
+      const auto ts = static_cast<std::int64_t>(ggml_type_size(type));
+      const mmq_args args = {static_cast<const char*>(w->data),
+                             type,
+                             reinterpret_cast<const int*>(quantized.get()),
+                             ids_dst.get(),
+                             bounds.get(),
+                             static_cast<float*>(output->data),
+                             nullptr,
+                             w->ne[0],
+                             w->ne[1],
+                             rows,
+                             static_cast<std::int64_t>(w->nb[1]) / ts,
+                             rows,
+                             static_cast<std::int64_t>(output->nb[1] / sizeof(float)),
+                             w->ne[2],
+                             w->ne[2],
+                             static_cast<std::int64_t>(w->nb[2]) / ts,
+                             sy2,
+                             static_cast<std::int64_t>(output->nb[2] / sizeof(float)),
+                             w->ne[3],
+                             input->ne[3],
+                             static_cast<std::int64_t>(w->nb[3]) / ts,
+                             sy3,
+                             static_cast<std::int64_t>(output->nb[3] / sizeof(float)),
+                             tokens,
+                             ncols_opt};
+      switch (type) {
+        case GGML_TYPE_Q8_0:
+          mul_mat_q_case<GGML_TYPE_Q8_0>(context, args, stream);
+          break;
+        case GGML_TYPE_Q2_K:
+          mul_mat_q_case<GGML_TYPE_Q2_K>(context, args, stream);
+          break;
+        case GGML_TYPE_Q4_K:
+          mul_mat_q_case<GGML_TYPE_Q4_K>(context, args, stream);
+          break;
+        case GGML_TYPE_Q5_K:
+          mul_mat_q_case<GGML_TYPE_Q5_K>(context, args, stream);
+          break;
+        case GGML_TYPE_Q6_K:
+          mul_mat_q_case<GGML_TYPE_Q6_K>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ2_XXS:
+          mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ2_XS:
+          mul_mat_q_case<GGML_TYPE_IQ2_XS>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ3_XXS:
+          mul_mat_q_case<GGML_TYPE_IQ3_XXS>(context, args, stream);
+          break;
+        default:
+          GGML_ABORT("paired MMQ type passed validation without its case");
+      }
+    }
   });
 }
 

@@ -25,6 +25,7 @@
 
 #include "ggml.h"
 #include "kernels/ggml/fusion.h"
+#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 
@@ -516,8 +517,15 @@ TEST_F(GgmlOpsValidateTest, GetRowsIsRefusedWhatItsLauncherAssertsOn) {
   ggml_tensor* ids = Typed(GGML_TYPE_I32, 4);
   ggml_tensor* picked = Bound(ggml_get_rows(context(), rows, ids));
   EXPECT_TRUE(CheckGetRows(picked).has_value());
-  // F16 rows: another kernel instance than the plan's.
-  Rejected(CheckGetRows(Bound(ggml_get_rows(context(), Typed(GGML_TYPE_F16, kWidth, 8), ids))));
+  // F16 APE tables widen into F32 without a vector-copy kernel.
+  auto* const from_half = Bound(ggml_get_rows(context(), Typed(GGML_TYPE_F16, kWidth, 8), ids));
+  EXPECT_TRUE(CheckGetRows(from_half));
+  EXPECT_FALSE(GetRowsVectorized(from_half));
+  const std::array<ggml_tensor*, 1> half_nodes = {from_half};
+  auto half_plan = jitllm::kernels::ggml::PlanGraph(half_nodes, false, {});
+  ASSERT_TRUE(half_plan);
+  ASSERT_EQ(half_plan->steps.size(), 1U);
+  EXPECT_EQ(half_plan->steps.front().implementation, jitllm::kernels::ggml::kGetRowsName);
   // An output over the rows it reads.
   ggml_tensor* over = ggml_get_rows(context(), rows, ids);
   TensorArena::Bind(over, reinterpret_cast<std::uintptr_t>(rows->data));

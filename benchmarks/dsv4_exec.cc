@@ -629,6 +629,8 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   kg::DeviceChoices device = choices_in;
   device.fuse_norms = !m.exact;
   device.vector_floats = !m.exact;
+  device.pair_experts = !m.exact;
+  device.wide_sparse_attention = !m.exact;
   const kg::DeviceChoices& choices = device;
   std::vector<ggml_tensor*> keep;
   for (const std::string& name : keep_names) {

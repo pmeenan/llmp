@@ -205,6 +205,34 @@ TEST(Dsv4Test, BindsTheGgufsTensorsAndRefusesWhatDiffers) {
   }
 }
 
+TEST(Dsv4Test, BindsCommunityIq2XxsAndF16ApeWithoutChangingOtherFloatTypes) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  auto resources = GgufLike(p);
+  for (auto& r : resources) {
+    const std::string& role = r.roles[0];
+    if (role.ends_with("compressor_ape.weight")) {
+      r.type = "F16";
+    } else if (role.ends_with("ffn_gate_exps.weight") || role.ends_with("ffn_up_exps.weight")) {
+      r.type = "IQ2_XXS";
+    } else if (role.ends_with("ffn_down_exps.weight")) {
+      r.type = "Q2_K";
+    }
+  }
+  auto bound = md::BindDsv4(p, "deepseek4", resources);
+  ASSERT_TRUE(bound) << Why(bound);
+  EXPECT_EQ(bound->layers[2].comp_ape.type, "F16");
+  EXPECT_EQ(bound->layers[2].idx_comp_ape.type, "F16");
+  EXPECT_EQ(bound->layers[2].gate_exps.type, "IQ2_XXS");
+  EXPECT_EQ(bound->layers[2].down_exps.type, "Q2_K");
+  for (const std::string_view unsupported : {"BF16", "Q8_0", "I32"}) {
+    auto changed = resources;
+    std::ranges::find_if(changed, [](const md::Dsv4Resource& r) {
+      return r.roles[0] == "blk.2.attn_compressor_ape.weight";
+    })->type = unsupported;
+    EXPECT_FALSE(md::BindDsv4(p, "deepseek4", changed));
+  }
+}
+
 TEST(Dsv4Test, GrowingStateCoversTheRingPaddedPrefixAndCompressedDummyCells) {
   auto state = md::Dsv4State(md::Dsv4Flash(), 262144, 2048, md::Dsv4Window::kRing);
   ASSERT_TRUE(state) << Why(state);

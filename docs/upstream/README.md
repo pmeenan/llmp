@@ -18,6 +18,7 @@ and the repro, and does not rely on the rest of this file.
 | [exllamav3.md](exllamav3.md) | ExLlamaV3's kernels (the native EXL3 linear) |
 | [vllm.md](vllm.md) | vLLM, as Mia's Qwen3.8 fork and recipe run it (an M3 baseline) |
 | [tensorfold.md](tensorfold.md) | TensorFold (an M3 baseline and a source of techniques) |
+| [ds4.md](ds4.md) | Entrpi's ds4 fork (same-GGUF DeepSeek baseline and prefill techniques) |
 | [other.md](other.md) | Projects with a single finding: Docker, SGLang, qemu-user with LeakSanitizer, Ubuntu's snapshot service |
 
 ## Upstream entries and rough edges

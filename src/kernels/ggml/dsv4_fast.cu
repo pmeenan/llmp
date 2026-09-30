@@ -49,6 +49,10 @@ constexpr __device__ VecDot DotOf(ggml_type type) {
   switch (type) {
     case GGML_TYPE_Q8_0:
       return vec_dot_q8_0_q8_1;
+    case GGML_TYPE_Q2_K:
+      return vec_dot_q2_K_q8_1;
+    case GGML_TYPE_IQ2_XXS:
+      return vec_dot_iq2_xxs_q8_1;
     case GGML_TYPE_MXFP4:
       return vec_dot_mxfp4_q8_1;
     case GGML_TYPE_Q4_K:
@@ -70,6 +74,10 @@ constexpr __host__ __device__ int VdrOf(ggml_type type) {
   switch (type) {
     case GGML_TYPE_Q8_0:
       return VDR_Q8_0_Q8_1_MMVQ;
+    case GGML_TYPE_Q2_K:
+      return VDR_Q2_K_Q8_1_MMVQ;
+    case GGML_TYPE_IQ2_XXS:
+      return VDR_IQ2_XXS_Q8_1_MMVQ;
     case GGML_TYPE_MXFP4:
       return VDR_MXFP4_Q8_1_MMVQ;
     case GGML_TYPE_Q4_K:
@@ -541,6 +549,10 @@ int LanesPerRowOf(ggml_type type, int k) {
   switch (type) {
     case GGML_TYPE_Q8_0:
       return LanesPerRow<GGML_TYPE_Q8_0>(k);
+    case GGML_TYPE_Q2_K:
+      return LanesPerRow<GGML_TYPE_Q2_K>(k);
+    case GGML_TYPE_IQ2_XXS:
+      return LanesPerRow<GGML_TYPE_IQ2_XXS>(k);
     case GGML_TYPE_MXFP4:
       return LanesPerRow<GGML_TYPE_MXFP4>(k);
     case GGML_TYPE_Q4_K:
@@ -619,6 +631,12 @@ bool LaunchVecQ(ggml_type type, const VecQDesc& d, int variant, cudaStream_t str
   switch (type) {
     case GGML_TYPE_Q8_0:
       LaunchVariant<GGML_TYPE_Q8_0>(d, variant, stream);
+      break;
+    case GGML_TYPE_Q2_K:
+      LaunchVariant<GGML_TYPE_Q2_K>(d, variant, stream);
+      break;
+    case GGML_TYPE_IQ2_XXS:
+      LaunchVariant<GGML_TYPE_IQ2_XXS>(d, variant, stream);
       break;
     case GGML_TYPE_MXFP4:
       LaunchVariant<GGML_TYPE_MXFP4>(d, variant, stream);

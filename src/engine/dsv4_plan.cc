@@ -144,6 +144,8 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   device.row_invariant = speculation.verify && m.exact;
   device.fuse_norms = !m.exact;
   device.vector_floats = !m.exact;
+  device.pair_experts = !m.exact;
+  device.wide_sparse_attention = !m.exact;
   const auto inputs = g.inputs();
   if (auto placed =
           PlaceAndPlan(*out, g.nodes, inputs, keep, device, activations, activation_bytes);
@@ -233,6 +235,8 @@ std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
   kg::DeviceChoices device = choices;
   device.fuse_norms = !d.exact;
   device.vector_floats = !d.exact;
+  device.pair_experts = !d.exact;
+  device.wide_sparse_attention = !d.exact;
   if (auto placed =
           PlaceAndPlan(*out, g.core.nodes, inputs, keep, device, activations, activation_bytes);
       !placed) {

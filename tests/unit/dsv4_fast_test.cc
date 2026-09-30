@@ -285,15 +285,17 @@ TEST_F(Dsv4FastTest, EveryConfigurationCoversEveryTypeTailRowsAndPaddedRows) {
     ggml_type type;
     std::int64_t k;
   };
-  const std::array<Case, 9> cases = {{{GGML_TYPE_Q8_0, 1024},
-                                      {GGML_TYPE_Q8_0, 1056},
-                                      {GGML_TYPE_MXFP4, 1024},
-                                      {GGML_TYPE_MXFP4, 1056},
-                                      {GGML_TYPE_Q4_K, 1024},
-                                      {GGML_TYPE_Q5_K, 1024},
-                                      {GGML_TYPE_Q6_K, 1024},
-                                      {GGML_TYPE_IQ2_XS, 1024},
-                                      {GGML_TYPE_IQ3_XXS, 1024}}};
+  const std::array<Case, 11> cases = {{{GGML_TYPE_Q8_0, 1024},
+                                       {GGML_TYPE_Q2_K, 1024},
+                                       {GGML_TYPE_IQ2_XXS, 1024},
+                                       {GGML_TYPE_Q8_0, 1056},
+                                       {GGML_TYPE_MXFP4, 1024},
+                                       {GGML_TYPE_MXFP4, 1056},
+                                       {GGML_TYPE_Q4_K, 1024},
+                                       {GGML_TYPE_Q5_K, 1024},
+                                       {GGML_TYPE_Q6_K, 1024},
+                                       {GGML_TYPE_IQ2_XS, 1024},
+                                       {GGML_TYPE_IQ3_XXS, 1024}}};
   constexpr float kLimit = 7.0f;
   // Each configuration's rows a block reads together (dsv4_fast.cu kVariants).
   constexpr std::array<std::int64_t, 11> kRows = {1, 1, 2, 1, 2, 4, 1, 2, 2, 1, 4};
@@ -397,7 +399,9 @@ TEST_F(Dsv4FastTest, RoutedExpertsReadOnceMatchPerTokenProducts) {
     bool per_slot;  // the down projection's per-slot rows, else each token's row
     bool glu;
   };
-  const std::array<Case, 4> cases = {{{GGML_TYPE_IQ2_XS, 4096, false, true},
+  const std::array<Case, 6> cases = {{{GGML_TYPE_IQ2_XXS, 4096, false, true},
+                                      {GGML_TYPE_Q2_K, 2048, true, false},
+                                      {GGML_TYPE_IQ2_XS, 4096, false, true},
                                       {GGML_TYPE_IQ3_XXS, 2048, true, false},
                                       {GGML_TYPE_MXFP4, 4096, false, true},
                                       {GGML_TYPE_MXFP4, 2048, true, false}}};

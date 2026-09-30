@@ -73,6 +73,12 @@ struct DeviceChoices {
   // vector kernel (MMVF) whatever upstream would route them to (MMF past
   // one BF16 column): a verify's router and head mixes.
   bool vector_floats = false;
+  // Fast plans may share preparation across adjacent ordinary MMQ expert
+  // products. The default keeps one primitive step per graph node.
+  bool pair_experts = false;
+  // Share a sparse query tile's KV union only for measured fast shapes.
+  // Unknown/reference graphs retain the original column selection.
+  bool wide_sparse_attention = false;
 };
 
 // One implementation's run over its nodes, in the order implementations.h
@@ -114,6 +120,7 @@ inline constexpr std::string_view kMulMatQ = "ggml.mul_mat.mmq";
 inline constexpr std::string_view kMulMatHadamard = "ggml.mul_mat.fwht";
 inline constexpr std::string_view kMulMatIdVecQ = "ggml.mul_mat_id.mmvq";
 inline constexpr std::string_view kMulMatIdQ = "ggml.mul_mat_id.mmq";
+inline constexpr std::string_view kMulMatIdQPair = "jitllm.mul_mat_id.mmq_pair";
 inline constexpr std::string_view kSubName = "ggml.sub";
 inline constexpr std::string_view kDivName = "ggml.div";
 inline constexpr std::string_view kScaleName = "ggml.scale";
@@ -134,6 +141,7 @@ inline constexpr std::string_view kHcCombName = "ggml.dsv4_hc_comb";
 inline constexpr std::string_view kHcPreName = "ggml.dsv4_hc_pre";
 inline constexpr std::string_view kHcPostName = "ggml.dsv4_hc_post";
 inline constexpr std::string_view kFlashAttnMmaName = "ggml.flash_attn_ext.mma";
+inline constexpr std::string_view kFlashAttnMmaWideName = "jitllm.flash_attn_ext.mma_wide";
 inline constexpr std::string_view kSsmConvName = "ggml.ssm_conv";
 inline constexpr std::string_view kGatedDeltaNetName = "ggml.gated_delta_net";
 // jitLLM's own operations on GGML tensors (jitllm_ops.h).
