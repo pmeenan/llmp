@@ -94,9 +94,10 @@ void Recorded(int result) {
 }  // namespace
 
 bool Dsv4HcaTokentileFits(const LaunchContext& launch, const ggml_tensor* node) {
-  return CheckDsv4HcaTokentile(node).has_value() && Supported(launch) &&
-         node->src[0]->ne[1] == 4096 && JitllmOpInt(node->src[3], 0) == 4352 &&
-         node->src[1]->ne[1] == 4608;
+  if (!CheckDsv4HcaTokentile(node) || !Supported(launch)) return false;
+  const auto tokens = node->src[0]->ne[1];
+  return (tokens == 2048 || tokens == 4096) && JitllmOpInt(node->src[3], 0) == tokens + 256 &&
+         node->src[1]->ne[1] == tokens + 512;
 }
 
 std::expected<std::uint64_t, KernelFailure> PlanDsv4HcaTokentile(const LaunchContext& launch,

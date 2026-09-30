@@ -221,11 +221,15 @@ The complete mirror/record/core path takes 7.056 ms versus ordinary
 89.030/89.012 ms; candidate/native NMSE is 9.48e−8, with separate
 strict FP64 selected-row references. Four fresh same-binary 8K model
 processes improve mean prefill throughput by 17.88%, with identical
-128 IDs and each path's full-logit repeat exact. This does not prove
+128 IDs and each path's full-logit repeat exact. A separate actual
+2,048-row replay takes 3.557 ms versus 46.560/46.553 ms; its matched
+production-sized-chunk 8K ABBA gains 15.76%, with the same ID/repeat
+controls. This does not prove
 the cause of the earlier oracle failure or establish long-window
 quality. The transfer is a default-off benchmark option for measured
-4,096-row GB10 shapes; production 2,048-row and fixed 32K/128K quality
-qualification remain pending. The qualified production HCA selection
+2,048/4,096-row GB10 shapes with 256 compressed cells; larger compressed
+extents and fixed 32K/128K quality qualification remain pending.
+The qualified production HCA selection
 remains unchanged.
 
 The generic planner and launch default retain D512's one-query sparse

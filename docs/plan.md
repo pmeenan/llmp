@@ -881,6 +881,14 @@ it appears.
       8K controls gain 3.68% mean prefill throughput and preserve all
       128 greedy IDs. It remains benchmark-only and off by default;
       long greedy, PPL and state/restore gates are owed before adoption.
+      A separate [literal HCA core port](experiments/ds4-hca-tokentile/README.md)
+      retains native F16 state and charges mirror/record preparation.
+      Same-input attention latency falls from 89.03 to 7.06 ms at 4K
+      rows and 46.56 to 3.56 ms at production-sized 2K rows. Separate
+      fresh 8K ABBAs gain 17.88% / 15.76% prefill throughput, with identical
+      128 IDs and exact own full-logit repeats. It remains benchmark-only
+      and default off; larger compressed extents and the unchanged long
+      greedy/PPL gates are still required.
       A separate [frontier-head follow-up](experiments/dsv4-frontier-head/README.md)
       preserves all state/DSpark streams while selecting only the target
       head rows production consumes. Original Q4_K controls gain

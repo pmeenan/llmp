@@ -134,9 +134,11 @@
   token/head rows its full-F32-Q FP64-reference NMSE was
   `1.65870549908486e-8` versus native `9.65217482737688e-8`. Four fresh
   same-binary community 8K processes give 17.88% mean prefill throughput
-  gain, identical 128 IDs and exact own full-logit repeats. These limited
-  results disclose numerical differences; production 2,048-row and
-  fixed-bound long-context quality remain required before any default
+  gain, identical 128 IDs and exact own full-logit repeats. The separate
+  actual 2,048-row charged replay takes 3.557 ms versus 46.560/46.553 ms;
+  its matched 8K ABBA gains 15.76% with the same ID/repeat controls.
+  These limited results disclose numerical differences; larger compressed
+  extents and fixed-bound long-context quality remain required before any default
   change. Full evidence is in the
   [literal HCA report](../experiments/ds4-hca-tokentile/README.md).
 - **Proposed upstream action:** expose a narrow standalone token-tile

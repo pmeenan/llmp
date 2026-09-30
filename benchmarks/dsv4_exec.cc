@@ -757,7 +757,7 @@ class Runner {
     Planned* p = nullptr;
     std::unique_ptr<Planned> once;
     if (keep.empty()) {
-      const auto position_key = m_.ds4_hca && rows == 4096 ? n_past : 0;
+      const auto position_key = m_.ds4_hca && (rows == 2048 || rows == 4096) ? n_past : 0;
       auto found = std::ranges::find_if(
           cache_, [&](const auto& e) { return e.shape == shape && e.position == position_key; });
       if (found == cache_.end()) {
@@ -1503,8 +1503,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   if (o.d2r_experts && o.exact) {
     return Error("--q2-d2r requires the fast plan; the exact plan retains its original products");
   }
-  if (o.ds4_hca && (o.exact || o.max_rows != 4096)) {
-    return Error("--ds4-hca requires the fast plan and --max-rows 4096");
+  if (o.ds4_hca && (o.exact || (o.max_rows != 2048 && o.max_rows != 4096))) {
+    return Error("--ds4-hca requires the fast plan and --max-rows 2048 or 4096");
   }
   if (o.probe_step != 0 && (o.force.empty() || o.probe_step >= o.generate)) {
     return Error("--probe-step needs --force and a step below --generate");

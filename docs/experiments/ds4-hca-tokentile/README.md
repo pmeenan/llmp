@@ -9,8 +9,10 @@ first-4K community-GGUF attention operands, versus native attention's
 F16 raw-ring mirror and original dense causal-record preparation. Four
 fresh matched 8K model processes give a 17.88% mean prefill throughput
 gain with identical 128 IDs and each arm's full-logit repeat exact.
-The native integration remains a default-off benchmark option pending
-production-shape and fixed-bound quality qualification. Serving and
+The production-sized 2,048-row comparison gains 15.76% mean prefill
+throughput under the same protocol. The native integration remains a
+default-off benchmark option pending larger compressed extents and
+fixed-bound quality qualification. Serving and
 production chunk sizes remain unchanged.
 
 ## One attention product, identical inputs and cache bytes
@@ -112,8 +114,8 @@ two approximations to be bit-identical.
 
 `jitllm_dsv4_exec --ds4-hca` is the only option that selects
 `jitllm.dsv4.hca_tokentile`. It refuses exact plans and chunks other
-than 4,096. The device predicate is restricted to measured GB10,
-D512/G64, T4096, raw4352/compressed256 shapes. Serving, decode,
+than 2,048 or 4,096. The device predicate is restricted to measured GB10,
+D512/G64, T2048/raw2304 or T4096/raw4352, with 256 compressed cells. Serving, decode,
 speculative verify, other devices and unknown shapes keep their previous
 selection. The generic direct entry point admits bounded tail fixtures
 without broadening the measured graph predicate.
@@ -136,10 +138,11 @@ own-repeat controls. The native tail controls report NMSE
 `5.62815e-8`, `1.60439e-7` and `2.37771e-7` against the unchanged
 ordinary approximation, all within `5e-4`.
 
-Production DeepSeek uses 2,048-row chunks. A future default decision
-requires an actual 2,048-row charged replay/model comparison, unchanged
-memory headroom and the existing fixed near-tie/PPL bounds. This initial
-4,096-row comparison does not authorize a chunk-size change.
+Production DeepSeek uses 2,048-row chunks. Its actual charged replay and
+model comparison are recorded below. A future default decision still
+requires larger compressed extents, unchanged memory headroom and the
+existing fixed near-tie/PPL bounds. Neither benchmark option changes
+production's chunk size.
 
 ## Matched 8K complete-model comparison
 
@@ -177,7 +180,76 @@ The fixed 0.947-nat near-tie and symmetric 3% PPL bounds are unchanged.
 Own graph scratch/reuse controls pass; the unchanged full-swap table is
 not repeated for this default-off attention arithmetic experiment.
 
-## Provenance and reproduction
+## Production chunk size, separate matched comparison
+
+A fresh capture executes the first 2,048 IDs of the same immutable
+community prompt with 2,048-row chunks. It captures layer three's actual
+Q, joined F16 KV, mask, sinks, visibility and native output. It is not a
+slice of the 4,096-row capture. Raw capacity is 2,304, compressed capacity
+256 and total KV capacity 2,560; original operation parameters are
+retained. The unchanged literal core, strict scorer and charged replay
+run their existing controls.
+
+| Charged arm, nine samples | Median ms |
+| --- | ---: |
+| Native ordinary, before | 46.559704 |
+| Literal mirror + records + attention | 3.556768 |
+| Native ordinary, after | 46.553265 |
+
+Native replay exactly matches the captured output. Candidate/native
+NMSE is `8.772082589e-8`, maximum absolute difference `0.005705357`.
+The strict 22-row full-F32-Q reference gives native NMSE
+`8.508874690e-8` and candidate NMSE `2.540958133e-8`; against RN-F16 Q,
+candidate NMSE is `2.905187262e-9`. Candidate/native scratch is
+3,277,824 / 4,739,072 bytes. The two identical Q banks total 536,870,912
+bytes, beyond L2. Operator controls do not establish model quality.
+
+The subsequent fresh-process 8K ABBA changes only the benchmark's
+attention opt-in. Context is 9,216, chunk size 2,048, compact scheduling
+and frontier head enabled, Q2 D2R disabled, with 128 outputs.
+
+| Fresh process, in order | Prefill s | 127 decode steps s | Literal HCA launches |
+| --- | ---: | ---: | ---: |
+| Ordinary off0 | 15.0271 | 6.8756 | 0 |
+| Literal on0 | 13.0061 | 6.8893 | 80 |
+| Literal on1 | 12.9797 | 6.8973 | 80 |
+| Ordinary off1 | 15.0552 | 6.9021 | 0 |
+
+Mean prefill falls from 15.04115 to 12.99290 s: 15.7644% higher
+throughput, or 13.6176% lower latency. All 128 IDs match between arms;
+each arm's fresh full-logit repeat is exact. Planned activation/scratch
+allocations are unchanged at 903,872,512 / 96,468,992 bytes;
+MemAvailable-derived peak occupancy ranges from 89,652,146,176 to
+90,070,847,488 bytes. Each load and retirement passes the successful-query
+105-GiB preflight. No long-quality gate or default adoption is claimed.
+
+On `spark`, supervised replay `m3-ds4-hca-2048-replay-r1` completed rc0
+2026-09-30, 13:18:14–13:18:51 EDT; model batch
+`m3-ds4-hca-2048-model-ab` completed rc0 at 13:25:03–13:27:15 EDT.
+Raw source, operands, checks and commands remain externally in
+`~/scratch/m3-ds4-hca/source-2048/`, `replay-community-2048-r1/`,
+`native-2048-final/` and `native-2048-ab/`.
+
+| 2,048-row identity | SHA-256 |
+| --- | --- |
+| First-2K prompt TSV | `338b4d6b2962ef931b3cb3e06b90193c7166c2fbcd831c487d5bdad9d5c5a40e` |
+| Capture binary | `d858aed16f659c600ffcc06707d0cfd1523465f6054b98b8405761d9db5ef1dd` |
+| Replay binary | `b554d0deed80fd7d6b1f141811180ac7bb4596d0ccd673a4176293172d71e707` |
+| Captured Q | `8d946cce71f68ed9272a6b5db6c32b3f3f376e98b454f8ab3936c7a71f743e1b` |
+| Captured joined KV | `133425dcd227da71af4385414830125432c4b9a2c8ef5decec28c0d3658528ee` |
+| Checked/measured native binary | `e3b9f22116b7647c1db13fe78ea7a28df850d71252c9653e562e9e0658132903` |
+| Model aggregate | `2e130eb130f16eebd2f195ff01a639680bea5784879096be0903ed388b4162d2` |
+| Off0/off1 full logits | `0033c67e3f92e68d9066678ab8533e6b3cebe8981706741a43acbd56ecd0a97a` |
+| On0/on1 full logits | `134d427cf962e3cbb59287cef4e2a07f259e8c2b0e1d606c95a36f02c427c91c` |
+
+The two-file eligibility/cache/CLI change passes prepare and all 1,041
+locked Spark-native tests (203 GPU, 64.76 s), SDK format and the affected
+host translation unit's tidy, 296 boundaries, actual REUSE and 22 headers.
+The subsequent comment/report/plan update passes a separate actual REUSE
+and 23-header export; six CLI refusals pass before loading. Broad swap
+timing is unchanged and is not repeated for this benchmark-only extension.
+
+## Provenance and reproduction of the initial 4,096-row trial
 
 Raw capture, controls and replay are under
 `spark:~/scratch/m3-ds4-hca/replay-community-r2/`; supervised job
@@ -218,7 +290,7 @@ Analysis SHA-256 is
 | Original op_params | `460a6dfea38797bf78feff173c5f905dc060c3144b5fbc1951803d77cd509bf4` |
 | Native captured output | `423eeffc50beee057da7dd715c74a0802db4f9d04d17ca2b1cad4f013dd53166` |
 | Immutable 8K prompt | `c1d7137841d7d594254e5540806b645e8fb7e6b741f8bcee77776bff67256e29` |
-| Captured first 4K IDs | `2781d8299bc58782978d9ddd7bc868bf0b40558508e5f539bd67538e4f98177f` |
+| First-4K prompt TSV | `2781d8299bc58782978d9ddd7bc868bf0b40558508e5f539bd67538e4f98177f` |
 | Final checked/measured native binary | `91e2f84ef4b53a1e799e7ecd9920d035a5bfa1d1a9a9481a78df86d6870602da` |
 | ABBA build receipt | `21c6c430c1f9bb39019b0fc4a30a64a094e85150d0b9a22f18b47a23f6fe66c7` |
 | Final metadata build receipt | `6160958029888c65a6d0bcc959f59ea617a76fd78ee0ae29a41b976ddc326353` |
