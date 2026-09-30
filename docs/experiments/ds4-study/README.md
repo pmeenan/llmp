@@ -446,6 +446,43 @@ TSV SHA-256
 `755b00b9ac2eeab723d2ce3b80d703149df1e085960c18c21ea7068e9e645ad7`).
 No ds4 PPL result is inferred from the native own-plan control.
 
+### Original ds4 default-cache likelihood control (2026-09-30)
+
+The pinned original ds4 pipeline now has a direct 32K likelihood readback
+on this exact community GGUF and TSV. Default FP8 KV and FP4 indexer
+transforms/storage remain enabled, with no `--quality` or environment
+overrides. Chunk size is 4,096, capacity 33,792, and every supplied transition
+is scored from its completed batch hidden row through the original full head.
+The registered second-half scope is unchanged: indices 16,384–32,766,
+16,383 transitions. Its PPL is **2.980670302**, about **0.138% lower** than
+the native wide-attention value above and **0.217% lower** than native
+one-query attention. These are same-weight comparisons to the recorded
+native paths, not a same-GGUF llama.cpp oracle gate or a general-quality pass.
+
+Before the 32K run, independently loaded ordinary and diagnostic original
+binaries used the first 8,192 fixed IDs plus four forced continuation IDs.
+All four complete 129,280-logit frontier files matched byte for byte; the
+diagnostic also scored all 8,191 prompt transitions. This proves likelihood
+readback preserved the original frontier and continuation in that control.
+The diagnostic is not a timing arm: its extra heads/readbacks/reductions must
+not be counted as original prefill throughput.
+
+This does **not** supply the owner's requested complete ds4 pipeline running
+inside jitLLM or end-to-end equality/performance parity. The native complete
+plan remains under implementation; operator ports and their individual
+controls do not establish that result.
+
+Provenance: `spark-b`, original pin `76d51ef82a81b70b78e51a3a6ea11946286de976`,
+ordinary/diagnostic binaries `3ecb3566096ea017b2f5ff512343d0976cf8cc39609d36cfec59f2e0baf5c84c`
+and `660d6d438328c54be13fde7388582bffaab747657e8399fe9c8d6a9267d4ff7f`.
+Raw controls and losses are outside Git in
+`~/scratch/m3-ds4-reference-quality/{control-r2,default-ppl-32k-r1}/`;
+completed retired receipt hashes are
+`55a7ffcab7ca8dae09da0a98d189c5dd79abaf7121caa8f0e13c0b34d3112951`
+and `5e5295e7f73d597e2530c12160d561ddc01e29cc1d3aad89f5782cfd7dd96b08`.
+The launcher-only retry fixed the required `--prompt-file` argument after
+a pre-load CLI refusal; the frozen native sources/binaries remained unchanged.
+
 The original UD-Q2_K_XL checkpoint is also affected by the shared
 attention and paired IQ2_XS preparation. On the existing 31,705-token
 coding fixture, old/new prefill is 59.118 / 50.990 s; both use 4,096-row
