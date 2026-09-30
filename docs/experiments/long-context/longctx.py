@@ -31,8 +31,30 @@ Every run samples MemAvailable every 200 ms (peak = the drop from before the
 engine started) and writes OUT/run.json and one OUT/<prompt>.json each.
 Prefill = first streamed piece − request sent (one decode step included);
 decode = (completion tokens − 1) ÷ (last piece − first piece).
+New records retain the requested output budget and terminal stream status;
+early natural stops are labeled separately from full-budget timings. Retrieval
+keeps the historical reasoning-plus-visible metric and also checks the visible
+answer, which passes only after a completed stop response.
+
+Protocol fields (also retained in run.json's compact prompt summaries):
+    requested_tokens / completion_tokens: the sent budget and actual count;
+    full_budget: actual count equals budget, or null if a count is unavailable;
+    early_stop: a completed natural stop before that budget;
+    finish_reason / seen_done / stream_complete: terminal status; /v1/ streams
+        need both a finish reason and [DONE], native llama /completion needs
+        its explicit stop envelope instead. Incomplete streams record errors
+        and do not produce throughput values;
+    needles_found: historical reasoning-plus-visible presence, unchanged;
+    visible_needles_found / visible_retrieval_pass: visible presence only,
+        passing only if every fact is visible and finish_reason is stop in
+        a complete stream. A length finish is still a timing, not an answer.
+        This searches the content/text channel; raw completion APIs need not
+        separate reasoning, and model-specific hidden markup is not inferred.
+The runtime's cold page-in warm-up is saved and must complete successfully
+before timed prompts start. Synthetic checks: test_longctx.py on a Spark.
 """
 import argparse
+import http.client
 import json
 import os
 from pathlib import Path
@@ -70,37 +92,69 @@ def prompt_files(paths):
     return [json.loads(Path(p).read_text()) for p in paths]
 
 
-def stream(client, path, payload, memory):
-    """A streamed request: timings, text, per-token IDs and log-probabilities."""
-    payload = dict(payload, stream=True)
-    if path.startswith("/v1/"):
-        payload["stream_options"] = {"include_usage": True}
-    out = {"t_send": time.monotonic(), "t_first": None, "t_last": None, "pieces": 0,
-           "text": "", "reasoning": "", "ids": [], "steps": [], "usage": None, "timings": None}
+def stream_chunks(response, record):
+    """Retain partial results if the connection or SSE JSON ends badly."""
     try:
-        response = __import__("baseline").OPENER.open(client._request(path, payload),
-                                                      timeout=4 * 3600)
-    except urllib.error.HTTPError as e:
-        out["error"] = {"status": e.code, "body": e.read().decode(errors="replace")[:2000]}
-        out["t_end"] = time.monotonic()
-        out["min_available_bytes"] = memory.minimum(out["t_send"], out["t_end"])
-        return out
-    with response:
         for raw in response:
             line = raw.strip()
             if not line.startswith(b"data:"):
                 continue
             data = line[5:].strip()
             if data == b"[DONE]":
-                break
+                record["seen_done"] = True
+                return
             chunk = json.loads(data)
+            if not isinstance(chunk, dict):
+                raise ValueError("SSE data is not a JSON object")
             if "error" in chunk:
-                out["error"] = chunk["error"]
-                break
+                record["error"] = chunk["error"]
+                return
+            yield chunk
+    except (ValueError, OSError, http.client.HTTPException) as error:
+        record["error"] = {"code": "stream_read_failed", "message": str(error)}
+
+
+def stream(client, path, payload, memory):
+    """A streamed request: timings, text, per-token IDs and log-probabilities."""
+    payload = dict(payload, stream=True)
+    if path.startswith("/v1/"):
+        payload["stream_options"] = {"include_usage": True}
+    out = {"t_send": time.monotonic(), "t_first": None, "t_last": None, "pieces": 0,
+           "text": "", "reasoning": "", "ids": [], "steps": [], "usage": None, "timings": None,
+           "requested_tokens": payload.get("max_tokens", payload.get("n_predict")),
+           "finish_reason": None, "seen_done": False, "stream_complete": False,
+           "llama_stop": False}
+    try:
+        response = __import__("baseline").OPENER.open(client._request(path, payload),
+                                                      timeout=4 * 3600)
+    except urllib.error.HTTPError as e:
+        with e:
+            out["error"] = {"status": e.code, "body": e.read().decode(errors="replace")[:2000]}
+        out["t_end"] = time.monotonic()
+        out["min_available_bytes"] = memory.minimum(out["t_send"], out["t_end"])
+        return out
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
+        out["error"] = {"code": "stream_open_failed", "message": str(error)}
+        out["t_end"] = time.monotonic()
+        out["min_available_bytes"] = memory.minimum(out["t_send"], out["t_end"])
+        return out
+    with response:
+        for chunk in stream_chunks(response, out):
             now = time.monotonic()
             out["usage"] = chunk.get("usage") or out["usage"]
             out["timings"] = chunk.get("timings") or out["timings"]
             piece = ""
+            if "choices" not in chunk and chunk.get("stop"):  # native llama terminal envelope
+                out["llama_stop"] = True
+                out["llama_stop_details"] = {
+                    k: chunk[k] for k in ("stop_type", "stopped_eos", "stopped_limit",
+                                         "stopped_word", "stopping_word") if k in chunk}
+                stop_type = chunk.get("stop_type")
+                if stop_type == "limit" or chunk.get("stopped_limit"):
+                    out["finish_reason"] = "length"
+                elif stop_type in ("eos", "word") or chunk.get("stopped_eos") or (
+                        chunk.get("stopped_word")):
+                    out["finish_reason"] = "stop"
             if "content" in chunk and "choices" not in chunk:  # llama.cpp /completion
                 piece = chunk.get("content") or ""
                 out["text"] += piece
@@ -112,6 +166,8 @@ def stream(client, path, payload, memory):
                 if chunk.get("tokens"):
                     out.setdefault("token_chunks", []).append(chunk["tokens"])
             for choice in chunk.get("choices") or []:
+                if choice.get("finish_reason") is not None:
+                    out["finish_reason"] = choice["finish_reason"]
                 delta = choice.get("delta") or {}
                 content = delta.get("content") or choice.get("text") or ""
                 reasoning = delta.get("reasoning_content") or delta.get("reasoning") or ""
@@ -131,6 +187,14 @@ def stream(client, path, payload, memory):
                 out["pieces"] += 1
                 out["t_first"] = out["t_first"] or now
                 out["t_last"] = now
+    terminal = out["seen_done"] if path.startswith("/v1/") else out["llama_stop"]
+    out["stream_complete"] = bool(terminal and isinstance(out["finish_reason"], str)
+                                  and out["finish_reason"] and not out.get("error"))
+    if not out["stream_complete"] and not out.get("error"):
+        out["error"] = {"code": "incomplete_stream", "message":
+                        "Missing terminal stream marker or finish reason",
+                        "seen_done": out["seen_done"], "llama_stop": out["llama_stop"],
+                        "finish_reason": out["finish_reason"]}
     out["t_end"] = time.monotonic()
     out["min_available_bytes"] = memory.minimum(out["t_send"], out["t_end"])
     return out
@@ -140,11 +204,30 @@ def summarize(record, prompt_tokens, completion_tokens):
     first, last, send = record["t_first"], record["t_last"], record["t_send"]
     record["prompt_tokens"] = prompt_tokens
     record["completion_tokens"] = completion_tokens
+    complete = bool(record.get("stream_complete") and not record.get("error"))
+    requested = record.get("requested_tokens")
+    known_counts = requested is not None and completion_tokens is not None
+    record["full_budget"] = completion_tokens == requested if known_counts else None
+    record["early_stop"] = (complete and record.get("finish_reason") == "stop"
+                            and completion_tokens < requested) if known_counts else None
+    record["completed_stop"] = complete and record.get("finish_reason") == "stop"
+    if not complete:
+        record["completion_status"] = "error" if record.get("error") else "incomplete"
+    elif record["early_stop"]:
+        record["completion_status"] = "early_stop"
+    elif record["full_budget"]:
+        record["completion_status"] = "full_budget"
+    elif record.get("finish_reason") == "length" and known_counts:
+        record["completion_status"] = "short_length"
+    else:
+        record["completion_status"] = "complete"
     record["prefill_s"] = first - send if first else None
-    record["prefill_tok_s"] = prompt_tokens / (first - send) if first and prompt_tokens else None
+    record["prefill_tok_s"] = (prompt_tokens / (first - send)
+                               if complete and first and prompt_tokens else None)
     span = (last or 0) - (first or 0)
     record["decode_tok_s"] = ((completion_tokens - 1) / span
-                              if completion_tokens and completion_tokens > 1 and span > 0 else None)
+                              if complete and completion_tokens and completion_tokens > 1
+                              and span > 0 else None)
     return record
 
 
@@ -163,11 +246,19 @@ def failed(out, run, name, error):
 
 
 def report(out, name, prompt, record):
+    # Preserve the historical metric; reasoning alone is not a visible answer.
     record["needles_found"] = needles(prompt, record.get("reasoning", "") + record["text"])
+    record["visible_needles_found"] = needles(prompt, record["text"])
+    record["visible_retrieval_pass"] = (
+        bool(record.get("completed_stop")) and all(record["visible_needles_found"].values())
+        if record["visible_needles_found"] else None)
     dump(out / f"{name}.json", record)
     short = {k: record.get(k) for k in ("prompt_tokens", "completion_tokens", "prefill_s",
-                                          "prefill_tok_s", "decode_tok_s", "needles_found",
-                                          "error")}
+                                       "requested_tokens", "full_budget", "early_stop",
+                                       "completion_status", "finish_reason", "seen_done",
+                                       "stream_complete", "completed_stop", "prefill_tok_s",
+                                       "decode_tok_s", "needles_found", "visible_needles_found",
+                                       "visible_retrieval_pass", "error")}
     print(name, json.dumps(short), flush=True)
     return short
 
@@ -418,10 +509,10 @@ def cmd_jitllm(args):
     baseline = Memory.available()
     run = {"config": Path(args.config).read_text(), "baseline_available_bytes": baseline,
            "prompts": {}}
-    log = open(out / "service.log", "w")
     t0 = time.monotonic()
-    process = subprocess.Popen([args.runtime, "--config", args.config, "--anchor",
-                                str(out / "anchor")], stdout=log, stderr=subprocess.STDOUT)
+    with open(out / "service.log", "w") as log:
+        process = subprocess.Popen([args.runtime, "--config", args.config, "--anchor",
+                                    str(out / "anchor")], stdout=log, stderr=subprocess.STDOUT)
     client = Client(f"http://127.0.0.1:{args.port}", args.model)
     try:
         while "jitllm-runtime: ready" not in (out / "service.log").read_text():
@@ -435,6 +526,14 @@ def cmd_jitllm(args):
                       {"model": args.model, "messages": [{"role": "user", "content": "Hi"}],
                        "temperature": 0, "max_tokens": 8}, memory)
         run["warmup_s"] = warm["t_end"] - warm["t_send"]
+        usage = warm.get("usage") or {}
+        summarize(warm, usage.get("prompt_tokens"), usage.get("completion_tokens"))
+        run["warmup"] = report(out, "warmup", {}, warm)
+        dump(out / "run.json", run)
+        if warm.get("error") or not warm["stream_complete"]:
+            error = RuntimeError("cold page-in warm-up failed; no timed requests were sent")
+            failed(out, run, "warmup", error)
+            raise error
         for prompt in prompt_files(args.prompts):
             messages = list(prompt["messages"])
             turns = [None] + (prompt["followups"] if args.session else [])
@@ -479,11 +578,13 @@ def cmd_jitllm(args):
                     failed(out, run, case, error)
                     break
     finally:
-        process.send_signal(signal.SIGTERM)
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM)
         try:
             process.wait(timeout=120)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait()
         run["min_available_bytes"] = memory.minimum(t0)
         run["peak_drop_gib"] = (baseline - run["min_available_bytes"]) / GIB
         memory.running = False

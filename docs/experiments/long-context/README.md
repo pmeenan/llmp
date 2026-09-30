@@ -378,8 +378,9 @@ identified by their content hashes (below).
   passphrases", and at 256K Mia's vLLM reasoned they were planted secrets
   and declined to repeat them; so the check has its own prompts (`-r`, the
   same files) whose notes give neutral "release codenames" and whose one
-  question asks for them in three lines. A rung passes when all three
-  appear in the output (reasoning or answer).
+  question asks for them in three lines. The historical runs below count
+  all three appearing in reasoning or answer. Final context checks require
+  all three in the visible answer after a completed natural stop.
 - **Perplexity:** *War and Peace* (Project Gutenberg #2600, public domain
   in the USA; the download's SHA-256 `2d5bb2ad…`, its header and footer
   cut: `ppl.txt`, SHA-256 `c7156148…`, 777,232 DeepSeek tokens). Each
@@ -415,6 +416,14 @@ piece − first piece), 512 generated tokens greedy (fewer when the model
 stopped); peak memory = the drop in `MemAvailable` from before the engine
 started, sampled every 200 ms. jitLLM runs start with a short warm-up
 request so no measured prefill includes paging the model in.
+
+The final harness retains requested and actual output counts, labels natural
+early stops, and requires the terminal stream marker and finish reason before
+reporting throughput. Failed warm-up prevents timed requests; truncated
+responses preserve partial output with an error. Its visible-retrieval result
+is separate from the historical `needles_found` field. Eleven synthetic
+protocol checks in [test_longctx.py](test_longctx.py) pass on `spark-b`
+(2026-09-30, Python 3.14.7, warnings treated as errors).
 
 ## Comparators
 
