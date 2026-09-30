@@ -658,8 +658,9 @@ it appears.
       slices take the 99th percentile of noise between two of jitLLM's
       own paths ([dsv4-decode](experiments/dsv4-decode/README.md#the-bound-going-forward)),
       under which one forced-run speculative token (a 3.62-nat
-      disagreement) is flagged. Open: that token's diagnosis; "decisive"
-      (about 1.1×) is not reached on any target; the products run at
+      disagreement) is flagged. It is diagnosed as kernel noise amplified
+      by near-tied routing ([step 93](experiments/dsv4-decode/README.md#step-93-diagnosed)).
+      Open: "decisive" (about 1.1×) is not reached on any target; the products run at
       about 200–210 GB/s in the model against 230–245 alone, unexplained.
 - [x] **TensorFold's techniques, Qwen3.8's decode gap first** (the owner,
       2026-09-28; [tensorfold-techniques](experiments/tensorfold-techniques/README.md)):
@@ -872,6 +873,10 @@ it appears.
       DeepSeek V4 Flash toward its trained 1,048,576 (YaRN, 16× over
       65,536). The largest that fits beside its weights and drafter is
       measured and becomes the documented and configurable ceiling.
+      [Final context checks](experiments/m3-final-context/README.md)
+      record the completed compact-target quality and earlier 1M request
+      fit, with final-path timings, retrieval and continuing-context swaps
+      explicitly pending.
       - *Baseline first:* prefill throughput and decode speed at each
         depth, speculative and plain, through the runtime and against the
         same-format comparators at the same depths:
@@ -899,8 +904,10 @@ it appears.
         64K). Maxima: Qwen3.8 262,144 (verified; MTP 32,768), DeepSeek
         262,144 plain (the configuration's bound, 1.3 GiB inside the
         guard) and 143,360 with DSpark. Correctness at 32K and 128K
-        passes except one DeepSeek step at 32K (2.62 nats, not
-        diagnosed); DeepSeek does not repeat at 32K (RE-031). Fixed to
+        passes except one DeepSeek step at 32K (2.62 nats, subsequently
+        diagnosed as near-tied routing/indexer noise; phase 2 agrees with
+        the oracle at that step). Phase 1 DeepSeek does not repeat at
+        32K (RE-031). Fixed to
         measure: RE-037, RE-038. The ranked gap list and fix plan are the
         report's; runs past 64K stopped there (the owner).
       - *Optimization, until every depth is at least the comparator's

@@ -26,6 +26,12 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_turn_reuse PRIVATE
                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
 
+  # Exact long-context swap controls without a second whole-state allocation.
+  add_executable(jitllm_long_swap long_swap.cc)
+  target_link_libraries(jitllm_long_swap PRIVATE jitllm_runtime_serving jitllm_base jitllm_warnings)
+  target_link_options(jitllm_long_swap PRIVATE
+                     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
+
   add_executable(jitllm_storage_bench storage_bench.cc)
   target_link_libraries(jitllm_storage_bench PRIVATE jitllm_cuda_device_memory jitllm_storage jitllm_warnings)
 

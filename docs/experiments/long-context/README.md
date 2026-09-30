@@ -20,6 +20,11 @@ supersedes the Qwen3.8 rows below: its per-token cost is now flat to
 within the indexer, at least Mia's vLLM's speed plain at every depth,
 repeatable, and speculative to 262,144.
 
+The [final context checks](../m3-final-context/README.md) follow the
+later kernel transfers, growing state and turn reuse. They distinguish
+the earlier 1M request fit from final-path maximum, quality and swap gates;
+pending results there are not passes.
+
 ## Phase 2: DeepSeek flat with depth (2026-09-29)
 
 Phase 2's first slice fixes gap 1 (below) on DeepSeek V4 Flash's default
