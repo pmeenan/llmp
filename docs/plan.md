@@ -889,12 +889,15 @@ it appears.
       65,536). The largest that fits beside its weights and drafter is
       measured and becomes the documented and configurable ceiling.
       [Final context checks](experiments/m3-final-context/README.md)
-      record the completed compact-target quality and earlier 1M request
-      fit. The corrected HCA/frontier runtime's 32K–256K ladder completes
+      record the completed compact-target quality and final runtime
+      checks. The corrected HCA/frontier runtime's 32K–256K ladder completes
       all 512 outputs per mode: prefill 1.88–1.93× llama.cpp, plain decode
       1.15–1.33× and DSpark 1.12–1.40×, peak memory 1.025× / 1.015×.
-      Final 1M/Qwen timings, neutral retrieval and continuing-context
-      swaps remain explicitly pending.
+      Final 1M timing also completes 512 outputs per mode: prefill
+      2.18–2.27× llama.cpp, decode 2.01× plain / 1.88× DSpark, memory
+      within 1.012×. Neutral completed-answer retrieval passes 8K–256K
+      in both modes. Qwen timings, DeepSeek 1M retrieval and
+      continuing-context swaps remain explicitly pending.
       - *Baseline first:* prefill throughput and decode speed at each
         depth, speculative and plain, through the runtime and against the
         same-format comparators at the same depths:

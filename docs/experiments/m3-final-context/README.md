@@ -100,7 +100,8 @@ The timing prompts quote the answer markers and the responses stop at
 their output budget, so these rows are not neutral retrieval passes.
 The fresh 32K/128K fixed-bound oracle controls, matched perplexity and
 sampled distribution checks remain the quality evidence linked above.
-Neutral retrieval and continuing-context swaps remain separate gates.
+Neutral retrieval results follow; continuing-context swaps remain separate
+gates.
 
 Provenance:
 
@@ -115,6 +116,33 @@ Provenance:
   `spark-b`; references:
   `~/.local/share/jitllm/m3lc/raw/ds-llama-{plain,dspark}/run.json`
   on the respective hosts above.
+
+## Final DeepSeek neutral retrieval through 256K
+
+On `spark-b`, job `m3-final-ds-neutral-retrieval` completes successfully
+2026-09-30 06:51:02–07:27:12 EDT. The runtime binary, target/drafter,
+capacity and chunks are the final ladder's checked configuration above.
+Plain and DSpark use separate fresh processes and zero cached tokens.
+The neutral fixtures place three release codenames in the source corpus
+and ask for those facts without quoting the answers in the question.
+All ten requests finish with `stop`, a terminal marker and a complete
+stream; all three facts appear in the visible answer, with no error.
+
+| Rung | Actual prompt tokens | Plain / DSpark output tokens | Visible retrieval |
+| --- | ---: | ---: | --- |
+| 8K | 7,594 | 82 / 82 | All three facts, both modes |
+| 32K | 31,628 | 74 / 88 | All three facts, both modes |
+| 64K | 64,492 | 163 / 163 | All three facts, both modes |
+| 128K | 128,744 | 164 / 164 | All three facts, both modes |
+| 256K | 258,779 | 74 / 74 | All three facts, both modes |
+
+Each request permits at most 1,024 outputs; a completed shorter answer
+passes this retrieval check and is not a 512-output timing measurement.
+Peak sampled memory drops are 98.068 / 108.715 GiB. Raw results are
+`~/scratch/m3-extrapolation-ds/final-retrieval-262k-{plain,spec}/run.json`
+on `spark-b`, using the measurement harness pinned above. These checks
+do not substitute for the fixed-bound oracle, full-window PPL or the
+separate 1M retrieval request, which remains in flight.
 
 ## DeepSeek one-million-token fit before the final optimizations
 
@@ -170,9 +198,39 @@ These captures precede the harness's terminal-marker/finish-reason fields;
 those fields are not retroactively inferred. Successful captures and
 512-output counts are retained in
 `~/scratch/m3-extrapolation-ds-b/llama-1m-{plain,spec}/run.json`.
-Final native plain/speculative timing and neutral retrieval started on
-`spark` at 05:23 EDT using the checked HCA/frontier runtime
-`7dd83ca9ceb0b077268b8448f6124ca7760425afd8ebb68b177eb9935b917770`.
+## Final DeepSeek runtime at one-million-token capacity
+
+The final HCA/frontier runtime on `spark`, job `m3-final-ds-1m` started
+2026-09-30 05:23 EDT, completes both plain and DSpark timing requests.
+Each processes 1,038,047 prompt tokens from the same canonical fixture
+as the reference above and produces all 512 outputs. Both start fresh,
+cache zero prompt tokens, finish with `length` and a terminal marker,
+and complete their streams without errors. Native chat rendering adds
+89 tokens relative to the reference; this is not an equal-ID comparison.
+Both use `context = 1048576`, F16 caches and 2,048-row chunks.
+
+| Mode | Prefill seconds | Prefill tok/s (× reference) | Decode tok/s (×) | Peak drop GiB (×) |
+| --- | ---: | ---: | ---: | ---: |
+| Plain | 3,542.776 | 293.004 (2.179×) | 16.545 (2.013×) | 103.911 (1.012×) |
+| DSpark | 3,558.859 | 291.680 (2.272×) | 31.750 (1.882×) | 114.847 (1.009×) |
+
+All rates exceed the matched same-GGUF reference; both memory ratios
+pass the approximately 1.1× bound. Minimum available memory is
+14,291,140,608 / 2,565,365,760 bytes. Registered fixed allocations are
+2.35 / 2.51 GiB, including workspace 2.21 / 2.37 GiB and 0.04 GiB
+host chunk inputs; execution budgets are 110.57 / 110.58 GiB.
+The prompt and output leave 10,017 tokens below the configured ceiling.
+Timing fixtures are not neutral retrieval evidence; the separate 1M
+completed-answer retrieval and maximum saved-state swap remain pending.
+The residual slope and watchdog floors still require completed-chunk
+observations rather than these mean rates.
+
+Runtime SHA-256:
+`7dd83ca9ceb0b077268b8448f6124ca7760425afd8ebb68b177eb9935b917770`;
+the checked kernel source is the same final HCA/frontier body as the
+262K ladder. Harness SHA-256 is the same as above. Raw native results
+are `~/scratch/m3-extrapolation-ds/final-new-1m-{plain,spec}-timing/run.json`
+on `spark`; reference captures and input/source pins are recorded above.
 
 ## Continuing-context swap protocol
 
@@ -229,11 +287,11 @@ The book is the long-context corpus's `ppl.txt`, SHA-256
 
 - Qwen native runtime prefill, plain decode and speculation at 32K, 64K,
   128K and 256K, with 512 requested outputs and zero cached prompt tokens.
-  DeepSeek's final ladder above is complete; its largest fitting prompt
-  at 1M remains in flight. Preserve actual completed output counts when
-  a model stops early.
-- Neutral `-r` retrieval at each rung and each maximum, with at most
-  1,024 outputs, checks all three codenames. The neutral 1M prompt content
+  DeepSeek's final ladder and 1M timing above are complete. Preserve
+  actual completed output counts when a model stops early.
+- Neutral `-r` retrieval with at most 1,024 outputs checks all three
+  codenames. DeepSeek plain/DSpark through 256K is complete; its 1M and
+  Qwen's ladder remain pending. The neutral 1M prompt content
   SHA-256 is
   `a4321cf9a22cc5a384905df8b394d88d5c1dafe35dfcbe51b61171c575a98015`.
 - Final frontier-head and Qwen kernel controls retain their original

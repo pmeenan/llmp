@@ -105,15 +105,14 @@ not used. The options each renderer supports and refuses are in
   The default is now 262,144. The configuration accepts 512 to the
   checkpoint's trained 1,048,576-token ceiling, checked before model
   allocation; growing state admits physical backing only as it is used,
-  within the runtime's memory guard. An earlier actual 1M request fit is
-  recorded in the [final context study](experiments/m3-final-context/README.md);
-  it precedes the frontier-head change and does not close its final
-  maximum-context quality/continuation gates.
-  At 262,144 it fits one Spark plain
-  and with DSpark (3.5 and 3.9 GiB fixed, the guard's 6 GiB margin
-  kept); a 256K prompt is not verified through the runtime, whose chat
-  route no longer has a fixed deadline to stop one (a progress watchdog,
-  runtime-serving.md#progress-and-deadlines). The
+  within the runtime's memory guard. The final HTTP path completes its
+  32K–256K ladder and a 1,038,047-token prompt at 1M capacity with all
+  512 outputs, plain and with DSpark
+  ([final context study](experiments/m3-final-context/README.md)). Neutral
+  completed-answer retrieval also passes 8K–256K in both modes; the
+  separate 1M retrieval and saved maximum-context continuation remain
+  pending. The chat route uses a progress watchdog
+  ([deadlines](runtime-serving.md#progress-and-deadlines)). The
   minimum, 512, starts and serves (checked on `spark`, speculative), its
   prefill chunk capped at 384 rows by the 128-position window; the
   default chunk is 2,048 rows
@@ -160,8 +159,10 @@ not used. The options each renderer supports and refuses are in
     equal/near-tie rows), with exact own repeats and common later rows.
     Matched 128K PPL is 1.926517 versus 1.9298. Fresh sampled checks pass
     the fixed TV bound; the final 32K–256K runtime ladder exceeds matched
-    llama.cpp speed with memory within 1.025×. Maximum-context runtime
-    controls remain pending; historical phase-2 agreement is not a
+    llama.cpp speed with memory within 1.025×. The final 1M runtime
+    also exceeds both modes' reference speed, with memory within 1.012×.
+    Maximum-context retrieval and continuation remain pending;
+    historical phase-2 agreement is not a
     current-path blanket pass.
   - The reference mode (`--exact on`) keeps GGML's top-k and does not
     repeat past 4,096 positions (RE-031).
