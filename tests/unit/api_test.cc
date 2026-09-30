@@ -34,6 +34,7 @@
 #include <expected>
 #include <format>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -47,8 +48,11 @@
 #include "platform/interfaces.h"
 #include "runtime/api_server.h"
 #include "runtime/binding.h"
+#include "runtime/completion_tokens.h"
 #include "runtime/http.h"
 #include "runtime/watchdog.h"
+#include "tokenizer/tokenizer.h"
+#include "tokenizer/unicode.h"
 
 namespace {
 
@@ -410,6 +414,314 @@ TEST(ChatRequest, TakesTextAsText) {
               HasSubstr("not valid JSON"));  // a duplicate key
 }
 
+TEST(LiteralRequest, ReadsTextAndExactIdsWithBothScoringConventions) {
+  auto text = api::ParseCompletionRequest(
+      R"({"model":"m","prompt":"a\u0000é","echo":true,"logprobs":1,"max_tokens":1,"temperature":0})");
+  ASSERT_TRUE(text.has_value());
+  EXPECT_EQ(text->prompt, std::optional<std::string>(std::string("a\0é", 4)));
+  EXPECT_TRUE(text->echo);
+  EXPECT_EQ(text->logprobs, 1U);
+  EXPECT_EQ(text->options.max_tokens, 1U);
+  EXPECT_TRUE(text->options.messages.empty());
+  auto ids = api::ParseCompletionRequest(
+      R"({"model":"m","prompt":[3,0,2147483647],"max_tokens":0,"prompt_logprobs":0,"echo":false,"add_special_tokens":true,"return_tokens_as_token_ids":true})");
+  ASSERT_TRUE(ids.has_value());
+  EXPECT_FALSE(ids->prompt.has_value());
+  EXPECT_THAT(ids->token_ids, ElementsAre(3, 0, 2147483647));
+  EXPECT_EQ(ids->options.max_tokens, 0U);
+  EXPECT_EQ(ids->prompt_logprobs, 0U);
+  EXPECT_FALSE(ids->echo);
+  EXPECT_TRUE(ids->return_tokens_as_token_ids);
+  auto empty = api::ParseCompletionRequest(R"({"model":"m","prompt":""})");
+  ASSERT_TRUE(empty.has_value());  // model BOS availability checked at admission
+  EXPECT_EQ(empty->options.max_tokens, 16U);
+}
+
+TEST(LiteralRequest, RefusesMalformedIdsAndUnimplementedSemanticFields) {
+  for (const std::string_view prompt : {"null", "[]", "[[]]", "[\"x\"]", "[true]", "[-1]", "[1.0]",
+                                        "[2147483648]", "[[1],[2]]", R"(["a","b"])", "{}"}) {
+    auto r = api::ParseCompletionRequest(std::format(R"({{"model":"m","prompt":{}}})", prompt));
+    ASSERT_FALSE(r.has_value()) << prompt;
+    EXPECT_EQ(r.error().param, "prompt");
+  }
+  for (const std::string_view field :
+       {R"("logprobs":true)", R"("logprobs":-1)", R"("prompt_logprobs":6)", R"("echo":1)",
+        R"("stream":true)", R"("best_of":2)", R"("suffix":"x")", R"("truncate_prompt_tokens":1)",
+        R"("allowed_token_ids":[1])", R"("ignore_eos":true)", R"("use_beam_search":true)",
+        R"("min_tokens":1)", R"("skip_special_tokens":false)", R"("messages":[])",
+        R"("max_tokens":-1)", R"("max_tokens":0,"max_completion_tokens":1)"}) {
+    EXPECT_FALSE(
+        api::ParseCompletionRequest(std::format(R"({{"model":"m","prompt":"x",{}}})", field))
+            .has_value())
+        << field;
+  }
+  EXPECT_FALSE(api::ParseCompletionRequest(R"({"model":"m"})").has_value());
+  EXPECT_FALSE(
+      api::ParseCompletionRequest(R"({"model":"m","prompt":"a","prompt":[1]})").has_value());
+  EXPECT_FALSE(api::ParseCompletionRequest("{\"model\":\"m\",\"prompt\":\"\xC3\"}").has_value());
+  EXPECT_FALSE(Parse(WithField(R"("max_tokens":0)")).has_value());
+}
+
+TEST(LiteralRequest, SharesTheHardIntakeAndUnknownNameBounds) {
+  std::string body = R"({"model":"m","prompt":"x","unrecognized":{"secret":"not logged"}})";
+  auto r = api::ParseCompletionRequest(body);
+  ASSERT_TRUE(r.has_value());
+  EXPECT_THAT(r->options.ignored, ElementsAre("unrecognized"));
+  body.resize(api::kMaxBodyBytes, ' ');
+  EXPECT_TRUE(api::ParseCompletionRequest(body).has_value());
+  body.push_back(' ');
+  EXPECT_FALSE(api::ParseCompletionRequest(body).has_value());
+  const std::string too_long(api::kMaxMessageBytes + 1, 'x');
+  EXPECT_FALSE(
+      api::ParseCompletionRequest(std::format(R"({{"model":"m","prompt":"{}"}})", too_long))
+          .has_value());
+}
+
+TEST(LiteralJson, EchoArraysAlignWithHarnessAndVllmSuppliedTokenScores) {
+  auto request = api::ParseCompletionRequest(
+      R"({"model":"m","prompt":[1,2],"echo":true,"max_tokens":1,"logprobs":1,"prompt_logprobs":1})");
+  ASSERT_TRUE(request.has_value());
+  const api::TokenLogprob first{
+      .id = 1, .token = "é", .logprob = std::nullopt, .top = {}, .text_offset = 0};
+  const api::TokenLogprob supplied{.id = 2,
+                                   .token = "x",
+                                   .logprob = -7,
+                                   .top = {{.id = 3, .token = "y", .logprob = -0.1, .rank = 1},
+                                           {.id = 2, .token = "x", .logprob = -7, .rank = 8}},
+                                   .text_offset = 1};
+  auto generated = supplied;
+  generated.text_offset = 2;
+  const api::LiteralResult rows{.prompt_text = "éx",
+                                .logprobs = {first, supplied, generated},
+                                .prompt_logprobs = {first, supplied}};
+  auto body = api::LiteralCompletionJson("cmpl-1", 5, *request, "x", rows, api::Finish::kLength,
+                                         {.prompt_tokens = 2, .completion_tokens = 1});
+  ASSERT_TRUE(body.has_value());
+  auto doc = json::Parse(*body);
+  ASSERT_TRUE(doc.has_value()) << *body;
+  EXPECT_EQ(In(doc->root(), {"object"}).string(), "text_completion");
+  const auto choice = In(doc->root(), {"choices"}).at(0);
+  EXPECT_EQ(In(choice, {"text"}).string(), "éxx");
+  const auto scores = In(choice, {"logprobs"});
+  for (const std::string_view key : {"tokens", "token_logprobs", "top_logprobs", "text_offset"}) {
+    EXPECT_EQ(In(scores, {key}).size(), 3U);
+  }
+  EXPECT_TRUE(In(scores, {"token_logprobs"}).at(0).is_null());
+  // lm_eval reads [ctxlen:-1]: only supplied continuation token x, even
+  // when x is outside top-1; the final generated row is separate.
+  EXPECT_EQ(In(scores, {"token_logprobs"}).at(1).float64(), -7);
+  EXPECT_EQ(In(In(scores, {"top_logprobs"}).at(1), {"y"}).float64(), -0.1);
+  EXPECT_EQ(In(scores, {"text_offset"}).at(1).int64(), 1);
+  const auto prompt = In(choice, {"prompt_logprobs"});
+  EXPECT_TRUE(prompt.at(0).is_null());
+  EXPECT_EQ(In(prompt.at(1), {"2", "logprob"}).float64(), -7);
+  EXPECT_EQ(In(prompt.at(1), {"2", "rank"}).int64(), 8);
+}
+
+TEST(LiteralJson, PureScoringDoesNotRequireEchoOrLegacyLogprobs) {
+  auto request = api::ParseCompletionRequest(
+      R"({"model":"m","prompt":[1,2],"max_tokens":0,"prompt_logprobs":0})");
+  ASSERT_TRUE(request.has_value());
+  const api::LiteralResult rows{
+      .prompt_text = "AB",
+      .logprobs = {},
+      .prompt_logprobs = {
+          {.id = 1, .token = "A", .logprob = std::nullopt, .top = {}, .text_offset = 0},
+          {.id = 2,
+           .token = "B",
+           .logprob = -2,
+           .top = {{.id = 2, .token = "B", .logprob = -2, .rank = 2}},
+           .text_offset = 1}}};
+  auto body = api::LiteralCompletionJson("cmpl-0", 1, *request, "", rows, api::Finish::kStop,
+                                         {.prompt_tokens = 2});
+  ASSERT_TRUE(body.has_value());
+  auto doc = json::Parse(*body);
+  ASSERT_TRUE(doc.has_value());
+  const auto choice = In(doc->root(), {"choices"}).at(0);
+  EXPECT_EQ(In(choice, {"text"}).string(), "");
+  EXPECT_TRUE(In(choice, {"logprobs"}).is_null());
+  EXPECT_EQ(In(choice, {"prompt_logprobs"}).size(), 2U);
+  EXPECT_EQ(In(doc->root(), {"usage", "completion_tokens"}).int64(), 0);
+}
+
+TEST(LiteralJson, RefusesOversizedOrNonfiniteScoresBeforeSerialization) {
+  api::CompletionRequest request;
+  request.options.model = "m";
+  request.prompt = "x";
+  request.logprobs = 1;
+  api::LiteralResult result;
+  result.logprobs.push_back({.id = 1,
+                             .token = "x",
+                             .logprob = std::numeric_limits<double>::infinity(),
+                             .top = {},
+                             .text_offset = 0});
+  EXPECT_FALSE(
+      api::LiteralCompletionJson("c", 0, request, "", result, api::Finish::kStop, {}).has_value());
+  result.logprobs.front().logprob = -1;
+  result.logprobs.front().token.resize((api::kMaxCompletionResponseBytes / 6) + 1, 'x');
+  EXPECT_FALSE(
+      api::LiteralCompletionJson("c", 0, request, "", result, api::Finish::kStop, {}).has_value());
+}
+
+jitllm::tokenizer::TokenizerSpec LiteralVocabulary(bool add_bos) {
+  jitllm::tokenizer::TokenizerSpec spec;
+  char32_t next = 256;
+  for (unsigned byte = 0; byte < 256; ++byte) {
+    const bool printable =
+        (byte >= 0x21 && byte <= 0x7E) || (byte >= 0xA1 && byte <= 0xAC) || byte >= 0xAE;
+    std::string text;
+    jitllm::tokenizer::unicode::AppendUtf8(printable ? static_cast<char32_t>(byte) : next++, text);
+    spec.tokens.push_back(std::move(text));
+    spec.kinds.push_back(jitllm::tokenizer::TokenKind::kNormal);
+  }
+  spec.tokens.emplace_back("<bos>");
+  spec.tokens.emplace_back("<eos>");
+  spec.tokens.emplace_back("unused");
+  spec.kinds.push_back(jitllm::tokenizer::TokenKind::kControl);
+  spec.kinds.push_back(jitllm::tokenizer::TokenKind::kControl);
+  spec.kinds.push_back(jitllm::tokenizer::TokenKind::kUnused);
+  spec.bos = 256;
+  spec.eos = 257;
+  spec.add_bos = add_bos;
+  return spec;
+}
+
+TEST(LiteralTokens, TextHonorsAddBosPolicyButIdsRemainExact) {
+  auto with = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(true));
+  auto without = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
+  ASSERT_TRUE(with.has_value());
+  ASSERT_TRUE(without.has_value());
+  auto request = api::ParseCompletionRequest(
+      R"({"model":"m","prompt":"A","max_tokens":0,"echo":true,"logprobs":1})");
+  ASSERT_TRUE(request.has_value());
+  auto prepared = api::PrepareLiteralPrompt(*request, *with, 2);
+  ASSERT_TRUE(prepared.has_value());
+  EXPECT_THAT(prepared->tokens, ElementsAre(256, 65));
+  EXPECT_TRUE(prepared->added_bos);
+  EXPECT_EQ(prepared->text, "A");
+  prepared = api::PrepareLiteralPrompt(*request, *without, 2);
+  ASSERT_TRUE(prepared.has_value());
+  EXPECT_THAT(prepared->tokens, ElementsAre(65));
+  EXPECT_FALSE(prepared->added_bos);
+  request->prompt = "<bos>A";
+  prepared = api::PrepareLiteralPrompt(*request, *with, 4);
+  ASSERT_TRUE(prepared.has_value());
+  EXPECT_THAT(prepared->tokens, ElementsAre(256, 65));
+  EXPECT_FALSE(prepared->added_bos);
+  request->prompt.reset();
+  request->token_ids = {257, 65};
+  prepared = api::PrepareLiteralPrompt(*request, *with, 2);
+  ASSERT_TRUE(prepared.has_value());
+  EXPECT_THAT(prepared->tokens, ElementsAre(257, 65));  // supplied stop is not dropped
+  EXPECT_FALSE(prepared->added_bos);
+  request->options.max_tokens = 1;
+  EXPECT_FALSE(api::PrepareLiteralPrompt(*request, *with, 2).has_value());
+  request->options.max_tokens = 0;
+  request->token_ids = {258};
+  EXPECT_FALSE(api::PrepareLiteralPrompt(*request, *with, 2).has_value());
+  request->token_ids = {259};
+  EXPECT_FALSE(api::PrepareLiteralPrompt(*request, *with, 2).has_value());
+}
+
+TEST(LiteralTokens, EmptyTextRequiresEnabledBosAndNormalizationIsExplicit) {
+  auto with = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(true));
+  auto spec = LiteralVocabulary(false);
+  spec.normalization = jitllm::tokenizer::Normalization::kNfc;
+  auto normalized = jitllm::tokenizer::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(with.has_value());
+  ASSERT_TRUE(normalized.has_value());
+  auto request = api::ParseCompletionRequest(
+      R"({"model":"m","prompt":"","max_tokens":0,"prompt_logprobs":0})");
+  ASSERT_TRUE(request.has_value());
+  auto prepared = api::PrepareLiteralPrompt(*request, *with, 1);
+  ASSERT_TRUE(prepared.has_value());
+  EXPECT_THAT(prepared->tokens, ElementsAre(256));
+  EXPECT_FALSE(api::PrepareLiteralPrompt(*request, *normalized, 1).has_value());
+  request->add_special_tokens = false;
+  EXPECT_FALSE(api::PrepareLiteralPrompt(*request, *with, 1).has_value());
+  request->prompt = "e\xCC\x81";
+  auto refused = api::PrepareLiteralPrompt(*request, *normalized, 8);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code, "tokenization_changes_text");
+}
+
+TEST(LiteralTokens, ByteTokensShareOffsetsAndFlushAtThePromptBoundary) {
+  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
+  ASSERT_TRUE(tokenizer.has_value());
+  std::size_t budget = 1024;
+  api::LiteralRows rows(*tokenizer, false, true, 0, budget);
+  std::vector<float> logits(tokenizer->size(), 0);
+  auto lead = rows.Add(0xC3, {}, 1, true);
+  ASSERT_TRUE(lead.has_value());
+  EXPECT_EQ(lead->text_offset, 0U);
+  auto tail = rows.Add(0xA9, logits, 1);
+  ASSERT_TRUE(tail.has_value());
+  EXPECT_EQ(tail->text_offset, 0U);
+  EXPECT_EQ(rows.offset(), 1U);  // é is one decoded character, not two byte tokens
+  ASSERT_TRUE(rows.Add(0xE2, logits, 1).has_value());
+  EXPECT_EQ(rows.offset(), 1U);
+  rows.Finish();
+  EXPECT_EQ(rows.offset(), 2U);  // trailing partial byte becomes U+FFFD
+  api::LiteralRows generated(*tokenizer, true, false, rows.offset(), budget);
+  auto next = generated.Add(65, logits, 0);
+  ASSERT_TRUE(next.has_value());
+  EXPECT_EQ(next->text_offset, 2U);
+  EXPECT_EQ(next->token, "token_id:65");
+  EXPECT_EQ(generated.offset(), 3U);
+  auto eos = generated.Add(257, logits, 0);
+  ASSERT_TRUE(eos.has_value());
+  EXPECT_EQ(eos->text_offset, 3U);
+  EXPECT_EQ(generated.offset(), 3U);  // EOS has a score but no generated text
+  budget = api::kMaxCompletionResponseBytes;
+  EXPECT_FALSE(generated.Add(65, logits, 0).has_value());
+  EXPECT_EQ(budget, api::kMaxCompletionResponseBytes);
+}
+
+TEST(LiteralTokens, RefusesScoreCountBeforeDecodingAndPreservesBpeIds) {
+  auto spec = LiteralVocabulary(false);
+  spec.tokens.emplace_back("ab");
+  spec.kinds.push_back(jitllm::tokenizer::TokenKind::kNormal);
+  spec.merges.emplace_back("a", "b");
+  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(tokenizer.has_value());
+  auto request = api::ParseCompletionRequest(
+      R"({"model":"m","prompt":"ab","max_tokens":0,"prompt_logprobs":1})");
+  ASSERT_TRUE(request.has_value());
+  auto merged = api::PrepareLiteralPrompt(*request, *tokenizer, 8);
+  ASSERT_TRUE(merged.has_value());
+  EXPECT_THAT(merged->tokens, ElementsAre(259));
+  request->prompt.reset();
+  request->token_ids = {97, 98};  // client-specified continuation boundary stays separate
+  auto exact = api::PrepareLiteralPrompt(*request, *tokenizer, 8);
+  ASSERT_TRUE(exact.has_value());
+  EXPECT_THAT(exact->tokens, ElementsAre(97, 98));
+  request->token_ids.assign(api::kMaxCompletionScoreRows + 1, 65);
+  auto refused = api::PrepareLiteralPrompt(*request, *tokenizer, 262144);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code, "score_limit_exceeded");
+}
+
+TEST(LiteralJson, ZeroTopCountKeepsActualTokenOnlyWhenOtherFormAskedForTopOne) {
+  auto request = api::ParseCompletionRequest(
+      R"({"model":"m","prompt":[1,2],"max_tokens":0,"echo":true,"logprobs":1,"prompt_logprobs":0})");
+  ASSERT_TRUE(request.has_value());
+  api::TokenLogprob row{.id = 2,
+                        .token = "B",
+                        .logprob = -2,
+                        .top = {{.id = 3, .token = "C", .logprob = -0.1, .rank = 1},
+                                {.id = 2, .token = "B", .logprob = -2, .rank = 2}},
+                        .text_offset = 1};
+  api::LiteralResult result{.prompt_text = "AB", .logprobs = {row}, .prompt_logprobs = {row}};
+  auto body = api::LiteralCompletionJson("c", 0, *request, "", result, api::Finish::kStop, {});
+  ASSERT_TRUE(body.has_value());
+  auto doc = json::Parse(*body);
+  ASSERT_TRUE(doc.has_value());
+  const auto choice = In(doc->root(), {"choices"}).at(0);
+  EXPECT_EQ(In(choice, {"logprobs", "top_logprobs"}).at(0).size(), 2U);
+  EXPECT_EQ(In(choice, {"prompt_logprobs"}).at(0).size(), 1U);
+  EXPECT_TRUE(In(choice, {"prompt_logprobs"}).at(0).find("2").has_value());
+}
+
 TEST(ApiJson, ShapesParseBack) {
   const api::Usage usage{.prompt_tokens = 7, .completion_tokens = 3, .cached_tokens = 2};
   const std::string completion = api::CompletionJson("chatcmpl-1", 5, "m", "a\"b", std::string("r"),
@@ -723,6 +1035,69 @@ class FakeBackend final : public api::Backend {
     return api::Completion{.completion_tokens = go ? 4U : 3U, .cached_tokens = 2, .stopped = go};
   }
 
+  std::expected<api::Completion, api::Error> Complete(const api::CompletionRequest& request,
+                                                      api::Exchange& exchange) override {
+    ++literal_calls;
+    if (std::ranges::any_of(request.token_ids, [](std::int32_t id) { return id >= 10; })) {
+      return std::unexpected(api::Error{.status = 400,
+                                        .type = "invalid_request_error",
+                                        .message = "outside vocabulary",
+                                        .param = "prompt",
+                                        .code = "invalid_token_id"});
+    }
+    const auto prompt = static_cast<std::uint32_t>(request.prompt ? request.prompt->size()
+                                                                  : request.token_ids.size());
+    const auto max_tokens = request.options.max_tokens.value_or(16);
+    if (!exchange.Admit(
+            {.prompt_tokens = prompt, .max_tokens = max_tokens, .swap_bytes = 0, .floors = {}})) {
+      return api::Completion{};
+    }
+    if (request.prompt == "block") {
+      started.store(true);
+      while (!release.load()) {
+        if (!exchange.Next(jitllm::runtime::Phase::kPrefill, 1)) {
+          cancelled.store(true);
+          return api::Completion{};
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+    }
+    api::Completion result;
+    result.literal.prompt_text = request.prompt.value_or(std::string(prompt, 'A'));
+    if (request.prompt == "huge") {
+      result.literal.prompt_text.assign(std::size_t{4} << 20U, 'x');
+    }
+    for (std::uint32_t i = 0; i < prompt; ++i) {
+      api::TokenLogprob row{
+          .id = 1, .token = "A", .logprob = std::nullopt, .top = {}, .text_offset = i};
+      if (i != 0) {
+        row.logprob = -2;
+        row.top = {{.id = 2, .token = "B", .logprob = -0.1, .rank = 1},
+                   {.id = 1, .token = "A", .logprob = -2, .rank = 2}};
+      }
+      if (request.echo && request.logprobs) {
+        result.literal.logprobs.push_back(row);
+      }
+      if (request.prompt_logprobs) {
+        result.literal.prompt_logprobs.push_back(std::move(row));
+      }
+    }
+    if (max_tokens != 0) {
+      (void)exchange.Content("B");
+      result.completion_tokens = 1;
+      if (request.logprobs) {
+        result.literal.logprobs.push_back(
+            {.id = 2,
+             .token = "B",
+             .logprob = -0.1,
+             .top = {{.id = 2, .token = "B", .logprob = -0.1, .rank = 1}},
+             .text_offset = request.echo ? prompt : 0});
+      }
+    }
+    result.stopped = max_tokens == 0;
+    return result;
+  }
+
   // Set before the server starts.
   api::Exchange::Admission admission{
       .prompt_tokens = 10, .max_tokens = 1000, .swap_bytes = 0, .floors = {}};
@@ -730,6 +1105,7 @@ class FakeBackend final : public api::Backend {
   std::atomic<bool> release{false};
   std::atomic<bool> cancelled{false};
   std::atomic<bool> flooded{false};
+  std::atomic<unsigned> literal_calls{0};
 };
 
 // A client socket's reads, with a timeout: false at the end or on none.
@@ -898,6 +1274,13 @@ class ServerTest : public ::testing::Test {
         extra, body.size(), body);
   }
 
+  static std::string Literal(std::string_view body) {
+    return std::format(
+        "POST /v1/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.size(), body);
+  }
+
   static std::string Chat(std::string_view text, std::string_view fields = "",
                           std::string_view model = "alpha") {
     return std::format(R"({{"model":"{}","messages":[{{"role":"user","content":"{}"}}]{}}})", model,
@@ -949,6 +1332,106 @@ TEST_F(ServerTest, AnswersAChatCompletion) {
   EXPECT_EQ(In(In(root, {"choices"}).at(0), {"finish_reason"}).string(), "stop");
   EXPECT_EQ(In(root, {"usage", "prompt_tokens"}).int64(), 10);
   EXPECT_EQ(In(root, {"usage", "completion_tokens"}).int64(), 4);
+}
+
+TEST_F(ServerTest, ServesLegacyEchoAndVllmPureScoringOnTheLiteralRoute) {
+  auto response = Exchange(
+      Literal(R"({"model":"alpha","prompt":[1,2],"max_tokens":1,"echo":true,"logprobs":1})"));
+  EXPECT_THAT(response, StartsWith("HTTP/1.1 200 OK\r\n"));
+  EXPECT_THAT(response, HasSubstr("jitllm-inference-version: 1\r\n"));
+  auto doc = json::Parse(BodyOf(response));
+  ASSERT_TRUE(doc.has_value());
+  EXPECT_THAT(std::string(In(doc->root(), {"id"}).string()), StartsWith("cmpl-"));
+  EXPECT_EQ(In(doc->root(), {"object"}).string(), "text_completion");
+  const auto choice = In(doc->root(), {"choices"}).at(0);
+  EXPECT_EQ(In(choice, {"text"}).string(), "AAB");
+  EXPECT_EQ(In(choice, {"logprobs", "token_logprobs"}).size(), 3U);
+  response = Exchange(Literal(
+      R"({"model":"alpha","prompt":[1,2],"max_tokens":0,"echo":false,"prompt_logprobs":0})"));
+  doc = json::Parse(BodyOf(response));
+  ASSERT_TRUE(doc.has_value());
+  const auto scored = In(doc->root(), {"choices"}).at(0);
+  EXPECT_EQ(In(scored, {"text"}).string(), "");
+  EXPECT_TRUE(In(scored, {"logprobs"}).is_null());
+  EXPECT_EQ(In(scored, {"prompt_logprobs"}).size(), 2U);
+  EXPECT_EQ(In(doc->root(), {"usage", "completion_tokens"}).int64(), 0);
+  EXPECT_EQ(In(scored, {"finish_reason"}).string(), "stop");
+  EXPECT_EQ(backend_.literal_calls, 2U);
+}
+
+TEST_F(ServerTest, LiteralParserRefusesBeforeBackendAndAdmissionChecksVocabulary) {
+  for (const std::string_view body :
+       {R"({"model":"alpha","prompt":[-1]})", R"({"model":"alpha","prompt":[true]})",
+        R"({"model":"alpha","prompt":[[1]]})", R"({"model":"alpha","prompt":"x","stream":true})",
+        R"({"model":"image","prompt":"x"})"}) {
+    EXPECT_THAT(Exchange(Literal(body)), StartsWith("HTTP/1.1 400 "));
+  }
+  EXPECT_EQ(backend_.literal_calls, 0U);
+  EXPECT_THAT(Exchange(Literal(R"({"model":"alpha","prompt":[10]})")),
+              AllOf(StartsWith("HTTP/1.1 400 "), HasSubstr("invalid_token_id")));
+  EXPECT_EQ(backend_.literal_calls, 1U);
+}
+
+TEST_F(ServerTest, LiteralScoringStopsWhenTheClientDisconnects) {
+  const int fd =
+      Connect(Literal(R"({"model":"alpha","prompt":"block","max_tokens":0,"prompt_logprobs":1})"));
+  WaitStarted();
+  linger reset{.l_onoff = 1, .l_linger = 0};
+  (void)::setsockopt(fd, SOL_SOCKET, SO_LINGER, &reset, sizeof reset);
+  (void)::close(fd);
+  for (int i = 0; i < 2000 && !backend_.cancelled.load(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_TRUE(backend_.cancelled.load());
+}
+
+TEST_F(ServerTest, LiteralResponseBudgetFollowsSlowBuffersThroughSendAndDrop) {
+  constexpr std::string_view body =
+      R"({"model":"alpha","prompt":"huge","max_tokens":0,"echo":true})";
+  auto request = api::ParseCompletionRequest(body);
+  ASSERT_TRUE(request.has_value());
+  // Measure the allocator's charge for this exact response shape rather
+  // than assuming a particular string growth factor in the test.
+  api::LiteralResult large;
+  large.prompt_text.assign(std::size_t{4} << 20U, 'x');
+  auto serialized =
+      api::LiteralCompletionJson("cmpl-000000000000000000000000", 1000000000, *request, "", large,
+                                 api::Finish::kStop, {.prompt_tokens = 4});
+  ASSERT_TRUE(serialized.has_value());
+  api::ServerOptions options;
+  options.response_budget = serialized->capacity() + (serialized->capacity() / 2);
+  options.write_timeout = std::chrono::seconds(5);
+  Stop();
+  Start(options);
+  if (!server_.has_value()) {
+    ADD_FAILURE() << "the response-budget server did not start";
+    return;
+  }
+  auto& server = *server_;
+  jitllm::runtime::http::Fd slow(Open(4096));
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(slow.get(), Literal(body)));
+  const auto wait_for_charge = [&](bool charged) {
+    for (int i = 0; i < 1000 && (server.response_bytes() != 0) != charged; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return (server.response_bytes() != 0) == charged;
+  };
+  ASSERT_TRUE(wait_for_charge(true));
+  EXPECT_LE(server.response_bytes(), options.response_budget);
+  jitllm::runtime::http::Fd second(Open(4096));
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(second.get(), Literal(body)));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(second.get(), pending),
+              AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("response_budget_exceeded")));
+  EXPECT_LE(server.response_bytes(), options.response_budget);
+  // A reset releases a partially sent allocation, allowing the next large
+  // response; draining that response releases its charge as well.
+  linger reset{.l_onoff = 1, .l_linger = 0};
+  (void)::setsockopt(slow.get(), SOL_SOCKET, SO_LINGER, &reset, sizeof reset);
+  slow = jitllm::runtime::http::Fd();
+  ASSERT_TRUE(wait_for_charge(false));
+  EXPECT_THAT(Exchange(Literal(body)), StartsWith("HTTP/1.1 200 "));
+  ASSERT_TRUE(wait_for_charge(false));
 }
 
 TEST_F(ServerTest, StreamsChunksThenDone) {

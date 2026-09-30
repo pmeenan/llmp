@@ -9,7 +9,8 @@ keepalive contract, standard-client signals, alias echo), with D-047's
 reasoning, storage and non-streaming corrections, following D-022/D-030.
 This is the M5 implementation contract and test plan for the
 inference front door, not a claim that jitLLM serves these clients. M3
-serves only a minimal `/v1/chat/completions` on loopback and the tailnet
+serves a minimal `/v1/chat/completions` and non-streaming raw
+`/v1/completions` with supplied-token likelihoods on loopback and the tailnet
 ([runtime-serving.md](runtime-serving.md#the-chat-route), D-097), checked
 with curl, not with these clients; the surface here arrives in M5 (D-087).
 M3's route already does three things this document assigns to M5:
@@ -18,6 +19,12 @@ Completions (below), and ignoring unknown fields by name under a
 documented rule (the last section). Sources are live official documentation, not
 pinned client binaries; recheck and record exact client versions and
 configurations when running acceptance.
+
+D-100 adds the bounded [literal likelihood contract](runtime-serving.md#literal-completions-and-likelihoods):
+OpenAI echo/logprobs and vLLM prompt_logprobs, including max_tokens zero.
+This does not claim full client acceptance. The initial one-row scorer is
+memory bounded and has decode-like throughput; generation quality suites
+still need ordinary long prefill to exercise large attention tiles.
 
 Related assessments: the [Ollama and API capability assessment](api-capabilities.md)
 (D-041/D-042: Ollama subset, discovery, continuation close, download/warm jobs,

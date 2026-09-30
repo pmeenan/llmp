@@ -48,6 +48,16 @@ add_executable(api_test api_test.cc)
 target_link_libraries(api_test PRIVATE jitllm_runtime jitllm_json)
 jitllm_gtest(api_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# The actual Llm loops with fake completed chunks; no GPU work. Serving's
+# Llm implementation is currently linked only in CUDA profiles.
+if(JITLLM_CUDA)
+  add_executable(llm_scores_test llm_scores_test.cc)
+  target_link_libraries(llm_scores_test PRIVATE jitllm_runtime_serving)
+  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
+  target_link_options(llm_scores_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  jitllm_gtest(llm_scores_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+endif()
+
 # The resource core: the catalog and the memory manager's policy, on no
 # vendor SDK (D-026).
 add_executable(catalog_test catalog_test.cc)

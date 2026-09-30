@@ -221,6 +221,10 @@ struct GenerateOptions {
   // the prefill's logits), a stop token left out; returning false ends
   // the generation after that step, the state holding what it accepted.
   std::function<bool(std::span<const std::int32_t>)> on_tokens;
+  // One natural target row per generated token, including a stop token.
+  // False cancels after this completed step. Rows are borrowed only during
+  // the call and never accumulated unless keep_logits was also requested.
+  std::function<bool(std::int32_t, std::span<const float>)> on_logits = nullptr;
 };
 
 // A model with a conversation: DeepSeek V4 Flash, Qwen3.8 Flash Next.
@@ -274,6 +278,14 @@ class Llm : public Served {
   // `run` (if given) says so.
   Status Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
                  const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr);
+  // Literal teacher forcing from an empty history. Runs one completed
+  // target step per supplied token, reporting token j's row from j-1.
+  // The first supplied token has no preceding distribution. This bounded
+  // first scorer reuses the existing one-row workspace; it has decode-like
+  // throughput and does not exercise full prefill attention tiles.
+  Status ScorePrompt(std::span<const std::int32_t> tokens, std::vector<float>& last,
+                     const std::function<bool(std::int32_t, std::span<const float>)>& on_row,
+                     const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr);
   // Reuse the live prefix or restore its nearest matching turn checkpoint,
   // then prefill the suffix. Capture before the renderer's unstable assistant
   // opening, at stable_boundary; zero means no renderer boundary supplied.

@@ -15,6 +15,10 @@
 
 namespace jitllm::surface {
 
+// The bounded inference HTTP subset (D-097, D-100), discovered through
+// jitllm-inference-version. Additive OpenAI/vLLM fields stay in version 1.
+inline constexpr std::uint32_t kInferenceVersion = 1;
+
 // The representation inside the opaque signature of a reasoning block that
 // jitLLM signs (D-047). The signature carries this version with jitLLM's
 // identity; M5 fixes what version 1 holds. A runtime cannot verify a

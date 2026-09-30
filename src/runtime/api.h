@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// M3's minimal chat route (D-097; docs/runtime-serving.md#the-chat-route):
+// M3's bounded inference routes (D-097, D-100; docs/runtime-serving.md):
 // an OpenAI-shaped POST /v1/chat/completions request read from untrusted
 // bytes under fixed numeric bounds, and the JSON the route answers with.
 // The full front door (client-api-baseline.md) is M5's; this is a subset of
 // its Chat Completions profile, vendor-free and CPU-tested.
+// Literal /v1/completions additionally accepts raw text/exact IDs and
+// unfiltered target likelihoods through legacy echo and vLLM prompt scores.
 //
 // What a request may hold. `model`, `messages` (system, developer, user and
 // assistant text; a string or an array of text parts), `max_tokens` or
@@ -111,8 +113,26 @@ struct ChatRequest {
   std::vector<std::string> ignored;
 };
 
+// Literal /v1/completions, with one text prompt or one exact token-ID
+// sequence. No chat template is applied. Token IDs never acquire a BOS.
+// Scoring and its response are bounded independently of the model context.
+inline constexpr std::size_t kMaxCompletionScoreRows = 131072;
+inline constexpr std::size_t kMaxCompletionResponseBytes = std::size_t{64} << 20U;
+inline constexpr std::uint32_t kMaxCompletionTopLogprobs = 5;
+struct CompletionRequest {
+  ChatRequest options;  // the shared model/sampling/stop controls; no messages
+  std::optional<std::string> prompt;
+  std::vector<std::int32_t> token_ids;
+  bool echo = false;
+  bool add_special_tokens = true;  // text only: tokenizer's add-BOS policy, never EOS
+  bool return_tokens_as_token_ids = false;
+  std::optional<std::uint32_t> logprobs;
+  std::optional<std::uint32_t> prompt_logprobs;
+};
+
 // Parses and checks a request body (JSON), before any model work.
 std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body);
+std::expected<CompletionRequest, Error> ParseCompletionRequest(std::string_view body);
 
 // The unknown fields requests have carried, by name (never a value;
 // D-014): how often, and when first and last (Unix seconds). At most
@@ -149,12 +169,38 @@ struct Usage {
   std::uint32_t cached_tokens = 0;  // the prompt's tokens the conversation state already held
 };
 
+struct TokenLogprob {
+  struct Ranked {
+    std::int32_t id = 0;
+    std::string token;
+    double logprob = 0;
+    std::uint32_t rank = 0;
+  };
+  std::int32_t id = 0;
+  std::string token;
+  std::optional<double> logprob;  // null only for the first supplied token
+  std::vector<Ranked> top;
+  std::size_t text_offset = 0;  // Unicode characters in the decoded text
+};
+struct LiteralResult {
+  std::string prompt_text;
+  std::vector<TokenLogprob> logprobs;
+  std::vector<TokenLogprob> prompt_logprobs;
+};
+
 // {"error":{...}}
 std::string ErrorJson(const Error& error);
 // A non-streaming response (object "chat.completion").
 std::string CompletionJson(std::string_view id, std::int64_t created, std::string_view model,
                            std::string_view content, const std::optional<std::string>& reasoning,
                            Finish finish, const Usage& usage);
+// Legacy OpenAI arrays and the vLLM prompt_logprobs extension. The result's
+// scores come from the natural target distribution, before sampling filters.
+std::expected<std::string, Error> LiteralCompletionJson(std::string_view id, std::int64_t created,
+                                                        const CompletionRequest& request,
+                                                        std::string_view content,
+                                                        const LiteralResult& result, Finish finish,
+                                                        const Usage& usage);
 // One streamed chunk (object "chat.completion.chunk"): a delta of the role,
 // the reasoning or the content, or with `finish` the last one.
 enum class Delta : std::uint8_t { kRole, kReasoning, kContent, kFinish };

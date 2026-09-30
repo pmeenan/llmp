@@ -365,6 +365,7 @@ as information, each listener beyond loopback and the tailnet as served
 without authentication. An optional API key is M5's.
 
     POST /v1/chat/completions      one conversation turn, JSON or SSE
+    POST /v1/completions           literal prompt, JSON; echo and token likelihoods
     GET  /v1/models                the configured models (the image among them)
     GET  /v1/models/{id}
     GET  /jitllm/v1/ignored-fields the unknown fields seen (loopback peers only)
@@ -376,6 +377,10 @@ are reused directly or through a matching turn checkpoint (as `chat`
 does). The model named is made resident first (a full
 swap when another is), and the turn is one request under one lease
 (D-093), greedy or sampled, speculative where the model has a drafter.
+
+The inference responses advertise `jitllm-inference-version: 1` (D-100).
+The following fields/output describe the chat route; literal completions
+have their own contract below.
 
 **Fields.** Honored: `model` (a configured name; unknown is a 404, the
 image pipeline a 400 `model_not_supported`), `messages` (system;
@@ -645,6 +650,99 @@ more; a slower one (a hard disk, a NAS) needs a larger `stall_seconds`.
 The node's own patience for a step, ten minutes, bounds every unit
 whatever its allowance, so a `stall_seconds` above 600 leaves a hung step
 to it alone. `deadline_cap_seconds` 14,400 (60 to 86,400).
+
+## Literal completions and likelihoods
+
+`POST /v1/completions` accepts one `prompt`: raw UTF-8 text or a nonempty
+array of exact nonnegative int32 token IDs. It applies no chat template,
+reasoning split or prefix reuse. Each request starts from cleared state,
+under the same bounded queue, browser guards, swap and request lease as
+chat. Admission validates IDs against the actual model vocabulary, refuses
+unused padding IDs and checks prompt plus requested output against the
+usable context. Supplied EOS/stop IDs are ordinary teacher-forced inputs.
+
+Besides the shared model/sampling/stop controls, it honors `echo` (false),
+`logprobs` and `prompt_logprobs` (null, or integers 0–5),
+`add_special_tokens` (true) and `return_tokens_as_token_ids` (false).
+Text adds BOS only when the tokenizer enables it and the prompt does not
+already start with it; no EOS is added. Exact IDs are never changed.
+An empty text prompt needs an enabled BOS; otherwise it is a 400.
+`max_tokens` defaults to 16 and accepts zero. `stream: true`, batches,
+suffix insertion, embeddings, truncation and restricted token-ID sets are
+refused; `n`/`best_of` must be 1, `min_tokens` 0, `ignore_eos` and beam
+search false, and `skip_special_tokens` true. Other known unsupported
+controls follow chat's off-value rule; unknown names are counted as before.
+
+For supplied-token scores without generation or echo:
+
+```json
+{"model":"your-alias","prompt":[1,42,73],"max_tokens":0,"prompt_logprobs":1}
+```
+
+The JSON object is `text_completion`; `choices[0].text` is empty,
+`finish_reason` is `stop`, and `usage.completion_tokens` is zero. Its
+`prompt_logprobs` has one entry per supplied token: first null, then objects
+keyed by decimal token ID. Each value has `logprob`, `rank` and
+`decoded_token`. The actual supplied ID is always included, with the
+requested highest-scoring alternatives; zero requests only the actual ID.
+These are vLLM's [prompt score and zero-token conventions](https://github.com/vllm-project/vllm/blob/v0.12.0/vllm/entrypoints/openai/serving_completion.py).
+
+For the legacy OpenAI echo interface:
+
+```json
+{"model":"your-alias","prompt":[1,42,73],"max_tokens":1,"temperature":0,"echo":true,"logprobs":1}
+```
+
+`choices[0].logprobs` contains equally sized `tokens`, `token_logprobs`,
+`top_logprobs` and `text_offset` arrays. Echo includes supplied-token rows
+before the generated suffix, so lm-evaluation-harness's
+[`[ctxlen:-1]` parser](https://github.com/EleutherAI/lm-evaluation-harness/blob/ddd67220430a2470529f25fd5c05a576ca1057a0/lm_eval/models/openai_completions.py)
+sees the supplied continuation and excludes the one generated row.
+The first supplied token has null score/top scores because no preceding
+distribution exists. With text and an implicit BOS, that BOS remains the
+first null metadata row but is omitted from echoed text. `echo: false`
+omits prompt rows from the legacy arrays; `prompt_logprobs` remains usable
+independently. An absent `logprobs` returns a null legacy object.
+
+Scores use double-precision log-sum-exp over the natural F32 target logits,
+before temperature or sampling filters. Padded negative infinity is excluded
+from normalization; NaN, positive infinity, an all-masked row or a masked
+actual token produces an error, never an invented finite score. `top_logprobs`
+includes the actual token even outside top-k; top-1 refers to the unfiltered
+target maximum, with stable lowest-ID ties. No draft probabilities are scored.
+A generated EOS/stop token retains its score and usage count while its text
+is omitted. A stop string truncates returned text; the tokens that completed
+the stop retain their scores, and later accepted verify rows are not emitted.
+
+`text_offset` counts Unicode characters in the decoded stream, not bytes
+or token-ID label lengths. Byte tokens inside a UTF-8 character can share
+an offset. Trailing partial UTF-8 is replaced at each prompt/output boundary,
+matching the returned text; individually decoded byte-token labels can still
+be replacement characters. `return_tokens_as_token_ids` labels them
+`token_id:N` and keeps identity unambiguous. Scored text must round-trip
+through the tokenizer; normalization that changes it is refused, with an
+exact-ID prompt as the alternative. Clients handle BPE boundaries and
+rolling windows explicitly; no prompt truncation occurs.
+
+The existing 16 MiB body, 8 MiB text and JSON-value limits still apply.
+Scoring adds at most 131,072 prompt plus generated rows and a conservative
+64 MiB response envelope; a request that exceeds them is refused, and a
+response that grows beyond its allowance ends with an error. Completed literal
+body allocations share a 128 MiB server budget, counted by capacity until
+their socket buffers drain or are dropped. Another completed body gets a
+503 with `response_budget_exceeded` if it does not fit; slow readers cannot
+retain an unbounded collection of large score replies. One completed
+target row is reduced and discarded at a time, retaining only bounded token
+metadata. The initial scorer has decode-like throughput, uses the decode
+floor for its deadline/watchdog and does not exercise 2,048-row HCA or other
+large prefill tiles. Ordinary unscored generation keeps tiled prefill.
+Cancellation stops between target steps and retires owed commits/rollback
+before the request lease is released. Full recurrent and drafter-injection
+state remains intact for generation after a scored prompt. Faster tiled
+scoring and streaming/batched literal completions are future work.
+
+Validated on Spark on 2026-09-30 against completed native target rows for
+short DeepSeek and Qwen prompts, with speculation on and off.
 
 ## Limits
 

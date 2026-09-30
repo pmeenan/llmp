@@ -115,6 +115,7 @@ class Tokenizer {
   Normalization normalization() const;
   std::optional<TokenId> bos() const;
   std::optional<TokenId> eos() const;
+  bool adds_bos() const;
   // A token's text and kind (id < size()).
   std::string_view Text(TokenId id) const;
   TokenKind Kind(TokenId id) const;

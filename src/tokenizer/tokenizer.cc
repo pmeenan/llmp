@@ -457,6 +457,7 @@ std::size_t Tokenizer::size() const { return impl_->tokens.size(); }
 PreTokenizer Tokenizer::pre_tokenizer() const { return impl_->pre_tokenizer; }
 Normalization Tokenizer::normalization() const { return impl_->normalization; }
 std::optional<TokenId> Tokenizer::bos() const { return impl_->bos; }
+bool Tokenizer::adds_bos() const { return impl_->add_bos; }
 std::optional<TokenId> Tokenizer::eos() const { return impl_->eos; }
 std::string_view Tokenizer::Text(TokenId id) const {
   return impl_->tokens[static_cast<std::size_t>(id)];

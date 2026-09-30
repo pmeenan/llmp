@@ -36,6 +36,7 @@
 #include <expected>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace jitllm::execution {
@@ -63,6 +64,22 @@ std::string_view SamplingErrorName(SamplingError e);
 
 // The greedy choice.
 std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits);
+
+// Natural target log probabilities, before temperature or truncation. At
+// least the top-1 and supplied token are returned, even when top_count is
+// zero. Negative-infinity padding is excluded; a supplied token with zero
+// probability cannot be represented as a finite JSON score and is refused.
+struct TokenScores {
+  struct Ranked {
+    std::int32_t id = 0;
+    double logprob = 0;
+    std::uint32_t rank = 0;
+  };
+  double logprob = 0;
+  std::vector<Ranked> top;
+};
+std::expected<TokenScores, SamplingError> ScoreToken(std::span<const float> logits,
+                                                     std::int32_t token, std::uint32_t top_count);
 
 // A seeded draw. `scratch` is reused between calls to avoid allocating (it
 // grows to one candidate a logit).

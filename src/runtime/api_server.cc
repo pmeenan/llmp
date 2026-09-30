@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "base/report.h"
+#include "base/surface_versions.h"
 #include "platform/crash_policy.h"
 #include "platform/event_loop.h"
 #include "platform/sockets.h"
@@ -160,7 +161,9 @@ struct Server::Channel {
   Clock::time_point queued_at;
   std::chrono::seconds idle_timeout{0};
 
-  std::string out;          // bytes the I/O thread has not taken yet
+  std::string out;           // bytes the I/O thread has not taken yet
+  std::string literal_body;  // kept separately so transfer never copies a large body
+  std::size_t response_reserved = 0;
   bool head_sent = false;   // the head is in `out` or gone out
   bool chunked = false;     // the body is framed in chunks
   bool keep_alive = false;  // the connection serves another request after this
@@ -174,6 +177,7 @@ struct Server::Channel {
   // Everything below: with Server::mutex_ held.
   void PutHead(int status, std::string_view type, std::optional<std::size_t> length,
                std::vector<std::string> extra = {}) {
+    extra.push_back(std::format("jitllm-inference-version: {}", surface::kInferenceVersion));
     chunked = !length && !http10;
     if (!length && http10) {
       keep_alive = false;  // the body ends with the connection
@@ -259,6 +263,7 @@ struct Server::Connection {
   Clock::time_point progress_at;  // the last write that went out, or when output became pending
   std::string wbuf;
   std::size_t woff = 0;
+  std::size_t response_reserved = 0;  // follows a literal body's full allocation
   std::shared_ptr<Channel> channel;
   bool close_after = false;   // pipelined, refused mid-request, or input closed: no reuse
   bool input_closed = false;  // the peer shut its sending side after a whole request
@@ -326,6 +331,24 @@ class Server::Stream final : public Exchange {
   // Hands the rest of the response to the I/O thread for the backend's
   // result; the status for the log.
   int End(const std::expected<Completion, Error>& result) {
+    {
+      const std::scoped_lock lock(server_.mutex_);
+      if (channel_.stalled || channel_.gone) {
+        return channel_.stalled ? 504 : 499;
+      }
+    }
+    // Large literal score arrays are driver-owned. Serialize without the
+    // shared I/O lock so another connection can still disconnect or read.
+    std::optional<std::expected<std::string, Error>> literal_body;
+    if (pending_.literal && result) {
+      EmitLocked(text_.Finish());  // non-streaming: only local strings
+      usage_.completion_tokens = result->completion_tokens;
+      usage_.cached_tokens = result->cached_tokens;
+      const Finish finish = result->stopped || text_.stopped() ? Finish::kStop : Finish::kLength;
+      literal_body = LiteralCompletionJson(channel_.id, channel_.created, *pending_.literal,
+                                           content_, result->literal, finish, usage_);
+      timed_out_ = timed_out_ || Clock::now() > deadline_;
+    }
     int status = 200;
     {
       const std::scoped_lock lock(server_.mutex_);
@@ -338,7 +361,9 @@ class Server::Stream final : public Exchange {
         channel_.PutError(result.error());
         status = result.error().status;
       } else {
-        EmitLocked(text_.Finish());
+        if (!pending_.literal) {
+          EmitLocked(text_.Finish());
+        }
         usage_.completion_tokens = result->completion_tokens;
         usage_.cached_tokens = result->cached_tokens;
         if (timed_out_ || stopping_) {
@@ -370,13 +395,34 @@ class Server::Stream final : public Exchange {
             channel_.PutBody("data: [DONE]\n\n");
             channel_.PutEnd();
           } else {
-            const std::string body = CompletionJson(
-                channel_.id, channel_.created, model, content_,
-                reasoning_.empty() ? std::nullopt : std::optional<std::string>(reasoning_), finish,
-                usage_);
-            channel_.PutHead(200, kJson, body.size());
-            channel_.PutBody(body);
-            channel_.PutEnd();
+            auto body = literal_body
+                            ? std::move(*literal_body)
+                            : std::expected<std::string, Error>(CompletionJson(
+                                  channel_.id, channel_.created, model, content_,
+                                  reasoning_.empty() ? std::nullopt
+                                                     : std::optional<std::string>(reasoning_),
+                                  finish, usage_));
+            if (!body) {
+              channel_.PutError(body.error());
+              status = body.error().status;
+            } else if (pending_.literal &&
+                       (body->capacity() > server_.options_.response_budget ||
+                        server_.response_in_use_ >
+                            server_.options_.response_budget - body->capacity())) {
+              channel_.PutError(Refusal(503, "completed response buffers are full; retry later",
+                                        "response_budget_exceeded"));
+              status = 503;
+            } else {
+              channel_.PutHead(200, kJson, body->size());
+              if (pending_.literal) {
+                channel_.response_reserved = body->capacity();
+                server_.response_in_use_ += channel_.response_reserved;
+                channel_.literal_body = std::move(*body);
+              } else {
+                channel_.PutBody(*body);
+              }
+              channel_.PutEnd();
+            }
           }
         }
       }
@@ -551,6 +597,11 @@ Health Server::health() const {
   return watchdog_.health();
 }
 
+std::size_t Server::response_bytes() const {
+  const std::scoped_lock lock(mutex_);
+  return response_in_use_;
+}
+
 void Server::HealthChanged() const {
   if (!options_.on_health) {
     return;
@@ -710,13 +761,20 @@ void Server::Drop(Connection& c) {
   if (c.dead) {
     return;
   }
-  if (c.channel) {
+  {
     const std::scoped_lock lock(mutex_);
-    c.channel->gone = true;
-    if (c.channel->queued) {
-      c.channel->queued = false;
-      std::erase_if(queue_, [&](const Pending& p) { return p.channel == c.channel; });
+    if (c.channel) {
+      c.channel->gone = true;
+      if (c.channel->queued) {
+        c.channel->queued = false;
+        std::erase_if(queue_, [&](const Pending& p) { return p.channel == c.channel; });
+      }
+      Release(c.channel->literal_body);
+      response_in_use_ -= std::exchange(c.channel->response_reserved, 0);
+      Release(c.channel->out);
     }
+    Release(c.wbuf);
+    response_in_use_ -= std::exchange(c.response_reserved, 0);
   }
   body_in_use_ -= c.reserved;
   c.reserved = 0;
@@ -768,12 +826,20 @@ void Server::Flush(Connection& c) {
       bool ended = false;
       bool gone = false;
       bool keep_alive = false;
-      if (c.channel) {
+      {
         const std::scoped_lock lock(mutex_);
-        c.wbuf.swap(c.channel->out);
-        ended = c.channel->ended;
-        gone = c.channel->gone;
-        keep_alive = c.channel->keep_alive;
+        response_in_use_ -= std::exchange(c.response_reserved, 0);
+        if (c.channel) {
+          if (!c.channel->out.empty()) {
+            c.wbuf.swap(c.channel->out);
+          } else if (!c.channel->literal_body.empty()) {
+            c.wbuf.swap(c.channel->literal_body);
+            c.response_reserved = std::exchange(c.channel->response_reserved, 0);
+          }
+          ended = c.channel->ended;
+          gone = c.channel->gone;
+          keep_alive = c.channel->keep_alive;
+        }
       }
       if (gone) {
         Drop(c);
@@ -1007,9 +1073,11 @@ void Server::OnRequest(Connection& c, http::Request request) {
     answer(ModelJson(*it, created_));
     return;
   }
-  if (request.path != "/v1/chat/completions") {
-    Refuse(c,
-           Refusal(404, "no such route; this runtime serves /v1/chat/completions and /v1/models"));
+  const bool literal_route = request.path == "/v1/completions";
+  if (request.path != "/v1/chat/completions" && !literal_route) {
+    Refuse(c, Refusal(404,
+                      "no such route; this runtime serves /v1/chat/completions, /v1/completions "
+                      "and /v1/models"));
     return;
   }
   if (request.method != "POST") {
@@ -1029,7 +1097,19 @@ void Server::OnRequest(Connection& c, http::Request request) {
     Refuse(c, Refusal(415, "the body must be Content-Type: application/json"));
     return;
   }
-  auto parsed = ParseChatRequest(request.body);
+  std::optional<CompletionRequest> literal;
+  std::expected<ChatRequest, Error> parsed;
+  if (literal_route) {
+    auto raw = ParseCompletionRequest(request.body);
+    if (raw) {
+      parsed = raw->options;
+      literal = std::move(*raw);
+    } else {
+      parsed = std::unexpected(raw.error());
+    }
+  } else {
+    parsed = ParseChatRequest(request.body);
+  }
   request.body.clear();
   request.body.shrink_to_fit();
   if (!parsed) {
@@ -1052,15 +1132,17 @@ void Server::OnRequest(Connection& c, http::Request request) {
     return;
   }
   if (!model->chat) {
-    Error error = Refusal(400,
-                          "This is not a chat model and thus not supported in the "
-                          "v1/chat/completions endpoint",
-                          "model_not_supported");
+    Error error =
+        Refusal(400, "This is not a text model and thus not supported by a completions endpoint",
+                "model_not_supported");
     error.param = "model";
     Refuse(c, error);
     return;
   }
   channel->model = parsed->model;
+  if (literal_route) {
+    channel->id.replace(0, 9, "cmpl-");
+  }
   channel->stream = parsed->stream;
   channel->queued_at = Clock::now();
   bool stopping = false;
@@ -1071,7 +1153,8 @@ void Server::OnRequest(Connection& c, http::Request request) {
     unhealthy = !watchdog_.health().healthy;
     if (!stopping && !unhealthy && queue_.size() < options_.max_queued) {
       channel->queued = true;
-      queue_.push_back({.channel = channel, .request = std::move(*parsed)});
+      queue_.push_back(
+          {.channel = channel, .request = std::move(*parsed), .literal = std::move(literal)});
       ready_.Signal();
       return;
     }
@@ -1385,7 +1468,9 @@ void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& o
     HealthChanged();
   }
   Stream stream(*this, pending, wake_fd, on_wake, started);
-  const std::expected<Completion, Error> result = backend_.Complete(pending.request, stream);
+  const std::expected<Completion, Error> result = pending.literal
+                                                      ? backend_.Complete(*pending.literal, stream)
+                                                      : backend_.Complete(pending.request, stream);
   const int status = stream.End(result);
   bool stalled = false;
   {

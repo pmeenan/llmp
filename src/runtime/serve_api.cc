@@ -36,6 +36,7 @@
 #include "runtime/api_server.h"
 #include "runtime/binding.h"
 #include "runtime/commands.h"
+#include "runtime/completion_tokens.h"
 #include "runtime/prefill.h"
 #include "runtime/runtime.h"
 #include "runtime/serving.h"
@@ -281,6 +282,185 @@ class NodeBackend final : public api::Backend {
         .completion_tokens = static_cast<std::uint32_t>(generation.tokens.size()),
         .cached_tokens = reused,
         .stopped = generation.stopped};
+  }
+
+  std::expected<api::Completion, api::Error> Complete(const api::CompletionRequest& request,
+                                                      api::Exchange& exchange) override {
+    const auto& controls = request.options;
+    Served* model = server_.Find(controls.model);
+    if (model == nullptr || !model->llm()) {
+      return std::unexpected(Failure(404, "The model does not exist", "model_not_found", "model"));
+    }
+    auto& llm = static_cast<Llm&>(*model);
+    auto prompt = api::PrepareLiteralPrompt(request, llm.tokenizer(), llm.usable_context());
+    if (!prompt) {
+      return std::unexpected(prompt.error());
+    }
+    const auto& tokens = prompt->tokens;
+    const auto max_tokens = controls.max_tokens.value_or(16);
+    const bool score_prompt = request.prompt_logprobs || (request.echo && request.logprobs);
+    api::Completion result;
+    result.literal.prompt_text = std::move(prompt->text);
+    std::size_t budget = 1024 + (6 * result.literal.prompt_text.size());
+    if (budget > api::kMaxCompletionResponseBytes) {
+      return std::unexpected(Failure(413, "prompt echo exceeds the response size", {}, "prompt"));
+    }
+    std::uint64_t swap_bytes = 0;
+    if (server_.resident() != model) {
+      swap_bytes = model->weight_read_bytes() + llm.state_snapshot_bytes();
+      if (auto* out = server_.resident(); out != nullptr && out->llm()) {
+        swap_bytes += static_cast<Llm&>(*out).state_snapshot_bytes();
+      }
+    }
+    Floors floors;
+    if (const auto entry =
+            std::ranges::find(config_.models, controls.model, &config::ModelEntry::name);
+        entry != config_.models.end()) {
+      floors = {.prefill = entry->prefill_floor_tok_s, .decode = entry->decode_floor_tok_s};
+    }
+    if (score_prompt) {
+      // Pure scoring is one-row target work, not tiled prefill. Its scaled
+      // deadline and per-row watchdog allowance must use the decode floor.
+      floors.prefill = floors.decode;
+    }
+    if (!exchange.Admit({.prompt_tokens = static_cast<std::uint32_t>(tokens.size()),
+                         .max_tokens = max_tokens,
+                         .swap_bytes = swap_bytes,
+                         .floors = floors})) {
+      return api::Completion{};
+    }
+    swapped_ = server_.resident() != model;
+    if (swapped_ && !exchange.Next(Phase::kSwap, swap_bytes)) {
+      swapped_ = false;
+      return api::Completion{};
+    }
+    if (auto activated = server_.Activate(*model, parts_); !activated) {
+      Fail("making the literal completion model resident: " + activated.error());
+      return std::unexpected(Failure(503, "the model could not be made resident"));
+    }
+    if (!exchange.Continue()) {
+      return api::Completion{};
+    }
+    std::optional<api::Error> output_problem;
+    api::LiteralRows prompt_rows(llm.tokenizer(), request.return_tokens_as_token_ids, true, 0,
+                                 budget);
+    api::LiteralRows generated_rows(
+        llm.tokenizer(), request.return_tokens_as_token_ids, false,
+        request.echo ? api::TextCharacters(result.literal.prompt_text) : 0, budget);
+    const std::uint32_t prompt_top = std::max(request.prompt_logprobs.value_or(0),
+                                              request.echo ? request.logprobs.value_or(0) : 0);
+    const auto add_prompt = [&](std::int32_t id, std::span<const float> row, bool first) {
+      auto scored = prompt_rows.Add(id, row, prompt_top, first, first && prompt->added_bos);
+      if (!scored) {
+        output_problem = scored.error();
+        return false;
+      }
+      if (request.echo && request.logprobs) {
+        result.literal.logprobs.push_back(*scored);
+      }
+      if (request.prompt_logprobs) {
+        result.literal.prompt_logprobs.push_back(std::move(*scored));
+      }
+      return exchange.Continue();
+    };
+    tokenizer::StreamDecoder decoder(llm.tokenizer(), {});
+    GenerateOptions options{.max_tokens = max_tokens,
+                            .stop = true,
+                            .keep_logits = false,
+                            .sampling = std::nullopt,
+                            .seed = 0,
+                            .on_tokens = {},
+                            .on_logits = {}};
+    if (controls.temperature > 0) {
+      options.sampling =
+          execution::SamplingParams{.temperature = static_cast<float>(controls.temperature),
+                                    .top_k = controls.top_k,
+                                    .top_p = static_cast<float>(controls.top_p),
+                                    .min_p = static_cast<float>(controls.min_p)};
+      options.seed = controls.seed.value_or(RandomSeed());
+    }
+    if (request.logprobs) {
+      options.on_logits = [&](std::int32_t id, std::span<const float> row) {
+        auto scored = generated_rows.Add(id, row, *request.logprobs);
+        if (!scored) {
+          output_problem = scored.error();
+          return false;
+        }
+        result.literal.logprobs.push_back(std::move(*scored));
+        return exchange.Continue();
+      };
+    }
+    options.on_tokens = [&](std::span<const std::int32_t> fresh) {
+      std::string piece;
+      for (const auto id : fresh) {
+        if (!decoder.Push(id, piece)) {
+          output_problem =
+              Failure(500, "a generated token cannot be decoded", "invalid_model_token");
+          return false;
+        }
+      }
+      if (6 * piece.size() > api::kMaxCompletionResponseBytes - budget) {
+        output_problem =
+            Failure(413, "completion text exceeds the response size", "response_too_large");
+        return false;
+      }
+      budget += 6 * piece.size();
+      return piece.empty() ? exchange.Continue() : exchange.Content(piece);
+    };
+    Generation generation;
+    PrefillRun prefill;
+    auto ran = server_.InRequest(*model, [&]() -> Status {
+      if (auto cleared = llm.Clear(); !cleared) {
+        return cleared;
+      }
+      std::vector<float> last;
+      const PrefillGoOn go_on = [&](std::uint32_t rows) {
+        return exchange.Next(Phase::kPrefill, rows);
+      };
+      if (score_prompt) {
+        if (!add_prompt(tokens.front(), {}, true)) {
+          prefill.stopped = true;
+          return {};
+        }
+        if (auto scored = llm.ScorePrompt(
+                tokens, last,
+                [&](std::int32_t id, std::span<const float> row) {
+                  return add_prompt(id, row, false);
+                },
+                go_on, &prefill);
+            !scored) {
+          return scored;
+        }
+      } else if (auto filled = llm.Prefill(tokens, last, go_on, &prefill); !filled) {
+        return filled;
+      }
+      prompt_rows.Finish();  // same boundary flush as prompt_text, never carried into generation
+      if (prefill.stopped || !exchange.Continue() || max_tokens == 0 ||
+          !exchange.Next(Phase::kDecode, 0)) {
+        return {};
+      }
+      return llm.Generate(last, options, generation);
+    });
+    if (!ran) {
+      Fail("the literal completion failed: " + ran.error());
+      return std::unexpected(Failure(500, "the completion failed; the runtime is stopping"));
+    }
+    if (output_problem) {
+      return std::unexpected(*output_problem);
+    }
+    std::string rest;
+    decoder.Finish(rest);
+    generated_rows.Finish();
+    if (!rest.empty()) {
+      if (6 * rest.size() > api::kMaxCompletionResponseBytes - budget) {
+        return std::unexpected(Failure(413, "completion text exceeds the response size",
+                                       "response_unrepresentable", "logprobs"));
+      }
+      (void)exchange.Content(rest);
+    }
+    result.completion_tokens = static_cast<std::uint32_t>(generation.tokens.size());
+    result.stopped = max_tokens == 0 || generation.stopped;
+    return result;
   }
 
   void AfterResponse() override {

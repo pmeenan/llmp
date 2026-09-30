@@ -105,6 +105,56 @@ std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits)
   return static_cast<std::int32_t>(std::ranges::find(logits, scan->max) - logits.begin());
 }
 
+std::expected<TokenScores, SamplingError> ScoreToken(std::span<const float> logits,
+                                                     std::int32_t token, std::uint32_t top_count) {
+  if (token < 0 || std::cmp_greater_equal(token, logits.size()) || top_count > 5) {
+    return std::unexpected(SamplingError::kInvalidParams);
+  }
+  const auto scan = ScanLogits(logits);
+  if (!scan) {
+    return std::unexpected(scan.error());
+  }
+  if (!std::isfinite(logits[static_cast<std::size_t>(token)])) {
+    return std::unexpected(SamplingError::kInvalidLogits);
+  }
+  double sum = 0;
+  std::uint32_t token_rank = 1;
+  std::vector<std::int32_t> best;
+  const std::size_t keep = std::max(top_count, 1U);
+  for (std::size_t i = 0; i < logits.size(); ++i) {
+    const double value = logits[i];
+    if (!std::isfinite(value)) {
+      continue;  // the scan already refused NaN and +infinity
+    }
+    sum += std::exp(value - scan->max);
+    token_rank += static_cast<std::uint32_t>(value > logits[static_cast<std::size_t>(token)]);
+    const auto at = std::ranges::find_if(
+        best, [&](std::int32_t id) { return value > logits[static_cast<std::size_t>(id)]; });
+    if (std::cmp_less(best.size(), keep) || at != best.end()) {
+      best.insert(at, static_cast<std::int32_t>(i));
+      if (best.size() > keep) {
+        best.pop_back();
+      }
+    }
+  }
+  const double norm = std::log(sum);
+  const auto score = [&](std::int32_t id) {
+    return (static_cast<double>(logits[static_cast<std::size_t>(id)]) - scan->max) - norm;
+  };
+  TokenScores out{.logprob = score(token), .top = {}};
+  for (const auto id : best) {
+    const auto rank =
+        1 + static_cast<std::uint32_t>(std::ranges::count_if(best, [&](std::int32_t other) {
+          return logits[static_cast<std::size_t>(other)] > logits[static_cast<std::size_t>(id)];
+        }));
+    out.top.push_back({.id = id, .logprob = score(id), .rank = rank});
+  }
+  if (std::ranges::find(best, token) == best.end()) {
+    out.top.push_back({.id = token, .logprob = out.logprob, .rank = token_rank});
+  }
+  return out;
+}
+
 namespace {
 
 bool ParamsValid(const SamplingParams& p) {

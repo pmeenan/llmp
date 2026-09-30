@@ -39,6 +39,61 @@ one Spark and on two.
 
 ---
 
+## D-100: Literal Completions expose target likelihoods through OpenAI echo/logprobs and vLLM prompt_logprobs, including zero-token scoring  (2026-09-30, status: accepted by the owner's explicit API authorization; adds a bounded inference route to D-097; establishes inference surface version 1 under D-062)
+
+**Decision.** Add non-streaming `POST /v1/completions` for one raw text
+prompt or one exact token-ID sequence. Apply no chat template. Honor legacy
+OpenAI `echo` and integer `logprobs`, and vLLM's `prompt_logprobs` and
+`max_tokens: 0` convention. A request with zero generated tokens returns
+supplied-token scores when requested, even with `echo: false`; a one-token
+echo request also supports the pinned lm-evaluation-harness parser.
+Probabilities are natural logarithms of the unfiltered target distribution,
+independent of temperature, top-k/top-p/min-p and draft proposals. Return
+the supplied token's score even when it is outside the requested top scores.
+Never substitute a top token's probability or silently truncate a prompt.
+
+Exact token IDs acquire no BOS or EOS. Text `add_special_tokens` follows
+the tokenizer's add-BOS policy, without duplicating an explicit BOS or
+adding EOS. The first supplied token has no preceding distribution and
+its score is null. Empty text requires an enabled BOS; otherwise it is
+refused. A scored text prompt that normalizes to different decoded text
+is refused with a suggestion to use exact IDs. Rolling windows and BPE
+continuation boundaries are the client's explicit responsibility.
+
+**Consequences.** The first scorer reuses the existing one-row target
+execution contract and reduces each completed vocabulary row immediately.
+It retains full recurrent state and, where speculation is configured, the
+drafter's injection. It does not change target arithmetic, model admission
+workspace or context ceilings. Scoring has decode-like throughput and
+does not exercise large prefill tiles; it is not evidence for a changed
+2,048-row attention implementation. Each target step advances the existing
+watchdog, and cancellation retires completed work before releasing the
+request. Retained score rows and response bytes have independent fixed
+bounds; larger evaluations use explicit windows.
+
+The response carries the legacy parallel arrays and vLLM's ID-keyed prompt
+score objects. A terminal generated stop token retains its probability
+and usage count while its text is omitted; stop strings truncate text,
+not the already emitted token metadata, matching the vLLM consumer contract.
+Partial UTF-8 tokens share decoded-character offsets and are flushed at
+the prompt/output boundary. Token-ID labels are available to distinguish
+byte tokens whose individual decoding produces the same replacement text.
+
+`jitllm-inference-version: 1` advertises the bounded inference subset.
+This establishes the previously unnumbered inference surface, and adds
+compatible fields/routes to the unreleased 0.1 product; it does not break
+the existing chat request/response profile or require a product bump.
+Streaming literal completions, batched prompts, embeddings and distribution
+restrictions remain refused. Authentication, CORS and the other M5 routes
+remain under D-097/M5. The [runtime contract](runtime-serving.md#literal-completions-and-likelihoods)
+records the exact fields and bounds.
+
+**Reopen if.** An evaluation needs faster tiled scoring, wider score/output
+bounds or streaming/batched completions. Extend the runner only with
+explicit workspace, state, cancellation and same-history numerical controls;
+do not silently replace the one-row likelihood path with another precision
+or a sampled/filtered distribution.
+
 ## D-098: Distribution: the `.deb` is primary; an OCI image built from the same `.deb` is secondary, with documented run flags; Homebrew or `.pkg` and winget or MSI follow their ports  (2026-09-29, status: accepted at the owner's request of 2026-09-29 (the portability slice), for review with it; decision only, nothing built; specializes D-027's native package managers and its container-only reopen condition; D-074's package unchanged)
 
 **Decision.**

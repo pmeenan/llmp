@@ -3,7 +3,8 @@
 
 // M3's chat route as a server (D-097 as the owner amended it on 2026-09-28;
 // docs/runtime-serving.md#the-chat-route): `GET /v1/models`,
-// `GET /v1/models/{id}`, `POST /v1/chat/completions` and, for loopback
+// `GET /v1/models/{id}`, `POST /v1/chat/completions`, non-streaming
+// `POST /v1/completions` (D-100) and, for loopback
 // peers, `GET /jitllm/v1/ignored-fields`, on one listener per resolved
 // endpoint (binding.h), over a Backend that runs the requests.
 // Vendor-free, so the CPU tests drive it with a fake backend.
@@ -55,6 +56,9 @@
 // a `: keepalive` comment; before a non-streaming response's head, on
 // HTTP/1.1, an interim 102 (HTTP/1.0 runs to its end). A connection
 // between requests keeps no large buffer (held_bytes).
+// Completed literal bodies share response_budget by their allocated capacity;
+// their reservation follows the bytes through the channel and socket buffer
+// until that allocation is released. A full budget refuses another body (503).
 //
 // A request's end. Non-streaming: one JSON body once the outcome is known
 // (a 504 past its deadline or on a stall, a 503 when the runtime stops),
@@ -82,6 +86,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -144,6 +149,7 @@ struct Completion {
   std::uint32_t completion_tokens = 0;  // generated, a stop token included
   std::uint32_t cached_tokens = 0;      // the prompt's tokens the state already held
   bool stopped = false;                 // ended at the model's stop token
+  LiteralResult literal{};              // empty for chat completions
 };
 
 class Backend {
@@ -161,6 +167,16 @@ class Backend {
   // 4xx, or a 5xx); after Admit, an Error is a failure mid-response.
   virtual std::expected<Completion, Error> Complete(const ChatRequest& request,
                                                     Exchange& exchange) = 0;
+  virtual std::expected<Completion, Error> Complete(const CompletionRequest& request,
+                                                    Exchange& exchange) {
+    (void)request;
+    (void)exchange;
+    return std::unexpected(Error{.status = 501,
+                                 .type = "server_error",
+                                 .message = "literal completions are unavailable",
+                                 .param = {},
+                                 .code = {}});
+  }
   // After the response is handed to the I/O thread: work off the
   // request's path.
   virtual void AfterResponse() {}
@@ -186,6 +202,7 @@ struct ServerOptions {
   std::size_t max_connections = kMaxConnections;
   std::size_t max_unsent = kMaxUnsentBytes;
   std::size_t body_budget = kBodyBudgetBytes;
+  std::size_t response_budget = 2 * kMaxCompletionResponseBytes;
   std::FILE* log = nullptr;  // one line a request; nullptr: none
   // Called as the backend turns unhealthy or recovers, on the thread that
   // noticed (the I/O thread, the driver), one call at a time, with the
@@ -216,6 +233,9 @@ class Server {
   // by capacity), as of the I/O thread's last pass (at least once a
   // second). Between requests a connection keeps at most 16 KiB of each.
   std::size_t held_bytes() const { return held_bytes_.load(std::memory_order_relaxed); }
+  // Capacity of completed literal response allocations still retained by the
+  // server, including a partially sent socket buffer.
+  std::size_t response_bytes() const;
   // The backend's health as the watchdog sees it (for M5's management
   // listener; the log says each change).
   Health health() const;
@@ -227,6 +247,7 @@ class Server {
   struct Pending {
     std::shared_ptr<Channel> channel;
     ChatRequest request;
+    std::optional<CompletionRequest> literal;
   };
   class Stream;
 
@@ -293,6 +314,7 @@ class Server {
   mutable std::mutex health_mutex_;  // on_health's calls, one at a time
   std::deque<Pending> queue_;
   std::vector<std::uint64_t> dirty_;  // connections whose channels have new output
+  std::size_t response_in_use_ = 0;   // channel/socket literal-body allocations
   bool stopping_ = false;
   Watchdog watchdog_;
   std::shared_ptr<Channel> running_;  // the request the driver runs

@@ -1132,6 +1132,59 @@ Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& la
   return {};
 }
 
+Status Llm::ScorePrompt(std::span<const std::int32_t> tokens, std::vector<float>& last,
+                        const std::function<bool(std::int32_t, std::span<const float>)>& on_row,
+                        const PrefillGoOn& go_on, PrefillRun* run) {
+  if (!history_.empty() || tokens.empty() || tokens.size() > context_) {
+    return Error("literal scoring needs an empty history and a nonempty prompt within context");
+  }
+  if (needs_clear_) {
+    if (auto r = Clear(); !r) {
+      return r;
+    }
+  }
+  PrefillRun completed;
+  last.clear();
+  for (std::uint32_t at = 0; at < tokens.size(); ++at) {
+    if (go_on && !go_on(1)) {
+      completed.stopped = true;
+      break;
+    }
+    const auto started = Clock::now();
+    auto ran = RunChunk(tokens.first(std::size_t{at} + 1), at, speculate_, last);
+    if (!ran) {
+      needs_clear_ = !StateUsable();
+      if (needs_clear_) {
+        history_.clear();
+      }
+      last.clear();
+      return ran;
+    }
+    history_.push_back(tokens[at]);
+    completed.end = at + 1;
+    ++completed.chunks;
+    completed.longest = std::max(completed.longest, Seconds(Clock::now() - started));
+    if (at + 1 < tokens.size() && on_row && !on_row(tokens[at + 1], last)) {
+      completed.stopped = true;
+      break;
+    }
+  }
+  if (auto settled = Settle(); !settled) {
+    needs_clear_ = true;
+    history_.clear();
+    last.clear();
+    return settled;
+  }
+  history_used_ = Clock::now();
+  if (completed.stopped) {
+    last.clear();
+  }
+  if (run != nullptr) {
+    *run = completed;
+  }
+  return {};
+}
+
 Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& options,
                      Generation& out) {
   const auto is_stop = [&](std::int32_t token) {
@@ -1139,6 +1192,9 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
   };
   if (last.empty()) {
     return Error(std::format("{} has no prefill's logits to generate from", name_));
+  }
+  if (options.max_tokens == 0) {
+    return Error("generation needs a positive token budget");
   }
   sampling_.reset();
   if (options.sampling && options.sampling->temperature > 0) {
@@ -1171,7 +1227,8 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
     out.logits = {last};
   }
   out.stopped = is_stop(out.tokens.back());
-  out.cancelled = !report();
+  out.cancelled = options.on_logits && !options.on_logits(*first, last);
+  out.cancelled = !report() || out.cancelled;
   // Every token so far, the anchor (the last generated, not yet in the
   // state) last; pos: how many the state holds.
   std::vector<std::int32_t> all = history_;
@@ -1193,11 +1250,26 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
       break;
     }
     std::vector<std::int32_t> kept;
+    std::vector<std::vector<float>> step_logits;
     if (speculate_) {
       ran =
-          SpecStep(all, pos, left, kept, options.keep_logits ? &out.logits : nullptr, out.drafted);
+          SpecStep(all, pos, left, kept,
+                   options.keep_logits || options.on_logits ? &step_logits : nullptr, out.drafted);
       if (ran) {
-        out.accepted += kept.size() - 1;
+        if (kept.empty() || kept.size() > left ||
+            ((options.keep_logits || options.on_logits) && step_logits.size() != kept.size())) {
+          // Refuse a broken runner contract before indexing borrowed rows.
+          // The completed verify still retires its owed commit/restore.
+          constexpr std::string_view reason =
+              "a speculative step returned inconsistent token/logit counts";
+          if (auto settled = Settle(); !settled) {
+            ran = Error(std::format("{}; settling failed: {}", reason, settled.error()));
+          } else {
+            ran = Error(std::string(reason));
+          }
+        } else {
+          out.accepted += kept.size() - 1;
+        }
       }
     } else {
       std::vector<float> row;
@@ -1210,8 +1282,8 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
           failed_prefix_valid = StateUsable();
         } else {
           kept = {*next};
-          if (options.keep_logits) {
-            out.logits.push_back(std::move(row));
+          if (options.keep_logits || options.on_logits) {
+            step_logits.push_back(std::move(row));
           }
         }
       }
@@ -1227,25 +1299,46 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
     // though the state holds what was accepted after it.
     pos += static_cast<std::uint32_t>(kept.size());
     all.insert(all.end(), kept.begin(), kept.end());
-    for (const std::int32_t token : kept) {
+    for (std::size_t i = 0; i < kept.size() && out.tokens.size() < options.max_tokens; ++i) {
+      const std::int32_t token = kept[i];
       out.tokens.push_back(token);
+      if (options.keep_logits) {
+        out.logits.push_back(step_logits[i]);
+      }
+      if (options.on_logits && !options.on_logits(token, step_logits[i])) {
+        out.cancelled = true;
+      }
       if (is_stop(token)) {
         out.stopped = true;
+      }
+      // A scoring response associates each visible token with its row.
+      // Deliver it now, so a stop string cannot collect later verify rows.
+      // The entire accepted verify is already complete and is still settled.
+      if (options.on_logits) {
+        out.cancelled = !report() || out.cancelled;
+      }
+      if (out.stopped || out.cancelled) {
         break;
       }
     }
-    out.cancelled = !report();
+    if (!options.on_logits) {
+      out.cancelled = !report() || out.cancelled;
+    }
   }
   out.decode_seconds = Seconds(Clock::now() - start);
   sampling_.reset();
   if (!ran) {
-    if (failed_prefix_valid && Settle()) {
-      history_.assign(all.begin(), all.begin() + pos);
-      needs_clear_ = false;
-    } else {
-      needs_clear_ = true;
-      history_.clear();
+    if (failed_prefix_valid) {
+      if (auto settled = Settle(); !settled) {
+        ran = Error(std::format("{}; settling failed: {}", ran.error(), settled.error()));
+      } else {
+        history_.assign(all.begin(), all.begin() + pos);
+        needs_clear_ = false;
+        return ran;
+      }
     }
+    needs_clear_ = true;
+    history_.clear();
     return ran;
   }
   history_.assign(all.begin(), all.begin() + pos);

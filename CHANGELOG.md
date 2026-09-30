@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- `/v1/completions` accepts raw text or exact token IDs, legacy OpenAI
+  echo/logprobs and vLLM prompt_logprobs with zero-token scoring. The
+  bounded inference subset establishes `jitllm-inference-version: 1`.
 - A bounded Qwen draft-head capture diagnostic supplies real operands for
   isolated product comparisons without changing serving arithmetic.
 - A bounded Qwen routed-down capture diagnostic preserves common-input

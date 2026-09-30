@@ -69,6 +69,47 @@ TEST(Greedy, RefusesBadLogits) {
             ex::SamplingError::kInvalidLogits);
 }
 
+TEST(TokenScores, ScoresTheSuppliedTokenOutsideTopOneWithoutSamplingBias) {
+  const std::vector<float> row = {0, 2, -3, -INFINITY};
+  const auto score = ex::ScoreToken(row, 2, 0);
+  ASSERT_TRUE(score.has_value());
+  const double norm = std::log(std::exp(-2.0) + 1 + std::exp(-5.0));
+  EXPECT_DOUBLE_EQ(score->logprob, -5 - norm);
+  ASSERT_EQ(score->top.size(), 2U);
+  EXPECT_EQ(score->top[0].id, 1);
+  EXPECT_DOUBLE_EQ(score->top[0].logprob, -norm);
+  EXPECT_EQ(score->top[0].rank, 1U);
+  EXPECT_EQ(score->top[1].id, 2);
+  EXPECT_EQ(score->top[1].rank, 3U);
+  EXPECT_DOUBLE_EQ(score->top[1].logprob, score->logprob);
+  const auto shifted = ex::ScoreToken(std::vector<float>{100, 102, 97, -INFINITY}, 2, 5);
+  ASSERT_TRUE(shifted.has_value());
+  EXPECT_DOUBLE_EQ(shifted->logprob, score->logprob);
+  EXPECT_EQ(shifted->top.size(), 3U);  // padding never becomes a candidate
+}
+
+TEST(TokenScores, TiesHaveEqualProbabilitiesAndStableLowestIdOrdering) {
+  const auto score = ex::ScoreToken(std::vector<float>{2, -2, 2, 2}, 3, 2);
+  ASSERT_TRUE(score.has_value());
+  ASSERT_EQ(score->top.size(), 3U);
+  EXPECT_EQ(score->top[0].id, 0);
+  EXPECT_EQ(score->top[1].id, 2);
+  EXPECT_EQ(score->top[2].id, 3);
+  EXPECT_DOUBLE_EQ(score->logprob, score->top[0].logprob);
+  EXPECT_EQ(score->top[2].rank, 1U);
+}
+
+TEST(TokenScores, RefusesInvalidTargetsAndNonJsonDistributions) {
+  for (const auto& row : {std::vector<float>{NAN, 0}, std::vector<float>{INFINITY, 0},
+                          std::vector<float>{-INFINITY, -INFINITY}}) {
+    EXPECT_FALSE(ex::ScoreToken(row, 1, 1));
+  }
+  EXPECT_FALSE(ex::ScoreToken(std::vector<float>{0, -INFINITY}, 1, 1));
+  EXPECT_FALSE(ex::ScoreToken(std::vector<float>{0}, -1, 1));
+  EXPECT_FALSE(ex::ScoreToken(std::vector<float>{0}, 1, 1));
+  EXPECT_FALSE(ex::ScoreToken(std::vector<float>{0}, 0, 6));
+}
+
 TEST(Sample, TemperatureZeroIsGreedy) {
   std::vector<ex::SamplingCandidate> scratch;
   const std::vector<float> logits = {0.1F, 0.9F, 0.3F};

@@ -10,9 +10,11 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -252,10 +254,11 @@ std::expected<std::vector<std::string>, Error> ParseStop(const json::Value& v) {
   return stops;
 }
 
-std::expected<std::uint32_t, Error> ParseMaxTokens(const json::Value& v, std::string_view name) {
+std::expected<std::uint32_t, Error> ParseMaxTokens(const json::Value& v, std::string_view name,
+                                                   std::int64_t least = 1) {
   const std::optional<std::int64_t> n = v.int64();
-  if (!v.is_integer() || !n || *n < 1 || std::cmp_greater(*n, kMaxTokensCeiling)) {
-    return Bad(std::format("{} must be an integer from 1 to {}", name, kMaxTokensCeiling),
+  if (!v.is_integer() || !n || *n < least || std::cmp_greater(*n, kMaxTokensCeiling)) {
+    return Bad(std::format("{} must be an integer from {} to {}", name, least, kMaxTokensCeiling),
                std::string(name));
   }
   return static_cast<std::uint32_t>(*n);
@@ -294,9 +297,7 @@ constexpr std::array<std::string_view, 31> kKnown = {"max_tokens",
                                                      "parallel_tool_calls",
                                                      "store"};
 
-}  // namespace
-
-std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
+std::expected<ChatRequest, Error> ParseRequest(std::string_view body, CompletionRequest* literal) {
   const json::Limits limits{.max_bytes = kMaxBodyBytes,
                             .max_depth = kMaxJsonDepth,
                             .max_values = kMaxJsonValues,
@@ -313,6 +314,7 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
   Ignored ignored(request.ignored);
   bool has_model = false;
   bool has_messages = false;
+  bool has_prompt = false;
   std::optional<std::uint32_t> max_tokens;
   std::optional<std::uint32_t> max_completion_tokens;
   for (std::size_t k = 0; k < root.size(); ++k) {
@@ -329,7 +331,86 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
       }
       request.model = std::string(v.string());
       has_model = true;
+    } else if (literal != nullptr && key == "prompt") {
+      has_prompt = true;
+      if (v.is_string()) {
+        if (v.string().size() > kMaxMessageBytes) {
+          return Bad("prompt exceeds the text byte limit", name);
+        }
+        literal->prompt = std::string(v.string());
+      } else if (v.is_array() && v.size() > 0 && v.size() <= kMaxTokensCeiling) {
+        for (std::size_t i = 0; i < v.size(); ++i) {
+          const auto token = v.at(i).int64();
+          if (!v.at(i).is_integer() || !token || *token < 0 ||
+              *token > std::numeric_limits<std::int32_t>::max()) {
+            return Bad(
+                "prompt must be one string or one nonempty array of nonnegative int32 token IDs",
+                name);
+          }
+          literal->token_ids.push_back(static_cast<std::int32_t>(*token));
+        }
+      } else {
+        return Bad(
+            "prompt must be one string or one nonempty token-ID array; batches are not supported",
+            name);
+      }
+    } else if (literal != nullptr && (key == "echo" || key == "add_special_tokens" ||
+                                      key == "return_tokens_as_token_ids")) {
+      if (!v.is_null()) {
+        if (!v.is_bool()) {
+          return Bad(name + " must be a boolean", name);
+        }
+        if (key == "echo") {
+          literal->echo = v.boolean();
+        } else if (key == "add_special_tokens") {
+          literal->add_special_tokens = v.boolean();
+        } else {
+          literal->return_tokens_as_token_ids = v.boolean();
+        }
+      }
+    } else if (literal != nullptr && (key == "logprobs" || key == "prompt_logprobs")) {
+      if (!v.is_null()) {
+        const auto count = v.int64();
+        if (!v.is_integer() || !count || *count < 0 ||
+            std::cmp_greater(*count, kMaxCompletionTopLogprobs)) {
+          return Bad(
+              std::format("{} must be an integer from 0 to {}", name, kMaxCompletionTopLogprobs),
+              name);
+        }
+        (key == "logprobs" ? literal->logprobs : literal->prompt_logprobs) =
+            static_cast<std::uint32_t>(*count);
+      }
+    } else if (literal != nullptr && key == "best_of") {
+      if (!v.is_null() && !NumberIs(v, 1)) {
+        return Bad("best_of must be 1", name);
+      }
+    } else if (literal != nullptr && key == "suffix") {
+      if (!v.is_null()) {
+        return Bad("suffix insertion is not supported", name);
+      }
+    } else if (literal != nullptr && (key == "truncate_prompt_tokens" || key == "prompt_embeds" ||
+                                      key == "allowed_token_ids" || key == "logprob_token_ids")) {
+      if (!v.is_null()) {
+        return Bad(
+            name + " is not supported; no prompt truncation or distribution restriction is applied",
+            name);
+      }
+    } else if (literal != nullptr && (key == "ignore_eos" || key == "use_beam_search")) {
+      if (!v.is_null() && (!v.is_bool() || v.boolean())) {
+        return Bad(name + " must be false", name);
+      }
+    } else if (literal != nullptr && key == "min_tokens") {
+      if (!v.is_null() && !NumberIs(v, 0)) {
+        return Bad("min_tokens must be 0", name);
+      }
+    } else if (literal != nullptr && key == "skip_special_tokens") {
+      if (!v.is_null() && (!v.is_bool() || !v.boolean())) {
+        return Bad("skip_special_tokens must be true", name);
+      }
     } else if (key == "messages") {
+      if (literal != nullptr) {
+        return Bad("messages is not accepted by the literal completions route", name);
+      }
       if (!v.is_array() || v.size() == 0) {
         return Bad("messages must be a non-empty array", "messages");
       }
@@ -350,13 +431,13 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
     } else if (v.is_null()) {
       continue;  // a known field's default
     } else if (key == "max_tokens") {
-      auto n = ParseMaxTokens(v, key);
+      auto n = ParseMaxTokens(v, key, literal != nullptr ? 0 : 1);
       if (!n) {
         return std::unexpected(n.error());
       }
       max_tokens = *n;
     } else if (key == "max_completion_tokens") {
-      auto n = ParseMaxTokens(v, key);
+      auto n = ParseMaxTokens(v, key, literal != nullptr ? 0 : 1);
       if (!n) {
         return std::unexpected(n.error());
       }
@@ -493,17 +574,42 @@ std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
   if (!has_model) {
     return Bad("model is required", "model");
   }
-  if (!has_messages) {
+  if (literal != nullptr && !has_prompt) {
+    return Bad("prompt is required", "prompt");
+  }
+  if (literal == nullptr && !has_messages) {
     return Bad("messages is required", "messages");
   }
   if (max_tokens && max_completion_tokens && *max_tokens != *max_completion_tokens) {
     return Bad("max_tokens and max_completion_tokens differ; give one", "max_completion_tokens");
   }
   request.max_tokens = max_completion_tokens ? max_completion_tokens : max_tokens;
-  if (request.messages.back().role != Role::kUser) {
+  if (literal == nullptr && request.messages.back().role != Role::kUser) {
     return Bad("the last message must be the user's", "messages");
   }
   return request;
+}
+
+}  // namespace
+
+std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
+  return ParseRequest(body, nullptr);
+}
+
+std::expected<CompletionRequest, Error> ParseCompletionRequest(std::string_view body) {
+  CompletionRequest literal;
+  auto options = ParseRequest(body, &literal);
+  if (!options) {
+    return std::unexpected(options.error());
+  }
+  if (options->stream) {
+    return Bad("literal completions currently support stream=false only", "stream");
+  }
+  if (!options->max_tokens) {
+    options->max_tokens = 16;  // legacy OpenAI completion default
+  }
+  literal.options = std::move(*options);
+  return literal;
 }
 
 // ---------------------------------------------------------------- IgnoredFields
@@ -572,6 +678,147 @@ std::string CompletionJson(std::string_view id, std::int64_t created, std::strin
       Quoted(id), created, Quoted(model), Quoted(content),
       reasoning ? ",\"reasoning\":" + Quoted(*reasoning) : std::string(), FinishName(finish),
       UsageJson(usage));
+}
+
+std::expected<std::string, Error> LiteralCompletionJson(std::string_view id, std::int64_t created,
+                                                        const CompletionRequest& request,
+                                                        std::string_view content,
+                                                        const LiteralResult& result, Finish finish,
+                                                        const Usage& usage) {
+  std::size_t allowance = 1024;
+  const auto charge = [&](std::size_t bytes) {
+    if (bytes > kMaxCompletionResponseBytes - allowance) {
+      return false;
+    }
+    allowance += bytes;
+    return true;
+  };
+  const auto charge_text = [&](std::string_view text) {
+    return text.size() <= kMaxCompletionResponseBytes / 6 && charge(6 * text.size());
+  };
+  const auto charge_rows = [&](std::span<const TokenLogprob> rows) {
+    if (rows.size() > kMaxCompletionScoreRows) {
+      return false;
+    }
+    for (const auto& row : rows) {
+      if (!charge(256) || !charge_text(row.token) || row.top.size() > 6 ||
+          (row.logprob && (!std::isfinite(*row.logprob) || *row.logprob > 0))) {
+        return false;
+      }
+      for (const auto& score : row.top) {
+        if (!charge(128) || !charge_text(score.token) || !std::isfinite(score.logprob) ||
+            score.logprob > 0 || score.rank == 0) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  if (!charge_text(content) || (request.echo && !charge_text(result.prompt_text)) ||
+      (request.logprobs && !charge_rows(result.logprobs)) ||
+      (request.prompt_logprobs && !charge_rows(result.prompt_logprobs))) {
+    return std::unexpected(Error{.status = 413,
+                                 .type = "invalid_request_error",
+                                 .message = "completion scores exceed the finite bounded response",
+                                 .param = "logprobs",
+                                 .code = "response_too_large"});
+  }
+  const auto arrays = [&](std::span<const TokenLogprob> rows) {
+    std::string tokens = "[";
+    std::string scores = "[";
+    std::string top = "[";
+    std::string offsets = "[";
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+      const auto& row = rows[i];
+      if (i != 0) {
+        tokens += ',';
+        scores += ',';
+        top += ',';
+        offsets += ',';
+      }
+      tokens += Quoted(row.token);
+      scores += row.logprob ? std::format("{:.17g}", *row.logprob) : "null";
+      offsets += std::to_string(row.text_offset);
+      if (!row.logprob) {
+        top += "null";
+      } else {
+        top += '{';
+        // Different byte tokens may decode to the same replacement text.
+        // Keep the highest score for a key so top-1/greedy remains correct;
+        // return_tokens_as_token_ids avoids that representational collision.
+        std::map<std::string, double> unique;
+        for (std::size_t j = 0; j < row.top.size(); ++j) {
+          const auto& score = row.top[j];
+          if (j >= *request.logprobs && score.id != row.id) {
+            continue;
+          }
+          const auto [at, inserted] = unique.try_emplace(score.token, score.logprob);
+          if (!inserted) {
+            at->second = std::max(at->second, score.logprob);
+          }
+        }
+        bool first = true;
+        for (const auto& [token, score] : unique) {
+          if (!first) {
+            top += ',';
+          }
+          first = false;
+          top += Quoted(token) + ':' + std::format("{:.17g}", score);
+        }
+        top += '}';
+      }
+    }
+    return "{\"tokens\":" + tokens + "],\"token_logprobs\":" + scores +
+           "],\"top_logprobs\":" + top + "],\"text_offset\":" + offsets + "]}";
+  };
+  std::string text = request.echo ? result.prompt_text : std::string();
+  text += content;
+  std::string prompt_scores;
+  if (request.prompt_logprobs) {
+    prompt_scores = ",\"prompt_logprobs\":[";
+    for (std::size_t i = 0; i < result.prompt_logprobs.size(); ++i) {
+      if (i != 0) {
+        prompt_scores += ',';
+      }
+      const auto& row = result.prompt_logprobs[i];
+      if (!row.logprob) {
+        prompt_scores += "null";
+      } else {
+        prompt_scores += '{';
+        // vLLM's prompt scores are keyed by token ID, independently of the
+        // legacy token text arrays. The supplied ID is always present.
+        bool first = true;
+        for (std::size_t j = 0; j < row.top.size(); ++j) {
+          const auto& score = row.top[j];
+          if (j >= *request.prompt_logprobs && score.id != row.id) {
+            continue;
+          }
+          if (!first) {
+            prompt_scores += ',';
+          }
+          first = false;
+          prompt_scores += std::format(R"({}:{{"logprob":{:.17g},"rank":{},"decoded_token":{}}})",
+                                       Quoted(std::to_string(score.id)), score.logprob, score.rank,
+                                       Quoted(score.token));
+        }
+        prompt_scores += '}';
+      }
+    }
+    prompt_scores += ']';
+  }
+  std::string body = std::format(
+      R"({{"id":{},"object":"text_completion","created":{},"model":{},"choices":[{{"index":0,"text":{},"logprobs":{},"finish_reason":"{}"{}}}],"usage":{}}})",
+      Quoted(id), created, Quoted(request.options.model), Quoted(text),
+      request.logprobs ? arrays(result.logprobs) : "null", FinishName(finish), prompt_scores,
+      UsageJson(usage));
+  if (body.size() > kMaxCompletionResponseBytes) {
+    return std::unexpected(Error{.status = 413,
+                                 .type = "invalid_request_error",
+                                 .message = "completion exceeds the bounded response size",
+                                 .param = "logprobs",
+                                 .code = "response_too_large"});
+  }
+  return body;
 }
 
 std::string ChunkJson(std::string_view id, std::int64_t created, std::string_view model,

@@ -253,8 +253,9 @@ the commit gate.
 **M0 (plan the plan), M1 (Bootstrap) and M2 (resource core and backend
 proof) are done** ([docs/m0-record.md](docs/m0-record.md),
 [docs/m1-record.md](docs/m1-record.md), [docs/m2-record.md](docs/m2-record.md)).
-With models configured the runtime service serves them on a minimal
-`/v1/chat/completions` on loopback and the tailnet (D-097); its `chat`
+With models configured the runtime service serves a minimal
+`/v1/chat/completions` (D-097) and literal `/v1/completions` with target
+likelihoods (D-100) on loopback and the tailnet; its `chat`
 and `swap-table` commands serve them by hand in its own process (D-096). **M3
 (single-Spark fast full swap) is in progress** ([docs/plan.md](docs/plan.md)):
 DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swapping A→B→A
