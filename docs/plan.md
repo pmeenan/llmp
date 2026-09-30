@@ -944,8 +944,12 @@ it appears.
           fixed-depth-three 128K harness by 0.8% / 1.3% with prefix / curated
           heads, all 512 tokens identical to matched controls, but does
           not close the final adaptive runtime ladder's speed gate
-          ([MXFP8 scheduling](experiments/qwen38-mxfp8-scheduling/README.md))
-          ([draft-head study](experiments/qwen38-draft-head/README.md)).
+          ([MXFP8 scheduling](experiments/qwen38-mxfp8-scheduling/README.md),
+          [draft-head study](experiments/qwen38-draft-head/README.md)).
+          The subsequent paired-prefix depth estimator regresses the
+          default head, and the complete small-column tensor-core path
+          is slower on every measured shape; both remain unadopted
+          ([depth and crossover](experiments/qwen38-depth-crossover/README.md)).
           *Adaptive depth and selected-head
           import implemented 2026-09-29:* native depth 2–3 chosen by observed
           acceptance, deterministic across saved/restored runs. The 128K

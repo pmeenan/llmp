@@ -13,6 +13,7 @@
 //                      --check greedy|timing|forced|swap|sampled-plain|sampled-spec
 //                      [--reference FILE] [--tokens N] [--context N]
 //                      [--graphs on|off] [--draft N] [--draft-vocab N]
+//                      [--adaptive-depth on|off]
 //                      [--runtime-prefill on|off] [--profile-decode on|off]
 //                      [--repeats N] [--margin B] [--seeds N] [--sampled FILE]
 //                      [--only ID] [--poll-us N] [--window P]
@@ -27,6 +28,8 @@
 // state. --profile-decode on bounds cudaProfilerAPI capture to speculation.
 // --check timing runs greedy speculation with argmax copies only, reporting
 // acceptance and costs without the plain/teacher-forced correctness runs.
+// Greedy/timing results include the actual step/depth trajectory and mean
+// draft/verify costs by requested depth, excluding incomplete tail steps.
 //
 // Prompts are the fixed set's (docs/experiments/fast-swap/prompts.json),
 // rendered by the native Qwen3.8 renderer with the template's defaults
@@ -288,6 +291,8 @@ struct Step {
   std::uint32_t kept = 0;    // rows kept: the anchor and the accepted drafts
   std::int32_t forced = -1;  // the draft position forced wrong, or -1
   std::int32_t next = -1;    // the token after the kept rows (the verify's own)
+  double draft_seconds = 0;
+  double verify_seconds = 0;
   std::vector<std::int32_t> drafts;
   std::vector<std::uint64_t> state;  // fingerprints after the commit (forced checks)
 };
@@ -831,7 +836,8 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
         !result) {
       return result;
     }
-    out.draft_seconds += Seconds(Clock::now() - drafting);
+    step.draft_seconds = Seconds(Clock::now() - drafting);
+    out.draft_seconds += step.draft_seconds;
     if (o_.window > 0.0 && forcing.control == nullptr) {
       // The adaptive window: a later draft is verified only while the
       // drafter is confident of it (a verify row costs ~5 ms, a plain step
@@ -889,7 +895,8 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
     if (auto r = qwen_.Verify(input, pos, argmax, read_logits ? &logits : nullptr); !r) {
       return r;
     }
-    out.verify_seconds += Seconds(Clock::now() - verifying);
+    step.verify_seconds = Seconds(Clock::now() - verifying);
+    out.verify_seconds += step.verify_seconds;
     if (auto r = Judge(step, argmax, logits, pos, history, sampling, seed, scratch, out); !r) {
       return r;
     }
@@ -1020,9 +1027,27 @@ Status Harness::Greedy() {
     std::vector<std::uint64_t> offered(qwen_.draft_rows(), 0);
     std::map<std::uint32_t, std::uint64_t> depths;
     std::map<std::uint32_t, std::uint64_t> verify_rows;
+    struct DepthCost {
+      std::uint64_t steps = 0;
+      double draft_seconds = 0;
+      double verify_seconds = 0;
+    };
+    std::map<std::uint32_t, DepthCost> costs;
+    // [anchor position, requested depth, verify rows, kept rows]. Timings
+    // are reported separately and never change the deterministic policy.
+    std::string trace;
     for (const Step& s : spec.steps) {
       ++depths[s.depth];
       ++verify_rows[s.rows];
+      trace +=
+          std::format("{}[{},{},{},{}]", trace.empty() ? "" : ",", s.pos, s.depth, s.rows, s.kept);
+      // Partial tail verifies cannot calibrate a full-depth step.
+      if (s.rows == s.depth + 1) {
+        auto& cost = costs[s.depth];
+        ++cost.steps;
+        cost.draft_seconds += s.draft_seconds;
+        cost.verify_seconds += s.verify_seconds;
+      }
       for (std::uint32_t i = 0; i + 1 < s.rows; ++i) {
         ++offered[i];
         by_position[i] += i + 1 < s.kept ? 1 : 0;
@@ -1043,6 +1068,13 @@ Status Harness::Greedy() {
     std::string rows_json;
     for (const auto& [rows, steps] : verify_rows) {
       rows_json += std::format("{}\"{}\":{}", rows_json.empty() ? "" : ",", rows, steps);
+    }
+    std::string costs_json;
+    for (const auto& [depth, cost] : costs) {
+      const double factor = 1000.0 / static_cast<double>(cost.steps);
+      costs_json += std::format(R"({}"{}":{{"steps":{},"draft":{:.3f},"verify":{:.3f}}})",
+                                costs_json.empty() ? "" : ",", depth, cost.steps,
+                                factor * cost.draft_seconds, factor * cost.verify_seconds);
     }
     std::println(
         "{}: {} prompt tokens, {} generated; plain {:.2f} tok/s, speculative [{}] tok/s; "
@@ -1068,12 +1100,13 @@ Status Harness::Greedy() {
         R"({{"check":"{}","prompt":"{}","prompt_tokens":{},"stable_boundary":{},"generated":{},"plain_tok_s":{:.3f},)"
         R"("spec_tok_s":[{}],"drafted":{},"accepted":{},"acceptance":{:.4f},)"
         R"("acceptance_by_position":[{}],"verifies":{},"draft_depths":{{{}}},"verify_rows":{{{}}},)"
+        R"("step_trace":[{}],"depth_cost_ms":{{{}}},)"
         R"("step_ms":{{"draft":{:.3f},"verify":{:.3f},"all":{:.3f}}},"text":{},)"
         R"("prompt_ids":[{}],"plain_tokens":[{}],"spec_tokens":[{}],)"
         R"("plain_logits_sha256":"{}","spec_logits_sha256":"{}"}})",
         timing ? "timing" : "greedy", prompt.id, prompt.ids.size(), prompt.stable_boundary, count,
         plain_rate, rates_json, spec.drafted, spec.accepted, acceptance, positions_json,
-        spec.verifies, depths_json, rows_json, spec.draft_seconds * per_step_ms,
+        spec.verifies, depths_json, rows_json, trace, costs_json, spec.draft_seconds * per_step_ms,
         spec.verify_seconds * per_step_ms, spec.decode_seconds * per_step_ms, escaped,
         ids(prompt.ids), ids(plain.tokens), ids(spec.tokens), LogitsDigest(plain.logits),
         LogitsDigest(first_run.logits.empty() ? spec.logits : first_run.logits)));

@@ -160,10 +160,9 @@ generated operands are shipped. The benchmark's temporary allocations
 remain protected by completion, and unknown CUDA/provider failure exits
 without resource destructors or later GPU work.
 
-The next source lead is a benchmark-only crossover comparison with the
-existing MXFP8 tensor-core path at three/four/five rows, charging input
-quantization, scale swizzle, launches and workspace. That path changes
-F32 activation precision and is not authorized by this arithmetic-only
-result; quality, distribution, rejection, repeat and swap evidence would
-be required before a production choice. The global graph threshold is
-unchanged.
+The subsequent [crossover comparison](../qwen38-depth-crossover/README.md)
+with the existing tensor-core path is slower at all 24 measured
+three/four/five-column shapes after charging input quantization, scale
+swizzle, launches and workspace. It is not adopted. Its input rounding
+differs; passing generated-operand controls does not establish model
+quality. The global graph threshold and F32 vector path remain unchanged.

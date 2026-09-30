@@ -77,6 +77,8 @@ aggregate results and upstream source identities belong in the linked reports.
 | Qwen BF16 vector kernel for multi-row verify | Slower than cuBLAS at that shape and two tokens exceeded the existing speculation near-tie bound | Its one-row product/reduction remains adopted for plain decode | New multi-row shape must pass the original quality bound and win end to end; do not widen the bound to accept a kernel. [TensorFold techniques](experiments/tensorfold-techniques/README.md) |
 | Qwen cuBLASLt small-column products | HC products were neutral; router conversion plus Lt was slower; full-head gain was 1.3–1.6%, about 0.1–0.2% of verify | Bounded candidate search, original F32-to-BF16 rounding, full working-set rotation and actual F32/BF16 output contracts | A new product shape needs its own isolated and model gain. Direct BF16-weight/F32-input Lt was unsupported on the measured head/router shapes by the pinned library. Production stays unchanged. [Qwen tuning](experiments/qwen38-gemm-tuning/README.md) |
 | MXFP8 vector input columns loaded one at a time | Lower registers did not produce the best small-output timing | Changed input/decoded-weight liveness without new quantization, scratch or launches | At columns 4 / rows 1 / warps 8, registers fall from 91 to 56, but the measured production transfer retains the original load order. A new consumer needs isolated and model evidence. [MXFP8 scheduling](experiments/qwen38-mxfp8-scheduling/README.md) |
+| Small-column MXFP8 tensor-core crossover | All 24 measured three/four/five-column products are slower after charging F32 quantization, scale swizzle and GEMM | Existing quantize/swizzle/GEMM wrappers and passing padded/tail controls | Measure pieces separately before attributing the slowdown. A new consumer must include every conversion/storage cost and pass original quality gates; the input rounding differs. Global threshold unchanged. [Depth and crossover](experiments/qwen38-depth-crossover/README.md) |
+| Paired-prefix adaptive-depth estimator | Prefix 128K regresses 3.75–4.23%; curated gains only 0.62–1.76% | Shared recent-prefix prediction; independent policy traces and measured phase costs | Different verify widths need not give exact counterfactual rewards. A new estimator must win on both measured heads and preserve deterministic checkpoint choices. Prototype removed; telemetry retained. [Depth and crossover](experiments/qwen38-depth-crossover/README.md) |
 | Confidence window that only shortens verify | No model gain; every draft pass has already run | Candidate confidence and deterministic stopping criterion | Avoid subsequent draft work itself. Compare against the unchanged whole-prefix draft and check state, repeats, swaps and rejection. |
 | Incremental confidence stopping after at least two drafts | Actual early stopping remained neutral at 128K: prefix 45.00 and curated 45.56 tok/s versus fixed-depth-four controls 45.61 and 45.76 | Bounded continuation graphs and explicit draft-state catch-up | Short forced-rejection control passed; direct parity with the monolithic draft was not established. Any new consumer needs that proof plus a measured gain. Prototype removed. [Calibration](experiments/qwen38-mtp-speed/README.md) |
 | ds4 direct-to-residual products | Different SoA weight layout and earlier route-weight multiplication around input quantization; not a drop-in raw GGUF product | Compact expert-major scheduling, paired gate/up preparation, fused activation, integer-dot/correction techniques | Keep raw artifact strides and current route weighting. Measure each piece before considering a layout change or extra weight replica. [ds4 study](experiments/ds4-study/README.md) |
@@ -92,13 +94,11 @@ aggregate results and upstream source identities belong in the linked reports.
 The compact ordinary-expert experiment is complete and its measured
 DeepSeek selection is retained. Qwen's library-product sweep was neutral;
 its measured small-output MXFP8 schedules give a modest incremental gain.
-The next source lead is a benchmark-only small-row tensor-core crossover,
-including F32 input quantization, scale swizzle, launches and workspace.
-It changes activation precision; an isolated win does not authorize
-production adoption or a change to the graph's global threshold, and the
-original quality/distribution/rollback/repeat/swap gates remain owed.
-Then measure any
-inventory candidate that can materially help the open M3 speed or maximum
+The complete small-row tensor-core crossover is slower on every measured
+shape, and the paired-prefix depth estimator regresses the default prefix
+head. Both remain unadopted; the existing kernels and deterministic policy
+stay in production. Measure an inventory candidate that can materially
+help the open M3 speed or maximum
 memory gate. Small unmeasured leads remain named here instead of becoming
 automatic model defaults or an unbounded benchmark queue.
 
