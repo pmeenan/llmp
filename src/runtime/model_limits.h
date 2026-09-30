@@ -12,10 +12,18 @@
 #include <string>
 #include <string_view>
 
+namespace jitllm::model {
+struct Dsv4Binding;
+}
+
 namespace jitllm::runtime {
 
 std::expected<void, std::string> CheckModelContext(std::string_view architecture,
                                                    std::uint32_t context);
+
+// Production frontier selection is measured for Flash's Q4_K head and
+// F32 hyperconnection product. Other bound formats keep every head row.
+bool Dsv4FrontierHeadForServing(const model::Dsv4Binding& binding);
 
 }  // namespace jitllm::runtime
 

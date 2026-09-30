@@ -10,12 +10,12 @@
 // may not until D-088 is accepted.
 //
 //   jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR
-//                      --check greedy|forced|swap|sampled-plain|sampled-spec|probe
+//                      --check greedy|forced|swap|sampled-plain|sampled-spec|probe|frontier|sizing
 //                      [--tokens N] [--context N] [--max-rows N] [--graphs on|off] [--draft N]
 //                      [--probe-step N]
 //                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
 //                      [--seeds N] [--sampled FILE] [--poll-us N]
-//                      [--exact on|off] [--margin B]
+//                      [--exact on|off] [--frontier-head on|off] [--margin B]
 //
 // Two modes (docs/experiments/dsv4-decode/): by default DeepSeek's fast
 // plan, a batched verify, and the checks coarse where the kernels differ
@@ -184,7 +184,7 @@ bool SameBits(std::span<const float> a, std::span<const float> b) {
 
 // Every row's logits, in order, as one SHA-256: a fingerprint to compare
 // two builds' generations bit for bit ("" for none kept).
-std::string LogitsDigest(const std::vector<std::vector<float>>& rows) {
+std::string LogitsDigest(std::span<const std::vector<float>> rows) {
   if (rows.empty()) {
     return {};
   }
@@ -236,6 +236,7 @@ struct Options {
 struct Prompt {
   std::string id;
   std::vector<std::int32_t> ids;
+  bool supplied_ids = false;
 };
 
 // One speculative step's record.
@@ -285,7 +286,7 @@ struct Forcing {
 
 class Harness {
  public:
-  explicit Harness(const Options& options)
+  explicit Harness(Options& options)
       : o_(options),
         node_({.compute_streams = 2,
                .slots = ts::kPagedSlots,
@@ -301,6 +302,9 @@ class Harness {
 
   Status Run();
   Status TearDown() {
+    if (!node_opened_) {
+      return {};
+    }
     std::vector<ts::PagedModel*> models = {&dsv4_};
     if (with_fp16()) {
       models.push_back(&fp16_);
@@ -330,6 +334,7 @@ class Harness {
   Status Untouched(const std::vector<std::byte>& pre_target, const std::vector<std::byte>& pre_ring,
                    Step& step);
   Status Greedy();
+  Status Frontier();
   // The forced check's rejections, per step (Forced); counts what each covers.
   static std::function<std::int32_t(std::size_t, std::uint32_t, std::uint32_t)> ForcedWrong(
       std::map<std::string, std::uint64_t>& covered);
@@ -349,7 +354,7 @@ class Harness {
   Status SwapIn();
   Status Write();
 
-  const Options& o_;
+  Options& o_;
   std::string record_;
   MemorySampler memory_;
   std::uint64_t available_before_ = MemAvailable();
@@ -363,6 +368,8 @@ class Harness {
   std::vector<std::string> results_;  // JSON objects
   std::vector<std::string> problems_;
   double load_seconds_ = 0;
+  bool weights_loaded_ = false;
+  bool node_opened_ = false;
 };
 
 // ------------------------------------------------------------------ prompts
@@ -408,10 +415,25 @@ Status Harness::Tokenize() {
     Prompt p;
     const auto id = entry.find("id");
     const auto messages = entry.find("messages");
-    if (!id || !messages || !messages->is_array()) {
+    const auto supplied = entry.find("token_ids");
+    if (!id || ((!messages || !messages->is_array()) && !supplied)) {
       return Error("a prompt without an id or messages");
     }
     p.id = std::string(id->string());
+    if (supplied) {
+      p.supplied_ids = true;
+      if (!supplied->is_array() || supplied->size() == 0) {
+        return Error("a token_ids prompt must be a nonempty array");
+      }
+      for (std::size_t i = 0; i < supplied->size(); ++i) {
+        const auto token = supplied->at(i).int64().value_or(-1);
+        if (token < 0 || std::cmp_greater_equal(token, md::Dsv4Flash().vocab)) {
+          return Error("a supplied prompt token is outside the vocabulary");
+        }
+        p.ids.push_back(static_cast<std::int32_t>(token));
+      }
+      return p;
+    }
     jitllm::chat::Conversation c;
     // As llama-server's /apply-template rendered the baselines' prompts: its
     // default turns the template's thinking on (the generation prompt ends
@@ -447,8 +469,18 @@ Status Harness::Tokenize() {
       if (!p) {
         return std::unexpected(p.error());
       }
+      if (o_.check == "frontier" && p->ids.size() > o_.dsv4.context - o_.tokens) {
+        return Error("the frontier diagnostic's prompt and outputs exceed its context");
+      }
       into->push_back(std::move(*p));
     }
+  }
+  if (o_.check == "frontier" && decode_.empty() && chat_.empty()) {
+    return Error("the frontier diagnostic needs at least one prompt");
+  }
+  const auto supplied_ids = [](const Prompt& p) { return p.supplied_ids; };
+  if (std::ranges::all_of(decode_, supplied_ids) && std::ranges::all_of(chat_, supplied_ids)) {
+    return {};
   }
   // The renderer and tokenizer against llama.cpp's own IDs for `capital`.
   const std::filesystem::path reference =
@@ -464,7 +496,7 @@ Status Harness::Tokenize() {
           continue;
         }
         for (const Prompt& p : chat_) {
-          if (p.id != id->string()) {
+          if (p.supplied_ids || p.id != id->string()) {
             continue;
           }
           std::vector<std::int32_t> want;
@@ -905,6 +937,112 @@ Status Harness::Compare(const Generation& plain, const Generation& spec, std::st
 }
 
 // ------------------------------------------------------------------ checks
+
+// Production prefill copies only its last logit row in both arms. Compare
+// raw target/DSpark state after prefill, then force the same continuation;
+// cross-head differences are recorded, while each arm must repeat exactly.
+Status Harness::Frontier() {
+  if (o_.dsv4.exact) {
+    return Error("the frontier control requires the fast plan");
+  }
+  std::vector<Prompt> prompts = decode_;
+  prompts.insert(prompts.end(), chat_.begin(), chat_.end());
+  if (!o_.only.empty()) {
+    std::erase_if(prompts, [&](const Prompt& p) { return p.id != o_.only; });
+  }
+  if (prompts.empty()) {
+    return Error("the frontier control has no prompt");
+  }
+  for (const Prompt& prompt : prompts) {
+    for (const bool inject : {false, true}) {
+      std::array<std::vector<std::byte>, 2> baseline_state;
+      std::array<std::vector<float>, 2> own_first;
+      std::array<Generation, 2> own;
+      std::vector<std::int32_t> forced;
+      for (std::uint32_t repeat = 0; repeat < 4; ++repeat) {
+        const bool frontier = repeat == 1 || repeat == 2;
+        const std::size_t arm = frontier ? 1 : 0;
+        o_.dsv4.frontier_head = frontier;
+        Generation generation;
+        std::vector<float> first;
+        double prefill = 0;
+        std::array<std::vector<std::byte>, 2> state;
+        if (auto r = InRequest("a frontier prefill control",
+                               [&]() -> Status {
+                                 const auto start = Clock::now();
+                                 if (auto p = Prefill(prompt, inject, first); !p) {
+                                   return p;
+                                 }
+                                 prefill = Seconds(Clock::now() - start);
+                                 if (auto s = dsv4_.ReadState(state[0], state[1]); !s) {
+                                   return s;
+                                 }
+                                 generation.tokens = {jb::Argmax(first)};
+                                 generation.logits = {first};
+                                 auto pos = static_cast<std::uint32_t>(prompt.ids.size());
+                                 for (std::uint32_t i = 1; i < o_.tokens; ++i) {
+                                   const std::int32_t token =
+                                       repeat == 0 ? generation.tokens.back() : forced[i - 1];
+                                   std::vector<float> row;
+                                   if (auto c = dsv4_.Chunk(pos++, std::span(&token, 1), row); !c) {
+                                     return c;
+                                   }
+                                   generation.tokens.push_back(jb::Argmax(row));
+                                   generation.logits.push_back(std::move(row));
+                                 }
+                                 return {};
+                               });
+            !r) {
+          return r;
+        }
+        if (repeat == 0) {
+          baseline_state = std::move(state);
+          forced = generation.tokens;
+        } else if (state != baseline_state) {
+          return Error("frontier prefill target or DSpark state differs from the all-head control");
+        }
+        if (repeat < 2) {
+          own_first[arm] = first;
+          own[arm] = generation;
+        } else {
+          if (!SameBits(own_first[arm], first) || own[arm].tokens != generation.tokens ||
+              own[arm].logits.size() != generation.logits.size()) {
+            return Error("the frontier control does not repeat its own trajectory exactly");
+          }
+          for (std::size_t i = 0; i < generation.logits.size(); ++i) {
+            if (!SameBits(own[arm].logits[i], generation.logits[i])) {
+              return Error("the frontier control does not repeat its own logits exactly");
+            }
+          }
+        }
+        for (std::size_t i = 1; i < generation.logits.size(); ++i) {
+          if (!SameBits(own[0].logits[i], generation.logits[i])) {
+            return Error("the frontier control's forced continuation logits differ");
+          }
+        }
+        const std::string name =
+            std::format("{}-{}-{}", prompt.id, inject ? "inject" : "plain", repeat);
+        if (auto w = jb::WriteFloats(o_.out / (name + ".head.f32"), first); !w) {
+          return w;
+        }
+        const auto hash = [](std::span<const std::byte> bytes) {
+          return jitllm::base::ToHex(jitllm::base::Sha256().Update(bytes).Finish());
+        };
+        results_.push_back(std::format(
+            R"({{"check":"frontier","prompt":"{}","prompt_tokens":{},"inject":{},"frontier":{},"repeat":{},"prefill_s":{:.6f},"prefill_tok_s":{:.3f},"target_sha256":"{}","ring_sha256":"{}","first_sha256":"{}","continuation_rows":{},"logits_sha256":"{}"}})",
+            prompt.id, prompt.ids.size(), inject ? "true" : "false", frontier ? "true" : "false",
+            repeat, prefill, static_cast<double>(prompt.ids.size()) / prefill,
+            hash(baseline_state[0]), hash(baseline_state[1]), LogitsDigest(std::span(&first, 1)),
+            generation.logits.size() - 1, LogitsDigest(generation.logits)));
+        std::println(
+            "{}: frontier {}, prefill {:.6f} s, target/DSpark state and {} continuation rows exact",
+            name, frontier, prefill, generation.logits.size() - 1);
+      }
+    }
+  }
+  o_.dsv4.frontier_head = false;
+  return {};
+}
 
 Status Harness::Greedy() {
   // The chained draft-verify looks the drafts' embedding rows up on the
@@ -1715,6 +1853,7 @@ Status Harness::Run() {
   if (auto r = node_.Open(); !r) {
     return r;
   }
+  node_opened_ = true;
   if (auto r = dsv4_.Setup(); !r) {
     return r;
   }
@@ -1753,11 +1892,15 @@ Status Harness::Run() {
     }
   }
   node_.Run();
+  if (o_.check == "sizing") {
+    return Write();
+  }
   std::vector<ts::LoadStats> log;
   const auto start = Clock::now();
   if (auto r = node_.Load(dsv4_.weights(), "A's first load", log); !r) {
     return r;
   }
+  weights_loaded_ = true;
   load_seconds_ = Seconds(Clock::now() - start);
   std::println("loaded: {} bytes ({} the drafter's) in {:.2f} s", dsv4_.weight_read_bytes(),
                dsv4_.drafter_read_bytes(), load_seconds_);
@@ -1784,7 +1927,9 @@ Status Harness::Run() {
     return r;
   }
   Status checked;
-  if (o_.check == "greedy") {
+  if (o_.check == "frontier") {
+    checked = Frontier();
+  } else if (o_.check == "greedy") {
     checked = Greedy();
   } else if (o_.check == "forced") {
     checked = Forced();
@@ -1825,10 +1970,12 @@ Status Harness::Write() {
   const std::uint64_t drop = available_before_ - std::min(available_before_, memory_.low());
   std::ofstream(o_.out / "spec.json")
       << std::format(
-             R"({{"check":"{}","load_seconds":{:.2f},"read_bytes":{},"drafter_read_bytes":{},)"
+             R"({{"check":"{}","frontier_head":{},"weights_loaded":{},"activations_bytes":{},"pool_bytes":{},"host_input_bytes":{},"load_seconds":{:.2f},"read_bytes":{},"drafter_read_bytes":{},)"
              R"("peak_memavailable_drop_bytes":{},"graphs":{{"eager":{},"captured":{},"replayed":{},)"
              R"("refused":{}}},"results":[{}],"problems":[{}]}})",
-             o_.check, load_seconds_, dsv4_.weight_read_bytes(), dsv4_.drafter_read_bytes(), drop,
+             o_.check, o_.dsv4.frontier_head ? "true" : "false", weights_loaded_ ? "true" : "false",
+             dsv4_.activations_needed(), dsv4_.pool_needed(), dsv4_.host_input_bytes(),
+             load_seconds_, dsv4_.weight_read_bytes(), dsv4_.drafter_read_bytes(), drop,
              dsv4_.graph_stats().eager, dsv4_.graph_stats().captured, dsv4_.graph_stats().replayed,
              dsv4_.graph_stats().refused, all, problems)
       << '\n';
@@ -1881,6 +2028,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--exact") {
       o.dsv4.exact = v == "on";
       ok = v == "on" || v == "off";
+    } else if (a == "--frontier-head") {
+      o.dsv4.frontier_head = v == "on";
+      ok = v == "on" || v == "off";
     } else if (a == "--margin") {
       const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), o.margin);
       ok = ec == std::errc() && end == v.data() + v.size() && o.margin >= 0.0;
@@ -1916,11 +2066,22 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.check.empty() || (o.fp16.artifact.empty() != o.fp16.tokens.empty())) {
     return Error(
         "usage: jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR "
-        "--check greedy|forced|swap|sampled-plain|sampled-spec|probe [--tokens N] [--context N] "
+        "--check greedy|forced|swap|sampled-plain|sampled-spec|probe|frontier|sizing [--tokens N] "
+        "[--context N] "
         "[--max-rows N] "
         "[--graphs on|off] [--exact on|off] [--margin B] [--draft N] [--fp16-artifact DIR "
         "--fp16-tokens FILE "
         "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N]");
+  }
+  // The paired control needs the all-row workspace for its original arm.
+  if (o.check == "frontier") {
+    if (o.dsv4.exact || o.dsv4.context > 131072 || o.dsv4.max_rows > 4096 || o.tokens > 1024 ||
+        o.tokens > o.dsv4.context) {
+      return Error(
+          "the frontier diagnostic needs fast mode, context <=131072, chunks <=4096 "
+          "and outputs <=1024 within context");
+    }
+    o.dsv4.frontier_head = false;
   }
   // The probe runs the fast plan and the reference mode over one state,
   // which needs the full window cache (engine/dsv4_runner.h set_exact).
@@ -1934,7 +2095,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  const auto options = Parse(std::span(argv, static_cast<std::size_t>(argc)));
+  auto options = Parse(std::span(argv, static_cast<std::size_t>(argc)));
   if (!options) {
     std::println(stderr, "{}", options.error());
     return 2;

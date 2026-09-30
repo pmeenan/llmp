@@ -545,6 +545,59 @@ TEST(Dsv4Test, TheChunkGraphIsPlannedByThisModulesImplementations) {
   }
 }
 
+TEST(Dsv4Test, RequestedHeadRowsLeaveTheFullChunkBeforeTheGather) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  const std::vector<md::Dsv4Resource> resources = GgufLike(p);
+  auto binding = md::BindDsv4(p, "deepseek4", resources);
+  ASSERT_TRUE(binding.has_value()) << Why(binding);
+  auto state = md::Dsv4State(p, 8192, 512, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state.has_value());
+  auto chunk = md::Dsv4Chunk(p, *state, 3000, 37, false);
+  ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+  using NodeShape = std::pair<ggml_op, std::array<std::int64_t, 4>>;
+  std::vector<NodeShape> full_trunk;
+  for (const std::int64_t outputs : {0, 1, 3, 37}) {
+    const kg::Dsv4ChunkShape shape = kg::Dsv4ShapeOf(*state, *chunk, outputs);
+    auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+    ASSERT_TRUE(arena.has_value());
+    auto graph = kg::BuildDsv4Graph(*arena, p, *binding, shape, {.fused = true});
+    ASSERT_TRUE(graph.has_value()) << Why(graph);
+    const std::int64_t head_rows = outputs == 0 ? 37 : outputs;
+    EXPECT_EQ(graph->out_ids->ne[0], head_rows);
+    EXPECT_EQ(graph->logits->ne[0], p.vocab);
+    EXPECT_EQ(graph->logits->ne[1], head_rows);
+    EXPECT_EQ(graph->Named("hc_head")->ne[1], head_rows);
+    EXPECT_EQ(graph->Named("result_norm")->ne[1], head_rows);
+    EXPECT_EQ(graph->Named("l_last-42")->ne[2], 37);
+    EXPECT_EQ(graph->csa_visible->ne[0], 37);
+    EXPECT_EQ(graph->raw_k_idxs->ne[0], 37);
+    const auto gather = std::ranges::find_if(graph->nodes, [&](const ggml_tensor* node) {
+      return node->op == GGML_OP_GET_ROWS && node->src[1] == graph->out_ids;
+    });
+    ASSERT_NE(gather, graph->nodes.end());
+    EXPECT_EQ((*gather)->src[0]->ne[0], p.hc_width());
+    EXPECT_EQ((*gather)->src[0]->ne[1], 37);
+    std::vector<NodeShape> trunk;
+    for (auto it = graph->nodes.begin(); it != gather; ++it) {
+      const ggml_tensor* node = *it;
+      trunk.emplace_back(node->op, std::array{node->ne[0], node->ne[1], node->ne[2], node->ne[3]});
+    }
+    if (outputs == 0) {
+      full_trunk = std::move(trunk);
+    } else {
+      EXPECT_EQ(trunk, full_trunk);
+      EXPECT_NE(shape, kg::Dsv4ShapeOf(*state, *chunk));
+    }
+  }
+  for (const std::int64_t outputs : {-1, 38}) {
+    auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+    ASSERT_TRUE(arena.has_value());
+    EXPECT_FALSE(kg::BuildDsv4Graph(*arena, p, *binding, kg::Dsv4ShapeOf(*state, *chunk, outputs),
+                                    {.fused = true})
+                     .has_value());
+  }
+}
+
 // The fast plan (Dsv4GraphOptions::fused, DeviceChoices::fuse_norms and
 // vector_floats; D-085's note): chunks of up to 8 rows run the hyper-
 // connections, the MoE blocks and the quantized products as jitLLM's fused
@@ -765,6 +818,28 @@ TEST(Dsv4Test, TheFastPlanAttendsSparselyAtAnyDepth) {
         }
       }
       EXPECT_EQ(attention, p.layers);
+      EXPECT_FALSE(used.contains(kg::kFlashAttnMmaWideName));
+      auto sharing_device = device;
+      sharing_device.wide_sparse_attention = true;
+      auto sharing = kg::PlanGraph(graph->nodes, false, sharing_device);
+      ASSERT_TRUE(sharing.has_value()) << rows << " rows: " << Why(sharing);
+      std::array<std::size_t, 3> families{};
+      for (const auto& step : sharing->steps) {
+        if (step.operation != jitllm::execution::Operation::kFlashAttn) {
+          continue;
+        }
+        const ggml_tensor* mask = step.nodes[0]->src[3];
+        const std::size_t family = kg::JitllmOpOf(mask) == kg::JitllmOp::kDsv4SparseMask
+                                       ? static_cast<std::size_t>(kg::JitllmOpInt(mask, 1))
+                                       : 2;
+        ASSERT_LT(family, families.size());
+        ++families[family];
+        EXPECT_EQ(step.implementation,
+                  family == 1 ? kg::kFlashAttnMmaName : kg::kFlashAttnMmaWideName);
+      }
+      // The real Flash profile has 21 selected-list CSA, 20 count-based
+      // HCA and two window-only layers, at either depth and all row shapes.
+      EXPECT_EQ(families, (std::array<std::size_t, 3>{21, 20, 2}));
       EXPECT_EQ(graph->csa.mask, nullptr);
       EXPECT_EQ(graph->hca.mask, nullptr);
       EXPECT_EQ(graph->lid.mask, nullptr);

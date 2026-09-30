@@ -351,10 +351,35 @@ sinks bound (RE-030).
   tiles, empty sink rows, finite mask biases and scratch/domain bounds
   match the FP64 reference. The reduction change moves some logits;
   the existing oracle near-tie bound remains fixed.
+- **Model limitation and selection:** the [frontier follow-up](../experiments/dsv4-frontier-head/README.md#head-arithmetic-and-quality)
+  reproduces a 32K original-target disagreement at forced row 249 with
+  production's 2,048-row compact scheduling floor. The oracle's margin
+  is 2.616249, above the unchanged 0.947 bound; native's own lead is
+  −0.585857. An earlier narrow control changes that lead to +0.096939,
+  but a narrow 128K experiment has another outside-bound case. Those
+  initial narrow runs used compact scheduling on partial chunks, so
+  those are retained as experiments, not a qualified global rollback.
+  Historical short/PPL evidence and FP64 operation tests do not close
+  this checkpoint gate.
+  A matched compact-off 32K control repeats every logit bit exactly,
+  ruling out compact scheduling for that fixture. An external control
+  keeps CSA/window sharing but returns count-based HCA to the original
+  path: 491 equal rows plus 21 within-bound near ties, zero violations,
+  native step-249 lead +0.184032. Its completed implementation counts
+  confirm the split. Prefill takes 9.26% longer at 32K and 12.23% longer
+  at 128K than matched all-wide controls. Its
+  corrected-floor 128K arm also passes (500 equal rows, 12 within-bound
+  near ties). Fresh all-head/frontier repeats at both depths are exact;
+  matched 128K PPL is 1.926517 versus 1.9298. The planner therefore
+  selects registered ordinary MMA for the existing count-based HCA
+  mask semantic, while opted-in CSA/window sharing remains. Production
+  state/injection, forced rejection and swap continuations are exact.
+  Final sampled and maximum-context runtime gates remain pending.
 - **Scope:** DeepSeek's fast sparse attention and the D256 reference
   capability. Selection defaults off: the old D512 one-query and D256
   dense choices remain the primitive/reference defaults. Only measured
-  DeepSeek fast planners enable wide unions; fully disjoint D512 lists
+  DeepSeek fast CSA/window planners enable wide unions; HCA retains
+  ordinary shape selection. Fully disjoint D512 lists
   regress in the cross-shape control. Qwen3.8's default `jitllm.qsa.attn`
   is independent.
 - **Proposed action:** none upstream; take the full backport with the

@@ -115,6 +115,9 @@ struct Dsv4Options {
   // position, which the reference mode needs: a probe that runs both plans
   // over one state (set_exact) sets it.
   bool full_window = false;
+  // Production fast prefill needs only the last head row. Generic and
+  // diagnostic callers opt in explicitly; exact/verify stay all-row.
+  bool frontier_head = false;
 };
 
 // What a chunk computes beside its target rows' own work.
@@ -173,6 +176,8 @@ class Dsv4Runner final : public PagedModel {
   Status CopyCheckpointState(void* host, std::span<const LiveState::Range> ranges, bool to_host);
   // One chunk of `tokens` after n_past: the last row's logits in `logits`
   // (every row's, rows × vocab, for kVerify).
+  // With frontier_head, fast prefill computes only that row's head;
+  // DSpark features/injection still cover the full chunk's streams.
   // With `meanwhile`, the chunk's job is submitted without waiting, and
   // `meanwhile` runs on this thread while it is in flight (the RE-029
   // probe: a page-in beside a long job); its failure fails the chunk.

@@ -25,6 +25,9 @@
 // from each row's visible counts, jitLLM's deterministic indexer, and the
 // MMA kernel's sparse gather, so its host inputs carry no CSA, HCA or
 // indexer mask (Dsv4Graph::csa_visible, hca_visible instead).
+// A positive shape.outputs selects trailing rows before the final mix,
+// norm and vocabulary head, preserving every trunk/state/feature row.
+// Shape outputs = 0 leaves the reference/default all-row head unchanged.
 //
 // Speculation (M3; docs/experiments/dspark/) adds, by option: a verify's
 // row-invariant plan (D-092: attention per query row; the planner picks
@@ -65,9 +68,17 @@
 
 namespace jitllm::kernels::ggml {
 
+// The measured compact expert scheduling floor for production DeepSeek
+// prefill. Native model controls share it; direct operation controls may
+// deliberately exercise smaller experimental shapes.
+inline constexpr std::int64_t kDsv4CompactMinRows = 2048;
+
 // A chunk's shape, from its host-built inputs.
 struct Dsv4ChunkShape {
   std::int64_t rows = 0;
+  // The head's last rows; 0 keeps the reference/default's every-row head.
+  // This never narrows the streams a DSpark feature capture reads.
+  std::int64_t outputs = 0;
   std::int64_t raw_n_kv = 0;
   std::int64_t raw_cells = 0;
   std::int64_t csa_n_kv = 0;  // also the indexer's
@@ -83,8 +94,8 @@ struct Dsv4ChunkShape {
   bool operator==(const Dsv4ChunkShape&) const = default;
 };
 
-Dsv4ChunkShape Dsv4ShapeOf(const model::Dsv4StateLayout& state,
-                           const model::Dsv4ChunkInputs& chunk);
+Dsv4ChunkShape Dsv4ShapeOf(const model::Dsv4StateLayout& state, const model::Dsv4ChunkInputs& chunk,
+                           std::int64_t outputs = 0);
 
 // One compressor's host-built inputs.
 struct Dsv4CompInputs {
@@ -217,7 +228,7 @@ struct Dsv4Graph {
   ggml_tensor* positions = nullptr;   // I32 [rows]
   ggml_tensor* raw_k_idxs = nullptr;  // I64 [rows]: each token's ring cell
   ggml_tensor* raw_mask = nullptr;    // F16 [raw_n_kv, rows, 1, 1]
-  ggml_tensor* out_ids = nullptr;     // I32 [rows]: 0 .. rows - 1, every row an output
+  ggml_tensor* out_ids = nullptr;     // I32 [outputs]: the head's requested trailing rows
   Dsv4CompInputs csa, hca, lid;
   ggml_tensor* lid_rot = nullptr;  // F32 [indexer head, indexer head]: never read
   ggml_tensor* top_k_zeros =
@@ -232,7 +243,7 @@ struct Dsv4Graph {
   ggml_tensor* hc_head_fn = nullptr;
   ggml_tensor* hc_head_base = nullptr;
   ggml_tensor* hc_head_scale = nullptr;
-  ggml_tensor* logits = nullptr;  // F32 [vocab, rows]
+  ggml_tensor* logits = nullptr;  // F32 [vocab, outputs]; default outputs = chunk rows
   // With options.features: F32 [width · features, rows], each row the
   // listed layers' stream means in order (DSpark's fc input).
   ggml_tensor* features = nullptr;

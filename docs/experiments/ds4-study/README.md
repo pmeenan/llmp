@@ -179,7 +179,7 @@ still separate in native. Q8 totals are not perfectly matched buckets:
 ds4's 0.463 s attention-output fusion includes additional products.
 These observations motivate the next bounded expert-product experiment.
 
-The retained sparse-attention change shares the union of up to eight
+The studied sparse-attention change shares the union of up to eight
 queries' gathered KV cells. It applies each original per-query mask,
 including its finite bias, to that union; KV remains F16. It backports
 GGML PRs 28770/29298's union/live-count machinery, extending the pinned
@@ -188,8 +188,11 @@ It also supports D256 sparse reference graphs. Qwen3.8's default fast QSA
 operation is independent.
 The generic planner and launch default retain D512's one-query sparse
 and D256's dense choices. `wide_sparse_attention` explicitly selects
-the distinct wide implementation; only measured DeepSeek fast planners
-enable it. The reference mode retains its original choice.
+the distinct wide implementation; measured DeepSeek fast CSA/window
+planners enable it, while count-based HCA retains ordinary MMA after
+the later checkpoint controls below. Reference mode retains its
+original choice. These historical study timings do not qualify that
+later component or close the final sampled/maximum-context gates.
 
 On the 8K prompt, native prefill changed from 16.375 s (500.27 tok/s)
 to 13.204 s (620.42 tok/s); plain decode stayed 18.46/18.44 tok/s. The
@@ -472,17 +475,52 @@ to these GGML sparse or quantized products. The transferable rule is
 to share operands and preparation when the original layout/arithmetic
 contract permits it, then measure the affected shape.
 
-DeepSeek production returns only the frontier logit row, while its graph
-computes every row's head. A future explicit frontier-head choice can
-gather the last hidden row before output normalization while retaining
-all hidden rows for DSpark injection; PPL and verify must keep all heads.
-The current head costs about 65 ms per 4K chunk, about 1% of GPU time;
+DeepSeek production returns only the frontier logit row, while the study's
+graph computed every row's head. A separate
+[frontier-head follow-up](../dsv4-frontier-head/README.md) selects the
+last stream row before the final mix and output normalization while
+retaining all hidden rows for DSpark injection; PPL and verify keep all
+requested heads. All study results above predate that follow-up.
+The community Q8 head profile costs about 65 ms per 4K chunk, about 1% of GPU time;
 eliminating full-row harness readback is a distinct measurement change.
 Qwen's fast production path already gathers its requested frontier rows
 before its head and preserves all injection streams.
 
-The final fast path's 8K forced 32-output capture is bit identical to the
-paired capture above after adding the explicit dispatch gate and keeping
+The follow-up's original-target 32K all-head/frontier runs exposed a
+shared outside-bound oracle case at step 249. Those initial native runs
+enabled compact scheduling even on partial chunks; production enables
+it only from 2,048 rows. A corrected native control sharing that floor
+still reproduces the same wide-path violation. Native `82437−10386` is
+−0.585857, while the oracle margin is 2.616249, above the unchanged
+0.947 bound. The earlier experimental-tail narrow arm has 493 equal
+rows and 19 near ties, with native lead +0.096939 at step 249. The
+experimental-tail narrow 128K control instead has one outside-bound
+case at step 315 (0.970619 > 0.947). Those experimental-tail captures
+do not qualify an all-narrow replacement. The diagnostic
+`dsv4_exec --wide-sparse on|off` retains explicit sharing permission.
+The same corrected-floor wide 32K control with compact scheduling off
+repeats all 512 complete logit rows bit exactly. A component experiment
+retaining CSA/window sharing while returning HCA to the original path
+has 491 equal rows and 21 within-bound near ties, zero outside-bound
+rows, at 9.26% more prefill time than all-wide. Its corrected-floor 128K
+arm has 500 equal rows plus 12 within-bound near ties, zero violations.
+Matched 128K prefill takes 12.23% more time than all-wide; this material
+cost is retained for the unchanged quality bound, with final serving
+timings still pending.
+Fresh all-head/frontier repeats at both depths are exact, as are common
+later logits and full target/DSpark state in 24 direct-runner arms.
+Matched 128K PPL is 1.926517 versus 1.9298, −0.1701%. Forced rejection
+and swap controls remain exact. The planner therefore uses ordinary
+MMA for count-based HCA uniformly, retaining opted-in CSA/window sharing.
+Final sampled plain/speculation and maximum-context runtime gates remain
+pending; historical speed/quality results above do not close them.
+Compact expert scheduling, paired preparation and F16 caches remain.
+Historical wide speed/short-quality/128K results above and the fresh
+narrow controls are identified separately in the follow-up.
+
+The historical wide/shared slice's final fast-path 8K forced 32-output
+capture is bit identical to the paired capture above after adding the
+explicit dispatch gate and keeping
 the one-column kernel's original fixed loop bound. This verifies that
 the preservation guards do not change the measured fast trajectory.
 That earlier shared slice's checked native harness binary has SHA-256

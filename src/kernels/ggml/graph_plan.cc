@@ -500,7 +500,12 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                           Where(graph, i)));
         }
         add(Operation::kFlashAttn,
-            device.wide_sparse_attention ? kFlashAttnMmaWideName : kFlashAttnMmaName, i, {node}, 1);
+            device.wide_sparse_attention &&
+                    (JitllmOpOf(node->src[3]) != JitllmOp::kDsv4SparseMask ||
+                     JitllmOpInt(node->src[3], 1) != 1)
+                ? kFlashAttnMmaWideName
+                : kFlashAttnMmaName,
+            i, {node}, 1);
         break;
       default:
         return Rejected(std::format("{}: no implementation of this operation", Where(graph, i)));

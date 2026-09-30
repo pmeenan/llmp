@@ -105,7 +105,10 @@ not used. The options each renderer supports and refuses are in
   The default is now 262,144. The configuration accepts 512 to the
   checkpoint's trained 1,048,576-token ceiling, checked before model
   allocation; growing state admits physical backing only as it is used,
-  within the runtime's memory guard. A 1M physical fit has not been measured.
+  within the runtime's memory guard. An earlier actual 1M request fit is
+  recorded in the [final context study](experiments/m3-final-context/README.md);
+  it precedes the frontier-head change and does not close its final
+  maximum-context quality/continuation gates.
   At 262,144 it fits one Spark plain
   and with DSpark (3.5 and 3.9 GiB fixed, the guard's 6 GiB margin
   kept); a 256K prompt is not verified through the runtime, whose chat
@@ -148,6 +151,16 @@ not used. The options each renderer supports and refuses are in
     another token where the oracle prefers its own by 2.62 nats; every
     jitLLM path has the two within 0.9 nats there, and the phase 2 fast
     plan agrees with the oracle ([step 249](experiments/long-context/README.md#step-249)).
+    The [frontier follow-up](experiments/dsv4-frontier-head/README.md#head-arithmetic-and-quality)
+    reproduces the disagreement in a current wide-path control matching
+    production's compact scheduling floor, with the unchanged 0.947
+    bound. Compact-off repeats every logit bit exactly there. Selecting
+    ordinary MMA for count-based HCA while retaining CSA/window sharing
+    passes fresh 32K/128K controls at that bound (491+21 and 500+12
+    equal/near-tie rows), with exact own repeats and common later rows.
+    Matched 128K PPL is 1.926517 versus 1.9298. Final sampled and
+    maximum-context runtime controls remain pending; historical phase-2
+    agreement is not a current-path blanket pass.
   - The reference mode (`--exact on`) keeps GGML's top-k and does not
     repeat past 4,096 positions (RE-031).
   - DeepSeek's own `tokenizer.json` differs from the GGUF's tokenizer on

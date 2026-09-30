@@ -508,6 +508,61 @@ TEST(DsparkTest, AVerifysGraphIsRowInvariantAndInjectsTheDraftersRing) {
           .has_value());
 }
 
+TEST(DsparkTest, AFrontierHeadRetainsEveryFeatureAndPartialInjectionRow) {
+  const md::Dsv4Profile p = WindowOnlyTarget();
+  const std::vector<md::Dsv4Resource> resources = Target(p);
+  auto target = md::BindDsv4(p, "deepseek4", resources);
+  ASSERT_TRUE(target.has_value()) << Why(target);
+  const md::DsparkProfile& d = md::DsparkDeepSeekV4Flash();
+  const std::vector<md::Dsv4Resource> drafter = Drafter();
+  auto dbinding = md::BindDspark(d, "dflash", drafter, p, *target);
+  ASSERT_TRUE(dbinding.has_value()) << Why(dbinding);
+  auto state = md::Dsv4State(p, 4096, 512, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state.has_value());
+  auto chunk = md::Dsv4Chunk(p, *state, 300, 37, false);
+  ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+  for (const std::int64_t outputs : {0, 1}) {
+    auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+    ASSERT_TRUE(arena.has_value());
+    const kg::Dsv4GraphOptions options{
+        .features = d.target_layers,
+        .inject = kg::Dsv4Injection{.profile = &d, .binding = &*dbinding, .rows = 32, .ring = 256},
+        .fused = true};
+    auto graph =
+        kg::BuildDsv4Graph(*arena, p, *target, kg::Dsv4ShapeOf(*state, *chunk, outputs), options);
+    ASSERT_TRUE(graph.has_value()) << Why(graph);
+    EXPECT_EQ(graph->logits->ne[1], outputs == 0 ? 37 : 1);
+    ASSERT_NE(graph->features, nullptr);
+    EXPECT_EQ(graph->features->ne[0], 3 * p.width);
+    EXPECT_EQ(graph->features->ne[1], 37);
+    EXPECT_EQ(graph->Named("l_last-42")->ne[2], 37);
+    EXPECT_EQ(graph->Named("inp_g_embeddings")->ne[1], 32);
+    ASSERT_TRUE(graph->inject.has_value());
+    EXPECT_EQ(graph->inject->cells->ne[0], 32);
+    std::size_t ring_writes = 0;
+    for (const ggml_tensor* node : graph->nodes) {
+      if (node->op == GGML_OP_SET_ROWS &&
+          std::ranges::find(graph->inject->ring, node->src[2]) != graph->inject->ring.end()) {
+        ++ring_writes;
+        EXPECT_EQ(node->src[0]->ne[1], 32);
+      }
+    }
+    EXPECT_EQ(ring_writes, d.blocks.layers);
+    for (std::uint32_t il = 0; il < d.blocks.layers; ++il) {
+      EXPECT_EQ(graph->Named(std::format("kv_injected-{}", il))->ne[2], 32);
+    }
+    BindAll(*graph, graph->nodes);
+    auto device = ModelDevice(false);
+    device.fuse_norms = true;
+    device.vector_floats = true;
+    auto plan = kg::PlanGraph(graph->nodes, false, device);
+    ASSERT_TRUE(plan.has_value()) << Why(plan);
+    auto placed = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256,
+                                       std::vector<ggml_tensor*>{graph->logits});
+    ASSERT_TRUE(placed.has_value()) << Why(placed);
+  }
+}
+
 TEST(DsparkTest, TheDraftBlocksGraphChainsTheMarkovHeadOnArgmax) {
   const md::Dsv4Profile target_profile = WindowOnlyTarget();
   const std::vector<md::Dsv4Resource> target_resources = Target(target_profile);
@@ -543,6 +598,21 @@ TEST(DsparkTest, TheDraftBlocksGraphChainsTheMarkovHeadOnArgmax) {
   EXPECT_TRUE(used.contains(kg::kArgmaxName));
   EXPECT_TRUE(used.contains(kg::kFlashAttnMmaName));
   EXPECT_TRUE(used.contains(kg::kMulMatIdVecQ));
+  EXPECT_FALSE(used.contains(kg::kFlashAttnMmaWideName));
+  auto sharing_device = ModelDevice(false);
+  sharing_device.wide_sparse_attention = true;
+  auto sharing = kg::PlanGraph(graph->core.nodes, false, sharing_device);
+  ASSERT_TRUE(sharing.has_value()) << Why(sharing);
+  std::size_t attention = 0;
+  for (const auto& step : sharing->steps) {
+    if (step.operation == jitllm::execution::Operation::kFlashAttn) {
+      ++attention;
+      EXPECT_EQ(step.implementation, kg::kFlashAttnMmaWideName);
+    }
+  }
+  // DSpark's pinned three blocks are window-only; HCA gating leaves
+  // their opted-in selection unchanged through the same planner.
+  EXPECT_EQ(attention, d.blocks.layers);
   // Refusals: a block past the drafter's, another ring, a verify's options.
   auto again = kg::TensorArena::Create(kg::DsparkGraphTensors(d, 6));
   ASSERT_TRUE(again.has_value());

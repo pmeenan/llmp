@@ -10,7 +10,8 @@
 //                    [--prompts FILE --generate N [--force FILE]]
 //                    [--ppl FILE] [--dump NAMES] [--layout-proof]
 //                    [--bench-prefill N --bench-decode N] [--exact on|off]
-//                    [--compact-experts]
+//                    [--compact-experts] [--frontier-head]
+//                    [--probe-head]
 //                    [--probe-step N]
 //
 // - --exact on: the reference mode, the graph node for node as llama.cpp
@@ -532,6 +533,7 @@ struct Model {
   // off, the fast plan (dsv4_graph.h Dsv4GraphOptions::fused).
   bool exact = false;
   bool compact_experts = false;
+  bool wide_sparse = true;
 };
 
 void BindWeights(const Model& m, kg::Dsv4Graph& g) {
@@ -632,8 +634,10 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   device.fuse_norms = !m.exact;
   device.vector_floats = !m.exact;
   device.pair_experts = !m.exact;
-  device.compact_experts = !m.exact && m.compact_experts;
-  device.wide_sparse_attention = !m.exact;
+  // Match production's measured floor, including partially filled final
+  // chunks. Direct operation/micro controls can still exercise smaller rows.
+  device.compact_experts = !m.exact && m.compact_experts && shape.rows >= kg::kDsv4CompactMinRows;
+  device.wide_sparse_attention = !m.exact && m.wide_sparse;
   const kg::DeviceChoices& choices = device;
   std::vector<ggml_tensor*> keep;
   for (const std::string& name : keep_names) {
@@ -691,6 +695,8 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   return out;
 }
 
+Status WriteFloats(const std::filesystem::path& p, std::span<const float> v);
+
 class Runner {
  public:
   Runner(Device& device, Model model, kg::LaunchContext& launch,
@@ -719,16 +725,19 @@ class Runner {
   }
 
   // Runs one chunk of `tokens` after n_past; its logits (rows x vocab) in
-  // `logits`. With `keep`, the named tensors are kept (a separate plan).
+  // `logits`, or only its last row with frontier in the fast plan. With
+  // `keep`, every head row and the named tensors stay (a separate plan).
   Status Chunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                std::vector<float>& logits, std::span<const std::string> keep = {},
-               std::map<std::string, std::vector<float>>* kept = nullptr) {
+               std::map<std::string, std::vector<float>>* kept = nullptr, bool frontier = false) {
     const auto rows = static_cast<std::uint32_t>(tokens.size());
     auto in = md::Dsv4Chunk(*m_.profile, *m_.state, n_past, rows, m_.exact);
     if (!in) {
       return std::unexpected(in.error());
     }
-    const kg::Dsv4ChunkShape shape = kg::Dsv4ShapeOf(*m_.state, *in);
+    const std::int64_t requested_outputs =
+        frontier && !m_.exact && rows > 1 && keep.empty() ? 1 : 0;
+    const kg::Dsv4ChunkShape shape = kg::Dsv4ShapeOf(*m_.state, *in, requested_outputs);
     Planned* p = nullptr;
     std::unique_ptr<Planned> once;
     if (keep.empty()) {
@@ -773,8 +782,9 @@ class Runner {
                              (static_cast<std::uint64_t>(tokens[i]) * row_bytes);
       traits->to_float(row, embd.data() + (std::size_t{i} * m_.profile->width), m_.profile->width);
     }
-    std::vector<std::int32_t> out_ids(rows);
-    std::ranges::iota(out_ids, 0);
+    const auto outputs = static_cast<std::uint32_t>(g.out_ids->ne[0]);
+    std::vector<std::int32_t> out_ids(outputs);
+    std::ranges::iota(out_ids, static_cast<std::int32_t>(rows - outputs));
     const std::vector<float>& rot = m_.rot;
     // A ring's graph has no CSA or indexer mask, and reads the rows' visible
     // counts where the zero fill's source was (engine/dsv4_plan.cc).
@@ -834,8 +844,8 @@ class Runner {
     if (auto r = p->bound->Run(launch_); !r) {
       return Error(std::format("chunk at {}: {}", n_past, r.error().detail));
     }
-    const std::uint64_t logit_bytes = std::uint64_t{rows} * m_.profile->vocab * sizeof(float);
-    logits.resize(std::size_t{rows} * m_.profile->vocab);
+    const std::uint64_t logit_bytes = ggml_nbytes(g.logits);
+    logits.resize(static_cast<std::size_t>(ggml_nelements(g.logits)));
     if (auto r = Cuda(cudaMemcpyAsync(logits.data(), g.logits->data, logit_bytes,
                                       cudaMemcpyDeviceToHost, *stream),
                       "the logits copy");
@@ -881,6 +891,193 @@ class Runner {
     if (launch_.faulted()) {
       return Error(std::format("chunk at {}: the launch context faulted", n_past));
     }
+    return {};
+  }
+
+  // Both head shapes over one captured chunk's identical pre-head streams.
+  // The graph's original head suffix is reused; no trunk/state nodes run.
+  // This diagnostic's extra allocations and kept rows are not model timing.
+  Status ProbeHead(std::uint32_t n_past, std::uint32_t rows, std::span<const float> streams,
+                   const std::filesystem::path& dir) {
+    const auto terminal = [](std::string_view error) {
+      std::println(stderr, "terminal head probe failure: {}", error);
+      (void)std::fflush(stderr);
+      // Unknown completion retains GPU and host owners until process teardown.
+      std::_Exit(1);
+    };
+    const auto finish = [&] {
+      if (auto r = d_.Finish(); !r) {
+        terminal(r.error());
+      }
+      if (launch_.faulted()) {
+        terminal("the launch context faulted");
+      }
+    };
+    if (streams.size() != std::size_t{rows} * m_.profile->hc_width()) {
+      return Error("the head probe's streams are not the chunk's");
+    }
+    if (!std::ranges::all_of(streams, [](float value) { return std::isfinite(value); }) ||
+        std::ranges::all_of(streams, [](float value) { return value == 0; })) {
+      return Error("the head probe needs finite, nonzero model streams");
+    }
+    auto in = md::Dsv4Chunk(*m_.profile, *m_.state, n_past, rows, false);
+    if (!in) {
+      return std::unexpected(in.error());
+    }
+    auto native = d_.Stream();
+    if (!native) {
+      return std::unexpected(native.error());
+    }
+    using Allocation = std::unique_ptr<void, decltype(&cudaFree)>;
+    const auto allocate = [](std::uint64_t bytes) -> std::expected<Allocation, std::string> {
+      void* pointer = nullptr;
+      if (auto r = Cuda(cudaMalloc(&pointer, bytes), "head probe allocation"); !r) {
+        return std::unexpected(r.error());
+      }
+      return Allocation(pointer, &cudaFree);
+    };
+    auto source = allocate(streams.size_bytes());
+    if (!source) {
+      return std::unexpected(source.error());
+    }
+    if (auto r = Cuda(cudaMemcpyAsync(source->get(), streams.data(), streams.size_bytes(),
+                                      cudaMemcpyHostToDevice, *native),
+                      "head probe streams");
+        !r) {
+      terminal(r.error());
+    }
+    finish();
+    std::filesystem::create_directories(dir);
+    if (auto r = WriteFloats(dir / "streams.f32", streams); !r) {
+      return r;
+    }
+    std::string report = std::format(R"({{"rows":{},"arms":[)", rows);
+    for (const std::int64_t outputs : {0, 1}) {
+      auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(*m_.profile));
+      if (!arena) {
+        return Error(arena.error().detail);
+      }
+      auto graph = kg::BuildDsv4Graph(*arena, *m_.profile, *m_.binding,
+                                      kg::Dsv4ShapeOf(*m_.state, *in, outputs),
+                                      {.expert_stride = m_.weights->stride, .fused = true});
+      if (!graph) {
+        return Error(graph.error().detail);
+      }
+      kg::Dsv4Graph& g = *graph;
+      BindWeights(m_, g);
+      const auto gather = std::ranges::find_if(g.nodes, [&](const ggml_tensor* node) {
+        return node->op == GGML_OP_GET_ROWS && node->src[1] == g.out_ids;
+      });
+      const auto last = std::ranges::find(g.nodes, g.logits);
+      if (gather == g.nodes.end() || last == g.nodes.end() || gather > last) {
+        return Error("the head probe cannot find the graph's head suffix");
+      }
+      ggml_tensor* input =
+          ggml_new_tensor_2d(arena->context(), GGML_TYPE_F32, m_.profile->hc_width(), rows);
+      kg::TensorArena::Bind(input, Address(source->get()));
+      (*gather)->src[0] = input;
+      std::vector<ggml_tensor*> nodes(gather, std::next(last));
+      const auto head_rows = static_cast<std::uint32_t>(g.out_ids->ne[0]);
+      std::vector<std::int32_t> ids(head_rows);
+      std::ranges::iota(ids, static_cast<std::int32_t>(rows - head_rows));
+      auto indices = allocate(ids.size() * sizeof(std::int32_t));
+      if (!indices) {
+        return std::unexpected(indices.error());
+      }
+      kg::TensorArena::Bind(g.out_ids, Address(indices->get()));
+      if (auto r =
+              Cuda(cudaMemcpyAsync(indices->get(), ids.data(), ids.size() * sizeof(std::int32_t),
+                                   cudaMemcpyHostToDevice, *native),
+                   "head probe output IDs");
+          !r) {
+        terminal(r.error());
+      }
+      finish();
+      kg::BindDistinct(nodes, std::uint64_t{1} << 46U);
+      auto device = kg::DeviceChoicesOf(launch_);
+      device.fuse_norms = true;
+      device.vector_floats = true;
+      auto first = kg::PlanGraph(nodes, false, device);
+      if (!first) {
+        return Error(first.error().detail);
+      }
+      const std::array<ggml_tensor*, 3> keep = {g.Named("hc_head"), g.Named("result_norm"),
+                                                g.logits};
+      // Both leaves already own their input storage; only suffix outputs
+      // enter activation placement, which otherwise allocates every input.
+      auto placed = kg::PlaceActivations(nodes, *first, {}, 256, keep);
+      if (!placed) {
+        return Error(placed.error().detail);
+      }
+      auto storage = allocate(placed->extent);
+      if (!storage) {
+        return std::unexpected(storage.error());
+      }
+      for (const auto& [tensor, offset] : placed->offsets) {
+        kg::TensorArena::Bind(tensor, Address(storage->get()) + offset);
+      }
+      kg::BindViews(nodes);
+      if (input->data != source->get() || g.out_ids->data != indices->get()) {
+        return Error("head probe placement changed its external inputs");
+      }
+      auto plan = kg::PlanGraph(nodes, false, device);
+      if (!plan || !kg::SamePlan(*first, *plan)) {
+        return Error("the head probe plan changed after placement");
+      }
+      auto scratch = kg::PlanScratch(launch_, *plan);
+      if (!scratch || *scratch > launch_.workspace().size.value()) {
+        return Error("the head probe exceeds the scratch pool");
+      }
+      auto bound = kg::BoundGraph::Bind(registry_, *plan);
+      if (!bound) {
+        return Error(bound.error().detail);
+      }
+      std::array<std::vector<float>, 3> original;
+      constexpr std::array<std::string_view, 3> names = {"mixed", "norm", "logits"};
+      for (int repeat = 0; repeat < 2; ++repeat) {
+        if (auto r = bound->Run(launch_); !r) {
+          terminal(r.error().detail);
+        }
+        for (std::size_t i = 0; i < keep.size(); ++i) {
+          const ggml_tensor* tensor = keep[i];
+          std::vector<float> values(static_cast<std::size_t>(tensor->ne[0]));
+          const auto* last_row = static_cast<const std::byte*>(tensor->data) +
+                                 (static_cast<std::size_t>(head_rows - 1) * tensor->nb[1]);
+          if (auto r = Cuda(cudaMemcpyAsync(values.data(), last_row, values.size() * sizeof(float),
+                                            cudaMemcpyDeviceToHost, *native),
+                            "head probe frontier copy");
+              !r) {
+            terminal(r.error());
+          }
+          finish();
+          if (!std::ranges::all_of(values, [](float value) { return std::isfinite(value); }) ||
+              std::ranges::all_of(values, [](float value) { return value == 0; })) {
+            return Error("the head probe returned non-finite or zero model output");
+          }
+          if (repeat == 0) {
+            original[i] = values;
+          } else if (std::memcmp(values.data(), original[i].data(),
+                                 values.size() * sizeof(float)) != 0) {
+            return Error(
+                std::format("head probe {} {} does not repeat exactly", outputs, names[i]));
+          }
+          if (auto r =
+                  WriteFloats(dir / std::format("{}-{}-{}.f32", outputs, names[i], repeat), values);
+              !r) {
+            return r;
+          }
+        }
+      }
+      std::string implementations;
+      for (const auto& step : plan->steps) {
+        implementations +=
+            std::format(R"({}"{}")", implementations.empty() ? "" : ",", step.implementation);
+      }
+      report += std::format(
+          R"({}{{"outputs":{},"activations_bytes":{},"scratch_bytes":{},"implementations":[{}]}})",
+          outputs == 0 ? "" : ",", head_rows, placed->extent, *scratch, implementations);
+    }
+    std::ofstream(dir / "head.json") << report << "]}\n";
     return {};
   }
 
@@ -1151,6 +1348,9 @@ struct Options {
   std::uint32_t bench_decode = 0;
   bool exact = false;            // --exact on: the reference mode (Model::exact)
   bool compact_experts = false;  // the experimental device-built expert tile list
+  bool wide_sparse = true;       // diagnostic override; exact mode always uses the primitive
+  bool frontier_head = false;    // only the last prefill head row; PPL/diagnostics stay all-row
+  bool probe_head = false;       // repeated head suffixes from one final chunk's streams
   // --probe-step N: the first prompt's forced step N run twice from the
   // state before it, in the fast plan and in the reference mode, every
   // named tensor dumped (a full window, which both plans read).
@@ -1223,12 +1423,20 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.layout_proof = true;
     } else if (a == "--compact-experts") {
       o.compact_experts = true;
-    } else if (a == "--exact") {
+    } else if (a == "--frontier-head") {
+      o.frontier_head = true;
+    } else if (a == "--probe-head") {
+      o.probe_head = true;
+    } else if (a == "--exact" || a == "--wide-sparse") {
       auto v = value();
       if (!v || (*v != "on" && *v != "off")) {
-        return Error("--exact takes on or off");
+        return Error(std::format("{} takes on or off", a));
       }
-      o.exact = *v == "on";
+      if (a == "--exact") {
+        o.exact = *v == "on";
+      } else {
+        o.wide_sparse = *v == "on";
+      }
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -1241,6 +1449,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if (o.probe_step != 0 && (o.force.empty() || o.probe_step >= o.generate)) {
     return Error("--probe-step needs --force and a step below --generate");
+  }
+  if (o.probe_head && (o.prompts.empty() || o.exact || o.frontier_head || !o.dump.empty())) {
+    return Error("--probe-head needs fast --prompts, without --frontier-head or --dump");
   }
   return o;
 }
@@ -1364,7 +1575,8 @@ Status Run(const Options& o) {
               .state_base = Address(state_region),
               .rot = kg::HadamardMatrix(profile.indexer_head_dim),
               .exact = o.exact,
-              .compact_experts = o.compact_experts};
+              .compact_experts = o.compact_experts,
+              .wide_sparse = o.wide_sparse};
 
   // cuBLAS, with upstream's workspace for the device: the router's BF16
   // products run there at prefill widths.
@@ -1390,6 +1602,7 @@ Status Run(const Options& o) {
   std::uint64_t most_activations = 0;
   std::uint64_t most_scratch = 0;
   std::uint64_t most_inputs = 0;
+  const std::array<std::string, 1> probe_keep = {std::format("l_last-{}", profile.layers - 1)};
   {
     auto measure = kg::LaunchContext::Create(0, d.execution(), d.stream(),
                                              {.base = 0, .size = Bytes(0)}, cublas->get());
@@ -1407,7 +1620,10 @@ Status Run(const Options& o) {
       if (!in) {
         return std::unexpected(in.error());
       }
-      auto planned = PlanChunk(model, kg::Dsv4ShapeOf(*state, *in), choices, o.dump, 0, 0);
+      const std::int64_t requested_outputs =
+          o.frontier_head && !o.exact && o.ppl.empty() && o.dump.empty() && rows > 1 ? 1 : 0;
+      auto planned = PlanChunk(model, kg::Dsv4ShapeOf(*state, *in, requested_outputs), choices,
+                               o.probe_head ? std::span(probe_keep) : std::span(o.dump), 0, 0);
       if (!planned) {
         return Error(
             std::format("measuring a chunk of {} at {}: {}", rows, n_past, planned.error()));
@@ -1464,6 +1680,9 @@ Status Run(const Options& o) {
         return s;
       }(),
       state->bytes, activation_bytes, scratch_bytes);
+  summary += std::format(R"(,"frontier_head":{},"probe_head":{},"wide_sparse":{})",
+                         o.frontier_head ? "true" : "false", o.probe_head ? "true" : "false",
+                         !o.exact && o.wide_sparse ? "true" : "false");
 
   if (o.layout_proof) {
     std::string report;
@@ -1502,22 +1721,45 @@ Status Run(const Options& o) {
       }
       std::map<std::string, std::vector<float>> kept;
       const bool dump = pi == 0 && !o.dump.empty();
+      const bool probe_head = pi == 0 && o.probe_head;
       if (dump && prompt.ids.size() > o.max_rows) {
         return Error("--dump needs a first prompt of one chunk");
       }
       const auto t0 = Clock::now();
+      std::uint32_t last_chunk_first = 0;
+      std::uint32_t last_chunk_rows = 0;
       // A prompt longer than --max-rows (long context) is prefilled in chunks
       // of that many rows; the last chunk's last row gives the first token.
       for (std::size_t at = 0, rows = 0; at < prompt.ids.size(); at += rows) {
         rows = ChunkRows(prompt.ids.size() - at, o.max_rows);
-        if (auto r = runner.Chunk(
-                static_cast<std::uint32_t>(at), std::span(prompt.ids).subspan(at, rows), logits,
-                dump ? std::span(o.dump) : std::span<const std::string>{}, dump ? &kept : nullptr);
+        const bool probe_chunk = probe_head && at + rows == prompt.ids.size();
+        std::span<const std::string> keep_names;
+        if (probe_chunk) {
+          keep_names = probe_keep;
+        } else if (dump) {
+          keep_names = o.dump;
+        }
+        if (auto r = runner.Chunk(static_cast<std::uint32_t>(at),
+                                  std::span(prompt.ids).subspan(at, rows), logits, keep_names,
+                                  dump || probe_chunk ? &kept : nullptr, o.frontier_head);
             !r) {
           return Error(std::format("{} at {}: {}", prompt.name, at, r.error()));
         }
+        last_chunk_first = static_cast<std::uint32_t>(at);
+        last_chunk_rows = static_cast<std::uint32_t>(rows);
       }
       const double prefill = Seconds(Clock::now() - t0);
+      if (probe_head) {
+        const auto captured = kept.find(probe_keep[0]);
+        if (captured == kept.end()) {
+          return Error("the head probe's final streams were not captured");
+        }
+        if (auto r = runner.ProbeHead(last_chunk_first, last_chunk_rows, captured->second,
+                                      o.out / "head-probe");
+            !r) {
+          return r;
+        }
+      }
       if (dump) {
         std::filesystem::create_directories(o.out / "dump");
         std::string index = "{";
@@ -1631,7 +1873,9 @@ Status Run(const Options& o) {
       for (std::uint32_t at = 0; at < ids.size(); at += o.max_rows) {
         const auto rows =
             static_cast<std::uint32_t>(std::min<std::size_t>(o.max_rows, ids.size() - at));
-        if (auto r = runner.Chunk(at, std::span(ids).subspan(at, rows), logits); !r) {
+        if (auto r = runner.Chunk(at, std::span(ids).subspan(at, rows), logits, {}, nullptr,
+                                  o.frontier_head);
+            !r) {
           return r;
         }
       }

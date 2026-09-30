@@ -4,12 +4,20 @@
 #include "runtime/model_limits.h"
 
 #include <format>
+#include <vector>
 
 #include "config/node_config.h"
 #include "model/dsv4.h"
 #include "model/qwen38.h"
 
 namespace jitllm::runtime {
+
+bool Dsv4FrontierHeadForServing(const model::Dsv4Binding& binding) {
+  return binding.output.type == "Q4_K" &&
+         binding.output.ne == std::vector<std::uint64_t>{4096, 129280} &&
+         binding.hc_head_fn.type == "F32" &&
+         binding.hc_head_fn.ne == std::vector<std::uint64_t>{16384, 4};
+}
 
 std::expected<void, std::string> CheckModelContext(std::string_view architecture,
                                                    std::uint32_t context) {

@@ -80,6 +80,8 @@ struct DeviceChoices {
   // quantized shapes. Reference/default plans retain upstream's grid.
   bool compact_experts = false;
   // Share a sparse query tile's KV union only for measured fast shapes.
+  // Count-based DeepSeek HCA masks retain the ordinary implementation;
+  // selected-list CSA and window masks may use sharing when opted in.
   // Unknown/reference graphs retain the original column selection.
   bool wide_sparse_attention = false;
 };

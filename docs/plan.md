@@ -866,6 +866,18 @@ it appears.
       The owner's [cross-family inventory](optimization-inventory.md)
       covers existing implementations and reusable pieces of rejected
       kernels, so each new experiment checks prior consumers and outcomes.
+      A separate [frontier-head follow-up](experiments/dsv4-frontier-head/README.md)
+      preserves all state/DSpark streams while selecting only the target
+      head rows production consumes. Original Q4_K controls gain
+      0.8–1.2% prefill throughput with the final HCA component; the planned
+      1M workspace is unchanged.
+      A faithful-floor 32K all-wide control reproduces an outside-bound
+      oracle row, unchanged with compact scheduling off. Keeping CSA/window
+      sharing while selecting ordinary MMA for count-based HCA passes fresh
+      32K/128K all-head/frontier repeats at the unchanged 0.947 bound;
+      matched 128K PPL is 1.926517 versus 1.9298. Production state,
+      forced rejection and swap continuations remain exact. Final sampled
+      plain/speculation and maximum-context runtime gates remain pending.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

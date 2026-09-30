@@ -114,6 +114,21 @@ after each swap (the runner's `CheckPlaces` over its `PagedWeights` and
 nothing), BP-A1's coverage of every planned shape, the quarantine, and
 graphs that replay only with the staging they were captured with.
 
+DeepSeek production prefill with the measured Q4_K head explicitly
+requests one frontier head row;
+its graph's default remains every row. Requested output count is part of
+the planned shape, and copies use the graph's actual logit rows. The
+gather narrows only the final mix/norm/head, after all target layers and
+feature capture, so DSpark injection retains the full chunk's streams.
+Reference, verify and named diagnostic plans retain all requested heads.
+Qwen3.8 uses the same separation for its frontier and MTP streams.
+Opted-in shared attention retains CSA and window sharing, while existing
+count-based HCA masks select the registered ordinary MMA path. This is
+an operation-semantic choice, independent of context or artifact identity.
+Fresh 32K/128K head repeats, PPL and bounded state/rollback/swap controls
+qualify that combination; final sampled and maximum-context runtime gates
+remain separate.
+
 What the skeleton assumes today, which a family that differs changes here
 rather than works around:
 

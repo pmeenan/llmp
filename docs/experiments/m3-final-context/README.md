@@ -35,8 +35,12 @@ the forced prompt contains 128,821 raw token IDs.
 
 The full-text native perplexity summary scores a different window; its
 1.882248 value is not the matched comparison above. These checks cover
-the target's compact scheduling, not DSpark, the HTTP route, maximum
-retrieval or the pending frontier head.
+an earlier native all-shape compact experiment, including partial
+prefill chunks, whereas serving selects compact scheduling only from
+2,048 rows. They are historical evidence, not the final corrected-floor
+gate; see the [frontier follow-up](../dsv4-frontier-head/README.md#head-arithmetic-and-quality).
+They do not cover DSpark, the HTTP route, maximum retrieval or the pending
+frontier head.
 
 Provenance:
 

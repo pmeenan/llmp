@@ -183,6 +183,11 @@ class Dsv4 final : public Llm {
       return Error(std::format("artifact {} is a {}, not DeepSeek V4 (deepseek4)", artifact_id_,
                                artifact->model().architecture));
     }
+    auto binding = model::BindDsv4(model::Dsv4Flash(), *artifact);
+    if (!binding) {
+      return std::unexpected(binding.error());
+    }
+    options_.frontier_head = Dsv4FrontierHeadForServing(*binding);
     if (speculate_) {
       if (auto drafter = OpenTrusted(store_, drafter_id_); !drafter) {
         return std::unexpected(drafter.error());

@@ -240,7 +240,7 @@ void Builder::Inputs() {
   g_.positions = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
   g_.raw_k_idxs = ggml_new_tensor_1d(c_, GGML_TYPE_I64, n);
   g_.raw_mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, s_.raw_n_kv, n, 1, 1);
-  g_.out_ids = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
+  g_.out_ids = ggml_new_tensor_1d(c_, GGML_TYPE_I32, s_.outputs == 0 ? n : s_.outputs);
   const auto comp = [&](Dsv4CompInputs& in, std::int64_t blocks, std::int64_t persist,
                         std::int64_t reads, std::int64_t n_kv) {
     in.state_pos = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
@@ -1173,10 +1173,11 @@ void Builder::Build() {
     Name(inpl, "l_last", il);
   }
   capture(p_.layers, inpl);
-  // Every row is an output, gathered as llama.cpp gathers them.
+  // Capture above retains every feature row. Only the requested trailing
+  // rows enter the final mix, norm and vocabulary head.
   ggml_tensor* flat = ggml_reshape_2d(c_, inpl, p_.hc_width(), nt);
   ggml_tensor* flat_out = ggml_get_rows(c_, flat, g_.out_ids);
-  inpl = ggml_reshape_3d(c_, flat_out, p_.width, hc, nt);
+  inpl = ggml_reshape_3d(c_, flat_out, p_.width, hc, g_.out_ids->ne[0]);
   ggml_tensor* cur = HcHead(inpl);
   Name(cur, "hc_head", -1);
   cur = Norm(cur, g_.output_norm);
@@ -1284,9 +1285,10 @@ void Builder::BuildDraft(DsparkGraph& d) {
 
 }  // namespace
 
-Dsv4ChunkShape Dsv4ShapeOf(const model::Dsv4StateLayout& state,
-                           const model::Dsv4ChunkInputs& chunk) {
+Dsv4ChunkShape Dsv4ShapeOf(const model::Dsv4StateLayout& state, const model::Dsv4ChunkInputs& chunk,
+                           std::int64_t outputs) {
   return {.rows = chunk.rows,
+          .outputs = outputs,
           .raw_n_kv = chunk.raw_n_kv,
           .raw_cells = state.raw_cells,
           .csa_n_kv = chunk.csa.n_kv,
@@ -1396,11 +1398,12 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
                                                        const Dsv4ChunkShape& shape,
                                                        const Dsv4GraphOptions& options) {
   const Dsv4ChunkShape& s = shape;
-  if (s.rows <= 0 || s.raw_cells <= 0 || s.raw_n_kv < 256 || s.raw_n_kv > s.raw_cells ||
-      s.raw_n_kv % 256 != 0 || s.csa_n_kv < 256 || s.csa_n_kv > s.csa_cells ||
-      s.csa_n_kv % 256 != 0 || s.hca_n_kv < 256 || s.hca_n_kv > s.hca_cells ||
-      s.hca_n_kv % 256 != 0 || s.csa_blocks <= 0 || s.hca_blocks <= 0 || s.csa_persist <= 0 ||
-      s.hca_persist <= 0 || s.csa_state_rows != 2 * std::int64_t{model::kDsv4CsaRatio} ||
+  if (s.rows <= 0 || s.outputs < 0 || s.outputs > s.rows || s.raw_cells <= 0 || s.raw_n_kv < 256 ||
+      s.raw_n_kv > s.raw_cells || s.raw_n_kv % 256 != 0 || s.csa_n_kv < 256 ||
+      s.csa_n_kv > s.csa_cells || s.csa_n_kv % 256 != 0 || s.hca_n_kv < 256 ||
+      s.hca_n_kv > s.hca_cells || s.hca_n_kv % 256 != 0 || s.csa_blocks <= 0 || s.hca_blocks <= 0 ||
+      s.csa_persist <= 0 || s.hca_persist <= 0 ||
+      s.csa_state_rows != 2 * std::int64_t{model::kDsv4CsaRatio} ||
       s.hca_state_rows != std::int64_t{model::kDsv4HcaRatio}) {
     return Rejected("not a DeepSeek V4 chunk shape the state holds");
   }

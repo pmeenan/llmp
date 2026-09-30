@@ -36,6 +36,7 @@
 #include <utility>
 #include <vector>
 
+#include "model/dsv4.h"
 #include "platform/crash_policy.h"
 #include "platform/files.h"
 #include "platform/lock_file.h"
@@ -395,6 +396,27 @@ TEST(NotifyServiceManager, SendsToTheSocket) {
   auto unset = jitllm::platform::NotifyServiceManager("READY=1");
   ASSERT_TRUE(unset.has_value());
   EXPECT_FALSE(*unset);
+}
+
+TEST(ModelContext, FrontierHeadSelectionStaysWithinTheMeasuredFormatAndShape) {
+  using jitllm::runtime::Dsv4FrontierHeadForServing;
+  jitllm::model::Dsv4Binding binding;
+  binding.output = {.type = "Q4_K", .ne = {4096, 129280}};
+  binding.hc_head_fn = {.type = "F32", .ne = {16384, 4}};
+  EXPECT_TRUE(Dsv4FrontierHeadForServing(binding));
+  for (const std::string type : {"Q8_0", "F32", "BF16"}) {
+    binding.output.type = type;
+    EXPECT_FALSE(Dsv4FrontierHeadForServing(binding));
+  }
+  binding.output.type = "Q4_K";
+  binding.output.ne[1] = 129281;
+  EXPECT_FALSE(Dsv4FrontierHeadForServing(binding));
+  binding.output.ne[1] = 129280;
+  binding.hc_head_fn.type = "F16";
+  EXPECT_FALSE(Dsv4FrontierHeadForServing(binding));
+  binding.hc_head_fn.type = "F32";
+  binding.hc_head_fn.ne[0] = 4096;
+  EXPECT_FALSE(Dsv4FrontierHeadForServing(binding));
 }
 
 TEST(ModelContext, ChecksTheCheckpointCeilingBeforeSetup) {

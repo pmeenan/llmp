@@ -220,8 +220,13 @@ Status Dsv4Runner::Setup() {
                        .inject_rows = static_cast<std::int64_t>(
                            md::DsparkInject(dlayout_, probe.n_past, probe.rows).cells.size())};
       }
-      auto planned =
-          PlanDsv4Chunk(model_, kg::Dsv4ShapeOf(layout_, *in), choices, {}, 0, 0, speculation);
+      const std::int64_t requested_outputs = o_.frontier_head && !model_.exact && !o_.full_window &&
+                                                     probe.rows > 1 && !speculation.verify &&
+                                                     dump_.empty()
+                                                 ? 1
+                                                 : 0;
+      auto planned = PlanDsv4Chunk(model_, kg::Dsv4ShapeOf(layout_, *in, requested_outputs),
+                                   choices, dump_, 0, 0, speculation);
       if (!planned) {
         return Error(std::format("measuring a chunk of {} at {}: {}", probe.rows, probe.n_past,
                                  planned.error()));
@@ -680,7 +685,13 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
       return r;
     }
   }
-  auto planned = Planned({.shape = kg::Dsv4ShapeOf(layout_, *in),
+  // Production prefill returns only its frontier head. Verify/reference
+  // retain every requested row; one-row shapes keep their decode key.
+  const std::int64_t requested_outputs =
+      o_.frontier_head && !model_.exact && !o_.full_window && rows > 1 && !verify && dump_.empty()
+          ? 1
+          : 0;
+  auto planned = Planned({.shape = kg::Dsv4ShapeOf(layout_, *in, requested_outputs),
                           .kind = kind,
                           .inject_rows = static_cast<std::int64_t>(inject.cells.size())});
   if (!planned) {
@@ -704,7 +715,7 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
   const std::array<RunCopy, 1> outputs = {
       RunCopy{Address(logits_),
               Address(static_cast<const std::byte*>(g.logits->data) +
-                      (std::uint64_t{rows - out_rows} * row_bytes)),
+                      (static_cast<std::uint64_t>(g.logits->ne[1] - out_rows) * row_bytes)),
               out_rows * row_bytes}};
   kg::LaunchContext& launch = resources_.launch();
   RunPath path = RunPath::kEager;

@@ -101,6 +101,10 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     const Dsv4Model& m, const kg::Dsv4ChunkShape& shape, const kg::DeviceChoices& choices,
     std::span<const std::string> keep_names, std::uint64_t activations,
     std::uint64_t activation_bytes, const Dsv4Speculation& speculation) {
+  if ((m.exact || speculation.verify || !keep_names.empty()) && shape.outputs != 0 &&
+      shape.outputs != shape.rows) {
+    return Error("a reference chunk, verify or named diagnostic needs every row's head");
+  }
   auto out = std::make_unique<Dsv4Planned>();
   auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(*m.profile));
   if (!arena) {
@@ -145,7 +149,7 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   device.fuse_norms = !m.exact;
   device.vector_floats = !m.exact;
   device.pair_experts = !m.exact;
-  device.compact_experts = !m.exact && shape.rows >= 2048;
+  device.compact_experts = !m.exact && shape.rows >= kg::kDsv4CompactMinRows;
   device.wide_sparse_attention = !m.exact;
   const auto inputs = g.inputs();
   if (auto placed =
@@ -299,8 +303,12 @@ std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::D
     return embedded;
   }
   out.tokens.assign(tokens.begin(), tokens.end());
-  out.out_ids.resize(rows);
-  std::ranges::iota(out.out_ids, 0);
+  const auto outputs = static_cast<std::uint32_t>(g.out_ids->ne[0]);
+  if (outputs == 0 || outputs > rows) {
+    return Error("the head's output rows do not fit the chunk");
+  }
+  out.out_ids.resize(outputs);
+  std::ranges::iota(out.out_ids, static_cast<std::int32_t>(rows - outputs));
   // A ring's graph masks its compressed rows on the device from the rows'
   // visible counts (dsv4_graph.h Dsv4ChunkShape::ring): no CSA or indexer
   // mask, and the counts in the zero fill's place.
