@@ -3,11 +3,13 @@
 
 # Qwen3.8 MTP at the final runtime's 128K prompt (M3)
 
-The final 512-token runtime ladder leaves Qwen3.8's MTP speed gate open,
-especially at 128K: the default prefix head gives 45.034 tok/s against
-Mia's original single-run 48.652 on that prompt. Fresh identical-ID Mia
-controls below give 44.870 and 38.103; the reference varies materially.
-This study calibrates draft depth against the
+The final 512-token runtime ladder leaves Qwen3.8's MTP speed gate open.
+The fresh two-pass Mia ladder below has the same input IDs at every rung:
+the default prefix head beats both reference observations at 128K, but
+falls below both at 64K and 256K. Mia's generated histories and acceptance
+vary under unchanged settings. The original single-run 48.652 tok/s at
+128K remains historical, alongside the earlier fresh 44.870 / 38.103
+controls. This study calibrates draft depth against the
 same state, profiles the verify, and tests two possible transfers from the
 [ds4 study](../ds4-study/README.md). Neither expert-kernel experiment improved
 end-to-end speed, so neither implementation is retained. The existing
@@ -300,6 +302,92 @@ controller SHA-256 is
 The external controller and launch wrapper live one directory above;
 repeat with the pinned canonical IDs, recipe/image/model, two unprofiled
 requests and the same checked launch/cleanup protocol.
+
+## Fresh two-pass Mia ladder (2026-09-30)
+
+One fresh launch on `spark-c4e2` runs 32K, 64K, 128K and 256K in order,
+then repeats that order. It uses the same pinned recipe, image and
+checkpoint as the preceding profile, selected vocabulary 47,172 and
+fixed MTP depth three. The context ceiling is 262,144, prefill chunks
+2,048, max sequences four, memory utilization 0.786 and host reserve
+26 GiB. Main KV is FP8, QSA selector cache and recurrent state BF16;
+QSA/MoE determinism switches are zero. Compilation mode is zero with
+`FULL_DECODE_ONLY` graphs and automatic capture sizes. The executed
+arguments, mounted source hashes, active read-only selected vocabulary,
+resolved engine and cache capacity are retained in the external receipt.
+This ladder is unprofiled.
+
+Each request supplies the canonical native input IDs directly, uses a
+fresh cache salt and reports zero cached prompt tokens. Greedy generation
+uses `min_tokens=max_tokens=512` and `ignore_eos`; all eight requests
+complete 512 outputs with `length`, `[DONE]` and no stream error.
+
+| Actual prompt tokens | First / second prefill tok/s | First / second decode tok/s | First / second draft steps | First / second accepted/proposed |
+| ---: | ---: | ---: | ---: | --- |
+| 31,743 | 1,699.498 / 1,985.252 | 42.234 / 38.622 | 207 / 213 | 305/621 / 301/639 |
+| 64,110 | 1,908.727 / 1,952.237 | 39.702 / 39.645 | 205 / 204 | 308/615 / 309/612 |
+| 128,799 | 1,840.321 / 1,882.789 | 39.447 / 41.347 | 206 / 195 | 306/618 / 318/585 |
+| 258,702 | 1,734.038 / 1,736.898 | 42.885 / 38.766 | 189 / 212 | 324/567 / 301/636 |
+
+Acceptance by draft position, first / second: 32K `140,98,67` /
+`142,93,66`; 64K `151,98,59` / `144,96,69`; 128K `144,99,63` /
+`148,106,64`; 256K `150,103,71` / `143,99,59`. The two generated
+histories share only their first 13 / 10 / 9 / 32 IDs respectively.
+These are free-running observations with different token histories,
+not repeated identical target steps. Neither the faster repeat nor the
+slower one establishes a kernel regression or a quality loss.
+
+The [final native runtime ladder](../m3-final-context/README.md#final-qwen-http-timing-and-neutral-retrieval)
+uses adaptive depth 2–3, F16 KV/F32 recurrent state and 4,096-row prefill
+chunks. Identical prompt IDs do not match those stage precisions or
+policies. The comparison keeps both fresh reference observations visible:
+
+| Rung | Mia first / second decode tok/s | Native prefix MTP tok/s | Native selected MTP tok/s |
+| --- | ---: | ---: | ---: |
+| 32K | 42.234 / 38.622 | 39.380 | 37.063 |
+| 64K | 39.702 / 39.645 | 37.615 | 41.652 |
+| 128K | 39.447 / 41.347 | 45.332 | 43.799 |
+| 256K | 42.885 / 38.766 | 36.727 | 44.069 |
+
+The prefix head falls between the two reference observations at 32K,
+below both at 64K and 256K, and above both at 128K. The selected head
+is below both at 32K and above both at the other rungs. Neither head
+closes every depth's speed gate. This result narrows the remaining
+matched-piece work; it does not justify choosing a favorable history,
+changing the default head, or classifying lower cache precision as a
+quality sacrifice without a quality comparison.
+
+Job `mia-final-decode-ladder` completes rc0 at
+11:44:23–12:07:05 EDT on 2026-09-30. Readiness takes 716.770 seconds.
+Peak sampled `MemAvailable` drop is 101.537 GiB and minimum available
+memory 16,920,182,784 bytes, across the entire launch and eight uniquely
+salted requests. The allocated cache capacity and request history differ
+from the native ladder; this is a reference memory observation, not an
+isolated measurement of cache-precision savings. Initial and final
+all-query 105-GiB/no-model gates pass, and cleanup records no errors.
+
+Canonical little-endian I32 identities, in rung order:
+
+| Rung | Input SHA-256 |
+| --- | --- |
+| 32K | `306136a7dc2a5f66c94cbf4ac874e9011c0af79b79072731407a144bfba1fbd5` |
+| 64K | `143815331a501e67b4731cdcfe6c1a4b5c901e204e90ed67a38bede89949376e` |
+| 128K | `c9d455d1afc75e1fd4e0f93d0312f1768196609fab8a5836f57c15a72e2e3661` |
+| 256K | `d6325a694ffaad7f3dff6eb18fd6596e4032db513081061292fc6592ad928173` |
+
+Raw results are at
+`spark:~/scratch/mia-cache-quality/final-decode-ladder/`: `run.json`,
+`{32k,64k,128k,256k}-timing-{0,1}.json`, ready/container/start logs.
+Controller `../mia-final-decode-ladder.py` SHA-256 is
+`79ffe8d6fb67911638edc8ce61e10169ca96601b91d2f48a08b901a1d7536c30`;
+helper `../mia-cache-quality.py` SHA-256 is
+`6574640b162bf7043a06765fb0d5343c005a07e053e131a436c9353f7bf7c92c`;
+completed `run.json` SHA-256 is
+`b0f57e3c06b2b3d7e13206b45cfb1d05f7c67d799a94422a40c11674c823b67a`.
+The input pins come from the original canonical ladder records at
+`~/.local/share/jitllm/m3lc/raw/qw-mia-mtp3/`; the controller verifies
+their counts, values and hashes before loading. Repeat with the pinned
+launch settings and both complete passes, retaining all observations.
 
 ## Raw provenance and repeat
 

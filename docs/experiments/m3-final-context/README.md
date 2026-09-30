@@ -407,10 +407,15 @@ Each timing request has zero cached prompt tokens and completes all
 Peak sampled memory drops are 84.830 / 87.278 / 87.532 GiB. Minimum
 available memory is 34,646,167,552 / 32,050,442,240 / 31,806,234,624
 bytes. These are single-run native observations; the quoted-answer
-timing fixture does not qualify retrieval. The MTP comparator remains
-open pending the fresh same-ID Mia ladder and the
-[matched-piece study](../qwen38-mtp-speed/README.md#fresh-matched-mia-control-and-decode-profile).
-That recipe's FP8 KV/BF16 recurrent state also differs from these native
+timing fixture does not qualify retrieval. The
+[fresh same-ID Mia ladder](../qwen38-mtp-speed/README.md#fresh-two-pass-mia-ladder-2026-09-30)
+completes two full passes. Its decode observations are 42.234 / 38.622
+at 32K, 39.702 / 39.645 at 64K, 39.447 / 41.347 at 128K, and
+42.885 / 38.766 at 256K. The default prefix head beats both at 128K
+but falls below both at 64K and 256K; the selected head beats both at
+those three rungs but falls below both at 32K. Neither closes every
+depth's speed gate, so matched-piece optimization continues.
+That recipe's fixed depth three and FP8 KV/BF16 recurrent state differ from these native
 cache settings; neither a favorable seed/history nor lower bit depth
 alone classifies a quality tradeoff.
 
@@ -451,8 +456,8 @@ paths; header/license exports alone are not that audit.
 ## Remaining final-path checks
 
 - Native ladders and neutral retrieval above are complete on their pinned
-  paths. Compare the Qwen MTP results with the fresh same-ID reference and
-  finish the matched-piece optimization before closing its speed gate.
+  paths, as is the fresh same-ID two-pass Mia reference. Finish the Qwen
+  matched-piece optimization before closing its remaining speed gate.
 - Final frontier-head and Qwen kernel controls retain their original
   oracle/PPL bounds, seeded sampling rules and exact own-path rollback,
   repeat and swap requirements. Qwen's selected vocabulary remains a

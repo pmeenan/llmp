@@ -909,8 +909,9 @@ it appears.
       Final 1M timing also completes 512 outputs per mode: prefill
       2.18–2.27× llama.cpp, decode 2.01× plain / 1.88× DSpark, memory
       within 1.012×. Neutral completed-answer retrieval passes 8K–256K
-      in both modes and at 1M capacity with DSpark. Qwen timings and
-      continuing-context swaps remain explicitly pending.
+      in both modes and at 1M capacity with DSpark. Qwen timings, neutral
+      retrieval and both heads' 128K/maximum continuing swaps are complete;
+      its MTP speed gap and DeepSeek's maximum continuing swap remain open.
       - *Baseline first:* prefill throughput and decode speed at each
         depth, speculative and plain, through the runtime and against the
         same-format comparators at the same depths:
@@ -1015,7 +1016,13 @@ it appears.
           37.06 / 41.65 / 43.80 / 44.07. All fifteen neutral retrieval
           requests and both heads' exact 128K/maximum continuing swaps
           pass ([final context](experiments/m3-final-context/README.md)).
-          The fresh same-ID Mia ladder and matched-piece A/B remain open;
+          The fresh same-ID two-pass Mia ladder completes all eight
+          512-output requests: 42.23/38.62, 39.70/39.65, 39.45/41.35,
+          42.89/38.77 tok/s. Prefix beats both at 128K but trails both at
+          64K/256K; selected trails both at 32K and beats both elsewhere.
+          Neither closes every rung. Generated reference histories vary;
+          the fixed-depth-three FP8/BF16 cache settings remain distinct
+          from native adaptive F16/F32. Matched-piece A/B remains open;
         - sparse flash-attention prefill for both models (llama.cpp
           #29298 and #28770);
         - DeepSeek's compressed attention and indexer at depth;
