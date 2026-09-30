@@ -76,6 +76,13 @@ downgrade a heavy-path change to the light loop on their own.
   through build, review, challenge, fixes, checks and docs, then lands as
   one commit. Separate commits are only for pre-registrations that a
   protocol (D-079) needs fixed before the run it governs.
+- **Focused optimization checks.** During M3's kernel optimization run,
+  use operand/model correctness and matched performance A/Bs. Do not rerun
+  the full swap-performance table for arithmetic-only changes. Rerun the
+  affected swap checks when paging, saved state or graph lifetime changes
+  require them, and the full table at the milestone gate (owner,
+  2026-09-30). A completed table remains evidence for the unchanged swap
+  implementation; it is not part of every optimization test set.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name.

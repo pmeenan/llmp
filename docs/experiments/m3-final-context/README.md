@@ -278,8 +278,8 @@ they are not the first-token latency used by the separate 8K swap table.
 | --- | --- | --- | --- | --- |
 | DeepSeek + DSpark, long | 262,144 | 131,072 | 64 | Pass: repeated prefill and every returned token/logit exact |
 | DeepSeek + DSpark, maximum | 1,048,576 | 1,048,512 | 64 | Pending |
-| Qwen + MTP, long | 262,144 | 131,072 | 64 | Pending |
-| Qwen + MTP, maximum | 262,144 | 262,077 | 64, plus three reserved draft positions | Pending |
+| Qwen + MTP, long | 262,144 | 131,072 | 64 | Pass: both prefix and selected heads, repeated prefill and returned tokens/logits exact |
+| Qwen + MTP, maximum | 262,144 | 262,077 | 64, plus three reserved draft positions | Pass: both heads, repeated prefill and returned tokens/logits exact |
 
 The maximum continuing prompt leaves exactly the output and draft
 headroom required by the production runner. The saved prompt is therefore
@@ -345,22 +345,120 @@ native encoding supplies the first 131,072 IDs without chat rendering.
 Raw summary, logs and input pins remain in
 `~/scratch/m3-extrapolation-ds/final-128k-swap/` on `spark-b`.
 
+### Final Qwen 128K and maximum saved-state results
+
+On `spark-b`, 2026-09-30 10:36:39–10:51:25 EDT, step two of job
+`m3-final-qwen-and-table-v2` completes successfully. Four independent
+processes cover prefix and selected heads at 131,072 and 262,077 saved
+tokens, with adaptive MTP, 4,096-row chunks and 262,144 capacity. Both
+prefills and every one of the 64 continuation tokens/logits are exact
+in each case, including after the DeepSeek round trip. The partner uses
+plain decode, 512-token capacity and 384-row chunks. No turn checkpoints
+are retained.
+
+| Head / saved tokens | Control / repeated prefill seconds | Longest completed chunk seconds | Uninterrupted / restored decode seconds | Away / back activation seconds | State restore seconds |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Prefix / 131,072 | 58.381 / 58.350 | 1.922 / 1.893 | 1.375 / 1.436 | 8.945 / 7.744 | 0.364 |
+| Prefix / 262,077 | 121.244 / 121.173 | 2.022 / 2.022 | 1.685 / 1.784 | 9.356 / 8.078 | 0.660 |
+| Selected / 131,072 | 58.622 / 58.492 | 1.929 / 1.897 | 1.367 / 1.449 | 9.008 / 7.785 | 0.366 |
+| Selected / 262,077 | 121.411 / 121.297 | 2.028 / 2.026 | 1.557 / 1.636 | 9.407 / 8.136 | 0.661 |
+
+Each 128K prefill has 32 chunks; each maximum prefill has 65. Used/spilled
+state is 4,857,044,992 / 4,859,101,184 bytes at 128K and
+9,228,107,776 / 9,231,663,104 at the maximum, for either head.
+Peak sampled memory drops range from 105,271,848,960 to 105,348,288,512
+bytes, with at least 20,307,099,648 bytes available. These raw-ID
+exact-state fixtures are not the canonical HTTP timing or neutral retrieval
+prompts, so their prefill times do not establish those throughput rates.
+Activation totals retain the separate endpoint limitation above.
+
+The prefill logit SHA-256 is identical for both heads at each size:
+`4db8d218546bca911d6509a011fbbaff5b35690b3aaf10f727f8cbf3d1b2f539`
+at 128K and
+`0abed21af08263834acaab6691673a6dd0c6e6c1f5a3eac617ec9636bce0f69a`
+at the maximum. Harness SHA-256 is
+`1cc15b612782efc1b52264724ab6cac7b227b4bfb2fb8fb80471bd53d318415c`;
+the checked production kernels are `cf63418`'s unchanged default path.
+Raw results are `spark-b:~/scratch/m3-final-qwen/swaps/`,
+`{prefix,selected}-{131072,262077}.json` and their logs. Other steps of
+the initial queue failed before loading a model and are excluded; this
+step has its own successful exit and complete native records.
+
+## Final Qwen HTTP timing and neutral retrieval
+
+Job `m3-final-table-and-qwen-http-v3` completes rc0 on `spark-b`,
+2026-09-30 10:56:55–11:33:48 EDT. Its second step takes 27 minutes and
+starts six fresh runtime processes: plain, adaptive prefix MTP, and
+adaptive selected MTP, separately for timing and neutral retrieval.
+All use the same Qwen target, F16 caches/F32 recurrent state, 262,144
+capacity and 4,096-row prefill chunks. The main kernels are unchanged
+from `cf63418`; both negative expert/head prototypes are absent.
+
+Each timing request has zero cached prompt tokens and completes all
+512 outputs, with `length`, a terminal marker and no stream error.
+
+| Actual prompt tokens | Plain prefill / decode tok/s | Prefix MTP prefill / decode tok/s | Selected MTP prefill / decode tok/s |
+| ---: | ---: | ---: | ---: |
+| 31,743 | 2,313.940 / 26.355 | 2,271.915 / 39.380 | 2,265.031 / 37.063 |
+| 64,110 | 2,307.213 / 25.837 | 2,268.627 / 37.615 | 2,266.070 / 41.652 |
+| 128,799 | 2,257.390 / 25.351 | 2,224.327 / 45.332 | 2,220.862 / 43.799 |
+| 258,702 | 2,171.404 / 24.550 | 2,145.252 / 36.727 | 2,141.444 / 44.069 |
+
+Peak sampled memory drops are 84.830 / 87.278 / 87.532 GiB. Minimum
+available memory is 34,646,167,552 / 32,050,442,240 / 31,806,234,624
+bytes. These are single-run native observations; the quoted-answer
+timing fixture does not qualify retrieval. The MTP comparator remains
+open pending the fresh same-ID Mia ladder and the
+[matched-piece study](../qwen38-mtp-speed/README.md#fresh-matched-mia-control-and-decode-profile).
+That recipe's FP8 KV/BF16 recurrent state also differs from these native
+cache settings; neither a favorable seed/history nor lower bit depth
+alone classifies a quality tradeoff.
+
+All fifteen neutral retrieval requests complete naturally with `stop`,
+a terminal marker and no stream error. All three facts appear in the
+visible answer, in every mode, with zero cached prompt tokens.
+
+| Rung | Actual prompt tokens | Plain / prefix / selected output tokens |
+| --- | ---: | ---: |
+| 8K | 7,517 | 271 / 219 / 219 |
+| 32K | 31,674 | 272 / 274 / 274 |
+| 64K | 64,041 | 271 / 270 / 270 |
+| 128K | 129,037 | 172 / 221 / 221 |
+| 256K | 258,633 | 170 / 170 / 170 |
+
+Each request permits 1,024 outputs. A complete shorter answer passes
+retrieval; these rates are not 512-output timing measurements or the
+fixed-bound oracle/PPL quality comparison. Retrieval peak drops are
+84.840 / 87.245 / 87.497 GiB. All requests complete through the production
+progress watchdog. The saved-state runs above separately measure completed
+chunks up to 2.028 seconds, well inside its 242.88-second allowance for
+4,096 rows; this is evidence for retaining the existing floors, pending
+DeepSeek's maximum-chunk check.
+
+Runtime SHA-256 is
+`757c29452d26bfbd0fcc07686d0a13a632eef0850621be68e02ad7144886eaf0`.
+The HTTP harness is the pinned `20b10388…` helper above, with
+`baseline.py` SHA-256
+`41c693de64e2d63b32622cb03f29024d76455c0ad7efac4394ea3f5d45f4b1e2`
+and its `prompts.json` fixture SHA-256
+`d212009dadf1ddbf945c8dc7ad0214ba444236baf57c8ed9019c3ebe6b0805b4`.
+All three were pinned and their import checked before loading. Raw results
+are `spark-b:~/scratch/m3-final-qwen/{plain,prefix,selected}-{timing,retrieval}/`.
+Earlier rejected old-helper captures are preserved separately and excluded.
+The full source audit covered the 449 measured source/build/dependency/tool
+paths; header/license exports alone are not that audit.
+
 ## Remaining final-path checks
 
-- Qwen native runtime prefill, plain decode and speculation at 32K, 64K,
-  128K and 256K, with 512 requested outputs and zero cached prompt tokens.
-  DeepSeek's final ladder and 1M timing above are complete. Preserve
-  actual completed output counts when a model stops early.
-- Neutral `-r` retrieval with at most 1,024 outputs checks all three
-  codenames. DeepSeek plain/DSpark through 256K is complete; its 1M and
-  Qwen's ladder remain pending. The neutral 1M prompt content
-  SHA-256 is
-  `a4321cf9a22cc5a384905df8b394d88d5c1dafe35dfcbe51b61171c575a98015`.
+- Native ladders and neutral retrieval above are complete on their pinned
+  paths. Compare the Qwen MTP results with the fresh same-ID reference and
+  finish the matched-piece optimization before closing its speed gate.
 - Final frontier-head and Qwen kernel controls retain their original
   oracle/PPL bounds, seeded sampling rules and exact own-path rollback,
   repeat and swap requirements. Qwen's selected vocabulary remains a
   separate measured option; the default prefix head must meet its gate.
-- Final 128K and maximum continuing-context swaps use the protocol above.
+- DeepSeek's maximum continuing-context swap remains pending; the 128K
+  DeepSeek and both 128K/maximum Qwen heads pass the protocol above.
 - Re-check watchdog floors against actual longest chunks and route
   completion, then record the recommendation. Current defaults are
   prefill 100 tok/s, decode 5 tok/s and a 120-second stall interval.

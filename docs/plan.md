@@ -552,6 +552,12 @@ it appears.
       harness's. That is M3's swap table in a running process, against
       llama.cpp's 77 / 104 s, Mia's vLLM's 13 min 13 s, TensorFold's 141 s
       and diffusers' 212 s.
+      *Final integrated rerun, 2026-09-30:* all 32 rows pass on the
+      growing-state/turn-reuse/HCA/frontier default path, at 262K configured
+      ceilings; worst LLM↔LLM/first use 9.749 s, prepared 9.701 s.
+      Exact 8K continuations, retained graphs, fresh zero-context hashes
+      and the qualified fast image RGBA all pass
+      ([final table](experiments/fast-swap/swap.md#final-integrated-table-2026-09-30)).
 - [x] **CUDA graphs for decode** (pulled from M9): captured per model and
       plan and replayed after swaps that restore every extent at the same
       virtual addresses, with setup and tuning state restored the same way.
@@ -1003,7 +1009,13 @@ it appears.
           head; the externally supplied curated list reaches 41.4–41.9,
           so the prefix stays default. Curated 256K, rejection and swap
           controls are included in the study; the measured final runtime
-          timing leaves the extrapolation speed gate open;
+          timing leaves the extrapolation speed gate open. The checked
+          final runtime repeats complete all 512 outputs at every rung;
+          prefix 39.38 / 37.62 / 45.33 / 36.73 tok/s, selected
+          37.06 / 41.65 / 43.80 / 44.07. All fifteen neutral retrieval
+          requests and both heads' exact 128K/maximum continuing swaps
+          pass ([final context](experiments/m3-final-context/README.md)).
+          The fresh same-ID Mia ladder and matched-piece A/B remain open;
         - sparse flash-attention prefill for both models (llama.cpp
           #29298 and #28770);
         - DeepSeek's compressed attention and indexer at depth;

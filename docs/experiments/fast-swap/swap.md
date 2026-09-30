@@ -409,6 +409,71 @@ shared).
 
 ## Through jitllm-runtime (D-096)
 
+### Final integrated table, 2026-09-30
+
+On `spark-b`, 10:56:55–11:05 EDT, step one of supervised job
+`m3-final-table-and-qwen-http-v3` completes rc0 on the checked native
+path. One production process registers all three models, with DeepSeek
+and Qwen ceilings 262,144, chunks 2,048 / 4,096, DSpark and adaptive
+prefix MTP enabled, and the final growing-state/turn-reuse/HCA/frontier
+implementations. Every ordered pair runs first-use and prepared cycles
+with an 8,192-token saved context; each LLM A also runs a zero-context
+cycle. First-use/prepared retain the definitions below.
+
+All 32 swaps pass. Every 8K return preserves its state digest and all
+16 continued token/logit rows; every prepared 8K return replays graphs
+retained across the swap. B's output and the image controls are exact.
+The zero-context LLM returns compare independently recomputed prefill
+hashes across both partners, rather than a saved-state continuation.
+
+Seconds from swap request to the same first-output endpoints as below.
+Each cell lists A→B / B→A separately, covering all 32 observations.
+
+| A ↔ B | First use, 8K | Prepared, 8K | Prepared, zero context |
+| --- | ---: | ---: | ---: |
+| DeepSeek ↔ image | 6.112 / 9.655 | 5.788 / 8.719 | 5.753 / 8.865 |
+| DeepSeek ↔ Qwen3.8 | 8.015 / 9.549 | 7.981 / 9.565 | 8.014 / 9.701 |
+| image ↔ DeepSeek | 8.911 / 5.716 | 8.870 / 5.789 | — |
+| image ↔ Qwen3.8 | 6.596 / 5.098 | 6.557 / 5.127 | — |
+| Qwen3.8 ↔ DeepSeek | **9.749** / 7.796 | 9.684 / 7.785 | 9.657 / 7.778 |
+| Qwen3.8 ↔ image | 5.211 / 6.431 | 5.136 / 6.417 | 5.052 / 6.447 |
+
+The worst LLM↔LLM and first-use swap is 9.748554 seconds; the worst
+prepared swap is 9.700686. All satisfy the approximately 10-second goal,
+20-second prepared bound and 40-second first-use bound. Peak sampled
+memory drop is 119,427,960,832 bytes; available memory starts at
+125,658,554,368 and falls no lower than 6,215,024,640 bytes. Fixed
+allocations total 5,364,111,644 bytes. This is one final table, not a
+distribution or a maximum-context restore measurement; the separate
+[long swaps](../m3-final-context/README.md#continuing-context-swap-protocol)
+cover the latter.
+
+The fast image runs 40 steps at 1024², seed 42, CFG 1, on the original
+red-teapot prompt and BF16 noise. Its final RGBA SHA-256 is the previously
+qualified `3b7770ca…`, checked by `--image-expect`; the table's image
+endpoint hash is the first denoising output, a different buffer. The final
+RGBA check is exact continuation evidence, not a new diffusers comparison.
+
+Provenance: GB10, driver 580.178.04, CUDA 13.4.92, `CUDA_DISABLE_PTX_JIT=1`;
+runtime SHA-256
+`757c29452d26bfbd0fcc07686d0a13a632eef0850621be68e02ad7144886eaf0`.
+The production kernels match `cf63418`'s unchanged default path; subsequent
+head/grouped trials are absent. Target/drafter artifacts are DeepSeek
+`8a355bfb…` / `dd2d3f9c…` and Qwen `c4fb47a9…` / `056a750e…`;
+image composition `eca21baa…` retains its three original components.
+Input context is `4655685:docs/decisions.md`, SHA-256
+`6b159ff20d198a3ff825d78b5edc0c2bd8c9cf5af7222875fb88301635e14db5`;
+noise SHA-256
+`eb7333893ca0409a100955e5305482bb9de8225ee3c21d33fd01fd6c16c042bd`.
+All-query memory/process preflight passed before load. Raw config, input
+pins, native table and validated summary are
+`spark-b:~/scratch/m3-final-table/`; `table.json` SHA-256 is
+`e4057841e5f596b9897a9941e85fc411fa72808d3d51ca493272ceaf955b93c7`.
+The earlier invalid enrollment-anchor attempt refused before model load
+and is excluded. No workstation checks were run during this table.
+
+### Initial integrated table
+
 Since D-096 the runtime runs the swap path itself
 ([runtime-serving.md](../../runtime-serving.md)): `jitllm-runtime
 swap-table` registers every configured model on one node and runs the

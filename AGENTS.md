@@ -306,7 +306,7 @@ state, clustered and fused one-row kernels, PDL) 5–8% faster still; and
 the swap path in `jitllm-runtime` (D-096: an
 engine module, `[models]` in the configuration, `chat` and `swap-table`),
 its greedy tokens the harnesses', all 32 swaps of M3's table in one
-process under ~10 s with speculation on (worst LLM↔LLM 9.72 s); and the
+process under ~10 s with speculation on (final worst LLM↔LLM 9.75 s); and the
 [model support matrix](docs/model-support.md), with template hashes; and
 the chat route (D-097: a strict OpenAI subset, intake bounds
 fixed first, greedy replies equal to `chat`'s); and the engine cleanup:
