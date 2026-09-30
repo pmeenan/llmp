@@ -931,8 +931,9 @@ it appears.
           37.71. The selected head reaches 37.00 / 41.32 / 42.88 / 43.84;
           neither closes every depth's speed gate. Fixed depths 3–5,
           expert sharing, prepared Q8 and incremental confidence stopping
-          were neutral; shape-specific library products are the next
-          lever to measure for cheaper verify rows
+          were neutral. The bounded cuBLASLt library-product sweep was
+          also neutral and left production unchanged; MXFP8 vector
+          occupancy is the next lever to measure for cheaper verify rows
           ([draft-head study](experiments/qwen38-draft-head/README.md)).
           *Adaptive depth and selected-head
           import implemented 2026-09-29:* native depth 2–3 chosen by observed
