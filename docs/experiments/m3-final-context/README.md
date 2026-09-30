@@ -21,7 +21,7 @@ path; a result from an earlier path does not validate a later optimization.
 On `spark`, 2026-09-29 23:55–2026-09-30 00:09 EDT, the original
 UD-Q2_K_XL target artifact `8a355bfb…` ran with F16 caches, the fast plan,
 compact expert scheduling, `context = 262144` and 2,048-row chunks.
-These are `e221aa8`'s target kernels, before the pending frontier-head
+These are `e221aa8`'s target kernels, before the subsequent frontier-head
 optimization. Three fresh processes cover two forced runs and perplexity;
 the forced prompt contains 128,821 raw token IDs.
 
@@ -39,8 +39,10 @@ an earlier native all-shape compact experiment, including partial
 prefill chunks, whereas serving selects compact scheduling only from
 2,048 rows. They are historical evidence, not the final corrected-floor
 gate; see the [frontier follow-up](../dsv4-frontier-head/README.md#head-arithmetic-and-quality).
-They do not cover DSpark, the HTTP route, maximum retrieval or the pending
-frontier head.
+They do not cover DSpark, the HTTP route or maximum retrieval. The final
+HCA/frontier path's fresh 32K/128K oracle controls, matched PPL and sampled
+plain/speculation protocol are recorded in the
+[frontier follow-up](../dsv4-frontier-head/README.md).
 
 Provenance:
 
@@ -95,9 +97,29 @@ Raw results are `~/scratch/m3-extrapolation-ds/final-1m-spec/` on `spark`.
 The pinned llama.cpp b11254 image also started at a configured 1M context
 on `spark-b`, plain and with DSpark, in a separate seven-token startup
 probe. That probe establishes startup/capacity only. The complete matched
-plain/speculative long-prompt runs started on `spark` at 00:11 EDT on
-2026-09-30 and remain pending. Their outputs are
-`~/scratch/m3-extrapolation-ds-b/llama-1m-{plain,spec}/`.
+plain/speculative long-prompt runs completed on `spark`, 00:11–04:39 EDT
+on 2026-09-30. Both process 1,037,958 prompt tokens and produce all 512
+requested outputs from the same canonical timing fixture:
+
+| Mode | Prefill seconds | Prefill tok/s | Decode tok/s | Peak drop in MemAvailable, GiB |
+| --- | ---: | ---: | ---: | ---: |
+| Plain | 7,719.44 | 134.460 | 8.219 | 102.696 |
+| DSpark, maximum draft depth 3 | 8,086.05 | 128.364 | 16.870 | 113.788 |
+
+Minimum available memory is 15,737,749,504 bytes plain and 3,757,690,880
+bytes with DSpark. The image is `jitllm-llamacpp:b11254-cuda13`, source
+`8019dc563b1ecbae6b161a70c3a1359f1b206c1e`, all target/drafter layers
+on GPU, flash attention on, context 1,048,576, one slot, automatic fitting
+off and prompt cache disabled. Target and drafter are the same GGUFs as
+the native comparison. Chat rendering accounts for the 89-token difference
+from the earlier native prompt; token counts are retained separately.
+These captures precede the harness's terminal-marker/finish-reason fields;
+those fields are not retroactively inferred. Successful captures and
+512-output counts are retained in
+`~/scratch/m3-extrapolation-ds-b/llama-1m-{plain,spec}/run.json`.
+Final native plain/speculative timing and neutral retrieval started on
+`spark` at 05:23 EDT using the checked HCA/frontier runtime
+`7dd83ca9ceb0b077268b8448f6124ca7760425afd8ebb68b177eb9935b917770`.
 
 ## Continuing-context swap protocol
 

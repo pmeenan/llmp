@@ -24,7 +24,7 @@ all-row. One-row decode and its captured graph keys are unchanged.
 The final component selection keeps CSA/window sharing and returns
 count-based HCA masks to the registered ordinary MMA implementation.
 Fresh 32K/128K repeats and matched PPL qualify this body/head combination
-at the existing bounds. Final sampled and maximum-context runtime gates
+at the existing bounds. Final maximum-context runtime gates
 remain separate and do not close the whole M3 gate here.
 
 Selection occurs after every target layer and after the full feature
@@ -282,10 +282,33 @@ conditional logits are unchanged in the controls, both plain and
 speculative decoding use the same target head, and sampler/verification
 arithmetic is untouched. The initial head-only scope retained the earlier
 finite sampled control. The final HCA change also changes attention-body
-arithmetic, so a fresh plain/speculation check is pending on Spark A:
-the existing four prompts, 256 seeds and eight outputs, 8,192 samples per
-mode, at the unchanged pooled top-16-plus-other TV bound of 0.1. The
-earlier sampled result does not qualify this attention-body change.
+arithmetic, so fresh plain/speculation checks ran on `spark` on
+2026-09-30, 04:54–05:11 EDT. The existing capital, haiku, sky and Fibonacci
+prompts each contribute 256 seeds × eight outputs: 8,192 samples per mode.
+All four pooled top-16-plus-other TV distances pass the unchanged 0.1 bound:
+
+| Prompt | Plain/speculation TV |
+| --- | ---: |
+| Capital | 0.0034 |
+| Haiku | 0.0098 |
+| Sky | 0.0186 |
+| Fibonacci | 0.0112 |
+
+Both processes use the final counter-free HCA/frontier planner, F16 caches,
+`context = 262144`, 2,048-row chunks, graphs on, the fast plan and the
+original target/DSpark artifacts. Sampling is temperature 1 with no
+top-k, top-p or min-p truncation. Counts are checked at 2,048 per prompt
+per mode, and both runs report no problems. This finite marginal protocol
+does not establish equality of every conditional or joint distribution.
+Plain/speculation process times are 583.55 / 412.21 seconds; they include
+the protocol workload and are not runtime throughput comparisons.
+The spec-runner SHA-256 is
+`81954b884ec317ddf0536851895aface44f896282167c1219c4f8340e6a91008`;
+the final planner SHA-256 is `1355f003…` as recorded below.
+Prompt-fixture SHA-256 is
+`d212009dadf1ddbf945c8dc7ad0214ba444236baf57c8ed9019c3ebe6b0805b4`.
+Raw captures and the binary/source/fixture identities are under
+`~/scratch/m3-final-ds-sampled/frontier-hca-1355f003/` on `spark`.
 
 Initial `head-8192/` and `head-8229/` diagnostic captures were invalid:
 activation placement rebound external probe leaves to uninitialized
@@ -362,7 +385,7 @@ and one near tie (plain margin 0.0993), zero outside 0.947.
 The 160-output full-swap continuation has zero state differences,
 including a rejection immediately before the swap, and replays captured
 graphs after return. This is a bounded state/greedy control, not the
-pending sampled or maximum-state swap gate.
+maximum-state swap gate. The fresh sampled check is recorded above.
 
 ## Provenance and remaining gates
 

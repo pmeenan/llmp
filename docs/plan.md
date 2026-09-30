@@ -876,8 +876,9 @@ it appears.
       sharing while selecting ordinary MMA for count-based HCA passes fresh
       32K/128K all-head/frontier repeats at the unchanged 0.947 bound;
       matched 128K PPL is 1.926517 versus 1.9298. Production state,
-      forced rejection and swap continuations remain exact. Final sampled
-      plain/speculation and maximum-context runtime gates remain pending.
+      forced rejection and swap continuations remain exact. Fresh sampled
+      plain/speculation TV is 0.0034 / 0.0098 / 0.0186 / 0.0112, below the
+      unchanged 0.1 bound; maximum-context runtime gates remain pending.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
