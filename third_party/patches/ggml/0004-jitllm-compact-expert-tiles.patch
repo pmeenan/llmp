@@ -1,0 +1,195 @@
+From: jitLLM contributors
+Subject: [PATCH] cuda: bound routed MMQ tails and compact expert tiles
+
+Correct routed dummy-column padding in jitLLM's bounded workspace.
+Use a device-built, bounded tile list under explicit jitLLM dispatch.
+Keep raw weight strides, type-specific Q8 preparation and the existing
+full-K inner product. Ordinary/reference launches default to the original
+grid; no weight representation, early route weighting or sanitization.
+
+diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
+index 6923f35..4db5a39 100644
+--- a/ggml/src/ggml-cuda/mmq.cuh
++++ b/ggml/src/ggml-cuda/mmq.cuh
+@@ -950,7 +950,7 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
+ 
+ // The mul_mat_q kernel implements "stream-k" work partitioning as described in https://arxiv.org/abs/2301.03598
+ 
+-template <ggml_type type, int J, bool fallback>
++template <ggml_type type, int J, bool fallback, bool compact = false>
+ __launch_bounds__(ggml_cuda_mmq_get_nthreads(type, J, fallback), ggml_cuda_mmq_get_occupancy(type, J, fallback))
+ static __global__ void mul_mat_q(
+         const char * __restrict__ x, const int * __restrict__ y, const int32_t * __restrict__ ids_dst,
+@@ -959,7 +959,7 @@ static __global__ void mul_mat_q(
+         const uint3 blocks_per_ne00, const int nrows_x, const int ncols_dst, const int stride_row_x, const int ncols_y, const int stride_col_dst,
+         const uint3 channel_ratio, const uint3 nchannels_y, const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst,
+         const uint3 sample_ratio, const uint3 nsamples_y, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
+-        const uint3 ntx) {
++        const uint3 ntx, const int2 * __restrict__ expert_tiles = nullptr) {
+ 
+     // Skip unused template specializations for faster compilation:
+     if (ggml_cuda_mmq_get_config(type, J, fallback).type == GGML_TYPE_COUNT) {
+@@ -990,11 +990,17 @@ static __global__ void mul_mat_q(
+     }
+     __syncthreads();
+ 
+-    if constexpr (!ggml_cuda_mmq_get_stream_k(type, J, fallback)) {
++    if constexpr (compact || !ggml_cuda_mmq_get_stream_k(type, J, fallback)) {
+         const uint2 tmp2 = fast_div_modulo(blockIdx.z, nchannels_y);
+-        const int wt = tmp2.x;
+-        const int zt = tmp2.y;
+-        const int jt = blockIdx.y;
++        const int2 tile = compact ? expert_tiles[blockIdx.y] : make_int2(tmp2.y, blockIdx.y);
++        if constexpr (compact) {
++            if (tile.x < 0) {
++                return;
++            }
++        }
++        const int wt = compact ? 0 : tmp2.x;
++        const int zt = tile.x;
++        const int jt = tile.y;
+         const int it = blockIdx.x;
+ 
+         // Defaults for regular matrix multiplication:
+@@ -1383,8 +1389,67 @@ struct mmq_args {
+     int64_t nsamples_x; int64_t nsamples_y; int64_t stride_sample_x; int64_t stride_sample_y; int64_t stride_sample_dst;
+     int64_t ncols_max;
+     int64_t ncols_opt; // value to optimize the tile size against, launch grid still uses ncols_max
++#ifdef GGML_JITLLM
++    bool compact_experts = false;
++#endif
+ };
+ 
++#ifdef GGML_JITLLM
++// The list is bounded without reading expert counts back to the host:
++// sum_e ceil(rows_e/J) <= ceil(sum_e rows_e/J) + nexperts.
++// A fixed-capacity list keeps the launch capturable; unused entries are dummies.
++template <int J>
++static __global__ void mmq_expert_tiles(const int32_t * bounds, int2 * tiles,
++        const int nexperts, const int capacity) {
++    extern __shared__ int prefix[];
++    for (int e = threadIdx.x; e < nexperts; e += blockDim.x) {
++        prefix[e + 1] = (bounds[e + 1] - bounds[e] + J - 1) / J;
++    }
++    __syncthreads();
++    if (threadIdx.x == 0) {
++        prefix[0] = 0;
++        for (int e = 0; e < nexperts; ++e) {
++            prefix[e + 1] += prefix[e];
++        }
++    }
++    __syncthreads();
++    for (int t = threadIdx.x; t < capacity; t += blockDim.x) {
++        if (t >= prefix[nexperts]) {
++            tiles[t] = make_int2(-1, -1);
++            continue;
++        }
++        int lo = 0;
++        int hi = nexperts;
++        while (lo + 1 < hi) {
++            const int mid = (lo + hi) / 2;
++            if (prefix[mid] <= t) {
++                lo = mid;
++            } else {
++                hi = mid;
++            }
++        }
++        tiles[t] = make_int2(lo, t - prefix[lo]);
++    }
++}
++
++static int64_t mmq_compact_expert_capacity(const ggml_type type, const int64_t rows,
++        const int64_t tokens, const int64_t assignments, const int64_t experts, const int J) {
++    if (type == GGML_TYPE_MXFP4 || type == GGML_TYPE_NVFP4 || tokens < 256 || rows < 128 ||
++            experts < 64 || experts > 1024) {
++        return 0;
++    }
++    const int64_t capacity = (assignments + J - 1) / J + experts;
++    return capacity <= 65535 ? capacity : 0;
++}
++
++static bool mmq_use_compact_experts(const mmq_args & args, const int J) {
++    return args.compact_experts && args.ids_dst && args.expert_bounds &&
++        args.nchannels_x == args.nchannels_y && args.nsamples_x == 1 && args.nsamples_y == 1 &&
++        mmq_compact_expert_capacity(args.type_x, args.nrows_x, args.ncols_max,
++            args.ncols_dst, args.nchannels_x, J) != 0;
++}
++#endif
++
+ static size_t mmq_get_nbytes_shared(const ggml_cuda_mmq_config & config, const int cc) {
+     const size_t nbs_ids = config.J*sizeof(int);
+     const size_t nbs_x = ggml_cuda_mmq_get_nbytes_shared_x(config, cc);
+@@ -1426,6 +1491,28 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
+     const uint3 channel_ratio_fd   = init_fastdiv_values(channel_ratio);
+     const uint3 sample_ratio_fd    = init_fastdiv_values(sample_ratio);
+ 
++#ifdef GGML_JITLLM
++    if constexpr (type != GGML_TYPE_MXFP4 && type != GGML_TYPE_NVFP4) {
++        if (GGML_CUDA_CC_IS_NVIDIA(cc) && mmq_use_compact_experts(args, config.J)) {
++            CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, J, false, true>), nbytes_shared);
++            CUDA_SET_SHARED_MEMORY_LIMIT((mul_mat_q<type, J,  true, true>), nbytes_shared);
++            const int capacity = mmq_compact_expert_capacity(type, args.nrows_x,
++                args.ncols_max, args.ncols_dst, args.nchannels_x, config.J);
++            ggml_cuda_pool_alloc<int2> tiles(ctx.pool(id), capacity);
++            mmq_expert_tiles<J><<<1, 256, (args.nchannels_x + 1)*sizeof(int), stream>>>
++                (args.expert_bounds, tiles.ptr, args.nchannels_x, capacity);
++            const dim3 grid(nty, capacity, 1);
++            mul_mat_q<type, J, fallback, true><<<grid, block_dims, nbytes_shared, stream>>>
++                (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr, args.y_scale,
++                 blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
++                 channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
++                 sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
++                 ntx_fd, tiles.ptr);
++            return;
++        }
++    }
++#endif
++
+     if (!ggml_cuda_mmq_get_stream_k(type, J, fallback, cc)) {
+         mul_mat_q<type, J, fallback><<<block_nums_xy_tiling, block_dims, nbytes_shared, stream>>>
+             (args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, nullptr, args.y_scale,
+diff --git a/ggml/src/ggml-cuda/mmq.cu b/ggml/src/ggml-cuda/mmq.cu
+index 635e476..c7b802a 100644
+--- a/ggml/src/ggml-cuda/mmq.cu
++++ b/ggml/src/ggml-cuda/mmq.cu
+@@ -217,7 +217,7 @@ void ggml_cuda_mul_mat_q(
+         ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), nbytes_src1_q8_1);
+         ggml_cuda_pool_alloc<float> src1_scale(ctx.pool());
+         if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) {
+-            src1_scale.alloc(ne13*ne12*ne11);
++            src1_scale.alloc(ne13*ne12*ne11 + ggml_cuda_mmq_get_J_max(src0->type, fallback, cc, ne11));
+         }
+ 
+         {
+@@ -263,8 +263,16 @@ void ggml_cuda_mul_mat_q(
+     const int64_t ne_get_rows = ne12 * n_expert_used;
+     GGML_ASSERT(ne1 == n_expert_used);
+ 
++    // Routed tiles span sorted assignments, not the activation's slot axis.
++    // The last tile can read up to J-1 dummy Q8 columns and output IDs.
++    // jitLLM's pool has no allocator overprovisioning to hide that read.
++#ifdef GGML_JITLLM
++    const int j_max = ggml_cuda_mmq_get_J_max(src0->type, fallback, cc, 128);
++#else
++    const int j_max = ggml_cuda_mmq_get_J_max(src0->type, fallback, cc, ne11);
++#endif
+     ggml_cuda_pool_alloc<int32_t> ids_src1(ctx.pool(), ne_get_rows);
+-    ggml_cuda_pool_alloc<int32_t> ids_dst(ctx.pool(), ne_get_rows);
++    ggml_cuda_pool_alloc<int32_t> ids_dst(ctx.pool(), ne_get_rows + j_max);
+     ggml_cuda_pool_alloc<int32_t> expert_bounds(ctx.pool(), ne02 + 1);
+ 
+     // gate/up activations are broadcast across experts (ne11 == 1): quantize each token once and
+@@ -282,11 +290,11 @@ void ggml_cuda_mul_mat_q(
+     }
+ 
+     const size_t nbytes_src1_q8_1 = ne12*n_expert_used*ne10_padded * y_block_size/y_values_per_block +
+-        ggml_cuda_mmq_get_J_max(src0->type, fallback, cc, ne11) * sizeof(block_q8_1_mmq);
++        j_max * sizeof(block_q8_1_mmq);
+     ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), nbytes_src1_q8_1);
+     ggml_cuda_pool_alloc<float> src1_scale(ctx.pool());
+     if (src0->type == GGML_TYPE_NVFP4 && use_native_fp4) {
+-        src1_scale.alloc(ne12*n_expert_used);
++        src1_scale.alloc(ne_get_rows + j_max);
+     }
+ 
+     const int64_t ne11_flat = ne12*n_expert_used;

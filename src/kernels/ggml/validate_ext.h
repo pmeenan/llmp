@@ -75,6 +75,10 @@ std::expected<void, KernelFailure> CheckMulMatQ(const ggml_tensor* node);
 // (mmq.cu:207-212, mmvq.cu:1418-1423). One sample only.
 std::expected<void, KernelFailure> CheckMulMatIdQ(const ggml_tensor* node);
 
+// The same raw quantized expert products with an optional compact tile
+// worklist. FP4 preparation remains a separate contract.
+std::expected<void, KernelFailure> CheckMulMatIdQCompact(const ggml_tensor* node);
+
 // Two expert products with the same non-FP4 type, shape, activation and
 // routing tensors. Both outputs remain distinct; only maps and the
 // type-specific quantized activation preparation are shared.

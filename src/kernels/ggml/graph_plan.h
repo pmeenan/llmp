@@ -76,6 +76,9 @@ struct DeviceChoices {
   // Fast plans may share preparation across adjacent ordinary MMQ expert
   // products. The default keeps one primitive step per graph node.
   bool pair_experts = false;
+  // Use a device-built expert-major MMQ tile list for measured fast
+  // quantized shapes. Reference/default plans retain upstream's grid.
+  bool compact_experts = false;
   // Share a sparse query tile's KV union only for measured fast shapes.
   // Unknown/reference graphs retain the original column selection.
   bool wide_sparse_attention = false;
@@ -121,6 +124,8 @@ inline constexpr std::string_view kMulMatHadamard = "ggml.mul_mat.fwht";
 inline constexpr std::string_view kMulMatIdVecQ = "ggml.mul_mat_id.mmvq";
 inline constexpr std::string_view kMulMatIdQ = "ggml.mul_mat_id.mmq";
 inline constexpr std::string_view kMulMatIdQPair = "jitllm.mul_mat_id.mmq_pair";
+inline constexpr std::string_view kMulMatIdQCompact = "jitllm.mul_mat_id.mmq_compact";
+inline constexpr std::string_view kMulMatIdQPairCompact = "jitllm.mul_mat_id.mmq_pair_compact";
 inline constexpr std::string_view kSubName = "ggml.sub";
 inline constexpr std::string_view kDivName = "ggml.div";
 inline constexpr std::string_view kScaleName = "ggml.scale";

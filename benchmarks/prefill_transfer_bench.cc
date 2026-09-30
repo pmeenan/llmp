@@ -8,12 +8,17 @@
 // sample. A 512 MiB write before the timing events displaces operands from
 // L2. Synthetic finite operands; correctness is covered by the operation
 // tests, not inferred from these timings. No model or cache precision
-// changes. Usage: jitllm_prefill_transfer_bench [--only TEXT].
+// changes. --compact compares shared preparation with and without compact
+// expert tiles; --large uses the target expert shape, --down its down
+// projection, and --skew concentrates assignments in a few experts.
+// Usage: jitllm_prefill_transfer_bench [--only TEXT] [--compact]
+//        [--large] [--down] [--skew] [--tokens N].
 
 #include <cuda_runtime.h>
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -216,17 +221,19 @@ void Attention(int head, bool overlap) {
       [&] { Check(kg::FlashAttnMma(f.launch(), node, true)); });
 }
 
-void Experts(ggml_type type) {
+void Experts(ggml_type type, bool compact, bool large, bool down, bool skew, int tokens) {
   Fixture f;
   auto arena = kg::TensorArena::Create(16).value();
   auto* c = arena.context();
-  constexpr int kInner = 4096;
-  constexpr int kOut = 2048;
-  constexpr int kExperts = 64;
-  constexpr int kUsed = 4;
-  constexpr int kTokens = 512;
-  const auto row = Values(kInner);
-  const std::vector<float> importance(kInner, 1.0f);
+  const int kInner = down ? 2048 : 4096;
+  const int kOut = down ? 4096 : 2048;
+  const int kExperts = large ? 256 : 64;
+  const int kUsed = large ? 6 : 4;
+  const int default_tokens = large ? 4096 : 512;
+  const int kTokens = tokens != 0 ? tokens : default_tokens;
+  const int slots = down ? kUsed : 1;
+  const auto row = Values(static_cast<std::size_t>(kInner));
+  const std::vector<float> importance(static_cast<std::size_t>(kInner), 1.0f);
   std::vector<std::uint8_t> block(ggml_row_size(type, kInner));
   const auto written =
       ggml_quantize_chunk(type, row.data(), block.data(), 0, 1, kInner,
@@ -234,51 +241,87 @@ void Experts(ggml_type type) {
   if (written != block.size()) {
     std::abort();
   }
-  std::vector<std::uint8_t> weights(block.size() * kOut * kExperts);
+  std::vector<std::uint8_t> weights(block.size() * static_cast<std::size_t>(kOut) *
+                                    static_cast<std::size_t>(kExperts));
   for (std::size_t i = 0; i < weights.size(); i += block.size()) {
     std::ranges::copy(block, weights.begin() + static_cast<std::ptrdiff_t>(i));
   }
   auto* a = f.Place(ggml_new_tensor_3d(c, type, kInner, kOut, kExperts), weights);
   auto* b = f.Place(ggml_new_tensor_3d(c, type, kInner, kOut, kExperts), weights);
-  auto* x = f.Place(ggml_new_tensor_3d(c, GGML_TYPE_F32, kInner, 1, kTokens),
-                    Values(std::size_t{kInner} * kTokens));
-  std::vector<std::int32_t> ids(std::size_t{kUsed} * kTokens);
+  auto* x = f.Place(ggml_new_tensor_3d(c, GGML_TYPE_F32, kInner, slots, kTokens),
+                    Values(static_cast<std::size_t>(kInner) * static_cast<std::size_t>(slots) *
+                           static_cast<std::size_t>(kTokens)));
+  std::vector<std::int32_t> ids(static_cast<std::size_t>(kUsed) *
+                                static_cast<std::size_t>(kTokens));
   for (std::size_t i = 0; i < ids.size(); ++i) {
-    ids[i] = static_cast<std::int32_t>(i % kExperts);
+    ids[i] = static_cast<std::int32_t>(i % static_cast<std::size_t>(skew ? kUsed : kExperts));
   }
   auto* route = f.Place(ggml_new_tensor_2d(c, GGML_TYPE_I32, kUsed, kTokens), ids);
   auto* first = f.Place(ggml_mul_mat_id(c, a, x, route));
   auto* second = f.Place(ggml_mul_mat_id(c, b, x, route));
   f.Measure(
-      std::string(ggml_type_name(type)) + "-4096x2048-E64-T512-used4",
+      std::string(ggml_type_name(type)) + "-" + std::to_string(kInner) + "x" +
+          std::to_string(kOut) + "-E" + std::to_string(kExperts) + "-T" + std::to_string(kTokens) +
+          "-used" + std::to_string(kUsed) + (down ? "-slots" : "-broadcast") +
+          (skew ? "-skew" : "-uniform"),
       [&] {
-        Check(kg::MulMatQ(f.launch(), first));
-        Check(kg::MulMatQ(f.launch(), second));
+        if (compact) {
+          Check(kg::MulMatIdQPair(f.launch(), first, second));
+        } else {
+          Check(kg::MulMatQ(f.launch(), first));
+          Check(kg::MulMatQ(f.launch(), second));
+        }
       },
-      [&] { Check(kg::MulMatIdQPair(f.launch(), first, second)); });
+      [&] { Check(kg::MulMatIdQPair(f.launch(), first, second, compact)); });
 }
 }  // namespace
 
 int main(int argc, char** argv) {
   std::string_view only;
-  if (argc == 3 && std::string_view(argv[1]) == "--only") {
-    only = argv[2];
-  } else if (argc != 1) {
-    std::println(stderr, "usage: jitllm_prefill_transfer_bench [--only TEXT]");
-    return 2;
+  bool compact = false;
+  bool large = false;
+  bool down = false;
+  bool skew = false;
+  int tokens = 0;
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view arg = argv[i];
+    if (arg == "--only" && i + 1 < argc) {
+      only = argv[++i];
+    } else if (arg == "--compact") {
+      compact = true;
+    } else if (arg == "--large") {
+      large = true;
+    } else if (arg == "--down") {
+      down = true;
+    } else if (arg == "--skew") {
+      skew = true;
+    } else if (arg == "--tokens" && i + 1 < argc) {
+      const std::string_view value = argv[++i];
+      const auto parsed = std::from_chars(value.data(), value.data() + value.size(), tokens);
+      if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || tokens < 256 ||
+          tokens > 8192) {
+        std::println(stderr, "--tokens needs an integer from 256 to 8192");
+        return 2;
+      }
+    } else {
+      std::println(stderr,
+                   "usage: jitllm_prefill_transfer_bench [--only TEXT] [--compact] "
+                   "[--large] [--down] [--skew] [--tokens N]");
+      return 2;
+    }
   }
   std::println("case,primitive_ms,shared_ms,speedup,scratch_peak_bytes");
-  if (only.empty() || std::string_view("attention").contains(only)) {
+  if (!compact && (only.empty() || std::string_view("attention").contains(only))) {
     for (const int head : {256, 512}) {
       for (const bool overlap : {true, false}) {
         Attention(head, overlap);
       }
     }
   }
-  for (const auto type :
-       {GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_Q2_K, GGML_TYPE_Q4_K, GGML_TYPE_Q8_0}) {
+  for (const auto type : {GGML_TYPE_IQ2_XXS, GGML_TYPE_IQ2_XS, GGML_TYPE_Q2_K, GGML_TYPE_Q4_K,
+                          GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ3_XXS, GGML_TYPE_Q8_0}) {
     if (only.empty() || std::string_view(ggml_type_name(type)).contains(only)) {
-      Experts(type);
+      Experts(type, compact, large, down, skew, tokens);
     }
   }
   return 0;

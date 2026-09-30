@@ -77,8 +77,12 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
       planned = PlanMulMatVecQRows(launch, step.nodes.front());
     } else if (step.implementation == kMulMatQ || step.implementation == kMulMatIdQ) {
       planned = PlanMulMatQ(launch, step.nodes.front());
-    } else if (step.implementation == kMulMatIdQPair) {
-      planned = PlanMulMatIdQPair(launch, step.nodes[0], step.nodes[1]);
+    } else if (step.implementation == kMulMatIdQPair ||
+               step.implementation == kMulMatIdQPairCompact) {
+      planned = PlanMulMatIdQPair(launch, step.nodes[0], step.nodes[1],
+                                  step.implementation == kMulMatIdQPairCompact);
+    } else if (step.implementation == kMulMatIdQCompact) {
+      planned = PlanMulMatIdQCompact(launch, step.nodes.front());
     } else if (step.implementation == kTopKName) {
       planned = PlanTopK(launch, step.nodes.front());
     } else if (step.implementation == kDsv4LidTopKName) {

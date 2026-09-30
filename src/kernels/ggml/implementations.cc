@@ -83,7 +83,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 94> kKernels = {{
+constexpr std::array<Kernel::Entry, 96> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -263,6 +263,20 @@ constexpr std::array<Kernel::Entry, 94> kKernels = {{
      .arity = 2,
      .check = [](ConstNodes n) { return CheckMulMatIdQPair(n[0], n[1]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQPair(launch, n[0], n[1]); }},
+    {.name = "jitllm.mul_mat_id.mmq_compact",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "ordinary non-FP4 MMQ preparation and inner product with a device-built "
+                "expert-major tile list; original weight/output strides and Q8 arithmetic",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatIdQCompact(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQCompact(launch, n[0]); }},
+    {.name = "jitllm.mul_mat_id.mmq_pair_compact",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "two ordinary non-FP4 MMQ inner products sharing routing and Q8 preparation, "
+                "each launched with a device-built expert-major tile list",
+     .arity = 2,
+     .check = [](ConstNodes n) { return CheckMulMatIdQPair(n[0], n[1]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQPair(launch, n[0], n[1], true); }},
     {.name = "ggml.sub",
      .operation = execution::Operation::kSub,
      .variant = "ggml_cuda_op_sub: k_bin_bcast<op_sub, float, float, float>; upstream launch "

@@ -233,6 +233,16 @@ std::expected<void, KernelFailure> CheckMulMatIdQ(const ggml_tensor* node) {
   return {};
 }
 
+std::expected<void, KernelFailure> CheckMulMatIdQCompact(const ggml_tensor* node) {
+  if (auto checked = CheckMulMatIdQ(node); !checked) {
+    return checked;
+  }
+  if (node->src[0]->type == GGML_TYPE_MXFP4 || node->src[0]->type == GGML_TYPE_NVFP4) {
+    return Rejected("compact expert products take non-FP4 weights");
+  }
+  return {};
+}
+
 std::expected<void, KernelFailure> CheckMulMatIdQPair(const ggml_tensor* first,
                                                       const ggml_tensor* second) {
   if (auto checked = CheckMulMatIdQ(first); !checked) {

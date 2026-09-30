@@ -446,7 +446,7 @@ TEST_F(GgmlExtOpsTest, ExpertProductsCoverSkewedRoutingAndEmptyExperts) {
 TEST_F(GgmlExtOpsTest, PairedExpertPreparationMatchesSeparateProductsExactly) {
   constexpr std::int64_t kInner = 512;
   constexpr std::int64_t kOut = 128;
-  constexpr std::int64_t kExperts = 16;
+  constexpr std::int64_t kExperts = 64;
   constexpr std::int64_t kUsed = 2;
   constexpr std::int64_t kTokens = 257;
   for (const auto type : kg::QuantizedWeightTypes()) {
@@ -487,6 +487,20 @@ TEST_F(GgmlExtOpsTest, PairedExpertPreparationMatchesSeparateProductsExactly) {
       const auto want_first = Download(first);
       Launched(kg::MulMatQ(launch(), second), what);
       const auto want_second = Download(second);
+      // Compact tiles use a full-K reduction; an ordinary low-efficiency
+      // grid can instead split K and add its fixup. Bound only that
+      // reduction movement tightly, before target comparisons.
+      constexpr double kCompactNmse = 1e-10;
+      const std::vector<double> compact_want_first(want_first.begin(), want_first.end());
+      const std::vector<double> compact_want_second(want_second.begin(), want_second.end());
+      const auto compact_scratch = kg::PlanMulMatIdQCompact(launch(), first);
+      ASSERT_TRUE(compact_scratch.has_value()) << what << ": " << compact_scratch.error().detail;
+      ASSERT_EQ(cudaMemset(first->data, 0xFF, ggml_nbytes(first)), cudaSuccess);
+      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+      launch().ResetScratchPeak();
+      Launched(kg::MulMatIdQCompact(launch(), first), what);
+      EXPECT_LE(launch().scratch_peak().value(), *compact_scratch);
+      ExpectNmse(Download(first), compact_want_first, kCompactNmse, what);
       const auto scratch = kg::PlanMulMatIdQPair(launch(), first, second);
       ASSERT_TRUE(scratch.has_value()) << what << ": " << scratch.error().detail;
       ASSERT_EQ(cudaMemset(first->data, 0xFF, ggml_nbytes(first)), cudaSuccess);
@@ -497,6 +511,17 @@ TEST_F(GgmlExtOpsTest, PairedExpertPreparationMatchesSeparateProductsExactly) {
       EXPECT_LE(launch().scratch_peak().value(), *scratch);
       EXPECT_EQ(Download(first), want_first) << what;
       EXPECT_EQ(Download(second), want_second) << what;
+      const auto compact_pair_scratch = kg::PlanMulMatIdQPair(launch(), first, second, true);
+      ASSERT_TRUE(compact_pair_scratch.has_value())
+          << what << ": " << compact_pair_scratch.error().detail;
+      ASSERT_EQ(cudaMemset(first->data, 0xFF, ggml_nbytes(first)), cudaSuccess);
+      ASSERT_EQ(cudaMemset(second->data, 0xFF, ggml_nbytes(second)), cudaSuccess);
+      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+      launch().ResetScratchPeak();
+      Launched(kg::MulMatIdQPair(launch(), first, second, true), what);
+      EXPECT_LE(launch().scratch_peak().value(), *compact_pair_scratch);
+      ExpectNmse(Download(first), compact_want_first, kCompactNmse, what);
+      ExpectNmse(Download(second), compact_want_second, kCompactNmse, what);
       const std::array<ggml_tensor*, 2> nodes = {first, second};
       auto choices = kg::DeviceChoicesOf(launch());
       const auto primitive = kg::PlanGraph(nodes, false, choices);
@@ -510,7 +535,103 @@ TEST_F(GgmlExtOpsTest, PairedExpertPreparationMatchesSeparateProductsExactly) {
       ASSERT_EQ(plan->steps.size(), 1U);
       EXPECT_EQ(plan->steps[0].implementation, kg::kMulMatIdQPair);
       EXPECT_EQ(plan->steps[0].nodes.size(), 2U);
+      choices.compact_experts = true;
+      const auto compact_pair = kg::PlanGraph(nodes, false, choices);
+      ASSERT_TRUE(compact_pair.has_value()) << what << ": " << compact_pair.error().detail;
+      ASSERT_EQ(compact_pair->steps.size(), 1U);
+      EXPECT_EQ(compact_pair->steps[0].implementation, kg::kMulMatIdQPairCompact);
+      choices.pair_experts = false;
+      const auto compact = kg::PlanGraph(nodes, false, choices);
+      ASSERT_TRUE(compact.has_value()) << what << ": " << compact.error().detail;
+      ASSERT_EQ(compact->steps.size(), 2U);
+      EXPECT_EQ(compact->steps[0].implementation, kg::kMulMatIdQCompact);
+      EXPECT_EQ(compact->steps[1].implementation, kg::kMulMatIdQCompact);
     }
+  }
+}
+
+TEST_F(GgmlExtOpsTest, CompactExpertTilesPreservePartialRowsAndFallbackShapes) {
+  constexpr std::int64_t kInner = 1024;
+  constexpr std::int64_t kUsed = 2;
+  struct Shape {
+    std::int64_t rows, experts, tokens;
+  };
+  for (const auto type : {GGML_TYPE_IQ2_XXS, GGML_TYPE_Q2_K, GGML_TYPE_Q8_0}) {
+    // T256 leaves poor wave occupancy in the original stream-K grid on
+    // GB10 and exercises its split-K/fixup comparison; T257 has tails.
+    const std::array<Shape, 4> shapes = {
+        {{129, 64, 256}, {129, 64, 257}, {64, 64, 257}, {129, 16, 257}}};
+    for (const auto& [rows, experts, tokens] : shapes) {
+      auto weights = Quantize(type, kInner, rows * experts, 57);
+      auto* w = Place(ggml_new_tensor_3d(c(), type, kInner, rows, experts), weights.bytes);
+      auto* input = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kInner, kUsed, tokens),
+                          Normal(58, static_cast<std::size_t>(kInner * kUsed * tokens)));
+      std::vector<std::int32_t> ids;
+      for (std::int64_t t = 0; t < tokens; ++t) {
+        ids.push_back(static_cast<std::int32_t>(experts - 1));
+        ids.push_back(static_cast<std::int32_t>(t % 7));
+      }
+      auto* route = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, tokens), ids);
+      auto* product = Place(ggml_mul_mat_id(c(), w, input, route));
+      const std::string what = std::string(ggml_type_name(type)) + " M" + std::to_string(rows) +
+                               " E" + std::to_string(experts) + " T" + std::to_string(tokens);
+      Launched(kg::MulMatQ(launch(), product), what);
+      const auto want = Download(product);
+      const auto scratch = kg::PlanMulMatIdQCompact(launch(), product);
+      ASSERT_TRUE(scratch.has_value()) << what << ": " << scratch.error().detail;
+      ASSERT_EQ(cudaMemset(product->data, 0xFF, ggml_nbytes(product)), cudaSuccess);
+      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+      launch().ResetScratchPeak();
+      Launched(kg::MulMatIdQCompact(launch(), product), what);
+      EXPECT_LE(launch().scratch_peak().value(), *scratch);
+      ExpectNmse(Download(product), std::vector<double>(want.begin(), want.end()), 1e-10, what);
+    }
+  }
+}
+
+TEST_F(GgmlExtOpsTest, CapturedCompactPairsRebuildTilesFromEachReplaysRouting) {
+  constexpr std::int64_t kInner = 1024;
+  constexpr std::int64_t kOut = 129;
+  constexpr std::int64_t kExperts = 64;
+  constexpr std::int64_t kTokens = 257;
+  const auto a = Quantize(GGML_TYPE_Q2_K, kInner, kOut * kExperts, 59);
+  const auto b = Quantize(GGML_TYPE_Q2_K, kInner, kOut * kExperts, 60);
+  auto* wa = Place(ggml_new_tensor_3d(c(), GGML_TYPE_Q2_K, kInner, kOut, kExperts), a.bytes);
+  auto* wb = Place(ggml_new_tensor_3d(c(), GGML_TYPE_Q2_K, kInner, kOut, kExperts), b.bytes);
+  auto* x = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kInner, 1, kTokens),
+                  Normal(61, static_cast<std::size_t>(kInner * kTokens)));
+  std::vector<std::int32_t> ids(static_cast<std::size_t>(2 * kTokens));
+  for (std::size_t i = 0; i < ids.size(); ++i) {
+    ids[i] = static_cast<std::int32_t>(i % static_cast<std::size_t>(kExperts));
+  }
+  auto* routes = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, 2, kTokens), ids);
+  auto* first = Place(ggml_mul_mat_id(c(), wa, x, routes));
+  auto* second = Place(ggml_mul_mat_id(c(), wb, x, routes));
+  Launched(kg::MulMatIdQPair(launch(), first, second, true), "compact graph warmup");
+  Finish();
+  auto graph =
+      launch().Capture([&](LaunchContext& l) { return kg::MulMatIdQPair(l, first, second, true); });
+  ASSERT_TRUE(graph.has_value()) << graph.error().detail;
+  EXPECT_GE(graph->nodes(), 6U);  // maps, Q8, and each product's list and inner product
+  for (const bool concentrated : {true, false, true}) {
+    for (std::int64_t t = 0; t < kTokens; ++t) {
+      ids[static_cast<std::size_t>(2 * t)] = concentrated ? 0 : 63;
+      ids[static_cast<std::size_t>((2 * t) + 1)] =
+          concentrated ? 1 : static_cast<std::int32_t>(17 + (t % 8));
+    }
+    ASSERT_EQ(cudaMemcpy(routes->data, ids.data(), ids.size() * sizeof(std::int32_t),
+                         cudaMemcpyHostToDevice),
+              cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    Launched(kg::MulMatIdQPair(launch(), first, second, true), "fresh compact control");
+    const auto want_first = Download(first);
+    const auto want_second = Download(second);
+    ASSERT_EQ(cudaMemset(first->data, 0xFF, ggml_nbytes(first)), cudaSuccess);
+    ASSERT_EQ(cudaMemset(second->data, 0xFF, ggml_nbytes(second)), cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    Launched(launch().Launch(*graph), "compact graph replay");
+    EXPECT_EQ(Download(first), want_first);
+    EXPECT_EQ(Download(second), want_second);
   }
 }
 
@@ -1898,6 +2019,67 @@ TEST_F(GgmlExtOpsTest, OperationsReadWriteAndDrawOnlyWhatTheyShould) {
           });
   }
 
+  // Expert tails: empty leading/middle experts, partial token/output-row
+  // tiles, and ordinary/compact single/paired preparation. T257 keeps the
+  // original stream-K grid fully occupied on GB10, so no later fixup
+  // allocation can hide the final quantized-column over-read. Include raw
+  // FP4's ordinary preparation; compact/pair contracts remain non-FP4.
+  for (const auto type :
+       {GGML_TYPE_IQ2_XXS, GGML_TYPE_Q2_K, GGML_TYPE_Q8_0, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4}) {
+    constexpr std::int64_t k = 512;
+    constexpr std::int64_t out = 129;
+    constexpr std::int64_t experts = 64;
+    constexpr std::int64_t tokens = 257;
+    const auto a = Quantize(type, k, out * experts, 221);
+    const auto b = Quantize(type, k, out * experts, 222);
+    std::vector<std::int32_t> ids;
+    for (std::int64_t t = 0; t < tokens; ++t) {
+      ids.push_back(63);
+      ids.push_back(static_cast<std::int32_t>(17 + (t % 8)));
+    }
+    const bool fp4 = type == GGML_TYPE_MXFP4 || type == GGML_TYPE_NVFP4;
+    for (const int mode : {0, 1, 2, 3}) {
+      if (fp4 && mode != 0) {
+        continue;
+      }
+      const bool paired = mode % 2 != 0;
+      const bool compact = mode >= 2;
+      check(std::string(compact ? "compact experts " : "ordinary experts ") + ggml_type_name(type) +
+                (paired ? " pair" : " one"),
+            {bytes_of(a.bytes),
+             bytes_of(b.bytes),
+             bytes_of(Normal(223, static_cast<std::size_t>(k * tokens))),
+             bytes_of(ids),
+             {},
+             {}},
+            [&](ggml_context* ctx, const PlaceFn& place) {
+              auto* wa = place(ggml_new_tensor_3d(ctx, type, k, out, experts));
+              auto* wb = place(ggml_new_tensor_3d(ctx, type, k, out, experts));
+              auto* x = place(ggml_new_tensor_3d(ctx, GGML_TYPE_F32, k, 1, tokens));
+              auto* routes = place(ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 2, tokens));
+              auto* first = place(ggml_mul_mat_id(ctx, wa, x, routes));
+              auto* second = place(ggml_mul_mat_id(ctx, wb, x, routes));
+              return Built{.outputs = paired ? std::vector{first, second} : std::vector{first},
+                           .plan =
+                               [first, second, paired, compact](const LaunchContext& l) {
+                                 if (paired) {
+                                   return kg::PlanMulMatIdQPair(l, first, second, compact);
+                                 }
+                                 return compact ? kg::PlanMulMatIdQCompact(l, first)
+                                                : kg::PlanMulMatQ(l, first);
+                               },
+                           .run =
+                               [first, second, paired, compact](LaunchContext& l) {
+                                 if (paired) {
+                                   return kg::MulMatIdQPair(l, first, second, compact);
+                                 }
+                                 return compact ? kg::MulMatIdQCompact(l, first)
+                                                : kg::MulMatQ(l, first);
+                               }};
+            });
+    }
+  }
+
   // Flash attention: DeepSeek's decode, its sparse gather and a chunk;
   // Qwen3.8's rows.
   struct Fa {
@@ -2049,13 +2231,15 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
   using jitllm::execution::Operation;
   const std::vector<jitllm::execution::Implementation> declared = kg::Implementations();
   const auto registry = jitllm::execution::Registry::Create(declared).value();
-  const std::array<std::pair<const char*, Operation>, 29> expected = {{
+  const std::array<std::pair<const char*, Operation>, 31> expected = {{
       {"ggml.mul_mat.mmvq", Operation::kMatMul},
       {"ggml.mul_mat.mmq", Operation::kMatMul},
       {"ggml.mul_mat.fwht", Operation::kMatMul},
       {"ggml.mul_mat_id.mmvq", Operation::kMulMatId},
       {"ggml.mul_mat_id.mmq", Operation::kMulMatId},
       {"jitllm.mul_mat_id.mmq_pair", Operation::kMulMatId},
+      {"jitllm.mul_mat_id.mmq_compact", Operation::kMulMatId},
+      {"jitllm.mul_mat_id.mmq_pair_compact", Operation::kMulMatId},
       {"ggml.sub", Operation::kSub},
       {"ggml.div", Operation::kDiv},
       {"ggml.scale", Operation::kScale},
@@ -2087,7 +2271,11 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
     const auto kernel = kg::Kernel::Bind(registry.at(index));
     ASSERT_TRUE(kernel.has_value()) << name;
     EXPECT_EQ(kernel->name(), name);
-    EXPECT_EQ(kernel->arity(), std::string_view(name) == kg::kMulMatIdQPair ? 2U : 1U) << name;
+    EXPECT_EQ(kernel->arity(), std::string_view(name) == kg::kMulMatIdQPair ||
+                                       std::string_view(name) == kg::kMulMatIdQPairCompact
+                                   ? 2U
+                                   : 1U)
+        << name;
   }
   // A bound kernel checks and runs its node: scale through the registry.
   const auto scale = kg::Kernel::Bind(declared[registry.Find("ggml.scale").value_or(0)]).value();

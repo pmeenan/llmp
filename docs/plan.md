@@ -827,7 +827,7 @@ it appears.
       closing either way (a generation held until the shutdown is seen
       still must say close); 24 copies ×
       500 repeats passed 12,000 of 12,000 where main's test failed 136.
-- [ ] **ds4 study** (the owner, 2026-09-29), after long context's scaling
+- [x] **ds4 study** (the owner, 2026-09-29), after long context's scaling
       slices. [ds4](https://github.com/Entrpi/ds4) is antirez's
       MIT-licensed C/CUDA engine for DeepSeek V4 Flash, in Entrpi's fork
       tuned for the Spark. It reports prefill of 960 tok/s at 2K and 933
@@ -846,7 +846,7 @@ it appears.
 
       If it holds up, ds4 becomes a DeepSeek baseline beside llama.cpp,
       a same-format comparator on its GGUF.
-      *Study in progress* ([report](experiments/ds4-study/README.md)):
+      *Study completed 2026-09-29* ([report](experiments/ds4-study/README.md)):
       source/GGUF pinned, the same IQ2_XXS/Q2_K weights and F16 APE tables
       imported and run natively, fresh-process cold rungs to 128,817 IDs
       measured, and matched 4K profiles captured. Shared sparse query
@@ -855,8 +855,11 @@ it appears.
       Default ds4 has FP8 KV/FP4 indexer caches; its F32 control leaves a
       large product gap too. Wide sparse dispatch is opt-in for measured
       fast shapes because disjoint D512 lists regress. Cross-model and
-      format controls are in the report. Remaining: a genuinely compiled
-      compact expert-product experiment and any useful measured adoption;
+      format controls are in the report. Compact expert-major scheduling
+      is compiled and adopted for DeepSeek fast prefill from 2,048 rows:
+      alternating 8K controls improve throughput 11.1% on the community
+      weights and 9.8% on the original, with identical captured logits.
+      Smaller-format regressions keep generic and exact defaults off;
       ds4 is a same-weight harness comparator, not a cache-equivalent
       quality or runtime/DSpark baseline yet.
       The owner's [cross-family inventory](optimization-inventory.md)

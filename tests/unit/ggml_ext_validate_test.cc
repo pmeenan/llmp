@@ -128,6 +128,10 @@ TEST_F(GgmlExtValidateTest, PairedExpertsRequireMatchingInputsAndDisjointOutputs
   auto* first = Bound(ggml_mul_mat_id(c(), a, input, ids));
   auto* second = Bound(ggml_mul_mat_id(c(), b, input, ids));
   Accepted(kg::CheckMulMatIdQPair(first, second));
+  Accepted(kg::CheckMulMatIdQCompact(first));
+  Refused(kg::CheckMulMatIdQCompact(nullptr));
+  Refused(kg::CheckMulMatIdQCompact(
+      Bound(ggml_mul_mat(c(), New(GGML_TYPE_Q8_0, 512, 128), New(GGML_TYPE_F32, 512, 40)))));
   Refused(kg::CheckMulMatIdQPair(nullptr, second));
   Refused(kg::CheckMulMatIdQPair(first, first));
   Refused(kg::CheckMulMatIdQPair(
@@ -144,6 +148,7 @@ TEST_F(GgmlExtValidateTest, PairedExpertsRequireMatchingInputsAndDisjointOutputs
     auto* x = Bound(ggml_mul_mat_id(c(), New(type, 512, 128, 16), input, ids));
     auto* y = Bound(ggml_mul_mat_id(c(), New(type, 512, 128, 16), input, ids));
     Refused(kg::CheckMulMatIdQPair(x, y));
+    Refused(kg::CheckMulMatIdQCompact(x));
   }
 }
 

@@ -145,6 +145,7 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   device.fuse_norms = !m.exact;
   device.vector_floats = !m.exact;
   device.pair_experts = !m.exact;
+  device.compact_experts = !m.exact && shape.rows >= 2048;
   device.wide_sparse_attention = !m.exact;
   const auto inputs = g.inputs();
   if (auto placed =

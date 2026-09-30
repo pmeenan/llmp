@@ -57,15 +57,23 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
 std::expected<void, KernelFailure> MulMatVecQ(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* node);
 
+// The same raw MMQ inner product and preparation, with device-built
+// expert-major tiles for sufficiently large non-FP4 expert products.
+// Other supported shapes retain the ordinary MMQ launch.
+std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQCompact(const LaunchContext& launch,
+                                                                 const ggml_tensor* node);
+std::expected<void, KernelFailure> MulMatIdQCompact(LaunchContext& launch, ggml_tensor* node);
+
 // The same ordinary MMQ products, in order, with one shared preparation of
 // the routing maps and type-specific Q8 activations (ds4's paired MoE
 // technique). Both products retain their own weight/output strides and
 // sequential fixup workspace. No arithmetic or downstream GLU is fused.
 std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContext& launch,
                                                               const ggml_tensor* first,
-                                                              const ggml_tensor* second);
+                                                              const ggml_tensor* second,
+                                                              bool compact_experts = false);
 std::expected<void, KernelFailure> MulMatIdQPair(LaunchContext& launch, ggml_tensor* first,
-                                                 ggml_tensor* second);
+                                                 ggml_tensor* second, bool compact_experts = false);
 
 // Row-invariant products for a speculative verify (D-092; mmvq_rows.cu):
 // every output column of a quantized product (up to kRowsMaxColumns

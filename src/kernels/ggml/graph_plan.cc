@@ -233,12 +233,16 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           if (CheckMulMatIdQPair(node, second)) {
             const auto second_path = device.quant(second);
             if (second_path && *second_path == QuantMulMatPath::kTile) {
-              add(Operation::kMulMatId, kMulMatIdQPair, i, {node, second}, 2);
+              add(Operation::kMulMatId,
+                  device.compact_experts ? kMulMatIdQPairCompact : kMulMatIdQPair, i,
+                  {node, second}, 2);
               break;
             }
           }
         }
-        add(Operation::kMulMatId, *path == QuantMulMatPath::kVector ? kMulMatIdVecQ : kMulMatIdQ, i,
+        const auto tile_name =
+            device.compact_experts && CheckMulMatIdQCompact(node) ? kMulMatIdQCompact : kMulMatIdQ;
+        add(Operation::kMulMatId, *path == QuantMulMatPath::kVector ? kMulMatIdVecQ : tile_name, i,
             {node}, 1);
         break;
       }

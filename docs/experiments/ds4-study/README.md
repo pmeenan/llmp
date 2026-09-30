@@ -217,6 +217,143 @@ jitLLM retains post-down weighting. Keeping an extra SoA replica would
 also invalidate the memory comparison. No cache precision change,
 early weighting or nonfinite-value sanitization is adopted.
 
+The whole-kernel mismatch does not rule out its individual components:
+
+| Component | Evidence and next constraint |
+| --- | --- |
+| Expert-major tile scheduling | Retained raw-layout transfer below: about 11% community and 10% original-checkpoint 8K prefill throughput gains. It needs no SoA replica or new activation approximation. |
+| Shared maps and input quantization | Retained above, about 0.8% native 8K prefill gain. Qwen's separate per-16-value NVFP4 preparation needs its own implementation and measurement. |
+| IQ2 gate/up plus SwiGLU epilogue | Native gate/up is 1.287 s per matched 4K chunk, before separate input preparation; the aggregate routed/shared SwiGLU bucket adds 0.121 s. ds4's fused routed product/epilogue/preparation is 1.085 s. A raw-layout F32 epilogue is plausible but unimplemented and unmeasured; it must retain post-down route weighting. |
+| Direct Q2 down product | Native MMQ is 0.956 s versus ds4 D2R's 0.452 s per matched chunk. A raw-code tensor-core implementation must retain GGML D2S6's original-input minimum correction and half-rounded coefficients; ordinary dequantized F16 operands alone change that approximation. No such product is adopted. |
+| Frontier-only output head | About 65 ms, roughly 1% of native GPU time per 4K chunk. This is a distinct graph-level opportunity, not the main product gap. |
+
+Those profile times identify GPU components, not independent end-to-end
+speedups. The native and ds4 cache precisions still differ. Packed-weight
+padding, an additional representation and physical peak memory are separate
+quantities; no extra weight representation is introduced by these transfers.
+
+## Compact product experiment
+
+The compact path uses a device-built expert-major list of token tiles
+over the existing routed-row bounds. It keeps raw GGUF blocks, every
+weight/output stride, the type-specific Q8 activation preparation and
+the existing MMQ inner product. It has explicit single/paired registry
+identities and a default-off `compact_experts` planner choice. DeepSeek's
+fast production planner enables it for prefill chunks of at least 2,048
+rows; reference/exact plans preserve the ordinary dispatch. The harness's
+`--compact-experts` switch selects it only outside reference mode.
+
+The list capacity is `ceil(assignments / J) + experts`, with unused
+entries marked as dummies. One fixed-capacity launch requires no host
+count readback and can be captured. The compact launch is NVIDIA-only;
+small or ineligible shapes retain the ordinary launch, and FP4 remains
+on its separate preparation contract.
+
+Controls fixed before target runs pass for all eight ordinary non-FP4
+types, padded expert strides, broadcast/per-slot inputs, skew and empty
+experts, partial rows/tokens, fallback shapes, and exact VMM/workspace
+bounds. A `T=256, K=1024, M=129, E=64` case exercises the old
+low-efficiency stream-K/fixup reduction. Compact tiles use a full-K
+reduction, so compact-versus-ordinary operation controls use a tight
+NMSE bound of `1e-10`; unpaired-versus-paired preparation remains bit
+exact. A captured pair must reproduce fresh compact products exactly
+when routing changes between replays. Model controls retain the existing
+0.947 oracle near-tie bound, 3% perplexity tolerance, F16 caches and exact
+own-path repeats.
+
+Nine alternating samples per arm, after two warmups and a separate
+512 MiB L2 displacement, compare ordinary paired preparation with
+compact paired preparation. For K=4,096, M=2,048, E=256, T=4,096 and six
+routed experts, the medians are:
+
+| Type | Uniform ordinary / compact ms | Speedup | Concentrated ordinary / compact ms | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| IQ2_XXS | 27.267649 / 19.100384 | 1.428× | 24.931040 / 11.796160 | 2.114× |
+| IQ2_XS | 29.727392 / 23.656160 | 1.257× | 25.584352 / 16.111456 | 1.588× |
+| Q2_K | 31.964865 / 27.765600 | 1.151× | 26.187519 / 18.543327 | 1.412× |
+| Q4_K | 32.122559 / 25.155264 | 1.277× | 23.857920 / 12.814080 | 1.862× |
+| Q8_0 | 42.970848 / 34.718239 | 1.238× | 25.566944 / 12.529376 | 2.041× |
+
+At the down shape K=2,048, M=4,096 with per-slot inputs, Q2_K changes
+from 36.555489 to 27.325121 ms with uniform routes (1.338×), and
+32.667393 to 20.053728 ms with concentrated routes (1.629×). IQ2_XXS
+and IQ2_XS also improve on that shape: 1.636× / 1.453× uniform and
+2.380× / 1.861× concentrated. These are synthetic product measurements;
+route concentration affects the gain.
+
+The shorter-chunk controls set the production floor. At 256 / 512 rows,
+Q5_K gate products fall to 0.823× / 0.812× and Q8_0 to
+0.880× / 0.860×. At 2,048 rows, all eight gate formats are neutral or
+faster (0.980–1.159×). The original model's IQ2_XS gate is 1.146×;
+its IQ3_XXS and Q4_K down products are 1.287× and 1.329×.
+Community IQ2_XXS gate and Q2_K down are 1.159× and 1.192×.
+These controls use the same nine-sample protocol, 256 experts and six
+routed experts; the down inputs are per-slot. Production keeps ordinary
+scheduling below 2,048 rows. Explicit experimental calls can still test
+smaller compact shapes, and unknown model planners remain default off.
+
+Four fresh model trials per checkpoint run ordinary, compact, compact,
+ordinary, with identical F16 caches, 4,096-row chunks and capacity 9,216.
+The ordinary/compact means of the two prefill times are:
+
+| Checkpoint, 8,192 prompt IDs | Ordinary s | Compact s | Throughput ratio |
+| --- | ---: | ---: | ---: |
+| Community IQ2_XXS / Q2_K | 13.15425 | 11.84490 | 1.111× |
+| Original IQ2_XS / IQ3_XXS / Q4_K | 13.05600 | 11.89200 | 1.098× |
+
+All 32 complete output rows are bit identical between ordinary and
+compact, and within each arm's fresh repeats. Community ordinary also
+matches the archived final shared-slice capture exactly. Community
+trials use its recorded ds4 8K continuation; original trials use the
+first 8,192 IDs of the pinned 31,705-ID coding fixture and the ordinary
+arm's own 32 greedy outputs as the common continuation. The original
+8K comparison is an own-path control, not a new llama.cpp oracle test.
+Its TSV SHA-256 is
+`0cbafc4bafd7a2c1e1c83f4a346815cdd500d2fb0bcb45afcfd826d591ae8e9a`;
+the full source TSV SHA-256 is
+`0961e248af647f3e9c838d43ba2cbad821fc48a7e9f066679ae7b2e8f118e6cb`.
+
+Sampled physical peak remains 87.62–87.88 GiB for the community model
+and 97.24–97.44 GiB for the original checkpoint. No representation,
+weight-byte or cache-precision change accompanies compact scheduling.
+Community compact prefill is about 692 tok/s, versus ds4's 1,054 tok/s
+F32-cache control above: a 0.656 throughput ratio, still about 34% lower.
+That is the closest full-precision control available, with F16 versus
+F32 caches; it is not a same-cache baseline. This slice does not supply
+a new long-context throughput, oracle or perplexity claim.
+
+Raw compact records are outside Git at `spark:~/scratch/m3-ds4-products/`:
+`micro-*.csv`, `community-{ordinary,compact,repeat,ordinary-repeat}/`
+and `original-{ordinary,compact,repeat,ordinary-repeat}/`. Each model
+directory has `summary.json`, full F32 output rows, `memory.json` with
+the exact command and initial/peak available memory, and `run.log` with
+the memory/GPU-process load gate. `model_control.sh` and
+`original-input.json` reproduce and identify the prefix fixture.
+`ds4-products-check-{1,2,3}` records the supervised native checks; the
+first full tests passed before a test-only lint correction, and the
+second check includes the initial 256-row production opt-in. The final
+third check refreshes the measured 2,048-row production floor.
+
+The model command is `jitllm_dsv4_exec --artifact ART --prompts TSV
+--generate 32 --context 9216 --max-rows 4096 --out OUT`, with
+`--compact-experts` for the compact arms. Community arms add its pinned
+`--force` file; original compact/repeat arms add the ordinary arm's
+recorded continuation. Product commands are
+`jitllm_prefill_transfer_bench --compact --large`, with `--skew` for
+concentrated routes, `--down --only q2` for the IQ2/Q2 down formats,
+and `--tokens 256|512|2048` for shorter chunks; original down controls
+also select `--only iq3` and `--only q4`.
+
+The compact model harness SHA-256 is
+`8ab9bab817cdb43557a57f3c6dbb3663e0770925cae9bb9c13a14c26bb0e8867`.
+The final transfer harness, after adding the shorter-chunk controls, is
+`d1caec84508cea1a771d4535b9605d656b4f31793179f455e9899f6b205c45ab`;
+the 4K tables preceded that command-line expansion, with the same
+kernel implementations. Patch 0004 SHA-256 is
+`1359fa8e2b03886150b370b89d51594cea0ad87ceefe1be2a9196ac904e80741`;
+its prepared GGML tree is
+`7dc37d35c542276122a6c0ce7beb72f7a816524873e391591a98ecac0cd0167a`.
+
 ## Numerical controls for the attention change
 
 Own comparison precedes the oracle assessment: original one-query to
@@ -348,7 +485,7 @@ The final fast path's 8K forced 32-output capture is bit identical to the
 paired capture above after adding the explicit dispatch gate and keeping
 the one-column kernel's original fixed loop bound. This verifies that
 the preservation guards do not change the measured fast trajectory.
-The checked native harness binary has SHA-256
+That earlier shared slice's checked native harness binary has SHA-256
 `6a7b22e833a2437dc8071404f4f88d26c026adfb491dbc4d5d8858154dfc6863`;
 the synthetic transfer harness has SHA-256
 `ed5a5de7da7993b0c3abe2a86ecf7c74055b552b1e3dcacc979cc5506f549646`.

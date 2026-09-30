@@ -360,6 +360,63 @@ sinks bound (RE-030).
 - **Proposed action:** none upstream; take the full backport with the
   planned pin bump after re-auditing the remaining launch arithmetic.
 
+## Compact routed MMQ tiles
+
+- **Status:** carried in `0004-jitllm-compact-expert-tiles.patch`;
+  enabled only by DeepSeek's fast prefill planner from 2,048 rows.
+- **Technique:** ds4's expert-major scheduling motivated a bounded
+  device-built list of `(expert, token tile)` entries over GGML's existing
+  routed-row bounds. The same full-K MMQ inner product reads the original
+  raw block layout at each tensor's row/expert stride. Maps and
+  type-specific Q8 quantization remain unchanged. No SoA replica or
+  early route weighting is introduced.
+- **Dispatch:** explicit `compact_experts`, default off, with separate
+  single/paired registry identities. The compact launch is NVIDIA-only;
+  other devices and small shapes retain the ordinary
+  launch; FP4 remains on its separate preparation contract. The list
+  capacity is `ceil(assignments / J) + experts`, so capture needs no
+  host count readback and workspace is bounded before launch.
+- **Evidence:** Spark operation controls cover all eight non-FP4 formats,
+  padded expert strides, broadcast/per-slot inputs, partial tiles,
+  split-K controls, changing captured routes and exact VMM/workspace
+  bounds. Four fresh 8K trials per checkpoint give 1.111× community and
+  1.098× original-checkpoint prefill throughput, with all 32 full logit
+  rows bit identical to ordinary scheduling and fresh repeats, and stable
+  physical memory. Synthetic uniform products improve 1.151–1.428×;
+  concentrated routes give larger gains. See [ds4-study](../experiments/ds4-study/README.md).
+  At 256/512 rows Q5_K and Q8_0 regress materially, so the production
+  planner retains ordinary scheduling there; explicit experimental
+  calls remain available. At 2,048 rows all eight gate formats are
+  neutral or faster in the same synthetic protocol.
+- **Proposed action:** offer the bounded launch as an opt-in for routed
+  quantized prefill; retain stream-K/fallback for other shapes. The
+  earlier study attempt had an inactive launch hook and does not count
+  as evidence.
+
+## Routed MMQ dummy-column scratch padding
+
+- **Status:** correction carried in patch 0004 and mirrored in jitLLM's
+  scratch planner and paired preparation; target controls pass.
+- **Finding:** the routed host path asks `get_J_max` about the activation
+  slot axis, commonly 1 or 6. That rounds to zero, while the selected
+  token tile can have 128 columns. The full Q8/FP4 tile load and the
+  output-ID shared load include dummy columns after the final sorted
+  assignment. An allocator's overprovisioning or a later stream-K fixup
+  allocation can hide the read; jitLLM's workspace has a declared bound.
+- **Correction:** size routed Q8/FP4 and output-ID tails for the maximum
+  supported `J <= 128`. NVFP4 scale storage also needs dummy columns
+  when stream-K stages a full tile into its fixup buffer. Dense NVFP4
+  scale storage receives matching padding. No kernel arithmetic or
+  primitive dispatch identity changes; compact eligibility stays non-FP4.
+- **Control:** ordinary and compact products, single and paired where
+  supported, with a partial final expert tile and no ordinary fixup
+  allocation, at both exact VMM boundaries. Raw MXFP4/NVFP4 ordinary
+  launches are included. All pass on Spark, and the ordinary model's
+  saved full-logit capture remains bit identical. The original read was
+  identified statically; no deliberate faulting old-binary run is claimed.
+- **Proposed action:** upstream the bounded-allocation correction
+  independently of compact scheduling.
+
 ## Upstream changes to adopt
 
 Checked 2026-09-29 at master `8019dc563`.

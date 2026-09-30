@@ -10,6 +10,7 @@
 //                    [--prompts FILE --generate N [--force FILE]]
 //                    [--ppl FILE] [--dump NAMES] [--layout-proof]
 //                    [--bench-prefill N --bench-decode N] [--exact on|off]
+//                    [--compact-experts]
 //                    [--probe-step N]
 //
 // - --exact on: the reference mode, the graph node for node as llama.cpp
@@ -530,6 +531,7 @@ struct Model {
   // The reference mode (--exact on): llama.cpp's graph planned unfused;
   // off, the fast plan (dsv4_graph.h Dsv4GraphOptions::fused).
   bool exact = false;
+  bool compact_experts = false;
 };
 
 void BindWeights(const Model& m, kg::Dsv4Graph& g) {
@@ -630,6 +632,7 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   device.fuse_norms = !m.exact;
   device.vector_floats = !m.exact;
   device.pair_experts = !m.exact;
+  device.compact_experts = !m.exact && m.compact_experts;
   device.wide_sparse_attention = !m.exact;
   const kg::DeviceChoices& choices = device;
   std::vector<ggml_tensor*> keep;
@@ -1146,7 +1149,8 @@ struct Options {
   bool layout_proof = false;
   std::uint32_t bench_prefill = 0;
   std::uint32_t bench_decode = 0;
-  bool exact = false;  // --exact on: the reference mode (Model::exact)
+  bool exact = false;            // --exact on: the reference mode (Model::exact)
+  bool compact_experts = false;  // the experimental device-built expert tile list
   // --probe-step N: the first prompt's forced step N run twice from the
   // state before it, in the fast plan and in the reference mode, every
   // named tensor dumped (a full window, which both plans read).
@@ -1217,6 +1221,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = number(o.probe_step);
     } else if (a == "--layout-proof") {
       o.layout_proof = true;
+    } else if (a == "--compact-experts") {
+      o.compact_experts = true;
     } else if (a == "--exact") {
       auto v = value();
       if (!v || (*v != "on" && *v != "off")) {
@@ -1357,7 +1363,8 @@ Status Run(const Options& o) {
               .state = &*state,
               .state_base = Address(state_region),
               .rot = kg::HadamardMatrix(profile.indexer_head_dim),
-              .exact = o.exact};
+              .exact = o.exact,
+              .compact_experts = o.compact_experts};
 
   // cuBLAS, with upstream's workspace for the device: the router's BF16
   // products run there at prefill widths.
