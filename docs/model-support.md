@@ -109,8 +109,8 @@ not used. The options each renderer supports and refuses are in
   32K–256K ladder and a 1,038,047-token prompt at 1M capacity with all
   512 outputs, plain and with DSpark
   ([final context study](experiments/m3-final-context/README.md)). Neutral
-  completed-answer retrieval also passes 8K–256K in both modes; the
-  separate 1M retrieval and saved maximum-context continuation remain
+  completed-answer retrieval also passes 8K–256K in both modes and at
+  1M capacity with DSpark; the saved maximum-context continuation remains
   pending. The chat route uses a progress watchdog
   ([deadlines](runtime-serving.md#progress-and-deadlines)). The
   minimum, 512, starts and serves (checked on `spark`, speculative), its
@@ -161,7 +161,8 @@ not used. The options each renderer supports and refuses are in
     the fixed TV bound; the final 32K–256K runtime ladder exceeds matched
     llama.cpp speed with memory within 1.025×. The final 1M runtime
     also exceeds both modes' reference speed, with memory within 1.012×.
-    Maximum-context retrieval and continuation remain pending;
+    Neutral retrieval at 1M capacity passes; maximum-length saved-state
+    continuation remains pending;
     historical phase-2 agreement is not a
     current-path blanket pass.
   - The reference mode (`--exact on`) keeps GGML's top-k and does not

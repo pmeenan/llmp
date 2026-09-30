@@ -896,7 +896,7 @@ it appears.
       Final 1M timing also completes 512 outputs per mode: prefill
       2.18–2.27× llama.cpp, decode 2.01× plain / 1.88× DSpark, memory
       within 1.012×. Neutral completed-answer retrieval passes 8K–256K
-      in both modes. Qwen timings, DeepSeek 1M retrieval and
+      in both modes and at 1M capacity with DSpark. Qwen timings and
       continuing-context swaps remain explicitly pending.
       - *Baseline first:* prefill throughput and decode speed at each
         depth, speculative and plain, through the runtime and against the
@@ -1012,8 +1012,9 @@ it appears.
       - *Defaults (implemented 2026-09-29):* context defaults to 262,144
         (was 8,704), with a generic cap of 1,048,576 and the checkpoint's
         trained ceiling checked before allocation: DeepSeek 1,048,576,
-        Qwen3.8 262,144. Growing state keeps the physical guard; a 1M
-        physical fit is not claimed. HTTP bodies allow 16 MiB and message
+        Qwen3.8 262,144. Growing state keeps the physical guard; final
+        DeepSeek timing and retrieval fit at 1M capacity with DSpark.
+        HTTP bodies allow 16 MiB and message
         text 8 MiB, while aggregate intake bounds, chunk policy and schema
         version 2 stay unchanged (D-096, D-097).
       - *Request deadline (done 2026-09-29):* the route's fixed 600 s

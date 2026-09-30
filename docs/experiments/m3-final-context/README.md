@@ -141,8 +141,8 @@ passes this retrieval check and is not a 512-output timing measurement.
 Peak sampled memory drops are 98.068 / 108.715 GiB. Raw results are
 `~/scratch/m3-extrapolation-ds/final-retrieval-262k-{plain,spec}/run.json`
 on `spark-b`, using the measurement harness pinned above. These checks
-do not substitute for the fixed-bound oracle, full-window PPL or the
-separate 1M retrieval request, which remains in flight.
+do not substitute for the fixed-bound oracle or full-window PPL. The
+separate completed 1M retrieval request is recorded below.
 
 ## DeepSeek one-million-token fit before the final optimizations
 
@@ -221,8 +221,9 @@ pass the approximately 1.1× bound. Minimum available memory is
 inputs need an additional 0.04 GiB; execution budgets are
 110.57 / 110.58 GiB.
 The prompt and output leave 10,017 tokens below the configured ceiling.
-Timing fixtures are not neutral retrieval evidence; the separate 1M
-completed-answer retrieval and maximum saved-state swap remain pending.
+Timing fixtures are not neutral retrieval evidence. The separate 1M
+completed-answer retrieval passes below; the maximum saved-state swap
+remains pending.
 The residual slope and watchdog floors still require completed-chunk
 observations rather than these mean rates.
 
@@ -232,6 +233,31 @@ the checked kernel source is the same final HCA/frontier body as the
 262K ladder. Harness SHA-256 is the same as above. Raw native results
 are `~/scratch/m3-extrapolation-ds/final-new-1m-{plain,spec}-timing/run.json`
 on `spark`; reference captures and input/source pins are recorded above.
+
+### Final DeepSeek neutral retrieval at 1M capacity
+
+The same supervised job completes successfully at 08:22:38 EDT on
+2026-09-30 after its separate DSpark retrieval request. The neutral fixture
+contains 1,037,970 native prompt tokens, with no cached tokens, and permits
+1,024 outputs. All three release codenames appear in the visible answer;
+the response naturally finishes after 44 outputs, with `stop`, a terminal
+marker and a complete stream without errors. This is a completed retrieval
+pass, separately from the two 512-output timing requests.
+
+Prefill takes 3,546.938 seconds (292.638 tok/s); decode is 30.682 tok/s
+on this short answer. Peak sampled memory drop is 114.568 GiB, with
+2,871,328,768 bytes minimum available. Runtime, artifacts, chunks and
+measurement harness are the final 1M configuration pinned above. This
+request also completes through the production HTTP progress watchdog;
+its mean rates do not establish a bound on individual completed chunks.
+
+The neutral prompt content SHA-256 is
+`a4321cf9a22cc5a384905df8b394d88d5c1dafe35dfcbe51b61171c575a98015`.
+Raw results are
+`spark:~/scratch/m3-extrapolation-ds/final-new-1m-spec-retrieval/run.json`,
+SHA-256 `4d84c3c47c694041f4ac4d01d9da901734807d191536fbce3d4cc15e3facefe2`;
+the separate response capture retains the visible answer and reasoning.
+The literal maximum-length saved-state continuation remains a separate gate.
 
 ## Continuing-context swap protocol
 
