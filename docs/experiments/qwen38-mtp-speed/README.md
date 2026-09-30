@@ -5,7 +5,9 @@
 
 The final 512-token runtime ladder leaves Qwen3.8's MTP speed gate open,
 especially at 128K: the default prefix head gives 45.034 tok/s against
-Mia's 48.652 on that prompt. This study calibrates draft depth against the
+Mia's original single-run 48.652 on that prompt. Fresh identical-ID Mia
+controls below give 44.870 and 38.103; the reference varies materially.
+This study calibrates draft depth against the
 same state, profiles the verify, and tests two possible transfers from the
 [ds4 study](../ds4-study/README.md). Neither expert-kernel experiment improved
 end-to-end speed, so neither implementation is retained. The existing
@@ -217,6 +219,87 @@ adds sampled-distribution evidence for the optional selected head under
 the existing finite protocol, alongside its earlier greedy, forced and
 swap controls. It does not establish distribution equality for every
 prompt or seed.
+
+## Fresh Mia controls and actual decode consumers (2026-09-30)
+
+The pinned Mia recipe was rerun on `spark` with the exact 128,799 native
+prompt IDs, rather than separately rendering the messages. Context is
+262,144, selected draft vocabulary 47,172, fixed MTP depth three, and
+512 greedy output tokens. `ignore_eos` and `min_tokens=512` enforce the
+same output count as the native timing harness. Each request uses a unique
+cache salt and reports zero cached prompt tokens. Two unprofiled requests
+precede a separate bounded late-decode capture in the same engine process.
+
+| Unprofiled request | Prefill tok/s | Decode tok/s | Draft steps | Accepted / proposed | Acceptance by position |
+| --- | ---: | ---: | ---: | ---: | --- |
+| First | 1,774.419 | 44.870 | 193 | 318 / 579 | 142, 112, 64 |
+| Second | 1,886.428 | 38.103 | 212 | 299 / 636 | 152, 96, 51 |
+
+Both complete all 512 outputs with terminal `length`/`[DONE]` and no stream
+error. Their generated histories agree for only the first nine token IDs.
+The second decode rate is 15.1% below the first under unchanged settings.
+This is free-running reference variation, with changed acceptance; it does
+not measure a kernel regression or quantify a quality loss. The original
+48.652 remains a historical observation. A single best run is insufficient
+to distinguish a native kernel improvement from a changed token history.
+Native rates quoted above also use F16 KV/F32 recurrent state versus this
+recipe's FP8 KV/BF16 recurrent state; identical IDs do not remove those
+precision differences.
+
+The third request is profiled and its throughput is excluded from speed
+comparisons. Its worker trace contains 32 CPU execution annotations, all
+`execute_context_0(0)_generation_1(4)`, plus 96 GPU annotations with the
+same name. These establish pure decode; the duplicate GPU annotations are
+not counted as additional target steps or inferred draft calls. Summed GPU
+kernel duration is 2,066.708 ms, distinct from elapsed generation time.
+
+| Profiled kernel family | GPU sum ms | Share |
+| --- | ---: | ---: |
+| MXFP8 SM120 GEMM | 471.897 | 22.83% |
+| Grouped FP4 GEMM, first product | 409.156 | 19.80% |
+| Grouped FP4 GEMM, second product | 203.528 | 9.85% |
+| Two main small BF16 GEMM variants | 563.214 | 27.25% |
+| BF16 GEMM alignment-2 variant | 64.595 | 3.13% |
+| Marlin expert product | 40.067 | 1.94% |
+| GDN post-convolution MTP | 23.646 | 1.14% |
+| QSA paged indexer and sparse attention | 39.619 | 1.92% |
+
+The ready log explicitly selects `FLASHINFER_CUTLASS` for the main model
+and `MARLIN` for its drafter. The main source path is vLLM's
+`fused_moe/experts/flashinfer_cutlass_moe.py` calling
+`flashinfer_cutlass_fused_moe`, with NVFP4 activation scales and BF16
+output. TRTLLM names in startup autotuning and auxiliary kernel namespaces
+alone do not identify the selected vLLM backend. The two actual grouped
+kernel symbols name tiles 128×64×128 / 128×32×256 and mainloop stages
+five / three. Native grouped products currently use 128×128×256; the
+native ≤8-row path uses Q8 activation vector products. This supports a
+charged target-verify product A/B, followed by an actual-reference tile
+comparison if needed. It establishes no default change or quality result.
+
+Job `mia-matched-decode-profile` completed rc0 from 08:54:16–09:11:44 EDT.
+Host `spark-c4e2`, driver 580.178.04, CUDA 13.4.92. Image SHA-256
+`fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8`,
+recipe `b8439110eec0230facbe4ddf0dffe01b8f769be0`, checkpoint revision
+`925d7be6c14c6c9442ef83e8f05b5a3c39304f69`, and engine
+`0.1.dev20073+g8e685d198`. Chunk limit is 2,048, max sequences four,
+memory utilization 0.786, and QSA/MoE determinism switches zero. Executed
+arguments, mounted-source hashes, selected-vocabulary activation and
+resolved BF16 state/cache capacity were checked at readiness. Launch and
+final cleanup passed all-query 105-GiB/no-model gates; no owned container
+or client remained.
+
+Canonical little-endian I32 IDs have SHA-256
+`c9d455d1afc75e1fd4e0f93d0312f1768196609fab8a5836f57c15a72e2e3661`.
+External raw records are at
+`spark:~/scratch/mia-cache-quality/raw-decode-profile/`: `run.json`, two
+`timing-*.json`, `profile.json`, ready/container logs, the compressed worker
+trace and its kernel summary. Trace SHA-256 is
+`791cff66b082bbc737ea61993b1e4fbd1f11d2b585e28b5784ade9ce0a51ff35`;
+controller SHA-256 is
+`8367be87b9ac0d0cbf9cfb18434810b7cbfa72f6417d0bdc1cbe50362cff707c`.
+The external controller and launch wrapper live one directory above;
+repeat with the pinned canonical IDs, recipe/image/model, two unprofiled
+requests and the same checked launch/cleanup protocol.
 
 ## Raw provenance and repeat
 
