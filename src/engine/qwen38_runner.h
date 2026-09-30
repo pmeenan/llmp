@@ -112,6 +112,20 @@ struct Qwen38Options {
   // `prose` and `code` (docs/experiments/qwen38-mtp/).
   std::uint32_t draft_rows = 2;
   std::uint32_t draft_vocab = 65536;
+  // Benchmark-only retained-head copies, bounded at setup; serving leaves
+  // this off. Draft's optional capture selects the retained plan per call.
+  bool draft_head_capture = false;
+};
+
+struct Qwen38DraftHeadCapture {
+  std::uint32_t catch_up_rows = 0;
+  std::uint32_t head_rows = 0;
+  // Pass-major unrounded F32 mixed inputs [passes, width] and F32 logits
+  // [passes, head_rows], copied from runner-owned pinned staging only after
+  // the device job completed. These vectors are never DMA destinations.
+  std::vector<float> inputs;
+  std::vector<float> logits;
+  std::vector<std::int32_t> token_ids;  // head rows' validated original token IDs
 };
 
 // What the n-gram rows cost, summed over chunks.
@@ -202,7 +216,8 @@ class Qwen38Runner final : public PagedModel {
   // `probabilities` each draft's softmax probability over the draft head's
   // rows (the drafter's confidence; an adaptive window's input).
   Status Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts,
-               std::vector<float>* probabilities = nullptr, std::uint32_t passes = 0);
+               std::vector<float>* probabilities = nullptr, std::uint32_t passes = 0,
+               Qwen38DraftHeadCapture* head_capture = nullptr);
   // A verify: history[n_past, end) the anchor and the drafts (history as
   // Chunk's), at most draft_rows + 1 rows; every row's argmax (the lowest
   // index among equals, on the device) and, with `logits`, every row's
@@ -306,7 +321,7 @@ class Qwen38Runner final : public PagedModel {
   std::expected<std::pair<kernels::ggml::Qwen38MtpShape, std::vector<model::Qwen38ChunkInputs>>,
                 std::string>
   MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
-            std::int64_t hidden_row, bool confidence = false) const;
+            std::int64_t hidden_row, bool confidence = false, bool capture_head = false) const;
 
   PagedNode& node_;
   const Qwen38Options& o_;
@@ -372,6 +387,8 @@ class Qwen38Runner final : public PagedModel {
   kernels::ggml::RangeCopy* carry_ = nullptr;    // a prefill's pending streams row
   std::uint32_t pending_rows_ = 0;               // streams rows the next draft catches up on
   void* drafts_ = nullptr;                       // pinned: a draft's, then a verify's argmaxes
+  float* draft_head_capture_ = nullptr;          // pinned, owned by the node through teardown
+  std::uint32_t capture_head_rows_ = 0;
 };
 
 }  // namespace jitllm::engine

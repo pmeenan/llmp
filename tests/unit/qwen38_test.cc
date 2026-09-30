@@ -1096,6 +1096,158 @@ TEST(Qwen38Test, RowsReadingMoreCellsAreTheChunksRowsOverThem) {
   EXPECT_FALSE(md::Qwen38Rows(p, s->cells, 4095, 2, 4096, false).has_value());  // past the cache
 }
 
+TEST(Qwen38Test, RetainingDraftHeadOperandsPreservesTheOperationSequence) {
+  const auto& p = md::Qwen38Flash();
+  auto target = md::BindQwen38(p, "qwen4exp", ArtifactLike(p, true));
+  ASSERT_TRUE(target.has_value());
+  using NodeShape = std::tuple<ggml_op, ggml_type, kg::JitllmOp, std::vector<std::int64_t>>;
+  for (const bool selected : {false, true}) {
+    auto resources = MtpLike();
+    const std::int64_t head_rows = selected ? 47172 : 65536;
+    if (selected) {
+      resources.push_back({.roles = {"draft_output.weight"},
+                           .type = "BF16",
+                           .ne = {2560, static_cast<std::uint64_t>(head_rows)}});
+      resources.push_back({.roles = {"draft_output.ids"},
+                           .type = "I32",
+                           .ne = {1, static_cast<std::uint64_t>(head_rows)}});
+    }
+    auto drafter = md::BindQwen38Mtp(p, "qwen4exp-mtp", resources);
+    ASSERT_TRUE(drafter.has_value()) << Why(drafter);
+    for (const auto& [rows, passes, head, confidence] :
+         {std::tuple{1, 3, true, false}, std::tuple{4, 3, true, true},
+          std::tuple{37, 1, false, false}}) {
+      std::vector<NodeShape> original;
+      for (const bool capture : {false, true}) {
+        const kg::Qwen38MtpShape shape{.rows = rows,
+                                       .passes = passes,
+                                       .n_kv = 256,
+                                       .cells = 4096,
+                                       .head = head,
+                                       .head_rows = head_rows,
+                                       .confidence = confidence,
+                                       .capture_head = capture && head,
+                                       .hidden_row = 1,
+                                       .hidden_rows = 513};
+        auto other = shape;
+        other.capture_head = !shape.capture_head;
+        EXPECT_NE(shape, other);  // retained lifetimes enter the plan/graph cache key
+        auto arena = kg::TensorArena::Create(kg::Qwen38MtpGraphTensors(p, passes));
+        ASSERT_TRUE(arena.has_value());
+        auto graph = kg::BuildQwen38MtpGraph(*arena, p, *target, *drafter, shape, 2764800);
+        ASSERT_TRUE(graph.has_value()) << Why(graph);
+        std::size_t heads = 0;
+        for (const ggml_tensor* node : graph->nodes) {
+          if (kg::JitllmOpOf(node) != kg::JitllmOp::kArgmax) {
+            continue;
+          }
+          ++heads;
+          const ggml_tensor* product = node->src[0];
+          ASSERT_NE(product, nullptr);
+          EXPECT_EQ(product->op, GGML_OP_MUL_MAT);
+          EXPECT_EQ(product->type, GGML_TYPE_F32);
+          EXPECT_EQ(product->ne[0], head_rows);
+          EXPECT_EQ(product->ne[1], 1);
+          EXPECT_EQ(product->src[0]->type, GGML_TYPE_BF16);
+          const ggml_tensor* input = product->src[1];
+          ASSERT_NE(input, nullptr);
+          EXPECT_EQ(input->type, GGML_TYPE_F32);
+          EXPECT_EQ(input->ne[0], p.width);
+          EXPECT_EQ(input->ne[1], 1);
+          EXPECT_NE(input->op, GGML_OP_GET_ROWS);
+        }
+        EXPECT_EQ(heads, head ? static_cast<std::size_t>(passes) : 0U);
+        EXPECT_EQ(graph->drafts.size(), heads);
+        EXPECT_EQ(graph->probabilities.size(), confidence ? heads : 0U);
+        EXPECT_EQ(graph->head_inputs.size(), capture ? heads : 0U);
+        EXPECT_EQ(graph->head_logits.size(), capture ? heads : 0U);
+        for (std::size_t pass = 0; pass < graph->head_inputs.size(); ++pass) {
+          EXPECT_EQ(graph->head_inputs[pass]->type, GGML_TYPE_F32);
+          EXPECT_EQ(graph->head_inputs[pass]->ne[0], p.width);
+          EXPECT_EQ(graph->head_inputs[pass]->ne[1], 1);
+          EXPECT_EQ(graph->head_logits[pass]->ne[0], head_rows);
+          EXPECT_EQ(graph->head_logits[pass]->ne[1], 1);
+        }
+        // Retaining values changes lifetimes only, including around every
+        // state write and the original token-map/confidence operations.
+        std::vector<NodeShape> signature;
+        for (const ggml_tensor* node : graph->nodes) {
+          signature.emplace_back(node->op, node->type, kg::JitllmOpOf(node),
+                                 std::vector<std::int64_t>(node->ne, node->ne + GGML_MAX_DIMS));
+        }
+        if (!capture) {
+          original = std::move(signature);
+        } else {
+          EXPECT_EQ(signature, original);
+        }
+        std::uint64_t next = std::uint64_t{1} << 40U;
+        for (ggml_tensor* node : graph->nodes) {
+          for (ggml_tensor* src : node->src) {
+            if (src != nullptr && src->op == GGML_OP_NONE && src->view_src == nullptr &&
+                src->data == nullptr) {
+              kg::TensorArena::Bind(src, next);
+              next += ((ggml_nbytes(src) + 255) / 256 * 256) + 256;
+            }
+          }
+        }
+        kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+        auto plan = kg::PlanGraph(graph->nodes, false, ModelDevice());
+        ASSERT_TRUE(plan.has_value()) << Why(plan);
+        std::vector<ggml_tensor*> kept = graph->drafts;
+        kept.insert(kept.end(), graph->head_inputs.begin(), graph->head_inputs.end());
+        kept.insert(kept.end(), graph->head_logits.begin(), graph->head_logits.end());
+        auto placed = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256, kept);
+        ASSERT_TRUE(placed.has_value()) << Why(placed);
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> retained_ranges;
+        for (ggml_tensor* retained : kept) {
+          const ggml_tensor* storage = retained;
+          while (storage->view_src != nullptr) {
+            storage = storage->view_src;
+          }
+          const auto found = std::ranges::find_if(
+              placed->offsets, [storage](const auto& entry) { return entry.first == storage; });
+          ASSERT_NE(found, placed->offsets.end());
+          const std::uint64_t end = found->second + ggml_nbytes(storage);
+          for (const auto& [start, stop] : retained_ranges) {
+            EXPECT_TRUE(end <= start || stop <= found->second);
+          }
+          retained_ranges.emplace_back(found->second, end);
+        }
+      }
+    }
+  }
+}
+
+TEST(Qwen38Test, DraftHeadCaptureIsOptInAndRefusesUnboundedOrHeadlessShapes) {
+  const auto& p = md::Qwen38Flash();
+  auto target = md::BindQwen38(p, "qwen4exp", ArtifactLike(p, true));
+  auto drafter = md::BindQwen38Mtp(p, "qwen4exp-mtp", MtpLike());
+  ASSERT_TRUE(target.has_value() && drafter.has_value());
+  kg::Qwen38MtpShape shape{.rows = 1,
+                           .passes = 1,
+                           .n_kv = 256,
+                           .cells = 4096,
+                           .head = true,
+                           .head_rows = 65536,
+                           .hidden_row = 1,
+                           .hidden_rows = 513};
+  auto arena = kg::TensorArena::Create(kg::Qwen38MtpGraphTensors(p, 1));
+  ASSERT_TRUE(arena.has_value());
+  auto ordinary = kg::BuildQwen38MtpGraph(*arena, p, *target, *drafter, shape, 2764800);
+  ASSERT_TRUE(ordinary.has_value());
+  EXPECT_TRUE(ordinary->head_inputs.empty());
+  EXPECT_TRUE(ordinary->head_logits.empty());
+  shape.capture_head = true;
+  for (const auto& [head, head_rows] : {std::pair{false, std::int64_t{65536}},
+                                        {true, std::int64_t{65537}},
+                                        {true, std::int64_t{0}}}) {
+    shape.head = head;
+    shape.head_rows = head_rows;
+    auto refused = kg::BuildQwen38MtpGraph(*arena, p, *target, *drafter, shape, 2764800);
+    EXPECT_FALSE(refused.has_value());
+  }
+}
+
 // The drafter's graph and a verify's, planned by this module's
 // implementations: the drafter's BF16 products GGML's float product or
 // jitllm.gemm.bf16, no MXFP8 product, its heads' drafts by jitllm.argmax;

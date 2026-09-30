@@ -301,7 +301,10 @@ struct Qwen38MtpShape {
   std::int64_t qsa_blocks = 0;
   bool head = false;
   std::int64_t head_rows = 0;
-  bool confidence = false;       // also return each draft's softmax probability
+  bool confidence = false;  // also return each draft's softmax probability
+  // Diagnostic only: keep each pass's unrounded mixed input and F32 head
+  // logits for a post-run copy. Requires a head of at most 65,536 rows.
+  bool capture_head = false;
   std::int64_t hidden_row = 0;   // pass 0's first streams row
   std::int64_t hidden_rows = 0;  // the streams' rows
 
@@ -340,6 +343,8 @@ struct Qwen38MtpGraph {
   // I32 [1] a pass: its draft's softmax probability over the draft head's
   // rows, as F32 bits (an adaptive window's confidence).
   std::vector<ggml_tensor*> probabilities;
+  std::vector<ggml_tensor*> head_inputs;  // F32 [width, 1], unrounded; capture_head only
+  std::vector<ggml_tensor*> head_logits;  // F32 [head rows, 1]; capture_head only
   std::vector<ggml_tensor*> nodes;
 
   // The host-built inputs, in the order they are copied.

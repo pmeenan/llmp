@@ -10,7 +10,7 @@
 //
 //   jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE
 //                      --prompts FILE --out DIR
-//                      --check greedy|timing|forced|swap|sampled-plain|sampled-spec
+//                      --check greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head
 //                      [--reference FILE] [--tokens N] [--context N]
 //                      [--graphs on|off] [--draft N] [--draft-vocab N]
 //                      [--adaptive-depth on|off]
@@ -384,6 +384,7 @@ class Harness {
   Status Fingerprints(const Step& step, std::vector<std::uint64_t>& out);
   Status Greedy();
   Status Forced();
+  Status DraftHead();
   Status Swap();
   Status SwapOut();
   Status SwapIn();
@@ -1117,6 +1118,166 @@ Status Harness::Greedy() {
 // Forced rejections: all rejected, one and two accepted, and some as
 // drafted; against a control that ran the same steps with other tokens
 // after the kept ones.
+Status Harness::DraftHead() {
+  const Prompt* chosen = nullptr;
+  for (const auto* set : {&chat_, &decode_}) {
+    for (const Prompt& p : *set) {
+      if (chosen == nullptr && (o_.only.empty() || p.id == o_.only)) {
+        chosen = &p;
+      }
+    }
+  }
+  if (chosen == nullptr) {
+    return Error("the draft-head control needs a selected prompt");
+  }
+  const Prompt& prompt = *chosen;
+  const std::uint32_t depth = o_.qwen.draft_rows;
+  if (std::uint64_t{prompt.ids.size()} + (std::uint64_t{o_.tokens} * depth) + depth + 1 >
+      o_.qwen.context) {
+    return Error("the prompt and bounded draft-head steps exceed the configured context");
+  }
+  struct Control {
+    std::vector<std::int32_t> drafts;
+    std::vector<float> probabilities;
+    std::vector<std::uint64_t> draft_state;
+    std::vector<std::uint64_t> kept_state;
+    std::uint64_t verify_logits = 0;
+    std::vector<std::int32_t> verdicts;
+    std::int32_t next = -1;
+  };
+  std::vector<Control> baseline;
+  std::vector<jitllm::engine::Qwen38DraftHeadCapture> captured;
+  std::vector<float> baseline_first;
+  const auto same_floats = [](const std::vector<float>& a, const std::vector<float>& b) {
+    return a.size() == b.size() &&
+           std::ranges::equal(std::as_bytes(std::span(a)), std::as_bytes(std::span(b)));
+  };
+  const auto write = [&](const std::filesystem::path& name, std::span<const std::byte> bytes) {
+    std::ofstream file(o_.out / name, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+    file.close();
+    return file.good();
+  };
+  if (!write("draft-head.prompt.i32", std::as_bytes(std::span(prompt.ids)))) {
+    return Error("writing the draft-head prompt IDs");
+  }
+  for (std::uint32_t arm = 0; arm < 4; ++arm) {
+    const bool capture = arm == 1 || arm == 2;
+    auto ran = InRequest("bounded draft-head capture control", [&]() -> Status {
+      std::vector<float> first;
+      if (auto p = Prefill(prompt, true, first); !p) {
+        return p;
+      }
+      if (arm == 0) {
+        baseline_first = first;
+      } else if (!same_floats(first, baseline_first)) {
+        return Error("capture on/off prefills do not have identical first logits");
+      }
+      std::vector<std::int32_t> history = prompt.ids;
+      history.push_back(Argmax(first));
+      for (std::uint32_t s = 0; s < o_.tokens; ++s) {
+        Control current;
+        jitllm::engine::Qwen38DraftHeadCapture head;
+        if (auto drafted = qwen_.Draft(history, current.drafts, &current.probabilities, depth,
+                                       capture ? &head : nullptr);
+            !drafted) {
+          return drafted;
+        }
+        const std::uint32_t keep = 1 + (s % depth);
+        Step stamp;
+        stamp.kept = keep;
+        if (auto read = Fingerprints(stamp, current.draft_state); !read) {
+          return read;
+        }
+        if (capture) {
+          const std::size_t width = md::Qwen38Flash().width;
+          if (head.inputs.size() != width * depth || head.head_rows == 0 ||
+              head.logits.size() != std::size_t{head.head_rows} * depth ||
+              head.token_ids.size() != head.head_rows ||
+              !md::CheckQwen38DraftIds(head.token_ids, qwen_.vocab()) ||
+              !std::ranges::all_of(head.inputs, [](float v) { return std::isfinite(v); }) ||
+              !std::ranges::all_of(head.logits, [](float v) { return std::isfinite(v); })) {
+            return Error("the retained draft-head capture has invalid dimensions or values");
+          }
+          for (std::uint32_t pass = 0; pass < depth; ++pass) {
+            const auto row = std::span(head.inputs).subspan(pass * width, width);
+            if (std::ranges::none_of(row, [](float v) { return v != 0; })) {
+              return Error("a retained draft-head input is all zero");
+            }
+          }
+          if (arm == 1) {
+            captured.push_back(head);
+            const auto stem = std::format("draft-head-{}", s);
+            if (!write(stem + ".inputs.f32", std::as_bytes(std::span(head.inputs))) ||
+                !write(stem + ".logits.f32", std::as_bytes(std::span(head.logits))) ||
+                !write(stem + ".history.i32",
+                       std::as_bytes(std::span(history).subspan(prompt.ids.size()))) ||
+                (s == 0 &&
+                 !write("draft-head.ids.i32", std::as_bytes(std::span(head.token_ids))))) {
+              return Error("writing the external draft-head capture");
+            }
+            results_.push_back(std::format(
+                R"({{"check":"draft_head_capture","step":{},"anchor_position":{},"passes":{},"catch_up_rows":{},"head_rows":{},"width":{},"input_fingerprint":{},"logit_fingerprint":{},"ids_fingerprint":{}}})",
+                s, history.size() - 1, depth, head.catch_up_rows, head.head_rows, width,
+                Fingerprint(std::as_bytes(std::span(head.inputs))),
+                Fingerprint(std::as_bytes(std::span(head.logits))),
+                Fingerprint(std::as_bytes(std::span(head.token_ids)))));
+          } else if (head.catch_up_rows != captured[s].catch_up_rows ||
+                     head.head_rows != captured[s].head_rows ||
+                     head.token_ids != captured[s].token_ids ||
+                     !same_floats(head.inputs, captured[s].inputs) ||
+                     !same_floats(head.logits, captured[s].logits)) {
+            return Error(std::format("draft-head capture repeat differs at step {}", s));
+          }
+        }
+        const auto pos = static_cast<std::uint32_t>(history.size() - 1);
+        const auto& common = arm == 0 ? current.drafts : baseline[s].drafts;
+        history.insert(history.end(), common.begin(), common.end());
+        std::vector<float> logits;
+        if (auto verified = qwen_.Verify(history, pos, current.verdicts, &logits); !verified) {
+          return verified;
+        }
+        if (current.verdicts.size() != depth + 1) {
+          return Error("draft-head control verify returned an incomplete verdict");
+        }
+        current.verify_logits = Fingerprint(std::as_bytes(std::span(logits)));
+        current.next = current.verdicts[keep - 1];
+        if (auto accepted = qwen_.Accept(keep); !accepted) {
+          return accepted;
+        }
+        if (auto settled = qwen_.Rollback(); !settled) {
+          return settled;
+        }
+        if (auto read = Fingerprints(stamp, current.kept_state); !read) {
+          return read;
+        }
+        if (arm == 0) {
+          baseline.push_back(current);
+        } else if (current.drafts != baseline[s].drafts ||
+                   !same_floats(current.probabilities, baseline[s].probabilities) ||
+                   current.draft_state != baseline[s].draft_state ||
+                   current.kept_state != baseline[s].kept_state ||
+                   current.verify_logits != baseline[s].verify_logits ||
+                   current.verdicts != baseline[s].verdicts) {
+          return Error(
+              std::format("capture {}/off common-input control differs at step {}", arm, s));
+        }
+        history.resize(std::size_t{pos} + keep);
+        history.push_back(baseline[s].next);
+      }
+      return {};
+    });
+    if (!ran) {
+      return ran;
+    }
+    results_.push_back(std::format(
+        R"({{"check":"draft_head_control","arm":{},"capture":{},"steps":{},"state_and_drafts_equal":true}})",
+        arm, capture ? "true" : "false", o_.tokens));
+  }
+  return {};
+}
+
 Status Harness::Forced() {
   // The first chat prompt, or --only's (a chat or decode prompt).
   if (chat_.empty() && decode_.empty()) {
@@ -1667,6 +1828,8 @@ Status Harness::Run() {
     checked = Greedy();
   } else if (o_.check == "forced") {
     checked = Forced();
+  } else if (o_.check == "draft-head") {
+    checked = DraftHead();
   } else if (o_.check == "swap") {
     checked = Swap();
   } else if (o_.check == "sampled-plain") {
@@ -1703,7 +1866,7 @@ Status Harness::Write() {
   const jb::Dsv4GraphStats& d = qwen_.draft_stats();
   std::ofstream(o_.out / "spec.json")
       << std::format(
-             R"({{"check":"{}","draft_rows":{},"draft_vocab":{},"adaptive_depth":{},"window":{},"runtime_prefill":{},"load_seconds":{:.2f},)"
+             R"({{"check":"{}","draft_rows":{},"draft_vocab":{},"draft_head_input":"f32","adaptive_depth":{},"window":{},"runtime_prefill":{},"load_seconds":{:.2f},)"
              R"("read_bytes":{},"drafter_read_bytes":{},"peak_memavailable_drop_bytes":{},)"
              R"("graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{},"dropped":{}}},)"
              R"("draft_graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{}}},)"
@@ -1814,9 +1977,11 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.fp16.artifact.empty() != o.fp16.tokens.empty()) {
     return Error(
         "usage: jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE "
-        "--prompts FILE --out DIR --check greedy|timing|forced|swap|sampled-plain|sampled-spec "
+        "--prompts FILE --out DIR --check "
+        "greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
-        "[--draft-vocab N] [--adaptive-depth on|off] [--runtime-prefill on|off] "
+        "[--draft-vocab N] [--adaptive-depth on|off] "
+        "[--runtime-prefill on|off] "
         "[--profile-decode on|off] "
         "[--repeats N] [--margin B] [--seeds N] "
         "[--sampled FILE] [--only ID] "
@@ -1824,6 +1989,16 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "DIR --fp16-tokens FILE "
         "--fp16-expect "
         "SHA256]");
+  }
+  if (o.check == "draft-head") {
+    if (o.qwen.context > 131072 || o.qwen.max_rows > 8192 || o.tokens > 8 ||
+        o.qwen.draft_rows > 3 || o.qwen.draft_vocab == 0 || o.qwen.draft_vocab > 65536 ||
+        o.adaptive_depth || o.window != 0) {
+      return Error(
+          "draft-head requires context<=131072, chunk<=8192, 2..8 steps, depth<=3, "
+          "head 1..65536 and fixed depth without a confidence window");
+    }
+    o.qwen.draft_head_capture = true;
   }
   std::filesystem::create_directories(o.out);
   o.qwen.out = o.out / "qwen38";

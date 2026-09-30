@@ -71,6 +71,8 @@ class Builder {
     ggml_tensor* streams = nullptr;      // F32 [width, hc, rows]
     ggml_tensor* draft = nullptr;        // I32 [1]
     ggml_tensor* probability = nullptr;  // I32 [1]: the draft's softmax probability's F32 bits
+    ggml_tensor* head_input = nullptr;
+    ggml_tensor* head_logits = nullptr;
   };
   MtpOut MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, ggml_tensor* hidden, bool head,
                  std::int64_t head_rows, bool confidence);
@@ -1346,12 +1348,14 @@ Builder::MtpOut Builder::MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, g
   ggml_tensor* mixed = HcFast(last, nullptr, nullptr, m.output_hc_norm, m.output_hc_down,
                               m.output_hc_up, nullptr, nullptr, false, -1)
                            .x;
+  ggml_tensor* head_input = mixed;
   ggml_tensor* w =
       head_rows > 0 ? ggml_view_2d(c_, m.output, width, head_rows, m.output->nb[1], 0) : m.output;
   // The argmax and its probability (the drafter's confidence, which an
   // adaptive window reads): the draft is the first I32, the probability's
   // bits the second.
-  ggml_tensor* both = Argmax(c_, ggml_mul_mat(c_, w, mixed), confidence);
+  ggml_tensor* head_logits = ggml_mul_mat(c_, w, mixed);
+  ggml_tensor* both = Argmax(c_, head_logits, confidence);
   Expand(res);
   Expand(both);
   ggml_tensor* draft = ggml_view_1d(c_, both, 1, 0);
@@ -1364,7 +1368,11 @@ Builder::MtpOut Builder::MtpPass(const Qwen38MtpGraph& m, ggml_tensor* tokens, g
   if (probability != nullptr) {
     Expand(probability);
   }
-  return {.streams = last, .draft = draft, .probability = probability};
+  return {.streams = last,
+          .draft = draft,
+          .probability = probability,
+          .head_input = head_input,
+          .head_logits = head_logits};
 }
 
 }  // namespace
@@ -1400,6 +1408,11 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
       s.hidden_row + s.rows > s.hidden_rows || (s.passes > 1 && !s.head) || s.head_rows < 0 ||
       std::cmp_greater(s.head_rows, head_rows) || ratio <= 0) {
     return Rejected("not an MTP drafter shape its state holds");
+  }
+  if (s.capture_head &&
+      (!s.head ||
+       (s.head_rows == 0 ? head_rows : static_cast<std::uint64_t>(s.head_rows)) > 65536)) {
+    return Rejected("a draft-head capture requires a head of at most 65,536 rows");
   }
   const bool past_budget = s.n_kv > std::int64_t{profile.indexer_budget} + ratio - 1;
   if (s.qsa_select != past_budget ||
@@ -1483,6 +1496,10 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
       m.drafts.push_back(out.draft);
       if (out.probability != nullptr) {
         m.probabilities.push_back(out.probability);
+      }
+      if (s.capture_head) {
+        m.head_inputs.push_back(out.head_input);
+        m.head_logits.push_back(out.head_logits);
       }
       hidden = ggml_reshape_2d(c, out.streams, profile.hc_width(), 1);
       tokens = out.draft;

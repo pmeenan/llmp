@@ -519,6 +519,36 @@ TEST_F(Qwen38FusedTest, Bf16ProductIsGgmlsCublasProduct) {
   }
 }
 
+// The draft-head experiment retains GGML's F32-input vector arithmetic
+// after BF16 round-to-nearest-even and exact widening. Include halfway
+// cases, signed zero and a partial output tile, independently of the graph.
+TEST_F(Qwen38FusedTest, RoundedDraftInputKeepsTheOriginalVectorProduct) {
+  constexpr std::int64_t kRows = 260;
+  auto x_h = Normal(231, static_cast<std::size_t>(kWidth));
+  std::size_t at = 0;
+  for (const std::uint32_t bits : {0x3F808000U, 0x3F818000U, 0xBF808000U, 0xBF818000U, 0x00000000U,
+                                   0x80000000U, 0x00018000U, 0x80018000U}) {
+    x_h[at++] = std::bit_cast<float>(bits);
+  }
+  std::vector<float> rounded_h(x_h.size());
+  std::ranges::transform(x_h, rounded_h.begin(), [](float v) { return FromBf16(Bf16Bits(v)); });
+  const auto w_f = Normal(232, static_cast<std::size_t>(kWidth * kRows), 0.02f);
+  std::vector<std::uint16_t> w_h(w_f.size());
+  std::ranges::transform(w_f, w_h.begin(), Bf16Bits);
+  ggml_tensor* w = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, kWidth, kRows), w_h);
+  ggml_tensor* x = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, 1), x_h);
+  ggml_tensor* expected = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, 1), rounded_h);
+  ggml_tensor* zero = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 1), std::vector<std::int32_t>{0});
+  ggml_tensor* widened = ggml_get_rows(c(), kg::ToBf16(c(), x), zero);
+  ggml_tensor* got = ggml_mul_mat(c(), w, widened);
+  ggml_tensor* control = ggml_mul_mat(c(), w, expected);
+  Run({got, control});
+  EXPECT_EQ(PlannedFor(got), kg::kMulMatVector);
+  EXPECT_EQ(PlannedFor(control), kg::kMulMatVector);
+  ExpectSame(Download(widened), rounded_h, "draft BF16 round/widen");
+  ExpectSame(Download(got), Download(control), "original vector product over rounded input");
+}
+
 // jitLLM's column-blocked recurrence is upstream's gated_delta_net bit for
 // bit at Qwen3.8's shape (16 query/key and 48 value heads of 128, q, k and v
 // viewed out of the convolution's output as the graph views them), and

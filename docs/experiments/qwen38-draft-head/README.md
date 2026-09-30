@@ -11,6 +11,10 @@ the [MTP sweep](../qwen38-mtp/README.md) and
 The measurement question is whether Mia's selected vocabulary helps beyond
 choosing a deeper draft window.
 
+The separate [draft-input experiment](../qwen38-draft-input/README.md)
+isolates BF16 rounding of the mixed draft-head input, with vocabulary and
+depth fixed. It has no measured result or default change yet.
+
 The selected list is now implemented and tested in jitLLM. Its 12.6% gain
 was in Mia's engine; the native same-depth trial at 128K is tied at depth 2
 and 4.9% slower at depth 3. The prefix remains the default. Increasing

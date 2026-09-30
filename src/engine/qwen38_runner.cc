@@ -82,6 +82,10 @@ std::vector<ExtentId> Qwen38Runner::managed_extents() const {
 }
 
 Status Qwen38Runner::Setup() {
+  if (o_.draft_head_capture && (o_.drafter.empty() || o_.context > 131072 || o_.max_rows > 8192)) {
+    return Error(
+        "draft-head capture needs a drafter, context at most 131072 and chunk at most 8192");
+  }
   if (o_.context > md::kQwen38FlashContext) {
     return Error(std::format("context {} exceeds Qwen3.8 Flash Next's trained ceiling {}",
                              o_.context, md::kQwen38FlashContext));
@@ -129,6 +133,16 @@ Status Qwen38Runner::Setup() {
       return Error(std::format("the drafter: {}", dbinding.error()));
     }
     dbinding_ = std::move(*dbinding);
+    if (o_.draft_head_capture) {
+      const std::uint64_t available =
+          dbinding_.selected_head() ? dbinding_.draft_ids.ne[1] : profile_.vocab;
+      const std::uint64_t requested =
+          o_.draft_vocab == 0 ? available : std::min<std::uint64_t>(o_.draft_vocab, available);
+      if (requested == 0 || requested > 65536) {
+        return Error("draft-head capture requires 1 to 65536 head rows");
+      }
+      capture_head_rows_ = static_cast<std::uint32_t>(requested);
+    }
     auto mtp = md::Qwen38MtpStateOf(profile_, layout_);
     auto commit = md::Qwen38Commit(profile_, verify);
     if (!mtp || !commit) {
@@ -299,7 +313,8 @@ Status Qwen38Runner::Setup() {
            {std::tuple{o_.context - o_.max_rows - 1, o_.max_rows, 1U, false},
             std::tuple{o_.context - verify - o_.draft_rows, verify, o_.draft_rows, true},
             std::tuple{unselected - unselected_rows, unselected_rows, 1U, false}}) {
-        auto shaped = MtpInputs(from, rows, passes, head, head ? 1 : 0, head);
+        auto shaped =
+            MtpInputs(from, rows, passes, head, head ? 1 : 0, head, head && o_.draft_head_capture);
         if (!shaped) {
           return std::unexpected(shaped.error());
         }
@@ -309,6 +324,16 @@ Status Qwen38Runner::Setup() {
         }
         if (auto r = account(**planned); !r) {
           return r;
+        }
+        if (shaped->first.capture_head) {
+          shaped->first.capture_head = false;
+          auto ordinary = PlanQwen38Mtp(model_, shaped->first, choices, 0, 0);
+          if (!ordinary) {
+            return Error(std::format("measuring the uncaptured drafter: {}", ordinary.error()));
+          }
+          if (auto r = account(**ordinary); !r) {
+            return r;
+          }
         }
       }
     }
@@ -340,6 +365,15 @@ Status Qwen38Runner::Setup() {
   runs_.SetStaging(*inputs, input_bytes);
   logits_ = *logits;
   hash_host_ = *hash;
+  if (capture_head_rows_ != 0) {
+    const std::uint64_t words =
+        std::uint64_t{o_.draft_rows} * (std::uint64_t{profile_.width} + capture_head_rows_);
+    auto captured = resources_.Pinned(words * sizeof(float));
+    if (!captured) {
+      return Error("pinned staging for the bounded draft-head capture");
+    }
+    draft_head_capture_ = static_cast<float*>(*captured);
+  }
   if (dbinding_.selected_head()) {
     auto ids = resources_.Pinned(dbinding_.draft_ids.ne[1] * sizeof(std::int32_t));
     if (!ids) {
@@ -857,7 +891,7 @@ Status Qwen38Runner::Usable() const {
 
 std::expected<std::pair<kg::Qwen38MtpShape, std::vector<md::Qwen38ChunkInputs>>, std::string>
 Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
-                        std::int64_t hidden_row, bool confidence) const {
+                        std::int64_t hidden_row, bool confidence, bool capture_head) const {
   const std::uint64_t end = std::uint64_t{first} + rows + passes - 1;
   if (rows == 0 || passes == 0 || end > mtp_layout_.context) {
     return Error(std::format("a draft of {} passes after {} rows at {} passes the context", passes,
@@ -887,6 +921,7 @@ Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t p
               ? std::min<std::uint64_t>(o_.draft_vocab, dbinding_.draft_ids.ne[1])
               : o_.draft_vocab),
       .confidence = confidence,
+      .capture_head = capture_head,
       .hidden_row = hidden_row,
       .hidden_rows = mtp_layout_.hidden_rows};
   return std::pair{shape, std::move(ins)};
@@ -1053,7 +1088,14 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
 }
 
 Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts,
-                           std::vector<float>* probabilities, std::uint32_t passes) {
+                           std::vector<float>* probabilities, std::uint32_t passes,
+                           Qwen38DraftHeadCapture* head_capture) {
+  if (head_capture != nullptr) {
+    *head_capture = {};
+    if (!o_.draft_head_capture || draft_head_capture_ == nullptr || capture_head_rows_ == 0) {
+      return Error("draft-head capture was not provisioned at setup");
+    }
+  }
   if (!speculative()) {
     return Error("drafting needs the drafter");
   }
@@ -1081,7 +1123,8 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
   if (passes > o_.draft_rows) {
     return Error("a draft past the configured maximum depth");
   }
-  auto shaped = MtpInputs(n - rows, rows, passes, true, 1, probabilities != nullptr);
+  auto shaped =
+      MtpInputs(n - rows, rows, passes, true, 1, probabilities != nullptr, head_capture != nullptr);
   if (!shaped) {
     return std::unexpected(shaped.error());
   }
@@ -1095,6 +1138,29 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
   MtpPlans::Entry& entry = **planned;
   PlanRuns& runs = entry.runs[0];
   const kg::Qwen38MtpGraph& g = entry.planned->graph;
+  if (head_capture != nullptr) {
+    if (g.head_inputs.size() != passes || g.head_logits.size() != passes) {
+      return Error("draft-head capture is missing a pass's input or logits");
+    }
+    const auto held_row = [&](const ggml_tensor* t, std::uint32_t width) {
+      if (t == nullptr || t->data == nullptr || t->type != GGML_TYPE_F32 ||
+          std::cmp_not_equal(t->ne[0], width) || t->ne[1] != 1 || t->ne[2] != 1 || t->ne[3] != 1 ||
+          !ggml_is_contiguous(t)) {
+        return false;
+      }
+      const auto& region = node_.activations();
+      const std::uint64_t address = Address(t->data);
+      const std::uint64_t bytes = std::uint64_t{width} * sizeof(float);
+      return address >= region.base && address - region.base <= region.bytes &&
+             bytes <= region.bytes - (address - region.base);
+    };
+    for (std::size_t j = 0; j < passes; ++j) {
+      if (!held_row(g.head_inputs[j], profile_.width) ||
+          !held_row(g.head_logits[j], capture_head_rows_)) {
+        return Error("draft-head capture source is outside its retained packed activation row");
+      }
+    }
+  }
   Qwen38MtpHostInputs host;
   Qwen38MtpSources(g, shaped->second, history.subspan(n - rows + 1, rows), host);
   auto copies = runs_.Stage(host.sources, 0);
@@ -1109,6 +1175,16 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
   for (std::size_t j = 0; j < g.probabilities.size(); ++j) {
     outputs.push_back({Address(static_cast<std::int32_t*>(drafts_) + kProbabilityAt + j),
                        Address(g.probabilities[j]->data), sizeof(std::int32_t)});
+  }
+  if (head_capture != nullptr) {
+    const std::uint64_t stride = std::uint64_t{profile_.width} + capture_head_rows_;
+    for (std::size_t j = 0; j < passes; ++j) {
+      float* into = draft_head_capture_ + (j * stride);
+      outputs.push_back({Address(into), Address(g.head_inputs[j]->data),
+                         std::uint64_t{profile_.width} * sizeof(float)});
+      outputs.push_back({Address(into + profile_.width), Address(g.head_logits[j]->data),
+                         std::uint64_t{capture_head_rows_} * sizeof(float)});
+    }
   }
   const bool capture = runs.CaptureDue(runs_.graphs());
   if (capture) {
@@ -1151,6 +1227,27 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
     probabilities->resize(g.probabilities.size());
     std::memcpy(probabilities->data(), values + kProbabilityAt,
                 g.probabilities.size() * sizeof(float));
+  }
+  if (head_capture != nullptr) {
+    // The node job has retired successfully. DMA named only node-owned
+    // pinned staging; ordinary vectors begin owning copies after completion.
+    head_capture->catch_up_rows = rows;
+    head_capture->head_rows = capture_head_rows_;
+    head_capture->token_ids.resize(capture_head_rows_);
+    if (dbinding_.selected_head()) {
+      std::memcpy(head_capture->token_ids.data(), draft_ids_host_,
+                  std::uint64_t{capture_head_rows_} * sizeof(std::int32_t));
+    } else {
+      for (std::uint32_t i = 0; i < capture_head_rows_; ++i) {
+        head_capture->token_ids[i] = static_cast<std::int32_t>(i);
+      }
+    }
+    const std::uint64_t stride = std::uint64_t{profile_.width} + capture_head_rows_;
+    for (std::size_t j = 0; j < passes; ++j) {
+      const float* from = draft_head_capture_ + (j * stride);
+      head_capture->inputs.insert(head_capture->inputs.end(), from, from + profile_.width);
+      head_capture->logits.insert(head_capture->logits.end(), from + profile_.width, from + stride);
+    }
   }
   return {};
 }

@@ -283,6 +283,8 @@ std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
   // copies them all out after the last pass.
   std::vector<ggml_tensor*> kept = out->graph.drafts;
   kept.insert(kept.end(), out->graph.probabilities.begin(), out->graph.probabilities.end());
+  kept.insert(kept.end(), out->graph.head_inputs.begin(), out->graph.head_inputs.end());
+  kept.insert(kept.end(), out->graph.head_logits.begin(), out->graph.head_logits.end());
   if (auto r = PlaceAndPlan(*out, out->graph.nodes, out->graph.inputs(), kept, choices, activations,
                             activation_bytes);
       !r) {
