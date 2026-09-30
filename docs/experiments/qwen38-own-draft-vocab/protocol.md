@@ -131,6 +131,17 @@ training is needed for this shortlist experiment. Persistent aggregate counts
 would be an explicit runtime option with a reset; no prompt or answer text is
 retained. No runtime adaptation is implemented or justified by this proposal.
 
+For long conversations, also test a bounded conversation-specific portion
+beside the broad core and installation-level portion. Rank it from recent
+committed assistant outputs, with user-introduced identifiers as a separate
+signal; decay old counts so a topic change can replace stale membership.
+Compare this mixture with a fixed list on the same chronological turns and
+charge every between-turn rebuild. Conversation counts have explicit scope
+and expiry when conversation identity is available; prefix matching alone
+does not identify a conversation or its lifetime (D-031). Otherwise use the
+bounded rolling installation signal. This is a deferred experiment, not a
+chosen partition size or a measured benefit.
+
 For the broad starting list, evaluate a portable curated text corpus across
 models: prose, programming languages, identifiers and structured output such
 as JSON/tool calls. Tokenize it with each target tokenizer, including space,
