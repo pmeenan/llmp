@@ -391,7 +391,7 @@ Status Qwen38Runner::Setup() {
   if (o_.routed_capture != 0) {
     const std::uint64_t per_row =
         (std::uint64_t{profile_.experts_used} * (profile_.expert_ffn + profile_.width + 2)) +
-        (2 * std::uint64_t{profile_.width}) + 1;
+        (3 * std::uint64_t{profile_.width}) + 1;
     routed_capture_bytes_ = per_row * (o_.draft_rows + 1) *
                             static_cast<std::uint64_t>(std::popcount(o_.routed_capture)) * 4;
     auto captured = resources_.Pinned(routed_capture_bytes_);
@@ -1349,7 +1349,8 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
         ggml_type type;
         std::int64_t n0, n1, n2;
       };
-      for (const auto part : {Part{layer.activation, GGML_TYPE_F32, ffn, used, rows},
+      for (const auto part : {Part{layer.input, GGML_TYPE_F32, width, 1, rows},
+                              Part{layer.activation, GGML_TYPE_F32, ffn, used, rows},
                               Part{layer.down, GGML_TYPE_F32, width, used, rows},
                               Part{layer.shared, GGML_TYPE_F32, width, rows, 1},
                               Part{layer.gate, GGML_TYPE_F32, 1, rows, 1},
@@ -1490,6 +1491,7 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
         into.resize(source.bytes / sizeof(Value));
         std::memcpy(into.data(), routed_capture_ + source.offset, source.bytes);
       };
+      take(values.input);
       take(values.activation);
       take(values.down);
       take(values.shared);

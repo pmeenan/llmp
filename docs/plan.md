@@ -1035,7 +1035,15 @@ it appears.
           64K/256K; selected trails both at 32K and beats both elsewhere.
           Neither closes every rung. Generated reference histories vary;
           the fixed-depth-three FP8/BF16 cache settings remain distinct
-          from native adaptive F16/F32. Matched-piece A/B remains open;
+          from native adaptive F16/F32. The actual installed FlashInfer
+          complete routed consumer, including private static quantization,
+          both products and finalization, is neutral/slower on twelve real
+          T4 histories: traced fused +2.32% cold latency / −0.21% warm,
+          ordered +1.75% / +1.73%. Fused finalization also varies on own
+          repeats; no production port or full-model candidate follows
+          ([complete consumer](experiments/qwen38-fi-down-stage/README.md#complete-consumer-follow-up)).
+          The remaining decode gap and reference-quality qualification
+          remain open;
         - sparse flash-attention prefill for both models (llama.cpp
           #29298 and #28770);
         - DeepSeek's compressed attention and indexer at depth;

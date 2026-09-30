@@ -1210,6 +1210,7 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
           MoeCombine(c_, down, selected, l.down_exps_scale, weights, sh, shared_gate);
       if ((capture_routed_ & (std::uint64_t{1} << il)) != 0) {
         g_.routed.push_back({.layer = static_cast<std::uint32_t>(il),
+                             .input = x,
                              .activation = act,
                              .down = down,
                              .shared = sh,

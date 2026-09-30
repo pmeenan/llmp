@@ -3,6 +3,13 @@
 
 # Qwen3.8 literal FlashInfer down stage (2026-09-30)
 
+The later complete-consumer comparison also finds no useful gain on these
+captured T4 inputs. The traced fused arm is2.32% slower cold and0.21%
+faster warm; the ordered arm is1.75% slower cold and1.73% slower warm.
+No production port or model-quality conclusion follows these operator
+results. The [complete comparison below](#complete-consumer-follow-up)
+includes the actual private initial quantizer and both products.
+
 The captured-input comparison rejects this standalone G2 transfer. Its
 complete cold latency rises 20.95–27.64%, and warm latency rises
 28.77–29.27%, against the original routed vector product and combine.
@@ -192,3 +199,158 @@ and independent busy/memory/GPU/container/native-process gates are clear.
 The final docs-only REUSE check passes with1009 headers; independent
 whole-unit review is recorded in the task handoff. Workstation execution
 checks remain owner-deferred.
+
+## Complete consumer follow-up
+
+This comparison calls the actual installed complete consumer, separately
+from the earlier standalone G2 and grouped-schedule trials. The native
+benchmark additionally retains its existing first-product F32 input view
+`[2560,1,T]`; it adds no arithmetic node or serving choice. Three layers at
+T4 add122880 bytes of bounded pinned staging. Capture-off/on/on/off controls
+again preserve all draft IDs/probabilities, full target/drafter state,
+verifier-logit rows, own repeats and common continuation exactly.
+
+The12 real T4 records use the same canonical128799 IDs, fixed depth3,
+selected47172 head, four steps and layers0/23/47. T3 controls take each
+record's first three rows. Original K2560→G1 N1280→G2 N2560, E512/top10
+remains the native F32-input/Q8 routed vector chain. The candidate casts
+that identical F32 input to BF16, invokes actual private
+`torch.ops._C.scaled_fp4_quant.out` with static-a1, then uses the installed
+AOT FlashInfer consumer for grouping, G1, BF16-product/F32-SwiGLU/BF16
+round/static-a2 preparation, G2 and route finalization. The unchanged native
+F32 shared/gate suffix follows. No KV, recurrent, target-head or drafter
+arithmetic changes in this external operator test.
+
+The installed ModelOpt helper swaps gate/up rows, reduces each layer's
+activation scales to maxima and swizzles block scales. All1536 original
+gate/up global-scale entries are bit equal. Expected code/SF permutations
+are frozen before the helper mutates its temporary inputs; each complete
+native slab is unaliased and hashes identically before/after that helper.
+The actual F32 CUDA reciprocal and pre-BF16 alpha multiplication are pinned.
+No dequantized or requantized weight replica is used.
+
+The traced fused pair is absolute tactic IDs19/56; the ordered diagnostic
+is19/36. Original list order, finalize/SwapAB copies and the full actual
+trace symbols substantiate these IDs. The raw binding's `[-1,-1]` is
+named `native_binding_default`: it selects the first native entries,
+bypasses Python `AutoTuner.choose_one`, and is neither a retrieved tactic
+cache nor an API-selected baseline. Its first entries lack the fused
+finalize epilogue despite the runner's support for that fusion. The pinned
+Python wrapper accepts `profile_ids` but unconditionally replaces the
+selection with its two autotuner calls; see the [upstream note](../../upstream/flashinfer.md).
+
+Before timing,24 native T4/T3 controls reproduce captured activation,
+raw down and combined bytes exactly, including own repeats. All72
+candidate controls remain finite. The ordered and native-binding-default
+variants repeat exactly in24/24 cases; traced fused repeats exactly in
+1/24, with atomic finalization variation retained. Forty-eight graph
+controls cover every distinct T4 history: native outputs match captures,
+candidate private code/SF buffers match eager, and ordered combined output
+matches eager. Native and ordered/default combined graph outputs match in
+12/12 histories each; traced fused combined outputs differ from eager in
+12/12, while its private code/SF operands still match. Its graph controls
+require finite output and record this atomic variation, rather than claim
+output equality. These controls do not qualify model PPL or task quality.
+
+### Charged complete-chain cost
+
+Each graph contains all12 real T4 invocations. Seven cold and seven
+unflushed warm ABBA groups per candidate replay one complete graph per
+sample. Cold arms flush512MiB outside the start event. Input conversion,
+padded SF clearing, private quantization, expert grouping, both products,
+activation, finalization, widening and shared combination are charged.
+Host setup/readback and completion proof are outside the GPU event.
+The event measures the complete12-invocation graph; its elapsed time is
+divided by12 below, so latency is milliseconds per layer invocation.
+The paired percentage is the median of each sample's `(B1+B2)/(A1+A2)-1`,
+not a ratio computed from independently rounded table medians.
+
+| Complete arm, cold | A1 ms/invocation | B1 ms/invocation | B2 ms/invocation | A2 ms/invocation | Paired latency change |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Traced fused19/56 | 0.423997 | 0.423843 | 0.449248 | 0.424456 | +2.32% |
+| Ordered19/36 | 0.424507 | 0.431589 | 0.430992 | 0.423992 | +1.75% |
+| Native binding default | 0.443011 | 0.424339 | 0.423141 | 0.424763 | −2.23% |
+
+| Candidate | Cold paired range | Warm paired median | Warm paired range |
+| --- | ---: | ---: | ---: |
+| Traced fused19/56 | −2.75% to+3.42% | −0.21% | −5.51% to−0.04% |
+| Ordered19/36 | −3.38% to+6.38% | +1.73% | +1.48% to+1.83% |
+| Native binding default | −3.57% to+4.58% | −0.03% | −1.03% to+0.08% |
+
+There is no useful, consistent complete-chain gain to justify a source
+port or a full-model candidate. This is a bounded T4/three-layer result,
+not a general rejection of FlashInfer. The ordered variant satisfies own
+repeat controls but remains slower; the traced fused variant also fails
+the exact own-repeat contract on23 inputs. Serving remains unchanged.
+
+Combined FFN maximum absolute differences are0.007054–0.025445 for traced
+fused and0.007054–0.024468 for ordered/default. Their relative L2 ranges
+are0.022243–0.146053 and0.022216–0.146012 respectively. These numbers
+describe differences between operator vectors, not percentages of model
+quality loss. No PPL, greedy bound, sampled distribution or completed task
+quality result is claimed for this complete candidate.
+
+The touched union is165 expert-layer pairs,456192000B of original weights.
+The three full512-expert native slabs allocate4246732800B; candidate
+permuted layouts are separate allocations. Required workspace is11119744B
+for traced fused/default and11119488B for ordered. Torch's allocation
+high-water mark is12868753408B for all prepared arms and controls together,
+not a model's physical peak or a serving memory estimate.
+
+### Complete-consumer provenance and exclusions
+
+Spark B, GB10, native SDK `aarch64-e0a0c85c42806fb1`, sm121a, same pinned
+image/recipe as above. Torch2.13.0+cu130/CUDA13.0 and FlashInfer0.6.17 run
+the actual image consumer. Registry provisioning resolves exactly the
+inspected image ID/RepoDigest in108.17s,rc0,9702911168B; no image export or
+large read overlapped Spark A's model job. The installed AOT module is
+55684824B, SHA256
+`67054a17ae94eb5c5076e913e40e7c1de46361bfbeecd132ddf2620bce945667`.
+JIT is disabled and the three quantization branch knobs remain absent.
+
+Local base033cda4 plus the seven-path input-view extension; the warm mirror
+receives only owned files. The separate license export uses that exact
+tracked base plus the delta. The native capture binary is
+`9f5ef099a0722fb6030aba29640e40eb3043c425d5b7e47d168f25be45f27b1f`;
+capture spec is
+`c6df5d300e9a19f90ee98c8a71fc7521db9aa3d65b6f64110f36da43747fac92`.
+Native full-chain bridge binary is
+`dc736815e700a47ac01985cd9d83c38131f6205ada43c7e2b4f5c4f22a2bb287`.
+Its original CUDA source remains
+`868532d8c464ce47e8a297816579f2953a0ba9903ae6a7a2b61c49e244f2b833`.
+The actual private quantizer library is
+`vllm/_C_stable_libtorch.abi3.so`, SHA256
+`c519f983b2a1dc83e2e78829dca3e832ded962e385d1bfa66720bcc61db402c1`.
+
+Final consumer SHA256
+`a874dd297e3928ba16e7cf4ef135755ba8ae7ebf74f15c296bb75b374d8fb38d`;
+config349224a3…, tactic proofbbdf7094…, launcherb8c2a3e1… and all original
+source/operand/full-slab hashes are archived under Spark B
+`~/scratch/m3-qwen-fi-whole/replay-v6/`. Terminal `consumer-result.json`
+SHA256 is
+`e6948e4f362e18eb551c3e8c0ad35e2ff81b8f7bda6fd5511715364f1cd437a5`;
+`analysis.json` is6353ded8… and `launcher-receipt.json` isbbaa5dcb….
+The absolute command/config and all source pins are in those receipts.
+
+Replayv1–v4 are excluded pre-operator preparations. V1 supplied the wrong
+Python-home override. V2/v3 exposed legacy embedding's ASCII text mode;
+the actual image CLI/embedded no-model probe proves UTF-8 mode1 after the
+verified exported `Py_UTF8Mode` startup setting and LC_CTYPE adjustment,
+with numeric locale and CUDA source unchanged. V4 formed an expected row
+permutation after the installed helper had mutated its temporary inputs,
+so its double-flip proof failed. V5 passed24/72/48 controls but failed a
+terminal `vllm._C` import assumption, leaving no complete timing receipt.
+The final preparation resolves the actual loader's stable module and
+serializes every static receipt field before products. No excluded run
+contributes performance or quality evidence.
+
+`qwen-fi-whole-capture-check` passes1040 tests/202GPU, SDK format7/tidy5,
+295 boundaries, seven early CLI refusals and actual REUSE/1012 headers.
+`qwen-fi-whole-routed-capture` completes rc0 in301s;
+`qwen-fi-whole-extract` completes rc0 in5s; bridge buildv10 completes rc0
+with SDK format/host tidy. `qwen-fi-whole-consumer-v6` completes rc0 in113s
+with24/72/48/168 controls/timings, client retirement and container absence.
+Independent post-run busy/memory/GPU/container/native-process probes are
+clear at115.886GiB available. No full-model candidate or broad swap-table
+rerun is owed for this rejected external arithmetic factor. Workstation
+execution checks remain owner-deferred.

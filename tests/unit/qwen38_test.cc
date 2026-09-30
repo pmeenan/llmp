@@ -1442,13 +1442,17 @@ TEST(Qwen38Test, RoutedDownCaptureRetainsExistingVerifyOperandsOnly) {
     constexpr std::array<std::uint32_t, 3> layers = {0, 23, 47};
     for (const auto& layer : captured->routed) {
       EXPECT_EQ(layer.layer, layers[layer_index++]);
+      EXPECT_EQ(layer.input, layer.activation->src[1]);
+      EXPECT_EQ(layer.input->ne[0], p.width);
+      EXPECT_EQ(layer.input->ne[1], 1);
+      EXPECT_EQ(layer.input->ne[2], rows);
       EXPECT_EQ(layer.activation->ne[0], p.expert_ffn);
       EXPECT_EQ(layer.activation->ne[1], p.experts_used);
       EXPECT_EQ(layer.activation->ne[2], rows);
       EXPECT_EQ(layer.down->ne[0], p.width);
       EXPECT_EQ(layer.combined->ne[1], rows);
-      for (auto* tensor : {layer.activation, layer.down, layer.shared, layer.gate, layer.weights,
-                           layer.ids, layer.combined}) {
+      for (auto* tensor : {layer.input, layer.activation, layer.down, layer.shared, layer.gate,
+                           layer.weights, layer.ids, layer.combined}) {
         kept.push_back(tensor);
       }
     }

@@ -54,3 +54,29 @@
 No FlashInfer implementation is vendored by this slice. A future retained
 copy needs an archive identity, source lock, kept-file license audit,
 original notices and changed-file attribution in the same unit.
+
+## Pinned Python profile override is ignored (RE-040)
+
+- **Status:** open; pinned-source finding, not reported upstream.
+- **Found:** 2026-09-30, FlashInfer0.6.17/a0a6b019 in the exact image above.
+- **Problem:** `fused_moe/core.py`, SHA256
+  `1fc7f2b942b253837e554b2a4c128e196a19a48679c4a11cdd7677e0cccfd5ca`,
+  documents `profile_ids` as a two-absolute-index override at1074–1076,
+  but its SM120 wrapper at546–610 accepts the value and unconditionally
+  invokes `AutoTuner.choose_one` for both products. Passing explicit IDs
+  into this public Python path does not establish the requested tactics.
+- **Native source:** `flashinfer_cutlass_fused_moe_binding.cu`, SHA256
+  `af8afe9d012744f02aa50cda309beeaeda9fc60468e8607f0e3b68b6ad913480`,
+  validates and uses two absolute IDs in `setRunnerProfiles` at839–873.
+  `[-1,-1]` selects first native entries; it is not an API/autotuner cache
+  selection. Finalize copies precede SwapAB copies in the pinned list.
+- **jitLLM workaround:** external replay calls that actual installed
+  native binding with source/trace-proved19/56 and ordered19/36, preserving
+  all operand, weight-transform and graph proofs. The full traced fused
+  consumer is2.32% slower cold and effectively neutral warm; ordered is
+  1.75%/1.73% slower. No production implementation is imported.
+- **Upstream master:** not checked. A narrow proposed action is to honor
+  valid supplied IDs before autotuning, or clarify/remove the override.
+  No issue or PR has been sent.
+- **Links:** [RE-040](../rough-edges.md#re-040-flashinfer-accepts-a-python-profile-override-but-its-sm120-wrapper-still-autotunes-both-products--2026-09-30-status-worked-around),
+  [complete-consumer report](../experiments/qwen38-fi-down-stage/README.md#complete-consumer-follow-up).

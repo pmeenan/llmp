@@ -28,6 +28,24 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-040: FlashInfer accepts a Python profile override but its SM120 wrapper still autotunes both products  (2026-09-30, status: worked-around)
+
+Environment: Spark GB10, FlashInfer0.6.17/a0a6b019 in Mia's pinned image
+fc120ece…. `fused_moe/core.py` documents `profile_ids` as absolute product
+tactic overrides, but the SM120 wrapper accepts that argument and then
+unconditionally runs `AutoTuner.choose_one` for both products. A Python
+call with a traced pair therefore does not prove that pair executed.
+The source-visible native binding validates and applies absolute IDs;
+`[-1,-1]` instead selects its first entries, without the Python autotuner.
+
+The external complete-consumer comparison uses that actual native binding
+with source/trace-proved19/56 and ordered19/36, pins all original sources,
+and tests every captured graph against eager controls before timing.
+This bypass belongs to an operator diagnostic, not the serving runtime.
+Its neutral/slower measured result justifies no implementation import.
+See [the complete report](experiments/qwen38-fi-down-stage/README.md#complete-consumer-follow-up)
+and [the standalone upstream handoff](upstream/flashinfer.md#pinned-python-profile-override-is-ignored-re-040).
+
 ## RE-039: A bounded Nsight CLI capture ended before its profiled model, leaving the target outside the job's supervision  (2026-09-30, status: worked-around)
 
 - **Environment:** `spark`, GB10, driver 580.178.04, CUDA 13.4.92,

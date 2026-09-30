@@ -254,8 +254,8 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
     kept.push_back(g.logits);  // copied out after the argmaxes are computed
   }
   for (const auto& layer : g.routed) {
-    for (auto* t : {layer.activation, layer.down, layer.shared, layer.gate, layer.weights,
-                    layer.ids, layer.combined}) {
+    for (auto* t : {layer.input, layer.activation, layer.down, layer.shared, layer.gate,
+                    layer.weights, layer.ids, layer.combined}) {
       kept.push_back(t);
     }
   }

@@ -209,7 +209,7 @@ struct Qwen38GraphOptions {
   bool export_streams = false;
   // The rows `streams` holds (model/qwen38.h Qwen38MtpState::hidden_rows).
   std::int64_t stream_rows = 0;
-  // Diagnostic only: retain routed down-stage operands at at most three
+  // Diagnostic only: retain routed-layer operands at at most three
   // layers of a small verify. No arithmetic or new nodes are introduced.
   std::uint64_t capture_routed = 0;
 };
@@ -220,6 +220,7 @@ inline bool Qwen38RoutedCaptureFits(std::uint64_t mask, std::uint32_t layers) {
 
 struct Qwen38RoutedTensors {
   std::uint32_t layer = 0;
+  ggml_tensor* input = nullptr;       // F32 [width, 1, rows], before gate/up
   ggml_tensor* activation = nullptr;  // F32 [ffn, used, rows], after SwiGLU
   ggml_tensor* down = nullptr;        // F32 [width, used, rows], before scale2
   ggml_tensor* shared = nullptr;      // F32 [width, rows], before sigmoid gate

@@ -1253,6 +1253,7 @@ Status Harness::DraftHead(bool routed_down) {
           for (const auto& layer : routed.layers) {
             const std::size_t slots = std::size_t{routed.rows} * profile.experts_used;
             if (layer.layer != std::array<std::uint32_t, 3>{0, 23, 47}[j] ||
+                layer.input.size() != std::size_t{routed.rows} * profile.width ||
                 layer.activation.size() != slots * profile.expert_ffn ||
                 layer.down.size() != slots * profile.width || layer.ids.size() != slots ||
                 layer.weights.size() != slots || layer.gate.size() != routed.rows ||
@@ -1260,8 +1261,8 @@ Status Harness::DraftHead(bool routed_down) {
                 layer.combined.size() != layer.shared.size()) {
               return Error("the routed capture has invalid operand extents");
             }
-            for (const auto* values : {&layer.activation, &layer.down, &layer.shared, &layer.gate,
-                                       &layer.weights, &layer.combined}) {
+            for (const auto* values : {&layer.input, &layer.activation, &layer.down, &layer.shared,
+                                       &layer.gate, &layer.weights, &layer.combined}) {
               if (!std::ranges::all_of(*values, [](float value) { return std::isfinite(value); })) {
                 return Error("a routed capture operand is not finite");
               }
@@ -1277,15 +1278,17 @@ Status Harness::DraftHead(bool routed_down) {
                 }
               }
             }
-            if (std::ranges::none_of(layer.activation, [](float value) { return value != 0; })) {
-              return Error("a routed capture activation is all zero");
+            if (std::ranges::none_of(layer.input, [](float value) { return value != 0; }) ||
+                std::ranges::none_of(layer.activation, [](float value) { return value != 0; })) {
+              return Error("a routed capture input or activation is all zero");
             }
             const auto stem = std::format("routed-down-{}-{}", s, layer.layer);
             if (arm == 1) {
               for (const auto& [name, values] :
-                   {std::pair{"activation", &layer.activation}, std::pair{"down", &layer.down},
-                    std::pair{"shared", &layer.shared}, std::pair{"gate", &layer.gate},
-                    std::pair{"weights", &layer.weights}, std::pair{"combined", &layer.combined}}) {
+                   {std::pair{"input", &layer.input}, std::pair{"activation", &layer.activation},
+                    std::pair{"down", &layer.down}, std::pair{"shared", &layer.shared},
+                    std::pair{"gate", &layer.gate}, std::pair{"weights", &layer.weights},
+                    std::pair{"combined", &layer.combined}}) {
                 if (!write(stem + "." + name + ".f32", std::as_bytes(std::span(*values)))) {
                   return Error("writing the external routed operand");
                 }
@@ -1295,9 +1298,10 @@ Status Harness::DraftHead(bool routed_down) {
                 return Error("writing the external routed history and IDs");
               }
               results_.push_back(std::format(
-                  R"({{"check":"routed_down_capture","step":{},"anchor_position":{},"layer":{},"rows":{},"ffn":{},"width":{},"experts_used":{},"activation_fingerprint":{},"down_fingerprint":{},"combined_fingerprint":{},"ids_fingerprint":{}}})",
+                  R"({{"check":"routed_down_capture","step":{},"anchor_position":{},"layer":{},"rows":{},"ffn":{},"width":{},"experts_used":{},"input_fingerprint":{},"activation_fingerprint":{},"down_fingerprint":{},"combined_fingerprint":{},"ids_fingerprint":{}}})",
                   s, pos, layer.layer, routed.rows, profile.expert_ffn, profile.width,
-                  profile.experts_used, Fingerprint(std::as_bytes(std::span(layer.activation))),
+                  profile.experts_used, Fingerprint(std::as_bytes(std::span(layer.input))),
+                  Fingerprint(std::as_bytes(std::span(layer.activation))),
                   Fingerprint(std::as_bytes(std::span(layer.down))),
                   Fingerprint(std::as_bytes(std::span(layer.combined))),
                   Fingerprint(std::as_bytes(std::span(layer.ids)))));
@@ -1305,6 +1309,7 @@ Status Harness::DraftHead(bool routed_down) {
               const auto& before = routed_records[s].layers[j];
               if (routed.rows != routed_records[s].rows || layer.layer != before.layer ||
                   layer.ids != before.ids || !same_floats(layer.activation, before.activation) ||
+                  !same_floats(layer.input, before.input) ||
                   !same_floats(layer.down, before.down) ||
                   !same_floats(layer.shared, before.shared) ||
                   !same_floats(layer.gate, before.gate) ||
