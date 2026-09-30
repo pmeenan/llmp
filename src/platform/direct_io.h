@@ -23,9 +23,11 @@
 #ifndef JITLLM_PLATFORM_DIRECT_IO_H_
 #define JITLLM_PLATFORM_DIRECT_IO_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <span>
 #include <string>
 
 namespace jitllm::platform {
@@ -81,6 +83,12 @@ std::expected<DirectFile, int> OpenForDirectRead(int dir, const char* name,
 // close-on-exec, gone once closed (Linux's O_TMPFILE), so nothing outlives
 // the process. errno on failure.
 std::expected<int, int> OpenUnnamedDirectFile(const std::filesystem::path& directory);
+// Synchronous direct transfer outside the scheduler's lock. The buffer,
+// length and file offset are 4 KiB aligned. EINTR and aligned short I/O
+// are retried; EOF or an unaligned short transfer is EIO. The call's
+// return proves the kernel no longer uses the buffer.
+std::expected<void, int> TransferDirectFile(int fd, std::uint64_t offset,
+                                            std::span<std::byte> buffer, bool write);
 // Drops a spill range without changing the file length. Future reads of
 // that range return zero; adjacent saved state remains intact. No I/O on
 // the range may still be in flight. errno on failure.

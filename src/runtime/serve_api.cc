@@ -112,7 +112,8 @@ class NodeBackend final : public api::Backend {
                                        .tool_calls = {}});
     }
     l.Defaults(conversation);
-    auto rendered = l.RenderChat(conversation);
+    std::uint32_t stable_boundary = 0;
+    auto rendered = l.RenderChat(conversation, &stable_boundary);
     if (!rendered) {
       return std::unexpected(
           Failure(400, "the conversation cannot be rendered: " + rendered.error(), {}, "messages"));
@@ -247,23 +248,12 @@ class NodeBackend final : public api::Backend {
       return exchange.Next(Phase::kPrefill, rows);
     };
     auto ran = server_.InRequest(*m, [&]() -> Status {
-      const std::vector<std::int32_t>& history = l.history();
-      // The state holds a prefix of this request's tokens: only the rest
-      // is prefilled; otherwise the conversation starts over (as chat).
-      if (history.empty() || history.size() >= tokens.size() ||
-          !std::equal(history.begin(), history.end(), tokens.begin())) {
-        if (auto r = l.Clear(); !r) {
-          return r;
-        }
-      } else {
-        reused = static_cast<std::uint32_t>(history.size());
-      }
       // Between chunks, whatever ends the request (the client gone, the
       // backend stalled, the deadline, the runtime stopping) stops the
       // prefill: an ordinary end, the state holding the chunks that ran
       // (serving.h Llm::Prefill).
       std::vector<float> last;
-      if (auto r = l.Prefill(std::span(tokens).subspan(reused), last, go_on, &prefill); !r) {
+      if (auto r = l.PreparePrompt(tokens, stable_boundary, last, reused, go_on, &prefill); !r) {
         return r;
       }
       if (prefill.stopped || !exchange.Next(Phase::kDecode, 0)) {

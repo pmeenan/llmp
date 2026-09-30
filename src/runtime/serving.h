@@ -26,8 +26,9 @@
 //   index unchecked, and its places checked still pinned (D-090). Each part
 //   is timed (SwapParts).
 // - An LLM holds one conversation: `history` is every token its state has
-//   seen. A turn's tokens extend it when they start with it; otherwise the
-//   state is cleared first. Generation is greedy, speculative by default
+//   seen. A turn's tokens extend it when they start with it; otherwise a
+//   matching retained turn checkpoint restores its prefix, or the state
+//   clears before fresh prefill. Generation is greedy, speculative by default
 //   where the model has a drafter (DSpark for DeepSeek, MTP for Qwen3.8),
 //   and each turn is one request: the model's closure leased once, every
 //   chunk a step under it (D-093). The prefill's chunk is the model's
@@ -44,6 +45,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <expected>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -57,11 +59,14 @@
 #include "chat/chat.h"
 #include "config/node_config.h"
 #include "config/storage_roles.h"
+#include "engine/checkpoint_file.h"
 #include "engine/live_state.h"
 #include "engine/paged_node.h"
+#include "execution/adaptive_depth.h"
 #include "execution/sampling.h"
 #include "runtime/commands.h"
 #include "runtime/prefill.h"
+#include "runtime/turn_reuse.h"
 #include "scheduler/scheduler.h"
 #include "tokenizer/tokenizer.h"
 
@@ -242,7 +247,7 @@ class Llm : public Served {
   std::expected<std::vector<std::int32_t>, std::string> EncodeText(std::string_view text) const;
   // A conversation rendered by the model's chat template and tokenized.
   std::expected<std::vector<std::int32_t>, std::string> RenderChat(
-      const chat::Conversation& conversation) const;
+      const chat::Conversation& conversation, std::uint32_t* stable_boundary = nullptr) const;
   // Text of generated tokens (control tokens left out).
   std::string Detokenize(std::span<const std::int32_t> tokens) const;
   // Template options this model's reference runs rendered with.
@@ -256,6 +261,7 @@ class Llm : public Served {
   // longer wanted (a swap out does not spill them), and the next use clears
   // it first.
   void Forget() {
+    turn_checkpoints_.clear();
     history_.clear();
     needs_clear_ = true;
   }
@@ -268,6 +274,15 @@ class Llm : public Served {
   // `run` (if given) says so.
   Status Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
                  const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr);
+  // Reuse the live prefix or restore its nearest matching turn checkpoint,
+  // then prefill the suffix. Capture before the renderer's unstable assistant
+  // opening, at stable_boundary; zero means no renderer boundary supplied.
+  Status PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
+                       std::vector<float>& last, std::uint32_t& reused,
+                       const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr,
+                       bool fresh = false);
+  std::size_t turn_checkpoints() const { return turn_checkpoints_.size(); }
+  std::uint64_t turn_checkpoint_bytes() const;
   // Greedy generation from `last` (a whole prefill's logits): the first
   // token is its argmax, the rest from decode steps.
   Status Generate(const std::vector<float>& last, const GenerateOptions& options, Generation& out);
@@ -306,10 +321,17 @@ class Llm : public Served {
   virtual std::vector<engine::LiveState::Range> used_state_ranges() const = 0;
   virtual Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) = 0;
   virtual Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) = 0;
+  virtual std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
+      std::uint32_t positions) const = 0;
+  virtual Status PrepareRestoreState(std::span<const engine::LiveState::Range> footprint) = 0;
+  virtual Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
+                                     bool to_host) = 0;
   virtual std::uint32_t cursor() const { return 0; }
   virtual void set_cursor(std::uint32_t /*value*/) {}
   virtual void SaveDecodingState() {}
   virtual void RestoreDecodingState() {}
+  virtual execution::AdaptiveDepth TurnDecodingState() const { return execution::AdaptiveDepth(1); }
+  virtual void RestoreTurnDecodingState(const execution::AdaptiveDepth& /*state*/) {}
 
   // During Generate: whether it samples, the token for a row's logits at
   // a position in the conversation (greedy: the argmax), and whether the
@@ -346,6 +368,23 @@ class Llm : public Served {
   std::optional<execution::SamplingParams> sampling_;
   std::uint64_t seed_ = 0;
   std::vector<execution::SamplingCandidate> scratch_;
+
+ private:
+  struct TurnCheckpoint {
+    TurnBoundary boundary;
+    engine::CheckpointFile file;
+    std::vector<engine::LiveState::Range> footprint;
+    std::uint32_t cursor = 0;
+    execution::AdaptiveDepth decoding;
+  };
+  Status CaptureTurnCheckpoint(const PrefillGoOn& go_on, bool& stopped);
+  Status ReusePrompt(std::span<const std::int32_t> tokens, std::uint32_t& reused, bool fresh,
+                     const PrefillGoOn& go_on, bool& stopped);
+  std::vector<TurnCheckpoint> turn_checkpoints_;
+  Clock::time_point history_used_ = Clock::now();
+
+ protected:
+  std::filesystem::path checkpoint_directory_;
 };
 
 // The image pipeline (Qwen-Image-2.1).

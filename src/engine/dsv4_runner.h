@@ -167,6 +167,10 @@ class Dsv4Runner final : public PagedModel {
   std::uint64_t used_state_bytes() const { return live_.used_bytes(); }
   Status SaveUsedState(void* host, std::span<const LiveState::Range> ranges);
   Status RestoreUsedState(void* host, std::span<const LiveState::Range> ranges);
+  std::expected<std::vector<LiveState::Range>, std::string> CheckpointRanges(
+      std::uint32_t positions) const;
+  Status PrepareRestoreState(std::span<const LiveState::Range> ranges);
+  Status CopyCheckpointState(void* host, std::span<const LiveState::Range> ranges, bool to_host);
   // One chunk of `tokens` after n_past: the last row's logits in `logits`
   // (every row's, rows × vocab, for kVerify).
   // With `meanwhile`, the chunk's job is submitted without waiting, and

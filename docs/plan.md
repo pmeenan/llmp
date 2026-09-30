@@ -932,7 +932,11 @@ it appears.
         prefix of the previous turn's state, including when a client drops
         or rewrites earlier reasoning, rather than re-prefilling. The
         recurrent and indexer state keep checkpoints at turn boundaries
-        where rollback to a prefix needs them.
+        where rollback to a prefix needs them. *Implemented 2026-09-29*
+        ([turn reuse](experiments/turn-reuse/README.md)): two private disk
+        checkpoints before the assistant opening, exact rollback and
+        continuation across full swaps; at 64K, 0.51 s DeepSeek and
+        0.42 s Qwen suffix preparation versus 141.6 / 29.1 s fresh.
       - *Defaults:* each model's default context rises from 8,704 to what
         coding clients expect, within the memory budget. The intake bounds
         (D-097) follow.

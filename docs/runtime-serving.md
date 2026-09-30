@@ -109,8 +109,10 @@ after the first output, off the swap's path. Each part is timed.
 
 An LLM holds one conversation: the tokens its state has seen. A turn's
 tokens (the conversation rendered by the model's chat template) extend it
-when they start with it, and only the rest is prefilled; otherwise the
-state is cleared first. A turn is one request (D-093): the model's closure
+when they start with it, and only the rest is prefilled. Otherwise it
+restores the nearest retained turn checkpoint inside the exact common
+token prefix, then prefills the suffix; without a matching checkpoint it
+clears first. A turn is one request (D-093): the model's closure
 leased once, the prefill chunks ([below](#prefill-chunks-and-cancellation))
 and every decode step jobs under it. Decoding is greedy and, where the
 model has a drafter, speculative by default (D-092's batched verify:
@@ -136,6 +138,38 @@ chat template has no renderer is refused at registration, naming its
 hash. A job that failed after it may
 have run leaves the conversation unknown, so the next turn clears the
 state first.
+
+The turn cache keeps two checkpoints per model on the current branch,
+captured before the renderer's assistant opening. That boundary survives
+a client removing earlier reasoning; the opening itself can change when
+the assistant becomes a history message. Checkpoints copy whole used
+physical pages that later work can overwrite: recurrent and ring state,
+partly filled pool blocks, padded cache tails, DeepSeek dummy cells and
+the drafter's mutable state. Immutable earlier cache pages stay in the
+current branch's live state or its ordinary spill file. Rollback restores
+the complete footprint and drops newer tail pages, then restores the
+speculation cursor and adaptive schedule. It also discards checkpoints
+newer than the selected boundary.
+
+Each checkpoint owns an unnamed private direct-I/O file in the spill
+directory. One cataloged 2 MiB staging buffer plus alignment space is
+allocated only during a transfer. The cache does not keep pinned payload
+copies between turns. A failed allocation or disk write skips publication;
+a failed restore clears before recomputing. Uncertain device completion
+quarantines state and retains staging until process exit.
+Checkpoint transfers check cancellation and beat the progress watchdog
+between each page. A cancelled capture drops its unpublished file and
+keeps the completed prefix; a cancelled partial restore clears before
+reuse. The page currently in flight completes first.
+
+Checkpoints expire for reuse 24 hours after capture; looking one up does
+not renew it. Idle live history expires after 24 hours too. Physical file
+cleanup is lazy at the model's next request or destruction, and `Clear`,
+`Forget`, a diagnostic full-state restore and restart drop all entries.
+This is computation reuse within one model's current branch, not session
+identity or the independent shared-prefix and branch cache planned under
+D-031. The native control and measurements are in
+[turn reuse](experiments/turn-reuse/README.md).
 
 The image pipeline generates the prompt and initial latents it registered
 with: this slice's image runner (being reworked by the image-speed slice)
@@ -321,8 +355,8 @@ without authentication. An optional API key is M5's.
 It is a strict subset of client-api-baseline.md's Chat Completions profile,
 not M5's front door. A request is stateless, as OpenAI's are: the whole
 conversation is rendered by the model's template, and the state's tokens
-are reused when they are a prefix of it (as `chat` does, including its
-limit for thinking models). The model named is made resident first (a full
+are reused directly or through a matching turn checkpoint (as `chat`
+does). The model named is made resident first (a full
 swap when another is), and the turn is one request under one lease
 (D-093), greedy or sampled, speculative where the model has a drafter.
 
@@ -610,13 +644,11 @@ to it alone. `deadline_cap_seconds` 14,400 (60 to 86,400).
   such names later.
 - The image serves one prompt a process, from a latents file (above), and
   only through the commands.
-- A conversation is reused only when its re-rendered tokens extend what the
-  state holds; a thinking model's re-rendered history usually does not
-  (a client rarely sends the reasoning back), and the turn prefills again.
-  Measured at 64K on Qwen3.8: a client that drops the reasoning
-  re-prefills all ~61K tokens every turn (43 s); one that sends it back
-  prefills only the new ones (0.2–0.3 s)
-  ([long-context](experiments/long-context/README.md#turn-to-turn-reuse)).
+- Turn reuse keeps two stable boundaries on the current branch. A client
+  editing a prefix before those boundaries, or returning after their
+  expiry, needs a fresh prefill. Independent shared-prefix caching and
+  retained forks follow under D-031; prefix matching does not identify a
+  conversation.
 - Long-context prefill and decode are now nearly flat with depth on the
   fast plans ([long-context phase 2](experiments/long-context/README.md));
   the progress watchdog lets long prefills continue while they make progress.

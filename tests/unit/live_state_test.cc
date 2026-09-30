@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <span>
@@ -18,9 +19,11 @@
 #include <vector>
 
 #include "base/bytes.h"
+#include "engine/checkpoint_file.h"
 #include "engine/paged_node.h"
 #include "engine/support.h"
 #include "expected_error.h"
+#include "platform/direct_io.h"
 #include "providers/device_runtime.h"
 #include "scheduler/commands.h"
 
@@ -302,6 +305,234 @@ TEST_F(LowCapacityStateTest, CleanCapacityRefusalPreservesTheExistingPrefix) {
   std::vector<jitllm::catalog::ExtentId> staging;
   EXPECT_FALSE(node_.Pinned(256, 0, staging));
   EXPECT_TRUE(staging.empty());
+}
+
+TEST_F(LiveStateTest, DiskCheckpointRestoresTheWholeMutablePageAndDropsNewTailPages) {
+  const std::array<en::LiveState::Range, 1> prefix = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 3 * kExtent}};
+  ASSERT_TRUE(model_.live.Use(node_, prefix));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(node_.Job(
+      model_.fence_closure(),
+      [&](pr::NativeStream stream) {
+        return pr::FillAsync(stream, en::support::Pointer(model_.live.base(0)), 0x21, 3 * kExtent)
+                       .ok()
+                   ? jitllm::scheduler::JobResult::kQueued
+                   : jitllm::scheduler::JobResult::kUnknown;
+      },
+      "checkpoint prefix", 0));
+  const auto footprint = model_.live.used_ranges();
+  const std::array<en::LiveState::Range, 1> writes = {en::LiveState::Range{
+      .region = 0, .offset = (2 * kExtent) + 256, .bytes = (6 * kExtent) - 256}};
+  auto pages = en::CheckpointPages(footprint, writes);
+  ASSERT_TRUE(pages);
+  ASSERT_EQ(pages->size(), 1);
+  EXPECT_EQ(pages->front().bytes, kExtent);
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  auto checkpoint = en::CheckpointFile::Capture(
+      node_, directory, *pages, [&](void* host, std::span<const en::LiveState::Range> ranges) {
+        return model_.live.Copy(node_, model_.fence_closure(), 0, host, ranges, true);
+      });
+  ASSERT_TRUE(checkpoint);
+  EXPECT_EQ(Occupancy(), fixed_ + (3 * kExtent));  // staging is gone between turns
+  const std::array<en::LiveState::Range, 1> grown = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 5 * kExtent}};
+  ASSERT_TRUE(model_.live.Use(node_, grown));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(node_.Job(
+      model_.fence_closure(),
+      [&](pr::NativeStream stream) {
+        return pr::FillAsync(stream, en::support::Pointer(model_.live.base(0) + (2 * kExtent)),
+                             0x62, 3 * kExtent)
+                       .ok()
+                   ? jitllm::scheduler::JobResult::kQueued
+                   : jitllm::scheduler::JobResult::kUnknown;
+      },
+      "a newer branch", 0));
+  ASSERT_TRUE(node_.Evict(model_.live.extents()));
+  auto restored = checkpoint->Restore(
+      node_,
+      [&]() -> en::Status {
+        if (auto retained = model_.live.Retain(node_, footprint); !retained) {
+          return retained;
+        }
+        return model_.Refresh();
+      },
+      [&](void* host, std::span<const en::LiveState::Range> ranges) {
+        return model_.live.Copy(node_, model_.fence_closure(), 0, host, ranges, false);
+      });
+  ASSERT_TRUE(restored);
+  EXPECT_EQ(model_.live.extents().size(), 3);
+  std::vector<std::byte> copy;
+  const std::array<std::vector<std::byte>*, 1> output = {&copy};
+  ASSERT_TRUE(model_.live.Read(node_, model_.fence_closure(), 0, "restored checkpoint", output));
+  EXPECT_TRUE(std::ranges::all_of(std::span(copy).first(3 * kExtent),
+                                  [](std::byte b) { return b == std::byte{0x21}; }));
+  EXPECT_TRUE(std::ranges::all_of(std::span(copy).subspan(3 * kExtent),
+                                  [](std::byte b) { return b == std::byte{0}; }));
+}
+
+TEST_F(LiveStateTest, DiskCheckpointPadsFileTransfersButRestoresOnlyLogicalBytes) {
+  const std::array<en::LiveState::Range, 2> ranges = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 123},
+      en::LiveState::Range{.region = 0, .offset = kExtent, .bytes = 16}};
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  auto checkpoint = en::CheckpointFile::Capture(
+      node_, directory, ranges,
+      [](void* host, std::span<const en::LiveState::Range> page) -> en::Status {
+        std::memset(host, page.front().offset == 0 ? 0x35 : 0x72, page.front().bytes);
+        return {};
+      });
+  ASSERT_TRUE(checkpoint);
+  EXPECT_EQ(checkpoint->bytes(), 139);
+  std::size_t copied = 0;
+  auto restored = checkpoint->Restore(
+      node_, [] { return en::Status{}; },
+      [&](void* host, std::span<const en::LiveState::Range> page) -> en::Status {
+        const auto want = page.front().offset == 0 ? std::byte{0x35} : std::byte{0x72};
+        EXPECT_TRUE(
+            std::ranges::all_of(std::span(static_cast<const std::byte*>(host), page.front().bytes),
+                                [&](std::byte byte) { return byte == want; }));
+        copied += page.front().bytes;
+        return {};
+      });
+  ASSERT_TRUE(restored);
+  EXPECT_EQ(copied, 139);
+  EXPECT_EQ(Occupancy(), fixed_);
+}
+
+TEST_F(LowCapacityStateTest, OptionalCheckpointAllocationRefusesBeforeStateMutation) {
+  const std::array<en::LiveState::Range, 1> range = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  ASSERT_TRUE(model_.live.Use(node_, range));
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  bool copied = false;
+  auto checkpoint = en::CheckpointFile::Capture(
+      node_, directory, range, [&](void*, std::span<const en::LiveState::Range>) -> en::Status {
+        copied = true;
+        return {};
+      });
+  ASSERT_FALSE(checkpoint);
+  EXPECT_FALSE(checkpoint.error().invalid_state);
+  EXPECT_FALSE(copied);
+  EXPECT_TRUE(model_.live.Usable());
+  EXPECT_EQ(Occupancy(), fixed_ + kExtent);
+}
+
+TEST_F(LiveStateTest, FailedCheckpointDeviceCopyRetainsItsOriginalStagingAllocation) {
+  const std::array<en::LiveState::Range, 1> range = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  auto checkpoint = en::CheckpointFile::Capture(
+      node_, directory, range, [](void*, std::span<const en::LiveState::Range>) -> en::Status {
+        return std::unexpected("copy completion is unknown");
+      });
+  ASSERT_FALSE(checkpoint);
+  EXPECT_TRUE(checkpoint.error().invalid_state);
+  EXPECT_EQ(node_.kept_pinned(), 1);
+  EXPECT_EQ(Occupancy(), fixed_ + kExtent + jitllm::platform::kDirectIoAlignment);
+}
+
+TEST_F(LiveStateTest, CancelledCheckpointCaptureDropsItsCandidateAfterTheCurrentPage) {
+  const std::array<en::LiveState::Range, 2> ranges = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16},
+      en::LiveState::Range{.region = 0, .offset = kExtent, .bytes = 16}};
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  std::size_t copied = 0;
+  auto checkpoint = en::CheckpointFile::Capture(
+      node_, directory, ranges,
+      [&](void* host, std::span<const en::LiveState::Range>) -> en::Status {
+        std::memset(host, 0x45, 16);
+        ++copied;
+        return {};
+      },
+      [&]() { return copied == 0; });
+  ASSERT_FALSE(checkpoint);
+  EXPECT_TRUE(checkpoint.error().cancelled);
+  EXPECT_FALSE(checkpoint.error().invalid_state);
+  EXPECT_EQ(copied, 1);
+  EXPECT_EQ(Occupancy(), fixed_);
+  EXPECT_EQ(node_.kept_pinned(), 0);
+}
+
+TEST_F(LiveStateTest, RestoreCancellationReportsWhetherTheBranchNeedsClearing) {
+  const std::array<en::LiveState::Range, 2> ranges = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16},
+      en::LiveState::Range{.region = 0, .offset = kExtent, .bytes = 16}};
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  auto checkpoint = en::CheckpointFile::Capture(
+      node_, directory, ranges,
+      [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
+        std::memset(host, 0x45, 16);
+        return {};
+      });
+  ASSERT_TRUE(checkpoint);
+  bool prepared = false;
+  std::size_t copied = 0;
+  const auto prepare = [&]() -> en::Status {
+    prepared = true;
+    return {};
+  };
+  const auto copy = [&](void* host, std::span<const en::LiveState::Range>) -> en::Status {
+    EXPECT_EQ(static_cast<const std::byte*>(host)[0], std::byte{0x45});
+    ++copied;
+    return {};
+  };
+  auto early = checkpoint->Restore(node_, prepare, copy, [] { return false; });
+  ASSERT_FALSE(early);
+  EXPECT_TRUE(early.error().cancelled);
+  EXPECT_FALSE(early.error().invalid_state);
+  EXPECT_FALSE(prepared);
+  EXPECT_EQ(copied, 0);
+  auto partial = checkpoint->Restore(node_, prepare, copy, [&]() { return copied == 0; });
+  ASSERT_FALSE(partial);
+  EXPECT_TRUE(partial.error().cancelled);
+  EXPECT_TRUE(partial.error().invalid_state);
+  EXPECT_TRUE(prepared);
+  EXPECT_EQ(copied, 1);
+  EXPECT_EQ(Occupancy(), fixed_);
+  EXPECT_EQ(node_.kept_pinned(), 0);
+  copied = 0;
+  ASSERT_TRUE(checkpoint->Restore(node_, prepare, copy));
+  EXPECT_EQ(copied, 2);  // the immutable checkpoint remains usable
+}
+
+class CheckpointCapacityStateTest : public LiveStateTest {
+ protected:
+  std::uint64_t BudgetExtents() const override { return 2; }
+};
+
+TEST_F(CheckpointCapacityStateTest, RestoreStagingRefusalLeavesTheBranchUntouched) {
+  const std::array<en::LiveState::Range, 1> range = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  auto checkpoint = en::CheckpointFile::Capture(
+      node_, directory, range, [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
+        std::memset(host, 0, 16);
+        return {};
+      });
+  ASSERT_TRUE(checkpoint);
+  ASSERT_TRUE(model_.live.Use(node_, range));
+  bool prepared = false;
+  auto restored = checkpoint->Restore(
+      node_,
+      [&]() -> en::Status {
+        prepared = true;
+        return {};
+      },
+      [](void*, std::span<const en::LiveState::Range>) { return en::Status{}; });
+  ASSERT_FALSE(restored);
+  EXPECT_FALSE(restored.error().invalid_state);
+  EXPECT_FALSE(prepared);
+  EXPECT_TRUE(model_.live.Usable());
+  EXPECT_EQ(Occupancy(), fixed_ + kExtent);
 }
 
 TEST(LiveStateBufferTest, UnprovenCopyRefusesReuseAndKeepsItsDestinationUntilExit) {

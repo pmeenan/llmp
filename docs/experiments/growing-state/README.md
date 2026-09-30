@@ -16,7 +16,8 @@ and cached indexer-block state. A clean capacity refusal preserves the
 completed prefix. A job whose effects are uncertain quarantines the state.
 Diagnostic snapshots pack used extents and catalog their pinned staging;
 the shared snapshot records its owner, history, cursor and adaptive depth.
-These snapshots are controls, not the turn-reuse cache, which follows next.
+These snapshots are controls; the [turn-reuse cache](../turn-reuse/README.md)
+uses transient page staging and private disk checkpoints instead.
 
 ## Native checks
 

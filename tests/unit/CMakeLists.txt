@@ -246,6 +246,9 @@ jitllm_gtest(tokenizer_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 # The chat renderers against their references' text (D-067), and JSON as
 # Python prints it.
 add_executable(chat_test chat_test.cc)
+add_executable(turn_reuse_test turn_reuse_test.cc)
+target_link_libraries(turn_reuse_test PRIVATE jitllm_runtime jitllm_chat)
+jitllm_gtest(turn_reuse_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 target_link_libraries(chat_test PRIVATE jitllm_chat jitllm_json jitllm_base)
 jitllm_gtest(chat_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")

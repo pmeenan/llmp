@@ -262,6 +262,10 @@ std::expected<Dsv4StateLayout, std::string> Dsv4State(const Dsv4Profile& profile
 // `positions` may touch. The dummy compressed row is always included.
 std::expected<std::vector<StateRange>, std::string> Dsv4UsedState(const Dsv4StateLayout& state,
                                                                   std::uint32_t positions);
+// Ranges later tokens may overwrite. Checkpoints save their complete used
+// physical pages, including padded bytes beyond the current read prefix.
+std::expected<std::vector<StateRange>, std::string> Dsv4CheckpointWrites(
+    const Dsv4StateLayout& state, std::uint32_t positions);
 
 // The widest chunk Dsv4State admits at `context` (either window: a ring is
 // never larger than the full cache, and holds any chunk the full cache

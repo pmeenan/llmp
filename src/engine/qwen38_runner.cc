@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "artifact/layout.h"
+#include "engine/checkpoint_file.h"
 #include "engine/support.h"
 #include "ggml.h"
 #include "kernels/ggml/executor.h"
@@ -1356,6 +1357,13 @@ Status Qwen38Runner::RestoreUsedState(void* host, std::span<const LiveState::Ran
       std::ranges::any_of(ranges, [](const LiveState::Range& r) { return r.bytes != 0; })) {
     return Error("the conversation snapshot has no source buffer");
   }
+  if (auto prepared = PrepareRestoreState(ranges); !prepared) {
+    return prepared;
+  }
+  return CopyCheckpointState(host, ranges, false);
+}
+
+Status Qwen38Runner::PrepareRestoreState(std::span<const LiveState::Range> ranges) {
   const bool requested = node_.InRequest(stream_);
   if (requested) {
     if (auto ended = node_.EndRequest(stream_); !ended) {
@@ -1379,11 +1387,60 @@ Status Qwen38Runner::RestoreUsedState(void* host, std::span<const LiveState::Ran
   if (!prepared) {
     return prepared;
   }
-  auto copied = live_.Copy(node_, fence_, stream_, host, ranges, false);
+  return {};
+}
+
+Status Qwen38Runner::CopyCheckpointState(void* host, std::span<const LiveState::Range> ranges,
+                                         bool to_host) {
+  auto copied = live_.Copy(node_, fence_, stream_, host, ranges, to_host);
   if (!copied) {
     live_.Quarantine();
   }
   return copied;
+}
+
+std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::CheckpointRanges(
+    std::uint32_t positions) const {
+  if (auto usable = live_.Usable(); !usable) {
+    return std::unexpected(usable.error());
+  }
+  if (auto settled = live_.AwaitingAccept(); !settled) {
+    return std::unexpected(settled.error());
+  }
+  if (live_.owed()) {
+    return Error("checkpoint has an unsettled Qwen3.8 verify");
+  }
+  auto mutable_bytes = md::Qwen38CheckpointWrites(profile_, layout_, positions);
+  if (!mutable_bytes) {
+    return std::unexpected(mutable_bytes.error());
+  }
+  std::vector<LiveState::Range> writes;
+  for (const auto& range : *mutable_bytes) {
+    writes.push_back({.region = kTarget, .offset = range.offset, .bytes = range.bytes});
+  }
+  if (speculative()) {
+    // The drafter catches up the previous target row before advancing.
+    const std::uint64_t first = positions == 0 ? 0 : positions - 1;
+    const std::uint64_t kv_row = std::uint64_t{profile_.head_dim} * profile_.kv_heads * 2;
+    const std::uint64_t indexer_row = std::uint64_t{profile_.indexer_head_dim} * 4;
+    const auto tail = [&](std::uint64_t offset, std::uint64_t row, std::uint64_t begin,
+                          std::uint64_t cells) {
+      if (begin < cells) {
+        writes.push_back(
+            {.region = kDrafter, .offset = offset + (begin * row), .bytes = (cells - begin) * row});
+      }
+    };
+    tail(mtp_layout_.k, kv_row, first, mtp_layout_.cells);
+    tail(mtp_layout_.v, kv_row, first, mtp_layout_.cells);
+    tail(mtp_layout_.indexer, indexer_row, first, mtp_layout_.cells);
+    tail(mtp_layout_.blocks, std::uint64_t{profile_.indexer_head_dim} * 2,
+         first / profile_.indexer_ratio,
+         (std::uint64_t{mtp_layout_.cells} + profile_.indexer_ratio - 1) / profile_.indexer_ratio);
+    writes.push_back({.region = kDrafter,
+                      .offset = mtp_layout_.hidden,
+                      .bytes = mtp_layout_.bytes - mtp_layout_.hidden});
+  }
+  return CheckpointPages(live_.used_ranges(), writes);
 }
 
 }  // namespace jitllm::engine

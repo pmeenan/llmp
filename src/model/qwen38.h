@@ -273,6 +273,8 @@ std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p
 std::expected<std::vector<StateRange>, std::string> Qwen38UsedState(const Qwen38Profile& profile,
                                                                     const Qwen38StateLayout& state,
                                                                     std::uint32_t positions);
+std::expected<std::vector<StateRange>, std::string> Qwen38CheckpointWrites(
+    const Qwen38Profile& profile, const Qwen38StateLayout& state, std::uint32_t positions);
 
 // The widest chunk Qwen38State admits at `context`: the context,
 // kQwen38MaxRows and, with `host_masks`, the F32 [n_kv, rows] tensors' I32

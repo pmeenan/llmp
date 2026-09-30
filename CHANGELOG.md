@@ -13,6 +13,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- LLM turns reuse stable checkpoints when clients remove earlier reasoning,
+  with two private disk checkpoints per model and a 24-hour reuse limit.
 - LLM conversation state allocates and spills only used cache extents;
   long context ceilings no longer allocate the whole cache at registration.
 - The `jitllm` command, with `--version`: the product version (`X.Y.Z` for a

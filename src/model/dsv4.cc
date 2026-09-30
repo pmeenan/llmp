@@ -494,6 +494,34 @@ std::expected<std::vector<StateRange>, std::string> Dsv4UsedState(const Dsv4Stat
   return ranges;
 }
 
+std::expected<std::vector<StateRange>, std::string> Dsv4CheckpointWrites(
+    const Dsv4StateLayout& state, std::uint32_t positions) {
+  if (positions > state.context) {
+    return Refused("checkpoint passes the DeepSeek context");
+  }
+  using K = Dsv4StateTensor::Kind;
+  std::vector<StateRange> writes;
+  for (const Dsv4StateTensor& t : state.tensors) {
+    std::uint64_t first = 0;
+    if (t.kind == K::kRawK && state.window == Dsv4Window::kFull) {
+      first = positions;
+    } else if (t.kind == K::kCsaK || t.kind == K::kLidK || t.kind == K::kHcaK) {
+      const std::uint64_t ratio = t.kind == K::kHcaK ? kDsv4HcaRatio : kDsv4CsaRatio;
+      first = positions / ratio;
+      // Every compressor chunk writes its final dummy cell, even outside
+      // the visible prefix. Retained bytes must reproduce it exactly.
+      const std::uint64_t row = t.ne0 * (t.f16 ? 2 : 4);
+      writes.push_back({.offset = t.offset + ((t.ne1 - 1) * row), .bytes = row});
+    }
+    first = std::min(first, t.ne1);
+    const std::uint64_t row = t.ne0 * (t.f16 ? 2 : 4);
+    if (first < t.ne1) {
+      writes.push_back({.offset = t.offset + (first * row), .bytes = (t.ne1 - first) * row});
+    }
+  }
+  return writes;
+}
+
 std::uint32_t Dsv4MostRows(const Dsv4Profile& p, std::uint32_t context) {
   if (!ProfileIsSane(p) || context == 0 ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {

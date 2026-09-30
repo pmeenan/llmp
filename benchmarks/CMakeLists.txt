@@ -21,6 +21,11 @@ add_subdirectory(retained_backing)
 # Storage queue depth and request size, direct into host VMM through the
 # providers (docs/experiments/storage-queue/). Needs a CUDA device.
 if(JITLLM_CUDA)
+  add_executable(jitllm_turn_reuse turn_reuse.cc)
+  target_link_libraries(jitllm_turn_reuse PRIVATE jitllm_runtime_serving jitllm_base jitllm_warnings)
+  target_link_options(jitllm_turn_reuse PRIVATE
+                     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
+
   add_executable(jitllm_storage_bench storage_bench.cc)
   target_link_libraries(jitllm_storage_bench PRIVATE jitllm_cuda_device_memory jitllm_storage jitllm_warnings)
 

@@ -15,6 +15,7 @@
 #include <string_view>
 #include <utility>
 
+#include "engine/checkpoint_file.h"
 #include "engine/support.h"
 #include "ggml.h"
 #include "kernels/ggml/executor.h"
@@ -1171,6 +1172,13 @@ Status Dsv4Runner::RestoreUsedState(void* host, std::span<const LiveState::Range
       std::ranges::any_of(ranges, [](const LiveState::Range& r) { return r.bytes != 0; })) {
     return Error("the conversation snapshot has no source buffer");
   }
+  if (auto prepared = PrepareRestoreState(ranges); !prepared) {
+    return prepared;
+  }
+  return CopyCheckpointState(host, ranges, false);
+}
+
+Status Dsv4Runner::PrepareRestoreState(std::span<const LiveState::Range> ranges) {
   const bool requested = node_.InRequest(stream_);
   if (requested) {
     if (auto ended = node_.EndRequest(stream_); !ended) {
@@ -1194,11 +1202,41 @@ Status Dsv4Runner::RestoreUsedState(void* host, std::span<const LiveState::Range
   if (!prepared) {
     return prepared;
   }
-  auto copied = live_.Copy(node_, fence_, stream_, host, ranges, false);
+  return {};
+}
+
+Status Dsv4Runner::CopyCheckpointState(void* host, std::span<const LiveState::Range> ranges,
+                                       bool to_host) {
+  auto copied = live_.Copy(node_, fence_, stream_, host, ranges, to_host);
   if (!copied) {
     live_.Quarantine();
   }
   return copied;
+}
+
+std::expected<std::vector<LiveState::Range>, std::string> Dsv4Runner::CheckpointRanges(
+    std::uint32_t positions) const {
+  if (auto usable = live_.Usable(); !usable) {
+    return std::unexpected(usable.error());
+  }
+  if (auto settled = live_.AwaitingAccept(); !settled) {
+    return std::unexpected(settled.error());
+  }
+  if (live_.owed()) {
+    return Error("checkpoint has an unsettled DeepSeek verify");
+  }
+  auto mutable_bytes = md::Dsv4CheckpointWrites(layout_, positions);
+  if (!mutable_bytes) {
+    return std::unexpected(mutable_bytes.error());
+  }
+  std::vector<LiveState::Range> writes;
+  for (const auto& range : *mutable_bytes) {
+    writes.push_back({.region = kTarget, .offset = range.offset, .bytes = range.bytes});
+  }
+  if (speculative()) {
+    writes.push_back({.region = kDrafter, .offset = 0, .bytes = dlayout_.bytes});
+  }
+  return CheckpointPages(live_.used_ranges(), writes);
 }
 
 Status Dsv4Runner::ReadState(std::vector<std::byte>& target, std::vector<std::byte>& drafter) {

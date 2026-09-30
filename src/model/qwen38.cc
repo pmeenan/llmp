@@ -631,6 +631,29 @@ std::expected<std::vector<StateRange>, std::string> Qwen38UsedState(const Qwen38
   return ranges;
 }
 
+std::expected<std::vector<StateRange>, std::string> Qwen38CheckpointWrites(
+    const Qwen38Profile& p, const Qwen38StateLayout& state, std::uint32_t positions) {
+  if (positions > state.context || p.indexer_ratio == 0) {
+    return Refused("checkpoint passes the Qwen3.8 context");
+  }
+  using K = Qwen38StateTensor::Kind;
+  std::vector<StateRange> writes;
+  for (const Qwen38StateTensor& t : state.tensors) {
+    std::uint64_t first = 0;
+    if (t.kind == K::kK || t.kind == K::kV || t.kind == K::kIndexerK) {
+      first = positions;
+    } else if (t.kind == K::kIndexerBlocks) {
+      first = positions / p.indexer_ratio;  // a partly filled pool block is mutable
+    }
+    first = std::min(first, t.ne1);
+    const std::uint64_t row = t.ne0 * (t.f16 ? 2 : 4);
+    if (first < t.ne1) {
+      writes.push_back({.offset = t.offset + (first * row), .bytes = (t.ne1 - first) * row});
+    }
+  }
+  return writes;
+}
+
 std::uint32_t Qwen38MostRows(std::uint32_t context, bool host_masks) {
   if (context == 0 ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {

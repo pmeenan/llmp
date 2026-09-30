@@ -155,6 +155,7 @@ class Dsv4 final : public Llm {
         runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
     name_ = entry.name;
     node_ = &node;
+    checkpoint_directory_ = roles.spill;
     speculate_ = !drafter_id_.empty() && entry.speculation && !plain;
     context_ = entry.context;
     options_.artifact = roles.installed / artifact_id_;
@@ -255,11 +256,11 @@ class Dsv4 final : public Llm {
   }
   std::string extra() const override {
     return std::format(
-        R"({{"used_state_bytes":{},"architecture":"deepseek4","speculation":{},"coverage_tensors":{},)"
+        R"({{"turn_checkpoints":{},"turn_checkpoint_bytes":{},"used_state_bytes":{},"architecture":"deepseek4","speculation":{},"coverage_tensors":{},)"
         R"("slab_padding":{},"state_bytes":{},"drafter_state_bytes":{},"graphs":{}}})",
-        runner_.used_state_bytes(), speculate_ ? "\"dspark\"" : "null", runner_.coverage_tensors(),
-        runner_.slab_padding(), runner_.state_bytes(), runner_.drafter_state_bytes(),
-        GraphJson(graphs()));
+        turn_checkpoints(), turn_checkpoint_bytes(), runner_.used_state_bytes(),
+        speculate_ ? "\"dspark\"" : "null", runner_.coverage_tensors(), runner_.slab_padding(),
+        runner_.state_bytes(), runner_.drafter_state_bytes(), GraphJson(graphs()));
   }
   void Defaults(chat::Conversation& c) const override {
     // As llama-server's /apply-template rendered the references' prompts:
@@ -355,6 +356,17 @@ class Dsv4 final : public Llm {
   Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
     return runner_.RestoreUsedState(host, ranges);
   }
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
+      std::uint32_t positions) const override {
+    return runner_.CheckpointRanges(positions);
+  }
+  Status PrepareRestoreState(std::span<const engine::LiveState::Range> footprint) override {
+    return runner_.PrepareRestoreState(footprint);
+  }
+  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
+                             bool to_host) override {
+    return runner_.CopyCheckpointState(host, ranges, to_host);
+  }
   std::uint64_t target_state_bytes() const override { return runner_.state_bytes(); }
   std::uint64_t drafter_state_base() const override { return runner_.drafter_state_base(); }
   std::uint64_t drafter_state_bytes() const override { return runner_.drafter_state_bytes(); }
@@ -382,6 +394,7 @@ class Qwen38 final : public Llm {
     name_ = entry.name;
     node_ = &node;
     speculate_ = !drafter_id_.empty() && entry.speculation && !plain;
+    checkpoint_directory_ = roles.spill;
     context_ = entry.context;
     options_.artifact = roles.installed / artifact_id_;
     options_.out = roles.spill;
@@ -493,14 +506,14 @@ class Qwen38 final : public Llm {
   std::string extra() const override {
     const engine::PleStats& p = runner_.ple();
     return std::format(
-        R"({{"used_state_bytes":{},"architecture":"qwen4exp","speculation":{},"coverage_tensors":{},)"
+        R"({{"turn_checkpoints":{},"turn_checkpoint_bytes":{},"used_state_bytes":{},"architecture":"qwen4exp","speculation":{},"coverage_tensors":{},)"
         R"("slab_padding":{},"state_bytes":{},"drafter_state_bytes":{},"ple_table_bytes":{},)"
         R"("ple":{{"chunks":{},"lookups":{},"rows":{},"reads":{},"read_bytes":{},)"
         R"("seconds":{:.6f}}},"graphs":{}}})",
-        runner_.used_state_bytes(), speculate_ ? "\"mtp\"" : "null", runner_.coverage_tensors(),
-        runner_.slab_padding(), runner_.state_bytes(), runner_.drafter_state_bytes(),
-        runner_.table_bytes(), p.chunks, p.lookups, p.rows, p.reads, p.read_bytes, p.seconds,
-        GraphJson(graphs()));
+        turn_checkpoints(), turn_checkpoint_bytes(), runner_.used_state_bytes(),
+        speculate_ ? "\"mtp\"" : "null", runner_.coverage_tensors(), runner_.slab_padding(),
+        runner_.state_bytes(), runner_.drafter_state_bytes(), runner_.table_bytes(), p.chunks,
+        p.lookups, p.rows, p.reads, p.read_bytes, p.seconds, GraphJson(graphs()));
   }
   void Defaults(chat::Conversation& /*c*/) const override {
     // The template's own defaults (thinking on), as the oracle's /tokenize
@@ -628,12 +641,25 @@ class Qwen38 final : public Llm {
     return runner_.RestoreUsedState(host, ranges);
   }
   std::uint64_t target_state_bytes() const override { return runner_.state_bytes(); }
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
+      std::uint32_t positions) const override {
+    return runner_.CheckpointRanges(positions);
+  }
+  Status PrepareRestoreState(std::span<const engine::LiveState::Range> footprint) override {
+    return runner_.PrepareRestoreState(footprint);
+  }
+  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
+                             bool to_host) override {
+    return runner_.CopyCheckpointState(host, ranges, to_host);
+  }
   std::uint64_t drafter_state_base() const override { return runner_.drafter_state_base(); }
   std::uint64_t drafter_state_bytes() const override { return runner_.drafter_state_bytes(); }
   std::uint32_t cursor() const override { return runner_.pending_rows(); }
   void set_cursor(std::uint32_t value) override { runner_.set_pending_rows(value); }
   void SaveDecodingState() override { saved_depth_ = depth_; }
   void RestoreDecodingState() override { depth_ = saved_depth_; }
+  execution::AdaptiveDepth TurnDecodingState() const override { return depth_; }
+  void RestoreTurnDecodingState(const execution::AdaptiveDepth& state) override { depth_ = state; }
 
  private:
   std::string artifact_id_;
@@ -777,7 +803,10 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::EncodeText(std::strin
 }
 
 std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
-    const chat::Conversation& conversation) const {
+    const chat::Conversation& conversation, std::uint32_t* stable_boundary) const {
+  if (stable_boundary != nullptr) {
+    *stable_boundary = 0;
+  }
   if (template_ == nullptr) {
     return Error(std::format("{} has no chat template a native renderer supports (D-067)", name_));
   }
@@ -786,8 +815,24 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
     return Error(rendered.error().ToString());
   }
   std::vector<tokenizer::TokenId> ids;
-  if (auto r = tokenizer_->EncodeMarked(rendered->text, rendered->specials, {}, ids); !r) {
+  std::vector<std::size_t> span_tokens;
+  if (auto r = tokenizer_->EncodeMarked(rendered->text, rendered->specials, {}, ids,
+                                        stable_boundary == nullptr ? nullptr : &span_tokens);
+      !r) {
     return Error(r.error().ToString());
+  }
+  if (stable_boundary != nullptr) {
+    for (const chat::Boundary& boundary : rendered->boundaries) {
+      if (boundary.kind != chat::BoundaryKind::kGenerationPrompt) {
+        continue;
+      }
+      for (std::size_t i = 0; i < rendered->specials.size(); ++i) {
+        if (rendered->specials[i].offset == boundary.offset && span_tokens[i] < ids.size()) {
+          *stable_boundary = static_cast<std::uint32_t>(span_tokens[i]);
+          break;
+        }
+      }
+    }
   }
   return std::vector<std::int32_t>(ids.begin(), ids.end());
 }
@@ -834,12 +879,196 @@ void Llm::FindThinkTokens() {
 }
 
 Status Llm::Clear() {
+  turn_checkpoints_.clear();
   if (auto r = ClearState(); !r) {
     return r;
   }
   history_.clear();
   needs_clear_ = false;
+  history_used_ = Clock::now();
   return {};
+}
+
+std::uint64_t Llm::turn_checkpoint_bytes() const {
+  std::uint64_t bytes = 0;
+  for (const TurnCheckpoint& checkpoint : turn_checkpoints_) {
+    bytes += checkpoint.file.bytes();
+  }
+  return bytes;
+}
+
+Status Llm::CaptureTurnCheckpoint(const PrefillGoOn& go_on, bool& stopped) {
+  if (history_.empty()) {
+    return {};
+  }
+  const std::size_t position = history_.size();
+  if (std::ranges::any_of(turn_checkpoints_, [&](const TurnCheckpoint& c) {
+        return c.boundary.position == position;
+      })) {
+    return {};  // looking it up does not renew its retention period
+  }
+  if (auto settled = Settle(); !settled) {
+    return settled;
+  }
+  auto ranges = CheckpointRanges(static_cast<std::uint32_t>(position));
+  if (!ranges) {
+    return std::unexpected(ranges.error());
+  }
+  const engine::CheckpointFile::Continue progress =
+      go_on ? engine::CheckpointFile::Continue([&]() { return go_on(0); })
+            : engine::CheckpointFile::Continue{};
+  auto file = engine::CheckpointFile::Capture(
+      *node_, checkpoint_directory_, *ranges,
+      [&](void* host, std::span<const engine::LiveState::Range> page) {
+        return CopyCheckpointState(host, page, true);
+      },
+      progress);
+  if (!file) {
+    if (file.error().invalid_state) {
+      Forget();
+      return Error("saving a turn checkpoint: " + file.error().detail);
+    }
+    stopped = file.error().cancelled;
+    return {};  // optional cache: unavailable staging or disk does not fail the turn
+  }
+  TurnCheckpoint checkpoint{.boundary = {.position = position, .created = Clock::now()},
+                            .file = std::move(*file),
+                            .footprint = used_state_ranges(),
+                            .cursor = cursor(),
+                            .decoding = TurnDecodingState()};
+  turn_checkpoints_.push_back(std::move(checkpoint));
+  if (turn_checkpoints_.size() > kTurnCheckpointLimit) {
+    turn_checkpoints_.erase(turn_checkpoints_.begin());
+  }
+  return {};
+}
+
+Status Llm::ReusePrompt(std::span<const std::int32_t> tokens, std::uint32_t& reused, bool fresh,
+                        const PrefillGoOn& go_on, bool& stopped) {
+  reused = 0;
+  const auto now = Clock::now();
+  if (fresh || needs_clear_ || !StateUsable() || now - history_used_ >= kTurnCheckpointRetention) {
+    return Clear();
+  }
+  std::erase_if(turn_checkpoints_, [&](const TurnCheckpoint& checkpoint) {
+    return now - checkpoint.boundary.created >= kTurnCheckpointRetention;
+  });
+  const std::size_t common = CommonPrefix(history_, tokens);
+  if (!history_.empty() && common == history_.size() && common < tokens.size()) {
+    reused = static_cast<std::uint32_t>(common);
+    return {};
+  }
+  std::vector<TurnBoundary> boundaries;
+  boundaries.reserve(turn_checkpoints_.size());
+  for (const TurnCheckpoint& checkpoint : turn_checkpoints_) {
+    boundaries.push_back(checkpoint.boundary);
+  }
+  const auto match = MatchingTurnBoundary(boundaries, common, tokens.size(), now);
+  if (!match) {
+    return Clear();
+  }
+  TurnCheckpoint& checkpoint = turn_checkpoints_[*match];
+  const auto position = checkpoint.boundary.position;
+  const auto restored_cursor = checkpoint.cursor;
+  const auto restored_decoding = checkpoint.decoding;
+  if (auto settled = Settle(); !settled) {
+    Forget();
+    return settled;
+  }
+  const engine::CheckpointFile::Continue progress =
+      go_on ? engine::CheckpointFile::Continue([&]() { return go_on(0); })
+            : engine::CheckpointFile::Continue{};
+  auto restored = checkpoint.file.Restore(
+      *node_, [&]() { return PrepareRestoreState(checkpoint.footprint); },
+      [&](void* host, std::span<const engine::LiveState::Range> page) {
+        return CopyCheckpointState(host, page, false);
+      },
+      progress);
+  if (!restored) {
+    if (restored.error().cancelled) {
+      stopped = true;
+      return restored.error().invalid_state ? Clear() : Status{};
+    }
+    // Before mutation this is an optional cache miss. After mutation, Clear
+    // drops the branch before any fresh prefill; an uncertain device copy
+    // may make Clear fail, in which case the runtime stops normally.
+    return Clear();
+  }
+  history_.resize(position);
+  set_cursor(restored_cursor);
+  RestoreTurnDecodingState(restored_decoding);
+  std::erase_if(turn_checkpoints_,
+                [&](const TurnCheckpoint& c) { return c.boundary.position > position; });
+  reused = static_cast<std::uint32_t>(position);
+  needs_clear_ = false;
+  history_used_ = now;
+  return {};
+}
+
+Status Llm::PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
+                          std::vector<float>& last, std::uint32_t& reused, const PrefillGoOn& go_on,
+                          PrefillRun* run, bool fresh) {
+  if (tokens.empty() || tokens.size() >= context_ || stable_boundary >= tokens.size()) {
+    return Error("the prompt or its turn boundary is outside the context");
+  }
+  last.clear();
+  reused = 0;
+  bool stopped = go_on && !go_on(0);
+  if (!stopped) {
+    if (auto prepared = ReusePrompt(tokens, reused, fresh, go_on, stopped); !prepared) {
+      return prepared;
+    }
+  }
+  PrefillRun total{.end = reused, .stopped = stopped};
+  if (run != nullptr) {
+    *run = total;
+  }
+  if (stopped) {
+    return {};
+  }
+  const auto append = [&](std::uint32_t end) -> Status {
+    const auto begin = static_cast<std::uint32_t>(history_.size());
+    if (end <= begin) {
+      return {};
+    }
+    PrefillRun part;
+    auto ran = Prefill(tokens.subspan(begin, end - begin), last, go_on, &part);
+    total.end = part.end;
+    total.chunks += part.chunks;
+    total.longest = std::max(total.longest, part.longest);
+    total.stopped = part.stopped;
+    if (run != nullptr) {
+      *run = total;
+    }
+    return ran;
+  };
+  if (stable_boundary != 0 && stable_boundary >= history_.size()) {
+    if (auto ran = append(stable_boundary); !ran) {
+      return ran;
+    }
+    if (total.stopped) {
+      return {};
+    }
+    if (go_on && !go_on(0)) {
+      total.stopped = true;
+      last.clear();
+      if (run != nullptr) {
+        *run = total;
+      }
+      return {};
+    }
+    if (auto checkpointed = CaptureTurnCheckpoint(go_on, total.stopped); !checkpointed) {
+      return checkpointed;
+    }
+    if (total.stopped) {
+      last.clear();
+      if (run != nullptr) {
+        *run = total;
+      }
+      return {};
+    }
+  }
+  return append(static_cast<std::uint32_t>(tokens.size()));
 }
 
 Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
@@ -890,6 +1119,7 @@ Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& la
   // generate from.
   all.resize(ran->end);
   history_ = std::move(all);
+  history_used_ = Clock::now();
   if (ran->stopped) {
     last.clear();
   }
@@ -1013,6 +1243,7 @@ Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& opti
     return ran;
   }
   history_.assign(all.begin(), all.begin() + pos);
+  history_used_ = Clock::now();
   if (out.tokens.size() > options.max_tokens) {
     out.tokens.resize(options.max_tokens);
   }
@@ -1061,6 +1292,8 @@ Status Llm::RestoreState(void* host) {
     return r;
   }
   history_ = saved_history_;
+  turn_checkpoints_.clear();  // a full diagnostic restore may replace the branch
+  history_used_ = Clock::now();
   set_cursor(saved_cursor_);
   RestoreDecodingState();
   needs_clear_ = false;

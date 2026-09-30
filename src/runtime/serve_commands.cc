@@ -161,31 +161,22 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
       chat::Conversation conversation;
       conversation.messages = messages;
       l.Defaults(conversation);
-      auto tokens = l.RenderChat(conversation);
+      std::uint32_t stable_boundary = 0;
+      auto tokens = l.RenderChat(conversation, &stable_boundary);
       if (!tokens) {
         return Error(std::format("turn {}: {}", index + 1, tokens.error()));
       }
       Generation generation;
-      std::size_t reused = 0;
+      std::uint32_t reused = 0;
       double prefill = 0;
       PrefillRun chunks;
       std::string top;  // the prefill's last row: its highest logits
       Clock::time_point first;
       auto ran = server.InRequest(*m, [&]() -> Status {
-        const std::vector<std::int32_t>& history = l.history();
-        // The state holds a prefix of this turn's tokens: only the rest is
-        // prefilled; otherwise the conversation starts over.
-        if (o.fresh || history.empty() || history.size() >= tokens->size() ||
-            !std::equal(history.begin(), history.end(), tokens->begin())) {
-          if (auto r = l.Clear(); !r) {
-            return r;
-          }
-        } else {
-          reused = history.size();
-        }
         std::vector<float> last;
         const auto start = Clock::now();
-        if (auto r = l.Prefill(std::span(*tokens).subspan(reused), last, {}, &chunks); !r) {
+        if (auto r = l.PreparePrompt(*tokens, stable_boundary, last, reused, {}, &chunks, o.fresh);
+            !r) {
           return r;
         }
         first = Clock::now();

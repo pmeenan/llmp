@@ -143,14 +143,25 @@ rather than works around:
   cover padded attention reads, dummy cells and fixed rings. Packed
   snapshots carry only used pages. A clean capacity refusal preserves the
   completed prefix; uncertain completion quarantines it.
-- **Turn-boundary checkpoints** of recurrent or indexer state: a
-  checkpoint is a set of saved ranges kept across jobs, the verify
-  snapshot's mechanism with a longer life, and belongs beside it in
-  `LiveState`; which ranges to save is the model's (as `Dsv4ChunkWrites`
-  is today).
-- **Turn-to-turn prefix reuse**: the runtime's conversation (`history`)
-  and `LiveState::Clear` are where a turn decides to keep or drop state;
-  restoring a checkpoint rather than clearing is the new path.
+- **Turn-boundary checkpoints**: the model's `CheckpointWrites` names
+  future mutable ranges; the runner includes its drafter and
+  `CheckpointPages` selects whole used physical pages overlapping them.
+  `CheckpointFile` captures those pages into an unnamed private direct-I/O
+  file with transient cataloged staging. Immutable earlier cache pages
+  remain in the branch's live state or spill file. Restore first retains
+  the original footprint and discards newer tail pages, then copies the
+  saved pages back. Uncertain copies quarantine the state and retain the
+  original staging allocation.
+  Per-page continuation checks let the watchdog observe progress and
+  limit cancellation to the transfer currently in flight.
+- **Turn-to-turn prefix reuse**: the runtime's `PreparePrompt` compares
+  exact tokens, reuses a complete live prefix or restores the nearest of
+  two retained boundaries within their common prefix, and prefills the
+  suffix. Boundaries precede the renderer's unstable assistant opening.
+  Entries carry history position, cursor and adaptive decoding state,
+  expire for reuse after 24 hours and disappear at clear or restart;
+  cleanup during idle time is lazy. See
+  [the native control](experiments/turn-reuse/README.md).
 - **Deterministic top-k and sparse prefill attention**: graph builders and
   kernels (`kernels/ggml/`), selected per shape by the plan; the skeleton's
   plan cache and graphs take them unchanged, and a prefill shape's capture

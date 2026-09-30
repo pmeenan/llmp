@@ -183,6 +183,10 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t used_state_bytes() const { return live_.used_bytes(); }
   Status SaveUsedState(void* host, std::span<const LiveState::Range> ranges);
   Status RestoreUsedState(void* host, std::span<const LiveState::Range> ranges);
+  std::expected<std::vector<LiveState::Range>, std::string> CheckpointRanges(
+      std::uint32_t positions) const;
+  Status PrepareRestoreState(std::span<const LiveState::Range> ranges);
+  Status CopyCheckpointState(void* host, std::span<const LiveState::Range> ranges, bool to_host);
   // One chunk: history[n_past, end) after n_past (history holds every token
   // from position 0); the last row's logits in `logits`. With `inject`
   // (speculating), the drafter's streams and its pass over the chunk too.

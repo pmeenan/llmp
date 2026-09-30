@@ -10,6 +10,7 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -215,6 +216,35 @@ std::expected<void, int> DiscardFileRange(int fd, std::uint64_t offset, std::uin
   if (bytes != 0 && ::fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
                                 static_cast<off_t>(offset), static_cast<off_t>(bytes)) != 0) {
     return std::unexpected(errno);
+  }
+  return {};
+}
+
+std::expected<void, int> TransferDirectFile(int fd, std::uint64_t offset,
+                                            std::span<std::byte> buffer, bool write) {
+  const auto limit = static_cast<std::uint64_t>(std::numeric_limits<off_t>::max());
+  if (fd < 0 || offset > limit || buffer.size() > limit - offset ||
+      offset % kDirectIoAlignment != 0 || buffer.size() % kDirectIoAlignment != 0 ||
+      reinterpret_cast<std::uintptr_t>(buffer.data()) % kDirectIoAlignment != 0) {
+    return std::unexpected(EINVAL);
+  }
+  std::size_t done = 0;
+  while (done < buffer.size()) {
+    const std::size_t bytes = std::min<std::size_t>(buffer.size() - done, 2U << 20U);
+    const auto at = static_cast<off_t>(offset + done);
+    const ssize_t result = write ? ::pwrite(fd, buffer.data() + done, bytes, at)
+                                 : ::pread(fd, buffer.data() + done, bytes, at);
+    if (result < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return std::unexpected(errno);
+    }
+    if (result == 0 || std::cmp_greater(result, bytes) ||
+        static_cast<std::uint64_t>(result) % kDirectIoAlignment != 0) {
+      return std::unexpected(EIO);
+    }
+    done += static_cast<std::size_t>(result);
   }
   return {};
 }
