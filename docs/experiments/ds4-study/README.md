@@ -124,12 +124,29 @@ slab padding: the harness's slabs add only 40,157,184 bytes.
 
 Cache policies differ. ds4's defaults use FP8 compressed KV and FP4
 indexer caches; native uses F16. An additional 8K cold ds4 run with
-`DS4_CUDA_FP8_KV=0 DS4_CUDA_FP4_INDEX=0` uses F32 caches and gives
+`DS4_CUDA_FP8_KV=0 DS4_CUDA_FP4_INDEX=0` uses F32 primary storage and gives
 1,054.22 prefill and 17.55 steady decode tok/s, with a 95.26 GiB peak.
 Native's F16 prefill is 0.593 times that F32 control, leaving a 40.7%
 throughput deficit; the prefill gap remains without ds4's compressed
-caches. This is a higher-precision reference control, not a matching
-F16-cache comparison. ds4 exposes no F16 mode at this pin.
+storage. This is a storage/kernel control, not an unrounded cache or a
+matching F16-cache comparison. Both ds4 profiles still round/dequantize
+non-rotary KV through FP8 and indexer values through Hadamard/FP4 before storage;
+disabling the packed mirrors does not disable those transforms. ds4
+exposes no F16 mode at this pin.
+
+The pinned `ds4_cuda.cu` functions `fp8_kv_quantize_kernel` and
+`indexer_hadamard_fp4_kernel` always write the rounded values back to
+their F32 tensors, even when the packed output pointers are null.
+The graph calls those functions in both storage profiles. `--quality`
+changes several product/attention choices but leaves these transforms
+and some fused paths active; it is not an exact or all-F32 oracle.
+DeepSeek's [official inference model](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/blob/9e165c30e2704aec5d9d593cce3eebd58bbef1cb/inference/model.py)
+also simulates FP8 non-rotary KV and Hadamard/FP4 indexer rounding for
+quantization-aware training. Lower bit width alone therefore does not
+establish a sacrifice relative to the intended model. The storage
+controls above do not measure its quality cost or prove that ds4 passes
+our long-window oracle and 3% perplexity gates. Those require matched
+same-GGUF controls; the short agreement below is insufficient.
 
 An interleaved default-cache 8K repeat measured 952.82 prefill and 18.77
 steady decode tok/s (94.68 GiB peak), versus 1,064.32 in the ladder.
@@ -321,9 +338,10 @@ and 97.24–97.44 GiB for the original checkpoint. No representation,
 weight-byte or cache-precision change accompanies compact scheduling.
 Community compact prefill is about 692 tok/s, versus ds4's 1,054 tok/s
 F32-cache control above: a 0.656 throughput ratio, still about 34% lower.
-That is the closest full-precision control available, with F16 versus
-F32 caches; it is not a same-cache baseline. This slice does not supply
-a new long-context throughput, oracle or perplexity claim.
+That control stores ds4's FP8/FP4-rounded values in F32, while native
+uses F16 caches; it is not a same-cache or unrounded baseline. This
+slice does not supply a new long-context throughput, oracle or
+perplexity claim.
 
 Raw compact records are outside Git at `spark:~/scratch/m3-ds4-products/`:
 `micro-*.csv`, `community-{ordinary,compact,repeat,ordinary-repeat}/`

@@ -853,8 +853,10 @@ it appears.
       measured, and matched 4K profiles captured. Shared sparse query
       gathers and paired expert preparation retain F16 caches and their
       original weights; native 8K prefill changes from 500 to 625 tok/s.
-      Default ds4 has FP8 KV/FP4 indexer caches; its F32 control leaves a
-      large product gap too. Wide sparse dispatch is opt-in for measured
+      Default ds4 has FP8 KV/FP4 indexer caches; its F32-storage control
+      retains those rounded values and leaves a large product gap too.
+      Full same-GGUF reference quality qualification is pending. Wide
+      sparse dispatch is opt-in for measured
       fast shapes because disjoint D512 lists regress. Cross-model and
       format controls are in the report. Compact expert-major scheduling
       is compiled and adopted for DeepSeek fast prefill from 2,048 rows:

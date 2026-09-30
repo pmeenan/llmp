@@ -62,5 +62,25 @@
   D2R source; future reuse must retain those notices.
 - **Precision:** default compressed KV and indexer caches use FP8 and
   FP4 respectively. `DS4_CUDA_FP8_KV=0` and `DS4_CUDA_FP4_INDEX=0`
-  restore F32 caches. jitLLM keeps its F16 caches; default ds4 timings
-  are a same-weight comparator with this precision difference disclosed.
+  restore F32 primary storage, retaining FP8/FP4-rounded values.
+  jitLLM keeps its F16 caches; default ds4 timings are a same-weight
+  comparator with the different transforms and storage disclosed.
+
+## Cache-off is a storage control, not an unrounded quality oracle
+
+- **Status:** source clarification; no upstream patch proposed.
+- **What:** at the study pin, `fp8_kv_quantize_kernel` and
+  `indexer_hadamard_fp4_kernel` in `ds4_cuda.cu` always write rounded,
+  dequantized values into F32 tensors. Null packed-mirror pointers only
+  disable the additional packed writes. The model graph still calls both
+  transforms when `DS4_CUDA_FP8_KV=0 DS4_CUDA_FP4_INDEX=0`.
+  `--quality` changes several product/attention kernels, not every fused
+  path, and does not disable these transforms.
+- **Interpretation:** the official DeepSeek inference code also simulates
+  these quantization-aware-training transforms. A packed/F32-storage
+  comparison alone neither measures their quality effect nor proves a
+  long-window gate. The study's earlier higher/full-precision labels are
+  corrected; same-GGUF oracle/perplexity qualification remains pending.
+- **Proposed action:** document storage and value precision independently
+  in future benchmark comparisons; retain the pinned original device
+  objects in the external full-window scoring adapter.
