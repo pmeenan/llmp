@@ -963,6 +963,10 @@ it appears.
           default head, and the complete small-column tensor-core path
           is slower on every measured shape; both remain unadopted
           ([depth and crossover](experiments/qwen38-depth-crossover/README.md)).
+          The bounded NVFP4 expert CTA schedule improves isolated down
+          products but remains neutral with prefix / slightly slower with
+          curated on the adaptive 128K trial; production stays unchanged
+          ([NVFP4 scheduling](experiments/qwen38-nvfp4-scheduling/README.md)).
           *Adaptive depth and selected-head
           import implemented 2026-09-29:* native depth 2–3 chosen by observed
           acceptance, deterministic across saved/restored runs. The 128K
