@@ -78,6 +78,7 @@
 #ifndef JITLLM_KERNELS_GGML_QWEN38_GRAPH_H_
 #define JITLLM_KERNELS_GGML_QWEN38_GRAPH_H_
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -208,6 +209,24 @@ struct Qwen38GraphOptions {
   bool export_streams = false;
   // The rows `streams` holds (model/qwen38.h Qwen38MtpState::hidden_rows).
   std::int64_t stream_rows = 0;
+  // Diagnostic only: retain routed down-stage operands at at most three
+  // layers of a small verify. No arithmetic or new nodes are introduced.
+  std::uint64_t capture_routed = 0;
+};
+
+inline bool Qwen38RoutedCaptureFits(std::uint64_t mask, std::uint32_t layers) {
+  return layers > 0 && layers < 64 && (mask >> layers) == 0 && std::popcount(mask) <= 3;
+}
+
+struct Qwen38RoutedTensors {
+  std::uint32_t layer = 0;
+  ggml_tensor* activation = nullptr;  // F32 [ffn, used, rows], after SwiGLU
+  ggml_tensor* down = nullptr;        // F32 [width, used, rows], before scale2
+  ggml_tensor* shared = nullptr;      // F32 [width, rows], before sigmoid gate
+  ggml_tensor* gate = nullptr;        // F32 [1, rows], shared gate logits
+  ggml_tensor* weights = nullptr;     // F32 [1, used, rows]
+  ggml_tensor* ids = nullptr;         // I32 [used, rows]
+  ggml_tensor* combined = nullptr;    // F32 [width, rows]
 };
 
 // The rows above which GGML's float products run on cuBLAS (MMVF and MMF
@@ -250,6 +269,7 @@ struct Qwen38Graph {
   // equals, jitllm.argmax), the last node; the logits stay live beside it.
   ggml_tensor* argmax = nullptr;
   std::vector<ggml_tensor*> nodes;
+  std::vector<Qwen38RoutedTensors> routed;
   // Intermediates under llama.cpp's callback names ("l_last-7", ...).
   std::vector<std::pair<std::string, ggml_tensor*>> named;
 

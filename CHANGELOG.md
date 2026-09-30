@@ -15,6 +15,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 - A bounded Qwen draft-head capture diagnostic supplies real operands for
   isolated product comparisons without changing serving arithmetic.
+- A bounded Qwen routed-down capture diagnostic preserves common-input
+  operands for isolated expert-product comparisons without changing serving.
 - DeepSeek V4 Flash's community IQ2_XXS/Q2_K GGUFs run natively, including
   F16 attention-compressor APE tables, without requantizing their weights.
 - LLM turns reuse stable checkpoints when clients remove earlier reasoning,

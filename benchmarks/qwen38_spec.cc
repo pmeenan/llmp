@@ -84,6 +84,7 @@
 #include <cuda.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -384,7 +385,7 @@ class Harness {
   Status Fingerprints(const Step& step, std::vector<std::uint64_t>& out);
   Status Greedy();
   Status Forced();
-  Status DraftHead();
+  Status DraftHead(bool routed_down = false);
   Status Swap();
   Status SwapOut();
   Status SwapIn();
@@ -1118,7 +1119,8 @@ Status Harness::Greedy() {
 // Forced rejections: all rejected, one and two accepted, and some as
 // drafted; against a control that ran the same steps with other tokens
 // after the kept ones.
-Status Harness::DraftHead() {
+Status Harness::DraftHead(bool routed_down) {
+  const std::string_view stage = routed_down ? "routed-down" : "draft-head";
   const Prompt* chosen = nullptr;
   for (const auto* set : {&chat_, &decode_}) {
     for (const Prompt& p : *set) {
@@ -1147,6 +1149,7 @@ Status Harness::DraftHead() {
   };
   std::vector<Control> baseline;
   std::vector<jitllm::engine::Qwen38DraftHeadCapture> captured;
+  std::vector<jitllm::engine::Qwen38RoutedCapture> routed_records;
   std::vector<float> baseline_first;
   const auto same_floats = [](const std::vector<float>& a, const std::vector<float>& b) {
     return a.size() == b.size() &&
@@ -1159,12 +1162,12 @@ Status Harness::DraftHead() {
     file.close();
     return file.good();
   };
-  if (!write("draft-head.prompt.i32", std::as_bytes(std::span(prompt.ids)))) {
+  if (!write(std::format("{}.prompt.i32", stage), std::as_bytes(std::span(prompt.ids)))) {
     return Error("writing the draft-head prompt IDs");
   }
   for (std::uint32_t arm = 0; arm < 4; ++arm) {
     const bool capture = arm == 1 || arm == 2;
-    auto ran = InRequest("bounded draft-head capture control", [&]() -> Status {
+    auto ran = InRequest(std::format("bounded {} capture control", stage), [&]() -> Status {
       std::vector<float> first;
       if (auto p = Prefill(prompt, true, first); !p) {
         return p;
@@ -1180,7 +1183,7 @@ Status Harness::DraftHead() {
         Control current;
         jitllm::engine::Qwen38DraftHeadCapture head;
         if (auto drafted = qwen_.Draft(history, current.drafts, &current.probabilities, depth,
-                                       capture ? &head : nullptr);
+                                       capture && !routed_down ? &head : nullptr);
             !drafted) {
           return drafted;
         }
@@ -1190,7 +1193,7 @@ Status Harness::DraftHead() {
         if (auto read = Fingerprints(stamp, current.draft_state); !read) {
           return read;
         }
-        if (capture) {
+        if (capture && !routed_down) {
           const std::size_t width = md::Qwen38Flash().width;
           if (head.inputs.size() != width * depth || head.head_rows == 0 ||
               head.logits.size() != std::size_t{head.head_rows} * depth ||
@@ -1235,8 +1238,87 @@ Status Harness::DraftHead() {
         const auto& common = arm == 0 ? current.drafts : baseline[s].drafts;
         history.insert(history.end(), common.begin(), common.end());
         std::vector<float> logits;
-        if (auto verified = qwen_.Verify(history, pos, current.verdicts, &logits); !verified) {
+        jitllm::engine::Qwen38RoutedCapture routed;
+        if (auto verified = qwen_.Verify(history, pos, current.verdicts, &logits,
+                                         capture && routed_down ? &routed : nullptr);
+            !verified) {
           return verified;
+        }
+        if (capture && routed_down) {
+          const auto& profile = md::Qwen38Flash();
+          if (routed.rows != depth + 1 || routed.layers.size() != 3) {
+            return Error("the routed capture is missing rows or layers");
+          }
+          std::size_t j = 0;
+          for (const auto& layer : routed.layers) {
+            const std::size_t slots = std::size_t{routed.rows} * profile.experts_used;
+            if (layer.layer != std::array<std::uint32_t, 3>{0, 23, 47}[j] ||
+                layer.activation.size() != slots * profile.expert_ffn ||
+                layer.down.size() != slots * profile.width || layer.ids.size() != slots ||
+                layer.weights.size() != slots || layer.gate.size() != routed.rows ||
+                layer.shared.size() != std::size_t{routed.rows} * profile.width ||
+                layer.combined.size() != layer.shared.size()) {
+              return Error("the routed capture has invalid operand extents");
+            }
+            for (const auto* values : {&layer.activation, &layer.down, &layer.shared, &layer.gate,
+                                       &layer.weights, &layer.combined}) {
+              if (!std::ranges::all_of(*values, [](float value) { return std::isfinite(value); })) {
+                return Error("a routed capture operand is not finite");
+              }
+            }
+            for (std::uint32_t t = 0; t < routed.rows; ++t) {
+              const auto ids = std::span(layer.ids).subspan(std::size_t{t} * profile.experts_used,
+                                                            profile.experts_used);
+              for (std::size_t i = 0; i < ids.size(); ++i) {
+                if (ids[i] < 0 || std::cmp_greater_equal(ids[i], profile.experts) ||
+                    std::find(ids.begin(), ids.begin() + static_cast<std::ptrdiff_t>(i), ids[i]) !=
+                        ids.begin() + static_cast<std::ptrdiff_t>(i)) {
+                  return Error("routed capture IDs are not valid distinct experts per token");
+                }
+              }
+            }
+            if (std::ranges::none_of(layer.activation, [](float value) { return value != 0; })) {
+              return Error("a routed capture activation is all zero");
+            }
+            const auto stem = std::format("routed-down-{}-{}", s, layer.layer);
+            if (arm == 1) {
+              for (const auto& [name, values] :
+                   {std::pair{"activation", &layer.activation}, std::pair{"down", &layer.down},
+                    std::pair{"shared", &layer.shared}, std::pair{"gate", &layer.gate},
+                    std::pair{"weights", &layer.weights}, std::pair{"combined", &layer.combined}}) {
+                if (!write(stem + "." + name + ".f32", std::as_bytes(std::span(*values)))) {
+                  return Error("writing the external routed operand");
+                }
+              }
+              if (!write(stem + ".ids.i32", std::as_bytes(std::span(layer.ids))) ||
+                  !write(stem + ".history.i32", std::as_bytes(std::span(history)))) {
+                return Error("writing the external routed history and IDs");
+              }
+              results_.push_back(std::format(
+                  R"({{"check":"routed_down_capture","step":{},"anchor_position":{},"layer":{},"rows":{},"ffn":{},"width":{},"experts_used":{},"activation_fingerprint":{},"down_fingerprint":{},"combined_fingerprint":{},"ids_fingerprint":{}}})",
+                  s, pos, layer.layer, routed.rows, profile.expert_ffn, profile.width,
+                  profile.experts_used, Fingerprint(std::as_bytes(std::span(layer.activation))),
+                  Fingerprint(std::as_bytes(std::span(layer.down))),
+                  Fingerprint(std::as_bytes(std::span(layer.combined))),
+                  Fingerprint(std::as_bytes(std::span(layer.ids)))));
+            } else {
+              const auto& before = routed_records[s].layers[j];
+              if (routed.rows != routed_records[s].rows || layer.layer != before.layer ||
+                  layer.ids != before.ids || !same_floats(layer.activation, before.activation) ||
+                  !same_floats(layer.down, before.down) ||
+                  !same_floats(layer.shared, before.shared) ||
+                  !same_floats(layer.gate, before.gate) ||
+                  !same_floats(layer.weights, before.weights) ||
+                  !same_floats(layer.combined, before.combined)) {
+                return Error(std::format("routed operand repeat differs at step {} layer {}", s,
+                                         layer.layer));
+              }
+            }
+            ++j;
+          }
+          if (arm == 1) {
+            routed_records.push_back(std::move(routed));
+          }
         }
         if (current.verdicts.size() != depth + 1) {
           return Error("draft-head control verify returned an incomplete verdict");
@@ -1272,8 +1354,8 @@ Status Harness::DraftHead() {
       return ran;
     }
     results_.push_back(std::format(
-        R"({{"check":"draft_head_control","arm":{},"capture":{},"steps":{},"state_and_drafts_equal":true}})",
-        arm, capture ? "true" : "false", o_.tokens));
+        R"({{"check":"{}_control","arm":{},"capture":{},"steps":{},"state_and_drafts_equal":true}})",
+        stage, arm, capture ? "true" : "false", o_.tokens));
   }
   return {};
 }
@@ -1830,6 +1912,8 @@ Status Harness::Run() {
     checked = Forced();
   } else if (o_.check == "draft-head") {
     checked = DraftHead();
+  } else if (o_.check == "routed-down") {
+    checked = DraftHead(true);
   } else if (o_.check == "swap") {
     checked = Swap();
   } else if (o_.check == "sampled-plain") {
@@ -1978,7 +2062,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     return Error(
         "usage: jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE "
         "--prompts FILE --out DIR --check "
-        "greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head "
+        "greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|routed-down "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
         "[--draft-vocab N] [--adaptive-depth on|off] "
         "[--runtime-prefill on|off] "
@@ -1999,6 +2083,14 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
           "head 1..65536 and fixed depth without a confidence window");
     }
     o.qwen.draft_head_capture = true;
+  }
+  if (o.check == "routed-down") {
+    if (o.qwen.context > 131072 || o.qwen.max_rows > 8192 || o.tokens > 8 ||
+        o.qwen.draft_rows != 3 || o.adaptive_depth || o.window != 0) {
+      return Error(
+          "routed-down requires context<=131072, chunk<=8192, 2..8 steps and fixed depth3");
+    }
+    o.qwen.routed_capture = 1 | (std::uint64_t{1} << 23) | (std::uint64_t{1} << 47);
   }
   std::filesystem::create_directories(o.out);
   o.qwen.out = o.out / "qwen38";

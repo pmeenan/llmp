@@ -234,7 +234,8 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
                                                  : kg::Qwen38GraphOptions::Experts::kGgml,
                             .verify = kind.verify,
                             .export_streams = kind.export_streams,
-                            .stream_rows = m.mtp_state != nullptr ? m.mtp_state->hidden_rows : 0});
+                            .stream_rows = m.mtp_state != nullptr ? m.mtp_state->hidden_rows : 0,
+                            .capture_routed = kind.capture_routed});
   if (!graph) {
     return Error(graph.error().detail);
   }
@@ -251,6 +252,12 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
   }
   if (g.argmax != nullptr) {
     kept.push_back(g.logits);  // copied out after the argmaxes are computed
+  }
+  for (const auto& layer : g.routed) {
+    for (auto* t : {layer.activation, layer.down, layer.shared, layer.gate, layer.weights,
+                    layer.ids, layer.combined}) {
+      kept.push_back(t);
+    }
   }
   if (auto r =
           PlaceAndPlan(*out, g.nodes, g.inputs(), kept, choices, activations, activation_bytes);

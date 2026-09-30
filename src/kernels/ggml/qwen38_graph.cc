@@ -47,7 +47,7 @@ class Builder {
  public:
   Builder(ggml_context* c, const model::Qwen38Profile& p, const model::Qwen38Binding& b,
           const Qwen38ChunkShape& s, Qwen38Graph& g, bool fused, bool exact, bool cutlass,
-          bool verify = false, bool export_streams = false)
+          bool verify = false, bool export_streams = false, std::uint64_t capture_routed = 0)
       : c_(c),
         p_(p),
         b_(b),
@@ -57,7 +57,8 @@ class Builder {
         fast_(fused && !exact),
         cutlass_(cutlass),
         verify_(verify),
-        export_(export_streams) {}
+        export_(export_streams),
+        capture_routed_(capture_routed) {}
 
   std::expected<void, KernelFailure> Leaves(const Qwen38GraphOptions& options);
   void Build();
@@ -293,6 +294,7 @@ class Builder {
   bool cutlass_;
   bool verify_;
   bool export_;
+  std::uint64_t capture_routed_;
   std::vector<ggml_tensor*> expanded_;
 };
 
@@ -1203,7 +1205,20 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
                         moe::ExpertLayout::gate_up_codes(), layout.gate_up_scales());
       ggml_tensor* down = MoeGemv(c_, l.experts, act, selected, n_embd, 0, n_embd,
                                   layout.down_codes(), layout.down_scales());
-      return MoeCombine(c_, down, selected, l.down_exps_scale, weights, sh, shared_gate_dot());
+      ggml_tensor* shared_gate = shared_gate_dot();
+      ggml_tensor* combined =
+          MoeCombine(c_, down, selected, l.down_exps_scale, weights, sh, shared_gate);
+      if ((capture_routed_ & (std::uint64_t{1} << il)) != 0) {
+        g_.routed.push_back({.layer = static_cast<std::uint32_t>(il),
+                             .activation = act,
+                             .down = down,
+                             .shared = sh,
+                             .gate = shared_gate,
+                             .weights = weights,
+                             .ids = selected,
+                             .combined = combined});
+      }
+      return combined;
     }
     // Prefill: the rows sorted by expert, quantized once, CUTLASS's grouped
     // GEMMs (gate and up as one), SwiGLU with the next quantization, and
@@ -1588,8 +1603,14 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
   if (options.export_streams && (!options.fused || options.exact)) {
     return Rejected("the streams are exported by the fast form");
   }
+  if (options.capture_routed != 0 &&
+      (!Qwen38RoutedCaptureFits(options.capture_routed, profile.layers) || !options.verify ||
+       !cutlass || s.rows > 4)) {
+    return Rejected(
+        "routed capture takes at most three layers of a CUTLASS fast verify of 1..4 rows");
+  }
   Builder builder(arena.context(), profile, binding, shape, g, options.fused, options.exact,
-                  cutlass, options.verify, options.export_streams);
+                  cutlass, options.verify, options.export_streams, options.capture_routed);
   // A selection over the host's masks builds F32 [n_kv, rows] tensors, whose
   // plane GGML strides in 32 bits (RE-037; model/qwen38.h Qwen38State).
   if (s.qsa_select && !builder.SelectsOnDevice() &&

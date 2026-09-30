@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstring>
 #include <expected>
@@ -13,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 #include "artifact/layout.h"
@@ -82,6 +84,12 @@ std::vector<ExtentId> Qwen38Runner::managed_extents() const {
 }
 
 Status Qwen38Runner::Setup() {
+  if (o_.routed_capture != 0 &&
+      (!kg::Qwen38RoutedCaptureFits(o_.routed_capture, profile_.layers) || o_.drafter.empty() ||
+       o_.draft_rows == 0 || o_.draft_rows > 3 || o_.context > 131072 || o_.max_rows > 8192)) {
+    return Error(
+        "routed capture requires <=3 layers, a depth<=3 drafter, context<=131072 and chunk<=8192");
+  }
   if (o_.draft_head_capture && (o_.drafter.empty() || o_.context > 131072 || o_.max_rows > 8192)) {
     return Error(
         "draft-head capture needs a drafter, context at most 131072 and chunk at most 8192");
@@ -276,6 +284,12 @@ Status Qwen38Runner::Setup() {
                         {.verify = false, .export_streams = true}});
       for (const std::uint32_t at : {0U, o_.context - verify}) {
         probes.push_back({at, verify, {.verify = true, .export_streams = true}});
+        if (o_.routed_capture != 0) {
+          probes.push_back(
+              {at,
+               verify,
+               {.verify = true, .export_streams = true, .capture_routed = o_.routed_capture}});
+        }
       }
     }
     const auto account = [&](const PlannedBase& planned) -> Status {
@@ -373,6 +387,18 @@ Status Qwen38Runner::Setup() {
       return Error("pinned staging for the bounded draft-head capture");
     }
     draft_head_capture_ = static_cast<float*>(*captured);
+  }
+  if (o_.routed_capture != 0) {
+    const std::uint64_t per_row =
+        (std::uint64_t{profile_.experts_used} * (profile_.expert_ffn + profile_.width + 2)) +
+        (2 * std::uint64_t{profile_.width}) + 1;
+    routed_capture_bytes_ = per_row * (o_.draft_rows + 1) *
+                            static_cast<std::uint64_t>(std::popcount(o_.routed_capture)) * 4;
+    auto captured = resources_.Pinned(routed_capture_bytes_);
+    if (!captured) {
+      return Error("pinned staging for the bounded routed capture");
+    }
+    routed_capture_ = static_cast<std::byte*>(*captured);
   }
   if (dbinding_.selected_head()) {
     auto ids = resources_.Pinned(dbinding_.draft_ids.ne[1] * sizeof(std::int32_t));
@@ -1253,7 +1279,14 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
 }
 
 Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t n_past,
-                            std::vector<std::int32_t>& argmax, std::vector<float>* logits) {
+                            std::vector<std::int32_t>& argmax, std::vector<float>* logits,
+                            Qwen38RoutedCapture* routed_capture) {
+  if (routed_capture != nullptr) {
+    *routed_capture = {};
+    if (o_.routed_capture == 0 || routed_capture_ == nullptr) {
+      return Error("routed capture was not provisioned at setup");
+    }
+  }
   if (!speculative()) {
     return Error("a verify needs the drafter");
   }
@@ -1278,7 +1311,9 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   if (!slots) {
     return std::unexpected(slots.error());
   }
-  const Qwen38ChunkKind kind{.verify = true, .export_streams = true};
+  const Qwen38ChunkKind kind{.verify = true,
+                             .export_streams = true,
+                             .capture_routed = routed_capture != nullptr ? o_.routed_capture : 0};
   auto planned = Planned({.shape = kg::Qwen38ShapeOf(layout_, *in, rows), .kind = kind});
   if (!planned) {
     return std::unexpected(planned.error());
@@ -1286,6 +1321,59 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   ChunkPlans::Entry& entry = **planned;
   Qwen38Planned* p = entry.planned.get();
   const kg::Qwen38Graph& g = p->graph;
+  // The graph keeps these computed operands through the final node. Only
+  // runner-owned pinned memory is a DMA destination; caller vectors are
+  // populated after node_.Job has proven completion and retirement.
+  struct Retained {
+    ggml_tensor* tensor;
+    std::uint64_t offset;
+    std::uint64_t bytes;
+  };
+  std::vector<Retained> retained;
+  std::uint64_t retained_bytes = 0;
+  if (routed_capture != nullptr) {
+    if (g.routed.size() != static_cast<std::size_t>(std::popcount(o_.routed_capture))) {
+      return Error("routed capture is missing a requested layer");
+    }
+    const auto& region = node_.activations();
+    for (const auto& layer : g.routed) {
+      if (layer.layer >= profile_.layers ||
+          (o_.routed_capture & (std::uint64_t{1} << layer.layer)) == 0) {
+        return Error("routed capture selected an unrequested layer");
+      }
+      const std::int64_t width = profile_.width;
+      const std::int64_t ffn = profile_.expert_ffn;
+      const std::int64_t used = profile_.experts_used;
+      struct Part {
+        ggml_tensor* tensor;
+        ggml_type type;
+        std::int64_t n0, n1, n2;
+      };
+      for (const auto part : {Part{layer.activation, GGML_TYPE_F32, ffn, used, rows},
+                              Part{layer.down, GGML_TYPE_F32, width, used, rows},
+                              Part{layer.shared, GGML_TYPE_F32, width, rows, 1},
+                              Part{layer.gate, GGML_TYPE_F32, 1, rows, 1},
+                              Part{layer.weights, GGML_TYPE_F32, 1, used, rows},
+                              Part{layer.ids, GGML_TYPE_I32, used, rows, 1},
+                              Part{layer.combined, GGML_TYPE_F32, width, rows, 1}}) {
+        const ggml_tensor* t = part.tensor;
+        const std::uint64_t bytes = static_cast<std::uint64_t>(part.n0 * part.n1 * part.n2) * 4;
+        if (t == nullptr || t->data == nullptr || t->type != part.type || t->ne[0] != part.n0 ||
+            t->ne[1] != part.n1 || t->ne[2] != part.n2 || t->ne[3] != 1 || !ggml_is_contiguous(t)) {
+          return Error("routed capture has an invalid packed operand");
+        }
+        const std::uint64_t address = Address(t->data);
+        if (address < region.base || address - region.base > region.bytes ||
+            bytes > region.bytes - (address - region.base) ||
+            retained_bytes > routed_capture_bytes_ ||
+            bytes > routed_capture_bytes_ - retained_bytes) {
+          return Error("routed capture source or destination exceeds its retained allocation");
+        }
+        retained.push_back({part.tensor, retained_bytes, bytes});
+        retained_bytes += bytes;
+      }
+    }
+  }
   if (in->qsa_select && (g.mask != nullptr || g.mask_f32 != nullptr)) {
     in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, true);
     if (!in) {
@@ -1342,6 +1430,10 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   if (logits != nullptr) {
     outputs.push_back({Address(logits_), Address(g.logits->data), rows * row_bytes});
   }
+  for (const auto& part : retained) {
+    outputs.push_back(
+        {Address(routed_capture_ + part.offset), Address(part.tensor->data), part.bytes});
+  }
   kg::LaunchContext& launch = resources_.launch();
   RunPath path = RunPath::kEager;
   Status ran;
@@ -1385,6 +1477,28 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   if (logits != nullptr) {
     const auto* values = static_cast<const float*>(logits_);
     logits->assign(values, values + (std::size_t{rows} * profile_.vocab));
+  }
+  if (routed_capture != nullptr) {
+    routed_capture->rows = rows;
+    std::size_t part = 0;
+    for (const auto& layer : g.routed) {
+      Qwen38RoutedCapture::Layer values;
+      values.layer = layer.layer;
+      const auto take = [&](auto& into) {
+        const Retained& source = retained[part++];
+        using Value = std::remove_reference_t<decltype(into)>::value_type;
+        into.resize(source.bytes / sizeof(Value));
+        std::memcpy(into.data(), routed_capture_ + source.offset, source.bytes);
+      };
+      take(values.activation);
+      take(values.down);
+      take(values.shared);
+      take(values.gate);
+      take(values.weights);
+      take(values.ids);
+      take(values.combined);
+      routed_capture->layers.push_back(std::move(values));
+    }
   }
   return {};
 }

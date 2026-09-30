@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1404,6 +1405,108 @@ TEST(Qwen38Test, TheDrafterAndAVerifyArePlannedByThisModulesImplementations) {
                                      .experts = kg::Qwen38GraphOptions::Experts::kCutlass,
                                      .verify = true})
                    .has_value());
+}
+
+TEST(Qwen38Test, RoutedDownCaptureRetainsExistingVerifyOperandsOnly) {
+  const auto& p = md::Qwen38Flash();
+  auto binding = md::BindQwen38(p, "qwen4exp", ArtifactLike(p, true));
+  auto state = md::Qwen38State(p, 4096, 512);
+  ASSERT_TRUE(binding.has_value() && state.has_value());
+  constexpr std::uint64_t mask = 1 | (std::uint64_t{1} << 23) | (std::uint64_t{1} << 47);
+  constexpr std::uint64_t stride = 2764800;
+  const std::vector<std::uint64_t> strides(p.layers, stride);
+  for (const std::uint32_t rows : {1U, 3U, 4U}) {
+    auto chunk =
+        md::Qwen38Chunk(p, *state, Hash(), std::vector<std::int32_t>(36 + rows, 7), 36, rows);
+    ASSERT_TRUE(chunk.has_value());
+    auto ordinary_arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+    auto capture_arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+    ASSERT_TRUE(ordinary_arena.has_value() && capture_arena.has_value());
+    kg::Qwen38GraphOptions options{.expert_stride = strides,
+                                   .experts = kg::Qwen38GraphOptions::Experts::kCutlass,
+                                   .verify = true};
+    const auto shape = kg::Qwen38ShapeOf(*state, *chunk, rows);
+    auto ordinary = kg::BuildQwen38Graph(*ordinary_arena, p, *binding, shape, options);
+    options.capture_routed = mask;
+    auto captured = kg::BuildQwen38Graph(*capture_arena, p, *binding, shape, options);
+    ASSERT_TRUE(ordinary.has_value() && captured.has_value()) << Why(captured);
+    EXPECT_TRUE(ordinary->routed.empty());
+    ASSERT_EQ(captured->routed.size(), 3U);
+    ASSERT_EQ(ordinary->nodes.size(), captured->nodes.size());
+    for (std::size_t i = 0; i < ordinary->nodes.size(); ++i) {
+      EXPECT_EQ(ordinary->nodes[i]->op, captured->nodes[i]->op);
+      EXPECT_STREQ(ordinary->nodes[i]->name, captured->nodes[i]->name);
+    }
+    std::vector<ggml_tensor*> kept = {captured->logits};
+    std::uint32_t layer_index = 0;
+    constexpr std::array<std::uint32_t, 3> layers = {0, 23, 47};
+    for (const auto& layer : captured->routed) {
+      EXPECT_EQ(layer.layer, layers[layer_index++]);
+      EXPECT_EQ(layer.activation->ne[0], p.expert_ffn);
+      EXPECT_EQ(layer.activation->ne[1], p.experts_used);
+      EXPECT_EQ(layer.activation->ne[2], rows);
+      EXPECT_EQ(layer.down->ne[0], p.width);
+      EXPECT_EQ(layer.combined->ne[1], rows);
+      for (auto* tensor : {layer.activation, layer.down, layer.shared, layer.gate, layer.weights,
+                           layer.ids, layer.combined}) {
+        kept.push_back(tensor);
+      }
+    }
+    // The descriptor-only plan is bound at distinct fake addresses; this
+    // checks the lifetimes of views and their owning computed storage.
+    std::uint64_t next = std::uint64_t{1} << 40;
+    for (auto* node : captured->nodes) {
+      for (auto* source : node->src) {
+        if (source != nullptr && source->op == GGML_OP_NONE && source->view_src == nullptr &&
+            source->data == nullptr) {
+          kg::TensorArena::Bind(source, next);
+          next += ((ggml_nbytes(source) + 255) / 256 * 256) + 256;
+        }
+      }
+    }
+    kg::BindDistinct(captured->nodes, std::uint64_t{1} << 46);
+    auto plan = kg::PlanGraph(captured->nodes, false, ModelDevice());
+    ASSERT_TRUE(plan.has_value()) << Why(plan);
+    auto placed = kg::PlaceActivations(captured->nodes, *plan, captured->inputs(), 256, kept);
+    ASSERT_TRUE(placed.has_value()) << Why(placed);
+    std::set<const ggml_tensor*> owners;
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> retained_ranges;
+    for (auto* tensor : kept) {
+      const ggml_tensor* owner = tensor;
+      while (owner->view_src != nullptr) {
+        owner = owner->view_src;
+      }
+      if (!owners.insert(owner).second) {
+        continue;  // IDs/weights/gate share the same router's storage.
+      }
+      auto found = std::ranges::find_if(
+          placed->offsets, [owner](const auto& offset) { return offset.first == owner; });
+      ASSERT_NE(found, placed->offsets.end());
+      const std::uint64_t end = found->second + ggml_nbytes(owner);
+      for (const auto& [start, stop] : retained_ranges) {
+        EXPECT_TRUE(end <= start || stop <= found->second);
+      }
+      retained_ranges.emplace_back(found->second, end);
+    }
+  }
+  auto chunk = md::Qwen38Chunk(p, *state, Hash(), std::vector<std::int32_t>(41, 7), 36, 5);
+  ASSERT_TRUE(chunk.has_value());
+  for (const auto [rows, verify, exact, capture] :
+       {std::tuple{4U, false, false, mask}, std::tuple{4U, true, true, mask},
+        std::tuple{4U, true, false, mask | 2}, std::tuple{4U, true, false, std::uint64_t{1} << 48},
+        std::tuple{5U, true, false, mask}}) {
+    auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+    ASSERT_TRUE(arena.has_value());
+    auto shape = kg::Qwen38ShapeOf(*state, *chunk, rows);
+    shape.rows = rows;
+    EXPECT_FALSE(kg::BuildQwen38Graph(*arena, p, *binding, shape,
+                                      {.expert_stride = strides,
+                                       .exact = exact,
+                                       .experts = kg::Qwen38GraphOptions::Experts::kCutlass,
+                                       .verify = verify,
+                                       .capture_routed = capture})
+                     .has_value());
+  }
 }
 
 }  // namespace

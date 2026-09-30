@@ -115,6 +115,19 @@ struct Qwen38Options {
   // Benchmark-only retained-head copies, bounded at setup; serving leaves
   // this off. Draft's optional capture selects the retained plan per call.
   bool draft_head_capture = false;
+  // Benchmark-only: provision retained routed operands for these layers;
+  // Verify's optional capture selects its distinct plan per call.
+  std::uint64_t routed_capture = 0;
+};
+
+struct Qwen38RoutedCapture {
+  struct Layer {
+    std::uint32_t layer = 0;
+    std::vector<float> activation, down, shared, gate, weights, combined;
+    std::vector<std::int32_t> ids;
+  };
+  std::uint32_t rows = 0;
+  std::vector<Layer> layers;
 };
 
 struct Qwen38DraftHeadCapture {
@@ -224,7 +237,8 @@ class Qwen38Runner final : public PagedModel {
   // logits (rows × vocab; a sampler's or a check's). The next job after one
   // must be preceded by its Accept.
   Status Verify(std::span<const std::int32_t> history, std::uint32_t n_past,
-                std::vector<std::int32_t>& argmax, std::vector<float>* logits);
+                std::vector<std::int32_t>& argmax, std::vector<float>* logits,
+                Qwen38RoutedCapture* routed_capture = nullptr);
   // After a verify: its first `keep` rows (1 to its rows) stay; they are
   // committed and the rest's cells restored before the next job's own work
   // (Rollback runs that now).
@@ -389,6 +403,8 @@ class Qwen38Runner final : public PagedModel {
   void* drafts_ = nullptr;                       // pinned: a draft's, then a verify's argmaxes
   float* draft_head_capture_ = nullptr;          // pinned, owned by the node through teardown
   std::uint32_t capture_head_rows_ = 0;
+  std::byte* routed_capture_ = nullptr;  // runner-owned pinned DMA staging
+  std::uint64_t routed_capture_bytes_ = 0;
 };
 
 }  // namespace jitllm::engine
