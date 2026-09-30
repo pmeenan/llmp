@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "source_lock_component": "ds4",
+  "archive_sha256": "731e037da1bed009da5db31e5170681b59f1e22af00a3e56fa29cff8706ed63c",
+  "repository": "https://github.com/Entrpi/ds4",
+  "commit": "76d51ef82a81b70b78e51a3a6ea11946286de976",
+  "source": "ds4_cuda.cu",
+  "source_sha256": "8d5de76a7aaaf9131ba8f9cf35412863fef88299b39676ea4bcfb07aef7386e3",
+  "verbatim_functions": [
+    {
+      "name": "rms_norm_plain_kernel",
+      "first_line": 7970,
+      "last_line": 7991
+    },
+    {
+      "name": "rms_norm_plain_f16_rows_kernel",
+      "first_line": 8000,
+      "last_line": 8021
+    },
+    {
+      "name": "rms_norm_weight_kernel",
+      "first_line": 8023,
+      "last_line": 8044
+    },
+    {
+      "name": "rms_norm_weight_f16pair_kernel",
+      "first_line": 8057,
+      "last_line": 8081
+    },
+    {
+      "name": "rms_norm_weight_f16q8_kernel",
+      "first_line": 8095,
+      "last_line": 8147
+    },
+    {
+      "name": "hc4_split_one",
+      "first_line": 13687,
+      "last_line": 13733
+    },
+    {
+      "name": "hc_split_sinkhorn_kernel",
+      "first_line": 13735,
+      "last_line": 13739
+    },
+    {
+      "name": "hc_weighted_sum_kernel",
+      "first_line": 13741,
+      "last_line": 13753
+    },
+    {
+      "name": "hc_expand_kernel",
+      "first_line": 13789,
+      "last_line": 13819
+    },
+    {
+      "name": "hc_expand_split_rmsf16_kernel",
+      "first_line": 13862,
+      "last_line": 13951
+    },
+    {
+      "name": "hc_split_weighted_sum_fused_kernel",
+      "first_line": 13953,
+      "last_line": 13979
+    },
+    {
+      "name": "output_hc_weights_kernel",
+      "first_line": 14236,
+      "last_line": 14250
+    }
+  ],
+  "numerical_changes": [],
+  "launch_contract": {
+    "threads": 256,
+    "hc_lanes": 4,
+    "max_prefill_rows": 4096,
+    "fused_expand_width": 4096,
+    "fused_expand_min_rows": 9,
+    "fused_expand_expert_slots": 6,
+    "wide_q8_emit_min_rows": 64,
+    "q8_block_bytes": 144,
+    "original_flags": [
+      "-O3",
+      "--use_fast_math",
+      "-lineinfo"
+    ],
+    "integration_flags": "Spark A final native compile receipt verifies original -O3/--use_fast_math/-lineinfo and sm_121a SASS. Host flags remain the native SDK's."
+  },
+  "integration": "Explicit reviewed MIT derivative of the existing locked ds4 source, matching the cache component. No copied foreign dispatch, model allocation, pointer registry, counter, cooperative grid or stream owner. Existing ds4 notices apply; root integrates module metadata/sidecar and source lock coverage.",
+  "limitations": "Original fused expansion has its original F32 contraction differences from the unfused loop+norm. This component is not a model quality, performance, default or complete-plan result.",
+  "verification": "Spark A 2026-09-30 final combined cache/HC pass verifies the pinned original source, twelve full original numerical functions/ranges and compile options, locked build, CPU/GPU controls and SDK format/tidy/boundary/REUSE/header checks. Operator qualification only; no model or performance result."
+}

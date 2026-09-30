@@ -24,7 +24,7 @@
 #                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, mmvq_rows.cu,
 #                        fattn_mma*.cu)
 #                        to jitllm_ggml_kernels.
-add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
+add_library(jitllm_ggml_tensors STATIC dsv4_ds4_cache.cc dsv4_ds4_hc.cc dsv4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
                                        qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
@@ -58,7 +58,7 @@ if(JITLLM_CUDA)
   endforeach()
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
-                                         fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu mmvq_rows.cu fattn_mma.cu
+                                         fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu dsv4_ds4_cache.cu dsv4_ds4_hc.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
                                          jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu dsv4_fast.cu dsv4_sparse.cu
                                          qsa_sparse.cu
@@ -133,7 +133,11 @@ if(JITLLM_CUDA)
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
   set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
-                   dsv4_graph.h dsv4_hca_tokentile.cu
+                   dsv4_graph.h dsv4_hca_tokentile.cu dsv4_ds4_cache.cc dsv4_ds4_cache.cu
+                   dsv4_ds4_cache.h dsv4_ds4_cache_core.cuh dsv4_ds4_cache_core.json
+                   dsv4_ds4_cache_core.json.license
+                   dsv4_ds4_hc.cc dsv4_ds4_hc.cu dsv4_ds4_hc.h
+                   dsv4_ds4_hc_core.cuh dsv4_ds4_hc_core.json dsv4_ds4_hc_core.json.license
                    executor.cc
                    executor.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
@@ -177,6 +181,11 @@ if(JITLLM_CUDA)
   # (template-instances/fattn-vec-instance-f16-f16.cu) builds in the bridge.
   set_source_files_properties(fattn.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
+  # The default-off complete-ds4 benchmark's cache/QAT and HC/norm cores
+  # retain the pinned original CUDA flags. The caller owns every range,
+  # including the decode table; this adds no original runtime or globals.
+  set_source_files_properties(dsv4_ds4_cache.cu dsv4_ds4_hc.cu PROPERTIES COMPILE_OPTIONS
+                              "-O3;--use_fast_math;-lineinfo")
   # The M3 units that compile or launch GGML's kernels take GGML's device
   # flags too, as GGML's own files and instance units build
   # (third_party/patches/ggml/0002): the tensor-core flash-attention

@@ -20,7 +20,7 @@ contain upstream context under the MIT License:
   notice in the UPSTREAM-NOTICE.txt beside it.
 
 The incorporated ds4 D2R product, extracted token-tile HCA numerical core,
-and their reviewed patches retain the
+cache/QAT and HC/norm numerical derivatives and their reviewed patches retain the
 MIT notices of The ds4.c authors (2026), Entrpi (2026), The ggml authors
 (2023-2026), and Marco Palaferri (2026). Its license and attribution are
 recorded in third_party/sources.lock.json and shipped third-party notices.

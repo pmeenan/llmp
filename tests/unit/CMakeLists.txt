@@ -333,6 +333,16 @@ add_executable(dsv4_test dsv4_test.cc)
 target_link_libraries(dsv4_test PRIVATE jitllm_ggml_tensors jitllm_model)
 jitllm_gtest(dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# Refusals and the explicit decode table for the complete-ds4 benchmark's
+# cache stages. No device pointers are dereferenced by these CPU controls.
+add_executable(dsv4_ds4_cache_validate_test dsv4_ds4_cache_validate_test.cc)
+target_link_libraries(dsv4_ds4_cache_validate_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(dsv4_ds4_cache_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(dsv4_ds4_hc_validate_test dsv4_ds4_hc_validate_test.cc)
+target_link_libraries(dsv4_ds4_hc_validate_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(dsv4_ds4_hc_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # DeepSeek V4's DSpark drafter and speculation's parts of the adapter and
 # graph (model/dspark.h; D-092).
 add_executable(dspark_test dspark_test.cc)
@@ -442,6 +452,20 @@ if(JITLLM_CUDA)
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(dsv4_fast_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(dsv4_fast_test)
+
+  # Original FP8/FP4 QAT layouts, rounded raw-ring stores and guarded
+  # producer/consumer byte controls. These are not model quality tests.
+  add_executable(dsv4_ds4_cache_test dsv4_ds4_cache_test.cc)
+  target_include_directories(dsv4_ds4_cache_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(dsv4_ds4_cache_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(dsv4_ds4_cache_test)
+
+  add_executable(dsv4_ds4_hc_test dsv4_ds4_hc_test.cc)
+  target_include_directories(dsv4_ds4_hc_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(dsv4_ds4_hc_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(dsv4_ds4_hc_test)
 
   # jitLLM's Qwen-Image kernels (kernels/image) against host references.
   add_executable(image_kernels_test image_kernels_test.cc)

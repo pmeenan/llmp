@@ -3,6 +3,26 @@
 
 # ds4
 
+## Literal wide-prefill normalization and hyper-connections
+
+- **Status:** source port for the complete-plan benchmark; no upstream patch.
+- **What:** twelve full numerical functions from the study pin are copied
+  under MIT into `src/kernels/ggml/dsv4_ds4_hc_core.cuh`, with source ranges
+  in its companion provenance. They cover plain and weighted RMS with F16
+  and original compact Q8 sidecars, the twenty-iteration HC4 Sinkhorn split,
+  weighted sums, plain expansion, fused expansion/next RMS and head weights.
+- **Native contract:** checked borrowed views, explicit row counts, streams
+  and output sidecars; no upstream allocation, pointer registry or dispatch.
+  The original six-slot guarded ascending MoE sum can feed fused expansion.
+  Original wide-row eligibility and fused contraction are preserved;
+  fused expansion is not claimed equal to a separate expansion and RMS.
+- **Evidence:** independent whole-source/provenance review completed;
+  Spark A's final combined locked cache/HC build passes 1,059 tests, including
+  211 GPU tests, SDK format/tidy, boundaries and REUSE/header checks.
+  This supplies operators, not a complete model run or quality/speed result.
+- **Proposed upstream action:** none; the borrowed-view adapters serve
+  jitLLM's ownership contract. Prepared source/archive identities are unchanged.
+
 - **Repository:** [Entrpi/ds4](https://github.com/Entrpi/ds4), fork of
   [antirez/ds4](https://github.com/antirez/ds4), MIT.
 - **Study pin:** `76d51ef82a81b70b78e51a3a6ea11946286de976` (M3,
@@ -152,6 +172,30 @@
   entry point with explicit causal first position, raw prefix availability,
   record extents, and workspace ownership. The native ring adaptation is
   jitLLM-specific; no upstream submission is claimed.
+
+## Explicit cache/QAT numerical stages for the complete comparison
+
+- **Status:** checked native adapters are being prepared for the separate
+  complete-plan benchmark; they are not selected by production. A cache
+  stage alone does not establish complete-model parity or quality.
+- **Source:** the same pinned `ds4_cuda.cu`, with original E4M3/power-of-two
+  rounding, normalized Hadamard/E2M1 indexer rounding, packed layouts and
+  batch raw-ring store. The reviewed MIT derivative is
+  `src/kernels/ggml/dsv4_ds4_cache_core.cuh`; its companion provenance lists
+  the original numerical functions and the two pointer-signature adaptations.
+  The only FP8 read adaptation replaces a device global with an explicit
+  caller-owned, accounted decode table. Original numerical compile options
+  remain `-O3 --use_fast_math -lineinfo`.
+- **Native ownership:** checked logical spans, no allocation or stream/cache
+  counter ownership; jitLLM's launch scope queues the stages. Raw stores
+  retain the original F16 round trip into physically F32 storage. Their host
+  position is eager-only to prevent stale graph replay. Packed KV preserves
+  the F32 rotary tail; indexer query preparation supports scale-only output.
+  The complete host plan, alternate state identity, counters and other
+  original stages remain separate work.
+- **Proposed upstream action:** expose numerical cache producers/consumers
+  with explicit table, ranges and execution-time position contracts. No
+  upstream submission is claimed.
 
 ## Cache-off is a storage control, not an unrounded quality oracle
 
