@@ -13,7 +13,9 @@ choosing a deeper draft window.
 
 The separate [draft-input experiment](../qwen38-draft-input/README.md)
 isolates BF16 rounding of the mixed draft-head input, with vocabulary and
-depth fixed. It has no measured result or default change yet.
+depth fixed. Captured real-input replay finds RN plus the original vector
+product neutral; library products with F32 or actual BF16 output are about
+41% slower. No draft-input or library-head default change follows.
 
 The selected list is now implemented and tested in jitLLM. Its 12.6% gain
 was in Mia's engine; the native same-depth trial at 128K is tied at depth 2

@@ -986,6 +986,16 @@ it appears.
           payload and graph controls, but gains only 2.4–2.9% on overlapping
           complete pairs and slightly regresses disjoint routes; no
           production fusion or model trial is justified by that result.
+          Fresh same-ID 128K Mia controls vary 44.87/38.10 tok/s; the older
+          ladder above remains historical and neither new run closes every
+          depth's gate. Captured draft-head input RN is neutral and library
+          heads with F32 or actual BF16 output are about 41% slower.
+          Small-verify FP4/BF16 grouped experts lose 19%; the actual Mia
+          cooperative tile/stage pair loses 33%, with native dynamic
+          activation scaling retained. Both prototypes are removed
+          ([draft input](experiments/qwen38-draft-input/README.md),
+          [grouped factor](experiments/qwen38-grouped-verify/README.md),
+          [fresh reference](experiments/qwen38-mtp-speed/README.md)).
           *Adaptive depth and selected-head
           import implemented 2026-09-29:* native depth 2–3 chosen by observed
           acceptance, deterministic across saved/restored runs. The 128K

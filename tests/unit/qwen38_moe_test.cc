@@ -10,12 +10,13 @@
 // - the grouped GEMM equals the FP64 product of its quantized inputs (the
 //   activations' codes and scales as quantized, the weights as stored) to
 //   BF16's rounding;
-// - the whole prefill path (route, quantize, gate and up GEMM, SwiGLU and
+// - the whole wider prefill path (route, quantize, gate and up GEMM, SwiGLU and
 //   quantize, down GEMM, weighted sum with the shared expert) is within
 //   NMSE 1e-3 of GGML's MMQ path over the same weights in GGML's layout
 //   (which quantizes the activations the same way; kAgainstMmq), and no
 //   further from the FP64 reference than that path (within 5%, and 3e-2:
-//   FP4 activations);
+//   FP4 activations); small rows retain the same absolute FP64 and
+//   BF16-product bounds;
 // - decode's vector products (activations quantized to 8 bits as MMVQ
 //   quantizes them) are within upstream's quantized bound (5e-4) of the
 //   FP64 product.
@@ -412,8 +413,8 @@ TEST_F(Qwen38MoeTest, ThePrefillPathMatchesMmqAndTheReference) {
   if (!moe::GroupedGemmAvailable()) {
     GTEST_SKIP() << "no sm_121a grouped GEMM in this build";
   }
-  for (const std::int64_t t : {9, 37, 300}) {
-    const std::string what = "prefill t " + std::to_string(t);
+  for (const std::int64_t t : {1, 4, 9, 37, 300}) {
+    const std::string what = "grouped t " + std::to_string(t);
     const auto x_h = Normal(7 + t, static_cast<std::size_t>(kWidth * t), 1.0f);
     const auto routes = Routes(t, 11 + t);
     std::vector<float> w_h(static_cast<std::size_t>(kUsed * t));
@@ -538,11 +539,12 @@ TEST_F(Qwen38MoeTest, ThePrefillPathMatchesMmqAndTheReference) {
     }
     EXPECT_LE(worst, 1.0) << what << ": the GEMM beyond BF16 rounding of its exact product";
 
-    // Against GGML's MMQ path (every token) and the FP64 reference (the
-    // first four tokens).
-    constexpr std::int64_t kChecked = 4;
-    std::vector<double> ref(static_cast<std::size_t>(kWidth * kChecked));
-    for (std::int64_t r = 0; r < kChecked; ++r) {
+    // Against GGML's product (every token) and the FP64 reference (up to
+    // four tokens). At <=8 rows GGML uses Q8 MMVQ rather than FP4 MMQ, so
+    // only the wider shapes share the MMQ comparison bounds below.
+    const auto checked = std::min<std::int64_t>(4, t);
+    std::vector<double> ref(static_cast<std::size_t>(kWidth * checked));
+    for (std::int64_t r = 0; r < checked; ++r) {
       std::vector<double> total(kWidth, 0.0);
       for (std::int64_t j = 0; j < kUsed; ++j) {
         const auto e = static_cast<std::size_t>(routes[static_cast<std::size_t>((r * kUsed) + j)]);
@@ -577,14 +579,16 @@ TEST_F(Qwen38MoeTest, ThePrefillPathMatchesMmqAndTheReference) {
     }
     std::vector<double> mmq_d(mmq.begin(), mmq.end());
     const double against_mmq = Nmse(got, mmq_d);
-    const std::vector<float> got_first(got.begin(), got.begin() + (kWidth * kChecked));
-    const std::vector<float> mmq_first(mmq.begin(), mmq.begin() + (kWidth * kChecked));
+    const std::vector<float> got_first(got.begin(), got.begin() + (kWidth * checked));
+    const std::vector<float> mmq_first(mmq.begin(), mmq.begin() + (kWidth * checked));
     const double against_ref = Nmse(got_first, ref);
     const double mmq_against_ref = Nmse(mmq_first, ref);
     std::cout << what << ": NMSE " << against_mmq << " against MMQ, " << against_ref
               << " against FP64 (MMQ's " << mmq_against_ref << ")\n";
-    EXPECT_LE(against_mmq, kAgainstMmq) << what;
-    EXPECT_LE(against_ref, 1.05 * mmq_against_ref) << what;
+    if (t > 8) {
+      EXPECT_LE(against_mmq, kAgainstMmq) << what;
+      EXPECT_LE(against_ref, 1.05 * mmq_against_ref) << what;
+    }
     EXPECT_LE(against_ref, 3e-2) << what;
     EXPECT_TRUE(std::ranges::all_of(got, [](float v) { return std::isfinite(v); })) << what;
     // Back to GGML's layout for the next shape.

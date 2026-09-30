@@ -25,8 +25,9 @@ Mia recipe `b8439110eec0230facbe4ddf0dffe01b8f769be0`
 [`patch_mtp_draft_vocab.py:102`](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark/blob/b8439110eec0230facbe4ddf0dffe01b8f769be0/files/patch_mtp_draft_vocab.py#L102)
 casts the mixed input to the selected weight's BF16 dtype before its linear
 product. This proves a precision difference, not an acceptance benefit.
-Mia also returns BF16 output; these isolated arms return F32 logits and do
-not reproduce the whole Mia head. No Mia implementation is copied.
+Mia also returns BF16 output; the initial three arms return F32 logits and
+do not reproduce the whole Mia head. The follow-up below measures actual
+BF16 output separately. No Mia implementation is copied.
 
 External replay compares original MMVF, existing `ToBf16` plus BF16
 `get_rows` widening and original MMVF, and existing `GemmBf16` with rounded
@@ -91,6 +92,43 @@ follows. New proposals can change verifier grouping and its numerical path
 despite unchanged target source. This does not repeat the earlier neutral
 full-target-head/HC cuBLASLt or failed multirow target-verifier BF16 trials.
 
+### Follow-up with BF16 product output
+
+A fourth external arm uses BF16 input/weights and actual cuBLAS BF16
+output, widened afterward only for the original argmax/confidence/map.
+It charges conversion, product, widening and ranking over the same 12 real
+inputs per head/full working set. The algorithm is the existing
+`cublasGemmEx`, `CUBLAS_COMPUTE_32F`, `CUBLAS_GEMM_DEFAULT_TENSOR_OP`;
+there is no algorithm sweep. Original captured logits, fresh/graph own
+repeats and mapped argmax pass, and widened BF16 bits are checked exactly.
+
+| Head | Confidence | Fresh original MMVF ms | BF16-output library plus widening ms |
+| --- | --- | ---: | ---: |
+| Prefix | Off | 1.420394 | 2.001223 |
+| Prefix | On | 1.424258 | 2.010117 |
+| Selected | Off | 1.023493 | 1.441080 |
+| Selected | On | 1.028103 | 1.447656 |
+
+The BF16-output arm is also about 41% slower and changes no winning IDs.
+Every winning maximum is unique: no BF16-induced winning ties occur in
+these 12 rows; minimum top-two margin is 0.875. Maximum absolute logit
+movement versus original is 0.118084 and maximum original top-two margin
+movement is 0.137091. Maximum drafter softmax TV is 0.0135804 prefix /
+0.0135433 selected. This matches the head operand/output dtypes, not Mia's
+complete MTP state or its chosen library implementation. No output-quality
+or full-model acceptance conclusion follows. The branch is not integrated.
+
+Raw records are `spark-b:~/scratch/m3-qwen-draft-bf16-output/`, with exact
+commands/operand pins in `pins.json` and all four-arm vectors in
+`replay-{prefix,selected}-{on,off}`. Supervised job
+`qwen-draft-head-bf16-output` completes rc0 at 09:15:53 EDT after external
+SDK compile/format/tidy, replay and analysis. Source/binary/object SHA-256:
+`c3ecd43f64d6ed1d2024159414a5de5ae8dcdd3cd94a98306c30f323d8bb28b6` /
+`864e5e7bb1b76e6411d49406fa18671c2c5035e00dc1cd4d92ef2279c34aa115` /
+`e676202068ad84a4942841551b670415b6a76a1c38aeb3f0a683456cef1937e6`.
+Controller SHA-256:
+`c73ca7d621491c30fb6a080533f983362b9e178834762172cd9dda3b8aaf5893`.
+
 The retained slice passes the locked Spark-native 1,037 tests (201 GPU),
 SDK formatting and six host tidy units, 294 boundary checks and nine early
 CLI refusals; actual REUSE/header checks pass for the exported tree.
@@ -115,8 +153,9 @@ CPU waits/copies between kernels.
 
 | Stage | Current native path | Reference distinction |
 | --- | --- | --- |
-| Routed products, ≤8 rows | NVFP4 E2M1 weights/E4M3 scales; signed Q8 activation per16, amax/127, roundf; DP4A/F32 accumulation and F32 output/SwiGLU | Mia's NVFP4 routed implementation uses FP4 activation products; its actual profiled consumer and casts require matched source/trace attribution |
-| Wider native routed products | FP4 E2M1 activation with per16 E4M3 and row-global scale; CUTLASS F32 accumulation→BF16 product; BF16 SwiGLU input/FP4 down requantization | Existing product is source-feasible for a bounded small-row experiment, but changes quantization and intermediate casts together |
+| Routed products, ≤8 rows | NVFP4 E2M1 weights/E4M3 scales; signed Q8 activation per16, amax/127, roundf; DP4A/F32 accumulation and F32 output/SwiGLU | Mia's actual main consumer is FlashInfer CUTLASS with FP4 activations, static a1/a2 scales and BF16 output; its drafter is Marlin |
+| Small-row MXFP8 linears | E4M3 weights/E8M0 scales decoded by the vector product; raw F32 activations, F32 FMA and output | Mia quantizes activations for its FP8 product; this is separate from routed Q8/FP4 |
+| Wider native routed products | FP4 E2M1 activation with per16 E4M3 and row-global scale; CUTLASS F32 accumulation→BF16 product; BF16 SwiGLU input/FP4 down requantization | Small-row model transfer loses about 19%; Mia's observed cooperative tile/stage pair loses about 33%, with native dynamic scaling retained ([grouped factor](../qwen38-grouped-verify/README.md)) |
 | Draft head | BF16 weights, F32 input/accumulation/output | Mia BF16 input/output; isolated input RN was neutral here |
 | KV / recurrent state | F16 / F32 | Pinned Mia recipe FP8 KV / BF16 SSM; no causal cache/state quality-loss measurement is inferred from these profiles |
 
