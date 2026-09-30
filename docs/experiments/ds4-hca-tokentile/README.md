@@ -10,10 +10,12 @@ F16 raw-ring mirror and original dense causal-record preparation. Four
 fresh matched 8K model processes give a 17.88% mean prefill throughput
 gain with identical 128 IDs and each arm's full-logit repeat exact.
 The production-sized 2,048-row comparison gains 15.76% mean prefill
-throughput under the same protocol. The native integration remains a
-default-off benchmark option pending larger compressed extents and
-fixed-bound quality qualification. Serving and
-production chunk sizes remain unchanged.
+throughput under the same protocol. Late real operands also pass the
+operator controls, but two fixed 32K oracle repeats exceed the greedy
+bound by 1.669249 nats at one of 512 steps. The tested configuration's
+fixed-window PPL passes at −0.1435% versus the reference. The native
+integration remains a default-off benchmark option; serving retains the
+quality-qualified ordinary attention path and production chunk sizes.
 
 ## One attention product, identical inputs and cache bytes
 
@@ -115,7 +117,8 @@ two approximations to be bit-identical.
 `jitllm_dsv4_exec --ds4-hca` is the only option that selects
 `jitllm.dsv4.hca_tokentile`. It refuses exact plans and chunks other
 than 2,048 or 4,096. The device predicate is restricted to measured GB10,
-D512/G64, T2048/raw2304 or T4096/raw4352, with 256 compressed cells. Serving, decode,
+D512/G64, T2048/raw2304 with 256/1,024 compressed cells or
+T4096/raw4352 with 256 compressed cells. Serving, decode,
 speculative verify, other devices and unknown shapes keep their previous
 selection. The generic direct entry point admits bounded tail fixtures
 without broadening the measured graph predicate.
@@ -139,9 +142,8 @@ own-repeat controls. The native tail controls report NMSE
 ordinary approximation, all within `5e-4`.
 
 Production DeepSeek uses 2,048-row chunks. Its actual charged replay and
-model comparison are recorded below. A future default decision still
-requires larger compressed extents, unchanged memory headroom and the
-existing fixed near-tie/PPL bounds. Neither benchmark option changes
+model comparison are recorded below. The longer fixed-bound result
+below blocks default adoption. Neither benchmark option changes
 production's chunk size.
 
 ## Matched 8K complete-model comparison
@@ -248,6 +250,129 @@ host translation unit's tidy, 296 boundaries, actual REUSE and 22 headers.
 The subsequent comment/report/plan update passes a separate actual REUSE
 and 23-header export; six CLI refusals pass before loading. Broad swap
 timing is unchanged and is not repeated for this benchmark-only extension.
+
+## Late real operands at 32K and near 128K
+
+The same qualified replay binary also consumes layer three's actual last
+2,048-row chunk from two longer community prompts. The first uses 32,768
+IDs at capacity 32,768, first position 30,720 and 256 compressed cells.
+The second uses 126,976 IDs from the immutable 128,817-ID study prompt at
+capacity 131,072, first position 124,928 and 1,024 compressed cells. Both
+have 2,304 raw cells and a wrapped ring. The second is a near-128K prompt,
+not a literal 131,072-token prompt.
+
+| Captured late chunk | Native before / after, ms | Charged literal core, ms | Native / full-Q reference NMSE | Literal / full-Q reference NMSE |
+| --- | ---: | ---: | ---: | ---: |
+| 32K | 11.014080 / 11.010528 | 4.418304 | `2.725399948e-7` | `1.199247669e-8` |
+| 126,976 IDs, 128K capacity | 33.497761 / 33.479073 | 8.596640 | `1.302060263e-6` | `1.212598900e-8` |
+
+The strict FP64 references still score 22 selected token/head rows.
+Candidate/native NMSE is `2.366878199e-7` / `1.202363893e-6`, maximum
+absolute difference `0.011991501` / `0.033945084`. Candidate/RN-F16-Q
+reference NMSE is `2.971617316e-9` / `2.504495067e-9`. Every native output
+exactly reproduces its captured output; own repeats, original mask and
+visibility controls, changed-query graph reuse and guards pass. All
+nine-sample native/candidate/native medians charge mirror and record
+preparation, with two query banks totaling 536,870,912 bytes.
+
+Candidate/native scratch is 3,277,824/4,739,072 bytes at 32K and
+6,423,552/11,030,528 near 128K. Joined KV occupies 2,621,440 / 3,407,872
+bytes. These are operator comparisons, not model quality percentages.
+The larger measured shape is now eligible through the benchmark's
+default-off option; production selection remains unchanged. The fixed
+32K model check below fails, so operator accuracy does not qualify a
+default change.
+
+On `spark`, supervised `m3-ds4-hca-long-replay-r1` completed rc0 on
+2026-09-30 at 13:55:50–14:01:43 EDT. Eight successful-query pre/post
+model and replay gates report 116.196–117.063 GiB available. Raw source,
+real operands and receipts remain in `~/scratch/m3-ds4-hca/source-long/`
+and `replay-community-long-r1/`. The unchanged measured replay binary is
+`b554d0deed80fd7d6b1f141811180ac7bb4596d0ccd673a4176293172d71e707`;
+the new external capture binary is
+`cc279f368c6e45aa53d8c82c105d24838da57e76f9ee46205d43e819afee0189`.
+The finished pins receipt is
+`39c1a21ff2c62ed3da3fc79cd6fa4d1013289e61df6a8fba719f0a4f56f5be34`,
+with both full operand inventories; replay results are
+`db7a60a23a9540d7654ade0f65f2be2c45c1153f4fd8a5a66696d62332255aaa`
+and `3e81dbe8ad01f5513a0b3910afb12228b347566a6c21fd8ecbb163c65b9b6c5d`.
+
+The narrow eligibility extension passes prepare, all 1,041 locked
+Spark-native tests (203 GPU, 64.24 s), SDK format, 296 boundaries,
+actual REUSE and 22 headers. No host translation unit changed. Its
+checked native binary is
+`1ebd103df04636868710e97ce790eae91154abca665207560f1ab94f03d7acf9`.
+The broad swap table is unchanged and is not repeated.
+
+## Fixed 32K oracle result
+
+Two fresh original-GGUF processes run the same 31,705 prompt IDs and
+512 forced oracle IDs as the quality-qualified ordinary-HCA control.
+Capacity is 32,768, chunk size 2,048, with compact scheduling at the
+production floor, CSA/window sharing and the frontier head. Each process
+actually executes 300 literal HCA calls in its 15 full prefill chunks;
+its partial tail and one-row decode keep their previous implementations.
+
+Both repeats have 487 equal argmaxes, 24 near ties and one disagreement
+outside the unchanged 0.947-nat bound. At step 249 native chooses 10386
+instead of oracle 82437; the oracle margin is `2.6162492111325264`
+nats. It exceeds the bound by `1.6692492111325264` nats, about 2.76
+times the bound. This is one failed comparison among 512, not a model
+quality-loss percentage. The same position failed the earlier all-wide
+path. Copying the original ds4 HCA core therefore does not eliminate
+that failure, even though its captured-operator accuracy is better.
+
+The complete fresh 512-row logits repeat bit exactly. Prefill takes
+53.5559 / 53.1265 seconds; these are diagnostic candidate timings, not
+a qualified default speed comparison. The planned longer greedy checks
+stop at this failed 32K gate. A separate fixed 128K PPL run measures
+average loss; it cannot reverse the failed greedy verdict. No ds4
+reference-quality pass or precision-only cause is inferred.
+
+Supervised `m3-ds4-hca-long-quality` stops with rc1 on 2026-09-30 at
+14:30:31–14:33:35 EDT after both native processes complete rc0 and
+retire through the strong query gates. Raw commands and full-logit
+identities are in `~/scratch/m3-ds4-hca/native-long-quality/`.
+Production retains the existing quality-qualified ordinary HCA path.
+
+## Fixed 128K perplexity result
+
+A separate original-GGUF process completes all 131,072 immutable input
+IDs with 2,048-row chunks and the same default-off attention opt-in.
+The registered scoring window is loss indices 65,536 through 131,070,
+65,535 targets. Its PPL is `1.9270310876022734` versus the fixed oracle
+`1.9298`, a relative change of −0.143481832%, within the symmetric 3%
+bound. The already qualified ordinary-HCA control is `1.926517`.
+The native summary's all-row PPL `1.882515` uses a different window
+and is not the registered quality score.
+
+This qualifies the tested mixed selection, not a whole-128K literal
+HCA core. The graph passes its used compressed extent to the predicate:
+chunks 1–16 have 256 compressed cells and chunks 49–64 have 1,024, so
+32 chunks × 20 HCA layers execute 640 literal calls. The intervening
+512/768-cell chunks keep ordinary attention. All 131,071 losses are
+finite. The failed greedy gate still blocks default adoption.
+
+On `spark`, `m3-ds4-hca-long-ppl` runs at 14:40:20–14:45:29 EDT on
+2026-09-30. Its model completes rc0 in 295.774 seconds and passes the
+retirement gate; the controller returns rc1 because it incorrectly
+expects all 1,280 HCA calls. A separately reviewed non-model validator
+derives the actual 640-call selection from the unchanged predicate and
+validates the pinned summary, full loss vector and original controller
+receipt without rerunning inference or overwriting that receipt. It
+completes rc0 as `m3-ds4-hca-long-ppl-validate`, with a fresh successful
+117.263-GiB query gate. Raw outputs and both receipts remain in
+`~/scratch/m3-ds4-hca/native-long-ppl/`.
+
+Summary SHA-256 is
+`3c2a95cb355b841a28c187200d138b1e6a4b6802e4b2dc6a78b8fa11caf30feb`;
+loss vector is
+`f1672a24e7d11dfbaf0c585fc33fbcb19976248efdbc3f4775962ad212d8ada0`.
+The original controller receipt is
+`ae296d9c1225e207de116ffc0cef19ed80127f0e1244660b1b60706591fb150f`;
+the correction validator is
+`c2775ae8c07fdb71cdbfa60a4a72e1e496437c756cb8ed907ad08bda561a2609`.
+The checked native binary remains the long-check identity above.
 
 ## Provenance and reproduction of the initial 4,096-row trial
 

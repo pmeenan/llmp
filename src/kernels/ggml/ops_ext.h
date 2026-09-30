@@ -178,8 +178,9 @@ std::expected<void, KernelFailure> FlashAttnMma(LaunchContext& launch, ggml_tens
 
 // Literal ds4 four-token/G8 HCA core, with native F16 ring bit-copy and
 // original dense causal records in one planned scratch scope. Selection
-// is default-off and restricted to GB10 2,048/4,096-row HCA graphs with
-// rows + 256 raw and 256 compressed cells. Direct controls admit tails.
+// is default-off and restricted to GB10 HCA graphs with rows + 256 raw:
+// 2,048 rows with 256/1,024 compressed cells, or 4,096 rows with 256.
+// Direct controls admit tails.
 // Plan sets the core's 88,576-byte shared-memory opt-in before capture;
 // Run never changes CUDA function attributes or allocates hidden storage.
 bool Dsv4HcaTokentileFits(const LaunchContext& launch, const ggml_tensor* node);

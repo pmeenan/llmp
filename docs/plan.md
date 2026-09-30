@@ -887,8 +887,13 @@ it appears.
       rows and 46.56 to 3.56 ms at production-sized 2K rows. Separate
       fresh 8K ABBAs gain 17.88% / 15.76% prefill throughput, with identical
       128 IDs and exact own full-logit repeats. It remains benchmark-only
-      and default off; larger compressed extents and the unchanged long
-      greedy/PPL gates are still required.
+      and default off. Late 2K operands with 1,024 compressed cells also
+      pass the operator controls, but two fresh original-GGUF 32K model
+      repeats fail the fixed greedy bound at the same step 249:
+      2.616249 versus 0.947 nats, 1.669249 nats over. Better isolated
+      arithmetic does not close model quality; the default remains unchanged.
+      The mixed eligible 128K selection passes fixed-window PPL at
+      1.927031 versus 1.9298 (−0.1435%); the greedy failure still blocks adoption.
       A separate [frontier-head follow-up](experiments/dsv4-frontier-head/README.md)
       preserves all state/DSpark streams while selecting only the target
       head rows production consumes. Original Q4_K controls gain

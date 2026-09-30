@@ -227,8 +227,15 @@ production-sized-chunk 8K ABBA gains 15.76%, with the same ID/repeat
 controls. This does not prove
 the cause of the earlier oracle failure or establish long-window
 quality. The transfer is a default-off benchmark option for measured
-2,048/4,096-row GB10 shapes with 256 compressed cells; larger compressed
-extents and fixed 32K/128K quality qualification remain pending.
+2,048/4,096-row GB10 shapes with 256 compressed cells. Late actual
+2K chunks also qualify the operator with 1,024 compressed cells: charged
+8.597 ms versus native 33.498/33.479 ms at 126,976 IDs and 128K capacity.
+Two fresh original-GGUF 32K model repeats still fail at step 249,
+oracle margin 2.616249 versus the fixed 0.947 bound. The core's better
+captured-operator accuracy therefore does not qualify a default change.
+The tested mixed 128K selection passes fixed-window PPL at 1.927031
+versus 1.9298 (−0.1435%); only the 256/1,024-cell chunks select the
+literal core. That average-loss result does not reverse the greedy failure.
 The qualified production HCA selection
 remains unchanged.
 

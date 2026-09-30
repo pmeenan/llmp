@@ -137,9 +137,16 @@
   gain, identical 128 IDs and exact own full-logit repeats. The separate
   actual 2,048-row charged replay takes 3.557 ms versus 46.560/46.553 ms;
   its matched 8K ABBA gains 15.76% with the same ID/repeat controls.
-  These limited results disclose numerical differences; larger compressed
-  extents and fixed-bound long-context quality remain required before any default
-  change. Full evidence is in the
+  Late actual 2K chunks take 4.418 ms versus 11.014/11.011 ms at 32K
+  and 8.597 ms versus 33.498/33.479 ms with 126,976 IDs at 128K capacity.
+  Selected-row strict references and own/captured repeats pass; the larger
+  shape has 1,024 compressed cells. These limited results disclose
+  numerical differences. Two fresh original-GGUF 32K model repeats fail
+  the unchanged near-tie bound at step 249: 2.616249 versus 0.947 nats.
+  The mixed 128K eligible selection passes fixed-window PPL at 1.927031
+  versus 1.9298 (−0.1435%), without reversing the greedy failure.
+  The original core does not eliminate the prior failure; no default
+  change or ds4 reference-quality conclusion follows. Full evidence is in the
   [literal HCA report](../experiments/ds4-hca-tokentile/README.md).
 - **Proposed upstream action:** expose a narrow standalone token-tile
   entry point with explicit causal first position, raw prefix availability,

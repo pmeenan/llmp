@@ -96,8 +96,10 @@ void Recorded(int result) {
 bool Dsv4HcaTokentileFits(const LaunchContext& launch, const ggml_tensor* node) {
   if (!CheckDsv4HcaTokentile(node) || !Supported(launch)) return false;
   const auto tokens = node->src[0]->ne[1];
-  return (tokens == 2048 || tokens == 4096) && JitllmOpInt(node->src[3], 0) == tokens + 256 &&
-         node->src[1]->ne[1] == tokens + 512;
+  const auto raw = JitllmOpInt(node->src[3], 0);
+  const auto compressed = node->src[1]->ne[1] - raw;
+  return raw == tokens + 256 && ((tokens == 2048 && (compressed == 256 || compressed == 1024)) ||
+                                 (tokens == 4096 && compressed == 256));
 }
 
 std::expected<std::uint64_t, KernelFailure> PlanDsv4HcaTokentile(const LaunchContext& launch,
