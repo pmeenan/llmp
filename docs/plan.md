@@ -204,7 +204,7 @@ it appears.
       ([environment.md](environment.md#m3-model-store-2026-09-28)).
       The default vLLM image's commit (`8e685d198`) and the kernels its
       engine log selects were read in the baselines item.
-- [ ] **Baselines,** installed and run on the Sparks by us: MiaAI's
+- [x] **Baselines,** installed and run on the Sparks by us: MiaAI's
       configurations, TensorFold, llama.cpp for the GGUF, and vLLM or SGLang
       where they support these models; for the image, diffusers in BF16 as
       the speed and format reference (the fastest measured), and
@@ -230,8 +230,12 @@ it appears.
       `VLLM_QSA_DET_TOPK=1`, `VLLM_MOE_DET_FINALIZE=1`), which took a second
       launch (10 min 52 s). vLLM or SGLang on DeepSeek 0731 is not
       available on one Spark (no GGUF path for this quantization; the
-      native checkpoint does not fit). Open: stable-diffusion.cpp's GGUFs.
-- [ ] **Import:** M0's Python prototype importer writes the D-056 artifacts
+      native checkpoint does not fit). The additional
+      [stable-diffusion.cpp GGUF comparison](experiments/image-gguf/README.md)
+      is measured on `spark`: Q4_K_M, Q8_0 and BF16 controls, including
+      1024²/40-step time, sampled memory and visual agreement. It is a
+      format comparison, not native jitLLM GGUF image support.
+- [x] **Import:** M0's Python prototype importer writes the D-056 artifacts
       for the three models, including NVFP4 and MXFP8 tensors and the image
       pipeline's BF16 components. The C++ importer and verifier stay in M5.
       *DeepSeek V4 Flash 0731:* `import_m3.py` (the pinned prototype, its
@@ -255,7 +259,7 @@ it appears.
       (14.23 GB) and VAE (1.35 GB, F32) and `compose` their composition
       `eca21baa…` on `spark` in under three minutes; `artifact/composition.h`
       reads it natively ([qwen-image-native](experiments/qwen-image-native/README.md)).
-- [ ] **Kernels and the source lock** (D-053, D-057, D-077): the pinned
+- [x] **Kernels and the source lock** (D-053, D-057, D-077): the pinned
       llama.cpp has much of what the models need (quantized matmul and
       `mul_mat_id`, MoE routing, the lightning indexer, `dsv4-hc`, gated
       delta net and `ssm-conv`, prefill flash attention at head dimensions
@@ -311,7 +315,7 @@ it appears.
       under 1% of a decode step below 1M positions, and 3.6–71× slower for
       prefill's many rows (measured 2026-09-28,
       [licensing.md](licensing.md)).
-- [ ] **Model graphs and state** (pulled from M7 and M9): DeepSeek V4's
+- [x] **Model graphs and state** (pulled from M7 and M9): DeepSeek V4's
       compressed sparse attention with its indexer (CSA/HCA) and mHC;
       Qwen3.8's QSA, hyper-connections and Gated DeltaNet layers; the
       resident MoE execution both need (pulled from M7; no demand-paged
@@ -414,7 +418,7 @@ it appears.
       against 36.2 s before on the same host (0.64× diffusers' 52.6 s), a
       step 0.82 s, decode 0.36 s; image 41.77 dB, SSIM 0.996, repeatable
       ([qwen-image-native](experiments/qwen-image-native/README.md#speed)).
-- [ ] **Resident expert layout** (the initial choice pulled from M7):
+- [x] **Resident expert layout** (the initial choice pulled from M7):
       repacked expert groups get executable views that GGML's `mul_mat_id`
       and the NVFP4 path's grouped GEMM accept with every expert resident.
       Pointer-table or uniform-stride dispatch is chosen per format, by a
@@ -444,7 +448,7 @@ it appears.
       templates byte for byte; shipped binaries may link them (D-088,
       accepted 2026-09-28). The output
       parsers and the request mapping are the chat route's.
-- [ ] **Speculative decoding in the core** (pulled from M9; D-068): Qwen3.8's
+- [x] **Speculative decoding in the core** (pulled from M9; D-068): Qwen3.8's
       MTP layer and DeepSeek's DSpark drafter, with verify and rollback that
       keep only the accepted prefix, and forced draft rejection for the
       exit's speculation checks (moved from M9). Every published Mia and
@@ -495,7 +499,7 @@ it appears.
       The 1.0 bound is qwen38-native's, not dsv4-decode's later rule (the
       verify's own noise, p99 0.23–2.39 per prompt, measured afterwards);
       it is kept as the stricter test.
-- [ ] **The swap path:** evict the outgoing model and hand its backing to
+- [x] **The swap path:** evict the outgoing model and hand its backing to
       the incoming one (D-033's handoff, pulled from M6; D-081), with
       page-in through the landing zone overlapping the rest. Creating and
       mapping backing costs about 70–76 µs (`cuMemCreate`) and 40–43 µs
@@ -548,7 +552,7 @@ it appears.
       harness's. That is M3's swap table in a running process, against
       llama.cpp's 77 / 104 s, Mia's vLLM's 13 min 13 s, TensorFold's 141 s
       and diffusers' 212 s.
-- [ ] **CUDA graphs for decode** (pulled from M9): captured per model and
+- [x] **CUDA graphs for decode** (pulled from M9): captured per model and
       plan and replayed after swaps that restore every extent at the same
       virtual addresses, with setup and tuning state restored the same way.
       This reopens D-086 and needs the relocation proof first. BP-F4's
@@ -855,6 +859,9 @@ it appears.
       compact expert-product experiment and any useful measured adoption;
       ds4 is a same-weight harness comparator, not a cache-equivalent
       quality or runtime/DSpark baseline yet.
+      The owner's [cross-family inventory](optimization-inventory.md)
+      covers existing implementations and reusable pieces of rejected
+      kernels, so each new experiment checks prior consumers and outcomes.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
@@ -915,19 +922,23 @@ it appears.
           26.8 → 24.4 tok/s from 8K to 256K, prefill 2,314 → 2,178), at
           least Mia's speed plain at every depth, repeatable, MTP to
           262,144 ([long-context phase 2](experiments/long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth));
-          open: MTP 0.91× / 0.96× Mia's MTP 3 at 128K / 256K (a step
-          costs the same at depth; at 128K the draft depth caps a
-          well-accepted answer, levers the depth chosen by acceptance,
-          a cheaper verify row, and the selected draft vocabulary
-          ([draft-head study](experiments/qwen38-draft-head/README.md));
-          runtime ladder still to be rerun). *Adaptive depth and selected-head
+          open: the final 512-output runtime ladder's default-prefix MTP
+          reaches 39.12 / 37.55 / 45.03 / 35.63 tok/s at 32K / 64K /
+          128K / 256K, versus Mia's MTP 3 at 37.25 / 40.45 / 48.65 /
+          37.71. The selected head reaches 37.00 / 41.32 / 42.88 / 43.84;
+          neither closes every depth's speed gate. Fixed depths 3–5,
+          expert sharing, prepared Q8 and incremental confidence stopping
+          were neutral; shape-specific library products are the next
+          lever to measure for cheaper verify rows
+          ([draft-head study](experiments/qwen38-draft-head/README.md)).
+          *Adaptive depth and selected-head
           import implemented 2026-09-29:* native depth 2–3 chosen by observed
           acceptance, deterministic across saved/restored runs. The 128K
           128-output harness trial reaches 44.3–45.0 tok/s with the prefix
           head; the externally supplied curated list reaches 41.4–41.9,
           so the prefix stays default. Curated 256K, rejection and swap
-          controls are included in the study; final runtime timing remains
-          part of the extrapolation gate;
+          controls are included in the study; the measured final runtime
+          timing leaves the extrapolation speed gate open;
         - sparse flash-attention prefill for both models (llama.cpp
           #29298 and #28770);
         - DeepSeek's compressed attention and indexer at depth;

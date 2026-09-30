@@ -192,6 +192,7 @@ the commit gate.
 | [docs/artifact-format.md](docs/artifact-format.md) | The experimental v0 prepared-artifact format (D-056): container, manifest/index schema, layout and page-in rules, worked examples |
 | [docs/model-support.md](docs/model-support.md) | The model support matrix: each model and drafter jitLLM runs, its pin, artifact, template hash, tokenizer, decoding modes, evidence, divergences and status |
 | [docs/portability.md](docs/portability.md) | Other GPU platforms and OSes: where vendor and Linux code may live (the boundary check), the device runtime and platform seams, the registry's primitive-fallback rule and each model's minimum primitive set, the runners' shared skeleton, distribution |
+| [docs/optimization-inventory.md](docs/optimization-inventory.md) | Cross-family optimization transfers, current consumers and shape/format limits, including useful pieces of rejected kernels; read before proposing another kernel experiment |
 | [docs/tokenizer.md](docs/tokenizer.md) | The native tokenizer, chat renderers, stop tokens and sampling: pre-tokenizers, bounds, Unicode tables, agreement with the references, template hashes |
 | [docs/client-api-baseline.md](docs/client-api-baseline.md) | The M5 inference API contract: routes, client profiles, front-door, status and keepalive rules; links the Ollama, vLLM and OpenRouter assessments |
 | [docs/ideation.md](docs/ideation.md) | The full original reasoning and source links behind a constraint. Long; read the section you need, not the whole file |
