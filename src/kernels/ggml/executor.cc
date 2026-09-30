@@ -57,7 +57,9 @@ DeviceChoices DeviceChoicesOf(const LaunchContext& launch) {
   return {.mul_mat = [&launch](const ggml_tensor* node) { return SelectMulMat(launch, node); },
           .vector_fusible =
               [&launch](const ggml_tensor* node) { return MulMatVecFusible(launch, node); },
-          .quant = [&launch](const ggml_tensor* node) { return SelectMulMatQ(launch, node); }};
+          .quant = [&launch](const ggml_tensor* node) { return SelectMulMatQ(launch, node); },
+          .q2_d2r_fits =
+              [&launch](const ggml_tensor* node) { return MulMatIdQ2D2rFits(launch, node); }};
 }
 
 std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& launch,
@@ -83,6 +85,8 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
                                   step.implementation == kMulMatIdQPairCompact);
     } else if (step.implementation == kMulMatIdQCompact) {
       planned = PlanMulMatIdQCompact(launch, step.nodes.front());
+    } else if (step.implementation == kMulMatIdQ2D2r) {
+      planned = PlanMulMatIdQ2D2r(launch, step.nodes.front());
     } else if (step.implementation == kTopKName) {
       planned = PlanTopK(launch, step.nodes.front());
     } else if (step.implementation == kDsv4LidTopKName) {

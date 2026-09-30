@@ -64,6 +64,16 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQCompact(const LaunchCon
                                                                  const ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatIdQCompact(LaunchContext& launch, ggml_tensor* node);
 
+// Experimental raw Q2_K product under the same maps and D2S6 Q8 activation
+// preparation. ds4's direct-to-register arithmetic differs from GGML's
+// half-rounded coefficient arithmetic. No permanent weight replica.
+// Automatic selection is restricted to the measured GB10 prefill shape;
+// direct controls may call the bounded generic operation.
+bool MulMatIdQ2D2rFits(const LaunchContext& launch, const ggml_tensor* node);
+std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQ2D2r(const LaunchContext& launch,
+                                                              const ggml_tensor* node);
+std::expected<void, KernelFailure> MulMatIdQ2D2r(LaunchContext& launch, ggml_tensor* node);
+
 // The same ordinary MMQ products, in order, with one shared preparation of
 // the routing maps and type-specific Q8 activations (ds4's paired MoE
 // technique). Both products retain their own weight/output strides and

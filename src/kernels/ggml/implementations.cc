@@ -25,9 +25,10 @@
 #include "kernels/ggml/validate_ext.h"
 
 // The build's part of each identity, from CMakeLists.txt.
-#if !defined(JITLLM_GGML_SOURCE_TREE) || !defined(JITLLM_GGML_SDK) ||           \
-    !defined(JITLLM_GGML_TARGET) || !defined(JITLLM_GGML_CUDA_ARCHITECTURES) || \
-    !defined(JITLLM_GGML_BUILD_TYPE) || !defined(JITLLM_GGML_SANITIZE)
+#if !defined(JITLLM_GGML_SOURCE_TREE) || !defined(JITLLM_DS4_SOURCE_TREE) ||        \
+    !defined(JITLLM_GGML_SDK) || !defined(JITLLM_GGML_TARGET) ||                    \
+    !defined(JITLLM_GGML_CUDA_ARCHITECTURES) || !defined(JITLLM_GGML_BUILD_TYPE) || \
+    !defined(JITLLM_GGML_SANITIZE)
 #error "implementations.cc needs the GGML source tree, SDK, target, architectures and build type"
 #endif
 
@@ -83,7 +84,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 96> kKernels = {{
+constexpr std::array<Kernel::Entry, 97> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -270,6 +271,12 @@ constexpr std::array<Kernel::Entry, 96> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckMulMatIdQCompact(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQCompact(launch, n[0]); }},
+    {.name = "jitllm.mul_mat_id.q2_d2r",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "ds4 down_q2k_d2r_kernel<64,64,raw>: 128x64 tiles; native maps/Q8 D2S6; raw Q2_K",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatIdQ2D2r(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQ2D2r(launch, n[0]); }},
     {.name = "jitllm.mul_mat_id.mmq_pair_compact",
      .operation = execution::Operation::kMulMatId,
      .variant = "two ordinary non-FP4 MMQ inner products sharing routing and Q8 preparation, "
@@ -787,15 +794,25 @@ execution::Implementation Declare(std::string_view name, execution::Operation op
   // The grouped GEMM and the MXFP8 product are CUTLASS's kernels: their
   // identities name that tree too.
   const bool cutlass = name == kMoeGemmName || name == kMxfp8GemmName;
+  const bool ds4 = name == kMulMatIdQ2D2r;
+  std::string source = "ggml";
+  std::string revision =
+      std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE, ModuleSourcesDigest());
+  if (ds4) {
+    source = "ds4";
+    revision = std::format("ds4 tree {}; ggml tree {}; jitllm module {}", JITLLM_DS4_SOURCE_TREE,
+                           JITLLM_GGML_SOURCE_TREE, ModuleSourcesDigest());
+  } else if (cutlass) {
+    source = "cutlass";
+    revision =
+        std::format("cutlass tree {}; ggml tree {}; jitllm module {}", JITLLM_CUTLASS_SOURCE_TREE,
+                    JITLLM_GGML_SOURCE_TREE, ModuleSourcesDigest());
+  }
   return {
       .name = std::string(name),
       .operation = operation,
-      .source = cutlass ? "cutlass" : "ggml",
-      .revision = cutlass ? std::format("cutlass tree {}; ggml tree {}; jitllm module {}",
-                                        JITLLM_CUTLASS_SOURCE_TREE, JITLLM_GGML_SOURCE_TREE,
-                                        ModuleSourcesDigest())
-                          : std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE,
-                                        ModuleSourcesDigest()),
+      .source = std::move(source),
+      .revision = std::move(revision),
       .build = std::format("sdk {}; target {}; cuda {}; build type {}; {}; {}; sanitizers {}",
                            JITLLM_GGML_SDK, JITLLM_GGML_TARGET, JITLLM_GGML_CUDA_ARCHITECTURES,
                            JITLLM_GGML_BUILD_TYPE, kAsserts, kLibraryAsserts, JITLLM_GGML_SANITIZE),

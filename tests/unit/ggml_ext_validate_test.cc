@@ -120,6 +120,33 @@ TEST_F(GgmlExtValidateTest, ExpertProductsFollowMulMatIdsShapes) {
   Refused(kg::CheckMulMatIdQ(Bound(ggml_mul_mat(c(), New(GGML_TYPE_Q8_0, 4096, 8), x))));
 }
 
+TEST_F(GgmlExtValidateTest, RawQ2D2rRefusesWrongLayoutsAndWorklistBounds) {
+  const auto make = [&](ggml_type type, std::int64_t k, std::int64_t m, std::int64_t experts,
+                        std::int64_t used, std::int64_t tokens, bool broadcast = false) {
+    return Bound(ggml_mul_mat_id(c(), New(type, k, m, experts),
+                                 New(GGML_TYPE_F32, k, broadcast ? 1 : used, tokens),
+                                 New(GGML_TYPE_I32, used, tokens)));
+  };
+  auto* real = make(GGML_TYPE_Q2_K, 2048, 4096, 256, 6, 4096);
+  Accepted(kg::CheckMulMatIdQ2D2r(real));
+  Accepted(kg::CheckMulMatIdQ2D2r(make(GGML_TYPE_Q2_K, 512, 18, 16, 6, 65)));
+  Accepted(kg::CheckMulMatIdQ2D2r(make(GGML_TYPE_Q2_K, 512, 2, 32768, 1, 1)));
+  Refused(kg::CheckMulMatIdQ2D2r(nullptr));
+  Refused(kg::CheckMulMatIdQ2D2r(make(GGML_TYPE_Q8_0, 2048, 4096, 256, 6, 4096)));
+  Refused(kg::CheckMulMatIdQ2D2r(make(GGML_TYPE_Q2_K, 512, 17, 16, 6, 65)));
+  Refused(kg::CheckMulMatIdQ2D2r(make(GGML_TYPE_Q2_K, 512, 18, 16, 6, 65, true)));
+  Refused(kg::CheckMulMatIdQ2D2r(make(GGML_TYPE_Q2_K, 512, 2, 32769, 1, 1)));
+  Refused(kg::CheckMulMatIdQ2D2r(make(GGML_TYPE_Q2_K, 512, 2, 65536, 1, 1)));
+  Refused(kg::CheckMulMatIdQ2D2r(make(GGML_TYPE_Q2_K, 512, 2, 65535, 1, 1)));
+  auto* weights = real->src[0];
+  const auto stride = weights->nb[2];
+  weights->nb[2] -= 84;  // overlapping expert rows, despite valid raw byte multiples
+  Refused(kg::CheckMulMatIdQ2D2r(real));
+  weights->nb[2] = stride;
+  real->nb[2] += sizeof(float);  // the raw scatter returns packed output only
+  Refused(kg::CheckMulMatIdQ2D2r(real));
+}
+
 TEST_F(GgmlExtValidateTest, PairedExpertsRequireMatchingInputsAndDisjointOutputs) {
   auto* input = New(GGML_TYPE_F32, 512, 1, 40);
   auto* ids = New(GGML_TYPE_I32, 2, 40);

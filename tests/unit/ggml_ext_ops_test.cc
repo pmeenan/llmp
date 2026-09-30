@@ -550,6 +550,93 @@ TEST_F(GgmlExtOpsTest, PairedExpertPreparationMatchesSeparateProductsExactly) {
   }
 }
 
+TEST_F(GgmlExtOpsTest, RawQ2D2rPreservesItsOwnCapturedProductAndPlansAllScratch) {
+  constexpr std::int64_t k = 512;
+  constexpr std::int64_t m = 130;
+  constexpr std::int64_t experts = 16;
+  constexpr std::int64_t used = 6;
+  constexpr std::int64_t tokens = 129;
+  auto weights = Quantize(GGML_TYPE_Q2_K, k, m * experts, 71);
+  auto* w = Place(ggml_new_tensor_3d(c(), GGML_TYPE_Q2_K, k, m, experts), weights.bytes);
+  auto* x = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, k, used, tokens),
+                  Normal(72, static_cast<std::size_t>(k * used * tokens)));
+  std::vector<std::int32_t> ids(static_cast<std::size_t>(used * tokens));
+  for (std::int64_t t = 0; t < tokens; ++t) {
+    for (std::int64_t slot = 0; slot < used; ++slot) {
+      ids[static_cast<std::size_t>((t * used) + slot)] = static_cast<std::int32_t>(slot);
+    }
+  }
+  auto* routes = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, used, tokens), ids);
+  auto* product = Place(ggml_mul_mat_id(c(), w, x, routes));
+  auto* other = Place(ggml_mul_mat_id(c(), w, x, routes));
+  const auto scratch = kg::PlanMulMatIdQ2D2r(launch(), product);
+  ASSERT_TRUE(scratch.has_value()) << (scratch ? "" : scratch.error().detail);
+  const kg::GraphPlan plan{.steps = {{.operation = jitllm::execution::Operation::kMulMatId,
+                                      .implementation = kg::kMulMatIdQ2D2r,
+                                      .nodes = {product}}}};
+  const auto planned = kg::PlanScratch(launch(), plan);
+  ASSERT_TRUE(planned.has_value()) << (planned ? "" : planned.error().detail);
+  EXPECT_EQ(*planned, *scratch);
+  EXPECT_GT(*scratch, 0U);
+  auto insufficient = LaunchContext::Create(
+      0, *execution_, stream_, {.base = Allocate(*scratch), .size = Bytes(*scratch - 1)});
+  ASSERT_TRUE(insufficient.has_value()) << (insufficient ? "" : insufficient.error().detail);
+  const auto refused = kg::MulMatIdQ2D2r(**insufficient, product);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().error, KernelError::kRejected);
+  insufficient->reset();
+  launch().ResetScratchPeak();
+  Launched(kg::MulMatIdQ2D2r(launch(), product), "raw Q2 warmup");
+  EXPECT_LE(launch().scratch_peak().value(), *scratch);
+  const auto first = Download(product);
+  Launched(kg::MulMatIdQ2D2r(launch(), product), "raw Q2 own repeat");
+  EXPECT_EQ(Download(product), first);
+  Launched(kg::MulMatIdQCompact(launch(), other), "raw Q2 original control");
+  const auto control = Download(other);
+  ExpectNmse(first, std::vector<double>(control.begin(), control.end()), kMulMatNmse,
+             "raw Q2 versus native compact approximation");
+  auto graph = launch().Capture([&](LaunchContext& l) -> std::expected<void, KernelFailure> {
+    if (auto r = kg::MulMatIdQ2D2r(l, product); !r) return r;
+    // A second operation reuses the same pool after the raw consumer.
+    return kg::MulMatIdQCompact(l, other);
+  });
+  ASSERT_TRUE(graph.has_value()) << (graph ? "" : graph.error().detail);
+  for (const bool concentrated : {false, true, false}) {
+    for (std::int64_t t = 0; t < tokens; ++t) {
+      for (std::int64_t slot = 0; slot < used; ++slot) {
+        ids[static_cast<std::size_t>((t * used) + slot)] =
+            static_cast<std::int32_t>(concentrated ? slot : (slot + t) % experts);
+      }
+    }
+    ASSERT_EQ(cudaMemcpy(routes->data, ids.data(), ids.size() * sizeof(std::int32_t),
+                         cudaMemcpyHostToDevice),
+              cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    Launched(kg::MulMatIdQ2D2r(launch(), product), "raw Q2 changing routes");
+    const auto want = Download(product);
+    Launched(kg::MulMatIdQCompact(launch(), other), "compact changing routes");
+    const auto want_other = Download(other);
+    Launched(launch().Launch(*graph), "raw Q2 graph and scratch reuse");
+    EXPECT_EQ(Download(product), want);
+    EXPECT_EQ(Download(other), want_other);
+  }
+  auto choices = kg::DeviceChoicesOf(launch());
+  const std::array<ggml_tensor*, 1> nodes = {product};
+  auto ordinary = kg::PlanGraph(nodes, false, choices);
+  ASSERT_TRUE(ordinary.has_value()) << (ordinary ? "" : ordinary.error().detail);
+  EXPECT_EQ(ordinary->steps[0].implementation, kg::kMulMatIdQ);
+  choices.d2r_experts = true;
+  auto fallback = kg::PlanGraph(nodes, false, choices);
+  ASSERT_TRUE(fallback.has_value()) << (fallback ? "" : fallback.error().detail);
+  EXPECT_EQ(fallback->steps[0].implementation, kg::kMulMatIdQ);   // unmeasured small shape
+  choices.q2_d2r_fits = [](const ggml_tensor*) { return true; };  // explicit generic control
+  auto selected = kg::PlanGraph(nodes, false, choices);
+  ASSERT_TRUE(selected.has_value()) << (selected ? "" : selected.error().detail);
+  EXPECT_EQ(selected->steps[0].implementation, kg::kMulMatIdQ2D2r);
+  choices.row_invariant = true;
+  EXPECT_FALSE(kg::PlanGraph(nodes, false, choices).has_value());  // original verify bound wins
+}
+
 TEST_F(GgmlExtOpsTest, CompactExpertTilesPreservePartialRowsAndFallbackShapes) {
   constexpr std::int64_t kInner = 1024;
   constexpr std::int64_t kUsed = 2;
@@ -2231,7 +2318,7 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
   using jitllm::execution::Operation;
   const std::vector<jitllm::execution::Implementation> declared = kg::Implementations();
   const auto registry = jitllm::execution::Registry::Create(declared).value();
-  const std::array<std::pair<const char*, Operation>, 31> expected = {{
+  const std::array<std::pair<const char*, Operation>, 32> expected = {{
       {"ggml.mul_mat.mmvq", Operation::kMatMul},
       {"ggml.mul_mat.mmq", Operation::kMatMul},
       {"ggml.mul_mat.fwht", Operation::kMatMul},
@@ -2240,6 +2327,7 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
       {"jitllm.mul_mat_id.mmq_pair", Operation::kMulMatId},
       {"jitllm.mul_mat_id.mmq_compact", Operation::kMulMatId},
       {"jitllm.mul_mat_id.mmq_pair_compact", Operation::kMulMatId},
+      {"jitllm.mul_mat_id.q2_d2r", Operation::kMulMatId},
       {"ggml.sub", Operation::kSub},
       {"ggml.div", Operation::kDiv},
       {"ggml.scale", Operation::kScale},

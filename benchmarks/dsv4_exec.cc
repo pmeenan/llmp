@@ -533,6 +533,7 @@ struct Model {
   // off, the fast plan (dsv4_graph.h Dsv4GraphOptions::fused).
   bool exact = false;
   bool compact_experts = false;
+  bool d2r_experts = false;
   bool wide_sparse = true;
 };
 
@@ -637,6 +638,7 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   // Match production's measured floor, including partially filled final
   // chunks. Direct operation/micro controls can still exercise smaller rows.
   device.compact_experts = !m.exact && m.compact_experts && shape.rows >= kg::kDsv4CompactMinRows;
+  device.d2r_experts = !m.exact && m.d2r_experts;
   device.wide_sparse_attention = !m.exact && m.wide_sparse;
   const kg::DeviceChoices& choices = device;
   std::vector<ggml_tensor*> keep;
@@ -1348,6 +1350,7 @@ struct Options {
   std::uint32_t bench_decode = 0;
   bool exact = false;            // --exact on: the reference mode (Model::exact)
   bool compact_experts = false;  // the experimental device-built expert tile list
+  bool d2r_experts = false;      // default-off raw Q2_K D2R product comparison
   bool wide_sparse = true;       // diagnostic override; exact mode always uses the primitive
   bool frontier_head = false;    // only the last prefill head row; PPL/diagnostics stay all-row
   bool probe_head = false;       // repeated head suffixes from one final chunk's streams
@@ -1423,6 +1426,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.layout_proof = true;
     } else if (a == "--compact-experts") {
       o.compact_experts = true;
+    } else if (a == "--q2-d2r") {
+      o.d2r_experts = true;
     } else if (a == "--frontier-head") {
       o.frontier_head = true;
     } else if (a == "--probe-head") {
@@ -1446,6 +1451,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if (o.artifact.empty() || o.out.empty()) {
     return Error("--artifact and --out are required");
+  }
+  if (o.d2r_experts && o.exact) {
+    return Error("--q2-d2r requires the fast plan; the exact plan retains its original products");
   }
   if (o.probe_step != 0 && (o.force.empty() || o.probe_step >= o.generate)) {
     return Error("--probe-step needs --force and a step below --generate");
@@ -1576,6 +1584,7 @@ Status Run(const Options& o) {
               .rot = kg::HadamardMatrix(profile.indexer_head_dim),
               .exact = o.exact,
               .compact_experts = o.compact_experts,
+              .d2r_experts = o.d2r_experts,
               .wide_sparse = o.wide_sparse};
 
   // cuBLAS, with upstream's workspace for the device: the router's BF16
@@ -1683,6 +1692,7 @@ Status Run(const Options& o) {
   summary += std::format(R"(,"frontier_head":{},"probe_head":{},"wide_sparse":{})",
                          o.frontier_head ? "true" : "false", o.probe_head ? "true" : "false",
                          !o.exact && o.wide_sparse ? "true" : "false");
+  summary += std::format(R"(,"q2_d2r":{})", o.d2r_experts ? "true" : "false");
 
   if (o.layout_proof) {
     std::string report;

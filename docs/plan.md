@@ -868,6 +868,13 @@ it appears.
       The owner's [cross-family inventory](optimization-inventory.md)
       covers existing implementations and reusable pieces of rejected
       kernels, so each new experiment checks prior consumers and outcomes.
+      A [direct MIT Q2_K product port](experiments/ds4-q2-d2r/README.md)
+      uses the same captured native input and raw weight blocks without
+      a permanent SoA copy: charged product latency falls about 26%,
+      with NMSE 2.13e−7 versus compact MMQ. Fresh same-source community
+      8K controls gain 3.68% mean prefill throughput and preserve all
+      128 greedy IDs. It remains benchmark-only and off by default;
+      long greedy, PPL and state/restore gates are owed before adoption.
       A separate [frontier-head follow-up](experiments/dsv4-frontier-head/README.md)
       preserves all state/DSpark streams while selecting only the target
       head rows production consumes. Original Q4_K controls gain

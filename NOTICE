@@ -19,6 +19,11 @@ contain upstream context under the MIT License:
   Copyright (c) 2023-2026 The ggml authors. Each retains its upstream
   notice in the UPSTREAM-NOTICE.txt beside it.
 
+The incorporated ds4 D2R product and its reviewed raw-Q2_K patch retain the
+MIT notices of The ds4.c authors (2026), Entrpi (2026), The ggml authors
+(2023-2026), and Marco Palaferri (2026). Its license and attribution are
+recorded in third_party/sources.lock.json and shipped third-party notices.
+
 src/tokenizer/unicode_data.cc holds data generated from the Unicode
 Character Database 15.1.0, Copyright (c) 1991-2023 Unicode, Inc., under the
 Unicode License V3 (LICENSES/Unicode-3.0.txt).

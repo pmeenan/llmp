@@ -57,6 +57,9 @@ struct DeviceChoices {
   // ops_ext.h SelectMulMatQ: the family upstream routes a quantized
   // mul_mat or mul_mat_id to. Without it, quantized products are refused.
   std::function<std::expected<QuantMulMatPath, KernelFailure>(const ggml_tensor*)> quant;
+  // Measured device/shape eligibility for the default-off raw Q2_K D2R
+  // product. A CPU planner may supply a model of this predicate.
+  std::function<bool(const ggml_tensor*)> q2_d2r_fits = nullptr;
   // A speculative verify's plan (D-092): every matrix product of up to
   // kRowsMaxColumns columns (tokens) runs a row-invariant implementation
   // (the quantized ones jitllm.mul_mat*.mmvq_rows, the float ones MMVF),
@@ -79,6 +82,9 @@ struct DeviceChoices {
   // Use a device-built expert-major MMQ tile list for measured fast
   // quantized shapes. Reference/default plans retain upstream's grid.
   bool compact_experts = false;
+  // Experimental single-product transfer: keep native Q8 preparation and
+  // raw weights, then use ds4's D2R arithmetic. No default plan enables it.
+  bool d2r_experts = false;
   // Share a sparse query tile's KV union only for measured fast shapes.
   // Count-based DeepSeek HCA masks retain the ordinary implementation;
   // selected-list CSA and window masks may use sharing when opted in.
@@ -128,6 +134,7 @@ inline constexpr std::string_view kMulMatIdQ = "ggml.mul_mat_id.mmq";
 inline constexpr std::string_view kMulMatIdQPair = "jitllm.mul_mat_id.mmq_pair";
 inline constexpr std::string_view kMulMatIdQCompact = "jitllm.mul_mat_id.mmq_compact";
 inline constexpr std::string_view kMulMatIdQPairCompact = "jitllm.mul_mat_id.mmq_pair_compact";
+inline constexpr std::string_view kMulMatIdQ2D2r = "jitllm.mul_mat_id.q2_d2r";
 inline constexpr std::string_view kSubName = "ggml.sub";
 inline constexpr std::string_view kDivName = "ggml.div";
 inline constexpr std::string_view kScaleName = "ggml.scale";

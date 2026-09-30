@@ -74,6 +74,10 @@ std::expected<void, KernelFailure> CheckMulMatQ(const ggml_tensor* node);
 // an expert in [0, experts) (the plan's bound), output [n, used, tokens]
 // (mmq.cu:207-212, mmvq.cu:1418-1423). One sample only.
 std::expected<void, KernelFailure> CheckMulMatIdQ(const ggml_tensor* node);
+// Raw Q2_K D2R: one sample, per-slot input, even output width, bounded
+// expert/column worklist and whole native rows. IDs remain the producer's
+// responsibility, including unique selected experts within each token.
+std::expected<void, KernelFailure> CheckMulMatIdQ2D2r(const ggml_tensor* node);
 
 // The same raw quantized expert products with an optional compact tile
 // worklist. FP4 preparation remains a separate contract.

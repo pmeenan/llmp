@@ -9,18 +9,20 @@ they came from, how its license was classified and how it builds. Nothing
 else enters the build. [source-dependencies.md](../docs/source-dependencies.md)
 explains the mechanism and why it was chosen.
 
-It holds five core components: GoogleTest, toml++, GGML (D-077),
-ExLlamaV3's kernels for the native EXL3 linear, and CUTLASS's headers for
-Qwen3.8's NVFP4 grouped GEMM. toml++, GGML and CUTLASS ship (`use:
-product`: since D-096 the runtime links the engine's kernels); GoogleTest
+It holds six core components: GoogleTest, toml++, GGML (D-077),
+ExLlamaV3's kernels for the native EXL3 linear, CUTLASS's headers for
+Qwen3.8's NVFP4 grouped GEMM, and ds4's MIT D2R product unit. toml++, GGML,
+CUTLASS and ds4 ship (`use: product`: since D-096 the runtime links the
+engine's kernels); GoogleTest
 and ExLlamaV3 link only into tests and benchmarks (`use: test`). The last
-three are adapted sources: each
-is its upstream archive narrowed by `archive.keep`, with the reviewed
+four are adapted sources: each is its upstream archive narrowed by
+`archive.keep`, with the reviewed
 patches in [patches/](patches/)`<id>/` that add jitLLM's build of the files
 it compiles (and, for GGML, link only the quantized kernels of the types it
 compiles and build without CUB; for ExLlamaV3, reduce three of them to
 their kernels; for CUTLASS, name its header trees as one interface
-target, compiling nothing). GGML's build compiles the operations of the
+target, compiling nothing; for ds4, add a raw-Q2 loader and compile only
+the D2R product translation unit). GGML's build compiles the operations of the
 backend proof's models and of M3's DeepSeek V4 Flash and Qwen3.8 Flash,
 not all of GGML (the lock's `license.scope` lists the files).
 [licensing.md](../docs/licensing.md) records their audits.

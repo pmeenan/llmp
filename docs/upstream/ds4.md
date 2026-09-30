@@ -8,7 +8,8 @@
 - **Study pin:** `76d51ef82a81b70b78e51a3a6ea11946286de976` (M3,
   2026-09-29), CUDA 13.4.92, `sm_121`, on `spark`.
 - **Evidence:** [same-GGUF study](../experiments/ds4-study/README.md).
-  No ds4 source is linked into jitLLM.
+  The locked MIT D2R product unit is linked in CUDA builds; the raw Q2_K
+  product is available through an explicit benchmark-only opt-in.
 
 ## Cold-context measurements require a fresh session
 
@@ -42,29 +43,69 @@
   query-tile union, an explicit fast-plan choice that defaults off for
   unknown sparse patterns after disjoint D512 lists regressed. Its paired-MMQ path shares the expert maps and
   quantized input preparation while retaining the two ordinary products.
-- **Rejected direct transfer:** `cuda/mmq/ds4_mmq_d2r.cu` requires dense
+- **Original layout mismatch:** `cuda/mmq/ds4_mmq_d2r.cu` requires dense
   whole-array SoA `[half scales, pad64, uint2 codes]`; jitLLM's resident
   experts use raw GGUF blocks at padded per-expert strides. ds4's fused
   epilogue weights the activation before Q8 quantization and the down
   product; jitLLM weights after down. It also replaces nonfinite values
   with zero. A direct kernel copy would change layout and arithmetic.
-  No SoA replica, early weighting, sanitization or cache precision change
-  is adopted to close the remaining speed gap.
-- **Q2 prototype assessment:** GGML's D2S6 activation layout retains
+  The raw Q2 loader below resolves the weight-layout mismatch while
+  retaining post-down weighting and jitLLM's cache precision. The IQ2
+  fused epilogue and its nonfinite-value sanitization are not selected.
+- **Earlier Q2 prototype assessment:** GGML's D2S6 activation layout retains
   original F32 subgroup sums for its affine minimum correction. A simple
   fully dequantized F16 product would discard that correction. Matching
   it through per-16-value integer dots and epilogues adds synchronization
   to an existing integer-MMA path; no speed advantage is established, so
-  the source proposal is not implemented.
+  that exact-arithmetic source proposal was not implemented. The later
+  port tests ds4's original reconstruction approximation instead.
 - **License:** the fork's root LICENSE is MIT. Its D2R product source
   also attributes Marco Palaferri's MIT code from
-  `xangel82/DS4-GB10-GX10-DSpark-CUDA` at `910501e`. This study ports no
-  D2R source; future reuse must retain those notices.
+  `xangel82/DS4-GB10-GX10-DSpark-CUDA` at `910501e`. The source lock keeps
+  the complete root notice and this original product attribution.
 - **Precision:** default compressed KV and indexer caches use FP8 and
   FP4 respectively. `DS4_CUDA_FP8_KV=0` and `DS4_CUDA_FP4_INDEX=0`
   restore F32 primary storage, retaining FP8/FP4-rounded values.
   jitLLM keeps its F16 caches; default ds4 timings are a same-weight
   comparator with the different transforms and storage disclosed.
+
+## Raw Q2_K weight loader under jitLLM's launch contract
+
+- **Status:** local adaptation in
+  `third_party/patches/ds4/0001-jitllm-raw-q2-d2r.patch`;
+  benchmark-only native dispatch, off by default.
+- **What:** the original Q2_K D2R MMA and scatter read raw 84-byte GGUF
+  blocks through an added loader, preserving its paired-row integer MMA
+  and F32 accumulation from the stored half coefficients. Weight row and
+  expert strides are explicit;
+  no persistent SoA or dequantized weight copy is created. jitLLM owns
+  expert maps, unchanged GGML Q8 input preparation, bounded worklist
+  scratch and completion. It does not invoke ds4's runtime or dispatch.
+- **Bounds:** the original worklist stores an expert in the high 16 bits
+  of a signed integer, then decodes it with `packed >> 16`. The raw
+  interface therefore admits at most 32,768 experts; a 32,769-expert
+  shape refuses before preparation. The worklist's column tiles and
+  total CUDA Y-grid bound are checked separately. Production-shaped
+  opt-in selection is limited to the measured GB10 Q2_K 2,048-input,
+  4,096-output, 256-expert, six-slot, 4,096-token product.
+- **Arithmetic:** raw and original SoA D2R outputs are bit-identical on
+  the captured real layer-zero input. Compared with native compact MMQ,
+  the raw product's NMSE is `2.1331352209781956e-7`; the original D2R
+  reconstruction and tensor-core reduction remain a different
+  approximation from GGML's half-rounded affine coefficients and
+  original-input minimum correction. Quality uses the unchanged model
+  bounds; isolated error is not a model-quality result.
+- **License review:** the entire pinned archive was audited before
+  narrowing `archive.keep`. The retained root MIT license names the
+  ds4, Entrpi and GGML authors; the D2R source retains Marco Palaferri's
+  attribution. The complete product translation unit is compiled,
+  including its original unselected IQ2/Q8 entry points. Only the raw
+  Q2 entry point is selected; no upstream model runtime, cache kernel,
+  server, shim or original build script is included in this component.
+- **Proposed upstream action:** consider a raw-GGUF/explicit-stride
+  product entry point, and document the signed expert-index limit and
+  unique-experts-per-token routing precondition. The new loader is
+  jitLLM-specific; no upstream submission is claimed.
 
 ## Cache-off is a storage control, not an unrounded quality oracle
 

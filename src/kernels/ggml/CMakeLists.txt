@@ -58,7 +58,7 @@ if(JITLLM_CUDA)
   endforeach()
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
-                                         fattn.cu ops_ext.cu mul_mat_q.cu mmvq_rows.cu fattn_mma.cu
+                                         fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
                                          jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu dsv4_fast.cu dsv4_sparse.cu
                                          qsa_sparse.cu
@@ -81,7 +81,7 @@ if(JITLLM_CUDA)
                                                      --diag-suppress=20012)
   target_link_libraries(jitllm_ggml_kernels
                         PUBLIC jitllm_ggml_tensors jitllm_ggml_cuda jitllm_device_memory
-                               jitllm_cublas jitllm_cublaslt jitllm_execution
+                               jitllm_cublas jitllm_cublaslt jitllm_execution jitllm_ds4_d2r
                         # the NVIDIA driver, for ggml_support.cu's device queries
                         PRIVATE jitllm_cuda_device_memory jitllm_warnings jitllm_ggml_cutlass)
   # sm_121a as GGML's own units build (third_party/patches/ggml/0002), and
@@ -98,6 +98,7 @@ if(JITLLM_CUDA)
   get_property(sources GLOBAL PROPERTY JITLLM_SOURCES_ENTRIES)
   set(ggml_tree "")
   set(cutlass_tree "")
+  set(ds4_tree "")
   string(JSON count ERROR_VARIABLE error LENGTH "${sources}")
   if(NOT error AND count GREATER 0)
     # foreach(RANGE -1) would still run, for 0 and -1.
@@ -108,10 +109,12 @@ if(JITLLM_CUDA)
         string(JSON ggml_tree ERROR_VARIABLE error GET "${sources}" ${i} source_tree)
       elseif(NOT error AND id STREQUAL "cutlass")
         string(JSON cutlass_tree ERROR_VARIABLE error GET "${sources}" ${i} source_tree)
+      elseif(NOT error AND id STREQUAL "ds4")
+        string(JSON ds4_tree ERROR_VARIABLE error GET "${sources}" ${i} source_tree)
       endif()
     endforeach()
   endif()
-  foreach(tree IN ITEMS ggml_tree cutlass_tree)
+  foreach(tree IN ITEMS ggml_tree cutlass_tree ds4_tree)
     string(LENGTH "${${tree}}" length)
     if(NOT length EQUAL 64 OR NOT ${tree} MATCHES "^[0-9a-f]+$")
       message(FATAL_ERROR "The source receipt has no ${tree} digest for the registry's identities")
@@ -120,7 +123,7 @@ if(JITLLM_CUDA)
   string(REPLACE ";" "+" sanitize "${JITLLM_SANITIZE}")
   list(JOIN architectures "," architecture_text)
   set_source_files_properties(implementations.cc PROPERTIES COMPILE_DEFINITIONS
-    "JITLLM_GGML_SOURCE_TREE=\"${ggml_tree}\";JITLLM_CUTLASS_SOURCE_TREE=\"${cutlass_tree}\";JITLLM_GGML_SDK=\"${JITLLM_SDK_IDENTITY}\";JITLLM_GGML_TARGET=\"${JITLLM_TARGET_TRIPLE}\";JITLLM_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\";JITLLM_GGML_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";JITLLM_GGML_SANITIZE=\"${sanitize}\"")
+    "JITLLM_GGML_SOURCE_TREE=\"${ggml_tree}\";JITLLM_CUTLASS_SOURCE_TREE=\"${cutlass_tree}\";JITLLM_DS4_SOURCE_TREE=\"${ds4_tree}\";JITLLM_GGML_SDK=\"${JITLLM_SDK_IDENTITY}\";JITLLM_GGML_TARGET=\"${JITLLM_TARGET_TRIPLE}\";JITLLM_GGML_CUDA_ARCHITECTURES=\"${architecture_text}\";JITLLM_GGML_BUILD_TYPE=\"${CMAKE_BUILD_TYPE}\";JITLLM_GGML_SANITIZE=\"${sanitize}\"")
 
   # And jitLLM's own code in the module: every file in this directory, whose
   # digest a build-time command writes into a generated source
@@ -140,7 +143,7 @@ if(JITLLM_CUDA)
                    jitllm_ops.h launch.cu launch.h
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
                    mxfp8_cutlass.cu mxfp8_cutlass.h mxfp8_quant.cuh
-                   mul_mat_cublas.cu mul_mat_q.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
+                   mul_mat_cublas.cu mul_mat_q.cu mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
                    ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_commit.h qwen38_graph.cc
                    qwen38_graph.h tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
                    validate_util.h)
@@ -182,7 +185,7 @@ if(JITLLM_CUDA)
   # (jitllm_fused.cu) build with the same flags, so that their arithmetic
   # compiles as the nodes' does.
   set_source_files_properties(fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
-                              mul_mat_q.cu mmvq_rows.cu ops_ext.cu jitllm_fused.cu jitllm_moe.cu
+                              mul_mat_q.cu mul_mat_q2_d2r.cu mmvq_rows.cu ops_ext.cu jitllm_fused.cu jitllm_moe.cu
                               dsv4_fast.cu dsv4_sparse.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
 endif()

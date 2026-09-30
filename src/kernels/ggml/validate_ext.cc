@@ -233,6 +233,29 @@ std::expected<void, KernelFailure> CheckMulMatIdQ(const ggml_tensor* node) {
   return {};
 }
 
+std::expected<void, KernelFailure> CheckMulMatIdQ2D2r(const ggml_tensor* node) {
+  if (auto checked = CheckMulMatIdQ(node); !checked) {
+    return checked;
+  }
+  const ggml_tensor* w = node->src[0];
+  const ggml_tensor* x = node->src[1];
+  const ggml_tensor* ids = node->src[2];
+  const auto assignments = Product({x->ne[2], ids->ne[0]});
+  // The original worklist packs an expert and a 64-column tile in uint16
+  // halves, then decodes the expert with a signed shift. Keep its high bit
+  // clear. All raw strides are bounded before the launcher's arithmetic.
+  if (w->type != GGML_TYPE_Q2_K || w->ne[0] % 512 != 0 || w->ne[1] % 2 != 0 || w->ne[2] > 32768 ||
+      x->ne[1] != ids->ne[0] || !ggml_is_contiguous(node) || !assignments ||
+      *assignments > 65535ULL * 64ULL ||
+      ((*assignments + 63) / 64) + static_cast<std::uint64_t>(w->ne[2]) > 65535 ||
+      w->nb[1] > UINT32_MAX || w->nb[1] % 4 != 0 || w->nb[2] % 4 != 0 ||
+      w->nb[1] > w->nb[2] / static_cast<std::uint64_t>(w->ne[1])) {
+    return Rejected(
+        "raw Q2_K D2R needs bounded even rows, nonoverlapping experts and per-slot input");
+  }
+  return {};
+}
+
 std::expected<void, KernelFailure> CheckMulMatIdQCompact(const ggml_tensor* node) {
   if (auto checked = CheckMulMatIdQ(node); !checked) {
     return checked;

@@ -3,6 +3,45 @@
   "schema": 1,
   "modules": {},
   "components": {
+    "ds4": {
+      "version": "batched-serving-76d51ef",
+      "kind": "archive",
+      "category": "implementation",
+      "tier": "core",
+      "use": "product",
+      "machine": "target",
+      "upstream": {
+        "repository": "https://github.com/Entrpi/ds4",
+        "commit": "76d51ef82a81b70b78e51a3a6ea11946286de976"
+      },
+      "archive": {
+        "file": "ds4-76d51ef82a81b70b78e51a3a6ea11946286de976.tar.gz",
+        "urls": ["https://codeload.github.com/Entrpi/ds4/tar.gz/76d51ef82a81b70b78e51a3a6ea11946286de976"],
+        "sha256": "731e037da1bed009da5db31e5170681b59f1e22af00a3e56fa29cff8706ed63c",
+        "size": 7794185,
+        "keep": ["LICENSE", "cuda/mmq/ds4_mmq_d2r.cu", "cuda/mmq/ds4_mmq_d2r.cuh"]
+      },
+      "patches": [
+        {"path": "patches/ds4/0001-jitllm-raw-q2-d2r.patch", "sha256": "cf5f0b6686cf2917a34165a72c9ce748d6f091ba0c9a8652ea2fe6360b44f72f"}
+      ],
+      "tree_sha256": "dc925631f904c032ea2dcafaa94ca759af3c9c1ccaa1adfc8f1ecc3e81f803c7",
+      "depends": ["ggml"],
+      "cmake": {
+        "subdirectory": "jitllm",
+        "options": {},
+        "platform_packages": [],
+        "targets": ["jitllm_ds4_d2r"]
+      },
+      "license": {
+        "expression": "MIT",
+        "files": ["LICENSE"],
+        "notices": ["LICENSE", "cuda/mmq/ds4_mmq_d2r.cu:8-12"],
+        "scope": "Only cuda/mmq/ds4_mmq_d2r.cu and its header, built by the patched jitllm/CMakeLists.txt as jitllm_ds4_d2r in CUDA profiles (an empty interface target in CPU profiles). The unit contains Q2_K down, IQ2_XXS paired/fused and dense Q8 D2R kernels; native dispatch calls only the new raw-Q2_K down launcher. The patch reconstructs the original shared weight tile directly from raw GGUF blocks at native padded strides, keeps the original D2R integer-MMA/scatter arithmetic and adds no permanent SoA replica. Includes common.cuh and mmq.cuh resolve to independently locked GGML, not ds4's vendored shims. Only the patched CMake file executes; no upstream runtime, graph, cache, routing, repack, dispatcher, tools or original build script is kept or executed.",
+        "evidence": "Whole pinned archive audited on Spark, 2026-09-30: 926 regular files, no special members, source-header/license scan found no implementation declaration outside the core tier. Root LICENSE is MIT (SHA-256 c4c2d4cef8d91b06bf07911b49edd662c3fbcad027acb135c816ec0281d17247), Copyright (c) 2026 The ds4.c authors, Copyright (c) 2026 Entrpi <entrpi@proton.me>, and Copyright (c) 2023-2026 The ggml authors. The selected CUDA/header carry SPDX MIT. CUDA's fused IQ2 path additionally attributes Marco Palaferri's MIT code from xangel82/DS4-GB10-GX10-DSpark-CUDA commit 910501e; that notice is retained even though the native dispatcher does not call the fused path. Discarded bundled implementation exceptions are Iris MIT, linenoise and rax BSD-2-Clause, and Metal YaRN's MIT attribution; the vendored MMQ tree's VENDOR.md records MIT GGML. Dataset/prompt text is not incorporated implementation. No discarded implementation or data enters the prepared tree.",
+        "obligations": "The package's third-party notices reproduce the root MIT notice and retained Marco Palaferri MIT attribution. NOTICE identifies the incorporated source and reviewed patch; jitLLM's own wrapper keeps the GGML notice for copied preparation arithmetic. No source offer is owed. The experimental operation is off by default and benchmark-only pending same-GGUF model speed/quality evidence."
+      },
+      "verification": "Pinned Git checkout 76d51ef82a81b70b78e51a3a6ea11946286de976 matched selected original file SHA-256s 9dd3be8c4af62a2ead319fe72e7ff6881472ce8a6749d7b6885a6956f2cf79b9 (CUDA) and b4b6093f04ab59fa085ac230f83e11ed28cb0bbe6d85987f42da886f46c31575 (header). Codeload archive SHA-256/length and patched tree were measured on a Spark using the shared source parser/digest; no identity was inferred. The build uses the isolated replay's O3, sm_121a SASS, use_fast_math and extended-lambda flags, plus configured discrete SASS. Raw versus original SoA product was bit exact on the captured real input; the different GGML approximation is reported separately."
+    },
     "ggml": {
       "version": "b10964",
       "kind": "archive",

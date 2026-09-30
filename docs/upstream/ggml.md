@@ -450,6 +450,26 @@ sinks bound (RE-030).
 - **Proposed action:** upstream the bounded-allocation correction
   independently of compact scheduling.
 
+## Selected expert IDs are unique within a routed token
+
+- **Status:** documented precondition; no upstream patch proposed.
+- **Pin and source:** llama.cpp/GGML `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`,
+  `ggml/src/ggml-cuda/mmid.cuh`, `mm_ids_helper`.
+- **What:** the helper counts every selected slot, but its per-token
+  expert lookup has one slot per expert. Duplicate IDs for the same
+  expert within one token can therefore disagree with the assigned-row
+  count and leave an output index uninitialized. Repetition across
+  different tokens is supported. Model routing selects top-k distinct
+  experts; a synthetic routed fixture must obey the same contract.
+- **Evidence:** an early external Q2 D2R control inserted duplicate
+  experts within one token and the ordinary MMQ control failed with an
+  illegal device address before the candidate comparison. The fixture
+  was corrected to unique IDs within each token; ordinary, compact and
+  D2R products then passed repeats, guards and padded-tail controls.
+- **Proposed action:** document this precondition in the helper interface
+  and test fixtures. No runtime ID validation or new duplicate-routing
+  semantics is claimed by the jitLLM port.
+
 ## Upstream changes to adopt
 
 Checked 2026-09-29 at master `8019dc563`.

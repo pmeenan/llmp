@@ -65,6 +65,15 @@ and no file type may go unclassified.
 
 ## What builds jitLLM
 
+The M3 direct-product experiment also incorporates the MIT D2R unit from
+Entrpi/ds4 at `76d51ef82a81b70b78e51a3a6ea11946286de976`, through its
+locked archive and reviewed raw-Q2_K/build patch. The kept unit includes
+the original IQ2/Q8 routines; native dispatch calls only raw Q2_K down,
+with jitLLM's preparation and completion. The whole archive audit and
+exact source scope are in the source lock. Packages carry the ds4 authors,
+Entrpi, GGML and Marco Palaferri MIT notices; no ds4 runtime or cache
+implementation is incorporated.
+
 [toolchains/provenance.toml](../toolchains/provenance.toml) records every
 locked SDK artifact, host prerequisite and mise tool with its D-017
 category, license, what of it reaches a binary and the notices that follow;

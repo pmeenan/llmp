@@ -228,6 +228,11 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         if (!path) {
           return Rejected(std::format("{}: {}", Where(graph, i), path.error().detail));
         }
+        if (device.d2r_experts && *path == QuantMulMatPath::kTile && device.q2_d2r_fits &&
+            device.q2_d2r_fits(node)) {
+          add(Operation::kMulMatId, kMulMatIdQ2D2r, i, {node}, 1);
+          break;
+        }
         if (device.pair_experts && *path == QuantMulMatPath::kTile && i + 1 < graph.size()) {
           ggml_tensor* second = graph[i + 1];
           if (CheckMulMatIdQPair(node, second)) {
