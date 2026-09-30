@@ -923,8 +923,11 @@ it appears.
       2.18–2.27× llama.cpp, decode 2.01× plain / 1.88× DSpark, memory
       within 1.012×. Neutral completed-answer retrieval passes 8K–256K
       in both modes and at 1M capacity with DSpark. Qwen timings, neutral
-      retrieval and both heads' 128K/maximum continuing swaps are complete;
-      its MTP speed gap and DeepSeek's maximum continuing swap remain open.
+      retrieval and both heads' 128K/maximum continuing swaps are complete.
+      DeepSeek's direct maximum swap also passes: both 1,048,512-token
+      prefills and 64 restored outputs/logits exact, longest chunk 14.72 s,
+      spill 7.33 GB and restore 0.583 s. Retain the 100/5 tok/s watchdog
+      floors; Qwen's MTP speed gap remains open.
       - *Baseline first:* prefill throughput and decode speed at each
         depth, speculative and plain, through the runtime and against the
         same-format comparators at the same depths:

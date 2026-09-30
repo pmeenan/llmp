@@ -223,7 +223,7 @@ inputs need an additional 0.04 GiB; execution budgets are
 The prompt and output leave 10,017 tokens below the configured ceiling.
 Timing fixtures are not neutral retrieval evidence. The separate 1M
 completed-answer retrieval passes below; the maximum saved-state swap
-remains pending.
+also passes the direct validation recorded below.
 The residual slope and watchdog floors still require completed-chunk
 observations rather than these mean rates.
 
@@ -257,7 +257,7 @@ Raw results are
 `spark:~/scratch/m3-extrapolation-ds/final-new-1m-spec-retrieval/run.json`,
 SHA-256 `4d84c3c47c694041f4ac4d01d9da901734807d191536fbce3d4cc15e3facefe2`;
 the separate response capture retains the visible answer and reasoning.
-The literal maximum-length saved-state continuation remains a separate gate.
+The separate maximum-length saved-state continuation passes below.
 
 ## Continuing-context swap protocol
 
@@ -277,7 +277,7 @@ they are not the first-token latency used by the separate 8K swap table.
 | Model | Configured context | Required saved prompt | Continuation | Status |
 | --- | --- | --- | --- | --- |
 | DeepSeek + DSpark, long | 262,144 | 131,072 | 64 | Pass: repeated prefill and every returned token/logit exact |
-| DeepSeek + DSpark, maximum | 1,048,576 | 1,048,512 | 64 | Pending |
+| DeepSeek + DSpark, maximum | 1,048,576 | 1,048,512 | 64 | Pass: repeated prefill and every returned token/logit exact |
 | Qwen + MTP, long | 262,144 | 131,072 | 64 | Pass: both prefix and selected heads, repeated prefill and returned tokens/logits exact |
 | Qwen + MTP, maximum | 262,144 | 262,077 | 64, plus three reserved draft positions | Pass: both heads, repeated prefill and returned tokens/logits exact |
 
@@ -344,6 +344,50 @@ The raw UTF-8 fixture SHA-256 is
 native encoding supplies the first 131,072 IDs without chat rendering.
 Raw summary, logs and input pins remain in
 `~/scratch/m3-extrapolation-ds/final-128k-swap/` on `spark-b`.
+
+### Final DeepSeek maximum saved-state result
+
+On `spark`, 2026-09-30 15:13:58–17:16:04 EDT, supervised job
+`m3-final-ds-max-direct` completes with native exit zero and a successful
+process/memory retirement check. This directly supervised run has no
+profiler. Two independent 1,048,512-token prefills and every one of the
+64 continuation tokens and complete logit rows compare bit exactly,
+including after the prepared Qwen round trip. It uses DSpark, F16 caches,
+2,048-row chunks and 1,048,576 capacity on the unchanged production path.
+
+| Measurement | Result |
+| --- | --- |
+| Control / repeated prefill | 3,683.025 / 3,585.332 seconds; 512 chunks each |
+| Longest completed chunk | 14.722 / 11.413 seconds |
+| Uninterrupted / restored decode | 3.505 / 3.086 seconds for 64 outputs |
+| Away / back activation | 14.442 / 9.911 seconds |
+| Return state restore | 0.583 seconds |
+| Spilled / initialized state | 7,331,643,392 / 7,328,645,120 bytes |
+| Peak sampled memory drop / minimum available | 122,689,716,224 / 3,179,405,312 bytes |
+
+The longest observed chunk is inside the current 181.44-second allowance.
+Together with the completed maximum-capacity HTTP timing/retrieval and
+Qwen chunk observations, this supports retaining the prefill/decode floors
+of 100/5 tok/s and the 120-second stall interval. The swap harness itself
+does not exercise the HTTP watchdog. Its activation totals are separate
+from the first-token swap table; maximum saved state adds spill work.
+
+Fixed allocations are 2,787,125,020 bytes, host chunk inputs 46,137,344
+bytes and the execution budget 118,656,870,172 bytes. The prepared partner
+is plain Qwen with 512-token capacity and 384-row chunks. No turn
+checkpoints are retained. Both full-logit captures have SHA-256
+`8229c9587f7ea672e67b51972c17e05332fee06428f03ea4bcd620c2ac36c329`.
+
+Native harness SHA-256:
+`ed2a9e146507a54ed39302d61f192057eb64b5715f7ae9af23d288c179d7c3d1`;
+controller SHA-256:
+`eae2bbb9ed9e5a67d2e7ec81c5fff126572ee0afcdc205d1b73e651effef4ba9`.
+The raw UTF-8 input is the maximum fixture pinned above. Native summary
+SHA-256 is
+`b65e4067b814f771131e672190f3b15b1c74254cca54cea188e165cfa058a884`.
+Results and completed receipt remain in
+`spark:~/scratch/m3-extrapolation-ds/max-state-direct-final/`.
+The earlier profiled attempt remains excluded under RE-039.
 
 ### Final Qwen 128K and maximum saved-state results
 
@@ -437,8 +481,8 @@ fixed-bound oracle/PPL quality comparison. Retrieval peak drops are
 84.840 / 87.245 / 87.497 GiB. All requests complete through the production
 progress watchdog. The saved-state runs above separately measure completed
 chunks up to 2.028 seconds, well inside its 242.88-second allowance for
-4,096 rows; this is evidence for retaining the existing floors, pending
-DeepSeek's maximum-chunk check.
+4,096 rows; with DeepSeek's completed maximum-chunk check above, this
+supports retaining the existing floors.
 
 Runtime SHA-256 is
 `757c29452d26bfbd0fcc07686d0a13a632eef0850621be68e02ad7144886eaf0`.
@@ -462,14 +506,14 @@ paths; header/license exports alone are not that audit.
   oracle/PPL bounds, seeded sampling rules and exact own-path rollback,
   repeat and swap requirements. Qwen's selected vocabulary remains a
   separate measured option; the default prefix head must meet its gate.
-- DeepSeek's maximum continuing-context swap remains pending; the 128K
-  DeepSeek and both 128K/maximum Qwen heads pass the protocol above.
+- DeepSeek's 128K/maximum and both 128K/maximum Qwen heads pass the
+  continuing-context protocol above.
   The attempted profiled maximum run produced a completed bounded trace
   but no complete native result or retained application exit status
-  ([RE-039](../../rough-edges.md)); it is excluded and will be replaced
-  by a directly supervised validation run.
-- Re-check watchdog floors against actual longest chunks and route
-  completion, then record the recommendation. Current defaults are
+  ([RE-039](../../rough-edges.md)); it is excluded and superseded
+  by the successful directly supervised validation above.
+- Retain watchdog floors based on the actual longest chunks and completed
+  maximum-capacity routes above. Current defaults are
   prefill 100 tok/s, decode 5 tok/s and a 120-second stall interval.
   `Allowance = stall + 3 × expected` permits 181.44 seconds for a
   2,048-row chunk at the prefill floor. The floor also scales the whole
