@@ -419,10 +419,12 @@ request so no measured prefill includes paging the model in.
 
 The final harness retains requested and actual output counts, labels natural
 early stops, and requires the terminal stream marker and finish reason before
-reporting throughput. Failed warm-up prevents timed requests; truncated
-responses preserve partial output with an error. Its visible-retrieval result
-is separate from the historical `needles_found` field. Eleven synthetic
-protocol checks in [test_longctx.py](test_longctx.py) pass on `spark-b`
+reporting throughput. GPU-process and container queries must succeed before
+an engine starts; a failed query is not an idle Spark. Failed warm-up prevents
+timed requests; truncated responses preserve partial output with an error.
+Its visible-retrieval result is separate from the historical `needles_found`
+field. Twelve synthetic protocol checks in [test_longctx.py](test_longctx.py)
+pass on `spark`
 (2026-09-30, Python 3.14.7, warnings treated as errors).
 
 ## Comparators

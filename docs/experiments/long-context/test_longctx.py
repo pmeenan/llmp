@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -66,6 +67,32 @@ class ProtocolTest(unittest.TestCase):
             short = LONGCTX.report(Path(directory), "synthetic", prompt, record)
             saved = json.loads((Path(directory) / "synthetic.json").read_text())
         return short, saved
+
+    def test_failed_process_queries_prevent_starting_the_runtime(self):
+        for failed_command in ("nvidia-smi", LONGCTX.DOCKER[0]):
+            with self.subTest(command=failed_command), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                config = root / "config.toml"
+                config.write_text("# no engine may start\n")
+                args = SimpleNamespace(out=str(root / "run"), config=str(config),
+                                       min_gib=105, runtime="unused")
+
+                def query(command, *, check=False, **kwargs):
+                    result = subprocess.CompletedProcess(command,
+                                                         int(command[0] == failed_command),
+                                                         stdout="", stderr="query unavailable")
+                    if check:
+                        result.check_returncode()
+                    return result
+
+                with (
+                    mock.patch.object(LONGCTX, "Memory", Memory),
+                    mock.patch.object(LONGCTX.subprocess, "run", side_effect=query),
+                    mock.patch.object(LONGCTX.subprocess, "Popen") as started,
+                ):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        LONGCTX.cmd_jitllm(args)
+                started.assert_not_called()
 
     def test_reasoning_does_not_count_as_a_visible_retrieval_answer(self):
         record = self.read(sse(completed_chunks("A-fact", reasoning="B-fact C-fact")))

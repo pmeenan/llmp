@@ -80,8 +80,9 @@ def gate(min_gib):
     """Refuse to start an engine beside another model process."""
     free = Memory.available() / GIB
     apps = subprocess.run(["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
-                          capture_output=True, text=True).stdout.strip()
-    running = subprocess.run(DOCKER + ["ps", "-q"], capture_output=True, text=True).stdout.strip()
+                          check=True, capture_output=True, text=True).stdout.strip()
+    running = subprocess.run(DOCKER + ["ps", "-q"], check=True,
+                             capture_output=True, text=True).stdout.strip()
     if free < min_gib or apps or running:
         raise SystemExit(f"busy: {free:.1f} GiB available, GPU processes [{apps}], "
                          f"containers [{running}]")
