@@ -216,6 +216,7 @@ if(JITLLM_CUDA)
   add_executable(jitllm_qwen38_spec qwen38_spec.cc)
   target_link_libraries(jitllm_qwen38_spec PRIVATE jitllm_paged_runners jitllm_launch_recorder
                                                    jitllm_tokenizer jitllm_chat jitllm_sampling
+                                                   jitllm_runtime
                                                    jitllm_warnings)
   target_link_options(jitllm_qwen38_spec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 

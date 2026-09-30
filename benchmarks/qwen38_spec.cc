@@ -10,9 +10,10 @@
 //
 //   jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE
 //                      --prompts FILE --out DIR
-//                      --check greedy|forced|swap|sampled-plain|sampled-spec
+//                      --check greedy|timing|forced|swap|sampled-plain|sampled-spec
 //                      [--reference FILE] [--tokens N] [--context N]
 //                      [--graphs on|off] [--draft N] [--draft-vocab N]
+//                      [--runtime-prefill on|off] [--profile-decode on|off]
 //                      [--repeats N] [--margin B] [--seeds N] [--sampled FILE]
 //                      [--only ID] [--poll-us N] [--window P]
 //                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
@@ -21,6 +22,11 @@
 // first draft always verified and each later one only while the drafter's
 // probability for it is at least P (the checks' control runs keep every
 // draft).
+// --runtime-prefill on splits before the assistant opening and uses the
+// runtime's tiled chunks, so draft-depth trials start from the route's
+// state. --profile-decode on bounds cudaProfilerAPI capture to speculation.
+// --check timing runs greedy speculation with argmax copies only, reporting
+// acceptance and costs without the plain/teacher-forced correctness runs.
 //
 // Prompts are the fixed set's (docs/experiments/fast-swap/prompts.json),
 // rendered by the native Qwen3.8 renderer with the template's defaults
@@ -72,7 +78,7 @@
 //
 // Exit 1 on any failed check; spec.json in --out has every number.
 
-#include <cuda_runtime.h>
+#include <cuda.h>
 
 #include <algorithm>
 #include <atomic>
@@ -110,6 +116,7 @@
 #include "fp16_runner.h"
 #include "model/qwen38.h"
 #include "paged_node.h"
+#include "runtime/prefill.h"
 #include "scheduler/scheduler.h"
 #include "tokenizer/hf.h"
 #include "tokenizer/tokenizer.h"
@@ -133,6 +140,25 @@ constexpr double kTvBound = 0.1;
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
 double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
+
+Status ProfileDecode(bool start) {
+  // The SDK exports the profiler entry points through the driver API but
+  // does not include the optional profiler header.
+  using Profiler = CUresult(CUDAAPI*)();
+  void* address = nullptr;
+  const char* name = start ? "cuProfilerStart" : "cuProfilerStop";
+  const CUresult lookup =
+      cuGetProcAddress(name, &address, 4000, CU_GET_PROC_ADDRESS_DEFAULT, nullptr);
+  if (lookup != CUDA_SUCCESS || address == nullptr) {
+    return Error(std::format("looking up {}: {}", name, static_cast<int>(lookup)));
+  }
+  if (const CUresult result = reinterpret_cast<Profiler>(address)(); result != CUDA_SUCCESS) {
+    const char* message = nullptr;
+    (void)cuGetErrorString(result, &message);
+    return Error(std::format("{}: {}", name, message == nullptr ? "CUDA error" : message));
+  }
+  return {};
+}
 
 std::uint64_t MemAvailable() {
   std::ifstream file("/proc/meminfo");
@@ -241,6 +267,8 @@ struct Options {
   // it is at least this (its own default 0.3).
   double window = 0.0;
   bool adaptive_depth = false;
+  bool runtime_prefill = false;
+  bool profile_decode = false;
   std::filesystem::path sampled;
   std::string only;
   std::optional<std::uint32_t> poll_us;
@@ -249,6 +277,7 @@ struct Options {
 struct Prompt {
   std::string id;
   std::vector<std::int32_t> ids;
+  std::uint32_t stable_boundary = 0;
 };
 
 // One speculative step's record.
@@ -424,8 +453,24 @@ Status Harness::Tokenize() {
       return Error(rendered.error().ToString());
     }
     std::vector<jitllm::tokenizer::TokenId> ids;
-    if (auto r = tokenizer_->EncodeMarked(rendered->text, rendered->specials, {}, ids); !r) {
+    std::vector<std::size_t> span_tokens;
+    if (auto r = tokenizer_->EncodeMarked(rendered->text, rendered->specials, {}, ids,
+                                          o_.runtime_prefill ? &span_tokens : nullptr);
+        !r) {
       return Error(r.error().ToString());
+    }
+    if (o_.runtime_prefill) {
+      for (const jitllm::chat::Boundary& boundary : rendered->boundaries) {
+        if (boundary.kind != jitllm::chat::BoundaryKind::kGenerationPrompt) {
+          continue;
+        }
+        for (std::size_t i = 0; i < rendered->specials.size(); ++i) {
+          if (rendered->specials[i].offset == boundary.offset && span_tokens[i] < ids.size()) {
+            p.stable_boundary = static_cast<std::uint32_t>(span_tokens[i]);
+            break;
+          }
+        }
+      }
     }
     p.ids.assign(ids.begin(), ids.end());
     return p;
@@ -499,6 +544,22 @@ Status Harness::Prefill(const Prompt& prompt, bool inject, std::vector<float>& l
     return r;
   }
   const std::uint32_t rows = o_.qwen.max_rows;
+  if (o_.runtime_prefill) {
+    const auto chunk = [&](std::uint32_t at, std::uint32_t n) {
+      return qwen_.Chunk(std::span(prompt.ids).first(at + n), at, last, inject);
+    };
+    std::uint32_t at = 0;
+    if (prompt.stable_boundary != 0) {
+      auto run = jitllm::runtime::RunPrefillChunks(0, prompt.stable_boundary, rows, chunk, {});
+      if (!run) {
+        return Error(std::format("{}'s prefill: {}", prompt.id, run.error()));
+      }
+      at = run->end;
+    }
+    auto run = jitllm::runtime::RunPrefillChunks(at, static_cast<std::uint32_t>(prompt.ids.size()),
+                                                 rows, chunk, {});
+    return run ? Status{} : Error(std::format("{}'s prefill: {}", prompt.id, run.error()));
+  }
   for (std::uint32_t at = 0; at < prompt.ids.size(); at += rows) {
     const auto n = static_cast<std::uint32_t>(std::min<std::size_t>(rows, prompt.ids.size() - at));
     if (auto r = qwen_.Chunk(std::span(prompt.ids).first(at + n), at, last, inject); !r) {
@@ -740,6 +801,11 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
   // Every token through the anchor (at `pos`, not yet in the cache).
   std::vector<std::int32_t> history = prompt.ids;
   history.push_back(out.tokens.back());
+  if (o_.profile_decode) {
+    if (auto result = ProfileDecode(true); !result) {
+      return result;
+    }
+  }
   const auto start = Clock::now();
   while (out.tokens.size() < count && out.steps.size() < forcing.max_steps) {
     if (pos + k > o_.qwen.context) {
@@ -760,10 +826,10 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
       passes = depth.Choose();
     }
     step.depth = passes;
-    if (auto r =
+    if (auto result =
             qwen_.Draft(history, step.drafts, o_.window > 0.0 ? &probabilities : nullptr, passes);
-        !r) {
-      return r;
+        !result) {
+      return result;
     }
     out.draft_seconds += Seconds(Clock::now() - drafting);
     if (o_.window > 0.0 && forcing.control == nullptr) {
@@ -846,6 +912,11 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
     }
   }
   out.decode_seconds = Seconds(Clock::now() - start);
+  if (o_.profile_decode) {
+    if (auto result = ProfileDecode(false); !result) {
+      return result;
+    }
+  }
   out.depth = depth;
   // The last verify's tokens may run past `count` (a run stopped by
   // max_steps has fewer, and keeps them all).
@@ -861,6 +932,7 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
 // ------------------------------------------------------------------ checks
 
 Status Harness::Greedy() {
+  const bool timing = o_.check == "timing";
   std::vector<Prompt> prompts = decode_;
   prompts.insert(prompts.end(), chat_.begin(), chat_.end());
   if (!o_.only.empty()) {
@@ -871,8 +943,11 @@ Status Harness::Greedy() {
         std::ranges::any_of(decode_, [&](const Prompt& p) { return p.id == prompt.id; });
     const std::uint32_t count = decode ? o_.tokens : std::min<std::uint32_t>(o_.tokens, 32);
     Generation plain;
-    if (auto r = InRequest("a plain generation", [&] { return Plain(prompt, count, plain); }); !r) {
-      return r;
+    if (!timing) {
+      if (auto r = InRequest("a plain generation", [&] { return Plain(prompt, count, plain); });
+          !r) {
+        return r;
+      }
     }
     const std::size_t repeats = decode ? o_.repeats : 1;
     std::vector<double> rates;
@@ -886,7 +961,7 @@ Status Harness::Greedy() {
       // The first two runs keep every logit (their repeat checked bit for
       // bit); later ones read the verdicts' argmaxes alone, as a greedy
       // client does (their tokens checked).
-      const bool keep = r < 2;
+      const bool keep = !timing && r < 2;
       std::vector<float> first;
       if (auto run = InRequest(
               "a speculative generation",
@@ -902,7 +977,7 @@ Status Harness::Greedy() {
           !run) {
         return run;
       }
-      if (!SameBits(first, plain.logits.front())) {
+      if (!timing && !SameBits(first, plain.logits.front())) {
         problems_.push_back(std::format(
             "{}: the prefill with the injection differs from the plain prefill", prompt.id));
       }
@@ -920,8 +995,10 @@ Status Harness::Greedy() {
     }
     // The verify's noise from the first run's rows (its tokens are checked
     // equal to the last's above; later runs keep no logits).
-    if (auto r = NearTies(prompt, plain, spec, repeats > 1 ? &first_run : &spec); !r) {
-      return r;
+    if (!timing) {
+      if (auto r = NearTies(prompt, plain, spec, repeats > 1 ? &first_run : &spec); !r) {
+        return r;
+      }
     }
     std::string text;
     if (auto decoded = tokenizer_->Decode(
@@ -930,7 +1007,7 @@ Status Harness::Greedy() {
         !decoded) {
       text = "(not decodable)";
     }
-    const double plain_rate = static_cast<double>(count - 1) / plain.decode_seconds;
+    const double plain_rate = timing ? 0.0 : static_cast<double>(count - 1) / plain.decode_seconds;
     const double acceptance =
         spec.drafted > 0 ? static_cast<double>(spec.accepted) / static_cast<double>(spec.drafted)
                          : 0.0;
@@ -942,8 +1019,10 @@ Status Harness::Greedy() {
     std::vector<std::uint64_t> by_position(qwen_.draft_rows(), 0);
     std::vector<std::uint64_t> offered(qwen_.draft_rows(), 0);
     std::map<std::uint32_t, std::uint64_t> depths;
+    std::map<std::uint32_t, std::uint64_t> verify_rows;
     for (const Step& s : spec.steps) {
       ++depths[s.depth];
+      ++verify_rows[s.rows];
       for (std::uint32_t i = 0; i + 1 < s.rows; ++i) {
         ++offered[i];
         by_position[i] += i + 1 < s.kept ? 1 : 0;
@@ -960,6 +1039,10 @@ Status Harness::Greedy() {
     std::string depths_json;
     for (const auto& [depth, steps] : depths) {
       depths_json += std::format("{}\"{}\":{}", depths_json.empty() ? "" : ",", depth, steps);
+    }
+    std::string rows_json;
+    for (const auto& [rows, steps] : verify_rows) {
+      rows_json += std::format("{}\"{}\":{}", rows_json.empty() ? "" : ",", rows, steps);
     }
     std::println(
         "{}: {} prompt tokens, {} generated; plain {:.2f} tok/s, speculative [{}] tok/s; "
@@ -982,14 +1065,15 @@ Status Harness::Greedy() {
       return out;
     };
     results_.push_back(std::format(
-        R"({{"check":"greedy","prompt":"{}","prompt_tokens":{},"generated":{},"plain_tok_s":{:.3f},)"
+        R"({{"check":"{}","prompt":"{}","prompt_tokens":{},"stable_boundary":{},"generated":{},"plain_tok_s":{:.3f},)"
         R"("spec_tok_s":[{}],"drafted":{},"accepted":{},"acceptance":{:.4f},)"
-        R"("acceptance_by_position":[{}],"verifies":{},"draft_depths":{{{}}},)"
+        R"("acceptance_by_position":[{}],"verifies":{},"draft_depths":{{{}}},"verify_rows":{{{}}},)"
         R"("step_ms":{{"draft":{:.3f},"verify":{:.3f},"all":{:.3f}}},"text":{},)"
         R"("prompt_ids":[{}],"plain_tokens":[{}],"spec_tokens":[{}],)"
         R"("plain_logits_sha256":"{}","spec_logits_sha256":"{}"}})",
-        prompt.id, prompt.ids.size(), count, plain_rate, rates_json, spec.drafted, spec.accepted,
-        acceptance, positions_json, spec.verifies, depths_json, spec.draft_seconds * per_step_ms,
+        timing ? "timing" : "greedy", prompt.id, prompt.ids.size(), prompt.stable_boundary, count,
+        plain_rate, rates_json, spec.drafted, spec.accepted, acceptance, positions_json,
+        spec.verifies, depths_json, rows_json, spec.draft_seconds * per_step_ms,
         spec.verify_seconds * per_step_ms, spec.decode_seconds * per_step_ms, escaped,
         ids(prompt.ids), ids(plain.tokens), ids(spec.tokens), LogitsDigest(plain.logits),
         LogitsDigest(first_run.logits.empty() ? spec.logits : first_run.logits)));
@@ -1546,7 +1630,7 @@ Status Harness::Run() {
     return r;
   }
   Status checked;
-  if (o_.check == "greedy") {
+  if (o_.check == "greedy" || o_.check == "timing") {
     checked = Greedy();
   } else if (o_.check == "forced") {
     checked = Forced();
@@ -1586,16 +1670,16 @@ Status Harness::Write() {
   const jb::Dsv4GraphStats& d = qwen_.draft_stats();
   std::ofstream(o_.out / "spec.json")
       << std::format(
-             R"({{"check":"{}","draft_rows":{},"draft_vocab":{},"adaptive_depth":{},"load_seconds":{:.2f},)"
+             R"({{"check":"{}","draft_rows":{},"draft_vocab":{},"adaptive_depth":{},"window":{},"runtime_prefill":{},"load_seconds":{:.2f},)"
              R"("read_bytes":{},"drafter_read_bytes":{},"peak_memavailable_drop_bytes":{},)"
              R"("graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{},"dropped":{}}},)"
              R"("draft_graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{}}},)"
              R"("ple_seconds":{:.3f},"results":[{}],"problems":[{}]}})",
              o_.check, o_.qwen.draft_rows, o_.qwen.draft_vocab,
-             o_.adaptive_depth ? "true" : "false", load_seconds_, qwen_.weight_read_bytes(),
-             qwen_.drafter_read_bytes(), drop, g.eager, g.captured, g.replayed, g.refused,
-             g.dropped, d.eager, d.captured, d.replayed, d.refused, qwen_.ple().seconds, all,
-             problems)
+             o_.adaptive_depth ? "true" : "false", o_.window, o_.runtime_prefill ? "true" : "false",
+             load_seconds_, qwen_.weight_read_bytes(), qwen_.drafter_read_bytes(), drop, g.eager,
+             g.captured, g.replayed, g.refused, g.dropped, d.eager, d.captured, d.replayed,
+             d.refused, qwen_.ple().seconds, all, problems)
       << '\n';
   std::println(
       "peak MemAvailable drop: {:.2f} GiB; graphs {} replayed, {} captured, {} refused ({})",
@@ -1657,6 +1741,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--adaptive-depth") {
       o.adaptive_depth = v == "on";
       ok = v == "on" || v == "off";
+    } else if (a == "--runtime-prefill") {
+      o.runtime_prefill = v == "on";
+      ok = v == "on" || v == "off";
+    } else if (a == "--profile-decode") {
+      o.profile_decode = v == "on";
+      ok = v == "on" || v == "off";
     } else if (a == "--repeats") {
       ok = number(o.repeats) && o.repeats >= 1;
     } else if (a == "--margin") {
@@ -1691,11 +1781,14 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.fp16.artifact.empty() != o.fp16.tokens.empty()) {
     return Error(
         "usage: jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE "
-        "--prompts FILE --out DIR --check greedy|forced|swap|sampled-plain|sampled-spec "
+        "--prompts FILE --out DIR --check greedy|timing|forced|swap|sampled-plain|sampled-spec "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
-        "[--draft-vocab N] [--adaptive-depth on|off] [--repeats N] [--margin B] [--seeds N] "
+        "[--draft-vocab N] [--adaptive-depth on|off] [--runtime-prefill on|off] "
+        "[--profile-decode on|off] "
+        "[--repeats N] [--margin B] [--seeds N] "
         "[--sampled FILE] [--only ID] "
-        "[--poll-us N] [--window P] [--prefill-chunk N] [--fp16-artifact DIR --fp16-tokens FILE "
+        "[--poll-us N] [--window P] [--prefill-chunk N] [--fp16-artifact "
+        "DIR --fp16-tokens FILE "
         "--fp16-expect "
         "SHA256]");
   }

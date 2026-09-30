@@ -199,13 +199,56 @@ there and reached 40.402 / 40.908 tok/s (prefix) and 39.620 / 39.900
 is 41.413 / 41.879, with 39 depth-3 and eight depth-2 steps. These fresh
 passes replay depths but recompute all draft proposals; the repeats agree
 exactly. This prefix
-trial exceeds the recorded Mia rate of 43.475, although the runtime's
-512-output ladder remains to be rerun. It matches 126 of 128 own
+trial exceeds the recorded Mia rate of 43.475 on that 128-output trial.
+The final runtime's original 512-output ladder below still has a gap at
+128K. It matches 126 of 128 own
 teacher-forced greedy tokens, with two near-ties (largest margin 0.0359,
 existing bound 1.0), no violations, and exact replay. Selected matches
 all 128. Neither reports a
 problem. The changed schedule changes near-tie continuations, so these
 are separate native trials, not matched-output acceptance comparisons.
+
+## Final runtime ladder, 512 outputs
+
+On `spark-b`, 2026-09-29 20:47:44–21:02:25 EDT, the final adaptive and
+turn-reuse implementation (`4256331` code), context 262,144 and 4,096-row
+prefill chunks. Each mode gets a fresh runtime process, a short warm-up,
+then phase 1's original 32K, 64K, 128K and 256K prompts with 512 greedy
+outputs. Every request completes with zero cached tokens. The selected
+head uses the final converter's `8600a998…` artifact. Target caches remain
+F16; the pinned Mia comparator uses its recipe's FP8 KV and MTP depth 3.
+
+| Prompt tokens | Plain prefill tok/s | Plain decode tok/s | Prefix adaptive tok/s | Selected adaptive tok/s | Mia MTP-3 tok/s |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 31,743 | 2,322.46 | 26.53 | 39.12 | 37.00 | 37.25 |
+| 64,110 | 2,315.47 | 25.97 | 37.55 | 41.32 | 40.45 |
+| 128,799 | 2,266.02 | 25.43 | 45.03 | 42.88 | 48.65 |
+| 258,702 | 2,176.36 | 24.67 | 35.63 | 43.84 | 37.71 |
+
+Speculative prefill stays 2,139–2,270 tok/s for both heads at these depths.
+Peak host `MemAvailable` drop is 84.86 GiB plain, 87.39 GiB prefix and
+87.47 GiB selected, including weights, used state, workspace and page-cache
+effects. The selected head is 10.0% faster than the prefix at 64K and
+23.0% faster at 256K, but 5.4% slower at 32K and 4.8% slower at 128K.
+These free-running trajectories differ; rates combine draft cost and
+continuation-dependent acceptance. They do not isolate vocabulary cost.
+
+The M3 long-context speed gate remains open: neither head reaches Mia at
+128K, and the default prefix is also short at 64K and 256K. Plain decode
+and all prefill rates exceed their recorded comparators. The shorter native
+trial's different generation length and prompt rendering cannot substitute
+for this ladder. These timing prompts are not the neutral retrieval gate:
+some 512-token continuations remain in reasoning, so missing passphrases
+in those continuations are recorded separately from retrieval correctness.
+
+Raw results are external on `spark-b`,
+`~/scratch/m3-extrapolation/qw-{plain,prefix,selected}/run.json`, supervised
+job `m3-qwen-runtime-final`. Configurations and verified prompt-content
+hashes are alongside them in `qw-*.toml` and `prompt-pins.json`; the same
+original prompts and pinned Mia run are recorded in the
+[long-context report](../long-context/README.md). No job or request errors
+occurred; all twelve long requests returned 512 outputs and cached zero
+tokens.
 
 ## Recommendation
 
@@ -232,6 +275,11 @@ remains a larger direct timing target.
   source list SHA-256 as below, packed BF16 rows and original I32 IDs.
   Re-importing with the final converter changes the artifact identity;
   the pin-validation fixes do not change these tested tensor bytes.
+- Final selected drafter:
+  `8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40`,
+  imported on `spark-b` at 19:02:35–19:02:47 EDT. Its indexed tensor
+  payloads match the earlier trial artifact. An 8K fresh-proposal control
+  repeats exactly; the runtime ladder above executes this final artifact.
 - Checkpoint: `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4` at
   `925d7be6c14c6c9442ef83e8f05b5a3c39304f69`.
 - Mia recipe: `b8439110eec0230facbe4ddf0dffe01b8f769be0`.
