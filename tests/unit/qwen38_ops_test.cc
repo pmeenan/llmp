@@ -240,6 +240,47 @@ TEST_F(Qwen38OpsTest, Mxfp8VectorProductMatchesTheReference) {
   }
 }
 
+// The measured small-output schedules keep the lone-column arithmetic,
+// including each column's padded stride, while grouping different rows
+// and warps. Covers tuned and untuned column counts over the same weights.
+TEST_F(Qwen38OpsTest, SmallMxfp8ProductsMatchLoneColumnsBitForBit) {
+  constexpr std::int64_t k = 2560;
+  constexpr std::int64_t kStride = k + 12;
+  constexpr std::int64_t kColumns = 8;
+  for (const std::int64_t rows : {48, 512, 640}) {
+    const auto codes =
+        E4m3Codes(static_cast<std::uint64_t>(rows), static_cast<std::size_t>(k * rows));
+    std::vector<std::uint8_t> scales(static_cast<std::size_t>(k / 32 * rows));
+    std::mt19937 random(static_cast<unsigned>(rows));
+    for (auto& scale : scales) scale = static_cast<std::uint8_t>(118 + (random() % 12));
+    std::vector<float> input(static_cast<std::size_t>(kStride * kColumns));
+    std::normal_distribution<float> normal(0.0f, 1.0f);
+    for (float& value : input) value = normal(random);
+    auto* wc = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I8, k, rows), codes);
+    auto* ws = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I8, k / 32, rows), scales);
+    auto* full = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kStride, kColumns), input);
+    std::vector<std::uint32_t> want;
+    for (std::int64_t column = 0; column < kColumns; ++column) {
+      auto* x =
+          ggml_view_1d(c(), full, k, static_cast<std::size_t>(column * kStride) * sizeof(float));
+      auto* y = Place(kg::Mxfp8MulMatVec(c(), wc, ws, x));
+      ASSERT_TRUE(kg::RunMxfp8MulMatVec(launch(), y).has_value());
+      const auto bits = Download<std::uint32_t>(y);
+      want.insert(want.end(), bits.begin(), bits.end());
+    }
+    for (std::int64_t columns = 2; columns <= kColumns; ++columns) {
+      auto* x =
+          ggml_view_2d(c(), full, k, columns, static_cast<std::size_t>(kStride) * sizeof(float), 0);
+      auto* y = Place(kg::Mxfp8MulMatVec(c(), wc, ws, x));
+      ASSERT_TRUE(kg::RunMxfp8MulMatVec(launch(), y).has_value());
+      const auto bits = Download<std::uint32_t>(y);
+      ASSERT_EQ(bits.size(), static_cast<std::size_t>(rows * columns));
+      EXPECT_TRUE(std::equal(bits.begin(), bits.end(), want.begin()))
+          << "outputs " << rows << ", columns " << columns;
+    }
+  }
+}
+
 // The vector product's refusals: more than 8 columns, k not whole 32-code
 // blocks, activations off their 16-byte alignment.
 TEST_F(Qwen38OpsTest, Mxfp8VectorProductRefusesWhatItCannotRun) {

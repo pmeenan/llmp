@@ -932,8 +932,12 @@ it appears.
           neither closes every depth's speed gate. Fixed depths 3–5,
           expert sharing, prepared Q8 and incremental confidence stopping
           were neutral. The bounded cuBLASLt library-product sweep was
-          also neutral and left production unchanged; MXFP8 vector
-          occupancy is the next lever to measure for cheaper verify rows
+          also neutral and left production unchanged. A bounded GB10
+          MXFP8 schedule for 48/512/640-output products improves the
+          fixed-depth-three 128K harness by 0.8% / 1.3% with prefix / curated
+          heads, all 512 tokens identical to matched controls, but does
+          not close the final adaptive runtime ladder's speed gate
+          ([MXFP8 scheduling](experiments/qwen38-mxfp8-scheduling/README.md))
           ([draft-head study](experiments/qwen38-draft-head/README.md)).
           *Adaptive depth and selected-head
           import implemented 2026-09-29:* native depth 2–3 chosen by observed

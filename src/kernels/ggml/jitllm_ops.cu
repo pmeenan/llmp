@@ -52,8 +52,6 @@ __device__ __forceinline__ void Decode16(const uint4 q, float out[16]) {
   }
 }
 
-constexpr int kWarps = 8;  // warps per block
-
 // kRows output rows a warp, each row's arithmetic the one-row-a-warp
 // product's: lane l takes the row's 16-code vectors l, l + 32, ...; each
 // vector is half of one 32-code block, so its dot product is scaled by its
@@ -68,7 +66,7 @@ constexpr int kWarps = 8;  // warps per block
 // for that kernel before reading x, and lets the next launch once its
 // weights are read. (x and y are not __restrict__: PDL and restrict are
 // mutually exclusive, GGML's GGML_CUDA_RESTRICT.)
-template <int kColumns, int kRows>
+template <int kColumns, int kRows, int kWarps>
 __global__ void __launch_bounds__(kWarps * 32)
     Mxfp8Gemv(const std::uint8_t* __restrict__ codes, const std::uint8_t* __restrict__ scales,
               const float* x, float* y, int n, int k, int x_stride) {
@@ -375,23 +373,47 @@ __global__ void Mxfp8SwizzleKernel(const std::uint8_t* __restrict__ in,
                     static_cast<std::uint64_t>(blocks))] = r < n ? in[i] : 0;
 }
 
-template <int kColumns>
-void LaunchGemv(const ggml_tensor* node, cudaStream_t stream) {
+template <int kColumns, int kRows, int kWarps>
+void LaunchGemvSchedule(const ggml_tensor* node, cudaStream_t stream) {
   const ggml_tensor* codes = node->src[0];
   const ggml_tensor* x = node->src[2];
   const int n = static_cast<int>(codes->ne[1]);
   const int k = static_cast<int>(codes->ne[0]);
-  // Rows a warp: one for a lone column (decode's, where the weights'
-  // stream bounds it), more as the columns' loads of x grow.
-  constexpr int kRows = kColumns == 1 ? 1 : (kColumns <= 4 ? 4 : 2);
   const int per_block = kWarps * kRows;
   const dim3 grid(static_cast<unsigned>((n + per_block - 1) / per_block));
-  ggml_cuda_kernel_launch(Mxfp8Gemv<kColumns, kRows>,
+  ggml_cuda_kernel_launch(Mxfp8Gemv<kColumns, kRows, kWarps>,
                           ggml_cuda_kernel_launch_params(grid, dim3(kWarps * 32), 0, stream),
                           static_cast<const std::uint8_t*>(codes->data),
                           static_cast<const std::uint8_t*>(node->src[1]->data),
                           static_cast<const float*>(x->data), static_cast<float*>(node->data), n, k,
                           static_cast<int>(x->nb[1] / sizeof(float)));
+}
+
+template <int kColumns>
+void LaunchGemv(const ggml_tensor* node, cudaStream_t stream, bool gb10) {
+  if constexpr (kColumns > 1) {
+    const auto* codes = node->src[0];
+    if (gb10 && codes->ne[0] == 2560) {
+      if (codes->ne[1] == 48) {
+        // The 48-output beta/alpha products have too few CTAs at the
+        // wider row grouping. Measured for every multi-row column count.
+        LaunchGemvSchedule<kColumns, 1, 4>(node, stream);
+        return;
+      }
+      if (codes->ne[1] == 512 || codes->ne[1] == 640) {
+        if constexpr (kColumns == 3 || kColumns == 4) {
+          LaunchGemvSchedule<kColumns, 2, 4>(node, stream);
+          return;
+        } else if constexpr (kColumns == 5 || kColumns == 7) {
+          LaunchGemvSchedule<kColumns, 4, 4>(node, stream);
+          return;
+        }
+      }
+    }
+  }
+  // Original scheduling for one-row decode, other shapes and devices.
+  constexpr int kRows = kColumns == 1 ? 1 : (kColumns <= 4 ? 4 : 2);
+  LaunchGemvSchedule<kColumns, kRows, 8>(node, stream);
 }
 
 }  // namespace
@@ -400,32 +422,33 @@ std::expected<void, KernelFailure> RunMxfp8MulMatVec(LaunchContext& launch, ggml
   if (auto checked = CheckMxfp8MulMatVec(node); !checked) {
     return checked;
   }
-  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+  const bool gb10 = ggml_cuda_info().devices[launch.device()].cc == 1210;
+  return launch.Run(base::Bytes(0), [node, gb10](ggml_backend_cuda_context& context) {
     cudaStream_t stream = context.stream();
     switch (node->src[2]->ne[1]) {
       case 1:
-        LaunchGemv<1>(node, stream);
+        LaunchGemv<1>(node, stream, gb10);
         break;
       case 2:
-        LaunchGemv<2>(node, stream);
+        LaunchGemv<2>(node, stream, gb10);
         break;
       case 3:
-        LaunchGemv<3>(node, stream);
+        LaunchGemv<3>(node, stream, gb10);
         break;
       case 4:
-        LaunchGemv<4>(node, stream);
+        LaunchGemv<4>(node, stream, gb10);
         break;
       case 5:
-        LaunchGemv<5>(node, stream);
+        LaunchGemv<5>(node, stream, gb10);
         break;
       case 6:
-        LaunchGemv<6>(node, stream);
+        LaunchGemv<6>(node, stream, gb10);
         break;
       case 7:
-        LaunchGemv<7>(node, stream);
+        LaunchGemv<7>(node, stream, gb10);
         break;
       default:
-        LaunchGemv<8>(node, stream);
+        LaunchGemv<8>(node, stream, gb10);
         break;
     }
   });

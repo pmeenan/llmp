@@ -147,6 +147,16 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_qwen38_gemm_tune PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # GB10-only scheduling sweep, run only by explicit benchmark invocation.
+  add_executable(jitllm_qwen38_mxfp8_tune qwen38_mxfp8_tune.cc qwen38_mxfp8_tune_kernels.cu)
+  target_include_directories(jitllm_qwen38_mxfp8_tune SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_qwen38_mxfp8_tune PRIVATE jitllm_ggml_kernels jitllm_warnings)
+  set_target_properties(jitllm_qwen38_mxfp8_tune PROPERTIES CUDA_ARCHITECTURES 121a-real)
+  set_source_files_properties(qwen38_mxfp8_tune_kernels.cu PROPERTIES COMPILE_OPTIONS "-Xptxas=-v")
+  target_link_options(jitllm_qwen38_mxfp8_tune PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # The paged harnesses' model runners: the FP16 fixture and an EXL3
   # fixture, each a model on the engine's paged node
   # (tests/support/paged_node.h), so one process can hold either or both

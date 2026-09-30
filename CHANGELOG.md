@@ -100,6 +100,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Qwen3.8's small-output MXFP8 verify products use measured GB10 warp
+  schedules, preserving their arithmetic and adding no workspace.
 - DeepSeek fast prefill can share sparse KV gathers across eight queries
   and expert input preparation across gate/up products, and use compact
   expert tile lists from 2,048 rows, retaining F16 caches and the original
