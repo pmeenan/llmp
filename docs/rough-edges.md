@@ -28,6 +28,40 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-039: A bounded Nsight CLI capture ended before its profiled model, leaving the target outside the job's supervision  (2026-09-30, status: worked-around)
+
+- **Environment:** `spark`, GB10, driver 580.178.04, CUDA 13.4.92,
+  Nsight Systems 2025.3.2. Job `m3-final-ds-max-swap` starts at
+  10:10:15 EDT, launching `jitllm_long_swap` through
+  `nsys profile --trace=cuda --sample=none --cpuctxsw=none --delay=2700
+  --duration=60 --kill=none --wait=all --export=sqlite`.
+- **Observed:** after the bounded capture/export, the profiler exits zero
+  and the supervised shell ends, but the model remains a GPU compute
+  process with PPID 1 and its own process group. Its output descriptors
+  are anonymous pipes. The redirected JSON file contains profiler/export
+  text, not a completed native result; no complete native output was
+  retained after the profiler exited. `spark-job busy` and the GPU/process probes correctly
+  refuse to call the Spark free. A later attempt to adopt the observed
+  process finds it already gone; there is no retained application exit
+  code or complete swap record.
+- **Impact:** a successful bounded profiler capture is neither application
+  completion nor proof that the model remains inside the supervisor's
+  process group. This maximum-state attempt is excluded from the gate.
+  Its completed `.nsys-rep`/SQLite capture can support bounded GPU
+  diagnostics, without qualifying the unfinished host/model test.
+- **Workaround:** run long validation commands directly under
+  `spark-job`; collect bounded profiles separately with application
+  lifetime and output collection kept explicitly supervised. Always
+  check `busy` and the full memory/process gate before handing off a
+  Spark. Do not infer application success from the profiler's exit.
+- **Limits:** this is one observed launch/option combination, not an
+  isolated Nsight defect or a claim about why the target later exited.
+  Pins, failed native output and completed trace remain in
+  `spark:~/scratch/m3-extrapolation-ds/final-max-swap/`; see
+  [the final context report](experiments/m3-final-context/README.md).
+  The launch wrapper is
+  `spark:~/scratch/m3-final-launch/jitllm-final-ds-max-swap.sh`.
+
 ## RE-038: GGML's concat has two kernels, and only the per-row one is bound by the grid's 65,535 channels, so a check that bounded both refused DeepSeek V4 past ~52K positions  (2026-09-29, status: fixed)
 
 - **Environment:** `spark-b`, GB10, the `spark-native` build at `6c182c3`;

@@ -17,6 +17,30 @@
   account); [NVIDIA/cccl](https://github.com/NVIDIA/cccl) issues for CUB and
   Thrust. None of these reports has been filed yet.
 
+## Bounded Nsight capture completed before its launched model (RE-039)
+
+- **Status:** worked around; no isolated upstream defect claimed.
+- **Found:** 2026-09-30, `spark`, Nsight Systems 2025.3.2, driver
+  580.178.04 and CUDA 13.4.92.
+- **Problem:** `nsys profile --trace=cuda --sample=none --cpuctxsw=none
+  --delay=2700 --duration=60 --kill=none --wait=all --export=sqlite`
+  finished its trace/export with exit zero while its launched native
+  model remained on the GPU, reparented to PID 1 with a separate process
+  group. No complete native JSON or application exit status was retained
+  after the profiler exited. The surrounding `spark-job`
+  supervised the profiler, not that surviving process.
+- **jitLLM's workaround:** separate the long validation command from
+  bounded profiling, and keep the application's lifetime/output explicitly
+  supervised. `spark-job busy` plus all-query memory/process probes caught
+  the surviving model before a second model could load. The unfinished
+  maximum-state result is excluded; only the completed bounded trace is
+  retained as a diagnostic.
+- **Proposed action:** before reporting an upstream bug, isolate this
+  option combination with a cheap target and confirm documented wait and
+  output behavior. No reproduction run or report has been made.
+- **Links:** [RE-039](../rough-edges.md#re-039-a-bounded-nsight-cli-capture-ended-before-its-profiled-model-leaving-the-target-outside-the-jobs-supervision--2026-09-30-status-worked-around);
+  `spark:~/scratch/m3-extrapolation-ds/final-max-swap/`.
+
 ## A stream holds about 1,020 pending operations, then a launch blocks its thread (RE-029)
 
 - **Status:** open.

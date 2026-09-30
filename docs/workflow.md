@@ -184,5 +184,11 @@ never writes the marker.
   bad case (an HTTP 400, an out-of-memory) costs one row, not the run.
 - **Hand a Spark over by checking `spark-job busy`** (exit 1 while a `--gpu`
   job or any GPU compute process runs), not by messages alone.
+- **Profiler completion is separate from application completion.** A
+  bounded Nsight CLI capture can end while its target survives in a
+  separate process group (RE-039). Keep long validation directly
+  supervised; collect profiles separately with explicit target/output
+  lifetime. A profiler's successful exit cannot qualify an unfinished
+  model result.
 - **Clean up when finishing:** kill your own jobs that are still running,
   and run `spark-job gc` to remove old finished ones.

@@ -459,6 +459,10 @@ paths; header/license exports alone are not that audit.
   separate measured option; the default prefix head must meet its gate.
 - DeepSeek's maximum continuing-context swap remains pending; the 128K
   DeepSeek and both 128K/maximum Qwen heads pass the protocol above.
+  The attempted profiled maximum run produced a completed bounded trace
+  but no complete native result or retained application exit status
+  ([RE-039](../../rough-edges.md)); it is excluded and will be replaced
+  by a directly supervised validation run.
 - Re-check watchdog floors against actual longest chunks and route
   completion, then record the recommendation. Current defaults are
   prefill 100 tok/s, decode 5 tok/s and a 120-second stall interval.
