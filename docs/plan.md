@@ -967,6 +967,10 @@ it appears.
           products but remains neutral with prefix / slightly slower with
           curated on the adaptive 128K trial; production stays unchanged
           ([NVFP4 scheduling](experiments/qwen38-nvfp4-scheduling/README.md)).
+          Producer-fused down-Q8 export then passes exact intermediate,
+          payload and graph controls, but gains only 2.4–2.9% on overlapping
+          complete pairs and slightly regresses disjoint routes; no
+          production fusion or model trial is justified by that result.
           *Adaptive depth and selected-head
           import implemented 2026-09-29:* native depth 2–3 chosen by observed
           acceptance, deterministic across saved/restored runs. The 128K

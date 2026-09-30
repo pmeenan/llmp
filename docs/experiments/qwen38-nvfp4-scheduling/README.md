@@ -143,8 +143,92 @@ summaries, nsys capture and archived production/test patch are on B under
 
 The six-schedule fixture, exact per-slot arithmetic, physical packed-slab
 controls and actual route-bank working-set accounting are reusable pieces.
-A new consumer still needs its own model gain. The distinct next candidate
-is fusing exact down-input Q8 preparation into the GLU producer, avoiding
-the additional preparation launches that defeated the earlier prototype.
-It remains unimplemented here and must retain F32 GLU outputs, original
-conversion/block order, PDL readiness and completion-aware scratch ownership.
+A new consumer still needs its own model gain. The distinct producer-fused
+down-input Q8 experiment below also remains unadopted.
+
+## Producer-fused down-input Q8
+
+The earlier [prepared-Q8 prototype](../qwen38-mtp-speed/README.md) adds
+96 preparation launches per verify: gate/up input and down input in each
+of 48 layers. This separate experiment keeps gate/up quantization inline
+and exports the exact down-input Q8 from the existing GLU producer. It
+adds no preparation launch. The complete GLU-plus-down pair improves only
+2.4–2.9% in speed ratio for overlapping routes and is slightly slower for
+disjoint routes. That small isolated result does not justify production
+fusion or a model trial; production remains unchanged and the MTP gate open.
+
+The external kernels keep eight rows per warp and eight warps per CTA.
+GLU retains its original Q8 input conversion, dots, block-scale FMA,
+XOR reduction, scales, F32 output and PDL positions. Each CTA produces
+32 GLU outputs. After one CTA barrier, two threads quantize its two
+16-value groups in the original ordered amax/127, round and code-packing
+sequence. Tail warps participate in the barrier; invalid expert IDs exit
+uniformly after canonical NaN F32 writes. Their unused payload is defined
+zero, rather than claimed to equal quantizing NaNs.
+
+Prepared down reads each lane's original block sequence and retains its
+integer-dot, FMA and reduction order. Every Q8 read precedes its original
+PDL release. The explicit payload record holds four code words, an F32
+scale and zero padding in 32 bytes, aligned to 16. At three/four/five rows
+and ten selected slots the transient payload is 38,400 / 51,200 / 64,000
+bytes. These buffers are allocated before graph capture; allocation wall
+time and capture time are reported separately from per-pair GPU time.
+No production graph scratch, allocator or snapshot contract is changed.
+
+`m3-qwen-glu-down-q8-micro2`, 06:22:46–06:23:40 EDT, uses the same
+Spark, SDK, artifact offsets and unchanged production kernel as above.
+Forty controls cover rows 1–8, up to 64 selected slots, duplicates, invalid
+IDs, zero-amax GLU groups, padded input/ID/slab strides, short K and down
+tails. Twenty-four use the native launcher; 16 padded/half-CTA controls
+use the copied original kernel. All stored F32 GLU values, every Q8
+record byte and final down outputs match exactly, including independent
+repeats, finite/canonical-NaN checks, guard bytes and malformed-stride
+refusals. Separate zero gate scales exercise the exported zero-amax path.
+
+The six timed actual-shape pairs use physical backing for 512 experts,
+ten routed slots and all 64 route banks. Their accessed gate/up-plus-down
+weight sets are 1,291,161,600 / 1,415,577,600 bytes (overlap / disjoint),
+above measured 24 MiB L2. Each result is the median of three CUDA-event
+batches of 512 complete pairs. Original controls bracket the candidate;
+each captured graph has exactly 128 kernel nodes. Post-capture controls
+compare its final bank with an eager pair, including F32 outputs, every
+Q8 byte and guards. Pool-offset reuse and production planning are not
+tested because integration is rejected.
+
+Mean before/after original time and fused-pair time, in microseconds:
+
+| Token rows | Route | Original pair | Fused pair | Speed ratio |
+| ---: | --- | ---: | ---: | ---: |
+| 3 | Overlap | 198.257 | 192.654 | 1.029 |
+| 3 | Disjoint | 380.279 | 382.714 | 0.994 |
+| 4 | Overlap | 232.043 | 226.634 | 1.024 |
+| 4 | Disjoint | 503.209 | 507.007 | 0.993 |
+| 5 | Overlap | 265.526 | 258.112 | 1.029 |
+| 5 | Disjoint | 625.474 | 631.835 | 0.990 |
+
+Overlap latency falls 2.33–2.83%; disjoint latency rises 0.64–1.02%.
+Bracketed baseline drift is −1.44% to −0.19%. Full fixture allocation
+wall time is 64.3–65.5 ms, including weights, references and guards;
+128-node candidate capture plus instantiation is 0.270–0.279 ms.
+Neither is presented as per-step production allocation overhead.
+Ptxas reports GLU 98 registers, one barrier and 128 bytes of shared memory
+(original: 106 registers), and prepared down 78 registers (original: 98),
+with zero stack or spills. Lower registers do not establish a model gain.
+
+Raw records, formatted sources, build flags, identities and scripts stay on
+B under `~/scratch/m3-qwen-glu-down-q8/`. The original production unit is
+unchanged at `7b8c71122d032c4f05ee97c9b7b90769cec15541f60bd17018b7299dab82e291`.
+The external host passes SDK format and clang-tidy; device units compile
+with the original production flags, including `-use_fast_math` and PDL.
+The initial job stopped at host style checks before controls; the corrected
+job above completes successfully. SHA-256 identities:
+
+- producer/prepared-down kernel `7702c7c4d94126ef32b3b3e63e718a44e469cb4602b2933a7704da1c08ccf06b`;
+- host fixture `51d3a9989645108aa0aba89d6ea4769d75bc1821ef1efaa896759062c19ec42b`;
+- external diagnostic binary `096c4b275df8fbdcd05ccf0d72700236aa5b2003c778c906aaa048d7cae52279`.
+
+Exact producer export, intermediate/payload controls and complete-pair
+capture accounting are reusable pieces for a different eligible consumer.
+The current small pair gain leaves production planner/scratch integration,
+model quality, rollback and swap evidence unclaimed. No further variant is
+selected from this microbenchmark alone.
