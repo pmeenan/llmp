@@ -449,8 +449,7 @@ TEST(Qwen38Test, TheWidestChunkIsBounded) {
   const md::Qwen38Profile& p = md::Qwen38Flash();
   for (const auto& [context, most] :
        {std::pair{512U, 512U}, std::pair{511U, 511U}, std::pair{8704U, md::kQwen38MaxRows},
-        std::pair{65536U, 8191U}, std::pair{131072U, 4095U}, std::pair{262144U, 2047U},
-        std::pair{262400U, 2046U}}) {
+        std::pair{65536U, 8191U}, std::pair{131072U, 4095U}, std::pair{262144U, 2047U}}) {
     SCOPED_TRACE(context);
     EXPECT_EQ(md::Qwen38MostRows(context), most);
     EXPECT_TRUE(md::Qwen38State(p, context, most).has_value());
@@ -462,6 +461,10 @@ TEST(Qwen38Test, TheWidestChunkIsBounded) {
   EXPECT_EQ(md::Qwen38MostRows(4000, false), 4000U);
   EXPECT_EQ(md::Qwen38MostRows(0), 0U);
   EXPECT_EQ(md::Qwen38MostRows(0x7FFFFF01U), 0U);
+  EXPECT_EQ(md::Qwen38MostRows(262145), 0U);
+  EXPECT_EQ(md::Qwen38MostRows(262145, false), 0U);
+  EXPECT_FALSE(md::Qwen38State(p, 262145, 1).has_value());
+  EXPECT_FALSE(md::Qwen38State(p, 262145, 1, false).has_value());
 }
 
 TEST(Qwen38Test, AChunksMaskAndPositionsAreCausal) {

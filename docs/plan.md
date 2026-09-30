@@ -937,9 +937,13 @@ it appears.
         checkpoints before the assistant opening, exact rollback and
         continuation across full swaps; at 64K, 0.51 s DeepSeek and
         0.42 s Qwen suffix preparation versus 141.6 / 29.1 s fresh.
-      - *Defaults:* each model's default context rises from 8,704 to what
-        coding clients expect, within the memory budget. The intake bounds
-        (D-097) follow.
+      - *Defaults (implemented 2026-09-29):* context defaults to 262,144
+        (was 8,704), with a generic cap of 1,048,576 and the checkpoint's
+        trained ceiling checked before allocation: DeepSeek 1,048,576,
+        Qwen3.8 262,144. Growing state keeps the physical guard; a 1M
+        physical fit is not claimed. HTTP bodies allow 16 MiB and message
+        text 8 MiB, while aggregate intake bounds, chunk policy and schema
+        version 2 stay unchanged (D-096, D-097).
       - *Request deadline (done 2026-09-29):* the route's fixed 600 s
         deadline is gone, so a long prefill no longer fails on the clock: a
         progress watchdog, scaled non-streaming deadlines and no deadline

@@ -179,8 +179,9 @@ amended it to what follows.
   `</think>` token. Omitted `temperature` samples at 1, as OpenAI
   documents; 0 is greedy.
 - **Bounds and statuses** as runtime-serving.md tabulates them: head 16
-  KiB and 64 headers, target 2 KiB, body 4 MiB (Content-Length only), JSON
-  depth 16 and 262,144 values, 1,024 messages of at most 1 MiB, 64
+  KiB and 64 headers, target 2 KiB, body 16 MiB (Content-Length only; was
+  4 MiB before the context amendment below), JSON depth 16 and 262,144
+  values, 1,024 messages of at most 8 MiB (was 1 MiB), 64
   content parts, 4 stop strings of 1–128 bytes, `max_tokens` 1 to the
   model's usable context less the prompt, temperature 0–2, top_p (0, 1],
   top_k −1 to 2³¹−1, min_p [0, 1]; timeouts of 10 s for the head and 30 s
@@ -298,6 +299,17 @@ serving on. The conversation's state then holds exactly the chunks that
 ran, so a retry continues from them
 ([runtime-serving.md](runtime-serving.md#prefill-chunks-and-cancellation)).
 
+**Amended 2026-09-29** (M3 coding contexts). The context cap widens to
+1,048,576 at parse, while each selected model's configured usable context
+still bounds prompt plus output. Bodies widen from 4 to 16 MiB and each
+message's decoded text from 1 to 8 MiB, including the separate reasoning
+field, to admit large source-code prompts and their JSON escaping.
+The 64 MiB arriving-body pool, JSON depth and value count, message and part
+counts, queue and connection limits do not widen. The byte caps remain
+independent of token counts; they do not guarantee every possible 1M-token
+input fits. Existing request shapes remain valid; API version stays 1
+(D-062), and no physical model-fit claim follows from intake acceptance.
+
 ## D-096: The runtime serves M3's models through an engine module, `[models]` in the configuration and two local serving commands; GGML, CUTLASS and cuBLAS ship  (2026-09-28, status: accepted by the owner, 2026-09-28; adds configuration keys and runtime commands, D-016 public surfaces; applies D-076's consequences for shipping cuBLAS; changes GGML's and CUTLASS's lock `use` to product under D-057; its engine's CUDA use moved behind the device runtime on 2026-09-29, noted below)
 
 **Decision.** M3's swap path leaves the harnesses for `jitllm-runtime`
@@ -313,7 +325,8 @@ ran, so a retry continues from them
   installed artifact (`artifact`) or composition (`composition`, D-089) by
   ID, and for an artifact an optional `drafter` (speculation is then the
   default decode, `speculation = false` turns it off), `context` (512 to
-  262,144 tokens, default 8,704), and `tokenizer` and `chat_template`
+  1,048,576 tokens, default 262,144, subject to the checkpoint ceiling;
+  originally 262,144 and 8,704), and `tokenizer` and `chat_template`
   paths for an artifact whose metadata keeps neither. Names are 1–64 of
   `[a-z0-9._-]`, starting with a letter or digit; at most 16 models; an
   artifact (target or drafter) serves one model. The keys
@@ -384,6 +397,20 @@ so every context from the minimum, 512, starts (before, the fixed
 512-row chunk refused DeepSeek at 512 and wrapped Qwen3.8's MTP planning
 position). The policy and its measurements are in
 [runtime-serving.md](runtime-serving.md#prefill-chunks-and-cancellation).
+
+**Amended 2026-09-29** (M3 coding contexts). The default context becomes
+262,144; the generic configuration cap becomes 1,048,576. All configured
+LLM artifacts' architectures and trained checkpoint ceilings are checked
+before opening the device node or constructing any model: DeepSeek V4
+Flash 1,048,576, Qwen3.8 Flash Next 262,144. The engine also refuses a
+ceiling beyond the supported checkpoint before opening its weight artifact.
+Growing state reserves virtual addresses and backs initialized extents
+inside the physical cap; the 6 GiB guard and F16 caches stay. A 1M DeepSeek
+physical fit is unmeasured. The prefill chunk cap stays 262,144, with the
+same runtime chunk policy. `swap-table --context-tokens` follows the generic
+cap but must fit its selected model. This widens existing values, keeps
+existing explicit contexts valid and changes no field or encoding, so
+`schema_version` stays 2 under D-062. D-097 widens bounded HTTP intake too.
 
 **Noted 2026-09-29** (the portability slice; its reopen condition "the
 engine's CUDA use moves behind a provider interface" met, the decision

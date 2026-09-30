@@ -566,7 +566,8 @@ std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p
   // of up to n_kv x rows x 4 bytes, a stride GGML's flash attention takes as
   // a 32-bit int and ggml_permute truncates to one (RE-037): for them the
   // chunk bound and the padded context are bounded together by those bytes.
-  if (context == 0 || max_rows == 0 || max_rows > context || max_rows > kQwen38MaxRows ||
+  if (context == 0 || context > kQwen38FlashContext || max_rows == 0 || max_rows > context ||
+      max_rows > kQwen38MaxRows ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255 ||
       (host_masks && Pad(context, 256) * max_rows * kMaskBytes >
                          std::uint64_t{std::numeric_limits<std::int32_t>::max()})) {
@@ -655,7 +656,7 @@ std::expected<std::vector<StateRange>, std::string> Qwen38CheckpointWrites(
 }
 
 std::uint32_t Qwen38MostRows(std::uint32_t context, bool host_masks) {
-  if (context == 0 ||
+  if (context == 0 || context > kQwen38FlashContext ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {
     return 0;
   }

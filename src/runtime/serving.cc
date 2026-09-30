@@ -32,6 +32,7 @@
 #include "platform/host_probe.h"
 #include "platform/path_trust.h"
 #include "runtime/memory_guard.h"
+#include "runtime/model_limits.h"
 #include "runtime/prefill.h"
 #include "scheduler/programs.h"
 #include "tokenizer/gguf.h"
@@ -1331,7 +1332,7 @@ void Server::Log(std::string_view text) {
   (void)std::fflush(log_);
 }
 
-Status Server::Make(const config::ModelEntry& entry, int index) {
+Status Server::Make(const config::ModelEntry& entry, int index, std::string_view architecture) {
   if (entry.composition) {
     if (options_.image_noise.empty()) {
       Log(
@@ -1343,11 +1344,6 @@ Status Server::Make(const config::ModelEntry& entry, int index) {
     models_.push_back(std::make_unique<QwenImage>(node_, entry, roles_, options_, index));
     return {};
   }
-  auto artifact = OpenTrusted(roles_.installed, entry.artifact.value_or(""));
-  if (!artifact) {
-    return Error(std::format("model {}: {}", entry.name, artifact.error()));
-  }
-  const std::string& architecture = artifact->model().architecture;
   if (architecture == "deepseek4") {
     models_.push_back(std::make_unique<Dsv4>(node_, entry, roles_, options_.plain, index));
   } else if (architecture == "qwen4exp") {
@@ -1416,14 +1412,36 @@ Status Server::Start(bool snapshot) {
   if (config_.models.empty()) {
     return Error("the configuration names no models ([models.<name>], D-096)");
   }
+  // Check every LLM's checkpoint ceiling before opening the device node or
+  // constructing runners. An invalid model later in the list must not
+  // cause any earlier model's resources to be allocated either.
+  std::vector<std::string> architectures;
+  architectures.reserve(config_.models.size());
+  for (const config::ModelEntry& entry : config_.models) {
+    if (entry.composition) {
+      architectures.emplace_back();
+      continue;
+    }
+    auto artifact = OpenTrusted(roles_.installed, entry.artifact.value_or(""));
+    if (!artifact) {
+      return Error(std::format("model {}: {}", entry.name, artifact.error()));
+    }
+    const std::string& architecture = artifact->model().architecture;
+    if (auto context = CheckModelContext(architecture, entry.context); !context) {
+      return Error(std::format("model {}: {}", entry.name, context.error()));
+    }
+    architectures.push_back(architecture);
+  }
   if (auto r = node_.Open(); !r) {
     return r;
   }
   // Each model's stream and owner: its place among the registered.
+  std::size_t entry_index = 0;
   for (const config::ModelEntry& entry : config_.models) {
-    if (auto r = Make(entry, static_cast<int>(models_.size())); !r) {
+    if (auto r = Make(entry, static_cast<int>(models_.size()), architectures[entry_index]); !r) {
       return r;
     }
+    ++entry_index;
   }
   if (models_.empty()) {
     return Error("no configured model could be registered");

@@ -36,6 +36,8 @@
 #include <utility>
 #include <vector>
 
+#include "config/node_config.h"
+
 namespace jitllm::runtime::api {
 
 // The intake bounds, fixed before the route accepts input
@@ -44,16 +46,16 @@ namespace jitllm::runtime::api {
 inline constexpr std::size_t kMaxHeaderBytes = std::size_t{16} << 10U;  // request line + headers
 inline constexpr std::size_t kMaxHeaders = 64;
 inline constexpr std::size_t kMaxTargetBytes = 2048;
-inline constexpr std::size_t kMaxBodyBytes = std::size_t{4} << 20U;
+inline constexpr std::size_t kMaxBodyBytes = std::size_t{16} << 20U;
 inline constexpr std::size_t kMaxJsonDepth = 16;
 inline constexpr std::size_t kMaxJsonValues = std::size_t{1} << 18U;
 inline constexpr std::size_t kMaxMessages = 1024;
-inline constexpr std::size_t kMaxMessageBytes = std::size_t{1} << 20U;  // one message's text
+inline constexpr std::size_t kMaxMessageBytes = std::size_t{8} << 20U;  // one message's text
 inline constexpr std::size_t kMaxContentParts = 64;
 inline constexpr std::size_t kMaxModelBytes = 64;
 inline constexpr std::size_t kMaxStops = 4;
 inline constexpr std::size_t kMaxStopBytes = 128;
-inline constexpr std::uint32_t kMaxTokensCeiling = 262144;  // config::kMaxContext
+inline constexpr std::uint32_t kMaxTokensCeiling = config::kMaxContext;
 inline constexpr double kMaxTemperature = 2.0;
 inline constexpr std::int64_t kMaxTopK = std::int64_t{1} << 31U;
 // Unknown fields: names recorded per request, and a name's recorded bytes.

@@ -70,6 +70,10 @@ std::span<const std::byte> Dsv4Runner::table() const {
 }
 
 Status Dsv4Runner::Setup() {
+  if (o_.context > md::kDsv4FlashContext) {
+    return Error(std::format("context {} exceeds DeepSeek V4 Flash's trained ceiling {}",
+                             o_.context, md::kDsv4FlashContext));
+  }
   if (auto r = weights_.Open(o_.artifact); !r) {
     return r;
   }

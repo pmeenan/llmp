@@ -52,7 +52,7 @@ struct Limits {
   std::size_t max_header_bytes = 16384;  // the request line and headers
   std::size_t max_headers = 64;
   std::size_t max_target_bytes = 2048;
-  std::size_t max_body_bytes = std::size_t{4} << 20U;
+  std::size_t max_body_bytes = std::size_t{16} << 20U;
 };
 
 struct Header {

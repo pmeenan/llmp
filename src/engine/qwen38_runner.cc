@@ -82,6 +82,10 @@ std::vector<ExtentId> Qwen38Runner::managed_extents() const {
 }
 
 Status Qwen38Runner::Setup() {
+  if (o_.context > md::kQwen38FlashContext) {
+    return Error(std::format("context {} exceeds Qwen3.8 Flash Next's trained ceiling {}",
+                             o_.context, md::kQwen38FlashContext));
+  }
   if (auto r = weights_.Open(o_.artifact); !r) {
     return r;
   }

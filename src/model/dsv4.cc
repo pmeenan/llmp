@@ -406,7 +406,7 @@ std::expected<Dsv4StateLayout, std::string> Dsv4State(const Dsv4Profile& p, std:
   }
   // Positions are I32 in the graph, and the caches' cell counts (the
   // context padded to 256) must fit their 32-bit fields.
-  if (context == 0 || max_rows == 0 || max_rows > context ||
+  if (context == 0 || context > kDsv4FlashContext || max_rows == 0 || max_rows > context ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {
     return Refused(std::format("no state for {} positions in chunks of {}", context, max_rows));
   }
@@ -523,7 +523,7 @@ std::expected<std::vector<StateRange>, std::string> Dsv4CheckpointWrites(
 }
 
 std::uint32_t Dsv4MostRows(const Dsv4Profile& p, std::uint32_t context) {
-  if (!ProfileIsSane(p) || context == 0 ||
+  if (!ProfileIsSane(p) || context == 0 || context > kDsv4FlashContext ||
       context > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max()) - 255) {
     return 0;
   }

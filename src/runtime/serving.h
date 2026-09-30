@@ -452,7 +452,7 @@ class Server {
   std::uint64_t workspace_bytes() const { return workspace_; }  // the shared activations and pool
 
  private:
-  Status Make(const config::ModelEntry& entry, int index);
+  Status Make(const config::ModelEntry& entry, int index, std::string_view architecture);
   void Log(std::string_view text);
 
   const config::NodeConfig& config_;

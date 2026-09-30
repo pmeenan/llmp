@@ -491,6 +491,7 @@ image = {{ composition = "{3}" }}
   EXPECT_EQ(deepseek.drafter, std::string(kDspark));
   EXPECT_TRUE(deepseek.speculation);
   EXPECT_EQ(deepseek.context, jitllm::config::kDefaultContext);
+  EXPECT_EQ(deepseek.context, 262144U);
   EXPECT_FALSE(deepseek.composition.has_value());
   const auto& image = config.models[1];
   EXPECT_EQ(image.name, "image");
@@ -542,12 +543,26 @@ artifact = "{0}"
   EXPECT_THAT(failures, Contains(HasSubstr("models.both: a model names exactly one of")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline: drafter, speculation, context")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.short.artifact must be an ID string")));
-  EXPECT_THAT(failures, Contains(HasSubstr("models.small.context must be from 512 to 262144")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.small.context must be from 512 to 1048576")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.self: an artifact cannot be its own drafter")));
   EXPECT_THAT(failures, Contains(HasSubstr("an installed artifact serves one model")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.odd.tokenizer must be an absolute path")));
   EXPECT_THAT(failures, Contains(HasSubstr("unknown key models.odd.colour")));
   EXPECT_THAT(failures, Contains(HasSubstr("unknown table models.deep.er")));
+}
+
+TEST(NodeConfigTest, ContextDefaultsAndCeilingRemainSchemaTwo) {
+  for (const auto context : {512U, 262144U, 262145U, 1048576U}) {
+    const NodeConfig config =
+        Parsed(std::format("schema_version = 2\n[models.m]\nartifact = \"{}\"\ncontext = {}\n",
+                           std::string(64, 'a'), context));
+    ASSERT_THAT(config.models, SizeIs(1));
+    EXPECT_EQ(config.models.front().context, context);
+  }
+  EXPECT_THAT(
+      Failures(std::format("schema_version = 2\n[models.m]\nartifact = \"{}\"\ncontext = 1048577\n",
+                           std::string(64, 'a'))),
+      ElementsAre(HasSubstr("context must be from 512 to 1048576 tokens, not 1048577")));
 }
 
 // A model's context from its minimum, its prefill chunk (configured, or
@@ -605,7 +620,7 @@ decode_floor_tok_s = 5
 )",
       std::string(64, 'a'), std::string(64, 'b'), std::string(64, 'c'), std::string(64, 'd'),
       std::string(64, 'e'), std::string(64, 'f'), std::string(64, '0'), std::string(64, '1')));
-  EXPECT_THAT(failures, Contains(HasSubstr("models.below.context must be from 512 to 262144")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.below.context must be from 512 to 1048576")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.none.prefill_chunk must be from 1 to 262144")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.over.prefill_chunk must be from 1 to 262144")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.text.prefill_chunk must be an integer")));

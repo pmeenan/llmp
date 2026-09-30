@@ -48,7 +48,7 @@ A node names the models it serves in its configuration (D-073's document,
 artifact = "8a355bfb…"   # an installed artifact's ID, under storage.installed
 drafter = "dd2d3f9c…"    # optional: its speculative drafter (DSpark, MTP)
 # speculation = true     # the default when there is a drafter
-# context = 8704         # tokens of conversation state, 512 to 262,144
+# context = 262144       # default tokens of conversation state (bounds below)
 # prefill_chunk = 2048   # rows of a prefill chunk; default by model (below)
 # prefill_floor_tok_s = 100  # tokens a second: the floors the chat route figures
 # decode_floor_tok_s = 5      #   a request's work at (progress and deadlines, below)
@@ -73,6 +73,16 @@ artifact is opened under the store's trust rules (only root and the
 runtime's user may change it), and the tokenizer and template files the
 configuration names are read under the configuration's (D-073). A chat
 template is rendered only if a native renderer has its hash (D-067).
+
+The omitted context defaults to 262,144 tokens. The configuration's generic
+range is 512 to 1,048,576; registration checks the supported checkpoint's
+trained ceiling before opening the device node or constructing any model:
+DeepSeek V4 Flash permits 1,048,576 and Qwen3.8 Flash Next 262,144.
+An explicit context that exceeds its checkpoint is refused with the model's
+name and allowed range. These are virtual ceilings: initialized state grows
+inside the physical budget and can be refused when it no longer fits.
+The 1M DeepSeek ceiling is not a claim that a 1M conversation fits one Spark.
+The widening preserves `schema_version = 2` and the HTTP API version (D-062).
 
 ## Registration and the swap
 
@@ -183,10 +193,13 @@ A turn's prefill runs in chunks (`runtime/prefill.h`). The chunk is the
 model's `prefill_chunk` if configured (1 to 262,144 rows), else the
 runtime's default for the model, and in either case at most what the
 model's state layout admits at its context (DeepSeek: the window cache's
-cells less its 128-position window; Qwen3.8: 8,192 rows, and its F32
-[context, rows] tensors under 2^31 bytes, RE-037: 4,095 rows at 131,072,
-2,047 at 262,144) and below the context, in whole 8-row tiles. So every
-context the configuration accepts has a chunk: at the minimum, 512,
+cells less its 128-position window; Qwen3.8's fast graph: 8,192 rows)
+and below the context, in whole 8-row tiles. The reference graph's host
+masks have the separate RE-037 bound of F32 [context, rows] tensors under
+2^31 bytes: 4,095 rows at 131,072 and 2,047 at 262,144. The generic
+context cap does not widen the prefill chunk cap, still 262,144, or the
+runtime's default chunks, DeepSeek 2,048 and Qwen3.8 4,096. Every supported
+context has a chunk: at the minimum, 512,
 DeepSeek's chunk is 384 rows and Qwen3.8's 504. A chunk of 1,024 rows or
 more runs in whole tiles and its few remaining rows as a chunk of their
 own, since GGML's attention reads the mask in whole 8-row tiles from
@@ -221,7 +234,9 @@ chunk is how soon a prefill notices a cancellation. That gives DeepSeek
 prompt prefills 1.48× faster on DeepSeek and 1.78× on Qwen3.8, for
 1.4 GiB more shared workspace (sized for the larger model's need,
 DeepSeek's). Per-chunk time grows with the position, so at contexts past
-8,704 (not verified) a chunk takes longer; `prefill_chunk` sets another.
+8,704 a chunk takes longer; the
+[long-context report](experiments/long-context/README.md) checks deeper
+contexts with the same policy. `prefill_chunk` sets another chunk.
 
 The prefill's result depends a little on the chunk (the fast plans are
 not bit-exact across chunk shapes: DeepSeek's top logit after the 8K
@@ -309,7 +324,9 @@ specifies; A's restored state must hash as it left and its continuation
 equal, token and logit, the same state's unswapped continuation; B's first
 output must repeat; a prepared return must replay graphs captured before
 the swap; an image A's regenerated pixels must equal its control's. Both
-write every number to `--report` as JSON. Run by hand, a command stops on
+write every number to `--report` as JSON. `swap-table --context-tokens`
+accepts 32 to 1,048,576; the requested context must also fit the selected
+model's usable configured context. Run by hand, a command stops on
 SIGINT or SIGTERM at once; the kernel frees its memory and spill files.
 
 ## The chat route
@@ -425,13 +442,13 @@ checked before any model work (runtime/api.h):
 | --- | --- | --- | --- |
 | Request line and headers | 16 KiB, 64 headers | 413 | Clients send a few hundred bytes; a bounded buffer per connection |
 | Target | 2 KiB | 414 | Routes and a short query |
-| Body | 4 MiB, by Content-Length only | 413 before it is read (chunked: 501; none on a POST: 411) | A 262,144-token context at ~4 bytes a token with JSON escaping, and a bounded buffer |
-| Bodies arriving at once | 64 MiB | 503, `Retry-After: 10` | Sixteen largest bodies; what 1,024 connections could otherwise hold (4 GiB) comes out of the Spark's one memory budget |
+| Body | 16 MiB, by Content-Length only | 413 before it is read (chunked: 501; none on a POST: 411) | Room for a roughly 4 MiB, 1M-token coding prompt with JSON escaping; byte limits remain independent of token counts |
+| Bodies arriving at once | 64 MiB | 503, `Retry-After: 10` | Four largest bodies; what 1,024 connections could otherwise hold (16 GiB) comes out of the Spark's one memory budget |
 | JSON | depth 16, 262,144 values | 400 | The request's own nesting is 5 deep; the parser's allocation stays under ~4 MiB of nodes |
-| Messages | 1 to 1,024 | 400 | Several times any conversation that fits the default 8,704-token context |
-| A message's text | 1 MiB, from at most 64 parts | 400 | Bounded by the body anyway; stops one field taking it all |
+| Messages | 1 to 1,024 | 400 | A bounded turn history independent of the token ceiling |
+| A message's text | 8 MiB, from at most 64 parts; reasoning text separately at most 8 MiB | 400 | Allows a large coding message while bounding each decoded field |
 | `model` | 1 to 64 bytes | 400 | A configured name's limit (D-096) |
-| `max_tokens` | 1 to 262,144 at parse; prompt + it ≤ the model's usable context | 400 `context_length_exceeded` | The context the model's state holds (`context`, less Qwen3.8's MTP draft rows when it speculates) |
+| `max_tokens` | 1 to 1,048,576 at parse; prompt + it ≤ the model's usable context | 400 `context_length_exceeded` | The generic context cap at parse, then the selected checkpoint's configured context (`context`, less Qwen3.8's MTP draft rows when it speculates); `max_completion_tokens` has the same bound |
 | Prompt | under the usable context | 400 `context_length_exceeded` | As above; counted by the model's own tokenizer and template |
 | `temperature`, `top_p`, `top_k`, `min_p` | [0, 2], (0, 1] (`top_p` not rounding to 0 as a float), −1 to 2³¹−1, [0, 1] | 400 | OpenAI's ranges and vLLM's for `top_k` and `min_p`; sampling.h's, which takes floats |
 | `seed` | a 64-bit signed integer | 400 | OpenAI's type |

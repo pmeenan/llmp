@@ -321,7 +321,8 @@ cached block keys, 1.21–1.37× Mia prefill), with the progress
 watchdog replacing the route's fixed deadline. State now grows with use,
 spilling only initialized extents; both 262K ceilings register together and
 swap exact 8K state under 10 s. Turn checkpoints reuse 64K prefixes when
-reasoning is removed, with exact continuation across swaps. Remaining
+reasoning is removed, with exact continuation across swaps. Context defaults
+to 262,144, with trained ceilings checked before allocation. Remaining
 before the gate: final maximum timing and the ds4 study. M3.5 (model families, the
 owner's approved 13 plus legacy fixtures and Bonsai, formats with EXL3
 in focus, concurrent batching) follows M3, before M4. Keep this paragraph

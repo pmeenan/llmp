@@ -98,6 +98,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Models default to 262,144 tokens of context (was 8,704). DeepSeek V4
+  Flash accepts up to its trained 1,048,576-token ceiling; Qwen3.8 Flash
+  Next remains capped at 262,144, checked before model allocation. Growing
+  state remains subject to the physical memory guard. The chat route accepts
+  bodies up to 16 MiB and message text up to 8 MiB, with `max_tokens` parsed
+  up to 1,048,576; its aggregate intake bounds and prefill chunk policy stay
+  unchanged. Schema version remains 2.
 - Qwen3.8 greedy MTP decoding chooses depth two or three from acceptance;
   state restore preserves the schedule. Draft confidence is computed only
   when requested. The experimental importer can prepare a selected BF16

@@ -224,16 +224,28 @@ TEST(Dsv4Test, GrowingStateCoversTheRingPaddedPrefixAndCompressedDummyCells) {
     } else if (t.kind == K::kCsaK || t.kind == K::kLidK) {
       // ceil(1025/4)=257 cells; attention reads through padded cell 511.
       EXPECT_TRUE(covered(t.offset, 512 * row));
-      EXPECT_FALSE(covered(t.offset + 512 * row, row));
-      EXPECT_TRUE(covered(t.offset + (t.ne1 - 1) * row, row));
+      EXPECT_FALSE(covered(t.offset + (512 * row), row));
+      EXPECT_TRUE(covered(t.offset + ((t.ne1 - 1) * row), row));
     } else if (t.kind == K::kHcaK) {
       EXPECT_TRUE(covered(t.offset, 256 * row));
-      EXPECT_TRUE(covered(t.offset + (t.ne1 - 1) * row, row));
+      EXPECT_TRUE(covered(t.offset + ((t.ne1 - 1) * row), row));
     } else {
       EXPECT_TRUE(covered(t.offset, t.bytes));
     }
   }
   EXPECT_FALSE(md::Dsv4UsedState(*state, 262145));
+}
+
+TEST(Dsv4Test, StateLayoutStopsAtTheTrainedContextCeiling) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  // This describes virtual state; constructing it backs no model memory.
+  auto state = md::Dsv4State(p, 1048576, 2048, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state.has_value()) << Why(state);
+  EXPECT_EQ(state->context, 1048576U);
+  EXPECT_EQ(state->raw_cells, 2304U);
+  EXPECT_FALSE(md::Dsv4State(p, 1048577, 2048, md::Dsv4Window::kRing).has_value());
+  EXPECT_EQ(md::Dsv4MostRows(p, 1048576), 1048448U);
+  EXPECT_EQ(md::Dsv4MostRows(p, 1048577), 0U);
 }
 
 TEST(Dsv4Test, TheStateIsBoundedAndSizedAsLlamaCppSizesIt) {

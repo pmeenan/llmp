@@ -41,6 +41,7 @@
 #include "platform/lock_file.h"
 #include "platform/sd_notify.h"
 #include "runtime/memory_guard.h"
+#include "runtime/model_limits.h"
 #include "runtime/prefill.h"
 #include "runtime/watchdog.h"
 
@@ -161,6 +162,11 @@ TEST(RuntimeArguments, Commands) {
   EXPECT_EQ(options->command.table.context_tokens, 8192U);
   EXPECT_EQ(options->command.serving.report, "r.json");
 
+  options = jitllm::runtime::ParseArguments(
+      std::array<std::string_view, 3>{"swap-table", "--context-tokens", "1048576"});
+  ASSERT_TRUE(options.has_value()) << options.error();
+  EXPECT_EQ(options->command.table.context_tokens, 1048576U);
+
   const std::string long_text(jitllm::runtime::kMaxTurnBytes + 1, 'x');
   const std::string upper_sha(64, 'A');  // hex, but not as the table prints it
   for (const std::vector<std::string_view>& bad : {
@@ -177,6 +183,7 @@ TEST(RuntimeArguments, Commands) {
            {"swap-table", "--pairs", ""},
            {"swap-table", "--cycles", "9"},
            {"swap-table", "--cycles", "0"},
+           {"swap-table", "--context-tokens", "1048577"},
            {"swap-table", "--image-expect", upper_sha},
            {"swap-table", "--zero-context", "yes"},
            {"swap-table", "--image-expect", "abc"},
@@ -390,6 +397,24 @@ TEST(NotifyServiceManager, SendsToTheSocket) {
   EXPECT_FALSE(*unset);
 }
 
+TEST(ModelContext, ChecksTheCheckpointCeilingBeforeSetup) {
+  using jitllm::runtime::CheckModelContext;
+  for (const std::string_view architecture : {"deepseek4", "qwen4exp"}) {
+    EXPECT_TRUE(CheckModelContext(architecture, 512).has_value());
+    EXPECT_TRUE(CheckModelContext(architecture, jitllm::config::kDefaultContext).has_value());
+    EXPECT_FALSE(CheckModelContext(architecture, 511).has_value());
+  }
+  EXPECT_TRUE(CheckModelContext("deepseek4", 1048576).has_value());
+  auto refused = CheckModelContext("deepseek4", 1048577);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("deepseek4's supported range 512 to 1048576"));
+  refused = CheckModelContext("qwen4exp", 262145);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("qwen4exp's supported range 512 to 262144"));
+  EXPECT_FALSE(CheckModelContext("qwen4exp", 1048576).has_value());
+  EXPECT_FALSE(CheckModelContext("unknown", 262144).has_value());
+}
+
 // A prefill's chunk (runtime/prefill.h): the configured or default rows,
 // capped by the model and below the context.
 TEST(PrefillChunk, TakesTheConfiguredOrDefaultRowsWithinTheModelAndContext) {
@@ -397,6 +422,8 @@ TEST(PrefillChunk, TakesTheConfiguredOrDefaultRowsWithinTheModelAndContext) {
   EXPECT_EQ(PrefillChunkRows(8704, std::nullopt, 2048, 8192), 2048U);
   EXPECT_EQ(PrefillChunkRows(8704, 4096U, 2048, 8192), 4096U);
   EXPECT_EQ(PrefillChunkRows(8704, 65536U, 2048, 8192), 8192U);  // the model's most
+  EXPECT_EQ(PrefillChunkRows(1048576, std::nullopt, 2048, 1048448), 2048U);
+  EXPECT_EQ(PrefillChunkRows(262144, std::nullopt, 4096, 8192), 4096U);
   // The minimum context: a chunk below it, whatever the default.
   EXPECT_EQ(PrefillChunkRows(512, std::nullopt, 2048, 512), 504U);  // whole tiles
   EXPECT_EQ(PrefillChunkRows(512, std::nullopt, 2048, 384), 384U);

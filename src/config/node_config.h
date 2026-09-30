@@ -87,11 +87,11 @@ struct Membership {
 inline constexpr std::size_t kMaxModels = 16;
 inline constexpr std::size_t kMaxModelName = 64;
 // A model's conversation state, in tokens: the default, and its bounds.
-inline constexpr std::uint32_t kDefaultContext = 8704;
+inline constexpr std::uint32_t kDefaultContext = 262144;
 inline constexpr std::uint32_t kMinContext = 512;
-inline constexpr std::uint32_t kMaxContext = 262144;
+inline constexpr std::uint32_t kMaxContext = 1048576;
 // A prefill chunk's rows, when a model's are configured.
-inline constexpr std::uint32_t kMaxPrefillChunk = kMaxContext;
+inline constexpr std::uint32_t kMaxPrefillChunk = 262144;
 // The throughput floors, in tokens a second, that the chat route figures a
 // model's work at (docs/runtime-serving.md#progress-and-deadlines): the
 // defaults, and the bounds of a configured one.

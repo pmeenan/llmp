@@ -88,6 +88,8 @@ struct Dsv4Profile {
 
 inline constexpr std::uint32_t kDsv4CsaRatio = 4;
 inline constexpr std::uint32_t kDsv4HcaRatio = 128;
+// The supported Flash checkpoint's trained position ceiling.
+inline constexpr std::uint32_t kDsv4FlashContext = 1048576;
 
 // DeepSeek V4 Flash (both the e3aa0d6a and 0731 GGUF revisions share it).
 const Dsv4Profile& Dsv4Flash();

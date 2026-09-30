@@ -129,7 +129,7 @@ std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,
       ok = !v.empty();
       o.table.context_text = v;
     } else if (o.command == Command::kSwapTable && a == "--context-tokens") {
-      ok = Number<std::uint32_t>(v, 32, 262144, o.table.context_tokens);
+      ok = Number<std::uint32_t>(v, 32, config::kMaxContext, o.table.context_tokens);
     } else if (o.command == Command::kSwapTable && a == "--continue") {
       ok = Number<std::uint32_t>(v, 1, 1024, o.table.continue_tokens);
     } else if (o.command == Command::kSwapTable && a == "--cycles") {

@@ -92,7 +92,8 @@ not used. The options each renderer supports and refuses are in
   | Exact (reference) mode, `--exact on` | harness only: llama.cpp's graph node for node, unfused, and D-092's row-invariant verify |
 
 - **Context:** exercised at 4,096 (against the oracle) and at 8,704, the
-  runtime's default (8,192 tokens of conversation in the swap table); since
+  runtime's original default (8,192 tokens of conversation in the swap
+  table); since
   the long-context baseline, through the runtime at `context = 262144`
   with 8K to 128K prompts, and against llama.cpp b11254 at 32K
   ([long-context](experiments/long-context/README.md#phase-2-deepseek-flat-with-depth-2026-09-29):
@@ -100,7 +101,11 @@ not used. The options each renderer supports and refuses are in
   128K, a long run repeating bit for bit). Its per-token cost is flat with
   depth but for the indexer (decode 21.9 / 21.2 / 20.5 tok/s at 8K / 64K /
   128K, 1.18–1.22× llama.cpp's; the fast plan's window cache a ring).
-  The configuration accepts 512 to 262,144; 262,144 fits one Spark plain
+  The default is now 262,144. The configuration accepts 512 to the
+  checkpoint's trained 1,048,576-token ceiling, checked before model
+  allocation; growing state admits physical backing only as it is used,
+  within the runtime's memory guard. A 1M physical fit has not been measured.
+  At 262,144 it fits one Spark plain
   and with DSpark (3.5 and 3.9 GiB fixed, the guard's 6 GiB margin
   kept); a 256K prompt is not verified through the runtime, whose chat
   route no longer has a fixed deadline to stop one (a progress watchdog,
@@ -210,7 +215,8 @@ not used. The options each renderer supports and refuses are in
   1.2–1.4× and 1.03–1.08× Mia's vLLM from 32K on; bit-for-bit repeatable at
   64K and 128K; speculation with its MTP drafter to the configured
   262,144 ([long-context](experiments/long-context/README.md#phase-2-qwen38-flash-next-flat-with-depth)).
-  The minimum, 512, starts and serves
+  The default and trained ceiling are both 262,144; registration refuses a
+  higher value before model allocation. The minimum, 512, starts and serves
   (checked on `spark`, with MTP: 510 tokens usable), its prefill chunk
   504 rows; the default chunk is 4,096 rows at every context
   ([prefill chunks](runtime-serving.md#prefill-chunks-and-cancellation)).

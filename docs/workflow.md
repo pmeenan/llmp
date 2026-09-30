@@ -128,6 +128,10 @@ downgrade a heavy-path change to the light loop on their own.
   --exclude /build/ --exclude /.git`). Check `git status` first; if there
   are changes you didn't make, you're iterating on in-flight work, not
   starting fresh.
+  When handing a warm Spark build between worktrees or bases, force a
+  rebuild of units whose source or headers changed. `rsync -a` preserves
+  source timestamps; an older timestamp can otherwise leave a newer object
+  from the previous tree in place even though its contents differ.
 - **Scratch files stay out of the tree.**
 - **Notes stay out of the docs.** Handoff and review notes live in the final
   message and the commit, not in the documents they describe. Process detail

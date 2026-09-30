@@ -49,8 +49,11 @@ schema_version = 2
 # A speculative drafter's artifact; speculation is then the default decode.
 # drafter = "<64 hex digits>"
 # speculation = true
-# Tokens of conversation state, 512 to 262144.
-# context = 8704
+# Tokens of conversation state, default 262144. The generic range is
+# 512 to 1048576; registration enforces the checkpoint's trained ceiling
+# (DeepSeek V4 Flash 1048576, Qwen3.8 Flash Next 262144). State grows with
+# use inside the physical memory budget; the ceiling alone backs no cache.
+# context = 262144
 # Rows of a prefill chunk, 1 to 262144; by default the runtime's choice for
 # the model (DeepSeek V4 2048, Qwen3.8 4096), capped at what the model
 # allows at its context (below it) and, from 8 rows, rounded down to a

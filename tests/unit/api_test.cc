@@ -295,7 +295,11 @@ TEST(ChatRequest, EnforcesItsBounds) {
               HasSubstr("[model]"));
   // Tokens, temperature, top_p, seed.
   EXPECT_TRUE(Parse(WithField(R"("max_tokens":262144)")).has_value());
-  EXPECT_THAT(ErrorOf(WithField(R"("max_tokens":262145)")), HasSubstr("[max_tokens]"));
+  EXPECT_TRUE(Parse(WithField(R"("max_tokens":1048576)")).has_value());
+  EXPECT_THAT(ErrorOf(WithField(R"("max_tokens":1048577)")), HasSubstr("[max_tokens]"));
+  EXPECT_TRUE(Parse(WithField(R"("max_completion_tokens":1048576)")).has_value());
+  EXPECT_THAT(ErrorOf(WithField(R"("max_completion_tokens":1048577)")),
+              HasSubstr("[max_completion_tokens]"));
   EXPECT_THAT(ErrorOf(WithField(R"("max_tokens":0)")), HasSubstr("[max_tokens]"));
   EXPECT_THAT(ErrorOf(WithField(R"("max_tokens":1.5)")), HasSubstr("[max_tokens]"));
   EXPECT_TRUE(Parse(WithField(R"("temperature":2)")).has_value());
@@ -325,6 +329,40 @@ TEST(ChatRequest, EnforcesItsBounds) {
   EXPECT_THAT(ErrorOf(WithField(std::format(R"("metadata":{{"a":{}}})", deep))),
               HasSubstr("not valid JSON"));
   EXPECT_THAT(ErrorOf(std::string(api::kMaxBodyBytes + 1, ' ')), HasSubstr("not valid JSON"));
+}
+
+TEST(HttpRequest, ChecksTheCodingBodyCeilingFromTheHead) {
+  const auto head = [](std::size_t bytes) {
+    return std::format(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\n"
+        "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        bytes);
+  };
+  auto request = jitllm::runtime::http::ParseHead(head(api::kMaxBodyBytes), {});
+  ASSERT_TRUE(request.has_value()) << request.error().message;
+  EXPECT_EQ(request->body_bytes, std::size_t{16} << 20U);
+  EXPECT_TRUE(request->body.empty());
+  request = jitllm::runtime::http::ParseHead(head(api::kMaxBodyBytes + 1), {});
+  ASSERT_FALSE(request.has_value());
+  EXPECT_EQ(request.error().status, 413);
+}
+
+TEST(ChatRequest, AcceptsLargeCodingTextWithinBoundedIntake) {
+  // A roughly 4 MiB coding prompt fits with doubled JSON escaping. This
+  // checks the byte envelope; the selected model checks token counts later.
+  const std::string content(std::size_t{4} << 20U, '\\');
+  auto request =
+      Parse(std::format(R"({{"model":"m","messages":[{{"role":"user","content":"{}"}}]}})",
+                        std::string(std::size_t{8} << 20U, '\\')));
+  ASSERT_TRUE(request.has_value()) << request.error().message;
+  ASSERT_EQ(request->messages.size(), 1U);
+  EXPECT_EQ(request->messages.front().content, content);
+  // The complete body still has a hard limit even when each field fits.
+  std::string body = WithField(R"("max_tokens":1)");
+  body.resize(api::kMaxBodyBytes, ' ');
+  EXPECT_TRUE(Parse(body).has_value());
+  body.push_back(' ');
+  EXPECT_THAT(ErrorOf(body), HasSubstr("not valid JSON"));
 }
 
 TEST(OutputText, EndsAtAStopStringAcrossPieces) {
@@ -1425,7 +1463,7 @@ TEST_F(ServerTest, AClientThatLeavesCancelsItsGeneration) {
 // or the response's bytes allocated: the accounting sees a body arrive,
 // and then nothing large on connections that sit idle.
 TEST_F(ServerTest, IdleConnectionsKeepNoLargeBuffers) {
-  const std::string text(std::size_t{900} << 10U, 'a');  // under a message's 1 MiB
+  const std::string text(std::size_t{900} << 10U, 'a');  // a bounded message
   const std::string whole = Post(Chat(text));
   if (!server_.has_value()) {
     ADD_FAILURE() << "no server";

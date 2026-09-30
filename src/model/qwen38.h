@@ -91,6 +91,7 @@ struct Qwen38Profile {
 
 // Qwen3.8 Flash Next (Qwen/Qwen3.8-Flash-Next@de4b8e4d's text model, as
 // Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6 carries it).
+inline constexpr std::uint32_t kQwen38FlashContext = 262144;
 const Qwen38Profile& Qwen38Flash();
 
 // A bound tensor: its artifact resource (or expert array), whether it is a
