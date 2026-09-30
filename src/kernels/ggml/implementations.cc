@@ -84,7 +84,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 97> kKernels = {{
+constexpr std::array<Kernel::Entry, 98> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -438,6 +438,14 @@ constexpr std::array<Kernel::Entry, 97> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckFlashAttnMma(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return FlashAttnMma(launch, n[0]); }},
+    {.name = "jitllm.dsv4.hca_tokentile",
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "ds4 attention_tokentile_hmma_kernel: four tokens/G8, M32/R32, 16 warps; "
+                "F32 Q rounded to F16, original F32 QK/softmax/PV accumulation and F16 "
+                "probabilities; native F16 ring mirror and original dense causal records",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4HcaTokentile(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return Dsv4HcaTokentile(launch, n[0]); }},
     {.name = "jitllm.flash_attn_ext.mma_wide",
      .operation = execution::Operation::kFlashAttn,
      .variant = "explicit sparse query-union choice at D256/512, one or eight query columns; "
@@ -794,7 +802,7 @@ execution::Implementation Declare(std::string_view name, execution::Operation op
   // The grouped GEMM and the MXFP8 product are CUTLASS's kernels: their
   // identities name that tree too.
   const bool cutlass = name == kMoeGemmName || name == kMxfp8GemmName;
-  const bool ds4 = name == kMulMatIdQ2D2r;
+  const bool ds4 = name == kMulMatIdQ2D2r || name == kDsv4HcaTokentileName;
   std::string source = "ggml";
   std::string revision =
       std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE, ModuleSourcesDigest());

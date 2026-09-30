@@ -504,6 +504,10 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                           "512 only",
                           Where(graph, i)));
         }
+        if (device.ds4_hca && device.ds4_hca_fits && device.ds4_hca_fits(node)) {
+          add(Operation::kFlashAttn, kDsv4HcaTokentileName, i, {node}, 1);
+          break;
+        }
         add(Operation::kFlashAttn,
             device.wide_sparse_attention &&
                     (JitllmOpOf(node->src[3]) != JitllmOp::kDsv4SparseMask ||

@@ -56,6 +56,7 @@
 #include "ggml.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/implementations.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
@@ -1804,6 +1805,111 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionMatchesTheReference) {
 // head per KV head, no mask, cells not a multiple of 256 (the last KV tile
 // bounds-checked). The A/B its native kernel won (docs/experiments/
 // qwen-image-native); kept so that the comparison reruns.
+TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeCapturedScratchAndPreservesOwnRepeats) {
+  if (ComputeCapability() != 1210) GTEST_SKIP() << "the measured ds4 HCA arm is GB10 only";
+  const auto exact = [](const std::vector<float>& got, const std::vector<float>& want) {
+    ASSERT_EQ(got.size(), want.size());
+    EXPECT_EQ(std::memcmp(got.data(), want.data(), got.size() * sizeof(float)), 0);
+  };
+  constexpr std::int64_t raw_cells = 256;
+  constexpr std::int64_t compressed = 256;
+  for (const auto [first, rows] :
+       std::array<std::pair<std::uint32_t, std::uint32_t>, 3>{{{0, 3}, {127, 5}, {511, 129}}}) {
+    auto queries = Normal(first + 131, static_cast<std::size_t>(rows) * 64 * 512, 0.5F);
+    auto* packed_q = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 512, 64, rows), queries);
+    auto* q = ggml_permute(c(), packed_q, 0, 2, 1, 3);
+    auto* kv = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 512, raw_cells + compressed),
+                     Halves(Normal(first + 137, (raw_cells + compressed) * 512, 0.5F)));
+    std::vector<float> window(static_cast<std::size_t>(raw_cells) * rows,
+                              -std::numeric_limits<float>::infinity());
+    std::vector<std::int32_t> visible(rows);
+    for (std::uint32_t row = 0; row < rows; ++row) {
+      const auto position = static_cast<std::int64_t>(first) + row;
+      for (auto p = std::max<std::int64_t>(0, position - 127); p <= position; ++p)
+        window[(static_cast<std::size_t>(row) * raw_cells) +
+               static_cast<std::size_t>(p % raw_cells)] = 0;
+      visible[row] = static_cast<std::int32_t>((position + 1) / 128);
+    }
+    auto* mask = Place(kg::Dsv4SparseMask(
+        c(), Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, raw_cells, rows), Halves(window)),
+        nullptr, Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, rows), visible), raw_cells,
+        compressed));
+    Launched(kg::RunDsv4SparseMask(launch(), mask), "ds4 HCA causal mask");
+    auto* sinks = Place(ggml_new_tensor_1d(c(), GGML_TYPE_F32, 64), Normal(139, 64));
+    const auto make = [&] {
+      auto* node = Place(ggml_flash_attn_ext(c(), q, kv, kv, mask, 0.04419417306780815F, 0, 0));
+      ggml_flash_attn_ext_add_sinks(node, sinks);
+      EXPECT_TRUE(ggml_prec_set_acc(node, GGML_PREC_F32));
+      ggml_flash_attn_ext_set_n_kv_max(node, 128 + compressed);
+      kg::SetFlashAttnSparseAny(node);
+      kg::MarkDsv4HcaTokentile(node, first);
+      return node;
+    };
+    auto* node = make();
+    auto* control = make();
+    const auto scratch = kg::PlanDsv4HcaTokentile(launch(), node);
+    ASSERT_TRUE(scratch.has_value()) << (scratch ? "" : scratch.error().detail);
+    const kg::GraphPlan plan{.steps = {{.operation = jitllm::execution::Operation::kFlashAttn,
+                                        .implementation = kg::kDsv4HcaTokentileName,
+                                        .nodes = {node}}}};
+    const auto planned = kg::PlanScratch(launch(), plan);
+    ASSERT_TRUE(planned.has_value());
+    EXPECT_EQ(*planned, *scratch);
+    auto insufficient = LaunchContext::Create(
+        0, *execution_, stream_, {.base = Allocate(*scratch), .size = Bytes(*scratch - 1)});
+    ASSERT_TRUE(insufficient.has_value());
+    EXPECT_EQ(FailedCode(kg::Dsv4HcaTokentile(**insufficient, node)), KernelError::kRejected);
+    insufficient->reset();
+    launch().ResetScratchPeak();
+    Launched(kg::Dsv4HcaTokentile(launch(), node), "ds4 HCA warmup");
+    EXPECT_LE(launch().scratch_peak().value(), *scratch);
+    const auto original = Download(node);
+    Launched(kg::Dsv4HcaTokentile(launch(), node), "ds4 HCA repeat");
+    exact(Download(node), original);
+    Launched(kg::FlashAttnMma(launch(), control), "ds4 HCA native approximation");
+    const auto native = Download(control);
+    ExpectNmse(original, std::vector<double>(native.begin(), native.end()), kFlashAttnNmse,
+               "ds4 HCA versus native approximation");
+    auto graph =
+        launch().Capture([&](LaunchContext& context) -> std::expected<void, KernelFailure> {
+          if (auto r = kg::Dsv4HcaTokentile(context, node); !r) return r;
+          // Ordinary sparse preparation overwrites the same planned pool offsets.
+          return kg::FlashAttnMma(context, control);
+        });
+    ASSERT_TRUE(graph.has_value()) << (graph ? "" : graph.error().detail);
+    for (const float scale : {1.0F, 0.5F}) {
+      auto changed = queries;
+      for (auto& value : changed) value *= scale;
+      ASSERT_EQ(cudaMemcpy(packed_q->data, changed.data(), changed.size() * sizeof(float),
+                           cudaMemcpyHostToDevice),
+                cudaSuccess);
+      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+      Launched(kg::Dsv4HcaTokentile(launch(), node), "ds4 HCA changed query");
+      const auto want = Download(node);
+      Launched(kg::FlashAttnMma(launch(), control), "native changed query");
+      const auto want_control = Download(control);
+      for (int repeat = 0; repeat < 2; ++repeat) {
+        Launched(launch().Launch(*graph), "ds4 HCA graph and pool reuse");
+        exact(Download(node), want);
+        exact(Download(control), want_control);
+      }
+    }
+    auto choices = kg::DeviceChoicesOf(launch());
+    const std::array<ggml_tensor*, 1> nodes = {node};
+    const auto ordinary = kg::PlanGraph(nodes, false, choices);
+    ASSERT_TRUE(ordinary.has_value());
+    EXPECT_EQ(ordinary->steps.front().implementation, kg::kFlashAttnMmaName);
+    choices.ds4_hca = true;
+    const auto fallback = kg::PlanGraph(nodes, false, choices);
+    ASSERT_TRUE(fallback.has_value());
+    EXPECT_EQ(fallback->steps.front().implementation, kg::kFlashAttnMmaName);
+    choices.ds4_hca_fits = [](const ggml_tensor*) { return true; };  // bounded generic control
+    const auto selected = kg::PlanGraph(nodes, false, choices);
+    ASSERT_TRUE(selected.has_value());
+    EXPECT_EQ(selected->steps.front().implementation, kg::kDsv4HcaTokentileName);
+  }
+}
+
 TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionAt128WithoutMaskMatchesTheReference) {
   struct Case {
     std::int64_t heads, rows, cells;
@@ -2318,7 +2424,7 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
   using jitllm::execution::Operation;
   const std::vector<jitllm::execution::Implementation> declared = kg::Implementations();
   const auto registry = jitllm::execution::Registry::Create(declared).value();
-  const std::array<std::pair<const char*, Operation>, 32> expected = {{
+  const std::array<std::pair<const char*, Operation>, 33> expected = {{
       {"ggml.mul_mat.mmvq", Operation::kMatMul},
       {"ggml.mul_mat.mmq", Operation::kMatMul},
       {"ggml.mul_mat.fwht", Operation::kMatMul},
@@ -2350,6 +2456,7 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
       {"ggml.dsv4_hc_pre", Operation::kHcPre},
       {"ggml.dsv4_hc_post", Operation::kHcPost},
       {"ggml.flash_attn_ext.mma", Operation::kFlashAttn},
+      {"jitllm.dsv4.hca_tokentile", Operation::kFlashAttn},
       {"ggml.flash_attn_ext.mma_d128", Operation::kFlashAttn},
   }};
   for (const auto& [name, operation] : expected) {

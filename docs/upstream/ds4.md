@@ -107,6 +107,43 @@
   unique-experts-per-token routing precondition. The new loader is
   jitLLM-specific; no upstream submission is claimed.
 
+## Literal token-tile HCA core over native F16 state
+
+- **Status:** native benchmark-only integration checked, default off;
+  `third_party/patches/ds4/0002-jitllm-hca-tokentile.patch`.
+- **Source:** `ds4_cuda.cu` at the same study pin, numerical sections
+  12,313–12,577 and 12,844–13,476 copied verbatim. The original four-token,
+  G8, M32/R32 core retains RN-F16 Q loading, F32 QK and PV tensor-core
+  accumulation, original F32 online softmax and F16 probabilities. Only
+  these helpers/core and narrow launch wrappers compile, under the root
+  MIT notice; no ds4 runtime or cache transform is incorporated.
+- **Native adaptation:** bit-copy the F16 raw ring to a chronological
+  mirror, prepare the original dense causal records, and run the core in
+  one planned scratch scope. Negative prefix mirror rows are excluded by
+  the original `raw_row_min`. The default-off benchmark caches first
+  position explicitly; native runtime builders and defaults are unchanged.
+  Joined compressed state retains its original F16 bytes. The trusted
+  binder tag vouches for canonical zero finite mask entries and causal
+  counts; it is not a content check of arbitrary device masks. The launcher
+  also refuses nonstandard scale, ALiBi, softcap and incompatible layouts.
+- **Evidence:** identical captured community-GGUF layer-three first-4K
+  operands on `spark`, 2026-09-30: native 89.030/89.012 ms before/after,
+  literal path 7.056 ms including mirror and record preparation. Candidate
+  scratch was 6,425,600 bytes, native attention scratch 7,892,992 bytes.
+  Candidate versus native NMSE was `9.484399536172616e-8`; on 22 selected
+  token/head rows its full-F32-Q FP64-reference NMSE was
+  `1.65870549908486e-8` versus native `9.65217482737688e-8`. Four fresh
+  same-binary community 8K processes give 17.88% mean prefill throughput
+  gain, identical 128 IDs and exact own full-logit repeats. These limited
+  results disclose numerical differences; production 2,048-row and
+  fixed-bound long-context quality remain required before any default
+  change. Full evidence is in the
+  [literal HCA report](../experiments/ds4-hca-tokentile/README.md).
+- **Proposed upstream action:** expose a narrow standalone token-tile
+  entry point with explicit causal first position, raw prefix availability,
+  record extents, and workspace ownership. The native ring adaptation is
+  jitLLM-specific; no upstream submission is claimed.
+
 ## Cache-off is a storage control, not an unrounded quality oracle
 
 - **Status:** source clarification; no upstream patch proposed.

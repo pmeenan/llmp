@@ -54,12 +54,14 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
 }  // namespace
 
 DeviceChoices DeviceChoicesOf(const LaunchContext& launch) {
-  return {.mul_mat = [&launch](const ggml_tensor* node) { return SelectMulMat(launch, node); },
-          .vector_fusible =
-              [&launch](const ggml_tensor* node) { return MulMatVecFusible(launch, node); },
-          .quant = [&launch](const ggml_tensor* node) { return SelectMulMatQ(launch, node); },
-          .q2_d2r_fits =
-              [&launch](const ggml_tensor* node) { return MulMatIdQ2D2rFits(launch, node); }};
+  return {
+      .mul_mat = [&launch](const ggml_tensor* node) { return SelectMulMat(launch, node); },
+      .vector_fusible =
+          [&launch](const ggml_tensor* node) { return MulMatVecFusible(launch, node); },
+      .quant = [&launch](const ggml_tensor* node) { return SelectMulMatQ(launch, node); },
+      .q2_d2r_fits = [&launch](const ggml_tensor* node) { return MulMatIdQ2D2rFits(launch, node); },
+      .ds4_hca_fits =
+          [&launch](const ggml_tensor* node) { return Dsv4HcaTokentileFits(launch, node); }};
 }
 
 std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& launch,
@@ -99,6 +101,8 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
       planned = PlanQsaTopK(step.nodes.front());
     } else if (step.implementation == kQsaAttnName) {
       planned = PlanQsaAttn(step.nodes.front());
+    } else if (step.implementation == kDsv4HcaTokentileName) {
+      planned = PlanDsv4HcaTokentile(launch, step.nodes.front());
     } else if (step.implementation == kFlashAttnMmaName ||
                step.implementation == kFlashAttnMmaWideName) {
       auto attention = PlanFlashAttnMma(launch, step.nodes.front(),

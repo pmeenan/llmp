@@ -14,6 +14,7 @@
 #include <utility>
 
 #include "ggml.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/validate_util.h"
 
 namespace jitllm::kernels::ggml {
@@ -1130,6 +1131,48 @@ std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node) {
   }
   if (sinks != nullptr && Overlap(node, sinks)) {
     return Rejected("an output overlapping the sinks");
+  }
+  return {};
+}
+
+void MarkDsv4HcaTokentile(ggml_tensor* node, std::uint32_t first) {
+  static_assert(sizeof(first) == sizeof(node->op_params[kDsv4HcaFirstParam]));
+  std::memcpy(&node->op_params[kDsv4HcaFirstParam], &first, sizeof(first));
+  node->op_params[kDsv4HcaTagParam] = kDsv4HcaTag;
+}
+
+std::expected<void, KernelFailure> CheckDsv4HcaTokentile(const ggml_tensor* node) {
+  if (auto checked = CheckFlashAttnMma(node); !checked) return checked;
+  const auto* q = node->src[0];
+  const auto* kv = node->src[1];
+  const auto* mask = node->src[3];
+  const auto* sinks = node->src[4];
+  if (node->op_params[kDsv4HcaTagParam] != kDsv4HcaTag ||
+      JitllmOpOf(mask) != JitllmOp::kDsv4SparseMask || JitllmOpInt(mask, 1) != 1) {
+    return Rejected("ds4 HCA requires an explicitly vouched causal count-mask graph");
+  }
+  if (auto checked = CheckDsv4SparseMask(mask); !checked) return checked;
+  const auto raw = JitllmOpInt(mask, 0);
+  const auto compressed = kv->ne[1] - raw;
+  const auto tokens = q->ne[1];
+  std::uint32_t first = 0;
+  std::memcpy(&first, &node->op_params[kDsv4HcaFirstParam], sizeof(first));
+  if (q->ne[0] != 512 || q->ne[2] != 64 || q->ne[3] != 1 || tokens > 4096 || kv->ne[2] != 1 ||
+      kv->ne[3] != 1 || kv->data != node->src[2]->data || !ggml_are_same_stride(kv, node->src[2]) ||
+      raw < tokens + 127 || raw > 1048576 || compressed < 1 || compressed > 32768 ||
+      static_cast<std::uint64_t>(first) + static_cast<std::uint64_t>(tokens) > 1048576 ||
+      (static_cast<std::uint64_t>(first) + static_cast<std::uint64_t>(tokens)) / 128 >
+          static_cast<std::uint64_t>(compressed) ||
+      node->op_params[4] != 128 + compressed || node->op_params[kFlashAttnSparseParam] != 1 ||
+      node->op_params[kFlashAttnWideSparseParam] != 0 ||
+      ParamF32(node, 0) != 0.04419417306780815F || node->op_params[3] != GGML_PREC_F32 ||
+      sinks == nullptr || !Packed(sinks) || q->nb[1] != std::size_t{64} * 512 * sizeof(float) ||
+      q->nb[2] != 512 * sizeof(float) || q->nb[3] != ggml_nbytes(node) ||
+      kv->nb[1] != 512 * sizeof(ggml_fp16_t) || mask->ne[0] != kv->ne[1] || mask->ne[1] != tokens) {
+    return Rejected("ds4 HCA needs bounded D512/G64 canonical ring/count layout and scale");
+  }
+  if (Overlap(q, kv) || Overlap(q, sinks) || Overlap(kv, sinks)) {
+    return Rejected("ds4 HCA inputs must have disjoint backed ranges");
   }
   return {};
 }

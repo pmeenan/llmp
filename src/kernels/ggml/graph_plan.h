@@ -60,6 +60,7 @@ struct DeviceChoices {
   // Measured device/shape eligibility for the default-off raw Q2_K D2R
   // product. A CPU planner may supply a model of this predicate.
   std::function<bool(const ggml_tensor*)> q2_d2r_fits = nullptr;
+  std::function<bool(const ggml_tensor*)> ds4_hca_fits = nullptr;
   // A speculative verify's plan (D-092): every matrix product of up to
   // kRowsMaxColumns columns (tokens) runs a row-invariant implementation
   // (the quantized ones jitllm.mul_mat*.mmvq_rows, the float ones MMVF),
@@ -85,6 +86,9 @@ struct DeviceChoices {
   // Experimental single-product transfer: keep native Q8 preparation and
   // raw weights, then use ds4's D2R arithmetic. No default plan enables it.
   bool d2r_experts = false;
+  // Benchmark-only literal ds4 HCA comparison. Tagged causal metadata and
+  // measured device/layout eligibility are both required; fallback is stable.
+  bool ds4_hca = false;
   // Share a sparse query tile's KV union only for measured fast shapes.
   // Count-based DeepSeek HCA masks retain the ordinary implementation;
   // selected-list CSA and window masks may use sharing when opted in.
@@ -156,6 +160,7 @@ inline constexpr std::string_view kHcPreName = "ggml.dsv4_hc_pre";
 inline constexpr std::string_view kHcPostName = "ggml.dsv4_hc_post";
 inline constexpr std::string_view kFlashAttnMmaName = "ggml.flash_attn_ext.mma";
 inline constexpr std::string_view kFlashAttnMmaWideName = "jitllm.flash_attn_ext.mma_wide";
+inline constexpr std::string_view kDsv4HcaTokentileName = "jitllm.dsv4.hca_tokentile";
 inline constexpr std::string_view kSsmConvName = "ggml.ssm_conv";
 inline constexpr std::string_view kGatedDeltaNetName = "ggml.gated_delta_net";
 // jitLLM's own operations on GGML tensors (jitllm_ops.h).

@@ -214,12 +214,19 @@ queries over eight heads in 32-KV-row stages. Its
 `tt_mma_m16n8k16_f16_f32` is used for both scores and weighted values,
 with F32 output accumulators and F32 rescaling. Cache transforms,
 query scaling and reduction partitions also differ.
-This is a source-established candidate for a more accurate shared
-attention path, not a measured speed/quality improvement or an
-explanation proved for the later HCA oracle failure. A causal control
-must replay identical real HCA inputs through each arithmetic choice
-against a high-precision operation reference, then repeat the fixed
-long-window model gates. The current qualified HCA selection remains.
+The later [literal HCA transfer](../ds4-hca-tokentile/README.md) replays
+identical captured community first-4K operands, including native F16 KV
+and exact original bounds, through the unchanged ds4 numerical core.
+The complete mirror/record/core path takes 7.056 ms versus ordinary
+89.030/89.012 ms; candidate/native NMSE is 9.48e−8, with separate
+strict FP64 selected-row references. Four fresh same-binary 8K model
+processes improve mean prefill throughput by 17.88%, with identical
+128 IDs and each path's full-logit repeat exact. This does not prove
+the cause of the earlier oracle failure or establish long-window
+quality. The transfer is a default-off benchmark option for measured
+4,096-row GB10 shapes; production 2,048-row and fixed 32K/128K quality
+qualification remain pending. The qualified production HCA selection
+remains unchanged.
 
 The generic planner and launch default retain D512's one-query sparse
 and D256's dense choices. `wide_sparse_attention` explicitly selects

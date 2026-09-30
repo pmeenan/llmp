@@ -111,6 +111,7 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
@@ -534,6 +535,7 @@ struct Model {
   bool exact = false;
   bool compact_experts = false;
   bool d2r_experts = false;
+  bool ds4_hca = false;
   bool wide_sparse = true;
 };
 
@@ -616,7 +618,7 @@ void BindWeights(const Model& m, kg::Dsv4Graph& g) {
 std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
     const Model& m, const kg::Dsv4ChunkShape& shape, const kg::DeviceChoices& choices_in,
     std::span<const std::string> keep_names, std::uint64_t activations,
-    std::uint64_t activation_bytes) {
+    std::uint64_t activation_bytes, std::uint32_t first_position = 0) {
   auto out = std::make_unique<Planned>();
   auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(*m.profile));
   if (!arena) {
@@ -639,6 +641,18 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   // chunks. Direct operation/micro controls can still exercise smaller rows.
   device.compact_experts = !m.exact && m.compact_experts && shape.rows >= kg::kDsv4CompactMinRows;
   device.d2r_experts = !m.exact && m.d2r_experts;
+  device.ds4_hca = !m.exact && m.ds4_hca;
+  if (device.ds4_hca) {
+    // The literal core takes first position as a host scalar. Only this
+    // benchmark's opt-in cache includes it; no runtime plan changes.
+    for (auto* node : g.nodes) {
+      if (node->op == GGML_OP_FLASH_ATTN_EXT &&
+          kg::JitllmOpOf(node->src[3]) == kg::JitllmOp::kDsv4SparseMask &&
+          kg::JitllmOpInt(node->src[3], 1) == 1) {
+        kg::MarkDsv4HcaTokentile(node, first_position);
+      }
+    }
+  }
   device.wide_sparse_attention = !m.exact && m.wide_sparse;
   const kg::DeviceChoices& choices = device;
   std::vector<ggml_tensor*> keep;
@@ -743,22 +757,25 @@ class Runner {
     Planned* p = nullptr;
     std::unique_ptr<Planned> once;
     if (keep.empty()) {
-      auto found = std::ranges::find_if(cache_, [&](const auto& e) { return e.first == shape; });
+      const auto position_key = m_.ds4_hca && rows == 4096 ? n_past : 0;
+      auto found = std::ranges::find_if(
+          cache_, [&](const auto& e) { return e.shape == shape && e.position == position_key; });
       if (found == cache_.end()) {
-        auto planned = Prepare(shape, {});
+        auto planned = Prepare(shape, {}, n_past);
         if (!planned) {
           return std::unexpected(planned.error());
         }
         if (cache_.size() >= 8) {
           cache_.erase(cache_.begin());
         }
-        cache_.emplace_back(shape, std::move(*planned));
+        cache_.push_back(
+            {.shape = shape, .position = position_key, .planned = std::move(*planned)});
         found = std::prev(cache_.end());
         ++plans_made_;
       }
-      p = found->second.get();
+      p = found->planned.get();
     } else {
-      auto planned = Prepare(shape, keep);
+      auto planned = Prepare(shape, keep, n_past);
       if (!planned) {
         return std::unexpected(planned.error());
       }
@@ -825,6 +842,25 @@ class Runner {
     if (!stream) {
       return std::unexpected(stream.error());
     }
+    const auto failure = [&](std::string detail) -> Status {
+      if (m_.ds4_hca) {
+        std::println(stderr, "terminal HCA trial failure: {}", detail);
+        (void)std::fflush(stderr);
+        // Completion is unproved after any failed submission/copy/fence.
+        // Keep plans, scratch, GPU and host-copy owners until process exit.
+        std::_Exit(1);
+      }
+      return Error(std::move(detail));
+    };
+    if (!p->bound) return Error(std::format("chunk at {}: no bound plan", n_past));
+    std::uint64_t required_staging = 0;
+    for (const auto& [tensor, source] : sources) {
+      (void)source;
+      const auto bytes = Round(ggml_nbytes(tensor), 256);
+      if (required_staging > staging_bytes_ || bytes > staging_bytes_ - required_staging)
+        return Error("the inputs exceed their staging");
+      required_staging += bytes;
+    }
     std::uint64_t staged = 0;
     for (const auto& [tensor, source] : sources) {
       const std::uint64_t bytes = ggml_nbytes(tensor);
@@ -836,23 +872,24 @@ class Runner {
                                         cudaMemcpyHostToDevice, *stream),
                         "an input copy");
           !r) {
-        return r;
+        return failure(r.error());
       }
       staged += Round(bytes, 256);
     }
-    if (!p->bound) {
-      return Error(std::format("chunk at {}: no bound plan", n_past));
-    }
     if (auto r = p->bound->Run(launch_); !r) {
-      return Error(std::format("chunk at {}: {}", n_past, r.error().detail));
+      return failure(std::format("chunk at {}: {}", n_past, r.error().detail));
     }
+    hca_tokentile_steps_ +=
+        static_cast<std::uint64_t>(std::ranges::count_if(p->plan.steps, [](const auto& step) {
+          return step.implementation == kg::kDsv4HcaTokentileName;
+        }));
     const std::uint64_t logit_bytes = ggml_nbytes(g.logits);
     logits.resize(static_cast<std::size_t>(ggml_nelements(g.logits)));
     if (auto r = Cuda(cudaMemcpyAsync(logits.data(), g.logits->data, logit_bytes,
                                       cudaMemcpyDeviceToHost, *stream),
                       "the logits copy");
         !r) {
-      return r;
+      return failure(r.error());
     }
     if (kept != nullptr) {
       std::vector<std::string> names(keep.begin(), keep.end());
@@ -872,7 +909,7 @@ class Runner {
                                             cudaMemcpyDeviceToHost, *stream),
                             "a kept tensor");
               !r) {
-            return r;
+            return failure(r.error());
           }
         } else if (t->type == GGML_TYPE_I32 && ggml_is_contiguous(t)) {
           std::vector<std::int32_t> ids(n);
@@ -880,7 +917,7 @@ class Runner {
                   cudaMemcpy(ids.data(), t->data, n * sizeof(std::int32_t), cudaMemcpyDeviceToHost),
                   "a kept tensor");
               !r) {
-            return r;
+            return failure(r.error());
           }
           std::ranges::transform(ids, to.begin(),
                                  [](std::int32_t v) { return static_cast<float>(v); });
@@ -888,10 +925,10 @@ class Runner {
       }
     }
     if (auto r = d_.Finish(); !r) {
-      return r;
+      return failure(r.error());
     }
     if (launch_.faulted()) {
-      return Error(std::format("chunk at {}: the launch context faulted", n_past));
+      return failure(std::format("chunk at {}: the launch context faulted", n_past));
     }
     return {};
   }
@@ -1092,12 +1129,14 @@ class Runner {
   int plans_made() const { return plans_made_; }
   std::uint64_t most_scratch() const { return most_scratch_; }
   std::uint64_t most_activations() const { return most_activations_; }
+  std::uint64_t hca_tokentile_steps() const { return hca_tokentile_steps_; }
 
  private:
   std::expected<std::unique_ptr<Planned>, std::string> Prepare(const kg::Dsv4ChunkShape& shape,
-                                                               std::span<const std::string> keep) {
-    auto planned =
-        PlanChunk(m_, shape, kg::DeviceChoicesOf(launch_), keep, activations_, activation_bytes_);
+                                                               std::span<const std::string> keep,
+                                                               std::uint32_t first_position) {
+    auto planned = PlanChunk(m_, shape, kg::DeviceChoicesOf(launch_), keep, activations_,
+                             activation_bytes_, first_position);
     if (!planned) {
       return std::unexpected(planned.error());
     }
@@ -1128,10 +1167,16 @@ class Runner {
   std::uint64_t activation_bytes_;
   std::byte* staging_;
   std::uint64_t staging_bytes_;
-  std::vector<std::pair<kg::Dsv4ChunkShape, std::unique_ptr<Planned>>> cache_;
+  struct CacheEntry {
+    kg::Dsv4ChunkShape shape;
+    std::uint32_t position = 0;
+    std::unique_ptr<Planned> planned;
+  };
+  std::vector<CacheEntry> cache_;
   int plans_made_ = 0;
   std::uint64_t most_scratch_ = 0;
   std::uint64_t most_activations_ = 0;
+  std::uint64_t hca_tokentile_steps_ = 0;
 };
 
 // ------------------------------------------------------------------ inputs
@@ -1351,6 +1396,7 @@ struct Options {
   bool exact = false;            // --exact on: the reference mode (Model::exact)
   bool compact_experts = false;  // the experimental device-built expert tile list
   bool d2r_experts = false;      // default-off raw Q2_K D2R product comparison
+  bool ds4_hca = false;          // default-off literal ds4 HCA arithmetic comparison
   bool wide_sparse = true;       // diagnostic override; exact mode always uses the primitive
   bool frontier_head = false;    // only the last prefill head row; PPL/diagnostics stay all-row
   bool probe_head = false;       // repeated head suffixes from one final chunk's streams
@@ -1428,6 +1474,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.compact_experts = true;
     } else if (a == "--q2-d2r") {
       o.d2r_experts = true;
+    } else if (a == "--ds4-hca") {
+      o.ds4_hca = true;
     } else if (a == "--frontier-head") {
       o.frontier_head = true;
     } else if (a == "--probe-head") {
@@ -1454,6 +1502,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if (o.d2r_experts && o.exact) {
     return Error("--q2-d2r requires the fast plan; the exact plan retains its original products");
+  }
+  if (o.ds4_hca && (o.exact || o.max_rows != 4096)) {
+    return Error("--ds4-hca requires the fast plan and --max-rows 4096");
   }
   if (o.probe_step != 0 && (o.force.empty() || o.probe_step >= o.generate)) {
     return Error("--probe-step needs --force and a step below --generate");
@@ -1585,6 +1636,7 @@ Status Run(const Options& o) {
               .exact = o.exact,
               .compact_experts = o.compact_experts,
               .d2r_experts = o.d2r_experts,
+              .ds4_hca = o.ds4_hca,
               .wide_sparse = o.wide_sparse};
 
   // cuBLAS, with upstream's workspace for the device: the router's BF16
@@ -1631,8 +1683,9 @@ Status Run(const Options& o) {
       }
       const std::int64_t requested_outputs =
           o.frontier_head && !o.exact && o.ppl.empty() && o.dump.empty() && rows > 1 ? 1 : 0;
-      auto planned = PlanChunk(model, kg::Dsv4ShapeOf(*state, *in, requested_outputs), choices,
-                               o.probe_head ? std::span(probe_keep) : std::span(o.dump), 0, 0);
+      auto planned =
+          PlanChunk(model, kg::Dsv4ShapeOf(*state, *in, requested_outputs), choices,
+                    o.probe_head ? std::span(probe_keep) : std::span(o.dump), 0, 0, n_past);
       if (!planned) {
         return Error(
             std::format("measuring a chunk of {} at {}: {}", rows, n_past, planned.error()));
@@ -1693,6 +1746,7 @@ Status Run(const Options& o) {
                          o.frontier_head ? "true" : "false", o.probe_head ? "true" : "false",
                          !o.exact && o.wide_sparse ? "true" : "false");
   summary += std::format(R"(,"q2_d2r":{})", o.d2r_experts ? "true" : "false");
+  summary += std::format(R"(,"ds4_hca":{})", o.ds4_hca ? "true" : "false");
 
   if (o.layout_proof) {
     std::string report;
@@ -1924,8 +1978,9 @@ Status Run(const Options& o) {
 
   const std::uint64_t low = memory.low();
   summary += std::format(
-      R"(,"plans_made":{},"most_activations":{},"most_scratch":{},"mem_available_before":{},"mem_available_low":{},"peak_bytes_by_mem_available":{}}})",
-      runner.plans_made(), runner.most_activations(), runner.most_scratch(), available_before, low,
+      R"(,"plans_made":{},"most_activations":{},"most_scratch":{},"hca_tokentile_steps":{},"mem_available_before":{},"mem_available_low":{},"peak_bytes_by_mem_available":{}}})",
+      runner.plans_made(), runner.most_activations(), runner.most_scratch(),
+      runner.hca_tokentile_steps(), available_before, low,
       available_before > low ? available_before - low : 0);
   std::ofstream(o.out / "summary.json") << summary << "\n";
   std::println(

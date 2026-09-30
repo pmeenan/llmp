@@ -17,6 +17,8 @@
 #include <limits>
 
 #include "ggml.h"
+#include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
@@ -145,6 +147,79 @@ TEST_F(GgmlExtValidateTest, RawQ2D2rRefusesWrongLayoutsAndWorklistBounds) {
   weights->nb[2] = stride;
   real->nb[2] += sizeof(float);  // the raw scatter returns packed output only
   Refused(kg::CheckMulMatIdQ2D2r(real));
+}
+
+TEST_F(GgmlExtValidateTest, Ds4HcaRequiresExplicitCanonicalMetadataAndPreservesDefaultPlanning) {
+  const auto build = [this](std::uint32_t first, std::int64_t rows) {
+    auto* packed = New(GGML_TYPE_F32, 512, 64, rows);
+    auto* q = ggml_permute(c(), packed, 0, 2, 1, 3);
+    auto* kv = New(GGML_TYPE_F16, 512, 4608);
+    auto* mask = Bound(kg::Dsv4SparseMask(c(), New(GGML_TYPE_F16, 4352, rows), nullptr,
+                                          New(GGML_TYPE_I32, rows), 4352, 256));
+    auto* node = Bound(ggml_flash_attn_ext(c(), q, kv, kv, mask, 0.04419417306780815F, 0, 0));
+    ggml_flash_attn_ext_add_sinks(node, New(GGML_TYPE_F32, 64));
+    EXPECT_TRUE(ggml_prec_set_acc(node, GGML_PREC_F32));
+    ggml_flash_attn_ext_set_n_kv_max(node, 384);
+    kg::SetFlashAttnSparseAny(node);
+    kg::MarkDsv4HcaTokentile(node, first);
+    return node;
+  };
+  auto* node = build(0, 4096);
+  EXPECT_EQ(node->src[0]->nb[1], std::size_t{64} * 512 * sizeof(float));
+  EXPECT_EQ(node->src[0]->nb[2], 512U * sizeof(float));
+  EXPECT_EQ(node->src[0]->nb[3], ggml_nbytes(node));
+  EXPECT_EQ(node->op_params[3], GGML_PREC_F32);
+  EXPECT_EQ(kg::JitllmOpInt(node->src[3], 0), 4352);
+  EXPECT_EQ(kg::JitllmOpInt(node->src[3], 1), 1);
+  EXPECT_EQ(node->op_params[4], 384);
+  Accepted(kg::CheckDsv4HcaTokentile(node));
+  for (const auto first : {127U, 128U, 511U, 28672U})
+    Accepted(kg::CheckDsv4HcaTokentile(build(first, 5)));
+  Refused(kg::CheckDsv4HcaTokentile(nullptr));
+  Refused(kg::CheckDsv4HcaTokentile(build(0, 4097)));
+  Refused(kg::CheckDsv4HcaTokentile(build(32768, 4096)));  // unread compressed extent
+  Refused(kg::CheckDsv4HcaTokentile(build(UINT32_MAX, 5)));
+  auto saved = node->op_params[kg::kDsv4HcaTagParam];
+  node->op_params[kg::kDsv4HcaTagParam] = 0;
+  Refused(kg::CheckDsv4HcaTokentile(node));
+  node->op_params[kg::kDsv4HcaTagParam] = saved;
+  const auto refuse_param = [&](int index, std::int32_t value) {
+    saved = node->op_params[index];
+    node->op_params[index] = value;
+    Refused(kg::CheckDsv4HcaTokentile(node));
+    node->op_params[index] = saved;
+  };
+  refuse_param(0, 0);
+  refuse_param(1, 0x3f800000);
+  refuse_param(2, 0x3f800000);
+  refuse_param(3, GGML_PREC_DEFAULT);
+  refuse_param(4, 383);
+  refuse_param(kg::kFlashAttnSparseParam, 0);
+  refuse_param(kg::kFlashAttnWideSparseParam, 1);
+  auto* original_v = node->src[2];
+  node->src[2] = New(GGML_TYPE_F16, 512, 4608);
+  Refused(kg::CheckDsv4HcaTokentile(node));
+  node->src[2] = original_v;
+  void* const original_q = node->src[0]->data;
+  node->src[0]->data = node->src[1]->data;
+  Refused(kg::CheckDsv4HcaTokentile(node));
+  node->src[0]->data = original_q;
+  const std::array<ggml_tensor*, 1> nodes = {node};
+  kg::DeviceChoices choices;
+  choices.ds4_hca_fits = [](const ggml_tensor* n) {
+    return kg::CheckDsv4HcaTokentile(n).has_value();
+  };
+  const auto ordinary = kg::PlanGraph(nodes, false, choices);
+  ASSERT_TRUE(ordinary.has_value());
+  EXPECT_EQ(ordinary->steps.front().implementation, kg::kFlashAttnMmaName);
+  choices.ds4_hca = true;
+  const auto selected = kg::PlanGraph(nodes, false, choices);
+  ASSERT_TRUE(selected.has_value());
+  EXPECT_EQ(selected->steps.front().implementation, kg::kDsv4HcaTokentileName);
+  choices.ds4_hca_fits = nullptr;
+  const auto fallback = kg::PlanGraph(nodes, false, choices);
+  ASSERT_TRUE(fallback.has_value());
+  EXPECT_EQ(fallback->steps.front().implementation, kg::kFlashAttnMmaName);
 }
 
 TEST_F(GgmlExtValidateTest, PairedExpertsRequireMatchingInputsAndDisjointOutputs) {

@@ -58,7 +58,7 @@ if(JITLLM_CUDA)
   endforeach()
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
-                                         fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu mmvq_rows.cu fattn_mma.cu
+                                         fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
                                          jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu dsv4_fast.cu dsv4_sparse.cu
                                          qsa_sparse.cu
@@ -81,7 +81,7 @@ if(JITLLM_CUDA)
                                                      --diag-suppress=20012)
   target_link_libraries(jitllm_ggml_kernels
                         PUBLIC jitllm_ggml_tensors jitllm_ggml_cuda jitllm_device_memory
-                               jitllm_cublas jitllm_cublaslt jitllm_execution jitllm_ds4_d2r
+                               jitllm_cublas jitllm_cublaslt jitllm_execution jitllm_ds4_d2r jitllm_ds4_hca
                         # the NVIDIA driver, for ggml_support.cu's device queries
                         PRIVATE jitllm_cuda_device_memory jitllm_warnings jitllm_ggml_cutlass)
   # sm_121a as GGML's own units build (third_party/patches/ggml/0002), and
@@ -133,7 +133,7 @@ if(JITLLM_CUDA)
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
   set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
-                   dsv4_graph.h
+                   dsv4_graph.h dsv4_hca_tokentile.cu
                    executor.cc
                    executor.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu

@@ -176,6 +176,17 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchCont
 std::expected<void, KernelFailure> FlashAttnMma(LaunchContext& launch, ggml_tensor* node,
                                                 bool wide_sparse = false);
 
+// Literal ds4 four-token/G8 HCA core, with native F16 ring bit-copy and
+// original dense causal records in one planned scratch scope. Selection
+// is default-off and restricted to GB10 4,096-row HCA graphs with the
+// measured 4,352 raw + 256 compressed cells. Direct controls admit tails.
+// Plan sets the core's 88,576-byte shared-memory opt-in before capture;
+// Run never changes CUDA function attributes or allocates hidden storage.
+bool Dsv4HcaTokentileFits(const LaunchContext& launch, const ggml_tensor* node);
+std::expected<std::uint64_t, KernelFailure> PlanDsv4HcaTokentile(const LaunchContext& launch,
+                                                                 const ggml_tensor* node);
+std::expected<void, KernelFailure> Dsv4HcaTokentile(LaunchContext& launch, ggml_tensor* node);
+
 // The same kernels at head dimension 128 without grouping and without a
 // mask (validate_ext.h CheckFlashAttnMma128): the instance
 // ggml_cuda_flash_attn_ext_mma_f16_case<128, 128, columns, 1>, columns 8,
