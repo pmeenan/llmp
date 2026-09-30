@@ -382,6 +382,14 @@ sinks bound (RE-030).
   ordinary shape selection. Fully disjoint D512 lists
   regress in the cross-shape control. Qwen3.8's default `jitllm.qsa.attn`
   is independent.
+- **Unmeasured arithmetic candidate:** the pinned NVIDIA D512 MMA
+  variants use F32 score accumulators and F16 weighted-value
+  accumulators (`T_C_VKQ = half2`). ds4's four-query token-tile kernel
+  uses F32 MMA accumulators for both products and rescales in F32.
+  That source difference does not prove the cause of the model failure
+  above. A real-input replay and the unchanged long-window model gates
+  must precede a change to the qualified HCA selection; no new patch
+  or upstream defect is claimed.
 - **Proposed action:** none upstream; take the full backport with the
   planned pin bump after re-auditing the remaining launch arithmetic.
 

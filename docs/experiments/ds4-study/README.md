@@ -203,6 +203,24 @@ GGML PRs 28770/29298's union/live-count machinery, extending the pinned
 D512 eight-query case while retaining its MMA configuration and swizzle.
 It also supports D256 sparse reference graphs. Qwen3.8's default fast QSA
 operation is independent.
+
+Sharing gathered rows does not make the native and ds4 kernels
+arithmetically identical. At the pins in this report, native D512
+instantiates GGML's one/eight-query variants over eight heads. Its
+`T_C_KQ` score accumulator is F32, but `T_C_VKQ` weighted-value
+accumulator is `half2`; NVIDIA's corresponding MMA instructions
+accumulate weighted values in F16. ds4's token tile groups four
+queries over eight heads in 32-KV-row stages. Its
+`tt_mma_m16n8k16_f16_f32` is used for both scores and weighted values,
+with F32 output accumulators and F32 rescaling. Cache transforms,
+query scaling and reduction partitions also differ.
+This is a source-established candidate for a more accurate shared
+attention path, not a measured speed/quality improvement or an
+explanation proved for the later HCA oracle failure. A causal control
+must replay identical real HCA inputs through each arithmetic choice
+against a high-precision operation reference, then repeat the fixed
+long-window model gates. The current qualified HCA selection remains.
+
 The generic planner and launch default retain D512's one-query sparse
 and D256's dense choices. `wide_sparse_attention` explicitly selects
 the distinct wide implementation; measured DeepSeek fast CSA/window
