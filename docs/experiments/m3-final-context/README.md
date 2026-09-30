@@ -63,6 +63,59 @@ Provenance:
   matched perplexity window. Native arguments include `--compact-experts
   --context 262144 --max-rows 2048`.
 
+## Final DeepSeek runtime ladder at 262K capacity
+
+The checked HCA/frontier path runs through the production HTTP route on
+`spark-b`, 2026-09-30 05:41:57–06:19:47 EDT, job
+`m3-final-ds-runtime-ladder`. Both modes use the original UD-Q2_K_XL
+artifact, F16 caches, 2,048-row prefill chunks and `context = 262144`.
+Plain and DSpark start fresh processes and reuse no prompt tokens.
+Each of the eight requests completes its entire 512-output budget,
+with the terminal marker, finish reason `length` and no stream error.
+
+Ratios compare the pinned llama.cpp b11254 long-context captures on
+the same canonical prompts, with equal prompt/output counts. The plain
+reference ran on `spark-b`; the DSpark reference ran on `spark`. These
+are single-run measurements on the two GB10s, rather than confidence
+intervals.
+
+| Prompt tokens | Plain prefill tok/s (× reference) | Plain decode tok/s (×) | DSpark prefill tok/s (×) | DSpark decode tok/s (×) |
+| ---: | ---: | ---: | ---: | ---: |
+| 31,705 | 537.924 (1.880×) | 21.660 (1.151×) | 519.508 (1.880×) | 34.152 (1.116×) |
+| 64,447 | 521.907 (1.896×) | 21.280 (1.181×) | 519.159 (1.929×) | 40.462 (1.397×) |
+| 128,821 | 488.504 (1.891×) | 20.565 (1.227×) | 486.573 (1.928×) | 36.961 (1.208×) |
+| 258,856 | 439.434 (1.916×) | 19.544 (1.327×) | 430.089 (1.911×) | 34.836 (1.226×) |
+
+Sampled peak drops in `MemAvailable` are 98.175 GiB plain and
+108.636 GiB with DSpark, 1.025× / 1.015× their reference's
+95.812 / 107.061 GiB. Native minimum available memory is
+20,376,899,584 / 9,091,158,016 bytes. All rates exceed the matched
+reference; both memory ratios pass the approximately 1.1× bound.
+The speculative rates also depend on each prompt's acceptance; this
+table does not isolate that factor or prove context-independent cost.
+The remaining prefill slope and maximum-context cost require the
+final profile rather than an inference from these means.
+
+The timing prompts quote the answer markers and the responses stop at
+their output budget, so these rows are not neutral retrieval passes.
+The fresh 32K/128K fixed-bound oracle controls, matched perplexity and
+sampled distribution checks remain the quality evidence linked above.
+Neutral retrieval and continuing-context swaps remain separate gates.
+
+Provenance:
+
+- Runtime SHA-256:
+  `08e68c23920f93c1d74c20df516e1a189cd27b14e81225f1d81d77b9eedc7254`;
+  kernel source is `d753aa0` plus the unchanged `a5dff04` diagnostic fields.
+- Measurement harness SHA-256:
+  `20b10388886c1abff54e96ca8ec12a5f00701fffa2d8955fd9a534cc8e63f437`.
+- Target/drafter identities and the llama.cpp pin are the same as below.
+- Raw native captures:
+  `~/scratch/m3-extrapolation-ds/final-262k-{plain,spec}/run.json` on
+  `spark-b`; references:
+  `~/.local/share/jitllm/m3lc/raw/ds-llama-{plain,dspark}/run.json`
+  on the respective hosts above.
+
 ## DeepSeek one-million-token fit before the final optimizations
 
 The runtime on `spark` completed a 1,038,047-token chat prompt at
@@ -174,10 +227,11 @@ The book is the long-context corpus's `ppl.txt`, SHA-256
 
 ## Remaining final-path checks
 
-- Native runtime prefill, plain decode and speculation at 32K, 64K,
+- Qwen native runtime prefill, plain decode and speculation at 32K, 64K,
   128K and 256K, with 512 requested outputs and zero cached prompt tokens.
-  DeepSeek additionally runs its largest fitting prompt at 1M. Preserve
-  actual completed output counts when a model stops early.
+  DeepSeek's final ladder above is complete; its largest fitting prompt
+  at 1M remains in flight. Preserve actual completed output counts when
+  a model stops early.
 - Neutral `-r` retrieval at each rung and each maximum, with at most
   1,024 outputs, checks all three codenames. The neutral 1M prompt content
   SHA-256 is

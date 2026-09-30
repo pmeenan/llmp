@@ -888,8 +888,11 @@ it appears.
       measured and becomes the documented and configurable ceiling.
       [Final context checks](experiments/m3-final-context/README.md)
       record the completed compact-target quality and earlier 1M request
-      fit, with final-path timings, retrieval and continuing-context swaps
-      explicitly pending.
+      fit. The corrected HCA/frontier runtime's 32K–256K ladder completes
+      all 512 outputs per mode: prefill 1.88–1.93× llama.cpp, plain decode
+      1.15–1.33× and DSpark 1.12–1.40×, peak memory 1.025× / 1.015×.
+      Final 1M/Qwen timings, neutral retrieval and continuing-context
+      swaps remain explicitly pending.
       - *Baseline first:* prefill throughput and decode speed at each
         depth, speculative and plain, through the runtime and against the
         same-format comparators at the same depths:

@@ -158,9 +158,11 @@ not used. The options each renderer supports and refuses are in
     ordinary MMA for count-based HCA while retaining CSA/window sharing
     passes fresh 32K/128K controls at that bound (491+21 and 500+12
     equal/near-tie rows), with exact own repeats and common later rows.
-    Matched 128K PPL is 1.926517 versus 1.9298. Final sampled and
-    maximum-context runtime controls remain pending; historical phase-2
-    agreement is not a current-path blanket pass.
+    Matched 128K PPL is 1.926517 versus 1.9298. Fresh sampled checks pass
+    the fixed TV bound; the final 32K–256K runtime ladder exceeds matched
+    llama.cpp speed with memory within 1.025×. Maximum-context runtime
+    controls remain pending; historical phase-2 agreement is not a
+    current-path blanket pass.
   - The reference mode (`--exact on`) keeps GGML's top-k and does not
     repeat past 4,096 positions (RE-031).
   - DeepSeek's own `tokenizer.json` differs from the GGUF's tokenizer on

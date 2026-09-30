@@ -512,8 +512,11 @@ later logits and full target/DSpark state in 24 direct-runner arms.
 Matched 128K PPL is 1.926517 versus 1.9298, −0.1701%. Forced rejection
 and swap controls remain exact. The planner therefore uses ordinary
 MMA for count-based HCA uniformly, retaining opted-in CSA/window sharing.
-Final sampled plain/speculation and maximum-context runtime gates remain
-pending; historical speed/quality results above do not close them.
+Fresh sampled plain/speculation checks pass the unchanged 0.1 TV bound
+at 0.0034 / 0.0098 / 0.0186 / 0.0112. The final production-runtime
+32K–256K ladder also passes matched llama.cpp speed and memory bounds
+([final context checks](../m3-final-context/README.md)); maximum-context
+runtime gates remain pending. Historical results do not close those gates.
 Compact expert scheduling, paired preparation and F16 caches remain.
 Historical wide speed/short-quality/128K results above and the fresh
 narrow controls are identified separately in the follow-up.
