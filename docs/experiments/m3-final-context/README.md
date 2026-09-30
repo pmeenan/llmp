@@ -217,8 +217,9 @@ Both use `context = 1048576`, F16 caches and 2,048-row chunks.
 All rates exceed the matched same-GGUF reference; both memory ratios
 pass the approximately 1.1× bound. Minimum available memory is
 14,291,140,608 / 2,565,365,760 bytes. Registered fixed allocations are
-2.35 / 2.51 GiB, including workspace 2.21 / 2.37 GiB and 0.04 GiB
-host chunk inputs; execution budgets are 110.57 / 110.58 GiB.
+2.35 / 2.51 GiB, including workspace 2.21 / 2.37 GiB. Host chunk
+inputs need an additional 0.04 GiB; execution budgets are
+110.57 / 110.58 GiB.
 The prompt and output leave 10,017 tokens below the configured ceiling.
 Timing fixtures are not neutral retrieval evidence; the separate 1M
 completed-answer retrieval and maximum saved-state swap remain pending.
@@ -249,7 +250,7 @@ they are not the first-token latency used by the separate 8K swap table.
 
 | Model | Configured context | Required saved prompt | Continuation | Status |
 | --- | --- | --- | --- | --- |
-| DeepSeek + DSpark, long | 262,144 | 131,072 | 64 | Pending |
+| DeepSeek + DSpark, long | 262,144 | 131,072 | 64 | Pass: repeated prefill and every returned token/logit exact |
 | DeepSeek + DSpark, maximum | 1,048,576 | 1,048,512 | 64 | Pending |
 | Qwen + MTP, long | 262,144 | 131,072 | 64 | Pending |
 | Qwen + MTP, maximum | 262,144 | 262,077 | 64, plus three reserved draft positions | Pending |
@@ -282,6 +283,41 @@ pinned perplexity book; the combined UTF-8 input SHA-256 is
 It is an exact-state fixture, not a retrieval or oracle-quality prompt.
 The book is the long-context corpus's `ppl.txt`, SHA-256
 `c7156148ecaa12b6416cf816540d8dede2014982554a835e61076f0dd8bf0c2d`.
+
+### Final DeepSeek 128K saved-state result
+
+On `spark-b`, 2026-09-30 07:37:42–07:47:20 EDT, supervised job
+`m3-final-ds-128k-swap-v3`
+completes successfully with the final HCA/frontier body. Both independent
+131,072-token prefills and all 64 continued tokens/logits compare bit
+exactly, including after the prepared Qwen round trip. The final prefill
+logit row's SHA-256 is
+`693c162cd81b493df0325f62206dd4e66b6550c5972136edf9af614220edcb22`.
+
+| Measurement | Result |
+| --- | --- |
+| Control / repeated prefill | 266.822 / 268.468 seconds; 64 chunks each |
+| Longest completed chunk | 4.641 / 4.653 seconds |
+| Uninterrupted / restored decode | 1.637 / 1.622 seconds for 64 outputs |
+| Away / back activation | 7.601 / 9.458 seconds |
+| Return state restore | 0.143 seconds |
+| Spilled / initialized state | 1,128,267,776 / 1,125,269,504 bytes |
+| Peak sampled memory drop / minimum available | 116,553,003,008 / 9,155,997,696 bytes |
+
+The partner uses the original Qwen artifact, plain decode, 512-token
+capacity and 384-row chunks. No turn checkpoints are retained. These
+activation totals are swap parts, not the separate first-token endpoint
+measurement. The observed chunk durations are well inside the current
+181.44-second prefill allowance, but this harness does not exercise the
+HTTP watchdog or prove its maximum-context case.
+
+Harness SHA-256:
+`c9e7a3b63ccb8c32121aa2774fef47347829fba8b8b37a81383c29c22a8e7ffd`.
+The raw UTF-8 fixture SHA-256 is
+`d1e6ac95a35fa0e27b9fe66505d85555c90dbf0c044e5458124b68a6bb2b80c9`;
+native encoding supplies the first 131,072 IDs without chat rendering.
+Raw summary, logs and input pins remain in
+`~/scratch/m3-extrapolation-ds/final-128k-swap/` on `spark-b`.
 
 ## Remaining final-path checks
 
