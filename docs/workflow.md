@@ -83,6 +83,14 @@ downgrade a heavy-path change to the light loop on their own.
   require them, and the full table at the milestone gate (owner,
   2026-09-30). A completed table remains evidence for the unchanged swap
   implementation; it is not part of every optimization test set.
+  *Owner override, 2026-10-01:* defer unit suites and the routine full-check
+  cycle during experimental comparisons until the source of a difference
+  is understood and a change is chosen for adoption. Build the needed
+  benchmark target and verify the intended inputs, configuration, paid
+  work, output and successful completion. Model admission and supervised
+  retirement still apply. Check the resulting production implementation
+  before landing it; diagnostic experiments do not each require a full
+  unit suite.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name.
