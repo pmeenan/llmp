@@ -8,6 +8,7 @@
 //
 //   jitllm_dsv4_exec --artifact DIR --out DIR [--context N] [--max-rows N]
 //                    [--prompts FILE --generate N [--force FILE]]
+//                    [--stop-ids ID[,ID...]]
 //                    [--ppl FILE] [--dump NAMES] [--layout-proof]
 //                    [--bench-prefill N --bench-decode N] [--exact on|off]
 //                    [--compact-experts] [--frontier-head]
@@ -25,6 +26,9 @@
 //   after each, every named tensor and the logits written under
 //   OUT/probe/{fast,exact}/ (docs/experiments/dsv4-decode's probe method,
 //   resident); the state a full window, which both plans read.
+// - --stop-ids: optional private task-study stops, checked against the
+//   vocabulary. A stop stays in raw argmax/logit records but is not fed
+//   into another decode. Without this option generation stays fixed-length.
 // - Weights: the artifact is opened as untrusted input (artifact.h), its
 //   resources and expert arrays bound to the compiled-in DeepSeek V4 profile
 //   (model/dsv4.h), and every chunk read with direct I/O, one coalesced read
@@ -115,6 +119,7 @@
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
+#include "long_context_tasks.h"
 #include "model/dsv4.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
@@ -1388,6 +1393,7 @@ struct Options {
   std::filesystem::path prompts;
   std::filesystem::path force;
   std::uint32_t generate = 0;
+  std::vector<std::int32_t> stop_ids;
   std::filesystem::path ppl;
   std::vector<std::string> dump;
   bool layout_proof = false;
@@ -1462,6 +1468,13 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = number(o.max_rows);
     } else if (a == "--generate") {
       ok = number(o.generate);
+    } else if (a == "--stop-ids") {
+      auto text = value();
+      if (!text) return std::unexpected(text.error());
+      if (!o.stop_ids.empty()) return Error("--stop-ids may be supplied once");
+      auto stops = jitllm::benchmarks::long_context::ParseStopIds(*text, md::Dsv4Flash().vocab);
+      if (!stops) return std::unexpected(stops.error());
+      o.stop_ids = std::move(*stops);
     } else if (a == "--bench-prefill") {
       ok = number(o.bench_prefill);
     } else if (a == "--bench-decode") {
@@ -1508,6 +1521,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if (o.probe_step != 0 && (o.force.empty() || o.probe_step >= o.generate)) {
     return Error("--probe-step needs --force and a step below --generate");
+  }
+  if (!o.stop_ids.empty() && (o.prompts.empty() || o.generate == 0 || !o.force.empty())) {
+    return Error("--stop-ids requires --prompts and positive --generate, without --force");
   }
   if (o.probe_head && (o.prompts.empty() || o.exact || o.frontier_head || !o.dump.empty())) {
     return Error("--probe-head needs fast --prompts, without --frontier-head or --dump");
@@ -1747,6 +1763,12 @@ Status Run(const Options& o) {
                          !o.exact && o.wide_sparse ? "true" : "false");
   summary += std::format(R"(,"q2_d2r":{})", o.d2r_experts ? "true" : "false");
   summary += std::format(R"(,"ds4_hca":{})", o.ds4_hca ? "true" : "false");
+  if (!o.stop_ids.empty()) {
+    std::string ids;
+    for (auto id : o.stop_ids) ids += (ids.empty() ? "" : ",") + std::to_string(id);
+    summary += std::format(R"(,"stop_ids":[{}],"compact_experts":{},"exact":{})", ids,
+                           o.compact_experts ? "true" : "false", o.exact ? "true" : "false");
+  }
 
   if (o.layout_proof) {
     std::string report;
@@ -1776,6 +1798,10 @@ Status Run(const Options& o) {
     std::vector<float> logits;
     for (std::size_t pi = 0; pi < prompts->size(); ++pi) {
       const TokenLine& prompt = (*prompts)[pi];
+      if (!o.stop_ids.empty() &&
+          (prompt.ids.size() >= o.context || o.generate > o.context - prompt.ids.size())) {
+        return Error("stopped generation prompt plus output budget exceeds context");
+      }
       if (!forced.empty() &&
           (forced[pi].name != prompt.name || forced[pi].ids.size() < o.generate)) {
         return Error(std::format("--force has no {} tokens for {}", o.generate, prompt.name));
@@ -1844,7 +1870,10 @@ Status Run(const Options& o) {
       argmax.push_back(Argmax(std::span(logits).subspan(logits.size() - vocab)));
       auto n_past = static_cast<std::uint32_t>(prompt.ids.size());
       double decode = 0;
+      std::uint32_t decode_steps = 0;
+      bool stopped = jitllm::benchmarks::long_context::IsStop(o.stop_ids, argmax.back());
       for (std::uint32_t k = 1; k < o.generate; ++k) {
+        if (stopped) break;
         const std::int32_t next = forced.empty() ? argmax.back() : forced[pi].ids[k - 1];
         if (pi == 0 && k == o.probe_step) {
           if (auto r = Probe(o, runner, state_region, state->bytes, n_past, next); !r) {
@@ -1857,8 +1886,10 @@ Status Run(const Options& o) {
         }
         decode += Seconds(Clock::now() - t1);
         ++n_past;
+        ++decode_steps;
         steps.insert(steps.end(), logits.begin(), logits.end());
         argmax.push_back(Argmax(logits));
+        stopped = jitllm::benchmarks::long_context::IsStop(o.stop_ids, argmax.back());
       }
       if (auto r = WriteFloats(o.out / (prompt.name + ".logits.f32"), steps); !r) {
         return r;
@@ -1868,11 +1899,16 @@ Status Run(const Options& o) {
         ids += std::format("{}{}", i == 0 ? "" : ",", argmax[i]);
       }
       summary += std::format(
-          R"({}{{"name":"{}","prompt_tokens":{},"argmax":[{}],"prefill_seconds":{:.4f},"decode_seconds":{:.4f},"decode_steps":{}}})",
-          pi == 0 ? "" : ",", prompt.name, prompt.ids.size(), ids, prefill, decode,
-          o.generate > 0 ? o.generate - 1 : 0);
+          R"({}{{"name":"{}","prompt_tokens":{},"argmax":[{}],"prefill_seconds":{:.4f},"decode_seconds":{:.4f},"decode_steps":{})",
+          pi == 0 ? "" : ",", prompt.name, prompt.ids.size(), ids, prefill, decode, decode_steps);
+      if (!o.stop_ids.empty()) {
+        summary += std::format(R"(,"stop_reason":"{}","output_tokens":{},"stop_id":{})",
+                               stopped ? "eos" : "length", argmax.size() - (stopped ? 1U : 0U),
+                               stopped ? argmax.back() : -1);
+      }
+      summary += '}';
       std::println("{}: {} prompt tokens, prefill {:.3f} s, {} decode steps {:.3f} s", prompt.name,
-                   prompt.ids.size(), prefill, o.generate > 0 ? o.generate - 1 : 0, decode);
+                   prompt.ids.size(), prefill, decode_steps, decode);
     }
     summary += "]";
   }

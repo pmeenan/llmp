@@ -140,6 +140,10 @@ target_link_libraries(rb_replay_test PRIVATE jitllm_retained_backing)
 jitllm_gtest(rb_replay_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+add_executable(long_context_tasks_test long_context_tasks_test.cc)
+target_link_libraries(long_context_tasks_test PRIVATE jitllm_long_context_tasks)
+jitllm_gtest(long_context_tasks_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(device_execution_test device_execution_test.cc)
 target_link_libraries(device_execution_test PRIVATE jitllm_fake_providers)
 jitllm_gtest(device_execution_test TEST_PREFIX unit. PROPERTIES LABELS unit)

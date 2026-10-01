@@ -28,6 +28,14 @@ target_link_libraries(jitllm_sampling_bench PRIVATE jitllm_sampling jitllm_warni
 add_subdirectory(retained_backing)
 add_subdirectory(ds4_complete)
 
+# CPU-only frozen task construction/scoring; never loads a device or model.
+add_library(jitllm_long_context_tasks STATIC long_context_tasks.cc)
+target_include_directories(jitllm_long_context_tasks PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(jitllm_long_context_tasks PUBLIC jitllm_json PRIVATE jitllm_warnings)
+add_executable(jitllm_long_context_task_prepare long_context_tasks_main.cc)
+target_link_libraries(jitllm_long_context_task_prepare PRIVATE jitllm_long_context_tasks
+                      jitllm_artifact jitllm_tokenizer jitllm_chat jitllm_base jitllm_warnings)
+
 # Storage queue depth and request size, direct into host VMM through the
 # providers (docs/experiments/storage-queue/). Needs a CUDA device.
 if(JITLLM_CUDA)
@@ -119,7 +127,8 @@ if(JITLLM_CUDA)
   target_include_directories(jitllm_dsv4_exec SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(jitllm_dsv4_exec PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory
-                                                 jitllm_artifact jitllm_model jitllm_warnings)
+                                                 jitllm_artifact jitllm_model jitllm_warnings
+                                                 jitllm_long_context_tasks)
   target_link_options(jitllm_dsv4_exec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   # M3's second model slice: Qwen3.8 Flash Next (Mia's NVFP4 and MXFP8
