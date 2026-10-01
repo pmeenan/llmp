@@ -124,11 +124,10 @@ std::expected<void, KernelFailure> RunDs4Moe(LaunchContext& launch, const Ds4Moe
 // Selected IDs are compact, valid/distinct original or checked captured IDs.
 struct Ds4MoeMaps {
   Ds4CacheBuffer selected{}, ids_source{}, ids_destination{}, expert_bounds{};
-  std::span<const Ds4CacheBuffer> retained{};
+  std::span<const Ds4CacheBuffer> retained;
 };
 std::expected<void, KernelFailure> CheckDs4MoeMaps(const Ds4MoeMaps& desc);
-std::expected<void, KernelFailure> RunDs4MoeMaps(LaunchContext& launch,
-                                             const Ds4MoeMaps& desc);
+std::expected<void, KernelFailure> RunDs4MoeMaps(LaunchContext& launch, const Ds4MoeMaps& desc);
 
 // Temporary captured-input benchmark seam: canonical materialized gate/up
 // [4096,6,2048] are supplied by the caller. Only the unchanged original
@@ -142,11 +141,11 @@ std::expected<void, KernelFailure> RunDs4MoeMaps(LaunchContext& launch,
 struct Ds4MoePostPair {
   Ds4CacheBuffer gate{}, up{}, weights{}, ids_destination{}, expert_bounds{};
   Ds4CacheBuffer down_weights{}, middle{}, down_quant{}, work{}, down{}, sum{};
-  std::span<const Ds4CacheBuffer> retained{};
+  std::span<const Ds4CacheBuffer> retained;
 };
 std::expected<void, KernelFailure> CheckDs4MoePostPair(const Ds4MoePostPair& desc);
 std::expected<void, KernelFailure> RunDs4MoePostPair(LaunchContext& launch,
-                                                 const Ds4MoePostPair& desc);
+                                                     const Ds4MoePostPair& desc);
 
 }  // namespace jitllm::kernels::ggml
 #endif  // JITLLM_KERNELS_GGML_DSV4_DS4_MOE_H_

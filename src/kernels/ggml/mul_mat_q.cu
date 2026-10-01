@@ -436,12 +436,11 @@ std::expected<ExpertMmqLayout, KernelFailure> DescribeMulMatIdQPairPrepared(
       ggml_type_size(GGML_TYPE_IQ2_XXS) != 66 || ggml_blck_size(GGML_TYPE_IQ2_XXS) != 256 ||
       sizeof(block_q8_1_mmq) != 144 || QK8_1_MMQ != 128 ||
       !std::ranges::equal(weights->ne, weight_shape) ||
-      !std::ranges::equal(source->ne, input_shape) ||
-      !std::ranges::equal(ids->ne, ids_shape) ||
+      !std::ranges::equal(source->ne, input_shape) || !std::ranges::equal(ids->ne, ids_shape) ||
       !std::ranges::equal(first->ne, output_shape) ||
-      !std::ranges::all_of(std::array<const ggml_tensor*, 6>{weights, second->src[0], source,
-                                                           ids, first, second},
-                           [](const ggml_tensor* tensor) { return detail::Packed(tensor); }))
+      !std::ranges::all_of(
+          std::array<const ggml_tensor*, 6>{weights, second->src[0], source, ids, first, second},
+          [](const ggml_tensor* tensor) { return detail::Packed(tensor); }))
     return Rejected("prepared IQ2 controls require the fixed packed GB10 capture geometry");
   auto selected = SelectMulMatQ(launch, first);
   if (!selected || *selected != QuantMulMatPath::kTile)
@@ -454,12 +453,12 @@ std::expected<ExpertMmqLayout, KernelFailure> DescribeMulMatIdQPairPrepared(
   constexpr std::uint64_t pairs = 4096ULL * 6;
   constexpr std::uint64_t payload = (4096ULL / 128) * pairs * 144;
   return ExpertMmqLayout{.activation_payload_bytes = payload,
-                        .activation_bytes = payload + static_cast<std::uint64_t>(j) * 144,
-                        .source_ids_bytes = pairs * 4,
-                        .destination_ids_payload_bytes = pairs * 4,
-                        .destination_ids_bytes = (pairs + static_cast<std::uint64_t>(j)) * 4,
-                        .bounds_bytes = 257ULL * 4,
-                        .native_j_max = static_cast<std::uint64_t>(j)};
+                         .activation_bytes = payload + static_cast<std::uint64_t>(j) * 144,
+                         .source_ids_bytes = pairs * 4,
+                         .destination_ids_payload_bytes = pairs * 4,
+                         .destination_ids_bytes = (pairs + static_cast<std::uint64_t>(j)) * 4,
+                         .bounds_bytes = 257ULL * 4,
+                         .native_j_max = static_cast<std::uint64_t>(j)};
 }
 
 namespace {
@@ -474,17 +473,17 @@ bool ExpertExtent(const void* data, std::uint64_t bytes, ExpertRange& result) {
   result = {.begin = begin, .end = end};
   return true;
 }
-bool ExpertDisjoint(ExpertRange a, ExpertRange b) {
-  return a.end <= b.begin || b.end <= a.begin;
-}
+bool ExpertDisjoint(ExpertRange a, ExpertRange b) { return a.end <= b.begin || b.end <= a.begin; }
 
-std::expected<ExpertMmqLayout, KernelFailure> CheckExpertPrepared(
-    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
-    const ExpertMmqPrepared& input, std::uint64_t generation) {
+std::expected<ExpertMmqLayout, KernelFailure> CheckExpertPrepared(const LaunchContext& launch,
+                                                                  const ggml_tensor* first,
+                                                                  const ggml_tensor* second,
+                                                                  const ExpertMmqPrepared& input,
+                                                                  std::uint64_t generation) {
   auto layout = DescribeMulMatIdQPairPrepared(launch, first, second);
   if (!layout) return std::unexpected(layout.error());
-  if (generation == 0 || input.generation != generation ||
-      input.source != first->src[1]->data || input.selected != first->src[2]->data)
+  if (generation == 0 || input.generation != generation || input.source != first->src[1]->data ||
+      input.selected != first->src[2]->data)
     return Rejected("prepared IQ2 source, selected IDs or generation is stale");
   const std::array buffers{input.activation, input.source_ids, input.destination_ids, input.bounds};
   const std::array required{layout->activation_bytes, layout->source_ids_bytes,
@@ -500,7 +499,7 @@ std::expected<ExpertMmqLayout, KernelFailure> CheckExpertPrepared(
         return Rejected("prepared IQ2 activation/map buffers overlap");
   }
   const std::array<const ggml_tensor*, 6> operands{first->src[0], second->src[0], first->src[1],
-                                                 first->src[2], first, second};
+                                                   first->src[2], first,          second};
   std::array<ExpertRange, 6> logical{};
   for (std::size_t i = 0; i < operands.size(); ++i) {
     const auto bytes = detail::Extent(operands[i]);
@@ -542,143 +541,143 @@ std::expected<ExpertMmqLayout, KernelFailure> CheckExpertPrepared(
 }
 }  // namespace
 
-static std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch,
-                                                            ggml_tensor* first, ggml_tensor* second,
-                                                            bool compact_experts,
-                                                            const ExpertMmqPrepared* capture = nullptr) {
+static std::expected<void, KernelFailure> RunExpertProducts(
+    LaunchContext& launch, ggml_tensor* first, ggml_tensor* second, bool compact_experts,
+    const ExpertMmqPrepared* capture = nullptr) {
   auto scratch = second != nullptr ? PlanMulMatIdQPair(launch, first, second, compact_experts)
                                    : PlanMulMatIdQCompact(launch, first);
   if (!scratch) {
     return std::unexpected(scratch.error());
   }
-  return launch.Run(
-      base::Bytes(*scratch), [first, second, compact_experts, capture](ggml_backend_cuda_context& context) {
-        // Host preparation from GGML mmq.cu: the same inverse broadcast map
-        // and scatter quantization feed two ordinary MMQ launches. This is
-        // ds4's paired-preparation technique without its SoA repack or fused
-        // early route weighting.
-        const ggml_tensor* weights = first->src[0];
-        const ggml_tensor* input = first->src[1];
-        const ggml_tensor* ids = first->src[2];
-        const auto type = weights->type;
-        const auto used = ids->ne[0];
-        const auto tokens = input->ne[2];
-        const auto rows = tokens * used;
-        const auto padded = GGML_PAD(input->ne[0], MATRIX_ROW_PADDING);
-        const int cc = ggml_cuda_info().devices[context.device].cc;
-        const auto j_max = ggml_cuda_mmq_get_J_max(type, weights->ne[1] % 128 != 0, cc, 128);
-        cudaStream_t stream = context.stream();
-        ggml_cuda_pool_alloc<std::int32_t> ids_src(context.pool(), static_cast<std::size_t>(rows));
-        ggml_cuda_pool_alloc<std::int32_t> ids_dst(context.pool(),
-                                                   static_cast<std::size_t>(rows + j_max));
-        ggml_cuda_pool_alloc<std::int32_t> bounds(context.pool(),
-                                                  static_cast<std::size_t>(weights->ne[2] + 1));
-        const bool broadcast = input->ne[1] == 1 && used > 1;
-        ggml_cuda_launch_mm_ids_helper(
-            static_cast<const std::int32_t*>(ids->data), ids_src.get(), ids_dst.get(), bounds.get(),
-            static_cast<int>(weights->ne[2]), static_cast<int>(tokens), static_cast<int>(used),
-            static_cast<int>(input->ne[1]), static_cast<int>(ids->nb[1] / sizeof(std::int32_t)),
-            static_cast<int>(input->nb[2] / input->nb[1]), broadcast, stream);
-        CUDA_CHECK(cudaGetLastError());
-        const auto bytes =
-            static_cast<std::size_t>(rows * padded) * sizeof(block_q8_1_mmq) / QK8_1_MMQ +
-            static_cast<std::size_t>(j_max) * sizeof(block_q8_1_mmq);
-        ggml_cuda_pool_alloc<char> quantized(context.pool(), bytes);
-        const auto* x = static_cast<const float*>(input->data);
-        const auto s11 = static_cast<std::int64_t>(input->nb[1] / sizeof(float));
-        const auto s12 = static_cast<std::int64_t>(input->nb[2] / sizeof(float));
-        const auto s13 = static_cast<std::int64_t>(input->nb[3] / sizeof(float));
-        if (broadcast) {
-          quantize_scatter_mmq_q8_1_cuda(x, ids_src.get(), quantized.get(), type, input->ne[0], s12,
-                                         padded, tokens, rows, static_cast<int>(used), stream);
-        } else {
-          quantize_mmq_q8_1_cuda(x, ids_src.get(), quantized.get(), type, input->ne[0], s11, s12,
-                                 s13, padded, rows, 1, 1, stream);
-        }
-        CUDA_CHECK(cudaGetLastError());
-        if (capture != nullptr) {
-          // Diagnostic copies preserve every private guard byte without
-          // modifying or assuming initialization of its source buffer.
-          CUDA_CHECK(cudaMemcpyAsync(capture->activation.data, quantized.get(), bytes,
-                                     cudaMemcpyDeviceToDevice, stream));
-          CUDA_CHECK(cudaMemcpyAsync(capture->source_ids.data, ids_src.get(),
-                                     static_cast<std::size_t>(rows) * sizeof(std::int32_t),
-                                     cudaMemcpyDeviceToDevice, stream));
-          CUDA_CHECK(cudaMemcpyAsync(capture->destination_ids.data, ids_dst.get(),
-                                     static_cast<std::size_t>(rows + j_max) * sizeof(std::int32_t),
-                                     cudaMemcpyDeviceToDevice, stream));
-          CUDA_CHECK(cudaMemcpyAsync(capture->bounds.data, bounds.get(),
-                                     static_cast<std::size_t>(weights->ne[2] + 1) * sizeof(std::int32_t),
-                                     cudaMemcpyDeviceToDevice, stream));
-        }
-        const auto sy2 = input->ne[1] * padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
-                         (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
-        const auto sy3 = tokens * sy2;
-        const auto ncols_opt = GGML_CUDA_CC_IS_RDNA3_0(cc) || GGML_CUDA_CC_IS_RDNA4(cc)
-                                   ? (rows + weights->ne[2] - 1) / weights->ne[2]
-                                   : tokens;
-        for (ggml_tensor* output : {first, second}) {
-          if (output == nullptr) {
-            continue;
-          }
-          const ggml_tensor* w = output->src[0];
-          const auto ts = static_cast<std::int64_t>(ggml_type_size(type));
-          const mmq_args args = {static_cast<const char*>(w->data),
-                                 type,
-                                 reinterpret_cast<const int*>(quantized.get()),
-                                 ids_dst.get(),
-                                 bounds.get(),
-                                 static_cast<float*>(output->data),
-                                 nullptr,
-                                 w->ne[0],
-                                 w->ne[1],
-                                 rows,
-                                 static_cast<std::int64_t>(w->nb[1]) / ts,
-                                 rows,
-                                 static_cast<std::int64_t>(output->nb[1] / sizeof(float)),
-                                 w->ne[2],
-                                 w->ne[2],
-                                 static_cast<std::int64_t>(w->nb[2]) / ts,
-                                 sy2,
-                                 static_cast<std::int64_t>(output->nb[2] / sizeof(float)),
-                                 w->ne[3],
-                                 input->ne[3],
-                                 static_cast<std::int64_t>(w->nb[3]) / ts,
-                                 sy3,
-                                 static_cast<std::int64_t>(output->nb[3] / sizeof(float)),
-                                 tokens,
-                                 ncols_opt,
-                                 compact_experts};
-          switch (type) {
-            case GGML_TYPE_Q8_0:
-              mul_mat_q_case<GGML_TYPE_Q8_0>(context, args, stream);
-              break;
-            case GGML_TYPE_Q2_K:
-              mul_mat_q_case<GGML_TYPE_Q2_K>(context, args, stream);
-              break;
-            case GGML_TYPE_Q4_K:
-              mul_mat_q_case<GGML_TYPE_Q4_K>(context, args, stream);
-              break;
-            case GGML_TYPE_Q5_K:
-              mul_mat_q_case<GGML_TYPE_Q5_K>(context, args, stream);
-              break;
-            case GGML_TYPE_Q6_K:
-              mul_mat_q_case<GGML_TYPE_Q6_K>(context, args, stream);
-              break;
-            case GGML_TYPE_IQ2_XXS:
-              mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, stream);
-              break;
-            case GGML_TYPE_IQ2_XS:
-              mul_mat_q_case<GGML_TYPE_IQ2_XS>(context, args, stream);
-              break;
-            case GGML_TYPE_IQ3_XXS:
-              mul_mat_q_case<GGML_TYPE_IQ3_XXS>(context, args, stream);
-              break;
-            default:
-              GGML_ABORT("paired MMQ type passed validation without its case");
-          }
-        }
-      });
+  return launch.Run(base::Bytes(*scratch), [first, second, compact_experts,
+                                            capture](ggml_backend_cuda_context& context) {
+    // Host preparation from GGML mmq.cu: the same inverse broadcast map
+    // and scatter quantization feed two ordinary MMQ launches. This is
+    // ds4's paired-preparation technique without its SoA repack or fused
+    // early route weighting.
+    const ggml_tensor* weights = first->src[0];
+    const ggml_tensor* input = first->src[1];
+    const ggml_tensor* ids = first->src[2];
+    const auto type = weights->type;
+    const auto used = ids->ne[0];
+    const auto tokens = input->ne[2];
+    const auto rows = tokens * used;
+    const auto padded = GGML_PAD(input->ne[0], MATRIX_ROW_PADDING);
+    const int cc = ggml_cuda_info().devices[context.device].cc;
+    const auto j_max = ggml_cuda_mmq_get_J_max(type, weights->ne[1] % 128 != 0, cc, 128);
+    cudaStream_t stream = context.stream();
+    ggml_cuda_pool_alloc<std::int32_t> ids_src(context.pool(), static_cast<std::size_t>(rows));
+    ggml_cuda_pool_alloc<std::int32_t> ids_dst(context.pool(),
+                                               static_cast<std::size_t>(rows + j_max));
+    ggml_cuda_pool_alloc<std::int32_t> bounds(context.pool(),
+                                              static_cast<std::size_t>(weights->ne[2] + 1));
+    const bool broadcast = input->ne[1] == 1 && used > 1;
+    ggml_cuda_launch_mm_ids_helper(
+        static_cast<const std::int32_t*>(ids->data), ids_src.get(), ids_dst.get(), bounds.get(),
+        static_cast<int>(weights->ne[2]), static_cast<int>(tokens), static_cast<int>(used),
+        static_cast<int>(input->ne[1]), static_cast<int>(ids->nb[1] / sizeof(std::int32_t)),
+        static_cast<int>(input->nb[2] / input->nb[1]), broadcast, stream);
+    CUDA_CHECK(cudaGetLastError());
+    const auto bytes =
+        static_cast<std::size_t>(rows * padded) * sizeof(block_q8_1_mmq) / QK8_1_MMQ +
+        static_cast<std::size_t>(j_max) * sizeof(block_q8_1_mmq);
+    ggml_cuda_pool_alloc<char> quantized(context.pool(), bytes);
+    const auto* x = static_cast<const float*>(input->data);
+    const auto s11 = static_cast<std::int64_t>(input->nb[1] / sizeof(float));
+    const auto s12 = static_cast<std::int64_t>(input->nb[2] / sizeof(float));
+    const auto s13 = static_cast<std::int64_t>(input->nb[3] / sizeof(float));
+    if (broadcast) {
+      quantize_scatter_mmq_q8_1_cuda(x, ids_src.get(), quantized.get(), type, input->ne[0], s12,
+                                     padded, tokens, rows, static_cast<int>(used), stream);
+    } else {
+      quantize_mmq_q8_1_cuda(x, ids_src.get(), quantized.get(), type, input->ne[0], s11, s12, s13,
+                             padded, rows, 1, 1, stream);
+    }
+    CUDA_CHECK(cudaGetLastError());
+    if (capture != nullptr) {
+      // Diagnostic copies preserve every private guard byte without
+      // modifying or assuming initialization of its source buffer.
+      CUDA_CHECK(cudaMemcpyAsync(capture->activation.data, quantized.get(), bytes,
+                                 cudaMemcpyDeviceToDevice, stream));
+      CUDA_CHECK(cudaMemcpyAsync(capture->source_ids.data, ids_src.get(),
+                                 static_cast<std::size_t>(rows) * sizeof(std::int32_t),
+                                 cudaMemcpyDeviceToDevice, stream));
+      CUDA_CHECK(cudaMemcpyAsync(capture->destination_ids.data, ids_dst.get(),
+                                 static_cast<std::size_t>(rows + j_max) * sizeof(std::int32_t),
+                                 cudaMemcpyDeviceToDevice, stream));
+      CUDA_CHECK(
+          cudaMemcpyAsync(capture->bounds.data, bounds.get(),
+                          static_cast<std::size_t>(weights->ne[2] + 1) * sizeof(std::int32_t),
+                          cudaMemcpyDeviceToDevice, stream));
+    }
+    const auto sy2 = input->ne[1] * padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
+                     (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
+    const auto sy3 = tokens * sy2;
+    const auto ncols_opt = GGML_CUDA_CC_IS_RDNA3_0(cc) || GGML_CUDA_CC_IS_RDNA4(cc)
+                               ? (rows + weights->ne[2] - 1) / weights->ne[2]
+                               : tokens;
+    for (ggml_tensor* output : {first, second}) {
+      if (output == nullptr) {
+        continue;
+      }
+      const ggml_tensor* w = output->src[0];
+      const auto ts = static_cast<std::int64_t>(ggml_type_size(type));
+      const mmq_args args = {static_cast<const char*>(w->data),
+                             type,
+                             reinterpret_cast<const int*>(quantized.get()),
+                             ids_dst.get(),
+                             bounds.get(),
+                             static_cast<float*>(output->data),
+                             nullptr,
+                             w->ne[0],
+                             w->ne[1],
+                             rows,
+                             static_cast<std::int64_t>(w->nb[1]) / ts,
+                             rows,
+                             static_cast<std::int64_t>(output->nb[1] / sizeof(float)),
+                             w->ne[2],
+                             w->ne[2],
+                             static_cast<std::int64_t>(w->nb[2]) / ts,
+                             sy2,
+                             static_cast<std::int64_t>(output->nb[2] / sizeof(float)),
+                             w->ne[3],
+                             input->ne[3],
+                             static_cast<std::int64_t>(w->nb[3]) / ts,
+                             sy3,
+                             static_cast<std::int64_t>(output->nb[3] / sizeof(float)),
+                             tokens,
+                             ncols_opt,
+                             compact_experts};
+      switch (type) {
+        case GGML_TYPE_Q8_0:
+          mul_mat_q_case<GGML_TYPE_Q8_0>(context, args, stream);
+          break;
+        case GGML_TYPE_Q2_K:
+          mul_mat_q_case<GGML_TYPE_Q2_K>(context, args, stream);
+          break;
+        case GGML_TYPE_Q4_K:
+          mul_mat_q_case<GGML_TYPE_Q4_K>(context, args, stream);
+          break;
+        case GGML_TYPE_Q5_K:
+          mul_mat_q_case<GGML_TYPE_Q5_K>(context, args, stream);
+          break;
+        case GGML_TYPE_Q6_K:
+          mul_mat_q_case<GGML_TYPE_Q6_K>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ2_XXS:
+          mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ2_XS:
+          mul_mat_q_case<GGML_TYPE_IQ2_XS>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ3_XXS:
+          mul_mat_q_case<GGML_TYPE_IQ3_XXS>(context, args, stream);
+          break;
+        default:
+          GGML_ABORT("paired MMQ type passed validation without its case");
+      }
+    }
+  });
 }
 
 std::expected<void, KernelFailure> MulMatIdQPair(LaunchContext& launch, ggml_tensor* first,
@@ -690,9 +689,10 @@ std::expected<void, KernelFailure> MulMatIdQCompact(LaunchContext& launch, ggml_
   return RunExpertProducts(launch, node, nullptr, true);
 }
 
-std::expected<void, KernelFailure> MulMatIdQPairCapture(
-    LaunchContext& launch, ggml_tensor* first, ggml_tensor* second,
-    const ExpertMmqPrepared& capture, std::uint64_t generation) {
+std::expected<void, KernelFailure> MulMatIdQPairCapture(LaunchContext& launch, ggml_tensor* first,
+                                                        ggml_tensor* second,
+                                                        const ExpertMmqPrepared& capture,
+                                                        std::uint64_t generation) {
   if (auto checked = CheckExpertPrepared(launch, first, second, capture, generation); !checked)
     return std::unexpected(checked.error());
   return RunExpertProducts(launch, first, second, true, &capture);
@@ -709,43 +709,55 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPairBorrowed(
                    first->src[1]->ne[2] * first->src[2]->ne[0], true);
 }
 
-std::expected<void, KernelFailure> MulMatIdQPairBorrowed(
-    LaunchContext& launch, ggml_tensor* first, ggml_tensor* second,
-    const ExpertMmqPrepared& input, std::uint64_t generation) {
+std::expected<void, KernelFailure> MulMatIdQPairBorrowed(LaunchContext& launch, ggml_tensor* first,
+                                                         ggml_tensor* second,
+                                                         const ExpertMmqPrepared& input,
+                                                         std::uint64_t generation) {
   auto scratch = PlanMulMatIdQPairBorrowed(launch, first, second, input, generation);
   if (!scratch) return std::unexpected(scratch.error());
-  return launch.Run(base::Bytes(*scratch), [first, second, input](ggml_backend_cuda_context& context) {
-    const auto* source = first->src[1];
-    const auto* ids = first->src[2];
-    const auto tokens = source->ne[2];
-    const auto rows = tokens * ids->ne[0];
-    const auto padded = GGML_PAD(source->ne[0], MATRIX_ROW_PADDING);
-    const auto sy2 = source->ne[1] * padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
-                     (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
-    const auto sy3 = tokens * sy2;
-    for (ggml_tensor* output : {first, second}) {
-      const auto* weights = output->src[0];
-      const auto ts = static_cast<std::int64_t>(ggml_type_size(GGML_TYPE_IQ2_XXS));
-      const mmq_args args{static_cast<const char*>(weights->data),
-                         GGML_TYPE_IQ2_XXS,
-                         static_cast<const int*>(input.activation.data),
-                         static_cast<const std::int32_t*>(input.destination_ids.data),
-                         static_cast<const std::int32_t*>(input.bounds.data),
-                         static_cast<float*>(output->data), nullptr,
-                         weights->ne[0], weights->ne[1], rows,
-                         static_cast<std::int64_t>(weights->nb[1]) / ts, rows,
-                         static_cast<std::int64_t>(output->nb[1] / sizeof(float)),
-                         weights->ne[2], weights->ne[2],
-                         static_cast<std::int64_t>(weights->nb[2]) / ts, sy2,
-                         static_cast<std::int64_t>(output->nb[2] / sizeof(float)),
-                         weights->ne[3], source->ne[3],
-                         static_cast<std::int64_t>(weights->nb[3]) / ts, sy3,
-                         static_cast<std::int64_t>(output->nb[3] / sizeof(float)),
-                         tokens, tokens, true};
-      mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, context.stream());
-      CUDA_CHECK(cudaGetLastError());
-    }
-  });
+  return launch.Run(
+      base::Bytes(*scratch), [first, second, input](ggml_backend_cuda_context& context) {
+        const auto* source = first->src[1];
+        const auto* ids = first->src[2];
+        const auto tokens = source->ne[2];
+        const auto rows = tokens * ids->ne[0];
+        const auto padded = GGML_PAD(source->ne[0], MATRIX_ROW_PADDING);
+        const auto sy2 = source->ne[1] * padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
+                         (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
+        const auto sy3 = tokens * sy2;
+        for (ggml_tensor* output : {first, second}) {
+          const auto* weights = output->src[0];
+          const auto ts = static_cast<std::int64_t>(ggml_type_size(GGML_TYPE_IQ2_XXS));
+          const mmq_args args{static_cast<const char*>(weights->data),
+                              GGML_TYPE_IQ2_XXS,
+                              static_cast<const int*>(input.activation.data),
+                              static_cast<const std::int32_t*>(input.destination_ids.data),
+                              static_cast<const std::int32_t*>(input.bounds.data),
+                              static_cast<float*>(output->data),
+                              nullptr,
+                              weights->ne[0],
+                              weights->ne[1],
+                              rows,
+                              static_cast<std::int64_t>(weights->nb[1]) / ts,
+                              rows,
+                              static_cast<std::int64_t>(output->nb[1] / sizeof(float)),
+                              weights->ne[2],
+                              weights->ne[2],
+                              static_cast<std::int64_t>(weights->nb[2]) / ts,
+                              sy2,
+                              static_cast<std::int64_t>(output->nb[2] / sizeof(float)),
+                              weights->ne[3],
+                              source->ne[3],
+                              static_cast<std::int64_t>(weights->nb[3]) / ts,
+                              sy3,
+                              static_cast<std::int64_t>(output->nb[3] / sizeof(float)),
+                              tokens,
+                              tokens,
+                              true};
+          mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, context.stream());
+          CUDA_CHECK(cudaGetLastError());
+        }
+      });
 }
 
 }  // namespace jitllm::kernels::ggml

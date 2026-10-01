@@ -139,9 +139,10 @@ std::expected<ExpertMmqLayout, KernelFailure> DescribeMulMatIdQPairPrepared(
 // preparation. Private guard bytes are retained, not presumed initialized;
 // valid payload/guard extents are given by Describe. Capture is not timed
 // as an ordinary complete-chain candidate.
-std::expected<void, KernelFailure> MulMatIdQPairCapture(
-    LaunchContext& launch, ggml_tensor* first, ggml_tensor* second,
-    const ExpertMmqPrepared& capture, std::uint64_t generation);
+std::expected<void, KernelFailure> MulMatIdQPairCapture(LaunchContext& launch, ggml_tensor* first,
+                                                        ggml_tensor* second,
+                                                        const ExpertMmqPrepared& capture,
+                                                        std::uint64_t generation);
 // Caller authenticates every map/activation byte before upload, including
 // the full selected-ID bijection and initialized native-readable guards.
 // Only native compact tiles/fixup are allocated; producer work is absent
@@ -149,9 +150,10 @@ std::expected<void, KernelFailure> MulMatIdQPairCapture(
 std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPairBorrowed(
     const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
     const ExpertMmqPrepared& input, std::uint64_t generation);
-std::expected<void, KernelFailure> MulMatIdQPairBorrowed(
-    LaunchContext& launch, ggml_tensor* first, ggml_tensor* second,
-    const ExpertMmqPrepared& input, std::uint64_t generation);
+std::expected<void, KernelFailure> MulMatIdQPairBorrowed(LaunchContext& launch, ggml_tensor* first,
+                                                         ggml_tensor* second,
+                                                         const ExpertMmqPrepared& input,
+                                                         std::uint64_t generation);
 
 // Row-invariant products for a speculative verify (D-092; mmvq_rows.cu):
 // every output column of a quantized product (up to kRowsMaxColumns
