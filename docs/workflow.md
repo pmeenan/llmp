@@ -91,6 +91,11 @@ downgrade a heavy-path change to the light loop on their own.
   retirement still apply. Check the resulting production implementation
   before landing it; diagnostic experiments do not each require a full
   unit suite.
+  *Owner clarification, 2026-10-01:* screen a candidate first with one
+  representative shape or prompt and a short bookended A/B. Expand quality,
+  state and context controls when the result warrants adoption or leaves a
+  decision unresolved. Do not make full ladders, repeated historical archive
+  verification or production check cycles prerequisites to this first screen.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name.
