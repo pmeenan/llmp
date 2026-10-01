@@ -325,7 +325,8 @@ spilling only initialized extents; both 262K ceilings register together and
 swap exact 8K state under 10 s. Turn checkpoints reuse 64K prefixes when
 reasoning is removed, with exact continuation across swaps. Context defaults
 to 262,144, with trained ceilings checked before allocation. Remaining
-before the gate: Qwen's long-context MTP speed gap, ds4's causal native-stage
+before the gate: Qwen's long-context MTP speed gap, concurrent-request
+comparisons (the API currently queues requests), ds4's causal native-stage
 restoration and wider matched-context/task-quality checks, the final
 swap/client gate and record, and deferred workstation checks. Final
 maximum-context timing, neutral retrieval and continuing-context swaps

@@ -941,6 +941,19 @@ it appears.
       complete four OFF/ON pairs without a clear candidate-specific answer
       regression, but both paths fail parts of the strict rubric. HCA stays
       off by default; these tests do not approve a quality exception.
+- [ ] **Concurrent-request comparisons** (the owner, 2026-10-01).
+      Engine comparisons cover one request and concurrent generation
+      requests, beginning with 1, 2 and 4 on the same resident model.
+      Compare actual aggregate throughput and each request's latency,
+      completion, output and memory, with matched prompts, contexts,
+      precision and speculation settings. TensorFold's explicit CUDA
+      concurrency mode is included; cross-quantization results remain
+      labelled. [Protocol](experiments/concurrent-requests/protocol.md).
+      jitLLM currently queues requests to completion; solo performance
+      does not establish concurrent parity. Measure the gap and use it to
+      prioritize the continuous-batching work below, advancing the
+      necessary implementation when the comparison requires it. This
+      criterion remains open while only solo/operator measurements exist.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
@@ -1195,6 +1208,12 @@ it appears.
   comparators are reported beside them for speed and memory, not gated.
   Each comparison names the comparator, its format and whether both sides
   speculated.
+  *Owner addition, 2026-10-01:* report both solo and concurrent generation
+  requests at matched concurrency levels, initially 1, 2 and 4. Include
+  aggregate completed-token throughput, each request's latency, errors,
+  admission limits and memory. Establish parity in both scenarios before
+  claiming a performance gate passes; existing single-request results
+  qualify only that scenario. Do not count streamed chunks as tokens.
 - **Long context** (the owner, 2026-09-29):
   - **Speed:** at 32K, 64K, 128K and each model's measured one-Spark
     maximum, prefill and decode (plain and speculative) are at least the
@@ -1310,6 +1329,9 @@ family" guide, and its long-context scaling work.
       The chat route's one-request-at-a-time queue (D-097) becomes a
       batch scheduler. Batching applies to requests for the same model;
       different models still time-slice by swapping (D-019).
+      M3's added concurrent-request comparisons now measure this gap;
+      advance the necessary implementation into the optimization run
+      where those comparisons require it (owner, 2026-10-01).
 - [ ] **Skeleton gaps the M3 cleanup's review named**
       ([engine.md](engine.md)):
       - planning, capture and launch binding are GGML-only, so a family
