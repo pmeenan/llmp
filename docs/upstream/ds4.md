@@ -3,6 +3,27 @@
 
 # ds4
 
+## Literal compressor and aligned weight-repack primitives
+
+- **Status:** native numerical derivatives for the complete-plan benchmark;
+  no upstream patch or production selection change.
+- **What:** nine complete compressor/RoPE functions and three original
+  IQ2_XXS/Q2_K/Q8 repack kernels, with authenticated source pins and
+  verbatim-function provenance beside their native cores.
+- **Contract:** zero-prefix, aligned and ragged compressor paths retain
+  original finite boot sentinel, later infinity resets, mandatory QAT and
+  ratio-four last-four-token refresh. The caller supplies the original small
+  projection products for that refresh. Repack uses bounded raw chunks and
+  whole Q2 row pairs, preserving every scale/code bit; the caller owns files,
+  allocations and completion. This does not supply a full prepared model.
+- **Evidence:** independent whole reviews and Spark B's final locked check
+  pass 1,110 tests, including 223 GPU tests, SDK format/tidy, boundaries and
+  REUSE/header checks. All twelve original functions match the pinned source;
+  analytical pooling, frontier, byte-permutation/inverse, padding and graph
+  controls pass. No end-to-end equality or performance result is claimed.
+- **Proposed upstream action:** none; the adapters expose jitLLM-owned
+  buffers and streams. Prepared archive/tree identities are unchanged.
+
 ## Literal wide-prefill normalization and hyper-connections
 
 - **Status:** source port for the complete-plan benchmark; no upstream patch.

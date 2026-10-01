@@ -69,14 +69,49 @@ replays and exact own repeats. The final combined Spark A check above covers
 these operators and all twelve original source ranges, with 1,027 headers
 checked. Physical model state and the complete pipeline remain separate work.
 
+## Compressor frontiers and aligned weight preparation
+
+`dsv4_ds4_comp` retains nine complete original compressor/RoPE functions.
+It exposes original zero-prefix, aligned and ragged pooling/state updates,
+learned RMS, rotary-tail coordinates and mandatory FP8/FP4 QAT. Boot/Clear
+uses finite score `-1e30`; original later resets use negative infinity.
+Ratio-four bulk calls explicitly require the caller's separate small
+last-four-token projection products and refresh before continuation.
+Reusing wide projection tails would change the original state rounding.
+
+`dsv4_ds4_repack` exposes three complete original preparation kernels from
+`cuda/mmq/ds4_repack.cu` (SHA-256
+`ce29f7c50e6bc9922a08bf456d5204e684ae74f5618e63dbd583a81edab15153`).
+It converts bounded raw IQ2_XXS, paired-row Q2_K and dense Q8 blocks into
+the original aligned sections. One initialization establishes padding;
+chunks preserve every scale/code bit and require proved completion before
+staging reuse or file output. No original allocator or weight server is used.
+
+Spark B's final combined check (2026-09-30) verifies all 35 original
+cache/HC/compressor/repack functions, both explicit decode-table adaptations
+and scalar ABI. The locked native build passes 1,110 tests, including 223
+GPU tests, in 69.78 seconds, with 24 SDK format checks, all twelve host-unit
+tidies, boundaries and REUSE/header checks (1,047 headers). Source inventory
+and bytes remained unchanged. Compressor controls cover F64 pooling,
+4,096-row norm/RoPE/QAT, distinct refresh inputs, ragged frontiers and graph
+operands; repack controls cover independent full byte permutation/inverse,
+special scale bits, chunks across experts, padding/guards and graph inputs.
+Check receipt SHA-256:
+`2eb67bf9247a8c7982a4dda97954045c21a63cabb8bcf5bd0a94f14921c1e3e5`.
+
+These qualify primitives. The file producer, complete alternate weight set,
+physical model state and whole configured pipeline are still pending.
+Workstation checks remain deferred until the implementations settle.
+
 ## Remaining complete-plan work
 
 Use one alternate prepared expert representation, with canonical GGUF and
 per-tensor provenance, rather than keeping full raw and aligned expert
 weight sets resident together. Add separate accounted raw/packed cache and
 frontier resources, actual per-layer visibility counters and a distinct
-state identity. Port the original dense/HC, compressor, indexer, all sparse
-attention branches, router, routed/shared FFN, fused epilogues and full
+state identity. Assemble the checked HC/compressor stages and port the
+original dense products, indexer, all sparse attention branches, router,
+routed/shared FFN, fused epilogues and full
 requested head, including their preparation and completion boundaries.
 
 The first complete-model control is all 43 layers at 8K, with matched

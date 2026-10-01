@@ -24,7 +24,7 @@
 #                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, mmvq_rows.cu,
 #                        fattn_mma*.cu)
 #                        to jitllm_ggml_kernels.
-add_library(jitllm_ggml_tensors STATIC dsv4_ds4_cache.cc dsv4_ds4_hc.cc dsv4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
+add_library(jitllm_ggml_tensors STATIC dsv4_ds4_cache.cc dsv4_ds4_hc.cc dsv4_ds4_comp.cc dsv4_ds4_repack.cc dsv4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
                                        qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
@@ -58,7 +58,7 @@ if(JITLLM_CUDA)
   endforeach()
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
-                                         fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu dsv4_ds4_cache.cu dsv4_ds4_hc.cu mmvq_rows.cu fattn_mma.cu
+                                         fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu dsv4_ds4_cache.cu dsv4_ds4_hc.cu dsv4_ds4_comp.cu dsv4_ds4_repack.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
                                          jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu dsv4_fast.cu dsv4_sparse.cu
                                          qsa_sparse.cu
@@ -138,6 +138,10 @@ if(JITLLM_CUDA)
                    dsv4_ds4_cache_core.json.license
                    dsv4_ds4_hc.cc dsv4_ds4_hc.cu dsv4_ds4_hc.h
                    dsv4_ds4_hc_core.cuh dsv4_ds4_hc_core.json dsv4_ds4_hc_core.json.license
+                   dsv4_ds4_comp.cc dsv4_ds4_comp.cu dsv4_ds4_comp.h
+                   dsv4_ds4_comp_core.cuh dsv4_ds4_comp_core.json dsv4_ds4_comp_core.json.license
+                   dsv4_ds4_repack.cc dsv4_ds4_repack.cu dsv4_ds4_repack.h
+                   dsv4_ds4_repack_core.cuh dsv4_ds4_repack_core.json dsv4_ds4_repack_core.json.license
                    executor.cc
                    executor.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
@@ -184,7 +188,7 @@ if(JITLLM_CUDA)
   # The default-off complete-ds4 benchmark's cache/QAT and HC/norm cores
   # retain the pinned original CUDA flags. The caller owns every range,
   # including the decode table; this adds no original runtime or globals.
-  set_source_files_properties(dsv4_ds4_cache.cu dsv4_ds4_hc.cu PROPERTIES COMPILE_OPTIONS
+  set_source_files_properties(dsv4_ds4_cache.cu dsv4_ds4_hc.cu dsv4_ds4_comp.cu dsv4_ds4_repack.cu PROPERTIES COMPILE_OPTIONS
                               "-O3;--use_fast_math;-lineinfo")
   # The M3 units that compile or launch GGML's kernels take GGML's device
   # flags too, as GGML's own files and instance units build

@@ -343,6 +343,14 @@ add_executable(dsv4_ds4_hc_validate_test dsv4_ds4_hc_validate_test.cc)
 target_link_libraries(dsv4_ds4_hc_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(dsv4_ds4_hc_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(dsv4_ds4_comp_validate_test dsv4_ds4_comp_validate_test.cc)
+target_link_libraries(dsv4_ds4_comp_validate_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(dsv4_ds4_comp_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(dsv4_ds4_repack_validate_test dsv4_ds4_repack_validate_test.cc)
+target_link_libraries(dsv4_ds4_repack_validate_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(dsv4_ds4_repack_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # DeepSeek V4's DSpark drafter and speculation's parts of the adapter and
 # graph (model/dspark.h; D-092).
 add_executable(dspark_test dspark_test.cc)
@@ -466,6 +474,18 @@ if(JITLLM_CUDA)
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(dsv4_ds4_hc_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(dsv4_ds4_hc_test)
+
+  add_executable(dsv4_ds4_comp_test dsv4_ds4_comp_test.cc)
+  target_include_directories(dsv4_ds4_comp_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(dsv4_ds4_comp_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(dsv4_ds4_comp_test)
+
+  add_executable(dsv4_ds4_repack_test dsv4_ds4_repack_test.cc)
+  target_include_directories(dsv4_ds4_repack_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(dsv4_ds4_repack_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(dsv4_ds4_repack_test)
 
   # jitLLM's Qwen-Image kernels (kernels/image) against host references.
   add_executable(image_kernels_test image_kernels_test.cc)
