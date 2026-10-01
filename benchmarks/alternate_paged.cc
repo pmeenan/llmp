@@ -52,6 +52,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <expected>
 #include <filesystem>
@@ -244,10 +245,7 @@ class Alternation {
         exl3_(node_, o_.exl3, kExl3, kExl3) {}
 
   Status Run();
-  Status TearDown() {
-    const std::array<ts::PagedModel*, 2> models = {&fp16_, &exl3_};
-    return node_.TearDown(models);
-  }
+  Status TearDown() { return node_.TearDown(entered_models_); }
 
  private:
   Status Sample(std::string_view when);
@@ -258,6 +256,7 @@ class Alternation {
   ts::PagedNode node_;
   Fp16Runner fp16_;
   Exl3Runner exl3_;
+  std::vector<ts::PagedModel*> entered_models_;
 
   std::set<catalog::ExtentId> fp16_weights_;
   std::set<catalog::ExtentId> exl3_weights_;
@@ -319,9 +318,11 @@ Status Alternation::Run() {
   if (auto r = node_.Open(); !r) {
     return r;
   }
+  entered_models_.push_back(&fp16_);
   if (auto r = fp16_.Setup(); !r) {
     return r;
   }
+  entered_models_.push_back(&exl3_);
   if (auto r = exl3_.Setup(); !r) {
     return r;
   }
@@ -536,8 +537,10 @@ int main(int argc, char** argv) {
   {
     Alternation alternation(*options);
     ran = alternation.Run();
-    if (auto finished = alternation.TearDown(); !finished && ran) {
-      ran = finished;
+    if (auto finished = alternation.TearDown(); !finished) {
+      if (!ran) std::println(stderr, "FAILED: {}", ran.error());
+      std::println(stderr, "retirement failed: {}", finished.error());
+      std::abort();
     }
   }
   if (!ran) {

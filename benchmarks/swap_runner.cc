@@ -77,6 +77,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <expected>
 #include <filesystem>
@@ -345,10 +346,7 @@ class Swapper {
         fp16_(node_, o_.fp16, kFp16, kFp16, nullptr, record_) {}
 
   Status Run();
-  Status TearDown() {
-    const std::array<ts::PagedModel*, 2> models = {&dsv4_, &fp16_};
-    return node_.TearDown(models);
-  }
+  Status TearDown() { return node_.TearDown(entered_models_); }
 
  private:
   Status Tokenize();
@@ -378,6 +376,7 @@ class Swapper {
   ts::PagedNode node_;
   jb::Dsv4Runner dsv4_;
   jb::Fp16Runner fp16_;
+  std::vector<ts::PagedModel*> entered_models_;
   std::unique_ptr<jitllm::tokenizer::Tokenizer> tokenizer_;
 
   std::vector<std::int32_t> context_;  // A's context tokens, BOS first
@@ -913,9 +912,11 @@ Status Swapper::Run() {
   if (auto r = node_.Open(); !r) {
     return r;
   }
+  entered_models_.push_back(&dsv4_);
   if (auto r = dsv4_.Setup(); !r) {
     return r;
   }
+  entered_models_.push_back(&fp16_);
   if (auto r = fp16_.Setup(); !r) {
     return r;
   }
@@ -1182,8 +1183,10 @@ int main(int argc, char** argv) {
   {
     Swapper swapper(*options);
     ran = swapper.Run();
-    if (auto finished = swapper.TearDown(); !finished && ran) {
-      ran = finished;
+    if (auto finished = swapper.TearDown(); !finished) {
+      if (!ran) std::println(stderr, "FAILED: {}", ran.error());
+      std::println(stderr, "retirement failed: {}", finished.error());
+      std::abort();
     }
   }
   if (!ran) {

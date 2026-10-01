@@ -92,6 +92,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <expected>
 #include <filesystem>
@@ -382,13 +383,7 @@ class Harness {
         fp16_(node_, o_.fp16, kFp16, kFp16, nullptr, record_) {}
 
   Status Run();
-  Status TearDown() {
-    std::vector<ts::PagedModel*> models = {&qwen_};
-    if (with_fp16()) {
-      models.push_back(&fp16_);
-    }
-    return node_.TearDown(models);
-  }
+  Status TearDown() { return node_.TearDown(entered_models_); }
 
  private:
   bool with_fp16() const { return !o_.fp16.artifact.empty(); }
@@ -428,6 +423,7 @@ class Harness {
   ts::PagedNode node_;
   jb::Qwen38Runner qwen_;
   jb::Fp16Runner fp16_;
+  std::vector<ts::PagedModel*> entered_models_;
   std::unique_ptr<jitllm::tokenizer::Tokenizer> tokenizer_;
   std::vector<Prompt> decode_;
   std::vector<Prompt> chat_;
@@ -1585,8 +1581,12 @@ Status Harness::VocabAnchors() {
 
 Status Harness::DraftHead(bool routed_down) {
   const bool projection = o_.check == "mxfp8-projection";
-  const std::string_view stage = projection ? "mxfp8-projection"
-                                          : (routed_down ? "routed-down" : "draft-head");
+  std::string_view stage = "draft-head";
+  if (projection) {
+    stage = "mxfp8-projection";
+  } else if (routed_down) {
+    stage = "routed-down";
+  }
   const std::array<std::uint32_t, 3> all_layers{0, 23, 47};
   const std::span<const std::uint32_t> layers(all_layers);
   const auto selected_layers = projection ? layers.subspan(1) : layers;
@@ -1723,8 +1723,8 @@ Status Harness::DraftHead(bool routed_down) {
             const std::size_t slots = std::size_t{routed.rows} * profile.experts_used;
             const std::size_t projection_columns =
                 layer.layer == 0 ? 0 : 2 * std::size_t{profile.heads} * profile.head_dim;
-            const std::size_t attention_input = projection_columns == 0 ? 0
-                : std::size_t{routed.rows} * profile.width;
+            const std::size_t attention_input =
+                projection_columns == 0 ? 0 : std::size_t{routed.rows} * profile.width;
             if (layer.layer != selected_layers[j] ||
                 layer.input.size() != std::size_t{routed.rows} * profile.width ||
                 layer.activation.size() != slots * profile.expert_ffn ||
@@ -2345,10 +2345,12 @@ Status Harness::Run() {
   if (auto r = node_.Open(); !r) {
     return r;
   }
+  entered_models_.push_back(&qwen_);
   if (auto r = qwen_.Setup(); !r) {
     return r;
   }
   if (with_fp16()) {
+    entered_models_.push_back(&fp16_);
     if (auto r = fp16_.Setup(); !r) {
       return r;
     }
@@ -2562,7 +2564,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     return Error(
         "usage: jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE "
         "--prompts FILE --out DIR --check "
-        "greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|routed-down|mxfp8-projection "
+        "greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|routed-down|mxfp8-"
+        "projection "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
         "[--draft-vocab N] [--adaptive-depth on|off] "
         "[--runtime-prefill on|off] "
@@ -2621,9 +2624,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if (o.check == "mxfp8-projection") {
     if (o.qwen.context != 33792 || o.qwen.max_rows != 4096 || o.tokens != 2 ||
-        (o.qwen.draft_rows != 2 && o.qwen.draft_rows != 3) || o.adaptive_depth ||
-        o.window != 0 || o.profile_decode || !o.runtime_prefill || !o.qwen.graphs ||
-        o.qwen.draft_vocab != 47172 || !o.fp16.artifact.empty() || !o.reference.empty()) {
+        (o.qwen.draft_rows != 2 && o.qwen.draft_rows != 3) || o.adaptive_depth || o.window != 0 ||
+        o.profile_decode || !o.runtime_prefill || !o.qwen.graphs || o.qwen.draft_vocab != 47172 ||
+        !o.fp16.artifact.empty() || !o.reference.empty()) {
       return Error(
           "mxfp8-projection requires context33792/chunk4096, two steps, fixed depth2/3, "
           "head47172, runtime prefill/graphs and no profile/reference/swap");
@@ -2658,8 +2661,10 @@ int main(int argc, char** argv) {
   } else {
     Harness harness(*options);
     ran = harness.Run();
-    if (auto finished = harness.TearDown(); !finished && ran) {
-      ran = finished;
+    if (auto finished = harness.TearDown(); !finished) {
+      if (!ran) std::println(stderr, "FAILED: {}", ran.error());
+      std::println(stderr, "retirement failed: {}", finished.error());
+      std::abort();
     }
   }
   if (!ran) {

@@ -48,6 +48,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -58,6 +59,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include "base/bytes.h"
 #include "fp16_runner.h"
@@ -175,10 +177,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
 }
 
 // The node with the one model on stream 0, set up, run and torn down.
-Status Run(jitllm::benchmarks::Fp16Runner& runner, ts::PagedNode& node) {
+Status Run(jitllm::benchmarks::Fp16Runner& runner, ts::PagedNode& node,
+           std::vector<ts::PagedModel*>& entered_models) {
   if (auto r = node.Open(); !r) {
     return r;
   }
+  entered_models.push_back(&runner);
   if (auto r = runner.Setup(); !r) {
     return r;
   }
@@ -222,10 +226,12 @@ int main(int argc, char** argv) {
                         .inline_lanes = options->inline_lanes,
                         .coalesce = options->coalesce});
     jitllm::benchmarks::Fp16Runner runner(node, options->model, 0, 0, recording.get(), lines);
-    ran = Run(runner, node);
-    const std::array<ts::PagedModel*, 1> models = {&runner};
-    if (auto finished = node.TearDown(models); !finished && ran) {
-      ran = finished;
+    std::vector<ts::PagedModel*> entered_models;
+    ran = Run(runner, node, entered_models);
+    if (auto finished = node.TearDown(entered_models); !finished) {
+      if (!ran) std::println(stderr, "FAILED: {}", ran.error());
+      std::println(stderr, "retirement failed: {}", finished.error());
+      std::abort();
     }
   }
   if (recording) {

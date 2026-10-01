@@ -83,10 +83,12 @@ std::expected<PreparedModelWeights, std::string> PrepareModelWeights(
   const auto setup_started = Clock::now();
   en::PagedNode node({.compute_streams = 1});
   PreparationModel model(node);
+  std::vector<en::PagedModel*> entered_models;
   // Even a partial Open can own streams or landing-zone backing. Every
   // attempted setup passes through TearDown before captured owners leave.
   auto prepared = [&]() -> en::Status {
     if (auto opened = node.Open(); !opened) return opened;
+    entered_models.push_back(&model);
     if (auto mapped = model.resources.Map(model.raw, "ds4 preparation raw", payload_limit,
                                           ca::MemoryClass::kScratch);
         !mapped)
@@ -142,8 +144,7 @@ std::expected<PreparedModelWeights, std::string> PrepareModelWeights(
     return {};
   }();
   const auto teardown_started = Clock::now();
-  const std::array<en::PagedModel*, 1> models = {&model};
-  auto retired = node.TearDown(models);
+  auto retired = node.TearDown(entered_models);
   result.teardown_seconds = Seconds(teardown_started);
   if (!retired) {
     // A scope exit cannot prove GPU or storage retirement. This diagnostic

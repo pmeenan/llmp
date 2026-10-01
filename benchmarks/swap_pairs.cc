@@ -113,6 +113,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <expected>
@@ -737,10 +738,7 @@ class Swapper {
   }
 
   Status Run();
-  Status TearDown() {
-    const std::array<ts::PagedModel*, 2> models = {&a_->paged(), &b_->paged()};
-    return node_.TearDown(models);
-  }
+  Status TearDown() { return node_.TearDown(entered_models_); }
 
  private:
   std::unique_ptr<Model> Make(const std::string& which, int owner) {
@@ -799,6 +797,7 @@ class Swapper {
   ts::PagedNode node_;
   std::unique_ptr<Model> a_;
   std::unique_ptr<Model> b_;
+  std::vector<ts::PagedModel*> entered_models_;
 
   std::vector<std::int32_t> context_;  // A's context tokens
   std::vector<std::int32_t> history_;  // A's sequence so far
@@ -1563,6 +1562,7 @@ Status Swapper::Run() {
     return r;
   }
   for (Model* m : {a_.get(), b_.get()}) {
+    entered_models_.push_back(&m->paged());
     if (auto r = m->Setup(); !r) {
       return Error(std::format("{}: {}", m->name(), r.error()));
     }
@@ -1888,8 +1888,10 @@ int main(int argc, char** argv) {
   {
     Swapper swapper(*options);
     ran = swapper.Run();
-    if (auto finished = swapper.TearDown(); !finished && ran) {
-      ran = finished;
+    if (auto finished = swapper.TearDown(); !finished) {
+      if (!ran) std::println(stderr, "FAILED: {}", ran.error());
+      std::println(stderr, "retirement failed: {}", finished.error());
+      std::abort();
     }
   }
   if (!ran) {

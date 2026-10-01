@@ -81,6 +81,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <expected>
 #include <filesystem>
@@ -301,16 +302,7 @@ class Harness {
         fp16_(node_, o_.fp16, kFp16, kFp16, nullptr, record_) {}
 
   Status Run();
-  Status TearDown() {
-    if (!node_opened_) {
-      return {};
-    }
-    std::vector<ts::PagedModel*> models = {&dsv4_};
-    if (with_fp16()) {
-      models.push_back(&fp16_);
-    }
-    return node_.TearDown(models);
-  }
+  Status TearDown() { return node_.TearDown(entered_models_); }
 
  private:
   bool with_fp16() const { return !o_.fp16.artifact.empty(); }
@@ -361,6 +353,7 @@ class Harness {
   ts::PagedNode node_;
   jb::Dsv4Runner dsv4_;
   jb::Fp16Runner fp16_;
+  std::vector<ts::PagedModel*> entered_models_;
   std::unique_ptr<jitllm::tokenizer::Tokenizer> tokenizer_;
   std::vector<Prompt> decode_;
   std::vector<Prompt> chat_;
@@ -369,7 +362,6 @@ class Harness {
   std::vector<std::string> problems_;
   double load_seconds_ = 0;
   bool weights_loaded_ = false;
-  bool node_opened_ = false;
 };
 
 // ------------------------------------------------------------------ prompts
@@ -1853,11 +1845,12 @@ Status Harness::Run() {
   if (auto r = node_.Open(); !r) {
     return r;
   }
-  node_opened_ = true;
+  entered_models_.push_back(&dsv4_);
   if (auto r = dsv4_.Setup(); !r) {
     return r;
   }
   if (with_fp16()) {
+    entered_models_.push_back(&fp16_);
     if (auto r = fp16_.Setup(); !r) {
       return r;
     }
@@ -2104,8 +2097,10 @@ int main(int argc, char** argv) {
   {
     Harness harness(*options);
     ran = harness.Run();
-    if (auto finished = harness.TearDown(); !finished && ran) {
-      ran = finished;
+    if (auto finished = harness.TearDown(); !finished) {
+      if (!ran) std::println(stderr, "FAILED: {}", ran.error());
+      std::println(stderr, "retirement failed: {}", finished.error());
+      std::abort();
     }
   }
   if (!ran) {

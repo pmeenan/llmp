@@ -347,6 +347,7 @@ int main(int argc, char** argv) {
   std::vector<dc::Pass> passes;
   en::PagedNode node({.compute_streams = 1});
   dc::Runner runner(node, static_cast<std::uint32_t>(sms));
+  std::vector<en::PagedModel*> entered_models;
   const auto setup_started = Clock::now();
   double setup_seconds = 0;
   double load_seconds = 0;
@@ -364,6 +365,7 @@ int main(int argc, char** argv) {
   std::vector<en::Ds4AlignedWeightView> representations;
   auto run = [&]() -> dc::Result {
     if (auto opened = node.Open(); !opened) return opened;
+    entered_models.push_back(&runner);
     if (auto setup = runner.Setup(artifact_path, scratch, *prepared, output_b_study,
                                   routed_ffn_study, static_cast<std::uint32_t>(tokens->size()));
         !setup)
@@ -464,8 +466,7 @@ int main(int argc, char** argv) {
     return {};
   }();
   const auto retirement_started = Clock::now();
-  const std::array<en::PagedModel*, 1> models{&runner};
-  auto retired = node.TearDown(models);
+  auto retired = node.TearDown(entered_models);
   const auto retirement_seconds = Seconds(retirement_started);
   if (!retired) {
     std::println(stderr, "complete reference retirement failed: {}", retired.error());
