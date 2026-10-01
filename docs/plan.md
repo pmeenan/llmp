@@ -997,6 +997,10 @@ it appears.
       pair row-local products over independent request states: paid decode
       throughput improves 19.1%/19.6%, with exact IDs, acceptance and final
       state/cursors. Production request batching and HTTP parity remain open.
+      The separate [shared BF16 target-head control](experiments/qwen38-target-head-sharing/README.md)
+      adds 8.87% paid C4 decode throughput on that paired-product path, with
+      byte-identical complete target vectors and exact IDs, acceptance and
+      state. Both mechanisms still need native Slot-wave/serving integration.
       The [exact16 MXFP8 control](experiments/qwen38-mxfp8-sixteen/README.md)
       passes every output/state check but makes the paid four-request loop
       7.469 times slower. Keep paired-eight products; no wider MXFP8 kernel
