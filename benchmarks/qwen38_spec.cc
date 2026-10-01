@@ -1584,7 +1584,12 @@ Status Harness::VocabAnchors() {
 }
 
 Status Harness::DraftHead(bool routed_down) {
-  const std::string_view stage = routed_down ? "routed-down" : "draft-head";
+  const bool projection = o_.check == "mxfp8-projection";
+  const std::string_view stage = projection ? "mxfp8-projection"
+                                          : (routed_down ? "routed-down" : "draft-head");
+  const std::array<std::uint32_t, 3> all_layers{0, 23, 47};
+  const std::span<const std::uint32_t> layers(all_layers);
+  const auto selected_layers = projection ? layers.subspan(1) : layers;
   const Prompt* chosen = nullptr;
   for (const auto* set : {&chat_, &decode_}) {
     for (const Prompt& p : *set) {
@@ -1710,23 +1715,30 @@ Status Harness::DraftHead(bool routed_down) {
         }
         if (capture && routed_down) {
           const auto& profile = md::Qwen38Flash();
-          if (routed.rows != depth + 1 || routed.layers.size() != 3) {
+          if (routed.rows != depth + 1 || routed.layers.size() != selected_layers.size()) {
             return Error("the routed capture is missing rows or layers");
           }
           std::size_t j = 0;
           for (const auto& layer : routed.layers) {
             const std::size_t slots = std::size_t{routed.rows} * profile.experts_used;
-            if (layer.layer != std::array<std::uint32_t, 3>{0, 23, 47}[j] ||
+            const std::size_t projection_columns =
+                layer.layer == 0 ? 0 : 2 * std::size_t{profile.heads} * profile.head_dim;
+            const std::size_t attention_input = projection_columns == 0 ? 0
+                : std::size_t{routed.rows} * profile.width;
+            if (layer.layer != selected_layers[j] ||
                 layer.input.size() != std::size_t{routed.rows} * profile.width ||
                 layer.activation.size() != slots * profile.expert_ffn ||
                 layer.down.size() != slots * profile.width || layer.ids.size() != slots ||
                 layer.weights.size() != slots || layer.gate.size() != routed.rows ||
                 layer.shared.size() != std::size_t{routed.rows} * profile.width ||
-                layer.combined.size() != layer.shared.size()) {
+                layer.combined.size() != layer.shared.size() ||
+                layer.attention_input.size() != attention_input ||
+                layer.attention_projection.size() != projection_columns * routed.rows) {
               return Error("the routed capture has invalid operand extents");
             }
             for (const auto* values : {&layer.input, &layer.activation, &layer.down, &layer.shared,
-                                       &layer.gate, &layer.weights, &layer.combined}) {
+                                       &layer.gate, &layer.weights, &layer.combined,
+                                       &layer.attention_input, &layer.attention_projection}) {
               if (!std::ranges::all_of(*values, [](float value) { return std::isfinite(value); })) {
                 return Error("a routed capture operand is not finite");
               }
@@ -1746,13 +1758,18 @@ Status Harness::DraftHead(bool routed_down) {
                 std::ranges::none_of(layer.activation, [](float value) { return value != 0; })) {
               return Error("a routed capture input or activation is all zero");
             }
-            const auto stem = std::format("routed-down-{}-{}", s, layer.layer);
+            const auto stem = std::format("{}-{}-{}", stage, s, layer.layer);
             if (arm == 1) {
               for (const auto& [name, values] :
                    {std::pair{"input", &layer.input}, std::pair{"activation", &layer.activation},
                     std::pair{"down", &layer.down}, std::pair{"shared", &layer.shared},
                     std::pair{"gate", &layer.gate}, std::pair{"weights", &layer.weights},
-                    std::pair{"combined", &layer.combined}}) {
+                    std::pair{"combined", &layer.combined},
+                    std::pair{"attention-input", &layer.attention_input},
+                    std::pair{"attention-projection", &layer.attention_projection}}) {
+                if (values->empty()) {
+                  continue;
+                }
                 if (!write(stem + "." + name + ".f32", std::as_bytes(std::span(*values)))) {
                   return Error("writing the external routed operand");
                 }
@@ -1762,13 +1779,15 @@ Status Harness::DraftHead(bool routed_down) {
                 return Error("writing the external routed history and IDs");
               }
               results_.push_back(std::format(
-                  R"({{"check":"routed_down_capture","step":{},"anchor_position":{},"layer":{},"rows":{},"ffn":{},"width":{},"experts_used":{},"input_fingerprint":{},"activation_fingerprint":{},"down_fingerprint":{},"combined_fingerprint":{},"ids_fingerprint":{}}})",
+                  R"({{"check":"routed_down_capture","step":{},"anchor_position":{},"layer":{},"rows":{},"ffn":{},"width":{},"experts_used":{},"input_fingerprint":{},"activation_fingerprint":{},"down_fingerprint":{},"combined_fingerprint":{},"ids_fingerprint":{},"projection_columns":{},"attention_input_fingerprint":{},"attention_projection_fingerprint":{}}})",
                   s, pos, layer.layer, routed.rows, profile.expert_ffn, profile.width,
                   profile.experts_used, Fingerprint(std::as_bytes(std::span(layer.input))),
                   Fingerprint(std::as_bytes(std::span(layer.activation))),
                   Fingerprint(std::as_bytes(std::span(layer.down))),
                   Fingerprint(std::as_bytes(std::span(layer.combined))),
-                  Fingerprint(std::as_bytes(std::span(layer.ids)))));
+                  Fingerprint(std::as_bytes(std::span(layer.ids))), projection_columns,
+                  Fingerprint(std::as_bytes(std::span(layer.attention_input))),
+                  Fingerprint(std::as_bytes(std::span(layer.attention_projection)))));
             } else {
               const auto& before = routed_records[s].layers[j];
               if (routed.rows != routed_records[s].rows || layer.layer != before.layer ||
@@ -1778,7 +1797,9 @@ Status Harness::DraftHead(bool routed_down) {
                   !same_floats(layer.shared, before.shared) ||
                   !same_floats(layer.gate, before.gate) ||
                   !same_floats(layer.weights, before.weights) ||
-                  !same_floats(layer.combined, before.combined)) {
+                  !same_floats(layer.combined, before.combined) ||
+                  !same_floats(layer.attention_input, before.attention_input) ||
+                  !same_floats(layer.attention_projection, before.attention_projection)) {
                 return Error(std::format("routed operand repeat differs at step {} layer {}", s,
                                          layer.layer));
               }
@@ -2383,7 +2404,7 @@ Status Harness::Run() {
     checked = DraftHead();
   } else if (o_.check == "vocab-anchors") {
     checked = VocabAnchors();
-  } else if (o_.check == "routed-down") {
+  } else if (o_.check == "routed-down" || o_.check == "mxfp8-projection") {
     checked = DraftHead(true);
   } else if (o_.check == "swap") {
     checked = Swap();
@@ -2541,7 +2562,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     return Error(
         "usage: jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE "
         "--prompts FILE --out DIR --check "
-        "greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|routed-down "
+        "greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|routed-down|mxfp8-projection "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
         "[--draft-vocab N] [--adaptive-depth on|off] "
         "[--runtime-prefill on|off] "
@@ -2597,6 +2618,17 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
           "routed-down requires context<=131072, chunk<=8192, 2..8 steps and fixed depth3");
     }
     o.qwen.routed_capture = 1 | (std::uint64_t{1} << 23) | (std::uint64_t{1} << 47);
+  }
+  if (o.check == "mxfp8-projection") {
+    if (o.qwen.context != 33792 || o.qwen.max_rows != 4096 || o.tokens != 2 ||
+        (o.qwen.draft_rows != 2 && o.qwen.draft_rows != 3) || o.adaptive_depth ||
+        o.window != 0 || o.profile_decode || !o.runtime_prefill || !o.qwen.graphs ||
+        o.qwen.draft_vocab != 47172 || !o.fp16.artifact.empty() || !o.reference.empty()) {
+      return Error(
+          "mxfp8-projection requires context33792/chunk4096, two steps, fixed depth2/3, "
+          "head47172, runtime prefill/graphs and no profile/reference/swap");
+    }
+    o.qwen.routed_capture = (std::uint64_t{1} << 23) | (std::uint64_t{1} << 47);
   }
   std::error_code directory_error;
   std::filesystem::create_directories(o.out, directory_error);

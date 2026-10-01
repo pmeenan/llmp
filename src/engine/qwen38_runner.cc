@@ -392,8 +392,15 @@ Status Qwen38Runner::Setup() {
     const std::uint64_t per_row =
         (std::uint64_t{profile_.experts_used} * (profile_.expert_ffn + profile_.width + 2)) +
         (3 * std::uint64_t{profile_.width}) + 1;
-    routed_capture_bytes_ = per_row * (o_.draft_rows + 1) *
-                            static_cast<std::uint64_t>(std::popcount(o_.routed_capture)) * 4;
+    std::uint64_t words = per_row * static_cast<std::uint64_t>(std::popcount(o_.routed_capture));
+    for (std::uint32_t layer = 0; layer < profile_.layers; ++layer) {
+      if ((o_.routed_capture & (std::uint64_t{1} << layer)) != 0 &&
+          !binding_.layers[layer].linear) {
+        words += std::uint64_t{profile_.width} +
+                 (2 * std::uint64_t{profile_.heads} * profile_.head_dim);
+      }
+    }
+    routed_capture_bytes_ = words * (o_.draft_rows + 1) * 4;
     auto captured = resources_.Pinned(routed_capture_bytes_);
     if (!captured) {
       return Error("pinned staging for the bounded routed capture");
@@ -1349,14 +1356,22 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
         ggml_type type;
         std::int64_t n0, n1, n2;
       };
-      for (const auto part : {Part{layer.input, GGML_TYPE_F32, width, 1, rows},
+      std::vector<Part> parts = {Part{layer.input, GGML_TYPE_F32, width, 1, rows},
                               Part{layer.activation, GGML_TYPE_F32, ffn, used, rows},
                               Part{layer.down, GGML_TYPE_F32, width, used, rows},
                               Part{layer.shared, GGML_TYPE_F32, width, rows, 1},
                               Part{layer.gate, GGML_TYPE_F32, 1, rows, 1},
                               Part{layer.weights, GGML_TYPE_F32, 1, used, rows},
                               Part{layer.ids, GGML_TYPE_I32, used, rows, 1},
-                              Part{layer.combined, GGML_TYPE_F32, width, rows, 1}}) {
+                              Part{layer.combined, GGML_TYPE_F32, width, rows, 1}};
+      if (!binding_.layers[layer.layer].linear) {
+        const std::int64_t projection = 2 * std::int64_t{profile_.heads} * profile_.head_dim;
+        parts.push_back({layer.attention_input, GGML_TYPE_F32, width, rows, 1});
+        parts.push_back({layer.attention_projection, GGML_TYPE_F32, projection, rows, 1});
+      } else if (layer.attention_input != nullptr || layer.attention_projection != nullptr) {
+        return Error("a GDN layer cannot supply the QSA projection capture");
+      }
+      for (const auto part : parts) {
         const ggml_tensor* t = part.tensor;
         const std::uint64_t bytes = static_cast<std::uint64_t>(part.n0 * part.n1 * part.n2) * 4;
         if (t == nullptr || t->data == nullptr || t->type != part.type || t->ne[0] != part.n0 ||
@@ -1499,6 +1514,10 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
       take(values.weights);
       take(values.ids);
       take(values.combined);
+      if (!binding_.layers[layer.layer].linear) {
+        take(values.attention_input);
+        take(values.attention_projection);
+      }
       routed_capture->layers.push_back(std::move(values));
     }
   }

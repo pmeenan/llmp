@@ -295,6 +295,8 @@ class Builder {
   bool verify_;
   bool export_;
   std::uint64_t capture_routed_;
+  ggml_tensor* capture_attention_input_ = nullptr;
+  ggml_tensor* capture_attention_projection_ = nullptr;
   std::vector<ggml_tensor*> expanded_;
 };
 
@@ -841,6 +843,8 @@ ggml_tensor* Builder::Ple(const Qwen38LayerTensors& l, ggml_tensor* emb, ggml_te
 // rule (delta-net-base.cpp build_delta_net_fused, K = 1).
 ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
                                       const Input* pre) {
+  capture_attention_input_ = nullptr;
+  capture_attention_projection_ = nullptr;
   const std::int64_t nt = cur->ne[1];
   const std::int64_t d = p_.lin_head_dim;
   const std::int64_t hk = p_.lin_k_heads;
@@ -1051,6 +1055,8 @@ ggml_tensor* Builder::QsaTopK(const Qwen38LayerTensors& l, Input& cur, int il) {
 // build_layer_attn with build_attn_qsa (qwen4exp.cpp:676-845).
 ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
                                 const Input* pre) {
+  capture_attention_input_ = nullptr;
+  capture_attention_projection_ = nullptr;
   const std::int64_t d = p_.head_dim;
   const std::int64_t heads = p_.heads;
   const std::int64_t kvh = p_.kv_heads;
@@ -1060,6 +1066,10 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   ggml_tensor* top_k = QsaTopK(l, in, il);
   // [(d · 2) · heads, nt]: per head, q then its gate
   ggml_tensor* q_full = Linear(l.q, in);
+  if ((capture_routed_ & (std::uint64_t{1} << il)) != 0) {
+    capture_attention_input_ = in.x;
+    capture_attention_projection_ = q_full;
+  }
   const std::size_t f = ggml_element_size(q_full);
   const std::size_t per_head = f * U(d) * 2;  // q then its gate
   ggml_tensor* k = Linear(l.k, in);
@@ -1217,7 +1227,9 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
                              .gate = shared_gate,
                              .weights = weights,
                              .ids = selected,
-                             .combined = combined});
+                             .combined = combined,
+                             .attention_input = capture_attention_input_,
+                             .attention_projection = capture_attention_projection_});
       }
       return combined;
     }

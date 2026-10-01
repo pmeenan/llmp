@@ -258,6 +258,11 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
                     layer.weights, layer.ids, layer.combined}) {
       kept.push_back(t);
     }
+    for (auto* t : {layer.attention_input, layer.attention_projection}) {
+      if (t != nullptr) {
+        kept.push_back(t);
+      }
+    }
   }
   if (auto r =
           PlaceAndPlan(*out, g.nodes, g.inputs(), kept, choices, activations, activation_bytes);

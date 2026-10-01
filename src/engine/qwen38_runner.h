@@ -124,6 +124,7 @@ struct Qwen38RoutedCapture {
   struct Layer {
     std::uint32_t layer = 0;
     std::vector<float> input, activation, down, shared, gate, weights, combined;
+    std::vector<float> attention_input, attention_projection;
     std::vector<std::int32_t> ids;
   };
   std::uint32_t rows = 0;

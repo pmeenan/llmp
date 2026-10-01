@@ -228,6 +228,9 @@ struct Qwen38RoutedTensors {
   ggml_tensor* weights = nullptr;     // F32 [1, used, rows]
   ggml_tensor* ids = nullptr;         // I32 [used, rows]
   ggml_tensor* combined = nullptr;    // F32 [width, rows]
+  // Existing QSA input/product before query prep; absent for GDN layers.
+  ggml_tensor* attention_input = nullptr;       // F32 [width, rows]
+  ggml_tensor* attention_projection = nullptr;  // F32 [2*heads*head_dim, rows]
 };
 
 // The rows above which GGML's float products run on cuBLAS (MMVF and MMF

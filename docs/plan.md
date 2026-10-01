@@ -1097,6 +1097,12 @@ it appears.
           ordered +1.75% / +1.73%. Fused finalization also varies on own
           repeats; no production port or full-model candidate follows
           ([complete consumer](experiments/qwen38-fi-down-stage/README.md#complete-consumer-follow-up)).
+          The [literal MXFP8 projection](experiments/qwen38-mxfp8-consumer/README.md)
+          also remains unadopted: on eight real T3/T4 inputs, Mia's traced
+          tile/orientation costs 6.2–6.3% more than native with conversion,
+          quantization and widening included. The fresh public API default
+          selects a different orientation and is about 3× slower. These
+          single-request operator results do not explain the whole decode gap.
           The remaining decode gap and reference-quality qualification
           remain open;
         - sparse flash-attention prefill for both models (llama.cpp
