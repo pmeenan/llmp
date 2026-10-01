@@ -41,9 +41,9 @@ bool Add(std::uint64_t& total, std::uint64_t value) {
 }  // namespace
 
 Result Runner::Setup(const std::filesystem::path& artifact, const std::filesystem::path& scratch,
-                     PreparedModelWeights& prepared, bool output_b_study) {
+                     PreparedModelWeights& prepared, bool output_b_study, bool routed_ffn_study) {
   if (node_.threaded() || device_sms_ == 0 || prepared.plan.artifact_id != kCommunityArtifact ||
-      !mapped_.empty() || raw_.opened()) {
+      !mapped_.empty() || raw_.opened() || (output_b_study && routed_ffn_study)) {
     return std::unexpected(
         "complete runner setup requires a fresh node and prepared community set");
   }
@@ -74,7 +74,7 @@ Result Runner::Setup(const std::filesystem::path& artifact, const std::filesyste
     return reserved;
   }
   prepared_plan_ = prepared.plan;
-  auto scratch_plan = PlanScratch(profile, kContext, device_sms_, output_b_study);
+  auto scratch_plan = PlanScratch(profile, kContext, device_sms_, output_b_study, routed_ffn_study);
   if (!scratch_plan) return std::unexpected(scratch_plan.error());
   scratch_plan_ = std::move(*scratch_plan);
   // RunnerResources stores pointers, so reserve the final number before mapping.
@@ -119,12 +119,13 @@ Result Runner::Setup(const std::filesystem::path& artifact, const std::filesyste
   pinned = resources_.Pinned(sizeof(std::array<float, 128>));
   if (!pinned) return std::unexpected(pinned.error());
   host_decode_table_ = *pinned;
-  if (output_b_study) {
+  if (output_b_study || routed_ffn_study) {
     pinned = resources_.Pinned(kOutputBCaptureBytes);
     if (!pinned) return std::unexpected(pinned.error());
     host_output_b_capture_ = *pinned;
   }
   output_b_study_ = output_b_study;
+  routed_ffn_study_ = routed_ffn_study;
   const auto table = kg::Ds4CacheDecodeTable();
   std::memcpy(host_decode_table_, table.data(), sizeof(table));
   // State virtual capacity is not resident occupancy. Budget it separately
@@ -342,20 +343,26 @@ Result Runner::PrepareProfile() {
 
 std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> tokens, bool profile,
                                                  OutputBConsumer output_b,
-                                                 const std::filesystem::path& capture) {
+                                                 const std::filesystem::path& capture,
+                                                 RoutedFfnTier routed_ffn) {
   if (!initialized_ || tokens.size() != kContext ||
       (profile && profile_mark_count_ != profile_.marks.size()) ||
       std::ranges::any_of(tokens, [](auto token) { return token < 0 || token >= 129280; }) ||
       (output_b != OutputBConsumer::kOriginal && output_b != OutputBConsumer::kNativeMmq) ||
-      (!output_b_study_ && (output_b != OutputBConsumer::kOriginal || !capture.empty())) ||
+      (!output_b_study_ && output_b != OutputBConsumer::kOriginal) ||
+      (routed_ffn != RoutedFfnTier::kDirect && routed_ffn != RoutedFfnTier::kMaterialized) ||
+      (!routed_ffn_study_ && routed_ffn != RoutedFfnTier::kDirect) ||
+      (profile && (output_b_study_ || routed_ffn_study_)) ||
       (!capture.empty() &&
-       (profile || output_b != OutputBConsumer::kOriginal || host_output_b_capture_ == nullptr))) {
+       (profile || output_b != OutputBConsumer::kOriginal || routed_ffn != RoutedFfnTier::kDirect ||
+        (!output_b_study_ && !routed_ffn_study_) || host_output_b_capture_ == nullptr))) {
     return std::unexpected("complete reference needs exactly8192 validated current token IDs");
   }
   // Every pass consumes fresh state; failure never permits a suffix retry.
   initialized_ = false;
   Pass result;
   result.output_b_consumer = output_b;
+  result.routed_ffn_tier = routed_ffn;
   result.operand_capture = !capture.empty();
   // All sample storage is allocated before the profiled interval. The
   // sixteen handles were allocated once before ordinary warmup.
@@ -381,7 +388,10 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
            .model_generation = 1,
            .output_b_consumer = output_b,
            .output_b_study = output_b_study_,
-           .capture_output_b = !capture.empty() && first == kRows});
+           .capture_output_b = output_b_study_ && !capture.empty() && first == kRows,
+           .routed_ffn_tier = routed_ffn,
+           .routed_ffn_study = routed_ffn_study_,
+           .capture_routed_ffn = routed_ffn_study_ && !capture.empty() && first == kRows});
       if (!chunk) return std::unexpected(chunk.error());
       std::memcpy(host_tokens_, tokens.data() + first, std::uint64_t{kRows} * sizeof(std::int32_t));
       const auto* input = FindScratch("tokens");
@@ -422,8 +432,14 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
                                    *progress, marks);
             !status)
           return status;
-        if (!capture.empty() && CaptureOutputBAt(first, layer)) {
+        if (output_b_study_ && !capture.empty() && CaptureOutputBAt(first, layer)) {
           if (auto copied = CaptureOutputB(*chunk, layer, capture); !copied) {
+            Poison(*progress);
+            return copied;
+          }
+        }
+        if (routed_ffn_study_ && !capture.empty() && CaptureRoutedFfnAt(first, layer)) {
+          if (auto copied = CaptureRoutedFfn(*chunk, layer, capture); !copied) {
             Poison(*progress);
             return copied;
           }
@@ -595,6 +611,167 @@ Result Runner::CaptureOutputB(const Chunk& chunk, std::uint32_t layer,
   return {};
 }
 
+Result Runner::CaptureRoutedFfn(const Chunk& chunk, std::uint32_t layer,
+                                const std::filesystem::path& directory) {
+  if (!routed_ffn_study_ || host_output_b_capture_ == nullptr ||
+      chunk.routed_ffn_tier != RoutedFfnTier::kDirect || !CaptureRoutedFfnAt(chunk.first, layer) ||
+      layer >= chunk.layers.size())
+    return std::unexpected("routed-FFN capture requires completed ORIGINAL Direct operands");
+  const auto& recipe = chunk.layers[layer];
+  const auto& probe = recipe.routed_control;
+  if (!probe)
+    return std::unexpected("routed-FFN capture requires completed ORIGINAL Direct operands");
+  const auto& original = recipe.routed;
+  const auto& control = *probe;
+  if (original.producer.generation != chunk.storage_generation ||
+      original.producer.source_address != original.input.address ||
+      original.producer.kind != kg::Ds4MoeQuant::kD4)
+    return std::unexpected("routed-FFN capture lost the original token-D4 producer identity");
+  enum class Format : std::uint8_t { kBytes, kFloat, kD4, kD2s6 };
+  struct File {
+    std::string_view name;
+    kg::Ds4CacheBuffer source;
+    Format format = Format::kBytes;
+    std::uint64_t payload = 0;
+  };
+  constexpr std::uint64_t token_payload = std::uint64_t{kRows} * (4096 / 128) * 144;
+  constexpr std::uint64_t pair_payload = 6 * token_payload;
+  constexpr std::uint64_t down_payload = 6ULL * kRows * (2048 / 128) * 144;
+  const std::array files{
+      File{"input.f32", original.input, Format::kFloat},
+      File{"token.d4", original.producer.storage, Format::kD4, token_payload},
+      File{"selected.i32", original.selected},
+      File{"weights.f32", original.weights, Format::kFloat},
+      File{"gate.aligned-iq2", original.gate_weights},
+      File{"up.aligned-iq2", original.up_weights},
+      File{"down.aligned-q2", original.down_weights},
+      File{"direct.ids-source.i32", original.ids_source},
+      File{"direct.ids-destination.i32", original.ids_destination},
+      File{"direct.bounds.i32", original.expert_bounds},
+      File{"direct.work.i32", original.work},
+      File{"direct.d2s6", original.down_quant, Format::kD2s6, down_payload},
+      File{"direct.down.f32", original.down, Format::kFloat},
+      File{"materialized.ids-source.i32", control.ids_source},
+      File{"materialized.ids-destination.i32", control.ids_destination},
+      File{"materialized.bounds.i32", control.expert_bounds},
+      File{"materialized.work.i32", control.work},
+      File{"materialized.input.d4", control.input_quant, Format::kD4, pair_payload},
+      File{"materialized.gate.f32", control.gate, Format::kFloat},
+      File{"materialized.up.f32", control.up, Format::kFloat},
+      File{"materialized.middle.f32", control.middle, Format::kFloat},
+      File{"materialized.d2s6", control.down_quant, Format::kD2s6, down_payload},
+      File{"materialized.down.f32", control.down, Format::kFloat}};
+  std::error_code problem;
+  const auto output = directory / ("chunk1-layer" + std::to_string(layer));
+  if (!std::filesystem::create_directory(output, problem) || problem)
+    return std::unexpected("routed-FFN capture directory must be fresh and writable");
+  std::array<std::string, files.size()> digests;
+  // This quantum is block-aligned for both quant layouts and F32. A file
+  // can exceed staging capacity; consume each slice only after its Job
+  // fence, before reusing the same 128MiB owner for the next slice.
+  constexpr auto quantum = (kOutputBCaptureBytes / 144) * 144;
+  for (std::size_t index = 0; index < files.size(); ++index) {
+    const auto& file = files[index];
+    if (file.source.address == 0 || file.source.bytes == 0 ||
+        file.source.bytes > (std::uint64_t{4} << 30U) ||
+        file.source.address > std::numeric_limits<std::uint64_t>::max() - file.source.bytes ||
+        !node_.Covered(file.source.address, file.source.bytes, 0))
+      return std::unexpected("routed-FFN capture range is outside retained mapped operands");
+    if (file.payload != 0 &&
+        (file.payload % 144 != 0 ||
+         file.source.bytes != file.payload + ((file.name == "token.d4" ? 256ULL : 128ULL) * 144)))
+      return std::unexpected("routed-FFN quantized capture has incomplete guard capacity");
+    if (file.format == Format::kFloat && file.source.bytes % sizeof(float) != 0)
+      return std::unexpected("routed-FFN F32 capture has a partial scalar");
+    std::ofstream stored(output / file.name, std::ios::binary | std::ios::noreplace);
+    if (!stored) return std::unexpected("routed-FFN operand output must be a fresh file");
+    base::Sha256 hash;
+    for (std::uint64_t offset = 0; offset < file.source.bytes;) {
+      const auto count = std::min(quantum, file.source.bytes - offset);
+      std::string error;
+      auto copied = node_.Job(
+          everything_,
+          [&](pr::NativeStream stream) {
+            auto status =
+                pr::CopyAsync(stream, host_output_b_capture_, Pointer(file.source.address + offset),
+                              count, pr::CopyKind::kDeviceToHost);
+            if (!status.ok()) {
+              error = status.text();
+              return sc::JobResult::kUnknown;
+            }
+            return sc::JobResult::kQueued;
+          },
+          "diagnostic routed-FFN original-input operand slice", 0);
+      if (!copied) return std::unexpected(error.empty() ? copied.error() : error);
+      const auto bytes = std::span(static_cast<const std::byte*>(host_output_b_capture_),
+                                   static_cast<std::size_t>(count));
+      if (file.format == Format::kFloat &&
+          std::ranges::any_of(std::span(static_cast<const float*>(host_output_b_capture_),
+                                        static_cast<std::size_t>(count / sizeof(float))),
+                              [](float value) { return !std::isfinite(value); }))
+        return std::unexpected("routed-FFN captured F32 operand contains nonfinite values");
+      if (file.payload != 0) {
+        const auto payload_count =
+            offset < file.payload ? std::min(count, file.payload - offset) : 0;
+        for (std::uint64_t block = 0; block < payload_count / 144; ++block) {
+          if (file.format == Format::kD4) {
+            for (std::uint64_t scale = 0; scale < 4; ++scale) {
+              float value = 0;
+              std::memcpy(&value, bytes.data() + (block * 144) + (scale * 4), sizeof(value));
+              if (!std::isfinite(value) || value < 0)
+                return std::unexpected("routed-FFN D4 capture has an invalid F32 scale");
+            }
+          } else {
+            for (std::uint64_t scalar = 0; scalar < 8; ++scalar) {
+              std::uint16_t value = 0;
+              std::memcpy(&value, bytes.data() + (block * 144) + (scalar * 2), sizeof(value));
+              if ((value & 0x7c00U) == 0x7c00U || (scalar < 2 && (value & 0x8000U) != 0))
+                return std::unexpected("routed-FFN D2S6 capture has a nonfinite scale/sum");
+            }
+          }
+        }
+        if (std::ranges::any_of(bytes.subspan(static_cast<std::size_t>(payload_count)),
+                                [](std::byte value) { return value != std::byte{0}; }))
+          return std::unexpected("routed-FFN capture lost its complete initialized quant guard");
+      }
+      hash.Update(bytes);
+      stored.write(reinterpret_cast<const char*>(bytes.data()),
+                   static_cast<std::streamsize>(count));
+      if (!stored) return std::unexpected("cannot persist routed-FFN operand slice");
+      offset += count;
+    }
+    stored.close();
+    if (!stored) return std::unexpected("cannot finish routed-FFN operand file");
+    digests[index] = base::ToHex(hash.Finish());
+  }
+  std::ofstream metadata(output / "capture.json", std::ios::out | std::ios::noreplace);
+  std::string quoted;
+  base::json::AppendQuoted(chunk.artifact_id, quoted);
+  metadata << R"({"complete":true,"diagnostic_only":true,"same_original_upstream":true,)"
+           << R"("original_outputs_retained":true,"axis":"producer/gather+fusion/storage",)"
+           << R"("artifact":)" << quoted << R"(,"first":)" << chunk.first << R"(,"layer":)" << layer
+           << R"(,"generation":)" << chunk.storage_generation
+           << R"(,"rows":4096,"input":4096,"middle":2048,"output":4096,"pairs":24576,)"
+           << R"("experts":256,"top_k":6,"selected_stride":6,"weight_stride":6,)"
+           << R"("intermediate_bytes":603979776,"host_staging_bytes":)" << kOutputBCaptureBytes
+           << R"(,"copy_quantum":)" << quantum << R"(,"files":[)";
+  for (std::size_t index = 0; index < files.size(); ++index) {
+    if (index != 0) metadata << ',';
+    quoted.clear();
+    base::json::AppendQuoted(files[index].name, quoted);
+    metadata << R"({"name":)" << quoted << R"(,"bytes":)" << files[index].source.bytes
+             << R"(,"sha256":)";
+    quoted.clear();
+    base::json::AppendQuoted(digests[index], quoted);
+    metadata << quoted << R"(,"format":)" << static_cast<unsigned>(files[index].format)
+             << R"(,"payload_bytes":)" << files[index].payload << '}';
+  }
+  metadata << "]}\n";
+  metadata.close();
+  if (!metadata) return std::unexpected("cannot complete routed-FFN capture metadata");
+  return {};
+}
+
 Result Runner::Release() {
   // PagedNode has fenced every consumer and evicted every managed extent.
   std::vector<std::string> problems;
@@ -608,6 +785,7 @@ Result Runner::Release() {
   resources_.Release(problems);
   host_output_b_capture_ = nullptr;
   output_b_study_ = false;
+  routed_ffn_study_ = false;
   state_.Release(node_.memory(), problems);
   if (auto status = raw_.Release(node_.memory()); !status) problems.push_back(status.error());
   if (auto status = aligned_.Release(node_.memory()); !status) problems.push_back(status.error());

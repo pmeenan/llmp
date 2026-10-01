@@ -39,6 +39,7 @@ struct Pass {
   // Diagnostic event samples; this pass's wall time is not a speed result.
   std::vector<ProfileSample> profile;
   OutputBConsumer output_b_consumer = OutputBConsumer::kOriginal;
+  RoutedFfnTier routed_ffn_tier = RoutedFfnTier::kDirect;
   bool operand_capture = false;
 };
 
@@ -49,7 +50,8 @@ class Runner final : public engine::PagedModel {
   // Setup requires a freshly opened node. The caller always tears it down,
   // including partial setup failures, before any Runner owner is destroyed.
   Result Setup(const std::filesystem::path& artifact, const std::filesystem::path& scratch,
-               PreparedModelWeights& prepared, bool output_b_study = false);
+               PreparedModelWeights& prepared, bool output_b_study = false,
+               bool routed_ffn_study = false);
   Result Load();
   Result Initialize();
   // Create all marks once before warmup. A partial failure still retains
@@ -58,7 +60,8 @@ class Runner final : public engine::PagedModel {
   std::expected<Pass, std::string> Prefill(std::span<const std::int32_t> tokens,
                                            bool profile = false,
                                            OutputBConsumer output_b = OutputBConsumer::kOriginal,
-                                           const std::filesystem::path& capture = {});
+                                           const std::filesystem::path& capture = {},
+                                           RoutedFfnTier routed_ffn = RoutedFfnTier::kDirect);
   std::uint32_t stream() const override { return 0; }
   const catalog::Closure& fence_closure() const override { return everything_; }
   std::vector<catalog::ExtentId> managed_extents() const override;
@@ -83,6 +86,8 @@ class Runner final : public engine::PagedModel {
   Result ReadHashTables();
   Result CaptureOutputB(const Chunk& chunk, std::uint32_t layer,
                         const std::filesystem::path& directory);
+  Result CaptureRoutedFfn(const Chunk& chunk, std::uint32_t layer,
+                          const std::filesystem::path& directory);
   const NamedScratch* FindScratch(std::string_view name) const;
   kg::Ds4CacheBuffer State(model::Ds4BaselineStateKind kind, std::uint32_t layer) const;
 
@@ -105,6 +110,7 @@ class Runner final : public engine::PagedModel {
   void* host_decode_table_ = nullptr;
   void* host_output_b_capture_ = nullptr;
   bool output_b_study_ = false;
+  bool routed_ffn_study_ = false;
   std::uint64_t hash_bytes_ = 0;
   std::uint64_t budget_bytes_ = 0;
   std::uint64_t generation_ = 0;

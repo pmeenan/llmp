@@ -82,6 +82,32 @@ TEST(Ds4CompleteBinding, PaysFullChronologicalUnionAndPackedIndexerPreparation) 
   EXPECT_EQ(Bytes(*plan, "head.logits"), std::uint64_t{129280} * 4);
 }
 
+TEST(Ds4CompleteBinding, RoutedStudyPaysMaterializedStorageAndSeparateOriginalInputControl) {
+  const auto plain = complete::PlanScratch(model::Dsv4Flash(), 8192, 48);
+  const auto study = complete::PlanScratch(model::Dsv4Flash(), 8192, 48, false, true);
+  ASSERT_TRUE(plain);
+  ASSERT_TRUE(study);
+  std::uint64_t intermediate_bytes = 0;
+  for (const auto* name :
+       {"routed.materialized.gate", "routed.materialized.up", "routed.materialized.middle"}) {
+    EXPECT_EQ(Bytes(*plain, name), 0U);
+    EXPECT_EQ(Bytes(*study, name), 24576ULL * 2048 * 4);
+    intermediate_bytes += Bytes(*study, name);
+  }
+  EXPECT_EQ(intermediate_bytes, 603979776U);
+  const auto materialized = kg::Ds4MoeLayoutOf(
+      {.rows = 4096, .input = 4096, .middle = 2048, .output = 4096}, kg::Ds4MoeTier::kMaterialized);
+  ASSERT_TRUE(materialized);
+  EXPECT_GE(Bytes(*study, "routed.input.quant"), materialized->input_quant_bytes);
+  EXPECT_GE(Bytes(*study, "routed.down.quant"), materialized->down_quant_bytes);
+  EXPECT_GE(Bytes(*study, "routed.work"), materialized->work_bytes);
+  EXPECT_EQ(Bytes(*study, "routed.control.input.quant"), Bytes(*study, "routed.input.quant"));
+  EXPECT_EQ(Bytes(*study, "routed.control.down.quant"), Bytes(*study, "routed.down.quant"));
+  EXPECT_EQ(Bytes(*study, "routed.control.down"), Bytes(*study, "routed.down"));
+  EXPECT_EQ(Bytes(*study, "routed.control.bounds"), 257ULL * 4);
+  EXPECT_FALSE(complete::PlanScratch(model::Dsv4Flash(), 8192, 48, true, true));
+}
+
 TEST(Ds4CompleteBinding, RefusesUnqualifiedProfilesContextsAndIncompleteBinding) {
   const auto& profile = model::Dsv4Flash();
   EXPECT_FALSE(complete::PlanScratch(profile, 0, 48));

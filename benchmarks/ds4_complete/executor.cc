@@ -319,7 +319,32 @@ struct Inventory {
     Write(d.select.scratch);
     Write(d.select.diagnostics);
   }
-  void Add(const Layer& d) {
+  void Add(const kg::Ds4Moe& m) {
+    Values(m.shape.rows, m.shape.input, m.shape.middle, m.shape.output, m.tier, m.generation,
+           m.selected_stride, m.weight_stride, m.producer.source_address, m.producer.generation,
+           m.producer.rows, m.producer.width, m.producer.kind);
+    Add(m.producer.storage);
+    Add(m.input);
+    Immutable(m.gate_weights);
+    Immutable(m.up_weights);
+    Immutable(m.down_weights);
+    Add(m.selected);
+    Add(m.weights);
+    Write(m.compact_ids);
+    Write(m.compact_weights);
+    Write(m.ids_source);
+    Write(m.ids_destination);
+    Write(m.expert_bounds);
+    Write(m.work);
+    Write(m.input_quant);
+    Write(m.down_quant);
+    Write(m.gate);
+    Write(m.up);
+    Write(m.middle);
+    Write(m.down);
+    Write(m.sum);
+  }
+  void Add(const Layer& d, bool include_routed_control = true) {
     Values(d.index, d.ratio);
     Meta(d.qkv_norm.query);
     Meta(d.qkv_norm.query_output);
@@ -393,30 +418,9 @@ struct Inventory {
     Write(d.router.selected);
     Write(d.router.weights);
     Write(d.router.probabilities);
-    const auto& m = d.routed;
-    Values(m.shape.rows, m.shape.input, m.shape.middle, m.shape.output, m.tier, m.generation,
-           m.selected_stride, m.weight_stride, m.producer.source_address, m.producer.generation,
-           m.producer.rows, m.producer.width, m.producer.kind);
-    Add(m.producer.storage);
-    Add(m.input);
-    Immutable(m.gate_weights);
-    Immutable(m.up_weights);
-    Immutable(m.down_weights);
-    Add(m.selected);
-    Add(m.weights);
-    Write(m.compact_ids);
-    Write(m.compact_weights);
-    Write(m.ids_source);
-    Write(m.ids_destination);
-    Write(m.expert_bounds);
-    Write(m.work);
-    Write(m.input_quant);
-    Write(m.down_quant);
-    Write(m.gate);
-    Write(m.up);
-    Write(m.middle);
-    Write(m.down);
-    Write(m.sum);
+    Add(d.routed);
+    Value(d.routed_control.has_value());
+    if (include_routed_control && d.routed_control) Add(*d.routed_control);
     Add(d.shared_gate);
     Add(d.shared_up);
     Add(d.shared_down);
@@ -447,17 +451,20 @@ struct Inventory {
     Add(d.projection);
   }
 };
-Inventory Operands(const Chunk& c, bool include_output_b_control = true) {
+Inventory Operands(const Chunk& c, bool include_output_b_control = true,
+                   bool include_routed_control = true, bool include_routed_intermediates = true) {
   Inventory out;
-  out.Values(c.output_b_consumer, c.output_b_study);
+  out.Values(c.output_b_consumer, c.output_b_study, c.routed_ffn_tier, c.routed_ffn_study);
   if (include_output_b_control) out.Write(c.output_b_control);
+  if (include_routed_intermediates)
+    for (const auto& buffer : c.routed_intermediates) out.Write(buffer);
   out.Meta(c.embedding.weights);
   out.Meta(c.embedding.output);
   out.Value(c.embedding.hyper_connections);
   out.Immutable(View(c.embedding.tokens));
   out.Immutable(View(c.embedding.weights.storage));
   out.Add(c.embedding.output.storage);
-  for (const auto& l : c.layers) out.Add(l);
+  for (const auto& l : c.layers) out.Add(l, include_routed_control);
   if (c.frontier) out.Add(*c.frontier);
   return out;
 }
@@ -508,6 +515,33 @@ Result Paid(const Chunk& c) {
     for (const auto& operand : Operands(c, false).ranges)
       if (Overlap(c.output_b_control, operand))
         return Fail("output-B diagnostic control overlaps an original live operand");
+  }
+  // A diagnostic Materialized chain may write only its independently
+  // retained ranges. In an original Direct pass the paid intermediates
+  // belong to the probe, so omit those declarations while enumerating
+  // every actual original operand. Ordinary Materialized passes cannot
+  // carry a diagnostic control.
+  const auto original = Operands(c, true, false, false);
+  if (c.routed_ffn_tier == RoutedFfnTier::kDirect) {
+    for (std::size_t index = 0; index < c.routed_intermediates.size(); ++index) {
+      const auto& write = c.routed_intermediates[index];
+      if (Absent(write)) continue;
+      for (const auto& operand : original.ranges)
+        if (Overlap(write, operand))
+          return Fail("routed-FFN intermediate overlaps an original Direct operand");
+      for (std::size_t earlier = 0; earlier < index; ++earlier)
+        if (Overlap(write, c.routed_intermediates[earlier]))
+          return Fail("routed-FFN intermediates overlap");
+    }
+  }
+  for (const auto& layer : c.layers) {
+    if (!layer.routed_control) continue;
+    Inventory control;
+    control.Add(*layer.routed_control);
+    for (const auto& write : control.writes)
+      for (const auto& operand : original.ranges)
+        if (Overlap(write, operand))
+          return Fail("routed-FFN diagnostic control overlaps an original live operand");
   }
   for (const auto& b : inventory.ranges) {
     if (!Range(b) || std::ranges::none_of(c.paid_ranges, [b](Buffer r) { return Covers(r, b); }))
@@ -847,16 +881,47 @@ Result LayerOf(const model::Dsv4Profile& p, const Chunk& c, const Layer& l) {
       (Absent(l.router.hash) != (l.index >= p.hash_layers)))
     return Fail("router is not original F16 projection/current token hash/bias-only selection");
   const auto& m = l.routed;
+  const bool materialized = c.routed_ffn_tier == RoutedFfnTier::kMaterialized;
   if (m.shape.rows != kRows || m.shape.input != 4096 || m.shape.middle != 2048 ||
-      m.shape.output != 4096 || m.tier != kg::Ds4MoeTier::kDirect ||
+      m.shape.output != 4096 ||
+      m.tier != (materialized ? kg::Ds4MoeTier::kMaterialized : kg::Ds4MoeTier::kDirect) ||
       m.generation != c.storage_generation || !Same(m.input, l.ffn_norm.values) ||
       !Same(m.selected, l.router.selected) || !Same(m.weights, l.router.weights) ||
       m.selected_stride != 6 || m.weight_stride != 6 || !Absent(m.compact_ids) ||
-      !Absent(m.compact_weights) || !Absent(m.sum) || m.producer.kind != kg::Ds4MoeQuant::kD4 ||
-      m.producer.generation != c.storage_generation ||
-      m.producer.source_address != l.ffn_norm.values.address || m.producer.rows != kRows ||
-      m.producer.width != 4096 || !Same(m.producer.storage, l.ffn_norm.q8_d4))
-    return Fail("routed path substituted original Direct G1/D2S6/Q2 or its current D4 producer");
+      !Absent(m.compact_weights) || !Absent(m.sum))
+    return Fail("routed path differs from its explicit original wide FFN tier");
+  if (materialized) {
+    if (!Absent(m.producer.storage) || m.producer.source_address != 0 ||
+        m.producer.generation != 0 || m.producer.rows != 0 || m.producer.width != 0 ||
+        !Same(m.gate, c.routed_intermediates[0]) || !Same(m.up, c.routed_intermediates[1]) ||
+        !Same(m.middle, c.routed_intermediates[2]))
+      return Fail("Materialized FFN requires its paid original gathered producer and storage");
+  } else if (m.producer.kind != kg::Ds4MoeQuant::kD4 ||
+             m.producer.generation != c.storage_generation ||
+             m.producer.source_address != l.ffn_norm.values.address || m.producer.rows != kRows ||
+             m.producer.width != 4096 || !Same(m.producer.storage, l.ffn_norm.q8_d4) ||
+             !Absent(m.gate) || !Absent(m.up) || !Absent(m.middle)) {
+    return Fail("Direct FFN requires its current original token-D4 producer");
+  }
+  if (l.routed_control) {
+    const auto& control = *l.routed_control;
+    if (!c.routed_ffn_study || materialized || !CaptureRoutedFfnAt(c.first, l.index) ||
+        control.tier != kg::Ds4MoeTier::kMaterialized || control.shape.rows != m.shape.rows ||
+        control.shape.input != m.shape.input || control.shape.middle != m.shape.middle ||
+        control.shape.output != m.shape.output || control.generation != m.generation ||
+        !Same(control.input, m.input) || !Same(control.gate_weights, m.gate_weights) ||
+        !Same(control.up_weights, m.up_weights) || !Same(control.down_weights, m.down_weights) ||
+        !Same(control.selected, m.selected) || !Same(control.weights, m.weights) ||
+        control.selected_stride != 6 || control.weight_stride != 6 ||
+        !Absent(control.compact_ids) || !Absent(control.compact_weights) || !Absent(control.sum) ||
+        !Absent(control.producer.storage) || control.producer.source_address != 0 ||
+        control.producer.generation != 0 || control.producer.rows != 0 ||
+        control.producer.width != 0 || !Same(control.gate, c.routed_intermediates[0]) ||
+        !Same(control.up, c.routed_intermediates[1]) ||
+        !Same(control.middle, c.routed_intermediates[2]))
+      return Fail("routed-FFN diagnostic is not the same-original-input Materialized chain");
+    if (auto check = kg::CheckDs4Moe(control); !check) return Fail(check.error().detail);
+  }
   if (auto check = CheckedStages({kg::CheckDs4Router(l.router), kg::CheckDs4Moe(m),
                                   kg::CheckDs4SharedSwiglu(l.shared_swiglu)});
       !check)
@@ -896,6 +961,14 @@ Result LayerOf(const model::Dsv4Profile& p, const Chunk& c, const Layer& l) {
     return Fail("preceding layer requires original guarded MoE/shared fused next-HC/RMS");
   }
   if (auto check = kg::CheckDs4HcExpand(l.ffn_expand); !check) return Fail(check.error().detail);
+  if (materialized) {
+    if (auto check =
+            Disjoint({m.gate, m.up, m.middle, m.input_quant, m.down_quant, m.down, m.ids_source,
+                      m.ids_destination, m.expert_bounds, m.work},
+                     {l.hc_ffn_pre.residual, l.hc_ffn_pre.coefficients.split, l.ffn_norm.q8_d4});
+        !check)
+      return check;
+  }
   // The residual and split survive both attention and FFN. Distinct
   // temporary stages may reuse scratch only after their last consumer.
   if (auto check =
@@ -981,6 +1054,16 @@ Result CheckChunk(const model::Dsv4Profile& p, const Chunk& c) {
        (!Range(c.output_b_control) || c.output_b_control.bytes != std::uint64_t{kRows} * 4096 * 4 ||
         c.first != kRows || c.output_b_consumer != OutputBConsumer::kOriginal)))
     return Fail("invalid private output-B variant or original-input control range");
+  if ((c.routed_ffn_tier != RoutedFfnTier::kDirect &&
+       c.routed_ffn_tier != RoutedFfnTier::kMaterialized) ||
+      (c.routed_ffn_study && c.output_b_study) ||
+      (!c.routed_ffn_study && c.routed_ffn_tier != RoutedFfnTier::kDirect))
+    return Fail("invalid private routed-FFN tier or overlapping studies");
+  for (const auto& buffer : c.routed_intermediates) {
+    if (c.routed_ffn_study ? !Range(buffer) || buffer.bytes != 6ULL * kRows * 2048 * 4
+                           : !Absent(buffer))
+      return Fail("routed-FFN study requires symmetrically paid complete F32 intermediates");
+  }
   if (c.artifact_id != kCommunityArtifact || (c.first != 0 && c.first != kRows) ||
       c.context != 2 * kRows || c.layers.size() != kLayers || c.device_sms == 0 ||
       c.storage_generation == 0 || c.model_generation == 0 ||
@@ -1326,6 +1409,7 @@ bool EncodeLayer(Queue& q, providers::NativeStream native, kg::LaunchContext& la
   if (!q.Add(providers::FillAsync(native, tail, 0, std::size_t{256} * 144)) ||
       !q.Add(kg::RunDs4Moe(launch, l.routed)))
     return false;
+  if (l.routed_control && !q.Add(kg::RunDs4Moe(launch, *l.routed_control))) return false;
   if (!Mark(q, native, profile, 6, true) || !Mark(q, native, profile, 7)) return false;
   if (!q.Add(kg::RunDs4Q8Product(launch, l.shared_gate)) ||
       !q.Add(kg::RunDs4Q8Product(launch, l.shared_up)) ||
@@ -1374,6 +1458,12 @@ Result Workspace(const kg::LaunchContext& launch, const Chunk& c) {
     }
     auto moe = kg::PlanDs4MoeScratch(launch, l.routed);
     if (!moe || *moe > pool.bytes) return Fail("unpaid original routed native workspace");
+    const auto& routed_control = l.routed_control;
+    if (routed_control) {
+      auto bytes = kg::PlanDs4MoeScratch(launch, *routed_control);
+      if (!bytes || *bytes > pool.bytes)
+        return Fail("unpaid Materialized original-input control workspace");
+    }
     const Compression* compression = nullptr;
     const Compression* indexer = nullptr;
     const auto& compression_recipe = l.compression;
@@ -1520,7 +1610,20 @@ Result Resolve(engine::PagedNode& node, kg::LaunchContext& launch, const catalog
             error = moe.error().detail;
             return scheduler::JobResult::kNotStarted;
           }
-          dispatch.stages.push_back({l.index, "routed-ffn", "original-direct-g1-d2s6-q2", *moe});
+          dispatch.stages.push_back({l.index, "routed-ffn",
+                                     c.routed_ffn_tier == RoutedFfnTier::kDirect
+                                         ? "original-direct-g1-d2s6-q2"
+                                         : "original-materialized-gather-g1-f32-d2s6-q2",
+                                     *moe});
+          if (l.routed_control) {
+            auto bytes = kg::PlanDs4MoeScratch(launch, *l.routed_control);
+            if (!bytes) {
+              error = bytes.error().detail;
+              return scheduler::JobResult::kNotStarted;
+            }
+            dispatch.stages.push_back({l.index, "routed-ffn-original-input-control",
+                                       "original-materialized-gather-g1-f32-d2s6-q2", *bytes});
+          }
           dispatch.stages.push_back({l.index, "output-a", "original-own-hmma-inverse-rope-d4", 0});
           dispatch.stages.push_back({l.index, "router", "original-batch-top6-warp", 0});
           dispatch.stages.push_back(

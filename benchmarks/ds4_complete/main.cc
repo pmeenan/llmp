@@ -282,10 +282,12 @@ int main(int argc, char** argv) {
   }
   const bool profile_study = argc == 7 && std::string_view(argv[6]) == "--profile";
   const bool output_b_study = argc == 7 && std::string_view(argv[6]) == "--output-b-study";
-  if (argc != 6 && !profile_study && !output_b_study) {
+  const bool routed_ffn_study = argc == 7 && std::string_view(argv[6]) == "--routed-ffn-study";
+  const bool consumer_study = output_b_study || routed_ffn_study;
+  if (argc != 6 && !profile_study && !consumer_study) {
     std::println(stderr,
                  "usage: jitllm_ds4_complete ARTIFACT SCRATCH TOKENS OUTPUT REPEATS(1..3) "
-                 "[--profile|--output-b-study]");
+                 "[--profile|--output-b-study|--routed-ffn-study]");
     return 2;
   }
   const std::string_view repeat_text = argv[5];
@@ -293,7 +295,7 @@ int main(int argc, char** argv) {
   const auto parsed =
       std::from_chars(repeat_text.data(), repeat_text.data() + repeat_text.size(), repeats);
   if (parsed.ec != std::errc{} || parsed.ptr != repeat_text.data() + repeat_text.size() ||
-      repeats == 0 || repeats > 3 || ((profile_study || output_b_study) && repeats != 3))
+      repeats == 0 || repeats > 3 || ((profile_study || consumer_study) && repeats != 3))
     return 2;
   const std::filesystem::path artifact_path(argv[1]);
   const std::filesystem::path scratch(argv[2]);
@@ -303,7 +305,7 @@ int main(int argc, char** argv) {
     std::println(stderr, "{}", tokens.error());
     return 2;
   }
-  if ((profile_study || output_b_study) && Digest<std::int32_t>(*tokens) != kProfileTokensSha) {
+  if ((profile_study || consumer_study) && Digest<std::int32_t>(*tokens) != kProfileTokensSha) {
     std::println(stderr, "diagnostic study requires the pinned complete-reference token IDs");
     return 2;
   }
@@ -357,7 +359,9 @@ int main(int argc, char** argv) {
   std::vector<en::Ds4AlignedWeightView> representations;
   auto run = [&]() -> dc::Result {
     if (auto opened = node.Open(); !opened) return opened;
-    if (auto setup = runner.Setup(artifact_path, scratch, *prepared, output_b_study); !setup)
+    if (auto setup =
+            runner.Setup(artifact_path, scratch, *prepared, output_b_study, routed_ffn_study);
+        !setup)
       return setup;
     setup_seconds = Seconds(setup_started);
     budget = runner.budget_bytes();
@@ -375,16 +379,16 @@ int main(int argc, char** argv) {
     representations.assign(runner.aligned().views().begin(), runner.aligned().views().end());
     if (auto fresh = runner.Initialize(); !fresh) return fresh;
     std::println(stderr, "warmup complete original8K pipeline");
-    const auto capture_path = output_b_study ? output_path / "operands" : std::filesystem::path{};
-    if (output_b_study &&
+    const auto capture_path = consumer_study ? output_path / "operands" : std::filesystem::path{};
+    if (consumer_study &&
         (!std::filesystem::create_directory(capture_path, filesystem_error) || filesystem_error))
-      return std::unexpected("output-B operand directory must be fresh");
+      return std::unexpected("consumer study operand directory must be fresh");
     // The original warmup also runs the bounded SAME-original-input probe.
     // Its copies/persistence are diagnostic and outside all ordinary samples.
     auto warmup = runner.Prefill(*tokens, false, dc::OutputBConsumer::kOriginal, capture_path);
     if (!warmup) return std::unexpected(warmup.error());
     warmup_seconds = warmup->wall_seconds;
-    if (profile_study || output_b_study) {
+    if (profile_study || consumer_study) {
       warmup_sha = Digest<float>(warmup->logits);
       if (warmup->logits.size() != 129280 || warmup_sha != kProfileHeadSha ||
           std::ranges::any_of(warmup->logits, [](float value) { return !std::isfinite(value); }))
@@ -392,30 +396,33 @@ int main(int argc, char** argv) {
       if (auto saved = Save(output_path / "warmup.f32", warmup->logits); !saved) return saved;
     }
     unsigned pass_count = repeats;
-    if (output_b_study)
+    if (consumer_study)
       pass_count = 9;
     else if (profile_study)
       pass_count = 7;
     passes.reserve(pass_count);
-    std::vector<float> native_warmup;
+    std::vector<float> candidate_warmup;
     for (unsigned repeat = 0; repeat < pass_count; ++repeat) {
-      const bool native = output_b_study && repeat >= 3 && repeat < 6;
-      const auto consumer =
-          native ? dc::OutputBConsumer::kNativeMmq : dc::OutputBConsumer::kOriginal;
-      if (output_b_study && (repeat == 3 || repeat == 6)) {
+      const bool candidate = consumer_study && repeat >= 3 && repeat < 6;
+      const auto consumer = output_b_study && candidate ? dc::OutputBConsumer::kNativeMmq
+                                                        : dc::OutputBConsumer::kOriginal;
+      const auto routed = routed_ffn_study && candidate ? dc::RoutedFfnTier::kMaterialized
+                                                        : dc::RoutedFfnTier::kDirect;
+      if (consumer_study && (repeat == 3 || repeat == 6)) {
         if (auto fresh = runner.Initialize(); !fresh) return fresh;
-        auto variant_warmup = runner.Prefill(*tokens, false, consumer);
+        auto variant_warmup = runner.Prefill(*tokens, false, consumer, {}, routed);
         if (!variant_warmup) return std::unexpected(variant_warmup.error());
         if (variant_warmup->logits.size() != 129280 ||
             std::ranges::any_of(variant_warmup->logits,
                                 [](float value) { return !std::isfinite(value); }))
-          return std::unexpected("output-B variant warmup has incomplete/nonfinite logits");
+          return std::unexpected("consumer variant warmup has incomplete/nonfinite logits");
         output_b_warmup_seconds[repeat == 3 ? 0 : 1] = variant_warmup->wall_seconds;
-        const std::string_view name = native ? "native-warmup.f32" : "return-warmup.f32";
+        std::string_view name = "return-warmup.f32";
+        if (candidate) name = routed_ffn_study ? "materialized-warmup.f32" : "native-warmup.f32";
         if (auto saved = Save(output_path / name, variant_warmup->logits); !saved) return saved;
-        if (native) {
+        if (candidate) {
           native_warmup_sha = Digest<float>(variant_warmup->logits);
-          native_warmup = std::move(variant_warmup->logits);
+          candidate_warmup = std::move(variant_warmup->logits);
         } else {
           return_warmup_sha = Digest<float>(variant_warmup->logits);
           if (return_warmup_sha != kProfileHeadSha)
@@ -424,7 +431,7 @@ int main(int argc, char** argv) {
       }
       if (auto fresh = runner.Initialize(); !fresh) return fresh;
       std::println(stderr, "timed complete original8K pass{}", repeat);
-      auto pass = runner.Prefill(*tokens, profile_study && repeat == 3, consumer);
+      auto pass = runner.Prefill(*tokens, profile_study && repeat == 3, consumer, {}, routed);
       if (!pass) return std::unexpected(pass.error());
       if (profile_study &&
           pass->profile.size() !=
@@ -433,13 +440,13 @@ int main(int argc, char** argv) {
       if (std::ranges::any_of(pass->logits, [](float value) { return !std::isfinite(value); })) {
         return std::unexpected("complete reference produced nonfinite final logits");
       }
-      const auto& control = native ? native_warmup : warmup->logits;
+      const auto& control = candidate ? candidate_warmup : warmup->logits;
       if (pass->logits.size() != control.size() ||
           std::memcmp(pass->logits.data(), control.data(), pass->logits.size() * sizeof(float)) !=
               0) {
         return std::unexpected("complete reference own-repeat logits are not byte equal");
       }
-      if ((profile_study || (output_b_study && !native)) &&
+      if ((profile_study || (consumer_study && !candidate)) &&
           Digest<float>(pass->logits) != kProfileHeadSha)
         return std::unexpected("diagnostic pass differs from the pinned original full head");
       if (auto saved = Save(output_path / ("pass" + std::to_string(repeat) + ".f32"), pass->logits);
@@ -484,13 +491,23 @@ int main(int argc, char** argv) {
           << ",\"aligned_pagein_read_bytes\":" << aligned_reads
           << ",\"profile_study\":" << (profile_study ? "true" : "false")
           << ",\"output_b_study\":" << (output_b_study ? "true" : "false")
+          << ",\"routed_ffn_study\":" << (routed_ffn_study ? "true" : "false")
+          << ",\"routed_ffn_axis\":"
+          << Quoted(routed_ffn_study ? "producer/gather+fusion/storage" : "")
+          << ",\"routed_ffn_warmup_is_diagnostic\":" << (routed_ffn_study ? "true" : "false")
+          << ",\"materialized_warmup_logits_sha256\":"
+          << Quoted(routed_ffn_study ? native_warmup_sha : "")
           << ",\"output_b_warmup_is_diagnostic\":" << (output_b_study ? "true" : "false")
-          << ",\"native_warmup_logits_sha256\":" << Quoted(native_warmup_sha)
+          << ",\"native_warmup_logits_sha256\":" << Quoted(output_b_study ? native_warmup_sha : "")
           << ",\"return_warmup_logits_sha256\":" << Quoted(return_warmup_sha)
           << ",\"output_b_variant_warmup_seconds\":[" << output_b_warmup_seconds[0] << ','
-          << output_b_warmup_seconds[1] << ']' << ",\"profile_mark_count\":" << profile_mark_count
-          << ",\"profile_setup_free_bytes\":[" << profile_setup_free_bytes[0] << ','
-          << profile_setup_free_bytes[1] << ']'
+          << output_b_warmup_seconds[1] << ']'
+          << ",\"routed_ffn_intermediate_bytes\":" << (routed_ffn_study ? 603979776ULL : 0)
+          << ",\"routed_ffn_variant_warmup_seconds\":["
+          << (routed_ffn_study ? output_b_warmup_seconds[0] : 0) << ','
+          << (routed_ffn_study ? output_b_warmup_seconds[1] : 0) << ']'
+          << ",\"profile_mark_count\":" << profile_mark_count << ",\"profile_setup_free_bytes\":["
+          << profile_setup_free_bytes[0] << ',' << profile_setup_free_bytes[1] << ']'
           << ",\"profile_pinned_head_sha256\":" << Quoted(profile_study ? kProfileHeadSha : "")
           << ",\"warmup_logits_sha256\":" << Quoted(warmup_sha)
           << ",\"profile_wall_is_diagnostic\":" << (profile_study ? "true" : "false")
@@ -512,11 +529,11 @@ int main(int argc, char** argv) {
     if (comma) receipt << ',';
     comma = true;
     std::string_view role = "original";
-    if (output_b_study) {
+    if (consumer_study) {
       if (pass_index < 3)
         role = "original-before";
       else if (pass_index < 6)
-        role = "native-output-b";
+        role = routed_ffn_study ? "materialized-routed-ffn" : "native-output-b";
       else
         role = "original-after";
     } else if (profile_study) {
@@ -530,6 +547,7 @@ int main(int argc, char** argv) {
     receipt << "{\"role\":" << Quoted(role) << ",\"diagnostic\":"
             << (!pass.profile.empty() || pass.operand_capture ? "true" : "false")
             << ",\"output_b_consumer\":" << static_cast<unsigned>(pass.output_b_consumer)
+            << ",\"routed_ffn_tier\":" << static_cast<unsigned>(pass.routed_ffn_tier)
             << ",\"numerical_seconds\":" << pass.seconds
             << ",\"prefill_wall_seconds\":" << pass.wall_seconds
             << ",\"result_copy_seconds\":" << pass.result_copy_seconds

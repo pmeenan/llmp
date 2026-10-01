@@ -105,6 +105,11 @@ separate products. Retain precision, routing and every paid adapter in each
 control; avoid simultaneously resident full raw and aligned expert replicas.
 Measure singleton changes before interactions. All model speed comparisons
 use unmarked same-node repeats with original bookends and saved full heads.
+The completed [first FFN factor](../ds4-routed-ffn-first-axis/README.md) finds
+the fully paid Materialized path 2.35% slower than Direct, with all twelve
+heads and the complete captured D2S6/down outputs byte-identical. This
+producer/gather + fusion/storage factor does not explain the earlier large
+engine gap; native compact consumer/layout factors remain distinct.
 
 ## Qualification and provenance
 

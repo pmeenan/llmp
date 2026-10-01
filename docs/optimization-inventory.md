@@ -36,7 +36,12 @@ full heads and three complete original-input operator outputs byte-identical.
 The measured output chain also includes output-A and HC expansion.
 Separate FFN weight layout, consumer and fusion controls before interactions.
 The native consumer remains available in the private benchmark; production
-dispatch is unchanged and routed FFN is the next restoration target.
+dispatch is unchanged. The first [routed-FFN factor](experiments/ds4-routed-ffn-first-axis/README.md)
+compares paid producer/gather + fusion/storage: Materialized is 2.35% slower
+than Direct at 8K, with twelve full heads and complete captured D2S6/down
+outputs byte-identical. Keep Direct; no new gather adapter is justified by
+that bounded gap. Native weight-layout/consumer factors and matched 32K
+active-selection controls remain separate work.
 
 ## Coverage
 

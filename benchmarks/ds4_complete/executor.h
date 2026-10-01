@@ -97,6 +97,9 @@ struct Layer {
   kg::Ds4F16Product router_projection{};
   kg::Ds4Router router{};
   kg::Ds4Moe routed{};
+  // Optional fully paid Materialized probe on ORIGINAL norm/routes.
+  // Every writable range is separate from the ordinary recipe.
+  std::optional<kg::Ds4Moe> routed_control;
   kg::Ds4Q8Product shared_gate{}, shared_up{}, shared_down{};
   kg::Ds4SharedSwiglu shared_swiglu{};
   // Present on last layer only; preceding layers fuse this guarded sum.
@@ -123,6 +126,10 @@ struct ResolvedDispatch {
   std::vector<ResolvedStage> stages;
 };
 enum class OutputBConsumer : std::uint8_t { kOriginal, kNativeMmq };
+enum class RoutedFfnTier : std::uint8_t { kDirect, kMaterialized };
+constexpr bool CaptureRoutedFfnAt(std::uint32_t first, std::uint32_t layer) {
+  return first == kRows && layer == 21;
+}
 // Bounded diagnostic calls on ORIGINAL upstream operands in the late chunk.
 constexpr bool CaptureOutputBAt(std::uint32_t first, std::uint32_t layer) {
   return first == kRows && (layer == 0 || layer == 21 || layer == 42);
@@ -135,6 +142,10 @@ struct Chunk {
   std::string artifact_id;
   OutputBConsumer output_b_consumer = OutputBConsumer::kOriginal;
   bool output_b_study = false;
+  RoutedFfnTier routed_ffn_tier = RoutedFfnTier::kDirect;
+  bool routed_ffn_study = false;
+  // Symmetrically charged stored gate/up/activation in both study arms.
+  std::array<kg::Ds4CacheBuffer, 3> routed_intermediates{};
   // Optional separate native result in an original-only diagnostic pass.
   // It is mapped/charged with the same lifetime as every recipe operand.
   kg::Ds4CacheBuffer output_b_control{};

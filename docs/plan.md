@@ -929,9 +929,15 @@ it appears.
       replaces output-B with current GGML MMQ over identical original
       operands: rate ratio 0.9983, twelve complete heads and three complete
       operator outputs byte-identical. Its final Spark slice passes 1,199
-      tests, including 256 GPU tests. Routed FFN restoration and causal
-      A/Bs, wider context and task quality remain open; production defaults
-      are unchanged.
+      tests, including 256 GPU tests. The first [routed-FFN factor](experiments/ds4-routed-ffn-first-axis/README.md)
+      compares paid producer/gather and fusion/storage: Materialized is
+      2.35% slower than Direct, with all twelve final heads and complete
+      captured down outputs byte-identical. Keep Direct; native compact
+      consumer/layout factors and matched 32K remain open. The [fixed
+      long-context answer tests](experiments/ds4-long-context-tasks/README.md)
+      complete four OFF/ON pairs without a clear candidate-specific answer
+      regression, but both paths fail parts of the strict rubric. HCA stays
+      off by default; these tests do not approve a quality exception.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

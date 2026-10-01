@@ -110,10 +110,12 @@ bool SameLayout(const kg::Ds4AlignedLayout& a, const kg::Ds4AlignedLayout& b) {
 
 std::expected<ScratchPlan, std::string> PlanScratch(const model::Dsv4Profile& profile,
                                                     std::uint32_t context, std::uint32_t device_sms,
-                                                    bool output_b_study) {
+                                                    bool output_b_study, bool routed_ffn_study) {
   if (!SameProfile(profile) || context != kContext || device_sms == 0 || device_sms > 65535) {
     return std::unexpected("original binding requires Flash/context8192 and valid SM count");
   }
+  if (output_b_study && routed_ffn_study)
+    return std::unexpected("private consumer studies require separate matched arms");
   ScratchPlan result;
   const auto add = [&](std::string name, std::uint64_t bytes) -> bool {
     if (bytes == 0 || bytes > (std::uint64_t{4} << 30U) ||
@@ -205,6 +207,20 @@ std::expected<ScratchPlan, std::string> PlanScratch(const model::Dsv4Profile& pr
   good = good && add("routed.down.quant", routed->down_quant_bytes);
   good = good && add("routed.down", routed->down_bytes);
   values("routed.sum", 4096);
+  if (routed_ffn_study) {
+    // These allocations, including probe-only ranges, have the same paid
+    // lifetime in Direct and Materialized samples. No full expert replica.
+    values("routed.materialized.gate", 2048, 6 * kRows);
+    values("routed.materialized.up", 2048, 6 * kRows);
+    values("routed.materialized.middle", 2048, 6 * kRows);
+    values("routed.control.ids.source", 6);
+    values("routed.control.ids.destination", 6);
+    good = good && add("routed.control.bounds", 257ULL * 4);
+    good = good && add("routed.control.work", routed->work_bytes);
+    good = good && add("routed.control.input.quant", routed->input_quant_bytes);
+    good = good && add("routed.control.down.quant", routed->down_quant_bytes);
+    good = good && add("routed.control.down", routed->down_bytes);
+  }
   // Each simultaneously live quantized source gets its own authenticated
   // producer. Q-a/KV share the norm source; other sources remain distinct.
   for (const auto& [name, width] :
@@ -504,7 +520,16 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
       (in.capture_output_b &&
        (in.first != kRows || in.output_b_consumer != OutputBConsumer::kOriginal)))
     return std::unexpected("output-B diagnostic requires original late-chunk study operands");
-  auto scratch = PlanScratch(profile, kContext, in.device_sms, in.output_b_study);
+  if ((in.routed_ffn_tier != RoutedFfnTier::kDirect &&
+       in.routed_ffn_tier != RoutedFfnTier::kMaterialized) ||
+      (in.routed_ffn_study && in.output_b_study) ||
+      (!in.routed_ffn_study &&
+       (in.routed_ffn_tier != RoutedFfnTier::kDirect || in.capture_routed_ffn)) ||
+      (in.capture_routed_ffn &&
+       (in.first != kRows || in.routed_ffn_tier != RoutedFfnTier::kDirect)))
+    return std::unexpected("routed-FFN diagnostic requires original late-chunk Direct operands");
+  auto scratch =
+      PlanScratch(profile, kContext, in.device_sms, in.output_b_study, in.routed_ffn_study);
   if (!scratch) return std::unexpected(scratch.error());
   auto state = model::LayoutDs4BaselineState(profile, kContext, kRows, in.state->granularity);
   if (!state || !SameState(*state, *in.state) ||
@@ -533,6 +558,8 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
   result.artifact_id = in.artifact->id();
   result.output_b_consumer = in.output_b_consumer;
   result.output_b_study = in.output_b_study;
+  result.routed_ffn_tier = in.routed_ffn_tier;
+  result.routed_ffn_study = in.routed_ffn_study;
   std::vector<Buffer> scratch_ranges;
   for (const auto& required : scratch->ranges) {
     const auto found = std::ranges::find(in.scratch, required.name, &NamedScratch::name);
@@ -554,6 +581,9 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
   Binder b(in, result);
   const auto get = [&b](std::string_view name) { return b.Scratch(name); };
   if (in.capture_output_b) result.output_b_control = get("output-b.control");
+  if (in.routed_ffn_study)
+    result.routed_intermediates = {get("routed.materialized.gate"), get("routed.materialized.up"),
+                                   get("routed.materialized.middle")};
   result.embedding = {.tokens = Read(get("tokens")),
                       .weights = Matrix(b.Raw(binding->token_embd, "F16"), profile.vocab, 4096, 2),
                       .output = Output(get("hc.even"), kRows, 16384),
@@ -759,6 +789,29 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
         .input_quant = get("routed.input.quant"),
         .down_quant = get("routed.down.quant"),
         .down = get("routed.down")};
+    if (in.routed_ffn_tier == RoutedFfnTier::kMaterialized) {
+      l.routed.tier = kg::Ds4MoeTier::kMaterialized;
+      l.routed.producer = {};
+      l.routed.gate = result.routed_intermediates[0];
+      l.routed.up = result.routed_intermediates[1];
+      l.routed.middle = result.routed_intermediates[2];
+    }
+    if (in.capture_routed_ffn && CaptureRoutedFfnAt(in.first, i)) {
+      auto control = l.routed;
+      control.tier = kg::Ds4MoeTier::kMaterialized;
+      control.producer = {};
+      control.gate = result.routed_intermediates[0];
+      control.up = result.routed_intermediates[1];
+      control.middle = result.routed_intermediates[2];
+      control.ids_source = get("routed.control.ids.source");
+      control.ids_destination = get("routed.control.ids.destination");
+      control.expert_bounds = get("routed.control.bounds");
+      control.work = get("routed.control.work");
+      control.input_quant = get("routed.control.input.quant");
+      control.down_quant = get("routed.control.down.quant");
+      control.down = get("routed.control.down");
+      l.routed_control = control;
+    }
     l.shared_gate = b.Product(w.gate_shexp, 4096, 2048, get("ffn.norm"), get("shared.gate"),
                               get("ffn.norm.d4"), kg::Ds4Q8Path::kDenseD2r, true);
     l.shared_up = b.Product(w.up_shexp, 4096, 2048, get("ffn.norm"), get("shared.up"),

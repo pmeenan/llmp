@@ -334,7 +334,10 @@ are recorded in
 The ds4 study adopted shared sparse gathers and compact expert scheduling;
 its complete 8K benchmark now matches all original logits byte for byte
 within 2.4% throughput. Native output-B restoration is exact and comparable
-in speed; routed FFN is next. Literal ds4 code is temporary benchmark
+in speed; the paid Materialized FFN control is exact but 2.35% slower.
+Native compact FFN consumers and matched 32K remain open. Fixed long-context
+answer tests show no clear candidate-specific regression but fail parts of
+the strict rubric in both paths; HCA stays off by default. Literal ds4 code is temporary benchmark
 scaffolding. M3.5 (model families, the
 owner's approved 13 plus legacy fixtures and Bonsai, formats with EXL3
 in focus, concurrent batching) follows M3, before M4. Keep this paragraph

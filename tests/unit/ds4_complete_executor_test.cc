@@ -176,6 +176,68 @@ TEST(Ds4CompleteExecutor, PersistentCachesSurviveScratchAndOtherLayerJobs) {
   EXPECT_FALSE(complete::CheckMappedOperands(c));
 }
 
+TEST(Ds4CompleteExecutor, RoutedProbeCannotReplaceAnyLiveOriginalOperand) {
+  auto c = InventorySlice();
+  c.routed_ffn_study = true;
+  c.layers.resize(1);
+  auto& layer = c.layers[0];
+  const std::array live{Buffer{0x90000000, 65536}, Buffer{0x91000000, 65536},
+                        Buffer{0x92000000, 65536}, Buffer{0x93000000, 65536},
+                        Buffer{0x94000000, 65536}, Buffer{0x95000000, 65536},
+                        Buffer{0x96000000, 65536}, Buffer{0x97000000, 65536}};
+  layer.routed.down = live[0];
+  layer.routed.down_quant = live[1];
+  layer.routed.input_quant = live[2];
+  layer.routed.ids_source = live[3];
+  layer.routed.ids_destination = live[4];
+  layer.routed.work = live[5];
+  layer.hc_ffn_pre.residual = live[6];
+  layer.hc_ffn_pre.coefficients.split = live[7];
+  for (auto buffer : live) c.paid_ranges.push_back(buffer);
+  layer.routed_control.emplace();
+  auto& probe = *layer.routed_control;
+  probe.down = {0xa0000000, 65536};
+  c.paid_ranges.push_back(probe.down);
+  ASSERT_TRUE(complete::CheckMappedOperands(c));
+  for (auto buffer : live) {
+    probe.down.address = buffer.address + 16;
+    c.paid_ranges.back() = probe.down;
+    auto refused = complete::CheckMappedOperands(c);
+    ASSERT_FALSE(refused);
+    EXPECT_NE(refused.error().find("routed-FFN"), std::string::npos);
+  }
+  probe.down = {0xa0000000, 65536};
+  c.paid_ranges.back() = probe.down;
+  probe.ids_source = {live[3].address + 16, 4096};
+  EXPECT_FALSE(complete::CheckMappedOperands(c));
+  probe.ids_source = {};
+  c.routed_intermediates[0] = {live[6].address + 16, 4096};
+  EXPECT_FALSE(complete::CheckMappedOperands(c));
+  c.routed_intermediates[0] = {};
+  c.paid_ranges.back().bytes -= 1;
+  EXPECT_FALSE(complete::CheckMappedOperands(c));
+}
+
+TEST(Ds4CompleteExecutor, RoutedTierRequiresPrivateStudyAndSymmetricStorage) {
+  auto c = LedgerChunk();
+  c.routed_ffn_tier = complete::RoutedFfnTier::kMaterialized;
+  auto check = complete::CheckChunk(model::Dsv4Flash(), c);
+  ASSERT_FALSE(check);
+  EXPECT_NE(check.error().find("routed-FFN"), std::string::npos);
+  c.routed_ffn_study = true;
+  check = complete::CheckChunk(model::Dsv4Flash(), c);
+  ASSERT_FALSE(check);
+  EXPECT_NE(check.error().find("symmetrically paid"), std::string::npos);
+  c.routed_ffn_tier = complete::RoutedFfnTier::kDirect;
+  c.output_b_study = true;
+  check = complete::CheckChunk(model::Dsv4Flash(), c);
+  ASSERT_FALSE(check);
+  EXPECT_NE(check.error().find("overlapping studies"), std::string::npos);
+  EXPECT_TRUE(complete::CaptureRoutedFfnAt(4096, 21));
+  EXPECT_FALSE(complete::CaptureRoutedFfnAt(0, 21));
+  EXPECT_FALSE(complete::CaptureRoutedFfnAt(4096, 20));
+}
+
 TEST(Ds4CompleteExecutor, AdvancesOnlyTheCompletedLayerAndFinalHead) {
   auto c = LedgerChunk(4096);
   auto x = LedgerFor(c);
