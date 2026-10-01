@@ -19,6 +19,7 @@
 
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
+#include "base/check.h"
 #include "base/report.h"
 #include "engine/dsv4_plan.h"
 #include "engine/dsv4_runner.h"
@@ -797,6 +798,93 @@ Clock::time_point ResidentTimes::Latest(std::span<const catalog::ExtentId> exten
 
 // ---------------------------------------------------------------- an LLM
 
+Llm::Llm() : default_branch_(*this) {}
+
+Llm::Branch::~Branch() {
+  base::Check(!generation_active_, "a branch with an active generation was destroyed");
+}
+
+Status Llm::Branch::Clear() { return model_.Clear(*this); }
+
+void Llm::Branch::Forget() { model_.Forget(*this); }
+
+Status Llm::Branch::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
+                            const PrefillGoOn& go_on, PrefillRun* run) {
+  return model_.Prefill(*this, tokens, last, go_on, run);
+}
+
+Status Llm::Branch::ScorePrompt(
+    std::span<const std::int32_t> tokens, std::vector<float>& last,
+    const std::function<bool(std::int32_t, std::span<const float>)>& on_row,
+    const PrefillGoOn& go_on, PrefillRun* run) {
+  return model_.ScorePrompt(*this, tokens, last, on_row, go_on, run);
+}
+
+Status Llm::Branch::PreparePrompt(std::span<const std::int32_t> tokens,
+                                  std::uint32_t stable_boundary, std::vector<float>& last,
+                                  std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run,
+                                  bool fresh) {
+  return model_.PreparePrompt(*this, tokens, stable_boundary, last, reused, go_on, run, fresh);
+}
+
+std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::Branch::BeginGeneration(
+    const std::vector<float>& last, const GenerateOptions& options, Generation& out) & {
+  return model_.BeginGeneration(*this, last, options, out);
+}
+
+Status Llm::Branch::Generate(const std::vector<float>& last, const GenerateOptions& options,
+                             Generation& out) {
+  return model_.Generate(*this, last, options, out);
+}
+
+std::uint64_t Llm::Branch::state_snapshot_bytes() const {
+  model_.CheckBranch(*this);
+  return model_.used_state_bytes();
+}
+
+Status Llm::Branch::SaveState(void* host) { return model_.SaveState(*this, host); }
+
+Status Llm::Branch::RestoreState(void* host) { return model_.RestoreState(*this, host); }
+
+Status Llm::Clear() { return default_branch_.Clear(); }
+
+void Llm::Forget() { default_branch_.Forget(); }
+
+Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
+                    const PrefillGoOn& go_on, PrefillRun* run) {
+  return default_branch_.Prefill(tokens, last, go_on, run);
+}
+
+Status Llm::ScorePrompt(std::span<const std::int32_t> tokens, std::vector<float>& last,
+                        const std::function<bool(std::int32_t, std::span<const float>)>& on_row,
+                        const PrefillGoOn& go_on, PrefillRun* run) {
+  return default_branch_.ScorePrompt(tokens, last, on_row, go_on, run);
+}
+
+Status Llm::PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
+                          std::vector<float>& last, std::uint32_t& reused, const PrefillGoOn& go_on,
+                          PrefillRun* run, bool fresh) {
+  return default_branch_.PreparePrompt(tokens, stable_boundary, last, reused, go_on, run, fresh);
+}
+
+std::uint64_t Llm::turn_checkpoint_bytes() const { return default_branch_.turn_checkpoint_bytes(); }
+
+std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::BeginGeneration(
+    const std::vector<float>& last, const GenerateOptions& options, Generation& out) & {
+  return default_branch_.BeginGeneration(last, options, out);
+}
+
+Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& options,
+                     Generation& out) {
+  return default_branch_.Generate(last, options, out);
+}
+
+std::uint64_t Llm::state_snapshot_bytes() const { return default_branch_.state_snapshot_bytes(); }
+
+Status Llm::SaveState(void* host) { return default_branch_.SaveState(host); }
+
+Status Llm::RestoreState(void* host) { return default_branch_.RestoreState(host); }
+
 std::expected<std::vector<std::int32_t>, std::string> Llm::EncodeText(std::string_view text) const {
   std::vector<tokenizer::TokenId> ids;
   if (auto r = tokenizer_->Encode(text, {.add_bos_eos = true}, ids); !r) {
@@ -853,11 +941,18 @@ std::string Llm::Detokenize(std::span<const std::int32_t> tokens) const {
 
 std::expected<std::int32_t, std::string> Llm::Choose(std::span<const float> row,
                                                      std::uint64_t position) {
-  if (!sampling_) {
+  return Choose(default_branch_, row, position);
+}
+
+std::expected<std::int32_t, std::string> Llm::Choose(Branch& branch, std::span<const float> row,
+                                                     std::uint64_t position) {
+  CheckBranch(branch);
+  if (!branch.sampling_) {
     return engine::Argmax(row);
   }
-  auto token = execution::Sample(row, *sampling_,
-                                 {.seed = seed_, .stream = 0, .position = position}, scratch_);
+  auto token =
+      execution::Sample(row, *branch.sampling_,
+                        {.seed = branch.seed_, .stream = 0, .position = position}, branch.scratch_);
   if (!token) {
     return Error(std::format("sampling: {}", execution::SamplingErrorName(token.error())));
   }
@@ -866,12 +961,20 @@ std::expected<std::int32_t, std::string> Llm::Choose(std::span<const float> row,
 
 std::expected<bool, std::string> Llm::Keep(std::span<const float> row, std::int32_t draft,
                                            std::uint64_t position, std::int32_t& next) {
-  if (!sampling_) {
+  return Keep(default_branch_, row, draft, position, next);
+}
+
+std::expected<bool, std::string> Llm::Keep(Branch& branch, std::span<const float> row,
+                                           std::int32_t draft, std::uint64_t position,
+                                           std::int32_t& next) {
+  CheckBranch(branch);
+  if (!branch.sampling_) {
     next = engine::Argmax(row);
     return next == draft;
   }
-  auto verdict = execution::VerifyDraft(
-      row, draft, *sampling_, {.seed = seed_, .stream = 0, .position = position}, scratch_);
+  auto verdict = execution::VerifyDraft(row, draft, *branch.sampling_,
+                                        {.seed = branch.seed_, .stream = 0, .position = position},
+                                        branch.scratch_);
   if (!verdict) {
     return Error(std::format("sampling: {}", execution::SamplingErrorName(verdict.error())));
   }
@@ -884,18 +987,36 @@ void Llm::FindThinkTokens() {
   think_end_ = tokenizer_->Find("</think>");
 }
 
-Status Llm::Clear() {
-  turn_checkpoints_.clear();
+void Llm::CheckBranch(const Branch& branch) const {
+  base::Check(&branch.model_ == this && &branch == &default_branch_,
+              "native slot forwarding supports only this model's default branch");
+}
+
+void Llm::CheckIdleGeneration(const Branch& branch) const {
+  CheckBranch(branch);
+  base::Check(!branch.generation_active_, "mutating a conversation with an active generation");
+}
+
+void Llm::Forget(Branch& branch) {
+  CheckIdleGeneration(branch);
+  branch.turn_checkpoints_.clear();
+  branch.history_.clear();
+  branch.needs_clear_ = true;
+}
+
+Status Llm::Clear(Branch& branch) {
+  CheckIdleGeneration(branch);
+  branch.turn_checkpoints_.clear();
   if (auto r = ClearState(); !r) {
     return r;
   }
-  history_.clear();
-  needs_clear_ = false;
-  history_used_ = Clock::now();
+  branch.history_.clear();
+  branch.needs_clear_ = false;
+  branch.history_used_ = Clock::now();
   return {};
 }
 
-std::uint64_t Llm::turn_checkpoint_bytes() const {
+std::uint64_t Llm::Branch::turn_checkpoint_bytes() const {
   std::uint64_t bytes = 0;
   for (const TurnCheckpoint& checkpoint : turn_checkpoints_) {
     bytes += checkpoint.file.bytes();
@@ -903,12 +1024,12 @@ std::uint64_t Llm::turn_checkpoint_bytes() const {
   return bytes;
 }
 
-Status Llm::CaptureTurnCheckpoint(const PrefillGoOn& go_on, bool& stopped) {
-  if (history_.empty()) {
+Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool& stopped) {
+  if (branch.history_.empty()) {
     return {};
   }
-  const std::size_t position = history_.size();
-  if (std::ranges::any_of(turn_checkpoints_, [&](const TurnCheckpoint& c) {
+  const std::size_t position = branch.history_.size();
+  if (std::ranges::any_of(branch.turn_checkpoints_, [&](const TurnCheckpoint& c) {
         return c.boundary.position == position;
       })) {
     return {};  // looking it up does not renew its retention period
@@ -931,7 +1052,7 @@ Status Llm::CaptureTurnCheckpoint(const PrefillGoOn& go_on, bool& stopped) {
       progress);
   if (!file) {
     if (file.error().invalid_state) {
-      Forget();
+      Forget(branch);
       return Error("saving a turn checkpoint: " + file.error().detail);
     }
     stopped = file.error().cancelled;
@@ -942,43 +1063,44 @@ Status Llm::CaptureTurnCheckpoint(const PrefillGoOn& go_on, bool& stopped) {
                             .footprint = used_state_ranges(),
                             .cursor = cursor(),
                             .decoding = TurnDecodingState()};
-  turn_checkpoints_.push_back(std::move(checkpoint));
-  if (turn_checkpoints_.size() > kTurnCheckpointLimit) {
-    turn_checkpoints_.erase(turn_checkpoints_.begin());
+  branch.turn_checkpoints_.push_back(std::move(checkpoint));
+  if (branch.turn_checkpoints_.size() > kTurnCheckpointLimit) {
+    branch.turn_checkpoints_.erase(branch.turn_checkpoints_.begin());
   }
   return {};
 }
 
-Status Llm::ReusePrompt(std::span<const std::int32_t> tokens, std::uint32_t& reused, bool fresh,
-                        const PrefillGoOn& go_on, bool& stopped) {
+Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t& reused,
+                        bool fresh, const PrefillGoOn& go_on, bool& stopped) {
   reused = 0;
   const auto now = Clock::now();
-  if (fresh || needs_clear_ || !StateUsable() || now - history_used_ >= kTurnCheckpointRetention) {
-    return Clear();
+  if (fresh || branch.needs_clear_ || !StateUsable() ||
+      now - branch.history_used_ >= kTurnCheckpointRetention) {
+    return Clear(branch);
   }
-  std::erase_if(turn_checkpoints_, [&](const TurnCheckpoint& checkpoint) {
+  std::erase_if(branch.turn_checkpoints_, [&](const TurnCheckpoint& checkpoint) {
     return now - checkpoint.boundary.created >= kTurnCheckpointRetention;
   });
-  const std::size_t common = CommonPrefix(history_, tokens);
-  if (!history_.empty() && common == history_.size() && common < tokens.size()) {
+  const std::size_t common = CommonPrefix(branch.history_, tokens);
+  if (!branch.history_.empty() && common == branch.history_.size() && common < tokens.size()) {
     reused = static_cast<std::uint32_t>(common);
     return {};
   }
   std::vector<TurnBoundary> boundaries;
-  boundaries.reserve(turn_checkpoints_.size());
-  for (const TurnCheckpoint& checkpoint : turn_checkpoints_) {
+  boundaries.reserve(branch.turn_checkpoints_.size());
+  for (const TurnCheckpoint& checkpoint : branch.turn_checkpoints_) {
     boundaries.push_back(checkpoint.boundary);
   }
   const auto match = MatchingTurnBoundary(boundaries, common, tokens.size(), now);
   if (!match) {
-    return Clear();
+    return Clear(branch);
   }
-  TurnCheckpoint& checkpoint = turn_checkpoints_[*match];
+  TurnCheckpoint& checkpoint = branch.turn_checkpoints_[*match];
   const auto position = checkpoint.boundary.position;
   const auto restored_cursor = checkpoint.cursor;
   const auto restored_decoding = checkpoint.decoding;
   if (auto settled = Settle(); !settled) {
-    Forget();
+    Forget(branch);
     return settled;
   }
   const engine::CheckpointFile::Continue progress =
@@ -993,27 +1115,29 @@ Status Llm::ReusePrompt(std::span<const std::int32_t> tokens, std::uint32_t& reu
   if (!restored) {
     if (restored.error().cancelled) {
       stopped = true;
-      return restored.error().invalid_state ? Clear() : Status{};
+      return restored.error().invalid_state ? Clear(branch) : Status{};
     }
     // Before mutation this is an optional cache miss. After mutation, Clear
     // drops the branch before any fresh prefill; an uncertain device copy
     // may make Clear fail, in which case the runtime stops normally.
-    return Clear();
+    return Clear(branch);
   }
-  history_.resize(position);
+  branch.history_.resize(position);
   set_cursor(restored_cursor);
   RestoreTurnDecodingState(restored_decoding);
-  std::erase_if(turn_checkpoints_,
+  std::erase_if(branch.turn_checkpoints_,
                 [&](const TurnCheckpoint& c) { return c.boundary.position > position; });
   reused = static_cast<std::uint32_t>(position);
-  needs_clear_ = false;
-  history_used_ = now;
+  branch.needs_clear_ = false;
+  branch.history_used_ = now;
   return {};
 }
 
-Status Llm::PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
-                          std::vector<float>& last, std::uint32_t& reused, const PrefillGoOn& go_on,
-                          PrefillRun* run, bool fresh) {
+Status Llm::PreparePrompt(Branch& branch, std::span<const std::int32_t> tokens,
+                          std::uint32_t stable_boundary, std::vector<float>& last,
+                          std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run,
+                          bool fresh) {
+  CheckIdleGeneration(branch);
   if (tokens.empty() || tokens.size() >= context_ || stable_boundary >= tokens.size()) {
     return Error("the prompt or its turn boundary is outside the context");
   }
@@ -1021,7 +1145,7 @@ Status Llm::PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t st
   reused = 0;
   bool stopped = go_on && !go_on(0);
   if (!stopped) {
-    if (auto prepared = ReusePrompt(tokens, reused, fresh, go_on, stopped); !prepared) {
+    if (auto prepared = ReusePrompt(branch, tokens, reused, fresh, go_on, stopped); !prepared) {
       return prepared;
     }
   }
@@ -1033,12 +1157,12 @@ Status Llm::PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t st
     return {};
   }
   const auto append = [&](std::uint32_t end) -> Status {
-    const auto begin = static_cast<std::uint32_t>(history_.size());
+    const auto begin = static_cast<std::uint32_t>(branch.history_.size());
     if (end <= begin) {
       return {};
     }
     PrefillRun part;
-    auto ran = Prefill(tokens.subspan(begin, end - begin), last, go_on, &part);
+    auto ran = Prefill(branch, tokens.subspan(begin, end - begin), last, go_on, &part);
     total.end = part.end;
     total.chunks += part.chunks;
     total.longest = std::max(total.longest, part.longest);
@@ -1048,7 +1172,7 @@ Status Llm::PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t st
     }
     return ran;
   };
-  if (stable_boundary != 0 && stable_boundary >= history_.size()) {
+  if (stable_boundary != 0 && stable_boundary >= branch.history_.size()) {
     if (auto ran = append(stable_boundary); !ran) {
       return ran;
     }
@@ -1063,7 +1187,7 @@ Status Llm::PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t st
       }
       return {};
     }
-    if (auto checkpointed = CaptureTurnCheckpoint(go_on, total.stopped); !checkpointed) {
+    if (auto checkpointed = CaptureTurnCheckpoint(branch, go_on, total.stopped); !checkpointed) {
       return checkpointed;
     }
     if (total.stopped) {
@@ -1077,26 +1201,27 @@ Status Llm::PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t st
   return append(static_cast<std::uint32_t>(tokens.size()));
 }
 
-Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
+Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::vector<float>& last,
                     const PrefillGoOn& go_on, PrefillRun* run) {
-  if (needs_clear_) {
-    if (auto r = Clear(); !r) {
+  CheckIdleGeneration(branch);
+  if (branch.needs_clear_) {
+    if (auto r = Clear(branch); !r) {
       return r;
     }
   }
   if (tokens.empty()) {
     return Error("nothing to prefill");
   }
-  std::vector<std::int32_t> all = history_;
+  std::vector<std::int32_t> all = branch.history_;
   all.insert(all.end(), tokens.begin(), tokens.end());
   if (all.size() >= context_) {
     return Error(
         std::format("{} tokens do not fit {}'s context of {}", all.size(), name_, context_));
   }
   last.clear();
-  auto completed = static_cast<std::uint32_t>(history_.size());
+  auto completed = static_cast<std::uint32_t>(branch.history_.size());
   auto ran = RunPrefillChunks(
-      static_cast<std::uint32_t>(history_.size()), static_cast<std::uint32_t>(all.size()),
+      static_cast<std::uint32_t>(branch.history_.size()), static_cast<std::uint32_t>(all.size()),
       max_rows_,
       [&](std::uint32_t at, std::uint32_t n) {
         auto chunk = RunChunk(std::span(all).first(at + n), at, speculate_, last);
@@ -1107,11 +1232,11 @@ Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& la
       },
       go_on);
   if (!ran) {
-    needs_clear_ = !StateUsable();
-    if (needs_clear_) {
-      history_.clear();
+    branch.needs_clear_ = !StateUsable();
+    if (branch.needs_clear_) {
+      branch.history_.clear();
     } else {
-      history_.assign(all.begin(), all.begin() + completed);
+      branch.history_.assign(all.begin(), all.begin() + completed);
     }
     last.clear();
     return Error(std::format("{}'s prefill: {}", name_, ran.error()));
@@ -1124,22 +1249,24 @@ Status Llm::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& la
   // through the same chunk boundaries), and there are no logits to
   // generate from.
   all.resize(ran->end);
-  history_ = std::move(all);
-  history_used_ = Clock::now();
+  branch.history_ = std::move(all);
+  branch.history_used_ = Clock::now();
   if (ran->stopped) {
     last.clear();
   }
   return {};
 }
 
-Status Llm::ScorePrompt(std::span<const std::int32_t> tokens, std::vector<float>& last,
+Status Llm::ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens,
+                        std::vector<float>& last,
                         const std::function<bool(std::int32_t, std::span<const float>)>& on_row,
                         const PrefillGoOn& go_on, PrefillRun* run) {
-  if (!history_.empty() || tokens.empty() || tokens.size() > context_) {
+  CheckIdleGeneration(branch);
+  if (!branch.history_.empty() || tokens.empty() || tokens.size() > context_) {
     return Error("literal scoring needs an empty history and a nonempty prompt within context");
   }
-  if (needs_clear_) {
-    if (auto r = Clear(); !r) {
+  if (branch.needs_clear_) {
+    if (auto r = Clear(branch); !r) {
       return r;
     }
   }
@@ -1153,14 +1280,14 @@ Status Llm::ScorePrompt(std::span<const std::int32_t> tokens, std::vector<float>
     const auto started = Clock::now();
     auto ran = RunChunk(tokens.first(std::size_t{at} + 1), at, speculate_, last);
     if (!ran) {
-      needs_clear_ = !StateUsable();
-      if (needs_clear_) {
-        history_.clear();
+      branch.needs_clear_ = !StateUsable();
+      if (branch.needs_clear_) {
+        branch.history_.clear();
       }
       last.clear();
       return ran;
     }
-    history_.push_back(tokens[at]);
+    branch.history_.push_back(tokens[at]);
     completed.end = at + 1;
     ++completed.chunks;
     completed.longest = std::max(completed.longest, Seconds(Clock::now() - started));
@@ -1170,12 +1297,12 @@ Status Llm::ScorePrompt(std::span<const std::int32_t> tokens, std::vector<float>
     }
   }
   if (auto settled = Settle(); !settled) {
-    needs_clear_ = true;
-    history_.clear();
+    branch.needs_clear_ = true;
+    branch.history_.clear();
     last.clear();
     return settled;
   }
-  history_used_ = Clock::now();
+  branch.history_used_ = Clock::now();
   if (completed.stopped) {
     last.clear();
   }
@@ -1185,182 +1312,289 @@ Status Llm::ScorePrompt(std::span<const std::int32_t> tokens, std::vector<float>
   return {};
 }
 
-Status Llm::Generate(const std::vector<float>& last, const GenerateOptions& options,
-                     Generation& out) {
-  const auto is_stop = [&](std::int32_t token) {
-    return options.stop && std::ranges::find(stops_, token) != stops_.end();
-  };
+Llm::GenerationSession::GenerationSession(Llm& model, Branch& branch,
+                                          const GenerateOptions& options, Generation& out)
+    : model_(model), branch_(branch), options_(options), out_(out) {}
+
+Llm::GenerationSession::~GenerationSession() {
+  base::Check(finished_, "an unfinished generation session was destroyed");
+}
+
+std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::BeginGeneration(
+    Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
+    Generation& out) {
+  CheckBranch(branch);
   if (last.empty()) {
     return Error(std::format("{} has no prefill's logits to generate from", name_));
   }
   if (options.max_tokens == 0) {
     return Error("generation needs a positive token budget");
   }
-  sampling_.reset();
-  if (options.sampling && options.sampling->temperature > 0) {
-    sampling_ = options.sampling;
-    seed_ = options.seed;
+  if (branch.generation_active_) {
+    return Error("the default conversation already has an active generation");
   }
+  branch.generation_active_ = true;
+  auto session =
+      std::unique_ptr<GenerationSession>(new GenerationSession(*this, branch, options, out));
+  if (auto began = session->Begin(last); !began) {
+    session->Close();
+    return std::unexpected(began.error());
+  }
+  return session;
+}
+
+bool Llm::GenerationSession::IsStop(std::int32_t token) const {
+  return options_.stop && std::ranges::find(model_.stops_, token) != model_.stops_.end();
+}
+
+bool Llm::GenerationSession::Report() {
   // The new tokens since the last call, to on_tokens: false ends the
   // generation.
-  std::size_t reported = 0;
-  const auto report = [&]() {
-    if (!options.on_tokens) {
-      return true;
-    }
-    std::size_t visible = std::min<std::size_t>(out.tokens.size(), options.max_tokens);
-    if (out.stopped && visible == out.tokens.size() && visible > 0) {
-      --visible;  // the stop token
-    }
-    const std::span<const std::int32_t> fresh =
-        std::span<const std::int32_t>(out.tokens).subspan(reported, visible - reported);
-    reported = visible;
-    return options.on_tokens(fresh);
-  };
-  auto first = Choose(last, history_.size());
+  if (!options_.on_tokens) {
+    return true;
+  }
+  std::size_t visible = std::min<std::size_t>(out_.tokens.size(), options_.max_tokens);
+  if (out_.stopped && visible == out_.tokens.size() && visible > 0) {
+    --visible;  // the stop token
+  }
+  const std::span<const std::int32_t> fresh =
+      std::span<const std::int32_t>(out_.tokens).subspan(reported_, visible - reported_);
+  reported_ = visible;
+  return options_.on_tokens(fresh);
+}
+
+Status Llm::GenerationSession::Begin(const std::vector<float>& last) {
+  branch_.sampling_.reset();
+  if (options_.sampling && options_.sampling->temperature > 0) {
+    branch_.sampling_ = options_.sampling;
+    branch_.seed_ = options_.seed;
+  }
+  auto first = model_.Choose(branch_, last, branch_.history_.size());
   if (!first) {
-    sampling_.reset();
     return std::unexpected(first.error());
   }
-  out.tokens = {*first};
-  if (options.keep_logits) {
-    out.logits = {last};
+  out_.tokens = {*first};
+  if (options_.keep_logits) {
+    out_.logits = {last};
   }
-  out.stopped = is_stop(out.tokens.back());
-  out.cancelled = options.on_logits && !options.on_logits(*first, last);
-  out.cancelled = !report() || out.cancelled;
+  out_.stopped = IsStop(out_.tokens.back());
+  out_.cancelled = options_.on_logits && !options_.on_logits(*first, last);
+  out_.cancelled = !Report() || out_.cancelled;
   // Every token so far, the anchor (the last generated, not yet in the
   // state) last; pos: how many the state holds.
-  std::vector<std::int32_t> all = history_;
-  all.push_back(out.tokens.back());
-  auto pos = static_cast<std::uint32_t>(history_.size());
-  const auto start = Clock::now();
-  Status ran;
-  bool failed_prefix_valid = false;
-  while (!out.stopped && !out.cancelled && out.tokens.size() < options.max_tokens) {
-    if (pos + 1 >= context_) {
-      ran = Error(std::format("{}'s conversation reached its context of {}", name_, context_));
-      failed_prefix_valid = true;
-      break;
-    }
-    const auto left = static_cast<std::uint32_t>(options.max_tokens - out.tokens.size());
-    if (auto prepared = PrepareDecodeState(pos, left); !prepared) {
-      ran = prepared;
-      failed_prefix_valid = StateUsable();
-      break;
-    }
-    std::vector<std::int32_t> kept;
-    std::vector<std::vector<float>> step_logits;
-    if (speculate_) {
-      ran =
-          SpecStep(all, pos, left, kept,
-                   options.keep_logits || options.on_logits ? &step_logits : nullptr, out.drafted);
-      if (ran) {
-        if (kept.empty() || kept.size() > left ||
-            ((options.keep_logits || options.on_logits) && step_logits.size() != kept.size())) {
-          // Refuse a broken runner contract before indexing borrowed rows.
-          // The completed verify still retires its owed commit/restore.
-          constexpr std::string_view reason =
-              "a speculative step returned inconsistent token/logit counts";
-          if (auto settled = Settle(); !settled) {
-            ran = Error(std::format("{}; settling failed: {}", reason, settled.error()));
-          } else {
-            ran = Error(std::string(reason));
-          }
-        } else {
-          out.accepted += kept.size() - 1;
-        }
-      }
+  all_ = branch_.history_;
+  all_.push_back(out_.tokens.back());
+  position_ = static_cast<std::uint32_t>(branch_.history_.size());
+  start_ = Clock::now();
+  return {};
+}
+
+bool Llm::GenerationSession::done() const {
+  return finished_ || !ran_ || out_.stopped || out_.cancelled ||
+         out_.tokens.size() >= options_.max_tokens;
+}
+
+std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession::PrepareStep() {
+  base::Check(!prepared_ && !done(), "preparing a generation without a next step");
+  if (position_ + 1 >= model_.context_) {
+    ran_ = Error(
+        std::format("{}'s conversation reached its context of {}", model_.name_, model_.context_));
+    failed_prefix_valid_ = true;
+    return std::unexpected(ran_.error());
+  }
+  left_ = static_cast<std::uint32_t>(options_.max_tokens - out_.tokens.size());
+  if (auto prepared = model_.PrepareDecodeState(position_, left_); !prepared) {
+    ran_ = prepared;
+    failed_prefix_valid_ = model_.StateUsable();
+    return std::unexpected(ran_.error());
+  }
+  prepared_ = true;
+  return Step{.all = all_,
+              .position = position_,
+              .left = left_,
+              .speculative = model_.speculate_,
+              .need_logits = options_.keep_logits || static_cast<bool>(options_.on_logits)};
+}
+
+Status Llm::GenerationSession::FailStep(std::string error, bool prefix_valid) {
+  base::Check(prepared_, "failing a generation without a prepared step");
+  prepared_ = false;
+  ran_ = Error(std::move(error));
+  failed_prefix_valid_ = prefix_valid;
+  return ran_;
+}
+
+Status Llm::GenerationSession::ApplyPlain(std::vector<float> row) {
+  base::Check(prepared_ && !model_.speculate_, "applying an unprepared ordinary generation step");
+  prepared_ = false;
+  auto next = model_.Choose(branch_, row, position_ + 1);
+  if (!next) {
+    ran_ = std::unexpected(next.error());
+    ++position_;  // the anchor was processed before sampling failed
+    failed_prefix_valid_ = model_.StateUsable();
+    return ran_;
+  }
+  std::vector<std::vector<float>> logits;
+  if (options_.keep_logits || options_.on_logits) {
+    logits.push_back(std::move(row));
+  }
+  return ApplyTokens({*next}, std::move(logits));
+}
+
+Status Llm::GenerationSession::ApplySpeculative(std::vector<std::int32_t> kept,
+                                                std::vector<std::vector<float>> logits,
+                                                std::uint64_t drafted) {
+  base::Check(prepared_ && model_.speculate_, "applying an unprepared speculative generation step");
+  prepared_ = false;
+  out_.drafted += drafted;
+  if (kept.empty() || kept.size() > left_ ||
+      ((options_.keep_logits || options_.on_logits) && logits.size() != kept.size())) {
+    // Refuse a broken runner contract before indexing borrowed rows.
+    // The completed verify still retires its owed commit/restore.
+    constexpr std::string_view reason =
+        "a speculative step returned inconsistent token/logit counts";
+    if (auto settled = model_.Settle(); !settled) {
+      ran_ = Error(std::format("{}; settling failed: {}", reason, settled.error()));
     } else {
-      std::vector<float> row;
-      ran = RunChunk(all, pos, false, row);
-      if (ran) {
-        auto next = Choose(row, pos + 1);
-        if (!next) {
-          ran = std::unexpected(next.error());
-          ++pos;  // the anchor was processed before sampling failed
-          failed_prefix_valid = StateUsable();
-        } else {
-          kept = {*next};
-          if (options.keep_logits || options.on_logits) {
-            step_logits.push_back(std::move(row));
-          }
-        }
-      }
+      ran_ = Error(std::string(reason));
     }
-    if (!ran) {
+    return ran_;
+  }
+  out_.accepted += kept.size() - 1;
+  return ApplyTokens(std::move(kept), std::move(logits));
+}
+
+Status Llm::GenerationSession::ApplyTokens(std::vector<std::int32_t> kept,
+                                           std::vector<std::vector<float>> logits) {
+  if (++out_.steps == 1) {
+    out_.first_step = Clock::now();
+  }
+  // The anchor and the accepted drafts are in the state now; the last
+  // kept token is the next anchor. The generation ends at a stop token,
+  // though the state holds what was accepted after it.
+  position_ += static_cast<std::uint32_t>(kept.size());
+  all_.insert(all_.end(), kept.begin(), kept.end());
+  for (std::size_t i = 0; i < kept.size() && out_.tokens.size() < options_.max_tokens; ++i) {
+    const std::int32_t token = kept[i];
+    out_.tokens.push_back(token);
+    if (options_.keep_logits) {
+      out_.logits.push_back(logits[i]);
+    }
+    if (options_.on_logits && !options_.on_logits(token, logits[i])) {
+      out_.cancelled = true;
+    }
+    if (IsStop(token)) {
+      out_.stopped = true;
+    }
+    // A scoring response associates each visible token with its row.
+    // Deliver it now, so a stop string cannot collect later verify rows.
+    // The entire accepted verify is already complete and is still settled.
+    if (options_.on_logits) {
+      out_.cancelled = !Report() || out_.cancelled;
+    }
+    if (out_.stopped || out_.cancelled) {
       break;
     }
-    if (++out.steps == 1) {
-      out.first_step = Clock::now();
-    }
-    // The anchor and the accepted drafts are in the state now; the last
-    // kept token is the next anchor. The generation ends at a stop token,
-    // though the state holds what was accepted after it.
-    pos += static_cast<std::uint32_t>(kept.size());
-    all.insert(all.end(), kept.begin(), kept.end());
-    for (std::size_t i = 0; i < kept.size() && out.tokens.size() < options.max_tokens; ++i) {
-      const std::int32_t token = kept[i];
-      out.tokens.push_back(token);
-      if (options.keep_logits) {
-        out.logits.push_back(step_logits[i]);
-      }
-      if (options.on_logits && !options.on_logits(token, step_logits[i])) {
-        out.cancelled = true;
-      }
-      if (is_stop(token)) {
-        out.stopped = true;
-      }
-      // A scoring response associates each visible token with its row.
-      // Deliver it now, so a stop string cannot collect later verify rows.
-      // The entire accepted verify is already complete and is still settled.
-      if (options.on_logits) {
-        out.cancelled = !report() || out.cancelled;
-      }
-      if (out.stopped || out.cancelled) {
-        break;
-      }
-    }
-    if (!options.on_logits) {
-      out.cancelled = !report() || out.cancelled;
-    }
   }
-  out.decode_seconds = Seconds(Clock::now() - start);
-  sampling_.reset();
-  if (!ran) {
-    if (failed_prefix_valid) {
-      if (auto settled = Settle(); !settled) {
-        ran = Error(std::format("{}; settling failed: {}", ran.error(), settled.error()));
-      } else {
-        history_.assign(all.begin(), all.begin() + pos);
-        needs_clear_ = false;
-        return ran;
-      }
-    }
-    needs_clear_ = true;
-    history_.clear();
-    return ran;
-  }
-  history_.assign(all.begin(), all.begin() + pos);
-  history_used_ = Clock::now();
-  if (out.tokens.size() > options.max_tokens) {
-    out.tokens.resize(options.max_tokens);
-  }
-  if (out.logits.size() > out.tokens.size()) {
-    out.logits.resize(out.tokens.size());
-  }
-  if (auto settled = Settle(); !settled) {
-    needs_clear_ = true;
-    history_.clear();
-    return settled;
+  if (!options_.on_logits) {
+    out_.cancelled = !Report() || out_.cancelled;
   }
   return {};
 }
 
-std::uint64_t Llm::state_snapshot_bytes() const { return used_state_bytes(); }
+Status Llm::GenerationSession::RunScalarStep() {
+  auto step = PrepareStep();
+  if (!step) {
+    return std::unexpected(step.error());
+  }
+  if (step->speculative) {
+    std::vector<std::int32_t> kept;
+    std::vector<std::vector<float>> logits;
+    auto ran = model_.SpecStep(step->all, step->position, step->left, kept,
+                               step->need_logits ? &logits : nullptr, out_.drafted);
+    if (!ran) {
+      return FailStep(ran.error());
+    }
+    // SpecStep already updated the legacy counter, including partial failures.
+    return ApplySpeculative(std::move(kept), std::move(logits), 0);
+  }
+  std::vector<float> row;
+  if (auto ran = model_.RunChunk(step->all, step->position, false, row); !ran) {
+    return FailStep(ran.error());
+  }
+  return ApplyPlain(std::move(row));
+}
 
-Status Llm::SaveState(void* host) {
-  saved_valid_ = false;
+void Llm::GenerationSession::Cancel() {
+  base::Check(!finished_ && !prepared_, "cancelling a generation away from a completed boundary");
+  out_.cancelled = true;
+}
+
+void Llm::GenerationSession::Close() {
+  branch_.sampling_.reset();
+  branch_.generation_active_ = false;
+  finished_ = true;
+}
+
+Status Llm::GenerationSession::Finish() {
+  if (finished_) {
+    return ran_;
+  }
+  base::Check(!prepared_, "finishing a generation before its prepared step was applied");
+  base::Check(done(), "finishing an active generation without cancellation");
+  out_.decode_seconds = Seconds(Clock::now() - start_);
+  branch_.sampling_.reset();
+  if (!ran_) {
+    if (failed_prefix_valid_) {
+      if (auto settled = model_.Settle(); !settled) {
+        ran_ = Error(std::format("{}; settling failed: {}", ran_.error(), settled.error()));
+      } else {
+        branch_.history_.assign(all_.begin(), all_.begin() + position_);
+        branch_.needs_clear_ = false;
+        Close();
+        return ran_;
+      }
+    }
+    branch_.needs_clear_ = true;
+    branch_.history_.clear();
+    Close();
+    return ran_;
+  }
+  branch_.history_.assign(all_.begin(), all_.begin() + position_);
+  branch_.history_used_ = Clock::now();
+  if (out_.tokens.size() > options_.max_tokens) {
+    out_.tokens.resize(options_.max_tokens);
+  }
+  if (out_.logits.size() > out_.tokens.size()) {
+    out_.logits.resize(out_.tokens.size());
+  }
+  if (auto settled = model_.Settle(); !settled) {
+    branch_.needs_clear_ = true;
+    branch_.history_.clear();
+    ran_ = settled;
+  }
+  Close();
+  return ran_;
+}
+
+Status Llm::Generate(Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
+                     Generation& out) {
+  auto began = BeginGeneration(branch, last, options, out);
+  if (!began) {
+    return std::unexpected(began.error());
+  }
+  auto& session = **began;
+  while (!session.done()) {
+    if (auto ran = session.RunScalarStep(); !ran) {
+      break;
+    }
+  }
+  return session.Finish();
+}
+
+Status Llm::SaveState(Branch& branch, void* host) {
+  CheckIdleGeneration(branch);
+  branch.saved_valid_ = false;
   if (auto r = Settle(); !r) {
     return r;
   }
@@ -1368,34 +1602,35 @@ Status Llm::SaveState(void* host) {
   if (auto r = SaveUsedState(host, ranges); !r) {
     return r;
   }
-  saved_ranges_ = std::move(ranges);
-  saved_history_ = history_;
-  saved_cursor_ = cursor();
+  branch.saved_ranges_ = std::move(ranges);
+  branch.saved_history_ = branch.history_;
+  branch.saved_cursor_ = cursor();
   SaveDecodingState();
-  saved_valid_ = true;
+  branch.saved_valid_ = true;
   return {};
 }
 
-Status Llm::RestoreState(void* host) {
-  if (!saved_valid_) {
+Status Llm::RestoreState(Branch& branch, void* host) {
+  CheckIdleGeneration(branch);
+  if (!branch.saved_valid_) {
     return Error("no completed conversation snapshot to restore");
   }
-  if (host == nullptr && !saved_ranges_.empty()) {
+  if (host == nullptr && !branch.saved_ranges_.empty()) {
     return Error("the conversation snapshot has no source buffer");
   }
   if (auto r = Settle(); !r) {
     return r;
   }
-  if (auto r = RestoreUsedState(host, saved_ranges_); !r) {
-    needs_clear_ = true;
+  if (auto r = RestoreUsedState(host, branch.saved_ranges_); !r) {
+    branch.needs_clear_ = true;
     return r;
   }
-  history_ = saved_history_;
-  turn_checkpoints_.clear();  // a full diagnostic restore may replace the branch
-  history_used_ = Clock::now();
-  set_cursor(saved_cursor_);
+  branch.history_ = branch.saved_history_;
+  branch.turn_checkpoints_.clear();  // a full diagnostic restore may replace the branch
+  branch.history_used_ = Clock::now();
+  set_cursor(branch.saved_cursor_);
   RestoreDecodingState();
-  needs_clear_ = false;
+  branch.needs_clear_ = false;
   return {};
 }
 
@@ -1719,7 +1954,7 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   } else {
     Served& out = *resident_;
     parts.from = out.name();
-    const bool conversation = out.llm() && !static_cast<Llm&>(out).history().empty();
+    const bool conversation = out.llm() && out.HasRetainedState();
     parts.with_state = out.llm() && spill_state.value_or(conversation);
     std::vector<catalog::ExtentId> extents;
     if (parts.with_state) {

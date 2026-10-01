@@ -173,3 +173,24 @@ C2 evidence. Its separate post-preservation gate reports 116.952 GiB.
 Routine suites and style checks were deferred for the measured experiment
 under the owner's diagnostic override. Landing hygiene is recorded
 separately; it does not replace the measured source and binary identities.
+
+## Serving preparation
+
+The API driver's optional cooperative interface owns at most four stable request
+frames for one model. Admission runs between completed units, with independent
+deadlines and cancellation; model changes drain the active group. Every outcome
+passes through retirement that proves borrowed references have ended. Fake
+controls exercise admission fairness, capacity deferral, disconnects, deadlines,
+stalls, shutdown and shared response-budget accounting.
+
+The shared `Llm::GenerationSession` prepares and applies completed plain or
+speculative steps using the scalar acceptance and history logic. It borrows
+stable options and stateful callbacks from its caller. A model-owned
+`Llm::Branch` contains conversation history, sampling scratch, turn checkpoints
+and saved cursors; the legacy methods forward to this same default branch.
+Controls cover processed-anchor cancellation, callback state, visible stops
+after complete verification, absolute-position seeds and failed-step validity.
+
+This prepares service integration. The production node backend still executes
+serial requests; independent native slots, shared execution and a bounded exact
+prefix cache remain to be connected and measured through the real API.

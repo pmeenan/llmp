@@ -19,19 +19,23 @@
 // arrives on a connection before the previous response has ended
 // (pipelining) is not read: that connection closes after the response.
 // The thread that calls Run is the backend's (the node's one driver): it
-// takes queued requests in arrival order and runs each to its end, one at
-// a time, watching the caller's wake descriptor (the runtime's signals)
-// between requests and between generation steps. At most max_queued wait
-// behind the running one, beyond which a 429 with Retry-After; a
+// takes queued requests in arrival order. Backends without a cooperative
+// capability run one to its end; a cooperative backend admits up to four
+// same-model requests and advances declared units, draining before an
+// incompatible FIFO head. The driver watches the caller's wake descriptor
+// (the runtime's signals) between units. At most max_queued wait
+// behind the active requests, beyond which a 429 with Retry-After; a
 // non-streaming request waits at most queue_wait (then the same 429), a
 // stream, held by keepalives, as long as the backend makes progress.
 //
-// Progress (watchdog.h). Every call the backend makes on its Exchange is
+// Progress (watchdog.h). On the serial path every backend Exchange call is
 // a beat; Next names the unit that follows (a swap, a prefill chunk,
 // decode) and its size, which with the model's floors sets how long it
-// may take: `stall` plus kWorkMargin times its expected time. The I/O
-// thread watches the beats: past that allowance the running request ends
-// (a 504 before the headers, an in-stream error after), its generation is
+// may take: `stall` plus kWorkMargin times its expected time.
+// Cooperative execution declares and completes units explicitly:
+// polling its channels or emitting text never renews an in-flight unit.
+// The I/O thread watches the beats: past that allowance active requests end
+// (a 504 before the headers, an in-stream error after), their generation is
 // cancelled as when a client leaves, what is queued gets a 503, and the
 // backend is unhealthy (health(), the log, `on_health`): new requests get
 // a 503 until the backend's next beat, which the unit it hung in makes
@@ -87,6 +91,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -109,8 +114,9 @@ using Clock = std::chrono::steady_clock;
 // connections hold no body's or response's bytes outside the budgets.
 inline constexpr std::size_t kKeptBufferBytes = std::size_t{16} << 10U;
 
-// One admitted request as the backend sees it. Each call is progress for
-// the watchdog (watchdog.h) and returns whether to go on: false ends the
+// One admitted request as the backend sees it. Each call on the serial
+// path is watchdog progress; cooperative units declare progress separately.
+// Every call returns whether to go on: false ends the
 // generation (a stop string, the peer gone, the backend stalled, a
 // non-streaming deadline, the runtime stopping).
 class Exchange {
@@ -152,6 +158,69 @@ struct Completion {
   LiteralResult literal{};              // empty for chat completions
 };
 
+// Optional native cooperative execution on the node's one driver. Start
+// creates host-owned request state; Advance performs one declared unit and
+// returns only at its completed boundary. No API object may be borrowed by
+// work after Retire proves its references retired, including error outcomes.
+class CooperativeBackend {
+ public:
+  struct Request {
+    const ChatRequest& options;
+    const CompletionRequest* literal = nullptr;
+  };
+  class Work {
+   public:
+    Work() = default;
+    Work(const Work&) = delete;
+    Work& operator=(const Work&) = delete;
+    Work(Work&&) = delete;
+    Work& operator=(Work&&) = delete;
+    virtual ~Work() = default;
+    virtual bool terminal() const = 0;
+    // Marks only this request. Its outstanding effects still retire.
+    virtual void Cancel() = 0;
+  };
+  struct Unit {
+    Phase phase = Phase::kStarting;
+    double expected_seconds = 0;
+  };
+  struct Retirement {
+    std::expected<Completion, Error> result;
+    // False is an undrainable ownership failure: the server aborts before
+    // freeing Work, its Exchange or another active request's frame.
+    bool references_retired = false;
+  };
+
+  CooperativeBackend() = default;
+  CooperativeBackend(const CooperativeBackend&) = delete;
+  CooperativeBackend& operator=(const CooperativeBackend&) = delete;
+  CooperativeBackend(CooperativeBackend&&) = delete;
+  CooperativeBackend& operator=(CooperativeBackend&&) = delete;
+  virtual ~CooperativeBackend() = default;
+  // Fast host-only eligibility, called with the queue lock held. No waits
+  // or callbacks. The driver batches only one model and at most four works.
+  // This descriptor is borrowed only for this call.
+  virtual bool Supports(const Request& request) const = 0;
+  // Validation and admission/session creation only; native work belongs to
+  // Advance. A null work means capacity deferred: no Admit, output, mutation
+  // or retained reference. With no active work it falls back to Complete.
+  // An Error likewise retains no references and ends only this request.
+  // On success, Request itself, its parsed members and Exchange have stable
+  // addresses until Retire proves their references retired.
+  virtual std::expected<std::unique_ptr<Work>, Error> Start(const Request& request,
+                                                            Exchange& exchange) = 0;
+  // No idle unit: nonterminal work without a next unit is a backend fault.
+  // Both methods run on the driver, without the queue/output lock.
+  virtual std::expected<Unit, std::string> NextUnit(std::span<Work* const> work) = 0;
+  virtual std::expected<void, std::string> Advance(std::span<Work* const> work) = 0;
+  // Cancelled, terminal and failed work all pass through this completion
+  // boundary. It may settle native effects; its allowance is the stall
+  // interval. It must not return an unproven lifetime as an ordinary Error.
+  virtual Retirement Retire(Work& work) = 0;
+};
+
+inline constexpr std::size_t kMaxActiveRequests = 4;
+
 class Backend {
  public:
   Backend() = default;
@@ -177,8 +246,11 @@ class Backend {
                                  .param = {},
                                  .code = {}});
   }
+  // Absent, every request retains the existing serial Complete path.
+  virtual CooperativeBackend* cooperative() { return nullptr; }
   // After the response is handed to the I/O thread: work off the
-  // request's path.
+  // request's path. With cooperative execution, this must preserve every
+  // other active Work's resources, references and cohort ownership.
   virtual void AfterResponse() {}
   // False once a failure left the backend unable to serve: Run returns.
   virtual bool healthy() const { return true; }
@@ -250,6 +322,7 @@ class Server {
     std::optional<CompletionRequest> literal;
   };
   class Stream;
+  struct Active;
 
   // I/O thread.
   void Loop();
@@ -273,6 +346,12 @@ class Server {
 
   // Driver thread.
   void Serve(Pending& pending, int wake_fd, const std::function<bool()>& on_wake);
+  std::expected<void, std::string> ServeCooperative(Pending first, CooperativeBackend& cooperative,
+                                                    int wake_fd,
+                                                    const std::function<bool()>& on_wake);
+  void FinishResponse(Pending& pending, Stream& stream,
+                      const std::expected<Completion, Error>& result, Clock::time_point started);
+  void Progress(Phase next, double expected);
   // Progress (with mutex_ held): the watchdog's beat, and a recovery's log
   // line; true when the backend recovered (on_health is then owed).
   bool BeatLocked(Phase next, double expected);
@@ -317,7 +396,7 @@ class Server {
   std::size_t response_in_use_ = 0;   // channel/socket literal-body allocations
   bool stopping_ = false;
   Watchdog watchdog_;
-  std::shared_ptr<Channel> running_;  // the request the driver runs
+  std::vector<std::shared_ptr<Channel>> running_;  // bounded, driver-owned active requests
 };
 
 }  // namespace jitllm::runtime::api

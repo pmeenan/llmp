@@ -12,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -400,6 +401,188 @@ TEST(LlmScores, OrdinaryKeepLogitsAndStoppedAcceptedTrajectoryStayAligned) {
   EXPECT_THAT(speculative.history(), ElementsAre(0, 1, 2, 7));
   EXPECT_EQ(speculative.target, speculative.history());
   EXPECT_FALSE(speculative.pending);
+}
+
+TEST(LlmScores, ResumablePlainAppliesCompletedRowsAndRetainsTheUnprocessedAnchor) {
+  FakeLlm model;
+  auto& branch = model.default_branch();
+  EXPECT_EQ(&branch.model(), &model);
+  EXPECT_EQ(&branch.history(), &model.history());
+  std::vector<float> last;
+  const std::array<std::int32_t, 1> prompt = {0};
+  ASSERT_TRUE(branch.Prefill(prompt, last).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 3;
+  options.keep_logits = true;
+  std::vector<unsigned> calls;
+  options.on_tokens = [&, count = 0U](std::span<const std::int32_t> /*tokens*/) mutable {
+    calls.push_back(++count);
+    return true;
+  };
+  rt::Generation result;
+  auto opened = branch.BeginGeneration(last, options, result);
+  ASSERT_TRUE(opened.has_value());
+  auto& session = **opened;
+  EXPECT_THAT(result.tokens, ElementsAre(1));
+  EXPECT_TRUE(model.HasRetainedState());
+  rt::Generation refused;
+  EXPECT_FALSE(model.BeginGeneration(last, options, refused).has_value());
+  auto step = session.PrepareStep();
+  ASSERT_TRUE(step.has_value());
+  EXPECT_THAT(step->all, ElementsAre(0, 1));
+  EXPECT_EQ(step->position, 1U);
+  EXPECT_EQ(step->left, 2U);
+  EXPECT_FALSE(step->speculative);
+  EXPECT_TRUE(step->need_logits);
+  // A completed external native job processed the anchor and returned its
+  // row. Applying that result must not dispatch another chunk.
+  model.target.push_back(step->all.back());
+  ASSERT_TRUE(session.ApplyPlain(FakeLlm::Row(2)).has_value());
+  EXPECT_EQ(model.chunks, 1U);
+  EXPECT_FALSE(session.done());
+  session.Cancel();
+  ASSERT_TRUE(session.Finish().has_value());
+  EXPECT_TRUE(result.cancelled);
+  EXPECT_THAT(result.tokens, ElementsAre(1, 2));
+  EXPECT_THAT(model.history(), ElementsAre(0, 1));
+  EXPECT_EQ(model.target, model.history());
+  EXPECT_EQ(result.logits.size(), 2U);
+  EXPECT_EQ(model.settlements, 1U);
+
+  rt::Generation next;
+  auto again = model.BeginGeneration(FakeLlm::Row(2), options, next);
+  ASSERT_TRUE(again.has_value());
+  // Finishing an old session twice cannot release the new session's guard.
+  ASSERT_TRUE(session.Finish().has_value());
+  EXPECT_FALSE(branch.BeginGeneration(last, options, refused).has_value());
+  EXPECT_THAT(calls, ElementsAre(1U, 2U, 3U));  // the original mutable callback
+  (*again)->Cancel();
+  ASSERT_TRUE((*again)->Finish().has_value());
+  EXPECT_EQ(model.settlements, 2U);
+  branch.Forget();
+  EXPECT_FALSE(model.HasRetainedState());
+  EXPECT_FALSE(branch.HasRetainedState());
+  ASSERT_TRUE(model.Prefill(prompt, last).has_value());
+  EXPECT_EQ(model.clearings, 1U);
+  EXPECT_EQ(branch.history(), model.target);
+}
+
+TEST(LlmScores, ResumableVerifySettlesTheFullAcceptedPrefixAfterVisibleStop) {
+  FakeLlm model(true);
+  std::vector<float> last;
+  const std::array<std::int32_t, 1> prompt = {0};
+  ASSERT_TRUE(model.Prefill(prompt, last).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.keep_logits = true;
+  std::vector<std::int32_t> rows;
+  std::vector<std::int32_t> visible;
+  options.on_logits = [&](std::int32_t token, std::span<const float> row) {
+    rows.push_back(token);
+    EXPECT_EQ(std::vector<float>(row.begin(), row.end()), FakeLlm::Row(token));
+    return true;
+  };
+  options.on_tokens = [&](std::span<const std::int32_t> fresh) {
+    visible.insert(visible.end(), fresh.begin(), fresh.end());
+    return true;
+  };
+  rt::Generation result;
+  auto opened = model.BeginGeneration(last, options, result);
+  ASSERT_TRUE(opened.has_value());
+  auto& session = **opened;
+  auto step = session.PrepareStep();
+  ASSERT_TRUE(step.has_value());
+  EXPECT_TRUE(step->speculative);
+  model.target = {0, 1, 2, 7};  // the anchor and accepted drafts, 4 still unprocessed
+  model.pending = true;
+  ASSERT_TRUE(
+      session.ApplySpeculative({2, 7, 4}, {FakeLlm::Row(2), FakeLlm::Row(7), FakeLlm::Row(4)}, 2)
+          .has_value());
+  EXPECT_TRUE(session.done());
+  EXPECT_TRUE(model.pending);
+  EXPECT_THAT(result.tokens, ElementsAre(1, 2, 7));
+  EXPECT_THAT(rows, ElementsAre(1, 2, 7));
+  EXPECT_THAT(visible, ElementsAre(1, 2));
+  EXPECT_EQ(result.drafted, 2U);
+  EXPECT_EQ(result.accepted, 2U);
+  ASSERT_TRUE(session.Finish().has_value());
+  EXPECT_FALSE(model.pending);
+  EXPECT_EQ(model.history(), model.target);
+  EXPECT_EQ(model.settlements, 1U);
+}
+
+TEST(LlmScores, ResumableSamplingUsesAbsolutePositionKeysForCompletedRows) {
+  FakeLlm model;
+  std::vector<float> ignored;
+  const std::array<std::int32_t, 3> prompt = {0, 1, 2};
+  ASSERT_TRUE(model.Prefill(prompt, ignored).has_value());
+  const std::vector<float> row(8, 0.0F);
+  rt::GenerateOptions options;
+  options.max_tokens = 2;
+  options.stop = false;
+  options.sampling =
+      jitllm::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
+  options.seed = 731;
+  std::vector<jitllm::execution::SamplingCandidate> scratch;
+  const auto first = jitllm::execution::Sample(
+      row, *options.sampling, {.seed = options.seed, .stream = 0, .position = 3}, scratch);
+  const auto second = jitllm::execution::Sample(
+      row, *options.sampling, {.seed = options.seed, .stream = 0, .position = 4}, scratch);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  rt::Generation result;
+  auto opened = model.BeginGeneration(row, options, result);
+  ASSERT_TRUE(opened.has_value());
+  auto& session = **opened;
+  auto step = session.PrepareStep();
+  ASSERT_TRUE(step.has_value());
+  model.target.push_back(step->all.back());
+  ASSERT_TRUE(session.ApplyPlain(row).has_value());
+  ASSERT_TRUE(session.Finish().has_value());
+  EXPECT_THAT(result.tokens, ElementsAre(*first, *second));
+  EXPECT_EQ(model.history(), model.target);
+}
+
+TEST(LlmScores, ResumableEarlyAndCompletedFailuresPreserveOnlyProvenHistory) {
+  FakeLlm model;
+  std::vector<float> last;
+  const std::array<std::int32_t, 1> prompt = {0};
+  ASSERT_TRUE(model.Prefill(prompt, last).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 2;
+  options.stop = false;
+  options.sampling =
+      jitllm::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
+  auto bad = last;
+  bad[0] = std::numeric_limits<float>::quiet_NaN();
+  rt::Generation result;
+  result.tokens = {6};
+  EXPECT_FALSE(model.BeginGeneration(bad, options, result).has_value());
+  EXPECT_THAT(result.tokens, ElementsAre(6));
+  EXPECT_EQ(model.history(), model.target);
+  auto opened = model.BeginGeneration(last, options, result);
+  ASSERT_TRUE(opened.has_value());
+  auto& session = **opened;
+  auto step = session.PrepareStep();
+  ASSERT_TRUE(step.has_value());
+  model.target.push_back(step->all.back());
+  EXPECT_FALSE(session.ApplyPlain(bad).has_value());
+  EXPECT_FALSE(session.Finish().has_value());
+  EXPECT_THAT(model.history(), ElementsAre(0, 1));
+  EXPECT_EQ(model.history(), model.target);
+  EXPECT_EQ(model.settlements, 1U);
+  EXPECT_TRUE(model.HasRetainedState());
+
+  rt::Generation uncertain;
+  auto again = model.BeginGeneration(FakeLlm::Row(2), options, uncertain);
+  ASSERT_TRUE(again.has_value());
+  ASSERT_TRUE((*again)->PrepareStep().has_value());
+  model.usable = false;
+  EXPECT_FALSE((*again)->FailStep("unproven external completion").has_value());
+  EXPECT_FALSE((*again)->Finish().has_value());
+  EXPECT_TRUE(model.history().empty());
+  EXPECT_FALSE(model.HasRetainedState());
+  EXPECT_EQ(model.settlements, 1U);  // uncertainty was not made safe by a destructor
 }
 
 }  // namespace

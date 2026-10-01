@@ -33,10 +33,12 @@
 #include <cstdio>
 #include <expected>
 #include <format>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -963,6 +965,7 @@ class FakeBackend final : public api::Backend {
   }
   std::expected<api::Completion, api::Error> Complete(const api::ChatRequest& request,
                                                       api::Exchange& exchange) override {
+    ++chat_calls;
     const std::string& text = request.messages.back().content;
     if (text == "fail") {
       return std::unexpected(api::Error{.status = 400,
@@ -1106,6 +1109,154 @@ class FakeBackend final : public api::Backend {
   std::atomic<bool> cancelled{false};
   std::atomic<bool> flooded{false};
   std::atomic<unsigned> literal_calls{0};
+  std::atomic<unsigned> chat_calls{0};
+  api::CooperativeBackend* cooperative() override { return cooperative_backend; }
+  api::CooperativeBackend* cooperative_backend = nullptr;
+};
+
+// Native-unit boundaries are explicit gates. Tests can block a wave or its
+// retirement while the transport continues to observe channels and health.
+class FakeCooperative final : public api::CooperativeBackend {
+ public:
+  class Job final : public Work {
+   public:
+    Job(FakeCooperative& backend, const Request& request, api::Exchange& into)
+        : owner(backend),
+          request(request),
+          exchange(into),
+          limit(request.options.max_tokens.value_or(4)) {
+      ++owner.live;
+    }
+    Job(const Job&) = delete;
+    Job& operator=(const Job&) = delete;
+    Job(Job&&) = delete;
+    Job& operator=(Job&&) = delete;
+    ~Job() override {
+      if (!retired) {
+        owner.early_destruction.store(true);
+      }
+      ++owner.destroyed;
+      --owner.live;
+    }
+    bool terminal() const override { return cancelled || ticks >= limit; }
+    void Cancel() override {
+      if (!cancelled) {
+        cancelled = true;
+        ++owner.cancelled;
+      }
+    }
+    FakeCooperative& owner;
+    const Request& request;  // borrows the descriptor itself through retirement
+    api::Exchange& exchange;
+    std::uint32_t limit = 0;
+    std::uint32_t ticks = 0;
+    bool cancelled = false;
+    bool retired = false;
+  };
+
+  bool Supports(const Request& request) const override {
+    return request.options.model == "alpha" &&
+           (request.literal != nullptr || request.options.messages.back().content != "serial");
+  }
+  std::expected<std::unique_ptr<Work>, api::Error> Start(const Request& request,
+                                                         api::Exchange& exchange) override {
+    if (request.literal == nullptr && request.options.messages.back().content == "bad") {
+      ++rejections;
+      return std::unexpected(api::Error{.status = 400,
+                                        .type = "invalid_request_error",
+                                        .message = "injected request refusal",
+                                        .param = "messages",
+                                        .code = {}});
+    }
+    if (request.literal == nullptr && request.options.messages.back().content == "defer") {
+      ++deferrals;
+      return std::unique_ptr<Work>{};
+    }
+    if (request.literal == nullptr && request.options.messages.back().content == "later") {
+      later_after_serial.store(serial_calls != nullptr && serial_calls->load() != 0);
+    }
+    auto work = std::make_unique<Job>(*this, request, exchange);
+    if (!exchange.Admit({.prompt_tokens = request.literal != nullptr ? 4U : 10U,
+                         .max_tokens = work->limit,
+                         .swap_bytes = 0,
+                         .floors = {.prefill = 1000, .decode = 1000}})) {
+      work->Cancel();
+    }
+    ++started;
+    return std::unique_ptr<Work>(std::move(work));
+  }
+  std::expected<Unit, std::string> NextUnit(std::span<Work* const> work) override {
+    if (work.size() > peak.load()) {
+      peak.store(static_cast<unsigned>(work.size()));
+    }
+    return Unit{.phase = jitllm::runtime::Phase::kDecode, .expected_seconds = 0};
+  }
+  std::expected<void, std::string> Advance(std::span<Work* const> work) override {
+    const unsigned now = rejections.load();
+    const unsigned since_last = now - previous_rejections_;
+    previous_rejections_ = now;
+    if (since_last > rejections_between_units.load()) {
+      rejections_between_units.store(since_last);
+    }
+    ++advances;
+    while (pause_units.load() && !release.load()) {
+      for (Work* item : work) {
+        auto& job = static_cast<Job&>(*item);
+        (void)job.exchange.Continue();  // channel polling must not defeat the watchdog
+        ++polls;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (fail_unit.load()) {
+      return std::unexpected("injected native completion failure");
+    }
+    for (Work* item : work) {
+      auto& job = static_cast<Job&>(*item);
+      if (job.request.options.model != "alpha" ||
+          job.request.options.max_tokens.value_or(4) != job.limit) {
+        return std::unexpected("the borrowed request changed during native work");
+      }
+      if (job.terminal()) {
+        continue;
+      }
+      if (!job.exchange.Content("x")) {
+        job.Cancel();
+      }
+      ++job.ticks;
+    }
+    return {};
+  }
+  Retirement Retire(Work& work) override {
+    auto& job = static_cast<Job&>(work);
+    retirement_entered.store(true);
+    while (pause_retirement.load() && !release_retirement.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    api::Completion result{
+        .completion_tokens = job.ticks, .cached_tokens = 0, .stopped = job.ticks >= job.limit};
+    if (job.request.literal != nullptr) {
+      result.literal.prompt_text = job.request.literal->prompt.value_or("");
+      if (job.request.literal->prompt == "huge") {
+        result.literal.prompt_text.assign(std::size_t{4} << 20U, 'x');
+      }
+    }
+    job.retired = true;
+    ++retired;
+    return {.result = std::move(result), .references_retired = true};
+  }
+
+  std::atomic<unsigned> started{0}, advances{0}, peak{0}, polls{0}, live{0};
+  std::atomic<unsigned> cancelled{0}, retired{0}, destroyed{0}, deferrals{0};
+  std::atomic<unsigned> rejections{0}, rejections_between_units{0};
+  std::atomic<bool> pause_units{false}, release{false}, fail_unit{false};
+  std::atomic<bool> pause_retirement{false}, release_retirement{false};
+  std::atomic<bool> retirement_entered{false}, early_destruction{false};
+  std::atomic<bool> later_after_serial{false};
+  const std::atomic<unsigned>* serial_calls = nullptr;
+
+ private:
+  unsigned previous_rejections_ = 0;  // driver-owned
 };
 
 // A client socket's reads, with a timeout: false at the end or on none.
@@ -1223,11 +1374,30 @@ class ServerTest : public ::testing::Test {
   void Stop() {
     if (thread_.joinable()) {
       backend_.release.store(true);
+      if (cooperative_) {
+        cooperative_->release.store(true);
+        cooperative_->release_retirement.store(true);
+      }
       const std::uint64_t one = 1;
       (void)!::write(wake_, &one, sizeof one);
       thread_.join();
       (void)::close(wake_);
     }
+  }
+
+  void StartCooperative(const api::ServerOptions& options = {}) {
+    Stop();
+    cooperative_ = std::make_unique<FakeCooperative>();
+    cooperative_->serial_calls = &backend_.chat_calls;
+    backend_.cooperative_backend = cooperative_.get();
+    Start(options);
+  }
+
+  static bool WaitFor(const std::function<bool()>& predicate) {
+    for (int i = 0; i < 2000 && !predicate(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return predicate();
   }
 
   // A connection, with a receive timeout.
@@ -1309,6 +1479,7 @@ class ServerTest : public ::testing::Test {
   }
 
   FakeBackend backend_;
+  std::unique_ptr<FakeCooperative> cooperative_;
   std::optional<api::Server> server_;
   std::uint16_t port_ = 0;
   int wake_ = -1;
@@ -2299,6 +2470,239 @@ TEST_F(ServerTest, StoppingEndsARunningRequest) {
   (void)::close(fd);
   (void)::close(queued);
   EXPECT_TRUE(result_.has_value());
+}
+
+TEST_F(ServerTest, CooperativeRequestsJoinAnExistingDecodeAndStayBounded) {
+  StartCooperative();
+  cooperative_->pause_units.store(true);
+  const int first = Connect(Post(Chat("long", R"(,"max_tokens":12)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  std::array<int, 4> later{};
+  for (int& fd : later) {
+    fd = Connect(Post(Chat("short", R"(,"max_tokens":4)")));
+  }
+  // All connections are handled while one backend unit remains in flight.
+  EXPECT_THAT(Exchange("GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"),
+              StartsWith("HTTP/1.1 200 "));
+  cooperative_->release.store(true);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->peak.load() == api::kMaxActiveRequests; }));
+  EXPECT_EQ(cooperative_->peak.load(), api::kMaxActiveRequests);
+  std::string pending;
+  for (const int fd : later) {
+    EXPECT_THAT(ReadResponse(fd, pending),
+                AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("content":"xxxx")")));
+    (void)::close(fd);
+  }
+  EXPECT_THAT(ReadResponse(first, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":12)")));
+  (void)::close(first);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->destroyed.load() == 5; }));
+  EXPECT_EQ(cooperative_->retired.load(), 5U);
+  EXPECT_EQ(backend_.chat_calls.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, CooperativeCancellationAndHalfCloseBelongToOneRequest) {
+  StartCooperative();
+  const int leaving = Connect(Post(Chat("long", R"(,"stream":true,"max_tokens":40)")));
+  std::string pending;
+  ASSERT_THAT(ReadUntil(leaving, pending, "data: "), StartsWith("HTTP/1.1 200 "));
+  const int half = Connect(Post(Chat("half", R"(,"max_tokens":8)")));
+  EXPECT_EQ(::shutdown(half, SHUT_WR), 0);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->peak.load() == 2; }));
+  linger reset{.l_onoff = 1, .l_linger = 0};
+  (void)::setsockopt(leaving, SOL_SOCKET, SO_LINGER, &reset, sizeof reset);
+  (void)::close(leaving);
+  pending.clear();
+  const std::string response = ReadUntil(half, pending, R"("finish_reason")");
+  EXPECT_THAT(response, AllOf(HasSubstr("HTTP/1.1 200 OK"), HasSubstr(R"("content":"xxxxxxxx")")));
+  (void)::close(half);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->destroyed.load() == 2; }));
+  EXPECT_EQ(cooperative_->cancelled.load(), 1U);
+  EXPECT_TRUE(BackendHealth().healthy);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, CooperativeDeadlinesDoNotEndAnotherRequestsStream) {
+  api::ServerOptions options;
+  options.deadline_cap = std::chrono::milliseconds(100);
+  options.stall = std::chrono::seconds(2);
+  StartCooperative(options);
+  const int timed = Connect(Post(Chat("timed", R"(,"max_tokens":100)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int streamed = Connect(Post(Chat("stream", R"(,"stream":true,"max_tokens":30)")));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(timed, pending),
+              AllOf(StartsWith("HTTP/1.1 504 "), HasSubstr("deadline")));
+  pending.clear();
+  EXPECT_THAT(ReadResponse(streamed, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("data: [DONE]")));
+  for (const int fd : {timed, streamed}) {
+    (void)::close(fd);
+  }
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->destroyed.load() == 2; }));
+  EXPECT_EQ(cooperative_->cancelled.load(), 1U);
+  EXPECT_EQ(BackendHealth().stalls, 0U);
+}
+
+TEST_F(ServerTest, CooperativeCohortDrainsBeforeSerialFallbackAndLaterRefill) {
+  StartCooperative();
+  cooperative_->pause_units.store(true);
+  const int first = Connect(Post(Chat("long", R"(,"max_tokens":10)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int serial = Connect(Post(Chat("serial", R"(,"cooperative_fifo_marker":true)")));
+  // The diagnostic route authenticates that this whole request was parsed
+  // before a later eligible one is sent; the driver is still blocked.
+  ASSERT_TRUE(WaitFor([&] {
+    return Exchange("GET /jitllm/v1/ignored-fields HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .contains("cooperative_fifo_marker");
+  }));
+  const int later = Connect(Post(Chat("later", R"(,"max_tokens":4)")));
+  cooperative_->release.store(true);
+  std::string pending;
+  for (const int fd : {first, serial, later}) {
+    EXPECT_THAT(ReadResponse(fd, pending), StartsWith("HTTP/1.1 200 "));
+    (void)::close(fd);
+  }
+  EXPECT_TRUE(cooperative_->later_after_serial.load());
+  EXPECT_EQ(cooperative_->peak.load(), 1U);
+  EXPECT_EQ(backend_.chat_calls.load(), 1U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+  EXPECT_THAT(Exchange(Post(Chat("defer"))),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("content":"defer")")));
+  EXPECT_EQ(cooperative_->deferrals.load(), 1U);
+  EXPECT_EQ(backend_.chat_calls.load(), 2U);
+}
+
+TEST_F(ServerTest, CooperativeChannelPollingCannotHideAGlobalStall) {
+  api::ServerOptions options;
+  options.stall = std::chrono::milliseconds(200);
+  StartCooperative(options);
+  const int first = Connect(Post(Chat("long", R"(,"max_tokens":100)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int second = Connect(Post(Chat("long", R"(,"max_tokens":100)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->peak.load() == 2; }));
+  cooperative_->pause_units.store(true);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->polls.load() != 0; }));
+  const int queued = Connect(Post(Chat("serial")));
+  std::string pending;
+  for (const int fd : {first, second}) {
+    EXPECT_THAT(ReadResponse(fd, pending),
+                AllOf(StartsWith("HTTP/1.1 504 "), HasSubstr("backend_stalled")));
+    (void)::close(fd);
+  }
+  EXPECT_THAT(ReadResponse(queued, pending),
+              AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("backend_unresponsive")));
+  (void)::close(queued);
+  EXPECT_FALSE(BackendHealth().healthy);
+  EXPECT_EQ(cooperative_->destroyed.load(), 0U);
+  cooperative_->release.store(true);
+  ASSERT_TRUE(
+      WaitFor([&] { return cooperative_->destroyed.load() == 2 && BackendHealth().healthy; }));
+  EXPECT_EQ(cooperative_->cancelled.load(), 2U);
+  EXPECT_THAT(Exchange(Post(Chat("serial"))), StartsWith("HTTP/1.1 200 "));
+}
+
+TEST_F(ServerTest, CooperativeFaultKeepsBorrowedFramesUntilRetirementCompletes) {
+  StartCooperative();
+  cooperative_->fail_unit.store(true);
+  cooperative_->pause_retirement.store(true);
+  const int fd = Connect(Post(Chat("fault", R"(,"max_tokens":4)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->retirement_entered.load(); }));
+  EXPECT_EQ(cooperative_->live.load(), 1U);
+  EXPECT_EQ(cooperative_->retired.load(), 0U);
+  EXPECT_EQ(cooperative_->destroyed.load(), 0U);
+  cooperative_->release_retirement.store(true);
+  std::string pending;
+  EXPECT_THAT(ReadResponse(fd, pending),
+              AllOf(StartsWith("HTTP/1.1 500 "), HasSubstr("backend_failed")));
+  (void)::close(fd);
+  Stop();
+  EXPECT_FALSE(result_.has_value());
+  EXPECT_EQ(cooperative_->retired.load(), 1U);
+  EXPECT_EQ(cooperative_->destroyed.load(), 1U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, CooperativeLiteralResponsesShareTheSocketBufferBudget) {
+  constexpr std::string_view body =
+      R"({"model":"alpha","prompt":"huge","max_tokens":0,"echo":true})";
+  api::ServerOptions options;
+  auto request = api::ParseCompletionRequest(body);
+  ASSERT_TRUE(request.has_value());
+  api::LiteralResult large;
+  large.prompt_text.assign(std::size_t{4} << 20U, 'x');
+  auto serialized =
+      api::LiteralCompletionJson("cmpl-000000000000000000000000", 1000000000, *request, "", large,
+                                 api::Finish::kStop, {.prompt_tokens = 4});
+  ASSERT_TRUE(serialized.has_value());
+  options.response_budget = serialized->capacity() + (serialized->capacity() / 2);
+  options.write_timeout = std::chrono::seconds(5);
+  StartCooperative(options);
+  if (!server_.has_value()) {
+    ADD_FAILURE() << "the cooperative response-budget server did not start";
+    return;
+  }
+  auto& server = *server_;
+  jitllm::runtime::http::Fd slow(Open(4096));
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(slow.get(), Literal(body)));
+  ASSERT_TRUE(WaitFor([&] { return server.response_bytes() != 0; }));
+  EXPECT_LE(server.response_bytes(), options.response_budget);
+  EXPECT_THAT(Exchange(Literal(body)),
+              AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("response_budget_exceeded")));
+  EXPECT_LE(server.response_bytes(), options.response_budget);
+  linger reset{.l_onoff = 1, .l_linger = 0};
+  (void)::setsockopt(slow.get(), SOL_SOCKET, SO_LINGER, &reset, sizeof reset);
+  slow = jitllm::runtime::http::Fd();
+  ASSERT_TRUE(WaitFor([&] { return server.response_bytes() == 0; }));
+  EXPECT_THAT(Exchange(Literal(body)), StartsWith("HTTP/1.1 200 "));
+  ASSERT_TRUE(WaitFor([&] { return server.response_bytes() == 0; }));
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, CooperativeShutdownRetiresEveryActiveRequest) {
+  StartCooperative();
+  const int first = Connect(Post(Chat("long", R"(,"max_tokens":100)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int second = Connect(Post(Chat("long", R"(,"max_tokens":100)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->peak.load() == 2; }));
+  const std::uint64_t one = 1;
+  (void)!::write(wake_, &one, sizeof one);
+  std::string pending;
+  for (const int fd : {first, second}) {
+    EXPECT_THAT(ReadResponse(fd, pending),
+                AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("Connection: close\r\n")));
+    (void)::close(fd);
+  }
+  Stop();
+  EXPECT_TRUE(result_.has_value());
+  EXPECT_EQ(cooperative_->retired.load(), 2U);
+  EXPECT_EQ(cooperative_->destroyed.load(), 2U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, CooperativeRefusedIntakeCannotStarveAnExistingDecode) {
+  StartCooperative();
+  cooperative_->pause_units.store(true);
+  const int first = Connect(Post(Chat("long", R"(,"max_tokens":20)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  std::array<int, 16> rejected{};
+  for (int& fd : rejected) {
+    fd = Connect(Post(Chat("bad")));
+  }
+  cooperative_->release.store(true);
+  std::string pending;
+  for (const int fd : rejected) {
+    EXPECT_THAT(ReadResponse(fd, pending), StartsWith("HTTP/1.1 400 "));
+    (void)::close(fd);
+  }
+  EXPECT_THAT(ReadResponse(first, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":20)")));
+  (void)::close(first);
+  EXPECT_EQ(cooperative_->rejections.load(), rejected.size());
+  EXPECT_LE(cooperative_->rejections_between_units.load(), api::kMaxActiveRequests);
+  EXPECT_EQ(backend_.chat_calls.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
 }
 
 }  // namespace

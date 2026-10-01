@@ -117,7 +117,7 @@ after the first output, off the swap's path. Each part is timed.
 
 ## Turns
 
-An LLM holds one conversation: the tokens its state has seen. A turn's
+An LLM holds one default conversation branch: the tokens its state has seen. A turn's
 tokens (the conversation rendered by the model's chat template) extend it
 when they start with it, and only the rest is prefilled. Otherwise it
 restores the nearest retained turn checkpoint inside the exact common
@@ -148,6 +148,13 @@ chat template has no renderer is refused at registration, naming its
 hash. A job that failed after it may
 have run leaves the conversation unknown, so the next turn clears the
 state first.
+
+The host-side `Llm::Branch` owns that conversation's history, turn checkpoints,
+sampling scratch and saved cursor. Its move-disabled generation session borrows
+stable options and callbacks, prepares one step, and applies its completed
+result through the same acceptance and history logic as scalar generation.
+The legacy methods forward to this model-owned default branch. Only this branch
+is exposed; native execution still uses the runner's default state.
 
 The turn cache keeps two checkpoints per model on the current branch,
 captured before the renderer's assistant opening. That boundary survives
@@ -539,6 +546,14 @@ ends at its next step and the request's lease is released as the backend
 returns, while the buffer
 lives until the driver lets go of it. Parsing a request's JSON (at most 4
 MiB) is the one piece of CPU work on the I/O thread.
+
+An optional internal `CooperativeBackend` interface lets the same driver own
+up to four stable request frames for one model, admitting new work between
+completed units. Each request retains its own response, deadline and cancellation;
+switching models drains the active group first. Retirement must prove that no
+work still borrows a frame before it can be freed. Focused fake-backend controls
+exercise this path. The production node backend currently supplies no cooperative
+implementation, so deployed requests still run serially.
 
 ## Progress and deadlines
 

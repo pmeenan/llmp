@@ -15,8 +15,10 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <deque>
@@ -283,14 +285,15 @@ class Server::Stream final : public Exchange {
   // `started`: when the driver took the request up, which a non-streaming
   // deadline counts from.
   Stream(Server& server, Pending& pending, int wake_fd, const std::function<bool()>& on_wake,
-         Clock::time_point started)
+         Clock::time_point started, bool cooperative = false)
       : server_(server),
         pending_(pending),
         channel_(*pending.channel),
         wake_fd_(wake_fd),
         on_wake_(on_wake),
         started_(started),
-        text_(pending.request.stop) {}
+        text_(pending.request.stop),
+        cooperative_(cooperative) {}
 
   bool Admit(const Admission& admission) override {
     usage_.prompt_tokens = admission.prompt_tokens;
@@ -488,6 +491,9 @@ class Server::Stream final : public Exchange {
   // Progress: the watchdog's beat, `next` the unit that follows (none:
   // the one under way goes on) and its expected seconds at the floors.
   void Progress(std::optional<Phase> next, double expected) {
+    if (cooperative_) {
+      return;  // the driver declares and completes units, not channel polling
+    }
     bool recovered = false;
     {
       const std::scoped_lock lock(server_.mutex_);
@@ -506,7 +512,8 @@ class Server::Stream final : public Exchange {
     }
     {
       const std::scoped_lock lock(server_.mutex_);
-      if (channel_.gone || channel_.stalled) {
+      stopping_ = stopping_ || server_.stopping_;
+      if (stopping_ || channel_.gone || channel_.stalled) {
         return false;
       }
     }
@@ -538,6 +545,24 @@ class Server::Stream final : public Exchange {
   bool timed_out_ = false;
   bool stopping_ = false;
   bool slow_ = false;
+  bool cooperative_ = false;
+};
+
+// Stable addresses: Start may borrow the exchange and the parsed request
+// until Retire proves every such reference has gone. Slots are never moved.
+struct Server::Active {
+  Pending pending;
+  CooperativeBackend::Request request;
+  Clock::time_point started;
+  Stream exchange;
+  std::unique_ptr<CooperativeBackend::Work> work;
+
+  Active(Server& server, Pending request, int wake_fd, const std::function<bool()>& on_wake)
+      : pending(std::move(request)),
+        request{.options = pending.request,
+                .literal = pending.literal ? &*pending.literal : nullptr},
+        started(Clock::now()),
+        exchange(server, pending, wake_fd, on_wake, started, true) {}
 };
 
 // ---------------------------------------------------------------- Server
@@ -636,10 +661,13 @@ void Server::WatchBackend(Clock::time_point now, std::vector<std::uint64_t>& end
     const Health& health = watchdog_.health();
     const Clock::duration idle = now - health.last_progress;
     std::string which = "no request";
-    if (running_ && !running_->ended && !running_->gone) {
+    for (const auto& running : running_) {
+      if (running->ended || running->gone) {
+        continue;
+      }
       // Ended as a client that leaves ends it: the generation stops at the
       // backend's next step, and the lease is released as it returns.
-      Channel& ch = *running_;
+      Channel& ch = *running;
       which = std::format("request {} ends with 504", ch.id);
       ch.PutError(Stalled(idle));
       ch.stalled = true;  // not `gone`: the connection stays to carry the error
@@ -1461,7 +1489,7 @@ void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& o
       Log(std::format("request {}: the client left while it was queued", channel.id));
       return;
     }
-    running_ = pending.channel;
+    running_.push_back(pending.channel);
     recovered = BeatLocked(Phase::kStarting, 0);
   }
   if (recovered) {
@@ -1471,12 +1499,32 @@ void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& o
   const std::expected<Completion, Error> result = pending.literal
                                                       ? backend_.Complete(*pending.literal, stream)
                                                       : backend_.Complete(pending.request, stream);
+  FinishResponse(pending, stream, result, started);
+  Progress(Phase::kIdle, 0);
+}
+
+void Server::Progress(Phase next, double expected) {
+  bool recovered = false;
+  {
+    const std::scoped_lock lock(mutex_);
+    recovered = BeatLocked(next, expected);
+  }
+  if (recovered) {
+    HealthChanged();
+  }
+}
+
+void Server::FinishResponse(Pending& pending, Stream& stream,
+                            const std::expected<Completion, Error>& result,
+                            Clock::time_point started) {
+  Channel& channel = *pending.channel;
   const int status = stream.End(result);
   bool stalled = false;
+  bool recovered = false;
   {
     const std::scoped_lock lock(mutex_);
     stalled = channel.stalled;
-    running_.reset();
+    std::erase(running_, pending.channel);
     // The backend returned: progress, and what follows the response.
     recovered = BeatLocked(Phase::kFinishing, 0);
   }
@@ -1496,13 +1544,177 @@ void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& o
       channel.id, pending.request.model, status, why, u.prompt_tokens, u.cached_tokens,
       u.completion_tokens, Seconds(Clock::now() - started), Seconds(started - channel.queued_at)));
   backend_.AfterResponse();
-  {
-    const std::scoped_lock lock(mutex_);
-    recovered = BeatLocked(Phase::kIdle, 0);  // nothing more to watch
+}
+
+std::expected<void, std::string> Server::ServeCooperative(Pending first,
+                                                          CooperativeBackend& cooperative,
+                                                          int wake_fd,
+                                                          const std::function<bool()>& on_wake) {
+  std::vector<std::unique_ptr<Active>> active;
+  active.reserve(kMaxActiveRequests);
+  bool drain = false;
+  std::string fatal;
+  // False means deferred with no effects. The caller still owns the frame
+  // and either restores it to the FIFO or uses the serial path alone.
+  const auto start = [&](std::unique_ptr<Active>& frame) {
+    {
+      const std::scoped_lock lock(mutex_);
+      if (frame->pending.channel->gone) {
+        Log(std::format("request {}: the client left while it was queued",
+                        frame->pending.channel->id));
+        return true;
+      }
+      running_.push_back(frame->pending.channel);
+    }
+    Progress(Phase::kStarting, 0);
+    auto created = cooperative.Start(frame->request, frame->exchange);
+    if (!created) {
+      FinishResponse(frame->pending, frame->exchange, std::unexpected(created.error()),
+                     frame->started);
+      return true;
+    }
+    if (!*created) {
+      const std::scoped_lock lock(mutex_);
+      std::erase(running_, frame->pending.channel);
+      return false;
+    }
+    frame->work = std::move(*created);
+    active.push_back(std::move(frame));
+    return true;
+  };
+
+  auto initial = std::make_unique<Active>(*this, std::move(first), wake_fd, on_wake);
+  if (!start(initial)) {
+    // A request that cannot join an empty cohort must not wait forever.
+    // Start's no-effects contract makes one serial fallback safe.
+    Serve(initial->pending, wake_fd, on_wake);
+    Progress(Phase::kIdle, 0);
+    return {};
   }
-  if (recovered) {
-    HealthChanged();
+  const auto retire = [&](bool stop) {
+    std::erase_if(active, [&](const std::unique_ptr<Active>& frame) {
+      const bool go_on = frame->exchange.Continue();
+      if (!go_on || stop || !fatal.empty()) {
+        frame->work->Cancel();
+      } else if (!frame->work->terminal()) {
+        return false;
+      }
+      Progress(Phase::kFinishing, 0);
+      auto retired = cooperative.Retire(*frame->work);
+      if (!retired.references_retired) {
+        (void)std::fputs("cooperative backend did not retire its references: aborting\n", stderr);
+        std::abort();
+      }
+      if (!fatal.empty()) {
+        retired.result = std::unexpected(
+            Refusal(500, "the model backend failed; the runtime is stopping", "backend_failed"));
+      }
+      FinishResponse(frame->pending, frame->exchange, retired.result, frame->started);
+      return true;
+    });
+  };
+  while (!active.empty()) {
+    if (Readable(wake_fd) && on_wake()) {
+      const std::scoped_lock lock(mutex_);
+      stopping_ = true;
+    }
+    if (!backend_.healthy() && fatal.empty()) {
+      fatal = backend_.failure();
+      if (fatal.empty()) {
+        fatal = "the cooperative backend failed";
+      }
+    }
+    bool stop = false;
+    {
+      const std::scoped_lock lock(mutex_);
+      stop = stopping_;
+    }
+    // Retire before admitting a replacement. The exchange and parsed
+    // inputs survive even after their socket disappeared.
+    retire(stop);
+    if (!backend_.healthy() && fatal.empty()) {
+      fatal = backend_.failure().empty() ? "the cooperative backend failed" : backend_.failure();
+    }
+    if (active.empty()) {
+      break;
+    }
+    if (stop || !fatal.empty()) {
+      continue;
+    }
+
+    // Failed or departed starters do not grow active.size(). Bound attempts
+    // as well as live works so an endless invalid FIFO cannot starve decode.
+    std::size_t attempts = 0;
+    while (!drain && active.size() < kMaxActiveRequests && attempts < kMaxActiveRequests) {
+      std::optional<Pending> pending;
+      {
+        const std::scoped_lock lock(mutex_);
+        if (stopping_ || queue_.empty()) {
+          break;
+        }
+        Pending& head = queue_.front();
+        if (head.request.model != active.front()->pending.request.model ||
+            !cooperative.Supports(
+                {.options = head.request, .literal = head.literal ? &*head.literal : nullptr})) {
+          drain = true;  // never refill past an incompatible FIFO head
+          break;
+        }
+        pending.emplace(std::move(head));
+        queue_.pop_front();
+        pending->channel->queued = false;
+      }
+      ++attempts;
+      auto frame = std::make_unique<Active>(*this, std::move(*pending), wake_fd, on_wake);
+      if (!start(frame)) {
+        const std::scoped_lock lock(mutex_);
+        frame->pending.channel->queued = true;
+        queue_.push_front(std::move(frame->pending));
+        break;
+      }
+    }
+    if (!backend_.healthy() && fatal.empty()) {
+      fatal = backend_.failure().empty() ? "the cooperative backend failed" : backend_.failure();
+    }
+    {
+      const std::scoped_lock lock(mutex_);
+      stop = stopping_;
+    }
+    // A new work can already be terminal, and intake may have consumed a
+    // shutdown signal. Recheck without starting another admission cycle.
+    retire(stop);
+    if (active.empty()) {
+      break;
+    }
+    if (stop || !fatal.empty()) {
+      continue;
+    }
+
+    std::array<CooperativeBackend::Work*, kMaxActiveRequests> work{};
+    for (std::size_t i = 0; i < active.size(); ++i) {
+      work[i] = active[i]->work.get();
+    }
+    const std::span<CooperativeBackend::Work* const> wave(work.data(), active.size());
+    auto next = cooperative.NextUnit(wave);
+    if (!next) {
+      fatal = next.error().empty() ? "no cooperative backend unit" : next.error();
+      continue;
+    }
+    if (next->phase == Phase::kIdle || !std::isfinite(next->expected_seconds) ||
+        next->expected_seconds < 0) {
+      fatal = "invalid cooperative backend unit";
+      continue;
+    }
+    Progress(next->phase, next->expected_seconds);
+    auto advanced = cooperative.Advance(wave);
+    // This is an actual unit's return, including failure. Exchange polling
+    // and output from its members never renew a hung unit's allowance.
+    Progress(Phase::kFinishing, 0);
+    if (!advanced) {
+      fatal = advanced.error().empty() ? "the cooperative backend unit failed" : advanced.error();
+    }
   }
+  Progress(Phase::kIdle, 0);
+  return fatal.empty() ? std::expected<void, std::string>{} : std::unexpected(std::move(fatal));
 }
 
 std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bool()>& on_wake) {
@@ -1519,6 +1731,7 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
     return std::unexpected(std::format("the event loop: {}", added.error().value()));
   }
   io_ = std::jthread([this] { Loop(); });
+  CooperativeBackend* const cooperative = backend_.cooperative();
   std::expected<void, std::string> result;
   for (;;) {
     {
@@ -1555,7 +1768,16 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
         next->channel->queued = false;
         queue_.pop_front();
       }
-      Serve(*next, wake_fd, on_wake);
+      if (cooperative != nullptr &&
+          cooperative->Supports(
+              {.options = next->request, .literal = next->literal ? &*next->literal : nullptr})) {
+        result = ServeCooperative(std::move(*next), *cooperative, wake_fd, on_wake);
+      } else {
+        Serve(*next, wake_fd, on_wake);
+      }
+      if (!result) {
+        break;
+      }
       if (!backend_.healthy()) {
         result = std::unexpected(backend_.failure());
         break;

@@ -993,6 +993,11 @@ it appears.
       pair row-local products over independent request states: paid decode
       throughput improves 19.1%/19.6%, with exact IDs, acceptance and final
       state/cursors. Production request batching and HTTP parity remain open.
+      The internal cooperative API driver and shared resumable generation
+      session prepare that integration: each model has one host conversation
+      branch, and per-request admission, cancellation and proven retirement
+      have fake-backend controls. The production node backend remains serial;
+      native slots, shared execution and prefix-cache integration remain open.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

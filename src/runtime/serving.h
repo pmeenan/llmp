@@ -171,6 +171,7 @@ class Served {
   virtual Status Bind() = 0;
   virtual std::vector<catalog::ExtentId> weights() const = 0;
   virtual std::vector<catalog::ExtentId> state() const { return {}; }
+  virtual bool HasRetainedState() const { return false; }
   virtual const catalog::Closure& everything() const = 0;
   virtual std::uint64_t weight_read_bytes() const = 0;
   // After a full load: the checks of what the kernels index unchecked.
@@ -229,7 +230,80 @@ struct GenerateOptions {
 
 // A model with a conversation: DeepSeek V4 Flash, Qwen3.8 Flash Next.
 class Llm : public Served {
+ private:
+  struct TurnCheckpoint {
+    TurnBoundary boundary;
+    engine::CheckpointFile file;
+    std::vector<engine::LiveState::Range> footprint;
+    std::uint32_t cursor = 0;
+    execution::AdaptiveDepth decoding;
+  };
+
  public:
+  class GenerationSession;
+  // Host conversation ownership over this model's immutable metadata. This
+  // slice exposes only the model-owned default branch; all native operations
+  // still use slot zero. A branch never registers or owns another model.
+  class Branch {
+   public:
+    Branch(const Branch&) = delete;
+    Branch& operator=(const Branch&) = delete;
+    Branch(Branch&&) = delete;
+    Branch& operator=(Branch&&) = delete;
+    ~Branch();
+
+    const Llm& model() const { return model_; }
+    const std::vector<std::int32_t>& history() const { return history_; }
+    bool HasRetainedState() const { return !history_.empty(); }
+    Status Clear();
+    void Forget();
+    Status Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
+                   const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr);
+    Status ScorePrompt(std::span<const std::int32_t> tokens, std::vector<float>& last,
+                       const std::function<bool(std::int32_t, std::span<const float>)>& on_row,
+                       const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr);
+    Status PreparePrompt(std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
+                         std::vector<float>& last, std::uint32_t& reused,
+                         const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr,
+                         bool fresh = false);
+    std::size_t turn_checkpoints() const { return turn_checkpoints_.size(); }
+    std::uint64_t turn_checkpoint_bytes() const;
+    std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
+        const std::vector<float>& last, const GenerateOptions& options, Generation& out) &;
+    std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
+        const std::vector<float>& last, const GenerateOptions&& options,
+        Generation& out) & = delete;
+    Status Generate(const std::vector<float>& last, const GenerateOptions& options,
+                    Generation& out);
+    std::uint64_t state_snapshot_bytes() const;
+    Status SaveState(void* host);
+    Status RestoreState(void* host);
+    void InvalidateStateSnapshot() { saved_valid_ = false; }
+
+   private:
+    friend class Llm;
+    friend class GenerationSession;
+    explicit Branch(Llm& model) : model_(model) {}
+
+    Llm& model_;
+    std::vector<std::int32_t> history_;
+    // A possibly run failed step invalidates this branch until native clear.
+    bool needs_clear_ = false;
+    std::vector<std::int32_t> saved_history_;
+    std::uint32_t saved_cursor_ = 0;
+    std::vector<engine::LiveState::Range> saved_ranges_;
+    bool saved_valid_ = false;
+    std::optional<execution::SamplingParams> sampling_;
+    std::uint64_t seed_ = 0;
+    std::vector<execution::SamplingCandidate> scratch_;
+    std::vector<TurnCheckpoint> turn_checkpoints_;
+    Clock::time_point history_used_ = Clock::now();
+    bool generation_active_ = false;
+  };
+
+  Llm();
+  Branch& default_branch() & { return default_branch_; }
+  const Branch& default_branch() const& { return default_branch_; }
   bool llm() const override { return true; }
   // The prefill chunk's rows, and the configuration's prefill_chunk if set
   // (max_rows is at most it, capped by the model at its context).
@@ -258,17 +332,14 @@ class Llm : public Served {
   virtual void Defaults(chat::Conversation& conversation) const = 0;
 
   // The conversation: every token the state has seen.
-  const std::vector<std::int32_t>& history() const { return history_; }
+  const std::vector<std::int32_t>& history() const { return default_branch_.history(); }
+  bool HasRetainedState() const override { return default_branch_.HasRetainedState(); }
   // The state zeroed and the conversation empty.
   Status Clear();
   // The conversation dropped without a job: the state's contents are no
   // longer wanted (a swap out does not spill them), and the next use clears
   // it first.
-  void Forget() {
-    turn_checkpoints_.clear();
-    history_.clear();
-    needs_clear_ = true;
-  }
+  void Forget();
   // Runs `tokens` after the history in chunks of max_rows (with the
   // drafter's injection when speculating): the last row's logits. With
   // `go_on`, asked with each chunk's rows before it (runtime/prefill.h):
@@ -293,10 +364,76 @@ class Llm : public Served {
                        std::vector<float>& last, std::uint32_t& reused,
                        const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr,
                        bool fresh = false);
-  std::size_t turn_checkpoints() const { return turn_checkpoints_.size(); }
+  std::size_t turn_checkpoints() const { return default_branch_.turn_checkpoints(); }
   std::uint64_t turn_checkpoint_bytes() const;
-  // Greedy generation from `last` (a whole prefill's logits): the first
-  // token is its argmax, the rest from decode steps.
+  // One resumable generation on the default conversation. The model,
+  // options and `out` outlive the session; no other operation may mutate that
+  // conversation before Finish. Borrowing preserves stateful callbacks.
+  // Finish is explicit: destroying an unfinished session violates ownership.
+  class GenerationSession {
+   public:
+    struct Step {
+      std::span<const std::int32_t> all;
+      std::uint32_t position = 0;
+      std::uint32_t left = 0;
+      bool speculative = false;
+      bool need_logits = false;
+    };
+    GenerationSession(const GenerationSession&) = delete;
+    GenerationSession& operator=(const GenerationSession&) = delete;
+    GenerationSession(GenerationSession&&) = delete;
+    GenerationSession& operator=(GenerationSession&&) = delete;
+    ~GenerationSession();
+
+    bool done() const;
+    // Runs existing context/growth preparation; called within a declared
+    // native unit, not from a scheduler's host-only eligibility check.
+    // The returned tokens are borrowed until Apply/FailStep, never rebound.
+    std::expected<Step, std::string> PrepareStep();
+    // The legacy native path, applying exactly one completed scalar step.
+    Status RunScalarStep();
+    // Apply only after the named native step completed. A speculative result
+    // already includes per-model selection/Accept; drafted is an increment.
+    Status ApplyPlain(std::vector<float> row);
+    Status ApplySpeculative(std::vector<std::int32_t> kept, std::vector<std::vector<float>> logits,
+                            std::uint64_t drafted);
+    // A failed submitted step: prefix_valid requires an independently proven
+    // prefix at Step::position. False invalidates history; neither proves retirement.
+    Status FailStep(std::string error, bool prefix_valid = false);
+    // Called at a completed boundary, with no step awaiting Apply/FailStep.
+    void Cancel();
+    // Once done or cancelled, settles and publishes history once. An Error
+    // retains the runner's completion/lifetime obligations, not retirement proof.
+    Status Finish();
+
+   private:
+    friend class Llm;
+    GenerationSession(Llm& model, Branch& branch, const GenerateOptions& options, Generation& out);
+    Status Begin(const std::vector<float>& last);
+    bool IsStop(std::int32_t token) const;
+    bool Report();
+    Status ApplyTokens(std::vector<std::int32_t> kept, std::vector<std::vector<float>> logits);
+    void Close();
+
+    Llm& model_;
+    Branch& branch_;
+    const GenerateOptions& options_;
+    Generation& out_;
+    std::vector<std::int32_t> all_;
+    std::uint32_t position_ = 0;
+    std::uint32_t left_ = 0;
+    std::size_t reported_ = 0;
+    Clock::time_point start_;
+    Status ran_;
+    bool failed_prefix_valid_ = false;
+    bool prepared_ = false;
+    bool finished_ = false;
+  };
+  std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
+      const std::vector<float>& last, const GenerateOptions& options, Generation& out) &;
+  std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
+      const std::vector<float>& last, const GenerateOptions&& options, Generation& out) & = delete;
+  // Drives the same resumable core to completion using ordinary native steps.
   Status Generate(const std::vector<float>& last, const GenerateOptions& options, Generation& out);
   // The whole conversation state (the target's and the drafter's, and the
   // host's speculation cursor) saved to or put back from pinned host
@@ -305,7 +442,7 @@ class Llm : public Served {
   std::uint64_t state_snapshot_bytes() const;
   Status SaveState(void* host);
   Status RestoreState(void* host);
-  void InvalidateStateSnapshot() { saved_valid_ = false; }
+  void InvalidateStateSnapshot() { default_branch_.InvalidateStateSnapshot(); }
 
   std::vector<catalog::ExtentId> state() const override = 0;
 
@@ -349,11 +486,16 @@ class Llm : public Served {
   // a position in the conversation (greedy: the argmax), and whether the
   // target keeps a draft there (greedy: the argmax equals it); if not,
   // `next` is the token in its place.
-  bool sampling() const { return sampling_.has_value(); }
+  bool sampling() const { return default_branch_.sampling_.has_value(); }
   std::expected<std::int32_t, std::string> Choose(std::span<const float> row,
                                                   std::uint64_t position);
   std::expected<bool, std::string> Keep(std::span<const float> row, std::int32_t draft,
                                         std::uint64_t position, std::int32_t& next);
+  std::expected<std::int32_t, std::string> Choose(Branch& branch, std::span<const float> row,
+                                                  std::uint64_t position);
+  std::expected<bool, std::string> Keep(Branch& branch, std::span<const float> row,
+                                        std::int32_t draft, std::uint64_t position,
+                                        std::int32_t& next);
   // Finds the reasoning markers in the vocabulary (after the tokenizer).
   void FindThinkTokens();
 
@@ -366,34 +508,34 @@ class Llm : public Served {
   std::unique_ptr<tokenizer::Tokenizer> tokenizer_;
   const chat::Template* template_ = nullptr;
   std::vector<std::int32_t> stops_;
-  std::vector<std::int32_t> history_;
-  // A chunk or step failed after it may have run: the history is unknown,
-  // and the state is cleared before the next use.
-  bool needs_clear_ = false;
-  std::vector<std::int32_t> saved_history_;
-  std::uint32_t saved_cursor_ = 0;
-  std::vector<engine::LiveState::Range> saved_ranges_;
-  bool saved_valid_ = false;
   std::optional<std::int32_t> think_start_;
   std::optional<std::int32_t> think_end_;
-  // The running generation's sampling, if it samples.
-  std::optional<execution::SamplingParams> sampling_;
-  std::uint64_t seed_ = 0;
-  std::vector<execution::SamplingCandidate> scratch_;
 
  private:
-  struct TurnCheckpoint {
-    TurnBoundary boundary;
-    engine::CheckpointFile file;
-    std::vector<engine::LiveState::Range> footprint;
-    std::uint32_t cursor = 0;
-    execution::AdaptiveDepth decoding;
-  };
-  Status CaptureTurnCheckpoint(const PrefillGoOn& go_on, bool& stopped);
-  Status ReusePrompt(std::span<const std::int32_t> tokens, std::uint32_t& reused, bool fresh,
-                     const PrefillGoOn& go_on, bool& stopped);
-  std::vector<TurnCheckpoint> turn_checkpoints_;
-  Clock::time_point history_used_ = Clock::now();
+  Status Clear(Branch& branch);
+  void Forget(Branch& branch);
+  Status Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::vector<float>& last,
+                 const PrefillGoOn& go_on, PrefillRun* run);
+  Status ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::vector<float>& last,
+                     const std::function<bool(std::int32_t, std::span<const float>)>& on_row,
+                     const PrefillGoOn& go_on, PrefillRun* run);
+  Status PreparePrompt(Branch& branch, std::span<const std::int32_t> tokens,
+                       std::uint32_t stable_boundary, std::vector<float>& last,
+                       std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run,
+                       bool fresh);
+  Status CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool& stopped);
+  Status ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t& reused,
+                     bool fresh, const PrefillGoOn& go_on, bool& stopped);
+  std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
+      Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
+      Generation& out);
+  Status Generate(Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
+                  Generation& out);
+  Status SaveState(Branch& branch, void* host);
+  Status RestoreState(Branch& branch, void* host);
+  void CheckBranch(const Branch& branch) const;
+  void CheckIdleGeneration(const Branch& branch) const;
+  Branch default_branch_;
 
  protected:
   std::filesystem::path checkpoint_directory_;
