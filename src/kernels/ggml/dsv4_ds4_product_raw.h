@@ -42,6 +42,8 @@ cudaError_t F16Vector(const void* weights, const float* input, float* output, in
 cudaError_t Mmq(const void* raw, const void* quantized, float* output, int m, int n, int k,
                 const MmqPlan& plan, void* fixup, std::uint64_t fixup_bytes, cudaStream_t stream);
 cudaError_t D4(const float* input, void* output, int rows, int columns, cudaStream_t stream);
+// Original post-MMQ kernel, also paid by the native consumer control.
+cudaError_t Sanitize(float* output, std::uint64_t count, cudaStream_t stream);
 cudaError_t Q81(const float* input, void* output, int rows, int columns, cudaStream_t stream);
 cudaError_t Q8Vector(const void* raw, const void* scales, const void* codes, const void* quantized,
                      float* output, int m, int n, int k, bool aligned, cudaStream_t stream);

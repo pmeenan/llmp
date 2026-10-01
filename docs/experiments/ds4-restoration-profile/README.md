@@ -94,7 +94,10 @@ original paid D4 producer, raw Q8 weights, guard initialization and output
 sanitizer. Keep stream, job fences, geometry and head cadence fixed. The
 current native public product entry prepares its input itself, so borrowing
 the existing D4 operand requires an explicit bounded native entry and its
-own workspace contract. This is a proposed singleton, with no speed result.
+own workspace contract. The completed [consumer singleton](../ds4-native-outputb/README.md)
+is comparable at a 0.9983 rate ratio, with twelve full heads and three
+complete original-input operator outputs byte-identical. It preserves the
+native consumer seam; production dispatch remains unchanged.
 
 The larger routed-FFN restoration separates aligned versus raw weight
 layout, original versus native consumers, and fused gate/up/SwiGLU versus

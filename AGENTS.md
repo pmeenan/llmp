@@ -325,12 +325,17 @@ spilling only initialized extents; both 262K ceilings register together and
 swap exact 8K state under 10 s. Turn checkpoints reuse 64K prefixes when
 reasoning is removed, with exact continuation across swaps. Context defaults
 to 262,144, with trained ceilings checked before allocation. Remaining
-before the gate: final maximum-context and quality/swap checks, plus
-Qwen's long-context MTP speed gap.
+before the gate: Qwen's long-context MTP speed gap, ds4's causal native-stage
+restoration and wider matched-context/task-quality checks, the final
+swap/client gate and record, and deferred workstation checks. Final
+maximum-context timing, neutral retrieval and continuing-context swaps
+are recorded in
+[final context checks](docs/experiments/m3-final-context/README.md).
 The ds4 study adopted shared sparse gathers and compact expert scheduling;
 its complete 8K benchmark now matches all original logits byte for byte
-within 2.4% throughput. Native-stage restoration will identify and adapt the
-mechanisms behind the gains. M3.5 (model families, the
+within 2.4% throughput. Native output-B restoration is exact and comparable
+in speed; routed FFN is next. Literal ds4 code is temporary benchmark
+scaffolding. M3.5 (model families, the
 owner's approved 13 plus legacy fixtures and Bonsai, formats with EXL3
 in focus, concurrent batching) follows M3, before M4. Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

@@ -20,6 +20,8 @@
 #include "kernels/ggml/dsv4_ds4_product_raw.h"
 #include "kernels/ggml/ggml_support.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/mul_mat_q_borrowed.cuh"
+#include "kernels/ggml/ops_ext.h"
 
 namespace jitllm::kernels::ggml {
 namespace {
@@ -85,6 +87,37 @@ std::expected<ds4_product::MmqPlan, KernelFailure> MmqPlan(const LaunchContext& 
     return Rejected("original ds4 MMQ has no legal bounded launch for this shape");
   return p;
 }
+// Bounded automatic metadata only. Kernels retain copied scalar arguments
+// and device addresses, never these host descriptors after the launch.
+struct NativeQ8View {
+  ggml_tensor weights{}, source{}, output{};
+  BorrowedMmqD4 quantized{};
+  explicit NativeQ8View(const Ds4Q8Product& d) {
+    const auto matrix = [](ggml_tensor& tensor, ggml_type type, void* data, std::uint32_t width,
+                           std::uint32_t rows) {
+      tensor.type = type;
+      tensor.data = data;
+      tensor.ne[0] = width;
+      tensor.ne[1] = rows;
+      tensor.ne[2] = tensor.ne[3] = 1;
+      tensor.nb[0] = ggml_type_size(type);
+      tensor.nb[1] = ggml_row_size(type, width);
+      tensor.nb[2] = tensor.nb[3] = tensor.nb[1] * rows;
+    };
+    matrix(weights, GGML_TYPE_Q8_0, const_cast<void*>(d.weights.raw.data), d.weights.columns,
+           d.weights.rows);
+    matrix(source, GGML_TYPE_F32, const_cast<void*>(d.input.storage.data), d.input.columns,
+           d.input.rows);
+    matrix(output, GGML_TYPE_F32, d.output.storage.data, d.output.columns, d.output.rows);
+    output.op = GGML_OP_MUL_MAT;
+    output.src[0] = &weights;
+    output.src[1] = &source;
+    quantized = {.data = d.quantized.storage.data,
+                 .bytes = d.quantized.storage.bytes,
+                 .source = d.quantized.source,
+                 .generation = d.quantized.generation};
+  }
+};
 }  // namespace
 
 std::expected<void, KernelFailure> RunDs4Embedding(LaunchContext& launch, const Ds4Embedding& d) {
@@ -249,6 +282,36 @@ std::expected<void, KernelFailure> RunDs4Q8Product(LaunchContext& launch, const 
         d.weights.raw.data, d.quantized.storage.data, static_cast<float*>(d.output.storage.data),
         static_cast<int>(d.weights.rows), static_cast<int>(d.input.rows),
         static_cast<int>(d.input.columns), p, fixup.get(), p.fixup, stream));
+  });
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanDs4Q8NativeMmq(const LaunchContext& launch,
+                                                               const Ds4Q8Product& d) {
+  if (auto checked = CheckDs4Q8Product(d); !checked) return std::unexpected(checked.error());
+  if (!d.prepared || d.path != Ds4Q8Path::kMmq || d.weights.raw.data == nullptr)
+    return Rejected("native Q8 consumer requires the original prepared D4/raw-MMQ descriptor");
+  if (auto device = Device(launch); !device) return std::unexpected(device.error());
+  // Preserve the complete original view, including any co-resident aligned
+  // planes, as disjoint charged operands of the same native Run.
+  if (!WorkspaceFits(launch, {d.input.storage, Read(d.output.storage), Read(d.quantized.storage),
+                              d.weights.raw, d.weights.scales, d.weights.codes}))
+    return Rejected("native Q8 control overlaps an original operand workspace");
+  NativeQ8View view(d);
+  return PlanMulMatQBorrowedD4(launch, &view.output, view.quantized, d.generation);
+}
+
+std::expected<void, KernelFailure> RunDs4Q8NativeMmq(LaunchContext& launch, const Ds4Q8Product& d) {
+  auto bytes = PlanDs4Q8NativeMmq(launch, d);
+  if (!bytes) return std::unexpected(bytes.error());
+  return launch.Run(base::Bytes(*bytes), [d](ggml_backend_cuda_context& context) {
+    CUDA_CHECK(ZeroTail(d.quantized, context.stream()));
+    if (internal::CudaErrorPending()) return;
+    NativeQ8View view(d);
+    internal::LaunchMulMatQBorrowedD4(context, &view.output, d.quantized.storage.data);
+    if (internal::CudaErrorPending()) return;
+    CUDA_CHECK(ds4_product::Sanitize(static_cast<float*>(d.output.storage.data),
+                                     static_cast<std::uint64_t>(d.output.rows) * d.output.columns,
+                                     context.stream()));
   });
 }
 

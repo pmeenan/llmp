@@ -43,6 +43,15 @@ std::uint64_t Address(const void* p) {
 }
 Buffer View(kg::Ds4ProductRead b) { return {Address(b.data), b.bytes}; }
 Buffer View(kg::Ds4ProductWrite b) { return {Address(b.data), b.bytes}; }
+#ifdef JITLLM_DS4_COMPLETE_CUDA
+kg::Ds4Q8Product ControlOutput(const Layer& layer, Buffer output) {
+  auto product = layer.output_b;
+  product.output.storage = {
+      .data = std::bit_cast<void*>(static_cast<std::uintptr_t>(output.address)),
+      .bytes = output.bytes};
+  return product;
+}
+#endif
 bool Same(Buffer a, Buffer b) { return a.address != 0 && a.address == b.address; }
 bool Same(Buffer a, kg::Ds4ProductRead b) { return Same(a, View(b)); }
 bool Same(Buffer a, kg::Ds4ProductWrite b) { return Same(a, View(b)); }
@@ -438,8 +447,10 @@ struct Inventory {
     Add(d.projection);
   }
 };
-Inventory Operands(const Chunk& c) {
+Inventory Operands(const Chunk& c, bool include_output_b_control = true) {
   Inventory out;
+  out.Values(c.output_b_consumer, c.output_b_study);
+  if (include_output_b_control) out.Write(c.output_b_control);
   out.Meta(c.embedding.weights);
   out.Meta(c.embedding.output);
   out.Value(c.embedding.hyper_connections);
@@ -490,6 +501,14 @@ Result Paid(const Chunk& c) {
   for (auto b : c.paid_ranges)
     if (!Range(b)) return Fail("invalid paid catalog byte range");
   const auto inventory = Operands(c);
+  // The diagnostic result survives until the existing layer fence and
+  // capture. It may overwrite no original operand, including mutable
+  // scratch which ordinary recipes can otherwise reuse between stages.
+  if (!Absent(c.output_b_control)) {
+    for (const auto& operand : Operands(c, false).ranges)
+      if (Overlap(c.output_b_control, operand))
+        return Fail("output-B diagnostic control overlaps an original live operand");
+  }
   for (const auto& b : inventory.ranges) {
     if (!Range(b) || std::ranges::none_of(c.paid_ranges, [b](Buffer r) { return Covers(r, b); }))
       return Fail("borrowed operand is outside paid mapped catalog ranges");
@@ -954,6 +973,14 @@ Result FrontierOf(const model::Dsv4Profile& p, const Chunk& c) {
 
 Result CheckChunk(const model::Dsv4Profile& p, const Chunk& c) {
   if (auto check = Profile(p); !check) return check;
+  if ((c.output_b_consumer != OutputBConsumer::kOriginal &&
+       c.output_b_consumer != OutputBConsumer::kNativeMmq) ||
+      (!c.output_b_study &&
+       (c.output_b_consumer != OutputBConsumer::kOriginal || !Absent(c.output_b_control))) ||
+      (!Absent(c.output_b_control) &&
+       (!Range(c.output_b_control) || c.output_b_control.bytes != std::uint64_t{kRows} * 4096 * 4 ||
+        c.first != kRows || c.output_b_consumer != OutputBConsumer::kOriginal)))
+    return Fail("invalid private output-B variant or original-input control range");
   if (c.artifact_id != kCommunityArtifact || (c.first != 0 && c.first != kRows) ||
       c.context != 2 * kRows || c.layers.size() != kLayers || c.device_sms == 0 ||
       c.storage_generation == 0 || c.model_generation == 0 ||
@@ -1276,7 +1303,11 @@ bool EncodeLayer(Queue& q, providers::NativeStream native, kg::LaunchContext& la
   if (!q.Add(kg::RunDs4Attention(launch, l.attention))) return false;
   if (!Mark(q, native, profile, 3, true) || !Mark(q, native, profile, 4)) return false;
   if (!q.Add(kg::RunDs4OutA(launch, l.output_a)) ||
-      !q.Add(kg::RunDs4Q8Product(launch, l.output_b)) ||
+      !q.Add(c.output_b_consumer == OutputBConsumer::kOriginal
+                 ? kg::RunDs4Q8Product(launch, l.output_b)
+                 : kg::RunDs4Q8NativeMmq(launch, l.output_b)) ||
+      (!Absent(c.output_b_control) && CaptureOutputBAt(c.first, l.index) &&
+       !q.Add(kg::RunDs4Q8NativeMmq(launch, ControlOutput(l, c.output_b_control)))) ||
       !q.Add(kg::RunDs4HcExpand(launch, l.attention_expand)))
     return false;
   if (!Mark(q, native, profile, 4, true) || !Mark(q, native, profile, 5)) return false;
@@ -1330,9 +1361,16 @@ Result Workspace(const kg::LaunchContext& launch, const Chunk& c) {
   for (const auto& l : c.layers) {
     for (const auto* d : {&l.query_a, &l.kv_projection, &l.query_b, &l.output_b, &l.shared_gate,
                           &l.shared_up, &l.shared_down}) {
-      auto bytes = kg::PlanDs4Q8Product(launch, *d);
+      auto bytes = d == &l.output_b && c.output_b_consumer == OutputBConsumer::kNativeMmq
+                       ? kg::PlanDs4Q8NativeMmq(launch, *d)
+                       : kg::PlanDs4Q8Product(launch, *d);
       if (!bytes || *bytes > pool.bytes)
         return Fail("unpaid original Q8 native stream-K workspace");
+    }
+    if (!Absent(c.output_b_control) && CaptureOutputBAt(c.first, l.index)) {
+      auto bytes = kg::PlanDs4Q8NativeMmq(launch, ControlOutput(l, c.output_b_control));
+      if (!bytes || *bytes > pool.bytes)
+        return Fail("unpaid native output-B original-input control workspace");
     }
     auto moe = kg::PlanDs4MoeScratch(launch, l.routed);
     if (!moe || *moe > pool.bytes) return Fail("unpaid original routed native workspace");
@@ -1454,16 +1492,28 @@ Result Resolve(engine::PagedNode& node, kg::LaunchContext& launch, const catalog
                {"shared-up", &l.shared_up},
                {"shared-down", &l.shared_down}}};
           for (const auto& [stage, product] : products) {
-            const auto bytes = kg::PlanDs4Q8Product(launch, *product);
+            const bool native_output =
+                stage == "output-b" && c.output_b_consumer == OutputBConsumer::kNativeMmq;
+            const auto bytes = native_output ? kg::PlanDs4Q8NativeMmq(launch, *product)
+                                             : kg::PlanDs4Q8Product(launch, *product);
             if (!bytes) {
               error = bytes.error().detail;
               return scheduler::JobResult::kNotStarted;
             }
-            dispatch.stages.push_back({l.index, stage,
-                                       product->path == kg::Ds4Q8Path::kMmq
-                                           ? "original-aligned-q8-mmq"
-                                           : "original-aligned-q8-dense-d2r",
-                                       *bytes});
+            std::string_view kind = product->path == kg::Ds4Q8Path::kMmq
+                                        ? "original-aligned-q8-mmq"
+                                        : "original-aligned-q8-dense-d2r";
+            if (native_output) kind = "native-ggml-q8-mmq-borrowed-d4";
+            dispatch.stages.push_back({l.index, stage, kind, *bytes});
+          }
+          if (!Absent(c.output_b_control) && CaptureOutputBAt(c.first, l.index)) {
+            auto bytes = kg::PlanDs4Q8NativeMmq(launch, ControlOutput(l, c.output_b_control));
+            if (!bytes) {
+              error = bytes.error().detail;
+              return scheduler::JobResult::kNotStarted;
+            }
+            dispatch.stages.push_back({l.index, "output-b-original-input-control",
+                                       "native-ggml-q8-mmq-borrowed-d4", *bytes});
           }
           auto moe = kg::PlanDs4MoeScratch(launch, l.routed);
           if (!moe) {

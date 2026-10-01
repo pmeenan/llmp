@@ -6,13 +6,17 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <expected>
+#include <fstream>
 #include <limits>
 #include <string>
 #include <utility>
 
 #include "base/bytes.h"
+#include "base/json.h"
+#include "base/sha256.h"
 #include "engine/support.h"
 #include "providers/device_runtime.h"
 #include "scheduler/commands.h"
@@ -27,6 +31,7 @@ using Clock = std::chrono::steady_clock;
 using Kind = model::Ds4BaselineStateKind;
 constexpr std::uint32_t kContext = 8192;
 constexpr std::uint64_t kGuard = std::uint64_t{6} << 30U;
+constexpr std::uint64_t kOutputBCaptureBytes = std::uint64_t{kRows} * 8192 * 4;
 
 void* Pointer(std::uint64_t address) { return en::support::Pointer(address); }
 
@@ -36,7 +41,7 @@ bool Add(std::uint64_t& total, std::uint64_t value) {
 }  // namespace
 
 Result Runner::Setup(const std::filesystem::path& artifact, const std::filesystem::path& scratch,
-                     PreparedModelWeights& prepared) {
+                     PreparedModelWeights& prepared, bool output_b_study) {
   if (node_.threaded() || device_sms_ == 0 || prepared.plan.artifact_id != kCommunityArtifact ||
       !mapped_.empty() || raw_.opened()) {
     return std::unexpected(
@@ -69,7 +74,7 @@ Result Runner::Setup(const std::filesystem::path& artifact, const std::filesyste
     return reserved;
   }
   prepared_plan_ = prepared.plan;
-  auto scratch_plan = PlanScratch(profile, kContext, device_sms_);
+  auto scratch_plan = PlanScratch(profile, kContext, device_sms_, output_b_study);
   if (!scratch_plan) return std::unexpected(scratch_plan.error());
   scratch_plan_ = std::move(*scratch_plan);
   // RunnerResources stores pointers, so reserve the final number before mapping.
@@ -114,6 +119,12 @@ Result Runner::Setup(const std::filesystem::path& artifact, const std::filesyste
   pinned = resources_.Pinned(sizeof(std::array<float, 128>));
   if (!pinned) return std::unexpected(pinned.error());
   host_decode_table_ = *pinned;
+  if (output_b_study) {
+    pinned = resources_.Pinned(kOutputBCaptureBytes);
+    if (!pinned) return std::unexpected(pinned.error());
+    host_output_b_capture_ = *pinned;
+  }
+  output_b_study_ = output_b_study;
   const auto table = kg::Ds4CacheDecodeTable();
   std::memcpy(host_decode_table_, table.data(), sizeof(table));
   // State virtual capacity is not resident occupancy. Budget it separately
@@ -329,16 +340,23 @@ Result Runner::PrepareProfile() {
   return {};
 }
 
-std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> tokens,
-                                                 bool profile) {
+std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> tokens, bool profile,
+                                                 OutputBConsumer output_b,
+                                                 const std::filesystem::path& capture) {
   if (!initialized_ || tokens.size() != kContext ||
       (profile && profile_mark_count_ != profile_.marks.size()) ||
-      std::ranges::any_of(tokens, [](auto token) { return token < 0 || token >= 129280; })) {
+      std::ranges::any_of(tokens, [](auto token) { return token < 0 || token >= 129280; }) ||
+      (output_b != OutputBConsumer::kOriginal && output_b != OutputBConsumer::kNativeMmq) ||
+      (!output_b_study_ && (output_b != OutputBConsumer::kOriginal || !capture.empty())) ||
+      (!capture.empty() &&
+       (profile || output_b != OutputBConsumer::kOriginal || host_output_b_capture_ == nullptr))) {
     return std::unexpected("complete reference needs exactly8192 validated current token IDs");
   }
   // Every pass consumes fresh state; failure never permits a suffix retry.
   initialized_ = false;
   Pass result;
+  result.output_b_consumer = output_b;
+  result.operand_capture = !capture.empty();
   // All sample storage is allocated before the profiled interval. The
   // sixteen handles were allocated once before ordinary warmup.
   if (profile) result.profile.reserve((std::size_t{2} * kLayers * kProfileChains) + 3);
@@ -360,7 +378,10 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
            .first = first,
            .device_sms = device_sms_,
            .storage_generation = generation_,
-           .model_generation = 1});
+           .model_generation = 1,
+           .output_b_consumer = output_b,
+           .output_b_study = output_b_study_,
+           .capture_output_b = !capture.empty() && first == kRows});
       if (!chunk) return std::unexpected(chunk.error());
       std::memcpy(host_tokens_, tokens.data() + first, std::uint64_t{kRows} * sizeof(std::int32_t));
       const auto* input = FindScratch("tokens");
@@ -401,6 +422,12 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
                                    *progress, marks);
             !status)
           return status;
+        if (!capture.empty() && CaptureOutputBAt(first, layer)) {
+          if (auto copied = CaptureOutputB(*chunk, layer, capture); !copied) {
+            Poison(*progress);
+            return copied;
+          }
+        }
         if (profile) {
           for (std::size_t chain = 0; chain < kProfileChains; ++chain)
             result.profile.push_back({chunk_index, layer, chunk->layers[layer].ratio,
@@ -455,6 +482,119 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
   return result;
 }
 
+Result Runner::CaptureOutputB(const Chunk& chunk, std::uint32_t layer,
+                              const std::filesystem::path& directory) {
+  if (!output_b_study_ || host_output_b_capture_ == nullptr ||
+      chunk.output_b_consumer != OutputBConsumer::kOriginal ||
+      !CaptureOutputBAt(chunk.first, layer) || layer >= chunk.layers.size() ||
+      chunk.output_b_control.address == 0)
+    return std::unexpected("output-B capture requires completed original upstream operands");
+  const auto& product = chunk.layers[layer].output_b;
+  if (!product.prepared || product.generation != chunk.storage_generation ||
+      product.quantized.generation != chunk.storage_generation ||
+      product.quantized.source != product.input.storage.data)
+    return std::unexpected("output-B capture lost the current original producer identity");
+  const auto buffer = [](auto storage) {
+    return kg::Ds4CacheBuffer{
+        static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(storage.data)), storage.bytes};
+  };
+  struct File {
+    std::string_view name;
+    kg::Ds4CacheBuffer source;
+    bool floating;
+  };
+  const std::array files{File{"input.f32", buffer(product.input.storage), true},
+                         File{"input.d4", buffer(product.quantized.storage), false},
+                         File{"weights.q8", buffer(product.weights.raw), false},
+                         File{"original.f32", buffer(product.output.storage), true},
+                         File{"native.f32", chunk.output_b_control, true}};
+  std::error_code problem;
+  const auto output = directory / ("chunk1-layer" + std::to_string(layer));
+  if (!std::filesystem::create_directory(output, problem) || problem)
+    return std::unexpected("output-B capture directory must be fresh and writable");
+  std::array<std::string, files.size()> digests;
+  for (std::size_t index = 0; index < files.size(); ++index) {
+    const auto& file = files[index];
+    if (file.source.address == 0 || file.source.bytes == 0 ||
+        file.source.bytes > kOutputBCaptureBytes ||
+        !node_.Covered(file.source.address, file.source.bytes, 0))
+      return std::unexpected("output-B capture range is outside retained mapped operands");
+    std::string error;
+    auto copied = node_.Job(
+        everything_,
+        [&](pr::NativeStream stream) {
+          auto status = pr::CopyAsync(stream, host_output_b_capture_, Pointer(file.source.address),
+                                      file.source.bytes, pr::CopyKind::kDeviceToHost);
+          if (!status.ok()) {
+            error = status.text();
+            return sc::JobResult::kUnknown;
+          }
+          return sc::JobResult::kQueued;
+        },
+        "diagnostic output-B current original operand capture", 0);
+    if (!copied) return std::unexpected(error.empty() ? copied.error() : error);
+    // Owned host staging is consumed only after this copy's Job fence.
+    const auto bytes = std::span(static_cast<const std::byte*>(host_output_b_capture_),
+                                 static_cast<std::size_t>(file.source.bytes));
+    if (file.floating) {
+      if (file.source.bytes % sizeof(float) != 0 ||
+          std::ranges::any_of(
+              std::span(static_cast<const float*>(host_output_b_capture_),
+                        static_cast<std::size_t>(file.source.bytes / sizeof(float))),
+              [](float value) { return !std::isfinite(value); }))
+        return std::unexpected("captured output-B input/output contains nonfinite values");
+    }
+    if (file.name == "input.d4") {
+      const auto payload = std::uint64_t{kRows} * (8192 / 128) * 144;
+      if (bytes.size() != payload + (256ULL * 144) ||
+          std::ranges::any_of(bytes.subspan(payload),
+                              [](std::byte value) { return value != std::byte{0}; }))
+        return std::unexpected("captured original D4 does not retain its complete zero guard");
+      for (std::uint64_t block = 0; block < payload / 144; ++block) {
+        for (std::uint64_t scale = 0; scale < 4; ++scale) {
+          float value = 0;
+          std::memcpy(&value, bytes.data() + (block * 144) + (scale * 4), sizeof(value));
+          if (!std::isfinite(value) || value < 0)
+            return std::unexpected("captured original D4 has an invalid F32 scale");
+        }
+      }
+    }
+    base::Sha256 hash;
+    hash.Update(bytes);
+    digests[index] = base::ToHex(hash.Finish());
+    std::ofstream stored(output / file.name, std::ios::binary | std::ios::noreplace);
+    stored.write(reinterpret_cast<const char*>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    stored.close();
+    if (!stored) return std::unexpected("cannot persist complete output-B captured bytes");
+  }
+  std::ofstream metadata(output / "capture.json", std::ios::out | std::ios::noreplace);
+  metadata << R"({"complete":true,"diagnostic":true,"original_upstream":true,)"
+           << R"("quality_override":false,"rows":4096,"input_width":8192,"output_width":4096,)"
+           << R"("weight_format":"Q8_0","input_format":"D4-F32x4-I8x128",)"
+           << R"("guard_blocks":256,"chunk":1,"layer":)" << layer << R"(,"source_generation":)"
+           << product.quantized.generation << R"(,"current_generation":)"
+           << chunk.storage_generation << R"(,"source_identity_matches":)"
+           << (product.quantized.source == product.input.storage.data ? "true" : "false")
+           << R"(,"original_prepared":)" << (product.prepared ? "true" : "false")
+           << R"(,"artifact":)";
+  std::string quoted;
+  base::json::AppendQuoted(chunk.artifact_id, quoted);
+  metadata << quoted << R"(,"files":[)";
+  for (std::size_t index = 0; index < files.size(); ++index) {
+    if (index != 0) metadata << ',';
+    quoted.clear();
+    base::json::AppendQuoted(files[index].name, quoted);
+    metadata << R"({"name":)" << quoted << R"(,"bytes":)" << files[index].source.bytes
+             << R"(,"sha256":")" << digests[index] << R"(","finite_f32":)"
+             << (files[index].floating ? "true" : "false") << '}';
+  }
+  metadata << "]}\n";
+  metadata.close();
+  if (!metadata) return std::unexpected("cannot complete output-B capture metadata");
+  return {};
+}
+
 Result Runner::Release() {
   // PagedNode has fenced every consumer and evicted every managed extent.
   std::vector<std::string> problems;
@@ -466,6 +606,8 @@ Result Runner::Release() {
   }
   profile_mark_count_ = 0;
   resources_.Release(problems);
+  host_output_b_capture_ = nullptr;
+  output_b_study_ = false;
   state_.Release(node_.memory(), problems);
   if (auto status = raw_.Release(node_.memory()); !status) problems.push_back(status.error());
   if (auto status = aligned_.Release(node_.memory()); !status) problems.push_back(status.error());

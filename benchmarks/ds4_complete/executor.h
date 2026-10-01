@@ -122,12 +122,22 @@ struct ResolvedDispatch {
   std::uint64_t native_pool_bytes = 0, cublas_bytes = 0;
   std::vector<ResolvedStage> stages;
 };
+enum class OutputBConsumer : std::uint8_t { kOriginal, kNativeMmq };
+// Bounded diagnostic calls on ORIGINAL upstream operands in the late chunk.
+constexpr bool CaptureOutputBAt(std::uint32_t first, std::uint32_t layer) {
+  return first == kRows && (layer == 0 || layer == 21 || layer == 42);
+}
 struct Chunk {
   std::uint32_t first = 0;
   std::uint32_t context = 0;
   std::uint32_t device_sms = 0;
   std::uint64_t storage_generation = 0, model_generation = 0;
   std::string artifact_id;
+  OutputBConsumer output_b_consumer = OutputBConsumer::kOriginal;
+  bool output_b_study = false;
+  // Optional separate native result in an original-only diagnostic pass.
+  // It is mapped/charged with the same lifetime as every recipe operand.
+  kg::Ds4CacheBuffer output_b_control{};
   kg::Ds4Embedding embedding{};
   std::vector<Layer> layers;
   std::optional<Frontier> frontier;

@@ -172,7 +172,7 @@ if(JITLLM_CUDA)
                    jitllm_ops.h launch.cu launch.h
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
                    mxfp8_cutlass.cu mxfp8_cutlass.h mxfp8_quant.cuh
-                   mul_mat_cublas.cu mul_mat_q.cu mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
+                   mul_mat_cublas.cu mul_mat_q.cu mul_mat_q_borrowed.cuh mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
                    ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_commit.h qwen38_graph.cc
                    qwen38_graph.h tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
                    validate_util.h)

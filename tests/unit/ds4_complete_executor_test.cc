@@ -119,6 +119,48 @@ TEST(Ds4CompleteExecutor, ScratchCannotOverwriteTokensOrAnotherStagesWeights) {
   EXPECT_FALSE(complete::CheckMappedOperands(c));
 }
 
+TEST(Ds4CompleteExecutor, NativeOutputBControlRequiresSeparatePaidOriginalInputStorage) {
+  auto c = InventorySlice();
+  c.output_b_control = {0x80000000, 4096ULL * 4096 * 4};
+  EXPECT_FALSE(complete::CheckMappedOperands(c));
+  c.paid_ranges.push_back(c.output_b_control);
+  ASSERT_TRUE(complete::CheckMappedOperands(c));
+  c.output_b_control = {0x200000, 1024};
+  EXPECT_FALSE(complete::CheckMappedOperands(c));
+  c = InventorySlice();
+  c.layers.resize(1);
+  const std::array live{
+      Buffer{0x90000000, 4096ULL * 4096 * 4}, Buffer{0xa0000000, 4096ULL * 8192 * 4},
+      Buffer{0xb0000000, 4096ULL * 64 * 144}, Buffer{0xc0000000, 4096ULL * 16384 * 4},
+      Buffer{0xd0000000, 4096ULL * 24 * 4}};
+  c.layers[0].output_b.output.storage = {WritePointer(live[0].address), live[0].bytes};
+  c.layers[0].output_b.input.storage = {ReadPointer(live[1].address), live[1].bytes};
+  c.layers[0].output_b.quantized.storage = {WritePointer(live[2].address), live[2].bytes};
+  c.layers[0].hc_attention_pre.residual = live[3];
+  c.layers[0].hc_attention_pre.coefficients.split = live[4];
+  for (const auto operand : live) c.paid_ranges.push_back(operand);
+  c.output_b_control = {0x80000000, 4096ULL * 4096 * 4};
+  c.paid_ranges.push_back(c.output_b_control);
+  ASSERT_TRUE(complete::CheckMappedOperands(c));
+  for (const auto operand : live) {
+    c.output_b_control.address = operand.address + 16;
+    c.paid_ranges.back() = c.output_b_control;
+    const auto alias = complete::CheckMappedOperands(c);
+    ASSERT_FALSE(alias);
+    EXPECT_NE(alias.error().find("output-B"), std::string::npos);
+  }
+  auto full = LedgerChunk();
+  full.output_b_consumer = complete::OutputBConsumer::kNativeMmq;
+  auto rejected = complete::CheckChunk(model::Dsv4Flash(), full);
+  ASSERT_FALSE(rejected);
+  EXPECT_NE(rejected.error().find("output-B"), std::string::npos);
+  full.output_b_study = true;
+  full.output_b_control = {0x80000000, 4096ULL * 4096 * 4};
+  rejected = complete::CheckChunk(model::Dsv4Flash(), full);
+  ASSERT_FALSE(rejected);
+  EXPECT_NE(rejected.error().find("output-B"), std::string::npos);
+}
+
 TEST(Ds4CompleteExecutor, PersistentCachesSurviveScratchAndOtherLayerJobs) {
   auto c = InventorySlice();
   c.layers.resize(2);

@@ -152,6 +152,13 @@ std::expected<std::uint64_t, KernelFailure> PlanDs4Q8Product(const LaunchContext
                                                              const Ds4Q8Product& d);
 std::expected<void, KernelFailure> RunDs4Q8Product(LaunchContext& launch, const Ds4Q8Product& d);
 
+// Temporary native-consumer control: requires the same original prepared
+// D4/raw-Q8 operands. Pays the original zero tail and sanitizer around the
+// current locked-GGML consumer in one native Run. No producer replacement.
+std::expected<std::uint64_t, KernelFailure> PlanDs4Q8NativeMmq(const LaunchContext& launch,
+                                                               const Ds4Q8Product& d);
+std::expected<void, KernelFailure> RunDs4Q8NativeMmq(LaunchContext& launch, const Ds4Q8Product& d);
+
 // The original small Q8 path has a distinct producer: canonical Q8_1
 // [T,padded_K/32], 36-byte blocks with F16 d/sum and 32 signed codes.
 // K is padded to 512; T is 1..8. This is never interchangeable with D4.

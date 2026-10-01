@@ -57,6 +57,18 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
 std::expected<void, KernelFailure> MulMatVecQ(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* node);
 
+// Current native dense Q8_0 MMQ consumer over an authenticated existing
+// D4 sidecar. Only native stream-K fixup is drawn; no quantization, route
+// map, sanitizer or producer is implicit. The caller retains and initializes
+// all guarded sidecar bytes through the same completion fence as the output.
+std::expected<std::uint64_t, KernelFailure> PlanMulMatQBorrowedD4(const LaunchContext& launch,
+                                                                  const ggml_tensor* node,
+                                                                  const BorrowedMmqD4& input,
+                                                                  std::uint64_t generation);
+std::expected<void, KernelFailure> MulMatQBorrowedD4(LaunchContext& launch, ggml_tensor* node,
+                                                     const BorrowedMmqD4& input,
+                                                     std::uint64_t generation);
+
 // The same raw MMQ inner product and preparation, with device-built
 // expert-major tiles for sufficiently large non-FP4 expert products.
 // Other supported shapes retain the ordinary MMQ launch.

@@ -349,6 +349,37 @@ TEST_F(Dsv4Ds4ProductGpu, OriginalD4AndStreamKProductsCoverRaggedColumnsAndOwnRe
   EXPECT_EQ(Read<float>(d.output.storage.data, t * m), got);
   Guard(d.output.storage.data, d.output.storage.bytes);
   EXPECT_LE(launch_->scratch_peak().value(), *kg::PlanDs4Q8Product(*launch_, d));
+  // Same exact producer/weights and independently decoded integer-dot
+  // reference above, now consumed by current native GGML. The ragged257
+  // columns exercise its guarded tail/fixup independently of the old closure.
+  d.output = Output(t, m);
+  const auto native_bytes = kg::PlanDs4Q8NativeMmq(*launch_, d);
+  ASSERT_TRUE(native_bytes);
+  launch_->ResetScratchPeak();
+  ASSERT_TRUE(kg::RunDs4Q8NativeMmq(*launch_, d));
+  EXPECT_EQ(Read<float>(d.output.storage.data, t * m), got);
+  EXPECT_EQ(Read<std::uint8_t>(q.storage.data, q.storage.bytes), quant);
+  EXPECT_LE(launch_->scratch_peak().value(), *native_bytes);
+  auto native_graph =
+      launch_->Capture([&](auto& context) { return kg::RunDs4Q8NativeMmq(context, d); });
+  ASSERT_TRUE(native_graph);
+  ASSERT_TRUE(launch_->Launch(*native_graph));
+  EXPECT_EQ(Read<float>(d.output.storage.data, t * m), got);
+  Guard(d.output.storage.data, d.output.storage.bytes);
+  // A captured borrower must read newly produced bytes at the same retained
+  // address rather than a cached host descriptor or hidden quantized replica.
+  x[1] += 1.0F;
+  Prove();
+  Require(cudaMemcpy(const_cast<void*>(input.storage.data), x.data(), x.size() * sizeof(float),
+                     cudaMemcpyHostToDevice) == cudaSuccess);
+  Require(cudaDeviceSynchronize() == cudaSuccess);
+  ASSERT_TRUE(kg::RunDs4D4(*launch_, input, 7, q));
+  ASSERT_TRUE(launch_->Launch(*native_graph));
+  const auto changed = Read<float>(d.output.storage.data, t * m);
+  EXPECT_NE(changed, got);
+  ASSERT_TRUE(kg::RunDs4Q8NativeMmq(*launch_, d));
+  EXPECT_EQ(Read<float>(d.output.storage.data, t * m), changed);
+  Guard(q.storage.data, q.storage.bytes);
 }
 
 TEST_F(Dsv4Ds4ProductGpu, SmallF16PreservesF32HalfwayInputsForVectorAndScalarSplit) {

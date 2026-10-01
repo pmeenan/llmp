@@ -51,8 +51,8 @@ struct NamedScratch {
 // packed original cache primaries. Both chunks share this worst-case plan.
 // Paid logical F32 cache proxies are explicit scratch, never hidden state.
 std::expected<ScratchPlan, std::string> PlanScratch(const model::Dsv4Profile& profile,
-                                                    std::uint32_t context,
-                                                    std::uint32_t device_sms);
+                                                    std::uint32_t context, std::uint32_t device_sms,
+                                                    bool output_b_study = false);
 
 struct BindingInputs {
   const artifact::Artifact* artifact = nullptr;
@@ -69,6 +69,9 @@ struct BindingInputs {
   std::uint32_t device_sms = 0;
   std::uint64_t storage_generation = 0;
   std::uint64_t model_generation = 0;
+  OutputBConsumer output_b_consumer = OutputBConsumer::kOriginal;
+  bool output_b_study = false;
+  bool capture_output_b = false;
 };
 
 // Root uploads scratch named "tokens" and initializes scalar/decode-table

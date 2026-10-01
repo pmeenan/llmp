@@ -29,11 +29,14 @@ comparisons are recorded. [Matched-pipeline study](experiments/ds4-complete-plan
 
 The matched 8K reference's [paid-chain profile](experiments/ds4-restoration-profile/README.md)
 puts routed FFN at 35.55% and attention output at 17.94% of measured GPU
-time, with all eight full heads byte-identical to original ds4. First isolate
-the native output-B MMQ consumer while retaining the paid D4 producer and
-sanitizer; the measured output chain also includes output-A and HC expansion.
+time, with all eight full heads byte-identical to original ds4. The first
+[native output-B restoration](experiments/ds4-native-outputb/README.md)
+retains the paid D4 producer and sanitizer: rate ratio 0.9983, all twelve
+full heads and three complete original-input operator outputs byte-identical.
+The measured output chain also includes output-A and HC expansion.
 Separate FFN weight layout, consumer and fusion controls before interactions.
-These are restoration targets, with no new kernel adoption or speed claim.
+The native consumer remains available in the private benchmark; production
+dispatch is unchanged and routed FFN is the next restoration target.
 
 ## Coverage
 
@@ -60,7 +63,7 @@ they have no text-model equivalent.
 | Technique | Already used | Missing or conditional consumer | Action and evidence |
 | --- | --- | --- | --- |
 | Keep only selected attention cells | DeepSeek's window plus indexer selection; Qwen3.8's kept QSA cells | A dense-attention family has no equivalent sparse selection | Shared principle is adopted. Model selection semantics remain authoritative; do not invent sparsity for another architecture. [Long context](experiments/long-context/README.md) |
-| Reuse a sparse query tile's union of KV rows | DeepSeek fast CSA/window attention through shared `mma_wide` | Generic D256/D512 attention; Qwen's separate QSA implementation | Unknown/reference defaults stay off. Count-based HCA retains ordinary MMA after a faithful-floor all-wide 32K oracle failure; this semantic split passes fresh 32K/128K repeats and matched PPL. D256 overlap/disjoint gains 4.58×/2.20×; D512 gains 1.50× overlapping but 0.556× disjoint. Fresh sampled top16-plus-other TV passes at 0.0034 / 0.0098 / 0.0186 / 0.0112; maximum-context runtime gates remain pending. The real Qwen paired-query transfer regresses despite passing operator bounds; see the rejected-kernel entry. [ds4 study](experiments/ds4-study/README.md), [diagnosis](experiments/dsv4-frontier-head/README.md#head-arithmetic-and-quality), [QSA transfer](experiments/qwen38-qsa-pair/README.md) |
+| Reuse a sparse query tile's union of KV rows | DeepSeek fast CSA/window attention through shared `mma_wide` | Generic D256/D512 attention; Qwen's separate QSA implementation | Unknown/reference defaults stay off. Count-based HCA retains ordinary MMA after a faithful-floor all-wide 32K oracle failure; this semantic split passes fresh 32K/128K repeats and matched PPL. D256 overlap/disjoint gains 4.58×/2.20×; D512 gains 1.50× overlapping but 0.556× disjoint. Fresh sampled top16-plus-other TV passes at 0.0034 / 0.0098 / 0.0186 / 0.0112; subsequent maximum-context timing, neutral retrieval and exact continuing-context swaps are recorded in the final-context report. The real Qwen paired-query transfer regresses despite passing operator bounds; see the rejected-kernel entry. [ds4 study](experiments/ds4-study/README.md), [diagnosis](experiments/dsv4-frontier-head/README.md#head-arithmetic-and-quality), [final context](experiments/m3-final-context/README.md), [QSA transfer](experiments/qwen38-qsa-pair/README.md) |
 | Prepare an input once for adjacent products | Qwen prefill reuses BF16/MXFP8 input forms; ordinary GGUF gate/up can share Q8 and route preparation | Other products that consume the same logical input; raw NVFP4 has a different contract | The ordinary pair is generic but default-off outside measured DeepSeek fast plans; its 8K model gain was 0.8%, not a decisive product speedup. Check conversions and map identity before sharing. [ds4 study](experiments/ds4-study/README.md) |
 | Compact expert-major tile scheduling | DeepSeek fast ordinary-GGUF prefill at 2,048 rows or more | Other ordinary expert families, smaller chunks and formats; Qwen uses its separate grouped tensor-core path | Compact scheduling preserves raw weights, route maps and the full-K arithmetic. Alternating 8K model controls gain 11.1% community / 9.8% original throughput with identical captured logits. Q5_K/Q8_0 regress at smaller shapes, so generic/exact dispatch stays off. [ds4 study](experiments/ds4-study/README.md) |
 | Direct original quantized product with a raw-layout loader | Benchmark-only community DeepSeek Q2_K down on GB10 | Other Q2 consumers/shapes; IQ2 products need a separate format-specific loader | The MIT ds4 D2R kernel reads original raw blocks without a persistent SoA replica. Charged real-input latency falls about 26%, with 2.13e−7 NMSE versus compact MMQ; same-source 8K ABBA gives 3.68% mean prefill throughput gain and identical 128 IDs. Default stays off pending fixed long-greedy/PPL and state gates. Keep maps/activation format/route weighting/cache/stage settings fixed when measuring a new piece. [Direct Q2 study](experiments/ds4-q2-d2r/README.md) |

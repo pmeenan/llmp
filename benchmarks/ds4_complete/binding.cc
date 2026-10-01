@@ -109,8 +109,8 @@ bool SameLayout(const kg::Ds4AlignedLayout& a, const kg::Ds4AlignedLayout& b) {
 }  // namespace
 
 std::expected<ScratchPlan, std::string> PlanScratch(const model::Dsv4Profile& profile,
-                                                    std::uint32_t context,
-                                                    std::uint32_t device_sms) {
+                                                    std::uint32_t context, std::uint32_t device_sms,
+                                                    bool output_b_study) {
   if (!SameProfile(profile) || context != kContext || device_sms == 0 || device_sms > 65535) {
     return std::unexpected("original binding requires Flash/context8192 and valid SM count");
   }
@@ -221,6 +221,7 @@ std::expected<ScratchPlan, std::string> PlanScratch(const model::Dsv4Profile& pr
   values("head.hidden", 4096, 1);
   values("head.norm", 4096, 1);
   values("head.logits", profile.vocab, 1);
+  if (output_b_study) values("output-b.control", 4096);
   auto q81 = kg::Ds4Q81Bytes(1, 4096);
   if (!q81) return std::unexpected(q81.error().detail);
   good = good && add("head.q81", *q81);
@@ -498,7 +499,12 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
       in.storage_generation == 0 || in.model_generation == 0) {
     return std::unexpected("incomplete original-model binding inputs");
   }
-  auto scratch = PlanScratch(profile, kContext, in.device_sms);
+  if ((!in.output_b_study &&
+       (in.output_b_consumer != OutputBConsumer::kOriginal || in.capture_output_b)) ||
+      (in.capture_output_b &&
+       (in.first != kRows || in.output_b_consumer != OutputBConsumer::kOriginal)))
+    return std::unexpected("output-B diagnostic requires original late-chunk study operands");
+  auto scratch = PlanScratch(profile, kContext, in.device_sms, in.output_b_study);
   if (!scratch) return std::unexpected(scratch.error());
   auto state = model::LayoutDs4BaselineState(profile, kContext, kRows, in.state->granularity);
   if (!state || !SameState(*state, *in.state) ||
@@ -525,6 +531,8 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
   result.storage_generation = in.storage_generation;
   result.model_generation = in.model_generation;
   result.artifact_id = in.artifact->id();
+  result.output_b_consumer = in.output_b_consumer;
+  result.output_b_study = in.output_b_study;
   std::vector<Buffer> scratch_ranges;
   for (const auto& required : scratch->ranges) {
     const auto found = std::ranges::find(in.scratch, required.name, &NamedScratch::name);
@@ -545,6 +553,7 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
     result.paid_ranges.push_back(Slice(in.state_storage, r.offset, r.bytes));
   Binder b(in, result);
   const auto get = [&b](std::string_view name) { return b.Scratch(name); };
+  if (in.capture_output_b) result.output_b_control = get("output-b.control");
   result.embedding = {.tokens = Read(get("tokens")),
                       .weights = Matrix(b.Raw(binding->token_embd, "F16"), profile.vocab, 4096, 2),
                       .output = Output(get("hc.even"), kRows, 16384),

@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <expected>
 #include <limits>
@@ -103,6 +104,48 @@ TEST_F(GgmlExtValidateTest, QuantizedProductsTakeTheCompiledTypesAtWholeRowSteps
   ggml_tensor* hinted = Bound(ggml_mul_mat(c(), New(GGML_TYPE_Q8_0, 4096, 256), x));
   ggml_mul_mat_set_hint(hinted, GGML_HINT_SRC0_IS_HADAMARD);
   Refused(kg::CheckMulMatQ(hinted));
+}
+
+TEST_F(GgmlExtValidateTest, BorrowedDenseD4RefusesStaleGuardedAliasedAndUnsupportedOperands) {
+  auto* weights = New(GGML_TYPE_Q8_0, 8192, 4096);
+  auto* source = New(GGML_TYPE_F32, 8192, 4096);
+  auto* output = Bound(ggml_mul_mat(c(), weights, source));
+  const kg::BorrowedMmqD4 original{.data = std::bit_cast<const void*>(kBase + (next_++ * kSlot)),
+                                   .bytes = (4096ULL * (8192 / 128) * 144) + (256ULL * 144),
+                                   .source = source->data,
+                                   .generation = 7};
+  Accepted(kg::CheckMulMatQBorrowedD4(output, original, 7));
+  Refused(kg::CheckMulMatQBorrowedD4(nullptr, original, 7));
+  Refused(kg::CheckMulMatQBorrowedD4(output, original, 8));
+  auto bad = original;
+  bad.generation = 0;
+  Refused(kg::CheckMulMatQBorrowedD4(output, bad, 0));
+  bad = original;
+  bad.source = weights->data;
+  Refused(kg::CheckMulMatQBorrowedD4(output, bad, 7));
+  bad = original;
+  bad.bytes = (4096ULL * (8192 / 128) * 144) + (128ULL * 144) - 1;
+  Refused(kg::CheckMulMatQBorrowedD4(output, bad, 7));
+  bad = original;
+  bad.data = std::bit_cast<const void*>(UINT64_MAX - 15);
+  Refused(kg::CheckMulMatQBorrowedD4(output, bad, 7));
+  for (const auto* tensor : {weights, source, output}) {
+    bad = original;
+    bad.data = tensor->data;
+    Refused(kg::CheckMulMatQBorrowedD4(output, bad, 7));
+  }
+  auto* unsupported = Bound(ggml_mul_mat(c(), New(GGML_TYPE_Q2_K, 8192, 4096), source));
+  Refused(kg::CheckMulMatQBorrowedD4(unsupported, original, 7));
+  const auto stride = source->nb[1];
+  source->nb[1] += sizeof(float);
+  Refused(kg::CheckMulMatQBorrowedD4(output, original, 7));
+  source->nb[1] = stride;
+  auto* multiple = New(GGML_TYPE_F32, 8192, 4096, 2);
+  auto* broadcast = Bound(ggml_mul_mat(c(), weights, multiple));
+  bad = original;
+  bad.source = multiple->data;
+  bad.bytes *= 2;
+  Refused(kg::CheckMulMatQBorrowedD4(broadcast, bad, 7));
 }
 
 TEST_F(GgmlExtValidateTest, ExpertProductsFollowMulMatIdsShapes) {

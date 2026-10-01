@@ -12,6 +12,7 @@
 // (mmq.cuh:1396-1558) size what they draw from the pool.
 
 #include <algorithm>
+#include <array>
 #include <climits>
 #include <cstdint>
 #include <expected>
@@ -21,8 +22,11 @@
 
 #include "base/bytes.h"
 #include "common.cuh"
+#include "kernels/ggml/cublas.h"
+#include "kernels/ggml/mul_mat_q_borrowed.cuh"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"
+#include "kernels/ggml/validate_util.h"
 #include "mmid.cuh"
 #include "mmq.cuh"
 #include "mmvq.cuh"
@@ -304,6 +308,96 @@ std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* n
   return launch.Run(base::Bytes(*scratch), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* ids = node->op == GGML_OP_MUL_MAT_ID ? node->src[2] : nullptr;
     ggml_cuda_mul_mat_q(context, node->src[0], node->src[1], ids, node);
+  });
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanMulMatQBorrowedD4(const LaunchContext& launch,
+                                                                  const ggml_tensor* node,
+                                                                  const BorrowedMmqD4& input,
+                                                                  std::uint64_t generation) {
+  if (auto checked = CheckMulMatQBorrowedD4(node, input, generation); !checked)
+    return std::unexpected(checked.error());
+  auto path = SelectMulMatQ(launch, node);
+  if (!path || *path != QuantMulMatPath::kTile)
+    return path ? Rejected("native MMQ does not select these borrowed dense operands")
+                : std::unexpected(path.error());
+  const auto* weights = node->src[0];
+  const auto* source = node->src[1];
+  const auto j = ggml_cuda_mmq_get_J_max(GGML_TYPE_Q8_0, weights->ne[1] % 128 != 0,
+                                         Device(launch).cc, source->ne[1]);
+  const auto payload = static_cast<std::uint64_t>(source->ne[0] / 128) *
+                       static_cast<std::uint64_t>(source->ne[1]) * 144;
+  if (j <= 0 || j > 128 || input.bytes - payload < static_cast<std::uint64_t>(j) * 144)
+    return Rejected("borrowed D4 does not cover the actual native MMQ guard");
+  const auto weight_bytes = detail::Extent(weights);
+  const auto source_bytes = detail::Extent(source);
+  const auto output_bytes = detail::Extent(node);
+  if (!weight_bytes || !source_bytes || !output_bytes)
+    return Rejected("borrowed MMQ has unmeasurable logical operands");
+  const std::array operands{std::pair{input.data, input.bytes},
+                            std::pair{static_cast<const void*>(weights->data), *weight_bytes},
+                            std::pair{static_cast<const void*>(source->data), *source_bytes},
+                            std::pair{static_cast<const void*>(node->data), *output_bytes}};
+  const auto disjoint = [&](LaunchContext::Workspace workspace) {
+    std::uint64_t end = 0;
+    if (__builtin_add_overflow(workspace.base, workspace.size.value(), &end)) return false;
+    if (workspace.size.value() == 0) return true;
+    return std::ranges::all_of(operands, [&](const auto& operand) {
+      const auto begin = reinterpret_cast<std::uintptr_t>(operand.first);
+      return end <= begin || begin + operand.second <= workspace.base;
+    });
+  };
+  if (!disjoint(launch.workspace()) ||
+      (launch.cublas() != nullptr && !disjoint(launch.cublas()->workspace())))
+    return Rejected("borrowed MMQ operands overlap a native workspace");
+  return TileFixup(launch, GGML_TYPE_Q8_0, weights->ne[1], weights->ne[0], node->ne[1], 1);
+}
+
+void internal::LaunchMulMatQBorrowedD4(ggml_backend_cuda_context& context, const ggml_tensor* node,
+                                       const void* quantized) {
+  const auto* weights = node->src[0];
+  const auto* source = node->src[1];
+  const auto sy = source->ne[1] * source->ne[0] *
+                  static_cast<std::int64_t>(sizeof(block_q8_1_mmq)) /
+                  (QK8_1_MMQ * static_cast<std::int64_t>(sizeof(int)));
+  const auto type_bytes = static_cast<std::int64_t>(ggml_type_size(GGML_TYPE_Q8_0));
+  const mmq_args args{static_cast<const char*>(weights->data),
+                      GGML_TYPE_Q8_0,
+                      static_cast<const int*>(quantized),
+                      nullptr,
+                      nullptr,
+                      static_cast<float*>(node->data),
+                      nullptr,
+                      weights->ne[0],
+                      weights->ne[1],
+                      node->ne[1],
+                      static_cast<std::int64_t>(weights->nb[1]) / type_bytes,
+                      source->ne[1],
+                      static_cast<std::int64_t>(node->nb[1] / sizeof(float)),
+                      1,
+                      1,
+                      static_cast<std::int64_t>(weights->nb[2]) / type_bytes,
+                      sy,
+                      static_cast<std::int64_t>(node->nb[2] / sizeof(float)),
+                      1,
+                      1,
+                      static_cast<std::int64_t>(weights->nb[3]) / type_bytes,
+                      sy,
+                      static_cast<std::int64_t>(node->nb[3] / sizeof(float)),
+                      node->ne[1],
+                      node->ne[1],
+                      false};
+  mul_mat_q_case<GGML_TYPE_Q8_0>(context, args, context.stream());
+  CUDA_CHECK(cudaGetLastError());
+}
+
+std::expected<void, KernelFailure> MulMatQBorrowedD4(LaunchContext& launch, ggml_tensor* node,
+                                                     const BorrowedMmqD4& input,
+                                                     std::uint64_t generation) {
+  auto scratch = PlanMulMatQBorrowedD4(launch, node, input, generation);
+  if (!scratch) return std::unexpected(scratch.error());
+  return launch.Run(base::Bytes(*scratch), [node, input](ggml_backend_cuda_context& context) {
+    internal::LaunchMulMatQBorrowedD4(context, node, input.data);
   });
 }
 

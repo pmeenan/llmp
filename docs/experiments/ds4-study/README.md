@@ -467,10 +467,11 @@ readback preserved the original frontier and continuation in that control.
 The diagnostic is not a timing arm: its extra heads/readbacks/reductions must
 not be counted as original prefill throughput.
 
-This does **not** supply the owner's requested complete ds4 pipeline running
-inside jitLLM or end-to-end equality/performance parity. The native complete
-plan remains under implementation; operator ports and their individual
-controls do not establish that result.
+This likelihood control does **not** establish end-to-end equality or
+performance parity. The subsequent [complete 8K reference](../ds4-complete-plan/README.md)
+does: all 129,280 original logits match byte for byte, with native throughput
+2.4% below original ds4 on the two Sparks. Wider matched context and native
+restoration remain separate work; operator controls do not close those rows.
 
 Provenance: `spark-b`, original pin `76d51ef82a81b70b78e51a3a6ea11946286de976`,
 ordinary/diagnostic binaries `3ecb3566096ea017b2f5ff512343d0976cf8cc39609d36cfec59f2e0baf5c84c`
@@ -596,8 +597,8 @@ has 491 equal rows and 21 within-bound near ties, zero outside-bound
 rows, at 9.26% more prefill time than all-wide. Its corrected-floor 128K
 arm has 500 equal rows plus 12 within-bound near ties, zero violations.
 Matched 128K prefill takes 12.23% more time than all-wide; this material
-cost is retained for the unchanged quality bound, with final serving
-timings still pending.
+cost is retained for the unchanged quality bound. Subsequent final serving
+timings are recorded in the [final context checks](../m3-final-context/README.md).
 Fresh all-head/frontier repeats at both depths are exact, as are common
 later logits and full target/DSpark state in 24 direct-runner arms.
 Matched 128K PPL is 1.926517 versus 1.9298, −0.1701%. Forced rejection
@@ -606,8 +607,9 @@ MMA for count-based HCA uniformly, retaining opted-in CSA/window sharing.
 Fresh sampled plain/speculation checks pass the unchanged 0.1 TV bound
 at 0.0034 / 0.0098 / 0.0186 / 0.0112. The final production-runtime
 32K–256K ladder also passes matched llama.cpp speed and memory bounds
-([final context checks](../m3-final-context/README.md)); maximum-context
-runtime gates remain pending. Historical results do not close those gates.
+([final context checks](../m3-final-context/README.md)); that report also
+records the subsequent maximum-context timing, neutral retrieval and exact
+continuing-context swaps. Historical results do not close later-path gates.
 Compact expert scheduling, paired preparation and F16 caches remain.
 Historical wide speed/short-quality/128K results above and the fresh
 narrow controls are identified separately in the follow-up.

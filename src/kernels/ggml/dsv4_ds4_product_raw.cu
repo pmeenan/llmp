@@ -152,6 +152,12 @@ namespace jitllm::kernels::ggml::ds4_product {
 
 using namespace original;
 
+cudaError_t Sanitize(float* output, std::uint64_t count, cudaStream_t stream) {
+  ds4_mmq_sanitize_f32_kernel<<<static_cast<unsigned>((count + 255) / 256), 256, 0, stream>>>(
+      output, count);
+  return cudaGetLastError();
+}
+
 cudaError_t Embedding(const std::int32_t* tokens, const void* weights, float* output,
                       std::uint32_t vocab, std::uint32_t rows, std::uint32_t width,
                       std::uint32_t hc, cudaStream_t stream) {

@@ -906,7 +906,9 @@ it appears.
       matched 128K PPL is 1.926517 versus 1.9298. Production state,
       forced rejection and swap continuations remain exact. Fresh sampled
       plain/speculation TV is 0.0034 / 0.0098 / 0.0186 / 0.0112, below the
-      unchanged 0.1 bound; maximum-context runtime gates remain pending.
+      unchanged 0.1 bound. Subsequent maximum-context timing, neutral
+      retrieval and exact continuing-context swaps are recorded in the
+      [final context checks](experiments/m3-final-context/README.md).
 - [ ] **Complete ds4 performance reference and native restoration**
       (the owner, 2026-09-30). First reproduce the complete original
       pipeline inside jitLLM on the same community GGUF, precisions,
@@ -923,9 +925,12 @@ it appears.
       129,280 original logits byte for byte on the same community weights
       and IDs. Three fresh passes deliver 1,085 tok/s on Spark A versus
       original ds4's 1,112 tok/s on Spark B, including the final result copy,
-      a 2.4% throughput gap. The final Spark slice passes 1,197 tests,
-      including 256 GPU tests. Native-stage restoration and causal A/Bs,
-      wider context and task quality remain open; production defaults
+      a 2.4% throughput gap. The first [native consumer restoration](experiments/ds4-native-outputb/README.md)
+      replaces output-B with current GGML MMQ over identical original
+      operands: rate ratio 0.9983, twelve complete heads and three complete
+      operator outputs byte-identical. Its final Spark slice passes 1,199
+      tests, including 256 GPU tests. Routed FFN restoration and causal
+      A/Bs, wider context and task quality remain open; production defaults
       are unchanged.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
@@ -1078,7 +1083,8 @@ it appears.
         ([growing state](experiments/growing-state/README.md)): stable
         virtual addresses, initialized extents only, sparse spill and
         packed controls; both models registered at 262K, swapping exact
-        8K state under 10 s. Maximum-context timing remains at the gate.
+        8K state under 10 s. Subsequent maximum-context timing and
+        continuing-context swaps are recorded in the final-context report.
       - *Turn-to-turn reuse at long context:* a coding agent resends the
         whole conversation each turn. The runtime reuses the longest common
         prefix of the previous turn's state, including when a client drops
