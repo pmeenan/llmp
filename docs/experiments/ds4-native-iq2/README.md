@@ -9,11 +9,12 @@ throughput than Direct, and 7.99% less than Materialized. Its complete
 finite outputs differ slightly. This is one captured layer, with no model
 quality, whole-pipeline, concurrent-request or production-default result.
 
-The next useful control is to capture the native activation/map preparation
-and compare its complete bytes against the existing original gathered D4
-and maps, before separating consumer arithmetic, weight layout and producer
-costs. The current native preparation is opaque in this replay; small
-output differences do not prove identical quantized inputs.
+The subsequent [preparation capture](../ds4-native-iq2-prepared/README.md)
+proves all native/original D4 payload bytes equal. Borrowing either payload
+reproduces native gate/up exactly, isolating the product differences to the
+consumer path. Removing preparation changes its resident time by about 4–6%.
+Standalone original/native consumer timing remains open; this compound
+replay does not isolate the raw loader, tile or schedule.
 
 ## Matched inputs and charged work
 

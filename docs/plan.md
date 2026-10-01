@@ -939,8 +939,12 @@ it appears.
       runs current compact gate/up plus the original suffix at 0.8659×
       Direct / 0.9201× Materialized operator speed, with small complete
       numerical differences and a paid duplicate map adapter. Keep Direct;
-      native activation preparation must be captured before separating
-      consumer arithmetic and layout. These comparisons cover one request.
+      the [preparation capture](experiments/ds4-native-iq2-prepared/README.md)
+      now proves every native/original D4 payload byte equal. Borrowing
+      either payload reproduces native gate/up exactly; producer removal
+      changes resident pair time by about 4–6%. A matched standalone
+      original/native consumer comparison remains open. These comparisons
+      cover one request.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer

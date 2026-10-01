@@ -421,16 +421,138 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContex
   return std::max(*a, *b);
 }
 
+std::expected<ExpertMmqLayout, KernelFailure> DescribeMulMatIdQPairPrepared(
+    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second) {
+  if (auto checked = CheckMulMatIdQPair(first, second); !checked)
+    return std::unexpected(checked.error());
+  const auto* weights = first->src[0];
+  const auto* source = first->src[1];
+  const auto* ids = first->src[2];
+  constexpr std::array<std::int64_t, 4> weight_shape{4096, 2048, 256, 1};
+  constexpr std::array<std::int64_t, 4> input_shape{4096, 1, 4096, 1};
+  constexpr std::array<std::int64_t, 4> ids_shape{6, 4096, 1, 1};
+  constexpr std::array<std::int64_t, 4> output_shape{2048, 6, 4096, 1};
+  if (Device(launch).cc != 1210 || weights->type != GGML_TYPE_IQ2_XXS ||
+      ggml_type_size(GGML_TYPE_IQ2_XXS) != 66 || ggml_blck_size(GGML_TYPE_IQ2_XXS) != 256 ||
+      sizeof(block_q8_1_mmq) != 144 || QK8_1_MMQ != 128 ||
+      !std::ranges::equal(weights->ne, weight_shape) ||
+      !std::ranges::equal(source->ne, input_shape) ||
+      !std::ranges::equal(ids->ne, ids_shape) ||
+      !std::ranges::equal(first->ne, output_shape) ||
+      !std::ranges::all_of(std::array<const ggml_tensor*, 6>{weights, second->src[0], source,
+                                                           ids, first, second},
+                           [](const ggml_tensor* tensor) { return detail::Packed(tensor); }))
+    return Rejected("prepared IQ2 controls require the fixed packed GB10 capture geometry");
+  auto selected = SelectMulMatQ(launch, first);
+  if (!selected || *selected != QuantMulMatPath::kTile)
+    return selected ? Rejected("prepared IQ2 controls require the native MMQ tile path")
+                    : std::unexpected(selected.error());
+  // The same J-max call as RunExpertProducts, not a presumed128-column guard.
+  const auto j = ggml_cuda_mmq_get_J_max(GGML_TYPE_IQ2_XXS, false, Device(launch).cc, 128);
+  if (j <= 0 || j > 128)
+    return Rejected("prepared IQ2 native J guard exceeds the bounded captured tier");
+  constexpr std::uint64_t pairs = 4096ULL * 6;
+  constexpr std::uint64_t payload = (4096ULL / 128) * pairs * 144;
+  return ExpertMmqLayout{.activation_payload_bytes = payload,
+                        .activation_bytes = payload + static_cast<std::uint64_t>(j) * 144,
+                        .source_ids_bytes = pairs * 4,
+                        .destination_ids_payload_bytes = pairs * 4,
+                        .destination_ids_bytes = (pairs + static_cast<std::uint64_t>(j)) * 4,
+                        .bounds_bytes = 257ULL * 4,
+                        .native_j_max = static_cast<std::uint64_t>(j)};
+}
+
+namespace {
+struct ExpertRange {
+  std::uint64_t begin = 0;
+  std::uint64_t end = 0;
+};
+bool ExpertExtent(const void* data, std::uint64_t bytes, ExpertRange& result) {
+  const auto begin = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(data));
+  std::uint64_t end = 0;
+  if (data == nullptr || bytes == 0 || __builtin_add_overflow(begin, bytes, &end)) return false;
+  result = {.begin = begin, .end = end};
+  return true;
+}
+bool ExpertDisjoint(ExpertRange a, ExpertRange b) {
+  return a.end <= b.begin || b.end <= a.begin;
+}
+
+std::expected<ExpertMmqLayout, KernelFailure> CheckExpertPrepared(
+    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
+    const ExpertMmqPrepared& input, std::uint64_t generation) {
+  auto layout = DescribeMulMatIdQPairPrepared(launch, first, second);
+  if (!layout) return std::unexpected(layout.error());
+  if (generation == 0 || input.generation != generation ||
+      input.source != first->src[1]->data || input.selected != first->src[2]->data)
+    return Rejected("prepared IQ2 source, selected IDs or generation is stale");
+  const std::array buffers{input.activation, input.source_ids, input.destination_ids, input.bounds};
+  const std::array required{layout->activation_bytes, layout->source_ids_bytes,
+                            layout->destination_ids_bytes, layout->bounds_bytes};
+  std::array<ExpertRange, 4> prepared{};
+  for (std::size_t i = 0; i < buffers.size(); ++i) {
+    if (buffers[i].bytes < required[i] || buffers[i].bytes % 4 != 0 ||
+        reinterpret_cast<std::uintptr_t>(buffers[i].data) % (i == 0 ? 16 : 4) != 0 ||
+        !ExpertExtent(buffers[i].data, buffers[i].bytes, prepared[i]))
+      return Rejected("prepared IQ2 buffer capacity, alignment or address extent is invalid");
+    for (std::size_t previous = 0; previous < i; ++previous)
+      if (!ExpertDisjoint(prepared[i], prepared[previous]))
+        return Rejected("prepared IQ2 activation/map buffers overlap");
+  }
+  const std::array<const ggml_tensor*, 6> operands{first->src[0], second->src[0], first->src[1],
+                                                 first->src[2], first, second};
+  std::array<ExpertRange, 6> logical{};
+  for (std::size_t i = 0; i < operands.size(); ++i) {
+    const auto bytes = detail::Extent(operands[i]);
+    if (!bytes || !ExpertExtent(operands[i]->data, *bytes, logical[i]))
+      return Rejected("prepared IQ2 logical operand extent is invalid");
+    for (const auto range : prepared)
+      if (!ExpertDisjoint(range, logical[i]))
+        return Rejected("prepared IQ2 buffers overlap a logical product operand");
+  }
+  for (const auto buffer : input.retained) {
+    if (buffer.data == nullptr && buffer.bytes == 0) continue;
+    ExpertRange retained{};
+    if (!ExpertExtent(buffer.data, buffer.bytes, retained))
+      return Rejected("prepared IQ2 retained extent is invalid");
+    for (const auto range : prepared)
+      if (!ExpertDisjoint(range, retained))
+        return Rejected("prepared IQ2 buffers overlap retained original controls");
+    if (!ExpertDisjoint(logical[4], retained) || !ExpertDisjoint(logical[5], retained))
+      return Rejected("prepared IQ2 outputs overlap retained original controls");
+  }
+  const auto disjoint_workspace = [&](LaunchContext::Workspace workspace) {
+    if (workspace.size.value() == 0) return true;
+    ExpertRange range{};
+    if (!ExpertExtent(reinterpret_cast<const void*>(workspace.base), workspace.size.value(), range))
+      return false;
+    if (!std::ranges::all_of(prepared, [&](ExpertRange p) { return ExpertDisjoint(p, range); }) ||
+        !std::ranges::all_of(logical, [&](ExpertRange p) { return ExpertDisjoint(p, range); }))
+      return false;
+    return std::ranges::all_of(input.retained, [&](ExpertMmqBuffer b) {
+      if (b.data == nullptr && b.bytes == 0) return true;
+      ExpertRange retained{};
+      return ExpertExtent(b.data, b.bytes, retained) && ExpertDisjoint(retained, range);
+    });
+  };
+  if (!disjoint_workspace(launch.workspace()) ||
+      (launch.cublas() != nullptr && !disjoint_workspace(launch.cublas()->workspace())))
+    return Rejected("prepared IQ2 live operands overlap a native workspace");
+  return *layout;
+}
+}  // namespace
+
 static std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch,
                                                             ggml_tensor* first, ggml_tensor* second,
-                                                            bool compact_experts) {
+                                                            bool compact_experts,
+                                                            const ExpertMmqPrepared* capture = nullptr) {
   auto scratch = second != nullptr ? PlanMulMatIdQPair(launch, first, second, compact_experts)
                                    : PlanMulMatIdQCompact(launch, first);
   if (!scratch) {
     return std::unexpected(scratch.error());
   }
   return launch.Run(
-      base::Bytes(*scratch), [first, second, compact_experts](ggml_backend_cuda_context& context) {
+      base::Bytes(*scratch), [first, second, compact_experts, capture](ggml_backend_cuda_context& context) {
         // Host preparation from GGML mmq.cu: the same inverse broadcast map
         // and scatter quantization feed two ordinary MMQ launches. This is
         // ds4's paired-preparation technique without its SoA repack or fused
@@ -474,6 +596,21 @@ static std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launc
                                  s13, padded, rows, 1, 1, stream);
         }
         CUDA_CHECK(cudaGetLastError());
+        if (capture != nullptr) {
+          // Diagnostic copies preserve every private guard byte without
+          // modifying or assuming initialization of its source buffer.
+          CUDA_CHECK(cudaMemcpyAsync(capture->activation.data, quantized.get(), bytes,
+                                     cudaMemcpyDeviceToDevice, stream));
+          CUDA_CHECK(cudaMemcpyAsync(capture->source_ids.data, ids_src.get(),
+                                     static_cast<std::size_t>(rows) * sizeof(std::int32_t),
+                                     cudaMemcpyDeviceToDevice, stream));
+          CUDA_CHECK(cudaMemcpyAsync(capture->destination_ids.data, ids_dst.get(),
+                                     static_cast<std::size_t>(rows + j_max) * sizeof(std::int32_t),
+                                     cudaMemcpyDeviceToDevice, stream));
+          CUDA_CHECK(cudaMemcpyAsync(capture->bounds.data, bounds.get(),
+                                     static_cast<std::size_t>(weights->ne[2] + 1) * sizeof(std::int32_t),
+                                     cudaMemcpyDeviceToDevice, stream));
+        }
         const auto sy2 = input->ne[1] * padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
                          (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
         const auto sy3 = tokens * sy2;
@@ -551,6 +688,64 @@ std::expected<void, KernelFailure> MulMatIdQPair(LaunchContext& launch, ggml_ten
 
 std::expected<void, KernelFailure> MulMatIdQCompact(LaunchContext& launch, ggml_tensor* node) {
   return RunExpertProducts(launch, node, nullptr, true);
+}
+
+std::expected<void, KernelFailure> MulMatIdQPairCapture(
+    LaunchContext& launch, ggml_tensor* first, ggml_tensor* second,
+    const ExpertMmqPrepared& capture, std::uint64_t generation) {
+  if (auto checked = CheckExpertPrepared(launch, first, second, capture, generation); !checked)
+    return std::unexpected(checked.error());
+  return RunExpertProducts(launch, first, second, true, &capture);
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPairBorrowed(
+    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
+    const ExpertMmqPrepared& input, std::uint64_t generation) {
+  if (auto checked = CheckExpertPrepared(launch, first, second, input, generation); !checked)
+    return std::unexpected(checked.error());
+  const auto* weights = first->src[0];
+  return TileFixup(launch, GGML_TYPE_IQ2_XXS, weights->ne[1], weights->ne[0],
+                   first->src[1]->ne[2] * first->src[2]->ne[0], weights->ne[2],
+                   first->src[1]->ne[2] * first->src[2]->ne[0], true);
+}
+
+std::expected<void, KernelFailure> MulMatIdQPairBorrowed(
+    LaunchContext& launch, ggml_tensor* first, ggml_tensor* second,
+    const ExpertMmqPrepared& input, std::uint64_t generation) {
+  auto scratch = PlanMulMatIdQPairBorrowed(launch, first, second, input, generation);
+  if (!scratch) return std::unexpected(scratch.error());
+  return launch.Run(base::Bytes(*scratch), [first, second, input](ggml_backend_cuda_context& context) {
+    const auto* source = first->src[1];
+    const auto* ids = first->src[2];
+    const auto tokens = source->ne[2];
+    const auto rows = tokens * ids->ne[0];
+    const auto padded = GGML_PAD(source->ne[0], MATRIX_ROW_PADDING);
+    const auto sy2 = source->ne[1] * padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
+                     (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
+    const auto sy3 = tokens * sy2;
+    for (ggml_tensor* output : {first, second}) {
+      const auto* weights = output->src[0];
+      const auto ts = static_cast<std::int64_t>(ggml_type_size(GGML_TYPE_IQ2_XXS));
+      const mmq_args args{static_cast<const char*>(weights->data),
+                         GGML_TYPE_IQ2_XXS,
+                         static_cast<const int*>(input.activation.data),
+                         static_cast<const std::int32_t*>(input.destination_ids.data),
+                         static_cast<const std::int32_t*>(input.bounds.data),
+                         static_cast<float*>(output->data), nullptr,
+                         weights->ne[0], weights->ne[1], rows,
+                         static_cast<std::int64_t>(weights->nb[1]) / ts, rows,
+                         static_cast<std::int64_t>(output->nb[1] / sizeof(float)),
+                         weights->ne[2], weights->ne[2],
+                         static_cast<std::int64_t>(weights->nb[2]) / ts, sy2,
+                         static_cast<std::int64_t>(output->nb[2] / sizeof(float)),
+                         weights->ne[3], source->ne[3],
+                         static_cast<std::int64_t>(weights->nb[3]) / ts, sy3,
+                         static_cast<std::int64_t>(output->nb[3] / sizeof(float)),
+                         tokens, tokens, true};
+      mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, context.stream());
+      CUDA_CHECK(cudaGetLastError());
+    }
+  });
 }
 
 }  // namespace jitllm::kernels::ggml
