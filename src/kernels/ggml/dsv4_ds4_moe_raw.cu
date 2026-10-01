@@ -450,5 +450,51 @@ cudaError_t Moe(Device device, const Call& c, const Plan& p, void* fixup, cudaSt
   if (c.sum != nullptr) return Sum(c.down, c.sum, c.rows, c.output_width, stream);
   return cudaSuccess;
 }
+cudaError_t MoePostPair(const PostPair& c, cudaStream_t stream) {
+  constexpr int rows = 4096;
+  constexpr int selected = 6;
+  constexpr int pairs = rows * selected;
+  constexpr int middle = 2048;
+  constexpr int output = 4096;
+  constexpr auto down_payload = static_cast<std::uint64_t>(pairs) * (middle / 128) * 144;
+  constexpr auto n = static_cast<std::uint64_t>(pairs) * middle;
+  // Identical charged guard, activation and down chain from the original
+  // materialized arm above. Its gate/up/maps are already complete inputs.
+  DS4_TRY(cudaMemsetAsync(static_cast<char*>(c.down_quant) + down_payload, 0, 128 * 144, stream));
+  ds4_swiglu_weighted_f32<<<static_cast<unsigned>((n + 255) / 256), 256, 0, stream>>>(
+      c.gate, c.up, c.weights, c.middle, n, middle, 10.0F);
+  DS4_TRY(cudaGetLastError());
+  DS4_TRY(Quant<MMQ_Q8_1_DS_LAYOUT_D2S6>(c.middle, c.ids_destination, c.down_quant, pairs,
+                                       middle, stream));
+  constexpr int capacity = (pairs + 63) / 64 + 256;
+  int* count = c.work + capacity;
+  d2r_build_worklist_kernel<64><<<1, 256, 0, stream>>>(c.bounds, c.work, count, 256);
+  DS4_TRY(cudaGetLastError());
+  down_q2k_d2r_kernel<64, 64><<<dim3(static_cast<unsigned>((output + 127) / 128),
+                                  static_cast<unsigned>(capacity), 1),
+                             dim3(32, 8, 1), 0, stream>>>(
+      c.down_weights, static_cast<const block_q8_1_mmq*>(c.down_quant), c.ids_destination,
+      c.bounds, c.work, count, c.down, output, middle, pairs, 256);
+  DS4_TRY(cudaGetLastError());
+  if (c.sum != nullptr) return Sum(c.down, c.sum, rows, output, stream);
+  return cudaSuccess;
+}
+cudaError_t MoeMaps(Device device, const Maps& c, cudaStream_t stream) {
+  constexpr int rows = 4096;
+  constexpr int pairs = rows * 6;
+  DS4_TRY(cudaMemsetAsync(c.ids_source, 0, static_cast<std::uint64_t>(pairs) * 4, stream));
+  DS4_TRY(cudaMemsetAsync(c.ids_destination, 0, static_cast<std::uint64_t>(pairs) * 4, stream));
+  constexpr auto shared = static_cast<std::uint64_t>(rows) * sizeof(mm_ids_helper_store);
+  if (shared <= device.shared) {
+    DS4_TRY(cudaFuncSetAttribute(mm_ids_helper<6>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                 static_cast<int>(device.shared)));
+    mm_ids_helper<6><<<256, 32, shared, stream>>>(c.selected, c.ids_source, c.ids_destination,
+                                                c.bounds, rows, 6, 1, 6, 1);
+  } else {
+    mm_ids_helper_global<6><<<256, 32, 0, stream>>>(c.selected, c.ids_source, c.ids_destination,
+                                                 c.bounds, rows, 6, 1, 6, 1);
+  }
+  return cudaGetLastError();
+}
 #undef DS4_TRY
 }  // namespace jitllm::kernels::ggml::ds4_moe

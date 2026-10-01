@@ -182,4 +182,46 @@ std::expected<void, KernelFailure> RunDs4Moe(LaunchContext& launch, const Ds4Moe
     CUDA_CHECK(ds4_moe::Moe(device, call, plan, fixup.get(), context.stream()));
   });
 }
+
+std::expected<void, KernelFailure> RunDs4MoePostPair(LaunchContext& launch,
+                                                 const Ds4MoePostPair& d) {
+  if (auto checked = CheckDs4MoePostPair(d); !checked) return checked;
+  if (auto device = Device(launch); !device) return std::unexpected(device.error());
+  const std::array operands = {d.gate, d.up, d.weights, d.ids_destination, d.expert_bounds,
+                              d.down_weights, d.middle, d.down_quant, d.work, d.down, d.sum};
+  if (!Disjoint(launch, operands) || !Disjoint(launch, d.retained))
+    return Reject("ds4 post-pair operands overlap native workspace");
+  // The retained span is used only by synchronous validation; the queued
+  // callback keeps plain borrowed views, never caller host containers.
+  const ds4_moe::PostPair call{.gate = Pointer<const float>(d.gate),
+                              .up = Pointer<const float>(d.up),
+                              .weights = Pointer<const float>(d.weights),
+                              .ids_destination = Pointer<const std::int32_t>(d.ids_destination),
+                              .bounds = Pointer<const std::int32_t>(d.expert_bounds),
+                              .down_weights = Pointer<const void>(d.down_weights),
+                              .middle = Pointer<float>(d.middle),
+                              .down_quant = Pointer<void>(d.down_quant),
+                              .work = Pointer<int>(d.work),
+                              .down = Pointer<float>(d.down),
+                              .sum = Pointer<float>(d.sum)};
+  return launch.Run(base::Bytes(0), [call](auto& context) {
+    CUDA_CHECK(ds4_moe::MoePostPair(call, context.stream()));
+  });
+}
+std::expected<void, KernelFailure> RunDs4MoeMaps(LaunchContext& launch,
+                                             const Ds4MoeMaps& d) {
+  if (auto checked = CheckDs4MoeMaps(d); !checked) return checked;
+  const auto device = Device(launch);
+  if (!device) return std::unexpected(device.error());
+  const std::array operands = {d.selected, d.ids_source, d.ids_destination, d.expert_bounds};
+  if (!Disjoint(launch, operands) || !Disjoint(launch, d.retained))
+    return Reject("ds4 map adapter operands overlap native workspace");
+  const ds4_moe::Maps call{.selected = Pointer<const std::int32_t>(d.selected),
+                          .ids_source = Pointer<std::int32_t>(d.ids_source),
+                          .ids_destination = Pointer<std::int32_t>(d.ids_destination),
+                          .bounds = Pointer<std::int32_t>(d.expert_bounds)};
+  return launch.Run(base::Bytes(0), [call, device = *device](auto& context) {
+    CUDA_CHECK(ds4_moe::MoeMaps(device, call, context.stream()));
+  });
+}
 }  // namespace jitllm::kernels::ggml

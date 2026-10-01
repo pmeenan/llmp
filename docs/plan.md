@@ -935,8 +935,13 @@ it appears.
       captured down outputs byte-identical. Keep Direct. The [matched 32K
       pipeline](experiments/ds4-matched-32k/README.md) now matches every final
       logit byte on the same Spark and is 0.71% slower, including actual
-      deep CUB selection. Native compact consumer/layout factors remain
-      open. These comparisons cover one request. The [fixed
+      deep CUB selection. The [captured native IQ2 restoration](experiments/ds4-native-iq2/README.md)
+      runs current compact gate/up plus the original suffix at 0.8659×
+      Direct / 0.9201× Materialized operator speed, with small complete
+      numerical differences and a paid duplicate map adapter. Keep Direct;
+      native activation preparation must be captured before separating
+      consumer arithmetic and layout. These comparisons cover one request.
+      The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer
       regression, but both paths fail parts of the strict rubric. HCA stays

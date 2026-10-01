@@ -119,5 +119,34 @@ std::expected<std::uint64_t, KernelFailure> PlanDs4MoeScratch(const LaunchContex
                                                               const Ds4Moe& desc);
 std::expected<void, KernelFailure> RunDs4Moe(LaunchContext& launch, const Ds4Moe& desc);
 
+// Temporary fixed-4096 benchmark map adapter. It pays the original helper
+// when a replacement product's transient private maps cannot be borrowed.
+// Selected IDs are compact, valid/distinct original or checked captured IDs.
+struct Ds4MoeMaps {
+  Ds4CacheBuffer selected{}, ids_source{}, ids_destination{}, expert_bounds{};
+  std::span<const Ds4CacheBuffer> retained{};
+};
+std::expected<void, KernelFailure> CheckDs4MoeMaps(const Ds4MoeMaps& desc);
+std::expected<void, KernelFailure> RunDs4MoeMaps(LaunchContext& launch,
+                                             const Ds4MoeMaps& desc);
+
+// Temporary captured-input benchmark seam: canonical materialized gate/up
+// [4096,6,2048] are supplied by the caller. Only the unchanged original
+// weighted/clamped F32 activation, D2S6 producer, worklist64, aligned Q2 down
+// and optional sum execute. It builds no expert maps or gate/up products.
+// Maps must be emitted by the original helper or authenticated and validated
+// on the host against all captured selected IDs and bounds before upload.
+// Route weights are compact [4096,6], finite original captured values.
+// All storage and retained original controls stay leased until completion;
+// writable buffers must be disjoint from every complete retained extent.
+struct Ds4MoePostPair {
+  Ds4CacheBuffer gate{}, up{}, weights{}, ids_destination{}, expert_bounds{};
+  Ds4CacheBuffer down_weights{}, middle{}, down_quant{}, work{}, down{}, sum{};
+  std::span<const Ds4CacheBuffer> retained{};
+};
+std::expected<void, KernelFailure> CheckDs4MoePostPair(const Ds4MoePostPair& desc);
+std::expected<void, KernelFailure> RunDs4MoePostPair(LaunchContext& launch,
+                                                 const Ds4MoePostPair& desc);
+
 }  // namespace jitllm::kernels::ggml
 #endif  // JITLLM_KERNELS_GGML_DSV4_DS4_MOE_H_

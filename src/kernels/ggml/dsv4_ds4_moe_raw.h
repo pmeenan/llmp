@@ -55,6 +55,25 @@ struct Call {
   int rows, input_width, middle_width, output_width, selected_stride, weight_stride, tier;
   bool produced;
 };
+struct PostPair {
+  const float* gate;
+  const float* up;
+  const float* weights;
+  const std::int32_t* ids_destination;
+  const std::int32_t* bounds;
+  const void* down_weights;
+  float* middle;
+  void* down_quant;
+  int* work;
+  float* down;
+  float* sum;
+};
+struct Maps {
+  const std::int32_t* selected;
+  std::int32_t* ids_source;
+  std::int32_t* ids_destination;
+  std::int32_t* bounds;
+};
 bool PlanClassic(Device device, int rows, int input, int middle, int output, Plan& plan);
 bool CooperativeFits(int sm, int rows);
 cudaError_t Select(const Router& router, cudaStream_t stream);
@@ -65,5 +84,7 @@ cudaError_t Shared(const float* gate, const float* up, float* out, int rows, int
 cudaError_t Sum(const float* down, float* out, int rows, int width, cudaStream_t stream);
 cudaError_t Moe(Device device, const Call& call, const Plan& plan, void* fixup,
                 cudaStream_t stream);
+cudaError_t MoePostPair(const PostPair& call, cudaStream_t stream);
+cudaError_t MoeMaps(Device device, const Maps& call, cudaStream_t stream);
 }  // namespace jitllm::kernels::ggml::ds4_moe
 #endif  // JITLLM_KERNELS_GGML_DSV4_DS4_MOE_RAW_H_

@@ -212,4 +212,52 @@ std::expected<void, KernelFailure> CheckDs4MoeSum(const Ds4MoeSum& d) {
   const std::array ranges = {Access{d.slots, bytes * 6}, Access{d.output, bytes, 4, true}};
   return Ranges(ranges);
 }
+
+std::expected<void, KernelFailure> CheckDs4MoePostPair(const Ds4MoePostPair& d) {
+  constexpr Ds4MoeShape shape{.rows = 4096, .input = 4096, .middle = 2048, .output = 4096};
+  const auto layout = Ds4MoeLayoutOf(shape, Ds4MoeTier::kMaterialized);
+  if (!layout) return std::unexpected(layout.error());
+  const auto& l = *layout;
+  const std::array ranges = {Access{d.gate, l.middle_bytes},
+                             Access{d.up, l.middle_bytes},
+                             Access{d.weights, 4096ULL * 6 * 4},
+                             Access{d.ids_destination, 4096ULL * 6 * 4},
+                             Access{d.expert_bounds, 257ULL * 4},
+                             Access{d.down_weights, l.down_weight_bytes, 64},
+                             Access{d.middle, l.middle_bytes, 4, true},
+                             Access{d.down_quant, l.down_quant_bytes, 16, true},
+                             Access{d.work, l.work_bytes, 4, true},
+                             Access{d.down, l.down_bytes, 4, true},
+                             Access{d.sum, Absent(d.sum) ? 0 : 4096ULL * 4096 * 4, 4, true}};
+  if (auto checked = Ranges(ranges); !checked) return checked;
+  for (const auto protected_buffer : d.retained) {
+    const std::array protected_range = {Access{protected_buffer, protected_buffer.bytes, 1}};
+    if (auto checked = Ranges(protected_range); !checked) return checked;
+    for (const auto& writable : ranges) {
+      if (!writable.write || writable.bytes == 0 || protected_buffer.bytes == 0) continue;
+      if (writable.buffer.address < protected_buffer.address + protected_buffer.bytes &&
+          protected_buffer.address < writable.buffer.address + writable.buffer.bytes)
+        return Reject("ds4 post-pair writable range aliases a retained original operand");
+    }
+  }
+  return {};
+}
+std::expected<void, KernelFailure> CheckDs4MoeMaps(const Ds4MoeMaps& d) {
+  const std::array ranges = {Access{d.selected, 4096ULL * 6 * 4},
+                             Access{d.ids_source, 4096ULL * 6 * 4, 4, true},
+                             Access{d.ids_destination, 4096ULL * 6 * 4, 4, true},
+                             Access{d.expert_bounds, 257ULL * 4, 4, true}};
+  if (auto checked = Ranges(ranges); !checked) return checked;
+  for (const auto protected_buffer : d.retained) {
+    const std::array protected_range = {Access{protected_buffer, protected_buffer.bytes, 1}};
+    if (auto checked = Ranges(protected_range); !checked) return checked;
+    for (const auto& writable : ranges) {
+      if (!writable.write || protected_buffer.bytes == 0) continue;
+      if (writable.buffer.address < protected_buffer.address + protected_buffer.bytes &&
+          protected_buffer.address < writable.buffer.address + writable.buffer.bytes)
+        return Reject("ds4 map adapter writable range aliases a retained original operand");
+    }
+  }
+  return {};
+}
 }  // namespace jitllm::kernels::ggml
