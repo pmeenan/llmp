@@ -952,8 +952,12 @@ it appears.
       jitLLM currently queues requests to completion; solo performance
       does not establish concurrent parity. Measure the gap and use it to
       prioritize the continuous-batching work below, advancing the
-      necessary implementation when the comparison requires it. This
-      criterion remains open while only solo/operator measurements exist.
+      necessary implementation when the comparison requires it.
+      The [first TensorFold 8K screen](experiments/concurrent-requests/README.md)
+      completes all 28 requests with exact solo controls: fresh-burst
+      throughput scales 1.78× plain and 1.28× speculative at four requests,
+      with serial prefills. Native/Mia, warm decode, repeats and the longer
+      ladder remain open; this screen does not establish concurrent parity.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
