@@ -555,13 +555,30 @@ work still borrows a frame before it can be freed. Focused fake-backend controls
 exercise this path. The production node backend currently supplies no cooperative
 implementation, so deployed requests still run serially.
 
-An LLM's stable `Branch` owns its prompt history, sampling key, generation guard,
+An LLM's stable `Branch` owns its prompt history, sampling key, session guard,
 turn checkpoints and adaptive draft-depth policy. Qwen3.8 maps up to four branches
 to independent native request slots, with one shared set of model weights. Other
 families retain their default branch. Each resumable generation session forwards
 its completed units to its own branch; saving, restoring or clearing a branch
 does not change another branch's history or policy. This state separation is
 groundwork for the cooperative backend; it does not enable concurrent serving.
+
+`Branch::BeginPrompt` owns a bounded prompt copy without native work. Its
+`PromptSession` advances one reuse/restore, prefill chunk or turn-checkpoint unit
+at a time, allowing the future cooperative backend to schedule peer decode
+between completed units. The ordinary `PreparePrompt` drives this same session.
+Cancellation preserves the completed token prefix; a failed helper that discarded
+host history still requires a native clear before reuse. A branch admits only
+one prompt or generation session. Explicit `Finish` releases host ownership;
+the runner separately proves native completion.
+
+The prompt-session slice passed all 1,242 locked Spark-native tests, including
+six focused prompt controls and 256 GPU tests, plus SDK format/tidy, portability,
+REUSE and 1,139 embedded-header checks. Spark B's completed check receipt is
+`5a3b8826ce72f00f8338f97e85225f546ff673747eec9b1dedcd7781bc16691c`
+under `~/scratch/m3-cooperative-prefill-records/check-r1/`; its unchanged
+source map is `f9de799fc86c4aaf1d09be9a85ed2c4fcb3e43068c871bfcd8237122ba34ea20`.
+The deferred workstation checks remain part of the final optimization gate.
 
 ## Progress and deadlines
 

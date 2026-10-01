@@ -244,6 +244,7 @@ class Llm : public Served {
   };
 
  public:
+  class PromptSession;
   class GenerationSession;
   // Host conversation ownership over this model's immutable metadata. Only
   // this model constructs branches; each names one of its native state slots.
@@ -270,6 +271,11 @@ class Llm : public Served {
                          std::vector<float>& last, std::uint32_t& reused,
                          const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr,
                          bool fresh = false);
+    // Host-only admission. The session owns the supplied prompt and performs
+    // reuse, chunks and checkpointing only through declared completed units.
+    std::expected<std::unique_ptr<PromptSession>, std::string> BeginPrompt(
+        std::span<const std::int32_t> tokens, std::uint32_t stable_boundary = 0,
+        bool fresh = false) &;
     std::size_t turn_checkpoints() const { return turn_checkpoints_.size(); }
     std::uint64_t turn_checkpoint_bytes() const;
     std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
@@ -286,6 +292,7 @@ class Llm : public Served {
 
    private:
     friend class Llm;
+    friend class PromptSession;
     friend class GenerationSession;
     explicit Branch(Llm& model, std::uint32_t slot = 0) : model_(model), slot_(slot) {}
 
@@ -304,6 +311,7 @@ class Llm : public Served {
     std::vector<TurnCheckpoint> turn_checkpoints_;
     Clock::time_point history_used_ = Clock::now();
     bool generation_active_ = false;
+    const PromptSession* prompt_session_ = nullptr;
     execution::AdaptiveDepth decoding_{1};
     execution::AdaptiveDepth saved_decoding_{1};
   };
@@ -378,6 +386,54 @@ class Llm : public Served {
                        std::vector<float>& last, std::uint32_t& reused,
                        const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr,
                        bool fresh = false);
+  // A prompt on one branch, advanced separately from peer decode steps.
+  // NextUnit is host-only; Advance owns native work through its completed
+  // boundary. Finish releases host ownership, not proof of GPU retirement.
+  // The model outlives the session; an unfinished session cannot be destroyed.
+  class PromptSession {
+   public:
+    enum class Phase { kReuse, kChunk, kCheckpoint };
+    struct Unit {
+      Phase phase = Phase::kReuse;
+      std::uint32_t rows = 0;
+    };
+    PromptSession(const PromptSession&) = delete;
+    PromptSession& operator=(const PromptSession&) = delete;
+    PromptSession(PromptSession&&) = delete;
+    PromptSession& operator=(PromptSession&&) = delete;
+    ~PromptSession();
+    bool done() const;
+    std::expected<Unit, std::string> NextUnit() const;
+    Status Advance(const PrefillGoOn& go_on = {});
+    // Only between completed units; keeps exactly the processed prefix.
+    void Cancel();
+    Status Finish();
+    std::uint32_t reused() const { return reused_; }
+    const PrefillRun& run() const { return run_; }
+    const std::vector<float>& last() const { return last_; }
+
+   private:
+    friend class Llm;
+    PromptSession(Llm& model, Branch& branch, std::span<const std::int32_t> tokens,
+                  std::uint32_t stable_boundary, bool fresh);
+    void NextPhase();
+    void Stop();
+    Status Fail(std::string error);
+    Llm& model_;
+    Branch& branch_;
+    const std::vector<std::int32_t> tokens_;
+    const std::uint32_t stable_boundary_;
+    const bool fresh_;
+    std::vector<float> last_;
+    std::uint32_t reused_ = 0;
+    PrefillRun run_;
+    Phase phase_ = Phase::kReuse;
+    Status ran_;
+    bool checkpoint_pending_ = false;
+    bool complete_ = false;
+    bool finished_ = false;
+    bool advancing_ = false;
+  };
   std::size_t turn_checkpoints() const { return default_branch_.turn_checkpoints(); }
   std::uint64_t turn_checkpoint_bytes() const;
   // One resumable generation on the default conversation. The model,
@@ -572,8 +628,8 @@ class Llm : public Served {
   std::optional<std::int32_t> think_end_;
 
  private:
-  Status Clear(Branch& branch);
-  void Forget(Branch& branch);
+  Status Clear(Branch& branch, const PromptSession* prompt = nullptr);
+  void Forget(Branch& branch, const PromptSession* prompt = nullptr);
   Status Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::vector<float>& last,
                  const PrefillGoOn& go_on, PrefillRun* run);
   Status ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::vector<float>& last,
@@ -583,9 +639,14 @@ class Llm : public Served {
                        std::uint32_t stable_boundary, std::vector<float>& last,
                        std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run,
                        bool fresh);
-  Status CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool& stopped);
+  Status CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool& stopped,
+                               const PromptSession* prompt = nullptr);
   Status ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t& reused,
-                     bool fresh, const PrefillGoOn& go_on, bool& stopped);
+                     bool fresh, const PrefillGoOn& go_on, bool& stopped,
+                     const PromptSession* prompt = nullptr);
+  std::expected<std::unique_ptr<PromptSession>, std::string> BeginPrompt(
+      Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
+      bool fresh);
   std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
       Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
       Generation& out);
@@ -595,7 +656,7 @@ class Llm : public Served {
   Status RestoreState(Branch& branch, void* host);
   void CheckBranch(const Branch& branch) const;
   void CheckDefaultBranch(const Branch& branch) const;
-  void CheckIdleGeneration(const Branch& branch) const;
+  void CheckIdleGeneration(const Branch& branch, const PromptSession* prompt = nullptr) const;
   Branch default_branch_;
   std::array<std::unique_ptr<Branch>, kMaxBranches - 1> extra_branches_;
   std::uint32_t branch_count_ = 1;

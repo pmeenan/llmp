@@ -61,6 +61,10 @@ class FakeLlm : public rt::Llm {
   const catalog::Closure& everything() const override { return paged_.fence_closure(); }
   std::uint64_t weight_read_bytes() const override { return 0; }
   void Defaults(jitllm::chat::Conversation& /*conversation*/) const override {}
+  void ConfigurePrefill(std::uint32_t context, std::uint32_t rows) {
+    context_ = context;
+    max_rows_ = rows;
+  }
 
   static std::vector<float> Row(std::int32_t next) {
     std::vector<float> row(8, -2.0F);
@@ -75,6 +79,7 @@ class FakeLlm : public rt::Llm {
   std::optional<unsigned> fail_chunk;
   bool usable = true;
   bool fail_settle = false;
+  bool fail_clear = false;
   bool fail_prepare = false;
   bool pending = false;
   bool omit_row = false;
@@ -128,6 +133,9 @@ class FakeLlm : public rt::Llm {
   }
   rt::Status ClearState() override {
     ++clearings;
+    if (fail_clear) {
+      return std::unexpected("fake clear refused before dispatch");
+    }
     target.clear();
     injection.clear();
     usable = true;
@@ -894,6 +902,196 @@ TEST(LlmScores, ABranchPreparationRefusalLeavesPeerGenerationRunning) {
   EXPECT_EQ((*b)->history(), model.native_state(2).target);
   EXPECT_EQ(model.native_state(2).settlements, 1U);
   EXPECT_EQ(model.native_state(0).chunks, 0U);
+}
+
+TEST(LlmScores, ResumablePromptAdmissionIsHostOnlyAndOwnsItsPrompt) {
+  FakeLlm model(true);
+  std::vector<std::int32_t> prompt(19, 2);
+  auto opened = model.default_branch().BeginPrompt(prompt);
+  ASSERT_TRUE(opened.has_value());
+  auto& session = **opened;
+  EXPECT_EQ(model.clearings, 0U);
+  EXPECT_EQ(model.chunks, 0U);
+  EXPECT_TRUE(model.history().empty());
+  auto next = session.NextUnit();
+  ASSERT_TRUE(next.has_value());
+  EXPECT_EQ(next->phase, rt::Llm::PromptSession::Phase::kReuse);
+  EXPECT_EQ(next->rows, 0U);
+  EXPECT_FALSE(model.default_branch().BeginPrompt(prompt).has_value());
+  rt::GenerateOptions options;
+  rt::Generation generation;
+  EXPECT_FALSE(model.BeginGeneration(FakeLlm::Row(1), options, generation).has_value());
+  EXPECT_FALSE(session.Finish().has_value());
+  std::ranges::fill(prompt, 3);  // caller storage is not retained
+  std::vector<std::uint32_t> units;
+  while (!session.done()) {
+    auto unit = session.NextUnit();
+    ASSERT_TRUE(unit.has_value());
+    units.push_back(unit->rows);
+    ASSERT_TRUE(session.Advance().has_value());
+  }
+  ASSERT_TRUE(session.Finish().has_value());
+  EXPECT_THAT(units, ElementsAre(0, 8, 8, 3));
+  EXPECT_EQ(model.history(), std::vector<std::int32_t>(19, 2));
+  EXPECT_EQ(model.history(), model.target);
+  EXPECT_EQ(model.injection, model.target);
+  EXPECT_EQ(model.clearings, 1U);
+  EXPECT_EQ(session.run().end, 19U);
+  EXPECT_EQ(session.run().chunks, 3U);
+  EXPECT_EQ(session.last(), FakeLlm::Row(3));
+}
+
+TEST(LlmScores, ResumablePromptCancelsAtACompletePrefixAndCanResume) {
+  FakeLlm model;
+  std::vector<float> row;
+  const std::array<std::int32_t, 2> prefix = {0, 1};
+  ASSERT_TRUE(model.Prefill(prefix, row).has_value());
+  std::vector<std::int32_t> prompt = {0, 1};
+  prompt.resize(19, 2);
+  auto opened = model.default_branch().BeginPrompt(prompt);
+  ASSERT_TRUE(opened.has_value());
+  auto& session = **opened;
+  ASSERT_TRUE(session.Advance().has_value());
+  EXPECT_EQ(session.reused(), 2U);
+  ASSERT_TRUE(session.Advance().has_value());
+  EXPECT_EQ(model.target.size(), 10U);
+  session.Cancel();
+  ASSERT_TRUE(session.Finish().has_value());
+  EXPECT_TRUE(session.run().stopped);
+  EXPECT_EQ(session.run().end, 10U);
+  EXPECT_EQ(session.run().chunks, 1U);
+  EXPECT_TRUE(session.last().empty());
+  EXPECT_EQ(model.history(), model.target);
+  EXPECT_EQ(model.clearings, 0U);
+  std::uint32_t reused = 0;
+  rt::PrefillRun finished;
+  ASSERT_TRUE(model.PreparePrompt(prompt, 0, row, reused, {}, &finished).has_value());
+  EXPECT_EQ(reused, 10U);
+  EXPECT_EQ(model.target, prompt);
+  EXPECT_EQ(model.history(), prompt);
+  EXPECT_EQ(finished.chunks, 2U);
+}
+
+TEST(LlmScores, ResumablePromptKeepsTheTiledTailAndTurnBoundarySeparate) {
+  FakeLlm model;
+  model.ConfigurePrefill(8192, 4096);
+  const std::vector<std::int32_t> prompt(2051, 1);
+  auto opened = model.default_branch().BeginPrompt(prompt);
+  ASSERT_TRUE(opened.has_value());
+  auto& session = **opened;
+  ASSERT_TRUE(session.Advance().has_value());
+  auto first = session.NextUnit();
+  ASSERT_TRUE(first.has_value());
+  EXPECT_EQ(first->rows, 2048U);
+  ASSERT_TRUE(session.Advance().has_value());
+  auto tail = session.NextUnit();
+  ASSERT_TRUE(tail.has_value());
+  EXPECT_EQ(tail->rows, 3U);
+  ASSERT_TRUE(session.Advance().has_value());
+  ASSERT_TRUE(session.Finish().has_value());
+  EXPECT_EQ(model.history(), prompt);
+
+  FakeLlm boundary_model;
+  const std::vector<std::int32_t> boundary_prompt(17, 2);
+  auto boundary = boundary_model.default_branch().BeginPrompt(boundary_prompt, 9);
+  ASSERT_TRUE(boundary.has_value());
+  ASSERT_TRUE((*boundary)->Advance().has_value());
+  ASSERT_TRUE((*boundary)->Advance().has_value());
+  auto before = (*boundary)->NextUnit();
+  ASSERT_TRUE(before.has_value());
+  EXPECT_EQ(before->rows, 1U);
+  ASSERT_TRUE((*boundary)->Advance().has_value());
+  auto checkpoint = (*boundary)->NextUnit();
+  ASSERT_TRUE(checkpoint.has_value());
+  EXPECT_EQ(checkpoint->phase, rt::Llm::PromptSession::Phase::kCheckpoint);
+  EXPECT_EQ(checkpoint->rows, 0U);
+  (*boundary)->Cancel();
+  ASSERT_TRUE((*boundary)->Finish().has_value());
+  EXPECT_EQ(boundary_model.history(), std::vector<std::int32_t>(9, 2));
+  EXPECT_EQ(boundary_model.history(), boundary_model.target);
+  EXPECT_EQ(boundary_model.turn_checkpoints(), 0U);
+}
+
+TEST(LlmScores, ResumablePromptFailuresDoNotPublishAnUnprovenChunk) {
+  FakeLlm model;
+  const std::vector<std::int32_t> prompt(19, 2);
+  auto opened = model.default_branch().BeginPrompt(prompt);
+  ASSERT_TRUE(opened.has_value());
+  auto& session = **opened;
+  ASSERT_TRUE(session.Advance().has_value());
+  ASSERT_TRUE(session.Advance().has_value());
+  model.fail_chunk = 2;
+  EXPECT_FALSE(session.Advance().has_value());
+  EXPECT_TRUE(session.done());
+  EXPECT_FALSE(session.Finish().has_value());
+  EXPECT_EQ(session.run().end, 8U);  // only one successfully completed chunk
+  EXPECT_EQ(session.run().chunks, 1U);
+  EXPECT_TRUE(session.last().empty());
+  EXPECT_TRUE(model.history().empty());
+  EXPECT_FALSE(model.HasRetainedState());
+  std::vector<float> row;
+  const std::array<std::int32_t, 1> restart = {3};
+  ASSERT_TRUE(model.Prefill(restart, row).has_value());
+  EXPECT_EQ(model.clearings, 2U);
+  EXPECT_EQ(model.history(), model.target);
+  EXPECT_THAT(model.history(), ElementsAre(3));
+}
+
+TEST(LlmScores, ResumablePromptKeepsARequiredClearAfterAProvenRefusal) {
+  FakeLlm model;
+  std::vector<float> row;
+  const std::array<std::int32_t, 2> prefix = {0, 1};
+  ASSERT_TRUE(model.Prefill(prefix, row).has_value());
+  model.Forget();  // native state remains usable, but its host history was discarded
+  model.fail_clear = true;
+  const std::array<std::int32_t, 1> restart = {3};
+  auto opened = model.default_branch().BeginPrompt(restart);
+  ASSERT_TRUE(opened.has_value());
+  EXPECT_FALSE((*opened)->Advance().has_value());
+  EXPECT_FALSE((*opened)->Finish().has_value());
+  EXPECT_TRUE(model.usable);
+  EXPECT_EQ(model.clearings, 1U);
+  EXPECT_TRUE(model.history().empty());
+  EXPECT_THAT(model.target, ElementsAre(0, 1));
+  model.fail_clear = false;
+  ASSERT_TRUE(model.Prefill(restart, row).has_value());
+  EXPECT_EQ(model.clearings, 2U);
+  EXPECT_EQ(model.history(), model.target);
+  EXPECT_THAT(model.history(), ElementsAre(3));
+}
+
+TEST(LlmScores, AResumablePromptDoesNotBlockOrCancelItsPeerGeneration) {
+  NativeBranchesFake model;
+  auto decoding = model.branch(0);
+  auto prefilling = model.branch(1);
+  ASSERT_TRUE(decoding.has_value());
+  ASSERT_TRUE(prefilling.has_value());
+  std::vector<float> last;
+  const std::array<std::int32_t, 1> prefix = {0};
+  ASSERT_TRUE((*decoding)->Prefill(prefix, last).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 3;
+  options.stop = false;
+  rt::Generation out;
+  auto generation = (*decoding)->BeginGeneration(last, options, out);
+  ASSERT_TRUE(generation.has_value());
+  const std::vector<std::int32_t> prompt(19, 2);
+  auto prefill = (*prefilling)->BeginPrompt(prompt);
+  ASSERT_TRUE(prefill.has_value());
+  ASSERT_TRUE((*prefill)->Advance().has_value());
+  ASSERT_TRUE((*generation)->RunScalarStep().has_value());
+  ASSERT_TRUE((*prefill)->Advance().has_value());
+  (*prefill)->Cancel();
+  ASSERT_TRUE((*prefill)->Finish().has_value());
+  ASSERT_TRUE((*generation)->RunScalarStep().has_value());
+  ASSERT_TRUE((*generation)->Finish().has_value());
+  EXPECT_THAT(out.tokens, ElementsAre(1, 2, 3));
+  EXPECT_FALSE(out.cancelled);
+  EXPECT_EQ((*decoding)->history(), model.native_state(0).target);
+  EXPECT_EQ((*prefilling)->history(), std::vector<std::int32_t>(8, 2));
+  EXPECT_EQ((*prefilling)->history(), model.native_state(1).target);
+  EXPECT_EQ(model.native_state(2).chunks, 0U);
+  EXPECT_EQ(model.native_state(3).chunks, 0U);
 }
 
 }  // namespace

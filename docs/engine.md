@@ -196,6 +196,12 @@ rather than works around:
   expire for reuse after 24 hours and disappear at clear or restart;
   cleanup during idle time is lazy. See
   [the native control](experiments/turn-reuse/README.md).
+- **Resumable prompt preparation**: a runtime branch's `PromptSession` owns
+  the bounded prompt and advances reuse/restore, one ordinary prefill chunk,
+  or checkpoint capture as separate completed units. The legacy prompt path
+  drives the same session. This seam applies to both LLMs and keeps native
+  state, chunk arithmetic and completion ownership in their existing runners.
+  The production API backend still needs the cooperative scheduling connection.
 - **Deterministic top-k and sparse prefill attention**: graph builders and
   kernels (`kernels/ggml/`), selected per shape by the plan; the skeleton's
   plan cache and graphs take them unchanged, and a prefill shape's capture

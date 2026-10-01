@@ -926,6 +926,7 @@ Llm::Llm() : default_branch_(*this) {}
 
 Llm::Branch::~Branch() {
   base::Check(!generation_active_, "a branch with an active generation was destroyed");
+  base::Check(prompt_session_ == nullptr, "a branch with an active prompt was destroyed");
 }
 
 Status Llm::Branch::Clear() { return model_.Clear(*this); }
@@ -949,6 +950,11 @@ Status Llm::Branch::PreparePrompt(std::span<const std::int32_t> tokens,
                                   std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run,
                                   bool fresh) {
   return model_.PreparePrompt(*this, tokens, stable_boundary, last, reused, go_on, run, fresh);
+}
+
+std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::Branch::BeginPrompt(
+    std::span<const std::int32_t> tokens, std::uint32_t stable_boundary, bool fresh) & {
+  return model_.BeginPrompt(*this, tokens, stable_boundary, fresh);
 }
 
 std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::Branch::BeginGeneration(
@@ -1319,20 +1325,22 @@ void Llm::RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveD
   RestoreTurnDecodingState(state);
 }
 
-void Llm::CheckIdleGeneration(const Branch& branch) const {
+void Llm::CheckIdleGeneration(const Branch& branch, const PromptSession* prompt) const {
   CheckBranch(branch);
   base::Check(!branch.generation_active_, "mutating a conversation with an active generation");
+  base::Check(branch.prompt_session_ == prompt,
+              "mutating a conversation with another active prompt");
 }
 
-void Llm::Forget(Branch& branch) {
-  CheckIdleGeneration(branch);
+void Llm::Forget(Branch& branch, const PromptSession* prompt) {
+  CheckIdleGeneration(branch, prompt);
   branch.turn_checkpoints_.clear();
   branch.history_.clear();
   branch.needs_clear_ = true;
 }
 
-Status Llm::Clear(Branch& branch) {
-  CheckIdleGeneration(branch);
+Status Llm::Clear(Branch& branch, const PromptSession* prompt) {
+  CheckIdleGeneration(branch, prompt);
   branch.turn_checkpoints_.clear();
   if (auto r = ClearStateFor(branch); !r) {
     return r;
@@ -1351,7 +1359,8 @@ std::uint64_t Llm::Branch::turn_checkpoint_bytes() const {
   return bytes;
 }
 
-Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool& stopped) {
+Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool& stopped,
+                                  const PromptSession* prompt) {
   if (branch.history_.empty()) {
     return {};
   }
@@ -1379,7 +1388,7 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
       progress);
   if (!file) {
     if (file.error().invalid_state) {
-      Forget(branch);
+      Forget(branch, prompt);
       return Error("saving a turn checkpoint: " + file.error().detail);
     }
     stopped = file.error().cancelled;
@@ -1398,12 +1407,13 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
 }
 
 Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t& reused,
-                        bool fresh, const PrefillGoOn& go_on, bool& stopped) {
+                        bool fresh, const PrefillGoOn& go_on, bool& stopped,
+                        const PromptSession* prompt) {
   reused = 0;
   const auto now = Clock::now();
   if (fresh || branch.needs_clear_ || !StateUsableFor(branch) ||
       now - branch.history_used_ >= kTurnCheckpointRetention) {
-    return Clear(branch);
+    return Clear(branch, prompt);
   }
   std::erase_if(branch.turn_checkpoints_, [&](const TurnCheckpoint& checkpoint) {
     return now - checkpoint.boundary.created >= kTurnCheckpointRetention;
@@ -1420,14 +1430,14 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
   }
   const auto match = MatchingTurnBoundary(boundaries, common, tokens.size(), now);
   if (!match) {
-    return Clear(branch);
+    return Clear(branch, prompt);
   }
   TurnCheckpoint& checkpoint = branch.turn_checkpoints_[*match];
   const auto position = checkpoint.boundary.position;
   const auto restored_cursor = checkpoint.cursor;
   const auto restored_decoding = checkpoint.decoding;
   if (auto settled = SettleFor(branch); !settled) {
-    Forget(branch);
+    Forget(branch, prompt);
     return settled;
   }
   const engine::CheckpointFile::Continue progress =
@@ -1442,12 +1452,12 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
   if (!restored) {
     if (restored.error().cancelled) {
       stopped = true;
-      return restored.error().invalid_state ? Clear(branch) : Status{};
+      return restored.error().invalid_state ? Clear(branch, prompt) : Status{};
     }
     // Before mutation this is an optional cache miss. After mutation, Clear
     // drops the branch before any fresh prefill; an uncertain device copy
     // may make Clear fail, in which case the runtime stops normally.
-    return Clear(branch);
+    return Clear(branch, prompt);
   }
   branch.history_.resize(position);
   SetCursorFor(branch, restored_cursor);
@@ -1465,67 +1475,184 @@ Status Llm::PreparePrompt(Branch& branch, std::span<const std::int32_t> tokens,
                           std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run,
                           bool fresh) {
   CheckIdleGeneration(branch);
+  auto opened = BeginPrompt(branch, tokens, stable_boundary, fresh);
+  if (!opened) {
+    return std::unexpected(opened.error());
+  }
+  auto& session = **opened;
+  while (!session.done()) {
+    if (auto advanced = session.Advance(go_on); !advanced) {
+      break;
+    }
+  }
+  auto result = session.Finish();
+  last = std::move(session.last_);
+  reused = session.reused();
+  if (run != nullptr) {
+    *run = session.run();
+  }
+  return result;
+}
+
+Llm::PromptSession::PromptSession(Llm& model, Branch& branch, std::span<const std::int32_t> tokens,
+                                  std::uint32_t stable_boundary, bool fresh)
+    : model_(model),
+      branch_(branch),
+      tokens_(tokens.begin(), tokens.end()),
+      stable_boundary_(stable_boundary),
+      fresh_(fresh) {}
+
+Llm::PromptSession::~PromptSession() {
+  base::Check(finished_, "an unfinished prompt session was destroyed");
+}
+
+std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::BeginPrompt(
+    Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
+    bool fresh) {
+  CheckBranch(branch);
   if (tokens.empty() || tokens.size() >= context_ || stable_boundary >= tokens.size()) {
     return Error("the prompt or its turn boundary is outside the context");
   }
-  last.clear();
-  reused = 0;
-  bool stopped = go_on && !go_on(0);
-  if (!stopped) {
-    if (auto prepared = ReusePrompt(branch, tokens, reused, fresh, go_on, stopped); !prepared) {
-      return prepared;
+  if (max_rows_ == 0) {
+    return Error("a prompt needs a positive prefill chunk size");
+  }
+  if (branch.generation_active_ || branch.prompt_session_ != nullptr) {
+    return Error("the conversation already has an active session");
+  }
+  auto session = std::unique_ptr<PromptSession>(
+      new PromptSession(*this, branch, tokens, stable_boundary, fresh));
+  branch.prompt_session_ = session.get();
+  return session;
+}
+
+bool Llm::PromptSession::done() const { return complete_ || finished_; }
+
+std::expected<Llm::PromptSession::Unit, std::string> Llm::PromptSession::NextUnit() const {
+  if (done() || advancing_) {
+    return Error("the prompt has no next unit");
+  }
+  Unit unit{.phase = phase_};
+  if (phase_ == Phase::kChunk) {
+    const auto at = static_cast<std::uint32_t>(branch_.history_.size());
+    const auto end =
+        checkpoint_pending_ ? stable_boundary_ : static_cast<std::uint32_t>(tokens_.size());
+    base::Check(at < end, "a prompt chunk has no rows");
+    unit.rows = std::min(model_.max_rows_, end - at);
+    if (unit.rows >= kPrefillTiledFrom) {
+      unit.rows -= unit.rows % kPrefillRowTile;
     }
   }
-  PrefillRun total{.end = reused, .stopped = stopped};
-  if (run != nullptr) {
-    *run = total;
+  return unit;
+}
+
+void Llm::PromptSession::NextPhase() {
+  const auto at = branch_.history_.size();
+  if (checkpoint_pending_ && at == stable_boundary_) {
+    phase_ = Phase::kCheckpoint;
+  } else if (at < tokens_.size()) {
+    phase_ = Phase::kChunk;
+  } else {
+    complete_ = true;
   }
-  if (stopped) {
+}
+
+Status Llm::PromptSession::Fail(std::string error) {
+  branch_.needs_clear_ = branch_.needs_clear_ || !model_.StateUsableFor(branch_);
+  if (branch_.needs_clear_) {
+    branch_.history_.clear();
+  }
+  last_.clear();
+  complete_ = true;
+  ran_ = std::unexpected(std::move(error));
+  return ran_;
+}
+
+Status Llm::PromptSession::Advance(const PrefillGoOn& go_on) {
+  auto next = NextUnit();
+  if (!next) {
+    return std::unexpected(next.error());
+  }
+  model_.CheckIdleGeneration(branch_, this);
+  advancing_ = true;
+  struct CompletedUnit {
+    explicit CompletedUnit(bool& value) noexcept : advancing(value) {}
+    CompletedUnit(const CompletedUnit&) = delete;
+    CompletedUnit& operator=(const CompletedUnit&) = delete;
+    CompletedUnit(CompletedUnit&&) = delete;
+    CompletedUnit& operator=(CompletedUnit&&) = delete;
+    bool& advancing;
+    ~CompletedUnit() { advancing = false; }
+  } completed{advancing_};
+  if (go_on && !go_on(next->rows)) {
+    Stop();
     return {};
   }
-  const auto append = [&](std::uint32_t end) -> Status {
-    const auto begin = static_cast<std::uint32_t>(branch.history_.size());
-    if (end <= begin) {
+  if (next->phase == Phase::kReuse) {
+    auto reused = model_.ReusePrompt(branch_, tokens_, reused_, fresh_, go_on, run_.stopped, this);
+    if (!reused) {
+      return Fail(reused.error());
+    }
+    run_.end = reused_;
+    if (run_.stopped) {
+      Stop();
       return {};
     }
-    PrefillRun part;
-    auto ran = Prefill(branch, tokens.subspan(begin, end - begin), last, go_on, &part);
-    total.end = part.end;
-    total.chunks += part.chunks;
-    total.longest = std::max(total.longest, part.longest);
-    total.stopped = part.stopped;
-    if (run != nullptr) {
-      *run = total;
+    checkpoint_pending_ = stable_boundary_ != 0 && stable_boundary_ >= branch_.history_.size();
+  } else if (next->phase == Phase::kCheckpoint) {
+    auto captured = model_.CaptureTurnCheckpoint(branch_, go_on, run_.stopped, this);
+    if (!captured) {
+      return Fail(captured.error());
     }
-    return ran;
-  };
-  if (stable_boundary != 0 && stable_boundary >= branch.history_.size()) {
-    if (auto ran = append(stable_boundary); !ran) {
-      return ran;
-    }
-    if (total.stopped) {
+    if (run_.stopped) {
+      Stop();
       return {};
     }
-    if (go_on && !go_on(0)) {
-      total.stopped = true;
-      last.clear();
-      if (run != nullptr) {
-        *run = total;
-      }
-      return {};
+    checkpoint_pending_ = false;
+  } else {
+    const auto at = static_cast<std::uint32_t>(branch_.history_.size());
+    const auto end = at + next->rows;
+    const auto started = Clock::now();
+    auto chunk =
+        model_.RunChunkFor(branch_, std::span(tokens_).first(end), at, model_.speculate_, last_);
+    if (!chunk) {
+      return Fail(
+          std::format("{}'s prefill: the chunk at {}: {}", model_.name_, at, chunk.error()));
     }
-    if (auto checkpointed = CaptureTurnCheckpoint(branch, go_on, total.stopped); !checkpointed) {
-      return checkpointed;
-    }
-    if (total.stopped) {
-      last.clear();
-      if (run != nullptr) {
-        *run = total;
-      }
-      return {};
-    }
+    branch_.history_.insert(branch_.history_.end(), tokens_.begin() + at, tokens_.begin() + end);
+    branch_.history_used_ = Clock::now();
+    run_.end = end;
+    ++run_.chunks;
+    run_.longest = std::max(run_.longest, Seconds(Clock::now() - started));
   }
-  return append(static_cast<std::uint32_t>(tokens.size()));
+  NextPhase();
+  return {};
+}
+
+void Llm::PromptSession::Cancel() {
+  base::Check(!advancing_, "cancelling a prompt before its unit completed");
+  Stop();
+}
+
+void Llm::PromptSession::Stop() {
+  if (finished_) {
+    return;
+  }
+  run_.stopped = true;
+  last_.clear();
+  complete_ = true;
+}
+
+Status Llm::PromptSession::Finish() {
+  base::Check(!advancing_, "finishing a prompt before its unit completed");
+  if (!done()) {
+    return Error("a prompt still has unprocessed units");
+  }
+  if (!finished_) {
+    base::Check(branch_.prompt_session_ == this, "a prompt lost its branch ownership");
+    branch_.prompt_session_ = nullptr;
+    finished_ = true;
+  }
+  return ran_;
 }
 
 Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::vector<float>& last,
@@ -1657,8 +1784,8 @@ std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::BeginGe
   if (options.max_tokens == 0) {
     return Error("generation needs a positive token budget");
   }
-  if (branch.generation_active_) {
-    return Error("the conversation already has an active generation");
+  if (branch.generation_active_ || branch.prompt_session_ != nullptr) {
+    return Error("the conversation already has an active session");
   }
   branch.generation_active_ = true;
   auto session =

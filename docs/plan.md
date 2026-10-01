@@ -1009,6 +1009,10 @@ it appears.
       cancellation and proven retirement have fake-backend controls. The
       production node backend remains serial; shared execution and
       prefix-cache integration remain open.
+      Prompt preparation now uses a branch-owned resumable session: host-only
+      admission, separate reuse/chunk/checkpoint units and cancellation that
+      preserves the completed prefix. The scalar path drives the same core;
+      this prepares prefill/decode interleaving without enabling it in serving.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
