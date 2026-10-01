@@ -947,7 +947,11 @@ it appears.
       measures native at 0.880357× original resident rate. Its [J64 control](experiments/ds4-native-iq2-j64/README.md)
       preserves every output byte but is 4.92% slower than J128. Keep the
       current tile; isolate remaining loader/launch/arithmetic factors before
-      restoring another piece. These comparisons cover one request.
+      restoring another piece. The [shared-worklist control](experiments/ds4-native-iq2-worklist/README.md)
+      reduces two gate/up worklist builds to one with unchanged J128
+      consumers and byte-identical complete outputs, but gains only 0.20%
+      amid 0.15–0.34% bookend movement. Keep the separate path; no adoption
+      follows. These comparisons cover one request.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer
