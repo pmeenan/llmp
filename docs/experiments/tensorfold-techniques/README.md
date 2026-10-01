@@ -11,8 +11,8 @@ TensorFold decodes Qwen3.8 Flash Next about 1.3–1.45× faster than jitLLM
 techniques wherever they measurably help, speed before bit exactness
 (D-085's note), within each model's format: a change of precision is the
 separate quality/performance-modes item. This study profiles both engines,
-splits the gap into format (the bytes a token reads) and engine (how they
-are read), adopts what transfers, and records the rest.
+estimates the format's contribution from checkpoint sizes, adopts measured
+engine improvements that transfer, and records the remaining attribution limits.
 
 This study read and ran TensorFold at `ashhart/TensorFold@beddbb7b`, in
 `nvcr.io/nvidia/pytorch:26.07-py3` as the baseline ran it, on
@@ -23,9 +23,9 @@ within 4% of it (plain 37.5, MTP 55.4–56.1 tok/s, the owner's tip runs on
 ([licensing](../../licensing.md#tensorfold)); nothing of it is copied
 here, only ideas.
 
-## The decode gap is format, not engine
+## Checkpoint sizes suggest a substantial format contribution
 
-**Bytes a decode token reads**, computed from the two checkpoints'
+**Modeled bytes per decode token**, computed from the two checkpoints'
 safetensors headers (`spark`, 2026-09-28): routed experts count 10 of 512 a
 layer, the token table one row, the n-gram table its 16 rows, everything
 else whole.
@@ -43,19 +43,23 @@ else whole.
 | Gated DeltaNet state, read and written | 453 MB before this study, 226 MB after | 226 MB (double-buffered) |
 | **Total** | **7.55 GB before, 7.33 GB after** | **4.48 GB** |
 
-jitLLM reads 1.64–1.69× TensorFold's bytes. The MXFP8 dense layers (8.25
+This full-read model assigns jitLLM 1.64–1.69× TensorFold's bytes. The MXFP8 dense layers (8.25
 bits a weight against 5) and the BF16 hyper-connection products and head
 (16 against 5) make up all of it; Mia's NVFP4 experts read *fewer* bytes
 than MLX's (4.5 bits against 5).
 
-**Effective bandwidth.** jitLLM's plain step took 37.4 ms on the device
+**Effective bandwidth estimates.** jitLLM's plain step took 37.4 ms on the device
 before this study ([qwen38-mtp](../qwen38-mtp/README.md#performance-and-memory)):
 7.55 GB at 202 GB/s. TensorFold's 36.9–37.6 tok/s (the baseline) is 165–168
 GB/s on its 4.48 GB, and its 39.4–39.8 tok/s in this study's session
-(`"draft": false`, 32 and 256 tokens of `prose`) 177–178 GB/s. jitLLM's
-engine already reads a byte faster: at its own 202 GB/s TensorFold's 4.48
-GB would take 22.2 ms, 45 tok/s. **The whole gap is format**, and more
-than the whole: engine for engine, jitLLM is about 1.15–1.2× ahead.
+(`"draft": false`, 32 and 256 tokens of `prose`) 177–178 GB/s. Applying
+jitLLM's modeled 202 GB/s to TensorFold's 4.48 GB predicts 22.2 ms, 45 tok/s.
+This counterfactual makes format a plausible substantial explanation of the
+solo gap. Checkpoint bytes are not measured DRAM traffic, however, and
+TensorFold's kernel profile was unavailable. Cache reuse, numerical products,
+state and scheduling remain confounded; these estimates establish neither a
+complete format attribution nor an engine-for-engine advantage. Concurrent
+sharing also changes how often common weights need to be read.
 
 **Where jitLLM's step went** (Nsight Systems, the decode graph's nodes
 traced, `spark-b`, `jitllm_swap_pairs --a qwen38 --bench 16`, 8 steps;
@@ -145,7 +149,7 @@ rebased on `5e6794c`): main 25.88 / 25.82 tok/s (37.29 / 37.47 ms), final
 27.29 / 27.45 (35.23 / 35.25), +5.4–6.3%. On `spark` the speculation harness's plain decode gave
 25.49 / 26.06 → 26.94–27.30 / 27.52–27.56 tok/s (`prose` / `code`, stage
 1). That is 0.73× TensorFold's baseline 36.9–37.6, against 0.69× before:
-the rest is format.
+the remaining format contribution has not been isolated.
 
 ## Speculation: the adaptive window
 
@@ -206,9 +210,9 @@ final build's plain rate, against main's 1.49–1.64×.
   ([dsv4-decode](../dsv4-decode/README.md)). No import layout change had a
   measured gap to close; TensorFold's regrouping fixes a gap (107–130 to
   200–220 GB/s, creator-reported) its MLX layout had and Mia's does not.
-- **Tensor-core decode products.** At one row they read the same bytes;
-  jitLLM's vector kernels already read at or above TensorFold's per-byte
-  rate.
+- **Tensor-core decode products.** At one row they have the same modeled
+  weight bytes. Native vector-kernel measurements suggest a memory-bound
+  path; TensorFold's modeled per-byte rate does not isolate a kernel comparison.
 - **Stacked projections** (q, k, v, z, b, a in one launch). DeepSeek's
   grouped multi-matrix launch gained nothing
   ([dsv4-decode](../dsv4-decode/README.md)); with PDL the launches between
@@ -359,9 +363,10 @@ PDL changes no arithmetic.
 
 ## Limits and what remains
 
-- **The rest of the gap is format:** Mia's MXFP8 dense layers and BF16
-  hyper-connection products and head read 2.9 GB a token more than
-  TensorFold's 4-bit. Reading them in fewer bits is the
+- **Format remains a plausible substantial contributor:** Mia's MXFP8 dense
+  layers and BF16 hyper-connection products and head add about 2.9 GB per token
+  under the full-read model compared with TensorFold's 4-bit. The entire
+  remaining gap is not causally assigned. Reading these weights in fewer bits is the
   quality/performance-modes item (a copy of the head in NVFP4 or MXFP8,
   a 4-bit import of TensorFold's format, D-087's M9 item).
 - **Speculation did not gain** beyond the verify's one-column fix (its
