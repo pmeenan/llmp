@@ -10,7 +10,7 @@
 
 #include "base/bytes.h"
 #include "common.cuh"
-#include "ds4_mmq_d2r.cuh"
+#include "cuda/mmq/ds4_mmq_d2r.cuh"
 #include "kernels/ggml/ggml_support.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"

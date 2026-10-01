@@ -3,6 +3,30 @@
 
 # ds4
 
+## Isolated original dense/vector products and headers
+
+- **Status:** temporary complete-plan comparison primitives; no production
+  selection or complete-model performance claim follows.
+- **Source:** the same original source pin. Four private numerical
+  derivatives retain complete function spans (including embedding, conversion
+  and fused wide Q/KV normalization); the companion source record lists each
+  span and the thirteen unchanged original headers. The kept/patched tree
+  changes while the authenticated archive does not. A private namespace
+  isolates this original closure; production D2R continues to include the
+  locked GGML numerical headers explicitly.
+- **Native ownership:** borrowed checked operands, explicit F16/F32 input
+  forms, D4/Q8_1 producer identity, original launch tiers, charged scratch
+  and ragged physical padding. jitLLM supplies the stream, cuBLAS handle,
+  workspace and completion. No original allocator, pool, global sidecar
+  registry or model runtime is linked.
+- **Evidence:** Spark A's final locked check passes 1,135 tests, including
+  234 GPU tests, SDK format/tidy, boundaries and REUSE/header checks. Complete
+  numerical spans and all thirteen original headers match the authenticated
+  sources. Independent source review is clean; full model assembly remains
+  pending.
+- **Proposed upstream action:** expose independently callable products with
+  explicit producer and physical layout contracts. No submission is claimed.
+
 ## Literal compressor and aligned weight-repack primitives
 
 - **Status:** native numerical derivatives for the complete-plan benchmark;

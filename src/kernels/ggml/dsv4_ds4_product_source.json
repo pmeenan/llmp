@@ -1,0 +1,65 @@
+{
+  "schema": "jitllm-private-numerical-extraction-v1",
+  "status": "original-source correspondence and CPU/GPU operator controls qualified on Spark A; complete-model assembly, quality and performance pending",
+  "upstream": {
+    "project": "Entrpi/ds4",
+    "commit": "76d51ef82a81b70b78e51a3a6ea11946286de976",
+    "license": "MIT",
+    "archive_sha256": "731e037da1bed009da5db31e5170681b59f1e22af00a3e56fa29cff8706ed63c",
+    "archive_bytes": 7794185
+  },
+  "compilation": {
+    "original_flags": ["-O3", "--use_fast_math", "-lineinfo", "compute_121a/sm_121a", "DS4_CUDA_HAVE_MXF4=1"],
+    "native_sdk_command": "actual Spark A compile-database entries recorded in m3-ds4-products-r1/check-r6/numerical-compile.json; aarch64-e0a0c85c42806fb1 SDK, original O3/use_fast_math/lineinfo and sm_121a target verified",
+    "prepared_include_root": "authenticated original component ROOT, via jitllm_ds4_original_headers",
+    "explicit_includes": ["cuda/mmq/mmq.cuh", "cuda/mmq/mmvq.cuh", "cuda/mmq/quantize.cuh", "cuda/mmq/unary.cuh"],
+    "closure_namespace": "named implementation namespace jitllm::kernels::ggml::ds4_product::original; standard and CUDA dependencies included outside; original extern template declarations retain external linkage",
+    "foreign_runtime": "no original context, allocator, pool, registry, host dispatcher or stubs implementation is linked",
+    "diagnostic_only_adaptation": "Clang -Wsign-conversion and -Wshorten-64-to-32 push/pop surround only the copied host calc_launch_params definition (mmvq.cu:673-684); body remains verbatim and native caller validates positive dimensions/tile bounds; adapter, device and numerical flags stay unchanged"
+  },
+  "retained_original_headers": [
+    {"path": "cuda/mmq/common.cuh", "sha256": "ae55a86b4b7b3dd9a2478cfa82df4dbebf61f496f12eb61a5844d79a6a06e079"},
+    {"path": "cuda/mmq/mmq.cuh", "sha256": "1e7bbd4787e1d1251b41939fea9efbf3546a8be3515fb13ae6a1f9f1e33a83c8"},
+    {"path": "cuda/mmq/mma.cuh", "sha256": "c7e0f3332da182e203b4b953f9fa8535ffca3767d2b7d4d7dbf7ce486262d1af"},
+    {"path": "cuda/mmq/vecdotq.cuh", "sha256": "69ee2488c89da7e6d31a91d2f33f3312d7c66dbcb60b4c42f154bdf775c4436a"},
+    {"path": "cuda/mmq/ggml-common.h", "sha256": "33667042e675da25d8ea0c6d5d0999506f1edfce2b7d97c2d78830ac5fb3fa46"},
+    {"path": "cuda/mmq/ggml.h", "sha256": "a2038623e615bbddea1a06c2b97e14cbc66ff6e8ab9502e2d0adeb6e01ba44e4"},
+    {"path": "cuda/mmq/ggml-impl.h", "sha256": "ab51e0da20c5d05c9eb2e75364bcf88cb33d4fad300fa5992abb587dfdf75b65"},
+    {"path": "cuda/mmq/ggml-cuda.h", "sha256": "ab51e0da20c5d05c9eb2e75364bcf88cb33d4fad300fa5992abb587dfdf75b65"},
+    {"path": "cuda/mmq/ds4_ggml_stubs.h", "sha256": "b90204d531468697bfd2e0c31d5a5075075f1901bcbab2135df3cab0199eed78"},
+    {"path": "cuda/mmq/vendors/cuda.h", "sha256": "e7847065d5d741f892d2f1f7aaaa8f418a41e3b983d1e6f09010055d4d1c38d1"},
+    {"path": "cuda/mmq/mmvq.cuh", "sha256": "d4f4fd819f435ffe8cfd0016e08dc94e16ddb8f77d1d53cf2097dd52f47ae8c2"},
+    {"path": "cuda/mmq/quantize.cuh", "sha256": "017f8592498246d68f8b66e35b7d0de2d1d315440ebaeeaffdcaa8477d02fd8f"},
+    {"path": "cuda/mmq/unary.cuh", "sha256": "281a094dc34dd98a7e3d297c27a6d919a1bf482da2c76700ff6d56c4a31fef1d"}
+  ],
+  "verbatim_definitions": [
+    {"destination": "dsv4_ds4_product_original.cuh", "source": "ds4_cuda.cu", "sha256": "8d5de76a7aaaf9131ba8f9cf35412863fef88299b39676ea4bcfb07aef7386e3", "inclusive_lines": [[8262, 8342], [8420, 8477], [9797, 10066], [6433, 6451], [6624, 6628], [7287, 7287], [8182, 8240]]},
+    {"destination": "dsv4_ds4_product_original.cuh", "source": "cuda/mmq/ds4_mmq_d2r.cu", "sha256": "9dd3be8c4af62a2ead319fe72e7ff6881472ce8a6749d7b6885a6956f2cf79b9", "inclusive_lines": [[205, 208], [215, 231], [251, 263], [284, 306], [3057, 3308]]},
+    {"destination": "dsv4_ds4_product_original.cuh", "source": "cuda/mmq/ds4_mmq.cu", "sha256": "aaee3dcc55789efe54c17dad66cd39b24f2a8f28b7d119ded980a03f658cb7b8", "inclusive_lines": [[427, 432]]},
+    {"destination": "dsv4_ds4_product_quantize.cuh", "source": "cuda/mmq/quantize.cu", "sha256": "752c02fc5a17c1f884ba6acc6eed9419da7fc1d79bb6aa5f45a9837874744029", "inclusive_lines": [[271, 367]]},
+    {"destination": "dsv4_ds4_product_f16.cuh", "source": "ds4_cuda.cu", "sha256": "8d5de76a7aaaf9131ba8f9cf35412863fef88299b39676ea4bcfb07aef7386e3", "inclusive_lines": [[6453, 6479], [6629, 6733]]},
+    {"destination": "dsv4_ds4_product_q8.cuh", "source": "cuda/mmq/quantize.cu", "sha256": "752c02fc5a17c1f884ba6acc6eed9419da7fc1d79bb6aa5f45a9837874744029", "inclusive_lines": [[4, 48]]},
+    {"destination": "dsv4_ds4_product_q8.cuh", "source": "cuda/mmq/mmvq.cu", "sha256": "d7a36c4fd58778631c6f3618c012cfa6a8fff8f31d448a3d1d807f3b556f0d3a", "inclusive_lines": [[8, 605], [673, 684]]},
+    {"destination": "dsv4_ds4_product_q8.cuh", "source": "cuda/mmq/ds4_mmq.cu", "sha256": "aaee3dcc55789efe54c17dad66cd39b24f2a8f28b7d119ded980a03f658cb7b8", "inclusive_lines": [[3571, 3658]]}
+  ],
+  "adapted_host_launches": {
+    "embedding": "original packed F16 lookup, token0 defensive fallback, F32 HC4 replication on native stream; actual token upload charged by caller",
+    "conversion": "original packed F32-to-F16 round-to-nearest conversion, explicit borrowed output; no hidden input mirror",
+    "qkv_norm": "original fused two-grid-plane 256-thread weighted RMS at T>8, independent exact input/output aliases; original small Q8_1 emission explicitly absent from this wide reference scope",
+    "wide_f16": "ds4_gpu_matmul_f16_preconv_tensor: T>8, GemmEx(T,N), F16 operands, F32 compute/output, original default algorithm; explicit physical leading dimensions and native lent handle/workspace",
+    "small_f16": "T1..8 F32 input; original M<2048,K>=1024 split tier and ascending split combine; one-row borrowed pool scratch reused in stream order",
+    "wide_q8": "original MMQ X/Y/warps/shared-memory and stream-K/fixup selection; sm_121 default Xmax128 explicit instead of process-global environment cache; direct original templates and sanitizer",
+    "dense_q8": "original kind-5 D2R predicate T>=512,M>=2048,M%128==0,K<=4096,K%1024==0; original complete dense core and group_m choice",
+    "small_q8": "T1..8; aligned kind-5 preferred when K%1024==0, raw MMVQ fallback explicitly named; original Q8_1 producer/F16 scales; raw dense output clear+sanitizer, aligned no sanitizer; full requested M output",
+    "out_a": "original G8,K4096,rank1024,head512,rotary64 core and inverse-RoPE table; explicit dummy table/store padding; optional exact D4 dual emit",
+    "rope": "original head normalization/tail-RoPE YaRN numerical functions with scalar or signed per-row positions"
+  },
+  "caller_contract": {
+    "ownership": "caller holds mapped/charged operands, sidecars and stream through proved completion; LaunchContext supplies bounded workspace/handle and records submission failures",
+    "sidecars": "explicit source pointer/generation/rows/K, no global producer registry; Q8_1 and MMQ D4 are separate formats",
+    "padding": "D4 256 tail blocks and K/512<=65535 CUDA grid-y bound; raw small Q8 complete readable row tiles; out_a whole 16-row stores and 128-row table reads with 32-byte aligned WMMA output; MMQ output count and raw block count must fit original signed offsets",
+    "cadence": "caller retains original final/progress-callback head cadence; products add no diagnostic heads or top2 shortcut",
+    "prohibitions": "no current-GGML substitution for missing literal operation; no foreign host runtime/registry; no runtime default selection"
+  },
+  "checks_pending": ["matched original/model performance and quality", "final x86 workstation checks after implementations settle"]
+}

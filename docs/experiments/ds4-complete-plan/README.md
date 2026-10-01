@@ -10,6 +10,18 @@ independently of the quality gates; a diagnostic quality failure remains
 visible and does not suppress its performance result. Quality gates still
 precede adoption or a production default change.
 
+The literal path is temporary benchmark scaffolding (owner, 2026-09-30).
+After it matches the configured reference pipeline and performance, restore
+native stages one at a time under the same inputs and settings to identify
+which pieces explain the speed. Charge each stage's preparation, conversion,
+layout and completion work; test interactions where independent gains do
+not add up. Adapt the useful techniques into jitLLM's existing architecture
+and check other model/kernel consumers. Retain our native state, dispatch,
+catalog and provider contracts wherever they do not cause the difference.
+Retire unused literal code from shipping builds after the comparisons;
+durable provenance, controls and aggregate results remain. A permanent ds4
+runtime or parallel serving architecture is not the intended deliverable.
+
 That complete plan is not implemented yet. The existing HCA and Q2 product
 experiments are individual transfers over native inputs/state. Their speed
 ratios do not demonstrate complete ds4 performance parity.
@@ -103,6 +115,29 @@ These qualify primitives. The file producer, complete alternate weight set,
 physical model state and whole configured pipeline are still pending.
 Workstation checks remain deferred until the implementations settle.
 
+## Original dense and vector products
+
+`dsv4_ds4_product` supplies original F16 embedding/HC lookup, the explicit
+F32-to-F16 input conversion, fused wide Q/KV RMS, the wide F16 cuBLAS product, small
+F32-activation/F16-weight vector tiers, compact D4 and canonical Q8_1
+activation producers, Q8 MMQ and aligned dense D2R, small full-row Q8
+products, head norm/RoPE and the grouped own out-a HMMA with optional D4
+output. Each producer carries its source pointer, shape and generation;
+scratch, physical tile padding and input conversions are explicit.
+The original numerical definitions and thirteen retained MMQ headers are
+isolated in a private namespace. The existing production D2R unit continues
+to use the locked GGML headers through explicit includes.
+
+Spark A's final locked slice passes 1,135 tests, including 234 GPU tests,
+the actual SDK's format/tidy, boundaries and REUSE/header checks. Complete
+numerical spans and all thirteen original headers match the authenticated
+source. Controls cover independent double products, halfway/subnormal F16
+rounding, signed positions, byte-exact activation forms, every full-head
+logit, padded/ragged reads and writes, current graph inputs and refusal
+before submission. Independent whole-source and adversarial reviews are
+clean. No model speed or quality result follows from these products alone;
+workstation checks remain deferred until the implementations settle.
+
 ## Remaining complete-plan work
 
 Use one alternate prepared expert representation, with canonical GGUF and
@@ -110,7 +145,7 @@ per-tensor provenance, rather than keeping full raw and aligned expert
 weight sets resident together. Add separate accounted raw/packed cache and
 frontier resources, actual per-layer visibility counters and a distinct
 state identity. Assemble the checked HC/compressor stages and port the
-original dense products, indexer, all sparse attention branches, router,
+original indexer, all sparse attention branches, router,
 routed/shared FFN, fused epilogues and full
 requested head, including their preparation and completion boundaries.
 

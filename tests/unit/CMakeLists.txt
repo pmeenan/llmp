@@ -347,6 +347,10 @@ add_executable(dsv4_ds4_comp_validate_test dsv4_ds4_comp_validate_test.cc)
 target_link_libraries(dsv4_ds4_comp_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(dsv4_ds4_comp_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(dsv4_ds4_product_test dsv4_ds4_product_test.cc)
+target_link_libraries(dsv4_ds4_product_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(dsv4_ds4_product_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(dsv4_ds4_repack_validate_test dsv4_ds4_repack_validate_test.cc)
 target_link_libraries(dsv4_ds4_repack_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(dsv4_ds4_repack_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -480,6 +484,12 @@ if(JITLLM_CUDA)
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(dsv4_ds4_comp_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(dsv4_ds4_comp_test)
+
+  add_executable(dsv4_ds4_product_gpu_test dsv4_ds4_product_gpu_test.cc)
+  target_include_directories(dsv4_ds4_product_gpu_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(dsv4_ds4_product_gpu_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(dsv4_ds4_product_gpu_test)
 
   add_executable(dsv4_ds4_repack_test dsv4_ds4_repack_test.cc)
   target_include_directories(dsv4_ds4_repack_test SYSTEM PRIVATE

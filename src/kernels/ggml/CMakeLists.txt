@@ -24,7 +24,7 @@
 #                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, mmvq_rows.cu,
 #                        fattn_mma*.cu)
 #                        to jitllm_ggml_kernels.
-add_library(jitllm_ggml_tensors STATIC dsv4_ds4_cache.cc dsv4_ds4_hc.cc dsv4_ds4_comp.cc dsv4_ds4_repack.cc dsv4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
+add_library(jitllm_ggml_tensors STATIC dsv4_ds4_product.cc dsv4_ds4_cache.cc dsv4_ds4_hc.cc dsv4_ds4_comp.cc dsv4_ds4_repack.cc dsv4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
                                        qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
@@ -64,6 +64,8 @@ if(JITLLM_CUDA)
                                          qsa_sparse.cu
                                          cublas.cc executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
+  target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_product.cu dsv4_ds4_product_raw.cu)
+  target_link_libraries(jitllm_ggml_kernels PRIVATE jitllm_ds4_original_headers)
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   # CUTLASS's NVFP4 grouped GEMM for the routed experts (moe_cutlass.h) and
@@ -133,6 +135,11 @@ if(JITLLM_CUDA)
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
   set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
+                   dsv4_ds4_product.h dsv4_ds4_product.cc dsv4_ds4_product.cu
+                   dsv4_ds4_product_raw.h dsv4_ds4_product_raw.cu
+                   dsv4_ds4_product_original.cuh dsv4_ds4_product_quantize.cuh
+                   dsv4_ds4_product_f16.cuh dsv4_ds4_product_q8.cuh
+                   dsv4_ds4_product_source.json dsv4_ds4_product_source.json.license
                    dsv4_graph.h dsv4_hca_tokentile.cu dsv4_ds4_cache.cc dsv4_ds4_cache.cu
                    dsv4_ds4_cache.h dsv4_ds4_cache_core.cuh dsv4_ds4_cache_core.json
                    dsv4_ds4_cache_core.json.license
@@ -190,6 +197,8 @@ if(JITLLM_CUDA)
   # including the decode table; this adds no original runtime or globals.
   set_source_files_properties(dsv4_ds4_cache.cu dsv4_ds4_hc.cu dsv4_ds4_comp.cu dsv4_ds4_repack.cu PROPERTIES COMPILE_OPTIONS
                               "-O3;--use_fast_math;-lineinfo")
+  set_source_files_properties(dsv4_ds4_product.cu dsv4_ds4_product_raw.cu PROPERTIES COMPILE_OPTIONS
+                              "-O3;--use_fast_math;-lineinfo;-extended-lambda")
   # The M3 units that compile or launch GGML's kernels take GGML's device
   # flags too, as GGML's own files and instance units build
   # (third_party/patches/ggml/0002): the tensor-core flash-attention
