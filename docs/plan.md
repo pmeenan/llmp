@@ -978,7 +978,12 @@ it appears.
       strict-prefix warm screen completes all 63 requests and 21 exact fresh
       controls: median C1/C2/C4 rates 57.53/82.17/109.81 tokens/s. C4 varies
       14.01%; its post-shutdown sampler error leaves memory unqualified.
-      Native/Mia warm, Mia plain, stable decision-relevant concurrent
+      Mia's warm screen also completes 63 requests: median C1/C2/C4 rates
+      37.43/56.59/82.04 tokens/s, with 6,656 cached prompt tokens and a
+      1,536-token tail versus TensorFold's one-token tail. All 21 greedy
+      warm/fresh outputs differ under DET=0. Two outer bookkeeping errors
+      leave the retained results descriptive, without memory or quality
+      qualification. Native warm, Mia plain, stable decision-relevant concurrent
       controls and the longer ladder remain open; these screens do not
       establish concurrent parity.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long

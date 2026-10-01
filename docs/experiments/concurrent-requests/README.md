@@ -397,5 +397,101 @@ than its directory; it is preserved separately and excluded.
 Same-engine warm/fresh equality is not a model-quality comparison. The
 fresh and warm screens have different paid work scopes and independent
 inputs, so their rates do not isolate a cache algorithm's causal gain.
-Native and Mia warm branches, longer contexts, default parallelism and
+Native warm branches, longer contexts, default parallelism and
 decision-relevant stable concurrent controls remain open.
+
+## Mia warm concurrency: completed requests, failed outer instrumentation
+
+Mia reused **6,656 of 8,192 prompt tokens** in every warm request, leaving a
+**1,536-token tail**. The three C1/C2/C4 observations returned all 256 generated
+tokens. Median complete-burst rates were **37.43 / 56.59 / 82.04 tok/s**.
+These are descriptive results from a completed matrix whose outer controller
+failed two bookkeeping checks. The original failure is retained; no model
+work was repeated and no memory or model-quality gate is claimed.
+
+| Observation | Concurrency | Complete-burst tok/s | Median request latency (s) | Worst request latency (s) |
+| --- | --- | --- | --- | --- |
+| 0 | 1 | 36.4551 | 7.0223 | 7.0223 |
+| 0 | 2 | 51.8956 | 9.8380 | 9.8660 |
+| 0 | 4 | 83.8897 | 12.1659 | 12.2059 |
+| 1 | 4 | 81.6081 | 12.2271 | 12.5477 |
+| 1 | 2 | 56.6116 | 8.8298 | 9.0440 |
+| 1 | 1 | 39.0555 | 6.5548 | 6.5548 |
+| 2 | 2 | 56.5922 | 9.0180 | 9.0472 |
+| 2 | 1 | 37.4304 | 6.8394 | 6.8394 |
+| 2 | 4 | 82.0377 | 12.1523 | 12.4818 |
+
+C1/C2/C4 observed rate ranges were 36.4551–39.0555,
+51.8956–56.6116 and 81.6081–83.8897 tok/s; max/min ratios were
+1.0713, 1.0909 and 1.0280. The three observations use independently marked
+prompts in balanced order. They are a bounded screen, not a confidence interval.
+First generated SSE events arrived in 0.769–0.784 s at C1, 0.761–2.461 s at
+C2 and 0.773–3.418 s at C4. These are visible streaming batch boundaries,
+not per-token GPU timings.
+
+All **63 requests** completed: 21 independent 8,191-token seeds with a
+one-token output cap, 21 warm 8,192-token requests and 21 fresh same-target
+solo controls. Every seed and fresh control reported zero cached tokens;
+each warm request reported 6,656. Returned prompt IDs, raw SSE token IDs,
+finite actual-token scores, text, usage and terminal markers were preserved
+and independently reconstructed. All 21 warm/fresh output-ID and text
+comparisons differed; all 21 usage and finish comparisons matched. DET0
+differences remain descriptive and establish no quality pass.
+
+TensorFold's completed warm screen reused 8,191 tokens and processed one
+tail token. Mia's 1,536-token tail therefore prevents a comparison that assumes
+equal cached work. The engines also retain their stated KV precision,
+speculative depth, graph and scheduling configurations. Both screens use the
+same frozen target and strict-prefix IDs, parallel capacity four and three
+C1/C2/C4 observations; neither establishes cross-engine output parity.
+
+The unchanged Mia recipe used context 33,792, four sequence slots, FP8 KV,
+BF16 SSM, fixed MTP depth three, selected 47,172-token head and DET0.
+Readiness took 781.528 s; the matrix took 381.780 s. Summed seed and fresh
+control latencies were 81.757 and 201.987 s, recorded separately from warm
+cell rates. Whole launch wall was 1,167.777 s. Startup, seed setup and fresh
+controls are not included in the warm cell numerator or wall.
+
+The outer controller accidentally returned the last protected mount's SHA
+in its `arguments` field. Docker mount ordering changed that string even
+though the live PID, start time, image, speculation configuration,
+environment and mounted-source dictionaries remained identical. Its second
+failure capped every retained file at 16 MiB, including the valid
+31,262,224-byte aggregate containing all 63 response rows. Individual request
+files stayed bounded. Both original errors and outer exit 1 remain immutable.
+The sampler itself completed without error and stopped before deliberate
+retirement. Its 4,645 Linux MemAvailable samples observed a minimum
+17,131,659,264 bytes and a drop of 108,768,202,752 bytes; these remain
+descriptive shared-node observations, with no repaired formal memory gate.
+Maximum sampling interval was 0.262 s and the final sample preceded matrix
+completion by 0.104 s.
+
+The model client exited zero and was reaped, the owned container was removed,
+and the original source/input/asset terminal checks passed. The original
+retirement log recorded 117.374 GiB free and clear probes. CPU-only
+reconstruction and preservation later passed in about one second, copied
+255 hash-bound evidence files, and left the failed outer qualification intact.
+
+| Evidence | SHA-256 |
+| --- | --- |
+| Frozen target/seed inputs | `cae29a57817cb3479d743517f4bc87b68e05f50abe22ed250d89a7452cdd3e00` |
+| Actual prepared receipt | `37453b172044896ae600604bc658a901c065f7eef3136cbf852b2ddab5e8fdaa` |
+| Failed outer run | `4a538d6a65d17f91cfb74a3837244c6656ef276ce947d09ad2b7ec640c3d8e8f` |
+| Complete 63-request receipt | `12b6cb90d667b598cc1f74e618b5af089f9577c4dbb5e73702a879cc2f33cd10` |
+| Original failed supervisor terminal | `f26c1a7cacfbcbac903ee77dcd85295968607ae928ea75863cfbc1f293e61850` |
+| Reconstruction/preservation receipt | `c11f3ffd0e14ed13dff3ebec8d65bd8bffd55b0806e506ff633342fedbc789e3` |
+| Descriptive reconstruction source | `026dc0aabc279bd95c09d168eb75b2d65bc9067755c923e33b7a6d87f149aae7` |
+
+The original client/controller/protocol source SHAs are respectively
+`6645eb5d2716afe08d09ae93b5f732d762a17f53002d42de3edffb067e4de29d`,
+`637af3509c82e18e92f43b7419ec8d5b3dcec2300217f0ecc34885e200067092`
+and `030c50f2bdcdecc373386c31ad2ae3f0b4131d7b657ab3a2e88ae8efbe2b4c8b`.
+Raw records and all 127 request files remain outside Git at A's
+`~/scratch/m3-mia-warm-r1/study-r1/`; the independently authenticated copy is
+`~/scratch/m3-mia-warm-r1/analysis-preservation-r1/preserved/`. Local mirrors
+are `/home/pmeenan/scratch/m3-mia-warm-model-r1-records/` and
+`/home/pmeenan/scratch/m3-mia-warm-analysis-r1-records/`. The original model job
+was `warm-cache-matrix-r1` / supervisor 1917829; the separate CPU-only job was
+`warm-data-retain-r1` / supervisor 1975031. Existing immutable image, recipe,
+source/asset/stat pins and prior qualification scope are retained in the
+prepared and run receipts; no new full checkpoint-payload SHA is claimed.
