@@ -953,11 +953,14 @@ it appears.
       does not establish concurrent parity. Measure the gap and use it to
       prioritize the continuous-batching work below, advancing the
       necessary implementation when the comparison requires it.
-      The [first TensorFold 8K screen](experiments/concurrent-requests/README.md)
-      completes all 28 requests with exact solo controls: fresh-burst
+      The [first 8K screens](experiments/concurrent-requests/README.md)
+      record TensorFold's 28 requests with exact solo controls: fresh-burst
       throughput scales 1.78× plain and 1.28× speculative at four requests,
-      with serial prefills. Native/Mia, warm decode, repeats and the longer
-      ladder remain open; this screen does not establish concurrent parity.
+      with serial prefills. Mia's speculative screen completes 14×256
+      outputs and scales 23.44→40.26 tokens/s (1.72×), with all seven
+      greedy repeats differing under DET=0; no quality pass follows.
+      Native, Mia plain, warm decode, repeats and the longer ladder remain
+      open; these screens do not establish concurrent parity.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

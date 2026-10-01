@@ -107,5 +107,84 @@ process check interpreted `tensorfold` in the supervisor's job name as a
 model process. The neutral r2 name passed the unchanged check. Both failed
 records are preserved and excluded from timings; neither ran model work.
 
-jitLLM's queue baseline and Mia's NVFP4 speculative concurrency screen are
-separate runs. No concurrent parity gate is closed by this report.
+## Mia: first 8K speculative screen
+
+Mia's fresh prompt-plus-generation throughput increased from 23.44 to
+40.26 tokens/s at four requests (1.72×). All fourteen requests completed
+with 256 output IDs, finite returned log-probabilities, the original 8,192
+prompt IDs and zero cached prompt tokens. Every matching solo output
+differed from its burst member, including the one-request repeat. This
+completed performance screen supplies no output-equality or quality pass.
+
+Spark A, 2026-10-01. Recipe `b8439110eec0230facbe4ddf0dffe01b8f769be0`,
+image `sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8`,
+resolved vLLM `0.1.dev20073+g8e685d198`. Checkpoint:
+Mia-AiLab/Qwen3.8-Flash-Next-NVFP4 at
+`925d7be6c14c6c9442ef83e8f05b5a3c39304f69`. The selected draft vocabulary
+has 47,172 IDs. One rank, fixed MTP depth three, FP8 KV, BF16 recurrent
+state/head I/O, `DET=0`, context 33,792, four request slots, chunked
+prefill 2,048, GPU utilization 0.786 and 26 GiB host reserve. Compilation
+mode zero, `FULL_DECODE_ONLY`, graph capture sizes 4/8/12/16; asynchronous
+scheduling and profiling are off. Launch/configuration and source pins were
+checked before and after. The model identity scope is revision, index and
+unchanged file stats, without a new full-shard hash.
+
+Use the same seven speculative input members as the TensorFold screen,
+with literal string prompts, no inserted special tokens, temperature zero,
+256-token caps and one observation per cell. Unique cache salts isolate
+requests. Returned prompt IDs were independently compared with the exact
+prepared packed IDs. Actual KV capacity was 601,014 tokens, above the
+configured length; this is capacity telemetry, not concurrent allocation
+usage. Plain mode requires a separate deployment and remains unmeasured.
+
+| Requests | Actual output tokens | Burst time (s) | Aggregate tokens/s | Median / worst request latency (s) | First visible text, input order (s) |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 256 | 10.923 | 23.437 | 10.923 / 10.923 | 4.853 |
+| 2 | 512 | 15.528 | 32.972 | 15.440 / 15.528 | 3.827, 8.596 |
+| 4 | 1,024 | 25.435 | 40.260 | 25.037 / 25.434 | 12.427, 16.375, 8.580, 3.811 |
+
+All seven controls matched usage and finish reason, but their full IDs
+and text differed after common prefixes of 35–44 tokens. Variation already
+exists in the C1 repeat, so these records do not isolate a concurrency cause
+or measure a quality loss. Timings are retained descriptively under the
+declared `DET=0` condition. This is separate from the historical deterministic
+quality oracle. Aggregate speculative counters cover whole bursts; they
+are not attributed to individual concurrent requests. SSE token batches
+and their gaps supply delivery timing, without a per-token kernel claim.
+
+At four requests, Mia and TensorFold's speculative fresh-burst rates are
+close (40.26 and 40.53 tokens/s). Their weight formats, state precisions,
+draft policies and Sparks differ. Fresh prefill and scheduling remain
+inside both endpoint timers, and there is only one observation per cell.
+This comparison cannot establish same-format decode or quality parity.
+
+Readiness took 792.508 seconds; the matrix and controls took 120.505
+seconds, and the controller took 917.040 seconds including retirement.
+Minimum sampled node available memory was 15,428,767,744 bytes; observed
+drop was 110,410,014,720 bytes (102.83 GiB), including setup/cache. This is
+node-wide memory, separate from any process RSS or allocation total.
+The same live server identity and static configuration were confirmed
+before and after. Load/client/retirement commands completed and were reaped,
+the container was absent, and the retained retirement log reported
+117.341 GiB available.
+
+Raw receipts and the descriptive analysis are external at
+`/home/pmeenan/scratch/m3-mia-concurrent-r1-records/`; the supervised job
+on Spark A is `mia-concurrent-spec-r1`. The prepared receipt binds the
+input receipt listed above, actual recipe source, launch assets, environment
+and model inventories. The analyzer reconstructs all three rates and
+seven comparisons from completed per-request records.
+
+| Input or result | SHA-256 |
+| --- | --- |
+| Prepared receipt | `dcdc6985a16096d45da435ac8470084e391ea365190884a9b892e32d99a8ee19` |
+| Client script | `bfe5aa8a1aa318d24e28a0352463bc2aac44693c4baae8884aada0d61e4cf61c` |
+| Model controller | `53b0cc57c2ae77f2d56c6984d0257c3c9c2ceafc86b3acf455d9f02573e342a1` |
+| Analyzer | `8ece3c0e4130c82e4fc444f6bd86449d35647585758efc7332fd850c0423ec6c` |
+| Complete launch receipt | `1e4585acbde5312cd620b8ce35c3f94d0b624b11c367455f586a328595beed48` |
+| Complete client receipt | `90562f54abf4aae571d5fcd9c3258218e03f995081addac6a6b9cdcc0939cbf8` |
+| Descriptive analysis | `f0732207dd39601ca8347af63e16c085537d63176f351946a8b6443474764e8c` |
+
+jitLLM's queue baseline, warm decode, longer contexts and repeated
+decision-relevant cells remain open. No concurrent parity gate is closed
+by these initial comparator screens.
