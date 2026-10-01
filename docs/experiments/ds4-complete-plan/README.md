@@ -111,9 +111,28 @@ special scale bits, chunks across experts, padding/guards and graph inputs.
 Check receipt SHA-256:
 `2eb67bf9247a8c7982a4dda97954045c21a63cabb8bcf5bd0a94f14921c1e3e5`.
 
-These qualify primitives. The file producer, complete alternate weight set,
+These qualify primitives. The complete alternate weight set, initialized
 physical model state and whole configured pipeline are still pending.
 Workstation checks remain deferred until the implementations settle.
+
+## Bounded state and weight preparation
+
+`model/dsv4_ds4_state` describes distinct original raw-ring, packed KV/indexer
+and fixed compressor frontiers, with visibility restricted to emitted rows.
+`engine/dsv4_ds4_weights` plans the complete aligned expert replacement and
+additive dense set, and prepares one tensor at a time through native jobs.
+The bounded reader/repack/writer path fences before reusing its staging;
+`PrepareDs4WeightFile` supplies owner-only unnamed direct-I/O files, hashes
+their stored bytes including padding, and retains descriptors for native paging.
+
+Spark B's final helper check (2026-09-30) passes 1,126 tests, including 229
+GPU tests, with nine SDK format checks, six host-unit tidies, boundaries and
+REUSE/header checks (1,054 headers). Controls cover disjoint state layouts,
+emitted-row bounds, expert/shard chunk boundaries, independent aligned byte
+permutations, current operands, stream/provider identity, capture refusal and
+proved retirement after read/write failures. Actual filesystem preparation of
+the complete model set, its catalog binding and initialized state remain
+whole-model assembly work; these controls establish no model speed or quality.
 
 ## Original dense and vector products
 
@@ -138,15 +157,48 @@ before submission. Independent whole-source and adversarial reviews are
 clean. No model speed or quality result follows from these products alone;
 workstation checks remain deferred until the implementations settle.
 
+## Original indexer and sparse attention
+
+`dsv4_ds4_indexer` retains 34 complete original score, selection and
+query-preparation definitions, including the paid MXF4 producer chain.
+`dsv4_ds4_attention` retains 68 complete original definitions: raw/mixed
+prefill, explicit selected-row attention, banked and live-count variants,
+split/head-group combines, and the complete token-tile union, sort,
+chronological mirror and HMMA chain. Packed readers receive an explicit
+immutable decode table and diagnostics; numerical bodies and original
+default eligibility/order remain intact. Native dispatch owns streams,
+scratch and completion and refuses an unavailable original tier.
+
+Spark A's final locked check (2026-09-30) passes 1,168 tests, including
+248 GPU tests, in 77.27 seconds. All 102 complete definitions and retained
+regions match the authenticated original after only the recorded pointer
+and diagnostic substitutions and the MXF4 architecture guard are restored.
+The actual installed SDK verifies ten formatted units, four host-unit
+tidies, boundaries and REUSE/header checks (1,079 headers). The frozen
+1,198-file source inventory is unchanged, locked sources are enabled, and
+the actual CUDA commands retain `-O3 --use_fast_math -lineinfo` with
+`sm_121a` SASS. Independent whole-source and final-delta reviews are clean.
+
+Controls cover CPU refusals and paid scratch bounds; exact selection
+across ties and deep streaming; original packed QAT scores; strict causal
+future-cell masking; ragged MXF4 query-mirror/requantizer byte equality;
+scalar/head-group results against F64; token-tile bitmap and deep-sort
+unions including partial tiles; sink normalization; and current-operand
+graph replays. No model was loaded. These results qualify the operators;
+the first complete configured pipeline and its speed/quality results
+remain pending. Check receipt SHA-256:
+`c4a950f4f03535206c0d5985d1a09313605fa8b3bac2e482f216c93c26a4e4b6`.
+Source-correspondence receipt SHA-256:
+`9aeb3249cc7d219d9f506beadc54a2075b5866d8762fe47d4578cb871a81bc66`.
+
 ## Remaining complete-plan work
 
 Use one alternate prepared expert representation, with canonical GGUF and
 per-tensor provenance, rather than keeping full raw and aligned expert
-weight sets resident together. Add separate accounted raw/packed cache and
-frontier resources, actual per-layer visibility counters and a distinct
-state identity. Assemble the checked HC/compressor stages and port the
-original indexer, all sparse attention branches, router,
-routed/shared FFN, fused epilogues and full
+weight sets resident together. Bind separate accounted raw/packed cache
+and frontier resources, actual per-layer visibility counters and a distinct
+state identity. Assemble the checked HC/compressor/product/indexer/attention
+stages with the original router, routed/shared FFN, fused epilogues and full
 requested head, including their preparation and completion boundaries.
 
 The first complete-model control is all 43 layers at 8K, with matched

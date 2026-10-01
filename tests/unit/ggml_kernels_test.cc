@@ -423,6 +423,12 @@ TEST_F(GgmlKernelsTest, LaunchesUseTheProvidersContextAndStreamOrder) {
   ASSERT_EQ(cuDevicePrimaryCtxRetain(&primary, device), CUDA_SUCCESS);
   auto launch = Launcher();
   ASSERT_NE(launch, nullptr);
+  EXPECT_TRUE(launch->UsesStream(*execution_, stream_));
+  FaultingExecution other_provider(*execution_);
+  EXPECT_FALSE(launch->UsesStream(other_provider, stream_));
+  const auto other_stream = execution_->CreateStream().value();
+  EXPECT_FALSE(launch->UsesStream(*execution_, other_stream));
+  ASSERT_TRUE(execution_->DestroyStream(other_stream).has_value());
   CUcontext current = nullptr;
   ASSERT_EQ(cuCtxGetCurrent(&current), CUDA_SUCCESS);
   EXPECT_EQ(current, primary);

@@ -20,6 +20,13 @@ reduction order at the same quality; our own rollback, repeat and restored
 continuation remain exact. Changes that trade quality for speed need an
 explicit per-alias quality/performance mode, off by default.
 
+The complete literal ds4 path is a temporary benchmark reference. Match
+its configured end-to-end performance, restore native stages individually
+to isolate the causes, and adapt the useful mechanisms across applicable
+models and kernels. The final implementation should preserve jitLLM's
+architecture; unused reference code can leave shipping builds once the
+comparisons are recorded. [Matched-pipeline study](experiments/ds4-complete-plan/README.md).
+
 ## Coverage
 
 | Implementation family | Current consumer and source | Techniques to compare |

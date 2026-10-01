@@ -328,7 +328,8 @@ to 262,144, with trained ceilings checked before allocation. Remaining
 before the gate: final maximum-context and quality/swap checks, plus
 Qwen's long-context MTP speed gap.
 The ds4 study adopted shared sparse gathers and compact expert scheduling;
-its comparator uses different cache precision. M3.5 (model families, the
+its matched pipeline is being assembled as a temporary benchmark for restoring
+native stages and adapting the mechanisms that explain the gains. M3.5 (model families, the
 owner's approved 13 plus legacy fixtures and Bonsai, formats with EXL3
 in focus, concurrent batching) follows M3, before M4. Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

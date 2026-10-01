@@ -20,7 +20,8 @@ contain upstream context under the MIT License:
   notice in the UPSTREAM-NOTICE.txt beside it.
 
 The incorporated ds4 D2R product, extracted token-tile HCA numerical core,
-cache/QAT, HC/norm, compressor, aligned-repack and dense/vector product
+cache/QAT, HC/norm, compressor, aligned-repack, dense/vector product,
+indexer and sparse-attention
 numerical derivatives, and the retained original numerical headers,
 and their reviewed patches retain the
 MIT notices of The ds4.c authors (2026), Entrpi (2026), The ggml authors

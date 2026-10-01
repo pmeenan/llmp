@@ -28,6 +28,7 @@ add_library(jitllm_ggml_tensors STATIC dsv4_ds4_product.cc dsv4_ds4_cache.cc dsv
                                        qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_sources(jitllm_ggml_tensors PRIVATE dsv4_ds4_attention.cc dsv4_ds4_indexer.cc)
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
                                                  jitllm_model
                                           # cutlass/version.h only (jitllm_ops.cc pins the
@@ -65,6 +66,7 @@ if(JITLLM_CUDA)
                                          cublas.cc executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_product.cu dsv4_ds4_product_raw.cu)
+  target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_attention.cu dsv4_ds4_indexer.cu)
   target_link_libraries(jitllm_ggml_kernels PRIVATE jitllm_ds4_original_headers)
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
@@ -135,6 +137,12 @@ if(JITLLM_CUDA)
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
   set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
+                   dsv4_ds4_attention.h dsv4_ds4_attention.cc dsv4_ds4_attention.cu
+                   dsv4_ds4_attention_core.cuh dsv4_ds4_attention_core.json
+                   dsv4_ds4_attention_core.json.license
+                   dsv4_ds4_indexer.h dsv4_ds4_indexer.cc dsv4_ds4_indexer.cu
+                   dsv4_ds4_indexer_core.cuh dsv4_ds4_indexer_core.json
+                   dsv4_ds4_indexer_core.json.license
                    dsv4_ds4_product.h dsv4_ds4_product.cc dsv4_ds4_product.cu
                    dsv4_ds4_product_raw.h dsv4_ds4_product_raw.cu
                    dsv4_ds4_product_original.cuh dsv4_ds4_product_quantize.cuh
@@ -199,6 +207,8 @@ if(JITLLM_CUDA)
                               "-O3;--use_fast_math;-lineinfo")
   set_source_files_properties(dsv4_ds4_product.cu dsv4_ds4_product_raw.cu PROPERTIES COMPILE_OPTIONS
                               "-O3;--use_fast_math;-lineinfo;-extended-lambda")
+  set_source_files_properties(dsv4_ds4_attention.cu dsv4_ds4_indexer.cu PROPERTIES COMPILE_OPTIONS
+                              "-O3;--use_fast_math;-lineinfo")
   # The M3 units that compile or launch GGML's kernels take GGML's device
   # flags too, as GGML's own files and instance units build
   # (third_party/patches/ggml/0002): the tensor-core flash-attention

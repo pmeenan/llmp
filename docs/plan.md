@@ -907,6 +907,18 @@ it appears.
       forced rejection and swap continuations remain exact. Fresh sampled
       plain/speculation TV is 0.0034 / 0.0098 / 0.0186 / 0.0112, below the
       unchanged 0.1 bound; maximum-context runtime gates remain pending.
+- [ ] **Complete ds4 performance reference and native restoration**
+      (the owner, 2026-09-30). First reproduce the complete original
+      pipeline inside jitLLM on the same community GGUF, precisions,
+      context, chunks and output cadence; measure it independently of
+      adoption's quality gates. Then restore native stages one at a time
+      to bisect the speed difference, including charged preparation,
+      weight/state layouts, launch boundaries and interacting stages.
+      Adapt the mechanisms that explain the gains into our architecture
+      and assess applicable consumers across models/kernels. The literal
+      path is temporary benchmark scaffolding, not a permanent runtime;
+      retire unused reference code from shipping builds after the study.
+      [Current primitive qualification and remaining assembly](experiments/ds4-complete-plan/README.md).
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

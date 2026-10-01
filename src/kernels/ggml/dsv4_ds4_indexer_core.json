@@ -1,0 +1,306 @@
+{
+  "schema": 1,
+  "source_lock_component": "ds4",
+  "archive_sha256": "731e037da1bed009da5db31e5170681b59f1e22af00a3e56fa29cff8706ed63c",
+  "repository": "https://github.com/Entrpi/ds4",
+  "commit": "76d51ef82a81b70b78e51a3a6ea11946286de976",
+  "source": "ds4_cuda.cu",
+  "source_sha256": "8d5de76a7aaaf9131ba8f9cf35412863fef88299b39676ea4bcfb07aef7386e3",
+  "retained_regions": [
+    {
+      "first_line": 561,
+      "last_line": 566
+    },
+    {
+      "first_line": 6629,
+      "last_line": 6634
+    },
+    {
+      "first_line": 8682,
+      "last_line": 8685
+    },
+    {
+      "first_line": 8830,
+      "last_line": 8841
+    },
+    {
+      "first_line": 8882,
+      "last_line": 8906
+    },
+    {
+      "first_line": 15427,
+      "last_line": 16578
+    },
+    {
+      "first_line": 16704,
+      "last_line": 17364
+    },
+    {
+      "first_line": 17366,
+      "last_line": 17664
+    }
+  ],
+  "numerical_functions": [
+    {
+      "name": "warp_sum_f32",
+      "first_line": 6629,
+      "last_line": 6634,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "dsv4_pow2_ceil_scale",
+      "first_line": 8682,
+      "last_line": 8685,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "dsv4_e2m1fn_value_dev",
+      "first_line": 8830,
+      "last_line": 8841,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_fp4_read",
+      "first_line": 8882,
+      "last_line": 8891,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_fp4_level_read",
+      "first_line": 8899,
+      "last_line": 8906,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_scores_kernel",
+      "first_line": 15427,
+      "last_line": 15475,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_score_one_direct_kernel",
+      "first_line": 15477,
+      "last_line": 15536,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_scores_multiseq_kernel",
+      "first_line": 15547,
+      "last_line": 15612,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_scores_multiseq_v5d_kernel",
+      "first_line": 15664,
+      "last_line": 15834,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_scores_multiseq_v5e_kernel",
+      "first_line": 15877,
+      "last_line": 16072,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_scores_wmma_kernel",
+      "first_line": 16074,
+      "last_line": 16186,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_scores_wmma32_kernel",
+      "first_line": 16188,
+      "last_line": 16308,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_scores_wmma64_kernel",
+      "first_line": 16310,
+      "last_line": 16430,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_scores_wmma128_kernel",
+      "first_line": 16432,
+      "last_line": 16578,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_topk_kernel",
+      "first_line": 16704,
+      "last_line": 16723,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "topk_score_better",
+      "first_line": 16725,
+      "last_line": 16727,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "topk_float_ordered_key",
+      "first_line": 16729,
+      "last_line": 16732,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "topk_pack_key",
+      "first_line": 16734,
+      "last_line": 16736,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_topk_8192_cub_kernel",
+      "first_line": 16738,
+      "last_line": 16785,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_topk_1024_kernel",
+      "first_line": 16787,
+      "last_line": 16836,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_topk_pow2_kernel",
+      "first_line": 16838,
+      "last_line": 16894,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_topk_pow2_u16_kernel",
+      "first_line": 16896,
+      "last_line": 16952,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_topk_chunk_pow2_kernel",
+      "first_line": 16954,
+      "last_line": 17030,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_topk_merge_pow2_kernel",
+      "first_line": 17032,
+      "last_line": 17093,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_topk_tree_merge_pow2_kernel",
+      "first_line": 17095,
+      "last_line": 17167,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "indexer_topk_stream512_kernel",
+      "first_line": 17200,
+      "last_line": 17363,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "rr_e2m1_nearest_lvl",
+      "first_line": 17404,
+      "last_line": 17413,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "rr_q_quant_kernel",
+      "first_line": 17418,
+      "last_line": 17456,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "rr_q_scale_pack_kernel",
+      "first_line": 17464,
+      "last_line": 17474,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "rr_mma_mxf4",
+      "first_line": 17476,
+      "last_line": 17487,
+      "body_adaptation": "The unchanged original asm is guarded by __CUDA_ARCH__>=1210; off-architecture stray launch traps. Native MXF4 dispatch requires eager sm_121a."
+    },
+    {
+      "name": "idx_cp_async_u32",
+      "first_line": 17491,
+      "last_line": 17497,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "idx_cp_commit",
+      "first_line": 17498,
+      "last_line": 17500,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "idx_cp_wait0",
+      "first_line": 17501,
+      "last_line": 17503,
+      "body_adaptation": "none"
+    },
+    {
+      "name": "rr_coarse_mxf4_v3_kernel",
+      "first_line": 17516,
+      "last_line": 17664,
+      "body_adaptation": "none"
+    }
+  ],
+  "signature_adaptations": "Nine score kernels and stream512 accept a final explicit native diagnostic operand. Lexical aliases replace three original diagnostic device globals; no arithmetic expression changes.",
+  "numerical_changes": [],
+  "build_contract": {
+    "original_flags": [
+      "-O3",
+      "--use_fast_math",
+      "-lineinfo"
+    ],
+    "mxf4": "sm_121a SASS, original kind::mxf4 block-scaled MMA",
+    "native_stream_and_completion": "LaunchContext only; all scratch/operands borrowed and retained by caller through completion"
+  },
+  "scope": "Temporary swappable benchmark reference for matching the complete original ds4 pipeline before one-stage native substitutions. No production selector, default, permanent architecture or complete-plan equality/performance claim. Native integration and retirement from shipping builds follow measured comparison.",
+  "excluded": "Original runtime, streams, handles, scratch allocators, graph caches, environment parsing, model-map registry and diagnostic dumping. Original producer chains, visibility filters, selected-row ordering, sink normalization and default tier policy remain explicit in native dispatch.",
+  "verification": {
+    "status": "qualified-operators-model-pending",
+    "scope": "Temporary swappable original ds4 benchmark reference; no production selection or complete-model equality, quality or performance claim.",
+    "host": "spark",
+    "date": "2026-09-30",
+    "sdk": "aarch64-e0a0c85c42806fb1",
+    "independent_whole_source_review": "Parent and independent reviewer clean; final SDK/style and causal-reference delta independently reviewed.",
+    "full_locked_tests": 1168,
+    "gpu_tests": 248,
+    "full_test_elapsed_seconds": 77.27,
+    "sdk_format_units": 10,
+    "sdk_host_tidies": 4,
+    "boundary_check": "passed",
+    "reuse_header_check": {
+      "checked": 1079,
+      "problems": []
+    },
+    "original_function_definitions": {
+      "indexer": 34,
+      "attention": 68
+    },
+    "original_full_regions_and_restored_bodies": "passed",
+    "native_cuda_flags_verified": [
+      "-O3",
+      "--use_fast_math",
+      "-lineinfo",
+      "--generate-code=arch=compute_121a,code=[sm_121a]"
+    ],
+    "source_inventory_unchanged": true,
+    "model_loaded": false,
+    "receipt_path": "spark:~/scratch/m3-ds4-attention-indexer-r1/check-r3/receipt.json",
+    "receipt_sha256": "c4a950f4f03535206c0d5985d1a09313605fa8b3bac2e482f216c93c26a4e4b6",
+    "original_correspondence_receipt_sha256": "9aeb3249cc7d219d9f506beadc54a2075b5866d8762fe47d4578cb871a81bc66",
+    "original_proof_controller_sha256": "89adf425ebdf59b50453539bc76cb3393ce15bbc77de9943ff247ad2c5f856e3",
+    "installed_sdk_receipt_sha256": "f38891fcc394ddf956aaa196c6895d7309148b8b5159b0c3a0459721946992bf",
+    "compile_database_sha256": "44bafbd704478e2314b5083dea8427c8721df57c38d89adb664b4a33833b4267",
+    "checked_metadata_sha256": "63fc859b7266c16eb15fd86f19804356cbb6c205fab1c3845bf1271cffb756a5",
+    "checks_pending": [
+      "Complete configured model equality and resident performance",
+      "Later model quality, long-context and state gates",
+      "Deferred workstation checks at optimization end"
+    ]
+  }
+}
+

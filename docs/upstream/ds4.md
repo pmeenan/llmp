@@ -3,6 +3,31 @@
 
 # ds4
 
+## Original sparse attention and indexer comparison stages
+
+- **Status:** qualified temporary benchmark primitives; no production
+  selection, complete-model parity or model quality/speed result follows.
+- **Source:** the same authenticated `ds4_cuda.cu` pin, with 34 complete
+  indexer and 68 complete attention definitions and retained-region
+  provenance beside the native MIT cores. Original numerical bodies and
+  default dispatch ordering remain intact. Packed readers receive explicit
+  decode-table/diagnostic operands; MXF4 is guarded to the qualified target.
+- **Native ownership:** borrowed checked operands and paid producer
+  chains: query preparation, causal selection, union/bitmap or deep sort,
+  chronological raw/packed mirrors, split combines and sink normalization.
+  jitLLM supplies its stream, workspace and completion; no original model
+  runtime, allocator, handles or global sidecar registry is imported.
+- **Evidence:** Spark A's final locked check passes 1,168 tests, including
+  248 GPU tests, ten SDK format checks, four host-unit tidies, boundaries
+  and REUSE/header checks (1,079 headers). Full original source/region and
+  102-function correspondence, original CUDA flags and `sm_121a` SASS are
+  verified; independent whole reviews are clean. The complete configured
+  model comparison remains pending. Details and receipt pins are in the
+  [complete-plan report](../experiments/ds4-complete-plan/README.md).
+- **Proposed upstream action:** expose standalone score/select and complete
+  attention producer chains with explicit visibility, packed layout,
+  workspace and completion contracts. No submission is claimed.
+
 ## Isolated original dense/vector products and headers
 
 - **Status:** temporary complete-plan comparison primitives; no production

@@ -171,6 +171,11 @@ class LaunchContext {
   // Between runs: the next peak counts only the runs after this.
   void ResetScratchPeak();
   bool faulted() const { return faulted_; }
+  // Borrowed-operation adapters must fence the provider stream used here,
+  // not another stream that happens to have the same numerical ID.
+  bool UsesStream(const providers::DeviceExecution& execution, providers::StreamId stream) const {
+    return &execution_ == &execution && stream_ == stream;
+  }
   int device() const { return device_; }
   Workspace workspace() const { return workspace_; }
   // The lent cuBLAS handle, if any.
