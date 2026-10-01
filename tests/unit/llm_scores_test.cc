@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -38,7 +39,9 @@ class FakePaged final : public engine::PagedModel {
   catalog::Closure closure_;
 };
 
-class FakeLlm final : public rt::Llm {
+class FakeLlm : public rt::Llm {
+  friend class NativeBranchesFake;
+
  public:
   explicit FakeLlm(bool speculative = false) {
     name_ = "fake";
@@ -167,6 +170,133 @@ class FakeLlm final : public rt::Llm {
 
  private:
   FakePaged paged_;
+};
+
+class NativeBranchesFake final : public FakeLlm {
+ public:
+  explicit NativeBranchesFake(bool speculative = false) : FakeLlm(speculative) {
+    for (auto& leaf : leaves_) {
+      leaf = std::make_unique<FakeLlm>(speculative);
+    }
+    EXPECT_TRUE(PrepareBranches(4, 3).has_value());
+  }
+  bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
+  FakeLlm& native_state(std::size_t slot) { return slot == 0 ? *this : *leaves_.at(slot - 1); }
+  const auto& selected() const { return selected_; }
+  jitllm::execution::AdaptiveDepth& policy(Branch& branch) { return BranchDecoding(branch); }
+  std::uint32_t& pending_cursor(Branch& branch) { return cursors_[BranchIndex(branch)]; }
+  rt::Status SelectBranches(std::span<Branch* const> active) override {
+    if (active.size() > kMaxBranches) {
+      return std::unexpected("too many fake branches");
+    }
+    std::array<bool, kMaxBranches> selected{};
+    for (const auto* branch : active) {
+      if (branch == nullptr || &branch->model() != this) {
+        return std::unexpected("foreign fake branch");
+      }
+      const auto slot = BranchIndex(*branch);
+      if (selected[slot]) {
+        return std::unexpected("duplicate fake branch");
+      }
+      selected[slot] = true;
+    }
+    selected_ = selected;
+    return {};
+  }
+
+ protected:
+  rt::Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t n_past,
+                         bool inject, std::vector<float>& logits) override {
+    return Native(branch).FakeLlm::RunChunk(all, n_past, inject, logits);
+  }
+  rt::Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
+                         std::uint32_t left, std::vector<std::int32_t>& kept,
+                         std::vector<std::vector<float>>* logits, std::uint64_t& drafted) override {
+    return Native(branch).FakeLlm::SpecStep(all, pos, left, kept, logits, drafted);
+  }
+  rt::Status SettleFor(Branch& branch) override { return Native(branch).FakeLlm::Settle(); }
+  rt::Status ClearStateFor(Branch& branch) override { return Native(branch).FakeLlm::ClearState(); }
+  bool StateUsableFor(const Branch& branch) const override {
+    return Native(branch).FakeLlm::StateUsable();
+  }
+  rt::Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) override {
+    return Native(branch).FakeLlm::PrepareDecodeState(pos, left);
+  }
+  std::uint64_t TargetStateBaseFor(const Branch& branch) const override {
+    return Native(branch).FakeLlm::target_state_base();
+  }
+  std::uint64_t TargetStateBytesFor(const Branch& branch) const override {
+    return Native(branch).FakeLlm::target_state_bytes();
+  }
+  std::uint64_t DrafterStateBaseFor(const Branch& branch) const override {
+    return Native(branch).FakeLlm::drafter_state_base();
+  }
+  std::uint64_t DrafterStateBytesFor(const Branch& branch) const override {
+    return Native(branch).FakeLlm::drafter_state_bytes();
+  }
+  std::uint64_t UsedStateBytesFor(const Branch& branch) const override {
+    return Native(branch).FakeLlm::used_state_bytes();
+  }
+  std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const override {
+    return Native(branch).FakeLlm::used_state_ranges();
+  }
+  rt::Status SaveUsedStateFor(Branch& branch, void* host,
+                              std::span<const engine::LiveState::Range> ranges) override {
+    auto saved = Native(branch).FakeLlm::SaveUsedState(host, ranges);
+    if (saved) {
+      saved_native_[BranchIndex(branch)] = {Native(branch).target, Native(branch).injection};
+    }
+    return saved;
+  }
+  rt::Status RestoreUsedStateFor(Branch& branch, void* host,
+                                 std::span<const engine::LiveState::Range> ranges) override {
+    auto restored = Native(branch).FakeLlm::RestoreUsedState(host, ranges);
+    if (restored) {
+      const auto& saved = saved_native_[BranchIndex(branch)];
+      Native(branch).target = saved[0];
+      Native(branch).injection = saved[1];
+    }
+    return restored;
+  }
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
+      const Branch& branch, std::uint32_t positions) const override {
+    return Native(branch).FakeLlm::CheckpointRanges(positions);
+  }
+  rt::Status PrepareRestoreStateFor(Branch& branch,
+                                    std::span<const engine::LiveState::Range> footprint) override {
+    return Native(branch).FakeLlm::PrepareRestoreState(footprint);
+  }
+  rt::Status CopyCheckpointStateFor(Branch& branch, void* host,
+                                    std::span<const engine::LiveState::Range> ranges,
+                                    bool to_host) override {
+    return Native(branch).FakeLlm::CopyCheckpointState(host, ranges, to_host);
+  }
+  std::uint32_t CursorFor(const Branch& branch) const override {
+    return cursors_[BranchIndex(branch)];
+  }
+  void SetCursorFor(Branch& branch, std::uint32_t value) override {
+    cursors_[BranchIndex(branch)] = value;
+  }
+  void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
+  void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
+  jitllm::execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
+    return BranchDecoding(branch);
+  }
+  void RestoreTurnDecodingStateFor(Branch& branch,
+                                   const jitllm::execution::AdaptiveDepth& decoding) override {
+    BranchDecoding(branch) = decoding;
+  }
+
+ private:
+  FakeLlm& Native(Branch& branch) { return native_state(BranchIndex(branch)); }
+  const FakeLlm& Native(const Branch& branch) const {
+    const auto slot = BranchIndex(branch);
+    return slot == 0 ? static_cast<const FakeLlm&>(*this) : *leaves_[slot - 1];
+  }
+  std::array<std::unique_ptr<FakeLlm>, kMaxBranches - 1> leaves_;
+  std::array<std::array<std::vector<std::int32_t>, 2>, kMaxBranches> saved_native_{};
+  std::array<std::uint32_t, kMaxBranches> cursors_{};
+  std::array<bool, kMaxBranches> selected_{};
 };
 
 TEST(LlmScores, TeacherForcesStopIdsAndKeepsAllInjectionState) {
@@ -583,6 +713,187 @@ TEST(LlmScores, ResumableEarlyAndCompletedFailuresPreserveOnlyProvenHistory) {
   EXPECT_TRUE(model.history().empty());
   EXPECT_FALSE(model.HasRetainedState());
   EXPECT_EQ(model.settlements, 1U);  // uncertainty was not made safe by a destructor
+}
+
+TEST(LlmScores, NativeBranchesOwnTheirHistoriesAndRejectForeignSelection) {
+  NativeBranchesFake model;
+  FakeLlm serial;
+  EXPECT_EQ(serial.branches(), 1U);
+  EXPECT_FALSE(serial.branch(1).has_value());
+  EXPECT_FALSE(model.branch(4).has_value());
+  std::array<rt::Llm::Branch*, 4> branches{};
+  std::array<std::vector<float>, 4> rows;
+  for (std::size_t slot = 0; slot < branches.size(); ++slot) {
+    auto branch = model.branch(slot);
+    ASSERT_TRUE(branch.has_value());
+    branches[slot] = *branch;
+    EXPECT_EQ(&(*branch)->model(), &model);
+    auto again = model.branch(slot);
+    ASSERT_TRUE(again.has_value());
+    EXPECT_EQ(*again, *branch);
+    const std::array<std::int32_t, 2> prompt = {static_cast<std::int32_t>(slot), 0};
+    ASSERT_TRUE((*branch)->Prefill(prompt, rows[slot]).has_value());
+    EXPECT_EQ((*branch)->history(), model.native_state(slot).target);
+  }
+  EXPECT_EQ(branches[0], &model.default_branch());
+  ASSERT_TRUE(model.SelectBranches(branches).has_value());
+  const auto original = model.selected();
+  const std::array<rt::Llm::Branch*, 2> duplicates = {branches[0], branches[0]};
+  EXPECT_FALSE(model.SelectBranches(duplicates).has_value());
+  const std::array<rt::Llm::Branch*, 1> foreign = {&serial.default_branch()};
+  EXPECT_FALSE(model.SelectBranches(foreign).has_value());
+  const std::array<rt::Llm::Branch*, 1> null = {nullptr};
+  EXPECT_FALSE(model.SelectBranches(null).has_value());
+  EXPECT_EQ(model.selected(), original);
+  ASSERT_TRUE(branches[1]->Clear().has_value());
+  EXPECT_TRUE(branches[1]->history().empty());
+  EXPECT_TRUE(model.native_state(1).target.empty());
+  EXPECT_EQ(model.native_state(1).clearings, 1U);
+  for (std::size_t slot : {0U, 2U, 3U}) {
+    EXPECT_EQ(branches[slot]->history(), model.native_state(slot).target);
+    EXPECT_EQ(model.native_state(slot).target.size(), 2U);
+    EXPECT_EQ(model.native_state(slot).clearings, 0U);
+  }
+  branches[0]->Forget();
+  EXPECT_TRUE(model.HasRetainedState());
+  branches[2]->Forget();
+  branches[3]->Forget();
+  EXPECT_FALSE(model.HasRetainedState());
+}
+
+TEST(LlmScores, FourResumableBranchesInterleaveSamplingWithoutSharingKeysOrGuards) {
+  NativeBranchesFake model;
+  std::array<rt::Llm::Branch*, 4> branches{};
+  std::array<rt::GenerateOptions, 4> options;
+  std::array<rt::Generation, 4> results;
+  std::array<std::unique_ptr<rt::Llm::GenerationSession>, 4> sessions;
+  std::array<std::array<std::int32_t, 3>, 4> expected{};
+  const std::vector<float> row(8, 0.0F);
+  for (std::size_t slot = 0; slot < branches.size(); ++slot) {
+    auto branch = model.branch(slot);
+    ASSERT_TRUE(branch.has_value());
+    branches[slot] = *branch;
+    const std::vector<std::int32_t> prompt(slot + 1, static_cast<std::int32_t>(slot));
+    std::vector<float> ignored;
+    ASSERT_TRUE((*branch)->Prefill(prompt, ignored).has_value());
+    auto& option = options[slot];
+    option.max_tokens = 3;
+    option.stop = false;
+    option.sampling =
+        jitllm::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
+    option.seed = 731 + slot;
+    std::vector<jitllm::execution::SamplingCandidate> scratch;
+    for (std::size_t generated = 0; generated < 3; ++generated) {
+      auto token = jitllm::execution::Sample(
+          row, *option.sampling,
+          {.seed = option.seed, .stream = 0, .position = prompt.size() + generated}, scratch);
+      ASSERT_TRUE(token.has_value());
+      expected[slot][generated] = *token;
+    }
+    auto opened = (*branch)->BeginGeneration(row, option, results[slot]);
+    ASSERT_TRUE(opened.has_value());
+    sessions[slot] = std::move(*opened);
+    rt::Generation refused;
+    EXPECT_FALSE((*branch)->BeginGeneration(row, option, refused).has_value());
+  }
+  // Change execution order every wave; keys depend only on each branch's
+  // seed and completed position. Cancel one at a completed boundary.
+  for (std::size_t slot : {3U, 0U, 2U, 1U}) {
+    auto step = sessions[slot]->PrepareStep();
+    ASSERT_TRUE(step.has_value());
+    model.native_state(slot).target.push_back(step->all.back());
+    ASSERT_TRUE(sessions[slot]->ApplyPlain(row).has_value());
+  }
+  sessions[1]->Cancel();
+  ASSERT_TRUE(sessions[1]->Finish().has_value());
+  for (std::size_t slot : {2U, 3U, 0U}) {
+    auto step = sessions[slot]->PrepareStep();
+    ASSERT_TRUE(step.has_value());
+    model.native_state(slot).target.push_back(step->all.back());
+    ASSERT_TRUE(sessions[slot]->ApplyPlain(row).has_value());
+    ASSERT_TRUE(sessions[slot]->Finish().has_value());
+  }
+  for (std::size_t slot = 0; slot < branches.size(); ++slot) {
+    const auto count = slot == 1 ? 2U : 3U;
+    EXPECT_EQ(results[slot].tokens,
+              std::vector<std::int32_t>(expected[slot].begin(), expected[slot].begin() + count));
+    EXPECT_EQ(results[slot].cancelled, slot == 1);
+    EXPECT_EQ(branches[slot]->history(), model.native_state(slot).target);
+    EXPECT_EQ(model.native_state(slot).settlements, 1U);
+  }
+}
+
+TEST(LlmScores, BranchSnapshotsRestoreTheirOwnCursorAndAdaptivePolicy) {
+  NativeBranchesFake model(true);
+  auto a = model.branch(1);
+  auto b = model.branch(2);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  std::vector<float> ignored;
+  const std::array<std::int32_t, 2> first = {0, 1};
+  const std::array<std::int32_t, 3> second = {2, 3, 4};
+  ASSERT_TRUE((*a)->Prefill(first, ignored).has_value());
+  ASSERT_TRUE((*b)->Prefill(second, ignored).has_value());
+  model.pending_cursor(**a) = 2;
+  model.pending_cursor(**b) = 4;
+  for (unsigned i = 0; i < 4; ++i) {
+    model.policy(**a).Observe(3, 1);
+    model.policy(**b).Observe(3, 4);
+  }
+  const auto saved_a = model.policy(**a);
+  const auto saved_b = model.policy(**b);
+  ASSERT_NE(saved_a, saved_b);
+  ASSERT_TRUE((*a)->SaveState(nullptr).has_value());
+  ASSERT_TRUE((*b)->SaveState(nullptr).has_value());
+  const std::array<std::int32_t, 1> tail = {5};
+  ASSERT_TRUE((*a)->Prefill(tail, ignored).has_value());
+  ASSERT_TRUE((*b)->Prefill(tail, ignored).has_value());
+  model.pending_cursor(**a) = 6;
+  model.policy(**a).Observe(2, 3);
+  const auto changed_b = (*b)->history();
+  ASSERT_TRUE((*a)->RestoreState(nullptr).has_value());
+  EXPECT_EQ((*a)->history(), std::vector<std::int32_t>(first.begin(), first.end()));
+  EXPECT_EQ((*a)->history(), model.native_state(1).target);
+  EXPECT_EQ(model.pending_cursor(**a), 2U);
+  EXPECT_EQ(model.policy(**a), saved_a);
+  EXPECT_EQ((*b)->history(), changed_b);
+  EXPECT_EQ(model.native_state(2).target, changed_b);
+  EXPECT_EQ(model.pending_cursor(**b), 4U);
+  EXPECT_EQ(model.policy(**b), saved_b);
+}
+
+TEST(LlmScores, ABranchPreparationRefusalLeavesPeerGenerationRunning) {
+  NativeBranchesFake model;
+  auto a = model.branch(1);
+  auto b = model.branch(2);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  std::vector<float> last_a;
+  std::vector<float> last_b;
+  const std::array<std::int32_t, 1> first = {0};
+  const std::array<std::int32_t, 1> second = {2};
+  ASSERT_TRUE((*a)->Prefill(first, last_a).has_value());
+  ASSERT_TRUE((*b)->Prefill(second, last_b).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 3;
+  options.stop = false;
+  rt::Generation result_a;
+  rt::Generation result_b;
+  auto opened_a = (*a)->BeginGeneration(last_a, options, result_a);
+  auto opened_b = (*b)->BeginGeneration(last_b, options, result_b);
+  ASSERT_TRUE(opened_a.has_value());
+  ASSERT_TRUE(opened_b.has_value());
+  model.native_state(1).fail_prepare = true;  // proven host refusal before dispatch
+  EXPECT_FALSE((*opened_a)->PrepareStep().has_value());
+  EXPECT_FALSE((*opened_a)->Finish().has_value());
+  EXPECT_EQ((*a)->history(), model.native_state(1).target);
+  ASSERT_TRUE((*opened_b)->RunScalarStep().has_value());
+  ASSERT_TRUE((*opened_b)->RunScalarStep().has_value());
+  ASSERT_TRUE((*opened_b)->Finish().has_value());
+  EXPECT_THAT(result_b.tokens, ElementsAre(3, 4, 5));
+  EXPECT_EQ((*b)->history(), model.native_state(2).target);
+  EXPECT_EQ(model.native_state(2).settlements, 1U);
+  EXPECT_EQ(model.native_state(0).chunks, 0U);
 }
 
 }  // namespace

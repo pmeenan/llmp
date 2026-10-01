@@ -1002,10 +1002,13 @@ it appears.
       7.469 times slower. Keep paired-eight products; no wider MXFP8 kernel
       or selector change is adopted.
       The internal cooperative API driver and shared resumable generation
-      session prepare that integration: each model has one host conversation
-      branch, and per-request admission, cancellation and proven retirement
-      have fake-backend controls. The production node backend remains serial;
-      native slots, shared execution and prefix-cache integration remain open.
+      session prepare that integration. Qwen now has four independent native
+      request slots under one shared model owner; a real-model control passes
+      64 output and 82 full-state comparisons, graph replay and all-slot
+      swap/return, with 1236 Spark-native tests passing. Per-request admission,
+      cancellation and proven retirement have fake-backend controls. The
+      production node backend remains serial; shared execution and
+      prefix-cache integration remain open.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

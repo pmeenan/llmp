@@ -94,8 +94,12 @@ class LiveState {
   Status Retain(PagedNode& node, std::span<const Range> ranges);
   // Copies only these initialized ranges, packed in their given order,
   // between state and the caller's sufficiently large pinned buffer.
+  enum class CopyRetirement : std::uint8_t { kProven, kUnproven };
+  // Optional ownership result: pre-dispatch refusal is proven. A failed
+  // posted copy is conservatively unproven; the caller must stop further
+  // shared-stream work and retain its owners, as KeepPinned already does.
   Status Copy(PagedNode& node, const catalog::Closure& fence, std::uint32_t stream, void* host,
-              std::span<const Range> ranges, bool to_host);
+              std::span<const Range> ranges, bool to_host, CopyRetirement* retirement = nullptr);
   std::size_t regions() const { return regions_.size(); }
   // A region's address and its layout's bytes; 0 for a region not added.
   std::uint64_t base(std::size_t region) const;
@@ -122,10 +126,19 @@ class LiveState {
   // lifts once it has.
   Status Clear(PagedNode& node, const catalog::Closure& fence, std::uint32_t stream,
                std::string_view what);
+  // Drops this growing state's initialized backing and saved contents,
+  // without ending a stream's request lease. Called only between completed
+  // jobs/copies, after the caller has removed this state from its lease and
+  // protected every other active state. Catalog guards require every
+  // destination extent to be unleased and have no operation in flight.
+  // Refused for nongrowing/empty state; a failed discard keeps this state
+  // quarantined once invalidation was attempted.
+  Status DiscardGrowingState(PagedNode& node);
   // Every region read to the host (a job), one output per region (empty
   // for a region not added).
   Status Read(PagedNode& node, const catalog::Closure& fence, std::uint32_t stream,
-              std::string_view what, std::span<std::vector<std::byte>* const> out);
+              std::string_view what, std::span<std::vector<std::byte>* const> out,
+              CopyRetirement* retirement = nullptr);
   // Pinned host memory of total_bytes() (allocated on first use; null if
   // that failed): Read's copy, and a harness's scratch.
   void* HostCopy(PagedNode& node, std::uint64_t bytes = 0);

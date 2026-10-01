@@ -70,6 +70,131 @@ std::expected<SlabSpec, std::string> SlabOf(const artifact::Artifact& artifact,
 
 Qwen38Runner::~Qwen38Runner() = default;
 
+std::array<Qwen38Runner::RequestState*, Qwen38Runner::kRequestSlots> Qwen38Runner::Requests() {
+  return {&default_request_, additional_requests_.data(), &additional_requests_[1],
+          &additional_requests_[2]};
+}
+
+std::array<const Qwen38Runner::RequestState*, Qwen38Runner::kRequestSlots> Qwen38Runner::Requests()
+    const {
+  return {&default_request_, additional_requests_.data(), &additional_requests_[1],
+          &additional_requests_[2]};
+}
+
+std::expected<Qwen38Runner::Slot*, std::string> Qwen38Runner::request_slot(std::size_t index) {
+  if (index >= kRequestSlots || released_) {
+    return Error("a Qwen3.8 request slot outside the live runner");
+  }
+  return &request_slots_[index];
+}
+
+void Qwen38Runner::FaultCohort() {
+  cohort_faulted_ = true;
+  for (RequestState* request : Requests()) {
+    request->live.Quarantine();
+  }
+}
+
+void Qwen38Runner::CheckFailedJob() {
+  auto healthy = node_.Call(
+      [&]() -> Status {
+        if (node_.scheduler().fault()) {
+          return Error("the Qwen3.8 shared scheduler faulted");
+        }
+        for (const auto& [id, generation] : execution_.extents) {
+          const auto view = node_.catalog().Describe(id);
+          if (!view || view->content_generation != generation ||
+              view->state == catalog::ExtentState::kQuarantined) {
+            return Error("the Qwen3.8 active closure is no longer usable");
+          }
+        }
+        return {};
+      },
+      "checking Qwen3.8's failed shared job");
+  if (!healthy || (std::popcount(active_mask_) > 1 && !node_.InRequest(stream_))) {
+    FaultCohort();
+  }
+}
+
+Status Qwen38Runner::CheckActive(const RequestState& request) const {
+  if (released_ || cohort_faulted_) {
+    return Error("the Qwen3.8 cohort requires retirement");
+  }
+  if ((active_mask_ & (1U << request.slot)) == 0) {
+    return Error("the Qwen3.8 request slot is not active");
+  }
+  if (std::popcount(active_mask_) > 1 && !node_.InRequest(stream_)) {
+    return Error("active Qwen3.8 slots require one held stream request");
+  }
+  return {};
+}
+
+Status Qwen38Runner::SelectSlots(std::span<Slot* const> active) {
+  if (released_ || cohort_faulted_) {
+    return Error("the Qwen3.8 cohort requires retirement");
+  }
+  if (active.size() > kRequestSlots) {
+    return Error("at most four Qwen3.8 request slots");
+  }
+  std::uint8_t mask = 0;
+  for (const Slot* slot : active) {
+    if (slot == nullptr || &slot->owner_ != this) {
+      return Error("a Qwen3.8 slot belongs to another runner");
+    }
+    const auto bit = static_cast<std::uint8_t>(1U << slot->index());
+    if ((mask & bit) != 0) {
+      return Error("a Qwen3.8 request slot occurs twice");
+    }
+    mask |= bit;
+  }
+  active_mask_ = mask;
+  return RefreshClosures();
+}
+
+void Qwen38Runner::DropPlans() {
+  for (RequestState* request : Requests()) {
+    request->plans.Clear();
+    request->mplans.Clear();
+  }
+}
+
+std::size_t Qwen38Runner::plans() const {
+  std::size_t count = 0;
+  for (const RequestState* request : Requests()) {
+    count += request->plans.size();
+  }
+  return count;
+}
+
+std::size_t Qwen38Runner::graphs() const {
+  std::size_t count = 0;
+  for (const RequestState* request : Requests()) {
+    count += request->plans.graphs() + request->mplans.graphs();
+  }
+  return count;
+}
+
+void Qwen38Runner::RoomForGraphs() {
+  RoomForGraph(kMaxGraphs, graph_stats_, plans_, mplans_, additional_requests_[0].plans,
+               additional_requests_[0].mplans, additional_requests_[1].plans,
+               additional_requests_[1].mplans, additional_requests_[2].plans,
+               additional_requests_[2].mplans);
+}
+
+std::vector<ExtentId> Qwen38Runner::state() const {
+  std::vector<ExtentId> all;
+  for (const RequestState* request : Requests()) {
+    const auto extents = request->live.extents();
+    all.insert(all.end(), extents.begin(), extents.end());
+  }
+  return all;
+}
+
+bool Qwen38Runner::HasRetainedState() const {
+  return std::ranges::any_of(
+      Requests(), [](const RequestState* request) { return request->live.used_bytes() != 0; });
+}
+
 std::vector<ExtentId> Qwen38Runner::weights() const {
   std::vector<ExtentId> all = weights_.extents();
   all.insert(all.end(), dweights_.extents().begin(), dweights_.extents().end());
@@ -396,8 +521,8 @@ Status Qwen38Runner::Setup() {
     for (std::uint32_t layer = 0; layer < profile_.layers; ++layer) {
       if ((o_.routed_capture & (std::uint64_t{1} << layer)) != 0 &&
           !binding_.layers[layer].linear) {
-        words += std::uint64_t{profile_.width} +
-                 (2 * std::uint64_t{profile_.heads} * profile_.head_dim);
+        words +=
+            std::uint64_t{profile_.width} + (2 * std::uint64_t{profile_.heads} * profile_.head_dim);
       }
     }
     routed_capture_bytes_ = words * (o_.draft_rows + 1) * 4;
@@ -422,37 +547,15 @@ Status Qwen38Runner::Setup() {
     return Error("the n-gram rows' landing is not 4 KiB-aligned for direct reads");
   }
   if (speculative()) {
-    // A verify's saves, then the snapshot of the cells it writes (D-068
-    // working state), mapped for the model's life.
-    const std::uint32_t qsa = profile_.layers / 4;
-    const std::uint64_t row_cells = (2 * std::uint64_t{profile_.head_dim} * profile_.kv_heads * 2) +
-                                    (std::uint64_t{profile_.indexer_head_dim} * 4);
-    const std::uint64_t snapshot_offset = Round(commit_layout_.bytes, 256);
-    // (And the block keys a verify completes: at most one a ratio of rows,
-    // and one more across a block's boundary.)
-    const std::uint64_t block_keys =
-        ((std::uint64_t{o_.draft_rows + 1} / profile_.indexer_ratio) + 1) * qsa *
-        std::uint64_t{profile_.indexer_head_dim} * 2;
-    const std::uint64_t commit_bytes =
-        snapshot_offset +
-        Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + block_keys + 4096, 256);
-    if (auto r = resources_.Map(commit_, "the Qwen3.8 verify's saves", commit_bytes,
-                                MemoryClass::kRuntime);
-        !r) {
+    if (auto r = SetupSnapshot(default_request_); !r) {
       return r;
     }
-    live_.SnapshotAt(commit_.base + snapshot_offset, commit_.bytes - snapshot_offset);
-    if (auto r = live_.AllocateSnapshot(resources_, kRangeCapacity); !r) {
-      return r;
-    }
-    auto carry = resources_.Pinned(4 * sizeof(kg::RangeCopy));
     // A draft's drafts, their probabilities (from kProbabilityAt), then
     // (from kArgmaxAt) a verify's argmaxes.
     auto drafts = resources_.Pinned(512);
-    if (!carry || !drafts) {
+    if (!drafts) {
       return Error("pinned staging for Qwen3.8's speculation");
     }
-    carry_ = static_cast<kg::RangeCopy*>(*carry);
     drafts_ = *drafts;
   }
   auto ring = providers::OpenStorage(kRingDepth);
@@ -460,6 +563,61 @@ Status Qwen38Runner::Setup() {
     return Error(std::format("the n-gram rows' ring: {}", ring.error().message()));
   }
   ring_ = std::move(*ring);
+  // Provision additional slots after every legacy default allocation, so
+  // slot zero's state, commit and shared weight/workspace places stay put.
+  // All four virtual ceilings and snapshots exist before Register/Start;
+  // growing state acquires physical backing only when a slot uses it.
+  for (RequestState& request : additional_requests_) {
+    request.model = model_;
+    if (auto r = request.live.AddGrowing(
+            node_, std::format("the Qwen3.8 slot {} state", request.slot), layout_.bytes, owner_);
+        !r) {
+      return r;
+    }
+    if (speculative()) {
+      if (auto r = request.live.AddGrowing(
+              node_, std::format("the Qwen3.8 slot {} MTP state", request.slot), mtp_layout_.bytes,
+              owner_);
+          !r) {
+        return r;
+      }
+      if (auto r = SetupSnapshot(request); !r) {
+        return r;
+      }
+    }
+  }
+  return {};
+}
+
+Status Qwen38Runner::SetupSnapshot(RequestState& request) {
+  // A verify's saves, then the snapshot of the cells it writes (D-068
+  // working state), mapped for the model's life at this slot's own place.
+  const std::uint32_t qsa = profile_.layers / 4;
+  const std::uint64_t row_cells = (2 * std::uint64_t{profile_.head_dim} * profile_.kv_heads * 2) +
+                                  (std::uint64_t{profile_.indexer_head_dim} * 4);
+  const std::uint64_t snapshot_offset = Round(commit_layout_.bytes, 256);
+  const std::uint64_t block_keys =
+      ((std::uint64_t{o_.draft_rows + 1} / profile_.indexer_ratio) + 1) * qsa *
+      std::uint64_t{profile_.indexer_head_dim} * 2;
+  const std::uint64_t commit_bytes =
+      snapshot_offset +
+      Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + block_keys + 4096, 256);
+  const std::string name = request.slot == 0
+                               ? "the Qwen3.8 verify's saves"
+                               : std::format("the Qwen3.8 slot {} verify's saves", request.slot);
+  if (auto r = resources_.Map(request.commit, name, commit_bytes, MemoryClass::kRuntime); !r) {
+    return r;
+  }
+  request.live.SnapshotAt(request.commit.base + snapshot_offset,
+                          request.commit.bytes - snapshot_offset);
+  if (auto r = request.live.AllocateSnapshot(resources_, kRangeCapacity); !r) {
+    return r;
+  }
+  auto carry = resources_.Pinned(4 * sizeof(kg::RangeCopy));
+  if (!carry) {
+    return Error("pinned staging for Qwen3.8's speculation");
+  }
+  request.carry = static_cast<kg::RangeCopy*>(*carry);
   return {};
 }
 
@@ -517,14 +675,18 @@ Status Qwen38Runner::Register() {
       return r;
     }
   }
-  if (auto r = live_.RegisterSpill(node_, o_.out); !r) {
-    return r;
+  for (RequestState* request : Requests()) {
+    if (auto r = request->live.RegisterSpill(node_, o_.out); !r) {
+      return r;
+    }
   }
   // D-090, for every model: the places stay put for the model's life
   // (never unpinned; the pins go with the scheduler).
   auto pinned_extents = weights();
-  const auto reserved = live_.reserved_extents();
-  pinned_extents.insert(pinned_extents.end(), reserved.begin(), reserved.end());
+  for (const RequestState* request : Requests()) {
+    const auto reserved = request->live.reserved_extents();
+    pinned_extents.insert(pinned_extents.end(), reserved.begin(), reserved.end());
+  }
   if (auto pinned = node_.scheduler().PinPlaces(pinned_extents); !pinned) {
     return Error(std::format("pinning Qwen3.8's places: {}", sc::ToString(pinned.error())));
   }
@@ -537,7 +699,9 @@ Status Qwen38Runner::CheckPlaces() {
       [&]() -> Status {
         weights_.CheckPlaces(node_.scheduler(), check);
         dweights_.CheckPlaces(node_.scheduler(), check);
-        live_.CheckPlaces(node_.scheduler(), check);
+        for (const RequestState* request : Requests()) {
+          request->live.CheckPlaces(node_.scheduler(), check);
+        }
         return {};
       },
       "checking Qwen3.8's places");
@@ -554,81 +718,70 @@ Status Qwen38Runner::CheckPlaces() {
   return {};
 }
 
-Status Qwen38Runner::RefreshClosures() {
+Status Qwen38Runner::RefreshClosures() { return RefreshClosures(active_mask_); }
+
+Status Qwen38Runner::RefreshClosures(std::uint8_t protected_mask) {
   auto refreshed = node_.Call(
       [&]() -> Status {
         auto& catalog = node_.catalog();
-        std::vector<ExtentId> all = weights();
-        const std::vector<ExtentId> live = live_.extents();
-        all.insert(all.end(), live.begin(), live.end());
+        std::vector<ExtentId> shared = weights();
         for (const Mapped* mapped :
              std::initializer_list<const Mapped*>{&node_.activations(), &node_.pool()}) {
-          all.insert(all.end(), mapped->extents.begin(), mapped->extents.end());
+          shared.insert(shared.end(), mapped->extents.begin(), mapped->extents.end());
         }
         const std::vector<ExtentId> own = resources_.extents();
-        all.insert(all.end(), own.begin(), own.end());
-        everything_ = catalog.ClosureOfExtents(all).value();
-        fence_ = catalog.ClosureOfExtents(state()).value();
+        shared.insert(shared.end(), own.begin(), own.end());
+        std::vector<ExtentId> all = shared;
+        std::vector<ExtentId> active = shared;
+        std::array<catalog::Closure, kRequestSlots> slot_fences;
+        for (RequestState* request : Requests()) {
+          const auto live = request->live.extents();
+          all.insert(all.end(), live.begin(), live.end());
+          if ((protected_mask & (1U << request->slot)) != 0) {
+            active.insert(active.end(), live.begin(), live.end());
+          }
+          auto fence = catalog.ClosureOfExtents(live);
+          if (!fence) {
+            return Error("a Qwen3.8 slot's state closure is no longer cataloged");
+          }
+          slot_fences[request->slot] = std::move(*fence);
+        }
+        auto everything = catalog.ClosureOfExtents(all);
+        auto fence = catalog.ClosureOfExtents(state());
+        auto execution = catalog.ClosureOfExtents(active);
+        if (!everything || !fence || !execution) {
+          return Error("a Qwen3.8 cohort closure is no longer cataloged");
+        }
+        for (RequestState* request : Requests()) {
+          request->fence = std::move(slot_fences[request->slot]);
+        }
+        everything_ = std::move(*everything);
+        fence_ = std::move(*fence);
+        execution_ = std::move(*execution);
         return {};
       },
       "refreshing Qwen3.8's used state closure");
   if (!refreshed) {
+    FaultCohort();
     return refreshed;
   }
-  return node_.RefreshRequest(stream_, everything_);
+  if (auto held = node_.RefreshRequest(stream_, execution_); !held) {
+    // RefreshRequest may have ended the previous lease before refusing its
+    // replacement. No slot may dispatch after that loss of protection.
+    FaultCohort();
+    return held;
+  }
+  return {};
 }
 
 Status Qwen38Runner::Bind() {
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
   }
-  model_.places.resource = [this](std::uint32_t resource) {
-    return weights_.resource_address(resource);
-  };
-  model_.places.array = [this](std::uint32_t array) { return weights_.array_address(array); };
-  model_.places.state = live_.base(kTarget);
-  model_.places.ple_table = slot_memory_.base;
-  if (speculative()) {
-    model_.places.mtp_resource = [this](std::uint32_t resource) {
-      return dweights_.resource_address(resource);
-    };
-    model_.places.mtp_array = [this](std::uint32_t array) {
-      return dweights_.array_address(array);
-    };
-    model_.places.mtp_state = live_.base(kDrafter);
-    model_.places.commit = commit_.base;
-    // The commit's places: every linear-attention layer's state and saves.
-    using K = md::Qwen38StateTensor::Kind;
-    const std::uint64_t state = live_.base(kTarget);
-    const auto at = [&](std::uint32_t il, K kind) {
-      return state + layout_.tensors[static_cast<std::size_t>(layout_.Find(il, kind))].offset;
-    };
-    kg::Qwen38CommitArgs& c = commit_args_;
-    c.layers = static_cast<int>(commit_layout_.layers.size());
-    c.channels = static_cast<int>(profile_.conv_channels());
-    c.qk_heads = static_cast<int>(profile_.lin_k_heads);
-    c.v_heads = static_cast<int>(profile_.lin_v_heads);
-    c.taps = static_cast<int>(profile_.conv - 1);
-    for (std::size_t i = 0; i < commit_layout_.layers.size(); ++i) {
-      const std::uint32_t il = commit_layout_.layers[i];
-      const std::uint64_t base = commit_.base;
-      c.layer[i] = {.state = static_cast<float*>(Pointer(at(il, K::kRecurrent))),
-                    .history = static_cast<float*>(Pointer(at(il, K::kConv))),
-                    .conv = static_cast<const float*>(Pointer(base + commit_layout_.conv_out(i))),
-                    .qkv = static_cast<const float*>(Pointer(base + commit_layout_.qkv(i))),
-                    .gate = static_cast<const float*>(Pointer(base + commit_layout_.gate(i))),
-                    .beta = static_cast<const float*>(Pointer(base + commit_layout_.beta(i)))};
+  for (RequestState* request : Requests()) {
+    if (auto bound = BindRequest(*request); !bound) {
+      return bound;
     }
-    c.ple_history = static_cast<float*>(Pointer(at(profile_.ple_layer, K::kPleConv)));
-    c.ple_rows = static_cast<const float*>(Pointer(commit_.base + commit_layout_.ple()));
-    c.ple_width = static_cast<int>(profile_.hc_width());
-    c.ple_taps = static_cast<int>(profile_.ple_history());
-    // A verify's kept rows committed after the rejected rows' restore.
-    live_.SetCommit([this](kg::LaunchContext& launch, std::uint32_t keep) {
-      kg::Qwen38CommitArgs args = commit_args_;
-      args.keep = static_cast<int>(keep);
-      return kg::Qwen38Commit(launch, args);
-    });
   }
   if (auto r = resources_.BindLaunch(scratch_bytes_); !r) {
     return r;
@@ -637,9 +790,66 @@ Status Qwen38Runner::Bind() {
   return {};
 }
 
+Status Qwen38Runner::BindRequest(RequestState& request) {
+  request.model.places.resource = [this](std::uint32_t resource) {
+    return weights_.resource_address(resource);
+  };
+  request.model.places.array = [this](std::uint32_t array) {
+    return weights_.array_address(array);
+  };
+  request.model.places.state = request.live.base(kTarget);
+  request.model.places.ple_table = slot_memory_.base;
+  if (speculative()) {
+    request.model.places.mtp_resource = [this](std::uint32_t resource) {
+      return dweights_.resource_address(resource);
+    };
+    request.model.places.mtp_array = [this](std::uint32_t array) {
+      return dweights_.array_address(array);
+    };
+    request.model.places.mtp_state = request.live.base(kDrafter);
+    request.model.places.commit = request.commit.base;
+    // The commit's places: every linear-attention layer's state and saves.
+    using K = md::Qwen38StateTensor::Kind;
+    const std::uint64_t state = request.live.base(kTarget);
+    const auto at = [&](std::uint32_t il, K kind) {
+      return state + layout_.tensors[static_cast<std::size_t>(layout_.Find(il, kind))].offset;
+    };
+    kg::Qwen38CommitArgs& c = request.commit_args;
+    c.layers = static_cast<int>(commit_layout_.layers.size());
+    c.channels = static_cast<int>(profile_.conv_channels());
+    c.qk_heads = static_cast<int>(profile_.lin_k_heads);
+    c.v_heads = static_cast<int>(profile_.lin_v_heads);
+    c.taps = static_cast<int>(profile_.conv - 1);
+    for (std::size_t i = 0; i < commit_layout_.layers.size(); ++i) {
+      const std::uint32_t il = commit_layout_.layers[i];
+      const std::uint64_t base = request.commit.base;
+      c.layer[i] = {.state = static_cast<float*>(Pointer(at(il, K::kRecurrent))),
+                    .history = static_cast<float*>(Pointer(at(il, K::kConv))),
+                    .conv = static_cast<const float*>(Pointer(base + commit_layout_.conv_out(i))),
+                    .qkv = static_cast<const float*>(Pointer(base + commit_layout_.qkv(i))),
+                    .gate = static_cast<const float*>(Pointer(base + commit_layout_.gate(i))),
+                    .beta = static_cast<const float*>(Pointer(base + commit_layout_.beta(i)))};
+    }
+    c.ple_history = static_cast<float*>(Pointer(at(profile_.ple_layer, K::kPleConv)));
+    c.ple_rows = static_cast<const float*>(Pointer(request.commit.base + commit_layout_.ple()));
+    c.ple_width = static_cast<int>(profile_.hc_width());
+    c.ple_taps = static_cast<int>(profile_.ple_history());
+    // A verify's kept rows committed after the rejected rows' restore.
+    request.live.SetCommit([&request](kg::LaunchContext& launch, std::uint32_t keep) {
+      kg::Qwen38CommitArgs args = request.commit_args;
+      args.keep = static_cast<int>(keep);
+      return kg::Qwen38Commit(launch, args);
+    });
+  }
+  return {};
+}
+
 // ------------------------------------------------------------------ work
 
 Status Qwen38Runner::ReadPleHash() {
+  if (cohort_faulted_ || released_) {
+    return Error("the Qwen3.8 cohort requires retirement");
+  }
   hash_checked_ = false;
   const md::Qwen38Layer& l = binding_.layers[profile_.ple_layer];
   const std::array<const md::Qwen38Tensor*, 3> parts = {&l.ple_multipliers, &l.ple_head_offsets,
@@ -651,7 +861,7 @@ Status Qwen38Runner::ReadPleHash() {
   }
   void* host = hash_host_;
   if (auto r = node_.Job(
-          everything_,
+          execution_,
           [&copies, host](providers::NativeStream stream) {
             std::uint64_t at = 0;
             for (const auto& [address, bytes] : copies) {
@@ -666,6 +876,7 @@ Status Qwen38Runner::ReadPleHash() {
           },
           "reading the n-gram hash", stream_);
       !r) {
+    CheckFailedJob();
     return r;
   }
   const auto* values = static_cast<const std::int64_t*>(host);
@@ -682,7 +893,7 @@ Status Qwen38Runner::ReadPleHash() {
     const auto count = static_cast<std::size_t>(dbinding_.draft_ids.ne[1]);
     const auto address = model_.places.mtp_resource(dbinding_.draft_ids.index);
     if (auto r = node_.Job(
-            everything_,
+            execution_,
             [this, address, count](providers::NativeStream stream) {
               return providers::CopyAsync(stream, draft_ids_host_, Pointer(address),
                                           count * sizeof(std::int32_t),
@@ -693,6 +904,7 @@ Status Qwen38Runner::ReadPleHash() {
             },
             "reading the draft vocabulary", stream_);
         !r) {
+      CheckFailedJob();
       return r;
     }
     if (auto checked = md::CheckQwen38DraftIds(
@@ -706,6 +918,9 @@ Status Qwen38Runner::ReadPleHash() {
 }
 
 Status Qwen38Runner::Scrub(std::uint8_t value, bool slabs, bool dense) {
+  if (cohort_faulted_ || released_) {
+    return Error("the Qwen3.8 cohort requires retirement");
+  }
   std::uint32_t count = 0;
   for (const PagedWeights::Range& r : unwritten_) {
     if (r.slab ? slabs : dense) {
@@ -715,30 +930,48 @@ Status Qwen38Runner::Scrub(std::uint8_t value, bool slabs, bool dense) {
     }
   }
   const std::uint64_t* ranges = scrub_;
-  return node_.Job(
-      everything_,
+  auto scrubbed = node_.Job(
+      execution_,
       [ranges, count, value](providers::NativeStream stream) {
         return kernels::paging::FillRanges(ranges, count, value, stream.handle)
                    ? sc::JobResult::kQueued
                    : sc::JobResult::kUnknown;
       },
       "filling the weights' unwritten bytes", stream_);
+  if (!scrubbed) {
+    CheckFailedJob();
+  }
+  return scrubbed;
 }
 
-Status Qwen38Runner::Clear() {
-  const bool open = node_.InRequest(stream_);
-  pending_rows_ = 0;
-  if (auto cleared = live_.Clear(node_, fence_, stream_, "clearing the Qwen3.8 state"); !cleared) {
-    return cleared;
+Status Qwen38Runner::Clear() { return Clear(default_request_); }
+
+Status Qwen38Runner::Clear(RequestState& request) {
+  if (auto active = CheckActive(request); !active) {
+    return active;
   }
+  request.pending_rows = 0;
+  // Remove only this destination's state from the completed stream lease.
+  // Shared storage and all other active initialized states remain protected.
+  const auto others = static_cast<std::uint8_t>(active_mask_ & ~(1U << request.slot));
+  if (auto protected_others = RefreshClosures(others); !protected_others) {
+    return protected_others;
+  }
+  const Status cleared = request.live.DiscardGrowingState(node_);
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
   }
-  return open ? node_.BeginRequest(stream_, everything_, "a cleared Qwen3.8 conversation")
-              : Status{};
+  return cleared;
 }
 
 Status Qwen38Runner::EnsureState(std::uint32_t positions) {
+  return EnsureState(default_request_, positions);
+}
+
+Status Qwen38Runner::EnsureState(RequestState& request, std::uint32_t positions) {
+  if (auto active = CheckActive(request); !active) {
+    return active;
+  }
   auto needed = md::Qwen38UsedState(profile_, layout_, positions);
   if (!needed) {
     return std::unexpected(needed.error());
@@ -763,10 +996,10 @@ Status Qwen38Runner::EnsureState(std::uint32_t positions) {
                       .offset = mtp_layout_.hidden,
                       .bytes = mtp_layout_.bytes - mtp_layout_.hidden});
   }
-  auto used = live_.Use(node_, ranges, &everything_);
+  auto used = request.live.Use(node_, ranges, &execution_);
   if (!used) {
     if (auto refreshed = RefreshClosures(); !refreshed) {
-      live_.Quarantine();
+      request.live.Quarantine();
       return Error(std::format("{}; {}", used.error(), refreshed.error()));
     }
     return std::unexpected(used.error());
@@ -776,12 +1009,17 @@ Status Qwen38Runner::EnsureState(std::uint32_t positions) {
 
 std::expected<Qwen38Runner::ChunkPlans::Entry*, std::string> Qwen38Runner::Planned(
     const ChunkKey& key) {
-  if (ChunkPlans::Entry* found = plans_.Find(key); found != nullptr) {
+  return Planned(default_request_, key);
+}
+
+std::expected<Qwen38Runner::ChunkPlans::Entry*, std::string> Qwen38Runner::Planned(
+    RequestState& request, const ChunkKey& key) {
+  if (ChunkPlans::Entry* found = request.plans.Find(key); found != nullptr) {
     return found;
   }
   const auto start = std::chrono::steady_clock::now();
   kg::LaunchContext& launch = resources_.launch();
-  auto planned = PlanQwen38Chunk(model_, key.shape, kg::DeviceChoicesOf(launch),
+  auto planned = PlanQwen38Chunk(request.model, key.shape, kg::DeviceChoicesOf(launch),
                                  node_.activations().base, node_.activations().bytes, {}, key.kind);
   if (!planned) {
     return std::unexpected(planned.error());
@@ -791,18 +1029,23 @@ std::expected<Qwen38Runner::ChunkPlans::Entry*, std::string> Qwen38Runner::Plann
   }
   Check((*planned)->graph);
   plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
-  return &plans_.Add(key, std::move(*planned));
+  return &request.plans.Add(key, std::move(*planned));
 }
 
 std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::PlannedMtp(
     const kg::Qwen38MtpShape& shape) {
-  if (MtpPlans::Entry* found = mplans_.Find(shape); found != nullptr) {
+  return PlannedMtp(default_request_, shape);
+}
+
+std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::PlannedMtp(
+    RequestState& request, const kg::Qwen38MtpShape& shape) {
+  if (MtpPlans::Entry* found = request.mplans.Find(shape); found != nullptr) {
     return found;
   }
   const auto start = std::chrono::steady_clock::now();
   kg::LaunchContext& launch = resources_.launch();
-  auto planned = PlanQwen38Mtp(model_, shape, kg::DeviceChoicesOf(launch), node_.activations().base,
-                               node_.activations().bytes);
+  auto planned = PlanQwen38Mtp(request.model, shape, kg::DeviceChoicesOf(launch),
+                               node_.activations().base, node_.activations().bytes);
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -811,7 +1054,7 @@ std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::Planned
   }
   CheckMtp((*planned)->graph);
   plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
-  return &mplans_.Add(shape, std::move(*planned));
+  return &request.mplans.Add(shape, std::move(*planned));
 }
 
 // BP-A1's check (planned.h): the state is live state (the target's, the
@@ -903,23 +1146,36 @@ std::function<bool(void* stream)> Qwen38Runner::Gather(std::uint32_t rows) {
 }
 
 void Qwen38Runner::Settle(bool saved, bool wrote, bool unknown) {
+  Settle(default_request_, saved, wrote, unknown);
+}
+
+void Qwen38Runner::Settle(RequestState& request, bool saved, bool wrote, bool unknown) {
   // An undone verify wrote no other target state, but its streams rows may
   // have overwritten the ones the next draft would catch up on (rows 1 ..):
   // none is pending until a chunk with the injection or an accepted verify
   // writes them again.
-  if (live_.Settle(saved, wrote, unknown || resources_.launch().faulted())) {
-    pending_rows_ = 0;
+  const bool uncertain = unknown || resources_.launch().faulted();
+  if (request.live.Settle(saved, wrote, uncertain)) {
+    request.pending_rows = 0;
+  }
+  if (uncertain) {
+    FaultCohort();
   }
 }
 
-Status Qwen38Runner::Usable() const {
+Status Qwen38Runner::Usable() const { return Usable(default_request_); }
+
+Status Qwen38Runner::Usable(const RequestState& request) const {
+  if (auto active = CheckActive(request); !active) {
+    return active;
+  }
   if (!hash_checked_) {
     return Error("the n-gram hash is not checked since the last load");
   }
   if (rows_stalled_) {
     return Error("the n-gram rows' reads stalled earlier; their landing may still be written");
   }
-  return live_.Usable();
+  return request.live.Usable();
 }
 
 std::expected<std::pair<kg::Qwen38MtpShape, std::vector<md::Qwen38ChunkInputs>>, std::string>
@@ -962,10 +1218,15 @@ Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t p
 
 Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t n_past,
                            std::vector<float>& logits, bool inject) {
-  if (auto usable = Usable(); !usable) {
+  return Chunk(default_request_, history, n_past, logits, inject);
+}
+
+Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> history,
+                           std::uint32_t n_past, std::vector<float>& logits, bool inject) {
+  if (auto usable = Usable(request); !usable) {
     return usable;
   }
-  if (auto waiting = live_.AwaitingAccept(); !waiting) {
+  if (auto waiting = request.live.AwaitingAccept(); !waiting) {
     return waiting;
   }
   if (inject && !speculative()) {
@@ -981,7 +1242,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
   if (!in) {
     return std::unexpected(in.error());
   }
-  if (auto used = EnsureState(n_past + rows); !used) {
+  if (auto used = EnsureState(request, n_past + rows); !used) {
     return used;
   }
   auto slots = ReadRows(*in);
@@ -989,7 +1250,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
     return std::unexpected(slots.error());
   }
   const Qwen38ChunkKind kind{.verify = false, .export_streams = inject};
-  auto planned = Planned({.shape = kg::Qwen38ShapeOf(layout_, *in, 1), .kind = kind});
+  auto planned = Planned(request, {.shape = kg::Qwen38ShapeOf(layout_, *in, 1), .kind = kind});
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -1029,7 +1290,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
         return std::unexpected(shaped.error());
       }
       mins = std::move(shaped->second);
-      auto mplanned = PlannedMtp(shaped->first);
+      auto mplanned = PlannedMtp(request, shaped->first);
       if (!mplanned) {
         return std::unexpected(mplanned.error());
       }
@@ -1042,10 +1303,11 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
       mcopies = std::move(*staged);
     }
     const std::uint64_t row = std::uint64_t{profile_.hc_width()} * sizeof(float);
-    const std::uint64_t streams = live_.base(kDrafter) + mtp_layout_.hidden;
-    carry_[carries++] = {.from = streams + (rows * row), .to = streams, .bytes = row};
+    const std::uint64_t streams = request.live.base(kDrafter) + mtp_layout_.hidden;
+    request.carry[carries++] = {.from = streams + (rows * row), .to = streams, .bytes = row};
     if (rows != 1) {
-      carry_[carries++] = {.from = streams + (rows * row), .to = streams + row, .bytes = row};
+      request.carry[carries++] = {
+          .from = streams + (rows * row), .to = streams + row, .bytes = row};
     }
   }
   const std::uint64_t row_bytes = std::uint64_t{profile_.vocab} * sizeof(float);
@@ -1054,7 +1316,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
   // that has run once launch by launch; otherwise launch by launch.
   const bool capture = runs.CaptureDue(runs_.graphs()) && rows == 1 && !inject;
   if (capture) {
-    RoomForGraph(kMaxGraphs, graph_stats_, plans_, mplans_);
+    RoomForGraphs();
   }
   const Copies outputs = {{Address(logits_), Address(g.logits->data), row_bytes}};
   kg::LaunchContext& launch = resources_.launch();
@@ -1065,8 +1327,8 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
     // A pending commit or restore queued here is work this job must fence,
     // even if its own run is then refused before anything else.
-    const bool committing = live_.owed();
-    if (auto r = live_.QueueOwed(launch); !r) {
+    const bool committing = request.live.owed();
+    if (auto r = request.live.QueueOwed(launch); !r) {
       ran = Error(std::format("chunk at {}: {}", n_past, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
@@ -1094,7 +1356,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
       Count(draft_stats_, m.path);
     }
     if (carries != 0) {
-      if (auto r = kg::CopyRanges(launch, carry_, carries); !r) {
+      if (auto r = kg::CopyRanges(launch, request.carry, carries); !r) {
         ran = Error(std::format("the drafter's pending row at {}: {}", n_past, r.error().detail));
         unknown = true;
         return sc::JobResult::kUnknown;
@@ -1102,9 +1364,12 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
     }
     return sc::JobResult::kQueued;
   };
-  const Status posted = node_.Job(everything_, std::move(job), "a Qwen3.8 chunk", stream_);
+  const Status posted = node_.Job(execution_, std::move(job), "a Qwen3.8 chunk", stream_);
   if (!posted || !ran || launch.faulted()) {
-    Settle(false, wrote, unknown);
+    if (!posted) {
+      CheckFailedJob();
+    }
+    Settle(request, false, wrote, unknown);
     if (launch.faulted()) {
       return Error(std::format("chunk at {}: the launch context faulted", n_past));
     }
@@ -1114,7 +1379,7 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
   // With the injection the chunk's last row is the pending one; without,
   // the streams rows no longer precede the anchor, so no draft may read
   // them until a chunk with the injection or an accepted verify.
-  pending_rows_ = inject ? 1 : 0;
+  request.pending_rows = inject ? 1 : 0;
   const auto* values = static_cast<const float*>(logits_);
   logits.assign(values, values + profile_.vocab);
   return {};
@@ -1123,6 +1388,12 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
 Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts,
                            std::vector<float>* probabilities, std::uint32_t passes,
                            Qwen38DraftHeadCapture* head_capture) {
+  return Draft(default_request_, history, drafts, probabilities, passes, head_capture);
+}
+
+Status Qwen38Runner::Draft(RequestState& request, std::span<const std::int32_t> history,
+                           std::vector<std::int32_t>& drafts, std::vector<float>* probabilities,
+                           std::uint32_t passes, Qwen38DraftHeadCapture* head_capture) {
   if (head_capture != nullptr) {
     *head_capture = {};
     if (!o_.draft_head_capture || draft_head_capture_ == nullptr || capture_head_rows_ == 0) {
@@ -1132,13 +1403,13 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
   if (!speculative()) {
     return Error("drafting needs the drafter");
   }
-  if (auto usable = Usable(); !usable) {
+  if (auto usable = Usable(request); !usable) {
     return usable;
   }
-  if (auto waiting = live_.AwaitingAccept(); !waiting) {
+  if (auto waiting = request.live.AwaitingAccept(); !waiting) {
     return waiting;
   }
-  const std::uint32_t rows = pending_rows_;
+  const std::uint32_t rows = request.pending_rows;
   if (rows == 0 || history.size() < std::size_t{rows} + 1) {
     return Error("no streams to draft from (a prefill with the injection, or a verify, first)");
   }
@@ -1161,10 +1432,10 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
   if (!shaped) {
     return std::unexpected(shaped.error());
   }
-  if (auto used = EnsureState(n + passes - 1); !used) {
+  if (auto used = EnsureState(request, n + passes - 1); !used) {
     return used;
   }
-  auto planned = PlannedMtp(shaped->first);
+  auto planned = PlannedMtp(request, shaped->first);
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -1221,14 +1492,14 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
   }
   const bool capture = runs.CaptureDue(runs_.graphs());
   if (capture) {
-    RoomForGraph(kMaxGraphs, graph_stats_, plans_, mplans_);
+    RoomForGraphs();
   }
   kg::LaunchContext& launch = resources_.launch();
   RunPath path = RunPath::kEager;
   Status ran;
   bool unknown = false;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
-    if (auto r = live_.QueueOwed(launch); !r) {
+    if (auto r = request.live.QueueOwed(launch); !r) {
       ran = Error(std::format("draft at {}: {}", n, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
@@ -1243,11 +1514,14 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
     }
     return sc::JobResult::kQueued;
   };
-  const Status posted = node_.Job(everything_, std::move(job), "a Qwen3.8 MTP draft", stream_);
+  const Status posted = node_.Job(execution_, std::move(job), "a Qwen3.8 MTP draft", stream_);
   if (!posted || !ran || launch.faulted()) {
+    if (!posted) {
+      CheckFailedJob();
+    }
     // A draft writes the drafter's cells alone (the committed ones as the
     // next draft rewrites them); a launch of unknown effect quarantines.
-    Settle(false, false, unknown);
+    Settle(request, false, false, unknown);
     if (launch.faulted()) {
       return Error(std::format("draft at {}: the launch context faulted", n));
     }
@@ -1288,6 +1562,12 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
 Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t n_past,
                             std::vector<std::int32_t>& argmax, std::vector<float>* logits,
                             Qwen38RoutedCapture* routed_capture) {
+  return Verify(default_request_, history, n_past, argmax, logits, routed_capture);
+}
+
+Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t> history,
+                            std::uint32_t n_past, std::vector<std::int32_t>& argmax,
+                            std::vector<float>* logits, Qwen38RoutedCapture* routed_capture) {
   if (routed_capture != nullptr) {
     *routed_capture = {};
     if (o_.routed_capture == 0 || routed_capture_ == nullptr) {
@@ -1297,10 +1577,10 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   if (!speculative()) {
     return Error("a verify needs the drafter");
   }
-  if (auto usable = Usable(); !usable) {
+  if (auto usable = Usable(request); !usable) {
     return usable;
   }
-  if (auto waiting = live_.AwaitingAccept(); !waiting) {
+  if (auto waiting = request.live.AwaitingAccept(); !waiting) {
     return waiting;
   }
   if (history.size() <= n_past || history.size() - n_past > std::size_t{o_.draft_rows} + 1) {
@@ -1311,7 +1591,7 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   if (!in) {
     return std::unexpected(in.error());
   }
-  if (auto used = EnsureState(n_past + rows); !used) {
+  if (auto used = EnsureState(request, n_past + rows); !used) {
     return used;
   }
   auto slots = ReadRows(*in);
@@ -1321,7 +1601,7 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   const Qwen38ChunkKind kind{.verify = true,
                              .export_streams = true,
                              .capture_routed = routed_capture != nullptr ? o_.routed_capture : 0};
-  auto planned = Planned({.shape = kg::Qwen38ShapeOf(layout_, *in, rows), .kind = kind});
+  auto planned = Planned(request, {.shape = kg::Qwen38ShapeOf(layout_, *in, rows), .kind = kind});
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -1357,13 +1637,13 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
         std::int64_t n0, n1, n2;
       };
       std::vector<Part> parts = {Part{layer.input, GGML_TYPE_F32, width, 1, rows},
-                              Part{layer.activation, GGML_TYPE_F32, ffn, used, rows},
-                              Part{layer.down, GGML_TYPE_F32, width, used, rows},
-                              Part{layer.shared, GGML_TYPE_F32, width, rows, 1},
-                              Part{layer.gate, GGML_TYPE_F32, 1, rows, 1},
-                              Part{layer.weights, GGML_TYPE_F32, 1, used, rows},
-                              Part{layer.ids, GGML_TYPE_I32, used, rows, 1},
-                              Part{layer.combined, GGML_TYPE_F32, width, rows, 1}};
+                                 Part{layer.activation, GGML_TYPE_F32, ffn, used, rows},
+                                 Part{layer.down, GGML_TYPE_F32, width, used, rows},
+                                 Part{layer.shared, GGML_TYPE_F32, width, rows, 1},
+                                 Part{layer.gate, GGML_TYPE_F32, 1, rows, 1},
+                                 Part{layer.weights, GGML_TYPE_F32, 1, used, rows},
+                                 Part{layer.ids, GGML_TYPE_I32, used, rows, 1},
+                                 Part{layer.combined, GGML_TYPE_F32, width, rows, 1}};
       if (!binding_.layers[layer.layer].linear) {
         const std::int64_t projection = 2 * std::int64_t{profile_.heads} * profile_.head_dim;
         parts.push_back({layer.attention_input, GGML_TYPE_F32, width, rows, 1});
@@ -1404,8 +1684,8 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   }
   // The cells it writes (each QSA layer's K, V and indexer rows), saved.
   using K = md::Qwen38StateTensor::Kind;
-  const std::uint64_t state = live_.base(kTarget);
-  live_.BeginSaves();
+  const std::uint64_t state = request.live.base(kTarget);
+  request.live.BeginSaves();
   for (std::uint32_t i = 0; i < rows; ++i) {
     const std::uint64_t cell = std::uint64_t{n_past} + i;
     for (const md::Qwen38StateTensor& t : layout_.tensors) {
@@ -1413,7 +1693,7 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
         continue;
       }
       const std::uint64_t bytes = t.ne0 * (t.f16 ? 2 : 4);
-      if (auto added = live_.Save(state + t.offset + (cell * bytes), bytes, i); !added) {
+      if (auto added = request.live.Save(state + t.offset + (cell * bytes), bytes, i); !added) {
         return added;
       }
     }
@@ -1428,7 +1708,7 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
         continue;
       }
       const std::uint64_t bytes = t.ne0 * 2;
-      if (auto added = live_.Save(state + t.offset + (b * bytes), bytes, row); !added) {
+      if (auto added = request.live.Save(state + t.offset + (b * bytes), bytes, row); !added) {
         return added;
       }
     }
@@ -1438,7 +1718,7 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   PlanRuns& runs = entry.runs[logits != nullptr ? kWithLogits : kLean];
   const bool capture = runs.CaptureDue(runs_.graphs());
   if (capture) {
-    RoomForGraph(kMaxGraphs, graph_stats_, plans_, mplans_);
+    RoomForGraphs();
   }
   const std::uint64_t row_bytes = std::uint64_t{profile_.vocab} * sizeof(float);
   auto* const argmax_host = static_cast<std::int32_t*>(drafts_) + kArgmaxAt;
@@ -1456,12 +1736,12 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   bool saved = false;
   bool unknown = false;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
-    if (auto r = live_.QueueOwed(launch); !r) {
+    if (auto r = request.live.QueueOwed(launch); !r) {
       ran = Error(std::format("verify at {}: {}", n_past, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
     }
-    if (auto r = live_.QueueSaves(launch); !r) {
+    if (auto r = request.live.QueueSaves(launch); !r) {
       ran = Error(std::format("verify at {}: {}", n_past, r.error().detail));
       unknown = true;
       return sc::JobResult::kUnknown;
@@ -1477,18 +1757,21 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
     }
     return sc::JobResult::kQueued;
   };
-  const Status posted = node_.Job(everything_, std::move(job), "a Qwen3.8 verify", stream_);
+  const Status posted = node_.Job(execution_, std::move(job), "a Qwen3.8 verify", stream_);
   if (!posted || !ran || launch.faulted()) {
+    if (!posted) {
+      CheckFailedJob();
+    }
     // Never left half-written: the verify is undone before the next job's
     // work, or the state quarantined.
-    Settle(saved, false, unknown);
+    Settle(request, saved, false, unknown);
     if (launch.faulted()) {
       return Error(std::format("verify at {}: the launch context faulted", n_past));
     }
     return !ran ? ran : Error(std::format("verify at {}: {}", n_past, posted.error()));
   }
   Count(graph_stats_, path);
-  live_.Verified(rows);
+  request.live.Verified(rows);
   argmax.assign(argmax_host, argmax_host + rows);
   if (logits != nullptr) {
     const auto* values = static_cast<const float*>(logits_);
@@ -1524,34 +1807,56 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
   return {};
 }
 
-Status Qwen38Runner::Accept(std::uint32_t keep) {
-  if (auto usable = Usable(); !usable) {
+Status Qwen38Runner::Accept(std::uint32_t keep) { return Accept(default_request_, keep); }
+
+Status Qwen38Runner::Accept(RequestState& request, std::uint32_t keep) {
+  if (auto usable = Usable(request); !usable) {
     return usable;
   }
-  if (auto accepted = live_.Accept(keep); !accepted) {
+  if (auto accepted = request.live.Accept(keep); !accepted) {
     return accepted;
   }
-  pending_rows_ = keep;
+  request.pending_rows = keep;
   return {};
 }
 
-Status Qwen38Runner::Rollback() {
-  if (auto usable = Usable(); !usable) {
+Status Qwen38Runner::Rollback() { return Rollback(default_request_); }
+
+Status Qwen38Runner::Rollback(RequestState& request) {
+  if (auto usable = Usable(request); !usable) {
     return usable;
   }
-  return live_.Rollback(node_, everything_, stream_, resources_.launch(),
-                        "committing a verify's kept rows");
+  auto rolled = request.live.Rollback(node_, execution_, stream_, resources_.launch(),
+                                      "committing a verify's kept rows");
+  if (!rolled) {
+    CheckFailedJob();
+  }
+  if (resources_.launch().faulted() || (!rolled && request.live.quarantined())) {
+    FaultCohort();
+  }
+  return rolled;
 }
 
 Status Qwen38Runner::ReadState(std::vector<std::byte>& target, std::vector<std::byte>& drafter) {
-  if (auto r = Rollback(); !r) {
+  return ReadState(default_request_, target, drafter);
+}
+
+Status Qwen38Runner::ReadState(RequestState& request, std::vector<std::byte>& target,
+                               std::vector<std::byte>& drafter) {
+  if (auto r = Rollback(request); !r) {
     return r;
   }
-  if (live_.verify_rows() != 0) {
+  if (request.live.verify_rows() != 0) {
     return Error("reading the state with a verify awaiting its Accept");
   }
   const std::array<std::vector<std::byte>*, 2> out = {&target, &drafter};
-  return live_.Read(node_, fence_, stream_, "reading the Qwen3.8 state", out);
+  LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
+  auto read = request.live.Read(node_, request.fence, stream_, "reading the Qwen3.8 state", out,
+                                &retirement);
+  if (retirement == LiveState::CopyRetirement::kUnproven) {
+    FaultCohort();
+  }
+  return read;
 }
 
 Status Qwen38Runner::Release() {
@@ -1565,7 +1870,9 @@ Status Qwen38Runner::Release() {
   DropPlans();
   resources_.Release(problems);
   auto& memory = node_.memory();
-  live_.Release(memory, problems);
+  for (RequestState* request : Requests()) {
+    request->live.Release(memory, problems);
+  }
   for (PagedWeights* part : {&weights_, &dweights_}) {
     if (auto r = part->Release(memory); !r) {
       problems.push_back(std::format("Qwen3.8: {}", r.error()));
@@ -1585,40 +1892,64 @@ Status Qwen38Runner::Release() {
 }
 
 Status Qwen38Runner::SaveUsedState(void* host, std::span<const LiveState::Range> ranges) {
-  return live_.Copy(node_, fence_, stream_, host, ranges, true);
+  return SaveUsedState(default_request_, host, ranges);
+}
+
+Status Qwen38Runner::SaveUsedState(RequestState& request, void* host,
+                                   std::span<const LiveState::Range> ranges) {
+  if (auto active = CheckActive(request); !active) {
+    return active;
+  }
+  LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
+  auto copied = request.live.Copy(node_, request.fence, stream_, host, ranges, true, &retirement);
+  if (retirement == LiveState::CopyRetirement::kUnproven) {
+    FaultCohort();
+  }
+  return copied;
 }
 
 Status Qwen38Runner::RestoreUsedState(void* host, std::span<const LiveState::Range> ranges) {
+  return RestoreUsedState(default_request_, host, ranges);
+}
+
+Status Qwen38Runner::RestoreUsedState(RequestState& request, void* host,
+                                      std::span<const LiveState::Range> ranges) {
   if (host == nullptr &&
       std::ranges::any_of(ranges, [](const LiveState::Range& r) { return r.bytes != 0; })) {
     return Error("the conversation snapshot has no source buffer");
   }
-  if (auto prepared = PrepareRestoreState(ranges); !prepared) {
+  if (auto prepared = PrepareRestoreState(request, ranges); !prepared) {
     return prepared;
   }
-  return CopyCheckpointState(host, ranges, false);
+  return CopyCheckpointState(request, host, ranges, false);
 }
 
 Status Qwen38Runner::PrepareRestoreState(std::span<const LiveState::Range> ranges) {
-  const bool requested = node_.InRequest(stream_);
-  if (requested) {
-    if (auto ended = node_.EndRequest(stream_); !ended) {
-      return ended;
-    }
+  return PrepareRestoreState(default_request_, ranges);
+}
+
+Status Qwen38Runner::PrepareRestoreState(RequestState& request,
+                                         std::span<const LiveState::Range> ranges) {
+  if (auto active = CheckActive(request); !active) {
+    return active;
+  }
+  const auto others = static_cast<std::uint8_t>(active_mask_ & ~(1U << request.slot));
+  if (auto protected_others = RefreshClosures(others); !protected_others) {
+    return protected_others;
   }
   auto prepared = [&]() -> Status {
-    if (auto used = live_.Use(node_, ranges, &everything_); !used) {
+    if (auto used = request.live.Use(node_, ranges, &execution_); !used) {
       return std::unexpected(used.error());
     }
-    return live_.Retain(node_, ranges);
+    return request.live.Retain(node_, ranges);
   }();
+  if (!prepared) {
+    request.live.Quarantine();
+  }
+  // Even refused/partial growth belongs to this stable owner and appears
+  // in both the retained-state union and the active lease before returning.
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
-  }
-  if (requested) {
-    if (auto opened = node_.BeginRequest(stream_, everything_, "restored conversation"); !opened) {
-      return opened;
-    }
   }
   if (!prepared) {
     return prepared;
@@ -1628,22 +1959,43 @@ Status Qwen38Runner::PrepareRestoreState(std::span<const LiveState::Range> range
 
 Status Qwen38Runner::CopyCheckpointState(void* host, std::span<const LiveState::Range> ranges,
                                          bool to_host) {
-  auto copied = live_.Copy(node_, fence_, stream_, host, ranges, to_host);
+  return CopyCheckpointState(default_request_, host, ranges, to_host);
+}
+
+Status Qwen38Runner::CopyCheckpointState(RequestState& request, void* host,
+                                         std::span<const LiveState::Range> ranges, bool to_host) {
+  if (auto active = CheckActive(request); !active) {
+    return active;
+  }
+  LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
+  auto copied =
+      request.live.Copy(node_, request.fence, stream_, host, ranges, to_host, &retirement);
   if (!copied) {
-    live_.Quarantine();
+    request.live.Quarantine();
+  }
+  if (retirement == LiveState::CopyRetirement::kUnproven) {
+    FaultCohort();
   }
   return copied;
 }
 
 std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::CheckpointRanges(
     std::uint32_t positions) const {
-  if (auto usable = live_.Usable(); !usable) {
+  return CheckpointRanges(default_request_, positions);
+}
+
+std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::CheckpointRanges(
+    const RequestState& request, std::uint32_t positions) const {
+  if (auto active = CheckActive(request); !active) {
+    return std::unexpected(active.error());
+  }
+  if (auto usable = request.live.Usable(); !usable) {
     return std::unexpected(usable.error());
   }
-  if (auto settled = live_.AwaitingAccept(); !settled) {
+  if (auto settled = request.live.AwaitingAccept(); !settled) {
     return std::unexpected(settled.error());
   }
-  if (live_.owed()) {
+  if (request.live.owed()) {
     return Error("checkpoint has an unsettled Qwen3.8 verify");
   }
   auto mutable_bytes = md::Qwen38CheckpointWrites(profile_, layout_, positions);
@@ -1676,7 +2028,7 @@ std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::Checkpoi
                       .offset = mtp_layout_.hidden,
                       .bytes = mtp_layout_.bytes - mtp_layout_.hidden});
   }
-  return CheckpointPages(live_.used_ranges(), writes);
+  return CheckpointPages(request.live.used_ranges(), writes);
 }
 
 }  // namespace jitllm::engine

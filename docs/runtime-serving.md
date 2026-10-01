@@ -555,6 +555,14 @@ work still borrows a frame before it can be freed. Focused fake-backend controls
 exercise this path. The production node backend currently supplies no cooperative
 implementation, so deployed requests still run serially.
 
+An LLM's stable `Branch` owns its prompt history, sampling key, generation guard,
+turn checkpoints and adaptive draft-depth policy. Qwen3.8 maps up to four branches
+to independent native request slots, with one shared set of model weights. Other
+families retain their default branch. Each resumable generation session forwards
+its completed units to its own branch; saving, restoring or clearing a branch
+does not change another branch's history or policy. This state separation is
+groundwork for the cooperative backend; it does not enable concurrent serving.
+
 ## Progress and deadlines
 
 A chat request has no fixed deadline (D-097, the owner's note of

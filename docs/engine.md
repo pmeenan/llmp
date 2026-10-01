@@ -76,6 +76,25 @@ joined problems).
    `RunnerResources::Release`, `LiveState::Release`, each
    `PagedWeights::Release`.
 
+## Independent request state
+
+`Qwen38Runner` exposes four stable request slots. Each owns its target and MTP
+live state, verify snapshot, commit state, pending cursor and plan caches. The
+weights, launch context, stream, staging and workspace remain shared. The scalar
+runner methods use slot zero. `SelectSlots` selects an execution closure over the
+active slots at a completed unit boundary; the runner's aggregate state and swap
+closure include every initialized slot, including idle retained conversations.
+The graph cap applies across all slots.
+
+Clearing or restoring one destination first renews the request's protection of
+its peers, then discards only the destination's eligible backing and renews the
+selected closure. A separately held destination refuses discard. A proven local
+failure while discarding the destination invalidates that slot; clean validation
+refusals preserve the existing state. An unproven device or shared-execution failure
+stops the cohort and preserves borrowed owners until retirement is established.
+The serving adapter forwards each host branch to its corresponding native slot;
+the production API backend still runs requests serially.
+
 ## Adding a model family
 
 What a new family writes, and nothing else:

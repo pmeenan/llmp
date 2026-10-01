@@ -484,7 +484,17 @@ class Qwen38 final : public Llm {
     if (tokenizer_->eos() && std::ranges::find(stops_, *tokenizer_->eos()) == stops_.end()) {
       stops_.push_back(*tokenizer_->eos());
     }
-    return runner_.Setup();
+    if (auto setup = runner_.Setup(); !setup) {
+      return setup;
+    }
+    for (std::size_t i = 0; i < native_slots_.size(); ++i) {
+      auto slot = runner_.request_slot(i);
+      if (!slot) {
+        return std::unexpected(slot.error());
+      }
+      native_slots_[i] = *slot;
+    }
+    return PrepareBranches(static_cast<std::uint32_t>(native_slots_.size()), 3);
   }
   std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
   std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
@@ -494,6 +504,25 @@ class Qwen38 final : public Llm {
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
   std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
   const catalog::Closure& everything() const override { return runner_.everything(); }
+  const catalog::Closure& request_closure() const override { return runner_.execution_closure(); }
+  bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
+  Status PrepareDefaultRequest() override {
+    std::array<Branch*, 1> active{&default_branch()};
+    return SelectBranches(active);
+  }
+  Status SelectBranches(std::span<Branch* const> active) override {
+    if (active.size() > native_slots_.size()) {
+      return Error("too many Qwen native conversation branches");
+    }
+    std::array<engine::Qwen38Runner::Slot*, engine::Qwen38Runner::kRequestSlots> selected{};
+    for (std::size_t i = 0; i < active.size(); ++i) {
+      if (active[i] == nullptr || &active[i]->model() != this) {
+        return Error("a selected Qwen conversation belongs to another model");
+      }
+      selected[i] = &NativeSlot(*active[i]);
+    }
+    return runner_.SelectSlots(std::span(selected).first(active.size()));
+  }
   std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
   Status AfterLoad() override { return runner_.ReadPleHash(); }
   Status CheckPlaces() override { return runner_.CheckPlaces(); }
@@ -534,19 +563,127 @@ class Qwen38 final : public Llm {
  protected:
   Status RunChunk(std::span<const std::int32_t> all, std::uint32_t n_past, bool inject,
                   std::vector<float>& logits) override {
-    return runner_.Chunk(all, n_past, logits, inject);
+    return RunChunkFor(default_branch(), all, n_past, inject, logits);
   }
   Status SpecStep(std::span<const std::int32_t> all, std::uint32_t pos, std::uint32_t left,
                   std::vector<std::int32_t>& kept, std::vector<std::vector<float>>* logits,
                   std::uint64_t& drafted) override {
+    return SpecStepFor(default_branch(), all, pos, left, kept, logits, drafted);
+  }
+  Status Settle() override { return SettleFor(default_branch()); }
+  Status ClearState() override { return ClearStateFor(default_branch()); }
+  bool StateUsable() const override { return StateUsableFor(default_branch()); }
+  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
+    return PrepareDecodeStateFor(default_branch(), pos, left);
+  }
+  std::uint64_t target_state_base() const override { return TargetStateBaseFor(default_branch()); }
+  std::uint64_t target_state_bytes() const override {
+    return TargetStateBytesFor(default_branch());
+  }
+  std::uint64_t drafter_state_base() const override {
+    return DrafterStateBaseFor(default_branch());
+  }
+  std::uint64_t drafter_state_bytes() const override {
+    return DrafterStateBytesFor(default_branch());
+  }
+  std::uint64_t used_state_bytes() const override { return UsedStateBytesFor(default_branch()); }
+  std::vector<engine::LiveState::Range> used_state_ranges() const override {
+    return UsedStateRangesFor(default_branch());
+  }
+  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
+    return SaveUsedStateFor(default_branch(), host, ranges);
+  }
+  Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
+    return RestoreUsedStateFor(default_branch(), host, ranges);
+  }
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
+      std::uint32_t positions) const override {
+    return CheckpointRangesFor(default_branch(), positions);
+  }
+  Status PrepareRestoreState(std::span<const engine::LiveState::Range> footprint) override {
+    return PrepareRestoreStateFor(default_branch(), footprint);
+  }
+  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
+                             bool to_host) override {
+    return CopyCheckpointStateFor(default_branch(), host, ranges, to_host);
+  }
+  std::uint32_t cursor() const override { return CursorFor(default_branch()); }
+  void set_cursor(std::uint32_t value) override { SetCursorFor(default_branch(), value); }
+  void SaveDecodingState() override { SaveDecodingStateFor(default_branch()); }
+  void RestoreDecodingState() override { RestoreDecodingStateFor(default_branch()); }
+  execution::AdaptiveDepth TurnDecodingState() const override {
+    return TurnDecodingStateFor(default_branch());
+  }
+  void RestoreTurnDecodingState(const execution::AdaptiveDepth& state) override {
+    RestoreTurnDecodingStateFor(default_branch(), state);
+  }
+
+  Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t n_past,
+                     bool inject, std::vector<float>& logits) override {
+    return NativeSlot(branch).Chunk(all, n_past, logits, inject);
+  }
+  Status SettleFor(Branch& branch) override { return NativeSlot(branch).Rollback(); }
+  bool StateUsableFor(const Branch& branch) const override {
+    return NativeSlot(branch).state_usable();
+  }
+  std::uint64_t TargetStateBaseFor(const Branch& branch) const override {
+    return NativeSlot(branch).state_base();
+  }
+  std::uint64_t TargetStateBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).state_bytes();
+  }
+  std::uint64_t DrafterStateBaseFor(const Branch& branch) const override {
+    return NativeSlot(branch).drafter_state_base();
+  }
+  std::uint64_t DrafterStateBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).drafter_state_bytes();
+  }
+  std::uint64_t UsedStateBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).used_state_bytes();
+  }
+  std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const override {
+    return NativeSlot(branch).used_state_ranges();
+  }
+  Status SaveUsedStateFor(Branch& branch, void* host,
+                          std::span<const engine::LiveState::Range> ranges) override {
+    return NativeSlot(branch).SaveUsedState(host, ranges);
+  }
+  Status RestoreUsedStateFor(Branch& branch, void* host,
+                             std::span<const engine::LiveState::Range> ranges) override {
+    return NativeSlot(branch).RestoreUsedState(host, ranges);
+  }
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
+      const Branch& branch, std::uint32_t positions) const override {
+    return NativeSlot(branch).CheckpointRanges(positions);
+  }
+  Status PrepareRestoreStateFor(Branch& branch,
+                                std::span<const engine::LiveState::Range> footprint) override {
+    return NativeSlot(branch).PrepareRestoreState(footprint);
+  }
+  Status CopyCheckpointStateFor(Branch& branch, void* host,
+                                std::span<const engine::LiveState::Range> ranges,
+                                bool to_host) override {
+    return NativeSlot(branch).CopyCheckpointState(host, ranges, to_host);
+  }
+  std::uint32_t CursorFor(const Branch& branch) const override {
+    return NativeSlot(branch).pending_rows();
+  }
+  void SetCursorFor(Branch& branch, std::uint32_t value) override {
+    NativeSlot(branch).set_pending_rows(value);
+  }
+
+  Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
+                     std::uint32_t left, std::vector<std::int32_t>& kept,
+                     std::vector<std::vector<float>>* logits, std::uint64_t& drafted) override {
     // Sampling's position keys keep their existing fixed draft schedule.
     // Greedy chooses its depth from deterministic acceptance observations.
-    const auto depth = sampling() || runner_.draft_rows() < 3 ? 2U : depth_.Choose();
+    const auto depth =
+        sampling(branch) || runner_.draft_rows() < 3 ? 2U : BranchDecoding(branch).Choose();
     if (depth > options_.context - pos) {
       return Error("the drafts would pass the context");
     }
     std::vector<std::int32_t> drafts;
-    if (auto r = runner_.Draft(all, drafts, nullptr, depth); !r) {
+    if (auto r = NativeSlot(branch).Draft(all, drafts, nullptr, depth); !r) {
       return r;
     }
     // The verify: the anchor and its drafts, within the tokens left.
@@ -557,8 +694,9 @@ class Qwen38 final : public Llm {
     input.insert(input.end(), drafts.begin(), drafts.end());
     std::vector<std::int32_t> argmax;
     std::vector<float> verified;
-    const bool rows_needed = logits != nullptr || sampling();
-    if (auto r = runner_.Verify(input, pos, argmax, rows_needed ? &verified : nullptr); !r) {
+    const bool rows_needed = logits != nullptr || sampling(branch);
+    if (auto r = NativeSlot(branch).Verify(input, pos, argmax, rows_needed ? &verified : nullptr);
+        !r) {
       return r;
     }
     const std::uint32_t vocab = runner_.vocab();
@@ -567,7 +705,7 @@ class Qwen38 final : public Llm {
     };
     std::uint32_t m = 0;
     std::int32_t next = -1;
-    if (!sampling()) {
+    if (!sampling(branch)) {
       // Greedy: the verify's own argmaxes.
       for (; m < rows - 1; ++m) {
         if (argmax[m] != drafts[m]) {
@@ -583,7 +721,7 @@ class Qwen38 final : public Llm {
       // token at pos + m + 1.
       for (; m < rows - 1; ++m) {
         std::int32_t instead = -1;
-        auto keep = Keep(row(m), drafts[m], std::uint64_t{pos} + m + 1, instead);
+        auto keep = Keep(branch, row(m), drafts[m], std::uint64_t{pos} + m + 1, instead);
         if (!keep) {
           return std::unexpected(keep.error());
         }
@@ -593,14 +731,14 @@ class Qwen38 final : public Llm {
         }
       }
       if (next < 0) {
-        auto chosen = Choose(row(m), std::uint64_t{pos} + m + 1);
+        auto chosen = Choose(branch, row(m), std::uint64_t{pos} + m + 1);
         if (!chosen) {
           return std::unexpected(chosen.error());
         }
         next = *chosen;
       }
     }
-    if (auto r = runner_.Accept(m + 1); !r) {
+    if (auto r = NativeSlot(branch).Accept(m + 1); !r) {
       return r;
     }
     kept.assign(drafts.begin(), drafts.begin() + m);
@@ -612,63 +750,50 @@ class Qwen38 final : public Llm {
       }
     }
     drafted += rows - 1;
-    if (!sampling()) {
-      depth_.Observe(depth, m + 1, rows == depth + 1);
+    if (!sampling(branch)) {
+      BranchDecoding(branch).Observe(depth, m + 1, rows == depth + 1);
     }
     return {};
   }
-  Status Settle() override { return runner_.Rollback(); }
-  Status ClearState() override {
-    depth_ = execution::AdaptiveDepth(3);
-    return runner_.Clear();
-  }
-  std::uint64_t target_state_base() const override { return runner_.state_base(); }
-  std::uint64_t used_state_bytes() const override { return runner_.used_state_bytes(); }
-  bool StateUsable() const override { return runner_.state_usable(); }
-  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
+  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) override {
     if (!speculate_) {
-      return runner_.ReserveStateThrough(pos + 1);
+      return NativeSlot(branch).ReserveStateThrough(pos + 1);
     }
-    const auto depth = sampling() || runner_.draft_rows() < 3 ? 2U : depth_.Choose();
+    const auto depth =
+        sampling(branch) || runner_.draft_rows() < 3 ? 2U : BranchDecoding(branch).Choose();
     if (depth > context_ - pos) {
       return Error("the drafts would pass the context");
     }
     const auto verify_rows = std::min({depth + 1, left, context_ - pos});
     // Draft reprocesses tokens ending before the anchor; its final pass
     // ends at pos + depth - 1. Verify includes the anchor itself.
-    return runner_.ReserveStateThrough(pos + std::max(depth - 1, verify_rows));
+    return NativeSlot(branch).ReserveStateThrough(pos + std::max(depth - 1, verify_rows));
   }
-  std::vector<engine::LiveState::Range> used_state_ranges() const override {
-    return runner_.used_state_ranges();
+
+  Status ClearStateFor(Branch& branch) override {
+    BranchDecoding(branch) = execution::AdaptiveDepth(3);
+    return NativeSlot(branch).Clear();
   }
-  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
-    return runner_.SaveUsedState(host, ranges);
+  void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
+  void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
+  execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
+    return BranchDecoding(branch);
   }
-  Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
-    return runner_.RestoreUsedState(host, ranges);
+  void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) override {
+    BranchDecoding(branch) = state;
   }
-  std::uint64_t target_state_bytes() const override { return runner_.state_bytes(); }
-  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
-      std::uint32_t positions) const override {
-    return runner_.CheckpointRanges(positions);
-  }
-  Status PrepareRestoreState(std::span<const engine::LiveState::Range> footprint) override {
-    return runner_.PrepareRestoreState(footprint);
-  }
-  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
-                             bool to_host) override {
-    return runner_.CopyCheckpointState(host, ranges, to_host);
-  }
-  std::uint64_t drafter_state_base() const override { return runner_.drafter_state_base(); }
-  std::uint64_t drafter_state_bytes() const override { return runner_.drafter_state_bytes(); }
-  std::uint32_t cursor() const override { return runner_.pending_rows(); }
-  void set_cursor(std::uint32_t value) override { runner_.set_pending_rows(value); }
-  void SaveDecodingState() override { saved_depth_ = depth_; }
-  void RestoreDecodingState() override { depth_ = saved_depth_; }
-  execution::AdaptiveDepth TurnDecodingState() const override { return depth_; }
-  void RestoreTurnDecodingState(const execution::AdaptiveDepth& state) override { depth_ = state; }
 
  private:
+  engine::Qwen38Runner::Slot& NativeSlot(Branch& branch) {
+    const auto index = BranchIndex(branch);
+    base::Check(native_slots_[index] != nullptr, "native conversation slots are not ready");
+    return *native_slots_[index];
+  }
+  const engine::Qwen38Runner::Slot& NativeSlot(const Branch& branch) const {
+    const auto index = BranchIndex(branch);
+    base::Check(native_slots_[index] != nullptr, "native conversation slots are not ready");
+    return *native_slots_[index];
+  }
   std::string artifact_id_;
   std::string drafter_id_;  // empty: none
   std::optional<fs::path> tokenizer_path_;
@@ -676,8 +801,7 @@ class Qwen38 final : public Llm {
   fs::path store_;
   engine::Qwen38Options options_;  // before the runner, which keeps a reference
   engine::Qwen38Runner runner_;
-  execution::AdaptiveDepth depth_{3};
-  execution::AdaptiveDepth saved_depth_{3};
+  std::array<engine::Qwen38Runner::Slot*, engine::Qwen38Runner::kRequestSlots> native_slots_{};
 };
 
 // The Qwen-Image-2.1 pipeline (engine/qwen_image_runner.h).
@@ -839,7 +963,7 @@ Status Llm::Branch::Generate(const std::vector<float>& last, const GenerateOptio
 
 std::uint64_t Llm::Branch::state_snapshot_bytes() const {
   model_.CheckBranch(*this);
-  return model_.used_state_bytes();
+  return model_.UsedStateBytesFor(*this);
 }
 
 Status Llm::Branch::SaveState(void* host) { return model_.SaveState(*this, host); }
@@ -987,9 +1111,212 @@ void Llm::FindThinkTokens() {
   think_end_ = tokenizer_->Find("</think>");
 }
 
+Status Llm::PrepareBranches(std::uint32_t count, std::uint32_t draft_depth) {
+  if (branches_prepared_ || count == 0 || count > kMaxBranches || draft_depth == 0 ||
+      default_branch_.generation_active_ || !default_branch_.history_.empty()) {
+    return Error("native branches must be prepared once before conversation use");
+  }
+  for (std::uint32_t slot = 1; slot < count; ++slot) {
+    extra_branches_[slot - 1] = std::unique_ptr<Branch>(new Branch(*this, slot));
+    extra_branches_[slot - 1]->decoding_ = execution::AdaptiveDepth(draft_depth);
+    extra_branches_[slot - 1]->saved_decoding_ = execution::AdaptiveDepth(draft_depth);
+  }
+  default_branch_.decoding_ = execution::AdaptiveDepth(draft_depth);
+  default_branch_.saved_decoding_ = execution::AdaptiveDepth(draft_depth);
+  branch_count_ = count;
+  branches_prepared_ = true;
+  return {};
+}
+
+std::expected<Llm::Branch*, std::string> Llm::branch(std::size_t index) & {
+  if (index >= branch_count_) {
+    return Error("the model has no native conversation slot at this index");
+  }
+  return index == 0 ? &default_branch_ : extra_branches_[index - 1].get();
+}
+
+Status Llm::SelectBranches(std::span<Branch* const> active) {
+  if (active.size() != 1 || active.front() != &default_branch_) {
+    return Error("this model supports only its default native conversation");
+  }
+  return {};
+}
+
 void Llm::CheckBranch(const Branch& branch) const {
-  base::Check(&branch.model_ == this && &branch == &default_branch_,
-              "native slot forwarding supports only this model's default branch");
+  base::Check(&branch.model_ == this && branch.slot_ < branch_count_ &&
+                  (branch.slot_ == 0 ? &branch == &default_branch_
+                                     : &branch == extra_branches_[branch.slot_ - 1].get()),
+              "conversation branch does not belong to this model's native slot");
+}
+
+void Llm::CheckDefaultBranch(const Branch& branch) const {
+  CheckBranch(branch);
+  base::Check(&branch == &default_branch_, "this family forwards native work only for branch zero");
+}
+
+std::uint32_t Llm::BranchIndex(const Branch& branch) const {
+  CheckBranch(branch);
+  return branch.slot_;
+}
+
+bool Llm::AnyBranchHasRetainedState() const {
+  if (default_branch_.HasRetainedState()) {
+    return true;
+  }
+  for (std::uint32_t slot = 1; slot < branch_count_; ++slot) {
+    if (extra_branches_[slot - 1]->HasRetainedState()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool Llm::sampling(const Branch& branch) const {
+  CheckBranch(branch);
+  return branch.sampling_.has_value();
+}
+
+execution::AdaptiveDepth& Llm::BranchDecoding(Branch& branch) {
+  CheckBranch(branch);
+  return branch.decoding_;
+}
+
+const execution::AdaptiveDepth& Llm::BranchDecoding(const Branch& branch) const {
+  CheckBranch(branch);
+  return branch.decoding_;
+}
+
+void Llm::SaveBranchDecoding(Branch& branch) {
+  CheckBranch(branch);
+  branch.saved_decoding_ = branch.decoding_;
+}
+
+void Llm::RestoreBranchDecoding(Branch& branch) {
+  CheckBranch(branch);
+  branch.decoding_ = branch.saved_decoding_;
+}
+
+Status Llm::RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t n_past,
+                        bool inject, std::vector<float>& logits) {
+  CheckDefaultBranch(branch);
+  return RunChunk(all, n_past, inject, logits);
+}
+
+Status Llm::SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
+                        std::uint32_t left, std::vector<std::int32_t>& kept,
+                        std::vector<std::vector<float>>* logits, std::uint64_t& drafted) {
+  CheckDefaultBranch(branch);
+  return SpecStep(all, pos, left, kept, logits, drafted);
+}
+
+Status Llm::SettleFor(Branch& branch) {
+  CheckDefaultBranch(branch);
+  return Settle();
+}
+
+Status Llm::ClearStateFor(Branch& branch) {
+  CheckDefaultBranch(branch);
+  return ClearState();
+}
+
+bool Llm::StateUsableFor(const Branch& branch) const {
+  CheckDefaultBranch(branch);
+  return StateUsable();
+}
+
+Status Llm::PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) {
+  CheckDefaultBranch(branch);
+  return PrepareDecodeState(pos, left);
+}
+
+std::uint64_t Llm::TargetStateBaseFor(const Branch& branch) const {
+  CheckDefaultBranch(branch);
+  return target_state_base();
+}
+
+std::uint64_t Llm::TargetStateBytesFor(const Branch& branch) const {
+  CheckDefaultBranch(branch);
+  return target_state_bytes();
+}
+
+std::uint64_t Llm::DrafterStateBaseFor(const Branch& branch) const {
+  CheckDefaultBranch(branch);
+  return drafter_state_base();
+}
+
+std::uint64_t Llm::DrafterStateBytesFor(const Branch& branch) const {
+  CheckDefaultBranch(branch);
+  return drafter_state_bytes();
+}
+
+std::uint64_t Llm::UsedStateBytesFor(const Branch& branch) const {
+  CheckDefaultBranch(branch);
+  return used_state_bytes();
+}
+
+std::vector<engine::LiveState::Range> Llm::UsedStateRangesFor(const Branch& branch) const {
+  CheckDefaultBranch(branch);
+  return used_state_ranges();
+}
+
+Status Llm::SaveUsedStateFor(Branch& branch, void* host,
+                             std::span<const engine::LiveState::Range> ranges) {
+  CheckDefaultBranch(branch);
+  return SaveUsedState(host, ranges);
+}
+
+Status Llm::RestoreUsedStateFor(Branch& branch, void* host,
+                                std::span<const engine::LiveState::Range> ranges) {
+  CheckDefaultBranch(branch);
+  return RestoreUsedState(host, ranges);
+}
+
+std::expected<std::vector<engine::LiveState::Range>, std::string> Llm::CheckpointRangesFor(
+    const Branch& branch, std::uint32_t positions) const {
+  CheckDefaultBranch(branch);
+  return CheckpointRanges(positions);
+}
+
+Status Llm::PrepareRestoreStateFor(Branch& branch,
+                                   std::span<const engine::LiveState::Range> footprint) {
+  CheckDefaultBranch(branch);
+  return PrepareRestoreState(footprint);
+}
+
+Status Llm::CopyCheckpointStateFor(Branch& branch, void* host,
+                                   std::span<const engine::LiveState::Range> ranges, bool to_host) {
+  CheckDefaultBranch(branch);
+  return CopyCheckpointState(host, ranges, to_host);
+}
+
+std::uint32_t Llm::CursorFor(const Branch& branch) const {
+  CheckDefaultBranch(branch);
+  return cursor();
+}
+
+void Llm::SetCursorFor(Branch& branch, std::uint32_t value) {
+  CheckDefaultBranch(branch);
+  set_cursor(value);
+}
+
+void Llm::SaveDecodingStateFor(Branch& branch) {
+  CheckDefaultBranch(branch);
+  SaveDecodingState();
+}
+
+void Llm::RestoreDecodingStateFor(Branch& branch) {
+  CheckDefaultBranch(branch);
+  RestoreDecodingState();
+}
+
+execution::AdaptiveDepth Llm::TurnDecodingStateFor(const Branch& branch) const {
+  CheckDefaultBranch(branch);
+  return TurnDecodingState();
+}
+
+void Llm::RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) {
+  CheckDefaultBranch(branch);
+  RestoreTurnDecodingState(state);
 }
 
 void Llm::CheckIdleGeneration(const Branch& branch) const {
@@ -1007,7 +1334,7 @@ void Llm::Forget(Branch& branch) {
 Status Llm::Clear(Branch& branch) {
   CheckIdleGeneration(branch);
   branch.turn_checkpoints_.clear();
-  if (auto r = ClearState(); !r) {
+  if (auto r = ClearStateFor(branch); !r) {
     return r;
   }
   branch.history_.clear();
@@ -1034,10 +1361,10 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
       })) {
     return {};  // looking it up does not renew its retention period
   }
-  if (auto settled = Settle(); !settled) {
+  if (auto settled = SettleFor(branch); !settled) {
     return settled;
   }
-  auto ranges = CheckpointRanges(static_cast<std::uint32_t>(position));
+  auto ranges = CheckpointRangesFor(branch, static_cast<std::uint32_t>(position));
   if (!ranges) {
     return std::unexpected(ranges.error());
   }
@@ -1047,7 +1374,7 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
   auto file = engine::CheckpointFile::Capture(
       *node_, checkpoint_directory_, *ranges,
       [&](void* host, std::span<const engine::LiveState::Range> page) {
-        return CopyCheckpointState(host, page, true);
+        return CopyCheckpointStateFor(branch, host, page, true);
       },
       progress);
   if (!file) {
@@ -1060,9 +1387,9 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
   }
   TurnCheckpoint checkpoint{.boundary = {.position = position, .created = Clock::now()},
                             .file = std::move(*file),
-                            .footprint = used_state_ranges(),
-                            .cursor = cursor(),
-                            .decoding = TurnDecodingState()};
+                            .footprint = UsedStateRangesFor(branch),
+                            .cursor = CursorFor(branch),
+                            .decoding = TurnDecodingStateFor(branch)};
   branch.turn_checkpoints_.push_back(std::move(checkpoint));
   if (branch.turn_checkpoints_.size() > kTurnCheckpointLimit) {
     branch.turn_checkpoints_.erase(branch.turn_checkpoints_.begin());
@@ -1074,7 +1401,7 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
                         bool fresh, const PrefillGoOn& go_on, bool& stopped) {
   reused = 0;
   const auto now = Clock::now();
-  if (fresh || branch.needs_clear_ || !StateUsable() ||
+  if (fresh || branch.needs_clear_ || !StateUsableFor(branch) ||
       now - branch.history_used_ >= kTurnCheckpointRetention) {
     return Clear(branch);
   }
@@ -1099,7 +1426,7 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
   const auto position = checkpoint.boundary.position;
   const auto restored_cursor = checkpoint.cursor;
   const auto restored_decoding = checkpoint.decoding;
-  if (auto settled = Settle(); !settled) {
+  if (auto settled = SettleFor(branch); !settled) {
     Forget(branch);
     return settled;
   }
@@ -1107,9 +1434,9 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
       go_on ? engine::CheckpointFile::Continue([&]() { return go_on(0); })
             : engine::CheckpointFile::Continue{};
   auto restored = checkpoint.file.Restore(
-      *node_, [&]() { return PrepareRestoreState(checkpoint.footprint); },
+      *node_, [&]() { return PrepareRestoreStateFor(branch, checkpoint.footprint); },
       [&](void* host, std::span<const engine::LiveState::Range> page) {
-        return CopyCheckpointState(host, page, false);
+        return CopyCheckpointStateFor(branch, host, page, false);
       },
       progress);
   if (!restored) {
@@ -1123,8 +1450,8 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
     return Clear(branch);
   }
   branch.history_.resize(position);
-  set_cursor(restored_cursor);
-  RestoreTurnDecodingState(restored_decoding);
+  SetCursorFor(branch, restored_cursor);
+  RestoreTurnDecodingStateFor(branch, restored_decoding);
   std::erase_if(branch.turn_checkpoints_,
                 [&](const TurnCheckpoint& c) { return c.boundary.position > position; });
   reused = static_cast<std::uint32_t>(position);
@@ -1224,7 +1551,7 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
       static_cast<std::uint32_t>(branch.history_.size()), static_cast<std::uint32_t>(all.size()),
       max_rows_,
       [&](std::uint32_t at, std::uint32_t n) {
-        auto chunk = RunChunk(std::span(all).first(at + n), at, speculate_, last);
+        auto chunk = RunChunkFor(branch, std::span(all).first(at + n), at, speculate_, last);
         if (chunk) {
           completed = at + n;
         }
@@ -1232,7 +1559,7 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
       },
       go_on);
   if (!ran) {
-    branch.needs_clear_ = !StateUsable();
+    branch.needs_clear_ = !StateUsableFor(branch);
     if (branch.needs_clear_) {
       branch.history_.clear();
     } else {
@@ -1278,9 +1605,9 @@ Status Llm::ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens,
       break;
     }
     const auto started = Clock::now();
-    auto ran = RunChunk(tokens.first(std::size_t{at} + 1), at, speculate_, last);
+    auto ran = RunChunkFor(branch, tokens.first(std::size_t{at} + 1), at, speculate_, last);
     if (!ran) {
-      branch.needs_clear_ = !StateUsable();
+      branch.needs_clear_ = !StateUsableFor(branch);
       if (branch.needs_clear_) {
         branch.history_.clear();
       }
@@ -1296,7 +1623,7 @@ Status Llm::ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens,
       break;
     }
   }
-  if (auto settled = Settle(); !settled) {
+  if (auto settled = SettleFor(branch); !settled) {
     branch.needs_clear_ = true;
     branch.history_.clear();
     last.clear();
@@ -1331,7 +1658,7 @@ std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::BeginGe
     return Error("generation needs a positive token budget");
   }
   if (branch.generation_active_) {
-    return Error("the default conversation already has an active generation");
+    return Error("the conversation already has an active generation");
   }
   branch.generation_active_ = true;
   auto session =
@@ -1403,9 +1730,9 @@ std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession:
     return std::unexpected(ran_.error());
   }
   left_ = static_cast<std::uint32_t>(options_.max_tokens - out_.tokens.size());
-  if (auto prepared = model_.PrepareDecodeState(position_, left_); !prepared) {
+  if (auto prepared = model_.PrepareDecodeStateFor(branch_, position_, left_); !prepared) {
     ran_ = prepared;
-    failed_prefix_valid_ = model_.StateUsable();
+    failed_prefix_valid_ = model_.StateUsableFor(branch_);
     return std::unexpected(ran_.error());
   }
   prepared_ = true;
@@ -1431,7 +1758,7 @@ Status Llm::GenerationSession::ApplyPlain(std::vector<float> row) {
   if (!next) {
     ran_ = std::unexpected(next.error());
     ++position_;  // the anchor was processed before sampling failed
-    failed_prefix_valid_ = model_.StateUsable();
+    failed_prefix_valid_ = model_.StateUsableFor(branch_);
     return ran_;
   }
   std::vector<std::vector<float>> logits;
@@ -1453,7 +1780,7 @@ Status Llm::GenerationSession::ApplySpeculative(std::vector<std::int32_t> kept,
     // The completed verify still retires its owed commit/restore.
     constexpr std::string_view reason =
         "a speculative step returned inconsistent token/logit counts";
-    if (auto settled = model_.Settle(); !settled) {
+    if (auto settled = model_.SettleFor(branch_); !settled) {
       ran_ = Error(std::format("{}; settling failed: {}", reason, settled.error()));
     } else {
       ran_ = Error(std::string(reason));
@@ -1510,8 +1837,8 @@ Status Llm::GenerationSession::RunScalarStep() {
   if (step->speculative) {
     std::vector<std::int32_t> kept;
     std::vector<std::vector<float>> logits;
-    auto ran = model_.SpecStep(step->all, step->position, step->left, kept,
-                               step->need_logits ? &logits : nullptr, out_.drafted);
+    auto ran = model_.SpecStepFor(branch_, step->all, step->position, step->left, kept,
+                                  step->need_logits ? &logits : nullptr, out_.drafted);
     if (!ran) {
       return FailStep(ran.error());
     }
@@ -1519,7 +1846,7 @@ Status Llm::GenerationSession::RunScalarStep() {
     return ApplySpeculative(std::move(kept), std::move(logits), 0);
   }
   std::vector<float> row;
-  if (auto ran = model_.RunChunk(step->all, step->position, false, row); !ran) {
+  if (auto ran = model_.RunChunkFor(branch_, step->all, step->position, false, row); !ran) {
     return FailStep(ran.error());
   }
   return ApplyPlain(std::move(row));
@@ -1546,7 +1873,7 @@ Status Llm::GenerationSession::Finish() {
   branch_.sampling_.reset();
   if (!ran_) {
     if (failed_prefix_valid_) {
-      if (auto settled = model_.Settle(); !settled) {
+      if (auto settled = model_.SettleFor(branch_); !settled) {
         ran_ = Error(std::format("{}; settling failed: {}", ran_.error(), settled.error()));
       } else {
         branch_.history_.assign(all_.begin(), all_.begin() + position_);
@@ -1568,7 +1895,7 @@ Status Llm::GenerationSession::Finish() {
   if (out_.logits.size() > out_.tokens.size()) {
     out_.logits.resize(out_.tokens.size());
   }
-  if (auto settled = model_.Settle(); !settled) {
+  if (auto settled = model_.SettleFor(branch_); !settled) {
     branch_.needs_clear_ = true;
     branch_.history_.clear();
     ran_ = settled;
@@ -1595,17 +1922,17 @@ Status Llm::Generate(Branch& branch, const std::vector<float>& last, const Gener
 Status Llm::SaveState(Branch& branch, void* host) {
   CheckIdleGeneration(branch);
   branch.saved_valid_ = false;
-  if (auto r = Settle(); !r) {
+  if (auto r = SettleFor(branch); !r) {
     return r;
   }
-  auto ranges = used_state_ranges();
-  if (auto r = SaveUsedState(host, ranges); !r) {
+  auto ranges = UsedStateRangesFor(branch);
+  if (auto r = SaveUsedStateFor(branch, host, ranges); !r) {
     return r;
   }
   branch.saved_ranges_ = std::move(ranges);
   branch.saved_history_ = branch.history_;
-  branch.saved_cursor_ = cursor();
-  SaveDecodingState();
+  branch.saved_cursor_ = CursorFor(branch);
+  SaveDecodingStateFor(branch);
   branch.saved_valid_ = true;
   return {};
 }
@@ -1618,18 +1945,18 @@ Status Llm::RestoreState(Branch& branch, void* host) {
   if (host == nullptr && !branch.saved_ranges_.empty()) {
     return Error("the conversation snapshot has no source buffer");
   }
-  if (auto r = Settle(); !r) {
+  if (auto r = SettleFor(branch); !r) {
     return r;
   }
-  if (auto r = RestoreUsedState(host, branch.saved_ranges_); !r) {
+  if (auto r = RestoreUsedStateFor(branch, host, branch.saved_ranges_); !r) {
     branch.needs_clear_ = true;
     return r;
   }
   branch.history_ = branch.saved_history_;
   branch.turn_checkpoints_.clear();  // a full diagnostic restore may replace the branch
   branch.history_used_ = Clock::now();
-  set_cursor(branch.saved_cursor_);
-  RestoreDecodingState();
+  SetCursorFor(branch, branch.saved_cursor_);
+  RestoreDecodingStateFor(branch);
   branch.needs_clear_ = false;
   return {};
 }
@@ -1886,7 +2213,10 @@ Served* Server::Find(std::string_view name) {
 }
 
 Status Server::InRequest(Served& m, const std::function<Status()>& body) {
-  return node_.WithRequest(m.paged().stream(), m.everything(),
+  if (auto selected = m.PrepareDefaultRequest(); !selected) {
+    return selected;
+  }
+  return node_.WithRequest(m.paged().stream(), m.request_closure(),
                            std::format("{}'s request", m.name()), body);
 }
 

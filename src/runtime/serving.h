@@ -40,6 +40,7 @@
 #ifndef JITLLM_RUNTIME_SERVING_H_
 #define JITLLM_RUNTIME_SERVING_H_
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -173,6 +174,9 @@ class Served {
   virtual std::vector<catalog::ExtentId> state() const { return {}; }
   virtual bool HasRetainedState() const { return false; }
   virtual const catalog::Closure& everything() const = 0;
+  // Execution may protect fewer idle retained states than full swaps do.
+  virtual const catalog::Closure& request_closure() const { return everything(); }
+  virtual Status PrepareDefaultRequest() { return {}; }
   virtual std::uint64_t weight_read_bytes() const = 0;
   // After a full load: the checks of what the kernels index unchecked.
   virtual Status AfterLoad() { return {}; }
@@ -241,9 +245,9 @@ class Llm : public Served {
 
  public:
   class GenerationSession;
-  // Host conversation ownership over this model's immutable metadata. This
-  // slice exposes only the model-owned default branch; all native operations
-  // still use slot zero. A branch never registers or owns another model.
+  // Host conversation ownership over this model's immutable metadata. Only
+  // this model constructs branches; each names one of its native state slots.
+  // A branch never registers or owns another model.
   class Branch {
    public:
     Branch(const Branch&) = delete;
@@ -283,9 +287,10 @@ class Llm : public Served {
    private:
     friend class Llm;
     friend class GenerationSession;
-    explicit Branch(Llm& model) : model_(model) {}
+    explicit Branch(Llm& model, std::uint32_t slot = 0) : model_(model), slot_(slot) {}
 
     Llm& model_;
+    const std::uint32_t slot_;
     std::vector<std::int32_t> history_;
     // A possibly run failed step invalidates this branch until native clear.
     bool needs_clear_ = false;
@@ -299,11 +304,20 @@ class Llm : public Served {
     std::vector<TurnCheckpoint> turn_checkpoints_;
     Clock::time_point history_used_ = Clock::now();
     bool generation_active_ = false;
+    execution::AdaptiveDepth decoding_{1};
+    execution::AdaptiveDepth saved_decoding_{1};
   };
 
   Llm();
   Branch& default_branch() & { return default_branch_; }
   const Branch& default_branch() const& { return default_branch_; }
+  static constexpr std::size_t kMaxBranches = 4;
+  std::size_t branches() const { return branch_count_; }
+  // A stable model-owned wrapper. Looking it up performs no native work.
+  std::expected<Branch*, std::string> branch(std::size_t index) &;
+  // Between completed native units. The Qwen implementation protects the
+  // complete selected set; selecting performs no model registration.
+  virtual Status SelectBranches(std::span<Branch* const> active);
   bool llm() const override { return true; }
   // The prefill chunk's rows, and the configuration's prefill_chunk if set
   // (max_rows is at most it, capped by the model at its context).
@@ -447,6 +461,16 @@ class Llm : public Served {
   std::vector<catalog::ExtentId> state() const override = 0;
 
  protected:
+  // Called once, after the native slots exist. Other model families retain
+  // one default branch and their existing scalar overrides.
+  Status PrepareBranches(std::uint32_t count, std::uint32_t draft_depth);
+  std::uint32_t BranchIndex(const Branch& branch) const;
+  bool AnyBranchHasRetainedState() const;
+  execution::AdaptiveDepth& BranchDecoding(Branch& branch);
+  const execution::AdaptiveDepth& BranchDecoding(const Branch& branch) const;
+  void SaveBranchDecoding(Branch& branch);
+  void RestoreBranchDecoding(Branch& branch);
+
   // One chunk: all[n_past, end) after n_past (all holds every token from
   // position 0), `inject` with the drafter's pass; the last row's logits.
   virtual Status RunChunk(std::span<const std::int32_t> all, std::uint32_t n_past, bool inject,
@@ -482,11 +506,47 @@ class Llm : public Served {
   virtual execution::AdaptiveDepth TurnDecodingState() const { return execution::AdaptiveDepth(1); }
   virtual void RestoreTurnDecodingState(const execution::AdaptiveDepth& /*state*/) {}
 
+  // Explicit conversation forwarding. Defaults accept branch zero only;
+  // a family with independent native slots overrides this set together.
+  virtual Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all,
+                             std::uint32_t n_past, bool inject, std::vector<float>& logits);
+  virtual Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
+                             std::uint32_t left, std::vector<std::int32_t>& kept,
+                             std::vector<std::vector<float>>* logits, std::uint64_t& drafted);
+  virtual Status SettleFor(Branch& branch);
+  virtual Status ClearStateFor(Branch& branch);
+  virtual bool StateUsableFor(const Branch& branch) const;
+  virtual Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left);
+  virtual std::uint64_t TargetStateBaseFor(const Branch& branch) const;
+  virtual std::uint64_t TargetStateBytesFor(const Branch& branch) const;
+  virtual std::uint64_t DrafterStateBaseFor(const Branch& branch) const;
+  virtual std::uint64_t DrafterStateBytesFor(const Branch& branch) const;
+  virtual std::uint64_t UsedStateBytesFor(const Branch& branch) const;
+  virtual std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const;
+  virtual Status SaveUsedStateFor(Branch& branch, void* host,
+                                  std::span<const engine::LiveState::Range> ranges);
+  virtual Status RestoreUsedStateFor(Branch& branch, void* host,
+                                     std::span<const engine::LiveState::Range> ranges);
+  virtual std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
+      const Branch& branch, std::uint32_t positions) const;
+  virtual Status PrepareRestoreStateFor(Branch& branch,
+                                        std::span<const engine::LiveState::Range> footprint);
+  virtual Status CopyCheckpointStateFor(Branch& branch, void* host,
+                                        std::span<const engine::LiveState::Range> ranges,
+                                        bool to_host);
+  virtual std::uint32_t CursorFor(const Branch& branch) const;
+  virtual void SetCursorFor(Branch& branch, std::uint32_t value);
+  virtual void SaveDecodingStateFor(Branch& branch);
+  virtual void RestoreDecodingStateFor(Branch& branch);
+  virtual execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const;
+  virtual void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state);
+
   // During Generate: whether it samples, the token for a row's logits at
   // a position in the conversation (greedy: the argmax), and whether the
   // target keeps a draft there (greedy: the argmax equals it); if not,
   // `next` is the token in its place.
   bool sampling() const { return default_branch_.sampling_.has_value(); }
+  bool sampling(const Branch& branch) const;
   std::expected<std::int32_t, std::string> Choose(std::span<const float> row,
                                                   std::uint64_t position);
   std::expected<bool, std::string> Keep(std::span<const float> row, std::int32_t draft,
@@ -534,8 +594,12 @@ class Llm : public Served {
   Status SaveState(Branch& branch, void* host);
   Status RestoreState(Branch& branch, void* host);
   void CheckBranch(const Branch& branch) const;
+  void CheckDefaultBranch(const Branch& branch) const;
   void CheckIdleGeneration(const Branch& branch) const;
   Branch default_branch_;
+  std::array<std::unique_ptr<Branch>, kMaxBranches - 1> extra_branches_;
+  std::uint32_t branch_count_ = 1;
+  bool branches_prepared_ = false;
 
  protected:
   std::filesystem::path checkpoint_directory_;

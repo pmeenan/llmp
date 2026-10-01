@@ -67,6 +67,7 @@
 #ifndef JITLLM_ENGINE_QWEN38_RUNNER_H_
 #define JITLLM_ENGINE_QWEN38_RUNNER_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -209,7 +210,7 @@ class Qwen38Runner final : public PagedModel {
   // The state zeroed (a job leasing it), the drafter's too, and any pending
   // commit dropped.
   Status Clear();
-  bool state_usable() const { return !live_.quarantined(); }
+  bool state_usable() const { return !cohort_faulted_ && !live_.quarantined(); }
   Status ReserveStateThrough(std::uint32_t positions) { return EnsureState(positions); }
   std::vector<LiveState::Range> used_state_ranges() const { return live_.used_ranges(); }
   std::uint64_t used_state_bytes() const { return live_.used_bytes(); }
@@ -257,12 +258,9 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t drafter_read_bytes() const { return dweights_.read_bytes(); }
 
   // Forgets every planned shape and its graph.
-  void DropPlans() {
-    plans_.Clear();
-    mplans_.Clear();
-  }
-  std::size_t plans() const { return plans_.size(); }
-  std::size_t graphs() const { return plans_.graphs() + mplans_.graphs(); }
+  void DropPlans();
+  std::size_t plans() const;
+  std::size_t graphs() const;
   double plan_seconds() const { return plan_seconds_; }
   const PleStats& ple() const { return ple_; }
   // Decode graphs on or off for the next chunks; captured graphs are kept.
@@ -273,7 +271,7 @@ class Qwen38Runner final : public PagedModel {
   // The weight extents (the target's, then the drafter's) and the state's
   // (the target's, then the drafter's).
   std::vector<catalog::ExtentId> weights() const;
-  std::vector<catalog::ExtentId> state() const { return live_.extents(); }
+  std::vector<catalog::ExtentId> state() const;
   std::uint64_t weight_read_bytes() const { return weights_.read_bytes() + dweights_.read_bytes(); }
   std::uint64_t state_bytes() const { return layout_.bytes; }
   std::uint64_t state_base() const { return live_.base(kTarget); }
@@ -319,10 +317,157 @@ class Qwen38Runner final : public PagedModel {
   static constexpr std::size_t kWithLogits = 0;  // ChunkPlans' variants
   static constexpr std::size_t kLean = 1;
 
+  // One conversation's writable native state and address-bound plans.
+  // The runner owns it at a stable address through fenced Release; shared
+  // weights, PLE, launch/staging and layout geometry stay on the runner.
+  // The aliases below preserve the legacy default request and private
+  // benchmark entry points. Every other request has independent addresses.
+  struct RequestState {
+    explicit RequestState(std::uint32_t index = 0) : slot(index) {}
+    RequestState(const RequestState&) = delete;
+    RequestState& operator=(const RequestState&) = delete;
+    RequestState(RequestState&&) = delete;
+    RequestState& operator=(RequestState&&) = delete;
+    ~RequestState() = default;
+
+    LiveState live{"Qwen3.8"};  // target, then MTP drafter
+    Qwen38Model model;
+    ChunkPlans plans{32};
+    MtpPlans mplans{32};
+    // Working state, charged for the model's life and never spilled.
+    Mapped commit;
+    kernels::ggml::Qwen38CommitArgs commit_args;
+    kernels::ggml::RangeCopy* carry = nullptr;
+    std::uint32_t pending_rows = 0;
+    const std::uint32_t slot;
+    catalog::Closure fence;
+  };
+
+ public:
+  static constexpr std::size_t kRequestSlots = 4;
+  // Borrowed from its one runner through fenced Release. A slot cannot move,
+  // be constructed by callers, or redirect work to another runner. Scalar
+  // prefill writes directly into its own state; shared staging is reused
+  // only after each native operation has completed.
+  class Slot final {
+   public:
+    Slot(const Slot&) = delete;
+    Slot& operator=(const Slot&) = delete;
+    Slot(Slot&&) = delete;
+    Slot& operator=(Slot&&) = delete;
+    ~Slot() = default;
+    std::uint32_t index() const { return request_.slot; }
+    bool state_usable() const { return !owner_.cohort_faulted_ && !request_.live.quarantined(); }
+    std::vector<LiveState::Range> used_state_ranges() const { return request_.live.used_ranges(); }
+    std::uint64_t used_state_bytes() const { return request_.live.used_bytes(); }
+    std::uint64_t state_base() const { return request_.live.base(kTarget); }
+    std::uint64_t state_bytes() const { return owner_.layout_.bytes; }
+    std::uint64_t drafter_state_base() const { return request_.live.base(kDrafter); }
+    std::uint64_t drafter_state_bytes() const { return request_.live.bytes(kDrafter); }
+    std::uint32_t pending_rows() const { return request_.pending_rows; }
+    // Only after completed rollback/restore of this slot's own snapshot.
+    void set_pending_rows(std::uint32_t rows) { request_.pending_rows = rows; }
+    Status Clear() { return owner_.Clear(request_); }
+    Status ReserveStateThrough(std::uint32_t positions) {
+      return owner_.EnsureState(request_, positions);
+    }
+    Status Chunk(std::span<const std::int32_t> history, std::uint32_t n_past,
+                 std::vector<float>& logits, bool inject = false) {
+      return owner_.Chunk(request_, history, n_past, logits, inject);
+    }
+    Status Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts,
+                 std::vector<float>* probabilities = nullptr, std::uint32_t passes = 0,
+                 Qwen38DraftHeadCapture* head_capture = nullptr) {
+      return owner_.Draft(request_, history, drafts, probabilities, passes, head_capture);
+    }
+    Status Verify(std::span<const std::int32_t> history, std::uint32_t n_past,
+                  std::vector<std::int32_t>& argmax, std::vector<float>* logits,
+                  Qwen38RoutedCapture* routed_capture = nullptr) {
+      return owner_.Verify(request_, history, n_past, argmax, logits, routed_capture);
+    }
+    Status Accept(std::uint32_t keep) { return owner_.Accept(request_, keep); }
+    Status Rollback() { return owner_.Rollback(request_); }
+    Status ReadState(std::vector<std::byte>& target, std::vector<std::byte>& drafter) {
+      return owner_.ReadState(request_, target, drafter);
+    }
+    Status SaveUsedState(void* host, std::span<const LiveState::Range> ranges) {
+      return owner_.SaveUsedState(request_, host, ranges);
+    }
+    Status RestoreUsedState(void* host, std::span<const LiveState::Range> ranges) {
+      return owner_.RestoreUsedState(request_, host, ranges);
+    }
+    std::expected<std::vector<LiveState::Range>, std::string> CheckpointRanges(
+        std::uint32_t positions) const {
+      return owner_.CheckpointRanges(request_, positions);
+    }
+    Status PrepareRestoreState(std::span<const LiveState::Range> ranges) {
+      return owner_.PrepareRestoreState(request_, ranges);
+    }
+    Status CopyCheckpointState(void* host, std::span<const LiveState::Range> ranges, bool to_host) {
+      return owner_.CopyCheckpointState(request_, host, ranges, to_host);
+    }
+
+   private:
+    friend class Qwen38Runner;
+    Slot(Qwen38Runner& owner, RequestState& request) : owner_(owner), request_(request) {}
+    Qwen38Runner& owner_;
+    RequestState& request_;
+  };
+  // Host-only lookup; no admission, model activation or native dispatch.
+  std::expected<Slot*, std::string> request_slot(std::size_t index);
+  // Between completed native/copy units only. With several active slots the
+  // driver must hold one request on this stream over execution_closure().
+  // Refreshing an existing request retains their union; failure stops the
+  // entire cohort. Empty selects shared resources alone for drained retirement.
+  // Serial fallback selects slot zero before opening its ordinary request.
+  Status SelectSlots(std::span<Slot* const> active);
+  const catalog::Closure& execution_closure() const { return execution_; }
+  bool cohort_usable() const { return !cohort_faulted_; }
+  bool HasRetainedState() const;
+
+ private:
+  std::array<RequestState*, kRequestSlots> Requests();
+  std::array<const RequestState*, kRequestSlots> Requests() const;
+  Status CheckActive(const RequestState& request) const;
+  void FaultCohort();
+  // Job's Status alone does not distinguish a known fenced refusal from
+  // a provider fault retaining an operation. Inspect scheduler/catalog
+  // health on their owner thread before preserving a local failure.
+  void CheckFailedJob();
+  Status BindRequest(RequestState& request);
+  Status SetupSnapshot(RequestState& request);
+  void RoomForGraphs();
+  Status Clear(RequestState& request);
+  Status EnsureState(RequestState& request, std::uint32_t positions);
+  Status Chunk(RequestState& request, std::span<const std::int32_t> history, std::uint32_t n_past,
+               std::vector<float>& logits, bool inject);
+  Status Draft(RequestState& request, std::span<const std::int32_t> history,
+               std::vector<std::int32_t>& drafts, std::vector<float>* probabilities,
+               std::uint32_t passes, Qwen38DraftHeadCapture* head_capture);
+  Status Verify(RequestState& request, std::span<const std::int32_t> history, std::uint32_t n_past,
+                std::vector<std::int32_t>& argmax, std::vector<float>* logits,
+                Qwen38RoutedCapture* routed_capture);
+  Status Accept(RequestState& request, std::uint32_t keep);
+  Status Rollback(RequestState& request);
+  Status ReadState(RequestState& request, std::vector<std::byte>& target,
+                   std::vector<std::byte>& drafter);
+  Status SaveUsedState(RequestState& request, void* host, std::span<const LiveState::Range> ranges);
+  Status RestoreUsedState(RequestState& request, void* host,
+                          std::span<const LiveState::Range> ranges);
+  Status PrepareRestoreState(RequestState& request, std::span<const LiveState::Range> ranges);
+  Status CopyCheckpointState(RequestState& request, void* host,
+                             std::span<const LiveState::Range> ranges, bool to_host);
+  std::expected<std::vector<LiveState::Range>, std::string> CheckpointRanges(
+      const RequestState& request, std::uint32_t positions) const;
+
   Status ReserveWeights(std::vector<std::uint64_t>& stride, std::uint64_t& mtp_stride);
   std::expected<ChunkPlans::Entry*, std::string> Planned(const ChunkKey& key);
+  std::expected<ChunkPlans::Entry*, std::string> Planned(RequestState& request,
+                                                         const ChunkKey& key);
   std::expected<MtpPlans::Entry*, std::string> PlannedMtp(
       const kernels::ggml::Qwen38MtpShape& shape);
+  std::expected<MtpPlans::Entry*, std::string> PlannedMtp(
+      RequestState& request, const kernels::ggml::Qwen38MtpShape& shape);
   void Check(const kernels::ggml::Qwen38Graph& graph);
   void CheckMtp(const kernels::ggml::Qwen38MtpGraph& graph);
   // The chunk's n-gram rows planned, read and their slots' sources set.
@@ -334,9 +479,12 @@ class Qwen38Runner final : public PagedModel {
   // After a failed job (LiveState::Settle), with the launch context's
   // fault: an undone verify leaves no streams rows pending.
   void Settle(bool saved, bool wrote, bool unknown);
+  void Settle(RequestState& request, bool saved, bool wrote, bool unknown);
   // The live state's, and the n-gram hash checked and no row reads stalled.
   Status Usable() const;
+  Status Usable(const RequestState& request) const;
   Status RefreshClosures();
+  Status RefreshClosures(std::uint8_t protected_mask);
   Status EnsureState(std::uint32_t positions);
   // The drafter's shape and pass inputs for `rows` rows from `first` and
   // `passes` - 1 single rows after them.
@@ -350,7 +498,13 @@ class Qwen38Runner final : public PagedModel {
   int owner_;
   std::uint32_t stream_;
   RunnerResources resources_;
-  LiveState live_{"Qwen3.8"};  // the target's state, then the MTP drafter's
+  RequestState default_request_;
+  std::array<RequestState, 3> additional_requests_{
+      {RequestState(1), RequestState(2), RequestState(3)}};
+  std::array<Slot, kRequestSlots> request_slots_{
+      {Slot(*this, default_request_), Slot(*this, additional_requests_[0]),
+       Slot(*this, additional_requests_[1]), Slot(*this, additional_requests_[2])}};
+  LiveState& live_ = default_request_.live;
   GraphRuns runs_;
 
   const model::Qwen38Profile& profile_ = model::Qwen38Flash();
@@ -360,7 +514,7 @@ class Qwen38Runner final : public PagedModel {
   model::Qwen38StateLayout layout_;
   model::Qwen38PleHash hash_;
   bool hash_checked_ = false;
-  Qwen38Model model_;
+  Qwen38Model& model_ = default_request_.model;
 
   // The n-gram rows: the table in its shard, the slots (device), the
   // landing and the slots' sources (pinned), the runner's own ring.
@@ -385,10 +539,13 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t host_input_bytes_ = 0;
 
   catalog::Closure everything_;
-  catalog::Closure fence_;  // the state: what a clear or a fence leases
+  catalog::Closure fence_;        // the state: what a clear or a fence leases
+  catalog::Closure execution_;    // shared resources and every active initialized slot
+  std::uint8_t active_mask_ = 1;  // legacy default request until explicitly changed
+  bool cohort_faulted_ = false;   // lost protection/unknown shared completion: retirement only
 
-  ChunkPlans plans_{32};  // destroyed before the launch context (Release)
-  MtpPlans mplans_{32};
+  ChunkPlans& plans_ = default_request_.plans;  // cleared before the launch context (Release)
+  MtpPlans& mplans_ = default_request_.mplans;
   GraphStats graph_stats_;
   GraphStats draft_stats_;
   double plan_seconds_ = 0;
@@ -403,13 +560,13 @@ class Qwen38Runner final : public PagedModel {
   // A verify's saves and its cells' snapshot (D-068 working state, charged
   // with the model, never spilled: mapped for the model's life, it stays
   // across a swap, and a commit still pending then runs at the next job).
-  Mapped commit_;
-  kernels::ggml::Qwen38CommitArgs commit_args_;  // every place but `keep`, from Bind
-  std::uint64_t mtp_base_ = 0;                   // a drafter pass's inputs are staged from here
-  kernels::ggml::RangeCopy* carry_ = nullptr;    // a prefill's pending streams row
-  std::uint32_t pending_rows_ = 0;               // streams rows the next draft catches up on
-  void* drafts_ = nullptr;                       // pinned: a draft's, then a verify's argmaxes
-  float* draft_head_capture_ = nullptr;          // pinned, owned by the node through teardown
+  Mapped& commit_ = default_request_.commit;
+  kernels::ggml::Qwen38CommitArgs& commit_args_ = default_request_.commit_args;
+  std::uint64_t mtp_base_ = 0;  // a drafter pass's inputs are staged from here
+  kernels::ggml::RangeCopy*& carry_ = default_request_.carry;
+  std::uint32_t& pending_rows_ = default_request_.pending_rows;
+  void* drafts_ = nullptr;               // pinned: a draft's, then a verify's argmaxes
+  float* draft_head_capture_ = nullptr;  // pinned, owned by the node through teardown
   std::uint32_t capture_head_rows_ = 0;
   std::byte* routed_capture_ = nullptr;  // runner-owned pinned DMA staging
   std::uint64_t routed_capture_bytes_ = 0;

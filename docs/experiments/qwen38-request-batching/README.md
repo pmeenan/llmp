@@ -192,5 +192,49 @@ Controls cover processed-anchor cancellation, callback state, visible stops
 after complete verification, absolute-position seeds and failed-step validity.
 
 This prepares service integration. The production node backend still executes
-serial requests; independent native slots, shared execution and a bounded exact
-prefix cache remain to be connected and measured through the real API.
+serial requests; shared execution and a bounded exact prefix cache remain to
+be connected and measured through the real API.
+
+## Independent native request slots
+
+Qwen's runner now owns four stable native slots under one shared model owner.
+Each has independent target/MTP state, verify snapshot, pending cursor and
+plan caches. Runtime branches forward history, sampling, checkpoints and
+adaptive policy to their own slots. Only selected slots enter the execution
+closure, while swaps and retention account for every initialized slot.
+This adds state ownership; no shared product dispatch or HTTP concurrency
+is enabled by it.
+
+A real-model control on Spark A uses public slot operations with context
+2048, chunks of 512 rows and four distinct prefixes of 255/257/511/513 IDs. Its
+depth-two/three and forced-kept-row trajectories match scalar controls
+exactly: 64 complete output comparisons and 82 complete initialized-page
+and cursor comparisons pass. Four clean host refusals preserve state. A
+separately leased destination blocks Clear, quarantines only that slot and
+is rebuilt while its peers remain exact. Five extra-slot-only retention
+controls pass. Host capture/clear/restore,
+independently leased peers, graph replay and an away/return swap are included.
+There are 21 target captures/21 replays, 19 draft captures/21 replays, and
+the aggregate graph count remains capped at 16. All 37069 evicted extents
+return, preserving 835354624 state bytes and all four final state identities.
+Diagnostic capture and comparison pay 3341418496 and 17124769792 bytes
+outside any performance claim. The native control took 43.871 seconds.
+
+The first control attempt passed its output and page checks, then inspected
+an empty-target handoff before asynchronous parked-backing release finished.
+The retry changes only that away swap to completed eviction before asserting
+released residency. Production source, arithmetic and return-swap behavior
+remain unchanged; both attempts are retained separately.
+
+The chosen production slice passes 1236 Spark-native tests, including 256 GPU
+tests, SDK formatting and clang-tidy, the boundary check and REUSE/header
+checks. Its 1260-file source map is 5553813b…, checked receipt 86b8b9db…,
+SDK f38891fc… and runtime binary 124cd0ea…. The external control binds that
+same source and libraries: build bba5e9ae…, binary 23e249d5…, complete outer
+control 6b8d8b1c… and native 208e0dca…. All children were reaped in the
+supervised group and the terminal gate reported 117.225 GiB with no active
+model. Raw receipts and controls stay outside Git under
+`~/scratch/m3-qwen-native-slots-r1/` on Spark A. These controls establish
+slot independence and retention at the tested shapes, not task quality,
+performance parity, fault recovery or deployed concurrency. x86 checks
+remain deferred under the owner's optimization-run override.

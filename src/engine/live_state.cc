@@ -351,7 +351,10 @@ LiveState::Status LiveState::Retain(PagedNode& node, std::span<const Range> rang
 
 LiveState::Status LiveState::Copy(PagedNode& node, const catalog::Closure& fence,
                                   std::uint32_t stream, void* host, std::span<const Range> ranges,
-                                  bool to_host) {
+                                  bool to_host, CopyRetirement* retirement) {
+  if (retirement != nullptr) {
+    *retirement = CopyRetirement::kProven;
+  }
   std::uint64_t total = 0;
   for (const Range& range : ranges) {
     if (range.region >= regions_.size() || range.offset > bytes(range.region) ||
@@ -401,6 +404,9 @@ LiveState::Status LiveState::Copy(PagedNode& node, const catalog::Closure& fence
       to_host ? "saving used conversation state" : "restoring used conversation state", stream);
   if (!posted) {
     node.KeepPinned(host);
+    if (retirement != nullptr) {
+      *retirement = CopyRetirement::kUnproven;
+    }
   }
   return posted;
 }
@@ -416,6 +422,79 @@ void LiveState::CheckPlaces(const sc::Scheduler& scheduler, PlaceCheck& check) c
   }
 }
 
+LiveState::Status LiveState::DiscardGrowingState(PagedNode& node) {
+  if (regions_.empty() ||
+      !std::ranges::all_of(regions_, [](const Region& r) { return r.growing; })) {
+    return Error("discarding requires nonempty growing state");
+  }
+  quarantined_ = true;
+  const auto used = extents();
+  auto discarded = node.Call(
+      [&]() -> Status {
+        for (const ExtentId id : used) {
+          auto view = node.catalog().Describe(id);
+          if (!view || view->leases != 0 || view->registrations != 0 ||
+              (view->state != catalog::ExtentState::kResident &&
+               view->state != catalog::ExtentState::kNonresident)) {
+            return Error("a state being cleared is held or has an operation in flight");
+          }
+        }
+        for (const ExtentId id : used) {
+          if (node.catalog().Describe(id)->state == catalog::ExtentState::kResident &&
+              !node.catalog().InvalidateContents(id)) {
+            return Error("invalidating a conversation state");
+          }
+        }
+        return {};
+      },
+      "discarding conversation state");
+  if (!discarded) {
+    return discarded;
+  }
+  if (auto evicted = node.Evict(used); !evicted) {
+    return evicted;
+  }
+  auto forgotten = node.Call(
+      [&]() -> Status {
+        for (const ExtentId id : used) {
+          if (!node.catalog().ForgetPreserved(id)) {
+            return Error("forgetting a conversation state's saved contents");
+          }
+        }
+        for (Region& r : regions_) {
+          for (std::size_t i = 0; i < r.sources.size(); ++i) {
+            r.sources[i].write_back = false;
+            if (!node.scheduler().SetSource(r.mapped.extents[i], r.sources[i])) {
+              return Error("restoring a growing state's initial source");
+            }
+          }
+        }
+        return {};
+      },
+      "forgetting conversation state");
+  if (!forgotten) {
+    return forgotten;
+  }
+  std::uint64_t file_bytes = 0;
+  for (const Region& r : regions_) {
+    file_bytes += r.mapped.bytes;
+  }
+  if (::ftruncate(spill_fd_, 0) != 0 ||
+      ::ftruncate(spill_fd_, static_cast<off_t>(file_bytes)) != 0) {
+    return Error("clearing the sparse conversation spill file");
+  }
+  for (Region& r : regions_) {
+    std::ranges::fill(r.used, 0);
+  }
+  restore_count_ = 0;
+  commit_keep_ = 0;
+  save_count_ = 0;
+  saved_.clear();
+  verify_rows_ = 0;
+  quarantined_ = false;
+  return {};
+}
+
 LiveState::Status LiveState::Clear(PagedNode& node, const catalog::Closure& fence,
                                    std::uint32_t stream, std::string_view what) {
   if (!regions_.empty() &&
@@ -427,72 +506,7 @@ LiveState::Status LiveState::Clear(PagedNode& node, const catalog::Closure& fenc
         return ended;
       }
     }
-    quarantined_ = true;
-    const auto used = extents();
-    auto discarded = node.Call(
-        [&]() -> Status {
-          for (const ExtentId id : used) {
-            auto view = node.catalog().Describe(id);
-            if (!view || view->leases != 0 || view->registrations != 0 ||
-                (view->state != catalog::ExtentState::kResident &&
-                 view->state != catalog::ExtentState::kNonresident)) {
-              return Error("a state being cleared is held or has an operation in flight");
-            }
-          }
-          for (const ExtentId id : used) {
-            if (node.catalog().Describe(id)->state == catalog::ExtentState::kResident &&
-                !node.catalog().InvalidateContents(id)) {
-              return Error("invalidating a conversation state");
-            }
-          }
-          return {};
-        },
-        "discarding conversation state");
-    if (!discarded) {
-      return discarded;
-    }
-    if (auto evicted = node.Evict(used); !evicted) {
-      return evicted;
-    }
-    auto forgotten = node.Call(
-        [&]() -> Status {
-          for (const ExtentId id : used) {
-            if (!node.catalog().ForgetPreserved(id)) {
-              return Error("forgetting a conversation state's saved contents");
-            }
-          }
-          for (Region& r : regions_) {
-            for (std::size_t i = 0; i < r.sources.size(); ++i) {
-              r.sources[i].write_back = false;
-              if (!node.scheduler().SetSource(r.mapped.extents[i], r.sources[i])) {
-                return Error("restoring a growing state's initial source");
-              }
-            }
-          }
-          return {};
-        },
-        "forgetting conversation state");
-    if (!forgotten) {
-      return forgotten;
-    }
-    std::uint64_t file_bytes = 0;
-    for (const Region& r : regions_) {
-      file_bytes += r.mapped.bytes;
-    }
-    if (::ftruncate(spill_fd_, 0) != 0 ||
-        ::ftruncate(spill_fd_, static_cast<off_t>(file_bytes)) != 0) {
-      return Error("clearing the sparse conversation spill file");
-    }
-    for (Region& r : regions_) {
-      std::ranges::fill(r.used, 0);
-    }
-    restore_count_ = 0;
-    commit_keep_ = 0;
-    save_count_ = 0;
-    saved_.clear();
-    verify_rows_ = 0;
-    quarantined_ = false;
-    return {};
+    return DiscardGrowingState(node);
   }
   std::vector<std::pair<std::uint64_t, std::uint64_t>> zeroed;
   zeroed.reserve(regions_.size());
@@ -553,7 +567,11 @@ void* LiveState::HostCopy(PagedNode& node, std::uint64_t bytes) {
 
 LiveState::Status LiveState::Read(PagedNode& node, const catalog::Closure& fence,
                                   std::uint32_t stream, std::string_view what,
-                                  std::span<std::vector<std::byte>* const> out) {
+                                  std::span<std::vector<std::byte>* const> out,
+                                  CopyRetirement* retirement) {
+  if (retirement != nullptr) {
+    *retirement = CopyRetirement::kProven;
+  }
   const std::vector<Range> ranges = used_ranges();
   auto* host = static_cast<std::byte*>(HostCopy(node, std::max<std::uint64_t>(used_bytes(), 256)));
   if (host == nullptr) {
@@ -581,6 +599,9 @@ LiveState::Status LiveState::Read(PagedNode& node, const catalog::Closure& fence
       what, stream);
   if (!posted) {
     HostCopyUnproven();
+    if (retirement != nullptr) {
+      *retirement = CopyRetirement::kUnproven;
+    }
     return posted;
   }
   for (std::size_t i = 0; i < out.size(); ++i) {
