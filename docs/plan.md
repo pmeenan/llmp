@@ -997,6 +997,10 @@ it appears.
       pair row-local products over independent request states: paid decode
       throughput improves 19.1%/19.6%, with exact IDs, acceptance and final
       state/cursors. Production request batching and HTTP parity remain open.
+      The [exact16 MXFP8 control](experiments/qwen38-mxfp8-sixteen/README.md)
+      passes every output/state check but makes the paid four-request loop
+      7.469 times slower. Keep paired-eight products; no wider MXFP8 kernel
+      or selector change is adopted.
       The internal cooperative API driver and shared resumable generation
       session prepare that integration: each model has one host conversation
       branch, and per-request admission, cancellation and proven retirement
