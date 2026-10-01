@@ -94,6 +94,10 @@
 #include "model/qwen38.h"
 #include "providers/storage.h"
 
+namespace jitllm::benchmarks::qwen_batch {
+class Proof;
+}
+
 namespace jitllm::engine {
 
 struct Qwen38Options {
@@ -297,6 +301,9 @@ class Qwen38Runner final : public PagedModel {
   Status Release() override;
 
  private:
+  // Private C2 benchmark borrows this one weight/PLE/launch owner; serving
+  // never constructs it. Independent state stays in cataloged LiveState slots.
+  friend class benchmarks::qwen_batch::Proof;
   static constexpr std::size_t kTarget = 0;  // live_'s regions
   static constexpr std::size_t kDrafter = 1;
 

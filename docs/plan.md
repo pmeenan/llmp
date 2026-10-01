@@ -986,6 +986,10 @@ it appears.
       qualification. Native warm, Mia plain, stable decision-relevant concurrent
       controls and the longer ladder remain open; these screens do not
       establish concurrent parity.
+      The [private native C2/C4 mechanism controls](experiments/qwen38-request-batching/README.md)
+      pair row-local products over independent request states: paid decode
+      throughput improves 19.1%/19.6%, with exact IDs, acceptance and final
+      state/cursors. Production request batching and HTTP parity remain open.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
