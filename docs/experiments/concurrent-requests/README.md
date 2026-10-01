@@ -185,6 +185,125 @@ seven comparisons from completed per-request records.
 | Complete client receipt | `90562f54abf4aae571d5fcd9c3258218e03f995081addac6a6b9cdcc0939cbf8` |
 | Descriptive analysis | `f0732207dd39601ca8347af63e16c085537d63176f351946a8b6443474764e8c` |
 
-jitLLM's queue baseline, warm decode, longer contexts and repeated
-decision-relevant cells remain open. No concurrent parity gate is closed
-by these initial comparator screens.
+## jitLLM: first 8K queue screen
+
+The current native service runs one request to completion while other
+clients wait. Its aggregate fresh-prompt throughput stayed near 20.2
+tokens/s in plain mode and 27.3–28.5 tokens/s with speculation as the
+number of clients increased from one to four. All 28 native responses
+completed their 256-token budgets, and all fourteen matching solo/burst
+comparisons had identical text, usage and finish. Native output token IDs
+were not returned. The concurrent speed gate remains open.
+
+Spark A, 2026-10-01. Native and Mia used this same Spark; the TensorFold
+screen used Spark B. The native source was the authenticated 1,244-file
+`4e9dd06` export and a locked, target-only runtime build with the actual
+Spark A SDK and SDK-identical cuBLAS payloads. This diagnostic did not run
+a fresh full unit suite or style pass, following the owner's experimental
+workflow override. No production source or scheduling policy changed.
+
+Both native deployments used target `c4fb47a9`, selected 47,172-row MTP
+artifact `8600a998`, context 33,792, prefill chunk 4,096, F16 KV and F32
+recurrent state. Speculation used the existing adaptive depth two/three;
+plain mode disabled speculation. The two deployment configurations
+differed only in speculation and private storage paths. All fourteen
+frozen input members were authenticated against the common `a947338b`
+receipt. Literal text requests used the original pinned tokenizer,
+`add_special_tokens: false`, temperature zero and a 256-token cap. Every
+burst and solo response reported 8,192 prompt tokens and zero cached
+tokens. This checks authenticated text/tokenizer plus usage; it does not
+independently prove native HTTP prompt IDs.
+
+| Mode | Requests | Actual output tokens | Burst time (s) | Aggregate tokens/s | Median / worst request latency (s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Plain† | 1 | 256 | 12.684 | 20.183 | 12.684 / 12.684 |
+| Plain† | 2 | 512 | 25.274 | 20.258 | 18.954 / 25.273 |
+| Plain† | 4 | 1,024 | 50.572 | 20.248 | 31.598 / 50.571 |
+| Speculative | 1 | 256 | 9.383 | 27.285 | 9.383 / 9.383 |
+| Speculative | 2 | 512 | 17.951 | 28.522 | 13.447 / 17.951 |
+| Speculative | 4 | 1,024 | 36.639 | 27.949 | 22.832 / 36.638 |
+
+† The first controller completed all plain requests and comparisons, then
+failed because its memory sampler read a transient process status without
+`VmRSS` after the service had exited. The outer receipt remains incomplete
+and supplies no memory qualification. The same live service identity was
+proven before and after the matrix; requested shutdown returned zero, the
+service was reaped, and the independent strong retirement check passed.
+The table retains these completed timings descriptively under root's
+explicit instrumentation-only disposition. No successful plain requests
+were repeated or replaced. The next controller stopped and joined the
+sampler before deliberate service exit, froze a speculative-only mode,
+and completed that separate deployment cleanly.
+
+These are one observation per cell. Aggregate throughput divides actual
+completion tokens by first submission to last complete response, including
+fresh prefill, admission, queue waits and HTTP work. Submission spreads
+were below 0.9 ms. Nonstreaming native replies expose neither first-token
+timing nor an independent decode rate. Service logs explicitly recorded
+successive queue waits; this is a queue baseline, not horizontal batched
+execution. Same-engine text equality is not a model-quality pass or a
+token-ID equality claim.
+
+The speculative C1 result exceeds Mia's 23.437 tokens/s but is below
+TensorFold's 31.617. At C2 and C4 it is below both fresh speculative
+references, whose C4 rates are 40.260 and 40.532. Native C4 median latency
+is 22.832 seconds, while its last request takes 36.638 seconds; Mia's and
+TensorFold's worst requests take 25.434 and 25.264 seconds. Thus aggregate
+throughput and per-request latency cannot be declared matched. The
+comparators have different draft policies, state precisions and batching
+rules; TensorFold also uses different affine weight quantization. Mia's
+seven solo/burst outputs differed under `DET=0`. None of these endpoint
+timings isolates a numerical kernel or establishes cross-engine quality.
+
+Native listener/model-list readiness took 1.506 seconds in plain mode and
+1.505 seconds with speculation. Those endpoints precede first model
+page-in; they are not comparable to a fully loaded reference startup.
+An excluded nine-prompt-token, sixteen-output-token warmup took 6.456
+and 6.530 seconds and included initial paging. The plain matrix and its
+controls took 177.136 seconds; the speculative matrix took 128.008.
+Controller wall times were 190.284 and 141.365 seconds. The speculative
+run's observed node-available-memory drop was 83,623,931,904 bytes and
+peak sampled process RSS was 1,825,263,616 bytes. These are different
+unified-node/process scopes and include setup/cache, not isolated GPU
+allocation totals or incremental concurrency memory. Plain memory samples
+remain unqualified. The receipt-bound retirement gates reported 117.286
+and 117.284 GiB available.
+
+Raw records are retained on Spark A at
+`~/scratch/m3-native-concurrent-a-r1/run-r1/` and `run-r2/`; compact local
+copies are `/home/pmeenan/scratch/m3-native-concurrent-a-model-r1-records/`
+and `/home/pmeenan/scratch/m3-native-concurrent-a-model-r2-records/`.
+The original plain job was `native-concurrent-a-model-r1`, 08:58:37–09:01:48
+EDT, outer rc 1 solely for the sampler failure. The speculative-only job
+was `native-concurrent-a-model-r2`, 09:10:23–09:12:45 EDT, rc 0. Both
+services retired with rc 0. The descriptive analyzer authenticates the
+prepared, launch, client and terminal receipts and reconstructs the
+per-request metrics; its r1 exception is restricted to the exact retained
+instrumentation failure and does not repair the original launch status.
+Both descriptive reconstruction jobs completed with rc 0. The measured
+runtime, actual SDK cuBLAS payloads and build receipts were copied without
+rewriting the binary into the external `preserve-r1/` archive and their
+hashes checked before and after; the source export and raw roots remain
+in place.
+
+| Input or result | SHA-256 |
+| --- | --- |
+| Target-build receipt | `0a016387befe4fb76476fe16a4ae3234d0e0d5b3e91246f5533b77cb5ae5ed0b` |
+| Native runtime | `bec33fe429780623af7d577f6450dae32f6db9aff6253d0d722f55ec24abc27c` |
+| Authenticated source map | `c71b616d848839b7526a78fd68d28c14185cce9777b95a2fe7617339c497232f` |
+| Client source | `61de4ae8411a82cdaf46f12afad4bdb4ef51455f52913419800ad714f2dba85e` |
+| Plain prepared receipt | `2fec63be31214218658c8514019bfe0f8e07a7b9460dc5ef3bf52fbf71f26ae5` |
+| Plain outer incomplete receipt | `2b686aef2e7f4bc969b851ca7cea9b87451c9faae8492e629e22dfef570808aa` |
+| Plain complete client receipt | `440fe27e6f7ca381015d2d9deff22b4ffb590b5133c9b24e3d35accf379af527` |
+| Speculative prepared receipt | `3bd59444c06c63498e8d8921825115cc313670b28c4392471a135892c39e09cd` |
+| Speculative controller source | `9e9be1e31db687d1971cade5a20ff7d63eaedfb540238790a3d80001233778ca` |
+| Speculative complete launch receipt | `15ab4a32beb9a6ea1a78eb54568f927da56d8f08757ad84e7faac61cfd4fd618` |
+| Speculative complete client receipt | `8f684ad80258d85e5028ed67b06aedf1e3983a49e2635a28b5435b1c93a2f76a` |
+| Descriptive analyzer source | `fcd10073979882f3b43c2442694c1cea323dbdb460ae6198ed374831d23822ab` |
+| Plain descriptive analysis | `3abad2b1cc99d1df70b9dee7fb03c89b6ac288d4dcf264fd771d3f8d8f3fc59b` |
+| Speculative descriptive analysis | `ae198ae21aadc5abf687d88c1c3360ebb19b03c880fc65f16ce79e97e8498b86` |
+| Native preservation receipt | `72278232c7b4a846ab54429900277c06c03af5aee75c0360a0420cb088c78630` |
+
+Continuous batched native execution, warm branches, longer contexts and
+repeated decision-relevant cells remain open. This diagnostic changes no
+defaults and closes no concurrent parity or quality gate.

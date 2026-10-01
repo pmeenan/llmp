@@ -964,8 +964,15 @@ it appears.
       with serial prefills. Mia's speculative screen completes 14×256
       outputs and scales 23.44→40.26 tokens/s (1.72×), with all seven
       greedy repeats differing under DET=0; no quality pass follows.
-      Native, Mia plain, warm decode, repeats and the longer ladder remain
-      open; these screens do not establish concurrent parity.
+      The native queue screen completes all 28 outputs with exact text,
+      usage and finish against fourteen solo controls. Its aggregate rate
+      stays near 20.2 tokens/s plain and 27.3–28.5 speculative at C1–C4,
+      below both speculative references at C2/C4. Plain timing is retained
+      descriptively after a post-shutdown memory-sampler failure; the
+      separate speculative deployment completed cleanly. This measured
+      gap advances native continuous batching. Mia plain, warm decode,
+      repeated decision-relevant cells and the longer ladder remain open;
+      these screens do not establish concurrent parity.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
