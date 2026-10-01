@@ -155,6 +155,21 @@ std::expected<void, KernelFailure> MulMatIdQPairBorrowed(LaunchContext& launch, 
                                                          const ExpertMmqPrepared& input,
                                                          std::uint64_t generation);
 
+// Fixed-fixture diagnostic of the actual selected compact consumer. J is
+// the selected tile, independent of ExpertMmqLayout::native_j_max guards.
+// Submits no GPU work. Compiled attributes are collected externally from
+// the authenticated actual instance object, not a new wrapper instantiation.
+struct ExpertMmqDispatch {
+  std::uint64_t scratch_bytes = 0, dynamic_shared_bytes = 0, device_optin_shared_bytes = 0;
+  std::uint32_t row_tile = 0, column_tile = 0, threads = 0, capacity = 0;
+  std::uint32_t product_grid_x = 0, product_grid_y = 0, product_grid_z = 0;
+  std::uint32_t builder_launches = 0, product_launches = 0;
+  bool compact = false, stream_k = false;
+};
+std::expected<ExpertMmqDispatch, KernelFailure> DescribeMulMatIdQPairBorrowed(
+    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
+    const ExpertMmqPrepared& input, std::uint64_t generation);
+
 // Row-invariant products for a speculative verify (D-092; mmvq_rows.cu):
 // every output column of a quantized product (up to kRowsMaxColumns
 // activation columns, or tokens of a mul_mat_id) is computed with the

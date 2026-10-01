@@ -942,9 +942,12 @@ it appears.
       the [preparation capture](experiments/ds4-native-iq2-prepared/README.md)
       now proves every native/original D4 payload byte equal. Borrowing
       either payload reproduces native gate/up exactly; producer removal
-      changes resident pair time by about 4–6%. A matched standalone
-      original/native consumer comparison remains open. These comparisons
-      cover one request.
+      changes resident pair time by about 4–6%. The [standalone same-D4
+      consumer comparison](experiments/ds4-native-iq2-consumer/README.md)
+      measures native at 0.880357× original resident rate. Its [J64 control](experiments/ds4-native-iq2-j64/README.md)
+      preserves every output byte but is 4.92% slower than J128. Keep the
+      current tile; isolate remaining loader/launch/arithmetic factors before
+      restoring another piece. These comparisons cover one request.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer

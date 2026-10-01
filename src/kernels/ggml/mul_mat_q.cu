@@ -79,13 +79,11 @@ std::expected<void, KernelFailure> CheckNode(const ggml_tensor* node) {
   return CheckMulMatQ(node);
 }
 
-// What launch_mul_mat_q draws for the tile size mul_mat_q_switch_J picks,
-// and the grid limits of its non-stream-k launch.
-std::expected<std::uint64_t, KernelFailure> TileFixup(const LaunchContext& launch, ggml_type type,
-                                                      std::int64_t rows, std::int64_t k,
-                                                      std::int64_t columns, std::int64_t planes,
-                                                      std::int64_t assignments = 0,
-                                                      bool compact_experts = false) {
+// Same tile selection as mul_mat_q_switch_J. Shared with the fixed-fixture
+// description so diagnostics cannot invent a different selection heuristic.
+std::expected<ggml_cuda_mmq_config, KernelFailure> ChosenTile(const LaunchContext& launch,
+                                                              ggml_type type, std::int64_t rows,
+                                                              std::int64_t columns) {
   const auto& device = Device(launch);
   const int cc = device.cc;
   const bool fallback = rows % 128 != 0;
@@ -105,7 +103,20 @@ std::expected<std::uint64_t, KernelFailure> TileFixup(const LaunchContext& launc
   if (best_j == 0) {
     return Rejected("no MMQ tile size fits the device's shared memory");
   }
-  const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, best_j, fallback, cc);
+  return ggml_cuda_mmq_get_config(type, best_j, fallback, cc);
+}
+// What launch_mul_mat_q draws for the tile size mul_mat_q_switch_J picks,
+// and the grid limits of its non-stream-k launch.
+std::expected<std::uint64_t, KernelFailure> TileFixup(const LaunchContext& launch, ggml_type type,
+                                                      std::int64_t rows, std::int64_t k,
+                                                      std::int64_t columns, std::int64_t planes,
+                                                      std::int64_t assignments = 0,
+                                                      bool compact_experts = false) {
+  const auto& device = Device(launch);
+  const int cc = device.cc;
+  const auto chosen = ChosenTile(launch, type, rows, columns);
+  if (!chosen) return std::unexpected(chosen.error());
+  const auto& config = *chosen;
   const std::int64_t nty = (rows + config.I - 1) / config.I;
   const std::int64_t ntx = (columns + config.J - 1) / config.J;
   const std::int64_t ntiles = ntx * nty * planes;
@@ -758,6 +769,51 @@ std::expected<void, KernelFailure> MulMatIdQPairBorrowed(LaunchContext& launch, 
           CUDA_CHECK(cudaGetLastError());
         }
       });
+}
+
+std::expected<ExpertMmqDispatch, KernelFailure> DescribeMulMatIdQPairBorrowed(
+    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
+    const ExpertMmqPrepared& input, std::uint64_t generation) {
+  if (auto checked = CheckExpertPrepared(launch, first, second, input, generation); !checked)
+    return std::unexpected(checked.error());
+  const auto* weights = first->src[0];
+  const auto tokens = first->src[1]->ne[2];
+  const auto assignments = tokens * first->src[2]->ne[0];
+  const auto chosen = ChosenTile(launch, GGML_TYPE_IQ2_XXS, weights->ne[1], tokens);
+  if (!chosen) return std::unexpected(chosen.error());
+  const auto& config = *chosen;
+  // This description qualifies only the actual current captured instance;
+  // refusal never substitutes it into the unchanged dispatch below.
+  if (config.I != 128 || config.J != 128 || config.nthreads != 256 ||
+      !config.use_mma_data_layout(Device(launch).cc))
+    return Rejected("borrowed IQ2 description does not match the captured current tile");
+  const auto capacity = mmq_compact_expert_capacity(GGML_TYPE_IQ2_XXS, weights->ne[1], tokens,
+                                                    assignments, weights->ne[2], config.J);
+  const auto scratch = PlanMulMatIdQPairBorrowed(launch, first, second, input, generation);
+  if (!scratch) return std::unexpected(scratch.error());
+  if (capacity <= 0 || *scratch != static_cast<std::uint64_t>(capacity) * sizeof(int2))
+    return Rejected("borrowed IQ2 selected compact capacity differs from actual scratch");
+  int current = -1;
+  if (cudaGetDevice(&current) != cudaSuccess || current != launch.device())
+    return Rejected("borrowed IQ2 attribute device differs");
+  // mul_mat_q has static linkage in mmq.cuh. Taking its address here would
+  // instantiate another numerical kernel under this wrapper's flags.
+  // The controller instead inspects the already built IQ2 instance object.
+  return ExpertMmqDispatch{
+      .scratch_bytes = *scratch,
+      .dynamic_shared_bytes = mmq_get_nbytes_shared(config, Device(launch).cc),
+      .device_optin_shared_bytes = Device(launch).smpbo,
+      .row_tile = static_cast<std::uint32_t>(config.I),
+      .column_tile = static_cast<std::uint32_t>(config.J),
+      .threads = static_cast<std::uint32_t>(config.nthreads),
+      .capacity = static_cast<std::uint32_t>(capacity),
+      .product_grid_x = static_cast<std::uint32_t>((weights->ne[1] + config.I - 1) / config.I),
+      .product_grid_y = static_cast<std::uint32_t>(capacity),
+      .product_grid_z = 1,
+      .builder_launches = 2,
+      .product_launches = 2,
+      .compact = true,
+      .stream_k = false};
 }
 
 }  // namespace jitllm::kernels::ggml

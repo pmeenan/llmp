@@ -12,6 +12,7 @@
 
 #include "base/bytes.h"
 #include "common.cuh"
+#include "kernels/ggml/cublas.h"
 #include "kernels/ggml/dsv4_ds4_moe.h"
 #include "kernels/ggml/dsv4_ds4_moe_raw.h"
 #include "kernels/ggml/ggml_support.h"
@@ -38,6 +39,20 @@ std::expected<ds4_moe::Device, KernelFailure> Device(const LaunchContext& launch
 }
 bool Disjoint(const LaunchContext& launch, std::span<const Ds4CacheBuffer> buffers) {
   const auto w = launch.workspace();
+  std::uint64_t end = 0;
+  if (__builtin_add_overflow(w.base, w.size.value(), &end)) return false;
+  for (auto b : buffers) {
+    if (b.address == 0 || w.size.value() == 0) continue;
+    std::uint64_t bend = 0;
+    if (__builtin_add_overflow(b.address, b.bytes, &bend) || (w.base < bend && b.address < end))
+      return false;
+  }
+  return true;
+}
+bool PairWorkspacesDisjoint(const LaunchContext& launch, std::span<const Ds4CacheBuffer> buffers) {
+  if (!Disjoint(launch, buffers)) return false;
+  if (launch.cublas() == nullptr) return true;
+  const auto w = launch.cublas()->workspace();
   std::uint64_t end = 0;
   if (__builtin_add_overflow(w.base, w.size.value(), &end)) return false;
   for (auto b : buffers) {
@@ -184,32 +199,32 @@ std::expected<void, KernelFailure> RunDs4Moe(LaunchContext& launch, const Ds4Moe
 }
 
 std::expected<void, KernelFailure> RunDs4MoePostPair(LaunchContext& launch,
-                                                 const Ds4MoePostPair& d) {
+                                                     const Ds4MoePostPair& d) {
   if (auto checked = CheckDs4MoePostPair(d); !checked) return checked;
   if (auto device = Device(launch); !device) return std::unexpected(device.error());
-  const std::array operands = {d.gate, d.up, d.weights, d.ids_destination, d.expert_bounds,
-                              d.down_weights, d.middle, d.down_quant, d.work, d.down, d.sum};
+  const std::array operands = {d.gate,          d.up,           d.weights, d.ids_destination,
+                               d.expert_bounds, d.down_weights, d.middle,  d.down_quant,
+                               d.work,          d.down,         d.sum};
   if (!Disjoint(launch, operands) || !Disjoint(launch, d.retained))
     return Reject("ds4 post-pair operands overlap native workspace");
   // The retained span is used only by synchronous validation; the queued
   // callback keeps plain borrowed views, never caller host containers.
   const ds4_moe::PostPair call{.gate = Pointer<const float>(d.gate),
-                              .up = Pointer<const float>(d.up),
-                              .weights = Pointer<const float>(d.weights),
-                              .ids_destination = Pointer<const std::int32_t>(d.ids_destination),
-                              .bounds = Pointer<const std::int32_t>(d.expert_bounds),
-                              .down_weights = Pointer<const void>(d.down_weights),
-                              .middle = Pointer<float>(d.middle),
-                              .down_quant = Pointer<void>(d.down_quant),
-                              .work = Pointer<int>(d.work),
-                              .down = Pointer<float>(d.down),
-                              .sum = Pointer<float>(d.sum)};
+                               .up = Pointer<const float>(d.up),
+                               .weights = Pointer<const float>(d.weights),
+                               .ids_destination = Pointer<const std::int32_t>(d.ids_destination),
+                               .bounds = Pointer<const std::int32_t>(d.expert_bounds),
+                               .down_weights = Pointer<const void>(d.down_weights),
+                               .middle = Pointer<float>(d.middle),
+                               .down_quant = Pointer<void>(d.down_quant),
+                               .work = Pointer<int>(d.work),
+                               .down = Pointer<float>(d.down),
+                               .sum = Pointer<float>(d.sum)};
   return launch.Run(base::Bytes(0), [call](auto& context) {
     CUDA_CHECK(ds4_moe::MoePostPair(call, context.stream()));
   });
 }
-std::expected<void, KernelFailure> RunDs4MoeMaps(LaunchContext& launch,
-                                             const Ds4MoeMaps& d) {
+std::expected<void, KernelFailure> RunDs4MoeMaps(LaunchContext& launch, const Ds4MoeMaps& d) {
   if (auto checked = CheckDs4MoeMaps(d); !checked) return checked;
   const auto device = Device(launch);
   if (!device) return std::unexpected(device.error());
@@ -217,11 +232,66 @@ std::expected<void, KernelFailure> RunDs4MoeMaps(LaunchContext& launch,
   if (!Disjoint(launch, operands) || !Disjoint(launch, d.retained))
     return Reject("ds4 map adapter operands overlap native workspace");
   const ds4_moe::Maps call{.selected = Pointer<const std::int32_t>(d.selected),
-                          .ids_source = Pointer<std::int32_t>(d.ids_source),
-                          .ids_destination = Pointer<std::int32_t>(d.ids_destination),
-                          .bounds = Pointer<std::int32_t>(d.expert_bounds)};
+                           .ids_source = Pointer<std::int32_t>(d.ids_source),
+                           .ids_destination = Pointer<std::int32_t>(d.ids_destination),
+                           .bounds = Pointer<std::int32_t>(d.expert_bounds)};
   return launch.Run(base::Bytes(0), [call, device = *device](auto& context) {
     CUDA_CHECK(ds4_moe::MoeMaps(device, call, context.stream()));
+  });
+}
+std::expected<Ds4MoePairDispatch, KernelFailure> DescribeDs4MoePair(const LaunchContext& launch,
+                                                                    const Ds4MoePair& d,
+                                                                    std::uint64_t generation) {
+  if (auto checked = CheckDs4MoePair(d, generation); !checked)
+    return std::unexpected(checked.error());
+  const auto device = Device(launch);
+  if (!device) return std::unexpected(device.error());
+  int current = -1;
+  if (cudaGetDevice(&current) != cudaSuccess || current != launch.device())
+    return Reject("ds4 standalone pair attribute device differs");
+  cudaFuncAttributes attributes{};
+  if (ds4_moe::PairAttributes(attributes) != cudaSuccess || attributes.maxThreadsPerBlock < 256 ||
+      attributes.numRegs <= 0 || attributes.binaryVersion <= 0 || attributes.ptxVersion <= 0)
+    return Reject("ds4 standalone pair compiled attributes are unavailable");
+  constexpr auto capacity = (4096U * 6 + 63) / 64 + 256;
+  return Ds4MoePairDispatch{
+      .work_bytes = (static_cast<std::uint64_t>(capacity) + 1) * 4,
+      .dynamic_shared_bytes = 0,
+      .static_shared_bytes = attributes.sharedSizeBytes,
+      .local_bytes = attributes.localSizeBytes,
+      .device_optin_shared_bytes = device->shared,
+      .row_tile = 128,
+      .column_tile = 64,
+      .threads = 256,
+      .capacity = capacity,
+      .product_grid_x = 16,
+      .product_grid_y = capacity,
+      .product_grid_z = 2,
+      .registers = static_cast<std::uint32_t>(attributes.numRegs),
+      .max_threads = static_cast<std::uint32_t>(attributes.maxThreadsPerBlock),
+      .binary_version = static_cast<std::uint32_t>(attributes.binaryVersion),
+      .ptx_version = static_cast<std::uint32_t>(attributes.ptxVersion),
+      .builder_launches = 1,
+      .product_launches = 1};
+}
+std::expected<void, KernelFailure> RunDs4MoePair(LaunchContext& launch, const Ds4MoePair& d,
+                                                 std::uint64_t generation) {
+  if (auto checked = CheckDs4MoePair(d, generation); !checked) return checked;
+  if (auto device = Device(launch); !device) return std::unexpected(device.error());
+  const std::array operands = {d.activation,    d.gate_weights, d.up_weights, d.ids_destination,
+                               d.expert_bounds, d.work,         d.gate,       d.up};
+  if (!PairWorkspacesDisjoint(launch, operands) || !PairWorkspacesDisjoint(launch, d.retained))
+    return Reject("ds4 standalone pair overlaps native workspace");
+  const ds4_moe::Pair call{.activation = Pointer<const void>(d.activation),
+                           .gate_weights = Pointer<const void>(d.gate_weights),
+                           .up_weights = Pointer<const void>(d.up_weights),
+                           .ids_destination = Pointer<const std::int32_t>(d.ids_destination),
+                           .bounds = Pointer<const std::int32_t>(d.expert_bounds),
+                           .work = Pointer<int>(d.work),
+                           .gate = Pointer<float>(d.gate),
+                           .up = Pointer<float>(d.up)};
+  return launch.Run(base::Bytes(0), [call](auto& context) {
+    CUDA_CHECK(ds4_moe::MoePair(call, context.stream()));
   });
 }
 }  // namespace jitllm::kernels::ggml

@@ -260,4 +260,29 @@ std::expected<void, KernelFailure> CheckDs4MoeMaps(const Ds4MoeMaps& d) {
   }
   return {};
 }
+std::expected<void, KernelFailure> CheckDs4MoePair(const Ds4MoePair& d, std::uint64_t generation) {
+  if (generation == 0 || d.generation != generation)
+    return Reject("ds4 standalone pair generation differs");
+  constexpr auto weight = 553648128ULL;
+  constexpr auto activation = 113246208ULL + (128ULL * 144ULL);
+  constexpr auto output = 4096ULL * 6 * 2048 * 4;
+  constexpr auto work = ((((4096ULL * 6) + 63) / 64) + 256 + 1) * 4;
+  const std::array ranges = {
+      Access{d.activation, activation, 16}, Access{d.gate_weights, weight, 64},
+      Access{d.up_weights, weight, 64},     Access{d.ids_destination, 4096ULL * 6 * 4},
+      Access{d.expert_bounds, 257ULL * 4},  Access{d.work, work, 4, true},
+      Access{d.gate, output, 4, true},      Access{d.up, output, 4, true}};
+  if (auto checked = Ranges(ranges); !checked) return checked;
+  for (const auto protected_buffer : d.retained) {
+    const std::array protected_range = {Access{protected_buffer, protected_buffer.bytes, 1}};
+    if (auto checked = Ranges(protected_range); !checked) return checked;
+    for (const auto& writable : ranges) {
+      if (!writable.write || protected_buffer.bytes == 0) continue;
+      if (writable.buffer.address < protected_buffer.address + protected_buffer.bytes &&
+          protected_buffer.address < writable.buffer.address + writable.buffer.bytes)
+        return Reject("ds4 standalone pair writable extent aliases a retained operand");
+    }
+  }
+  return {};
+}
 }  // namespace jitllm::kernels::ggml

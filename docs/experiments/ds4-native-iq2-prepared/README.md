@@ -97,9 +97,12 @@ Materialized in these samples. These are descriptive witnesses with no
 registered acceptance bound; they do not qualify full-model answers or
 perplexity. The experiment runs no downstream activation/down/sum chain.
 
-The next useful factor is a same-process, same-D4 comparison of the actual
-original standalone gate/up consumer and the native consumer, paying and
-recording their weight loaders, map/work preparation, tile and schedule.
+The [same-D4 standalone comparison](../ds4-native-iq2-consumer/README.md)
+now measures the native gate/up consumer at 0.880357× original resident
+rate, paying each worklist and product. A subsequent [J128/J64 control](../ds4-native-iq2-j64/README.md)
+keeps every output byte equal but is slower at J64. Weight loading,
+paired-launch structure and remaining arithmetic/compiler choices remain
+distinct possible causes.
 The existing capture/borrow seam can isolate native preparation for other
 compact GGML expert products after separate shape/type qualification; this
 fixture establishes only IQ2_XXS at this geometry.

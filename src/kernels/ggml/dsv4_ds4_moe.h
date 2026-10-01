@@ -147,5 +147,32 @@ std::expected<void, KernelFailure> CheckDs4MoePostPair(const Ds4MoePostPair& des
 std::expected<void, KernelFailure> RunDs4MoePostPair(LaunchContext& launch,
                                                      const Ds4MoePostPair& desc);
 
+// Temporary standalone materialized pair control. Only the original NT64
+// worklist and two-leg IQ2 product execute; maps and guarded gathered D4
+// are authenticated and validated before upload. No producer or suffix.
+// Both weight banks are original aligned IQ2, not native 66-byte records.
+struct Ds4MoePair {
+  Ds4CacheBuffer activation{}, gate_weights{}, up_weights{};
+  Ds4CacheBuffer ids_destination{}, expert_bounds{}, work{}, gate{}, up{};
+  std::uint64_t generation = 0;
+  std::span<const Ds4CacheBuffer> retained;
+};
+struct Ds4MoePairDispatch {
+  std::uint64_t work_bytes = 0, dynamic_shared_bytes = 0, static_shared_bytes = 0;
+  std::uint64_t local_bytes = 0, device_optin_shared_bytes = 0;
+  std::uint32_t row_tile = 0, column_tile = 0, threads = 0, capacity = 0;
+  std::uint32_t product_grid_x = 0, product_grid_y = 0, product_grid_z = 0;
+  std::uint32_t registers = 0, max_threads = 0, binary_version = 0, ptx_version = 0;
+  std::uint32_t builder_launches = 0, product_launches = 0;
+};
+std::expected<void, KernelFailure> CheckDs4MoePair(const Ds4MoePair& desc,
+                                                   std::uint64_t generation);
+// Queries the compiled product outside timing; it submits no GPU work.
+std::expected<Ds4MoePairDispatch, KernelFailure> DescribeDs4MoePair(const LaunchContext& launch,
+                                                                    const Ds4MoePair& desc,
+                                                                    std::uint64_t generation);
+std::expected<void, KernelFailure> RunDs4MoePair(LaunchContext& launch, const Ds4MoePair& desc,
+                                                 std::uint64_t generation);
+
 }  // namespace jitllm::kernels::ggml
 #endif  // JITLLM_KERNELS_GGML_DSV4_DS4_MOE_H_
