@@ -959,6 +959,11 @@ it appears.
       prefills and 64 restored outputs/logits exact, longest chunk 14.72 s,
       spill 7.33 GB and restore 0.583 s. Retain the 100/5 tok/s watchdog
       floors; Qwen's MTP speed gap remains open.
+      The [Qwen policy/phase controls](experiments/qwen38-policy-phase/README.md)
+      keep that gate open: all four 32K head/depth combinations trail the
+      faster fresh Mia control, while selected/adaptive is best at 64K.
+      Verify accounts for 86–88% of decode time; these unchanged-harness
+      diagnostics change no default or quality bound.
       - *Baseline first:* prefill throughput and decode speed at each
         depth, speculative and plain, through the runtime and against the
         same-format comparators at the same depths:
