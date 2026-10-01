@@ -185,12 +185,20 @@
   approximation from GGML's half-rounded affine coefficients and
   original-input minimum correction. Quality uses the unchanged model
   bounds; isolated error is not a model-quality result.
+- **Compiled scope:** patch
+  `third_party/patches/ds4/0004-jitllm-raw-q2-only.patch` makes the native
+  target define `JITLLM_DS4_RAW_Q2_ONLY`. It excludes unselected original
+  IQ2 paired/fused, dense Q8 and SoA Q2 entry points and their global
+  instantiations. The raw-Q2 launcher, down numerical template, worklist
+  and availability/scratch helpers retain their complete original bodies.
+  Original standalone source may still enable the guarded entries.
+  The separate literal comparison derivatives retain their original
+  numerical and header closure; this does not remove those study units.
 - **License review:** the entire pinned archive was audited before
   narrowing `archive.keep`. The retained root MIT license names the
   ds4, Entrpi and GGML authors; the D2R source retains Marco Palaferri's
-  attribution. The complete product translation unit is compiled,
-  including its original unselected IQ2/Q8 entry points. Only the raw
-  Q2 entry point is selected; no upstream model runtime, cache kernel,
+  attribution. The complete product source remains retained; the native
+  target compiles its raw Q2 entry point and helpers. No upstream model runtime, cache kernel,
   server, shim or original build script is included in this component.
 - **Proposed upstream action:** consider a raw-GGUF/explicit-stride
   product entry point, and document the signed expert-index limit and

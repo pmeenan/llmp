@@ -68,8 +68,9 @@ and no file type may go unclassified.
 The M3 direct-product experiment also incorporates the MIT D2R unit from
 Entrpi/ds4 at `76d51ef82a81b70b78e51a3a6ea11946286de976`, through its
 locked archive and reviewed patches for raw-Q2_K and the extracted original
-token-tile HCA numerical helpers/core. The kept D2R unit includes
-the original IQ2/Q8 routines; native dispatch calls only raw Q2_K down,
+token-tile HCA numerical helpers/core. The kept D2R source includes
+the original IQ2/Q8 routines, guarded out of the native target by
+`JITLLM_DS4_RAW_Q2_ONLY`; it compiles the raw Q2_K down path and helpers,
 with jitLLM's preparation and completion. The HCA core uses native F16 cache
 bytes with caller-owned mirror/record scratch; its original numerical source
 is copied verbatim. Both experiments are benchmark-only and default off.
