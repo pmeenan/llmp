@@ -17,6 +17,29 @@
   account); [NVIDIA/cccl](https://github.com/NVIDIA/cccl) issues for CUB and
   Thrust. None of these reports has been filed yet.
 
+## CUDA current free memory excludes inactive file cache (RE-041)
+
+- **Status:** benchmark workaround; no isolated upstream defect claimed.
+- **Found:** 2026-10-01, `spark-b` (`spark-56f5`), GB10, kernel
+  `7.0.0-1019-nvidia`, driver 580.178.04 and CUDA 13.4.92 in SDK
+  `aarch64-e0a0c85c42806fb1`.
+- **Observed:** after buffered verification of an inactive 86.72-GB GGUF,
+  Linux MemAvailable remained high while CUDA current free memory caused
+  the native reference's unchanged admission guard to refuse. Immediately
+  paired file residency and allocation-only controls show that advice on
+  this exact pinned GGUF reduces resident pages from 21,171,903 to zero
+  and raises post-setup CUDA free memory from 23.45 to 110.27 GB, with
+  Linux MemAvailable approximately unchanged at 120.32 GB.
+- **Workaround:** file-scoped `POSIX_FADV_DONTNEED` on the authenticated,
+  inactive comparator GGUF before native allocation. The original source,
+  executable and 6-GiB guard then complete the matched 32K run. No global
+  cache or core-provider change is adopted.
+- **Limits/action:** determine documented current-free/reclaim behavior
+  before proposing a provider change or filing a defect. The probes do
+  not test whether an actual allocation would reclaim the file cache.
+- **Links:** [RE-041](../rough-edges.md#re-041-cuda-current-free-memory-can-exclude-reclaimable-inactive-gguf-file-cache--2026-10-01-status-worked-around)
+  and [paired control](../experiments/ds4-matched-32k/README.md#allocation-refusal-and-scoped-cache-control).
+
 ## Bounded Nsight capture completed before its launched model (RE-039)
 
 - **Status:** worked around; no isolated upstream defect claimed.

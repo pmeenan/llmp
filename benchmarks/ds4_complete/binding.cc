@@ -25,7 +25,6 @@ namespace jitllm::benchmarks::ds4_complete {
 namespace {
 using Buffer = kg::Ds4CacheBuffer;
 using StateKind = model::Ds4BaselineStateKind;
-constexpr std::uint32_t kContext = 8192;
 constexpr std::uint64_t kAlignment = 256;
 
 bool SameProfile(const model::Dsv4Profile& p) {
@@ -111,8 +110,11 @@ bool SameLayout(const kg::Ds4AlignedLayout& a, const kg::Ds4AlignedLayout& b) {
 std::expected<ScratchPlan, std::string> PlanScratch(const model::Dsv4Profile& profile,
                                                     std::uint32_t context, std::uint32_t device_sms,
                                                     bool output_b_study, bool routed_ffn_study) {
-  if (!SameProfile(profile) || context != kContext || device_sms == 0 || device_sms > 65535) {
-    return std::unexpected("original binding requires Flash/context8192 and valid SM count");
+  if (!SameProfile(profile) || !SupportedContext(context) ||
+      ((output_b_study || routed_ffn_study) && context != 8192) || device_sms == 0 ||
+      device_sms > 65535) {
+    return std::unexpected(
+        "original binding requires Flash/context8192-or32768 and valid SM count");
   }
   if (output_b_study && routed_ffn_study)
     return std::unexpected("private consumer studies require separate matched arms");
@@ -156,31 +158,31 @@ std::expected<ScratchPlan, std::string> PlanScratch(const model::Dsv4Profile& pr
   values("compression.score", 1024);
   values("compression.refresh.kv", 1024, 4);
   values("compression.refresh.score", 1024, 4);
-  values("attention.proxy", 512, kContext / 4);
+  values("attention.proxy", 512, context / 4);
   values("indexer.compression.kv", 256);
   values("indexer.compression.score", 256);
   values("indexer.refresh.kv", 256, 4);
   values("indexer.refresh.score", 256, 4);
-  values("indexer.proxy", 128, kContext / 4);
+  values("indexer.proxy", 128, context / 4);
   values("indexer.query", 8192);
   values("indexer.weights", 64);
   values("indexer.query.codes", 64, kRows * 64, 1);
   values("indexer.query.scales", 4, kRows * 64);
-  values("indexer.scores", kContext / 4);
+  values("indexer.scores", context / 4);
   values("indexer.selected", 512);
   good = good && add("indexer.score.scratch", std::uint64_t{kRows} * 64 * 4);
   good = good && add("indexer.diagnostics", sizeof(kg::Ds4IndexerDiagnostics));
   good = good && add("attention.diagnostics", sizeof(kg::Ds4AttentionDiagnostics));
-  // Worst dense/indexed TT chain across the two chunks: 2048 compressed
-  // records per four-query tile plus paid chronological/F16 mirrors.
+  // Conservative worst dense/indexed TT chain across every whole chunk,
+  // with paid chronological/F16 mirrors through the complete context.
   kg::Ds4Attention a{};
   a.tokens = kRows;
-  a.first = kRows;
+  a.first = context - kRows;
   a.raw_cells = 4352;
   a.raw_count = 4352;
-  a.compressed_cells = kContext / 4;
-  a.compressed_count = kContext / 4;
-  a.consecutive_first = kRows;
+  a.compressed_cells = context / 4;
+  a.compressed_count = context / 4;
+  a.consecutive_first = context - kRows;
   a.domain = kg::Ds4AttentionDomain::kMixedRing;
   auto attention = kg::PlanDs4AttentionScratch(a, kg::Ds4AttentionKind::kTokenTile, device_sms);
   if (!attention) return std::unexpected(attention.error().detail);
@@ -460,7 +462,7 @@ class Binder {
         .first = inputs_.first,
         .tokens = kRows,
         .before = before,
-        .capacity = (kContext / ratio) + 2,
+        .capacity = (inputs_.state->context / ratio) + 2,
         .rms_epsilon = 1.0e-6F};
     if (ape.type != "F16" && ape.type != "F32") Fail("unknown original compressor APE format");
     if (ratio == 4) {
@@ -511,7 +513,7 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
       in.prepared_plan == nullptr || in.aligned_weights == nullptr || in.state == nullptr ||
       !in.raw_weights->opened() || &in.raw_weights->artifact() != in.artifact ||
       in.raw_weights->bytes() == 0 || in.raw_weights->extents().empty() ||
-      in.artifact->id() != kCommunityArtifact || (in.first != 0 && in.first != kRows) ||
+      in.artifact->id() != kCommunityArtifact || !ChunkStart(in.state->context, in.first) ||
       in.storage_generation == 0 || in.model_generation == 0) {
     return std::unexpected("incomplete original-model binding inputs");
   }
@@ -528,13 +530,14 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
       (in.capture_routed_ffn &&
        (in.first != kRows || in.routed_ffn_tier != RoutedFfnTier::kDirect)))
     return std::unexpected("routed-FFN diagnostic requires original late-chunk Direct operands");
+  const auto context = in.state->context;
   auto scratch =
-      PlanScratch(profile, kContext, in.device_sms, in.output_b_study, in.routed_ffn_study);
+      PlanScratch(profile, context, in.device_sms, in.output_b_study, in.routed_ffn_study);
   if (!scratch) return std::unexpected(scratch.error());
-  auto state = model::LayoutDs4BaselineState(profile, kContext, kRows, in.state->granularity);
+  auto state = model::LayoutDs4BaselineState(profile, context, kRows, in.state->granularity);
   if (!state || !SameState(*state, *in.state) ||
       !Valid(in.state_storage, in.state->virtual_bytes, in.state->granularity))
-    return std::unexpected("state is not the original packed two-chunk layout");
+    return std::unexpected("state is not the original packed whole-chunk layout");
   auto preparation = engine::PlanDs4PreparedWeights(*in.artifact);
   if (!preparation || !SamePreparation(*preparation, *in.prepared_plan) ||
       in.aligned_weights->views().size() != preparation->tensors.size())
@@ -551,7 +554,7 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
     return std::unexpected("named scratch inventory is incomplete or has extra ranges");
   Chunk result;
   result.first = in.first;
-  result.context = kContext;
+  result.context = context;
   result.device_sms = in.device_sms;
   result.storage_generation = in.storage_generation;
   result.model_generation = in.model_generation;
@@ -840,7 +843,7 @@ std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,
     }
     result.layers.push_back(l);
   }
-  if (in.first == kRows) {
+  if (in.first + kRows == context) {
     Frontier head{};
     const auto last =
         Slice(result.layers.back().ffn_expand.values, Values(kRows - 1, 16384), Values(1, 16384));

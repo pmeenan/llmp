@@ -335,7 +335,8 @@ The ds4 study adopted shared sparse gathers and compact expert scheduling;
 its complete 8K benchmark now matches all original logits byte for byte
 within 2.4% throughput. Native output-B restoration is exact and comparable
 in speed; the paid Materialized FFN control is exact but 2.35% slower.
-Native compact FFN consumers and matched 32K remain open. Fixed long-context
+The matched 32K pipeline is byte-exact and 0.71% slower on the same Spark;
+native compact FFN consumers remain open. Fixed long-context
 answer tests show no clear candidate-specific regression but fail parts of
 the strict rubric in both paths; HCA stays off by default. Literal ds4 code is temporary benchmark
 scaffolding. M3.5 (model families, the

@@ -26,10 +26,10 @@ void* WritePointer(std::uint64_t address) {
 // Only metadata for ledger controls. It intentionally contains no model
 // operands; CheckChunk must still refuse it. These transitions are a CPU
 // proof of counting/order, never a substitute for GPU Job completion.
-complete::Chunk LedgerChunk(std::uint32_t first = 0) {
+complete::Chunk LedgerChunk(std::uint32_t first = 0, std::uint32_t context = 8192) {
   complete::Chunk c;
   c.first = first;
-  c.context = 8192;
+  c.context = context;
   c.device_sms = 48;
   c.storage_generation = 7;
   c.model_generation = 11;
@@ -39,12 +39,13 @@ complete::Chunk LedgerChunk(std::uint32_t first = 0) {
     c.layers[i].index = i;
     c.layers[i].ratio = model::Dsv4Flash().compress_ratios[i];
   }
-  if (first == 4096) c.frontier.emplace();
+  if (first + complete::kRows == context) c.frontier.emplace();
   return c;
 }
 complete::Progress LedgerFor(const complete::Chunk& c) {
   complete::Progress x;
   x.first = c.first;
+  x.context = c.context;
   x.storage_generation = c.storage_generation;
   x.model_generation = c.model_generation;
   for (std::uint32_t i = 0; i < 43; ++i) {
@@ -268,6 +269,70 @@ TEST(Ds4CompleteExecutor, FirstChunkHasNoUnrequestedHead) {
   EXPECT_FALSE(complete::CompleteFrontier(c, x));
   EXPECT_EQ(x.compressed[2], 1024U);
   EXPECT_EQ(x.compressed[3], 32U);
+}
+
+TEST(Ds4CompleteExecutor, EightWholeChunksAdvanceOnlyCompletedCountsAndOneFinalHead) {
+  for (std::uint32_t first = 0; first < 32768; first += complete::kRows) {
+    auto c = LedgerChunk(first, 32768);
+    auto x = LedgerFor(c);
+    ASSERT_TRUE(complete::CompleteEmbedding(c, x));
+    for (std::uint32_t layer = 0; layer < complete::kLayers; ++layer) {
+      auto stale = x;
+      stale.context = 8192;
+      EXPECT_FALSE(complete::CheckProgress(c, stale, complete::Phase::kLayers, layer));
+      EXPECT_FALSE(complete::CompleteLayer(c, layer + 1, x));
+      ASSERT_TRUE(complete::CompleteLayer(c, layer, x));
+      const auto ratio = c.layers[layer].ratio;
+      EXPECT_EQ(x.compressed[layer], ratio == 0 ? 0U : (first + complete::kRows) / ratio);
+      EXPECT_EQ(x.indexed[layer], ratio == 4 ? (first + complete::kRows) / 4 : 0U);
+      EXPECT_FALSE(complete::CompleteLayer(c, layer, x));
+    }
+    if (first == 28672) {
+      EXPECT_EQ(x.phase, complete::Phase::kFrontier);
+      ASSERT_TRUE(complete::CompleteFrontier(c, x));
+    } else {
+      EXPECT_EQ(x.phase, complete::Phase::kComplete);
+      EXPECT_FALSE(complete::CompleteFrontier(c, x));
+    }
+    EXPECT_EQ(x.phase, complete::Phase::kComplete);
+    complete::Poison(x);
+    EXPECT_FALSE(complete::CompleteEmbedding(c, x));
+  }
+  auto c = LedgerChunk(8192, 32768);
+  auto x = LedgerFor(c);
+  c.frontier.emplace();
+  EXPECT_FALSE(complete::CompleteEmbedding(c, x));
+  for (const auto context : {0U, 4096U, 16384U, 32767U, 65536U})
+    EXPECT_FALSE(complete::ChunkStart(context, 0));
+  for (const auto first : {1U, 2048U, 32768U, UINT32_MAX})
+    EXPECT_FALSE(complete::ChunkStart(32768, first));
+}
+
+TEST(Ds4CompleteExecutor, SelectorUsesExactOriginalBandAndActualSharedMemoryEligibility) {
+  for (const bool cub : {false, true}) {
+    EXPECT_TRUE(
+        complete::OriginalSelectorChoice(1024, kg::Ds4IndexerSelectKind::kBitonic1024, cub));
+    EXPECT_TRUE(
+        complete::OriginalSelectorChoice(2048, kg::Ds4IndexerSelectKind::kBitonic2048, cub));
+    EXPECT_TRUE(
+        complete::OriginalSelectorChoice(3072, kg::Ds4IndexerSelectKind::kBitonic4096, cub));
+    EXPECT_TRUE(complete::OriginalSelectorChoice(
+        4096, cub ? kg::Ds4IndexerSelectKind::kCub8192 : kg::Ds4IndexerSelectKind::kBitonic4096,
+        cub));
+    for (const auto cells : {5120U, 6144U, 7168U, 8192U}) {
+      EXPECT_TRUE(complete::OriginalSelectorChoice(
+          cells, cub ? kg::Ds4IndexerSelectKind::kCub8192 : kg::Ds4IndexerSelectKind::kBitonic8192,
+          cub));
+      EXPECT_FALSE(
+          complete::OriginalSelectorChoice(cells, kg::Ds4IndexerSelectKind::kStream512, cub));
+      EXPECT_FALSE(complete::OriginalSelectorChoice(
+          cells, cub ? kg::Ds4IndexerSelectKind::kBitonic8192 : kg::Ds4IndexerSelectKind::kCub8192,
+          cub));
+    }
+    for (const auto cells : {0U, 512U, 4095U, 8193U, UINT32_MAX})
+      EXPECT_FALSE(
+          complete::OriginalSelectorChoice(cells, kg::Ds4IndexerSelectKind::kCub8192, cub));
+  }
 }
 
 TEST(Ds4CompleteExecutor, RefusalRetainsCountsAndFailurePoisonsContinuation) {

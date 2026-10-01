@@ -3,7 +3,7 @@
 
 // Temporary matched ds4 reference, owned and scheduled by jitLLM. This is
 // a concrete original-stage recipe, not a third-party runtime or callback
-// dispatch table. First scope: two4096-row chunks/all43 layers/full head.
+// dispatch table. Bounded scope: context8192/32768, T4096/all43/final-only head.
 #ifndef JITLLM_BENCHMARKS_DS4_COMPLETE_EXECUTOR_H_
 #define JITLLM_BENCHMARKS_DS4_COMPLETE_EXECUTOR_H_
 
@@ -38,6 +38,27 @@ namespace kg = kernels::ggml;
 using Result = std::expected<void, std::string>;
 inline constexpr std::uint32_t kLayers = 43;
 inline constexpr std::uint32_t kRows = 4096;
+constexpr bool SupportedContext(std::uint32_t context) {
+  return context == 8192 || context == 32768;
+}
+constexpr bool ChunkStart(std::uint32_t context, std::uint32_t first) {
+  return SupportedContext(context) && first % kRows == 0 && first <= context - kRows;
+}
+// Exact pinned original default at the supported whole-chunk bands. Device
+// eligibility is reported by Describe, not supplied by the benchmark caller.
+constexpr bool OriginalSelectorChoice(std::uint32_t cells, kg::Ds4IndexerSelectKind kind,
+                                      bool cub_available) {
+  if (cells == 1024) return kind == kg::Ds4IndexerSelectKind::kBitonic1024;
+  if (cells == 2048) return kind == kg::Ds4IndexerSelectKind::kBitonic2048;
+  if (cells == 3072) return kind == kg::Ds4IndexerSelectKind::kBitonic4096;
+  if (cells == 4096)
+    return kind == (cub_available ? kg::Ds4IndexerSelectKind::kCub8192
+                                  : kg::Ds4IndexerSelectKind::kBitonic4096);
+  if (cells >= 5120 && cells <= 8192 && cells % 1024 == 0)
+    return kind == (cub_available ? kg::Ds4IndexerSelectKind::kCub8192
+                                  : kg::Ds4IndexerSelectKind::kBitonic8192);
+  return false;
+}
 inline constexpr std::size_t kProfileChains = 8;
 // Borrowed diagnostic handles. The runner owns them until native teardown
 // has fenced every consumer, including a failed/unknown recording. No event
@@ -118,6 +139,9 @@ struct ResolvedStage {
   std::uint32_t layer = 0;
   std::string_view stage, kind;
   std::uint64_t scratch_bytes = 0;
+  std::uint32_t score_band = 0;
+  std::uint64_t cub_temp_storage_bytes = 0, selector_dynamic_smem_bytes = 0, device_smem_bytes = 0;
+  bool cub_available = false;
 };
 struct ResolvedDispatch {
   int device = -1;
@@ -196,7 +220,7 @@ std::expected<ResolvedDispatch, std::string> ReadResolvedDispatch(const Chunk& c
 enum class Phase : std::uint8_t { kEmbedding, kLayers, kFrontier, kComplete, kPoisoned };
 struct CompletionToken;
 struct Progress {
-  std::uint32_t first = 0, next_layer = 0;
+  std::uint32_t first = 0, next_layer = 0, context = 0;
   std::uint64_t storage_generation = 0, model_generation = 0;
   Phase phase = Phase::kEmbedding;
   std::array<std::uint32_t, kLayers> compressed{}, indexed{};

@@ -28,6 +28,40 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-041: CUDA current free memory can exclude reclaimable inactive GGUF file cache  (2026-10-01, status: worked-around)
+
+Environment: `spark-b` (`spark-56f5`), GB10, kernel `7.0.0-1019-nvidia`,
+driver 580.178.04, CUDA 13.4.92 in SDK `aarch64-e0a0c85c42806fb1`.
+The matched 32K native ds4 reference refused its full-budget-plus-6-GiB
+guard after preparation, before weight loading or inference. Linux
+MemAvailable was about 114 GiB, but allocation-only diagnostics observed
+CUDA current free memory about 87.11 GB below Linux MemAvailable. The
+8K-to-32K budget increase was only 248 MiB.
+
+The inactive original 86,720,111,488-byte GGUF had been fully hashed using
+buffered reads. A pinned-FD `mincore` control, sampled after the first
+allocation probe and immediately before advice, found all 21,171,903 pages
+resident. File-scoped `POSIX_FADV_DONTNEED` reduced residency to zero.
+The same 32K allocation probe then observed CUDA free memory after setup
+increase from 23,445,520,384 to 110,266,376,192 bytes, while Linux
+MemAvailable remained approximately 120.32 GB. Its unchanged 6-GiB guard
+changed from refusal to admission. Restoring the original qualified source
+and executable then completed the full 32K model with byte-exact logits.
+
+The workaround belongs to this benchmark handoff: advise only the inactive,
+authenticated original GGUF after its buffered verification, and retain the
+normal native admission guard. No global cache flush, provider accounting
+change or guard reduction was made. The diagnostic omits aligned-weight
+virtual reservations/catalog entries and does not itself qualify a model
+run. These observations establish a cache-sensitive current-free reading;
+they do not establish whether a real CUDA allocation would automatically
+reclaim that cache, nor identify a driver defect.
+
+See the [matched 32K report](experiments/ds4-matched-32k/README.md#allocation-refusal-and-scoped-cache-control)
+and [NVIDIA handoff](upstream/cuda.md#cuda-current-free-memory-excludes-inactive-file-cache-re-041).
+Failed run, unchanged allocation probes and scoped cache control remain at
+`spark-b:~/scratch/m3-ds4-matched-32k-{native-r1,budget-r1}/`.
+
 ## RE-040: FlashInfer accepts a Python profile override but its SM120 wrapper still autotunes both products  (2026-09-30, status: worked-around)
 
 Environment: Spark GB10, FlashInfer0.6.17/a0a6b019 in Mia's pinned image

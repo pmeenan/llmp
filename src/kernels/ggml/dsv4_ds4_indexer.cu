@@ -353,7 +353,14 @@ std::expected<Ds4IndexerDispatch, KernelFailure> DescribeDs4IndexerDispatch(
   if (device.cc < 800 && kind != Ds4IndexerScoreKind::kScalar &&
       kind != Ds4IndexerScoreKind::kDirectOne && kind != Ds4IndexerScoreKind::kMultisequenceScalar)
     return Rejected("original ds4 indexer WMMA/staging needs sm_80 or later");
-  return Ds4IndexerDispatch{kind, selected_kind};
+  return Ds4IndexerDispatch{
+      .score_kind = kind,
+      .select_kind = selected_kind,
+      .cub_temp_storage_bytes = sizeof(TopkCubSort::TempStorage),
+      .select_dynamic_shared_bytes =
+          selected_kind == Ds4IndexerSelectKind::kCub8192 ? sizeof(TopkCubSort::TempStorage) : 0,
+      .device_shared_optin = static_cast<std::uint64_t>(device.smpbo),
+      .cub_available = cub};
 }
 
 std::expected<void, KernelFailure> RunDs4IndexerScoreSelect(LaunchContext& launch,

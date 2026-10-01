@@ -125,6 +125,11 @@ struct Ds4IndexerSelect {
 struct Ds4IndexerDispatch {
   Ds4IndexerScoreKind score_kind = Ds4IndexerScoreKind::kScalar;
   Ds4IndexerSelectKind select_kind = Ds4IndexerSelectKind::kInsertion;
+  // Diagnostic facts from the actual compiled CUB type/native device. No
+  // caller-provided Boolean selects a numerical tier or changes arithmetic.
+  std::uint64_t cub_temp_storage_bytes = 0, select_dynamic_shared_bytes = 0,
+                device_shared_optin = 0;
+  bool cub_available = false;
 };
 
 // Device capability and capture status are checked again by the launcher.

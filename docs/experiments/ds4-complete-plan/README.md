@@ -13,8 +13,12 @@ and completion ownership throughout.
 The initial scope is all 43 layers, two 4,096-row chunks at 8K, and one
 final full-vocabulary head. Measure this initial performance baseline
 independently of the quality gates; quality qualification still precedes
-adoption or a production default change. Ordinary suffix/decode and long
-contexts remain separate work.
+adoption or a production default change. The matched reference now also
+completes [32K on the same Spark](../ds4-matched-32k/README.md), exercising
+deep original selection: all four complete native heads match all four
+original heads byte for byte, with throughput 0.71% lower. Both results
+cover one request on its ordinary stream; ordinary suffix/decode, concurrent
+requests and larger contexts remain separate work.
 
 The complete 8K native reference now matches all 129,280 original logits
 byte for byte and runs within 2.4% of original ds4 throughput. This establishes

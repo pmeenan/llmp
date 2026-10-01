@@ -34,8 +34,8 @@ struct Pass {
   double result_copy_seconds = 0;
   engine::StepTimes steps{};
   std::vector<float> logits;
-  std::array<double, 2> chunks{};
-  std::array<ResolvedDispatch, 2> dispatch{};
+  std::vector<double> chunks;
+  std::vector<ResolvedDispatch> dispatch;
   // Diagnostic event samples; this pass's wall time is not a speed result.
   std::vector<ProfileSample> profile;
   OutputBConsumer output_b_consumer = OutputBConsumer::kOriginal;
@@ -49,9 +49,10 @@ class Runner final : public engine::PagedModel {
       : node_(node), resources_(node, 0, 0), device_sms_(device_sms) {}
   // Setup requires a freshly opened node. The caller always tears it down,
   // including partial setup failures, before any Runner owner is destroyed.
+  // The whole original path supports 8K/32K; private factors remain 8K only.
   Result Setup(const std::filesystem::path& artifact, const std::filesystem::path& scratch,
                PreparedModelWeights& prepared, bool output_b_study = false,
-               bool routed_ffn_study = false);
+               bool routed_ffn_study = false, std::uint32_t context = 8192);
   Result Load();
   Result Initialize();
   // Create all marks once before warmup. A partial failure still retains
@@ -94,6 +95,7 @@ class Runner final : public engine::PagedModel {
   engine::PagedNode& node_;
   engine::RunnerResources resources_;
   std::uint32_t device_sms_ = 0;
+  std::uint32_t context_ = 8192;
   engine::PagedWeights raw_;
   engine::Ds4PagedAlignedWeights aligned_;
   engine::Ds4PreparedWeightSet prepared_plan_;

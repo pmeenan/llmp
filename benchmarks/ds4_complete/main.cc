@@ -223,15 +223,15 @@ std::expected<std::vector<std::int32_t>, std::string> Tokens(const std::filesyst
       if (parsed.ec != std::errc{} || parsed.ptr != spelling.data() + spelling.size()) {
         return std::unexpected("fixed input has malformed or overflowing token text");
       }
-      if (id < 0 || id >= 129280 || result.size() == 8192) {
-        return std::unexpected("fixed input has an invalid ID or exceeds8192 tokens");
+      if (id < 0 || id >= 129280 || result.size() == 32768) {
+        return std::unexpected("fixed input has an invalid ID or exceeds32768 tokens");
       }
       result.push_back(static_cast<std::int32_t>(id));
     }
     if (ids.bad()) return std::unexpected("fixed input read failed");
   }
-  if (file.bad() || result.size() != 8192) {
-    return std::unexpected("fixed input must contain exactly8192 current token IDs");
+  if (file.bad() || (result.size() != 8192 && result.size() != 32768)) {
+    return std::unexpected("fixed input must contain exactly8192 or32768 current token IDs");
   }
   return result;
 }
@@ -256,7 +256,11 @@ void Dispatch(std::ostream& output, const dc::ResolvedDispatch& dispatch) {
     comma = true;
     output << "{\"layer\":" << stage.layer << ",\"stage\":" << Quoted(stage.stage)
            << ",\"kind\":" << Quoted(stage.kind) << ",\"scratch_bytes\":" << stage.scratch_bytes
-           << '}';
+           << ",\"score_band\":" << stage.score_band
+           << ",\"cub_temp_storage_bytes\":" << stage.cub_temp_storage_bytes
+           << ",\"selector_dynamic_smem_bytes\":" << stage.selector_dynamic_smem_bytes
+           << ",\"device_smem_bytes\":" << stage.device_smem_bytes
+           << ",\"cub_available\":" << (stage.cub_available ? "true" : "false") << '}';
   }
   output << "]}";
 }
@@ -305,7 +309,8 @@ int main(int argc, char** argv) {
     std::println(stderr, "{}", tokens.error());
     return 2;
   }
-  if ((profile_study || consumer_study) && Digest<std::int32_t>(*tokens) != kProfileTokensSha) {
+  if ((profile_study || consumer_study) &&
+      (tokens->size() != 8192 || Digest<std::int32_t>(*tokens) != kProfileTokensSha)) {
     std::println(stderr, "diagnostic study requires the pinned complete-reference token IDs");
     return 2;
   }
@@ -359,8 +364,8 @@ int main(int argc, char** argv) {
   std::vector<en::Ds4AlignedWeightView> representations;
   auto run = [&]() -> dc::Result {
     if (auto opened = node.Open(); !opened) return opened;
-    if (auto setup =
-            runner.Setup(artifact_path, scratch, *prepared, output_b_study, routed_ffn_study);
+    if (auto setup = runner.Setup(artifact_path, scratch, *prepared, output_b_study,
+                                  routed_ffn_study, static_cast<std::uint32_t>(tokens->size()));
         !setup)
       return setup;
     setup_seconds = Seconds(setup_started);
@@ -378,7 +383,7 @@ int main(int argc, char** argv) {
     state = runner.physical_state_bytes();
     representations.assign(runner.aligned().views().begin(), runner.aligned().views().end());
     if (auto fresh = runner.Initialize(); !fresh) return fresh;
-    std::println(stderr, "warmup complete original8K pipeline");
+    std::println(stderr, "warmup complete original{}-token pipeline", tokens->size());
     const auto capture_path = consumer_study ? output_path / "operands" : std::filesystem::path{};
     if (consumer_study &&
         (!std::filesystem::create_directory(capture_path, filesystem_error) || filesystem_error))
@@ -388,13 +393,13 @@ int main(int argc, char** argv) {
     auto warmup = runner.Prefill(*tokens, false, dc::OutputBConsumer::kOriginal, capture_path);
     if (!warmup) return std::unexpected(warmup.error());
     warmup_seconds = warmup->wall_seconds;
-    if (profile_study || consumer_study) {
-      warmup_sha = Digest<float>(warmup->logits);
-      if (warmup->logits.size() != 129280 || warmup_sha != kProfileHeadSha ||
-          std::ranges::any_of(warmup->logits, [](float value) { return !std::isfinite(value); }))
-        return std::unexpected("diagnostic warmup differs from the pinned original full head");
-      if (auto saved = Save(output_path / "warmup.f32", warmup->logits); !saved) return saved;
-    }
+    warmup_sha = Digest<float>(warmup->logits);
+    if (warmup->logits.size() != 129280 ||
+        std::ranges::any_of(warmup->logits, [](float value) { return !std::isfinite(value); }))
+      return std::unexpected("warmup has incomplete/nonfinite original full head");
+    if (auto saved = Save(output_path / "warmup.f32", warmup->logits); !saved) return saved;
+    if ((profile_study || consumer_study) && warmup_sha != kProfileHeadSha)
+      return std::unexpected("diagnostic warmup differs from the pinned original full head");
     unsigned pass_count = repeats;
     if (consumer_study)
       pass_count = 9;
@@ -430,7 +435,7 @@ int main(int argc, char** argv) {
         }
       }
       if (auto fresh = runner.Initialize(); !fresh) return fresh;
-      std::println(stderr, "timed complete original8K pass{}", repeat);
+      std::println(stderr, "timed complete original{}-token pass{}", tokens->size(), repeat);
       auto pass = runner.Prefill(*tokens, profile_study && repeat == 3, consumer, {}, routed);
       if (!pass) return std::unexpected(pass.error());
       if (profile_study &&
@@ -440,6 +445,11 @@ int main(int argc, char** argv) {
       if (std::ranges::any_of(pass->logits, [](float value) { return !std::isfinite(value); })) {
         return std::unexpected("complete reference produced nonfinite final logits");
       }
+      // Persist every complete finite head before refusing nonrepeat. This
+      // preserves selector-tie evidence without altering original arithmetic.
+      if (auto saved = Save(output_path / ("pass" + std::to_string(repeat) + ".f32"), pass->logits);
+          !saved)
+        return saved;
       const auto& control = candidate ? candidate_warmup : warmup->logits;
       if (pass->logits.size() != control.size() ||
           std::memcmp(pass->logits.data(), control.data(), pass->logits.size() * sizeof(float)) !=
@@ -449,10 +459,6 @@ int main(int argc, char** argv) {
       if ((profile_study || (consumer_study && !candidate)) &&
           Digest<float>(pass->logits) != kProfileHeadSha)
         return std::unexpected("diagnostic pass differs from the pinned original full head");
-      if (auto saved = Save(output_path / ("pass" + std::to_string(repeat) + ".f32"), pass->logits);
-          !saved) {
-        return saved;
-      }
       passes.push_back(std::move(*pass));
     }
     return {};
@@ -474,7 +480,8 @@ int main(int argc, char** argv) {
           << R"({"complete":true,"retired":true,"own_repeat_byte_equal":true,)"
           << R"("original_engine_parity":false,"artifact":)" << Quoted(artifact->id())
           << ",\"tokens_sha256\":" << Quoted(Digest<std::int32_t>(*tokens))
-          << R"(,"context_capacity":8192,"prompt_tokens":8192,"chunk_rows":4096,"layers":43,)"
+          << ",\"context_capacity\":" << tokens->size() << ",\"prompt_tokens\":" << tokens->size()
+          << R"(,"chunk_rows":4096,"layers":43,)"
           << R"("head_rows":1,"vocab":129280,"preparation_seconds":)"
           << prepared->preparation_seconds
           << ",\"preparation_setup_seconds\":" << prepared->setup_seconds
@@ -551,17 +558,22 @@ int main(int argc, char** argv) {
             << ",\"numerical_seconds\":" << pass.seconds
             << ",\"prefill_wall_seconds\":" << pass.wall_seconds
             << ",\"result_copy_seconds\":" << pass.result_copy_seconds
-            << ",\"tok_s\":" << 8192.0 / pass.wall_seconds << ",\"chunks\":[" << pass.chunks[0]
-            << ',' << pass.chunks[1] << ']'
-            << ",\"logits_sha256\":" << Quoted(Digest<float>(pass.logits))
+            << ",\"tok_s\":" << static_cast<double>(tokens->size()) / pass.wall_seconds
+            << ",\"chunks\":[";
+    for (std::size_t chunk = 0; chunk < pass.chunks.size(); ++chunk) {
+      if (chunk != 0) receipt << ',';
+      receipt << pass.chunks[chunk];
+    }
+    receipt << ']' << ",\"logits_sha256\":" << Quoted(Digest<float>(pass.logits))
             << ",\"native_jobs\":" << pass.steps.steps
             << ",\"device_seconds\":" << pass.steps.device
             << ",\"dispatch_seconds\":" << pass.steps.dispatch
             << ",\"job_host_seconds\":" << pass.steps.job
             << ",\"after_seconds\":" << pass.steps.after << ",\"resolved_dispatch\":[";
-    Dispatch(receipt, pass.dispatch[0]);
-    receipt << ',';
-    Dispatch(receipt, pass.dispatch[1]);
+    for (std::size_t chunk = 0; chunk < pass.dispatch.size(); ++chunk) {
+      if (chunk != 0) receipt << ',';
+      Dispatch(receipt, pass.dispatch[chunk]);
+    }
     receipt << "],\"profile_samples\":[";
     for (std::size_t sample_index = 0; sample_index < pass.profile.size(); ++sample_index) {
       if (sample_index != 0) receipt << ',';

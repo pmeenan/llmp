@@ -932,8 +932,11 @@ it appears.
       tests, including 256 GPU tests. The first [routed-FFN factor](experiments/ds4-routed-ffn-first-axis/README.md)
       compares paid producer/gather and fusion/storage: Materialized is
       2.35% slower than Direct, with all twelve final heads and complete
-      captured down outputs byte-identical. Keep Direct; native compact
-      consumer/layout factors and matched 32K remain open. The [fixed
+      captured down outputs byte-identical. Keep Direct. The [matched 32K
+      pipeline](experiments/ds4-matched-32k/README.md) now matches every final
+      logit byte on the same Spark and is 0.71% slower, including actual
+      deep CUB selection. Native compact consumer/layout factors remain
+      open. These comparisons cover one request. The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer
       regression, but both paths fail parts of the strict rubric. HCA stays

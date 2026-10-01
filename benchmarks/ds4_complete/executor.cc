@@ -497,7 +497,11 @@ std::vector<std::uint64_t> Identity(const Chunk& c) {
   return result;
 }
 std::vector<std::uint64_t> ProgressIdentity(const Progress& x) {
-  std::vector<std::uint64_t> result{x.first, x.next_layer, x.storage_generation, x.model_generation,
+  std::vector<std::uint64_t> result{x.first,
+                                    x.next_layer,
+                                    x.context,
+                                    x.storage_generation,
+                                    x.model_generation,
                                     static_cast<std::uint64_t>(x.phase)};
   result.insert(result.end(), x.compressed.begin(), x.compressed.end());
   result.insert(result.end(), x.indexed.begin(), x.indexed.end());
@@ -808,7 +812,7 @@ Result LayerOf(const model::Dsv4Profile& p, const Chunk& c, const Layer& l) {
   const auto& a = l.attention;
   const auto after = ratio != 0 ? (c.first + kRows) / ratio : 0;
   const auto raw_count = c.first == 0 ? kRows : kRows + 128;
-  const auto raw_start = c.first == 0 ? 0U : c.first - 128;
+  const auto raw_start = c.first == 0 ? 0U : (c.first - 128) % 4352;
   const bool static_mixed = c.first == 0 && ratio == 128;
   auto domain = kg::Ds4AttentionDomain::kMixedRing;
   if (ratio == 4)
@@ -1064,11 +1068,11 @@ Result CheckChunk(const model::Dsv4Profile& p, const Chunk& c) {
                            : !Absent(buffer))
       return Fail("routed-FFN study requires symmetrically paid complete F32 intermediates");
   }
-  if (c.artifact_id != kCommunityArtifact || (c.first != 0 && c.first != kRows) ||
-      c.context != 2 * kRows || c.layers.size() != kLayers || c.device_sms == 0 ||
-      c.storage_generation == 0 || c.model_generation == 0 ||
-      c.frontier.has_value() != (c.first == kRows))
-    return Fail("incomplete initial all43/two4096/full-head8K recipe");
+  if (c.artifact_id != kCommunityArtifact || !ChunkStart(c.context, c.first) ||
+      ((c.output_b_study || c.routed_ffn_study) && c.context != 8192) ||
+      c.layers.size() != kLayers || c.device_sms == 0 || c.storage_generation == 0 ||
+      c.model_generation == 0 || c.frontier.has_value() != (c.first + kRows == c.context))
+    return Fail("incomplete all43/whole4096/final-head/context8192-or32768 recipe");
   if (!Matrix(c.embedding.weights, p.vocab, 4096, 2) ||
       !Matrix(c.embedding.output, kRows, 16384, 4) || c.embedding.hyper_connections != 4)
     return Fail("embedding is not the canonical F16 four-HC producer");
@@ -1123,16 +1127,19 @@ std::expected<Progress, std::string> Begin(const model::Dsv4Profile& p, const Ch
   if (auto check = CheckChunk(p, c); !check) return std::unexpected(check.error());
   Progress result;
   result.first = c.first;
+  result.context = c.context;
   result.storage_generation = c.storage_generation;
   result.model_generation = c.model_generation;
   if (c.first == 0) {
     if (previous != nullptr)
       return std::unexpected("fresh state cannot reuse a previous progress ledger");
   } else {
-    if (previous == nullptr || previous->phase != Phase::kComplete || previous->first != 0 ||
+    if (previous == nullptr || previous->phase != Phase::kComplete ||
+        previous->first != c.first - kRows || previous->context != c.context ||
         previous->next_layer != kLayers || previous->storage_generation != c.storage_generation ||
         previous->model_generation != c.model_generation)
-      return std::unexpected("second chunk requires completed original first chunk/current state");
+      return std::unexpected(
+          "chunk requires the immediately preceding completed original prefix/current state");
     if (previous->completion_owner_ != nullptr &&
         (previous->completion_identity_ != ProgressIdentity(*previous) ||
          !previous->completion_token_ || previous->completion_token_->poisoned ||
@@ -1157,7 +1164,8 @@ std::expected<Progress, std::string> Begin(const model::Dsv4Profile& p, const Ch
   return result;
 }
 Result CheckProgress(const Chunk& c, const Progress& x, Phase phase, std::uint32_t layer) {
-  if ((c.first != 0 && c.first != kRows) || c.context != 2 * kRows || c.storage_generation == 0 ||
+  if (!ChunkStart(c.context, c.first) || x.context != c.context ||
+      c.frontier.has_value() != (c.first + kRows == c.context) || c.storage_generation == 0 ||
       c.model_generation == 0 || x.phase != phase || x.first != c.first ||
       x.storage_generation != c.storage_generation || x.model_generation != c.model_generation ||
       x.next_layer > kLayers ||
@@ -1547,11 +1555,13 @@ Result Resolve(engine::PagedNode& node, kg::LaunchContext& launch, const catalog
               error = "original packed MXF4 tier unavailable; F32 fallback is forbidden";
               return scheduler::JobResult::kNotStarted;
             }
-            const auto expected_select = l.indexer->scores.cells == 1024
-                                             ? kg::Ds4IndexerSelectKind::kBitonic1024
-                                             : kg::Ds4IndexerSelectKind::kBitonic2048;
-            if (indexer->select_kind != expected_select) {
-              error = "unexpected original first8K selector dispatch";
+            if (!OriginalSelectorChoice(l.indexer->scores.cells, indexer->select_kind,
+                                        indexer->cub_available) ||
+                indexer->cub_temp_storage_bytes == 0 ||
+                indexer->cub_available !=
+                    (indexer->device_shared_optin >= indexer->cub_temp_storage_bytes) ||
+                indexer->select_dynamic_shared_bytes > indexer->device_shared_optin) {
+              error = "unexpected original whole-chunk selector/smem dispatch";
               return scheduler::JobResult::kNotStarted;
             }
             index_dispatch[l.index] = *indexer;
@@ -1566,12 +1576,37 @@ Result Resolve(engine::PagedNode& node, kg::LaunchContext& launch, const catalog
               return scheduler::JobResult::kNotStarted;
             }
             dispatch.stages.push_back({l.index, "indexer-score", "original-mxf4", *score_bytes});
+            std::string_view selector;
+            switch (indexer->select_kind) {
+              case kg::Ds4IndexerSelectKind::kBitonic1024:
+                selector = "original-bitonic1024";
+                break;
+              case kg::Ds4IndexerSelectKind::kBitonic2048:
+                selector = "original-bitonic2048";
+                break;
+              case kg::Ds4IndexerSelectKind::kBitonic4096:
+                selector = "original-bitonic4096";
+                break;
+              case kg::Ds4IndexerSelectKind::kCub8192:
+                selector = "original-cub8192";
+                break;
+              case kg::Ds4IndexerSelectKind::kBitonic8192:
+                selector = "original-bitonic8192";
+                break;
+              default:
+                error = "unrecordable original selector";
+                return scheduler::JobResult::kNotStarted;
+            }
             dispatch.stages.push_back(
-                {l.index, "indexer-select",
-                 indexer->select_kind == kg::Ds4IndexerSelectKind::kBitonic1024
-                     ? "original-bitonic1024"
-                     : "original-bitonic2048",
-                 *select_bytes});
+                {.layer = l.index,
+                 .stage = "indexer-select",
+                 .kind = selector,
+                 .scratch_bytes = *select_bytes,
+                 .score_band = l.indexer->scores.cells,
+                 .cub_temp_storage_bytes = indexer->cub_temp_storage_bytes,
+                 .selector_dynamic_smem_bytes = indexer->select_dynamic_shared_bytes,
+                 .device_smem_bytes = indexer->device_shared_optin,
+                 .cub_available = indexer->cub_available});
           }
           const std::array<std::pair<std::string_view, const kg::Ds4Q8Product*>, 7> products{
               {{"query-a", &l.query_a},

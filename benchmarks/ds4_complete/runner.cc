@@ -29,7 +29,6 @@ namespace pr = providers;
 namespace sc = scheduler;
 using Clock = std::chrono::steady_clock;
 using Kind = model::Ds4BaselineStateKind;
-constexpr std::uint32_t kContext = 8192;
 constexpr std::uint64_t kGuard = std::uint64_t{6} << 30U;
 constexpr std::uint64_t kOutputBCaptureBytes = std::uint64_t{kRows} * 8192 * 4;
 
@@ -41,12 +40,16 @@ bool Add(std::uint64_t& total, std::uint64_t value) {
 }  // namespace
 
 Result Runner::Setup(const std::filesystem::path& artifact, const std::filesystem::path& scratch,
-                     PreparedModelWeights& prepared, bool output_b_study, bool routed_ffn_study) {
+                     PreparedModelWeights& prepared, bool output_b_study, bool routed_ffn_study,
+                     std::uint32_t context) {
   if (node_.threaded() || device_sms_ == 0 || prepared.plan.artifact_id != kCommunityArtifact ||
-      !mapped_.empty() || raw_.opened() || (output_b_study && routed_ffn_study)) {
+      !mapped_.empty() || raw_.opened() || !SupportedContext(context) ||
+      ((output_b_study || routed_ffn_study) && context != 8192) ||
+      (output_b_study && routed_ffn_study)) {
     return std::unexpected(
         "complete runner setup requires a fresh node and prepared community set");
   }
+  context_ = context;
   if (auto opened = raw_.Open(artifact); !opened) return opened;
   if (raw_.artifact().id() != prepared.plan.artifact_id) {
     return std::unexpected("complete runner canonical and prepared identities differ");
@@ -56,7 +59,7 @@ Result Runner::Setup(const std::filesystem::path& artifact, const std::filesyste
   if (!binding) return std::unexpected(binding.error());
   native_binding_ = std::move(*binding);
   auto layout =
-      model::LayoutDs4BaselineState(profile, kContext, kRows, node_.memory().Granularity().value());
+      model::LayoutDs4BaselineState(profile, context_, kRows, node_.memory().Granularity().value());
   if (!layout) return std::unexpected(layout.error());
   state_layout_ = std::move(*layout);
   if (auto state =
@@ -74,7 +77,7 @@ Result Runner::Setup(const std::filesystem::path& artifact, const std::filesyste
     return reserved;
   }
   prepared_plan_ = prepared.plan;
-  auto scratch_plan = PlanScratch(profile, kContext, device_sms_, output_b_study, routed_ffn_study);
+  auto scratch_plan = PlanScratch(profile, context_, device_sms_, output_b_study, routed_ffn_study);
   if (!scratch_plan) return std::unexpected(scratch_plan.error());
   scratch_plan_ = std::move(*scratch_plan);
   // RunnerResources stores pointers, so reserve the final number before mapping.
@@ -129,7 +132,7 @@ Result Runner::Setup(const std::filesystem::path& artifact, const std::filesyste
   const auto table = kg::Ds4CacheDecodeTable();
   std::memcpy(host_decode_table_, table.data(), sizeof(table));
   // State virtual capacity is not resident occupancy. Budget it separately
-  // for this fixed8K model control; ordinary growing-state serving is unchanged.
+  // for this bounded model control; ordinary growing-state serving is unchanged.
   budget_bytes_ = node_.catalog().OccupancyOf(node_.domain()).Total().value();
   const auto state_budget = en::support::Round(state_layout_.virtual_bytes, en::kPagedExtent);
   if (!Add(budget_bytes_, raw_.bytes()) || !Add(budget_bytes_, aligned_.bytes()) ||
@@ -190,7 +193,7 @@ Result Runner::Load() {
 }
 
 Result Runner::UseState() {
-  auto ranges = model::Ds4BaselineStateThrough(state_layout_, kContext);
+  auto ranges = model::Ds4BaselineStateThrough(state_layout_, context_);
   if (!ranges) return std::unexpected(ranges.error());
   std::vector<en::LiveState::Range> state_ranges;
   state_ranges.reserve(ranges->size());
@@ -322,7 +325,7 @@ Result Runner::Initialize() {
 }
 
 Result Runner::PrepareProfile() {
-  if (!loaded_ || profile_mark_count_ != 0)
+  if (!loaded_ || profile_mark_count_ != 0 || context_ != 8192)
     return std::unexpected("diagnostic marks require loaded weights and a fresh mark owner");
   auto memory = pr::QueryDeviceMemory();
   if (!memory) return std::unexpected(memory.error().text());
@@ -345,7 +348,7 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
                                                  OutputBConsumer output_b,
                                                  const std::filesystem::path& capture,
                                                  RoutedFfnTier routed_ffn) {
-  if (!initialized_ || tokens.size() != kContext ||
+  if (!initialized_ || tokens.size() != context_ || (profile && context_ != 8192) ||
       (profile && profile_mark_count_ != profile_.marks.size()) ||
       std::ranges::any_of(tokens, [](auto token) { return token < 0 || token >= 129280; }) ||
       (output_b != OutputBConsumer::kOriginal && output_b != OutputBConsumer::kNativeMmq) ||
@@ -356,11 +359,13 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
       (!capture.empty() &&
        (profile || output_b != OutputBConsumer::kOriginal || routed_ffn != RoutedFfnTier::kDirect ||
         (!output_b_study_ && !routed_ffn_study_) || host_output_b_capture_ == nullptr))) {
-    return std::unexpected("complete reference needs exactly8192 validated current token IDs");
+    return std::unexpected("complete reference needs its exact8192-or32768 validated token IDs");
   }
   // Every pass consumes fresh state; failure never permits a suffix retry.
   initialized_ = false;
   Pass result;
+  result.chunks.resize(context_ / kRows);
+  result.dispatch.resize(context_ / kRows);
   result.output_b_consumer = output_b;
   result.routed_ffn_tier = routed_ffn;
   result.operand_capture = !capture.empty();
@@ -370,7 +375,7 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
   auto* marks = profile ? &profile_ : nullptr;
   std::optional<Progress> previous;
   const auto run = [&]() -> Result {
-    for (std::uint32_t chunk_index = 0; chunk_index < 2; ++chunk_index) {
+    for (std::uint32_t chunk_index = 0; chunk_index < context_ / kRows; ++chunk_index) {
       const auto first = chunk_index * kRows;
       auto chunk = BindChunk(
           model::Dsv4Flash(),
@@ -468,7 +473,7 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
   };
   (void)node_.TakeTimes(0);
   const auto wall_started = Clock::now();
-  auto status = node_.WithRequest(0, everything_, "complete original8K prefill", run);
+  auto status = node_.WithRequest(0, everything_, "complete original whole-chunk prefill", run);
   result.wall_seconds = en::support::Seconds(Clock::now() - wall_started);
   result.steps = node_.TakeTimes(0);
   if (!status) {

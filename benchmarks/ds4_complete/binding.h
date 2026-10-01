@@ -47,9 +47,10 @@ struct NamedScratch {
   kg::Ds4CacheBuffer storage{};
 };
 
-// Initial matched scope: context8192, T4096, first0/4096, all43 Flash layers,
-// packed original cache primaries. Both chunks share this worst-case plan.
+// Bounded matched scope: context8192/32768, T4096, whole chunks/all43 Flash
+// layers, packed original cache primaries. All chunks share the paid maximum.
 // Paid logical F32 cache proxies are explicit scratch, never hidden state.
+// Output-B and routed-FFN factors stay at their separately qualified 8K rung.
 std::expected<ScratchPlan, std::string> PlanScratch(const model::Dsv4Profile& profile,
                                                     std::uint32_t context, std::uint32_t device_sms,
                                                     bool output_b_study = false,
@@ -82,7 +83,7 @@ struct BindingInputs {
 // state before Resolve. Root leases all paid_ranges in the Job closure.
 // Hash table HOST owners outlive this result/Resolve; no device payload is
 // trusted merely because an address was supplied. Final head exists only
-// for the second chunk, preserving the original requested output cadence.
+// for the final chunk, preserving the original requested output cadence.
 // Refuses missing format, representation, mapping, scratch or original tier;
 // no generic native arithmetic substitutes for an unavailable original path.
 std::expected<Chunk, std::string> BindChunk(const model::Dsv4Profile& profile,

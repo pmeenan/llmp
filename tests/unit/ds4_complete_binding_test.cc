@@ -127,4 +127,33 @@ TEST(Ds4CompleteBinding, RefusesUnqualifiedProfilesContextsAndIncompleteBinding)
   EXPECT_FALSE(complete::BindChunk(profile, {}));
 }
 
+TEST(Ds4CompleteBinding, PaysTheWhole32kBandWithoutGrowingPerChunkProductsOrRing) {
+  const auto short_plan = complete::PlanScratch(model::Dsv4Flash(), 8192, 48);
+  const auto plan = complete::PlanScratch(model::Dsv4Flash(), 32768, 48);
+  ASSERT_TRUE(short_plan.has_value());
+  ASSERT_TRUE(plan.has_value());
+  EXPECT_EQ(plan->ranges.size(), short_plan->ranges.size());
+  EXPECT_EQ(Bytes(*plan, "indexer.scores"), 4096ULL * 8192 * 4);
+  EXPECT_EQ(Bytes(*plan, "attention.proxy"), 8192ULL * 512 * 4);
+  EXPECT_EQ(Bytes(*plan, "indexer.proxy"), 8192ULL * 128 * 4);
+  EXPECT_EQ(Bytes(*plan, "query.heads"), Bytes(*short_plan, "query.heads"));
+  EXPECT_EQ(Bytes(*plan, "routed.down"), Bytes(*short_plan, "routed.down"));
+  EXPECT_EQ(Bytes(*plan, "head.logits"), Bytes(*short_plan, "head.logits"));
+  kg::Ds4Attention attention{};
+  attention.tokens = 4096;
+  attention.first = 28672;
+  attention.raw_cells = 4352;
+  attention.raw_count = 4224;
+  attention.raw_start = (28672U - 128) % 4352;
+  attention.compressed_cells = 8192;
+  attention.compressed_count = 8192;
+  attention.consecutive_first = 28672;
+  attention.domain = kg::Ds4AttentionDomain::kMixedRing;
+  const auto scratch = kg::PlanDs4AttentionScratch(attention, kg::Ds4AttentionKind::kTokenTile, 48);
+  ASSERT_TRUE(scratch.has_value());
+  EXPECT_GE(Bytes(*plan, "attention.scratch"), scratch->bytes);
+  EXPECT_FALSE(complete::PlanScratch(model::Dsv4Flash(), 32768, 48, true));
+  EXPECT_FALSE(complete::PlanScratch(model::Dsv4Flash(), 32768, 48, false, true));
+}
+
 }  // namespace
