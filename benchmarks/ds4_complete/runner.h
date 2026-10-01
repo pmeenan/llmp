@@ -22,6 +22,12 @@
 
 namespace jitllm::benchmarks::ds4_complete {
 
+struct ProfileSample {
+  std::uint32_t chunk = 0, layer = 0, ratio = 0;
+  std::string_view chain;
+  float milliseconds = 0;
+  bool active = false;
+};
 struct Pass {
   double seconds = 0;
   double wall_seconds = 0;
@@ -30,6 +36,8 @@ struct Pass {
   std::vector<float> logits;
   std::array<double, 2> chunks{};
   std::array<ResolvedDispatch, 2> dispatch{};
+  // Diagnostic event samples; this pass's wall time is not a speed result.
+  std::vector<ProfileSample> profile;
 };
 
 class Runner final : public engine::PagedModel {
@@ -42,7 +50,11 @@ class Runner final : public engine::PagedModel {
                PreparedModelWeights& prepared);
   Result Load();
   Result Initialize();
-  std::expected<Pass, std::string> Prefill(std::span<const std::int32_t> tokens);
+  // Create all marks once before warmup. A partial failure still retains
+  // every created handle until the caller's fenced TearDown invokes Release.
+  Result PrepareProfile();
+  std::expected<Pass, std::string> Prefill(std::span<const std::int32_t> tokens,
+                                           bool profile = false);
   std::uint32_t stream() const override { return 0; }
   const catalog::Closure& fence_closure() const override { return everything_; }
   std::vector<catalog::ExtentId> managed_extents() const override;
@@ -56,6 +68,10 @@ class Runner final : public engine::PagedModel {
   std::uint64_t raw_read_bytes() const { return raw_.read_bytes(); }
   std::uint64_t physical_state_bytes() const { return state_.used_bytes(); }
   std::span<const engine::LoadStats> loads() const { return loads_; }
+  std::uint32_t profile_mark_count() const { return profile_mark_count_; }
+  std::array<std::uint64_t, 2> profile_setup_free_bytes() const {
+    return profile_setup_free_bytes_;
+  }
 
  private:
   Result RefreshClosure();
@@ -86,6 +102,9 @@ class Runner final : public engine::PagedModel {
   std::uint64_t generation_ = 0;
   bool loaded_ = false;
   bool initialized_ = false;
+  ProfileMarks profile_{};
+  std::uint32_t profile_mark_count_ = 0;
+  std::array<std::uint64_t, 2> profile_setup_free_bytes_{};
   catalog::Closure everything_;
   std::vector<engine::LoadStats> loads_;
 };

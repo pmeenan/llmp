@@ -8,6 +8,7 @@
 #define JITLLM_BENCHMARKS_DS4_COMPLETE_EXECUTOR_H_
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -23,6 +24,7 @@
 #include "kernels/ggml/dsv4_ds4_moe.h"
 #include "kernels/ggml/dsv4_ds4_product.h"
 #include "model/dsv4.h"
+#include "providers/device_runtime.h"
 
 namespace jitllm::engine {
 class PagedNode;
@@ -36,6 +38,18 @@ namespace kg = kernels::ggml;
 using Result = std::expected<void, std::string>;
 inline constexpr std::uint32_t kLayers = 43;
 inline constexpr std::uint32_t kRows = 4096;
+inline constexpr std::size_t kProfileChains = 8;
+// Borrowed diagnostic handles. The runner owns them until native teardown
+// has fenced every consumer, including a failed/unknown recording. No event
+// is created, recorded, read or destroyed by an inactive profile.
+struct ProfileMarks {
+  std::array<providers::TimingMark, 2 * kProfileChains> marks{};
+  std::array<float, kProfileChains> milliseconds{};
+  std::array<bool, kProfileChains> active{};
+};
+inline constexpr std::array<std::string_view, kProfileChains> kProfileNames{
+    "hc-attention-input", "q-kv-production", "compression-indexer", "attention",
+    "attention-output",   "ffn-input-route", "routed-ffn",          "shared-ffn-expand"};
 inline constexpr std::string_view kCommunityArtifact =
     "cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac";
 
@@ -204,12 +218,13 @@ Result Resolve(engine::PagedNode& node, kg::LaunchContext& launch, const catalog
                std::span<const HashTable> hash_tables);
 Result RunEmbedding(engine::PagedNode& node, kg::LaunchContext& launch,
                     const catalog::Closure& closure, std::uint32_t stream, const Chunk& c,
-                    Progress& x);
+                    Progress& x, ProfileMarks* profile = nullptr);
 Result RunLayer(engine::PagedNode& node, kg::LaunchContext& launch, const catalog::Closure& closure,
-                std::uint32_t stream, const Chunk& c, std::uint32_t layer, Progress& x);
+                std::uint32_t stream, const Chunk& c, std::uint32_t layer, Progress& x,
+                ProfileMarks* profile = nullptr);
 Result RunFrontier(engine::PagedNode& node, kg::LaunchContext& launch,
                    const catalog::Closure& closure, std::uint32_t stream, const Chunk& c,
-                   Progress& x);
+                   Progress& x, ProfileMarks* profile = nullptr);
 
 }  // namespace jitllm::benchmarks::ds4_complete
 #endif  // JITLLM_BENCHMARKS_DS4_COMPLETE_EXECUTOR_H_

@@ -309,14 +309,40 @@ Result Runner::Initialize() {
   return {};
 }
 
-std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> tokens) {
+Result Runner::PrepareProfile() {
+  if (!loaded_ || profile_mark_count_ != 0)
+    return std::unexpected("diagnostic marks require loaded weights and a fresh mark owner");
+  auto memory = pr::QueryDeviceMemory();
+  if (!memory) return std::unexpected(memory.error().text());
+  profile_setup_free_bytes_[0] = memory->free;
+  for (auto& mark : profile_.marks) {
+    auto created = pr::CreateTimingMark();
+    if (!created) return std::unexpected(created.error().text());
+    if (created->handle == nullptr)
+      return std::unexpected("diagnostic provider created an empty timing mark");
+    mark = *created;
+    ++profile_mark_count_;
+  }
+  memory = pr::QueryDeviceMemory();
+  if (!memory) return std::unexpected(memory.error().text());
+  profile_setup_free_bytes_[1] = memory->free;
+  return {};
+}
+
+std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> tokens,
+                                                 bool profile) {
   if (!initialized_ || tokens.size() != kContext ||
+      (profile && profile_mark_count_ != profile_.marks.size()) ||
       std::ranges::any_of(tokens, [](auto token) { return token < 0 || token >= 129280; })) {
     return std::unexpected("complete reference needs exactly8192 validated current token IDs");
   }
   // Every pass consumes fresh state; failure never permits a suffix retry.
   initialized_ = false;
   Pass result;
+  // All sample storage is allocated before the profiled interval. The
+  // sixteen handles were allocated once before ordinary warmup.
+  if (profile) result.profile.reserve((std::size_t{2} * kLayers * kProfileChains) + 3);
+  auto* marks = profile ? &profile_ : nullptr;
   std::optional<Progress> previous;
   const auto run = [&]() -> Result {
     for (std::uint32_t chunk_index = 0; chunk_index < 2; ++chunk_index) {
@@ -365,20 +391,31 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
       if (!progress) return std::unexpected(progress.error());
       const auto started = Clock::now();
       if (auto embedded =
-              RunEmbedding(node_, resources_.launch(), everything_, 0, *chunk, *progress);
+              RunEmbedding(node_, resources_.launch(), everything_, 0, *chunk, *progress, marks);
           !embedded)
         return embedded;
+      if (profile)
+        result.profile.push_back({chunk_index, 0, 0, "embedding", profile_.milliseconds[0], true});
       for (std::uint32_t layer = 0; layer < kLayers; ++layer) {
-        if (auto status =
-                RunLayer(node_, resources_.launch(), everything_, 0, *chunk, layer, *progress);
+        if (auto status = RunLayer(node_, resources_.launch(), everything_, 0, *chunk, layer,
+                                   *progress, marks);
             !status)
           return status;
+        if (profile) {
+          for (std::size_t chain = 0; chain < kProfileChains; ++chain)
+            result.profile.push_back({chunk_index, layer, chunk->layers[layer].ratio,
+                                      kProfileNames[chain], profile_.milliseconds[chain],
+                                      profile_.active[chain]});
+        }
       }
       if (chunk->frontier) {
         if (auto status =
-                RunFrontier(node_, resources_.launch(), everything_, 0, *chunk, *progress);
+                RunFrontier(node_, resources_.launch(), everything_, 0, *chunk, *progress, marks);
             !status)
           return status;
+        if (profile)
+          result.profile.push_back(
+              {chunk_index, kLayers, 0, "frontier-full-head", profile_.milliseconds[0], true});
       }
       result.chunks[chunk_index] = en::support::Seconds(Clock::now() - started);
       result.seconds += result.chunks[chunk_index];
@@ -421,6 +458,13 @@ std::expected<Pass, std::string> Runner::Prefill(std::span<const std::int32_t> t
 Result Runner::Release() {
   // PagedNode has fenced every consumer and evicted every managed extent.
   std::vector<std::string> problems;
+  // Destroy only here, after fenced teardown; partial creation and unknown
+  // recordings retain the same owner until this proof exists.
+  for (auto& mark : profile_.marks) {
+    if (mark.handle != nullptr) pr::DestroyTimingMark(mark);
+    mark = {};
+  }
+  profile_mark_count_ = 0;
   resources_.Release(problems);
   state_.Release(node_.memory(), problems);
   if (auto status = raw_.Release(node_.memory()); !status) problems.push_back(status.error());

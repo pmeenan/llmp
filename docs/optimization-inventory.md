@@ -27,6 +27,14 @@ models and kernels. The final implementation should preserve jitLLM's
 architecture; unused reference code can leave shipping builds once the
 comparisons are recorded. [Matched-pipeline study](experiments/ds4-complete-plan/README.md).
 
+The matched 8K reference's [paid-chain profile](experiments/ds4-restoration-profile/README.md)
+puts routed FFN at 35.55% and attention output at 17.94% of measured GPU
+time, with all eight full heads byte-identical to original ds4. First isolate
+the native output-B MMQ consumer while retaining the paid D4 producer and
+sanitizer; the measured output chain also includes output-A and HC expansion.
+Separate FFN weight layout, consumer and fusion controls before interactions.
+These are restoration targets, with no new kernel adoption or speed claim.
+
 ## Coverage
 
 | Implementation family | Current consumer and source | Techniques to compare |

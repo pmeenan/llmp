@@ -34,6 +34,10 @@ namespace dc = jitllm::benchmarks::ds4_complete;
 namespace en = jitllm::engine;
 namespace base = jitllm::base;
 using Clock = std::chrono::steady_clock;
+inline constexpr std::string_view kProfileHeadSha =
+    "499a05df44162d26dd151f44003388a68a494c86265ea756fecdabed85ae13b8";
+inline constexpr std::string_view kProfileTokensSha =
+    "60329b1e4ff5d19d40082666e8c08b86655d4b1173486aecbc4a752bb6aa3ac7";
 
 std::string Quoted(std::string_view value) {
   std::string result;
@@ -276,8 +280,11 @@ int main(int argc, char** argv) {
     }
     return 0;
   }
-  if (argc != 6) {
-    std::println(stderr, "usage: jitllm_ds4_complete ARTIFACT SCRATCH TOKENS OUTPUT REPEATS(1..3)");
+  const bool profile_study = argc == 7 && std::string_view(argv[6]) == "--profile";
+  if (argc != 6 && !profile_study) {
+    std::println(stderr,
+                 "usage: jitllm_ds4_complete ARTIFACT SCRATCH TOKENS OUTPUT REPEATS(1..3) "
+                 "[--profile]");
     return 2;
   }
   const std::string_view repeat_text = argv[5];
@@ -285,7 +292,7 @@ int main(int argc, char** argv) {
   const auto parsed =
       std::from_chars(repeat_text.data(), repeat_text.data() + repeat_text.size(), repeats);
   if (parsed.ec != std::errc{} || parsed.ptr != repeat_text.data() + repeat_text.size() ||
-      repeats == 0 || repeats > 3)
+      repeats == 0 || repeats > 3 || (profile_study && repeats != 3))
     return 2;
   const std::filesystem::path artifact_path(argv[1]);
   const std::filesystem::path scratch(argv[2]);
@@ -293,6 +300,10 @@ int main(int argc, char** argv) {
   auto tokens = Tokens(argv[3]);
   if (!tokens) {
     std::println(stderr, "{}", tokens.error());
+    return 2;
+  }
+  if (profile_study && Digest<std::int32_t>(*tokens) != kProfileTokensSha) {
+    std::println(stderr, "diagnostic study requires the pinned complete-reference token IDs");
     return 2;
   }
   auto artifact = jitllm::artifact::Artifact::Open(artifact_path);
@@ -336,6 +347,9 @@ int main(int argc, char** argv) {
   std::uint64_t state = 0;
   std::uint64_t raw_reads = 0;
   std::uint64_t aligned_reads = 0;
+  std::uint32_t profile_mark_count = 0;
+  std::array<std::uint64_t, 2> profile_setup_free_bytes{};
+  std::string warmup_sha;
   std::vector<en::Ds4AlignedWeightView> representations;
   auto run = [&]() -> dc::Result {
     if (auto opened = node.Open(); !opened) return opened;
@@ -347,6 +361,11 @@ int main(int argc, char** argv) {
     const auto load_started = Clock::now();
     if (auto loaded = runner.Load(); !loaded) return loaded;
     load_seconds = Seconds(load_started);
+    if (profile_study) {
+      if (auto ready = runner.PrepareProfile(); !ready) return ready;
+      profile_mark_count = runner.profile_mark_count();
+      profile_setup_free_bytes = runner.profile_setup_free_bytes();
+    }
     state = runner.physical_state_bytes();
     representations.assign(runner.aligned().views().begin(), runner.aligned().views().end());
     if (auto fresh = runner.Initialize(); !fresh) return fresh;
@@ -354,11 +373,24 @@ int main(int argc, char** argv) {
     auto warmup = runner.Prefill(*tokens);
     if (!warmup) return std::unexpected(warmup.error());
     warmup_seconds = warmup->wall_seconds;
-    for (unsigned repeat = 0; repeat < repeats; ++repeat) {
+    if (profile_study) {
+      warmup_sha = Digest<float>(warmup->logits);
+      if (warmup->logits.size() != 129280 || warmup_sha != kProfileHeadSha ||
+          std::ranges::any_of(warmup->logits, [](float value) { return !std::isfinite(value); }))
+        return std::unexpected("diagnostic warmup differs from the pinned original full head");
+      if (auto saved = Save(output_path / "warmup.f32", warmup->logits); !saved) return saved;
+    }
+    const auto pass_count = profile_study ? 7U : repeats;
+    passes.reserve(pass_count);
+    for (unsigned repeat = 0; repeat < pass_count; ++repeat) {
       if (auto fresh = runner.Initialize(); !fresh) return fresh;
       std::println(stderr, "timed complete original8K pass{}", repeat);
-      auto pass = runner.Prefill(*tokens);
+      auto pass = runner.Prefill(*tokens, profile_study && repeat == 3);
       if (!pass) return std::unexpected(pass.error());
+      if (profile_study &&
+          pass->profile.size() !=
+              (repeat == 3 ? (std::size_t{2} * dc::kLayers * dc::kProfileChains) + 3 : 0))
+        return std::unexpected("diagnostic pass has incomplete or unexpected chain samples");
       if (std::ranges::any_of(pass->logits, [](float value) { return !std::isfinite(value); })) {
         return std::unexpected("complete reference produced nonfinite final logits");
       }
@@ -367,6 +399,8 @@ int main(int argc, char** argv) {
                       pass->logits.size() * sizeof(float)) != 0) {
         return std::unexpected("complete reference own-repeat logits are not byte equal");
       }
+      if (profile_study && Digest<float>(pass->logits) != kProfileHeadSha)
+        return std::unexpected("diagnostic pass differs from the pinned original full head");
       if (auto saved = Save(output_path / ("pass" + std::to_string(repeat) + ".f32"), pass->logits);
           !saved) {
         return saved;
@@ -406,7 +440,14 @@ int main(int argc, char** argv) {
           << ",\"retirement_seconds\":" << retirement_seconds
           << ",\"execution_budget_bytes\":" << budget << ",\"physical_state_bytes\":" << state
           << ",\"raw_pagein_read_bytes\":" << raw_reads
-          << ",\"aligned_pagein_read_bytes\":" << aligned_reads << ",\"representations\":[";
+          << ",\"aligned_pagein_read_bytes\":" << aligned_reads
+          << ",\"profile_study\":" << (profile_study ? "true" : "false")
+          << ",\"profile_mark_count\":" << profile_mark_count << ",\"profile_setup_free_bytes\":["
+          << profile_setup_free_bytes[0] << ',' << profile_setup_free_bytes[1] << ']'
+          << ",\"profile_pinned_head_sha256\":" << Quoted(profile_study ? kProfileHeadSha : "")
+          << ",\"warmup_logits_sha256\":" << Quoted(warmup_sha)
+          << ",\"profile_wall_is_diagnostic\":" << (profile_study ? "true" : "false")
+          << ",\"representations\":[";
   bool comma = false;
   for (const auto& view : representations) {
     if (comma) receipt << ',';
@@ -419,10 +460,22 @@ int main(int argc, char** argv) {
   }
   receipt << "],\"passes\":[";
   comma = false;
-  for (const auto& pass : passes) {
+  for (std::size_t pass_index = 0; pass_index < passes.size(); ++pass_index) {
+    const auto& pass = passes[pass_index];
     if (comma) receipt << ',';
     comma = true;
-    receipt << "{\"numerical_seconds\":" << pass.seconds
+    std::string_view role = "original";
+    if (profile_study) {
+      if (pass_index < 3)
+        role = "original-before";
+      else if (pass_index == 3)
+        role = "profiled-original";
+      else
+        role = "original-after";
+    }
+    receipt << "{\"role\":" << Quoted(role)
+            << ",\"diagnostic\":" << (!pass.profile.empty() ? "true" : "false")
+            << ",\"numerical_seconds\":" << pass.seconds
             << ",\"prefill_wall_seconds\":" << pass.wall_seconds
             << ",\"result_copy_seconds\":" << pass.result_copy_seconds
             << ",\"tok_s\":" << 8192.0 / pass.wall_seconds << ",\"chunks\":[" << pass.chunks[0]
@@ -436,6 +489,15 @@ int main(int argc, char** argv) {
     Dispatch(receipt, pass.dispatch[0]);
     receipt << ',';
     Dispatch(receipt, pass.dispatch[1]);
+    receipt << "],\"profile_samples\":[";
+    for (std::size_t sample_index = 0; sample_index < pass.profile.size(); ++sample_index) {
+      if (sample_index != 0) receipt << ',';
+      const auto& sample = pass.profile[sample_index];
+      receipt << "{\"chunk\":" << sample.chunk << ",\"layer\":" << sample.layer
+              << ",\"ratio\":" << sample.ratio << ",\"chain\":" << Quoted(sample.chain)
+              << ",\"active\":" << (sample.active ? "true" : "false")
+              << ",\"milliseconds\":" << sample.milliseconds << '}';
+    }
     receipt << "]}";
   }
   receipt << "]}\n";

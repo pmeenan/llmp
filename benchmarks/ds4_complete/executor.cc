@@ -1185,6 +1185,33 @@ class Queue {
   bool queued = false;
   bool unknown = false;
 };
+Result CheckProfile(ProfileMarks* profile) {
+  if (profile == nullptr) return {};
+  if (std::ranges::any_of(profile->marks, [](auto mark) { return mark.handle == nullptr; }))
+    return Fail("diagnostic profile requires all sixteen runner-owned timing marks");
+  profile->milliseconds.fill(0);
+  profile->active.fill(false);
+  return {};
+}
+bool Mark(Queue& q, providers::NativeStream stream, ProfileMarks* profile, std::size_t chain,
+          bool end = false) {
+  if (profile == nullptr || !profile->active[chain]) return true;
+  return q.Add(providers::RecordTimingMark(profile->marks[(2 * chain) + (end ? 1 : 0)], stream));
+}
+Result ReadProfile(ProfileMarks* profile) {
+  if (profile == nullptr) return {};
+  // Called only after node.Job proved completion on this native stream.
+  for (std::size_t chain = 0; chain < kProfileChains; ++chain) {
+    if (!profile->active[chain]) continue;
+    auto elapsed =
+        providers::ElapsedMilliseconds(profile->marks[2 * chain], profile->marks[(2 * chain) + 1]);
+    if (!elapsed) return Fail(elapsed.error().text());
+    if (!std::isfinite(*elapsed) || *elapsed <= 0)
+      return Fail("active diagnostic chain has a nonpositive/nonfinite GPU duration");
+    profile->milliseconds[chain] = *elapsed;
+  }
+  return {};
+}
 bool Project(Queue& q, kg::LaunchContext& launch, const Compression& d) {
   return q.Add(kg::RunDs4F16Product(launch, d.kv_projection)) &&
          q.Add(kg::RunDs4F16Product(launch, d.score_projection));
@@ -1203,14 +1230,17 @@ bool Emit(Queue& q, kg::LaunchContext& launch, const Compression& d) {
   return true;
 }
 bool EncodeLayer(Queue& q, providers::NativeStream native, kg::LaunchContext& launch,
-                 const Chunk& c, const Layer& l) {
+                 const Chunk& c, const Layer& l, ProfileMarks* profile) {
   // Fresh chunk invalidates the prior HC mirror; subsequent layers reuse
   // the current same-stream fused expand producer, never a global registry.
+  if (!Mark(q, native, profile, 0)) return false;
   if (l.index == 0 && !q.Add(kg::RunDs4Rms(launch, l.hc_attention_rms))) return false;
   if (!q.Add(kg::RunDs4F16Product(launch, l.hc_attention_projection)) ||
       !q.Add(kg::RunDs4HcPre(launch, l.hc_attention_pre)) ||
-      !q.Add(kg::RunDs4Rms(launch, l.attention_norm)) ||
-      !q.Add(kg::RunDs4Q8Product(launch, l.query_a)) ||
+      !q.Add(kg::RunDs4Rms(launch, l.attention_norm)))
+    return false;
+  if (!Mark(q, native, profile, 0, true) || !Mark(q, native, profile, 1)) return false;
+  if (!q.Add(kg::RunDs4Q8Product(launch, l.query_a)) ||
       !q.Add(kg::RunDs4Q8Product(launch, l.kv_projection)) ||
       !q.Add(kg::RunDs4QkvNorm(launch, l.qkv_norm)) ||
       !q.Add(kg::RunDs4Q8Product(launch, l.query_b)) ||
@@ -1222,6 +1252,7 @@ bool EncodeLayer(Queue& q, providers::NativeStream native, kg::LaunchContext& la
   // nonzero compressed chunk stores after emit and before score/select.
   if ((c.first == 0 || l.ratio == 0) && !q.Add(kg::RunDs4CacheRawStore(launch, l.raw_store)))
     return false;
+  if (!Mark(q, native, profile, 1, true) || !Mark(q, native, profile, 2)) return false;
   if (l.compression && (!Project(q, launch, *l.compression) || !Emit(q, launch, *l.compression)))
     return false;
   if (l.indexer) {
@@ -1241,15 +1272,20 @@ bool EncodeLayer(Queue& q, providers::NativeStream native, kg::LaunchContext& la
   if (l.indexer &&
       !q.Add(kg::RunDs4IndexerScoreSelect(launch, l.indexer->scores, l.indexer->select)))
     return false;
-  if (!q.Add(kg::RunDs4Attention(launch, l.attention)) ||
-      !q.Add(kg::RunDs4OutA(launch, l.output_a)) ||
+  if (!Mark(q, native, profile, 2, true) || !Mark(q, native, profile, 3)) return false;
+  if (!q.Add(kg::RunDs4Attention(launch, l.attention))) return false;
+  if (!Mark(q, native, profile, 3, true) || !Mark(q, native, profile, 4)) return false;
+  if (!q.Add(kg::RunDs4OutA(launch, l.output_a)) ||
       !q.Add(kg::RunDs4Q8Product(launch, l.output_b)) ||
-      !q.Add(kg::RunDs4HcExpand(launch, l.attention_expand)) ||
-      !q.Add(kg::RunDs4F16Product(launch, l.hc_ffn_projection)) ||
+      !q.Add(kg::RunDs4HcExpand(launch, l.attention_expand)))
+    return false;
+  if (!Mark(q, native, profile, 4, true) || !Mark(q, native, profile, 5)) return false;
+  if (!q.Add(kg::RunDs4F16Product(launch, l.hc_ffn_projection)) ||
       !q.Add(kg::RunDs4HcPre(launch, l.hc_ffn_pre)) || !q.Add(kg::RunDs4Rms(launch, l.ffn_norm)) ||
       !q.Add(kg::RunDs4F16Product(launch, l.router_projection)) ||
       !q.Add(kg::RunDs4Router(launch, l.router)))
     return false;
+  if (!Mark(q, native, profile, 5, true) || !Mark(q, native, profile, 6)) return false;
   // Explicit charged safety work: the fused RMS writes only D4 payload.
   // Initialize the original guarded consumer slack before its first G1
   // read. The original default blanket arena/output memsets stay absent.
@@ -1257,14 +1293,16 @@ bool EncodeLayer(Queue& q, providers::NativeStream native, kg::LaunchContext& la
   auto* tail =
       std::bit_cast<void*>(static_cast<std::uintptr_t>(l.ffn_norm.q8_d4.address + payload));
   if (!q.Add(providers::FillAsync(native, tail, 0, std::size_t{256} * 144)) ||
-      !q.Add(kg::RunDs4Moe(launch, l.routed)) ||
-      !q.Add(kg::RunDs4Q8Product(launch, l.shared_gate)) ||
+      !q.Add(kg::RunDs4Moe(launch, l.routed)))
+    return false;
+  if (!Mark(q, native, profile, 6, true) || !Mark(q, native, profile, 7)) return false;
+  if (!q.Add(kg::RunDs4Q8Product(launch, l.shared_gate)) ||
       !q.Add(kg::RunDs4Q8Product(launch, l.shared_up)) ||
       !q.Add(kg::RunDs4SharedSwiglu(launch, l.shared_swiglu)) ||
       !q.Add(kg::RunDs4Q8Product(launch, l.shared_down)))
     return false;
   if (l.final_sum && !q.Add(kg::RunDs4MoeSum(launch, *l.final_sum))) return false;
-  return q.Add(kg::RunDs4HcExpand(launch, l.ffn_expand));
+  return q.Add(kg::RunDs4HcExpand(launch, l.ffn_expand)) && Mark(q, native, profile, 7, true);
 }
 Result JobResult(const Result& job, const Queue& q) {
   if (!job) {
@@ -1468,20 +1506,27 @@ Result Resolve(engine::PagedNode& node, kg::LaunchContext& launch, const catalog
 }
 Result RunEmbedding(engine::PagedNode& node, kg::LaunchContext& launch,
                     const catalog::Closure& closure, std::uint32_t stream, const Chunk& c,
-                    Progress& x) {
+                    Progress& x, ProfileMarks* profile) {
   if (auto check = Owner(node, launch, stream); !check) return check;
   if (auto check = RuntimeAccess::Check(c, launch); !check) return check;
   if (auto check = CheckProgress(c, x, Phase::kEmbedding); !check) return check;
   if (auto check = RuntimeAccess::CheckCompletion(x, launch, c.first == 0); !check) return check;
+  if (auto check = CheckProfile(profile); !check) return check;
+  if (profile != nullptr) profile->active[0] = true;
   Queue q;
   auto job = node.Job(
       closure,
-      [&](providers::NativeStream) {
-        q.Add(kg::RunDs4Embedding(launch, c.embedding));
+      [&](providers::NativeStream native) {
+        if (Mark(q, native, profile, 0) && q.Add(kg::RunDs4Embedding(launch, c.embedding)))
+          Mark(q, native, profile, 0, true);
         return q.Outcome();
       },
       "original ds4 complete embedding", stream);
   if (auto check = JobResult(job, q); !check) {
+    Poison(x);
+    return check;
+  }
+  if (auto check = ReadProfile(profile); !check) {
     Poison(x);
     return check;
   }
@@ -1493,20 +1538,30 @@ Result RunEmbedding(engine::PagedNode& node, kg::LaunchContext& launch,
   return {};
 }
 Result RunLayer(engine::PagedNode& node, kg::LaunchContext& launch, const catalog::Closure& closure,
-                std::uint32_t stream, const Chunk& c, std::uint32_t layer, Progress& x) {
+                std::uint32_t stream, const Chunk& c, std::uint32_t layer, Progress& x,
+                ProfileMarks* profile) {
   if (auto check = Owner(node, launch, stream); !check) return check;
   if (auto check = RuntimeAccess::Check(c, launch); !check) return check;
   if (auto check = CheckProgress(c, x, Phase::kLayers, layer); !check) return check;
   if (auto check = RuntimeAccess::CheckCompletion(x, launch, false); !check) return check;
+  if (auto check = CheckProfile(profile); !check) return check;
+  if (profile != nullptr) {
+    profile->active.fill(true);
+    profile->active[2] = c.layers[layer].ratio != 0;
+  }
   Queue q;
   auto job = node.Job(
       closure,
       [&](providers::NativeStream native) {
-        EncodeLayer(q, native, launch, c, c.layers[layer]);
+        EncodeLayer(q, native, launch, c, c.layers[layer], profile);
         return q.Outcome();
       },
       "original ds4 complete attention+FFN layer", stream);
   if (auto check = JobResult(job, q); !check) {
+    Poison(x);
+    return check;
+  }
+  if (auto check = ReadProfile(profile); !check) {
     Poison(x);
     return check;
   }
@@ -1519,26 +1574,33 @@ Result RunLayer(engine::PagedNode& node, kg::LaunchContext& launch, const catalo
 }
 Result RunFrontier(engine::PagedNode& node, kg::LaunchContext& launch,
                    const catalog::Closure& closure, std::uint32_t stream, const Chunk& c,
-                   Progress& x) {
+                   Progress& x, ProfileMarks* profile) {
   if (auto check = Owner(node, launch, stream); !check) return check;
   if (auto check = RuntimeAccess::Check(c, launch); !check) return check;
   if (auto check = CheckProgress(c, x, Phase::kFrontier); !check) return check;
   if (auto check = RuntimeAccess::CheckCompletion(x, launch, false); !check) return check;
   if (!c.frontier) return Fail("missing original final head recipe");
+  if (auto check = CheckProfile(profile); !check) return check;
+  if (profile != nullptr) profile->active[0] = true;
   Queue q;
   const auto& d = *c.frontier;
   auto job = node.Job(
       closure,
-      [&](providers::NativeStream) {
-        if (q.Add(kg::RunDs4Rms(launch, d.hc_rms)) &&
+      [&](providers::NativeStream native) {
+        if (Mark(q, native, profile, 0) && q.Add(kg::RunDs4Rms(launch, d.hc_rms)) &&
             q.Add(kg::RunDs4F16Vector(launch, d.hc_projection)) &&
             q.Add(kg::RunDs4HcHeadWeights(launch, d.hc_weights)) &&
-            q.Add(kg::RunDs4HcWeighted(launch, d.collapse)) && q.Add(kg::RunDs4Rms(launch, d.norm)))
-          q.Add(kg::RunDs4Q8Vector(launch, d.projection));
+            q.Add(kg::RunDs4HcWeighted(launch, d.collapse)) &&
+            q.Add(kg::RunDs4Rms(launch, d.norm)) && q.Add(kg::RunDs4Q8Vector(launch, d.projection)))
+          Mark(q, native, profile, 0, true);
         return q.Outcome();
       },
       "original ds4 complete final HC/full head", stream);
   if (auto check = JobResult(job, q); !check) {
+    Poison(x);
+    return check;
+  }
+  if (auto check = ReadProfile(profile); !check) {
     Poison(x);
     return check;
   }
@@ -1558,17 +1620,17 @@ Result Resolve(engine::PagedNode& /*node*/, kg::LaunchContext& /*launch*/,
 }
 Result RunEmbedding(engine::PagedNode& /*node*/, kg::LaunchContext& /*launch*/,
                     const catalog::Closure& /*closure*/, std::uint32_t /*stream*/,
-                    const Chunk& /*c*/, Progress& /*x*/) {
+                    const Chunk& /*c*/, Progress& /*x*/, ProfileMarks* /*profile*/) {
   return Fail("complete ds4 execution requires the native CUDA benchmark");
 }
 Result RunLayer(engine::PagedNode& /*node*/, kg::LaunchContext& /*launch*/,
                 const catalog::Closure& /*closure*/, std::uint32_t /*stream*/, const Chunk& /*c*/,
-                std::uint32_t /*layer*/, Progress& /*x*/) {
+                std::uint32_t /*layer*/, Progress& /*x*/, ProfileMarks* /*profile*/) {
   return Fail("complete ds4 execution requires the native CUDA benchmark");
 }
 Result RunFrontier(engine::PagedNode& /*node*/, kg::LaunchContext& /*launch*/,
                    const catalog::Closure& /*closure*/, std::uint32_t /*stream*/,
-                   const Chunk& /*c*/, Progress& /*x*/) {
+                   const Chunk& /*c*/, Progress& /*x*/, ProfileMarks* /*profile*/) {
   return Fail("complete ds4 execution requires the native CUDA benchmark");
 }
 #endif
