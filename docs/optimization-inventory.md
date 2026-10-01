@@ -11,6 +11,11 @@ on 2026-09-29. The linked source declarations are the authoritative lists
 of individual implementation identities; this document records techniques,
 consumers, eligibility and evidence.
 
+The [2026-10-01 implementation snapshot](experiments/optimization-inventory/README.md)
+adds the independent native request slots, positive private BF16 head-sharing
+factor, rejected shared-worklist/exact16 controls and cross-family boundaries
+on batching and weight reuse. Its priority order follows the current M3 gaps.
+
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand
 types and strides, shapes, arithmetic, scratch accounting and lifetime.
