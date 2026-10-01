@@ -307,3 +307,95 @@ in place.
 Continuous batched native execution, warm branches, longer contexts and
 repeated decision-relevant cells remain open. This diagnostic changes no
 defaults and closes no concurrent parity or quality gate.
+
+## TensorFold: repeated strict-prefix warm screen
+
+On the existing four-stream TensorFold deployment, warm aggregate throughput
+increased from a median 57.53 tokens/s for one request to 82.17 for two and
+109.81 for four. All nine bursts and all 21 matching fresh solo controls
+completed their 256-token budgets, and every warm/solo output ID, text,
+usage and finish comparison was exact. Four-request observations varied
+by 14.01% from minimum to maximum, exceeding the preregistered 1.1 range
+flag. These are retained descriptive results, with no native concurrency
+parity or deployment-default conclusion.
+
+The client matrix completed, but the outer controller remains failed.
+After intentional server retirement, its sampler encountered a process
+status with no `VmRSS`. This is the sole recorded cleanup error; actual
+launch return code is zero, its client is reaped, the owned container is
+absent and the independent strong retirement check passed. Memory
+qualification is unavailable. The successful paid request work is retained
+without a model rerun or replacement of the failed outer receipt.
+
+Spark B, 2026-10-01, 09:21:39–09:28:58 EDT. This uses the same immutable
+TensorFold 713 image/runtime 0.3.6.2, affine four-bit checkpoint, context
+33,792, BF16 KV, four streams, maximum six MTP drafts and confidence 0.30
+as the initial fresh screen. C1 also runs on this four-stream deployment;
+it is not the default single-stream configuration. Requests use temperature
+zero, literal text, speculation enabled and output cap 256.
+
+CPU preparation froze 21 distinct 8,192-token prompts, balanced across
+orders C1/C2/C4, C4/C2/C1 and C2/C1/C4. Both authenticated tokenizers
+produce identical IDs. Each prepared 8,191-token seed round-trips exactly
+and is the strict proper prefix of its target, with a one-token tail.
+All 21 first-64-ID prefixes are distinct. The 105 exact prepared files and
+ten installed runtime source identities were authenticated before and
+after the matrix. Prompt IDs are not returned by this endpoint; prompt
+identity rests on the frozen text/tokenizer proof and reported usage.
+
+Before each burst, its independent seeds run serially with a one-token
+cap and cached count zero. All 21 timed target responses report cached
+8,191, while all 21 fresh same-target solo responses report cached zero.
+The original runtime retains the seed prompt snapshot before its first
+output, so that output does not become part of the reused prefix. The
+timed warm request includes prefix-state restoration, one-token tail
+prefill, adaptive drafting/verification and HTTP completion. This is not
+an isolated decode-kernel timer.
+
+| Concurrent requests | Three aggregate rates (tokens/s) | Median | Max/min | Median of burst median latencies (s) |
+| --- | --- | ---: | ---: | ---: |
+| 1 | 56.258 / 58.260 / 57.528 | 57.528 | 1.0356 | 4.450 |
+| 2 | 80.507 / 82.169 / 83.858 | 82.169 | 1.0416 | 6.194 |
+| 4 | 103.719 / 109.809 / 118.247 | 109.809 | 1.1401 | 8.824 |
+
+The rate denominator is first barrier submission to final `DONE`, using
+actual complete output tokens. Submission spreads stay below 0.8 ms.
+First visible generated-text event ranges are 0.0818–0.1092 seconds for
+C1, 0.0851–0.1615 for C2 and 0.1103–0.3682 for C4. These are visible SSE
+event times, not individual token-kernel times. Worst completed request
+latencies across the three observations are 4.550 / 6.360 / 9.873 seconds.
+
+Loaded endpoint startup took 139.360 seconds; the request matrix took
+296.210 and the complete controller wall was 438.649. The 21 seed request
+latencies sum to 73.267 seconds, the 21 fresh solo latencies to 161.850,
+and the nine warm burst spans to 59.949. These sums are not substituted
+for measured setup or matrix wall and are outside the warm rate numerator
+and denominator. The receipt-bound retirement reports 116.792 GiB
+available, with GPU/container/native-model probes clear.
+
+Raw 63 JSON responses, 63 bounded SSE files, source/config/live-process
+proofs, the failed outer receipt, command terminal records and supervisor
+logs remain outside Git. Local records are
+`/home/pmeenan/scratch/m3-tf-warm-model-r2-records/`; Spark B retains
+`~/scratch/m3-tf-warm-r1/model-r2/`. The earlier r1 invocation stopped
+before model loading because its inputs argument named the receipt rather
+than its directory; it is preserved separately and excluded.
+
+| Input or result | SHA-256 |
+| --- | --- |
+| Immutable image ID | `1a2afff2bd001cdea746d96bdb7614a4f937caa28e1646babd9acb951ea3aa48` |
+| CPU-prepared inputs | `cae29a57817cb3479d743517f4bc87b68e05f50abe22ed250d89a7452cdd3e00` |
+| Preparation source | `939cf40123d50c351f72cd7458578139ad26cb662b2843919a3dbd5e223d97be` |
+| Client source | `352cde12e4a8fdb6d76d252bbe776a3c9b67c1b5e0724d8f8ce96d8fb2121420` |
+| Controller source | `7f4ccce5829f5b2726731d1720c00dead7a6395ea0ccbffba99094148faab646` |
+| Protocol | `78d38b6d7714a24bc486d622a0d9372701216f00019a960f10e1fe0d9d05503d` |
+| Failed outer receipt | `4a05feaaccdd32bf7f17704e1a6ac476439112125164424588bc7a15875c7e8e` |
+| Complete client receipt | `c3bf0f07ec39e3b1fa08733ec2473e9ba1b788e4c1c115e874136fe1041ed6b9` |
+| Independent strong retirement log | `d22f6ba0f0553901e4acd61081557ffabdf415753dbeaa0c1b8dd7506198da98` |
+| Supervisor terminal record | `c20b8b7f69de82b8f62d54f12b2059c43fceb1def3b3d6175f9fdc41a842432c` |
+
+Same-engine warm/fresh equality is not a model-quality comparison. The
+fresh and warm screens have different paid work scopes and independent
+inputs, so their rates do not isolate a cache algorithm's causal gain.
+Native and Mia warm branches, longer contexts, default parallelism and
+decision-relevant stable concurrent controls remain open.

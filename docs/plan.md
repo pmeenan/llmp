@@ -970,9 +970,13 @@ it appears.
       below both speculative references at C2/C4. Plain timing is retained
       descriptively after a post-shutdown memory-sampler failure; the
       separate speculative deployment completed cleanly. This measured
-      gap advances native continuous batching. Mia plain, warm decode,
-      repeated decision-relevant cells and the longer ladder remain open;
-      these screens do not establish concurrent parity.
+      gap advances native continuous batching. TensorFold's repeated
+      strict-prefix warm screen completes all 63 requests and 21 exact fresh
+      controls: median C1/C2/C4 rates 57.53/82.17/109.81 tokens/s. C4 varies
+      14.01%; its post-shutdown sampler error leaves memory unqualified.
+      Native/Mia warm, Mia plain, stable decision-relevant concurrent
+      controls and the longer ladder remain open; these screens do not
+      establish concurrent parity.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
