@@ -106,6 +106,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -114,12 +115,16 @@
 #include "base/json.h"
 #include "base/sha256.h"
 #include "chat/chat.h"
+#include "engine/checkpoint_file.h"
+#include "engine/support.h"
 #include "engine_names.h"
 #include "execution/adaptive_depth.h"
 #include "execution/sampling.h"
 #include "fp16_runner.h"
 #include "model/qwen38.h"
 #include "paged_node.h"
+#include "qwen38_reference.h"
+#include "qwen38_vocab.h"
 #include "runtime/prefill.h"
 #include "scheduler/scheduler.h"
 #include "tokenizer/hf.h"
@@ -131,6 +136,7 @@ namespace ts = jitllm::test_support;
 namespace jb = jitllm::benchmarks;
 namespace md = jitllm::model;
 namespace ex = jitllm::execution;
+namespace dv = jitllm::benchmarks::draft_vocab;
 using jitllm::base::Bytes;
 using Clock = std::chrono::steady_clock;
 using Status = ts::Status;
@@ -257,6 +263,8 @@ struct Options {
   std::filesystem::path out;
   std::filesystem::path prompts;
   std::filesystem::path reference;
+  std::filesystem::path chat_template;
+  std::filesystem::path stop_metadata;
   std::string check;
   std::uint32_t tokens = 256;
   std::uint32_t repeats = 3;
@@ -313,6 +321,25 @@ struct Generation {
   double draft_seconds = 0;
   double verify_seconds = 0;
 };
+
+// The private held-out control keeps complete target rows. Refuse a short
+// generation or a nonfinite row before argmax/near-tie evidence is emitted.
+Status VocabGeneration(const Generation& generation) {
+  constexpr std::size_t count = 256;
+  const auto vocab = md::Qwen38Flash().vocab;
+  if (generation.tokens.size() != count || generation.logits.size() != count) {
+    return Error("held-out generation did not retain all 256 token rows");
+  }
+  for (std::size_t i = 0; i < count; ++i) {
+    if (generation.logits[i].size() != vocab || generation.tokens[i] < 0 ||
+        std::cmp_greater_equal(generation.tokens[i], vocab) ||
+        !std::ranges::all_of(
+            generation.logits[i], [](float value) { return std::isfinite(value); })) {
+      return Error("held-out generation has a malformed or nonfinite target row");
+    }
+  }
+  return {};
+}
 
 // How a speculative run chooses its drafts.
 struct Forcing {
@@ -386,6 +413,8 @@ class Harness {
   Status Greedy();
   Status Forced();
   Status DraftHead(bool routed_down = false);
+  Status VocabAnchors();
+  std::expected<std::string, std::string> UsedStateDigest();
   Status Swap();
   Status SwapOut();
   Status SwapIn();
@@ -402,9 +431,19 @@ class Harness {
   std::unique_ptr<jitllm::tokenizer::Tokenizer> tokenizer_;
   std::vector<Prompt> decode_;
   std::vector<Prompt> chat_;
+  std::vector<dv::Example> vocab_examples_;
   std::vector<std::string> results_;  // JSON objects
   std::vector<std::string> problems_;
   double load_seconds_ = 0;
+  double vocab_digest_seconds_ = 0;
+  double vocab_copy_seconds_ = 0;
+  double vocab_sha_seconds_ = 0;
+  double vocab_checkpoint_seconds_ = 0;
+  double vocab_restore_seconds_ = 0;
+  double vocab_reference_staging_seconds_ = 0;
+  std::uint64_t vocab_digest_bytes_ = 0;
+  std::uint64_t vocab_digest_calls_ = 0;
+  dv::ReferenceStats vocab_reference_;
 };
 
 // ------------------------------------------------------------------ prompts
@@ -434,6 +473,23 @@ Status Harness::Tokenize() {
   auto text = ReadFile(o_.prompts);
   if (!text) {
     return std::unexpected(text.error());
+  }
+  if (o_.check == "vocab-anchors" || o_.check == "vocab-greedy") {
+    auto examples = dv::ReadExamples(*text, o_.qwen.context, md::Qwen38Flash().vocab);
+    if (!examples) {
+      return Error(examples.error());
+    }
+    vocab_examples_ = std::move(*examples);
+    if (o_.check == "vocab-greedy") {
+      if (vocab_examples_.front().split != "held_out") {
+        return Error("vocab-greedy requires the frozen held-out input manifest");
+      }
+      for (const auto& example : vocab_examples_) {
+        decode_.push_back(
+            {.id = example.id, .ids = example.prompt, .stable_boundary = example.stable_boundary});
+      }
+    }
+    return {};
   }
   auto doc = jitllm::base::json::Parse(*text);
   if (!doc) {
@@ -623,6 +679,11 @@ Status Harness::NearTies(const Prompt& prompt, const Generation& plain, const Ge
   Generation forced;
   if (auto r = InRequest(prompt.id, [&] { return Teacher(prompt, spec.tokens, forced); }); !r) {
     return r;
+  }
+  if (o_.check == "vocab-greedy") {
+    if (auto checked = VocabGeneration(forced); !checked) {
+      return checked;
+    }
   }
   if (rows == nullptr || rows->tokens != spec.tokens) {
     rows = &spec;
@@ -957,6 +1018,11 @@ Status Harness::Greedy() {
           !r) {
         return r;
       }
+      if (o_.check == "vocab-greedy") {
+        if (auto checked = VocabGeneration(plain); !checked) {
+          return checked;
+        }
+      }
     }
     const std::size_t repeats = decode ? o_.repeats : 1;
     std::vector<double> rates;
@@ -989,6 +1055,11 @@ Status Harness::Greedy() {
       if (!timing && !SameBits(first, plain.logits.front())) {
         problems_.push_back(std::format(
             "{}: the prefill with the injection differs from the plain prefill", prompt.id));
+      }
+      if (o_.check == "vocab-greedy") {
+        if (auto checked = VocabGeneration(spec); !checked) {
+          return checked;
+        }
       }
       if (r > 0) {
         bool same = first_run.tokens == spec.tokens;
@@ -1116,9 +1187,402 @@ Status Harness::Greedy() {
   return {};
 }
 
-// Forced rejections: all rejected, one and two accepted, and some as
-// drafted; against a control that ran the same steps with other tokens
-// after the kept ones.
+// Two cataloged page views, held across this anchor's completed copies. A
+// failed copy quarantines the whole allocation; no destructor can prove it.
+class VocabReferenceBuffers {
+ public:
+  explicit VocabReferenceBuffers(ts::PagedNode& node) : node_(node) {}
+  VocabReferenceBuffers(const VocabReferenceBuffers&) = delete;
+  VocabReferenceBuffers& operator=(const VocabReferenceBuffers&) = delete;
+  VocabReferenceBuffers(VocabReferenceBuffers&&) = delete;
+  VocabReferenceBuffers& operator=(VocabReferenceBuffers&&) = delete;
+  ~VocabReferenceBuffers() {
+    if (base_ != nullptr) {
+      if (unknown_ || !node_.FreePinned(base_)) {
+        node_.KeepPinned(base_);
+      }
+    }
+  }
+  Status Open() {
+    constexpr std::uint64_t alignment = 4096;
+    std::vector<jitllm::catalog::ExtentId> extents;
+    auto memory = node_.Pinned(2 * (dv::ReferencePages::kPage + alignment), kQwen, extents);
+    if (!memory) {
+      return Error(memory.error());
+    }
+    base_ = *memory;
+    auto* first = static_cast<std::byte*>(jitllm::engine::support::Pointer(
+        jitllm::engine::support::Round(reinterpret_cast<std::uintptr_t>(base_), alignment)));
+    live_ = {first, static_cast<std::size_t>(dv::ReferencePages::kPage)};
+    expected_ = {first + dv::ReferencePages::kPage,
+                 static_cast<std::size_t>(dv::ReferencePages::kPage)};
+    return {};
+  }
+  Status Close() {
+    if (unknown_) {
+      return Error("reference copy completion is unknown");
+    }
+    if (auto freed = node_.FreePinned(base_); !freed) {
+      node_.KeepPinned(base_);
+      base_ = nullptr;
+      return freed;
+    }
+    base_ = nullptr;
+    return {};
+  }
+  void Unknown() { unknown_ = true; }
+  std::span<std::byte> live() const { return live_; }
+  std::span<std::byte> expected() const { return expected_; }
+
+ private:
+  ts::PagedNode& node_;
+  void* base_ = nullptr;
+  bool unknown_ = false;
+  std::span<std::byte> live_;
+  std::span<std::byte> expected_;
+};
+
+std::expected<std::string, std::string> Harness::UsedStateDigest() {
+  const auto start = Clock::now();
+  const auto ranges = qwen_.used_state_ranges();
+  if (ranges.empty()) {
+    return Error("vocabulary control has no used state");
+  }
+  std::vector<jitllm::catalog::ExtentId> extents;
+  auto staging = node_.Pinned(ts::kPagedExtent, kQwen, extents);
+  if (!staging) {
+    return Error(staging.error());
+  }
+  jitllm::base::Sha256 hash;
+  for (const auto& range : ranges) {
+    if (range.bytes == 0 || range.bytes > ts::kPagedExtent) {
+      if (auto freed = node_.FreePinned(*staging); !freed) {
+        node_.KeepPinned(*staging);
+      }
+      return Error("vocabulary control state exceeds one staging page");
+    }
+    const auto copy_start = Clock::now();
+    if (auto copied = qwen_.CopyCheckpointState(*staging, std::span(&range, 1), true); !copied) {
+      node_.KeepPinned(*staging);  // failed completion never authorizes a free
+      return Error(copied.error());
+    }
+    vocab_copy_seconds_ += Seconds(Clock::now() - copy_start);
+    const auto sha_start = Clock::now();
+    hash.Update(std::format("{}:{}:{};", range.region, range.offset, range.bytes));
+    hash.Update(
+        std::span(static_cast<const std::byte*>(*staging), static_cast<std::size_t>(range.bytes)));
+    vocab_digest_bytes_ += range.bytes;
+    vocab_sha_seconds_ += Seconds(Clock::now() - sha_start);
+  }
+  if (auto freed = node_.FreePinned(*staging); !freed) {
+    node_.KeepPinned(*staging);
+    return Error(freed.error());
+  }
+  auto result = jitllm::base::ToHex(hash.Finish());
+  vocab_digest_seconds_ += Seconds(Clock::now() - start);
+  ++vocab_digest_calls_;
+  return result;
+}
+
+Status Harness::VocabAnchors() {
+  struct Arm {
+    std::vector<std::int32_t> drafts;
+    std::vector<std::int32_t> verdicts;
+    std::vector<float> probabilities;
+    std::string drafted_state;
+    std::string committed_state;
+    std::string verify_sha;
+    std::uint32_t keep = 0;
+  };
+  const auto digest = [](std::span<const std::byte> bytes) {
+    jitllm::base::Sha256 hash;
+    hash.Update(bytes);
+    return jitllm::base::ToHex(hash.Finish());
+  };
+  const auto write = [&](const std::string& name, std::span<const std::byte> bytes) {
+    std::ofstream file(o_.out / name, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+    file.close();
+    return file.good();
+  };
+  for (const dv::Example& example : vocab_examples_) {
+    if (!o_.only.empty() && example.id != o_.only) {
+      continue;
+    }
+    const auto start = Clock::now();
+    auto ran = InRequest("frozen own-vocabulary common history", [&]() -> Status {
+      const Prompt prompt{
+          .id = example.id, .ids = example.prompt, .stable_boundary = example.stable_boundary};
+      std::vector<float> last;
+      if (auto filled = Prefill(prompt, true, last); !filled) {
+        return filled;
+      }
+      std::vector<std::int32_t> history = example.prompt;
+      auto consumed = static_cast<std::uint32_t>(history.size());
+      for (const std::uint32_t offset : std::span(example.anchors).first(o_.tokens)) {
+        history.assign(example.prompt.begin(), example.prompt.end());
+        history.insert(history.end(), example.continuation.begin(),
+                       example.continuation.begin() + static_cast<std::ptrdiff_t>(offset) + 1);
+        const auto position = static_cast<std::uint32_t>(history.size() - 1);
+        // The anchor itself is uncached. Intervening authored tokens supply
+        // conditioning only; their IDs are never the target-frequency labels.
+        if (consumed < position) {
+          if (auto advanced = qwen_.Chunk(std::span(history).first(position), consumed, last, true);
+              !advanced) {
+            return advanced;
+          }
+        }
+        if (auto settled = qwen_.Rollback(); !settled) {
+          return settled;
+        }
+        const auto pending = qwen_.pending_rows();
+        const auto before_ranges = qwen_.used_state_ranges();
+        VocabReferenceBuffers buffers(node_);
+        const auto staging_start = Clock::now();
+        if (auto opened = buffers.Open(); !opened) {
+          return opened;
+        }
+        vocab_reference_staging_seconds_ += Seconds(Clock::now() - staging_start);
+        const auto page_ranges = [&] {
+          std::vector<dv::PageRange> pages;
+          for (const auto& range : qwen_.used_state_ranges()) {
+            pages.push_back({.region = range.region, .offset = range.offset, .bytes = range.bytes});
+          }
+          return pages;
+        };
+        const auto copy_page = [&](void* host, const dv::PageRange& page) {
+          const jitllm::engine::LiveState::Range range{
+              .region = page.region, .offset = page.offset, .bytes = page.bytes};
+          return qwen_.CopyCheckpointState(host, std::span(&range, 1), true);
+        };
+        const auto capture_reference = [&]() -> std::expected<dv::ReferencePages, std::string> {
+          auto reference = dv::ReferencePages::Capture(o_.out, page_ranges(), qwen_.pending_rows(),
+                                                       buffers.live(), copy_page, vocab_reference_);
+          if (!reference) {
+            if (reference.error().unknown_copy) {
+              buffers.Unknown();
+            }
+            return Error(reference.error().detail);
+          }
+          return std::move(*reference);
+        };
+        const auto compare_reference = [&](const dv::ReferencePages& reference) -> Status {
+          auto compared = reference.Compare(page_ranges(), qwen_.pending_rows(), buffers.expected(),
+                                            buffers.live(), copy_page, vocab_reference_);
+          if (!compared) {
+            if (compared.error().unknown_copy) {
+              buffers.Unknown();
+            }
+            return Error(compared.error().detail);
+          }
+          return {};
+        };
+        auto before = capture_reference();
+        if (!before) {
+          return Error(before.error());
+        }
+        std::optional<dv::ReferencePages> drafted_reference;
+        std::optional<dv::ReferencePages> committed_reference;
+        const auto checkpoint_start = Clock::now();
+        auto checkpoint = jitllm::engine::CheckpointFile::Capture(
+            node_, o_.out, before_ranges,
+            [&](void* host, std::span<const jitllm::engine::LiveState::Range> ranges) {
+              return qwen_.CopyCheckpointState(host, ranges, true);
+            });
+        if (!checkpoint) {
+          return Error(checkpoint.error().detail);
+        }
+        vocab_checkpoint_seconds_ += Seconds(Clock::now() - checkpoint_start);
+        Arm baseline;
+        jitllm::engine::Qwen38DraftHeadCapture captured;
+        for (std::uint32_t arm = 0; arm < 4; ++arm) {
+          const bool capture = arm == 1 || arm == 2;
+          Arm current;
+          jitllm::engine::Qwen38DraftHeadCapture head;
+          if (auto drafted = qwen_.Draft(history, current.drafts, &current.probabilities,
+                                         dv::kDepth, capture ? &head : nullptr);
+              !drafted) {
+            return drafted;
+          }
+          if (arm == 0) {
+            auto reference = capture_reference();
+            if (!reference) {
+              return Error(reference.error());
+            }
+            drafted_reference.emplace(std::move(*reference));
+          } else if (auto compared = compare_reference(*drafted_reference); !compared) {
+            return compared;
+          }
+          current.drafted_state = drafted_reference->sha256();
+          if (current.drafts.size() != dv::kDepth || current.probabilities.size() != dv::kDepth ||
+              !std::ranges::all_of(current.probabilities,
+                                   [](float p) { return std::isfinite(p) && p >= 0 && p <= 1; })) {
+            return Error("vocabulary control returned incomplete drafts or confidence");
+          }
+          if (capture) {
+            const std::size_t width = md::Qwen38Flash().width;
+            if (head.inputs.size() != width * dv::kDepth || head.head_rows == 0 ||
+                head.head_rows > 65536 ||
+                head.logits.size() != static_cast<std::size_t>(head.head_rows) * dv::kDepth ||
+                head.token_ids.size() != head.head_rows || head.catch_up_rows != pending ||
+                !md::CheckQwen38DraftIds(head.token_ids, qwen_.vocab()) ||
+                !std::ranges::all_of(head.inputs, [](float f) { return std::isfinite(f); }) ||
+                !std::ranges::all_of(head.logits, [](float f) { return std::isfinite(f); })) {
+              return Error("vocabulary control capture has invalid extents or values");
+            }
+            for (std::uint32_t pass = 0; pass < dv::kDepth; ++pass) {
+              if (std::ranges::none_of(std::span(head.inputs).subspan(pass * width, width),
+                                       [](float value) { return value != 0; })) {
+                return Error("vocabulary control captured a zero head operand");
+              }
+            }
+            if (arm == 1) {
+              captured = std::move(head);
+            } else if (head.catch_up_rows != captured.catch_up_rows ||
+                       head.head_rows != captured.head_rows ||
+                       head.token_ids != captured.token_ids ||
+                       !SameBits(head.inputs, captured.inputs) ||
+                       !SameBits(head.logits, captured.logits)) {
+              return Error("vocabulary control retained operands do not repeat exactly");
+            }
+          }
+          auto verification = history;
+          verification.insert(verification.end(), current.drafts.begin(), current.drafts.end());
+          std::vector<float> logits;
+          if (auto verified = qwen_.Verify(verification, position, current.verdicts, &logits);
+              !verified) {
+            return verified;
+          }
+          if (current.verdicts.size() != dv::kDepth + 1 ||
+              logits.size() != std::size_t{qwen_.vocab()} * (dv::kDepth + 1) ||
+              !std::ranges::all_of(logits, [](float f) { return std::isfinite(f); })) {
+            return Error("vocabulary control has incomplete or nonfinite verification rows");
+          }
+          current.verify_sha = digest(std::as_bytes(std::span(logits)));
+          std::uint32_t accepted = 0;
+          while (accepted < dv::kDepth && current.verdicts[accepted] == current.drafts[accepted]) {
+            ++accepted;
+          }
+          current.keep = accepted + 1;
+          if (auto kept = qwen_.Accept(current.keep); !kept) {
+            return kept;
+          }
+          if (auto settled = qwen_.Rollback(); !settled) {
+            return settled;
+          }
+          if (arm == 0) {
+            auto reference = capture_reference();
+            if (!reference) {
+              return Error(reference.error());
+            }
+            committed_reference.emplace(std::move(*reference));
+          } else if (auto compared = compare_reference(*committed_reference); !compared) {
+            return compared;
+          }
+          current.committed_state = committed_reference->sha256();
+          if (arm == 0) {
+            baseline = current;
+          } else if (current.drafts != baseline.drafts || current.verdicts != baseline.verdicts ||
+                     current.keep != baseline.keep ||
+                     !SameBits(current.probabilities, baseline.probabilities) ||
+                     current.drafted_state != baseline.drafted_state ||
+                     current.committed_state != baseline.committed_state ||
+                     current.verify_sha != baseline.verify_sha) {
+            return Error("capture off/on/on/off changed a natural proposal, verify or state");
+          }
+          const auto restore_start = Clock::now();
+          auto restored = checkpoint->Restore(
+              node_, [&] { return qwen_.PrepareRestoreState(checkpoint->ranges()); },
+              [&](void* host, std::span<const jitllm::engine::LiveState::Range> ranges) {
+                return qwen_.CopyCheckpointState(host, ranges, false);
+              });
+          if (!restored) {
+            return Error(restored.error().detail);
+          }
+          vocab_restore_seconds_ += Seconds(Clock::now() - restore_start);
+          qwen_.set_pending_rows(pending);
+          if (auto compared = compare_reference(*before); !compared) {
+            return compared;
+          }
+        }
+        // Natural target argmax is computed on the original common history
+        // after restoration, independently of any head's proposal or authored answer.
+        if (auto controlled = qwen_.Chunk(history, position, last, true); !controlled) {
+          return controlled;
+        }
+        if (last.size() != qwen_.vocab() ||
+            !std::ranges::all_of(last, [](float f) { return std::isfinite(f); })) {
+          return Error("vocabulary target-control row is incomplete or nonfinite");
+        }
+        consumed = position + 1;
+        const auto stem = std::format("vocab-{}-{}", example.id, offset);
+        if (!write(stem + ".inputs.f32", std::as_bytes(std::span(captured.inputs))) ||
+            !write(stem + ".logits.f32", std::as_bytes(std::span(captured.logits))) ||
+            !write(stem + ".history.i32", std::as_bytes(std::span(history))) ||
+            !write(stem + ".target.f32", std::as_bytes(std::span(last))) ||
+            !write("vocab-head.ids.i32", std::as_bytes(std::span(captured.token_ids)))) {
+          return Error("writing authenticated common-anchor vocabulary captures");
+        }
+        std::string drafts;
+        for (const auto token : baseline.drafts) {
+          drafts += std::format("{}{}", drafts.empty() ? "" : ",", token);
+        }
+        auto advanced_sha = UsedStateDigest();
+        if (!advanced_sha) {
+          return Error(advanced_sha.error());
+        }
+        results_.push_back(std::format(
+            R"({{"check":"vocab_anchor","example":"{}","domain":"{}","nominal_tokens":{},"prompt_tokens":{},"anchor_offset":{},"anchor_position":{},"passes":3,"arms":4,"catch_up_rows":{},"head_rows":{},"width":{},"drafts":[{}],"accepted":{},"target_signal":"native_control_natural_argmax","target_id":{},"history_sha256":"{}","first_input_sha256":"{}","capture_input_sha256":"{}","captured_logits_sha256":"{}","target_logits_sha256":"{}","confidence_sha256":"{}","verify_logits_sha256":"{}","drafted_state_sha256":"{}","committed_state_sha256":"{}","before_state_sha256":"{}","control_advanced_state_sha256":"{}","checkpoint_bytes":{},"state_sha_traversals":4,"state_reference_captures":3,"state_reference_comparisons":10,"used_range_geometry_exact":true,"pending_cursor_exact":true,"own_repeat_exact":true,"capture_off_on_exact":true,"full_restore_exact":true}})",
+            example.id, example.domain, example.nominal_tokens, example.prompt.size(), offset,
+            position, pending, captured.head_rows, md::Qwen38Flash().width, drafts,
+            baseline.keep - 1, Argmax(last), digest(std::as_bytes(std::span(history))),
+            digest(std::as_bytes(std::span(captured.inputs).first(md::Qwen38Flash().width))),
+            digest(std::as_bytes(std::span(captured.inputs))),
+            digest(std::as_bytes(std::span(captured.logits))),
+            digest(std::as_bytes(std::span(last))),
+            digest(std::as_bytes(std::span(baseline.probabilities))), baseline.verify_sha,
+            baseline.drafted_state, baseline.committed_state, before->sha256(), *advanced_sha,
+            checkpoint->bytes()));
+        const auto staging_close = Clock::now();
+        if (auto freed = buffers.Close(); !freed) {
+          return freed;
+        }
+        vocab_reference_staging_seconds_ += Seconds(Clock::now() - staging_close);
+      }
+      return {};
+    });
+    if (!ran) {
+      return ran;
+    }
+    results_.push_back(std::format(
+        R"({{"check":"vocab_example","example":"{}","anchors":{},"diagnostic_seconds":{:.9f}}})",
+        example.id, o_.tokens, Seconds(Clock::now() - start)));
+  }
+  const auto selected = std::ranges::count_if(
+      vocab_examples_, [&](const dv::Example& e) { return o_.only.empty() || e.id == o_.only; });
+  if (selected == 0) {
+    return Error("vocabulary pilot did not select a frozen example");
+  }
+  results_.push_back(std::format(
+      R"({{"check":"vocab_collection","split":"{}","examples":{},"anchors":{},"complete_collection":{},"diagnostic_only":true,"state_digest_calls":{},"state_digest_bytes":{},"state_digest_seconds":{:.9f},"state_copy_seconds":{:.9f},"state_sha_seconds":{:.9f},"checkpoint_capture_seconds":{:.9f},"checkpoint_restore_seconds":{:.9f},"reference_captures":{},"reference_comparisons":{},"reference_capture_bytes":{},"reference_comparison_bytes":{},"reference_write_bytes":{},"reference_read_bytes":{},"reference_capture_seconds":{:.9f},"reference_comparison_seconds":{:.9f},"reference_capture_copy_seconds":{:.9f},"reference_comparison_copy_seconds":{:.9f},"reference_write_seconds":{:.9f},"reference_read_seconds":{:.9f},"reference_byte_compare_seconds":{:.9f},"reference_staging_seconds":{:.9f},"advanced_digest_seconds":{:.9f}}})",
+      vocab_examples_.front().split, selected, selected * o_.tokens,
+      selected == 8 && o_.tokens == 4 ? "true" : "false",
+      vocab_digest_calls_ + vocab_reference_.captures,
+      vocab_digest_bytes_ + vocab_reference_.capture_bytes,
+      vocab_digest_seconds_ + vocab_reference_.capture_copy_seconds + vocab_reference_.sha_seconds,
+      vocab_copy_seconds_ + vocab_reference_.capture_copy_seconds,
+      vocab_sha_seconds_ + vocab_reference_.sha_seconds, vocab_checkpoint_seconds_,
+      vocab_restore_seconds_, vocab_reference_.captures, vocab_reference_.comparisons,
+      vocab_reference_.capture_bytes, vocab_reference_.comparison_bytes,
+      vocab_reference_.write_bytes, vocab_reference_.read_bytes, vocab_reference_.capture_seconds,
+      vocab_reference_.comparison_seconds, vocab_reference_.capture_copy_seconds,
+      vocab_reference_.comparison_copy_seconds, vocab_reference_.write_seconds,
+      vocab_reference_.read_seconds, vocab_reference_.byte_compare_seconds,
+      vocab_reference_staging_seconds_, vocab_digest_seconds_));
+  return {};
+}
+
 Status Harness::DraftHead(bool routed_down) {
   const std::string_view stage = routed_down ? "routed-down" : "draft-head";
   const Prompt* chosen = nullptr;
@@ -1911,12 +2375,14 @@ Status Harness::Run() {
     return r;
   }
   Status checked;
-  if (o_.check == "greedy" || o_.check == "timing") {
+  if (o_.check == "greedy" || o_.check == "timing" || o_.check == "vocab-greedy") {
     checked = Greedy();
   } else if (o_.check == "forced") {
     checked = Forced();
   } else if (o_.check == "draft-head") {
     checked = DraftHead();
+  } else if (o_.check == "vocab-anchors") {
+    checked = VocabAnchors();
   } else if (o_.check == "routed-down") {
     checked = DraftHead(true);
   } else if (o_.check == "swap") {
@@ -2006,12 +2472,16 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.prompts = v;
     } else if (a == "--reference") {
       o.reference = v;
+    } else if (a == "--template") {
+      o.chat_template = v;
+    } else if (a == "--stop-metadata") {
+      o.stop_metadata = v;
     } else if (a == "--out") {
       o.out = v;
     } else if (a == "--check") {
       o.check = v;
     } else if (a == "--tokens") {
-      ok = number(o.tokens) && o.tokens >= 2;
+      ok = number(o.tokens) && o.tokens >= 1;
     } else if (a == "--context") {
       ok = number(o.qwen.context);
     } else if (a == "--prefill-chunk") {
@@ -2061,7 +2531,11 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       return Error(std::format("{} does not take {}", a, v));
     }
   }
-  if (o.qwen.artifact.empty() || o.qwen.drafter.empty() || o.tokenizer.empty() ||
+  const bool preparing = o.check == "vocab-prepare";
+  if (o.tokens < 2 && o.check != "vocab-anchors") {
+    return Error("this check requires at least two tokens or steps");
+  }
+  if ((!preparing && (o.qwen.artifact.empty() || o.qwen.drafter.empty())) || o.tokenizer.empty() ||
       o.prompts.empty() || o.out.empty() || o.check.empty() ||
       o.fp16.artifact.empty() != o.fp16.tokens.empty()) {
     return Error(
@@ -2078,6 +2552,33 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "DIR --fp16-tokens FILE "
         "--fp16-expect "
         "SHA256]");
+  }
+  if (preparing && (o.chat_template.empty() || o.stop_metadata.empty())) {
+    return Error("vocab-prepare requires --template and --stop-metadata");
+  }
+  if (o.check == "vocab-greedy") {
+    if (o.qwen.context != dv::kContext || o.qwen.max_rows != 8192 || o.tokens != 256 ||
+        o.repeats != 2 || o.qwen.draft_rows != dv::kDepth ||
+        (o.qwen.draft_vocab != 65536 && o.qwen.draft_vocab != 47172) || o.adaptive_depth ||
+        o.window != 0 || o.margin != 1.0 || !o.runtime_prefill || !o.qwen.graphs ||
+        o.profile_decode || !o.only.empty() || !o.reference.empty() || !o.fp16.artifact.empty()) {
+      return Error(
+          "vocab-greedy requires frozen held-out context33792/chunk8192, all eight cells, "
+          "256 outputs, two repeats, fixed depth3, head65536/47172, margin1.0 and graphs");
+    }
+  }
+  if (o.check == "vocab-anchors") {
+    const bool pilot = o.only == "cal-code-8192" && o.tokens == 1;
+    const bool complete = o.only.empty() && o.tokens == 4;
+    if (o.qwen.context != dv::kContext || o.qwen.max_rows != 8192 || o.tokens > 4 ||
+        o.qwen.draft_rows != dv::kDepth || o.qwen.draft_vocab == 0 || o.qwen.draft_vocab > 65536 ||
+        o.adaptive_depth || o.window != 0 || !o.runtime_prefill || !o.reference.empty() ||
+        !o.fp16.artifact.empty() || (!pilot && !complete)) {
+      return Error(
+          "vocab-anchors requires context33792, chunk8192, 1..4 anchors, fixed depth3, "
+          "head1..65536, runtime prefill, all eight prepared input cells and no swap");
+    }
+    o.qwen.draft_head_capture = true;
   }
   if (o.check == "draft-head") {
     if (o.qwen.context > 131072 || o.qwen.max_rows > 8192 || o.tokens > 8 ||
@@ -2097,7 +2598,11 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     }
     o.qwen.routed_capture = 1 | (std::uint64_t{1} << 23) | (std::uint64_t{1} << 47);
   }
-  std::filesystem::create_directories(o.out);
+  std::error_code directory_error;
+  std::filesystem::create_directories(o.out, directory_error);
+  if (directory_error) {
+    return Error("creating benchmark output directory: " + directory_error.message());
+  }
   o.qwen.out = o.out / "qwen38";
   o.fp16.out = o.out / "fp16";
   return o;
@@ -2112,7 +2617,13 @@ int main(int argc, char** argv) {
     return 2;
   }
   Status ran;
-  {
+  if (options->check == "vocab-prepare") {
+    ran = dv::Prepare({.source = options->prompts,
+                       .tokenizer = options->tokenizer,
+                       .chat_template = options->chat_template,
+                       .stop_metadata = options->stop_metadata,
+                       .output = options->out});
+  } else {
     Harness harness(*options);
     ran = harness.Run();
     if (auto finished = harness.TearDown(); !finished && ran) {

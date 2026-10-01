@@ -45,6 +45,20 @@ An ordinary free-running comparison does not substitute for this control. Keep
 depth three fixed first. Compare adaptive depth separately after the
 vocabulary effect is understood.
 
+The initial private collector retains four independently authenticated
+complete-state SHA traversals per anchor: before, baseline post-draft,
+baseline post-commit and control-advanced. Ten additional complete checks
+compare every byte against private unnamed direct-file references: three
+post-draft, three post-commit and all four restores. Every current ordered
+range and pending cursor must match; missing/extra/short/reordered ranges
+and truncated/extended files refuse. No full host-state replica or alternate
+restore callback is used. Charge all reference capture/read/copy/compare
+and original checkpoint/restore cost separately from decode. The revised
+pilot must reproduce the original fourteen-SHA pilot's four canonical hashes,
+full captured rows and natural trajectory; preparation must reproduce both
+preregistered manifests byte for byte. Full collection remains separately
+budgeted and cannot proceed from a partial pilot.
+
 Use the same coding question and answer continuation with increasing
 irrelevant source context to isolate depth, plus distinct code, prose,
 instruction-following and arithmetic prompts to isolate content. Freeze
@@ -85,6 +99,17 @@ already reserved IDs. Zero-frequency rows consequently fall back to the
 lower original IDs. Require exactly 47,172 distinct in-range IDs and write
 them in ascending original-ID order. This objective and fallback order stay
 fixed before any output collection.
+
+For the bounded initial native execution, the corresponding target token
+means the unchanged target control's unfiltered natural argmax after the
+common anchor. Authored continuation IDs are conditioning only, not ranking
+labels. The first candidate has one example per cell and four first-pass
+anchors per example: 32 calibration observations, deliberately too small
+to establish representative corpus coverage. Most zero-frequency membership
+therefore comes from the already fixed lower-ID fallback. A one-cell pilot
+can measure diagnostic cost but cannot satisfy complete calibration; missing
+anchors never get renormalized. Freeze both split manifests before outputs
+and refuse replacing either prepared file.
 
 Equal width with the external head isolates membership. A smaller or larger
 list is a later cost/coverage experiment. Store the list hash, source manifest
@@ -168,4 +193,22 @@ before launch. Any batch over ten minutes must decide the current head
 choice; a broad recurring suite is not part of the default check set.
 All model loads use the existing free-memory and process gates, one
 Spark per timed batch, and supervised application completion. This
-protocol defines the study; it does not claim any runs have happened.
+protocol defines the study; measurements and their scopes live in the
+[completed report](README.md).
+
+### Initial candidate disposition, 2026-10-01
+
+The frozen bounded candidate completed construction, generic import and
+all eight held-out cells' common-history controls before full-head
+projection. It has 22 nonzero-score IDs; all three heads contain the full
+winner at every held-out anchor, choose the same first token and accept
+the same 48/96 positions. Root stopped before the further 25–30-minute
+free-running phase under the standing authorization and D-085: no
+membership/acceptance gain justified adoption work. That phase is not
+waived or labeled passed. The list remains
+unchanged and experimental, and its full state/cursor/subset proofs and
+raw outputs remain preserved. A future adoption claim still requires the
+free-generation and existing correctness/distribution gates above.
+Larger training calibration, text seeding and installation adaptation are
+separate preregistered follow-ups; none may revise this candidate using
+the observed held-out outputs.

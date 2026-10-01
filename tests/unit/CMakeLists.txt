@@ -4,6 +4,15 @@
 # Unit tests of jitLLM's modules, one GoogleTest executable per module
 # (docs/architecture.md#testing). Every test carries the `unit` label.
 
+add_executable(qwen38_vocab_test qwen38_vocab_test.cc)
+target_link_libraries(qwen38_vocab_test PRIVATE jitllm_draft_vocab_contract)
+jitllm_gtest(qwen38_vocab_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(qwen38_reference_test qwen38_reference_test.cc)
+target_link_libraries(qwen38_reference_test PRIVATE jitllm_vocab_reference jitllm_base)
+jitllm_gtest(qwen38_reference_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 add_executable(cli_test cli_test.cc)
 target_link_libraries(cli_test PRIVATE jitllm_cli jitllm_surface_versions)
 target_compile_definitions(cli_test PRIVATE "JITLLM_TEST_PROJECT_VERSION=\"${PROJECT_VERSION}\"")

@@ -4,6 +4,15 @@
 # Measurement harnesses: built with the rest, never run by CTest. Each
 # prints aggregate tables that a report under docs/experiments/ records.
 
+add_library(jitllm_draft_vocab_contract STATIC qwen38_vocab.cc)
+target_include_directories(jitllm_draft_vocab_contract PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(jitllm_draft_vocab_contract PRIVATE jitllm_json jitllm_chat
+                                                       jitllm_model jitllm_tokenizer jitllm_warnings)
+
+add_library(jitllm_vocab_reference STATIC qwen38_reference.cc)
+target_include_directories(jitllm_vocab_reference PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(jitllm_vocab_reference PRIVATE jitllm_base jitllm_platform jitllm_warnings)
+
 # D-048's lanes: wakeup latency against polling, lane throughput, and the
 # completion board's round trip (docs/experiments/task-lanes/).
 add_executable(jitllm_lanes_bench lanes_bench.cc)
@@ -241,6 +250,8 @@ if(JITLLM_CUDA)
   add_executable(jitllm_qwen38_spec qwen38_spec.cc)
   target_link_libraries(jitllm_qwen38_spec PRIVATE jitllm_paged_runners jitllm_launch_recorder
                                                    jitllm_tokenizer jitllm_chat jitllm_sampling
+                                                   jitllm_draft_vocab_contract
+                                                   jitllm_vocab_reference
                                                    jitllm_runtime
                                                    jitllm_warnings)
   target_link_options(jitllm_qwen38_spec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
