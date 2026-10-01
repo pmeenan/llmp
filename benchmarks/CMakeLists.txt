@@ -17,6 +17,7 @@ target_link_libraries(jitllm_sampling_bench PRIVATE jitllm_sampling jitllm_warni
 # The retained-backing comparison's deterministic replay of the swap trace
 # on the fake provider (docs/experiments/retained-backing/).
 add_subdirectory(retained_backing)
+add_subdirectory(ds4_complete)
 
 # Storage queue depth and request size, direct into host VMM through the
 # providers (docs/experiments/storage-queue/). Needs a CUDA device.

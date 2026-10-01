@@ -267,6 +267,56 @@
   with explicit table, ranges and execution-time position contracts. No
   upstream submission is claimed.
 
+## Literal router and routed/shared FFN for the temporary reference
+
+- **Status:** checked primitives for the temporary complete-prefill
+  benchmark; no upstream patch. The owner
+  intends to match the whole configured pipeline, restore native stages
+  individually to identify useful changes, then retire the literal reference.
+- **Source:** `dsv4_ds4_moe_core.cuh` and `dsv4_ds4_moe_original.cuh`,
+  under the study pin, plus the unchanged prepared original MMQ header
+  closure. Companion provenance identifies five original CUDA units:
+  `ds4_cuda.cu`, `ds4_mmq_d2r.cu`, `ds4_mmq.cu`, `mmid.cu` and
+  `quantize.cu`. The authenticated correspondence proof verifies 115 complete
+  numerical functions/templates and ten prepared headers unchanged against
+  those pinned sources. Original CUDA numerical options remain
+  `-O3 --use_fast_math -lineinfo`.
+- **Evidence:** Spark A's final combined locked check passes 1,197 tests,
+  including 256 GPU tests and the corrected FFN quantization controls, with
+  actual SDK format/tidy, boundaries and REUSE/header checks. The complete
+  source proof is SHA-256
+  `691bcddc9d74f09eebaee273df05c6265784cde4e9d701d4034a5ae6f49f8e86`.
+- **Arithmetic:** authoritative selected-six routing, original expert maps,
+  IQ2 G1, weighted/clamped SwiGLU, original D4/canonical Q8_1 and D2S6
+  preparation, aligned Q2 down and the guarded six-slot sum. Independent
+  controls distinguish direct-F16 Q8_1 scales, reciprocal-F32 D4 scales and
+  reciprocal-F16 D2S6 scales; the existing physical bound is unchanged.
+- **Native ownership:** checked borrowed extents and explicit six-of256
+  source strides, jitLLM streams/workspace/fixup and current producer
+  identities. No original context, allocator, weight server, global sidecar
+  registry or model dispatcher is linked. Complete source and transformed
+  scratch are charged. D2R's CTA-barrier contract permits complete 128-row
+  output tiles and even tails below 16; larger partial tails are refused
+  before packing. Original numerical bodies remain untouched.
+- **Scope:** the initial full-model scope is two 4,096-row chunks through all
+  43 layers and one final full head at 8K. Original serial live-scalar
+  routing and the default small materialized/shared-MMQ tier below 1,024
+  assignments remain follow-ons; Classic has a distinct original activation
+  and is diagnostic. Operator controls do not qualify decode, full-model
+  equality, quality, speed or defaults. The measured external original
+  and native 8K pipeline match all 129,280 logits byte for byte, with
+  native throughput 2.4% lower on a separate Spark. Those fixed-input
+  results and the remaining restoration work are in the
+  [complete-plan report](../experiments/ds4-complete-plan/README.md).
+- **License:** the numerical derivative and prepared original headers retain
+  the MIT notices of The ggml authors, The ds4.c authors, Entrpi and Marco
+  Palaferri, including the original fused-G1 attribution. Authored adapters,
+  tests and provenance are Apache-2.0. The source lock, NOTICE and shipped
+  third-party notices retain those obligations; no source offer is owed.
+- **Proposed upstream action:** document the low-level D2R tail/barrier
+  eligibility and explicit producer-buffer contracts. No submission is
+  claimed; native ownership adapters are jitLLM-specific.
+
 ## Cache-off is a storage control, not an unrounded quality oracle
 
 - **Status:** source clarification; no upstream patch proposed.

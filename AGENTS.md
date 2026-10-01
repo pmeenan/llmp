@@ -328,8 +328,9 @@ to 262,144, with trained ceilings checked before allocation. Remaining
 before the gate: final maximum-context and quality/swap checks, plus
 Qwen's long-context MTP speed gap.
 The ds4 study adopted shared sparse gathers and compact expert scheduling;
-its matched pipeline is being assembled as a temporary benchmark for restoring
-native stages and adapting the mechanisms that explain the gains. M3.5 (model families, the
+its complete 8K benchmark now matches all original logits byte for byte
+within 2.4% throughput. Native-stage restoration will identify and adapt the
+mechanisms behind the gains. M3.5 (model families, the
 owner's approved 13 plus legacy fixtures and Bonsai, formats with EXL3
 in focus, concurrent batching) follows M3, before M4. Keep this paragraph
 short and current when plan.md milestone status changes (rule 4).

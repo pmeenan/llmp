@@ -51,6 +51,8 @@ class RunnerResources {
 
   // `bytes` of device VMM (rounded to extents) of `memory_class`, pinned,
   // mapped into `mapped` for the runner's life. Before the node runs.
+  // `mapped` must remain alive at the same address through fenced Release,
+  // including when Map fails after making a partial allocation.
   Status Map(Mapped& mapped, std::string name, std::uint64_t bytes,
              catalog::MemoryClass memory_class);
   // Pinned host memory, cataloged as the runner's staging. Before the

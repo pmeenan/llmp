@@ -918,7 +918,15 @@ it appears.
       and assess applicable consumers across models/kernels. The literal
       path is temporary benchmark scaffolding, not a permanent runtime;
       retire unused reference code from shipping builds after the study.
-      [Current primitive qualification and remaining assembly](experiments/ds4-complete-plan/README.md).
+      [Complete reference and restoration evidence](experiments/ds4-complete-plan/README.md):
+      the native 8K pipeline completes all 43 layers and matches all
+      129,280 original logits byte for byte on the same community weights
+      and IDs. Three fresh passes deliver 1,085 tok/s on Spark A versus
+      original ds4's 1,112 tok/s on Spark B, including the final result copy,
+      a 2.4% throughput gap. The final Spark slice passes 1,197 tests,
+      including 256 GPU tests. Native-stage restoration and causal A/Bs,
+      wider context and task quality remain open; production defaults
+      are unchanged.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

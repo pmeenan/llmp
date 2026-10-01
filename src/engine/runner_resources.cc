@@ -22,12 +22,14 @@ using support::Error;
 
 RunnerResources::Status RunnerResources::Map(Mapped& mapped, std::string name, std::uint64_t bytes,
                                              catalog::MemoryClass memory_class) {
+  // Retain even a partially mapped attempt through fenced teardown.
+  // MapResident can fail after reservation or some backing was acquired.
+  mapped_.push_back(&mapped);
   if (auto r = node_.MapResident(mapped, std::move(name), bytes, providers::BackingKind::kDevice,
                                  memory_class, catalog::Recovery::kPinned, owner_);
       !r) {
     return r;
   }
-  mapped_.push_back(&mapped);
   return {};
 }
 

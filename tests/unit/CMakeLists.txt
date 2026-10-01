@@ -367,6 +367,14 @@ add_executable(dsv4_ds4_attention_validate_test dsv4_ds4_attention_validate_test
 target_link_libraries(dsv4_ds4_attention_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(dsv4_ds4_attention_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(dsv4_ds4_moe_validate_test dsv4_ds4_moe_validate_test.cc)
+target_link_libraries(dsv4_ds4_moe_validate_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(dsv4_ds4_moe_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+add_executable(ds4_complete_executor_test ds4_complete_executor_test.cc)
+target_link_libraries(ds4_complete_executor_test PRIVATE jitllm_ds4_complete_contract)
+jitllm_gtest(ds4_complete_executor_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(dsv4_ds4_repack_validate_test dsv4_ds4_repack_validate_test.cc)
 target_link_libraries(dsv4_ds4_repack_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(dsv4_ds4_repack_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
@@ -512,6 +520,24 @@ if(JITLLM_CUDA)
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(dsv4_ds4_attention_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(dsv4_ds4_attention_test)
+
+  add_executable(dsv4_ds4_moe_test dsv4_ds4_moe_test.cc)
+  target_include_directories(dsv4_ds4_moe_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(dsv4_ds4_moe_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(dsv4_ds4_moe_test)
+
+  add_executable(ds4_complete_binding_test ds4_complete_binding_test.cc)
+  target_link_libraries(ds4_complete_binding_test PRIVATE jitllm_ds4_complete_native)
+  target_link_options(ds4_complete_binding_test PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../../cublas")
+  jitllm_gtest(ds4_complete_binding_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+  add_executable(ds4_complete_retirement_test ds4_complete_retirement_test.cc)
+  target_link_libraries(ds4_complete_retirement_test PRIVATE jitllm_engine jitllm_fake_providers)
+  target_link_options(ds4_complete_retirement_test PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../../cublas")
+  jitllm_gtest(ds4_complete_retirement_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
   add_executable(dsv4_ds4_repack_test dsv4_ds4_repack_test.cc)
   target_include_directories(dsv4_ds4_repack_test SYSTEM PRIVATE

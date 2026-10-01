@@ -11,6 +11,7 @@
 #include <expected>
 #include <filesystem>
 #include <limits>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -71,8 +72,11 @@ std::expected<Ds4PreparedWeightSet, std::string> PlanDs4PreparedWeights(
   if (!binding) return std::unexpected(binding.error());
   Ds4PreparedWeightSet result;
   result.artifact_id = a.id();
+  std::set<std::pair<bool, std::uint32_t>> identities;
   auto append = [&](std::string name, std::uint32_t index, bool expert,
                     kg::Ds4AlignedShape shape) -> Status {
+    if (!identities.emplace(expert, index).second)
+      return std::unexpected("duplicate original prepared tensor identity");
     auto layout = kg::Ds4AlignedLayoutOf(shape);
     if (!layout) return std::unexpected(layout.error().detail);
     Ds4PreparedWeight tensor{.name = std::move(name),
@@ -125,11 +129,12 @@ std::expected<Ds4PreparedWeightSet, std::string> PlanDs4PreparedWeights(
           !added)
         return std::unexpected(added.error());
     }
-    // Original cuda_attention_outa_aligned_ptr flattens the three-dimensional
-    // group/rank tensor into low_dim rows before its lazy aligned repack.
+    // The canonical importer already flattens the original group/rank tensor
+    // into [heads*head/groups, o_lora*groups], in the same physical row order
+    // that cuda_attention_outa_aligned_ptr repacks into low_dim rows.
     // Prepare that exact additive plane up front, without an F16 weight mirror.
     const auto& out_a = layer.out_a;
-    if (out_a.type != "Q8_0" || out_a.ne != std::vector<std::uint64_t>{4096, 1024, 8}) {
+    if (out_a.type != "Q8_0" || out_a.ne != std::vector<std::uint64_t>{4096, 8192}) {
       return std::unexpected("original own out-a requires the community Q8 group-major tensor");
     }
     const auto& resource = a.resources()[out_a.index];
@@ -140,10 +145,11 @@ std::expected<Ds4PreparedWeightSet, std::string> PlanDs4PreparedWeights(
       return std::unexpected(added.error());
   }
   // Original repack_q8 candidate:2-D Q8_0, K divisible1024, at least2MiB,
-  // token embedding excluded. Three-dimensional out_a was prepared explicitly.
+  // token embedding excluded. Canonically flattened out_a is already prepared.
   for (std::uint32_t i = 0; i < a.resources().size(); ++i) {
     const auto& tensor = a.resources()[i];
     const auto& repr = tensor.repr;
+    if (identities.contains({false, i})) continue;
     if (repr.family != artifact::Family::kGgml || repr.type != "Q8_0" || repr.dims.size() != 2 ||
         repr.dims[0] % 1024 != 0 || tensor.bytes.value() < (std::uint64_t{2} << 20U) ||
         tensor.name.contains("token_embd"))

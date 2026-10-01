@@ -56,6 +56,8 @@ struct Ds4PreparedWeightSet {
 
 // Binds all43 Flash layers, refuses another artifact/precision and requires
 // IQ2_XXS gate/up, Q2_K down and the original dense Q8 candidate predicates.
+// Canonical out-a is [4096,8192], preserving original group-major row order;
+// its additive aligned plane appears exactly once in the dense namespace.
 // Uses only validated native resource/slice placements, never raw GGUF offsets.
 std::expected<Ds4PreparedWeightSet, std::string> PlanDs4PreparedWeights(
     const artifact::Artifact& artifact);
