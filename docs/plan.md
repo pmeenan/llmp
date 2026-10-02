@@ -1018,6 +1018,10 @@ it appears.
       41.13 to 45.21 tokens/s (+9.91%), with exact IDs, traces and range geometry.
       This single direction screen selects focused recovery controls and serving
       integration; it does not qualify state-page equality or HTTP parity.
+      Focused rejected-request recovery and HTTP capacity/cancellation controls
+      now pass. The first matched fresh cooperative HTTP C2 screen is neutral
+      (+0.34% aggregate rate) and delays the first-finishing request; hold
+      adoption and screen fixed depth with pairing counters before broader checks.
       The [exact16 MXFP8 control](experiments/qwen38-mxfp8-sixteen/README.md)
       passes every output/state check but makes the paid four-request loop
       7.469 times slower. Keep paired-eight products; no wider MXFP8 kernel

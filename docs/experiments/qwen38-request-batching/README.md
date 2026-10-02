@@ -279,3 +279,49 @@ attempts remain excluded. Records are retained outside Git at
 The diagnostic overlays are not a deployed concurrency implementation.
 Focused state/recovery controls and serving integration follow this useful
 signal; routine production checks remain owed before adoption.
+
+## First cooperative HTTP screen
+
+The private service integration preserves replies and recovery, but its first
+matched fresh C2 screen is **neutral (+0.34% aggregate throughput)**. It is held
+from production adoption. The earlier native decode gain does not establish a
+gain through the HTTP scheduler.
+
+Both service profiles provision two wave slots at context 262144 and chunks
+of 4096, use the selected 47172 head and retain adaptive depth. Only the
+cooperative backend is enabled in the shared profile. The two untouched
+`spec-c4-u2/u3` chat fixtures each render to 8266 prompt tokens; all four replies
+contain 256 generated tokens, zero cached tokens and a length finish. Text,
+reasoning, usage and finish agree exactly between profiles. One fresh pair per
+profile pays prefill, any first activation, queueing and HTTP work; this is not
+a pure decode or repeat-stability measurement.
+
+| Profile | Pair wall, s | Aggregate outputs/s | u2 completion, s | u3 completion, s |
+| --- | ---: | ---: | ---: | ---: |
+| Scalar | 25.887234 | 19.778088 | 25.887234 | 16.090539 |
+| Cooperative | 25.798419 | 19.846177 | 25.614849 | 25.798257 |
+
+The previously first-finishing request takes substantially longer under shared
+execution. Both shared requests queue for less than 0.002 s; the scalar u2
+request queues for 16.090 s. No draft-depth or paired-product counters were
+retained, so these observations identify no cause. Source inspection finds
+that unequal adaptive depths disable paired draft products; a small fixed-depth
+screen with aggregate pairing counters is the next causal check.
+
+Separate focused controls restore the rejected request to its complete
+post-draft state, preserve its accepted peer and produce exact continuation
+outputs. The HTTP behavior screen preserves 16 normal responses, exercises
+capacity deferral/refill and records one intentional disconnect as 499. The
+262144-context startup guard passes without reducing chunks or context; it
+does not establish populated maximum-context memory or task quality.
+
+Provenance: Spark B, SDK 4432b0ab, checked private target receipt d98004a1,
+scalar/shared executables 26d54826/6e18e013 and unchanged resolved SDK cuBLAS.
+Actual performance outer receipt is 9c06c3d0, client receipts a85ec3e7/ecd4eca7;
+both service children complete zero and are reaped, with terminal probes clear
+at 116.726 GiB. Behavior/startup/recovery receipts are 17e52735/02fc48d8/995d00cd.
+Raw controls remain outside Git in the respective
+`/home/pmeenan/scratch/m3-qwen-cooperative-screen-*-r1-records/` and
+`/home/pmeenan/scratch/m3-qwen-discard-verify-control-r1-records/` directories.
+Routine suites are deferred while diagnosing this neutral private candidate;
+no production default or cross-engine parity follows from it.
