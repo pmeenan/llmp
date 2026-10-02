@@ -970,6 +970,13 @@ it appears.
       3.17% with all six complete heads byte-identical. The guarded fast
       graph removes the norm intermediate; reference and unsupported
       shapes retain both primitives.
+      The private [output-A prefix factor](experiments/ds4-output-prefix/README.md)
+      gains 4.08% community-checkpoint 8K prefill throughput with packing,
+      table preparation and copy-back paid. At 32K on the original checkpoint,
+      its 512-row fixed-history comparison has zero outside-bound differences
+      and all full logits repeat exactly. The same native baseline in that
+      screen has one exception exceeding the fixed bound by 1.669249 nats.
+      Broader quality and production adaptation remain open; no default changes.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer

@@ -54,7 +54,7 @@ Source anchors: `src/kernels/ggml/{qwen2_graph,dsv4_graph,qwen38_graph,graph_pla
 | Qwen BF16 full-target-head sharing: positive controls | Ordinary selector/MMF at six, eight or sixteen columns, paid concatenations and bounded split views over independent states | Paid fixed3 C4 decode gains 8.867%. Fixed3 cooperative C2 HTTP gains 5.40%/4.99%. Extending the shared three-row guard under unchanged adaptive depth gains 2.53%/1.33%, pooled 1.93%, with exact full native vectors and HTTP responses. These head-only factors do not establish cross-engine parity. |
 | Qwen fixed-three depth: modest direction, no default change | A fixed depth remains a cheap scheduling candidate; the current adaptive policy stays selected | One fresh C2 screen gains 2.35% amid 1.18% ordinary bookend movement. Both reasoning trajectories change, so later acceptance/work can differ; the capped replies contain no final answer. |
 | Qwen shared HC BF16 products: small positive private screen | Combine compatible multirow products over the same weights while preserving separate preparation, nonlinear mixing and request state | Fresh adaptive C2 HTTP gains 1.60% amid 0.28% control movement with identical capped replies. Full native-vector/state controls and attribution of HC pair counts remain open. |
-| DeepSeek inverse-RoPE/output-A/layout fusion: positive private timing, quality pending | Fuse a producer transform with a grouped projection and eliminate intermediate layout work; adapt the useful mechanism to native operations | With packing/table preparation/copy-back paid, the operator cuts latency 45.63% and whole-model 8K throughput improves 4.08% amid 0.42% bookend movement. Its F16 tensor-core arithmetic changes full logits; selected coordinate accuracy is not an answer-quality gate. Qwen and Qwen2 lack this grouped output-A chain. |
+| DeepSeek inverse-RoPE/output-A/layout fusion: positive private timing and focused quality | Fuse a producer transform with a grouped projection and eliminate intermediate layout work; adapt the useful mechanism to native operations | Paid operator latency falls 45.63%; community 8K throughput improves 4.08% amid 0.42% bookend movement. The original-checkpoint 32K candidate passes the unchanged greedy bound and repeats all full logits exactly; its native baseline fails one step. Broader quality and production integration remain open. Qwen and Qwen2 lack this grouped output-A chain. |
 | Exact16 Qwen MXFP8: no adoption | Share work using paired-eight products; investigate BF16 full heads independently | Exact16 is 7.469 times slower despite exact outputs/state. Compiled local-storage growth supports a spill concern but does not measure traffic or prove the sole cause. |
 | Literal Mia scheduling/attention consumers: earlier negative controls | Inspect their packing, cache and launch boundaries separately; retain native device selection and sparse work | A faster kernel in its original runtime can lose after adapters or dispatch changes. Do not repeat an unchanged negative factor. |
 | Cross-token Qwen sparse-cell union: rejected timing | The native per-KV-head query tile and selected-cell cache remain useful; a cheaper bounded union would be a new experiment | The measured union proposal materially regressed. Synthetic D256 sharing does not approve it for Qwen. |
@@ -74,6 +74,7 @@ Evidence lives in the existing reports:
 `qwen38-depth-policy/README.md`,
 `qwen38-hc-sharing/README.md`,
 `dsv4-qhead/README.md`,
+`ds4-output-prefix/README.md`,
 `qwen38-mxfp8-scheduling/README.md`,
 `tensorfold-techniques/README.md` and `ds4-long-context-tasks/README.md`.
 Entries marked investigation have no claimed measured gain.
@@ -104,10 +105,13 @@ Qwen's ten-expert sorted NVFP4 combine already has its own implementation;
 other MoE families need matching layout, precision and sum contracts before
 transferring this mechanism. Dense and image consumers have no such sum.
 The selected [Q-head fusion](../dsv4-qhead/README.md) adds a separate 3.17%
-whole-model prefill gain with byte-exact full heads. A subsequent private
-inverse-RoPE/output-A/layout screen gains 4.08% but changes logits; its next
-step is one focused same-checkpoint quality comparison, rather than a context
-or task matrix. Operator gains and separate model factors are not additive.
+whole-model prefill gain with byte-exact full heads. The private
+[inverse-RoPE/output-A/layout screen](../ds4-output-prefix/README.md) gains
+4.08% on the community 8K workload but changes logits. At 32K on the original
+checkpoint it has zero outside-bound differences in 512 fixed-history rows
+and repeats complete logits exactly; the same native baseline has one
+exception. Broader quality and an interaction with optional HCA remain open.
+Operator gains and separate model factors are not additive.
 The first native
 Slot-wave C2 screen improves paid decode by 9.91% with exact IDs and traces,
 selecting focused state/recovery controls and serving integration.
