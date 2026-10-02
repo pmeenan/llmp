@@ -39,6 +39,179 @@ one Spark and on two.
 
 ---
 
+## D-101: Decision models through the Jev/SystemOne API, multimodal file inputs with each family's bring-up, and OpenAI-shaped media generation routes  (2026-10-02, status: accepted at the owner's request of 2026-10-02, with the owner's answers that day on DeepSeek V4 Flash Vision-Exp, the audio carrier, confidence and the TTS testbeds; scope and plan only, nothing built; moves D-042's file inputs from M10 to M3.5 and M4; makes decision heads an exception to D-044's classification deferral; schedules the image-output API features.md left unscheduled; adds public routes, D-016)
+
+**Decision.**
+
+- **Decision models: `POST /v1/systemone`, wire-compatible with TypeSafe's
+  Jev/SystemOne API.** That is the API decision-model clients already
+  code against: TypeSafe's SDKs (Python `typesafe-sdk`, npm
+  `@typesafe-ai/sdk`, MIT) with a base URL, gateways (Vercel, OpenRouter,
+  Pydantic AI, LiteLLM's Jev classifier) and Cloudflare Workers AI's Clef.
+  The contract is TypeSafe's OpenAPI 3.1 spec (`api.typesafe.ai/openapi.json`,
+  version 0.2.0 on 2026-10-02, copied and hashed at entry):
+  - **Request:** `model`, `state` (string or JSON) and `questions` keyed by
+    ID, each `noul`, `choice` or `score` with `instructions` and
+    `criteria`.
+  - **Response:** `answers` keyed by ID, `usage` and the resolved `model`.
+    `confidence` uses TypeSafe's published formulas.
+  - **Extensions:** `images` and `videos`, as Clef's reference and Workers
+    AI accept them.
+  - **Starting intake bounds:** Workers AI's limits (1–64 questions, 2–255
+    options, 2–10 score levels, at most 4 images).
+  - **Errors:** TypeSafe's statuses (401, 422, 429, 529) and the 422 body.
+
+  The test models are Cloudflare's **Clef**
+  (`Cloudflare/clef@2f3de3dd85f379784083b0814d997ab627200f0c`, Qwen3.8-27B
+  backbone, 128M-parameter joint schema head) and **Clef-flash**
+  (`Cloudflare/clef-flash@17f0b0ad64efb65d273590632833508766b2aae6`,
+  Qwen3.5-9B backbone, 122M head), both Apache-2.0.
+  - **Oracle:** their reference `joint_schema_model.py` on transformers
+    5.10.2, in BF16, compared per-option probability.
+  - **Same-format comparator:** ggml-org's Clef GGUFs on llama.cpp, text
+    only, once PR #29831 merges.
+  - **Execution:** a decision program is one prefill with no retained
+    state. It exposes the final-norm hidden states of every position, not
+    logits. The head reads them together with the output-head rows of each
+    option's tokens, and answers every question of a request jointly.
+- **Multimodal file inputs land with each family's bring-up, not at M10.**
+  - **What:** images (several per request), video files and audio files.
+    Live streams stay deferred (D-042).
+  - **M3.5:** Qwen3.8 Flash Next (images, video), every M3.5 checkpoint
+    whose pinned files carry an encoder, Clef's and Qwen-Image's Qwen3-VL
+    vision path, DeepSeek V4 Flash Vision-Exp, and an audio carrier.
+    DeepSeek V4 Flash 0731 is text-only, so Vision-Exp is a separate
+    checkpoint. The owner keeps it; V4.1 Flash follows. No pinned
+    checkpoint keeps an audio encoder, so the carrier is a separate
+    model, Gemma 4 E4B-it (owner, 2026-10-02).
+  - **M4:** GLM-5.3 Flash (images, video) and DeepSeek V4.1 Flash
+    (images).
+  - **Wire forms:** Chat Completions `image_url`, `input_audio` and vLLM's
+    `video_url` on the existing chat route in M3.5. Responses and Messages
+    image inputs follow when M5 builds those protocols, and Ollama's
+    `images` in M10.
+  - **Fetching:** inline data only. Fetching remote URLs is off by default
+    (D-014 privacy, request forgery).
+- **Media generation: OpenAI's routes, as the local engines serve them.**
+  - **Images:** `POST /v1/images/generations` and `/v1/images/edits` for
+    Qwen-Image-2.1.
+    - Output is `b64_json`.
+    - Edits are accepted as multipart `image[]` and `mask`, and as the JSON
+      `images[]` form Codex sends.
+    - `size` is width×height. Streaming uses a `stream` and
+      `partial_images` subset.
+    - Extension fields follow vLLM-Omni: `negative_prompt`,
+      `num_inference_steps`, `guidance_scale` and `seed`.
+  - **Video:** `/v1/videos` asynchronous jobs, in the shape vLLM-Omni,
+    SGLang and LiteLLM kept after OpenAI shut its own down on 2026-09-24,
+    for MiniMax H3.
+    - Routes: create, retrieve with status and progress, download the
+      content, list, and delete (which cancels).
+    - They run on D-041's job machinery. Generated media is kept only
+      until it is fetched or expires (D-014).
+  - **Speech:** `/v1/audio/speech` in OpenAI's shape.
+    - **Testbeds (owner, 2026-10-02):** Breeze-TTS-2
+      (`BreezeBlue/Breeze-TTS-2@3e28c5151381a722f1d8661b4118c298caa77aa4`)
+      and Kokoro-82M
+      (`hexgrad/Kokoro-82M@f3ff3571791e39611d31c381e3a41a3af07b4987`).
+    - **Mapping:** `voice` names a configured voice. `instructions` is
+      Breeze's voice design and direction. Breeze's reference-audio
+      voice cloning takes the reference clip and its transcript as
+      extension fields.
+    - **Output:** whole files or streamed audio (`stream_format`).
+  - **Coding agents, through MCP:** these clients cannot point their
+    built-in image generation at a local server (Claude Code and OpenCode
+    have none; Antigravity and Cursor are hosted only; Codex's is gated on
+    OpenAI authentication). So an optional **MCP media server** carries
+    image and video generation into their chats. It runs as a separate
+    process calling the front door (D-005; D-042 keeps tool execution out
+    of the runtime) and returns MCP image content with the saved file's
+    path.
+  - **Not adopted:** the Responses hosted `image_generation` tool (no
+    client sends it to a custom provider) and `/v1/images/variations`
+    (retired).
+- **Further compatibility surfaces (owner, 2026-10-02),** each in the
+  milestone that builds its protocol or model:
+  - **M3.5, with the image routes:** Stable Diffusion WebUI's
+    `/sdapi/v1/txt2img`, `/img2img`, `/sd-models` and `/options`, for
+    Open WebUI, SillyTavern and LibreChat. Also images in chat responses,
+    as OpenRouter's `message.images` and `delta.images` (D-046's
+    vocabulary), so a chat request to an image model returns its image
+    instead of a refusal.
+  - **M3.5, with the audio carrier:** `POST /v1/audio/transcriptions` in
+    OpenAI's shape (multipart file; text, JSON and subtitle formats;
+    streamed text deltas), for Open WebUI's and LibreChat's voice input.
+  - **M5, with the front door:** Google's Gemini API (`v1beta/models`,
+    `:generateContent`, `:streamGenerateContent?alt=sse`,
+    `:countTokens`; image `inlineData` in and out), for Gemini CLI and
+    the google-genai SDKs through their base URL. Off loopback, Gemini
+    CLI requires HTTPS (D-065). Antigravity cannot be pointed at it.
+  - **M5, with the front door:** fill-in-the-middle code completion:
+    - `suffix` on `/v1/completions` and on the Ollama profile's
+      `/api/generate`;
+    - Mistral's `/v1/fim/completions`;
+    - llama.cpp's `/infill`.
+
+    It serves Continue, Tabby, Twinny, llama.vscode and Zed's edit
+    predictions, on models whose tokenizers carry FIM tokens, confirmed
+    at entry.
+  - **M10, with embeddings and reranking:** the request shapes their
+    clients send: Hugging Face TEI's `/embed` and `/rerank`, Cohere's
+    `/v2/embed`, Ollama's `/api/embed`, and the Cohere (`/v2/rerank`)
+    and Jina (`/v1/rerank`) shapes behind D-044's routes.
+
+**Context.** The owner asked for this on 2026-10-02, after Cloudflare
+released Clef (2026-09-30) and called it fully Jev-API compatible.
+Research that day:
+
+- **TypeSafe's API:** schema, SDKs and gateways.
+- **Clef's reference against TypeSafe:** Clef's weights differ from their
+  base models in the linear projections (merged adapters). Its
+  `confidence` is the top probability rather than TypeSafe's formula, it
+  echoes the requested `model`, and it answers questions jointly, where
+  TypeSafe documents them as independent.
+- **Which planned models take which media:** Qwen3.8 (Flash Next and 27B)
+  and GLM-5.3 Flash take images and video; DeepSeek V4.1 Flash takes
+  images; DeepSeek V4 Flash 0731 and the large GLM-5.3 are text-only.
+- **How clients generate images:** see the last Decision bullet.
+
+The facts and sources are in [m35-families.md](m35-families.md#media-inputs-decision-models-and-generation-apis).
+
+**Consequences.**
+
+- **Plan:** M3.5 gains three scope items (decision models, file inputs,
+  media generation routes) with exit criteria. M4 gains its two models'
+  vision. M5's front door gains the Gemini API and fill-in-the-middle.
+  M10's pooled outputs gain their clients' request shapes, and its
+  file-input item reduces to text resources and the Ollama profile's
+  `images`.
+- **Heavy path:** every new route is a public interface, and every media
+  decoder parses untrusted input.
+  - Byte, pixel, frame and duration bounds are fixed before anything is
+    decoded.
+  - Decoders are chosen under D-017 and D-080; a video demuxer may land in
+    the optional copyleft tier.
+- **Acceptance:** encoder outputs and the language model's teacher-forced
+  logits on image, video and audio prompts, against the same-format
+  reference with preprocessing matched to its pinned processor. Decision
+  answers are judged on per-option probabilities.
+- **Paging:** encoders and decision heads are components of a composition
+  (D-089), paged and released like other extents. Encoder outputs are
+  request state.
+- **Batching:** decision requests batch like other requests (M3.5).
+- **Versioning:** new routes are additive under D-062 and D-100: they
+  keep `jitllm-inference-version: 1` unless one breaks an existing
+  profile, and each adds its CHANGELOG line.
+
+**Reopen if.**
+
+- TypeSafe's spec changes incompatibly, or Clef's reference diverges from
+  it in ways clients notice.
+- A named client needs remote media URLs.
+- A coding client opens its built-in image generation to custom endpoints;
+  then serve it directly as well.
+- A planned checkpoint's encoder needs live streaming.
+
 ## D-100: Literal Completions expose target likelihoods through OpenAI echo/logprobs and vLLM prompt_logprobs, including zero-token scoring  (2026-09-30, status: accepted by the owner's explicit API authorization; adds a bounded inference route to D-097; establishes inference surface version 1 under D-062)
 
 **Decision.** Add non-streaming `POST /v1/completions` for one raw text
@@ -5086,7 +5259,7 @@ under a pinned version, a deployment beyond a single owner's local nodes is
 adopted (D-014), or a client requires the resolved identity in the standard
 `model` field.
 
-## D-044: Confirm compatible reranking, monitoring and completion APIs; bound specialized scope  (2026-09-22, status: accepted; extends D-043; front-door contract in D-045)
+## D-044: Confirm compatible reranking, monitoring and completion APIs; bound specialized scope  (2026-09-22, status: accepted; extends D-043; front-door contract in D-045; decision models over the Jev API made an exception to the classification deferral by D-101)
 
 **Decision.** The owner approved the remaining vLLM API-triage group:
 
@@ -5161,7 +5334,7 @@ await triage.
 resource/lifetime or privacy invariants, or a protocol revision changes the
 selected compatibility contract.
 
-## D-042: Confirm staged multimodal input, MCP management, sharing controls and embeddings  (2026-09-22, status: accepted; extends D-041)
+## D-042: Confirm staged multimodal input, MCP management, sharing controls and embeddings  (2026-09-22, status: accepted; extends D-041; image, video and audio file inputs scheduled with their families in M3.5 and M4 by D-101)
 
 **Decision.** The owner approved the second API-triage group:
 

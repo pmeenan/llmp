@@ -48,9 +48,9 @@ Each milestone leaves a usable, testable result. None has a promised date.
 | M1 Bootstrap | Pinned SDK, builds, local check gate, package skeleton, confined-job proof | M0 (done) |
 | M2 Resource core | Catalog, admission and leases on a fake backend and a Spark; the backend proof settles the operation contract | M1 (done) |
 | M3 Single-Spark fast swap | DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swap A→B→A on one Spark, aiming at ~10 s to first token, as correct, fast and lean as their references | M2 |
-| M3.5 Model families | The core engine runs the major open model families, MoE and dense (Gemma, Llama, MiMo and the other top-tier families), each correct, as fast as its reference and flat with context, before the system is built around it | M3 |
-| M4 Two-Spark fast swap | GLM-5.3 Flash, then DeepSeek v4.1 Flash, sharded over both Sparks in the same cycle | M3.5 |
-| M5 One resident model | Importer, verifier, the three client protocols, TLS and management on the small fixtures | M4 |
+| M3.5 Model families | The core engine runs the major open model families, MoE and dense (Gemma, Llama, MiMo and the other top-tier families), each correct, as fast as its reference and flat with context, before the system is built around it; image, video and audio file inputs on the models that take them, decision models over the Jev API, and image, video and speech generation routes (D-101) | M3 |
+| M4 Two-Spark fast swap | GLM-5.3 Flash, then DeepSeek v4.1 Flash, sharded over both Sparks in the same cycle, with their image (and GLM's video) inputs | M3.5 |
+| M5 One resident model | Importer, verifier, the three client protocols plus the Gemini API and code completion, TLS and management on the small fixtures | M4 |
 | M6 First useful product | A→B→A with partial retention; switching policy chosen from measurement | M5 |
 | M6a Configured placement | Conductor, enrolled nodes, whole-model placement and routing | M6 |
 | M7 Demand-paged MoE | Exact expert paging; Gemma 4 and Ornith as daily drivers with reasoning and constrained output (their resident bring-up is M3.5's) | M6 |
@@ -1611,11 +1611,100 @@ family" guide, and its long-context scaling work.
       chunks), and mcg and 3inst are verified on partial packs only.
       Measure it against ExLlamaV3 and us, then adopt what transfers
       (D-091).
+- [ ] **Multimodal file inputs** (D-101, moved from M10 by the owner,
+      2026-10-02): images (several per request), video files and audio
+      files on every model here that takes them, brought up with its
+      family. Live streams stay deferred (D-042). Encoders are components
+      of the model's composition (D-089), paged and released like other
+      extents ([facts and sources](m35-families.md#media-inputs-decision-models-and-generation-apis)).
+      - **Qwen3-VL vision tower** (27 layers, patch 16, 2×2 merge,
+        interleaved M-RoPE): Qwen3.8 Flash Next (from M3), Qwen3.8-27B,
+        Ornith 1.5, Bonsai-27B, Clef and Clef-flash. Images and video
+        (2 fps frame sampling, text timestamps). Qwen-Image-2.1's edit
+        mode uses the same family of tower for its reference images.
+      - **The other M3.5 encoders** as their pinned files carry them:
+        - Gemma 4 26B and 31B, with images and video as frames; their
+          image tokens are bidirectional on sliding layers only;
+        - Gemma 3 4B (SigLIP);
+        - Llama 4 Scout (tiles);
+        - Mistral Small 4 (Pixtral);
+        - Muse Glimmer (images; its video is unendorsed);
+        - MiMo-V2.6 (images and video; the pinned EXL3 build dropped its
+          audio).
+      - **DeepSeek V4 Flash Vision-Exp** (images; kept by the owner,
+        2026-10-02, with V4.1 Flash's vision following in M4): V4 Flash
+        0731 is text-only, and the vision model is a separate,
+        continued-trained checkpoint whose GGUF and encoder sit in antirez's pinned
+        repository. Its row-pair "N-layout" fits CSA compression.
+      - **Audio:** no pinned checkpoint keeps an audio encoder, so Gemma
+        4 E4B-it joins as the audio carrier (owner, 2026-10-02): 16 kHz,
+        128 mels, at most 30 s per clip, sharing Gemma 4's tokenizer,
+        template and vision.
+      - **Intake** on the chat route: Chat Completions `image_url`,
+        `input_audio` and vLLM's `video_url`, inline data only, with
+        remote URL fetching off by default. Byte, pixel, frame and
+        duration bounds are fixed before decoding. The image, audio and
+        video decoders are chosen under D-017 and D-080, and they and the
+        intake take the heavy path.
+- [ ] **Decision models over the Jev API** (D-101, the owner,
+      2026-10-02): `POST /v1/systemone`, wire-compatible with TypeSafe's
+      Jev/SystemOne OpenAPI spec, which the TypeSafe SDKs, gateways and
+      Workers AI's Clef share.
+      - **Test models:** `Cloudflare/clef` (Qwen3.8-27B backbone) and
+        `Cloudflare/clef-flash` (Qwen3.5-9B backbone), each with a joint
+        schema head of about 125M parameters.
+      - **Decision program:** one prefill with no retained state. The head
+        reads every position's final-norm hidden state and the output-head
+        rows of each option's tokens. It answers all of a request's
+        questions jointly, with images and videos as Clef accepts them.
+      - **Wire behavior:** confidence follows TypeSafe's published
+        formulas; Clef's reference reports the top probability instead,
+        and that difference is recorded.
+      - **Clients:** the TypeSafe Python and JavaScript SDKs, unmodified,
+        pointed at jitLLM by base URL.
+- [ ] **Media generation routes** (D-101, the owner, 2026-10-02):
+      - `POST /v1/images/generations` and `/v1/images/edits` for
+        Qwen-Image-2.1, in OpenAI's shape with vLLM-Omni's diffusion
+        fields. Edits take reference images and a mask.
+      - `/v1/videos` asynchronous jobs for MiniMax H3, on D-041's job
+        machinery, with generated media kept only until fetched or
+        expired.
+      - `/v1/audio/speech` on two text-to-speech testbeds (owner,
+        2026-10-02):
+        - **Breeze-TTS-2:** 3.47B in BF16. A T5Gemma2 text encoder (26
+          layers), a Qwen3 backbone (28 layers, 2048 wide), a depth
+          decoder over 16 codebooks and a Mimi-style codec at 24 kHz.
+          It does voice design from instructions, and voice cloning from
+          a reference clip, which goes through the codec's encoder.
+          Classifier-free guidance doubles its rows. Streaming output.
+        - **Kokoro-82M:** StyleTTS 2 with an ISTFTNet vocoder and a
+          PL-BERT encoder, over misaki phonemes, with 54 voice packs, at
+          24 kHz. Its weights and voices are PyTorch pickles, so import
+          reads them without executing them. misaki's grapheme-to-phoneme
+          step runs natively, with no interpreter in serving (D-010); its
+          espeak-ng fallback is GPL and belongs in the optional copyleft
+          tier (D-080).
+      - Stable Diffusion WebUI's `/sdapi/v1/txt2img`, `/img2img`,
+        `/sd-models` and `/options` over the same pipeline, for Open
+        WebUI, SillyTavern and LibreChat.
+      - Images in chat responses (OpenRouter's `message.images` and
+        `delta.images`, D-046), so a chat request to an image model
+        returns its image.
+      - `POST /v1/audio/transcriptions` on the audio carrier, in OpenAI's
+        shape, for voice input in Open WebUI and LibreChat.
+      - An optional **MCP media server**, a separate process calling these
+        routes. It is how coding agents whose built-in image generation
+        cannot point at a local server mix generated images into chat:
+        Claude Code, OpenCode, Codex, Gemini CLI, and Antigravity where it
+        accepts the server. Open WebUI and LibreChat call the routes
+        directly, and Codex's own image tool is tried against them too.
 - [ ] **Resident only.** Demand-paged experts stay M7's; M7 keeps its
       daily-driver usability work and builds on the families brought up
       here.
 
-**Exit criteria**, per approved family and form (MoE, dense):
+**Exit criteria**, per approved family and form (MoE, dense). D-101's
+decision and speech models meet their own criteria below in place of
+the correctness, speed and long-context ones:
 
 - **Correctness:** greedy tokens match the same-format oracle except
   near-ties, under the recorded-first noise bound; perplexity within a few
@@ -1639,6 +1728,34 @@ family" guide, and its long-context scaling work.
   same correctness and speed criteria against its same-format reference.
   EXL3 decode and prefill are faster than ExLlamaV3's on the GB10, dense
   and MoE, at the covering set's bitrates, including mixed widths.
+- **Media inputs:** for each model and modality, encoder outputs and the
+  language model's teacher-forced logits on image, video and audio
+  prompts match the same-format reference within bounds declared before
+  evaluation, with preprocessing matched to the reference's pinned
+  processor. Requests with several images, and video files, are among
+  them. Generated text alone is not evidence. Inputs past their bounds
+  are refused before any decode, and the intake passes its adversarial
+  challenge.
+- **Decision models:** Clef's and Clef-flash's per-option probabilities
+  match their pinned reference within declared bounds, text-only and with
+  images. The TypeSafe SDKs complete requests unmodified. Decision
+  requests batch with each other, and no state outlives a request.
+- **Speech:** with the same inputs, seed and sampling, Breeze's codebook
+  logits match its reference's within declared bounds (teacher-forced),
+  and its codec turns given codes into the reference's waveform within
+  bounds. Kokoro's waveform for given phonemes and voice matches its
+  reference within bounds. Time to first audio and the real-time factor
+  are at least as good as each reference's on the GB10 (D-085). Open
+  WebUI speaks through `/v1/audio/speech` unmodified.
+- **Generation routes:** Qwen-Image's generated and edited images from
+  the routes equal the native pipeline's for the same seed, and Open
+  WebUI generates through them unmodified, and through the WebUI routes,
+  SillyTavern does too. Open WebUI shows an image returned in a chat
+  response. Transcriptions from the audio carrier match its reference
+  output for the same clips. A MiniMax H3 job runs from
+  create to download and cancels cleanly. Through the MCP media server,
+  Claude Code and at least one other coding agent show a generated image
+  in a chat turn.
 - The support matrix lists every approved family with its evidence.
 
 ## M4 — Two-Spark fast full swap  `pending`
@@ -1729,6 +1846,15 @@ requantization from optimizations at unchanged quality.
       and correct; the
       nextn layers or DSpark head for v4.1). ReconGemm prepares its
       cuBLASLt descriptors once per bound GEMM (M2's hand-off).
+- [ ] **Media inputs** (D-101), on M3.5's intake:
+      - GLM-5.3 Flash's images and video: the GLM ViT (24 layers, patch
+        14, 2D RoPE inside), video at 2 fps with per-frame timestamps;
+      - DeepSeek V4.1 Flash's images: the DeepSeek-ViT with its 3×3
+        aligner, at most 1,024 tokens an image in reading order.
+
+      Both checkpoints keep their towers. Mia's V4.1 build says vision was
+      not its validation target, and llama.cpp has no V4.1 architecture,
+      so V4.1's oracle is its repository's own inference code.
 - [ ] The minimal `/v1/chat/completions` serves the sharded models.
 
 **Exit criteria:**
@@ -1754,6 +1880,8 @@ requantization from optimizations at unchanged quality.
   back within the timeout, the swap reports failure cleanly, neither
   catalog keeps a lease, grant or backing from B, and the next swap
   succeeds.
+- **Media inputs:** M3.5's media-input criterion holds for both models'
+  modalities.
 
 ## M5 — One resident model, end to end  `pending`
 
@@ -1802,6 +1930,16 @@ M3.
       `plugins`. Numeric intake bounds are fixed before any external input
       is accepted, with the total input limit reconciled with named-client
       tests ([cluster design](cluster-design.md)).
+- [ ] **Gemini API and fill-in-the-middle** (D-101, the owner,
+      2026-10-02):
+      - Google's Gemini API (`v1beta/models`, `:generateContent`,
+        `:streamGenerateContent?alt=sse`, `:countTokens`, image
+        `inlineData` in and out) for Gemini CLI and the google-genai SDKs
+        by base URL.
+      - Code completion with a suffix: `suffix` on `/v1/completions` (and
+        the Ollama profile's `/api/generate` in M10), Mistral's
+        `/v1/fim/completions` and llama.cpp's `/infill`, on models whose
+        tokenizers carry FIM tokens, confirmed at entry.
 - [ ] **Local management API and CLI** (D-064): versioned routes for import,
       listing, representation inspection, removal, jobs and node health.
 - [ ] **Service hardening** (D-074; M1's hand-offs, moved from M2 by the
@@ -1836,7 +1974,10 @@ M3.
   by the owner, 2026-09-27; BP-F4's per-token host cost is measured in
   M3).
 - The [M5 acceptance cases](client-api-baseline.md#acceptance-owed-in-m5)
-  pass as scoped there. At least one named client completes a chat
+  pass as scoped there. Gemini CLI completes a chat unmodified through
+  the Gemini API, and Continue or llama.vscode completes code through
+  fill-in-the-middle, with the inserted text equal to the model's greedy
+  output for the same prompt. At least one named client completes a chat
   unmodified with each representation, and Cursor stays an explicit gap
   unless resolved. The context-compacted release moves to M6, which
   delivers D-041's close, and the Ollama-native checks move to M10 with the
@@ -2224,8 +2365,8 @@ that a stranger can install from the project's package repository and run
 **Entry:** M9 exit. The owner may pull an item forward once its dependencies
 exist (for example the Ollama profile or tokenization endpoints after M5, or
 the dashboard after M6's management controls); the release itself waits for
-every earlier exit. Each model added for embeddings, reranking or file
-inputs is named at entry with its pinned reference engine and numerical
+every earlier exit. Each model added for embeddings or reranking is
+named at entry with its pinned reference engine and numerical
 bounds, declared before native evaluation.
 
 **Scope:**
@@ -2249,10 +2390,13 @@ bounds, declared before native evaluation.
       Completions with standard log-probabilities and bounded token
       diagnostics.
 - [ ] **Pooled outputs** (D-042, D-044): embeddings and reranking on
-      validated models named at entry.
-- [ ] **File inputs** (D-042): text resources, images (starting with Gemma
-      4's vision encoder) and audio files, on models validated for them,
-      with bounded preprocessing.
+      validated models named at entry, in the shapes their clients send
+      (D-101): OpenAI's `/v1/embeddings`, Hugging Face TEI's `/embed` and
+      `/rerank`, Cohere's `/v2/embed` and `/v2/rerank`, Jina's rerank,
+      and Ollama's `/api/embed`.
+- [ ] **File inputs** (D-042): text resources. Images, video and audio
+      files moved to M3.5 and M4 with their families (D-101); here the
+      Ollama profile carries `images` for the models validated there.
 - [ ] **Packaging** (D-027): the signed arm64 apt repository and its signing
       keys, optional copyleft modules in the default install with a
       build-time opt-out (D-080), and drain-before-restart upgrades; and,
@@ -2271,11 +2415,10 @@ bounds, declared before native evaluation.
 - Every new model and output path meets numerical acceptance against its
   pinned reference within the declared bounds before any support claim:
   embedding vectors with the model's pooling and normalization; rerank
-  scores and orderings; encoder outputs and the language model's
-  teacher-forced logits on image and audio prompts, with preprocessing
-  matched to the reference's pinned implementation. Raw Completions
-  log-probabilities agree with the validated teacher-forced logits, and
-  tokenize and render output matches inference byte for byte and ID for ID.
+  scores and orderings (media inputs are judged in M3.5 and M4, D-101).
+  Raw Completions log-probabilities agree with the validated
+  teacher-forced logits, and tokenize and render output matches inference
+  byte for byte and ID for ID.
   Generated text alone is not evidence.
 - On a fresh Spark, installing from the apt repository and following only
   the checked-in docs reaches a running supported model (vision.md).
@@ -2299,7 +2442,7 @@ dependency-group scoring, optimistic MoE) live in features.md.
 | Ollama registry and other management compatibility | After the basic subset and relevant native management operation, when a named client needs them | Deferred D-041 candidate; lifecycle mapping needs separate proof |
 | Regex/grammar constrained output | After validated JSON/schema support, when a concrete client requires it | D-043 deferral; no automatic milestone delivery |
 | LoRA adapters | Earliest M9 planning after validated base-model execution, when a concrete adapter workload needs them | D-044 deferral; no automatic delivery |
-| Classification/reward/generic pooling APIs | Earliest M9 planning after validated base-model execution, when a concrete model/task workload needs them | D-044 deferral; not implied by embedding/reranking support |
+| Classification/reward/generic pooling APIs | Earliest M9 planning after validated base-model execution, when a concrete model/task workload needs them | D-044 deferral; not implied by embedding/reranking support. Decision models over the Jev API are the exception, in M3.5 (D-101) |
 | Live audio/video input | Earliest M9 planning after initial file-input evidence, when a concrete workload establishes streaming/synchronization requirements | Deferred D-042 candidate; not an automatic M9 deliverable |
 | Batch/background inference jobs | Earliest M9 planning after validated request scheduling, when a concrete workload justifies scheduling/storage needs | Deferred D-042 candidate; ordinary background request priority is already confirmed |
 | Automatic membership changes | After M6a, when configured enrollment and explicit restart cannot reasonably serve membership churn | Candidate mechanism under D-023/D-038; bootstrap discovery and path refresh for enrolled nodes are already M6a scope |

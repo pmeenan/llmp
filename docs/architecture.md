@@ -1247,7 +1247,9 @@ own decision.
 | Stored MTP layers | Ornith (one layer), Qwen3.8 (MTP head), MiMo | Stored and accounted in references, never executed | Draft, verify and rollback phase kinds; truncation | M3 (Qwen3.8); M9 (Ornith, MiMo) (D-068) |
 | Companion MTP drafter | Gemma 4 assistant drafters; DeepSeek V4's DSpark; GLM-5.3's DFlash2 | None | Composed contexts; resources shared across artifacts | M3 (DSpark); M4 (DFlash2 or GLM's MTP, whichever is faster and correct, D-087); M9 (Gemma 4) (D-068) |
 | Block diffusion over a causal prefix | DiffusionGemma-26B-A4B | None | Canvas phase kinds and sampler; transient canvas; bidirectional attention over cached KV; restore points only where the adapter validates them (vLLM describes the commit as a causal encoder pass) | M9 (D-068) |
-| Modality encoders | Gemma 4 and MiMo image input | None | Encoder components and phase kinds (D-042's staged modalities) | M10 (Gemma 4 first) |
+| Modality encoders | Qwen3-VL tower (Qwen3.8 Flash Next first), Gemma 4, MiMo, DeepSeek-ViT, GLM ViT; Gemma 4 E4B audio | None | Encoder components and phase kinds (D-042's staged modalities) | M3.5; M4 (GLM-5.3 Flash, DeepSeek V4.1 Flash) (D-101) |
+| Decision heads | Clef, Clef-flash | None | Prefill-only program exposing final-norm hidden states; head component | M3.5 (D-101) |
+| Speech synthesis | Breeze-TTS-2, Kokoro-82M | None | Codec and vocoder components; audio output phase | M3.5 (D-101) |
 | Image-generation pipelines | Qwen-Image-2.1 | BF16 and GGUF references | Multi-component contexts; per-phase release | M3 |
 | Pooled outputs | Embeddings (D-042), reranking (D-044) | None | Pooled-output phase kind; bidirectional attention | M10 |
 | Model-parallel sharding | GLM-5.3 and DeepSeek v4.1 TP2; MiMo TP=2/EP=2 | Two-Spark references | Per-rank plans | M4 (TP2); M8 (MiMo's EP) |

@@ -287,7 +287,8 @@ gate and frozen M3 record remain open. Workstation checks are deferred
 until implementations settle; package checks remain owed before shipment.
 
 M3.5 follows M3: the approved 13 model checkpoints, legacy fixtures, Bonsai,
-formats with EXL3 in focus, and remaining continuous batching/skeleton gaps
+formats with EXL3 in focus, remaining continuous batching/skeleton gaps,
+media file inputs, Clef over the Jev API and media generation routes (D-101)
 ([plan](docs/plan.md), [family set](docs/m35-families.md)). M4 follows on
 two Sparks; [reference engines](docs/m4-references.md) are re-pinned at entry.
 Detailed historical results belong in the plan and experiment reports.

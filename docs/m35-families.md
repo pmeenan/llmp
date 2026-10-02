@@ -901,6 +901,204 @@ A new category beside M3's Qwen-Image, for the owner's MiniMax H3.
   9.3B single-stream DiT on a Qwen3-VL-8B encoder, FP8 and NF4 only,
   non-commercial); FLUX.2-klein-9B is the alternative.
 
+## Media inputs, decision models and generation APIs
+
+Added 2026-10-02 at the owner's request (D-101), as a desk study like the
+rest of this file: nothing was downloaded or run. Facts come from the
+Hugging Face API, configs, processor configs, cards and engine source on
+that day. Encoder sizes marked "≈" are inferred from mmproj GGUF byte
+sizes. GB10 claims are creator-reported.
+
+### Which planned checkpoints take which media
+
+| Model (as pinned) | Image | Video | Audio | Encoder | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Qwen3.8 Flash Next (M3) | yes, several | yes | no | Qwen3-VL ViT: 27 layers, width 1152, patch 16, temporal 2, 2×2 merge, ≈0.45B | Interleaved M-RoPE in the LLM. Video at 2 fps, 4–768 frames, text timestamps. Mia's NVFP4 keeps the tower, quantized (MXFP8 plus NVFP4 fc2). The GGUF ships an mmproj ([config](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/raw/main/config.json)) |
+| Qwen3.8-27B, Ornith 1.5, Bonsai-27B | yes | yes (Ornith's card is silent) | no | the same tower | EXL3 `SC_3.00` keeps it in BF16; the GGUFs ship an mmproj ([card](https://huggingface.co/Qwen/Qwen3.8-27B)) |
+| DeepSeek V4 Flash 0731 (M3) | no | no | no | none | Text-only ([config](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/raw/main/config.json)) |
+| DeepSeek V4 Flash Vision-Exp | yes, interleaved | no | no | DeepSeek-ViT: 32 layers, width 1024, patch 14, 2D RoPE, 3×3 aligner, ≈0.47B | A separate checkpoint continued-trained from 0731 ([card](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-Vision-Exp)). At most 384 tokens an image, in an "N-layout" padded to CSA's compression. Its GGUFs and encoder are in the pinned `antirez/deepseek-v4-gguf`. llama.cpp `deepseek4v`, DwarfStar on CUDA |
+| DeepSeek V4.1 Flash (M4) | yes | no | no | the same ViT family | At most 1,024 tokens an image, in reading order ([vision.py](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/raw/main/inference/vision.py)). Mia's EXL3 keeps the tower but did not validate it. No llama.cpp architecture |
+| GLM-5.3 Flash (M4) | yes | yes | no | GLM ViT: 24 layers, width 1024, patch 14, 2D RoPE, ≈0.58B | No M-RoPE in the LLM. Video at 2 fps with per-frame timestamps ([processor](https://huggingface.co/zai-org/GLM-5.3-Flash/raw/main/processor_config.json)). The large GLM-5.3 is text-only |
+| Gemma 4 26B-A4B and 31B | yes | as frames (32 × 70 tokens) | no | ≈550M, patch 16, 3×3 pooling | Images at 70–1,120 tokens (280 by default). Image tokens attend bidirectionally on sliding layers only. Audio exists only on E2B, E4B and 12B ([card](https://huggingface.co/google/gemma-4-26B-A4B-it)) |
+| Gemma 3 4B QAT (legacy) | yes | no | no | SigLIP, 896 px, 256 tokens | The pinned ggml-org GGUF includes the mmproj |
+| Llama 4 Scout | yes, tested up to 5 | no | no | ViT, 336 px tiles (up to 16), ≈0.87B | The unsloth GGUF ships an mmproj |
+| Mistral Small 4 | yes | no | no | Pixtral, patch 14, 2×2 merger | `[IMG_BREAK]`/`[IMG_END]` tokens |
+| Muse Glimmer 30B | yes | processor and vLLM only; card says images | no | ViT-G/14, ≈1.8B, at most 4,096 tokens an image | Meta's GGUF ships a Q4_K_M mmproj ([card](https://huggingface.co/meta-models/Muse-Glimmer-30B)) |
+| MiMo-V2.6-Flash-RL | yes | yes | original only | ViT 681M; audio tokenizer 308M + 127M, 24 kHz, 128 mels | The pinned EXL3 build drops the audio encoder ([card](https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL)) |
+| gpt-oss-120b, Nemotron 3 Super, Kimi-Linear, Llama 3.3 70B, GLM-4.7-Flash, Gemma 2 2B, Phi-3.5-mini, Command R7B | no | no | no | none | Text-only |
+
+Reference engines for the media path:
+
+- **llama.cpp mtmd:** images, audio and video, with video through ffmpeg
+  at 4 fps. It has projectors for every vision family above except V4.1
+  ([docs](https://github.com/ggml-org/llama.cpp/blob/master/docs/multimodal.md)).
+- **vLLM:** registers every family above. Upstream MiMo is text-only.
+- **SGLang:** covers MiMo's audio and Gemma 4's audio.
+- **ExLlamaV3:** images on its EXL3 families. Video is unverified.
+
+**Audio carrier.** No pinned checkpoint takes audio, so the owner chose
+a carrier on 2026-10-02:
+`google/gemma-4-E4B-it@ee0ef6023621cff504d758262d4e04895a5af4a2`
+(Apache-2.0, 8.0B, 4.4M downloads in 30 days).
+It takes 16 kHz audio as 128 mel bins, about 30 s a clip, through a
+≈300M conformer, and shares Gemma 4's tokenizer, template and vision.
+llama.cpp, vLLM, SGLang and transformers run it. Alternatives:
+- `nvidia/Nemotron-3-Nano-Omni-30B-A3B`: audio, image and video in one
+  model, NVIDIA license;
+- `Qwen/Qwen3-ASR-1.7B`;
+- `openai/whisper-large-v3-turbo`, for transcription only.
+
+### Decision models: Clef and the Jev API
+
+- **The API.** TypeSafe's Jev / SystemOne: `POST /v1/systemone` and
+  `GET /v1/models`, with bearer authentication
+  ([API](https://docs.typesafe.ai/api.md),
+  [OpenAPI 0.2.0](https://api.typesafe.ai/openapi.json)).
+  - **Request:** `model`, `state` (string or JSON) and `questions` keyed
+    by ID. Each question is `noul` (true/false), `choice` (up to 255
+    named options) or `score` (2–10 ordered levels), with `instructions`
+    and `criteria`.
+  - **Response:** `answers`, `usage` and the resolved `model`.
+    - noul: P(true);
+    - choice: the argmax, `probabilities` and `confidence`;
+    - score: Σ i·pᵢ, a `legend`, `probabilities` and `confidence`.
+
+    Confidence is (p_max − 1/n)/(1 − 1/n) for choice, and a
+    distance-normalized formula for score
+    ([confidence](https://docs.typesafe.ai/confidence.md)).
+  - **Not offered:** streaming or a batch route.
+  - **Clients:** the TypeSafe SDKs (`typesafe-sdk` 0.7.2,
+    `@typesafe-ai/sdk` 0.6.0, MIT; base URL from `TYPESAFE_BASE_URL`);
+    Vercel AI Gateway and `@ai-sdk/typesafe-ai`; OpenRouter; Pydantic AI
+    Gateway; TanStack AI; LiteLLM's Jev classifier.
+- **Workers AI** serves Clef with the same body. Its limits are 1–64
+  questions, at most 4 images (data URLs, PNG, JPEG or WebP) and 64K
+  tokens ([model page](https://developers.cloudflare.com/workers-ai/models/clef/)).
+- **The models.** Both are Apache-2.0
+  ([clef](https://huggingface.co/Cloudflare/clef),
+  [clef-flash](https://huggingface.co/Cloudflare/clef-flash)).
+
+  | Model | Revision | Backbone | Backbone size | Head |
+  | --- | --- | --- | --- | --- |
+  | Clef | `2f3de3dd85f379784083b0814d997ab627200f0c` | Qwen3.8-27B (`qwen3_5`, 64 layers, 3 linear : 1 full attention) | 54.7 GB BF16 | 128M |
+  | Clef-flash | `17f0b0ad64efb65d273590632833508766b2aae6` | Qwen3.5-9B (32 layers) | 18.8 GB BF16 | 122M |
+
+  - Both keep the Qwen3-VL vision tower and drop MTP.
+  - Against the base models, Clef's linear projections differ in layers
+    40–63 and Clef-flash's in every layer; embeddings, output head,
+    norms and vision are unchanged (merged adapters, inferred from the
+    weights).
+- **The forward pass** (`joint_schema_model.py`):
+  1. One causal prefill without a cache over a fixed prompt: the state,
+     any media placeholders, then each question's instruction span and
+     one span per option.
+  2. The head (2 evidence-routing layers and 4 decoder layers, width
+     1024) reads every position's hidden state after the final norm.
+     Its inputs are the mean of each question span, the mean of each
+     option span, the output-head rows of each option's tokens, and the
+     last token.
+  3. Questions attend to each other, so answers are joint.
+  4. Each question's option logits pass through a softmax.
+
+  The reference is tested on transformers 5.10.2 with torch 2.11.
+- **Where the reference differs from TypeSafe's documented behavior:**
+  - its `confidence` is the top probability;
+  - it echoes the requested `model`;
+  - the question ID enters the prompt;
+  - `instructions` is optional;
+  - questions interact.
+- **Other engines.**
+  - vLLM would load only the backbone as a chat model; its `/v1/systemone`
+    work is generic ([PR #59299](https://github.com/vllm-project/vllm/pull/59299)).
+  - llama.cpp's text-only Clef support is open
+    ([PR #29831](https://github.com/ggml-org/llama.cpp/pull/29831)), with
+    GGUFs at `ggml-org/Clef-GGUF` and `ggml-org/Clef-Flash-GGUF`.
+
+### Text-to-speech testbeds
+
+Chosen by the owner on 2026-10-02.
+
+- **Breeze-TTS-2**
+  (`BreezeBlue/Breeze-TTS-2@3e28c5151381a722f1d8661b4118c298caa77aa4`,
+  [card](https://huggingface.co/BreezeBlue/Breeze-TTS-2)).
+  - **Ranking:** #1 open-weight model on Artificial Analysis's TTS board
+    (creator-reported).
+  - **Size:** 3.47B parameters, 6.97 GB in BF16, plus a 0.68 GB audio
+    tokenizer.
+  - **Components:** a T5Gemma2 text encoder (26 layers, 1152 wide, window
+    512); a Qwen3 backbone (28 layers, 2048 wide, 16 query and 8 KV
+    heads, llama3 RoPE scaling); a 12-layer depth decoder over 16
+    codebooks of 2,051 entries; a Mimi-style codec at 12.5 Hz; and a
+    Qwen3-TTS 12 Hz audio tokenizer. Audio is 24 kHz.
+  - **Generation:** sampled at temperature 0.9, with classifier-free
+    guidance (`cfg_scale` 4 for instructions). Voices come from a
+    reference clip and its transcript (cloning), a description (design),
+    or both (direction). Vocal events such as `(laugh)` are written
+    inline. English and Chinese.
+  - **Reference:** PyTorch inference code at
+    [breezeblue-ai/breeze-tts](https://github.com/breezeblue-ai/breeze-tts)
+    (Apache-2.0).
+    - Its server answers a multipart `POST /v1/audio/speech` (`text`,
+      `instruction`, `ref_audio`, `ref_text`, `cfg_scale`, `seed`) with
+      streamed 24 kHz 16-bit PCM.
+    - Stage-wise CUDA graphs give under 40 ms to first audio and a
+      real-time factor of 0.32 on an H100 (creator-reported).
+  - **License (informational, D-087):** the weights are under the
+    BreezeBlue Research and Non-Commercial License.
+- **Kokoro-82M**
+  (`hexgrad/Kokoro-82M@f3ff3571791e39611d31c381e3a41a3af07b4987`,
+  [card](https://huggingface.co/hexgrad/Kokoro-82M)).
+  - **Popularity:** Apache-2.0, 11.4M downloads in 30 days.
+  - **Architecture:** StyleTTS 2 with an ISTFTNet vocoder and a PL-BERT
+    text encoder, over 178 phoneme tokens, at 24 kHz. Duration and
+    prosody prediction are LSTM-based, and the decoder uses AdaIN
+    convolutions.
+  - **Weights:** `kokoro-v1_0.pth` (327 MB) and 54 voice packs (`.pt`),
+    all PyTorch pickles. Import must read them without executing code
+    (D-009). `onnx-community/Kokoro-82M-v1.0-ONNX` is an Apache-2.0
+    conversion.
+  - **Reference:** the `kokoro` package (≥ 0.9.2). Its phonemes come from
+    `misaki`, which falls back to espeak-ng (GPL-3.0) for unknown words.
+
+### Generation APIs and clients
+
+- **OpenAI's image routes.**
+  - `POST /v1/images/generations` returns `b64_json` and can stream
+    partial images.
+  - `POST /v1/images/edits` takes up to 16 multipart `image[]` and a mask.
+    Codex sends a JSON `images[]` form instead.
+  - `/v1/images/variations` is retired. Chat Completions cannot output
+    images ([guide](https://developers.openai.com/api/docs/guides/image-generation)).
+- **Local engines.** vLLM-Omni serves the image routes with
+  `negative_prompt`, `num_inference_steps`, `guidance_scale` and `seed`, and
+  `/v1/videos` as asynchronous jobs.
+  - The job flow: create returns `queued`, `GET /{id}` reports progress,
+    and `GET /{id}/content` downloads the result
+    ([api_server.py](https://github.com/vllm-project/vllm-omni/blob/main/vllm_omni/entrypoints/openai/api_server.py)).
+  - OpenAI shut its own `/v1/videos` down on 2026-09-24, but SGLang and
+    LiteLLM keep the shape.
+- **Clients.**
+
+  | Client | Image generation today | Can it use a local server? |
+  | --- | --- | --- |
+  | Open WebUI | `/images/generations` and `/images/edits`, A1111, ComfyUI or Gemini | Yes |
+  | LibreChat | OpenAI image tools | Yes, through `IMAGE_GEN_OAI_BASEURL` |
+  | Codex | Its built-in tool calls `{base_url}/images/generations` with `gpt-image-2` | Gated on OpenAI authentication; whether a custom provider passes is unverified |
+  | Claude Code, OpenCode | None built in | Only through MCP |
+  | Antigravity, Cursor | Hosted Nano Banana | No |
+  | Gemini CLI | Its nanobanana extension, an MCP server | Its base URL is configurable |
+
+  Claude Code, Codex, Gemini CLI, OpenCode, Zed and Cursor all pass an MCP
+  tool's image content to the model; Continue fails on it. So an MCP
+  server that calls the image routes is the one portable way to mix
+  generated images into the coding agents' chats.
+- **Demand.** On Hugging Face over 30 days, the generation tags rank
+  text-to-image (SDXL, Qwen-Image-2.1) and image editing (Qwen-Image-Edit,
+  FLUX.2) first. Image-to-video (Wan 2.2, LTX-2.5, MiniMax H3) outdraws
+  text-to-video. Then come text-to-speech (Kokoro-82M at 11.4M, XTTS-v2,
+  Qwen3-TTS) and speech recognition (whisper-large-v3-turbo). Music and 3D
+  are niche.
+
 ## Order of bring-up
 
 The owner-named families first, then by new surface; each step reuses the

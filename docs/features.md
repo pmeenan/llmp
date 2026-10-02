@@ -261,7 +261,7 @@ explicit triggers; confirmed scope does not imply runtime support.
 | Machine-readable API and per-model capability discovery | confirmed | Owner approved 2026-09-22, D-041: schemas/features/model limits in M5, cluster availability in M6a; discovery does not reserve capacity |
 | Explicit final-turn flag and idempotent continuation close | confirmed | Owner approved 2026-09-22, D-041, M6: targeted conversation release with completion-safe cleanup and independent shared-prefix retention; D-055 fixes the semantics, the exact schema remains M6 API design |
 | Asynchronous warm/install job surface | confirmed | Owner approved 2026-09-22, D-041: progress/status/cancellation/retry, validated prepared publication, warming subject to capacity, no implicit downloads from inference; D-054 adds staging, archive, peer replication and the explicit archive/delete selection. Import/download jobs M5, warm jobs M6, archive and peer replication M6a |
-| Typed text resources, images and audio-file inputs | confirmed | Owner approved 2026-09-22, D-042: incremental delivery with validated models/backends and bounded preprocessing; output modalities separate; M10, images starting with Gemma 4 |
+| Typed text resources, images and audio-file inputs | confirmed | Owner approved 2026-09-22, D-042: incremental delivery with validated models/backends and bounded preprocessing; output modalities separate; text resources M10. Images, video and audio files moved to M3.5 and M4 with their families (D-101) |
 | Live audio/video input | deferred | Owner approved deferral 2026-09-22, D-042: concrete workload must establish streaming/synchronization needs; earliest M9 planning after initial file-input evidence, not an automatic deliverable |
 | Optional MCP management adapter | confirmed | Owner approved 2026-09-22, D-042: after native management API, separate process exposing discovery/status and explicitly authorized actions; no arbitrary tool execution in runtime; M10 |
 | Application permissions, priorities, queue waits, cancellation and bounded progress events | confirmed | Owner approved 2026-09-22, D-042: interactive/background request priority and maximum queue waits within single-owner scope, not production multitenant isolation. Priorities, queue waits, cancellation and progress events M6 (D-069 uses them); application permissions M10 |
@@ -284,7 +284,7 @@ and the first three additions; D-044 completes this triage.
 | Prometheus metrics and compatible health/load queries | confirmed | Owner approved 2026-09-22, D-044: /metrics, compatible queries, metric names reused only with matching meaning; paging measurements separate, bounded labels and authorization; M6 |
 | Raw Completions and bounded token/logprob diagnostics | confirmed | Owner approved 2026-09-22, D-044: OpenAI-compatible /v1/completions, standard log-probability fields and bounded vLLM-compatible token diagnostics; M10 |
 | LoRA adapters | deferred | Owner approved deferral 2026-09-22, D-044: concrete adapter workload required; earliest M9 planning after validated base-model execution, not automatic delivery |
-| Classification, reward and generic pooling APIs | deferred | Owner approved workload-driven scope 2026-09-22, D-044: concrete model/task demand required; earliest M9 planning after validated base-model execution |
+| Classification, reward and generic pooling APIs | deferred | Owner approved workload-driven scope 2026-09-22, D-044: concrete model/task demand required; earliest M9 planning after validated base-model execution. Decision models over the Jev API are the exception, in M3.5 (D-101) |
 | Generic worker RPC, training controls and split-serving deployment APIs in the client baseline | rejected | Owner approved exclusion 2026-09-22, D-044; specialized runtime/deployment controls do not belong in this baseline. Compatible prompt-rendering endpoints remain confirmed in D-043 |
 
 ## Front-door contract and review fixes (2026-09-22)
@@ -315,6 +315,29 @@ OpenAI-shaped routes, no fourth protocol. Execution evidence is still owed.
 | `session_id`, `user` and `metadata` as advisory hints | confirmed | Owner approved 2026-09-22, D-046: affinity, attribution and retention preferences under D-045's signal rules; never identity, retention grants or authorization. Accepted as advisory preferences from M5 ([signals](client-api-baseline.md)); the hint extension lands in M10 with sessions |
 | `models` array with `provider.require_parameters`/`quantizations` as the opt-in fallback spelling | deferred | Owner approved 2026-09-22, D-046: reserved as the spelling if alternative-model fallback is ever accepted; fallback itself stays a D-042 design suggestion, never silent; no earliest milestone until fallback is accepted |
 | OpenRouter plugins, transforms, auto-router, routing suffixes, pricing, credits, service tiers and generation stats | rejected | Owner approved exclusion 2026-09-22, D-046: server-side tools, lossy prompt rewrites and billing have no local meaning; `transforms` and `plugins` are rejected explicitly, cost fields omitted |
+
+## Decision models, media inputs and generation APIs (2026-10-02)
+
+Owner-requested on 2026-10-02 and recorded in D-101. The facts behind it
+(the Jev API, which planned checkpoints carry which encoders, and how
+clients generate images) are in
+[m35-families.md](m35-families.md#media-inputs-decision-models-and-generation-apis).
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Decision models over TypeSafe's Jev/SystemOne API (`POST /v1/systemone`) | confirmed | D-101, M3.5: wire-compatible with TypeSafe's OpenAPI spec and SDKs; Clef and Clef-flash as the test models; a prefill-only decision program feeding the model's joint schema head |
+| Image, video and audio file inputs per family | confirmed | D-101: M3.5 for Qwen3.8 Flash Next and the M3.5 checkpoints whose files carry encoders, DeepSeek V4 Flash Vision-Exp and Gemma 4 E4B-it as the audio carrier; M4 for GLM-5.3 Flash and DeepSeek V4.1 Flash. Inline data only; remote URL fetching off by default |
+| Image generation and editing (`/v1/images/generations`, `/v1/images/edits`) | confirmed | D-101, M3.5: OpenAI's shape with vLLM-Omni's diffusion fields, for Qwen-Image-2.1 |
+| Video generation jobs (`/v1/videos`) | confirmed | D-101, M3.5: the asynchronous job shape vLLM-Omni, SGLang and LiteLLM serve, for MiniMax H3; generated media kept until fetched or expired |
+| Text-to-speech (`/v1/audio/speech`) | confirmed | D-101, M3.5: Breeze-TTS-2 and Kokoro-82M as testbeds (owner, 2026-10-02) |
+| MCP media server | confirmed | D-101, M3.5: an optional separate process exposing image and video generation as MCP tools, for coding agents whose built-in image generation cannot point at a local server |
+| Stable Diffusion WebUI routes (`/sdapi/v1/txt2img`, `/img2img`, `/sd-models`, `/options`) | confirmed | D-101, M3.5: for Open WebUI, SillyTavern and LibreChat over the image pipeline |
+| Images in chat responses (OpenRouter `message.images` / `delta.images`) | confirmed | D-101, M3.5: a chat request to an image model returns its image |
+| Speech recognition (`/v1/audio/transcriptions`) | confirmed | D-101, M3.5: on the audio carrier, for Open WebUI's and LibreChat's voice input |
+| Google Gemini API (`generateContent`, streaming, `countTokens`, models) | confirmed | D-101, M5: for Gemini CLI and the google-genai SDKs by base URL; HTTPS off loopback |
+| Fill-in-the-middle code completion (`suffix`, `/v1/fim/completions`, `/infill`) | confirmed | D-101, M5 (Ollama's `suffix` with the M10 profile): Continue, Tabby, Twinny, llama.vscode, Zed edit predictions; models with FIM tokens confirmed at entry |
+| Embedding and rerank client shapes (TEI `/embed` and `/rerank`, Cohere `/v2/embed`, Ollama `/api/embed`, Cohere and Jina rerank) | confirmed | D-101, M10 with the pooled outputs |
+| Responses hosted `image_generation` tool; `/v1/images/variations` | rejected | Owner approved exclusion 2026-10-02, D-101: no client sends the tool to a custom provider; variations are retired upstream |
 
 ## Platforms
 
@@ -377,7 +400,8 @@ No implementation milestone or public control contract is committed yet.
 | --- | --- | --- |
 | GLM-5.3-Flash, DeepSeek-v4.1-Flash, Qwen3.8-Flash-Next (via the MiaAI-Lab two-Spark references) | confirmed | as target families and reference recipes; pinned before porting; support earned per checkpoint. M3/M4's models: Qwen3.8 in M3 on one Spark, GLM and v4.1 in M4 |
 | ~30B-class dense models (suitable Gemma / Llama variants) | confirmed | intended use case, not a promise for every checkpoint |
-| [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) image-generation/editing reference experiment | confirmed experiment target | [BF16 reference study complete](experiments/image-reference/README.md), including phase release and text switching; [GGUF study on a pinned GGML runner](experiments/image-gguf/README.md) complete (Q4_K_M/Q8_0, phase release, budgeted disk-backed denoising). Native backend support remains unvalidated; M3 schedules the native pipeline in BF16, like diffusers (D-087). Image-output API support stays unscheduled |
+| Cloudflare Clef and Clef-flash decision models | confirmed test models | Owner-added 2026-10-02 (D-101): Qwen3.8-27B and Qwen3.5-9B backbones with a joint schema head, served over the Jev/SystemOne API in M3.5 |
+| [Qwen-Image-2.1](https://huggingface.co/Qwen/Qwen-Image-2.1) image-generation/editing reference experiment | confirmed experiment target | [BF16 reference study complete](experiments/image-reference/README.md), including phase release and text switching; [GGUF study on a pinned GGML runner](experiments/image-gguf/README.md) complete (Q4_K_M/Q8_0, phase release, budgeted disk-backed denoising). M3 runs the native pipeline in BF16, like diffusers (D-087). The image generation and edit routes are M3.5's (D-101) |
 | MiMo-V2.6-Flash-RL | confirmed experiment target | Owner-added 2026-09-22; [bounded text-only TP=2/EP=2 SGLang reference](experiments/mimo-reference/README.md) ran on both Sparks; smaller-quant follow-up remains a [revisit trigger](experiments/model-candidates.md). Native support not validated; sharding remains M8 |
 | Gemma 4 MTP assistant drafters (26B-A4B and 31B targets) and DiffusionGemma-26B-A4B | confirmed shape targets | Owner-added 2026-09-23 (D-068) so that speculative and diffusion shapes are designed for from M0; DiffusionGemma and the 26B-A4B drafter build on the Gemma 4 26B-A4B architecture already used as a reference, and the 31B drafter targets the dense 31B. Execution M9; native support not validated |
 | Small dense model plus synthetic/tiny MoE as the first bring-up vehicles | confirmed | ideation §19: separate execution, import, and pager bugs before a flagship architecture |

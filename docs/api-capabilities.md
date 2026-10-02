@@ -170,7 +170,8 @@ interruption/cancellation and bounded live state. Video needs timestamps,
 sampling/ordering policy and audio/video synchronization. Extracting frames or
 transcribing audio is an explicit lossy transformation, never silently called
 native video/audio support. Advertise input and output modalities separately;
-this request does not implicitly add image/audio/video generation.
+this request does not implicitly add image/audio/video generation (D-101
+adds it explicitly).
 
 ### Discovery and MCP
 
@@ -227,8 +228,10 @@ D-041 adds discovery to M5, targeted continuation close to M6, and cluster
 availability to M6a. The milestone ladder (plan.md, renumbered by D-087)
 places import and download jobs in M5; warm jobs, priorities, queue waits, cancellation and
 progress events in M6; archive and peer replication in M6a; and the Ollama
-subset, file inputs, MCP, application permissions and embeddings in M10. MCP
-follows the native management API.
+subset, text resources, MCP, application permissions and embeddings in M10.
+D-101 moves image, video and audio file inputs to M3.5 and M4 with their
+model families, and adds media generation routes in M3.5. MCP follows the
+native management API.
 Live audio/video and batch/background jobs remain deferred until concrete
 workloads establish their requirements; earliest M9 planning, not automatic M9
 obligations. All accepted scope still needs execution evidence.
