@@ -13,7 +13,7 @@ It proposes bounded comparisons; it does not expand a quality exception.
 | Implementation | Native shape and format contract | Techniques already present | Transfer opportunity |
 | --- | --- | --- | --- |
 | GGML Qwen2 fixture | Dense attention with F16 KV; ordinary GGML linears and graph operations | Shared planner's supported norm/multiply, RoPE/store and vector linear/activation fusions, when their graph and device guards match | Use the fixture to validate generic fusion/planner changes. Sparse-cell union is irrelevant to its dense attention; an attention replacement needs its own mask/GQA/precision controls. |
-| GGML DeepSeek V4 target and DSpark | GGUF quantized weights; sparse window/indexer/compressed attention; hyper-connections and six routed experts | Fast small-row routed vectors, HC preparation/routing, PDL and graph replay; wide compression, native HC primitives, compact expert scheduling and shared gate/up Q8 preparation | Measure wide-prefill chains before extending the small-row fast path. The post-down ordered six-expert weighted sum is a concrete missing fusion. IQ2 loader/MMA scheduling remains a separate operator gap. |
+| GGML DeepSeek V4 target and DSpark | GGUF quantized weights; sparse window/indexer/compressed attention; hyper-connections and six routed experts | Fast small-row routed vectors, HC preparation/routing, PDL and graph replay; wide compression, native HC primitives, compact expert scheduling, shared gate/up Q8 preparation and ordered wide-row expert reduction | Continue measured wide-prefill chains before extending the small-row fast path. IQ2 loader/MMA scheduling remains a separate operator gap. |
 | GGML Qwen3.8 target and MTP | MXFP8 dense products, NVFP4 experts, BF16 head and recurrent Gated DeltaNet/QSA | HC preparation/mixing, quantization epilogues, fused gate/up/SwiGLU, in-place recurrent updates, clustered small BF16 products, PDL, device QSA selection, cached block keys, sparse attention and graph replay | Integrate measured cross-request paired-eight products using independent native states. Retain the separately measured BF16 full-head sharing candidate. Attribute acceptance and milliseconds per step separately when choosing depth or vocabulary. |
 | EXL3 fixture companion | Packed EXL3 weights and transform/reconstruction contracts; F16 output/bias behavior | Packed GEMV/GEMM and grouped GEMM paths; fused reconstruction option; pinned cuBLASLt reconstruction algorithms and upstream bias addition | Request-row sharing and paid shape-dependent dispatch are reusable ideas. An MXFP8/NVFP4 kernel cannot replace its different representation or transforms. Run its actual fixture paths at new row counts before changing their selection. |
 | Qwen-Image-2.1 | BF16 DiT/text/VAE operations with reference materialization rounding points | Flash attention, normalization/modulation/residual and normalization/RoPE fusions, implicit-GEMM VAE convolution, pinned BF16 products and cached text-prefix inputs | Preserve each documented BF16 rounding point while sharing preparation or fusing epilogues. Large dense image rows do not establish a use for small-row decode kernels. Profile launches before trying PDL. |
@@ -79,8 +79,14 @@ study is already complete; the remaining DeepSeek attribution concerns the
 current production graph, rather than another literal-pipeline parity run.
 The [matched production attribution](../ds4-production-prefill-attribution/README.md)
 now places the ordered weighted-expert reduction at about 5% of 8K prefill
-wall. Its captured-operand screen is byte-exact and 4.19× faster; measure
-one complete prefill substitution before wider HC rewrites. The first native
+wall. Its captured-operand screen is byte-exact and 4.19× faster; the complete
+8K substitution gains 4.30% in tokens/s with every full head byte unchanged.
+The selected native operation handles canonical F32 width 4096 with six
+experts, preserving weighting placement and ascending multiply/add order.
+Qwen's ten-expert sorted NVFP4 combine already has its own implementation;
+other MoE families need matching layout, precision and sum contracts before
+transferring this mechanism. Dense and image consumers have no such sum.
+The first native
 Slot-wave C2 screen improves paid decode by 9.91% with exact IDs and traces,
 selecting focused state/recovery controls and serving integration.
 Measure real concurrent requests on both models. Broader PDL,

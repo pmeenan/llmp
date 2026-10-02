@@ -15,6 +15,7 @@
 
 #include "cutlass/version.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/mxfp8_cutlass.h"
 #include "kernels/ggml/validate_ext.h"
@@ -93,6 +94,7 @@ constinit std::array kTagQuantizeQ8 = std::to_array("jitllm.q8_1");
 constinit std::array kTagVecQ = std::to_array("jitllm.vecq");
 constinit std::array kTagDsv4Route = std::to_array("jitllm.dsv4.route");
 constinit std::array kTagDsv4Combine = std::to_array("jitllm.dsv4.combine");
+constinit std::array kTagDsv4WeightedReduce = std::to_array("jitllm.dsv4.weighted_reduce");
 constinit std::array kTagDsv4HcMix = std::to_array("jitllm.dsv4.hc_mix");
 constinit std::array kTagDsv4HcPre = std::to_array("jitllm.dsv4.hc_pre");
 constinit std::array kTagDsv4Compress = std::to_array("jitllm.dsv4.compress");
@@ -185,7 +187,8 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 38> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 39> fused = {{
+      {kTagDsv4WeightedReduce.data(), JitllmOp::kDsv4WeightedReduce},
       {kTagGdnStep.data(), JitllmOp::kGdnStep},
       {kTagDsv4LidTopK.data(), JitllmOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), JitllmOp::kDsv4SparseMask},
@@ -1898,6 +1901,11 @@ ggml_tensor* Dsv4Combine(ggml_context* context, ggml_tensor* down, ggml_tensor* 
                          ggml_tensor* shared) {
   return Custom(context, GGML_TYPE_F32, {down->ne[0], down->ne[2], 1, 1}, {down, route, shared},
                 kTagDsv4Combine.data());
+}
+
+ggml_tensor* Dsv4OrderedReduce(ggml_context* context, ggml_tensor* down, ggml_tensor* weights) {
+  return Custom(context, GGML_TYPE_F32, {down->ne[0], down->ne[2], 1, 1}, {down, weights},
+                kTagDsv4WeightedReduce.data());
 }
 
 ggml_tensor* Dsv4HcMix(ggml_context* context, ggml_tensor* x, ggml_tensor* fn) {

@@ -42,10 +42,12 @@
 #include "base/bytes.h"
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "providers/cuda/cuda_device_execution.h"
@@ -609,6 +611,101 @@ TEST_F(Dsv4FastTest, CombineIsTheWeightedSumPlusTheSharedExpert) {
   ExpectNear(got, want, 1e-12, "combine");
 }
 
+TEST_F(Dsv4FastTest, OrderedReductionMatchesSeparateGgmlProductsAndAdds) {
+  constexpr std::int64_t kWidth = 4096;
+  constexpr std::int64_t kSlots = 6;
+  // One token, the first wide chunk and the admitted maximum exercise
+  // both grid dimensions. Compare the actual GPU primitives, including
+  // cancellation, signed zero, subnormals and large finite magnitudes.
+  constexpr std::array<float, 8> pattern = {0.0f,
+                                            -0.0f,
+                                            std::numeric_limits<float>::denorm_min(),
+                                            -std::numeric_limits<float>::denorm_min(),
+                                            1e20f,
+                                            -1e20f,
+                                            1.0f,
+                                            1.0000001f};
+  for (const std::int64_t rows : {1, 9, 4096}) {
+    std::vector<float> input(static_cast<std::size_t>(kWidth * kSlots * rows));
+    for (std::size_t i = 0; i < input.size(); ++i) {
+      input[i] = pattern[(i + (i / static_cast<std::size_t>(kWidth))) % pattern.size()];
+    }
+    const auto weights = Normal(903, static_cast<std::size_t>(kSlots * rows), 0.25f);
+    auto* down = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kWidth, kSlots, rows), input);
+    auto* scale = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 1, kSlots, rows), weights);
+    auto* product = Place(ggml_mul(c(), down, scale));
+    Launched(kg::Mul(launch(), product), "ordinary six products");
+    auto* ordinary = ggml_view_2d(c(), product, kWidth, rows, product->nb[2], 0);
+    ordinary->data = product->data;
+    for (std::int64_t slot = 1; slot < kSlots; ++slot) {
+      auto* view = ggml_view_2d(c(), product, kWidth, rows, product->nb[2],
+                                static_cast<std::size_t>(slot) * product->nb[1]);
+      view->data = static_cast<std::byte*>(product->data) + view->view_offs;
+      auto* sum = Place(ggml_add(c(), ordinary, view));
+      Launched(kg::Add(launch(), sum), "ordinary ordered sum");
+      ordinary = sum;
+    }
+    auto* fused = kg::Dsv4OrderedReduce(c(), down, scale);
+    const auto bytes = ggml_nbytes(fused);
+    const auto address = Allocate(bytes + 256);
+    TensorArena::Bind(fused, address);
+    const std::array<std::uint8_t, 256> guard = [] {
+      std::array<std::uint8_t, 256> value{};
+      value.fill(0xa7);
+      return value;
+    }();
+    EXPECT_EQ(cudaMemcpy(static_cast<std::byte*>(fused->data) + bytes, guard.data(), guard.size(),
+                         cudaMemcpyHostToDevice),
+              cudaSuccess);
+    Launched(kg::RunDsv4OrderedReduce(launch(), fused), "ordered weighted reduction");
+    const auto want = Download(ordinary);
+    const auto got = Download(fused);
+    ASSERT_EQ(got.size(), want.size());
+    EXPECT_EQ(std::memcmp(got.data(), want.data(), bytes), 0) << rows << " rows";
+    std::array<std::uint8_t, 256> after{};
+    EXPECT_EQ(cudaMemcpy(after.data(), static_cast<std::byte*>(fused->data) + bytes, after.size(),
+                         cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    EXPECT_EQ(after, guard);
+  }
+}
+
+TEST_F(Dsv4FastTest, OrderedReductionRefusesInvalidBoundsAndAliasesBeforeLaunch) {
+  auto* down = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 4096, 6, 1));
+  auto* weights = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 1, 6, 1));
+  auto* out = Place(kg::Dsv4OrderedReduce(c(), down, weights), std::vector<float>(4096, 17.0f));
+  const kg::Dsv4WeightedReduce good{.down = {down, Bytes(ggml_nbytes(down))},
+                                    .weights = {weights, Bytes(ggml_nbytes(weights))},
+                                    .values = {out, Bytes(ggml_nbytes(out))}};
+  ASSERT_TRUE(kg::CheckDsv4OrderedReduce(out).has_value());
+  auto short_input = good;
+  short_input.down.bytes = Bytes(ggml_nbytes(down) - sizeof(float));
+  EXPECT_FALSE(kg::RunDsv4WeightedReduce(launch(), short_input).has_value());
+  auto wrapping = good;
+  wrapping.down.bytes = Bytes(std::numeric_limits<std::uint64_t>::max());
+  EXPECT_FALSE(kg::RunDsv4WeightedReduce(launch(), wrapping).has_value());
+  auto alias = *out;
+  alias.data = down->data;
+  auto overlap = good;
+  overlap.values.tensor = &alias;
+  EXPECT_FALSE(kg::RunDsv4WeightedReduce(launch(), overlap).has_value());
+  auto unaligned = *out;
+  unaligned.data = static_cast<std::byte*>(out->data) + 1;
+  auto bad_address = good;
+  bad_address.values.tensor = &unaligned;
+  EXPECT_FALSE(kg::RunDsv4WeightedReduce(launch(), bad_address).has_value());
+  auto pitched = *down;
+  pitched.nb[2] += sizeof(float);
+  auto bad_stride = good;
+  bad_stride.down.tensor = &pitched;
+  EXPECT_FALSE(kg::RunDsv4WeightedReduce(launch(), bad_stride).has_value());
+  auto extra = *out;
+  extra.src[2] = weights;
+  EXPECT_FALSE(kg::RunDsv4OrderedReduce(launch(), &extra).has_value());
+  const auto unchanged = Download(out);
+  EXPECT_TRUE(std::ranges::all_of(unchanged, [](float value) { return value == 17.0f; }));
+}
+
 TEST_F(Dsv4FastTest, TheHyperConnectionPreMixMatchesFp64) {
   constexpr std::int64_t kWidth = 4096;
   constexpr std::int64_t kHc = 4;
@@ -843,7 +940,8 @@ TEST_F(Dsv4FastTest, TheRegistryDeclaresAndBindsTheFastPlansImplementations) {
   ASSERT_TRUE(registry.has_value());
   for (const std::string_view name :
        {kg::kQuantizeQ8Name, kg::kVecQName, kg::kDsv4RouteName, kg::kDsv4CombineName,
-        kg::kDsv4HcMixName, kg::kDsv4HcPreName, kg::kDsv4CompressName}) {
+        kg::kDsv4HcMixName, kg::kDsv4HcPreName, kg::kDsv4CompressName,
+        std::string_view{kg::kDsv4WeightedReduceName}}) {
     bool found = false;
     for (const jitllm::execution::Implementation& implementation : kg::Implementations()) {
       if (implementation.name == name) {

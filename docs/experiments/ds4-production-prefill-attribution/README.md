@@ -136,9 +136,87 @@ operands, complete outputs and receipts remain outside Git under
 `/home/pmeenan/scratch/m3-ds4-weighted-reduction-records/` and the corresponding
 Spark A scratch directory. Routine suites were deferred for this diagnostic.
 
-This signal selects one complete 8K before/candidate/after prefill screen.
+This signal selected one complete 8K before/candidate/after prefill screen.
 Its placement must keep down, weights and final output simultaneously live:
 the old plan can reuse down storage before the last ADD is born. Keep all
 intermediate allocations charged for the first substitution. The earlier
 665 ms budget limits expectations; no default, quality, concurrency,
 memory or whole-model gain follows from this operator result.
+
+## Complete 8K reduction screen
+
+One ordinary/candidate/ordinary pass on the same input and native contracts
+takes **13.303123922/12.705059177/13.200088719 s**. Against the ordinary
+bookend mean of 13.2516063205 s, the candidate supplies **4.30181% more
+tokens/s**, or 4.12438% less time. Ordinary bookends move 0.78056%. This
+single candidate pass is a useful adoption signal, without a repeat-stability
+qualification or a context ladder.
+
+Each chunk retains all 3785 original steps and its original complete
+signature. The private candidate replaces only 43 six-step reductions per
+chunk with the screened ordered kernel. Placement keeps all three operands
+simultaneously live and retains every original intermediate allocation;
+removed intermediate values are neither computed nor exposed. Both arms
+pay the same maximum activation allocation, **1,891,631,104 bytes**.
+Ordinary/candidate extents are 1,462,430,464/1,512,794,880 bytes. Both also
+pay 190,840,832 scratch, 207,618,048 pinned staging, 264,126,464 state and
+33,554,432 cuBLAS workspace bytes. These are declared capacities, not a
+sampled model-memory gate. Input assembly/copies, all launches, head copies
+and existing completion fences remain inside whole-prefill wall; the
+6.980053 s load, clears, prebinding and report I/O are outside.
+
+All six heads retain 129280 finite F32 values, with no head all zero, and
+match every byte of the corresponding production head above. The same
+numerical kernel and production compiler/device-math flags retain six
+separate multiplies and five ascending additions without FMA. Main and the
+warm source/build remain unchanged; this private substitution does not
+enable a production default or qualify concurrency.
+
+Screen receipt is
+`8f435e3f51a6dd1bb49f75472cee13cbbe2dabd087292f1b0235f207e34a8bb9`,
+native `e80f08e6…`, plans `a7f0a123…`, build `ff9091e6…`, and binary
+`75e5a1e9…`. The native child completes zero in 51.381099 s and is reaped;
+terminal admission records 117.352 GiB free with model probes clear. Raw
+records and all six heads remain under
+`/home/pmeenan/scratch/m3-ds4-weighted-prefill-records/`. Routine suites
+were deferred for this diagnostic. The chosen next implementation is a
+normal native graph/registry operation with the same bounded F32 contract,
+preserving Exact, the existing small-row combine and ordinary fallback.
+
+## Native graph adoption
+
+The selected operation is now a normal two-input native graph node. Its
+direct dependencies keep down outputs, weights and its distinct result live
+together. Fast wide rows 9–4096 select it only for canonical F32 width 4096
+and six experts. Exact, the existing small-row MoE combine and unsupported
+shapes keep their original paths. The compiled kernel has six FMUL and five
+FADD instructions, no FFMA, 24 registers and no local/shared/stack storage.
+
+Three normal production 8K confirmation passes take
+**13.042181402/12.871286353/12.910588913 s**, mean 12.941352223 s.
+They contain no event marks and use the normal bound graph. Every one of
+the six complete heads still matches the original production head bytes.
+These passes confirm the selected implementation; the causal speed result
+remains the preceding 4.30% bookended substitution. Each chunk now has
+3570 steps, including 43 ordered reductions. The measured graph extent is
+1,462,430,464 bytes; allocated activation capacity is 1,828,716,544 bytes,
+scratch 190,840,832, staging 207,618,048 and state 264,126,464. These
+capacities do not substitute for a sampled model-memory comparison.
+
+On Spark A, the final locked check passes 1245 tests, including 258 GPU
+tests. They cover full output equality at rows 1/9/4096, short/wrapping
+bounds, aliases, alignment, strides and graph selection/fallback. SDK
+format/tidy, boundary, REUSE and header checks pass. Check receipt is
+`cab2e5f5…`, target `06762afe…`, and the 1266-file source map
+`5e3664ab…`. Production confirmation receipt is `2b95ae89…`, native
+`84f203f9…`, build `fa63a149…` and binary `4887d405…`; its child exits
+zero in 50.913893 s and is reaped, with 116.574 GiB free at terminal
+admission. Raw records and all six heads remain under
+`/home/pmeenan/scratch/m3-ds4-ordered-reduce-final-records/`.
+Workstation checks remain deferred to the settled optimization run.
+
+The transferable mechanism is eliminating intermediate route-weighted
+expert arrays while preserving weighting placement and ordered summation.
+Qwen's ten-expert sorted NVFP4 combine already implements its own combine;
+this six-expert F32 kernel does not match it. Another MoE consumer needs
+its own matching layout/precision/order contract and measured screen.

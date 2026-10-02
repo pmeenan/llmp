@@ -34,6 +34,7 @@
 #include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"
+#include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
@@ -598,6 +599,29 @@ TEST(Dsv4Test, RequestedHeadRowsLeaveTheFullChunkBeforeTheGather) {
   }
 }
 
+TEST(Dsv4Test, OrderedReductionSelectionRequiresTheCompleteCanonicalContract) {
+  auto arena = kg::TensorArena::Create(16);
+  ASSERT_TRUE(arena.has_value());
+  auto* down = ggml_new_tensor_3d(arena->context(), GGML_TYPE_F32, 4096, 6, 4096);
+  auto* weights = ggml_new_tensor_3d(arena->context(), GGML_TYPE_F32, 1, 6, 4096);
+  EXPECT_TRUE(kg::Dsv4WeightedReduceFits(down, weights));
+  auto wrong = *down;
+  wrong.ne[0] = 2048;
+  EXPECT_FALSE(kg::Dsv4WeightedReduceFits(&wrong, weights));
+  wrong = *down;
+  wrong.ne[1] = 5;
+  EXPECT_FALSE(kg::Dsv4WeightedReduceFits(&wrong, weights));
+  wrong = *down;
+  wrong.ne[2] = 4097;
+  EXPECT_FALSE(kg::Dsv4WeightedReduceFits(&wrong, weights));
+  wrong = *down;
+  wrong.type = GGML_TYPE_BF16;
+  EXPECT_FALSE(kg::Dsv4WeightedReduceFits(&wrong, weights));
+  wrong = *weights;
+  wrong.nb[2] += sizeof(float);
+  EXPECT_FALSE(kg::Dsv4WeightedReduceFits(down, &wrong));
+}
+
 // The fast plan (Dsv4GraphOptions::fused, DeviceChoices::fuse_norms and
 // vector_floats; D-085's note): chunks of up to 8 rows run the hyper-
 // connections, the MoE blocks and the quantized products as jitLLM's fused
@@ -648,6 +672,10 @@ TEST(Dsv4Test, TheFastPlanFusesDecodeAndVerifyChunks) {
       auto plan = kg::PlanGraph(graph->nodes, false, fused ? device : ModelDevice());
       ASSERT_TRUE(plan.has_value()) << rows << " at " << n_past << ": " << Why(plan);
       steps[fused ? 1 : 0] = plan->steps.size();
+      const auto reductions = std::ranges::count_if(plan->steps, [](const auto& step) {
+        return step.implementation == kg::kDsv4WeightedReduceName;
+      });
+      EXPECT_EQ(reductions, fused && rows > kg::kVecQTokens ? p.layers : 0);
       if (fused) {
         for (const auto& step : plan->steps) {
           used.insert(step.implementation);

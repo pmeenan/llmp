@@ -107,6 +107,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- DeepSeek's fast wide prefill combines its six expert outputs in one F32
+  kernel with the original multiplication and addition order; unsupported
+  shapes and reference plans keep their ordinary operations.
 - DeepSeek fast production prefill with the measured Q4_K head computes
   only its frontier head row, while retaining every DSpark feature row;
   reference, verify and scoring paths keep their requested heads.

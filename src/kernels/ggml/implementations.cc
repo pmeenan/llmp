@@ -15,6 +15,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
@@ -84,7 +85,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 98> kKernels = {{
+constexpr std::array<Kernel::Entry, 99> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -761,6 +762,13 @@ constexpr std::array<Kernel::Entry, 98> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4Combine(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4Combine(launch, n[0]); }},
+    {.name = kDsv4WeightedReduceName,
+     .operation = execution::Operation::kMoeCombine,
+     .variant = "WeightedReduceKernel: one column per thread, initial rounded F32 multiply "
+                "then five ascending rounded multiply/adds; no contraction or scratch",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4OrderedReduce(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4OrderedReduce(launch, n[0]); }},
     {.name = "jitllm.dsv4.hc_mix",
      .operation = execution::Operation::kHcMix,
      .variant = "HcMixKernel: 64 chunks of a token, 24 dot products and the sum of squares",

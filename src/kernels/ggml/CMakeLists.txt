@@ -30,6 +30,7 @@ add_library(jitllm_ggml_tensors STATIC dsv4_ds4_product.cc dsv4_ds4_cache.cc dsv
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_ds4_attention.cc dsv4_ds4_indexer.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_ds4_moe.cc)
+target_sources(jitllm_ggml_tensors PRIVATE dsv4_weighted_reduce.cc)
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
                                                  jitllm_model
                                           # cutlass/version.h only (jitllm_ops.cc pins the
@@ -69,6 +70,7 @@ if(JITLLM_CUDA)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_product.cu dsv4_ds4_product_raw.cu)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_attention.cu dsv4_ds4_indexer.cu)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_moe.cu dsv4_ds4_moe_raw.cu)
+  target_sources(jitllm_ggml_kernels PRIVATE dsv4_weighted_reduce.cu)
   target_link_libraries(jitllm_ggml_kernels PRIVATE jitllm_ds4_original_headers)
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
@@ -139,6 +141,7 @@ if(JITLLM_CUDA)
   # editors' hidden, backup and autosave files (.x, x~, #x#, x.orig, x.rej)
   # are not sources and are skipped (as in ggml_module_digest_test.cmake).
   set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
+                   dsv4_weighted_reduce.h dsv4_weighted_reduce.cc dsv4_weighted_reduce.cu
                    dsv4_ds4_moe.h dsv4_ds4_moe.cc dsv4_ds4_moe.cu
                    dsv4_ds4_moe_raw.h dsv4_ds4_moe_raw.cu dsv4_ds4_moe_core.cuh
                    dsv4_ds4_moe_original.cuh dsv4_ds4_moe_core.json
@@ -226,6 +229,6 @@ if(JITLLM_CUDA)
   # compiles as the nodes' does.
   set_source_files_properties(fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu
                               mul_mat_q.cu mul_mat_q2_d2r.cu mmvq_rows.cu ops_ext.cu jitllm_fused.cu jitllm_moe.cu
-                              dsv4_fast.cu dsv4_sparse.cu PROPERTIES COMPILE_OPTIONS
+                              dsv4_fast.cu dsv4_sparse.cu dsv4_weighted_reduce.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
 endif()

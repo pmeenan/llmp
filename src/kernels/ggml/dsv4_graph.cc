@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ggml.h"
+#include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
@@ -968,21 +969,28 @@ ggml_tensor* Builder::Moe(std::uint32_t il_u, ggml_tensor* cur) {
     act = ggml_swiglu_split(c_, gate, up);
   }
   ggml_tensor* experts = ggml_mul_mat_id(c_, l.down_exps, act, selected);
-  experts = ggml_mul(c_, experts, weights);
-  Expand(experts);
-  std::vector<ggml_tensor*> views;
-  const auto n_used = static_cast<std::size_t>(used);
-  for (std::size_t i = 0; i < n_used; ++i) {
-    views.push_back(ggml_view_2d(c_, experts, n_embd, nt, experts->nb[2], i * experts->nb[1]));
-    Expand(views.back());
-  }
-  ggml_tensor* moe_out = views[0];
-  for (std::size_t i = 1; i < n_used; ++i) {
-    moe_out = ggml_add(c_, moe_out, views[i]);
-    Expand(moe_out);
-  }
-  if (used == 1) {
-    moe_out = ggml_cont(c_, moe_out);
+  ggml_tensor* moe_out = nullptr;
+  if (o_.fused && nt > kVecQTokens && Dsv4WeightedReduceFits(experts, weights)) {
+    // The ordinary graph dependencies make down, weights and output live
+    // together. Exact, small-row and outside-contract paths stay ordinary.
+    moe_out = Dsv4OrderedReduce(c_, experts, weights);
+  } else {
+    experts = ggml_mul(c_, experts, weights);
+    Expand(experts);
+    std::vector<ggml_tensor*> views;
+    const auto n_used = static_cast<std::size_t>(used);
+    for (std::size_t i = 0; i < n_used; ++i) {
+      views.push_back(ggml_view_2d(c_, experts, n_embd, nt, experts->nb[2], i * experts->nb[1]));
+      Expand(views.back());
+    }
+    moe_out = views[0];
+    for (std::size_t i = 1; i < n_used; ++i) {
+      moe_out = ggml_add(c_, moe_out, views[i]);
+      Expand(moe_out);
+    }
+    if (used == 1) {
+      moe_out = ggml_cont(c_, moe_out);
+    }
   }
   Name(moe_out, "ffn_moe_out", il);
 

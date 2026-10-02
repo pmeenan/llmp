@@ -960,8 +960,11 @@ it appears.
       665 ms, about 5% of wall, selecting one focused reduction screen without
       claiming a whole-model gain or attributing the remaining literal gap.
       That captured-operand reduction now runs at 4.19× the ordinary rate,
-      with every complete output byte unchanged; one whole-prefill substitution
-      follows before adoption.
+      with every complete output byte unchanged. Its bookended complete 8K
+      substitution gains 4.30% in tokens/s with all six full heads byte-equal.
+      The selected native graph operation retains the original F32
+      multiplication/addition order and exact/small-row/unsupported fallbacks;
+      its final Spark check passes 1,245 tests, including 258 GPU tests.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer

@@ -20,6 +20,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
@@ -476,6 +477,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             break;
           case JitllmOp::kDsv4Combine:
             add(Operation::kMoeCombine, kDsv4CombineName, i, {node}, 1);
+            break;
+          case JitllmOp::kDsv4WeightedReduce:
+            add(Operation::kMoeCombine, kDsv4WeightedReduceName, i, {node}, 1);
             break;
           case JitllmOp::kDsv4HcMix:
             add(Operation::kHcMix, kDsv4HcMixName, i, {node}, 1);
