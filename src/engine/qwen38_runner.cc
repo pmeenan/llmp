@@ -456,14 +456,16 @@ Status Qwen38Runner::Setup() {
       // allocations: every eligible scalar product's inputs and output,
       // each rounded independently. Summing it for every slot covers both
       // fixed pairs even when their tensors remain live across barriers,
-      // including the four-row BF16 full-head input and replacement.
+      // including BF16 full-head and multirow HC inputs and replacements.
       std::uint64_t extra = 0;
       for (const auto& step : planned.plan.steps) {
         for (const ggml_tensor* t : step.nodes) {
           const auto op = kg::JitllmOpOf(t);
           const bool full_head =
               step.implementation == kg::kMulMatTensorCore && Qwen38FullHeadPairCandidate(t);
-          if (op != kg::JitllmOp::kMxfp8MulMatVec && op != kg::JitllmOp::kMoeGemv && !full_head) {
+          const bool hc = Qwen38HcPairCandidate(t);
+          if (op != kg::JitllmOp::kMxfp8MulMatVec && op != kg::JitllmOp::kMoeGemv && !full_head &&
+              !hc) {
             continue;
           }
           const auto add = [&](const ggml_tensor* tensor) {
@@ -477,7 +479,7 @@ Status Qwen38Runner::Setup() {
           };
           bool added = add(t);
           if (added) {
-            if (full_head) {
+            if (full_head || hc) {
               added = add(t->src[1]);
             } else if (op == kg::JitllmOp::kMxfp8MulMatVec) {
               added = add(t->src[2]);

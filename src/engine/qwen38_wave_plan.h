@@ -99,16 +99,22 @@ class Qwen38WavePlanned : public PlannedBase {
 // composer separately authenticates the immutable leaf and MMF selectors.
 bool Qwen38FullHeadPairCandidate(const ggml_tensor* tensor);
 
+// Only the original two-to-four-row cuBLAS BF16 product, with contiguous
+// operands/output. The composer also checks shared immutable weights,
+// parameters and compatible layouts; one-row vector products stay scalar.
+bool Qwen38HcPairCandidate(const ggml_tensor* tensor);
+
 // One to four actual slots, each one to four rows. Fixed ascending pairs
-// coalesce only corresponding MXFP8-vector and routed-GEMV products, each
+// coalesce corresponding MXFP8-vector and routed-GEMV products, each
 // at most eight rows, with paid GGML concat and split views. An odd slot,
 // incompatible phase/product sequence or diagnostic capture retains the
 // original operations. Ragged row counts may pair; MTP pass/head/confidence
-// differences do not. Target-head sharing may pair identical
-// contiguous equal three- or four-row BF16 full target heads into an ordinary
-// six- or eight-column MMF product with one paid F32 concat and two views.
-// Actual scalar/replacement selectors must all remain MMF; ragged, odd or
-// unsupported heads stay original.
+// differences do not. Compatible target verification pairs also coalesce
+// guarded two-to-four-row HC BF16 products on their original cuBLAS path.
+// Target-head sharing may pair compatible contiguous three- or four-row BF16
+// full target heads into an ordinary six-, seven- or eight-column MMF product
+// with one paid F32 concat and two views. Actual scalar/replacement selectors
+// must all remain MMF; odd or unsupported heads stay original.
 // Draft heads and all stateful operations stay original.
 // Every unmodified registry identity and each replacement's precision tier
 // are checked against fresh scalar plans. No dispatch occurs on any error.

@@ -91,8 +91,10 @@ activation, scratch, staging and host-input bounds checked before work.
 `qwen38_wave_plan.h` composes fresh per-slot plans without rewriting scalar
 caches. It pairs compatible target/draft MXFP8 and routed vector products at up
 to eight rows, charging concatenation and retaining independent output views.
-Eligible equal three- or four-row BF16 target heads pair through the ordinary
-six- or eight-column MMF selector; mixed and unsupported heads stay original.
+Compatible two-to-four-row HC BF16 products share their original cuBLAS path,
+retaining separate preparation and nonlinear mixing. Eligible three- or
+four-row BF16 target heads pair through the ordinary six-, seven- or
+eight-column MMF selector; unsupported heads stay original.
 Stateful operations and draft heads stay independent. `TargetWave` and
 `DraftWave` validate placement
 and bindings before dispatch, then publish outputs only after the completed job.

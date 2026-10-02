@@ -53,8 +53,9 @@ Source anchors: `src/kernels/ggml/{qwen2_graph,dsv4_graph,qwen38_graph,graph_pla
 | DeepSeek wide HC mix/pre and suffix: no adoption | Retain efficient ordinary producers when investigating nonlinear/output-normalization fusion | Complete 8K mix/pre is 2.18% slower with paid weight casts. Preserving ordinary RMS/F16 projection and fusing only the suffix gains 0.48% amid 0.30% bookend movement. Both change heads; neither warrants a wider ladder. Qwen already has its own wide HC path. |
 | Qwen BF16 full-target-head sharing: positive controls | Ordinary selector/MMF at six, eight or sixteen columns, paid concatenations and bounded split views over independent states | Paid fixed3 C4 decode gains 8.867%. Fixed3 cooperative C2 HTTP gains 5.40%/4.99%. Extending the shared three-row guard under unchanged adaptive depth gains 2.53%/1.33%, pooled 1.93%, with exact full native vectors and HTTP responses. These head-only factors do not establish cross-engine parity. |
 | Qwen fixed-three depth: modest direction, no default change | A fixed depth remains a cheap scheduling candidate; the current adaptive policy stays selected | One fresh C2 screen gains 2.35% amid 1.18% ordinary bookend movement. Both reasoning trajectories change, so later acceptance/work can differ; the capped replies contain no final answer. |
-| Qwen shared HC BF16 products: small positive private screen | Combine compatible multirow products over the same weights while preserving separate preparation, nonlinear mixing and request state | Fresh adaptive C2 HTTP gains 1.60% amid 0.28% control movement with identical capped replies. Full native-vector/state controls and attribution of HC pair counts remain open. |
-| Qwen ragged BF16 full-head sharing: small positive private screen | The ordinary seven-column MMF can share compatible three-plus-four verification heads, with paid concatenation and independent output views | Fresh adaptive C2 HTTP gains 1.50% amid 0.27% control movement with identical capped replies. Combine with HC sharing for focused full-vector/state controls; separate gains are not additive. |
+| Qwen shared HC BF16 products: selected with ragged heads | Combine compatible multirow products over the same weights while preserving separate preparation, nonlinear mixing and request state | Alone, adaptive C2 HTTP gains 1.60%; combined gains 2.76% amid 0.53% control movement, with exact full target vectors, initialized state, HC values and capped replies. Each two-slot plan pairs 194 HC products. |
+| Qwen ragged BF16 full-head sharing: selected with HC products | The ordinary seven-column MMF can share compatible three-plus-four verification heads, with paid concatenation and independent output views | Alone, adaptive C2 HTTP gains 1.50%; the combined selection has exact 3+3, 3+4, 4+3, 4+4 and rejection/recovery controls. Separate gains are not additive. |
+| Qwen four active slots: rejected | Larger cohorts need better scheduling or wider efficient product sharing | With the selected combined kernels, one C4 capacity2/4/2 screen loses 13.16%, delays first completion and funds 3.51 GB more fixed memory. Keep two active slots without a larger capacity matrix. |
 | DeepSeek inverse-RoPE/output-A/layout fusion: positive private timing and focused quality | Fuse a producer transform with a grouped projection and eliminate intermediate layout work; adapt the useful mechanism to native operations | Paid operator latency falls 45.63%; community 8K throughput improves 4.08% amid 0.42% bookend movement. The original-checkpoint 32K candidate passes the unchanged greedy bound and repeats all full logits exactly; its native baseline fails one step. Broader quality and production integration remain open. Qwen and Qwen2 lack this grouped output-A chain. |
 | Exact16 Qwen MXFP8: no adoption | Share work using paired-eight products; investigate BF16 full heads independently | Exact16 is 7.469 times slower despite exact outputs/state. Compiled local-storage growth supports a spill concern but does not measure traffic or prove the sole cause. |
 | Literal Mia scheduling/attention consumers: earlier negative controls | Inspect their packing, cache and launch boundaries separately; retain native device selection and sparse work | A faster kernel in its original runtime can lose after adapters or dispatch changes. Do not repeat an unchanged negative factor. |
@@ -84,16 +85,17 @@ Entries marked investigation have no claimed measured gain.
 ## Priority
 
 Native Qwen shared execution integrates paired-eight products and guarded
-BF16 equal three- or four-row heads using independent slots and unchanged
-adaptive policy. Extending head sharing to depth-two verification gives a
+BF16 three- or four-row heads and compatible multirow HC products using
+independent slots and unchanged adaptive policy. Extending head sharing to depth-two verification gives a
 modest 1.93% pooled gain in two adaptive HTTP screens. The preceding adaptive
 shared-versus-serial screen was neutral; cross-engine concurrent qualification
 remains open.
 The short [fixed-three depth screen](../qwen38-depth-policy/README.md) is a
 modest candidate; no context ladder or default change follows from it.
-The short [HC-sharing screen](../qwen38-hc-sharing/README.md) gains 1.60%
-without changing adaptive depth, independent state or capped replies. It
-remains private pending focused numerical/state controls.
+The selected [combined HC/ragged sharing](../qwen38-combined-sharing/README.md)
+gains 2.76% with exact full native vectors, state, HC values and capped replies.
+The [four-slot screen](../qwen38-capacity/README.md) loses 13.16%; retain two
+active requests. Cross-engine concurrent qualification remains open.
 The literal/native benchmark pipeline
 study is already complete; the remaining DeepSeek attribution concerns the
 current production graph, rather than another literal-pipeline parity run.

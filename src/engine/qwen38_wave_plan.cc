@@ -37,6 +37,18 @@ bool Qwen38FullHeadPairCandidate(const ggml_tensor* t) {
          t->ne[3] == 1 && ggml_is_contiguous(t);
 }
 
+// Target-wave geometry shared with conservative workspace provisioning. Original one-row GemvBf16
+// uses a different vector kernel; only the existing multirow cuBLAS path may be combined.
+bool Qwen38HcPairCandidate(const ggml_tensor* t) {
+  namespace kg = kernels::ggml;
+  return t != nullptr && kg::IsGemvBf16(t) && t->src[0] != nullptr && t->src[1] != nullptr &&
+         t->src[0]->type == GGML_TYPE_BF16 && t->src[1]->type == GGML_TYPE_BF16 &&
+         (t->type == GGML_TYPE_F32 || t->type == GGML_TYPE_BF16) && t->ne[1] >= 2 &&
+         t->ne[1] <= 4 && t->ne[1] > kg::kGemvBf16FastColumns && t->ne[2] == 1 && t->ne[3] == 1 &&
+         t->src[1]->ne[1] == t->ne[1] && t->src[1]->ne[2] == 1 && t->src[1]->ne[3] == 1 &&
+         ggml_is_contiguous(t->src[0]) && ggml_is_contiguous(t->src[1]) && ggml_is_contiguous(t);
+}
+
 namespace {
 namespace kg = kernels::ggml;
 using support::Address;
@@ -156,6 +168,14 @@ bool Concatenable(const ggml_tensor* a, const ggml_tensor* b, std::size_t dim, g
   return true;
 }
 
+bool MatchHc(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mutable_places) {
+  return Qwen38HcPairCandidate(a) && Qwen38HcPairCandidate(b) && a->type == b->type &&
+         a->ne[0] == b->ne[0] && a->ne[1] + b->ne[1] <= 8 &&
+         std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) == 0 &&
+         SameImmutableLeaf(a->src[0], b->src[0], mutable_places) &&
+         Concatenable(a->src[1], b->src[1], 1, GGML_TYPE_BF16);
+}
+
 bool OrdinaryHead(const kg::GraphPlan& plan, const ggml_tensor* node) {
   const kg::PlanStep* found = nullptr;
   for (const auto& step : plan.steps) {
@@ -257,7 +277,7 @@ struct Qwen38WaveBuilder {
       ggml_tensor* a = out.target_[a_slot]->graph.logits;
       ggml_tensor* b = out.target_[b_slot]->graph.logits;
       if (!Qwen38FullHeadPairCandidate(a) || !Qwen38FullHeadPairCandidate(b) ||
-          a->ne[1] != b->ne[1] || !SameImmutableLeaf(a->src[0], b->src[0], mutable_places) ||
+          !SameImmutableLeaf(a->src[0], b->src[0], mutable_places) ||
           std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) != 0 ||
           !OrdinaryHead(originals[a_slot], a) || !OrdinaryHead(originals[b_slot], b)) {
         continue;
@@ -325,6 +345,40 @@ struct Qwen38WaveBuilder {
         products += barriers[a].size();
       }
     }
+    // HC eligibility never enters the original all-product preflight above.
+    // Authenticate the extra barriers independently, including their order
+    // among the existing barriers. A refusal leaves all old pairing intact.
+    Slots<bool> hc_slots{};
+    for (std::size_t i = 0; i + 1 < order.size(); i += 2) {
+      const auto a = order[i];
+      const auto b = order[i + 1];
+      if (!pair_first[a] || out.target_[a] == nullptr || out.target_[b] == nullptr ||
+          out.target_[a]->graph.row_ids == nullptr || out.target_[b]->graph.row_ids == nullptr) {
+        continue;
+      }
+      std::vector<ggml_tensor*> a_barriers;
+      std::vector<ggml_tensor*> b_barriers;
+      const auto extra_barrier = [](const ggml_tensor* t) {
+        return Eligible(t) || Qwen38HcPairCandidate(t);
+      };
+      std::ranges::copy_if(lists[a], std::back_inserter(a_barriers), extra_barrier);
+      std::ranges::copy_if(lists[b], std::back_inserter(b_barriers), extra_barrier);
+      bool match = a_barriers.size() == b_barriers.size();
+      std::size_t hc_products = 0;
+      for (std::size_t n = 0; match && n < a_barriers.size(); ++n) {
+        if (Qwen38HcPairCandidate(a_barriers[n])) {
+          match = MatchHc(a_barriers[n], b_barriers[n], mutable_places);
+          ++hc_products;
+        } else {
+          match = Match(a_barriers[n], b_barriers[n], mutable_places);
+        }
+      }
+      if (match && hc_products != 0 && hc_products <= kMaxPairedProducts - products) {
+        hc_slots[a] = true;
+        hc_slots[b] = true;
+        products += hc_products;
+      }
+    }
     if (products != 0) {
       auto arena = kg::TensorArena::Create(products * 5);
       if (!arena) {
@@ -342,7 +396,7 @@ struct Qwen38WaveBuilder {
       }
     }
     const auto barrier = [&](std::uint32_t slot, const ggml_tensor* t) {
-      return Eligible(t) || t == head_at[slot];
+      return Eligible(t) || t == head_at[slot] || (hc_slots[slot] && Qwen38HcPairCandidate(t));
     };
     Slots<std::size_t> at{};
     while (true) {
@@ -418,7 +472,19 @@ struct Qwen38WaveBuilder {
         ggml_context* c = out.arena->context();
         ggml_tensor* both = nullptr;
         std::array<ggml_tensor*, 2> split{};
-        if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
+        if (Qwen38HcPairCandidate(a)) {
+          if (!hc_slots[a_slot] || !hc_slots[b_slot] || !MatchHc(a, b, mutable_places)) {
+            return Error("Qwen3.8 wave lost a preflighted HC barrier");
+          }
+          ggml_tensor* x = ggml_concat(c, a->src[1], b->src[1], 1);
+          out.nodes_.push_back(x);
+          both = kg::GemvBf16(c, a->src[0], x, a->type);
+          std::memcpy(both->op_params, a->op_params, sizeof(both->op_params));
+          split[0] = ggml_view_2d(c, both, a->ne[0], a->ne[1], both->nb[1], 0);
+          split[1] = ggml_view_2d(c, both, b->ne[0], b->ne[1], both->nb[1],
+                                  static_cast<std::size_t>(a->ne[1]) * both->nb[1]);
+          out.stats_.packed_bytes += ggml_nbytes(x);
+        } else if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
           ggml_tensor* x = ggml_concat(c, a->src[2], b->src[2], 1);
           out.nodes_.push_back(x);
           both = kg::Mxfp8MulMatVec(c, a->src[0], a->src[1], x);

@@ -558,8 +558,10 @@ the group; a different model or literal completion waits for the group to drain.
 Prefill chunks alternate fairly between branches, with ready decode work between
 them. Compatible small-row target/draft products share weights; independent
 attention, recurrence, logits and commits remain branch-owned. Eligible pairs
-of equal three- or four-row BF16 target heads use one ordinary six- or
-eight-column product with a paid input concatenation. Unsupported shapes keep
+of three- or four-row BF16 target heads use one ordinary six-, seven- or
+eight-column product with a paid input concatenation. Compatible multirow HC
+BF16 products also share immutable weights through their original cuBLAS path,
+with independent preparation and nonlinear mixing. Unsupported shapes keep
 their original products.
 
 Cancellation ends only its request at a completed boundary. Before releasing a

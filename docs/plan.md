@@ -1067,8 +1067,14 @@ it appears.
       cancellation and proven retirement have fake-backend controls. The
       production node backend now runs two Qwen chat requests in shared
       target/draft waves, with four retained branches, separate adaptive
-      policies and prefix reuse. Compatible equal three- or four-row BF16
-      target heads share an ordinary six- or eight-column product; all packing
+      policies and prefix reuse. Compatible three- or four-row BF16
+      target heads share an ordinary six-, seven- or eight-column product;
+      compatible multirow HC BF16 products share their original cuBLAS path.
+      The [combined screen](experiments/qwen38-combined-sharing/README.md)
+      gains 2.76% paid C2 HTTP throughput with exact native outputs, state
+      and capped replies; all 1,253 locked Spark tests pass. Funding four
+      active slots loses 13.16% in a short C4 screen, so two remain selected.
+      All packing
       is paid. Overflow waits
       for a retired slot, while model changes and literal completions drain
       the group. Independent request failures retain completed peers; native

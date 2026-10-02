@@ -15,6 +15,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 - Qwen3.8 chat requests share decode work across two independent conversations,
   retaining separate state, sampling and cancellation while reusing model weights.
+  Compatible multirow HC products and unequal verification heads also share weights.
 - `/v1/completions` accepts raw text or exact token IDs, legacy OpenAI
   echo/logprobs and vLLM prompt_logprobs with zero-token scoring. The
   bounded inference subset establishes `jitllm-inference-version: 1`.

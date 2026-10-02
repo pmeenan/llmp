@@ -21,6 +21,7 @@
 
 #include "engine/qwen38_wave_plan.h"
 #include "ggml.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "runtime/serving.h"
 
@@ -59,6 +60,44 @@ TEST(Qwen38WaveHead, AdaptiveRowsRequireContiguousFullBf16Geometry) {
     EXPECT_FALSE(engine::Qwen38FullHeadPairCandidate(&bad));
   }
   EXPECT_FALSE(engine::Qwen38FullHeadPairCandidate(nullptr));
+}
+
+TEST(Qwen38WaveHc, OnlyContiguousMultirowBf16ProductsAreCandidates) {
+  namespace kg = jitllm::kernels::ggml;
+  auto arena = kg::TensorArena::Create(48);
+  ASSERT_TRUE(arena);
+  auto* context = arena->context();
+  auto* weight = ggml_new_tensor_2d(context, GGML_TYPE_BF16, 2560, 128);
+  for (const std::int64_t rows : {1, 2, 3, 4, 5}) {
+    auto* input = ggml_new_tensor_2d(context, GGML_TYPE_BF16, 2560, rows);
+    for (const auto type : {GGML_TYPE_F32, GGML_TYPE_BF16}) {
+      auto* output = kg::GemvBf16(context, weight, input, type);
+      const bool supported = rows >= 2 && rows <= 4;
+      EXPECT_EQ(engine::Qwen38HcPairCandidate(output), supported);
+      if (!supported) {
+        continue;
+      }
+      auto bad = *output;
+      ++bad.ne[1];
+      EXPECT_FALSE(engine::Qwen38HcPairCandidate(&bad));
+      auto strided = *input;
+      strided.nb[1] += sizeof(ggml_bf16_t);
+      bad = *output;
+      bad.src[1] = &strided;
+      EXPECT_FALSE(engine::Qwen38HcPairCandidate(&bad));
+      auto f32_input = *input;
+      f32_input.type = GGML_TYPE_F32;
+      bad = *output;
+      bad.src[1] = &f32_input;
+      EXPECT_FALSE(engine::Qwen38HcPairCandidate(&bad));
+      auto quantized = *weight;
+      quantized.type = GGML_TYPE_Q8_0;
+      bad = *output;
+      bad.src[0] = &quantized;
+      EXPECT_FALSE(engine::Qwen38HcPairCandidate(&bad));
+    }
+  }
+  EXPECT_FALSE(engine::Qwen38HcPairCandidate(nullptr));
 }
 
 class FakePaged final : public engine::PagedModel {
