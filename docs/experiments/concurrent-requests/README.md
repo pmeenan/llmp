@@ -495,3 +495,44 @@ was `warm-cache-matrix-r1` / supervisor 1917829; the separate CPU-only job was
 `warm-data-retain-r1` / supervisor 1975031. Existing immutable image, recipe,
 source/asset/stat pins and prior qualification scope are retained in the
 prepared and run receipts; no new full checkpoint-payload SHA is claimed.
+
+## DeepSeek short solo/C2 screen
+
+One buffered service screen on Spark A compares the community IQ2_XXS model
+in original ds4 and a diagnostic native service. Independently rendered
+input IDs agree completely: solo has 1918 tokens and the two fresh concurrent
+prompts have 2355/2634. Every request produces 64 tokens with a length finish
+and zero cached prompt tokens. These inputs differ from the Qwen 8K cells.
+
+| Engine | Solo request, s | Solo output tokens/s | C2 pair, s | C2 aggregate output tokens/s |
+| --- | ---: | ---: | ---: | ---: |
+| Original ds4 | 4.771588 | 13.412726 | 10.283758 | 12.446812 |
+| Diagnostic native | 13.830224 | 4.627546 | 16.844065 | 7.599116 |
+
+Each cell has one observation. The native solo pays its first 6.532-second
+weight activation; original weight loading occurs during startup, outside
+the request clock. Both C2 arms have resident weights and pay both fresh
+prefills. Native queues the requests: one finishes at 8.756791 s, the other
+at 16.844065 s. Original continuous execution finishes them at
+10.027234/10.283758 s, with no serial fallback or batch failure.
+
+Both use context 16384 without speculation. Original funds four batch slots,
+uses prefill chunks of 4096 and default FP8 KV/FP4 indexer; native retains
+the selected ordered reduction, F16 caches and serving chunks of 2048.
+This exposes a current service gap and selects native batching work, but
+does not isolate its cause, compare matched cache/chunk precision, measure
+pure decode, or establish generated-ID equality, quality or streaming TTFT.
+
+The normal native service refuses this artifact's unsupported chat template.
+A private host-only shim admits that exact artifact/template for literal
+completions with its validated original EOS; chat returns 400 before
+activation. Numerical objects and options remain unchanged. This diagnostic
+does not qualify production registration without a supported renderer.
+
+Provenance: Spark A SDK f38891fc, community artifact cd39d504, calibrated
+inputs b3ba219a, targets 2a302753, original receipt 9c61f649, literal build
+6cd6443c/binary 3335e766 and combined receipt 43612961. The completed original
+arm is reused after native startup refusal. All six raw responses agree with
+nested records and parsed bodies; services and helper commands exit zero
+and are reaped. Final probes are clear at 117.207 GiB. Raw records remain
+outside Git under `/home/pmeenan/scratch/m3-deepseek-concurrent-short-records/`.

@@ -1006,6 +1006,11 @@ it appears.
       qualification. Native warm, Mia plain, stable decision-relevant concurrent
       controls and the longer ladder remain open; these screens do not
       establish concurrent parity.
+      DeepSeek's short service screen returns all calibrated solo/C2 inputs
+      and 64-token replies. Resident-weight C2 rates are 12.45 tokens/s
+      in ds4 and 7.60 in the native queue, with different cache/chunk
+      profiles; this selects batching work without qualifying a matched
+      pipeline or quality comparison.
       The [private native C2/C4 mechanism controls](experiments/qwen38-request-batching/README.md)
       pair row-local products over independent request states: paid decode
       throughput improves 19.1%/19.6%, with exact IDs, acceptance and final
