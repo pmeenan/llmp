@@ -60,6 +60,12 @@ measures native at 0.880357× original resident rate. Its [J128/J64 follow-up](e
 keeps all outputs exact but reduces rate by 4.92%; retain J128. Weight
 loading, paired-launch structure and remaining arithmetic/compiler factors
 still need separate causal controls; historic compound times cannot isolate them.
+The [query-B consumer factor](experiments/ds4-query-b/README.md) keeps paid
+original D4 and every other literal stage, including output-B: native
+borrowed-D4 Q8 MMQ is 3.110% slower at T4096/K1024/M32768, with 0.430%
+bookend movement. Original full heads remain golden; native repeats exactly
+with the same final argmax but different logits. This closes one consumer
+screen, not Q/KV producers or a quality gate; no cross-family gain is claimed.
 
 ## Coverage
 

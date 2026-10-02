@@ -30,15 +30,25 @@
   this exact pinned GGUF reduces resident pages from 21,171,903 to zero
   and raises post-setup CUDA free memory from 23.45 to 110.27 GB, with
   Linux MemAvailable approximately unchanged at 120.32 GB.
+  On 2026-10-02, Spark A's query-B control reproduced guard refusal with
+  its unchanged paid allocation ledger. Advice on only its inactive,
+  previously hashed 28.80-GB Mia packed PLE raised post-setup CUDA free
+  from 97.62 to 116.69 GB; required free stayed 100.80 GB, including the
+  unchanged 6-GiB guard. Linux MemAvailable changed from 119.75 to
+  120.54 GB. The PLE's unprivileged `mincore` vectors stayed all ones
+  on a root-owned 0644 file, so no page-eviction count is claimed.
 - **Workaround:** file-scoped `POSIX_FADV_DONTNEED` on the authenticated,
-  inactive comparator GGUF before native allocation. The original source,
-  executable and 6-GiB guard then complete the matched 32K run. No global
-  cache or core-provider change is adopted.
+  inactive comparator GGUF or packed PLE before native allocation. The
+  GGUF control's original source, executable and 6-GiB guard then complete
+  the matched 32K run; the PLE control admits the unchanged allocation
+  guard. No global cache or core-provider change is adopted.
 - **Limits/action:** determine documented current-free/reclaim behavior
   before proposing a provider change or filing a defect. The probes do
   not test whether an actual allocation would reclaim the file cache.
 - **Links:** [RE-041](../rough-edges.md#re-041-cuda-current-free-memory-can-exclude-reclaimable-inactive-gguf-file-cache--2026-10-01-status-worked-around)
   and [paired control](../experiments/ds4-matched-32k/README.md#allocation-refusal-and-scoped-cache-control).
+  The Spark A query-B allocation/cache receipts are retained at
+  `spark:~/scratch/m3-ds4-query-b-factor-r1/`.
 
 ## Bounded Nsight capture completed before its launched model (RE-039)
 

@@ -52,6 +52,7 @@ recorded as local results.
 | --- | --- |
 | Complete original pipeline and deep selector | Reproduced; 8K/32K full-head equality and speed controls complete. |
 | Output-B native consumer on original operands | Restored privately; full outputs exact and rate ratio 0.9983. It does not explain the gap. |
+| Query-B native consumer on original D4 | One paid original/native/original screen is 3.11% slower, with 0.43% bookend movement. Original heads remain golden; native repeats exactly with changed logits and the same final argmax. Park this consumer factor; Q/KV producers remain open. |
 | Routed FFN direct versus materialized chain | Paid materialization is 2.35% slower; keep direct in the reference. |
 | Native IQ2 consumers, input preparation, J64 and shared worklist | Isolated. Preparation bytes match; native consumer remains slower. J64 and worklist controls did not justify adoption. Occupancy-two remains untested. |
 | Route weighting and six-slot summation | Exact native ordered fusion landed; +4.30% whole-prefill screen. |

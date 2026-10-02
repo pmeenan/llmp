@@ -81,6 +81,20 @@ and [NVIDIA handoff](upstream/cuda.md#cuda-current-free-memory-excludes-inactive
 Failed run, unchanged allocation probes and scoped cache control remain at
 `spark-b:~/scratch/m3-ds4-matched-32k-{native-r1,budget-r1}/`.
 
+On 2026-10-02, Spark A's private query-B control hit the same guard after
+preparation, before loading weights or running a numerical sample. An
+allocation-only probe with its unchanged paid buffers needed
+100,797,513,728 bytes free (94,355,062,784 future weight/state bytes plus
+6 GiB), but CUDA reported 97,618,493,440. Advice on only the inactive,
+previously hashed 28,800,138,240-byte Mia packed PLE raised the same
+probe's CUDA free to 116,689,006,592, admitting the unchanged guard.
+Linux MemAvailable changed from 119,751,155,712 to 120,541,548,544 bytes.
+The pinned-FD `mincore` vectors stayed all ones for this root-owned 0644
+file under the unprivileged reader; those vectors do not substantiate an
+evicted-page count. No global cache drop, guard reduction or operand removal
+was used. Raw probes, advice and the failed preparation are retained at
+`spark:~/scratch/m3-ds4-query-b-factor-r1/`.
+
 ## RE-040: FlashInfer accepts a Python profile override but its SM120 wrapper still autotunes both products  (2026-09-30, status: worked-around)
 
 Environment: Spark GB10, FlashInfer0.6.17/a0a6b019 in Mia's pinned image
