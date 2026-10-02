@@ -979,7 +979,11 @@ it appears.
       Adding the optional HCA attention to that output-A factor also has
       zero outside-bound differences, with all full logits exact on a fresh
       repeat. Likelihood on the same oracle-generated continuation is almost
-      native's; registered held-out likelihood and real-answer gates remain open.
+      native's. The actual mixed 128K path passes registered held-out
+      perplexity at 1.92884 versus 1.9298 (−0.05%) and preserves the frozen
+      127K-token variable-binding answer exactly. The 128K forced-greedy
+      control also passes: 500 exact choices, 12 within-bound differences,
+      no outside/unresolved rows and exact agreement at step 315.
       Broader quality and production adaptation remain open; no default changes.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)

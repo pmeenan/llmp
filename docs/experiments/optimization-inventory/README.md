@@ -59,7 +59,7 @@ Source anchors: `src/kernels/ggml/{qwen2_graph,dsv4_graph,qwen38_graph,graph_pla
 | Exact16 Qwen MXFP8: no adoption | Share work using paired-eight products; investigate BF16 full heads independently | Exact16 is 7.469 times slower despite exact outputs/state. Compiled local-storage growth supports a spill concern but does not measure traffic or prove the sole cause. |
 | Literal Mia scheduling/attention consumers: earlier negative controls | Inspect their packing, cache and launch boundaries separately; retain native device selection and sparse work | A faster kernel in its original runtime can lose after adapters or dispatch changes. Do not repeat an unchanged negative factor. |
 | Cross-token Qwen sparse-cell union: rejected timing | The native per-KV-head query tile and selected-cell cache remain useful; a cheaper bounded union would be a new experiment | The measured union proposal materially regressed. Synthetic D256 sharing does not approve it for Qwen. |
-| DeepSeek original HCA attention: optional, off by default | Query-token tiling and F32 weighted-value accumulation are inspectable independently of cache changes | HCA plus the output-A prefix now has zero outside-bound differences on the original-checkpoint 32K trajectory and repeats every full logit exactly. Its conditional likelihood on that generated continuation is almost native's. Registered held-out likelihood, real answers and broader contexts remain open; keep the existing quality gate. |
+| DeepSeek original HCA attention: optional, off by default | Query-token tiling and F32 weighted-value accumulation are inspectable independently of cache changes | HCA plus output-A passes the original-checkpoint 32K/128K greedy bounds, with an exact full-logit repeat at 32K. The actual mixed 128K path passes registered held-out PPL at 1.92884 versus 1.9298 (−0.05%) and preserves the frozen 127K-token variable-binding answer. Native integration and broader acceptance remain open. |
 | TensorFold adaptive draft window and partial vocabulary | Acceptance-dependent scheduling, model-specific curated IDs and future prompt/turn-frequency vocabulary proposals | Model/format/cache/depth factors differ. Acceptance benefit is workload-specific; quantizing or truncating a draft head requires its own measured tradeoff. |
 | TensorFold import-layout and tensor-core decode suggestions | Packing and epilogue techniques at matching native shapes | Existing native vector kernels already have their own measured rate. Checkpoint bytes alone do not establish device traffic or an attributable format-only speedup. |
 | Image reduced-precision linears/cache and quantized heads | Optional future per-alias quality/performance modes | Preserve default model quality; no unmeasured precision reduction belongs in the ordinary speed pass. |
@@ -114,7 +114,12 @@ checkpoint it has zero outside-bound differences in 512 fixed-history rows
 and repeats complete logits exactly; the same native baseline has one
 exception. The optional HCA interaction also passes that greedy/repeat
 control; its likelihood on the same generated continuation is almost
-native's. Registered held-out quality and native integration remain open.
+native's. The actual mixed 128K path also passes registered held-out
+perplexity at −0.05% relative to the oracle and preserves the saved native
+127K-token variable-binding answer exactly. The 128K fixed-history
+comparison has 500 exact choices, 12 within-bound differences and no
+outside/unresolved rows; former step 315 now agrees. Native integration
+and broader acceptance remain open.
 Operator gains and separate model factors are not additive.
 The first native
 Slot-wave C2 screen improves paid decode by 9.91% with exact IDs and traces,

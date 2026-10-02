@@ -11,8 +11,11 @@ invocation pays weight-plane packing and an extra copy back into the
 original graph's output. Its arithmetic differs from native MMQ.
 The original-checkpoint 32K forced trajectory passes the registered greedy
 bound and repeats all full logits exactly; its native baseline fails one
-step. These are focused attribution/quality results; no production dispatch
-changes here and broader acceptance is separate.
+step. The HCA/output-A combination also passes the registered 128K
+held-out perplexity condition and the frozen 127K-token variable-binding
+answer task, and passes the original-checkpoint 128K forced trajectory.
+These are focused attribution/quality results; no production
+dispatch changes here and broader acceptance is separate.
 
 ## Captured first-layer screen
 
@@ -206,6 +209,81 @@ not the registered held-out perplexity corpus or gate. The interaction's
 conditional likelihood is almost native's, but these aggregate numbers
 do not prove real-answer or broader-context quality.
 
+## Registered 128K held-out perplexity
+
+One fresh HCA/output-A process uses the original UD-Q2_K_XL checkpoint,
+the existing 131,072-token held-out corpus and the registered last-half
+scoring window. The unchanged reference is 1.9298 with a symmetric 3%
+bound; no baseline is rerun. All 131,071 F64 losses are finite. Exactly
+65,535 losses at indices `[65536, 131071)` give mean NLL
+0.6569195756 and perplexity **1.928841523**, **−0.0496672%** relative
+to the reference, passing this registered condition.
+
+The 32 full 4,096-row chunks execute 1,376 output-A prefixes and 160 HCA
+operations. Only the first eight chunks' 256 compressed cells admit the
+existing HCA guard; later 512/768/1,024-cell shapes keep native attention.
+There are no tail or decode chunks. This qualifies that actual mixed path,
+not HCA across every 128K layer. The run takes 256.275 s for all-head PPL,
+with 170,917,888 diagnostic extra bytes and 20,647,096,320 bytes available
+at the sampled memory low. These single-run clocks do not establish a
+matched 128K speed gain. The native graph adaptation and default
+acceptance remain open.
+
+## Frozen long-context answer control
+
+One combined-path process uses the existing R3 chronological variable-binding
+task: 126,976 frozen prompt IDs, context 131,072, output cap 128 and
+authenticated EOS token 1. The tokenizer, template, facts and exact JSON
+rubric are unchanged. The saved native 2,048-row result passed; it is not
+rerun. The new 4,096-row process also passes, producing exactly
+`["v_seed42", "v_hop42a", "v_hop42b", "v_hop42c", "v_hop42d"]`
+and EOS after 34 answer tokens. All 35 raw generated IDs match that saved
+native result; all 4,524,800 saved logits are finite and each row's argmax
+agrees with its generated ID.
+
+The actual path executes 31 full chunks, 1,333 output-A prefixes, 160 HCA
+operations and 34 native decode chunks, with no tail. Its 197.3284-s
+prefill and 1.7561-s decode clocks are descriptive; the saved native uses
+a different chunk size. This is one positive synthetic answer control,
+not a broader task-suite result.
+
+The model completed rc0 and retired before its controller rejected two
+identical duplicate Boolean keys in the private benchmark's stop summary.
+A bounded no-model/no-build recovery admits only the top-level duplicates
+`compact_experts=true` and `exact=false`, preserves the original summary
+and scores a canonical copy with the same native exact-answer helper.
+No answer, EOS, count or rubric changes. Raw/canonical summary SHA256:
+`fdb98f3a1a961d6a0d0dc2f327eb23c1e5c567a825f7cba0f3212b5808f9ebb3` /
+`41b0a85a1a5cb7d0ceacca4f5695c8640c9018cc91c1d7cbb8d797972c80831e`.
+
+## Original-checkpoint 128K forced trajectory
+
+One fresh combined-path process uses the existing 128,821 prompt IDs,
+512 oracle-forced continuation IDs and saved same-checkpoint b11254
+oracle. The unchanged 0.947-nat bound gives **500 equal choices, 12
+within-bound near ties, zero outside and zero unresolved**. Every
+difference has an exact top-five oracle margin. The largest is
+0.475185394 nats, 0.471814606 below the bound. Step 315 selects oracle
+token 295 exactly. All 66,191,360 logits are finite and each complete
+row's argmax agrees with its summary.
+
+The actual path executes 31 full 4,096-row chunks, 1,333 output-A prefixes
+and 160 HCA operations. The authenticated `ChunkRows` loop then executes
+1,840 and 5 native prompt-tail rows, followed by 511 one-row native decode
+chunks. The raw private counters report zero tails and 513 decode chunks
+because their old 31,705-position cutoff labels both tails as decode.
+The model finished rc0 and retired before that reporting assertion failed.
+A bounded no-build/no-model recovery preserves the raw summary and
+derives the exact row sequence from the executed source and fixed input;
+the oracle, logits, scoring and bound are unchanged.
+
+The full-logit SHA256 is
+`d842b48cac15b06197996619764c6acc61ce070c66848310a4961b586146160f`.
+The 203.2561-s prefill and 25.7354-s decode clocks are descriptive quality
+run clocks. This condition passes its fixed-history greedy bound; it has
+no fresh deterministic repeat, matched performance bookend or additional
+task matrix. Production/default acceptance remains separate.
+
 ## Provenance
 
 Measured on `spark-c4e2`, 2026-10-02, SDK
@@ -215,7 +293,10 @@ static/compiler/library identities, fixed inputs, complete outputs and
 successful supervised retirement are retained. The final whole-factor
 gate finds 117.129 GiB available; fixed-quality and fresh-repeat terminal
 gates find 117.324 / 117.290 GiB; the HCA interaction terminal is
-117.298 GiB, and its fresh repeat is 117.288 GiB. The completed
+117.298 GiB, and its fresh repeat is 117.288 GiB. The registered PPL
+condition retires at 117.306 GiB; the R3 model/recovery retire at
+117.266 / 117.287 GiB; the 128K greedy model/recovery retire at
+117.286 / 117.294 GiB. The completed
 whole/quality/repeat/interaction
 comparisons finish rc0,
 with no native/GPU/container model processes and `spark-job busy` free.
@@ -228,10 +309,15 @@ with no native/GPU/container model processes and `spark-job busy` free.
 - Quality prompt/force SHA256: `0961e248af647f3e9c838d43ba2cbad821fc48a7e9f066679ae7b2e8f118e6cb` /
   `e70be6122f5df8d83357b8223aab63d0f826cdd1dac85760e759cd574471480a`.
 - Saved same-checkpoint oracle SHA256: `49de2d51973b4bef32cf174c861d44d74bf63b6ec8ee576641dcba8bcc042aa6`.
+- Held-out PPL input/loss SHA256: `47f997b83854b52d0eb2c3ae605b505d87cd778f573fde9664d93a0e205bf2c6` /
+  `b6d39c8da65f78e874092d8043e11fc3a4ff1ee9af06afbd2757b6bfacf82e2a`.
 - Raw local evidence: `/home/pmeenan/scratch/m3-ds4-qhead-short-records/outa-operator-r3/`
   and `outa-whole-r1/`, `outa-quality-r1/`, `outa-quality-repeat-r1/`;
   the interaction and its repeat are in `outa-hca-r1/` and
-  `outa-hca-repeat-r1/`;
+  `outa-hca-repeat-r1/`, with the registered PPL condition in `outa-ppl-r1/`
+  and the R3 model/recovery in `outa-r3-r1/` and `outa-r3-recover-r1/`;
+  the 128K greedy model/scoring recovery are in `outa-128k-r1/` and
+  `outa-128k-score-r1/`;
   sources/results on Spark are under
   `/home/pmeenan/scratch/m3-ds4-qhead-short-r1/`.
 
