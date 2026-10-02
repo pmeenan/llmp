@@ -15,6 +15,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
@@ -86,7 +87,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 100> kKernels = {{
+constexpr std::array<Kernel::Entry, 101> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -101,6 +102,13 @@ constexpr std::array<Kernel::Entry, 100> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4QHead(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4QHead(launch, n[0]); }},
+    {.name = kDsv4OutAName,
+     .operation = execution::Operation::kMatMul,
+     .variant = "paid raw-Q8 packing, inverse tail64 RoPE, staged F16/HMMA grouped output-A "
+                "into canonical F32 output; borrowed ds4 numerical core",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4OutA(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4OutA(launch, n[0]); }},
     {.name = "ggml.add",
      .operation = execution::Operation::kAdd,
      .variant = "ggml_cuda_op_add: k_bin_bcast<op_add, float, float, float>; upstream launch "
@@ -818,7 +826,7 @@ execution::Implementation Declare(std::string_view name, execution::Operation op
   // The grouped GEMM and the MXFP8 product are CUTLASS's kernels: their
   // identities name that tree too.
   const bool cutlass = name == kMoeGemmName || name == kMxfp8GemmName;
-  const bool ds4 = name == kMulMatIdQ2D2r || name == kDsv4HcaTokentileName;
+  const bool ds4 = name == kMulMatIdQ2D2r || name == kDsv4HcaTokentileName || name == kDsv4OutAName;
   std::string source = "ggml";
   std::string revision =
       std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE, ModuleSourcesDigest());

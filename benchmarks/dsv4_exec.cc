@@ -112,6 +112,7 @@
 #include "ggml.h"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/dsv4_graph.h"
+#include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
@@ -541,6 +542,7 @@ struct Model {
   bool compact_experts = false;
   bool d2r_experts = false;
   bool ds4_hca = false;
+  bool outa_prefill = false;
   bool wide_sparse = true;
 };
 
@@ -631,7 +633,9 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   }
   out->arena.emplace(std::move(*arena));
   auto graph = kg::BuildDsv4Graph(*out->arena, *m.profile, *m.binding, shape,
-                                  {.expert_stride = m.weights->stride, .fused = !m.exact});
+                                  {.expert_stride = m.weights->stride,
+                                   .fused = !m.exact,
+                                   .outa_prefill = !m.exact && m.outa_prefill});
   if (!graph) {
     return Error(graph.error().detail);
   }
@@ -848,8 +852,8 @@ class Runner {
       return std::unexpected(stream.error());
     }
     const auto failure = [&](std::string detail) -> Status {
-      if (m_.ds4_hca) {
-        std::println(stderr, "terminal HCA trial failure: {}", detail);
+      if (m_.ds4_hca || m_.outa_prefill) {
+        std::println(stderr, "terminal prefill trial failure: {}", detail);
         (void)std::fflush(stderr);
         // Completion is unproved after any failed submission/copy/fence.
         // Keep plans, scratch, GPU and host-copy owners until process exit.
@@ -888,6 +892,8 @@ class Runner {
         static_cast<std::uint64_t>(std::ranges::count_if(p->plan.steps, [](const auto& step) {
           return step.implementation == kg::kDsv4HcaTokentileName;
         }));
+    outa_prefill_steps_ += static_cast<std::uint64_t>(std::ranges::count_if(
+        p->plan.steps, [](const auto& step) { return step.implementation == kg::kDsv4OutAName; }));
     const std::uint64_t logit_bytes = ggml_nbytes(g.logits);
     logits.resize(static_cast<std::size_t>(ggml_nelements(g.logits)));
     if (auto r = Cuda(cudaMemcpyAsync(logits.data(), g.logits->data, logit_bytes,
@@ -1135,6 +1141,7 @@ class Runner {
   std::uint64_t most_scratch() const { return most_scratch_; }
   std::uint64_t most_activations() const { return most_activations_; }
   std::uint64_t hca_tokentile_steps() const { return hca_tokentile_steps_; }
+  std::uint64_t outa_prefill_steps() const { return outa_prefill_steps_; }
 
  private:
   std::expected<std::unique_ptr<Planned>, std::string> Prepare(const kg::Dsv4ChunkShape& shape,
@@ -1182,6 +1189,7 @@ class Runner {
   std::uint64_t most_scratch_ = 0;
   std::uint64_t most_activations_ = 0;
   std::uint64_t hca_tokentile_steps_ = 0;
+  std::uint64_t outa_prefill_steps_ = 0;
 };
 
 // ------------------------------------------------------------------ inputs
@@ -1403,6 +1411,7 @@ struct Options {
   bool compact_experts = false;  // the experimental device-built expert tile list
   bool d2r_experts = false;      // default-off raw Q2_K D2R product comparison
   bool ds4_hca = false;          // default-off literal ds4 HCA arithmetic comparison
+  bool outa_prefill = false;     // default-off native output-A graph operation at4096 rows
   bool wide_sparse = true;       // diagnostic override; exact mode always uses the primitive
   bool frontier_head = false;    // only the last prefill head row; PPL/diagnostics stay all-row
   bool probe_head = false;       // repeated head suffixes from one final chunk's streams
@@ -1489,6 +1498,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.d2r_experts = true;
     } else if (a == "--ds4-hca") {
       o.ds4_hca = true;
+    } else if (a == "--outa-prefill") {
+      o.outa_prefill = true;
     } else if (a == "--frontier-head") {
       o.frontier_head = true;
     } else if (a == "--probe-head") {
@@ -1518,6 +1529,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if (o.ds4_hca && (o.exact || (o.max_rows != 2048 && o.max_rows != 4096))) {
     return Error("--ds4-hca requires the fast plan and --max-rows 2048 or 4096");
+  }
+  if (o.outa_prefill && (o.exact || o.max_rows != 4096)) {
+    return Error("--outa-prefill requires fast mode and4096-row prefill");
   }
   if (o.probe_step != 0 && (o.force.empty() || o.probe_step >= o.generate)) {
     return Error("--probe-step needs --force and a step below --generate");
@@ -1653,6 +1667,7 @@ Status Run(const Options& o) {
               .compact_experts = o.compact_experts,
               .d2r_experts = o.d2r_experts,
               .ds4_hca = o.ds4_hca,
+              .outa_prefill = o.outa_prefill,
               .wide_sparse = o.wide_sparse};
 
   // cuBLAS, with upstream's workspace for the device: the router's BF16
@@ -1686,6 +1701,7 @@ Status Run(const Options& o) {
     if (!measure) {
       return Error(measure.error().detail);
     }
+    model.outa_prefill = model.outa_prefill && kg::Dsv4OutASupported(**measure);
     const kg::DeviceChoices choices = kg::DeviceChoicesOf(**measure);
     const std::array<std::pair<std::uint32_t, std::uint32_t>, 4> probes = {
         {{0, o.max_rows},
@@ -1763,11 +1779,14 @@ Status Run(const Options& o) {
                          !o.exact && o.wide_sparse ? "true" : "false");
   summary += std::format(R"(,"q2_d2r":{})", o.d2r_experts ? "true" : "false");
   summary += std::format(R"(,"ds4_hca":{})", o.ds4_hca ? "true" : "false");
+  summary += std::format(
+      R"(,"outa_prefill":{},"outa_prefill_requested":{},"compact_experts":{},"exact":{})",
+      model.outa_prefill ? "true" : "false", o.outa_prefill ? "true" : "false",
+      o.compact_experts ? "true" : "false", o.exact ? "true" : "false");
   if (!o.stop_ids.empty()) {
     std::string ids;
     for (auto id : o.stop_ids) ids += (ids.empty() ? "" : ",") + std::to_string(id);
-    summary += std::format(R"(,"stop_ids":[{}],"compact_experts":{},"exact":{})", ids,
-                           o.compact_experts ? "true" : "false", o.exact ? "true" : "false");
+    summary += std::format(R"(,"stop_ids":[{}])", ids);
   }
 
   if (o.layout_proof) {
@@ -2014,9 +2033,9 @@ Status Run(const Options& o) {
 
   const std::uint64_t low = memory.low();
   summary += std::format(
-      R"(,"plans_made":{},"most_activations":{},"most_scratch":{},"hca_tokentile_steps":{},"mem_available_before":{},"mem_available_low":{},"peak_bytes_by_mem_available":{}}})",
+      R"(,"plans_made":{},"most_activations":{},"most_scratch":{},"hca_tokentile_steps":{},"outa_prefill_steps":{},"mem_available_before":{},"mem_available_low":{},"peak_bytes_by_mem_available":{}}})",
       runner.plans_made(), runner.most_activations(), runner.most_scratch(),
-      runner.hca_tokentile_steps(), available_before, low,
+      runner.hca_tokentile_steps(), runner.outa_prefill_steps(), available_before, low,
       available_before > low ? available_before - low : 0);
   std::ofstream(o.out / "summary.json") << summary << "\n";
   std::println(

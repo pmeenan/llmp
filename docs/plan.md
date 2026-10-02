@@ -984,6 +984,14 @@ it appears.
       127K-token variable-binding answer exactly. The 128K forced-greedy
       control also passes: 500 exact choices, 12 within-bound differences,
       no outside/unresolved rows and exact agreement at step 315.
+      The guarded native output-A graph operation then gains 4.97% in one
+      paid 8K OFF/ON/OFF screen, matching the qualified private candidate's
+      complete logits exactly and reducing required scratch. Its selected
+      Spark slice passes 1,248 tests, including 259 GPU tests, plus format,
+      tidy, boundaries, REUSE and headers. It remains default-off in the
+      benchmark at 4096 rows; production chunk geometry and attention
+      integration remain open. The [closure status](m3-optimization-status.md)
+      tracks completed and missing independent-review experiments.
       Broader quality and production adaptation remain open; no default changes.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)

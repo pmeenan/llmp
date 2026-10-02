@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- An opt-in native DeepSeek output-A operation fuses inverse rotation,
+  Q8 weight preparation and the grouped projection on the qualified
+  4,096-row GB10 shape, preserving the diagnostic's complete logits.
+
 - Qwen3.8 chat requests share decode work across two independent conversations,
   retaining separate state, sampling and cancellation while reusing model weights.
   Compatible multirow HC products and unequal verification heads also share weights.

@@ -11,6 +11,10 @@ on 2026-09-29. The linked source declarations are the authoritative lists
 of individual implementation identities; this document records techniques,
 consumers, eligibility and evidence.
 
+The [current M3 closure status](m3-optimization-status.md) separates completed
+review experiments, rejected candidates, selected native changes and open
+engine gaps. Individual positive factors do not establish pipeline parity.
+
 The [2026-10-01 implementation snapshot](experiments/optimization-inventory/README.md)
 adds the independent native request slots, positive private BF16 head-sharing
 factor, rejected shared-worklist/exact16 controls and cross-family boundaries

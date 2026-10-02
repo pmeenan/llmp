@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ggml.h"
+#include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/fusion.h"
@@ -906,6 +907,21 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
   }
 
   out = ggml_reshape_3d(c_, out, head, heads, nt);
+  const Dsv4OutAParams outa_params = {.original_context = rl.n_ctx_orig,
+                                      .base = rl.base,
+                                      .scale = rl.scale,
+                                      .extension = rl.ext,
+                                      .attention = rl.attn,
+                                      .beta_fast = rl.beta_fast,
+                                      .beta_slow = rl.beta_slow};
+  if (o_.fused && o_.outa_prefill && p_.rope_dims == 64 && nope == 448 &&
+      Dsv4OutAFits(l.out_a, out, g_.positions, outa_params)) {
+    // The direct dependency retains unrotated heads through the disjoint
+    // canonical output write. No inverse-RoPE tensor or output layout copy.
+    out = Mm(l.out_b, Dsv4OutA(c_, l.out_a, out, g_.positions, outa_params));
+    Name(out, "attn_out", il);
+    return out;
+  }
   out = ggml_rope_ext_back(c_, out, g_.positions, nullptr, static_cast<int>(p_.rope_dims),
                            kRopeMode, rl.n_ctx_orig, rl.base, rl.scale, rl.ext, rl.attn,
                            rl.beta_fast, rl.beta_slow);

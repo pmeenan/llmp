@@ -250,99 +250,34 @@ the commit gate.
 
 ## Current status
 
-**M0 (plan the plan), M1 (Bootstrap) and M2 (resource core and backend
-proof) are done** ([docs/m0-record.md](docs/m0-record.md),
-[docs/m1-record.md](docs/m1-record.md), [docs/m2-record.md](docs/m2-record.md)).
-With models configured the runtime service serves a minimal
-`/v1/chat/completions` (D-097) and literal `/v1/completions` with target
-likelihoods (D-100) on loopback and the tailnet; its `chat`
-and `swap-table` commands serve them by hand in its own process (D-096). **M3
-(single-Spark fast full swap) is in progress** ([docs/plan.md](docs/plan.md)):
-DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1 swapping A→B→A
-in ~10 s (≤ ~20 s at exit), then M4 on two Sparks. Landed: its models
-and baselines pinned, with licenses recorded; GGML widened for the two
-LLMs' operations; the native tokenizer, chat renderers and sampling
-(D-088 clears their Unicode tables); DeepSeek V4 Flash imported
-and run natively (bit-identical to llama.cpp unfused on the same GGUF),
-now as device jobs over leased closures on the paged node; and the swap
-path's core (full swaps with the D-033 backing handoff, state spill and
-restore, a copy lane for RE-029) in a harness swap runner: DeepSeek↔the
-FP16 fixture A→B→A, bit-identical after the return; DeepSeek's decode
-steps replaying as CUDA graphs at pinned places that survive swaps
-(D-090), bit-identical to launch by launch, and with a request leasing
-its closure once (D-093) decoding at 1.02× llama.cpp's unfused speed,
-measured on the runtime's own wake (D-094: lanes that sleep through a
-step and wake just ahead of its end, not the harness's polling);
-Qwen3.8 Flash
-Next native and resident from Mia's NVFP4 checkpoint (against Mia's vLLM:
-greedy within near-ties under a bound set after the first comparison,
-perplexity −1.5%; prefill, after a second pass under D-085's speed before
-bit exactness (MXFP8 tensor-core products, fused hyper-connections,
-routing and QSA selection), 1.41× its speed at 8K in 8,192-row chunks and
-1.38× in 4,096-row chunks, perplexity −0.8 to −1.2%, one greedy step
-outside the near-tie bound, accepted by the owner); and Qwen-Image-2.1 imported as component artifacts joined by a composition
-(D-089) and run natively (within its pre-registered bounds of diffusers
-BF16; 0.64× its generation time with weights resident after a speed pass
-at the same precision, its operations through a bound plan, one prompt at
-1024², 40 steps); and all six ordered swap pairs of the three on the
-paged node (Qwen3.8's n-gram table read by rows, D-035), every swap
-under ~10 s (worst LLM↔LLM 9.38 s, page-in bound), an LLM's return
-bit-identical to its saved state's continuation (RE-031 rules out a
-rerun); and DeepSeek's speculative decoding with its DSpark drafter
-(D-092): greedy bit-identical to plain greedy, exact rollback of rejected
-drafts, across swaps too, decode 0.96–0.97× llama.cpp's with the same
-drafter once each generation ran as a request; then DeepSeek's fast
-plan as the default (speed before bit exactness: one vector kernel that
-reads each routed expert once per verify, fused routing and
-hyper-connections; greedy within near-ties of llama.cpp, the exact plan
-kept as `--exact on`): plain decode 1.07–1.09× llama.cpp's, DSpark
-1.03× / 1.07–1.08× on prose / code, short of a decisive ~1.1×; and
-Qwen3.8's speculative decoding with its MTP layer, a drafter artifact of
-its own: a batched verify with the kept rows' recurrent state committed,
-greedy within near-ties, forced rejections exact against a control and
-across a swap, and 1.12× / 1.03× Mia's MTP-3 decode; Qwen3.8's decode
-graphs (which survive a swap) make its plain decode 1.01–1.03× Mia's
-without speculation, and TensorFold's techniques (an in-place recurrent
-state, clustered and fused one-row kernels, PDL) 5–8% faster still; and
-the swap path in `jitllm-runtime` (D-096: an
-engine module, `[models]` in the configuration, `chat` and `swap-table`),
-its greedy tokens the harnesses', all 32 swaps of M3's table in one
-process under ~10 s with speculation on (final worst LLM↔LLM 9.75 s); and the
-[model support matrix](docs/model-support.md), with template hashes; and
-the chat route (D-097: a strict OpenAI subset, intake bounds
-fixed first, greedy replies equal to `chat`'s); and the engine cleanup:
-one runner skeleton ([engine.md](docs/engine.md)), behaviour bit for bit
-as before, main clang-tidy clean.
-D-087 moved the
-later milestones back two places (the old M3 is M5). Long context is
-part of M3 (owner, 2026-09-29): both LLMs now run flat with depth to
-128K and fit 262,144 on one Spark (DeepSeek: a window ring, sparse
-attention, a deterministic indexer top-k, 1.65–1.72× llama.cpp prefill
-and 1.15–1.22× decode; Qwen3.8: device selection, sparse QSA attention,
-cached block keys, 1.21–1.37× Mia prefill), with the progress
-watchdog replacing the route's fixed deadline. State now grows with use,
-spilling only initialized extents; both 262K ceilings register together and
-swap exact 8K state under 10 s. Turn checkpoints reuse 64K prefixes when
-reasoning is removed, with exact continuation across swaps. Context defaults
-to 262,144, with trained ceilings checked before allocation. Remaining
-before the gate: Qwen's long-context MTP speed gap, concurrent-request
-comparisons (Qwen chat now shares two independent requests), ds4's causal native-stage
-restoration and wider matched-context/task-quality checks, the final
-swap/client gate and record, and deferred workstation checks. Final
-maximum-context timing, neutral retrieval and continuing-context swaps
-are recorded in
-[final context checks](docs/experiments/m3-final-context/README.md).
-The ds4 study adopted shared sparse gathers and compact expert scheduling;
-its complete 8K benchmark now matches all original logits byte for byte
-within 2.4% throughput. Native output-B restoration is exact and comparable
-in speed; the paid Materialized FFN control is exact but 2.35% slower.
-The matched 32K pipeline is byte-exact and 0.71% slower on the same Spark;
-native compact FFN consumers remain open. Fixed long-context
-answer tests show no clear candidate-specific regression but fail parts of
-the strict rubric in both paths; HCA stays off by default. Literal ds4 code is temporary benchmark
-scaffolding. M3.5 (model families, the
-owner's approved 13 plus legacy fixtures and Bonsai, formats with EXL3
-in focus, concurrent batching) follows M3, before M4. Keep this paragraph
-short and current when plan.md milestone status changes (rule 4).
-For the current M3 optimization run, the owner deferred workstation checks
-to the end (2026-09-29); each slice still gets its Spark check set.
+**M0, M1 and M2 are complete; M3 is in progress.** The runtime serves Chat
+Completions and literal Completions with target likelihoods on loopback and
+the tailnet (D-096, D-097, D-100). DeepSeek V4 Flash, Qwen3.8 Flash Next and
+Qwen-Image-2.1 execute natively with paging, saved state and stable-address
+graphs. The recorded 32-swap table's worst LLM swap is 9.75 s against the
+20 s exit bound. Both LLMs run to 262,144 tokens; state grows with use,
+spills initialized extents, and turn checkpoints preserve exact continuation
+when earlier reasoning is removed, including across swaps. Maximum-context
+timing, retrieval and continuing-context swaps are recorded in
+[final context](docs/experiments/m3-final-context/README.md).
+
+The [M3 optimization status](docs/m3-optimization-status.md) tracks remaining
+engine gaps and the independent review's suggestions. The complete literal
+ds4 benchmark matches all original logits at 8K/32K within 2.4%/0.71% of
+its speed. Native stage restoration is incomplete: ordered reduction and
+Q-head fusions are landed; the guarded default-off 4096-row output-A adapter
+gains 4.97%. Output-A plus experimental HCA passes the unchanged 32K/128K
+greedy bounds, 128K perplexity and one long-answer control; production
+geometry and broader acceptance remain open, and HCA stays off by default.
+Qwen chat shares two independent requests, including HC products and ragged
+verification heads (+2.76% in a paid C2 screen); four active slots regressed.
+Fresh concurrent engine comparisons, Qwen same-history acceptance,
+DeepSeek batching, the remaining native prefill gap, final swap/client
+gate and frozen M3 record remain open. Workstation checks are deferred
+until implementations settle; package checks remain owed before shipment.
+
+M3.5 follows M3: the approved 13 model checkpoints, legacy fixtures, Bonsai,
+formats with EXL3 in focus, and remaining continuous batching/skeleton gaps
+([plan](docs/plan.md), [family set](docs/m35-families.md)). M4 follows on
+two Sparks; [reference engines](docs/m4-references.md) are re-pinned at entry.
+Detailed historical results belong in the plan and experiment reports.

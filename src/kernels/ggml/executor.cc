@@ -16,6 +16,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -103,6 +104,8 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
       planned = PlanQsaAttn(step.nodes.front());
     } else if (step.implementation == kDsv4HcaTokentileName) {
       planned = PlanDsv4HcaTokentile(launch, step.nodes.front());
+    } else if (step.implementation == kDsv4OutAName) {
+      planned = PlanDsv4OutA(launch, step.nodes.front());
     } else if (step.implementation == kFlashAttnMmaName ||
                step.implementation == kFlashAttnMmaWideName) {
       auto attention = PlanFlashAttnMma(launch, step.nodes.front(),

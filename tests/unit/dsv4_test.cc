@@ -34,6 +34,7 @@
 #include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"
+#include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
@@ -929,6 +930,94 @@ TEST(Dsv4Test, ExpertStridesAreWholeBlocks) {
   strides[42] = 9309200;
   const auto whole = kg::BuildDsv4Graph(*fourth, p, *binding, shape, {.expert_stride = strides});
   EXPECT_TRUE(whole.has_value()) << Why(whole);
+}
+
+TEST(Dsv4Test, OutAPrefillRequiresItsQualifiedShapeAndDisjointOutput) {
+  auto arena = kg::TensorArena::Create(16);
+  ASSERT_TRUE(arena.has_value());
+  auto* c = arena->context();
+  auto* w = ggml_new_tensor_3d(c, GGML_TYPE_Q8_0, 4096, 1024, 8);
+  auto* x = ggml_new_tensor_3d(c, GGML_TYPE_F32, 512, 64, 4096);
+  auto* pos = ggml_new_tensor_1d(c, GGML_TYPE_I32, 4096);
+  const kg::Dsv4OutAParams params{.base = 10000, .scale = 1, .attention = 1};
+  ASSERT_TRUE(kg::Dsv4OutAFits(w, x, pos, params));
+  auto* out = kg::Dsv4OutA(c, w, x, pos, params);
+  kg::TensorArena::Bind(w, std::uint64_t{1} << 40U);
+  kg::TensorArena::Bind(x, std::uint64_t{1} << 42U);
+  kg::TensorArena::Bind(pos, std::uint64_t{1} << 44U);
+  const auto address = std::uint64_t{1} << 46U;
+  kg::TensorArena::Bind(out, address);
+  EXPECT_TRUE(kg::CheckDsv4OutA(out).has_value());
+  EXPECT_EQ(kg::Dsv4OutAParamsOf(out).base, params.base);
+  for (auto* input : {w, x, pos}) {
+    kg::TensorArena::Bind(out, reinterpret_cast<std::uintptr_t>(input->data));
+    EXPECT_FALSE(kg::CheckDsv4OutA(out).has_value());
+  }
+  kg::TensorArena::Bind(out, address);
+  const auto saved = x->nb[2];
+  x->nb[2] += sizeof(float);
+  EXPECT_FALSE(kg::CheckDsv4OutA(out).has_value());
+  x->nb[2] = saved;
+  auto wrong = *x;
+  wrong.ne[2] = 2048;
+  EXPECT_FALSE(kg::Dsv4OutAFits(w, &wrong, pos, params));
+  wrong = *w;
+  wrong.type = GGML_TYPE_Q5_K;
+  EXPECT_FALSE(kg::Dsv4OutAFits(&wrong, x, pos, params));
+  auto bad_params = params;
+  bad_params.extension = 1;
+  EXPECT_FALSE(kg::Dsv4OutAFits(w, x, pos, bad_params));
+}
+
+TEST(Dsv4Test, OutAPrefillIsOptInAndKeepsUnrotatedHeadsLive) {
+  const auto& p = md::Dsv4Flash();
+  const auto resources = GgufLike(p);
+  auto binding = md::BindDsv4(p, "deepseek4", resources);
+  ASSERT_TRUE(binding.has_value()) << Why(binding);
+  auto state = md::Dsv4State(p, 8192, 4096);
+  ASSERT_TRUE(state.has_value());
+  for (const auto rows : {1U, 2048U, 4096U}) {
+    auto chunk = md::Dsv4Chunk(p, *state, 0, rows);
+    ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+    for (const auto mode : {0, 1, 2}) {
+      auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+      ASSERT_TRUE(arena.has_value());
+      auto graph = kg::BuildDsv4Graph(*arena, p, *binding, kg::Dsv4ShapeOf(*state, *chunk),
+                                      {.fused = mode != 2, .outa_prefill = mode != 0});
+      ASSERT_TRUE(graph.has_value()) << Why(graph);
+      std::uint64_t next = std::uint64_t{1} << 40U;
+      const auto bind_leaf = [&](ggml_tensor* t) {
+        if (t != nullptr && t->data == nullptr) {
+          kg::TensorArena::Bind(t, next);
+          next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+        }
+      };
+      for (auto* t : graph->inputs()) bind_leaf(t);
+      for (auto* node : graph->nodes) {
+        for (auto* src : node->src) {
+          if (src != nullptr && src->op == GGML_OP_NONE && src->view_src == nullptr) bind_leaf(src);
+        }
+      }
+      kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+      auto plan = kg::PlanGraph(graph->nodes, false, ModelDevice());
+      ASSERT_TRUE(plan.has_value()) << Why(plan);
+      const auto count = std::ranges::count_if(
+          plan->steps, [](const auto& step) { return step.implementation == kg::kDsv4OutAName; });
+      EXPECT_EQ(count, mode == 1 && rows == 4096 ? p.layers : 0);
+      if (count == 0) continue;
+      auto placement = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256);
+      ASSERT_TRUE(placement.has_value()) << Why(placement);
+      for (const auto& [tensor, offset] : placement->offsets) {
+        kg::TensorArena::Bind(tensor, (std::uint64_t{1} << 46U) + offset);
+      }
+      kg::BindViews(graph->nodes);
+      for (const auto& step : plan->steps) {
+        if (step.implementation == kg::kDsv4OutAName) {
+          EXPECT_TRUE(kg::CheckDsv4OutA(step.nodes.front()).has_value());
+        }
+      }
+    }
+  }
 }
 
 TEST(Dsv4Test, TheHadamardMatrixIsOrthonormal) {

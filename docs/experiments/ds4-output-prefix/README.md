@@ -14,8 +14,9 @@ bound and repeats all full logits exactly; its native baseline fails one
 step. The HCA/output-A combination also passes the registered 128K
 held-out perplexity condition and the frozen 127K-token variable-binding
 answer task, and passes the original-checkpoint 128K forced trajectory.
-These are focused attribution/quality results; no production
-dispatch changes here and broader acceptance is separate.
+These are focused attribution/quality results. The guarded native adapter
+also gains 4.97% in its own screen with exact candidate logits; runtime
+defaults remain unchanged and broader acceptance is separate.
 
 ## Captured first-layer screen
 
@@ -284,6 +285,53 @@ run clocks. This condition passes its fixed-history greedy bound; it has
 no fresh deterministic repeat, matched performance bookend or additional
 task matrix. Production/default acceptance remains separate.
 
+## Native graph restoration
+
+The selected adapter makes the prefix a direct native graph operation,
+`jitllm.dsv4.outa_prefill`, behind a default-off benchmark option. It
+accepts only the qualified GB10, 4,096-row packed Q8_0/F32 shape. Exact
+and unsupported shapes retain the original inverse RoPE, MMQ and layout
+copy. The three direct dependencies retain unrotated heads, positions
+and raw weights through the disjoint canonical output write. Weight
+packing and rotation-table preparation remain paid on the provider stream;
+no persistent weight replicas, D4 emission or output-B change are added.
+
+One fresh native OFF/ON/OFF screen uses the same community artifact and
+literal 8K input. Actual plan creation, binding, input copies, all layers,
+dispatch, fences and full frontier-head copies are inside the paid clock.
+Both arms also pay the same preallocated host retention of the two complete
+heads; file writes and plan audit are outside. This scope differs from
+the earlier prebound diagnostic, so its absolute clocks are separate.
+
+| Native OFF before, s | Native ON, s | Native OFF after, s | Throughput gain | Bookend movement |
+| ---: | ---: | ---: | ---: | ---: |
+| 12.461957835 | 11.887680241 | 12.496068163 | 4.97433% | 0.27372% |
+
+All four OFF full heads match the original goldens. Both ON full heads
+match the earlier qualified output-A-only diagnostic byte for byte.
+Each ON chunk executes 43 native output-A operations; the two actual
+plans have 3,441 steps versus 3,527. Each retains 43 Q-head, weighted
+reduction, compact paired and compact down consumers, with no HCA calls.
+Activation extent remains 1,462,430,464 bytes (the ordinary benchmark's
+1,828,716,544-byte allocation includes its usual margin). Required scratch
+falls from 151,013,376 to 134,414,336 bytes; allocated scratch falls from
+190,840,832 to 169,869,312. The prefix's reused 36,700,160-byte scratch
+lives inside that pool. The diagnostic 170,917,888-byte extra plane/low
+allocation and copy back are gone. Sampled peak memory is 0.999983× the
+larger OFF reference. This selects the guarded native implementation for
+source qualification; no runtime default, 2,048-row support or broader
+performance claim follows.
+
+The selected source passes the full locked Spark set (1,248 tests, including
+259 GPU tests), the SDK's format and clang-tidy checks on changed units,
+and the portability boundary check. Routine declaration-name and integer
+style repairs are followed by the five affected descriptor/planner,
+module-digest and source controls; the full suite is not repeated.
+REUSE and header checks pass on the final source snapshot using the retained
+pure SDK REUSE shim: 1,153 headers across 1,274 paths, no findings.
+The CU lint parser uses the documented RE-042 include adaptation; the actual
+NVCC13.4 compile flags and numerical core remain unchanged.
+
 ## Provenance
 
 Measured on `spark-c4e2`, 2026-10-02, SDK
@@ -296,7 +344,8 @@ gates find 117.324 / 117.290 GiB; the HCA interaction terminal is
 117.298 GiB, and its fresh repeat is 117.288 GiB. The registered PPL
 condition retires at 117.306 GiB; the R3 model/recovery retire at
 117.266 / 117.287 GiB; the 128K greedy model/recovery retire at
-117.286 / 117.294 GiB. The completed
+117.286 / 117.294 GiB. The native restoration screen retires at
+117.290 GiB. The completed
 whole/quality/repeat/interaction
 comparisons finish rc0,
 with no native/GPU/container model processes and `spark-job busy` free.
@@ -318,6 +367,8 @@ with no native/GPU/container model processes and `spark-job busy` free.
   and the R3 model/recovery in `outa-r3-r1/` and `outa-r3-recover-r1/`;
   the 128K greedy model/scoring recovery are in `outa-128k-r1/` and
   `outa-128k-score-r1/`;
+  the native restoration is in `outa-native-r2/`, with its pre-model
+  compile failure retained in `outa-native-r1/`;
   sources/results on Spark are under
   `/home/pmeenan/scratch/m3-ds4-qhead-short-r1/`.
 

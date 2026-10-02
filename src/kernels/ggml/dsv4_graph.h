@@ -222,6 +222,9 @@ struct Dsv4GraphOptions {
   // Q heads with64 normal rotary tail values use one RMSNorm/RoPE kernel,
   // retaining native F32 rounding without a materialized norm tensor.
   bool fused = false;
+  // Private opt-in for the qualified GB10 4096-row staged output-A shape.
+  // Unsupported shapes and the exact graph retain native inverse RoPE/MMQ.
+  bool outa_prefill = false;
 };
 
 struct Dsv4Graph {
