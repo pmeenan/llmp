@@ -220,3 +220,41 @@ expert arrays while preserving weighting placement and ordered summation.
 Qwen's ten-expert sorted NVFP4 combine already implements its own combine;
 this six-expert F32 kernel does not match it. Another MoE consumer needs
 its own matching layout/precision/order contract and measured screen.
+
+## Wide HC first screen: keep the current path
+
+Extending the existing small-row HC mix/pre kernels to 4096-row prefill is
+**2.18% slower** in one complete 8K ordinary/candidate/ordinary screen on
+Spark A. Paid times are 12.757279643/13.045291677/12.763420386 s; ordinary
+bookends move by 0.0481%. This negative selects no production change,
+quality ladder or broader timing matrix.
+
+The community artifact's 86 HC matrices are F16. Each candidate chunk pays
+86 existing F16-to-F32 graph conversions, with 135266304 logical output
+bytes, before 86 native HC mix and 86 HC pre operations. The existing CUDA
+bodies and flags are unchanged. A narrow private planner mapping connects
+CPY to the existing packed F16/F32 converter and bound validator. Both
+chunks drop from 3570 to 2710 steps, but fewer steps do not yield a speed
+gain. Expert products and all 43 ordered reductions per chunk remain the
+same. Allocated activation rises by 46137344 bytes to 1874853888; scratch,
+staging and state capacities are unchanged.
+
+All four ordinary full heads match the selected production bytes. Both
+candidate heads are finite and retain the same argmax, but all 129280
+values differ: maximum absolute differences are 0.886101/0.841692, RMS
+0.160280/0.159910 and NMSE 0.001125/0.000772. These two heads establish no
+task-quality approval. Preserve the ordinary projection and investigate
+the mixing/output-normalization suffix separately if its own paid screen
+warrants it; this whole screen attributes no phase cost.
+
+The initial attempt fell back because the HC weight-type guard excluded
+F16. The paid-conversion retry then refused the missing CPY planner route
+before candidate prefill. Both attempts and their completed outputs are
+retained. The completed screen binds source graph 974a3aa4, planner
+406f505b, study f1f87215, controller 63086f39, build 5d2e92ed and executable
+a3f9b79b to SDK f38891fc and unchanged resolved cuBLAS. Actual outer receipt
+is `1b8e5df488b95ba186001ac4f1aa882567ce4602b961ad2f85edceb551776881`;
+all eleven commands complete zero and are reaped, with 117.242 GiB free
+and model probes clear at retirement. Six full heads and small receipts
+remain outside Git under
+`/home/pmeenan/scratch/m3-ds4-wide-hc-short-records/model-r3/`.
