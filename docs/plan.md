@@ -1101,6 +1101,14 @@ it appears.
       gains 2.76% paid C2 HTTP throughput with exact native outputs, state
       and capped replies; all 1,253 locked Spark tests pass. Funding four
       active slots loses 13.16% in a short C4 screen, so two remain selected.
+      A separate [conditional depth plus four-head screen](experiments/qwen38-conditional-heads/README.md)
+      gains 7.05% against exact normal C4 serving, with 1.34% bookend rate
+      movement. It delays first completion by 83.23%, raises median latency
+      15.70%, funds 3.27 GiB more fixed memory and changes complete replies.
+      Keep the current default while mechanism and depth-policy controls
+      are checked separately. The separate four-head mechanism now passes
+      13 complete heads and 20 initialized-state/cursor comparisons, including
+      discard, retry and continuation; policy and sampling remain unqualified.
       All packing
       is paid. Overflow waits
       for a retired slot, while model changes and literal completions drain
