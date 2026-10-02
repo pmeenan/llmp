@@ -64,6 +64,23 @@
 //     every cell by every row is built, and no mask or block table on the
 //     host.
 //
+// A GGUF checkpoint's artifact (model/qwen38.h Qwen38Format::kGguf) takes
+// GGML's own products for every matrix of its types (MMVQ and MMQ for the
+// k- and i-quants and Q8_0, MMVF or cuBLAS for F32, the BF16 path above for
+// BF16), GGML's mul_mat_id for its routed experts (no global scales), and
+// jitllm.qrows.get_rows for its n-gram table (jitllm_ops.h). Its fast form
+// keeps every fusion that does not read the ModelOpt formats: QSA's
+// selection, pool and sparse attention, Gated DeltaNet's convolution,
+// history, step and gated norm, the router (an F32 gate row) and the
+// experts' sum (unscaled); its hyper-connections take the reference
+// form's fusions (jitllm.hc.norm, .mix, .combine) over its products, since
+// the fast mix's are BF16-only. Up to kVecQTokens rows (decode) its fast
+// form's quantized products are jitllm.vecq over one Q8_1 quantization of
+// each input (DeepSeek's fast plan's product, for the types it takes), the
+// routed experts' gate and up with their SwiGLU in one where the rows times
+// the experts used fit its 64 pairs. Speculation (a verify, the drafter's
+// streams) and the CUTLASS expert layout are the ModelOpt artifact's alone.
+//
 // Routed experts are 3D weights [k, n, experts] at the caller's expert
 // stride (the resident expert layout, docs/artifact-format.md#executable-views);
 // the down projection's rows (640 elements) are not whole 512-element steps,
@@ -112,6 +129,10 @@ struct Qwen38Mxfp8Tensors {
   // Or, the MTP drafter's (model/qwen38.h Qwen38Mxfp8::bf16), BF16 [k, n]:
   // GGML's float product up to kQwen38Bf16Rows rows, else jitllm.gemm.bf16.
   ggml_tensor* bf16 = nullptr;
+  // Or a GGUF checkpoint's (Qwen38Mxfp8::matrix), [k, n] of its GGML type:
+  // GGML's product (MMVQ or MMQ for a quantized type, MMVF or cuBLAS for
+  // F32), or a BF16 one's as `bf16`'s.
+  ggml_tensor* matrix = nullptr;
 };
 
 struct Qwen38LayerTensors {
@@ -129,6 +150,7 @@ struct Qwen38LayerTensors {
   ggml_tensor* conv1d = nullptr;
   ggml_tensor* ssm_norm = nullptr;
   Qwen38Mxfp8Tensors q, k, v, o, idx_qk;
+  Qwen38Mxfp8Tensors idx_q, idx_k;  // a GGUF checkpoint's split indexer projection
   ggml_tensor* q_norm = nullptr;
   ggml_tensor* k_norm = nullptr;
   ggml_tensor* idx_q_norm = nullptr;
@@ -148,7 +170,8 @@ struct Qwen38LayerTensors {
   // The layer's expert slab as bytes [stride, experts] (the CUTLASS layout,
   // moe_layout.h), in place of the three GGML weights.
   ggml_tensor* experts = nullptr;
-  ggml_tensor* gate_exps_scale = nullptr;  // F32 [experts]
+  // F32 [experts]: NVFP4's global scales (null for a GGUF checkpoint).
+  ggml_tensor* gate_exps_scale = nullptr;
   ggml_tensor* up_exps_scale = nullptr;
   ggml_tensor* down_exps_scale = nullptr;
   // State (bind at the state layout's offsets).
@@ -261,8 +284,10 @@ struct Qwen38Graph {
   ggml_tensor* streams = nullptr;
   // Weights.
   ggml_tensor* token_embd = nullptr;
-  ggml_tensor* ple_table = nullptr;        // I8 [row bytes, rows]
-  ggml_tensor* ple_table_scale = nullptr;  // F32 [1]
+  // I8 [row bytes, rows] (ModelOpt's packed NVFP4), or a GGUF checkpoint's
+  // [ple_row, rows] of its GGML type.
+  ggml_tensor* ple_table = nullptr;
+  ggml_tensor* ple_table_scale = nullptr;  // F32 [1] (ModelOpt's only)
   ggml_tensor* output = nullptr;
   ggml_tensor* output_hc_norm = nullptr;
   ggml_tensor* output_hc_down = nullptr;

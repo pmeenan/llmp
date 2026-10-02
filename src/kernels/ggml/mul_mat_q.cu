@@ -40,7 +40,11 @@
     !defined(GGML_JITLLM_MMQ_Q8_0) || !defined(GGML_JITLLM_MMQ_Q4_K) ||      \
     !defined(GGML_JITLLM_MMQ_Q5_K) || !defined(GGML_JITLLM_MMQ_Q6_K) ||      \
     !defined(GGML_JITLLM_MMQ_IQ2_XS) || !defined(GGML_JITLLM_MMQ_IQ3_XXS) || \
-    !defined(GGML_JITLLM_MMQ_MXFP4) || !defined(GGML_JITLLM_MMQ_NVFP4)
+    !defined(GGML_JITLLM_MMQ_MXFP4) || !defined(GGML_JITLLM_MMQ_NVFP4) ||    \
+    !defined(GGML_JITLLM_MMQ_Q4_0) || !defined(GGML_JITLLM_MMQ_Q2_0) ||      \
+    !defined(GGML_JITLLM_MMQ_Q3_K) || !defined(GGML_JITLLM_MMQ_IQ1_S) ||     \
+    !defined(GGML_JITLLM_MMQ_IQ2_S) || !defined(GGML_JITLLM_MMQ_IQ3_S) ||    \
+    !defined(GGML_JITLLM_MMQ_IQ4_NL) || !defined(GGML_JITLLM_MMQ_IQ4_XS)
 #error "validate_ext.h's quantized weight types need their MMQ instance units"
 #endif
 
@@ -728,6 +732,31 @@ std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml
           break;
         case GGML_TYPE_IQ3_XXS:
           mul_mat_q_case<GGML_TYPE_IQ3_XXS>(context, args, stream);
+          break;
+        // The other types Qwen3.8's GGUF quantizations mix.
+        case GGML_TYPE_Q4_0:
+          mul_mat_q_case<GGML_TYPE_Q4_0>(context, args, stream);
+          break;
+        case GGML_TYPE_Q2_0:
+          mul_mat_q_case<GGML_TYPE_Q2_0>(context, args, stream);
+          break;
+        case GGML_TYPE_Q3_K:
+          mul_mat_q_case<GGML_TYPE_Q3_K>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ1_S:
+          mul_mat_q_case<GGML_TYPE_IQ1_S>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ2_S:
+          mul_mat_q_case<GGML_TYPE_IQ2_S>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ3_S:
+          mul_mat_q_case<GGML_TYPE_IQ3_S>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ4_NL:
+          mul_mat_q_case<GGML_TYPE_IQ4_NL>(context, args, stream);
+          break;
+        case GGML_TYPE_IQ4_XS:
+          mul_mat_q_case<GGML_TYPE_IQ4_XS>(context, args, stream);
           break;
         default:
           GGML_ABORT("paired MMQ type passed validation without its case");

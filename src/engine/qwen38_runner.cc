@@ -22,6 +22,7 @@
 #include "engine/checkpoint_file.h"
 #include "engine/support.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_graph.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/paging/paging.h"
@@ -328,10 +329,20 @@ Status Qwen38Runner::Setup() {
   if (binding_.ple_table.ne.size() != 2) {
     return Error("the n-gram table is not a table of rows");
   }
+  // A row's bytes: the ModelOpt table's plain bytes [row bytes, rows], or a
+  // GGUF checkpoint's GGML rows [values, rows] of its type.
+  std::uint64_t row_bytes = binding_.ple_table.ne[0];
+  if (binding_.gguf()) {
+    auto type = kg::GgmlTypeOf(binding_.ple_table.type);
+    if (!type) {
+      return Error(type.error().detail);
+    }
+    row_bytes = ggml_row_size(*type, static_cast<std::int64_t>(binding_.ple_table.ne[0]));
+  }
   table_ = PleTable{.fd = weights_.shard_fd(first->shard),
                     .file_offset = first->file_offset.value() + table.offset.value(),
                     .rows = binding_.ple_table.ne[1],
-                    .row_bytes = binding_.ple_table.ne[0],
+                    .row_bytes = row_bytes,
                     .chunk_file_offset = first->file_offset.value(),
                     .file_bytes = first->file_offset.value() + groups[table_group].stored.value()};
   const std::uint64_t row_slots =
@@ -340,6 +351,7 @@ Status Qwen38Runner::Setup() {
   slots_ = row_slots * profile_.ple_heads();
   graph_binding_ = binding_;
   graph_binding_.ple_table.ne[1] = slots_;
+  graph_binding_.ple_table.readable = 0;  // the slots reserve no over-read
 
   // The state first: its extents come before the weights' in a closure, so
   // a swap back restores it before paging the weights in.
@@ -987,6 +999,16 @@ Status Qwen38Runner::ReadPleHash() {
     return Error("the Qwen3.8 cohort requires retirement");
   }
   hash_checked_ = false;
+  if (binding_.gguf()) {
+    // A GGUF checkpoint's constants are its kept metadata's (no drafter).
+    auto hash = md::ReadQwen38GgufHash(profile_, weights_.artifact(), table_.rows);
+    if (!hash) {
+      return std::unexpected(hash.error());
+    }
+    hash_ = std::move(*hash);
+    hash_checked_ = true;
+    return {};
+  }
   const md::Qwen38Layer& l = binding_.layers[profile_.ple_layer];
   const std::array<const md::Qwen38Tensor*, 3> parts = {&l.ple_multipliers, &l.ple_head_offsets,
                                                         &l.ple_head_vocab};

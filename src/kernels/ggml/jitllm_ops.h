@@ -138,6 +138,7 @@ enum class JitllmOp : std::uint8_t {
   kDsv4OutA,
   kDsv4HcNormF16,
   kDsv4F16Copy,
+  kQRows,
 };
 
 // The operation a GGML_OP_CUSTOM node names, or kNone.
@@ -161,6 +162,18 @@ ggml_tensor* Mxfp8Dequant(ggml_context* context, ggml_tensor* codes, ggml_tensor
 // [1]: F32 [values, n].
 ggml_tensor* Nvfp4Rows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids,
                        ggml_tensor* scale, std::int64_t values);
+// jitllm.qrows.get_rows: rows of a table in one of GGML's 32-value block
+// types (Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, IQ4_NL) as F32, each value as GGML's
+// dequantization gives it (dequantize.cuh; IQ4_NL's kvalues_iq4nl times
+// its block's scale): a GGUF checkpoint's n-gram table, whose 160-value
+// rows are not the whole 256-value super-blocks GGML's own get_rows
+// dequantizes these i-quants in (getrows.cu k_get_rows_kq). `table` [values,
+// rows] of such a type (packed), `ids` I32 [n]: F32 [values, n]. Rows of a
+// multiple of 32 values, at most 1,024; an id outside the table gives NaN
+// rather than a read out of bounds.
+ggml_tensor* QRows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids);
+// Whether jitllm.qrows.get_rows takes a table of `type`.
+bool QRowsType(ggml_type type);
 // `x` F32 [n, rows]: I32 [rows]; with `probability`, I32 [2 · rows]: the
 // indices, then each row's softmax probability of its highest value (F32
 // bits; 0 for a row of NaN), the drafter's confidence that TensorFold's
@@ -185,8 +198,10 @@ ggml_tensor* HcMix(ggml_context* context, ggml_tensor* x, ggml_tensor* weight, g
 ggml_tensor* MoeGlu(ggml_context* context, ggml_tensor* gate, ggml_tensor* up, ggml_tensor* ids,
                     ggml_tensor* gate_scale, ggml_tensor* up_scale);
 // `down` F32 [width, used, t], `ids` as MoeGlu's, `down_scale` F32
-// [experts], `weights` F32 [1, used, t], `shared` F32 [width, t],
-// `shared_gate` F32 [1, t] (before its sigmoid): F32 [width, t].
+// [experts] (or null: experts without global scales, a GGUF checkpoint's,
+// whose sum is GGML's unfused nodes' without the scale's product),
+// `weights` F32 [1, used, t], `shared` F32 [width, t], `shared_gate` F32
+// [1, t] (before its sigmoid): F32 [width, t].
 ggml_tensor* MoeCombine(ggml_context* context, ggml_tensor* down, ggml_tensor* ids,
                         ggml_tensor* down_scale, ggml_tensor* weights, ggml_tensor* shared,
                         ggml_tensor* shared_gate);
@@ -222,6 +237,7 @@ bool IsGemvBf16(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckMxfp8MulMatVec(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckMxfp8Dequant(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckNvfp4Rows(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckQRows(const ggml_tensor* node);
 // Packed F32 rows of at most 2^31 - 1 values into a packed I32 row of one
 // index a row, at most 65,535 rows.
 std::expected<void, KernelFailure> CheckArgmax(const ggml_tensor* node);
@@ -398,6 +414,7 @@ class LaunchContext;
 std::expected<void, KernelFailure> RunMxfp8MulMatVec(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunMxfp8Dequant(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunNvfp4Rows(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunQRows(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunArgmax(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunHcCombine(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunHcNorm(LaunchContext& launch, ggml_tensor* node);
@@ -557,8 +574,9 @@ struct MoeRouterLayout {
   std::uint64_t gate() const { return static_cast<std::uint64_t>(2 * used * t) * 4; }
   std::int64_t ints() const { return (2 * used * t) + t; }
 };
-// `logits` F32 [experts, t], `x` F32 [width, t], `gate_row` BF16 [width]:
-// I32 [MoeRouterLayout.ints()].
+// `logits` F32 [experts, t], `x` F32 [width, t], `gate_row` BF16 [width]
+// (the ModelOpt checkpoint's) or F32 [width] (a GGUF checkpoint's): I32
+// [MoeRouterLayout.ints()].
 ggml_tensor* MoeRouter(ggml_context* context, ggml_tensor* logits, ggml_tensor* x,
                        ggml_tensor* gate_row, std::int64_t used);
 std::expected<void, KernelFailure> CheckMoeRouter(const ggml_tensor* node);

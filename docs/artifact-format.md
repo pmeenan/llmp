@@ -321,6 +321,38 @@ converter identity is the record. Resources are named as llama.cpp's
   gated norm); A becomes −exp(A_log), and dt_bias and the convolution
   kernels F32.
 
+### Qwen3.8 Flash Next (GGUF)
+
+A GGUF quantization of the same model (unsloth's UD builds,
+ISTA-DASLab's GSQ-RCO and others; llama.cpp's `qwen4exp` tensors) needs no
+importer of its own: `import_m3.py build` takes it through layout.py's
+GGUF path verbatim, as DeepSeek's GGUF. Every tensor keeps its GGML type
+and bytes; each layer's `ffn_{gate,up,down}_exps.weight` is sliced into
+one expert group per expert (rule 2; the down slices' 640-value rows
+reserve GGML's over-read); `per_layer_token_embd.weight` (the 28.8 GB
+n-gram table, IQ4_NL `[160, 320,001,536]` in UD-IQ3_XXS, 90 bytes a row)
+is a row table (rule 3); and the first shard's header is kept as
+`meta/<stem>.kv.gguf` (rule 7). The runtime binds it as Qwen3.8's GGUF
+form (`model/qwen38.h` `Qwen38Format::kGguf`), detected by that table
+being a GGML representation:
+
+| Role | GGUF tensors (UD-IQ3_XXS's types) | What the binding takes |
+| --- | --- | --- |
+| Attention, linear attention, shared expert, PLE projections, mixers | `attn_{q,k,v,output}`, `attn_qkv`, `attn_gate`, `ssm_out`, `ffn_{gate,up,down}_shexp`, `ple_{key,value}`, `hc_*_{down,up}` (Q6_K, Q8_0) | Any GGML type, its shape exact; the graph refuses a type this build's products do not take |
+| Indexer projection | `indexer.q_proj` `[2560, 512]`, `indexer.k_proj` `[2560, 128]` (BF16): llama.cpp's converter splits the checkpoint's fused one | Two linears (the ModelOpt form's fused `indexer.qk_proj` is one) |
+| Router, β/α, HC inject, shared gate | `ffn_gate_inp`, `ssm_{beta,alpha}`, `hc_*_inject`, `ffn_gate_inp_shexp` (F32) | Any type; the shared gate F32 or BF16 |
+| Routed experts | `ffn_{gate,up,down}_exps` expert arrays (IQ2_S gate/up, IQ3_S on one layer, IQ4_NL down) | GGML's layout at the slab's uniform stride, no global scales |
+| Norms, convolutions, recurrence | `*_norm`, `ssm_conv1d`, `ple_conv1d`, `ssm_dt.bias`, `ssm_a` (F32, (1 + w) folded, A = −exp(A_log), value heads tiled) | F32, exactly as the ModelOpt importer writes them (it follows the same converter) |
+| Token table, head | `token_embd`, `output` (Q6_K) | Any type |
+| n-gram table | `per_layer_token_embd` (IQ4_NL) | Q4_0, Q4_1, Q5_0, Q5_1, Q8_0 or IQ4_NL (`jitllm.qrows.get_rows`), F32, F16 or BF16, or a 256-value block type GGML's `get_rows` takes |
+| n-gram hash | **metadata**, not tensors: `qwen4exp.ple.layer_multipliers`, `.head_offsets`, `.head_vocab_sizes` | Read from the kept `.kv.gguf` (`artifact/gguf_metadata.h`, the prototype verifier's `_check_kv_gguf` rules), with every hyperparameter the shapes do not fix checked against the compiled profile |
+
+The kept metadata is the first native reader of a `.kv.gguf`'s values
+beyond the tokenizer, so it applies the rules above (magic, version 3,
+zero tensors, unique non-empty keys, no arrays of arrays, the
+`general.*` and `*.expert_count` types, no trailing bytes) and checks
+every length against the bytes left.
+
 ## Page-in contract
 
 - **Closure.** A resource needs every chunk its `[offset, offset+readable_bytes)`
@@ -629,10 +661,16 @@ the pinned `gguf.cpp` rules: no arrays of arrays, non-empty unique keys, and
 every `*.expert_count` a u32, and every array element type valid even when
 the array is empty. In every kept `.kv.gguf` file, an architecture must equal
 the manifest's, and any `*.expert_count` must be the manifest architecture's
-key with exactly the manifest's count. The native reader (`src/artifact`) does not yet
-parse kept `.kv.gguf` files: it checks only their caps and source
-coverage, so it accepts one these rules refuse, and whatever first reads
-their contents natively must add these checks. Each resource may carry at most 8
+key with exactly the manifest's count. The native artifact reader (`src/artifact/artifact.h`)
+does not parse kept `.kv.gguf` files when it opens an artifact: it checks
+only their caps and source coverage, so it accepts one these rules
+refuse. Their readers apply the rules when they read the contents:
+`artifact/gguf_metadata.h` (a GGUF Qwen3.8 artifact's hash and
+hyperparameters) applies them all but the manifest comparisons, which
+its caller makes for the keys it reads (the architecture `qwen4exp` and
+`qwen4exp.expert_count` the profile's; another architecture's
+`*.expert_count` is only type-checked); the tokenizer's reader
+(`tokenizer/gguf.h`) applies its own subset. Each resource may carry at most 8
 alias roles, and aliases count toward the entry cap. Unkept arrays are skipped without being built.
 Single links are checked for every file in both modes. The prototype's 104 unit
 tests cover each rule with a negative case: the classes found by ten

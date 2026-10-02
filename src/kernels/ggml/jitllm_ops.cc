@@ -64,6 +64,7 @@ void JitllmCustomTag(ggml_tensor* /*dst*/, int /*ith*/, int /*nth*/, void* /*use
 constinit std::array kTagMxfp8MulMatVec = std::to_array("jitllm.mxfp8.mul_mat_vec");
 constinit std::array kTagMxfp8Dequant = std::to_array("jitllm.mxfp8.dequant");
 constinit std::array kTagNvfp4Rows = std::to_array("jitllm.nvfp4.get_rows");
+constinit std::array kTagQRows = std::to_array("jitllm.qrows.get_rows");
 constinit std::array kTagArgmax = std::to_array("jitllm.argmax");
 constinit std::array kTagHcCombine = std::to_array("jitllm.hc.combine");
 constinit std::array kTagHcNorm = std::to_array("jitllm.hc.norm");
@@ -190,6 +191,9 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   }
   if (params.userdata == kTagNvfp4Rows.data()) {
     return JitllmOp::kNvfp4Rows;
+  }
+  if (params.userdata == kTagQRows.data()) {
+    return JitllmOp::kQRows;
   }
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
@@ -323,6 +327,25 @@ ggml_tensor* Nvfp4Rows(ggml_context* context, ggml_tensor* table, ggml_tensor* i
                 kTagNvfp4Rows.data());
 }
 
+bool QRowsType(ggml_type type) {
+  switch (type) {
+    case GGML_TYPE_Q4_0:
+    case GGML_TYPE_Q4_1:
+    case GGML_TYPE_Q5_0:
+    case GGML_TYPE_Q5_1:
+    case GGML_TYPE_Q8_0:
+    case GGML_TYPE_IQ4_NL:
+      return true;
+    default:
+      return false;
+  }
+}
+
+ggml_tensor* QRows(ggml_context* context, ggml_tensor* table, ggml_tensor* ids) {
+  return Custom(context, GGML_TYPE_F32, {table->ne[0], ids->ne[0], 1, 1}, {table, ids},
+                kTagQRows.data());
+}
+
 ggml_tensor* HcCombine(ggml_context* context, ggml_tensor* res, ggml_tensor* out,
                        ggml_tensor* inject) {
   return Custom(context, GGML_TYPE_F32, {res->ne[0], res->ne[1], res->ne[2], 1}, {res, out, inject},
@@ -375,6 +398,12 @@ ggml_tensor* MoeGlu(ggml_context* context, ggml_tensor* gate, ggml_tensor* up, g
 ggml_tensor* MoeCombine(ggml_context* context, ggml_tensor* down, ggml_tensor* ids,
                         ggml_tensor* down_scale, ggml_tensor* weights, ggml_tensor* shared,
                         ggml_tensor* shared_gate) {
+  if (down_scale == nullptr) {
+    // Unscaled (JitllmOpInt(node, 0) == 1): the scale's slot left out.
+    return WithInts(Custom(context, GGML_TYPE_F32, {down->ne[0], down->ne[2], 1, 1},
+                           {down, ids, weights, shared, shared_gate}, kTagMoeCombine.data()),
+                    {1});
+  }
   return Custom(context, GGML_TYPE_F32, {down->ne[0], down->ne[2], 1, 1},
                 {down, ids, down_scale, weights, shared, shared_gate}, kTagMoeCombine.data());
 }
@@ -624,6 +653,38 @@ std::expected<void, KernelFailure> CheckNvfp4Rows(const ggml_tensor* node) {
   return {};
 }
 
+std::expected<void, KernelFailure> CheckQRows(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kQRows, 2); !checked) {
+    return checked;
+  }
+  const ggml_tensor* table = node->src[0];
+  const ggml_tensor* ids = node->src[1];
+  const std::int64_t values = node->ne[0];
+  if (!QRowsType(table->type) || ids->type != GGML_TYPE_I32 || !IsF32(node)) {
+    return Rejected("a table of a 32-value block type and I32 ids into F32");
+  }
+  if (AnyEmpty({table, ids, node}) || !AllSane({table, ids, node}) || !Matrix2d(table) ||
+      !Matrix2d(node) || ggml_nrows(ids) != 1) {
+    return Rejected("a table of rows and one row of ids");
+  }
+  if (values % 32 != 0 || values > 1024 || table->ne[0] != values || node->ne[1] != ids->ne[0]) {
+    return Rejected("rows of a multiple of 32 values (at most 1,024), one a row id");
+  }
+  // Blocks read their scale as a half, or Q4_1's and Q5_1's as a half2.
+  const std::uint64_t block_align =
+      table->type == GGML_TYPE_Q4_1 || table->type == GGML_TYPE_Q5_1 ? 4 : 2;
+  if (!Packed(table) || !Packed(ids) || !Packed(node) || !Aligned(table, block_align) ||
+      !Aligned(ids, 4) || !Aligned(node, 4) || std::cmp_greater(table->ne[1], kInt32Max) ||
+      std::cmp_greater(ids->ne[0], 65535 * 1024LL)) {
+    return Rejected("packed operands within the kernel's grid");
+  }
+  if (!AllCurrent({node, table, ids}) || !Disjoint(node, table, false) ||
+      !Disjoint(node, ids, false)) {
+    return Rejected("a stale view, or an output overlapping an operand");
+  }
+  return {};
+}
+
 namespace {
 
 bool Shaped(const ggml_tensor* t, std::int64_t n0, std::int64_t n1, std::int64_t n2) {
@@ -771,32 +832,41 @@ std::expected<void, KernelFailure> CheckMoeGlu(const ggml_tensor* node) {
 }
 
 std::expected<void, KernelFailure> CheckMoeCombine(const ggml_tensor* node) {
-  if (auto checked = CheckCustom(node, JitllmOp::kMoeCombine, 6); !checked) {
+  // Unscaled (a GGUF checkpoint's experts): the scale's slot left out.
+  const bool unscaled = node != nullptr && JitllmOpInt(node, 0) == 1;
+  if (auto checked = CheckCustom(node, JitllmOp::kMoeCombine, unscaled ? 5 : 6); !checked) {
     return checked;
   }
+  const int at = unscaled ? 2 : 3;  // the weights' slot
   const ggml_tensor* down = node->src[0];
   const ggml_tensor* ids = node->src[1];
-  const ggml_tensor* down_scale = node->src[2];
-  const ggml_tensor* weights = node->src[3];
-  const ggml_tensor* shared = node->src[4];
-  const ggml_tensor* shared_gate = node->src[5];
+  const ggml_tensor* down_scale = unscaled ? nullptr : node->src[2];
+  const ggml_tensor* weights = node->src[at];
+  const ggml_tensor* shared = node->src[at + 1];
+  const ggml_tensor* shared_gate = node->src[at + 2];
   const std::int64_t width = down->ne[0];
   const std::int64_t used = down->ne[1];
   const std::int64_t t = down->ne[2];
-  const std::int64_t experts = down_scale->ne[0];
+  if (down_scale != nullptr &&
+      (!Vector(down_scale, down_scale->ne[0]) || std::cmp_greater(down_scale->ne[0], kInt32Max) ||
+       !Aligned(down_scale, sizeof(float)))) {
+    return Rejected("aligned F32 scales [experts]");
+  }
   if (!IsF32(node) || !IsF32(down) || down->ne[3] != 1 || !ExpertIds(ids, used, t) ||
-      !Vector(down_scale, experts) || std::cmp_greater(experts, kInt32Max) || !IsF32(weights) ||
-      !Shaped(weights, 1, used, t) || !IsF32(shared) || !Shaped(shared, width, t, 1) ||
-      !IsF32(shared_gate) || !Shaped(shared_gate, 1, t, 1) || !Shaped(node, width, t, 1)) {
+      !IsF32(weights) || !Shaped(weights, 1, used, t) || !IsF32(shared) ||
+      !Shaped(shared, width, t, 1) || !IsF32(shared_gate) || !Shaped(shared_gate, 1, t, 1) ||
+      !Shaped(node, width, t, 1)) {
     return Rejected(
-        "F32 products [width, used, t], ids [used, t], scales [experts], weights [1, used, t], "
-        "a shared product [width, t] and its gate [1, t]");
+        "F32 products [width, used, t], ids [used, t], weights [1, used, t], a shared product "
+        "[width, t] and its gate [1, t]");
   }
   if (width % 4 != 0 || !Aligned(node, 16) || !Aligned(down, 16) || !Aligned(shared, 16) ||
-      !Aligned(down_scale, sizeof(float)) || !Aligned(weights, sizeof(float)) ||
-      !Aligned(shared_gate, sizeof(float)) ||
+      !Aligned(weights, sizeof(float)) || !Aligned(shared_gate, sizeof(float)) ||
       std::cmp_greater(ggml_nelements(node) / 4, kInt32Max)) {
     return Rejected("rows of whole float4s, 16-byte aligned, within the kernel's grid");
+  }
+  if (down_scale == nullptr) {
+    return CheckDense(node, {down, weights, shared, shared_gate}, ids);
   }
   return CheckDense(node, {down, down_scale, weights, shared, shared_gate}, ids);
 }
@@ -1794,13 +1864,15 @@ std::expected<void, KernelFailure> CheckMoeRouter(const ggml_tensor* node) {
       std::cmp_greater(layout.ints(), kInt32Max)) {
     return Rejected("32 to 1,024 experts (whole warps), at most 32 used, whole float4 rows");
   }
+  // The gate row's four values a load: 8 bytes in BF16, 16 in F32.
+  const bool bf16_gate = gate_row->type == GGML_TYPE_BF16;
   if (!IsF32(logits) || !Shaped(logits, experts, t, 1) || !IsF32(x) || !Shaped(x, width, t, 1) ||
-      gate_row->type != GGML_TYPE_BF16 || ggml_nelements(gate_row) != width || !Aligned(x, 16) ||
-      !Aligned(gate_row, 8) || !Aligned(logits, sizeof(float)) || node->type != GGML_TYPE_I32 ||
-      !Shaped(node, layout.ints(), 1, 1) || !Aligned(node, 16)) {
+      (!bf16_gate && !IsF32(gate_row)) || ggml_nelements(gate_row) != width || !Aligned(x, 16) ||
+      !Aligned(gate_row, bf16_gate ? 8 : 16) || !Aligned(logits, sizeof(float)) ||
+      node->type != GGML_TYPE_I32 || !Shaped(node, layout.ints(), 1, 1) || !Aligned(node, 16)) {
     return Rejected(
-        "F32 logits [experts, t] and x [width, t], a BF16 gate row [width], into the routing's "
-        "I32 blob");
+        "F32 logits [experts, t] and x [width, t], a BF16 or F32 gate row [width], into the "
+        "routing's I32 blob");
   }
   return CheckDense(node, {logits, x, gate_row});
 }
@@ -1860,6 +1932,12 @@ bool VecQType(ggml_type type) {
     case GGML_TYPE_Q6_K:
     case GGML_TYPE_IQ2_XS:
     case GGML_TYPE_IQ3_XXS:
+    // Qwen3.8's GGUF quantizations' (the kernel's generic per-token path).
+    case GGML_TYPE_Q3_K:
+    case GGML_TYPE_IQ2_S:
+    case GGML_TYPE_IQ3_S:
+    case GGML_TYPE_IQ4_NL:
+    case GGML_TYPE_IQ4_XS:
       return true;
     default:
       return false;

@@ -40,9 +40,11 @@ using detail::Product;
 using detail::Rejected;
 using detail::Span;
 
-constexpr std::array<ggml_type, 10> kQuantizedWeightTypes = {
-    GGML_TYPE_Q8_0,    GGML_TYPE_Q4_K,  GGML_TYPE_Q5_K,  GGML_TYPE_Q6_K, GGML_TYPE_IQ2_XS,
-    GGML_TYPE_IQ3_XXS, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4, GGML_TYPE_Q2_K, GGML_TYPE_IQ2_XXS,
+constexpr std::array<ggml_type, 18> kQuantizedWeightTypes = {
+    GGML_TYPE_Q8_0,    GGML_TYPE_Q4_K,   GGML_TYPE_Q5_K,   GGML_TYPE_Q6_K,  GGML_TYPE_IQ2_XS,
+    GGML_TYPE_IQ3_XXS, GGML_TYPE_MXFP4,  GGML_TYPE_NVFP4,  GGML_TYPE_Q2_K,  GGML_TYPE_IQ2_XXS,
+    GGML_TYPE_Q4_0,    GGML_TYPE_Q2_0,   GGML_TYPE_Q3_K,   GGML_TYPE_IQ1_S, GGML_TYPE_IQ2_S,
+    GGML_TYPE_IQ3_S,   GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS,
 };
 
 // MarkRowPaddingReadable's bit: above every GGML_TENSOR_FLAG_* (ggml.h).
@@ -824,7 +826,9 @@ std::expected<void, KernelFailure> CheckGetRowsExt(const ggml_tensor* node) {
   }
   const ggml_tensor* rows = node->src[0];
   const ggml_tensor* ids = node->src[1];
-  const bool quantized = IsQuantizedWeightType(rows->type);
+  // getrows.cu's type switch has no NVFP4 case (it aborts), so NVFP4 rows
+  // are refused here rather than at launch.
+  const bool quantized = IsQuantizedWeightType(rows->type) && rows->type != GGML_TYPE_NVFP4;
   const bool integers = rows->type == GGML_TYPE_I32 && node->type == GGML_TYPE_I32;
   if ((!quantized || !IsF32(node)) && !integers) {
     return Rejected("get_rows of quantized rows into F32, or of I32 rows into I32");

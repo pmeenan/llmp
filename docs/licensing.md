@@ -118,7 +118,13 @@ without its code) are Apache-2.0 only. The M3 widening compiles more of the kept
 tree (the lock's `license.scope` lists it); every added file is under the
 root MIT license with no header of its own (checked 2026-09-28; the NVFP4
 MMQ instance unit Qwen3.8 added, `template-instances/mmq-instance-nvfp4.cu`,
-likewise, checked the same day). Upstream's
+likewise, checked the same day; and the eight Qwen3.8's GGUF
+quantizations added, `mmq-instance-{q4_0,q2_0,q3_k,iq1_s,iq2_s,iq3_s,iq4_nl,iq4_xs}.cu`,
+each upstream's generated one-line `DECL_MMQ_CASE` unit with no header of
+its own, checked 2026-10-02). jitLLM's GGUF n-gram row lookup
+(`jitllm_ops.cu` `QRowsKernel`) calls GGML's `dequantize.cuh` functions
+and reads its `kvalues_iq4nl` table through the include, copying neither.
+Upstream's
 `argsort.cu` and `top-k.cu` would include CUB directly, and jitLLM's patch
 builds them without it (bitonic argsort; top-k's radix select, upstream's
 HIP path). D-080 cleared libcu++ only. CUB's own headers in the SDK's

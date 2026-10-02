@@ -75,10 +75,10 @@ index 0000000..38f64d9
 +  endforeach()
 +  # The quantized matrix products' tile kernels (MMQ), one instance unit per
 +  # weight type: only the types of the models jitLLM runs (DeepSeek V4 Flash's
-+  # GGUF, Qwen3.8's NVFP4 experts). mmq.cu's type switch has a case for these
-+  # (patches/ggml/0001, GGML_JITLLM_MMQ_<type>); MMVQ's vector kernels
-+  # (mmvq.cu) instantiate every type in their own unit.
-+  set(mmq_types q8_0 q2_k q4_k q5_k q6_k iq2_xxs iq2_xs iq3_xxs mxfp4 nvfp4)
++  # and Qwen3.8's GGUF quantizations, Qwen3.8's NVFP4 experts). mmq.cu's type
++  # switch has a case for these (patches/ggml/0001, GGML_JITLLM_MMQ_<type>);
++  # MMVQ's vector kernels (mmvq.cu) instantiate every type in their own unit.
++  set(mmq_types q8_0 q2_k q4_k q5_k q6_k iq2_xxs iq2_xs iq3_xxs mxfp4 nvfp4 q4_0 q2_0 q3_k iq1_s iq2_s iq3_s iq4_nl iq4_xs)
 +  set(mmq_definitions "")
 +  foreach(type IN LISTS mmq_types)
 +    list(APPEND instances "${cuda}/template-instances/mmq-instance-${type}.cu")

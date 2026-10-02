@@ -6,7 +6,7 @@
 # the groups, chunks, placements and direct-read plans of a validated
 # artifact. The model layer (docs/architecture.md#layers-and-dependency-rules):
 # it needs only base and platform, and no vendor SDK.
-add_library(jitllm_artifact STATIC artifact.cc composition.cc error.cc json.cc layout.cc
-                                   representation.cc)
+add_library(jitllm_artifact STATIC artifact.cc composition.cc error.cc gguf_metadata.cc json.cc
+                                   layout.cc representation.cc)
 target_include_directories(jitllm_artifact PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_artifact PUBLIC jitllm_base PRIVATE jitllm_platform jitllm_warnings)

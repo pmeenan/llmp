@@ -31,8 +31,12 @@ namespace jitllm::kernels::ggml {
 
 // The quantized weight types whose matrix-product kernels this build
 // compiles (third_party/patches/ggml/0002's MMQ instance units): DeepSeek V4
-// Flash UD-Q2_K_XL's Q8_0, Q4_K, Q5_K, Q6_K, IQ2_XS, IQ3_XXS and MXFP4, and
-// Qwen3.8 Flash's NVFP4 experts.
+// Flash UD-Q2_K_XL's Q8_0, Q4_K, Q5_K, Q6_K, IQ2_XS, IQ3_XXS and MXFP4,
+// antirez's IQ2_XXS and Q2_K, Qwen3.8 Flash's NVFP4 experts, and the other
+// types unsloth's and ISTA-DASLab's Qwen3.8 GGUF quantizations mix (Q4_0,
+// Q2_0, Q3_K, IQ1_S, IQ2_S, IQ3_S, IQ4_NL, IQ4_XS). IQ1_M has no tile
+// kernel upstream, so it is not here: its products are refused (Qwen3.8's
+// GGUF graph refuses an IQ1_M matrix or expert array when it is built).
 std::span<const ggml_type> QuantizedWeightTypes();
 bool IsQuantizedWeightType(ggml_type type);
 

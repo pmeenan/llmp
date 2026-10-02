@@ -65,6 +65,17 @@ constexpr __device__ VecDot DotOf(ggml_type type) {
       return vec_dot_iq2_xs_q8_1;
     case GGML_TYPE_IQ3_XXS:
       return vec_dot_iq3_xxs_q8_1;
+    // Qwen3.8's GGUF quantizations' (the generic per-token path).
+    case GGML_TYPE_Q3_K:
+      return vec_dot_q3_K_q8_1;
+    case GGML_TYPE_IQ2_S:
+      return vec_dot_iq2_s_q8_1;
+    case GGML_TYPE_IQ3_S:
+      return vec_dot_iq3_s_q8_1;
+    case GGML_TYPE_IQ4_NL:
+      return vec_dot_iq4_nl_q8_1;
+    case GGML_TYPE_IQ4_XS:
+      return vec_dot_iq4_xs_q8_1;
     default:
       return nullptr;
   }
@@ -90,6 +101,16 @@ constexpr __host__ __device__ int VdrOf(ggml_type type) {
       return VDR_IQ2_XS_Q8_1_MMVQ;
     case GGML_TYPE_IQ3_XXS:
       return VDR_IQ3_XXS_Q8_1_MMVQ;
+    case GGML_TYPE_Q3_K:
+      return VDR_Q3_K_Q8_1_MMVQ;
+    case GGML_TYPE_IQ2_S:
+      return VDR_IQ2_S_Q8_1_MMVQ;
+    case GGML_TYPE_IQ3_S:
+      return VDR_IQ3_S_Q8_1_MMVQ;
+    case GGML_TYPE_IQ4_NL:
+      return VDR_IQ4_NL_Q8_1_MMVQ;
+    case GGML_TYPE_IQ4_XS:
+      return VDR_IQ4_XS_Q8_1_MMVQ;
     default:
       return 1;
   }
@@ -565,6 +586,16 @@ int LanesPerRowOf(ggml_type type, int k) {
       return LanesPerRow<GGML_TYPE_IQ2_XS>(k);
     case GGML_TYPE_IQ3_XXS:
       return LanesPerRow<GGML_TYPE_IQ3_XXS>(k);
+    case GGML_TYPE_Q3_K:
+      return LanesPerRow<GGML_TYPE_Q3_K>(k);
+    case GGML_TYPE_IQ2_S:
+      return LanesPerRow<GGML_TYPE_IQ2_S>(k);
+    case GGML_TYPE_IQ3_S:
+      return LanesPerRow<GGML_TYPE_IQ3_S>(k);
+    case GGML_TYPE_IQ4_NL:
+      return LanesPerRow<GGML_TYPE_IQ4_NL>(k);
+    case GGML_TYPE_IQ4_XS:
+      return LanesPerRow<GGML_TYPE_IQ4_XS>(k);
     default:
       return 0;
   }
@@ -577,6 +608,24 @@ int LanesPerRowOf(ggml_type type, int k) {
 // Dense products: see below.
 int DefaultVariant(ggml_type type, const VecQDesc& d) {
   const bool even = d.nrows % 2 == 0;
+  // Qwen3.8's GGUF shapes at decode (vecq_bench's "qwen" cases on the GB10,
+  // docs/experiments/qwen38-gguf/): its routed experts' types, gate and up
+  // one row a block (r1 w4), down two rows a warp; and dense rows shorter
+  // than one 128-lane pass and not whole 256-value steps (its mixers' 320-
+  // and shared expert's 640-value rows; no DeepSeek product's) four rows a
+  // block.
+  if (d.tokens == 1) {
+    const bool gguf_type = type == GGML_TYPE_IQ2_S || type == GGML_TYPE_IQ3_S ||
+                           type == GGML_TYPE_IQ4_NL || type == GGML_TYPE_IQ4_XS ||
+                           type == GGML_TYPE_Q3_K;
+    if (d.ids != nullptr && gguf_type) {
+      return d.g != nullptr || !even ? 0 : 4;
+    }
+    if (d.ids == nullptr && d.ncols_x % 256 != 0 && LanesPerRowOf(type, d.ncols_x) < 128 &&
+        d.nrows % 4 == 0) {
+      return 10;
+    }
+  }
   if (d.ids != nullptr) {
     if (!even) {
       return 0;
@@ -655,6 +704,21 @@ bool LaunchVecQ(ggml_type type, const VecQDesc& d, int variant, cudaStream_t str
       break;
     case GGML_TYPE_IQ3_XXS:
       LaunchVariant<GGML_TYPE_IQ3_XXS>(d, variant, stream);
+      break;
+    case GGML_TYPE_Q3_K:
+      LaunchVariant<GGML_TYPE_Q3_K>(d, variant, stream);
+      break;
+    case GGML_TYPE_IQ2_S:
+      LaunchVariant<GGML_TYPE_IQ2_S>(d, variant, stream);
+      break;
+    case GGML_TYPE_IQ3_S:
+      LaunchVariant<GGML_TYPE_IQ3_S>(d, variant, stream);
+      break;
+    case GGML_TYPE_IQ4_NL:
+      LaunchVariant<GGML_TYPE_IQ4_NL>(d, variant, stream);
+      break;
+    case GGML_TYPE_IQ4_XS:
+      LaunchVariant<GGML_TYPE_IQ4_XS>(d, variant, stream);
       break;
     default:
       return false;

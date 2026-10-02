@@ -37,6 +37,7 @@ no model is there yet, so measured speeds are given as headlines only.
 | [DSpark](#dspark) for DeepSeek V4 Flash 0731 (Q8_0) | drafter | Served (M3), with its target | paged-correct |
 | [Qwen3.8 Flash Next](#qwen38-flash-next) NVFP4 | target | Served (M3) | paged-correct, one accepted greedy divergence (below) |
 | [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
+| [Qwen3.8 Flash Next GGUF](#qwen38-flash-next-gguf) UD-IQ3_XXS | target | Served (runtime registers it; not in the swap table) | resident-correct against llama.cpp on the same GGUF; paged through the runtime |
 | [Qwen-Image-2.1](#qwen-image-21) BF16 | composition of 3 components | Served (M3), one prompt a process | paged-correct |
 | [Qwen2.5-0.5B-Instruct FP16](#m2-fixtures) | fixture | Fixture | paged-correct |
 | [Qwen2.5-0.5B-Instruct EXL3](#m2-fixtures) 4.0 and 4.5 bpw | fixtures | Fixture | paged-correct |
@@ -305,6 +306,44 @@ seeded-sampling evidence in this study.
     vLLM does.
   - The CUTLASS grouped GEMM and MXFP8 GEMM are built for `sm_121a` only:
     elsewhere this artifact's prefill is refused.
+
+## Qwen3.8 Flash Next GGUF
+
+- **Architecture:** `qwen4exp` (`model/qwen38.h` `Qwen38Format::kGguf`),
+  the same model as [above](#qwen38-flash-next) from a GGUF checkpoint.
+- **Checkpoint:** `unsloth/Qwen3.8-Flash-Next-GGUF@38bb39ee`, UD-IQ3_XXS
+  (pins.json id `qwen3.8-flash-next-gguf-ud-iq3xxs`): IQ2_S gate/up
+  experts (IQ3_S on one layer), IQ4_NL down experts and n-gram table,
+  Q6_K and Q8_0 matrices, BF16 indexer projections, F32 norms and routers.
+- **Artifact:** v0 `5356b5b0…`, imported verbatim by `import_m3.py build`
+  ([artifact-format](artifact-format.md#qwen38-flash-next-gguf)); the
+  n-gram hash and the hyperparameters come from its kept GGUF metadata,
+  checked against the profile.
+- **Other quantizations:** the binding takes any GGML type; the graph
+  refuses one this build's products do not take. Matrix products cover
+  Q8_0, Q4_0, Q2_0, the K-quants Q2_K–Q6_K, IQ1_S, IQ2_XXS/XS/S,
+  IQ3_XXS/S, IQ4_NL/XS, MXFP4 and NVFP4 (MMVQ and MMQ); the n-gram table
+  Q4_0, Q4_1, Q5_0, Q5_1, Q8_0 or IQ4_NL. Only UD-IQ3_XXS has been run.
+  IQ1_M (in unsloth's UD-IQ1 builds) has no tile kernel upstream, so a
+  checkpoint with IQ1_M matrices or experts is refused when it is set up;
+  ISTA-DASLab's GSQ-RCO Q2_0 builds are untested.
+- **Components:** the target alone; speculation (its MTP GGUF) is not
+  built.
+- **Template and tokenizer:** the configuration names the NVFP4
+  checkpoint's `tokenizer.json` and `chat_template.jinja` (the same
+  vocabulary; the GGUF's own template is not registered).
+- **Decoding:** plain only; greedy checked (the runtime's sampler is the
+  NVFP4 model's, not checked on this artifact).
+- **Verified** (on `spark-b`,
+  [qwen38-gguf](experiments/qwen38-gguf/README.md)): against llama.cpp
+  b11254 on the same GGUF, teacher-forced greedy 188 of 192 steps equal
+  and the rest near-ties, perplexity −0.23% from the unfused arm's, the
+  resident expert layout bit for bit; served through `jitllm-runtime`
+  (n-gram rows from the SSD).
+- **Speed headline** (C1, through the runtime and `llama-server`, the same
+  requests): 8K prefill 1,118 tok/s against 676 (1.65×; `llama-bench`
+  768), decode 33.8 against 31.2 tok/s (1.08×); first token after start
+  6.3 s against 68.7 s; peak memory 56.9 against 80.1 GiB.
 
 ## Qwen3.8 MTP
 

@@ -483,6 +483,39 @@ TEST_F(Qwen38FusedTest, ExpertCombineIsTheUnfusedNodes) {
   }
 }
 
+// Experts without global scales (a GGUF checkpoint's): the combine's
+// unscaled form is GGML's unfused nodes without the scale's product, bit
+// for bit.
+TEST_F(Qwen38FusedTest, UnscaledExpertCombineIsTheUnfusedNodes) {
+  constexpr std::int64_t kUsed = 10;
+  for (const std::int64_t t : {1, 7, 33}) {
+    const auto down_h = Normal(24, static_cast<std::size_t>(kWidth * kUsed * t), 2.0f);
+    std::vector<float> w_h = Normal(25, static_cast<std::size_t>(kUsed * t), 0.05f, 0.1f);
+    for (float& v : w_h) {
+      v = std::abs(v);
+    }
+    const auto sh_h = Normal(26, static_cast<std::size_t>(kWidth * t), 0.3f);
+    const auto sg_h = Normal(27, static_cast<std::size_t>(t), 2.0f);
+    ggml_tensor* down = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kWidth, kUsed, t), down_h);
+    ggml_tensor* weights = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 1, kUsed, t), w_h);
+    ggml_tensor* sh = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, t), sh_h);
+    ggml_tensor* sg = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 1, t), sg_h);
+    ggml_tensor* ids = Ids(kUsed, t, 28);
+    ggml_tensor* e = ggml_mul(c(), down, weights);
+    ggml_tensor* unfused = ggml_view_2d(c(), e, kWidth, t, e->nb[2], 0);
+    for (std::int64_t j = 1; j < kUsed; ++j) {
+      unfused = ggml_add(
+          c(), unfused,
+          ggml_view_2d(c(), e, kWidth, t, e->nb[2], static_cast<std::size_t>(j) * e->nb[1]));
+    }
+    unfused = ggml_add(c(), unfused, ggml_mul(c(), sh, ggml_sigmoid(c(), sg)));
+    ggml_tensor* fused = kg::MoeCombine(c(), down, ids, nullptr, weights, sh, sg);
+    Run({unfused, fused});
+    EXPECT_EQ(PlannedFor(fused), kg::kMoeCombineName);
+    ExpectSame(Download(fused), Download(unfused), "unscaled combine t " + std::to_string(t));
+  }
+}
+
 // The BF16 product over activations converted once is GGML's cuBLAS
 // product over the F32 activations, at the mixer's and the router's shapes.
 TEST_F(Qwen38FusedTest, Bf16ProductIsGgmlsCublasProduct) {

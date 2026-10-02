@@ -653,6 +653,12 @@ add_dependencies(artifact_test artifact_corpus)
 jitllm_gtest(artifact_test TEST_PREFIX unit. WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
              PROPERTIES LABELS unit ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# The kept GGUF metadata reader (artifact/gguf_metadata.h): values and each
+# refusal on headers built in the test.
+add_executable(gguf_metadata_test gguf_metadata_test.cc)
+target_link_libraries(gguf_metadata_test PRIVATE jitllm_artifact)
+jitllm_gtest(gguf_metadata_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The composition reader (D-089): each rule of the prototype's
 # verify_composition on compositions built here, and the installed
 # Qwen-Image-2.1 composition where the M3 store holds it (a Spark).

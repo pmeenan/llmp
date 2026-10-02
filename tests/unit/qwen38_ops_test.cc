@@ -8,7 +8,8 @@
 //   for float products (NMSE 1e-7: its F32 block sums differ only in order);
 //   and its BF16 dequantization, exactly;
 // - the n-gram table's NVFP4 row lookup, exactly, and NaN for an id outside
-//   the table;
+//   the table; and a GGUF checkpoint's (IQ4_NL and the other 32-value block
+//   types), GGML's CPU dequantization bit for bit;
 // - GGML's NVFP4 expert products (mul_mat_id) over weights in ModelOpt's
 //   layout repacked here into GGML's blocks (independently of the importer),
 //   at the model's shapes, the down projection's 640-element rows with the
@@ -411,6 +412,60 @@ TEST_F(Qwen38OpsTest, Nvfp4TableRowsDequantizeExactly) {
       ASSERT_EQ(v, want) << "id " << ids[i] << " value " << j;
     }
   }
+}
+
+// A GGUF checkpoint's n-gram table (160-value rows of a 32-value block
+// type, IQ4_NL in unsloth's): every value GGML's own CPU dequantization
+// gives it (ggml-quants.c, the type traits' to_float), bit for bit, at
+// ids in and outside the table; and a type or row the lookup does not
+// take refused.
+TEST_F(Qwen38OpsTest, GgufTableRowsAreGgmlsDequantization) {
+  constexpr std::int64_t kValues = 160;
+  constexpr std::int64_t kRows = 37;
+  const std::vector<std::int32_t> ids = {0, 36, 5, 5, 17, 37, -1};  // the last two are outside
+  for (const ggml_type type : {GGML_TYPE_IQ4_NL, GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_Q4_1,
+                               GGML_TYPE_Q5_0, GGML_TYPE_Q5_1}) {
+    std::mt19937 random(11);  // NOLINT(bugprone-random-generator-seed): reproducible
+    std::normal_distribution<float> normal(0.0f, 0.02f);
+    std::vector<float> source(static_cast<std::size_t>(kValues * kRows));
+    for (float& v : source) {
+      v = normal(random);
+    }
+    const std::size_t row_bytes = ggml_row_size(type, kValues);
+    std::vector<std::uint8_t> table(row_bytes * kRows);
+    ASSERT_EQ(ggml_quantize_chunk(type, source.data(), table.data(), 0, kRows, kValues, nullptr),
+              table.size());
+    ggml_tensor* t = Place(ggml_new_tensor_2d(c(), type, kValues, kRows), table);
+    ggml_tensor* id =
+        Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, static_cast<std::int64_t>(ids.size())), ids);
+    ggml_tensor* out = Place(kg::QRows(c(), t, id));
+    ASSERT_TRUE(kg::RunQRows(launch(), out).has_value()) << ggml_type_name(type);
+    const std::vector<float> got = Download(out);
+    std::vector<float> want(static_cast<std::size_t>(kValues));
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      const bool inside = ids[i] >= 0 && ids[i] < kRows;
+      if (inside) {
+        ggml_get_type_traits(type)->to_float(
+            table.data() + (static_cast<std::size_t>(ids[i]) * row_bytes), want.data(), kValues);
+      }
+      for (std::size_t j = 0; j < static_cast<std::size_t>(kValues); ++j) {
+        const float v = got[(i * kValues) + j];
+        if (!inside) {
+          EXPECT_TRUE(std::isnan(v)) << ggml_type_name(type) << " " << j;
+          continue;
+        }
+        ASSERT_EQ(v, want[j]) << ggml_type_name(type) << " id " << ids[i] << " value " << j;
+      }
+    }
+  }
+  // A k-quant table (no 32-value blocks), and rows of 48 values: refused.
+  ggml_tensor* k_quant = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q4_K, 256, 4));
+  ggml_tensor* id = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 2));
+  EXPECT_EQ(FailedCode(kg::RunQRows(launch(), Place(kg::QRows(c(), k_quant, id)))),
+            KernelError::kRejected);
+  ggml_tensor* short_rows = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q8_0, 48, 4));
+  EXPECT_EQ(FailedCode(kg::RunQRows(launch(), Place(kg::QRows(c(), short_rows, id)))),
+            KernelError::kRejected);
 }
 
 // ModelOpt NVFP4 [n, k] into GGML's block_nvfp4 rows (the importer's

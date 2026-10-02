@@ -208,6 +208,7 @@ inline constexpr std::string_view kGatedDeltaNetName = "ggml.gated_delta_net";
 inline constexpr std::string_view kMxfp8MulMatVecName = "jitllm.mxfp8.mul_mat_vec";
 inline constexpr std::string_view kMxfp8DequantName = "jitllm.mxfp8.dequant";
 inline constexpr std::string_view kNvfp4RowsName = "jitllm.nvfp4.get_rows";
+inline constexpr std::string_view kQRowsName = "jitllm.qrows.get_rows";
 inline constexpr std::string_view kHcCombineName = "jitllm.hc.combine";
 inline constexpr std::string_view kHcNormName = "jitllm.hc.norm";
 inline constexpr std::string_view kHcMixName = "jitllm.hc.mix";

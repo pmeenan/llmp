@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "artifact/artifact.h"
+#include "artifact/gguf_metadata.h"
 #include "artifact/representation.h"
 #include "model/state.h"
 
@@ -75,6 +76,9 @@ struct Want {
   std::vector<std::uint64_t> ne;
   bool expert_array = false;
   Qwen38Tensor* into = nullptr;
+  // A GGUF checkpoint's matrix: a GGML representation of any type (`type`
+  // unread).
+  bool any = false;
 };
 
 // The wants' builders.
@@ -110,6 +114,18 @@ class Wants {
                      .ne = std::move(ne),
                      .expert_array = true,
                      .into = into});
+  }
+  // A GGUF checkpoint's GGML matrix or expert array of the checkpoint's
+  // type.
+  void Any(std::string role, std::vector<std::uint64_t> ne, Qwen38Tensor* into,
+           bool expert_array = false) {
+    want_.push_back({.role = std::move(role),
+                     .plain = false,
+                     .type = {},
+                     .ne = std::move(ne),
+                     .expert_array = expert_array,
+                     .into = into,
+                     .any = true});
   }
 
  private:
@@ -193,6 +209,66 @@ void AddLayer(Wants& w, const Qwen38Profile& p, const std::string& n, std::uint3
   }
 }
 
+// One layer's wants in a GGUF checkpoint's artifact (llama.cpp's qwen4exp
+// tensors, as its converter writes them, conversion/qwen4exp.py at b11254):
+// every matrix of the checkpoint's type, the norms, the convolutions and
+// the recurrence's parameters F32, the indexer's projection split, the
+// routed experts in GGML's layout without scales, and no hash tensors.
+void AddGgufLayer(Wants& w, const Qwen38Profile& p, const std::string& n, std::uint32_t il,
+                  Qwen38Layer& l) {
+  const std::uint64_t width = p.width;
+  const std::uint64_t hd = p.head_dim;
+  l.linear = p.linear(il);
+  for (const auto& [kind, norm, down, up, inject] :
+       {std::tuple{"attn", &l.hc_attn_norm, &l.hc_attn_down, &l.hc_attn_up, &l.hc_attn_inject},
+        std::tuple{"ffn", &l.hc_ffn_norm, &l.hc_ffn_down, &l.hc_ffn_up, &l.hc_ffn_inject}}) {
+    w.Ggml(std::format("{}hc_{}_norm.weight", n, kind), "F32", {p.hc_width()}, norm);
+    w.Any(std::format("{}hc_{}_down.weight", n, kind), {p.hc_width(), p.hc_rank}, down);
+    w.Any(std::format("{}hc_{}_up.weight", n, kind), {p.hc_rank, p.hc_width()}, up);
+    w.Any(std::format("{}hc_{}_inject.weight", n, kind), {p.hc_width(), p.hc}, inject);
+  }
+  if (l.linear) {
+    w.Any(n + "attn_qkv.weight", {width, p.conv_channels()}, &l.qkv.matrix);
+    w.Any(n + "attn_gate.weight", {width, p.lin_v_width()}, &l.z.matrix);
+    w.Any(n + "ssm_beta.weight", {width, p.lin_v_heads}, &l.beta.matrix);
+    w.Any(n + "ssm_alpha.weight", {width, p.lin_v_heads}, &l.alpha.matrix);
+    w.Ggml(n + "ssm_dt.bias", "F32", {p.lin_v_heads}, &l.dt_bias);
+    w.Ggml(n + "ssm_a", "F32", {p.lin_v_heads}, &l.ssm_a);
+    w.Ggml(n + "ssm_conv1d.weight", "F32", {p.conv, p.conv_channels()}, &l.conv1d);
+    w.Ggml(n + "ssm_norm.weight", "F32", {p.lin_head_dim}, &l.ssm_norm);
+    w.Any(n + "ssm_out.weight", {p.lin_v_width(), width}, &l.ssm_out.matrix);
+  } else {
+    w.Any(n + "attn_q.weight", {width, 2 * hd * p.heads}, &l.q.matrix);
+    w.Any(n + "attn_k.weight", {width, hd * p.kv_heads}, &l.k.matrix);
+    w.Any(n + "attn_v.weight", {width, hd * p.kv_heads}, &l.v.matrix);
+    w.Any(n + "attn_output.weight", {hd * p.heads, width}, &l.o.matrix);
+    w.Ggml(n + "attn_q_norm.weight", "F32", {hd}, &l.q_norm);
+    w.Ggml(n + "attn_k_norm.weight", "F32", {hd}, &l.k_norm);
+    w.Any(n + "indexer.q_proj.weight", {width, std::uint64_t{p.indexer_heads} * p.indexer_head_dim},
+          &l.idx_q.matrix);
+    w.Any(n + "indexer.k_proj.weight", {width, p.indexer_head_dim}, &l.idx_k.matrix);
+    w.Ggml(n + "indexer.q_norm.weight", "F32", {p.indexer_head_dim}, &l.idx_q_norm);
+    w.Ggml(n + "indexer.k_norm.weight", "F32", {p.indexer_head_dim}, &l.idx_k_norm);
+  }
+  if (il == p.ple_layer) {
+    w.Any(n + "ple_key.weight", {p.ple_width(), p.hc_width()}, &l.ple_key);
+    w.Any(n + "ple_value.weight", {p.ple_width(), width}, &l.ple_value);
+    w.Ggml(n + "ple_norm_key.weight", "F32", {p.hc_width()}, &l.ple_norm_key);
+    w.Ggml(n + "ple_norm_query.weight", "F32", {p.hc_width()}, &l.ple_norm_query);
+    w.Ggml(n + "ple_norm_conv.weight", "F32", {p.hc_width()}, &l.ple_norm_conv);
+    w.Ggml(n + "ple_conv1d.weight", "F32", {p.ple_conv, p.hc_width()}, &l.ple_conv1d);
+  }
+  w.Any(n + "ffn_gate_inp.weight", {width, p.experts}, &l.router);
+  w.Any(n + "ffn_gate_inp_shexp.weight", {width}, &l.shared_gate);
+  w.Any(n + "ffn_gate_shexp.weight", {width, p.shared_ffn}, &l.gate_shexp.matrix);
+  w.Any(n + "ffn_up_shexp.weight", {width, p.shared_ffn}, &l.up_shexp.matrix);
+  w.Any(n + "ffn_down_shexp.weight", {p.shared_ffn, width}, &l.down_shexp.matrix);
+  const std::uint64_t f = p.expert_ffn;
+  w.Any(n + "ffn_gate_exps.weight", {width, f}, &l.gate_exps, true);
+  w.Any(n + "ffn_up_exps.weight", {width, f}, &l.up_exps, true);
+  w.Any(n + "ffn_down_exps.weight", {f, width}, &l.down_exps, true);
+}
+
 // Binds every want to the resource of its role, which must have its
 // representation, type and shape exactly; refused, naming the tensor, if
 // one is missing or differs, or if the artifact binds a role no want reads.
@@ -234,10 +310,10 @@ std::expected<void, std::string> Match(const Qwen38Profile& p, std::span<const W
         std::ranges::equal(r.ne, x.ne, [](std::uint64_t got, std::uint64_t want_ne) {
           return want_ne == 0 ? got > 0 : got == want_ne;
         });
-    if (r.plain != x.plain || r.type != x.type || !shape_fits) {
+    if (r.plain != x.plain || (!x.any && r.type != x.type) || r.type.empty() || !shape_fits) {
       return Refused(std::format("{} is {} {} {}, not {} {} {}", x.role, r.plain ? "plain" : "GGML",
-                                 r.type, Shape(r.ne), x.plain ? "plain" : "GGML", x.type,
-                                 Shape(x.ne)));
+                                 r.type, Shape(r.ne), x.plain ? "plain" : "GGML",
+                                 x.any ? "of any type" : x.type, Shape(x.ne)));
     }
     *x.into = {.index = found->second,
                .plain = r.plain,
@@ -281,7 +357,8 @@ std::expected<std::vector<Qwen38Resource>, std::string> ResourcesOf(
     all.push_back({.roles = resource.roles,
                    .plain = plain,
                    .type = std::string(resource.repr.type),
-                   .ne = std::move(ne)});
+                   .ne = std::move(ne),
+                   .readable = resource.readable.value()});
   }
   first_array = all.size();
   for (const artifact::ExpertArray& array : artifact.expert_arrays()) {
@@ -370,15 +447,40 @@ std::expected<Qwen38Binding, std::string> BindQwen38(const Qwen38Profile& p,
   }
   Qwen38Binding b;
   b.layers.resize(p.layers);
+  const std::uint64_t w = p.width;
+  std::vector<Want> want;
+  Wants wants(want);
+  // A GGUF checkpoint's artifact: its n-gram table a GGML representation
+  // (the ModelOpt artifact's is plain bytes). Every other tensor must then
+  // be the GGUF form's too, or the binding is refused below.
+  const bool gguf = std::ranges::any_of(resources, [](const Qwen38Resource& r) {
+    return !r.plain && !r.expert_array &&
+           std::ranges::contains(r.roles, "per_layer_token_embd.weight");
+  });
+  if (gguf) {
+    b.format = Qwen38Format::kGguf;
+    b.experts = Qwen38Experts::kGgml;
+    wants.Any("token_embd.weight", {w, p.vocab}, &b.token_embd);
+    wants.Any("output.weight", {w, p.vocab}, &b.output);
+    wants.Ggml("output_hc_norm.weight", "F32", {p.hc_width()}, &b.output_hc_norm);
+    wants.Any("output_hc_down.weight", {p.hc_width(), p.hc_rank}, &b.output_hc_down);
+    wants.Any("output_hc_up.weight", {p.hc_rank, p.hc_width()}, &b.output_hc_up);
+    // The table's rows are checked against the hash's ranges, not the profile.
+    wants.Any("per_layer_token_embd.weight", {p.ple_row, 0}, &b.ple_table);
+    for (std::uint32_t il = 0; il < p.layers; ++il) {
+      AddGgufLayer(wants, p, std::format("blk.{}.", il), il, b.layers[il]);
+    }
+    if (auto matched = Match(p, want, resources, "Qwen3.8"); !matched) {
+      return std::unexpected(matched.error());
+    }
+    return b;
+  }
   // The experts' layout: the CUTLASS layout's arrays where the artifact has
   // them (every layer's, or the binding is refused below), else GGML's.
   const bool cutlass = std::ranges::any_of(resources, [](const Qwen38Resource& r) {
     return r.expert_array && std::ranges::contains(r.roles, "blk.0.ffn_gate_up_exps.codes");
   });
   b.experts = cutlass ? Qwen38Experts::kCutlass : Qwen38Experts::kGgml;
-  const std::uint64_t w = p.width;
-  std::vector<Want> want;
-  Wants wants(want);
   wants.Ggml("token_embd.weight", "BF16", {w, p.vocab}, &b.token_embd);
   wants.Ggml("output.weight", "BF16", {w, p.vocab}, &b.output);
   wants.Ggml("output_hc_norm.weight", "F32", {p.hc_width()}, &b.output_hc_norm);
@@ -516,6 +618,139 @@ std::expected<Qwen38PleHash, std::string> CheckQwen38PleHash(
     h.multipliers.push_back(static_cast<std::uint64_t>(m));
   }
   return h;
+}
+
+std::expected<Qwen38PleHash, std::string> ReadQwen38GgufHash(const Qwen38Profile& p,
+                                                             std::span<const std::byte> metadata,
+                                                             std::uint64_t table_rows) {
+  if (!ProfileIsSane(p)) {
+    return Refused("the profile is not a Qwen3.8 model's");
+  }
+  constexpr std::string_view kArch = "qwen4exp";
+  // Each integer key and the profile's value for it.
+  const std::vector<std::pair<std::string_view, std::int64_t>> integers = {
+      {"qwen4exp.block_count", p.layers},
+      {"qwen4exp.embedding_length", p.width},
+      {"qwen4exp.context_length", kQwen38FlashContext},
+      {"qwen4exp.full_attention_interval", 4},
+      {"qwen4exp.attention.head_count", p.heads},
+      {"qwen4exp.attention.head_count_kv", p.kv_heads},
+      {"qwen4exp.attention.key_length", p.head_dim},
+      {"qwen4exp.attention.value_length", p.head_dim},
+      {"qwen4exp.attention.indexer.head_count", p.indexer_heads},
+      {"qwen4exp.attention.indexer.key_length", p.indexer_head_dim},
+      {"qwen4exp.attention.indexer.top_k", p.indexer_budget},
+      {"qwen4exp.rope.dimension_count", p.rope_dims},
+      {"qwen4exp.ssm.conv_kernel", p.conv},
+      {"qwen4exp.ssm.group_count", p.lin_k_heads},
+      {"qwen4exp.ssm.time_step_rank", p.lin_v_heads},
+      {"qwen4exp.ssm.state_size", p.lin_head_dim},
+      {"qwen4exp.ssm.inner_size", p.lin_v_width()},
+      {"qwen4exp.expert_count", p.experts},
+      {"qwen4exp.expert_used_count", p.experts_used},
+      {"qwen4exp.expert_feed_forward_length", p.expert_ffn},
+      {"qwen4exp.expert_shared_feed_forward_length", p.shared_ffn},
+      {"qwen4exp.hyper_connection.count", p.hc},
+      {"qwen4exp.hyper_connection.low_rank", p.hc_rank},
+      {"qwen4exp.ple.ngram_size", p.ngram},
+      {"qwen4exp.ple.heads_per_ngram", p.heads_per_ngram},
+      {"qwen4exp.ple.conv_kernel", p.ple_conv},
+      {"qwen4exp.ple.eos_token_id", p.ple_eos},
+      {"qwen4exp.embedding_length_per_layer_input", p.ple_row},
+  };
+  // Each float key and the profile's value, compared as F32.
+  const std::vector<std::pair<std::string_view, float>> floats = {
+      {"qwen4exp.attention.layer_norm_rms_epsilon", p.rms_eps},
+      {"qwen4exp.rope.freq_base", p.rope_base},
+  };
+  // Each integer array and the profile's values.
+  std::vector<std::int64_t> ratios;
+  ratios.reserve(p.layers);
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    ratios.push_back(p.linear(il) ? 0 : std::int64_t{p.indexer_ratio});
+  }
+  const std::vector<std::pair<std::string_view, std::vector<std::int64_t>>> arrays = {
+      {"qwen4exp.attention.compress_ratios", ratios},
+      {"qwen4exp.rope.dimension_sections",
+       {p.rope_sections[0], p.rope_sections[1], p.rope_sections[2], p.rope_sections[3]}},
+      {"qwen4exp.ple.layers", {p.ple_layer}},
+  };
+  constexpr std::string_view kMultipliers = "qwen4exp.ple.layer_multipliers";
+  constexpr std::string_view kOffsets = "qwen4exp.ple.head_offsets";
+  constexpr std::string_view kVocab = "qwen4exp.ple.head_vocab_sizes";
+  std::vector<std::string_view> wanted = {"general.architecture", kMultipliers, kOffsets, kVocab};
+  for (const auto& [key, value] : integers) {
+    wanted.push_back(key);
+  }
+  for (const auto& [key, value] : floats) {
+    wanted.push_back(key);
+  }
+  for (const auto& [key, value] : arrays) {
+    wanted.push_back(key);
+  }
+  auto read = artifact::ReadGgufMetadata(metadata, wanted);
+  if (!read) {
+    return Refused(std::format("the kept GGUF metadata: {}", read.error().ToString()));
+  }
+  const artifact::GgufMetadata& m = *read;
+  using Kind = artifact::GgufValue::Kind;
+  const auto find = [&](std::string_view key, Kind kind) -> const artifact::GgufValue* {
+    const auto at = m.find(key);
+    return at != m.end() && at->second.kind == kind ? &at->second : nullptr;
+  };
+  if (const auto* arch = find("general.architecture", Kind::kString);
+      arch == nullptr || arch->text != kArch) {
+    return Refused("the kept GGUF metadata's architecture is not qwen4exp");
+  }
+  for (const auto& [key, value] : integers) {
+    const auto* v = find(key, Kind::kInteger);
+    if (v == nullptr || v->integer != value) {
+      return Refused(std::format("the kept GGUF metadata's {} is {}, not the profile's {}", key,
+                                 v == nullptr ? "missing" : std::format("{}", v->integer), value));
+    }
+  }
+  for (const auto& [key, value] : floats) {
+    const auto* v = find(key, Kind::kFloat);
+    if (v == nullptr || static_cast<float>(v->real) != value) {
+      return Refused(
+          std::format("the kept GGUF metadata's {} is not the profile's {}", key, value));
+    }
+  }
+  for (const auto& [key, value] : arrays) {
+    const auto* v = find(key, Kind::kIntegers);
+    if (v == nullptr || v->integers != value) {
+      return Refused(std::format("the kept GGUF metadata's {} is not the profile's", key));
+    }
+  }
+  const auto* mult = find(kMultipliers, Kind::kIntegers);
+  const auto* offsets = find(kOffsets, Kind::kIntegers);
+  const auto* vocab = find(kVocab, Kind::kIntegers);
+  if (mult == nullptr || offsets == nullptr || vocab == nullptr) {
+    return Refused("the kept GGUF metadata has no n-gram hash constants");
+  }
+  return CheckQwen38PleHash(p, mult->integers, offsets->integers, vocab->integers, table_rows);
+}
+
+std::expected<Qwen38PleHash, std::string> ReadQwen38GgufHash(const Qwen38Profile& p,
+                                                             const artifact::Artifact& a,
+                                                             std::uint64_t table_rows) {
+  // Every source shard's metadata agrees but for split.* (import rule 7);
+  // the first shard's is read.
+  std::string kept;
+  for (const artifact::ListedFile& f : a.files()) {
+    if (f.role == artifact::FileRole::kSourceMetadata && f.path.ends_with(".kv.gguf") &&
+        (kept.empty() || f.path.contains("-00001-of-"))) {
+      kept = f.path.substr(5);  // "meta/"
+    }
+  }
+  if (kept.empty()) {
+    return Refused("the artifact keeps no GGUF metadata, so no n-gram hash");
+  }
+  auto bytes = a.ReadMetadata(kept);
+  if (!bytes) {
+    return Refused(std::format("{}: {}", kept, bytes.error().ToString()));
+  }
+  return ReadQwen38GgufHash(p, std::as_bytes(std::span(*bytes)), table_rows);
 }
 
 // ---------------------------------------------------------------- state

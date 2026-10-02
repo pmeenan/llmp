@@ -88,7 +88,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 110> kKernels = {{
+constexpr std::array<Kernel::Entry, 111> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -566,6 +566,12 @@ constexpr std::array<Kernel::Entry, 110> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckNvfp4Rows(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunNvfp4Rows(launch, n[0]); }},
+    {.name = "jitllm.qrows.get_rows",
+     .operation = execution::Operation::kGetRows,
+     .variant = "QRowsKernel<type>: a block an id, a thread a value, GGML's dequantize.cuh",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckQRows(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunQRows(launch, n[0]); }},
     // jitLLM's fusions of Qwen3.8's GGML nodes (jitllm_ops.h), GGML's
     // arithmetic in its order.
     {.name = "jitllm.hc.combine",

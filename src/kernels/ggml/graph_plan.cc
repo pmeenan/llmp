@@ -437,6 +437,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case JitllmOp::kNvfp4Rows:
             add(Operation::kGetRows, kNvfp4RowsName, i, {node}, 1);
             break;
+          case JitllmOp::kQRows:
+            add(Operation::kGetRows, kQRowsName, i, {node}, 1);
+            break;
           case JitllmOp::kHcCombine:
             add(Operation::kHcCombine, kHcCombineName, i, {node}, 1);
             break;

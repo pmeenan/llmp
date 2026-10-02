@@ -59,15 +59,18 @@ class GgmlExtValidateTest : public ::testing::Test {
 };
 
 TEST_F(GgmlExtValidateTest, QuantizedProductsTakeTheCompiledTypesAtWholeRowSteps) {
-  EXPECT_EQ(kg::QuantizedWeightTypes().size(), 10U);
+  EXPECT_EQ(kg::QuantizedWeightTypes().size(), 18U);
   for (const ggml_type type : kg::QuantizedWeightTypes()) {
     EXPECT_TRUE(kg::IsQuantizedWeightType(type)) << ggml_type_name(type);
     ggml_tensor* w = New(type, 4096, 256);
     ggml_tensor* x = New(GGML_TYPE_F32, 4096, 5);
     Accepted(kg::CheckMulMatQ(Bound(ggml_mul_mat(c(), w, x))));
   }
-  EXPECT_TRUE(kg::IsQuantizedWeightType(GGML_TYPE_NVFP4));  // Qwen3.8's experts
-  EXPECT_FALSE(kg::IsQuantizedWeightType(GGML_TYPE_Q4_0));
+  EXPECT_TRUE(kg::IsQuantizedWeightType(GGML_TYPE_NVFP4));   // Qwen3.8's experts
+  EXPECT_TRUE(kg::IsQuantizedWeightType(GGML_TYPE_IQ2_S));   // Qwen3.8 GGUF's experts
+  EXPECT_TRUE(kg::IsQuantizedWeightType(GGML_TYPE_IQ4_NL));  // and its n-gram table
+  EXPECT_FALSE(kg::IsQuantizedWeightType(GGML_TYPE_Q4_1));
+  EXPECT_FALSE(kg::IsQuantizedWeightType(GGML_TYPE_IQ1_M));  // no MMQ upstream
   // Rows short of a 512-element step (Qwen3.8's 640-element down
   // projection): refused unless the binder vouches for their padding, and
   // then only in whole blocks.
@@ -87,7 +90,7 @@ TEST_F(GgmlExtValidateTest, QuantizedProductsTakeTheCompiledTypesAtWholeRowSteps
   // Not a compiled type; float weights; rows not whole 512-element steps;
   // F16 activations; an output over the weights.
   ggml_tensor* x = New(GGML_TYPE_F32, 4096, 5);
-  Refused(kg::CheckMulMatQ(Bound(ggml_mul_mat(c(), New(GGML_TYPE_IQ2_S, 4096, 256), x))));
+  Refused(kg::CheckMulMatQ(Bound(ggml_mul_mat(c(), New(GGML_TYPE_IQ1_M, 4096, 256), x))));
   Refused(kg::CheckMulMatQ(Bound(ggml_mul_mat(c(), New(GGML_TYPE_F16, 4096, 256), x))));
   ggml_tensor* short_w = New(GGML_TYPE_Q8_0, 4064, 256);
   Refused(kg::CheckMulMatQ(Bound(ggml_mul_mat(c(), short_w, New(GGML_TYPE_F32, 4064, 5)))));
@@ -475,7 +478,10 @@ TEST_F(GgmlExtValidateTest, GathersAndScattersTakeTheModelsTypes) {
   Refused(kg::CheckGetRowsExt(
       Bound(ggml_get_rows(c(), New(GGML_TYPE_Q8_0, 96, 10), New(GGML_TYPE_I32, 5)))));
   Refused(kg::CheckGetRowsExt(
-      Bound(ggml_get_rows(c(), New(GGML_TYPE_Q4_0, 4096, 10), New(GGML_TYPE_I32, 5)))));
+      Bound(ggml_get_rows(c(), New(GGML_TYPE_Q4_1, 4096, 10), New(GGML_TYPE_I32, 5)))));
+  // A product type GGML's get_rows has no case for (getrows.cu aborts).
+  Refused(kg::CheckGetRowsExt(
+      Bound(ggml_get_rows(c(), New(GGML_TYPE_NVFP4, 4096, 10), New(GGML_TYPE_I32, 5)))));
   ggml_tensor* mask = New(GGML_TYPE_F16, 1, 3072);
   Accepted(kg::CheckSetRowsExt(
       ggml_set_rows(c(), mask, New(GGML_TYPE_F16, 1, 5), New(GGML_TYPE_I32, 5))));

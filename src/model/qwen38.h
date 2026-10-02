@@ -110,13 +110,19 @@ struct Qwen38Tensor {
   std::uint64_t readable = 0;
 };
 
-// An MXFP8 matrix: E4M3 codes ne [k, n] and E8M0 scales ne [k / 32, n]; or,
-// in the MTP drafter, whose linears the checkpoint keeps in BF16, `bf16`
-// alone (GGML BF16 ne [k, n]; codes and scales unbound).
+// A linear's weights: MXFP8, E4M3 codes ne [k, n] and E8M0 scales ne
+// [k / 32, n]; or, in the MTP drafter, whose linears the checkpoint keeps
+// in BF16, `bf16` alone (GGML BF16 ne [k, n]; codes and scales unbound);
+// or, in a GGUF checkpoint's artifact (Qwen38Format::kGguf), `matrix`
+// alone: a GGML matrix ne [k, n] of the type the checkpoint stores (a
+// k- or i-quant, Q8_0, BF16 or F32; the graph refuses one its products do
+// not take).
 struct Qwen38Mxfp8 {
   Qwen38Tensor codes, scales;
   Qwen38Tensor bf16;
+  Qwen38Tensor matrix;
   bool is_bf16() const { return !bf16.type.empty(); }
+  bool is_matrix() const { return !matrix.type.empty(); }
 };
 
 struct Qwen38Layer {
@@ -126,17 +132,25 @@ struct Qwen38Layer {
   // Gated DeltaNet.
   Qwen38Mxfp8 qkv, z, beta, alpha, ssm_out;
   Qwen38Tensor dt_bias, ssm_a, conv1d, ssm_norm;
-  // QSA.
-  Qwen38Mxfp8 q, k, v, o, idx_qk;
+  // QSA. The indexer's query and key projection is one fused matrix in the
+  // ModelOpt artifact (idx_qk: its query heads' rows, then the key's), and
+  // two in a GGUF checkpoint's (idx_q and idx_k: llama.cpp's converter
+  // splits it).
+  Qwen38Mxfp8 q, k, v, o, idx_qk, idx_q, idx_k;
   Qwen38Tensor q_norm, k_norm, idx_q_norm, idx_k_norm;
-  // The n-gram embedding (its layer only).
+  // The n-gram embedding (its layer only). The hash's constants are I64
+  // tensors in the ModelOpt artifact; a GGUF checkpoint keeps them in its
+  // metadata (ReadQwen38GgufHash), so they are unbound there.
   Qwen38Tensor ple_key, ple_value, ple_norm_key, ple_norm_query, ple_norm_conv, ple_conv1d;
   Qwen38Tensor ple_multipliers, ple_head_offsets, ple_head_vocab;
   // MoE: the router, the shared expert and its gate, the routed experts
-  // (expert arrays, `ne` of one slice) and their per-expert global scales.
+  // (expert arrays, `ne` of one slice) and their per-expert global scales
+  // (NVFP4's; a GGUF checkpoint's experts have none, so they are unbound).
   Qwen38Tensor router, shared_gate;
   Qwen38Mxfp8 gate_shexp, up_shexp, down_shexp;
-  // The routed experts in GGML's layout (Qwen38Experts::kGgml): NVFP4.
+  // The routed experts in GGML's layout (Qwen38Experts::kGgml): NVFP4, or
+  // a GGUF checkpoint's types (each projection its own, as the
+  // checkpoint's mix gives them).
   Qwen38Tensor gate_exps, up_exps, down_exps;
   // Or in the CUTLASS layout (kCutlass): four I8 arrays packed from each
   // expert group's start (kernels/ggml/moe_layout.h, checked contiguous):
@@ -160,12 +174,26 @@ struct Qwen38Layer {
 // writes since (docs/artifact-format.md, "Executable views").
 enum class Qwen38Experts : std::uint8_t { kGgml, kCutlass };
 
+// The checkpoint the artifact was imported from (docs/artifact-format.md):
+// Mia's ModelOpt NVFP4 experts and MXFP8 linears, repacked by
+// modelopt_qwen38.py; or a GGUF checkpoint (llama.cpp's qwen4exp tensors,
+// unsloth's and others' quantizations), imported verbatim by layout.py:
+// every tensor a GGML representation of the checkpoint's own type, the
+// indexer's projection split in two, no expert or table scales, and the
+// n-gram hash's constants in the kept GGUF metadata.
+enum class Qwen38Format : std::uint8_t { kModelOpt, kGguf };
+
 struct Qwen38Binding {
   std::vector<Qwen38Layer> layers;
+  // ple_table: the ModelOpt artifact's packed NVFP4 rows (plain U8 [90,
+  // rows]) with ple_table_scale; a GGUF artifact's GGML table [ple_row,
+  // rows] of its type (ple_table_scale unbound).
   Qwen38Tensor token_embd, ple_table, ple_table_scale, output, output_hc_norm, output_hc_down,
       output_hc_up;
   Qwen38Experts experts = Qwen38Experts::kGgml;
+  Qwen38Format format = Qwen38Format::kModelOpt;
   bool cutlass() const { return experts == Qwen38Experts::kCutlass; }
+  bool gguf() const { return format == Qwen38Format::kGguf; }
 };
 
 // A resource or expert array as the adapter sees it.
@@ -177,13 +205,21 @@ struct Qwen38Resource {
   bool expert_array = false;
   std::uint32_t count = 0;
   std::uint64_t group_offset = 0;  // an expert array's, as Qwen38Tensor's
+  // Readable bytes: a slice's (as Qwen38Tensor's), or a resource's, its
+  // bytes plus the kernels' over-read the artifact reserves (0: none
+  // recorded).
   std::uint64_t readable = 0;
 };
 
 // Binds every tensor the profile reads to the resource of that role, which
 // must have its representation, type and shape exactly; refused, naming the
 // tensor, if one is missing or differs, if `architecture` is not
-// "qwen4exp", or if the artifact binds a role Qwen3.8 does not read.
+// "qwen4exp", or if the artifact binds a role Qwen3.8 does not read. A GGUF
+// artifact (every resource and array a GGML representation, the n-gram
+// table among them) is bound as Qwen38Format::kGguf: its matrices,
+// routed experts and table take any GGML type whose rows are whole blocks
+// (the artifact's reader has checked that), its norms and recurrent
+// parameters F32, exactly as llama.cpp's converter writes them.
 std::expected<Qwen38Binding, std::string> BindQwen38(const Qwen38Profile& profile,
                                                      std::string_view architecture,
                                                      std::span<const Qwen38Resource> resources);
@@ -205,6 +241,26 @@ std::expected<Qwen38PleHash, std::string> CheckQwen38PleHash(
     const Qwen38Profile& profile, std::span<const std::int64_t> multipliers,
     std::span<const std::int64_t> offsets, std::span<const std::int64_t> vocab,
     std::uint64_t table_rows);
+
+// A GGUF artifact's n-gram hash, from the GGUF metadata it keeps
+// (docs/artifact-format.md, import rule 7: the first source shard's,
+// artifact/gguf_metadata.h's rules): qwen4exp.ple.layer_multipliers,
+// .head_offsets and .head_vocab_sizes, checked as CheckQwen38PleHash checks
+// them against `table_rows`. The hyperparameters the tensors' shapes do not
+// fix must be the profile's too: the architecture, the layer and expert
+// counts and widths, the experts used, the attention, indexer, Gated
+// DeltaNet and hyper-connection extents, the indexer's budget and every
+// layer's compression ratio (which places the QSA layers), the RMS epsilon,
+// RoPE's dimensions, sections and base, the context, and the n-gram size,
+// heads, layer, row, convolution and EOS. Refused, naming the key, if one
+// is missing, mistyped or differs.
+std::expected<Qwen38PleHash, std::string> ReadQwen38GgufHash(const Qwen38Profile& profile,
+                                                             const artifact::Artifact& artifact,
+                                                             std::uint64_t table_rows);
+// The same from the kept metadata file's bytes.
+std::expected<Qwen38PleHash, std::string> ReadQwen38GgufHash(const Qwen38Profile& profile,
+                                                             std::span<const std::byte> metadata,
+                                                             std::uint64_t table_rows);
 
 // ---------------------------------------------------------------- state
 

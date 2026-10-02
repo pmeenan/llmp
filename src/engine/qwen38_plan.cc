@@ -31,6 +31,7 @@ void BindQwen38Weights(const Qwen38Model& m, kg::Qwen38Graph& g) {
   const auto mx = [&](const kg::Qwen38Mxfp8Tensors& t, const md::Qwen38Mxfp8& r) {
     bind(t.codes, r.codes);
     bind(t.scales, r.scales);
+    bind(t.matrix, r.matrix);  // a GGUF checkpoint's
   };
   const auto& b = *m.binding;
   bind(g.token_embd, b.token_embd);
@@ -68,6 +69,8 @@ void BindQwen38Weights(const Qwen38Model& m, kg::Qwen38Graph& g) {
       mx(l.v, r.v);
       mx(l.o, r.o);
       mx(l.idx_qk, r.idx_qk);
+      mx(l.idx_q, r.idx_q);
+      mx(l.idx_k, r.idx_k);
       bind(l.q_norm, r.q_norm);
       bind(l.k_norm, r.k_norm);
       bind(l.idx_q_norm, r.idx_q_norm);

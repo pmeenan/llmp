@@ -201,6 +201,24 @@ int main(int argc, char** argv) {
       {"dense Q8_0 1024x32768, 4 tokens", GGML_TYPE_Q8_0, 1024, 32768, false, 4, false, false,
        177.2},
       {"dense Q8_0 8192x4096, 4 tokens", GGML_TYPE_Q8_0, 8192, 4096, false, 4, false, false, 167.0},
+      // Qwen3.8 Flash Next's UD-IQ3_XXS GGUF at decode (docs/experiments/qwen38-gguf/).
+      {"qwen dense Q6_K 2560x10240, 1 token", GGML_TYPE_Q6_K, 2560, 10240, false, 1, false, false,
+       0},
+      {"qwen dense Q6_K 2560x6144, 1 token", GGML_TYPE_Q6_K, 2560, 6144, false, 1, false, false, 0},
+      {"qwen dense Q6_K 6144x2560, 1 token", GGML_TYPE_Q6_K, 6144, 2560, false, 1, false, false, 0},
+      {"qwen dense Q6_K 2560x12288, 1 token", GGML_TYPE_Q6_K, 2560, 12288, false, 1, false, false,
+       0},
+      {"qwen shared gate+up Q6_K 2560x640, 1 token", GGML_TYPE_Q6_K, 2560, 640, false, 1, true,
+       false, 0},
+      {"qwen head Q6_K 2560x248320, 1 token", GGML_TYPE_Q6_K, 2560, 248320, false, 1, false, false,
+       0},
+      {"qwen dense Q8_0 10240x320, 1 token", GGML_TYPE_Q8_0, 10240, 320, false, 1, false, false, 0},
+      {"qwen dense Q8_0 320x10240, 1 token", GGML_TYPE_Q8_0, 320, 10240, false, 1, false, false, 0},
+      {"qwen dense Q8_0 640x2560, 1 token", GGML_TYPE_Q8_0, 640, 2560, false, 1, false, false, 0},
+      {"qwen routed gate+up IQ2_S 2560x640, 1 token", GGML_TYPE_IQ2_S, 2560, 640, true, 1, true,
+       false, 0},
+      {"qwen routed down IQ4_NL 640x2560, 1 token", GGML_TYPE_IQ4_NL, 640, 2560, true, 1, false,
+       true, 0},
   };
   std::mt19937 rng(42);  // NOLINT(bugprone-random-generator-seed): reproducible
   std::uniform_int_distribution<int> byte(0, 255);

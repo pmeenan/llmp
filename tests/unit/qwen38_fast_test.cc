@@ -675,6 +675,45 @@ TEST_F(Qwen38FastTest, TheRouterPicksTheTopExpertsAndTheSharedGate) {
   }
 }
 
+// A GGUF checkpoint's shared-expert gate row is F32: the same routing, its
+// gate logit the F32 row's dot product.
+TEST_F(Qwen38FastTest, TheRouterTakesAnF32GateRow) {
+  constexpr std::int64_t experts = 512;
+  constexpr std::int64_t used = 10;
+  for (const std::int64_t t : {1, 11}) {
+    const auto seed = static_cast<std::uint64_t>(t);
+    const auto logits_h = Normal(41 + seed, static_cast<std::size_t>(experts * t), 2.0f);
+    const auto x_h = Normal(42 + seed, static_cast<std::size_t>(kWidth * t));
+    const auto gate_h = Normal(43, kWidth, 0.05f);
+    ggml_tensor* logits = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, experts, t), logits_h);
+    ggml_tensor* x = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, t), x_h);
+    ggml_tensor* f32_row = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, kWidth), gate_h);
+    ggml_tensor* bf16_row = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_BF16, kWidth), ToBf16(gate_h));
+    ggml_tensor* f32_routed = kg::MoeRouter(c(), logits, x, f32_row, used);
+    ggml_tensor* bf16_routed = kg::MoeRouter(c(), logits, x, bf16_row, used);
+    Run({f32_routed, bf16_routed});
+    EXPECT_EQ(PlannedFor(f32_routed), kg::kMoeRouterName);
+    const kg::MoeRouterLayout l{.used = used, .t = t};
+    const auto f32_blob = Download<std::int32_t>(f32_routed);
+    const auto bf16_blob = Download<std::int32_t>(bf16_routed);
+    // The picks and weights do not read the gate row.
+    const auto gate_at = static_cast<std::ptrdiff_t>(l.gate() / 4);
+    EXPECT_TRUE(std::equal(f32_blob.begin(), f32_blob.begin() + gate_at, bf16_blob.begin()));
+    std::vector<float> gates(static_cast<std::size_t>(t));
+    std::memcpy(gates.data(), f32_blob.data() + gate_at, gates.size() * 4);
+    std::vector<double> want(gates.size());
+    for (std::int64_t r = 0; r < t; ++r) {
+      double dot = 0.0;
+      for (std::int64_t i = 0; i < kWidth; ++i) {
+        dot += static_cast<double>(gate_h[static_cast<std::size_t>(i)]) *
+               x_h[static_cast<std::size_t>((r * kWidth) + i)];
+      }
+      want[static_cast<std::size_t>(r)] = dot;
+    }
+    ExpectNear(gates, want, 1e-10, "F32 shared gate t " + std::to_string(t));
+  }
+}
+
 TEST_F(Qwen38FastTest, GatedDeltaNetTakesBf16RowsAndQuantizesItsGate) {
   constexpr std::int64_t d = 128;
   constexpr std::int64_t heads = 48;

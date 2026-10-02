@@ -65,7 +65,9 @@
 //   jitllm.mxfp8.mul_mat_vec     {custom}                RunMxfp8MulMatVec
 //   jitllm.mxfp8.dequant         {custom}                RunMxfp8Dequant
 //   jitllm.nvfp4.get_rows        {custom}                RunNvfp4Rows
-// (GGML's NVFP4 experts take ggml.mul_mat_id.mmvq and .mmq above), and
+//   jitllm.qrows.get_rows        {custom}                RunQRows
+// (GGML's NVFP4 experts take ggml.mul_mat_id.mmvq and .mmq above; the last,
+// a GGUF checkpoint's n-gram table in a 32-value block type), and
 // jitLLM's fusions of Qwen3.8's GGML nodes, the same arithmetic in the same
 // order:
 //   jitllm.hc.combine            {custom}                RunHcCombine

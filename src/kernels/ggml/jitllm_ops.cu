@@ -3,7 +3,8 @@
 
 // jitLLM's own kernels on GGML tensors (jitllm_ops.h): MXFP8 vector
 // products, dequantization, quantization and the tensor-core product's
-// launch (mxfp8_cutlass.h), and NVFP4 table rows.
+// launch (mxfp8_cutlass.h), NVFP4 table rows, and rows of GGML's 32-value
+// block types (through GGML's own dequantize.cuh and kvalues_iq4nl).
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -15,6 +16,7 @@
 
 #include "base/bytes.h"
 #include "common.cuh"
+#include "dequantize.cuh"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/moe_cutlass.h"
@@ -191,6 +193,54 @@ __global__ void Nvfp4RowsKernel(const std::uint8_t* __restrict__ table, std::int
   const std::uint8_t scale_code = row[values / 2 + j / 16];
   const float scale = __half2float(__half(__nv_cvt_fp8_to_halfraw(scale_code, __NV_E4M3)));
   *dst = ((code & 8) != 0 ? -magnitude : magnitude) * scale * global[0];
+}
+
+// One value of a 32-value block type's row (jitllm.qrows.get_rows): value
+// `j` of row `row`, as GGML's dequantization gives it (dequantize.cuh's
+// legacy types take value pairs (i, i + 16), Q8_0's (i, i + 1); IQ4_NL's
+// low nibbles are values 0-15 of its block, the high ones 16-31, through
+// kvalues_iq4nl, as dequantize_iq4_nl).
+template <ggml_type kType>
+__device__ __forceinline__ float QRowValue(const void* row, int j) {
+  const int ib = j / 32;
+  const int within = j % 32;
+  if constexpr (kType == GGML_TYPE_IQ4_NL) {
+    const auto* b = static_cast<const block_iq4_nl*>(row) + ib;
+    const std::uint8_t q = b->qs[within % 16];
+    return __half2float(b->d) * static_cast<float>(kvalues_iq4nl[within < 16 ? q & 0xf : q >> 4]);
+  } else if constexpr (kType == GGML_TYPE_Q8_0) {
+    float2 v;
+    dequantize_q8_0(row, ib, within & ~1, v);
+    return (within & 1) == 0 ? v.x : v.y;
+  } else {
+    float2 v;
+    if constexpr (kType == GGML_TYPE_Q4_0) {
+      dequantize_q4_0(row, ib, within % 16, v);
+    } else if constexpr (kType == GGML_TYPE_Q4_1) {
+      dequantize_q4_1(row, ib, within % 16, v);
+    } else if constexpr (kType == GGML_TYPE_Q5_0) {
+      dequantize_q5_0(row, ib, within % 16, v);
+    } else {
+      dequantize_q5_1(row, ib, within % 16, v);
+    }
+    return within < 16 ? v.x : v.y;
+  }
+}
+
+// One block per id, one thread per value.
+template <ggml_type kType>
+__global__ void QRowsKernel(const std::uint8_t* __restrict__ table, std::int64_t rows,
+                            std::size_t row_bytes, const std::int32_t* __restrict__ ids,
+                            float* __restrict__ out, int values) {
+  const int j = static_cast<int>(threadIdx.x);
+  const std::int64_t i = blockIdx.x;
+  const std::int32_t id = ids[i];
+  float* dst = out + (i * values) + j;
+  if (id < 0 || id >= rows) {
+    *dst = __uint_as_float(0x7fc00000u);
+    return;
+  }
+  *dst = QRowValue<kType>(table + (static_cast<std::size_t>(id) * row_bytes), j);
 }
 
 // The better of two (value, index) candidates: the higher value, the lower
@@ -520,6 +570,48 @@ std::expected<void, KernelFailure> RunNvfp4Rows(LaunchContext& launch, ggml_tens
         static_cast<const std::uint8_t*>(table->data), table->ne[1],
         static_cast<const std::int32_t*>(node->src[1]->data),
         static_cast<const float*>(node->src[2]->data), static_cast<float*>(node->data), values);
+  });
+}
+
+std::expected<void, KernelFailure> RunQRows(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckQRows(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const ggml_tensor* table = node->src[0];
+    const int values = static_cast<int>(node->ne[0]);
+    const auto ids = static_cast<unsigned>(node->src[1]->ne[0]);
+    const auto* bytes = static_cast<const std::uint8_t*>(table->data);
+    const auto* id = static_cast<const std::int32_t*>(node->src[1]->data);
+    auto* out = static_cast<float*>(node->data);
+    const auto threads = static_cast<unsigned>(values);
+    cudaStream_t stream = context.stream();
+    switch (table->type) {
+      case GGML_TYPE_Q4_0:
+        QRowsKernel<GGML_TYPE_Q4_0>
+            <<<ids, threads, 0, stream>>>(bytes, table->ne[1], table->nb[1], id, out, values);
+        break;
+      case GGML_TYPE_Q4_1:
+        QRowsKernel<GGML_TYPE_Q4_1>
+            <<<ids, threads, 0, stream>>>(bytes, table->ne[1], table->nb[1], id, out, values);
+        break;
+      case GGML_TYPE_Q5_0:
+        QRowsKernel<GGML_TYPE_Q5_0>
+            <<<ids, threads, 0, stream>>>(bytes, table->ne[1], table->nb[1], id, out, values);
+        break;
+      case GGML_TYPE_Q5_1:
+        QRowsKernel<GGML_TYPE_Q5_1>
+            <<<ids, threads, 0, stream>>>(bytes, table->ne[1], table->nb[1], id, out, values);
+        break;
+      case GGML_TYPE_Q8_0:
+        QRowsKernel<GGML_TYPE_Q8_0>
+            <<<ids, threads, 0, stream>>>(bytes, table->ne[1], table->nb[1], id, out, values);
+        break;
+      default:  // IQ4_NL (CheckQRows admits no other type)
+        QRowsKernel<GGML_TYPE_IQ4_NL>
+            <<<ids, threads, 0, stream>>>(bytes, table->ne[1], table->nb[1], id, out, values);
+        break;
+    }
   });
 }
 

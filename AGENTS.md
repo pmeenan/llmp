@@ -254,7 +254,9 @@ the commit gate.
 Completions and literal Completions with target likelihoods on loopback and
 the tailnet (D-096, D-097, D-100). DeepSeek V4 Flash, Qwen3.8 Flash Next and
 Qwen-Image-2.1 execute natively with paging, saved state and stable-address
-graphs. The recorded 32-swap table's worst LLM swap is 9.75 s against the
+graphs; Qwen3.8 also runs from its GGUF quantizations (UD-IQ3_XXS checked
+against llama.cpp, [qwen38-gguf](docs/experiments/qwen38-gguf/README.md)).
+The recorded 32-swap table's worst LLM swap is 9.75 s against the
 20 s exit bound. Both LLMs run to 262,144 tokens; state grows with use,
 spills initialized extents, and turn checkpoints preserve exact continuation
 when earlier reasoning is removed, including across swaps. Maximum-context

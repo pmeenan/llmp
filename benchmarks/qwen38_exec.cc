@@ -471,6 +471,10 @@ std::expected<md::Qwen38PleHash, std::string> ReadPleHash(const jitllm::artifact
                                                           const Weights& w,
                                                           const md::Qwen38Profile& p,
                                                           const md::Qwen38Binding& b) {
+  if (b.gguf()) {
+    // A GGUF checkpoint's constants are its kept metadata's.
+    return md::ReadQwen38GgufHash(p, a, b.ple_table.ne[1]);
+  }
   const md::Qwen38Layer& l = b.layers[p.ple_layer];
   const auto read =
       [&](const md::Qwen38Tensor& t) -> std::expected<std::vector<std::int64_t>, std::string> {
@@ -1572,6 +1576,12 @@ Status Run(const Options& o) {
   }
   if (o.convert_experts && o.unfused) {
     return Error("--unfused reads GGML's layout, which --convert-experts replaces");
+  }
+  // A GGUF checkpoint's experts are GGML's types: no CUTLASS conversion,
+  // and the kernel A/B's NVFP4 and MXFP8 operands are the ModelOpt
+  // artifact's.
+  if (binding->gguf() && (o.convert_experts || o.ab)) {
+    return Error("--convert-experts and --ab take the ModelOpt artifact, not a GGUF one");
   }
   // (The fast graph builds no tensor of every cell by every row: RE-037's
   // chunk bound is the reference and unfused forms'.)

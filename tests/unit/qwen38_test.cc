@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <functional>
 #include <limits>
 #include <set>
 #include <span>
@@ -1511,6 +1512,490 @@ TEST(Qwen38Test, RoutedDownCaptureRetainsExistingVerifyOperandsOnly) {
                                        .capture_routed = capture})
                      .has_value());
   }
+}
+
+// ------------------------------------------------ a GGUF checkpoint's artifact
+
+// A GGML type's block (values, bytes), for the types the GGUF below uses.
+std::pair<std::uint64_t, std::uint64_t> Block(std::string_view type) {
+  if (type == "Q6_K") {
+    return {256, 210};
+  }
+  if (type == "Q8_0") {
+    return {32, 34};
+  }
+  if (type == "IQ4_NL") {
+    return {32, 18};
+  }
+  if (type == "IQ2_S") {
+    return {256, 82};
+  }
+  if (type == "BF16") {
+    return {1, 2};
+  }
+  return {1, 4};  // F32
+}
+
+std::uint64_t RowBytes(std::string_view type, std::uint64_t values) {
+  const auto [block, bytes] = Block(type);
+  return values / block * bytes;
+}
+
+// A tensor's readable bytes as the importer reserves them: its bytes plus,
+// for a quantized row short of a 512-value step, GGML's over-read.
+std::uint64_t Readable(std::string_view type, const std::vector<std::uint64_t>& ne) {
+  std::uint64_t bytes = RowBytes(type, ne[0]);
+  for (std::size_t i = 1; i < ne.size(); ++i) {
+    bytes *= ne[i];
+  }
+  const bool quantized = Block(type).first > 1;
+  return bytes + (quantized && ne[0] % 512 != 0 ? RowBytes(type, 512 - (ne[0] % 512)) : 0);
+}
+
+// unsloth's UD-IQ3_XXS GGUF of Qwen3.8 Flash Next, as layout.py imports it
+// (tensor names, types and shapes as the checkpoint has them, layer 0's mix
+// for every layer): Q6_K and Q8_0 matrices, F32 norms, routers, injects and
+// the recurrence's parameters, BF16 indexer projections, IQ2_S gate and up
+// experts and IQ4_NL down ones, and the IQ4_NL n-gram table. The expert
+// arrays share each layer's groups at the stride kGgufStride.
+constexpr std::uint64_t kGgufStride = 1977840;  // the group's 1,974,272 bytes, whole 5,904s
+std::vector<md::Qwen38Resource> GgufLike(const md::Qwen38Profile& p) {
+  std::vector<md::Qwen38Resource> r;
+  std::vector<md::Qwen38Resource> arrays;
+  const auto ggml = [&](std::string name, std::string type, std::vector<std::uint64_t> ne) {
+    const std::uint64_t readable = Readable(type, ne);
+    r.push_back({.roles = {std::move(name)},
+                 .plain = false,
+                 .type = std::move(type),
+                 .ne = std::move(ne),
+                 .readable = readable});
+  };
+  ggml("token_embd.weight", "Q6_K", {2560, 248320});
+  ggml("output.weight", "Q6_K", {2560, 248320});
+  ggml("output_hc_norm.weight", "F32", {10240});
+  ggml("output_hc_down.weight", "Q8_0", {10240, 320});
+  ggml("output_hc_up.weight", "Q8_0", {320, 10240});
+  ggml("per_layer_token_embd.weight", "IQ4_NL", {160, kTableRows});
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    const std::string n = std::format("blk.{}.", il);
+    for (const char* kind : {"attn", "ffn"}) {
+      ggml(std::format("{}hc_{}_norm.weight", n, kind), "F32", {10240});
+      ggml(std::format("{}hc_{}_down.weight", n, kind), "Q8_0", {10240, 320});
+      ggml(std::format("{}hc_{}_up.weight", n, kind), "Q8_0", {320, 10240});
+      ggml(std::format("{}hc_{}_inject.weight", n, kind), "F32", {10240, 4});
+    }
+    if (p.linear(il)) {
+      ggml(n + "attn_qkv.weight", "Q6_K", {2560, 10240});
+      ggml(n + "attn_gate.weight", "Q6_K", {2560, 6144});
+      ggml(n + "ssm_beta.weight", "F32", {2560, 48});
+      ggml(n + "ssm_alpha.weight", "F32", {2560, 48});
+      ggml(n + "ssm_dt.bias", "F32", {48});
+      ggml(n + "ssm_a", "F32", {48});
+      ggml(n + "ssm_conv1d.weight", "F32", {4, 10240});
+      ggml(n + "ssm_norm.weight", "F32", {128});
+      ggml(n + "ssm_out.weight", "Q6_K", {6144, 2560});
+    } else {
+      ggml(n + "attn_q.weight", "Q6_K", {2560, 12288});
+      ggml(n + "attn_k.weight", "Q6_K", {2560, 512});
+      ggml(n + "attn_v.weight", "Q6_K", {2560, 512});
+      ggml(n + "attn_output.weight", "Q6_K", {6144, 2560});
+      ggml(n + "attn_q_norm.weight", "F32", {256});
+      ggml(n + "attn_k_norm.weight", "F32", {256});
+      ggml(n + "indexer.q_proj.weight", "BF16", {2560, 512});
+      ggml(n + "indexer.k_proj.weight", "BF16", {2560, 128});
+      ggml(n + "indexer.q_norm.weight", "F32", {128});
+      ggml(n + "indexer.k_norm.weight", "F32", {128});
+    }
+    if (il == 1) {
+      ggml(n + "ple_key.weight", "Q8_0", {2560, 10240});
+      ggml(n + "ple_value.weight", "Q8_0", {2560, 2560});
+      for (const char* part : {"key", "query", "conv"}) {
+        ggml(std::format("{}ple_norm_{}.weight", n, part), "F32", {10240});
+      }
+      ggml(n + "ple_conv1d.weight", "F32", {4, 10240});
+    }
+    ggml(n + "ffn_gate_inp.weight", "F32", {2560, 512});
+    ggml(n + "ffn_gate_inp_shexp.weight", "F32", {2560});
+    ggml(n + "ffn_gate_shexp.weight", "Q6_K", {2560, 640});
+    ggml(n + "ffn_up_shexp.weight", "Q6_K", {2560, 640});
+    ggml(n + "ffn_down_shexp.weight", "Q8_0", {640, 2560});
+    std::uint64_t group_offset = 0;
+    for (const auto& [proj, type, ne] :
+         {std::tuple{"gate", "IQ2_S", std::vector<std::uint64_t>{2560, 640}},
+          std::tuple{"up", "IQ2_S", std::vector<std::uint64_t>{2560, 640}},
+          std::tuple{"down", "IQ4_NL", std::vector<std::uint64_t>{640, 2560}}}) {
+      const std::uint64_t readable = Readable(type, ne);
+      arrays.push_back({.roles = {std::format("{}ffn_{}_exps.weight", n, proj)},
+                        .plain = false,
+                        .type = type,
+                        .ne = ne,
+                        .expert_array = true,
+                        .count = 512,
+                        .group_offset = group_offset,
+                        .readable = readable});
+      group_offset += (readable + 255) / 256 * 256;
+    }
+  }
+  r.insert(r.end(), arrays.begin(), arrays.end());
+  return r;
+}
+
+TEST(Qwen38Test, BindsAGgufCheckpointsTensorsAndRefusesWhatDiffers) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  const std::vector<md::Qwen38Resource> resources = GgufLike(p);
+  auto bound = md::BindQwen38(p, "qwen4exp", resources);
+  ASSERT_TRUE(bound.has_value()) << Why(bound);
+  EXPECT_TRUE(bound->gguf());
+  EXPECT_FALSE(bound->cutlass());
+  EXPECT_EQ(bound->ple_table.type, "IQ4_NL");
+  EXPECT_EQ(bound->ple_table.ne, (std::vector<std::uint64_t>{160, kTableRows}));
+  EXPECT_EQ(bound->token_embd.type, "Q6_K");
+  EXPECT_TRUE(bound->layers[0].qkv.is_matrix());
+  EXPECT_EQ(bound->layers[0].qkv.matrix.type, "Q6_K");
+  EXPECT_TRUE(bound->layers[0].qkv.codes.type.empty());
+  EXPECT_EQ(bound->layers[3].idx_q.matrix.type, "BF16");
+  EXPECT_EQ(bound->layers[3].idx_k.matrix.ne, (std::vector<std::uint64_t>{2560, 128}));
+  EXPECT_TRUE(bound->layers[3].idx_qk.matrix.type.empty());
+  EXPECT_EQ(bound->layers[5].down_exps.type, "IQ4_NL");
+  EXPECT_TRUE(bound->layers[5].gate_exps_scale.type.empty());
+  EXPECT_TRUE(bound->layers[1].ple_multipliers.type.empty());
+  EXPECT_EQ(bound->layers[0].router.type, "F32");
+  // The readable bytes the importer reserves reach the binding (Q8_0's
+  // 640-value rows read 408 bytes past the last).
+  EXPECT_EQ(bound->layers[0].down_shexp.matrix.readable, 1740800U + 408U);
+
+  // A tensor of the ModelOpt form, a hash tensor, a missing projection, a
+  // plain resource or another shape: refused, naming the tensor.
+  auto mixed = resources;
+  for (md::Qwen38Resource& r : mixed) {
+    if (r.roles[0] == "blk.3.indexer.k_proj.weight") {
+      r.roles[0] = "blk.3.indexer.qk_proj.weight";
+    }
+  }
+  EXPECT_NE(Why(md::BindQwen38(p, "qwen4exp", mixed)).find("indexer"), std::string::npos);
+  auto hash = resources;
+  hash.push_back({.roles = {"blk.1.ple_multipliers"}, .plain = false, .type = "I64", .ne = {3}});
+  EXPECT_NE(Why(md::BindQwen38(p, "qwen4exp", hash)).find("does not read"), std::string::npos);
+  auto plain = resources;
+  for (md::Qwen38Resource& r : plain) {
+    if (r.roles[0] == "blk.0.ssm_a") {
+      r.plain = true;
+    }
+  }
+  EXPECT_NE(Why(md::BindQwen38(p, "qwen4exp", plain)).find("blk.0.ssm_a"), std::string::npos);
+  auto reshaped = resources;
+  for (md::Qwen38Resource& r : reshaped) {
+    if (r.roles[0] == "blk.7.attn_k.weight") {
+      r.ne = {2560, 256};
+    }
+  }
+  EXPECT_NE(Why(md::BindQwen38(p, "qwen4exp", reshaped)).find("blk.7.attn_k.weight"),
+            std::string::npos);
+  auto retyped = resources;
+  for (md::Qwen38Resource& r : retyped) {
+    if (r.roles[0] == "blk.0.ssm_norm.weight") {
+      r.type = "F16";  // the norms are F32, as llama.cpp's converter writes them
+    }
+  }
+  EXPECT_NE(Why(md::BindQwen38(p, "qwen4exp", retyped)).find("ssm_norm"), std::string::npos);
+}
+
+// A GGUF header (artifact/gguf_metadata.h) with the qwen4exp keys the
+// binding checks, as unsloth's GGUF has them; `skip` leaves a key out and
+// `used` sets the experts used.
+std::vector<std::byte> GgufMetadata(std::string_view skip = {}, std::uint32_t used = 10) {
+  std::vector<std::byte> out;
+  const auto raw = [&](const void* p, std::size_t n) {
+    const auto* b = static_cast<const std::byte*>(p);
+    out.insert(out.end(), b, b + n);
+  };
+  const auto u32 = [&](std::uint32_t v) { raw(&v, 4); };
+  const auto u64 = [&](std::uint64_t v) { raw(&v, 8); };
+  const auto str = [&](std::string_view s) {
+    u64(s.size());
+    raw(s.data(), s.size());
+  };
+  struct Entry {
+    std::string key;
+    std::function<void()> value;
+  };
+  const auto ints = [&](const std::vector<std::int64_t>& v, std::uint32_t type) {
+    u32(type);
+    u64(v.size());
+    for (const std::int64_t x : v) {
+      raw(&x, type == 11 ? 8 : 4);
+    }
+  };
+  std::vector<std::int64_t> ratios;
+  ratios.reserve(48);
+  for (std::uint32_t il = 0; il < 48; ++il) {
+    ratios.push_back(il % 4 == 3 ? 4 : 0);
+  }
+  std::vector<std::int64_t> offsets;
+  std::vector<std::int64_t> vocab;
+  for (std::int64_t h = 0; h < 16; ++h) {
+    offsets.push_back(h * 20000096);
+    vocab.push_back(20000096 - (h * 8));
+  }
+  const std::vector<std::pair<std::string, std::uint32_t>> scalars = {
+      {"qwen4exp.block_count", 48},
+      {"qwen4exp.embedding_length", 2560},
+      {"qwen4exp.context_length", 262144},
+      {"qwen4exp.full_attention_interval", 4},
+      {"qwen4exp.attention.head_count", 24},
+      {"qwen4exp.attention.head_count_kv", 2},
+      {"qwen4exp.attention.key_length", 256},
+      {"qwen4exp.attention.value_length", 256},
+      {"qwen4exp.attention.indexer.head_count", 4},
+      {"qwen4exp.attention.indexer.key_length", 128},
+      {"qwen4exp.attention.indexer.top_k", 2048},
+      {"qwen4exp.rope.dimension_count", 64},
+      {"qwen4exp.ssm.conv_kernel", 4},
+      {"qwen4exp.ssm.group_count", 16},
+      {"qwen4exp.ssm.time_step_rank", 48},
+      {"qwen4exp.ssm.state_size", 128},
+      {"qwen4exp.ssm.inner_size", 6144},
+      {"qwen4exp.expert_count", 512},
+      {"qwen4exp.expert_used_count", used},
+      {"qwen4exp.expert_feed_forward_length", 640},
+      {"qwen4exp.expert_shared_feed_forward_length", 640},
+      {"qwen4exp.hyper_connection.count", 4},
+      {"qwen4exp.hyper_connection.low_rank", 320},
+      {"qwen4exp.ple.ngram_size", 3},
+      {"qwen4exp.ple.heads_per_ngram", 8},
+      {"qwen4exp.ple.conv_kernel", 4},
+      {"qwen4exp.ple.eos_token_id", 248044},
+      {"qwen4exp.embedding_length_per_layer_input", 160},
+  };
+  std::vector<Entry> entries;
+  entries.push_back({"general.architecture", [&] {
+                       u32(8);
+                       str("qwen4exp");
+                     }});
+  for (const auto& [key, value] : scalars) {
+    entries.push_back({key, [&, v = value] {
+                         u32(4);
+                         u32(v);
+                       }});
+  }
+  for (const auto& [key, value] : {std::pair{"qwen4exp.attention.layer_norm_rms_epsilon", 1e-6f},
+                                   std::pair{"qwen4exp.rope.freq_base", 10000000.0f}}) {
+    entries.push_back({key, [&, v = value] {
+                         u32(6);
+                         raw(&v, 4);
+                       }});
+  }
+  entries.push_back({"qwen4exp.attention.compress_ratios", [&] {
+                       u32(9);
+                       ints(ratios, 5);
+                     }});
+  entries.push_back({"qwen4exp.rope.dimension_sections", [&] {
+                       u32(9);
+                       ints({11, 11, 10, 0}, 5);
+                     }});
+  entries.push_back({"qwen4exp.ple.layers", [&] {
+                       u32(9);
+                       ints({1}, 5);
+                     }});
+  entries.push_back({"qwen4exp.ple.layer_multipliers", [&] {
+                       u32(9);
+                       ints({3, 5, 7}, 11);
+                     }});
+  entries.push_back({"qwen4exp.ple.head_offsets", [&] {
+                       u32(9);
+                       ints(offsets, 11);
+                     }});
+  entries.push_back({"qwen4exp.ple.head_vocab_sizes", [&] {
+                       u32(9);
+                       ints(vocab, 11);
+                     }});
+  std::erase_if(entries, [&](const Entry& e) { return e.key == skip; });
+  raw("GGUF", 4);
+  u32(3);
+  u64(0);
+  u64(entries.size());
+  for (const Entry& e : entries) {
+    str(e.key);
+    e.value();
+  }
+  return out;
+}
+
+TEST(Qwen38Test, AGgufCheckpointsHashAndHyperparametersComeFromItsMetadata) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  const std::vector<std::byte> metadata = GgufMetadata();
+  auto read = md::ReadQwen38GgufHash(p, metadata, kTableRows);
+  ASSERT_TRUE(read.has_value()) << Why(read);
+  const md::Qwen38PleHash want = Hash();
+  EXPECT_EQ(read->multipliers, want.multipliers);
+  EXPECT_EQ(read->offsets, want.offsets);
+  EXPECT_EQ(read->vocab, want.vocab);
+  // A hyperparameter that is not the profile's, a missing key, constants
+  // that leave the table, or bytes that are not GGUF metadata: refused.
+  EXPECT_NE(Why(md::ReadQwen38GgufHash(p, GgufMetadata({}, 8), kTableRows))
+                .find("qwen4exp.expert_used_count"),
+            std::string::npos);
+  EXPECT_NE(Why(md::ReadQwen38GgufHash(p, GgufMetadata("qwen4exp.rope.freq_base"), kTableRows))
+                .find("qwen4exp.rope.freq_base"),
+            std::string::npos);
+  EXPECT_NE(Why(md::ReadQwen38GgufHash(p, GgufMetadata("qwen4exp.ple.head_offsets"), kTableRows))
+                .find("hash"),
+            std::string::npos);
+  EXPECT_NE(Why(md::ReadQwen38GgufHash(p, metadata, 1000)).find("outside"), std::string::npos);
+  const std::vector<std::byte> truncated(metadata.begin(), metadata.end() - 1);
+  EXPECT_NE(Why(md::ReadQwen38GgufHash(p, truncated, kTableRows)).find("kept GGUF"),
+            std::string::npos);
+}
+
+TEST(Qwen38Test, AGgufCheckpointsGraphTakesGgmlsProductsAndTheFormatFreeFusions) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  const std::vector<md::Qwen38Resource> resources = GgufLike(p);
+  auto binding = md::BindQwen38(p, "qwen4exp", resources);
+  ASSERT_TRUE(binding.has_value()) << Why(binding);
+  auto state = md::Qwen38State(p, 4096, 512);
+  ASSERT_TRUE(state.has_value());
+  const md::Qwen38PleHash h = Hash();
+  const std::vector<std::uint64_t> strides(p.layers, kGgufStride);
+  // (n_past, rows, fused, exact)
+  for (const auto& [n_past, rows, fused, exact] :
+       {std::tuple{0U, 37U, true, false}, std::tuple{37U, 1U, true, false},
+        std::tuple{2800U, 512U, true, false}, std::tuple{4095U, 1U, true, false},
+        std::tuple{40U, 8U, true, false}, std::tuple{0U, 37U, true, true},
+        std::tuple{2800U, 512U, true, true}, std::tuple{0U, 37U, false, false},
+        std::tuple{37U, 1U, false, false}, std::tuple{2800U, 512U, false, false}}) {
+    std::vector<std::int32_t> history(std::size_t{n_past} + rows, 1000);
+    auto chunk = md::Qwen38Chunk(p, *state, h, history, n_past, rows);
+    ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+    const kg::Qwen38ChunkShape shape = kg::Qwen38ShapeOf(*state, *chunk, 1);
+    auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+    ASSERT_TRUE(arena.has_value());
+    auto graph = kg::BuildQwen38Graph(*arena, p, *binding, shape,
+                                      {.expert_stride = strides, .fused = fused, .exact = exact});
+    ASSERT_TRUE(graph.has_value()) << Why(graph);
+    const bool fast = fused && !exact;
+    std::uint64_t next = std::uint64_t{1} << 40U;
+    const auto bind_leaf = [&](ggml_tensor* t) {
+      if (t != nullptr && t->data == nullptr) {
+        kg::TensorArena::Bind(t, next);
+        next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+      }
+    };
+    for (ggml_tensor* t : graph->inputs()) {
+      bind_leaf(t);
+    }
+    for (ggml_tensor* node : graph->nodes) {
+      for (ggml_tensor* src : node->src) {
+        if (src != nullptr && src->op == GGML_OP_NONE && src->view_src == nullptr) {
+          bind_leaf(src);
+        }
+      }
+    }
+    kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+    auto plan = kg::PlanGraph(graph->nodes, false, ModelDevice());
+    ASSERT_TRUE(plan.has_value()) << rows << " at " << n_past << ": " << Why(plan);
+    std::set<std::string_view> used;
+    for (const auto& step : plan->steps) {
+      used.insert(step.implementation);
+    }
+    const std::string at =
+        std::format("{} rows at {}, fused {}, exact {}", rows, n_past, fused, exact);
+    // The n-gram table's IQ4_NL rows, the token table's Q6_K rows.
+    EXPECT_TRUE(used.contains(kg::kQRowsName)) << at;
+    EXPECT_TRUE(used.contains(kg::kGetRowsExtName)) << at;
+    EXPECT_FALSE(used.contains(kg::kNvfp4RowsName)) << at;
+    // No ModelOpt format's operation.
+    for (const std::string_view name :
+         {kg::kMxfp8MulMatVecName, kg::kMxfp8DequantName, kg::kMxfp8GemmName,
+          kg::kMxfp8QuantizeName, kg::kMxfp8SwizzleName, kg::kQsaGateQuantizeName, kg::kMoeGemvName,
+          kg::kMoeGemmName, kg::kMoeGluName, kg::kHcPrepName, kg::kHcLoName, kg::kHcMixBf16Name}) {
+      EXPECT_FALSE(used.contains(name)) << name << ": " << at;
+    }
+    // The quantized products up to 8 rows (the head's one row at every
+    // width): the fast form's jitllm.vecq over one Q8_1 quantization of each
+    // input, else GGML's MMVQ; past them GGML's MMQ. The routed experts take
+    // jitllm.vecq where the fast form's rows times the experts used fit its
+    // 64 pairs.
+    const bool vector = rows <= 8;
+    const bool vecq_experts = fast && rows * 10 <= 64;
+    EXPECT_EQ(used.contains(kg::kVecQName), fast) << at;
+    EXPECT_EQ(used.contains(kg::kQuantizeQ8Name), fast) << at;
+    EXPECT_EQ(used.contains(kg::kMulMatVecQ), !fast) << at;
+    EXPECT_EQ(used.contains(kg::kMulMatQ), !vector) << at;
+    EXPECT_EQ(used.contains(kg::kMulMatIdVecQ), vector && !vecq_experts) << at;
+    EXPECT_EQ(used.contains(kg::kMulMatIdQ), !vector) << at;
+    // The reference form's hyper-connection fusions where fused.
+    for (const std::string_view name : {kg::kHcCombineName, kg::kHcNormName, kg::kHcMixName}) {
+      EXPECT_EQ(used.contains(name), fused) << name << ": " << at;
+    }
+    // The format-free fast fusions.
+    EXPECT_EQ(used.contains(kg::kMoeRouterName), fast) << at;
+    EXPECT_EQ(used.contains(kg::kMoeCombineName), fused) << at;
+    EXPECT_EQ(used.contains(kg::kQsaPoolName), fast) << at;
+    EXPECT_EQ(used.contains(kg::kQsaPrepName), fast) << at;
+    EXPECT_EQ(used.contains(kg::kGdnHistoryName), fast) << at;
+    EXPECT_EQ(used.contains(kg::kGdnNormGateName), fused) << at;
+    EXPECT_EQ(used.contains(kg::kGdnStepName),
+              fast && static_cast<std::int64_t>(rows) <= kg::kGatedDeltaNetLanesTokens)
+        << at;
+    EXPECT_EQ(used.contains(kg::kSwiGluName), !vecq_experts) << at;
+    const bool sparse = fast && chunk->qsa_select;
+    EXPECT_EQ(used.contains(kg::kQsaAttnName), sparse) << at;
+    EXPECT_EQ(used.contains(kg::kFlashAttnMmaName), !sparse) << at;
+    // The BF16 indexer projections: jitLLM's BF16 GEMM past 16 rows where
+    // fused.
+    EXPECT_EQ(used.contains(kg::kGemmBf16Name),
+              fused && static_cast<std::int64_t>(rows) > kg::kQwen38Bf16Rows)
+        << at;
+    auto placed = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256);
+    ASSERT_TRUE(placed.has_value()) << Why(placed);
+    EXPECT_EQ(graph->logits->ne[0], 248320);
+  }
+  // A GGUF artifact's graph takes no CUTLASS layout, verify or drafter
+  // streams; and a type its products do not take is refused, named.
+  std::vector<std::int32_t> history(8, 1000);
+  auto chunk = md::Qwen38Chunk(p, *state, h, history, 0, 8);
+  ASSERT_TRUE(chunk.has_value());
+  const kg::Qwen38ChunkShape shape = kg::Qwen38ShapeOf(*state, *chunk, 8);
+  for (const auto& options :
+       {kg::Qwen38GraphOptions{.expert_stride = strides,
+                               .experts = kg::Qwen38GraphOptions::Experts::kCutlass},
+        kg::Qwen38GraphOptions{.expert_stride = strides, .verify = true},
+        kg::Qwen38GraphOptions{
+            .expert_stride = strides, .export_streams = true, .stream_rows = 16}}) {
+    auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+    ASSERT_TRUE(arena.has_value());
+    EXPECT_NE(Why(kg::BuildQwen38Graph(*arena, p, *binding, shape, options)).find("GGUF"),
+              std::string::npos);
+  }
+  auto iq1m = resources;
+  for (md::Qwen38Resource& r : iq1m) {
+    if (r.roles[0] == "blk.2.attn_qkv.weight") {
+      r.type = "IQ1_M";  // no tile kernel upstream: not a type the products take
+    }
+  }
+  auto rebound = md::BindQwen38(p, "qwen4exp", iq1m);
+  ASSERT_TRUE(rebound.has_value()) << Why(rebound);
+  auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+  ASSERT_TRUE(arena.has_value());
+  EXPECT_NE(Why(kg::BuildQwen38Graph(*arena, p, *rebound, shape, {.expert_stride = strides}))
+                .find("IQ1_M"),
+            std::string::npos);
+  // A token table of a product type GGML's get_rows has no case for
+  // (NVFP4: getrows.cu aborts) is refused when the graph is built.
+  auto nvfp4 = resources;
+  for (md::Qwen38Resource& r : nvfp4) {
+    if (r.roles[0] == "token_embd.weight") {
+      r.type = "NVFP4";
+    }
+  }
+  auto nvfp4_bound = md::BindQwen38(p, "qwen4exp", nvfp4);
+  ASSERT_TRUE(nvfp4_bound.has_value()) << Why(nvfp4_bound);
+  auto nvfp4_arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(p));
+  ASSERT_TRUE(nvfp4_arena.has_value());
+  EXPECT_NE(
+      Why(kg::BuildQwen38Graph(*nvfp4_arena, p, *nvfp4_bound, shape, {.expert_stride = strides}))
+          .find("token_embd"),
+      std::string::npos);
 }
 
 }  // namespace

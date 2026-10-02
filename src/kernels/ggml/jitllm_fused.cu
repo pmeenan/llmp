@@ -198,7 +198,9 @@ __global__ void MoeGluKernel(const float4* __restrict__ gate, const float4* __re
 }
 
 // Σ_j (down_j · s_down[e_j]) · w_j in expert order, plus shared ·
-// sigmoid(shared gate), four columns a thread.
+// sigmoid(shared gate), four columns a thread. Without scales (null: a GGUF
+// checkpoint's experts) Σ_j down_j · w_j, GGML's unfused nodes' arithmetic
+// (a product by the weight, the slots added in order).
 __global__ void MoeCombineKernel(const float4* __restrict__ down,
                                  const std::int32_t* __restrict__ ids,
                                  const float* __restrict__ down_scale,
@@ -215,11 +217,16 @@ __global__ void MoeCombineKernel(const float4* __restrict__ down,
   const std::int64_t c4 = i % width4;
   float4 acc = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
   for (int j = 0; j < used; ++j) {
-    const float ds = ExpertScale(down_scale, ids[(t * ids_stride) + j], experts);
     const float w = weights[(t * used) + j];
     const float4 d = down[(((t * used) + j) * width4) + c4];
-    const float4 e = make_float4(__fmul_rn(d.x * ds, w), __fmul_rn(d.y * ds, w),
-                                 __fmul_rn(d.z * ds, w), __fmul_rn(d.w * ds, w));
+    float4 e;
+    if (down_scale == nullptr) {
+      e = make_float4(__fmul_rn(d.x, w), __fmul_rn(d.y, w), __fmul_rn(d.z, w), __fmul_rn(d.w, w));
+    } else {
+      const float ds = ExpertScale(down_scale, ids[(t * ids_stride) + j], experts);
+      e = make_float4(__fmul_rn(d.x * ds, w), __fmul_rn(d.y * ds, w), __fmul_rn(d.z * ds, w),
+                      __fmul_rn(d.w * ds, w));
+    }
     if (j == 0) {
       acc = e;
     } else {
@@ -1395,9 +1402,17 @@ __global__ void HcMixBf16Kernel(const uint4* __restrict__ normed, const uint4* _
 // their clamped sum, and the shared expert's gate logit.
 constexpr int kRouterWarps = 8;
 constexpr int kRouterSlots = 32;  // experts / 32, at most
+// The gate row's four values at `c4`: BF16 (uint2) or F32 (float4).
+__device__ __forceinline__ float4 GateRow4(const uint2* __restrict__ row, int c4) {
+  return Bf16x4(row[c4]);
+}
+__device__ __forceinline__ float4 GateRow4(const float4* __restrict__ row, int c4) {
+  return row[c4];
+}
+template <typename GateRow>
 __global__ void __launch_bounds__(kRouterWarps * 32)
     MoeRouterKernel(const float* __restrict__ logits, const float4* __restrict__ x,
-                    const uint2* __restrict__ gate_row, std::int32_t* __restrict__ ids,
+                    const GateRow* __restrict__ gate_row, std::int32_t* __restrict__ ids,
                     float* __restrict__ weights, float* __restrict__ gate, int tokens, int slots,
                     int used, int width4) {
   ggml_cuda_pdl_lc();  // the routed products after it may launch meanwhile
@@ -1475,7 +1490,7 @@ __global__ void __launch_bounds__(kRouterWarps * 32)
   }
   float dot = 0.0f;
   for (int c4 = lane; c4 < width4; c4 += 32) {
-    dot += Dot4(x[(t * width4) + c4], Bf16x4(gate_row[c4]));
+    dot += Dot4(x[(t * width4) + c4], GateRow4(gate_row, c4));
   }
   dot = WarpSum(dot);
   if (lane == 0) {
@@ -1573,16 +1588,20 @@ std::expected<void, KernelFailure> RunMoeCombine(LaunchContext& launch, ggml_ten
   return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
     const ggml_tensor* down = node->src[0];
     const ggml_tensor* ids = node->src[1];
+    // Unscaled (JitllmOpInt 0): the scale's slot left out.
+    const bool unscaled = JitllmOpInt(node, 0) == 1;
+    const int at = unscaled ? 2 : 3;
+    const ggml_tensor* scale = unscaled ? nullptr : node->src[2];
     const std::int64_t total4 = ggml_nelements(node) / 4;
     MoeCombineKernel<<<Blocks(total4, kThreads), kThreads, 0, context.stream()>>>(
         static_cast<const float4*>(down->data), static_cast<const std::int32_t*>(ids->data),
-        static_cast<const float*>(node->src[2]->data),
-        static_cast<const float*>(node->src[3]->data),
-        static_cast<const float4*>(node->src[4]->data),
-        static_cast<const float*>(node->src[5]->data), static_cast<float4*>(node->data),
+        scale != nullptr ? static_cast<const float*>(scale->data) : nullptr,
+        static_cast<const float*>(node->src[at]->data),
+        static_cast<const float4*>(node->src[at + 1]->data),
+        static_cast<const float*>(node->src[at + 2]->data), static_cast<float4*>(node->data),
         static_cast<int>(down->ne[0] / 4), static_cast<int>(down->ne[1]),
-        static_cast<int>(ids->nb[1] / sizeof(std::int32_t)), static_cast<int>(node->src[2]->ne[0]),
-        total4);
+        static_cast<int>(ids->nb[1] / sizeof(std::int32_t)),
+        scale != nullptr ? static_cast<int>(scale->ne[0]) : 0, total4);
   });
 }
 
@@ -1938,15 +1957,21 @@ std::expected<void, KernelFailure> RunMoeRouter(LaunchContext& launch, ggml_tens
     const int tokens = JitllmOpInt(node, 2);
     const MoeRouterLayout layout{.used = used, .t = tokens};
     auto* blob = static_cast<std::uint8_t*>(node->data);
-    MoeRouterKernel<<<static_cast<unsigned>((tokens + kRouterWarps - 1) / kRouterWarps),
-                      kRouterWarps * 32, 0, context.stream()>>>(
-        static_cast<const float*>(node->src[0]->data),
-        static_cast<const float4*>(node->src[1]->data),
-        static_cast<const uint2*>(node->src[2]->data),
-        reinterpret_cast<std::int32_t*>(blob + MoeRouterLayout::ids()),
-        reinterpret_cast<float*>(blob + layout.weights()),
-        reinterpret_cast<float*>(blob + layout.gate()), tokens, experts / 32, used,
-        JitllmOpInt(node, 3) / 4);
+    const auto launch_with = [&](const auto* gate_row) {
+      MoeRouterKernel<<<static_cast<unsigned>((tokens + kRouterWarps - 1) / kRouterWarps),
+                        kRouterWarps * 32, 0, context.stream()>>>(
+          static_cast<const float*>(node->src[0]->data),
+          static_cast<const float4*>(node->src[1]->data), gate_row,
+          reinterpret_cast<std::int32_t*>(blob + MoeRouterLayout::ids()),
+          reinterpret_cast<float*>(blob + layout.weights()),
+          reinterpret_cast<float*>(blob + layout.gate()), tokens, experts / 32, used,
+          JitllmOpInt(node, 3) / 4);
+    };
+    if (node->src[2]->type == GGML_TYPE_BF16) {
+      launch_with(static_cast<const uint2*>(node->src[2]->data));
+    } else {
+      launch_with(static_cast<const float4*>(node->src[2]->data));
+    }
   });
 }
 

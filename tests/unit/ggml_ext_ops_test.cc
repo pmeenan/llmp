@@ -825,8 +825,8 @@ TEST_F(GgmlExtOpsTest, QuantizedChecksRefuseWhatTheLaunchersWouldNotTake) {
   ggml_tensor* short_x = ggml_view_2d(c(), x, 4064, 2, x->nb[1], 0);
   ggml_tensor* short_rows = Place(ggml_mul_mat(c(), short_w, short_x));
   EXPECT_EQ(FailedCode(kg::CheckMulMatQ(short_rows)), KernelError::kRejected);
-  ggml_tensor* q4_0 = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q4_0, 4096, 32));
-  EXPECT_EQ(FailedCode(kg::CheckMulMatQ(Place(ggml_mul_mat(c(), q4_0, x)))),
+  ggml_tensor* q4_1 = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q4_1, 4096, 32));
+  EXPECT_EQ(FailedCode(kg::CheckMulMatQ(Place(ggml_mul_mat(c(), q4_1, x)))),
             KernelError::kRejected);
   ggml_tensor* x16 = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 4096, 2));
   EXPECT_EQ(FailedCode(kg::CheckMulMatQ(Place(ggml_mul_mat(c(), w, x16)))), KernelError::kRejected);

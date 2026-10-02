@@ -23,8 +23,10 @@ import uuid
 HERE = Path(__file__).resolve().parent
 PROMPTS = json.loads((HERE / "prompts.json").read_text())
 DOCKER = shlex.split(os.environ.get("DOCKER", "sudo -n docker"))
-LLAMA_IMAGE = ("ghcr.io/ggml-org/llama.cpp@sha256:"
-               "837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7")
+# The pinned b10964 image; LLAMA_IMAGE overrides it (pins.json's local
+# b11254 build, jitllm-llamacpp:b11254-cuda13, for the Qwen3.8 GGUF study).
+LLAMA_IMAGE = os.environ.get("LLAMA_IMAGE", "ghcr.io/ggml-org/llama.cpp@sha256:"
+                             "837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7")
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 GIB = 1 << 30
 

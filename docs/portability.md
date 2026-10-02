@@ -209,6 +209,11 @@ unfused path that exists:
   softplus, sqrt, ReLU, abs, sign, clamp, fill; repeat, concat, transpose,
   cont, `sum_rows`, `soft_max`; `get_rows`, `set_rows`; argsort top-k and
   `top_k`; `ssm_conv` and `gated_delta_net`. Verify and MTP add argmax.
+  A GGUF checkpoint's form replaces NVFP4 and MXFP8 with `mul_mat` and
+  `mul_mat_id` of its quantized types (MMVQ and MMQ) and F32 products,
+  and the n-gram table's rows with `jitllm.qrows.get_rows` (a 32-value
+  block type's rows of 160 values, which GGML's `get_rows` reads only in
+  256-value super-blocks; no fallback yet).
 - **Qwen-Image-2.1:** BF16 GEMM; 3×3 and 1×1 convolution (im2col and
   GEMM); non-causal attention at D 128 and a short causal one; SiLU,
   GELU-tanh, SwiGLU, add, gated residual, scale-shift, all rounding to
