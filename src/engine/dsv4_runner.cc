@@ -490,6 +490,7 @@ Status Dsv4Runner::Clear() {
 }
 
 Status Dsv4Runner::EnsureState(std::uint32_t positions) {
+  state_refused_ = false;
   auto needed = md::Dsv4UsedState(layout_, positions);
   if (!needed) {
     return std::unexpected(needed.error());
@@ -501,12 +502,16 @@ Status Dsv4Runner::EnsureState(std::uint32_t positions) {
   if (speculative()) {
     ranges.push_back({.region = kDrafter, .offset = 0, .bytes = dlayout_.bytes});
   }
-  auto used = live_.Use(node_, ranges, &everything_);
+  bool over_budget = false;
+  auto used = live_.Use(node_, ranges, &everything_, &over_budget);
   if (!used) {
     if (auto refreshed = RefreshClosures(); !refreshed) {
       live_.Quarantine();
       return Error(std::format("{}; {}", used.error(), refreshed.error()));
     }
+    // Only a clean refusal that left the state usable may be retried once
+    // capacity is freed (state_refused).
+    state_refused_ = over_budget && !live_.quarantined();
     return std::unexpected(used.error());
   }
   return *used ? RefreshClosures() : Status{};
@@ -673,6 +678,7 @@ Status Dsv4Runner::Rollback() {
 Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                          std::vector<float>& logits, const std::function<Status()>& meanwhile,
                          Dsv4ChunkKind kind) {
+  state_refused_ = false;
   const auto rows = static_cast<std::uint32_t>(tokens.size());
   if (kind != Dsv4ChunkKind::kPlain && !speculative()) {
     return Error("an injection or a verify needs the drafter");
@@ -829,6 +835,7 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
 
 Status Dsv4Runner::Draft(std::uint32_t pos0, std::int32_t anchor,
                          std::vector<std::int32_t>& drafts) {
+  state_refused_ = false;
   if (!speculative()) {
     return Error("drafting needs the drafter");
   }
@@ -945,6 +952,7 @@ std::expected<ggml_tensor*, std::string> Dsv4Runner::DraftRowsNode(std::uint32_t
 
 Status Dsv4Runner::DraftVerify(std::uint32_t pos, std::int32_t anchor, std::uint32_t rows,
                                std::vector<std::int32_t>& drafts, std::vector<float>& logits) {
+  state_refused_ = false;
   if (!speculative()) {
     return Error("drafting needs the drafter");
   }

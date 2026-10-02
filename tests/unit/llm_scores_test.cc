@@ -238,7 +238,7 @@ class FakeLlm : public rt::Llm {
   std::uint64_t target_state_bytes() const override { return 0; }
   std::uint64_t drafter_state_base() const override { return 0; }
   std::uint64_t drafter_state_bytes() const override { return 0; }
-  std::uint64_t used_state_bytes() const override { return 0; }
+  std::uint64_t used_state_bytes() const override { return target.size(); }
   std::vector<engine::LiveState::Range> used_state_ranges() const override { return {}; }
   rt::Status SaveUsedState(void* /*host*/,
                            std::span<const engine::LiveState::Range> /*ranges*/) override {
@@ -279,7 +279,17 @@ class NativeBranchesFake final : public FakeLlm {
   std::size_t generation_wave_capacity() const override { return wave_capacity_; }
   std::optional<std::uint32_t> nonfinite_wave_row;
   std::optional<std::uint32_t> failed_wave_judgement;
+  // The execution budget in state tokens, shared by every branch: growth
+  // past it is refused for capacity before dispatch (StateRefusedFor).
+  std::optional<std::size_t> budget;
   FakeLlm& native_state(std::size_t slot) { return slot == 0 ? *this : *leaves_.at(slot - 1); }
+  std::size_t held() {
+    std::size_t tokens = 0;
+    for (std::size_t slot = 0; slot < kMaxBranches; ++slot) {
+      tokens += native_state(slot).target.size();
+    }
+    return tokens;
+  }
   const auto& selected() const { return selected_; }
   jitllm::execution::AdaptiveDepth& policy(Branch& branch) { return BranchDecoding(branch); }
   std::uint32_t& pending_cursor(Branch& branch) { return cursors_[BranchIndex(branch)]; }
@@ -329,6 +339,9 @@ class NativeBranchesFake final : public FakeLlm {
   }
   rt::Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t n_past,
                          bool inject, std::vector<float>& logits) override {
+    if (OverBudget(branch, all.size())) {
+      return std::unexpected("loading would exceed the execution budget");
+    }
     return Native(branch).FakeLlm::RunChunk(all, n_past, inject, logits);
   }
   rt::Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
@@ -348,6 +361,9 @@ class NativeBranchesFake final : public FakeLlm {
     return Native(branch).capacity_refused;
   }
   rt::Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) override {
+    if (OverBudget(branch, std::size_t{pos} + 1)) {
+      return std::unexpected("loading would exceed the execution budget");
+    }
     return Native(branch).FakeLlm::PrepareDecodeState(pos, left);
   }
   std::uint64_t TargetStateBaseFor(const Branch& branch) const override {
@@ -416,6 +432,21 @@ class NativeBranchesFake final : public FakeLlm {
   }
 
  private:
+  // Whether growing this branch's state to `tokens` would pass the budget
+  // beside every other branch's: then refused for capacity, nothing run.
+  bool OverBudget(Branch& branch, std::size_t tokens) {
+    if (!budget.has_value()) {
+      return false;
+    }
+    const std::size_t limit = *budget;
+    FakeLlm& native = Native(branch);
+    const bool over =
+        held() - native.target.size() + std::max(tokens, native.target.size()) > limit;
+    if (over) {
+      native.capacity_refused = true;
+    }
+    return over;
+  }
   const std::size_t wave_capacity_;
   FakeLlm& Native(Branch& branch) { return native_state(BranchIndex(branch)); }
   const FakeLlm& Native(const Branch& branch) const {
@@ -1655,6 +1686,268 @@ TEST(LlmScores, APreemptedGenerationResumesFromItsRebuiltStateWithoutRepeatingTo
     EXPECT_EQ((*branch)->history(), (*reference)->history());
     EXPECT_EQ((*branch)->history(), model.native_state(1).target);
   }
+}
+
+// Serial state capacity (Llm::set_capacity_reclaim): a serial request
+// refused for capacity frees idle branches' state, the largest first, as
+// serve_api.cc's SerialReclaim does, and runs the same unit again; one it
+// cannot relieve ends at its completed prefix, typed, for the request alone.
+void ReclaimIdleLargestFirst(NativeBranchesFake& model, std::vector<std::size_t>& released) {
+  model.set_capacity_reclaim([&model, &released](const rt::Llm::Branch& refused) {
+    const auto idle = model.LargestIdleBranch(refused);
+    if (!idle) {
+      return false;
+    }
+    auto branch = model.branch(*idle);
+    if (!branch || !(*branch)->ReleaseIdleState()) {
+      return false;
+    }
+    released.push_back(*idle);
+    return true;
+  });
+}
+
+void HoldIdle(NativeBranchesFake& model, std::size_t slot, std::size_t tokens) {
+  auto branch = model.branch(slot);
+  ASSERT_TRUE(branch.has_value());
+  std::vector<float> last;
+  ASSERT_TRUE((*branch)->Prefill(std::vector<std::int32_t>(tokens, 1), last).has_value());
+}
+
+TEST(LlmScores, TheLargestIdleBranchExcludesTheRefusedAndBusyBranches) {
+  NativeBranchesFake model;
+  HoldIdle(model, 1, 6);
+  HoldIdle(model, 2, 9);
+  HoldIdle(model, 3, 4);
+  auto zero = model.branch(0);
+  auto two = model.branch(2);
+  ASSERT_TRUE(zero.has_value());
+  ASSERT_TRUE(two.has_value());
+  EXPECT_EQ(model.LargestIdleBranch(**zero), 2U);
+  EXPECT_EQ(model.LargestIdleBranch(**two), 1U);
+  // A branch with an open session is not idle.
+  auto busy = (*two)->BeginPrompt(std::array<std::int32_t, 1>{4});
+  ASSERT_TRUE(busy.has_value());
+  EXPECT_EQ(model.LargestIdleBranch(**zero), 1U);
+  (*busy)->Cancel();
+  ASSERT_TRUE((*busy)->Finish().has_value());
+  // No branch retaining state, or none but the refused one: none.
+  NativeBranchesFake empty;
+  auto first = empty.branch(0);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_FALSE(empty.LargestIdleBranch(**first).has_value());
+  FakeLlm serial;
+  std::vector<float> last;
+  ASSERT_TRUE(serial.Prefill(std::array<std::int32_t, 2>{0, 1}, last).has_value());
+  EXPECT_FALSE(serial.LargestIdleBranch(serial.default_branch()).has_value());
+}
+
+TEST(LlmScores, ASerialPrefillReleasesIdleStateLargestFirstAndRetriesTheRefusedChunk) {
+  NativeBranchesFake model;
+  HoldIdle(model, 1, 6);
+  HoldIdle(model, 2, 9);
+  std::vector<std::size_t> released;
+  ReclaimIdleLargestFirst(model, released);
+  model.budget = 20;
+  const std::vector<std::int32_t> prompt(10, 2);
+  std::vector<float> last;
+  std::vector<std::uint32_t> asked;
+  rt::PrefillRun run;
+  ASSERT_TRUE(model.Clear().has_value());
+  ASSERT_TRUE(model
+                  .Prefill(
+                      prompt, last,
+                      [&asked](std::uint32_t rows) {
+                        asked.push_back(rows);
+                        return true;
+                      },
+                      &run)
+                  .has_value());
+  EXPECT_THAT(released, ElementsAre(2U));   // 15 + 8 > 20; then 6 + 8 and 6 + 10 fit
+  EXPECT_THAT(asked, ElementsAre(8U, 2U));  // each chunk declared once
+  EXPECT_EQ(model.history(), prompt);
+  EXPECT_EQ(model.target, prompt);
+  EXPECT_FALSE(model.default_branch().capacity_refused());
+  EXPECT_EQ(run.chunks, 2U);
+  EXPECT_TRUE(model.native_state(2).target.empty());
+  EXPECT_EQ(model.native_state(1).target.size(), 6U);  // not needed: kept
+  auto one = model.branch(1);
+  ASSERT_TRUE(one.has_value());
+  EXPECT_EQ((*one)->history().size(), 6U);
+}
+
+TEST(LlmScores, ASerialPrefillThatCannotFitAloneEndsTypedAtItsCompletedPrefix) {
+  NativeBranchesFake model;
+  HoldIdle(model, 1, 6);
+  HoldIdle(model, 2, 9);
+  std::vector<std::size_t> released;
+  ReclaimIdleLargestFirst(model, released);
+  model.budget = 20;
+  const std::vector<std::int32_t> prompt(25, 2);
+  std::vector<float> last;
+  auto refused = model.Prefill(prompt, last);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("the chunk at 16"));
+  EXPECT_THAT(refused.error(), HasSubstr("execution budget"));
+  EXPECT_THAT(released, ElementsAre(2U, 1U));
+  EXPECT_TRUE(model.default_branch().capacity_refused());
+  EXPECT_TRUE(last.empty());
+  // The state is usable and holds the chunks that ran; nothing owes a clear.
+  EXPECT_EQ(model.history(), std::vector<std::int32_t>(16, 2));
+  EXPECT_EQ(model.target, model.history());
+  const unsigned clearings = model.clearings;
+  ASSERT_TRUE(model.Prefill(std::array<std::int32_t, 1>{3}, last).has_value());
+  EXPECT_EQ(model.clearings, clearings);
+  EXPECT_FALSE(model.default_branch().capacity_refused());
+
+  // Without a reclaim the same refusal ends the prefill at once, typed.
+  model.set_capacity_reclaim({});
+  ASSERT_TRUE(model.Clear().has_value());
+  HoldIdle(model, 3, 5);
+  EXPECT_FALSE(model.Prefill(std::vector<std::int32_t>(20, 2), last).has_value());
+  EXPECT_TRUE(model.default_branch().capacity_refused());
+  EXPECT_EQ(model.history(), std::vector<std::int32_t>(8, 2));
+  EXPECT_EQ(model.native_state(3).target.size(), 5U);
+  EXPECT_THAT(released, ElementsAre(2U, 1U));
+}
+
+TEST(LlmScores, ASerialNonCapacityFailureIsNeitherReclaimedNorTyped) {
+  NativeBranchesFake model;
+  HoldIdle(model, 1, 6);
+  std::vector<std::size_t> released;
+  ReclaimIdleLargestFirst(model, released);
+  model.fail_chunk = 2;
+  std::vector<float> last;
+  EXPECT_FALSE(model.Prefill(std::vector<std::int32_t>(12, 2), last).has_value());
+  EXPECT_TRUE(released.empty());
+  EXPECT_FALSE(model.default_branch().capacity_refused());
+  EXPECT_TRUE(model.history().empty());  // unknown completion: a clear is owed
+  EXPECT_EQ(model.native_state(1).target.size(), 6U);
+}
+
+TEST(LlmScores, ASerialPromptReleasesIdleStateAndRetriesOrEndsTyped) {
+  NativeBranchesFake model;
+  HoldIdle(model, 3, 7);
+  std::vector<std::size_t> released;
+  ReclaimIdleLargestFirst(model, released);
+  model.budget = 18;
+  const std::vector<std::int32_t> turn(16, 2);
+  std::vector<float> last;
+  std::uint32_t reused = 0;
+  unsigned asked = 0;
+  const rt::PrefillGoOn go_on = [&asked](std::uint32_t /*rows*/) {
+    ++asked;
+    return true;
+  };
+  ASSERT_TRUE(model.PreparePrompt(turn, 0, last, reused, go_on).has_value());
+  EXPECT_THAT(released, ElementsAre(3U));  // 7 + 16 > 18
+  EXPECT_EQ(model.history(), turn);
+  EXPECT_EQ(last, FakeLlm::Row(3));
+  EXPECT_FALSE(model.default_branch().capacity_refused());
+  EXPECT_EQ(asked, 4U);  // reuse, two chunks, and the refused chunk declared again
+
+  // Alone, a longer turn that cannot fit ends at its completed prefix.
+  std::vector<std::int32_t> longer = turn;
+  longer.resize(28, 3);
+  auto refused = model.PreparePrompt(longer, 0, last, reused, go_on);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("execution budget"));
+  EXPECT_TRUE(model.default_branch().capacity_refused());
+  EXPECT_EQ(reused, 16U);
+  EXPECT_EQ(model.history(), turn);
+  EXPECT_TRUE(last.empty());
+  EXPECT_THAT(released, ElementsAre(3U));
+}
+
+TEST(LlmScores, ASerialScoreReleasesIdleStateAndReportsEachRowOnce) {
+  NativeBranchesFake model;
+  HoldIdle(model, 1, 4);
+  std::vector<std::size_t> released;
+  ReclaimIdleLargestFirst(model, released);
+  model.budget = 8;
+  const std::array<std::int32_t, 6> prompt = {0, 1, 2, 3, 4, 5};
+  std::vector<float> last;
+  std::vector<std::int32_t> scored;
+  ASSERT_TRUE(model
+                  .ScorePrompt(prompt, last,
+                               [&scored](std::int32_t id, std::span<const float> /*row*/) {
+                                 scored.push_back(id);
+                                 return true;
+                               })
+                  .has_value());
+  EXPECT_THAT(released, ElementsAre(1U));  // the fifth row: 4 + 5 > 8
+  EXPECT_THAT(scored, ElementsAre(1, 2, 3, 4, 5));
+  EXPECT_THAT(model.history(), ElementsAre(0, 1, 2, 3, 4, 5));
+  EXPECT_FALSE(model.default_branch().capacity_refused());
+
+  ASSERT_TRUE(model.Clear().has_value());
+  model.budget = 3;
+  scored.clear();
+  auto refused =
+      model.ScorePrompt(prompt, last, [&scored](std::int32_t id, std::span<const float> /*row*/) {
+        scored.push_back(id);
+        return true;
+      });
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("fake's scoring: the row at 3: "));
+  EXPECT_TRUE(model.default_branch().capacity_refused());
+  EXPECT_THAT(scored, ElementsAre(1, 2, 3));  // the fourth row: 4 > 3, nothing idle
+  EXPECT_THAT(model.history(), ElementsAre(0, 1, 2));
+}
+
+TEST(LlmScores, ASerialGenerationReleasesIdleStateThenEndsTypedWhenAlone) {
+  NativeBranchesFake model;
+  HoldIdle(model, 1, 5);
+  std::vector<std::size_t> released;
+  ReclaimIdleLargestFirst(model, released);
+  model.budget = 12;
+  std::vector<float> last;
+  ASSERT_TRUE(model.Prefill(std::vector<std::int32_t>(6, 0), last).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  std::vector<std::int32_t> visible;
+  options.on_tokens = [&visible](std::span<const std::int32_t> fresh) {
+    visible.insert(visible.end(), fresh.begin(), fresh.end());
+    return true;
+  };
+  rt::Generation out;
+  ASSERT_TRUE(model.Generate(last, options, out).has_value());
+  EXPECT_THAT(released, ElementsAre(1U));  // the second step: 5 + 8 > 12
+  EXPECT_THAT(out.tokens, ElementsAre(1, 2, 3, 4));
+  EXPECT_EQ(visible, out.tokens);  // each streamed once
+  EXPECT_FALSE(model.default_branch().capacity_refused());
+  EXPECT_EQ(model.history().size(), 9U);
+
+  // Alone, past the budget: ends at its completed prefix, settled.
+  ASSERT_TRUE(model.Clear().has_value());
+  model.budget = 8;
+  ASSERT_TRUE(model.Prefill(std::vector<std::int32_t>(6, 0), last).has_value());
+  rt::Generation alone;
+  visible.clear();
+  auto refused = model.Generate(last, options, alone);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("fake's decode step at 8: "));
+  EXPECT_THAT(refused.error(), HasSubstr("execution budget"));
+  EXPECT_TRUE(model.default_branch().capacity_refused());
+  EXPECT_THAT(alone.tokens, ElementsAre(1, 2, 3));
+  EXPECT_EQ(visible, alone.tokens);
+  EXPECT_EQ(model.history().size(), 8U);  // the prompt and two processed tokens
+  EXPECT_EQ(model.target, model.history());
+  EXPECT_EQ(model.settlements, 2U);  // each generation's end
+
+  // A refused generation whose settling then fails is not capacity's: the
+  // branch owes a clear and the failure is untyped (the service stops).
+  ASSERT_TRUE(model.Clear().has_value());
+  ASSERT_TRUE(model.Prefill(std::vector<std::int32_t>(6, 0), last).has_value());
+  model.fail_settle = true;
+  rt::Generation unsettled;
+  auto failed = model.Generate(last, options, unsettled);
+  ASSERT_FALSE(failed.has_value());
+  EXPECT_THAT(failed.error(), HasSubstr("settling failed"));
+  EXPECT_FALSE(model.default_branch().capacity_refused());
+  EXPECT_TRUE(model.history().empty());
+  model.fail_settle = false;
 }
 
 }  // namespace

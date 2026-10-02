@@ -185,6 +185,44 @@ class ChatOutput final {
   bool any_content_ = false;
 };
 
+// A serial request's state-capacity policy on its model for the request's
+// duration (Llm::set_capacity_reclaim); cleared when it ends.
+class ScopedReclaim final {
+ public:
+  ScopedReclaim(Llm& model, Llm::CapacityReclaim reclaim) : model_(model) {
+    model_.set_capacity_reclaim(std::move(reclaim));
+  }
+  ~ScopedReclaim() { model_.set_capacity_reclaim({}); }
+  ScopedReclaim(const ScopedReclaim&) = delete;
+  ScopedReclaim& operator=(const ScopedReclaim&) = delete;
+  ScopedReclaim(ScopedReclaim&&) = delete;
+  ScopedReclaim& operator=(ScopedReclaim&&) = delete;
+
+ private:
+  Llm& model_;
+};
+
+// A serial request's work under its lease, with the refusal that ended it
+// when only the state's capacity did (Branch::capacity_refused): the lease
+// then ends normally, and the request alone fails (as a cohort member that
+// cannot fit alone). Any other failure is returned for the node to stop.
+class SerialCapacity final {
+ public:
+  explicit SerialCapacity(Llm& model) : model_(model) {}
+  Status operator()(const Status& status, std::string_view what) {
+    if (!status && model_.default_branch().capacity_refused()) {
+      refusal_ = std::format("{}{}", what, status.error());
+      return {};
+    }
+    return status;
+  }
+  const std::optional<std::string>& refusal() const { return refusal_; }
+
+ private:
+  Llm& model_;
+  std::optional<std::string> refusal_;
+};
+
 // The chat route's requests as turns on the node: one model resident, a
 // swap when another is asked for, the conversation state reused when the
 // rendered request extends it, and each request one lease (D-093).
@@ -681,6 +719,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     const PrefillGoOn go_on = [&exchange](std::uint32_t rows) {
       return exchange.Next(Phase::kPrefill, rows);
     };
+    // Idle branches' retained state gives way to this request, the largest
+    // first; a refusal it still meets fails the request alone.
+    const ScopedReclaim reclaim(l, SerialReclaim(l));
+    SerialCapacity capacity(l);
     auto ran = server_.InRequest(*m, [&]() -> Status {
       // Between chunks, whatever ends the request (the client gone, the
       // backend stalled, the deadline, the runtime stopping) stops the
@@ -690,16 +732,20 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       if (auto r =
               l.PreparePrompt(tokens, rendered->stable_boundary, last, reused, go_on, &prefill);
           !r) {
-        return r;
+        return capacity(r, "the prompt could not be processed: ");
       }
       if (prefill.stopped || !exchange.Next(Phase::kDecode, 0)) {
         return {};  // the state holds what ran; the exchange answers for why
       }
-      return l.Generate(last, options, generation);
+      return capacity(l.Generate(last, options, generation), "the generation failed: ");
     });
     if (!ran) {
       Fail(std::format("{}'s request: {}", m->name(), ran.error()));
       return std::unexpected(Failure(500, "the generation failed; the runtime is stopping"));
+    }
+    if (capacity.refusal()) {
+      RefusedAlone(l);
+      return std::unexpected(Failure(500, *capacity.refusal()));
     }
     if (prefill.stopped) {
       // Token counts and times only (D-014); the exchange answers for why.
@@ -840,6 +886,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     };
     Generation generation;
     PrefillRun prefill;
+    // As chat's serial turn: idle branches' retained state gives way to this
+    // request, and a refusal it still meets fails the request alone.
+    const ScopedReclaim reclaim(llm, SerialReclaim(llm));
+    SerialCapacity capacity(llm);
     auto ran = server_.InRequest(*model, [&]() -> Status {
       if (auto cleared = llm.Clear(); !cleared) {
         return cleared;
@@ -860,21 +910,25 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
                 },
                 go_on, &prefill);
             !scored) {
-          return scored;
+          return capacity(scored, "the prompt could not be processed: ");
         }
       } else if (auto filled = llm.Prefill(tokens, last, go_on, &prefill); !filled) {
-        return filled;
+        return capacity(filled, "the prompt could not be processed: ");
       }
       prompt_rows.Finish();  // same boundary flush as prompt_text, never carried into generation
       if (prefill.stopped || !exchange.Continue() || max_tokens == 0 ||
           !exchange.Next(Phase::kDecode, 0)) {
         return {};
       }
-      return llm.Generate(last, options, generation);
+      return capacity(llm.Generate(last, options, generation), "the generation failed: ");
     });
     if (!ran) {
       Fail("the literal completion failed: " + ran.error());
       return std::unexpected(Failure(500, "the completion failed; the runtime is stopping"));
+    }
+    if (capacity.refusal()) {
+      RefusedAlone(llm);
+      return std::unexpected(Failure(500, *capacity.refusal()));
     }
     if (output_problem) {
       return std::unexpected(*output_problem);
@@ -1047,7 +1101,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     const std::optional<std::size_t> idle = LargestIdleState();
     CapacityDecision decision = OnCapacityRefused(cohort, slots, idle.has_value());
     if (decision.reclaim) {
-      if (idle && ReleaseIdle(*idle)) {
+      if (idle && ReleaseIdle(*cohort_model_, *idle)) {
         Apply(cohort);  // the refused members run again
         return;
       }
@@ -1100,25 +1154,41 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     return idle;
   }
 
-  // Clears that cache for members refused for capacity: conversation state
+  // Clears that cache for requests refused for capacity: conversation state
   // is never an eviction victim, so a retired conversation's state would
   // otherwise hold its capacity until its branch is reused. Its next turn
   // then prefills from the start. False if the clear failed (logged).
-  bool ReleaseIdle(std::size_t slot) {
-    auto branch = cohort_model_->branch(slot);
+  bool ReleaseIdle(Llm& model, std::size_t slot) {
+    auto branch = model.branch(slot);
     if (!branch) {
       return false;
     }
     const std::size_t tokens = (*branch)->history().size();
     if (auto released = (*branch)->ReleaseIdleState(); !released) {
       Say(log_, std::format("{}'s idle conversation state in slot {} could not be cleared: {}",
-                            cohort_model_->name(), slot, released.error()));
+                            model.name(), slot, released.error()));
       return false;
     }
     Say(log_, std::format("{}'s idle conversation state in slot {} ({} tokens) cleared for a "
                           "request short of state capacity",
-                          cohort_model_->name(), slot, tokens));
+                          model.name(), slot, tokens));
     return true;
+  }
+
+  // A serial request runs alone, as a cohort of one: refused for capacity,
+  // it clears the largest idle branch's retained state and runs again.
+  Llm::CapacityReclaim SerialReclaim(Llm& model) {
+    return [this, &model](const Llm::Branch& refused) {
+      const std::optional<std::size_t> idle = model.LargestIdleBranch(refused);
+      return idle.has_value() && ReleaseIdle(model, *idle);
+    };
+  }
+
+  // Positions only (D-014).
+  void RefusedAlone(const Llm& model) {
+    Say(log_, std::format("{}'s request does not fit the state's capacity alone at {} tokens: "
+                          "refused",
+                          model.name(), model.history().size()));
   }
 
   // Frees a waiting member's state between its completed units: its

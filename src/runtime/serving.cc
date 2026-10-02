@@ -353,6 +353,9 @@ class Dsv4 final : public Llm {
   std::uint64_t target_state_base() const override { return runner_.state_base(); }
   std::uint64_t used_state_bytes() const override { return runner_.used_state_bytes(); }
   bool StateUsable() const override { return runner_.state_usable(); }
+  bool StateRefusedFor(const Branch& branch) const override {
+    return &branch == &default_branch() && runner_.state_refused();
+  }
   Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
     auto rows = speculate_
                     ? std::min({options_.draft_rows + 1, options_.max_verify, left, context_ - pos})
@@ -1358,6 +1361,31 @@ bool Llm::AnyBranchHasRetainedState() const {
   return false;
 }
 
+std::optional<std::size_t> Llm::LargestIdleBranch(const Branch& keep) const {
+  CheckBranch(keep);
+  std::optional<std::size_t> idle;
+  std::uint64_t most = 0;
+  for (std::uint32_t slot = 0; slot < branch_count_; ++slot) {
+    const Branch& branch = slot == 0 ? default_branch_ : *extra_branches_[slot - 1];
+    if (&branch == &keep || branch.generation_active_ || branch.prompt_session_ != nullptr) {
+      continue;
+    }
+    if (const std::uint64_t bytes = UsedStateBytesFor(branch); bytes > most) {
+      most = bytes;
+      idle = slot;
+    }
+  }
+  return idle;
+}
+
+bool Llm::CapacityRefused(const Branch& branch) const {
+  return StateRefusedFor(branch) && StateUsableFor(branch);
+}
+
+bool Llm::ReclaimFor(const Branch& branch) {
+  return capacity_reclaim_ && capacity_reclaim_(branch);
+}
+
 bool Llm::sampling(const Branch& branch) const {
   CheckBranch(branch);
   return branch.sampling_.has_value();
@@ -1669,15 +1697,30 @@ Status Llm::PreparePrompt(Branch& branch, std::span<const std::int32_t> tokens,
                           std::uint32_t& reused, const PrefillGoOn& go_on, PrefillRun* run,
                           bool fresh) {
   CheckIdleGeneration(branch);
+  branch.capacity_refused_ = false;
   auto opened = BeginPrompt(branch, tokens, stable_boundary, fresh);
   if (!opened) {
     return std::unexpected(opened.error());
   }
   auto& session = **opened;
+  std::size_t reclaimed = 0;
   while (!session.done()) {
-    if (auto advanced = session.Advance(go_on); !advanced) {
-      break;
+    auto advanced = session.Advance(go_on, true);
+    if (advanced) {
+      reclaimed = 0;
+      continue;
     }
+    if (session.refused()) {
+      // The same unit again once capacity was freed; otherwise it ends at
+      // its completed prefix, as an undeferred refusal does.
+      if (reclaimed < kMaxBranches && ReclaimFor(branch)) {
+        ++reclaimed;
+        continue;
+      }
+      branch.capacity_refused_ = true;
+      [[maybe_unused]] const auto failed = session.Fail(std::move(advanced.error()));
+    }
+    break;
   }
   auto result = session.Finish();
   last = std::move(session.last_);
@@ -1860,6 +1903,7 @@ Status Llm::PromptSession::Finish() {
 Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::vector<float>& last,
                     const PrefillGoOn& go_on, PrefillRun* run) {
   CheckIdleGeneration(branch);
+  branch.capacity_refused_ = false;
   if (branch.needs_clear_) {
     if (auto r = Clear(branch); !r) {
       return r;
@@ -1881,8 +1925,16 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
       max_rows_,
       [&](std::uint32_t at, std::uint32_t n) {
         auto chunk = RunChunkFor(branch, std::span(all).first(at + n), at, speculate_, last);
+        // A capacity refusal ran nothing: the same chunk again once freed.
+        for (std::size_t reclaimed = 0;
+             !chunk && CapacityRefused(branch) && reclaimed < kMaxBranches && ReclaimFor(branch);
+             ++reclaimed) {
+          chunk = RunChunkFor(branch, std::span(all).first(at + n), at, speculate_, last);
+        }
         if (chunk) {
           completed = at + n;
+        } else {
+          branch.capacity_refused_ = CapacityRefused(branch);
         }
         return chunk;
       },
@@ -1918,6 +1970,7 @@ Status Llm::ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens,
                         const std::function<bool(std::int32_t, std::span<const float>)>& on_row,
                         const PrefillGoOn& go_on, PrefillRun* run) {
   CheckIdleGeneration(branch);
+  branch.capacity_refused_ = false;
   if (!branch.history_.empty() || tokens.empty() || tokens.size() > context_) {
     return Error("literal scoring needs an empty history and a nonempty prompt within context");
   }
@@ -1935,13 +1988,20 @@ Status Llm::ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens,
     }
     const auto started = Clock::now();
     auto ran = RunChunkFor(branch, tokens.first(std::size_t{at} + 1), at, speculate_, last);
+    // A capacity refusal ran nothing: the same row again once freed.
+    for (std::size_t reclaimed = 0;
+         !ran && CapacityRefused(branch) && reclaimed < kMaxBranches && ReclaimFor(branch);
+         ++reclaimed) {
+      ran = RunChunkFor(branch, tokens.first(std::size_t{at} + 1), at, speculate_, last);
+    }
     if (!ran) {
+      branch.capacity_refused_ = CapacityRefused(branch);
       branch.needs_clear_ = !StateUsableFor(branch);
       if (branch.needs_clear_) {
         branch.history_.clear();
       }
       last.clear();
-      return ran;
+      return Error(std::format("{}'s scoring: the row at {}: {}", name_, at, ran.error()));
     }
     branch.history_.push_back(tokens[at]);
     completed.end = at + 1;
@@ -2182,8 +2242,17 @@ Status Llm::GenerationSession::ApplyTokens(std::vector<std::int32_t> kept,
   return {};
 }
 
-Status Llm::GenerationSession::RunScalarStep() {
-  auto step = PrepareStep();
+void Llm::GenerationSession::EndRefused() {
+  base::Check(refused() && !prepared_ && ran_.has_value(),
+              "ending a generation that was not refused");
+  // Named as a prefill's refusal names its chunk (positions only, D-014).
+  ran_ = Error(std::format("{}'s decode step at {}: {}", model_.name_, position_,
+                           std::exchange(refusal_, {})));
+  failed_prefix_valid_ = model_.StateUsableFor(branch_);
+}
+
+Status Llm::GenerationSession::RunScalarStep(bool defer_capacity) {
+  auto step = PrepareStep(defer_capacity);
   if (!step) {
     return std::unexpected(step.error());
   }
@@ -2359,17 +2428,36 @@ Status Llm::GenerationSession::Finish() {
 
 Status Llm::Generate(Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
                      Generation& out) {
+  CheckBranch(branch);
+  branch.capacity_refused_ = false;
   auto began = BeginGeneration(branch, last, options, out);
   if (!began) {
     return std::unexpected(began.error());
   }
   auto& session = **began;
+  std::size_t reclaimed = 0;
   while (!session.done()) {
-    if (auto ran = session.RunScalarStep(); !ran) {
-      break;
+    if (auto ran = session.RunScalarStep(true); ran) {
+      reclaimed = 0;
+      continue;
     }
+    if (session.refused()) {
+      // The same step again once capacity was freed; otherwise it ends at
+      // its completed prefix, as an undeferred refusal does.
+      if (reclaimed < kMaxBranches && ReclaimFor(branch)) {
+        ++reclaimed;
+        continue;
+      }
+      branch.capacity_refused_ = true;
+      session.EndRefused();
+    }
+    break;
   }
-  return session.Finish();
+  auto finished = session.Finish();
+  // Settling the refused generation can still fail; that failure (the
+  // branch then owes a clear) is not capacity's.
+  branch.capacity_refused_ = branch.capacity_refused_ && !branch.needs_clear_;
+  return finished;
 }
 
 Status Llm::SaveState(Branch& branch, void* host) {

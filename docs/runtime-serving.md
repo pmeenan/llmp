@@ -527,7 +527,9 @@ libraries does, or one that has gone; a client that half-closes should
 parse 1xx (RFC 9110, section 15.2). A half-close before the request is
 whole is a disconnect. A failure of the node itself (a swap or a job
 that failed) ends the request with a 500 or 503 and stops the service
-with status 1.
+with status 1. A request whose conversation state does not fit the
+execution budget even alone is not one: it fails with a 500 and the
+service goes on ([state capacity](#state-capacity-in-a-cohort)).
 
 **Connections.** HTTP/1.1 connections persist: a response carries
 `Connection: keep-alive` unless the client asked to close, an HTTP/1.0
@@ -630,9 +632,17 @@ again later. Every other failure ends its request as before. The policy
 
 So only a request that cannot fit alone fails for capacity; under pressure
 the cohort serves fewer requests at a time. A waiting member keeps its
-deadline, cancellation and client checks between every unit. The serial
-path (`Complete`) is unchanged; a cohort of one clears idle caches first,
-then fails with the refusal as before. The runtime
+deadline, cancellation and client checks between every unit. A cohort of
+one clears idle caches first, then fails with the refusal.
+
+The serial path (`Complete`: literal completions and scoring, and chat for
+models without a cohort) runs alone, as a cohort of one. Its prefill chunk,
+scored row or decode step refused this way (DeepSeek's runner types the
+same refusal) clears the largest idle branch's retained state and runs
+again (`Llm::set_capacity_reclaim`, `Llm::LargestIdleBranch`); once none
+is left, the request fails with the refusal (a 500 naming the chunk or
+step), its state usable at its completed prefix, and the service goes on.
+Any other failure still stops the service, as below. The runtime
 logs each wait, preemption, cleared idle cache and refusal with slots and
 token counts only.
 
@@ -788,9 +798,12 @@ to it alone. `deadline_cap_seconds` 14,400 (60 to 86,400).
 array of exact nonnegative int32 token IDs. It applies no chat template,
 reasoning split or prefix reuse. Each request starts from cleared state,
 under the same bounded queue, browser guards, swap and request lease as
-chat. Admission validates IDs against the actual model vocabulary, refuses
-unused padding IDs and checks prompt plus requested output against the
-usable context. Supplied EOS/stop IDs are ordinary teacher-forced inputs.
+chat. Idle chat branches' retained state gives way to it when the state's
+capacity refuses it; one that cannot fit alone fails with a 500
+([state capacity](#state-capacity-in-a-cohort)). Admission validates IDs
+against the actual model vocabulary, refuses unused padding IDs and checks
+prompt plus requested output against the usable context. Supplied EOS/stop
+IDs are ordinary teacher-forced inputs.
 
 Besides the shared model/sampling/stop controls, it honors `echo` (false),
 `logprobs` and `prompt_logprobs` (null, or integers 0–5),

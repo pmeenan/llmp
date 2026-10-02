@@ -306,6 +306,10 @@ class Llm : public Served {
     Status SaveState(void* host);
     Status RestoreState(void* host);
     void InvalidateStateSnapshot() { saved_valid_ = false; }
+    // Whether the last serial Prefill, ScorePrompt, PreparePrompt or
+    // Generate of this branch ended on a capacity refusal (Llm::
+    // set_capacity_reclaim): the state usable at its completed prefix.
+    bool capacity_refused() const { return capacity_refused_; }
 
    private:
     friend class Llm;
@@ -328,6 +332,7 @@ class Llm : public Served {
     std::vector<TurnCheckpoint> turn_checkpoints_;
     Clock::time_point history_used_ = Clock::now();
     bool generation_active_ = false;
+    bool capacity_refused_ = false;
     const PromptSession* prompt_session_ = nullptr;
     execution::AdaptiveDepth decoding_{1};
     execution::AdaptiveDepth saved_decoding_{1};
@@ -343,6 +348,22 @@ class Llm : public Served {
   // Between completed native units. The Qwen implementation protects the
   // complete selected set; selecting performs no model registration.
   virtual Status SelectBranches(std::span<Branch* const> active);
+  // Serial state capacity (docs/runtime-serving.md#state-capacity-in-a-
+  // cohort). A serial Prefill, ScorePrompt, PreparePrompt or Generate of a
+  // branch whose prefill chunk or decode step only the state's capacity
+  // refused (StateRefusedFor: before dispatch, the state usable as it was)
+  // asks `reclaim` to free capacity and runs the same unit again while it
+  // returns true (at most kMaxBranches times a unit). A refusal it cannot
+  // relieve ends the call with the refusal, the state holding its completed
+  // prefix, and Branch::capacity_refused() true. Every other failure ends it
+  // as before. Called on the driver thread between completed units, with
+  // the refused branch's session still open; empty clears it.
+  using CapacityReclaim = std::function<bool(const Branch& refused)>;
+  void set_capacity_reclaim(CapacityReclaim reclaim) { capacity_reclaim_ = std::move(reclaim); }
+  // The branch other than `keep` with no session open that retains the most
+  // conversation state (an idle conversation's reuse cache), if any: what
+  // Branch::ReleaseIdleState frees first.
+  std::optional<std::size_t> LargestIdleBranch(const Branch& keep) const;
   bool llm() const override { return true; }
   // The prefill chunk's rows, and the configuration's prefill_chunk if set
   // (max_rows is at most it, capped by the model at its context).
@@ -490,8 +511,9 @@ class Llm : public Served {
     std::expected<Step, std::string> PrepareStep(bool defer_capacity = false);
     bool refused() const { return !refusal_.empty(); }
     const std::string& refusal() const { return refusal_; }
-    // The legacy native path, applying exactly one completed scalar step.
-    Status RunScalarStep();
+    // The legacy native path, applying exactly one completed scalar step;
+    // `defer_capacity` as PrepareStep's.
+    Status RunScalarStep(bool defer_capacity = false);
     // Apply only after the named native step completed. A speculative result
     // already includes per-model selection/Accept; drafted is an increment.
     Status ApplyPlain(std::vector<float> row);
@@ -512,6 +534,8 @@ class Llm : public Served {
     Status Begin(const std::vector<float>& last, bool resume);
     bool IsStop(std::int32_t token) const;
     bool Report();
+    // Ends a deferred capacity refusal as an undeferred one would have.
+    void EndRefused();
     Status ApplyTokens(std::vector<std::int32_t> kept, std::vector<std::vector<float>> logits);
     void Close();
 
@@ -736,7 +760,13 @@ class Llm : public Served {
   void CheckBranch(const Branch& branch) const;
   void CheckDefaultBranch(const Branch& branch) const;
   void CheckIdleGeneration(const Branch& branch, const PromptSession* prompt = nullptr) const;
+  // After a serial unit of `branch` failed: whether only the state's
+  // capacity refused it (the state usable); and then whether reclaiming
+  // freed capacity for it to run again (set_capacity_reclaim).
+  bool CapacityRefused(const Branch& branch) const;
+  bool ReclaimFor(const Branch& branch);
   Branch default_branch_;
+  CapacityReclaim capacity_reclaim_;
   std::array<std::unique_ptr<Branch>, kMaxBranches - 1> extra_branches_;
   std::uint32_t branch_count_ = 1;
   bool branches_prepared_ = false;

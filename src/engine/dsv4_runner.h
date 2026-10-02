@@ -168,6 +168,12 @@ class Dsv4Runner final : public PagedModel {
   Status Clear();
   bool state_usable() const { return !live_.quarantined(); }
   Status ReserveStateThrough(std::uint32_t positions) { return EnsureState(positions); }
+  // After a failed ReserveStateThrough, Chunk, Draft or DraftVerify: true
+  // when only the state's growth did not fit the execution budget beside
+  // what is leased (LiveState::Use's over_budget). Nothing was dispatched;
+  // the state is usable as it was, with any fresh zero pages that completed
+  // retained. A later call may succeed once capacity is freed.
+  bool state_refused() const { return state_refused_; }
   std::vector<LiveState::Range> used_state_ranges() const { return live_.used_ranges(); }
   std::uint64_t used_state_bytes() const { return live_.used_bytes(); }
   Status SaveUsedState(void* host, std::span<const LiveState::Range> ranges);
@@ -400,6 +406,7 @@ class Dsv4Runner final : public PagedModel {
   double plan_seconds_ = 0;
   Coverage coverage_;
   bool released_ = false;
+  bool state_refused_ = false;  // the last call's clean capacity refusal (state_refused)
 
   // The DSpark drafter (Dsv4Options::drafter).
   const model::DsparkProfile& dprofile_ = model::DsparkDeepSeekV4Flash();

@@ -259,6 +259,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- A `/v1/completions` request (or a serial chat turn) refused for
+  conversation-state capacity stopped the runtime, even when idle chat
+  conversations' retained state held the capacity it needed. It now clears
+  that idle state, the largest first, and goes on; one that cannot fit
+  alone fails with a 500 and the service keeps serving.
 - Routed quantized products allocate scratch for partial expert tiles'
   dummy columns, including raw FP4, so bounded workspace covers every read.
 - Qwen3.8's sparse attention rejects unequal key/value cache row strides
