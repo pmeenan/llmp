@@ -102,3 +102,43 @@ The child and supervisor completed rc0, inherited process group was reaped,
 and final strong retirement was 117.306 GiB with no GPU/container/native
 work. Raw plans, ordered rows, heads, logs and controllers remain outside
 Git at `/home/pmeenan/scratch/m3-ds4-prefill-attribution-records/`.
+
+## First captured-operand reduction screen
+
+One short O/C/C/O operator screen on Spark A replaces the ordinary F32 MUL
+and five ascending ADD launches with one ordered kernel. GPU phase medians
+are 8.084000/1.883136/1.877888/7.684096 ms, with one warmup and three paid
+samples per phase. Pooled phase medians give **4.19250× operator rate**
+(76.15% less elapsed time); the corresponding host-wall ratio is 4.13373×.
+Ordinary bookends move 5.20%, candidate bookends 0.28%. This is one actual
+layer/chunk's resident operands, not a whole-prefill speedup.
+
+The unchanged production graph captured F32 down `[4096,6,4096,1]`, scaled
+weights `[1,6,4096,1]` and the final `[4096,4096,1,1]` result on its existing
+stream. Every warm and timed result contains 16,777,216 finite floats and
+matches all captured bytes, SHA-256
+`f2eee85f7b60aa59e5ab79080c285d8b14c93af96bea5c4504f40dfb58bf53ea`.
+All inputs remain unchanged and ten allocation tail guards match. Four
+complete frontier heads match the preceding production heads. Candidate
+scratch is zero; the capture/replay diagnostics own 1,275,169,280 device
+bytes including guards, which is not a sampled model-memory result.
+Retained SASS has six separate multiplies and five ordered additions,
+without FMA; the observed host CUDA `cuobjdump` is recorded separately
+from the SDK compiler.
+
+Actual screen receipt is
+`1772695114e626b8ea6430ad962a2044bf69cf0c6f9d465e8687c033b0bb8a39`,
+build `451f3cb2…`, binary `2ee7116e…`, and operator receipt `fb91cd50…`.
+The supervised native child completed zero and was reaped after 42.088 s;
+independent retirement recorded 117.348 GiB free with model probes clear.
+Failed compile/inspection-path attempts are retained and excluded. Raw
+operands, complete outputs and receipts remain outside Git under
+`/home/pmeenan/scratch/m3-ds4-weighted-reduction-records/` and the corresponding
+Spark A scratch directory. Routine suites were deferred for this diagnostic.
+
+This signal selects one complete 8K before/candidate/after prefill screen.
+Its placement must keep down, weights and final output simultaneously live:
+the old plan can reuse down storage before the last ADD is born. Keep all
+intermediate allocations charged for the first substitution. The earlier
+665 ms budget limits expectations; no default, quality, concurrency,
+memory or whole-model gain follows from this operator result.

@@ -238,3 +238,44 @@ model. Raw receipts and controls stay outside Git under
 slot independence and retention at the tested shapes, not task quality,
 performance parity, fault recovery or deployed concurrency. x86 checks
 remain deferred under the owner's optimization-run override.
+
+## First native Slot-wave C2 screen
+
+The public native runner now has a diagnostic shared-wave implementation
+over its independent slots. One scalar-to-wave direction screen on Spark B
+completed the same two 8192-ID requests at fixed depth three: 510 paid
+outputs took 12.399845467 s scalar and 11.281745075 s shared, or
+**41.129545→45.205772 outputs/s (+9.9107%)**. One observation per arm in
+fixed order warrants integration and focused follow-up; it does not establish
+repeat stability, a production default or HTTP throughput.
+
+The selected 47172 head, context 33792, chunks of 4096 and graph policy are
+identical. Fresh prefills and small full-row controls are outside the decode
+clock. Active selection, PLE reads/gather, packing, planning/capture, output
+reads, acceptance and final settlement are paid. Finished slots leave later
+waves without dummy work. All 512 IDs, all 199 per-slot draft/verdict traces,
+pending cursors and initialized-range geometry match. Six complete-row
+comparisons are byte-identical and all twelve retained vectors are finite;
+this screen does not compare complete state-page contents.
+
+Whole Draft is 1.544364433/1.631446159 s, Verify 10.505578754/9.415343014 s,
+and host commit/final settlement 0.011866362/0.009252485 s. The shared arm
+executes 37,248 MXFP8 and 9,888 routed pairs, paying 4,662,501,600 packing
+bytes. PLE lookups stay at 12,704; union planning reduces reads from
+12,696 rows/53,055,488 B to 10,560 rows/44,126,208 B, while the measured PLE
+scope grows from 0.141478699 to 0.631575164 s. That scope covers planning,
+direct-read completion and offset bookkeeping, excluding hash construction
+and GPU gather. It identifies no I/O or host cause. There is no persistent
+row-payload cache. BF16 full-head sharing remains a separate factor.
+
+Actual outer receipt is
+`890a9956b9f8fc49496f5ba1c7ed51e01d4c22f9f86ecf11c811789b16462d68`,
+native `3c13e628…`, build `e2a1dca6…` and binary `e719926f…`, with actual
+B SDK `4432b0ab…` and unchanged resolved cuBLAS payloads. The 65 s supervised
+job completed zero and the native child was reaped; independent retirement
+recorded 117.145 GiB free with model probes clear. Compile-only failed
+attempts remain excluded. Records are retained outside Git at
+`/home/pmeenan/scratch/m3-qwen-native-wave-screen-control-r1-records/`.
+The diagnostic overlays are not a deployed concurrency implementation.
+Focused state/recovery controls and serving integration follow this useful
+signal; routine production checks remain owed before adoption.

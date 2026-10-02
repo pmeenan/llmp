@@ -959,6 +959,9 @@ it appears.
       bookend movement. The exact post-down weighting and six-slot sum occupy
       665 ms, about 5% of wall, selecting one focused reduction screen without
       claiming a whole-model gain or attributing the remaining literal gap.
+      That captured-operand reduction now runs at 4.19× the ordinary rate,
+      with every complete output byte unchanged; one whole-prefill substitution
+      follows before adoption.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer
@@ -1008,6 +1011,10 @@ it appears.
       adds 8.87% paid C4 decode throughput on that paired-product path, with
       byte-identical complete target vectors and exact IDs, acceptance and
       state. Both mechanisms still need native Slot-wave/serving integration.
+      The first native Slot-wave C2 screen raises paid decode from
+      41.13 to 45.21 tokens/s (+9.91%), with exact IDs, traces and range geometry.
+      This single direction screen selects focused recovery controls and serving
+      integration; it does not qualify state-page equality or HTTP parity.
       The [exact16 MXFP8 control](experiments/qwen38-mxfp8-sixteen/README.md)
       passes every output/state check but makes the paid four-request loop
       7.469 times slower. Keep paired-eight products; no wider MXFP8 kernel

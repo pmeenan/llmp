@@ -77,8 +77,13 @@ The isolated BF16 full-head control is a positive candidate; integrate it as a
 separate factor after the paired-eight wave path passes its native controls. The literal/native benchmark pipeline
 study is already complete; the remaining DeepSeek attribution concerns the
 current production graph, rather than another literal-pipeline parity run.
-Obtain that matched prefill-chain attribution, then test the ordered weighted-expert
-reduction before wider HC rewrites. Measure real concurrent requests on both models. Broader PDL,
+The [matched production attribution](../ds4-production-prefill-attribution/README.md)
+now places the ordered weighted-expert reduction at about 5% of 8K prefill
+wall. Its captured-operand screen is byte-exact and 4.19× faster; measure
+one complete prefill substitution before wider HC rewrites. The first native
+Slot-wave C2 screen improves paid decode by 9.91% with exact IDs and traces,
+selecting focused state/recovery controls and serving integration.
+Measure real concurrent requests on both models. Broader PDL,
 layout, attention and vocabulary proposals follow a measured missing budget.
 
 Private A/B iterations need target builds and their causal controls. The
