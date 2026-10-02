@@ -269,6 +269,14 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Stopping `jitllm-runtime` with two models configured, after a swap,
+  logged "a compute stream could not be fenced" and exited with a failure
+  status: the stop's fence of the swapped-out model's stream tried to page
+  its spilled state back in, beyond the execution budget. The fence now
+  leases nothing, so it neither fails nor reads anything back, and that
+  stream's work is proven complete before its model is released; if a
+  fence still fails, the stop leaves the models' memory as it is rather
+  than release it under work that may still be running.
 - A `/v1/completions` request (or a serial chat turn) refused for
   conversation-state capacity stopped the runtime, even when idle chat
   conversations' retained state held the capacity it needed. It now clears

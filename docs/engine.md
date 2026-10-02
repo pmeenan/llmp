@@ -22,7 +22,8 @@ sources with it and posts its work through it: `Job` (one device job on the
 model's stream over a closure), `Load`, `Evict`, `Swap`, `Call` (a function
 on the scheduler's thread), and requests: `BeginRequest`/`EndRequest`, or
 `WithRequest` around a body, lease a model's closure once for all its steps
-(D-093). Its teardown fences each model's stream, evicts the managed
+(D-093). Its teardown fences each model's stream (a job that leases
+nothing, so a model swapped out is not paged in again), evicts the managed
 extents, stops the scheduler and only then calls each model's `Release`
 (`PagedModel`). `ReleaseMapped` and `PlaceCheck` are the node's memory
 helpers every runner uses.

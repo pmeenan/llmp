@@ -236,7 +236,9 @@ class PagedModel {
   PagedModel(PagedModel&&) = delete;
   PagedModel& operator=(PagedModel&&) = delete;
   virtual ~PagedModel() = default;
-  // Its compute stream's index, and a closure a fence job there may lease.
+  // Its compute stream's index (TearDown's fence there leases nothing),
+  // and a closure a fence job there may lease: its own clears, copies and
+  // reads use it, and it may be nonresident while the model is swapped out.
   virtual std::uint32_t stream() const = 0;
   virtual const catalog::Closure& fence_closure() const = 0;
   // What must be evicted before the scheduler stops: every extent whose

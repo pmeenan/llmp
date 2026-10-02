@@ -31,6 +31,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <print>
@@ -66,7 +67,10 @@ constexpr std::array<std::size_t, 2> kExtents = {4, 3};  // model 0 is the large
 // back through the shared workspace.
 class Model final : public ts::PagedModel {
  public:
-  Model(ts::PagedNode& node, std::uint32_t index) : node_(node), index_(index) {}
+  // `fence_weights`: its fence closure is its weights (like a runner's
+  // state, nonresident once the model is swapped out), not its staging.
+  Model(ts::PagedNode& node, std::uint32_t index, bool fence_weights = false)
+      : node_(node), index_(index), fence_weights_(fence_weights) {}
 
   void Setup(const std::filesystem::path& directory) {
     const std::size_t extents = kExtents.at(index_);
@@ -123,7 +127,7 @@ class Model final : public ts::PagedModel {
     all.insert(all.end(), node_.pool().extents.begin(), node_.pool().extents.end());
     all.insert(all.end(), staging_.begin(), staging_.end());
     closure_ = node_.catalog().ClosureOfExtents(all).value();
-    fence_ = node_.catalog().ClosureOfExtents(staging_).value();
+    fence_ = node_.catalog().ClosureOfExtents(fence_weights_ ? weights_ : staging_).value();
   }
 
   // Every weight extent through the workspace to the staging, on this
@@ -168,7 +172,13 @@ class Model final : public ts::PagedModel {
   std::uint32_t stream() const override { return index_; }
   const jitllm::catalog::Closure& fence_closure() const override { return fence_; }
   std::vector<ExtentId> managed_extents() const override { return weights_; }
+  // Called first in Release, once the node's teardown has fenced the stream.
+  std::function<void()> on_release;
+
   ts::Status Release() override {
+    if (on_release) {
+      on_release();
+    }
     const bool freed = !place_.valid() || node_.memory().Free(place_).has_value();
     if (fd_ >= 0) {
       (void)::close(fd_);
@@ -182,6 +192,7 @@ class Model final : public ts::PagedModel {
  private:
   ts::PagedNode& node_;
   std::uint32_t index_;
+  bool fence_weights_ = false;
   std::vector<std::byte> file_;
   int fd_ = -1;
   jitllm::providers::ReservationId place_;
@@ -190,7 +201,7 @@ class Model final : public ts::PagedModel {
   std::vector<ExtentId> staging_;
   std::byte* staging_bytes_ = nullptr;
   jitllm::catalog::Closure closure_;
-  jitllm::catalog::Closure fence_;  // the staging, always resident
+  jitllm::catalog::Closure fence_;  // the staging, always resident, unless fence_weights_
 };
 
 TEST(CudaPagedNodeTest, TwoModelsAlternateAndEachEvictsOnlyTheOthersWeights) {
@@ -334,6 +345,79 @@ TEST(CudaPagedNodeTest, SwapsHandBackingOverAndEveryByteReadsBack) {
   }
   const ts::Status finished = node.TearDown(teardown);
   EXPECT_TRUE(finished.has_value()) << finished.error();
+}
+
+// Teardown fences every model's stream before it evicts or releases
+// anything, a model swapped out included, without leasing that model's
+// memory. Each model's fence closure here is its weights, nonresident once
+// the first is swapped out (like a runner's spilled state). Without `room`
+// for them beside the second model's, a fence that paged them in again
+// was refused (as jitllm-runtime's stop once was with two models); with
+// room, it read them back for nothing. Work queued on the first stream
+// outside any job (a host function that ends late, as a launch context's
+// own work may) has completed before that model's Release.
+void TearDownAfterASwap(bool room) {
+  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
+  Model first(node, 0, /*fence_weights=*/true);
+  Model second(node, 1, /*fence_weights=*/true);
+  const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
+  ts::Status ran = node.Open();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent).has_value());
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  const std::size_t extents = room ? kExtents[0] + kExtents[1] : kExtents[0];
+  ASSERT_TRUE(node.Start(Bytes(fixed + (extents * kExtent))).has_value());
+  first.Register();
+  second.Register();
+  node.Run();
+  ran = first.ReadBack();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  ts::SwapReport report;
+  ran = node.Swap(first.weights(), second.closure(), /*handoff=*/true, report);
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  ran = second.ReadBack();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_TRUE(second.Intact());
+  EXPECT_EQ(first.Resident(), 0U);
+
+  // No job is in flight, so nothing else queues on the first stream now.
+  std::atomic<bool> ended{false};
+  const auto native = node.execution().Submission(node.stream(first.stream()));
+  ASSERT_TRUE(native.has_value());
+  ASSERT_EQ(cudaLaunchHostFunc(
+                static_cast<cudaStream_t>(native->handle),
+                [](void* flag) {
+                  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                  static_cast<std::atomic<bool>*>(flag)->store(true);
+                },
+                &ended),
+            cudaSuccess);
+  bool ended_before_release = false;
+  const std::uint64_t reads = node.requests();
+  std::uint64_t reads_at_release = 0;
+  first.on_release = [&] {
+    ended_before_release = ended.load();
+    reads_at_release = node.requests();
+  };
+  const ts::Status finished = node.TearDown(teardown);
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+  EXPECT_TRUE(ended_before_release);
+  EXPECT_EQ(reads_at_release, reads);  // nothing paged in again
+  // The host function writes into this frame, fenced or not.
+  for (int i = 0; i < 1000 && !ended.load(); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_TRUE(ended.load());
+}
+
+TEST(CudaPagedNodeTest, TearDownFencesASwappedOutModelsStreamWithNoRoomForIt) {
+  TearDownAfterASwap(/*room=*/false);
+}
+
+TEST(CudaPagedNodeTest, TearDownFencesASwappedOutModelsStreamWithoutPagingItIn) {
+  TearDownAfterASwap(/*room=*/true);
 }
 
 // M3's lease per request on the real providers: a request pages its

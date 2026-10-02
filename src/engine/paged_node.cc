@@ -1019,20 +1019,30 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
     // A fence after anything noted on each model's stream (a measuring
     // launch context notes work even when nothing runs), so it can be
     // destroyed; then every managed backing released through its
-    // eviction; then the scheduler stops and the lanes drain.
+    // eviction; then the scheduler stops and the lanes drain. The fence
+    // leases nothing: it orders only the stream, and a model swapped out
+    // has its state written back, perhaps with no room to page it in again
+    // (and no reason to). A stream that could not be fenced may still be
+    // using any model's memory, so then nothing is evicted or released.
     const bool usable = !threads_.empty() || !scheduler_->fault();
+    const catalog::Closure nothing;
     std::vector<ExtentId> managed;
+    bool fenced_all = usable;
     for (PagedModel* model : models) {
-      if (usable && !Job(
-                        model->fence_closure(),
-                        [](providers::NativeStream) { return sc::JobResult::kQueued; },
-                        "fencing a compute stream", model->stream())) {
-        problems.emplace_back("a compute stream could not be fenced");
+      if (usable) {
+        if (auto fenced = Job(
+                nothing, [](providers::NativeStream) { return sc::JobResult::kQueued; },
+                "fencing a compute stream", model->stream());
+            !fenced) {
+          problems.push_back(std::format("compute stream {} could not be fenced: {}",
+                                         model->stream(), fenced.error()));
+          fenced_all = false;
+        }
       }
       const auto extents = model->managed_extents();
       managed.insert(managed.end(), extents.begin(), extents.end());
     }
-    if ((!threads_.empty() || !scheduler_->fault()) && !Evict(managed)) {
+    if (fenced_all && !Evict(managed)) {
       problems.emplace_back("the weights could not be evicted at the end");
     }
     scheduler_->RequestShutdown();
@@ -1067,6 +1077,10 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
     threads_.clear();
     if (!stopped_ || !stopped_->has_value()) {
       problems.emplace_back("the scheduler stopped with a fault: backing is left as it is");
+      return Joined(problems);
+    }
+    if (!fenced_all) {
+      problems.emplace_back("a compute stream was not fenced: backing is left as it is");
       return Joined(problems);
     }
   } else if (execution_ != nullptr) {
