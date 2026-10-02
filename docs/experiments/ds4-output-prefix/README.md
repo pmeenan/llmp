@@ -395,13 +395,36 @@ Sampled peak memory is 0.997174 times the larger OFF reference.
 All eight fresh OFF heads match their chunk's bookend bytes. The four ON
 heads are complete and finite and retain argmax 4084/1393/295/554. Maximum
 absolute drift is 3.109016/0.644032/1.404508/0.684175; RMS drift is
-0.554431/0.123842/0.266103/0.132872. This selects a focused original-checkpoint
-quality check; it does not establish new quality or production acceptance.
+0.554431/0.123842/0.266103/0.132872. This selected the focused original-checkpoint
+quality check below; the speed signal alone does not establish acceptance.
 The one supervised build/three-model screen completes rc0 in 87 seconds;
 all children are reaped and strong retirement records 117.231 GiB clear.
 Raw results are retained in the sibling `outa2048-native-r1/` and
 `outa2048-native-r1-supervisor/` evidence directories. No suite or repeat
 matrix was run for this private screen.
+
+The candidate-only 32K fixed-history check uses the original checkpoint,
+the same 31,705 prompt IDs and 512 oracle-forced IDs, and the unchanged
+0.947-nat bound. It executes fifteen full 2,048-row chunks, a native
+985-row tail and 511 native one-row decode chunks: 645 output-A and 300
+HCA operations. All 66,191,360 retained logits are finite and all 512
+reported argmax IDs match the full vectors.
+
+The result is **497 equal, 14 within the near-tie bound, one outside and
+zero unresolved**. At step 249 (position 31,954), the candidate chooses
+10386 instead of oracle 82437. Both IDs are present in the saved top five;
+the exact oracle margin is 2.616249211 nats, exceeding the bound by
+1.669249211 nats. This is the same failed discriminator previously seen
+without the qualified 4,096-row combination. The 2,048-row extension is
+stopped without a candidate repeat, production adoption or default change;
+the separate passing 4,096-row results above remain distinct.
+
+The quality job completes rc0 in 99 seconds including the private host
+compile, model load and scoring; all children are reaped and the final
+strong gate records 117.269 GiB clear. Raw evidence remains in
+`outa2048-quality-r1/` and its sibling supervisor directory. The complete
+logit SHA256 is
+`52c0b582b45e7dcb55f00b2b9a8fca9347cad5d57eae926a112a2df348a805a6`.
 
 ## Provenance
 

@@ -993,7 +993,9 @@ it appears.
       integration remain open. A paid native attention interaction at that
       geometry adds 21.19% throughput, reducing 8K prefill to 9.879 s.
       The private 2048-row extension gains 3.95% with HCA already on,
-      with 0.18% bookend movement; its focused quality check is pending.
+      with 0.18% bookend movement, but fails one original-checkpoint 32K
+      fixed-history row: 2.616249 nats, 1.669249 above the unchanged bound.
+      That extension is stopped; the passing 4096-row candidate stays separate.
       These different-factor screens are not added together or recorded as
       a matched final ds4 speed ratio. The [closure status](m3-optimization-status.md)
       tracks completed and missing independent-review experiments.
