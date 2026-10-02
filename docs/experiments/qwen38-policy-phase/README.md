@@ -47,6 +47,50 @@ approximately 86–88% of completed decode time, so the observed cost is chiefly
 target verification. Different policies change proposal histories and step
 boundaries; the phase table cannot attribute that cost to a head or product.
 
+## Short follow-up direction screens
+
+The first short prefix-head screen uses a 7586-token chat prompt and the
+unchanged qualified benchmark. F3/A/A/F3 rates are
+40.149/40.312/40.653/40.161 tokens/s. Pooled fixed/adaptive rates are
+40.155/40.482, an adaptive advantage of only 0.81%; this supplies no useful
+speed separation. Within-policy 512 IDs and complete traces repeat exactly,
+while policies first diverge after 15 common outputs. Prefix 65536 is the
+draft vocabulary width, not this prompt's context length.
+
+One subsequent curated-head 32K screen uses the retained 31743-token prompt,
+selected 47172 head and the same immutable binary. F3/A/A/F3 rates are
+40.113/37.801/37.372/40.291 tokens/s. Pooled fixed/adaptive rates are
+**40.201803/37.585276**, a **6.9616% fixed-three advantage**. Fixed bookends
+move 0.4437%, adaptive observations 1.1479%. All four initial token arrays
+match; each policy repeats all 512 generated IDs and complete traces exactly.
+Cross-policy output first diverges at index 13 (fixed 846/adaptive 23310), so
+the rates follow different histories and isolate no kernel or quality cause.
+Fixed runs 211 verifies with 632 offers/300 accepts; adaptive runs 240 with
+577/271, selecting depth 2 141 times and depth 3 99. Whole Verify occupies
+87.3–88.3% of loop time; no separate head timer exists.
+
+Each of these screens has four fresh processes, one repeat and 511 paid
+decode outputs per child. Pooled rates divide 1022 outputs by both times
+inferred from the retained rounded rates. Context 262144, chunks 4096, graphs,
+runtime prefill, native F16 KV/F32 recurrence and BF16 head weights with
+F32 I/O remain unchanged. No rebuild, historical archive walk, full-state
+capture or routine unit suite precedes these diagnostics. The results
+support fixed 3 as this curated 32K baseline; the earlier 64K result prevents
+a blanket policy change. Defaults, HTTP parity and task-quality gates remain
+open.
+
+Provenance: immutable A-built binary `ac9988d0…`, origin source map
+`f2047cb6…` and qualification `90d52cf7…`, executed on B SDK `4432b0ab…`
+with unchanged resolved cuBLAS bytes. Prefix screen receipt is `3bd3f9da…`;
+curated preparation `b42186d4…` and timing
+`d9f4e42b7f4a0f0633a9abc0e4387e2624616237247ade9e7b39a6f09ffb8593`.
+Curated input JSON `190f1faf…` renders packed I32 `306136a7…` in every
+child. Both supervisors complete zero and all eight children are reaped;
+final independent gates record 116.951/117.116 GiB with model probes clear.
+The curated supervised run takes 152 s. Full records remain outside Git in
+`/home/pmeenan/scratch/m3-qwen-policy-quick-b-timing-r1-records/` and
+`/home/pmeenan/scratch/m3-qwen-policy-curated-32k-b-timing-r1-records/`.
+
 ## Trajectory and reference limits
 
 With fixed 3, prefix and selected outputs agree for all 512 IDs at both
