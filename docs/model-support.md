@@ -115,7 +115,7 @@ not used. The options each renderer supports and refuses are in
   ([deadlines](runtime-serving.md#progress-and-deadlines)). The
   minimum, 512, starts and serves (checked on `spark`, speculative), its
   prefill chunk capped at 384 rows by the 128-position window; the
-  default chunk is 2,048 rows
+  default chunk is 4,096 rows to a 262,144-token context, 2,048 above
   ([prefill chunks](runtime-serving.md#prefill-chunks-and-cancellation)).
 - **Verified** (on `spark-b`):
   - Exact mode, resident: bit-identical to llama.cpp `b29c606e` unfused

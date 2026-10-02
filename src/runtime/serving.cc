@@ -51,12 +51,16 @@ constexpr std::size_t kMaxTokenizerBytes = std::size_t{64} << 20U;
 // Extents the page-in observer tracks (the M3 models use about 100,000).
 constexpr std::size_t kObservedExtents = std::size_t{1} << 18U;
 // Each model's prefill chunk when its prefill_chunk is not configured
-// (docs/runtime-serving.md#prefill-chunks-and-cancellation), measured
-// through the runtime: doubled from 512 rows while that gained 10% or more
-// prefill speed at 8K tokens and the longest chunk stayed within 5 s (a
-// chunk is how soon a prefill notices a cancellation); then capped by the
-// model at its context (prefill.h).
-constexpr std::uint32_t kDsv4PrefillRows = 2048;
+// (docs/runtime-serving.md#prefill-chunks-and-cancellation): the fastest
+// measured through the runtime at 8K and 32K tokens within the memory
+// bound (DeepSeek: 4,096 rows 12-15% faster than 2,048, 8,192 no faster);
+// then capped by the model at its context (prefill.h). DeepSeek's
+// attention mask is sized for the whole context, so above 262,144 tokens
+// its default stays 2,048 rows: at 1,048,576, 4,096 would fix 2.14 GiB
+// more and take that from the measured 1M conversation's state.
+constexpr std::uint32_t kDsv4PrefillRows = 4096;
+constexpr std::uint32_t kDsv4DeepPrefillRows = 2048;
+constexpr std::uint32_t kDsv4WidePrefillContext = 262144;  // the widest context at 4,096
 constexpr std::uint32_t kQwen38PrefillRows = 4096;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
@@ -164,8 +168,10 @@ class Dsv4 final : public Llm {
     options_.out = roles.spill;
     options_.context = entry.context;
     configured_rows_ = entry.prefill_chunk;
-    max_rows_ = PrefillChunkRows(entry.context, entry.prefill_chunk, kDsv4PrefillRows,
-                                 model::Dsv4MostRows(model::Dsv4Flash(), entry.context));
+    max_rows_ = PrefillChunkRows(
+        entry.context, entry.prefill_chunk,
+        entry.context > kDsv4WidePrefillContext ? kDsv4DeepPrefillRows : kDsv4PrefillRows,
+        model::Dsv4MostRows(model::Dsv4Flash(), entry.context));
     options_.max_rows = max_rows_;
     options_.graphs = true;
     if (speculate_) {

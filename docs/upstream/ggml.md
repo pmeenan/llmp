@@ -41,7 +41,8 @@ sinks bound (RE-030).
   llama.cpp's 512-row micro-batches stay far under both.
 - **jitLLM's workaround:** its operation checks refuse such strides, and
   Qwen3.8's chunk bound keeps every F32 [n_kv, rows] tensor under 2^31
-  bytes (RE-037).
+  bytes (RE-037); DeepSeek V4's keeps its F16 attention mask under it
+  (4,029 rows at 1,048,576 positions).
 - **Proposed action:** take #29227 with the pin bump; then the chunk bound
   can follow the flash-attention mask (F16) alone.
 

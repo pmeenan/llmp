@@ -55,11 +55,12 @@ schema_version = 2
 # use inside the physical memory budget; the ceiling alone backs no cache.
 # context = 262144
 # Rows of a prefill chunk, 1 to 262144; by default the runtime's choice for
-# the model (DeepSeek V4 2048, Qwen3.8 4096), capped at what the model
+# the model (Qwen3.8 4096; DeepSeek V4 4096 to a context of 262144, 2048
+# above it), capped at what the model
 # allows at its context (below it) and, from 8 rows, rounded down to a
 # multiple of 8; the runtime logs the chunk it uses. A chunk is how soon a
 # prefill notices a cancellation.
-# prefill_chunk = 2048
+# prefill_chunk = 4096
 # Throughput floors, in tokens a second, from which the chat route figures
 # how long a prefill chunk may take before the request counts as stalled,
 # and a non-streaming request's deadline (docs/runtime-serving.md,

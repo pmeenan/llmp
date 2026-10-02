@@ -452,6 +452,8 @@ so every context from the minimum, 512, starts (before, the fixed
 512-row chunk refused DeepSeek at 512 and wrapped Qwen3.8's MTP planning
 position). The policy and its measurements are in
 [runtime-serving.md](runtime-serving.md#prefill-chunks-and-cancellation).
+(Owner, 2026-10-02: defaults are chosen for prefill throughput, not
+capped by cancellation latency; DeepSeek's is now 4,096 rows.)
 
 **Amended 2026-09-29** (M3 coding contexts). The default context becomes
 262,144; the generic configuration cap becomes 1,048,576. All configured

@@ -49,7 +49,7 @@ artifact = "8a355bfb…"   # an installed artifact's ID, under storage.installed
 drafter = "dd2d3f9c…"    # optional: its speculative drafter (DSpark, MTP)
 # speculation = true     # the default when there is a drafter
 # context = 262144       # default tokens of conversation state (bounds below)
-# prefill_chunk = 2048   # rows of a prefill chunk; default by model (below)
+# prefill_chunk = 4096   # rows of a prefill chunk; default by model (below)
 # prefill_floor_tok_s = 100  # tokens a second: the floors the chat route figures
 # decode_floor_tok_s = 5      #   a request's work at (progress and deadlines, below)
 
@@ -200,22 +200,30 @@ A turn's prefill runs in chunks (`runtime/prefill.h`). The chunk is the
 model's `prefill_chunk` if configured (1 to 262,144 rows), else the
 runtime's default for the model, and in either case at most what the
 model's state layout admits at its context (DeepSeek: the window cache's
-cells less its 128-position window; Qwen3.8's fast graph: 8,192 rows)
-and below the context, in whole 8-row tiles. The reference graph's host
+cells less its 128-position window, and its fast plan's F16 attention
+mask over the ring and compressed cells under 2^31 bytes, RE-037:
+13,528 rows at a 262,144-token context, 4,096 to 1,030,144 and 4,024
+at 1,048,576;
+Qwen3.8's fast graph: 8,192 rows) and below the context, in whole 8-row
+tiles. The reference graph's host
 masks have the separate RE-037 bound of F32 [context, rows] tensors under
 2^31 bytes: 4,095 rows at 131,072 and 2,047 at 262,144. The generic
 context cap does not widen the prefill chunk cap, still 262,144, or the
-runtime's default chunks, DeepSeek 2,048 and Qwen3.8 4,096. Every supported
+runtime's default chunks: Qwen3.8 4,096; DeepSeek 4,096 to a 262,144-token
+context and 2,048 above it, since its attention mask is sized for the
+whole context (at 1,048,576 its capped 4,024 rows fix 4.50 GiB against
+2,048 rows' 2.36 GiB, room the recorded 1M conversation's state needs). Every supported
 context has a chunk: at the minimum, 512,
 DeepSeek's chunk is 384 rows and Qwen3.8's 504. A chunk of 1,024 rows or
 more runs in whole tiles and its few remaining rows as a chunk of their
 own, since GGML's attention reads the mask in whole 8-row tiles from
 1,024 rows on (RE-036). Registration logs each model's chunk.
 
-**The defaults** come from the runtime's own prefill (`jitllm-runtime
-chat`, speculative, so each chunk also feeds the drafter; one model
-configured, context 8,704; `spark`, GB10, 2026-09-29; the best of two
-turns each, from a cleared state):
+**The defaults** were first sized from the runtime's own prefill
+(`jitllm-runtime chat`, speculative, so each chunk also feeds the
+drafter; one model configured, context 8,704; `spark`, GB10, 2026-09-29;
+the best of two turns each, from a cleared state; bold, that sizing's
+choice, before the DeepSeek stage mechanisms):
 
 | Model, chunk rows | 8K-token prompt | ~2K-token prompt | Longest chunk (8K) | Fixed memory (workspace) | Peak |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -233,17 +241,20 @@ turns each, from a cleared state):
 
 (8,088 and 2,164 prompt tokens for DeepSeek, 8,553 and 2,362 for
 Qwen3.8; peak is the host's `MemAvailable` drop with the weights
-resident.) The policy: from 512 rows, double the chunk while that gains
-10% or more at 8K tokens and its longest chunk stays within 5 s, since a
-chunk is how soon a prefill notices a cancellation. That gives DeepSeek
-2,048 rows (4,096 gains 0–4% for twice the wait and memory) and Qwen3.8
-4,096 (8,192 gains 5%). Against the fixed 512 rows before, an 8K-token
-prompt prefills 1.48× faster on DeepSeek and 1.78× on Qwen3.8, for
-1.4 GiB more shared workspace (sized for the larger model's need,
-DeepSeek's). Per-chunk time grows with the position, so at contexts past
-8,704 a chunk takes longer; the
+resident.) The policy chooses each default chunk for prefill throughput
+within the memory bound; a chunk is also how soon a prefill notices a
+cancellation, but that latency does not cap it (owner, 2026-10-02). The
+first sizing gave DeepSeek 2,048 rows and Qwen3.8 4,096. Against the
+fixed 512 rows before, an 8K-token prompt prefilled 1.48× faster on
+DeepSeek and 1.78× on Qwen3.8. After the DeepSeek stage mechanisms
+landed, 4,096 rows prefill the 0731 GGUF 12.1% faster than 2,048 at 8K
+and 14.9% at 32K, for 1.28 GiB more fixed memory at a 262,144-token
+context (2.70 GiB; 8,192 is no
+faster and adds 2.9 GiB more): the
+[DeepSeek concurrent report](experiments/deepseek-concurrent/README.md)
+has the sweep. Per-chunk time grows with the position; the
 [long-context report](experiments/long-context/README.md) checks deeper
-contexts with the same policy. `prefill_chunk` sets another chunk.
+contexts. `prefill_chunk` sets another chunk.
 
 The prefill's result depends a little on the chunk (the fast plans are
 not bit-exact across chunk shapes: DeepSeek's top logit after the 8K
@@ -279,7 +290,8 @@ cancellation waits at most for the chunk under way.
 
 **Measured** (`spark`, driver
 580.178.04, the service with both models on loopback at their default
-chunks and context, greedy streamed requests of an ~8K-token prompt; two
+context and the default chunks then, DeepSeek's 2,048 rows before the
+4,096-row default, greedy streamed requests of an ~8K-token prompt; two
 runs, the same to 0.03 s, and a review's third of the disconnects):
 
 | Case | Stopped after | From the event to the prefill's stop | Then |
@@ -692,8 +704,16 @@ floors, 100 prefill and 5 decode tokens a second, are below every speed
 measured here at 8K (DeepSeek's slowest prefill in the table, 220 tok/s
 at 256-row chunks; its plain decode at 8K, 19 tok/s, plan.md), but not
 at DeepSeek's deepest context, where the stall time and the margin of
-three carry it. Extrapolated, not measured: its 2,048-row chunk's device
-time grows about 0.14 s per 1,000 tokens of context (4.7, 7.9 and 12.3 s
+three carry it. On the fast plan, measured: 2,048-row chunks' longest is
+14.7 s in a 1,048,512-token prefill
+([final context](experiments/m3-final-context/README.md)); 4,024-row
+chunks (what a 1M context caps 4,096 to) take 5.9–6.6 s in the first
+32K positions and 9.4–9.8 s at 233K–253K (`spark`, 2026-10-02, DSpark,
+context 1,048,576), about 0.015 s more per 1,000 tokens, which
+extrapolates (not measured) to about 21 s at 1M, inside the 240.7 s
+allowance (120 + 3 × 40.24). The first, more pessimistic extrapolation,
+from before the fast plan: a 2,048-row chunk's device time grows about
+0.14 s per 1,000 tokens of context (4.7, 7.9 and 12.3 s
 at 8K, 32K and 64K, [long-context](experiments/long-context/README.md);
 the same line gives 794 s of device time for the 128K stream, which
 took 836.8 s to its first token), so about 40 s (52 tok/s) at 262,144,

@@ -103,7 +103,9 @@ changes heads; keep 16F. Native ds4 stage mechanisms gain 19.37% exact and 23.70
 8K, within about 1–2% of literal ds4, and are now the fast plan's
 defaults. On the served original checkpoint at 2,048-row chunks only F16 Q
 and the dense Q8_0 pairs apply (runtime 8K prefill +1.26%); the larger
-native gap there is in its own types and chunk size.
+native gap there is in its own types and chunk size. Serving now defaults
+to 4,096-row DeepSeek chunks, 12.1% faster at 8K and 14.9% at 32K than
+2,048 ([DeepSeek concurrent](experiments/deepseek-concurrent/README.md)).
 On the other Spark, the positive captured GDN factor selects a bounded native
 wave-composition screen with independent F32 state/output ranges, graph
 dependencies and paid packing. That integration is unstarted. A separate

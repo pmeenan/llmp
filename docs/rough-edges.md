@@ -197,8 +197,14 @@ and [the standalone upstream handoff](upstream/flashinfer.md#pinned-python-profi
   bytes, which covers both: the widest chunk is 2,047 rows at 262,144
   (the runtime caps `prefill_chunk` at 2,040, whole 8-row tiles, and logs
   it), 4,095 at 131,072 and 8,191 at 65,536. DeepSeek V4's [n_kv, rows]
-  tensors are F16 masks (2,048 rows × 262,144 cells is 1 GiB), under the
-  bound up to its configured maximum.
+  tensors are F16 masks; its fast plan's attention mask spans the ring
+  and the compressed cells, so at 1,048,576 positions a 4,096-row chunk's
+  mask is 2,183,135,232 bytes and the operation check refuses the last
+  chunks of a near-ceiling prompt (found in review, 2026-10-02, when the
+  default became 4,096 rows; 2,048 rows stay under). `Dsv4MostRows`
+  bounds the chunk under 2^31 bytes: 4,096 rows to 1,030,144 positions,
+  4,029 at 1,048,576 (a configured 4,096 runs 4,024; the default there
+  stays 2,048 for memory).
 - **Impact:** any context × rows product past 2^29 cells in F32 trips it
   until the pin includes #29227; a sparse attention path with block
   tables instead of dense masks and expanded scores removes the tensors

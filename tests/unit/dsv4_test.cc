@@ -41,6 +41,7 @@
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
+#include "kernels/ggml/validate_ext.h"
 
 namespace {
 
@@ -276,7 +277,7 @@ TEST(Dsv4Test, StateLayoutStopsAtTheTrainedContextCeiling) {
   EXPECT_EQ(state->context, 1048576U);
   EXPECT_EQ(state->raw_cells, 2304U);
   EXPECT_FALSE(md::Dsv4State(p, 1048577, 2048, md::Dsv4Window::kRing).has_value());
-  EXPECT_EQ(md::Dsv4MostRows(p, 1048576), 1048448U);
+  EXPECT_EQ(md::Dsv4MostRows(p, 1048576), 4029U);  // the fast plan's mask bound
   EXPECT_EQ(md::Dsv4MostRows(p, 1048577), 0U);
 }
 
@@ -326,12 +327,13 @@ TEST(Dsv4Test, TheStateIsBoundedAndSizedAsLlamaCppSizesIt) {
 // The widest chunk the state admits, which the runtime's prefill chunk
 // stays within: at the configuration's minimum context (512) the window
 // leaves 384 rows, not 512; just below it (511) as much; and each is the
-// edge (one more row is refused).
+// edge (one more row is refused). Deeper (from about 29K positions) the
+// attention mask binds first (TheWidestChunksMaskFitsTheAttentionKernel).
 TEST(Dsv4Test, TheWidestChunkFitsTheWindow) {
   const md::Dsv4Profile& p = md::Dsv4Flash();
   for (const auto& [context, most] :
        {std::pair{512U, 384U}, std::pair{511U, 384U}, std::pair{513U, 513U},
-        std::pair{8704U, 8576U}, std::pair{262144U, 262016U}, std::pair{200U, 128U}}) {
+        std::pair{8704U, 8576U}, std::pair{200U, 128U}}) {
     SCOPED_TRACE(context);
     EXPECT_EQ(md::Dsv4MostRows(p, context), most);
     EXPECT_TRUE(md::Dsv4State(p, context, most).has_value());
@@ -892,6 +894,84 @@ TEST(Dsv4Test, TheFastPlanAttendsSparselyAtAnyDepth) {
   EXPECT_FALSE(kg::BuildDsv4Graph(*arena, p, *binding, kg::Dsv4ShapeOf(*state, *chunk),
                                   {.expert_stride = strides, .row_invariant = true, .fused = true})
                    .has_value());
+}
+
+// The fast plan's attention mask is F16 [ring cells + compressed cells,
+// rows], and the MMA kernel takes its planes' strides in 32 bits (RE-037):
+// the widest chunk Dsv4MostRows admits keeps every attention's operands
+// within the kernel's check at the deepest chunk, and one row more does
+// not. A 4,096-row chunk fits to 1,030,144 positions; at 1,048,576 the
+// widest is 4,029 rows (4,024 in whole tiles).
+TEST(Dsv4Test, TheWidestChunksMaskFitsTheAttentionKernel) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  const std::vector<md::Dsv4Resource> resources = GgufLike(p);
+  auto binding = md::BindDsv4(p, "deepseek4", resources);
+  ASSERT_TRUE(binding.has_value()) << Why(binding);
+  std::vector<std::uint64_t> strides(p.layers, 8064224);
+  strides[42] = 9309200;
+  // The first refusal of the kernel's check among the attentions of the
+  // chunk of `rows` that ends the context; empty when all pass.
+  const auto refused = [&](std::uint32_t context, std::uint32_t rows) -> std::string {
+    auto state = md::Dsv4State(p, context, rows, md::Dsv4Window::kRing);
+    if (!state) {
+      return "no state: " + state.error();
+    }
+    auto chunk = md::Dsv4Chunk(p, *state, context - rows, rows, false);
+    if (!chunk) {
+      return "no chunk: " + chunk.error();
+    }
+    auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+    if (!arena) {
+      return "no arena";
+    }
+    auto graph = kg::BuildDsv4Graph(*arena, p, *binding, kg::Dsv4ShapeOf(*state, *chunk),
+                                    {.expert_stride = strides, .fused = true});
+    if (!graph) {
+      return "no graph: " + Why(graph);
+    }
+    std::uint64_t next = std::uint64_t{1} << 40U;
+    const auto bind_leaf = [&](ggml_tensor* t) {
+      if (t != nullptr && t->data == nullptr && t->view_src == nullptr) {
+        kg::TensorArena::Bind(t, next);
+        next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+      }
+    };
+    for (ggml_tensor* t : graph->inputs()) {
+      bind_leaf(t);
+    }
+    for (ggml_tensor* node : graph->nodes) {
+      for (ggml_tensor* src : node->src) {
+        if (src != nullptr && src->op == GGML_OP_NONE) {
+          bind_leaf(src);
+        }
+      }
+    }
+    kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+    std::size_t attention = 0;
+    std::string first;
+    for (const ggml_tensor* node : graph->nodes) {
+      if (node->op == GGML_OP_FLASH_ATTN_EXT) {
+        ++attention;
+        auto checked = kg::CheckFlashAttnMma(node);
+        if (!checked && first.empty()) {
+          first = Why(checked);
+        }
+      }
+    }
+    EXPECT_EQ(attention, p.layers);
+    return first;
+  };
+  constexpr std::string_view kStrides = "flash attention beyond the kernel's 32-bit extents";
+  for (const auto& [context, most] : {std::pair{1048576U, 4029U}, std::pair{1030144U, 4100U}}) {
+    SCOPED_TRACE(context);
+    EXPECT_EQ(md::Dsv4MostRows(p, context), most);
+    EXPECT_EQ(refused(context, most), "");
+    EXPECT_TRUE(refused(context, most + 1).starts_with(kStrides));
+  }
+  EXPECT_EQ(md::Dsv4MostRows(p, 1030400), 4095U);
+  EXPECT_EQ(md::Dsv4MostRows(p, 262144), 13530U);
+  EXPECT_EQ(refused(1048576, 2048), "");
+  EXPECT_TRUE(refused(1048576, 4096).starts_with(kStrides));
 }
 
 TEST(Dsv4Test, ExpertStridesAreWholeBlocks) {

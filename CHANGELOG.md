@@ -121,6 +121,15 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- DeepSeek prefills in 4,096-row chunks by default (was 2,048): 12-15%
+  faster at 8K-32K tokens on the 0731 GGUF for 1.28 GiB more fixed memory.
+  Above a 262,144-token context the default stays 2,048 rows, whose
+  smaller attention mask leaves a 1M conversation its state (there 4,096,
+  capped to 4,024 rows, fixed 2.14 GiB more). Any DeepSeek chunk is now also capped
+  where that mask fits the kernel's 32-bit strides (13,528 rows at a
+  262,144-token context, 4,024 at 1M); wider chunks refused a deep
+  prompt's last chunks.
+
 - DeepSeek fast prefill fuses eligible Q-head normalization and rotation,
   preserving native F32 arithmetic without a normalization intermediate.
 

@@ -1025,6 +1025,8 @@ it appears.
       production's 2,048-row chunks they gain 7.21% on the community
       checkpoint but 1.41% on the served original checkpoint, where only
       F16 Q and dense Q8_0 pairs apply; runtime 8K prefill gains 1.26%.
+      Production DeepSeek chunks are now 4,096 rows, 12.1% faster at 8K
+      than 2,048 ([DeepSeek concurrent](experiments/deepseek-concurrent/README.md)).
       These different-factor screens are not added together or recorded as
       a matched final ds4 speed ratio. The [closure status](m3-optimization-status.md)
       tracks completed and missing independent-review experiments.

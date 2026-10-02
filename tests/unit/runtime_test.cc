@@ -444,7 +444,9 @@ TEST(PrefillChunk, TakesTheConfiguredOrDefaultRowsWithinTheModelAndContext) {
   EXPECT_EQ(PrefillChunkRows(8704, std::nullopt, 2048, 8192), 2048U);
   EXPECT_EQ(PrefillChunkRows(8704, 4096U, 2048, 8192), 4096U);
   EXPECT_EQ(PrefillChunkRows(8704, 65536U, 2048, 8192), 8192U);  // the model's most
-  EXPECT_EQ(PrefillChunkRows(1048576, std::nullopt, 2048, 1048448), 2048U);
+  EXPECT_EQ(PrefillChunkRows(1048576, std::nullopt, 2048, 4029), 2048U);
+  // DeepSeek's default at its 1M ceiling: the model's 4,029, in whole tiles.
+  EXPECT_EQ(PrefillChunkRows(1048576, std::nullopt, 4096, 4029), 4024U);
   EXPECT_EQ(PrefillChunkRows(262144, std::nullopt, 4096, 8192), 4096U);
   // The minimum context: a chunk below it, whatever the default.
   EXPECT_EQ(PrefillChunkRows(512, std::nullopt, 2048, 512), 504U);  // whole tiles

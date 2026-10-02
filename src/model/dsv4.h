@@ -272,7 +272,10 @@ std::expected<std::vector<StateRange>, std::string> Dsv4CheckpointWrites(
 // The widest chunk Dsv4State admits at `context` (either window: a ring is
 // never larger than the full cache, and holds any chunk the full cache
 // does): the context, and the full cache's cells less the window (0 when
-// none, or when the context is refused whatever the chunk).
+// none, or when the context is refused whatever the chunk); and, for the
+// fast plan's ring, the widest whose attention mask (F16 [ring cells +
+// compressed cells, rows]) stays under 2^31 bytes (RE-037): 13,530 rows
+// at 262,144, 4,100 at 1,030,144, 4,029 at 1,048,576.
 std::uint32_t Dsv4MostRows(const Dsv4Profile& profile, std::uint32_t context);
 
 // ---------------------------------------------------------------- chunk inputs

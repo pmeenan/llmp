@@ -533,9 +533,31 @@ std::uint32_t Dsv4MostRows(const Dsv4Profile& p, std::uint32_t context) {
     return 0;
   }
   const std::uint64_t cells = Pad(context, 256);
-  return cells <= p.window
-             ? 0
-             : static_cast<std::uint32_t>(std::min<std::uint64_t>(context, cells - p.window));
+  if (cells <= p.window) {
+    return 0;
+  }
+  // The fast plan's attention mask, F16 [ring cells + compressed cells,
+  // rows], stays under 2^31 bytes: the MMA kernel takes its planes'
+  // strides in 32 bits (RE-037). The largest such rows, by bisection (the
+  // mask grows with the rows).
+  const std::uint64_t compressed =
+      Pad((std::uint64_t{context} + kDsv4CsaRatio - 1) / kDsv4CsaRatio, 256);
+  const auto fits = [&](std::uint64_t rows) {
+    const std::uint64_t ring = std::min(cells, Pad(std::uint64_t{p.window} + rows, 256));
+    return (ring + compressed) * rows * 2 <=
+           static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max());
+  };
+  std::uint64_t lo = 0;
+  std::uint64_t hi = std::min<std::uint64_t>(context, cells - p.window);
+  while (lo < hi) {
+    const std::uint64_t mid = hi - ((hi - lo) / 2);
+    if (fits(mid)) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return static_cast<std::uint32_t>(lo);
 }
 
 // ---------------------------------------------------------------- chunk inputs

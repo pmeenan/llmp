@@ -279,7 +279,9 @@ regressed; conditional depth plus four shared heads gains 7.05% at C4 but
 delays first completion 83.23% and changes replies, so it remains private.
 Fresh matched concurrent comparisons against current TensorFold NVFP4 are
 complete: native completed-token rate is +19.22% / +8.63% / −14.55% at
-C1/C2/C4. Qwen same-history acceptance,
+C1/C2/C4. DeepSeek still queues concurrent requests yet leads llama.cpp
+`--parallel 4` on the same GGUF at C1/C2/C4 (+52/42/36% with DSpark,
++45/25/14% plain). Qwen same-history acceptance,
 DeepSeek batching, the remaining native prefill gap, final swap/client
 gate and frozen M3 record remain open. Workstation checks are deferred
 until implementations settle; package checks remain owed before shipment.
