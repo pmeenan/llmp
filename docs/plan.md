@@ -953,7 +953,12 @@ it appears.
       reduces two gate/up worklist builds to one with unchanged J128
       consumers and byte-identical complete outputs, but gains only 0.20%
       amid 0.15–0.34% bookend movement. Keep the separate path; no adoption
-      follows. These comparisons cover one request.
+      follows. These comparisons cover one request. The [matched-input native
+      stage profile](experiments/ds4-production-prefill-attribution/README.md)
+      records 13.31 s at 8K with byte-equal complete heads and 0.49% ordinary
+      bookend movement. The exact post-down weighting and six-slot sum occupy
+      665 ms, about 5% of wall, selecting one focused reduction screen without
+      claiming a whole-model gain or attributing the remaining literal gap.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer
