@@ -426,6 +426,50 @@ strong gate records 117.269 GiB clear. Raw evidence remains in
 logit SHA256 is
 `52c0b582b45e7dcb55f00b2b9a8fca9347cad5d57eae926a112a2df348a805a6`.
 
+## Remaining native 4K stage budget
+
+The existing ordered-step collector is repeated once on the current
+community 8K combination: native output-A and HCA, compact experts and
+frontier heads, two 4,096-row chunks. The two rejected 2,048-row guard
+changes are first replaced with the retained selected 4K sources and
+their two libraries rebuilt. The collector then prebinds the same complete
+plans in all arms and runs O/observed/O within one loaded model. It pays
+input assembly/copies, operation preparation, dispatch, fences and complete
+frontier-head copies; planning/event creation, audit and file writes are
+outside the paid clock. It adds no intermediate synchronization.
+
+The three paid passes take **9.810647619 / 9.762510701 / 9.754978414 seconds**.
+Bookends move −0.56744%; the observed pass is −0.20753% from their mean.
+All six complete heads match the saved native-combination goldens byte
+for byte. Actual plans retain 43 output-A and 20 HCA operations per chunk,
+plus the selected Q-head, reduction and compact expert consumers.
+
+| Chain | Summed ordered intervals, ms |
+| --- | ---: |
+| Routed FFN | 3,790.039 |
+| Attention output and hyper-connection expansion | 1,413.764 |
+| Attention | 1,036.031 |
+| Q/KV | 945.274 |
+| Shared FFN and hyper-connection expansion | 701.674 |
+| FFN input and routing | 634.082 |
+| Hyper-connection attention input | 549.042 |
+| Compression and indexer | 517.963 |
+
+Ordered intervals sum to 9,655.759 ms within the observed 9,762.511-ms
+whole pass; they include host enqueue gaps and are not kernel-busy time.
+The compact pair/down consumers account for 1,870.319 / 1,549.578 ms,
+3,419.897 ms together (35.03% of the observed wall). They are the largest
+remaining measured consumer target. Output-A accounts for 716.212 ms;
+wide attention/HCA account for 680.275 / 341.796 ms. These are current
+within-pipeline budgets, not differences subtracted from older literal
+pipeline profiles or predictions of removable time.
+
+The supervised restore/build/collector/classifier job completes rc0;
+all command children are reaped. The final strong gate records 117.111 GiB
+with native/GPU/container probes clear. Event rows, full heads and receipts
+are retained in `combined-attribution-r1/` and its sibling supervisor
+directory under the same evidence root. No suite or context matrix is run.
+
 ## Provenance
 
 Measured on `spark-c4e2`, 2026-10-02, SDK
