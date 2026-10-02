@@ -15,6 +15,7 @@
 
 #include "cutlass/version.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/moe_layout.h"
 #include "kernels/ggml/mxfp8_cutlass.h"
@@ -95,6 +96,7 @@ constinit std::array kTagVecQ = std::to_array("jitllm.vecq");
 constinit std::array kTagDsv4Route = std::to_array("jitllm.dsv4.route");
 constinit std::array kTagDsv4Combine = std::to_array("jitllm.dsv4.combine");
 constinit std::array kTagDsv4WeightedReduce = std::to_array("jitllm.dsv4.weighted_reduce");
+constinit std::array kTagDsv4QHead = std::to_array("jitllm.dsv4.qhead");
 constinit std::array kTagDsv4HcMix = std::to_array("jitllm.dsv4.hc_mix");
 constinit std::array kTagDsv4HcPre = std::to_array("jitllm.dsv4.hc_pre");
 constinit std::array kTagDsv4Compress = std::to_array("jitllm.dsv4.compress");
@@ -187,8 +189,9 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 39> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 40> fused = {{
       {kTagDsv4WeightedReduce.data(), JitllmOp::kDsv4WeightedReduce},
+      {kTagDsv4QHead.data(), JitllmOp::kDsv4QHead},
       {kTagGdnStep.data(), JitllmOp::kGdnStep},
       {kTagDsv4LidTopK.data(), JitllmOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), JitllmOp::kDsv4SparseMask},
@@ -1906,6 +1909,15 @@ ggml_tensor* Dsv4Combine(ggml_context* context, ggml_tensor* down, ggml_tensor* 
 ggml_tensor* Dsv4OrderedReduce(ggml_context* context, ggml_tensor* down, ggml_tensor* weights) {
   return Custom(context, GGML_TYPE_F32, {down->ne[0], down->ne[2], 1, 1}, {down, weights},
                 kTagDsv4WeightedReduce.data());
+}
+
+ggml_tensor* Dsv4QHead(ggml_context* context, ggml_tensor* x, ggml_tensor* positions,
+                       const Dsv4QHeadParams& params) {
+  static_assert(sizeof(params) == 32 && kEpsOffset + sizeof(params) <= GGML_MAX_OP_PARAMS);
+  ggml_tensor* node = Custom(context, GGML_TYPE_F32, {x->ne[0], x->ne[1], x->ne[2], x->ne[3]},
+                             {x, positions}, kTagDsv4QHead.data());
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, &params, sizeof(params));
+  return node;
 }
 
 ggml_tensor* Dsv4HcMix(ggml_context* context, ggml_tensor* x, ggml_tensor* fn) {

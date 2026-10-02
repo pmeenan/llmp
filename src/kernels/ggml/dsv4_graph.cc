@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ggml.h"
+#include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -757,9 +758,21 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
   qr = Norm(qr, l.q_a_norm);
   ggml_tensor* q = Mm(l.q_b, qr);
   q = ggml_reshape_3d(c_, q, head, heads, nt);
-  q = ggml_rms_norm(c_, q, p_.rms_eps);
-  q = RopeExt(q, g_.positions, rl, rl.n_ctx_orig);
-  q = ggml_rope_set_offset(q, static_cast<int>(nope));
+  const Dsv4QHeadParams q_params{.eps = p_.rms_eps,
+                                 .original_context = rl.n_ctx_orig,
+                                 .base = rl.base,
+                                 .scale = rl.scale,
+                                 .extension = rl.ext,
+                                 .attention = rl.attn,
+                                 .beta_fast = rl.beta_fast,
+                                 .beta_slow = rl.beta_slow};
+  if (o_.fused && p_.rope_dims == 64 && Dsv4QHeadFits(q, g_.positions, q_params)) {
+    q = Dsv4QHead(c_, q, g_.positions, q_params);
+  } else {
+    q = ggml_rms_norm(c_, q, p_.rms_eps);
+    q = RopeExt(q, g_.positions, rl, rl.n_ctx_orig);
+    q = ggml_rope_set_offset(q, static_cast<int>(nope));
+  }
   Name(q, "q", il);
 
   ggml_tensor* kv = Mm(l.kv, cur);

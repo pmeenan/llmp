@@ -20,6 +20,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -453,6 +454,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             break;
           case JitllmOp::kQsaPrep:
             add(Operation::kRope, kQsaPrepName, i, {node}, 1);
+            break;
+          case JitllmOp::kDsv4QHead:
+            add(Operation::kRope, kDsv4QHeadName, i, {node}, 1);
             break;
           case JitllmOp::kQsaGateQuantize:
             add(Operation::kQuantize, kQsaGateQuantizeName, i, {node}, 1);

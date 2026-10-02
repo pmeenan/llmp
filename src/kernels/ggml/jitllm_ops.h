@@ -134,6 +134,7 @@ enum class JitllmOp : std::uint8_t {
   kDsv4LidTopK,
   kDsv4SparseMask,
   kDsv4WeightedReduce,
+  kDsv4QHead,
 };
 
 // The operation a GGML_OP_CUSTOM node names, or kNone.

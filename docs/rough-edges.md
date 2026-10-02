@@ -28,6 +28,25 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-042: Clang's CUDA parser requires a cuRAND header absent from the trimmed SDK  (2026-10-02, status: worked-around)
+
+On Spark A, SDK `aarch64-e0a0c85c42806fb1`, Clang22.1.8 and CUDA13.4.92,
+the Q-head CUDA clang-tidy check first rejected NVCC-only compile-database
+driver flags. Adapting that actual entry for Clang's CUDA host parser then
+failed at `__clang_cuda_runtime_wrapper.h:505`: its unconditional
+`curand_mtgp32_kernel.h` include is absent from the trimmed SDK, although
+the checked kernel uses no cuRAND API.
+
+For this lint check, retain the actual entry's definitions and SDK include
+paths, replace NVCC-only driver flags with Clang CUDA host parsing flags,
+then supplement headers with `/usr/local/cuda-13.0/include`, after the SDK
+paths. The resulting changed-unit check passes. This workaround affects
+parsing only: production still compiles with NVCC13.4.92, unchanged native
+flags and the pinned SDK libraries. Preserve the original and adapted
+entries; do not replace the production toolchain to repair lint.
+See the [Q-head report](experiments/dsv4-qhead/README.md) and
+[LLVM note](upstream/other.md#llvm-cuda-lint-parsing-needs-an-unused-curand-header-re-042).
+
 ## RE-041: CUDA current free memory can exclude reclaimable inactive GGUF file cache  (2026-10-01, status: worked-around)
 
 Environment: `spark-b` (`spark-56f5`), GB10, kernel `7.0.0-1019-nvidia`,

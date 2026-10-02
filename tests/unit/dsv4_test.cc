@@ -34,6 +34,7 @@
 #include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"
+#include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -676,6 +677,9 @@ TEST(Dsv4Test, TheFastPlanFusesDecodeAndVerifyChunks) {
         return step.implementation == kg::kDsv4WeightedReduceName;
       });
       EXPECT_EQ(reductions, fused && rows > kg::kVecQTokens ? p.layers : 0);
+      const auto qheads = std::ranges::count_if(
+          plan->steps, [](const auto& step) { return step.implementation == kg::kDsv4QHeadName; });
+      EXPECT_EQ(qheads, fused && rows >= 16 ? p.layers : 0);
       if (fused) {
         for (const auto& step : plan->steps) {
           used.insert(step.implementation);

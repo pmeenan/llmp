@@ -20,7 +20,7 @@ and the repro, and does not rely on the rest of this file.
 | [flashinfer.md](flashinfer.md) | FlashInfer's pinned CUTLASS NVFP4 consumer, inspected for Qwen component transfers |
 | [tensorfold.md](tensorfold.md) | TensorFold (an M3 baseline and a source of techniques) |
 | [ds4.md](ds4.md) | Entrpi's ds4 fork (same-GGUF DeepSeek baseline and prefill techniques) |
-| [other.md](other.md) | Projects with a single finding: Docker, SGLang, qemu-user with LeakSanitizer, Ubuntu's snapshot service |
+| [other.md](other.md) | Projects with a single finding: Docker, SGLang, LLVM's CUDA parser, qemu-user with LeakSanitizer, Ubuntu's snapshot service |
 
 ## Upstream entries and rough edges
 

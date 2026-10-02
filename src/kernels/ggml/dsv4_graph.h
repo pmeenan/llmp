@@ -218,7 +218,9 @@ struct Dsv4GraphOptions {
   // indexer's scoring and HCA's one row per 128 positions, over a ring
   // window (model/dsv4.h Dsv4Window::kRing) or the full one. Not llama.cpp's
   // arithmetic: its logits differ in the last bits and beyond. Off: the
-  // graph node for node as llama.cpp builds it.
+  // graph node for node as llama.cpp builds it. Wide contiguous512-value
+  // Q heads with64 normal rotary tail values use one RMSNorm/RoPE kernel,
+  // retaining native F32 rounding without a materialized norm tensor.
   bool fused = false;
 };
 

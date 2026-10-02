@@ -965,6 +965,11 @@ it appears.
       The selected native graph operation retains the original F32
       multiplication/addition order and exact/small-row/unsupported fallbacks;
       its final Spark check passes 1,245 tests, including 258 GPU tests.
+      The [native Q-head fusion](experiments/dsv4-qhead/README.md) combines
+      per-head RMSNorm and normal-tail RoPE: its corrected 8K screen gains
+      3.17% with all six complete heads byte-identical. The guarded fast
+      graph removes the norm intermediate; reference and unsupported
+      shapes retain both primitives.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer

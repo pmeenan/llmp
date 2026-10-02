@@ -107,6 +107,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- DeepSeek fast prefill fuses eligible Q-head normalization and rotation,
+  preserving native F32 arithmetic without a normalization intermediate.
+
 - DeepSeek's fast wide prefill combines its six expert outputs in one F32
   kernel with the original multiplication and addition order; unsupported
   shapes and reference plans keep their ordinary operations.

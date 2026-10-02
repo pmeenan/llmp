@@ -6,6 +6,28 @@
 Projects with a single finding each. None has been reported, and none of
 their current versions was checked.
 
+## LLVM: CUDA lint parsing needs an unused cuRAND header (RE-042)
+
+- **Status:** open (SDK/parser compatibility to track).
+- **Project:** [llvm/llvm-project](https://github.com/llvm/llvm-project),
+  Clang22.1.8 in jitLLM SDK `aarch64-e0a0c85c42806fb1`, Spark A, 2026-10-02.
+- **Problem:** `clang/lib/Headers/__clang_cuda_runtime_wrapper.h:505`
+  unconditionally includes `curand_mtgp32_kernel.h`. A CUDA host parsing
+  check fails against the trimmed CUDA13.4.92 SDK because that header is
+  absent, even for a kernel with no cuRAND calls. The earlier NVCC-only
+  compile-entry driver flags must also be adapted before Clang can parse.
+- **jitLLM's workaround:** retain the actual compile entry's definitions
+  and SDK headers, adapt only parser driver flags, and add the installed
+  `/usr/local/cuda-13.0/include` after SDK paths for lint only. The successful
+  check records both original and adapted entries. Production NVCC flags,
+  SDK libraries and numerical behavior remain unchanged.
+- **Upstream current code:** not checked; no defect or fix is established.
+- **Proposed action:** before changing the SDK, check the current wrapper
+  and whether the required cuRAND headers should be provisioned for Clang
+  CUDA parsing. This observation does not justify a production compiler pin.
+- **Links:** [RE-042](../rough-edges.md#re-042-clangs-cuda-parser-requires-a-curand-header-absent-from-the-trimmed-sdk--2026-10-02-status-worked-around),
+  [qualification report](../experiments/dsv4-qhead/README.md).
+
 ## Docker: a multi-arch index digest can run the wrong architecture from the local store (RE-015)
 
 - **Status:** open.

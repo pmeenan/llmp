@@ -15,6 +15,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -85,7 +86,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 99> kKernels = {{
+constexpr std::array<Kernel::Entry, 100> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -93,6 +94,13 @@ constexpr std::array<Kernel::Entry, 99> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckRmsNorm(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RmsNorm(launch, n[0]); }},
+    {.name = kDsv4QHeadName,
+     .operation = execution::Operation::kRope,
+     .variant = "QHeadKernel: native 256-thread RMS reduction at width512, explicit F32 "
+                "normalization rounding and normal tail64 RoPE multiply/FMA order",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4QHead(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4QHead(launch, n[0]); }},
     {.name = "ggml.add",
      .operation = execution::Operation::kAdd,
      .variant = "ggml_cuda_op_add: k_bin_bcast<op_add, float, float, float>; upstream launch "

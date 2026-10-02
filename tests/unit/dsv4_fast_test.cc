@@ -42,6 +42,7 @@
 #include "base/bytes.h"
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
@@ -50,6 +51,7 @@
 #include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
+#include "model/dsv4.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/device_execution.h"
 
@@ -1176,6 +1178,55 @@ TEST_F(Dsv4FastTest, TheSparseMaskKeepsTheWindowAndTheSelectedOrVisibleRows) {
       }
     }
     EXPECT_TRUE(found) << name;
+  }
+}
+
+TEST_F(Dsv4FastTest, QHeadRetainsNativeRmsAndRotaryRoundingAtLongPositions) {
+  const auto& profile = jitllm::model::Dsv4Flash();
+  for (const std::int64_t rows : {33, 2048}) {
+    const auto count = static_cast<std::size_t>(512LL * 64 * rows);
+    auto* input = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 512, 64, rows), Normal(711, count));
+    std::vector<std::int32_t> values(static_cast<std::size_t>(rows));
+    constexpr std::array<std::int32_t, 6> positions{0, 97, 4095, 131071, 262143, 1048575};
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      values[i] = positions[i % positions.size()];
+    }
+    auto* pos = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, rows), values);
+    auto* norm = Place(ggml_rms_norm(c(), input, profile.rms_eps));
+    Launched(kg::RmsNorm(launch(), norm), "native Q-head RMS");
+    for (const bool yarn : {false, true}) {
+      const float scale = yarn ? 1.0f / profile.rope_scale : 1.0f;
+      const kg::Dsv4QHeadParams params{
+          .eps = profile.rms_eps,
+          .original_context = yarn ? static_cast<std::int32_t>(profile.yarn_original_context) : 0,
+          .base = yarn ? profile.compress_rope_base : profile.rope_base,
+          .scale = scale,
+          .extension = yarn ? 1.0f : 0.0f,
+          .attention = yarn ? 1.0f / (1.0f + (0.1f * logf(1.0f / scale))) : 1.0f,
+          .beta_fast = yarn ? profile.yarn_beta_fast : 0,
+          .beta_slow = yarn ? profile.yarn_beta_slow : 0};
+      auto* original = Place(ggml_rope_ext(c(), norm, pos, nullptr, 64, 0, params.original_context,
+                                           params.base, params.scale, params.extension,
+                                           params.attention, params.beta_fast, params.beta_slow));
+      ggml_rope_set_offset(original, 448);
+      auto* fused = Place(kg::Dsv4QHead(c(), input, pos, params));
+      ASSERT_TRUE(kg::Dsv4QHeadFits(input, pos, params));
+      Launched(kg::RopeExt(launch(), original), "native Q-head rotation");
+      Launched(kg::RunDsv4QHead(launch(), fused), "fused Q-head");
+      const auto want = Download(original);
+      const auto got = Download(fused);
+      EXPECT_EQ(std::memcmp(want.data(), got.data(), want.size() * sizeof(float)), 0)
+          << rows << " rows, YaRN " << yarn;
+      const auto address = Address(fused);
+      TensorArena::Bind(fused, Address(input));
+      EXPECT_FALSE(kg::CheckDsv4QHead(fused).has_value());
+      TensorArena::Bind(fused, address);
+      auto saved = fused->nb[2];
+      fused->nb[2] += sizeof(float);
+      EXPECT_FALSE(kg::CheckDsv4QHead(fused).has_value());
+      fused->nb[2] = saved;
+      EXPECT_TRUE(kg::CheckDsv4QHead(fused).has_value());
+    }
   }
 }
 
