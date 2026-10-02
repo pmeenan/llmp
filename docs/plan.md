@@ -1020,8 +1020,11 @@ it appears.
       integration; it does not qualify state-page equality or HTTP parity.
       Focused rejected-request recovery and HTTP capacity/cancellation controls
       now pass. The first matched fresh cooperative HTTP C2 screen is neutral
-      (+0.34% aggregate rate) and delays the first-finishing request; hold
-      adoption and screen fixed depth with pairing counters before broader checks.
+      (+0.34% aggregate rate); fixed3 restores pairing but remains neutral
+      (−0.28%). Skipping unchanged selection rebuilds gives +2.92%, and the
+      same binaries with warm weights give +2.60%; first completion worsens.
+      Hold adoption, diagnose coarse costs and screen head sharing before
+      broader checks.
       The [exact16 MXFP8 control](experiments/qwen38-mxfp8-sixteen/README.md)
       passes every output/state check but makes the paid four-request loop
       7.469 times slower. Keep paired-eight products; no wider MXFP8 kernel

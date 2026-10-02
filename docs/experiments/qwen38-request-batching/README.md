@@ -258,6 +258,12 @@ pending cursors and initialized-range geometry match. Six complete-row
 comparisons are byte-identical and all twelve retained vectors are finite;
 this screen does not compare complete state-page contents.
 
+Each arm performs six untimed generation steps before re-prefilling for the
+clocked loop: three full-row controls and three IDs-only steps also warm the
+actual copy-key plans. New shapes can still plan/capture during timing, but
+this is not a first-use graph measurement. The later HTTP one-token prime
+warms singleton masks only and does not reproduce this two-slot warmup.
+
 Whole Draft is 1.544364433/1.631446159 s, Verify 10.505578754/9.415343014 s,
 and host commit/final settlement 0.011866362/0.009252485 s. The shared arm
 executes 37,248 MXFP8 and 9,888 routed pairs, paying 4,662,501,600 packing
@@ -305,8 +311,8 @@ The previously first-finishing request takes substantially longer under shared
 execution. Both shared requests queue for less than 0.002 s; the scalar u2
 request queues for 16.090 s. No draft-depth or paired-product counters were
 retained, so these observations identify no cause. Source inspection finds
-that unequal adaptive depths disable paired draft products; a small fixed-depth
-screen with aggregate pairing counters is the next causal check.
+that unequal adaptive depths disable paired draft products; the short fixed-depth
+successor below tests that pairing eligibility without a wider matrix.
 
 Separate focused controls restore the rejected request to its complete
 post-draft state, preserve its accepted peer and produce exact continuation
@@ -325,3 +331,64 @@ Raw controls remain outside Git in the respective
 `/home/pmeenan/scratch/m3-qwen-discard-verify-control-r1-records/` directories.
 Routine suites are deferred while diagnosing this neutral private candidate;
 no production default or cross-engine parity follows from it.
+
+## Short HTTP successors
+
+Three single-pair successors preserve the same selected head, chunks, context
+and fresh 8266-prompt/zero-cache/256-output fixtures. Both arms use greedy
+depth three. Every scalar/shared response retains identical content,
+reasoning, usage and length finish.
+
+| Screen | Scalar pair, s | Shared pair, s | Aggregate rate change |
+| --- | ---: | ---: | ---: |
+| Fixed depth three | 26.211413 | 26.284096 | −0.2765% |
+| Skip unchanged slot-selection closure rebuild | 26.255620 | 25.511645 | +2.9162% |
+| Same targets, warm weights before fresh pair | 20.240570 | 19.728319 | +2.5965% |
+
+Fixed depth restores pairing: 107 of 109 completed draft/verify calls are
+paired. It does not recover the native ready-C2 gain. The next private
+one-file shortcut retains original validation and mutation-driven closure
+refreshes, skipping the repeated rebuild only for an unchanged slot mask
+with an open request. Its screen has 106 paired calls and four single-slot
+calls; changed bootstrap/tail grouping prevents attributing the before/after
+wall difference solely to the shortcut.
+
+The last screen uses those unchanged binaries and pays an identical unrelated
+one-token request before each measured pair. Prime requests have 57 prompt
+tokens, zero cached tokens and identical replies, taking 6.303806/6.301559 s;
+initial page-in is outside the pair clock. Measured prompts still have zero
+cached tokens. Fresh prefill, queueing, graph preparation and HTTP remain
+charged, so this is not pure decode. The shared arm executes 107 paired and
+two single-slot calls, including the prime. First completion worsens from
+10.200529 to 19.627801 s.
+
+These small single observations select no default adoption or wider ladder.
+The next diagnostic records inclusive adapter/graph costs on the unchanged
+warm-weight workload; BF16 target-head sharing remains a separate factor.
+Fixed3/selection builds are 2444d4a4/4363f3aa; actual outer receipts are
+73ec92f6/73656b3d/94fd760b. All services and helper commands complete zero
+and are reaped, with clear terminal probes. Compact raw records remain
+outside Git in the respective
+`/home/pmeenan/scratch/m3-qwen-cooperative-{fixed3,selection,weight-prime}-*-r1-records/`
+directories. Source remains private and production checks remain owed.
+
+One unchanged warm-weight successor records inclusive adapter timings, with
+no failures or new policy. Pair wall is 20.431959/19.718395 s (+3.6188%
+aggregate rate, one observation). Ten prefill/anchor calls cost
+7.497371/7.551036 s; scalar generation costs 13.002896 s over 216 calls,
+shared generation 12.278710 s over 109 calls. Nested draft costs are
+1.666641/1.912625 s and verification 11.333401/10.364445 s. Selection costs
+only 0.008984/0.009252 s. These scopes include prime adapter work, overlap
+their nested calls and are host wall time, not exclusive GPU budgets.
+
+Existing cumulative plan costs are 0.204643/0.679720 s and PLE costs
+0.321670/0.649766 s, with identical 279104 lookups but fewer shared read bytes.
+Scalar/shared graph counters are eager 33/61, captured 12/23, replayed
+407/154 and refused zero. These overlapping diagnostics establish no causal
+phase attribution. Fresh prefill dilutes the generation benefit, and shared
+verification remains the largest adapter scope; target-head sharing is the
+next separate factor. All response controls and six unique 200 terminals
+pass. Target 3ae5f73e and outer ce09d422 bind this diagnostic; all commands
+and service children exit zero/reaped, terminal memory 117.178 GiB with probes
+clear. Compact records are
+`/home/pmeenan/scratch/m3-qwen-cooperative-host-cost-http-r1-records/`.
