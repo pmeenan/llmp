@@ -18,6 +18,7 @@
 #include "engine/checkpoint_file.h"
 #include "engine/support.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -38,6 +39,15 @@ using catalog::MemoryClass;
 using support::Address;
 using support::Error;
 using support::Pointer;
+
+std::optional<std::uint32_t> HcaFirstPosition(const Dsv4Model& model,
+                                              const kg::Dsv4ChunkShape& shape,
+                                              std::uint32_t first) {
+  if (!model.exact && model.prefill_outa_hca && shape.rows == 4096 && shape.hca_n_kv == 256) {
+    return first;
+  }
+  return std::nullopt;
+}
 using support::Round;
 using support::Seconds;
 
@@ -161,7 +171,8 @@ Status Dsv4Runner::Setup() {
                                 .stride = std::move(stride),
                                 .state = std::uint64_t{1} << 45U},
                      .rot = kg::HadamardMatrix(profile_.indexer_head_dim),
-                     .exact = o_.exact};
+                     .exact = o_.exact,
+                     .prefill_outa_hca = o_.prefill_outa_hca && !o_.exact && !o_.full_window};
   if (speculative()) {
     dmodel_ = DsparkModel{.artifact = &dweights_.artifact(),
                           .profile = &dprofile_,
@@ -182,6 +193,7 @@ Status Dsv4Runner::Setup() {
     if (!measure) {
       return std::unexpected(measure.error());
     }
+    model_.prefill_outa_hca = model_.prefill_outa_hca && kg::Dsv4OutASupported(**measure);
     const kg::DeviceChoices choices = kg::DeviceChoicesOf(**measure);
     const auto account = [&](const PlannedBase& planned) -> Status {
       most_activations = std::max(most_activations, planned.placement.extent);
@@ -202,6 +214,11 @@ Status Dsv4Runner::Setup() {
                                  {o_.context - o_.max_rows, o_.max_rows, Dsv4ChunkKind::kPlain},
                                  {o_.context - 1, 1, Dsv4ChunkKind::kPlain},
                                  {o_.max_rows, 1, Dsv4ChunkKind::kPlain}};
+    // Past the HCA fast path's 256 compressed cells, fund the ordinary
+    // 512-cell attention fallback as well as the existing context-end probe.
+    if (model_.prefill_outa_hca && o_.max_rows == 4096 && o_.context >= 32768 + 4096) {
+      probes.push_back({32768, 4096, Dsv4ChunkKind::kPlain});
+    }
     if (speculative()) {
       probes.push_back({0, o_.max_rows, Dsv4ChunkKind::kInject});
       probes.push_back({o_.context - o_.max_rows, o_.max_rows, Dsv4ChunkKind::kInject});
@@ -225,8 +242,9 @@ Status Dsv4Runner::Setup() {
                                                      dump_.empty()
                                                  ? 1
                                                  : 0;
-      auto planned = PlanDsv4Chunk(model_, kg::Dsv4ShapeOf(layout_, *in, requested_outputs),
-                                   choices, dump_, 0, 0, speculation);
+      const auto shape = kg::Dsv4ShapeOf(layout_, *in, requested_outputs);
+      auto planned = PlanDsv4Chunk(model_, shape, choices, dump_, 0, 0, speculation,
+                                   HcaFirstPosition(model_, shape, probe.n_past));
       if (!planned) {
         return Error(std::format("measuring a chunk of {} at {}: {}", probe.rows, probe.n_past,
                                  planned.error()));
@@ -549,8 +567,9 @@ std::expected<Dsv4Runner::ChunkPlans::Entry*, std::string> Dsv4Runner::Planned(
                    .inject_rows = key.inject_rows};
   }
   kg::LaunchContext& launch = resources_.launch();
-  auto planned = PlanDsv4Chunk(model_, key.shape, kg::DeviceChoicesOf(launch), dump_,
-                               node_.activations().base, node_.activations().bytes, speculation);
+  auto planned =
+      PlanDsv4Chunk(model_, key.shape, kg::DeviceChoicesOf(launch), dump_, node_.activations().base,
+                    node_.activations().bytes, speculation, key.first_position);
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -691,9 +710,11 @@ Status Dsv4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> tok
       o_.frontier_head && !model_.exact && !o_.full_window && rows > 1 && !verify && dump_.empty()
           ? 1
           : 0;
-  auto planned = Planned({.shape = kg::Dsv4ShapeOf(layout_, *in, requested_outputs),
+  const auto shape = kg::Dsv4ShapeOf(layout_, *in, requested_outputs);
+  auto planned = Planned({.shape = shape,
                           .kind = kind,
-                          .inject_rows = static_cast<std::int64_t>(inject.cells.size())});
+                          .inject_rows = static_cast<std::int64_t>(inject.cells.size()),
+                          .first_position = HcaFirstPosition(model_, shape, n_past)});
   if (!planned) {
     return std::unexpected(planned.error());
   }

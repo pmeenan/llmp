@@ -13,6 +13,8 @@ namespace jitllm::kernels::ggml::internal {
 // PlanMulMatQBorrowedD4 must have accepted these exact metadata/operands
 // before any submission. Records failures with the ordinary native CUDA
 // error collector; the outer Run retains its charged workspace on unknown.
+// Called across translation units by dsv4_ds4_product.cu.
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 void LaunchMulMatQBorrowedD4(ggml_backend_cuda_context& context, const ggml_tensor* node,
                              const void* quantized);
 }  // namespace jitllm::kernels::ggml::internal

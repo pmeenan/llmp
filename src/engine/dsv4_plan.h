@@ -60,6 +60,10 @@ struct Dsv4Model {
   // row-invariant plan (D-092). Off (the default): jitLLM's fused plan and
   // a batched verify, judged coarsely against llama.cpp.
   bool exact = false;
+  // Internal opt-in for the qualified 4K output-A/HCA prefill combination.
+  // OutA keeps its descriptor fallback; HCA requires all layers' OutA and
+  // the qualified 4K/256-compressed shape. Other rows retain ordinary math.
+  bool prefill_outa_hca = false;
 };
 
 // DeepSeek's DSpark drafter beside its target (model/dspark.h): its places
@@ -105,7 +109,8 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     const Dsv4Model& m, const kernels::ggml::Dsv4ChunkShape& shape,
     const kernels::ggml::DeviceChoices& choices, std::span<const std::string> keep,
     std::uint64_t activations, std::uint64_t activation_bytes,
-    const Dsv4Speculation& speculation = {});
+    const Dsv4Speculation& speculation = {},
+    std::optional<std::uint32_t> first_position = std::nullopt);
 
 // Binds a chunk graph's DSpark injection: the drafter's fc, norms and wkv,
 // and its ring.

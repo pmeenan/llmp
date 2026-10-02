@@ -118,6 +118,8 @@ struct Dsv4Options {
   // Production fast prefill needs only the last head row. Generic and
   // diagnostic callers opt in explicitly; exact/verify stay all-row.
   bool frontier_head = false;
+  // Internal experiment, off by default; no public runtime/config option.
+  bool prefill_outa_hca = false;
 };
 
 // What a chunk computes beside its target rows' own work.
@@ -331,6 +333,8 @@ class Dsv4Runner final : public PagedModel {
     kernels::ggml::Dsv4ChunkShape shape;
     Dsv4ChunkKind kind = Dsv4ChunkKind::kPlain;
     std::int64_t inject_rows = 0;
+    // HCA's host scalar; present only for eligible 4K/256-compressed plans.
+    std::optional<std::uint32_t> first_position = std::nullopt;
     bool operator==(const ChunkKey&) const = default;
   };
   using ChunkPlans = PlanCache<ChunkKey, Dsv4Planned>;

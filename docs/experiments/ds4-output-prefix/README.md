@@ -470,6 +470,64 @@ with native/GPU/container probes clear. Event rows, full heads and receipts
 are retained in `combined-attribution-r1/` and its sibling supervisor
 directory under the same evidence root. No suite or context matrix is run.
 
+## Native runner integration control
+
+The normal paged DeepSeek runner now has an internal, default-off request
+for the qualified 4K combination. Output-A retains its shape/type/device
+fallbacks. HCA requires all 43 actual output-A insertions and the qualified
+4,096-row/256-compressed shape; later full chunks retain output-A with
+ordinary HCA. Exact mode, full-window diagnostics and other row sizes
+retain ordinary operations. The position scalar is part of the eligible
+plan's cache key and is checked against all actual host positions before
+embedding, copies or dispatch. No public runtime configuration or default
+changes here.
+
+One genuine-runner control uses the frozen community 8K IDs, capacity
+12,288, two 4K chunks and three common one-row continuation steps. The
+existing Frontier control runs all-head/frontier/frontier/all-head, without
+DSpark or decode graphs. Both frontier repeats' two complete vocabulary
+heads match the previously qualified native-combination goldens byte for
+byte. Each all-head and frontier arm repeats its own heads exactly; all
+four prefills leave identical canonical target-state snapshots (all
+initialized extents, with unused extents represented by zeros), and their
+common continuation logits are exact. The state digest is
+`2fe394c7f75cceae5d50b95c75c92429e20c4ca7f2a7aefee82bd270d8be6d75`.
+
+The completed-plan audit records 43 output-A, 20 HCA, 43 Q-head,
+43 reductions and 43 compact pair/down consumers for each of eight
+full chunks, with the correct distinct cache positions 0 and 4,096.
+All twelve one-row continuation chunks have zero output-A/HCA calls.
+This is a runner/state control, not a new performance or answer-quality
+comparison; diagnostic head retention and audit work are included in its
+reported times.
+
+A separate **allocation-only** 128K invocation loads no weights. It checks
+all 32 full 4K shapes against the five production accounting probes,
+including the new 32,768-position ordinary-HCA fallback probe. The extra
+audit shapes do not enlarge funding. All raw activation/scratch/input
+maxima fit: **1,682,631,424 / 134,414,336 / 103,082,752 bytes**. Funded
+activation and scratch allocations are 2,103,443,456 / 169,869,312 bytes.
+Actual selection is 1,376 output-A calls and 160 HCA calls: HCA runs on
+the first eight chunks, with ordinary 512/768/1,024-compressed fallbacks
+afterward. Registered weight-byte totals in this sizing report do not
+represent reads in that invocation.
+
+The supervised control finishes rc0 with every command reaped, and the
+fresh handback gate records 117.190 GiB with native/GPU/container probes
+clear. Raw controls and sizing are in `runner-control-r3/` and its sibling
+supervisor directory under the evidence root. Two prior attempts stop
+before model loading: a diagnostic missing header, then the harness's
+sharded-only metadata filename assumption. Metadata selection now follows
+the runtime's single-file fallback and first-shard preference. Selected
+source now passes 1,258 locked Spark tests, including 259 GPU tests, and
+its format/tidy/boundary checks. The final normal-header/archive build also
+repeats all eight known complete heads, initialized state and common
+continuation exactly; it contains no private runner or audit getter.
+The [scoped IQ2 validation](../ds4-iq2-occ2/README.md) records the combined
+source receipts and final compiled controls. Source-only
+REUSE/header checking passes 1,168 headers across 1,290 source paths with
+no problems. Any serving-default decision remains separate.
+
 ## Provenance
 
 Measured on `spark-c4e2`, 2026-10-02, SDK

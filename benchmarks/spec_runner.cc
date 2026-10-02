@@ -16,6 +16,7 @@
 //                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
 //                      [--seeds N] [--sampled FILE] [--poll-us N]
 //                      [--exact on|off] [--frontier-head on|off] [--margin B]
+//                      [--prefill-outa-hca on|off] (two qualified artifacts only)
 //
 // Two modes (docs/experiments/dsv4-decode/): by default DeepSeek's fast
 // plan, a batched verify, and the checks coarse where the kernels differ
@@ -378,7 +379,8 @@ Status Harness::Tokenize() {
   // The tokenizer from the target artifact's GGUF metadata (import rule 7).
   std::filesystem::path meta;
   for (const auto& entry : std::filesystem::directory_iterator(o_.dsv4.artifact / "meta")) {
-    if (entry.path().filename().string().contains("00001-of")) {
+    const auto name = entry.path().filename().string();
+    if (name.ends_with(".kv.gguf") && (meta.empty() || name.contains("00001-of"))) {
       meta = entry.path();
     }
   }
@@ -1849,6 +1851,11 @@ Status Harness::Run() {
   if (auto r = dsv4_.Setup(); !r) {
     return r;
   }
+  if (o_.dsv4.prefill_outa_hca &&
+      dsv4_.artifact().id() != "8a355bfb27c90e1150fbd7fa62ea6e63f6bf34fcca33934e52d22773f1508234" &&
+      dsv4_.artifact().id() != "cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac") {
+    return Error("combined prefill runner control is limited to its two qualified artifacts");
+  }
   if (with_fp16()) {
     entered_models_.push_back(&fp16_);
     if (auto r = fp16_.Setup(); !r) {
@@ -1963,10 +1970,11 @@ Status Harness::Write() {
   const std::uint64_t drop = available_before_ - std::min(available_before_, memory_.low());
   std::ofstream(o_.out / "spec.json")
       << std::format(
-             R"({{"check":"{}","frontier_head":{},"weights_loaded":{},"activations_bytes":{},"pool_bytes":{},"host_input_bytes":{},"load_seconds":{:.2f},"read_bytes":{},"drafter_read_bytes":{},)"
+             R"({{"check":"{}","frontier_head":{},"prefill_outa_hca":{},"weights_loaded":{},"activations_bytes":{},"pool_bytes":{},"host_input_bytes":{},"load_seconds":{:.2f},"read_bytes":{},"drafter_read_bytes":{},)"
              R"("peak_memavailable_drop_bytes":{},"graphs":{{"eager":{},"captured":{},"replayed":{},)"
              R"("refused":{}}},"results":[{}],"problems":[{}]}})",
-             o_.check, o_.dsv4.frontier_head ? "true" : "false", weights_loaded_ ? "true" : "false",
+             o_.check, o_.dsv4.frontier_head ? "true" : "false",
+             o_.dsv4.prefill_outa_hca ? "true" : "false", weights_loaded_ ? "true" : "false",
              dsv4_.activations_needed(), dsv4_.pool_needed(), dsv4_.host_input_bytes(),
              load_seconds_, dsv4_.weight_read_bytes(), dsv4_.drafter_read_bytes(), drop,
              dsv4_.graph_stats().eager, dsv4_.graph_stats().captured, dsv4_.graph_stats().replayed,
@@ -2024,6 +2032,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--frontier-head") {
       o.dsv4.frontier_head = v == "on";
       ok = v == "on" || v == "off";
+    } else if (a == "--prefill-outa-hca") {
+      o.dsv4.prefill_outa_hca = v == "on";
+      ok = v == "on" || v == "off";
     } else if (a == "--margin") {
       const auto [end, ec] = std::from_chars(v.data(), v.data() + v.size(), o.margin);
       ok = ec == std::errc() && end == v.data() + v.size() && o.margin >= 0.0;
@@ -2062,7 +2073,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "--check greedy|forced|swap|sampled-plain|sampled-spec|probe|frontier|sizing [--tokens N] "
         "[--context N] "
         "[--max-rows N] "
-        "[--graphs on|off] [--exact on|off] [--margin B] [--draft N] [--fp16-artifact DIR "
+        "[--graphs on|off] [--exact on|off] [--margin B] [--draft N] "
+        "[--prefill-outa-hca on|off] [--fp16-artifact DIR "
         "--fp16-tokens FILE "
         "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N]");
   }
@@ -2075,6 +2087,10 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
           "and outputs <=1024 within context");
     }
     o.dsv4.frontier_head = false;
+  }
+  if (o.dsv4.prefill_outa_hca &&
+      (o.dsv4.exact || o.dsv4.max_rows != 4096 || o.dsv4.context > 131072 || o.check == "probe")) {
+    return Error("combined prefill runner control needs fast4096 mode, context<=131072, no probe");
   }
   // The probe runs the fast plan and the reference mode over one state,
   // which needs the full window cache (engine/dsv4_runner.h set_exact).

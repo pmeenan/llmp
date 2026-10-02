@@ -106,6 +106,10 @@ std::expected<void, KernelFailure> CheckMulMatIdQCompact(const ggml_tensor* node
 std::expected<void, KernelFailure> CheckMulMatIdQPair(const ggml_tensor* first,
                                                       const ggml_tensor* second);
 
+// The measured IQ2 compact-pair geometry. Device/compact eligibility is
+// checked by the CUDA planner; ordinary pairs keep their existing contract.
+bool IsMulMatIdQPairIq2Occ2(const ggml_tensor* first, const ggml_tensor* second);
+
 // A ggml_mul_mat node carrying GGML_HINT_SRC0_IS_HADAMARD, which upstream
 // runs as a fast Walsh-Hadamard transform of the activations
 // (fwht.cu:61-101, ggml-cuda.cu:1826-1829): F32 activations and output of

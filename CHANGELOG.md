@@ -13,6 +13,8 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- DeepSeek's qualified 4K GB10 IQ2 expert pairs use a scoped J64 kernel,
+  improving the measured native 8K prefill rate by 4.15% with exact logits.
 - An opt-in native DeepSeek output-A operation fuses inverse rotation,
   Q8 weight preparation and the grouped projection on the qualified
   4,096-row GB10 shape, preserving the diagnostic's complete logits.

@@ -327,6 +327,21 @@ std::expected<void, KernelFailure> CheckMulMatIdQPair(const ggml_tensor* first,
   return {};
 }
 
+bool IsMulMatIdQPairIq2Occ2(const ggml_tensor* first, const ggml_tensor* second) {
+  if (!CheckMulMatIdQPair(first, second)) {
+    return false;
+  }
+  const auto* weights = first->src[0];
+  const auto* source = first->src[1];
+  const auto* ids = first->src[2];
+  constexpr std::array<std::int64_t, 4> weight_shape{4096, 2048, 256, 1};
+  constexpr std::array<std::int64_t, 4> input_shape{4096, 1, 4096, 1};
+  constexpr std::array<std::int64_t, 4> ids_shape{6, 4096, 1, 1};
+  return weights->type == GGML_TYPE_IQ2_XXS && std::ranges::equal(weights->ne, weight_shape) &&
+         std::ranges::equal(source->ne, input_shape) && std::ranges::equal(ids->ne, ids_shape) &&
+         AllPacked({source, first, second});
+}
+
 std::expected<void, KernelFailure> CheckMulMatHadamard(const ggml_tensor* node) {
   if (node == nullptr || node->op != GGML_OP_MUL_MAT || node->src[0] == nullptr || !Bound(node) ||
       !Bound(node->src[1])) {

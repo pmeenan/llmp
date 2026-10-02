@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <expected>
 #include <limits>
+#include <utility>
 
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
@@ -295,6 +296,46 @@ TEST_F(GgmlExtValidateTest, PairedExpertsRequireMatchingInputsAndDisjointOutputs
     Refused(kg::CheckMulMatIdQPair(x, y));
     Refused(kg::CheckMulMatIdQCompact(x));
   }
+}
+
+TEST_F(GgmlExtValidateTest, Iq2OccupancyTwoPairsKeepTheMeasuredGeometryAndOriginalValidation) {
+  const auto pair = [&](ggml_type type, std::int64_t k, std::int64_t width, std::int64_t experts,
+                        std::int64_t used, std::int64_t rows, bool broadcast = true) {
+    auto* input = New(GGML_TYPE_F32, k, broadcast ? 1 : used, rows);
+    auto* ids = New(GGML_TYPE_I32, used, rows);
+    auto* first = Bound(ggml_mul_mat_id(c(), New(type, k, width, experts), input, ids));
+    auto* second = Bound(ggml_mul_mat_id(c(), New(type, k, width, experts), input, ids));
+    Accepted(kg::CheckMulMatIdQPair(first, second));
+    return std::pair{first, second};
+  };
+  auto [first, second] = pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 256, 6, 4096);
+  EXPECT_TRUE(kg::IsMulMatIdQPairIq2Occ2(first, second));
+  EXPECT_FALSE(kg::IsMulMatIdQPairIq2Occ2(nullptr, second));
+  EXPECT_FALSE(kg::IsMulMatIdQPairIq2Occ2(first, first));
+  // Real router IDs are the six-row view of a 256-row argsort result.
+  // Original map preparation already pays and respects this token stride.
+  auto* routed_ids = first->src[2];
+  routed_ids->nb[1] = 256 * sizeof(std::int32_t);
+  routed_ids->nb[2] = routed_ids->nb[1] * 4096;
+  routed_ids->nb[3] = routed_ids->nb[2];
+  EXPECT_TRUE(kg::IsMulMatIdQPairIq2Occ2(first, second));
+  for (const auto& [a, b] : {pair(GGML_TYPE_IQ2_XS, 4096, 2048, 256, 6, 4096),
+                             pair(GGML_TYPE_IQ2_XXS, 2048, 2048, 256, 6, 4096),
+                             pair(GGML_TYPE_IQ2_XXS, 4096, 4096, 256, 6, 4096),
+                             pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 128, 6, 4096),
+                             pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 256, 5, 4096),
+                             pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 256, 6, 2048),
+                             pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 256, 6, 4096, false)}) {
+    EXPECT_FALSE(kg::IsMulMatIdQPairIq2Occ2(a, b));
+  }
+  // Padded outputs still satisfy the ordinary pair contract, but they do
+  // not enter the fixed packed-output specialization.
+  second->nb[2] += second->nb[1];
+  Accepted(kg::CheckMulMatIdQPair(first, second));
+  EXPECT_FALSE(kg::IsMulMatIdQPairIq2Occ2(first, second));
+  second->nb[2] -= second->nb[1];
+  TensorArena::Bind(second, reinterpret_cast<std::uintptr_t>(first->data));
+  EXPECT_FALSE(kg::IsMulMatIdQPairIq2Occ2(first, second));
 }
 
 TEST_F(GgmlExtValidateTest, TheHadamardProductNeedsItsHintAndARowTheTransformTakes) {

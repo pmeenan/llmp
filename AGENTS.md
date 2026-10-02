@@ -268,10 +268,14 @@ its speed. Native stage restoration is incomplete: ordered reduction and
 Q-head fusions are landed; the guarded default-off 4096-row output-A adapter
 gains 4.97%. Output-A plus experimental HCA passes the unchanged 32K/128K
 greedy bounds, 128K perplexity and one long-answer control; production
-geometry and broader acceptance remain open, and HCA stays off by default.
+runner integration is checked and remains default-off; scoped IQ2 tuning
+adds 4.15% whole-prefill throughput with byte-exact full heads. Broader
+acceptance remains open, and HCA stays off by default.
 Qwen chat shares two independent requests, including HC products and ragged
 verification heads (+2.76% in a paid C2 screen); four active slots regressed.
-Fresh concurrent engine comparisons, Qwen same-history acceptance,
+Fresh matched concurrent comparisons against current TensorFold NVFP4 are
+complete: native completed-token rate is +19.22% / +8.63% / −14.55% at
+C1/C2/C4. Qwen same-history acceptance,
 DeepSeek batching, the remaining native prefill gap, final swap/client
 gate and frozen M3 record remain open. Workstation checks are deferred
 until implementations settle; package checks remain owed before shipment.

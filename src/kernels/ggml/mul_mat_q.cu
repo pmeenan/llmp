@@ -55,6 +55,11 @@ const ggml_cuda_device_info::cuda_device_info& Device(const LaunchContext& launc
   return ggml_cuda_info().devices[launch.device()];
 }
 
+bool Iq2Occ2Pair(const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
+                 bool compact_experts) {
+  return compact_experts && Device(launch).cc == 1210 && IsMulMatIdQPairIq2Occ2(first, second);
+}
+
 constexpr std::uint64_t kBlock = 256;  // the pool's block boundary (launch.h)
 
 // The pool's high-water mark for draws in this order, none freed between.
@@ -212,9 +217,11 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatVecQ(const LaunchContext& 
   return draws.total();
 }
 
-static std::expected<std::uint64_t, KernelFailure> PlanMulMatQPrepared(const LaunchContext& launch,
-                                                                       const ggml_tensor* node,
-                                                                       bool compact_experts) {
+namespace {
+
+std::expected<std::uint64_t, KernelFailure> PlanMulMatQPrepared(const LaunchContext& launch,
+                                                                const ggml_tensor* node,
+                                                                bool compact_experts) {
   auto path = SelectMulMatQ(launch, node);
   if (!path) {
     return std::unexpected(path.error());
@@ -238,7 +245,7 @@ static std::expected<std::uint64_t, KernelFailure> PlanMulMatQPrepared(const Lau
   // A routed activation's slot axis (usually 1 or 6) does not bound J:
   // the tile spans sorted token assignments and loads all its columns.
   const auto pad_columns = node->op == GGML_OP_MUL_MAT_ID ? 128 : input->ne[1];
-  const std::uint64_t j_max =
+  const auto j_max =
       static_cast<std::uint64_t>(ggml_cuda_mmq_get_J_max(weights->type, fallback, cc, pad_columns));
   Draws draws;
   if (node->op == GGML_OP_MUL_MAT) {
@@ -286,6 +293,8 @@ static std::expected<std::uint64_t, KernelFailure> PlanMulMatQPrepared(const Lau
   draws.Add(*fixup);
   return draws.total();
 }
+
+}  // namespace
 
 std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& launch,
                                                         const ggml_tensor* node) {
@@ -429,7 +438,15 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContex
   }
   // Maps and quantization match; each product returns its fixup or compact
   // tile list before the next draws it. Their high-water marks do not add.
-  return std::max(*a, *b);
+  const std::uint64_t ordinary = std::max(*a, *b);
+  if (!Iq2Occ2Pair(launch, first, second, compact_experts)) {
+    return ordinary;
+  }
+  // The producer's original J128 Q8/ID guards stay intact. Only the
+  // sequential compact worklist grows from 448 to 640 int2 entries.
+  const auto before = mmq_compact_expert_capacity(GGML_TYPE_IQ2_XXS, 2048, 4096, 24576, 256, 128);
+  const auto after = mmq_compact_expert_capacity(GGML_TYPE_IQ2_XXS, 2048, 4096, 24576, 256, 64);
+  return ordinary + (static_cast<std::uint64_t>(after - before) * sizeof(int2));
 }
 
 std::expected<ExpertMmqLayout, KernelFailure> DescribeMulMatIdQPairPrepared(
@@ -464,7 +481,7 @@ std::expected<ExpertMmqLayout, KernelFailure> DescribeMulMatIdQPairPrepared(
   constexpr std::uint64_t pairs = 4096ULL * 6;
   constexpr std::uint64_t payload = (4096ULL / 128) * pairs * 144;
   return ExpertMmqLayout{.activation_payload_bytes = payload,
-                         .activation_bytes = payload + static_cast<std::uint64_t>(j) * 144,
+                         .activation_bytes = payload + (static_cast<std::uint64_t>(j) * 144),
                          .source_ids_bytes = pairs * 4,
                          .destination_ids_payload_bytes = pairs * 4,
                          .destination_ids_bytes = (pairs + static_cast<std::uint64_t>(j)) * 4,
@@ -534,6 +551,8 @@ std::expected<ExpertMmqLayout, KernelFailure> CheckExpertPrepared(const LaunchCo
   const auto disjoint_workspace = [&](LaunchContext::Workspace workspace) {
     if (workspace.size.value() == 0) return true;
     ExpertRange range{};
+    // Provider VMM addresses are checked as integers; this pointer is never host-dereferenced.
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
     if (!ExpertExtent(reinterpret_cast<const void*>(workspace.base), workspace.size.value(), range))
       return false;
     if (!std::ranges::all_of(prepared, [&](ExpertRange p) { return ExpertDisjoint(p, range); }) ||
@@ -550,18 +569,17 @@ std::expected<ExpertMmqLayout, KernelFailure> CheckExpertPrepared(const LaunchCo
     return Rejected("prepared IQ2 live operands overlap a native workspace");
   return *layout;
 }
-}  // namespace
-
-static std::expected<void, KernelFailure> RunExpertProducts(
-    LaunchContext& launch, ggml_tensor* first, ggml_tensor* second, bool compact_experts,
-    const ExpertMmqPrepared* capture = nullptr) {
+std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml_tensor* first,
+                                                     ggml_tensor* second, bool compact_experts,
+                                                     const ExpertMmqPrepared* capture = nullptr) {
   auto scratch = second != nullptr ? PlanMulMatIdQPair(launch, first, second, compact_experts)
                                    : PlanMulMatIdQCompact(launch, first);
   if (!scratch) {
     return std::unexpected(scratch.error());
   }
-  return launch.Run(base::Bytes(*scratch), [first, second, compact_experts,
-                                            capture](ggml_backend_cuda_context& context) {
+  const bool iq2_occ2 = Iq2Occ2Pair(launch, first, second, compact_experts);
+  return launch.Run(base::Bytes(*scratch), [first, second, compact_experts, capture,
+                                            iq2_occ2](ggml_backend_cuda_context& context) {
     // Host preparation from GGML mmq.cu: the same inverse broadcast map
     // and scatter quantization feed two ordinary MMQ launches. This is
     // ds4's paired-preparation technique without its SoA repack or fused
@@ -590,8 +608,8 @@ static std::expected<void, KernelFailure> RunExpertProducts(
         static_cast<int>(input->nb[2] / input->nb[1]), broadcast, stream);
     CUDA_CHECK(cudaGetLastError());
     const auto bytes =
-        static_cast<std::size_t>(rows * padded) * sizeof(block_q8_1_mmq) / QK8_1_MMQ +
-        static_cast<std::size_t>(j_max) * sizeof(block_q8_1_mmq);
+        (static_cast<std::size_t>(rows * padded) * sizeof(block_q8_1_mmq) / QK8_1_MMQ) +
+        (static_cast<std::size_t>(j_max) * sizeof(block_q8_1_mmq));
     ggml_cuda_pool_alloc<char> quantized(context.pool(), bytes);
     const auto* x = static_cast<const float*>(input->data);
     const auto s11 = static_cast<std::int64_t>(input->nb[1] / sizeof(float));
@@ -676,7 +694,11 @@ static std::expected<void, KernelFailure> RunExpertProducts(
           mul_mat_q_case<GGML_TYPE_Q6_K>(context, args, stream);
           break;
         case GGML_TYPE_IQ2_XXS:
-          mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, stream);
+          if (iq2_occ2) {
+            CUDA_CHECK(ggml_cuda_mul_mat_iq2_occ2_pair_product(context, args, stream));
+          } else {
+            mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, stream);
+          }
           break;
         case GGML_TYPE_IQ2_XS:
           mul_mat_q_case<GGML_TYPE_IQ2_XS>(context, args, stream);
@@ -690,6 +712,8 @@ static std::expected<void, KernelFailure> RunExpertProducts(
     }
   });
 }
+
+}  // namespace
 
 std::expected<void, KernelFailure> MulMatIdQPair(LaunchContext& launch, ggml_tensor* first,
                                                  ggml_tensor* second, bool compact_experts) {

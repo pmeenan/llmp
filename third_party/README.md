@@ -26,6 +26,8 @@ extract only the original token-tile HCA numerical helpers/core with narrow
 launchers). GGML's build compiles the operations of the
 backend proof's models and of M3's DeepSeek V4 Flash and Qwen3.8 Flash,
 not all of GGML (the lock's `license.scope` lists the files).
+Patch 0005 adds an IQ2 compact-pair kernel specialization for the measured
+GB10 shape; ordinary MMQ configurations remain unchanged.
 [licensing.md](../docs/licensing.md) records their audits.
 
 | Step | Where | Does |

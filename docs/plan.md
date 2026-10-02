@@ -953,7 +953,15 @@ it appears.
       reduces two gate/up worklist builds to one with unchanged J128
       consumers and byte-identical complete outputs, but gains only 0.20%
       amid 0.15–0.34% bookend movement. Keep the separate path; no adoption
-      follows. These comparisons cover one request. The [matched-input native
+      follows. The later [occupancy-two screen](experiments/ds4-iq2-occ2/README.md)
+      selects a distinct J64 compiler specialization: captured paired products
+      gain 28.05%, and genuine native 8K prefill gains 4.15%, with all six
+      complete heads byte-exact. Production dispatch retains generic
+      configurations and is restricted to the measured GB10 paired shape;
+      its coherent Spark build, unit/style/boundary checks and final compiled
+      golden/state confirmation pass, as do REUSE/header checks.
+      These comparisons cover one request.
+      The [matched-input native
       stage profile](experiments/ds4-production-prefill-attribution/README.md)
       records 13.31 s at 8K with byte-equal complete heads and 0.49% ordinary
       bookend movement. The exact post-down weighting and six-slot sum occupy
@@ -989,8 +997,12 @@ it appears.
       complete logits exactly and reducing required scratch. Its selected
       Spark slice passes 1,248 tests, including 259 GPU tests, plus format,
       tidy, boundaries, REUSE and headers. It remains default-off in the
-      benchmark at 4096 rows; production chunk geometry and attention
-      integration remain open. A paid native attention interaction at that
+      benchmark at 4096 rows. Genuine runner integration now preserves the
+      qualified full heads, initialized state and ordinary one-row continuation;
+      its allocation-only 128K control funds all 32 full-chunk plan shapes.
+      It remains default-off, with position authentication before dispatch
+      and passing Spark unit/style/boundary and final compiled head/state
+      controls, plus REUSE/header checks. A paid native attention interaction at that
       geometry adds 21.19% throughput, reducing 8K prefill to 9.879 s.
       The private 2048-row extension gains 3.95% with HCA already on,
       with 0.18% bookend movement, but fails one original-checkpoint 32K

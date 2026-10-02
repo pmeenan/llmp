@@ -351,6 +351,12 @@ target_link_libraries(dsv4_ds4_state_test PRIVATE jitllm_model)
 jitllm_gtest(dsv4_ds4_state_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 if(JITLLM_CUDA)
+  add_executable(dsv4_prefill_plan_test dsv4_prefill_plan_test.cc)
+  target_link_libraries(dsv4_prefill_plan_test PRIVATE jitllm_engine)
+  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
+  target_link_options(dsv4_prefill_plan_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  jitllm_gtest(dsv4_prefill_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
   add_executable(dsv4_ds4_weights_test dsv4_ds4_weights_test.cc)
   target_link_libraries(dsv4_ds4_weights_test PRIVATE jitllm_engine)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")

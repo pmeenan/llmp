@@ -8,10 +8,13 @@
 #include <cstdint>
 #include <format>
 #include <numeric>
+#include <ranges>
 #include <string_view>
 #include <utility>
 
 #include "engine/support.h"
+#include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/validate_ext.h"
 
 namespace jitllm::engine {
 
@@ -100,7 +103,12 @@ void BindDsv4Weights(const Dsv4Model& m, kg::Dsv4Graph& g) {
 std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     const Dsv4Model& m, const kg::Dsv4ChunkShape& shape, const kg::DeviceChoices& choices,
     std::span<const std::string> keep_names, std::uint64_t activations,
-    std::uint64_t activation_bytes, const Dsv4Speculation& speculation) {
+    std::uint64_t activation_bytes, const Dsv4Speculation& speculation,
+    std::optional<std::uint32_t> first_position) {
+  if (first_position && (shape.rows != 4096 ||
+                         static_cast<std::uint64_t>(*first_position) + 4096 > m.state->context)) {
+    return Error("the prefill plan's first position leaves its 4K context");
+  }
   if ((m.exact || speculation.verify || !keep_names.empty()) && shape.outputs != 0 &&
       shape.outputs != shape.rows) {
     return Error("a reference chunk, verify or named diagnostic needs every row's head");
@@ -111,9 +119,12 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     return Error(arena.error().detail);
   }
   out->arena.emplace(std::move(*arena));
+  const bool outa_prefill =
+      !m.exact && m.prefill_outa_hca && m.state->window == md::Dsv4Window::kRing;
   kg::Dsv4GraphOptions options{.expert_stride = m.places.stride,
                                .row_invariant = speculation.verify && m.exact,
-                               .fused = !m.exact};
+                               .fused = !m.exact,
+                               .outa_prefill = outa_prefill};
   if (const DsparkModel* d = speculation.drafter; d != nullptr) {
     options.features = d->profile->target_layers;
     options.inject = kg::Dsv4Injection{.profile = d->profile,
@@ -127,6 +138,7 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   }
   out->graph = std::move(*graph);
   kg::Dsv4Graph& g = out->graph;
+  g.prefill_first_position = first_position;
   BindDsv4Weights(m, g);
   if (speculation.drafter != nullptr) {
     BindDsparkInjection(*speculation.drafter, g);
@@ -151,6 +163,26 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   device.pair_experts = !m.exact;
   device.compact_experts = !m.exact && shape.rows >= kg::kDsv4CompactMinRows;
   device.wide_sparse_attention = !m.exact;
+  // HCA alone has not passed the registered quality gate. Require every
+  // layer's actual output-A insertion, including weight/YaRN eligibility.
+  const bool all_outa = std::cmp_equal(
+      std::ranges::count_if(
+          g.nodes,
+          [](const auto* node) { return kg::JitllmOpOf(node) == kg::JitllmOp::kDsv4OutA; }),
+      m.profile->layers);
+  device.ds4_hca = outa_prefill && all_outa && shape.rows == 4096 && shape.hca_n_kv == 256;
+  if (device.ds4_hca) {
+    if (!first_position) {
+      return Error("the combined prefill HCA plan needs its first position");
+    }
+    for (auto* node : g.nodes) {
+      if (node->op == GGML_OP_FLASH_ATTN_EXT &&
+          kg::JitllmOpOf(node->src[3]) == kg::JitllmOp::kDsv4SparseMask &&
+          kg::JitllmOpInt(node->src[3], 1) == 1) {
+        kg::MarkDsv4HcaTokentile(node, *first_position);
+      }
+    }
+  }
   const auto inputs = g.inputs();
   if (auto placed =
           PlaceAndPlan(*out, g.nodes, inputs, keep, device, activations, activation_bytes);
@@ -299,6 +331,18 @@ std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::D
                                                  Dsv4HostInputs& out,
                                                  std::span<const std::int64_t> inject_cells) {
   const auto rows = static_cast<std::uint32_t>(tokens.size());
+  // The HCA scalar is part of the cached plan. Authenticate it
+  // against the real host positions before any copies or dispatch.
+  if (g.prefill_first_position) {
+    const std::uint32_t first = *g.prefill_first_position;
+    if (in.positions.size() != rows || rows != 4096 || in.positions.front() < 0 ||
+        std::cmp_not_equal(in.positions.front(), first) ||
+        !std::ranges::equal(in.positions,
+                            std::views::iota(static_cast<std::int64_t>(first),
+                                             static_cast<std::int64_t>(first) + rows))) {
+      return Error("the cached HCA first position differs from the actual chunk");
+    }
+  }
   if (auto embedded = Dsv4EmbeddingRows(m, tokens, table, out.embd); !embedded) {
     return embedded;
   }

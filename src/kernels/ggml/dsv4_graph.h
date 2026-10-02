@@ -228,9 +228,12 @@ struct Dsv4GraphOptions {
 };
 
 struct Dsv4Graph {
-  ggml_tensor* embd = nullptr;        // F32 [width, rows]: the embedding rows
-  ggml_tensor* tokens = nullptr;      // I32 [rows]: the hash layers' routing
-  ggml_tensor* positions = nullptr;   // I32 [rows]
+  ggml_tensor* embd = nullptr;       // F32 [width, rows]: the embedding rows
+  ggml_tensor* tokens = nullptr;     // I32 [rows]: the hash layers' routing
+  ggml_tensor* positions = nullptr;  // I32 [rows]
+  // An engine-planned HCA scalar, authenticated against the actual host
+  // positions before dispatch, including when an operation falls back.
+  std::optional<std::uint32_t> prefill_first_position = std::nullopt;
   ggml_tensor* raw_k_idxs = nullptr;  // I64 [rows]: each token's ring cell
   ggml_tensor* raw_mask = nullptr;    // F16 [raw_n_kv, rows, 1, 1]
   ggml_tensor* out_ids = nullptr;     // I32 [outputs]: the head's requested trailing rows

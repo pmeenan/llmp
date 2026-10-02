@@ -426,6 +426,35 @@ sinks bound (RE-030).
   earlier study attempt had an inactive launch hook and does not count
   as evidence.
 
+## Scoped IQ2 compact-pair occupancy two
+
+- **Patch:** `0005-jitllm-iq2-compact-pair-occ2.patch` adds a separate
+  default-false MMQ template specialization, leaving every configuration
+  row unchanged. The specialized IQ2_XXS/J64/nonfallback/compact kernel
+  requests two CTAs per SM. Its single bridge is defined in the existing
+  O3 IQ2 instance unit; no duplicate defining translation unit is added.
+- **Dispatch:** only the native paired-compact path on GB10, with weights
+  `[4096,2048,256,1]`, broadcast input `[4096,1,4096,1]`, six routes per
+  token and 4,096 tokens. Input and both outputs must be packed;
+  IDs keep their original validated token stride (including top-k views).
+  Existing weight-stride and disjointness validation remains mandatory.
+  The original map/scatter preparation and J128 dummy guards remain;
+  sequential J64 worklists require 640 rather than 448 entries (+1,536
+  bytes). Single products, ordinary pairs, other formats/geometries and
+  other devices retain their existing launches.
+- **Evidence:** one captured real-input J128/J64-occ2/J128 comparison
+  improves resident paired-product rate 28.05%, with 0.51% bookend movement
+  and all six full gate/up outputs byte-exact. One paid native 8K
+  comparison improves whole-prefill rate 4.15%, with 0.27% bookend movement
+  and all six full vocabulary heads byte-exact. These are separate
+  measurements, not additive gains. Actual PTX requests two CTAs; measured
+  scheduling occupancy is not claimed. See
+  [the occupancy-two screen](../experiments/ds4-iq2-occ2/README.md).
+- **Proposed action:** offer this as a shape-scoped routed-prefill variant,
+  independently of changing the generic IQ2 configuration. The isolated
+  production specialization still needs its selected-code checks; the
+  screens do not certify other shapes or models.
+
 ## Routed MMQ dummy-column scratch padding
 
 - **Status:** correction carried in patch 0004 and mirrored in jitLLM's
