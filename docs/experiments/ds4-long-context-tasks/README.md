@@ -55,10 +55,22 @@ stops at EOS after 727 answer tokens but uses an overflow-prone initial
 that API and fixes the initial offset/header bound, but leaves body-end
 addition unchecked and omits explicit maximum-valid and truncated-body
 tests. It reaches the fixed 768-token budget without EOS. Both fail the
-practical rubric. Their descriptive differences do not establish a
-candidate regression because the OFF baseline also fails. The machine
+practical rubric. Their shared failures still conceal concrete improvements
+and disadvantages: ON repairs the initial bound and preserves the API,
+while OFF supplies stronger explicit edge-case tests and moves its owned
+payload into the callback instead of copying it again. The machine
 scoring receipts retain `accepted: null` for this qualitative case; the
 manual judgment is preserved separately.
+
+A separate offline review of all eight saved answers against the frozen
+questions confirms identical retrieval content and no clear overall
+candidate-specific answer regression in this small set. C1's ON patch is
+fully closed and its final saved test sentence is complete despite the
+output cap; no essential code appears truncated. Both explanations loosely
+call reused storage dangling and overstate a uint32 length's ability to
+overflow 64-bit arithmetic. This unblinded paired judgment adds descriptive
+evidence, without changing the strict scores, greedy bound or acceptance
+gate. One practical-code pair cannot establish reliability or a default.
 
 ## Measured scope
 
