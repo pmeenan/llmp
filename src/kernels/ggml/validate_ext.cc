@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <expected>
@@ -340,6 +341,99 @@ bool IsMulMatIdQPairIq2Occ2(const ggml_tensor* first, const ggml_tensor* second)
   return weights->type == GGML_TYPE_IQ2_XXS && std::ranges::equal(weights->ne, weight_shape) &&
          std::ranges::equal(source->ne, input_shape) && std::ranges::equal(ids->ne, ids_shape) &&
          AllPacked({source, first, second});
+}
+
+float MulMatIdQPairGluLimit(const ggml_tensor* glu) {
+  float limit = 0;
+  std::memcpy(&limit, reinterpret_cast<const char*>(glu->op_params) + (3 * sizeof(std::int32_t)),
+              sizeof(limit));
+  return limit;
+}
+
+bool MulMatIdQCompactPrequantFits(const ggml_tensor* down, const ggml_tensor* glu) {
+  if (down == nullptr || glu == nullptr || down->op != GGML_OP_MUL_MAT_ID || down->src[1] != glu ||
+      down->src[0] == nullptr || down->src[2] == nullptr || glu->src[1] == nullptr ||
+      down->src[2] != glu->src[1]->src[2] || down->src[0]->type != GGML_TYPE_Q2_K) {
+    return false;
+  }
+  constexpr std::array<std::int64_t, 4> weight_shape{2048, 4096, 256, 1};
+  constexpr std::array<std::int64_t, 4> input_shape{2048, 6, 4096, 1};
+  return std::ranges::equal(down->src[0]->ne, weight_shape) &&
+         std::ranges::equal(glu->ne, input_shape) && IsF32(glu) && AllPacked({glu, down});
+}
+
+bool MulMatQPairDenseFits(const ggml_tensor* a, const ggml_tensor* b) {
+  if (a == nullptr || b == nullptr || a == b || a->op != GGML_OP_MUL_MAT ||
+      b->op != GGML_OP_MUL_MAT || a->src[1] == nullptr || a->src[1] != b->src[1] ||
+      a->src[0] == nullptr || b->src[0] == nullptr || a->src[0]->type != GGML_TYPE_Q8_0 ||
+      b->src[0]->type != GGML_TYPE_Q8_0) {
+    return false;
+  }
+  const ggml_tensor* x = a->src[1];
+  return IsF32(x) && x->ne[2] == 1 && x->ne[3] == 1 && x->ne[1] >= 64 && Packed(x) &&
+         a->src[0]->ne[2] == 1 && a->src[0]->ne[3] == 1 && b->src[0]->ne[2] == 1 &&
+         b->src[0]->ne[3] == 1 && a->src[0]->ne[1] % 128 == 0 && b->src[0]->ne[1] % 128 == 0;
+}
+
+std::expected<void, KernelFailure> CheckMulMatQPairDense(const ggml_tensor* a,
+                                                         const ggml_tensor* b) {
+  if (!MulMatQPairDenseFits(a, b)) {
+    return Rejected("not two dense Q8_0 products of one packed F32 activation");
+  }
+  if (auto checked = CheckMulMatQ(a); !checked) {
+    return checked;
+  }
+  if (auto checked = CheckMulMatQ(b); !checked) {
+    return checked;
+  }
+  if (Overlap(a, b)) {
+    return Rejected("paired dense products overlap");
+  }
+  return {};
+}
+
+std::expected<void, KernelFailure> CheckMulMatIdQCompactPrequant(const ggml_tensor* down) {
+  if (down == nullptr || down->src[1] == nullptr ||
+      !MulMatIdQCompactPrequantFits(down, down->src[1])) {
+    return Rejected("not the Q2_K down product of a pair activation write-back");
+  }
+  return CheckMulMatIdQCompact(down);
+}
+
+bool MulMatIdQPairGluFits(const ggml_tensor* up, const ggml_tensor* gate, const ggml_tensor* glu) {
+  if (glu == nullptr || glu->op != GGML_OP_GLU ||
+      ggml_get_glu_op(glu) != GGML_GLU_OP_SWIGLU_CLAMP || glu->src[0] != gate ||
+      glu->src[1] != up || glu->view_src != nullptr || !IsMulMatIdQPairIq2Occ2(up, gate)) {
+    return false;
+  }
+  std::int32_t swapped = 0;
+  std::memcpy(&swapped, reinterpret_cast<const char*>(glu->op_params) + sizeof(std::int32_t),
+              sizeof(swapped));
+  const float limit = MulMatIdQPairGluLimit(glu);
+  return swapped == 0 && std::isfinite(limit) && limit > 0 && IsF32(glu) && IsF32(up) &&
+         IsF32(gate) && ggml_are_same_shape(glu, up) && ggml_are_same_shape(glu, gate) &&
+         AllPacked({glu, up, gate});
+}
+
+std::expected<void, KernelFailure> CheckMulMatIdQPairGlu(const ggml_tensor* up,
+                                                         const ggml_tensor* gate,
+                                                         const ggml_tensor* glu) {
+  if (!MulMatIdQPairGluFits(up, gate, glu)) {
+    return Rejected("not the IQ2 compact pair followed by its packed F32 swiglu_clamp");
+  }
+  if (auto checked = CheckMulMatIdQPair(up, gate); !checked) {
+    return checked;
+  }
+  if (!Bound(glu) || !AllSane({glu}) || !AllCurrent({glu}) || !Aligned(glu, 16)) {
+    return Rejected("the pair activation is not a bound aligned tensor");
+  }
+  for (const ggml_tensor* other : std::initializer_list<const ggml_tensor*>{
+           up, gate, up->src[0], up->src[1], up->src[2], gate->src[0]}) {
+    if (!Disjoint(glu, other, false)) {
+      return Rejected("the pair activation overlaps a product or its operands");
+    }
+  }
+  return {};
 }
 
 std::expected<void, KernelFailure> CheckMulMatHadamard(const ggml_tensor* node) {
@@ -1115,9 +1209,12 @@ std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node) {
   const ggml_tensor* v = node->src[2];
   const ggml_tensor* mask = node->src[3];
   const ggml_tensor* sinks = node->src[4];
-  if (!IsF32(q) || !IsF32(node) || k->type != GGML_TYPE_F16 || v->type != GGML_TYPE_F16 ||
+  // D512 also takes F16 Q (experimental: the Q-head's RN F16 rows, which the
+  // kernel otherwise rounds from F32 itself).
+  const bool q_type = IsF32(q) || (q->type == GGML_TYPE_F16 && q->ne[0] == 512);
+  if (!q_type || !IsF32(node) || k->type != GGML_TYPE_F16 || v->type != GGML_TYPE_F16 ||
       mask->type != GGML_TYPE_F16 || (sinks != nullptr && (!Bound(sinks) || !IsF32(sinks)))) {
-    return Rejected("F32 Q, F16 K, V and mask, optional F32 sinks, into F32");
+    return Rejected("F32 (or D512 F16) Q, F16 K, V and mask, optional F32 sinks, into F32");
   }
   // op_params: scale, max_bias, logit_softcap, precision, n_kv_max
   // (ggml.c:5534-5575).
@@ -1156,7 +1253,7 @@ std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node) {
   if (k->ne[1] % 256 != 0 || q->ne[2] / k->ne[2] <= 4) {
     return Rejected("cells in multiples of 256 and more than 4 query heads per KV head");
   }
-  if (q->nb[0] != sizeof(float) || k->nb[0] != sizeof(ggml_fp16_t) ||
+  if (q->nb[0] != ggml_type_size(q->type) || k->nb[0] != sizeof(ggml_fp16_t) ||
       v->nb[0] != sizeof(ggml_fp16_t) || mask->nb[0] != sizeof(ggml_fp16_t) ||
       !AlignedEverywhere(q, 16) || !AlignedEverywhere(k, 16) || !AlignedEverywhere(v, 16) ||
       !AlignedEverywhere(mask, 16) || !Packed(node) || !Aligned(node, 16)) {
@@ -1220,8 +1317,9 @@ std::expected<void, KernelFailure> CheckDsv4HcaTokentile(const ggml_tensor* node
       node->op_params[4] != 128 + compressed || node->op_params[kFlashAttnSparseParam] != 1 ||
       node->op_params[kFlashAttnWideSparseParam] != 0 ||
       ParamF32(node, 0) != 0.04419417306780815F || node->op_params[3] != GGML_PREC_F32 ||
-      sinks == nullptr || !Packed(sinks) || q->nb[1] != std::size_t{64} * 512 * sizeof(float) ||
-      q->nb[2] != 512 * sizeof(float) || q->nb[3] != ggml_nbytes(node) ||
+      sinks == nullptr || !Packed(sinks) ||
+      q->nb[1] != std::size_t{64} * 512 * ggml_type_size(q->type) ||
+      q->nb[2] != 512 * ggml_type_size(q->type) || q->nb[3] != ggml_nbytes(q) ||
       kv->nb[1] != 512 * sizeof(ggml_fp16_t) || mask->ne[0] != kv->ne[1] || mask->ne[1] != tokens) {
     return Rejected("ds4 HCA needs bounded D512/G64 canonical ring/count layout and scale");
   }

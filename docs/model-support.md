@@ -182,6 +182,9 @@ in the resident native harness through 128,817 prompt tokens, with F16
 caches. On the recorded 8K trajectory all 32 argmaxes agree with ds4,
 including its F32-cache control, and native forced repeats are bit
 identical. A 32K own-plan PPL control is within the existing 3% gate.
+At 4,096-row chunks the fast plan's default D2R down product changes its
+logits; its 32K perplexity is within 0.04% of ds4's
+([stage mechanisms](experiments/ds4-prefill-stages/README.md)).
 ds4's default caches use FP8/FP4, so same weights alone do not establish
 equivalent cache policies. This variant has no runtime chat, DSpark,
 swap/restore or seeded-sampling evidence in this study.

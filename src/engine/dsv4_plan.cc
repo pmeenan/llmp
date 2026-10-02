@@ -125,6 +125,12 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
                                .row_invariant = speculation.verify && m.exact,
                                .fused = !m.exact,
                                .outa_prefill = outa_prefill};
+  // The ds4 prefill stage mechanisms (docs/experiments/ds4-prefill-stages):
+  // the fast plan's defaults, each under its own shape guard. A named
+  // diagnostic keeps the tensors they leave unwritten (or write as F16), so
+  // it plans without them.
+  const bool stages = !m.exact && keep_names.empty();
+  kg::SetDsv4PrefillStages(options, stages);
   if (const DsparkModel* d = speculation.drafter; d != nullptr) {
     options.features = d->profile->target_layers;
     options.inject = kg::Dsv4Injection{.profile = d->profile,
@@ -163,6 +169,7 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
   device.pair_experts = !m.exact;
   device.compact_experts = !m.exact && shape.rows >= kg::kDsv4CompactMinRows;
   device.wide_sparse_attention = !m.exact;
+  kg::SetDsv4PrefillStages(device, stages);
   // HCA alone has not passed the registered quality gate. Require every
   // layer's actual output-A insertion, including weight/YaRN eligibility.
   const bool all_outa = std::cmp_equal(

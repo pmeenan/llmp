@@ -391,8 +391,11 @@ std::expected<void, KernelFailure> FlashAttnMma(LaunchContext& launch, ggml_tens
   if (!plan) {
     return std::unexpected(plan.error());
   }
-  const detail::MmaCase run = plan->head == 512 ? detail::FlashAttnMmaCase512(plan->columns)
-                                                : detail::FlashAttnMmaCase256(plan->columns);
+  const bool q16 = node->src[0]->type == GGML_TYPE_F16;
+  const detail::MmaCase run = plan->head == 512
+                                  ? (q16 ? detail::FlashAttnMmaCase512Q16(plan->columns)
+                                         : detail::FlashAttnMmaCase512(plan->columns))
+                                  : detail::FlashAttnMmaCase256(plan->columns);
   if (run == nullptr) {
     return Rejected("no MMA case for this head size and column count");
   }

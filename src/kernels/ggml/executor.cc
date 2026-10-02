@@ -62,7 +62,11 @@ DeviceChoices DeviceChoicesOf(const LaunchContext& launch) {
       .quant = [&launch](const ggml_tensor* node) { return SelectMulMatQ(launch, node); },
       .q2_d2r_fits = [&launch](const ggml_tensor* node) { return MulMatIdQ2D2rFits(launch, node); },
       .ds4_hca_fits =
-          [&launch](const ggml_tensor* node) { return Dsv4HcaTokentileFits(launch, node); }};
+          [&launch](const ggml_tensor* node) { return Dsv4HcaTokentileFits(launch, node); },
+      .pair_glu_fits =
+          [&launch](const ggml_tensor* up, const ggml_tensor* gate) {
+            return MulMatIdQPairGluSupported(launch, up, gate);
+          }};
 }
 
 std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& launch,
@@ -83,10 +87,13 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
     } else if (step.implementation == kMulMatQ || step.implementation == kMulMatIdQ) {
       planned = PlanMulMatQ(launch, step.nodes.front());
     } else if (step.implementation == kMulMatIdQPair ||
-               step.implementation == kMulMatIdQPairCompact) {
+               step.implementation == kMulMatIdQPairCompact ||
+               step.implementation == kMulMatIdQPairGlu ||
+               step.implementation == kMulMatIdQPairGluQ8) {
       planned = PlanMulMatIdQPair(launch, step.nodes[0], step.nodes[1],
-                                  step.implementation == kMulMatIdQPairCompact);
-    } else if (step.implementation == kMulMatIdQCompact) {
+                                  step.implementation != kMulMatIdQPair);
+    } else if (step.implementation == kMulMatIdQCompact ||
+               step.implementation == kMulMatIdQCompactPrequant) {
       planned = PlanMulMatIdQCompact(launch, step.nodes.front());
     } else if (step.implementation == kMulMatIdQ2D2r) {
       planned = PlanMulMatIdQ2D2r(launch, step.nodes.front());
@@ -104,7 +111,10 @@ std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& lau
       planned = PlanQsaAttn(step.nodes.front());
     } else if (step.implementation == kDsv4HcaTokentileName) {
       planned = PlanDsv4HcaTokentile(launch, step.nodes.front());
-    } else if (step.implementation == kDsv4OutAName) {
+    } else if (step.implementation == kMulMatQPairDense) {
+      planned = PlanMulMatQPairDense(launch, step.nodes[0], step.nodes[1]);
+    } else if (step.implementation == kDsv4OutAName ||
+               step.implementation == kDsv4OutAFastPackName) {
       planned = PlanDsv4OutA(launch, step.nodes.front());
     } else if (step.implementation == kFlashAttnMmaName ||
                step.implementation == kFlashAttnMmaWideName) {

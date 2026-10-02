@@ -39,6 +39,8 @@ std::expected<MmaKernelShape, std::string> FlashAttnMmaShape512(int columns, boo
 using MmaCase = void (*)(ggml_backend_cuda_context& context, ggml_tensor* node);
 MmaCase FlashAttnMmaCase256(int columns);
 MmaCase FlashAttnMmaCase512(int columns);
+// Experimental: the same cases reading F16 Q (fattn_mma_q16.cuh).
+MmaCase FlashAttnMmaCase512Q16(int columns);
 
 // Head dimension 128 without grouping (ncols2 1: multi-head attention, the
 // Qwen-Image denoiser's), for columns 8, 16, 32 or 64

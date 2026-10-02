@@ -105,6 +105,10 @@ is 56,843,520 bytes in an explicitly bounded 256-MiB pool.
 
 ## Native integration and whole-model A/B
 
+*Later:* the [stage mechanisms](../ds4-prefill-stages/README.md#production-defaults)
+made this product a fast-plan default on the same guard;
+`jitllm_dsv4_exec` now takes `--q2-d2r on|off` (default on).
+
 `--q2-d2r` on `jitllm_dsv4_exec` enables the new registry identity
 `jitllm.mul_mat_id.q2_d2r`. Default selection is off; its opt-in device
 predicate admits only measured GB10 K2048/M4096/E256/used6/T4096 shapes.

@@ -97,6 +97,29 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContex
                                                               bool compact_experts = false);
 std::expected<void, KernelFailure> MulMatIdQPair(LaunchContext& launch, ggml_tensor* first,
                                                  ggml_tensor* second, bool compact_experts = false);
+// Experimental (docs/experiments/ds4-prefill-stages): the GB10 IQ2 occupancy-two
+// pair with swiglu_clamp(gate, up) written by the up product (gate first),
+// the up output itself unwritten. Scratch as PlanMulMatIdQPair's compact pair.
+std::expected<void, KernelFailure> MulMatIdQPairGlu(LaunchContext& launch, ggml_tensor* up,
+                                                    ggml_tensor* gate, ggml_tensor* glu);
+// Whether this device runs that pair over these operands (GB10 alone has
+// the occupancy-two kernel): the planner's device guard (graph_plan.h
+// DeviceChoices::pair_glu_fits), so that other devices keep the plain pair.
+bool MulMatIdQPairGluSupported(const LaunchContext& launch, const ggml_tensor* up,
+                               const ggml_tensor* gate);
+// And its quantizing form: the activation's bytes then hold the down
+// product's D2S6 input, which MulMatIdQCompactPrequant reads unquantized.
+std::expected<void, KernelFailure> MulMatIdQPairGluQ8(LaunchContext& launch, ggml_tensor* up,
+                                                      ggml_tensor* gate, ggml_tensor* glu);
+std::expected<void, KernelFailure> MulMatIdQCompactPrequant(LaunchContext& launch,
+                                                            ggml_tensor* down);
+// Experimental: two dense Q8_0 products of one activation sharing its Q8_1
+// quantization (validate_ext.h MulMatQPairDenseFits).
+std::expected<std::uint64_t, KernelFailure> PlanMulMatQPairDense(const LaunchContext& launch,
+                                                                 const ggml_tensor* a,
+                                                                 const ggml_tensor* b);
+std::expected<void, KernelFailure> MulMatQPairDense(LaunchContext& launch, ggml_tensor* a,
+                                                    ggml_tensor* b);
 
 // Experimental fixed-GB10 IQ2 preparation controls. These expose the
 // current pair's private preparation without replacing its producer and

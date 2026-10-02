@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <array>
@@ -20,7 +21,12 @@ namespace {
 // The locked GGML norm.cu's 256-thread reduction and normal-offset
 // rope.cu's YaRN arithmetic. YaRN: MIT licensed, Copyright (c) 2023
 // Jeffrey Quesnelle and Bowen Peng, as attributed by the locked source.
-__global__ void QHeadKernel(const float* x, float* dst, const std::int32_t* pos, float eps,
+// Stores the F32 values, or (half) the same values rounded to nearest.
+__device__ __forceinline__ void Store(float* dst, int i, float v) { dst[i] = v; }
+__device__ __forceinline__ void Store(half* dst, int i, float v) { dst[i] = __float2half_rn(v); }
+
+template <typename T>
+__global__ void QHeadKernel(const float* x, T* dst, const std::int32_t* pos, float eps,
                             float theta_scale, float freq_scale, float ext_factor,
                             float attn_factor, float corr0, float corr1) {
   const int tid = static_cast<int>(threadIdx.x);
@@ -42,8 +48,8 @@ __global__ void QHeadKernel(const float* x, float* dst, const std::int32_t* pos,
   const float x0 = __fmul_rn(scale, x[i0]);
   const float x1 = __fmul_rn(scale, x[i0 + 1]);
   if (i0 < 448) {
-    dst[i0] = x0;
-    dst[i0 + 1] = x1;
+    Store(dst, i0, x0);
+    Store(dst, i0 + 1, x1);
     return;
   }
   const int iw = i0 - 448;
@@ -63,8 +69,8 @@ __global__ void QHeadKernel(const float* x, float* dst, const std::int32_t* pos,
   const float s = sinf(theta) * mscale;
   // Native rope_norm's actual SASS contracts x0's products. Source-level
   // equivalence alone allows the other operand to be contracted instead.
-  dst[i0] = __fmaf_rn(c, x0, -__fmul_rn(s, x1));
-  dst[i0 + 1] = __fmaf_rn(s, x0, __fmul_rn(c, x1));
+  Store(dst, i0, __fmaf_rn(c, x0, -__fmul_rn(s, x1)));
+  Store(dst, i0 + 1, __fmaf_rn(s, x0, __fmul_rn(c, x1)));
 }
 
 }  // namespace
@@ -79,13 +85,21 @@ std::expected<void, KernelFailure> RunDsv4QHead(LaunchContext& launch, ggml_tens
   const float theta_scale = powf(p.base, -2.0f / 64);
   const auto* x = static_cast<const float*>(node->src[0]->data);
   const auto* positions = static_cast<const std::int32_t*>(node->src[1]->data);
-  auto* dst = static_cast<float*>(node->data);
+  void* dst = node->data;
+  const bool half_out = node->type == GGML_TYPE_F16;
   const auto blocks = static_cast<unsigned>(node->ne[2]) * 64U;
   const float corr0 = corr[0];
   const float corr1 = corr[1];
   return launch.Run(base::Bytes(0), [=](auto& context) {
-    QHeadKernel<<<blocks, 256, 32 * sizeof(float), context.stream()>>>(
-        x, dst, positions, p.eps, theta_scale, p.scale, p.extension, p.attention, corr0, corr1);
+    if (half_out) {
+      QHeadKernel<half><<<blocks, 256, 32 * sizeof(float), context.stream()>>>(
+          x, static_cast<half*>(dst), positions, p.eps, theta_scale, p.scale, p.extension,
+          p.attention, corr0, corr1);
+    } else {
+      QHeadKernel<float><<<blocks, 256, 32 * sizeof(float), context.stream()>>>(
+          x, static_cast<float*>(dst), positions, p.eps, theta_scale, p.scale, p.extension,
+          p.attention, corr0, corr1);
+    }
     CUDA_CHECK(cudaGetLastError());
   });
 }

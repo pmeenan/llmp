@@ -52,12 +52,12 @@ std::expected<void, KernelFailure> CheckDsv4QHead(const ggml_tensor* node) {
   }
   const auto* x = node->src[0];
   const auto* positions = node->src[1];
-  if (!Dsv4QHeadFits(x, positions, Dsv4QHeadParamsOf(node)) || !detail::IsF32(node) ||
-      !ggml_are_same_shape(node, x) || !detail::Packed(node) ||
-      !detail::AllSane({node, x, positions}) || !detail::AllCurrent({node, x, positions}) ||
-      !detail::Aligned(node, alignof(float)) || !detail::Aligned(x, alignof(float)) ||
-      !detail::Aligned(positions, alignof(std::int32_t)) || !detail::Disjoint(node, x, false) ||
-      !detail::Disjoint(node, positions, false)) {
+  if (!Dsv4QHeadFits(x, positions, Dsv4QHeadParamsOf(node)) ||
+      (!detail::IsF32(node) && node->type != GGML_TYPE_F16) || !ggml_are_same_shape(node, x) ||
+      !detail::Packed(node) || !detail::AllSane({node, x, positions}) ||
+      !detail::AllCurrent({node, x, positions}) || !detail::Aligned(node, 16) ||
+      !detail::Aligned(x, alignof(float)) || !detail::Aligned(positions, alignof(std::int32_t)) ||
+      !detail::Disjoint(node, x, false) || !detail::Disjoint(node, positions, false)) {
     return detail::Rejected("DeepSeek Q-head requires bounded contiguous disjoint F32 outputs");
   }
   return {};

@@ -269,8 +269,10 @@ Q-head fusions are landed; the guarded default-off 4096-row output-A adapter
 gains 4.97%. Output-A plus experimental HCA passes the unchanged 32K/128K
 greedy bounds, 128K perplexity and one long-answer control; production
 runner integration is checked and remains default-off; scoped IQ2 tuning
-adds 4.15% whole-prefill throughput with byte-exact full heads. Broader
-acceptance remains open, and HCA stays off by default.
+adds 4.15% whole-prefill throughput with byte-exact full heads. The ds4
+stage mechanisms are now fast-plan defaults (with output-A/HCA, community
+4096-row 8K is within ~1–2% of literal ds4; served runtime prefill +1.26%).
+Broader acceptance remains open, and HCA stays off by default.
 Qwen chat shares two independent requests, including HC products and ragged
 verification heads (+2.76% in a paid C2 screen). Four-slot adaptive serving
 regressed; conditional depth plus four shared heads gains 7.05% at C4 but

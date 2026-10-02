@@ -12,9 +12,14 @@
 //                    [--ppl FILE] [--dump NAMES] [--layout-proof]
 //                    [--bench-prefill N --bench-decode N] [--exact on|off]
 //                    [--compact-experts] [--frontier-head]
+//                    [--ds4-stages on|off] [--q2-d2r on|off]
 //                    [--probe-head]
 //                    [--probe-step N]
 //
+// - --ds4-stages / --q2-d2r (both on by default, as production's fast plan;
+//   docs/experiments/ds4-prefill-stages): the ds4 prefill stage mechanisms
+//   and the D2R Q2_K down product, each under its own shape guard; off, the
+//   fast plan without them, for A/B comparisons.
 // - --exact on: the reference mode, the graph node for node as llama.cpp
 //   builds it and planned unfused (its logits llama.cpp's with fusion off,
 //   bit for bit); off (the default), jitLLM's fast plan (dsv4_graph.h
@@ -540,9 +545,12 @@ struct Model {
   // off, the fast plan (dsv4_graph.h Dsv4GraphOptions::fused).
   bool exact = false;
   bool compact_experts = false;
-  bool d2r_experts = false;
+  // The fast plan's ds4 prefill stage mechanisms and D2R down product, as
+  // production plans them (graph_plan.h SetDsv4PrefillStages).
+  bool d2r_experts = true;
   bool ds4_hca = false;
   bool outa_prefill = false;
+  bool ds4_stages = true;
   bool wide_sparse = true;
 };
 
@@ -632,10 +640,14 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
     return Error(arena.error().detail);
   }
   out->arena.emplace(std::move(*arena));
-  auto graph = kg::BuildDsv4Graph(*out->arena, *m.profile, *m.binding, shape,
-                                  {.expert_stride = m.weights->stride,
-                                   .fused = !m.exact,
-                                   .outa_prefill = !m.exact && m.outa_prefill});
+  // As production (engine/dsv4_plan.cc): a named dump plans without the
+  // stage mechanisms, which leave some named tensors unwritten.
+  const bool stages = !m.exact && m.ds4_stages && keep_names.empty();
+  kg::Dsv4GraphOptions options{.expert_stride = m.weights->stride,
+                               .fused = !m.exact,
+                               .outa_prefill = !m.exact && m.outa_prefill};
+  kg::SetDsv4PrefillStages(options, stages);
+  auto graph = kg::BuildDsv4Graph(*out->arena, *m.profile, *m.binding, shape, options);
   if (!graph) {
     return Error(graph.error().detail);
   }
@@ -649,7 +661,9 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   // Match production's measured floor, including partially filled final
   // chunks. Direct operation/micro controls can still exercise smaller rows.
   device.compact_experts = !m.exact && m.compact_experts && shape.rows >= kg::kDsv4CompactMinRows;
-  device.d2r_experts = !m.exact && m.d2r_experts;
+  kg::SetDsv4PrefillStages(device, stages);
+  // --q2-d2r off: the pair's quantizing write-back takes the Q2_K down.
+  device.d2r_experts = !m.exact && m.d2r_experts && keep_names.empty();
   device.ds4_hca = !m.exact && m.ds4_hca;
   if (device.ds4_hca) {
     // The literal core takes first position as a host scalar. Only this
@@ -1409,9 +1423,10 @@ struct Options {
   std::uint32_t bench_decode = 0;
   bool exact = false;            // --exact on: the reference mode (Model::exact)
   bool compact_experts = false;  // the experimental device-built expert tile list
-  bool d2r_experts = false;      // default-off raw Q2_K D2R product comparison
+  bool d2r_experts = true;       // --q2-d2r off: the fast plan without its D2R down product
   bool ds4_hca = false;          // default-off literal ds4 HCA arithmetic comparison
   bool outa_prefill = false;     // default-off native output-A graph operation at4096 rows
+  bool ds4_stages = true;        // --ds4-stages off: without the ds4 prefill stage mechanisms
   bool wide_sparse = true;       // diagnostic override; exact mode always uses the primitive
   bool frontier_head = false;    // only the last prefill head row; PPL/diagnostics stay all-row
   bool probe_head = false;       // repeated head suffixes from one final chunk's streams
@@ -1494,8 +1509,6 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.layout_proof = true;
     } else if (a == "--compact-experts") {
       o.compact_experts = true;
-    } else if (a == "--q2-d2r") {
-      o.d2r_experts = true;
     } else if (a == "--ds4-hca") {
       o.ds4_hca = true;
     } else if (a == "--outa-prefill") {
@@ -1504,15 +1517,19 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.frontier_head = true;
     } else if (a == "--probe-head") {
       o.probe_head = true;
-    } else if (a == "--exact" || a == "--wide-sparse") {
+    } else if (a == "--exact" || a == "--wide-sparse" || a == "--ds4-stages" || a == "--q2-d2r") {
       auto v = value();
       if (!v || (*v != "on" && *v != "off")) {
         return Error(std::format("{} takes on or off", a));
       }
       if (a == "--exact") {
         o.exact = *v == "on";
-      } else {
+      } else if (a == "--wide-sparse") {
         o.wide_sparse = *v == "on";
+      } else if (a == "--ds4-stages") {
+        o.ds4_stages = *v == "on";
+      } else {
+        o.d2r_experts = *v == "on";
       }
     } else {
       return Error(std::format("unknown argument {}", a));
@@ -1523,9 +1540,6 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if (o.artifact.empty() || o.out.empty()) {
     return Error("--artifact and --out are required");
-  }
-  if (o.d2r_experts && o.exact) {
-    return Error("--q2-d2r requires the fast plan; the exact plan retains its original products");
   }
   if (o.ds4_hca && (o.exact || (o.max_rows != 2048 && o.max_rows != 4096))) {
     return Error("--ds4-hca requires the fast plan and --max-rows 2048 or 4096");
@@ -1668,6 +1682,7 @@ Status Run(const Options& o) {
               .d2r_experts = o.d2r_experts,
               .ds4_hca = o.ds4_hca,
               .outa_prefill = o.outa_prefill,
+              .ds4_stages = o.ds4_stages,
               .wide_sparse = o.wide_sparse};
 
   // cuBLAS, with upstream's workspace for the device: the router's BF16
@@ -1777,7 +1792,9 @@ Status Run(const Options& o) {
   summary += std::format(R"(,"frontier_head":{},"probe_head":{},"wide_sparse":{})",
                          o.frontier_head ? "true" : "false", o.probe_head ? "true" : "false",
                          !o.exact && o.wide_sparse ? "true" : "false");
-  summary += std::format(R"(,"q2_d2r":{})", o.d2r_experts ? "true" : "false");
+  summary +=
+      std::format(R"(,"q2_d2r":{},"ds4_stages":{})", !o.exact && o.d2r_experts ? "true" : "false",
+                  !o.exact && o.ds4_stages ? "true" : "false");
   summary += std::format(R"(,"ds4_hca":{})", o.ds4_hca ? "true" : "false");
   summary += std::format(
       R"(,"outa_prefill":{},"outa_prefill_requested":{},"compact_experts":{},"exact":{})",

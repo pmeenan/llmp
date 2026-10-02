@@ -15,6 +15,7 @@
 
 #include "cutlass/version.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
@@ -99,6 +100,8 @@ constinit std::array kTagDsv4Combine = std::to_array("jitllm.dsv4.combine");
 constinit std::array kTagDsv4WeightedReduce = std::to_array("jitllm.dsv4.weighted_reduce");
 constinit std::array kTagDsv4QHead = std::to_array("jitllm.dsv4.qhead");
 constinit std::array kTagDsv4OutA = std::to_array("jitllm.dsv4.outa_prefill");
+constinit std::array kTagDsv4HcNormF16 = std::to_array("jitllm.dsv4.hc_norm_f16");
+constinit std::array kTagDsv4F16Copy = std::to_array("jitllm.dsv4.f16_copy");
 constinit std::array kTagDsv4HcMix = std::to_array("jitllm.dsv4.hc_mix");
 constinit std::array kTagDsv4HcPre = std::to_array("jitllm.dsv4.hc_pre");
 constinit std::array kTagDsv4Compress = std::to_array("jitllm.dsv4.compress");
@@ -191,7 +194,9 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 41> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 43> fused = {{
+      {kTagDsv4F16Copy.data(), JitllmOp::kDsv4F16Copy},
+      {kTagDsv4HcNormF16.data(), JitllmOp::kDsv4HcNormF16},
       {kTagDsv4WeightedReduce.data(), JitllmOp::kDsv4WeightedReduce},
       {kTagDsv4QHead.data(), JitllmOp::kDsv4QHead},
       {kTagDsv4OutA.data(), JitllmOp::kDsv4OutA},
@@ -1915,12 +1920,22 @@ ggml_tensor* Dsv4OrderedReduce(ggml_context* context, ggml_tensor* down, ggml_te
 }
 
 ggml_tensor* Dsv4QHead(ggml_context* context, ggml_tensor* x, ggml_tensor* positions,
-                       const Dsv4QHeadParams& params) {
+                       const Dsv4QHeadParams& params, ggml_type type) {
   static_assert(sizeof(params) == 32 && kEpsOffset + sizeof(params) <= GGML_MAX_OP_PARAMS);
-  ggml_tensor* node = Custom(context, GGML_TYPE_F32, {x->ne[0], x->ne[1], x->ne[2], x->ne[3]},
+  ggml_tensor* node = Custom(context, type, {x->ne[0], x->ne[1], x->ne[2], x->ne[3]},
                              {x, positions}, kTagDsv4QHead.data());
   std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, &params, sizeof(params));
   return node;
+}
+
+ggml_tensor* Dsv4F16Copy(ggml_context* context, ggml_tensor* x) {
+  return Custom(context, GGML_TYPE_F16, {x->ne[0], x->ne[1], 1, 1}, {x}, kTagDsv4F16Copy.data());
+}
+
+ggml_tensor* Dsv4HcNormF16(ggml_context* context, ggml_tensor* flat, float eps) {
+  return WithEps(Custom(context, GGML_TYPE_F16, {flat->ne[0], flat->ne[1], 1, 1}, {flat},
+                        kTagDsv4HcNormF16.data()),
+                 eps);
 }
 
 ggml_tensor* Dsv4OutA(ggml_context* context, ggml_tensor* weights, ggml_tensor* heads,

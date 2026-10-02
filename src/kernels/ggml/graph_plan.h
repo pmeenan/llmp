@@ -61,6 +61,9 @@ struct DeviceChoices {
   // product. A CPU planner may supply a model of this predicate.
   std::function<bool(const ggml_tensor*)> q2_d2r_fits = nullptr;
   std::function<bool(const ggml_tensor*)> ds4_hca_fits = nullptr;
+  // The device condition of pair_glu (below) for an (up, gate) pair: ops_ext.h
+  // MulMatIdQPairGluSupported. Without it, the write-back pair is never planned.
+  std::function<bool(const ggml_tensor*, const ggml_tensor*)> pair_glu_fits = nullptr;
   // A speculative verify's plan (D-092): every matrix product of up to
   // kRowsMaxColumns columns (tokens) runs a row-invariant implementation
   // (the quantized ones jitllm.mul_mat*.mmvq_rows, the float ones MMVF),
@@ -83,8 +86,10 @@ struct DeviceChoices {
   // Use a device-built expert-major MMQ tile list for measured fast
   // quantized shapes. Reference/default plans retain upstream's grid.
   bool compact_experts = false;
-  // Experimental single-product transfer: keep native Q8 preparation and
-  // raw weights, then use ds4's D2R arithmetic. No default plan enables it.
+  // Keep native Q8 preparation and raw weights, then use ds4's D2R
+  // arithmetic for the measured GB10 Q2_K down product (q2_d2r_fits). Not
+  // bit-identical; qualified by 32K perplexity
+  // (docs/experiments/ds4-prefill-stages). The fast DeepSeek plan's default.
   bool d2r_experts = false;
   // Benchmark-only literal ds4 HCA comparison. Tagged causal metadata and
   // measured device/layout eligibility are both required; fallback is stable.
@@ -94,7 +99,38 @@ struct DeviceChoices {
   // selected-list CSA and window masks may use sharing when opted in.
   // Unknown/reference graphs retain the original column selection.
   bool wide_sparse_attention = false;
+  // The ds4 prefill stage mechanisms (docs/experiments/ds4-prefill-stages),
+  // each byte-identical to the plan without it and each under its own
+  // shape guard; the fast DeepSeek plan's defaults (SetDsv4PrefillStages).
+  // With compact experts, the measured GB10 IQ2 occupancy-two pair followed
+  // by its swiglu_clamp writes the activation from the up product's
+  // write-back instead of the up output.
+  bool pair_glu = false;
+  // And with it, the activation written as the following Q2_K down product's
+  // D2S6 input, which that product then reads without quantizing. Where
+  // d2r_experts takes that down product, the pair writes the F32 activation.
+  bool pair_glu_q8 = false;
+  // Where an HC post with F16 rows reads the routed experts' ordered
+  // reduction plus the shared expert, form that sum in the post's kernel
+  // (dsv4_hc_norm.h Dsv4HcPostExpertsAt) instead of writing it.
+  bool hc_post_experts = false;
+  // Output-A with a coalesced weight repack (identical bytes).
+  bool outa_fast_pack = false;
+  // Two dense Q8_0 MMQ products of one activation share one quantization;
+  // the later product runs at the earlier one's place.
+  bool dense_pair = false;
 };
+
+// The fast DeepSeek plan's device-side prefill stage mechanisms (above) and
+// the D2R down product, all on or all off. Reference plans keep them off.
+inline void SetDsv4PrefillStages(DeviceChoices& device, bool on) {
+  device.d2r_experts = on;
+  device.pair_glu = on;
+  device.pair_glu_q8 = on;
+  device.hc_post_experts = on;
+  device.outa_fast_pack = on;
+  device.dense_pair = on;
+}
 
 // One implementation's run over its nodes, in the order implementations.h
 // lists for it.
@@ -132,12 +168,17 @@ inline constexpr std::string_view kMulMatGluFused = "ggml.mul_mat_glu.mmvf_fused
 // M3's (ops_ext.h), planned with fusion off only.
 inline constexpr std::string_view kMulMatVecQ = "ggml.mul_mat.mmvq";
 inline constexpr std::string_view kMulMatQ = "ggml.mul_mat.mmq";
+inline constexpr std::string_view kMulMatQPairDense = "jitllm.mul_mat.mmq_pair_dense";
 inline constexpr std::string_view kMulMatHadamard = "ggml.mul_mat.fwht";
 inline constexpr std::string_view kMulMatIdVecQ = "ggml.mul_mat_id.mmvq";
 inline constexpr std::string_view kMulMatIdQ = "ggml.mul_mat_id.mmq";
 inline constexpr std::string_view kMulMatIdQPair = "jitllm.mul_mat_id.mmq_pair";
 inline constexpr std::string_view kMulMatIdQCompact = "jitllm.mul_mat_id.mmq_compact";
 inline constexpr std::string_view kMulMatIdQPairCompact = "jitllm.mul_mat_id.mmq_pair_compact";
+inline constexpr std::string_view kMulMatIdQPairGlu = "jitllm.mul_mat_id.mmq_pair_glu";
+inline constexpr std::string_view kMulMatIdQPairGluQ8 = "jitllm.mul_mat_id.mmq_pair_glu_q8";
+inline constexpr std::string_view kMulMatIdQCompactPrequant =
+    "jitllm.mul_mat_id.mmq_compact_prequant";
 inline constexpr std::string_view kMulMatIdQ2D2r = "jitllm.mul_mat_id.q2_d2r";
 inline constexpr std::string_view kSubName = "ggml.sub";
 inline constexpr std::string_view kDivName = "ggml.div";

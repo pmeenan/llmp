@@ -15,6 +15,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
@@ -87,7 +88,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 101> kKernels = {{
+constexpr std::array<Kernel::Entry, 110> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -102,6 +103,36 @@ constexpr std::array<Kernel::Entry, 101> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4QHead(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4QHead(launch, n[0]); }},
+    {.name = kDsv4F16CopyName,
+     .operation = execution::Operation::kConvert,
+     .variant = "F16CopyKernel: RN F32-to-F16 copy shared by F16-weight cuBLAS products "
+                "(experimental)",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4F16Copy(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4F16Copy(launch, n[0]); }},
+    {.name = kDsv4HcNormF16Name,
+     .operation = execution::Operation::kRmsNorm,
+     .variant = "HcNormF16Kernel: native 1024-thread flat RMS reduction and F32 scale, then RN "
+                "F16 rows for the HC mix product (experimental)",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4HcNormF16(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4HcNormF16(launch, n[0]); }},
+    {.name = kDsv4HcPostExpertsNormF16Name,
+     .operation = execution::Operation::kHcPost,
+     .variant = "HcPostNormF16Kernel<true>: the ordered six-slot expert reduction and shared add "
+                "formed in the HC post, then F32 streams and F16 mix-input rows (experimental)",
+     .arity = 4,
+     .check = [](ConstNodes n) { return CheckDsv4HcPostExpertsNormF16(n[0], n[1], n[2], n[3]); },
+     .run = [](LaunchContext& launch,
+               Nodes n) { return RunDsv4HcPostExpertsNormF16(launch, n[0], n[1], n[2], n[3]); }},
+    {.name = kDsv4HcPostNormF16Name,
+     .operation = execution::Operation::kHcPost,
+     .variant = "HcPostNormF16Kernel: native HC post FMAs into F32 streams, then the native "
+                "flat RMS and RN F16 mix-input rows (experimental)",
+     .arity = 2,
+     .check = [](ConstNodes n) { return CheckDsv4HcPostNormF16(n[0], n[1]); },
+     .run = [](LaunchContext& launch,
+               Nodes n) { return RunDsv4HcPostNormF16(launch, n[0], n[1]); }},
     {.name = kDsv4OutAName,
      .operation = execution::Operation::kMatMul,
      .variant = "paid raw-Q8 packing, inverse tail64 RoPE, staged F16/HMMA grouped output-A "
@@ -109,6 +140,13 @@ constexpr std::array<Kernel::Entry, 101> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4OutA(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4OutA(launch, n[0]); }},
+    {.name = kDsv4OutAFastPackName,
+     .operation = execution::Operation::kMatMul,
+     .variant = "output-A with a coalesced raw-Q8 weight repack (identical bytes), then the same "
+                "staged F16/HMMA grouped product (experimental)",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckDsv4OutA(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunDsv4OutA(launch, n[0], true); }},
     {.name = "ggml.add",
      .operation = execution::Operation::kAdd,
      .variant = "ggml_cuda_op_add: k_bin_bcast<op_add, float, float, float>; upstream launch "
@@ -142,7 +180,7 @@ constexpr std::array<Kernel::Entry, 101> kKernels = {{
      .variant = "GGML's cuBLAS path (mul_mat_cublas.cu): conversions, GemmEx, strided or "
                 "pointer-array batched GEMM on the lent handle, as upstream plans them",
      .arity = 1,
-     .check = [](ConstNodes n) { return CheckMulMat(n[0]); },
+     .check = [](ConstNodes n) { return CheckMulMatCublasOperands(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatCublas(launch, n[0]); }},
     {.name = "ggml.get_rows",
      .operation = execution::Operation::kGetRows,
@@ -301,6 +339,36 @@ constexpr std::array<Kernel::Entry, 101> kKernels = {{
      .arity = 2,
      .check = [](ConstNodes n) { return CheckMulMatIdQPair(n[0], n[1]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQPair(launch, n[0], n[1], true); }},
+    {.name = "jitllm.mul_mat.mmq_pair_dense",
+     .operation = execution::Operation::kMatMul,
+     .variant = "two dense Q8_0 MMQ products sharing one Q8_1 quantization of their "
+                "activation (experimental)",
+     .arity = 2,
+     .check = [](ConstNodes n) { return CheckMulMatQPairDense(n[0], n[1]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatQPairDense(launch, n[0], n[1]); }},
+    {.name = "jitllm.mul_mat_id.mmq_pair_glu",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "GB10 IQ2 occupancy-two compact pair, gate first, up write-back storing "
+                "swiglu_clamp(gate, up) (experimental)",
+     .arity = 3,
+     .check = [](ConstNodes n) { return CheckMulMatIdQPairGlu(n[0], n[1], n[2]); },
+     .run = [](LaunchContext& launch,
+               Nodes n) { return MulMatIdQPairGlu(launch, n[0], n[1], n[2]); }},
+    {.name = "jitllm.mul_mat_id.mmq_pair_glu_q8",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "the activation write-back pair, its activation stored as the down product's "
+                "D2S6 Q8_1 MMQ input at sorted columns (experimental)",
+     .arity = 3,
+     .check = [](ConstNodes n) { return CheckMulMatIdQPairGlu(n[0], n[1], n[2]); },
+     .run = [](LaunchContext& launch,
+               Nodes n) { return MulMatIdQPairGluQ8(launch, n[0], n[1], n[2]); }},
+    {.name = "jitllm.mul_mat_id.mmq_compact_prequant",
+     .operation = execution::Operation::kMulMatId,
+     .variant = "compact Q2_K MMQ over the pair write-back's D2S6 input, unquantized here "
+                "(experimental)",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckMulMatIdQCompactPrequant(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQCompactPrequant(launch, n[0]); }},
     {.name = "ggml.sub",
      .operation = execution::Operation::kSub,
      .variant = "ggml_cuda_op_sub: k_bin_bcast<op_sub, float, float, float>; upstream launch "
@@ -826,7 +894,8 @@ execution::Implementation Declare(std::string_view name, execution::Operation op
   // The grouped GEMM and the MXFP8 product are CUTLASS's kernels: their
   // identities name that tree too.
   const bool cutlass = name == kMoeGemmName || name == kMxfp8GemmName;
-  const bool ds4 = name == kMulMatIdQ2D2r || name == kDsv4HcaTokentileName || name == kDsv4OutAName;
+  const bool ds4 = name == kMulMatIdQ2D2r || name == kDsv4HcaTokentileName ||
+                   name == kDsv4OutAName || name == kDsv4OutAFastPackName;
   std::string source = "ggml";
   std::string revision =
       std::format("ggml tree {}; jitllm module {}", JITLLM_GGML_SOURCE_TREE, ModuleSourcesDigest());

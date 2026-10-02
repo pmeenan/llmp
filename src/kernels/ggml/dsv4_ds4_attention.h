@@ -162,6 +162,15 @@ std::expected<void, KernelFailure> RunDs4AttentionMask(LaunchContext& launch,
 // the native context; no partially submitted alternate retry occurs.
 std::expected<void, KernelFailure> RunDs4Attention(LaunchContext& launch, const Ds4Attention& desc);
 
+// Experimental (docs/experiments/ds4-prefill-stages): the token-tile HCA core
+// over F16 Q rows; arguments as the patched ds4 jitllm_ds4_hca_core_launch's.
+// Prepare sets the kernel's shared-memory opt-in outside graph capture.
+int Ds4HcaCoreQ16Prepare();
+int Ds4HcaCoreQ16Launch(float* out, const float* sinks, const void* q, const void* raw,
+                        const void* compressed, const void* records, const void* counts,
+                        std::uint32_t stride, std::uint32_t tokens, std::uint32_t heads,
+                        std::uint32_t raw_row_min, void* stream);
+
 }  // namespace jitllm::kernels::ggml
 
 #endif  // JITLLM_KERNELS_GGML_DSV4_DS4_ATTENTION_H_

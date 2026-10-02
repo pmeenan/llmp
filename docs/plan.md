@@ -1012,13 +1012,23 @@ it appears.
       attributes 166.9 ms / 2.21% to fusion/reuse with exact complete heads;
       this is not a native integration gain. A separate [native flat-RMS
       launch-size screen](experiments/ds4-flat-rms/README.md) loses 1.30%
-      and changes logits, so 1024 threads remain selected. The HC projection's
-      existing F16-input/F32-accumulation/output path is an unstarted next
-      factor, with native normalization retained and no claimed gain.
+      and changes logits, so 1024 threads remain selected. The [HC projection's
+      F32 accumulation](experiments/ds4-hc-projection/README.md) is neutral
+      (+0.25%) and changes heads; 16F stays.
+      The [ds4 stage mechanisms](experiments/ds4-prefill-stages/README.md)
+      bring native 8K prefill to 7.64–7.74 s against literal ds4's ~7.57 s
+      at the 4096-row community geometry: eight byte-exact changes plus the
+      perplexity-qualified D2R down product. They are now the fast plan's
+      defaults, each under its own shape guard. Runner heads, state and
+      continuation are byte-exact at 2,048 rows on both checkpoints, and the
+      original-checkpoint 32K fixed-history control is byte-identical. At
+      production's 2,048-row chunks they gain 7.21% on the community
+      checkpoint but 1.41% on the served original checkpoint, where only
+      F16 Q and dense Q8_0 pairs apply; runtime 8K prefill gains 1.26%.
       These different-factor screens are not added together or recorded as
       a matched final ds4 speed ratio. The [closure status](m3-optimization-status.md)
       tracks completed and missing independent-review experiments.
-      Broader quality and production adaptation remain open; no default changes.
+      Broader quality remains open; output-A/HCA stays default-off.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer

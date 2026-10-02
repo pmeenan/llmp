@@ -140,15 +140,18 @@ namespace {
 // family's own selection, for the product `node` written to `out`: the node
 // itself, or with fusion the node the launcher writes instead, which has
 // the product's shape (ggml_can_fuse_ext, ggml-impl.h:681-706).
-std::expected<void, KernelFailure> CheckMulMatInto(const ggml_tensor* node,
-                                                   const ggml_tensor* out) {
+std::expected<void, KernelFailure> CheckMulMatInto(const ggml_tensor* node, const ggml_tensor* out,
+                                                   bool f16_input = false) {
   if (node == nullptr || node->op != GGML_OP_MUL_MAT || !Bound(out) || !Bound(node->src[0]) ||
       !Bound(node->src[1])) {
     return Rejected("not a bound mul_mat node");
   }
   const ggml_tensor* weights = node->src[0];
   const ggml_tensor* input = node->src[1];
-  if (!IsF32(input) || !IsF32(node) || !IsF32(out) ||
+  // cuBLAS alone also reads F16 activations of F16 weights directly.
+  const bool input_type = IsF32(input) || (f16_input && input->type == GGML_TYPE_F16 &&
+                                           weights != nullptr && weights->type == GGML_TYPE_F16);
+  if (!input_type || !IsF32(node) || !IsF32(out) ||
       (weights->type != GGML_TYPE_F16 && weights->type != GGML_TYPE_F32 &&
        weights->type != GGML_TYPE_BF16)) {
     return Rejected("F16, BF16 or F32 weights with F32 activations and output");
@@ -164,8 +167,8 @@ std::expected<void, KernelFailure> CheckMulMatInto(const ggml_tensor* node,
     return Rejected("the fused output has the product's shape");
   }
   if (input->ne[3] != node->ne[3] || weights->nb[0] != ggml_type_size(weights->type) ||
-      input->nb[0] != sizeof(float) || out->nb[0] != sizeof(float) || !ElementStrides(weights) ||
-      !ElementStrides(input) || !ElementStrides(out)) {
+      input->nb[0] != ggml_type_size(input->type) || out->nb[0] != sizeof(float) ||
+      !ElementStrides(weights) || !ElementStrides(input) || !ElementStrides(out)) {
     return Rejected("mul_mat needs contiguous rows and matching samples");
   }
   if (AnyEmpty({out, weights, input}) || !AllSane({out, weights, input})) {
@@ -208,6 +211,10 @@ std::expected<void, KernelFailure> CheckMulMatInto(const ggml_tensor* node,
 
 std::expected<void, KernelFailure> CheckMulMat(const ggml_tensor* node) {
   return CheckMulMatInto(node, node);
+}
+
+std::expected<void, KernelFailure> CheckMulMatCublasOperands(const ggml_tensor* node) {
+  return CheckMulMatInto(node, node, /*f16_input=*/true);
 }
 
 std::expected<void, KernelFailure> CheckRmsNorm(const ggml_tensor* norm) {
@@ -338,7 +345,7 @@ std::expected<void, KernelFailure> CheckClearOf(const ggml_tensor* node, std::ui
 
 std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* node,
                                                              ggml_type compute, bool f32_output) {
-  if (auto checked = CheckMulMat(node); !checked) {
+  if (auto checked = CheckMulMatCublasOperands(node); !checked) {
     return std::unexpected(checked.error());
   }
   if (compute != GGML_TYPE_F32 && compute != GGML_TYPE_F16 && compute != GGML_TYPE_BF16) {
@@ -346,6 +353,11 @@ std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* 
   }
   const ggml_tensor* src0 = node->src[0];
   const ggml_tensor* src1 = node->src[1];
+  // F16 activations stand for the F32 ones the F16 compute type would round
+  // them to; another compute type would read the unrounded F32 values.
+  if (src1->type == GGML_TYPE_F16 && compute != GGML_TYPE_F16) {
+    return Rejected("F16 activations are read only with the F16 compute type");
+  }
   // The launcher asserts a contiguous output and indexes it as packed.
   if (!Packed(node)) {
     return Rejected("cuBLAS writes a packed output");

@@ -73,7 +73,13 @@ the original IQ2/Q8 routines, guarded out of the native target by
 `JITLLM_DS4_RAW_Q2_ONLY`; it compiles the raw Q2_K down path and helpers,
 with jitLLM's preparation and completion. The HCA core uses native F16 cache
 bytes with caller-owned mirror/record scratch; its original numerical source
-is copied verbatim. Both experiments are benchmark-only and default off.
+is copied verbatim. The raw Q2_K D2R down product is now the fast DeepSeek
+plan's default on its measured GB10 shape; the HCA core, also reached with
+F16 queries through jitLLM's own loader, remains opt-in and default off.
+That loader's kernel (`src/kernels/ggml/dsv4_ds4_attention.cu`, MIT AND
+Apache-2.0) is a copy of the original token-tile core that reads F16 Q
+rows, otherwise unchanged; the file's header names the ds4 authors and
+Entrpi.
 The whole archive audit and
 exact source scope are in the source lock. Packages carry the ds4 authors,
 Entrpi, GGML and Marco Palaferri MIT notices; no ds4 runtime or cache
@@ -95,7 +101,11 @@ flash-attention case and copies `launch_fattn`'s host arithmetic, keep
 GGML's notice in their headers, as do the M3 units that instantiate or
 copy from GGML (`fattn_mma.cu` with `fattn.cu`'s sparse-mask kernel,
 `fattn_mma_d256.cu`, `fattn_mma_d512.cu`, `fattn_mma_shape.cuh`,
-`mul_mat_q.cu`, `ops_ext.cu`), and the ports of llama.cpp's DeepSeek V4
+`mul_mat_q.cu`, `ops_ext.cu`; the ds4 stage mechanisms' F16-Q copy of the
+MMA flash attention and `launch_fattn`, `fattn_mma_q16.cuh` with
+`fattn_mma_d512_q16.cu`, their copy of the compact MMQ kernel,
+`mul_mat_q_glu.cu`, and the HC post and RMS arithmetic in
+`dsv4_hc_norm.cu`), and the ports of llama.cpp's DeepSeek V4
 graph and compressor plan (`src/kernels/ggml/dsv4_graph.cc`,
 `src/model/dsv4.cc`; llama.cpp is MIT like GGML, under the same
 copyright) and of its Qwen3.8 graph (`qwen4exp.cpp`), QSA block tables and

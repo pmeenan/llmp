@@ -24,6 +24,7 @@
 #include "common.cuh"
 #include "kernels/ggml/cublas.h"
 #include "kernels/ggml/mul_mat_q_borrowed.cuh"
+#include "kernels/ggml/mul_mat_q_glu.cuh"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"
 #include "kernels/ggml/validate_util.h"
@@ -571,15 +572,22 @@ std::expected<ExpertMmqLayout, KernelFailure> CheckExpertPrepared(const LaunchCo
 }
 std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml_tensor* first,
                                                      ggml_tensor* second, bool compact_experts,
-                                                     const ExpertMmqPrepared* capture = nullptr) {
+                                                     const ExpertMmqPrepared* capture = nullptr,
+                                                     ggml_tensor* glu = nullptr,
+                                                     bool glu_q8 = false,
+                                                     const ggml_tensor* prequantized = nullptr) {
   auto scratch = second != nullptr ? PlanMulMatIdQPair(launch, first, second, compact_experts)
                                    : PlanMulMatIdQCompact(launch, first);
   if (!scratch) {
     return std::unexpected(scratch.error());
   }
   const bool iq2_occ2 = Iq2Occ2Pair(launch, first, second, compact_experts);
-  return launch.Run(base::Bytes(*scratch), [first, second, compact_experts, capture,
-                                            iq2_occ2](ggml_backend_cuda_context& context) {
+  if (glu != nullptr && !iq2_occ2) {
+    return Rejected("the pair activation write-back takes the GB10 IQ2 occupancy-two pair only");
+  }
+  return launch.Run(base::Bytes(*scratch), [first, second, compact_experts, capture, iq2_occ2, glu,
+                                            glu_q8,
+                                            prequantized](ggml_backend_cuda_context& context) {
     // Host preparation from GGML mmq.cu: the same inverse broadcast map
     // and scatter quantization feed two ordinary MMQ launches. This is
     // ds4's paired-preparation technique without its SoA repack or fused
@@ -615,7 +623,10 @@ std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml
     const auto s11 = static_cast<std::int64_t>(input->nb[1] / sizeof(float));
     const auto s12 = static_cast<std::int64_t>(input->nb[2] / sizeof(float));
     const auto s13 = static_cast<std::int64_t>(input->nb[3] / sizeof(float));
-    if (broadcast) {
+    if (prequantized != nullptr) {
+      // The pair's activation write-back already holds this D2S6 input at
+      // the same sorted columns (the same maps of the same routes).
+    } else if (broadcast) {
       quantize_scatter_mmq_q8_1_cuda(x, ids_src.get(), quantized.get(), type, input->ne[0], s12,
                                      padded, tokens, rows, static_cast<int>(used), stream);
     } else {
@@ -645,18 +656,26 @@ std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml
     const auto ncols_opt = GGML_CUDA_CC_IS_RDNA3_0(cc) || GGML_CUDA_CC_IS_RDNA4(cc)
                                ? (rows + weights->ne[2] - 1) / weights->ne[2]
                                : tokens;
-    for (ggml_tensor* output : {first, second}) {
+    // With the activation write-back, gate (second) is written first and
+    // the up product (first) stores swiglu_clamp(gate, up) into `glu`.
+    const std::array<ggml_tensor*, 2> order = glu != nullptr
+                                                  ? std::array<ggml_tensor*, 2>{second, first}
+                                                  : std::array<ggml_tensor*, 2>{first, second};
+    for (ggml_tensor* output : order) {
       if (output == nullptr) {
         continue;
       }
+      const bool activation = glu != nullptr && output == first;
+      float* const destination = static_cast<float*>(activation ? glu->data : output->data);
       const ggml_tensor* w = output->src[0];
       const auto ts = static_cast<std::int64_t>(ggml_type_size(type));
       const mmq_args args = {static_cast<const char*>(w->data),
                              type,
-                             reinterpret_cast<const int*>(quantized.get()),
+                             reinterpret_cast<const int*>(
+                                 prequantized != nullptr ? prequantized->data : quantized.get()),
                              ids_dst.get(),
                              bounds.get(),
-                             static_cast<float*>(output->data),
+                             destination,
                              nullptr,
                              w->ne[0],
                              w->ne[1],
@@ -694,7 +713,11 @@ std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml
           mul_mat_q_case<GGML_TYPE_Q6_K>(context, args, stream);
           break;
         case GGML_TYPE_IQ2_XXS:
-          if (iq2_occ2) {
+          if (activation) {
+            CUDA_CHECK(LaunchIq2PairGluUp(context, args, static_cast<const float*>(second->data),
+                                          MulMatIdQPairGluLimit(glu), glu_q8 ? glu->data : nullptr,
+                                          stream));
+          } else if (iq2_occ2) {
             CUDA_CHECK(ggml_cuda_mul_mat_iq2_occ2_pair_product(context, args, stream));
           } else {
             mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, stream);
@@ -720,8 +743,123 @@ std::expected<void, KernelFailure> MulMatIdQPair(LaunchContext& launch, ggml_ten
   return RunExpertProducts(launch, first, second, compact_experts);
 }
 
+std::expected<void, KernelFailure> MulMatIdQPairGlu(LaunchContext& launch, ggml_tensor* up,
+                                                    ggml_tensor* gate, ggml_tensor* glu) {
+  if (auto checked = CheckMulMatIdQPairGlu(up, gate, glu); !checked) {
+    return checked;
+  }
+  return RunExpertProducts(launch, up, gate, /*compact_experts=*/true, nullptr, glu);
+}
+
+bool MulMatIdQPairGluSupported(const LaunchContext& launch, const ggml_tensor* up,
+                               const ggml_tensor* gate) {
+  return Iq2Occ2Pair(launch, up, gate, /*compact_experts=*/true);
+}
+
 std::expected<void, KernelFailure> MulMatIdQCompact(LaunchContext& launch, ggml_tensor* node) {
   return RunExpertProducts(launch, node, nullptr, true);
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanMulMatQPairDense(const LaunchContext& launch,
+                                                                 const ggml_tensor* a,
+                                                                 const ggml_tensor* b) {
+  if (auto checked = CheckMulMatQPairDense(a, b); !checked) {
+    return std::unexpected(checked.error());
+  }
+  auto pa = PlanMulMatQ(launch, a);
+  if (!pa) {
+    return std::unexpected(pa.error());
+  }
+  auto pb = PlanMulMatQ(launch, b);
+  if (!pb) {
+    return std::unexpected(pb.error());
+  }
+  // One activation buffer and each product's stream-k fixup, generously.
+  return *pa + *pb;
+}
+
+std::expected<void, KernelFailure> MulMatQPairDense(LaunchContext& launch, ggml_tensor* a,
+                                                    ggml_tensor* b) {
+  auto scratch = PlanMulMatQPairDense(launch, a, b);
+  if (!scratch) {
+    return std::unexpected(scratch.error());
+  }
+  return launch.Run(base::Bytes(*scratch), [a, b](ggml_backend_cuda_context& context) {
+    // ggml_cuda_mul_mat_q's dense branch (mmq.cu), quantizing the shared
+    // activation once for both Q8_0 products.
+    const ggml_tensor* src1 = a->src[1];
+    cudaStream_t stream = context.stream();
+    const int cc = ggml_cuda_info().devices[context.device].cc;
+    const std::int64_t ne10 = src1->ne[0];
+    const std::int64_t ne11 = src1->ne[1];
+    const std::int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
+    const int j_max = ggml_cuda_mmq_get_J_max(GGML_TYPE_Q8_0, false, cc, ne11);
+    const auto nbytes =
+        (static_cast<std::size_t>(ne11 * ne10_padded) * sizeof(block_q8_1_mmq) / QK8_1_MMQ) +
+        (static_cast<std::size_t>(j_max) * sizeof(block_q8_1_mmq));
+    ggml_cuda_pool_alloc<char> q8(context.pool(), nbytes);
+    const auto s11 = static_cast<std::int64_t>(src1->nb[1] / sizeof(float));
+    const auto s12 = static_cast<std::int64_t>(src1->nb[2] / sizeof(float));
+    const auto s13 = static_cast<std::int64_t>(src1->nb[3] / sizeof(float));
+    quantize_mmq_q8_1_cuda(static_cast<const float*>(src1->data), nullptr, q8.get(), GGML_TYPE_Q8_0,
+                           ne10, s11, s12, s13, ne10_padded, ne11, 1, 1, stream);
+    CUDA_CHECK(cudaGetLastError());
+    const std::int64_t y12 = ne11 * ne10_padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
+                             (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
+    for (ggml_tensor* node : {a, b}) {
+      const ggml_tensor* src0 = node->src[0];
+      const auto ts0 = static_cast<std::int64_t>(ggml_type_size(src0->type));
+      const mmq_args args = {static_cast<const char*>(src0->data),
+                             src0->type,
+                             reinterpret_cast<const int*>(q8.get()),
+                             nullptr,
+                             nullptr,
+                             static_cast<float*>(node->data),
+                             nullptr,
+                             src0->ne[0],
+                             src0->ne[1],
+                             node->ne[1],
+                             static_cast<std::int64_t>(src0->nb[1]) / ts0,
+                             ne11,
+                             static_cast<std::int64_t>(node->nb[1] / sizeof(float)),
+                             src0->ne[2],
+                             1,
+                             static_cast<std::int64_t>(src0->nb[2]) / ts0,
+                             y12,
+                             static_cast<std::int64_t>(node->nb[2] / sizeof(float)),
+                             src0->ne[3],
+                             1,
+                             static_cast<std::int64_t>(src0->nb[3]) / ts0,
+                             y12,
+                             static_cast<std::int64_t>(node->nb[3] / sizeof(float)),
+                             node->ne[1],
+                             node->ne[1]};
+      mul_mat_q_case<GGML_TYPE_Q8_0>(context, args, stream);
+    }
+  });
+}
+
+std::expected<void, KernelFailure> MulMatIdQPairGluQ8(LaunchContext& launch, ggml_tensor* up,
+                                                      ggml_tensor* gate, ggml_tensor* glu) {
+  if (auto checked = CheckMulMatIdQPairGlu(up, gate, glu); !checked) {
+    return checked;
+  }
+  // 24576 columns of 16 D2S6 blocks within the F32 activation's bytes.
+  if (ggml_nbytes(glu) < (static_cast<std::size_t>(24576) * 16 + 128) * sizeof(block_q8_1_mmq)) {
+    return Rejected("the pair activation cannot hold its quantized form");
+  }
+  return RunExpertProducts(launch, up, gate, /*compact_experts=*/true, nullptr, glu, true);
+}
+
+std::expected<void, KernelFailure> MulMatIdQCompactPrequant(LaunchContext& launch,
+                                                            ggml_tensor* down) {
+  if (auto checked = CheckMulMatIdQCompactPrequant(down); !checked) {
+    return checked;
+  }
+  if (mmq_get_q8_1_ds_layout(down->src[0]->type) != MMQ_Q8_1_DS_LAYOUT_D2S6) {
+    return Rejected("the prequantized down input is D2S6");
+  }
+  return RunExpertProducts(launch, down, nullptr, true, nullptr, nullptr, false, down->src[1]);
 }
 
 std::expected<void, KernelFailure> MulMatIdQPairCapture(LaunchContext& launch, ggml_tensor* first,

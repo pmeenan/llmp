@@ -20,6 +20,7 @@
 
 #include "execution/registry.h"
 #include "ggml.h"
+#include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
@@ -113,9 +114,16 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     plan.steps.push_back(
         {.operation = operation, .implementation = name, .nodes = std::move(nodes)});
   };
+  std::unordered_map<std::size_t, Dsv4HcPostExpertsNodes> deferred;
   for (std::size_t i = 0; i < graph.size(); ++i) {
     ggml_tensor* node = graph[i];
     if (taken[i] || LaunchesNothing(node)) {
+      continue;
+    }
+    if (const auto d = deferred.find(i); d != deferred.end()) {
+      const Dsv4HcPostExpertsNodes& f = d->second;
+      add(Operation::kHcPost, kDsv4HcPostExpertsNormF16Name, i, {f.reduce, f.add, f.post, f.norm},
+          4);
       continue;
     }
     if (fusion) {
@@ -195,6 +203,29 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           if (!path) {
             return Rejected(std::format("{}: {}", Where(graph, i), path.error().detail));
           }
+          if (device.dense_pair && *path == QuantMulMatPath::kTile) {
+            // A later dense Q8_0 product of the same activation joins this one.
+            bool paired = false;
+            for (std::size_t k = i + 1; k < graph.size() && k < i + 512; ++k) {
+              ggml_tensor* other = graph[k];
+              if (other->view_src == node->src[1] && !LaunchesNothing(other)) {
+                break;  // a write into the activation: the later product reads it changed
+              }
+              if (taken[k] || !MulMatQPairDenseFits(node, other)) {
+                continue;
+              }
+              const auto other_path = device.quant(other);
+              if (other_path && *other_path == QuantMulMatPath::kTile) {
+                add(Operation::kMatMul, kMulMatQPairDense, i, {node, other}, 1);
+                taken[k] = true;
+                paired = true;
+              }
+              break;
+            }
+            if (paired) {
+              break;
+            }
+          }
           add(Operation::kMatMul, *path == QuantMulMatPath::kVector ? kMulMatVecQ : kMulMatQ, i,
               {node}, 1);
           break;
@@ -241,6 +272,29 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           if (CheckMulMatIdQPair(node, second)) {
             const auto second_path = device.quant(second);
             if (second_path && *second_path == QuantMulMatPath::kTile) {
+              // The graph orders the pair as its GLU's sources: gate, then up.
+              ggml_tensor* glu = i + 2 < graph.size() ? graph[i + 2] : nullptr;
+              if (device.pair_glu && device.compact_experts && device.pair_glu_fits &&
+                  glu != nullptr && glu->src[0] == node && glu->src[1] == second &&
+                  MulMatIdQPairGluFits(second, node, glu) && device.pair_glu_fits(second, node)) {
+                ggml_tensor* down = i + 3 < graph.size() ? graph[i + 3] : nullptr;
+                // D2R reads the F32 activation and quantizes it itself
+                // (measured faster than the quantizing write-back).
+                const bool d2r_down = device.d2r_experts && device.q2_d2r_fits && down != nullptr &&
+                                      down->op == GGML_OP_MUL_MAT_ID && device.q2_d2r_fits(down);
+                if (device.pair_glu_q8 && !d2r_down && down != nullptr &&
+                    down->op == GGML_OP_MUL_MAT_ID && MulMatIdQCompactPrequantFits(down, glu) &&
+                    CheckMulMatIdQCompact(down)) {
+                  const auto down_path = device.quant(down);
+                  if (down_path && *down_path == QuantMulMatPath::kTile) {
+                    add(Operation::kMulMatId, kMulMatIdQPairGluQ8, i, {second, node, glu}, 3);
+                    add(Operation::kMulMatId, kMulMatIdQCompactPrequant, i + 3, {down}, 1);
+                    break;
+                  }
+                }
+                add(Operation::kMulMatId, kMulMatIdQPairGlu, i, {second, node, glu}, 3);
+                break;
+              }
               add(Operation::kMulMatId,
                   device.compact_experts ? kMulMatIdQPairCompact : kMulMatIdQPair, i,
                   {node, second}, 2);
@@ -351,6 +405,11 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         add(Operation::kHcPre, kHcPreName, i, {node}, 1);
         break;
       case GGML_OP_DSV4_HC_POST:
+        if (const auto f = Dsv4HcPostNormF16At(graph, i)) {
+          // The post, its flat reshape and the F16 mix-input norm: one kernel.
+          add(Operation::kHcPost, kDsv4HcPostNormF16Name, i, {f->post, f->norm}, 3);
+          break;
+        }
         add(Operation::kHcPost, kHcPostName, i, {node}, 1);
         break;
       case GGML_OP_SSM_CONV:
@@ -460,7 +519,14 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             add(Operation::kRope, kDsv4QHeadName, i, {node}, 1);
             break;
           case JitllmOp::kDsv4OutA:
-            add(Operation::kMatMul, kDsv4OutAName, i, {node}, 1);
+            add(Operation::kMatMul, device.outa_fast_pack ? kDsv4OutAFastPackName : kDsv4OutAName,
+                i, {node}, 1);
+            break;
+          case JitllmOp::kDsv4HcNormF16:
+            add(Operation::kRmsNorm, kDsv4HcNormF16Name, i, {node}, 1);
+            break;
+          case JitllmOp::kDsv4F16Copy:
+            add(Operation::kConvert, kDsv4F16CopyName, i, {node}, 1);
             break;
           case JitllmOp::kQsaGateQuantize:
             add(Operation::kQuantize, kQsaGateQuantizeName, i, {node}, 1);
@@ -487,6 +553,15 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             add(Operation::kMoeCombine, kDsv4CombineName, i, {node}, 1);
             break;
           case JitllmOp::kDsv4WeightedReduce:
+            if (device.hc_post_experts) {
+              std::size_t at = 0;
+              if (const auto f = Dsv4HcPostExpertsAt(graph, i, &at)) {
+                // Deferred to the post: it runs at the add's place.
+                taken[i] = true;
+                deferred.emplace(at, *f);
+                break;
+              }
+            }
             add(Operation::kMoeCombine, kDsv4WeightedReduceName, i, {node}, 1);
             break;
           case JitllmOp::kDsv4HcMix:

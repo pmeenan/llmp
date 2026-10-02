@@ -13,7 +13,7 @@ closure; individual reports retain conditions and evidence.
 | Question | Established result | Still needed |
 | --- | --- | --- |
 | Can jitLLM reproduce ds4's complete pipeline? | Yes. Full logits match byte for byte at 8K and 32K; throughput trails by 2.4% and 0.71%. | No repeat of this prerequisite. |
-| Does the normal DeepSeek architecture match ds4 prefill? | No. Reduction and Q-head fusions are landed. Output-A gains 4.97% at 4096 rows; adding HCA takes 8K prefill to 9.8792 s (+21.19% incremental throughput). Genuine runner controls preserve the passing 4K candidate's complete heads, initialized state and ordinary continuation. IQ2 J64 with occupancy two adds a separate 4.15% whole-prefill gain, with all six heads byte-exact. The private 2048-row extension gains 3.95% but fails one fixed-history quality row, exceeding the unchanged bound by 1.669249 nats; it is stopped. | The literal inverse preparation control attributes only 166.9 ms / 2.21% to fused input preparation, with exact heads. Restore/attribute the remaining stages using the checked native integration. The reproduced literal pipeline is around 7.5 s at 8K with different cache/math contracts and output cadence, so these clocks are not a matched final speed ratio. |
+| Does the normal DeepSeek architecture match ds4 prefill? | Nearly, at the measured 4096-row community geometry: the ds4 stage mechanisms bring native 8K prefill to 7.64–7.74 s against literal ds4's ~7.57 s, and they are now the fast plan's defaults. At production's 2048-row chunks they gain 7.21% on the community checkpoint, but only 1.41% (runtime 1.26%) on the served original checkpoint, where most of their guards do not admit the types. Reduction and Q-head fusions are landed. Output-A gains 4.97% at 4096 rows; adding HCA takes 8K prefill to 9.8792 s (+21.19% incremental throughput). Genuine runner controls preserve the passing 4K candidate's complete heads, initialized state and ordinary continuation. IQ2 J64 with occupancy two adds a separate 4.15% whole-prefill gain, with all six heads byte-exact. The private 2048-row extension gains 3.95% but fails one fixed-history quality row, exceeding the unchanged bound by 1.669249 nats; it is stopped. | The literal inverse preparation control attributes only 166.9 ms / 2.21% to fused input preparation, with exact heads. Restore/attribute the remaining stages using the checked native integration. The reproduced literal pipeline is around 7.5 s at 8K with different cache/math contracts and output cadence, so these clocks are not a matched final speed ratio. |
 | Is Qwen's solo MTP deficit explained? | Partly. Fixed-depth step times are close; acceptance and reference variation carry much of the reported rate difference. Curated vocabulary does not win at every depth. | Same-history paired acceptance, plus a decision on the actual remaining step-time slope. Existing generated-history runs do not establish acceptance parity or justify changing the gate. |
 | Does concurrent serving match the other engines? | Fresh matched 8K C1/C2/C4 controls are complete. Against current same-checkpoint TensorFold NVFP4, native is +19.22% / +8.63% / −14.55% on completed-token rate including prefill and queueing. Native also trails the older affine TensorFold and original Mia at C4. HC/ragged-head sharing gains 2.76% on paid C2 wall; cap-four adaptive loses 13.16%. Fixed depth one alone loses 1.32%; four-head sharing adds 5.80% against that control with identical public replies. Conditional depth plus four-head sharing gains 7.05% against exact normal C4, but first completion is 83.23% later, median latency 15.70% higher and replies change. Capacity stays two. | Four-head controls pass 13 complete logits and 20 initialized-state/cursor comparisons, including discard/retry/continuation. Qualify the depth policy separately, including the extra 3.27 GiB fixed budget and latency tradeoff. Depth zero and DeepSeek independent-state batching remain open. Matching checkpoint/prompt IDs does not establish equal arithmetic or quality. |
 
@@ -23,6 +23,8 @@ Reports: [literal 8K](experiments/ds4-complete-plan/README.md),
 [IQ2 occupancy two](experiments/ds4-iq2-occ2/README.md),
 [attention preparation](experiments/ds4-attention-preparation/README.md),
 [native flat RMS](experiments/ds4-flat-rms/README.md),
+[HC projection accumulation](experiments/ds4-hc-projection/README.md),
+[native ds4 stage mechanisms](experiments/ds4-prefill-stages/README.md),
 [Qwen sharing](experiments/qwen38-combined-sharing/README.md),
 [capacity rejection](experiments/qwen38-capacity/README.md),
 [depth-one row budget](experiments/qwen38-row-budget/README.md),
@@ -77,6 +79,8 @@ graph/state controls and a paid serving gain remain untested; no default changes
 | Wide HC input and HC suffix | Screened and rejected: −2.18% and +0.48%; no expanded quality or context matrix. |
 | HC-post followed by flat RMS | Positive exact private screen, +1.94%; native overlay prepared and reviewed, not yet run. |
 | Flat HC RMS launch size, 1024 versus 256 threads | One paid native 8K screen loses 1.30%, with −0.42% original duration movement. Ordinary complete heads remain exact; both candidate heads change all values with unchanged argmaxes. No isolated RMS latency or quality-bound verdict follows. Keep 1024 threads. |
+| HC projection 32F accumulation/output | One paid native 8K screen gains 0.25%, inside −0.41% bookend movement; candidate heads change almost every value with unchanged argmaxes. Keep 16F. The remaining HC input cost is the F32 normalized tensor and its F32-to-F16 reconversion, which ds4 avoids by emitting F16 normalized rows from its HC expand. |
+| ds4 stage mechanisms in the native graph | Eight exact changes (F16 HC mix rows, IQ2 pair SwiGLU + down-input Q8 write-back, expert sum in the HC post, shared F16 attention input, coalesced output-A repack, shared dense-pair quantization, F16 Q into jitLLM-owned CSA/HCA attention) gain 19.37% at 8K with byte-exact heads; with the qualified D2R down 23.70% (7.64–7.74 s vs literal ~7.57 s). D2R 32K PPL +0.04% vs ds4. **Now the fast plan's defaults**, each under its guard. Runner heads, state and continuation are byte-exact at 2048 rows on both checkpoints; the original-checkpoint 32K fixed-history control is byte-identical (491+21, none outside 0.947). Runtime 8K prefill on the served checkpoint gains 1.26%. |
 | HCA attention with output-A | Focused 4096-row quality controls pass at unchanged bounds. A paid native 4096-row interaction gains 21.19% incremental throughput with 0.86% bookend movement. Genuine runner controls preserve full heads, initialized state and ordinary continuation, authenticate chunk positions before dispatch and fund all 32 128K plan shapes. The default-off integration passes Spark unit/style/boundary, final compiled full-head/state and REUSE/header controls. The 2048-row extension fails one unchanged quality bound and is stopped. |
 | Remaining Q/KV, compression/indexer, shared-FFN and HC producer chains | Not fully restored or bisected. Their current native attribution is recorded; the piecewise replacement work is incomplete. |
 
@@ -93,9 +97,13 @@ are complete: producer fusion/reuse contributes 2.21% to the literal pipeline,
 while the smaller native RMS launch loses 1.30%. The conditional Qwen head
 screen and its discard/retry/continuation controls are also complete; their
 latency, memory and policy limitations retain the current serving default.
-The fresh concurrent engine comparison is complete. A separate next DeepSeek
-lead is its HC projection's existing F16-input/F32-accumulation/output path,
-retaining native normalization; it is unstarted and has no measured gain.
+The fresh concurrent engine comparison is complete. The DeepSeek HC
+projection's 32F accumulation/output screen is neutral (+0.25%) and
+changes heads; keep 16F. Native ds4 stage mechanisms gain 19.37% exact and 23.70% with D2R at
+8K, within about 1–2% of literal ds4, and are now the fast plan's
+defaults. On the served original checkpoint at 2,048-row chunks only F16 Q
+and the dense Q8_0 pairs apply (runtime 8K prefill +1.26%); the larger
+native gap there is in its own types and chunk size.
 On the other Spark, the positive captured GDN factor selects a bounded native
 wave-composition screen with independent F32 state/output ranges, graph
 dependencies and paid packing. That integration is unstarted. A separate

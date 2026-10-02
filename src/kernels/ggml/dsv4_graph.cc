@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ggml.h"
+#include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
@@ -215,6 +216,21 @@ class Builder {
     }
     return VecQ(c_, w, Q8Of(x), nullptr, x->ne[1], false);
   }
+  // Mm, but with shared_f16_inputs an F16-weight product of a wide F32 input
+  // reads one F16 copy of it, made once for every such product of that input.
+  ggml_tensor* MmShared(ggml_tensor* w, ggml_tensor* x) {
+    if (!o_.fused || !o_.shared_f16_inputs || w->type != GGML_TYPE_F16 || x->ne[1] < 64 ||
+        (VecQInput(x) && VecQWeight(w, x)) || !Dsv4F16CopyFits(x)) {
+      return Mm(w, x);
+    }
+    if (f16_source_ != x) {
+      f16_source_ = x;
+      f16_copy_ = Dsv4F16Copy(c_, x);
+    }
+    return ggml_mul_mat(c_, w, f16_copy_);
+  }
+  ggml_tensor* f16_source_ = nullptr;
+  ggml_tensor* f16_copy_ = nullptr;
 };
 
 std::expected<ggml_tensor*, KernelFailure> Leaf(ggml_context* c, const model::Dsv4Tensor& t,
@@ -452,7 +468,11 @@ ggml_tensor* Builder::HcPre(ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale,
   const std::int64_t hc = p_.hc;
   const std::int64_t nt = x->ne[2];
   ggml_tensor* flat = ggml_reshape_2d(c_, x, p_.hc_width(), nt);
-  ggml_tensor* flat_norm = ggml_rms_norm(c_, flat, p_.rms_eps);
+  // The F16 rows are exactly what the product would convert the F32 norm to.
+  ggml_tensor* flat_norm = o_.fused && o_.hc_f16_rows && nt >= 64 && fn->type == GGML_TYPE_F16 &&
+                                   Dsv4HcNormF16Fits(flat, p_.rms_eps)
+                               ? Dsv4HcNormF16(c_, flat, p_.rms_eps)
+                               : ggml_rms_norm(c_, flat, p_.rms_eps);
   ggml_tensor* mixes = ggml_mul_mat(c_, fn, flat_norm);
   ggml_tensor* scale_pre = ggml_view_1d(c_, scale, 1, ggml_row_size(scale->type, 0));
   ggml_tensor* scale_post = ggml_view_1d(c_, scale, 1, ggml_row_size(scale->type, 1));
@@ -645,7 +665,7 @@ ggml_tensor* Builder::LidTopK(const Dsv4LayerTensors& l, ggml_tensor* qr, ggml_t
   q = RopeExt(q, g_.positions, r, r.n_ctx_orig);
   q = ggml_rope_set_offset(q, static_cast<int>(ih - p_.rope_dims));
   q = Hadamard(q, g_.lid_rot);
-  ggml_tensor* weights = Mm(l.idx_proj, cur);
+  ggml_tensor* weights = MmShared(l.idx_proj, cur);
   weights = ggml_scale(c_, weights, 1.0f / sqrtf(static_cast<float>(ih * heads)));
   ggml_tensor* k = GetK(l.lid_k, s_.csa_n_kv);
   q = ggml_view_4d(c_, q, q->ne[0], q->ne[1], q->ne[2], 1, q->nb[1], q->nb[2], q->nb[3], 0);
@@ -719,7 +739,7 @@ ggml_tensor* Builder::LidTopKSparse(const Dsv4LayerTensors& l, ggml_tensor* qr, 
   q = RopeExt(q, g_.positions, r, r.n_ctx_orig);
   q = ggml_rope_set_offset(q, static_cast<int>(ih - p_.rope_dims));
   q = Hadamard(q, g_.lid_rot);
-  ggml_tensor* weights = Mm(l.idx_proj, cur);
+  ggml_tensor* weights = MmShared(l.idx_proj, cur);
   weights = ggml_scale(c_, weights, 1.0f / sqrtf(static_cast<float>(ih * heads)));
   ggml_tensor* k = ggml_view_2d(c_, l.lid_k, ih, s_.csa_n_kv, l.lid_k->nb[1], 0);
   const std::int64_t top = std::min<std::int64_t>(s_.csa_n_kv, p_.indexer_top_k);
@@ -768,7 +788,8 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
                                  .beta_fast = rl.beta_fast,
                                  .beta_slow = rl.beta_slow};
   if (o_.fused && p_.rope_dims == 64 && Dsv4QHeadFits(q, g_.positions, q_params)) {
-    q = Dsv4QHead(c_, q, g_.positions, q_params);
+    q = Dsv4QHead(c_, q, g_.positions, q_params,
+                  o_.f16_q && nt >= 64 ? GGML_TYPE_F16 : GGML_TYPE_F32);
   } else {
     q = ggml_rms_norm(c_, q, p_.rms_eps);
     q = RopeExt(q, g_.positions, rl, rl.n_ctx_orig);
@@ -786,14 +807,14 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
   ggml_tensor* hca_state_kv = nullptr;
   ggml_tensor* hca_state_score = nullptr;
   if (ratio == model::kDsv4HcaRatio) {
-    hca_state_kv = Mm(l.comp_kv, cur);
-    hca_state_score = Mm(l.comp_gate, cur);
+    hca_state_kv = MmShared(l.comp_kv, cur);
+    hca_state_score = MmShared(l.comp_gate, cur);
     ggml_tensor* ape_rows = ggml_get_rows(c_, l.comp_ape, g_.hca.state_pos);
     hca_state_score = ggml_add(c_, hca_state_score, ape_rows);
   }
   if (ratio == model::kDsv4CsaRatio) {
-    ggml_tensor* csa_kv = Mm(l.comp_kv, cur);
-    ggml_tensor* csa_score = Mm(l.comp_gate, cur);
+    ggml_tensor* csa_kv = MmShared(l.comp_kv, cur);
+    ggml_tensor* csa_score = MmShared(l.comp_gate, cur);
     ggml_tensor* ape_rows = ggml_get_rows(c_, l.comp_ape, g_.csa.state_pos);
     csa_score = ggml_add(c_, csa_score, ape_rows);
     // The ring state, read in place (no rollback planes to restore from).
@@ -819,8 +840,8 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
     Expand(ggml_set_rows(c_, l.csa_state_score, persist_score, g_.csa.persist_dst));
 
     const std::int64_t ih = p_.indexer_head_dim;
-    ggml_tensor* lid_kv = Mm(l.idx_comp_kv, cur);
-    ggml_tensor* lid_score = Mm(l.idx_comp_gate, cur);
+    ggml_tensor* lid_kv = MmShared(l.idx_comp_kv, cur);
+    ggml_tensor* lid_score = MmShared(l.idx_comp_gate, cur);
     ggml_tensor* lid_ape_rows = ggml_get_rows(c_, l.idx_comp_ape, g_.lid.state_pos);
     lid_score = ggml_add(c_, lid_score, lid_ape_rows);
     ggml_tensor* lid_base_kv = ggml_view_2d(c_, l.lid_state_kv, l.lid_state_kv->ne[0],

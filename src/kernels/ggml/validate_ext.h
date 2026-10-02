@@ -110,6 +110,24 @@ std::expected<void, KernelFailure> CheckMulMatIdQPair(const ggml_tensor* first,
 // checked by the CUDA planner; ordinary pairs keep their existing contract.
 bool IsMulMatIdQPairIq2Occ2(const ggml_tensor* first, const ggml_tensor* second);
 
+// Experimental (docs/experiments/ds4-prefill-stages): that IQ2 pair, up then gate,
+// followed by swiglu_clamp(gate, up) of the same packed F32 shape. Fits is
+// structural (the planner); Check adds binding and output separation.
+bool MulMatIdQPairGluFits(const ggml_tensor* up, const ggml_tensor* gate, const ggml_tensor* glu);
+std::expected<void, KernelFailure> CheckMulMatIdQPairGlu(const ggml_tensor* up,
+                                                         const ggml_tensor* gate,
+                                                         const ggml_tensor* glu);
+float MulMatIdQPairGluLimit(const ggml_tensor* glu);
+// And the Q2_K down product of that activation, whose input the pair's
+// write-back already quantized (D2S6 Q8_1 MMQ blocks in the activation's bytes).
+bool MulMatIdQCompactPrequantFits(const ggml_tensor* down, const ggml_tensor* glu);
+// Experimental: two dense Q8_0 MMQ products of one F32 activation, which then
+// share one Q8_1 quantization of it (each product's own, identically).
+bool MulMatQPairDenseFits(const ggml_tensor* a, const ggml_tensor* b);
+std::expected<void, KernelFailure> CheckMulMatQPairDense(const ggml_tensor* a,
+                                                         const ggml_tensor* b);
+std::expected<void, KernelFailure> CheckMulMatIdQCompactPrequant(const ggml_tensor* down);
+
 // A ggml_mul_mat node carrying GGML_HINT_SRC0_IS_HADAMARD, which upstream
 // runs as a fast Walsh-Hadamard transform of the activations
 // (fwht.cu:61-101, ggml-cuda.cu:1826-1829): F32 activations and output of

@@ -12,6 +12,7 @@
 #include "base/bytes.h"
 #include "common.cuh"
 #include "ds4_attn_tokentile.cuh"
+#include "kernels/ggml/dsv4_ds4_attention.h"
 #include "kernels/ggml/ggml_support.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/ops_ext.h"
@@ -108,7 +109,8 @@ std::expected<std::uint64_t, KernelFailure> PlanDsv4HcaTokentile(const LaunchCon
   if (!layout) return std::unexpected(layout.error());
   if (!Supported(launch)) return detail::Rejected("ds4 HCA is measured only on GB10");
   // Attribute setup is deliberately outside Run and graph capture.
-  const int result = jitllm_ds4_hca_prepare();
+  const int result =
+      node->src[0]->type == GGML_TYPE_F16 ? Ds4HcaCoreQ16Prepare() : jitllm_ds4_hca_prepare();
   if (result != 0) {
     (void)cudaGetLastError();
     return detail::Rejected("the ds4 HCA shared-memory opt-in failed");
@@ -137,10 +139,18 @@ std::expected<void, KernelFailure> Dsv4HcaTokentile(LaunchContext& launch, ggml_
                                            layout.compressed, layout.compressed, stream));
     if (internal::CudaErrorPending()) return;
     const auto* compressed = kv + static_cast<std::uint64_t>(layout.raw_cells) * 512;
-    Recorded(jitllm_ds4_hca_core_launch(
-        static_cast<float*>(node->data), static_cast<const float*>(node->src[4]->data),
-        static_cast<const float*>(node->src[0]->data), raw, compressed, records, counts,
-        layout.compressed, layout.tokens, 64, layout.first < 127 ? 127 - layout.first : 0, stream));
+    if (node->src[0]->type == GGML_TYPE_F16) {
+      Recorded(Ds4HcaCoreQ16Launch(
+          static_cast<float*>(node->data), static_cast<const float*>(node->src[4]->data),
+          node->src[0]->data, raw, compressed, records, counts, layout.compressed, layout.tokens,
+          64, layout.first < 127 ? 127 - layout.first : 0, stream));
+    } else {
+      Recorded(jitllm_ds4_hca_core_launch(
+          static_cast<float*>(node->data), static_cast<const float*>(node->src[4]->data),
+          static_cast<const float*>(node->src[0]->data), raw, compressed, records, counts,
+          layout.compressed, layout.tokens, 64, layout.first < 127 ? 127 - layout.first : 0,
+          stream));
+    }
     // The graph pins this same cataloged workspace. Foreign launchers
     // consume cudaGetLastError, so their result is recorded before returning.
   });

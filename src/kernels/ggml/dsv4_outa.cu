@@ -36,6 +36,23 @@ __global__ void PackOutA(const std::uint16_t* raw, std::uint16_t* scales, std::i
   for (std::uint32_t j = 0; j < 32; ++j) codes[(block * 32) + j] = source[j];
 }
 
+// The same bytes, coalesced: each thread moves one of a block's seventeen
+// 16-bit words (the F16 scale, then sixteen code pairs).
+__global__ void PackOutAFast(const std::uint16_t* __restrict__ raw,
+                             std::uint16_t* __restrict__ scales,
+                             std::uint16_t* __restrict__ codes) {
+  const auto word = (static_cast<std::uint64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (word >= kBlocks * 17) return;
+  const std::uint64_t block = word / 17;
+  const std::uint64_t k = word - (block * 17);
+  const std::uint16_t value = raw[word];
+  if (k == 0) {
+    scales[block] = value;
+  } else {
+    codes[(block * 16) + k - 1] = value;
+  }
+}
+
 bool WorkspaceOverlaps(const LaunchContext& launch, const ggml_tensor* node) {
   const auto base = launch.workspace().base;
   const std::array<const ggml_tensor*, 4> operands = {node, node->src[0], node->src[1],
@@ -68,7 +85,8 @@ std::expected<std::uint64_t, KernelFailure> PlanDsv4OutA(const LaunchContext& la
   return kScratch;
 }
 
-std::expected<void, KernelFailure> RunDsv4OutA(LaunchContext& launch, ggml_tensor* node) {
+std::expected<void, KernelFailure> RunDsv4OutA(LaunchContext& launch, ggml_tensor* node,
+                                               bool fast_pack) {
   auto planned = PlanDsv4OutA(launch, node);
   if (!planned) return std::unexpected(planned.error());
   if (WorkspaceOverlaps(launch, node))
@@ -85,14 +103,20 @@ std::expected<void, KernelFailure> RunDsv4OutA(LaunchContext& launch, ggml_tenso
       .beta_fast = p.beta_fast,
       .beta_slow = p.beta_slow,
       .inverse = true};
-  return launch.Run(base::Bytes(*planned), [node, rope](auto& context) {
+  return launch.Run(base::Bytes(*planned), [node, rope, fast_pack](auto& context) {
     ggml_cuda_pool_alloc<std::byte> scratch(context.pool(), static_cast<std::size_t>(kScratch));
     auto* bytes = scratch.get();
     auto* scales = reinterpret_cast<std::uint16_t*>(bytes);
     auto* codes = reinterpret_cast<std::int8_t*>(bytes + kScales);
     auto* table = bytes + kScales + kCodes;
-    PackOutA<<<static_cast<unsigned>((kBlocks + 255) / 256), 256, 0, context.stream()>>>(
-        static_cast<const std::uint16_t*>(node->src[0]->data), scales, codes);
+    if (fast_pack) {
+      PackOutAFast<<<static_cast<unsigned>(((kBlocks * 17) + 255) / 256), 256, 0,
+                     context.stream()>>>(static_cast<const std::uint16_t*>(node->src[0]->data),
+                                         scales, reinterpret_cast<std::uint16_t*>(codes));
+    } else {
+      PackOutA<<<static_cast<unsigned>((kBlocks + 255) / 256), 256, 0, context.stream()>>>(
+          static_cast<const std::uint16_t*>(node->src[0]->data), scales, codes);
+    }
     CUDA_CHECK(cudaGetLastError());
     if (internal::CudaErrorPending()) return;
     // The borrowed core queues table zero/preparation and the full canonical

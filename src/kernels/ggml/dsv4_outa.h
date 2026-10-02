@@ -14,6 +14,8 @@ namespace jitllm::kernels::ggml {
 
 class LaunchContext;
 inline constexpr const char* kDsv4OutAName = "jitllm.dsv4.outa_prefill";
+// Experimental: the same, with a coalesced weight repack (identical bytes).
+inline constexpr const char* kDsv4OutAFastPackName = "jitllm.dsv4.outa_prefill_fastpack";
 
 struct Dsv4OutAParams {
   std::int32_t original_context = 0;
@@ -41,7 +43,8 @@ std::expected<void, KernelFailure> CheckDsv4OutA(const ggml_tensor* node);
 bool Dsv4OutASupported(const LaunchContext& launch);
 std::expected<std::uint64_t, KernelFailure> PlanDsv4OutA(const LaunchContext& launch,
                                                          const ggml_tensor* node);
-std::expected<void, KernelFailure> RunDsv4OutA(LaunchContext& launch, ggml_tensor* node);
+std::expected<void, KernelFailure> RunDsv4OutA(LaunchContext& launch, ggml_tensor* node,
+                                               bool fast_pack = false);
 
 }  // namespace jitllm::kernels::ggml
 

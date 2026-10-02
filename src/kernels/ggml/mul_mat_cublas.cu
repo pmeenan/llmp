@@ -15,8 +15,9 @@
 //   (validate.h's CublasMulMat), made before launch, so the scratch bound
 //   and the executed calls cannot disagree, and what upstream would assert
 //   on or cuBLAS would refuse is refused before anything is queued.
-// - Only F32 activations and outputs and F16, BF16 or F32 weights, and only
-//   operands upstream's ggml_cuda_mul_mat would route to cuBLAS.
+// - Only F32 activations (or F16 activations of F16 weights, read
+//   directly) and outputs and F16, BF16 or F32 weights, and only operands
+//   upstream's ggml_cuda_mul_mat would route to cuBLAS.
 // - Where upstream aborts on a failed pointer-array launch, the copy skips
 //   the GEMM that would read the arrays; the run faults (launch.h).
 //
@@ -318,7 +319,7 @@ void Launch(ggml_backend_cuda_context& ctx, const CublasMulMat& plan, const ggml
 
 std::expected<CublasMulMat, KernelFailure> PlanMulMatCublas(const LaunchContext& launch,
                                                             const ggml_tensor* node) {
-  if (auto checked = CheckMulMat(node); !checked) {
+  if (auto checked = CheckMulMatCublasOperands(node); !checked) {
     return std::unexpected(checked.error());
   }
   // Read without a CUDA call: the table was read when the context was

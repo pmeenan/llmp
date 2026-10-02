@@ -32,8 +32,9 @@ struct Dsv4QHeadParams {
 // contiguous I32 position per token. Unsupported graphs keep both primitives.
 bool Dsv4QHeadFits(const ggml_tensor* x, const ggml_tensor* positions,
                    const Dsv4QHeadParams& params);
+// `type` F32, or F16 (experimental): the same values rounded to nearest.
 ggml_tensor* Dsv4QHead(ggml_context* context, ggml_tensor* x, ggml_tensor* positions,
-                       const Dsv4QHeadParams& params);
+                       const Dsv4QHeadParams& params, ggml_type type = GGML_TYPE_F32);
 Dsv4QHeadParams Dsv4QHeadParamsOf(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckDsv4QHead(const ggml_tensor* node);
 

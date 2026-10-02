@@ -508,6 +508,15 @@ if(JITLLM_CUDA)
   target_link_libraries(dsv4_fast_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(dsv4_fast_test)
 
+  # The fast plan's ds4 prefill stage mechanisms (docs/experiments/
+  # ds4-prefill-stages): each against the launches it replaces, byte for
+  # byte, with its selection, refusals and registry declaration.
+  add_executable(dsv4_stages_test dsv4_stages_test.cc)
+  target_include_directories(dsv4_stages_test SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(dsv4_stages_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(dsv4_stages_test)
+
   # Original FP8/FP4 QAT layouts, rounded raw-ring stores and guarded
   # producer/consumer byte controls. These are not model quality tests.
   add_executable(dsv4_ds4_cache_test dsv4_ds4_cache_test.cc)

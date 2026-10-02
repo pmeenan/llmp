@@ -225,7 +225,28 @@ struct Dsv4GraphOptions {
   // Private opt-in for the qualified GB10 4096-row staged output-A shape.
   // Unsupported shapes and the exact graph retain native inverse RoPE/MMQ.
   bool outa_prefill = false;
+  // The ds4 prefill stage mechanisms (docs/experiments/ds4-prefill-stages),
+  // each byte-identical to the graph without it; with `fused`, the fast
+  // plan's defaults (SetDsv4PrefillStages). Each HC mix input of at least
+  // 64 rows with F16 mix weights is normalized straight to F16 rows that
+  // the mix product reads, fused with the preceding HC post where one
+  // exists.
+  bool hc_f16_rows = false;
+  // The attention input's F16-weight products (compressor, indexer
+  // compressor and projection) of at least 64 rows read one shared F16 copy
+  // of it instead of each converting it.
+  bool shared_f16_inputs = false;
+  // The Q-head writes F16 Q rows (the RN values attention rounds F32 Q to)
+  // for chunks of at least 64 rows.
+  bool f16_q = false;
 };
+
+// The fast plan's graph-side prefill stage mechanisms (above), all on or off.
+inline void SetDsv4PrefillStages(Dsv4GraphOptions& options, bool on) {
+  options.hc_f16_rows = on;
+  options.shared_f16_inputs = on;
+  options.f16_q = on;
+}
 
 struct Dsv4Graph {
   ggml_tensor* embd = nullptr;       // F32 [width, rows]: the embedding rows

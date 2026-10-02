@@ -34,6 +34,7 @@
 #include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_graph.h"
+#include "kernels/ggml/dsv4_hc_norm.h"
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
@@ -1004,6 +1005,16 @@ TEST(Dsv4Test, OutAPrefillIsOptInAndKeepsUnrotatedHeadsLive) {
       const auto count = std::ranges::count_if(
           plan->steps, [](const auto& step) { return step.implementation == kg::kDsv4OutAName; });
       EXPECT_EQ(count, mode == 1 && rows == 4096 ? p.layers : 0);
+      // The coalesced repack (the fast plan's default) takes each one.
+      auto fast_device = ModelDevice();
+      fast_device.outa_fast_pack = true;
+      auto fast = kg::PlanGraph(graph->nodes, false, fast_device);
+      ASSERT_TRUE(fast.has_value()) << Why(fast);
+      EXPECT_EQ(std::ranges::count_if(fast->steps,
+                                      [](const auto& step) {
+                                        return step.implementation == kg::kDsv4OutAFastPackName;
+                                      }),
+                count);
       if (count == 0) continue;
       auto placement = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256);
       ASSERT_TRUE(placement.has_value()) << Why(placement);
@@ -1017,6 +1028,174 @@ TEST(Dsv4Test, OutAPrefillIsOptInAndKeepsUnrotatedHeadsLive) {
         }
       }
     }
+  }
+}
+
+// The community IQ2_XXS artifact's types (cd39d504…, docs/model-support.md):
+// F16 HC mixes, compressors, indexer projections and compressor APE tables,
+// Q8_0 Q-A and shared experts, IQ2_XXS gate/up and Q2_K down experts.
+std::vector<md::Dsv4Resource> CommunityLike(const md::Dsv4Profile& p) {
+  auto resources = GgufLike(p);
+  for (auto& r : resources) {
+    const std::string& role = r.roles[0];
+    const auto ends = [&](std::string_view suffix) { return role.ends_with(suffix); };
+    if (ends("hc_fn.weight") || ends("hc_attn_fn.weight") || ends("hc_ffn_fn.weight") ||
+        ends("compressor_kv.weight") || ends("compressor_gate.weight") ||
+        ends("compressor_ape.weight") || ends("indexer.attn_q_b.weight") ||
+        ends("indexer.proj.weight")) {
+      r.type = "F16";
+    } else if (ends("attn_q_a.weight") || ends("_shexp.weight")) {
+      r.type = "Q8_0";
+    } else if (ends("ffn_gate_exps.weight") || ends("ffn_up_exps.weight")) {
+      r.type = "IQ2_XXS";
+    } else if (ends("ffn_down_exps.weight")) {
+      r.type = "Q2_K";
+    }
+  }
+  return resources;
+}
+
+// The ds4 prefill stage mechanisms, the fast plan's defaults
+// (SetDsv4PrefillStages; docs/experiments/ds4-prefill-stages): each selected
+// only where its guard admits the graph. On the original UD-Q2_K_XL types
+// only F16 Q and the dense Q8_0 pairs apply; on the community types every
+// mechanism applies from 64 rows, the IQ2 pair's write-back only at its
+// measured 4,096 rows, where D2R takes the Q2_K down product unless it is
+// off. Decode and verify widths and the stages-off plan are unchanged.
+TEST(Dsv4Test, PrefillStageMechanismsSelectOnlyWhereTheirGuardsAdmit) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  struct Case {
+    bool community;
+    std::uint32_t rows;
+    bool stages;
+    bool d2r;
+  };
+  for (const Case& test :
+       {Case{false, 4, true, true}, Case{false, 63, true, true}, Case{false, 2048, true, true},
+        Case{false, 2048, false, false}, Case{true, 4, true, true}, Case{true, 64, true, true},
+        Case{true, 2048, true, true}, Case{true, 2048, false, false}, Case{true, 4096, true, true},
+        Case{true, 4096, true, false}}) {
+    const std::string what =
+        std::format("{} {} rows, stages {}, D2R {}", test.community ? "community" : "original",
+                    test.rows, test.stages, test.d2r);
+    const auto resources = test.community ? CommunityLike(p) : GgufLike(p);
+    auto binding = md::BindDsv4(p, "deepseek4", resources);
+    ASSERT_TRUE(binding.has_value()) << what << ": " << Why(binding);
+    auto state = md::Dsv4State(p, 8192, test.rows == 4096 ? 4096 : 2048, md::Dsv4Window::kRing);
+    ASSERT_TRUE(state.has_value()) << what;
+    auto chunk = md::Dsv4Chunk(p, *state, 0, test.rows, false);
+    ASSERT_TRUE(chunk.has_value()) << what << ": " << Why(chunk);
+    auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+    ASSERT_TRUE(arena.has_value());
+    kg::Dsv4GraphOptions options{.fused = true};
+    kg::SetDsv4PrefillStages(options, test.stages);
+    auto graph = kg::BuildDsv4Graph(*arena, p, *binding, kg::Dsv4ShapeOf(*state, *chunk), options);
+    ASSERT_TRUE(graph.has_value()) << what << ": " << Why(graph);
+    std::uint64_t next = std::uint64_t{1} << 40U;
+    const auto bind_leaf = [&](ggml_tensor* t) {
+      if (t != nullptr && t->data == nullptr && t->view_src == nullptr) {
+        kg::TensorArena::Bind(t, next);
+        next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+      }
+    };
+    for (ggml_tensor* t : graph->inputs()) {
+      bind_leaf(t);
+    }
+    for (ggml_tensor* node : graph->nodes) {
+      for (ggml_tensor* src : node->src) {
+        if (src != nullptr && src->op == GGML_OP_NONE) {
+          bind_leaf(src);
+        }
+      }
+    }
+    kg::BindDistinct(graph->nodes, std::uint64_t{1} << 46U);
+    kg::DeviceChoices device = ModelDevice();
+    device.fuse_norms = true;
+    device.vector_floats = true;
+    device.pair_experts = true;
+    device.compact_experts = test.rows >= kg::kDsv4CompactMinRows;
+    device.wide_sparse_attention = true;
+    // A model of the measured GB10 predicate (mul_mat_q2_d2r.cu).
+    device.q2_d2r_fits = [](const ggml_tensor* node) {
+      return node->src[0]->type == GGML_TYPE_Q2_K && node->src[0]->ne[0] == 2048 &&
+             node->src[0]->ne[1] == 4096 && node->src[0]->ne[2] == 256 &&
+             node->src[1]->ne[2] == 4096 && node->src[2]->ne[0] == 6;
+    };
+    // And of the GB10 write-back pair's device condition (mul_mat_q.cu).
+    device.pair_glu_fits = [](const ggml_tensor*, const ggml_tensor*) { return true; };
+    kg::SetDsv4PrefillStages(device, test.stages);
+    device.d2r_experts = test.d2r;
+    auto plan = kg::PlanGraph(graph->nodes, false, device);
+    ASSERT_TRUE(plan.has_value()) << what << ": " << Why(plan);
+    const auto count = [&](std::string_view name) {
+      return std::ranges::count_if(plan->steps,
+                                   [&](const auto& step) { return step.implementation == name; });
+    };
+    const auto layers = static_cast<std::ptrdiff_t>(p.layers);
+    const bool wide = test.stages && test.rows >= 64;
+    const bool community = wide && test.community;
+    // Layer 0's attention mix input alone; every later mix input with the
+    // post before it, each FFN post but the last forming the expert sum.
+    EXPECT_EQ(count(kg::kDsv4HcNormF16Name), community ? 1 : 0) << what;
+    EXPECT_EQ(count(kg::kDsv4HcPostNormF16Name), community ? layers : 0) << what;
+    EXPECT_EQ(count(kg::kDsv4HcPostExpertsNormF16Name), community ? layers - 1 : 0) << what;
+    if (community) {
+      EXPECT_EQ(count(kg::kHcPostName), 1) << what;  // the last, before the head
+    } else if (test.rows > kg::kVecQTokens) {
+      EXPECT_EQ(count(kg::kHcPostName), 2 * layers) << what;
+    }
+    // One shared copy of each compressed layer's attention input.
+    EXPECT_EQ(count(kg::kDsv4F16CopyName), community ? 41 : 0) << what;
+    // Q-A with KV, shared up with gate.
+    const auto dense = count(kg::kMulMatQPairDense);
+    if (!wide) {
+      EXPECT_EQ(dense, 0) << what;
+    } else if (test.community) {
+      EXPECT_EQ(dense, 2 * layers) << what;
+    } else {
+      // The compressors' and indexer's Q8_0 products of one input.
+      EXPECT_GE(dense, 41) << what;
+    }
+    const bool glu = community && test.rows == 4096;
+    EXPECT_EQ(count(kg::kMulMatIdQPairGlu), glu && test.d2r ? layers : 0) << what;
+    EXPECT_EQ(count(kg::kMulMatIdQ2D2r),
+              test.community && test.rows == 4096 && test.d2r ? layers : 0)
+        << what;
+    EXPECT_EQ(count(kg::kMulMatIdQPairGluQ8), glu && !test.d2r ? layers : 0) << what;
+    EXPECT_EQ(count(kg::kMulMatIdQCompactPrequant), glu && !test.d2r ? layers : 0) << what;
+    EXPECT_EQ(count(kg::kMulMatIdQPairCompact),
+              test.rows >= kg::kDsv4CompactMinRows && !glu ? layers : 0)
+        << what;
+    if (glu) {
+      // A device without the occupancy-two kernel keeps the plain pair.
+      kg::DeviceChoices other = device;
+      other.pair_glu_fits = [](const ggml_tensor*, const ggml_tensor*) { return false; };
+      auto plain = kg::PlanGraph(graph->nodes, false, other);
+      ASSERT_TRUE(plain.has_value()) << what << ": " << Why(plain);
+      const auto plain_count = [&](std::string_view name) {
+        return std::ranges::count_if(plain->steps,
+                                     [&](const auto& step) { return step.implementation == name; });
+      };
+      EXPECT_EQ(plain_count(kg::kMulMatIdQPairCompact), layers) << what;
+      EXPECT_EQ(plain_count(kg::kMulMatIdQPairGlu) + plain_count(kg::kMulMatIdQPairGluQ8) +
+                    plain_count(kg::kMulMatIdQCompactPrequant),
+                0)
+          << what;
+    }
+    std::ptrdiff_t f16_heads = 0;
+    std::ptrdiff_t f16_queries = 0;
+    for (const ggml_tensor* node : graph->nodes) {
+      if (kg::JitllmOpOf(node) == kg::JitllmOp::kDsv4QHead && node->type == GGML_TYPE_F16) {
+        ++f16_heads;
+      }
+      if (node->op == GGML_OP_FLASH_ATTN_EXT && node->src[0]->type == GGML_TYPE_F16) {
+        ++f16_queries;
+      }
+    }
+    EXPECT_EQ(f16_heads, wide ? layers : 0) << what;
+    EXPECT_EQ(f16_queries, wide ? layers : 0) << what;
+    auto placed = kg::PlaceActivations(graph->nodes, *plan, graph->inputs(), 256);
+    ASSERT_TRUE(placed.has_value()) << what << ": " << Why(placed);
   }
 }
 
