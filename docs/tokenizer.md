@@ -161,6 +161,7 @@ checkpoint ships and reproduces them byte for byte:
 | Template | SHA-256 | Where | Reference renderer |
 | --- | --- | --- | --- |
 | DeepSeek V4 Flash 0731 | `e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645` | The 0731 GGUF's `tokenizer.chat_template` (Unsloth's port of DeepSeek's encoder) | transformers 5.12.1 `apply_chat_template` (Jinja2 3.1.6), and DeepSeek's `encoding_dsv4.py` at `7872f01b` where it defines the case |
+| DeepSeek V4 Flash community "chat-v2" | `872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27` | The `tokenizer.chat_template` (5,016 bytes) of `antirez/deepseek-v4-gguf@f71f23d5`'s `DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf` | transformers 5.12.1 `apply_chat_template` with Python's `json.loads` as the `from_json` filter it lacks |
 | Qwen3.8 Flash Next | `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041` | `chat_template.jinja` of `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` | transformers 5.12.1 `apply_chat_template` |
 | Qwen-Image 2.1 text-to-image prompt | none: a fixed string | diffusers `8b3c707e`'s `QwenImage21Pipeline` | the pipeline's string, through the processor's tokenizer |
 
@@ -175,9 +176,32 @@ refinements: an unknown `reasoning_effort` is refused (the template ignores
 it; the encoder asserts), and the older `e3aa0d6a` GGUF's template
 (`d05566eb…`) has no renderer.
 
+**DeepSeek "chat-v2".** The community IQ2_XXS GGUF embeds a shorter,
+independent template with the same tokens, tool header, schemas and DSML
+calls. Its own renderer (`RenderDeepSeekV4ChatV2`, the same file) shares
+those parts and differs where the template does:
+
+| | 0731 (`e643c31f…`) | chat-v2 (`87249207…`) |
+| --- | --- | --- |
+| Reasoning effort | `high`/`max` prefix while thinking; others refused | none: any value renders as none |
+| Earlier reasoning while thinking | kept only after the last user message, or with tools | every assistant turn's kept |
+| Thinking, empty reasoning (where kept) | `<think></think>` | `</think>` |
+| Consecutive user and tool messages | one `<｜User｜>`, joined by blank lines | a `<｜User｜>` per user message and per run of tool results, which join with no separator |
+| `<｜Assistant｜>` | after a user or tool message | after one since the last assistant message (a system message between does not reset it) |
+| Generation prompt | always, when asked | only after a user or tool message |
+| Tools with empty system text | a blank line before the header | none |
+| Tool header and footer | "the user's question"; footer `\nYou MUST …calls.\n` | "the user question"; footer `\n\nYou MUST …calls.` |
+
+Both read `thinking` (jitLLM's `enable_thinking`), off by default, end
+turns with `<｜end▁of▁sentence｜>` and render a tool call's arguments as
+DSML parameters; chat-v2 parses string arguments with `from_json`, which
+equals rendering the client's string parsed (fixtures `string-arguments`,
+and `string-arguments-not-object`, which both refuse).
+
 **Supported.** DeepSeek V4: roles system, user, assistant and tool;
 request-level tools, DSML tool calls, reasoning, `enable_thinking` (the
-template's `thinking`) and `reasoning_effort` (low, high, max). Its
+template's `thinking`) and `reasoning_effort` (0731: low, high, max;
+chat-v2: ignored, as its template ignores it). Its
 developer and latest_reminder roles, tasks and response formats are refused
 as unsupported. Qwen3.8: system (first only), user, assistant and tool; tools
 and XML tool calls, `<think>` blocks, `enable_thinking`, `reasoning_effort`
@@ -200,13 +224,18 @@ source, makes them control tokens.
 
 **Fixtures:** 21 cases per LLM template (conversations with tools, tool
 calls and results, reasoning, options, Unicode, whitespace trimming, tags in
-content, and the template's refusals) and 4 image prompts. Text compares
+content, and the template's refusals), 41 for chat-v2 (the DeepSeek cases
+and its differences above, string arguments and interleaved tool results
+among them), and 4 image prompts. Text compares
 byte for byte in every profile (`chat_test`); token IDs compare with the
 references on the model files (`tokenizer_models_test`): all equal, with
-DeepSeek's against llama.cpp and against Hugging Face.
+DeepSeek's against llama.cpp (for chat-v2, llama.cpp on the community GGUF
+and the native tokenizer from its artifact's kept metadata, which equals
+the 0731 GGUF's) and against Hugging Face.
 
-**Stop tokens:** DeepSeek V4 `<｜end▁of▁sentence｜>`; Qwen3.8 `<|im_end|>` and
-`<|endoftext|>` (its generation_config.json's `eos_token_id`).
+**Stop tokens:** DeepSeek V4 (both templates) `<｜end▁of▁sentence｜>`;
+Qwen3.8 `<|im_end|>` and `<|endoftext|>` (its generation_config.json's
+`eos_token_id`).
 
 ## Sampling
 

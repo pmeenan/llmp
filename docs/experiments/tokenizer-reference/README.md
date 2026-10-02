@@ -32,6 +32,18 @@ The encoder is run, never incorporated; the models test reads that
 `tokenizer.json`. Each fixture records its source file's SHA-256, which the
 tests check.
 
+The community GGUF's "chat-v2" fixture (`deepseek-v4-chat-v2.json`) was
+added on `spark-b` on 2026-10-02 with the same environment; that run
+regenerated the other chat fixtures byte for byte. Its template is read
+from
+`models/antirez/deepseek-v4-gguf@f71f23d5/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf`
+(SHA-256 `87249207…`) and its `gguf_ids` come from llama-tokenize on that
+file. transformers has no `from_json` filter, which this template applies
+to string arguments, so `generate.py` adds Python's `json.loads` as it.
+The script also checks that the template's `thinking` and
+`enable_thinking` give the same text and that `reasoning_effort` changes
+nothing.
+
 ## Rerunning
 
 ```sh
@@ -49,7 +61,9 @@ whether the native side still agrees.
 ## Conversations
 
 The chat cases are in `generate.py` (`COMMON_CASES`, `DEEPSEEK_CASES`,
-`QWEN_CASES`) and are copied into each fixture with their outputs. A case
+`DEEPSEEK_V2_CASES`, `QWEN_CASES`) and are copied into each fixture with
+their outputs. A tool call's `arguments` may be a string, the client's
+text, which the template sees as is and the test parses. A case
 the template refuses records the template's exception; a case jitLLM
 refuses although the template renders it (an unknown `reasoning_effort`)
 records the template's text beside the expected error. For DeepSeek,

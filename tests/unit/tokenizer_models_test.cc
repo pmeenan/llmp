@@ -15,6 +15,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <print>
@@ -295,6 +296,33 @@ TEST(Vocabularies, DeepSeek0731TokenizerEqualsE3aa0d6a) {
             "d05566ebe26667ec54f4ef7a3dbc114ce2e00aefc40e0c62286374eee0e22080");
 }
 
+// The community IQ2_XXS GGUF (antirez/deepseek-v4-gguf@f71f23d5, artifact
+// cd39d504…) as its imported artifact keeps its metadata: the 0731 GGUF's
+// tokenizer with another chat template, chat-v2.
+constexpr std::string_view kCommunityKv =
+    "m3-artifacts/cd39d504dc2dbfe911a4a521fa8efc8053dc3e80e99738a9b25fa6b70c97a1ac/meta/"
+    "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.kv.gguf";
+
+TEST(Vocabularies, DeepSeekCommunityTokenizerEquals0731) {
+  const Loaded now = Load("deepseek-v4-0731-gguf", "gguf");
+  const auto community = ReadFile(ModelsDir() + "/" + std::string(kCommunityKv));
+  const auto current = ReadFile(now.path);
+  if (!community || !current) {
+    GTEST_SKIP() << "no community artifact or 0731 GGUF under " << ModelsDir();
+  }
+  const auto a = tok::ReadGgufTokenizer(std::as_bytes(std::span(*current)));
+  const auto b = tok::ReadGgufTokenizer(std::as_bytes(std::span(*community)));
+  ASSERT_TRUE(a.has_value() && b.has_value());
+  EXPECT_EQ(a->spec.tokens, b->spec.tokens);
+  EXPECT_EQ(a->spec.kinds, b->spec.kinds);
+  EXPECT_EQ(a->spec.merges, b->spec.merges);
+  EXPECT_EQ(a->pre, b->pre);
+  EXPECT_EQ(a->spec.bos, b->spec.bos);
+  EXPECT_EQ(a->spec.eos, b->spec.eos);
+  EXPECT_EQ(Sha256(b->chat_template),
+            "872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27");
+}
+
 // --- chat templates, as token IDs ---------------------------------------------------
 
 // Renders each case and encodes it with EncodeMarked; `ids_key` names the
@@ -314,7 +342,8 @@ void CheckChatTokens(const tok::Tokenizer& t, std::string_view fixture_name,
     if (c.find("error")) {
       continue;
     }
-    const auto rendered = tmpl->render(ConversationFrom(c));
+    std::deque<json::Document> arguments;
+    const auto rendered = tmpl->render(ConversationFrom(c, &arguments));
     ASSERT_TRUE(rendered.has_value());
     std::vector<TokenId> ids;
     const auto r = t.EncodeMarked(rendered->text, rendered->specials, {}, ids);
@@ -335,6 +364,31 @@ TEST(ChatTokens, DeepSeekV4OnTheGguf) {
   EXPECT_EQ(Sha256(loaded.chat_template),
             "e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645");
   CheckChatTokens(*loaded.tokenizer, "deepseek-v4-0731", "gguf_ids");
+}
+
+// chat-v2's fixture against llama.cpp on the community GGUF itself, here
+// through the tokenizer its artifact keeps.
+TEST(ChatTokens, DeepSeekV4ChatV2OnTheCommunityGguf) {
+  const auto bytes = ReadFile(ModelsDir() + "/" + std::string(kCommunityKv));
+  if (!bytes) {
+    GTEST_SKIP() << "no community artifact under " << ModelsDir();
+  }
+  auto g = tok::ReadGgufTokenizer(std::as_bytes(std::span(*bytes)));
+  ASSERT_TRUE(g.has_value()) << g.error().ToString();
+  EXPECT_EQ(Sha256(g->chat_template),
+            "872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27");
+  auto t = tok::Tokenizer::Create(std::move(g->spec));
+  ASSERT_TRUE(t.has_value()) << t.error().ToString();
+  CheckChatTokens(*t, "deepseek-v4-chat-v2", "gguf_ids");
+}
+
+TEST(ChatTokens, DeepSeekV4ChatV2OnItsTokenizerJson) {
+  const Loaded loaded = Load("deepseek-v4-0731-hf", "hf");
+  if (!loaded.skip.empty()) {
+    GTEST_SKIP() << loaded.skip;
+  }
+  ASSERT_NE(loaded.tokenizer, nullptr);
+  CheckChatTokens(*loaded.tokenizer, "deepseek-v4-chat-v2", "hf_ids");
 }
 
 TEST(ChatTokens, DeepSeekV4OnItsTokenizerJson) {

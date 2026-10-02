@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- The community DeepSeek V4 Flash IQ2_XXS GGUF's "chat-v2" template
+  (`antirez/deepseek-v4-gguf@f71f23d5`, SHA-256 `87249207…`) has a native
+  renderer, so that model registers with chat routes instead of being
+  refused for its template.
 - DeepSeek prefill uses ds4's stage mechanisms by default on GB10: F16 HC
   and attention rows, fused expert sums and pair activations, shared
   quantizations and the D2R Q2_K down product, each where its measured

@@ -45,7 +45,7 @@ TEST(TurnReuseTest, ExpiredBoundariesAndPromptEndsCannotSupplyMissingLogits) {
 }
 
 TEST(TurnReuseTest, StableRendererBoundarySurvivesRemovalOfAssistantReasoning) {
-  for (const auto render : {ch::RenderDeepSeekV4, ch::RenderQwen38}) {
+  for (const auto render : {ch::RenderDeepSeekV4, ch::RenderDeepSeekV4ChatV2, ch::RenderQwen38}) {
     ch::Conversation first;
     first.enable_thinking = true;
     first.messages.push_back({.role = ch::Role::kUser,

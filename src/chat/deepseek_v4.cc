@@ -6,6 +6,13 @@
 // deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b) renders it for the roles and
 // options jitLLM supports. Written from the format, not translated from the
 // template; the fixtures hold both references (docs/tokenizer.md).
+//
+// And the simpler "chat-v2" template of the community GGUF
+// antirez/deepseek-v4-gguf@f71f23d5 (SHA-256 87249207...): the same tokens,
+// tool schemas and DSML calls, but no reasoning-effort prefix, every earlier
+// reasoning kept while thinking, one <｜User｜> per user message, tool results
+// joined under one <｜User｜>, and a generation prompt only after a user or
+// tool message (RenderDeepSeekV4ChatV2).
 
 #include <cstddef>
 #include <expected>
@@ -48,9 +55,12 @@ constexpr std::string_view kEffortMax =
     "and are "
     "certain that no assumption remains unchecked and no error remains undiscovered.\n\n";
 
-constexpr std::string_view kToolsHeader =
-    "## Tools\n\nYou have access to a set of tools to help answer the user's question. You can "
-    "invoke tools "
+// The tool header, which the two templates word differently only in "the
+// user's question" (0731) against "the user question" (chat-v2).
+constexpr std::string_view kToolsHeaderLead =
+    "## Tools\n\nYou have access to a set of tools to help answer the user";
+constexpr std::string_view kToolsHeaderRest =
+    " question. You can invoke tools "
     "by writing a \"<｜DSML｜tool_calls>\" block like the following:\n\n"
     "<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"$TOOL_NAME\">\n"
     "<｜DSML｜parameter name=\"$PARAMETER_NAME\" "
@@ -68,12 +78,110 @@ constexpr std::string_view kToolsHeader =
 constexpr std::string_view kToolsFooter =
     "\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke tool "
     "calls.\n";
+// chat-v2's: two more newlines after the schemas' last one, and none at
+// the end.
+constexpr std::string_view kToolsFooterV2 =
+    "\n\nYou MUST strictly follow the above defined tool name and parameter schemas to invoke "
+    "tool calls.";
 
 std::unexpected<Error> Fail(Rule rule, std::string_view reason, std::size_t item = kNoItem) {
   return std::unexpected(Error{rule, reason, item});
 }
 
-bool NonEmpty(const std::optional<std::string>& s) { return s && !s->empty(); }
+// An optional text, empty when absent (the templates' `x or ''`).
+std::string_view TextOf(const std::optional<std::string>& s) {
+  return s.has_value() ? std::string_view(*s) : std::string_view();
+}
+
+// Every system message's content, joined by a blank line; whether there was
+// one.
+bool SystemPrompt(const Conversation& c, std::string& system) {
+  bool any = false;
+  for (const Message& m : c.messages) {
+    if (m.role != Role::kSystem) {
+      continue;
+    }
+    if (any) {
+      system += "\n\n";
+    }
+    system += m.content.value_or("");
+    any = true;
+  }
+  return any;
+}
+
+// The function tools' schemas, one JSON line each; other tools are skipped,
+// as both templates skip them.
+std::expected<std::string, Error> ToolSchemas(const Conversation& c) {
+  std::string schemas;
+  for (std::size_t i = 0; i < c.tools.size(); ++i) {
+    const base::json::Value tool = c.tools[i];
+    const auto type = tool.find("type");
+    if (!type || type->string() != "function") {
+      continue;
+    }
+    const auto function = tool.find("function");
+    if (!function) {
+      return Fail(Rule::kInvalid, "a function tool without its function", i);
+    }
+    AppendPythonJson(*function, schemas);
+    schemas += '\n';
+  }
+  return schemas;
+}
+
+void ToolsHeader(Writer& w, bool users) {
+  w.TextWithTokens(kToolsHeaderLead, {kDsml, kThinkStart, kThinkEnd});
+  if (users) {
+    w.Text("'s");
+  }
+  w.TextWithTokens(kToolsHeaderRest, {kDsml, kThinkStart, kThinkEnd});
+}
+
+// An assistant message's DSML tool-call block, after its content (both
+// templates write it alike).
+std::expected<void, Error> ToolCalls(Writer& w, const Message& m, std::size_t item) {
+  if (m.tool_calls.empty()) {
+    return {};
+  }
+  w.Text("\n\n<");
+  w.Special(kDsml);
+  w.Text("tool_calls>\n");
+  for (const ToolCall& call : m.tool_calls) {
+    if (!call.arguments.is_object()) {
+      return Fail(Rule::kInvalid, "tool call arguments are not an object", item);
+    }
+    w.Text("<");
+    w.Special(kDsml);
+    w.Text("invoke name=\"");
+    w.Text(call.name);
+    w.Text("\">\n");
+    for (std::size_t k = 0; k < call.arguments.size(); ++k) {
+      const base::json::Value v = call.arguments.member(k);
+      w.Text("<");
+      w.Special(kDsml);
+      w.Text("parameter name=\"");
+      w.Text(call.arguments.key(k));
+      if (v.is_string()) {
+        w.Text(R"(" string="true">)");
+        w.Text(v.string());
+      } else {
+        w.Text(R"(" string="false">)");
+        w.Json(v);
+      }
+      w.Text("</");
+      w.Special(kDsml);
+      w.Text("parameter>\n");
+    }
+    w.Text("</");
+    w.Special(kDsml);
+    w.Text("invoke>\n");
+  }
+  w.Text("</");
+  w.Special(kDsml);
+  w.Text("tool_calls>");
+  return {};
+}
 
 }  // namespace
 
@@ -97,30 +205,10 @@ std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& c) {
 
   // The system prompt: every system message, then the tool schemas.
   std::string system;
-  bool first_system = true;
-  for (const Message& m : c.messages) {
-    if (m.role != Role::kSystem) {
-      continue;
-    }
-    if (!first_system) {
-      system += "\n\n";
-    }
-    system += m.content.value_or("");
-    first_system = false;
-  }
-  std::string schemas;
-  for (std::size_t i = 0; i < c.tools.size(); ++i) {
-    const base::json::Value tool = c.tools[i];
-    const auto type = tool.find("type");
-    if (!type || type->string() != "function") {
-      continue;  // the template renders only function tools
-    }
-    const auto function = tool.find("function");
-    if (!function) {
-      return Fail(Rule::kInvalid, "a function tool without its function", i);
-    }
-    AppendPythonJson(*function, schemas);
-    schemas += '\n';
+  const bool any_system = SystemPrompt(c, system);
+  const auto schemas = ToolSchemas(c);
+  if (!schemas) {
+    return std::unexpected(schemas.error());
   }
 
   Writer w;
@@ -130,11 +218,11 @@ std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& c) {
   }
   w.Text(system);
   if (has_tools) {
-    if (!first_system) {
+    if (any_system) {
       w.Text("\n\n");
     }
-    w.TextWithTokens(kToolsHeader, {kDsml, kThinkStart, kThinkEnd});
-    w.Text(schemas);
+    ToolsHeader(w, /*users=*/true);
+    w.Text(*schemas);
     w.Text(kToolsFooter);
   }
   w.Mark(BoundaryKind::kPrefixEnd);
@@ -188,46 +276,9 @@ std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& c) {
           w.Text(m.reasoning_content.value_or(""));
           w.Special(kThinkEnd);
         }
-        if (NonEmpty(m.content)) {
-          w.Text(*m.content);
-        }
-        if (!m.tool_calls.empty()) {
-          w.Text("\n\n<");
-          w.Special(kDsml);
-          w.Text("tool_calls>\n");
-          for (const ToolCall& call : m.tool_calls) {
-            if (!call.arguments.is_object()) {
-              return Fail(Rule::kInvalid, "tool call arguments are not an object", i);
-            }
-            w.Text("<");
-            w.Special(kDsml);
-            w.Text("invoke name=\"");
-            w.Text(call.name);
-            w.Text("\">\n");
-            for (std::size_t k = 0; k < call.arguments.size(); ++k) {
-              const base::json::Value v = call.arguments.member(k);
-              w.Text("<");
-              w.Special(kDsml);
-              w.Text("parameter name=\"");
-              w.Text(call.arguments.key(k));
-              if (v.is_string()) {
-                w.Text(R"(" string="true">)");
-                w.Text(v.string());
-              } else {
-                w.Text(R"(" string="false">)");
-                w.Json(v);
-              }
-              w.Text("</");
-              w.Special(kDsml);
-              w.Text("parameter>\n");
-            }
-            w.Text("</");
-            w.Special(kDsml);
-            w.Text("invoke>\n");
-          }
-          w.Text("</");
-          w.Special(kDsml);
-          w.Text("tool_calls>");
+        w.Text(TextOf(m.content));
+        if (auto r = ToolCalls(w, m, i); !r) {
+          return std::unexpected(r.error());
         }
         w.Special(kEos);
         break;
@@ -236,6 +287,97 @@ std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& c) {
     w.Mark(BoundaryKind::kMessageEnd);
   }
   if (c.add_generation_prompt) {
+    w.Mark(BoundaryKind::kGenerationPrompt);
+    w.Special(kAssistant);
+    w.Special(thinking ? kThinkStart : kThinkEnd);
+  }
+  return w.Take();
+}
+
+std::expected<Rendered, Error> RenderDeepSeekV4ChatV2(const Conversation& c) {
+  if (c.preserve_thinking) {
+    return Fail(Rule::kUnsupported, "preserve_thinking is a Qwen3.8 option");
+  }
+  // The template's `thinking`, or else its `enable_thinking`; off by
+  // default. It has no reasoning effort: any value renders as none.
+  const bool thinking = c.enable_thinking.value_or(false);
+
+  // The system prompt: every system message, then the tool schemas, after
+  // a blank line only when the joined system text is not empty.
+  std::string system;
+  SystemPrompt(c, system);
+  const auto schemas = ToolSchemas(c);
+  if (!schemas) {
+    return std::unexpected(schemas.error());
+  }
+
+  Writer w;
+  w.Special(kBos);
+  w.Text(system);
+  if (!c.tools.empty()) {
+    if (!system.empty()) {
+      w.Text("\n\n");
+    }
+    ToolsHeader(w, /*users=*/false);
+    w.Text(*schemas);
+    w.Text(kToolsFooterV2);
+  }
+  w.Mark(BoundaryKind::kPrefixEnd);
+
+  // Each user message opens its own <｜User｜>; consecutive tool results
+  // share one. An assistant message opens <｜Assistant｜> only when a user
+  // or tool message came since the last assistant message, and only those
+  // ask for the generation prompt.
+  bool pending_assistant = false;
+  bool pending_tool_result = false;
+  for (std::size_t i = 0; i < c.messages.size(); ++i) {
+    const Message& m = c.messages[i];
+    switch (m.role) {
+      case Role::kSystem:
+        break;  // rendered above
+      case Role::kUser:
+      case Role::kTool:
+        if (!m.tool_calls.empty() || m.reasoning_content) {
+          return Fail(Rule::kUnsupported, "tool calls or reasoning on a user or tool message", i);
+        }
+        if (m.role == Role::kUser) {
+          w.Special(kUser);
+          w.Text(m.content.value_or(""));
+          pending_tool_result = false;
+        } else {
+          if (!pending_tool_result) {
+            w.Special(kUser);
+          }
+          w.Text("<tool_result>");
+          w.Text(m.content.value_or(""));
+          w.Text("</tool_result>");
+          pending_tool_result = true;
+        }
+        pending_assistant = true;
+        break;
+      case Role::kAssistant:
+        if (pending_assistant) {
+          w.Special(kAssistant);
+          // Every assistant message's reasoning while thinking, not only
+          // the last turn's.
+          if (thinking && !TextOf(m.reasoning_content).empty()) {
+            w.Special(kThinkStart);
+            w.Text(TextOf(m.reasoning_content));
+          }
+          w.Special(kThinkEnd);
+        }
+        w.Text(TextOf(m.content));
+        if (auto r = ToolCalls(w, m, i); !r) {
+          return std::unexpected(r.error());
+        }
+        w.Special(kEos);
+        pending_assistant = false;
+        pending_tool_result = false;
+        break;
+    }
+    w.Mark(BoundaryKind::kMessageEnd);
+  }
+  if (c.add_generation_prompt && pending_assistant) {
     w.Mark(BoundaryKind::kGenerationPrompt);
     w.Special(kAssistant);
     w.Special(thinking ? kThinkStart : kThinkEnd);

@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <fstream>
 #include <optional>
 #include <print>
@@ -114,8 +115,11 @@ inline chat::Role RoleFrom(std::string_view role) {
 }
 
 // A conversation from a chat fixture case; its JSON values point into the
-// case's document.
-inline chat::Conversation ConversationFrom(base::json::Value c) {
+// case's document. A tool call's arguments given as a string (the client's
+// text, which a template may parse with `from_json`) are parsed into a
+// document `parsed` keeps, as the chat route parses a client's.
+inline chat::Conversation ConversationFrom(base::json::Value c,
+                                           std::deque<base::json::Document>* parsed = nullptr) {
   using base::json::Value;
   chat::Conversation conv;
   auto text = [](std::optional<Value> v) -> std::optional<std::string> {
@@ -134,7 +138,18 @@ inline chat::Conversation ConversationFrom(base::json::Value c) {
     if (const auto calls = m.find("tool_calls")) {
       for (std::size_t k = 0; k < calls->size(); ++k) {
         const Value call = calls->at(k);
-        msg.tool_calls.push_back({std::string(Get(call, "name").string()), Get(call, "arguments")});
+        Value arguments = Get(call, "arguments");
+        if (arguments.is_string()) {
+          if (parsed == nullptr) {
+            BadFixture("string arguments without a document to keep");
+          }
+          auto doc = base::json::Parse(arguments.string());
+          if (!doc) {
+            BadFixture("string arguments: " + doc.error().ToString());
+          }
+          arguments = parsed->emplace_back(std::move(*doc)).root();
+        }
+        msg.tool_calls.push_back({std::string(Get(call, "name").string()), arguments});
       }
     }
     conv.messages.push_back(std::move(msg));

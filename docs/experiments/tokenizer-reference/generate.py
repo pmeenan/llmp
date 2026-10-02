@@ -18,8 +18,9 @@ reference encoding; its items record the tokens of the text Python's
 "replace" decoding gives.
 
 Chat references: transformers' apply_chat_template on the pinned template
-bytes, and for DeepSeek V4 also DeepSeek's encoding_dsv4.py where it
-defines the case.
+bytes, and for DeepSeek V4 0731 also DeepSeek's encoding_dsv4.py where it
+defines the case. The community GGUF's chat-v2 template needs a from_json
+filter, which transformers lacks: json.loads stands in for it.
 """
 
 import sys
@@ -47,6 +48,10 @@ QWEN_IMAGE_TOKENIZER = "models/Qwen/Qwen-Image-2.1@790c9263/processor/tokenizer.
 # DeepSeek's own files at deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b: tokenizer.json,
 # tokenizer_config.json and encoding/ (README.md lists them with their hashes).
 DEEPSEEK_DIR = "tokenizer-reference/deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b"
+# The community IQ2_XXS GGUF (the ds4 study's), whose embedded template is "chat-v2"; its
+# tokenizer is the 0731 GGUF's.
+COMMUNITY_GGUF = ("models/antirez/deepseek-v4-gguf@f71f23d5/"
+                  "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf")
 
 # (name, kind, path relative to --models)
 CONFIGS = [
@@ -300,6 +305,108 @@ DEEPSEEK_CASES = [
      "messages": [{"role": "user", "content": "x"}]},
 ]
 
+# The community GGUF's chat-v2 template: DeepSeek's cases (it has no reasoning
+# effort, so an unknown one renders rather than fails), and the places where it
+# parts from the 0731 template. A tool call's arguments may be the client's
+# string, which the template parses with from_json.
+DEEPSEEK_V2_CASES = [c for c in DEEPSEEK_CASES if c["name"] != "bad-effort"] + [
+    {"name": "effort-unknown-ignored", "options": {"enable_thinking": True, "reasoning_effort": "extreme"},
+     "messages": [{"role": "user", "content": "x"}]},
+    {"name": "thinking-history-kept", "options": {"enable_thinking": True}, "messages": [
+        {"role": "system", "content": "Be brief."},
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello!", "reasoning_content": "The user said hello."},
+        {"role": "user", "content": "Capital of France?"},
+        {"role": "assistant", "content": "Paris.", "reasoning_content": "It is Paris."},
+        {"role": "user", "content": "And Italy?"}]},
+    {"name": "thinking-empty-and-null-reasoning", "options": {"enable_thinking": True}, "messages": [
+        {"role": "user", "content": "One"},
+        {"role": "assistant", "content": "1", "reasoning_content": ""},
+        {"role": "user", "content": "Two"},
+        {"role": "assistant", "content": "2", "reasoning_content": None},
+        {"role": "user", "content": "Three"},
+        {"role": "assistant", "content": "3"},
+        {"role": "user", "content": "Four"}]},
+    {"name": "thinking-off-history", "options": {"enable_thinking": False}, "messages": [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello!", "reasoning_content": "Greeting."},
+        {"role": "user", "content": "Bye"}]},
+    {"name": "string-arguments", "options": {"enable_thinking": True}, "tools": [WEATHER_TOOL, SEARCH_TOOL],
+     "messages": [
+        {"role": "user", "content": "Weather in Paris and Tokyo, then search?"},
+        {"role": "assistant", "content": "", "reasoning_content": "Three calls.",
+         "tool_calls": [
+             call("get_weather", "{\"city\": \"Paris\", \"days\": 3}"),
+             call("get_weather", "{\"city\":\"\\u6771\\u4eac\",\"days\":2.50,\"unit\":\"celsius\","
+                                 "\"extra\":{\"a\":[1,-0,2.0,1E5,null,true,\"\\u00e9\\n\\\"q\\\"\"],"
+                                 "\"big\":123456789012345678901234567890}}"),
+             call("search", "{}")]},
+        {"role": "tool", "content": "sunny"},
+        {"role": "tool", "content": "rain"},
+        {"role": "tool", "content": ""},
+        {"role": "assistant", "content": "Paris sunny, Tokyo rain.", "reasoning_content": "Report."},
+        {"role": "user", "content": "Thanks."}]},
+    {"name": "string-arguments-not-object", "error": "invalid", "tools": [WEATHER_TOOL], "messages": [
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": "", "tool_calls": [call("get_weather", "[1, 2]")]},
+        {"role": "tool", "content": "x"}]},
+    {"name": "tool-after-user", "tools": [WEATHER_TOOL], "messages": [
+        {"role": "user", "content": "Weather?"},
+        {"role": "tool", "content": "cold"},
+        {"role": "tool", "content": "windy"}]},
+    {"name": "user-after-tool", "tools": [WEATHER_TOOL], "messages": [
+        {"role": "user", "content": "Weather in Oslo?"},
+        {"role": "assistant", "content": "Checking.", "tool_calls": [call("get_weather", {"city": "Oslo"})]},
+        {"role": "tool", "content": "cold"},
+        {"role": "user", "content": "And in Rome?"}]},
+    {"name": "tool-first", "messages": [
+        {"role": "tool", "content": "orphan"}, {"role": "user", "content": "What was that?"}]},
+    {"name": "assistant-first", "messages": [
+        {"role": "assistant", "content": "Hello, I am ready.", "reasoning_content": "Opening."},
+        {"role": "user", "content": "Hi"}]},
+    {"name": "consecutive-assistants", "options": {"enable_thinking": True}, "messages": [
+        {"role": "user", "content": "Count."},
+        {"role": "assistant", "content": "One.", "reasoning_content": "First."},
+        {"role": "assistant", "content": "Two.", "reasoning_content": "Second."},
+        {"role": "user", "content": "Go on."}]},
+    {"name": "ending-assistant-with-prompt", "add_generation_prompt": True, "messages": [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello!"}]},
+    {"name": "user-without-prompt", "add_generation_prompt": False, "messages": [
+        {"role": "user", "content": "Hi"}]},
+    {"name": "system-only", "messages": [{"role": "system", "content": "Just a system."}]},
+    {"name": "system-between", "options": {"enable_thinking": True}, "messages": [
+        {"role": "user", "content": "Hi"},
+        {"role": "system", "content": "Late rule."},
+        {"role": "assistant", "content": "Hello.", "reasoning_content": "Greet."},
+        {"role": "user", "content": "Bye"}]},
+    {"name": "tools-two-systems-first-empty", "tools": [SEARCH_TOOL], "messages": [
+        {"role": "system", "content": ""}, {"role": "system", "content": "Second."},
+        {"role": "user", "content": "Find it."}]},
+    {"name": "tools-non-function", "tools": [{"type": "code_interpreter"}], "messages": [
+        {"role": "user", "content": "Run it."}]},
+    {"name": "thinking-whitespace-reasoning", "options": {"enable_thinking": True}, "messages": [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello.", "reasoning_content": " "},
+        {"role": "user", "content": "Bye"}]},
+    {"name": "tool-runs-interleaved", "options": {"enable_thinking": True}, "tools": [WEATHER_TOOL], "messages": [
+        {"role": "user", "content": "Weather?"},
+        {"role": "assistant", "content": None, "reasoning_content": "Call.",
+         "tool_calls": [call("get_weather", {"city": "Oslo", "ключ": {"é": [[], {}, -1.5e-7, "</｜DSML｜parameter>"]}})]},
+        {"role": "tool", "content": None},
+        {"role": "user", "content": "Also Rome."},
+        {"role": "tool", "content": "warm"},
+        {"role": "tool", "content": "dry"},
+        {"role": "user", "content": "Summarize."}]},
+    {"name": "assistant-first-then-tool", "options": {"enable_thinking": True}, "messages": [
+        {"role": "assistant", "content": "", "reasoning_content": "Dropped.",
+         "tool_calls": [call("search", {"query": "x"})]},
+        {"role": "tool", "content": "found"}]},
+    {"name": "system-last-with-prompt", "options": {"enable_thinking": False}, "messages": [
+        {"role": "user", "content": "Hi"},
+        {"role": "system", "content": "Trailing rule."}]},
+]
+
 QWEN_CASES = [
     {"name": "thinking-off", "options": {"enable_thinking": False}, "messages": [
         {"role": "system", "content": "Be brief."}, {"role": "user", "content": "Hi"}]},
@@ -328,7 +435,7 @@ QWEN_CASES = [
 
 
 def template_messages(case):
-    """The messages as a template sees them (OpenAI shape, arguments parsed)."""
+    """The messages as a template sees them (OpenAI shape; arguments an object, or the client's string)."""
     out = []
     for m in case["messages"]:
         msg = {"role": m["role"], "content": m.get("content")}
@@ -341,11 +448,45 @@ def template_messages(case):
     return out
 
 
-def render_template(tokenizer, template: str, case) -> str:
+def render_template(tokenizer, template: str, case, **override) -> str:
     kwargs = dict(case.get("options", {}))
+    kwargs.update(override)
     return tokenizer.apply_chat_template(
         template_messages(case), tools=case.get("tools") or None, chat_template=template,
         add_generation_prompt=case.get("add_generation_prompt", True), tokenize=False, **kwargs)
+
+
+def add_from_json_filter():
+    """transformers compiles templates without a from_json filter, which the
+    chat-v2 template applies to string arguments: add Python's json.loads as
+    it to transformers' sandboxed environment (the other templates never use
+    it, so their renderings are unchanged)."""
+    from transformers.utils import chat_template_utils
+
+    base = chat_template_utils.ImmutableSandboxedEnvironment
+
+    class WithFromJson(base):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.filters["from_json"] = json.loads
+
+    chat_template_utils.ImmutableSandboxedEnvironment = WithFromJson
+
+
+def check_v2_options(tok, template: str, case, text: str) -> None:
+    """chat-v2 reads `thinking` before `enable_thinking` and has no reasoning
+    effort: the same text either way."""
+    options = case.get("options", {})
+
+    def without(key):
+        return {**case, "options": {k: v for k, v in options.items() if k != key}}
+
+    if "enable_thinking" in options:
+        alt = render_template(tok, template, without("enable_thinking"), thinking=options["enable_thinking"])
+        assert alt == text, f"{case['name']}: thinking and enable_thinking differ"
+    if "reasoning_effort" in options:
+        alt = render_template(tok, template, without("reasoning_effort"))
+        assert alt == text, f"{case['name']}: reasoning_effort changed the text"
 
 
 def upstream_deepseek(encoding, case):
@@ -387,15 +528,21 @@ def chat(args, results_unused=None):
     ds_template_path.parent.mkdir(parents=True, exist_ok=True)
     ds_template_path.write_bytes(gguf_chat_template(models / DEEPSEEK_GGUF))
     ds_template = ds_template_path.read_text(encoding="utf-8")
+    v2_template_path = pathlib.Path(args.work) / "dsv4-community-chat-v2.jinja"
+    v2_template_path.write_bytes(gguf_chat_template(models / COMMUNITY_GGUF))
+    v2_template = v2_template_path.read_text(encoding="utf-8")
     qwen_template_path = models / QWEN38_DIR / "chat_template.jinja"
     qwen_template = qwen_template_path.read_text(encoding="utf-8")
 
     ds_tok = transformers.AutoTokenizer.from_pretrained(str(deepseek_dir))
     qwen_tok = transformers.AutoTokenizer.from_pretrained(str(models / QWEN38_DIR))
+    add_from_json_filter()
 
     for label, tok, template, template_path, cases, gguf, hf_config in (
             ("deepseek-v4-0731", ds_tok, ds_template, ds_template_path, COMMON_CASES + DEEPSEEK_CASES, DEEPSEEK_GGUF,
              "deepseek-v4-0731-hf"),
+            ("deepseek-v4-chat-v2", ds_tok, v2_template, v2_template_path, COMMON_CASES + DEEPSEEK_V2_CASES,
+             COMMUNITY_GGUF, "deepseek-v4-0731-hf"),
             ("qwen3.8", qwen_tok, qwen_template, qwen_template_path, COMMON_CASES + QWEN_CASES, None, "qwen3.8-nvfp4")):
         out_cases, texts = [], {}
         for case in cases:
@@ -419,6 +566,8 @@ def chat(args, results_unused=None):
                 entry["reference_text"] = text
                 out_cases.append(entry)
                 continue
+            if label == "deepseek-v4-chat-v2":
+                check_v2_options(tok, template, case, text)
             entry["text"] = text
             entry["hf_ids"] = tok.encode(text, add_special_tokens=False)
             if label == "deepseek-v4-0731":
@@ -433,10 +582,13 @@ def chat(args, results_unused=None):
             for entry in out_cases:
                 if entry["name"] in ids:
                     entry["gguf_ids"] = ids[entry["name"]]["parse"]
+        renderer = f"transformers {transformers.__version__} apply_chat_template"
+        if label == "deepseek-v4-chat-v2":
+            renderer += ", with json.loads as the from_json filter"
         write_json(repo / f"tests/unit/data/chat/{label}.json", {
             "template": label,
             "template_sha256": sha256(template_path),
-            "renderer": f"transformers {transformers.__version__} apply_chat_template",
+            "renderer": renderer,
             "tokenizer_config": hf_config,
             "cases": out_cases,
         })

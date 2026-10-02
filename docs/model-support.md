@@ -33,7 +33,7 @@ no model is there yet, so measured speeds are given as headlines only.
 | Model | Role | Status | Level |
 | --- | --- | --- | --- |
 | [DeepSeek V4 Flash 0731](#deepseek-v4-flash-0731) UD-Q2_K_XL | target | Served (M3) | paged-correct |
-| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Harness-only | resident-correct, short oracle trajectories |
+| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Served (M3), one chat turn checked | resident-correct, short oracle trajectories |
 | [DSpark](#dspark) for DeepSeek V4 Flash 0731 (Q8_0) | drafter | Served (M3), with its target | paged-correct |
 | [Qwen3.8 Flash Next](#qwen38-flash-next) NVFP4 | target | Served (M3) | paged-correct, one accepted greedy divergence (below) |
 | [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
@@ -58,6 +58,7 @@ a Spark).
 | Model | SHA-256 the renderer is keyed on | The bytes hashed | Renderer, stop tokens |
 | --- | --- | --- | --- |
 | DeepSeek V4 Flash 0731 | `e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645` | The 0731 GGUF's `tokenizer.chat_template` (Unsloth's port of DeepSeek's `encoding_dsv4.py`), kept in the artifact's GGUF metadata | `deepseek-v4-flash-0731`; `<｜end▁of▁sentence｜>` |
+| DeepSeek V4 community IQ2_XXS | `872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27` | The community GGUF's `tokenizer.chat_template` ("chat-v2", 5,016 bytes), kept in artifact `cd39d504…`'s GGUF metadata | `deepseek-v4-flash-chat-v2`; `<｜end▁of▁sentence｜>` |
 | Qwen3.8 Flash Next | `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041` | `chat_template.jinja` of `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` (pinned in [pins.json](experiments/fast-swap/pins.json); the MLX baseline ships the same bytes) | `qwen3.8-flash-next`; `<\|im_end\|>`, `<\|endoftext\|>` |
 | Qwen-Image-2.1 | none: the prompt is diffusers `8b3c707e`'s fixed text-to-image string, not a chat template | — | `RenderQwenImagePrompt`; drops the 14 system-turn tokens |
 
@@ -186,8 +187,20 @@ At 4,096-row chunks the fast plan's default D2R down product changes its
 logits; its 32K perplexity is within 0.04% of ds4's
 ([stage mechanisms](experiments/ds4-prefill-stages/README.md)).
 ds4's default caches use FP8/FP4, so same weights alone do not establish
-equivalent cache policies. This variant has no runtime chat, DSpark,
-swap/restore or seeded-sampling evidence in this study.
+equivalent cache policies. This variant has no DSpark, swap/restore or
+seeded-sampling evidence in this study.
+
+- **Template:** `87249207…` ("chat-v2", above), read from the artifact;
+  its renderer differs from the 0731 template's where the templates do
+  ([tokenizer.md](tokenizer.md#chat-templates)). The tokenizer the
+  artifact keeps equals the 0731 GGUF's (`tokenizer_models_test`).
+- **Through the runtime** (on `spark`, 2026-10-02): `[models.deepseek]`
+  with this artifact, `speculation = false`, context 16,384, 2,048-row
+  chunks, registers, and one greedy `/v1/chat/completions` turn on
+  loopback (system "Be brief.", a question asking for a one-word answer)
+  returned reasoning and the answer "Paris", ending at the stop token, 19
+  prompt tokens.
+  One turn only: no quality, continuation, swap or timing claim.
 
 ## DSpark
 

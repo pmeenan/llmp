@@ -15,6 +15,10 @@
 //   DeepSeek's encoding_dsv4.py): roles system, user, assistant and tool;
 //   request-level tools, DSML tool calls, reasoning, `thinking` and
 //   `reasoning_effort`.
+// - DeepSeek V4 Flash "chat-v2", the community GGUF's embedded template
+//   (antirez/deepseek-v4-gguf@f71f23d5): the same roles, tools, DSML tool
+//   calls, reasoning and `thinking`; it has no reasoning effort, so any
+//   `reasoning_effort` renders as none.
 // - Qwen3.8 Flash Next, the NVFP4 checkpoint's chat_template.jinja: roles
 //   system (first only), user, assistant and tool; tools with XML tool
 //   calls, <think> blocks, `enable_thinking`, `reasoning_effort` and
@@ -127,6 +131,7 @@ const Template* FindTemplate(std::string_view sha256);
 std::expected<const Template*, std::string> FindTemplateForText(std::string_view template_text);
 
 std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& conversation);
+std::expected<Rendered, Error> RenderDeepSeekV4ChatV2(const Conversation& conversation);
 std::expected<Rendered, Error> RenderQwen38(const Conversation& conversation);
 
 // Qwen-Image 2.1's text-to-image prompt around `prompt` (an empty prompt

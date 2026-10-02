@@ -19,9 +19,11 @@ namespace {
 
 // The supported templates. Each hash is of the template's exact UTF-8 bytes
 // as the checkpoint ships it (docs/tokenizer.md records where from).
-const std::array<Template, 2> kTemplates = {{
+const std::array<Template, 3> kTemplates = {{
     {"e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645", "deepseek-v4-flash-0731",
      &RenderDeepSeekV4, StopRules{{"<｜end▁of▁sentence｜>"}}},
+    {"872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27",
+     "deepseek-v4-flash-chat-v2", &RenderDeepSeekV4ChatV2, StopRules{{"<｜end▁of▁sentence｜>"}}},
     {"c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041", "qwen3.8-flash-next",
      &RenderQwen38, StopRules{{"<|im_end|>", "<|endoftext|>"}}},
 }};
