@@ -11,6 +11,7 @@
 #include <expected>
 #include <format>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -147,11 +148,18 @@ Status Qwen38Runner::SelectSlots(std::span<Slot* const> active) {
     }
     mask |= bit;
   }
+  // Unchanged selection within an open request
+  // keeps its closure. State-growth, clear and restore paths still refresh.
+  if (mask == active_mask_ && node_.InRequest(stream_)) {
+    return {};
+  }
   active_mask_ = mask;
   return RefreshClosures();
 }
 
 void Qwen38Runner::DropPlans() {
+  target_waves_.Clear();
+  draft_waves_.Clear();
   for (RequestState* request : Requests()) {
     request->plans.Clear();
     request->mplans.Clear();
@@ -159,7 +167,7 @@ void Qwen38Runner::DropPlans() {
 }
 
 std::size_t Qwen38Runner::plans() const {
-  std::size_t count = 0;
+  std::size_t count = target_waves_.size() + draft_waves_.size();
   for (const RequestState* request : Requests()) {
     count += request->plans.size();
   }
@@ -167,7 +175,7 @@ std::size_t Qwen38Runner::plans() const {
 }
 
 std::size_t Qwen38Runner::graphs() const {
-  std::size_t count = 0;
+  std::size_t count = target_waves_.graphs() + draft_waves_.graphs();
   for (const RequestState* request : Requests()) {
     count += request->plans.graphs() + request->mplans.graphs();
   }
@@ -178,7 +186,7 @@ void Qwen38Runner::RoomForGraphs() {
   RoomForGraph(kMaxGraphs, graph_stats_, plans_, mplans_, additional_requests_[0].plans,
                additional_requests_[0].mplans, additional_requests_[1].plans,
                additional_requests_[1].mplans, additional_requests_[2].plans,
-               additional_requests_[2].mplans);
+               additional_requests_[2].mplans, target_waves_, draft_waves_);
 }
 
 std::vector<ExtentId> Qwen38Runner::state() const {
@@ -195,6 +203,15 @@ bool Qwen38Runner::HasRetainedState() const {
       Requests(), [](const RequestState* request) { return request->live.used_bytes() != 0; });
 }
 
+Qwen38SetupBudget Qwen38Runner::setup_budget() const {
+  Qwen38SetupBudget budget = setup_budget_;
+  for (const RequestState* request : Requests()) {
+    budget.initialized_logical += request->live.used_bytes();
+    budget.initialized_extent_bytes += request->live.extents().size() * kExtent;
+  }
+  return budget;
+}
+
 std::vector<ExtentId> Qwen38Runner::weights() const {
   std::vector<ExtentId> all = weights_.extents();
   all.insert(all.end(), dweights_.extents().begin(), dweights_.extents().end());
@@ -209,6 +226,9 @@ std::vector<ExtentId> Qwen38Runner::managed_extents() const {
 }
 
 Status Qwen38Runner::Setup() {
+  if (o_.wave_slots == 0 || o_.wave_slots > kRequestSlots) {
+    return Error("Qwen3.8 wave provisioning needs one to four slots");
+  }
   if (o_.routed_capture != 0 &&
       (!kg::Qwen38RoutedCaptureFits(o_.routed_capture, profile_.layers) || o_.drafter.empty() ||
        o_.draft_rows == 0 || o_.draft_rows > 3 || o_.context > 131072 || o_.max_rows > 8192)) {
@@ -314,7 +334,10 @@ Status Qwen38Runner::Setup() {
                     .row_bytes = binding_.ple_table.ne[0],
                     .chunk_file_offset = first->file_offset.value(),
                     .file_bytes = first->file_offset.value() + groups[table_group].stored.value()};
-  slots_ = std::uint64_t{o_.max_rows} * profile_.ple_heads();
+  const std::uint64_t row_slots =
+      o_.wave_slots > 1 ? std::max<std::uint64_t>(o_.max_rows, std::uint64_t{o_.wave_slots} * 4U)
+                        : o_.max_rows;
+  slots_ = row_slots * profile_.ple_heads();
   graph_binding_ = binding_;
   graph_binding_.ple_table.ne[1] = slots_;
 
@@ -376,6 +399,7 @@ Status Qwen38Runner::Setup() {
   std::uint64_t most_activations = 0;
   std::uint64_t most_scratch = 0;
   std::uint64_t most_inputs = 0;
+  std::uint64_t most_wave_extra = 0;
   {
     auto measure = resources_.MeasuringContext();
     if (!measure) {
@@ -425,6 +449,48 @@ Status Qwen38Runner::Setup() {
       }
       most_scratch = std::max(most_scratch, *scratch);
       most_inputs = std::max(most_inputs, planned.inputs_bytes);
+      if (o_.wave_slots == 1) {
+        return {};
+      }
+      // A no-reuse upper bound for the additional concat and replacement
+      // allocations: every eligible scalar product's inputs and output,
+      // each rounded independently. Summing it for every slot covers both
+      // fixed pairs even when their tensors remain live across barriers,
+      // including the four-row BF16 full-head input and replacement.
+      std::uint64_t extra = 0;
+      for (const auto& step : planned.plan.steps) {
+        for (const ggml_tensor* t : step.nodes) {
+          const auto op = kg::JitllmOpOf(t);
+          const bool full_head =
+              step.implementation == kg::kMulMatTensorCore && Qwen38FullHeadPairCandidate(t);
+          if (op != kg::JitllmOp::kMxfp8MulMatVec && op != kg::JitllmOp::kMoeGemv && !full_head) {
+            continue;
+          }
+          const auto add = [&](const ggml_tensor* tensor) {
+            const auto bytes = ggml_nbytes(tensor);
+            if (bytes > std::numeric_limits<std::uint64_t>::max() - 255 ||
+                Round(bytes, 256) > std::numeric_limits<std::uint64_t>::max() - extra) {
+              return false;
+            }
+            extra += Round(bytes, 256);
+            return true;
+          };
+          bool added = add(t);
+          if (added) {
+            if (full_head) {
+              added = add(t->src[1]);
+            } else if (op == kg::JitllmOp::kMxfp8MulMatVec) {
+              added = add(t->src[2]);
+            } else {
+              added = add(t->src[1]) && add(t->src[2]);
+            }
+          }
+          if (!added) {
+            return Error("Qwen3.8 paid wave storage exceeds checked bounds");
+          }
+        }
+      }
+      most_wave_extra = std::max(most_wave_extra, extra);
       return {};
     };
     for (const Probe& probe : probes) {
@@ -477,11 +543,32 @@ Status Qwen38Runner::Setup() {
       }
     }
   }
-  activation_bytes_ = Round(most_activations + (most_activations / 4), kExtent);
-  scratch_bytes_ = Round(most_scratch + (most_scratch / 4) + (1U << 20U), kExtent);
-  const std::uint64_t input_bytes = Round((most_inputs * 2) + (1U << 20U), kExtent);
+  const auto factor = std::uint64_t{o_.wave_slots};
+  const auto limit = std::numeric_limits<std::uint64_t>::max() / 16;
+  if (most_activations > limit || most_wave_extra > limit || most_inputs > limit ||
+      most_scratch > limit) {
+    return Error("Qwen3.8 provisioning exceeds checked wave bounds");
+  }
+  const auto activation_bound =
+      o_.wave_slots > 1 ? factor * (most_activations + most_wave_extra) : most_activations;
+  activation_bytes_ = Round(activation_bound + (activation_bound / 4), kExtent);
+  const auto scratch_bound = most_scratch * factor;
+  scratch_bytes_ = Round(scratch_bound + (scratch_bound / 4) + (1U << 20U), kExtent);
+  const std::uint64_t input_bytes =
+      Round((most_inputs * std::max<std::uint64_t>(2, factor)) + (1U << 20U), kExtent);
   // A chunk's host-built inputs are the staged bytes again, on the host.
-  host_input_bytes_ = Round(most_inputs + (1U << 20U), kExtent);
+  host_input_bytes_ = Round((most_inputs * factor) + (1U << 20U), kExtent);
+  setup_budget_.scalar_activations = Round(most_activations + (most_activations / 4), kExtent);
+  setup_budget_.scalar_scratch = Round(most_scratch + (most_scratch / 4) + (1U << 20U), kExtent);
+  setup_budget_.scalar_staging_inputs = Round((most_inputs * 2) + (1U << 20U), kExtent);
+  setup_budget_.scalar_host_inputs = Round(most_inputs + (1U << 20U), kExtent);
+  setup_budget_.activations = activation_bytes_;
+  setup_budget_.scratch = scratch_bytes_;
+  setup_budget_.staging_inputs = input_bytes;
+  setup_budget_.host_inputs = host_input_bytes_;
+  setup_budget_.ple_mapped = slot_memory_.bytes;
+  const std::uint64_t scalar_slots = std::uint64_t{o_.max_rows} * profile_.ple_heads();
+  setup_budget_.scalar_ple_mapped = Round(scalar_slots * table_.row_bytes, kExtent);
   // A drafter pass's inputs from the staging's second half, which the
   // largest inputs fit, so one job stages a chunk's and its pass's.
   mtp_base_ = Round(input_bytes / 2, 256);
@@ -503,6 +590,24 @@ Status Qwen38Runner::Setup() {
   scrub_ = static_cast<std::uint64_t*>(*scrub);
   runs_.SetStaging(*inputs, input_bytes);
   logits_ = *logits;
+  if (o_.wave_slots > 1) {
+    // Separate from the legacy default outputs, so existing scalar/proof
+    // addresses stay unchanged. All four indexed slices exist even for a
+    // smaller maximum cohort, which may select sparse masks such as 0b1010.
+    wave_logit_words_ = std::max<std::uint64_t>(4, logit_rows) * profile_.vocab;
+    auto wave_logits = resources_.Pinned(kRequestSlots * wave_logit_words_ * sizeof(float));
+    auto wave_ids = resources_.Pinned(kRequestSlots * 8 * sizeof(std::int32_t));
+    auto wave_probabilities = resources_.Pinned(kRequestSlots * 8 * sizeof(float));
+    if (!wave_logits || !wave_ids || !wave_probabilities) {
+      return Error("pinned per-slot Qwen3.8 wave outputs");
+    }
+    wave_logits_ = static_cast<float*>(*wave_logits);
+    wave_ids_ = static_cast<std::int32_t*>(*wave_ids);
+    wave_probabilities_ = static_cast<float*>(*wave_probabilities);
+    setup_budget_.wave_output_pinned =
+        (kRequestSlots * wave_logit_words_ * sizeof(float)) +
+        (2 * std::max<std::uint64_t>(kRequestSlots * 8 * sizeof(float), 256));
+  }
   hash_host_ = *hash;
   if (capture_head_rows_ != 0) {
     const std::uint64_t words =
@@ -586,6 +691,20 @@ Status Qwen38Runner::Setup() {
       }
     }
   }
+  setup_budget_.pinned = resources_.pinned_bytes();
+  // Only input staging, PLE landing/source staging and wave outputs change
+  // pinned demand. Capture/selected-head/snapshot descriptors stay identical.
+  const auto pinned = [](std::uint64_t bytes) { return std::max<std::uint64_t>(bytes, 256); };
+  setup_budget_.scalar_pinned =
+      setup_budget_.pinned - pinned(input_bytes) - pinned(landing_bytes_) -
+      pinned((slots_ + 1) * sizeof(std::uint32_t)) - setup_budget_.wave_output_pinned +
+      pinned(setup_budget_.scalar_staging_inputs) + pinned(PleLandingBound(scalar_slots)) +
+      pinned((scalar_slots + 1) * sizeof(std::uint32_t));
+  setup_budget_.runner_mapped = resources_.mapped_bytes();
+  setup_budget_.target_per_branch = layout_.bytes;
+  setup_budget_.drafter_per_branch = speculative() ? mtp_layout_.bytes : 0;
+  setup_budget_.virtual_per_branch =
+      Round(layout_.bytes, kExtent) + (speculative() ? Round(mtp_layout_.bytes, kExtent) : 0);
   return {};
 }
 
@@ -599,14 +718,29 @@ Status Qwen38Runner::SetupSnapshot(RequestState& request) {
   const std::uint64_t block_keys =
       ((std::uint64_t{o_.draft_rows + 1} / profile_.indexer_ratio) + 1) * qsa *
       std::uint64_t{profile_.indexer_head_dim} * 2;
+  // Shared verifies can discard a completed result after host judgement
+  // fails. Preserve the overwritten pending MTP streams as well as KV cells;
+  // the default scalar allocation and verify path remain unchanged.
+  const std::uint64_t stream_saves =
+      o_.wave_slots > 1
+          ? std::uint64_t{o_.draft_rows + 1} * Round(std::uint64_t{profile_.hc_width()} * 4, 256)
+          : 0;
   const std::uint64_t commit_bytes =
       snapshot_offset +
-      Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + block_keys + 4096, 256);
+      Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + block_keys + stream_saves + 4096,
+            256);
   const std::string name = request.slot == 0
                                ? "the Qwen3.8 verify's saves"
                                : std::format("the Qwen3.8 slot {} verify's saves", request.slot);
   if (auto r = resources_.Map(request.commit, name, commit_bytes, MemoryClass::kRuntime); !r) {
     return r;
+  }
+  if (request.slot == 0) {
+    setup_budget_.snapshot_per_branch = request.commit.bytes;
+    setup_budget_.scalar_snapshot_per_branch = Round(
+        snapshot_offset +
+            Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + block_keys + 4096, 256),
+        kExtent);
   }
   request.live.SnapshotAt(request.commit.base + snapshot_offset,
                           request.commit.bytes - snapshot_offset);
@@ -951,6 +1085,7 @@ Status Qwen38Runner::Clear(RequestState& request) {
     return active;
   }
   request.pending_rows = 0;
+  request.verify_restores_streams = false;
   // Remove only this destination's state from the completed stream lease.
   // Shared storage and all other active initialized states remain protected.
   const auto others = static_cast<std::uint8_t>(active_mask_ & ~(1U << request.slot));
@@ -1107,8 +1242,9 @@ std::expected<std::vector<std::int32_t>, std::string> Qwen38Runner::ReadRows(
   // The chunk's n-gram rows: planned, read and their slots' sources set,
   // while no job of this model holds the landing (the last one's fence
   // has completed: Job returns only after it).
-  const auto reading = std::chrono::steady_clock::now();
+  const auto planning = std::chrono::steady_clock::now();
   auto rows_plan = PlanPleRows(table_, in.ple_rows, landing_bytes_, slots_);
+  const auto ple_seconds = Seconds(std::chrono::steady_clock::now() - planning);
   if (!rows_plan) {
     return std::unexpected(rows_plan.error());
   }
@@ -1118,21 +1254,34 @@ std::expected<std::vector<std::int32_t>, std::string> Qwen38Runner::ReadRows(
     return std::unexpected(std::format("{} n-gram rows for {} lookups and {} slots",
                                        rows_plan->sources.size(), in.ple_rows.size(), slots_));
   }
-  if (auto r = ReadPleRows(*ring_, table_.fd, *rows_plan, landing_); !r) {
+  if (auto read = ReadRows(*rows_plan, in.ple_rows.size()); !read) {
+    return std::unexpected(read.error());
+  }
+  ple_.seconds += ple_seconds;
+  return std::move(rows_plan->slots);
+}
+
+Status Qwen38Runner::ReadRows(const PleRowPlan& planned, std::size_t lookups) {
+  const auto reading = std::chrono::steady_clock::now();
+  if (planned.sources.size() > lookups || planned.sources.size() > slots_ ||
+      planned.sources.size() > std::numeric_limits<std::uint32_t>::max()) {
+    return Error("the Qwen3.8 union row gather exceeds its provisioned slots");
+  }
+  if (auto r = ReadPleRows(*ring_, table_.fd, planned, landing_); !r) {
     rows_stalled_ = ring_->in_flight() != 0;  // reads that may still land
     return std::unexpected(r.error());
   }
-  std::ranges::copy(rows_plan->sources, sources_);
-  *ple_count_ = static_cast<std::uint32_t>(rows_plan->sources.size());
+  std::ranges::copy(planned.sources, sources_);
+  *ple_count_ = static_cast<std::uint32_t>(planned.sources.size());
   ple_.chunks += 1;
-  ple_.lookups += in.ple_rows.size();
-  ple_.rows += rows_plan->sources.size();
-  ple_.reads += rows_plan->reads.size();
-  ple_.read_bytes += rows_plan->landing_bytes;
-  ple_.useful_bytes += rows_plan->useful_bytes;
-  ple_.extent_bytes += rows_plan->extents * kExtent;
+  ple_.lookups += lookups;
+  ple_.rows += planned.sources.size();
+  ple_.reads += planned.reads.size();
+  ple_.read_bytes += planned.landing_bytes;
+  ple_.useful_bytes += planned.useful_bytes;
+  ple_.extent_bytes += planned.extents * kExtent;
   ple_.seconds += Seconds(std::chrono::steady_clock::now() - reading);
-  return std::move(rows_plan->slots);
+  return {};
 }
 
 std::function<bool(void* stream)> Qwen38Runner::Gather(std::uint32_t rows) {
@@ -1155,6 +1304,7 @@ void Qwen38Runner::Settle(RequestState& request, bool saved, bool wrote, bool un
   // none is pending until a chunk with the injection or an accepted verify
   // writes them again.
   const bool uncertain = unknown || resources_.launch().faulted();
+  request.verify_restores_streams = false;
   if (request.live.Settle(saved, wrote, uncertain)) {
     request.pending_rows = 0;
   }
@@ -1214,6 +1364,665 @@ Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t p
       .hidden_row = hidden_row,
       .hidden_rows = mtp_layout_.hidden_rows};
   return std::pair{shape, std::move(ins)};
+}
+
+Status Qwen38Runner::CheckWaveSlot(const Slot* slot, std::uint32_t previous) const {
+  if (!waves_provisioned() || slot == nullptr || &slot->owner_ != this ||
+      slot->index() >= kRequestSlots || slot->index() + 1 <= previous) {
+    return Error("Qwen3.8 waves need provisioned, owned, strictly ascending slots");
+  }
+  if (auto usable = Usable(slot->request_); !usable) {
+    return usable;
+  }
+  return slot->request_.live.AwaitingAccept();
+}
+
+Status Qwen38Runner::CheckWaveSources(std::span<const std::pair<ggml_tensor*, const void*>> sources,
+                                      const Qwen38WavePlanned& planned) const {
+  if (sources.size() != planned.inputs().size()) {
+    return Error("the Qwen3.8 wave does not stage every planned input");
+  }
+  std::uint64_t staged = 0;
+  for (const auto& [tensor, source] : sources) {
+    if (tensor == nullptr || tensor->data == nullptr || source == nullptr ||
+        std::ranges::count(planned.inputs(), tensor) != 1 ||
+        std::ranges::count_if(sources,
+                              [tensor](const auto& entry) { return entry.first == tensor; }) != 1) {
+      return Error("the Qwen3.8 wave repeats or omits an input source");
+    }
+    const std::uint64_t bytes = ggml_nbytes(tensor);
+    if (bytes == 0 || bytes > runs_.staging_bytes() ||
+        Round(bytes, 256) > runs_.staging_bytes() - staged) {
+      return Error("the Qwen3.8 wave inputs exceed their staging cap");
+    }
+    staged += Round(bytes, 256);
+    const auto& region = node_.activations();
+    const auto at = Address(tensor->data);
+    if (at < region.base || at - region.base > region.bytes ||
+        bytes > region.bytes - (at - region.base)) {
+      return Error("the Qwen3.8 wave input is outside its placed activation allocation");
+    }
+  }
+  if (staged != planned.inputs_bytes) {
+    return Error("the Qwen3.8 wave staging differs from its measured input bytes");
+  }
+  return {};
+}
+
+Status Qwen38Runner::CheckWaveOutput(const ggml_tensor* tensor, ggml_type type,
+                                     std::uint64_t bytes) const {
+  if (tensor == nullptr || tensor->data == nullptr || tensor->type != type ||
+      !ggml_is_contiguous(tensor) || ggml_nbytes(tensor) != bytes) {
+    return Error("the Qwen3.8 wave output has an invalid packed shape");
+  }
+  const auto& region = node_.activations();
+  const auto at = Address(tensor->data);
+  if (at < region.base || at - region.base > region.bytes ||
+      bytes > region.bytes - (at - region.base)) {
+    return Error("the Qwen3.8 wave output exceeds its retained placed allocation");
+  }
+  return {};
+}
+
+std::expected<Qwen38Runner::TargetWaves::Entry*, std::string> Qwen38Runner::PlannedWave(
+    const TargetWaveKey& key) {
+  if (auto* found = target_waves_.Find(key); found != nullptr) {
+    return found;
+  }
+  if (auto places = CheckPlaces(); !places) {
+    return std::unexpected(places.error());
+  }
+  const auto start = std::chrono::steady_clock::now();
+  std::vector<Qwen38TargetWaveInput> inputs;
+  for (const RequestState* request : Requests()) {
+    const auto s = request->slot;
+    if ((key.mask & (1U << s)) != 0) {
+      inputs.push_back({s, &request->model, key.slots[s].shape, key.slots[s].kind});
+    }
+  }
+  auto& launch = resources_.launch();
+  auto planned = PlanQwen38TargetWave(inputs, kg::DeviceChoicesOf(launch),
+                                      {.activations = node_.activations().base,
+                                       .bytes = node_.activations().bytes,
+                                       .paired = key.paired,
+                                       .share_target_head = true});
+  if (!planned) {
+    return std::unexpected(planned.error());
+  }
+  if (auto bound = BindPlanned(**planned, launch, resources_.registry(), "the target wave");
+      !bound) {
+    return std::unexpected(bound.error());
+  }
+  plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
+  auto owner = std::make_unique<WaveCacheOwner>();
+  owner->plan = std::move(*planned);
+  return &target_waves_.Add(key, std::move(owner));
+}
+
+std::expected<Qwen38Runner::DraftWaves::Entry*, std::string> Qwen38Runner::PlannedWave(
+    const DraftWaveKey& key) {
+  if (auto* found = draft_waves_.Find(key); found != nullptr) {
+    return found;
+  }
+  if (auto places = CheckPlaces(); !places) {
+    return std::unexpected(places.error());
+  }
+  const auto start = std::chrono::steady_clock::now();
+  std::vector<Qwen38DraftWaveInput> inputs;
+  for (const RequestState* request : Requests()) {
+    const auto s = request->slot;
+    if ((key.mask & (1U << s)) != 0) {
+      inputs.push_back({s, &request->model, key.slots[s]});
+    }
+  }
+  auto& launch = resources_.launch();
+  auto planned = PlanQwen38DraftWave(inputs, kg::DeviceChoicesOf(launch),
+                                     {.activations = node_.activations().base,
+                                      .bytes = node_.activations().bytes,
+                                      .paired = key.paired});
+  if (!planned) {
+    return std::unexpected(planned.error());
+  }
+  if (auto bound = BindPlanned(**planned, launch, resources_.registry(), "the draft wave");
+      !bound) {
+    return std::unexpected(bound.error());
+  }
+  plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
+  auto owner = std::make_unique<WaveCacheOwner>();
+  owner->plan = std::move(*planned);
+  return &draft_waves_.Add(key, std::move(owner));
+}
+
+Status Qwen38Runner::CheckWave(const Qwen38WavePlanned& planned) {
+  std::vector<const ggml_tensor*> state;
+  std::vector<const ggml_tensor*> saves;
+  std::vector<const ggml_tensor*> scratch;
+  for (std::size_t s = 0; s < kRequestSlots; ++s) {
+    if (const auto* g = planned.target(s); g != nullptr) {
+      for (const auto& l : g->layers) {
+        for (const ggml_tensor* t : {l.cache_k, l.cache_v, l.cache_idx, l.cache_pool, l.conv_state,
+                                     l.recurrent, l.ple_state}) {
+          if (t != nullptr) {
+            state.push_back(t);
+          }
+        }
+        for (const ggml_tensor* t :
+             {l.commit_conv, l.commit_qkv, l.commit_gate, l.commit_beta, l.commit_ple}) {
+          if (t != nullptr) {
+            saves.push_back(t);
+          }
+        }
+      }
+      if (g->streams != nullptr) {
+        state.push_back(g->streams);
+      }
+      scratch.push_back(g->ple_table);
+    }
+    if (const auto* g = planned.draft(s); g != nullptr) {
+      for (const ggml_tensor* t : {g->layer.cache_k, g->layer.cache_v, g->layer.cache_idx,
+                                   g->layer.cache_pool, g->streams}) {
+        if (t != nullptr) {
+          state.push_back(t);
+        }
+      }
+    }
+  }
+  const auto before = coverage_.violations;
+  CheckCoverage(node_, owner_, planned.nodes(),
+                {.state = state,
+                 .runtime = saves,
+                 .scratch = scratch,
+                 .inputs = planned.inputs(),
+                 .fill_reads_nothing = true,
+                 .what = "the wave's "},
+                coverage_);
+  if (coverage_.violations != before) {
+    return Error(
+        std::format("the Qwen3.8 wave failed catalog coverage: {}", coverage_.first_violation));
+  }
+  return {};
+}
+
+Status Qwen38Runner::ChunkWave(std::span<const ChunkWork> work, bool paired) {
+  if (work.empty() || work.size() > kRequestSlots) {
+    return Error("a Qwen3.8 chunk wave needs one to four slots");
+  }
+  std::array<TargetWork, kRequestSlots> target{};
+  for (std::size_t i = 0; i < work.size(); ++i) {
+    target[i] = {work[i].slot, work[i].history, work[i].n_past, nullptr, work[i].logits};
+  }
+  return TargetWave(std::span(target).first(work.size()), false, paired);
+}
+
+Status Qwen38Runner::VerifyWave(std::span<const VerifyWork> work, bool paired) {
+  if (work.empty() || work.size() > kRequestSlots) {
+    return Error("a Qwen3.8 verify wave needs one to four slots");
+  }
+  std::array<TargetWork, kRequestSlots> target{};
+  for (std::size_t i = 0; i < work.size(); ++i) {
+    target[i] = {work[i].slot, work[i].history, work[i].n_past, work[i].argmax, work[i].logits};
+  }
+  return TargetWave(std::span(target).first(work.size()), true, paired);
+}
+
+Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, bool paired) {
+  if (work.empty() || work.size() > o_.wave_slots || (verify && !speculative())) {
+    return Error("the Qwen3.8 target wave exceeds its provisioned cohort or lacks a drafter");
+  }
+  struct Save {
+    std::uint64_t address, bytes;
+    std::int64_t row;
+  };
+  struct Frame {
+    RequestState* request = nullptr;
+    md::Qwen38ChunkInputs in;
+    Qwen38HostInputs host;
+    std::vector<Save> saves;
+    bool saved = false;
+  };
+  // Host-source owners cannot move after Sources takes pointers to their
+  // scalar members/vectors. Their lifetime includes Stage and the whole Job.
+  std::array<std::unique_ptr<Frame>, kRequestSlots> frames;
+  TargetWaveKey key;
+  key.paired = paired;
+  std::vector<std::int32_t> ple_rows;
+  std::uint32_t previous = 0;
+  std::uint32_t total_rows = 0;
+  for (const auto& w : work) {
+    if (auto valid = CheckWaveSlot(w.slot, previous); !valid) {
+      return valid;
+    }
+    const auto s = w.slot->index();
+    previous = s + 1;
+    if (w.history.size() <= w.n_past || w.history.size() > o_.context ||
+        w.history.size() - w.n_past > std::min<std::size_t>(4, o_.max_rows) ||
+        (verify &&
+         (w.argmax == nullptr || w.history.size() - w.n_past > std::size_t{o_.draft_rows} + 1)) ||
+        (!verify && w.logits == nullptr)) {
+      return Error("a Qwen3.8 target wave has invalid rows, context or outputs");
+    }
+    for (const auto& other : work) {
+      if (&other != &w && ((w.logits != nullptr && w.logits == other.logits) ||
+                           (w.argmax != nullptr && w.argmax == other.argmax))) {
+        return Error("Qwen3.8 target wave outputs must have independent owners");
+      }
+    }
+    auto in = md::Qwen38Chunk(profile_, layout_, hash_, w.history, w.n_past,
+                              static_cast<std::uint32_t>(w.history.size() - w.n_past), false);
+    if (!in) {
+      return std::unexpected(in.error());
+    }
+    auto needed =
+        md::Qwen38UsedState(profile_, layout_, static_cast<std::uint32_t>(w.history.size()));
+    if (!needed) {
+      return std::unexpected(needed.error());
+    }
+    auto& f = frames[s] = std::make_unique<Frame>();
+    f->request = &w.slot->request_;
+    f->in = std::move(*in);
+    const auto rows = f->in.rows;
+    total_rows += rows;
+    ple_rows.insert(ple_rows.end(), f->in.ple_rows.begin(), f->in.ple_rows.end());
+    key.mask |= static_cast<std::uint8_t>(1U << s);
+    if (w.logits != nullptr) {
+      key.logits |= static_cast<std::uint8_t>(1U << s);
+    }
+    key.slots[s] = {.shape = kg::Qwen38ShapeOf(layout_, f->in, verify ? rows : 1),
+                    .kind = {.verify = verify, .export_streams = verify}};
+    if (verify) {
+      using K = md::Qwen38StateTensor::Kind;
+      const auto base = f->request->live.base(kTarget);
+      for (std::uint32_t i = 0; i < rows; ++i) {
+        const auto cell = std::uint64_t{w.n_past} + i;
+        for (const auto& t : layout_.tensors) {
+          if (t.kind == K::kK || t.kind == K::kV || t.kind == K::kIndexerK) {
+            const auto bytes = t.ne0 * (t.f16 ? 2U : 4U);
+            f->saves.push_back({base + t.offset + (cell * bytes), bytes, i});
+          }
+        }
+      }
+      const auto ratio = profile_.indexer_ratio;
+      for (std::uint64_t b = w.n_past / ratio; b < (std::uint64_t{w.n_past} + rows) / ratio; ++b) {
+        const auto row = static_cast<std::int64_t>(((b + 1) * ratio) - 1 - w.n_past);
+        for (const auto& t : layout_.tensors) {
+          if (t.kind == K::kIndexerBlocks) {
+            const auto bytes = t.ne0 * 2;
+            f->saves.push_back({base + t.offset + (b * bytes), bytes, row});
+          }
+        }
+      }
+      const auto offset = Round(commit_layout_.bytes, 256);
+      const auto& commit = f->request->commit;
+      const std::uint64_t stream_row = std::uint64_t{profile_.hc_width()} * 4;
+      const auto stream_base = f->request->live.base(kDrafter) + mtp_layout_.hidden;
+      for (std::uint32_t i = 0; i < rows; ++i) {
+        f->saves.push_back({stream_base + (std::uint64_t{i + 1} * stream_row), stream_row, i});
+      }
+      if (commit.bytes < offset || f->saves.size() > kRangeCapacity) {
+        return Error("the Qwen3.8 wave exceeds a slot's snapshot geometry");
+      }
+      std::uint64_t saved_bytes = 0;
+      for (const auto& save : f->saves) {
+        const auto within = [&](std::uint64_t at, std::uint64_t bytes) {
+          return save.address >= at && save.address - at <= bytes &&
+                 save.bytes <= bytes - (save.address - at);
+        };
+        if ((!within(base, layout_.bytes) &&
+             !within(stream_base, std::uint64_t{mtp_layout_.hidden_rows} * stream_row)) ||
+            saved_bytes > commit.bytes - offset ||
+            Round(save.bytes, 256) > commit.bytes - offset - saved_bytes) {
+          return Error("the Qwen3.8 wave exceeds a slot's snapshot capacity");
+        }
+        saved_bytes += Round(save.bytes, 256);
+      }
+    }
+  }
+  // No state growth, snapshot mutation or submission has occurred. One
+  // union row plan preserves every request's lookup slice, deduplicating
+  // actual file rows once; gathering into shared immutable slots is paid.
+  const auto planning = std::chrono::steady_clock::now();
+  auto rows_plan = PlanPleRows(table_, ple_rows, landing_bytes_, slots_);
+  const auto ple_seconds = Seconds(std::chrono::steady_clock::now() - planning);
+  if (!rows_plan) {
+    return std::unexpected(rows_plan.error());
+  }
+  if (rows_plan->slots.size() != ple_rows.size() || rows_plan->sources.size() > ple_rows.size() ||
+      rows_plan->sources.size() > slots_) {
+    return Error("the Qwen3.8 union row plan omitted a lookup or exceeded its gather capacity");
+  }
+  auto cached = PlannedWave(key);
+  if (!cached) {
+    return std::unexpected(cached.error());
+  }
+  auto& entry = **cached;
+  auto& planned = *entry.planned->plan;
+  std::vector<std::pair<ggml_tensor*, const void*>> sources;
+  Copies outputs;
+  std::size_t row_at = 0;
+  for (const auto& w : work) {
+    const auto s = w.slot->index();
+    auto& f = *frames[s];
+    const auto& g = *planned.target(s);
+    if (f.in.qsa_select && (g.mask != nullptr || g.mask_f32 != nullptr)) {
+      auto masked = md::Qwen38Chunk(profile_, layout_, hash_, w.history, w.n_past, f.in.rows, true);
+      if (!masked) {
+        return std::unexpected(masked.error());
+      }
+      f.in = std::move(*masked);
+    }
+    const auto count = f.in.ple_rows.size();
+    Qwen38Sources(g, f.in, verify ? f.in.rows : 1,
+                  std::span(rows_plan->slots).subspan(row_at, count), f.host, 1);
+    row_at += count;
+    sources.insert(sources.end(), f.host.sources.begin(), f.host.sources.end());
+    const auto words = std::uint64_t{verify ? f.in.rows : 1} * profile_.vocab;
+    if (words > wave_logit_words_) {
+      return Error("the Qwen3.8 wave exceeds its fixed output slice");
+    }
+    if (auto valid = CheckWaveOutput(g.logits, GGML_TYPE_F32, words * sizeof(float)); !valid) {
+      return valid;
+    }
+    if (w.logits != nullptr) {
+      outputs.push_back({Address(wave_logits_ + (s * wave_logit_words_)), Address(g.logits->data),
+                         words * sizeof(float)});
+    }
+    if (verify) {
+      const auto bytes = std::uint64_t{f.in.rows} * sizeof(std::int32_t);
+      if (auto valid = CheckWaveOutput(g.argmax, GGML_TYPE_I32, bytes); !valid) {
+        return valid;
+      }
+      outputs.push_back(
+          {Address(wave_ids_ + (std::size_t{s} * 8)), Address(g.argmax->data), bytes});
+    }
+  }
+  if (auto valid = CheckWaveSources(sources, planned); !valid) {
+    return valid;
+  }
+  for (const auto& w : work) {
+    if (auto used = EnsureState(w.slot->request_, static_cast<std::uint32_t>(w.history.size()));
+        !used) {
+      return used;  // partial growth stays initialized/protected; no graph ran
+    }
+  }
+  if (!entry.planned->covered) {
+    if (auto covered = CheckWave(planned); !covered) {
+      return covered;
+    }
+    entry.planned->covered = true;
+  }
+  if (auto read = ReadRows(*rows_plan, ple_rows.size()); !read) {
+    return read;
+  }
+  ple_.seconds += ple_seconds;
+  auto copies = runs_.Stage(sources, 0);
+  if (!copies) {
+    return std::unexpected(copies.error());
+  }
+  if (verify) {
+    for (const auto& w : work) {
+      auto& f = *frames[w.slot->index()];
+      f.request->live.BeginSaves();
+      f.request->verify_restores_streams = false;
+      for (const auto& save : f.saves) {
+        if (auto added = f.request->live.Save(save.address, save.bytes, save.row); !added) {
+          // Host preflight already proved the exact count/packed capacity;
+          // an unexpected refusal invalidates the cohort before submission.
+          FaultCohort();
+          return added;
+        }
+      }
+    }
+  }
+  auto& launch = resources_.launch();
+  auto& run = entry.runs[0];
+  const bool capture =
+      run.CaptureDue(runs_.graphs()) && (verify || std::ranges::all_of(work, [](const auto& w) {
+                                           return w.history.size() - w.n_past == 1;
+                                         }));
+  if (capture) {
+    RoomForGraphs();
+  }
+  const auto gather = Gather(total_rows);
+  Status ran;
+  RunPath path = RunPath::kEager;
+  bool unknown = false;
+  bool wrote = false;
+  bool committing = false;
+  auto job = [&](providers::NativeStream native) -> sc::JobResult {
+    for (const auto& w : work) {
+      auto& f = *frames[w.slot->index()];
+      committing = committing || f.request->live.owed();
+      if (auto owed = f.request->live.QueueOwed(launch); !owed) {
+        ran = Error(owed.error().detail);
+        unknown = true;
+        return sc::JobResult::kUnknown;
+      }
+    }
+    if (verify) {
+      for (const auto& w : work) {
+        auto& f = *frames[w.slot->index()];
+        if (auto saved = f.request->live.QueueSaves(launch); !saved) {
+          ran = Error(saved.error().detail);
+          unknown = true;
+          return sc::JobResult::kUnknown;
+        }
+        f.saved = true;
+      }
+    }
+    const auto queued =
+        runs_.Queue(run, *copies, gather, *planned.bound, outputs, capture, graph_stats_, native);
+    path = queued.path;
+    wrote = queued.before || queued.result.has_value();
+    if (!queued.result) {
+      ran = Error(queued.result.error().detail);
+      unknown = queued.result.error().error == kg::KernelError::kUnknown;
+      if (unknown) {
+        return sc::JobResult::kUnknown;
+      }
+      return committing || verify || wrote ? sc::JobResult::kFailed : sc::JobResult::kNotStarted;
+    }
+    return sc::JobResult::kQueued;
+  };
+  const auto posted = node_.Job(execution_, std::move(job), "a Qwen3.8 target wave", stream_);
+  if (!posted || !ran || launch.faulted()) {
+    if (!posted) {
+      CheckFailedJob();
+    }
+    for (const auto& w : work) {
+      auto& f = *frames[w.slot->index()];
+      Settle(*f.request, f.saved, !verify && wrote, unknown);
+    }
+    if (launch.faulted()) {
+      return Error("the Qwen3.8 target wave launch context faulted");
+    }
+    return !ran ? ran : Error(posted.error());
+  }
+  Count(graph_stats_, path);
+  last_wave_ = planned.stats();
+  for (const auto& w : work) {
+    const auto s = w.slot->index();
+    auto& f = *frames[s];
+    if (verify) {
+      f.request->live.Verified(f.in.rows);
+      f.request->verify_restores_streams = true;
+      w.argmax->assign(wave_ids_ + (std::size_t{s} * 8),
+                       wave_ids_ + (std::size_t{s} * 8) + f.in.rows);
+    } else {
+      f.request->pending_rows = 0;
+    }
+    if (w.logits != nullptr) {
+      const auto* from = wave_logits_ + (s * wave_logit_words_);
+      w.logits->assign(from, from + (std::size_t{verify ? f.in.rows : 1} * profile_.vocab));
+    }
+  }
+  return {};
+}
+
+Status Qwen38Runner::DraftWave(std::span<const DraftWork> work, bool paired) {
+  if (work.empty() || work.size() > o_.wave_slots || work.size() > kRequestSlots ||
+      !speculative()) {
+    return Error("a Qwen3.8 draft wave needs a provisioned cohort and drafter");
+  }
+  struct Frame {
+    RequestState* request = nullptr;
+    std::vector<md::Qwen38ChunkInputs> ins;
+    Qwen38MtpHostInputs host;
+    std::uint32_t through = 0;
+  };
+  std::array<std::unique_ptr<Frame>, kRequestSlots> frames;
+  DraftWaveKey key;
+  key.paired = paired;
+  std::uint32_t previous = 0;
+  for (const auto& w : work) {
+    if (auto valid = CheckWaveSlot(w.slot, previous); !valid) {
+      return valid;
+    }
+    const auto s = w.slot->index();
+    previous = s + 1;
+    auto& request = w.slot->request_;
+    const auto rows = request.pending_rows;
+    const auto passes = w.passes == 0 ? o_.draft_rows : w.passes;
+    if (w.drafts == nullptr || rows == 0 || rows > 4 || rows > o_.draft_rows + 1 || passes == 0 ||
+        passes > 3 || passes > o_.draft_rows || w.history.size() < std::size_t{rows} + 1 ||
+        w.history.size() > o_.context) {
+      return Error("a Qwen3.8 draft wave has invalid pending rows, passes, context or outputs");
+    }
+    for (const auto& other : work) {
+      if (&other != &w && (w.drafts == other.drafts || (w.probabilities != nullptr &&
+                                                        w.probabilities == other.probabilities))) {
+        return Error("Qwen3.8 draft wave outputs must have independent owners");
+      }
+    }
+    const auto n = static_cast<std::uint32_t>(w.history.size() - 1);
+    for (const auto t : w.history.subspan(n - rows + 1, rows)) {
+      if (t < 0 || std::cmp_greater_equal(t, profile_.vocab)) {
+        return Error("a Qwen3.8 draft wave token is outside the vocabulary");
+      }
+    }
+    auto shaped = MtpInputs(n - rows, rows, passes, true, 1, w.probabilities != nullptr, false);
+    if (!shaped) {
+      return std::unexpected(shaped.error());
+    }
+    const auto through = n + passes - 1;
+    auto needed = md::Qwen38UsedState(profile_, layout_, through);
+    if (!needed) {
+      return std::unexpected(needed.error());
+    }
+    auto& f = frames[s] = std::make_unique<Frame>();
+    f->request = &request;
+    f->through = through;
+    f->ins = std::move(shaped->second);
+    key.slots[s] = shaped->first;
+    key.mask |= static_cast<std::uint8_t>(1U << s);
+  }
+  auto cached = PlannedWave(key);
+  if (!cached) {
+    return std::unexpected(cached.error());
+  }
+  auto& entry = **cached;
+  auto& planned = *entry.planned->plan;
+  std::vector<std::pair<ggml_tensor*, const void*>> sources;
+  Copies outputs;
+  for (const auto& w : work) {
+    const auto s = w.slot->index();
+    auto& f = *frames[s];
+    const auto& g = *planned.draft(s);
+    const auto rows = f.request->pending_rows;
+    const auto n = static_cast<std::uint32_t>(w.history.size() - 1);
+    Qwen38MtpSources(g, f.ins, w.history.subspan(n - rows + 1, rows), f.host);
+    sources.insert(sources.end(), f.host.sources.begin(), f.host.sources.end());
+    if (g.drafts.size() != static_cast<std::size_t>(key.slots[s].passes) ||
+        g.probabilities.size() != (w.probabilities != nullptr ? g.drafts.size() : 0)) {
+      return Error("the Qwen3.8 draft wave omitted a requested pass output");
+    }
+    for (std::size_t j = 0; j < g.drafts.size(); ++j) {
+      if (auto valid = CheckWaveOutput(g.drafts[j], GGML_TYPE_I32, sizeof(std::int32_t)); !valid) {
+        return valid;
+      }
+      outputs.push_back({Address(wave_ids_ + (std::size_t{s} * 8) + j), Address(g.drafts[j]->data),
+                         sizeof(std::int32_t)});
+    }
+    for (std::size_t j = 0; j < g.probabilities.size(); ++j) {
+      if (auto valid = CheckWaveOutput(g.probabilities[j], GGML_TYPE_F32, sizeof(float)); !valid) {
+        return valid;
+      }
+      outputs.push_back({Address(wave_probabilities_ + (std::size_t{s} * 8) + j),
+                         Address(g.probabilities[j]->data), sizeof(float)});
+    }
+  }
+  if (auto valid = CheckWaveSources(sources, planned); !valid) {
+    return valid;
+  }
+  for (const auto& w : work) {
+    auto& f = *frames[w.slot->index()];
+    if (auto used = EnsureState(*f.request, f.through); !used) {
+      return used;
+    }
+  }
+  if (!entry.planned->covered) {
+    if (auto covered = CheckWave(planned); !covered) {
+      return covered;
+    }
+    entry.planned->covered = true;
+  }
+  auto copies = runs_.Stage(sources, 0);
+  if (!copies) {
+    return std::unexpected(copies.error());
+  }
+  auto& launch = resources_.launch();
+  auto& run = entry.runs[0];
+  const bool capture = run.CaptureDue(runs_.graphs());
+  if (capture) {
+    RoomForGraphs();
+  }
+  Status ran;
+  RunPath path = RunPath::kEager;
+  bool unknown = false;
+  auto job = [&](providers::NativeStream native) -> sc::JobResult {
+    for (const auto& w : work) {
+      if (auto owed = w.slot->request_.live.QueueOwed(launch); !owed) {
+        ran = Error(owed.error().detail);
+        unknown = true;
+        return sc::JobResult::kUnknown;
+      }
+    }
+    const auto queued =
+        runs_.Queue(run, *copies, {}, *planned.bound, outputs, capture, draft_stats_, native);
+    path = queued.path;
+    if (!queued.result) {
+      ran = Error(queued.result.error().detail);
+      unknown = queued.result.error().error == kg::KernelError::kUnknown;
+      return unknown ? sc::JobResult::kUnknown : sc::JobResult::kFailed;
+    }
+    return sc::JobResult::kQueued;
+  };
+  const auto posted = node_.Job(execution_, std::move(job), "a Qwen3.8 draft wave", stream_);
+  if (!posted || !ran || launch.faulted()) {
+    if (!posted) {
+      CheckFailedJob();
+    }
+    for (const auto& w : work) {
+      // As in scalar Draft: a known fenced failure wrote only MTP cells
+      // that the next catch-up rewrites; unknown effects stop all owners.
+      Settle(w.slot->request_, false, false, unknown);
+    }
+    if (launch.faulted()) {
+      return Error("the Qwen3.8 draft wave launch context faulted");
+    }
+    return !ran ? ran : Error(posted.error());
+  }
+  Count(draft_stats_, path);
+  last_wave_ = planned.stats();
+  for (const auto& w : work) {
+    const auto s = w.slot->index();
+    const auto count = static_cast<std::size_t>(key.slots[s].passes);
+    w.drafts->assign(wave_ids_ + (std::size_t{s} * 8), wave_ids_ + (std::size_t{s} * 8) + count);
+    if (w.probabilities != nullptr) {
+      w.probabilities->assign(wave_probabilities_ + (std::size_t{s} * 8),
+                              wave_probabilities_ + (std::size_t{s} * 8) + count);
+    }
+  }
+  return {};
 }
 
 Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t n_past,
@@ -1686,6 +2495,7 @@ Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t>
   using K = md::Qwen38StateTensor::Kind;
   const std::uint64_t state = request.live.base(kTarget);
   request.live.BeginSaves();
+  request.verify_restores_streams = false;
   for (std::uint32_t i = 0; i < rows; ++i) {
     const std::uint64_t cell = std::uint64_t{n_past} + i;
     for (const md::Qwen38StateTensor& t : layout_.tensors) {
@@ -1817,10 +2627,26 @@ Status Qwen38Runner::Accept(RequestState& request, std::uint32_t keep) {
     return accepted;
   }
   request.pending_rows = keep;
+  request.verify_restores_streams = false;
   return {};
 }
 
 Status Qwen38Runner::Rollback() { return Rollback(default_request_); }
+
+Status Qwen38Runner::DiscardVerify(RequestState& request) {
+  if (auto usable = Usable(request); !usable) {
+    return usable;
+  }
+  if (request.live.verify_rows() == 0 || !request.verify_restores_streams) {
+    return Error("discarding a Qwen verify that does not await Accept");
+  }
+  // A successful synchronous Verify completed its saves and writes. Accept
+  // has not changed pending_rows. Restore every saved range, with no kept
+  // recurrent streams, then drain through the existing failure handling.
+  (void)request.live.Settle(true, true, false);
+  request.verify_restores_streams = false;
+  return Rollback(request);
+}
 
 Status Qwen38Runner::Rollback(RequestState& request) {
   if (auto usable = Usable(request); !usable) {

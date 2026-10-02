@@ -3,6 +3,7 @@
 
 #include "engine/runner_resources.h"
 
+#include <algorithm>
 #include <format>
 #include <utility>
 
@@ -34,7 +35,19 @@ RunnerResources::Status RunnerResources::Map(Mapped& mapped, std::string name, s
 }
 
 std::expected<void*, std::string> RunnerResources::Pinned(std::uint64_t bytes) {
-  return node_.Pinned(bytes, owner_, staging_);
+  auto allocated = node_.Pinned(bytes, owner_, staging_);
+  if (allocated) {
+    pinned_bytes_ += std::max<std::uint64_t>(bytes, 256);
+  }
+  return allocated;
+}
+
+std::uint64_t RunnerResources::mapped_bytes() const {
+  std::uint64_t bytes = 0;
+  for (const Mapped* mapped : mapped_) {
+    bytes += mapped->bytes;
+  }
+  return bytes;
 }
 
 RunnerResources::Status RunnerResources::OpenCublas(std::string name) {

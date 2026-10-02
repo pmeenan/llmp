@@ -19,6 +19,9 @@
 #include <string>
 #include <vector>
 
+#include "engine/qwen38_wave_plan.h"
+#include "ggml.h"
+#include "kernels/ggml/tensors.h"
 #include "runtime/serving.h"
 
 namespace {
@@ -27,6 +30,36 @@ namespace rt = jitllm::runtime;
 namespace engine = jitllm::engine;
 namespace catalog = jitllm::catalog;
 using ::testing::ElementsAre;
+
+TEST(Qwen38WaveHead, AdaptiveRowsRequireContiguousFullBf16Geometry) {
+  auto arena = jitllm::kernels::ggml::TensorArena::Create(32);
+  ASSERT_TRUE(arena);
+  auto* context = arena->context();
+  auto* weight = ggml_new_tensor_2d(context, GGML_TYPE_BF16, 2560, 248320);
+  for (const std::int64_t rows : {1, 2, 3, 4, 5}) {
+    auto* input = ggml_new_tensor_2d(context, GGML_TYPE_F32, 2560, rows);
+    auto* output = ggml_mul_mat(context, weight, input);
+    const bool supported = rows == 3 || rows == 4;
+    EXPECT_EQ(engine::Qwen38FullHeadPairCandidate(output), supported);
+    if (!supported) {
+      continue;
+    }
+    auto bad = *output;
+    ++bad.ne[1];
+    EXPECT_FALSE(engine::Qwen38FullHeadPairCandidate(&bad));
+    auto strided = *input;
+    strided.nb[1] += sizeof(float);
+    bad = *output;
+    bad.src[1] = &strided;
+    EXPECT_FALSE(engine::Qwen38FullHeadPairCandidate(&bad));
+    auto quantized = *weight;
+    quantized.type = GGML_TYPE_Q8_0;
+    bad = *output;
+    bad.src[0] = &quantized;
+    EXPECT_FALSE(engine::Qwen38FullHeadPairCandidate(&bad));
+  }
+  EXPECT_FALSE(engine::Qwen38FullHeadPairCandidate(nullptr));
+}
 
 class FakePaged final : public engine::PagedModel {
  public:
@@ -182,13 +215,18 @@ class FakeLlm : public rt::Llm {
 
 class NativeBranchesFake final : public FakeLlm {
  public:
-  explicit NativeBranchesFake(bool speculative = false) : FakeLlm(speculative) {
+  explicit NativeBranchesFake(bool speculative = false, std::size_t wave_capacity = 4)
+      : FakeLlm(speculative), wave_capacity_(wave_capacity) {
     for (auto& leaf : leaves_) {
       leaf = std::make_unique<FakeLlm>(speculative);
     }
     EXPECT_TRUE(PrepareBranches(4, 3).has_value());
   }
   bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
+  bool supports_generation_waves() const override { return true; }
+  std::size_t generation_wave_capacity() const override { return wave_capacity_; }
+  std::optional<std::uint32_t> nonfinite_wave_row;
+  std::optional<std::uint32_t> failed_wave_judgement;
   FakeLlm& native_state(std::size_t slot) { return slot == 0 ? *this : *leaves_.at(slot - 1); }
   const auto& selected() const { return selected_; }
   jitllm::execution::AdaptiveDepth& policy(Branch& branch) { return BranchDecoding(branch); }
@@ -213,6 +251,30 @@ class NativeBranchesFake final : public FakeLlm {
   }
 
  protected:
+  rt::Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) override {
+    for (PreparedGeneration& unit : prepared) {
+      const auto slot = BranchIndex(*unit.branch);
+      if (failed_wave_judgement == slot) {
+        // Fake completed verify/discard: the exact prior prefix is restored,
+        // so its independent host error can preserve history at Step::position.
+        unit.result = std::unexpected("fake completed judgement failed");
+        unit.failed_prefix_valid = true;
+        continue;
+      }
+      auto ran =
+          unit.step.speculative
+              ? SpecStepFor(*unit.branch, unit.step.all, unit.step.position, unit.step.left,
+                            unit.kept, unit.step.need_logits ? &unit.logits : nullptr, unit.drafted)
+              : RunChunkFor(*unit.branch, unit.step.all, unit.step.position, false, unit.row);
+      if (!ran) {
+        return ran;
+      }
+      if (nonfinite_wave_row == slot) {
+        std::ranges::fill(unit.row, std::numeric_limits<float>::quiet_NaN());
+      }
+    }
+    return {};
+  }
   rt::Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t n_past,
                          bool inject, std::vector<float>& logits) override {
     return Native(branch).FakeLlm::RunChunk(all, n_past, inject, logits);
@@ -296,6 +358,7 @@ class NativeBranchesFake final : public FakeLlm {
   }
 
  private:
+  const std::size_t wave_capacity_;
   FakeLlm& Native(Branch& branch) { return native_state(BranchIndex(branch)); }
   const FakeLlm& Native(const Branch& branch) const {
     const auto slot = BranchIndex(branch);
@@ -902,6 +965,174 @@ TEST(LlmScores, ABranchPreparationRefusalLeavesPeerGenerationRunning) {
   EXPECT_EQ((*b)->history(), model.native_state(2).target);
   EXPECT_EQ(model.native_state(2).settlements, 1U);
   EXPECT_EQ(model.native_state(0).chunks, 0U);
+}
+
+TEST(LlmScores, AGenerationWaveCapacityRefusalLeavesSparseActiveBranchesUntouched) {
+  NativeBranchesFake model(false, 2);
+  auto a = model.branch(0);
+  auto b = model.branch(3);  // A high slot ID is valid with two active owners.
+  auto c = model.branch(1);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  ASSERT_TRUE(c.has_value());
+  std::vector<float> last_a;
+  std::vector<float> last_b;
+  std::vector<float> last_c;
+  ASSERT_TRUE((*a)->Prefill(std::array<std::int32_t, 1>{0}, last_a).has_value());
+  ASSERT_TRUE((*b)->Prefill(std::array<std::int32_t, 1>{2}, last_b).has_value());
+  ASSERT_TRUE((*c)->Prefill(std::array<std::int32_t, 1>{4}, last_c).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 3;
+  options.stop = false;
+  rt::Generation result_a;
+  rt::Generation result_b;
+  rt::Generation result_c;
+  auto opened_a = (*a)->BeginGeneration(last_a, options, result_a);
+  auto opened_b = (*b)->BeginGeneration(last_b, options, result_b);
+  auto opened_c = (*c)->BeginGeneration(last_c, options, result_c);
+  ASSERT_TRUE(opened_a.has_value());
+  ASSERT_TRUE(opened_b.has_value());
+  ASSERT_TRUE(opened_c.has_value());
+  model.native_state(1).fail_prepare = true;
+  const std::array<rt::Llm::GenerationSession*, 3> too_many = {opened_a->get(), opened_b->get(),
+                                                               opened_c->get()};
+  EXPECT_FALSE(model.RunGenerationWave(too_many).has_value());
+  EXPECT_FALSE((*opened_a)->done());
+  EXPECT_FALSE((*opened_b)->done());
+  EXPECT_FALSE((*opened_c)->done());  // No preparation reached its own refusal.
+  EXPECT_THAT(result_a.tokens, ElementsAre(1));
+  EXPECT_THAT(result_b.tokens, ElementsAre(3));
+  EXPECT_THAT(result_c.tokens, ElementsAre(5));
+  EXPECT_EQ(result_a.steps, 0U);
+  EXPECT_EQ(result_b.steps, 0U);
+  EXPECT_EQ(result_c.steps, 0U);
+  EXPECT_EQ(model.native_state(0).chunks, 1U);
+  EXPECT_EQ(model.native_state(3).chunks, 1U);
+  EXPECT_EQ(model.native_state(1).chunks, 1U);
+  const std::array<rt::Llm::GenerationSession*, 2> within_capacity = {opened_b->get(),
+                                                                      opened_a->get()};
+  ASSERT_TRUE(model.RunGenerationWave(within_capacity).has_value());
+  ASSERT_TRUE(model.RunGenerationWave(within_capacity).has_value());
+  ASSERT_TRUE((*opened_a)->Finish().has_value());
+  ASSERT_TRUE((*opened_b)->Finish().has_value());
+  EXPECT_THAT(result_a.tokens, ElementsAre(1, 2, 3));
+  EXPECT_THAT(result_b.tokens, ElementsAre(3, 4, 5));
+  EXPECT_THAT(result_c.tokens, ElementsAre(5));
+  (*opened_c)->Cancel();
+  ASSERT_TRUE((*opened_c)->Finish().has_value());
+  EXPECT_THAT((*c)->history(), ElementsAre(4));
+  EXPECT_EQ(model.native_state(1).chunks, 1U);
+}
+
+TEST(LlmScores, AGenerationWavePreparationRefusalKeepsAnAlreadyPreparedPeer) {
+  NativeBranchesFake model;
+  auto a = model.branch(1);
+  auto b = model.branch(2);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  std::vector<float> last_a;
+  std::vector<float> last_b;
+  ASSERT_TRUE((*a)->Prefill(std::array<std::int32_t, 1>{0}, last_a).has_value());
+  ASSERT_TRUE((*b)->Prefill(std::array<std::int32_t, 1>{2}, last_b).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 3;
+  options.stop = false;
+  rt::Generation result_a;
+  rt::Generation result_b;
+  auto opened_a = (*a)->BeginGeneration(last_a, options, result_a);
+  auto opened_b = (*b)->BeginGeneration(last_b, options, result_b);
+  ASSERT_TRUE(opened_a.has_value());
+  ASSERT_TRUE(opened_b.has_value());
+  model.native_state(1).fail_prepare = true;
+  // The peer is already prepared when the second request refuses growth.
+  const std::array<rt::Llm::GenerationSession*, 2> both = {opened_b->get(), opened_a->get()};
+  ASSERT_TRUE(model.RunGenerationWave(both).has_value());
+  EXPECT_TRUE((*opened_a)->done());
+  EXPECT_FALSE((*opened_b)->done());
+  EXPECT_THAT(result_a.tokens, ElementsAre(1));
+  EXPECT_THAT(result_b.tokens, ElementsAre(3, 4));
+  EXPECT_FALSE((*opened_a)->Finish().has_value());
+  EXPECT_EQ((*a)->history(), model.native_state(1).target);
+  const std::array<rt::Llm::GenerationSession*, 1> peer = {opened_b->get()};
+  ASSERT_TRUE(model.RunGenerationWave(peer).has_value());
+  ASSERT_TRUE((*opened_b)->Finish().has_value());
+  EXPECT_THAT(result_b.tokens, ElementsAre(3, 4, 5));
+  EXPECT_EQ((*b)->history(), model.native_state(2).target);
+}
+
+TEST(LlmScores, AGenerationWaveSamplingErrorPublishesTheCompletedPeer) {
+  NativeBranchesFake model;
+  auto a = model.branch(1);
+  auto b = model.branch(2);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  std::vector<float> last_a;
+  std::vector<float> last_b;
+  ASSERT_TRUE((*a)->Prefill(std::array<std::int32_t, 1>{0}, last_a).has_value());
+  ASSERT_TRUE((*b)->Prefill(std::array<std::int32_t, 1>{2}, last_b).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 3;
+  options.stop = false;
+  options.sampling =
+      jitllm::execution::SamplingParams{.temperature = 1, .top_k = 1, .top_p = 1, .min_p = 0};
+  rt::Generation result_a;
+  rt::Generation result_b;
+  auto opened_a = (*a)->BeginGeneration(last_a, options, result_a);
+  auto opened_b = (*b)->BeginGeneration(last_b, options, result_b);
+  ASSERT_TRUE(opened_a.has_value());
+  ASSERT_TRUE(opened_b.has_value());
+  model.nonfinite_wave_row = 1;
+  const std::array<rt::Llm::GenerationSession*, 2> both = {opened_a->get(), opened_b->get()};
+  ASSERT_TRUE(model.RunGenerationWave(both).has_value());
+  EXPECT_TRUE((*opened_a)->done());
+  EXPECT_FALSE((*opened_b)->done());
+  EXPECT_FALSE((*opened_a)->Finish().has_value());
+  // The failed choice follows a completed native anchor, which stays known.
+  EXPECT_THAT((*a)->history(), ElementsAre(0, 1));
+  EXPECT_EQ((*a)->history(), model.native_state(1).target);
+  const std::array<rt::Llm::GenerationSession*, 1> peer = {opened_b->get()};
+  ASSERT_TRUE(model.RunGenerationWave(peer).has_value());
+  ASSERT_TRUE((*opened_b)->Finish().has_value());
+  EXPECT_THAT(result_b.tokens, ElementsAre(3, 4, 5));
+  EXPECT_EQ((*b)->history(), model.native_state(2).target);
+}
+
+TEST(LlmScores, ADiscardedWaveJudgementPreservesOnlyItsOwnPriorPrefixAndCursor) {
+  NativeBranchesFake model(true);
+  auto a = model.branch(1);
+  auto b = model.branch(2);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  std::vector<float> last_a;
+  std::vector<float> last_b;
+  ASSERT_TRUE((*a)->Prefill(std::array<std::int32_t, 1>{0}, last_a).has_value());
+  ASSERT_TRUE((*b)->Prefill(std::array<std::int32_t, 1>{2}, last_b).has_value());
+  const auto target_a = model.native_state(1).target;
+  const auto drafter_a = model.native_state(1).injection;
+  model.pending_cursor(**a) = 3;
+  model.pending_cursor(**b) = 4;
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  rt::Generation result_a;
+  rt::Generation result_b;
+  auto opened_a = (*a)->BeginGeneration(last_a, options, result_a);
+  auto opened_b = (*b)->BeginGeneration(last_b, options, result_b);
+  ASSERT_TRUE(opened_a.has_value());
+  ASSERT_TRUE(opened_b.has_value());
+  model.failed_wave_judgement = 1;
+  const std::array<rt::Llm::GenerationSession*, 2> both = {opened_a->get(), opened_b->get()};
+  ASSERT_TRUE(model.RunGenerationWave(both).has_value());
+  EXPECT_FALSE((*opened_a)->Finish().has_value());
+  EXPECT_EQ((*a)->history(), target_a);
+  EXPECT_EQ(model.native_state(1).target, target_a);
+  EXPECT_EQ(model.native_state(1).injection, drafter_a);
+  EXPECT_EQ(model.pending_cursor(**a), 3U);
+  ASSERT_TRUE((*opened_b)->Finish().has_value());
+  EXPECT_THAT(result_b.tokens, ElementsAre(3, 2, 3, 4));
+  EXPECT_EQ((*b)->history(), model.native_state(2).target);
+  EXPECT_EQ(model.pending_cursor(**b), 4U);
+  EXPECT_FALSE(model.native_state(2).pending);
 }
 
 TEST(LlmScores, ResumablePromptAdmissionIsHostOnlyAndOwnsItsPrompt) {

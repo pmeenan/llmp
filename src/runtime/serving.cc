@@ -413,6 +413,9 @@ class Qwen38 final : public Llm {
                                  model::Qwen38MostRows(entry.context, false));
     options_.max_rows = max_rows_;
     options_.graphs = true;
+    // Two execution slots share weights and workspace while each branch
+    // retains its own native state and adaptive decoding policy.
+    options_.wave_slots = 2;
     if (speculate_) {
       options_.drafter = roles.installed / drafter_id_;
       options_.draft_rows = max_rows_ >= 4 ? 3 : 2;
@@ -420,6 +423,36 @@ class Qwen38 final : public Llm {
   }
 
   engine::PagedModel& paged() override { return runner_; }
+
+  std::string allocation_report() const override {
+    const auto b = runner_.setup_budget();
+    const auto workspace = std::format(
+        "\"scalar_activation_bytes\":{},\"provisioned_activation_bytes\":{},"
+        "\"scalar_scratch_bytes\":{},\"provisioned_scratch_bytes\":{},"
+        "\"scalar_input_staging_bytes\":{},\"provisioned_input_staging_bytes\":{},"
+        "\"scalar_host_input_bytes\":{},\"provisioned_host_input_bytes\":{}",
+        b.scalar_activations, b.activations, b.scalar_scratch, b.scratch, b.scalar_staging_inputs,
+        b.staging_inputs, b.scalar_host_inputs, b.host_inputs);
+    const auto fixed = std::format(
+        "\"scalar_ple_mapped_bytes\":{},\"provisioned_ple_mapped_bytes\":{},"
+        "\"scalar_pinned_bytes\":{},\"provisioned_pinned_bytes\":{},"
+        "\"wave_output_pinned_bytes\":{},\"scalar_snapshot_per_branch_bytes\":{},"
+        "\"provisioned_snapshot_per_branch_bytes\":{},\"runner_mapped_bytes\":{}",
+        b.scalar_ple_mapped, b.ple_mapped, b.scalar_pinned, b.pinned, b.wave_output_pinned,
+        b.scalar_snapshot_per_branch, b.snapshot_per_branch, b.runner_mapped);
+    const auto state = std::format(
+        "\"target_layout_per_branch_bytes\":{},\"drafter_layout_per_branch_bytes\":{},"
+        "\"virtual_extent_per_branch_bytes\":{},\"initialized_logical_bytes\":{},"
+        "\"initialized_extent_bytes\":{}",
+        b.target_per_branch, b.drafter_per_branch, b.virtual_per_branch, b.initialized_logical,
+        b.initialized_extent_bytes);
+    return std::format(
+        "{{\"format\":\"jitllm-qwen-wave-setup-budget-v1\",\"context\":{},"
+        "\"prefill_rows\":{},\"wave_capacity\":{},\"branch_count\":{},"
+        "\"speculative\":{},\"draft_rows\":{},{},{},{}}}",
+        context_, max_rows_, runner_.wave_capacity(), branches(), speculate_, options_.draft_rows,
+        workspace, fixed, state);
+  }
 
   Status Setup() override {
     auto artifact = OpenTrusted(store_, artifact_id_);
@@ -559,6 +592,8 @@ class Qwen38 final : public Llm {
   std::uint32_t usable_context() const override {
     return speculate_ ? context_ - runner_.draft_rows() : context_;
   }
+  bool supports_generation_waves() const override { return runner_.waves_provisioned(); }
+  std::size_t generation_wave_capacity() const override { return runner_.wave_capacity(); }
 
  protected:
   Status RunChunk(std::span<const std::int32_t> all, std::uint32_t n_past, bool inject,
@@ -677,8 +712,7 @@ class Qwen38 final : public Llm {
                      std::vector<std::vector<float>>* logits, std::uint64_t& drafted) override {
     // Sampling's position keys keep their existing fixed draft schedule.
     // Greedy chooses its depth from deterministic acceptance observations.
-    const auto depth =
-        sampling(branch) || runner_.draft_rows() < 3 ? 2U : BranchDecoding(branch).Choose();
+    const auto depth = DraftDepthFor(branch);
     if (depth > options_.context - pos) {
       return Error("the drafts would pass the context");
     }
@@ -699,9 +733,144 @@ class Qwen38 final : public Llm {
         !r) {
       return r;
     }
+    return JudgeVerify(branch, drafts, pos, depth, argmax, verified, kept, logits, drafted);
+  }
+  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) override {
+    if (!speculate_) {
+      return NativeSlot(branch).ReserveStateThrough(pos + 1);
+    }
+    const auto depth = DraftDepthFor(branch);
+    if (depth > context_ - pos) {
+      return Error("the drafts would pass the context");
+    }
+    const auto verify_rows = std::min({depth + 1, left, context_ - pos});
+    // Draft reprocesses tokens ending before the anchor; its final pass
+    // ends at pos + depth - 1. Verify includes the anchor itself.
+    return NativeSlot(branch).ReserveStateThrough(pos + std::max(depth - 1, verify_rows));
+  }
+
+  Status ClearStateFor(Branch& branch) override {
+    BranchDecoding(branch) = execution::AdaptiveDepth(3);
+    return NativeSlot(branch).Clear();
+  }
+  void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
+  void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
+  execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
+    return BranchDecoding(branch);
+  }
+  void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) override {
+    BranchDecoding(branch) = state;
+  }
+
+  bool GenerationCohortUsable() const override { return runner_.cohort_usable(); }
+
+  Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) override {
+    if (!runner_.waves_provisioned()) {
+      return Llm::RunPreparedGenerationWave(prepared);
+    }
+    if (!speculate_) {
+      std::vector<engine::Qwen38Runner::ChunkWork> chunks;
+      chunks.reserve(prepared.size());
+      for (PreparedGeneration& unit : prepared) {
+        chunks.push_back({.slot = &NativeSlot(*unit.branch),
+                          .history = unit.step.all,
+                          .n_past = unit.step.position,
+                          .logits = &unit.row});
+      }
+      return runner_.ChunkWave(chunks);
+    }
+
+    // These owners never move once the borrowed descriptors are made. Each
+    // completed Draft/VerifyWave consumes its inputs before this frame ends.
+    struct Frame {
+      std::uint32_t depth = 0;
+      std::vector<std::int32_t> drafts;
+      std::vector<std::int32_t> input;
+      std::vector<std::int32_t> argmax;
+      std::vector<float> verified;
+    };
+    std::vector<Frame> frames(prepared.size());
+    std::vector<engine::Qwen38Runner::DraftWork> drafts;
+    drafts.reserve(prepared.size());
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+      PreparedGeneration& unit = prepared[i];
+      Frame& frame = frames[i];
+      frame.depth = DraftDepthFor(*unit.branch);
+      if (frame.depth > context_ - unit.step.position) {
+        return Error("the drafts would pass the context");
+      }
+      drafts.push_back({.slot = &NativeSlot(*unit.branch),
+                        .history = unit.step.all,
+                        .drafts = &frame.drafts,
+                        .passes = frame.depth});
+    }
+    if (auto ran = runner_.DraftWave(drafts); !ran) {
+      return ran;
+    }
+    std::vector<engine::Qwen38Runner::VerifyWork> verifies;
+    verifies.reserve(prepared.size());
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+      PreparedGeneration& unit = prepared[i];
+      Frame& frame = frames[i];
+      // Keep the scalar schedule: all requested draft passes run, then the
+      // verify is truncated independently by this branch's output/context.
+      const auto rows =
+          std::min<std::uint32_t>({static_cast<std::uint32_t>(frame.drafts.size()) + 1,
+                                   unit.step.left, context_ - unit.step.position});
+      frame.drafts.resize(rows - 1);
+      frame.input.assign(unit.step.all.begin(), unit.step.all.end());
+      frame.input.insert(frame.input.end(), frame.drafts.begin(), frame.drafts.end());
+      verifies.push_back(
+          {.slot = &NativeSlot(*unit.branch),
+           .history = frame.input,
+           .n_past = unit.step.position,
+           .argmax = &frame.argmax,
+           .logits = unit.step.need_logits || sampling(*unit.branch) ? &frame.verified : nullptr});
+    }
+    if (auto ran = runner_.VerifyWave(verifies); !ran) {
+      return ran;
+    }
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+      PreparedGeneration& unit = prepared[i];
+      const Frame& frame = frames[i];
+      unit.result = JudgeVerify(*unit.branch, frame.drafts, unit.step.position, frame.depth,
+                                frame.argmax, frame.verified, unit.kept,
+                                unit.step.need_logits ? &unit.logits : nullptr, unit.drafted);
+      if (!unit.result) {
+        // The shared Verify completed; only this branch's host judgement
+        // failed. Undo its own completed verify before preserving its prefix.
+        if (auto rolled = NativeSlot(*unit.branch).DiscardVerify(); !rolled) {
+          if (!runner_.cohort_usable()) {
+            return Error(
+                std::format("{}; rolling back failed: {}", unit.result.error(), rolled.error()));
+          }
+          unit.result = Error(
+              std::format("{}; rolling back failed: {}", unit.result.error(), rolled.error()));
+        } else {
+          unit.failed_prefix_valid = true;
+        }
+      }
+    }
+    return {};
+  }
+
+ private:
+  std::uint32_t DraftDepthFor(const Branch& branch) const {
+    return sampling(branch) || runner_.draft_rows() < 3 ? 2U : BranchDecoding(branch).Choose();
+  }
+  Status JudgeVerify(Branch& branch, std::span<const std::int32_t> drafts, std::uint32_t pos,
+                     std::uint32_t depth, std::span<const std::int32_t> argmax,
+                     std::span<const float> verified, std::vector<std::int32_t>& kept,
+                     std::vector<std::vector<float>>* logits, std::uint64_t& drafted) {
+    const auto rows = static_cast<std::uint32_t>(drafts.size()) + 1;
     const std::uint32_t vocab = runner_.vocab();
+    // Validate the runner's whole completed result before using borrowed rows.
+    if (argmax.size() != rows ||
+        ((logits != nullptr || sampling(branch)) && verified.size() != std::size_t{rows} * vocab)) {
+      return Error("a Qwen verify returned inconsistent token/logit counts");
+    }
     const auto row = [&](std::uint32_t i) {
-      return std::span<const float>(verified).subspan(std::size_t{i} * vocab, vocab);
+      return verified.subspan(std::size_t{i} * vocab, vocab);
     };
     std::uint32_t m = 0;
     std::int32_t next = -1;
@@ -755,35 +924,6 @@ class Qwen38 final : public Llm {
     }
     return {};
   }
-  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) override {
-    if (!speculate_) {
-      return NativeSlot(branch).ReserveStateThrough(pos + 1);
-    }
-    const auto depth =
-        sampling(branch) || runner_.draft_rows() < 3 ? 2U : BranchDecoding(branch).Choose();
-    if (depth > context_ - pos) {
-      return Error("the drafts would pass the context");
-    }
-    const auto verify_rows = std::min({depth + 1, left, context_ - pos});
-    // Draft reprocesses tokens ending before the anchor; its final pass
-    // ends at pos + depth - 1. Verify includes the anchor itself.
-    return NativeSlot(branch).ReserveStateThrough(pos + std::max(depth - 1, verify_rows));
-  }
-
-  Status ClearStateFor(Branch& branch) override {
-    BranchDecoding(branch) = execution::AdaptiveDepth(3);
-    return NativeSlot(branch).Clear();
-  }
-  void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
-  void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
-  execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
-    return BranchDecoding(branch);
-  }
-  void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) override {
-    BranchDecoding(branch) = state;
-  }
-
- private:
   engine::Qwen38Runner::Slot& NativeSlot(Branch& branch) {
     const auto index = BranchIndex(branch);
     base::Check(native_slots_[index] != nullptr, "native conversation slots are not ready");
@@ -1979,6 +2119,104 @@ Status Llm::GenerationSession::RunScalarStep() {
   return ApplyPlain(std::move(row));
 }
 
+Status Llm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
+  // Families without a shared implementation retain the ordinary one-slot
+  // unit. This fallback never advertises multi-request shared dispatch.
+  if (prepared.size() != 1) {
+    return Error("this model has no shared generation implementation");
+  }
+  PreparedGeneration& unit = prepared.front();
+  if (unit.step.speculative) {
+    return SpecStepFor(*unit.branch, unit.step.all, unit.step.position, unit.step.left, unit.kept,
+                       unit.step.need_logits ? &unit.logits : nullptr, unit.drafted);
+  }
+  return RunChunkFor(*unit.branch, unit.step.all, unit.step.position, false, unit.row);
+}
+
+Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions) {
+  if (sessions.empty() || sessions.size() > kMaxBranches ||
+      sessions.size() > generation_wave_capacity() ||
+      (sessions.size() > 1 && !supports_generation_waves())) {
+    return Error("the generation cohort exceeds this model's capability");
+  }
+  std::array<bool, kMaxBranches> selected{};
+  for (GenerationSession* session : sessions) {
+    if (session == nullptr || &session->model_ != this || session->done() || session->prepared_ ||
+        session->finished_) {
+      return Error("a generation cohort contains an inactive or foreign session");
+    }
+    const std::size_t slot = BranchIndex(session->branch_);
+    if (selected[slot]) {
+      return Error("a generation cohort repeats a native branch");
+    }
+    selected[slot] = true;
+  }
+  std::vector<PreparedGeneration> prepared;
+  prepared.reserve(sessions.size());
+  const auto fail_cohort = [&](const std::string& error) {
+    for (GenerationSession* session : sessions) {
+      if (session->prepared_) {
+        [[maybe_unused]] const auto failed = session->FailStep(error);
+      } else {
+        session->ran_ = Error(error);
+        session->failed_prefix_valid_ = false;
+      }
+    }
+  };
+  for (GenerationSession* session : sessions) {
+    auto step = session->PrepareStep();
+    if (!step) {
+      // PrepareStep records this session's own terminal error. A refusal
+      // confined to its branch does not discard another prepared step.
+      if (!GenerationCohortUsable()) {
+        fail_cohort(step.error());
+        return std::unexpected(step.error());
+      }
+      continue;
+    }
+    prepared.push_back({.session = session,
+                        .branch = &session->branch_,
+                        .step = *step,
+                        .row = {},
+                        .kept = {},
+                        .logits = {},
+                        .drafted = 0,
+                        .result = {},
+                        .failed_prefix_valid = false});
+  }
+  if (prepared.empty()) {
+    return {};  // every session retains its own preparation error
+  }
+  std::ranges::sort(prepared, {},
+                    [this](const PreparedGeneration& unit) { return BranchIndex(*unit.branch); });
+  if (auto ran = RunPreparedGenerationWave(prepared); !ran) {
+    for (PreparedGeneration& unit : prepared) {
+      unit.session->out_.drafted += unit.drafted;
+    }
+    fail_cohort(ran.error());
+    return ran;
+  }
+  for (PreparedGeneration& unit : prepared) {
+    if (!unit.result) {
+      unit.session->out_.drafted += unit.drafted;
+      [[maybe_unused]] const auto failed =
+          unit.session->FailStep(unit.result.error(), unit.failed_prefix_valid);
+    } else {
+      // Apply owns any ordinary sampling/callback error on this session.
+      // Completed peers still receive their results in branch order.
+      (void)(unit.step.speculative ? unit.session->ApplySpeculative(
+                                         std::move(unit.kept), std::move(unit.logits), unit.drafted)
+                                   : unit.session->ApplyPlain(std::move(unit.row)));
+    }
+    if (!GenerationCohortUsable()) {
+      const std::string error = "the native generation cohort became unusable";
+      fail_cohort(error);
+      return Error(error);
+    }
+  }
+  return {};
+}
+
 void Llm::GenerationSession::Cancel() {
   base::Check(!finished_ && !prepared_, "cancelling a generation away from a completed boundary");
   out_.cancelled = true;
@@ -2260,6 +2498,9 @@ Status Server::Start(bool snapshot) {
     Log(std::format("model {}: set up in {:.2f} s, {} weight extents ({:.2f} GB read a load){}",
                     m->name(), Seconds(Clock::now() - started), m->weights().size(),
                     static_cast<double>(m->weight_read_bytes()) / 1e9, chunks));
+    if (const auto report = m->allocation_report(); !report.empty()) {
+      Log(std::format("allocation model {}: {}", m->name(), report));
+    }
   }
   if (auto r = node_.MapWorkspace(activations, pool); !r) {
     return r;
@@ -2277,11 +2518,18 @@ Status Server::Start(bool snapshot) {
   // the most any model's chunk builds, not their sum.
   host_inputs_ = host_inputs;
   const std::uint64_t available = MemorySampler::Available();
-  if (auto guard = CheckMemoryGuard({.largest = largest,
-                                     .host_inputs = host_inputs,
-                                     .available = available,
-                                     .fixed = fixed_});
-      !guard) {
+  const auto guard = CheckMemoryGuard(
+      {.largest = largest, .host_inputs = host_inputs, .available = available, .fixed = fixed_});
+  Log(
+      std::format("allocation guard: {{\"format\":\"jitllm-wave-startup-guard-v1\","
+                  "\"fixed_catalog_bytes\":{},\"shared_activation_bytes\":{},"
+                  "\"shared_scratch_bytes\":{},\"largest_weight_extent_bytes\":{},"
+                  "\"host_input_bytes\":{},\"uncounted_margin_bytes\":{},"
+                  "\"available_after_fixed_bytes\":{},\"available_known\":{},"
+                  "\"guard_passed\":{},\"registered_state_virtual_extent_bytes\":{}}}",
+                  fixed_, activations, pool, largest, host_inputs, kUncountedMargin, available,
+                  available != 0, guard.has_value(), node_.StateCapacity()));
+  if (!guard) {
     return std::unexpected(guard.error());
   }
   // State is charged as it grows. Keep the physical execution cap below
@@ -2345,6 +2593,57 @@ Status Server::InRequest(Served& m, const std::function<Status()>& body) {
   }
   return node_.WithRequest(m.paged().stream(), m.request_closure(),
                            std::format("{}'s request", m.name()), body);
+}
+
+Status Server::SelectRequestBranches(Llm& model, std::span<Llm::Branch* const> active) {
+  if (!started_ || torn_down_ || resident_ != &model || active.empty() ||
+      std::ranges::none_of(models_, [&](const auto& owned) { return owned.get() == &model; })) {
+    return Error("a cooperative request needs its resident model and active branches");
+  }
+  if (auto selected = model.SelectBranches(active); !selected) {
+    return selected;
+  }
+  const auto stream = model.paged().stream();
+  if (node_.InRequest(stream)) {
+    return node_.RefreshRequest(stream, model.request_closure());
+  }
+  return node_.BeginRequest(stream, model.request_closure(),
+                            std::format("{}'s request cohort", model.name()));
+}
+
+Status Server::EndRequestBranches(Llm& model) {
+  if (!started_ || torn_down_ || resident_ != &model) {
+    return Error("a retiring request cohort does not own the resident model");
+  }
+  const auto stream = model.paged().stream();
+  // A proven failed job or state helper can already have ended its request.
+  // The caller must separately prove that no work still borrows its owners.
+  return node_.InRequest(stream) ? node_.EndRequest(stream) : Status{};
+}
+
+Server::ReferenceRetirement Server::RetireRequestBranches(Llm& model, bool last_owner) {
+  if (!started_ || torn_down_ || resident_ != &model || !model.generation_cohort_usable()) {
+    return {.result = Error("the native cohort cannot prove reference retirement"),
+            .references_retired = false};
+  }
+  const auto stream = model.paged().stream();
+  bool queued = false;
+  auto fenced = node_.Job(
+      model.request_closure(),
+      [&queued](providers::NativeStream) {
+        queued = true;
+        // kQueued requires the DeviceLane to record and await its completion
+        // fence, even though this job queues no arithmetic or copies itself.
+        return scheduler::JobResult::kQueued;
+      },
+      "retiring native request-owner references", stream);
+  if (!fenced || !queued) {
+    return {.result = !fenced ? std::move(fenced) : Error("the retirement fence was not queued"),
+            .references_retired = false};
+  }
+  // The known-complete stream fence is the proof. An EndRequest error does
+  // not revoke it: EndRequest itself awaits ProgramDone::gone before return.
+  return {.result = last_owner ? EndRequestBranches(model) : Status{}, .references_retired = true};
 }
 
 Status Server::WaitReleased() {

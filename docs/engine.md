@@ -84,7 +84,20 @@ weights, launch context, stream, staging and workspace remain shared. The scalar
 runner methods use slot zero. `SelectSlots` selects an execution closure over the
 active slots at a completed unit boundary; the runner's aggregate state and swap
 closure include every initialized slot, including idle retained conversations.
-The graph cap applies across all slots.
+The graph cap applies across all slots. Serving provisions two concurrent
+execution slots separately from these four stable state slots, with conservative
+activation, scratch, staging and host-input bounds checked before work.
+
+`qwen38_wave_plan.h` composes fresh per-slot plans without rewriting scalar
+caches. It pairs compatible target/draft MXFP8 and routed vector products at up
+to eight rows, charging concatenation and retaining independent output views.
+Eligible equal three- or four-row BF16 target heads pair through the ordinary
+six- or eight-column MMF selector; mixed and unsupported heads stay original.
+Stateful operations and draft heads stay independent. `TargetWave` and
+`DraftWave` validate placement
+and bindings before dispatch, then publish outputs only after the completed job.
+Each successful verify retains its own snapshot until acceptance or explicit
+discard restores that branch's prior target and MTP state.
 
 Clearing or restoring one destination first renews the request's protection of
 its peers, then discards only the destination's eligible backing and renews the
@@ -92,8 +105,10 @@ selected closure. A separately held destination refuses discard. A proven local
 failure while discarding the destination invalidates that slot; clean validation
 refusals preserve the existing state. An unproven device or shared-execution failure
 stops the cohort and preserves borrowed owners until retirement is established.
-The serving adapter forwards each host branch to its corresponding native slot;
-the production API backend still runs requests serially.
+The serving adapter forwards each host branch to its corresponding native slot.
+The production Qwen chat backend drives prompt and generation units through the
+shared driver seams; other families and literal completions retain scalar entry
+points. A native fence proves retirement before any borrowed owner is released.
 
 ## Adding a model family
 
@@ -201,7 +216,8 @@ rather than works around:
   or checkpoint capture as separate completed units. The legacy prompt path
   drives the same session. This seam applies to both LLMs and keeps native
   state, chunk arithmetic and completion ownership in their existing runners.
-  The production API backend still needs the cooperative scheduling connection.
+  The production Qwen chat backend uses this seam to interleave prompt units and
+  peer decode without moving a borrowed request frame.
 - **Deterministic top-k and sparse prefill attention**: graph builders and
   kernels (`kernels/ggml/`), selected per shape by the plan; the skeleton's
   plan cache and graphs take them unchanged, and a prefill shape's capture

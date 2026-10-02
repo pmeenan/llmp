@@ -1160,6 +1160,10 @@ class FakeCooperative final : public api::CooperativeBackend {
   }
   std::expected<std::unique_ptr<Work>, api::Error> Start(const Request& request,
                                                          api::Exchange& exchange) override {
+    if (live.load() >= capacity.load()) {
+      ++capacity_deferrals;
+      return std::unique_ptr<Work>{};  // No owner, Admit, output or borrowed descriptor.
+    }
     if (request.literal == nullptr && request.options.messages.back().content == "bad") {
       ++rejections;
       return std::unexpected(api::Error{.status = 400,
@@ -1247,6 +1251,7 @@ class FakeCooperative final : public api::CooperativeBackend {
   }
 
   std::atomic<unsigned> started{0}, advances{0}, peak{0}, polls{0}, live{0};
+  std::atomic<unsigned> capacity{api::kMaxActiveRequests}, capacity_deferrals{0};
   std::atomic<unsigned> cancelled{0}, retired{0}, destroyed{0}, deferrals{0};
   std::atomic<unsigned> rejections{0}, rejections_between_units{0};
   std::atomic<bool> pause_units{false}, release{false}, fail_unit{false};
@@ -2498,6 +2503,39 @@ TEST_F(ServerTest, CooperativeRequestsJoinAnExistingDecodeAndStayBounded) {
   (void)::close(first);
   ASSERT_TRUE(WaitFor([&] { return cooperative_->destroyed.load() == 5; }));
   EXPECT_EQ(cooperative_->retired.load(), 5U);
+  EXPECT_EQ(backend_.chat_calls.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, CooperativeCapacityDefersThenRefillsWithoutSerialFallback) {
+  StartCooperative();
+  cooperative_->capacity.store(2);
+  cooperative_->pause_units.store(true);
+  const int first = Connect(Post(Chat("long", R"(,"max_tokens":12)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int second = Connect(Post(Chat("short", R"(,"max_tokens":4,"capacity_second":true)")));
+  const int third = Connect(Post(Chat("short", R"(,"max_tokens":4,"capacity_third":true)")));
+  // Authenticate both pending requests before completing the blocked unit.
+  ASSERT_TRUE(WaitFor([&] {
+    const auto ignored =
+        Exchange("GET /jitllm/v1/ignored-fields HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    return ignored.contains("capacity_second") && ignored.contains("capacity_third");
+  }));
+  cooperative_->release.store(true);
+  std::string pending;
+  for (const int fd : {second, third}) {
+    EXPECT_THAT(ReadResponse(fd, pending),
+                AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("content":"xxxx")")));
+    (void)::close(fd);
+  }
+  EXPECT_THAT(ReadResponse(first, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":12)")));
+  (void)::close(first);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->destroyed.load() == 3; }));
+  EXPECT_EQ(cooperative_->peak.load(), 2U);
+  EXPECT_GT(cooperative_->capacity_deferrals.load(), 0U);
+  EXPECT_EQ(cooperative_->started.load(), 3U);
+  EXPECT_EQ(cooperative_->retired.load(), 3U);
   EXPECT_EQ(backend_.chat_calls.load(), 0U);
   EXPECT_FALSE(cooperative_->early_destruction.load());
 }

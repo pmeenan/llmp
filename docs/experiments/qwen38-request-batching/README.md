@@ -444,3 +444,72 @@ both services and twelve commands per screen exit zero and are reaped.
 Terminal probes are clear at 117.138/117.123 GiB. Raw captures remain outside
 Git in `/home/pmeenan/scratch/m3-qwen-cooperative-head-factor-*-r1-records/`.
 Production suites are owed before adoption.
+
+## Adaptive implementation screen
+
+The cleaned implementation preserves adaptive depth two/three, the selected
+47172-row drafter, context 262144 and 4096-row prefill chunks. Its comparator
+changes only the cooperative-backend return value; both profiles fund the
+same two-request workspace and four retained branch slots. One fresh
+observation per cell, after an identical excluded one-token weight prime on
+Spark B, gives:
+
+| Requests | Serial wall / aggregate rate | Shared wall / aggregate rate | Rate change |
+| --- | --- | --- | --- |
+| C1 | 10.559027 s / 24.244658 tok/s | 10.447573 s / 24.503298 tok/s | +1.0668% |
+| C2 | 19.830179 s / 25.819233 tok/s | 19.739224 s / 25.938203 tok/s | +0.4608% |
+
+All six measured responses have 8266 prompt tokens, zero cached tokens,
+256 output tokens and a length finish, with exact text, reasoning, usage
+and finish against their controls. The first C2 completion moves from
+9.836625 to 19.562554 seconds; the last from 19.830113 to 19.739156 seconds.
+These clocks include fresh prefill, queueing, generation and HTTP work.
+There is no useful speed separation in this short adaptive screen, so it
+does not justify adopting shared execution as a default speed improvement.
+Native IDs, shared-head counts and pure decode timings are unavailable here.
+Depth-two verification has three target rows, outside the tested four-row
+head-sharing guard; extending that guard is a separate next factor.
+
+That four-row-only source passes 1250 locked Spark tests, including 258 GPU tests,
+in 80.70 seconds, plus changed-unit format/tidy, portability and license/header
+checks. Successful check `eb11f56e` binds runtime `340f6903`; adaptive HTTP
+receipt `ce35909c` completed 2026-10-02 01:14:51 EDT. Both services and all
+supervised children exited successfully and were reaped, with 116.953 GiB
+available and terminal probes clear. Startup guards cover this deployment,
+not populated maximum-context memory or a comparator memory ratio.
+Workstation checks remain deferred. Raw records stay outside Git under
+`/home/pmeenan/scratch/m3-qwen-cooperative-production-records/`.
+
+## Three-row heads under unchanged adaptive depth
+
+Depth-two verification produces three target rows. Extending the same
+BF16 head guard to equal three-row branches combines them in an ordinary
+six-column MMF product; equal four-row branches still use eight columns.
+Both profiles execute cooperative waves with the same adaptive policy,
+selected drafter, provisioning and excluded weight prime as above. Only
+three-row head sharing changes.
+
+| Profile order | Head OFF pair, s | Head ON pair, s | Aggregate rate change |
+| --- | ---: | ---: | ---: |
+| OFF then ON | 19.789511259 | 19.300846966 | +2.5318% |
+| ON then OFF | 19.670638327 | 19.411938460 | +1.3327% |
+
+Pooling the two observations per arm gives a descriptive 1.9305% rate
+gain. All eight measured responses have 8266 prompt tokens, zero cached
+tokens and 256 outputs, with identical content, reasoning, usage and
+length finish across both profiles and orders. The separate native control
+compares four complete 744960-word F32 heads byte for byte, with exact
+draft/verdict IDs, histories, keeps and pending cursors. A combined head
+pays 61440 input bytes; scratch remains 2377728 bytes. These results select
+the three/four-row guard, without establishing cross-engine parity or
+removing the earlier shared-versus-serial first-completion regression.
+
+The selected implementation passes all 1251 locked Spark tests, including
+258 GPU tests, in 80.97 seconds; format, changed-unit tidy, boundary,
+headers and REUSE pass. Two tidy units run fresh and five unchanged units
+reuse their authenticated source/compiler/SDK proofs. Actual final check
+`8b029fdb` binds runtime `7e477cac`; native control `15b919c6` and HTTP
+screens `387994fa` / `219990ad` bind the head factor. Every service and
+supervised child exits successfully and is reaped. Workstation checks
+remain deferred. Raw records stay outside Git under
+`/home/pmeenan/scratch/m3-qwen-head-three-*-records/`.

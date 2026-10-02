@@ -58,6 +58,11 @@ class RunnerResources {
   // Pinned host memory, cataloged as the runner's staging. Before the
   // node runs.
   std::expected<void*, std::string> Pinned(std::uint64_t bytes);
+  // Successful setup allocations only, before the scheduler starts. Device
+  // mappings include extent alignment; pinned bytes include PagedNode's 256
+  // byte minimum. This excludes the shared workspace and growing live state.
+  std::uint64_t mapped_bytes() const;
+  std::uint64_t pinned_bytes() const { return pinned_bytes_; }
 
   // cuBLAS on the model's stream, with upstream's workspace for the
   // device mapped as `name` (runtime memory).
@@ -89,6 +94,7 @@ class RunnerResources {
   std::uint32_t stream_;
   std::vector<Mapped*> mapped_;  // the runner's members, in mapping order
   std::vector<catalog::ExtentId> staging_;
+  std::uint64_t pinned_bytes_ = 0;
   Mapped cublas_workspace_;
   std::uint64_t cublas_bytes_ = 0;
   std::unique_ptr<kernels::ggml::CublasHandle> cublas_;

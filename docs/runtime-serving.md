@@ -350,7 +350,7 @@ bind = ["loopback", "tailscale"]  # the default; a string or a list of 1 to 16
 # bind = ["loopback", "192.168.1.5:9000", "[::]"]   # any address, with a port or not
 port = 8114                       # the port of "loopback", "tailscale" and a bare address
 max_connections = 1024            # open connections, idle ones included: 1 to 65,536
-max_queued = 64                   # requests waiting behind the running one: 1 to 1,024
+max_queued = 64                   # requests waiting behind active work: 1 to 1,024
 stall_seconds = 120               # no progress for this long fails a request: 30 to 3,600
 deadline_cap_seconds = 14400      # a non-streaming request's deadline at most: 60 to 86,400
 ```
@@ -470,7 +470,7 @@ checked before any model work (runtime/api.h):
 | Idle connection | 60 s between requests, told to the client (`Keep-Alive: timeout=60`) | closed | An idle connection costs a descriptor and a small buffer (at most 16 KiB each way: a larger one, a body's or a response's, is freed once its request is done); a minute spans a client's pauses between turns |
 | Connections | 1,024 (`[client] max_connections`) | the oldest idle one is closed for the new one; with none idle, 503 | Agents and their subagents keep pools; each is a descriptor, and the open-file limit is raised to fit |
 | Output not taken | 30 s without progress, or 1 MiB of a stream | the connection is dropped; the generation ends at its next step | A reader that stops reading cannot grow a buffer |
-| Queue | 64 waiting behind the running request (`[client] max_queued`); a non-streaming one 120 s, a stream as long as the backend makes progress | 429, `Retry-After: 10`, `x-should-retry: true`; 503 with the same headers (in-stream once a stream has started) when the backend stalls | One user; a subagent's request waits for the main one instead of failing, a stream (held by keepalives) for as long as a long request ahead of it takes |
+| Queue | 64 waiting behind active work (`[client] max_queued`); a non-streaming one 120 s, a stream as long as the backend makes progress | 429, `Retry-After: 10`, `x-should-retry: true`; 503 with the same headers (in-stream once a stream has started) when the backend stalls | A subagent can share Qwen chat execution; other requests wait, with streams held by keepalives while earlier work progresses |
 | A request | No fixed deadline: 120 s without progress (`[client] stall_seconds`), each unit of work allowed its expected time; a non-streaming one also its work at the model's floors three times over, at most 4 hours (`deadline_cap_seconds`) | 504 (in-stream error when streaming); after a stall, 503 to every request until the backend moves | A long prefill at depth is healthy and a stuck backend is not ([progress and deadlines](#progress-and-deadlines)) |
 
 **Guards and errors.** No credential (D-014 and its owner note); an
@@ -536,9 +536,10 @@ every connection, all non-blocking: it reads requests, answers the model
 list, the table and every refusal itself, and queues valid chat requests;
 it never waits on the model, and no client's pace (a stalled head, a
 reader that stops) holds up another's. The node's driver thread (the main
-thread) takes the queue first come, first served, and runs one request at
-a time, watching the runtime's signals (a signalfd) between requests and
-between generation steps. It never touches a socket: it appends each
+thread) takes the queue first come, first served, sharing compatible Qwen chat
+requests in completed units and running other requests one at a time. It
+watches the runtime's signals (a signalfd) between units. It never touches a
+socket: it appends each
 response's bytes to a buffer, whole events at a time, which the I/O
 thread writes out as the client takes them. A connection that closes
 (not one only half-closed, above) marks its request gone; the generation
@@ -551,21 +552,34 @@ An optional internal `CooperativeBackend` interface lets the same driver own
 up to four stable request frames for one model, admitting new work between
 completed units. Each request retains its own response, deadline and cancellation;
 switching models drains the active group first. Retirement must prove that no
-work still borrows a frame before it can be freed. Focused fake-backend controls
-exercise this path. The production node backend currently supplies no cooperative
-implementation, so deployed requests still run serially.
+work still borrows a frame before it can be freed. The production Qwen chat
+backend funds two active requests. A third waits for retirement and then refills
+the group; a different model or literal completion waits for the group to drain.
+Prefill chunks alternate fairly between branches, with ready decode work between
+them. Compatible small-row target/draft products share weights; independent
+attention, recurrence, logits and commits remain branch-owned. Eligible pairs
+of equal three- or four-row BF16 target heads use one ordinary six- or
+eight-column product with a paid input concatenation. Unsupported shapes keep
+their original products.
+
+Cancellation ends only its request at a completed boundary. Before releasing a
+frame or admitting its replacement, an explicit native stream fence proves
+that copies and jobs have retired. Unknown completion stops shared execution
+and retains the borrowed owners. Other families and `/v1/completions`, including
+likelihood scoring, retain their ordinary serial entry points.
 
 An LLM's stable `Branch` owns its prompt history, sampling key, session guard,
 turn checkpoints and adaptive draft-depth policy. Qwen3.8 maps up to four branches
 to independent native request slots, with one shared set of model weights. Other
 families retain their default branch. Each resumable generation session forwards
 its completed units to its own branch; saving, restoring or clearing a branch
-does not change another branch's history or policy. This state separation is
-groundwork for the cooperative backend; it does not enable concurrent serving.
+does not change another branch's history or policy. Prefix matching chooses a
+reuse opportunity among free branches; it does not identify a conversation.
+The execution capacity of two is separate from the four retained branch slots.
 
 `Branch::BeginPrompt` owns a bounded prompt copy without native work. Its
 `PromptSession` advances one reuse/restore, prefill chunk or turn-checkpoint unit
-at a time, allowing the future cooperative backend to schedule peer decode
+at a time, allowing the cooperative backend to schedule peer decode
 between completed units. The ordinary `PreparePrompt` drives this same session.
 Cancellation preserves the completed token prefix; a failed helper that discarded
 host history still requires a native clear before reuse. A branch admits only
@@ -789,8 +803,9 @@ short DeepSeek and Qwen prompts, with speculation on and off.
 - One process, one model resident at a time: M3's full swap. Partial
   eviction, admission and the switching policy come with M5 and M6.
 - The chat route is M3's minimal one: no tools, no reasoning controls,
-  no credentials (the optional API key is M5's), no CORS, no Responses or Messages routes, one request
-  at a time. The front door is M5's.
+  no credentials (the optional API key is M5's), no CORS, no Responses or
+  Messages routes. Qwen chat shares up to two requests; other families and
+  literal completions run one at a time. The front door is M5's.
 - The tailnet is found at startup; a node whose Tailscale comes up later
   serves it after a restart. `jitllm.service` is ordered after
   `tailscaled.service` (ordering only, no dependency) for that reason.

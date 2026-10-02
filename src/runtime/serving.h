@@ -194,6 +194,9 @@ class Served {
   virtual std::string violations() const { return {}; }
   // The model's own counters, a JSON object.
   virtual std::string extra() const { return "{}"; }
+  // Experimental allocation diagnostics, read after successful Setup and
+  // before node.Start. Empty for runners without detailed diagnostics.
+  virtual std::string allocation_report() const { return {}; }
 
  protected:
   std::string name_;
@@ -503,6 +506,22 @@ class Llm : public Served {
       const std::vector<float>& last, const GenerateOptions& options, Generation& out) &;
   std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
       const std::vector<float>& last, const GenerateOptions&& options, Generation& out) & = delete;
+  // One completed native unit over stable sessions belonging to this model.
+  // The caller selects/leases their branches before entry. Shared dispatch
+  // retains independent judgement, sampling and history publication. A
+  // per-session preparation or sampling error is retained by that session:
+  // it becomes done(), and Finish reports its error while peers continue.
+  // An error return here means invalid cohort input or a shared native error.
+  // Finish settles host ownership; neither success, StateUsable nor Finish
+  // alone proves native-reference retirement after a shared native failure.
+  Status RunGenerationWave(std::span<GenerationSession* const> sessions);
+  virtual bool supports_generation_waves() const { return false; }
+  // Immutable live-owner bound after runner setup. Native branch identifiers
+  // may be sparse; capacity limits simultaneous owners, not their slot IDs.
+  virtual std::size_t generation_wave_capacity() const { return 1; }
+  // A dispatch/fence admission guard only; a healthy cohort is not proof
+  // that native references have retired. The Server fences explicitly.
+  bool generation_cohort_usable() const { return GenerationCohortUsable(); }
   // Drives the same resumable core to completion using ordinary native steps.
   Status Generate(const std::vector<float>& last, const GenerateOptions& options, Generation& out);
   // The whole conversation state (the target's and the drafter's, and the
@@ -517,6 +536,24 @@ class Llm : public Served {
   std::vector<catalog::ExtentId> state() const override = 0;
 
  protected:
+  struct PreparedGeneration {
+    GenerationSession* session = nullptr;
+    Branch* branch = nullptr;
+    GenerationSession::Step step;
+    std::vector<float> row;
+    std::vector<std::int32_t> kept;
+    std::vector<std::vector<float>> logits;
+    std::uint64_t drafted = 0;
+    Status result;
+    // Only after independently restoring this step's starting prefix.
+    bool failed_prefix_valid = false;
+  };
+  // Success means the native unit completed. Each independent judgement
+  // supplies its own result. A shared error supplies no result to apply.
+  virtual Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared);
+  // Execution health only: false prevents dispatch after a shared failure.
+  // This is deliberately separate from native-reference retirement proof.
+  virtual bool GenerationCohortUsable() const { return true; }
   // Called once, after the native slots exist. Other model families retain
   // one default branch and their existing scalar overrides.
   Status PrepareBranches(std::uint32_t count, std::uint32_t draft_depth);
@@ -715,6 +752,21 @@ class Server {
   // `body` as one request of `m` (D-093): its closure leased once, every
   // job of `body` a step under it.
   Status InRequest(Served& m, const std::function<Status()>& body);
+  // A cooperative cohort retains one stream lease between completed units.
+  // The selected branch set can change only at such a boundary. The caller
+  // ends this lease before changing models or freeing the cohort owner.
+  Status SelectRequestBranches(Llm& model, std::span<Llm::Branch* const> active);
+  Status EndRequestBranches(Llm& model);
+  struct ReferenceRetirement {
+    Status result;
+    bool references_retired = false;
+  };
+  // After completed prompt/generation settlement, with the complete active
+  // union selected. A queued no-op job records and waits for a stream fence.
+  // Success of that explicit fence proves reference retirement; an ordinary
+  // error from another operation, or cohort health, does not. End the stream
+  // request only for the last owner; peers keep their selected state leases.
+  ReferenceRetirement RetireRequestBranches(Llm& model, bool last_owner);
   // Every eviction's backing no load took released (after a swap).
   Status WaitReleased();
 

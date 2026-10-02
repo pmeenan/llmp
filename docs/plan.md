@@ -983,8 +983,9 @@ it appears.
       precision and speculation settings. TensorFold's explicit CUDA
       concurrency mode is included; cross-quantization results remain
       labelled. [Protocol](experiments/concurrent-requests/protocol.md).
-      jitLLM currently queues requests to completion; solo performance
-      does not establish concurrent parity. Measure the gap and use it to
+      Qwen chat now shares two active requests; other families retain the queue.
+      Solo performance does not establish concurrent parity. Measure the gap
+      and use it to
       prioritize the continuous-batching work below, advancing the
       necessary implementation when the comparison requires it.
       The [first 8K screens](experiments/concurrent-requests/README.md)
@@ -1019,11 +1020,12 @@ it appears.
       The [private native C2/C4 mechanism controls](experiments/qwen38-request-batching/README.md)
       pair row-local products over independent request states: paid decode
       throughput improves 19.1%/19.6%, with exact IDs, acceptance and final
-      state/cursors. Production request batching and HTTP parity remain open.
+      state/cursors. These private results do not establish HTTP or
+      cross-engine parity.
       The separate [shared BF16 target-head control](experiments/qwen38-target-head-sharing/README.md)
       adds 8.87% paid C4 decode throughput on that paired-product path, with
       byte-identical complete target vectors and exact IDs, acceptance and
-      state. Both mechanisms still need native Slot-wave/serving integration.
+      state. Their native Slot-wave/serving integration is described below.
       The first native Slot-wave C2 screen raises paid decode from
       41.13 to 45.21 tokens/s (+9.91%), with exact IDs, traces and range geometry.
       This single direction screen selects focused recovery controls and serving
@@ -1048,12 +1050,19 @@ it appears.
       64 output and 82 full-state comparisons, graph replay and all-slot
       swap/return, with 1236 Spark-native tests passing. Per-request admission,
       cancellation and proven retirement have fake-backend controls. The
-      production node backend remains serial; shared execution and
-      prefix-cache integration remain open.
+      production node backend now runs two Qwen chat requests in shared
+      target/draft waves, with four retained branches, separate adaptive
+      policies and prefix reuse. Compatible equal three- or four-row BF16
+      target heads share an ordinary six- or eight-column product; all packing
+      is paid. Overflow waits
+      for a retired slot, while model changes and literal completions drain
+      the group. Independent request failures retain completed peers; native
+      fences prove retirement before releasing a frame. Matched comparison
+      and final gate qualification remain open.
       Prompt preparation now uses a branch-owned resumable session: host-only
       admission, separate reuse/chunk/checkpoint units and cancellation that
       preserves the completed prefix. The scalar path drives the same core;
-      this prepares prefill/decode interleaving without enabling it in serving.
+      Qwen serving interleaves these prompt units with ready peer decode.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

@@ -16,6 +16,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -24,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/report.h"
 #include "chat/chat.h"
 #include "config/node_config.h"
@@ -68,13 +70,468 @@ std::uint64_t RandomSeed() {
   return seed;
 }
 
+struct ChatPrompt {
+  std::vector<std::int32_t> tokens;
+  std::uint32_t stable_boundary = 0;
+  std::uint32_t max_tokens = 0;
+  bool reasoning = false;
+};
+
+std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatRequest& request) {
+  chat::Conversation conversation;
+  for (const api::Message& message : request.messages) {
+    chat::Role role = chat::Role::kUser;
+    if (message.role == api::Role::kSystem) {
+      role = chat::Role::kSystem;
+    } else if (message.role == api::Role::kAssistant) {
+      role = chat::Role::kAssistant;
+    }
+    conversation.messages.push_back({.role = role,
+                                     .content = message.content,
+                                     .reasoning_content = message.reasoning,
+                                     .tool_calls = {}});
+  }
+  model.Defaults(conversation);
+  ChatPrompt result;
+  auto rendered = model.RenderChat(conversation, &result.stable_boundary);
+  if (!rendered) {
+    return std::unexpected(
+        Failure(400, "the conversation cannot be rendered: " + rendered.error(), {}, "messages"));
+  }
+  result.tokens = std::move(*rendered);
+  const std::uint32_t usable = model.usable_context();
+  const auto prompt = static_cast<std::uint32_t>(result.tokens.size());
+  if (prompt >= usable) {
+    return std::unexpected(
+        Failure(400,
+                std::format("This model's maximum context length is {} tokens. However, your "
+                            "messages resulted in {} tokens. Please reduce the length of the "
+                            "messages.",
+                            usable, prompt),
+                "context_length_exceeded", "messages"));
+  }
+  result.max_tokens = request.max_tokens.value_or(usable - prompt);
+  if (std::uint64_t{prompt} + result.max_tokens > usable) {
+    return std::unexpected(Failure(
+        400,
+        std::format("This model's maximum context length is {} tokens. However, you requested "
+                    "{} tokens ({} in the messages, {} in the completion). Please reduce the "
+                    "length of the messages or completion.",
+                    usable, std::uint64_t{prompt} + result.max_tokens, prompt, result.max_tokens),
+        "context_length_exceeded", "messages"));
+  }
+  if (model.think_start() && model.think_end()) {
+    const auto marker =
+        std::ranges::find_if(result.tokens.rbegin(), result.tokens.rend(), [&](std::int32_t token) {
+          return token == *model.think_start() || token == *model.think_end();
+        });
+    result.reasoning = marker != result.tokens.rend() && *marker == *model.think_start();
+  }
+  return result;
+}
+
+// The exact scalar chat decoder and reasoning-boundary rules, with stable
+// ownership so an options callback can borrow it across completed units.
+class ChatOutput final {
+ public:
+  ChatOutput(Llm& model, api::Exchange& exchange, bool reasoning)
+      : model_(model), exchange_(exchange), decoder_(model.tokenizer(), {}), thinking_(reasoning) {}
+  bool Push(std::span<const std::int32_t> fresh) {
+    std::string piece;
+    bool go = true;
+    bool said = false;
+    const auto send = [&]() {
+      if (!piece.empty()) {
+        go = (thinking_ ? exchange_.Reasoning(piece) : exchange_.Content(piece)) && go;
+        any_content_ = any_content_ || !thinking_;
+        said = true;
+        piece.clear();
+      }
+    };
+    for (const std::int32_t token : fresh) {
+      if (thinking_ && model_.think_end() && token == *model_.think_end()) {
+        decoder_.Finish(piece);
+        if (piece.empty()) {
+          go = exchange_.Reasoning({}) && go;
+        }
+        send();
+        thinking_ = false;
+        continue;
+      }
+      if (!thinking_ && !any_content_ && piece.empty() && model_.think_start() &&
+          token == *model_.think_start()) {
+        thinking_ = true;
+        continue;
+      }
+      std::ignore = decoder_.Push(token, piece);
+    }
+    send();
+    return said ? go : exchange_.Continue();
+  }
+  void Finish() {
+    std::string rest;
+    decoder_.Finish(rest);
+    if (!rest.empty()) {
+      (void)(thinking_ ? exchange_.Reasoning(rest) : exchange_.Content(rest));
+    }
+  }
+
+ private:
+  Llm& model_;
+  api::Exchange& exchange_;
+  tokenizer::StreamDecoder decoder_;
+  bool thinking_ = false;
+  bool any_content_ = false;
+};
+
 // The chat route's requests as turns on the node: one model resident, a
 // swap when another is asked for, the conversation state reused when the
 // rendered request extends it, and each request one lease (D-093).
-class NodeBackend final : public api::Backend {
+class NodeBackend final : public api::Backend, public api::CooperativeBackend {
+  class ChatWork final : public api::CooperativeBackend::Work {
+   public:
+    enum class Stage { kPrompt, kGeneration, kDone };
+    ChatWork(NodeBackend& owner, Llm& model, Llm::Branch& branch, std::size_t slot,
+             const api::ChatRequest& request, api::Exchange& exchange, ChatPrompt rendered,
+             Floors floors, std::uint64_t swap_bytes)
+        : owner(owner),
+          model(model),
+          branch(branch),
+          slot(slot),
+          request(request),
+          exchange(exchange),
+          rendered(std::move(rendered)),
+          floors(floors),
+          swap_bytes(swap_bytes),
+          output(model, exchange, this->rendered.reasoning) {
+      options.max_tokens = this->rendered.max_tokens;
+      options.stop = true;
+      if (request.temperature > 0) {
+        options.sampling =
+            execution::SamplingParams{.temperature = static_cast<float>(request.temperature),
+                                      .top_k = request.top_k,
+                                      .top_p = static_cast<float>(request.top_p),
+                                      .min_p = static_cast<float>(request.min_p)};
+        options.seed = request.seed.value_or(RandomSeed());
+      }
+      options.on_tokens = [this](std::span<const std::int32_t> fresh) {
+        return output.Push(fresh);
+      };
+    }
+    ~ChatWork() override {
+      base::Check(retired, "a cooperative chat owner was freed before retirement");
+    }
+    ChatWork(const ChatWork&) = delete;
+    ChatWork& operator=(const ChatWork&) = delete;
+    ChatWork(ChatWork&&) = delete;
+    ChatWork& operator=(ChatWork&&) = delete;
+    bool terminal() const override {
+      return cancelled || error.has_value() || stage == Stage::kDone ||
+             (generation_session != nullptr && generation_session->done());
+    }
+    void Cancel() override { cancelled = true; }
+
+    NodeBackend& owner;
+    Llm& model;
+    Llm::Branch& branch;
+    const std::size_t slot;
+    const api::ChatRequest& request;
+    api::Exchange& exchange;
+    const ChatPrompt rendered;
+    const Floors floors;
+    const std::uint64_t swap_bytes;
+    ChatOutput output;
+    GenerateOptions options;
+    Generation generation;
+    std::unique_ptr<Llm::PromptSession> prompt_session;
+    std::unique_ptr<Llm::GenerationSession> generation_session;
+    std::optional<api::Error> error;
+    Stage stage = Stage::kPrompt;
+    std::uint32_t reused = 0;
+    bool cancelled = false;
+    bool native_touched = false;
+    bool retired = false;
+  };
+
  public:
   NodeBackend(Server& server, const config::NodeConfig& config, std::FILE* log)
       : server_(server), config_(config), log_(log) {}
+
+  // Only models with funded independent slots opt in. Literal completion,
+  // scoring and unsupported models retain their ordinary entry points.
+  api::CooperativeBackend* cooperative() override { return this; }
+
+  bool Supports(const api::CooperativeBackend::Request& request) const override {
+    if (request.literal != nullptr) {
+      return false;
+    }
+    Served* model = server_.Find(request.options.model);
+    return model != nullptr && model->llm() &&
+           static_cast<Llm&>(*model).supports_generation_waves();
+  }
+
+  std::expected<std::unique_ptr<api::CooperativeBackend::Work>, api::Error> Start(
+      const api::CooperativeBackend::Request& request, api::Exchange& exchange) override {
+    if (!Supports(request)) {
+      return std::unique_ptr<api::CooperativeBackend::Work>{};
+    }
+    auto& model = static_cast<Llm&>(*server_.Find(request.options.model));
+    if (cohort_model_ != nullptr && cohort_model_ != &model) {
+      return std::unique_ptr<api::CooperativeBackend::Work>{};
+    }
+    const auto claimed =
+        std::ranges::count_if(cohort_, [](const ChatWork* frame) { return frame != nullptr; });
+    if (static_cast<std::size_t>(claimed) >= model.generation_wave_capacity() ||
+        std::ranges::find(cohort_, nullptr) == cohort_.end()) {
+      return std::unique_ptr<api::CooperativeBackend::Work>{};
+    }
+    auto rendered = PrepareChat(model, request.options);
+    if (!rendered) {
+      return std::unexpected(rendered.error());
+    }
+    // Choose only an unclaimed model-owned branch. Prefix matching is a
+    // reuse preference, never conversation identity or retention policy.
+    std::size_t slot = cohort_.size();
+    std::size_t longest = 0;
+    for (std::size_t i = 0; i < model.branches() && i < cohort_.size(); ++i) {
+      if (cohort_[i] != nullptr) {
+        continue;
+      }
+      auto branch = model.branch(i);
+      if (!branch) {
+        return std::unexpected(Failure(500, "the model's conversation branch is unavailable"));
+      }
+      const auto& history = (*branch)->history();
+      const auto end = std::ranges::mismatch(history, rendered->tokens).in1;
+      const auto common = static_cast<std::size_t>(end - history.begin());
+      if (slot == cohort_.size() || common > longest) {
+        slot = i;
+        longest = common;
+      }
+    }
+    if (slot == cohort_.size()) {
+      return std::unique_ptr<api::CooperativeBackend::Work>{};
+    }
+    auto branch = model.branch(slot);
+    if (!branch) {
+      return std::unexpected(Failure(500, "the model's conversation branch is unavailable"));
+    }
+    const Floors floors = ModelFloors(model);
+    const auto swap_bytes = SwapBytes(model);
+    auto frame = std::make_unique<ChatWork>(*this, model, **branch, slot, request.options, exchange,
+                                            std::move(*rendered), floors, swap_bytes);
+    auto prompt =
+        frame->branch.BeginPrompt(frame->rendered.tokens, frame->rendered.stable_boundary);
+    if (!prompt) {
+      frame->retired = true;  // no session or native work retained a reference
+      return std::unexpected(Failure(500, "the prompt could not be admitted: " + prompt.error()));
+    }
+    frame->prompt_session = std::move(*prompt);
+    if (!exchange.Admit({.prompt_tokens = static_cast<std::uint32_t>(frame->rendered.tokens.size()),
+                         .max_tokens = frame->rendered.max_tokens,
+                         .swap_bytes = swap_bytes,
+                         .floors = floors})) {
+      frame->Cancel();  // retired normally; no native unit has run
+    }
+    cohort_model_ = &model;
+    cohort_[slot] = frame.get();
+    return std::unique_ptr<api::CooperativeBackend::Work>(std::move(frame));
+  }
+
+  std::expected<api::CooperativeBackend::Unit, std::string> NextUnit(
+      std::span<api::CooperativeBackend::Work* const> work) override {
+    if (auto valid = CheckCohort(work); !valid) {
+      return std::unexpected(valid.error());
+    }
+    selected_prompt_ = nullptr;
+    selected_decode_.clear();
+    selected_swap_ = server_.resident() != cohort_model_;
+    if (selected_swap_) {
+      return api::CooperativeBackend::Unit{
+          .phase = Phase::kSwap,
+          .expected_seconds =
+              static_cast<double>(SwapBytes(*cohort_model_)) / kSwapFloorBytesPerSecond};
+    }
+    ChatWork* prompt = nullptr;
+    std::size_t prompt_distance = cohort_.size();
+    for (auto* base : work) {
+      auto& frame = static_cast<ChatWork&>(*base);
+      if (frame.stage == ChatWork::Stage::kGeneration) {
+        selected_decode_.push_back(&frame);
+      } else if (frame.stage == ChatWork::Stage::kPrompt) {
+        const auto distance = (frame.slot + cohort_.size() - next_prompt_slot_) % cohort_.size();
+        if (distance < prompt_distance) {
+          prompt = &frame;
+          prompt_distance = distance;
+        }
+      }
+    }
+    if (!selected_decode_.empty() && (prefer_decode_ || prompt == nullptr)) {
+      double expected = 0;
+      for (const ChatWork* frame : selected_decode_) {
+        expected +=
+            ExpectedSeconds(Phase::kDecode, frame->model.speculative() ? 4 : 1, frame->floors);
+      }
+      return api::CooperativeBackend::Unit{.phase = Phase::kDecode, .expected_seconds = expected};
+    }
+    selected_decode_.clear();
+    if (prompt == nullptr) {
+      return std::unexpected("an active chat cohort has no next completed unit");
+    }
+    auto unit = prompt->prompt_session->NextUnit();
+    if (!unit) {
+      return std::unexpected(unit.error());
+    }
+    selected_prompt_ = prompt;
+    double expected = ExpectedSeconds(Phase::kPrefill, unit->rows, prompt->floors);
+    if (unit->phase != Llm::PromptSession::Phase::kChunk) {
+      expected +=
+          static_cast<double>(prompt->branch.state_snapshot_bytes()) / kSwapFloorBytesPerSecond;
+    }
+    return api::CooperativeBackend::Unit{.phase = Phase::kPrefill, .expected_seconds = expected};
+  }
+
+  std::expected<void, std::string> Advance(
+      std::span<api::CooperativeBackend::Work* const> work) override {
+    if (auto valid = CheckCohort(work); !valid) {
+      return valid;
+    }
+    if (selected_swap_) {
+      selected_swap_ = false;
+      bool needed = false;
+      for (auto* base : work) {
+        auto& frame = static_cast<ChatWork&>(*base);
+        if (!frame.exchange.Next(Phase::kSwap, frame.swap_bytes)) {
+          frame.Cancel();
+        } else {
+          needed = true;
+          frame.native_touched = true;
+        }
+      }
+      if (!needed) {
+        return {};
+      }
+      cohort_native_touched_ = true;
+      swapped_ = server_.resident() != cohort_model_;
+      if (auto activated = server_.Activate(*cohort_model_, parts_); !activated) {
+        Fail("making the cooperative chat model resident: " + activated.error());
+        return activated;
+      }
+      return {};
+    }
+    if (selected_prompt_ == nullptr && selected_decode_.empty()) {
+      return std::unexpected("advancing chat without its declared unit");
+    }
+    // Selection may itself change native ownership before it reports an
+    // error. Retirement therefore needs the fence even after refusal here.
+    cohort_native_touched_ = true;
+    // All active states stay protected even while just one branch prefills.
+    if (auto selected = SelectCohort(); !selected) {
+      Fail("selecting the native chat cohort: " + selected.error());
+      return selected;
+    }
+    if (selected_prompt_ != nullptr) {
+      ChatWork& frame = *std::exchange(selected_prompt_, nullptr);
+      frame.native_touched = true;
+      next_prompt_slot_ = (frame.slot + 1) % cohort_.size();
+      prefer_decode_ = true;
+      const PrefillGoOn go_on = [&frame](std::uint32_t rows) {
+        return !frame.cancelled && frame.exchange.Next(Phase::kPrefill, rows);
+      };
+      if (auto advanced = frame.prompt_session->Advance(go_on); !advanced) {
+        frame.error = Failure(500, "the prompt could not be processed: " + advanced.error());
+        return {};  // own failure; Retire independently proves references
+      }
+      if (frame.prompt_session->done()) {
+        return BeginChatGeneration(frame);
+      }
+      return {};
+    }
+    std::vector<Llm::GenerationSession*> sessions;
+    sessions.reserve(selected_decode_.size());
+    for (ChatWork* frame : selected_decode_) {
+      if (!frame->exchange.Next(Phase::kDecode, 0)) {
+        frame->Cancel();
+        continue;
+      }
+      frame->native_touched = true;
+      sessions.push_back(frame->generation_session.get());
+    }
+    selected_decode_.clear();
+    prefer_decode_ = false;
+    if (sessions.empty()) {
+      return {};
+    }
+    if (auto advanced = cohort_model_->RunGenerationWave(sessions); !advanced) {
+      Fail("the native chat generation wave failed: " + advanced.error());
+      return advanced;
+    }
+    return {};
+  }
+
+  api::CooperativeBackend::Retirement Retire(api::CooperativeBackend::Work& work) override {
+    auto& frame = static_cast<ChatWork&>(work);
+    if (&frame.owner != this || frame.retired || frame.slot >= cohort_.size() ||
+        cohort_[frame.slot] != &frame || !frame.terminal()) {
+      return {.result = std::unexpected(Failure(500, "retiring an invalid chat owner")),
+              .references_retired = false};
+    }
+    if (frame.prompt_session != nullptr) {
+      if (!frame.prompt_session->done()) {
+        frame.prompt_session->Cancel();
+      }
+      frame.reused = frame.prompt_session->reused();
+      if (auto finished = frame.prompt_session->Finish(); !finished && !frame.error) {
+        frame.error = Failure(500, "the prompt failed: " + finished.error());
+      }
+    }
+    if (frame.generation_session != nullptr) {
+      if (!frame.generation_session->done()) {
+        frame.generation_session->Cancel();
+      }
+      if (auto finished = frame.generation_session->Finish(); !finished && !frame.error) {
+        frame.error = Failure(500, "the generation failed: " + finished.error());
+      }
+    }
+    const auto peers =
+        std::ranges::count_if(cohort_, [](const ChatWork* peer) { return peer != nullptr; });
+    if (cohort_native_touched_) {
+      // The explicit fence hook, not a session status or StateUsable flag,
+      // proves that native copies/jobs no longer borrow this owner's frame.
+      const auto retired = server_.RetireRequestBranches(frame.model, peers == 1);
+      if (!retired.references_retired) {
+        return {.result = std::unexpected(Failure(500, "native chat references did not retire")),
+                .references_retired = false};
+      }
+      if (!retired.result) {
+        Fail("ending the native chat cohort: " + retired.result.error());
+        if (!frame.error) {
+          frame.error = Failure(500, "the native chat cohort failed during retirement");
+        }
+      }
+    }
+    if (!frame.error && frame.generation_session != nullptr) {
+      frame.output.Finish();
+    }
+    api::Completion result{
+        .completion_tokens = static_cast<std::uint32_t>(frame.generation.tokens.size()),
+        .cached_tokens = frame.reused,
+        .stopped = frame.generation.stopped};
+    cohort_[frame.slot] = nullptr;
+    frame.retired = true;
+    frame.generation_session.reset();
+    frame.prompt_session.reset();
+    if (peers == 1) {
+      cohort_model_ = nullptr;
+      cohort_native_touched_ = false;
+      selected_prompt_ = nullptr;
+      selected_decode_.clear();
+    }
+    return {.result = frame.error ? std::expected<api::Completion, api::Error>(
+                                        std::unexpected(*frame.error))
+                                  : std::expected<api::Completion, api::Error>(std::move(result)),
+            .references_retired = true};
+  }
 
   std::vector<api::ModelInfo> Models() const override {
     std::vector<api::ModelInfo> models;
@@ -99,57 +556,13 @@ class NodeBackend final : public api::Backend {
       return std::unexpected(Failure(404, "The model does not exist", "model_not_found", "model"));
     }
     auto& l = static_cast<Llm&>(*m);
-    chat::Conversation conversation;
-    for (const api::Message& message : request.messages) {
-      chat::Role role = chat::Role::kUser;
-      if (message.role == api::Role::kSystem) {
-        role = chat::Role::kSystem;
-      } else if (message.role == api::Role::kAssistant) {
-        role = chat::Role::kAssistant;
-      }
-      conversation.messages.push_back({.role = role,
-                                       .content = message.content,
-                                       .reasoning_content = message.reasoning,
-                                       .tool_calls = {}});
-    }
-    l.Defaults(conversation);
-    std::uint32_t stable_boundary = 0;
-    auto rendered = l.RenderChat(conversation, &stable_boundary);
+    auto rendered = PrepareChat(l, request);
     if (!rendered) {
-      return std::unexpected(
-          Failure(400, "the conversation cannot be rendered: " + rendered.error(), {}, "messages"));
+      return std::unexpected(rendered.error());
     }
-    const std::vector<std::int32_t>& tokens = *rendered;
-    const std::uint32_t usable = l.usable_context();
+    const std::vector<std::int32_t>& tokens = rendered->tokens;
     const auto prompt = static_cast<std::uint32_t>(tokens.size());
-    if (prompt >= usable) {
-      return std::unexpected(
-          Failure(400,
-                  std::format("This model's maximum context length is {} tokens. However, your "
-                              "messages resulted in {} tokens. Please reduce the length of the "
-                              "messages.",
-                              usable, prompt),
-                  "context_length_exceeded", "messages"));
-    }
-    const std::uint32_t max_tokens = request.max_tokens.value_or(usable - prompt);
-    if (std::uint64_t{prompt} + max_tokens > usable) {
-      return std::unexpected(Failure(
-          400,
-          std::format("This model's maximum context length is {} tokens. However, you requested "
-                      "{} tokens ({} in the messages, {} in the completion). Please reduce the "
-                      "length of the messages or completion.",
-                      usable, std::uint64_t{prompt} + max_tokens, prompt, max_tokens),
-          "context_length_exceeded", "messages"));
-    }
-    // Whether the rendered prompt leaves the model inside a reasoning
-    // block: its last reasoning marker opens one.
-    bool reasoning = false;
-    if (l.think_start() && l.think_end()) {
-      const auto marker = std::ranges::find_if(tokens.rbegin(), tokens.rend(), [&](std::int32_t t) {
-        return t == *l.think_start() || t == *l.think_end();
-      });
-      reasoning = marker != tokens.rend() && *marker == *l.think_start();
-    }
+    const std::uint32_t max_tokens = rendered->max_tokens;
     // What making the model resident pages in: its weights and its state,
     // and the resident conversation's state written back (an upper bound;
     // the watchdog allows the swap for it, watchdog.h).
@@ -205,41 +618,8 @@ class NodeBackend final : public api::Backend {
                                     .min_p = static_cast<float>(request.min_p)};
       options.seed = request.seed.value_or(RandomSeed());
     }
-    tokenizer::StreamDecoder decoder(l.tokenizer(), {});
-    bool thinking = reasoning;
-    bool any_content = false;
-    options.on_tokens = [&](std::span<const std::int32_t> fresh) {
-      std::string piece;
-      bool go = true;
-      bool said = false;
-      const auto send = [&]() {
-        if (!piece.empty()) {
-          go = (thinking ? exchange.Reasoning(piece) : exchange.Content(piece)) && go;
-          any_content = any_content || !thinking;
-          said = true;
-          piece.clear();
-        }
-      };
-      for (const std::int32_t token : fresh) {
-        if (thinking && l.think_end() && token == *l.think_end()) {
-          decoder.Finish(piece);
-          if (piece.empty()) {
-            go = exchange.Reasoning({}) && go;  // an empty block: the answer is still trimmed
-          }
-          send();
-          thinking = false;
-          continue;
-        }
-        if (!thinking && !any_content && piece.empty() && l.think_start() &&
-            token == *l.think_start()) {
-          thinking = true;  // the model opened reasoning itself
-          continue;
-        }
-        std::ignore = decoder.Push(token, piece);  // a token it cannot decode adds nothing
-      }
-      send();
-      return said ? go : exchange.Continue();
-    };
+    ChatOutput output(l, exchange, rendered->reasoning);
+    options.on_tokens = [&](std::span<const std::int32_t> fresh) { return output.Push(fresh); };
 
     Generation generation;
     std::uint32_t reused = 0;
@@ -254,7 +634,9 @@ class NodeBackend final : public api::Backend {
       // prefill: an ordinary end, the state holding the chunks that ran
       // (serving.h Llm::Prefill).
       std::vector<float> last;
-      if (auto r = l.PreparePrompt(tokens, stable_boundary, last, reused, go_on, &prefill); !r) {
+      if (auto r =
+              l.PreparePrompt(tokens, rendered->stable_boundary, last, reused, go_on, &prefill);
+          !r) {
         return r;
       }
       if (prefill.stopped || !exchange.Next(Phase::kDecode, 0)) {
@@ -273,11 +655,7 @@ class NodeBackend final : public api::Backend {
                             m->name(), prefill.chunks, l.history().size(), tokens.size()));
       return api::Completion{.completion_tokens = 0, .cached_tokens = reused, .stopped = false};
     }
-    std::string rest;
-    decoder.Finish(rest);
-    if (!rest.empty()) {
-      (void)(thinking ? exchange.Reasoning(rest) : exchange.Content(rest));
-    }
+    output.Finish();
     return api::Completion{
         .completion_tokens = static_cast<std::uint32_t>(generation.tokens.size()),
         .cached_tokens = reused,
@@ -483,6 +861,96 @@ class NodeBackend final : public api::Backend {
   std::string failure() const override { return failure_; }
 
  private:
+  Floors ModelFloors(const Llm& model) const {
+    const auto entry = std::ranges::find(config_.models, model.name(), &config::ModelEntry::name);
+    return entry == config_.models.end()
+               ? Floors{}
+               : Floors{.prefill = entry->prefill_floor_tok_s, .decode = entry->decode_floor_tok_s};
+  }
+
+  std::uint64_t SwapBytes(Llm& model) const {
+    if (server_.resident() == &model) {
+      return 0;
+    }
+    const auto used = [](Llm& llm) {
+      std::uint64_t bytes = 0;
+      // Branch wrappers and metadata are stable. Actual expiry, checkpoint
+      // restoration and growth remain in their declared native prompt units.
+      for (std::size_t i = 0; i < llm.branches(); ++i) {
+        auto branch = llm.branch(i);
+        if (branch) {
+          bytes += (*branch)->state_snapshot_bytes();
+        }
+      }
+      return bytes;
+    };
+    auto bytes = model.weight_read_bytes() + used(model);
+    if (auto* outgoing = server_.resident(); outgoing != nullptr && outgoing->llm()) {
+      bytes += used(static_cast<Llm&>(*outgoing));
+    }
+    return bytes;
+  }
+
+  Status CheckCohort(std::span<api::CooperativeBackend::Work* const> work) const {
+    if (cohort_model_ == nullptr || work.empty() || work.size() > cohort_.size()) {
+      return std::unexpected("the chat cohort has no active model or exceeds its bound");
+    }
+    std::array<bool, Llm::kMaxBranches> seen{};
+    for (auto* base : work) {
+      if (base == nullptr) {
+        return std::unexpected("the chat cohort has a null owner");
+      }
+      // Only Start on this backend constructs the caller-owned descriptors.
+      const auto& frame = static_cast<const ChatWork&>(*base);
+      if (&frame.owner != this || &frame.model != cohort_model_ || frame.slot >= cohort_.size() ||
+          cohort_[frame.slot] != &frame || frame.retired || frame.terminal() || seen[frame.slot]) {
+        return std::unexpected("the chat cohort contains an inactive, foreign or duplicate owner");
+      }
+      seen[frame.slot] = true;
+    }
+    if (std::ranges::count(seen, true) !=
+        std::ranges::count_if(cohort_, [](const ChatWork* frame) { return frame != nullptr; })) {
+      return std::unexpected("the chat unit omitted a claimed owner");
+    }
+    return {};
+  }
+
+  Status SelectCohort() {
+    std::array<Llm::Branch*, Llm::kMaxBranches> branches{};
+    std::size_t count = 0;
+    for (ChatWork* frame : cohort_) {
+      if (frame != nullptr) {
+        branches[count++] = &frame->branch;
+      }
+    }
+    return server_.SelectRequestBranches(*cohort_model_, std::span(branches).first(count));
+  }
+
+  static Status BeginChatGeneration(ChatWork& frame) {
+    frame.reused = frame.prompt_session->reused();
+    const bool stopped = frame.prompt_session->run().stopped;
+    if (auto finished = frame.prompt_session->Finish(); !finished) {
+      frame.error = Failure(500, "the prompt failed: " + finished.error());
+      return {};
+    }
+    if (stopped || frame.cancelled || !frame.exchange.Next(Phase::kDecode, 0)) {
+      frame.stage = ChatWork::Stage::kDone;
+      return {};
+    }
+    auto generation =
+        frame.branch.BeginGeneration(frame.prompt_session->last(), frame.options, frame.generation);
+    if (!generation) {
+      frame.error = Failure(500, "the generation could not start: " + generation.error());
+      return {};
+    }
+    frame.generation_session = std::move(*generation);
+    frame.stage = ChatWork::Stage::kGeneration;
+    // Last logits are no longer borrowed by generation: Begin already chose
+    // the first token. The callback and options remain in this stable frame.
+    frame.prompt_session.reset();
+    return {};
+  }
+
   void Fail(std::string what) {
     Say(log_, what);
     if (failure_.empty()) {
@@ -496,6 +964,14 @@ class NodeBackend final : public api::Backend {
   SwapParts parts_;
   bool swapped_ = false;
   std::string failure_;  // a node failure: the service stops
+  std::array<ChatWork*, Llm::kMaxBranches> cohort_{};
+  Llm* cohort_model_ = nullptr;
+  ChatWork* selected_prompt_ = nullptr;
+  std::vector<ChatWork*> selected_decode_;
+  std::size_t next_prompt_slot_ = 0;
+  bool prefer_decode_ = true;
+  bool selected_swap_ = false;
+  bool cohort_native_touched_ = false;
 };
 
 // Descriptors the node needs besides the chat route's connections.

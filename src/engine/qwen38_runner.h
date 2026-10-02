@@ -88,6 +88,7 @@
 #include "engine/planned.h"
 #include "engine/ple_rows.h"
 #include "engine/qwen38_plan.h"
+#include "engine/qwen38_wave_plan.h"
 #include "engine/runner_resources.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/qwen38_commit.h"
@@ -123,6 +124,38 @@ struct Qwen38Options {
   // Benchmark-only: provision retained routed operands for these layers;
   // Verify's optional capture selects its distinct plan per call.
   std::uint64_t routed_capture = 0;
+  // Internal opt-in provisioning, before Setup: 1 preserves scalar budgets;
+  // 2..4 additionally bound decode waves. No runtime/API capability is enabled
+  // merely by allocating this storage. Wide/injected prefill stays scalar.
+  std::uint32_t wave_slots = 1;
+};
+
+// Setup-only diagnostic arithmetic. Scalar values use the same measured plan
+// maxima with wave_slots=1; provisioned values are the actual allocations.
+// Both preserve all four branch ceilings/snapshots. Virtual ceilings do not
+// claim physical backing or simultaneous maximum-context admission.
+struct Qwen38SetupBudget {
+  std::uint64_t scalar_activations = 0;
+  std::uint64_t scalar_scratch = 0;
+  std::uint64_t scalar_staging_inputs = 0;
+  std::uint64_t scalar_host_inputs = 0;
+  std::uint64_t scalar_ple_mapped = 0;
+  std::uint64_t scalar_pinned = 0;
+  std::uint64_t scalar_snapshot_per_branch = 0;
+  std::uint64_t activations = 0;
+  std::uint64_t scratch = 0;
+  std::uint64_t staging_inputs = 0;
+  std::uint64_t host_inputs = 0;
+  std::uint64_t ple_mapped = 0;
+  std::uint64_t pinned = 0;
+  std::uint64_t wave_output_pinned = 0;
+  std::uint64_t snapshot_per_branch = 0;
+  std::uint64_t runner_mapped = 0;
+  std::uint64_t target_per_branch = 0;
+  std::uint64_t drafter_per_branch = 0;
+  std::uint64_t virtual_per_branch = 0;  // extent-rounded target plus drafter
+  std::uint64_t initialized_logical = 0;
+  std::uint64_t initialized_extent_bytes = 0;
 };
 
 struct Qwen38RoutedCapture {
@@ -339,6 +372,7 @@ class Qwen38Runner final : public PagedModel {
     kernels::ggml::Qwen38CommitArgs commit_args;
     kernels::ggml::RangeCopy* carry = nullptr;
     std::uint32_t pending_rows = 0;
+    bool verify_restores_streams = false;
     const std::uint32_t slot;
     catalog::Closure fence;
   };
@@ -386,6 +420,11 @@ class Qwen38Runner final : public PagedModel {
       return owner_.Verify(request_, history, n_past, argmax, logits, routed_capture);
     }
     Status Accept(std::uint32_t keep) { return owner_.Accept(request_, keep); }
+    // Only after this slot's Verify completed successfully, before Accept.
+    // Undo all saved target writes when host judgement could not select any
+    // rows. Drains the restore job before success; a failed return retains
+    // the runner's completion-aware ownership obligations.
+    Status DiscardVerify() { return owner_.DiscardVerify(request_); }
     Status Rollback() { return owner_.Rollback(request_); }
     Status ReadState(std::vector<std::byte>& target, std::vector<std::byte>& drafter) {
       return owner_.ReadState(request_, target, drafter);
@@ -425,7 +464,91 @@ class Qwen38Runner final : public PagedModel {
   bool cohort_usable() const { return !cohort_faulted_; }
   bool HasRetainedState() const;
 
+  // Borrowed descriptors for one synchronous completed native unit. All slots
+  // must belong to this runner, be selected, and occur once in ascending order.
+  // History, descriptors and caller outputs stay alive through return; DMA
+  // uses only the runner's pinned per-slot slices. Outputs change only after
+  // the whole unit completed successfully. Cancellation is checked by the
+  // driver between units, never by destroying an in-flight slot or plan.
+  struct ChunkWork {
+    Slot* slot = nullptr;
+    std::span<const std::int32_t> history;
+    std::uint32_t n_past = 0;
+    std::vector<float>* logits = nullptr;
+  };
+  struct DraftWork {
+    Slot* slot = nullptr;
+    std::span<const std::int32_t> history;
+    std::vector<std::int32_t>* drafts = nullptr;
+    std::vector<float>* probabilities = nullptr;
+    std::uint32_t passes = 0;  // zero: the configured maximum
+  };
+  struct VerifyWork {
+    Slot* slot = nullptr;
+    std::span<const std::int32_t> history;
+    std::uint32_t n_past = 0;
+    std::vector<std::int32_t>* argmax = nullptr;
+    std::vector<float>* logits = nullptr;
+  };
+  bool waves_provisioned() const { return !released_ && wave_logits_ != nullptr; }
+  std::uint32_t wave_capacity() const { return waves_provisioned() ? o_.wave_slots : 1; }
+  // Read after successful Setup and before node.Start. No native dispatch or
+  // catalog access; initialized range accounting is separate from the unused
+  // virtual ceilings.
+  Qwen38SetupBudget setup_budget() const;
+  // One to four rows each (Draft: <=4 pending rows, <=3 passes). Pairing
+  // retains the same <=8-row implementations. Incompatible fixed pairs and
+  // odd slots keep their original operations inside the owned joint plan.
+  // paired=false is a paid composition control, not a different math tier.
+  // ChunkWave never injects: prefill/injection and diagnostic captures use
+  // the existing Slot scalar entry points. Mixed phases form separate units.
+  // Status success covers the whole unit. A refusal gives no partial outputs;
+  // partial growth may still be retained. A known fenced failure settles all
+  // involved states; cohort_usable()/each state_usable() govern subsequent use.
+  // A faulted cohort requires completion-aware retirement, retaining its plans
+  // and pinned/native owners; an error return is not destruction permission.
+  // Successful verify rows await separate per-slot Accept(keep), as scalar.
+  Status ChunkWave(std::span<const ChunkWork> work, bool paired = true);
+  Status DraftWave(std::span<const DraftWork> work, bool paired = true);
+  Status VerifyWave(std::span<const VerifyWork> work, bool paired = true);
+  const Qwen38WaveStats& last_wave() const { return last_wave_; }
+
  private:
+  struct TargetWork {
+    Slot* slot;
+    std::span<const std::int32_t> history;
+    std::uint32_t n_past;
+    std::vector<std::int32_t>* argmax;
+    std::vector<float>* logits;
+  };
+  struct TargetWaveKey {
+    std::array<ChunkKey, kRequestSlots> slots{};
+    std::uint8_t mask = 0;
+    std::uint8_t logits = 0;  // fixed pinned output copy pattern
+    bool paired = true;
+    bool operator==(const TargetWaveKey&) const = default;
+  };
+  struct DraftWaveKey {
+    std::array<kernels::ggml::Qwen38MtpShape, kRequestSlots> slots{};
+    std::uint8_t mask = 0;
+    bool paired = true;
+    bool operator==(const DraftWaveKey&) const = default;
+  };
+  struct WaveCacheOwner {
+    std::unique_ptr<Qwen38WavePlanned> plan;
+    bool covered = false;  // BP-A1, once per bound plan, as scalar plans
+  };
+  using TargetWaves = PlanCache<TargetWaveKey, WaveCacheOwner>;
+  using DraftWaves = PlanCache<DraftWaveKey, WaveCacheOwner>;
+  Status TargetWave(std::span<const TargetWork> work, bool verify, bool paired);
+  Status CheckWaveSlot(const Slot* slot, std::uint32_t previous) const;
+  Status CheckWave(const Qwen38WavePlanned& planned);
+  std::expected<TargetWaves::Entry*, std::string> PlannedWave(const TargetWaveKey& key);
+  std::expected<DraftWaves::Entry*, std::string> PlannedWave(const DraftWaveKey& key);
+  Status ReadRows(const PleRowPlan& planned, std::size_t lookups);
+  Status CheckWaveSources(std::span<const std::pair<ggml_tensor*, const void*>> sources,
+                          const Qwen38WavePlanned& planned) const;
+  Status CheckWaveOutput(const ggml_tensor* tensor, ggml_type type, std::uint64_t bytes) const;
   std::array<RequestState*, kRequestSlots> Requests();
   std::array<const RequestState*, kRequestSlots> Requests() const;
   Status CheckActive(const RequestState& request) const;
@@ -448,6 +571,7 @@ class Qwen38Runner final : public PagedModel {
                 std::vector<std::int32_t>& argmax, std::vector<float>* logits,
                 Qwen38RoutedCapture* routed_capture);
   Status Accept(RequestState& request, std::uint32_t keep);
+  Status DiscardVerify(RequestState& request);
   Status Rollback(RequestState& request);
   Status ReadState(RequestState& request, std::vector<std::byte>& target,
                    std::vector<std::byte>& drafter);
@@ -537,6 +661,13 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t activation_bytes_ = 0;
   std::uint64_t scratch_bytes_ = 0;
   std::uint64_t host_input_bytes_ = 0;
+  Qwen38SetupBudget setup_budget_;
+  // Additional fixed pinned output slices, indexed by sealed slot rather
+  // than compact wave order. A graph key fixes the full output copy pattern.
+  float* wave_logits_ = nullptr;
+  std::int32_t* wave_ids_ = nullptr;
+  float* wave_probabilities_ = nullptr;
+  std::uint64_t wave_logit_words_ = 0;  // each slot's stride
 
   catalog::Closure everything_;
   catalog::Closure fence_;        // the state: what a clear or a fence leases
@@ -546,6 +677,9 @@ class Qwen38Runner final : public PagedModel {
 
   ChunkPlans& plans_ = default_request_.plans;  // cleared before the launch context (Release)
   MtpPlans& mplans_ = default_request_.mplans;
+  TargetWaves target_waves_{16};
+  DraftWaves draft_waves_{16};
+  Qwen38WaveStats last_wave_;
   GraphStats graph_stats_;
   GraphStats draft_stats_;
   double plan_seconds_ = 0;
