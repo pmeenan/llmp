@@ -990,7 +990,12 @@ it appears.
       Spark slice passes 1,248 tests, including 259 GPU tests, plus format,
       tidy, boundaries, REUSE and headers. It remains default-off in the
       benchmark at 4096 rows; production chunk geometry and attention
-      integration remain open. The [closure status](m3-optimization-status.md)
+      integration remain open. A paid native attention interaction at that
+      geometry adds 21.19% throughput, reducing 8K prefill to 9.879 s.
+      The private 2048-row extension gains 3.95% with HCA already on,
+      with 0.18% bookend movement; its focused quality check is pending.
+      These different-factor screens are not added together or recorded as
+      a matched final ds4 speed ratio. The [closure status](m3-optimization-status.md)
       tracks completed and missing independent-review experiments.
       Broader quality and production adaptation remain open; no default changes.
       The [fixed

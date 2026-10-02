@@ -332,6 +332,77 @@ pure SDK REUSE shim: 1,153 headers across 1,274 paths, no findings.
 The CU lint parser uses the documented RE-042 include adaptation; the actual
 NVCC13.4 compile flags and numerical core remain unchanged.
 
+## Native attention interaction screen
+
+One native HCA OFF/ON/OFF screen keeps output-A ON in all three arms,
+using the same community artifact, literal 8K input, two 4,096-row chunks,
+frontier heads and compact experts. It reuses the qualified production
+libraries unchanged; only the benchmark's flag guard and actual-plan
+audit change. Planning, binding, input copies, every packing/table and
+attention preparation, dispatch, fences and complete head copies remain
+inside the paid clock. Preallocated host head retention is identical;
+file writes and audits remain outside.
+
+| HCA OFF before, s | HCA ON, s | HCA OFF after, s | Incremental throughput gain | Bookend movement |
+| ---: | ---: | ---: | ---: | ---: |
+| 11.921261671 | 9.879234107 | 12.024281101 | 21.19129% | 0.86417% |
+
+Each actual plan retains 3,441 steps, 43 output-A, Q-head, ordered
+reduction, compact pair and compact down operations. The ON arm selects
+20 HCA operations per chunk, 40 total; all arms execute 86 output-A
+operations. Activation extent remains 1,462,430,464 bytes, required scratch
+134,414,336 and allocated scratch 169,869,312. There is no diagnostic GPU
+allocation. Sampled peak memory is 1.002878 times the larger OFF reference.
+
+All four OFF full heads match the qualified output-A-only goldens exactly.
+Both ON heads are complete and finite, retaining argmax 1393/554. Against
+the first OFF arm their maximum absolute differences are 0.584370/0.707085
+and RMS differences 0.114348/0.122808; this drift is descriptive. This
+screen establishes an incremental native speed signal, separately from
+the earlier original-checkpoint quality controls. It does not add a new
+quality pass, 2,048-row support, serving default or matched ds4 speed ratio.
+
+The supervised job completes rc0 in 82 seconds including the small private
+compile and three model loads. All command children are reaped; the final
+strong gate records 117.222 GiB with native/GPU/container probes clear.
+Raw heads, actual plans, commands and receipts remain in
+`/home/pmeenan/scratch/m3-ds4-qhead-short-records/outa-hca-native-r1/`,
+with its supervisor records in the sibling `outa-hca-native-r1-supervisor/`.
+
+## First 2,048-row geometry screen
+
+A private two-unit derivative admits only 2,048 or 4,096 packed rows,
+requires matching position/output rows, and passes that checked row count
+to the unchanged staged core. It retains the conservative 36,700,160-byte
+scratch requirement. The selected 4,096-row sources are preserved before
+the warm build; neither main nor the isolated production sources change.
+
+One native 8K OutA OFF/ON/OFF screen keeps HCA ON in all arms, with four
+2,048-row chunks and the same community artifact/input/frontier/compact
+conditions and paid planning/dispatch/copy scope as above.
+
+| OutA OFF before, s | OutA ON, s | OutA OFF after, s | Incremental throughput gain | Bookend movement |
+| ---: | ---: | ---: | ---: | ---: |
+| 12.116122736 | 11.666596215 | 12.137733770 | 3.94573% | 0.17837% |
+
+Every arm executes 80 HCA operations; the ON arm executes 172 output-A
+operations. Four actual plans retain 43 Q-head, ordered reduction, compact
+pair and down consumers each. The smaller ring has 173,948,928 state bytes.
+Activation extent stays 722,860,800 bytes; required scratch falls from
+75,515,904 to 67,207,168, and allocated scratch from 96,468,992 to 85,983,232.
+Sampled peak memory is 0.997174 times the larger OFF reference.
+
+All eight fresh OFF heads match their chunk's bookend bytes. The four ON
+heads are complete and finite and retain argmax 4084/1393/295/554. Maximum
+absolute drift is 3.109016/0.644032/1.404508/0.684175; RMS drift is
+0.554431/0.123842/0.266103/0.132872. This selects a focused original-checkpoint
+quality check; it does not establish new quality or production acceptance.
+The one supervised build/three-model screen completes rc0 in 87 seconds;
+all children are reaped and strong retirement records 117.231 GiB clear.
+Raw results are retained in the sibling `outa2048-native-r1/` and
+`outa2048-native-r1-supervisor/` evidence directories. No suite or repeat
+matrix was run for this private screen.
+
 ## Provenance
 
 Measured on `spark-c4e2`, 2026-10-02, SDK
