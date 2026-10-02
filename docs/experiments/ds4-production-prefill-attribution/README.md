@@ -258,3 +258,33 @@ all eleven commands complete zero and are reaped, with 117.242 GiB free
 and model probes clear at retirement. Six full heads and small receipts
 remain outside Git under
 `/home/pmeenan/scratch/m3-ds4-wide-hc-short-records/model-r3/`.
+
+## HC suffix first screen: keep the current path
+
+Preserving the ordinary flat RMS and F16 projection, then fusing only the
+mixing, Sinkhorn, weighted-stream sum and output normalization, gains
+**0.48%** in one paid whole-8K ordinary/candidate/ordinary screen on Spark A.
+Times are 12.785631293/12.743501693/12.823727494 s; ordinary bookends move
+by 0.30%. This small first signal selects no adoption or wider quality ladder.
+
+Each candidate chunk has 86 suffixes and the same 86 ordinary RMS/projection
+producers, using the actual cuBLAS selector. It pays no HC weight casts and
+retains the same expert products and ordered reductions. Steps fall from
+3570 to 2710, but this does not measure launch count or attribute phase cost.
+Allocated activation, scratch, staging and state capacities are unchanged;
+maximum activation extent rises by 35782656 bytes within the ordinary pool.
+All ordinary heads remain byte-identical. Candidate heads are finite with
+unchanged argmax but differ at every value: maximum errors 0.731697/0.737433,
+RMS 0.140777/0.136676 and NMSE 0.000868/0.000564. These are descriptive,
+without a quality acceptance claim.
+
+Conditions remain community artifact cd39d504, the original 8192 IDs,
+context8192/chunk4096, native fast, F16 KV/F32 HC and optional HCA off.
+Model loading is separate; host inputs, copies and fences are paid.
+Actual receipt `3f0ef87d4af5a29dbb5904b9abc8a0c17d6367ef636b95e7471a53a3b6b8c374`
+binds source f60475b5 and binary f0933f2a to SDK f38891fc. All eleven
+commands are zero/reaped; retirement has 117.201 GiB free and clear probes.
+Sources, six heads and raw records remain outside Git under
+`/home/pmeenan/scratch/m3-ds4-hc-suffix-short-records/`.
+Retaining an efficient producer while fusing its suffix remains transferable;
+this descriptor and changed arithmetic approve no other model's HC path.
