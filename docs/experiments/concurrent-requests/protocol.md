@@ -55,12 +55,14 @@ Keep cold engine startup separate from warm serving throughput. A single
 request on the concurrent deployment is also measured, because shared
 forwards may disable its single-request CUDA graphs.
 
-jitLLM currently runs the front request to completion before starting the
-next. Measure that queue honestly. A concurrent-request client is not proof
-of batched execution or scaling. Use the measured gap to prioritize the
-planned per-request states and batch scheduler; do not count a solo speed
-pass as concurrent parity. Production adoption remains subject to quality,
-state isolation, cancellation and memory admission checks.
+jitLLM's Qwen serving path now retains four independent branches and funds
+two active requests, alternating prefill chunks and sharing eligible decode
+products. A third request waits for a retirement before entering; other
+families still serve one active request. Report these actual admission limits
+and queueing. A concurrent-request client alone does not establish batched
+execution or scaling, and solo results do not establish concurrent parity.
+Shared-weight changes retain quality, state isolation, cancellation and
+memory admission checks.
 
 All Spark jobs are exclusive per node and supervised by `tools/spark-job`,
 with strong memory/process admission and terminal retirement. Run only the

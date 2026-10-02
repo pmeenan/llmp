@@ -976,6 +976,10 @@ it appears.
       its 512-row fixed-history comparison has zero outside-bound differences
       and all full logits repeat exactly. The same native baseline in that
       screen has one exception exceeding the fixed bound by 1.669249 nats.
+      Adding the optional HCA attention to that output-A factor also has
+      zero outside-bound differences, with all full logits exact on a fresh
+      repeat. Likelihood on the same oracle-generated continuation is almost
+      native's; registered held-out likelihood and real-answer gates remain open.
       Broader quality and production adaptation remain open; no default changes.
       The [fixed
       long-context answer tests](experiments/ds4-long-context-tasks/README.md)

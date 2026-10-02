@@ -164,6 +164,48 @@ greedy/repeat control. The repeat's prefill/decode clocks are
 context-quality conclusion follows from the isolated FP64 sample or this
 one fixed trajectory.
 
+## Optional HCA interaction, one new arm
+
+The already qualified output-A/HCA-OFF trajectory is the control for one
+fresh HCA-ON process. Only the private guard and existing `--ds4-hca`
+option change; the original checkpoint, history, output-A math, other
+operations and tail/decode paths are retained. All 140 eligible HCA
+launches and 301 output-A prefixes execute in the seven full chunks;
+the two tails and 511 decode chunks keep native attention/output-A.
+
+HCA plus output-A has 492 oracle-equal choices, 20 within-bound near ties,
+zero outside-bound differences and zero unresolved margins. Its largest
+oracle margin remains 0.725294083 nats and step 249 remains 82437.
+It passes this fixed-history greedy comparison. A fresh no-build
+combination repeat matches all 66,191,360 finite logit values byte for
+byte and all 512 choices, with identical actual counts and budgets.
+Its SHA256 is
+`a2d70ac4928fb8b7d8d9419924112620b621e1e413de1d39d0ec17aff5461930`.
+The combination passes this greedy/repeat control; broader/default
+acceptance remains open.
+Against output-A/HCA-OFF, 489 choices agree and 23 differ; complete-vector
+RMS is 0.293928455, NMSE 0.002545173 and maximum absolute difference
+4.33767986. The single ON prefill/decode clocks are 40.9253/24.2481 s;
+these are descriptive quality-run clocks, without a new paid bookend.
+The fresh repeat's clocks are 40.7895/24.2785 s, also descriptive.
+
+After the ON model retires, a single streaming pass scores the same 512
+oracle-chosen continuation IDs under each saved full native logit vector
+using stable F64 log-sum-exp. The oracle's saved normalized log-probability
+for each chosen ID supplies its reference likelihood.
+
+| Oracle-forced continuation, 512 tokens | Mean NLL, nats | Conditional perplexity |
+| --- | ---: | ---: |
+| b11254 oracle | 0.285054170 | 1.329834064 |
+| Current native, HCA off | 0.295788194 | 1.344185420 |
+| Output-A only, HCA off | 0.304861407 | 1.356436998 |
+| Output-A plus HCA on | 0.295742299 | 1.344123731 |
+
+This measures likelihood on the oracle's own generated continuation,
+not the registered held-out perplexity corpus or gate. The interaction's
+conditional likelihood is almost native's, but these aggregate numbers
+do not prove real-answer or broader-context quality.
+
 ## Provenance
 
 Measured on `spark-c4e2`, 2026-10-02, SDK
@@ -172,7 +214,9 @@ the actual native math flags and pinned cuBLAS payloads. Original source,
 static/compiler/library identities, fixed inputs, complete outputs and
 successful supervised retirement are retained. The final whole-factor
 gate finds 117.129 GiB available; fixed-quality and fresh-repeat terminal
-gates find 117.324 / 117.290 GiB. The completed whole/quality/repeat
+gates find 117.324 / 117.290 GiB; the HCA interaction terminal is
+117.298 GiB, and its fresh repeat is 117.288 GiB. The completed
+whole/quality/repeat/interaction
 comparisons finish rc0,
 with no native/GPU/container model processes and `spark-job busy` free.
 
@@ -186,6 +230,8 @@ with no native/GPU/container model processes and `spark-job busy` free.
 - Saved same-checkpoint oracle SHA256: `49de2d51973b4bef32cf174c861d44d74bf63b6ec8ee576641dcba8bcc042aa6`.
 - Raw local evidence: `/home/pmeenan/scratch/m3-ds4-qhead-short-records/outa-operator-r3/`
   and `outa-whole-r1/`, `outa-quality-r1/`, `outa-quality-repeat-r1/`;
+  the interaction and its repeat are in `outa-hca-r1/` and
+  `outa-hca-repeat-r1/`;
   sources/results on Spark are under
   `/home/pmeenan/scratch/m3-ds4-qhead-short-r1/`.
 
