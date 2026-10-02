@@ -60,7 +60,9 @@ Source anchors: `src/kernels/ggml/{qwen2_graph,dsv4_graph,qwen38_graph,graph_pla
 | Qwen four active slots at fixed depth one: rejected | Keep the cheap row-budget mechanism available for a new sharing factor; capacity alone did not improve paid service work | One C4 original/candidate/original screen loses 1.32% amid 0.24% bookend movement, despite 144 actual four-slot waves within eight verify rows. Complete replies differ; no quality or default adoption follows. |
 | Qwen four full target heads at fixed depth one: positive private screen | Share the immutable BF16 head across four requests with three paid concatenations and four bounded independent output views | One paid C4 OFF/ON/OFF screen gains 5.80%, with 1.40% bookend movement and identical complete public replies. Actual 145 eight-column MMFs replace four two-row heads. Both arms fund the same conservative envelope; this does not compare against normal adaptive/cap-two serving or establish native ID/state/quality equality. |
 | Qwen conditional depth plus four full heads: positive throughput, latency tradeoff | At three or four active requests, keep verification within eight rows while sharing the ordinary full head | Against exact normal serving, one C4 screen gains 7.05% with 1.34% rate movement. First completion is 83.23% later, median latency 15.70% higher and fixed funding grows 3.27 GiB. Complete replies differ. Separate mechanism controls pass 13 complete heads and 20 initialized-state/cursor comparisons, including discard/retry/continuation. Keep the current default; depth-policy quality and sampling remain open. |
+| Qwen independent-state GDN cohort: positive captured operator screen | Share a launch over bounded per-request pointers while retaining each recurrence's F32 arithmetic, operands and state | Four authentic two-row captures run with 26.51% lower paid replay wall (36.08% inverse-latency gain), exact outputs and unchanged input/state/guards. Graphs are disabled; serial and cohort share a private arithmetic-body refactor. Native wave composition, graph/recovery and serving impact are untested. Other stateful families need matching geometry/lifetime contracts and their own measurement. |
 | ds4 attention input preparation: measured small contribution | Produce identical normalized input formats once for several products, while preserving consumer arithmetic | Removing the original fusion/reuse adds 166.9 ms at 8K; the original literal pipeline is 2.21% faster, with all six full heads exact. This does not measure a native or additive gain and cannot alone explain the remaining descriptive gap. A later native port must preserve native normalization order. |
+| DeepSeek flat HC RMS launch size: rejected | Preserve the native reduction contract when considering launch-size changes | The 1024/256/1024 native 8K screen loses 1.30% with 172 eligible norms per pass. Both candidate heads change all values despite unchanged argmaxes; the screen neither isolates RMS latency nor establishes task quality. Keep 1024. The HC projection's existing F16-input/F32-accumulation/output path is a separate unstarted factor. |
 | DeepSeek inverse-RoPE/output-A/layout fusion: positive private timing and focused quality | Fuse a producer transform with a grouped projection and eliminate intermediate layout work; adapt the useful mechanism to native operations | Paid operator latency falls 45.63%; community 8K throughput improves 4.08% amid 0.42% bookend movement. The original-checkpoint 32K candidate passes the unchanged greedy bound and repeats all full logits exactly; its native baseline fails one step. The guarded default-off 4K runner passes full-head/state and Spark unit/style/boundary controls; broader quality/default acceptance remains open. Qwen and Qwen2 lack this grouped output-A chain. |
 | Exact16 Qwen MXFP8: no adoption | Share work using paired-eight products; investigate BF16 full heads independently | Exact16 is 7.469 times slower despite exact outputs/state. Compiled local-storage growth supports a spill concern but does not measure traffic or prove the sole cause. |
 | Literal Mia scheduling/attention consumers: earlier negative controls | Inspect their packing, cache and launch boundaries separately; retain native device selection and sparse work | A faster kernel in its original runtime can lose after adapters or dispatch changes. Do not repeat an unchanged negative factor. |
@@ -80,7 +82,9 @@ Evidence lives in the existing reports:
 `qwen38-four-head-sharing/README.md`,
 `qwen38-conditional-heads/README.md`,
 `qwen38-four-head-recovery/README.md`,
+`qwen38-gdn-cohort/README.md`,
 `ds4-attention-preparation/README.md`,
+`ds4-flat-rms/README.md`,
 `qwen38-request-batching/README.md`,
 `qwen38-mxfp8-sixteen/README.md`,
 `qwen38-target-head-sharing/README.md`,
@@ -106,7 +110,17 @@ modest candidate; no context ladder or default change follows from it.
 The selected [combined HC/ragged sharing](../qwen38-combined-sharing/README.md)
 gains 2.76% with exact full native vectors, state, HC values and capped replies.
 The [four-slot screen](../qwen38-capacity/README.md) loses 13.16%; retain two
-active requests. Cross-engine concurrent qualification remains open.
+active requests. The subsequent [conditional four-head screen](../qwen38-conditional-heads/README.md)
+gains 7.05% against normal C4 but delays first completion 83.23%, funds
+3.27 GiB more fixed memory and changes replies. Its separate mechanism
+controls pass; policy and sampling remain unqualified. The fresh
+[current TensorFold NVFP4 comparison](../serving-concurrent/README.md)
+leads native at C4, while native leads at C1/C2. Cross-engine concurrent
+qualification remains open.
+The [captured GDN cohort](../qwen38-gdn-cohort/README.md) lowers paid operator
+wall 26.51% with exact outputs and unchanged captured state. Its native wave
+integration and model/serving impact are unstarted; the operator screen does
+not qualify a default or a graph-enabled speedup.
 The literal/native benchmark pipeline
 study is already complete; the remaining DeepSeek attribution concerns the
 current production graph, rather than another literal-pipeline parity run.

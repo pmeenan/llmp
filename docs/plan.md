@@ -179,7 +179,7 @@ it appears.
 | Model | Correctness oracle (same format) | Performance comparators | Cross-quantization (speed and memory only) |
 | --- | --- | --- | --- |
 | DeepSeek V4 Flash 0731 | llama.cpp on the same GGUF | llama.cpp | vLLM or SGLang where they support it, unless on the same GGUF |
-| Qwen3.8 Flash Next | Mia's vLLM on the same NVFP4 checkpoint, in the recipe's deterministic mode (its default launch is not repeatable) | Mia's vLLM | TensorFold (MLX 4-bit); llama.cpp on a GGUF |
+| Qwen3.8 Flash Next | Mia's vLLM on the same NVFP4 checkpoint, in the recipe's deterministic mode (its default launch is not repeatable) | Mia's vLLM; TensorFold 0.6.2 on the same NVFP4 checkpoint (different activation/draft arithmetic, quality unqualified) | Earlier TensorFold (MLX 4-bit); llama.cpp on a GGUF |
 | Qwen-Image-2.1 | diffusers, BF16 | diffusers, BF16 | stable-diffusion.cpp's GGUFs, also for image quality |
 
 **Scope:**
@@ -1008,6 +1008,13 @@ it appears.
       with 0.18% bookend movement, but fails one original-checkpoint 32K
       fixed-history row: 2.616249 nats, 1.669249 above the unchanged bound.
       That extension is stopped; the passing 4096-row candidate stays separate.
+      The [literal input-preparation inverse factor](experiments/ds4-attention-preparation/README.md)
+      attributes 166.9 ms / 2.21% to fusion/reuse with exact complete heads;
+      this is not a native integration gain. A separate [native flat-RMS
+      launch-size screen](experiments/ds4-flat-rms/README.md) loses 1.30%
+      and changes logits, so 1024 threads remain selected. The HC projection's
+      existing F16-input/F32-accumulation/output path is an unstarted next
+      factor, with native normalization retained and no claimed gain.
       These different-factor screens are not added together or recorded as
       a matched final ds4 speed ratio. The [closure status](m3-optimization-status.md)
       tracks completed and missing independent-review experiments.
@@ -1109,6 +1116,11 @@ it appears.
       are checked separately. The separate four-head mechanism now passes
       13 complete heads and 20 initialized-state/cursor comparisons, including
       discard, retry and continuation; policy and sampling remain unqualified.
+      A separate [four-request captured GDN factor](experiments/qwen38-gdn-cohort/README.md)
+      lowers paid operator replay wall 26.51%, with exact F32 outputs and
+      unchanged operands/state/guards. Graphs are disabled and both arms
+      use the same private arithmetic-body refactor. Native wave integration,
+      graph/recovery controls and actual serving impact are untested.
       All packing
       is paid. Overflow waits
       for a retired slot, while model changes and literal completions drain

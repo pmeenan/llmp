@@ -22,12 +22,14 @@ Reports: [literal 8K](experiments/ds4-complete-plan/README.md),
 [output-A](experiments/ds4-output-prefix/README.md),
 [IQ2 occupancy two](experiments/ds4-iq2-occ2/README.md),
 [attention preparation](experiments/ds4-attention-preparation/README.md),
+[native flat RMS](experiments/ds4-flat-rms/README.md),
 [Qwen sharing](experiments/qwen38-combined-sharing/README.md),
 [capacity rejection](experiments/qwen38-capacity/README.md),
 [depth-one row budget](experiments/qwen38-row-budget/README.md),
 [four-request head sharing](experiments/qwen38-four-head-sharing/README.md),
 [conditional four-head serving](experiments/qwen38-conditional-heads/README.md),
 [four-head recovery](experiments/qwen38-four-head-recovery/README.md),
+[captured GDN cohort](experiments/qwen38-gdn-cohort/README.md),
 [concurrent engine comparison](experiments/serving-concurrent/README.md).
 The selected native output-A screen's actual receipt is retained externally
 under `m3-ds4-qhead-short-records/outa-native-r2`. The selected guarded native
@@ -42,7 +44,7 @@ of a different proposed experiment.
 | Recommendation | Status and decision |
 | --- | --- |
 | 1. Same-history Qwen draft acceptance | **Open.** Existing fixed-depth and generated-history reports expose the noise, but the proposed paired anchor collection across both engines has not run. Stop further solo verify-product ports without a specific measured deficit. |
-| 2. Attribute DeepSeek prefill by chain | **Done at the representative 4096-row geometry and refreshed after the selected factors.** The unchanged native graph selected six-slot reduction (+4.30%), Q-head fusion (+3.17%), output-A (+4.97% native screen), and HC-post/RMS (+1.94% private screen). These independent gains are not added together. The current output-A/HCA combination takes 9.763 s; its pair/down ordered intervals total 3.420 s (35.03% of wall), selecting that consumer group next. Native 2048-row chain attribution remains open. |
+| 2. Attribute DeepSeek prefill by chain | **Done at the representative 4096-row geometry and refreshed after the selected factors.** The unchanged native graph selected six-slot reduction (+4.30%), Q-head fusion (+3.17%), output-A (+4.97% native screen), and HC-post/RMS (+1.94% private screen). These independent gains are not added together. Before occupancy-two tuning, the output-A/HCA profile takes 9.763 s; pair/down ordered intervals total 3.420 s (35.03% of wall). The selected occupancy-two factor then gains 4.15% whole-prefill. Remaining producer/product contracts and native 2048-row chain attribution stay open. |
 | 3. Measure the oracle's own noise at failing HCA rows | **Not run.** Bounds remain unchanged. A separate output-A plus HCA interaction now passes both 32K/128K fixed-history bounds, 128K held-out perplexity and one positive long-answer control. This resolves those candidate failures without a bound change, but does not measure oracle noise or qualify a serving default. |
 | 4. Concurrency-aware row budget and both-model batching | **Partial.** Qwen's shared serving path and head/HC factors are landed. Cap-four adaptive is rejected. Fixed depth one alone loses 1.32%; sharing four full heads adds 5.80% with identical public replies. Conditional budgeting and four-head sharing then gain 7.05% against exact normal serving, but delay first completion by 83.23%, raise median latency 15.70%, fund 3.27 GiB more fixed memory and change replies. Four-head controls pass 13 complete heads and 20 initialized-state/cursor comparisons. Policy and sampling remain unqualified; no default changes. Depth zero and DeepSeek C2/C4 execution with independent request state remain open. |
 | 5. J64 with occupancy two | **Done: measured and scoped native source checked.** Captured real gate/up products gain 28.05%; genuine native 8K prefill gains 4.15%, with six complete heads byte-exact. The final O3 object has 128 registers/16 stack bytes versus ordinary J128's 254/0; actual hardware occupancy was not measured. Production dispatch is restricted to the measured GB10 paired shape. |
@@ -52,6 +54,13 @@ The review's additional 256K fixed-depth measurements, same-history controls,
 all-active concurrent decode windows and wider-column GEMM comparison remain
 separate open measurements. Its hypotheses and arithmetic estimates are not
 recorded as local results.
+
+The current TensorFold source inventory also selects independent-state GDN
+launch sharing. One captured four-request native F32 operator screen reduces
+paid replay wall by 26.51% (36.08% inverse-latency gain), with all outputs exact
+and inputs/state/guards unchanged. Graphs are disabled and the serial control
+uses the same private arithmetic-body refactor. Native wave integration,
+graph/state controls and a paid serving gain remain untested; no default changes.
 
 ## ds4 restoration coverage
 
@@ -67,6 +76,7 @@ recorded as local results.
 | Output-A projection and inverse rotation | Positive private and native screens. Selected native code passes its Spark check set; normal output-B remains intact. It remains a default-off benchmark option at the qualified 4096-row shape. The private 2048-row extension gains 3.95% with HCA on but fails one 32K fixed-history row and is stopped. |
 | Wide HC input and HC suffix | Screened and rejected: −2.18% and +0.48%; no expanded quality or context matrix. |
 | HC-post followed by flat RMS | Positive exact private screen, +1.94%; native overlay prepared and reviewed, not yet run. |
+| Flat HC RMS launch size, 1024 versus 256 threads | One paid native 8K screen loses 1.30%, with −0.42% original duration movement. Ordinary complete heads remain exact; both candidate heads change all values with unchanged argmaxes. No isolated RMS latency or quality-bound verdict follows. Keep 1024 threads. |
 | HCA attention with output-A | Focused 4096-row quality controls pass at unchanged bounds. A paid native 4096-row interaction gains 21.19% incremental throughput with 0.86% bookend movement. Genuine runner controls preserve full heads, initialized state and ordinary continuation, authenticate chunk positions before dispatch and fund all 32 128K plan shapes. The default-off integration passes Spark unit/style/boundary, final compiled full-head/state and REUSE/header controls. The 2048-row extension fails one unchanged quality bound and is stopped. |
 | Remaining Q/KV, compression/indexer, shared-FFN and HC producer chains | Not fully restored or bisected. Their current native attribution is recorded; the piecewise replacement work is incomplete. |
 
@@ -78,11 +88,20 @@ contracts; shared Qwen weights do not by themselves implement DeepSeek batching.
 
 ## Work order and M3 exit
 
-Use both Sparks: isolate DeepSeek normalization output preparation/reuse
-on one while testing Qwen conditional
-row budgeting and broader head sharing on the
-other. The fresh concurrent engine comparison is complete. Use one representative
-bookended screen to settle each candidate. Measure
+The literal preparation inverse factor and native flat-RMS launch-size screen
+are complete: producer fusion/reuse contributes 2.21% to the literal pipeline,
+while the smaller native RMS launch loses 1.30%. The conditional Qwen head
+screen and its discard/retry/continuation controls are also complete; their
+latency, memory and policy limitations retain the current serving default.
+The fresh concurrent engine comparison is complete. A separate next DeepSeek
+lead is its HC projection's existing F16-input/F32-accumulation/output path,
+retaining native normalization; it is unstarted and has no measured gain.
+On the other Spark, the positive captured GDN factor selects a bounded native
+wave-composition screen with independent F32 state/output ranges, graph
+dependencies and paid packing. That integration is unstarted. A separate
+sparse-attention cohort factor would retain per-request selection and caches;
+it is also unstarted and is distinct from the rejected shared-cell union.
+Use one representative bookended screen to settle each candidate. Measure
 same-history acceptance before doing more solo Qwen kernel ports. After the
 selected DeepSeek combination, refresh only its missing stage budget and
 replace the largest remaining chain. Full ladders are reserved for an
