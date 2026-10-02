@@ -116,7 +116,10 @@ std::uint64_t LiveState::used_bytes() const {
 }
 
 std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const Range> ranges,
-                                                const catalog::Closure* keep) {
+                                                const catalog::Closure* keep, bool* over_budget) {
+  if (over_budget != nullptr) {
+    *over_budget = false;
+  }
   // Validate the complete request before making any range resident.
   std::vector<std::pair<std::size_t, std::size_t>> fresh;
   for (const Range& range : ranges) {
@@ -172,7 +175,9 @@ std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const
     return std::unexpected(described.error());
   }
   sc::AcquireReport report;
-  auto loaded = node.Acquire(closure, report, "initializing conversation state");
+  bool refused_for_budget = false;
+  auto loaded =
+      node.Acquire(closure, report, "initializing conversation state", &refused_for_budget);
   // A kPreserve extent with no write-back source cannot be reclaimed
   // here: its initial load is complete, and no job has used it yet.
   // Switch to preservation before exposing it to a model's closure.
@@ -205,6 +210,9 @@ std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const
   if (!loaded) {
     // A clean capacity refusal precedes model dispatch. Existing state
     // remains valid; completed fresh zero pages are registered above.
+    if (over_budget != nullptr) {
+      *over_budget = refused_for_budget && !quarantined_;
+    }
     return std::unexpected(loaded.error());
   }
   return true;

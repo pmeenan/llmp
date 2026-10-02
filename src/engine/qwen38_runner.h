@@ -373,6 +373,7 @@ class Qwen38Runner final : public PagedModel {
     kernels::ggml::RangeCopy* carry = nullptr;
     std::uint32_t pending_rows = 0;
     bool verify_restores_streams = false;
+    bool state_refused = false;  // the last EnsureState's clean capacity refusal (Slot)
     const std::uint32_t slot;
     catalog::Closure fence;
   };
@@ -402,13 +403,30 @@ class Qwen38Runner final : public PagedModel {
     // Only after completed rollback/restore of this slot's own snapshot.
     void set_pending_rows(std::uint32_t rows) { request_.pending_rows = rows; }
     Status Clear() { return owner_.Clear(request_); }
+    // Discards the retained state of a slot outside the selected cohort (an
+    // idle conversation's reuse cache), between completed units. Refused
+    // for a selected slot, which clears through Clear.
+    Status ClearIdle() { return owner_.ClearIdle(request_); }
+    // A decode step's state, its caches backed through the alignment a
+    // shared wave reads (DecodeReadAlign): a capacity refusal is then this
+    // request's own, here, and never the shared wave's.
     Status ReserveStateThrough(std::uint32_t positions) {
-      return owner_.EnsureState(request_, positions);
+      request_.state_refused = false;
+      return owner_.EnsureState(request_, positions, owner_.DecodeReadAlign());
     }
     Status Chunk(std::span<const std::int32_t> history, std::uint32_t n_past,
                  std::vector<float>& logits, bool inject = false) {
+      request_.state_refused = false;
       return owner_.Chunk(request_, history, n_past, logits, inject);
     }
+    // After a failed ReserveStateThrough or Chunk: true when it failed only
+    // because the state's growth did not fit the execution budget beside
+    // what is leased (WorkError::kOverBudget). No graph ran; the state is
+    // usable as it was, with any fresh zero pages that completed retained
+    // and protected. A later call may succeed once leased state is freed.
+    bool state_refused() const { return request_.state_refused; }
+    // Before a refusal the caller makes without either call.
+    void ForgetRefusal() { request_.state_refused = false; }
     Status Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts,
                  std::vector<float>* probabilities = nullptr, std::uint32_t passes = 0,
                  Qwen38DraftHeadCapture* head_capture = nullptr) {
@@ -561,7 +579,13 @@ class Qwen38Runner final : public PagedModel {
   Status SetupSnapshot(RequestState& request);
   void RoomForGraphs();
   Status Clear(RequestState& request);
-  Status EnsureState(RequestState& request, std::uint32_t positions);
+  Status ClearIdle(RequestState& request);
+  // The state through `positions`, its caches read through `positions` rounded
+  // up to `read_align` (a wave's WaveReadAlign; Qwen38UsedState).
+  Status EnsureState(RequestState& request, std::uint32_t positions,
+                     std::uint32_t read_align = 256);
+  // The most coarsely a decode wave of this runner reads the caches.
+  std::uint32_t DecodeReadAlign() const;
   Status Chunk(RequestState& request, std::span<const std::int32_t> history, std::uint32_t n_past,
                std::vector<float>& logits, bool inject);
   Status Draft(RequestState& request, std::span<const std::int32_t> history,
@@ -615,7 +639,8 @@ class Qwen38Runner final : public PagedModel {
   std::expected<std::pair<kernels::ggml::Qwen38MtpShape, std::vector<model::Qwen38ChunkInputs>>,
                 std::string>
   MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
-            std::int64_t hidden_row, bool confidence = false, bool capture_head = false) const;
+            std::int64_t hidden_row, bool confidence = false, bool capture_head = false,
+            std::uint32_t read_align = 256) const;
 
   PagedNode& node_;
   const Qwen38Options& o_;
@@ -677,8 +702,8 @@ class Qwen38Runner final : public PagedModel {
 
   ChunkPlans& plans_ = default_request_.plans;  // cleared before the launch context (Release)
   MtpPlans& mplans_ = default_request_.mplans;
-  TargetWaves target_waves_{16};
-  DraftWaves draft_waves_{16};
+  TargetWaves target_waves_{64};
+  DraftWaves draft_waves_{64};
   Qwen38WaveStats last_wave_;
   GraphStats graph_stats_;
   GraphStats draft_stats_;

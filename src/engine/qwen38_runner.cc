@@ -68,6 +68,16 @@ std::expected<SlabSpec, std::string> SlabOf(const artifact::Artifact& artifact,
   return ExpertSlab(artifact, arrays, count, kSlabAlignment, il);
 }
 
+// The cells a wave's attention reads are aligned more coarsely than a
+// lone request's: a wave's graph keys every slot's shape, so with several
+// slots at different depths a 256-cell alignment changes some slot's shape
+// every few waves and the plans are never replayed. Cells past a row's
+// position are masked or hidden from selection by position: no result
+// changes (model/qwen38.h Qwen38Chunk). They are still read (the vector
+// attention and the block scores read every cell), so a wave's EnsureState
+// backs the caches through the same alignment.
+std::uint32_t WaveReadAlign(std::size_t slots) { return slots > 1 ? 2048 : 256; }
+
 }  // namespace
 
 Qwen38Runner::~Qwen38Runner() = default;
@@ -489,8 +499,12 @@ Status Qwen38Runner::Setup() {
             extra += Round(bytes, 256);
             return true;
           };
+          // A group of more than two slots joins its inputs by chained
+          // concats: up to 2 + 3 + 4 slots' inputs live at once, within
+          // three times each slot's input.
+          const int copies = o_.wave_slots > 2 ? 3 : 1;
           bool added = add(t);
-          if (added) {
+          for (int copy = 0; added && copy < copies; ++copy) {
             if (full_head || hc) {
               added = add(t->src[1]);
             } else if (op == kg::JitllmOp::kMxfp8MulMatVec) {
@@ -1123,15 +1137,39 @@ Status Qwen38Runner::Clear(RequestState& request) {
   return cleared;
 }
 
+Status Qwen38Runner::ClearIdle(RequestState& request) {
+  if (released_ || cohort_faulted_) {
+    return Error("the Qwen3.8 cohort requires retirement");
+  }
+  if ((active_mask_ & (1U << request.slot)) != 0) {
+    return Error("an active Qwen3.8 slot is cleared within its own request");
+  }
+  request.pending_rows = 0;
+  request.verify_restores_streams = false;
+  // Not selected, so outside the stream's lease, which keeps protecting
+  // every active state; the catalog refuses the discard if anything still
+  // holds or operates on this state's extents (DiscardGrowingState).
+  const Status cleared = request.live.DiscardGrowingState(node_);
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    return refreshed;
+  }
+  return cleared;
+}
+
 Status Qwen38Runner::EnsureState(std::uint32_t positions) {
   return EnsureState(default_request_, positions);
 }
 
-Status Qwen38Runner::EnsureState(RequestState& request, std::uint32_t positions) {
+std::uint32_t Qwen38Runner::DecodeReadAlign() const { return WaveReadAlign(o_.wave_slots); }
+
+Status Qwen38Runner::EnsureState(RequestState& request, std::uint32_t positions,
+                                 std::uint32_t read_align) {
   if (auto active = CheckActive(request); !active) {
     return active;
   }
-  auto needed = md::Qwen38UsedState(profile_, layout_, positions);
+  // A wave's graphs read the caches through a coarser alignment than the
+  // positions need (WaveReadAlign): the cells they read must be backed.
+  auto needed = md::Qwen38UsedState(profile_, layout_, positions, read_align);
   if (!needed) {
     return std::unexpected(needed.error());
   }
@@ -1140,7 +1178,7 @@ Status Qwen38Runner::EnsureState(RequestState& request, std::uint32_t positions)
     ranges.push_back({.region = kTarget, .offset = range.offset, .bytes = range.bytes});
   }
   if (speculative()) {
-    const auto cells = std::min<std::uint64_t>(mtp_layout_.cells, Round(positions, 256));
+    const auto cells = std::min<std::uint64_t>(mtp_layout_.cells, Round(positions, read_align));
     const std::uint64_t kv_row = std::uint64_t{profile_.head_dim} * profile_.kv_heads * 2;
     const std::uint64_t indexer_row = std::uint64_t{profile_.indexer_head_dim} * 4;
     const std::uint64_t blocks = (cells + profile_.indexer_ratio - 1) / profile_.indexer_ratio;
@@ -1155,12 +1193,16 @@ Status Qwen38Runner::EnsureState(RequestState& request, std::uint32_t positions)
                       .offset = mtp_layout_.hidden,
                       .bytes = mtp_layout_.bytes - mtp_layout_.hidden});
   }
-  auto used = request.live.Use(node_, ranges, &execution_);
+  bool over_budget = false;
+  auto used = request.live.Use(node_, ranges, &execution_, &over_budget);
   if (!used) {
     if (auto refreshed = RefreshClosures(); !refreshed) {
       request.live.Quarantine();
       return Error(std::format("{}; {}", used.error(), refreshed.error()));
     }
+    // Only a clean refusal that left the state usable and the cohort
+    // healthy may be retried once leased state is freed (Slot::state_refused).
+    request.state_refused = over_budget && !cohort_faulted_ && !request.live.quarantined();
     return std::unexpected(used.error());
   }
   return *used ? RefreshClosures() : Status{};
@@ -1354,14 +1396,15 @@ Status Qwen38Runner::Usable(const RequestState& request) const {
 
 std::expected<std::pair<kg::Qwen38MtpShape, std::vector<md::Qwen38ChunkInputs>>, std::string>
 Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t passes, bool head,
-                        std::int64_t hidden_row, bool confidence, bool capture_head) const {
+                        std::int64_t hidden_row, bool confidence, bool capture_head,
+                        std::uint32_t read_align) const {
   const std::uint64_t end = std::uint64_t{first} + rows + passes - 1;
   if (rows == 0 || passes == 0 || end > mtp_layout_.context) {
     return Error(std::format("a draft of {} passes after {} rows at {} passes the context", passes,
                              rows, first));
   }
-  const auto n_kv =
-      static_cast<std::uint32_t>(std::min<std::uint64_t>(Round(end, 256), mtp_layout_.cells));
+  const auto n_kv = static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(Round(end, read_align), mtp_layout_.cells));
   std::vector<md::Qwen38ChunkInputs> ins;
   for (std::uint32_t p = 0; p < passes; ++p) {
     auto in = md::Qwen38Rows(profile_, mtp_layout_.cells, p == 0 ? first : first + rows + p - 1,
@@ -1632,7 +1675,8 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
       }
     }
     auto in = md::Qwen38Chunk(profile_, layout_, hash_, w.history, w.n_past,
-                              static_cast<std::uint32_t>(w.history.size() - w.n_past), false);
+                              static_cast<std::uint32_t>(w.history.size() - w.n_past), false,
+                              WaveReadAlign(work.size()));
     if (!in) {
       return std::unexpected(in.error());
     }
@@ -1728,7 +1772,8 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
     auto& f = *frames[s];
     const auto& g = *planned.target(s);
     if (f.in.qsa_select && (g.mask != nullptr || g.mask_f32 != nullptr)) {
-      auto masked = md::Qwen38Chunk(profile_, layout_, hash_, w.history, w.n_past, f.in.rows, true);
+      auto masked = md::Qwen38Chunk(profile_, layout_, hash_, w.history, w.n_past, f.in.rows, true,
+                                    WaveReadAlign(work.size()));
       if (!masked) {
         return std::unexpected(masked.error());
       }
@@ -1763,7 +1808,8 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
     return valid;
   }
   for (const auto& w : work) {
-    if (auto used = EnsureState(w.slot->request_, static_cast<std::uint32_t>(w.history.size()));
+    if (auto used = EnsureState(w.slot->request_, static_cast<std::uint32_t>(w.history.size()),
+                                WaveReadAlign(work.size()));
         !used) {
       return used;  // partial growth stays initialized/protected; no graph ran
     }
@@ -1923,7 +1969,8 @@ Status Qwen38Runner::DraftWave(std::span<const DraftWork> work, bool paired) {
         return Error("a Qwen3.8 draft wave token is outside the vocabulary");
       }
     }
-    auto shaped = MtpInputs(n - rows, rows, passes, true, 1, w.probabilities != nullptr, false);
+    auto shaped = MtpInputs(n - rows, rows, passes, true, 1, w.probabilities != nullptr, false,
+                            WaveReadAlign(work.size()));
     if (!shaped) {
       return std::unexpected(shaped.error());
     }
@@ -1979,7 +2026,7 @@ Status Qwen38Runner::DraftWave(std::span<const DraftWork> work, bool paired) {
   }
   for (const auto& w : work) {
     auto& f = *frames[w.slot->index()];
-    if (auto used = EnsureState(*f.request, f.through); !used) {
+    if (auto used = EnsureState(*f.request, f.through, WaveReadAlign(work.size())); !used) {
       return used;
     }
   }

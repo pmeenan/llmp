@@ -1143,6 +1143,13 @@ it appears.
       admission, separate reuse/chunk/checkpoint units and cancellation that
       preserves the completed prefix. The scalar path drives the same core;
       Qwen serving interleaves these prompt units with ready peer decode.
+      The [four-request waves](experiments/qwen38-four-request-waves/README.md)
+      replace fixed pairs with groups of up to four requests (16-row joined
+      products on bit-exact wide MXFP8 and expert-major routed kernels,
+      2048-cell wave alignment for graph replay, depth 2 when shared):
+      matched 8K HTTP C4 +20% and C2 +9.8%, C1 unchanged with an identical
+      reply. Native leads current TensorFold NVFP4 at C1/C2, is level at C4 and trails
+      legacy Mia 18% at C4; replies under concurrency vary with arrival timing.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

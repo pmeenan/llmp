@@ -570,6 +570,185 @@ __global__ void __launch_bounds__(256) Gemv(GemvArgs a) {
   }
 }
 
+// The expert-major form of Gemv, for several tokens: each distinct expert's
+// weight rows are read once for every slot that chose it. A block (n-tile,
+// slot s) leads when s is a 0th, kMatched-th, ... slot choosing its expert,
+// in slot order; it computes those slots (up to kMatched) and the others
+// return. Each slot's output is Gemv's to the bit: the same lanes' blocks,
+// the same 8-bit quantization of x, dot products, scales and warp sums.
+constexpr int kMatched = 8;
+
+// Whether `tokens` take the expert-major form: more than one request's
+// verify rows (a wave's shared product). Within one request's rows L2
+// already serves the repeated experts, and the per-slot form is as fast
+// (C2 screen on GB10: +7.0% shared-wave throughput, −0.6% solo, outputs
+// identical).
+constexpr bool MoeGemvExpertMajor(std::int64_t tokens) { return tokens > 4; }
+
+template <bool kGlu, int kTiles>
+__global__ void __launch_bounds__(256) GemvExperts(GemvArgs a) {
+  constexpr int kOutputs = kGemvOutputs<kGlu>;
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int warp = static_cast<int>(threadIdx.x) / 32;
+  const int tile0 = static_cast<int>(blockIdx.x) * kTiles;
+  const int slot = static_cast<int>(blockIdx.y);  // t · used + j
+  const int slots = static_cast<int>(gridDim.y);
+  __shared__ int matched[kMatched];
+  __shared__ int count;
+  __shared__ int lead;
+  ggml_cuda_pdl_sync();
+  const auto expert_of = [&](int s) {
+    return a.ids[(static_cast<std::int64_t>(s / a.used) * a.ids_stride) + (s % a.used)];
+  };
+  const int e = expert_of(slot);
+  if (warp == 0) {
+    int before = 0;
+    int listed = 0;
+    for (int base = 0; base < slots; base += 32) {
+      const int i = base + lane;
+      const bool same = i < slots && expert_of(i) == e;
+      const unsigned ballot = __ballot_sync(0xffffffffu, same);
+      // The lanes of slots before `slot`.
+      const int k = slot - base;
+      const unsigned earlier = k <= 0 ? 0u : (k >= 32 ? 0xffffffffu : ((1u << k) - 1u));
+      before += __popc(ballot & earlier);
+      const unsigned after = ballot & ~earlier;
+      if (same && i >= slot) {
+        const int at = listed + __popc(after & ((1u << lane) - 1u));
+        if (at < kMatched) {
+          matched[at] = i;
+        }
+      }
+      listed += __popc(after);
+    }
+    if (lane == 0) {
+      lead = (e < 0 || e >= a.experts) ? 1 : (before % kMatched == 0);
+      count = (e < 0 || e >= a.experts) ? 1 : min(listed, kMatched);
+      if (e < 0 || e >= a.experts) {
+        matched[0] = slot;
+      }
+    }
+  }
+  __syncthreads();
+  if (!lead) {
+    return;
+  }
+  const int m_count = count;
+  // kTiles consecutive output tiles an expert: one leader scan for all.
+  for (int tile = tile0; tile < tile0 + kTiles; ++tile) {
+    const int n0 = ((tile * 8) + warp) * kOutputs;
+    if (n0 >= a.n) {
+      break;
+    }
+    const int rows = min(kOutputs, a.n - n0);
+    if (e < 0 || e >= a.experts) {
+      if (lane < rows) {
+        a.y[(static_cast<std::int64_t>(slot) * a.n) + n0 + lane] = __uint_as_float(0x7fc00000u);
+      }
+      continue;
+    }
+    const std::uint8_t* w = a.weights + (static_cast<std::uint64_t>(e) * a.stride);
+    const auto row0 = static_cast<std::uint64_t>(a.row0 + n0);
+    const std::uint8_t* codes = w + a.codes + (row0 * static_cast<std::uint64_t>(a.k / 2));
+    const std::uint8_t* scales = w + a.scales;
+    const int blocks = a.k / kSub;
+    float sum[kMatched][kGemvRows];
+#pragma unroll
+    for (int m = 0; m < kMatched; ++m) {
+#pragma unroll
+      for (int r = 0; r < kGemvRows; ++r) {
+        sum[m][r] = 0.0f;
+      }
+    }
+    for (int b = lane; b < blocks; b += 32) {
+      uint2 qs[kGemvRows];
+      std::uint8_t ss[kGemvRows];
+#pragma unroll
+      for (int r = 0; r < kGemvRows; ++r) {
+        const int rr = min(r % kOutputs, rows - 1) + (kGlu && r >= kOutputs ? a.n : 0);
+        qs[r] = *reinterpret_cast<const uint2*>(
+            codes + (static_cast<std::int64_t>(rr) * (a.k / 2)) + (b * 8));
+        ss[r] = scales[moe::SfOffset(row0 + static_cast<std::uint64_t>(rr),
+                                     static_cast<std::uint64_t>(b),
+                                     static_cast<std::uint64_t>(blocks))];
+      }
+      int2 lo[kGemvRows];
+      int2 hi[kGemvRows];
+      float sc[kGemvRows];
+#pragma unroll
+      for (int r = 0; r < kGemvRows; ++r) {
+        lo[r] = get_int_from_table_16(static_cast<int>(qs[r].x), kvalues_mxfp4);
+        hi[r] = get_int_from_table_16(static_cast<int>(qs[r].y), kvalues_mxfp4);
+        sc[r] = ggml_cuda_ue4m3_to_fp32(ss[r]);
+      }
+#pragma unroll
+      for (int m = 0; m < kMatched; ++m) {
+        if (m < m_count) {
+          const int s = matched[m];
+          const int t = s / a.used;
+          const int j = s % a.used;
+          const float* x = a.x + (t * a.x_token) + (j * a.x_slot);
+          const float4* xv = reinterpret_cast<const float4*>(x + (b * kSub));
+          const float4 xs[4] = {xv[0], xv[1], xv[2], xv[3]};
+          const float vals[kSub] = {xs[0].x, xs[0].y, xs[0].z, xs[0].w, xs[1].x, xs[1].y,
+                                    xs[1].z, xs[1].w, xs[2].x, xs[2].y, xs[2].z, xs[2].w,
+                                    xs[3].x, xs[3].y, xs[3].z, xs[3].w};
+          float amax = 0.0f;
+#pragma unroll
+          for (int i = 0; i < kSub; ++i) {
+            amax = fmaxf(amax, fabsf(vals[i]));
+          }
+          const float d = amax / 127.0f;
+          int xq[4] = {0, 0, 0, 0};
+          if (amax > 0.0f) {
+#pragma unroll
+            for (int i = 0; i < kSub; ++i) {
+              const auto q8 = static_cast<std::uint32_t>(
+                  static_cast<std::uint8_t>(static_cast<std::int8_t>(roundf(vals[i] / d))));
+              const int word = ((i / 8) * 2) + (i % 2);
+              xq[word] |= static_cast<int>(q8 << (8U * static_cast<std::uint32_t>((i % 8) / 2)));
+            }
+          }
+#pragma unroll
+          for (int r = 0; r < kGemvRows; ++r) {
+            int dot = ggml_cuda_dp4a(lo[r].x, xq[0], 0);
+            dot = ggml_cuda_dp4a(lo[r].y, xq[1], dot);
+            dot = ggml_cuda_dp4a(hi[r].x, xq[2], dot);
+            dot = ggml_cuda_dp4a(hi[r].y, xq[3], dot);
+            sum[m][r] = fmaf(static_cast<float>(dot), sc[r] * d, sum[m][r]);
+          }
+        }
+      }
+    }
+    ggml_cuda_pdl_lc();
+#pragma unroll
+    for (int m = 0; m < kMatched; ++m) {
+      if (m < m_count) {
+#pragma unroll
+        for (int r = 0; r < kGemvRows; ++r) {
+#pragma unroll
+          for (int offset = 16; offset > 0; offset >>= 1) {
+            sum[m][r] += __shfl_xor_sync(0xffffffffu, sum[m][r], offset, 32);
+          }
+        }
+        if (lane == 0) {
+          float* out = a.y + (static_cast<std::int64_t>(matched[m]) * a.n) + n0;
+#pragma unroll
+          for (int r = 0; r < kOutputs; ++r) {
+            if (r < rows) {
+              if constexpr (kGlu) {
+                out[r] = Silu(sum[m][r] * a.gate_scale[e]) * (sum[m][r + kOutputs] * a.up_scale[e]);
+              } else {
+                out[r] = sum[m][r];
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 // ------------------------------------------------------------------ layout conversion
 
 // One projection of the experts' slots: its GGML rows at `ggml` (each k / 64
@@ -892,6 +1071,20 @@ std::expected<void, KernelFailure> RunMoeGemv(LaunchContext& launch, ggml_tensor
     const dim3 grid(static_cast<unsigned>((node->ne[0] + per_block - 1) / per_block),
                     static_cast<unsigned>(ids->ne[0] * ids->ne[1]));
     const ggml_cuda_kernel_launch_params params(grid, dim3(256), 0, context.stream());
+    if (MoeGemvExpertMajor(ids->ne[1])) {
+      // Several output tiles a block, one leader scan for them all: the
+      // SwiGLU (gate/up) form 4, the down projection 8 (C4 HTTP profiles on
+      // GB10, a layer: 588 -> 544 and 458 -> 312 us).
+      const unsigned tiles = glu ? 4 : 8;
+      const dim3 tiled((grid.x + tiles - 1) / tiles, grid.y);
+      const ggml_cuda_kernel_launch_params p(tiled, dim3(256), 0, context.stream());
+      if (glu) {
+        ggml_cuda_kernel_launch(GemvExperts<true, 4>, p, a);
+      } else {
+        ggml_cuda_kernel_launch(GemvExperts<false, 8>, p, a);
+      }
+      return;
+    }
     if (glu) {
       ggml_cuda_kernel_launch(Gemv<true>, params, a);
     } else {

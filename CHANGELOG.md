@@ -35,6 +35,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   Q8 weight preparation and the grouped projection on the qualified
   4,096-row GB10 shape, preserving the diagnostic's complete logits.
 
+- Qwen3.8 chat requests share decode work across up to four independent
+  conversations (previously two), drafting two tokens each in a shared wave;
+  matched 8K HTTP screens complete 20% more tokens a second at four requests
+  and 9.8% more at two, with single-request output unchanged. A request whose
+  conversation state does not fit beside its peers' waits, or is set aside and
+  rebuilt once they finish, instead of failing; only a request that cannot fit
+  alone is refused.
 - Qwen3.8 chat requests share decode work across two independent conversations,
   retaining separate state, sampling and cancellation while reusing model weights.
   Compatible multirow HC products and unequal verification heads also share weights.

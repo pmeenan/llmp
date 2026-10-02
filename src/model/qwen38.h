@@ -326,10 +326,13 @@ std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p
                                                           bool host_masks = true);
 
 // The padded cache prefixes and fixed recurrent/convolution state used
-// through `positions`. No extent beyond these ranges is accessed.
+// through `positions`, the caches read through `positions` rounded up to
+// `read_align` (Qwen38Chunk's; a multiple of 256). No extent beyond these
+// ranges is accessed.
 std::expected<std::vector<StateRange>, std::string> Qwen38UsedState(const Qwen38Profile& profile,
                                                                     const Qwen38StateLayout& state,
-                                                                    std::uint32_t positions);
+                                                                    std::uint32_t positions,
+                                                                    std::uint32_t read_align = 256);
 std::expected<std::vector<StateRange>, std::string> Qwen38CheckpointWrites(
     const Qwen38Profile& profile, const Qwen38StateLayout& state, std::uint32_t positions);
 
@@ -376,13 +379,16 @@ struct Qwen38ChunkInputs {
 // `qsa.blocks`): the fast graph selects on the device from the cached block
 // keys and attends the kept cells alone (kernels/ggml/qwen38_graph.h). The
 // masks are [n_kv, rows] and the bias [n_kv / ratio, rows]: at a context of
-// 8,192 192 MiB a chunk, growing with the context.
-std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(const Qwen38Profile& profile,
-                                                          const Qwen38StateLayout& state,
-                                                          const Qwen38PleHash& hash,
-                                                          std::span<const std::int32_t> history,
-                                                          std::uint32_t n_past, std::uint32_t rows,
-                                                          bool selection_masks = true);
+// 8,192 192 MiB a chunk, growing with the context. Attention reads the
+// cells through the chunk's end rounded up to `read_align` (a multiple of
+// 256): cells past a row's position are masked, or hidden from the
+// device's selection by position, so a coarser alignment changes no
+// result, only how often the shape (and a wave's graph) changes. Those
+// cells are still read: back them (Qwen38UsedState at the same alignment).
+std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
+    const Qwen38Profile& profile, const Qwen38StateLayout& state, const Qwen38PleHash& hash,
+    std::span<const std::int32_t> history, std::uint32_t n_past, std::uint32_t rows,
+    bool selection_masks = true, std::uint32_t read_align = 256);
 
 // The n-gram rows of the token at `position` (exposed for tests):
 // ple_heads rows, llm_graph_input_ple::set_input's hash.

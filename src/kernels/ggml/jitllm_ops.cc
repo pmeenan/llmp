@@ -584,8 +584,8 @@ std::expected<void, KernelFailure> CheckMxfp8MulMatVec(const ggml_tensor* node) 
   }
   const std::int64_t t = x->ne[1];
   if (x->ne[0] != codes->ne[0] || node->ne[0] != codes->ne[1] || node->ne[1] != t ||
-      t > kMxfp8VecColumns) {
-    return Rejected("y[n, t] = W[n, k] x[k, t] for at most 8 columns");
+      t > kMxfp8VecWaveColumns) {
+    return Rejected("y[n, t] = W[n, k] x[k, t] for at most 16 columns");
   }
   // The kernel reads x in 16-byte vectors along each column.
   // The kernel's grid counts rows in int, 8 a block.
@@ -1048,12 +1048,12 @@ std::expected<void, KernelFailure> CheckMoeGemv(const ggml_tensor* node) {
   const std::int64_t row0 = JitllmOpInt(node, 0);
   const std::int64_t rows = JitllmOpInt(node, 1);
   if (!ExpertSlots(w, w->ne[1], rows, k, JitllmOpInt(node, 2), JitllmOpInt(node, 3)) || row0 < 0 ||
-      n <= 0 || row0 + n > rows || !ExpertIds(ids, used, t) || t > kMoeGemvTokens || used > 64 ||
-      !IsF32(x) || (x->ne[1] != 1 && x->ne[1] != used) || x->ne[2] != t || x->ne[3] != 1 ||
-      !Aligned(x, 16) || !IsF32(node) || !Shaped(node, n, used, t) ||
+      n <= 0 || row0 + n > rows || !ExpertIds(ids, used, t) || t > kMoeGemvWaveTokens ||
+      used > 64 || !IsF32(x) || (x->ne[1] != 1 && x->ne[1] != used) || x->ne[2] != t ||
+      x->ne[3] != 1 || !Aligned(x, 16) || !IsF32(node) || !Shaped(node, n, used, t) ||
       !Aligned(node, sizeof(float)) || std::cmp_greater(w->ne[1], kInt32Max)) {
     return Rejected(
-        "expert weights in the CUTLASS layout, F32 activations [k, 1 or used, t] for at most 8 "
+        "expert weights in the CUTLASS layout, F32 activations [k, 1 or used, t] for at most 16 "
         "tokens and their ids, into F32 [n, used, t]");
   }
   if (!swiglu) {

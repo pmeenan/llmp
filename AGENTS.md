@@ -275,15 +275,13 @@ adds 4.15% whole-prefill throughput with byte-exact full heads. The ds4
 stage mechanisms are now fast-plan defaults (with output-A/HCA, community
 4096-row 8K is within ~1–2% of literal ds4; served runtime prefill +1.26%).
 Broader acceptance remains open, and HCA stays off by default.
-Qwen chat shares two independent requests, including HC products and ragged
-verification heads (+2.76% in a paid C2 screen). Four-slot adaptive serving
-regressed; conditional depth plus four shared heads gains 7.05% at C4 but
-delays first completion 83.23% and changes replies, so it remains private.
-Fresh matched concurrent comparisons against current TensorFold NVFP4 are
-complete: native completed-token rate is +19.22% / +8.63% / −14.55% at
-C1/C2/C4. DeepSeek still queues concurrent requests yet leads llama.cpp
-`--parallel 4` on the same GGUF at C1/C2/C4 (+52/42/36% with DSpark,
-+45/25/14% plain). Qwen same-history acceptance,
+Qwen chat decodes up to four requests in one wave (joined products of up to
+16 rows, MXFP8/routed bit-exact per request; depth 2 when shared). Against
+current TensorFold NVFP4 it leads at C1/C2 and is level at C4 (25.7 / 29.7 /
+32.2 vs 21.5 / 24.8 / 31.9 completed tok/s, separate sessions), trailing
+legacy Mia 18% at C4. DeepSeek still queues concurrent requests yet leads
+llama.cpp `--parallel 4` on the same GGUF at C1/C2/C4 (+52/42/36% with
+DSpark, +45/25/14% plain). Qwen same-history acceptance,
 DeepSeek batching, the remaining native prefill gap, final swap/client
 gate and frozen M3 record remain open. Workstation checks are deferred
 until implementations settle; package checks remain owed before shipment.

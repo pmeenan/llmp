@@ -31,6 +31,7 @@ namespace rt = jitllm::runtime;
 namespace engine = jitllm::engine;
 namespace catalog = jitllm::catalog;
 using ::testing::ElementsAre;
+using ::testing::HasSubstr;
 
 TEST(Qwen38WaveHead, AdaptiveRowsRequireContiguousFullBf16Geometry) {
   auto arena = jitllm::kernels::ggml::TensorArena::Create(32);
@@ -153,6 +154,10 @@ class FakeLlm : public rt::Llm {
   bool fail_settle = false;
   bool fail_clear = false;
   bool fail_prepare = false;
+  // A clean capacity refusal before dispatch (Llm::StateRefusedFor): the
+  // state stays as it was. capacity_refused reports the last call's.
+  bool refuse_capacity = false;
+  bool capacity_refused = false;
   bool pending = false;
   bool omit_row = false;
   std::vector<std::int32_t> step = {2, 3, 4};
@@ -161,6 +166,10 @@ class FakeLlm : public rt::Llm {
   rt::Status RunChunk(std::span<const std::int32_t> all, std::uint32_t past, bool inject,
                       std::vector<float>& row) override {
     EXPECT_EQ(past, target.size());
+    capacity_refused = refuse_capacity;
+    if (refuse_capacity) {
+      return std::unexpected("loading would exceed the execution budget");
+    }
     ++chunks;
     if (fail_chunk == chunks) {
       usable = false;  // an unknown submission cannot establish a prefix
@@ -216,6 +225,10 @@ class FakeLlm : public rt::Llm {
   }
   bool StateUsable() const override { return usable; }
   rt::Status PrepareDecodeState(std::uint32_t /*pos*/, std::uint32_t /*left*/) override {
+    capacity_refused = refuse_capacity;
+    if (refuse_capacity) {
+      return std::unexpected("loading would exceed the execution budget");
+    }
     if (fail_prepare) {
       return std::unexpected("fake decode preparation failed");
     }
@@ -325,8 +338,14 @@ class NativeBranchesFake final : public FakeLlm {
   }
   rt::Status SettleFor(Branch& branch) override { return Native(branch).FakeLlm::Settle(); }
   rt::Status ClearStateFor(Branch& branch) override { return Native(branch).FakeLlm::ClearState(); }
+  rt::Status ReleaseIdleStateFor(Branch& branch) override {
+    return Native(branch).FakeLlm::ClearState();
+  }
   bool StateUsableFor(const Branch& branch) const override {
     return Native(branch).FakeLlm::StateUsable();
+  }
+  bool StateRefusedFor(const Branch& branch) const override {
+    return Native(branch).capacity_refused;
   }
   rt::Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) override {
     return Native(branch).FakeLlm::PrepareDecodeState(pos, left);
@@ -1362,6 +1381,280 @@ TEST(LlmScores, AResumablePromptDoesNotBlockOrCancelItsPeerGeneration) {
   EXPECT_EQ((*prefilling)->history(), model.native_state(1).target);
   EXPECT_EQ(model.native_state(2).chunks, 0U);
   EXPECT_EQ(model.native_state(3).chunks, 0U);
+}
+
+// State capacity in a cohort (runtime/cohort_capacity.h): a refusal the
+// caller defers leaves the session resumable at its completed prefix.
+TEST(LlmScores, ACapacityRefusedPromptChunkKeepsItsPrefixAndRetriesTheSameUnit) {
+  NativeBranchesFake model(true);
+  auto branch = model.branch(2);
+  ASSERT_TRUE(branch.has_value());
+  auto& native = model.native_state(2);
+  const std::vector<std::int32_t> prompt(19, 2);
+  auto opened = (*branch)->BeginPrompt(prompt);
+  ASSERT_TRUE(opened.has_value());
+  auto& session = **opened;
+  ASSERT_TRUE(session.Advance({}, true).has_value());  // reuse: nothing to reuse
+  ASSERT_TRUE(session.Advance({}, true).has_value());  // rows [0, 8)
+  native.refuse_capacity = true;
+  unsigned asked = 0;
+  const rt::PrefillGoOn go_on = [&asked](std::uint32_t /*rows*/) {
+    ++asked;
+    return true;
+  };
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    auto refused = session.Advance(go_on, true);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_THAT(refused.error(), HasSubstr("the chunk at 8"));
+    EXPECT_THAT(refused.error(), HasSubstr("execution budget"));
+    EXPECT_TRUE(session.refused());
+    EXPECT_FALSE(session.done());
+    EXPECT_EQ((*branch)->history(), std::vector<std::int32_t>(8, 2));
+    EXPECT_EQ(native.target, (*branch)->history());
+    EXPECT_EQ(session.run().chunks, 1U);
+    auto unit = session.NextUnit();
+    ASSERT_TRUE(unit.has_value());
+    EXPECT_EQ(unit->phase, rt::Llm::PromptSession::Phase::kChunk);
+    EXPECT_EQ(unit->rows, 8U);  // the same unit again
+  }
+  EXPECT_EQ(asked, 2U);
+  native.refuse_capacity = false;
+  while (!session.done()) {
+    ASSERT_TRUE(session.Advance({}, true).has_value());
+    EXPECT_FALSE(session.refused());
+  }
+  ASSERT_TRUE(session.Finish().has_value());
+  EXPECT_EQ((*branch)->history(), prompt);
+  EXPECT_EQ(native.target, prompt);
+  EXPECT_EQ(native.injection, prompt);
+  EXPECT_EQ(session.run().chunks, 3U);
+  EXPECT_EQ(session.last(), FakeLlm::Row(3));
+}
+
+TEST(LlmScores, AnUndeferredCapacityRefusalEndsThePromptAtItsProvenPrefix) {
+  NativeBranchesFake model;
+  auto branch = model.branch(1);
+  ASSERT_TRUE(branch.has_value());
+  const std::vector<std::int32_t> prompt(19, 2);
+  auto opened = (*branch)->BeginPrompt(prompt);
+  ASSERT_TRUE(opened.has_value());
+  ASSERT_TRUE((*opened)->Advance().has_value());
+  ASSERT_TRUE((*opened)->Advance().has_value());
+  model.native_state(1).refuse_capacity = true;
+  EXPECT_FALSE((*opened)->Advance().has_value());
+  EXPECT_FALSE((*opened)->refused());
+  EXPECT_TRUE((*opened)->done());
+  EXPECT_FALSE((*opened)->Finish().has_value());
+  // The usable state keeps the chunks that completed (as before deferral).
+  EXPECT_EQ((*branch)->history(), std::vector<std::int32_t>(8, 2));
+}
+
+TEST(LlmScores, ACancelledWaitingPromptAndGenerationKeepTheirCompletedPrefixes) {
+  NativeBranchesFake model;
+  auto prefilling = model.branch(1);
+  auto decoding = model.branch(2);
+  ASSERT_TRUE(prefilling.has_value());
+  ASSERT_TRUE(decoding.has_value());
+  const std::vector<std::int32_t> prompt(19, 2);
+  auto prompt_session = (*prefilling)->BeginPrompt(prompt);
+  ASSERT_TRUE(prompt_session.has_value());
+  ASSERT_TRUE((*prompt_session)->Advance({}, true).has_value());
+  ASSERT_TRUE((*prompt_session)->Advance({}, true).has_value());
+  model.native_state(1).refuse_capacity = true;
+  EXPECT_FALSE((*prompt_session)->Advance({}, true).has_value());
+  ASSERT_TRUE((*prompt_session)->refused());
+  (*prompt_session)->Cancel();
+  ASSERT_TRUE((*prompt_session)->Finish().has_value());
+  EXPECT_TRUE((*prompt_session)->run().stopped);
+  EXPECT_EQ((*prefilling)->history(), std::vector<std::int32_t>(8, 2));
+  EXPECT_EQ((*prefilling)->history(), model.native_state(1).target);
+
+  std::vector<float> last;
+  ASSERT_TRUE((*decoding)->Prefill(std::array<std::int32_t, 1>{0}, last).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  rt::Generation out;
+  auto generation = (*decoding)->BeginGeneration(last, options, out);
+  ASSERT_TRUE(generation.has_value());
+  const std::array<rt::Llm::GenerationSession*, 1> one = {generation->get()};
+  ASSERT_TRUE(model.RunGenerationWave(one, true).has_value());
+  model.native_state(2).refuse_capacity = true;
+  ASSERT_TRUE(model.RunGenerationWave(one, true).has_value());
+  ASSERT_TRUE((*generation)->refused());
+  EXPECT_FALSE((*generation)->done());
+  (*generation)->Cancel();
+  ASSERT_TRUE((*generation)->Finish().has_value());
+  EXPECT_THAT(out.tokens, ElementsAre(1, 2));
+  EXPECT_THAT((*decoding)->history(), ElementsAre(0, 1));
+  EXPECT_EQ((*decoding)->history(), model.native_state(2).target);
+}
+
+TEST(LlmScores, ACapacityRefusedGenerationWaitsWhileItsPeerRunsThenCompletes) {
+  NativeBranchesFake model;
+  auto a = model.branch(1);
+  auto b = model.branch(2);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  std::vector<float> last_a;
+  std::vector<float> last_b;
+  ASSERT_TRUE((*a)->Prefill(std::array<std::int32_t, 1>{0}, last_a).has_value());
+  ASSERT_TRUE((*b)->Prefill(std::array<std::int32_t, 1>{2}, last_b).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 3;
+  options.stop = false;
+  rt::Generation result_a;
+  rt::Generation result_b;
+  auto opened_a = (*a)->BeginGeneration(last_a, options, result_a);
+  auto opened_b = (*b)->BeginGeneration(last_b, options, result_b);
+  ASSERT_TRUE(opened_a.has_value());
+  ASSERT_TRUE(opened_b.has_value());
+  auto& native_a = model.native_state(1);
+  native_a.refuse_capacity = true;
+  const std::array<rt::Llm::GenerationSession*, 2> both = {opened_a->get(), opened_b->get()};
+  for (int wave = 0; wave < 2; ++wave) {
+    ASSERT_TRUE(model.RunGenerationWave(both, true).has_value());
+    EXPECT_TRUE((*opened_a)->refused());
+    EXPECT_THAT((*opened_a)->refusal(), HasSubstr("execution budget"));
+    EXPECT_FALSE((*opened_a)->done());
+    EXPECT_FALSE((*opened_b)->refused());
+  }
+  EXPECT_THAT(result_a.tokens, ElementsAre(1));
+  EXPECT_EQ(result_a.steps, 0U);
+  EXPECT_THAT(native_a.target, ElementsAre(0));
+  EXPECT_THAT(result_b.tokens, ElementsAre(3, 4, 5));
+  EXPECT_TRUE((*opened_b)->done());
+  ASSERT_TRUE((*opened_b)->Finish().has_value());
+  // The peer's state is free now: the waiting generation goes on.
+  native_a.refuse_capacity = false;
+  const std::array<rt::Llm::GenerationSession*, 1> alone = {opened_a->get()};
+  while (!(*opened_a)->done()) {
+    ASSERT_TRUE(model.RunGenerationWave(alone, true).has_value());
+    EXPECT_FALSE((*opened_a)->refused());
+  }
+  ASSERT_TRUE((*opened_a)->Finish().has_value());
+  EXPECT_THAT(result_a.tokens, ElementsAre(1, 2, 3));
+  EXPECT_EQ((*a)->history(), native_a.target);
+  EXPECT_EQ((*b)->history(), model.native_state(2).target);
+
+  // Undeferred, the same refusal ends the generation, as before.
+  std::vector<float> last_c;
+  auto c = model.branch(3);
+  ASSERT_TRUE(c.has_value());
+  ASSERT_TRUE((*c)->Prefill(std::array<std::int32_t, 1>{4}, last_c).has_value());
+  rt::Generation result_c;
+  auto opened_c = (*c)->BeginGeneration(last_c, options, result_c);
+  ASSERT_TRUE(opened_c.has_value());
+  model.native_state(3).refuse_capacity = true;
+  const std::array<rt::Llm::GenerationSession*, 1> undeferred = {opened_c->get()};
+  ASSERT_TRUE(model.RunGenerationWave(undeferred).has_value());
+  EXPECT_FALSE((*opened_c)->refused());
+  EXPECT_TRUE((*opened_c)->done());
+  EXPECT_FALSE((*opened_c)->Finish().has_value());
+  EXPECT_THAT((*c)->history(), ElementsAre(4));
+}
+
+TEST(LlmScores, AnIdleBranchReleasesItsRetainedStateForItsPeers) {
+  NativeBranchesFake model;
+  auto idle = model.branch(2);
+  ASSERT_TRUE(idle.has_value());
+  std::vector<float> last;
+  ASSERT_TRUE((*idle)->Prefill(std::array<std::int32_t, 3>{0, 1, 2}, last).has_value());
+  ASSERT_TRUE((*idle)->HasRetainedState());
+  ASSERT_TRUE((*idle)->ReleaseIdleState().has_value());
+  EXPECT_FALSE((*idle)->HasRetainedState());
+  EXPECT_TRUE(model.native_state(2).target.empty());
+  EXPECT_EQ(model.native_state(2).clearings, 1U);
+  // Its next turn prefills from the start, with no further clear owed.
+  ASSERT_TRUE((*idle)->Prefill(std::array<std::int32_t, 1>{4}, last).has_value());
+  EXPECT_THAT((*idle)->history(), ElementsAre(4));
+  EXPECT_EQ(model.native_state(2).clearings, 1U);
+  // A busy branch is not idle.
+  auto busy = (*idle)->BeginPrompt(std::array<std::int32_t, 2>{4, 5});
+  ASSERT_TRUE(busy.has_value());
+  EXPECT_DEATH(EXPECT_FALSE((*idle)->ReleaseIdleState().has_value()), "another active prompt");
+  (*busy)->Cancel();
+  ASSERT_TRUE((*busy)->Finish().has_value());
+  // A family without separate native slots refuses, owing a clear.
+  FakeLlm serial;
+  ASSERT_TRUE(serial.Prefill(std::array<std::int32_t, 1>{0}, last).has_value());
+  EXPECT_FALSE(serial.default_branch().ReleaseIdleState().has_value());
+  EXPECT_FALSE(serial.HasRetainedState());
+  ASSERT_TRUE(serial.Prefill(std::array<std::int32_t, 1>{3}, last).has_value());
+  EXPECT_EQ(serial.clearings, 1U);
+}
+
+TEST(LlmScores, APreemptedGenerationResumesFromItsRebuiltStateWithoutRepeatingTokens) {
+  for (const bool sampled : {false, true}) {
+    NativeBranchesFake model;
+    rt::GenerateOptions options;
+    options.max_tokens = 6;
+    options.stop = false;
+    if (sampled) {
+      options.sampling =
+          jitllm::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
+      options.seed = 913;
+    }
+    // The same request, uninterrupted, on another branch.
+    auto reference = model.branch(3);
+    ASSERT_TRUE(reference.has_value());
+    std::vector<float> last;
+    ASSERT_TRUE((*reference)->Prefill(std::array<std::int32_t, 1>{0}, last).has_value());
+    rt::Generation expected;
+    ASSERT_TRUE((*reference)->Generate(last, options, expected).has_value());
+    ASSERT_EQ(expected.tokens.size(), 6U);
+
+    auto branch = model.branch(1);
+    ASSERT_TRUE(branch.has_value());
+    std::vector<std::int32_t> visible;
+    rt::GenerateOptions streamed = options;
+    streamed.on_tokens = [&visible](std::span<const std::int32_t> fresh) {
+      visible.insert(visible.end(), fresh.begin(), fresh.end());
+      return true;
+    };
+    ASSERT_TRUE((*branch)->Prefill(std::array<std::int32_t, 1>{0}, last).has_value());
+    rt::Generation out;
+    auto opened = (*branch)->BeginGeneration(last, streamed, out);
+    ASSERT_TRUE(opened.has_value());
+    const std::array<rt::Llm::GenerationSession*, 1> one = {opened->get()};
+    ASSERT_TRUE(model.RunGenerationWave(one, true).has_value());
+    ASSERT_TRUE(model.RunGenerationWave(one, true).has_value());
+    model.native_state(1).refuse_capacity = true;
+    ASSERT_TRUE(model.RunGenerationWave(one, true).has_value());
+    ASSERT_TRUE((*opened)->refused());
+    // The preemption: the session ends at its completed boundary, the host
+    // keeps the tokens the state held, and the state is discarded.
+    (*opened)->Cancel();
+    ASSERT_TRUE((*opened)->Finish().has_value());
+    const std::vector<std::int32_t> held = (*branch)->history();
+    ASSERT_EQ(held.size(), 3U);  // the prompt and two generated; the anchor waits
+    ASSERT_TRUE((*branch)->Clear().has_value());
+    EXPECT_TRUE(model.native_state(1).target.empty());
+    model.native_state(1).refuse_capacity = false;
+    // Later: the state is rebuilt from those tokens, and the generation goes on.
+    auto rebuilt = (*branch)->BeginPrompt(held);
+    ASSERT_TRUE(rebuilt.has_value());
+    while (!(*rebuilt)->done()) {
+      ASSERT_TRUE((*rebuilt)->Advance({}, true).has_value());
+    }
+    ASSERT_TRUE((*rebuilt)->Finish().has_value());
+    EXPECT_EQ(model.native_state(1).target, held);
+    rt::Generation unused;
+    EXPECT_FALSE((*branch)->ResumeGeneration((*rebuilt)->last(), streamed, unused).has_value());
+    auto resumed = (*branch)->ResumeGeneration((*rebuilt)->last(), streamed, out);
+    ASSERT_TRUE(resumed.has_value());
+    EXPECT_FALSE(out.cancelled);
+    EXPECT_EQ(out.tokens.size(), 3U);
+    const std::array<rt::Llm::GenerationSession*, 1> again = {resumed->get()};
+    while (!(*resumed)->done()) {
+      ASSERT_TRUE(model.RunGenerationWave(again, true).has_value());
+    }
+    ASSERT_TRUE((*resumed)->Finish().has_value());
+    EXPECT_EQ(out.tokens, expected.tokens) << "sampled " << sampled;
+    EXPECT_EQ(visible, expected.tokens) << "sampled " << sampled;  // each streamed once
+    EXPECT_EQ((*branch)->history(), (*reference)->history());
+    EXPECT_EQ((*branch)->history(), model.native_state(1).target);
+  }
 }
 
 }  // namespace

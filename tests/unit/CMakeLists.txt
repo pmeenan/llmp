@@ -51,6 +51,11 @@ target_link_libraries(runtime_test PRIVATE jitllm_runtime jitllm_platform)
 jitllm_gtest(runtime_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# A chat cohort's state-capacity policy: who waits, fails, is preempted.
+add_executable(cohort_capacity_test cohort_capacity_test.cc)
+target_link_libraries(cohort_capacity_test PRIVATE jitllm_runtime)
+jitllm_gtest(cohort_capacity_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The chat route (D-097): requests and their bounds, the bind resolution and
 # Host guard, and the server over real loopback sockets with a fake backend.
 add_executable(api_test api_test.cc)
@@ -356,6 +361,14 @@ if(JITLLM_CUDA)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
   target_link_options(dsv4_prefill_plan_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   jitllm_gtest(dsv4_prefill_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+  # A Qwen3.8 wave's composition (engine/qwen38_wave_plan.h), planned on
+  # the host over a synthetic binding: no device, no model files.
+  add_executable(qwen38_wave_plan_test qwen38_wave_plan_test.cc)
+  target_link_libraries(qwen38_wave_plan_test PRIVATE jitllm_engine)
+  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
+  target_link_options(qwen38_wave_plan_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  jitllm_gtest(qwen38_wave_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
   add_executable(dsv4_ds4_weights_test dsv4_ds4_weights_test.cc)
   target_link_libraries(dsv4_ds4_weights_test PRIVATE jitllm_engine)

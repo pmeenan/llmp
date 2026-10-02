@@ -6,7 +6,8 @@
 // - jitLLM's MXFP8 vector product (jitllm_ops.h) at the model's input widths
 //   (2560, 6144, 640) and 1 to 8 columns, within upstream's default bound
 //   for float products (NMSE 1e-7: its F32 block sums differ only in order);
-//   and its BF16 dequantization, exactly;
+//   a wave's 9 to 16 columns equal to the lone columns bit for bit; and its
+//   BF16 dequantization, exactly;
 // - the n-gram table's NVFP4 row lookup, exactly, and NaN for an id outside
 //   the table; and a GGUF checkpoint's (IQ4_NL and the other 32-value block
 //   types), GGML's CPU dequantization bit for bit;
@@ -282,7 +283,70 @@ TEST_F(Qwen38OpsTest, SmallMxfp8ProductsMatchLoneColumnsBitForBit) {
   }
 }
 
-// The vector product's refusals: more than 8 columns, k not whole 32-code
+// A Qwen3.8 wave's shared products (engine/qwen38_wave_plan.h) of 9 to 16
+// columns take the wide kernels (staged x for wide outputs, x through L1
+// for small ones): every output is the lone column's bit for bit, at the
+// model's shapes and at row counts that leave a block's last warps short
+// or idle, with each column's padded stride, for column counts that fill
+// and that underfill each wide kernel's column template.
+TEST_F(Qwen38OpsTest, WideMxfp8ProductsMatchLoneColumnsBitForBit) {
+  constexpr std::int64_t kMostColumns = kg::kMxfp8VecWaveColumns;
+  for (const auto& [k, rows] : {std::pair<std::int64_t, std::int64_t>{2560, 10240},
+                                {2560, 6144},
+                                {6144, 2560},
+                                {2560, 640},
+                                {640, 2560},
+                                {2560, 48},
+                                {2560, 4100},
+                                {640, 300}}) {
+    const std::string what = "k " + std::to_string(k) + ", outputs " + std::to_string(rows);
+    const std::int64_t stride = k + 12;  // 16-byte aligned, not contiguous
+    auto arena = TensorArena::Create(64);
+    ASSERT_TRUE(arena.has_value());
+    ggml_context* ctx = arena->context();
+    const auto codes =
+        E4m3Codes(static_cast<std::uint64_t>(k + rows), static_cast<std::size_t>(k * rows));
+    std::vector<std::uint8_t> scales(static_cast<std::size_t>(k / 32 * rows));
+    std::mt19937 random(static_cast<unsigned>(k * rows));
+    for (auto& scale : scales) {
+      scale = static_cast<std::uint8_t>(118 + (random() % 12));
+    }
+    std::vector<float> input(static_cast<std::size_t>(stride * kMostColumns));
+    std::normal_distribution<float> normal(0.0f, 1.0f);
+    for (float& value : input) {
+      value = normal(random);
+    }
+    auto* wc = Place(ggml_new_tensor_2d(ctx, GGML_TYPE_I8, k, rows), codes);
+    auto* ws = Place(ggml_new_tensor_2d(ctx, GGML_TYPE_I8, k / 32, rows), scales);
+    auto* full = Place(ggml_new_tensor_2d(ctx, GGML_TYPE_F32, stride, kMostColumns), input);
+    std::vector<std::uint32_t> want;
+    for (std::int64_t column = 0; column < kMostColumns; ++column) {
+      auto* x =
+          ggml_view_1d(ctx, full, k, static_cast<std::size_t>(column * stride) * sizeof(float));
+      auto* y = Place(kg::Mxfp8MulMatVec(ctx, wc, ws, x));
+      ASSERT_TRUE(kg::RunMxfp8MulMatVec(launch(), y).has_value()) << what;
+      const auto bits = Download<std::uint32_t>(y);
+      want.insert(want.end(), bits.begin(), bits.end());
+    }
+    // The eight-column kernel agrees with the lone columns (the contract the
+    // wide kernels extend).
+    for (const std::int64_t columns : {8, 9, 12, 13, 16}) {
+      auto* x =
+          ggml_view_2d(ctx, full, k, columns, static_cast<std::size_t>(stride) * sizeof(float), 0);
+      auto* y = Place(kg::Mxfp8MulMatVec(ctx, wc, ws, x));
+      ASSERT_TRUE(kg::RunMxfp8MulMatVec(launch(), y).has_value()) << what;
+      const auto bits = Download<std::uint32_t>(y);
+      ASSERT_EQ(bits.size(), static_cast<std::size_t>(rows * columns)) << what;
+      for (std::size_t i = 0; i < bits.size(); ++i) {
+        ASSERT_EQ(bits[i], want[i]) << what << ", columns " << columns << ": column "
+                                    << (static_cast<std::int64_t>(i) / rows) << ", row "
+                                    << (static_cast<std::int64_t>(i) % rows);
+      }
+    }
+  }
+}
+
+// The vector product's refusals: more than 16 columns, k not whole 32-code
 // blocks, activations off their 16-byte alignment.
 TEST_F(Qwen38OpsTest, Mxfp8VectorProductRefusesWhatItCannotRun) {
   const auto refused = [&](std::int64_t k, std::int64_t columns, std::size_t x_offset) {
@@ -295,7 +359,9 @@ TEST_F(Qwen38OpsTest, Mxfp8VectorProductRefusesWhatItCannotRun) {
     return FailedCode(kg::RunMxfp8MulMatVec(launch(), y)) == KernelError::kRejected;
   };
   EXPECT_FALSE(refused(64, 8, 0));
-  EXPECT_TRUE(refused(64, 9, 0));
+  EXPECT_FALSE(refused(64, 9, 0));
+  EXPECT_FALSE(refused(64, 16, 0));
+  EXPECT_TRUE(refused(64, 17, 0));
   EXPECT_TRUE(refused(48, 1, 0));
   EXPECT_TRUE(refused(64, 1, 4));
 }

@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
 #include <initializer_list>
 #include <iterator>
 #include <limits>
@@ -58,16 +59,23 @@ template <typename T>
 using Slots = std::array<T, kQwen38WaveSlots>;
 using Lists = Slots<std::vector<ggml_tensor*>>;
 using Originals = Slots<kg::GraphPlan>;
+using Product = Qwen38WavePlanned::Product;
 
-struct HeadPair {
-  std::array<ggml_tensor*, 2> originals{};
-  // Paid concat, ordinary product, and the two independent output views.
-  std::array<ggml_tensor*, 4> nodes{};
+// Consecutive slots of the ascending request order; the first leads.
+using Group = std::vector<std::uint32_t>;
+
+struct HeadGroup {
+  std::vector<ggml_tensor*> originals;
+  // Paid concats, the ordinary product, then a view a slot.
+  std::vector<ggml_tensor*> nodes;
+  ggml_tensor* product = nullptr;
+  std::vector<ggml_tensor*> views;
 };
-using HeadPairs = Slots<std::optional<HeadPair>>;
+using HeadGroups = Slots<std::optional<HeadGroup>>;  // at each group's leader
 
 // Only composition metadata is capped here; the original graph builders
-// retain their own bounded arenas. Exceeding this cap keeps scalar products.
+// retain their own bounded arenas. Groups past this cap refuse the wave;
+// HC products past it stay scalar.
 constexpr std::size_t kMaxPairedProducts = 4096;
 
 struct Range {
@@ -170,7 +178,7 @@ bool Concatenable(const ggml_tensor* a, const ggml_tensor* b, std::size_t dim, g
 
 bool MatchHc(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mutable_places) {
   return Qwen38HcPairCandidate(a) && Qwen38HcPairCandidate(b) && a->type == b->type &&
-         a->ne[0] == b->ne[0] && a->ne[1] + b->ne[1] <= 8 &&
+         a->ne[0] == b->ne[0] &&
          std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) == 0 &&
          SameImmutableLeaf(a->src[0], b->src[0], mutable_places) &&
          Concatenable(a->src[1], b->src[1], 1, GGML_TYPE_BF16);
@@ -190,6 +198,8 @@ bool OrdinaryHead(const kg::GraphPlan& plan, const ggml_tensor* node) {
          found->implementation == kg::kMulMatTensorCore;
 }
 
+// Whether b may join a's product (each at most four rows; the group's sum
+// is checked separately against the kernels' limits).
 bool Match(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mutable_places) {
   if (!Eligible(a) || !Eligible(b) || kg::JitllmOpOf(a) != kg::JitllmOpOf(b) ||
       std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) != 0 ||
@@ -200,13 +210,12 @@ bool Match(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mu
   if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
     return SameImmutableLeaf(a->src[1], b->src[1], mutable_places) &&
            Concatenable(a->src[2], b->src[2], 1, GGML_TYPE_F32) && a->ne[1] >= 1 && a->ne[1] <= 4 &&
-           b->ne[1] >= 1 && b->ne[1] <= 4 && a->ne[1] + b->ne[1] <= 8 && a->ne[2] == 1 &&
-           b->ne[2] == 1 && a->ne[3] == 1 && b->ne[3] == 1 && a->src[2]->ne[1] == a->ne[1] &&
-           b->src[2]->ne[1] == b->ne[1] && a->src[2]->ne[2] == 1 && a->src[2]->ne[3] == 1;
+           b->ne[1] >= 1 && b->ne[1] <= 4 && a->ne[2] == 1 && b->ne[2] == 1 && a->ne[3] == 1 &&
+           b->ne[3] == 1 && a->src[2]->ne[1] == a->ne[1] && b->src[2]->ne[1] == b->ne[1] &&
+           a->src[2]->ne[2] == 1 && a->src[2]->ne[3] == 1;
   }
   if (a->ne[1] != b->ne[1] || a->ne[2] < 1 || a->ne[2] > 4 || b->ne[2] < 1 || b->ne[2] > 4 ||
-      a->ne[2] + b->ne[2] > 8 || a->ne[3] != 1 || b->ne[3] != 1 ||
-      !Concatenable(a->src[1], b->src[1], 2, GGML_TYPE_F32) ||
+      a->ne[3] != 1 || b->ne[3] != 1 || !Concatenable(a->src[1], b->src[1], 2, GGML_TYPE_F32) ||
       !Concatenable(a->src[2], b->src[2], 1, GGML_TYPE_I32) || a->src[1]->ne[2] != a->ne[2] ||
       b->src[1]->ne[2] != b->ne[2] || a->src[1]->ne[3] != 1 || a->src[2]->ne[0] != a->ne[1] ||
       a->src[2]->ne[1] != a->ne[2] || b->src[2]->ne[1] != b->ne[2] || a->src[2]->ne[2] != 1 ||
@@ -215,6 +224,34 @@ bool Match(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mu
   }
   return !kg::IsMoeGemvSwiglu(a) || (SameImmutableLeaf(a->src[3], b->src[3], mutable_places) &&
                                      SameImmutableLeaf(a->src[4], b->src[4], mutable_places));
+}
+
+// The rows a product joins (columns; a routed product's tokens) and the
+// most its shared kernel takes.
+std::int64_t JoinedRows(const ggml_tensor* t) {
+  return kg::JitllmOpOf(t) == kg::JitllmOp::kMoeGemv ? t->ne[2] : t->ne[1];
+}
+
+std::int64_t JoinedLimit(const ggml_tensor* t) {
+  switch (kg::JitllmOpOf(t)) {
+    case kg::JitllmOp::kMoeGemv:
+      return kg::kMoeGemvWaveTokens;
+    case kg::JitllmOp::kMxfp8MulMatVec:
+      return kg::kMxfp8VecWaveColumns;
+    default:
+      return 16;  // HC's cuBLAS product
+  }
+}
+
+// `xs` joined along `dim` by paid GGML concats, each appended to `nodes`.
+ggml_tensor* ConcatAll(ggml_context* c, std::span<ggml_tensor* const> xs, int dim,
+                       std::vector<ggml_tensor*>& nodes) {
+  ggml_tensor* x = xs[0];
+  for (std::size_t i = 1; i < xs.size(); ++i) {
+    x = ggml_concat(c, x, xs[i], dim);
+    nodes.push_back(x);
+  }
+  return x;
 }
 
 void Redirect(const Lists& lists, ggml_tensor* from, ggml_tensor* to) {
@@ -260,139 +297,193 @@ std::expected<void, std::string> Topological(std::span<ggml_tensor* const> nodes
 }  // namespace
 
 struct Qwen38WaveBuilder {
-  static std::expected<HeadPairs, std::string> PrepareHeads(
-      Qwen38WavePlanned& out, const Originals& originals, std::span<const std::uint32_t> order,
-      const Slots<bool>& compatible, std::span<const Range> mutable_places,
-      const kg::DeviceChoices& choices, bool share) {
-    HeadPairs pairs;
-    if (!share) {
-      return pairs;
+  // Consecutive slots of `order`, each `compatible` with the one before it,
+  // whose product barriers match the group leader's in sequence and whose
+  // rows fit each shared kernel. A slot that does not match its leader
+  // starts the next group. Without `allowed`, every slot is its own group.
+  static std::vector<Group> Groups(const Lists& lists, std::span<const std::uint32_t> order,
+                                   const Slots<bool>& compatible,
+                                   std::span<const Range> mutable_places, bool allowed) {
+    Lists barriers;
+    for (const auto s : order) {
+      std::ranges::copy_if(lists[s], std::back_inserter(barriers[s]), Eligible);
     }
-    for (std::size_t i = 0; i + 1 < order.size(); i += 2) {
-      const auto a_slot = order[i];
-      const auto b_slot = order[i + 1];
-      if (!compatible[a_slot] || out.target_[a_slot] == nullptr || out.target_[b_slot] == nullptr) {
+    const auto joins = [&](const Group& g, std::uint32_t s) {
+      const auto a = g.front();
+      if (barriers[a].empty() || barriers[a].size() != barriers[s].size()) {
+        return false;
+      }
+      for (std::size_t n = 0; n < barriers[a].size(); ++n) {
+        if (!Match(barriers[a][n], barriers[s][n], mutable_places)) {
+          return false;
+        }
+        std::int64_t rows = JoinedRows(barriers[s][n]);
+        for (const auto m : g) {
+          rows += JoinedRows(barriers[m][n]);
+        }
+        if (rows > JoinedLimit(barriers[a][n])) {
+          return false;
+        }
+      }
+      return true;
+    };
+    std::vector<Group> groups;
+    for (std::size_t i = 0; i < order.size(); ++i) {
+      const auto s = order[i];
+      if (i == 0 || !allowed || !compatible[s] || !joins(groups.back(), s)) {
+        groups.push_back({s});
+      } else {
+        groups.back().push_back(s);
+      }
+    }
+    return groups;
+  }
+
+  static std::expected<HeadGroups, std::string> PrepareHeads(
+      Qwen38WavePlanned& out, const Originals& originals, std::span<const Group> groups,
+      std::span<const Range> mutable_places, const kg::DeviceChoices& choices, bool share) {
+    HeadGroups heads;
+    if (!share) {
+      return heads;
+    }
+    for (const Group& g : groups) {
+      if (g.size() < 2) {
         continue;
       }
-      ggml_tensor* a = out.target_[a_slot]->graph.logits;
-      ggml_tensor* b = out.target_[b_slot]->graph.logits;
-      if (!Qwen38FullHeadPairCandidate(a) || !Qwen38FullHeadPairCandidate(b) ||
-          !SameImmutableLeaf(a->src[0], b->src[0], mutable_places) ||
-          std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) != 0 ||
-          !OrdinaryHead(originals[a_slot], a) || !OrdinaryHead(originals[b_slot], b)) {
+      std::vector<ggml_tensor*> logits;
+      bool eligible = true;
+      std::int64_t columns = 0;
+      for (const auto s : g) {
+        if (out.target_[s] == nullptr) {
+          eligible = false;
+          break;
+        }
+        ggml_tensor* t = out.target_[s]->graph.logits;
+        const ggml_tensor* lead = logits.empty() ? t : logits.front();
+        if (!Qwen38FullHeadPairCandidate(t) || !OrdinaryHead(originals[s], t) ||
+            !SameImmutableLeaf(lead->src[0], t->src[0], mutable_places) ||
+            std::memcmp(lead->op_params, t->op_params, sizeof(t->op_params)) != 0) {
+          eligible = false;
+          break;
+        }
+        columns += t->ne[1];
+        logits.push_back(t);
+      }
+      if (!eligible || columns > 16) {
         continue;
       }
       if (!out.head_arena_.has_value()) {
-        auto arena = kg::TensorArena::Create((kQwen38WaveSlots / 2) * 4);
+        auto arena = kg::TensorArena::Create(4 * kQwen38WaveSlots);
         if (!arena) {
           return Error(arena.error().detail);
         }
         out.head_arena_.emplace(std::move(*arena));
       }
-      if (auto room = out.head_arena_->Reserve(4); !room) {
+      if (auto room = out.head_arena_->Reserve(2 * g.size()); !room) {
         return Error(room.error().detail);
       }
       ggml_context* c = out.head_arena_->context();
-      ggml_tensor* x = ggml_concat(c, a->src[1], b->src[1], 1);
-      ggml_tensor* both = ggml_mul_mat(c, a->src[0], x);
-      std::memcpy(both->op_params, a->op_params, sizeof(both->op_params));
-      HeadPair candidate{{a, b},
-                         {x, both, ggml_view_2d(c, both, a->ne[0], a->ne[1], both->nb[1], 0),
-                          ggml_view_2d(c, both, b->ne[0], b->ne[1], both->nb[1],
-                                       static_cast<std::size_t>(a->ne[1]) * both->nb[1])}};
+      HeadGroup candidate;
+      candidate.originals = logits;
+      std::vector<ggml_tensor*> xs;
+      xs.reserve(logits.size());
+      for (ggml_tensor* t : logits) {
+        xs.push_back(t->src[1]);
+      }
+      ggml_tensor* x = ConcatAll(c, xs, 1, candidate.nodes);
+      candidate.product = ggml_mul_mat(c, logits.front()->src[0], x);
+      std::memcpy(candidate.product->op_params, logits.front()->op_params,
+                  sizeof(candidate.product->op_params));
+      candidate.nodes.push_back(candidate.product);
+      std::size_t offset = 0;
+      for (ggml_tensor* t : logits) {
+        ggml_tensor* view = ggml_view_2d(c, candidate.product, t->ne[0], t->ne[1],
+                                         candidate.product->nb[1], offset);
+        offset += static_cast<std::size_t>(t->ne[1]) * candidate.product->nb[1];
+        candidate.views.push_back(view);
+        candidate.nodes.push_back(view);
+      }
       // This metadata-only probe authenticates the actual device selector
-      // before rewriting any original descriptor. Unsupported pairs retain
+      // before rewriting any original descriptor. Unsupported groups retain
       // the scalar heads. Final placement rebinds these nodes and checks again.
       kg::BindDistinct(candidate.nodes, std::uint64_t{1} << 46U);
       auto probe = kg::PlanGraph(candidate.nodes, false, choices);
-      if (!probe || !OrdinaryHead(*probe, both)) {
+      if (!probe || !OrdinaryHead(*probe, candidate.product)) {
         continue;
       }
-      pairs[a_slot] = candidate;
+      heads[g.front()] = std::move(candidate);
     }
-    return pairs;
+    return heads;
   }
 
-  // Preflight every barrier before mutating any descriptor. Pair membership
-  // is fixed by the ascending request list, never shifted as a graph ends.
+  // Every group's barriers were preflighted (Groups) before any descriptor
+  // changes; membership never shifts as a graph ends.
   static std::expected<void, std::string> Compose(Qwen38WavePlanned& out, const Lists& lists,
-                                                  std::span<const std::uint32_t> order,
-                                                  const Slots<bool>& compatible,
+                                                  std::span<const Group> groups,
                                                   std::span<const Range> mutable_places,
-                                                  const HeadPairs& heads) {
-    Lists barriers;
-    for (std::size_t s = 0; s < kQwen38WaveSlots; ++s) {
-      std::ranges::copy_if(lists[s], std::back_inserter(barriers[s]), Eligible);
-    }
-    Slots<bool> pair_first{};
+                                                  const HeadGroups& heads) {
     std::size_t products = 0;
-    for (std::size_t i = 0; i + 1 < order.size(); i += 2) {
-      const auto a = order[i];
-      const auto b = order[i + 1];
-      if (!compatible[a] || barriers[a].empty() || barriers[a].size() != barriers[b].size() ||
-          barriers[a].size() > kMaxPairedProducts - products) {
-        continue;
-      }
-      bool match = true;
-      for (std::size_t n = 0; n < barriers[a].size(); ++n) {
-        if (!Match(barriers[a][n], barriers[b][n], mutable_places)) {
-          match = false;
-          break;
-        }
-      }
-      if (match) {
-        pair_first[a] = true;
-        products += barriers[a].size();
+    for (const Group& g : groups) {
+      if (g.size() > 1) {
+        products += static_cast<std::size_t>(std::ranges::count_if(lists[g.front()], Eligible));
       }
     }
-    // HC eligibility never enters the original all-product preflight above.
-    // Authenticate the extra barriers independently, including their order
-    // among the existing barriers. A refusal leaves all old pairing intact.
+    if (products > kMaxPairedProducts) {
+      return Error("Qwen3.8 wave exceeds its shared product bound");
+    }
+    // HC eligibility never enters the product preflight. Authenticate the
+    // extra barriers independently, including their order among the
+    // existing barriers; HC products join only target verifications. A
+    // refusal leaves the other grouping intact.
     Slots<bool> hc_slots{};
-    for (std::size_t i = 0; i + 1 < order.size(); i += 2) {
-      const auto a = order[i];
-      const auto b = order[i + 1];
-      if (!pair_first[a] || out.target_[a] == nullptr || out.target_[b] == nullptr ||
-          out.target_[a]->graph.row_ids == nullptr || out.target_[b]->graph.row_ids == nullptr) {
+    for (const Group& g : groups) {
+      if (g.size() < 2 || !std::ranges::all_of(g, [&](auto s) {
+            return out.target_[s] != nullptr && out.target_[s]->graph.row_ids != nullptr;
+          })) {
         continue;
       }
-      std::vector<ggml_tensor*> a_barriers;
-      std::vector<ggml_tensor*> b_barriers;
       const auto extra_barrier = [](const ggml_tensor* t) {
         return Eligible(t) || Qwen38HcPairCandidate(t);
       };
-      std::ranges::copy_if(lists[a], std::back_inserter(a_barriers), extra_barrier);
-      std::ranges::copy_if(lists[b], std::back_inserter(b_barriers), extra_barrier);
-      bool match = a_barriers.size() == b_barriers.size();
+      std::vector<ggml_tensor*> a_barriers;
+      std::ranges::copy_if(lists[g.front()], std::back_inserter(a_barriers), extra_barrier);
+      bool match = true;
       std::size_t hc_products = 0;
-      for (std::size_t n = 0; match && n < a_barriers.size(); ++n) {
-        if (Qwen38HcPairCandidate(a_barriers[n])) {
-          match = MatchHc(a_barriers[n], b_barriers[n], mutable_places);
-          ++hc_products;
-        } else {
-          match = Match(a_barriers[n], b_barriers[n], mutable_places);
+      std::vector<std::int64_t> rows(a_barriers.size(), 0);
+      for (std::size_t k = 0; match && k < g.size(); ++k) {
+        std::vector<ggml_tensor*> s_barriers;
+        std::ranges::copy_if(lists[g[k]], std::back_inserter(s_barriers), extra_barrier);
+        match = s_barriers.size() == a_barriers.size();
+        for (std::size_t n = 0; match && n < a_barriers.size(); ++n) {
+          if (Qwen38HcPairCandidate(a_barriers[n])) {
+            rows[n] += s_barriers[n]->ne[1];
+            match = MatchHc(a_barriers[n], s_barriers[n], mutable_places) && rows[n] <= 16;
+            hc_products += k == 0 ? 1 : 0;
+          } else {
+            match = Match(a_barriers[n], s_barriers[n], mutable_places);
+          }
         }
       }
       if (match && hc_products != 0 && hc_products <= kMaxPairedProducts - products) {
-        hc_slots[a] = true;
-        hc_slots[b] = true;
+        for (const auto s : g) {
+          hc_slots[s] = true;
+        }
         products += hc_products;
       }
     }
     if (products != 0) {
-      auto arena = kg::TensorArena::Create(products * 5);
+      auto arena = kg::TensorArena::Create(products * 4 * kQwen38WaveSlots);
       if (!arena) {
         return Error(arena.error().detail);
       }
       out.arena.emplace(std::move(*arena));
     }
     Slots<ggml_tensor*> head_at{};
-    for (std::size_t i = 0; i + 1 < order.size(); i += 2) {
-      const auto a = order[i];
-      const auto b = order[i + 1];
-      if (heads[a].has_value()) {
-        head_at[a] = heads[a]->originals[0];
-        head_at[b] = heads[a]->originals[1];
+    for (const Group& g : groups) {
+      if (heads[g.front()].has_value()) {
+        for (std::size_t k = 0; k < g.size(); ++k) {
+          head_at[g[k]] = heads[g.front()]->originals[k];
+        }
       }
     }
     const auto barrier = [&](std::uint32_t slot, const ggml_tensor* t) {
@@ -400,53 +491,68 @@ struct Qwen38WaveBuilder {
     };
     Slots<std::size_t> at{};
     while (true) {
+      // Every pass emits at least one descriptor or ends; a group whose
+      // members wait on each other at different barriers would otherwise
+      // spin here.
+      const std::size_t emitted = out.nodes_.size();
       bool ready = false;
-      for (const auto s : order) {
-        while (at[s] < lists[s].size() && !barrier(s, lists[s][at[s]])) {
-          out.nodes_.push_back(lists[s][at[s]++]);
+      for (const Group& g : groups) {
+        for (const auto s : g) {
+          while (at[s] < lists[s].size() && !barrier(s, lists[s][at[s]])) {
+            out.nodes_.push_back(lists[s][at[s]++]);
+          }
+          ready = ready || at[s] != lists[s].size();
         }
-        ready = ready || at[s] != lists[s].size();
       }
       if (!ready) {
         break;
       }
-      for (std::size_t i = 0; i < order.size(); ++i) {
-        const auto a_slot = order[i];
+      for (const Group& g : groups) {
+        const auto a_slot = g.front();
+        if (g.size() == 1) {
+          if (at[a_slot] != lists[a_slot].size()) {
+            out.nodes_.push_back(lists[a_slot][at[a_slot]++]);
+          }
+          continue;
+        }
         if (at[a_slot] == lists[a_slot].size()) {
+          if (std::ranges::any_of(g, [&](auto s) { return at[s] != lists[s].size(); })) {
+            return Error("Qwen3.8 wave lost a preflighted product barrier");
+          }
           continue;
         }
         if (lists[a_slot][at[a_slot]] == head_at[a_slot]) {
           // A shorter original product sequence may reach its head first.
-          // Hold only that head until its fixed peer has computed its input.
-          if (!heads[a_slot].has_value() || i + 1 >= order.size()) {
-            continue;
-          }
-          const auto b_slot = order[i + 1];
-          if (at[b_slot] == lists[b_slot].size() || lists[b_slot][at[b_slot]] != head_at[b_slot]) {
+          // Hold the heads until every member has computed its input.
+          if (!std::ranges::all_of(g, [&](auto s) {
+                return at[s] != lists[s].size() && lists[s][at[s]] == head_at[s];
+              })) {
             continue;
           }
           const auto& head = *heads[a_slot];
-          ++at[a_slot];
-          ++at[b_slot];
-          ++i;
           out.nodes_.insert(out.nodes_.end(), head.nodes.begin(), head.nodes.end());
-          out.products_.push_back({head.originals[0], head.originals[1], head.nodes[1]});
+          out.products_.push_back({head.originals, head.product});
           out.head_products_.push_back(out.products_.back());
-          const auto packed = ggml_nbytes(head.nodes[0]);
-          out.stats_.packed_bytes += packed;
-          out.stats_.head_packed_bytes += packed;
+          for (const ggml_tensor* n : head.nodes) {
+            if (n->op == GGML_OP_CONCAT) {
+              out.stats_.packed_bytes += ggml_nbytes(n);
+              out.stats_.head_packed_bytes += ggml_nbytes(n);
+            }
+          }
           ++out.stats_.full_head_pairs;
-          out.stats_.paired_slots |= static_cast<std::uint8_t>((1U << a_slot) | (1U << b_slot));
-          for (std::size_t j = 0; j < 2; ++j) {
-            ggml_tensor* original = head.originals[j];
-            ggml_tensor* split = head.nodes[j + 2];
+          for (std::size_t k = 0; k < g.size(); ++k) {
+            const auto s = g[k];
+            ++at[s];
+            out.stats_.paired_slots |= static_cast<std::uint8_t>(1U << s);
+            ggml_tensor* original = head.originals[k];
+            ggml_tensor* split = head.views[k];
             for (ggml_tensor*& held : out.keep_) {
               if (held == original) {
                 held = split;
               }
             }
             Redirect(lists, original, split);
-            auto& graph = out.target_[j == 0 ? a_slot : b_slot]->graph;
+            auto& graph = out.target_[s]->graph;
             graph.logits = split;
             for (auto& named : graph.named) {
               if (named.second == original) {
@@ -456,78 +562,98 @@ struct Qwen38WaveBuilder {
           }
           continue;
         }
-        ggml_tensor* a = lists[a_slot][at[a_slot]++];
-        if (!pair_first[a_slot]) {
-          out.nodes_.push_back(a);
-          continue;
+        std::vector<ggml_tensor*> members;
+        for (const auto s : g) {
+          if (at[s] == lists[s].size() || !out.arena.has_value()) {
+            return Error("Qwen3.8 wave lost a preflighted product barrier");
+          }
+          members.push_back(lists[s][at[s]++]);
         }
-        const auto b_slot = order[++i];
-        if (at[b_slot] == lists[b_slot].size() || !out.arena.has_value()) {
-          return Error("Qwen3.8 wave lost a preflighted product barrier");
+        ggml_tensor* a = members.front();
+        const bool hc = !Eligible(a) && hc_slots[a_slot] && Qwen38HcPairCandidate(a);
+        for (std::size_t k = 1; k < members.size(); ++k) {
+          if (hc ? (!hc_slots[g[k]] || !MatchHc(a, members[k], mutable_places))
+                 : !Match(a, members[k], mutable_places)) {
+            return Error("Qwen3.8 wave lost a preflighted product barrier");
+          }
         }
-        ggml_tensor* b = lists[b_slot][at[b_slot]++];
-        if (auto room = out.arena->Reserve(5); !room) {
+        if (auto room = out.arena->Reserve(4 * kQwen38WaveSlots); !room) {
           return Error(room.error().detail);
         }
         ggml_context* c = out.arena->context();
+        std::vector<ggml_tensor*> made;
+        std::vector<ggml_tensor*> xs;
         ggml_tensor* both = nullptr;
-        std::array<ggml_tensor*, 2> split{};
-        if (Qwen38HcPairCandidate(a)) {
-          if (!hc_slots[a_slot] || !hc_slots[b_slot] || !MatchHc(a, b, mutable_places)) {
-            return Error("Qwen3.8 wave lost a preflighted HC barrier");
+        std::vector<ggml_tensor*> split;
+        if (hc) {
+          for (ggml_tensor* m : members) {
+            xs.push_back(m->src[1]);
           }
-          ggml_tensor* x = ggml_concat(c, a->src[1], b->src[1], 1);
-          out.nodes_.push_back(x);
+          ggml_tensor* x = ConcatAll(c, xs, 1, made);
           both = kg::GemvBf16(c, a->src[0], x, a->type);
           std::memcpy(both->op_params, a->op_params, sizeof(both->op_params));
-          split[0] = ggml_view_2d(c, both, a->ne[0], a->ne[1], both->nb[1], 0);
-          split[1] = ggml_view_2d(c, both, b->ne[0], b->ne[1], both->nb[1],
-                                  static_cast<std::size_t>(a->ne[1]) * both->nb[1]);
+          std::size_t offset = 0;
+          for (ggml_tensor* m : members) {
+            split.push_back(ggml_view_2d(c, both, m->ne[0], m->ne[1], both->nb[1], offset));
+            offset += static_cast<std::size_t>(m->ne[1]) * both->nb[1];
+          }
           out.stats_.packed_bytes += ggml_nbytes(x);
         } else if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
-          ggml_tensor* x = ggml_concat(c, a->src[2], b->src[2], 1);
-          out.nodes_.push_back(x);
+          for (ggml_tensor* m : members) {
+            xs.push_back(m->src[2]);
+          }
+          ggml_tensor* x = ConcatAll(c, xs, 1, made);
           both = kg::Mxfp8MulMatVec(c, a->src[0], a->src[1], x);
-          split[0] = ggml_view_2d(c, both, a->ne[0], a->ne[1], both->nb[1], 0);
-          split[1] = ggml_view_2d(c, both, b->ne[0], b->ne[1], both->nb[1],
-                                  static_cast<std::size_t>(a->ne[1]) * both->nb[1]);
+          std::size_t offset = 0;
+          for (ggml_tensor* m : members) {
+            split.push_back(ggml_view_2d(c, both, m->ne[0], m->ne[1], both->nb[1], offset));
+            offset += static_cast<std::size_t>(m->ne[1]) * both->nb[1];
+          }
           out.stats_.packed_bytes += ggml_nbytes(x);
           ++out.stats_.mxfp8_pairs;
         } else {
-          ggml_tensor* x = ggml_concat(c, a->src[1], b->src[1], 2);
-          ggml_tensor* ids = ggml_concat(c, a->src[2], b->src[2], 1);
-          out.nodes_.push_back(x);
-          out.nodes_.push_back(ids);
+          std::vector<ggml_tensor*> ids;
+          for (ggml_tensor* m : members) {
+            xs.push_back(m->src[1]);
+            ids.push_back(m->src[2]);
+          }
+          ggml_tensor* x = ConcatAll(c, xs, 2, made);
+          ggml_tensor* joined = ConcatAll(c, ids, 1, made);
           if (kg::IsMoeGemvSwiglu(a)) {
-            both = kg::MoeGemvSwiglu(c, a->src[0], x, ids, a->ne[0], a->src[3], a->src[4],
+            both = kg::MoeGemvSwiglu(c, a->src[0], x, joined, a->ne[0], a->src[3], a->src[4],
                                      static_cast<std::uint64_t>(kg::JitllmOpInt(a, 2)),
                                      static_cast<std::uint64_t>(kg::JitllmOpInt(a, 3)));
           } else {
-            both = kg::MoeGemv(c, a->src[0], x, ids, a->ne[0], kg::JitllmOpInt(a, 0),
+            both = kg::MoeGemv(c, a->src[0], x, joined, a->ne[0], kg::JitllmOpInt(a, 0),
                                kg::JitllmOpInt(a, 1),
                                static_cast<std::uint64_t>(kg::JitllmOpInt(a, 2)),
                                static_cast<std::uint64_t>(kg::JitllmOpInt(a, 3)));
           }
-          split[0] =
-              ggml_view_3d(c, both, a->ne[0], a->ne[1], a->ne[2], both->nb[1], both->nb[2], 0);
-          split[1] = ggml_view_3d(c, both, b->ne[0], b->ne[1], b->ne[2], both->nb[1], both->nb[2],
-                                  static_cast<std::size_t>(a->ne[2]) * both->nb[2]);
-          out.stats_.packed_bytes += ggml_nbytes(x) + ggml_nbytes(ids);
+          std::size_t offset = 0;
+          for (ggml_tensor* m : members) {
+            split.push_back(ggml_view_3d(c, both, m->ne[0], m->ne[1], m->ne[2], both->nb[1],
+                                         both->nb[2], offset));
+            offset += static_cast<std::size_t>(m->ne[2]) * both->nb[2];
+          }
+          out.stats_.packed_bytes += ggml_nbytes(x) + ggml_nbytes(joined);
           ++out.stats_.routed_pairs;
         }
+        out.nodes_.insert(out.nodes_.end(), made.begin(), made.end());
         out.nodes_.push_back(both);
         out.nodes_.insert(out.nodes_.end(), split.begin(), split.end());
-        out.products_.push_back({a, b, both});
-        out.stats_.paired_slots |= static_cast<std::uint8_t>((1U << a_slot) | (1U << b_slot));
-        for (ggml_tensor*& held : out.keep_) {
-          if (held == a) {
-            held = split[0];
-          } else if (held == b) {
-            held = split[1];
+        out.products_.push_back({members, both});
+        for (std::size_t k = 0; k < members.size(); ++k) {
+          out.stats_.paired_slots |= static_cast<std::uint8_t>(1U << g[k]);
+          for (ggml_tensor*& held : out.keep_) {
+            if (held == members[k]) {
+              held = split[k];
+            }
           }
+          Redirect(lists, members[k], split[k]);
         }
-        Redirect(lists, a, split[0]);
-        Redirect(lists, b, split[1]);
+      }
+      if (out.nodes_.size() == emitted) {
+        return Error("Qwen3.8 wave members wait at different product barriers");
       }
     }
     return Topological(out.nodes_);
@@ -535,11 +661,14 @@ struct Qwen38WaveBuilder {
 
   static std::expected<void, std::string> Authenticate(const Originals& originals,
                                                        const Qwen38WavePlanned& out) {
+    const auto replaced = [&](const ggml_tensor* node) {
+      return std::ranges::any_of(out.products_, [&](const Product& p) {
+        return std::ranges::find(p.originals, node) != p.originals.end();
+      });
+    };
     for (const auto& plan : originals) {
       for (const auto& step : plan.steps) {
-        if (step.nodes.size() == 1 && std::ranges::any_of(out.products_, [&](const auto& pair) {
-              return pair[0] == step.nodes.front() || pair[1] == step.nodes.front();
-            })) {
+        if (step.nodes.size() == 1 && replaced(step.nodes.front())) {
           continue;
         }
         const auto count = std::ranges::count_if(out.plan.steps, [&](const kg::PlanStep& s) {
@@ -569,23 +698,30 @@ struct Qwen38WaveBuilder {
       }
       return found;
     };
-    for (const auto& pair : out.products_) {
-      const auto* a = original(pair[0]);
-      const auto* b = original(pair[1]);
-      const auto together = find(out.plan, pair[2]);
-      if (a == nullptr || b == nullptr || together == out.plan.steps.end() ||
-          a->operation != b->operation || a->implementation != b->implementation ||
-          a->operation != together->operation || a->implementation != together->implementation) {
-        return Error("Qwen3.8 wave changed a paired implementation or precision tier");
+    for (const auto& product : out.products_) {
+      const auto together = find(out.plan, product.together);
+      if (product.originals.size() < 2 || together == out.plan.steps.end()) {
+        return Error("Qwen3.8 wave changed a shared implementation or precision tier");
+      }
+      for (ggml_tensor* node : product.originals) {
+        const auto* step = original(node);
+        if (step == nullptr || step->operation != together->operation ||
+            step->implementation != together->implementation) {
+          return Error(std::format(
+              "Qwen3.8 wave changed a shared implementation or precision tier ({} for {})",
+              together->implementation, step == nullptr ? "?" : step->implementation));
+        }
       }
     }
-    for (const auto& pair : out.head_products_) {
-      const auto* a = original(pair[0]);
-      const auto* b = original(pair[1]);
-      if (a == nullptr || b == nullptr || a->operation != execution::Operation::kMatMul ||
-          a->implementation != kg::kMulMatTensorCore ||
-          b->operation != execution::Operation::kMatMul ||
-          b->implementation != kg::kMulMatTensorCore || !OrdinaryHead(out.plan, pair[2])) {
+    for (const auto& product : out.head_products_) {
+      for (ggml_tensor* node : product.originals) {
+        const auto* step = original(node);
+        if (step == nullptr || step->operation != execution::Operation::kMatMul ||
+            step->implementation != kg::kMulMatTensorCore) {
+          return Error("Qwen3.8 full target heads did not retain the ordinary MMF selector");
+        }
+      }
+      if (!OrdinaryHead(out.plan, product.together)) {
         return Error("Qwen3.8 full target heads did not retain the ordinary MMF selector");
       }
     }
@@ -603,16 +739,13 @@ struct Qwen38WaveBuilder {
         placement.bytes > std::numeric_limits<std::uint64_t>::max() - placement.activations) {
       return Error("Qwen3.8 wave activation range overflows");
     }
-    Slots<bool> allowed = compatible;
-    if (!placement.paired) {
-      allowed.fill(false);
-    }
-    auto heads = PrepareHeads(out, originals, order, compatible, mutable_places, choices,
+    const auto groups = Groups(lists, order, compatible, mutable_places, placement.paired);
+    auto heads = PrepareHeads(out, originals, groups, mutable_places, choices,
                               placement.paired && placement.share_target_head);
     if (!heads) {
       return std::unexpected(heads.error());
     }
-    if (auto made = Compose(out, lists, order, allowed, mutable_places, *heads); !made) {
+    if (auto made = Compose(out, lists, groups, mutable_places, *heads); !made) {
       return made;
     }
     if (auto made = PlaceAndPlan(out, out.nodes_, out.inputs_, out.keep_, choices,
@@ -666,8 +799,10 @@ struct Qwen38WaveBuilder {
       }
       order.push_back(s);
       out->active_slots_ |= static_cast<std::uint8_t>(1U << s);
-      if (i % 2 == 0 && i + 1 < requests.size()) {
-        compatible[s] = r.kind == requests[i + 1].kind && r.kind.capture_routed == 0;
+      // Whether this slot may join the group of the slot before it.
+      if (i != 0) {
+        compatible[s] = r.kind == requests[i - 1].kind && r.kind.capture_routed == 0 &&
+                        requests[i - 1].kind.capture_routed == 0;
       }
     }
     if (auto made =
@@ -711,8 +846,9 @@ struct Qwen38WaveBuilder {
       }
       order.push_back(s);
       out->active_slots_ |= static_cast<std::uint8_t>(1U << s);
-      if (i % 2 == 0 && i + 1 < requests.size()) {
-        compatible[s] = SameDraftPhase(r.shape, requests[i + 1].shape);
+      // Whether this slot may join the group of the slot before it.
+      if (i != 0) {
+        compatible[s] = SameDraftPhase(requests[i - 1].shape, r.shape);
       }
     }
     if (auto made =

@@ -37,6 +37,7 @@
 #include "runtime/api.h"
 #include "runtime/api_server.h"
 #include "runtime/binding.h"
+#include "runtime/cohort_capacity.h"
 #include "runtime/commands.h"
 #include "runtime/completion_tokens.h"
 #include "runtime/prefill.h"
@@ -251,7 +252,17 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     bool cancelled = false;
     bool native_touched = false;
     bool retired = false;
+    // State capacity (cohort_capacity.h): admission order, whether it
+    // waits, the refusal it fails with if it cannot fit alone, and after a
+    // preemption mid-generation, the tokens its state is rebuilt from (the
+    // prompt and every generated token but the unprocessed anchor).
+    std::uint64_t admitted = 0;
+    CapacityWait wait = CapacityWait::kNone;
+    std::string refusal;
+    bool resume = false;
+    std::vector<std::int32_t> resume_tokens;
   };
+  static_assert(kCohortSlots == Llm::kMaxBranches);
 
  public:
   NodeBackend(Server& server, const config::NodeConfig& config, std::FILE* log)
@@ -283,6 +294,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         std::ranges::count_if(cohort_, [](const ChatWork* frame) { return frame != nullptr; });
     if (static_cast<std::size_t>(claimed) >= model.generation_wave_capacity() ||
         std::ranges::find(cohort_, nullptr) == cohort_.end()) {
+      return std::unique_ptr<api::CooperativeBackend::Work>{};
+    }
+    // Members waiting for state capacity come first (FIFO): a new prompt
+    // would compete for the capacity they wait for.
+    if (!AdmissionOpen(Snapshot())) {
       return std::unique_ptr<api::CooperativeBackend::Work>{};
     }
     auto rendered = PrepareChat(model, request.options);
@@ -333,6 +349,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
                          .floors = floors})) {
       frame->Cancel();  // retired normally; no native unit has run
     }
+    frame->admitted = ++admissions_;
     cohort_model_ = &model;
     cohort_[slot] = frame.get();
     return std::unique_ptr<api::CooperativeBackend::Work>(std::move(frame));
@@ -356,6 +373,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     std::size_t prompt_distance = cohort_.size();
     for (auto* base : work) {
       auto& frame = static_cast<ChatWork&>(*base);
+      if (frame.wait != CapacityWait::kNone) {
+        continue;  // waits for state capacity (cohort_capacity.h)
+      }
       if (frame.stage == ChatWork::Stage::kGeneration) {
         selected_decode_.push_back(&frame);
       } else if (frame.stage == ChatWork::Stage::kPrompt) {
@@ -438,17 +458,29 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       const PrefillGoOn go_on = [&frame](std::uint32_t rows) {
         return !frame.cancelled && frame.exchange.Next(Phase::kPrefill, rows);
       };
-      if (auto advanced = frame.prompt_session->Advance(go_on); !advanced) {
-        frame.error = Failure(500, "the prompt could not be processed: " + advanced.error());
+      if (auto advanced = frame.prompt_session->Advance(go_on, true); !advanced) {
+        std::string error = "the prompt could not be processed: " + advanced.error();
+        if (frame.prompt_session->refused()) {
+          frame.refusal = std::move(error);
+          const std::array<ChatWork*, 1> refused = {&frame};
+          WaitForCapacity(refused);
+        } else {
+          frame.error = Failure(500, std::move(error));
+        }
+        Rebalance();
         return {};  // own failure; Retire independently proves references
       }
       if (frame.prompt_session->done()) {
-        return BeginChatGeneration(frame);
+        auto begun = BeginChatGeneration(frame);
+        Rebalance();
+        return begun;
       }
       return {};
     }
     std::vector<Llm::GenerationSession*> sessions;
+    std::vector<ChatWork*> stepped;
     sessions.reserve(selected_decode_.size());
+    stepped.reserve(selected_decode_.size());
     for (ChatWork* frame : selected_decode_) {
       if (!frame->exchange.Next(Phase::kDecode, 0)) {
         frame->Cancel();
@@ -456,16 +488,28 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       }
       frame->native_touched = true;
       sessions.push_back(frame->generation_session.get());
+      stepped.push_back(frame);
     }
     selected_decode_.clear();
     prefer_decode_ = false;
     if (sessions.empty()) {
       return {};
     }
-    if (auto advanced = cohort_model_->RunGenerationWave(sessions); !advanced) {
+    if (auto advanced = cohort_model_->RunGenerationWave(sessions, true); !advanced) {
       Fail("the native chat generation wave failed: " + advanced.error());
       return advanced;
     }
+    std::vector<ChatWork*> refused;
+    for (ChatWork* frame : stepped) {
+      if (frame->generation_session->refused()) {
+        frame->refusal = "the generation failed: " + frame->generation_session->refusal();
+        refused.push_back(frame);
+      }
+    }
+    if (!refused.empty()) {
+      WaitForCapacity(refused);
+    }
+    Rebalance();
     return {};
   }
 
@@ -480,7 +524,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       if (!frame.prompt_session->done()) {
         frame.prompt_session->Cancel();
       }
-      frame.reused = frame.prompt_session->reused();
+      if (!frame.resume) {
+        frame.reused = frame.prompt_session->reused();  // a rebuild's reuse is not the turn's
+      }
       if (auto finished = frame.prompt_session->Finish(); !finished && !frame.error) {
         frame.error = Failure(500, "the prompt failed: " + finished.error());
       }
@@ -510,8 +556,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         }
       }
     }
-    if (!frame.error && frame.generation_session != nullptr) {
-      frame.output.Finish();
+    if (!frame.error && !frame.generation.tokens.empty()) {
+      frame.output.Finish();  // including a generation preempted and not yet resumed
     }
     api::Completion result{
         .completion_tokens = static_cast<std::uint32_t>(frame.generation.tokens.size()),
@@ -526,6 +572,13 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       cohort_native_touched_ = false;
       selected_prompt_ = nullptr;
       selected_decode_.clear();
+    } else {
+      // Its state is no longer leased once the cohort is next selected:
+      // members waiting for capacity retry (cohort_capacity.h).
+      Cohort cohort = Snapshot();
+      OnMemberRetired(cohort);
+      Apply(cohort);
+      Rebalance();
     }
     return {.result = frame.error ? std::expected<api::Completion, api::Error>(
                                         std::unexpected(*frame.error))
@@ -927,7 +980,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   }
 
   static Status BeginChatGeneration(ChatWork& frame) {
-    frame.reused = frame.prompt_session->reused();
+    if (!frame.resume) {
+      frame.reused = frame.prompt_session->reused();
+    }
     const bool stopped = frame.prompt_session->run().stopped;
     if (auto finished = frame.prompt_session->Finish(); !finished) {
       frame.error = Failure(500, "the prompt failed: " + finished.error());
@@ -937,18 +992,191 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       frame.stage = ChatWork::Stage::kDone;
       return {};
     }
-    auto generation =
-        frame.branch.BeginGeneration(frame.prompt_session->last(), frame.options, frame.generation);
+    // After a preemption the rebuilt state continues the generation from its
+    // anchor; nothing is chosen or streamed again.
+    auto generation = frame.resume ? frame.branch.ResumeGeneration(frame.prompt_session->last(),
+                                                                   frame.options, frame.generation)
+                                   : frame.branch.BeginGeneration(frame.prompt_session->last(),
+                                                                  frame.options, frame.generation);
     if (!generation) {
       frame.error = Failure(500, "the generation could not start: " + generation.error());
       return {};
     }
+    frame.resume = false;
+    frame.resume_tokens = {};
     frame.generation_session = std::move(*generation);
     frame.stage = ChatWork::Stage::kGeneration;
     // Last logits are no longer borrowed by generation: Begin already chose
     // the first token. The callback and options remain in this stable frame.
     frame.prompt_session.reset();
     return {};
+  }
+
+  // State capacity (cohort_capacity.h; docs/runtime-serving.md#state-
+  // capacity-in-a-cohort). The cohort as the policy sees it, and back.
+  Cohort Snapshot() const {
+    Cohort cohort{};
+    for (std::size_t i = 0; i < cohort_.size(); ++i) {
+      if (const ChatWork* frame = cohort_[i]; frame != nullptr) {
+        cohort[i] = {.present = true,
+                     .terminal = frame->terminal(),
+                     .admitted = frame->admitted,
+                     .wait = frame->wait};
+      }
+    }
+    return cohort;
+  }
+  void Apply(const Cohort& cohort) {
+    for (std::size_t i = 0; i < cohort_.size(); ++i) {
+      if (cohort_[i] != nullptr) {
+        cohort_[i]->wait = cohort[i].wait;
+      }
+    }
+  }
+
+  // Within Advance, the cohort selected: members whose unit the state's
+  // capacity refused (each with its `refusal`, its state usable and its
+  // completed prefix kept) wait, fail if they cannot fit alone, or free
+  // the youngest waiter's state when no member could otherwise go on.
+  void WaitForCapacity(std::span<ChatWork* const> refused) {
+    std::vector<std::size_t> slots;
+    for (const ChatWork* frame : refused) {
+      slots.push_back(frame->slot);
+    }
+    Cohort cohort = Snapshot();
+    const std::optional<std::size_t> idle = LargestIdleState();
+    CapacityDecision decision = OnCapacityRefused(cohort, slots, idle.has_value());
+    if (decision.reclaim) {
+      if (idle && ReleaseIdle(*idle)) {
+        Apply(cohort);  // the refused members run again
+        return;
+      }
+      cohort = Snapshot();
+      decision = OnCapacityRefused(cohort, slots, false);
+    }
+    Apply(cohort);
+    for (const std::size_t slot : decision.refuse) {
+      ChatWork& frame = *cohort_[slot];
+      frame.error = Failure(500, frame.refusal);
+    }
+    // Positions and slots only (D-014).
+    for (const ChatWork* frame : refused) {
+      // The tokens its state holds: a generation publishes its history only
+      // when it ends, and its anchor is not processed yet.
+      const std::size_t held =
+          frame->generation_session != nullptr
+              ? frame->rendered.tokens.size() + frame->generation.tokens.size() - 1
+              : frame->branch.history().size();
+      if (frame->wait == CapacityWait::kBlocked) {
+        Say(log_, std::format("{}'s request in slot {} waits for conversation-state capacity at "
+                              "{} tokens",
+                              frame->model.name(), frame->slot, held));
+      } else if (frame->error) {
+        Say(log_, std::format("{}'s request in slot {} does not fit the state's capacity alone at "
+                              "{} tokens: refused",
+                              frame->model.name(), frame->slot, held));
+      }
+    }
+    if (decision.preempt) {
+      Preempt(*cohort_[*decision.preempt]);
+    }
+  }
+
+  // The branch outside the cohort retaining the most state (a finished
+  // conversation's reuse cache), if any.
+  std::optional<std::size_t> LargestIdleState() const {
+    std::optional<std::size_t> idle;
+    std::uint64_t most = 0;
+    for (std::size_t i = 0; i < cohort_model_->branches() && i < cohort_.size(); ++i) {
+      if (cohort_[i] != nullptr) {
+        continue;
+      }
+      auto branch = cohort_model_->branch(i);
+      if (branch && (*branch)->state_snapshot_bytes() > most) {
+        most = (*branch)->state_snapshot_bytes();
+        idle = i;
+      }
+    }
+    return idle;
+  }
+
+  // Clears that cache for members refused for capacity: conversation state
+  // is never an eviction victim, so a retired conversation's state would
+  // otherwise hold its capacity until its branch is reused. Its next turn
+  // then prefills from the start. False if the clear failed (logged).
+  bool ReleaseIdle(std::size_t slot) {
+    auto branch = cohort_model_->branch(slot);
+    if (!branch) {
+      return false;
+    }
+    const std::size_t tokens = (*branch)->history().size();
+    if (auto released = (*branch)->ReleaseIdleState(); !released) {
+      Say(log_, std::format("{}'s idle conversation state in slot {} could not be cleared: {}",
+                            cohort_model_->name(), slot, released.error()));
+      return false;
+    }
+    Say(log_, std::format("{}'s idle conversation state in slot {} ({} tokens) cleared for a "
+                          "request short of state capacity",
+                          cohort_model_->name(), slot, tokens));
+    return true;
+  }
+
+  // Frees a waiting member's state between its completed units: its
+  // sessions end at their completed prefix, the host keeps the tokens to
+  // rebuild it from, and its state is discarded (Branch::Clear). It begins
+  // again once no other member can run (Rebalance).
+  void Preempt(ChatWork& frame) {
+    Status finished;
+    if (frame.prompt_session != nullptr) {
+      frame.prompt_session->Cancel();
+      finished = frame.prompt_session->Finish();
+      frame.prompt_session.reset();
+    } else if (frame.generation_session != nullptr) {
+      frame.generation_session->Cancel();
+      finished = frame.generation_session->Finish();
+      frame.generation_session.reset();
+      if (finished) {
+        // The prompt and the generated tokens the state holds; the anchor
+        // stays in frame.generation, already streamed.
+        frame.resume_tokens = frame.branch.history();
+        frame.resume = true;
+        frame.stage = ChatWork::Stage::kPrompt;
+      }
+    }
+    if (!finished) {
+      frame.error = Failure(500, "the request could not release its state: " + finished.error());
+      return;
+    }
+    const std::size_t held = frame.branch.history().size();
+    if (auto cleared = frame.branch.Clear(); !cleared) {
+      frame.error = Failure(500, "the request could not release its state: " + cleared.error());
+      return;
+    }
+    Say(log_, std::format("{}'s request in slot {} released its state at {} tokens for its "
+                          "peers; it is rebuilt when they finish",
+                          frame.model.name(), frame.slot, held));
+  }
+
+  // After a unit or a retirement: when no member can go on, waiting
+  // members retry, or the oldest preempted one begins its prompt again
+  // (host-only; its first unit reuses or clears the branch as usual).
+  void Rebalance() {
+    Cohort cohort = Snapshot();
+    const auto restart = NextRestart(cohort);
+    Apply(cohort);
+    if (!restart) {
+      return;
+    }
+    ChatWork& frame = *cohort_[*restart];
+    const std::vector<std::int32_t>& tokens =
+        frame.resume ? frame.resume_tokens : frame.rendered.tokens;
+    auto prompt = frame.branch.BeginPrompt(tokens, frame.rendered.stable_boundary);
+    if (!prompt) {
+      frame.error = Failure(500, "the request could not begin again: " + prompt.error());
+      return;
+    }
+    frame.prompt_session = std::move(*prompt);
+    frame.stage = ChatWork::Stage::kPrompt;
   }
 
   void Fail(std::string what) {
@@ -969,6 +1197,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   ChatWork* selected_prompt_ = nullptr;
   std::vector<ChatWork*> selected_decode_;
   std::size_t next_prompt_slot_ = 0;
+  std::uint64_t admissions_ = 0;
   bool prefer_decode_ = true;
   bool selected_swap_ = false;
   bool cohort_native_touched_ = false;

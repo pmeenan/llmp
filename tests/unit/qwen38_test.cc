@@ -8,7 +8,8 @@
 // - the n-gram hash's constants checked against the table, and its rows
 //   worked by hand (llm_graph_input_ple::set_input at b29c606e2);
 // - the state layout's sizes, and a chunk's masks, positions and QSA block
-//   tables against llama.cpp's rules (set_input_qsa), worked by hand;
+//   tables against llama.cpp's rules (set_input_qsa), worked by hand, and
+//   the same chunk at a wave's coarser read alignment;
 // - the graph at prefill, decode and past-the-budget shapes: every node
 //   planned by an implementation of this module (a model of the device's
 //   choices), MXFP8 products by jitLLM's vector product or the BF16
@@ -393,6 +394,25 @@ TEST(Qwen38Test, GrowingStateCoversPaddedAttentionAndFixedRecurrentState) {
     }
   }
   EXPECT_FALSE(md::Qwen38UsedState(p, *state, 262145));
+  // A wave reads the caches through its chunk's end rounded up to 2,048
+  // (Qwen38Chunk's read_align): the used state covers every cell it reads.
+  ranges = md::Qwen38UsedState(p, *state, 257, 2048);
+  ASSERT_TRUE(ranges) << Why(ranges);
+  for (const auto& t : state->tensors) {
+    const auto row = t.ne0 * (t.f16 ? 2 : 4);
+    if (t.kind == K::kK || t.kind == K::kV || t.kind == K::kIndexerK) {
+      EXPECT_TRUE(covered(t.offset, 2048 * row));
+      EXPECT_FALSE(covered(t.offset + (2048 * row), row));
+    } else if (t.kind == K::kIndexerBlocks) {
+      EXPECT_TRUE(covered(t.offset, 512 * row));
+      EXPECT_FALSE(covered(t.offset + (512 * row), row));
+    } else {
+      EXPECT_TRUE(covered(t.offset, t.bytes));
+    }
+  }
+  for (const std::uint32_t align : {0U, 128U, 300U}) {
+    EXPECT_FALSE(md::Qwen38UsedState(p, *state, 257, align)) << align;
+  }
 }
 
 TEST(Qwen38Test, TheStateIsBoundedAndSized) {
@@ -557,6 +577,75 @@ TEST(Qwen38Test, PastTheBudgetQsaSelectsWholeBlocksAndTheTail) {
   EXPECT_EQ(d->qsa.bias[(std::size_t{2} * 576) + 574], 1e9f);  // token 2298
   EXPECT_EQ(d->qsa.bias[(std::size_t{3} * 576) + 574], 0.0f);  // token 2299
   EXPECT_EQ(d->qsa.bias[(std::size_t{3} * 576) + 573], 0.0f);
+}
+
+// A wave's chunks read the cells through their end rounded up to 2,048
+// rather than 256 (engine/qwen38_runner.cc): the read is clamped to the
+// cache's cells, and the rows, positions, cells, n-gram rows and QSA
+// decision are the 256-cell chunk's, the extra cells masked from every
+// row. An alignment that is zero or not whole 256-cell steps is refused.
+TEST(Qwen38Test, AChunksReadAlignmentOnlyWidensTheCellsItReads) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  auto state = md::Qwen38State(p, 5000, 512);
+  ASSERT_TRUE(state.has_value()) << Why(state);
+  ASSERT_EQ(state->cells, 5120U);
+  const md::Qwen38PleHash h = Hash();
+  // (n_past, rows, n_kv at 256, n_kv at 2,048)
+  for (const auto& [n_past, rows, fine, coarse] :
+       {std::tuple{0U, 1U, 256U, 2048U}, std::tuple{37U, 4U, 256U, 2048U},
+        std::tuple{250U, 8U, 512U, 2048U}, std::tuple{2040U, 8U, 2048U, 2048U},
+        std::tuple{2045U, 4U, 2304U, 4096U}, std::tuple{4090U, 8U, 4352U, 5120U},
+        std::tuple{4996U, 4U, 5120U, 5120U}}) {
+    SCOPED_TRACE(std::format("{} rows at {}", rows, n_past));
+    std::vector<std::int32_t> history(std::size_t{n_past} + rows, 1000);
+    for (std::size_t i = 0; i < history.size(); ++i) {
+      history[i] = static_cast<std::int32_t>((i * 7919) % 100000);
+    }
+    for (const bool masks : {true, false}) {
+      auto a = md::Qwen38Chunk(p, *state, h, history, n_past, rows, masks);
+      auto b = md::Qwen38Chunk(p, *state, h, history, n_past, rows, masks, 2048);
+      ASSERT_TRUE(a.has_value()) << Why(a);
+      ASSERT_TRUE(b.has_value()) << Why(b);
+      EXPECT_EQ(a->n_kv, fine);
+      EXPECT_EQ(b->n_kv, coarse);
+      EXPECT_EQ(b->rows, a->rows);
+      EXPECT_EQ(b->n_past, a->n_past);
+      EXPECT_EQ(b->tokens, a->tokens);
+      EXPECT_EQ(b->positions, a->positions);
+      EXPECT_EQ(b->cells, a->cells);
+      EXPECT_EQ(b->ple_rows, a->ple_rows);
+      EXPECT_EQ(b->qsa_select, a->qsa_select);
+      if (b->qsa_select) {
+        EXPECT_EQ(b->qsa.blocks, (coarse + p.indexer_ratio - 1) / p.indexer_ratio);
+      }
+      // Each row sees the same cells; the extra ones are masked.
+      ASSERT_EQ(a->mask.empty(), b->mask.empty());
+      ASSERT_EQ(a->mask_f32.empty(), b->mask_f32.empty());
+      ASSERT_TRUE(b->mask.empty() || b->mask.size() == std::size_t{coarse} * rows);
+      ASSERT_TRUE(b->mask_f32.empty() || b->mask_f32.size() == std::size_t{coarse} * rows);
+      for (std::uint32_t r = 0; r < rows; ++r) {
+        for (std::uint32_t j = 0; j < coarse; ++j) {
+          if (!b->mask.empty()) {
+            const std::uint16_t want =
+                j < fine ? a->mask[(std::size_t{r} * fine) + j] : md::kQwen38HalfNegInf;
+            ASSERT_EQ(b->mask[(std::size_t{r} * coarse) + j], want) << r << ", " << j;
+          }
+          if (!b->mask_f32.empty()) {
+            const float want = j < fine ? a->mask_f32[(std::size_t{r} * fine) + j]
+                                        : -std::numeric_limits<float>::infinity();
+            ASSERT_EQ(b->mask_f32[(std::size_t{r} * coarse) + j], want) << r << ", " << j;
+          }
+        }
+      }
+    }
+  }
+  std::vector<std::int32_t> history(40, 1000);
+  for (const std::uint32_t align : {0U, 128U, 300U, 2047U, 4097U}) {
+    EXPECT_FALSE(md::Qwen38Chunk(p, *state, h, history, 36, 4, false, align).has_value()) << align;
+  }
+  auto three = md::Qwen38Chunk(p, *state, h, history, 36, 4, false, 768);
+  ASSERT_TRUE(three.has_value()) << Why(three);
+  EXPECT_EQ(three->n_kv, 768U);
 }
 
 kg::DeviceChoices ModelDevice() {

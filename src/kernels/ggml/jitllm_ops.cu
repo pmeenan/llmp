@@ -149,6 +149,204 @@ __global__ void __launch_bounds__(kWarps * 32)
   }
 }
 
+// Mxfp8Gemv's wide form, for a wave's shared products of 9 to kColumns
+// columns (`columns` at run time): each output's arithmetic is Mxfp8Gemv's
+// (lane l takes the row's 16-code vectors l, l + 32, ..., the same 16-term
+// dot product, scale and warp sum). The block stages x in shared memory a
+// chunk of 32 vectors (512 values) at a time, every column, so each x value
+// is read from L2 once a block rather than once a warp; each lane's 16
+// values are padded to 20 floats so its four 16-byte reads do not conflict.
+// Columns past `columns` repeat the last column and are not written.
+constexpr int kWideLaneStride = 20;  // floats a lane's 16 values take
+
+template <int kColumns, int kRows, int kWarps>
+__global__ void __launch_bounds__(kWarps * 32)
+    Mxfp8GemvWide(const std::uint8_t* __restrict__ codes, const std::uint8_t* __restrict__ scales,
+                  const float* x, float* y, int n, int k, int x_stride, int columns) {
+  __shared__ __align__(16) float xs[kColumns][32 * kWideLaneStride];
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int row0 =
+      ((static_cast<int>(blockIdx.x) * kWarps) + (static_cast<int>(threadIdx.x) / 32)) * kRows;
+  // A warp past the last row still stages x with the block.
+  const bool active = row0 < n;
+  const int rows = active ? min(kRows, n - row0) : 1;
+  const int first = active ? row0 : 0;
+#pragma unroll
+  for (int r = 0; r < kRows; ++r) {
+    const std::uint8_t* w = codes + (static_cast<std::int64_t>(first + min(r, rows - 1)) * k);
+    for (int v = lane; active && v < min(k / 16, 64); v += 32) {
+      asm volatile("prefetch.global.L2 [%0];" ::"l"(w + (static_cast<std::int64_t>(v) * 16)));
+    }
+  }
+  ggml_cuda_pdl_sync();
+  float sum[kRows][kColumns];
+#pragma unroll
+  for (int r = 0; r < kRows; ++r) {
+#pragma unroll
+    for (int c = 0; c < kColumns; ++c) {
+      sum[r][c] = 0.0f;
+    }
+  }
+  const int vectors = k / 16;
+  for (int base = 0; base < vectors; base += 32) {
+    // This chunk's codes first, in flight during the staging.
+    const int v = base + lane;
+    uint4 q[kRows];
+    std::uint8_t sb[kRows];
+    if (active && v < vectors) {
+#pragma unroll
+      for (int r = 0; r < kRows; ++r) {
+        const int row = row0 + min(r, rows - 1);
+        q[r] = *reinterpret_cast<const uint4*>(codes + (static_cast<std::int64_t>(row) * k) +
+                                               (static_cast<std::int64_t>(v) * 16));
+        sb[r] = scales[(static_cast<std::int64_t>(row) * (k / 32)) + (v / 2)];
+      }
+    }
+    // Stage this chunk's vectors of every column: float4 j of the chunk is
+    // value 4j..4j+3, of vector j / 4.
+    const int chunk_vectors = min(32, vectors - base);
+    for (int i = static_cast<int>(threadIdx.x); i < kColumns * chunk_vectors * 4;
+         i += kWarps * 32) {
+      const int c = i / (chunk_vectors * 4);
+      const int j = i % (chunk_vectors * 4);
+      const int col = min(c, columns - 1);
+      const float4 a =
+          *reinterpret_cast<const float4*>(x + (static_cast<std::int64_t>(col) * x_stride) +
+                                           (static_cast<std::int64_t>(base) * 16) + (j * 4));
+      *reinterpret_cast<float4*>(&xs[c][((j / 4) * kWideLaneStride) + ((j % 4) * 4)]) = a;
+    }
+    __syncthreads();
+    if (active && v < vectors) {
+      // Each row's weights decoded once (Decode16), then columns outer,
+      // rows inner: each column's x is read from shared memory once.
+      float wf[kRows][16];
+      float scale[kRows];
+#pragma unroll
+      for (int r = 0; r < kRows; ++r) {
+        Decode16(q[r], wf[r]);
+        scale[r] = E8m0(sb[r]);
+      }
+#pragma unroll
+      for (int c = 0; c < kColumns; ++c) {
+        const float4* xv = reinterpret_cast<const float4*>(&xs[c][lane * kWideLaneStride]);
+        float xc[16];
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+          const float4 a = xv[i];
+          xc[4 * i + 0] = a.x;
+          xc[4 * i + 1] = a.y;
+          xc[4 * i + 2] = a.z;
+          xc[4 * i + 3] = a.w;
+        }
+#pragma unroll
+        for (int r = 0; r < kRows; ++r) {
+          float dot = 0.0f;
+#pragma unroll
+          for (int i = 0; i < 16; ++i) {
+            dot = fmaf(wf[r][i], xc[i], dot);
+          }
+          sum[r][c] = fmaf(dot, scale[r], sum[r][c]);
+        }
+      }
+    }
+    __syncthreads();
+  }
+  ggml_cuda_pdl_lc();
+  if (!active) {
+    return;
+  }
+#pragma unroll
+  for (int r = 0; r < kRows; ++r) {
+#pragma unroll
+    for (int c = 0; c < kColumns; ++c) {
+#pragma unroll
+      for (int offset = 16; offset > 0; offset /= 2) {
+        sum[r][c] += __shfl_xor_sync(0xffffffffu, sum[r][c], offset);
+      }
+      if (lane == 0 && r < rows && c < columns) {
+        y[static_cast<std::int64_t>(c) * n + row0 + r] = sum[r][c];
+      }
+    }
+  }
+}
+
+// The wide form for small outputs (beta/alpha, the shared expert, the
+// indexer, the router-sized products): no staging, x read through L1, each
+// warp several rows. Each output's arithmetic is Mxfp8Gemv's.
+template <int kColumns, int kRows, int kWarps>
+__global__ void __launch_bounds__(kWarps * 32)
+    Mxfp8GemvWideRows(const std::uint8_t* __restrict__ codes,
+                      const std::uint8_t* __restrict__ scales, const float* x, float* y, int n,
+                      int k, int x_stride, int columns) {
+  const int lane = static_cast<int>(threadIdx.x) % 32;
+  const int row0 =
+      ((static_cast<int>(blockIdx.x) * kWarps) + (static_cast<int>(threadIdx.x) / 32)) * kRows;
+  if (row0 >= n) {
+    return;
+  }
+  const int rows = min(kRows, n - row0);
+  ggml_cuda_pdl_sync();
+  float sum[kRows][kColumns];
+#pragma unroll
+  for (int r = 0; r < kRows; ++r) {
+#pragma unroll
+    for (int c = 0; c < kColumns; ++c) {
+      sum[r][c] = 0.0f;
+    }
+  }
+  const int vectors = k / 16;
+  for (int v = lane; v < vectors; v += 32) {
+    float wf[kRows][16];
+    float scale[kRows];
+#pragma unroll
+    for (int r = 0; r < kRows; ++r) {
+      const int row = row0 + min(r, rows - 1);
+      Decode16(*reinterpret_cast<const uint4*>(codes + (static_cast<std::int64_t>(row) * k) +
+                                               (static_cast<std::int64_t>(v) * 16)),
+               wf[r]);
+      scale[r] = E8m0(scales[(static_cast<std::int64_t>(row) * (k / 32)) + (v / 2)]);
+    }
+#pragma unroll
+    for (int c = 0; c < kColumns; ++c) {
+      const int col = min(c, columns - 1);
+      const float4* xv = reinterpret_cast<const float4*>(
+          x + (static_cast<std::int64_t>(col) * x_stride) + (v * 16));
+      float xc[16];
+#pragma unroll
+      for (int i = 0; i < 4; ++i) {
+        const float4 a = xv[i];
+        xc[4 * i + 0] = a.x;
+        xc[4 * i + 1] = a.y;
+        xc[4 * i + 2] = a.z;
+        xc[4 * i + 3] = a.w;
+      }
+#pragma unroll
+      for (int r = 0; r < kRows; ++r) {
+        float dot = 0.0f;
+#pragma unroll
+        for (int i = 0; i < 16; ++i) {
+          dot = fmaf(wf[r][i], xc[i], dot);
+        }
+        sum[r][c] = fmaf(dot, scale[r], sum[r][c]);
+      }
+    }
+  }
+  ggml_cuda_pdl_lc();
+#pragma unroll
+  for (int r = 0; r < kRows; ++r) {
+#pragma unroll
+    for (int c = 0; c < kColumns; ++c) {
+#pragma unroll
+      for (int offset = 16; offset > 0; offset /= 2) {
+        sum[r][c] += __shfl_xor_sync(0xffffffffu, sum[r][c], offset);
+      }
+      if (lane == 0 && r < rows && c < columns) {
+        y[(static_cast<std::int64_t>(c) * n) + row0 + r] = sum[r][c];
+      }
+    }
+  }
+}
+
 // Sixteen codes a thread, into sixteen BF16 (exact: an E4M3 value times a
 // power of two, within BF16's range for the scales real weights carry).
 __global__ void Mxfp8ToBf16(const std::uint8_t* __restrict__ codes,
@@ -439,6 +637,40 @@ void LaunchGemvSchedule(const ggml_tensor* node, cudaStream_t stream) {
                           static_cast<int>(x->nb[1] / sizeof(float)));
 }
 
+template <int kColumns, int kRows, int kWarps, typename K>
+void LaunchGemvWideKernel(K kernel, const ggml_tensor* node, cudaStream_t stream) {
+  const ggml_tensor* codes = node->src[0];
+  const ggml_tensor* x = node->src[2];
+  const int n = static_cast<int>(codes->ne[1]);
+  const int k = static_cast<int>(codes->ne[0]);
+  const int per_block = kWarps * kRows;
+  const dim3 grid(static_cast<unsigned>((n + per_block - 1) / per_block));
+  ggml_cuda_kernel_launch(kernel,
+                          ggml_cuda_kernel_launch_params(grid, dim3(kWarps * 32), 0, stream),
+                          static_cast<const std::uint8_t*>(codes->data),
+                          static_cast<const std::uint8_t*>(node->src[1]->data),
+                          static_cast<const float*>(x->data), static_cast<float*>(node->data), n, k,
+                          static_cast<int>(x->nb[1] / sizeof(float)), static_cast<int>(x->ne[1]));
+}
+
+// 9 to 16 columns: a wave's shared products. Measured on GB10 (16 columns,
+// a microbenchmark of every shape): wide outputs stage x a block, 2 rows a
+// warp (n of 4096 or more 16 warps); small ones read x through L1, 4 rows
+// a warp, and the 48-row beta/alpha one row a warp for enough CTAs.
+template <int kColumns>
+void LaunchGemvWideColumns(const ggml_tensor* node, cudaStream_t stream) {
+  const auto n = node->src[0]->ne[1];
+  if (n >= 4096) {
+    LaunchGemvWideKernel<kColumns, 2, 16>(Mxfp8GemvWide<kColumns, 2, 16>, node, stream);
+  } else if (n >= 2048) {
+    LaunchGemvWideKernel<kColumns, 2, 8>(Mxfp8GemvWide<kColumns, 2, 8>, node, stream);
+  } else if (n >= 256) {
+    LaunchGemvWideKernel<kColumns, 4, 4>(Mxfp8GemvWideRows<kColumns, 4, 4>, node, stream);
+  } else {
+    LaunchGemvWideKernel<kColumns, 1, 4>(Mxfp8GemvWideRows<kColumns, 1, 4>, node, stream);
+  }
+}
+
 template <int kColumns>
 void LaunchGemv(const ggml_tensor* node, cudaStream_t stream, bool gb10) {
   if constexpr (kColumns > 1) {
@@ -497,8 +729,15 @@ std::expected<void, KernelFailure> RunMxfp8MulMatVec(LaunchContext& launch, ggml
       case 7:
         LaunchGemv<7>(node, stream, gb10);
         break;
-      default:
+      case 8:
         LaunchGemv<8>(node, stream, gb10);
+        break;
+      default:
+        if (node->src[2]->ne[1] <= 12) {
+          LaunchGemvWideColumns<12>(node, stream);
+        } else {
+          LaunchGemvWideColumns<16>(node, stream);
+        }
         break;
     }
   });

@@ -381,9 +381,12 @@ class PagedNode {
   // Runs `call` on the scheduler's thread.
   Status Call(std::function<Status()> call, std::string_view what);
   // Makes room for `closure` under the budget and materializes it
-  // (AcquireProgram), never evicting the shared workspace.
+  // (AcquireProgram), never evicting the shared workspace. `over_budget`,
+  // if given, says whether a refusal was the budget's (WorkError::
+  // kOverBudget: the closure does not fit beside what is leased), a clean
+  // refusal before any victim was chosen.
   Status Acquire(const catalog::Closure& closure, scheduler::AcquireReport& report,
-                 std::string_view what);
+                 std::string_view what, bool* over_budget = nullptr);
   // Copies `bytes` between device memory at `device` and pinned host memory
   // at `host` (to the host if `to_host`), as one job on `stream` over
   // `closure`, which must hold the device range (a step of the request

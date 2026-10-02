@@ -78,8 +78,14 @@ class Qwen38WavePlanned : public PlannedBase {
   std::span<ggml_tensor* const> inputs() const { return inputs_; }
   std::uint8_t active_slots() const { return active_slots_; }
   const Qwen38WaveStats& stats() const { return stats_; }
+  // One shared product: the slots' original descriptors, in slot order, and
+  // their replacement.
+  struct Product {
+    std::vector<ggml_tensor*> originals;
+    ggml_tensor* together = nullptr;
+  };
   // Original head descriptors and their replacement, for selector/shape proof.
-  std::span<const std::array<ggml_tensor*, 3>> head_products() const { return head_products_; }
+  std::span<const Product> head_products() const { return head_products_; }
 
  private:
   friend struct Qwen38WaveBuilder;
@@ -88,9 +94,9 @@ class Qwen38WavePlanned : public PlannedBase {
   std::vector<ggml_tensor*> nodes_;
   std::vector<ggml_tensor*> inputs_;
   std::vector<ggml_tensor*> keep_;
-  std::vector<std::array<ggml_tensor*, 3>> products_;
+  std::vector<Product> products_;
   std::optional<kernels::ggml::TensorArena> head_arena_;
-  std::vector<std::array<ggml_tensor*, 3>> head_products_;
+  std::vector<Product> head_products_;
   Qwen38WaveStats stats_;
   std::uint8_t active_slots_ = 0;
 };
@@ -104,17 +110,18 @@ bool Qwen38FullHeadPairCandidate(const ggml_tensor* tensor);
 // parameters and compatible layouts; one-row vector products stay scalar.
 bool Qwen38HcPairCandidate(const ggml_tensor* tensor);
 
-// One to four actual slots, each one to four rows. Fixed ascending pairs
-// coalesce corresponding MXFP8-vector and routed-GEMV products, each
-// at most eight rows, with paid GGML concat and split views. An odd slot,
+// One to four actual slots, each one to four rows. Groups of consecutive
+// compatible slots (in ascending order, up to all four) coalesce
+// corresponding MXFP8-vector and routed-GEMV products, each at most
+// sixteen rows, with paid GGML concats and split views. A lone slot,
 // incompatible phase/product sequence or diagnostic capture retains the
-// original operations. Ragged row counts may pair; MTP pass/head/confidence
-// differences do not. Compatible target verification pairs also coalesce
+// original operations. Ragged row counts may group; MTP pass/head/confidence
+// differences do not. Compatible target verification groups also coalesce
 // guarded two-to-four-row HC BF16 products on their original cuBLAS path.
-// Target-head sharing may pair compatible contiguous three- or four-row BF16
-// full target heads into an ordinary six-, seven- or eight-column MMF product
-// with one paid F32 concat and two views. Actual scalar/replacement selectors
-// must all remain MMF; odd or unsupported heads stay original.
+// Target-head sharing may group compatible contiguous three- or four-row BF16
+// full target heads into an ordinary MMF product of up to sixteen columns
+// with paid F32 concats and a view a slot. Actual scalar/replacement
+// selectors must all remain MMF; otherwise the heads stay original.
 // Draft heads and all stateful operations stay original.
 // Every unmodified registry identity and each replacement's precision tier
 // are checked against fresh scalar plans. No dispatch occurs on any error.

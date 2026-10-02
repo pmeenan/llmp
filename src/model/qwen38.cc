@@ -846,12 +846,14 @@ std::expected<Qwen38StateLayout, std::string> Qwen38State(const Qwen38Profile& p
 
 std::expected<std::vector<StateRange>, std::string> Qwen38UsedState(const Qwen38Profile& p,
                                                                     const Qwen38StateLayout& state,
-                                                                    std::uint32_t positions) {
-  if (positions > state.context || p.indexer_ratio == 0) {
+                                                                    std::uint32_t positions,
+                                                                    std::uint32_t read_align) {
+  if (positions > state.context || p.indexer_ratio == 0 || read_align == 0 ||
+      read_align % 256 != 0) {
     return Refused("used state passes the Qwen3.8 context");
   }
   using K = Qwen38StateTensor::Kind;
-  const std::uint64_t read = std::min<std::uint64_t>(state.cells, Pad(positions, 256));
+  const std::uint64_t read = std::min<std::uint64_t>(state.cells, Pad(positions, read_align));
   std::vector<StateRange> ranges;
   for (const Qwen38StateTensor& t : state.tensors) {
     std::uint64_t rows = t.ne1;
@@ -934,14 +936,13 @@ std::vector<std::int32_t> Qwen38PleRows(const Qwen38Profile& p, const Qwen38PleH
   return rows;
 }
 
-std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(const Qwen38Profile& p,
-                                                          const Qwen38StateLayout& state,
-                                                          const Qwen38PleHash& hash,
-                                                          std::span<const std::int32_t> history,
-                                                          std::uint32_t n_past, std::uint32_t rows,
-                                                          bool selection_masks) {
+std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(
+    const Qwen38Profile& p, const Qwen38StateLayout& state, const Qwen38PleHash& hash,
+    std::span<const std::int32_t> history, std::uint32_t n_past, std::uint32_t rows,
+    bool selection_masks, std::uint32_t read_align) {
   const std::uint64_t end = std::uint64_t{n_past} + rows;
-  if (rows == 0 || rows > state.max_rows || end > state.context) {
+  if (rows == 0 || rows > state.max_rows || end > state.context || read_align == 0 ||
+      read_align % 256 != 0) {
     return Refused(
         std::format("a chunk of {} rows at {} does not fit a context of {} in chunks "
                     "of {}",
@@ -968,10 +969,10 @@ std::expected<Qwen38ChunkInputs, std::string> Qwen38Chunk(const Qwen38Profile& p
       return Refused(std::format("token {} is outside the vocabulary", t));
     }
   }
-  auto placed =
-      Qwen38Rows(p, state.cells, n_past, rows,
-                 static_cast<std::uint32_t>(std::min<std::uint64_t>(Pad(end, 256), state.cells)),
-                 selection_masks);
+  auto placed = Qwen38Rows(
+      p, state.cells, n_past, rows,
+      static_cast<std::uint32_t>(std::min<std::uint64_t>(Pad(end, read_align), state.cells)),
+      selection_masks);
   if (!placed) {
     return placed;
   }

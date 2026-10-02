@@ -19,7 +19,8 @@
 //   BF16-product bounds;
 // - decode's vector products (activations quantized to 8 bits as MMVQ
 //   quantizes them) are within upstream's quantized bound (5e-4) of the
-//   FP64 product.
+//   FP64 product, and a wave's expert-major form (5 to 16 tokens) is the
+//   per-slot form bit for bit.
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
@@ -37,6 +38,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -757,6 +759,107 @@ TEST_F(Qwen38MoeTest, SeveralTokensGetEachTokensOwnProducts) {
   }
 }
 
+// A Qwen3.8 wave's routed products join up to four requests' verify rows
+// (engine/qwen38_wave_plan.h): past four tokens the expert-major kernel
+// reads each chosen expert's rows once for every slot that chose it. Each
+// slot's outputs are the per-slot kernel's (at most four tokens a launch)
+// bit for bit: the SwiGLU form; the plain form over part of the up rows,
+// from an unaligned first row, at an output count that leaves the last
+// tile short; and the down projection over each slot's own input at
+// another such count. The routes repeat an expert within each token (more
+// than eight slots on it: several leading blocks, across the scan's
+// 32-slot steps) and hold ids outside the experts (NaN, each slot alone).
+TEST_F(Qwen38MoeTest, ExpertMajorProductsMatchTheirPerSlotProducts) {
+  ToCutlass();
+  ggml_tensor* experts =
+      ggml_new_tensor_2d(c(), GGML_TYPE_I8, static_cast<std::int64_t>(stride_), kExperts);
+  TensorArena::Bind(experts, slab_);
+  const moe::ExpertLayout l{.ffn = kFfn, .width = kWidth};
+  std::vector<float> gs_h(kExperts);
+  std::vector<float> us_h(kExperts);
+  for (std::int64_t e = 0; e < kExperts; ++e) {
+    gs_h[static_cast<std::size_t>(e)] = 0.9f + (0.01f * static_cast<float>(e));
+    us_h[static_cast<std::size_t>(e)] = 1.1f - (0.01f * static_cast<float>(e));
+  }
+  ggml_tensor* gs = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, kExperts), gs_h);
+  ggml_tensor* us = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, kExperts), us_h);
+  const auto same = [](float a, float b) {
+    return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b) ||
+           (std::isnan(a) && std::isnan(b));
+  };
+  constexpr std::int64_t kUpRow0 = kFfn + 24;
+  constexpr std::int64_t kUpRows = kFfn - 40;      // 600: the last 64-row tile is short
+  constexpr std::int64_t kDownRows = kWidth - 60;  // 2,500: likewise
+  constexpr std::int64_t kChunk = 4;               // the per-slot kernel's tokens
+  const auto build = [&](ggml_tensor* x, ggml_tensor* act, ggml_tensor* ids) {
+    return std::array<ggml_tensor*, 3>{
+        kg::MoeGemvSwiglu(c(), experts, x, ids, kFfn, gs, us, moe::ExpertLayout::gate_up_codes(),
+                          l.gate_up_scales()),
+        kg::MoeGemv(c(), experts, x, ids, kUpRows, kUpRow0, 2 * kFfn,
+                    moe::ExpertLayout::gate_up_codes(), l.gate_up_scales()),
+        kg::MoeGemv(c(), experts, act, ids, kDownRows, 0, kWidth, l.down_codes(), l.down_scales())};
+  };
+  for (const std::int64_t t : {5, 8, 12, 16}) {
+    const std::string what = "tokens " + std::to_string(t);
+    const auto x_h = Normal(61 + t, static_cast<std::size_t>(kWidth * t), 1.0f);
+    const auto act_h = Normal(62 + t, static_cast<std::size_t>(kFfn * kUsed * t), 1.0f);
+    auto routes = Routes(t, 63 + t);
+    for (std::int64_t r = 0; r < t; ++r) {
+      // Expert 5 twice in every token: at least 2t slots on it.
+      routes[static_cast<std::size_t>(r * kUsed)] = 5;
+      routes[static_cast<std::size_t>((r * kUsed) + 6)] = 5;
+    }
+    const std::vector<std::size_t> outside = {static_cast<std::size_t>(kUsed + 3),
+                                              static_cast<std::size_t>((2 * kUsed) + 4),
+                                              static_cast<std::size_t>((t * kUsed) - 1)};
+    routes[outside[0]] = kExperts;
+    routes[outside[1]] = -1;
+    routes[outside[2]] = kExperts;
+    ggml_tensor* x = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kWidth, 1, t), x_h);
+    ggml_tensor* act = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kFfn, kUsed, t), act_h);
+    ggml_tensor* ids = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, t), routes);
+    const auto whole = build(x, act, ids);
+    std::vector<ggml_tensor*> outputs(whole.begin(), whole.end());
+    for (std::int64_t first = 0; first < t; first += kChunk) {
+      const std::int64_t n = std::min(kChunk, t - first);
+      const auto slice = [&](const auto& v, std::int64_t per) {
+        using T = std::decay_t<decltype(v)>::value_type;
+        return std::vector<T>(v.begin() + (first * per), v.begin() + ((first + n) * per));
+      };
+      const auto part = build(
+          Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kWidth, 1, n), slice(x_h, kWidth)),
+          Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kFfn, kUsed, n), slice(act_h, kFfn * kUsed)),
+          Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, n), slice(routes, kUsed)));
+      outputs.insert(outputs.end(), part.begin(), part.end());
+    }
+    Run(outputs);
+    for (std::size_t form = 0; form < whole.size(); ++form) {
+      const auto got = Download(whole[form]);
+      const auto per_slot = static_cast<std::size_t>(whole[form]->ne[0]);
+      std::vector<float> want;
+      for (std::size_t i = whole.size() + form; i < outputs.size(); i += whole.size()) {
+        const auto part = Download(outputs[i]);
+        want.insert(want.end(), part.begin(), part.end());
+      }
+      ASSERT_EQ(got.size(), want.size()) << what;
+      ASSERT_EQ(got.size(), per_slot * static_cast<std::size_t>(kUsed * t)) << what;
+      for (std::size_t i = 0; i < got.size(); ++i) {
+        ASSERT_TRUE(same(got[i], want[i]))
+            << what << ", form " << form << ", slot " << (i / per_slot) << ", output "
+            << (i % per_slot) << ": " << got[i] << " vs " << want[i];
+      }
+      for (const std::size_t slot : outside) {
+        EXPECT_TRUE(std::isnan(got[slot * per_slot])) << what << ", form " << form;
+        EXPECT_TRUE(std::isnan(got[((slot + 1) * per_slot) - 1])) << what << ", form " << form;
+      }
+      EXPECT_TRUE(std::ranges::all_of(
+          got.begin(), got.begin() + static_cast<std::ptrdiff_t>(outside[0] * per_slot),
+          [](float v) { return std::isfinite(v); }))
+          << what << ", form " << form;
+    }
+  }
+}
+
 // The checks refuse a slab stride short of the layout, rows that are not
 // whole scale atoms, too many tokens for the vector product, and a route of
 // other extents.
@@ -775,16 +878,30 @@ TEST_F(Qwen38MoeTest, TheChecksRefuseWhatTheKernelsCannotRun) {
     TensorArena::Bind(node, Allocate(ggml_nbytes(node)));
     return node;
   };
-  // Nine tokens for the vector product.
-  EXPECT_FALSE(
-      kg::CheckMoeGemv(
-          place(kg::MoeGemv(c(), bytes(static_cast<std::int64_t>(stride_)), x, ids, kFfn, 0,
-                            2 * kFfn, moe::ExpertLayout::gate_up_codes(), l.gate_up_scales())))
-          .has_value());
+  // Sixteen tokens for the vector product (a wave's shared product), and not
+  // seventeen.
+  constexpr std::int64_t kMost = kg::kMoeGemvWaveTokens;
+  ggml_tensor* x17 = Leaf(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kWidth, 1, kMost + 1),
+                          std::vector<float>(static_cast<std::size_t>(kWidth * (kMost + 1)), 1.0f));
+  ggml_tensor* ids17 =
+      Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, kMost + 1),
+           std::vector<std::int32_t>(static_cast<std::size_t>(kUsed * (kMost + 1)), 0));
+  ggml_tensor* x16 = ggml_view_3d(c(), x17, kWidth, 1, kMost, x17->nb[1], x17->nb[2], 0);
+  ggml_tensor* ids16 = ggml_view_2d(c(), ids17, kUsed, kMost, ids17->nb[1], 0);
   ggml_tensor* x1 = ggml_view_3d(c(), x, kWidth, 1, 1, x->nb[1], x->nb[2], 0);
   ggml_tensor* ids1 = ggml_view_2d(c(), ids, kUsed, 1, ids->nb[1], 0);
-  const std::vector<ggml_tensor*> views = {x1, ids1};
+  const std::vector<ggml_tensor*> views = {x16, ids16, x1, ids1};
   kg::BindViews(views);
+  EXPECT_FALSE(
+      kg::CheckMoeGemv(
+          place(kg::MoeGemv(c(), bytes(static_cast<std::int64_t>(stride_)), x17, ids17, kFfn, 0,
+                            2 * kFfn, moe::ExpertLayout::gate_up_codes(), l.gate_up_scales())))
+          .has_value());
+  EXPECT_TRUE(
+      kg::CheckMoeGemv(
+          place(kg::MoeGemv(c(), bytes(static_cast<std::int64_t>(stride_)), x16, ids16, kFfn, 0,
+                            2 * kFfn, moe::ExpertLayout::gate_up_codes(), l.gate_up_scales())))
+          .has_value());
   // A stride short of the layout's rows.
   EXPECT_FALSE(
       kg::CheckMoeGemv(place(kg::MoeGemv(c(), bytes(static_cast<std::int64_t>(l.gate_up_scales())),

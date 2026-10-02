@@ -89,14 +89,20 @@ execution slots separately from these four stable state slots, with conservative
 activation, scratch, staging and host-input bounds checked before work.
 
 `qwen38_wave_plan.h` composes fresh per-slot plans without rewriting scalar
-caches. It pairs compatible target/draft MXFP8 and routed vector products at up
-to eight rows, charging concatenation and retaining independent output views.
-Compatible two-to-four-row HC BF16 products share their original cuBLAS path,
-retaining separate preparation and nonlinear mixing. Eligible three- or
-four-row BF16 target heads pair through the ordinary six-, seven- or
-eight-column MMF selector; unsupported heads stay original.
-Stateful operations and draft heads stay independent. `TargetWave` and
-`DraftWave` validate placement
+caches. Consecutive compatible slots (up to all four) form a group whose
+target/draft MXFP8 and routed vector products join at up to sixteen rows,
+charging concatenation and retaining independent output views; the wide
+MXFP8 and expert-major routed kernels give each request's products bit for
+bit. Compatible two-to-four-row HC BF16 products of a target group share
+their original cuBLAS path, retaining separate preparation and nonlinear
+mixing. Eligible three- or four-row BF16 target heads join through the
+ordinary MMF selector (up to sixteen columns); unsupported heads stay
+original. Stateful operations and draft heads stay independent. A
+multi-slot wave reads attention cells aligned to 2,048, and backs each
+slot's caches through them, so its graph key repeats. Each decode step's
+own state reservation already backs through that alignment, so running out
+of state capacity refuses that request rather than failing the shared wave
+(which would stop the node). `TargetWave` and `DraftWave` validate placement
 and bindings before dispatch, then publish outputs only after the completed job.
 Each successful verify retains its own snapshot until acceptance or explicit
 discard restores that branch's prior target and MTP state.

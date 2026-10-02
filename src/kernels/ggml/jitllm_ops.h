@@ -151,8 +151,13 @@ float JitllmOpEps(const ggml_tensor* node);
 std::int32_t JitllmOpInt(const ggml_tensor* node, int index);
 float JitllmOpFloat(const ggml_tensor* node, int index);
 
-// The most columns jitllm.mxfp8.mul_mat_vec takes.
+// The most columns a graph's own jitllm.mxfp8.mul_mat_vec takes: past them
+// a chunk's MXFP8 products run on tensor cores (qwen38_graph.cc).
 inline constexpr std::int64_t kMxfp8VecColumns = 8;
+// The most columns the kernel takes: a Qwen3.8 wave's shared products
+// (engine/qwen38_wave_plan.h) join up to four requests' verify rows. Each
+// column's arithmetic is the eight-column kernel's.
+inline constexpr std::int64_t kMxfp8VecWaveColumns = 16;
 
 // Builders. `codes` I8 [k, n], `scales` I8 [k / 32, n], `x` F32 [k, t].
 ggml_tensor* Mxfp8MulMatVec(ggml_context* context, ggml_tensor* codes, ggml_tensor* scales,
@@ -396,8 +401,10 @@ ggml_tensor* MoeGemvSwiglu(ggml_context* context, ggml_tensor* weights, ggml_ten
                            std::uint64_t scales_offset);
 // Whether a jitllm.moe.gemv node is the SwiGLU form.
 bool IsMoeGemvSwiglu(const ggml_tensor* node);
-// The most tokens jitllm.moe.gemv takes.
+// The most tokens a graph's own jitllm.moe.gemv takes (past them, the
+// grouped GEMM), and the most the kernel takes: a wave's shared products.
 inline constexpr std::int64_t kMoeGemvTokens = 8;
+inline constexpr std::int64_t kMoeGemvWaveTokens = 16;
 
 std::expected<void, KernelFailure> CheckMoeRoute(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckMoeQuantize(const ggml_tensor* node);

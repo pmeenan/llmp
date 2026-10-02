@@ -264,6 +264,10 @@ class Llm : public Served {
     const std::vector<std::int32_t>& history() const { return history_; }
     bool HasRetainedState() const { return !history_.empty(); }
     Status Clear();
+    // Clears an idle branch's retained state (its finished conversation's
+    // reuse cache) while it is outside the selected cohort, for peers that
+    // need the capacity. Families without separate native slots refuse.
+    Status ReleaseIdleState();
     void Forget();
     Status Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
                    const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr);
@@ -284,6 +288,16 @@ class Llm : public Served {
     std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
         const std::vector<float>& last, const GenerateOptions& options, Generation& out) &;
     std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
+        const std::vector<float>& last, const GenerateOptions&& options,
+        Generation& out) & = delete;
+    // Continues a generation `out` whose anchor (its last token, generated
+    // and reported but not yet in the state) follows exactly this branch's
+    // history: after a preemption discarded the state and a prompt session
+    // rebuilt it from the history the preempted session published. Nothing
+    // is chosen or reported again; `last` only proves that prompt completed.
+    std::expected<std::unique_ptr<GenerationSession>, std::string> ResumeGeneration(
+        const std::vector<float>& last, const GenerateOptions& options, Generation& out) &;
+    std::expected<std::unique_ptr<GenerationSession>, std::string> ResumeGeneration(
         const std::vector<float>& last, const GenerateOptions&& options,
         Generation& out) & = delete;
     Status Generate(const std::vector<float>& last, const GenerateOptions& options,
@@ -407,7 +421,13 @@ class Llm : public Served {
     ~PromptSession();
     bool done() const;
     std::expected<Unit, std::string> NextUnit() const;
-    Status Advance(const PrefillGoOn& go_on = {});
+    // With `defer_capacity`, a chunk the model refused only for state
+    // capacity (Llm::StateRefusedFor, the state usable) returns its error
+    // but leaves the session resumable: refused() is true, nothing was
+    // processed, and the next Advance retries the same unit. Otherwise
+    // (and by default) every failure ends the session.
+    Status Advance(const PrefillGoOn& go_on = {}, bool defer_capacity = false);
+    bool refused() const { return refused_; }
     // Only between completed units; keeps exactly the processed prefix.
     void Cancel();
     Status Finish();
@@ -436,6 +456,7 @@ class Llm : public Served {
     bool complete_ = false;
     bool finished_ = false;
     bool advancing_ = false;
+    bool refused_ = false;
   };
   std::size_t turn_checkpoints() const { return default_branch_.turn_checkpoints(); }
   std::uint64_t turn_checkpoint_bytes() const;
@@ -462,7 +483,13 @@ class Llm : public Served {
     // Runs existing context/growth preparation; called within a declared
     // native unit, not from a scheduler's host-only eligibility check.
     // The returned tokens are borrowed until Apply/FailStep, never rebound.
-    std::expected<Step, std::string> PrepareStep();
+    // With `defer_capacity`, a growth the model refused only for state
+    // capacity (Llm::StateRefusedFor, the state usable) returns its error
+    // but leaves the session active and unprepared: refused() is true and a
+    // later PrepareStep retries. Otherwise every refusal ends the session.
+    std::expected<Step, std::string> PrepareStep(bool defer_capacity = false);
+    bool refused() const { return !refusal_.empty(); }
+    const std::string& refusal() const { return refusal_; }
     // The legacy native path, applying exactly one completed scalar step.
     Status RunScalarStep();
     // Apply only after the named native step completed. A speculative result
@@ -482,7 +509,7 @@ class Llm : public Served {
    private:
     friend class Llm;
     GenerationSession(Llm& model, Branch& branch, const GenerateOptions& options, Generation& out);
-    Status Begin(const std::vector<float>& last);
+    Status Begin(const std::vector<float>& last, bool resume);
     bool IsStop(std::int32_t token) const;
     bool Report();
     Status ApplyTokens(std::vector<std::int32_t> kept, std::vector<std::vector<float>> logits);
@@ -498,6 +525,7 @@ class Llm : public Served {
     std::size_t reported_ = 0;
     Clock::time_point start_;
     Status ran_;
+    std::string refusal_;  // the last PrepareStep's deferred capacity refusal
     bool failed_prefix_valid_ = false;
     bool prepared_ = false;
     bool finished_ = false;
@@ -514,7 +542,11 @@ class Llm : public Served {
   // An error return here means invalid cohort input or a shared native error.
   // Finish settles host ownership; neither success, StateUsable nor Finish
   // alone proves native-reference retirement after a shared native failure.
-  Status RunGenerationWave(std::span<GenerationSession* const> sessions);
+  // With `defer_capacity`, a session whose preparation was refused only for
+  // state capacity stays active and unstepped instead (refused(); its peers
+  // still run), for the caller to retry or end (GenerationSession::PrepareStep).
+  Status RunGenerationWave(std::span<GenerationSession* const> sessions,
+                           bool defer_capacity = false);
   virtual bool supports_generation_waves() const { return false; }
   // Immutable live-owner bound after runner setup. Native branch identifiers
   // may be sparse; capacity limits simultaneous owners, not their slot IDs.
@@ -609,6 +641,15 @@ class Llm : public Served {
   virtual Status SettleFor(Branch& branch);
   virtual Status ClearStateFor(Branch& branch);
   virtual bool StateUsableFor(const Branch& branch) const;
+  // After a failed RunChunkFor or PrepareDecodeStateFor of this branch: true
+  // when only the state's capacity refused it, before any dispatch, leaving
+  // the state usable as it was. Waiting for peers' state to be freed may
+  // then let it succeed. Families without this distinction never claim it.
+  virtual bool StateRefusedFor(const Branch& /*branch*/) const { return false; }
+  // Discards an unselected branch's native state (Branch::ReleaseIdleState).
+  virtual Status ReleaseIdleStateFor(Branch& /*branch*/) {
+    return std::unexpected("this model keeps no idle conversation state apart");
+  }
   virtual Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left);
   virtual std::uint64_t TargetStateBaseFor(const Branch& branch) const;
   virtual std::uint64_t TargetStateBytesFor(const Branch& branch) const;
@@ -666,6 +707,7 @@ class Llm : public Served {
 
  private:
   Status Clear(Branch& branch, const PromptSession* prompt = nullptr);
+  Status ReleaseIdleState(Branch& branch);
   void Forget(Branch& branch, const PromptSession* prompt = nullptr);
   Status Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::vector<float>& last,
                  const PrefillGoOn& go_on, PrefillRun* run);
@@ -686,7 +728,7 @@ class Llm : public Served {
       bool fresh);
   std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
       Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
-      Generation& out);
+      Generation& out, bool resume = false);
   Status Generate(Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
                   Generation& out);
   Status SaveState(Branch& branch, void* host);

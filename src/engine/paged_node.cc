@@ -961,7 +961,7 @@ Status PagedNode::Call(std::function<Status()> call, std::string_view what) {
 }
 
 Status PagedNode::Acquire(const catalog::Closure& closure, AcquireReport& report,
-                          std::string_view what) {
+                          std::string_view what, bool* over_budget) {
   // The shared workspace is never a victim, whether or not the closure
   // names it: it is discardable, so it would be chosen first, and nothing
   // restores it.
@@ -970,7 +970,12 @@ Status PagedNode::Acquire(const catalog::Closure& closure, AcquireReport& report
   Done done;
   auto program = std::make_unique<AcquireProgram>(done, closure, domain_, budget_, report,
                                                   std::move(workspace));
-  return Post(std::move(program), done, what);
+  auto acquired = Post(std::move(program), done, what);
+  if (over_budget != nullptr) {
+    // Read once the program is gone (Post returns only then).
+    *over_budget = !acquired && done.error.load() == static_cast<int>(sc::WorkError::kOverBudget);
+  }
+  return acquired;
 }
 
 Status PagedNode::Copy(std::uint32_t stream, const catalog::Closure& closure, std::uint64_t device,

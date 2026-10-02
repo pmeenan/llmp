@@ -565,13 +565,16 @@ up to four stable request frames for one model, admitting new work between
 completed units. Each request retains its own response, deadline and cancellation;
 switching models drains the active group first. Retirement must prove that no
 work still borrows a frame before it can be freed. The production Qwen chat
-backend funds two active requests. A third waits for retirement and then refills
+backend funds four active requests, which decode in shared waves at draft
+depth 2 (a lone request keeps its adaptive depth; past two, drafts run per
+request). A fifth waits for retirement and then refills
 the group; a different model or literal completion waits for the group to drain.
 Prefill chunks alternate fairly between branches, with ready decode work between
-them. Compatible small-row target/draft products share weights; independent
-attention, recurrence, logits and commits remain branch-owned. Eligible pairs
-of three- or four-row BF16 target heads use one ordinary six-, seven- or
-eight-column product with a paid input concatenation. Compatible multirow HC
+them. Compatible small-row target/draft products of up to four requests share
+weights (sixteen rows a product; MXFP8 and routed outputs bit for bit); independent
+attention, recurrence, logits and commits remain branch-owned. Eligible groups
+of three- or four-row BF16 target heads use one ordinary MMF product of up to
+sixteen columns with paid input concatenations. Compatible multirow HC
 BF16 products also share immutable weights through their original cuBLAS path,
 with independent preparation and nonlinear mixing. Unsupported shapes keep
 their original products.
@@ -582,6 +585,57 @@ that copies and jobs have retired. Unknown completion stops shared execution
 and retains the borrowed owners. Other families and `/v1/completions`, including
 likelihood scoring, retain their ordinary serial entry points.
 
+### State capacity in a cohort
+
+Admission to a cohort does not reserve conversation state: each member's
+state grows as its prompt and generation run, and every member's state is
+leased while the cohort is selected. Conversation state is preserved, never
+an eviction victim, so an idle branch also keeps its finished
+conversation's state (its reuse cache) until it is cleared or spilled by a
+swap. A member's growth can therefore be refused only because other
+branches hold the rest of the execution budget. Such a
+refusal is typed: the runner reports it (`WorkError::kOverBudget` from the
+acquisition, `Llm::StateRefusedFor`) only when it came before any dispatch
+and left the state usable as it was, with any fresh zero pages that
+completed retained and protected. The cooperative backend defers it
+(`PromptSession::Advance` and `RunGenerationWave` with `defer_capacity`):
+the session stays resumable at its completed prefix, and its unit runs
+again later. Every other failure ends its request as before. The policy
+(`runtime/cohort_capacity.h`):
+
+- Idle state goes first: while a branch outside the cohort retains state,
+  the largest such cache is cleared (`Branch::ReleaseIdleState`, which
+  discards an unselected slot's state outside the lease) and the refused
+  member runs again. That conversation's next turn prefills from the start.
+- Then a refused member waits while any peer holds state, a waiting peer or
+  one about to retire included. It retries when a peer retires (its state
+  is then idle, and reclaimable) or is preempted.
+- A member refused while no other branch holds state cannot fit alone and
+  fails with the refusal (a 500 naming the chunk or step, as a lone
+  request's).
+- When no member can go on (every one holding state waits and none is about
+  to retire), the youngest waiting member is preempted: its sessions end at
+  their completed boundary, the host keeps its tokens (the prompt, and in a
+  generation every generated token but the unprocessed anchor), and its
+  state is cleared. The others retry at once. A preempted member begins
+  again, the oldest first, once no other member can run or waits: it
+  prefills those tokens, then a resumed generation continues from its
+  anchor without choosing or streaming any token again (sampling stays
+  keyed by absolute position). Its rebuilt state is recomputed, not
+  restored, so its later tokens may differ from an uninterrupted run's as
+  any prefill's rounding may; tokens already streamed never change.
+- While any member waits or is preempted, no new request joins the cohort;
+  it stays first in the queue. Admission reserves nothing else: a request
+  that cannot fit beside its peers waits as above instead.
+
+So only a request that cannot fit alone fails for capacity; under pressure
+the cohort serves fewer requests at a time. A waiting member keeps its
+deadline, cancellation and client checks between every unit. The serial
+path (`Complete`) is unchanged; a cohort of one clears idle caches first,
+then fails with the refusal as before. The runtime
+logs each wait, preemption, cleared idle cache and refusal with slots and
+token counts only.
+
 An LLM's stable `Branch` owns its prompt history, sampling key, session guard,
 turn checkpoints and adaptive draft-depth policy. Qwen3.8 maps up to four branches
 to independent native request slots, with one shared set of model weights. Other
@@ -589,7 +643,8 @@ families retain their default branch. Each resumable generation session forwards
 its completed units to its own branch; saving, restoring or clearing a branch
 does not change another branch's history or policy. Prefix matching chooses a
 reuse opportunity among free branches; it does not identify a conversation.
-The execution capacity of two is separate from the four retained branch slots.
+The execution capacity (the runner's funded wave slots, four for Qwen chat)
+is separate from the retained branch slots.
 
 `Branch::BeginPrompt` owns a bounded prompt copy without native work. Its
 `PromptSession` advances one reuse/restore, prefill chunk or turn-checkpoint unit
@@ -826,7 +881,7 @@ short DeepSeek and Qwen prompts, with speculation on and off.
   eviction, admission and the switching policy come with M5 and M6.
 - The chat route is M3's minimal one: no tools, no reasoning controls,
   no credentials (the optional API key is M5's), no CORS, no Responses or
-  Messages routes. Qwen chat shares up to two requests; other families and
+  Messages routes. Qwen chat shares up to four requests; other families and
   literal completions run one at a time. The front door is M5's.
 - The tailnet is found at startup; a node whose Tailscale comes up later
   serves it after a restart. `jitllm.service` is ordered after

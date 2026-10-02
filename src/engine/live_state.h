@@ -86,8 +86,13 @@ class LiveState {
   };
   // Materializes the extents intersecting these ranges, without changing
   // any previous contents or addresses. True when the used set grew.
+  // `over_budget`, if given, says whether an error was a clean capacity
+  // refusal: the acquisition did not fit the execution budget beside what
+  // is leased, and the state is still usable, with its previous contents
+  // and any fresh zero pages that completed (PagedNode::Acquire).
   std::expected<bool, std::string> Use(PagedNode& node, std::span<const Range> ranges,
-                                       const catalog::Closure* keep = nullptr);
+                                       const catalog::Closure* keep = nullptr,
+                                       bool* over_budget = nullptr);
   // Drops initialized extents outside these already-used ranges, without
   // reloading them or writing them back. Called between jobs, with no
   // request lease on the state. Its saved file ranges return to sparse zeros.

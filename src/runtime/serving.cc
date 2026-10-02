@@ -62,6 +62,8 @@ constexpr std::uint32_t kDsv4PrefillRows = 4096;
 constexpr std::uint32_t kDsv4DeepPrefillRows = 2048;
 constexpr std::uint32_t kDsv4WidePrefillContext = 262144;  // the widest context at 4,096
 constexpr std::uint32_t kQwen38PrefillRows = 4096;
+// The draft depth of each request in a Qwen3.8 wave of more than one.
+constexpr std::uint32_t kSharedWaveDepth = 2;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
@@ -419,9 +421,11 @@ class Qwen38 final : public Llm {
                                  model::Qwen38MostRows(entry.context, false));
     options_.max_rows = max_rows_;
     options_.graphs = true;
-    // Two execution slots share weights and workspace while each branch
-    // retains its own native state and adaptive decoding policy.
-    options_.wave_slots = 2;
+    // Four execution slots share weights and workspace while each branch
+    // retains its own native state: up to four requests decode in one wave
+    // (engine/qwen38_wave_plan.h), whose row-local products read each weight
+    // once (C2/C4 HTTP screens: +9.8%/+20% over two slots of pairs).
+    options_.wave_slots = 4;
     if (speculate_) {
       options_.drafter = roles.installed / drafter_id_;
       options_.draft_rows = max_rows_ >= 4 ? 3 : 2;
@@ -741,7 +745,11 @@ class Qwen38 final : public Llm {
     }
     return JudgeVerify(branch, drafts, pos, depth, argmax, verified, kept, logits, drafted);
   }
+  bool StateRefusedFor(const Branch& branch) const override {
+    return NativeSlot(branch).state_refused();
+  }
   Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) override {
+    NativeSlot(branch).ForgetRefusal();  // the refusals below are not capacity's
     if (!speculate_) {
       return NativeSlot(branch).ReserveStateThrough(pos + 1);
     }
@@ -758,6 +766,10 @@ class Qwen38 final : public Llm {
   Status ClearStateFor(Branch& branch) override {
     BranchDecoding(branch) = execution::AdaptiveDepth(3);
     return NativeSlot(branch).Clear();
+  }
+  Status ReleaseIdleStateFor(Branch& branch) override {
+    BranchDecoding(branch) = execution::AdaptiveDepth(3);
+    return NativeSlot(branch).ClearIdle();
   }
   void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
   void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
@@ -801,7 +813,12 @@ class Qwen38 final : public Llm {
     for (std::size_t i = 0; i < prepared.size(); ++i) {
       PreparedGeneration& unit = prepared[i];
       Frame& frame = frames[i];
-      frame.depth = DraftDepthFor(*unit.branch);
+      // A shared wave drafts two tokens a request: each verify row past that
+      // reads its own routed experts for every member, so the third draft's
+      // acceptance no longer pays for itself (C2/C4 HTTP screens: +8%/+15%
+      // over adaptive depth). A lone request keeps its adaptive depth.
+      frame.depth =
+          std::min(DraftDepthFor(*unit.branch), prepared.size() > 1 ? kSharedWaveDepth : 3U);
       if (frame.depth > context_ - unit.step.position) {
         return Error("the drafts would pass the context");
       }
@@ -810,7 +827,18 @@ class Qwen38 final : public Llm {
                         .drafts = &frame.drafts,
                         .passes = frame.depth});
     }
-    if (auto ran = runner_.DraftWave(drafts); !ran) {
+    // Past two requests each drafts alone, on its own cached graphs: a draft
+    // wave's graph keys every slot's pending rows (one to four), so a wider
+    // wave's graphs would seldom repeat (C4 HTTP screen: 3.6% faster).
+    if (drafts.size() > 2) {
+      for (std::size_t i = 0; i < prepared.size(); ++i) {
+        if (auto ran = NativeSlot(*prepared[i].branch)
+                           .Draft(prepared[i].step.all, frames[i].drafts, nullptr, frames[i].depth);
+            !ran) {
+          return ran;
+        }
+      }
+    } else if (auto ran = runner_.DraftWave(drafts); !ran) {
       return ran;
     }
     std::vector<engine::Qwen38Runner::VerifyWork> verifies;
@@ -1077,6 +1105,8 @@ Llm::Branch::~Branch() {
 
 Status Llm::Branch::Clear() { return model_.Clear(*this); }
 
+Status Llm::Branch::ReleaseIdleState() { return model_.ReleaseIdleState(*this); }
+
 void Llm::Branch::Forget() { model_.Forget(*this); }
 
 Status Llm::Branch::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
@@ -1106,6 +1136,11 @@ std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::Branch::Beg
 std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::Branch::BeginGeneration(
     const std::vector<float>& last, const GenerateOptions& options, Generation& out) & {
   return model_.BeginGeneration(*this, last, options, out);
+}
+
+std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::Branch::ResumeGeneration(
+    const std::vector<float>& last, const GenerateOptions& options, Generation& out) & {
+  return model_.BeginGeneration(*this, last, options, out, true);
 }
 
 Status Llm::Branch::Generate(const std::vector<float>& last, const GenerateOptions& options,
@@ -1497,6 +1532,19 @@ Status Llm::Clear(Branch& branch, const PromptSession* prompt) {
   return {};
 }
 
+Status Llm::ReleaseIdleState(Branch& branch) {
+  CheckIdleGeneration(branch);
+  branch.turn_checkpoints_.clear();
+  branch.history_.clear();
+  if (auto released = ReleaseIdleStateFor(branch); !released) {
+    branch.needs_clear_ = true;  // its next use clears whatever is left
+    return released;
+  }
+  branch.needs_clear_ = false;
+  branch.history_used_ = Clock::now();
+  return {};
+}
+
 std::uint64_t Llm::Branch::turn_checkpoint_bytes() const {
   std::uint64_t bytes = 0;
   for (const TurnCheckpoint& checkpoint : turn_checkpoints_) {
@@ -1713,7 +1761,8 @@ Status Llm::PromptSession::Fail(std::string error) {
   return ran_;
 }
 
-Status Llm::PromptSession::Advance(const PrefillGoOn& go_on) {
+Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity) {
+  refused_ = false;
   auto next = NextUnit();
   if (!next) {
     return std::unexpected(next.error());
@@ -1761,8 +1810,15 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on) {
     auto chunk =
         model_.RunChunkFor(branch_, std::span(tokens_).first(end), at, model_.speculate_, last_);
     if (!chunk) {
-      return Fail(
-          std::format("{}'s prefill: the chunk at {}: {}", model_.name_, at, chunk.error()));
+      std::string error =
+          std::format("{}'s prefill: the chunk at {}: {}", model_.name_, at, chunk.error());
+      if (defer_capacity && model_.StateRefusedFor(branch_) && model_.StateUsableFor(branch_)) {
+        // Refused before dispatch: the history, `last` and the state are as
+        // the previous unit left them, so the same unit can run again.
+        refused_ = true;
+        return std::unexpected(std::move(error));
+      }
+      return Fail(std::move(error));
     }
     branch_.history_.insert(branch_.history_.end(), tokens_.begin() + at, tokens_.begin() + end);
     branch_.history_used_ = Clock::now();
@@ -1921,8 +1977,8 @@ Llm::GenerationSession::~GenerationSession() {
 }
 
 std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::BeginGeneration(
-    Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
-    Generation& out) {
+    Branch& branch, const std::vector<float>& last, const GenerateOptions& options, Generation& out,
+    bool resume) {
   CheckBranch(branch);
   if (last.empty()) {
     return Error(std::format("{} has no prefill's logits to generate from", name_));
@@ -1933,10 +1989,14 @@ std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::BeginGe
   if (branch.generation_active_ || branch.prompt_session_ != nullptr) {
     return Error("the conversation already has an active session");
   }
+  if (resume && (out.tokens.empty() || out.stopped || out.tokens.size() >= options.max_tokens ||
+                 branch.history_.size() + 1 >= context_)) {
+    return Error("a resumed generation needs an unfinished generation within the context");
+  }
   branch.generation_active_ = true;
   auto session =
       std::unique_ptr<GenerationSession>(new GenerationSession(*this, branch, options, out));
-  if (auto began = session->Begin(last); !began) {
+  if (auto began = session->Begin(last, resume); !began) {
     session->Close();
     return std::unexpected(began.error());
   }
@@ -1963,11 +2023,23 @@ bool Llm::GenerationSession::Report() {
   return options_.on_tokens(fresh);
 }
 
-Status Llm::GenerationSession::Begin(const std::vector<float>& last) {
+Status Llm::GenerationSession::Begin(const std::vector<float>& last, bool resume) {
   branch_.sampling_.reset();
   if (options_.sampling && options_.sampling->temperature > 0) {
     branch_.sampling_ = options_.sampling;
     branch_.seed_ = options_.seed;
+  }
+  if (resume) {
+    // The anchor was chosen and reported before the preemption; the state
+    // now holds exactly the tokens before it again. Sampling stays keyed by
+    // absolute position, so the continuation draws as it would have.
+    out_.cancelled = false;
+    all_ = branch_.history_;
+    all_.push_back(out_.tokens.back());
+    position_ = static_cast<std::uint32_t>(branch_.history_.size());
+    reported_ = std::min<std::size_t>(out_.tokens.size(), options_.max_tokens);
+    start_ = Clock::now();
+    return {};
   }
   auto first = model_.Choose(branch_, last, branch_.history_.size());
   if (!first) {
@@ -1994,8 +2066,10 @@ bool Llm::GenerationSession::done() const {
          out_.tokens.size() >= options_.max_tokens;
 }
 
-std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession::PrepareStep() {
+std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession::PrepareStep(
+    bool defer_capacity) {
   base::Check(!prepared_ && !done(), "preparing a generation without a next step");
+  refusal_.clear();
   if (position_ + 1 >= model_.context_) {
     ran_ = Error(
         std::format("{}'s conversation reached its context of {}", model_.name_, model_.context_));
@@ -2004,6 +2078,12 @@ std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession:
   }
   left_ = static_cast<std::uint32_t>(options_.max_tokens - out_.tokens.size());
   if (auto prepared = model_.PrepareDecodeStateFor(branch_, position_, left_); !prepared) {
+    if (defer_capacity && model_.StateRefusedFor(branch_) && model_.StateUsableFor(branch_)) {
+      // Refused before dispatch: the session stays active and unprepared,
+      // its state and history as the last completed step left them.
+      refusal_ = prepared.error().empty() ? "the state's capacity refused it" : prepared.error();
+      return std::unexpected(refusal_);
+    }
     ran_ = prepared;
     failed_prefix_valid_ = model_.StateUsableFor(branch_);
     return std::unexpected(ran_.error());
@@ -2139,7 +2219,7 @@ Status Llm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
   return RunChunkFor(*unit.branch, unit.step.all, unit.step.position, false, unit.row);
 }
 
-Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions) {
+Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions, bool defer_capacity) {
   if (sessions.empty() || sessions.size() > kMaxBranches ||
       sessions.size() > generation_wave_capacity() ||
       (sessions.size() > 1 && !supports_generation_waves())) {
@@ -2165,15 +2245,17 @@ Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions) {
         [[maybe_unused]] const auto failed = session->FailStep(error);
       } else {
         session->ran_ = Error(error);
+        session->refusal_.clear();  // ended, no longer retryable
         session->failed_prefix_valid_ = false;
       }
     }
   };
   for (GenerationSession* session : sessions) {
-    auto step = session->PrepareStep();
+    auto step = session->PrepareStep(defer_capacity);
     if (!step) {
-      // PrepareStep records this session's own terminal error. A refusal
-      // confined to its branch does not discard another prepared step.
+      // PrepareStep records this session's own terminal error, or with
+      // defer_capacity its retryable refusal. A refusal confined to its
+      // branch does not discard another prepared step.
       if (!GenerationCohortUsable()) {
         fail_cohort(step.error());
         return std::unexpected(step.error());
