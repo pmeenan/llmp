@@ -1023,8 +1023,11 @@ it appears.
       (+0.34% aggregate rate); fixed3 restores pairing but remains neutral
       (−0.28%). Skipping unchanged selection rebuilds gives +2.92%, and the
       same binaries with warm weights give +2.60%; first completion worsens.
-      Hold adoption, diagnose coarse costs and screen head sharing before
-      broader checks.
+      Separate cooperative head OFF/ON and reversed ON/OFF screens gain
+      +5.40%/+4.99%, with exact full native vectors and HTTP responses.
+      This selects compatible BF16 head sharing for production integration
+      and checks; fixed3 observations do not qualify adaptive traffic or
+      cross-engine parity. Retain the production adaptive policy.
       The [exact16 MXFP8 control](experiments/qwen38-mxfp8-sixteen/README.md)
       passes every output/state check but makes the paid four-request loop
       7.469 times slower. Keep paired-eight products; no wider MXFP8 kernel

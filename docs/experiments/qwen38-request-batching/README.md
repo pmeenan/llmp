@@ -392,3 +392,55 @@ pass. Target 3ae5f73e and outer ce09d422 bind this diagnostic; all commands
 and service children exit zero/reaped, terminal memory 117.178 GiB with probes
 clear. Compact records are
 `/home/pmeenan/scratch/m3-qwen-cooperative-host-cost-http-r1-records/`.
+
+## Shared target head through HTTP
+
+Two cooperative profiles isolate BF16 full-target-head sharing OFF/ON. Both
+retain the selected drafter, private fixed depth three, unchanged-selection
+shortcut, graphs and identical provisioning. Compatible four-row heads
+become one ordinary eight-column MMF product, with paid input concatenation
+and separate slot logits and commit paths. Earlier receipt labels
+`scalar`/`wave` mean head OFF/ON here; both profiles execute shared waves.
+
+| Profile order | Head OFF pair, s | Head ON pair, s | Aggregate rate change |
+| --- | ---: | ---: | ---: |
+| OFF then ON | 19.843441 | 18.826454 | +5.4019% |
+| ON then OFF | 19.803395 | 18.862484 | +4.9883% |
+
+The pooled descriptive gain is 5.1949%, with two observations per arm.
+Each service first receives the same unrelated one-token weight prime,
+outside the pair clock. Every measured request has 8266 prompt tokens, zero
+cached tokens and 256 outputs. All eight responses preserve identical
+content, reasoning, usage and length finish. Fresh prefill, queue, graph
+preparation, generation, settlement and HTTP are charged; this is not a
+pure-decode or cross-engine comparison.
+
+Before HTTP, separate native OFF/ON processes at context 33792 execute the
+literal 8192-token fixtures through one paired draft and full verify. All
+four complete F32 target vectors, each 993280 words, are byte-identical;
+draft/verdict IDs, histories, keeps and pending cursors also match. Both
+four-row and combined eight-row heads select ordinary MMF over the same
+BF16 weight extent. One replacement pays 81920 input bytes; placement grows
+from 7987456 to 8028160 bytes and scratch stays 2377728, within unchanged
+bounds. These controls qualify their fixed histories and eligible shape.
+
+The first HTTP pair has identical work counts: 109 waves, 107 paired and
+two single-slot calls. ON replaces 104 heads and pays 8519680 head-pack
+bytes. The reverse confirmation has 110 ON waves, 106 paired and four
+single-slot calls, replacing 103 heads; OFF retains 109/107/two. Graph and
+PLE counts also differ in that confirmation. Its positive direction is
+whole-workload evidence, rather than identical per-step cost attribution.
+
+This selects the compatible BF16 head path for production integration and
+checks. Production adaptive depth remains unchanged; depth two, mixed,
+ragged or unsupported heads retain their original products. These fixed3
+observations do not establish the same gain under adaptive traffic, broader
+quality, state-page equality or a production default.
+
+Provenance: Spark B, SDK 4432b0ab, build db1c97e2, native control 5f4c3e57,
+HTTP receipts 989a8261 and 5af60b38. The confirmation reuses the same binaries
+and controls. All raw responses agree with nested records and parsed bodies;
+both services and twelve commands per screen exit zero and are reaped.
+Terminal probes are clear at 117.138/117.123 GiB. Raw captures remain outside
+Git in `/home/pmeenan/scratch/m3-qwen-cooperative-head-factor-*-r1-records/`.
+Production suites are owed before adoption.

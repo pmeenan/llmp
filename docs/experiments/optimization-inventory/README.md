@@ -50,7 +50,7 @@ Source anchors: `src/kernels/ggml/{qwen2_graph,dsv4_graph,qwen38_graph,graph_pla
 | Native IQ2 shared worklist: no adoption | Its diagnostic proves the second builder can be removed while retaining the two J128 products and every output bit | Rate improvement is only 0.202%, smaller than ordinary bookend movement; it does not close the consumer gap. |
 | Native IQ2 J64: retain J128 | Resource-limited J64 is a different potential configuration; loader lookahead/staging remain inspectable | Unchanged J64 was 4.92% slower. Registers, local bytes and dynamic shared memory must be measured for any new configuration; two-block occupancy is not established. |
 | DeepSeek wide HC mix/pre pair: no adoption | Preserve the ordinary projection; inspect mixing and output-normalization fusion independently | Complete 8K is 2.18% slower with paid F16-to-F32 casts despite fewer steps. Candidate heads differ; no quality or phase-cost conclusion. Qwen already has its own wide HC preparation/conversion path. |
-| Qwen BF16 full-target-head sharing: positive private control | Ordinary selector/MMF at sixteen columns, paid concatenations and bounded split views over independent states | Paid C4 decode gains 8.867% in one ABBA matrix. Four complete target vectors and natural tokens/state are exact; production integration and HTTP performance remain open. |
+| Qwen BF16 full-target-head sharing: positive private controls | Ordinary selector/MMF at eight or sixteen columns, paid concatenations and bounded split views over independent states | Paid C4 decode gains 8.867%. Cooperative C2 HTTP OFF/ON and reverse ON/OFF gain 5.40%/4.99%, with exact full native vectors and HTTP responses. Fixed3 results select production integration; adaptive traffic and final production checks remain open. |
 | Exact16 Qwen MXFP8: no adoption | Share work using paired-eight products; investigate BF16 full heads independently | Exact16 is 7.469 times slower despite exact outputs/state. Compiled local-storage growth supports a spill concern but does not measure traffic or prove the sole cause. |
 | Literal Mia scheduling/attention consumers: earlier negative controls | Inspect their packing, cache and launch boundaries separately; retain native device selection and sparse work | A faster kernel in its original runtime can lose after adapters or dispatch changes. Do not repeat an unchanged negative factor. |
 | Cross-token Qwen sparse-cell union: rejected timing | The native per-KV-head query tile and selected-cell cache remain useful; a cheaper bounded union would be a new experiment | The measured union proposal materially regressed. Synthetic D256 sharing does not approve it for Qwen. |
@@ -74,8 +74,10 @@ Entries marked investigation have no claimed measured gain.
 ## Priority
 
 Complete native Qwen shared execution using its checked independent slots.
-The isolated BF16 full-head control is a positive candidate; integrate it as a
-separate factor after the paired-eight wave path passes its native controls. The literal/native benchmark pipeline
+The BF16 full-head factor is positive in native controls and two short
+cooperative HTTP screens. Integrate its eligible four-row path with the
+unchanged adaptive policy, then check the production implementation.
+The literal/native benchmark pipeline
 study is already complete; the remaining DeepSeek attribution concerns the
 current production graph, rather than another literal-pipeline parity run.
 The [matched production attribution](../ds4-production-prefill-attribution/README.md)
