@@ -159,10 +159,11 @@
   before M2 closes. Both external references have run; the
   [EXL3 baseline](experiments/exl3-reference/README.md) includes real and larger
   synthetic packed projections. Native support remains unvalidated for both.
-- **Chat rendering.** Each supported chat template has a native renderer,
-  selected by the template's hash and checked against golden fixtures;
-  template code from a checkpoint never runs in jitLLM's runtime, jobs or
-  shipped tools (D-067).
+- **Chat rendering.** A template renders through a native family renderer,
+  chosen by the template's hash (checked against golden fixtures) or by
+  probe equivalence, or otherwise through a bounded, sandboxed
+  Jinja-subset interpreter in the runtime that marks only the control
+  tokens the template's own text placed (D-067 as amended 2026-10-02).
 - **Model shapes.** The resource core names no model architecture. Adapters,
   phase kinds, state capabilities, decoding modes and operations carry
   shape-specific behavior with declared bounds. Speculative (MTP) and
@@ -1292,8 +1293,9 @@ M7's daily drivers, DeepSeek V4 Flash and Qwen3.8 as M3's large pair
   result must reproduce the reference token IDs on fixtures. M3's byte-level
   BPE with its UCD 15.1.0 tables is in [tokenizer.md](tokenizer.md),
   cleared for shipped binaries by D-088.
-- **Renderer:** one native renderer per supported template hash, with golden
-  fixtures and segment boundaries (D-067).
+- **Renderer:** native family renderers chosen by template hash (golden
+  fixtures, segment boundaries) or probe equivalence, else the bounded
+  Jinja-subset interpreter of the checkpoint's template (D-067).
 - **Output:** incremental detokenization that holds back incomplete UTF-8,
   stop conditions, and the model family's tool-call and reasoning parser.
   Protocol adapters turn the result into wire events.
@@ -1696,7 +1698,7 @@ front door's and TLS keys and M6 the switching policy's.
 | Input | Trust | Handling |
 | --- | --- | --- |
 | Client requests | Untrusted, even when authenticated | Bounded before any work; D-045's guards; strict parsing |
-| Checkpoints, the long-term store, archives, peer transfers | Untrusted | Read only by job processes, in a confined parse stage; lengths, paths, hashes and metadata validated; no checkpoint code or template runs in a jitLLM process (D-009, D-054, D-067) |
+| Checkpoints, the long-term store, archives, peer transfers | Untrusted | Read only by job processes, in a confined parse stage; lengths, paths, hashes and metadata validated; no checkpoint code runs in a jitLLM process, and a chat template runs only in the runtime's bounded, sandboxed interpreter (D-009, D-054, D-067) |
 | Installed artifacts | Verified at install, then protected by the store's permissions | The runtime still parses manifests and indexes strictly and bounds-checks every range before use |
 | Cluster messages | Authenticated peers | Mutual TLS with pinned identities, bounded framing, validated records; no raw addresses or unvalidated paths cross (D-038) |
 | Management requests | Local processes | Loopback plus browser guards; credentials and TLS when bound elsewhere (D-064) |

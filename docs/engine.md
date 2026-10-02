@@ -147,8 +147,10 @@ What a new family writes, and nothing else:
 
 Outside the engine, a family may also need its import to a prepared
 artifact (`docs/experiments/artifact-layout/import_m3.py` today), its
-tokenizer's pre-tokenizer if it is new ([tokenizer.md](tokenizer.md)) and
-its chat renderer (`chat/`, by template hash, D-067).
+tokenizer's pre-tokenizer if it is new ([tokenizer.md](tokenizer.md)), and
+optionally a native chat renderer (`chat/`, chosen by template hash or
+probe equivalence, D-067); without one, its template runs through the
+sandboxed interpreter.
 
 The checks a family gets by composing the skeleton: the pinned places
 after each swap (the runner's `CheckPlaces` over its `PagedWeights` and

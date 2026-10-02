@@ -46,29 +46,36 @@ Nothing is distributed-correct: two-node execution is M4's.
 
 ## Chat templates
 
-A chat template is rendered only when a native renderer is registered for
-the SHA-256 of its exact UTF-8 bytes (D-067); no template text is ever
-evaluated. An LLM whose template has no renderer is refused when the
-runtime registers it, with the template's hash in the error
-(`chat::FindTemplateForText`). The registry is `kTemplates` in
-[src/chat/chat.cc](../src/chat/chat.cc); its hashes agree with
+A chat template renders natively when a native renderer is registered for
+the SHA-256 of its exact UTF-8 bytes, or when a native family renderer
+reproduces it on the probe corpus; any other template renders through the
+bounded, sandboxed Jinja-subset interpreter (D-067 as amended 2026-10-02;
+[tokenizer.md](tokenizer.md#chat-templates)). An LLM is refused when it
+registers only if neither accepts its template, with the template's hash
+in the error (`chat::ChatTemplate::ForText`). The registry is `kTemplates`
+in [src/chat/chat.cc](../src/chat/chat.cc); its hashes agree with
 [tokenizer.md](tokenizer.md#chat-templates) and with the unit tests
-(`chat_test`, and `tokenizer_models_test`, which hashes the model files on
-a Spark).
+(`chat_test`, `chat_template_test`, and `tokenizer_models_test`, which
+hashes the model files on a Spark).
 
 | Model | SHA-256 the renderer is keyed on | The bytes hashed | Renderer, stop tokens |
 | --- | --- | --- | --- |
 | DeepSeek V4 Flash 0731 | `e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645` | The 0731 GGUF's `tokenizer.chat_template` (Unsloth's port of DeepSeek's `encoding_dsv4.py`), kept in the artifact's GGUF metadata | `deepseek-v4-flash-0731`; `<｜end▁of▁sentence｜>` |
 | DeepSeek V4 community IQ2_XXS | `872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27` | The community GGUF's `tokenizer.chat_template` ("chat-v2", 5,016 bytes), kept in artifact `cd39d504…`'s GGUF metadata | `deepseek-v4-flash-chat-v2`; `<｜end▁of▁sentence｜>` |
 | Qwen3.8 Flash Next | `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041` | `chat_template.jinja` of `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` (pinned in [pins.json](experiments/fast-swap/pins.json); the MLX baseline ships the same bytes) | `qwen3.8-flash-next`; `<\|im_end\|>`, `<\|endoftext\|>` |
+| Qwen3.8 Unsloth GGUFs (Flash Next, 27B) | none pinned; `12827f24…` today | The GGUFs' `tokenizer.chat_template`, Unsloth's variant | `qwen3.8-flash-next-unsloth` by probe equivalence; `<\|im_end\|>`, `<\|endoftext\|>` |
 | Qwen-Image-2.1 | none: the prompt is diffusers `8b3c707e`'s fixed text-to-image string, not a chat template | — | `RenderQwenImagePrompt`; drops the 14 system-turn tokens |
 
-Templates with no renderer, so no chat: the older DeepSeek `e3aa0d6a`
-GGUF's (`d05566eb…`, refused by test), the FP16 fixture GGUF's
-(`d5495a1e…`) and the EXL3 fixtures' (`cd8e9439…`). The checkpoint's
-`processor/chat_template.jinja` for Qwen-Image (`3636d0f0…`) is pinned but
-not used. The options each renderer supports and refuses are in
-[tokenizer.md](tokenizer.md#chat-templates).
+Templates with no native renderer, which render through the interpreter
+where it accepts them: the older DeepSeek `e3aa0d6a` GGUF's (`d05566eb…`,
+not checked), the FP16 fixture GGUF's (`d5495a1e…`, not checked) and the
+EXL3 fixtures' (`cd8e9439…`, Qwen2.5's, which the template corpus checks
+against transformers). Of the 29 corpus templates, 22 interpret
+([chat-template-corpus](experiments/chat-template-corpus/README.md)).
+Serving them still needs a runner for their architecture. The
+checkpoint's `processor/chat_template.jinja` for Qwen-Image (`3636d0f0…`)
+is pinned but not used. The options each renderer supports and refuses
+are in [tokenizer.md](tokenizer.md#chat-templates).
 
 ## DeepSeek V4 Flash 0731
 

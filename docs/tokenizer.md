@@ -5,7 +5,8 @@
 
 M3's native text front end (plan.md, "Tokenizer and chat templates";
 D-067, D-088): a byte-level BPE tokenizer for the M3 models, native
-renderers for their pinned chat templates, stop tokens, and greedy and
+family renderers for their chat templates and a bounded, sandboxed
+Jinja-subset interpreter for any other template, stop tokens, and greedy and
 seeded sampling. All of it is CPU code with no vendor types and builds in
 every profile. D-088 (accepted 2026-09-28) clears its Unicode tables for
 shipped binaries, and `jitllm-runtime` links them: its serving commands
@@ -19,7 +20,7 @@ carries its notice ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)).
 | --- | --- |
 | `base/json.h` (`jitllm_json`) | General RFC 8259 JSON from untrusted bytes: strict UTF-8, unescaped strings, numbers kept as text, duplicate keys refused, caps on size, depth, values and string bytes |
 | `tokenizer/` (`jitllm_tokenizer`) | `unicode.h` (UCD 15.1.0 properties, strict UTF-8, U+FFFD replacement, NFC), `pretokenize.h` (the three pre-tokenizers), `tokenizer.h` (vocabulary validation, encode, decode, streaming decode), `gguf.h` and `hf.h` (the readers of a GGUF file's tokenizer metadata and of `tokenizer.json`) |
-| `chat/` (`jitllm_chat`) | `chat.h` (the conversation, the renderers, the template registry by hash, stop tokens, Python's `str.strip`), `pyjson.h` (JSON as Python's `json.dumps` prints it) |
+| `chat/` (`jitllm_chat`) | `chat.h` (the conversation, the native renderers and their registry, `ChatTemplate`: the choice by hash, probe or interpreter; stop tokens, Python's `str.strip`), `jinja.h` (the Jinja-subset interpreter: `jinja_parse.cc`, `jinja_eval.cc`, `jinja_value.cc`), `pyjson.h` (JSON as Python's `json.dumps` prints it) |
 | `execution/sampling.h` (`jitllm_sampling`) | Greedy and seeded sampling |
 
 Both new modules sit in the model layer (architecture.md), `tokenizer`
@@ -155,8 +156,35 @@ changed. The Qwen3.8 GGUF and NVFP4 `tokenizer.json` share tokens and merges
 
 ## Chat templates
 
-Each renderer is selected by the SHA-256 of the template bytes the
-checkpoint ships and reproduces them byte for byte:
+A model's template renders one of three ways (D-067 as amended
+2026-10-02; `chat::ChatTemplate::ForText`, when the model registers):
+
+1. **Native by hash:** a native renderer whose fixtures pin the template's
+   SHA-256 (the table below).
+2. **Native by probe:** a native renderer whose output equals the
+   template's own, rendered by the interpreter, on every conversation of
+   the probe corpus (`ProbeEquivalent` in `chat/template.cc`: 23
+   conversations, each with thinking unset, on and off, each accepted
+   reasoning effort and `preserve_thinking` off; both refusing counts as
+   equal, a case the renderer does not implement is skipped, and at least
+   30 renderings must be equal). Each probe renders under 500,000 steps
+   and 16 MiB of work, so a template that matches a family's text but
+   works hard besides (or burns its budget on purpose) differs at its
+   first probe instead of costing registration hundreds of full
+   renderings; and all the probes of one registration (every family's,
+   and the end-of-turn probe) draw on one pool of a single rendering's
+   bounds, so a copy that stays just under each probe's budget, probe
+   after probe, spends the pool and is interpreted. A repackaged copy of a supported template
+   (other spacing, comments or line ends) renders natively; any change to
+   what it renders falls through to the interpreter.
+3. **Interpreted:** the template itself, through the interpreter below.
+
+The runtime logs which, with the template's hash, unless the hash pins a
+renderer. A template the interpreter cannot parse (a construct, filter or
+test outside the subset, a bound) is refused at registration, naming its
+hash, as before.
+
+The native renderers reproduce their templates byte for byte:
 
 | Template | SHA-256 | Where | Reference renderer |
 | --- | --- | --- | --- |
@@ -164,6 +192,17 @@ checkpoint ships and reproduces them byte for byte:
 | DeepSeek V4 Flash community "chat-v2" | `872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27` | The `tokenizer.chat_template` (5,016 bytes) of `antirez/deepseek-v4-gguf@f71f23d5`'s `DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf` | transformers 5.12.1 `apply_chat_template` with Python's `json.loads` as the `from_json` filter it lacks |
 | Qwen3.8 Flash Next | `c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041` | `chat_template.jinja` of `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6` | transformers 5.12.1 `apply_chat_template` |
 | Qwen-Image 2.1 text-to-image prompt | none: a fixed string | diffusers `8b3c707e`'s `QwenImage21Pipeline` | the pipeline's string, through the processor's tokenizer |
+
+**Unsloth's Qwen3.8 GGUF variant.** `unsloth/Qwen3.8-Flash-Next-GGUF` and
+`unsloth/Qwen3.8-27B-GGUF` embed a variant (`12827f24…`) of the
+checkpoint's template: leading system messages (any number) merged, each
+trimmed, joined by a newline, empty ones skipped; `reasoning_effort: high`
+taken as `xhigh`; no error without a user query (the last message stands
+in); blank string tool-call arguments render no parameters. Its renderer
+(`RenderQwen38Unsloth`, the same family code with these options) has no
+fixtures of its own, so no hash pins it: it is chosen by probe
+equivalence, and the corpus test checks it against transformers on both
+GGUFs' templates.
 
 **DeepSeek's authority.** DeepSeek publishes no template, only
 `encoding_dsv4.py`, which defines the format; the GGUF's embedded template
@@ -236,6 +275,98 @@ the 0731 GGUF's) and against Hugging Face.
 **Stop tokens:** DeepSeek V4 (both templates) `<｜end▁of▁sentence｜>`;
 Qwen3.8 `<|im_end|>` and `<|endoftext|>` (its generation_config.json's
 `eos_token_id`).
+
+For an interpreted template, the stop tokens are the control token it
+places after an assistant message's content (rendering a two-message
+probe), and the tokenizer's EOS. That is a heuristic for one-channel
+formats: a format whose turns end in more than one way, or that also
+closes channels inside a turn (harmony's `<|call|>`, `<|return|>` and
+`<|end|>`), needs its family's own stop rules before it serves.
+
+### The template interpreter
+
+`chat/jinja.h` renders what Hugging Face transformers' `apply_chat_template`
+renders: Jinja2 3.1 under its `ImmutableSandboxedEnvironment` with
+`trim_blocks`, `lstrip_blocks` and the loop controls, one trailing newline
+of the template dropped, transformers' `tojson` (no HTML escaping;
+`ensure_ascii`, `indent`, `separators`, `sort_keys`), `raise_exception`,
+`strftime_now` (the runtime's local time) and the `{% generation %}` tag,
+plus llama.cpp's `from_json` filter. The template sees what transformers
+passes: `messages` (role, content or none, `reasoning_content` when given,
+OpenAI-shaped `tool_calls` with object arguments, as vLLM passes them),
+`tools` and `documents` (none when absent), `add_generation_prompt`,
+`bos_token` and `eos_token` (the tokenizer's), and the options a
+conversation sets (`enable_thinking`, also as `thinking`;
+`reasoning_effort`; `preserve_thinking`).
+
+| Part | The subset |
+| --- | --- |
+| Statements | `if`/`elif`/`else`; `for` with tuple targets, an `if` filter, `else`, `loop.*` (index, index0, revindex, revindex0, first, last, length, previtem, nextitem, depth, depth0, cycle), `break`, `continue`; `set` (names, tuples, a namespace's attribute, blocks with filters); `macro` with defaults, `varargs` and `kwargs`; `raw`; `generation`; comments and `-`/`+` whitespace control |
+| Expressions | literals (Python string escapes, adjacent strings joined), lists, tuples, mappings with string keys; attributes and items (Python attributes first for `.`, items first for `[]`), slices, calls; `+ - * / // % **` and `~` with Jinja2's precedence; comparisons, `in`, `not in`, `and`, `or`, `not`, `x if c else y` |
+| Filters | abs, capitalize, count, default/d, dictsort, escape/e, first, float, format (`%s %d %i %%`), from_json, indent, int, items, join, last, length, list, lower, map, max, min, reject, rejectattr, replace, reverse, round, safe, select, selectattr, sort, string, sum, title, tojson, trim, unique, upper |
+| Tests | boolean, callable, defined, divisibleby, eq/equalto/==, escaped, even, false, float, ge/>=, gt/greaterthan/>, in, integer, iterable, le/<=, lessthan/lt/<, lower, mapping, ne/!=, none, number, odd, sameas, sequence, string, true, undefined, upper |
+| Methods | strings: strip, lstrip, rstrip, split, rsplit, splitlines, startswith, endswith, replace, upper, lower, title, capitalize, find, rfind, count, join, removeprefix, removesuffix; mappings: get, keys, values, items, copy; lists: count, index, copy |
+| Globals | range (at most 100,000 items, as the sandbox), namespace, dict, raise_exception, strftime_now |
+
+Refused when parsed: `include`, `import`, `extends`, `block`, `call`,
+`filter` blocks, `with`, recursive loops, `*args`, unknown filters and
+tests, a call naming a keyword twice (as Python's compiler refuses it).
+Refused when run (the request fails): a mutating method (as the
+sandbox raises), another Python method, an integer beyond 64 bits, a
+strftime directive other than `%Y %y %m %d %e %H %I %M %S %j %p %B %b %A
+%a %%` (with `-` for no padding). Where Jinja2 raises (an undefined value's
+attribute, a type error, `raise_exception`), rendering returns `kInvalid`;
+a bound or an unimplemented feature returns `kUnsupported`. The bounds are
+D-067's, in `chat::jinja::Limits`. A value's text or JSON stops at the
+string bound as it grows, so one string held many times over costs no
+more than that; comparisons charge every byte they compare; substring
+searches (`in`, `find`, `rfind`, `count`, `split`, `rsplit`, `replace`)
+are linear (Knuth-Morris-Pratt), with needles up to a sixteenth of the
+live-bytes bound; searches by name (a scope's variables, a macro's
+parameters, a namespace's or mapping's members, a call's keyword
+arguments, a mapping literal's earlier keys) charge each entry they pass
+and every byte they compare, and a lookup in an indexed mapping the key's
+bytes; scans that build nothing (prefix and suffix tests, case tests,
+`from_json`, `int`, `float`, `%` and `strftime_now` formats, `tojson`'s
+key sorts) are charged as scanned; a loop's own copy of what it iterates
+is held as live bytes while it runs; the scan for the control tokens a
+rendering places is charged to its work. Containers release what they
+hold without recursing, so no chain of them can exhaust the stack.
+
+Known narrowings, none met by the corpus: case mapping (`upper`, `lower`,
+`title`, `capitalize`) is ASCII-only; filters Jinja2 returns as generators
+(`map`, `select`, `items`, `reverse`) are lists here, so printing one
+directly differs; attributes of numbers are undefined; a loop object
+prints as an error.
+
+**Provenance.** Every rendered byte is the template's or the input's. A
+template literal, the BOS and EOS texts and numbers the template computes
+are the template's; message content, roles, tool schemas, arguments and
+mapping keys from the client are not, through concatenation, slicing,
+`strip`, `replace`, `join`, `split`, `tojson` and case mapping, nor as a
+filter's formatting (`tojson`'s indent and separators, `indent`'s width):
+a value whose text the client chose never becomes the template's. Numbers
+and booleans the template computes are its own even when computed from
+client values (a message count, a length, a comparison), so a control
+token spelled with digits the template prints could be steered; no corpus
+template builds one. The rendering
+marks the vocabulary's control tokens that lie wholly in the template's
+bytes (leftmost, longest), so `EncodeMarked` makes only those control
+tokens, as with native renderers. An interpreted rendering reports one
+boundary: where the generation prompt starts, when the rendering without
+it is a prefix of the rendering with it; serving uses it for its turn
+checkpoint only when a control token starts there.
+
+**Evidence** ([chat-template-corpus](experiments/chat-template-corpus/README.md)):
+`jinja_test` compares 133 snippet templates (`jinja-snippets.json`) with
+transformers 5.12.1 (Jinja2 3.1.6), text and errors, and drives every
+bound with hostile templates and a 20,000-mutation fuzz;
+`chat_template_test` checks the choice of renderer and that the
+interpreter reproduces every case of the three pinned templates' fixtures;
+`chat_corpus_test` (label `models`, the corpus on the Sparks) renders 29
+real templates on 19 conversations each, 537 renderings and every
+refusal equal to transformers', through the interpreter and through the
+chosen renderer.
 
 ## Sampling
 
@@ -328,4 +459,8 @@ skip where the files are absent; a present file with another hash fails.
   a GGUF-sourced artifact carries them in its source metadata; Qwen3.8's
   are configured as files beside its artifact (runtime-serving.md).
 - Segment boundaries for cache breakpoints inside content blocks (D-067):
-  renderers report prefix, message and generation-prompt boundaries only.
+  native renderers report prefix, message and generation-prompt
+  boundaries only, an interpreted template the generation prompt's only.
+- Tool-call output parsing for interpreted templates: they render tool
+  definitions and calls, but the families they belong to have no output
+  parser yet (with the chat route's `tools` refusal, unused for now).

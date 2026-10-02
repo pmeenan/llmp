@@ -13,6 +13,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Any chat template now gets chat routes when it can be rendered exactly
+  (D-067 as amended): a native family renderer serves a template with a
+  pinned hash or one it reproduces on a probe corpus (so repackaged copies
+  and Unsloth's Qwen3.8 GGUF variant render natively), and any other
+  template renders through a bounded, sandboxed Jinja-subset interpreter
+  that matches Hugging Face transformers byte for byte on 29 real templates
+  (Gemma, Llama, Mistral, gpt-oss, GLM, Kimi, Phi and others). Only control
+  tokens in the template's own text become control tokens. Models whose
+  templates were refused at registration now register; the request and
+  response formats and `jitllm-inference-version` are unchanged.
 - The community DeepSeek V4 Flash IQ2_XXS GGUF's "chat-v2" template
   (`antirez/deepseek-v4-gguf@f71f23d5`, SHA-256 `87249207…`) has a native
   renderer, so that model registers with chat routes instead of being

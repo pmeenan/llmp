@@ -65,16 +65,25 @@ std::string_view Content(const Message& m) {
   return PythonStrip(m.content ? *m.content : std::string_view());
 }
 
-}  // namespace
+// Where Unsloth's GGUF template (SHA-256 12827f24...) parts from the
+// checkpoint's (docs/tokenizer.md).
+struct Variant {
+  bool merge_leading_systems = false;   // every leading system message, joined by \n
+  bool high_is_xhigh = false;           // reasoning_effort `high` taken as `xhigh`
+  bool require_query = true;            // no user query is an error, not the last message
+  bool blank_string_arguments = false;  // blank string arguments render no parameters
+};
 
-std::expected<Rendered, Error> RenderQwen38(const Conversation& c) {
+std::expected<Rendered, Error> RenderQwen(const Conversation& c, const Variant& variant) {
   if (c.messages.empty()) {
     return Fail(Rule::kInvalid, "no messages");
   }
   std::string_view instructions;
   if (!c.enable_thinking || *c.enable_thinking) {
-    const std::string_view effort =
-        c.reasoning_effort ? std::string_view(*c.reasoning_effort) : "xhigh";
+    std::string_view effort = c.reasoning_effort ? std::string_view(*c.reasoning_effort) : "xhigh";
+    if (variant.high_is_xhigh && effort == "high") {
+      effort = "xhigh";
+    }
     if (effort == "xhigh") {
       instructions = kEffortXhigh;
     } else if (effort == "low") {
@@ -84,7 +93,26 @@ std::expected<Rendered, Error> RenderQwen38(const Conversation& c) {
     }
   }
   const bool preserve = !c.preserve_thinking || *c.preserve_thinking;
-  const Message& first = c.messages[0];
+
+  // The leading system messages the template takes as the system prompt.
+  std::size_t systems = 0;
+  std::string system;
+  for (const Message& m : c.messages) {
+    if (m.role != Role::kSystem || (systems == 1 && !variant.merge_leading_systems)) {
+      break;
+    }
+    if (!m.tool_calls.empty() || m.reasoning_content) {
+      return Fail(Rule::kUnsupported,
+                  "tool calls or reasoning on a message that is not the assistant's", systems);
+    }
+    if (const std::string_view content = Content(m); !content.empty()) {
+      if (!system.empty()) {
+        system += '\n';
+      }
+      system += content;
+    }
+    ++systems;
+  }
 
   Writer w;
   if (!c.tools.empty()) {
@@ -101,28 +129,22 @@ std::expected<Rendered, Error> RenderQwen38(const Conversation& c) {
     }
     w.Text("\n</tools>");
     w.TextWithTokens(kToolInstructions, {kToolCall, kToolCallEnd});
-    if (first.role == Role::kSystem) {
-      if (const std::string_view content = Content(first); !content.empty()) {
-        w.Text("\n\n");
-        w.Text(content);
-      }
+    if (!system.empty()) {
+      w.Text("\n\n");
+      w.Text(system);
     }
     w.Special(kImEnd);
     w.Text("\n");
-  } else {
-    const std::string_view content =
-        first.role == Role::kSystem ? Content(first) : std::string_view();
-    if (!content.empty() || !instructions.empty()) {
-      w.Special(kImStart);
-      w.Text("system\n");
-      w.Text(instructions);
-      if (!content.empty() && !instructions.empty()) {
-        w.Text("\n\n");
-      }
-      w.Text(content);
-      w.Special(kImEnd);
-      w.Text("\n");
+  } else if (!system.empty() || !instructions.empty()) {
+    w.Special(kImStart);
+    w.Text("system\n");
+    w.Text(instructions);
+    if (!system.empty() && !instructions.empty()) {
+      w.Text("\n\n");
     }
+    w.Text(system);
+    w.Special(kImEnd);
+    w.Text("\n");
   }
   w.Mark(BoundaryKind::kPrefixEnd);
 
@@ -140,10 +162,13 @@ std::expected<Rendered, Error> RenderQwen38(const Conversation& c) {
     }
   }
   if (!last_query) {
-    return Fail(Rule::kInvalid, "no user query in the messages");
+    if (variant.require_query) {
+      return Fail(Rule::kInvalid, "no user query in the messages");
+    }
+    last_query = c.messages.size() - 1;
   }
 
-  for (std::size_t i = 0; i < c.messages.size(); ++i) {
+  for (std::size_t i = systems; i < c.messages.size(); ++i) {
     const Message& m = c.messages[i];
     const std::string_view content = Content(m);
     if (m.role != Role::kAssistant && (!m.tool_calls.empty() || m.reasoning_content)) {
@@ -152,10 +177,7 @@ std::expected<Rendered, Error> RenderQwen38(const Conversation& c) {
     }
     switch (m.role) {
       case Role::kSystem:
-        if (i != 0) {
-          return Fail(Rule::kInvalid, "a system message after the first", i);
-        }
-        break;
+        return Fail(Rule::kInvalid, "a system message after the first", i);
       case Role::kUser:
         w.Special(kImStart);
         w.Text("user\n");
@@ -179,7 +201,9 @@ std::expected<Rendered, Error> RenderQwen38(const Conversation& c) {
         w.Text(content);
         for (std::size_t k = 0; k < m.tool_calls.size(); ++k) {
           const ToolCall& call = m.tool_calls[k];
-          if (!call.arguments.is_object()) {
+          const bool blank = variant.blank_string_arguments && call.arguments.is_string() &&
+                             PythonStrip(call.arguments.string()).empty();
+          if (!call.arguments.is_object() && !blank) {
             return Fail(Rule::kInvalid, "tool call arguments are not an object", i);
           }
           if (k != 0) {
@@ -191,7 +215,7 @@ std::expected<Rendered, Error> RenderQwen38(const Conversation& c) {
           w.Text("\n<function=");
           w.Text(call.name);
           w.Text(">\n");
-          for (std::size_t a = 0; a < call.arguments.size(); ++a) {
+          for (std::size_t a = 0; !blank && a < call.arguments.size(); ++a) {
             const base::json::Value v = call.arguments.member(a);
             w.Text("<parameter=");
             w.Text(call.arguments.key(a));
@@ -244,6 +268,17 @@ std::expected<Rendered, Error> RenderQwen38(const Conversation& c) {
     }
   }
   return w.Take();
+}
+
+}  // namespace
+
+std::expected<Rendered, Error> RenderQwen38(const Conversation& c) { return RenderQwen(c, {}); }
+
+std::expected<Rendered, Error> RenderQwen38Unsloth(const Conversation& c) {
+  return RenderQwen(c, {.merge_leading_systems = true,
+                        .high_is_xhigh = true,
+                        .require_query = false,
+                        .blank_string_arguments = true});
 }
 
 std::expected<ImagePrompt, Error> RenderQwenImagePrompt(std::string_view prompt,

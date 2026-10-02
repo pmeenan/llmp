@@ -102,15 +102,19 @@ TEST(Templates, FoundByHash) {
             nullptr);
 }
 
-// A template without a renderer is named by its hash, for the refusal at
-// registration.
+// A template neither a native renderer nor the interpreter accepts is
+// named by its hash, for the refusal at registration; one the interpreter
+// accepts renders through it.
 TEST(Templates, UnknownTextIsNamedByItsHash) {
-  constexpr std::string_view kText = "{{ messages[0]['content'] }}";
+  constexpr std::string_view kText = "{% include 'x' %}";
   const std::string sha256 = jitllm::base::ToHex(jitllm::base::Sha256().Update(kText).Finish());
-  auto found = chat::FindTemplateForText(kText);
+  auto found = chat::ChatTemplate::ForText(kText, {});
   ASSERT_FALSE(found.has_value());
   EXPECT_NE(found.error().find(sha256), std::string::npos) << found.error();
   EXPECT_NE(found.error().find("no native renderer"), std::string::npos) << found.error();
+  auto interpreted = chat::ChatTemplate::ForText("{{ messages[0]['content'] }}", {});
+  ASSERT_TRUE(interpreted.has_value()) << interpreted.error();
+  EXPECT_EQ(interpreted->how(), chat::ChatTemplate::How::kInterpreted);
 }
 
 // Renders every case of a fixture and compares with the reference.
@@ -293,6 +297,7 @@ TEST(Renderers, DeepSeekContentNeverAddsControlTokens) {
   ASSERT_NE(hostile, nullptr);
   const auto placed = [](const chat::Rendered& r) {
     std::vector<std::string> tokens;
+    tokens.reserve(r.specials.size());
     for (const auto& s : r.specials) {
       tokens.emplace_back(std::string_view(r.text).substr(s.offset, s.length));
     }

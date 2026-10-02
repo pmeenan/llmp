@@ -64,10 +64,11 @@ STYLE_BY_SUFFIX = {
     **dict.fromkeys((".md", ".html", ".xml", ".svg"), HTML),
 }
 # Files that take a sidecar: formats without comments, and files whose exact
-# bytes a tool writes (mise rewrites mise.lock). Checked after the styles
-# above, so CMakeLists.txt is still commentable.
+# bytes a tool writes (mise rewrites mise.lock) or a test hashes (third-party
+# chat templates, .jinja). Checked after the styles above, so CMakeLists.txt
+# is still commentable.
 SIDECAR_NAMES = ("NOTICE", "mise.lock")
-SIDECAR_SUFFIXES = (".json", ".patch", ".tsv", ".txt")
+SIDECAR_SUFFIXES = (".jinja", ".json", ".patch", ".tsv", ".txt")
 # Names REUSE skips as license texts (reuse 6.2.0, covered_files.py). Such a
 # file escapes lint, so only these suffixes may carry the name.
 LICENSE_TEXT_NAMES = re.compile(r"^(LICEN[CS]E([-.].*)?|COPYING([-.].*)?)$")

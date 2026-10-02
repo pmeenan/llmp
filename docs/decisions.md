@@ -3220,10 +3220,98 @@ Each of those would have ruled these shapes out.
   path its D-052 or D-036 performance gates.
 - M7 finds that a shape needs a special case in the resource core.
 
-## D-067: Chat templates are rendered by native per-template renderers; template code from a checkpoint never runs in a jitLLM process  (2026-09-23, status: accepted; specializes D-009's untrusted-checkpoint rule and D-043's rendering contract)
+## D-067: Chat templates are rendered by native family renderers first, and otherwise by a bounded, sandboxed Jinja-subset interpreter of the checkpoint's own template  (2026-09-23, status: accepted; amended by the owner on 2026-10-02 (below), which replaces "template code from a checkpoint never runs in a jitLLM process" and "no generic fallback"; specializes D-009's untrusted-checkpoint rule and D-043's rendering contract)
 
-**Decision.** Owner's answer on 2026-09-23, asked while drafting
-architecture.md:
+**Amendment (owner, 2026-10-02).** Any model, quantization or repack a
+user brings gets chat routes when its template can be rendered exactly:
+
+- **Native family renderers first.** A native renderer serves a template
+  when its SHA-256 is one the renderer's golden fixtures pin (as before),
+  or when it is *probe-equivalent*: the interpreter renders the
+  template's own text on the family's probe corpus (23 conversations ×
+  thinking unset/on/off × each reasoning effort the renderer accepts ×
+  `preserve_thinking` off; tools, tool calls and results, reasoning,
+  empty and missing content, Unicode, whitespace, every role order) and
+  the native renderer's text equals it on every probe, or both refuse it
+  (the template raises; the renderer returns `kInvalid`). A probe the
+  native renderer does not implement (`kUnsupported`) is no evidence
+  either way; at least 30 equal renderings are required. Renderers are
+  per family with variant options (Qwen3.8's covers the checkpoint's
+  template and Unsloth's GGUF variant); a variant without fixtures of its
+  own has no pinned hash and is chosen only by probe. Equivalence is
+  evidence on the probe corpus, not a proof for every conversation.
+- **Otherwise the template itself, interpreted.** A bounded, sandboxed
+  interpreter (`src/chat/jinja*`) renders the subset of Jinja2 that chat
+  templates use, with Hugging Face transformers' semantics
+  (`apply_chat_template`: Jinja2's immutable sandbox, `trim_blocks`,
+  `lstrip_blocks`, loop controls, transformers' `tojson`,
+  `raise_exception`, `strftime_now` with the runtime's local time, its
+  `{% generation %}` tag) and llama.cpp's `from_json` filter. It is owned
+  code written from Jinja2's documentation and observed behaviour; no
+  engine's code is incorporated.
+- **What the template may do.** Only the fixed filters, tests, Python
+  string/list/mapping methods and globals that docs/tokenizer.md lists;
+  lists and mappings are immutable, a `namespace` is the only mutable
+  object. No file, network, environment, process, import, include,
+  inheritance or call-block access exists to refuse. A construct, filter,
+  test or method outside the subset refuses the template when it parses
+  (the model then has no chat routes, as before) or the request when it
+  runs; nothing else is approximated. The subset is knowingly narrower
+  than Jinja2 in a few corners no corpus template meets, where it renders
+  differently instead (docs/tokenizer.md lists them: ASCII-only case
+  mapping, generators printed, attributes of numbers).
+- **Bounds** (`chat::jinja::Limits`, each reached as an error, never a
+  truncated rendering): template 1 MiB; 262,144 syntax nodes; tree and
+  block nesting 256; evaluator recursion 512; macro nesting 32; list and
+  mapping nesting 64; 50,000,000 evaluation steps; 2 GiB of bytes built
+  or scanned (every operation charges at least what it costs in time: a
+  comparison, search, text or JSON of a value that holds one string many
+  times for every byte it touches, a search by name for every entry it
+  passes and byte it compares, a scan that builds nothing as scanned);
+  256 MiB held by values at once (and by a loop's copy of what it
+  iterates); 64 MiB per string; 32 MiB of output; ranges of 100,000
+  (Jinja2's sandbox); 64-bit integers. Substring searches are linear in
+  their text and needle; the scan for the control tokens a rendering
+  places is charged to its work. Serving renders twice when it adds a
+  generation prompt, to find its boundary, each rendering under these
+  bounds, so a request costs at most two renderings. Probes run under
+  500,000 steps and 16 MiB of work each, and all of one registration's
+  probes within one rendering's bounds. On spark's GB10 CPU a hostile
+  template is refused within about 6 s (the 2026-10-02 reviews measured
+  a 50,000,000-step loop at about 4.1 s, 2 GiB of the slowest work at
+  3.3 to 4.4 s, and both bounds spent at about 5.7 to 6.1 s); a 1 MiB,
+  3,000-message conversation renders through each of 29 real templates
+  within 1.2 s.
+- **Control tokens.** Every rendered byte carries its provenance: the
+  template's literals and the BOS/EOS texts the runtime supplies are the
+  template's; message content, tools, roles and options from the client
+  are not, through every string operation (concatenation, slicing,
+  strip, replace, join, `tojson`, case mapping) and where a filter takes
+  them as formatting (`tojson`'s indent and separators, `indent`'s
+  width). Numbers and booleans the template computes count as its own,
+  even from client values (a length, a comparison). Only the vocabulary's
+  control tokens wholly inside the template's own text are marked; a
+  control-token text in a message stays text, as with native renderers.
+- **Turn reuse.** An interpreted rendering reports the generation
+  prompt's start (where the rendering without it is a prefix of the one
+  with it, at a control token) and no prefix or message boundaries; reuse
+  stays token-exact. Stop tokens are the control token the template
+  places after an assistant message, plus the tokenizer's EOS.
+- **Refused as before:** request-supplied templates; a template neither a
+  native renderer nor the interpreter accepts.
+
+The chat request and response formats are unchanged; models whose
+templates were refused at registration now register and serve. That is
+an addition within the unreleased 0.x product, so neither the product
+version nor `jitllm-inference-version` changes (D-062); the CHANGELOG
+records it. Evidence: the interpreter equals transformers 5.12.1 (Jinja2
+3.1.6) byte for byte on 133 snippets and on 29 real templates × 19
+conversations (and, in the review, × 200 random ones), and reproduces
+every fixture case of the three pinned templates
+([corpus](experiments/chat-template-corpus/README.md)).
+
+**Original decision (2026-09-23), as amended above.** Owner's answer on
+2026-09-23, asked while drafting architecture.md:
 
 - **One native renderer per supported template.** Each supported chat
   template has a native C++ renderer. The runtime selects it by the SHA-256

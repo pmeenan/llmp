@@ -257,11 +257,13 @@ add_executable(json_test json_test.cc)
 target_link_libraries(json_test PRIVATE jitllm_json jitllm_chat jitllm_base)
 jitllm_gtest(json_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-# The tokenizer and chat fixtures (tests/unit/data), copied into the build
-# tree so that remote runs map them (JITLLM_TEST_DATA).
+# The tokenizer and chat fixtures and the pinned chat templates
+# (tests/unit/data), copied into the build tree so that remote runs map them
+# (JITLLM_TEST_DATA).
 set(tokenizer_data "${CMAKE_CURRENT_BINARY_DIR}/data")
 file(GLOB_RECURSE tokenizer_data_files RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/data"
-     CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/*.json")
+     CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/*.json"
+     "${CMAKE_CURRENT_SOURCE_DIR}/data/*.jinja")
 foreach(file IN LISTS tokenizer_data_files)
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/data/${file}" "${tokenizer_data}/${file}" COPYONLY)
 endforeach()
@@ -279,6 +281,25 @@ target_link_libraries(turn_reuse_test PRIVATE jitllm_runtime jitllm_chat)
 jitllm_gtest(turn_reuse_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 target_link_libraries(chat_test PRIVATE jitllm_chat jitllm_json jitllm_base)
 jitllm_gtest(chat_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+
+# The Jinja-subset interpreter: snippets against transformers' text,
+# provenance, and its bounds under hostile templates.
+add_executable(jinja_test jinja_test.cc)
+target_link_libraries(jinja_test PRIVATE jitllm_chat jitllm_json jitllm_base)
+jitllm_gtest(jinja_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+
+# Choosing a template's renderer (hash, probe, interpreter), interpreted
+# rendering with its marked control tokens; and the real-template corpus
+# against transformers (label `models`: the corpus lives on the Sparks).
+add_executable(chat_template_test chat_template_test.cc)
+target_link_libraries(chat_template_test PRIVATE jitllm_chat jitllm_json jitllm_base)
+jitllm_gtest(chat_template_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+add_executable(chat_corpus_test chat_corpus_test.cc)
+target_link_libraries(chat_corpus_test PRIVATE jitllm_chat jitllm_json jitllm_base)
+jitllm_gtest(chat_corpus_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models"
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 
 # The tokenizer and renderers against the references' token IDs on the real

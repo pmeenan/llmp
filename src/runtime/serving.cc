@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <format>
 #include <print>
@@ -41,6 +42,24 @@
 
 namespace jitllm::runtime {
 namespace {
+
+// strftime_now's clock for an interpreted chat template: local time, as
+// Python's datetime.now() gives it.
+std::optional<chat::jinja::CivilTime> LocalTime() {
+  const std::time_t now = std::time(nullptr);
+  std::tm tm{};
+  if (localtime_r(&now, &tm) == nullptr) {
+    return std::nullopt;
+  }
+  return chat::jinja::CivilTime{.year = tm.tm_year + 1900,
+                                .month = tm.tm_mon + 1,
+                                .day = tm.tm_mday,
+                                .hour = tm.tm_hour,
+                                .minute = tm.tm_min,
+                                .second = tm.tm_sec,
+                                .weekday = tm.tm_wday,
+                                .yearday = tm.tm_yday};
+}
 
 namespace fs = std::filesystem;
 namespace ja = jitllm::artifact;
@@ -232,18 +251,8 @@ class Dsv4 final : public Llm {
     if (!read->has_chat_template) {
       return Error(std::format("{} keeps no chat template, so it has no chat turns", kv));
     }
-    auto found = chat::FindTemplateForText(read->chat_template);
-    if (!found) {
-      return std::unexpected(found.error());
-    }
-    template_ = *found;
-    auto stops = chat::StopTokens(template_->stop, *tokenizer_);
-    if (!stops) {
-      return Error(stops.error().ToString());
-    }
-    stops_.assign(stops->begin(), stops->end());
-    if (tokenizer_->eos() && std::ranges::find(stops_, *tokenizer_->eos()) == stops_.end()) {
-      stops_.push_back(*tokenizer_->eos());
+    if (auto used = UseTemplate(read->chat_template); !used) {
+      return used;
     }
     return runner_.Setup();
   }
@@ -517,18 +526,8 @@ class Qwen38 final : public Llm {
     if (!text) {
       return std::unexpected(text.error());
     }
-    auto found = chat::FindTemplateForText(*text);
-    if (!found) {
-      return std::unexpected(found.error());
-    }
-    template_ = *found;
-    auto stops = chat::StopTokens(template_->stop, *tokenizer_);
-    if (!stops) {
-      return Error(stops.error().ToString());
-    }
-    stops_.assign(stops->begin(), stops->end());
-    if (tokenizer_->eos() && std::ranges::find(stops_, *tokenizer_->eos()) == stops_.end()) {
-      stops_.push_back(*tokenizer_->eos());
+    if (auto used = UseTemplate(*text); !used) {
+      return used;
     }
     if (auto setup = runner_.Setup(); !setup) {
       return setup;
@@ -1215,10 +1214,10 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
   if (stable_boundary != nullptr) {
     *stable_boundary = 0;
   }
-  if (template_ == nullptr) {
-    return Error(std::format("{} has no chat template a native renderer supports (D-067)", name_));
+  if (!template_) {
+    return Error(std::format("{} has no chat template (D-067)", name_));
   }
-  auto rendered = template_->render(conversation);
+  auto rendered = template_->Render(conversation, LocalTime());
   if (!rendered) {
     return Error(rendered.error().ToString());
   }
@@ -1294,6 +1293,30 @@ std::expected<bool, std::string> Llm::Keep(Branch& branch, std::span<const float
   }
   next = verdict->token;
   return verdict->accepted;
+}
+
+Status Llm::UseTemplate(std::string_view text) {
+  auto chosen = chat::ChatTemplate::ForText(text, chat::TokenFacts::From(*tokenizer_));
+  if (!chosen) {
+    return Error(chosen.error());
+  }
+  template_ = std::move(*chosen);
+  auto stops = chat::StopTokens(template_->stop(), *tokenizer_);
+  if (!stops) {
+    return Error(stops.error().ToString());
+  }
+  stops_.assign(stops->begin(), stops->end());
+  if (tokenizer_->eos() && std::ranges::find(stops_, *tokenizer_->eos()) == stops_.end()) {
+    stops_.push_back(*tokenizer_->eos());
+  }
+  if (template_->how() != chat::ChatTemplate::How::kNativeByHash) {
+    std::println(stderr, "{}: chat template {} rendered {} (D-067)", name_,
+                 template_->sha256().substr(0, 12),
+                 template_->how() == chat::ChatTemplate::How::kNativeByProbe
+                     ? std::format("natively by {}, equal on its probe corpus", template_->name())
+                     : std::string("by the sandboxed template interpreter"));
+  }
+  return {};
 }
 
 void Llm::FindThinkTokens() {

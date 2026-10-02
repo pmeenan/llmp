@@ -1,0 +1,3 @@
+SPDX-FileCopyrightText: 2026-present Unsloth (the chat template embedded in unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93, Apache-2.0 by its own notice)
+SPDX-FileCopyrightText: DeepSeek (the format text it ports from encoding_dsv4.py of deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b, MIT)
+SPDX-License-Identifier: Apache-2.0 AND MIT

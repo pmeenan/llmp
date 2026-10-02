@@ -4,9 +4,11 @@
 #include "chat/chat.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -17,15 +19,27 @@
 namespace jitllm::chat {
 namespace {
 
-// The supported templates. Each hash is of the template's exact UTF-8 bytes
-// as the checkpoint ships it (docs/tokenizer.md records where from).
-const std::array<Template, 3> kTemplates = {{
+constexpr auto kDeepSeekEfforts = std::to_array<std::string_view>({"low", "high", "max"});
+constexpr auto kChatV2Efforts = std::to_array<std::string_view>({"high", "unknown"});
+constexpr auto kQwenEfforts = std::to_array<std::string_view>({"xhigh", "medium", "low"});
+constexpr auto kQwenUnslothEfforts =
+    std::to_array<std::string_view>({"xhigh", "high", "medium", "low"});
+
+// The native renderers. Each hash is of the template's exact UTF-8 bytes
+// as the checkpoint ships it, pinned by that template's fixtures
+// (docs/tokenizer.md records where from); a template with another hash may
+// still be recognized by probe equivalence. Unsloth's Qwen3.8 GGUF variant
+// has no pinned hash: probe equivalence alone selects it.
+const std::array<Template, 4> kTemplates = {{
     {"e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645", "deepseek-v4-flash-0731",
-     &RenderDeepSeekV4, StopRules{{"<｜end▁of▁sentence｜>"}}},
+     &RenderDeepSeekV4, StopRules{{"<｜end▁of▁sentence｜>"}}, kDeepSeekEfforts},
     {"872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27",
-     "deepseek-v4-flash-chat-v2", &RenderDeepSeekV4ChatV2, StopRules{{"<｜end▁of▁sentence｜>"}}},
+     "deepseek-v4-flash-chat-v2", &RenderDeepSeekV4ChatV2, StopRules{{"<｜end▁of▁sentence｜>"}},
+     kChatV2Efforts},
     {"c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041", "qwen3.8-flash-next",
-     &RenderQwen38, StopRules{{"<|im_end|>", "<|endoftext|>"}}},
+     &RenderQwen38, StopRules{{"<|im_end|>", "<|endoftext|>"}}, kQwenEfforts},
+    {"", "qwen3.8-flash-next-unsloth", &RenderQwen38Unsloth,
+     StopRules{{"<|im_end|>", "<|endoftext|>"}}, kQwenUnslothEfforts},
 }};
 
 }  // namespace
@@ -50,26 +64,32 @@ std::string Error::ToString() const {
     s += std::to_string(item);
     s += ")";
   }
+  if (template_line != 0) {
+    s += " (template line ";
+    s += std::to_string(template_line);
+    s += ")";
+  }
   return s;
 }
 
 const Template* FindTemplate(std::string_view sha256) {
   for (const Template& t : kTemplates) {
-    if (t.sha256 == sha256) {
+    if (!t.sha256.empty() && t.sha256 == sha256) {
       return &t;
     }
   }
   return nullptr;
 }
 
+std::span<const Template> NativeTemplates() { return kTemplates; }
+
 std::expected<const Template*, std::string> FindTemplateForText(std::string_view template_text) {
   const std::string sha256 = base::ToHex(base::Sha256().Update(template_text).Finish());
   if (const Template* t = FindTemplate(sha256)) {
     return t;
   }
-  return std::unexpected(std::format(
-      "no native renderer has its chat template (SHA-256 {}), so it has no chat turns (D-067)",
-      sha256));
+  return std::unexpected(
+      std::format("no native renderer is pinned to its chat template (SHA-256 {})", sha256));
 }
 
 std::string_view PythonStrip(std::string_view text) {
@@ -124,6 +144,15 @@ std::expected<std::vector<tokenizer::TokenId>, Error> StopTokens(
     ids.push_back(*id);
   }
   return ids;
+}
+
+std::expected<std::vector<tokenizer::TokenId>, Error> StopTokens(
+    const std::vector<std::string>& texts, const tokenizer::Tokenizer& tokenizer) {
+  StopRules rules;
+  for (const std::string& t : texts) {
+    rules.tokens.emplace_back(t);
+  }
+  return StopTokens(rules, tokenizer);
 }
 
 }  // namespace jitllm::chat

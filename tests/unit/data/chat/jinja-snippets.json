@@ -1,0 +1,744 @@
+{
+ "renderer": "transformers 5.12.1 chat-template environment",
+ "now": "2026-10-02T12:34:56",
+ "variables": {
+  "msgs": [
+   {
+    "role": "system",
+    "content": "Be brief."
+   },
+   {
+    "role": "user",
+    "content": "hi"
+   },
+   {
+    "role": "assistant",
+    "content": "Hello!",
+    "reasoning_content": "greet"
+   }
+  ],
+  "d": {
+   "b": 1,
+   "A": 2,
+   "a": 3,
+   "items": "key-items"
+  },
+  "s": "  H\u00e9llo, W\u00f6rld! \u6771\u4eac \ud83d\ude00  ",
+  "n": 42,
+  "f": 2.5,
+  "neg": -7,
+  "t": true,
+  "nothing": null,
+  "nested": {
+   "x": {
+    "y": [
+     1,
+     {
+      "z": "deep"
+     }
+    ]
+   }
+  },
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "get_weather",
+     "description": "Weather <now> & \"later\"",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "city": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "city"
+      ]
+     }
+    }
+   }
+  ],
+  "big": 123456789012345678901234567890,
+  "fl": [
+   1.0,
+   1e+16,
+   1e-05,
+   0.1,
+   -0.0,
+   3.14159
+  ],
+  "uni": "\u00e9\u00a0\u2028\u0085\u0001'\"\\"
+ },
+ "snippets": [
+  {
+   "name": "print-constants",
+   "template": "{{ none }}|{{ None }}|{{ true }}|{{ False }}|{{ 1 }}|{{ 1.0 }}|{{ -0.0 }}|{{ 1e20 }}|{{ 1_000 }}",
+   "text": "None|None|True|False|1|1.0|-0.0|1e+20|1000"
+  },
+  {
+   "name": "print-containers",
+   "template": "{{ [1,'a',none,true,1.0,{'k':'v'}] }}|{{ ('a',) }}|{{ () }}|{{ {'a':\"it's\"} }}|{{ msgs[0] }}",
+   "text": "[1, 'a', None, True, 1.0, {'k': 'v'}]|('a',)|()|{'a': \"it's\"}|{'role': 'system', 'content': 'Be brief.'}"
+  },
+  {
+   "name": "print-unicode-repr",
+   "template": "{{ [uni] }}|{{ uni }}",
+   "text": "['\u00e9\\xa0\\u2028\\x85\\x01\\'\"\\\\']|\u00e9\u00a0\u2028\u0085\u0001'\"\\"
+  },
+  {
+   "name": "string-escapes",
+   "template": "{{ 'a\\nb\\tc\\u00e9\\x41\\101\\U0001F600\\q\\\\' }}|{{ \"q'\" }}|{{ 'a' 'b' \"c\" }}",
+   "text": "a\nb\tc\u00e9AA\ud83d\ude00\\q\\|q'|abc"
+  },
+  {
+   "name": "trailing-newline",
+   "template": "{{ 'a' }}\n",
+   "text": "a"
+  },
+  {
+   "name": "trailing-newlines",
+   "template": "{{ 'a' }}\n\n",
+   "text": "a\n"
+  },
+  {
+   "name": "crlf",
+   "template": "a\r\nb\rc{% if true %}\r\n{{ 'x' }}{% endif %}\r\n",
+   "text": "a\nb\ncx"
+  },
+  {
+   "name": "lstrip-trim",
+   "template": "  {% if true %}\n  x\n  {% endif %}\n  {# c #}\n  y\n",
+   "text": "  x\n  y"
+  },
+  {
+   "name": "lstrip-not-variable",
+   "template": "  {{ 'v' }}\n  {% if true %}t{% endif %}  \n",
+   "text": "  v\nt  "
+  },
+  {
+   "name": "lstrip-plus",
+   "template": "  {%+ if true %}a{% endif %}\n",
+   "text": "  a"
+  },
+  {
+   "name": "trim-plus",
+   "template": "{% if true +%}\na{% endif %}",
+   "text": "\na"
+  },
+  {
+   "name": "minus-control",
+   "template": "{%- if true -%}  a  {%- endif -%}  b {{- ' c ' -}} d\n {#- x -#} e",
+   "text": "ab c de"
+  },
+  {
+   "name": "minus-unicode-space",
+   "template": "a\u3000{%- if true %}b{% endif %}",
+   "text": "ab"
+  },
+  {
+   "name": "comment-trim",
+   "template": "a\n{# comment #}\nb",
+   "text": "a\nb"
+  },
+  {
+   "name": "raw-block",
+   "template": "{% raw %}{{ not evaluated }}{% endraw %}|{%- raw -%}  x  {%- endraw -%}|",
+   "text": "{{ not evaluated }}|x|"
+  },
+  {
+   "name": "text-only",
+   "template": "plain text, no tags\nsecond line",
+   "text": "plain text, no tags\nsecond line"
+  },
+  {
+   "name": "lstrip-after-text-no-newline",
+   "template": "x  {% if true %}y{% endif %}",
+   "text": "x  y"
+  },
+  {
+   "name": "block-at-start-indented",
+   "template": "    {% set a = 1 %}{{ a }}",
+   "text": "1"
+  },
+  {
+   "name": "multiline-tag",
+   "template": "{%\n  set a = [\n 1,\n 2,\n ]\n%}{{ a }}",
+   "text": "[1, 2]"
+  },
+  {
+   "name": "arithmetic",
+   "template": "{{ 3/2 }} {{ 4/2 }} {{ 7//2 }} {{ -7//2 }} {{ 7%3 }} {{ -7%3 }} {{ 2**10 }} {{ 0.1+0.2 }} {{ true + 1 }} {{ 7.5//2 }} {{ -7.5%2 }} {{ 2**-1 }}",
+   "text": "1.5 2.0 3 -4 1 2 1024 0.30000000000000004 2 3.0 0.5 0.5"
+  },
+  {
+   "name": "precedence",
+   "template": "{{ - 2 ** 2 }} {{ 2 ** 3 ** 2 }} {{ 1 + 2 * 3 }} {{ (1 + 2) * 3 }} {{ -1|abs }} {{ not 1 == 2 }} {{ 1 ~ (2 + 3) }} {{ 1 + 2 ~ 3 }}",
+   "error": "TypeError: unsupported operand type(s) for +: 'int' and 'str'"
+  },
+  {
+   "name": "precedence-concat-plus",
+   "template": "{{ 1 ~ 2 + 3 }}",
+   "error": "TypeError: can only concatenate str (not \"int\") to str"
+  },
+  {
+   "name": "logic",
+   "template": "{{ 1 and 'x' }} {{ 0 or 'y' }} {{ none or [] }} {{ 'a' and none }} {{ not '' }} {{ 1 < 2 < 3 }} {{ 3 > 2 > 2 }}",
+   "text": "x y [] None True True False"
+  },
+  {
+   "name": "comparisons",
+   "template": "{{ 1 == 1.0 }} {{ true == 1 }} {{ 1 in [true] }} {{ 'a' in 'cat' }} {{ 'k' in {'k':1} }} {{ x in [] }} {{ 'a' < 'b' }} {{ [1,2] < [1,3] }} {{ (1,2) == [1,2] }} {{ none == none }} {{ x == y }} {{ 'a' not in 'b' }}",
+   "text": "True True True True True False True True False True True True"
+  },
+  {
+   "name": "concat",
+   "template": "{{ [1,2] + [3] }} {{ 'ab' * 3 }} {{ 3 * 'ab' }} {{ [0] * 2 }} {{ 'a' ~ 1 ~ none ~ true ~ x }} {{ 'x' * 0 }} {{ 'x' * -1 }}",
+   "text": "[1, 2, 3] ababab ababab [0, 0] a1NoneTrue  "
+  },
+  {
+   "name": "ternary",
+   "template": "{{ 'x' if false }}|{{ ('x' if false) is defined }}|{{ 'a' if true else 'b' }}|{{ 'a' if false else 'b' if true else 'c' }}",
+   "text": "|False|a|b"
+  },
+  {
+   "name": "string-format-op",
+   "template": "{{ '%s and %d' % ('a', 3) }}|{{ '%s' % 'x' }}|{{ '100%%' % () }}",
+   "text": "a and 3|x|100%"
+  },
+  {
+   "name": "format-filter",
+   "template": "{{ '%s and %s'|format('a', 1) }} {{ '%d'|format(3) }} {{ '%s'|format({'a': 'b'}) }}",
+   "text": "a and 1 3 {'a': 'b'}"
+  },
+  {
+   "name": "attr-item",
+   "template": "{{ msgs[1].content }} {{ msgs[1]['content'] }} {{ nested.x.y[1].z }} {{ nested['x']['y'][0] }} {{ msgs[-1].role }} {{ msgs[9] is defined }}",
+   "text": "hi hi deep 1 assistant False"
+  },
+  {
+   "name": "attr-missing",
+   "template": "{{ msgs[0].nope is defined }} {{ nothing.attr is defined }}",
+   "text": "False False"
+  },
+  {
+   "name": "undefined-chain",
+   "template": "{{ x.y.z }}",
+   "error": "UndefinedError: 'x' is undefined"
+  },
+  {
+   "name": "undefined-item",
+   "template": "{{ x[0] }}",
+   "error": "UndefinedError: 'x' is undefined"
+  },
+  {
+   "name": "undefined-call",
+   "template": "{{ x() }}",
+   "error": "UndefinedError: 'x' is undefined"
+  },
+  {
+   "name": "dict-method-shadow",
+   "template": "{{ d['items'] }} {{ d.items is defined }} {{ d.get('a') }} {{ d.get('zz') }} {{ d.get('zz', 9) }}",
+   "text": "key-items True 3 None 9"
+  },
+  {
+   "name": "dict-methods",
+   "template": "{{ d.keys()|list }} {{ d.values()|list }} {{ d.items()|list }}",
+   "text": "['b', 'A', 'a', 'items'] [1, 2, 3, 'key-items'] [('b', 1), ('A', 2), ('a', 3), ('items', 'key-items')]"
+  },
+  {
+   "name": "slices",
+   "template": "{{ 'abc'[::-1] }} {{ 'h\u00e9llo'[1] }} {{ 'h\u00e9llo'[1:3] }} {{ [1,2,3][-1] }} {{ [1,2,3][:-1] }} {{ 'abc'[10:] }} {{ [1,2,3,4,5][::2] }} {{ [1,2,3,4,5][4:1:-1] }} {{ 'abc'[-10:2] }} {{ (1,2,3)[1:] }} {{ s[2:7] }}",
+   "text": "cba \u00e9 \u00e9l 3 [1, 2]  [1, 3, 5] [5, 4, 3] ab (2, 3) H\u00e9llo"
+  },
+  {
+   "name": "index-strings",
+   "template": "{{ 'h\u00e9llo'|length }} {{ s|length }} {{ s[2] }} {{ 'abc'[-1] }} {{ 'abc'[5] is defined }}",
+   "text": "5 22 H c False"
+  },
+  {
+   "name": "loop-scope",
+   "template": "{% for x in [1,2,3] %}{% if loop.first %}{% set a = 'A' %}{% endif %}[{{ a }}]{% endfor %}|{{ a }}",
+   "text": "[A][][]|"
+  },
+  {
+   "name": "if-scope",
+   "template": "{% if true %}{% set b = 2 %}{% endif %}{{ b }}",
+   "text": "2"
+  },
+  {
+   "name": "macro-late-binding",
+   "template": "{% macro m() %}{{ v }}{% endmacro %}{% set v = 1 %}{{ m() }}{% set v = 2 %}{{ m() }}",
+   "text": "12"
+  },
+  {
+   "name": "macro-in-loop",
+   "template": "{% for x in [1] %}{% set v = 5 %}{% macro m2() %}{{ v }}{% endmacro %}{{ m2() }}{% endfor %}",
+   "text": "5"
+  },
+  {
+   "name": "macro-args",
+   "template": "{% macro f(a, b=2) %}{{ a }}-{{ b }}{% endmacro %}{{ f(1) }} {{ f(1, b=3) }} {{ f(b=4, a=0) }} {{ f() }}",
+   "text": "1-2 1-3 0-4 -2"
+  },
+  {
+   "name": "macro-varargs",
+   "template": "{% macro f(a) %}{{ a }}{{ varargs }}{{ kwargs }}{% endmacro %}{{ f(1, 2, 3, k='v') }}",
+   "text": "1(2, 3){'k': 'v'}"
+  },
+  {
+   "name": "macro-too-many",
+   "template": "{% macro f(a) %}{{ a }}{% endmacro %}{{ f(1, 2) }}",
+   "error": "TypeError: macro 'f' takes not more than 1 argument(s)"
+  },
+  {
+   "name": "macro-default-uses-earlier",
+   "template": "{% macro f(a, b=a~'!') %}{{ b }}{% endmacro %}{{ f('x') }}",
+   "text": "x!"
+  },
+  {
+   "name": "macro-recursion",
+   "template": "{% macro r(n) %}{{ n }}{% if n > 0 %}{{ r(n - 1) }}{% endif %}{% endmacro %}{{ r(5) }}",
+   "text": "543210"
+  },
+  {
+   "name": "macro-returns-string",
+   "template": "{% macro m() %} x {% endmacro %}[{{ m()|trim }}]{{ m() is string }}",
+   "text": "[x]True"
+  },
+  {
+   "name": "namespace",
+   "template": "{% set ns = namespace(a=1, b='x') %}{% for i in range(3) %}{% set ns.a = ns.a + i %}{% endfor %}{{ ns.a }} {{ ns['a'] }} {{ ns.b }} {{ ns.c is defined }}",
+   "text": "4 4 x False"
+  },
+  {
+   "name": "namespace-from-dict",
+   "template": "{% set ns = namespace({'a': 1}, b=2) %}{{ ns.a }}{{ ns.b }}",
+   "text": "12"
+  },
+  {
+   "name": "set-on-non-namespace",
+   "template": "{% set d.x = 1 %}",
+   "error": "TemplateRuntimeError: cannot assign attribute on non-namespace object"
+  },
+  {
+   "name": "set-tuple",
+   "template": "{% set a, b = 1, 2 %}{{ a }}{{ b }}{% set (c, e) = ['x', 'y'] %}{{ c }}{{ e }}",
+   "text": "12xy"
+  },
+  {
+   "name": "set-block",
+   "template": "{% set x %}  inner {{ 1 }} {% endset %}[{{ x }}]{% set y | trim | upper %} yy {% endset %}[{{ y }}]",
+   "text": "[  inner 1 ][YY]"
+  },
+  {
+   "name": "for-items",
+   "template": "{% for k, v in {'a':1,'b':2}|items %}{{ k }}={{ v }};{% endfor %}{% for a in [] %}x{% else %}empty{% endfor %}",
+   "text": "a=1;b=2;empty"
+  },
+  {
+   "name": "for-filter",
+   "template": "{% for x in [1,2,3] if x > 1 %}{{ loop.index }}/{{ loop.length }}{{ loop.previtem }}{% endfor %}",
+   "text": "1/22/22"
+  },
+  {
+   "name": "for-loop-vars",
+   "template": "{% for x in 'abc' %}{{ loop.index0 }}{{ loop.revindex }}{{ loop.revindex0 }}{{ loop.first }}{{ loop.last }}{{ loop.nextitem }}{{ loop.cycle('o','e') }}{{ loop.depth }};{% endfor %}",
+   "text": "032TrueFalsebo1;121FalseFalsece1;210FalseTrueo1;"
+  },
+  {
+   "name": "for-dict",
+   "template": "{% for k in d %}{{ k }},{% endfor %}",
+   "text": "b,A,a,items,"
+  },
+  {
+   "name": "for-nested-loop",
+   "template": "{% for a in [1,2] %}{% for b in [3,4] %}{{ loop.index }}{{ a }}{{ b }} {% endfor %}{{ loop.index }}|{% endfor %}",
+   "text": "113 214 1|123 224 2|"
+  },
+  {
+   "name": "for-break-continue",
+   "template": "{% for i in range(5) %}{% if i == 1 %}{% continue %}{% endif %}{% if i == 3 %}{% break %}{% endif %}{{ i }}{% endfor %}",
+   "text": "02"
+  },
+  {
+   "name": "for-unpack",
+   "template": "{% for a, b in [[1,2],[3,4]] %}{{ a + b }}{% endfor %}",
+   "text": "37"
+  },
+  {
+   "name": "for-unpack-wrong",
+   "template": "{% for a, b in [[1,2,3]] %}{{ a }}{% endfor %}",
+   "error": "ValueError: too many values to unpack (expected 2)"
+  },
+  {
+   "name": "for-over-none",
+   "template": "{% for a in nothing %}{{ a }}{% endfor %}",
+   "error": "TypeError: 'NoneType' object is not iterable"
+  },
+  {
+   "name": "for-over-int",
+   "template": "{% for a in n %}{{ a }}{% endfor %}",
+   "error": "TypeError: 'int' object is not iterable"
+  },
+  {
+   "name": "loop-outside",
+   "template": "{{ loop }}|{{ loop is defined }}",
+   "text": "|False"
+  },
+  {
+   "name": "elif-chain",
+   "template": "{% for v in [0, 1, 2, 3] %}{% if v == 0 %}zero{% elif v == 1 %}one{% elif v == 2 %}two{% else %}many{% endif %} {% endfor %}",
+   "text": "zero one two many "
+  },
+  {
+   "name": "generation-tag",
+   "template": "{%- generation -%} gen {%- endgeneration -%}|{% generation %}x{% endgeneration %}",
+   "text": "gen|x"
+  },
+  {
+   "name": "raise",
+   "template": "{{ raise_exception('boom') }}",
+   "error": "TemplateError: boom"
+  },
+  {
+   "name": "raise-in-branch",
+   "template": "{% if msgs|length > 2 %}{{ raise_exception('too many') }}{% endif %}ok",
+   "error": "TemplateError: too many"
+  },
+  {
+   "name": "strftime",
+   "template": "{{ strftime_now('%d %b %Y') }}|{{ strftime_now('%Y-%m-%d %H:%M:%S %A %a %B %j %p %I %y') }}|{{ strftime_now('%-d %-m') }}",
+   "text": "02 Oct 2026|2026-10-02 12:34:56 Friday Fri October 275 PM 12 26|2 10"
+  },
+  {
+   "name": "range",
+   "template": "{{ range(3)|list }} {{ range(1,7,2)|list }} {{ range(5)|length }} {{ range(5, 0, -2)|list }} {{ range(0)|list }}",
+   "text": "[0, 1, 2] [1, 3, 5] 5 [5, 3, 1] []"
+  },
+  {
+   "name": "range-too-big",
+   "template": "{{ range(1000000)|length }}",
+   "error": "OverflowError: Range too big. The sandbox blocks ranges larger than MAX_RANGE (100000)."
+  },
+  {
+   "name": "dict-global",
+   "template": "{{ dict(a=1, b='x') }}",
+   "text": "{'a': 1, 'b': 'x'}"
+  },
+  {
+   "name": "filter-strings",
+   "template": "{{ ' x '|trim }}|{{ 'xxhixx'|trim('x') }}|{{ 'Hello World'|upper }}|{{ 'hello world'|title }}|{{ 'hELLO'|capitalize }}|{{ 'ABC'|lower }}|{{ s|trim }}",
+   "text": "x|hi|HELLO WORLD|Hello World|Hello|abc|H\u00e9llo, W\u00f6rld! \u6771\u4eac \ud83d\ude00"
+  },
+  {
+   "name": "filter-default",
+   "template": "{{ x|default('d') }} {{ ''|default('d') }} {{ ''|default('d', true) }} {{ none|default('d') }} {{ x|d('dd') }} {{ x|default }}|",
+   "text": "d  d None dd |"
+  },
+  {
+   "name": "filter-numbers",
+   "template": "{{ 5|string + 'x' }} {{ 2.0|int }} {{ '3'|int + 1 }} {{ 'x'|int }} {{ '2.5'|float }} {{ 2.567|round(1) }} {{ -3|abs }} {{ ' 12 '|int }} {{ '1_0'|int }} {{ '2.9'|int }} {{ 2.5|round }} {{ 3.5|round }} {{ 2.4|round(0, 'ceil') }} {{ 'x'|float }} {{ n|float }}",
+   "text": "5x 2 4 0 2.5 2.6 3 12 10 2 2.0 4.0 3.0 0.0 42.0"
+  },
+  {
+   "name": "filter-first-last",
+   "template": "{{ [1,2,3]|first }} {{ [1,2,3]|last }} {{ 'abc'|first }} {{ []|first is defined }} {{ [1,2]|reverse|list }} {{ 'abc'|reverse }} {{ 'abc'|last }}",
+   "text": "1 3 a False [2, 1] cba c"
+  },
+  {
+   "name": "filter-select",
+   "template": "{{ [{'a':1},{'a':2},{'b':3}]|selectattr('a','defined')|list }} {{ [{'r':'s'},{'r':'u'}]|rejectattr('r','equalto','s')|list }} {{ [{'n':'x'}]|map(attribute='n')|join(',') }} {{ [1,2,3,4]|select('odd')|list }} {{ [1,2,3,4]|reject('even')|list }} {{ [0,1,'',none]|select|list }} {{ msgs|selectattr('role', 'eq', 'user')|map(attribute='content')|first }}",
+   "text": "[{'a': 1}, {'a': 2}] [{'r': 'u'}] x [1, 3] [1, 3] [1] hi"
+  },
+  {
+   "name": "filter-map",
+   "template": "{{ ['a','B']|map('upper')|list }} {{ [1,2]|map('string')|list }} {{ msgs|map(attribute='role')|list }} {{ [{'a':1},{}]|map(attribute='a', default=0)|list }} {{ nested.x.y|map(attribute='z', default='-')|list }}",
+   "text": "['A', 'B'] ['1', '2'] ['system', 'user', 'assistant'] [1, 0] ['-', 'deep']"
+  },
+  {
+   "name": "filter-sort",
+   "template": "{{ [3,1,2]|sort }} {{ {'b':1,'A':2,'a':3}|dictsort }} {{ ['b','A','a']|sort }} {{ ['b','A','a']|sort(case_sensitive=true) }} {{ [3,1]|sort(reverse=true) }} {{ msgs|sort(attribute='role')|map(attribute='role')|list }} {{ {'b':1,'a':2}|dictsort(by='value') }} {{ {'b':1,'a':2}|dictsort(reverse=true) }}",
+   "text": "[1, 2, 3] [('A', 2), ('a', 3), ('b', 1)] ['A', 'a', 'b'] ['A', 'a', 'b'] [3, 1] ['assistant', 'system', 'user'] [('b', 1), ('a', 2)] [('b', 1), ('a', 2)]"
+  },
+  {
+   "name": "filter-tojson",
+   "template": "{{ {'a':[1,2.5,'\u00e9',none]}|tojson }} {{ {'a':1}|tojson(indent=2) }} {{ '\u00e9'|tojson(ensure_ascii=True) }} {{ {'a':1,'b':[]}|tojson(separators=(',',':')) }} {{ {'b':1,'a':2}|tojson(sort_keys=true) }} {{ '\ud83d\ude00'|tojson(true) }}",
+   "text": "{\"a\": [1, 2.5, \"\u00e9\", null]} {\n  \"a\": 1\n} \"\\u00e9\" {\"a\":1,\"b\":[]} {\"a\": 2, \"b\": 1} \"\\ud83d\\ude00\""
+  },
+  {
+   "name": "filter-tojson-values",
+   "template": "{{ [1,[2,[3]]]|tojson }} {{ none|tojson }} {{ true|tojson }} {{ 'a\"b\\\\\\n\\x01\\x7f'|tojson }} {{ 1.0|tojson }} {{ fl|tojson }} {{ big|tojson }} {{ tools|tojson }} {{ tools[0]|tojson(indent=4) }}",
+   "text": "[1, [2, [3]]] null true \"a\\\"b\\\\\\n\\u0001\u007f\" 1.0 [1.0, 1e+16, 1e-05, 0.1, -0.0, 3.14159] 123456789012345678901234567890 [{\"type\": \"function\", \"function\": {\"name\": \"get_weather\", \"description\": \"Weather <now> & \\\"later\\\"\", \"parameters\": {\"type\": \"object\", \"properties\": {\"city\": {\"type\": \"string\"}}, \"required\": [\"city\"]}}}] {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Weather <now> & \\\"later\\\"\",\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"city\": {\n                    \"type\": \"string\"\n                }\n            },\n            \"required\": [\n                \"city\"\n            ]\n        }\n    }\n}"
+  },
+  {
+   "name": "filter-tojson-empty",
+   "template": "{{ {}|tojson(indent=2) }}|{{ []|tojson(indent=2) }}|{{ {'a':{}}|tojson(indent=1) }}|{{ [[]]|tojson(indent='\\t') }}|{{ {'a': [1]}|tojson(indent=0) }}",
+   "text": "{}|[]|{\n \"a\": {}\n}|[\n\t[]\n]|{\n\"a\": [\n1\n]\n}"
+  },
+  {
+   "name": "filter-tojson-undefined",
+   "template": "{{ x|tojson }}",
+   "error": "TypeError: Object of type Undefined is not JSON serializable"
+  },
+  {
+   "name": "filter-length",
+   "template": "{{ [1,2,3]|length }} {{ {'a':1}|length }} {{ x|length }} {{ '\u00e9'|count }} {{ ''|length }}",
+   "text": "3 1 0 1 0"
+  },
+  {
+   "name": "filter-length-none",
+   "template": "{{ nothing|length }}",
+   "error": "TypeError: object of type 'NoneType' has no len()"
+  },
+  {
+   "name": "filter-join",
+   "template": "{{ ['a','b']|join }} {{ [1,2]|join('-') }} {{ ['a', none]|join(',') }} {{ msgs|join(', ', attribute='role') }}",
+   "text": "ab 1-2 a,None system, user, assistant"
+  },
+  {
+   "name": "filter-items",
+   "template": "{{ d|items|list }} {{ x|items|list }}",
+   "text": "[('b', 1), ('A', 2), ('a', 3), ('items', 'key-items')] []"
+  },
+  {
+   "name": "filter-items-list",
+   "template": "{{ [1]|items|list }}",
+   "error": "TypeError: Can only get item pairs from a mapping."
+  },
+  {
+   "name": "filter-unique-min-max-sum",
+   "template": "{{ [1,2,1]|unique|list }} {{ ['a','A','b']|unique|list }} {{ [1,5,3]|max }} {{ [1,5,3]|min }} {{ [1,2]|sum }} {{ [{'v':2},{'v':3}]|sum(attribute='v') }} {{ []|max is defined }} {{ ['b','A']|min }}",
+   "text": "[1, 2] ['a', 'b'] 5 1 3 5 False A"
+  },
+  {
+   "name": "filter-list",
+   "template": "{{ 'ab'|list }} {{ d|list }} {{ x|list }} {{ (1,2)|list }}",
+   "text": "['a', 'b'] ['b', 'A', 'a', 'items'] [] [1, 2]"
+  },
+  {
+   "name": "filter-replace",
+   "template": "{{ 'aaa'|replace('a','b') }} {{ 'aaa'|replace('a','b', 2) }} {{ 'abc'|replace('','-') }} {{ ('x'|safe)|replace('x','<') }} {{ s|replace(' ', '') }}",
+   "text": "bbb bba -a-b-c- < H\u00e9llo,W\u00f6rld!\u6771\u4eac\ud83d\ude00"
+  },
+  {
+   "name": "filter-indent",
+   "template": "{{ 'x'|indent(2) }}|{{ 'a\\nb\\n\\nc'|indent(2) }}|{{ 'a\\nb'|indent(2, true) }}|{{ 'a\\n\\nb'|indent(2, blank=true) }}|{{ 'a\\nb'|indent('> ') }}",
+   "text": "x|a\n  b\n\n  c|  a\n  b|a\n  \n  b|a\n> b"
+  },
+  {
+   "name": "filter-safe-escape",
+   "template": "{{ 'a<' + ('<b>'|safe) }}|{{ ('<b>'|safe) + '<' }}|{{ ('<b>'|safe) ~ '<' }}|{{ ['<',('<'|safe)]|join }}|{{ '<&>\"\\''|e }}|{{ ('<'|safe) is escaped }}|{{ ('x'|safe)|trim is escaped }}|{{ (('a'|safe) + '&') ~ 'b' }}",
+   "text": "a&lt;<b>|<b>&lt;|<b><|<<|&lt;&amp;&gt;&#34;&#39;|True|True|a&amp;b"
+  },
+  {
+   "name": "filter-string",
+   "template": "{{ none|string }} {{ [1]|string }} {{ 1.5|string }} {{ (1, 'a')|string }}",
+   "text": "None [1] 1.5 (1, 'a')"
+  },
+  {
+   "name": "filter-unknown",
+   "template": "{{ 'x'|wordcount }}",
+   "text": "1",
+   "jitllm": "unsupported"
+  },
+  {
+   "name": "test-unknown",
+   "template": "{{ 'x' is truthy }}",
+   "error": "TemplateAssertionError: No test named 'truthy'.",
+   "jitllm": "unsupported"
+  },
+  {
+   "name": "tests-types",
+   "template": "{{ 'abc' is string }} {{ 1 is number }} {{ true is number }} {{ true is integer }} {{ {} is mapping }} {{ 'a' is sequence }} {{ {} is sequence }} {{ 'a' is iterable }} {{ 1 is iterable }} {{ none is none }} {{ x is undefined }} {{ 1 is boolean }} {{ false is false }} {{ 1.0 is float }} {{ 1 is float }} {{ big is integer }} {{ x is iterable }} {{ x is sequence }}",
+   "text": "True True True False True True True True False True True False True True False True True True"
+  },
+  {
+   "name": "tests-values",
+   "template": "{{ 2 is even }} {{ 3 is odd }} {{ 9 is divisibleby 3 }} {{ 9 is divisibleby(2) }} {{ 1 is eq 1 }} {{ 'a' is in 'abc' }} {{ 1 is sameas 1 }} {{ 'a' is lower }} {{ 'A' is upper }} {{ 2 is gt 1 }} {{ 2 is lessthan 1 }} {{ 1 is ne 2 }} {{ 1 is ge 1 }} {{ 1 is le 0 }} {{ x is not defined }} {{ msgs is not string }} {{ (x is defined) and x }}",
+   "text": "True True True False True True True True True True False True True False True True False"
+  },
+  {
+   "name": "tests-callable",
+   "template": "{% macro m() %}{% endmacro %}{{ m is callable }} {{ 'a'.upper is callable }} {{ 1 is callable }}",
+   "text": "True True False"
+  },
+  {
+   "name": "test-none-arg",
+   "template": "{{ x is none if true else 'n' }}",
+   "error": "TemplateSyntaxError: expected token 'end of print statement', got 'true'"
+  },
+  {
+   "name": "methods",
+   "template": "{{ 'A-b'.lower() }} {{ 'ab'.startswith(('x','a')) }} {{ 'abc'.replace('b','B') }} {{ ' x'.lstrip() }} {{ 'a.b.c'.split('.', 1) }} {{ 'abc'.endswith('c') }} {{ 'a b '.rstrip() }} {{ 'xxaxx'.strip('x') }} {{ 'abc'.upper() }} {{ 'a,b'.rsplit(',', 1) }} {{ 'ab'.find('b') }} {{ 'ab'.rfind('z') }} {{ 'aXbXc'.count('X') }} {{ '-'.join(['a','b']) }} {{ 'hello world'.title() }} {{ 'abc'.capitalize() }}",
+   "text": "a-b True aBc x ['a', 'b.c'] True a b a ABC ['a', 'b'] 1 -1 2 a-b Hello World Abc"
+  },
+  {
+   "name": "methods-split",
+   "template": "{{ 'a,b,,c'.split(',') }} {{ ' a  b '.split() }} {{ ' a b c '.split(none, 1) }} {{ ' a b c '.rsplit(none, 1) }} {{ 'a\\nb\\r\\nc'.splitlines() }} {{ s.split() }} {{ ''.split() }} {{ ''.split(',') }}",
+   "text": "['a', 'b', '', 'c'] ['a', 'b'] ['a', 'b c '] [' a b', 'c'] ['a', 'b', 'c'] ['H\u00e9llo,', 'W\u00f6rld!', '\u6771\u4eac', '\ud83d\ude00'] [] ['']"
+  },
+  {
+   "name": "methods-split-empty-sep",
+   "template": "{{ 'abc'.split('') }}",
+   "error": "ValueError: empty separator"
+  },
+  {
+   "name": "methods-prefix",
+   "template": "{{ 'prefix-x'.removeprefix('prefix-') }} {{ 'x.txt'.removesuffix('.txt') }} {{ 'x'.removesuffix('') }}",
+   "text": "x x x"
+  },
+  {
+   "name": "methods-unicode-strip",
+   "template": "[{{ '\u3000x\u00a0'.strip() }}][{{ '\u200bx'.strip() }}]",
+   "text": "[x][\u200bx]"
+  },
+  {
+   "name": "method-mutating",
+   "template": "{{ msgs.append(1) }}",
+   "error": "SecurityError: access to attribute 'append' of 'list' object is unsafe."
+  },
+  {
+   "name": "method-dict-update",
+   "template": "{{ d.update({'a': 1}) }}",
+   "error": "SecurityError: access to attribute 'update' of 'dict' object is unsafe."
+  },
+  {
+   "name": "list-methods",
+   "template": "{{ [1,2,1].count(1) }} {{ [1,2].index(2) }}",
+   "text": "2 1"
+  },
+  {
+   "name": "client-values",
+   "template": "{{ s }}|{{ n }}|{{ f }}|{{ neg }}|{{ t }}|{{ nothing }}|{{ big }}|{{ fl }}|{{ uni }}",
+   "text": "  H\u00e9llo, W\u00f6rld! \u6771\u4eac \ud83d\ude00  |42|2.5|-7|True|None|123456789012345678901234567890|[1.0, 1e+16, 1e-05, 0.1, -0.0, 3.14159]|\u00e9\u00a0\u2028\u0085\u0001'\"\\"
+  },
+  {
+   "name": "message-loop",
+   "template": "{%- for m in msgs %}<|{{ m.role }}|>{{ m['content'] }}{% if m.reasoning_content is defined %}[{{ m.reasoning_content }}]{% endif %}\n{%- endfor %}",
+   "text": "<|system|>Be brief.<|user|>hi<|assistant|>Hello![greet]"
+  },
+  {
+   "name": "tools-loop",
+   "template": "{%- for t in tools %}{{ t.function.name }}: {{ t.function.parameters.properties|tojson }} {{ t.function.parameters.required|join(',') }}{% endfor %}",
+   "text": "get_weather: {\"city\": {\"type\": \"string\"}} city"
+  },
+  {
+   "name": "nested-dict-iter",
+   "template": "{% for k, v in nested.x|dictsort %}{{ k }}={{ v }}{% endfor %}",
+   "text": "y=[1, {'z': 'deep'}]"
+  },
+  {
+   "name": "is-mapping-content",
+   "template": "{% for m in msgs %}{% if m.content is string %}s{% elif m.content is mapping %}m{% else %}o{% endif %}{% endfor %}",
+   "text": "sss"
+  },
+  {
+   "name": "unsupported-include",
+   "template": "{% include 'x' %}",
+   "error": "TypeError: no loader for this environment specified",
+   "jitllm": "unsupported"
+  },
+  {
+   "name": "unsupported-call-block",
+   "template": "{% call foo() %}x{% endcall %}",
+   "error": "UndefinedError: 'foo' is undefined",
+   "jitllm": "unsupported"
+  },
+  {
+   "name": "syntax-unclosed",
+   "template": "{% if true %}x",
+   "error": "TemplateSyntaxError: Unexpected end of template. Jinja was looking for the following tags: 'elif' or 'else' or 'endif'. The innermost block that needs to be closed is 'if'."
+  },
+  {
+   "name": "syntax-bad-expr",
+   "template": "{{ 1 + }}",
+   "error": "TemplateSyntaxError: unexpected 'end of print statement'"
+  },
+  {
+   "name": "syntax-endfor-alone",
+   "template": "{% endfor %}",
+   "error": "TemplateSyntaxError: Encountered unknown tag 'endfor'."
+  },
+  {
+   "name": "break-outside-loop",
+   "template": "{% break %}",
+   "error": "SyntaxError: 'break' outside loop (<template>, line 11)"
+  },
+  {
+   "name": "review-round",
+   "template": "{{ 2.675|round(2) }}|{{ 0.125|round(2) }}|{{ 3|round }}|{{ 15|round(-1) }}|{{ 25|round(-1) }}|{{ -15|round(-1) }}|{{ 2.5|round }}|{{ 1234.5678|round(-2) }}|{{ 7|round(1, 'ceil') }}|{{ -0.4|round }}",
+   "text": "2.67|0.12|3|20|20|-20|2.0|1200.0|7.0|-0.0"
+  },
+  {
+   "name": "review-sum-strings",
+   "template": "{{ ['a', 'b']|sum(start='') }}",
+   "error": "TypeError: sum() can't sum strings [use ''.join(seq) instead]"
+  },
+  {
+   "name": "review-undefined-repr",
+   "template": "{{ [nope, 1] }}|{{ nope }}",
+   "text": "[Undefined, 1]|"
+  },
+  {
+   "name": "review-tojson-indent",
+   "template": "{{ {'a': [1, {'b': 2}]}|tojson(indent=70) }}|{{ [1, [2]]|tojson(indent=-1) }}|{{ {'k': [1, 2]}|tojson(separators=(';', '=')) }}",
+   "text": "{\n                                                                      \"a\": [\n                                                                                                                                            1,\n                                                                                                                                            {\n                                                                                                                                                                                                                  \"b\": 2\n                                                                                                                                            }\n                                                                      ]\n}|[\n1,\n[\n2\n]\n]|{\"k\"=[1;2]}"
+  },
+  {
+   "name": "review-indent",
+   "template": "{{ 'a\\nb\\n\\nc'|indent(3) }}|{{ 'a\\nb'|indent('> ', true) }}|{{ 'a\\nb'|indent(-2) }}|{{ 'a\\n\\nb'|indent(2, blank=true) }}",
+   "text": "a\n   b\n\n   c|> a\n> b|a\nb|a\n  \n  b"
+  },
+  {
+   "name": "review-slices",
+   "template": "{{ [1, 2, 3, 4, 5][1::9223372036854775807] }}|{{ 'abcd\u00e9'[::-2] }}|{{ 'abcd\u00e9'[-9223372036854775807:2] }}|{{ [1, 2, 3][::-9223372036854775807] }}|{{ 'h\u00e9llo'[1:4] }}|{{ [1, 2, 3][5:1:-1] }}|{{ 'h\u00e9llo'[10:] }}|{{ (1, 2, 3)[::2] }}",
+   "text": "[2]|\u00e9ca|ab|[3]|\u00e9ll|[3]||(1, 3)"
+  },
+  {
+   "name": "review-search",
+   "template": "{{ 'aaa'.rsplit('aa') }}|{{ 'aaa'.split('aa') }}|{{ 'abcabcab'.rfind('cab') }}|{{ 'aaaa'.count('aa') }}|{{ 'abab'.replace('ab', 'x', 1) }}|{{ 'ab' in 'aab' }}|{{ 'aXbXXc'.rsplit('X', 1) }}|{{ 'xabcabc'.find('abcabd') }}|{{ 'ababcabab'.rfind('abab') }}|{{ 'aabaabaaab'.split('aab') }}",
+   "text": "['a', '']|['', 'a']|5|2|xab|True|['aXbX', 'c']|-1|5|['', '', 'a', '']"
+  },
+  {
+   "name": "review-strip",
+   "template": "[{{ 'xyhixy'.strip('yx') }}][{{ 'h\u00e9\u00e9'.rstrip('\u00e9') }}][{{ '  a  '.rstrip() }}][{{ '\u00e9\u00e9a'.lstrip('\u00e9') }}][{{ ''.strip() }}][{{ '   '.strip() }}][{{ 'a\\u2028'|trim }}]",
+   "text": "[hi][h][  a][a][][][a]"
+  },
+  {
+   "name": "review-first-last-reverse",
+   "template": "{{ 'h\u00e9llo'|first }}{{ 'h\u00e9ll\u00f6'|last }}|{{ ''|first }}|{{ s|reverse }}|{{ '\u00e9\ud83d\ude00a'|reverse }}|{{ [1, 2]|reverse|list }}",
+   "text": "h\u00f6||  \ud83d\ude00 \u4eac\u6771 !dlr\u00f6W ,oll\u00e9H  |a\ud83d\ude00\u00e9|[2, 1]"
+  },
+  {
+   "name": "review-escape",
+   "template": "{{ '<a & \"b\">'|escape }}|{{ ('<' ~ s ~ '>')|e }}",
+   "text": "&lt;a &amp; &#34;b&#34;&gt;|&lt;  H\u00e9llo, W\u00f6rld! \u6771\u4eac \ud83d\ude00  &gt;"
+  },
+  {
+   "name": "review-case-tests-any-value",
+   "template": "{{ 5 is lower }} {{ none is upper }} {{ x is lower }} {{ [1] is lower }} {{ ['a'] is lower }} {{ true is upper }} {{ {'a': 1} is lower }} {{ '' is lower }} {{ nothing is lower }}",
+   "text": "False False False False True False True False False"
+  },
+  {
+   "name": "review-number-underscores",
+   "template": "{{ '1_0'|float }} {{ '_1'|float }} {{ '1_'|float(7) }} {{ '1__0'|float(7) }} {{ 'in_f'|float(7) }} {{ '1_0.5'|float }} {{ '1e1_0'|float }} {{ '1._5'|float(7) }} {{ '1_.5'|int(7) }} {{ '1.5_0'|int(7) }}",
+   "text": "10.0 0.0 7 7 7 10.5 10000000000.0 7 7 1"
+  },
+  {
+   "name": "review-format-op-mapping",
+   "template": "{{ 'abc' % [] }}|{{ 'abc' % [1] }}|{{ '%s' % [1] }}|{{ '%s' % {'a': 1} }}|{{ 'abc' % {} }}",
+   "text": "abc|abc|[1]|{'a': 1}|abc"
+  },
+  {
+   "name": "review-format-op-extra",
+   "template": "{{ 'abc' % 5 }}",
+   "error": "TypeError: not all arguments converted during string formatting"
+  },
+  {
+   "name": "review-call-keyword-repeated",
+   "template": "{% set n = namespace(a=1, a=2) %}{{ n.a }}",
+   "error": "SyntaxError: keyword argument repeated: a (<template>, line 13)"
+  }
+ ]
+}

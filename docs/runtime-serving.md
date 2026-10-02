@@ -72,7 +72,11 @@ refused at registration. Every
 artifact is opened under the store's trust rules (only root and the
 runtime's user may change it), and the tokenizer and template files the
 configuration names are read under the configuration's (D-073). A chat
-template is rendered only if a native renderer has its hash (D-067).
+template renders natively when a native renderer has its hash or reproduces
+it on the probe corpus, and otherwise through the sandboxed Jinja-subset
+interpreter; a model is refused only when neither accepts its template,
+and the runtime logs which way a template it did not pin renders (D-067 as
+amended 2026-10-02, [tokenizer.md](tokenizer.md#chat-templates)).
 
 The omitted context defaults to 262,144 tokens. The configuration's generic
 range is 512 to 1,048,576; registration checks the supported checkpoint's
@@ -144,8 +148,8 @@ when the route ends it (a stop string, the client gone, the backend
 stalled, a non-streaming request's deadline, the runtime stopping;
 [progress and deadlines](#progress-and-deadlines)), always between
 steps; the same ends a prefill between its chunks (below). A model whose
-chat template has no renderer is refused at registration, naming its
-hash. A job that failed after it may
+chat template neither a native renderer nor the interpreter accepts is
+refused at registration, naming its hash. A job that failed after it may
 have run leaves the conversation unknown, so the next turn clears the
 state first.
 

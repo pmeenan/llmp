@@ -1,0 +1,68 @@
+{
+ "about": "Conversations every corpus template renders (docs/experiments/chat-template-corpus): roles, tools, tool calls and results, reasoning, options, Unicode and whitespace, in chat-fixture form.",
+ "conversations": [
+  {"name": "single-user", "messages": [{"role": "user", "content": "What is 2+2?"}]},
+  {"name": "system-user", "messages": [{"role": "system", "content": "You are a helpful assistant."}, {"role": "user", "content": "Hello!"}]},
+  {"name": "multi-turn", "messages": [
+   {"role": "system", "content": "Be brief."},
+   {"role": "user", "content": "Hi"},
+   {"role": "assistant", "content": "Hello! How can I help?"},
+   {"role": "user", "content": "Capital of France?"}]},
+  {"name": "multi-turn-reasoning", "messages": [
+   {"role": "user", "content": "Hi"},
+   {"role": "assistant", "content": "Hello!", "reasoning_content": "The user greets me."},
+   {"role": "user", "content": "Capital of France?"}]},
+  {"name": "ending-assistant", "add_generation_prompt": false, "messages": [
+   {"role": "user", "content": "Hi"},
+   {"role": "assistant", "content": "Hello!"}]},
+  {"name": "thinking-on", "options": {"enable_thinking": true}, "messages": [
+   {"role": "system", "content": "Think first."}, {"role": "user", "content": "Prove that sqrt(2) is irrational."}]},
+  {"name": "thinking-off", "options": {"enable_thinking": false}, "messages": [
+   {"role": "user", "content": "Hi"},
+   {"role": "assistant", "content": "Hello!", "reasoning_content": "Greeting."},
+   {"role": "user", "content": "Bye"}]},
+  {"name": "effort-low", "options": {"reasoning_effort": "low"}, "messages": [{"role": "user", "content": "Plan a trip."}]},
+  {"name": "tools-full-round", "tools": [
+    {"type": "function", "function": {"name": "get_weather", "description": "Get the weather for a city.", "parameters": {"type": "object", "properties": {"city": {"type": "string", "description": "City name"}, "days": {"type": "integer"}, "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]}}, "required": ["city"]}}},
+    {"type": "function", "function": {"name": "search", "description": "Search the web.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}],
+   "messages": [
+   {"role": "system", "content": "You can call tools."},
+   {"role": "user", "content": "Weather in Paris and Tokyo for 3 days, in celsius?"},
+   {"role": "assistant", "content": "", "reasoning_content": "I need two weather calls.", "tool_calls": [
+     {"name": "get_weather", "arguments": {"city": "Paris", "days": 3, "unit": "celsius"}},
+     {"name": "get_weather", "arguments": {"city": "東京", "days": 3, "extra": {"nested": [1, 2.5, null, true]}}}]},
+   {"role": "tool", "content": "{\"temp\": 21, \"sky\": \"sunny\"}"},
+   {"role": "tool", "content": "{\"temp\": 18.5, \"sky\": \"rain\"}"},
+   {"role": "assistant", "content": "Paris: 21°C, sunny. Tokyo: 18.5°C, rain."},
+   {"role": "user", "content": "Thanks!"}]},
+  {"name": "tools-only", "tools": [
+    {"type": "function", "function": {"name": "search", "description": "Search the web.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}],
+   "messages": [{"role": "user", "content": "Find news about tokenizers."}]},
+  {"name": "tool-call-then-result", "tools": [
+    {"type": "function", "function": {"name": "get_weather", "description": "Get the weather.", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}],
+   "messages": [
+   {"role": "user", "content": "Weather in Oslo?"},
+   {"role": "assistant", "content": "Let me check.", "tool_calls": [{"name": "get_weather", "arguments": {"city": "Oslo"}}]},
+   {"role": "tool", "content": "cold"}]},
+  {"name": "unicode-content", "messages": [
+   {"role": "system", "content": "Réponds en français. 用中文也可以。"},
+   {"role": "user", "content": "Tiếng Việt 😀 👨‍👩‍👧 \t tabs and  spaces  "}]},
+  {"name": "whitespace", "messages": [
+   {"role": "system", "content": "  \n system with spaces 　"},
+   {"role": "user", "content": "\n\n  question?  \n"}]},
+  {"name": "content-with-tags", "messages": [
+   {"role": "user", "content": "Explain <think>, </think>, <|im_end|> and <tool_call> tags."}]},
+  {"name": "empty-content", "messages": [{"role": "user", "content": ""}]},
+  {"name": "two-systems", "messages": [
+   {"role": "system", "content": "First."}, {"role": "system", "content": "Second."},
+   {"role": "user", "content": "Go."}]},
+  {"name": "user-after-user", "messages": [{"role": "user", "content": "one"}, {"role": "user", "content": "two"}]},
+  {"name": "no-generation-prompt", "add_generation_prompt": false, "messages": [{"role": "user", "content": "Hi"}]},
+  {"name": "long-history", "messages": [
+   {"role": "system", "content": "Count with me."},
+   {"role": "user", "content": "1"}, {"role": "assistant", "content": "2"},
+   {"role": "user", "content": "3"}, {"role": "assistant", "content": "4"},
+   {"role": "user", "content": "5"}, {"role": "assistant", "content": "6"},
+   {"role": "user", "content": "7"}]}
+ ]
+}

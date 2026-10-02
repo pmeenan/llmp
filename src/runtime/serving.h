@@ -716,6 +716,9 @@ class Llm : public Served {
                                         std::int32_t& next);
   // Finds the reasoning markers in the vocabulary (after the tokenizer).
   void FindThinkTokens();
+  // Chooses how the model's chat template renders (chat::ChatTemplate) and
+  // its stop tokens (after the tokenizer); an error refuses the model.
+  Status UseTemplate(std::string_view text);
 
   engine::PagedNode* node_ = nullptr;
   std::uint32_t max_rows_ = 0;  // the prefill chunk (runtime/prefill.h), set at construction
@@ -724,7 +727,7 @@ class Llm : public Served {
   bool speculate_ = false;
   bool bos_ = false;  // EncodeText puts BOS first
   std::unique_ptr<tokenizer::Tokenizer> tokenizer_;
-  const chat::Template* template_ = nullptr;
+  std::optional<chat::ChatTemplate> template_;
   std::vector<std::int32_t> stops_;
   std::optional<std::int32_t> think_start_;
   std::optional<std::int32_t> think_end_;

@@ -1511,7 +1511,8 @@ family" guide, and its long-context scaling work.
       family" guide, which M3.5 tests and corrects:
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
-      - the native tokenizer and chat renderer, with the template hash
+      - the native tokenizer and its chat template's rendering (native or
+        interpreted, D-067), with the template hash
         recorded in the support matrix;
       - swaps in and out beside the M3 models;
       - speculation where the family ships MTP layers or drafters;

@@ -392,6 +392,22 @@ transformers 5.12.1 (Apache-2.0), Jinja2 3.1.6 (BSD-3-Clause), and DeepSeek's
 `encoding_dsv4.py` at `7872f01b` (MIT). The sampling tests use Random123's
 published Philox known-answer vectors (values, cited in the test).
 
+**The template interpreter** (`src/chat/jinja*`, D-067 as amended
+2026-10-02) is jitLLM's own Apache-2.0 code, written from Jinja2's
+documentation and its observed behaviour under transformers; no code of
+Jinja2 (BSD-3-Clause), minja or llama.cpp's Jinja engine (MIT) is
+incorporated. Its tests compare with transformers 5.12.1 and Jinja2 3.1.6,
+run as reference tools like those above. Three pinned templates are
+committed as test data with their own terms in `.license` sidecars
+(`tests/unit/data/chat/templates/`: the 0731 GGUF's, Unsloth's, Apache-2.0
+by its own notice with the MIT format text it ports from
+`encoding_dsv4.py`, so `Apache-2.0 AND MIT`; the community chat-v2 GGUF's,
+MIT; the Qwen3.8 NVFP4
+checkpoint's, Apache-2.0). The 29-template corpus stays outside the
+repository, fetched by `docs/experiments/chat-template-corpus/collect.py`
+([README](experiments/chat-template-corpus/README.md)); template text is
+model data under the owner's 2026-09-28 reading above.
+
 ## Early EXL3 companion (D-052)
 
 The [bring-up contract](exl3-bringup.md) and
