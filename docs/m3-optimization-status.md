@@ -3,7 +3,7 @@
 
 # M3 optimization status
 
-Snapshot: 2026-10-02, after `b80cc4b`. **Neither remaining engine comparison
+Snapshot: 2026-10-02. **Neither remaining engine comparison
 gap is closed.** Pipeline reproduction, a useful individual replacement,
 and a selected serving default are different outcomes. This page tracks
 closure; individual reports retain conditions and evidence.
@@ -15,13 +15,14 @@ closure; individual reports retain conditions and evidence.
 | Can jitLLM reproduce ds4's complete pipeline? | Yes. Full logits match byte for byte at 8K and 32K; throughput trails by 2.4% and 0.71%. | No repeat of this prerequisite. |
 | Does the normal DeepSeek architecture match ds4 prefill? | No. Reduction and Q-head fusions are landed. Output-A gains 4.97% at 4096 rows; adding HCA takes 8K prefill to 9.8792 s (+21.19% incremental throughput). The private 2048-row extension gains 3.95% but fails one fixed-history quality row, exceeding the unchanged bound by 1.669249 nats; it is stopped. | Integrate the passing 4096-row candidate and restore/attribute the remaining stages. The reproduced literal pipeline is around 7.5 s at 8K with different cache/math contracts and output cadence, so these clocks are not a matched final speed ratio. |
 | Is Qwen's solo MTP deficit explained? | Partly. Fixed-depth step times are close; acceptance and reference variation carry much of the reported rate difference. Curated vocabulary does not win at every depth. | Same-history paired acceptance, plus a decision on the actual remaining step-time slope. Existing generated-history runs do not establish acceptance parity or justify changing the gate. |
-| Does concurrent serving match the other engines? | Qwen's shared execution waves and HC/ragged-head sharing are landed. The latter gains 2.76% on paid C2 HTTP wall with exact replies. Four active slots lose 13.16%, so capacity stays two. | Fresh C1/C2/C4 comparison against Mia and TensorFold, now in flight. DeepSeek still needs independent-state batching. Solo parity does not establish concurrent parity. |
+| Does concurrent serving match the other engines? | Fresh matched 8K C1/C2/C4 controls are complete. Against current same-checkpoint TensorFold NVFP4, native is +19.22% / +8.63% / −14.55% on completed-token rate including prefill and queueing. Native also trails the older affine TensorFold and original Mia at C4. HC/ragged-head sharing gains 2.76% on paid C2 wall; cap-four adaptive loses 13.16%, so capacity stays two. | Attribute the C4 gap and screen the all-slot depth-zero/one row budget. DeepSeek still needs independent-state batching. Matching checkpoint/prompt IDs does not establish equal arithmetic or quality. |
 
 Reports: [literal 8K](experiments/ds4-complete-plan/README.md),
 [literal 32K](experiments/ds4-matched-32k/README.md),
 [output-A](experiments/ds4-output-prefix/README.md),
 [Qwen sharing](experiments/qwen38-combined-sharing/README.md),
-[capacity rejection](experiments/qwen38-capacity/README.md).
+[capacity rejection](experiments/qwen38-capacity/README.md),
+[concurrent engine comparison](experiments/serving-concurrent/README.md).
 The selected native output-A screen's actual receipt is retained externally
 under `m3-ds4-qhead-short-records/outa-native-r2`. The selected guarded native
 source passes its Spark check set; it is not a serving default.
@@ -71,9 +72,10 @@ contracts; shared Qwen weights do not by themselves implement DeepSeek batching.
 
 ## Work order and M3 exit
 
-Use both Sparks: finish selected DeepSeek integration on one while obtaining
-the fresh concurrent engine comparison on the other. Use one representative
-bookended screen to settle occupancy and row-budget candidates. Measure
+Use both Sparks: finish selected DeepSeek integration and the whole-prefill
+occupancy screen on one while testing Qwen's remaining row budget on the
+other. The fresh concurrent engine comparison is complete. Use one representative
+bookended screen to settle each candidate. Measure
 same-history acceptance before doing more solo Qwen kernel ports. After the
 selected DeepSeek combination, refresh only its missing stage budget and
 replace the largest remaining chain. Full ladders are reserved for an

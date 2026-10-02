@@ -4,10 +4,12 @@
 # TensorFold
 
 - **Repository:** [ashhart/TensorFold](https://github.com/ashhart/TensorFold),
-  MIT. A single-stream engine for MLX-format checkpoints with CUDA engines
-  for the DGX Spark. It is an M3 baseline for Qwen3.8 Flash Next and a
+  MIT through 0.5.0, Apache-2.0 from 0.6.0 with the earlier MIT notice
+  retained. It serves MLX, EXL3 and NVFP4 checkpoints through family-specific
+  engines, including concurrent Flash Next CUDA execution on a DGX Spark.
+  It is an M3 baseline for Qwen3.8 Flash Next and a
   source of techniques ([tensorfold-assessment.md](../tensorfold-assessment.md)).
-- **jitLLM's pin:** `71377a53` (0.3.6.2), measured as a baseline
+- **Historical baseline pin:** `71377a53` (0.3.6.2), measured as a baseline
   ([baselines](../experiments/fast-swap/baselines.md#qwen38-flash-next-tensorfold-mlx-4-bit-cross-quantization)).
   None of jitLLM's code comes from TensorFold.
 - **The load study** is outside this repository, on the workstation at
@@ -18,11 +20,12 @@
 
 ## Cold start: buffered reads and an int64 repack take ~130 of ~145 s
 
-- **Status:** PR open,
+- **Status:** landed in 0.5.0 as `8ae247f`, according to the maintainer's
+  2026-09-29 reply on
   [ashhart/TensorFold#82](https://github.com/ashhart/TensorFold/pull/82),
   "perf: Improve cuda startup/loading performance (3-15x faster on DGX
-  spark)", by the owner, opened 2026-09-29; no maintainer comment on
-  2026-09-29.
+  spark)", by the owner. Follow-up `da8a5df` releases the direct reader's
+  pinned staging after each load. Rechecked against upstream on 2026-10-02.
 - **Found:** 2026-09-28, TensorFold `beddbb7b` (0.3.5.1), `spark`.
 - **Problem:** Flash Next's `weights.load` reads 80 GB through small buffered
   reads (the kernel's 128 KiB readahead at a queue depth under 1:
@@ -39,7 +42,32 @@
   operations; GLM experts stacked on the GPU; fewer device synchronisations.
   Reported in the PR: 2.9–15× across models; Flash Next MLX 146 → 24 s to
   first token. Not re-measured in jitLLM.
-- **Proposed action:** follow the PR through review.
+- **Proposed action:** use the upstream implementation in the updated
+  baseline; no reapplication of the old PR is needed.
+
+## Same-checkpoint NVFP4 comparison
+
+- **Status:** measured at 8K with one, two and four concurrent requests;
+  [conditions and results](../experiments/serving-concurrent/README.md).
+- **Source:** release 0.6.2, commit
+  `56e2e3ec55bc0ae1d7d5158c4fa2c79a3567ab21`, inspected 2026-10-02.
+- **Capability:** the [current Flash Next recipe](https://github.com/ashhart/TensorFold/blob/56e2e3ec55bc0ae1d7d5158c4fa2c79a3567ab21/docs/recipes/qwen3.8-flash-next.md#nvfp4-checkpoints)
+  explicitly supports `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6`,
+  the checkpoint already used by jitLLM, including its MTP head. The
+  old 0.3.6.2 baseline accepts MLX/EXL3 and cannot run this ModelOpt export.
+- **Actual conditions:** same model files and full rendered prompt IDs,
+  context 33,792 and 256 generated tokens per request, zero cached prompt
+  tokens. TensorFold uses BF16 KV, a 79,591-entry draft vocabulary and MTP
+  cap 6/confidence 0.30; native uses F16 KV, 47,172 entries and depth 2/3.
+  Flash Next's released loader uses BF16 activations even when the global
+  `--precision checkpoint` flag is passed. Matching weight format does not
+  establish matching arithmetic or quality. The old affine-format and Mia
+  measurements retain their original provenance.
+- **Result:** native's completed-token rate, including prefill and queueing,
+  is 19.22% higher at C1 and 8.63% higher at C2, but 14.55% lower at C4.
+  Current TensorFold starts in 198.870 s with the first kernel compilation,
+  then 73.367/73.431 s with its compiled cache retained. One sample per cell;
+  the remaining concurrency gap needs attribution.
 
 ## RUNBOOK: persist the kernel caches (study patch 4)
 

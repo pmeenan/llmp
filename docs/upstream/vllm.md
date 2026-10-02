@@ -42,6 +42,14 @@ comes from vLLM.
   to 151–160 s (211 s on the very first launch); main weights 458 → 40 s.
 - **Proposed action:** follow the issue. Nothing more to send unless the
   maintainers ask.
+- **jitLLM testing, owner instruction 2026-10-02:** future legacy Mia
+  launches use this measured startup patch, preserving the selected model
+  runner and inference settings. The tested package is `instanttensor`
+  0.2.0; the PLE worker's safetensors override is mandatory. The original
+  package and patched recipe are retained at
+  `spark:~/.local/share/mia-load-study/{pylib,mia-perf}/`, with the method in
+  `/home/pmeenan/src/mia-load-study/issue-runs.sh`. Historical unpatched
+  runs retain their original provenance.
 
 ## Lazy safetensors views copy to the GPU at 0.13–0.2 GB/s on the GB10
 
