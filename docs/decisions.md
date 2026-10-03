@@ -88,8 +88,39 @@ configurable. The privacy defaults (D-014: loopback and tailnet binding)
 are unchanged; an owner who binds the inference endpoint elsewhere may
 want abuse limits back, which configuration can provide.
 
-**Reopen if** jitLLM is offered as a shared or public service, or a
-removed limit turns out to protect a real resource.
+**Applied 2026-10-03** (main agent, from the owner's answers above,
+after an audit of about 70 limits):
+
+- **Stalls:** the watchdog reports (log, health status, systemd STATUS)
+  and does not fail a running request or refuse queued and new ones on
+  its estimate. A confirmed hang (no progress of any kind: fences,
+  lanes, page-in bytes) escalates: cancel the stuck work, reset or evict
+  the model in place, then restart the process under its supervisor.
+  The engine's fixed 10-minute patience becomes progress-based and
+  configurable. Before a restart, state is spilled where possible, and
+  spilled conversation state and turn checkpoints survive a supervised
+  restart in owner-only files that the new process validates and
+  adopts (D-014's protection and retention still apply). A unit that
+  fails to start is retried rather than given up on.
+- **Deadlines:** no non-streaming deadline and no queue-wait limit by
+  default; both are optional knobs. Head and body arrival become
+  inactivity timeouts. A reader that stops reading gets backpressure (its
+  request pauses at a completed boundary) instead of a 30 s cut-off;
+  its buffer is memory-derived.
+- **Sizes and counts:** message, content-part, stop-string and queue
+  counts are removed; body, render, JSON-value and response limits are
+  derived from memory and the model's context; JSON depth stays a stack
+  bound. The template interpreter's step and work budgets become
+  cancellation points, not caps; its memory and depth bounds stay.
+  Node configuration drops the 16-model and generic 1M-context caps.
+- **Kept:** retention expiry with its 24-hour default (the owner's
+  configurable cache timeout, 2026-10-02), idle keep-alive, descriptor
+  and memory bounds, format and arithmetic bounds, Jinja2's own
+  `MAX_RANGE` refusal, and wire-protocol value ranges (TypeSafe's option
+  and level counts). No automatic abuse profile for non-loopback binds;
+  the knobs exist for owners who want one. Longer media (audio past an
+  encoder's window) is split, not refused. M4's cluster limits are
+  revised the same way before M4.
 
 ## D-101: Decision models through the Jev/SystemOne API, multimodal file inputs with each family's bring-up, and OpenAI-shaped media generation routes  (2026-10-02, status: accepted at the owner's request of 2026-10-02, with the owner's answers that day on DeepSeek V4 Flash Vision-Exp, the audio carrier, confidence and the TTS testbeds; scope and plan only, nothing built; moves D-042's file inputs from M10 to M3.5 and M4; makes decision heads an exception to D-044's classification deferral; schedules the image-output API features.md left unscheduled; adds public routes, D-016)
 
