@@ -181,6 +181,66 @@ class SparkJobTest(unittest.TestCase):
         self.run_tool("gc", "--older-than", "0")
         self.assertFalse((self.tmp / "jobs" / "gpu").exists())
 
+    def wait_for(self, predicate, timeout=20) -> None:
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            self.assertLess(time.monotonic(), deadline, "condition never held")
+            time.sleep(0.2)
+
+    def test_gpu_jobs_run_one_at_a_time(self):
+        marks = self.tmp / "marks"
+        self.start("first", "--gpu", "--", "bash", "-c", f"echo first-start >> {marks}; sleep 3; "
+                   f"echo first-end >> {marks}")
+        self.wait_for(lambda: marks.exists())
+        self.start("second", "--gpu", "--", "bash", "-c", f"echo second-start >> {marks}")
+        self.wait_for(lambda: self.state("second").get("gpu_waiting"))
+        self.assertIn("waiting for the GPU", self.run_tool("status").stdout)
+        busy = self.run_tool("busy")
+        self.assertEqual(busy.returncode, 1)
+        self.assertIn("gpu job second waiting for the GPU", busy.stdout)
+        self.assertIn("1 --gpu job(s), 1 waiting", busy.stdout)
+        self.assertEqual(self.wait("second")[0].returncode, 0)
+        self.assertEqual(marks.read_text().split(), ["first-start", "first-end", "second-start"])
+        self.assertIn("waiting for the GPU: held by first", pathlib.Path(self.state("second")["log"]).read_text())
+
+    def test_gpu_no_wait_refuses_while_held(self):
+        self.start("holder", "--gpu", "--", "sleep", "60")
+        self.wait_for(lambda: (self.tmp / "jobs" / "holder" / "gpu.json").exists())
+        refused = self.run_tool("start", "--name", "eager", "--gpu", "--no-wait", "--", "true")
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("held by holder", refused.stderr)
+        self.assertFalse((self.tmp / "jobs" / "eager").exists())
+        self.run_tool("kill", "holder")
+        self.start("eager", "--gpu", "--no-wait", "--", "true")  # the lock passes to its supervisor
+        self.assertEqual(self.wait("eager")[0].returncode, 0)
+        self.assertNotEqual(self.run_tool("start", "--name", "x", "--no-wait", "--", "true").returncode, 0)
+
+    def test_no_wait_lock_outlives_start(self):
+        self.start("held", "--gpu", "--no-wait", "--", "sleep", "60")  # `start` has exited here
+        refused = self.run_tool("start", "--name", "next", "--gpu", "--no-wait", "--", "true")
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+
+    def test_kill_ends_a_wait_and_timeout_counts_from_the_gpu(self):
+        self.start("long", "--gpu", "--", "sleep", "4")
+        self.wait_for(lambda: (self.tmp / "jobs" / "long" / "gpu.json").exists())
+        self.start("queued", "--gpu", "--", "true")
+        self.start("patient", "--gpu", "--timeout", "3", "--", "sleep", "1")
+        self.wait_for(lambda: self.state("queued").get("gpu_waiting"))
+        killed = self.run_tool("kill", "queued")
+        self.assertEqual(killed.returncode, 0, killed.stdout)
+        self.assertEqual(self.state("queued")["state"], "killed")
+        self.assertEqual(self.state("long")["state"], "running")
+        result, _ = self.wait("patient")  # waited ~4 s for the GPU, longer than its --timeout of 3
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_gpu_lock_freed_when_the_supervisor_dies(self):
+        self.start("doomed", "--gpu", "--", "sleep", "60")
+        self.wait_for(lambda: (self.tmp / "jobs" / "doomed" / "gpu.json").exists())
+        os.kill(self.state("doomed")["supervisor"]["pid"], signal.SIGKILL)
+        self.wait_for(lambda: self.state("doomed")["state"] == "lost")
+        self.start("after", "--gpu", "--", "true")
+        self.assertEqual(self.wait("after")[0].returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

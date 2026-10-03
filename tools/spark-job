@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Runs long work detached on a Spark, under a supervisor that always records how it ended.
 
-    spark-job start --name N [--timeout S] [--gpu] [-C DIR] -- CMD [ARGS...]
+    spark-job start --name N [--timeout S] [--gpu [--no-wait]] [-C DIR] -- CMD [ARGS...]
     spark-job start --name N --steps FILE [--step-timeout S] [--stop-on-fail] ...
     spark-job status [NAME] [--json]      running, done, failed, timed-out, killed or lost
     spark-job wait NAME [--timeout S]     blocks until a final state; 0 only for success
@@ -28,6 +28,17 @@ in $JITLLM_JOBS_DIR, else $XDG_DATA_HOME/jitllm/jobs, else
 ~/.local/share/jitllm/jobs, one directory per name: job.json (what was
 started, where, by which supervisor), child.json (the running step's process
 group), steps.json (queue progress), final.json (how it ended) and log.
+
+--gpu jobs on one host are mutually exclusive: the supervisor holds an
+exclusive lock (flock on .gpu.lock in the state directory) for the job's
+whole life, so a second --gpu job waits, logging whom it waits for once a
+minute, and starts by itself when the first ends, however it ends (the
+kernel drops the lock when the supervisor exits or dies). A waiting job
+shows as "waiting for the GPU" in `status` and `busy`; its --timeout counts
+from when it gets the GPU, and `kill` ends the wait. With --no-wait,
+`start` takes the lock itself and refuses at once if another --gpu job holds
+it. The lock covers spark-job jobs only: GPU work started outside spark-job
+is still visible only through `busy`'s nvidia-smi listing.
 """
 
 import sys
@@ -35,6 +46,7 @@ import sys
 sys.dont_write_bytecode = True
 
 import argparse
+import errno
 import fcntl
 import json
 import os
@@ -51,6 +63,8 @@ FINAL_STATES = ("done", "failed", "timed-out", "killed")
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 POLL = 0.2  # the supervisor's poll of its child, seconds
 WAIT_POLL = 1.0  # wait's poll of the job, seconds
+GPU_POLL = 1.0  # a waiting supervisor's retry of the GPU lock, seconds
+GPU_NOTE = 60.0  # how often a waiting supervisor logs whom it waits for, seconds
 
 
 # ---------------------------------------------------------------- state files
@@ -60,6 +74,33 @@ def jobs_root() -> pathlib.Path:
         return pathlib.Path(os.environ["JITLLM_JOBS_DIR"])
     data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     return pathlib.Path(data) / "jitllm" / "jobs"
+
+
+def gpu_lock_path(root: pathlib.Path) -> pathlib.Path:
+    return root / ".gpu.lock"
+
+
+def try_gpu_lock(fd: int) -> bool:
+    """Takes the host's GPU lock on fd without blocking; False if another job holds it."""
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError as e:
+        if e.errno in (errno.EAGAIN, errno.EACCES):
+            return False
+        raise
+
+
+def gpu_holder(root: pathlib.Path) -> str:
+    """Who holds the GPU lock, as far as the holder recorded it."""
+    holder = read_json(root / ".gpu.json") or {}
+    name = holder.get("name")
+    if not name or not (root / name).is_dir():
+        return "another --gpu job"
+    info = job_state(root / name)
+    if info["state"] != "running" or info.get("gpu_waiting"):
+        return "another --gpu job"
+    return f"{name} (running for {span(time.time() - holder.get('since', time.time()))})"
 
 
 def read_json(path: pathlib.Path) -> dict | None:
@@ -167,6 +208,9 @@ def job_state(job_dir: pathlib.Path) -> dict:
             info["state"] = "remote"  # a shared state directory; its pids mean nothing here
         elif supervisor_alive(job["supervisor"]):
             info["state"] = "running"
+            gpu = read_json(job_dir / "gpu.json") or {}
+            if gpu.get("waiting_since") and not gpu.get("acquired"):
+                info["gpu_waiting"] = gpu["waiting_since"]
         else:
             final = read_json(job_dir / "final.json")  # it may have finished since the first read
             if final is None:
@@ -185,6 +229,8 @@ def describe(info: dict) -> str:
         return f"{state} (signal {info['signal']})"
     if state in ("done", "failed") and info.get("rc") is not None:
         return f"{state} (rc {info['rc']})"
+    if state == "running" and info.get("gpu_waiting"):
+        return f"waiting for the GPU ({span(time.time() - info['gpu_waiting'])})"
     if state == "running" and info.get("steps"):
         done = sum(1 for s in info["steps"] if s["state"] not in ("pending", "running"))
         return f"running (step {min(done + 1, len(info['steps']))}/{len(info['steps'])})"
@@ -232,6 +278,8 @@ def cmd_start(args: argparse.Namespace) -> int:
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if bool(command) == bool(args.steps):
         sys.exit("spark-job start: give either -- CMD... or --steps FILE")
+    if args.no_wait and not args.gpu:
+        sys.exit("spark-job start: --no-wait applies to --gpu jobs only")
     steps = None
     if args.steps:
         lines = pathlib.Path(args.steps).read_text().splitlines()
@@ -253,6 +301,14 @@ def cmd_start(args: argparse.Namespace) -> int:
                       file=sys.stderr)
                 return 1
             shutil.rmtree(job_dir)  # a finished or lost job of that name is replaced
+        gpu_fd = None
+        if args.no_wait:  # take the GPU here, so the refusal is immediate; the supervisor inherits it
+            gpu_fd = os.open(gpu_lock_path(root), os.O_RDWR | os.O_CREAT, 0o644)
+            if not try_gpu_lock(gpu_fd):
+                os.close(gpu_fd)
+                print(f"spark-job: the GPU is held by {gpu_holder(root)}; not started (--no-wait)",
+                      file=sys.stderr)
+                return 1
         job_dir.mkdir()
         log = job_dir / "log"
         # Steps run with the caller's umask, never looser than 022: files a step creates must
@@ -263,14 +319,19 @@ def cmd_start(args: argparse.Namespace) -> int:
                "command": command or None, "steps_file": os.path.abspath(args.steps) if steps else None,
                "gpu": args.gpu, "timeout": args.timeout, "step_timeout": args.step_timeout,
                "grace": args.grace, "stop_on_fail": args.stop_on_fail, "start": now(),
-               "umask": caller_umask | 0o022}
+               "umask": caller_umask | 0o022, "gpu_fd": gpu_fd}
         if steps:
             write_json(job_dir / "steps.json", {"steps": [{"cmd": s, "state": "pending"} for s in steps]})
         write_json(job_dir / "job.json", job)
         with open(log, "ab") as out:
             sup = subprocess.Popen([sys.executable, "-B", os.path.abspath(__file__), "_supervise",
                                     str(job_dir)], cwd=cwd, stdin=subprocess.DEVNULL, stdout=out,
-                                   stderr=out, start_new_session=True)
+                                   stderr=out, start_new_session=True,
+                                   pass_fds=(gpu_fd,) if gpu_fd is not None else ())
+        # The supervisor shares the lock's open file description, so the lock stays held after
+        # this copy of the descriptor closes.
+        if gpu_fd is not None:
+            os.close(gpu_fd)
         # The supervisor is still this process's child here (a zombie at worst), so its pid is its own.
         job["supervisor"] = {"pid": sup.pid, "start_ticks": proc_stat(sup.pid)[1]}
         write_json(job_dir / "job.json", job)
@@ -287,7 +348,36 @@ class Supervisor:
         self.job = read_json(job_dir / "job.json")
         self.stop_reason = None
         self.log = open(job_dir / "log", "ab", buffering=0)
+        self.deadline = None  # set once the job may run (after the GPU lock for a --gpu job)
+        self.gpu_fd = None  # held, never closed, until this process ends
+
+    def start_clock(self) -> None:
         self.deadline = time.monotonic() + self.job["timeout"] if self.job["timeout"] else None
+
+    def acquire_gpu(self) -> dict | None:
+        """Holds the host's GPU lock for a --gpu job, waiting for it; a final outcome if killed meanwhile."""
+        root = self.dir.parent
+        if self.job.get("gpu_fd") is not None:  # `start --no-wait` took it and passed it on
+            self.gpu_fd = self.job["gpu_fd"]
+        else:
+            self.gpu_fd = os.open(gpu_lock_path(root), os.O_RDWR | os.O_CREAT, 0o644)
+            began = time.monotonic()
+            last_note = None
+            while not try_gpu_lock(self.gpu_fd):
+                if self.stop_reason:
+                    return {"state": "killed", "reason": f"{self.stop_reason}, waiting for the GPU"}
+                if last_note is None:
+                    write_json(self.dir / "gpu.json", {"waiting_since": now()})
+                if last_note is None or time.monotonic() - last_note >= GPU_NOTE:
+                    self.note(f"waiting for the GPU: held by {gpu_holder(root)}")
+                    last_note = time.monotonic()
+                time.sleep(GPU_POLL)
+            if last_note is not None:
+                self.note(f"got the GPU after waiting {span(time.monotonic() - began)}")
+        write_json(self.dir / "gpu.json", {"acquired": now()})
+        write_json(root / ".gpu.json", {"name": self.job["name"], "supervisor_pid": os.getpid(),
+                                        "since": now()})
+        return None
 
     def note(self, text: str) -> None:
         self.log.write(f"[spark-job {stamp(time.time())}] {text}\n".encode())
@@ -333,6 +423,12 @@ class Supervisor:
         return outcome
 
     def run(self) -> dict:
+        if self.job.get("gpu"):
+            killed = self.acquire_gpu()
+            if killed:
+                self.note(f"end: {describe(killed)}")
+                return killed
+        self.start_clock()
         if self.job["command"]:
             self.note(f"start: {shlex.join(self.job['command'])}")
             final = self.run_one(self.job["command"], None)
@@ -513,10 +609,14 @@ def gpu_processes() -> list[str] | None:
 def cmd_busy(args: argparse.Namespace) -> int:
     root = jobs_root()
     infos = [job_state(d) for d in sorted(root.iterdir()) if d.is_dir()] if root.is_dir() else []
-    gpu_jobs = [i for i in infos if i["state"] == "running" and i.get("gpu")]
+    gpu_jobs = [i for i in infos if i["state"] == "running" and i.get("gpu") and not i.get("gpu_waiting")]
+    waiting = [i for i in infos if i["state"] == "running" and i.get("gpu_waiting")]
     others = [i for i in infos if i["state"] == "running" and not i.get("gpu")]
     for info in gpu_jobs:
         print(f"gpu job {info['name']} running for {span(time.time() - info['start'])} (cwd {info['cwd']})")
+    for info in sorted(waiting, key=lambda i: i["gpu_waiting"]):
+        print(f"gpu job {info['name']} waiting for the GPU for {span(time.time() - info['gpu_waiting'])}"
+              f" (cwd {info['cwd']})")
     if others:
         print(f"also running (not --gpu): {', '.join(i['name'] for i in others)}")
     procs = gpu_processes()
@@ -524,7 +624,7 @@ def cmd_busy(args: argparse.Namespace) -> int:
         print("nvidia-smi: not available")
     else:
         groups = {(read_json(pathlib.Path(i["dir"]) / "child.json") or {}).get("pgid"): i["name"]
-                  for i in gpu_jobs + others}
+                  for i in gpu_jobs + others}  # a waiting job has no child yet
         print(f"nvidia-smi compute processes: {len(procs)}")
         for line in procs:
             pid = line.split(",")[0].strip()
@@ -537,7 +637,7 @@ def cmd_busy(args: argparse.Namespace) -> int:
             print(f"  {line}{owner}")
     busy = bool(gpu_jobs or procs)
     print(f"{socket.gethostname()}: {'busy' if busy else 'free'} ({len(gpu_jobs)} --gpu job(s), "
-          f"{len(procs or [])} GPU compute process(es))")
+          f"{len(waiting)} waiting, {len(procs or [])} GPU compute process(es))")
     return 1 if busy else 0
 
 
@@ -550,7 +650,10 @@ def main() -> int:
     p = sub.add_parser("start", help="run CMD (or a queue of steps) detached under a supervisor")
     p.add_argument("--name", required=True)
     p.add_argument("--timeout", type=float, help="the whole job's limit, seconds")
-    p.add_argument("--gpu", action="store_true", help="record that the job uses the GPU (see `busy`)")
+    p.add_argument("--gpu", action="store_true",
+                   help="the job uses the GPU: it waits for any other --gpu job here to end (see `busy`)")
+    p.add_argument("--no-wait", action="store_true",
+                   help="with --gpu: refuse at once if another --gpu job holds the GPU, instead of waiting")
     p.add_argument("-C", "--cwd", help="run in this directory (default: the current one)")
     p.add_argument("--grace", type=float, default=10.0, help="seconds between SIGTERM and SIGKILL")
     p.add_argument("--steps", help="a file of shell commands, one per line, run in order")
@@ -583,7 +686,8 @@ def main() -> int:
     p.add_argument("--older-than", type=float, default=24.0, metavar="HOURS")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(func=cmd_gc)
-    p = sub.add_parser("busy", help="whether a --gpu job or a GPU compute process is running here")
+    p = sub.add_parser("busy", help="whether a --gpu job or a GPU compute process is running here, "
+                                    "and which --gpu jobs wait")
     p.set_defaults(func=cmd_busy)
     args = parser.parse_args()
     return args.func(args)

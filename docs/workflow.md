@@ -186,7 +186,14 @@ never writes the marker.
     ssh spark-b '~/src/X/tools/spark-job wait ctx-ladder'    # as a background task
 
 - **Start** with `--timeout` (the process group gets SIGTERM, then SIGKILL)
-  and `--gpu` when the job touches the GPU. A queue is a `--steps` file,
+  and `--gpu` when the job touches the GPU. `--gpu` jobs on a host are
+  mutually exclusive: a second one waits for the first to end (shown as
+  "waiting for the GPU" in `status` and `busy`, logging whom it waits for),
+  then starts by itself; its `--timeout` counts from when it gets the GPU,
+  and `--no-wait` refuses at once instead. So every GPU run, builds' test
+  suites and measurements included, goes through `spark-job start --gpu`;
+  checking `busy` first is no longer enough on its own, since two agents
+  can both see the host free. A queue is a `--steps` file,
   one command per line; a failed step is recorded and the queue moves on
   (`--stop-on-fail` to stop, `--step-timeout` for a stalled rung).
 - **Wait** with `spark-job wait NAME` run as a background task; it exits 0
@@ -196,7 +203,9 @@ never writes the marker.
   catch each case's error, record it with the case, and continue, so one
   bad case (an HTTP 400, an out-of-memory) costs one row, not the run.
 - **Hand a Spark over by checking `spark-job busy`** (exit 1 while a `--gpu`
-  job or any GPU compute process runs), not by messages alone.
+  job or any GPU compute process runs; it also lists `--gpu` jobs waiting),
+  not by messages alone. The lock covers `spark-job` jobs only: GPU work
+  started outside it shows only in `busy`'s nvidia-smi listing.
 - **Profiler completion is separate from application completion.** A
   bounded Nsight CLI capture can end while its target survives in a
   separate process group (RE-039). Keep long validation directly
