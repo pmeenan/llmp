@@ -1169,6 +1169,19 @@ it appears.
       resume), time-slicing a pending model switch instead of draining
       the batch (D-069, pulled from M6), and literal completions joining
       the batch.
+- [ ] **Model settings in three layers** (D-103, the owner, 2026-10-03):
+      a table-driven `[models.NAME]` schema where every model setting can
+      be overridden; one resolved settings record per model at
+      registration, each value tagged derived / calibrated / override /
+      fallback and logged and reportable; derived defaults from the
+      artifact (including the checkpoint's generation-config sampling
+      defaults and the template's reasoning markers); a calibration
+      record under `roles.state` keyed by artifact, device and build, with
+      the measured trades first (prefill rows, slot cap, wave costs per
+      width up to the slot cap, draft depth and rows, floors, recompute
+      cost), then the hand-tuned kernel schedule tables. Lands after the
+      in-flight intake-limit, request-slot and DeepSeek wave changes,
+      which all touch the same `[models]` keys.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

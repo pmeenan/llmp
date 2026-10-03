@@ -39,6 +39,47 @@ one Spark and on two.
 
 ---
 
+## D-103: A model's settings resolve in three layers: derived default, calibration on this machine, owner override  (2026-10-03, status: accepted at the owner's request of 2026-10-03; applies to every model setting; extends D-096's `[models]` tables)
+
+**Decision.** Users bring any model, so no setting is chosen for a named
+checkpoint (owner, 2026-10-03: "generalize the defaults and allow the
+user to override each imported config"). Every model setting resolves, at
+registration, through three layers, later ones winning:
+
+1. **Derived default**, from the artifact itself: architecture, tensor
+   shapes and types, quantization format, the drafter's metadata, the
+   checkpoint's own generation and template metadata. Never from a
+   checkpoint's name or hash.
+2. **Calibration on this machine**, for anything whose best value is a
+   measured speed trade: prefill chunk rows, request-slot cap (the knee),
+   DSpark/plain wave costs per width, draft depth and draft rows, Qwen's
+   depth cost ratio and shared-wave depth, read alignment, progress
+   floors, recompute cost for the reclaim order, and kernel schedules
+   now chosen by hand-tuned tables (D2R, IQ2 pair, output-A, MXFP8 tiers).
+   Measured at registration or first use, recorded under `roles.state`
+   keyed by (artifact, device and driver, build) and re-measured when
+   any changes; the current constants are the fallback until measured.
+3. **Owner override**: any setting may be set in its `[models.NAME]`
+   table, validated by a table-driven schema; unknown keys are refused.
+
+The effective value of every setting and its source (derived,
+calibrated, override, fallback) is logged at registration and reported
+by a command. Quality-affecting choices (for example a non-bit-identical
+prefill mechanism) keep their qualification rules (D-085) and remain
+owner-overridable for exactness.
+
+**Context.** An inventory (2026-10-03) found that besides `context`,
+`prefill_chunk`, `speculation`, the floors, tokenizer and template, the
+runtime's model settings are constants measured on DeepSeek V4 Flash or
+Qwen3.8 Flash Next on one GB10, spread through `serving.cc` and kernel
+tables; sampling defaults ignore the checkpoint's generation config;
+reasoning markers are literal. Admitting new architectures beyond the two
+runners is M3.5's family work; this decision governs how their settings
+resolve.
+
+**Reopen if** calibration proves too slow or unstable to run at
+registration (then ship measured tables per hardware class instead).
+
 ## D-102: Limits come from real resources, not time or abuse caps  (2026-10-03, status: accepted at the owner's direction of 2026-10-03; applies across the runtime; amends how D-067's interpreter bounds, D-097's intake bounds and deadlines, and D-101's starting bounds are chosen; each affected limit is changed in its own reviewed task)
 
 **Decision.** jitLLM is run locally by the hardware's owner, not offered
