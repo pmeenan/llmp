@@ -4,6 +4,8 @@
 #include "engine/planned.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <format>
 #include <optional>
 #include <utility>
@@ -90,6 +92,24 @@ std::expected<void, std::string> BindPlanned(PlannedBase& planned, kg::LaunchCon
   }
   planned.bound.emplace(std::move(*bound));
   return {};
+}
+
+std::uint64_t PlannedNodes(const PlannedBase& planned) {
+  std::uint64_t nodes = 0;
+  for (const kg::PlanStep& step : planned.plan.steps) {
+    nodes += step.nodes.size();
+  }
+  return nodes;
+}
+
+std::uint64_t PlannedHostBytes(const PlannedBase& planned) {
+  const std::uint64_t arena = planned.arena ? planned.arena->bytes() : 0;
+  return arena + (PlannedNodes(planned) * kPlanNodeHostBytes);
+}
+
+std::uint64_t NextPlanUse() {
+  static std::atomic<std::uint64_t> next{0};
+  return next.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
 void CheckCoverage(const PagedNode& node, int owner, std::span<ggml_tensor* const> nodes,

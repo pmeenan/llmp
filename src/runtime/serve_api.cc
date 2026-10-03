@@ -959,9 +959,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     }
     Say(log_,
         std::format("swap {} -> {}: ready in {:.3f} s (evict {:.3f}, restore {:.3f}, "
-                    "page-in {:.3f}, setup {:.3f}); backing released {:.3f} s later",
+                    "page-in {:.3f}, setup {:.3f}; {} graphs dropped); backing released {:.3f} s "
+                    "later",
                     parts_.from.empty() ? "(nothing)" : parts_.from, parts_.to, parts_.total,
-                    parts_.evict, parts_.restore, parts_.page_in, parts_.setup, parts_.release));
+                    parts_.evict, parts_.restore, parts_.page_in, parts_.setup,
+                    parts_.dropped_graphs, parts_.release));
   }
 
   bool healthy() const override { return failure_.empty(); }

@@ -145,6 +145,7 @@ struct SwapParts {
   std::uint64_t spilled_bytes = 0;  // the outgoing state written back
   std::uint64_t handed_off = 0;
   std::uint64_t released_unused = 0;
+  std::uint64_t dropped_graphs = 0;  // the outgoing model's graphs, dropped with its plans
   Clock::time_point requested;
   Clock::time_point ready;  // setup's end
 };
@@ -168,6 +169,13 @@ class Served {
   // What a chunk builds on the host before staging it (its inputs), at
   // most: the node's fixed memory beside what the catalog maps.
   virtual std::uint64_t host_input_bytes() const { return 0; }
+  // The most host and driver memory its cached plans and graphs may hold
+  // (engine/planned.h caps): set apart beside the catalog's budget, as the
+  // host inputs are, by the start's memory guard. Only the resident model
+  // keeps them: a swap drops the outgoing model's (Server::Activate).
+  virtual std::uint64_t plan_host_bytes() const { return 0; }
+  // How plan_host_bytes() is made up, for the start's log (empty: none).
+  virtual std::string plan_report() const { return {}; }
   virtual Status Register() = 0;
   virtual Status Bind() = 0;
   virtual std::vector<catalog::ExtentId> weights() const = 0;
@@ -855,6 +863,9 @@ class Server {
   // one model runs at a time), which the start's memory guard counts beside
   // its margin.
   std::uint64_t host_input_bytes() const { return host_inputs_; }
+  // The largest model's plans' and graphs' bound (Served::plan_host_bytes):
+  // only the resident model keeps its plans.
+  std::uint64_t plan_host_bytes() const { return plans_; }
   std::uint64_t workspace_bytes() const { return workspace_; }  // the shared activations and pool
 
  private:
@@ -876,6 +887,7 @@ class Server {
   std::uint64_t budget_ = 0;
   std::uint64_t fixed_ = 0;
   std::uint64_t host_inputs_ = 0;
+  std::uint64_t plans_ = 0;  // plan_host_bytes()
   std::uint64_t workspace_ = 0;
   void* snapshot_ = nullptr;
   std::uint64_t snapshot_capacity_ = 0;

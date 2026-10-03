@@ -795,7 +795,11 @@ std::expected<void, KernelFailure> CopyRanges(LaunchContext& launch, const Range
 // (I32 [used, tokens], rows may be strided, as a jitllm.dsv4.route node's
 // first columns); an id is not checked on the device against the experts
 // (the routing and the hash table's check bound it, as for mul_mat_id).
+// The fast plan's chunks take vecq to kVecQTokens rows; a wave of several
+// sequences' rows (dsv4_graph.h Dsv4WaveGraph) to kVecQMaxTokens, routed
+// products to 128 (token, slot) pairs.
 inline constexpr std::int64_t kVecQTokens = 8;
+inline constexpr std::int64_t kVecQMaxTokens = 16;
 inline constexpr std::int64_t kDsv4HcChunks = 256;
 inline constexpr std::int64_t kDsv4HcChunkThreads = 64;  // a hc_mix block's threads
 enum class VecQGlu : std::int32_t { kNone = 0, kSwiglu = 1, kSwigluClamp = 2 };
@@ -811,6 +815,12 @@ ggml_tensor* QuantizeQ8(ggml_context* context, ggml_tensor* x);
 ggml_tensor* VecQ(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8, ggml_tensor* ids,
                   std::int64_t tokens, bool per_slot, ggml_tensor* gate = nullptr,
                   VecQGlu glu = VecQGlu::kNone, float limit = 0.0f);
+// A vecq node takes the launch a one-token product of its shape takes,
+// whatever its tokens: each token's sums then equal a one-token step's bit
+// for bit, its weights read again from cache for each token (a wave of
+// one-row steps, dsv4_graph.h Dsv4WaveGraph).
+void SetVecQOneToken(ggml_tensor* node);
+bool VecQOneToken(const ggml_tensor* node);
 // `logits` F32 [experts, tokens]; `bias` F32 [experts] or null; `table`
 // I32 [used, vocab] and `tokens` I32 [tokens], or both null.
 ggml_tensor* Dsv4Route(ggml_context* context, ggml_tensor* logits, ggml_tensor* bias,

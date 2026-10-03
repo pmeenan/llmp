@@ -1973,6 +1973,19 @@ ggml_tensor* VecQ(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8, 
   return WithFloat(node, 3, limit);
 }
 
+namespace {
+constexpr int kVecQOneTokenParam = 4;  // after tokens, per_slot, glu and the limit
+}  // namespace
+
+void SetVecQOneToken(ggml_tensor* node) {
+  const std::int32_t one = 1;
+  std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset +
+                  (static_cast<std::size_t>(kVecQOneTokenParam) * sizeof(one)),
+              &one, sizeof(one));
+}
+
+bool VecQOneToken(const ggml_tensor* node) { return JitllmOpInt(node, kVecQOneTokenParam) == 1; }
+
 ggml_tensor* Dsv4Route(ggml_context* context, ggml_tensor* logits, ggml_tensor* bias,
                        ggml_tensor* table, ggml_tensor* tokens, std::int64_t used, bool norm,
                        float clamp, float scale) {
@@ -2124,9 +2137,10 @@ std::expected<void, KernelFailure> CheckVecQ(const ggml_tensor* node) {
       !IsF32(node)) {
     return Rejected("quantized weights jitllm.vecq reads, and a jitllm.q8_1 input");
   }
-  if (tokens < 1 || tokens > kVecQTokens || (per_slot != 0 && per_slot != 1) || glu < 0 ||
-      glu > 2 || ((glu != 0) != (gate != nullptr))) {
-    return Rejected("1 to 8 tokens, and gate weights exactly with a GLU");
+  const std::int64_t one_token = JitllmOpInt(node, 4);
+  if (tokens < 1 || tokens > kVecQMaxTokens || (per_slot != 0 && per_slot != 1) || glu < 0 ||
+      glu > 2 || ((glu != 0) != (gate != nullptr)) || (one_token != 0 && one_token != 1)) {
+    return Rejected("1 to 16 tokens, and gate weights exactly with a GLU");
   }
   if (gate != nullptr && (!VecQWeights(gate) || gate->type != w->type ||
                           !ggml_are_same_shape(gate, w) || !ggml_are_same_stride(gate, w))) {
@@ -2139,7 +2153,7 @@ std::expected<void, KernelFailure> CheckVecQ(const ggml_tensor* node) {
     used = ids->ne[0];
     if (ids->ne[1] != tokens || ids->ne[2] != 1 || ids->ne[3] != 1 ||
         ids->nb[0] != sizeof(std::int32_t) || ids->nb[1] % sizeof(std::int32_t) != 0 || used < 1 ||
-        used * tokens > 64 || !Aligned(ids, 4) || AnyEmpty({ids}) || !AllSane({ids}) ||
+        used * tokens > 128 || !Aligned(ids, 4) || AnyEmpty({ids}) || !AllSane({ids}) ||
         !AllCurrent({ids}) || !Disjoint(node, ids, false) || !Shaped(node, n, used, tokens)) {
       return Rejected("ids I32 [used, tokens] and an output [n, used, tokens]");
     }

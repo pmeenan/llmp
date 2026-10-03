@@ -200,6 +200,17 @@ class Qwen38Runner final : public PagedModel {
   // a draft's four (its catch-up of 1 to 4 rows); two windows' worth, so a
   // step past a 256-cell boundary does not recapture the steps before it.
   static constexpr std::size_t kMaxGraphs = 16;
+  // And what they may hold, as counted (kGraphNodeHostBytes a node its plan
+  // launches): 16 graphs measured 105 MiB at 12 KiB a node at C4 (140 MiB
+  // at 16 KiB), and a capture past it alone is not made.
+  static constexpr std::uint64_t kMaxGraphBytes = std::uint64_t{192} << 20U;
+  // The most plans kept, host memory outside the catalog (plan_host_bytes()):
+  // chunk and drafter plans every slot's together, and each kind of wave.
+  // The measured working set: 24 plans in all, 250 MiB, at C4.
+  static constexpr std::size_t kMaxChunkPlans = 24;
+  static constexpr std::size_t kMaxMtpPlans = 24;
+  static constexpr std::size_t kMaxTargetWaves = 4;
+  static constexpr std::size_t kMaxDraftWaves = 16;
 
   Qwen38Runner(PagedNode& node, const Qwen38Options& options, int owner, std::uint32_t stream)
       : node_(node),
@@ -294,6 +305,16 @@ class Qwen38Runner final : public PagedModel {
   void DropPlans();
   std::size_t plans() const;
   std::size_t graphs() const;
+  // The most host and driver memory the plans and graphs may hold: every
+  // cap times its kind's largest plan (PlannedHostBytes; a wave every
+  // slot's and its composition) or graph (kGraphNodeHostBytes a node),
+  // measured at Setup. The memory guard counts it beside the catalog's
+  // budget (Served::plan_host_bytes).
+  std::uint64_t plan_host_bytes() const { return plan_host_bytes_; }
+  // How plan_host_bytes() is made up, for the start's log.
+  const std::string& plan_report() const { return plan_report_; }
+  // What the kept plans hold now, as counted (PlannedHostBytes).
+  std::uint64_t cached_plan_bytes() const;
   double plan_seconds() const { return plan_seconds_; }
   const PleStats& ple() const { return ple_; }
   // Decode graphs on or off for the next chunks; captured graphs are kept.
@@ -365,8 +386,8 @@ class Qwen38Runner final : public PagedModel {
 
     LiveState live{"Qwen3.8"};  // target, then MTP drafter
     Qwen38Model model;
-    ChunkPlans plans{32};
-    MtpPlans mplans{32};
+    ChunkPlans plans{kMaxChunkPlans};
+    MtpPlans mplans{kMaxMtpPlans};
     // Working state, charged for the model's life and never spilled.
     Mapped commit;
     kernels::ggml::Qwen38CommitArgs commit_args;
@@ -577,7 +598,14 @@ class Qwen38Runner final : public PagedModel {
   void CheckFailedJob();
   Status BindRequest(RequestState& request);
   Status SetupSnapshot(RequestState& request);
-  void RoomForGraphs();
+  // Before a capture of `adding_bytes` (planned.h RoomForGraphs): room
+  // under kMaxGraphs and kMaxGraphBytes, every graph counted; false if it
+  // alone exceeds them (not captured then).
+  bool RoomForGraphs(std::uint64_t adding_bytes);
+  // Before planning a chunk (or drafter) shape: room under kMaxChunkPlans
+  // (kMaxMtpPlans), every slot's together.
+  void RoomForChunkPlan();
+  void RoomForMtpPlan();
   Status Clear(RequestState& request);
   Status ClearIdle(RequestState& request);
   // The state through `positions`, its caches read through `positions` rounded
@@ -686,6 +714,8 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t activation_bytes_ = 0;
   std::uint64_t scratch_bytes_ = 0;
   std::uint64_t host_input_bytes_ = 0;
+  std::uint64_t plan_host_bytes_ = 0;  // plan_host_bytes()
+  std::string plan_report_;
   Qwen38SetupBudget setup_budget_;
   // Additional fixed pinned output slices, indexed by sealed slot rather
   // than compact wave order. A graph key fixes the full output copy pattern.
@@ -702,8 +732,8 @@ class Qwen38Runner final : public PagedModel {
 
   ChunkPlans& plans_ = default_request_.plans;  // cleared before the launch context (Release)
   MtpPlans& mplans_ = default_request_.mplans;
-  TargetWaves target_waves_{64};
-  DraftWaves draft_waves_{64};
+  TargetWaves target_waves_{kMaxTargetWaves};
+  DraftWaves draft_waves_{kMaxDraftWaves};
   Qwen38WaveStats last_wave_;
   GraphStats graph_stats_;
   GraphStats draft_stats_;

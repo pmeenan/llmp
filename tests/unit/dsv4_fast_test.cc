@@ -23,12 +23,14 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <expected>
+#include <format>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -274,6 +276,105 @@ TEST_F(Dsv4FastTest, DenseAndGroupedProductsMatchGgmlsVectorKernel) {
                    what + " (token 0 alone)");
       }
     }
+  }
+}
+
+// A wave's launches (dsv4_graph.h Dsv4WaveGraph): to sixteen tokens a
+// token's sums equal its sums among two (the multi-token launch, whatever
+// the count), and with SetVecQOneToken each token's equal a one-token
+// product's, bit for bit, dense and routed.
+TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
+  // The first n values of a (from offset at) and b, bit for bit.
+  const auto same = [](const std::vector<float>& a, const std::vector<float>& b, std::size_t n,
+                       std::size_t at = 0) {
+    if (a.size() < at + n || b.size() < n) {
+      return false;
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      if (std::bit_cast<std::uint32_t>(a[at + i]) != std::bit_cast<std::uint32_t>(b[i])) {
+        return false;
+      }
+    }
+    return true;
+  };
+  constexpr std::int64_t kOut = 256;
+  for (const ggml_type type : {GGML_TYPE_Q8_0, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}) {
+    const std::int64_t k = 4096;
+    const std::vector<std::uint8_t> bytes = Quantize(type, k, kOut, 11);
+    ggml_tensor* w = Place(ggml_new_tensor_2d(c(), type, k, kOut), bytes);
+    const std::vector<float> x = Normal(12, static_cast<std::size_t>(k * 16));
+    const auto run = [&](std::int64_t tokens, bool one_token) {
+      ggml_tensor* first = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, tokens),
+                                 std::vector<float>(x.begin(), x.begin() + (k * tokens)));
+      ggml_tensor* q8 = Place(kg::QuantizeQ8(c(), first));
+      ggml_tensor* node = Place(kg::VecQ(c(), w, q8, nullptr, tokens, false));
+      if (one_token) {
+        kg::SetVecQOneToken(node);
+        EXPECT_TRUE(kg::VecQOneToken(node));
+      }
+      EXPECT_TRUE(kg::CheckVecQ(node).has_value());
+      return RunVecQ(q8, node, std::format("{} x {}", ggml_type_name(type), tokens));
+    };
+    const std::vector<float> two = run(2, false);
+    const std::vector<float> sixteen = run(16, false);
+    EXPECT_TRUE(same(two, sixteen, 2 * kOut)) << ggml_type_name(type) << ": 16 tokens";
+    const std::vector<float> one = run(1, false);
+    const std::vector<float> four = run(4, true);
+    EXPECT_TRUE(same(one, four, kOut)) << ggml_type_name(type) << ": one-token launch";
+    // And each later token of the one-token launch equals that token alone.
+    for (std::int64_t t = 1; t < 4; ++t) {
+      ggml_tensor* row = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, 1),
+                               std::vector<float>(x.begin() + (t * k), x.begin() + ((t + 1) * k)));
+      ggml_tensor* q8 = Place(kg::QuantizeQ8(c(), row));
+      ggml_tensor* node = Place(kg::VecQ(c(), w, q8, nullptr, 1, false));
+      const std::vector<float> alone = RunVecQ(q8, node, "alone");
+      EXPECT_TRUE(
+          same(four, alone, static_cast<std::size_t>(kOut), static_cast<std::size_t>(t * kOut)))
+          << ggml_type_name(type) << " token " << t;
+    }
+  }
+  // Routed: sixteen tokens of six experts each (96 pairs), token 0 against
+  // two tokens, and a one-token launch against each token alone.
+  constexpr std::int64_t kExperts = 64;
+  constexpr std::int64_t kUsed = 6;
+  const ggml_type type = GGML_TYPE_IQ2_XS;
+  const std::int64_t k = 4096;
+  const std::int64_t slice = static_cast<std::int64_t>(ggml_row_size(type, k)) * kOut;
+  ggml_tensor* w = Place(ggml_new_tensor_3d(c(), type, k, kOut, kExperts),
+                         Quantize(type, k, kOut * kExperts, 13));
+  EXPECT_EQ(static_cast<std::int64_t>(w->nb[2]), slice);
+  const std::vector<float> x = Normal(14, static_cast<std::size_t>(k * 16));
+  std::vector<std::int32_t> all_ids;
+  for (std::int64_t t = 0; t < 16; ++t) {
+    for (std::int64_t u = 0; u < kUsed; ++u) {
+      all_ids.push_back(static_cast<std::int32_t>(((t * 5) + (u * 7)) % kExperts));
+    }
+  }
+  const auto routed = [&](std::int64_t first, std::int64_t tokens, bool one_token) {
+    ggml_tensor* in =
+        Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, tokens),
+              std::vector<float>(x.begin() + (first * k), x.begin() + ((first + tokens) * k)));
+    ggml_tensor* ids =
+        Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, tokens),
+              std::vector<std::int32_t>(all_ids.begin() + (first * kUsed),
+                                        all_ids.begin() + ((first + tokens) * kUsed)));
+    ggml_tensor* q8 = Place(kg::QuantizeQ8(c(), in));
+    ggml_tensor* node = Place(kg::VecQ(c(), w, q8, ids, tokens, false));
+    if (one_token) {
+      kg::SetVecQOneToken(node);
+    }
+    EXPECT_TRUE(kg::CheckVecQ(node).has_value());
+    return RunVecQ(q8, node, std::format("routed x {}", tokens));
+  };
+  const std::vector<float> two = routed(0, 2, false);
+  const std::vector<float> sixteen = routed(0, 16, false);
+  EXPECT_TRUE(same(two, sixteen, 2 * kUsed * kOut)) << "routed: 16 tokens";
+  const std::vector<float> four = routed(0, 4, true);
+  for (std::int64_t t = 0; t < 4; ++t) {
+    const std::vector<float> alone = routed(t, 1, false);
+    EXPECT_TRUE(same(four, alone, static_cast<std::size_t>(kUsed * kOut),
+                     static_cast<std::size_t>(t * kUsed * kOut)))
+        << "routed token " << t;
   }
 }
 
@@ -901,10 +1002,10 @@ TEST_F(Dsv4FastTest, TheCompressorMatchesFp64AndGivesZerosForMaskedBlocks) {
 TEST_F(Dsv4FastTest, TheChecksRefuseWhatTheKernelsDoNotTake) {
   const std::vector<std::uint8_t> bytes = Quantize(GGML_TYPE_Q8_0, 1024, 64, 3);
   ggml_tensor* w = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q8_0, 1024, 64), bytes);
-  // Nine tokens: more than a vecq takes.
-  ggml_tensor* x9 = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 1024, 9));
-  ggml_tensor* q9 = Place(kg::QuantizeQ8(c(), x9));
-  EXPECT_FALSE(kg::CheckVecQ(Place(kg::VecQ(c(), w, q9, nullptr, 9, false))).has_value());
+  // Seventeen tokens: more than a vecq takes.
+  ggml_tensor* x17 = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 1024, 17));
+  ggml_tensor* q17 = Place(kg::QuantizeQ8(c(), x17));
+  EXPECT_FALSE(kg::CheckVecQ(Place(kg::VecQ(c(), w, q17, nullptr, 17, false))).has_value());
   // A gate of another type.
   const std::vector<std::uint8_t> other = Quantize(GGML_TYPE_Q5_K, 1024, 64, 4);
   ggml_tensor* g = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q5_K, 1024, 64), other);

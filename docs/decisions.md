@@ -1061,6 +1061,26 @@ depend on per-step host data, graph memory grows past what a fixed
 per-model allowance covers, or captured replays stop matching launches
 bit for bit.
 
+**Amended 2026-10-02** (DeepSeek four-request batching and its challenge;
+the reopen condition on graph memory met). With request slots and waves,
+the plans and graphs a model kept outgrew the start guard's uncounted
+margin: a churn of shapes pushed a GB10 into swap. Each runner now caps
+its plans and graphs, by count and by counted bytes, least recently used
+dropped, and reports the most they can hold (`Served::plan_host_bytes`,
+`engine/planned.h`), which the guard sets apart. A swap drops the outgoing
+model's plans and graphs, so the guard sets apart only the largest model's
+bound: keeping every model's refused DeepSeek at 262K with DSpark beside
+Qwen3.8. Places stay pinned; a returning model plans and captures again
+(a prepared return planned again in 0.04 s; the challenge's 0.42 s over
+122 captures counts capture and instantiation only), so a swap table's
+prepared return no longer replays graphs captured before the swap.
+Both the fixed caps and the unconditional drop at swap-out are interim.
+The drop discards graphs whether or not memory is needed, ahead of the
+idle weights the owner's reclaim order frees first; the owner's policy
+(2026-10-02; a separate task) replaces both with dynamic caches that
+grow into free memory and are reclaimed only under pressure, in order of
+measured restore cost per byte freed, least recently used within a kind.
+
 ## D-089: A model of several components is one v0 artifact per component and a content-addressed composition that names them by ID  (2026-09-28, status: accepted by the main agent under the owner's overnight delegation (2026-09-28); confirmed by the owner, 2026-09-28; experimental under D-018 like the rest of v0; settles plan.md's M3 open question and artifact-format.md's "Companion and multi-component artifacts" for pipelines)
 
 **Decision.**

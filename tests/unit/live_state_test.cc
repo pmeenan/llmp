@@ -307,6 +307,32 @@ TEST_F(LowCapacityStateTest, CleanCapacityRefusalPreservesTheExistingPrefix) {
   EXPECT_TRUE(staging.empty());
 }
 
+// The refusal a cohort may wait out (Llm::StateRefusedFor, the runners'
+// Slot::state_refused) is typed: only the budget's refusal of a growth,
+// the state usable as it was; never an invalid range's.
+TEST_F(LowCapacityStateTest, OnlyTheBudgetsRefusalIsTypedAsCapacity) {
+  const std::array<en::LiveState::Range, 1> first = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  bool over_budget = true;
+  ASSERT_TRUE(model_.live.Use(node_, first, nullptr, &over_budget));
+  EXPECT_FALSE(over_budget);
+  ASSERT_TRUE(model_.Refresh());
+  const std::array<en::LiveState::Range, 1> next = {
+      en::LiveState::Range{.region = 0, .offset = kExtent, .bytes = 16}};
+  EXPECT_FALSE(model_.live.Use(node_, next, nullptr, &over_budget));
+  EXPECT_TRUE(over_budget);
+  EXPECT_TRUE(model_.live.Usable());
+  const std::array<en::LiveState::Range, 1> outside = {
+      en::LiveState::Range{.region = 0, .offset = 8 * kExtent, .bytes = 16}};
+  EXPECT_FALSE(model_.live.Use(node_, outside, nullptr, &over_budget));
+  EXPECT_FALSE(over_budget);
+  // Once the held state is released, the same growth fits.
+  ASSERT_TRUE(model_.live.DiscardGrowingState(node_));
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_TRUE(model_.live.Use(node_, next, nullptr, &over_budget));
+  EXPECT_FALSE(over_budget);
+}
+
 TEST_F(LiveStateTest, DiskCheckpointRestoresTheWholeMutablePageAndDropsNewTailPages) {
   const std::array<en::LiveState::Range, 1> prefix = {
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 3 * kExtent}};

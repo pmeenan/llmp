@@ -10,7 +10,8 @@
 // may not until D-088 is accepted.
 //
 //   jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR
-//                      --check greedy|forced|swap|sampled-plain|sampled-spec|probe|frontier|sizing
+//                      --check greedy|forced|swap|sampled-plain|sampled-spec|probe|frontier|sizing|
+//                              wave|plan-memory|capacity
 //                      [--tokens N] [--context N] [--max-rows N] [--graphs on|off] [--draft N]
 //                      [--probe-step N]
 //                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
@@ -63,6 +64,31 @@
 //   plus "other" (the exit's bound: 0.1).
 // - probe (fast plan): a diagnostic of one forced-run token (--probe-step);
 //   see Probe below and docs/experiments/dsv4-decode/probe.py.
+// - wave (--slots N, 2 to 4; docs/experiments/deepseek-batching/): N
+//   request slots (engine/dsv4_runner.h), the first N decode and chat
+//   prompts one a slot; without --drafter, plain decode waves. First each
+//   slot alone (selected alone) prefills and generates --tokens: plain
+//   one-row steps, or DSpark draft-and-verify steps of at most the wave's
+//   share of rows a slot (8 / N). Then every slot in one request: each
+//   cleared and prefilled in turn (its peers' states held), and waves of
+//   every slot still running. Plain waves are teacher-forced on the solo
+//   tokens: each row's logits against the solo step's (bit-identical rows,
+//   the largest difference, argmax agreement, the top-two margin's move).
+//   DSpark waves run each slot's solo step's rows: drafts and every verify
+//   row of two or more rows bit for bit, the same accepted tokens, and the
+//   states' fingerprints at the end equal. The last slot leaves the waves
+//   halfway (a cancelled request): its state when it left equals its state
+//   at the end. With DSpark, slot 0's first wave verify is discarded: its
+//   state equals before the wave but for its draft block's own ring cells
+//   (uncommitted positions), and the next wave's re-run of that step gives
+//   the solo step bit for bit. Decode seconds of both phases. With a
+//   drafter and --wave-mode decode, the waves are injected decode waves
+//   instead, against injected one-row steps alone, compared as plain ones.
+// - plan-memory (--slots N): the host and driver memory of the runner's
+//   plans and graphs, one new shape at a time, against what it counts
+//   (PlanMemory below).
+// - capacity (--slots N, --state-budget-mib B): the typed capacity refusal
+//   and the idle-state release a serving cohort waits on (Capacity below).
 //
 // The node runs the runtime's own wake (docs/experiments/runtime-wake/);
 // --poll-us, a diagnostic, instead has the scheduler and the device lane
@@ -72,6 +98,7 @@
 // Exit 1 on any failed check; spec.json in --out has every number.
 
 #include <cuda_runtime.h>
+#include <malloc.h>
 
 #include <algorithm>
 #include <array>
@@ -233,6 +260,11 @@ struct Options {
   double margin = 0.0;
   // probe: the generated token whose verify is replayed and dumped.
   std::uint32_t probe_step = 0;
+  // wave: with a drafter, "verify" (DSpark waves) or "decode" (injected decode waves).
+  std::string wave_mode = "verify";
+  // capacity: the state's room in the budget (MiB), beside the fixed memory
+  // and the weights; 0: room for every slot's whole state twice.
+  std::uint64_t state_budget_mib = 0;
 };
 
 struct Prompt {
@@ -335,6 +367,9 @@ class Harness {
   Status Probe();
   Status Swap();
   Status Sampled(bool speculative);
+  Status Wave();
+  Status PlanMemory();
+  Status Capacity();
   Status Compare(const Generation& plain, const Generation& spec, std::string_view what);
   // Plain one-token decoding fed `tokens` (teacher-forced): each step's
   // logits, the first the prefill's.
@@ -1840,6 +1875,810 @@ Status Harness::Sampled(bool speculative) {
 
 // ------------------------------------------------------------------ run
 
+// --check wave (the header): request slots, alone and in waves.
+Status Harness::Wave() {
+  using Slot = jb::Dsv4Runner::Slot;
+  const std::uint32_t slots = o_.dsv4.wave_slots;
+  // With a drafter, DSpark waves, or (--wave-mode decode) injected decode waves.
+  const bool spec = dsv4_.speculative() && o_.wave_mode != "decode";
+  const jb::Dsv4ChunkKind kind =
+      dsv4_.speculative() ? jb::Dsv4ChunkKind::kInject : jb::Dsv4ChunkKind::kPlain;
+  const std::uint32_t vocab = dsv4_.vocab();
+  const std::uint32_t tokens = o_.tokens;
+  std::vector<Prompt> prompts = decode_;
+  prompts.insert(prompts.end(), chat_.begin(), chat_.end());
+  if (prompts.size() < slots) {
+    return Error(std::format("the wave check needs {} prompts", slots));
+  }
+  prompts.resize(slots);
+  std::vector<Slot*> handles;
+  for (std::uint32_t i = 0; i < slots; ++i) {
+    auto slot = dsv4_.request_slot(i);
+    if (!slot) {
+      return std::unexpected(slot.error());
+    }
+    handles.push_back(*slot);
+  }
+  // Each slot's share of a wave's rows; a solo step runs at most that.
+  const std::uint32_t share = std::min<std::uint32_t>(
+      o_.dsv4.max_verify, static_cast<std::uint32_t>(jb::Dsv4Runner::kWaveRows) / slots);
+  const auto rows_at = [&](std::uint32_t pos, std::uint32_t left) {
+    auto rows =
+        std::min<std::uint32_t>({o_.dsv4.draft_rows + 1, share, left, o_.dsv4.context - pos});
+    while (rows > 1 && !md::Dsv4SameWidths(dsv4_.state_layout(), pos, rows)) {
+      --rows;
+    }
+    return rows;
+  };
+  const auto greedy = [&](std::span<const float> verified, std::span<const std::int32_t> drafts,
+                          std::uint32_t rows, std::int32_t& next) {
+    std::uint32_t m = 0;
+    for (; m < rows - 1; ++m) {
+      const std::int32_t want = jb::Argmax(verified.subspan(std::size_t{m} * vocab, vocab));
+      if (want != drafts[m]) {
+        next = want;
+        return m;
+      }
+    }
+    next = jb::Argmax(verified.subspan(std::size_t{m} * vocab, vocab));
+    return m;
+  };
+  const auto read = [&](Slot& slot, std::vector<std::byte>& target, std::vector<std::byte>& ring) {
+    if (auto r = slot.Rollback(); !r) {
+      return r;
+    }
+    return slot.ReadState(target, ring);
+  };
+  const auto fingerprint = [&](Slot& slot) -> std::expected<std::uint64_t, std::string> {
+    std::vector<std::byte> target;
+    std::vector<std::byte> ring;
+    if (auto r = read(slot, target, ring); !r) {
+      return std::unexpected(r.error());
+    }
+    return Fingerprint(target) ^ (Fingerprint(ring) * 31);
+  };
+  const auto prefill = [&](Slot& slot, const Prompt& prompt, std::vector<float>& last) -> Status {
+    if (auto r = slot.Clear(); !r) {
+      return r;
+    }
+    const std::uint32_t rows = o_.dsv4.max_rows;
+    for (std::uint32_t at = 0; at < prompt.ids.size(); at += rows) {
+      const auto n =
+          static_cast<std::uint32_t>(std::min<std::size_t>(rows, prompt.ids.size() - at));
+      if (auto r = slot.Chunk(at, std::span(prompt.ids).subspan(at, n), last, kind); !r) {
+        return Error(std::format("{}'s prefill at {}: {}", prompt.id, at, r.error()));
+      }
+    }
+    return {};
+  };
+  // What a slot's run records: its tokens, the prefill's row, and per step
+  // the logits (plain: the one row; DSpark: every verify row), the rows,
+  // the drafts and the rows kept.
+  struct Run {
+    std::vector<std::int32_t> tokens;
+    std::vector<float> first;
+    std::vector<std::vector<float>> logits;
+    std::vector<std::uint32_t> rows;
+    std::vector<std::vector<std::int32_t>> drafts;
+    std::vector<std::uint32_t> kept;
+    std::uint64_t fingerprint = 0;
+  };
+  std::vector<Run> solo(slots);
+  double solo_seconds = 0;
+  std::uint64_t solo_tokens = 0;
+  for (std::uint32_t i = 0; i < slots; ++i) {
+    const std::array<Slot*, 1> alone = {handles[i]};
+    if (auto r = dsv4_.SelectSlots(alone); !r) {
+      return r;
+    }
+    Run& run = solo[i];
+    auto ran = node_.WithRequest(kDsv4, dsv4_.execution_closure(), "a solo slot", [&]() -> Status {
+      Slot& slot = *handles[i];
+      if (auto r = prefill(slot, prompts[i], run.first); !r) {
+        return r;
+      }
+      auto pos = static_cast<std::uint32_t>(prompts[i].ids.size());
+      std::int32_t anchor = jb::Argmax(run.first);
+      run.tokens = {anchor};
+      const auto start = Clock::now();
+      while (run.tokens.size() < tokens) {
+        const auto left = static_cast<std::uint32_t>(tokens - run.tokens.size());
+        if (!spec) {
+          std::vector<float> row;
+          if (auto r = slot.Chunk(pos, std::span(&anchor, 1), row, kind); !r) {
+            return r;
+          }
+          anchor = jb::Argmax(row);
+          run.tokens.push_back(anchor);
+          run.logits.push_back(std::move(row));
+          run.rows.push_back(1);
+          ++pos;
+          continue;
+        }
+        const std::uint32_t rows = rows_at(pos, left);
+        std::vector<std::int32_t> drafts;
+        std::vector<float> verified;
+        if (auto r = slot.DraftVerify(pos, anchor, rows, drafts, verified); !r) {
+          return r;
+        }
+        std::int32_t next = -1;
+        const std::uint32_t m = greedy(verified, drafts, rows, next);
+        if (auto r = slot.Accept(m + 1); !r) {
+          return r;
+        }
+        run.tokens.insert(run.tokens.end(), drafts.begin(), drafts.begin() + m);
+        run.tokens.push_back(next);
+        run.logits.push_back(std::move(verified));
+        run.rows.push_back(rows);
+        run.drafts.push_back(std::move(drafts));
+        run.kept.push_back(m + 1);
+        pos += m + 1;
+        anchor = next;
+      }
+      solo_seconds += Seconds(Clock::now() - start);
+      solo_tokens += run.tokens.size() - 1;
+      auto print = fingerprint(slot);
+      if (!print) {
+        return std::unexpected(print.error());
+      }
+      run.fingerprint = *print;
+      return {};
+    });
+    if (!ran) {
+      return ran;
+    }
+  }
+
+  // Every slot in one request, cleared and prefilled in turn, then waves.
+  if (auto r = dsv4_.SelectSlots(handles); !r) {
+    return r;
+  }
+  struct Cursor {
+    std::size_t step = 0;  // the solo step this slot is at
+    std::uint32_t pos = 0;
+    std::int32_t anchor = 0;
+    bool done = false;
+    bool left = false;
+    std::vector<std::byte> left_target;
+    std::vector<std::byte> left_ring;
+  };
+  std::vector<Cursor> at(slots);
+  std::uint64_t rows_compared = 0;
+  std::uint64_t rows_identical = 0;
+  std::uint64_t argmax_agree = 0;
+  double largest = 0;
+  std::vector<double> moves;
+  std::uint64_t exact_mismatches = 0;
+  std::uint64_t waves = 0;
+  std::uint64_t wave_tokens = 0;
+  std::map<std::size_t, std::uint64_t> widths;
+  double wave_seconds = 0;
+  std::uint64_t discard_stale = -1ULL;
+  bool discard_rerun_exact = false;
+  bool left_unchanged = false;
+  std::vector<std::uint64_t> fingerprints(slots, 0);
+  auto ran = node_.WithRequest(kDsv4, dsv4_.execution_closure(), "a wave cohort", [&]() -> Status {
+    for (std::uint32_t i = 0; i < slots; ++i) {
+      std::vector<float> last;
+      if (auto r = prefill(*handles[i], prompts[i], last); !r) {
+        return r;
+      }
+      if (!SameBits(last, solo[i].first)) {
+        problems_.push_back(
+            std::format("slot {}'s prefill beside its peers differs from alone", i));
+      }
+      at[i].pos = static_cast<std::uint32_t>(prompts[i].ids.size());
+      at[i].anchor = solo[i].tokens.front();
+      at[i].done = solo[i].rows.empty();
+    }
+    const std::size_t half = solo[slots - 1].rows.size() / 2;
+    bool discarded = false;
+    const auto start = Clock::now();
+    while (true) {
+      // The last slot leaves halfway: its state then, kept to the end.
+      Cursor& last = at[slots - 1];
+      if (!last.left && !last.done && last.step >= half && half > 0) {
+        last.left = true;
+        if (auto r = read(*handles[slots - 1], last.left_target, last.left_ring); !r) {
+          return r;
+        }
+      }
+      std::vector<std::uint32_t> active;
+      for (std::uint32_t i = 0; i < slots; ++i) {
+        if (!at[i].done && !at[i].left) {
+          active.push_back(i);
+        }
+      }
+      if (active.empty()) {
+        break;
+      }
+      std::vector<jb::Dsv4Runner::WaveWork> work;
+      std::vector<std::vector<float>> logits(active.size());
+      std::vector<std::vector<std::int32_t>> drafts(active.size());
+      for (std::size_t k = 0; k < active.size(); ++k) {
+        const std::uint32_t i = active[k];
+        work.push_back({.slot = handles[i],
+                        .pos = at[i].pos,
+                        .anchor = at[i].anchor,
+                        .rows = solo[i].rows[at[i].step],
+                        .drafts = spec ? &drafts[k] : nullptr,
+                        .logits = &logits[k]});
+      }
+      // Slot 0's first wave verify is discarded (below), to be re-run.
+      std::vector<std::byte> pre_target;
+      std::vector<std::byte> pre_ring;
+      const bool discard = spec && !discarded && active.front() == 0;
+      if (discard) {
+        if (auto r = read(*handles[0], pre_target, pre_ring); !r) {
+          return r;
+        }
+      }
+      // As the serving policy: a verify of one row (a step ending at a
+      // mask width or the last token) runs alone, since a wave of wider
+      // verifies takes the multi-row launch; so does a lone slot.
+      std::vector<jb::Dsv4Runner::WaveWork> joined;
+      std::vector<std::size_t> joined_at;
+      std::vector<std::size_t> alone;
+      for (std::size_t k = 0; k < work.size(); ++k) {
+        if (spec && work[k].rows == 1) {
+          alone.push_back(k);
+        } else {
+          joined.push_back(work[k]);
+          joined_at.push_back(k);
+        }
+      }
+      if (joined.size() == 1) {
+        alone.push_back(joined_at.front());
+        joined.clear();
+      }
+      for (const std::size_t k : alone) {
+        const std::uint32_t i = active[k];
+        if (!spec) {
+          if (auto r = handles[i]->Chunk(at[i].pos, std::span(&at[i].anchor, 1), logits[k], kind);
+              !r) {
+            return r;
+          }
+        } else if (auto r = handles[i]->DraftVerify(at[i].pos, at[i].anchor, work[k].rows,
+                                                    drafts[k], logits[k]);
+                   !r) {
+          return r;
+        }
+      }
+      if (!joined.empty()) {
+        const auto wave = Clock::now();
+        if (auto r = spec ? dsv4_.DraftVerifyWave(joined) : dsv4_.DecodeWave(joined); !r) {
+          return r;
+        }
+        wave_seconds += Seconds(Clock::now() - wave);
+        ++waves;
+        ++widths[joined.size()];
+      }
+      for (std::size_t k = 0; k < active.size(); ++k) {
+        const std::uint32_t i = active[k];
+        Cursor& c = at[i];
+        const std::size_t step = c.step;
+        const std::vector<float>& want = solo[i].logits[step];
+        const bool same = SameBits(logits[k], want);
+        if (!spec) {
+          ++rows_compared;
+          rows_identical += same ? 1 : 0;
+          const std::int32_t mine = jb::Argmax(logits[k]);
+          const std::int32_t theirs = jb::Argmax(want);
+          argmax_agree += mine == theirs ? 1 : 0;
+          double diff = 0;
+          for (std::size_t v = 0; v < want.size(); ++v) {
+            diff = std::max(diff, static_cast<double>(std::fabs(logits[k][v] - want[v])));
+          }
+          largest = std::max(largest, diff);
+          // The solo row's top-two margin against the wave row's on the
+          // same two tokens.
+          const auto best = static_cast<std::size_t>(theirs);
+          std::size_t second = best == 0 ? 1 : 0;
+          for (std::size_t v = 0; v < vocab; ++v) {
+            if (v != best && want[v] > want[second]) {
+              second = v;
+            }
+          }
+          moves.push_back(
+              std::fabs((want[best] - want[second]) - (logits[k][best] - logits[k][second])));
+          // Teacher-forced on the solo tokens.
+          c.anchor = solo[i].tokens[step + 1];
+          ++c.pos;
+          ++c.step;
+          wave_tokens += 1;
+          c.done = c.step >= solo[i].rows.size();
+          continue;
+        }
+        const std::uint32_t rows = solo[i].rows[step];
+        const bool drafts_same = drafts[k] == solo[i].drafts[step];
+        if (!drafts_same || !same) {  // one-row verifies run alone (above)
+          ++exact_mismatches;
+          problems_.push_back(std::format("slot {} step {} ({} rows, wave of {}): {}", i, step,
+                                          rows, active.size(),
+                                          !drafts_same ? "drafts differ" : "verify rows differ"));
+        }
+        if (discard && i == 0) {
+          // Undo its verify; its state must be back but for its draft
+          // block's own ring cells (positions not yet committed).
+          discarded = true;
+          if (auto r = handles[0]->DiscardVerify(); !r) {
+            return r;
+          }
+          std::vector<std::byte> target;
+          std::vector<std::byte> ring;
+          if (auto r = read(*handles[0], target, ring); !r) {
+            return r;
+          }
+          std::uint64_t stale =
+              target.size() != pre_target.size() ||
+                      std::memcmp(target.data(), pre_target.data(), target.size()) != 0
+                  ? 1
+                  : 0;
+          auto dlayout = md::DsparkState(dsv4_.dspark_profile(), o_.dsv4.draft_rows);
+          if (!dlayout || ring.size() != pre_ring.size()) {
+            return Error("the drafter's ring layout");
+          }
+          auto block = md::DsparkBlock(dsv4_.dspark_profile(), *dlayout, c.pos, c.anchor,
+                                       o_.dsv4.draft_rows);
+          if (!block) {
+            return std::unexpected(block.error());
+          }
+          const std::uint64_t cell = std::uint64_t{dsv4_.dspark_profile().blocks.head_dim} * 2;
+          std::vector<std::uint8_t> drafted(ring.size(), 0);
+          for (const std::uint64_t offset : dlayout->offsets) {
+            for (const std::int64_t at_cell : block->cells) {
+              std::fill_n(
+                  drafted.begin() + static_cast<std::ptrdiff_t>(
+                                        offset + (static_cast<std::uint64_t>(at_cell) * cell)),
+                  cell, 1);
+            }
+          }
+          for (std::size_t b = 0; b < ring.size(); ++b) {
+            stale += drafted[b] == 0 && ring[b] != pre_ring[b] ? 1 : 0;
+          }
+          discard_stale = stale;
+          if (stale != 0) {
+            problems_.push_back(
+                std::format("a discarded wave verify left {} stale state bytes", stale));
+          }
+          continue;  // the step is re-run by the next wave
+        }
+        if (discarded && i == 0 && step == 0 && !discard_rerun_exact) {
+          discard_rerun_exact = drafts_same && same;
+        }
+        std::int32_t next = -1;
+        const std::uint32_t m = greedy(logits[k], drafts[k], rows, next);
+        if (m + 1 != solo[i].kept[step]) {
+          problems_.push_back(std::format("slot {} step {} kept {} rows, alone {}", i, step, m + 1,
+                                          solo[i].kept[step]));
+        }
+        if (auto r = handles[i]->Accept(m + 1); !r) {
+          return r;
+        }
+        c.pos += m + 1;
+        c.anchor = next;
+        ++c.step;
+        wave_tokens += m + 1;
+        c.done = c.step >= solo[i].rows.size();
+      }
+    }
+    wave_seconds = Seconds(Clock::now() - start);
+    // The slot that left: untouched since.
+    Cursor& last = at[slots - 1];
+    if (last.left) {
+      std::vector<std::byte> target;
+      std::vector<std::byte> ring;
+      if (auto r = read(*handles[slots - 1], target, ring); !r) {
+        return r;
+      }
+      left_unchanged = target == last.left_target && ring == last.left_ring;
+      if (!left_unchanged) {
+        problems_.emplace_back("the slot that left the waves changed after it left");
+      }
+    }
+    for (std::uint32_t i = 0; i < slots; ++i) {
+      auto print = fingerprint(*handles[i]);
+      if (!print) {
+        return std::unexpected(print.error());
+      }
+      fingerprints[i] = *print;
+      if (spec && !at[i].left && *print != solo[i].fingerprint) {
+        problems_.push_back(std::format("slot {}'s state after its waves differs from alone", i));
+      }
+    }
+    return {};
+  });
+  if (!ran) {
+    return ran;
+  }
+  std::ranges::sort(moves);
+  const auto quantile = [&](double q) {
+    return moves.empty()
+               ? 0.0
+               : moves[std::min(moves.size() - 1,
+                                static_cast<std::size_t>(q * static_cast<double>(moves.size())))];
+  };
+  if (spec && !discard_rerun_exact) {
+    problems_.emplace_back("slot 0's discarded step did not re-run to its solo result");
+  }
+  std::string width_json;
+  for (const auto& [width, count] : widths) {
+    width_json += std::format("{}\"{}\":{}", width_json.empty() ? "" : ",", width, count);
+  }
+  std::println(
+      "wave check: {} slots, {}; solo {} tokens in {:.2f} s ({:.2f} tok/s); waves {} ({} tokens in "
+      "{:.2f} s, {:.2f} tok/s)",
+      slots, spec ? "DSpark" : "plain", solo_tokens, solo_seconds,
+      static_cast<double>(solo_tokens) / solo_seconds, waves, wave_tokens, wave_seconds,
+      static_cast<double>(wave_tokens) / wave_seconds);
+  results_.push_back(std::format(
+      R"({{"check":"wave","slots":{},"speculative":{},"share":{},"solo_tokens":{},)"
+      R"("solo_seconds":{:.4f},"wave_tokens":{},"wave_seconds":{:.4f},"waves":{},"widths":{{{}}},)"
+      R"("rows_compared":{},"rows_identical":{},"argmax_agree":{},"largest_difference":{:.6f},)"
+      R"("margin_move_p50":{:.6f},"margin_move_p99":{:.6f},"margin_move_max":{:.6f},)"
+      R"("exact_mismatches":{},"discard_stale_bytes":{},"discard_rerun_exact":{},)"
+      R"("left_unchanged":{}}})",
+      slots, spec ? "true" : "false", share, solo_tokens, solo_seconds, wave_tokens, wave_seconds,
+      waves, width_json, rows_compared, rows_identical, argmax_agree, largest, quantile(0.5),
+      quantile(0.99), moves.empty() ? 0.0 : moves.back(), exact_mismatches,
+      spec ? std::format("{}", discard_stale) : std::string("null"),
+      discard_rerun_exact ? "true" : "false", left_unchanged ? "true" : "false"));
+  return {};
+}
+
+// --check plan-memory (--slots N; docs/experiments/deepseek-batching/,
+// "Plan memory"): what the runner's plans and graphs hold outside the
+// catalog. Every plan dropped first; then, one new shape at a time, the
+// process's heap in use (mallinfo2), its resident set and MemAvailable
+// before and after: a one-row chunk at a new position (its plan; the
+// state's growth is device memory), the same chunk again (its graph's
+// capture) and a third time (a replay: nothing should grow); a prefill
+// chunk of a new width; a decode wave of every slot at new positions (its
+// plan, then its graph); with a drafter, a DSpark wave (each slot's draft
+// plan and the wave's plan, then their graphs). Each kind's per-shape
+// heap is held against what the runner counts for it (cached_plan_bytes),
+// and the largest graph's growth against kGraphNodeHostBytes a node.
+Status Harness::PlanMemory() {
+  using Slot = jb::Dsv4Runner::Slot;
+  const std::uint32_t slots = o_.dsv4.wave_slots;
+  if (slots < 2) {
+    return Error("the plan-memory check needs --slots 2 to 4");
+  }
+  std::vector<Slot*> handles;
+  for (std::uint32_t i = 0; i < slots; ++i) {
+    auto slot = dsv4_.request_slot(i);
+    if (!slot) {
+      return std::unexpected(slot.error());
+    }
+    handles.push_back(*slot);
+  }
+  struct Sample {
+    std::int64_t heap = 0;
+    std::int64_t rss = 0;
+    std::int64_t available = 0;
+    std::int64_t counted = 0;
+    std::int64_t graph_device = 0;
+    std::int64_t graph_counted = 0;
+  };
+  const auto sample = [&]() {
+    Sample s;
+    const struct mallinfo2 m = mallinfo2();
+    s.heap = static_cast<std::int64_t>(m.uordblks + m.hblkhd);
+    std::ifstream statm("/proc/self/statm");
+    std::int64_t pages = 0;
+    std::int64_t resident = 0;
+    statm >> pages >> resident;
+    s.rss = resident * 4096;
+    std::ifstream meminfo("/proc/meminfo");
+    std::string key;
+    std::int64_t kib = 0;
+    std::string unit;
+    while (meminfo >> key >> kib >> unit) {
+      if (key == "MemAvailable:") {
+        s.available = kib * 1024;
+        break;
+      }
+    }
+    s.counted = static_cast<std::int64_t>(dsv4_.cached_plan_bytes());
+    s.graph_device = dsv4_.graph_stats().memory_bytes + dsv4_.draft_stats().memory_bytes;
+    s.graph_counted = static_cast<std::int64_t>(dsv4_.cached_graph_bytes());
+    return s;
+  };
+  struct Kind {
+    std::string name;
+    std::vector<Sample> deltas;
+    std::vector<std::int64_t> plans;     // new plans each
+    std::vector<std::int64_t> graphs;    // new graphs each
+    std::vector<std::uint64_t> dropped;  // graphs dropped to stay within the caps
+  };
+  std::map<std::string, Kind> kinds;
+  const auto measure = [&](const std::string& name, const std::function<Status()>& run) -> Status {
+    const Sample before = sample();
+    const auto plans = static_cast<std::int64_t>(dsv4_.plans());
+    const std::uint64_t dropped = dsv4_.graph_stats().dropped;
+    const auto graphs = static_cast<std::int64_t>(dsv4_.graphs());
+    if (auto r = run(); !r) {
+      return Error(std::format("{}: {}", name, r.error()));
+    }
+    const Sample after = sample();
+    Kind& k = kinds[name];
+    k.name = name;
+    k.deltas.push_back({.heap = after.heap - before.heap,
+                        .rss = after.rss - before.rss,
+                        .available = before.available - after.available,
+                        .counted = after.counted - before.counted,
+                        .graph_device = after.graph_device - before.graph_device,
+                        .graph_counted = after.graph_counted - before.graph_counted});
+    k.plans.push_back(static_cast<std::int64_t>(dsv4_.plans()) - plans);
+    k.graphs.push_back(static_cast<std::int64_t>(dsv4_.graphs()) - graphs);
+    k.dropped.push_back(dsv4_.graph_stats().dropped - dropped);
+    return {};
+  };
+  dsv4_.DropPlans();
+  dsv4_.set_graphs(true);
+  if (auto r = dsv4_.SelectSlots(handles); !r) {
+    return r;
+  }
+  const std::uint64_t bound = dsv4_.plan_host_bytes();
+  const std::int32_t token = 1000;
+  constexpr std::uint32_t kShapes = 4;  // within kMaxWavePlans, plain and DSpark waves together
+  auto ran = node_.WithRequest(kDsv4, dsv4_.execution_closure(), "plan memory", [&]() -> Status {
+    std::vector<float> row;
+    // One-row chunks of slot 0 at new positions: plan, capture, replay.
+    for (std::uint32_t k = 0; k < kShapes; ++k) {
+      const std::uint32_t pos = 1000 + (1024 * k);
+      const auto step = [&]() {
+        return handles[0]->Chunk(pos, std::span(&token, 1), row, jb::Dsv4ChunkKind::kPlain);
+      };
+      for (const char* name : {"chunk-plan", "chunk-graph", "chunk-replay"}) {
+        if (auto r = measure(name, step); !r) {
+          return r;
+        }
+      }
+    }
+    // Prefill chunks of slot 1, each a new width.
+    const std::uint32_t prefill = std::min<std::uint32_t>(o_.dsv4.max_rows, 2048);
+    for (std::uint32_t k = 0; k < kShapes; ++k) {
+      const std::vector<std::int32_t> tokens(prefill - (8 * k), token);
+      if (auto r = measure("prefill-plan", [&]() { return handles[1]->Chunk(0, tokens, row); });
+          !r) {
+        return r;
+      }
+    }
+    // Decode waves of every slot at new positions: plan, capture, replay.
+    std::vector<std::vector<float>> outs(slots);
+    std::vector<std::vector<std::int32_t>> drafts(slots);
+    for (std::uint32_t k = 0; k < kShapes; ++k) {
+      std::vector<jb::Dsv4Runner::WaveWork> work;
+      work.reserve(slots);
+      for (std::uint32_t i = 0; i < slots; ++i) {
+        work.push_back({.slot = handles[i],
+                        .pos = 6000 + (1024 * k) + (37 * i),
+                        .anchor = token,
+                        .rows = 1,
+                        .drafts = nullptr,
+                        .logits = &outs[i]});
+      }
+      for (const char* name : {"wave-plan", "wave-graph", "wave-replay"}) {
+        if (auto r = measure(name, [&]() { return dsv4_.DecodeWave(work); }); !r) {
+          return r;
+        }
+      }
+    }
+    if (!dsv4_.speculative()) {
+      return {};
+    }
+    // DSpark waves: each slot's draft and one joined verify, then Accept.
+    const std::uint32_t share = std::min<std::uint32_t>(
+        o_.dsv4.max_verify, static_cast<std::uint32_t>(jb::Dsv4Runner::kWaveRows) / slots);
+    for (std::uint32_t k = 0; k < kShapes; ++k) {
+      std::vector<jb::Dsv4Runner::WaveWork> work;
+      work.reserve(slots);
+      for (std::uint32_t i = 0; i < slots; ++i) {
+        std::uint32_t pos = 12000 + (1024 * k) + (64 * i);
+        std::uint32_t rows = share;
+        while (rows > 1 && !md::Dsv4SameWidths(dsv4_.state_layout(), pos, rows)) {
+          --rows;
+        }
+        work.push_back({.slot = handles[i],
+                        .pos = pos,
+                        .anchor = token,
+                        .rows = rows,
+                        .drafts = &drafts[i],
+                        .logits = &outs[i]});
+      }
+      const auto wave = [&]() -> Status {
+        if (auto r = dsv4_.DraftVerifyWave(work); !r) {
+          return r;
+        }
+        for (Slot* slot : handles) {
+          if (auto r = slot->Accept(1); !r) {
+            return r;
+          }
+        }
+        return {};
+      };
+      for (const char* name : {"spec-wave-plan", "spec-wave-graph", "spec-wave-replay"}) {
+        if (auto r = measure(name, wave); !r) {
+          return r;
+        }
+      }
+    }
+    return {};
+  });
+  if (!ran) {
+    return ran;
+  }
+  std::string rows;
+  for (const auto& [name, k] : kinds) {
+    std::string deltas;
+    for (std::size_t i = 0; i < k.deltas.size(); ++i) {
+      const Sample& d = k.deltas[i];
+      deltas += std::format(
+          R"({}{{"plans":{},"graphs":{},"dropped":{},"heap":{},"rss":{},"available_drop":{},"counted":{},"graph_counted":{},"graph_device":{}}})",
+          deltas.empty() ? "" : ",", k.plans[i], k.graphs[i], k.dropped[i], d.heap, d.rss,
+          d.available, d.counted, d.graph_counted, d.graph_device);
+      std::println(
+          "plan memory: {} #{}: plans {:+}, graphs {:+} ({} dropped); heap {:+.2f} MiB, "
+          "rss {:+.2f} MiB, "
+          "MemAvailable -{:.2f} MiB, counted {:+.2f} MiB, graphs counted {:+.2f} MiB, "
+          "graph device {:.2f} MiB",
+          name, i, k.plans[i], k.graphs[i], k.dropped[i], static_cast<double>(d.heap) / (1 << 20),
+          static_cast<double>(d.rss) / (1 << 20), static_cast<double>(d.available) / (1 << 20),
+          static_cast<double>(d.counted) / (1 << 20),
+          static_cast<double>(d.graph_counted) / (1 << 20),
+          static_cast<double>(d.graph_device) / (1 << 20));
+      // A kind's first shape also pays one-time costs (the driver loading
+      // its kernels), and a shape that made the runner drop another plan
+      // or graph nets them: reported, not held to the count. Otherwise a
+      // plan's heap, or a graph's, past what the runner counts for it is a
+      // defect. (MemAvailable moves with the rest of the system too: a
+      // graph's device memory is reported beside it, not checked.)
+      if (i == 0 || k.dropped[i] != 0 || k.plans[i] < 0 || k.graphs[i] < 0) {
+        continue;
+      }
+      if (k.plans[i] > 0 && d.counted < d.heap) {
+        problems_.push_back(
+            std::format("{} #{}: heap +{} bytes but {} counted", name, i, d.heap, d.counted));
+      }
+      if (k.plans[i] == 0 && k.graphs[i] > 0 && d.graph_counted < d.heap) {
+        problems_.push_back(std::format("{} #{}: a graph's heap +{} bytes but {} counted", name, i,
+                                        d.heap, d.graph_counted));
+      }
+    }
+    rows += std::format(R"({}"{}":[{}])", rows.empty() ? "" : ",", name, deltas);
+  }
+  std::println("plan memory: bound {:.2f} MiB; kept {} plans, {} graphs, counted {:.2f} MiB",
+               static_cast<double>(bound) / (1 << 20), dsv4_.plans(), dsv4_.graphs(),
+               static_cast<double>(dsv4_.cached_plan_bytes()) / (1 << 20));
+  results_.push_back(std::format(
+      R"({{"check":"plan-memory","slots":{},"speculative":{},"plan_host_bytes":{},"kinds":{{{}}}}})",
+      slots, dsv4_.speculative() ? "true" : "false", bound, rows));
+  return {};
+}
+
+// --check capacity (--slots N, --state-budget-mib B; docs/runtime-serving.md,
+// "State capacity in a cohort"): the runner's typed capacity refusal and
+// the idle-state release the serving cohort waits on. With slots 0 and 1
+// selected, slot 0 takes about 60% of the state's room; slot 1's growth to
+// the same is then refused for capacity (Slot::state_refused, the state
+// usable and unchanged), while a growth past the context is refused but
+// not for capacity. With slot 1 selected alone, it cannot clear itself as
+// idle; slot 0 (now idle) can, and slot 1's growth and a chunk then run.
+Status Harness::Capacity() {
+  using Slot = jb::Dsv4Runner::Slot;
+  if (o_.dsv4.wave_slots < 2 || o_.state_budget_mib == 0) {
+    return Error("the capacity check needs --slots 2 to 4 and --state-budget-mib");
+  }
+  std::array<Slot*, 2> slots{};
+  for (std::uint32_t i = 0; i < 2; ++i) {
+    auto slot = dsv4_.request_slot(i);
+    if (!slot) {
+      return std::unexpected(slot.error());
+    }
+    slots[i] = *slot;
+  }
+  // The positions whose state (and the DSpark ring) is about 60% of the room.
+  const std::uint64_t room = o_.state_budget_mib << 20U;
+  const auto bytes_through = [&](std::uint32_t positions) -> std::uint64_t {
+    auto ranges = md::Dsv4UsedState(dsv4_.state_layout(), positions);
+    std::uint64_t bytes = dsv4_.drafter_state_bytes();
+    if (ranges) {
+      for (const auto& r : *ranges) {
+        bytes += r.bytes;
+      }
+    }
+    return bytes;
+  };
+  const std::uint64_t target = (room * 6) / 10;
+  std::uint32_t lo = 1;
+  std::uint32_t hi = o_.dsv4.context - 1;
+  while (lo < hi) {
+    const std::uint32_t mid = lo + ((hi - lo + 1) / 2);
+    if (bytes_through(mid) <= target) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const std::uint32_t positions = lo;
+  if (bytes_through(positions) * 2 <= room || bytes_through(positions) > room) {
+    return Error(std::format("no position fills 60% of a {} MiB room", o_.state_budget_mib));
+  }
+  std::string failures;
+  const auto expect = [&](bool ok, std::string_view what) {
+    if (!ok) {
+      failures += std::format("{}{}", failures.empty() ? "" : "; ", what);
+    }
+  };
+  std::uint64_t used_before = 0;
+  std::uint64_t used_refused = 0;
+  if (auto r = dsv4_.SelectSlots(slots); !r) {
+    return r;
+  }
+  auto both = node_.WithRequest(kDsv4, dsv4_.execution_closure(), "two slots", [&]() -> Status {
+    for (Slot* slot : slots) {
+      if (auto r = slot->Clear(); !r) {
+        return r;
+      }
+    }
+    if (auto r = slots[0]->ReserveStateThrough(positions); !r) {
+      return Error(std::format("slot 0's state through {}: {}", positions, r.error()));
+    }
+    expect(!slots[0]->state_refused(), "a growth that fit is not a refusal");
+    used_before = slots[1]->used_state_bytes();
+    auto refused = slots[1]->ReserveStateThrough(positions);
+    expect(!refused.has_value(), "slot 1's growth beside slot 0's fit the room");
+    expect(slots[1]->state_refused(), "the budget's refusal is typed as capacity");
+    expect(slots[1]->state_usable(), "a capacity refusal leaves the state usable");
+    used_refused = slots[1]->used_state_bytes();
+    auto past = slots[1]->ReserveStateThrough(o_.dsv4.context + 8);
+    expect(!past.has_value() && !slots[1]->state_refused(),
+           "a growth past the context is refused, but not for capacity");
+    return {};
+  });
+  if (!both) {
+    return both;
+  }
+  bool cleared_active = true;
+  std::uint64_t idle_after = 0;
+  const std::array<Slot*, 1> alone = {slots[1]};
+  if (auto r = dsv4_.SelectSlots(alone); !r) {
+    return r;
+  }
+  auto one = node_.WithRequest(kDsv4, dsv4_.execution_closure(), "slot 1 alone", [&]() -> Status {
+    cleared_active = slots[1]->ClearIdle().has_value();
+    expect(!cleared_active, "a selected slot is not cleared as idle");
+    if (auto r = slots[0]->ClearIdle(); !r) {
+      return Error(std::format("clearing idle slot 0: {}", r.error()));
+    }
+    idle_after = slots[0]->used_state_bytes();
+    expect(idle_after == 0, "an idle slot's cleared state holds nothing");
+    if (auto r = slots[1]->ReserveStateThrough(positions); !r) {
+      return Error(std::format("slot 1's growth after the idle clear: {}", r.error()));
+    }
+    std::vector<float> row;
+    const std::int32_t token = 1000;
+    return slots[1]->Chunk(positions - 1, std::span(&token, 1), row);
+  });
+  if (!one) {
+    return one;
+  }
+  if (!failures.empty()) {
+    problems_.push_back("capacity: " + failures);
+  }
+  std::println(
+      "capacity: room {} MiB, {} positions ({:.1f} MiB a slot); slot 1 before {} bytes, "
+      "after its refusal {} bytes; {}",
+      o_.state_budget_mib, positions, static_cast<double>(bytes_through(positions)) / (1 << 20),
+      used_before, used_refused, failures.empty() ? "ok" : failures);
+  results_.push_back(std::format(
+      R"({{"check":"capacity","room_mib":{},"positions":{},"slot_bytes":{},"used_before":{},"used_after_refusal":{},"idle_after_clear":{},"failures":{}}})",
+      o_.state_budget_mib, positions, bytes_through(positions), used_before, used_refused,
+      idle_after, failures.empty() ? 0 : 1));
+  return {};
+}
+
 Status Harness::Run() {
   if (auto r = Tokenize(); !r) {
     return r;
@@ -1870,7 +2709,8 @@ Status Harness::Run() {
   const std::uint64_t fixed = node_.catalog().OccupancyOf(node_.domain()).Total().value();
   // State diagnostics keep a cataloged pinned copy alongside the device state.
   const std::uint64_t budget =
-      fixed + (2 * node_.StateCapacity()) +
+      fixed +
+      (o_.state_budget_mib != 0 ? (o_.state_budget_mib << 20U) : 2 * node_.StateCapacity()) +
       ((dsv4_.weights().size() + (with_fp16() ? fp16_.weights().size() : 0)) * ts::kPagedExtent);
   if (auto r = node_.Start(Bytes(budget)); !r) {
     return r;
@@ -1912,19 +2752,21 @@ Status Harness::Run() {
   if (auto r = dsv4_.Clear(); !r) {
     return r;
   }
-  std::vector<std::int32_t> empty_drafts;
-  if (auto r = dsv4_.Draft(0, 0, empty_drafts); !r) {
-    return r;
-  }
-  if (empty_drafts.size() != o_.dsv4.draft_rows ||
-      std::ranges::any_of(empty_drafts, [&](std::int32_t t) {
-        return t < 0 || std::cmp_greater_equal(t, dsv4_.vocab());
-      })) {
-    return Error("a standalone empty-prefix draft returned invalid tokens");
-  }
-  std::println("empty-prefix standalone draft: {} valid tokens", empty_drafts.size());
-  if (auto r = dsv4_.Clear(); !r) {
-    return r;
+  if (dsv4_.speculative()) {
+    std::vector<std::int32_t> empty_drafts;
+    if (auto r = dsv4_.Draft(0, 0, empty_drafts); !r) {
+      return r;
+    }
+    if (empty_drafts.size() != o_.dsv4.draft_rows ||
+        std::ranges::any_of(empty_drafts, [&](std::int32_t t) {
+          return t < 0 || std::cmp_greater_equal(t, dsv4_.vocab());
+        })) {
+      return Error("a standalone empty-prefix draft returned invalid tokens");
+    }
+    std::println("empty-prefix standalone draft: {} valid tokens", empty_drafts.size());
+    if (auto r = dsv4_.Clear(); !r) {
+      return r;
+    }
   }
   Status checked;
   if (o_.check == "frontier") {
@@ -1941,6 +2783,12 @@ Status Harness::Run() {
     checked = Sampled(false);
   } else if (o_.check == "sampled-spec") {
     checked = Sampled(true);
+  } else if (o_.check == "capacity") {
+    checked = Capacity();
+  } else if (o_.check == "plan-memory") {
+    checked = PlanMemory();
+  } else if (o_.check == "wave") {
+    checked = Wave();
   } else {
     checked = Error(std::format("no check {}", o_.check));
   }
@@ -2059,6 +2907,13 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.only = v;
     } else if (a == "--probe-step") {
       ok = number(o.probe_step) && o.probe_step >= 1;
+    } else if (a == "--wave-mode") {
+      o.wave_mode = v;
+      ok = v == "decode" || v == "verify";
+    } else if (a == "--state-budget-mib") {
+      ok = number(o.state_budget_mib) && o.state_budget_mib > 0;
+    } else if (a == "--slots") {
+      ok = number(o.dsv4.wave_slots) && o.dsv4.wave_slots >= 2 && o.dsv4.wave_slots <= 4;
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -2066,17 +2921,23 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       return Error(std::format("{} does not take {}", a, v));
     }
   }
-  if (o.dsv4.artifact.empty() || o.dsv4.drafter.empty() || o.prompts.empty() || o.out.empty() ||
-      o.check.empty() || (o.fp16.artifact.empty() != o.fp16.tokens.empty())) {
+  // The slot checks (wave, plan-memory, capacity) run plain without a
+  // drafter; every other check speculates.
+  const bool slotted = o.check == "wave" || o.check == "plan-memory" || o.check == "capacity";
+  if (o.dsv4.artifact.empty() || (o.dsv4.drafter.empty() && !slotted) || o.prompts.empty() ||
+      o.out.empty() || o.check.empty() || (o.fp16.artifact.empty() != o.fp16.tokens.empty()) ||
+      (slotted != (o.dsv4.wave_slots > 1))) {
     return Error(
-        "usage: jitllm_spec_runner --dsv4-artifact DIR --drafter DIR --prompts FILE --out DIR "
-        "--check greedy|forced|swap|sampled-plain|sampled-spec|probe|frontier|sizing [--tokens N] "
-        "[--context N] "
-        "[--max-rows N] "
+        "usage: jitllm_spec_runner --dsv4-artifact DIR [--drafter DIR] --prompts FILE --out DIR "
+        "--check greedy|forced|swap|sampled-plain|sampled-spec|probe|frontier|sizing|wave|"
+        "plan-memory|capacity "
+        "[--tokens N] [--context N] [--max-rows N] "
         "[--graphs on|off] [--exact on|off] [--margin B] [--draft N] "
         "[--prefill-outa-hca on|off] [--fp16-artifact DIR "
         "--fp16-tokens FILE "
-        "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N]");
+        "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N] "
+        "[--slots N (wave, plan-memory, capacity: 2-4)] [--wave-mode verify|decode] "
+        "[--state-budget-mib N]");
   }
   // The paired control needs the all-row workspace for its original arm.
   if (o.check == "frontier") {

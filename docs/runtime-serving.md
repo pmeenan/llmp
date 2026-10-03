@@ -97,11 +97,22 @@ model on one paged node: its artifacts opened, its runner set up on its own
 stream, its tokenizer and renderer found, the shared workspace mapped at the
 largest model's need. The scheduler's physical cap is the fixed allocations
 plus the post-setup available memory, less the largest host-built chunk
-inputs and a 6 GiB guard, rounded down to 2 MiB extents. Fixed allocations,
-weights, used state and dynamic staging are charged within that cap; the
-largest model's weights must fit beside the fixed allocations at admission.
-The guard covers memory outside the catalog (decode graphs, the driver and
-cuBLAS; [long-context](experiments/long-context/README.md#memory-and-the-guards-margin)).
+inputs, every model's plan budget and a 6 GiB guard, rounded down to 2 MiB
+extents. Fixed allocations, weights, used state and dynamic staging are
+charged within that cap; the largest model's weights must fit beside the
+fixed allocations at admission. The guard covers memory outside the catalog
+(the driver and cuBLAS; [long-context](experiments/long-context/README.md#memory-and-the-guards-margin)).
+A model's cached plans and graphs are host and driver memory outside the
+catalog too, but bounded: each runner caps its chunk, drafter and wave
+plans (shared by its request slots, least recently used dropped) and every
+graph it keeps, its drafter's and waves' included, and reports the most
+those caps can hold, measured from its largest plans at setup
+(`Served::plan_host_bytes`, `engine/planned.h`). Only the resident model
+keeps them: a swap drops the outgoing model's plans and graphs, and it
+plans and captures again when it returns (D-090 as amended). So the guard
+sets apart the largest model's bound beside the margin, and no number of
+distinct shapes can consume it
+([batching](experiments/deepseek-batching/README.md#plan-memory)).
 Conversation ceilings reserve virtual addresses; backing grows in 2 MiB
 extents with each padded cache prefix. The budget admits that growth from
 the remaining physical capacity, preserving the guard. Spill and restore
@@ -345,8 +356,10 @@ ordered pair of the registered models (or those named), A→B→A, first use
 tokens of A's context, each part timed and the endpoints as the table
 specifies; A's restored state must hash as it left and its continuation
 equal, token and logit, the same state's unswapped continuation; B's first
-output must repeat; a prepared return must replay graphs captured before
-the swap; an image A's regenerated pixels must equal its control's. Both
+output must repeat; an LLM that bounds its plans returns with none kept (its
+swap-out dropped them), and any other model's prepared return must replay
+graphs captured before the swap; an image A's regenerated pixels must equal
+its control's. Both
 write every number to `--report` as JSON. `swap-table --context-tokens`
 accepts 32 to 1,048,576; the requested context must also fit the selected
 model's usable configured context. Run by hand, a command stops on
@@ -554,7 +567,7 @@ every connection, all non-blocking: it reads requests, answers the model
 list, the table and every refusal itself, and queues valid chat requests;
 it never waits on the model, and no client's pace (a stalled head, a
 reader that stops) holds up another's. The node's driver thread (the main
-thread) takes the queue first come, first served, sharing compatible Qwen chat
+thread) takes the queue first come, first served, sharing compatible Qwen and DeepSeek chat
 requests in completed units and running other requests one at a time. It
 watches the runtime's signals (a signalfd) between units. It never touches a
 socket: it appends each
@@ -585,10 +598,24 @@ BF16 products also share immutable weights through their original cuBLAS path,
 with independent preparation and nonlinear mixing. Unsupported shapes keep
 their original products.
 
+The production DeepSeek chat backend funds four active requests (four
+native slots, `engine/dsv4_runner.h`). Their decode steps run as waves: plain,
+one row each; with DSpark, each request's own draft block, then one joined
+verify of every request's natural rows (up to four each, sixteen in all).
+A lone request, and a request whose verify is one row (a mask-width boundary or
+its last token), keeps its ordinary step. Each request's rows, drafts, accepted
+tokens and state equal its steps alone bit for bit, so concurrency itself
+does not change a reply. Two things around it can: a request preempted for
+state capacity rebuilds its state by prefill (below), and a turn that
+reuses a cached prefix continues from whichever free branch holds the
+longest one, whose earlier prefill may have been chunked differently
+([report](experiments/deepseek-batching/README.md): C4 +29.0% plain, +4.5%
+DSpark on the matched 7K protocol).
+
 Cancellation ends only its request at a completed boundary. Before releasing a
 frame or admitting its replacement, an explicit native stream fence proves
 that copies and jobs have retired. Unknown completion stops shared execution
-and retains the borrowed owners. Other families and `/v1/completions`, including
+and retains the borrowed owners. The image pipeline and `/v1/completions`, including
 likelihood scoring, retain their ordinary serial entry points.
 
 ### State capacity in a cohort
@@ -603,7 +630,10 @@ branches hold the rest of the execution budget. Such a
 refusal is typed: the runner reports it (`WorkError::kOverBudget` from the
 acquisition, `Llm::StateRefusedFor`) only when it came before any dispatch
 and left the state usable as it was, with any fresh zero pages that
-completed retained and protected. The cooperative backend defers it
+completed retained and protected (Qwen3.8's and DeepSeek's runners, each
+slot's `state_refused`; a DeepSeek decode step grows its state in its
+preparation, through the most rows its verify may take, so a shared wave
+never grows, nor refuses, a member). The cooperative backend defers it
 (`PromptSession::Advance` and `RunGenerationWave` with `defer_capacity`):
 the session stays resumable at its completed prefix, and its unit runs
 again later. Every other failure ends its request as before. The policy
@@ -651,14 +681,14 @@ logs each wait, preemption, cleared idle cache and refusal with slots and
 token counts only.
 
 An LLM's stable `Branch` owns its prompt history, sampling key, session guard,
-turn checkpoints and adaptive draft-depth policy. Qwen3.8 maps up to four branches
+turn checkpoints and adaptive draft-depth policy. Qwen3.8 and DeepSeek map up to four branches
 to independent native request slots, with one shared set of model weights. Other
 families retain their default branch. Each resumable generation session forwards
 its completed units to its own branch; saving, restoring or clearing a branch
 does not change another branch's history or policy. Prefix matching chooses a
 reuse opportunity among free branches; it does not identify a conversation.
-The execution capacity (the runner's funded wave slots, four for Qwen chat)
-is separate from the retained branch slots.
+The execution capacity (the runner's funded wave slots, four for Qwen and
+DeepSeek chat) is separate from the retained branch slots.
 
 `Branch::BeginPrompt` owns a bounded prompt copy without native work. Its
 `PromptSession` advances one reuse/restore, prefill chunk or turn-checkpoint unit
@@ -898,8 +928,9 @@ short DeepSeek and Qwen prompts, with speculation on and off.
   eviction, admission and the switching policy come with M5 and M6.
 - The chat route is M3's minimal one: no tools, no reasoning controls,
   no credentials (the optional API key is M5's), no CORS, no Responses or
-  Messages routes. Qwen chat shares up to four requests; other families and
-  literal completions run one at a time. The front door is M5's.
+  Messages routes. Qwen and DeepSeek chat share up to four requests; other
+  families and literal completions run one at a time. The front door is
+  M5's.
 - The tailnet is found at startup; a node whose Tailscale comes up later
   serves it after a restart. `jitllm.service` is ordered after
   `tailscaled.service` (ordering only, no dependency) for that reason.

@@ -50,6 +50,15 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   the runtime: 8K prefill 1.65× and decode 1.08× llama-server's. The build
   compiles GGML's tile kernels for Q4_0, Q2_0, Q3_K, IQ1_S, IQ2_S, IQ3_S,
   IQ4_NL and IQ4_XS too.
+- DeepSeek chat serves up to four requests at once: their decode steps (and
+  DSpark draft-and-verify steps) run in waves that read each weight once for
+  all of them, each request's steps bit-identical to running alone (a request
+  preempted for state capacity is rebuilt by prefill, and a turn reuses
+  whichever branch's cached prefix is longest, so those can still change a
+  reply). At four matched 7K-token requests the completed-token rate rises
+  29% plain and 4.5% with DSpark. A request whose state cannot grow beside
+  its peers' waits (an idle conversation's cached state is cleared first)
+  instead of failing; only one that cannot fit alone fails for capacity.
 - DeepSeek prefill uses ds4's stage mechanisms by default on GB10: F16 HC
   and attention rows, fused expert sums and pair activations, shared
   quantizations and the D2R Q2_K down product, each where its measured
@@ -305,6 +314,15 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   conversations' retained state held the capacity it needed. It now clears
   that idle state, the largest first, and goes on; one that cannot fit
   alone fails with a 500 and the service keeps serving.
+- Cached plans and graphs, which live outside the catalog, are now
+  bounded: each runner caps them (chunk and drafter plans shared by its
+  request slots, wave plans, and every graph, its drafter's and waves'
+  included, by count and by bytes; least recently used dropped) and reports
+  the most they can hold, and a swap drops the outgoing model's. The
+  runtime's memory guard sets apart the largest model's bound (DeepSeek
+  with DSpark: 0.63 GiB), so many distinct request shapes can no longer eat
+  its uncounted margin and push the host into swap. A model returning from
+  a swap plans and captures its graphs again.
 - Routed quantized products allocate scratch for partial expert tiles'
   dummy columns, including raw FP4, so bounded workspace covers every read.
 - Qwen3.8's sparse attention rejects unequal key/value cache row strides

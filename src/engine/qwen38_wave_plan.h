@@ -78,6 +78,9 @@ class Qwen38WavePlanned : public PlannedBase {
   std::span<ggml_tensor* const> inputs() const { return inputs_; }
   std::uint8_t active_slots() const { return active_slots_; }
   const Qwen38WaveStats& stats() const { return stats_; }
+  // What it holds on the host as its runner counts it (planned.h
+  // PlannedHostBytes): every slot's plan, its own arenas and joined plan.
+  std::uint64_t host_bytes() const;
   // One shared product: the slots' original descriptors, in slot order, and
   // their replacement.
   struct Product {
@@ -100,6 +103,13 @@ class Qwen38WavePlanned : public PlannedBase {
   Qwen38WaveStats stats_;
   std::uint8_t active_slots_ = 0;
 };
+
+// The most a wave of `slots` slots holds on the host (host_bytes()) when
+// each slot's plan holds at most `slot_bytes` (PlannedHostBytes), launches
+// at most `slot_nodes` nodes and has at most `products` products eligible to
+// be shared: every slot's plan, the composition's arenas and the joined plan.
+std::uint64_t Qwen38WaveHostBound(std::uint64_t slot_bytes, std::uint64_t slot_nodes,
+                                  std::uint64_t products, std::uint64_t slots);
 
 // Geometry-only eligibility, shared with conservative provisioning. The
 // composer separately authenticates the immutable leaf and MMF selectors.

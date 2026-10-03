@@ -52,6 +52,8 @@ class TensorArena {
 
   // The context GGML's graph functions build on.
   ggml_context* context() const { return context_.get(); }
+  // The host bytes it holds (its tensors' metadata), whatever it uses.
+  std::size_t bytes() const { return capacity_; }
   // Refused unless `tensors` more fit.
   std::expected<void, KernelFailure> Reserve(std::size_t tensors) const;
 

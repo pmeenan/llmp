@@ -37,9 +37,10 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | --- | --- | --- | --- |
 | Weights | `paged_weights.h` | Opens an artifact and its shards for direct reads; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`, `ExpertSlab`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
 | Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify | The state layout and each step's used ranges; which ranges a verify writes; a commit kernel if kept rows need one |
-| Planned shapes | `planned.h` | `PlannedGraph<Graph>`, `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, capped), `RoomForGraph` (the graph cap, D-090), `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
+| Planned shapes | `planned.h` | `PlannedGraph<Graph>`, `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, capped, least recently used dropped, host bytes counted: `PlannedHostBytes`), `RoomForPlan` (one plan cap over several caches, a runner's slots), `RoomForGraphs` (the graph cap over every graph a model keeps, D-090), `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
 | Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts) and what it copies out |
 | Resources | `runner_resources.h` | The runner's own device memory (pinned), pinned staging, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry, and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
+| Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
 
 `support.h` holds the small helpers (errors, addresses, rounding, seconds,
 joined problems).
@@ -65,8 +66,10 @@ joined problems).
    (`RunnerResources::BindLaunch`, then `GraphRuns::SetLaunch`).
 4. **Steps**: each chunk, draft or verify checks `LiveState::Usable` and
    `AwaitingAccept`, finds or plans its shape (`PlanCache::Find`, else plan,
-   `BindPlanned`, `CheckCoverage`, `Add`), decides whether to capture
-   (`PlanRuns::CaptureDue` plus the model's rule, then `RoomForGraph`), and
+   `BindPlanned`, `CheckCoverage`, `RoomForPlan` where slots share a cap,
+   `Add` with its `PlannedHostBytes`), decides whether to capture
+   (`PlanRuns::CaptureDue` plus the model's rule, then `RoomForGraphs` for
+   every capture of the job), and
    materializes its used ranges (`LiveState::Use`) and renews the request
    closure if new extents were initialized, then posts one job that queues what the live state owes (`QueueOwed`), a
    verify's saves (`QueueSaves`), and the run (`GraphRuns::Queue`). A
@@ -115,9 +118,28 @@ failure while discarding the destination invalidates that slot; clean validation
 refusals preserve the existing state. An unproven device or shared-execution failure
 stops the cohort and preserves borrowed owners until retirement is established.
 The serving adapter forwards each host branch to its corresponding native slot.
-The production Qwen chat backend drives prompt and generation units through the
-shared driver seams; other families and literal completions retain scalar entry
-points. A native fence proves retirement before any borrowed owner is released.
+The production Qwen and DeepSeek chat backends drive prompt and generation units
+through the shared driver seams; literal completions retain scalar entry points.
+A native fence proves retirement before any borrowed owner is released.
+
+`Dsv4Runner` has the same four slots (`Dsv4Options::wave_slots`; one, the
+harnesses' default, provisions slot zero alone), each with its own target state,
+DSpark ring, verify snapshot, output staging and plans, its cohort rules from
+`request_cohort.h`. Its waves are not composed from per-slot plans: the graph
+builder takes several slots' chunk shapes (`dsv4_graph.h` `Dsv4WaveGraph`) and
+builds one fast-plan graph whose row-local operations (every quantized product,
+routed experts read once per distinct expert, HC mixes, routing, norms, the
+head) run once over every slot's rows, while each slot's compressors, indexer,
+attention, cache writes and DSpark injection run on its own state. A wave holds
+at most 16 rows and keeps each request's rows bit-identical to its steps alone:
+`jitllm.vecq` is count-invariant from 2 to 16 tokens, float products past GGML's
+8-column vector kernel run per slot, a wave of one-row steps takes the vector
+product's one-token launch (`SetVecQOneToken`), and the drafter's injection
+(GGML MMVQ) runs per slot. `DecodeWave` runs one step of each slot (injected
+beside a drafter); `DraftVerifyWave` each slot's draft block and one joined
+verify, whose rows await each slot's `Accept`. A family whose graph builder can
+take per-slot segments gets waves this way at the cost of its stateful
+operations alone ([report](experiments/deepseek-batching/README.md)).
 
 ## Adding a model family
 
@@ -136,7 +158,9 @@ What a new family writes, and nothing else:
   in the graph's copy order.
 - `engine/<family>_runner.h`: a `PagedModel` holding `RunnerResources`,
   `LiveState`, `GraphRuns`, a `PagedWeights` per artifact and a
-  `PlanCache` per kind of plan, with Setup, Register and Bind as above and
+  capped `PlanCache` per kind of plan, its `plan_host_bytes()` (every cap at
+  its kind's largest plan, measured at Setup, and every graph's: the memory
+  guard sets it apart), with Setup, Register and Bind as above and
   the family's steps. The DeepSeek and Qwen3.8 runners are the worked
   examples: DeepSeek with a host table, a chained draft-and-verify job and
   a snapshot of every written range; Qwen3.8 with rows read on demand and

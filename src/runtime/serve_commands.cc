@@ -676,9 +676,17 @@ Status Table::Pair(Served& a, Served& b) {
                  .replayed = after.replayed - graphs_before.replayed,
                  .refused = after.refused - graphs_before.refused,
                  .kept = after.kept};
-    // Prepared: A kept its plans and graphs through the swap (D-090's
-    // pins), so its continuation replays graphs captured before it.
-    if (cycle > 0 && a.llm() && with_context && (ba.graphs_kept == 0 || ba.graphs.replayed == 0)) {
+    // An LLM that bounds its plans and graphs drops them at its swap-out
+    // (Server::Activate: the start's guard sets apart the resident model's
+    // bound alone), so none come back with it and a prepared return plans
+    // and captures again. A model that keeps them (D-090's pins) replays
+    // graphs captured before the swap.
+    if (cycle > 0 && a.llm() && a.plan_host_bytes() != 0 && ba.graphs_kept != 0) {
+      problems_.push_back(
+          std::format("{} {}: A kept {} graphs through the swap", pair, ba.name, ba.graphs_kept));
+    }
+    if (cycle > 0 && a.llm() && a.plan_host_bytes() == 0 && with_context &&
+        (ba.graphs_kept == 0 || ba.graphs.replayed == 0)) {
       problems_.push_back(std::format(
           "{} {}: A replayed no decode graph captured before the swap ({} kept, {} replayed)", pair,
           ba.name, ba.graphs_kept, ba.graphs.replayed));

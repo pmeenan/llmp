@@ -896,6 +896,178 @@ TEST(Dsv4Test, TheFastPlanAttendsSparselyAtAnyDepth) {
                    .has_value());
 }
 
+// A wave (dsv4_graph.h Dsv4WaveGraph): several slots' chunks at their own
+// positions in one graph, whose row-local operations run once over every
+// slot's rows (as many vector products as one chunk of the same rows) and
+// whose state, compressors, indexer and attention stay each slot's own.
+TEST(Dsv4Test, AWaveJoinsRowLocalWorkAndKeepsEachSlotsStateItsOwn) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  const std::vector<md::Dsv4Resource> resources = GgufLike(p);
+  auto binding = md::BindDsv4(p, "deepseek4", resources);
+  ASSERT_TRUE(binding.has_value()) << Why(binding);
+  auto state = md::Dsv4State(p, 8192, 512, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state.has_value());
+  std::vector<std::uint64_t> strides(p.layers, 8064224);
+  strides[42] = 9309200;
+  kg::DeviceChoices device = ModelDevice();
+  device.fuse_norms = true;
+  device.vector_floats = true;
+  // Three slots: a decode step, a four-row verify and a two-row one.
+  const std::array<std::pair<std::uint32_t, std::uint32_t>, 3> slots = {
+      {{100U, 1U}, {2000U, 4U}, {5000U, 2U}}};
+  kg::Dsv4WaveShape shape;
+  std::uint32_t rows = 0;
+  for (const auto& [n_past, n] : slots) {
+    auto chunk = md::Dsv4Chunk(p, *state, n_past, n, false);
+    ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+    shape.slots.push_back(kg::Dsv4ShapeOf(*state, *chunk));
+    rows += n;
+  }
+  const auto plan_of = [&](std::span<ggml_tensor* const> nodes,
+                           std::span<ggml_tensor* const> inputs) {
+    std::uint64_t next = std::uint64_t{1} << 40U;
+    const auto bind_leaf = [&](ggml_tensor* t) {
+      if (t != nullptr && t->data == nullptr && t->view_src == nullptr) {
+        kg::TensorArena::Bind(t, next);
+        next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+      }
+    };
+    for (ggml_tensor* t : inputs) {
+      bind_leaf(t);
+    }
+    for (ggml_tensor* node : nodes) {
+      for (ggml_tensor* src : node->src) {
+        if (src != nullptr && src->op == GGML_OP_NONE) {
+          bind_leaf(src);
+        }
+      }
+    }
+    kg::BindDistinct(nodes, std::uint64_t{1} << 46U);
+    return kg::PlanGraph(nodes, false, device);
+  };
+  const auto count = [](const kg::GraphPlan& plan, std::string_view name) {
+    return std::ranges::count_if(plan.steps,
+                                 [&](const auto& step) { return step.implementation == name; });
+  };
+  auto arena = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, slots.size()));
+  ASSERT_TRUE(arena.has_value());
+  auto wave =
+      kg::BuildDsv4WaveGraph(*arena, p, *binding, shape, {.expert_stride = strides, .fused = true});
+  ASSERT_TRUE(wave.has_value()) << Why(wave);
+  ASSERT_EQ(wave->slots.size(), slots.size());
+  EXPECT_EQ(wave->first, (std::vector<std::int64_t>{0, 1, 5}));
+  EXPECT_EQ(wave->joined.embd->ne[1], rows);
+  EXPECT_EQ(wave->joined.logits->ne[0], p.vocab);
+  EXPECT_EQ(wave->joined.logits->ne[1], rows);
+  EXPECT_EQ(wave->joined.out_ids, nullptr);
+  const auto inputs = wave->inputs();
+  EXPECT_EQ(inputs.size(), 7 + (slots.size() * 19));
+  auto plan = plan_of(wave->joined.nodes, inputs);
+  ASSERT_TRUE(plan.has_value()) << Why(plan);
+  // One chunk of the same rows, for the row-local operations' count.
+  auto chunk = md::Dsv4Chunk(p, *state, 2000, rows, false);
+  ASSERT_TRUE(chunk.has_value());
+  auto one_arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+  ASSERT_TRUE(one_arena.has_value());
+  auto one = kg::BuildDsv4Graph(*one_arena, p, *binding, kg::Dsv4ShapeOf(*state, *chunk),
+                                {.expert_stride = strides, .fused = true});
+  ASSERT_TRUE(one.has_value()) << Why(one);
+  auto one_plan = plan_of(one->nodes, one->inputs());
+  ASSERT_TRUE(one_plan.has_value()) << Why(one_plan);
+  for (const std::string_view name :
+       {kg::kVecQName, kg::kQuantizeQ8Name, kg::kDsv4RouteName, kg::kDsv4CombineName,
+        kg::kDsv4HcMixName, kg::kDsv4HcPreName}) {
+    EXPECT_EQ(count(*plan, name), count(*one_plan, name)) << name;
+    EXPECT_GT(count(*plan, name), 0) << name;
+  }
+  // Per slot: its attention, indexer and compressors (21 CSA layers with
+  // the indexer's compressor, 20 HCA).
+  EXPECT_EQ(count(*plan, kg::kDsv4LidTopKName), 21 * 3);
+  EXPECT_EQ(count(*plan, kg::kDsv4CompressName), ((21 * 2) + 20) * 3);
+  EXPECT_EQ(count(*plan, kg::kDsv4CompressName), 3 * count(*one_plan, kg::kDsv4CompressName));
+  std::size_t attention = 0;
+  for (const ggml_tensor* node : wave->joined.nodes) {
+    if (node->op == GGML_OP_FLASH_ATTN_EXT) {
+      ++attention;
+    }
+  }
+  EXPECT_EQ(attention, std::size_t{p.layers} * slots.size());
+  // Each slot's state is its own: no two slots name one state tensor, and
+  // every cache write goes to a slot's own.
+  std::set<const ggml_tensor*> seen;
+  for (const kg::Dsv4Graph& slot : wave->slots) {
+    for (const kg::Dsv4LayerTensors& l : slot.layers) {
+      ASSERT_NE(l.raw_k, nullptr);
+      EXPECT_TRUE(seen.insert(l.raw_k).second);
+      EXPECT_EQ(l.q_a, nullptr);  // the weights are the joined graph's
+    }
+  }
+  for (const kg::Dsv4LayerTensors& l : wave->joined.layers) {
+    EXPECT_EQ(l.raw_k, nullptr);
+    EXPECT_NE(l.q_a, nullptr);
+  }
+  for (const ggml_tensor* node : wave->joined.nodes) {
+    if (node->op == GGML_OP_SET_ROWS) {
+      // GGML's set_rows is a view of the tensor it writes.
+      const ggml_tensor* target = node->view_src;
+      bool owned = false;
+      for (const kg::Dsv4Graph& slot : wave->slots) {
+        for (const kg::Dsv4LayerTensors& l : slot.layers) {
+          for (const ggml_tensor* t :
+               {l.raw_k, l.csa_state_kv, l.csa_state_score, l.lid_k, l.lid_state_kv,
+                l.lid_state_score, l.hca_state_kv, l.hca_state_score}) {
+            owned = owned || (t != nullptr && t == target);
+          }
+        }
+      }
+      EXPECT_TRUE(owned);
+    }
+  }
+  auto placed = kg::PlaceActivations(wave->joined.nodes, *plan, inputs, 256);
+  ASSERT_TRUE(placed.has_value()) << Why(placed);
+  // Refused: past the rows the products keep column-invariant, more than
+  // four slots, the reference form, a head narrowed, layouts that differ.
+  const auto refused = [&](const kg::Dsv4WaveShape& s, const kg::Dsv4GraphOptions& o) {
+    auto a = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, 5));
+    return a.has_value() && !kg::BuildDsv4WaveGraph(*a, p, *binding, s, o).has_value();
+  };
+  const kg::Dsv4GraphOptions fused{.expert_stride = strides, .fused = true};
+  // Four four-row verifies (16 rows): the vector products still joined,
+  // the float products (router, indexer weights, head mixes) a slot at a
+  // time, as each slot's own chunk runs them.
+  kg::Dsv4WaveShape full;
+  full.slots.assign(4, shape.slots[1]);
+  {
+    auto a = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, 4));
+    ASSERT_TRUE(a.has_value());
+    auto sixteen = kg::BuildDsv4WaveGraph(*a, p, *binding, full, fused);
+    ASSERT_TRUE(sixteen.has_value()) << Why(sixteen);
+    auto plan16 = plan_of(sixteen->joined.nodes, sixteen->inputs());
+    ASSERT_TRUE(plan16.has_value()) << Why(plan16);
+    EXPECT_EQ(count(*plan16, kg::kVecQName), count(*one_plan, kg::kVecQName));
+    // Per layer the router, per CSA layer the indexer's weights, the head's
+    // mixes: each slot's.
+    EXPECT_EQ(count(*plan16, kg::kMulMatVecFRows), 4 * (43 + 21 + 1));
+    EXPECT_EQ(count(*plan, kg::kMulMatVecFRows), 43 + 21 + 1);
+  }
+  kg::Dsv4WaveShape wide;
+  auto eight = md::Dsv4Chunk(p, *state, 3000, 8, false);
+  ASSERT_TRUE(eight.has_value());
+  wide.slots.assign(3, kg::Dsv4ShapeOf(*state, *eight));
+  EXPECT_TRUE(refused(wide, fused));  // 24 rows
+  kg::Dsv4WaveShape many;
+  many.slots.assign(5, shape.slots[0]);
+  EXPECT_TRUE(refused(many, fused));
+  EXPECT_TRUE(refused(shape, {.expert_stride = strides}));
+  kg::Dsv4WaveShape narrowed = shape;
+  narrowed.slots[1].outputs = 1;
+  EXPECT_TRUE(refused(narrowed, fused));
+  kg::Dsv4WaveShape other = shape;
+  other.slots[2].csa_cells += 256;
+  EXPECT_TRUE(refused(other, fused));
+  EXPECT_TRUE(refused({}, fused));
+}
+
 // The fast plan's attention mask is F16 [ring cells + compressed cells,
 // rows], and the MMA kernel takes its planes' strides in 32 bits (RE-037):
 // the widest chunk Dsv4MostRows admits keeps every attention's operands

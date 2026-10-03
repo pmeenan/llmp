@@ -866,6 +866,31 @@ Qwen38WavePlanned::~Qwen38WavePlanned() {
   bound.reset();
 }
 
+std::uint64_t Qwen38WaveHostBound(std::uint64_t slot_bytes, std::uint64_t slot_nodes,
+                                  std::uint64_t products, std::uint64_t slots) {
+  const std::uint64_t overhead = ggml_tensor_overhead();
+  const std::uint64_t shared = std::min<std::uint64_t>(products, kMaxPairedProducts);
+  // The products' arena and the heads' (Target and Draft below).
+  const std::uint64_t arenas = ((shared + 1) * 4 * kQwen38WaveSlots) * overhead;
+  // The joined plan launches every slot's nodes and each product's concats
+  // and views; its node lists hold them again.
+  const std::uint64_t joined =
+      slots * (slot_nodes + (shared * 4)) * (kPlanNodeHostBytes + (3 * sizeof(ggml_tensor*)));
+  return (slots * slot_bytes) + arenas + joined;
+}
+
+std::uint64_t Qwen38WavePlanned::host_bytes() const {
+  std::uint64_t bytes = PlannedHostBytes(*this) + (head_arena_ ? head_arena_->bytes() : 0) +
+                        ((nodes_.size() + inputs_.size() + keep_.size()) * sizeof(ggml_tensor*));
+  for (const auto& planned : target_) {
+    bytes += planned != nullptr ? PlannedHostBytes(*planned) : 0;
+  }
+  for (const auto& planned : draft_) {
+    bytes += planned != nullptr ? PlannedHostBytes(*planned) : 0;
+  }
+  return bytes;
+}
+
 const kg::Qwen38Graph* Qwen38WavePlanned::target(std::size_t slot) const {
   return slot < target_.size() && target_[slot] != nullptr ? &target_[slot]->graph : nullptr;
 }

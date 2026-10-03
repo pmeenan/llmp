@@ -4,11 +4,13 @@
 #include "engine/dsv4_plan.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <format>
 #include <numeric>
 #include <ranges>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -38,7 +40,6 @@ void BindDsv4Weights(const Dsv4Model& m, kg::Dsv4Graph& g) {
   bind(g.hc_head_fn, b.hc_head_fn);
   bind(g.hc_head_base, b.hc_head_base);
   bind(g.hc_head_scale, b.hc_head_scale);
-  using K = md::Dsv4StateTensor::Kind;
   for (std::uint32_t il = 0; il < m.profile->layers; ++il) {
     const md::Dsv4Layer& r = b.layers[il];
     kg::Dsv4LayerTensors& l = g.layers[il];
@@ -77,6 +78,14 @@ void BindDsv4Weights(const Dsv4Model& m, kg::Dsv4Graph& g) {
     kg::TensorArena::Bind(l.up_exps, m.places.array(r.up_exps.index));
     kg::TensorArena::Bind(l.gate_exps, m.places.array(r.gate_exps.index));
     kg::TensorArena::Bind(l.down_exps, m.places.array(r.down_exps.index));
+  }
+  BindDsv4State(m, m.places.state, g);
+}
+
+void BindDsv4State(const Dsv4Model& m, std::uint64_t base, kg::Dsv4Graph& g) {
+  using K = md::Dsv4StateTensor::Kind;
+  for (std::uint32_t il = 0; il < m.profile->layers && il < g.layers.size(); ++il) {
+    kg::Dsv4LayerTensors& l = g.layers[il];
     const auto state = [&](ggml_tensor* t, K kind) {
       // A view (a ring's compressed cache in its window's tensor) is
       // bound with the tensor it views.
@@ -84,8 +93,7 @@ void BindDsv4Weights(const Dsv4Model& m, kg::Dsv4Graph& g) {
         return;
       }
       const std::int64_t i = m.state->Find(il, kind);
-      kg::TensorArena::Bind(t,
-                            m.places.state + m.state->tensors[static_cast<std::size_t>(i)].offset);
+      kg::TensorArena::Bind(t, base + m.state->tensors[static_cast<std::size_t>(i)].offset);
     };
     state(l.raw_k, K::kRawK);
     state(l.csa_k, K::kCsaK);
@@ -212,6 +220,161 @@ void BindDsparkInjection(const DsparkModel& d, kg::Dsv4Graph& g) {
     kg::TensorArena::Bind(t.kv_norm[il], d.places.resource(b.blocks.layers[il].kv_norm.index));
     kg::TensorArena::Bind(t.ring[il], d.places.state + d.state->offsets[il]);
   }
+}
+
+std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
+    const Dsv4Model& m, std::span<const std::uint64_t> states, const kg::Dsv4WaveShape& shape,
+    const kg::DeviceChoices& choices, std::uint64_t activations, std::uint64_t activation_bytes,
+    const DsparkModel* drafter, std::span<const std::uint64_t> rings) {
+  if (m.exact || states.size() != shape.slots.size() ||
+      (drafter != nullptr && rings.size() != shape.slots.size())) {
+    return Error("a wave runs the fast plan over one state place a slot");
+  }
+  auto out = std::make_unique<Dsv4WavePlanned>();
+  auto arena = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(*m.profile, shape.slots.size()));
+  if (!arena) {
+    return Error(arena.error().detail);
+  }
+  out->arena.emplace(std::move(*arena));
+  kg::Dsv4GraphOptions options{.expert_stride = m.places.stride, .fused = true};
+  kg::SetDsv4PrefillStages(options, true);
+  if (drafter != nullptr) {
+    options.features = drafter->profile->target_layers;
+    options.inject = kg::Dsv4Injection{.profile = drafter->profile,
+                                       .binding = drafter->binding,
+                                       .rows = 0,
+                                       .ring = drafter->state->ring};
+  }
+  auto graph = kg::BuildDsv4WaveGraph(*out->arena, *m.profile, *m.binding, shape, options);
+  if (!graph) {
+    return Error(graph.error().detail);
+  }
+  out->graph = std::move(*graph);
+  kg::Dsv4WaveGraph& g = out->graph;
+  BindDsv4Weights(m, g.joined);  // the joined graph holds no state
+  for (std::size_t i = 0; i < g.slots.size(); ++i) {
+    BindDsv4State(m, states[i], g.slots[i]);
+  }
+  if (drafter != nullptr) {
+    if (!g.joined.inject.has_value()) {
+      return Error("a wave beside a drafter built no injection");
+    }
+    const md::DsparkBinding& b = *drafter->binding;
+    kg::DsparkInjectTensors& t = *g.joined.inject;
+    kg::TensorArena::Bind(t.fc, drafter->places.resource(b.fc.index));
+    kg::TensorArena::Bind(t.enc_norm, drafter->places.resource(b.enc_norm.index));
+    for (std::size_t il = 0; il < t.kv.size(); ++il) {
+      kg::TensorArena::Bind(t.kv[il], drafter->places.resource(b.blocks.layers[il].kv.index));
+      kg::TensorArena::Bind(t.kv_norm[il],
+                            drafter->places.resource(b.blocks.layers[il].kv_norm.index));
+    }
+    for (std::size_t i = 0; i < g.slots.size(); ++i) {
+      std::optional<kg::DsparkInjectTensors>& injected = g.slots[i].inject;
+      if (!injected.has_value()) {
+        return Error("a wave slot beside a drafter built no injection");
+      }
+      kg::DsparkInjectTensors& own = *injected;
+      for (std::size_t il = 0; il < own.ring.size(); ++il) {
+        kg::TensorArena::Bind(own.ring[il], rings[i] + drafter->state->offsets[il]);
+      }
+    }
+  }
+  const std::vector<ggml_tensor*> keep = {g.joined.logits};
+  kg::DeviceChoices device = choices;
+  device.row_invariant = false;
+  device.fuse_norms = true;
+  device.vector_floats = true;
+  device.pair_experts = true;
+  device.compact_experts = false;
+  device.wide_sparse_attention = true;
+  kg::SetDsv4PrefillStages(device, true);
+  device.ds4_hca = false;
+  const auto inputs = g.inputs();
+  if (auto placed =
+          PlaceAndPlan(*out, g.joined.nodes, inputs, keep, device, activations, activation_bytes);
+      !placed) {
+    return std::unexpected(placed.error());
+  }
+  return out;
+}
+
+std::expected<void, std::string> BuildDsv4WaveInputs(const Dsv4Model& m, const kg::Dsv4WaveGraph& g,
+                                                     std::span<const Dsv4WaveSlotInputs> slots,
+                                                     std::span<const std::byte> table,
+                                                     Dsv4WaveHostInputs& out) {
+  if (slots.size() != g.slots.size()) {
+    return Error("the wave's inputs are not its slots'");
+  }
+  out.tokens.clear();
+  out.positions.clear();
+  for (auto& pos : out.state_pos) {
+    pos.clear();
+  }
+  for (std::size_t i = 0; i < slots.size(); ++i) {
+    const Dsv4WaveSlotInputs& s = slots[i];
+    const kg::Dsv4Graph& sg = g.slots[i];
+    const md::Dsv4ChunkInputs* in = s.chunk;
+    if (in == nullptr || in->rows != s.tokens.size() || in->positions.size() != in->rows ||
+        in->csa.n_visible.size() != in->rows || in->hca.n_visible.size() != in->rows ||
+        sg.raw_k_idxs == nullptr || std::cmp_not_equal(sg.raw_k_idxs->ne[0], in->rows) ||
+        std::cmp_not_equal(out.tokens.size(), g.first[i]) ||
+        (sg.inject ? std::cmp_not_equal(s.inject_cells.size(), sg.inject->cells->ne[0])
+                   : !s.inject_cells.empty())) {
+      return Error("a wave slot's inputs are not its graph's");
+    }
+    out.tokens.insert(out.tokens.end(), s.tokens.begin(), s.tokens.end());
+    out.positions.insert(out.positions.end(), in->positions.begin(), in->positions.end());
+    const std::array<const md::Dsv4CompPlan*, 3> plans = {&in->csa, &in->hca, &in->lid};
+    for (std::size_t k = 0; k < plans.size(); ++k) {
+      if (plans[k]->state_pos.size() != in->rows) {
+        return Error("a wave slot's compressor rows are not its rows");
+      }
+      out.state_pos[k].insert(out.state_pos[k].end(), plans[k]->state_pos.begin(),
+                              plans[k]->state_pos.end());
+    }
+  }
+  if (std::cmp_not_equal(out.tokens.size(), g.joined.tokens->ne[0])) {
+    return Error("the wave's rows are not its graph's");
+  }
+  if (auto embedded = Dsv4EmbeddingRows(m, out.tokens, table, out.embd); !embedded) {
+    return embedded;
+  }
+  out.sources = {{g.joined.embd, out.embd.data()},
+                 {g.joined.tokens, out.tokens.data()},
+                 {g.joined.positions, out.positions.data()},
+                 {g.joined.csa.state_pos, out.state_pos[0].data()},
+                 {g.joined.hca.state_pos, out.state_pos[1].data()},
+                 {g.joined.lid.state_pos, out.state_pos[2].data()},
+                 {g.joined.lid_rot, m.rot.data()}};
+  for (std::size_t i = 0; i < slots.size(); ++i) {
+    const md::Dsv4ChunkInputs& in = *slots[i].chunk;
+    const kg::Dsv4Graph& sg = g.slots[i];
+    out.sources.emplace_back(sg.raw_k_idxs, in.raw_cells.data());
+    out.sources.emplace_back(sg.raw_mask, in.raw_mask.data());
+    const std::array<std::pair<const kg::Dsv4CompInputs*, const md::Dsv4CompPlan*>, 3> comps = {
+        {{&sg.csa, &in.csa}, {&sg.hca, &in.hca}, {&sg.lid, &in.lid}}};
+    for (const auto& [t, plan] : comps) {
+      if (std::cmp_not_equal(plan->persist_src.size(), t->persist_src->ne[0]) ||
+          std::cmp_not_equal(plan->read_idxs.size(), t->read_idxs->ne[0]) ||
+          std::cmp_not_equal(plan->write_idxs.size(), t->write_idxs->ne[0])) {
+        return Error("a wave slot's compressor plan is not its graph's");
+      }
+      out.sources.insert(out.sources.end(), {{t->persist_src, plan->persist_src.data()},
+                                             {t->persist_dst, plan->persist_dst.data()},
+                                             {t->read_idxs, plan->read_idxs.data()},
+                                             {t->write_idxs, plan->write_idxs.data()},
+                                             {t->write_pos, plan->write_pos.data()}});
+    }
+    if (std::cmp_not_equal(in.raw_mask.size(), ggml_nelements(sg.raw_mask))) {
+      return Error("a wave slot's window mask is not its graph's");
+    }
+    out.sources.emplace_back(sg.csa_visible, in.csa.n_visible.data());
+    out.sources.emplace_back(sg.hca_visible, in.hca.n_visible.data());
+    if (sg.inject) {
+      out.sources.emplace_back(sg.inject->cells, slots[i].inject_cells.data());
+    }
+  }
+  return {};
 }
 
 std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(

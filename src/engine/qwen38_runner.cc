@@ -193,11 +193,36 @@ std::size_t Qwen38Runner::graphs() const {
   return count;
 }
 
-void Qwen38Runner::RoomForGraphs() {
-  RoomForGraph(kMaxGraphs, graph_stats_, plans_, mplans_, additional_requests_[0].plans,
-               additional_requests_[0].mplans, additional_requests_[1].plans,
-               additional_requests_[1].mplans, additional_requests_[2].plans,
-               additional_requests_[2].mplans, target_waves_, draft_waves_);
+std::uint64_t Qwen38Runner::cached_plan_bytes() const {
+  std::uint64_t bytes = target_waves_.host_bytes() + draft_waves_.host_bytes();
+  for (const RequestState* request : Requests()) {
+    bytes += request->plans.host_bytes() + request->mplans.host_bytes();
+  }
+  return bytes;
+}
+
+void Qwen38Runner::RoomForChunkPlan() {
+  std::array<ChunkPlans*, kRequestSlots> caches{};
+  for (RequestState* request : Requests()) {
+    caches[request->slot] = &request->plans;
+  }
+  RoomForPlan(kMaxChunkPlans, std::span<ChunkPlans* const>(caches));
+}
+
+void Qwen38Runner::RoomForMtpPlan() {
+  std::array<MtpPlans*, kRequestSlots> caches{};
+  for (RequestState* request : Requests()) {
+    caches[request->slot] = &request->mplans;
+  }
+  RoomForPlan(kMaxMtpPlans, std::span<MtpPlans* const>(caches));
+}
+
+bool Qwen38Runner::RoomForGraphs(std::uint64_t adding_bytes) {
+  return engine::RoomForGraphs(kMaxGraphs, kMaxGraphBytes, 1, adding_bytes, graph_stats_, plans_,
+                               mplans_, additional_requests_[0].plans,
+                               additional_requests_[0].mplans, additional_requests_[1].plans,
+                               additional_requests_[1].mplans, additional_requests_[2].plans,
+                               additional_requests_[2].mplans, target_waves_, draft_waves_);
 }
 
 std::vector<ExtentId> Qwen38Runner::state() const {
@@ -419,6 +444,15 @@ Status Qwen38Runner::Setup() {
   stand_in.vocab.assign(profile_.ple_heads(), 1);
   stand_in.table_rows = 1;
   std::uint64_t most_activations = 0;
+  // Each kind's largest plan (PlannedHostBytes), most launched nodes and
+  // most products a wave may share, for plan_host_bytes().
+  struct PlanKind {
+    std::uint64_t host = 0;
+    std::uint64_t nodes = 0;
+    std::uint64_t products = 0;
+  };
+  PlanKind chunk_kind;
+  PlanKind mtp_kind;
   std::uint64_t most_scratch = 0;
   std::uint64_t most_inputs = 0;
   std::uint64_t most_wave_extra = 0;
@@ -463,7 +497,9 @@ Status Qwen38Runner::Setup() {
         }
       }
     }
-    const auto account = [&](const PlannedBase& planned) -> Status {
+    const auto account = [&](const PlannedBase& planned, PlanKind& kind) -> Status {
+      kind.host = std::max(kind.host, PlannedHostBytes(planned));
+      kind.nodes = std::max(kind.nodes, PlannedNodes(planned));
       most_activations = std::max(most_activations, planned.placement.extent);
       auto scratch = kg::PlanScratch(**measure, planned.plan);
       if (!scratch) {
@@ -480,6 +516,7 @@ Status Qwen38Runner::Setup() {
       // fixed pairs even when their tensors remain live across barriers,
       // including BF16 full-head and multirow HC inputs and replacements.
       std::uint64_t extra = 0;
+      std::uint64_t products = 0;  // eligible to be shared (a wave's arena)
       for (const auto& step : planned.plan.steps) {
         for (const ggml_tensor* t : step.nodes) {
           const auto op = kg::JitllmOpOf(t);
@@ -490,6 +527,7 @@ Status Qwen38Runner::Setup() {
               !hc) {
             continue;
           }
+          ++products;
           const auto add = [&](const ggml_tensor* tensor) {
             const auto bytes = ggml_nbytes(tensor);
             if (bytes > std::numeric_limits<std::uint64_t>::max() - 255 ||
@@ -519,6 +557,7 @@ Status Qwen38Runner::Setup() {
         }
       }
       most_wave_extra = std::max(most_wave_extra, extra);
+      kind.products = std::max(kind.products, products);
       return {};
     };
     for (const Probe& probe : probes) {
@@ -535,7 +574,7 @@ Status Qwen38Runner::Setup() {
         return Error(std::format("measuring a chunk of {} at {}: {}", probe.rows, probe.n_past,
                                  planned.error()));
       }
-      if (auto r = account(**planned); !r) {
+      if (auto r = account(**planned, chunk_kind); !r) {
         return r;
       }
     }
@@ -555,7 +594,7 @@ Status Qwen38Runner::Setup() {
         if (!planned) {
           return Error(std::format("measuring the drafter: {}", planned.error()));
         }
-        if (auto r = account(**planned); !r) {
+        if (auto r = account(**planned, mtp_kind); !r) {
           return r;
         }
         if (shaped->first.capture_head) {
@@ -564,12 +603,37 @@ Status Qwen38Runner::Setup() {
           if (!ordinary) {
             return Error(std::format("measuring the uncaptured drafter: {}", ordinary.error()));
           }
-          if (auto r = account(**ordinary); !r) {
+          if (auto r = account(**ordinary, mtp_kind); !r) {
             return r;
           }
         }
       }
     }
+  }
+  // The plans' and graphs' bound (plan_host_bytes): every cap at its kind's
+  // largest plan (a wave: every slot's largest and its composition), and
+  // the graphs' budget (a capture past it alone is not made).
+  {
+    const std::uint64_t slots = o_.wave_slots;
+    const std::uint64_t chunks = kMaxChunkPlans * chunk_kind.host;
+    const std::uint64_t mtps = kMaxMtpPlans * mtp_kind.host;
+    std::uint64_t waves = 0;
+    if (slots > 1) {
+      waves = kMaxTargetWaves *
+              Qwen38WaveHostBound(chunk_kind.host, chunk_kind.nodes, chunk_kind.products, slots);
+      if (speculative()) {
+        waves += kMaxDraftWaves *
+                 Qwen38WaveHostBound(mtp_kind.host, mtp_kind.nodes, mtp_kind.products, slots);
+      }
+    }
+    plan_host_bytes_ = chunks + mtps + waves + kMaxGraphBytes;
+    const auto mib = [](std::uint64_t bytes) { return static_cast<double>(bytes) / (1U << 20U); };
+    plan_report_ = std::format(
+        "{:.0f} MiB: {} chunk plans of {:.1f} MiB ({} nodes), {} drafter plans of {:.1f} MiB ({} "
+        "nodes), {} target and {} draft waves {:.0f} MiB, graphs {:.0f} MiB",
+        mib(plan_host_bytes_), kMaxChunkPlans, mib(chunk_kind.host), chunk_kind.nodes, kMaxMtpPlans,
+        mib(mtp_kind.host), mtp_kind.nodes, slots > 1 ? kMaxTargetWaves : 0,
+        slots > 1 && speculative() ? kMaxDraftWaves : 0, mib(waves), mib(kMaxGraphBytes));
   }
   const auto factor = std::uint64_t{o_.wave_slots};
   const auto limit = std::numeric_limits<std::uint64_t>::max() / 16;
@@ -1230,7 +1294,10 @@ std::expected<Qwen38Runner::ChunkPlans::Entry*, std::string> Qwen38Runner::Plann
   }
   Check((*planned)->graph);
   plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
-  return &request.plans.Add(key, std::move(*planned));
+  RoomForChunkPlan();
+  const std::uint64_t bytes = PlannedHostBytes(**planned);
+  const std::uint64_t nodes = PlannedNodes(**planned);
+  return &request.plans.Add(key, std::move(*planned), bytes, nodes);
 }
 
 std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::PlannedMtp(
@@ -1255,7 +1322,10 @@ std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::Planned
   }
   CheckMtp((*planned)->graph);
   plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
-  return &request.mplans.Add(shape, std::move(*planned));
+  RoomForMtpPlan();
+  const std::uint64_t bytes = PlannedHostBytes(**planned);
+  const std::uint64_t nodes = PlannedNodes(**planned);
+  return &request.mplans.Add(shape, std::move(*planned), bytes, nodes);
 }
 
 // BP-A1's check (planned.h): the state is live state (the target's, the
@@ -1523,7 +1593,9 @@ std::expected<Qwen38Runner::TargetWaves::Entry*, std::string> Qwen38Runner::Plan
   plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
   auto owner = std::make_unique<WaveCacheOwner>();
   owner->plan = std::move(*planned);
-  return &target_waves_.Add(key, std::move(owner));
+  const std::uint64_t bytes = owner->plan->host_bytes();
+  const std::uint64_t nodes = PlannedNodes(*owner->plan);
+  return &target_waves_.Add(key, std::move(owner), bytes, nodes);
 }
 
 std::expected<Qwen38Runner::DraftWaves::Entry*, std::string> Qwen38Runner::PlannedWave(
@@ -1557,7 +1629,9 @@ std::expected<Qwen38Runner::DraftWaves::Entry*, std::string> Qwen38Runner::Plann
   plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
   auto owner = std::make_unique<WaveCacheOwner>();
   owner->plan = std::move(*planned);
-  return &draft_waves_.Add(key, std::move(owner));
+  const std::uint64_t bytes = owner->plan->host_bytes();
+  const std::uint64_t nodes = PlannedNodes(*owner->plan);
+  return &draft_waves_.Add(key, std::move(owner), bytes, nodes);
 }
 
 Status Qwen38Runner::CheckWave(const Qwen38WavePlanned& planned) {
@@ -1845,12 +1919,12 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
   }
   auto& launch = resources_.launch();
   auto& run = entry.runs[0];
-  const bool capture =
+  bool capture =
       run.CaptureDue(runs_.graphs()) && (verify || std::ranges::all_of(work, [](const auto& w) {
                                            return w.history.size() - w.n_past == 1;
                                          }));
-  if (capture) {
-    RoomForGraphs();
+  if (capture && !RoomForGraphs(entry.nodes * kGraphNodeHostBytes)) {
+    capture = false;  // past the graph caps alone: launch by launch
   }
   const auto gather = Gather(total_rows);
   Status ran;
@@ -2042,9 +2116,9 @@ Status Qwen38Runner::DraftWave(std::span<const DraftWork> work, bool paired) {
   }
   auto& launch = resources_.launch();
   auto& run = entry.runs[0];
-  const bool capture = run.CaptureDue(runs_.graphs());
-  if (capture) {
-    RoomForGraphs();
+  bool capture = run.CaptureDue(runs_.graphs());
+  if (capture && !RoomForGraphs(entry.nodes * kGraphNodeHostBytes)) {
+    capture = false;  // past the graph caps alone: launch by launch
   }
   Status ran;
   RunPath path = RunPath::kEager;
@@ -2194,9 +2268,9 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   const std::function<bool(void*)> gather = Gather(rows);
   // Decode graphs (D-090): replay a shape's graph; capture a one-row shape
   // that has run once launch by launch; otherwise launch by launch.
-  const bool capture = runs.CaptureDue(runs_.graphs()) && rows == 1 && !inject;
-  if (capture) {
-    RoomForGraphs();
+  bool capture = runs.CaptureDue(runs_.graphs()) && rows == 1 && !inject;
+  if (capture && !RoomForGraphs(entry.nodes * kGraphNodeHostBytes)) {
+    capture = false;  // past the graph caps alone: launch by launch
   }
   const Copies outputs = {{Address(logits_), Address(g.logits->data), row_bytes}};
   kg::LaunchContext& launch = resources_.launch();
@@ -2370,9 +2444,9 @@ Status Qwen38Runner::Draft(RequestState& request, std::span<const std::int32_t> 
                          std::uint64_t{capture_head_rows_} * sizeof(float)});
     }
   }
-  const bool capture = runs.CaptureDue(runs_.graphs());
-  if (capture) {
-    RoomForGraphs();
+  bool capture = runs.CaptureDue(runs_.graphs());
+  if (capture && !RoomForGraphs(entry.nodes * kGraphNodeHostBytes)) {
+    capture = false;  // past the graph caps alone: launch by launch
   }
   kg::LaunchContext& launch = resources_.launch();
   RunPath path = RunPath::kEager;
@@ -2597,9 +2671,9 @@ Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t>
   const std::function<bool(void*)> gather = Gather(rows);
   // The argmaxes always; the logits (their own runs) when asked.
   PlanRuns& runs = entry.runs[logits != nullptr ? kWithLogits : kLean];
-  const bool capture = runs.CaptureDue(runs_.graphs());
-  if (capture) {
-    RoomForGraphs();
+  bool capture = runs.CaptureDue(runs_.graphs());
+  if (capture && !RoomForGraphs(entry.nodes * kGraphNodeHostBytes)) {
+    capture = false;  // past the graph caps alone: launch by launch
   }
   const std::uint64_t row_bytes = std::uint64_t{profile_.vocab} * sizeof(float);
   auto* const argmax_host = static_cast<std::int32_t*>(drafts_) + kArgmaxAt;

@@ -293,6 +293,67 @@ struct Dsv4Graph {
 // How many tensors a chunk's graph creates at most, for TensorArena.
 std::size_t Dsv4GraphTensors(const model::Dsv4Profile& profile);
 
+// ---------------------------------------------------------------- waves
+
+// A wave (engine/dsv4_runner.h): up to kDsv4WaveSlots independent
+// sequences' decode or verify chunks in one graph of the fast plan. Every
+// row-local operation (the products, norms and rotations, the
+// hyper-connections, the routing, the routed and shared experts, the head,
+// the drafter's features) runs once over every slot's rows together, so a
+// weight is read once for the wave and a routed expert once for every row
+// of any slot that selected it. Each slot's own state stays its own: its
+// window cells, compressors, compressed and indexer rows, its indexer's
+// selection and its attention run over its own inputs and state at its own
+// rows, and the attention outputs are concatenated again; so does its
+// DSpark injection (GGML's quantized products of the drafter's projections
+// follow the column count). At most kDsv4WaveRows rows in all: the fast
+// plan's vector products and GGML's float vector kernel give each column
+// the same arithmetic at any count from two to eight, so a slot's verify
+// rows in a wave equal its verify alone bit for bit; a wave of one-row
+// steps gives its vector products the one-token launch (jitllm_ops.h
+// SetVecQOneToken), so each slot's row equals its step alone bit for bit.
+// A wave mixing one-row and wider slots keeps the wider launch.
+inline constexpr std::size_t kDsv4WaveSlots = 4;
+inline constexpr std::int64_t kDsv4WaveRows = 16;
+
+// Each slot's chunk shape, in wave order (their layout fields equal), and
+// the rows of each slot's DSpark injection (its last rows; 0 without one).
+struct Dsv4WaveShape {
+  std::vector<Dsv4ChunkShape> slots;
+  std::vector<std::int64_t> inject_rows;
+  bool operator==(const Dsv4WaveShape&) const = default;
+};
+
+struct Dsv4WaveGraph {
+  // The weights (and the drafter's injection weights), the joined inputs
+  // (embd, tokens, positions, each compressor's state_pos: every slot's
+  // rows in wave order), lid_rot, the logits of every row, features, the
+  // nodes and the joined tensors' names.
+  Dsv4Graph joined;
+  // Each slot's own inputs (raw_k_idxs, raw_mask, the compressors' other
+  // lists, the visible counts, the injection's cells) and its state tensors
+  // (layers, the injection's ring); the joined fields are null.
+  std::vector<Dsv4Graph> slots;
+  std::vector<std::int64_t> first;  // each slot's first row in the wave
+
+  // The host-built inputs, in the order they are copied: the joined ones,
+  // then each slot's.
+  std::vector<ggml_tensor*> inputs() const;
+};
+
+std::size_t Dsv4WaveGraphTensors(const model::Dsv4Profile& profile, std::size_t slots);
+
+// Builds a wave's graph (options.fused, the fast plan only: no reference,
+// row-invariant or prefill stage form). Refused if a slot's shape is not
+// one the state holds, the slots' layouts differ, the rows exceed
+// kDsv4WaveRows, an injection's rows do not fit its slot, or a layer would
+// not take the fast plan's fused form.
+std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& arena,
+                                                               const model::Dsv4Profile& profile,
+                                                               const model::Dsv4Binding& binding,
+                                                               const Dsv4WaveShape& shape,
+                                                               const Dsv4GraphOptions& options);
+
 // Builds the chunk's graph on `arena` with the binding's weight types and
 // shapes. Refused if the shape is not one the state holds, a weight type is
 // not a GGML type, an expert stride is not a whole number of the expert

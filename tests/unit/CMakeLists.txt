@@ -398,6 +398,20 @@ if(JITLLM_CUDA)
   target_link_options(qwen38_wave_plan_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   jitllm_gtest(qwen38_wave_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+  # The request cohort's host-only rules (engine/request_cohort.h).
+  add_executable(request_cohort_test request_cohort_test.cc)
+  target_link_libraries(request_cohort_test PRIVATE jitllm_engine)
+  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
+  target_link_options(request_cohort_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  jitllm_gtest(request_cohort_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+  # A runner's plan and graph caps (engine/planned.h), host-only.
+  add_executable(plan_cache_test plan_cache_test.cc)
+  target_link_libraries(plan_cache_test PRIVATE jitllm_engine)
+  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
+  target_link_options(plan_cache_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  jitllm_gtest(plan_cache_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
   add_executable(dsv4_ds4_weights_test dsv4_ds4_weights_test.cc)
   target_link_libraries(dsv4_ds4_weights_test PRIVATE jitllm_engine)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")

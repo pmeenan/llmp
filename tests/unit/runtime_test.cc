@@ -696,4 +696,34 @@ TEST(MemoryGuard, CountsTheWeightsTheHostInputsAndTheMargin) {
       CheckMemoryGuard({.largest = weights, .host_inputs = kGiB, .available = 0}).has_value());
 }
 
+// The models' bounded plans and graphs (Served::plan_host_bytes) are set
+// apart beside the margin, never taken from it.
+TEST(MemoryGuard, CountsThePlansBesideTheMargin) {
+  using jitllm::runtime::CheckMemoryGuard;
+  using jitllm::runtime::GuardReserve;
+  using jitllm::runtime::kUncountedMargin;
+  constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
+  const std::uint64_t weights = (903 * kGiB) / 10;
+  const std::uint64_t plans = (3 * kGiB) / 2;
+  const std::uint64_t exact = weights + kGiB + plans + kUncountedMargin;
+  EXPECT_TRUE(CheckMemoryGuard(
+                  {.largest = weights, .host_inputs = kGiB, .plans = plans, .available = exact})
+                  .has_value());
+  const auto short_by_one = CheckMemoryGuard(
+      {.largest = weights, .host_inputs = kGiB, .plans = plans, .available = exact - 1});
+  ASSERT_FALSE(short_by_one.has_value());
+  EXPECT_THAT(short_by_one.error(), HasSubstr("plans and graphs (1.5 GiB)"));
+  // What fits with the margin alone does not with the plans beside it.
+  EXPECT_TRUE(
+      CheckMemoryGuard({.largest = weights, .available = weights + kUncountedMargin}).has_value());
+  EXPECT_FALSE(
+      CheckMemoryGuard({.largest = weights, .plans = 1, .available = weights + kUncountedMargin})
+          .has_value());
+  EXPECT_FALSE(
+      CheckMemoryGuard({.largest = weights, .plans = ~std::uint64_t{0}, .available = 100 * kGiB})
+          .has_value());
+  // The reserve the budget leaves out: host inputs, plans and the margin.
+  EXPECT_EQ(GuardReserve({.host_inputs = kGiB, .plans = plans}), kGiB + plans + kUncountedMargin);
+}
+
 }  // namespace

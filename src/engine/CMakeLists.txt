@@ -17,9 +17,9 @@
 # harnesses and their tests.
 if(JITLLM_CUDA)
   add_library(jitllm_engine STATIC paged_node.cc paged_weights.cc live_state.cc checkpoint_file.cc planned.cc
-                                   graph_runs.cc runner_resources.cc ple_rows.cc dsv4_plan.cc
-                                   dsv4_runner.cc qwen38_plan.cc qwen38_wave_plan.cc qwen38_runner.cc
-                                   qwen_image_runner.cc)
+                                   graph_runs.cc runner_resources.cc ple_rows.cc request_cohort.cc
+                                   dsv4_plan.cc dsv4_runner.cc qwen38_plan.cc qwen38_wave_plan.cc
+                                   qwen38_runner.cc qwen_image_runner.cc)
   target_include_directories(jitllm_engine PUBLIC "${PROJECT_SOURCE_DIR}/src")
   # Temporary matched-reference weight preparation through native jobs/IO.
   target_sources(jitllm_engine PRIVATE dsv4_ds4_weights.cc dsv4_ds4_paged_weights.cc)

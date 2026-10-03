@@ -83,6 +83,8 @@ constexpr std::uint32_t kDsv4WidePrefillContext = 262144;  // the widest context
 constexpr std::uint32_t kQwen38PrefillRows = 4096;
 // The draft depth of each request in a Qwen3.8 wave of more than one.
 constexpr std::uint32_t kSharedWaveDepth = 2;
+// DeepSeek's independent request slots (engine/dsv4_runner.h): waves of up to four.
+constexpr std::uint32_t kDsv4RequestSlots = 4;
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
@@ -195,6 +197,11 @@ class Dsv4 final : public Llm {
         model::Dsv4MostRows(model::Dsv4Flash(), entry.context));
     options_.max_rows = max_rows_;
     options_.graphs = true;
+    // Four request slots share the weights and workspace, each with its own
+    // conversation state: concurrent chat requests decode in waves
+    // (engine/dsv4_runner.h), whose row-local products read each weight
+    // once for all of them.
+    options_.wave_slots = kDsv4RequestSlots;
     if (speculate_) {
       options_.drafter = roles.installed / drafter_id_;
     }
@@ -203,6 +210,23 @@ class Dsv4 final : public Llm {
   engine::PagedModel& paged() override { return runner_; }
 
   Status Setup() override {
+    if (auto opened = OpenArtifacts(); !opened) {
+      return opened;
+    }
+    if (auto setup = runner_.Setup(); !setup) {
+      return setup;
+    }
+    for (std::size_t i = 0; i < runner_.wave_capacity(); ++i) {
+      auto slot = runner_.request_slot(i);
+      if (!slot) {
+        return std::unexpected(slot.error());
+      }
+      native_slots_[i] = *slot;
+    }
+    return PrepareBranches(runner_.wave_capacity(), 1);
+  }
+
+  Status OpenArtifacts() {
     auto artifact = OpenTrusted(store_, artifact_id_);
     if (!artifact) {
       return std::unexpected(artifact.error());
@@ -254,16 +278,39 @@ class Dsv4 final : public Llm {
     if (auto used = UseTemplate(read->chat_template); !used) {
       return used;
     }
-    return runner_.Setup();
+    return {};
   }
   std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
   std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
   std::uint64_t host_input_bytes() const override { return runner_.host_input_bytes(); }
+  std::uint64_t plan_host_bytes() const override { return runner_.plan_host_bytes(); }
+  std::string plan_report() const override { return runner_.plan_report(); }
   Status Register() override { return runner_.Register(); }
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
   std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
   const catalog::Closure& everything() const override { return runner_.everything(); }
+  const catalog::Closure& request_closure() const override { return runner_.execution_closure(); }
+  bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
+  Status PrepareDefaultRequest() override {
+    std::array<Branch*, 1> active{&default_branch()};
+    return SelectBranches(active);
+  }
+  Status SelectBranches(std::span<Branch* const> active) override {
+    if (active.size() > runner_.wave_capacity()) {
+      return Error("too many DeepSeek native conversation branches");
+    }
+    std::array<engine::Dsv4Runner::Slot*, engine::Dsv4Runner::kRequestSlots> selected{};
+    for (std::size_t i = 0; i < active.size(); ++i) {
+      if (active[i] == nullptr || &active[i]->model() != this) {
+        return Error("a selected DeepSeek conversation belongs to another model");
+      }
+      selected[i] = &NativeSlot(*active[i]);
+    }
+    return runner_.SelectSlots(std::span(selected).first(active.size()));
+  }
+  bool supports_generation_waves() const override { return runner_.waves_provisioned(); }
+  std::size_t generation_wave_capacity() const override { return runner_.wave_capacity(); }
   std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
   Status AfterLoad() override { return runner_.CheckHashRouting(); }
   Status CheckPlaces() override { return runner_.CheckPlaces(); }
@@ -295,40 +342,277 @@ class Dsv4 final : public Llm {
   }
 
  protected:
+  // The default conversation's scalar entry points forward to its branch.
   Status RunChunk(std::span<const std::int32_t> all, std::uint32_t n_past, bool inject,
                   std::vector<float>& logits) override {
-    return runner_.Chunk(n_past, all.subspan(n_past), logits, {},
-                         inject ? engine::Dsv4ChunkKind::kInject : engine::Dsv4ChunkKind::kPlain);
+    return RunChunkFor(default_branch(), all, n_past, inject, logits);
   }
   Status SpecStep(std::span<const std::int32_t> all, std::uint32_t pos, std::uint32_t left,
                   std::vector<std::int32_t>& kept, std::vector<std::vector<float>>* logits,
                   std::uint64_t& drafted) override {
-    // The anchor and its drafts, within the tokens left, the verify's
-    // bound, the context and the steps' mask widths (D-092).
-    auto rows = std::min<std::uint32_t>(
-        {options_.draft_rows + 1, options_.max_verify, left, options_.context - pos});
+    return SpecStepFor(default_branch(), all, pos, left, kept, logits, drafted);
+  }
+  Status Settle() override { return SettleFor(default_branch()); }
+  Status ClearState() override { return ClearStateFor(default_branch()); }
+  std::uint64_t target_state_base() const override { return TargetStateBaseFor(default_branch()); }
+  std::uint64_t used_state_bytes() const override { return UsedStateBytesFor(default_branch()); }
+  bool StateUsable() const override { return StateUsableFor(default_branch()); }
+  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
+    return PrepareDecodeStateFor(default_branch(), pos, left);
+  }
+  std::vector<engine::LiveState::Range> used_state_ranges() const override {
+    return UsedStateRangesFor(default_branch());
+  }
+  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
+    return SaveUsedStateFor(default_branch(), host, ranges);
+  }
+  Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
+    return RestoreUsedStateFor(default_branch(), host, ranges);
+  }
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
+      std::uint32_t positions) const override {
+    return CheckpointRangesFor(default_branch(), positions);
+  }
+  Status PrepareRestoreState(std::span<const engine::LiveState::Range> footprint) override {
+    return PrepareRestoreStateFor(default_branch(), footprint);
+  }
+  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
+                             bool to_host) override {
+    return CopyCheckpointStateFor(default_branch(), host, ranges, to_host);
+  }
+  std::uint64_t target_state_bytes() const override {
+    return TargetStateBytesFor(default_branch());
+  }
+  std::uint64_t drafter_state_base() const override {
+    return DrafterStateBaseFor(default_branch());
+  }
+  std::uint64_t drafter_state_bytes() const override {
+    return DrafterStateBytesFor(default_branch());
+  }
+
+  // Each conversation branch on its own native request slot.
+  Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t n_past,
+                     bool inject, std::vector<float>& logits) override {
+    return NativeSlot(branch).Chunk(
+        n_past, all.subspan(n_past), logits,
+        inject ? engine::Dsv4ChunkKind::kInject : engine::Dsv4ChunkKind::kPlain);
+  }
+  Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
+                     std::uint32_t left, std::vector<std::int32_t>& kept,
+                     std::vector<std::vector<float>>* logits, std::uint64_t& drafted) override {
+    const std::uint32_t rows = VerifyRows(pos, left, runner_.max_verify());
+    std::vector<std::int32_t> drafts;
+    std::vector<float> verified;
+    if (auto r = NativeSlot(branch).DraftVerify(pos, all.back(), rows, drafts, verified); !r) {
+      return r;
+    }
+    return Judge(branch, pos, rows, drafts, verified, kept, logits, drafted);
+  }
+  Status SettleFor(Branch& branch) override { return NativeSlot(branch).Rollback(); }
+  Status ClearStateFor(Branch& branch) override { return NativeSlot(branch).Clear(); }
+  // A conversation outside the cohort: its reuse cache cleared for peers
+  // short of state capacity (Branch::ReleaseIdleState).
+  Status ReleaseIdleStateFor(Branch& branch) override { return NativeSlot(branch).ClearIdle(); }
+  bool StateRefusedFor(const Branch& branch) const override {
+    return NativeSlot(branch).state_refused();
+  }
+  bool StateUsableFor(const Branch& branch) const override {
+    return NativeSlot(branch).state_usable();
+  }
+  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) override {
+    const std::uint32_t rows = speculate_ ? VerifyRows(pos, left, runner_.max_verify()) : 1U;
+    return NativeSlot(branch).ReserveStateThrough(pos + rows);
+  }
+  std::uint64_t TargetStateBaseFor(const Branch& branch) const override {
+    return NativeSlot(branch).state_base();
+  }
+  std::uint64_t TargetStateBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).state_bytes();
+  }
+  std::uint64_t DrafterStateBaseFor(const Branch& branch) const override {
+    return NativeSlot(branch).drafter_state_base();
+  }
+  std::uint64_t DrafterStateBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).drafter_state_bytes();
+  }
+  std::uint64_t UsedStateBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).used_state_bytes();
+  }
+  std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const override {
+    return NativeSlot(branch).used_state_ranges();
+  }
+  Status SaveUsedStateFor(Branch& branch, void* host,
+                          std::span<const engine::LiveState::Range> ranges) override {
+    return NativeSlot(branch).SaveUsedState(host, ranges);
+  }
+  Status RestoreUsedStateFor(Branch& branch, void* host,
+                             std::span<const engine::LiveState::Range> ranges) override {
+    return NativeSlot(branch).RestoreUsedState(host, ranges);
+  }
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
+      const Branch& branch, std::uint32_t positions) const override {
+    return NativeSlot(branch).CheckpointRanges(positions);
+  }
+  Status PrepareRestoreStateFor(Branch& branch,
+                                std::span<const engine::LiveState::Range> footprint) override {
+    return NativeSlot(branch).PrepareRestoreState(footprint);
+  }
+  Status CopyCheckpointStateFor(Branch& branch, void* host,
+                                std::span<const engine::LiveState::Range> ranges,
+                                bool to_host) override {
+    return NativeSlot(branch).CopyCheckpointState(host, ranges, to_host);
+  }
+
+  // DeepSeek keeps no speculation cursor and no adaptive draft depth: every
+  // branch's are the defaults, saved and restored as no state.
+  std::uint32_t CursorFor(const Branch& branch) const override {
+    (void)BranchIndex(branch);
+    return 0;
+  }
+  void SetCursorFor(Branch& branch, std::uint32_t /*value*/) override { (void)BranchIndex(branch); }
+  void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
+  void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
+  execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
+    return BranchDecoding(branch);
+  }
+  void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) override {
+    BranchDecoding(branch) = state;
+  }
+
+  bool GenerationCohortUsable() const override { return runner_.cohort_usable(); }
+
+  // Several branches' steps in one wave (engine/dsv4_runner.h): a decode
+  // step of each, or with DSpark each one's draft and one joined verify of
+  // every branch's rows, each branch's share of the wave's rows. A lone
+  // branch keeps its ordinary step.
+  Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) override {
+    if (!runner_.waves_provisioned() || prepared.size() == 1) {
+      return Llm::RunPreparedGenerationWave(prepared);
+    }
+    std::vector<engine::Dsv4Runner::WaveWork> work;
+    work.reserve(prepared.size());
+    if (!speculate_) {
+      for (PreparedGeneration& unit : prepared) {
+        if (unit.step.all.size() != std::size_t{unit.step.position} + 1) {
+          return Error("a DeepSeek decode wave step is not one anchor row");
+        }
+        work.push_back({.slot = &NativeSlot(*unit.branch),
+                        .pos = unit.step.position,
+                        .anchor = unit.step.all.back(),
+                        .rows = 1,
+                        .drafts = nullptr,
+                        .logits = &unit.row});
+      }
+      return runner_.DecodeWave(work);
+    }
+    // These owners never move once the borrowed descriptors are made.
+    struct Frame {
+      std::uint32_t rows = 0;
+      std::vector<std::int32_t> drafts;
+      std::vector<float> verified;
+    };
+    std::vector<Frame> frames(prepared.size());
+    // A verify of one row (a step ending at a mask width, or the last
+    // token) runs alone: a wave of wider verifies would give it the
+    // multi-row launch, not its own step's arithmetic. So does a lone one.
+    const auto share = [](std::size_t count) {
+      return std::max<std::uint32_t>(
+          2, static_cast<std::uint32_t>(engine::Dsv4Runner::kWaveRows / count));
+    };
+    std::vector<std::size_t> joined;
+    std::vector<std::size_t> alone;
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+      const PreparedGeneration& unit = prepared[i];
+      const std::uint32_t rows = VerifyRows(unit.step.position, unit.step.left,
+                                            std::min(runner_.max_verify(), share(prepared.size())));
+      (rows == 1 ? alone : joined).push_back(i);
+    }
+    if (joined.size() == 1) {
+      alone.push_back(joined.front());
+      joined.clear();
+    }
+    for (const std::size_t i : alone) {
+      PreparedGeneration& unit = prepared[i];
+      unit.result =
+          SpecStepFor(*unit.branch, unit.step.all, unit.step.position, unit.step.left, unit.kept,
+                      unit.step.need_logits ? &unit.logits : nullptr, unit.drafted);
+      if (!unit.result && !runner_.cohort_usable()) {
+        return std::unexpected(unit.result.error());
+      }
+    }
+    if (joined.empty()) {
+      return {};
+    }
+    for (const std::size_t i : joined) {
+      PreparedGeneration& unit = prepared[i];
+      frames[i].rows = VerifyRows(unit.step.position, unit.step.left,
+                                  std::min(runner_.max_verify(), share(joined.size())));
+      work.push_back({.slot = &NativeSlot(*unit.branch),
+                      .pos = unit.step.position,
+                      .anchor = unit.step.all.back(),
+                      .rows = frames[i].rows,
+                      .drafts = &frames[i].drafts,
+                      .logits = &frames[i].verified});
+    }
+    if (auto ran = runner_.DraftVerifyWave(work); !ran) {
+      return ran;
+    }
+    for (const std::size_t i : joined) {
+      PreparedGeneration& unit = prepared[i];
+      Frame& frame = frames[i];
+      unit.result =
+          Judge(*unit.branch, unit.step.position, frame.rows, frame.drafts, frame.verified,
+                unit.kept, unit.step.need_logits ? &unit.logits : nullptr, unit.drafted);
+      if (!unit.result) {
+        // The shared wave completed; only this branch's judgement failed.
+        // Undo its own verify before keeping its prefix.
+        if (auto rolled = NativeSlot(*unit.branch).DiscardVerify(); !rolled) {
+          if (!runner_.cohort_usable()) {
+            return Error(
+                std::format("{}; rolling back failed: {}", unit.result.error(), rolled.error()));
+          }
+          unit.result = Error(
+              std::format("{}; rolling back failed: {}", unit.result.error(), rolled.error()));
+        } else {
+          unit.failed_prefix_valid = true;
+        }
+      }
+    }
+    return {};
+  }
+
+ private:
+  // The verify's rows from `pos`: the anchor and its drafts, within the
+  // tokens left, `most`, the context and the steps' mask widths (D-092).
+  std::uint32_t VerifyRows(std::uint32_t pos, std::uint32_t left, std::uint32_t most) const {
+    auto rows = std::min<std::uint32_t>({options_.draft_rows + 1, most, left, context_ - pos});
+    rows = std::max<std::uint32_t>(rows, 1);
     while (rows > 1 && !model::Dsv4SameWidths(runner_.state_layout(), pos, rows)) {
       --rows;
     }
-    std::vector<std::int32_t> drafts;
-    std::vector<float> verified;
-    if (auto r = runner_.DraftVerify(pos, all.back(), rows, drafts, verified); !r) {
-      return r;
+    return rows;
+  }
+  // A completed verify's verdict for `branch`: accept drafts while the
+  // target agrees (greedy: its argmax; sampling: speculative sampling's
+  // verdict); the first disagreement, or the row after the last draft,
+  // gives the next token. Row m predicts the token at pos + m + 1.
+  Status Judge(Branch& branch, std::uint32_t pos, std::uint32_t rows,
+               std::vector<std::int32_t>& drafts, std::span<const float> verified,
+               std::vector<std::int32_t>& kept, std::vector<std::vector<float>>* logits,
+               std::uint64_t& drafted) {
+    const std::uint32_t vocab = runner_.vocab();
+    if (rows == 0 || drafts.size() + 1 < rows || verified.size() != std::size_t{rows} * vocab) {
+      return Error("a DeepSeek verify returned inconsistent draft/logit counts");
     }
     drafts.resize(rows - 1);
-    const std::uint32_t vocab = runner_.vocab();
     const auto row = [&](std::uint32_t i) {
-      return std::span<const float>(verified).subspan(std::size_t{i} * vocab, vocab);
+      return verified.subspan(std::size_t{i} * vocab, vocab);
     };
-    // Accept drafts while the target agrees (greedy: its argmax; sampling:
-    // speculative sampling's verdict); the first disagreement, or the row
-    // after the last draft, gives the next token. Row m predicts the token
-    // at pos + m + 1.
     std::uint32_t m = 0;
     std::int32_t next = -1;
     for (; m < rows - 1; ++m) {
       std::int32_t instead = -1;
-      auto keep = Keep(row(m), drafts[m], std::uint64_t{pos} + m + 1, instead);
+      auto keep = Keep(branch, row(m), drafts[m], std::uint64_t{pos} + m + 1, instead);
       if (!keep) {
         return std::unexpected(keep.error());
       }
@@ -338,13 +622,13 @@ class Dsv4 final : public Llm {
       }
     }
     if (next < 0) {
-      auto chosen = Choose(row(m), std::uint64_t{pos} + m + 1);
+      auto chosen = Choose(branch, row(m), std::uint64_t{pos} + m + 1);
       if (!chosen) {
         return std::unexpected(chosen.error());
       }
       next = *chosen;
     }
-    if (auto r = runner_.Accept(m + 1); !r) {
+    if (auto r = NativeSlot(branch).Accept(m + 1); !r) {
       return r;
     }
     kept.assign(drafts.begin(), drafts.begin() + m);
@@ -357,53 +641,22 @@ class Dsv4 final : public Llm {
     drafted += rows - 1;
     return {};
   }
-  Status Settle() override { return runner_.Rollback(); }
-  Status ClearState() override { return runner_.Clear(); }
-  std::uint64_t target_state_base() const override { return runner_.state_base(); }
-  std::uint64_t used_state_bytes() const override { return runner_.used_state_bytes(); }
-  bool StateUsable() const override { return runner_.state_usable(); }
-  bool StateRefusedFor(const Branch& branch) const override {
-    return &branch == &default_branch() && runner_.state_refused();
+  engine::Dsv4Runner::Slot& NativeSlot(Branch& branch) {
+    const auto index = BranchIndex(branch);
+    base::Check(native_slots_[index] != nullptr, "native conversation slots are not ready");
+    return *native_slots_[index];
   }
-  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
-    auto rows = speculate_
-                    ? std::min({options_.draft_rows + 1, options_.max_verify, left, context_ - pos})
-                    : 1U;
-    while (rows > 1 && !model::Dsv4SameWidths(runner_.state_layout(), pos, rows)) {
-      --rows;
-    }
-    return runner_.ReserveStateThrough(pos + rows);
+  const engine::Dsv4Runner::Slot& NativeSlot(const Branch& branch) const {
+    const auto index = BranchIndex(branch);
+    base::Check(native_slots_[index] != nullptr, "native conversation slots are not ready");
+    return *native_slots_[index];
   }
-  std::vector<engine::LiveState::Range> used_state_ranges() const override {
-    return runner_.used_state_ranges();
-  }
-  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
-    return runner_.SaveUsedState(host, ranges);
-  }
-  Status RestoreUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
-    return runner_.RestoreUsedState(host, ranges);
-  }
-  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
-      std::uint32_t positions) const override {
-    return runner_.CheckpointRanges(positions);
-  }
-  Status PrepareRestoreState(std::span<const engine::LiveState::Range> footprint) override {
-    return runner_.PrepareRestoreState(footprint);
-  }
-  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
-                             bool to_host) override {
-    return runner_.CopyCheckpointState(host, ranges, to_host);
-  }
-  std::uint64_t target_state_bytes() const override { return runner_.state_bytes(); }
-  std::uint64_t drafter_state_base() const override { return runner_.drafter_state_base(); }
-  std::uint64_t drafter_state_bytes() const override { return runner_.drafter_state_bytes(); }
-
- private:
   std::string artifact_id_;
   std::string drafter_id_;  // empty: none
   fs::path store_;
   engine::Dsv4Options options_;  // before the runner, which keeps a reference
   engine::Dsv4Runner runner_;
+  std::array<engine::Dsv4Runner::Slot*, engine::Dsv4Runner::kRequestSlots> native_slots_{};
 };
 
 // Qwen3.8 Flash Next (engine/qwen38_runner.h), with its MTP block as its
@@ -544,6 +797,8 @@ class Qwen38 final : public Llm {
   std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
   std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
   std::uint64_t host_input_bytes() const override { return runner_.host_input_bytes(); }
+  std::uint64_t plan_host_bytes() const override { return runner_.plan_host_bytes(); }
+  std::string plan_report() const override { return runner_.plan_report(); }
   Status Register() override { return runner_.Register(); }
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
@@ -2594,8 +2849,8 @@ Status Server::SaveSnapshot(Llm& model) {
     snapshot_ = nullptr;
     snapshot_capacity_ = 0;
     const auto available = MemorySampler::Available();
-    if (available != 0 && (available < host_inputs_ + kUncountedMargin ||
-                           bytes > available - host_inputs_ - kUncountedMargin)) {
+    const std::uint64_t reserve = GuardReserve({.host_inputs = host_inputs_, .plans = plans_});
+    if (available != 0 && (available < reserve || bytes > available - reserve)) {
       return Error("initialized state snapshot would exceed the memory guard");
     }
     std::vector<catalog::ExtentId> staging;
@@ -2674,6 +2929,7 @@ Status Server::Start(bool snapshot) {
   std::uint64_t pool = 0;
   std::uint64_t largest = 0;
   std::uint64_t host_inputs = 0;
+  std::uint64_t plans = 0;
   for (const auto& m : models_) {
     const auto started = Clock::now();
     if (auto r = m->Setup(); !r) {
@@ -2681,6 +2937,7 @@ Status Server::Start(bool snapshot) {
     }
     activations = std::max(activations, m->activations_needed());
     host_inputs = std::max(host_inputs, m->host_input_bytes());
+    plans = std::max(plans, m->plan_host_bytes());
     pool = std::max(pool, m->pool_needed());
     largest = std::max<std::uint64_t>(largest, m->weights().size() * kExtent);
     std::string chunks;
@@ -2700,6 +2957,9 @@ Status Server::Start(bool snapshot) {
     if (const auto report = m->allocation_report(); !report.empty()) {
       Log(std::format("allocation model {}: {}", m->name(), report));
     }
+    if (const auto report = m->plan_report(); !report.empty()) {
+      Log(std::format("model {}: plans and graphs at most {}", m->name(), report));
+    }
   }
   if (auto r = node_.MapWorkspace(activations, pool); !r) {
     return r;
@@ -2716,27 +2976,35 @@ Status Server::Start(bool snapshot) {
   // in the budget the catalog enforces. One model runs chunks at a time, so
   // the most any model's chunk builds, not their sum.
   host_inputs_ = host_inputs;
+  // So are every model's cached plans and graphs, bounded by its caps
+  // (engine/planned.h). Only the resident model keeps them (a swap drops the
+  // outgoing model's, Activate), so the largest model's bound.
+  plans_ = plans;
   const std::uint64_t available = MemorySampler::Available();
-  const auto guard = CheckMemoryGuard(
-      {.largest = largest, .host_inputs = host_inputs, .available = available, .fixed = fixed_});
+  const MemoryGuard bounds = {.largest = largest,
+                              .host_inputs = host_inputs,
+                              .plans = plans,
+                              .available = available,
+                              .fixed = fixed_};
+  const auto guard = CheckMemoryGuard(bounds);
   Log(
       std::format("allocation guard: {{\"format\":\"jitllm-wave-startup-guard-v1\","
                   "\"fixed_catalog_bytes\":{},\"shared_activation_bytes\":{},"
                   "\"shared_scratch_bytes\":{},\"largest_weight_extent_bytes\":{},"
-                  "\"host_input_bytes\":{},\"uncounted_margin_bytes\":{},"
+                  "\"host_input_bytes\":{},\"plan_host_bytes\":{},\"uncounted_margin_bytes\":{},"
                   "\"available_after_fixed_bytes\":{},\"available_known\":{},"
                   "\"guard_passed\":{},\"registered_state_virtual_extent_bytes\":{}}}",
-                  fixed_, activations, pool, largest, host_inputs, kUncountedMargin, available,
-                  available != 0, guard.has_value(), node_.StateCapacity()));
+                  fixed_, activations, pool, largest, host_inputs, plans, kUncountedMargin,
+                  available, available != 0, guard.has_value(), node_.StateCapacity()));
   if (!guard) {
     return std::unexpected(guard.error());
   }
   // State is charged as it grows. Keep the physical execution cap below
-  // the measured available memory, leaving host-built inputs and the
-  // uncounted margin outside it. A virtual context ceiling need not fit
+  // the measured available memory, leaving host-built inputs, the plans and
+  // the uncounted margin outside it. A virtual context ceiling need not fit
   // before it is used; a growth that cannot fit its active closure fails.
   if (available != 0) {
-    budget_ = fixed_ + ((available - host_inputs - kUncountedMargin) / kExtent * kExtent);
+    budget_ = fixed_ + ((available - GuardReserve(bounds)) / kExtent * kExtent);
   } else {
     budget_ += node_.StateCapacity();
   }
@@ -2756,11 +3024,11 @@ Status Server::Start(bool snapshot) {
   node_.Run();
   Log(std::format(
       "serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed, the workspace {:.2f}; host-built "
-      "chunk inputs {:.2f} GiB beside it); {:.2f} GiB available",
+      "chunk inputs {:.2f} GiB and plans {:.2f} GiB beside it); {:.2f} GiB available",
       models_.size(), static_cast<double>(budget_) / (1ULL << 30U),
       static_cast<double>(fixed_) / (1ULL << 30U), static_cast<double>(workspace_) / (1ULL << 30U),
       static_cast<double>(host_inputs_) / (1ULL << 30U),
-      static_cast<double>(available) / (1ULL << 30U)));
+      static_cast<double>(plans_) / (1ULL << 30U), static_cast<double>(available) / (1ULL << 30U)));
   return {};
 }
 
@@ -2918,6 +3186,16 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     }
     const std::vector<catalog::ExtentId> weights = out.weights();
     extents.insert(extents.end(), weights.begin(), weights.end());
+    // Its plans and graphs go with it: host and driver memory outside the
+    // catalog, which the start's guard sets apart for the resident model
+    // alone (Start). Its jobs have all completed (nothing in flight replays
+    // a graph); a cohort whose completion is unproven keeps its owners. It
+    // plans and captures again on its return (D-090 as amended).
+    if (out.plan_host_bytes() != 0 &&
+        (!out.llm() || static_cast<Llm&>(out).generation_cohort_usable())) {
+      parts.dropped_graphs = out.graphs().kept;
+      out.DropPlans();
+    }
     scheduler::SwapReport report;
     if (auto r = node_.Swap(std::move(extents), m.everything(), handoff_, report); !r) {
       return r;

@@ -12,6 +12,7 @@
 #ifndef JITLLM_ENGINE_DSV4_PLAN_H_
 #define JITLLM_ENGINE_DSV4_PLAN_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -97,6 +98,9 @@ using Dsv4Planned = PlannedGraph<kernels::ggml::Dsv4Graph>;
 
 // Binds the graph's weights and state at the model's places.
 void BindDsv4Weights(const Dsv4Model& m, kernels::ggml::Dsv4Graph& g);
+// Binds only the state tensors of `g` at a state region `base` of `m`'s
+// layout (a wave slot's).
+void BindDsv4State(const Dsv4Model& m, std::uint64_t base, kernels::ggml::Dsv4Graph& g);
 
 // Builds, binds, plans and places one chunk shape's graph: every computed
 // tensor first at its own address, then placed in `activations` (0 to
@@ -115,6 +119,20 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
 // Binds a chunk graph's DSpark injection: the drafter's fc, norms and wkv,
 // and its ring.
 void BindDsparkInjection(const DsparkModel& d, kernels::ggml::Dsv4Graph& g);
+
+// A wave's graph (kernels/ggml/dsv4_graph.h Dsv4WaveGraph), plan,
+// placement and bound implementations.
+using Dsv4WavePlanned = PlannedGraph<kernels::ggml::Dsv4WaveGraph>;
+
+// Builds, binds, plans and places a wave of the fast plan: `m`'s weights,
+// each slot's state at `states` (in wave order), and with `drafter` its
+// injection's weights and each slot's ring at `rings`. As PlanDsv4Chunk
+// (activations 0: measure only); refused for the reference mode.
+std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
+    const Dsv4Model& m, std::span<const std::uint64_t> states,
+    const kernels::ggml::Dsv4WaveShape& shape, const kernels::ggml::DeviceChoices& choices,
+    std::uint64_t activations, std::uint64_t activation_bytes, const DsparkModel* drafter = nullptr,
+    std::span<const std::uint64_t> rings = {});
 
 // A draft block's graph, plan, placement and bound implementations.
 using DsparkPlanned = PlannedGraph<kernels::ggml::DsparkGraph>;
@@ -143,6 +161,33 @@ std::expected<void, std::string> BuildDsv4Inputs(
     const Dsv4Model& m, const kernels::ggml::Dsv4Graph& g, const model::Dsv4ChunkInputs& in,
     std::span<const std::int32_t> tokens, std::span<const std::byte> table, Dsv4HostInputs& out,
     std::span<const std::int64_t> inject_cells = {});
+
+// A wave's host-built inputs (Dsv4WaveGraph::inputs' order).
+struct Dsv4WaveHostInputs {
+  std::vector<float> embd;
+  std::vector<std::int32_t> tokens;
+  std::vector<std::int32_t> positions;
+  std::array<std::vector<std::int32_t>, 3> state_pos;  // CSA, HCA, the indexer
+  std::vector<std::pair<ggml_tensor*, const void*>> sources;
+};
+
+// One wave slot's host inputs: its chunk's (model/dsv4.h Dsv4Chunk, without
+// masks), its tokens and its injection's cells (empty without one).
+struct Dsv4WaveSlotInputs {
+  const model::Dsv4ChunkInputs* chunk = nullptr;
+  std::span<const std::int32_t> tokens;
+  std::span<const std::int64_t> inject_cells;
+};
+
+// The inputs of a wave, each slot's rows joined in wave order where the
+// graph joins them; refused for a token outside the vocabulary or inputs
+// that are not the graph's slots'. `slots` and what they name must outlive
+// `out`'s use.
+std::expected<void, std::string> BuildDsv4WaveInputs(const Dsv4Model& m,
+                                                     const kernels::ggml::Dsv4WaveGraph& g,
+                                                     std::span<const Dsv4WaveSlotInputs> slots,
+                                                     std::span<const std::byte> table,
+                                                     Dsv4WaveHostInputs& out);
 
 // The embedding rows of `tokens`, dequantized on the host from `table`
 // (the token table group's bytes) as every chunk looks them up.

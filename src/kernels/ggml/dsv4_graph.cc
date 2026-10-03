@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -90,16 +91,39 @@ Rope LayerRope(const model::Dsv4Profile& p, std::uint32_t ratio) {
 // LLAMA_ROPE_TYPE_NORM: consecutive pairs.
 constexpr int kRopeMode = 0;
 
+// A wave's slot (BuildDsv4WaveGraph): its inputs and state, its shape, and
+// its rows among the wave's.
+struct Segment {
+  Dsv4Graph* g = nullptr;
+  const Dsv4ChunkShape* s = nullptr;
+  std::int64_t first = 0;
+  std::int64_t inject_rows = 0;
+};
+
 class Builder {
  public:
   // `sparse`: a target chunk's fast plan (Dsv4GraphOptions::fused), its
-  // attention at depth sparse; never a draft block's.
+  // attention at depth sparse; never a draft block's. With `segments`, a
+  // wave: `s` the joined shape (its rows every slot's), `g` the joined graph.
   Builder(ggml_context* c, const model::Dsv4Profile& p, const model::Dsv4Binding& b,
-          const Dsv4ChunkShape& s, Dsv4Graph& g, const Dsv4GraphOptions& options, bool sparse)
-      : c_(c), p_(p), b_(b), s_(s), g_(g), o_(options), sparse_(sparse) {}
+          const Dsv4ChunkShape& s, Dsv4Graph& g, const Dsv4GraphOptions& options, bool sparse,
+          std::span<Segment> segments = {})
+      : c_(c), p_(p), b_(b), s_(s), g_(g), o_(options), sparse_(sparse), segs_(segments) {}
 
   // A target chunk's inputs.
   void Inputs();
+  // A wave's: the joined rows' and each slot's own.
+  void WaveInputs();
+  // Whether every layer takes the fast plan's fused form (a wave's
+  // requirement).
+  bool AllFused() const {
+    for (std::uint32_t il = 0; il < p_.layers; ++il) {
+      if (!Fused(il)) {
+        return false;
+      }
+    }
+    return true;
+  }
   // The weights (and every layer's state) of the binding's blocks and head.
   std::expected<void, KernelFailure> Weights();
   // A target chunk's DSpark injection leaves: the drafter's weights and ring.
@@ -163,6 +187,22 @@ class Builder {
   ggml_tensor* CpyK(ggml_tensor* cache, ggml_tensor* k_cur, ggml_tensor* idxs);
   ggml_tensor* GetK(ggml_tensor* cache, std::int64_t n_kv);
   ggml_tensor* Attention(std::uint32_t il, ggml_tensor* cur);
+  // A wave's attention: the row-local projections over every slot's rows,
+  // each slot's compressors, indexer and attention over its own state.
+  ggml_tensor* AttentionWave(std::uint32_t il, ggml_tensor* cur);
+  // A wave's DSpark injection: the projections joined, each slot's rows
+  // stored in its own ring.
+  void InjectWave(const DsparkInjectTensors& t, const Dsv4Injection& inject);
+  // A slot's rows [first, first + rows) of a joined [ne0, rows, ...] tensor.
+  ggml_tensor* Rows2(ggml_tensor* t, const Segment& seg) const {
+    return ggml_view_2d(c_, t, t->ne[0], seg.s->rows, t->nb[1],
+                        static_cast<std::size_t>(seg.first) * t->nb[1]);
+  }
+  ggml_tensor* Rows3(ggml_tensor* t, const Segment& seg) const {
+    return ggml_view_3d(c_, t, t->ne[0], t->ne[1], seg.s->rows, t->nb[1], t->nb[2],
+                        static_cast<std::size_t>(seg.first) * t->nb[2]);
+  }
+  void StateLeaves(Dsv4LayerTensors& l, std::uint32_t ratio, const Dsv4ChunkShape& s);
   ggml_tensor* Moe(std::uint32_t il, ggml_tensor* cur);
   // The fast plan's forms (Dsv4GraphOptions::fused), where Fused() holds.
   bool Fused(std::uint32_t il) const;
@@ -187,6 +227,7 @@ class Builder {
   Dsv4Graph& g_;
   const Dsv4GraphOptions& o_;
   bool sparse_;
+  std::span<Segment> segs_;  // a wave's slots; empty for one chunk
   std::vector<ggml_tensor*> expanded_;
   // The fast plan's activations quantized once (Q8Of), by input.
   std::unordered_map<const ggml_tensor*, ggml_tensor*> q8_;
@@ -199,11 +240,38 @@ class Builder {
     q8_.emplace(x, q);
     return q;
   }
+  // The most rows jitllm.vecq takes here: a chunk's kVecQTokens, a wave's
+  // kDsv4WaveRows (each token's sums the same at any count of two or more).
+  std::int64_t VecQRows() const { return segs_.empty() ? kVecQTokens : kDsv4WaveRows; }
+  // GGML's float vector kernel keeps each column's sums independent of the
+  // count up to this many columns (graph_plan.h kRowInvariantColumns); a
+  // wider wave runs a float product per slot over its rows, as each slot's
+  // own chunk does, and joins the results.
+  static constexpr std::int64_t kVectorFloatColumns = 8;
+  ggml_tensor* FloatMm(ggml_tensor* w, ggml_tensor* x, bool f32_acc = false) {
+    if (segs_.empty() || x->ne[1] <= kVectorFloatColumns || x->ne[2] != 1 || x->ne[3] != 1) {
+      ggml_tensor* out = ggml_mul_mat(c_, w, x);
+      if (f32_acc) {
+        ggml_prec_set_acc(out, GGML_PREC_F32);
+      }
+      return out;
+    }
+    ggml_tensor* joined = nullptr;
+    for (const Segment& seg : segs_) {
+      ggml_tensor* one = ggml_mul_mat(c_, w, Rows2(x, seg));
+      if (f32_acc) {
+        ggml_prec_set_acc(one, GGML_PREC_F32);
+      }
+      joined = joined != nullptr ? ggml_concat(c_, joined, one, 1) : one;
+    }
+    return joined;
+  }
   // A product: in the fast plan, a quantized 2D weight over at most
-  // kVecQTokens rows of F32 activations is jitllm.vecq over the input's one
-  // quantization; anything else GGML's mul_mat.
+  // VecQRows() rows of F32 activations is jitllm.vecq over the input's one
+  // quantization; anything else GGML's mul_mat (a wide wave's float
+  // products a slot at a time, FloatMm).
   bool VecQInput(const ggml_tensor* x) const {
-    return o_.fused && x->type == GGML_TYPE_F32 && x->ne[1] <= kVecQTokens && x->ne[2] == 1 &&
+    return o_.fused && x->type == GGML_TYPE_F32 && x->ne[1] <= VecQRows() && x->ne[2] == 1 &&
            x->ne[3] == 1 && x->nb[0] == sizeof(float) && x->ne[0] % 32 == 0;
   }
   static bool VecQWeight(const ggml_tensor* w, const ggml_tensor* x) {
@@ -212,7 +280,7 @@ class Builder {
   }
   ggml_tensor* Mm(ggml_tensor* w, ggml_tensor* x) {
     if (!VecQInput(x) || !VecQWeight(w, x)) {
-      return ggml_mul_mat(c_, w, x);
+      return segs_.empty() ? ggml_mul_mat(c_, w, x) : FloatMm(w, x);
     }
     return VecQ(c_, w, Q8Of(x), nullptr, x->ne[1], false);
   }
@@ -288,6 +356,39 @@ void Builder::Inputs() {
   g_.top_k_zeros = ggml_new_tensor_4d(c_, GGML_TYPE_F16, 1, top_k, n, 1);
 }
 
+void Builder::WaveInputs() {
+  // The joined rows: what row-local operations read.
+  const std::int64_t n = s_.rows;
+  g_.embd = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.width, n);
+  g_.tokens = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
+  g_.positions = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
+  for (Dsv4CompInputs* in : {&g_.csa, &g_.hca, &g_.lid}) {
+    in->state_pos = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
+  }
+  g_.lid_rot = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.indexer_head_dim, p_.indexer_head_dim);
+  // Each slot's own: its cells, window mask, compressor lists and counts.
+  for (Segment& seg : segs_) {
+    Dsv4Graph& sg = *seg.g;
+    const Dsv4ChunkShape& s = *seg.s;
+    sg.raw_k_idxs = ggml_new_tensor_1d(c_, GGML_TYPE_I64, s.rows);
+    sg.raw_mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, s.raw_n_kv, s.rows, 1, 1);
+    const auto comp = [&](Dsv4CompInputs& in, std::int64_t blocks, std::int64_t persist,
+                          std::int64_t reads) {
+      in.persist_src = ggml_new_tensor_1d(c_, GGML_TYPE_I32, persist);
+      in.persist_dst = ggml_new_tensor_1d(c_, GGML_TYPE_I32, persist);
+      in.read_idxs = ggml_new_tensor_1d(c_, GGML_TYPE_I32, reads);
+      in.write_idxs = ggml_new_tensor_1d(c_, GGML_TYPE_I64, blocks);
+      in.write_pos = ggml_new_tensor_1d(c_, GGML_TYPE_I32, blocks);
+    };
+    const std::int64_t csa_reads = 2 * std::int64_t{model::kDsv4CsaRatio} * s.csa_blocks;
+    comp(sg.csa, s.csa_blocks, s.csa_persist, csa_reads);
+    comp(sg.hca, s.hca_blocks, s.hca_persist, model::kDsv4HcaRatio * s.hca_blocks);
+    comp(sg.lid, s.csa_blocks, s.csa_persist, csa_reads);
+    sg.csa_visible = ggml_new_tensor_1d(c_, GGML_TYPE_I32, s.rows);
+    sg.hca_visible = ggml_new_tensor_1d(c_, GGML_TYPE_I32, s.rows);
+  }
+}
+
 std::expected<void, KernelFailure> Builder::Weights() {
   const Dsv4GraphOptions& options = o_;
   const auto leaf = [&](ggml_tensor*& into, const model::Dsv4Tensor& t,
@@ -309,6 +410,9 @@ std::expected<void, KernelFailure> Builder::Weights() {
   JITLLM_LEAF(g_.hc_head_base, b_.hc_head_base)
   JITLLM_LEAF(g_.hc_head_scale, b_.hc_head_scale)
   g_.layers.resize(p_.layers);
+  for (Segment& seg : segs_) {
+    seg.g->layers.resize(p_.layers);
+  }
   if (!options.expert_stride.empty() && options.expert_stride.size() != p_.layers) {
     return Rejected("an expert stride per layer, or none");
   }
@@ -393,46 +497,62 @@ std::expected<void, KernelFailure> Builder::Weights() {
     if (auto e = experts(l.down_exps, w.down_exps); !e) {
       return e;
     }
-    // State. In the fast plan a compressed layer reads its window cells and
-    // its compressed rows as one tensor: the compressed cache follows the
-    // window's in the state (model/dsv4.h), a view of the whole.
-    const std::int64_t head = p_.head_dim;
-    std::int64_t joined = 0;
-    if (sparse_ && w.ratio == model::kDsv4CsaRatio) {
-      joined = s_.csa_cells;
-    } else if (sparse_ && w.ratio == model::kDsv4HcaRatio) {
-      joined = s_.hca_cells;
-    }
-    l.raw_k = ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s_.raw_cells + joined, 1);
-    const auto after_window = [&](std::int64_t cells) {
-      return ggml_view_3d(c_, l.raw_k, head, cells, 1, l.raw_k->nb[1],
-                          l.raw_k->nb[1] * static_cast<std::size_t>(cells),
-                          l.raw_k->nb[1] * static_cast<std::size_t>(s_.raw_cells));
-    };
-    if (w.ratio == model::kDsv4CsaRatio) {
-      l.csa_k = joined != 0 ? after_window(s_.csa_cells)
-                            : ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s_.csa_cells, 1);
-      l.csa_state_kv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, 2 * head, s_.csa_state_rows);
-      l.csa_state_score = ggml_new_tensor_2d(c_, GGML_TYPE_F32, 2 * head, s_.csa_state_rows);
-      l.lid_k = ggml_new_tensor_3d(c_, GGML_TYPE_F16, p_.indexer_head_dim, s_.csa_cells, 1);
-      const std::int64_t lid_ring = 2 * std::int64_t{p_.indexer_head_dim};
-      l.lid_state_kv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, lid_ring, s_.csa_state_rows);
-      l.lid_state_score = ggml_new_tensor_2d(c_, GGML_TYPE_F32, lid_ring, s_.csa_state_rows);
-    } else if (w.ratio == model::kDsv4HcaRatio) {
-      l.hca_k = joined != 0 ? after_window(s_.hca_cells)
-                            : ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s_.hca_cells, 1);
-      l.hca_state_kv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, head, s_.hca_state_rows);
-      l.hca_state_score = ggml_new_tensor_2d(c_, GGML_TYPE_F32, head, s_.hca_state_rows);
+    if (segs_.empty()) {
+      StateLeaves(l, w.ratio, s_);
+    } else {
+      // A wave: each slot's state its own (its layout's shape).
+      for (Segment& seg : segs_) {
+        StateLeaves(seg.g->layers[il], w.ratio, *seg.s);
+      }
     }
   }
 #undef JITLLM_LEAF
   return {};
 }
 
+void Builder::StateLeaves(Dsv4LayerTensors& l, std::uint32_t ratio, const Dsv4ChunkShape& s) {
+  // State. In the fast plan a compressed layer reads its window cells and
+  // its compressed rows as one tensor: the compressed cache follows the
+  // window's in the state (model/dsv4.h), a view of the whole.
+  const std::int64_t head = p_.head_dim;
+  std::int64_t joined = 0;
+  if (sparse_ && ratio == model::kDsv4CsaRatio) {
+    joined = s.csa_cells;
+  } else if (sparse_ && ratio == model::kDsv4HcaRatio) {
+    joined = s.hca_cells;
+  }
+  l.raw_k = ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s.raw_cells + joined, 1);
+  const auto after_window = [&](std::int64_t cells) {
+    return ggml_view_3d(c_, l.raw_k, head, cells, 1, l.raw_k->nb[1],
+                        l.raw_k->nb[1] * static_cast<std::size_t>(cells),
+                        l.raw_k->nb[1] * static_cast<std::size_t>(s.raw_cells));
+  };
+  if (ratio == model::kDsv4CsaRatio) {
+    l.csa_k = joined != 0 ? after_window(s.csa_cells)
+                          : ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s.csa_cells, 1);
+    l.csa_state_kv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, 2 * head, s.csa_state_rows);
+    l.csa_state_score = ggml_new_tensor_2d(c_, GGML_TYPE_F32, 2 * head, s.csa_state_rows);
+    l.lid_k = ggml_new_tensor_3d(c_, GGML_TYPE_F16, p_.indexer_head_dim, s.csa_cells, 1);
+    const std::int64_t lid_ring = 2 * std::int64_t{p_.indexer_head_dim};
+    l.lid_state_kv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, lid_ring, s.csa_state_rows);
+    l.lid_state_score = ggml_new_tensor_2d(c_, GGML_TYPE_F32, lid_ring, s.csa_state_rows);
+  } else if (ratio == model::kDsv4HcaRatio) {
+    l.hca_k = joined != 0 ? after_window(s.hca_cells)
+                          : ggml_new_tensor_3d(c_, GGML_TYPE_F16, head, s.hca_cells, 1);
+    l.hca_state_kv = ggml_new_tensor_2d(c_, GGML_TYPE_F32, head, s.hca_state_rows);
+    l.hca_state_score = ggml_new_tensor_2d(c_, GGML_TYPE_F32, head, s.hca_state_rows);
+  }
+}
+
 std::expected<void, KernelFailure> Builder::InjectLeaves(const Dsv4Injection& inject) {
-  if (inject.profile == nullptr || inject.binding == nullptr || inject.rows <= 0 ||
-      inject.rows > s_.rows || inject.ring <= 0) {
+  if (inject.profile == nullptr || inject.binding == nullptr ||
+      (segs_.empty() && (inject.rows <= 0 || inject.rows > s_.rows)) || inject.ring <= 0) {
     return Rejected("not a DSpark injection of this chunk");
+  }
+  for (const Segment& seg : segs_) {
+    if (seg.inject_rows <= 0 || seg.inject_rows > seg.s->rows) {
+      return Rejected("not a DSpark injection of this wave's slot");
+    }
   }
   const model::Dsv4Profile& dp = inject.profile->blocks;
   const model::DsparkBinding& db = *inject.binding;
@@ -440,7 +560,9 @@ std::expected<void, KernelFailure> Builder::InjectLeaves(const Dsv4Injection& in
     return Rejected("the injection's binding is not its drafter's");
   }
   DsparkInjectTensors t;
-  t.cells = ggml_new_tensor_1d(c_, GGML_TYPE_I64, inject.rows);
+  if (segs_.empty()) {
+    t.cells = ggml_new_tensor_1d(c_, GGML_TYPE_I64, inject.rows);
+  }
   auto fc = Leaf(c_, db.fc, "fc");
   auto enc_norm = Leaf(c_, db.enc_norm, "enc_norm");
   if (!fc || !enc_norm) {
@@ -456,7 +578,18 @@ std::expected<void, KernelFailure> Builder::InjectLeaves(const Dsv4Injection& in
     }
     t.kv.push_back(*kv);
     t.kv_norm.push_back(*kv_norm);
-    t.ring.push_back(ggml_new_tensor_3d(c_, GGML_TYPE_F16, dp.head_dim, inject.ring, 1));
+    if (segs_.empty()) {
+      t.ring.push_back(ggml_new_tensor_3d(c_, GGML_TYPE_F16, dp.head_dim, inject.ring, 1));
+    }
+  }
+  // A wave: each slot's cells and ring its own; the weights the joined graph's.
+  for (Segment& seg : segs_) {
+    DsparkInjectTensors own;
+    own.cells = ggml_new_tensor_1d(c_, GGML_TYPE_I64, seg.inject_rows);
+    for (std::uint32_t il = 0; il < dp.layers; ++il) {
+      own.ring.push_back(ggml_new_tensor_3d(c_, GGML_TYPE_F16, dp.head_dim, inject.ring, 1));
+    }
+    seg.g->inject = std::move(own);
   }
   g_.inject = std::move(t);
   return {};
@@ -499,7 +632,7 @@ ggml_tensor* Builder::HcHead(ggml_tensor* x) {
   const std::int64_t nt = x->ne[2];
   ggml_tensor* flat = ggml_reshape_2d(c_, x, p_.hc_width(), nt);
   ggml_tensor* flat_norm = ggml_rms_norm(c_, flat, p_.rms_eps);
-  ggml_tensor* mixes = ggml_mul_mat(c_, g_.hc_head_fn, flat_norm);
+  ggml_tensor* mixes = FloatMm(g_.hc_head_fn, flat_norm);
   ggml_tensor* pre = ggml_add(c_, ggml_mul(c_, mixes, g_.hc_head_scale), g_.hc_head_base);
   pre = ggml_sigmoid(c_, pre);
   pre = ggml_scale_bias(c_, pre, 1.0f, p_.hc_eps);
@@ -966,6 +1099,197 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
   return out;
 }
 
+// A wave's attention for one layer (BuildDsv4WaveGraph): Attention's and
+// AttentionSparse's operations, the row-local ones over every slot's rows
+// and the rest per slot over its rows' views, its own inputs and state.
+ggml_tensor* Builder::AttentionWave(std::uint32_t il_u, ggml_tensor* cur) {
+  const int il = static_cast<int>(il_u);
+  const Dsv4LayerTensors& l = g_.layers[il_u];
+  const std::uint32_t ratio = p_.compress_ratios[il_u];
+  const std::int64_t head = p_.head_dim;
+  const std::int64_t nope = head - p_.rope_dims;
+  const std::int64_t heads = p_.heads;
+  const std::int64_t groups = p_.o_groups;
+  const std::int64_t nt = cur->ne[1];
+  const Rope rl = LayerRope(p_, ratio);
+
+  ggml_tensor* qr = Mm(l.q_a, cur);
+  qr = Norm(qr, l.q_a_norm);
+  ggml_tensor* q = Mm(l.q_b, qr);
+  q = ggml_reshape_3d(c_, q, head, heads, nt);
+  const Dsv4QHeadParams q_params{.eps = p_.rms_eps,
+                                 .original_context = rl.n_ctx_orig,
+                                 .base = rl.base,
+                                 .scale = rl.scale,
+                                 .extension = rl.ext,
+                                 .attention = rl.attn,
+                                 .beta_fast = rl.beta_fast,
+                                 .beta_slow = rl.beta_slow};
+  if (o_.fused && p_.rope_dims == 64 && Dsv4QHeadFits(q, g_.positions, q_params)) {
+    q = Dsv4QHead(c_, q, g_.positions, q_params,
+                  o_.f16_q && nt >= 64 ? GGML_TYPE_F16 : GGML_TYPE_F32);
+  } else {
+    q = ggml_rms_norm(c_, q, p_.rms_eps);
+    q = RopeExt(q, g_.positions, rl, rl.n_ctx_orig);
+    q = ggml_rope_set_offset(q, static_cast<int>(nope));
+  }
+  Name(q, "q", il);
+  ggml_tensor* kv = Mm(l.kv, cur);
+  kv = Norm(kv, l.kv_norm);
+  kv = ggml_reshape_3d(c_, kv, head, 1, nt);
+  kv = RopeExt(kv, g_.positions, rl, rl.n_ctx_orig);
+  kv = ggml_rope_set_offset(kv, static_cast<int>(nope));
+  Name(kv, "kv", il);
+
+  // The compressors' and the indexer's projections, every slot's rows.
+  const std::int64_t ih = p_.indexer_head_dim;
+  ggml_tensor* comp_kv = nullptr;
+  ggml_tensor* comp_score = nullptr;
+  ggml_tensor* lid_kv = nullptr;
+  ggml_tensor* lid_score = nullptr;
+  ggml_tensor* lid_q = nullptr;
+  ggml_tensor* lid_w = nullptr;
+  if (ratio == model::kDsv4HcaRatio || ratio == model::kDsv4CsaRatio) {
+    const Dsv4CompInputs& own = ratio == model::kDsv4HcaRatio ? g_.hca : g_.csa;
+    comp_kv = MmShared(l.comp_kv, cur);
+    comp_score = MmShared(l.comp_gate, cur);
+    comp_score = ggml_add(c_, comp_score, ggml_get_rows(c_, l.comp_ape, own.state_pos));
+  }
+  if (ratio == model::kDsv4CsaRatio) {
+    lid_kv = MmShared(l.idx_comp_kv, cur);
+    lid_score = MmShared(l.idx_comp_gate, cur);
+    lid_score = ggml_add(c_, lid_score, ggml_get_rows(c_, l.idx_comp_ape, g_.lid.state_pos));
+    lid_q = Mm(l.idx_q_b, qr);
+    lid_q = ggml_reshape_3d(c_, lid_q, ih, p_.indexer_heads, nt);
+    const Rope r = CompressedRope(p_);
+    lid_q = RopeExt(lid_q, g_.positions, r, r.n_ctx_orig);
+    lid_q = ggml_rope_set_offset(lid_q, static_cast<int>(ih - p_.rope_dims));
+    lid_q = Hadamard(lid_q, g_.lid_rot);
+    lid_w = MmShared(l.idx_proj, cur);
+    lid_w = ggml_scale(c_, lid_w, 1.0f / sqrtf(static_cast<float>(ih * p_.indexer_heads)));
+  }
+  Expand(q);
+  Expand(kv);
+
+  // Each slot: its compressors' blocks and ring rows, its window cells, its
+  // indexer's selection and its attention, over its own state.
+  ggml_tensor* out = nullptr;
+  for (const Segment& seg : segs_) {
+    const Dsv4ChunkShape& s = *seg.s;
+    Dsv4Graph& sg = *seg.g;
+    const Dsv4LayerTensors& sl = sg.layers[il_u];
+    const auto ring = [&](ggml_tensor* t, std::int64_t rows) {
+      return ggml_view_2d(c_, t, t->ne[0], rows, t->nb[1], 0);
+    };
+    const auto persist = [&](ggml_tensor* rows, const Dsv4CompInputs& in, ggml_tensor* kv_state,
+                             ggml_tensor* score_state, ggml_tensor* score) {
+      Expand(ggml_set_rows(c_, kv_state, ggml_get_rows(c_, Rows2(rows, seg), in.persist_src),
+                           in.persist_dst));
+      Expand(ggml_set_rows(c_, score_state, ggml_get_rows(c_, Rows2(score, seg), in.persist_src),
+                           in.persist_dst));
+    };
+    ggml_tensor* top_k = nullptr;
+    if (ratio == model::kDsv4CsaRatio) {
+      ggml_tensor* comp = CompressFused(
+          ring(sl.csa_state_kv, s.csa_state_rows), ring(sl.csa_state_score, s.csa_state_rows),
+          Rows2(comp_kv, seg), Rows2(comp_score, seg), sg.csa.read_idxs, sg.csa.write_pos,
+          l.comp_norm, model::kDsv4CsaRatio, head, true);
+      Expand(CpyK(sl.csa_k, comp, sg.csa.write_idxs));
+      persist(comp_kv, sg.csa, sl.csa_state_kv, sl.csa_state_score, comp_score);
+      ggml_tensor* lid_comp = CompressFused(
+          ring(sl.lid_state_kv, s.csa_state_rows), ring(sl.lid_state_score, s.csa_state_rows),
+          Rows2(lid_kv, seg), Rows2(lid_score, seg), sg.lid.read_idxs, sg.lid.write_pos,
+          l.idx_comp_norm, model::kDsv4CsaRatio, ih, true);
+      lid_comp = Hadamard(lid_comp, g_.lid_rot);
+      Expand(CpyK(sl.lid_k, lid_comp, sg.lid.write_idxs));
+      persist(lid_kv, sg.lid, sl.lid_state_kv, sl.lid_state_score, lid_score);
+      ggml_tensor* k = ggml_view_2d(c_, sl.lid_k, ih, s.csa_n_kv, sl.lid_k->nb[1], 0);
+      const std::int64_t top = std::min<std::int64_t>(s.csa_n_kv, p_.indexer_top_k);
+      top_k = Dsv4LidTopK(c_, Rows3(lid_q, seg), k, Rows2(lid_w, seg), sg.csa_visible, top);
+    } else if (ratio == model::kDsv4HcaRatio) {
+      ggml_tensor* comp = CompressFused(
+          ring(sl.hca_state_kv, s.hca_state_rows), ring(sl.hca_state_score, s.hca_state_rows),
+          Rows2(comp_kv, seg), Rows2(comp_score, seg), sg.hca.read_idxs, sg.hca.write_pos,
+          l.comp_norm, model::kDsv4HcaRatio, head, false);
+      Expand(CpyK(sl.hca_k, comp, sg.hca.write_idxs));
+      persist(comp_kv, sg.hca, sl.hca_state_kv, sl.hca_state_score, comp_score);
+    }
+    Expand(CpyK(sl.raw_k, Rows3(kv, seg), sg.raw_k_idxs));
+    const std::int64_t window = std::min<std::int64_t>(s.raw_n_kv, p_.window);
+    ggml_tensor* q_s = Rows3(q, seg);
+    ggml_tensor* one = nullptr;
+    if (ratio == model::kDsv4CsaRatio) {
+      ggml_tensor* k = GetK(sl.raw_k, s.raw_cells + s.csa_n_kv);
+      ggml_tensor* kq_mask =
+          Dsv4SparseMask(c_, sg.raw_mask, top_k, nullptr, s.raw_cells, s.csa_n_kv);
+      one = AttnMhaRow(q_s, k, kq_mask, l.attn_sinks, window + top_k->ne[0], true);
+    } else if (ratio == model::kDsv4HcaRatio) {
+      ggml_tensor* k = GetK(sl.raw_k, s.raw_cells + s.hca_n_kv);
+      ggml_tensor* kq_mask =
+          Dsv4SparseMask(c_, sg.raw_mask, nullptr, sg.hca_visible, s.raw_cells, s.hca_n_kv);
+      one = AttnMhaRow(q_s, k, kq_mask, l.attn_sinks, window + s.hca_n_kv, true);
+    } else {
+      ggml_tensor* k = GetK(sl.raw_k, s.raw_n_kv);
+      one = AttnMhaRow(q_s, k, sg.raw_mask, l.attn_sinks, window, true);
+    }
+    out = out != nullptr ? ggml_concat(c_, out, one, 1) : one;
+  }
+
+  out = ggml_reshape_3d(c_, out, head, heads, nt);
+  out = ggml_rope_ext_back(c_, out, g_.positions, nullptr, static_cast<int>(p_.rope_dims),
+                           kRopeMode, rl.n_ctx_orig, rl.base, rl.scale, rl.ext, rl.attn,
+                           rl.beta_fast, rl.beta_slow);
+  out = ggml_rope_set_offset(out, static_cast<int>(nope));
+  out = ggml_reshape_3d(c_, out, (heads / groups) * head, groups, nt);
+  ggml_tensor* oa = nullptr;
+  if (o_.fused && nt <= VecQRows() && VecQType(l.out_a->type) && ggml_is_contiguous(out) &&
+      out->ne[0] % 32 == 0) {
+    oa = VecQ(c_, l.out_a, Q8Of(out), nullptr, nt, true);
+    oa = ggml_reshape_2d(c_, oa, std::int64_t{p_.o_lora} * groups, nt);
+  } else {
+    out = ggml_permute(c_, out, 0, 2, 1, 3);
+    oa = ggml_mul_mat(c_, l.out_a, out);
+    oa = ggml_permute(c_, oa, 0, 2, 1, 3);
+    oa = ggml_cont_2d(c_, oa, std::int64_t{p_.o_lora} * groups, nt);
+  }
+  out = Mm(l.out_b, oa);
+  Name(out, "attn_out", il);
+  return out;
+}
+
+// The drafter's projections run per slot, over its injected rows alone, as
+// Inject runs them for its chunk: they are GGML's quantized products, whose
+// launch (and so each column's arithmetic) follows the column count, so a
+// slot's ring rows equal its own chunk's bit for bit. The drafter's few
+// projection weights are read once a slot.
+void Builder::InjectWave(const DsparkInjectTensors& t, const Dsv4Injection& inject) {
+  const model::Dsv4Profile& dp = inject.profile->blocks;
+  const Rope rope = LayerRope(dp, 0);
+  const std::int64_t head = dp.head_dim;
+  for (const Segment& seg : segs_) {
+    const std::int64_t r = seg.inject_rows;
+    const auto skip = static_cast<std::size_t>(seg.first + seg.s->rows - r);
+    ggml_tensor* features = ggml_view_2d(c_, g_.features, g_.features->ne[0], r, g_.features->nb[1],
+                                         skip * g_.features->nb[1]);
+    ggml_tensor* positions = ggml_view_1d(c_, g_.positions, r, skip * g_.positions->nb[0]);
+    ggml_tensor* inp_g = ggml_mul_mat(c_, t.fc, features);
+    inp_g = ggml_mul(c_, ggml_rms_norm(c_, inp_g, dp.rms_eps), t.enc_norm);
+    for (std::uint32_t il = 0; il < dp.layers; ++il) {
+      ggml_tensor* kv = ggml_mul_mat(c_, t.kv[il], inp_g);
+      kv = ggml_mul(c_, ggml_rms_norm(c_, kv, dp.rms_eps), t.kv_norm[il]);
+      kv = ggml_reshape_3d(c_, kv, head, 1, r);
+      kv = ggml_rope_ext(c_, kv, positions, nullptr, static_cast<int>(dp.rope_dims), kRopeMode,
+                         rope.n_ctx_orig, rope.base, rope.scale, rope.ext, rope.attn,
+                         rope.beta_fast, rope.beta_slow);
+      kv = ggml_rope_set_offset(kv, static_cast<int>(head - dp.rope_dims));
+      // InjectLeaves gave every slot its own cells and ring.
+      if (const std::optional<DsparkInjectTensors>& own = seg.g->inject; own.has_value()) {
+        Expand(CpyK(own->ring[il], kv, own->cells));
+      }
+    }
+  }
+}
+
 // build_moe_ffn and build_ffn for one layer (llama-graph.cpp:1748-2380).
 ggml_tensor* Builder::Moe(std::uint32_t il_u, ggml_tensor* cur) {
   const int il = static_cast<int>(il_u);
@@ -1058,7 +1382,7 @@ ggml_tensor* Builder::Moe(std::uint32_t il_u, ggml_tensor* cur) {
 }
 
 bool Builder::Fused(std::uint32_t il) const {
-  if (!o_.fused || s_.rows > kVecQTokens || p_.hc != 4 ||
+  if (!o_.fused || s_.rows > VecQRows() || p_.hc != 4 ||
       (std::int64_t{p_.width} * p_.hc) % (kDsv4HcChunks * kDsv4HcChunkThreads) != 0 ||
       p_.width % 1024 != 0 || p_.width > 8192 || p_.experts != 256) {
     return false;
@@ -1096,8 +1420,7 @@ ggml_tensor* Builder::MoeFused(std::uint32_t il_u, ggml_tensor* cur) {
   const Dsv4LayerTensors& l = g_.layers[il_u];
   const std::int64_t nt = cur->ne[1];
   const std::int64_t used = p_.experts_used;
-  ggml_tensor* logits = ggml_mul_mat(c_, l.router, cur);
-  ggml_prec_set_acc(logits, GGML_PREC_F32);
+  ggml_tensor* logits = FloatMm(l.router, cur, true);
   Name(logits, "ffn_moe_logits", il);
   const float scale = p_.expert_weights_scale != 0.0f && p_.expert_weights_scale != 1.0f
                           ? p_.expert_weights_scale
@@ -1198,7 +1521,7 @@ void Builder::Build() {
       ggml_tensor* cur = PreNorm(il_u, inpl, l.hc_attn_fn, l.hc_attn_scale, l.hc_attn_base,
                                  l.attn_norm, &post, &comb);
       Name(cur, "attn_norm", il);
-      cur = Attention(il_u, cur);
+      cur = segs_.empty() ? Attention(il_u, cur) : AttentionWave(il_u, cur);
       inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
       Name(inpl, "hc_attn_post", il);
       residual = inpl;
@@ -1232,10 +1555,12 @@ void Builder::Build() {
   }
   capture(p_.layers, inpl);
   // Capture above retains every feature row. Only the requested trailing
-  // rows enter the final mix, norm and vocabulary head.
-  ggml_tensor* flat = ggml_reshape_2d(c_, inpl, p_.hc_width(), nt);
-  ggml_tensor* flat_out = ggml_get_rows(c_, flat, g_.out_ids);
-  inpl = ggml_reshape_3d(c_, flat_out, p_.width, hc, g_.out_ids->ne[0]);
+  // rows enter the final mix, norm and vocabulary head (a wave's: all).
+  if (segs_.empty()) {
+    ggml_tensor* flat = ggml_reshape_2d(c_, inpl, p_.hc_width(), nt);
+    ggml_tensor* flat_out = ggml_get_rows(c_, flat, g_.out_ids);
+    inpl = ggml_reshape_3d(c_, flat_out, p_.width, hc, g_.out_ids->ne[0]);
+  }
   ggml_tensor* cur = HcHead(inpl);
   Name(cur, "hc_head", -1);
   cur = Norm(cur, g_.output_norm);
@@ -1254,7 +1579,11 @@ void Builder::Build() {
     Name(g_.features, "layer_inp", -1);
     Expand(g_.features);
     if (g_.inject && o_.inject) {
-      Inject(*g_.inject, *o_.inject);
+      if (segs_.empty()) {
+        Inject(*g_.inject, *o_.inject);
+      } else {
+        InjectWave(*g_.inject, *o_.inject);
+      }
     }
   }
   g_.nodes = GraphOrder(expanded_);
@@ -1404,6 +1733,30 @@ std::size_t Dsv4GraphTensors(const model::Dsv4Profile& profile) {
   return 512 + (std::size_t{profile.layers} * (512 + 96));
 }
 
+std::vector<ggml_tensor*> Dsv4WaveGraph::inputs() const {
+  std::vector<ggml_tensor*> all = {joined.embd,          joined.tokens,        joined.positions,
+                                   joined.csa.state_pos, joined.hca.state_pos, joined.lid.state_pos,
+                                   joined.lid_rot};
+  for (const Dsv4Graph& s : slots) {
+    all.insert(all.end(), {s.raw_k_idxs, s.raw_mask});
+    for (const Dsv4CompInputs* in : {&s.csa, &s.hca, &s.lid}) {
+      all.insert(all.end(),
+                 {in->persist_src, in->persist_dst, in->read_idxs, in->write_idxs, in->write_pos});
+    }
+    all.insert(all.end(), {s.csa_visible, s.hca_visible});
+    if (const std::optional<DsparkInjectTensors>& injected = s.inject; injected.has_value()) {
+      all.push_back(injected->cells);
+    }
+  }
+  return all;
+}
+
+std::size_t Dsv4WaveGraphTensors(const model::Dsv4Profile& profile, std::size_t slots) {
+  // A chunk's, and each slot's own inputs, state and per-slot operations
+  // (about 30 leaves and 60 nodes a layer, its share of the drafter's ring).
+  return Dsv4GraphTensors(profile) + (slots * (128 + (std::size_t{profile.layers} * 128)));
+}
+
 std::size_t DsparkGraphTensors(const model::DsparkProfile& profile, std::int64_t rows) {
   // The blocks as a target chunk's layers, and the Markov head's six a slot.
   return 256 + (std::size_t{profile.blocks.layers} * 512) + (static_cast<std::size_t>(rows) * 8);
@@ -1496,6 +1849,95 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
   }
   builder.Build();
   return g;
+}
+
+std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& arena,
+                                                               const model::Dsv4Profile& profile,
+                                                               const model::Dsv4Binding& binding,
+                                                               const Dsv4WaveShape& shape,
+                                                               const Dsv4GraphOptions& options) {
+  const std::size_t count = shape.slots.size();
+  if (count == 0 || count > kDsv4WaveSlots ||
+      (options.inject ? shape.inject_rows.size() != count
+                      : std::ranges::any_of(shape.inject_rows, [](auto r) { return r != 0; }))) {
+    return Rejected("a DeepSeek V4 wave takes one to four slots, each injected or none");
+  }
+  if (!options.fused || options.row_invariant || options.outa_prefill) {
+    return Rejected("a DeepSeek V4 wave runs the fast plan's fused form alone");
+  }
+  const Dsv4ChunkShape& lead = shape.slots.front();
+  std::int64_t rows = 0;
+  for (const Dsv4ChunkShape& s : shape.slots) {
+    if (s.rows <= 0 || s.outputs != 0 || s.raw_cells <= 0 || s.raw_n_kv < 256 ||
+        s.raw_n_kv > s.raw_cells || s.raw_n_kv % 256 != 0 || s.csa_n_kv < 256 ||
+        s.csa_n_kv > s.csa_cells || s.csa_n_kv % 256 != 0 || s.hca_n_kv < 256 ||
+        s.hca_n_kv > s.hca_cells || s.hca_n_kv % 256 != 0 || s.csa_blocks <= 0 ||
+        s.hca_blocks <= 0 || s.csa_persist <= 0 || s.hca_persist <= 0 ||
+        s.csa_state_rows != 2 * std::int64_t{model::kDsv4CsaRatio} ||
+        s.hca_state_rows != std::int64_t{model::kDsv4HcaRatio} || s.raw_cells != lead.raw_cells ||
+        s.csa_cells != lead.csa_cells || s.hca_cells != lead.hca_cells) {
+      return Rejected("not a DeepSeek V4 wave slot shape the state holds");
+    }
+    rows += s.rows;
+  }
+  if (rows > kDsv4WaveRows) {
+    return Rejected("a DeepSeek V4 wave's rows exceed its column-invariant products");
+  }
+  if (binding.layers.size() != profile.layers || profile.compress_ratios.size() != profile.layers ||
+      profile.hc != 4 || profile.heads % profile.o_groups != 0) {
+    return Rejected("the binding is not the profile's");
+  }
+  if (options.inject && options.features.empty()) {
+    return Rejected("a DSpark injection reads the chunk's features");
+  }
+  for (const std::uint32_t layer : options.features) {
+    if (layer > profile.layers) {
+      return Rejected("a feature layer past the stream leaving the last layer");
+    }
+  }
+  if (auto room = arena.Reserve(Dsv4WaveGraphTensors(profile, count)); !room) {
+    return std::unexpected(room.error());
+  }
+  Dsv4WaveGraph wave;
+  wave.slots.resize(count);
+  std::vector<Segment> segments(count);
+  std::int64_t first = 0;
+  for (std::size_t i = 0; i < count; ++i) {
+    segments[i] = {.g = &wave.slots[i],
+                   .s = &shape.slots[i],
+                   .first = first,
+                   .inject_rows = options.inject ? shape.inject_rows[i] : 0};
+    wave.first.push_back(first);
+    first += shape.slots[i].rows;
+  }
+  Dsv4ChunkShape joined = lead;
+  joined.rows = rows;
+  Builder builder(arena.context(), profile, binding, joined, wave.joined, options, true, segments);
+  builder.WaveInputs();
+  if (auto weights = builder.Weights(); !weights) {
+    return std::unexpected(weights.error());
+  }
+  if (!builder.AllFused()) {
+    return Rejected("a DeepSeek V4 wave needs every layer in the fast plan's fused form");
+  }
+  if (options.inject) {
+    if (auto leaves = builder.InjectLeaves(*options.inject); !leaves) {
+      return std::unexpected(leaves.error());
+    }
+  }
+  builder.Build();
+  // A wave of one-row steps: each vector product takes a one-row step's
+  // launch, so every slot's row equals its step alone bit for bit (the
+  // multi-token launch's reduction differs). Verify waves keep the
+  // multi-token launch their verifies take alone.
+  if (std::ranges::all_of(shape.slots, [](const Dsv4ChunkShape& s) { return s.rows == 1; })) {
+    for (ggml_tensor* node : wave.joined.nodes) {
+      if (JitllmOpOf(node) == JitllmOp::kVecQ) {
+        SetVecQOneToken(node);
+      }
+    }
+  }
+  return wave;
 }
 
 std::expected<DsparkGraph, KernelFailure> BuildDsparkGraph(TensorArena& arena,

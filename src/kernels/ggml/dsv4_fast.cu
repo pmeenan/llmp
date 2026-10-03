@@ -116,7 +116,7 @@ constexpr __host__ __device__ int VdrOf(ggml_type type) {
   }
 }
 
-constexpr int kMaxPairs = 64;  // CheckVecQ: used · tokens <= 64
+constexpr int kMaxPairs = 128;  // CheckVecQ: used · tokens <= 128
 
 // The types GGML's MMVQ prefetches into L2 on the GB10 (mmvq.cu
 // mmvq_should_prefetch, of the types here).
@@ -1170,7 +1170,14 @@ std::expected<void, KernelFailure> RunVecQ(LaunchContext& launch, ggml_tensor* n
     a.dst_slot = static_cast<int>(slotted ? node->nb[1] / sizeof(float) : 0);
     a.glu = JitllmOpInt(node, 2);
     a.limit = JitllmOpFloat(node, 3);
-    if (!LaunchVecQ(w->type, a, -1, context.stream())) {
+    int variant = -1;
+    if (VecQOneToken(node)) {
+      // The launch a one-token product of this shape takes (SetVecQOneToken).
+      VecQDesc one = a;
+      one.tokens = 1;
+      variant = DefaultVariant(w->type, one);
+    }
+    if (!LaunchVecQ(w->type, a, variant, context.stream())) {
       // CheckVecQ admits only what the default launches.
       ggml_cuda_error("LaunchVecQ", __func__, __FILE__, __LINE__,
                       "jitllm.vecq refused a node its check admitted");
