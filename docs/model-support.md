@@ -33,7 +33,7 @@ no model is there yet, so measured speeds are given as headlines only.
 | Model | Role | Status | Level |
 | --- | --- | --- | --- |
 | [DeepSeek V4 Flash 0731](#deepseek-v4-flash-0731) UD-Q2_K_XL | target | Served (M3) | paged-correct |
-| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Served (M3), one chat turn checked | resident-correct, short oracle trajectories |
+| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Served (M3), one chat turn checked; refused at start since `64faee6` (F16 HC mixes vs DeepSeek waves) | resident-correct, short oracle trajectories |
 | [DSpark](#dspark) for DeepSeek V4 Flash 0731 (Q8_0) | drafter | Served (M3), with its target | paged-correct |
 | [Qwen3.8 Flash Next](#qwen38-flash-next) NVFP4 | target | Served (M3) | paged-correct, one accepted greedy divergence (below) |
 | [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
@@ -209,6 +209,10 @@ seeded-sampling evidence in this study.
   returned reasoning and the answer "Paris", ending at the stop token, 19
   prompt tokens.
   One turn only: no quality, continuation, swap or timing claim.
+  Since main `64faee6` (four-slot DeepSeek waves) the runtime refuses to
+  start this artifact. The wave needs every layer in the fused form, which
+  requires F32 HC mix weights, and this GGUF's are F16
+  ([deepseek-batching](experiments/deepseek-batching/README.md#against-ds4-same-session)).
 
 ## DSpark
 

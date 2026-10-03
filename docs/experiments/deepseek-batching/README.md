@@ -125,7 +125,8 @@ byte-identical to the earlier run's, at every concurrency.
   through literal completions, which still run one at a time. On those
   numbers native plain trails by 15.9% / 9.2% / 11.9% (before: 16.1% /
   23.8% / 32.2%). Native plain C1 measured the same on both artifacts
-  (11.06 / 11.09).
+  (11.06 / 11.09). The [same-session comparison](#against-ds4-same-session)
+  below splits prefill from decode.
 - **Latency.** All four requests now finish together (C4: 70.6–71.8 s).
   Before, the first finished at about 19–23 s and the last at 75–92 s.
 - **Memory.** Peak `MemAvailable` drop at C4 is 109.85 GiB with DSpark
@@ -142,6 +143,198 @@ Pure decode, from the harness (4 slots, waves of 3–4, short prompts):
 
 DSpark gains less because a wave of four 4-row verifies reads about 78
 distinct routed experts, plus four separate draft blocks.
+
+## Against ds4, same session
+
+This section compares native main `64faee6` with ds4 0.6.5, measured
+interleaved on Spark A on 2026-10-02 (22:00–22:45 EDT). It splits each
+engine's time into prefill and decode. Every native cell's output is
+greedy, and so is ds4's. Each cell is one sample.
+
+**Matching is partial.** Main cannot serve the community IQ2_XXS artifact
+(`cd39d504…`) that ds4 runs; it refuses at start:
+
+> measuring a wave of 4 slots: a DeepSeek V4 wave needs every layer in
+> the fast plan's fused form
+
+A wave needs every layer in the fused form, and that form requires F32 HC
+mix weights. The community GGUF stores them as F16 (`Builder::Fused`,
+`dsv4_graph.cc`), so the artifact cannot start with four slots. The same
+check also keeps its single-request decode on the unfused path. Two native
+arms therefore stand in for main on that artifact:
+
+- **Community, one slot (serial).** A private shim, kept outside the
+  repository, recompiles only `serving.cc` with the build's flags. It reads
+  the DeepSeek model's request slots from the environment, set to one. The
+  community artifact then runs exactly as on the base, one request at a
+  time.
+- **Community, one slot, output-A/HCA.** The same shim also turns on the
+  runner's default-off output-A/HCA experiment.
+
+Main itself runs unmodified on the original artifact `8a355bfb…`, in
+waves, both plain and with DSpark. That arm does batch, but on a different
+artifact from ds4's.
+
+**Protocol.** The protocol is [deepseek-concurrent](../deepseek-concurrent/README.md)'s,
+with these settings:
+- prompts u0–u3, 7,043 tokens;
+- a fresh service per cell, with an excluded one-token prime;
+- context 262,144 and 4,096-row chunks;
+- requests streamed with `include_usage`, so each request's first token is
+  timed.
+
+ds4 gets the non-thinking chat request (`think: false`, greedy, defaults,
+`--no-spec`). Native has no request field for thinking, so it renders
+thinking on. Its prompt is ds4's recorded IDs with `<think>` in place of
+`</think>` as the last ID. Both report 7,043 prompt tokens. Native's
+outputs are therefore reasoning text and ds4's are answers; their lengths
+are fixed (finish `length` in every cell). No quality claim is made.
+
+Prefill and decode are timed in three ways:
+- ds4's own per-request `timings`: TTFT, prefill tok/s and decode tok/s;
+- each stream's first token;
+- separate cells that measure one part alone: prefill-only cells
+  (`max_tokens` 1) and decode-dominated cells (124-token prompts, 512
+  outputs).
+
+All 40 cells completed, each with exit code 0 and with the admission
+check passed before and after.
+
+**7,043-token prompts, 256 outputs (completed tok/s):**
+
+| Arm | C1 | C2 | C4 | C4 first / last completion, s | Native / ds4 at C1 / C2 / C4 |
+| --- | ---: | ---: | ---: | --- | --- |
+| ds4, community | 13.234 | 14.864 | 16.687 | 58.50 / 61.37 | — |
+| Native, community, serial | 10.478 | 10.962 | 11.061 | 23.39 / 92.58 | 0.79 / 0.74 / 0.66 |
+| Native, community, serial, output-A/HCA | 11.639 | 11.758 | 11.767 | 21.99 / 87.02 | 0.88 / 0.79 / 0.71 |
+| Native main, original, plain waves | 11.135 | 13.281 | 14.457 | 70.50 / 70.83 | 0.84 / 0.89 / 0.87 |
+| Native main, original, DSpark waves | 13.168 | 14.259 | 14.387 | 70.42 / 71.18 | 1.00 / 0.96 / 0.86 |
+
+**Prefill alone** (`max_tokens` 1, same prompts, wall from submission to
+the last reply):
+
+| Arm | C1 s | C2 s | C4 s | Prompt tok/s (C1 / C4) |
+| --- | ---: | ---: | ---: | --- |
+| ds4, community | 6.53 | 13.05 | 26.19 | 1079 / 1076 |
+| Native, community | 10.31 | 20.34 | 40.31 | 683 / 699 |
+| Native, community, output-A/HCA | 8.72 | 17.19 | 34.21 | 808 / 824 |
+| Native, original | 11.28 | 22.40 | 44.73 | 625 / 630 |
+
+Neither engine batches prefill: the wall grows linearly with the number of
+prompts. At C4 ds4 prefills 1.54× native on the same artifact (1.58× at
+C1), and 1.31× with output-A/HCA. Against main's original artifact it is
+1.71×.
+
+**Decode-dominated** (124-token prompts, 512 outputs):
+
+| Arm | C1 tok/s | C2 tok/s | C4 tok/s | Per-request decode tok/s, C1 / C2 / C4 |
+| --- | ---: | ---: | ---: | --- |
+| ds4, community | 20.85 | 30.93 | 46.55 | 21.5 / 15.9–16.3 / 11.9–12.6 |
+| Native, community, serial | 18.84 | 18.89 | 18.89 | 19.6 / 19.6 / 19.5–19.6 |
+| Native main, original, plain waves | 20.94 | 29.98 | 37.36 | 21.9 / 16.0 / 10.1 |
+| Native main, original, DSpark waves | 32.18 | 34.20 | 34.55 | 34.6 / 18.3–20.2 / 9.3–10.3 |
+
+Native's ratio to ds4 is:
+- plain waves: 1.00 / 0.97 / 0.80;
+- DSpark: 1.54 / 1.11 / 0.74.
+
+**Where the time goes**
+
+- **C1 (same artifact).** The gap is prefill.
+  - ds4: 6.5 s prefill (1,088 tok/s), then decode at 19.8 tok/s.
+  - Native: 10.3 s prefill (8.7 s with output-A/HCA), then decode at
+    19.25 tok/s.
+  - So prefill accounts for 3.8 s of the gap and decode for about 0.4 s.
+    The 7K C1 cell's own first token came at 11.18 s, against 10.28–10.32 s
+    for the first request of every other native community cell; that
+    0.9 s is unexplained.
+    Native decode on this artifact is 10% below its rate on the original
+    artifact (19.6 vs 21.9 tok/s at 124 tokens): F16 HC mixes keep every
+    layer off the fused decode form.
+- **C4, 7K (main's waves vs ds4).** All of the gap is prefill.
+  - Native: four prefills take 44.6 s; then 256 four-row waves take 26.0 s,
+    about 39 tok/s.
+  - ds4: four prefills take 26.2 s. Its other 35.2 s are 297 decode steps,
+    many narrower than four rows because ds4 decodes while later prompts
+    still prefill.
+  - Native spends 18.4 s more on prefill and about 9 s less on decode.
+- **C4, decode-dominated.** The gap is the wave step.
+  - Native's four-row wave takes 99 ms (10.1 tok/s each); its solo step
+    takes 46 ms. ds4's four-row step takes about 82 ms (about 12.2 tok/s
+    each), with a solo step of 46.5 ms.
+  - At C2 both engines are about 62 ms. The difference appears at four
+    rows.
+  - In these waves every token takes the one-token vecq launch, so that
+    each request's rows stay byte-identical to solo. Each weight is
+    therefore read again for each token. ds4 reads it once per step, and
+    its replies change with batch width.
+- **Scheduling.** Native's cooperative backend picks prompt chunks round
+  robin across slots and starts no decode until every prompt is prefilled.
+  At C4 every request's first token arrives at 44.5–45.0 s, against ds4's
+  6.8 / 17.1 / 27.9 / 38.9 s. This costs native no throughput: its waves
+  stay four rows wide. It does delay first completion: 70.5 against 58.5 s.
+- **DSpark at C4.** DSpark waves trail plain waves when decode dominates
+  (34.55 vs 37.36 tok/s). DSpark wins at C1 (+54%) and at C2 (+14%).
+
+**Prefill by prompt length.** Native, community artifact, literal IDs,
+one request at a time. Each length was run twice; the table gives seconds,
+and in brackets each arm's tok/s:
+
+| Prompt tokens (chunks) | 4,096 (1) | 4,097 (4,096 + 1) | 6,144 (4,096 + 2,048) | 7,043 (4,096 + 2,947) | 8,192 (2 × 4,096) |
+| --- | --- | --- | --- | --- | --- |
+| Native | 5.47–5.75 | 5.55–5.56 | 8.65–8.68 | 9.88–9.94 | 10.88–10.89 |
+| Native, output-A/HCA | 3.94–4.01 (1,021–1,039) | 4.03–4.05 | 7.12–7.16 (858–863) | 8.38–8.43 (836–841) | 8.00–8.01 (1,023–1,024) |
+
+With output-A/HCA, a full 4,096-row chunk runs at about 1,025 tok/s, about
+5% under ds4's 1,079. The 7K prompt is slower than 8,192 tokens, though: its
+2,947-row last chunk takes 4.4 s against 4.0 s for a full chunk. D2R,
+the IQ2 pair write-back, output-A and HCA are each guarded to 4,096-row
+chunks. Below that size the chunk falls back to the slower forms. At the
+full-chunk rate, the 7K prompt would take about 6.9 s against ds4's 6.5 s.
+That figure is inferred, not measured. The chat route's turn boundary
+(an extra 2-row unit and the turn checkpoint) adds about 0.4 s more
+(chat 10.31 vs literal 9.91 s).
+
+**Next steps, by expected effect**
+
+1. **Partial-chunk prefill.** Generalize the 4,096-row-only mechanisms
+   (output-A, HCA, D2R down, pair write-back) to any chunk of up to 4,096
+   rows. This is most of the remaining 7K prefill gap.
+2. **Output-A/HCA by default** (or as a per-alias flag). It gains 22% per
+   full chunk.
+3. **F16 HC mixes in the fused form.** Accepting them would restore main's
+   ability to start the community artifact, give it waves, and lift its
+   solo decode from 19.6 tok/s toward the original's 21.9. This is a
+   regression from 64faee6 to fix first: the support matrix lists the
+   artifact as served.
+4. **A multi-token vecq launch with the one-token reduction order** (open
+   above). It would read each weight once per wave while keeping rows
+   exact, the C4 decode lever (99 vs 82 ms).
+5. **Scheduling.**
+   - Finish the oldest prompt first, then alternate its decode with later
+     prompts, for earlier first tokens. Measure the throughput cost: ds4's
+     interleaving narrows its steps.
+   - Prefer plain waves over DSpark from three active requests.
+6. **The original artifact's prefill** (11.2 s for 7K tokens). Its
+   IQ3_XXS/IQ2_XS experts and F32 HC mixes bypass the stage mechanisms.
+   ds4 cannot load that GGUF, so there is no reference for it.
+
+**Conditions.** Spark A (`spark-c4e2`, GB10, driver 580.178.04).
+- **Native.** `jitllm-runtime` `60d1eb20…`, the `spark-native` build of a
+  tree equal to main `64faee6`.
+- **Shim.** `cbc1acc5…`. It recompiles only `serving.cc`, reading
+  `DS4M_WAVE_SLOTS` and `DS4M_OUTA_HCA`, with the build's exact flags and
+  link line. Records are in `shim/`.
+- **ds4.** `ds4-server` `b8ea076d…` (`76d51ef8`, 0.6.5), arguments as in
+  [deepseek-concurrent](../deepseek-concurrent/README.md#against-ds4).
+- **Harness.** Controller `run.py` `31e1eff5…`, length screen `plen.py`
+  `94cf0f67…`.
+- **Jobs.** Supervised jobs `ds4m-long`, `ds4m-ps` and `ds4m-plen`. The
+  admission check found at least 114.8 GiB available, with no GPU,
+  container or model process.
+- **Peak `MemAvailable` drop.** Native community 87–88 GiB, original 97–98
+  (DSpark 108–109), ds4 105–106.
+- **Raw records.** `spark:~/scratch/ds4m/` (`records/`, `tools/`, `shim/`).
 
 ## Plan memory
 
