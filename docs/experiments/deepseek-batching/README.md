@@ -8,6 +8,9 @@ instead of one request at a time. On the matched 7K-token HTTP protocol of
 [deepseek-concurrent](../deepseek-concurrent/README.md), the completed-token
 rate at C4 rises **+29.0% plain** and **+4.5% with DSpark**. In these cells every reply is
 byte-identical across C1, C2 and C4. Spark A (`spark-c4e2`), 2026-10-02.
+These cells predate per-wave forms: DSpark waves were then always
+draft-verify. With the [chosen form](#adaptive-dspark-and-plain-waves) a
+DSpark reply at C4 may differ from C1 unless `wave_form = "speculative"`.
 
 ## Design
 
@@ -38,10 +41,14 @@ byte-identical across C1, C2 and C4. Spark A (`spark-c4e2`), 2026-10-02.
     run per slot.
   - **One-row verifies.** These occur at a mask-width boundary or on the
     last token, and run alone.
-- **Policy.** Plain models run decode waves. With DSpark, each slot drafts
-  its own block, then one joined verify covers every slot's natural rows
-  (up to 4). A lone request keeps its ordinary step. Prefill chunks
-  alternate with peer waves (the cooperative backend's existing policy).
+- **Policy.** Plain models run decode waves. With DSpark, a draft-verify
+  wave has each slot draft its own block, then one joined verify covers
+  every slot's natural rows (up to 4). Since the
+  [per-wave forms](#adaptive-dspark-and-plain-waves), a DSpark wave may
+  instead be a plain decode wave, chosen from counted acceptance or fixed
+  by the model's `wave_form`. A lone request keeps its ordinary step.
+  Prefill chunks alternate with peer waves (the cooperative backend's
+  existing policy).
 - **Capacity.** A slot's state growth that the execution budget refuses
   beside its peers' leased state is typed (`Slot::state_refused`), so the
   cohort's capacity policy
@@ -555,7 +562,9 @@ long-first cell is 3.3–3.6% slower in two runs. The cost is the bound's:
 a request that finishes prefill early decodes in partial waves, one after
 each later prompt unit, where round robin finished every prompt together
 before decoding.
-DeepSeek's replies are byte-identical across schedules. Qwen3.8's vary
+DeepSeek's replies were byte-identical across schedules (measured before
+per-wave forms; a DSpark reply with the chosen form now follows its waves,
+[below](#adaptive-dspark-and-plain-waves)). Qwen3.8's vary
 with timing under either schedule (its round robin runs differ from each
 other).
 
@@ -586,12 +595,106 @@ Through the runtime, same session, community, DSpark against plain:
 
 As on the original artifact, DSpark leads alone but trails plain waves at
 four requests through the runtime, though the harness's wave check finds
-them level (42.54 against 42.29 tok/s). The HTTP C4 gap is open.
+them level (42.54 against 42.29 tok/s). Choosing the form per wave
+(below) narrows that gap.
+
+### Adaptive DSpark and plain waves
+
+Per-wave timing through the runtime (community, 124-token C4, each mode
+forced) shows where DSpark loses. Its waves complete more tokens a second
+at two and three requests, and fewer at four:
+
+| Wave width | DSpark: ms a wave, tok/s | Plain decode: ms a wave, tok/s |
+| --- | --- | --- |
+| 2 | 151, 31 | 78, 26 |
+| 3 | 197, 34 | 89, 34 |
+| 4 | 249, 42 | 86, 47 |
+
+The host's gap between waves is under 1 ms at four requests, so the
+difference is in the waves themselves: the four draft blocks run one
+after another, and the joined verify reads every slot's 4 rows.
+
+With a drafter, the runtime now chooses each wave's form per width
+(`execution/adaptive_wave_mode.h`; `serving.cc` `RunPreparedGenerationWave`)
+from counted tokens and a recorded cost, never from wall time:
+- **Cost.** For each width, a DSpark wave's time in plain decode waves:
+  1.94, 2.21 and 2.90 at widths 2, 3 and 4 (151/78, 197/89, 249/86 ms
+  above). They are recorded per model (`kWaveCost` in `serving.cc`) and
+  must be measured again when the wave step changes, as per-slot streams
+  would change it.
+- **Acceptance.** One moving average (weight 1/8) over the service's
+  draft-verify waves of any width, of the tokens each commits per
+  request. As Qwen's draft depth does, it counts only complete verifies:
+  a verify cut short by a mask width or the reply's end, one run alone,
+  and a wave with a sampling member are left out. A plain wave commits
+  one per request, so DSpark wins at a width while that average exceeds
+  the width's cost.
+- **Choice.** The first three waves of two or more speculate. After that,
+  each width switches form only when the average crosses its cost by 3%.
+  After every 64 plain waves, two waves speculate to update the average.
+- **Overrides.** A lone request and an uncalibrated width speculate. A
+  wave with any sampling request speculates, since the two forms turn
+  one seed into different tokens; seeded replies therefore repeat. The
+  model's `wave_form` key (`"auto"`, `"speculative"`, `"plain"`;
+  `AdaptiveWaveMode::Force`) fixes the form for exactness controls: with
+  `"speculative"` a reply at C4 equals the reply alone, on the shipped
+  build.
+- **Ring.** A plain wave of a speculative model still feeds the drafter's
+  ring (`Dsv4Runner::DecodeWave`, the injected decode wave), so its
+  requests can speculate again later.
+
+The same requests in the same waves, from the service's start, therefore
+choose the same forms, and the harness's runs repeat exactly. Which waves
+a request joins still follows when its peers arrive: equal prompts
+prefill in arrival order, and concurrent HTTP clients arrive in no fixed
+order. So with DSpark a greedy reply at four requests may differ from the
+same request alone, and between two runs of the same cell, because the
+forms' arithmetic differs. Two runs of the 124-token C4 cell (`h20s`,
+`h21s`) prefilled in different orders and gave different replies on both
+artifacts at the same rate (41.58 and 41.84 tok/s community, 40.66 and
+40.98 original; that build still averaged every verify). Plain waves
+without the drafter, and forced DSpark waves, gave the same replies in
+every run. A failed plain wave now keeps the conversation's prefix as the
+ordinary plain step does.
+
+`jitllm_spec_runner --check wave --wave-mode alternate` checks the
+drafter's ring across forms: plain and DSpark waves alternate on the same
+slots, and each slot is compared with a solo run that alternates the same
+way; a plain row that differs is a reported problem. Community: 82 of 82
+plain rows identical and 0 mismatched tokens; original: 84 of 84 and 0.
+
+Same session (`h22s`, `h22`), fresh service per cell, one build (the
+final source): plain without the drafter, DSpark with
+`wave_form = "speculative"`, and the chosen form (`"auto"`):
+
+| Cell | Plain | DSpark only | Chosen | Over DSpark | Under plain |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Community 124-token C4: tok/s | 43.00 | 38.58 | 41.23 | +6.9% | −4.1% |
+| Original 124-token C4: tok/s | 40.89 | 37.66 | 40.32 | +7.1% | −1.4% |
+| Community 7K C4: tok/s | 19.55 | 18.63 | 19.16 | +2.8% | −2.0% |
+| Original 7K C4: tok/s | 17.97 | 17.76 | 17.72 | −0.2% | −1.4% |
+
+At four requests the chosen form gains up to 7% over DSpark alone and
+lands 1–4% under plain waves; the 7K cells' differences are within or
+near this study's noise. The remaining gap to plain is not attributed.
+A run of the build before acceptance counted only complete verifies
+(`h20s`, `h20`, `bin/det7`) gave 1–9% over DSpark alone and 1–5% under
+plain. A lone request keeps DSpark's +31% (7K) to +54% (124 tokens). The
+`"speculative"` replies equal the forced build's (`bin/spec7`) and the
+build's before per-wave forms (`dss6`) byte for byte, so the configured
+form reproduces the cohort-equals-alone control on the shipped build.
+The plain replies equal them too. The earlier adaptive build chose by
+measured wall time (`h16`–`h19`) and gained 2–11%. It was replaced
+because its schedules, and so its replies, could change between runs.
 
 Records: `spark:~/scratch/dss5/` (`v2`, `v3`, `h1`–`h6`, `q1`, `bin/`,
 profile `v3/wave4.sqlite`; the adopted scheduling `h10`, `h10s`, `q2` and
-profile `short4.sqlite`; the community drafter `dr`, `h9`, `h9s`),
-controller `runx.py` over `dss0/tools/run.py`, 2026-10-03.
+profile `short4.sqlite`; the community drafter `dr`, `h9`, `h9s`; the
+wall-time adaptive waves `h16`–`h19`, `h17s` with the per-wave timing
+behind the costs; the chosen form `h20s`, `h21s`, `h20`, binaries
+`bin/det7` and `bin/spec7`; the final source `h22s`, `h22`, `w8`, binary
+`bin/det8`), controller
+`runx.py` over `dss0/tools/run.py`, 2026-10-03.
 
 ## Plan memory
 
@@ -739,10 +842,10 @@ cleared as idle; once idle slot 0 is cleared, slot 1 grows and runs.
   faster at three slots and level at four; not adopted.
 - **One launch for every slot's attention and state operations.** Open.
   About 12 ms of the 86 ms four-request step.
-- **DSpark at four requests through the runtime.** Open: on both
-  artifacts DSpark C4 trails plain waves at HTTP (community 7K −5.9%,
-  124-token −11.9%) while the harness's wave check finds them level.
-  Plain waves from four requests would change replies against C1.
+- **DSpark at four requests through the runtime.** Mostly closed by
+  [choosing the form per wave](#adaptive-dspark-and-plain-waves): 1–4%
+  under plain waves at C4, against 5–12% before. A joined draft block (one launch for
+  every slot's draft) would cut the DSpark wave's cost at its source.
 - **Joined DSpark draft blocks.** Open. A wave runs one draft per slot.
 - **Literal completions (`/v1/completions`).** Open. They remain serial.
 

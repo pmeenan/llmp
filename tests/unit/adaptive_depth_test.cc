@@ -7,6 +7,8 @@
 
 #include <cstdint>
 
+#include "execution/adaptive_wave_mode.h"
+
 namespace {
 using jitllm::execution::AdaptiveDepth;
 
@@ -98,5 +100,105 @@ TEST(AdaptiveDepthTest, ACheckpointRestoresTheSameChoicesThroughRejectionsAndPro
     policy.Observe(d, kept);
     EXPECT_EQ(policy, uninterrupted);
   }
+}
+
+using jitllm::execution::AdaptiveWaveMode;
+using Mode = AdaptiveWaveMode::Mode;
+
+// DeepSeek's calibration (serving.cc kWaveCost): a draft-verify wave
+// costs about 1.9, 2.2 and 2.9 plain waves at widths 2, 3 and 4.
+constexpr AdaptiveWaveMode::Costs kCost = {0, 0, 1.94, 2.21, 2.90};
+
+// `waves` waves of `width`: a draft-verify wave commits `kept` tokens a
+// request, a plain one one. Returns how many ran plain.
+std::uint32_t RunWaves(AdaptiveWaveMode& policy, std::uint32_t width, std::uint32_t waves,
+                       std::uint32_t kept) {
+  std::uint32_t plain = 0;
+  for (std::uint32_t i = 0; i < waves; ++i) {
+    const Mode m = policy.Choose(width);
+    plain += m == Mode::kPlain ? 1 : 0;
+    policy.Observe(width, m, kept * width, width);
+  }
+  return plain;
+}
+
+TEST(AdaptiveWaveModeTest, ALoneRequestOrAnUncalibratedWidthSpeculates) {
+  AdaptiveWaveMode policy(kCost);
+  RunWaves(policy, 4, 8, 1);  // acceptance nil
+  EXPECT_EQ(policy.Choose(4), Mode::kPlain);
+  EXPECT_EQ(policy.Choose(1), Mode::kSpeculative);
+  EXPECT_EQ(policy.Choose(5), Mode::kSpeculative);
+  AdaptiveWaveMode uncalibrated;
+  RunWaves(uncalibrated, 4, 8, 1);
+  EXPECT_EQ(uncalibrated.Choose(4), Mode::kSpeculative);
+}
+
+TEST(AdaptiveWaveModeTest, ChoosesByAcceptanceAgainstEachWidthsCost) {
+  // Three tokens a request: past 2.9 at width 4, so speculation; 2.5: past
+  // widths 2 and 3's costs, not width 4's.
+  AdaptiveWaveMode high(kCost);
+  EXPECT_EQ(RunWaves(high, 4, 3, 3), 0U);  // speculation first
+  EXPECT_EQ(high.Choose(4), Mode::kSpeculative);
+  AdaptiveWaveMode mid(kCost);
+  RunWaves(mid, 2, 3, 2);
+  for (std::uint32_t i = 0; i < 40; ++i) {
+    mid.Observe(4, Mode::kSpeculative, 10, 4);  // 2.5 a request
+  }
+  EXPECT_NEAR(mid.kept(), 2.5, 0.01);
+  EXPECT_EQ(mid.Choose(2), Mode::kSpeculative);
+  EXPECT_EQ(mid.Choose(3), Mode::kSpeculative);
+  EXPECT_EQ(mid.Choose(4), Mode::kPlain);
+}
+
+TEST(AdaptiveWaveModeTest, SamplingAndAForcedFormOverride) {
+  AdaptiveWaveMode policy(kCost);
+  RunWaves(policy, 4, 8, 1);
+  EXPECT_EQ(policy.Choose(4), Mode::kPlain);
+  EXPECT_EQ(policy.Choose(4, /*sampling=*/true), Mode::kSpeculative);
+  const AdaptiveWaveMode plain(kCost, AdaptiveWaveMode::Force::kPlain);
+  EXPECT_EQ(plain.Choose(2), Mode::kPlain);
+  EXPECT_EQ(plain.Choose(1), Mode::kSpeculative);
+  AdaptiveWaveMode spec(kCost, AdaptiveWaveMode::Force::kSpeculative);
+  RunWaves(spec, 4, 8, 1);
+  EXPECT_EQ(spec.Choose(4), Mode::kSpeculative);
+}
+
+TEST(AdaptiveWaveModeTest, ProbesFollowAcceptanceAndTheScheduleRepeats) {
+  AdaptiveWaveMode policy(kCost);
+  // Low acceptance: plain, with two draft-verify waves after every 64.
+  EXPECT_GE(RunWaves(policy, 4, 132, 1), 124U);
+  // Acceptance rises: the probes see it and speculation returns (the
+  // average needs about nine draft-verify waves, five probes).
+  EXPECT_LE(RunWaves(policy, 4, 5 * 66, 4), 5U * 64U);
+  EXPECT_EQ(RunWaves(policy, 4, 50, 4), 0U);
+  // No clock: the same tokens give the same choices.
+  AdaptiveWaveMode a(kCost);
+  AdaptiveWaveMode b(kCost);
+  for (std::uint32_t i = 0; i < 300; ++i) {
+    const std::uint32_t kept = 1 + ((i / 37) % 3);
+    ASSERT_EQ(a.Choose(4), b.Choose(4));
+    RunWaves(a, 4, 1, kept);
+    RunWaves(b, 4, 1, kept);
+    EXPECT_EQ(a, b);
+  }
+  // Empty observations, and a draft-verify wave without a complete verify,
+  // are ignored.
+  const AdaptiveWaveMode before = a;
+  a.Observe(4, Mode::kSpeculative, 0, 4);
+  a.Observe(4, Mode::kSpeculative, 7, 0);
+  a.Observe(4, Mode::kSpeculative, 7, 5);
+  a.Observe(1, Mode::kSpeculative, 3, 1);
+  EXPECT_EQ(a, before);
+}
+
+TEST(AdaptiveWaveModeTest, OnlyCompleteVerifiesFeedTheAverage) {
+  // Two of four requests verified their full rows and kept 3 each; the
+  // others' cut-short verifies do not dilute the average.
+  AdaptiveWaveMode policy(kCost);
+  for (std::uint32_t i = 0; i < 6; ++i) {
+    policy.Observe(4, Mode::kSpeculative, 6, 2);
+  }
+  EXPECT_NEAR(policy.kept(), 3.0, 1e-9);
+  EXPECT_EQ(policy.Choose(4), Mode::kSpeculative);
 }
 }  // namespace

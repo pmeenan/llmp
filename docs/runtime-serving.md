@@ -48,6 +48,7 @@ A node names the models it serves in its configuration (D-073's document,
 artifact = "8a355bfb…"   # an installed artifact's ID, under storage.installed
 drafter = "dd2d3f9c…"    # optional: its speculative drafter (DSpark, MTP)
 # speculation = true     # the default when there is a drafter
+# wave_form = "auto"     # concurrent waves: "auto", "speculative" or "plain" (below)
 # context = 262144       # default tokens of conversation state (bounds below)
 # prefill_chunk = 4096   # rows of a prefill chunk; default by model (below)
 # prefill_floor_tok_s = 100  # tokens a second: the floors the chat route figures
@@ -71,8 +72,8 @@ composition = "eca21baa…"  # a pipeline (D-089)
 ```
 
 A model names exactly one artifact or composition; the artifact-only keys
-(drafter, speculation, context, prefill chunk, the floors, tokenizer, chat
-template) are refused on a composition, an artifact serves one model, and
+(drafter, speculation, wave form, context, prefill chunk, the floors,
+tokenizer, chat template) are refused on a composition, an artifact serves one model, and
 a node names at most 16. The runner follows the artifact's architecture
 (`deepseek4`, `qwen4exp`) or the composition's (Qwen-Image); another is
 refused at registration. Every
@@ -241,7 +242,9 @@ verify), each step accepting the drafts the target agrees with; `--plain` decode
 sample instead (a `temperature` above 0): seeded, each token drawn at its
 position in the conversation (execution/sampling.h), and when speculating
 each draft accepted by speculative sampling (`VerifyDraft`), so the
-tokens are distributed as plain sampling's; a seed repeats a reply.
+tokens are distributed as plain sampling's; a seed repeats a reply. (Plain
+and speculative sampling turn one seed into different tokens, so DeepSeek
+keeps every wave with a sampling member speculative, below.)
 Qwen3.8 greedy speculation chooses depth two or three using a moving
 acceptance average and a measured relative step cost of 1.16. It tries
 four complete steps at each depth, then probes the other depth for four
@@ -712,19 +715,39 @@ their original products.
 
 The production DeepSeek chat backend funds four active requests (four
 native slots, `engine/dsv4_runner.h`). Their decode steps run as waves: plain,
-one row each; with DSpark, each request's own draft block, then one joined
-verify of every request's natural rows (up to four each, sixteen in all).
-A lone request, and a request whose verify is one row (a mask-width boundary or
-its last token), keeps its ordinary step. Each request's rows, drafts, accepted
-tokens and state equal its steps alone bit for bit, so concurrency itself
-does not change a reply. Two things around it can: a request preempted for
-state capacity whose state could not be spilled rebuilds it by prefill
-(below; one spilled resumes exactly), and a turn that
-reuses a cached prefix continues from whichever free branch it can reuse
-the most of (`Llm::ReusablePrefix`: live history continued, or a turn
-checkpoint; with none, an empty branch, then the least recently used, so
-a new conversation leaves idle ones alone while an empty branch is free),
-whose earlier prefill may have been chunked differently
+one row each. With DSpark, a wave of two or more is either each request's
+own draft block then one joined verify of every request's natural rows (up
+to four each, sixteen in all), or one plain row each with the drafter still
+fed. The tokens draft-verify waves accept, against a per-width cost measured
+for the model, choose between them (`execution/adaptive_wave_mode.h`). The
+choice reads no clock, so the same requests in the same waves since the
+service started choose the same forms, and a wave with a sampling member
+always speculates. A lone request, and a request whose verify is one row
+(a mask-width boundary or its last token), keeps its ordinary step. The
+model's `wave_form` key fixes the form of waves of two or more instead
+(`"auto"`, the default, chooses as above). With `"speculative"` every wave
+is draft-verify, so each request's reply at four requests equals its reply
+alone: the control a cohort is checked against. With `"plain"` every wave
+is plain decode, sampling members included, while a lone request still
+speculates (to compare the two wave forms). Neither is a tuning knob.
+
+Each request's rows, drafts, accepted tokens and state equal the same steps
+alone bit for bit. Without a drafter, concurrency itself therefore does not
+change a reply. With DSpark it can: a greedy request may take plain steps in
+a wave where alone it speculates, and the two forms' arithmetic differs, so
+its reply at four requests may differ from its reply alone (both greedy;
+a speculative token is the plain argmax or a near-tie within the verify's
+noise). Which waves a request joins follows its peers' arrival (equal
+prompts prefill in arrival order), so such a reply may also differ between
+two runs whose concurrent requests arrive in another order; a sampled
+request, always speculating, does not. Two more things can change a reply: a request
+preempted for state capacity whose state could not be spilled rebuilds it
+by prefill (below; one spilled resumes exactly), and a turn that reuses a
+cached prefix continues from whichever free branch it can reuse the most
+of (`Llm::ReusablePrefix`: live history continued, or a turn checkpoint;
+with none, an empty branch, then the least recently used, so a new
+conversation leaves idle ones alone while an empty branch is free), whose
+earlier prefill may have been chunked differently
 ([report](experiments/deepseek-batching/README.md): C4 +29.0% plain, +4.5%
 DSpark on the matched 7K protocol).
 A wave needs every layer in the fast plan's fused form, which takes HC

@@ -84,6 +84,11 @@
 //   the solo step bit for bit. Decode seconds of both phases. With a
 //   drafter and --wave-mode decode, the waves are injected decode waves
 //   instead, against injected one-row steps alone, compared as plain ones.
+//   With --wave-mode alternate, each slot's even steps are injected decode
+//   steps and its odd ones DSpark steps, alone and in waves alike (serving
+//   mixes the two forms, execution/adaptive_wave_mode.h): every row, draft
+//   and kept count equals alone's, so drafts after plain steps show the
+//   drafter's ring fed by them. No step is discarded.
 // - plan-memory (--slots N): the host and driver memory of the runner's
 //   plans and graphs, one new shape at a time, against what it counts
 //   (PlanMemory below).
@@ -1882,8 +1887,13 @@ Status Harness::Sampled(bool speculative) {
 Status Harness::Wave() {
   using Slot = jb::Dsv4Runner::Slot;
   const std::uint32_t slots = o_.dsv4.wave_slots;
-  // With a drafter, DSpark waves, or (--wave-mode decode) injected decode waves.
+  // With a drafter, DSpark waves, or (--wave-mode decode) injected decode
+  // waves, or (--wave-mode alternate) the two by turns: a slot's even steps
+  // plain, its odd ones DSpark, alone as in waves, so a draft after plain
+  // steps shows the drafter's ring fed by them.
+  const bool alternate = dsv4_.speculative() && o_.wave_mode == "alternate";
   const bool spec = dsv4_.speculative() && o_.wave_mode != "decode";
+  const auto step_spec = [&](std::size_t step) { return spec && (!alternate || step % 2 == 1); };
   const jb::Dsv4ChunkKind kind =
       dsv4_.speculative() ? jb::Dsv4ChunkKind::kInject : jb::Dsv4ChunkKind::kPlain;
   const std::uint32_t vocab = dsv4_.vocab();
@@ -1964,6 +1974,7 @@ Status Harness::Wave() {
     std::vector<std::uint32_t> rows;
     std::vector<std::vector<std::int32_t>> drafts;
     std::vector<std::uint32_t> kept;
+    std::vector<std::size_t> next;  // each step's next anchor, in tokens
     std::uint64_t fingerprint = 0;
   };
   std::vector<Run> solo(slots);
@@ -1986,7 +1997,7 @@ Status Harness::Wave() {
       const auto start = Clock::now();
       while (run.tokens.size() < tokens) {
         const auto left = static_cast<std::uint32_t>(tokens - run.tokens.size());
-        if (!spec) {
+        if (!step_spec(run.rows.size())) {
           std::vector<float> row;
           if (auto r = slot.Chunk(pos, std::span(&anchor, 1), row, kind); !r) {
             return r;
@@ -1995,6 +2006,9 @@ Status Harness::Wave() {
           run.tokens.push_back(anchor);
           run.logits.push_back(std::move(row));
           run.rows.push_back(1);
+          run.drafts.emplace_back();
+          run.kept.push_back(1);
+          run.next.push_back(run.tokens.size() - 1);
           ++pos;
           continue;
         }
@@ -2015,6 +2029,7 @@ Status Harness::Wave() {
         run.rows.push_back(rows);
         run.drafts.push_back(std::move(drafts));
         run.kept.push_back(m + 1);
+        run.next.push_back(run.tokens.size() - 1);
         pos += m + 1;
         anchor = next;
       }
@@ -2056,7 +2071,7 @@ Status Harness::Wave() {
   std::uint64_t wave_tokens = 0;
   std::map<std::size_t, std::uint64_t> widths;
   double wave_seconds = 0;
-  std::uint64_t discard_stale = -1ULL;
+  std::optional<std::uint64_t> discard_stale;  // none: nothing discarded
   bool discard_rerun_exact = false;
   bool left_unchanged = false;
   std::vector<std::uint64_t> fingerprints(slots, 0);
@@ -2095,6 +2110,13 @@ Status Harness::Wave() {
       if (active.empty()) {
         break;
       }
+      // Every active slot is at the same step (alternate takes no discard).
+      const bool wave_spec = step_spec(at[active.front()].step);
+      for (const std::uint32_t i : active) {
+        if (step_spec(at[i].step) != wave_spec) {
+          return Error("an alternating wave's slots are at different forms");
+        }
+      }
       std::vector<jb::Dsv4Runner::WaveWork> work;
       std::vector<std::vector<float>> logits(active.size());
       std::vector<std::vector<std::int32_t>> drafts(active.size());
@@ -2104,13 +2126,13 @@ Status Harness::Wave() {
                         .pos = at[i].pos,
                         .anchor = at[i].anchor,
                         .rows = solo[i].rows[at[i].step],
-                        .drafts = spec ? &drafts[k] : nullptr,
+                        .drafts = wave_spec ? &drafts[k] : nullptr,
                         .logits = &logits[k]});
       }
       // Slot 0's first wave verify is discarded (below), to be re-run.
       std::vector<std::byte> pre_target;
       std::vector<std::byte> pre_ring;
-      const bool discard = spec && !discarded && active.front() == 0;
+      const bool discard = wave_spec && !alternate && !discarded && active.front() == 0;
       if (discard) {
         if (auto r = read(*handles[0], pre_target, pre_ring); !r) {
           return r;
@@ -2123,7 +2145,7 @@ Status Harness::Wave() {
       std::vector<std::size_t> joined_at;
       std::vector<std::size_t> alone;
       for (std::size_t k = 0; k < work.size(); ++k) {
-        if (spec && work[k].rows == 1) {
+        if (wave_spec && work[k].rows == 1) {
           alone.push_back(k);
         } else {
           joined.push_back(work[k]);
@@ -2136,7 +2158,7 @@ Status Harness::Wave() {
       }
       for (const std::size_t k : alone) {
         const std::uint32_t i = active[k];
-        if (!spec) {
+        if (!wave_spec) {
           if (auto r = handles[i]->Chunk(at[i].pos, std::span(&at[i].anchor, 1), logits[k], kind);
               !r) {
             return r;
@@ -2149,7 +2171,7 @@ Status Harness::Wave() {
       }
       if (!joined.empty()) {
         const auto wave = Clock::now();
-        if (auto r = spec ? dsv4_.DraftVerifyWave(joined) : dsv4_.DecodeWave(joined); !r) {
+        if (auto r = wave_spec ? dsv4_.DraftVerifyWave(joined) : dsv4_.DecodeWave(joined); !r) {
           return r;
         }
         wave_seconds += Seconds(Clock::now() - wave);
@@ -2162,9 +2184,18 @@ Status Harness::Wave() {
         const std::size_t step = c.step;
         const std::vector<float>& want = solo[i].logits[step];
         const bool same = SameBits(logits[k], want);
-        if (!spec) {
+        if (!wave_spec) {
           ++rows_compared;
           rows_identical += same ? 1 : 0;
+          // Alternating, a plain row follows DSpark waves on the same
+          // slots: it must equal the solo run's, or the drafter's ring
+          // (or the state) diverged across forms.
+          if (alternate && !same) {
+            ++exact_mismatches;
+            problems_.push_back(
+                std::format("slot {} step {} (plain, wave of {}): the row differs from alone", i,
+                            step, active.size()));
+          }
           const std::int32_t mine = jb::Argmax(logits[k]);
           const std::int32_t theirs = jb::Argmax(want);
           argmax_agree += mine == theirs ? 1 : 0;
@@ -2185,7 +2216,7 @@ Status Harness::Wave() {
           moves.push_back(
               std::fabs((want[best] - want[second]) - (logits[k][best] - logits[k][second])));
           // Teacher-forced on the solo tokens.
-          c.anchor = solo[i].tokens[step + 1];
+          c.anchor = solo[i].tokens[solo[i].next[step]];
           ++c.pos;
           ++c.step;
           wave_tokens += 1;
@@ -2301,19 +2332,22 @@ Status Harness::Wave() {
                : moves[std::min(moves.size() - 1,
                                 static_cast<std::size_t>(q * static_cast<double>(moves.size())))];
   };
-  if (spec && !discard_rerun_exact) {
+  if (spec && !alternate && !discard_rerun_exact) {
     problems_.emplace_back("slot 0's discarded step did not re-run to its solo result");
   }
   std::string width_json;
   for (const auto& [width, count] : widths) {
     width_json += std::format("{}\"{}\":{}", width_json.empty() ? "" : ",", width, count);
   }
+  std::string_view form = spec ? "DSpark" : "plain";
+  if (alternate) {
+    form = "plain and DSpark by turns";
+  }
   std::println(
       "wave check: {} slots, {}; solo {} tokens in {:.2f} s ({:.2f} tok/s); waves {} ({} tokens in "
       "{:.2f} s, {:.2f} tok/s)",
-      slots, spec ? "DSpark" : "plain", solo_tokens, solo_seconds,
-      static_cast<double>(solo_tokens) / solo_seconds, waves, wave_tokens, wave_seconds,
-      static_cast<double>(wave_tokens) / wave_seconds);
+      slots, form, solo_tokens, solo_seconds, static_cast<double>(solo_tokens) / solo_seconds,
+      waves, wave_tokens, wave_seconds, static_cast<double>(wave_tokens) / wave_seconds);
   results_.push_back(std::format(
       R"({{"check":"wave","slots":{},"speculative":{},"share":{},"solo_tokens":{},)"
       R"("solo_seconds":{:.4f},"wave_tokens":{},"wave_seconds":{:.4f},"waves":{},"widths":{{{}}},)"
@@ -2324,7 +2358,7 @@ Status Harness::Wave() {
       slots, spec ? "true" : "false", share, solo_tokens, solo_seconds, wave_tokens, wave_seconds,
       waves, width_json, rows_compared, rows_identical, argmax_agree, largest, quantile(0.5),
       quantile(0.99), moves.empty() ? 0.0 : moves.back(), exact_mismatches,
-      spec ? std::format("{}", discard_stale) : std::string("null"),
+      discard_stale ? std::format("{}", *discard_stale) : std::string("null"),
       discard_rerun_exact ? "true" : "false", left_unchanged ? "true" : "false"));
   return {};
 }
@@ -3109,7 +3143,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       ok = number(o.probe_step) && o.probe_step >= 1;
     } else if (a == "--wave-mode") {
       o.wave_mode = v;
-      ok = v == "decode" || v == "verify";
+      ok = v == "decode" || v == "verify" || v == "alternate";
     } else if (a == "--state-budget-mib") {
       ok = number(o.state_budget_mib) && o.state_budget_mib > 0;
     } else if (a == "--slots") {
@@ -3136,7 +3170,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "[--prefill-outa-hca on|off] [--fp16-artifact DIR "
         "--fp16-tokens FILE "
         "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N] "
-        "[--slots N (wave, plan-memory, capacity: 2-4)] [--wave-mode verify|decode] "
+        "[--slots N (wave, plan-memory, capacity: 2-4)] [--wave-mode verify|decode|alternate] "
         "[--state-budget-mib N]");
   }
   // The paired control needs the all-row workspace for its original arm.

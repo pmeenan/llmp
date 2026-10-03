@@ -78,11 +78,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   IQ4_NL and IQ4_XS too.
 - DeepSeek chat serves up to four requests at once: their decode steps (and
   DSpark draft-and-verify steps) run in waves that read each weight once for
-  all of them, each request's steps bit-identical to running alone (a request
-  preempted for state capacity is rebuilt by prefill, and a turn reuses
-  whichever branch's cached prefix is longest, so those can still change a
-  reply). At four matched 7K-token requests the completed-token rate rises
-  29% plain and 4.5% with DSpark. A request whose state cannot grow beside
+  all of them, each request's steps bit-identical to the same steps alone (a
+  request preempted for state capacity is rebuilt by prefill, and a turn
+  reuses whichever branch's cached prefix is longest, so those can still
+  change a reply; so can concurrency with a drafter, since DSpark waves may
+  take plain decode steps, below). At four matched 7K-token requests the
+  completed-token rate rises 29% plain and 4.5% with DSpark. A request whose state cannot grow beside
   its peers' waits (an idle conversation's cached state is cleared first)
   instead of failing; only one that cannot fit alone fails for capacity.
 - DeepSeek prefill uses ds4's stage mechanisms by default on GB10: F16 HC
@@ -200,6 +201,20 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- With its DSpark drafter, DeepSeek now chooses per wave of concurrent
+  requests between draft-verify waves and plain decode waves: the tokens
+  draft-verify waves accept against a cost measured for each wave width.
+  No clock enters the choice, so the same requests in the same waves choose
+  the same forms. At four requests this is up to 7% faster than DSpark
+  waves alone and 1–4% under plain waves without the drafter. A lone request
+  keeps speculating (31–54% faster), and a wave with a sampling request
+  always speculates, so seeded replies repeat. A greedy reply at several
+  requests may now differ from the same request alone, and between runs
+  whose requests arrive in a different order (the forms' arithmetic
+  differs, and arrival order decides which waves a request joins). A
+  model's new `wave_form` key (`"auto"`, the default, `"speculative"` or
+  `"plain"`) fixes the form; with `"speculative"` a reply at several
+  requests equals the reply alone.
 - Concurrent chat prompts now prefill shortest remaining first, so a short
   prompt no longer waits behind a long one that arrived first, and equal
   prompts each stream their first token in turn instead of all at once at

@@ -578,6 +578,58 @@ artifact = "{0}"
   EXPECT_THAT(failures, Contains(HasSubstr("unknown table models.deep.er")));
 }
 
+// A speculative model's wave form: auto by default, or forced for exactness
+// controls; only an artifact's key.
+TEST(NodeConfigTest, ReadsAndChecksWaveForm) {
+  const NodeConfig config = Parsed(std::format(R"(schema_version = 2
+[models.chosen]
+artifact = "{0}"
+[models.auto]
+artifact = "{1}"
+wave_form = "auto"
+[models.drafted]
+artifact = "{2}"
+wave_form = "speculative"
+[models.plain]
+artifact = "{3}"
+wave_form = "plain"
+)",
+                                               std::string(64, 'a'), std::string(64, 'b'),
+                                               std::string(64, 'c'), std::string(64, 'd')));
+  ASSERT_THAT(config.models, SizeIs(4));
+  using jitllm::config::WaveForm;
+  EXPECT_EQ(config.models[0].name, "auto");
+  EXPECT_EQ(config.models[0].wave_form, WaveForm::kAuto);
+  EXPECT_EQ(config.models[1].name, "chosen");
+  EXPECT_EQ(config.models[1].wave_form, WaveForm::kAuto);
+  EXPECT_EQ(config.models[2].name, "drafted");
+  EXPECT_EQ(config.models[2].wave_form, WaveForm::kSpeculative);
+  EXPECT_EQ(config.models[3].name, "plain");
+  EXPECT_EQ(config.models[3].wave_form, WaveForm::kPlain);
+
+  const auto failures = Failures(std::format(
+      R"(schema_version = 2
+[models.word]
+artifact = "{0}"
+wave_form = "fast"
+[models.flag]
+artifact = "{1}"
+wave_form = true
+[models.pipeline]
+composition = "{2}"
+wave_form = "plain"
+)",
+      std::string(64, 'a'), std::string(64, 'b'), std::string(64, 'c')));
+  EXPECT_THAT(
+      failures,
+      Contains(HasSubstr(R"(models.word.wave_form must be "auto", "speculative" or "plain")")));
+  EXPECT_THAT(
+      failures,
+      Contains(HasSubstr(R"(models.flag.wave_form must be "auto", "speculative" or "plain")")));
+  EXPECT_THAT(failures, Contains(HasSubstr("chat_template and wave_form are a model artifact's "
+                                           "keys, not a composition's")));
+}
+
 TEST(NodeConfigTest, ContextDefaultsAndCeilingRemainSchemaTwo) {
   for (const auto context : {512U, 262144U, 262145U, 1048576U}) {
     const NodeConfig config =

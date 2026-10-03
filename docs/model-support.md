@@ -235,9 +235,11 @@ seeded-sampling evidence in this study.
   near-tie violations on the eight `--check greedy` prompts (acceptance
   0.48–0.82). Forced rejections leave 0 stale bytes, and DSpark waves at
   2 and 4 slots equal each slot alone. Through the runtime it leads plain
-  decode alone (7K C1 +31%, 124-token +54%) and trails plain waves at
-  C4 (−6% / −12%)
-  ([deepseek-batching](experiments/deepseek-batching/README.md#dspark-with-the-community-artifact)).
+  decode alone (7K C1 +31%, 124-token +54%). At C4 DSpark waves trailed
+  plain ones (−6% / −12%). Each wave now chooses DSpark or plain decode
+  from counted acceptance against a measured per-width cost, which puts
+  C4 1–4% under plain on both artifacts
+  ([deepseek-batching](experiments/deepseek-batching/README.md#adaptive-dspark-and-plain-waves)).
 
 ## DSpark
 

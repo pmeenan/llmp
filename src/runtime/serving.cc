@@ -29,6 +29,7 @@
 #include "engine/qwen38_runner.h"
 #include "engine/qwen_image_runner.h"
 #include "execution/adaptive_depth.h"
+#include "execution/adaptive_wave_mode.h"
 #include "memory/reclaim.h"
 #include "model/dsv4.h"
 #include "model/qwen38.h"
@@ -209,6 +210,7 @@ class Dsv4 final : public Llm {
     node_ = &node;
     checkpoint_directory_ = roles.spill;
     speculate_ = !drafter_id_.empty() && entry.speculation && !plain;
+    wave_mode_ = execution::AdaptiveWaveMode(kWaveCost, WaveForce(entry.wave_form));
     context_ = entry.context;
     options_.artifact = roles.installed / artifact_id_;
     options_.out = roles.spill;
@@ -538,15 +540,16 @@ class Dsv4 final : public Llm {
 
   // Several branches' steps in one wave (engine/dsv4_runner.h): a decode
   // step of each, or with DSpark each one's draft and one joined verify of
-  // every branch's rows, each branch's share of the wave's rows. A lone
-  // branch keeps its ordinary step.
+  // every branch's rows (each branch's share of the wave's rows) or a
+  // decode step of each, as AdaptiveWaveMode chooses. A lone branch keeps
+  // its ordinary step.
   Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) override {
     if (!runner_.waves_provisioned() || prepared.size() == 1) {
       return Llm::RunPreparedGenerationWave(prepared);
     }
-    std::vector<engine::Dsv4Runner::WaveWork> work;
-    work.reserve(prepared.size());
     if (!speculate_) {
+      std::vector<engine::Dsv4Runner::WaveWork> work;
+      work.reserve(prepared.size());
       for (PreparedGeneration& unit : prepared) {
         if (unit.step.all.size() != std::size_t{unit.step.position} + 1) {
           return Error("a DeepSeek decode wave step is not one anchor row");
@@ -560,6 +563,76 @@ class Dsv4 final : public Llm {
       }
       return runner_.DecodeWave(work);
     }
+    // With DSpark, a wave of several requests is a draft-verify wave or a
+    // plain decode wave (the drafter still fed), as the accepted tokens
+    // against the measured cost of each width choose: never by wall time,
+    // so the same waves choose the same forms (execution/adaptive_wave_mode.h).
+    // A sampling member keeps every wave speculative.
+    const auto width = static_cast<std::uint32_t>(prepared.size());
+    const bool sampled = std::ranges::any_of(
+        prepared, [this](const PreparedGeneration& unit) { return sampling(*unit.branch); });
+    const auto mode = wave_mode_.Choose(width, sampled);
+    std::uint32_t tokens = 0;
+    std::uint32_t complete = 0;
+    auto waved = mode == execution::AdaptiveWaveMode::Mode::kPlain
+                     ? PlainWave(prepared)
+                     : SpeculativeWave(prepared, tokens, complete);
+    // A sampling member's speculation accepts differently: not observed.
+    if (waved && !sampled) {
+      wave_mode_.Observe(width, mode, tokens, complete);
+    }
+    return waved;
+  }
+
+ private:
+  // A plain decode wave of a speculative model's requests: one row each,
+  // its token chosen as an ordinary step's (greedy: the argmax). A failed
+  // choice keeps the processed anchor, as an ordinary plain step's does.
+  Status PlainWave(std::span<PreparedGeneration> prepared) {
+    std::vector<engine::Dsv4Runner::WaveWork> work;
+    std::vector<std::vector<float>> rows(prepared.size());
+    work.reserve(prepared.size());
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+      const PreparedGeneration& unit = prepared[i];
+      if (unit.step.all.size() != std::size_t{unit.step.position} + 1) {
+        return Error("a DeepSeek decode wave step is not one anchor row");
+      }
+      work.push_back({.slot = &NativeSlot(*unit.branch),
+                      .pos = unit.step.position,
+                      .anchor = unit.step.all.back(),
+                      .rows = 1,
+                      .drafts = nullptr,
+                      .logits = &rows[i]});
+    }
+    if (auto ran = runner_.DecodeWave(work); !ran) {
+      return ran;
+    }
+    for (std::size_t i = 0; i < prepared.size(); ++i) {
+      PreparedGeneration& unit = prepared[i];
+      auto chosen = Choose(*unit.branch, rows[i], std::uint64_t{unit.step.position} + 1);
+      if (!chosen) {
+        unit.result = std::unexpected(chosen.error());
+        unit.anchor_processed = true;
+        continue;
+      }
+      unit.kept = {*chosen};
+      if (unit.step.need_logits) {
+        unit.logits.push_back(std::move(rows[i]));
+      }
+    }
+    return {};
+  }
+
+  // Each request's draft and one joined verify of every request's rows.
+  // `tokens` and `complete`: the tokens kept by, and the count of, the
+  // requests whose verify took its full rows in the joined wave (what the
+  // wave form's acceptance average counts).
+  Status SpeculativeWave(std::span<PreparedGeneration> prepared, std::uint32_t& tokens,
+                         std::uint32_t& complete) {
+    tokens = 0;
+    complete = 0;
+    std::vector<engine::Dsv4Runner::WaveWork> work;
+    work.reserve(prepared.size());
     // These owners never move once the borrowed descriptors are made.
     struct Frame {
       std::uint32_t rows = 0;
@@ -598,10 +671,10 @@ class Dsv4 final : public Llm {
     if (joined.empty()) {
       return {};
     }
+    const std::uint32_t full = std::min(runner_.max_verify(), share(joined.size()));
     for (const std::size_t i : joined) {
       PreparedGeneration& unit = prepared[i];
-      frames[i].rows = VerifyRows(unit.step.position, unit.step.left,
-                                  std::min(runner_.max_verify(), share(joined.size())));
+      frames[i].rows = VerifyRows(unit.step.position, unit.step.left, full);
       work.push_back({.slot = &NativeSlot(*unit.branch),
                       .pos = unit.step.position,
                       .anchor = unit.step.all.back(),
@@ -618,6 +691,10 @@ class Dsv4 final : public Llm {
       unit.result =
           Judge(*unit.branch, unit.step.position, frame.rows, frame.drafts, frame.verified,
                 unit.kept, unit.step.need_logits ? &unit.logits : nullptr, unit.drafted);
+      if (unit.result && frame.rows == full) {
+        tokens += static_cast<std::uint32_t>(unit.kept.size());
+        ++complete;
+      }
       if (!unit.result) {
         // The shared wave completed; only this branch's judgement failed.
         // Undo its own verify before keeping its prefix.
@@ -636,7 +713,6 @@ class Dsv4 final : public Llm {
     return {};
   }
 
- private:
   // The verify's rows from `pos`: the anchor and its drafts, within the
   // tokens left, `most`, the context and the steps' mask widths (D-092).
   std::uint32_t VerifyRows(std::uint32_t pos, std::uint32_t left, std::uint32_t most) const {
@@ -712,6 +788,27 @@ class Dsv4 final : public Llm {
   engine::Dsv4Options options_;  // before the runner, which keeps a reference
   engine::Dsv4Runner runner_;
   std::array<engine::Dsv4Runner::Slot*, engine::Dsv4Runner::kRequestSlots> native_slots_{};
+  // With DSpark: draft-verify or plain waves, by width (RunPreparedGenerationWave).
+  // The calibration: a draft-verify wave's time over a plain decode wave's,
+  // by width, measured through the runtime with each form forced (GB10,
+  // community GGUF, four 124-token chats, 2026-10-03: 151 / 78, 197 / 89
+  // and 249 / 86 ms at widths 2, 3 and 4; docs/experiments/deepseek-
+  // batching). To be measured again when a wave's cost changes.
+  static constexpr execution::AdaptiveWaveMode::Costs kWaveCost = {0, 0, 1.94, 2.21, 2.90};
+  // The model's configured wave form (wave_form): chosen, or forced for
+  // exactness controls.
+  static execution::AdaptiveWaveMode::Force WaveForce(config::WaveForm form) {
+    switch (form) {
+      case config::WaveForm::kSpeculative:
+        return execution::AdaptiveWaveMode::Force::kSpeculative;
+      case config::WaveForm::kPlain:
+        return execution::AdaptiveWaveMode::Force::kPlain;
+      case config::WaveForm::kAuto:
+        break;
+    }
+    return execution::AdaptiveWaveMode::Force::kNone;
+  }
+  execution::AdaptiveWaveMode wave_mode_{kWaveCost};
 };
 
 // Qwen3.8 Flash Next (engine/qwen38_runner.h), with its MTP block as its
@@ -2684,6 +2781,15 @@ Status Llm::GenerationSession::FailStep(std::string error, bool prefix_valid) {
   return ran_;
 }
 
+Status Llm::GenerationSession::FailAfterAnchor(std::string error) {
+  base::Check(prepared_, "failing a generation without a prepared step");
+  prepared_ = false;
+  ran_ = Error(std::move(error));
+  ++position_;  // the anchor was processed before the choice failed
+  failed_prefix_valid_ = model_.StateUsableFor(branch_);
+  return ran_;
+}
+
 Status Llm::GenerationSession::ApplyPlain(std::vector<float> row) {
   base::Check(prepared_ && !model_.speculate_, "applying an unprepared ordinary generation step");
   prepared_ = false;
@@ -2859,7 +2965,8 @@ Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions, bool
                         .logits = {},
                         .drafted = 0,
                         .result = {},
-                        .failed_prefix_valid = false});
+                        .failed_prefix_valid = false,
+                        .anchor_processed = false});
   }
   if (prepared.empty()) {
     return {};  // every session retains its own preparation error
@@ -2877,7 +2984,9 @@ Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions, bool
     if (!unit.result) {
       unit.session->out_.drafted += unit.drafted;
       [[maybe_unused]] const auto failed =
-          unit.session->FailStep(unit.result.error(), unit.failed_prefix_valid);
+          unit.anchor_processed
+              ? unit.session->FailAfterAnchor(unit.result.error())
+              : unit.session->FailStep(unit.result.error(), unit.failed_prefix_valid);
     } else {
       // Apply owns any ordinary sampling/callback error on this session.
       // Completed peers still receive their results in branch order.

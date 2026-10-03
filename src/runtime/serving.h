@@ -637,6 +637,10 @@ class Llm : public Served {
     // A failed submitted step: prefix_valid requires an independently proven
     // prefix at Step::position. False invalidates history; neither proves retirement.
     Status FailStep(std::string error, bool prefix_valid = false);
+    // A prepared step whose anchor the state holds but whose next token
+    // failed to be chosen: as ApplyPlain's failure, the prefix through the
+    // anchor is kept if the state is usable.
+    Status FailAfterAnchor(std::string error);
     // Called at a completed boundary, with no step awaiting Apply/FailStep.
     void Cancel();
     // Once done or cancelled, settles and publishes history once. An Error
@@ -718,6 +722,10 @@ class Llm : public Served {
     Status result;
     // Only after independently restoring this step's starting prefix.
     bool failed_prefix_valid = false;
+    // A failed plain step whose anchor the state already holds: the prefix
+    // through the anchor is kept, as an ordinary plain step's choice failing
+    // keeps it (GenerationSession::FailAfterAnchor).
+    bool anchor_processed = false;
   };
   // Success means the native unit completed. Each independent judgement
   // supplies its own result. A shared error supplies no result to apply.

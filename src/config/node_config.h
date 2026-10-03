@@ -100,6 +100,11 @@ inline constexpr std::uint32_t kMaxPrefillFloor = 1'000'000;
 inline constexpr std::uint32_t kDefaultDecodeFloor = 5;
 inline constexpr std::uint32_t kMaxDecodeFloor = 100'000;
 
+// How a speculative model steps a wave of concurrent requests
+// (docs/runtime-serving.md): chosen per wave from counted acceptance, or
+// always draft-verify, or always plain decode (exactness controls).
+enum class WaveForm : std::uint8_t { kAuto, kSpeculative, kPlain };
+
 // One model: the name the CLI (and later the API) asks for, and what the
 // installed store holds for it. Nothing here has touched the store.
 struct ModelEntry {
@@ -114,6 +119,10 @@ struct ModelEntry {
   // D-089's drafter binding). Speculation is then the default decode.
   std::optional<std::string> drafter;
   bool speculation = true;
+  // With an artifact: a speculative model's form for waves of two or more
+  // requests, "auto" (the default), "speculative" or "plain". DeepSeek's
+  // waves take it; a model without waves of both forms ignores it.
+  WaveForm wave_form = WaveForm::kAuto;
   // With an artifact: the tokens of conversation state its runner holds.
   std::uint32_t context = kDefaultContext;
   // With an artifact: the rows of a prefill chunk (1 to kMaxPrefillChunk);

@@ -49,6 +49,12 @@ schema_version = 2
 # A speculative drafter's artifact; speculation is then the default decode.
 # drafter = "<64 hex digits>"
 # speculation = true
+# With a drafter, the form of waves of two or more concurrent requests
+# (DeepSeek): "auto" chooses per wave from the drafts accepted; the
+# exactness controls "speculative" (every wave draft-verify, so a reply at
+# several requests equals the reply alone) and "plain" (every wave plain
+# decode) fix it.
+# wave_form = "auto"
 # Tokens of conversation state, default 262144. The generic range is
 # 512 to 1048576; registration enforces the checkpoint's trained ceiling
 # (DeepSeek V4 Flash 1048576, Qwen3.8 Flash Next 262144). State grows with

@@ -200,10 +200,11 @@ enum class ModelKey : std::uint8_t {
   kDecodeFloor,
   kTokenizer,
   kChatTemplate,
+  kWaveForm,
 };
 
 std::optional<ModelKey> FindModelKey(std::string_view key) {
-  static constexpr std::array<std::pair<std::string_view, ModelKey>, 10> kKeys = {{
+  static constexpr std::array<std::pair<std::string_view, ModelKey>, 11> kKeys = {{
       {"artifact", ModelKey::kArtifact},
       {"composition", ModelKey::kComposition},
       {"drafter", ModelKey::kDrafter},
@@ -214,6 +215,7 @@ std::optional<ModelKey> FindModelKey(std::string_view key) {
       {"decode_floor_tok_s", ModelKey::kDecodeFloor},
       {"tokenizer", ModelKey::kTokenizer},
       {"chat_template", ModelKey::kChatTemplate},
+      {"wave_form", ModelKey::kWaveForm},
   }};
   for (const auto& [name, value] : kKeys) {
     if (name == key) {
@@ -869,6 +871,21 @@ class Validator {
             fs::path(text->get());
         break;
       }
+      case ModelKey::kWaveForm: {
+        const auto* text = node.as_string();
+        if (text != nullptr && text->get() == "auto") {
+          model.entry.wave_form = WaveForm::kAuto;
+        } else if (text != nullptr && text->get() == "speculative") {
+          model.entry.wave_form = WaveForm::kSpeculative;
+        } else if (text != nullptr && text->get() == "plain") {
+          model.entry.wave_form = WaveForm::kPlain;
+        } else {
+          out_.At(leaf, std::format(R"({} must be "auto", "speculative" or "plain")", key));
+          break;
+        }
+        model.wave_form_set = true;
+        break;
+      }
     }
   }
 
@@ -892,12 +909,13 @@ class Validator {
       if (m.artifact.has_value() == m.composition.has_value()) {
         problem("a model names exactly one of artifact (a model) and composition (a pipeline)");
       }
-      if (m.composition && (m.drafter || m.tokenizer || m.chat_template || model.context_set ||
-                            model.speculation_set || m.prefill_chunk || model.floors_set)) {
+      if (m.composition &&
+          (m.drafter || m.tokenizer || m.chat_template || model.context_set ||
+           model.speculation_set || m.prefill_chunk || model.floors_set || model.wave_form_set)) {
         problem(
             "drafter, speculation, context, prefill_chunk, prefill_floor_tok_s, "
-            "decode_floor_tok_s, tokenizer and chat_template are a model artifact's keys, not a "
-            "composition's");
+            "decode_floor_tok_s, tokenizer, chat_template and wave_form are a model artifact's "
+            "keys, not a composition's");
       }
       if (m.artifact && m.drafter && *m.artifact == *m.drafter) {
         problem("an artifact cannot be its own drafter");
@@ -1085,6 +1103,7 @@ class Validator {
     bool context_set = false;
     bool speculation_set = false;
     bool floors_set = false;
+    bool wave_form_set = false;
   };
 
   Collector& out_;
