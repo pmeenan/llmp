@@ -223,22 +223,25 @@ std::expected<std::unique_ptr<Qwen38Planned>, std::string> PlanQwen38Chunk(
                              shape.rows));
   }
   auto out = std::make_unique<Qwen38Planned>();
-  auto arena = kg::TensorArena::Create(kg::Qwen38GraphTensors(*m.profile));
+  const kg::Qwen38GraphOptions options{
+      .expert_stride = m.places.stride,
+      .fused = m.fused,
+      .exact = m.exact,
+      .experts = m.cutlass ? kg::Qwen38GraphOptions::Experts::kCutlass
+                           : kg::Qwen38GraphOptions::Experts::kGgml,
+      .verify = kind.verify,
+      .export_streams = kind.export_streams,
+      .stream_rows = m.mtp_state != nullptr ? m.mtp_state->hidden_rows : 0,
+      .capture_routed = kind.capture_routed};
+  auto arena = SizedArena(kg::Qwen38GraphTensors(*m.profile), [&](kg::TensorArena& a) {
+    return kg::BuildQwen38Graph(a, *m.profile, *m.binding, shape, options).has_value();
+  });
   if (!arena) {
-    return Error(arena.error().detail);
+    return std::unexpected(arena.error());
   }
   out->arena.emplace(std::move(*arena));
-  auto graph =
-      kg::BuildQwen38Graph(*out->arena, *m.profile, *m.binding, shape,
-                           {.expert_stride = m.places.stride,
-                            .fused = m.fused,
-                            .exact = m.exact,
-                            .experts = m.cutlass ? kg::Qwen38GraphOptions::Experts::kCutlass
-                                                 : kg::Qwen38GraphOptions::Experts::kGgml,
-                            .verify = kind.verify,
-                            .export_streams = kind.export_streams,
-                            .stream_rows = m.mtp_state != nullptr ? m.mtp_state->hidden_rows : 0,
-                            .capture_routed = kind.capture_routed});
+  auto graph = kg::BuildQwen38Graph(*out->arena, *m.profile, *m.binding, shape, options);
+  out->arena->Seal();
   if (!graph) {
     return Error(graph.error().detail);
   }
@@ -282,13 +285,18 @@ std::expected<std::unique_ptr<Qwen38MtpPlanned>, std::string> PlanQwen38Mtp(
     return Error("no MTP drafter");
   }
   auto out = std::make_unique<Qwen38MtpPlanned>();
-  auto arena = kg::TensorArena::Create(kg::Qwen38MtpGraphTensors(*m.profile, shape.passes));
+  auto arena =
+      SizedArena(kg::Qwen38MtpGraphTensors(*m.profile, shape.passes), [&](kg::TensorArena& a) {
+        return kg::BuildQwen38MtpGraph(a, *m.profile, *m.binding, *m.drafter, shape, m.mtp_stride)
+            .has_value();
+      });
   if (!arena) {
-    return Error(arena.error().detail);
+    return std::unexpected(arena.error());
   }
   out->arena.emplace(std::move(*arena));
   auto graph =
       kg::BuildQwen38MtpGraph(*out->arena, *m.profile, *m.binding, *m.drafter, shape, m.mtp_stride);
+  out->arena->Seal();
   if (!graph) {
     return Error(graph.error().detail);
   }

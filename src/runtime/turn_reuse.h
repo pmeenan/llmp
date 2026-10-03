@@ -16,6 +16,7 @@ namespace jitllm::runtime {
 // not a conversation or its lifetime (D-031). Independent shared-prefix
 // retention and forks belong to the later request scheduler.
 inline constexpr std::size_t kTurnCheckpointLimit = 2;
+// The default of `[memory] retention_hours` (D-055's idle cap, 24 hours).
 inline constexpr auto kTurnCheckpointRetention = std::chrono::hours(24);
 
 struct TurnBoundary {
@@ -31,16 +32,16 @@ inline std::size_t CommonPrefix(std::span<const std::int32_t> a, std::span<const
   return n;
 }
 
-inline std::optional<std::size_t> MatchingTurnBoundary(std::span<const TurnBoundary> boundaries,
-                                                       std::size_t common,
-                                                       std::size_t request_tokens,
-                                                       std::chrono::steady_clock::time_point now) {
+inline std::optional<std::size_t> MatchingTurnBoundary(
+    std::span<const TurnBoundary> boundaries, std::size_t common, std::size_t request_tokens,
+    std::chrono::steady_clock::time_point now,
+    std::chrono::steady_clock::duration retention = kTurnCheckpointRetention) {
   std::optional<std::size_t> best;
   for (std::size_t i = 0; i < boundaries.size(); ++i) {
     const TurnBoundary& boundary = boundaries[i];
     if (boundary.position == 0 || boundary.position > common ||
         boundary.position >= request_tokens || boundary.created > now ||
-        now - boundary.created >= kTurnCheckpointRetention) {
+        now - boundary.created >= retention) {
       continue;
     }
     if (!best || boundary.position > boundaries[*best].position) {

@@ -1689,6 +1689,9 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
       continue;
     }
 
+    // Between completed units: the backend's housekeeping (it leaves every
+    // active Work's resources alone).
+    backend_.Maintain();
     std::array<CooperativeBackend::Work*, kMaxActiveRequests> work{};
     for (std::size_t i = 0; i < active.size(); ++i) {
       work[i] = active[i]->work.get();
@@ -1740,9 +1743,12 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
         break;
       }
     }
+    // Idle, the backend's housekeeping runs between waits (Backend::Maintain:
+    // retention, the spill budget, memory pressure from outside).
+    backend_.Maintain();
     std::array<pollfd, 2> fds{{{.fd = wake_fd, .events = POLLIN, .revents = 0},
                                {.fd = ready_.descriptor(), .events = POLLIN, .revents = 0}}};
-    const int n = ::poll(fds.data(), fds.size(), -1);
+    const int n = ::poll(fds.data(), fds.size(), static_cast<int>(kMaintenanceMs));
     if (n < 0) {
       if (errno == EINTR) {
         continue;

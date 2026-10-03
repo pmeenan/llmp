@@ -31,11 +31,13 @@
 #ifndef JITLLM_ENGINE_LIVE_STATE_H_
 #define JITLLM_ENGINE_LIVE_STATE_H_
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -93,6 +95,9 @@ class LiveState {
   std::expected<bool, std::string> Use(PagedNode& node, std::span<const Range> ranges,
                                        const catalog::Closure* keep = nullptr,
                                        bool* over_budget = nullptr);
+  // What the last Use refused for capacity asked for: the fresh extents'
+  // bytes (what the runtime reclaims for it before it runs again).
+  std::uint64_t refused_bytes() const { return refused_bytes_; }
   // Drops initialized extents outside these already-used ranges, without
   // reloading them or writing them back. Called between jobs, with no
   // request lease on the state. Its saved file ranges return to sparse zeros.
@@ -112,6 +117,11 @@ class LiveState {
   std::uint64_t total_bytes() const;
   // Every extent, region by region.
   std::vector<catalog::ExtentId> extents() const;
+  // Every initialized extent, into `written` if any of `changed` lies in
+  // it, else into `unchanged` (an incremental spill's split: what writes
+  // since the spill file last held the state may have changed).
+  void SplitExtents(std::span<const Range> changed, std::vector<catalog::ExtentId>& written,
+                    std::vector<catalog::ExtentId>& unchanged) const;
   // Every extent of the virtual reservations, including unused ones:
   // sources and address pins are registered once, at setup.
   std::vector<catalog::ExtentId> reserved_extents() const;
@@ -234,6 +244,7 @@ class LiveState {
   std::uint64_t host_capacity_ = 0;
   bool host_copy_unproven_ = false;
   bool quarantined_ = false;
+  std::uint64_t refused_bytes_ = 0;  // refused_bytes()
 
   std::uint64_t snapshot_base_ = 0;
   std::uint64_t snapshot_bytes_ = 0;
@@ -247,6 +258,38 @@ class LiveState {
   Commit commit_;
   std::vector<Saved> saved_;       // the last verify's
   std::uint32_t verify_rows_ = 0;  // its rows; 0 once accepted
+};
+
+// What a request slot's spill file holds against its live state (an
+// incremental spill, D-055 as amended): once a spill wrote the state back,
+// or a restore read it from there, the file holds it as it is (on_disk).
+// Every write since is recorded by its runner: the first position a job
+// wrote from (the model's ranges that writes from it may change, as a turn
+// checkpoint's, cover what it wrote), or the ranges a copy wrote. Anything
+// else that changes the state (a clear, a diagnostic restore, a fault)
+// loses the file's standing: the next spill writes everything. Only the
+// extents the record covers are written back; the rest, unchanged, are
+// released with the file's copy kept (scheduler::EvictOptions::unchanged).
+struct SpillTrack {
+  static constexpr std::uint32_t kUnwritten = std::numeric_limits<std::uint32_t>::max();
+  bool on_disk = false;
+  std::uint32_t written_from = kUnwritten;
+  std::vector<LiveState::Range> written;
+
+  void Saved() {
+    on_disk = true;
+    written_from = kUnwritten;
+    written.clear();
+  }
+  void Lost() {
+    on_disk = false;
+    written_from = kUnwritten;
+    written.clear();
+  }
+  void Wrote(std::uint32_t from) { written_from = std::min(written_from, from); }
+  void Wrote(std::span<const LiveState::Range> ranges) {
+    written.insert(written.end(), ranges.begin(), ranges.end());
+  }
 };
 
 }  // namespace jitllm::engine

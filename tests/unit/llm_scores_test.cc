@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -160,6 +161,8 @@ class FakeLlm : public rt::Llm {
   bool capacity_refused = false;
   bool pending = false;
   bool omit_row = false;
+  // Spilled (Llm::SpillIdle): its tokens kept, none of them resident.
+  bool spilled = false;
   std::vector<std::int32_t> step = {2, 3, 4};
 
  protected:
@@ -218,6 +221,7 @@ class FakeLlm : public rt::Llm {
       return std::unexpected("fake clear refused before dispatch");
     }
     target.clear();
+    spilled = false;
     injection.clear();
     usable = true;
     pending = false;
@@ -282,11 +286,16 @@ class NativeBranchesFake final : public FakeLlm {
   // The execution budget in state tokens, shared by every branch: growth
   // past it is refused for capacity before dispatch (StateRefusedFor).
   std::optional<std::size_t> budget;
+  // Whether a request leases the selected branches' state (BranchIdle).
+  bool lease_held = false;
+  unsigned spills = 0;
+  unsigned restores = 0;
   FakeLlm& native_state(std::size_t slot) { return slot == 0 ? *this : *leaves_.at(slot - 1); }
   std::size_t held() {
     std::size_t tokens = 0;
     for (std::size_t slot = 0; slot < kMaxBranches; ++slot) {
-      tokens += native_state(slot).target.size();
+      // Spilled state holds nothing resident.
+      tokens += native_state(slot).spilled ? 0 : native_state(slot).target.size();
     }
     return tokens;
   }
@@ -337,8 +346,38 @@ class NativeBranchesFake final : public FakeLlm {
     }
     return {};
   }
+  // Spill and restore (Llm::SpillIdle, Llm::SpillSetAside, a prompt's
+  // restore): a spilled slot's tokens are kept but count against no budget;
+  // its restore is refused for capacity like a growth past the budget.
+  bool LeasedFor(const Branch& branch) const override {
+    return lease_held && selected_[BranchIndex(branch)];
+  }
+  rt::Status SpillFor(Branch& branch) override {
+    ++spills;
+    Native(branch).spilled = true;
+    return {};
+  }
+  rt::Status RestoreFor(Branch& branch) override {
+    FakeLlm& native = Native(branch);
+    native.capacity_refused = false;
+    if (held() + native.target.size() > budget.value_or(SIZE_MAX)) {
+      native.capacity_refused = true;
+      return std::unexpected("loading would exceed the execution budget");
+    }
+    ++restores;
+    native.spilled = false;
+    return {};
+  }
+  bool SpilledFor(const Branch& branch) const override { return Native(branch).spilled; }
+  std::uint64_t SpilledBytesFor(const Branch& branch) const override {
+    return Native(branch).spilled ? Native(branch).target.size() : 0;
+  }
   rt::Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t n_past,
                          bool inject, std::vector<float>& logits) override {
+    if (Native(branch).spilled) {
+      ADD_FAILURE() << "a spilled state ran a chunk";
+      return std::unexpected("a spilled state ran a chunk");
+    }
     if (OverBudget(branch, all.size())) {
       return std::unexpected("loading would exceed the execution budget");
     }
@@ -1688,13 +1727,182 @@ TEST(LlmScores, APreemptedGenerationResumesFromItsRebuiltStateWithoutRepeatingTo
   }
 }
 
+// Spill, not clear (Llm::SpillSetAside): a generation set aside for its
+// peers keeps its state, spilled, and resumes from it restored, with no
+// prefill and no token chosen or streamed again.
+TEST(LlmScores, AGenerationSetAsideResumesFromItsSpilledStateWithoutPrefill) {
+  for (const bool sampled : {false, true}) {
+    NativeBranchesFake model;
+    rt::GenerateOptions options;
+    options.max_tokens = 6;
+    options.stop = false;
+    if (sampled) {
+      options.sampling =
+          jitllm::execution::SamplingParams{.temperature = 1, .top_k = 0, .top_p = 1, .min_p = 0};
+      options.seed = 913;
+    }
+    auto reference = model.branch(3);
+    ASSERT_TRUE(reference.has_value());
+    std::vector<float> last;
+    ASSERT_TRUE((*reference)->Prefill(std::array<std::int32_t, 1>{0}, last).has_value());
+    rt::Generation expected;
+    ASSERT_TRUE((*reference)->Generate(last, options, expected).has_value());
+
+    auto branch = model.branch(1);
+    ASSERT_TRUE(branch.has_value());
+    std::vector<std::int32_t> visible;
+    rt::GenerateOptions streamed = options;
+    streamed.on_tokens = [&visible](std::span<const std::int32_t> fresh) {
+      visible.insert(visible.end(), fresh.begin(), fresh.end());
+      return true;
+    };
+    ASSERT_TRUE((*branch)->Prefill(std::array<std::int32_t, 1>{0}, last).has_value());
+    rt::Generation out;
+    auto opened = (*branch)->BeginGeneration(last, streamed, out);
+    ASSERT_TRUE(opened.has_value());
+    const std::array<rt::Llm::GenerationSession*, 1> one = {opened->get()};
+    ASSERT_TRUE(model.RunGenerationWave(one, true).has_value());
+    ASSERT_TRUE(model.RunGenerationWave(one, true).has_value());
+    (*opened)->Cancel();
+    ASSERT_TRUE((*opened)->Finish().has_value());
+    const std::vector<std::int32_t> held = (*branch)->history();
+    ASSERT_EQ(held.size(), 3U);
+    // Selected and leased (a cohort member): set aside, it is spilled all
+    // the same, its tokens kept.
+    const std::array<rt::Llm::Branch*, 1> selected = {*branch};
+    ASSERT_TRUE(model.SelectBranches(selected).has_value());
+    model.lease_held = true;
+    EXPECT_FALSE(model.SpillIdle(**branch).has_value());  // in use: not idle
+    ASSERT_TRUE(model.SpillSetAside(**branch).has_value());
+    model.lease_held = false;
+    EXPECT_TRUE((*branch)->spilled());
+    EXPECT_EQ(model.native_state(1).target, held);
+    const unsigned chunks = model.native_state(1).chunks;
+    // Begun again with `resume`: its only unit restores the state.
+    auto restored = (*branch)->BeginPrompt(held, 0, false, true);
+    ASSERT_TRUE(restored.has_value());
+    while (!(*restored)->done()) {
+      ASSERT_TRUE((*restored)->Advance({}, true).has_value());
+    }
+    ASSERT_TRUE((*restored)->Finish().has_value());
+    EXPECT_EQ((*restored)->reused(), 3U);
+    EXPECT_EQ(model.native_state(1).chunks, chunks);  // no prefill
+    EXPECT_EQ(model.restores, 1U);
+    EXPECT_FALSE((*branch)->spilled());
+    auto resumed = (*branch)->ResumeGeneration((*restored)->last(), streamed, out);
+    ASSERT_TRUE(resumed.has_value());
+    const std::array<rt::Llm::GenerationSession*, 1> again = {resumed->get()};
+    while (!(*resumed)->done()) {
+      ASSERT_TRUE(model.RunGenerationWave(again, true).has_value());
+    }
+    ASSERT_TRUE((*resumed)->Finish().has_value());
+    EXPECT_EQ(out.tokens, expected.tokens) << "sampled " << sampled;
+    EXPECT_EQ(visible, expected.tokens) << "sampled " << sampled;
+    EXPECT_EQ((*branch)->history(), (*reference)->history());
+    EXPECT_EQ((*branch)->history(), model.native_state(1).target);
+  }
+}
+
+std::optional<std::size_t> LargestIdle(NativeBranchesFake& model, const rt::Llm::Branch& keep);
+
+// An idle conversation spilled for a peer's capacity keeps its history and
+// state; its next turn restores the state before reusing it (refused for
+// capacity, deferred like a chunk: the serial reclaim makes room and the
+// same unit runs again) and continues exactly, prefilling only its new
+// tokens.
+TEST(LlmScores, AnIdleConversationSpilledForItsPeersContinuesExactly) {
+  NativeBranchesFake model;
+  model.budget = 20;
+  auto one = model.branch(1);
+  ASSERT_TRUE(one.has_value());
+  const std::vector<std::int32_t> first = {1, 2, 3, 4, 5, 6};
+  std::vector<float> last;
+  std::uint32_t reused = 0;
+  ASSERT_TRUE((*one)->PreparePrompt(first, 0, last, reused).has_value());
+  std::vector<std::size_t> spilled;
+  model.set_capacity_reclaim([&model, &spilled](const rt::Llm::Branch& refused) {
+    const auto idle = LargestIdle(model, refused);
+    if (!idle) {
+      return false;
+    }
+    auto branch = model.branch(*idle);
+    if (!branch || !model.SpillIdle(**branch)) {
+      return false;
+    }
+    spilled.push_back(*idle);
+    return true;
+  });
+  // The default branch's 16 tokens beside slot 1's 6 pass 20: slot 1 spills.
+  ASSERT_TRUE(model.Prefill(std::vector<std::int32_t>(16, 2), last).has_value());
+  EXPECT_THAT(spilled, ElementsAre(1U));
+  EXPECT_TRUE((*one)->spilled());
+  EXPECT_EQ((*one)->history(), first);
+  EXPECT_EQ(model.native_state(1).target, first);
+  EXPECT_EQ(model.spills, 1U);
+
+  // Its next turn: restoring 6 beside the default's 16 passes 20, so the
+  // reclaim spills the default branch (idle now) and the restore runs again.
+  std::vector<std::int32_t> next = first;
+  next.insert(next.end(), {7, 0});
+  const unsigned chunks = model.native_state(1).chunks;
+  ASSERT_TRUE((*one)->PreparePrompt(next, 0, last, reused).has_value());
+  EXPECT_THAT(spilled, ElementsAre(1U, 0U));
+  EXPECT_EQ(reused, 6U);
+  EXPECT_EQ(model.restores, 1U);
+  EXPECT_FALSE((*one)->spilled());
+  EXPECT_EQ(model.native_state(1).target, next);
+  EXPECT_EQ(model.native_state(1).chunks, chunks + 1);  // only its two new tokens
+  EXPECT_EQ(last, FakeLlm::Row(1));
+  EXPECT_TRUE(model.default_branch().spilled());
+  EXPECT_EQ(model.history().size(), 16U);
+
+  // Without room even after a reclaim, the restore's refusal ends the turn
+  // typed, the branch still spilled with its history.
+  model.set_capacity_reclaim({});
+  model.budget = 4;
+  std::vector<std::int32_t> returning(16, 2);
+  returning.push_back(5);
+  auto refused = model.PreparePrompt(returning, 0, last, reused);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("execution budget"));
+  EXPECT_TRUE(model.default_branch().capacity_refused());
+  EXPECT_TRUE(model.default_branch().spilled());
+  EXPECT_EQ(model.history().size(), 16U);
+  // A turn that does not continue it discards the spilled state instead.
+  model.budget = 20;
+  ASSERT_TRUE(model.PreparePrompt(std::vector<std::int32_t>{3, 3}, 0, last, reused).has_value());
+  EXPECT_EQ(reused, 0U);
+  EXPECT_FALSE(model.default_branch().spilled());
+  EXPECT_THAT(model.target, ElementsAre(3, 3));
+}
+
+// The idle branch other than `keep` holding the most resident state, if
+// any: idle meaning no session open and no request leasing it
+// (Llm::BranchIdle), spilled state not counted (Llm::ResidentStateBytes).
+std::optional<std::size_t> LargestIdle(NativeBranchesFake& model, const rt::Llm::Branch& keep) {
+  std::optional<std::size_t> idle;
+  std::uint64_t most = 0;
+  for (std::size_t slot = 0; slot < model.branches(); ++slot) {
+    auto branch = model.branch(slot);
+    if (!branch || *branch == &keep || !model.BranchIdle(**branch)) {
+      continue;
+    }
+    if (const std::uint64_t bytes = model.ResidentStateBytes(**branch); bytes > most) {
+      most = bytes;
+      idle = slot;
+    }
+  }
+  return idle;
+}
+
 // Serial state capacity (Llm::set_capacity_reclaim): a serial request
-// refused for capacity frees idle branches' state, the largest first, as
-// serve_api.cc's SerialReclaim does, and runs the same unit again; one it
+// refused for capacity frees idle branches' state (here the largest
+// first, dropped: the retry's mechanics; the runtime's order and its
+// spilling are Server::Reclaim's), and runs the same unit again; one it
 // cannot relieve ends at its completed prefix, typed, for the request alone.
 void ReclaimIdleLargestFirst(NativeBranchesFake& model, std::vector<std::size_t>& released) {
   model.set_capacity_reclaim([&model, &released](const rt::Llm::Branch& refused) {
-    const auto idle = model.LargestIdleBranch(refused);
+    const auto idle = LargestIdle(model, refused);
     if (!idle) {
       return false;
     }
@@ -1714,7 +1922,27 @@ void HoldIdle(NativeBranchesFake& model, std::size_t slot, std::size_t tokens) {
   ASSERT_TRUE((*branch)->Prefill(std::vector<std::int32_t>(tokens, 1), last).has_value());
 }
 
-TEST(LlmScores, TheLargestIdleBranchExcludesTheRefusedAndBusyBranches) {
+// What a prompt would reuse of a branch (the chat route's choice of
+// branch): its live history when continued, else nothing here (no turn
+// checkpoint), and nothing past the retention or from a branch owing a clear.
+TEST(LlmScores, AReusablePrefixIsTheLiveHistoryAPromptContinues) {
+  NativeBranchesFake model;
+  HoldIdle(model, 1, 6);
+  auto one = model.branch(1);
+  auto two = model.branch(2);
+  ASSERT_TRUE(one.has_value());
+  ASSERT_TRUE(two.has_value());
+  std::vector<std::int32_t> next(6, 1);
+  next.push_back(2);
+  EXPECT_EQ(model.ReusablePrefix(**one, next), 6U);
+  EXPECT_EQ(model.ReusablePrefix(**two, next), 0U);                             // empty
+  EXPECT_EQ(model.ReusablePrefix(**one, std::vector<std::int32_t>(6, 1)), 0U);  // nothing new
+  EXPECT_EQ(model.ReusablePrefix(**one, std::vector<std::int32_t>{1, 1, 3, 4}), 0U);
+  model.set_retention(std::chrono::seconds(0));
+  EXPECT_EQ(model.ReusablePrefix(**one, next), 0U);  // past its retention
+}
+
+TEST(LlmScores, AnIdleBranchHasNoSessionAndNoLeaseAndCountsOnlyResidentState) {
   NativeBranchesFake model;
   HoldIdle(model, 1, 6);
   HoldIdle(model, 2, 9);
@@ -1723,23 +1951,38 @@ TEST(LlmScores, TheLargestIdleBranchExcludesTheRefusedAndBusyBranches) {
   auto two = model.branch(2);
   ASSERT_TRUE(zero.has_value());
   ASSERT_TRUE(two.has_value());
-  EXPECT_EQ(model.LargestIdleBranch(**zero), 2U);
-  EXPECT_EQ(model.LargestIdleBranch(**two), 1U);
+  EXPECT_EQ(LargestIdle(model, **zero), 2U);
+  EXPECT_EQ(LargestIdle(model, **two), 1U);
   // A branch with an open session is not idle.
   auto busy = (*two)->BeginPrompt(std::array<std::int32_t, 1>{4});
   ASSERT_TRUE(busy.has_value());
-  EXPECT_EQ(model.LargestIdleBranch(**zero), 1U);
+  EXPECT_FALSE(model.BranchIdle(**two));
+  EXPECT_EQ(LargestIdle(model, **zero), 1U);
   (*busy)->Cancel();
   ASSERT_TRUE((*busy)->Finish().has_value());
+  // Nor is one whose state a request leases.
+  const std::array<rt::Llm::Branch*, 1> selected = {*two};
+  ASSERT_TRUE(model.SelectBranches(selected).has_value());
+  model.lease_held = true;
+  EXPECT_FALSE(model.BranchIdle(**two));
+  model.lease_held = false;
+  EXPECT_TRUE(model.BranchIdle(**two));
+  // A spilled branch holds nothing resident.
+  ASSERT_TRUE(model.SpillIdle(**two).has_value());
+  EXPECT_EQ(model.ResidentStateBytes(**two), 0U);
+  EXPECT_EQ(model.SpilledStateBytes(**two), 9U);
+  EXPECT_EQ(model.StateBytes(**two), 9U);
+  EXPECT_EQ(LargestIdle(model, **zero), 1U);
   // No branch retaining state, or none but the refused one: none.
   NativeBranchesFake empty;
   auto first = empty.branch(0);
   ASSERT_TRUE(first.has_value());
-  EXPECT_FALSE(empty.LargestIdleBranch(**first).has_value());
+  EXPECT_FALSE(LargestIdle(empty, **first).has_value());
+  // A family without separate native slots has no idle branch apart.
   FakeLlm serial;
   std::vector<float> last;
   ASSERT_TRUE(serial.Prefill(std::array<std::int32_t, 2>{0, 1}, last).has_value());
-  EXPECT_FALSE(serial.LargestIdleBranch(serial.default_branch()).has_value());
+  EXPECT_FALSE(serial.BranchIdle(serial.default_branch()));
 }
 
 TEST(LlmScores, ASerialPrefillReleasesIdleStateLargestFirstAndRetriesTheRefusedChunk) {

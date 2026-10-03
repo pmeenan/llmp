@@ -561,6 +561,73 @@ TEST_F(CheckpointCapacityStateTest, RestoreStagingRefusalLeavesTheBranchUntouche
   EXPECT_EQ(Occupancy(), fixed_ + kExtent);
 }
 
+// A budget full of what the reclaim order can give back (plans and graphs
+// charged past their floor, PagedNode::ChargeHost) never refuses a turn
+// checkpoint: its staging has the node's reclaimer free room first.
+TEST_F(CheckpointCapacityStateTest, ABudgetFullOfPlansAndGraphsStillCheckpoints) {
+  node_.SetHostFloor(0);
+  ASSERT_TRUE(node_.ChargeHost(2 * kExtent, true));
+  EXPECT_EQ(Occupancy(), fixed_ + (2 * kExtent));
+  std::uint64_t asked = 0;
+  node_.SetReclaimer([&](std::uint64_t needed, en::PagedNode::ReclaimFor what) {
+    EXPECT_EQ(what, en::PagedNode::ReclaimFor::kStaging);  // a state need: whole
+    asked += needed;
+    const std::uint64_t freed =
+        std::min(node_.host_counted(), (needed + kExtent - 1) / kExtent * kExtent);
+    node_.UnchargeHost(freed);
+    return freed;
+  });
+  const std::array<en::LiveState::Range, 1> range = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  auto checkpoint = en::CheckpointFile::Capture(
+      node_, directory, range, [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
+        std::memset(host, 0x5a, 16);
+        return {};
+      });
+  ASSERT_TRUE(checkpoint);
+  EXPECT_GT(asked, 0U);
+  node_.SetReclaimer({});
+}
+
+// The runtime sets the checkpoints' staging apart at start
+// (PagedNode::ReserveStaging): with the budget past full and nothing left
+// to reclaim, a capture and a restore still run on it, one at a time, and
+// it stays reserved between them.
+TEST_F(CheckpointCapacityStateTest, ReservedStagingServesCheckpointsWithNothingToReclaim) {
+  ASSERT_TRUE(node_.ReserveStaging(en::CheckpointStagingBytes()));
+  node_.SetHostFloor(0);
+  ASSERT_TRUE(node_.ChargeHost(2 * kExtent, true));  // required: past the budget
+  const std::uint64_t full = Occupancy();
+  EXPECT_GT(full, fixed_ + (2 * kExtent));
+  std::vector<jitllm::catalog::ExtentId> staging;
+  EXPECT_FALSE(node_.Pinned(256, 0, staging));  // nothing else fits
+  const std::array<en::LiveState::Range, 1> range = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16}};
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): test environment is immutable
+  const auto directory = std::filesystem::path(std::getenv("JITLLM_TEST_SCRATCH"));
+  auto checkpoint = en::CheckpointFile::Capture(
+      node_, directory, range, [](void* host, std::span<const en::LiveState::Range>) -> en::Status {
+        std::memset(host, 0x5a, 16);
+        return {};
+      });
+  ASSERT_TRUE(checkpoint);
+  EXPECT_EQ(Occupancy(), full);
+  std::size_t copied = 0;
+  auto restored = checkpoint->Restore(
+      node_, [] { return en::Status{}; },
+      [&](void* host, std::span<const en::LiveState::Range> page) -> en::Status {
+        EXPECT_EQ(static_cast<const std::byte*>(host)[0], std::byte{0x5a});
+        copied += page.front().bytes;
+        return {};
+      });
+  ASSERT_TRUE(restored);
+  EXPECT_EQ(copied, 16U);
+  EXPECT_EQ(Occupancy(), full);
+  node_.UnchargeHost(2 * kExtent);
+}
+
 TEST(LiveStateBufferTest, UnprovenCopyRefusesReuseAndKeepsItsDestinationUntilExit) {
   en::PagedNode node(en::NodeSettings{});
   ASSERT_TRUE(node.Open());

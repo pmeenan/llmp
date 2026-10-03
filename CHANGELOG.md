@@ -13,6 +13,32 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Memory is used fully and given back gracefully under pressure (D-055
+  and D-090 as amended 2026-10-02): plans and graphs no longer have fixed
+  counts and survive a swap, growing into free memory; idle conversations
+  are spilled to disk (writing only what changed since their last spill)
+  and restored exactly at their next turn instead of being cleared and
+  prefilled again (a request set aside for its peers' capacity likewise
+  resumes from its spilled state, choosing no token again); everything
+  reclaimable goes through one order, GreedyDual-Size over measured
+  restore costs with stale entries aging out, taking all that is needed
+  or nothing (caches never spill conversations); turn checkpoints are
+  never refused for a budget full of caches; a swap that cannot make room,
+  or fails (a read error) and is undone, or a first load that fails,
+  fails only its requests (503) and the service goes on; and memory
+  pressure from other processes (MemAvailable, the kernel's pressure-stall
+  information) has the runtime give back what it can, in one trim to a
+  target headroom and at a growing back-off while the pressure persists,
+  never what the running model's next step uses. New configuration
+  keys, compatible with schema version 2 (a minor bump of the 0.x line):
+  `[memory] retention_hours` (default 24, the former fixed constant) and
+  `spill_budget_gib` (default 128). A DeepSeek plan now holds 2.4 MiB
+  instead of 9.9 (its arena holds what its graph uses), and the start's
+  guard sets apart only one step's plans, so the DeepSeek DSpark beside
+  Qwen3.8 configuration gains conversation-state room and can take a
+  diagnostic state snapshot (`swap-table`), which the guard's margin was
+  counted twice against before.
+
 - Any chat template now gets chat routes when it can be rendered exactly
   (D-067 as amended): a native family renderer serves a template with a
   pinned hash or one it reproduces on a probe corpus (so repackaged copies

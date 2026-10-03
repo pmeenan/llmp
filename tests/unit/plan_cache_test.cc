@@ -1,20 +1,20 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// A runner's plan and graph caps (engine/planned.h), host-only: a cache
-// keeps its least recently used shapes out (a Find counts as a use), counts
-// the host bytes each plan was charged, several caches share one plan cap
-// (each request slot's chunk plans) and one graph cap (every graph a model
-// keeps, its drafter's and its waves' too), each dropping the least
-// recently used across them.
+// A runner's plans and graphs (engine/planned.h), host-only: a cache keeps
+// every shape (no fixed number) with its measured planning time, charges
+// each plan's bytes to its account as it is added (and a graph's before
+// its capture, refused when the account refuses it), gives each back as it
+// goes, and offers its plans and graphs to the node's reclaim order
+// (memory/reclaim.h) as candidates, least recently used ones first, never
+// one a step under way holds (PlanStep). Entries never move. A plan's
+// arena is sized to what its graph uses (SizedArena).
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <memory>
 #include <span>
 #include <utility>
@@ -24,155 +24,187 @@
 #include "engine/planned.h"
 #include "ggml.h"
 #include "kernels/ggml/tensors.h"
+#include "memory/reclaim.h"
 
 namespace {
 
 namespace en = jitllm::engine;
+using jitllm::memory::ReclaimCandidate;
+using jitllm::memory::ReclaimKind;
 
 using Cache = en::PlanCache<int, int>;
 
 std::unique_ptr<int> Plan(int v) { return std::make_unique<int>(v); }
 
-TEST(PlanCacheTest, KeepsTheMostRecentlyUsedAndCountsTheirBytes) {
-  Cache cache(3);
-  cache.Add(1, Plan(1), 100);
-  cache.Add(2, Plan(2), 200);
-  cache.Add(3, Plan(3), 300);
-  EXPECT_EQ(cache.host_bytes(), 600U);
-  // A use of the oldest keeps it: the next Add drops the least recently used.
-  ASSERT_NE(cache.Find(1), nullptr);
-  cache.Add(4, Plan(4), 400);
-  EXPECT_EQ(cache.size(), 3U);
-  EXPECT_NE(cache.Find(1), nullptr);
-  EXPECT_EQ(cache.Find(2), nullptr);
-  EXPECT_EQ(cache.host_bytes(), 100U + 300U + 400U);
-  // The least recently used is now 3 (1 and 4 were used since).
-  const std::uint64_t oldest = cache.OldestUse();
-  cache.DropOldest();
-  EXPECT_EQ(cache.Find(3), nullptr);
-  EXPECT_GT(cache.OldestUse(), oldest);
-  cache.Clear();
-  EXPECT_EQ(cache.size(), 0U);
-  EXPECT_EQ(cache.host_bytes(), 0U);
-  EXPECT_EQ(cache.OldestUse(), Cache::kNever);
-  cache.DropOldest();  // nothing to drop
-  EXPECT_EQ(cache.graphs(), 0U);
-  EXPECT_FALSE(cache.DropOldestGraph());
-  EXPECT_EQ(cache.OldestGraphUse(), Cache::kNever);
-}
-
-TEST(PlanCacheTest, SlotsShareOnePlanCapDroppingTheLeastRecentlyUsedOfAny) {
-  // Four slots' chunk plans, each cache able to hold the whole cap alone.
-  std::array<Cache, 4> slots{Cache(4), Cache(4), Cache(4), Cache(4)};
-  std::array<Cache*, 4> caches{slots.data(), &slots[1], &slots[2], &slots[3]};
-  const std::span<Cache* const> all(caches);
-  const auto held = [&]() {
-    std::size_t n = 0;
-    for (const Cache& c : slots) {
-      n += c.size();
-    }
-    return n;
-  };
-  for (int i = 0; i < 4; ++i) {
-    en::RoomForPlan(4, all);
-    slots[static_cast<std::size_t>(i)].Add(i, Plan(i));
-  }
-  EXPECT_EQ(held(), 4U);
-  // Slot 0's plan was used last: slot 1's goes for slot 2's next shape.
-  ASSERT_NE(slots[0].Find(0), nullptr);
-  en::RoomForPlan(4, all);
-  EXPECT_EQ(held(), 3U);
-  EXPECT_EQ(slots[1].size(), 0U);
-  slots[2].Add(10, Plan(10));
-  EXPECT_EQ(held(), 4U);
-  EXPECT_EQ(slots[2].size(), 2U);
-  // Below the cap nothing goes.
-  slots[3].DropOldest();
-  en::RoomForPlan(4, all);
-  EXPECT_EQ(held(), 3U);
-  // A cap of zero empties them all; empty caches end the loop.
-  en::RoomForPlan(0, all);
-  EXPECT_EQ(held(), 0U);
-  en::RoomForPlan(0, all);
-}
-
-// A cache as RoomForGraphs sees it: graphs, each with its plan's last use
-// and the bytes counted for it.
-struct FakeGraphs {
-  std::vector<std::pair<std::uint64_t, std::uint64_t>> graphs_;  // use, bytes
-  std::size_t graphs() const { return graphs_.size(); }
-  std::uint64_t graph_bytes() const {
-    std::uint64_t n = 0;
-    for (const auto& g : graphs_) {
-      n += g.second;
-    }
-    return n;
-  }
-  std::uint64_t OldestGraphUse() const {
-    std::uint64_t oldest = std::numeric_limits<std::uint64_t>::max();
-    for (const auto& g : graphs_) {
-      oldest = std::min(oldest, g.first);
-    }
-    return oldest;
-  }
-  bool DropOldestGraph() {
-    if (graphs_.empty()) {
-      return false;
-    }
-    graphs_.erase(std::ranges::min_element(graphs_));
-    return true;
+// An account that records its charges and refuses past a budget.
+struct Ledger {
+  std::uint64_t budget = UINT64_MAX;
+  std::uint64_t charged = 0;
+  std::vector<std::pair<std::uint64_t, bool>> asked;  // bytes, required
+  en::PlanAccount account;
+  Ledger() {
+    account.Bind(
+        [this](std::uint64_t bytes, bool required) {
+          asked.emplace_back(bytes, required);
+          if (!required && charged + bytes > budget) {
+            return false;
+          }
+          charged += bytes;
+          return true;
+        },
+        [this](std::uint64_t bytes) { charged -= bytes; });
   }
 };
 
-constexpr std::uint64_t kNoBudget = std::numeric_limits<std::uint64_t>::max();
-
-TEST(PlanCacheTest, EveryGraphCountsTowardOneCapDroppingTheLeastRecentlyUsed) {
-  // A wave cache, and two slots' draft caches (whose graphs count too).
-  FakeGraphs waves{.graphs_ = {{5, 0}, {9, 0}}};
-  FakeGraphs draft_a{.graphs_ = {{3, 0}}};
-  FakeGraphs draft_b{.graphs_ = {{7, 0}}};
-  en::GraphStats stats;
-  // Four kept, room for two captures under a cap of five: one goes, the
-  // least recently used of all (draft A's).
-  en::RoomForGraphs(5, kNoBudget, 2, 0, stats, waves, draft_a, draft_b);
-  EXPECT_EQ(waves.graphs() + draft_a.graphs() + draft_b.graphs(), 3U);
-  EXPECT_EQ(draft_a.graphs(), 0U);
-  EXPECT_EQ(stats.dropped, 1U);
-  // Room for three under a cap of four: two more go (5, then 7).
-  en::RoomForGraphs(4, kNoBudget, 3, 0, stats, waves, draft_a, draft_b);
-  ASSERT_EQ(waves.graphs(), 1U);
-  EXPECT_EQ(waves.graphs_.front().first, 9U);
-  EXPECT_EQ(draft_b.graphs(), 0U);
-  EXPECT_EQ(stats.dropped, 3U);
-  // Already within the cap: nothing goes. More captures than the cap are
-  // refused, dropping nothing; one more past a full cap drops the last.
-  en::RoomForGraph(2, stats, waves, draft_a, draft_b);
-  EXPECT_EQ(stats.dropped, 3U);
-  EXPECT_FALSE(en::RoomForGraphs(1, kNoBudget, 4, 0, stats, waves, draft_a, draft_b));
-  EXPECT_EQ(waves.graphs(), 1U);
-  EXPECT_EQ(stats.dropped, 3U);
-  EXPECT_TRUE(en::RoomForGraphs(1, kNoBudget, 1, 0, stats, waves, draft_a, draft_b));
-  EXPECT_EQ(waves.graphs(), 0U);
-  EXPECT_EQ(stats.dropped, 4U);
+TEST(PlanCacheTest, KeepsEveryShapeAndChargesWhatEachHolds) {
+  Ledger ledger;
+  Cache cache(&ledger.account);
+  for (int i = 0; i < 100; ++i) {
+    cache.Add(i, Plan(i), 100, 0, 0.01);
+  }
+  // No fixed number: every one is kept, every one charged, as required.
+  EXPECT_EQ(cache.size(), 100U);
+  EXPECT_EQ(cache.host_bytes(), 10000U);
+  EXPECT_EQ(ledger.charged, 10000U);
+  EXPECT_EQ(ledger.account.bytes(), 10000U);
+  EXPECT_TRUE(ledger.asked.front().second);
+  ASSERT_NE(cache.Find(42), nullptr);
+  EXPECT_EQ(*cache.Find(42)->planned, 42);
+  EXPECT_EQ(cache.Find(1000), nullptr);
+  cache.Clear();
+  EXPECT_EQ(cache.size(), 0U);
+  EXPECT_EQ(ledger.charged, 0U);
+  EXPECT_EQ(ledger.account.bytes(), 0U);
 }
 
-TEST(PlanCacheTest, GraphsStayWithinTheirByteBudget) {
-  FakeGraphs waves{.graphs_ = {{2, 300}, {6, 300}}};
-  FakeGraphs chunks{.graphs_ = {{4, 100}, {8, 100}}};
-  en::GraphStats stats;
-  // 800 kept; a 250-byte capture under a 1,000-byte budget: the least
-  // recently used goes (300 at use 2), then 500 + 250 fits.
-  EXPECT_TRUE(en::RoomForGraphs(16, 1000, 1, 250, stats, waves, chunks));
-  EXPECT_EQ(waves.graph_bytes() + chunks.graph_bytes(), 500U);
-  EXPECT_EQ(stats.dropped, 1U);
-  // Within both caps nothing goes.
-  EXPECT_TRUE(en::RoomForGraphs(16, 1000, 1, 500, stats, waves, chunks));
-  EXPECT_EQ(stats.dropped, 1U);
-  // A capture alone past the budget is refused, dropping nothing: the kept
-  // graphs never hold more than the budget.
-  EXPECT_FALSE(en::RoomForGraphs(16, 1000, 1, 1200, stats, waves, chunks));
-  EXPECT_EQ(waves.graph_bytes() + chunks.graph_bytes(), 500U);
-  EXPECT_EQ(stats.dropped, 1U);
+TEST(PlanCacheTest, AGraphIsChargedBeforeItsCaptureAndGivenBackWithoutOne) {
+  Ledger ledger;
+  Cache cache(&ledger.account);
+  Cache::Entry& entry = cache.Add(1, Plan(1), 100, 10);
+  // A graph of 10 launched nodes: refused past the budget (not required),
+  // so it is not captured and nothing is charged.
+  ledger.budget = 100 + (10 * en::kGraphNodeHostBytes) - 1;
+  EXPECT_FALSE(cache.ChargeGraph(entry));
+  EXPECT_FALSE(ledger.asked.back().second);
+  EXPECT_EQ(ledger.charged, 100U);
+  ledger.budget = UINT64_MAX;
+  // A refused charge is not asked again at once: the next use skips it
+  // without asking (1, then 2, 4 … uses after each refusal).
+  const std::size_t asked_before = ledger.asked.size();
+  EXPECT_FALSE(cache.ChargeGraph(entry));
+  EXPECT_EQ(ledger.asked.size(), asked_before);
+  {
+    // Within the step that will capture it, the charge stays even with no
+    // graph yet, and is made once.
+    const en::PlanStep step;
+    ASSERT_NE(cache.Find(1), nullptr);
+    ASSERT_TRUE(cache.ChargeGraph(entry));
+    EXPECT_EQ(ledger.charged, 100U + (10 * en::kGraphNodeHostBytes));
+    const std::size_t asked = ledger.asked.size();
+    EXPECT_TRUE(cache.ChargeGraph(entry));
+    EXPECT_EQ(ledger.asked.size(), asked);
+    ASSERT_NE(cache.Find(1), nullptr);
+    EXPECT_EQ(ledger.charged, 100U + (10 * en::kGraphNodeHostBytes));
+  }
+  // The capture did not happen (no graph): once no step holds the plan,
+  // its next use gives the charge back.
+  ASSERT_NE(cache.Find(1), nullptr);
+  EXPECT_EQ(ledger.charged, 100U);
+  EXPECT_EQ(cache.graphs(), 0U);
+  // A variant past the cache's is refused.
+  EXPECT_FALSE(cache.ChargeGraph(entry, 1));
+}
+
+TEST(PlanCacheTest, ARefusedGraphChargeBacksOffDoublingToItsMost) {
+  Ledger ledger;
+  Cache cache(&ledger.account);
+  Cache::Entry& entry = cache.Add(1, Plan(1), 100, 10);
+  ledger.budget = 100;  // no room for any graph
+  std::vector<std::size_t> asked_at;
+  for (std::size_t use = 0; use < 1000; ++use) {
+    const std::size_t before = ledger.asked.size();
+    EXPECT_FALSE(cache.ChargeGraph(entry));
+    if (ledger.asked.size() != before) {
+      asked_at.push_back(use);
+    }
+  }
+  // Asked at 0, then after 1, 2, 4 … 256 uses skipped, then every 257th.
+  ASSERT_GE(asked_at.size(), 3U);
+  EXPECT_EQ(asked_at[0], 0U);
+  EXPECT_EQ(asked_at[1], 2U);
+  EXPECT_EQ(asked_at[2], 5U);
+  EXPECT_LE(asked_at.size(), 12U);
+  // Once it fits, the wait resets.
+  ledger.budget = UINT64_MAX;
+  while (!cache.ChargeGraph(entry)) {
+  }
+  EXPECT_EQ(entry.graph_backoff, 0U);
+}
+
+TEST(PlanCacheTest, PlansAreCandidatesOnceNoStepHoldsThem) {
+  Ledger ledger;
+  Cache cache(&ledger.account);
+  cache.Add(1, Plan(1), 100, 0, 0.02);
+  cache.Add(2, Plan(2), 300, 0, 0.05);
+  std::vector<ReclaimCandidate> candidates;
+  cache.Collect(7, true, candidates);
+  ASSERT_EQ(candidates.size(), 2U);  // plans only: neither has a graph
+  EXPECT_EQ(candidates[0].kind, ReclaimKind::kPlan);
+  EXPECT_EQ(candidates[0].owner, 7U);
+  EXPECT_EQ(candidates[0].bytes, 100U);
+  EXPECT_DOUBLE_EQ(candidates[0].restore_seconds, 0.02);
+  EXPECT_TRUE(candidates[0].running);
+  EXPECT_LT(candidates[0].last_use, candidates[1].last_use);
+  {
+    // A step that found plan 1 holds it: it is no candidate, and a reclaim
+    // of it (from a charge inside the step) is refused.
+    const en::PlanStep step;
+    EXPECT_NE(en::PlanStepStart(), en::kNoStep);
+    {
+      const en::PlanStep nested;  // a nested step keeps the outer one's start
+      ASSERT_NE(cache.Find(1), nullptr);
+    }
+    candidates.clear();
+    cache.Collect(7, true, candidates);
+    ASSERT_EQ(candidates.size(), 1U);
+    EXPECT_EQ(candidates[0].bytes, 300U);
+    Cache::Entry* held = cache.Find(1);
+    ASSERT_NE(held, nullptr);
+    EXPECT_EQ(cache.Reclaim(ReclaimKind::kPlan, held->serial), 0U);
+    // The other goes; the held entry has not moved.
+    EXPECT_EQ(cache.Reclaim(ReclaimKind::kPlan, candidates[0].id), 300U);
+    EXPECT_EQ(cache.Find(1), held);
+    EXPECT_EQ(cache.reclaimed_plans(), 1U);
+  }
+  EXPECT_EQ(en::PlanStepStart(), en::kNoStep);
+  EXPECT_EQ(ledger.charged, 100U);
+  // Between steps plan 1 is a candidate again; a graph reclaim of a plan
+  // without one frees nothing; an unknown serial nothing.
+  candidates.clear();
+  cache.Collect(0, false, candidates);
+  ASSERT_EQ(candidates.size(), 1U);
+  EXPECT_EQ(cache.Reclaim(ReclaimKind::kGraph, candidates[0].id), 0U);
+  EXPECT_EQ(cache.Reclaim(ReclaimKind::kPlan, 0), 0U);
+  EXPECT_EQ(cache.Reclaim(ReclaimKind::kPlan, candidates[0].id), 100U);
+  EXPECT_EQ(cache.size(), 0U);
+  EXPECT_EQ(ledger.charged, 0U);
+}
+
+TEST(PlanCacheTest, AReclaimFindsItsPlanAmongARunnersCaches) {
+  Ledger ledger;
+  Cache a(&ledger.account);
+  en::PlanCache<int, int, 2> b(&ledger.account);
+  a.Add(1, Plan(1), 10);
+  auto& kept = b.Add(1, Plan(2), 20);
+  std::array<en::PlanCacheBase*, 2> caches = {&a, &b};
+  std::vector<ReclaimCandidate> candidates;
+  en::CollectPlans(caches, 3, false, candidates);
+  ASSERT_EQ(candidates.size(), 2U);
+  EXPECT_EQ(en::ReclaimPlan(caches, ReclaimKind::kPlan, kept.serial), 20U);
+  EXPECT_EQ(b.size(), 0U);
+  EXPECT_EQ(a.size(), 1U);
+  EXPECT_EQ(en::ReclaimPlan(caches, ReclaimKind::kPlan, kept.serial), 0U);
+  EXPECT_EQ(ledger.charged, 10U);
 }
 
 TEST(PlanCacheTest, APlansHostBytesAreItsArenaAndItsLaunchedNodes) {
@@ -192,6 +224,38 @@ TEST(PlanCacheTest, APlansHostBytesAreItsArenaAndItsLaunchedNodes) {
   // Uses are ordered across caches and never repeat.
   const std::uint64_t a = en::NextPlanUse();
   EXPECT_GT(en::NextPlanUse(), a);
+}
+
+// A graph of `tensors` leaf tensors built on an arena (false: no room).
+bool Build(jitllm::kernels::ggml::TensorArena& arena, int tensors) {
+  for (int i = 0; i < tensors; ++i) {
+    if (!arena.Reserve(1)) {
+      return false;
+    }
+    (void)ggml_new_tensor_1d(arena.context(), GGML_TYPE_F32, 4);
+  }
+  return true;
+}
+
+TEST(PlanCacheTest, APlansArenaHoldsWhatItsGraphUsesNotTheEstimate) {
+  auto sized =
+      en::SizedArena(1000, [](jitllm::kernels::ggml::TensorArena& a) { return Build(a, 10); });
+  ASSERT_TRUE(sized.has_value());
+  // The estimate's 1,000 tensors are not kept: ten and one's slack.
+  EXPECT_LE(sized->bytes(), 11 * ggml_tensor_overhead());
+  EXPECT_EQ(sized->used(), 0U);
+  // Its checks answer for the estimate the build was checked against, so
+  // the same build passes them; sealed, it answers for its own room.
+  EXPECT_TRUE(sized->Reserve(1000).has_value());
+  EXPECT_TRUE(Build(*sized, 10));
+  sized->Seal();
+  EXPECT_TRUE(sized->Reserve(1).has_value());
+  EXPECT_FALSE(sized->Reserve(2).has_value());
+  // A build that fails keeps the estimate, for the caller's own error.
+  auto failed =
+      en::SizedArena(8, [](jitllm::kernels::ggml::TensorArena& a) { return Build(a, 10); });
+  ASSERT_TRUE(failed.has_value());
+  EXPECT_EQ(failed->bytes(), 8 * ggml_tensor_overhead());
 }
 
 }  // namespace

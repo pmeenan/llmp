@@ -28,9 +28,9 @@
 //   workspace; the input staging, the logits rows and the hash tables'
 //   copy: pinned host memory, cataloged.
 // - A chunk: its host-built inputs, the graph planned for its shape, kind
-//   and injection (kept per shape, at most kMaxChunkPlans of them across
-//   every request slot, the least recently used dropped; DropPlans forgets
-//   them, for first-use measurements), and one job that copies the inputs,
+//   and injection (kept per shape, every request slot's, with no fixed
+//   number: they go when the node reclaims them, planned.h; DropPlans
+//   forgets them, for first-use measurements), and one job that copies the inputs,
 //   runs the bound plan under the K-C launch context and copies the last
 //   row's logits out. The first chunk of each shape checks every tensor
 //   the plan binds against the catalog (BP-A1).
@@ -39,14 +39,20 @@
 //   the input copies, the plan's 4,972 steps and the logits copy together,
 //   and every later chunk of that shape replays it. What varies between
 //   steps of a shape (the token, its position, the cache cells, the masks
-//   and the compressors' indices) is the inputs' data. Every graph counts
-//   toward one cap, the draft blocks' and the waves' too (kMaxGraphs and
-//   the draft's with one slot, kMaxWaveGraphs with several), and toward
-//   kMaxGraphBytes as counted: a capture past either destroys the least
-//   recently used plan's graph. Prefill chunks run launch by launch.
-// - The plans' and graphs' host and driver memory, outside the catalog, is
-//   bounded by those caps: plan_host_bytes(), measured from the largest
-//   plans at Setup, is what the memory guard counts for it.
+//   and the compressors' indices) is the inputs' data. Every graph, the
+//   draft blocks' and the waves' too, is charged before its capture; one
+//   that does not fit even after the node reclaimed is not made (that
+//   plan runs launch by launch). Prefill chunks run launch by launch.
+// - The plans' and graphs' host and driver memory, outside the catalog's
+//   extents, is charged to the node (planned.h PlanAccount, PagedNode::
+//   ChargeHost) and given back through the node's one reclaim order
+//   (ReclaimCandidates, Reclaim). What one step holds at once at most,
+//   plan_floor_bytes(), measured from the largest plans at Setup, is what
+//   the memory guard sets apart for it.
+// - An idle slot's state (a finished conversation, or a member set aside
+//   for its peers) spills to its own spill file (Slot::Spill) and comes
+//   back before its next work (Slot::Restore), exactly as it left: the
+//   swap's write-back path, for one slot.
 // - The hash-routed layers' token-to-expert tables, which the kernels index
 //   unchecked, are checked after every full load (CheckHashRouting).
 // - Speculation (Dsv4Options::drafter; docs/experiments/dspark/): the
@@ -163,23 +169,6 @@ enum class Dsv4ChunkKind : std::uint8_t {
 class Dsv4Runner final : public PagedModel {
  public:
   using Status = engine::Status;
-  // The most decode graphs kept with one request slot (D-090), the draft
-  // block's beside them: driver memory outside the catalog, tens of MiB
-  // each; capturing another destroys the least recently used.
-  static constexpr std::size_t kMaxGraphs = 8;
-  // With several request slots: every graph, their decode, verify and
-  // draft graphs and the waves', together.
-  static constexpr std::size_t kMaxWaveGraphs = 16;
-  // And what every graph may hold, as counted (kGraphNodeHostBytes a node
-  // its plan launches): a capture past it drops the least recently used,
-  // and one past it alone is not made. The measured working set: up to 143
-  // MiB at 12 KiB a node in the C4 HTTP cells (3 graphs).
-  static constexpr std::uint64_t kMaxGraphBytes = std::uint64_t{256} << 20U;
-  // The most chunk plans kept, every slot's together, and the most wave
-  // plans: host memory outside the catalog (plan_host_bytes()). The measured
-  // working set: up to 26 plans of every kind, 330 MiB, in the C4 HTTP cells.
-  static constexpr std::size_t kMaxChunkPlans = 24;
-  static constexpr std::size_t kMaxWavePlans = 6;
   static constexpr std::size_t kRequestSlots = RequestCohort::kSlots;
   // A wave's most rows, every slot's together (dsv4_graph.h).
   static constexpr std::int64_t kWaveRows = kernels::ggml::kDsv4WaveRows;
@@ -215,11 +204,11 @@ class Dsv4Runner final : public PagedModel {
     RequestState& operator=(RequestState&&) = delete;
     ~RequestState() = default;
 
-    LiveState live{"DeepSeek"};        // the target's state, then the DSpark ring
-    Dsv4Model model;                   // the shared weights' places, this state's
-    DsparkModel dmodel;                // the drafter's, this ring's
-    ChunkPlans plans{kMaxChunkPlans};  // destroyed before the launch context (Release)
-    DraftPlans dplans{1};
+    LiveState live{"DeepSeek"};  // the target's state, then the DSpark ring
+    Dsv4Model model;             // the shared weights' places, this state's
+    DsparkModel dmodel;          // the drafter's, this ring's
+    ChunkPlans plans;            // destroyed before the launch context (Release)
+    DraftPlans dplans;
     Mapped snapshot;  // a verify's saves (runtime)
     // Pinned: this slot's scalar logits rows and drafts. A captured graph
     // copies its outputs where it was captured to, so each slot's plans
@@ -228,8 +217,13 @@ class Dsv4Runner final : public PagedModel {
     void* drafts = nullptr;
     const std::uint32_t slot;
     bool provisioned = false;  // its live state exists (slot 0 always)
-    // The last EnsureState's clean capacity refusal (Slot::state_refused).
+    // The last EnsureState's (or Restore's) clean capacity refusal
+    // (Slot::state_refused).
     bool state_refused = false;
+    // Its state written to its spill file and its backing released
+    // (Slot::Spill): outside every closure until Restore brings it back.
+    bool spilled = false;
+    SpillTrack track;        // what its spill file holds (an incremental spill)
     catalog::Closure fence;  // its state alone
   };
 
@@ -419,17 +413,34 @@ class Dsv4Runner final : public PagedModel {
   Status DumpLast(std::vector<Dumped>& out);
   std::size_t plans() const;
   std::size_t graphs() const;
-  // The most host and driver memory the plans and graphs may hold: every
-  // cap times its kind's largest plan (PlannedHostBytes) or graph
-  // (kGraphNodeHostBytes a node), measured at Setup. The memory guard
-  // counts it beside the catalog's budget (Served::plan_host_bytes).
-  std::uint64_t plan_host_bytes() const { return plan_host_bytes_; }
-  // How plan_host_bytes() is made up, for the start's log.
+  // What one step holds at once at most (its plans, PlannedHostBytes),
+  // measured at Setup from the largest plans of each kind: a chunk beside
+  // a draft block, or a wave beside every slot's draft block. The memory
+  // guard sets it apart beside the catalog's budget (Served::
+  // plan_floor_bytes); every plan and graph past it is charged inside the
+  // budget (planned.h PlanAccount).
+  std::uint64_t plan_floor_bytes() const { return plan_floor_bytes_; }
+  // How plan_floor_bytes() is made up, for the start's log.
   const std::string& plan_report() const { return plan_report_; }
+  // Its plans and graphs as candidates for the node's reclaim order
+  // (memory/reclaim.h), `owner`'s, `running` if it is the resident model;
+  // none a step under way holds. Between jobs only.
+  void ReclaimCandidates(std::uint32_t owner, bool running,
+                         std::vector<memory::ReclaimCandidate>& out);
+  // Drops one (a plan with its graphs, or a plan's graphs): the bytes
+  // freed, 0 if it is gone or held.
+  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id);
+  // Plans and graphs the node reclaimed so far.
+  std::uint64_t reclaimed_plans() const;
+  std::uint64_t reclaimed_graphs() const;
   // What the kept plans hold now, as counted (PlannedHostBytes).
   std::uint64_t cached_plan_bytes() const;
   // What the kept graphs hold now, as counted (kGraphNodeHostBytes a node).
   std::uint64_t cached_graph_bytes() const;
+  // What they took of the device's free memory at their captures.
+  std::uint64_t graph_measured_bytes() const;
+  // Of the kept plans' arenas, the bytes their tensors use (or hold).
+  std::uint64_t cached_arena_used(bool capacity = false) const;
   double plan_seconds() const { return plan_seconds_; }  // spent planning, in all
   // Decode graphs on or off for the next chunks; captured graphs are kept.
   void set_graphs(bool on) { runs_.set_graphs(on); }
@@ -453,6 +464,13 @@ class Dsv4Runner final : public PagedModel {
   // then the drafter's ring).
   std::vector<catalog::ExtentId> weights() const;
   std::vector<catalog::ExtentId> state() const;
+  // A swap's incremental write-back: the resident state's extents nothing
+  // wrote since their slots' spill files last held them (SpillTrack), which
+  // a write-back may release without writing (EvictOptions::unchanged);
+  // and, once the swap wrote the rest back (`whole`) or failed to, each
+  // resident slot's record.
+  std::vector<catalog::ExtentId> unchanged_state() const;
+  void StateWrittenBack(bool whole);
   bool HasRetainedState() const;
   std::uint64_t weight_read_bytes() const { return weights_.read_bytes() + dweights_.read_bytes(); }
   std::uint64_t state_bytes() const { return layout_.bytes; }
@@ -500,6 +518,29 @@ class Dsv4Runner final : public PagedModel {
     // idle conversation's reuse cache), between completed units. Refused
     // for a selected slot, which clears through Clear.
     Status ClearIdle() { return owner_.ClearIdle(request_); }
+    // Spills this slot's state to its spill file, between completed units
+    // (an idle conversation, or a member set aside for its peers; a
+    // selected slot first leaves the held request's lease): its backing
+    // released, the state exactly as it was once Restore brings it back.
+    // Only what changed since the spill file last held the state is written
+    // (SpillTrack). Refused while a verify awaits its Accept.
+    Status Spill() { return owner_.Spill(request_); }
+    // What a Spill now would write (0 while spilled).
+    std::uint64_t spill_write_bytes() const { return owner_.SpillWriteBytes(request_); }
+    // Brings a spilled slot's state back before its next work: a clean
+    // capacity refusal sets state_refused(), the state still spilled.
+    Status Restore() { return owner_.Restore(request_); }
+    bool spilled() const { return request_.spilled; }
+    // Whether the request open on the stream leases its state now.
+    bool held() const {
+      return owner_.cohort_.IsActive(request_.slot) && owner_.node_.InRequest(owner_.stream_);
+    }
+    // What its last refused growth asked for (LiveState::refused_bytes).
+    std::uint64_t refused_bytes() const { return request_.live.refused_bytes(); }
+    // What its spill file holds of its state while it is spilled.
+    std::uint64_t spilled_bytes() const {
+      return request_.spilled ? request_.live.extents().size() * kPagedExtent : 0;
+    }
     Status ReserveStateThrough(std::uint32_t positions) {
       return owner_.EnsureState(request_, positions);
     }
@@ -645,12 +686,11 @@ class Dsv4Runner final : public PagedModel {
   Status PlanSnapshot(RequestState& request, const model::Dsv4ChunkInputs& in);
   Status RefreshClosures() { return RefreshClosures(cohort_.active()); }
   Status RefreshClosures(std::uint8_t protected_mask);
-  // Before `adding` captures of `adding_bytes` (planned.h RoomForGraphs):
-  // room under the graph caps (every graph); false if they alone exceed
-  // them (not captured then).
-  bool RoomForGraphs(std::size_t adding, std::uint64_t adding_bytes);
-  // Before planning a chunk shape: room under kMaxChunkPlans, every slot's.
-  void RoomForChunkPlan();
+  // Every plan cache: each slot's chunk and draft plans, and the waves'.
+  std::array<PlanCacheBase*, (2 * kRequestSlots) + 1> PlanCaches();
+  std::array<const PlanCacheBase*, (2 * kRequestSlots) + 1> PlanCaches() const;
+  // After a plan was dropped: DumpLast's plan may have gone with it.
+  void ForgetLastPlanned();
   // Where a slot's draft block's inputs are staged (fixed per slot: its
   // captured graph copies from there).
   std::uint64_t DraftStagingAt(const RequestState& request) const {
@@ -662,9 +702,22 @@ class Dsv4Runner final : public PagedModel {
     }
     return cohort_.Check(node_, stream_, request.slot);
   }
+  // Active, and its state resident (not spilled).
+  Status CheckResident(const RequestState& request) const {
+    if (auto active = CheckActive(request); !active) {
+      return active;
+    }
+    if (request.spilled) {
+      return std::unexpected(std::string("the DeepSeek slot's state is spilled: restore it first"));
+    }
+    return {};
+  }
   Status Usable(const RequestState& request) const {
     if (auto active = CheckActive(request); !active) {
       return active;
+    }
+    if (request.spilled) {
+      return std::unexpected(std::string("the DeepSeek slot's state is spilled: restore it first"));
     }
     return request.live.Usable();
   }
@@ -672,6 +725,18 @@ class Dsv4Runner final : public PagedModel {
 
   Status Clear(RequestState& request);
   Status ClearIdle(RequestState& request);
+  Status Spill(RequestState& request);
+  Status Restore(RequestState& request);
+  // An incremental spill's split of a slot's initialized extents (what its
+  // record says changed since its spill file held it, and the rest); with
+  // no standing record, every extent is `written`.
+  void SplitForSpill(const RequestState& request, std::vector<catalog::ExtentId>& written,
+                     std::vector<catalog::ExtentId>& unchanged) const;
+  std::uint64_t SpillWriteBytes(const RequestState& request) const;
+  // The state ranges writes from `positions` on may change (a turn
+  // checkpoint's, and an incremental spill's record).
+  std::expected<std::vector<LiveState::Range>, std::string> StateWrites(
+      std::uint32_t positions) const;
   Status EnsureState(RequestState& request, std::uint32_t positions);
   Status Chunk(RequestState& request, std::uint32_t n_past, std::span<const std::int32_t> tokens,
                std::vector<float>& logits, const std::function<Status()>& meanwhile,
@@ -725,9 +790,9 @@ class Dsv4Runner final : public PagedModel {
   std::uint64_t activation_bytes_ = 0;
   std::uint64_t scratch_bytes_ = 0;
   std::uint64_t host_input_bytes_ = 0;
-  std::uint64_t snapshot_bytes_ = 0;   // a slot's verify snapshot
-  std::uint64_t draft_staging_ = 0;    // a slot's draft inputs' staging stride
-  std::uint64_t plan_host_bytes_ = 0;  // plan_host_bytes()
+  std::uint64_t snapshot_bytes_ = 0;    // a slot's verify snapshot
+  std::uint64_t draft_staging_ = 0;     // a slot's draft inputs' staging stride
+  std::uint64_t plan_floor_bytes_ = 0;  // plan_floor_bytes()
   std::string plan_report_;
   // The request slots provisioned: Dsv4Options::wave_slots, or 1 when the
   // weights cannot take a wave (serial_reason_).
@@ -742,7 +807,9 @@ class Dsv4Runner final : public PagedModel {
   // staging (a lease of a tenth of `everything_`'s extents).
   catalog::Closure draft_closure_;
 
-  WavePlans waves_{kMaxWavePlans};
+  WavePlans waves_;
+  // What the plans and graphs hold, charged to the node (Bind).
+  PlanAccount account_;
   std::vector<std::string> dump_;              // set_dump
   const Dsv4Planned* last_planned_ = nullptr;  // the last chunk's plan (DumpLast)
   GraphStats graph_stats_;

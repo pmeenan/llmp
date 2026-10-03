@@ -295,16 +295,28 @@ std::expected<void*, std::string> PagedNode::Pinned(std::uint64_t bytes, int own
                                                     std::vector<ExtentId>& staging) {
   bytes = std::max<std::uint64_t>(bytes, 256);
   if (scheduler_ != nullptr) {
-    auto fits = Call(
-        [&]() -> Status {
-          const auto occupancy = catalog_.OccupancyOf(domain_).Total().value();
-          return occupancy > budget_.value() || bytes > budget_.value() - occupancy
-                     ? Error("pinned staging exceeds the execution budget")
-                     : Status{};
-        },
-        "checking pinned staging capacity");
-    if (!fits) {
-      return std::unexpected(fits.error());
+    // What does not fit has the reclaim order free it first, then is
+    // checked again (and again when it is registered).
+    for (int attempt = 0;; ++attempt) {
+      std::uint64_t shortfall = 0;
+      auto checked = Call(
+          [&]() -> Status {
+            shortfall = Shortfall(bytes);
+            return {};
+          },
+          "checking pinned staging capacity");
+      if (!checked) {
+        return std::unexpected(checked.error());
+      }
+      if (shortfall == 0) {
+        break;
+      }
+      // In whole extents (what the plans' charge gives back moves in them),
+      // checked again after each reclaim, a few times at most.
+      const std::uint64_t ask = (shortfall + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
+      if (attempt >= 3 || AskReclaim(ask, ReclaimFor::kStaging) == 0) {
+        return Error("pinned staging exceeds the execution budget");
+      }
     }
   }
   auto allocated = providers::AllocatePinned(bytes);
@@ -348,6 +360,170 @@ std::expected<void*, std::string> PagedNode::Pinned(std::uint64_t bytes, int own
   }
   pinned_.push_back(pointer);
   return pointer;
+}
+
+bool PagedNode::Recharge(std::uint64_t total, bool force, std::uint64_t* shortfall) {
+  const std::uint64_t past = total > host_floor_ ? total - host_floor_ : 0;
+  const std::uint64_t charge = (past + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
+  if (charge == host_charged_) {
+    return true;
+  }
+  // Before the scheduler runs, or once it stopped, there is nothing to
+  // charge against: only the count changes.
+  if (scheduler_ == nullptr || torn_down_) {
+    host_charged_ = charge;
+    return true;
+  }
+  bool fits = true;
+  auto changed = Call(
+      [&]() -> Status {
+        const std::uint64_t occupancy = catalog_.OccupancyOf(domain_).Total().value();
+        const std::uint64_t others = occupancy - std::min(occupancy, host_charged_);
+        if (charge > host_charged_ && !force &&
+            (others > budget_.value() || charge > budget_.value() - others)) {
+          fits = false;
+          if (shortfall != nullptr) {
+            *shortfall = others + charge - budget_.value();
+          }
+          return {};
+        }
+        if (host_extent_.valid()) {
+          if (!catalog_.ReleasePinned(host_extent_) || !catalog_.RemoveExtent(host_extent_)) {
+            return Error("forgetting the plans' charge");
+          }
+          host_extent_ = {};
+        }
+        if (charge != 0) {
+          auto extent = catalog_.AddExtent({.domain = domain_,
+                                            .memory_class = MemoryClass::kRuntime,
+                                            .recovery = catalog::Recovery::kPinned,
+                                            .size = Bytes(charge),
+                                            .content = {}},
+                                           true);
+          if (!extent) {
+            return Error("charging the plans");
+          }
+          host_extent_ = *extent;
+        }
+        return {};
+      },
+      "charging plans and graphs");
+  if (!changed) {
+    // Only the count is kept; the catalog's charge is what it was.
+    return force;
+  }
+  if (fits) {
+    host_charged_ = charge;
+  }
+  return fits;
+}
+
+bool PagedNode::ChargeHost(std::uint64_t bytes, bool required) {
+  if (bytes == 0) {
+    return true;
+  }
+  std::uint64_t shortfall = 0;
+  if (Recharge(host_total_ + bytes, false, &shortfall)) {
+    host_total_ += bytes;
+    return true;
+  }
+  // What the charge lacks (all of it or nothing), from other plans and
+  // graphs only (a graph's only from what costs less to restore than a
+  // graph). The charge moves in whole extents past the floor, so the ask is
+  // rounded up by one and the room checked again after each reclaim.
+  const ReclaimFor what = required ? ReclaimFor::kPlan : ReclaimFor::kGraph;
+  for (int attempt = 0; attempt < 3 && shortfall != 0; ++attempt) {
+    const std::uint64_t ask =
+        ((shortfall + kPagedExtent - 1) / kPagedExtent * kPagedExtent) + kPagedExtent;
+    if (AskReclaim(ask, what) == 0) {
+      break;
+    }
+    shortfall = 0;
+    if (Recharge(host_total_ + bytes, false, &shortfall)) {
+      host_total_ += bytes;
+      return true;
+    }
+  }
+  if (!required) {
+    return false;
+  }
+  ++host_overcharges_;
+  (void)Recharge(host_total_ + bytes, true, nullptr);
+  host_total_ += bytes;
+  return true;
+}
+
+std::uint64_t PagedNode::AskReclaim(std::uint64_t needed, ReclaimFor what) {
+  if (!reclaimer_ || reclaiming_ || needed == 0) {
+    return 0;
+  }
+  reclaiming_ = true;
+  const std::uint64_t freed = reclaimer_(needed, what);
+  reclaiming_ = false;
+  return freed;
+}
+
+std::uint64_t PagedNode::Shortfall(std::uint64_t bytes) const {
+  const std::uint64_t occupancy = catalog_.OccupancyOf(domain_).Total().value();
+  const std::uint64_t budget = budget_.value();
+  return occupancy > budget || bytes > budget - occupancy ? occupancy + bytes - budget : 0;
+}
+
+Status PagedNode::ReserveStaging(std::uint64_t bytes) {
+  if (staging_ != nullptr) {
+    return {};
+  }
+  std::vector<ExtentId> extents;
+  auto pinned = Pinned(bytes, kShared, extents);
+  if (!pinned) {
+    return std::unexpected(pinned.error());
+  }
+  staging_ = *pinned;
+  staging_bytes_ = bytes;
+  return {};
+}
+
+void* PagedNode::TakeStaging(std::uint64_t bytes) {
+  if (staging_ == nullptr || staging_taken_ || bytes > staging_bytes_) {
+    return nullptr;
+  }
+  staging_taken_ = true;
+  return staging_;
+}
+
+void PagedNode::ReturnStaging(void* pointer, bool proven) {
+  if (pointer == nullptr || pointer != staging_) {
+    return;
+  }
+  if (proven) {
+    staging_taken_ = false;
+    return;
+  }
+  // A copy may still reach it: kept to the process's end, out of use.
+  KeepPinned(staging_);
+  staging_ = nullptr;
+  staging_bytes_ = 0;
+  staging_taken_ = false;
+}
+
+void PagedNode::UnchargeHost(std::uint64_t bytes) {
+  host_total_ -= std::min(bytes, host_total_);
+  (void)Recharge(host_total_, true, nullptr);
+}
+
+std::expected<std::uint64_t, std::string> PagedNode::FreeBytes() {
+  std::uint64_t free = 0;
+  auto read = Call(
+      [&]() -> Status {
+        const std::uint64_t occupancy = catalog_.OccupancyOf(domain_).Total().value();
+        free = occupancy < budget_.value() ? budget_.value() - occupancy : 0;
+        return {};
+      },
+      "reading the free budget");
+  if (!read) {
+    return std::unexpected(read.error());
+  }
+  return free;
 }
 
 void PagedNode::KeepPinned(void* pointer) {
@@ -623,6 +799,9 @@ Status PagedNode::Post(std::unique_ptr<sc::TaskProgram> program, Done& done,
                        std::string_view what) {
   if (!threads_.empty()) {
     return Await(done, what, Submit(std::move(program)));
+  }
+  if (scheduler_ == nullptr) {
+    return Error(std::format("{}: the node has not started", what));
   }
   const std::uint64_t request = ++request_;
   if (!scheduler_->Start(request, std::move(program), 1)) {

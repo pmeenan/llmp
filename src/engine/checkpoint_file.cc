@@ -37,7 +37,9 @@ class Staging {
   Staging& operator=(Staging&&) = delete;
   ~Staging() {
     if (base_ != nullptr) {
-      if (unknown_) {
+      if (reserved_) {
+        node_.ReturnStaging(base_, !unknown_);
+      } else if (unknown_) {
         node_.KeepPinned(base_);
       } else {
         if (auto freed = node_.FreePinned(base_); !freed) {
@@ -46,13 +48,22 @@ class Staging {
       }
     }
   }
+  // The node's reserved staging when it is free (PagedNode::ReserveStaging:
+  // a full budget never starves a checkpoint), else an allocation of its
+  // own, for which the node reclaims room first.
   Status Open() {
-    std::vector<catalog::ExtentId> extents;
-    auto pinned = node_.Pinned(kPagedExtent + kAlignment, kShared, extents);
-    if (!pinned) {
-      return std::unexpected(pinned.error());
+    const std::uint64_t kBytes = CheckpointStagingBytes();
+    if (void* reserved = node_.TakeStaging(kBytes); reserved != nullptr) {
+      base_ = reserved;
+      reserved_ = true;
+    } else {
+      std::vector<catalog::ExtentId> extents;
+      auto pinned = node_.Pinned(kBytes, kShared, extents);
+      if (!pinned) {
+        return std::unexpected(pinned.error());
+      }
+      base_ = *pinned;
     }
-    base_ = *pinned;
     memory_ = static_cast<std::byte*>(
         support::Pointer(support::Round(reinterpret_cast<std::uintptr_t>(base_), kAlignment)));
     return {};
@@ -65,6 +76,7 @@ class Staging {
   void* base_ = nullptr;
   std::byte* memory_ = nullptr;
   bool unknown_ = false;
+  bool reserved_ = false;
 };
 
 Status Validate(std::span<const Range> ranges) {
@@ -84,6 +96,8 @@ Status Validate(std::span<const Range> ranges) {
 }
 
 }  // namespace
+
+std::uint64_t CheckpointStagingBytes() { return kPagedExtent + kAlignment; }
 
 std::expected<std::vector<Range>, std::string> CheckpointPages(std::span<const Range> used,
                                                                std::span<const Range> writes) {

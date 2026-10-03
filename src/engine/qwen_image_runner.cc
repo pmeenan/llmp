@@ -19,6 +19,7 @@
 #include "artifact/composition.h"
 #include "base/sha256.h"
 #include "chat/chat.h"
+#include "engine/planned.h"
 #include "engine/runner_resources.h"
 #include "engine/support.h"
 #include "execution/registry.h"
@@ -49,6 +50,9 @@ using Bf16 = std::uint16_t;
 using Clock = std::chrono::steady_clock;
 
 constexpr std::uint64_t kExtent = kPagedExtent;
+// The least a recorded step is charged at, whatever the device's free memory
+// showed across its recording (other work moves it too).
+constexpr std::uint64_t kGraphFloorBytes = std::uint64_t{16} << 20U;
 
 Status Checked(providers::DeviceStatus result, std::string_view what) {
   if (!result.ok()) {
@@ -126,6 +130,16 @@ struct QwenImageRunner::State {
 
   // A later step, recorded once (QwenImageOptions::graphs).
   providers::RecordedWork graph;
+  // What it holds (driver memory outside the catalog's extents: the drop in
+  // the device's free memory across its recording, at least
+  // kGraphFloorBytes), charged to the node; its recording's seconds (what
+  // recording it again costs); its last replay (planned.h NextPlanUse).
+  std::uint64_t graph_bytes = 0;
+  std::uint64_t graph_measured = 0;  // the drop itself, before the floor
+  double graph_seconds = 0;
+  std::uint64_t graph_used = 0;
+  memory::ReclaimStamp graph_stamp;  // the reclaim order's at its last replay
+  PlanAccount account;
 
   // The last generation's timings.
   double encode = 0;
@@ -361,8 +375,53 @@ Status QwenImageRunner::Register() {
   return {};
 }
 
+void QwenImageRunner::ReclaimCandidates(std::uint32_t owner, bool running,
+                                        std::vector<memory::ReclaimCandidate>& out) {
+  const State& s = *s_;
+  if (s.graph.valid() && s.graph_bytes != 0 && s.graph_used < PlanStepStart()) {
+    out.push_back({.kind = memory::ReclaimKind::kGraph,
+                   .owner = owner,
+                   .id = 1,
+                   .bytes = s.graph_bytes,
+                   .last_use = s.graph_used,
+                   .restore_seconds = s.graph_seconds,
+                   .running = running});
+    memory::SetUse(out.back(), s.graph_stamp);
+  }
+}
+
+std::uint64_t QwenImageRunner::graph_measured_bytes() const {
+  const State& s = *s_;
+  return s.graph.valid() ? s.graph_measured : 0;
+}
+
+std::uint64_t QwenImageRunner::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
+  State& s = *s_;
+  // Between jobs only (nothing in flight replays it); a step under way
+  // keeps it.
+  if (kind != memory::ReclaimKind::kGraph || id != 1 || !s.graph.valid() ||
+      s.graph_used >= PlanStepStart()) {
+    return 0;
+  }
+  s.DropGraph();
+  const std::uint64_t bytes = s.graph_bytes;
+  s.graph_bytes = 0;
+  s.account.Uncharge(bytes);
+  return bytes;
+}
+
+std::string QwenImageRunner::plan_report() const {
+  const State& s = *s_;
+  return s.graph_bytes == 0 ? std::string("a denoising step's graph, charged once recorded")
+                            : std::format("a denoising step's graph of {:.1f} MiB",
+                                          static_cast<double>(s.graph_bytes) / (1U << 20U));
+}
+
 Status QwenImageRunner::Bind() {
   State& s = *s_;
+  s.account.Bind(
+      [this](std::uint64_t bytes, bool required) { return node_.ChargeHost(bytes, required); },
+      [this](std::uint64_t bytes) { node_.UnchargeHost(bytes); });
   auto& catalog = node_.catalog();
   // What every phase leases beside its component: the image's own memory,
   // the cuBLAS workspace and the staging, and the activations.
@@ -478,6 +537,10 @@ Status QwenImageRunner::Step(std::uint32_t index, bool hash, std::string* sha) {
   const float dt = ki::EulerStepDt(s.schedule.sigmas[index + 1] - s.schedule.sigmas[index], true);
   const ki::Handles handles{.blas = s.resources.cublas().native(), .lt = s.lt.get()};
   const auto started = Clock::now();
+  const PlanStep step;               // the recorded step stays while this one runs
+  std::uint64_t recorded_bytes = 0;  // a recording made in this job: what it holds
+  std::uint64_t recorded_measured = 0;
+  double recorded_seconds = 0;
   Status ran;
   auto job = [&](providers::NativeStream native) -> sc::JobResult {
     void* const st = native.handle;
@@ -503,6 +566,9 @@ Status QwenImageRunner::Step(std::uint32_t index, bool hash, std::string* sha) {
       // thread uses the device meanwhile), after the second step made
       // every product's descriptors; then replayed.
       if (!s.graph.valid()) {
+        const auto recording = Clock::now();
+        const std::size_t free_before =
+            providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
         r = Checked(providers::BeginRecording(native), "capture");
         if (r) {
           const Status queued = s.pipeline->Step(false, s.dw, handles, st);
@@ -513,6 +579,12 @@ Status QwenImageRunner::Step(std::uint32_t index, bool hash, std::string* sha) {
             r = Checked(recorded.error(), "end capture and instantiate");
           } else {
             s.graph = std::move(*recorded);
+            const std::size_t free_after =
+                providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
+            (void)providers::TakeLastError();
+            recorded_measured = free_before > free_after ? free_before - free_after : 0;
+            recorded_bytes = std::max<std::uint64_t>(recorded_measured, kGraphFloorBytes);
+            recorded_seconds = Seconds(Clock::now() - recording);
           }
         }
       }
@@ -533,6 +605,18 @@ Status QwenImageRunner::Step(std::uint32_t index, bool hash, std::string* sha) {
     return sc::JobResult::kQueued;
   };
   const Status posted = node_.Job(c.closure, std::move(job), "a denoising step", stream_);
+  if (recorded_bytes != 0 && s.graph.valid()) {
+    // Recorded in this job (the device lane's thread): charged here, on the
+    // driver's, once it completed. Required: it exists already.
+    (void)s.account.Charge(recorded_bytes, true);
+    s.graph_bytes = recorded_bytes;
+    s.graph_measured = recorded_measured;
+    s.graph_seconds = recorded_seconds;
+  }
+  if (s.graph.valid()) {
+    s.graph_used = NextPlanUse();
+    s.graph_stamp = memory::StampUse();
+  }
   if (!ran) {
     return ran;
   }
@@ -646,9 +730,10 @@ std::string QwenImageRunner::Report() const {
   }
   return std::format(
       R"({{"components":{{{}}},"plan":"{}","own_bytes":{},"work_bytes":{},"text_rows":{},"generations":{},)"
+      R"("graph_measured_bytes":{},"graph_floor_bytes":{},)"
       R"("last":{{"encode":{:.6f},"first_step":{:.6f},"step_median":{:.6f},"decode":{:.6f}}}}})",
       components, s.pipeline ? jitllm::base::ToHex(s.pipeline->identity()) : std::string(),
-      s.own_bytes, work_bytes_, s.text, s.generations, s.encode,
+      s.own_bytes, work_bytes_, s.text, s.generations, s.graph_measured, kGraphFloorBytes, s.encode,
       s.steps.empty() ? 0.0 : s.steps.front(), later.empty() ? 0.0 : later[later.size() / 2],
       s.decode);
 }
@@ -659,6 +744,7 @@ Status QwenImageRunner::Release() {
   // The recorded step first (it names the memory below), then cuBLASLt on
   // the workspace, then the runner's resources.
   s.DropGraph();
+  s.account.Uncharge(std::exchange(s.graph_bytes, 0));
   s.lt.reset();
   s.resources.Release(problems);
   for (Component& c : s.c) {

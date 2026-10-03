@@ -193,6 +193,21 @@ struct ClientConfig {
   std::uint32_t deadline_cap_seconds = kDefaultDeadlineCapSeconds;
 };
 
+// Conversation state under memory pressure ([memory]; D-055 as amended
+// 2026-10-02): how long an idle conversation's state, resident or spilled,
+// and its turn checkpoints stay reusable, and how much spilled state the
+// spill directory may hold before the least recently used is deleted.
+inline constexpr std::uint32_t kDefaultRetentionHours = 24;
+inline constexpr std::uint32_t kMaxRetentionHours = 8760;
+inline constexpr std::uint32_t kDefaultSpillBudgetGib = 128;
+inline constexpr std::uint32_t kMaxSpillBudgetGib = 1048576;
+
+struct MemoryConfig {
+  std::uint32_t retention_hours = kDefaultRetentionHours;
+  // 0: idle conversations are never kept spilled (dropped instead).
+  std::uint32_t spill_budget_gib = kDefaultSpillBudgetGib;
+};
+
 // Parses one bind entry ("loopback", "tailscale", "127.0.0.1:8114",
 // "[::]", ...); the error says what is wrong. A port is 1-65535, in
 // decimal; an IPv6 address is bracketed; IPv4-mapped IPv6 is refused.
@@ -202,6 +217,7 @@ struct NodeConfig {
   std::optional<Membership> membership;
   // Where and how the service listens for the chat route.
   ClientConfig client;
+  MemoryConfig memory;
   std::string limits_profile{kLimitsProfile};
   Storage storage;
   // Sorted by name.

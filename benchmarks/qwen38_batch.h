@@ -137,8 +137,8 @@ class Proof final : public engine::PagedModel {
   engine::GraphRuns runs_{false};
   engine::GraphStats graph_stats_;
   std::array<engine::GraphStats, 8> arm_graph_stats_;
-  engine::PlanCache<TargetKey, Plan> target_plans_{12};
-  engine::PlanCache<DraftKey, Plan> draft_plans_{12};
+  engine::PlanCache<TargetKey, Plan> target_plans_;  // uncharged: the proof's own shapes
+  engine::PlanCache<DraftKey, Plan> draft_plans_;
   engine::Coverage coverage_;
   std::byte* output_ = nullptr;
   std::byte* live_page_ = nullptr;

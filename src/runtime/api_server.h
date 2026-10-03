@@ -252,6 +252,10 @@ class Backend {
   // request's path. With cooperative execution, this must preserve every
   // other active Work's resources, references and cohort ownership.
   virtual void AfterResponse() {}
+  // The backend's own housekeeping, on Run's thread between completed
+  // units and while idle (at least every kMaintenanceMs): with cooperative
+  // execution, it must preserve every active Work's resources.
+  virtual void Maintain() {}
   // False once a failure left the backend unable to serve: Run returns.
   virtual bool healthy() const { return true; }
   virtual std::string failure() const { return {}; }

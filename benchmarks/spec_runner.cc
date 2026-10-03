@@ -157,6 +157,9 @@ using Status = ts::Status;
 constexpr int kDsv4 = 0;  // owner and stream
 constexpr int kFp16 = 1;
 constexpr std::uint32_t kSampledTokens = 8;
+// The capacity check's prefill before its spills, and its chunks.
+constexpr std::uint32_t kSpillPrefix = 8192;
+constexpr std::uint32_t kSpillChunk = 2048;
 constexpr std::size_t kHistogramTop = 16;
 constexpr double kTvBound = 0.1;
 
@@ -2359,6 +2362,12 @@ Status Harness::PlanMemory() {
     std::int64_t counted = 0;
     std::int64_t graph_device = 0;
     std::int64_t graph_counted = 0;
+    // The reclaim costs (docs/experiments/memory-pressure): planning's and
+    // capturing's seconds, and the kept plans' arenas (capacity and use).
+    double plan_seconds = 0;
+    double capture_seconds = 0;
+    std::int64_t arena = 0;
+    std::int64_t arena_used = 0;
   };
   const auto sample = [&]() {
     Sample s;
@@ -2382,6 +2391,12 @@ Status Harness::PlanMemory() {
     s.counted = static_cast<std::int64_t>(dsv4_.cached_plan_bytes());
     s.graph_device = dsv4_.graph_stats().memory_bytes + dsv4_.draft_stats().memory_bytes;
     s.graph_counted = static_cast<std::int64_t>(dsv4_.cached_graph_bytes());
+    s.plan_seconds = dsv4_.plan_seconds();
+    for (const auto* g : {&dsv4_.graph_stats(), &dsv4_.draft_stats()}) {
+      s.capture_seconds += g->capture_seconds + g->instantiate_seconds;
+    }
+    s.arena_used = static_cast<std::int64_t>(dsv4_.cached_arena_used());
+    s.arena = static_cast<std::int64_t>(dsv4_.cached_arena_used(true));
     return s;
   };
   struct Kind {
@@ -2408,7 +2423,11 @@ Status Harness::PlanMemory() {
                         .available = before.available - after.available,
                         .counted = after.counted - before.counted,
                         .graph_device = after.graph_device - before.graph_device,
-                        .graph_counted = after.graph_counted - before.graph_counted});
+                        .graph_counted = after.graph_counted - before.graph_counted,
+                        .plan_seconds = after.plan_seconds - before.plan_seconds,
+                        .capture_seconds = after.capture_seconds - before.capture_seconds,
+                        .arena = after.arena - before.arena,
+                        .arena_used = after.arena_used - before.arena_used});
     k.plans.push_back(static_cast<std::int64_t>(dsv4_.plans()) - plans);
     k.graphs.push_back(static_cast<std::int64_t>(dsv4_.graphs()) - graphs);
     k.dropped.push_back(dsv4_.graph_stats().dropped - dropped);
@@ -2419,9 +2438,9 @@ Status Harness::PlanMemory() {
   if (auto r = dsv4_.SelectSlots(handles); !r) {
     return r;
   }
-  const std::uint64_t bound = dsv4_.plan_host_bytes();
+  const std::uint64_t bound = dsv4_.plan_floor_bytes();
   const std::int32_t token = 1000;
-  constexpr std::uint32_t kShapes = 4;  // within kMaxWavePlans, plain and DSpark waves together
+  constexpr std::uint32_t kShapes = 4;
   auto ran = node_.WithRequest(kDsv4, dsv4_.execution_closure(), "plan memory", [&]() -> Status {
     std::vector<float> row;
     // One-row chunks of slot 0 at new positions: plan, capture, replay.
@@ -2509,25 +2528,89 @@ Status Harness::PlanMemory() {
   if (!ran) {
     return ran;
   }
+  // Reclaim costs (docs/experiments/memory-pressure): the last slot's
+  // prefill of four chunks of max_rows, timed with its plans kept (what
+  // recomputing its state costs a byte), then every slot's state written
+  // back to its spill file and read again (what spilling costs a byte).
+  double prefill_seconds = 0;
+  std::uint64_t prefill_tokens = 0;
+  std::uint64_t prefill_state = 0;
+  ran = node_.WithRequest(kDsv4, dsv4_.execution_closure(), "reclaim costs", [&]() -> Status {
+    std::vector<float> row;
+    Slot* slot = handles.back();
+    const std::uint32_t rows = o_.dsv4.max_rows;
+    const std::vector<std::int32_t> tokens(rows, token);
+    for (int pass = 0; pass < 2; ++pass) {
+      if (auto r = slot->Clear(); !r) {
+        return r;
+      }
+      const auto start = std::chrono::steady_clock::now();
+      for (std::uint32_t k = 0; k < 4 && (k + 1) * rows < o_.dsv4.context; ++k) {
+        if (auto r = slot->Chunk(k * rows, tokens, row); !r) {
+          return r;
+        }
+        prefill_tokens = std::uint64_t{k + 1} * rows;
+      }
+      prefill_seconds =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+      prefill_state = slot->used_state_bytes();
+    }
+    return {};
+  });
+  if (!ran) {
+    return ran;
+  }
+  const std::vector<jitllm::catalog::ExtentId> state = dsv4_.state();
+  const std::uint64_t state_bytes = state.size() * (std::uint64_t{2} << 20U);
+  const auto spill_start = std::chrono::steady_clock::now();
+  if (auto r = node_.Evict(state); !r) {
+    return r;
+  }
+  const auto spilled = std::chrono::steady_clock::now();
+  std::vector<ts::LoadStats> restore_log;
+  if (auto r = node_.Load(state, "restoring the state", restore_log); !r) {
+    return r;
+  }
+  const auto restored = std::chrono::steady_clock::now();
+  const double spill_seconds = std::chrono::duration<double>(spilled - spill_start).count();
+  const double restore_seconds = std::chrono::duration<double>(restored - spilled).count();
+  std::println(
+      "reclaim costs: prefill {} tokens in {:.3f} s ({:.0f} tok/s), state {:.1f} MiB: {:.2f} s a "
+      "GiB recomputed; spill {:.1f} MiB in {:.3f} s ({:.2f} GB/s), restore {:.3f} s ({:.2f} "
+      "GB/s): {:.3f} s a GiB both ways",
+      prefill_tokens, prefill_seconds, static_cast<double>(prefill_tokens) / prefill_seconds,
+      static_cast<double>(prefill_state) / (1 << 20),
+      prefill_seconds / (static_cast<double>(prefill_state) / (1 << 30)),
+      static_cast<double>(state_bytes) / (1 << 20), spill_seconds,
+      static_cast<double>(state_bytes) / spill_seconds / 1e9, restore_seconds,
+      static_cast<double>(state_bytes) / restore_seconds / 1e9,
+      (spill_seconds + restore_seconds) / (static_cast<double>(state_bytes) / (1 << 30)));
+  results_.push_back(std::format(
+      R"({{"check":"reclaim-costs","prefill_tokens":{},"prefill_seconds":{:.6f},"prefill_state_bytes":{},"spill_bytes":{},"spill_seconds":{:.6f},"restore_seconds":{:.6f}}})",
+      prefill_tokens, prefill_seconds, prefill_state, state_bytes, spill_seconds, restore_seconds));
   std::string rows;
   for (const auto& [name, k] : kinds) {
     std::string deltas;
     for (std::size_t i = 0; i < k.deltas.size(); ++i) {
       const Sample& d = k.deltas[i];
       deltas += std::format(
-          R"({}{{"plans":{},"graphs":{},"dropped":{},"heap":{},"rss":{},"available_drop":{},"counted":{},"graph_counted":{},"graph_device":{}}})",
+          R"({}{{"plans":{},"graphs":{},"dropped":{},"heap":{},"rss":{},"available_drop":{},"counted":{},"graph_counted":{},"graph_device":{},"plan_seconds":{:.6f},"capture_seconds":{:.6f},"arena":{},"arena_used":{}}})",
           deltas.empty() ? "" : ",", k.plans[i], k.graphs[i], k.dropped[i], d.heap, d.rss,
-          d.available, d.counted, d.graph_counted, d.graph_device);
+          d.available, d.counted, d.graph_counted, d.graph_device, d.plan_seconds,
+          d.capture_seconds, d.arena, d.arena_used);
       std::println(
           "plan memory: {} #{}: plans {:+}, graphs {:+} ({} dropped); heap {:+.2f} MiB, "
           "rss {:+.2f} MiB, "
           "MemAvailable -{:.2f} MiB, counted {:+.2f} MiB, graphs counted {:+.2f} MiB, "
-          "graph device {:.2f} MiB",
+          "graph device {:.2f} MiB; planning {:.1f} ms, capture {:.1f} ms; arena {:+.2f} MiB "
+          "({:+.2f} used)",
           name, i, k.plans[i], k.graphs[i], k.dropped[i], static_cast<double>(d.heap) / (1 << 20),
           static_cast<double>(d.rss) / (1 << 20), static_cast<double>(d.available) / (1 << 20),
           static_cast<double>(d.counted) / (1 << 20),
           static_cast<double>(d.graph_counted) / (1 << 20),
-          static_cast<double>(d.graph_device) / (1 << 20));
+          static_cast<double>(d.graph_device) / (1 << 20), d.plan_seconds * 1e3,
+          d.capture_seconds * 1e3, static_cast<double>(d.arena) / (1 << 20),
+          static_cast<double>(d.arena_used) / (1 << 20));
       // A kind's first shape also pays one-time costs (the driver loading
       // its kernels), and a shape that made the runner drop another plan
       // or graph nets them: reported, not held to the count. Otherwise a
@@ -2552,7 +2635,7 @@ Status Harness::PlanMemory() {
                static_cast<double>(bound) / (1 << 20), dsv4_.plans(), dsv4_.graphs(),
                static_cast<double>(dsv4_.cached_plan_bytes()) / (1 << 20));
   results_.push_back(std::format(
-      R"({{"check":"plan-memory","slots":{},"speculative":{},"plan_host_bytes":{},"kinds":{{{}}}}})",
+      R"({{"check":"plan-memory","slots":{},"speculative":{},"plan_floor_bytes":{},"kinds":{{{}}}}})",
       slots, dsv4_.speculative() ? "true" : "false", bound, rows));
   return {};
 }
@@ -2612,6 +2695,8 @@ Status Harness::Capacity() {
     }
   };
   std::uint64_t used_before = 0;
+  std::vector<float> control;       // slot 0's next-token logits before any spill
+  std::vector<float> control_then;  // and the token's after it
   std::uint64_t used_refused = 0;
   if (auto r = dsv4_.SelectSlots(slots); !r) {
     return r;
@@ -2626,6 +2711,44 @@ Status Harness::Capacity() {
       return Error(std::format("slot 0's state through {}: {}", positions, r.error()));
     }
     expect(!slots[0]->state_refused(), "a growth that fit is not a refusal");
+    {
+      // Contents for the spill below to keep: kSpillPrefix tokens of a
+      // prefill (enough that some pages lie wholly before the next step,
+      // for the incremental spill); and its control, the next tokens'
+      // logits from that state, before it is cleared and prefilled again
+      // (the same chunks, the same state).
+      const std::vector<std::int32_t> tokens(kSpillPrefix, 1000);
+      const auto prefill = [&]() -> Status {
+        std::vector<float> row;
+        for (std::uint32_t at = 0; at < kSpillPrefix; at += kSpillChunk) {
+          const auto part = std::span(tokens).subspan(at, std::min(kSpillChunk, kSpillPrefix - at));
+          if (auto r = slots[0]->Chunk(at, part, row); !r) {
+            return r;
+          }
+        }
+        return {};
+      };
+      const std::int32_t next = 2000;
+      if (auto r = prefill(); !r) {
+        return Error(std::format("slot 0's prefill: {}", r.error()));
+      }
+      if (auto r = slots[0]->Chunk(kSpillPrefix, std::span(&next, 1), control); !r) {
+        return Error(std::format("slot 0's control step: {}", r.error()));
+      }
+      const std::int32_t then = 2001;
+      if (auto r = slots[0]->Chunk(kSpillPrefix + 1, std::span(&then, 1), control_then); !r) {
+        return Error(std::format("slot 0's second control step: {}", r.error()));
+      }
+      if (auto r = slots[0]->Clear(); !r) {
+        return r;
+      }
+      if (auto r = slots[0]->ReserveStateThrough(positions); !r) {
+        return Error(std::format("slot 0's state through {} again: {}", positions, r.error()));
+      }
+      if (auto r = prefill(); !r) {
+        return Error(std::format("slot 0's prefill again: {}", r.error()));
+      }
+    }
     used_before = slots[1]->used_state_bytes();
     auto refused = slots[1]->ReserveStateThrough(positions);
     expect(!refused.has_value(), "slot 1's growth beside slot 0's fit the room");
@@ -2640,9 +2763,85 @@ Status Harness::Capacity() {
   if (!both) {
     return both;
   }
+  // Spill, not clear (docs/runtime-serving.md#state-capacity-in-a-cohort):
+  // idle slot 0's state is written to its spill file and its backing
+  // released, so slot 1's growth now fits; slot 0's restore while slot 1
+  // holds the room is refused for capacity (typed, still spilled); once
+  // there is room again it comes back, and the next token's logits from it
+  // equal the control's from the unspilled state, bit for bit.
+  std::vector<float> after;
+  std::vector<float> after_then;
+  std::uint64_t spilled_bytes = 0;
+  std::uint64_t incremental_bytes = 0;
+  const std::array<Slot*, 1> zero = {slots[0]};
+  const std::array<Slot*, 1> alone = {slots[1]};
+  if (auto r = dsv4_.SelectSlots(alone); !r) {
+    return r;
+  }
+  if (auto r = node_.WithRequest(
+          kDsv4, dsv4_.execution_closure(), "slot 1 beside spilled slot 0",
+          [&]() -> Status {
+            if (auto s = slots[0]->Spill(); !s) {
+              return Error(std::format("spilling idle slot 0: {}", s.error()));
+            }
+            expect(slots[0]->spilled(), "an idle slot spills");
+            spilled_bytes = slots[0]->spilled_bytes();
+            expect(spilled_bytes != 0, "a spilled slot's file holds its state");
+            if (auto g = slots[1]->ReserveStateThrough(positions); !g) {
+              return Error(std::format("slot 1's growth beside spilled slot 0: {}", g.error()));
+            }
+            return {};
+          });
+      !r) {
+    return r;
+  }
+  if (auto r = dsv4_.SelectSlots(zero); !r) {
+    return r;
+  }
+  if (auto r = node_.WithRequest(
+          kDsv4, dsv4_.execution_closure(), "slot 0 restored",
+          [&]() -> Status {
+            const auto refused = slots[0]->Restore();
+            expect(!refused.has_value() && slots[0]->state_refused() && slots[0]->spilled(),
+                   "a restore past the room is refused for capacity, the slot still spilled");
+            if (auto c = slots[1]->ClearIdle(); !c) {
+              return Error(std::format("clearing idle slot 1: {}", c.error()));
+            }
+            if (auto s = slots[0]->Restore(); !s) {
+              return Error(std::format("restoring slot 0: {}", s.error()));
+            }
+            expect(!slots[0]->spilled() && !slots[0]->state_refused(), "a restore with room runs");
+            const std::int32_t next = 2000;
+            if (auto c = slots[0]->Chunk(kSpillPrefix, std::span(&next, 1), after); !c) {
+              return c;
+            }
+            // An incremental spill: only the pages the step from there may
+            // have changed are written; the rest are released with the
+            // file's copy kept. Restored, the state continues exactly.
+            incremental_bytes = slots[0]->spill_write_bytes();
+            if (auto s = slots[0]->Spill(); !s) {
+              return Error(std::format("spilling slot 0 again: {}", s.error()));
+            }
+            expect(slots[0]->spill_write_bytes() == 0, "a spilled slot writes nothing more");
+            if (auto s = slots[0]->Restore(); !s) {
+              return Error(std::format("restoring slot 0 again: {}", s.error()));
+            }
+            expect(slots[0]->spill_write_bytes() == 0,
+                   "a restored slot nothing wrote since has nothing to write");
+            const std::int32_t then = 2001;
+            return slots[0]->Chunk(kSpillPrefix + 1, std::span(&then, 1), after_then);
+          });
+      !r) {
+    return r;
+  }
+  expect(!control.empty() && after == control,
+         "the next token's logits from a restored state equal the unspilled control's");
+  expect(incremental_bytes != 0 && incremental_bytes < spilled_bytes,
+         "a second spill writes only what changed since the first");
+  expect(!control_then.empty() && after_then == control_then,
+         "the logits after an incremental spill and restore equal the unspilled control's");
   bool cleared_active = true;
   std::uint64_t idle_after = 0;
-  const std::array<Slot*, 1> alone = {slots[1]};
   if (auto r = dsv4_.SelectSlots(alone); !r) {
     return r;
   }
@@ -2669,13 +2868,14 @@ Status Harness::Capacity() {
   }
   std::println(
       "capacity: room {} MiB, {} positions ({:.1f} MiB a slot); slot 1 before {} bytes, "
-      "after its refusal {} bytes; {}",
+      "after its refusal {} bytes; spilled {} bytes, then {} incrementally; {}",
       o_.state_budget_mib, positions, static_cast<double>(bytes_through(positions)) / (1 << 20),
-      used_before, used_refused, failures.empty() ? "ok" : failures);
+      used_before, used_refused, spilled_bytes, incremental_bytes,
+      failures.empty() ? "ok" : failures);
   results_.push_back(std::format(
-      R"({{"check":"capacity","room_mib":{},"positions":{},"slot_bytes":{},"used_before":{},"used_after_refusal":{},"idle_after_clear":{},"failures":{}}})",
+      R"({{"check":"capacity","room_mib":{},"positions":{},"slot_bytes":{},"used_before":{},"used_after_refusal":{},"idle_after_clear":{},"spilled_bytes":{},"incremental_spill_bytes":{},"failures":{}}})",
       o_.state_budget_mib, positions, bytes_through(positions), used_before, used_refused,
-      idle_after, failures.empty() ? 0 : 1));
+      idle_after, spilled_bytes, incremental_bytes, failures.empty() ? 0 : 1));
   return {};
 }
 

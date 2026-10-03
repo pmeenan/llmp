@@ -696,8 +696,8 @@ TEST(MemoryGuard, CountsTheWeightsTheHostInputsAndTheMargin) {
       CheckMemoryGuard({.largest = weights, .host_inputs = kGiB, .available = 0}).has_value());
 }
 
-// The models' bounded plans and graphs (Served::plan_host_bytes) are set
-// apart beside the margin, never taken from it.
+// The most plans one step of a model holds at once (Served::
+// plan_floor_bytes) is set apart beside the margin, never taken from it.
 TEST(MemoryGuard, CountsThePlansBesideTheMargin) {
   using jitllm::runtime::CheckMemoryGuard;
   using jitllm::runtime::GuardReserve;
@@ -712,7 +712,7 @@ TEST(MemoryGuard, CountsThePlansBesideTheMargin) {
   const auto short_by_one = CheckMemoryGuard(
       {.largest = weights, .host_inputs = kGiB, .plans = plans, .available = exact - 1});
   ASSERT_FALSE(short_by_one.has_value());
-  EXPECT_THAT(short_by_one.error(), HasSubstr("plans and graphs (1.5 GiB)"));
+  EXPECT_THAT(short_by_one.error(), HasSubstr("a model step's plans (1.5 GiB)"));
   // What fits with the margin alone does not with the plans beside it.
   EXPECT_TRUE(
       CheckMemoryGuard({.largest = weights, .available = weights + kUncountedMargin}).has_value());

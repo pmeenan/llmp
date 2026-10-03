@@ -78,6 +78,11 @@ struct PlanRuns {
   bool uncapturable = false;  // a capture was refused
   std::optional<kernels::ggml::CapturedGraph> graph;
   Copies copies;
+  double seconds = 0;  // its graph's capture and instantiation: what capturing it again costs
+  // What the capture took of the device's free memory (on a GB10 the
+  // node's one memory, so host and driver memory alike; other processes'
+  // use in the meantime counts too): a check on kGraphNodeHostBytes.
+  std::uint64_t measured_bytes = 0;
 
   // With graphs on: no graph yet, none refused, and one run launch by
   // launch first (D-090: a shape is captured on its second run).

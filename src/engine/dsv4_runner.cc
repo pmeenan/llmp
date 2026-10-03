@@ -191,6 +191,14 @@ std::uint64_t Dsv4Runner::cached_graph_bytes() const {
   return bytes;
 }
 
+std::uint64_t Dsv4Runner::graph_measured_bytes() const {
+  std::uint64_t bytes = waves_.graph_measured_bytes();
+  for (const RequestState* request : Requests()) {
+    bytes += request->plans.graph_measured_bytes() + request->dplans.graph_measured_bytes();
+  }
+  return bytes;
+}
+
 std::uint64_t Dsv4Runner::cached_plan_bytes() const {
   std::uint64_t bytes = waves_.host_bytes();
   for (const RequestState* request : Requests()) {
@@ -199,26 +207,92 @@ std::uint64_t Dsv4Runner::cached_plan_bytes() const {
   return bytes;
 }
 
-bool Dsv4Runner::RoomForGraphs(std::size_t adding, std::uint64_t adding_bytes) {
-  // Every graph counts: the draft blocks' and the waves' with the chunks'.
-  const std::size_t most = wave_slots_ > 1 ? kMaxWaveGraphs : kMaxGraphs + (speculative() ? 1 : 0);
-  auto& more = additional_requests_;
-  return engine::RoomForGraphs(most, kMaxGraphBytes, adding, adding_bytes, graph_stats_,
-                               default_request_.plans, default_request_.dplans, more[0].plans,
-                               more[0].dplans, more[1].plans, more[1].dplans, more[2].plans,
-                               more[2].dplans, waves_);
+std::uint64_t Dsv4Runner::cached_arena_used(bool capacity) const {
+  std::uint64_t bytes = 0;
+  const auto add = [&bytes, capacity](const auto& cache) {
+    cache.ForEach([&bytes, capacity](const auto& entry) {
+      const auto& arena = entry.planned->arena;
+      if (arena) {
+        bytes += capacity ? arena->bytes() : arena->used();
+      }
+    });
+  };
+  add(waves_);
+  for (const RequestState* request : Requests()) {
+    add(request->plans);
+    add(request->dplans);
+  }
+  return bytes;
 }
 
-void Dsv4Runner::RoomForChunkPlan() {
-  std::array<ChunkPlans*, kRequestSlots> caches{};
+std::array<PlanCacheBase*, (2 * Dsv4Runner::kRequestSlots) + 1> Dsv4Runner::PlanCaches() {
+  std::array<PlanCacheBase*, (2 * kRequestSlots) + 1> caches{};
   for (RequestState* request : Requests()) {
-    caches[request->slot] = &request->plans;
+    caches[std::size_t{2} * request->slot] = &request->plans;
+    caches[(std::size_t{2} * request->slot) + 1] = &request->dplans;
   }
-  const std::size_t before = plans();
-  engine::RoomForPlan(kMaxChunkPlans, std::span<ChunkPlans* const>(caches));
-  if (plans() != before) {
-    last_planned_ = nullptr;  // DumpLast's plan may have gone
+  caches.back() = &waves_;
+  return caches;
+}
+
+std::array<const PlanCacheBase*, (2 * Dsv4Runner::kRequestSlots) + 1> Dsv4Runner::PlanCaches()
+    const {
+  std::array<const PlanCacheBase*, (2 * kRequestSlots) + 1> caches{};
+  for (const RequestState* request : Requests()) {
+    caches[std::size_t{2} * request->slot] = &request->plans;
+    caches[(std::size_t{2} * request->slot) + 1] = &request->dplans;
   }
+  caches.back() = &waves_;
+  return caches;
+}
+
+void Dsv4Runner::ForgetLastPlanned() {
+  if (last_planned_ == nullptr) {
+    return;
+  }
+  bool kept = false;
+  for (const RequestState* request : Requests()) {
+    request->plans.ForEach(
+        [&](const ChunkPlans::Entry& e) { kept = kept || e.planned.get() == last_planned_; });
+  }
+  if (!kept) {
+    last_planned_ = nullptr;  // DumpLast's plan went
+  }
+}
+
+void Dsv4Runner::ReclaimCandidates(std::uint32_t owner, bool running,
+                                   std::vector<memory::ReclaimCandidate>& out) {
+  if (released_ || cohort_.faulted()) {
+    return;  // a faulted cohort keeps its owners until retirement
+  }
+  auto caches = PlanCaches();
+  CollectPlans(caches, owner, running, out);
+}
+
+std::uint64_t Dsv4Runner::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
+  if (released_ || cohort_.faulted()) {
+    return 0;
+  }
+  auto caches = PlanCaches();
+  const std::uint64_t freed = ReclaimPlan(caches, kind, id);
+  ForgetLastPlanned();
+  return freed;
+}
+
+std::uint64_t Dsv4Runner::reclaimed_plans() const {
+  std::uint64_t n = 0;
+  for (const PlanCacheBase* cache : PlanCaches()) {
+    n += cache->reclaimed_plans();
+  }
+  return n;
+}
+
+std::uint64_t Dsv4Runner::reclaimed_graphs() const {
+  std::uint64_t n = 0;
+  for (const PlanCacheBase* cache : PlanCaches()) {
+    n += cache->reclaimed_graphs();
+  }
+  return n;
 }
 
 // ------------------------------------------------------------------ setup
@@ -238,6 +312,29 @@ std::vector<ExtentId> Dsv4Runner::state() const {
     }
   }
   return all;
+}
+
+std::vector<ExtentId> Dsv4Runner::unchanged_state() const {
+  std::vector<ExtentId> all;
+  for (const RequestState* request : Requests()) {
+    if (request->provisioned && !request->spilled) {
+      std::vector<ExtentId> written;
+      SplitForSpill(*request, written, all);
+    }
+  }
+  return all;
+}
+
+void Dsv4Runner::StateWrittenBack(bool whole) {
+  for (RequestState* request : Requests()) {
+    if (request->provisioned && !request->spilled) {
+      if (whole) {
+        request->track.Saved();
+      } else {
+        request->track.Lost();
+      }
+    }
+  }
 }
 
 std::vector<ExtentId> Dsv4Runner::managed_extents() const {
@@ -392,7 +489,7 @@ Status Dsv4Runner::Setup() {
   std::uint64_t most_inputs = 0;
   std::uint64_t draft_inputs = 0;
   // The largest plan of each kind (PlannedHostBytes) and the most nodes any
-  // plan launches, for plan_host_bytes().
+  // plan launches, for plan_floor_bytes().
   std::uint64_t chunk_host = 0;
   std::uint64_t draft_host = 0;
   std::uint64_t wave_host = 0;
@@ -514,20 +611,21 @@ Status Dsv4Runner::Setup() {
       }
     }
   }
-  // The plans' and graphs' bound (plan_host_bytes): every cap at its kind's
-  // largest plan, each slot's draft block, and the graphs' budget.
+  // What one step holds at once at most (plan_floor_bytes): a chunk (or a
+  // verify) beside its slot's draft block, or a wave beside every slot's
+  // draft block. Every plan and graph past it is charged inside the budget.
   {
     const std::uint64_t slots = wave_slots_;
-    const std::uint64_t waves = slots > 1 ? kMaxWavePlans * wave_host : 0;
-    const std::uint64_t graphs = kMaxGraphBytes;  // a capture past it alone is not made
-    plan_host_bytes_ =
-        (kMaxChunkPlans * chunk_host) + waves + (speculative() ? slots * draft_host : 0) + graphs;
+    const std::uint64_t draft = speculative() ? draft_host : 0;
+    const std::uint64_t chunk_step = chunk_host + draft;
+    const std::uint64_t wave_step = slots > 1 ? wave_host + (slots * draft) : 0;
+    plan_floor_bytes_ = std::max(chunk_step, wave_step);
     const auto mib = [](std::uint64_t bytes) { return static_cast<double>(bytes) / (1U << 20U); };
     plan_report_ = std::format(
-        "{:.0f} MiB: {} chunk plans of {:.1f} MiB, {} wave plans of {:.1f} MiB, draft plans of "
-        "{:.1f} MiB, graphs {:.0f} MiB (the most nodes a plan launches: {})",
-        mib(plan_host_bytes_), kMaxChunkPlans, mib(chunk_host), slots > 1 ? kMaxWavePlans : 0,
-        mib(wave_host), mib(draft_host), mib(graphs), most_nodes);
+        "{:.1f} MiB a step at most: chunk plans of {:.1f} MiB, wave plans of {:.1f} MiB, draft "
+        "plans of {:.1f} MiB (the most nodes a plan launches: {}, a graph of it {:.0f} MiB)",
+        mib(plan_floor_bytes_), mib(chunk_host), mib(wave_host), mib(draft_host), most_nodes,
+        mib(most_nodes * kGraphNodeHostBytes));
   }
   // Margins: other shapes of these widths place a little differently.
   activation_bytes_ = Round(most_activations + (most_activations / 4), kExtent);
@@ -743,7 +841,9 @@ Status Dsv4Runner::RefreshClosures(std::uint8_t protected_mask) {
         shared.insert(shared.end(), common.begin(), common.end());
         std::array<const LiveState*, kRequestSlots> states{};
         for (const RequestState* request : Requests()) {
-          states[request->slot] = request->provisioned ? &request->live : nullptr;
+          // A spilled slot's state is in no closure until Restore brings it back.
+          states[request->slot] =
+              request->provisioned && !request->spilled ? &request->live : nullptr;
         }
         auto closures = cohort_.Build(catalog, shared, states, protected_mask);
         if (!closures) {
@@ -766,7 +866,8 @@ Status Dsv4Runner::RefreshClosures(std::uint8_t protected_mask) {
           draft.insert(draft.end(), target.begin(), target.end());
           draft.insert(draft.end(), common.begin(), common.end());
           for (const RequestState* request : Requests()) {
-            if (request->provisioned && (protected_mask & (1U << request->slot)) != 0) {
+            if (request->provisioned && !request->spilled &&
+                (protected_mask & (1U << request->slot)) != 0) {
               const auto live = request->live.extents();
               draft.insert(draft.end(), live.begin(), live.end());
             }
@@ -812,6 +913,15 @@ Status Dsv4Runner::Bind() {
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
   }
+  // Every plan and graph charged to the node as it is kept.
+  account_.Bind(
+      [this](std::uint64_t bytes, bool required) { return node_.ChargeHost(bytes, required); },
+      [this](std::uint64_t bytes) { node_.UnchargeHost(bytes); });
+  for (RequestState* request : Requests()) {
+    request->plans.set_account(&account_);
+    request->dplans.set_account(&account_);
+  }
+  waves_.set_account(&account_);
   for (RequestState* request : Requests()) {
     if (request->provisioned) {
       BindSlot(*request);
@@ -837,17 +947,145 @@ Status Dsv4Runner::Clear(RequestState& request) {
     return protected_others;
   }
   const Status cleared = request.live.DiscardGrowingState(node_);
+  request.track.Lost();
+  if (cleared) {
+    request.spilled = false;  // nothing left in its spill file either
+  }
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
   }
   return cleared;
 }
 
+Status Dsv4Runner::Spill(RequestState& request) {
+  if (released_ || cohort_.faulted()) {
+    return Error("the DeepSeek cohort requires retirement");
+  }
+  if (!request.provisioned) {
+    return Error("spilling a DeepSeek slot that is not provisioned");
+  }
+  if (request.spilled) {
+    return {};
+  }
+  if (auto usable = request.live.Usable(); !usable) {
+    return usable;
+  }
+  if (auto awaiting = request.live.AwaitingAccept(); !awaiting) {
+    return awaiting;
+  }
+  const std::vector<ExtentId> extents = request.live.extents();
+  if (extents.empty()) {
+    return {};  // nothing initialized: nothing to spill
+  }
+  // Out of every closure first, so the held request no longer leases it
+  // (a selected slot leaves the lease; its peers stay protected); then
+  // every initialized extent written back to its place in the slot's
+  // spill file and its backing released (the swap's write-back path). A
+  // restore owed by its last verify stays owed: the snapshot it restores
+  // from is the slot's own runtime memory, not spilled.
+  std::vector<ExtentId> written;
+  std::vector<ExtentId> unchanged;
+  SplitForSpill(request, written, unchanged);
+  request.spilled = true;
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    request.spilled = false;
+    return refreshed;
+  }
+  // Only what changed since the spill file last held it is written; the
+  // rest is released with the file's copy kept (the catalog checks its
+  // generation is the one saved there).
+  for (const auto& [extents_of, unchanged_word] :
+       {std::pair{&written, false}, std::pair{&unchanged, true}}) {
+    if (extents_of->empty()) {
+      continue;
+    }
+    if (auto evicted = node_.Evict(*extents_of, {.unchanged = unchanged_word}); !evicted) {
+      // Some extents may be written back and released, others not: still
+      // spilled, so Restore materializes whichever are not resident.
+      request.track.Lost();
+      return evicted;
+    }
+  }
+  request.track.Saved();
+  return {};
+}
+
+void Dsv4Runner::SplitForSpill(const RequestState& request, std::vector<ExtentId>& written,
+                               std::vector<ExtentId>& unchanged) const {
+  std::vector<LiveState::Range> changed = request.track.written;
+  bool known = request.track.on_disk;
+  if (known && request.track.written_from != SpillTrack::kUnwritten) {
+    auto writes = StateWrites(request.track.written_from);
+    if (writes) {
+      changed.insert(changed.end(), writes->begin(), writes->end());
+    } else {
+      known = false;
+    }
+  }
+  if (!known) {
+    written = request.live.extents();
+    return;
+  }
+  request.live.SplitExtents(changed, written, unchanged);
+}
+
+std::uint64_t Dsv4Runner::SpillWriteBytes(const RequestState& request) const {
+  if (request.spilled) {
+    return 0;
+  }
+  std::vector<ExtentId> written;
+  std::vector<ExtentId> unchanged;
+  SplitForSpill(request, written, unchanged);
+  return written.size() * kPagedExtent;
+}
+
+Status Dsv4Runner::Restore(RequestState& request) {
+  request.state_refused = false;
+  if (!request.spilled) {
+    return {};
+  }
+  if (released_ || cohort_.faulted()) {
+    return Error("the DeepSeek cohort requires retirement");
+  }
+  catalog::Closure closure;
+  const std::vector<ExtentId> extents = request.live.extents();
+  if (auto described = node_.Call(
+          [&]() -> Status {
+            auto of = node_.catalog().ClosureOfExtents(extents);
+            if (!of) {
+              return Error("a spilled DeepSeek state is no longer cataloged");
+            }
+            closure = std::move(*of);
+            return {};
+          },
+          "describing a spilled DeepSeek state");
+      !described) {
+    return described;
+  }
+  // Each extent read back from the spill file at the generation it was
+  // written at (invariant 4), under the budget: a clean refusal leaves it
+  // spilled, for the runtime to make room and try again.
+  sc::AcquireReport report;
+  bool over_budget = false;
+  if (auto acquired =
+          node_.Acquire(closure, report, "restoring a spilled DeepSeek state", &over_budget);
+      !acquired) {
+    request.state_refused = over_budget && !cohort_.faulted();
+    return acquired;
+  }
+  request.spilled = false;
+  // Read back whole: the file still holds it as it is, if the spill that
+  // wrote it completed (SpillTrack: nothing writes a spilled slot).
+  return RefreshClosures();
+}
+
 Status Dsv4Runner::ClearIdle(RequestState& request) {
   if (released_ || cohort_.faulted()) {
     return Error("the DeepSeek cohort requires retirement");
   }
-  if (!request.provisioned || cohort_.IsActive(request.slot)) {
+  // Leased by the request open on the stream: cleared within its own
+  // request (Clear). Selected last but with no request open, it is idle.
+  if (!request.provisioned || (cohort_.IsActive(request.slot) && node_.InRequest(stream_))) {
     return Error("an active DeepSeek slot is cleared within its own request");
   }
   request.state_refused = false;
@@ -855,6 +1093,10 @@ Status Dsv4Runner::ClearIdle(RequestState& request) {
   // every active state; the catalog refuses the discard if anything still
   // holds or operates on this state's extents (DiscardGrowingState).
   const Status cleared = request.live.DiscardGrowingState(node_);
+  request.track.Lost();
+  if (cleared) {
+    request.spilled = false;
+  }
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
   }
@@ -863,8 +1105,8 @@ Status Dsv4Runner::ClearIdle(RequestState& request) {
 
 Status Dsv4Runner::EnsureState(RequestState& request, std::uint32_t positions) {
   request.state_refused = false;
-  if (auto active = CheckActive(request); !active) {
-    return active;
+  if (auto usable = Usable(request); !usable) {
+    return usable;
   }
   auto needed = md::Dsv4UsedState(layout_, positions);
   if (!needed) {
@@ -966,11 +1208,11 @@ std::expected<Dsv4Runner::ChunkPlans::Entry*, std::string> Dsv4Runner::Planned(
     return std::unexpected(r.error());
   }
   Check((*planned)->graph);
-  plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
-  RoomForChunkPlan();
+  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  plan_seconds_ += seconds;
   const std::uint64_t bytes = PlannedHostBytes(**planned);
   const std::uint64_t nodes = PlannedNodes(**planned);
-  return &request.plans.Add(key, std::move(*planned), bytes, nodes);
+  return &request.plans.Add(key, std::move(*planned), bytes, nodes, seconds);
 }
 
 std::expected<Dsv4Runner::DraftPlans::Entry*, std::string> Dsv4Runner::PlannedDraft(
@@ -988,10 +1230,11 @@ std::expected<Dsv4Runner::DraftPlans::Entry*, std::string> Dsv4Runner::PlannedDr
   if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the draft"); !r) {
     return std::unexpected(r.error());
   }
-  plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
+  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  plan_seconds_ += seconds;
   const std::uint64_t bytes = PlannedHostBytes(**planned);
   const std::uint64_t nodes = PlannedNodes(**planned);
-  return &request.dplans.Add(o_.draft_rows, std::move(*planned), bytes, nodes);
+  return &request.dplans.Add(o_.draft_rows, std::move(*planned), bytes, nodes, seconds);
 }
 
 std::expected<Dsv4Runner::WavePlans::Entry*, std::string> Dsv4Runner::PlannedWave(
@@ -1019,10 +1262,11 @@ std::expected<Dsv4Runner::WavePlans::Entry*, std::string> Dsv4Runner::PlannedWav
     return std::unexpected(r.error());
   }
   CheckWave((*planned)->graph);
-  plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
+  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  plan_seconds_ += seconds;
   const std::uint64_t bytes = PlannedHostBytes(**planned);
   const std::uint64_t nodes = PlannedNodes(**planned);
-  return &waves_.Add(key, std::move(*planned), bytes, nodes);
+  return &waves_.Add(key, std::move(*planned), bytes, nodes, seconds);
 }
 
 // BP-A1's check (planned.h): the state is live state (the target's and the
@@ -1139,7 +1383,7 @@ Status Dsv4Runner::DiscardVerify(RequestState& request) {
 }
 
 Status Dsv4Runner::Rollback(RequestState& request) {
-  if (auto active = CheckActive(request); !active) {
+  if (auto active = CheckResident(request); !active) {
     return active;
   }
   auto rolled = request.live.Rollback(node_, execution_, stream_, resources_.launch(),
@@ -1156,7 +1400,9 @@ Status Dsv4Runner::Rollback(RequestState& request) {
 Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
                          std::span<const std::int32_t> tokens, std::vector<float>& logits,
                          const std::function<Status()>& meanwhile, Dsv4ChunkKind kind) {
+  const PlanStep step;  // the plan this step borrows stays until its job ends
   request.state_refused = false;
+  request.track.Wrote(n_past);
   const auto rows = static_cast<std::uint32_t>(tokens.size());
   if (kind != Dsv4ChunkKind::kPlain && !speculative()) {
     return Error("an injection or a verify needs the drafter");
@@ -1219,8 +1465,8 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
   // launch by launch. An HCA plan never: its position changes each run.
   bool capture = !hca && runs.CaptureDue(runs_.graphs()) &&
                  ((rows == 1 && kind == Dsv4ChunkKind::kPlain) || verify);
-  if (capture && !RoomForGraphs(1, entry.nodes * kGraphNodeHostBytes)) {
-    capture = false;  // past the graph caps alone: launch by launch
+  if (capture && !request.plans.ChargeGraph(entry)) {
+    capture = false;  // no room for its graph even after a reclaim: launch by launch
   }
   // The last row's logits (the next token's), or a verify's every row's.
   const std::array<RunCopy, 1> outputs = {
@@ -1323,7 +1569,9 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
 
 Status Dsv4Runner::Draft(RequestState& request, std::uint32_t pos0, std::int32_t anchor,
                          std::vector<std::int32_t>& drafts) {
+  const PlanStep step;  // the plan this step borrows stays until its job ends
   request.state_refused = false;
+  request.track.Wrote(pos0 > 0 ? pos0 - 1 : 0);
   if (!speculative()) {
     return Error("drafting needs the drafter");
   }
@@ -1352,8 +1600,8 @@ Status Dsv4Runner::Draft(RequestState& request, std::uint32_t pos0, std::int32_t
       RunCopy{Address(request.drafts), Address(g.drafts->data),
               std::uint64_t{o_.draft_rows} * sizeof(std::int32_t)}};
   bool capture = runs.CaptureDue(runs_.graphs());
-  if (capture && !RoomForGraphs(1, entry.nodes * kGraphNodeHostBytes)) {
-    capture = false;  // past the graph caps alone: launch by launch
+  if (capture && !request.dplans.ChargeGraph(entry)) {
+    capture = false;  // no room for its graph even after a reclaim: launch by launch
   }
   kg::LaunchContext& launch = resources_.launch();
   RunPath path = RunPath::kEager;
@@ -1455,7 +1703,9 @@ std::expected<ggml_tensor*, std::string> Dsv4Runner::DraftRowsNode(std::uint32_t
 Status Dsv4Runner::DraftVerify(RequestState& request, std::uint32_t pos, std::int32_t anchor,
                                std::uint32_t rows, std::vector<std::int32_t>& drafts,
                                std::vector<float>& logits) {
+  const PlanStep step;  // the plans this step borrows stay until its job ends
   request.state_refused = false;
+  request.track.Wrote(pos > 0 ? pos - 1 : 0);
   if (!speculative()) {
     return Error("drafting needs the drafter");
   }
@@ -1509,13 +1759,10 @@ Status Dsv4Runner::DraftVerify(RequestState& request, std::uint32_t pos, std::in
   PlanRuns& vruns = ventry.runs[0];
   const kg::Dsv4Graph& vg = ventry.planned->graph;
   bool vcapture = vruns.CaptureDue(runs_.graphs());
-  if ((dcapture || vcapture) &&
-      !RoomForGraphs(
-          (dcapture ? 1U : 0U) + (vcapture ? 1U : 0U),
-          ((dcapture ? dentry.nodes : 0) + (vcapture ? ventry.nodes : 0)) * kGraphNodeHostBytes)) {
-    dcapture = false;  // past the graph caps alone: launch by launch
-    vcapture = false;
-  }
+  // Each graph charged before its capture; one with no room even after a
+  // reclaim is not made (that plan runs launch by launch).
+  dcapture = dcapture && request.dplans.ChargeGraph(dentry);
+  vcapture = vcapture && request.plans.ChargeGraph(ventry);
   ggml_tensor* lookup = nullptr;
   if (rows > 1) {
     // The verify's embedding input is staged first: row 0 the anchor's,
@@ -1649,9 +1896,15 @@ Status Dsv4Runner::DecodeWave(std::span<const WaveWork> work) { return Wave(work
 Status Dsv4Runner::DraftVerifyWave(std::span<const WaveWork> work) { return Wave(work, true); }
 
 Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
+  const PlanStep step;  // the plans this wave borrows stay until its job ends
   if (!waves_provisioned() || work.empty() || work.size() > wave_slots_ ||
       (spec && !speculative()) || model_.exact) {
     return Error("a DeepSeek wave needs provisioned slots (and a drafter to verify)");
+  }
+  for (const WaveWork& w : work) {
+    if (w.slot != nullptr && &w.slot->owner_ == this) {
+      w.slot->request_.track.Wrote(w.pos > 0 ? w.pos - 1 : 0);
+    }
   }
   // Each slot's frame; host sources point into it until the job ends.
   struct Frame {
@@ -1794,20 +2047,12 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
       }
     }
   }
-  bool capture = run.CaptureDue(runs_.graphs());
-  std::size_t captures = capture ? 1 : 0;
-  std::uint64_t capture_bytes = capture ? entry.nodes * kGraphNodeHostBytes : 0;
+  // Each graph charged before its capture; one with no room even after a
+  // reclaim is not made (that plan runs launch by launch).
+  const bool capture = run.CaptureDue(runs_.graphs()) && waves_.ChargeGraph(entry);
   for (std::size_t i = 0; i < count; ++i) {
-    if (frames[i].dcapture) {
-      ++captures;
-      capture_bytes += frames[i].draft->nodes * kGraphNodeHostBytes;
-    }
-  }
-  if (captures != 0 && !RoomForGraphs(captures, capture_bytes)) {
-    capture = false;  // past the graph caps alone: launch by launch
-    for (std::size_t i = 0; i < count; ++i) {
-      frames[i].dcapture = false;
-    }
+    frames[i].dcapture =
+        frames[i].dcapture && frames[i].request->dplans.ChargeGraph(*frames[i].draft);
   }
   const std::array<RunCopy, 1> outputs = {
       RunCopy{Address(wave_logits_), Address(g.joined.logits->data),
@@ -2013,7 +2258,7 @@ std::expected<std::uint64_t, std::string> Dsv4Runner::CheckDeviceEmbedding() {
 
 Status Dsv4Runner::SaveUsedState(RequestState& request, void* host,
                                  std::span<const LiveState::Range> ranges) {
-  if (auto active = CheckActive(request); !active) {
+  if (auto active = CheckResident(request); !active) {
     return active;
   }
   LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
@@ -2030,6 +2275,7 @@ Status Dsv4Runner::RestoreUsedState(RequestState& request, void* host,
       std::ranges::any_of(ranges, [](const LiveState::Range& r) { return r.bytes != 0; })) {
     return Error("the conversation snapshot has no source buffer");
   }
+  request.track.Lost();  // a diagnostic restore replaces the state whole
   if (auto prepared = PrepareRestoreState(request, ranges); !prepared) {
     return prepared;
   }
@@ -2038,7 +2284,7 @@ Status Dsv4Runner::RestoreUsedState(RequestState& request, void* host,
 
 Status Dsv4Runner::PrepareRestoreState(RequestState& request,
                                        std::span<const LiveState::Range> ranges) {
-  if (auto active = CheckActive(request); !active) {
+  if (auto active = CheckResident(request); !active) {
     return active;
   }
   // The held request without this slot's state, which Retain needs
@@ -2066,8 +2312,11 @@ Status Dsv4Runner::PrepareRestoreState(RequestState& request,
 
 Status Dsv4Runner::CopyCheckpointState(RequestState& request, void* host,
                                        std::span<const LiveState::Range> ranges, bool to_host) {
-  if (auto active = CheckActive(request); !active) {
+  if (auto active = CheckResident(request); !active) {
     return active;
+  }
+  if (!to_host) {
+    request.track.Wrote(ranges);  // a turn checkpoint's pages copied in
   }
   LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
   auto copied =
@@ -2095,6 +2344,15 @@ std::expected<std::vector<LiveState::Range>, std::string> Dsv4Runner::Checkpoint
   if (request.live.owed()) {
     return Error("checkpoint has an unsettled DeepSeek verify");
   }
+  auto writes = StateWrites(positions);
+  if (!writes) {
+    return std::unexpected(writes.error());
+  }
+  return CheckpointPages(request.live.used_ranges(), *writes);
+}
+
+std::expected<std::vector<LiveState::Range>, std::string> Dsv4Runner::StateWrites(
+    std::uint32_t positions) const {
   auto mutable_bytes = md::Dsv4CheckpointWrites(layout_, positions);
   if (!mutable_bytes) {
     return std::unexpected(mutable_bytes.error());
@@ -2106,7 +2364,7 @@ std::expected<std::vector<LiveState::Range>, std::string> Dsv4Runner::Checkpoint
   if (speculative()) {
     writes.push_back({.region = kDrafter, .offset = 0, .bytes = dlayout_.bytes});
   }
-  return CheckpointPages(request.live.used_ranges(), writes);
+  return writes;
 }
 
 Status Dsv4Runner::ReadState(RequestState& request, std::vector<std::byte>& target,
@@ -2180,6 +2438,8 @@ Status Dsv4Runner::DumpLast(std::vector<Dumped>& out) {
 
 std::expected<double, std::string> Dsv4Runner::TimeReplays(std::uint32_t n_past, std::int32_t token,
                                                            std::uint32_t count) {
+  const PlanStep step;  // its plan stays while this runs
+  default_request_.track.Wrote(n_past);
   auto in = md::Dsv4Chunk(profile_, layout_, n_past, 1, model_.exact);
   if (!in) {
     return std::unexpected(in.error());

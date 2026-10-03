@@ -50,6 +50,10 @@
 namespace jitllm::runtime {
 namespace {
 
+// The least a capacity refusal has the reclaim order free: one 2 MiB
+// extent of state.
+constexpr std::uint64_t kExtentBytes = std::uint64_t{2} << 20U;
+
 void Say(std::FILE* log, std::string_view text) {
   const std::string line = std::format("jitllm-runtime: {}\n", base::Printable(text));
   (void)std::fwrite(line.data(), 1, line.size(), log);
@@ -350,9 +354,16 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return std::unexpected(rendered.error());
     }
     // Choose only an unclaimed model-owned branch. Prefix matching is a
-    // reuse preference, never conversation identity or retention policy.
+    // reuse preference, never conversation identity or retention policy:
+    // the branch whose state this prompt can actually reuse the most of
+    // (Llm::ReusablePrefix: its live history continued, or a turn
+    // checkpoint inside the common prefix); with none, an empty branch,
+    // then the least recently used, so a new conversation does not
+    // discard an idle one's state while an empty branch is free.
     std::size_t slot = cohort_.size();
-    std::size_t longest = 0;
+    std::size_t best = 0;
+    bool best_empty = false;
+    Clock::time_point best_used;
     for (std::size_t i = 0; i < model.branches() && i < cohort_.size(); ++i) {
       if (cohort_[i] != nullptr) {
         continue;
@@ -361,12 +372,17 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       if (!branch) {
         return std::unexpected(Failure(500, "the model's conversation branch is unavailable"));
       }
-      const auto& history = (*branch)->history();
-      const auto end = std::ranges::mismatch(history, rendered->tokens).in1;
-      const auto common = static_cast<std::size_t>(end - history.begin());
-      if (slot == cohort_.size() || common > longest) {
+      const std::size_t reusable = model.ReusablePrefix(**branch, rendered->tokens);
+      const bool empty = !(*branch)->HasRetainedState();
+      const Clock::time_point used = model.LastUsed(**branch);
+      const bool better = slot == cohort_.size() || reusable > best ||
+                          (reusable == best &&
+                           ((empty && !best_empty) || (empty == best_empty && used < best_used)));
+      if (better) {
         slot = i;
-        longest = common;
+        best = reusable;
+        best_empty = empty;
+        best_used = used;
       }
     }
     if (slot == cohort_.size()) {
@@ -481,17 +497,34 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
           frame.Cancel();
         } else {
           needed = true;
-          frame.native_touched = true;
         }
       }
       if (!needed) {
         return {};
       }
-      cohort_native_touched_ = true;
       swapped_ = server_.resident() != cohort_model_;
       if (auto activated = server_.Activate(*cohort_model_, parts_); !activated) {
+        swapped_ = false;
+        if (server_.NodeHealthy()) {
+          // Recovery first (D-102): a swap refused for room, or failed and
+          // undone (or not: no model resident, the next activation loads one
+          // whole), fails only these requests. The cohort posted no native
+          // work, so its retirement has no references to fence.
+          for (auto* base : work) {
+            auto& frame = static_cast<ChatWork&>(*base);
+            frame.error =
+                Failure(503, "the model could not be made resident: " + activated.error());
+          }
+          return {};
+        }
         Fail("making the cooperative chat model resident: " + activated.error());
         return activated;
+      }
+      // Resident: the cohort's native work begins, whose references its
+      // retirement fences.
+      cohort_native_touched_ = true;
+      for (auto* base : work) {
+        static_cast<ChatWork&>(*base).native_touched = true;
       }
       return {};
     }
@@ -713,9 +746,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return api::Completion{};
     }
     if (auto r = server_.Activate(*m, parts_); !r) {
-      Fail(std::format("making {} resident: {}", m->name(), r.error()));
+      if (!server_.NodeHealthy()) {  // otherwise recovered (D-102): this request only
+        Fail(std::format("making {} resident: {}", m->name(), r.error()));
+      }
       swapped_ = false;
-      return std::unexpected(Failure(503, "the model could not be made resident"));
+      return std::unexpected(Failure(503, "the model could not be made resident: " + r.error()));
     }
     // A swap is one program (about 10 s on a Spark), watched as one unit
     // at its bytes; whatever ended the request meanwhile (the client gone,
@@ -842,8 +877,12 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return api::Completion{};
     }
     if (auto activated = server_.Activate(*model, parts_); !activated) {
-      Fail("making the literal completion model resident: " + activated.error());
-      return std::unexpected(Failure(503, "the model could not be made resident"));
+      if (!server_.NodeHealthy()) {  // otherwise recovered (D-102): this request only
+        Fail("making the literal completion model resident: " + activated.error());
+      }
+      swapped_ = false;
+      return std::unexpected(
+          Failure(503, "the model could not be made resident: " + activated.error()));
     }
     if (!exchange.Continue()) {
       return api::Completion{};
@@ -988,14 +1027,21 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return;
     }
     Say(log_,
-        std::format("swap {} -> {}: ready in {:.3f} s (evict {:.3f}, restore {:.3f}, "
-                    "page-in {:.3f}, setup {:.3f}; {} graphs dropped); backing released {:.3f} s "
-                    "later",
-                    parts_.from.empty() ? "(nothing)" : parts_.from, parts_.to, parts_.total,
-                    parts_.evict, parts_.restore, parts_.page_in, parts_.setup,
-                    parts_.dropped_graphs, parts_.release));
+        std::format(
+            "swap {} -> {}: ready in {:.3f} s (evict {:.3f}, restore {:.3f}, "
+            "page-in {:.3f}, setup {:.3f}; {} graphs reclaimed for it); backing released {:.3f} s "
+            "later",
+            parts_.from.empty() ? "(nothing)" : parts_.from, parts_.to, parts_.total, parts_.evict,
+            parts_.restore, parts_.page_in, parts_.setup, parts_.dropped_graphs, parts_.release));
   }
 
+  // Between units and while idle: idle conversations past their retention
+  // or the spill budget, and memory pressure from outside (Server::Maintain).
+  void Maintain() override {
+    if (failure_.empty()) {
+      server_.Maintain();
+    }
+  }
   bool healthy() const override { return failure_.empty(); }
   std::string failure() const override { return failure_; }
 
@@ -1131,17 +1177,23 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       slots.push_back(frame->slot);
     }
     Cohort cohort = Snapshot();
-    const std::optional<std::size_t> idle = LargestIdleState();
-    CapacityDecision decision = OnCapacityRefused(cohort, slots, idle.has_value());
-    if (decision.reclaim) {
-      if (idle && ReleaseIdle(*cohort_model_, *idle)) {
-        Apply(cohort);  // the refused members run again
-        return;
-      }
-      cohort = Snapshot();
-      decision = OnCapacityRefused(cohort, slots, false);
+    // The node's reclaim order first (Server::Reclaim): plans and graphs,
+    // idle conversations spilled, in the order's priority, for what each
+    // refused member asked: all of it or nothing, member by member, so one
+    // member's need that cannot be met does not keep another's from it
+    // (those relieved run again; the rest are refused again and wait).
+    bool reclaimed = false;
+    for (const ChatWork* frame : refused) {
+      const std::uint64_t needed =
+          std::max<std::uint64_t>(frame->model.RefusedBytes(frame->branch), kExtentBytes);
+      reclaimed =
+          server_.Reclaim(needed, true, "conversation state refused") >= needed || reclaimed;
     }
+    CapacityDecision decision = OnCapacityRefused(cohort, slots, reclaimed);
     Apply(cohort);
+    if (decision.reclaim) {
+      return;  // the refused members run again
+    }
     for (const std::size_t slot : decision.refuse) {
       ChatWork& frame = *cohort_[slot];
       frame.error = Failure(500, frame.refusal);
@@ -1169,51 +1221,14 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     }
   }
 
-  // The branch outside the cohort retaining the most state (a finished
-  // conversation's reuse cache), if any.
-  std::optional<std::size_t> LargestIdleState() const {
-    std::optional<std::size_t> idle;
-    std::uint64_t most = 0;
-    for (std::size_t i = 0; i < cohort_model_->branches() && i < cohort_.size(); ++i) {
-      if (cohort_[i] != nullptr) {
-        continue;
-      }
-      auto branch = cohort_model_->branch(i);
-      if (branch && (*branch)->state_snapshot_bytes() > most) {
-        most = (*branch)->state_snapshot_bytes();
-        idle = i;
-      }
-    }
-    return idle;
-  }
-
-  // Clears that cache for requests refused for capacity: conversation state
-  // is never an eviction victim, so a retired conversation's state would
-  // otherwise hold its capacity until its branch is reused. Its next turn
-  // then prefills from the start. False if the clear failed (logged).
-  bool ReleaseIdle(Llm& model, std::size_t slot) {
-    auto branch = model.branch(slot);
-    if (!branch) {
-      return false;
-    }
-    const std::size_t tokens = (*branch)->history().size();
-    if (auto released = (*branch)->ReleaseIdleState(); !released) {
-      Say(log_, std::format("{}'s idle conversation state in slot {} could not be cleared: {}",
-                            model.name(), slot, released.error()));
-      return false;
-    }
-    Say(log_, std::format("{}'s idle conversation state in slot {} ({} tokens) cleared for a "
-                          "request short of state capacity",
-                          model.name(), slot, tokens));
-    return true;
-  }
-
   // A serial request runs alone, as a cohort of one: refused for capacity,
-  // it clears the largest idle branch's retained state and runs again.
+  // it has the node's reclaim order free what its unit asked for (plans,
+  // graphs, idle conversations spilled) and runs again.
   Llm::CapacityReclaim SerialReclaim(Llm& model) {
     return [this, &model](const Llm::Branch& refused) {
-      const std::optional<std::size_t> idle = model.LargestIdleBranch(refused);
-      return idle.has_value() && ReleaseIdle(model, *idle);
+      const std::uint64_t needed =
+          std::max<std::uint64_t>(model.RefusedBytes(refused), kExtentBytes);
+      return server_.Reclaim(needed, true, "conversation state refused") >= needed;
     };
   }
 
@@ -1251,6 +1266,16 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return;
     }
     const std::size_t held = frame.branch.history().size();
+    // Spill, not clear: its state written to its slot's spill file and
+    // restored exactly when it begins again, so it continues as if never
+    // set aside (Llm::SpillSetAside). Only a state that cannot be spilled
+    // is cleared, and then rebuilt by prefill.
+    if (auto spilled = frame.model.SpillSetAside(frame.branch); spilled) {
+      Say(log_, std::format("{}'s request in slot {} set aside for its peers: its state spilled "
+                            "at {} tokens, restored when they finish",
+                            frame.model.name(), frame.slot, held));
+      return;
+    }
     if (auto cleared = frame.branch.Clear(); !cleared) {
       frame.error = Failure(500, "the request could not release its state: " + cleared.error());
       return;
@@ -1273,7 +1298,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     ChatWork& frame = *cohort_[*restart];
     const std::vector<std::int32_t>& tokens =
         frame.resume ? frame.resume_tokens : frame.rendered.tokens;
-    auto prompt = frame.branch.BeginPrompt(tokens, frame.rendered.stable_boundary);
+    // A generation set aside resumes from its spilled state: its prompt
+    // only restores it (BeginPrompt's `resume`).
+    auto prompt =
+        frame.branch.BeginPrompt(tokens, frame.rendered.stable_boundary, false, frame.resume);
     if (!prompt) {
       frame.error = Failure(500, "the request could not begin again: " + prompt.error());
       return;

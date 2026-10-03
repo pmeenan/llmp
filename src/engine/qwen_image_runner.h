@@ -48,9 +48,11 @@
 //   a plan bound against the implementation registry (D-053), the resident
 //   harness's plans (QwenImageOptions::plan, fast by default). Steps from
 //   the third on replay a CUDA graph of one step, captured in the third's
-//   job the first time and kept for the runner's life: every address it
-//   holds (the weights' pinned places, D-090, the image's own memory, the
-//   workspace) stays put.
+//   job the first time and kept until the node's reclaim order takes it
+//   (charged to the node as recorded, D-090 as amended; recorded again by
+//   the next step from the third): every address it holds (the
+//   weights' pinned places, D-090, the image's own memory, the workspace)
+//   stays put.
 
 #ifndef JITLLM_ENGINE_QWEN_IMAGE_RUNNER_H_
 #define JITLLM_ENGINE_QWEN_IMAGE_RUNNER_H_
@@ -68,6 +70,7 @@
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "kernels/image/pipeline.h"
+#include "memory/reclaim.h"
 #include "model/qwen_image.h"
 
 namespace jitllm::engine {
@@ -117,6 +120,19 @@ class QwenImageRunner final : public PagedModel {
   Status Finish(std::string& sha);
   // Timings and sizes, JSON.
   std::string Report() const;
+  // Its recorded step (driver memory outside the catalog's extents,
+  // charged to the node once recorded) as a candidate for the node's
+  // reclaim order (memory/reclaim.h), and its reclaim: dropped between
+  // jobs, recorded again by the next step from the third. The image
+  // keeps no GGML plans; its pipeline's bound plan is a few KiB, not
+  // counted.
+  void ReclaimCandidates(std::uint32_t owner, bool running,
+                         std::vector<memory::ReclaimCandidate>& out);
+  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id);
+  std::string plan_report() const;
+  // What its kept graph took of the device's free memory at its recording
+  // (before the floor it is charged at), for the teardown's log.
+  std::uint64_t graph_measured_bytes() const;
   // Each component artifact's data directory (after Setup).
   std::vector<std::filesystem::path> data() const;
 

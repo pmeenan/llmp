@@ -1164,6 +1164,34 @@ idle weights the owner's reclaim order frees first; the owner's policy
 grow into free memory and are reclaimed only under pressure, in order of
 measured restore cost per byte freed, least recently used within a kind.
 
+**Amended again 2026-10-02** (the owner's policy, built; D-055 as amended
+the same day; [memory-pressure](experiments/memory-pressure/README.md)).
+The caps and the drop at swap-out are gone. Every plan and graph a model
+keeps is charged to the node as it is kept (`engine/planned.h`
+`PlanAccount`, `PagedNode::ChargeHost`): past a floor the start's guard
+sets apart, what one step of the largest model holds at once
+(`Served::plan_floor_bytes`: 7.5 MiB for DeepSeek with DSpark, one
+wave's plans or a chunk's beside its draft; for Qwen3.8 a paired unit's
+target and draft waves together), and beside it the one scratch arena
+every plan's first build uses (the largest estimate, about 17 MiB), the
+charge is a pinned runtime extent
+inside the execution budget, so it grows into free room and is given back
+through the node's one reclaim order when growth, a swap's incoming model
+or pressure from outside needs it (GreedyDual over measured costs, D-055
+as amended: each kind least recently used first, stale plans and graphs
+eventually before fresh idle state, the running model's in-use floor and
+a running step's never). A capture that does not fit even after
+reclaiming what costs less to restore than a graph is not made. A
+graph's charge (16 KiB a launched node) is checked against what its
+capture took of the device's free memory, which the teardown logs
+beside it. A swap keeps both models' plans and
+graphs, so a prepared return replays graphs captured before the swap
+again, as before the interim drop (the swap table checks it); the
+places stay pinned. A plan's arena now holds what its graph uses (a
+DeepSeek decode plan 1.8 MiB of a 9.4 MiB estimate). The image pipeline's
+recorded step is charged the same way. **Reopen if** a model must move
+between swaps, as above.
+
 ## D-089: A model of several components is one v0 artifact per component and a content-addressed composition that names them by ID  (2026-09-28, status: accepted by the main agent under the owner's overnight delegation (2026-09-28); confirmed by the owner, 2026-09-28; experimental under D-018 like the rest of v0; settles plan.md's M3 open question and artifact-format.md's "Companion and multi-component artifacts" for pipelines)
 
 **Decision.**
@@ -4678,7 +4706,7 @@ provider's backing cannot take a group from a 4 KiB-aligned run; tooling or
 parser evidence favours another container; or D-018's gate records a
 compatibility policy.
 
-## D-055: Capacity-driven state retention with a 24-hour idle cap; M4's named workload is the Qwen2.5-0.5B FP16/EXL3 pair  (2026-09-22, status: accepted; specializes D-024, D-031 and D-036; its M3, M4, M5 and M7 are M5, M6, M7 and M9 under D-087)
+## D-055: Capacity-driven state retention with a 24-hour idle cap; M4's named workload is the Qwen2.5-0.5B FP16/EXL3 pair  (2026-09-22, status: accepted; specializes D-024, D-031 and D-036; its M3, M4, M5 and M7 are M5, M6, M7 and M9 under D-087; its initial victim order replaced on 2026-10-02 by one reclaim order by measured restore cost, with plans and graphs registered, idle state spilled rather than cleared and `[memory]` retention and spill-budget keys (below))
 
 **Decision.** Reusable conversation state follows the
 [retention policy](retention-policy.md):
@@ -4757,6 +4785,133 @@ floor or the M7 benefit, or M5/M7 workloads show idle state within
 or a different idle cap; a supported representation cannot express restore
 boundaries or coverage; or a larger dense model enters M3/M4 support, in
 which case add it as a named configuration rather than replace this one.
+
+**Amended 2026-10-02** (the owner's memory policy: use memory fully, scale
+down gracefully under pressure, never fixed cache counts;
+[memory-pressure](experiments/memory-pressure/README.md)). Built for M3's
+runtime, one conversation branch per request slot (no shared-prefix
+entries yet); M6's entry classes keep the rules above.
+
+- **One reclaim order** (`memory/reclaim.h`) for everything that can give
+  memory back, whoever holds it: captured graphs, plans and idle
+  conversation state, and idle weights once something produces them (M3's
+  full swap evicts an inactive model's weights whole, so none are
+  candidates yet; M6's partial eviction adds them). The rule is
+  GreedyDual-Size over expected costs per byte: a candidate's priority is
+  L + c × p, c its kind's cost to restore a GiB freed, p the chance it is
+  used again and L the inflation value at its last use; the lowest goes
+  first, and each reclaim raises L to what it took. The owner's intent is
+  the expected cost of a byte freed, which depends on the chance it is
+  used again: kind-first sorting (the first build) spilled an idle
+  conversation for every one-off request while half the room held plans
+  and graphs no request used again, since they grow with every shape a
+  workload meets (Qwen3.8, 9 turns: 149 plans of 312 MiB, 93 graphs of
+  1,157 MiB). L alone ages a stale plan too slowly (at ~6 s a GiB against
+  idle state's ~0.2, about 30 spills before it goes), so p decays with
+  staleness directly: it halves with every reclaim taken since the last
+  use and every 5 minutes idle. A plan unused for three reclaims, or a
+  quarter of an hour, then ranks below a conversation used just now. Both
+  terms only fall with staleness, so candidates of one cost (one kind)
+  keep strict least recent use, never largest first, the running model's
+  after every other model's; a costly kind still outlasts a cheap one
+  while both are in use. Costs are measured, per
+  candidate where they can be: a plan's own planning time, a graph's
+  capture and instantiation, idle state's spill (only what changed since
+  its last spill, below) and restore at the node's rates, weights'
+  page-in. On a GB10 (`spark-b`): idle weights 0.08 s a GiB (13.3 GB/s),
+  idle state 0.17 written whole (11.0 GB/s out, 14.5 in; 0.07 when
+  unchanged), graphs 0.2–0.4 (8–14 ms for a 39 MiB decode graph), plans
+  2–15 (27 to 106 ms for 3–7 MiB) and recomputing state 64 (DeepSeek's
+  prefill). It replaces the initial order above and the cohort's
+  largest-first clear.
+- **All of it or nothing, no more than needed.** A reclaim takes
+  candidates in order until they cover what was asked; if the order
+  cannot cover it, nothing is taken and the caller waits or refuses (a
+  capacity refusal counts as relieved only when all of it was freed, and
+  each refused member's need is reclaimed on its own). Cache charges (a
+  plan, a graph's capture) displace only other plans and graphs, never
+  conversation state, which only state needs, swaps and pressure from
+  outside displace; a graph's capture takes only what costs less to
+  restore than a graph, and one refused is not asked again for the next
+  1, 2, 4 … 256 uses of its plan. A swap's room is checked against the
+  catalog again after each reclaim (a reclaim's bytes need not be what the
+  occupancy dropped: the cache charge moves in whole extents), and a swap
+  it cannot make room for is refused before anything moves. One that
+  fails partway is undone (only what it brought in goes out again, and
+  the outgoing model loads back). If the undo or a first load fails,
+  no model is resident and the next activation loads one whole. Each
+  case fails only the requests that needed the swap (503) and keeps
+  the backend serving (D-102, recovery first); only a faulted node
+  stops the service for its supervisor. Pressure from outside takes
+  whatever part it can. Every reclaim
+  spares the running model's in-use floor (its most recently used plans
+  up to its step floor, with their graphs) and what a step under way uses.
+- **Plans and graphs are registered.** Each runner charges what its plans
+  and graphs hold (host heap and driver memory) to the node as it keeps
+  them; past a floor the start's guard sets apart (what one step of the
+  largest model holds at once) the charge is a pinned runtime extent
+  inside the budget, so growth that needs its room reclaims it through the
+  order. No fixed number of plans or graphs; a graph that does not fit
+  even after a reclaim is not captured (that shape runs launch by launch).
+  D-090 is amended to match. Every pinned allocation that can be refused
+  (staging, a snapshot) has the order free its room first, as a charge
+  does, and a turn checkpoint's staging is set apart at start, so a budget
+  full of reclaimable memory never refuses a checkpoint. Paging plans to
+  disk is not built: their rebuild costs more a byte than a spill, and
+  they grow with use (above), but they hold host pointers a page-out
+  would have to keep valid (open, in the report).
+- **Spill, not clear; and only what changed.** Idle conversation state the
+  order takes is written to its slot's spill file (the swap's write-back
+  path, one slot) and restored exactly at its next turn's first unit
+  (refused for capacity like a growth, and retried after a reclaim). Each
+  runner records what was written since the file last held the state (the
+  first position a job wrote from, through the ranges writes from there
+  may change, as a turn checkpoint's; copied-in ranges; anything else
+  loses the record), and a spill, or a swap's write-back, writes only
+  those extents; the rest are released with the file's copy kept, which
+  the catalog confirms by the content generation saved there
+  (`EvictOptions::unchanged`). It saves writes for Qwen3.8 today; for
+  DeepSeek with DSpark its write ranges and the whole drafter region
+  cover every used extent, so every spill writes all of it (tracking the
+  drafter's ring incrementally is open). A cohort member set aside for its
+  peers is spilled and resumes from its restored state, no token chosen or
+  streamed again; its reply then equals an uninterrupted one where the
+  family's replies do not depend on wave composition (DeepSeek's are
+  bit-identical per request in waves; Qwen3.8's under concurrency vary
+  with arrival timing, spilled or not), which the review's set-aside runs
+  confirmed end to end. A spill that fails (an I/O error midway) leaves
+  the state not exactly known: the conversation is cleared instead and
+  the log says so; its next turn prefills. State is dropped instead only
+  when it is not exactly known, past the spill budget, or with a budget
+  of 0.
+- **Retention and the spill budget are configuration** (`[memory]`, a
+  public surface; schema version 2, compatible keys): `retention_hours`
+  (1 to 8,760, default 24, the cap above) bounds idle conversations,
+  resident or spilled, and their turn checkpoints, enforced between units
+  and while idle; `spill_budget_gib` (0 to 1,048,576, default 128) bounds
+  the spilled state on disk, a swap's write-back included (past it, the
+  outgoing model's least recently used conversations are deleted before
+  the swap), the least recently used deleted first. Spill files stay
+  unnamed, private and deleted at startup (D-014). The retention policy's
+  spill write budget (bytes a rolling 24 hours, from the drive's rated
+  endurance) is not built: the spill budget bounds capacity, not writes.
+  Writing only what changed cuts the writes; the endurance budget stays
+  M6's.
+- **Pressure from outside** (D-004: other processes share a Spark's
+  memory): between units and while idle the runtime reads MemAvailable and
+  the kernel's memory pressure (`/proc/pressure/memory`); under 512 MiB
+  available, one reclaim through the same order asks for what restores
+  1 GiB of headroom above that mark. A full stall of 5% or more of the
+  last 10 seconds only raises the trigger to that target: a stall alone
+  (a compile or a copy on the host stalled 5–23% with 4–35 GiB available)
+  is not pressure on the runtime. Pressure ends only back there
+  (hysteresis); while it persists, trims are spaced by a back-off
+  doubling from 1 s to 60 s, a
+  trim that found too little left waits 60 s and logs once a minute at
+  most, and no reclaim takes the running model's in-use floor (its most
+  recently used plans up to its step floor, with their graphs) or what a
+  step under way uses, so pressure kept up from outside cannot make the
+  runtime drop and rebuild its plans every look.
 
 ## D-054: Installed artifacts stay node-local; optional long-term store; one import per cluster with peer replication  (2026-09-22, status: accepted; specializes D-009, D-018, D-034 and D-041; role paths and keys in D-063)
 

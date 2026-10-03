@@ -143,11 +143,6 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     return Error("a reference chunk, verify or named diagnostic needs every row's head");
   }
   auto out = std::make_unique<Dsv4Planned>();
-  auto arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(*m.profile));
-  if (!arena) {
-    return Error(arena.error().detail);
-  }
-  out->arena.emplace(std::move(*arena));
   const bool outa_prefill = !m.exact && !speculation.verify && m.prefill_outa_hca &&
                             m.state->window == md::Dsv4Window::kRing && OutAHcaRows(m, shape.rows);
   kg::Dsv4GraphOptions options{.expert_stride = m.places.stride,
@@ -167,7 +162,15 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
                                        .rows = speculation.inject_rows,
                                        .ring = d->state->ring};
   }
+  auto arena = SizedArena(kg::Dsv4GraphTensors(*m.profile), [&](kg::TensorArena& a) {
+    return kg::BuildDsv4Graph(a, *m.profile, *m.binding, shape, options).has_value();
+  });
+  if (!arena) {
+    return std::unexpected(arena.error());
+  }
+  out->arena.emplace(std::move(*arena));
   auto graph = kg::BuildDsv4Graph(*out->arena, *m.profile, *m.binding, shape, options);
+  out->arena->Seal();
   if (!graph) {
     return Error(graph.error().detail);
   }
@@ -275,11 +278,6 @@ std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
     return Error("a wave runs the fast plan over one state place a slot");
   }
   auto out = std::make_unique<Dsv4WavePlanned>();
-  auto arena = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(*m.profile, shape.slots.size()));
-  if (!arena) {
-    return Error(arena.error().detail);
-  }
-  out->arena.emplace(std::move(*arena));
   kg::Dsv4GraphOptions options{.expert_stride = m.places.stride, .fused = true};
   kg::SetDsv4PrefillStages(options, true);
   if (drafter != nullptr) {
@@ -289,7 +287,16 @@ std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
                                        .rows = 0,
                                        .ring = drafter->state->ring};
   }
+  auto arena =
+      SizedArena(kg::Dsv4WaveGraphTensors(*m.profile, shape.slots.size()), [&](kg::TensorArena& a) {
+        return kg::BuildDsv4WaveGraph(a, *m.profile, *m.binding, shape, options).has_value();
+      });
+  if (!arena) {
+    return std::unexpected(arena.error());
+  }
+  out->arena.emplace(std::move(*arena));
   auto graph = kg::BuildDsv4WaveGraph(*out->arena, *m.profile, *m.binding, shape, options);
+  out->arena->Seal();
   if (!graph) {
     return Error(graph.error().detail);
   }
@@ -425,13 +432,18 @@ std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
     const DsparkModel& d, std::int64_t rows, const kg::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes) {
   auto out = std::make_unique<DsparkPlanned>();
-  auto arena = kg::TensorArena::Create(kg::DsparkGraphTensors(*d.profile, rows));
+  const kg::Dsv4GraphOptions options{.expert_stride = d.places.stride, .fused = !d.exact};
+  auto arena = SizedArena(kg::DsparkGraphTensors(*d.profile, rows), [&](kg::TensorArena& a) {
+    return kg::BuildDsparkGraph(a, *d.profile, *d.binding, rows, d.state->ring, options)
+        .has_value();
+  });
   if (!arena) {
-    return Error(arena.error().detail);
+    return std::unexpected(arena.error());
   }
   out->arena.emplace(std::move(*arena));
-  auto graph = kg::BuildDsparkGraph(*out->arena, *d.profile, *d.binding, rows, d.state->ring,
-                                    {.expert_stride = d.places.stride, .fused = !d.exact});
+  auto graph =
+      kg::BuildDsparkGraph(*out->arena, *d.profile, *d.binding, rows, d.state->ring, options);
+  out->arena->Seal();
   if (!graph) {
     return Error(graph.error().detail);
   }

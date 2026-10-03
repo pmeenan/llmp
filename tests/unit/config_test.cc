@@ -184,6 +184,33 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
               ElementsAre(HasSubstr("unknown key client.hosts")));
 }
 
+// Conversation state under memory pressure (D-055 as amended 2026-10-02):
+// its retention and the spill budget, with their defaults and ranges.
+TEST(NodeConfigTest, MemoryKeepsConversationsAsConfigured) {
+  const NodeConfig defaults = Parsed("schema_version = 2\n");
+  EXPECT_EQ(defaults.memory.retention_hours, 24U);
+  EXPECT_EQ(defaults.memory.spill_budget_gib, 128U);
+  const NodeConfig set =
+      Parsed("schema_version = 2\n[memory]\nretention_hours = 1\nspill_budget_gib = 0\n");
+  EXPECT_EQ(set.memory.retention_hours, 1U);
+  EXPECT_EQ(set.memory.spill_budget_gib, 0U);
+  const NodeConfig most = Parsed(
+      "schema_version = 2\nmemory.retention_hours = 8760\nmemory.spill_budget_gib = "
+      "1048576\n");
+  EXPECT_EQ(most.memory.retention_hours, 8760U);
+  EXPECT_EQ(most.memory.spill_budget_gib, 1048576U);
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nretention_hours = 0\n"),
+              ElementsAre(HasSubstr("memory.retention_hours must be from 1 to 8760, not 0")));
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nretention_hours = 8761\n"),
+              ElementsAre(HasSubstr("memory.retention_hours must be from 1 to 8760")));
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nspill_budget_gib = -1\n"),
+              ElementsAre(HasSubstr("memory.spill_budget_gib must be from 0 to 1048576")));
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nspill_budget_gib = \"64\"\n"),
+              ElementsAre(HasSubstr("memory.spill_budget_gib must be an integer")));
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nplans = 3\n"),
+              ElementsAre(HasSubstr("unknown key memory.plans")));
+}
+
 TEST(NodeConfigTest, ReadsTheMemberExample) {
   const NodeConfig config = Parsed(kMember);
   ASSERT_TRUE(config.membership.has_value());

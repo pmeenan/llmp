@@ -25,6 +25,9 @@ using en::support::Error;
 using Clock = std::chrono::steady_clock;
 constexpr std::uint64_t kPage = en::kPagedExtent;
 constexpr std::uint32_t kOutputs = 256;
+// The most graphs a natural run may keep: its shapes' (the runner's caches
+// no longer cap them; the proof's own shapes are few).
+constexpr std::size_t kMaxProofGraphs = 16;
 
 template <typename T>
 bool Exact(const std::vector<T>& a, const std::vector<T>& b) {
@@ -336,7 +339,7 @@ Proof::Status Proof::Generate(bool batch, GenerationRun& run) {
       run.graphs.refused != 0 || run.graphs.captured == 0 || run.graphs.replayed == 0 ||
       run.graphs.eager + run.graphs.captured + run.graphs.replayed != 2 * run.steps.size() ||
       coverage_.violations != 0 ||
-      target_plans_.graphs() + draft_plans_.graphs() > en::Qwen38Runner::kMaxGraphs) {
+      target_plans_.graphs() + draft_plans_.graphs() > kMaxProofGraphs) {
     return Error("C2 natural timing lacks finite completion or actual bounded graph execution");
   }
   run.complete = true;

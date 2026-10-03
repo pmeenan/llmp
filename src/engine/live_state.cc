@@ -84,6 +84,24 @@ std::vector<ExtentId> LiveState::extents() const {
   return all;
 }
 
+void LiveState::SplitExtents(std::span<const Range> changed, std::vector<ExtentId>& written,
+                             std::vector<ExtentId>& unchanged) const {
+  for (std::size_t ri = 0; ri < regions_.size(); ++ri) {
+    const Region& r = regions_[ri];
+    for (std::size_t i = 0; i < r.mapped.extents.size(); ++i) {
+      if (r.used[i] == 0) {
+        continue;
+      }
+      const std::uint64_t begin = i * kExtent;
+      const std::uint64_t end = begin + kExtent;
+      const bool touched = std::ranges::any_of(changed, [&](const Range& c) {
+        return c.region == ri && c.bytes != 0 && c.offset < end && begin < c.offset + c.bytes;
+      });
+      (touched ? written : unchanged).push_back(r.mapped.extents[i]);
+    }
+  }
+}
+
 std::vector<ExtentId> LiveState::reserved_extents() const {
   std::vector<ExtentId> all;
   for (const Region& r : regions_) {
@@ -213,6 +231,7 @@ std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const
     if (over_budget != nullptr) {
       *over_budget = refused_for_budget && !quarantined_;
     }
+    refused_bytes_ = refused_for_budget ? fresh.size() * kExtent : 0;
     return std::unexpected(loaded.error());
   }
   return true;

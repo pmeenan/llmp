@@ -1358,6 +1358,23 @@ it appears.
         [runtime-serving.md](runtime-serving.md#progress-and-deadlines)):
         DeepSeek's 128K prompt, which the deadline stopped at 108,544
         tokens, now streams to its end (845.8 s on `spark`).
+- [x] **Memory policy** (the owner, 2026-10-02: use memory fully, scale
+      down gracefully under pressure, never fixed cache counts; D-055 and
+      D-090 as amended). *Done 2026-10-02*
+      ([memory-pressure](experiments/memory-pressure/README.md)): one
+      reclaim order, GreedyDual-Size over measured restore costs a byte
+      (idle state spilled 0.17 s a GiB, graphs 0.2–0.4, plans 2–15;
+      recomputing 64), all of what is asked or nothing. Plans and graphs
+      are uncapped and charged inside the budget past one step's floor,
+      and survive swaps. Plans shrink 3.2–4.1×. Idle conversations spill,
+      writing only what changed, and resume exactly: 2.48 s with 20,012
+      cached tokens against the base's 30.18 s re-prefill. Turn
+      checkpoints' staging is set apart. The `[memory]` retention and
+      spill budget are configurable. Pressure from outside is trimmed to
+      a target headroom with hysteresis and back-off, never the running
+      model's floor. The two-model DSpark configuration gains 0.61 GiB of
+      state room, and its swap table now runs, exact. Open: plans to
+      disk, per-slot plan sharing, the spill write budget (M6).
 
 **Exit criteria:**
 

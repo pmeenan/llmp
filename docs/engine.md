@@ -37,7 +37,7 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | --- | --- | --- | --- |
 | Weights | `paged_weights.h` | Opens an artifact and its shards for direct reads; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`, `ExpertSlab`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
 | Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify | The state layout and each step's used ranges; which ranges a verify writes; a commit kernel if kept rows need one |
-| Planned shapes | `planned.h` | `PlannedGraph<Graph>`, `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, capped, least recently used dropped, host bytes counted: `PlannedHostBytes`), `RoomForPlan` (one plan cap over several caches, a runner's slots), `RoomForGraphs` (the graph cap over every graph a model keeps, D-090), `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
+| Planned shapes | `planned.h` | `PlannedGraph<Graph>`, `SizedArena` (a plan's arena holds what its graph uses), `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, no fixed number, each plan's host bytes and planning time kept: `PlannedHostBytes`), `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim), `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
 | Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts) and what it copies out |
 | Resources | `runner_resources.h` | The runner's own device memory (pinned), pinned staging, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry, and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
@@ -64,12 +64,14 @@ joined problems).
    fence, any narrower ones), the model's places as the plan's address
    functions, the commit hook, and the launch context
    (`RunnerResources::BindLaunch`, then `GraphRuns::SetLaunch`).
-4. **Steps**: each chunk, draft or verify checks `LiveState::Usable` and
+4. **Steps**: each chunk, draft or verify holds a `PlanStep` for its life,
+   checks `LiveState::Usable` and
    `AwaitingAccept`, finds or plans its shape (`PlanCache::Find`, else plan,
-   `BindPlanned`, `CheckCoverage`, `RoomForPlan` where slots share a cap,
-   `Add` with its `PlannedHostBytes`), decides whether to capture
-   (`PlanRuns::CaptureDue` plus the model's rule, then `RoomForGraphs` for
-   every capture of the job), and
+   `BindPlanned`, `CheckCoverage`, `Add` with its `PlannedHostBytes` and
+   planning time, charged as it is added), decides whether to capture
+   (`PlanRuns::CaptureDue` plus the model's rule, then `ChargeGraph` for
+   every capture of the job: a graph with no room even after a reclaim is
+   not made), and
    materializes its used ranges (`LiveState::Use`) and renews the request
    closure if new extents were initialized, then posts one job that queues what the live state owes (`QueueOwed`), a
    verify's saves (`QueueSaves`), and the run (`GraphRuns::Queue`). A
@@ -87,8 +89,12 @@ live state, verify snapshot, commit state, pending cursor and plan caches. The
 weights, launch context, stream, staging and workspace remain shared. The scalar
 runner methods use slot zero. `SelectSlots` selects an execution closure over the
 active slots at a completed unit boundary; the runner's aggregate state and swap
-closure include every initialized slot, including idle retained conversations.
-The graph cap applies across all slots. Serving provisions two concurrent
+closure include every initialized slot, idle retained conversations too, but
+not a spilled one (a swap in does not restore it; its next turn does).
+Every slot's plans and graphs are charged to one account. A slot outside the
+selected set spills (`Slot::Spill`: its state out of every closure, written to
+its spill file, its backing released) and restores (`Slot::Restore`) before
+its next work; Clear discards a spilled slot's saved state too. Serving provisions two concurrent
 execution slots separately from these four stable state slots, with conservative
 activation, scratch, staging and host-input bounds checked before work.
 
@@ -166,9 +172,11 @@ What a new family writes, and nothing else:
   in the graph's copy order.
 - `engine/<family>_runner.h`: a `PagedModel` holding `RunnerResources`,
   `LiveState`, `GraphRuns`, a `PagedWeights` per artifact and a
-  capped `PlanCache` per kind of plan, its `plan_host_bytes()` (every cap at
-  its kind's largest plan, measured at Setup, and every graph's: the memory
-  guard sets it apart), with Setup, Register and Bind as above and
+  `PlanCache` per kind of plan bound to its `PlanAccount` at Bind, its
+  `plan_floor_bytes()` (what one step holds at once, from its kinds' largest
+  plans measured at Setup: the memory
+  guard sets it apart), its plans' `ReclaimCandidates` and `Reclaim` and its
+  slots' `Spill` and `Restore`, with Setup, Register and Bind as above and
   the family's steps. The DeepSeek and Qwen3.8 runners are the worked
   examples: DeepSeek with a host table, a chained draft-and-verify job and
   a snapshot of every written range; Qwen3.8 with rows read on demand and

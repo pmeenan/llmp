@@ -22,6 +22,11 @@ namespace jitllm::engine {
 std::expected<std::vector<LiveState::Range>, std::string> CheckpointPages(
     std::span<const LiveState::Range> used, std::span<const LiveState::Range> writes);
 
+// The pinned staging one capture or restore uses at a time: one extent
+// and room to align it for direct I/O. The runtime sets it apart at start
+// (PagedNode::ReserveStaging) so a full budget never starves a checkpoint.
+std::uint64_t CheckpointStagingBytes();
+
 struct CheckpointFailure {
   std::string detail;
   // Capture: a device copy has uncertain effects. Restore: the old branch

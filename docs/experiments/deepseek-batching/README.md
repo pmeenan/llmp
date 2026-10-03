@@ -595,6 +595,13 @@ controller `runx.py` over `dss0/tools/run.py`, 2026-10-03.
 
 ## Plan memory
 
+*Superseded 2026-10-02:* the caps and the swap's drop below are gone.
+Plans and graphs are charged inside the execution budget past one step's
+floor and given back through the node's reclaim order, and a plan's arena
+holds what its graph uses
+([memory-pressure](../memory-pressure/README.md); D-055 and D-090 as
+amended). This section records the interim design.
+
 Plans and graphs are host and driver memory outside the catalog. Before
 the caps, four slots' 32 chunk plans each, 32 wave plans and 16 graphs
 (draft blocks' uncounted) could grow the service by about 2 GiB. The

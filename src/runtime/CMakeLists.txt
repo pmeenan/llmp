@@ -6,12 +6,14 @@
 # commands' arguments (commands.h), a prefill's chunks (prefill.h), the
 # start's memory guard (memory_guard.h), checkpoint ceilings (model_limits.h),
 # a chat cohort's state-capacity policy (cohort_capacity.h) and schedule
-# (cohort_schedule.h), and the chat route's HTTP,
-# requests, binding, server and watchdog (http.h, api.h, binding.h,
+# (cohort_schedule.h), when pressure from outside has it trim
+# (pressure_trim.h), room for a swap (swap_room.h), and the chat route's
+# HTTP, requests, binding, server and watchdog (http.h, api.h, binding.h,
 # api_server.h, watchdog.h; D-097), all vendor-free.
 add_library(jitllm_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc binding.cc
                                   cohort_capacity.cc cohort_schedule.cc completion_tokens.cc
-                                  memory_guard.cc model_limits.cc prefill.cc watchdog.cc)
+                                  memory_guard.cc model_limits.cc prefill.cc pressure_trim.cc
+                                  swap_room.cc watchdog.cc)
 target_include_directories(jitllm_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_runtime PUBLIC jitllm_config jitllm_platform
                       PRIVATE jitllm_build_info jitllm_report jitllm_device_probe jitllm_json

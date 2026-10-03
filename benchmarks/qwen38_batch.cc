@@ -737,9 +737,6 @@ Proof::Status Proof::Draft(const Requests<std::vector<std::int32_t>>& histories,
     return Error(copies.error());
   }
   runs_.set_graphs(graphs);
-  if (natural_ && found->runs[0].CaptureDue(graphs)) {
-    en::RoomForGraph(en::Qwen38Runner::kMaxGraphs, graph_stats_, target_plans_, draft_plans_);
-  }
   en::Status queued;
   auto r = owner_.node_.Job(
       closure_,
@@ -905,9 +902,6 @@ Proof::Status Proof::Verify(const Requests<std::vector<std::int32_t>>& histories
     return Error(copies.error());
   }
   runs_.set_graphs(graphs);
-  if (natural_ && found->runs[0].CaptureDue(graphs)) {
-    en::RoomForGraph(en::Qwen38Runner::kMaxGraphs, graph_stats_, target_plans_, draft_plans_);
-  }
   en::Status queued;
   auto r = owner_.node_.Job(
       closure_,

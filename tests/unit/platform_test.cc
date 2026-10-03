@@ -36,6 +36,7 @@
 #include "platform/files.h"
 #include "platform/host_probe.h"
 #include "platform/interfaces.h"
+#include "platform/memory_pressure.h"
 #include "platform/path_trust.h"
 #include "platform/sockets.h"
 
@@ -162,6 +163,28 @@ TEST(Files, ListDirectory) {
   const auto missing = jitllm::platform::ListDirectory(root.path() / "missing");
   ASSERT_FALSE(missing);
   EXPECT_EQ(missing.error(), std::errc::no_such_file_or_directory);
+}
+
+TEST(MemoryPressure, ParsesTheStallLines) {
+  using jitllm::platform::ParsePressure;
+  const auto stall = ParsePressure(
+      "some avg10=1.50 avg60=0.10 avg300=0.00 total=1234\n"
+      "full avg10=0.25 avg60=0.00 avg300=0.00 total=56\n");
+  ASSERT_TRUE(stall.has_value());
+  const auto parsed = stall.value_or(jitllm::platform::PressureStall{});
+  EXPECT_DOUBLE_EQ(parsed.some_avg10, 1.5);
+  EXPECT_DOUBLE_EQ(parsed.full_avg10, 0.25);
+  EXPECT_FALSE(ParsePressure("some avg10=1.50 avg60=0.10 avg300=0.00 total=1\n").has_value());
+  EXPECT_FALSE(ParsePressure("some avg10=x\nfull avg10=0.00\n").has_value());
+  EXPECT_FALSE(ParsePressure("some avg10=101.0\nfull avg10=0.00\n").has_value());
+  EXPECT_FALSE(ParsePressure("somewhere avg10=1.0\nfull avg10=0.00\n").has_value());
+  EXPECT_FALSE(ParsePressure("").has_value());
+  // This host's, when it has PSI: both lines, each a share in [0, 100].
+  const auto now = jitllm::platform::ReadMemoryPressure();
+  if (now.stall) {
+    EXPECT_LE(now.stall->full_avg10, 100.0);
+    EXPECT_GE(now.stall->some_avg10, 0.0);
+  }
 }
 
 TEST(Meminfo, Values) {

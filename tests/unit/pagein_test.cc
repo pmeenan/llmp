@@ -186,15 +186,16 @@ class EvictProgram final : public TaskProgram {
     std::optional<TaskOutcome> outcome;
     std::vector<std::expected<Readiness, WorkError>> results;
   };
-  EvictProgram(Report& report, std::vector<ExtentId> extents)
-      : report_(report), extents_(std::move(extents)) {}
+  EvictProgram(Report& report, std::vector<ExtentId> extents,
+               jitllm::scheduler::EvictOptions options = {})
+      : report_(report), extents_(std::move(extents)), options_(options) {}
 
   Step Advance(TaskContext& context) override {
     if (context.TakeFailure()) {
       return Step::Finish(TaskOutcome::kFailed);
     }
     if (next_ < extents_.size()) {
-      const auto result = context.Evict(extents_[next_++]);
+      const auto result = context.Evict(extents_[next_++], options_);
       report_.results.push_back(result);
       if (!result) {
         return Step::Finish(TaskOutcome::kFailed);
@@ -208,6 +209,7 @@ class EvictProgram final : public TaskProgram {
  private:
   Report& report_;
   std::vector<ExtentId> extents_;
+  jitllm::scheduler::EvictOptions options_;
   std::size_t next_ = 0;
 };
 
@@ -1500,6 +1502,50 @@ TEST_P(PageInTest, WriteBackPreservesStateAcrossEvictionAndRestore) {
   Settle();
   EXPECT_EQ(restored_again.outcome, TaskOutcome::kSucceeded);
   EXPECT_TRUE(StateIs(0));
+}
+
+// Incremental spill: restored from its place and not written since (its
+// owner's word, EvictOptions::unchanged, and the catalog's saved
+// generation), a write-back writes nothing and still completes preserved,
+// so a load restores the same bytes. Never written back, or with contents
+// replaced since, the word is not enough: it is written.
+TEST_P(PageInTest, AnUnchangedWriteBackWritesNothingAndStillRestores) {
+  Build();
+  const ExtentId state = AddState(0);
+  const Closure before = catalog_.ClosureOfExtents(std::vector{state}).value();
+  const jitllm::scheduler::EvictOptions unchanged{.unchanged = true};
+  // Never saved: written, word or not.
+  EXPECT_EQ(View(state).saved_generation, 0U);
+  EvictProgram::Report first;
+  ASSERT_TRUE(
+      scheduler_->Start(1, std::make_unique<EvictProgram>(first, std::vector{state}, unchanged))
+          .has_value());
+  Settle();
+  ASSERT_EQ(first.outcome, TaskOutcome::kSucceeded);
+  const std::size_t written = Writes().size();
+  EXPECT_GT(written, 0U);
+  EXPECT_EQ(View(state).saved_generation, View(state).content_generation);
+  LoadProgram::Report restored;
+  ASSERT_TRUE(scheduler_->Start(2, Load(restored, before)).has_value());
+  Settle();
+  ASSERT_EQ(restored.outcome, TaskOutcome::kSucceeded);
+  // Unchanged since: nothing written, preserved, restored whole.
+  EvictProgram::Report again;
+  ASSERT_TRUE(
+      scheduler_->Start(3, std::make_unique<EvictProgram>(again, std::vector{state}, unchanged))
+          .has_value());
+  Settle();
+  ASSERT_EQ(again.outcome, TaskOutcome::kSucceeded);
+  EXPECT_EQ(Writes().size(), written);
+  EXPECT_EQ(View(state).state, ExtentState::kNonresident);
+  EXPECT_TRUE(View(state).preserved);
+  EXPECT_EQ(scheduler_->stats().unchanged_writebacks, 1U);
+  LoadProgram::Report restored_again;
+  ASSERT_TRUE(scheduler_->Start(4, Load(restored_again, before)).has_value());
+  Settle();
+  ASSERT_EQ(restored_again.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(StateIs(0));
+  EXPECT_FALSE(scheduler_->fault().has_value());
 }
 
 // A direct place (host backing the storage lane reaches) is written from

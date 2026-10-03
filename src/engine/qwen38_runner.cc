@@ -201,28 +201,76 @@ std::uint64_t Qwen38Runner::cached_plan_bytes() const {
   return bytes;
 }
 
-void Qwen38Runner::RoomForChunkPlan() {
-  std::array<ChunkPlans*, kRequestSlots> caches{};
-  for (RequestState* request : Requests()) {
-    caches[request->slot] = &request->plans;
+std::uint64_t Qwen38Runner::cached_graph_bytes() const {
+  std::uint64_t bytes = 0;
+  for (const PlanCacheBase* cache : PlanCaches()) {
+    bytes += cache->graph_bytes();
   }
-  RoomForPlan(kMaxChunkPlans, std::span<ChunkPlans* const>(caches));
+  return bytes;
 }
 
-void Qwen38Runner::RoomForMtpPlan() {
-  std::array<MtpPlans*, kRequestSlots> caches{};
-  for (RequestState* request : Requests()) {
-    caches[request->slot] = &request->mplans;
+std::uint64_t Qwen38Runner::graph_measured_bytes() const {
+  std::uint64_t bytes = 0;
+  for (const PlanCacheBase* cache : PlanCaches()) {
+    bytes += cache->graph_measured_bytes();
   }
-  RoomForPlan(kMaxMtpPlans, std::span<MtpPlans* const>(caches));
+  return bytes;
 }
 
-bool Qwen38Runner::RoomForGraphs(std::uint64_t adding_bytes) {
-  return engine::RoomForGraphs(kMaxGraphs, kMaxGraphBytes, 1, adding_bytes, graph_stats_, plans_,
-                               mplans_, additional_requests_[0].plans,
-                               additional_requests_[0].mplans, additional_requests_[1].plans,
-                               additional_requests_[1].mplans, additional_requests_[2].plans,
-                               additional_requests_[2].mplans, target_waves_, draft_waves_);
+std::array<PlanCacheBase*, (2 * Qwen38Runner::kRequestSlots) + 2> Qwen38Runner::PlanCaches() {
+  std::array<PlanCacheBase*, (2 * kRequestSlots) + 2> caches{};
+  for (RequestState* request : Requests()) {
+    caches[std::size_t{2} * request->slot] = &request->plans;
+    caches[(std::size_t{2} * request->slot) + 1] = &request->mplans;
+  }
+  caches[2 * kRequestSlots] = &target_waves_;
+  caches[(2 * kRequestSlots) + 1] = &draft_waves_;
+  return caches;
+}
+
+std::array<const PlanCacheBase*, (2 * Qwen38Runner::kRequestSlots) + 2> Qwen38Runner::PlanCaches()
+    const {
+  std::array<const PlanCacheBase*, (2 * kRequestSlots) + 2> caches{};
+  for (const RequestState* request : Requests()) {
+    caches[std::size_t{2} * request->slot] = &request->plans;
+    caches[(std::size_t{2} * request->slot) + 1] = &request->mplans;
+  }
+  caches[2 * kRequestSlots] = &target_waves_;
+  caches[(2 * kRequestSlots) + 1] = &draft_waves_;
+  return caches;
+}
+
+void Qwen38Runner::ReclaimCandidates(std::uint32_t owner, bool running,
+                                     std::vector<memory::ReclaimCandidate>& out) {
+  if (released_ || cohort_faulted_) {
+    return;  // a faulted cohort keeps its owners until retirement
+  }
+  auto caches = PlanCaches();
+  CollectPlans(caches, owner, running, out);
+}
+
+std::uint64_t Qwen38Runner::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
+  if (released_ || cohort_faulted_) {
+    return 0;
+  }
+  auto caches = PlanCaches();
+  return ReclaimPlan(caches, kind, id);
+}
+
+std::uint64_t Qwen38Runner::reclaimed_plans() const {
+  std::uint64_t n = 0;
+  for (const PlanCacheBase* cache : PlanCaches()) {
+    n += cache->reclaimed_plans();
+  }
+  return n;
+}
+
+std::uint64_t Qwen38Runner::reclaimed_graphs() const {
+  std::uint64_t n = 0;
+  for (const PlanCacheBase* cache : PlanCaches()) {
+    n += cache->reclaimed_graphs();
+  }
+  return n;
 }
 
 std::vector<ExtentId> Qwen38Runner::state() const {
@@ -232,6 +280,29 @@ std::vector<ExtentId> Qwen38Runner::state() const {
     all.insert(all.end(), extents.begin(), extents.end());
   }
   return all;
+}
+
+std::vector<ExtentId> Qwen38Runner::unchanged_state() const {
+  std::vector<ExtentId> all;
+  for (const RequestState* request : Requests()) {
+    if (!request->spilled) {
+      std::vector<ExtentId> written;
+      SplitForSpill(*request, written, all);
+    }
+  }
+  return all;
+}
+
+void Qwen38Runner::StateWrittenBack(bool whole) {
+  for (RequestState* request : Requests()) {
+    if (!request->spilled) {
+      if (whole) {
+        request->track.Saved();
+      } else {
+        request->track.Lost();
+      }
+    }
+  }
 }
 
 bool Qwen38Runner::HasRetainedState() const {
@@ -445,7 +516,7 @@ Status Qwen38Runner::Setup() {
   stand_in.table_rows = 1;
   std::uint64_t most_activations = 0;
   // Each kind's largest plan (PlannedHostBytes), most launched nodes and
-  // most products a wave may share, for plan_host_bytes().
+  // most products a wave may share, for plan_floor_bytes().
   struct PlanKind {
     std::uint64_t host = 0;
     std::uint64_t nodes = 0;
@@ -610,30 +681,29 @@ Status Qwen38Runner::Setup() {
       }
     }
   }
-  // The plans' and graphs' bound (plan_host_bytes): every cap at its kind's
-  // largest plan (a wave: every slot's largest and its composition), and
-  // the graphs' budget (a capture past it alone is not made).
+  // What one step holds at once at most (plan_floor_bytes): a chunk beside
+  // its drafter pass (an injected prefill chunk), or a paired unit's target
+  // wave beside its draft wave (each every slot's largest plan and its
+  // composition). Every plan and graph past it is charged inside the budget.
   {
     const std::uint64_t slots = o_.wave_slots;
-    const std::uint64_t chunks = kMaxChunkPlans * chunk_kind.host;
-    const std::uint64_t mtps = kMaxMtpPlans * mtp_kind.host;
-    std::uint64_t waves = 0;
+    const std::uint64_t chunk_step = chunk_kind.host + (speculative() ? mtp_kind.host : 0);
+    std::uint64_t target_wave = 0;
+    std::uint64_t draft_wave = 0;
     if (slots > 1) {
-      waves = kMaxTargetWaves *
-              Qwen38WaveHostBound(chunk_kind.host, chunk_kind.nodes, chunk_kind.products, slots);
+      target_wave =
+          Qwen38WaveHostBound(chunk_kind.host, chunk_kind.nodes, chunk_kind.products, slots);
       if (speculative()) {
-        waves += kMaxDraftWaves *
-                 Qwen38WaveHostBound(mtp_kind.host, mtp_kind.nodes, mtp_kind.products, slots);
+        draft_wave = Qwen38WaveHostBound(mtp_kind.host, mtp_kind.nodes, mtp_kind.products, slots);
       }
     }
-    plan_host_bytes_ = chunks + mtps + waves + kMaxGraphBytes;
+    plan_floor_bytes_ = std::max(chunk_step, target_wave + draft_wave);
     const auto mib = [](std::uint64_t bytes) { return static_cast<double>(bytes) / (1U << 20U); };
     plan_report_ = std::format(
-        "{:.0f} MiB: {} chunk plans of {:.1f} MiB ({} nodes), {} drafter plans of {:.1f} MiB ({} "
-        "nodes), {} target and {} draft waves {:.0f} MiB, graphs {:.0f} MiB",
-        mib(plan_host_bytes_), kMaxChunkPlans, mib(chunk_kind.host), chunk_kind.nodes, kMaxMtpPlans,
-        mib(mtp_kind.host), mtp_kind.nodes, slots > 1 ? kMaxTargetWaves : 0,
-        slots > 1 && speculative() ? kMaxDraftWaves : 0, mib(waves), mib(kMaxGraphBytes));
+        "{:.1f} MiB a step at most: chunk plans of {:.1f} MiB ({} nodes), drafter plans of {:.1f} "
+        "MiB ({} nodes), target waves of {:.1f} MiB, draft waves of {:.1f} MiB",
+        mib(plan_floor_bytes_), mib(chunk_kind.host), chunk_kind.nodes, mib(mtp_kind.host),
+        mtp_kind.nodes, mib(target_wave), mib(draft_wave));
   }
   const auto factor = std::uint64_t{o_.wave_slots};
   const auto limit = std::numeric_limits<std::uint64_t>::max() / 16;
@@ -960,8 +1030,13 @@ Status Qwen38Runner::RefreshClosures(std::uint8_t protected_mask) {
         std::vector<ExtentId> all = shared;
         std::vector<ExtentId> active = shared;
         std::array<catalog::Closure, kRequestSlots> slot_fences;
+        std::vector<ExtentId> resident_state;
         for (RequestState* request : Requests()) {
+          if (request->spilled) {
+            continue;  // in no closure until Restore brings it back
+          }
           const auto live = request->live.extents();
+          resident_state.insert(resident_state.end(), live.begin(), live.end());
           all.insert(all.end(), live.begin(), live.end());
           if ((protected_mask & (1U << request->slot)) != 0) {
             active.insert(active.end(), live.begin(), live.end());
@@ -973,7 +1048,7 @@ Status Qwen38Runner::RefreshClosures(std::uint8_t protected_mask) {
           slot_fences[request->slot] = std::move(*fence);
         }
         auto everything = catalog.ClosureOfExtents(all);
-        auto fence = catalog.ClosureOfExtents(state());
+        auto fence = catalog.ClosureOfExtents(resident_state);
         auto execution = catalog.ClosureOfExtents(active);
         if (!everything || !fence || !execution) {
           return Error("a Qwen3.8 cohort closure is no longer cataloged");
@@ -1009,6 +1084,16 @@ Status Qwen38Runner::Bind() {
       return bound;
     }
   }
+  // Every plan and graph charged to the node as it is kept.
+  account_.Bind(
+      [this](std::uint64_t bytes, bool required) { return node_.ChargeHost(bytes, required); },
+      [this](std::uint64_t bytes) { node_.UnchargeHost(bytes); });
+  for (RequestState* request : Requests()) {
+    request->plans.set_account(&account_);
+    request->mplans.set_account(&account_);
+  }
+  target_waves_.set_account(&account_);
+  draft_waves_.set_account(&account_);
   if (auto r = resources_.BindLaunch(scratch_bytes_); !r) {
     return r;
   }
@@ -1195,6 +1280,10 @@ Status Qwen38Runner::Clear(RequestState& request) {
     return protected_others;
   }
   const Status cleared = request.live.DiscardGrowingState(node_);
+  request.track.Lost();
+  if (cleared) {
+    request.spilled = false;  // nothing left in its spill file either
+  }
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
   }
@@ -1205,7 +1294,9 @@ Status Qwen38Runner::ClearIdle(RequestState& request) {
   if (released_ || cohort_faulted_) {
     return Error("the Qwen3.8 cohort requires retirement");
   }
-  if ((active_mask_ & (1U << request.slot)) != 0) {
+  // Leased by the request open on the stream: cleared within its own
+  // request (Clear). Selected last but with no request open, it is idle.
+  if ((active_mask_ & (1U << request.slot)) != 0 && node_.InRequest(stream_)) {
     return Error("an active Qwen3.8 slot is cleared within its own request");
   }
   request.pending_rows = 0;
@@ -1214,10 +1305,135 @@ Status Qwen38Runner::ClearIdle(RequestState& request) {
   // every active state; the catalog refuses the discard if anything still
   // holds or operates on this state's extents (DiscardGrowingState).
   const Status cleared = request.live.DiscardGrowingState(node_);
+  request.track.Lost();
+  if (cleared) {
+    request.spilled = false;  // nothing left in its spill file either
+  }
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
   }
   return cleared;
+}
+
+Status Qwen38Runner::CheckResident(const RequestState& request) const {
+  if (auto active = CheckActive(request); !active) {
+    return active;
+  }
+  if (request.spilled) {
+    return Error("the Qwen3.8 slot's state is spilled: restore it first");
+  }
+  return {};
+}
+
+Status Qwen38Runner::Spill(RequestState& request) {
+  if (released_ || cohort_faulted_) {
+    return Error("the Qwen3.8 cohort requires retirement");
+  }
+  if (request.spilled) {
+    return {};
+  }
+  if (auto usable = request.live.Usable(); !usable) {
+    return usable;
+  }
+  if (auto awaiting = request.live.AwaitingAccept(); !awaiting) {
+    return awaiting;
+  }
+  const std::vector<ExtentId> extents = request.live.extents();
+  if (extents.empty()) {
+    return {};  // nothing initialized: nothing to spill
+  }
+  // Out of every closure first, so the held request no longer leases it
+  // (its peers stay protected); then every initialized extent written back
+  // to its place in the slot's spill file and its backing released (the
+  // swap's write-back path). A commit or restore owed by its last verify
+  // stays owed: it works from the slot's own runtime memory, not spilled.
+  std::vector<ExtentId> written;
+  std::vector<ExtentId> unchanged;
+  SplitForSpill(request, written, unchanged);
+  request.spilled = true;
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    request.spilled = false;
+    return refreshed;
+  }
+  // Only what changed since the spill file last held it is written.
+  for (const auto& [extents_of, unchanged_word] :
+       {std::pair{&written, false}, std::pair{&unchanged, true}}) {
+    if (extents_of->empty()) {
+      continue;
+    }
+    if (auto evicted = node_.Evict(*extents_of, {.unchanged = unchanged_word}); !evicted) {
+      request.track.Lost();
+      return evicted;
+    }
+  }
+  request.track.Saved();
+  return {};
+}
+
+void Qwen38Runner::SplitForSpill(const RequestState& request, std::vector<ExtentId>& written,
+                                 std::vector<ExtentId>& unchanged) const {
+  std::vector<LiveState::Range> changed = request.track.written;
+  bool known = request.track.on_disk;
+  if (known && request.track.written_from != SpillTrack::kUnwritten) {
+    auto writes = StateWrites(request.track.written_from);
+    if (writes) {
+      changed.insert(changed.end(), writes->begin(), writes->end());
+    } else {
+      known = false;
+    }
+  }
+  if (!known) {
+    written = request.live.extents();
+    return;
+  }
+  request.live.SplitExtents(changed, written, unchanged);
+}
+
+std::uint64_t Qwen38Runner::SpillWriteBytes(const RequestState& request) const {
+  if (request.spilled) {
+    return 0;
+  }
+  std::vector<ExtentId> written;
+  std::vector<ExtentId> unchanged;
+  SplitForSpill(request, written, unchanged);
+  return written.size() * kPagedExtent;
+}
+
+Status Qwen38Runner::Restore(RequestState& request) {
+  request.state_refused = false;
+  if (!request.spilled) {
+    return {};
+  }
+  if (released_ || cohort_faulted_) {
+    return Error("the Qwen3.8 cohort requires retirement");
+  }
+  catalog::Closure closure;
+  const std::vector<ExtentId> extents = request.live.extents();
+  if (auto described = node_.Call(
+          [&]() -> Status {
+            auto of = node_.catalog().ClosureOfExtents(extents);
+            if (!of) {
+              return Error("a spilled Qwen3.8 state is no longer cataloged");
+            }
+            closure = std::move(*of);
+            return {};
+          },
+          "describing a spilled Qwen3.8 state");
+      !described) {
+    return described;
+  }
+  // Read back at the generations it was written at, under the budget: a
+  // clean refusal leaves it spilled for the runtime to make room.
+  sc::AcquireReport report;
+  bool over_budget = false;
+  if (auto acquired =
+          node_.Acquire(closure, report, "restoring a spilled Qwen3.8 state", &over_budget);
+      !acquired) {
+    request.state_refused = over_budget && !cohort_faulted_;
+    return acquired;
+  }
+  request.spilled = false;
+  return RefreshClosures();
 }
 
 Status Qwen38Runner::EnsureState(std::uint32_t positions) {
@@ -1228,7 +1444,7 @@ std::uint32_t Qwen38Runner::DecodeReadAlign() const { return WaveReadAlign(o_.wa
 
 Status Qwen38Runner::EnsureState(RequestState& request, std::uint32_t positions,
                                  std::uint32_t read_align) {
-  if (auto active = CheckActive(request); !active) {
+  if (auto active = CheckResident(request); !active) {
     return active;
   }
   // A wave's graphs read the caches through a coarser alignment than the
@@ -1293,11 +1509,11 @@ std::expected<Qwen38Runner::ChunkPlans::Entry*, std::string> Qwen38Runner::Plann
     return std::unexpected(r.error());
   }
   Check((*planned)->graph);
-  plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
-  RoomForChunkPlan();
+  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  plan_seconds_ += seconds;
   const std::uint64_t bytes = PlannedHostBytes(**planned);
   const std::uint64_t nodes = PlannedNodes(**planned);
-  return &request.plans.Add(key, std::move(*planned), bytes, nodes);
+  return &request.plans.Add(key, std::move(*planned), bytes, nodes, seconds);
 }
 
 std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::PlannedMtp(
@@ -1321,11 +1537,11 @@ std::expected<Qwen38Runner::MtpPlans::Entry*, std::string> Qwen38Runner::Planned
     return std::unexpected(r.error());
   }
   CheckMtp((*planned)->graph);
-  plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
-  RoomForMtpPlan();
+  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  plan_seconds_ += seconds;
   const std::uint64_t bytes = PlannedHostBytes(**planned);
   const std::uint64_t nodes = PlannedNodes(**planned);
-  return &request.mplans.Add(shape, std::move(*planned), bytes, nodes);
+  return &request.mplans.Add(shape, std::move(*planned), bytes, nodes, seconds);
 }
 
 // BP-A1's check (planned.h): the state is live state (the target's, the
@@ -1452,7 +1668,7 @@ void Qwen38Runner::Settle(RequestState& request, bool saved, bool wrote, bool un
 Status Qwen38Runner::Usable() const { return Usable(default_request_); }
 
 Status Qwen38Runner::Usable(const RequestState& request) const {
-  if (auto active = CheckActive(request); !active) {
+  if (auto active = CheckResident(request); !active) {
     return active;
   }
   if (!hash_checked_) {
@@ -1590,12 +1806,13 @@ std::expected<Qwen38Runner::TargetWaves::Entry*, std::string> Qwen38Runner::Plan
       !bound) {
     return std::unexpected(bound.error());
   }
-  plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
+  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  plan_seconds_ += seconds;
   auto owner = std::make_unique<WaveCacheOwner>();
   owner->plan = std::move(*planned);
   const std::uint64_t bytes = owner->plan->host_bytes();
   const std::uint64_t nodes = PlannedNodes(*owner->plan);
-  return &target_waves_.Add(key, std::move(owner), bytes, nodes);
+  return &target_waves_.Add(key, std::move(owner), bytes, nodes, seconds);
 }
 
 std::expected<Qwen38Runner::DraftWaves::Entry*, std::string> Qwen38Runner::PlannedWave(
@@ -1626,12 +1843,13 @@ std::expected<Qwen38Runner::DraftWaves::Entry*, std::string> Qwen38Runner::Plann
       !bound) {
     return std::unexpected(bound.error());
   }
-  plan_seconds_ += Seconds(std::chrono::steady_clock::now() - start);
+  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  plan_seconds_ += seconds;
   auto owner = std::make_unique<WaveCacheOwner>();
   owner->plan = std::move(*planned);
   const std::uint64_t bytes = owner->plan->host_bytes();
   const std::uint64_t nodes = PlannedNodes(*owner->plan);
-  return &draft_waves_.Add(key, std::move(owner), bytes, nodes);
+  return &draft_waves_.Add(key, std::move(owner), bytes, nodes, seconds);
 }
 
 Status Qwen38Runner::CheckWave(const Qwen38WavePlanned& planned) {
@@ -1707,8 +1925,14 @@ Status Qwen38Runner::VerifyWave(std::span<const VerifyWork> work, bool paired) {
 }
 
 Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, bool paired) {
+  const PlanStep step;  // the plans this wave borrows stay until its job ends
   if (work.empty() || work.size() > o_.wave_slots || (verify && !speculative())) {
     return Error("the Qwen3.8 target wave exceeds its provisioned cohort or lacks a drafter");
+  }
+  for (const TargetWork& w : work) {
+    if (w.slot != nullptr && &w.slot->owner_ == this) {
+      w.slot->request_.track.Wrote(w.n_past > 0 ? w.n_past - 1 : 0);
+    }
   }
   struct Save {
     std::uint64_t address, bytes;
@@ -1923,8 +2147,8 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
       run.CaptureDue(runs_.graphs()) && (verify || std::ranges::all_of(work, [](const auto& w) {
                                            return w.history.size() - w.n_past == 1;
                                          }));
-  if (capture && !RoomForGraphs(entry.nodes * kGraphNodeHostBytes)) {
-    capture = false;  // past the graph caps alone: launch by launch
+  if (capture && !target_waves_.ChargeGraph(entry)) {
+    capture = false;  // no room for its graph even after a reclaim: launch by launch
   }
   const auto gather = Gather(total_rows);
   Status ran;
@@ -2003,9 +2227,16 @@ Status Qwen38Runner::TargetWave(std::span<const TargetWork> work, bool verify, b
 }
 
 Status Qwen38Runner::DraftWave(std::span<const DraftWork> work, bool paired) {
+  const PlanStep step;  // the plans this wave borrows stay until its job ends
   if (work.empty() || work.size() > o_.wave_slots || work.size() > kRequestSlots ||
       !speculative()) {
     return Error("a Qwen3.8 draft wave needs a provisioned cohort and drafter");
+  }
+  for (const DraftWork& w : work) {
+    if (w.slot != nullptr && &w.slot->owner_ == this) {
+      w.slot->request_.track.Wrote(
+          w.history.size() > 1 ? static_cast<std::uint32_t>(w.history.size() - 2) : 0);
+    }
   }
   struct Frame {
     RequestState* request = nullptr;
@@ -2117,8 +2348,8 @@ Status Qwen38Runner::DraftWave(std::span<const DraftWork> work, bool paired) {
   auto& launch = resources_.launch();
   auto& run = entry.runs[0];
   bool capture = run.CaptureDue(runs_.graphs());
-  if (capture && !RoomForGraphs(entry.nodes * kGraphNodeHostBytes)) {
-    capture = false;  // past the graph caps alone: launch by launch
+  if (capture && !draft_waves_.ChargeGraph(entry)) {
+    capture = false;  // no room for its graph even after a reclaim: launch by launch
   }
   Status ran;
   RunPath path = RunPath::kEager;
@@ -2177,6 +2408,8 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
 
 Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> history,
                            std::uint32_t n_past, std::vector<float>& logits, bool inject) {
+  const PlanStep step;  // the plans this step borrows stay until its job ends
+  request.track.Wrote(n_past);
   if (auto usable = Usable(request); !usable) {
     return usable;
   }
@@ -2269,8 +2502,8 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   // Decode graphs (D-090): replay a shape's graph; capture a one-row shape
   // that has run once launch by launch; otherwise launch by launch.
   bool capture = runs.CaptureDue(runs_.graphs()) && rows == 1 && !inject;
-  if (capture && !RoomForGraphs(entry.nodes * kGraphNodeHostBytes)) {
-    capture = false;  // past the graph caps alone: launch by launch
+  if (capture && !request.plans.ChargeGraph(entry, kWithLogits)) {
+    capture = false;  // no room for its graph even after a reclaim: launch by launch
   }
   const Copies outputs = {{Address(logits_), Address(g.logits->data), row_bytes}};
   kg::LaunchContext& launch = resources_.launch();
@@ -2348,6 +2581,9 @@ Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<st
 Status Qwen38Runner::Draft(RequestState& request, std::span<const std::int32_t> history,
                            std::vector<std::int32_t>& drafts, std::vector<float>* probabilities,
                            std::uint32_t passes, Qwen38DraftHeadCapture* head_capture) {
+  const PlanStep step;  // the plan this step borrows stays until its job ends
+  // The drafter catches up the previous target row before advancing.
+  request.track.Wrote(history.size() > 1 ? static_cast<std::uint32_t>(history.size() - 2) : 0);
   if (head_capture != nullptr) {
     *head_capture = {};
     if (!o_.draft_head_capture || draft_head_capture_ == nullptr || capture_head_rows_ == 0) {
@@ -2445,8 +2681,8 @@ Status Qwen38Runner::Draft(RequestState& request, std::span<const std::int32_t> 
     }
   }
   bool capture = runs.CaptureDue(runs_.graphs());
-  if (capture && !RoomForGraphs(entry.nodes * kGraphNodeHostBytes)) {
-    capture = false;  // past the graph caps alone: launch by launch
+  if (capture && !request.mplans.ChargeGraph(entry)) {
+    capture = false;  // no room for its graph even after a reclaim: launch by launch
   }
   kg::LaunchContext& launch = resources_.launch();
   RunPath path = RunPath::kEager;
@@ -2522,6 +2758,8 @@ Status Qwen38Runner::Verify(std::span<const std::int32_t> history, std::uint32_t
 Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t> history,
                             std::uint32_t n_past, std::vector<std::int32_t>& argmax,
                             std::vector<float>* logits, Qwen38RoutedCapture* routed_capture) {
+  const PlanStep step;  // the plan this step borrows stays until its job ends
+  request.track.Wrote(n_past > 0 ? n_past - 1 : 0);
   if (routed_capture != nullptr) {
     *routed_capture = {};
     if (o_.routed_capture == 0 || routed_capture_ == nullptr) {
@@ -2672,8 +2910,8 @@ Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t>
   // The argmaxes always; the logits (their own runs) when asked.
   PlanRuns& runs = entry.runs[logits != nullptr ? kWithLogits : kLean];
   bool capture = runs.CaptureDue(runs_.graphs());
-  if (capture && !RoomForGraphs(entry.nodes * kGraphNodeHostBytes)) {
-    capture = false;  // past the graph caps alone: launch by launch
+  if (capture && !request.plans.ChargeGraph(entry, logits != nullptr ? kWithLogits : kLean)) {
+    capture = false;  // no room for its graph even after a reclaim: launch by launch
   }
   const std::uint64_t row_bytes = std::uint64_t{profile_.vocab} * sizeof(float);
   auto* const argmax_host = static_cast<std::int32_t*>(drafts_) + kArgmaxAt;
@@ -2868,7 +3106,7 @@ Status Qwen38Runner::SaveUsedState(void* host, std::span<const LiveState::Range>
 
 Status Qwen38Runner::SaveUsedState(RequestState& request, void* host,
                                    std::span<const LiveState::Range> ranges) {
-  if (auto active = CheckActive(request); !active) {
+  if (auto active = CheckResident(request); !active) {
     return active;
   }
   LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
@@ -2889,6 +3127,7 @@ Status Qwen38Runner::RestoreUsedState(RequestState& request, void* host,
       std::ranges::any_of(ranges, [](const LiveState::Range& r) { return r.bytes != 0; })) {
     return Error("the conversation snapshot has no source buffer");
   }
+  request.track.Lost();  // a diagnostic restore replaces the state whole
   if (auto prepared = PrepareRestoreState(request, ranges); !prepared) {
     return prepared;
   }
@@ -2901,7 +3140,7 @@ Status Qwen38Runner::PrepareRestoreState(std::span<const LiveState::Range> range
 
 Status Qwen38Runner::PrepareRestoreState(RequestState& request,
                                          std::span<const LiveState::Range> ranges) {
-  if (auto active = CheckActive(request); !active) {
+  if (auto active = CheckResident(request); !active) {
     return active;
   }
   const auto others = static_cast<std::uint8_t>(active_mask_ & ~(1U << request.slot));
@@ -2935,8 +3174,11 @@ Status Qwen38Runner::CopyCheckpointState(void* host, std::span<const LiveState::
 
 Status Qwen38Runner::CopyCheckpointState(RequestState& request, void* host,
                                          std::span<const LiveState::Range> ranges, bool to_host) {
-  if (auto active = CheckActive(request); !active) {
+  if (auto active = CheckResident(request); !active) {
     return active;
+  }
+  if (!to_host) {
+    request.track.Wrote(ranges);  // a turn checkpoint's pages copied in
   }
   LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
   auto copied =
@@ -2969,6 +3211,15 @@ std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::Checkpoi
   if (request.live.owed()) {
     return Error("checkpoint has an unsettled Qwen3.8 verify");
   }
+  auto writes = StateWrites(positions);
+  if (!writes) {
+    return std::unexpected(writes.error());
+  }
+  return CheckpointPages(request.live.used_ranges(), *writes);
+}
+
+std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::StateWrites(
+    std::uint32_t positions) const {
   auto mutable_bytes = md::Qwen38CheckpointWrites(profile_, layout_, positions);
   if (!mutable_bytes) {
     return std::unexpected(mutable_bytes.error());
@@ -2999,7 +3250,7 @@ std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::Checkpoi
                       .offset = mtp_layout_.hidden,
                       .bytes = mtp_layout_.bytes - mtp_layout_.hidden});
   }
-  return CheckpointPages(request.live.used_ranges(), writes);
+  return writes;
 }
 
 }  // namespace jitllm::engine

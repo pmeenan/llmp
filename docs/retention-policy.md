@@ -9,7 +9,10 @@ reusable state outlives the request that produced it, who may reuse it, what
 ends it, how it is bounded and what M6 must demonstrate. It does not
 implement a cache, choose a durable spill format or report measurements.
 M3 spills and restores one model's state across a full swap through M2's
-write-back path; the policy here arrives in M6.
+write-back path, and (D-055 as amended 2026-10-02) an idle conversation's
+state under memory pressure, with a configured retention and spill budget
+([below](#victims-spill-and-exhaustion)); the rest of the policy here
+arrives in M6.
 D-050's [reservation policy](reservation-policy.md) remains the authority for
 admitted work, and D-048's [completion protocol](async-model.md) for
 lifetimes.
@@ -253,7 +256,45 @@ Candidates are ordered by their own refresh times, so the class-specific
 refresh rules carry through, and each is credited only with the bytes it
 actually frees. This is a baseline to measure in M6, not a tuned policy;
 cost-aware alternatives are compared on recorded traces before replacing it
-(features.md). M6's state is small next to its weights, so it cannot show
+(features.md).
+
+**As built in M3 (D-055 as amended 2026-10-02).** The runtime replaced the
+baseline with the owner's cost-aware order before M6, for what M3 holds:
+one conversation branch per request slot and no shared-prefix entries. One
+order (`memory/reclaim.h`) covers everything reclaimable, whoever holds it:
+captured graphs, plans and idle conversation state (idle weights once
+partial eviction produces them). It is GreedyDual-Size over measured
+costs: a candidate's priority is the inflation value at its last use plus
+its kind's cost to restore a GiB freed, the lowest goes first, and each
+reclaim raises the inflation to what it took. So a costly kind outlasts a
+cheap one while both are used, one left unused falls behind fresher cheap
+ones, and within a kind the order is strict least recent use (never
+largest first), the running model's last and never its in-use floor. A
+candidate's cost is measured, not assumed: a plan's planning time, a
+graph's capture, idle state's spill (of what changed) and restore at the
+node's measured rates, weights' page-in. On a GB10: idle weights (0.08 s a
+GiB), idle state (0.17 written whole, 0.07 unchanged), graphs (0.2–0.4),
+plans (2–15); recomputing state costs 64 s a GiB, so idle state is
+spilled, not dropped
+([memory-pressure](experiments/memory-pressure/README.md)). Spill is the
+swap's write-back path for one slot: the slot's state leaves every
+closure, the initialized extents written since its spill file last held
+it are written there (the rest released with the file's copy kept) and
+their backing released, and its next turn's first unit restores them
+at the generation they were written at before the state is reused (a
+refusal for capacity is typed and retried after a reclaim). A cohort
+member set aside for its peers is spilled the same way and resumes from
+its restored state. State is dropped instead only when its contents are
+not exactly known, past the spill budget, or with a budget of 0. The
+spill write budget below is not built yet: the spill budget bounds
+capacity, and writing only what changed reduces the writes.
+Retention is `[memory] retention_hours` (below), enforced by the driver
+between units and while idle for resident and spilled state alike; the
+spill budget is `[memory] spill_budget_gib`, past which the least
+recently used spilled conversation, a swapped-out model's included, is
+deleted first. Plans and graphs are charged inside the budget past one
+step's floor (D-090 as amended), so growing state reclaims them through
+the same order. M6's state is small next to its weights, so it cannot show
 whether idle state within a large `M_state` starves weight residency. M7
 and M9 measure that on their larger workloads. Entry caps also bound each
 caller scope's share of metadata; they do not isolate resident or spill
@@ -307,9 +348,9 @@ their provenance.
 
 | Parameter | Meaning | Rule | Pinned |
 | --- | --- | --- | --- |
-| `T_cont`, `T_prefix` | Maximum idle age per class | 24 hours each (owner decision); configurable downward | Now |
+| `T_cont`, `T_prefix` | Maximum idle age per class | 24 hours each (owner decision); configurable: M3's runtime has `[memory] retention_hours`, 1 to 8,760, default 24, for its conversations and their turn checkpoints | Now |
 | `M_state` | Resident retained-state cap | At most `B − F − J − max_m(R_m + E_m)`, so idle state never stops the node from holding its largest supported request | M5 exit |
-| `S_spill` | Spill capacity | Within the spill filesystem's free space less a fixed reserve; held back from installs (D-054) | M5 exit |
+| `S_spill` | Spill capacity | Within the spill filesystem's free space less a fixed reserve; held back from installs (D-054). M3's runtime: `[memory] spill_budget_gib`, default 128 GiB, the least recently used deleted past it | M5 exit |
 | Spill write budget | Bytes spilled per rolling 24 hours | From the drive's rated endurance, with its source recorded, and the measured M6 workload; past it, entries are dropped instead of spilled and the event is reported | M6 entry |
 | `N_prefix`, `N_cont` | Entry-count caps per class, with a per-scope share of each | Worst-case index metadata (token IDs, block digests and maps at maximum context) fits inside `F` | M5 exit |
 | `L_prefix` | Minimum shared-prefix length | Below it, recomputation costs less than an entry's metadata and lookup | M5 exit |

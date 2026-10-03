@@ -61,6 +61,13 @@ chat_template = "/path/to/chat_template.jinja"  # likewise
 
 [models.image]
 composition = "eca21baa…"  # a pipeline (D-089)
+
+[memory]                     # D-055 as amended 2026-10-02 (below)
+# retention_hours = 24       # idle conversations, resident or spilled, and their
+                             #   turn checkpoints stay reusable this long: 1 to 8,760
+# spill_budget_gib = 128     # spilled conversation state kept on disk at most,
+                             #   the least recently used deleted first: 0 to 1,048,576
+                             #   (0: idle state is dropped, never kept spilled)
 ```
 
 A model names exactly one artifact or composition; the artifact-only keys
@@ -102,22 +109,110 @@ extents. Fixed allocations, weights, used state and dynamic staging are
 charged within that cap; the largest model's weights must fit beside the
 fixed allocations at admission. The guard covers memory outside the catalog
 (the driver and cuBLAS; [long-context](experiments/long-context/README.md#memory-and-the-guards-margin)).
-A model's cached plans and graphs are host and driver memory outside the
-catalog too, but bounded: each runner caps its chunk, drafter and wave
-plans (shared by its request slots, least recently used dropped) and every
-graph it keeps, its drafter's and waves' included, and reports the most
-those caps can hold, measured from its largest plans at setup
-(`Served::plan_host_bytes`, `engine/planned.h`). Only the resident model
-keeps them: a swap drops the outgoing model's plans and graphs, and it
-plans and captures again when it returns (D-090 as amended). So the guard
-sets apart the largest model's bound beside the margin, and no number of
-distinct shapes can consume it
-([batching](experiments/deepseek-batching/README.md#plan-memory)).
+A model's plans and graphs are host and driver memory outside the
+catalog's extents, but counted (D-090 and D-055 as amended 2026-10-02):
+each runner charges what each plan and graph holds to the node as it
+keeps it (`engine/planned.h`). The guard sets apart only what one step of
+the largest model holds at once (`Served::plan_floor_bytes`: a chunk
+beside its draft block, or one wave); everything past that floor is a
+charge inside the budget, so plans and graphs grow into room the budget
+leaves free, with no fixed number, and are given back through the node's
+one reclaim order (below) when conversation state, a swap's incoming
+model or pressure from outside needs the room. A swap keeps both models'
+plans and graphs.
 Conversation ceilings reserve virtual addresses; backing grows in 2 MiB
 extents with each padded cache prefix. The budget admits that growth from
 the remaining physical capacity, preserving the guard. Spill and restore
 move only initialized extents. Diagnostic snapshots allocate cataloged,
-pinned staging lazily and copy only used pages. No weights are paged yet.
+pinned staging lazily and copy only used pages (charged within the
+budget, not set apart again from the guard's margin, so the DeepSeek
+DSpark beside Qwen3.8 configuration can take one). No weights are paged
+yet.
+
+**The reclaim order** (`Server::Reclaim`, `memory/reclaim.h`; D-055 as
+amended 2026-10-02). Whatever can give memory back goes through one
+order: captured graphs, plans, and idle conversations' state (a branch
+with no session whose state no request leases), spilled to its slot's
+spill file (idle weights too, once partial eviction produces them; M3's
+full swap evicts an inactive model's weights whole). The order is
+GreedyDual-Size over expected costs: a candidate's priority is the
+inflation value at its last use plus its kind's measured cost to restore
+a GiB (a plan's planning time, a graph's capture, a spill's write of what
+changed and its restore at the node's rates, 11.0 and 14.5 GB/s on a
+GB10 until the runtime has measured its own) times its chance of reuse,
+which halves with every reclaim since its last use and every 5 minutes
+idle. The lowest goes first, and each reclaim raises the inflation to
+what it took. Measured on `spark-b`, idle state (0.17 s a GiB) goes
+before graphs (0.2–0.4) and plans (2–15) used at the same time, while a
+plan or graph unused for three reclaims or a quarter of an hour falls
+behind a conversation used just now; recomputing state (64 s a GiB) is
+never chosen while spill has room
+([memory-pressure](experiments/memory-pressure/README.md)). Within a kind
+the least recently used goes first, the running model's last; never its
+in-use floor (its most recently used plans up to its `plan_floor_bytes`,
+with their graphs) nor anything a step under way holds. A reclaim takes
+all it was asked for or nothing (the caller then waits or refuses), and
+no more. Cache charges (a plan, a graph's capture) displace only other
+plans and graphs, never conversation state; a graph's capture takes only
+what costs less to restore than a graph, and one refused is not asked
+again for the next 1, 2, 4 … 256 uses of its plan. Conversation state is
+displaced only for state (a growth, a restore, pinned staging), a swap,
+or pressure from outside. The order runs when a growth or restore is
+refused for capacity (below; each refused member's need on its own),
+when a plan, a graph or pinned staging does not fit (from inside its
+step, which it spares), before a swap whose incoming model would not
+fit, and under pressure from outside. A swap's room is checked against
+the catalog again after each reclaim, and a swap it cannot make room
+for is refused before anything moves. One that fails partway (a read
+error) is undone: what the swap brought in (the incoming model's weights
+and state, never the shared workspace or a runner's pinned memory) goes
+out again and the outgoing model loads back. If the undo fails too, or a
+model's first load fails, no model is resident and the next activation
+loads its model whole. In every case only the requests that needed the
+swap fail (503); the backend goes on (D-102: recovery first). Only a
+faulted node ends the process, by abort (signal 6) rather than an
+orderly stop, for its supervisor to restart. The turn checkpoints' staging is set apart at
+start, so a full budget never refuses one; a checkpoint that is not
+saved or restored is logged.
+
+**Spill writes only what changed** (D-055 as amended). Each runner
+records what was written to a slot's state since its spill file last held
+it: the first position a job wrote from (covering the ranges writes from
+there may change, as a turn checkpoint does) and ranges copied in.
+Anything else that changes the state loses the record. A spill, or a
+swap's write-back, then writes only those extents. The rest are released
+with the file's copy kept, which the catalog confirms by the content
+generation the file saved (`scheduler::EvictOptions::unchanged`). This
+saves writes for Qwen3.8 today. DeepSeek with DSpark writes everything:
+its write ranges and the whole drafter region cover every used extent.
+A spill that fails partway (an I/O error) leaves the state not exactly
+known, so the conversation is cleared instead, the log says so, and its
+next turn prefills.
+
+**Retention, the spill budget and pressure** (`[memory]`, below).
+Between units and while idle, the driver deletes idle conversations,
+resident or spilled, unused for `retention_hours`, and while the spilled
+state (a swap's written-back conversations included) passes
+`spill_budget_gib`, the least recently used spilled one; a spill that
+would pass the budget deletes those first, and with a budget of 0 idle
+state is dropped instead of spilled. It also reads MemAvailable and the
+kernel's pressure-stall information (`runtime/pressure_trim.h`): under 512
+MiB available, one reclaim through the same order asks for what would
+bring MemAvailable back to 1.5 GiB (the mark plus 1 GiB of headroom),
+taking whatever part of it the order has. A full memory stall of 5% of
+the last 10 seconds only raises the trigger to that target: a stall
+alone (a compile or a copy with plenty available) is not pressure on the
+runtime. Pressure ends only back at
+that target, and nothing more is trimmed between the mark and the target.
+While it persists, trims are spaced by a back-off that doubles from 1 s to
+60 s, and a trim that found too little left goes straight to 60 s and logs
+once a minute at most. No reclaim takes the running model's in-use floor
+(its most recently used plans up to its `plan_floor_bytes`, with their
+graphs; `memory::ProtectFloor`) or anything a step under way uses. So
+pressure that another process keeps up drops what lies past the floor at
+that growing back-off (once a minute at most once it settles), never four
+times a second. Each reclaim, deletion and pressure event is one log line
+of counts, bytes and the measured costs (D-014).
 
 One model is resident at a time (M3's full swap). Activating another
 (`Server::Activate`) is one `SwapProgram`: the resident LLM's conversation
@@ -194,10 +289,19 @@ between each page. A cancelled capture drops its unpublished file and
 keeps the completed prefix; a cancelled partial restore clears before
 reuse. The page currently in flight completes first.
 
-Checkpoints expire for reuse 24 hours after capture; looking one up does
-not renew it. Idle live history expires after 24 hours too. Physical file
-cleanup is lazy at the model's next request or destruction, and `Clear`,
+Checkpoints expire for reuse `[memory] retention_hours` (24 by default)
+after capture; looking one up does not renew it. Idle live history, and
+an idle conversation's spilled state, expire after as long unused: the
+driver deletes them between units and while idle, and a lookup treats
+them as gone whether or not it has. Physical file cleanup of checkpoints
+is lazy at the model's next request or destruction, and `Clear`,
 `Forget`, a diagnostic full-state restore and restart drop all entries.
+
+An idle conversation the reclaim order spills keeps its history: its
+next turn's first unit restores its state exactly from the slot's spill
+file before reusing it (refused for capacity like a chunk, and run again
+once the order made room) and prefills only its new tokens. A turn that
+does not continue it discards the spilled state as a clear would.
 This is computation reuse within one model's current branch, not session
 identity or the independent shared-prefix and branch cache planned under
 D-031. The native control and measurements are in
@@ -356,9 +460,9 @@ ordered pair of the registered models (or those named), A→B→A, first use
 tokens of A's context, each part timed and the endpoints as the table
 specifies; A's restored state must hash as it left and its continuation
 equal, token and logit, the same state's unswapped continuation; B's first
-output must repeat; an LLM that bounds its plans returns with none kept (its
-swap-out dropped them), and any other model's prepared return must replay
-graphs captured before the swap; an image A's regenerated pixels must equal
+output must repeat; a prepared return that kept its graphs through the swap
+(models keep their plans and graphs unless the reclaim order took them)
+must replay graphs captured before it; an image A's regenerated pixels must equal
 its control's. Both
 write every number to `--report` as JSON. `swap-table --context-tokens`
 accepts 32 to 1,048,576; the requested context must also fit the selected
@@ -614,9 +718,13 @@ A lone request, and a request whose verify is one row (a mask-width boundary or
 its last token), keeps its ordinary step. Each request's rows, drafts, accepted
 tokens and state equal its steps alone bit for bit, so concurrency itself
 does not change a reply. Two things around it can: a request preempted for
-state capacity rebuilds its state by prefill (below), and a turn that
-reuses a cached prefix continues from whichever free branch holds the
-longest one, whose earlier prefill may have been chunked differently
+state capacity whose state could not be spilled rebuilds it by prefill
+(below; one spilled resumes exactly), and a turn that
+reuses a cached prefix continues from whichever free branch it can reuse
+the most of (`Llm::ReusablePrefix`: live history continued, or a turn
+checkpoint; with none, an empty branch, then the least recently used, so
+a new conversation leaves idle ones alone while an empty branch is free),
+whose earlier prefill may have been chunked differently
 ([report](experiments/deepseek-batching/README.md): C4 +29.0% plain, +4.5%
 DSpark on the matched 7K protocol).
 A wave needs every layer in the fast plan's fused form, which takes HC
@@ -638,11 +746,11 @@ likelihood scoring, retain their ordinary serial entry points.
 
 Admission to a cohort does not reserve conversation state: each member's
 state grows as its prompt and generation run, and every member's state is
-leased while the cohort is selected. Conversation state is preserved, never
-an eviction victim, so an idle branch also keeps its finished
-conversation's state (its reuse cache) until it is cleared or spilled by a
-swap. A member's growth can therefore be refused only because other
-branches hold the rest of the execution budget. Such a
+leased while the cohort is selected. An idle branch keeps its finished
+conversation's state (its reuse cache) resident until the reclaim order
+spills it, or a swap does, or its retention ends. A member's growth (or
+its spilled state's restore) can therefore be refused when the execution
+budget is full. Such a
 refusal is typed: the runner reports it (`WorkError::kOverBudget` from the
 acquisition, `Llm::StateRefusedFor`) only when it came before any dispatch
 and left the state usable as it was, with any fresh zero pages that
@@ -655,10 +763,11 @@ the session stays resumable at its completed prefix, and its unit runs
 again later. Every other failure ends its request as before. The policy
 (`runtime/cohort_capacity.h`):
 
-- Idle state goes first: while a branch outside the cohort retains state,
-  the largest such cache is cleared (`Branch::ReleaseIdleState`, which
-  discards an unselected slot's state outside the lease) and the refused
-  member runs again. That conversation's next turn prefills from the start.
+- The reclaim order goes first (above): what the refused units asked for
+  is freed from plans, graphs and idle conversations outside the cohort,
+  spilled, in the order's priority, and the refused member runs again;
+  only when all of it was freed (otherwise nothing is taken and it
+  waits). A spilled conversation's next turn restores it exactly.
 - Then a refused member waits while any peer holds state, a waiting peer or
   one about to retire included. It retries when a peer retires (its state
   is then idle, and reclaimable) or is preempted.
@@ -666,16 +775,23 @@ again later. Every other failure ends its request as before. The policy
   fails with the refusal (a 500 naming the chunk or step, as a lone
   request's).
 - When no member can go on (every one holding state waits and none is about
-  to retire), the youngest waiting member is preempted: its sessions end at
-  their completed boundary, the host keeps its tokens (the prompt, and in a
-  generation every generated token but the unprocessed anchor), and its
-  state is cleared. The others retry at once. A preempted member begins
-  again, the oldest first, once no other member can run or waits: it
-  prefills those tokens, then a resumed generation continues from its
-  anchor without choosing or streaming any token again (sampling stays
-  keyed by absolute position). Its rebuilt state is recomputed, not
-  restored, so its later tokens may differ from an uninterrupted run's as
-  any prefill's rounding may; tokens already streamed never change.
+  to retire), the youngest waiting member is set aside (preempted): its
+  sessions end at their completed boundary, the host keeps its tokens (the
+  prompt, and in a generation every generated token but the unprocessed
+  anchor), and its state is spilled (`Llm::SpillSetAside`). The others
+  retry at once. A preempted member begins again, the oldest first, once
+  no other member can run or waits: its first unit restores its state
+  from the spill file, exactly as it left, and a resumed generation
+  continues from its anchor without choosing or streaming any token again
+  (sampling stays keyed by absolute position). Its state is exactly as it
+  left, so its reply equals an uninterrupted run's wherever the family's
+  replies do not depend on wave composition: DeepSeek's waves keep each
+  request bit-identical to running alone, while Qwen3.8's replies under
+  concurrency vary with arrival timing, set aside or not. (The review's
+  set-aside runs reached it end to end on DeepSeek under memory pressure,
+  and every resumed reply equalled its control's.) Only a state that
+  cannot be spilled is cleared and rebuilt by prefill (whose rounding may
+  then differ; tokens already streamed never change).
 - While any member waits or is preempted, no new request joins the cohort;
   it stays first in the queue. Admission reserves nothing else: a request
   that cannot fit beside its peers waits as above instead.
@@ -683,18 +799,18 @@ again later. Every other failure ends its request as before. The policy
 So only a request that cannot fit alone fails for capacity; under pressure
 the cohort serves fewer requests at a time. A waiting member keeps its
 deadline, cancellation and client checks between every unit. A cohort of
-one clears idle caches first, then fails with the refusal.
+one reclaims first, then fails with the refusal.
 
 The serial path (`Complete`: literal completions and scoring, and chat for
 models without a cohort) runs alone, as a cohort of one. Its prefill chunk,
-scored row or decode step refused this way (DeepSeek's runner types the
-same refusal) clears the largest idle branch's retained state and runs
-again (`Llm::set_capacity_reclaim`, `Llm::LargestIdleBranch`); once none
-is left, the request fails with the refusal (a 500 naming the chunk or
+scored row, decode step or spilled state's restore refused this way
+(DeepSeek's runner types the same refusal) has the reclaim order free what
+it asked for and runs again (`Llm::set_capacity_reclaim`); once nothing is
+left, the request fails with the refusal (a 500 naming the chunk or
 step), its state usable at its completed prefix, and the service goes on.
 Any other failure still stops the service, as below. The runtime
-logs each wait, preemption, cleared idle cache and refusal with slots and
-token counts only.
+logs each wait, preemption, reclaim and refusal with slots, token counts
+and bytes only.
 
 An LLM's stable `Branch` owns its prompt history, sampling key, session guard,
 turn checkpoints and adaptive draft-depth policy. Qwen3.8 and DeepSeek map up to four branches

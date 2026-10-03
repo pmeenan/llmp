@@ -415,6 +415,12 @@ struct EvictOptions {
   // the eviction parks once unmapped, and the backing is released only if
   // no load has taken it by the time the evicting task finishes.
   bool handoff = false;
+  // Its owner's word that nothing wrote a kPreserve extent since it was
+  // last restored from its write-back place (or written back there): if
+  // the catalog agrees that the place saved its current content generation
+  // (ExtentView::saved_generation), the write-back writes nothing, and the
+  // eviction completes preserved as if it had (incremental spill).
+  bool unchanged = false;
 };
 
 // Controls from other threads.
@@ -458,6 +464,9 @@ struct SchedulerStats {
   std::uint64_t leases_held = 0;
   std::uint64_t leases_released = 0;
   std::uint64_t held_operations = 0;
+  // Write-backs that wrote nothing (EvictOptions::unchanged), and their bytes.
+  std::uint64_t unchanged_writebacks = 0;
+  std::uint64_t unchanged_writeback_bytes = 0;
 };
 
 class Scheduler {

@@ -26,10 +26,10 @@ void WakeBlocked(Cohort& cohort) {
 }  // namespace
 
 CapacityDecision OnCapacityRefused(Cohort& cohort, std::span<const std::size_t> refused,
-                                   bool idle_state) {
+                                   bool reclaimed) {
   CapacityDecision decision;
-  if (idle_state) {
-    // A finished conversation's reuse cache gives way: the refused members
+  if (reclaimed) {
+    // The reclaim order made room: the refused members
     // stay runnable, and so does anyone waiting.
     decision.reclaim = true;
     WakeBlocked(cohort);

@@ -8,7 +8,9 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <ctime>
@@ -27,15 +29,18 @@
 #include "engine/qwen38_runner.h"
 #include "engine/qwen_image_runner.h"
 #include "execution/adaptive_depth.h"
+#include "memory/reclaim.h"
 #include "model/dsv4.h"
 #include "model/qwen38.h"
 #include "platform/crash_policy.h"
 #include "platform/files.h"
 #include "platform/host_probe.h"
+#include "platform/memory_pressure.h"
 #include "platform/path_trust.h"
 #include "runtime/memory_guard.h"
 #include "runtime/model_limits.h"
 #include "runtime/prefill.h"
+#include "runtime/swap_room.h"
 #include "scheduler/programs.h"
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
@@ -85,6 +90,24 @@ constexpr std::uint32_t kQwen38PrefillRows = 4096;
 constexpr std::uint32_t kSharedWaveDepth = 2;
 // DeepSeek's independent request slots (engine/dsv4_runner.h): waves of up to four.
 constexpr std::uint32_t kDsv4RequestSlots = 4;
+
+// The reclaim order's cost of idle conversation state (Server::Reclaim):
+// its write-back and its restore, at the node's rates measured so far, and
+// before any at the rates measured on a GB10 (spark-b, DeepSeek's four
+// slots' state, 1.42 GB written back at 11.0 GB/s and read again at 14.5
+// GB/s; docs/experiments/memory-pressure). Dropping it instead (no spill
+// budget) costs its recomputation: 64 s a GiB measured for DeepSeek's
+// prefill (16,384 tokens, 368 MiB of state in 22.9 s), the lower of the two
+// models' (Qwen3.8's state is denser a token).
+constexpr double kSpillBytesPerSecond = 11.0e9;
+constexpr double kRestoreBytesPerSecond = 14.5e9;
+constexpr double kRecomputeSecondsPerByte = 64.0 / static_cast<double>(1ULL << 30U);
+// A graph's capture and instantiation a GiB counted, measured on a GB10
+// (0.33–0.45 s in the services' logs): what a graph's capture weighs
+// against before any graph is held (Server::Reclaim).
+constexpr double kGraphSecondsPerGiB = 0.36;
+// How often the driver's maintenance looks (between units and when idle).
+constexpr auto kMaintenanceInterval = std::chrono::milliseconds(250);
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
 
@@ -288,13 +311,25 @@ class Dsv4 final : public Llm {
   std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
   std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
   std::uint64_t host_input_bytes() const override { return runner_.host_input_bytes(); }
-  std::uint64_t plan_host_bytes() const override { return runner_.plan_host_bytes(); }
+  std::uint64_t plan_floor_bytes() const override { return runner_.plan_floor_bytes(); }
+  std::uint64_t graph_measured_bytes() const override { return runner_.graph_measured_bytes(); }
+  void ReclaimCandidates(std::uint32_t owner, bool running,
+                         std::vector<memory::ReclaimCandidate>& out) override {
+    runner_.ReclaimCandidates(owner, running, out);
+  }
+  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override {
+    return runner_.Reclaim(kind, id);
+  }
   std::string plan_report() const override { return runner_.plan_report(); }
   std::string serial_reason() const override { return runner_.serial_reason(); }
   Status Register() override { return runner_.Register(); }
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
   std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
+  std::vector<catalog::ExtentId> unchanged_state() const override {
+    return runner_.unchanged_state();
+  }
+  void StateWrittenBack(bool whole) override { runner_.StateWrittenBack(whole); }
   const catalog::Closure& everything() const override { return runner_.everything(); }
   const catalog::Closure& request_closure() const override { return runner_.execution_closure(); }
   bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
@@ -419,6 +454,20 @@ class Dsv4 final : public Llm {
   // A conversation outside the cohort: its reuse cache cleared for peers
   // short of state capacity (Branch::ReleaseIdleState).
   Status ReleaseIdleStateFor(Branch& branch) override { return NativeSlot(branch).ClearIdle(); }
+  Status SpillFor(Branch& branch) override { return NativeSlot(branch).Spill(); }
+  Status RestoreFor(Branch& branch) override { return NativeSlot(branch).Restore(); }
+  bool SpilledFor(const Branch& branch) const override { return NativeSlot(branch).spilled(); }
+  std::uint64_t SpilledBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).spilled_bytes();
+  }
+  std::uint64_t SpillWriteBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).spill_write_bytes();
+  }
+  bool LeasedFor(const Branch& branch) const override { return NativeSlot(branch).held(); }
+  std::uint64_t RefusedBytesFor(const Branch& branch) const override {
+    const auto& slot = NativeSlot(branch);
+    return slot.spilled() ? slot.spilled_bytes() : slot.refused_bytes();
+  }
   bool StateRefusedFor(const Branch& branch) const override {
     return NativeSlot(branch).state_refused();
   }
@@ -803,12 +852,24 @@ class Qwen38 final : public Llm {
   std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
   std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
   std::uint64_t host_input_bytes() const override { return runner_.host_input_bytes(); }
-  std::uint64_t plan_host_bytes() const override { return runner_.plan_host_bytes(); }
+  std::uint64_t plan_floor_bytes() const override { return runner_.plan_floor_bytes(); }
+  std::uint64_t graph_measured_bytes() const override { return runner_.graph_measured_bytes(); }
+  void ReclaimCandidates(std::uint32_t owner, bool running,
+                         std::vector<memory::ReclaimCandidate>& out) override {
+    runner_.ReclaimCandidates(owner, running, out);
+  }
+  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override {
+    return runner_.Reclaim(kind, id);
+  }
   std::string plan_report() const override { return runner_.plan_report(); }
   Status Register() override { return runner_.Register(); }
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
   std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
+  std::vector<catalog::ExtentId> unchanged_state() const override {
+    return runner_.unchanged_state();
+  }
+  void StateWrittenBack(bool whole) override { runner_.StateWrittenBack(whole); }
   const catalog::Closure& everything() const override { return runner_.everything(); }
   const catalog::Closure& request_closure() const override { return runner_.execution_closure(); }
   bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
@@ -1033,6 +1094,20 @@ class Qwen38 final : public Llm {
   Status ReleaseIdleStateFor(Branch& branch) override {
     BranchDecoding(branch) = execution::AdaptiveDepth(3);
     return NativeSlot(branch).ClearIdle();
+  }
+  Status SpillFor(Branch& branch) override { return NativeSlot(branch).Spill(); }
+  Status RestoreFor(Branch& branch) override { return NativeSlot(branch).Restore(); }
+  bool SpilledFor(const Branch& branch) const override { return NativeSlot(branch).spilled(); }
+  std::uint64_t SpilledBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).spilled_bytes();
+  }
+  std::uint64_t SpillWriteBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).spill_write_bytes();
+  }
+  bool LeasedFor(const Branch& branch) const override { return NativeSlot(branch).held(); }
+  std::uint64_t RefusedBytesFor(const Branch& branch) const override {
+    const auto& slot = NativeSlot(branch);
+    return slot.spilled() ? slot.spilled_bytes() : slot.refused_bytes();
   }
   void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
   void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
@@ -1289,6 +1364,15 @@ class QwenImage final : public Image {
   const catalog::Closure& everything() const override { return runner_.everything(); }
   std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
   std::string extra() const override { return runner_.Report(); }
+  std::string plan_report() const override { return runner_.plan_report(); }
+  std::uint64_t graph_measured_bytes() const override { return runner_.graph_measured_bytes(); }
+  void ReclaimCandidates(std::uint32_t owner, bool running,
+                         std::vector<memory::ReclaimCandidate>& out) override {
+    runner_.ReclaimCandidates(owner, running, out);
+  }
+  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override {
+    return runner_.Reclaim(kind, id);
+  }
   Status FirstOutput(std::string& sha) override { return runner_.FirstOutput(sha); }
   Status Finish(std::string& sha) override { return runner_.Finish(sha); }
 
@@ -1370,6 +1454,8 @@ Status Llm::Branch::Clear() { return model_.Clear(*this); }
 
 Status Llm::Branch::ReleaseIdleState() { return model_.ReleaseIdleState(*this); }
 
+bool Llm::Branch::spilled() const { return model_.SpilledFor(*this); }
+
 void Llm::Branch::Forget() { model_.Forget(*this); }
 
 Status Llm::Branch::Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
@@ -1392,8 +1478,9 @@ Status Llm::Branch::PreparePrompt(std::span<const std::int32_t> tokens,
 }
 
 std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::Branch::BeginPrompt(
-    std::span<const std::int32_t> tokens, std::uint32_t stable_boundary, bool fresh) & {
-  return model_.BeginPrompt(*this, tokens, stable_boundary, fresh);
+    std::span<const std::int32_t> tokens, std::uint32_t stable_boundary, bool fresh,
+    bool resume) & {
+  return model_.BeginPrompt(*this, tokens, stable_boundary, fresh, resume);
 }
 
 std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::Branch::BeginGeneration(
@@ -1645,21 +1732,114 @@ bool Llm::AnyBranchHasRetainedState() const {
   return false;
 }
 
-std::optional<std::size_t> Llm::LargestIdleBranch(const Branch& keep) const {
-  CheckBranch(keep);
-  std::optional<std::size_t> idle;
-  std::uint64_t most = 0;
-  for (std::uint32_t slot = 0; slot < branch_count_; ++slot) {
-    const Branch& branch = slot == 0 ? default_branch_ : *extra_branches_[slot - 1];
-    if (&branch == &keep || branch.generation_active_ || branch.prompt_session_ != nullptr) {
-      continue;
-    }
-    if (const std::uint64_t bytes = UsedStateBytesFor(branch); bytes > most) {
-      most = bytes;
-      idle = slot;
-    }
+bool Llm::BranchIdle(const Branch& branch) const {
+  CheckBranch(branch);
+  return !branch.generation_active_ && branch.prompt_session_ == nullptr && !LeasedFor(branch);
+}
+
+std::uint64_t Llm::StateBytes(const Branch& branch) const {
+  CheckBranch(branch);
+  return UsedStateBytesFor(branch);
+}
+
+std::uint64_t Llm::ResidentStateBytes(const Branch& branch) const {
+  CheckBranch(branch);
+  return SpilledFor(branch) ? 0 : UsedStateBytesFor(branch);
+}
+
+std::uint64_t Llm::SpilledStateBytes(const Branch& branch) const {
+  CheckBranch(branch);
+  return SpilledBytesFor(branch);
+}
+
+Clock::time_point Llm::LastUsed(const Branch& branch) const {
+  CheckBranch(branch);
+  return branch.history_used_.at;
+}
+
+memory::ReclaimStamp Llm::LastStamp(const Branch& branch) const {
+  CheckBranch(branch);
+  return branch.history_used_.reclaim;
+}
+
+std::uint64_t Llm::SpillWriteBytes(const Branch& branch) const {
+  CheckBranch(branch);
+  return SpillWriteBytesFor(branch);
+}
+
+std::size_t Llm::ReusablePrefix(const Branch& branch, std::span<const std::int32_t> tokens) const {
+  CheckBranch(branch);
+  const auto now = Clock::now();
+  if (branch.needs_clear_ || branch.history_.empty() || !StateUsableFor(branch) ||
+      now - branch.history_used_.at >= retention_) {
+    return 0;
   }
-  return idle;
+  const std::size_t common = CommonPrefix(branch.history_, tokens);
+  if (common == branch.history_.size() && common < tokens.size()) {
+    return common;
+  }
+  std::vector<TurnBoundary> boundaries;
+  boundaries.reserve(branch.turn_checkpoints_.size());
+  for (const TurnCheckpoint& checkpoint : branch.turn_checkpoints_) {
+    boundaries.push_back(checkpoint.boundary);
+  }
+  const auto match = MatchingTurnBoundary(boundaries, common, tokens.size(), now, retention_);
+  return match ? boundaries[*match].position : 0;
+}
+
+Status Llm::SpillIdle(Branch& branch) { return Spill(branch, false); }
+
+Status Llm::SpillSetAside(Branch& branch) { return Spill(branch, true); }
+
+Status Llm::Spill(Branch& branch, bool set_aside) {
+  CheckIdleGeneration(branch);
+  if (!set_aside && !BranchIdle(branch)) {
+    return Error("a conversation in use is not spilled");
+  }
+  if (SpilledFor(branch)) {
+    return {};
+  }
+  // State that may hold anything (a failed step's), or none, is dropped:
+  // there is nothing exact to keep. A member set aside is cleared by its
+  // caller, within its request (Branch::Clear).
+  if (branch.needs_clear_ || branch.history_.empty() || !StateUsableFor(branch)) {
+    return set_aside ? Error("no exact state to spill") : ReleaseIdleState(branch);
+  }
+  // What it writes (only what changed since its last spill): the measured
+  // rate's bytes.
+  const std::uint64_t bytes = SpillWriteBytesFor(branch);
+  const auto started = Clock::now();
+  if (auto spilled = SpillFor(branch); !spilled) {
+    if (set_aside) {
+      return spilled;
+    }
+    // Neither spilled nor known as it was: dropped, its next turn prefills.
+    if (auto released = ReleaseIdleState(branch); !released) {
+      return Error(std::format("{}; clearing it instead: {}", spilled.error(), released.error()));
+    }
+    return Error(std::format("{}: cleared instead", spilled.error()));
+  }
+  ++spill_stats_.spills;
+  spill_stats_.spilled_bytes += bytes;
+  spill_stats_.spill_seconds += Seconds(Clock::now() - started);
+  return {};
+}
+
+Status Llm::RestoreSpilled(Branch& branch, bool& refused) {
+  refused = false;
+  if (!SpilledFor(branch)) {
+    return {};
+  }
+  const std::uint64_t bytes = SpilledBytesFor(branch);
+  const auto started = Clock::now();
+  if (auto restored = RestoreFor(branch); !restored) {
+    refused = StateRefusedFor(branch) && StateUsableFor(branch);
+    return restored;
+  }
+  ++spill_stats_.restores;
+  spill_stats_.restored_bytes += bytes;
+  spill_stats_.restore_seconds += Seconds(Clock::now() - started);
+  return {};
 }
 
 bool Llm::CapacityRefused(const Branch& branch) const {
@@ -1898,6 +2078,12 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
       return Error("saving a turn checkpoint: " + file.error().detail);
     }
     stopped = file.error().cancelled;
+    if (!stopped) {
+      // Positions only (D-014): the next turn that would continue from it
+      // prefills instead.
+      Say(std::format("{}: a turn checkpoint at {} tokens was not saved: {}", name(), position,
+                      file.error().detail));
+    }
     return {};  // optional cache: unavailable staging or disk does not fail the turn
   }
   TurnCheckpoint checkpoint{.boundary = {.position = position, .created = Clock::now()},
@@ -1913,30 +2099,52 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
 }
 
 Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t& reused,
-                        bool fresh, const PrefillGoOn& go_on, bool& stopped,
+                        bool fresh, bool resume, const PrefillGoOn& go_on, bool& stopped,
                         const PromptSession* prompt) {
   reused = 0;
   const auto now = Clock::now();
   if (fresh || branch.needs_clear_ || !StateUsableFor(branch) ||
-      now - branch.history_used_ >= kTurnCheckpointRetention) {
+      now - branch.history_used_.at >= retention_) {
     return Clear(branch, prompt);
   }
   std::erase_if(branch.turn_checkpoints_, [&](const TurnCheckpoint& checkpoint) {
-    return now - checkpoint.boundary.created >= kTurnCheckpointRetention;
+    return now - checkpoint.boundary.created >= retention_;
   });
   const std::size_t common = CommonPrefix(branch.history_, tokens);
-  if (!branch.history_.empty() && common == branch.history_.size() && common < tokens.size()) {
-    reused = static_cast<std::uint32_t>(common);
-    return {};
-  }
+  // The live state continues the prompt (with `resume`, it may be the
+  // whole prompt: a generation set aside for its peers resumes from it).
+  const bool live = !branch.history_.empty() && common == branch.history_.size() &&
+                    (common < tokens.size() || (resume && common == tokens.size()));
   std::vector<TurnBoundary> boundaries;
   boundaries.reserve(branch.turn_checkpoints_.size());
   for (const TurnCheckpoint& checkpoint : branch.turn_checkpoints_) {
     boundaries.push_back(checkpoint.boundary);
   }
-  const auto match = MatchingTurnBoundary(boundaries, common, tokens.size(), now);
-  if (!match) {
-    return Clear(branch, prompt);
+  const auto match = live
+                         ? std::nullopt
+                         : MatchingTurnBoundary(boundaries, common, tokens.size(), now, retention_);
+  if (!live && !match) {
+    return Clear(branch, prompt);  // a spilled state is discarded with it
+  }
+  // Spill, not clear: an idle conversation's state spilled for capacity
+  // comes back exactly as it left before it is reused (refused for
+  // capacity: the unit runs again once the runtime made room).
+  if (bool refused = false; SpilledFor(branch)) {
+    if (auto restored = RestoreSpilled(branch, refused); !restored) {
+      if (refused) {
+        return restored;  // the caller defers it (PromptSession::Advance)
+      }
+      Say(
+          std::format("{}: a spilled conversation of {} tokens was not restored ({}): the "
+                      "prompt is prefilled from its start",
+                      name(), branch.history_.size(), restored.error()));
+      return Clear(branch, prompt);
+    }
+  }
+  if (live) {
+    reused = static_cast<std::uint32_t>(common);
+    branch.history_used_ = now;
+    return {};
   }
   TurnCheckpoint& checkpoint = branch.turn_checkpoints_[*match];
   const auto position = checkpoint.boundary.position;
@@ -1960,6 +2168,10 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
       stopped = true;
       return restored.error().invalid_state ? Clear(branch, prompt) : Status{};
     }
+    Say(
+        std::format("{}: the turn checkpoint at {} tokens was not restored ({}): the prompt is "
+                    "prefilled from its start",
+                    name(), position, restored.error().detail));
     // Before mutation this is an optional cache miss. After mutation, Clear
     // drops the branch before any fresh prefill; an uncertain device copy
     // may make Clear fail, in which case the runtime stops normally.
@@ -2016,20 +2228,21 @@ Status Llm::PreparePrompt(Branch& branch, std::span<const std::int32_t> tokens,
 }
 
 Llm::PromptSession::PromptSession(Llm& model, Branch& branch, std::span<const std::int32_t> tokens,
-                                  std::uint32_t stable_boundary, bool fresh)
+                                  std::uint32_t stable_boundary, bool fresh, bool resume)
     : model_(model),
       branch_(branch),
       tokens_(tokens.begin(), tokens.end()),
       stable_boundary_(stable_boundary),
-      fresh_(fresh) {}
+      fresh_(fresh),
+      resume_(resume) {}
 
 Llm::PromptSession::~PromptSession() {
   base::Check(finished_, "an unfinished prompt session was destroyed");
 }
 
 std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::BeginPrompt(
-    Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
-    bool fresh) {
+    Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t stable_boundary, bool fresh,
+    bool resume) {
   CheckBranch(branch);
   if (tokens.empty() || tokens.size() >= context_ || stable_boundary >= tokens.size()) {
     return Error("the prompt or its turn boundary is outside the context");
@@ -2041,7 +2254,7 @@ std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::BeginPrompt
     return Error("the conversation already has an active session");
   }
   auto session = std::unique_ptr<PromptSession>(
-      new PromptSession(*this, branch, tokens, stable_boundary, fresh));
+      new PromptSession(*this, branch, tokens, stable_boundary, fresh, resume));
   branch.prompt_session_ = session.get();
   return session;
 }
@@ -2123,8 +2336,16 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity
     return {};
   }
   if (next->phase == Phase::kReuse) {
-    auto reused = model_.ReusePrompt(branch_, tokens_, reused_, fresh_, go_on, run_.stopped, this);
+    auto reused =
+        model_.ReusePrompt(branch_, tokens_, reused_, fresh_, resume_, go_on, run_.stopped, this);
     if (!reused) {
+      if (defer_capacity && model_.SpilledFor(branch_) && model_.StateRefusedFor(branch_) &&
+          model_.StateUsableFor(branch_)) {
+        // Its spilled state's restore refused for capacity, before any
+        // change: the same unit again once there is room.
+        refused_ = true;
+        return std::unexpected(reused.error());
+      }
       return Fail(reused.error());
     }
     run_.end = reused_;
@@ -2337,7 +2558,9 @@ std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::BeginGe
     Branch& branch, const std::vector<float>& last, const GenerateOptions& options, Generation& out,
     bool resume) {
   CheckBranch(branch);
-  if (last.empty()) {
+  // A resumed generation chooses nothing from `last`: after a restore of its
+  // spilled state (no prefill) there are none.
+  if (last.empty() && !resume) {
     return Error(std::format("{} has no prefill's logits to generate from", name_));
   }
   if (options.max_tokens == 0) {
@@ -2814,7 +3037,9 @@ Server::Server(const config::NodeConfig& config, const config::RuntimeRoles& rol
              .coalesce = false,
              .copy_lane = true,
              .slot_bytes = engine::kSlabSlotBytes,
-             .observer = &times_}) {}
+             .observer = &times_}),
+      retention_(std::chrono::hours(config.memory.retention_hours)),
+      spill_budget_(std::uint64_t{config.memory.spill_budget_gib} << 30U) {}
 
 Server::~Server() {
   if (started_ && !torn_down_) {
@@ -2867,13 +3092,17 @@ Status Server::SaveSnapshot(Llm& model) {
     }
     snapshot_ = nullptr;
     snapshot_capacity_ = 0;
-    const auto available = MemorySampler::Available();
-    const std::uint64_t reserve = GuardReserve({.host_inputs = host_inputs_, .plans = plans_});
-    if (available != 0 && (available < reserve || bytes > available - reserve)) {
-      return Error("initialized state snapshot would exceed the memory guard");
-    }
+    // Its staging is charged to the catalog, within the budget (the
+    // node's Pinned): the guard's margin, set apart beside the budget, is
+    // not counted again (that double count refused DeepSeek with DSpark
+    // beside Qwen3.8). Refused for the budget, the reclaim order makes
+    // room first.
     std::vector<catalog::ExtentId> staging;
     auto allocated = node_.Pinned(bytes, engine::kShared, staging);
+    if (!allocated && Reclaim(bytes, true, "a state snapshot's staging") != 0) {
+      staging.clear();
+      allocated = node_.Pinned(bytes, engine::kShared, staging);
+    }
     if (!allocated) {
       return std::unexpected(allocated.error());
     }
@@ -2956,7 +3185,7 @@ Status Server::Start(bool snapshot) {
     }
     activations = std::max(activations, m->activations_needed());
     host_inputs = std::max(host_inputs, m->host_input_bytes());
-    plans = std::max(plans, m->plan_host_bytes());
+    plans = std::max(plans, m->plan_floor_bytes());
     pool = std::max(pool, m->pool_needed());
     largest = std::max<std::uint64_t>(largest, m->weights().size() * kExtent);
     std::string chunks;
@@ -2977,7 +3206,7 @@ Status Server::Start(bool snapshot) {
       Log(std::format("allocation model {}: {}", m->name(), report));
     }
     if (const auto report = m->plan_report(); !report.empty()) {
-      Log(std::format("model {}: plans and graphs at most {}", m->name(), report));
+      Log(std::format("model {}: plans {}", m->name(), report));
     }
     if (const auto reason = m->serial_reason(); !reason.empty()) {
       Log(std::format("model {}: serves one request at a time ({})", m->name(), reason));
@@ -2998,10 +3227,15 @@ Status Server::Start(bool snapshot) {
   // in the budget the catalog enforces. One model runs chunks at a time, so
   // the most any model's chunk builds, not their sum.
   host_inputs_ = host_inputs;
-  // So are every model's cached plans and graphs, bounded by its caps
-  // (engine/planned.h). Only the resident model keeps them (a swap drops the
-  // outgoing model's, Activate), so the largest model's bound.
-  plans_ = plans;
+  // So are its plans and graphs (engine/planned.h), but only the floor is
+  // set apart here: what one step of any model holds at once. Every plan
+  // and graph past it is charged inside the budget (PagedNode::ChargeHost)
+  // and given back through the reclaim order when the budget is needed.
+  // Beside it, the scratch arena every plan's first build uses (one for the
+  // process, at the largest estimate the models' setups measured).
+  const std::uint64_t step_plans = plans;
+  plans_ = plans + engine::ScratchArenaBytes();
+  plans = plans_;
   const std::uint64_t available = MemorySampler::Available();
   const MemoryGuard bounds = {.largest = largest,
                               .host_inputs = host_inputs,
@@ -3013,7 +3247,7 @@ Status Server::Start(bool snapshot) {
       std::format("allocation guard: {{\"format\":\"jitllm-wave-startup-guard-v1\","
                   "\"fixed_catalog_bytes\":{},\"shared_activation_bytes\":{},"
                   "\"shared_scratch_bytes\":{},\"largest_weight_extent_bytes\":{},"
-                  "\"host_input_bytes\":{},\"plan_host_bytes\":{},\"uncounted_margin_bytes\":{},"
+                  "\"host_input_bytes\":{},\"plan_floor_bytes\":{},\"uncounted_margin_bytes\":{},"
                   "\"available_after_fixed_bytes\":{},\"available_known\":{},"
                   "\"guard_passed\":{},\"registered_state_virtual_extent_bytes\":{}}}",
                   fixed_, activations, pool, largest, host_inputs, plans, kUncountedMargin,
@@ -3044,19 +3278,118 @@ Status Server::Start(bool snapshot) {
     }
   }
   node_.Run();
+  // Plans and graphs past the floor are charged inside the budget; a charge
+  // that does not fit has the reclaim order make room first.
+  node_.SetHostFloor(step_plans);
+  node_.SetReclaimer([this](std::uint64_t needed, engine::PagedNode::ReclaimFor what) {
+    // Cache charges displace only other plans and graphs, never
+    // conversation state (a graph's only what costs less to restore than a
+    // graph); pinned staging (a checkpoint's, a snapshot's) is a state need
+    // and may spill idle conversations.
+    using For = engine::PagedNode::ReclaimFor;
+    switch (what) {
+      case For::kPlan:
+        return Reclaim(needed, false, "a plan past the free budget");
+      case For::kGraph:
+        return Reclaim(needed, false, "a graph past the free budget", nullptr,
+                       memory::ReclaimKind::kGraph);
+      case For::kStaging:
+        break;
+    }
+    return Reclaim(needed, true, "pinned staging past the free budget");
+  });
+  // The turn checkpoints' staging, set apart once so a budget full of
+  // reclaimable plans, graphs and idle state never starves a capture or a
+  // restore (they use it one at a time).
+  if (std::ranges::any_of(models_, [](const auto& m) { return m->llm(); })) {
+    if (auto r = node_.ReserveStaging(engine::CheckpointStagingBytes()); !r) {
+      return Error("setting apart the turn checkpoints' staging: " + r.error());
+    }
+  }
+  // The state room: what the budget leaves the conversations beside the
+  // fixed memory and the largest model's weights.
+  const std::uint64_t room = budget_ > fixed_ + largest ? budget_ - fixed_ - largest : 0;
   Log(std::format(
       "serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed, the workspace {:.2f}; host-built "
-      "chunk inputs {:.2f} GiB and plans {:.2f} GiB beside it); {:.2f} GiB available",
+      "chunk inputs {:.2f} GiB and a step's plans {:.2f} GiB beside it); conversation state "
+      "room {:.2f} GiB beside the largest weights; {:.2f} GiB available; idle conversations "
+      "spill, kept {} h within {} GiB",
       models_.size(), static_cast<double>(budget_) / (1ULL << 30U),
       static_cast<double>(fixed_) / (1ULL << 30U), static_cast<double>(workspace_) / (1ULL << 30U),
       static_cast<double>(host_inputs_) / (1ULL << 30U),
-      static_cast<double>(plans_) / (1ULL << 30U), static_cast<double>(available) / (1ULL << 30U)));
+      static_cast<double>(plans_) / (1ULL << 30U), static_cast<double>(room) / (1ULL << 30U),
+      static_cast<double>(available) / (1ULL << 30U), config_.memory.retention_hours,
+      config_.memory.spill_budget_gib));
+  for (const auto& m : models_) {
+    if (m->llm()) {
+      static_cast<Llm&>(*m).set_retention(retention_);
+      static_cast<Llm&>(*m).set_log([this](std::string_view text) { Log(text); });
+    }
+  }
   return {};
 }
 
 Status Server::TearDown() {
   if (torn_down_) {
     return {};
+  }
+  if (started_) {
+    // What the incremental spills and swaps left unwritten, and the
+    // reclaims that found too little to take (counts and bytes only).
+    if (auto stats = node_.Stats(); stats) {
+      Log(std::format(
+          "write-backs released unchanged (nothing written): {} extents, {:.1f} MiB; reclaims "
+          "that took nothing (too little to take): {}",
+          stats->unchanged_writebacks,
+          static_cast<double>(stats->unchanged_writeback_bytes) / (1U << 20U), reclaims_short_));
+    }
+    // What each model's plans and graphs held at the end, and what bringing
+    // them back would have cost (the reclaim order's measured inputs):
+    // counts, bytes and seconds only.
+    for (std::uint32_t i = 0; i < models_.size(); ++i) {
+      std::vector<memory::ReclaimCandidate> held;
+      models_[i]->ReclaimCandidates(i, false, held);
+      std::array<std::uint64_t, memory::kReclaimKinds> count{};
+      std::array<std::uint64_t, memory::kReclaimKinds> bytes{};
+      std::array<double, memory::kReclaimKinds> seconds{};
+      for (const memory::ReclaimCandidate& c : held) {
+        const auto k = static_cast<std::size_t>(c.kind);
+        ++count[k];
+        bytes[k] += c.bytes;
+        seconds[k] += c.restore_seconds;
+      }
+      const auto p = static_cast<std::size_t>(memory::ReclaimKind::kPlan);
+      const auto g = static_cast<std::size_t>(memory::ReclaimKind::kGraph);
+      if (count[p] + count[g] != 0) {
+        // A plan's count includes its graphs'; a graph may have no plan
+        // candidate (the image pipeline's recorded step).
+        const std::array<double, memory::kReclaimKinds> cost = memory::KindCosts(held);
+        const auto mib = [](std::uint64_t b) { return static_cast<double>(b) / (1U << 20U); };
+        std::uint64_t plan_bytes = 0;
+        double plan_seconds = 0;
+        for (const memory::ReclaimCandidate& c : held) {
+          if (c.kind != memory::ReclaimKind::kPlan) {
+            continue;
+          }
+          std::uint64_t own = c.bytes;
+          double own_seconds = c.restore_seconds;
+          for (const memory::ReclaimCandidate& graph : held) {
+            if (graph.kind == memory::ReclaimKind::kGraph && graph.id == c.id) {
+              own -= std::min(own, graph.bytes);
+              own_seconds -= std::min(own_seconds, graph.restore_seconds);
+            }
+          }
+          plan_bytes += own;
+          plan_seconds += own_seconds;
+        }
+        Log(std::format(
+            "model {}: {} plans held {:.1f} MiB (planned in {:.3f} s, {:.2f} s a GiB), "
+            "{} graphs {:.1f} MiB counted, {:.1f} MiB measured at their captures (captured in "
+            "{:.3f} s, {:.2f} s a GiB)",
+            models_[i]->name(), count[p], mib(plan_bytes), plan_seconds, cost[p], count[g],
+            mib(bytes[g]), mib(models_[i]->graph_measured_bytes()), seconds[g], cost[g]));
+      }
+    }
   }
   torn_down_ = true;
   std::vector<engine::PagedModel*> models;
@@ -3172,6 +3505,418 @@ Status Server::FinishSwap(SwapParts& parts) {
   return {};
 }
 
+std::uint64_t Server::SpilledBytes() {
+  std::uint64_t bytes = 0;
+  for (const auto& m : models_) {
+    if (!m->llm()) {
+      continue;
+    }
+    auto& l = static_cast<Llm&>(*m);
+    // A model a swap wrote back holds all its state on disk until it returns.
+    const bool written_back = std::ranges::find(spilled_, m.get()) != spilled_.end();
+    for (std::size_t i = 0; i < l.branches(); ++i) {
+      if (auto b = l.branch(i); b) {
+        bytes += written_back ? l.StateBytes(**b) : l.SpilledStateBytes(**b);
+      }
+    }
+  }
+  return bytes;
+}
+
+bool Server::KeepWithinSpillBudget(std::uint64_t extra) {
+  std::size_t deleted = 0;
+  std::uint64_t deleted_bytes = 0;
+  bool fits = false;
+  for (;;) {
+    const std::uint64_t held = SpilledBytes();
+    if (held <= spill_budget_ && extra <= spill_budget_ - held) {
+      fits = true;
+      break;
+    }
+    // The least recently used spilled conversation no request holds.
+    Llm* oldest = nullptr;
+    Llm::Branch* branch = nullptr;
+    for (const auto& m : models_) {
+      if (!m->llm()) {
+        continue;
+      }
+      auto& l = static_cast<Llm&>(*m);
+      const bool written_back = std::ranges::find(spilled_, m.get()) != spilled_.end();
+      for (std::size_t i = 0; i < l.branches(); ++i) {
+        auto b = l.branch(i);
+        if (!b || !l.BranchIdle(**b) ||
+            (written_back ? l.StateBytes(**b) : l.SpilledStateBytes(**b)) == 0) {
+          continue;
+        }
+        if (branch == nullptr || l.LastUsed(**b) < oldest->LastUsed(*branch)) {
+          oldest = &l;
+          branch = *b;
+        }
+      }
+    }
+    if (branch == nullptr) {
+      break;
+    }
+    const std::uint64_t bytes = oldest->StateBytes(*branch);
+    if (auto released = branch->ReleaseIdleState(); !released) {
+      Log(std::format("{}'s spilled conversation could not be deleted: {}", oldest->name(),
+                      released.error()));
+      break;
+    }
+    ++deleted;
+    deleted_bytes += bytes;
+  }
+  if (deleted != 0) {
+    Log(std::format(
+        "deleted {} spilled conversations ({:.1f} MiB), the least recently used, "
+        "past the spill budget of {} GiB",
+        deleted, static_cast<double>(deleted_bytes) / (1U << 20U), spill_budget_ >> 30U));
+  }
+  return fits;
+}
+
+std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_view why,
+                              const Served* running, std::optional<memory::ReclaimKind> below_kind,
+                              bool partial) {
+  if (reclaiming_ || !started_ || torn_down_ || needed == 0) {
+    return 0;
+  }
+  reclaiming_ = true;
+  if (running == nullptr) {
+    running = resident_;
+  }
+  // Idle state's cost at the rates measured so far (once a GiB has moved).
+  double spill_rate = kSpillBytesPerSecond;
+  double restore_rate = kRestoreBytesPerSecond;
+  {
+    Llm::SpillStats all;
+    for (const auto& m : models_) {
+      if (m->llm()) {
+        const Llm::SpillStats& s = static_cast<Llm&>(*m).spill_stats();
+        all.spilled_bytes += s.spilled_bytes;
+        all.spill_seconds += s.spill_seconds;
+        all.restored_bytes += s.restored_bytes;
+        all.restore_seconds += s.restore_seconds;
+      }
+    }
+    constexpr std::uint64_t kEnough = std::uint64_t{1} << 30U;
+    if (all.spilled_bytes >= kEnough && all.spill_seconds > 0) {
+      spill_rate = static_cast<double>(all.spilled_bytes) / all.spill_seconds;
+    }
+    if (all.restored_bytes >= kEnough && all.restore_seconds > 0) {
+      restore_rate = static_cast<double>(all.restored_bytes) / all.restore_seconds;
+    }
+  }
+  const auto k = [](memory::ReclaimKind kind) { return static_cast<std::size_t>(kind); };
+  std::array<std::uint64_t, memory::kReclaimKinds> count{};
+  std::array<std::uint64_t, memory::kReclaimKinds> freed_by{};
+  std::array<double, memory::kReclaimKinds> cost{};
+  std::uint64_t freed = 0;
+  std::size_t dropped = 0;
+  bool took = false;
+  // All of it or nothing: a selection that cannot cover what is needed
+  // reclaims nothing (the caller waits or refuses). Another round only when
+  // a victim gave back less than its count (held, or gone meanwhile).
+  for (int round = 0; round < 4 && freed < needed; ++round) {
+    std::vector<memory::ReclaimCandidate> candidates;
+    Llm* idle_owner = nullptr;
+    std::uint32_t resident_index = 0;
+    for (std::uint32_t i = 0; i < models_.size(); ++i) {
+      models_[i]->ReclaimCandidates(i, models_[i].get() == running, candidates);
+      if (models_[i].get() == resident_) {
+        resident_index = i;
+      }
+    }
+    // The running model's next step finds what its last ones used.
+    memory::ProtectFloor(candidates, running != nullptr ? running->plan_floor_bytes() : 0);
+    if (states && resident_ != nullptr && resident_->llm()) {
+      idle_owner = static_cast<Llm*>(resident_);
+      for (std::size_t slot = 0; slot < idle_owner->branches(); ++slot) {
+        auto b = idle_owner->branch(slot);
+        if (!b || !idle_owner->BranchIdle(**b) || (*b)->history().empty()) {
+          continue;
+        }
+        const std::uint64_t bytes = idle_owner->ResidentStateBytes(**b);
+        if (bytes == 0) {
+          continue;
+        }
+        // A spill writes only what changed since its last one; a restore
+        // reads it all.
+        const auto size = static_cast<double>(bytes);
+        const auto writes = static_cast<double>(idle_owner->SpillWriteBytes(**b));
+        candidates.push_back(
+            {.kind = memory::ReclaimKind::kIdleState,
+             .owner = resident_index,
+             .id = slot,
+             .bytes = bytes,
+             .last_use =
+                 static_cast<std::uint64_t>(idle_owner->LastUsed(**b).time_since_epoch().count()),
+             .restore_seconds = spill_budget_ == 0 ? size * kRecomputeSecondsPerByte
+                                                   : (writes / spill_rate) + (size / restore_rate),
+             .running = resident_ == running});
+        memory::SetUse(candidates.back(), idle_owner->LastStamp(**b));
+      }
+    }
+    cost = memory::KindCosts(candidates);
+    double below = std::numeric_limits<double>::infinity();
+    if (below_kind) {
+      // What the charge would cost to restore a GiB: its kind's measured
+      // cost, or the GB10's when none is held.
+      double charged = cost[k(*below_kind)];
+      if (charged == 0) {
+        charged = *below_kind == memory::ReclaimKind::kGraph ? kGraphSecondsPerGiB : 0;
+      }
+      below = memory::ReclaimInflation() + charged;
+    }
+    const memory::ReclaimPlan plan = memory::SelectReclaim(candidates, needed - freed, below);
+    if (!plan.sufficient && (!partial || plan.victims.empty())) {
+      ++reclaims_short_;
+      break;
+    }
+    std::uint64_t got_round = 0;
+    for (std::size_t v = 0; v < plan.victims.size() && freed < needed; ++v) {
+      const memory::ReclaimCandidate& c = candidates[plan.victims[v]];
+      std::uint64_t got = 0;
+      if (c.kind == memory::ReclaimKind::kIdleState) {
+        if (idle_owner == nullptr) {
+          continue;  // only the resident model's idle state is a candidate
+        }
+        auto b = idle_owner->branch(c.id);
+        if (!b) {
+          continue;
+        }
+        // Spill, not clear: within the spill budget (the least recently
+        // used spilled state deleted first); past it, or with none, dropped.
+        if (spill_budget_ != 0 && KeepWithinSpillBudget(idle_owner->SpillWriteBytes(**b))) {
+          if (auto spilled = idle_owner->SpillIdle(**b); spilled) {
+            got = c.bytes;
+          } else {
+            Log(std::format("{}'s idle conversation in slot {}: {}", idle_owner->name(), c.id,
+                            spilled.error()));
+            got = idle_owner->ResidentStateBytes(**b) == 0 ? c.bytes : 0;
+          }
+        } else if (auto released = (*b)->ReleaseIdleState(); released) {
+          got = c.bytes;
+          ++dropped;
+        }
+      } else {
+        got = models_[c.owner]->Reclaim(c.kind, c.id);
+      }
+      if (got != 0) {
+        took = true;
+        memory::RaiseReclaimInflation(plan.priorities[v]);
+        ++count[k(c.kind)];
+        freed_by[k(c.kind)] += got;
+        freed += got;
+        got_round += got;
+      }
+    }
+    if (got_round == 0) {
+      break;
+    }
+  }
+  if (freed != 0) {
+    platform::ReleaseFreeHeap();
+  }
+  if (took) {
+    const auto mib = [](std::uint64_t b) { return static_cast<double>(b) / (1U << 20U); };
+    using K = memory::ReclaimKind;
+    // Counts, bytes and measured costs only (D-014).
+    Log(std::format(
+        "reclaimed {:.1f} MiB of {:.1f} MiB needed for {}: {} graphs ({:.1f} MiB), {} plans "
+        "({:.1f} MiB), {} idle conversations {} ({:.1f} MiB); measured s a GiB: graphs {:.2f}, "
+        "plans {:.2f}, idle state {:.2f}",
+        mib(freed), mib(needed), why, count[k(K::kGraph)], mib(freed_by[k(K::kGraph)]),
+        count[k(K::kPlan)], mib(freed_by[k(K::kPlan)]), count[k(K::kIdleState)],
+        dropped != 0 ? "dropped" : "spilled", mib(freed_by[k(K::kIdleState)]), cost[k(K::kGraph)],
+        cost[k(K::kPlan)], cost[k(K::kIdleState)]));
+  }
+  reclaiming_ = false;
+  return freed;
+}
+
+Status Server::MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out) {
+  // The bytes the swap lacks now: what it pages in beyond what goes out
+  // and the budget's free room, from the catalog itself (what a reclaim
+  // reports freed need not be what occupancy dropped by: the plans'
+  // charge moves in whole extents past its floor).
+  std::string sizing_error;
+  const auto shortfall = [&]() -> std::uint64_t {
+    std::uint64_t incoming = 0;
+    std::uint64_t outgoing = 0;
+    std::uint64_t free = 0;
+    auto sized = node_.Call(
+        [&]() -> Status {
+          const catalog::Catalog& catalog = node_.catalog();
+          for (const auto& [extent, generation] : m.everything().extents) {
+            (void)generation;
+            if (const auto view = catalog.Describe(extent);
+                view && view->state != catalog::ExtentState::kResident) {
+              incoming += view->descriptor.size.value();
+            }
+          }
+          for (const catalog::ExtentId extent : out) {
+            if (const auto view = catalog.Describe(extent);
+                view && view->state == catalog::ExtentState::kResident) {
+              outgoing += view->descriptor.size.value();
+            }
+          }
+          const std::uint64_t occupancy = catalog.OccupancyOf(node_.domain()).Total().value();
+          free = occupancy < budget_ ? budget_ - occupancy : 0;
+          return {};
+        },
+        "sizing a swap");
+    if (!sized) {
+      sizing_error = sized.error();
+      return 0;
+    }
+    return incoming > outgoing + free ? incoming - outgoing - free : 0;
+  };
+  auto made = MakeRoom(
+      shortfall,
+      [&](std::uint64_t ask) { return Reclaim(ask, false, "a swap's incoming model", &m); },
+      kExtent);
+  if (!sizing_error.empty()) {
+    return Error(sizing_error);
+  }
+  if (!made) {
+    return Error(std::format("{} to {}: {}", resident_ != nullptr ? resident_->name() : "a swap",
+                             m.name(), made.error()));
+  }
+  return {};
+}
+
+bool Server::NodeHealthy() {
+  if (!started_ || torn_down_) {
+    return false;
+  }
+  auto checked = node_.Call(
+      [&]() -> Status {
+        return node_.scheduler().fault() ? Error("the node's scheduler faulted") : Status{};
+      },
+      "checking the node's health");
+  return checked.has_value();
+}
+
+Status Server::EvictPaged(Served& m) {
+  // Only what a swap moves: its weights and its conversation state (the
+  // shared workspace and its own pinned runtime memory stay where they
+  // are). State is written back to its places.
+  std::vector<catalog::ExtentId> own = m.weights();
+  const std::vector<catalog::ExtentId> state = m.state();
+  own.insert(own.end(), state.begin(), state.end());
+  std::vector<catalog::ExtentId> resident;
+  auto listed = node_.Call(
+      [&]() -> Status {
+        const catalog::Catalog& catalog = node_.catalog();
+        for (const catalog::ExtentId extent : own) {
+          if (const auto view = catalog.Describe(extent);
+              view && view->state == catalog::ExtentState::kResident) {
+            resident.push_back(extent);
+          }
+        }
+        return {};
+      },
+      "listing a model's resident extents");
+  if (!listed) {
+    return listed;
+  }
+  return resident.empty() ? Status{} : node_.Evict(resident);
+}
+
+Status Server::UndoSwap(Served& out, Served& in) {
+  // What of the incoming model came in goes out again (its state written
+  // back to its place), then the outgoing model comes back whole: its
+  // weights, and its state from what its write-back saved.
+  if (auto r = EvictPaged(in); !r) {
+    return r;
+  }
+  std::vector<catalog::ExtentId> again;
+  auto listed = node_.Call(
+      [&]() -> Status {
+        const catalog::Catalog& catalog = node_.catalog();
+        for (const auto& [extent, generation] : out.everything().extents) {
+          (void)generation;
+          if (const auto view = catalog.Describe(extent);
+              view && view->state != catalog::ExtentState::kResident) {
+            again.push_back(extent);
+          }
+        }
+        return {};
+      },
+      "listing a failed swap's extents");
+  if (!listed) {
+    return listed;
+  }
+  if (!again.empty()) {
+    std::vector<engine::LoadStats> log;
+    if (auto r = node_.Load(again, std::format("{} back after a failed swap", out.name()), log);
+        !r) {
+      return r;
+    }
+  }
+  return out.AfterLoad();  // its checks after a load, as after a swap
+}
+
+void Server::Maintain() {
+  if (!started_ || torn_down_ || reclaiming_) {
+    return;
+  }
+  const auto now = Clock::now();
+  if (now < next_maintenance_) {
+    return;
+  }
+  next_maintenance_ = now + kMaintenanceInterval;
+  // Idle conversations past their retention, resident or spilled.
+  std::size_t expired = 0;
+  std::uint64_t expired_bytes = 0;
+  for (const auto& m : models_) {
+    if (!m->llm()) {
+      continue;
+    }
+    auto& l = static_cast<Llm&>(*m);
+    for (std::size_t i = 0; i < l.branches(); ++i) {
+      auto b = l.branch(i);
+      if (!b || !l.BranchIdle(**b) || (*b)->history().empty() ||
+          now - l.LastUsed(**b) < retention_) {
+        continue;
+      }
+      const std::uint64_t bytes = l.StateBytes(**b);
+      if (auto released = (*b)->ReleaseIdleState(); released) {
+        ++expired;
+        expired_bytes += bytes;
+      }
+    }
+  }
+  if (expired != 0) {
+    Log(std::format("deleted {} idle conversations ({:.1f} MiB) past their retention of {} h",
+                    expired, static_cast<double>(expired_bytes) / (1U << 20U),
+                    config_.memory.retention_hours));
+  }
+  (void)KeepWithinSpillBudget(0);
+  // Pressure from outside the runtime: other processes share the node's
+  // memory (D-004). One reclaim of what would restore the target headroom,
+  // spaced by a back-off while the pressure persists (PressureTrim), never
+  // the running model's in-use floor (Reclaim).
+  const platform::MemoryPressure pressure = platform::ReadMemoryPressure();
+  const PressureTrim::Trim trim = pressure_.Observe(pressure, now);
+  if (!trim.now) {
+    return;
+  }
+  const std::uint64_t freed = Reclaim(trim.needed, true, trim.why, nullptr, std::nullopt, true);
+  if (pressure_.Trimmed(freed, trim.needed, now)) {
+    const auto mib = [](std::uint64_t b) { return static_cast<double>(b) / (1U << 20U); };
+    Log(std::format(
+        "memory pressure from outside ({:.0f} MiB available, a full stall {:.1f}% of the last 10 "
+        "s): gave back {:.1f} MiB of {:.1f} MiB, too little left to give without the running "
+        "model's floor; looking again in {} s ({} trims, {} short)",
+        mib(pressure.available.value_or(0)), pressure.stall ? pressure.stall->full_avg10 : 0.0,
+        mib(freed), mib(trim.needed),
+        std::chrono::duration_cast<std::chrono::seconds>(pressure_.backoff()).count(),
+        pressure_.trims(), pressure_.short_trims()));
+  }
+}
+
 Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_state) {
   parts = SwapParts{};
   parts.to = m.name();
@@ -3189,9 +3934,30 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   Clock::time_point loaded;
   if (resident_ == nullptr) {
     // Nothing resident: the first load of its weights (its state is
-    // resident since setup).
+    // resident since setup, or written back by a swap that failed and
+    // could not be undone: restored with them).
+    // Whatever another model still holds from a swap that failed and could
+    // not be undone goes out first (state written back).
+    for (const auto& other : models_) {
+      if (other.get() != &m) {
+        if (auto r = EvictPaged(*other); !r) {
+          return r;
+        }
+        if (other->llm() && other->HasRetainedState() &&
+            std::ranges::find(spilled_, other.get()) == spilled_.end()) {
+          spilled_.push_back(other.get());
+        }
+      }
+    }
     std::vector<engine::LoadStats> log;
-    if (auto r = node_.Load(m.weights(), std::format("{}'s first load", m.name()), log); !r) {
+    std::vector<catalog::ExtentId> all;
+    for (const auto& [extent, generation] : m.everything().extents) {
+      (void)generation;
+      all.push_back(extent);
+    }
+    // A load that fails (a read error) leaves no model resident: the next
+    // activation loads one whole again.
+    if (auto r = node_.Load(all, std::format("{}'s first load", m.name()), log); !r) {
       return r;
     }
     loaded = Clock::now();
@@ -3202,27 +3968,112 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     const bool conversation = out.llm() && out.HasRetainedState();
     parts.with_state = out.llm() && spill_state.value_or(conversation);
     std::vector<catalog::ExtentId> extents;
+    std::vector<catalog::ExtentId> unchanged;
     if (parts.with_state) {
-      extents = out.state();  // first: its write-backs start first
-      parts.spilled_bytes = extents.size() * kExtent;
+      auto& l = static_cast<Llm&>(out);
+      // The spill budget holds a swap's write-back too: past it, the least
+      // recently used of its conversations are deleted, not written.
+      const auto writes = [&l]() {
+        std::uint64_t bytes = 0;
+        for (std::size_t i = 0; i < l.branches(); ++i) {
+          if (auto b = l.branch(i); b) {
+            bytes += l.SpillWriteBytes(**b);
+          }
+        }
+        return bytes;
+      };
+      std::size_t deleted = 0;
+      while (!KeepWithinSpillBudget(writes())) {
+        Llm::Branch* oldest = nullptr;
+        for (std::size_t i = 0; i < l.branches(); ++i) {
+          if (auto b = l.branch(i); b && l.BranchIdle(**b) && l.ResidentStateBytes(**b) != 0 &&
+                                    (oldest == nullptr || l.LastUsed(**b) < l.LastUsed(*oldest))) {
+            oldest = *b;
+          }
+        }
+        if (oldest == nullptr || !oldest->ReleaseIdleState()) {
+          break;
+        }
+        ++deleted;
+      }
+      if (deleted != 0) {
+        Log(
+            std::format("{}: {} conversations deleted, the least recently used, for the spill "
+                        "budget of {} GiB before its swap-out",
+                        out.name(), deleted, spill_budget_ >> 30U));
+      }
+      // Its state first, so its write-backs start first; what nothing wrote
+      // since its slot's spill file last held it is released without
+      // writing (an incremental spill), before the swap.
+      unchanged = out.unchanged_state();
+      for (const catalog::ExtentId extent : out.state()) {
+        if (std::ranges::find(unchanged, extent) == unchanged.end()) {
+          extents.push_back(extent);
+        }
+      }
+      // What it writes back: its resident state (a conversation the reclaim
+      // order spilled already is on disk, and passed over).
+      for (std::size_t i = 0; i < l.branches(); ++i) {
+        if (auto b = l.branch(i); b) {
+          parts.spilled_bytes += l.ResidentStateBytes(**b);
+        }
+      }
     }
     const std::vector<catalog::ExtentId> weights = out.weights();
     extents.insert(extents.end(), weights.begin(), weights.end());
-    // Its plans and graphs go with it: host and driver memory outside the
-    // catalog, which the start's guard sets apart for the resident model
-    // alone (Start). Its jobs have all completed (nothing in flight replays
-    // a graph); a cohort whose completion is unproven keeps its owners. It
-    // plans and captures again on its return (D-090 as amended).
-    if (out.plan_host_bytes() != 0 &&
-        (!out.llm() || static_cast<Llm&>(out).generation_cohort_usable())) {
-      parts.dropped_graphs = out.graphs().kept;
-      out.DropPlans();
+    // Its plans and graphs stay (D-090 as amended 2026-10-02): charged
+    // inside the budget, they go only when the reclaim order needs their
+    // room, here first if the incoming model does not fit beside them. The
+    // room is checked again after each reclaim, and a swap it cannot make
+    // room for is refused before anything moves.
+    const std::uint64_t graphs_before = out.graphs().kept + m.graphs().kept;
+    {
+      std::vector<catalog::ExtentId> going = extents;
+      going.insert(going.end(), unchanged.begin(), unchanged.end());
+      if (auto room = MakeRoomForSwap(m, going); !room) {
+        parts.refused = true;
+        return room;
+      }
+    }
+    const std::uint64_t graphs_after = out.graphs().kept + m.graphs().kept;
+    parts.dropped_graphs = graphs_before > graphs_after ? graphs_before - graphs_after : 0;
+    if (!unchanged.empty()) {
+      if (auto r = node_.Evict(unchanged, {.unchanged = true}); !r) {
+        out.StateWrittenBack(false);
+        if (auto undone = UndoSwap(out, m); undone) {
+          parts.refused = true;
+        } else {
+          resident_ = nullptr;  // the next activation loads one whole
+        }
+        return r;
+      }
     }
     scheduler::SwapReport report;
     if (auto r = node_.Swap(std::move(extents), m.everything(), handoff_, report); !r) {
+      if (parts.with_state) {
+        out.StateWrittenBack(false);
+      }
+      // Never the process: whatever of the incoming model came in goes out
+      // again and the outgoing one comes back whole, so both stay usable and
+      // only the request that needed the swap fails.
+      if (auto undone = UndoSwap(out, m); undone) {
+        parts.refused = true;
+        Log(std::format("swap {} -> {} failed and was undone: {}", out.name(), m.name(),
+                        r.error()));
+      } else {
+        Log(
+            std::format("swap {} -> {} failed ({}) and could not be undone ({}): no model is "
+                        "resident until the next one loads whole",
+                        out.name(), m.name(), r.error(), undone.error()));
+        if (parts.with_state && std::ranges::find(spilled_, &out) == spilled_.end()) {
+          spilled_.push_back(&out);
+        }
+        resident_ = nullptr;
+      }
       return r;
     }
     if (parts.with_state) {
+      out.StateWrittenBack(true);
       spilled_.push_back(&out);
     }
     evicted = report.evicted;

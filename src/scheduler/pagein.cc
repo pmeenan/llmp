@@ -782,7 +782,12 @@ std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::Exten
     return Readiness::kReady;
   }
   const PageSource& place = source->second;
-  if (write_back && (lanes_.storage == nullptr || (place.landed && !CanCopy()))) {
+  // Unchanged since its place saved these contents (its owner's word and
+  // the catalog's generation): written back without writing anything.
+  const bool saved = write_back && options.unchanged && extent_view->saved_generation != 0 &&
+                     extent_view->saved_generation == extent_view->content_generation;
+  const bool writes = write_back && !saved;
+  if (writes && (lanes_.storage == nullptr || (place.landed && !CanCopy()))) {
     return std::unexpected(WorkError::kInvalid);
   }
   if (place.backing && lanes_.device == nullptr && lanes_.backing == nullptr) {
@@ -811,12 +816,16 @@ std::expected<Readiness, WorkError> Scheduler::Evict(TaskId task, catalog::Exten
   eviction.waiters.reserve(settings_.waiters);
   eviction.waiters.push_back(task);
   ++record->waiting;
-  if (write_back && place.landed) {
+  if (saved) {
+    ++stats_.unchanged_writebacks;
+    stats_.unchanged_writeback_bytes += place.read.length;
+  }
+  if (writes && place.landed) {
     eviction.stage = EvictStage::kSlot;
     ProceedEviction(extent);  // last: it may settle the eviction at once
     return Readiness::kWaiting;
   }
-  eviction.stage = write_back ? EvictStage::kWriting : EvictStage::kUnmapping;
+  eviction.stage = writes ? EvictStage::kWriting : EvictStage::kUnmapping;
   if (!OpenEvictStage(extent, eviction)) {
     blocked_.push_back(extent);
   }

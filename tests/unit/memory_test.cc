@@ -8,6 +8,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -16,6 +17,7 @@
 #include "expected_error.h"
 #include "memory/commitment.h"
 #include "memory/materialize.h"
+#include "memory/reclaim.h"
 #include "memory/victims.h"
 
 namespace {
@@ -342,6 +344,329 @@ TEST_F(MaterializeTest, InFlightQuarantinedAndStaleExtents) {
   plan = jitllm::memory::PlanMaterialization(catalog_, domain_, kBudget, taken);
   EXPECT_THAT(plan.stale, ElementsAre(state));
   EXPECT_FALSE(plan.feasible);
+}
+
+// The node's one reclaim order (memory/reclaim.h): GreedyDual-Size over
+// each kind's measured cost to restore a byte, so with equal inflation the
+// cheapest kind first; strict least recent use within a kind (never largest
+// first), the running model's last.
+using jitllm::memory::KindCosts;
+using jitllm::memory::ProtectFloor;
+using jitllm::memory::ReclaimCandidate;
+using jitllm::memory::ReclaimKind;
+using jitllm::memory::ReclaimOrder;
+using jitllm::memory::SelectReclaim;
+
+constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
+
+// The costs measured on a GB10 (docs/experiments/memory-pressure), a GiB
+// each: weights paged in at 13.3 GB/s, idle state written back and read
+// again at 11.0 and 14.5 GB/s, a decode graph's capture (9 ms for ~40 MiB),
+// a decode plan's planning (23 ms for ~2.4 MiB).
+std::vector<ReclaimCandidate> Measured() {
+  return {
+      {.kind = ReclaimKind::kPlan,
+       .owner = 0,
+       .id = 1,
+       .bytes = 2516582,
+       .last_use = 1,
+       .restore_seconds = 0.023},
+      {.kind = ReclaimKind::kGraph,
+       .owner = 0,
+       .id = 1,
+       .bytes = 41943040,
+       .last_use = 1,
+       .restore_seconds = 0.009},
+      {.kind = ReclaimKind::kIdleState,
+       .owner = 0,
+       .id = 2,
+       .bytes = kGiB,
+       .last_use = 5,
+       .restore_seconds = (1.0737 / 11.0) + (1.0737 / 14.5)},
+      {.kind = ReclaimKind::kIdleWeights,
+       .owner = 1,
+       .id = 3,
+       .bytes = kGiB,
+       .last_use = 9,
+       .restore_seconds = 1.0737 / 13.3},
+  };
+}
+
+TEST(ReclaimOrder, KindsGoByTheirMeasuredCostToRestoreAByte) {
+  const auto candidates = Measured();
+  const auto cost = KindCosts(candidates);
+  EXPECT_NEAR(cost[static_cast<std::size_t>(ReclaimKind::kIdleWeights)], 0.081, 0.001);
+  EXPECT_NEAR(cost[static_cast<std::size_t>(ReclaimKind::kIdleState)], 0.172, 0.001);
+  EXPECT_NEAR(cost[static_cast<std::size_t>(ReclaimKind::kGraph)], 0.230, 0.001);
+  EXPECT_NEAR(cost[static_cast<std::size_t>(ReclaimKind::kPlan)], 9.81, 0.01);
+  // Weights, then idle state (spilled), then graphs, then plans.
+  EXPECT_THAT(ReclaimOrder(candidates), ElementsAre(3U, 2U, 1U, 0U));
+  // A measurement that makes plans cheaper per byte moves them first.
+  auto cheap = candidates;
+  cheap[0].restore_seconds = 0.0001;
+  EXPECT_EQ(ReclaimOrder(cheap).front(), 0U);
+}
+
+TEST(ReclaimOrder, WithinAKindTheLeastRecentlyUsedGoesFirstNeverTheLargest) {
+  std::vector<ReclaimCandidate> plans = {
+      {.kind = ReclaimKind::kPlan,
+       .owner = 0,
+       .id = 1,
+       .bytes = 100,
+       .last_use = 9,
+       .restore_seconds = 0.05},
+      {.kind = ReclaimKind::kPlan,
+       .owner = 0,
+       .id = 2,
+       .bytes = 900,
+       .last_use = 3,
+       .restore_seconds = 0.05},
+      {.kind = ReclaimKind::kPlan,
+       .owner = 1,
+       .id = 3,
+       .bytes = 5000,
+       .last_use = 6,
+       .restore_seconds = 0.05},
+      // The running model's goes after every other model's of its kind.
+      {.kind = ReclaimKind::kPlan,
+       .owner = 1,
+       .id = 4,
+       .bytes = 50,
+       .last_use = 1,
+       .restore_seconds = 0.05,
+       .running = true},
+  };
+  EXPECT_THAT(ReclaimOrder(plans), ElementsAre(1U, 2U, 0U, 3U));
+  // Enough is taken in that order and no more.
+  const auto plan = SelectReclaim(plans, 950);
+  EXPECT_THAT(plan.victims, ElementsAre(1U, 2U));
+  EXPECT_EQ(plan.bytes, 5900U);
+  EXPECT_TRUE(plan.sufficient);
+  const auto all = SelectReclaim(plans, 1U << 20U);
+  EXPECT_EQ(all.victims.size(), 4U);
+  EXPECT_FALSE(all.sufficient);
+}
+
+TEST(ReclaimOrder, TheChoiceIsDeterministicAndIgnoresEmptyCandidates) {
+  std::vector<ReclaimCandidate> c = {
+      {.kind = ReclaimKind::kGraph, .owner = 2, .id = 1, .bytes = 10, .last_use = 4},
+      {.kind = ReclaimKind::kGraph, .owner = 1, .id = 7, .bytes = 10, .last_use = 4},
+      {.kind = ReclaimKind::kGraph, .owner = 1, .id = 5, .bytes = 0, .last_use = 1},
+      {.kind = ReclaimKind::kGraph, .owner = 1, .id = 6, .bytes = 10, .last_use = 4},
+  };
+  EXPECT_THAT(ReclaimOrder(c), ElementsAre(3U, 1U, 0U));
+  EXPECT_TRUE(SelectReclaim(c, 0).victims.empty());
+  EXPECT_TRUE(SelectReclaim({}, 1).victims.empty());
+  EXPECT_FALSE(SelectReclaim({}, 1).sufficient);
+}
+
+// GreedyDual-Size: a candidate's priority is the inflation value at its last
+// use plus its kind's cost a GiB, and every reclaim raises the inflation to
+// what it took. A costly kind outlasts a cheap one while both are in use; one
+// left unused falls behind cheap ones used after reclaims raised the value.
+TEST(ReclaimOrder, AStaleCostlyEntryFallsBehindFreshCheapOnesAsReclaimsGoOn) {
+  std::vector<ReclaimCandidate> c = {
+      {.kind = ReclaimKind::kPlan,
+       .owner = 0,
+       .id = 1,
+       .bytes = kGiB / 64,
+       .last_use = 1,
+       .inflation = 0,
+       .restore_seconds = 0.08},  // 5.12 s a GiB
+      {.kind = ReclaimKind::kIdleState,
+       .owner = 0,
+       .id = 2,
+       .bytes = kGiB,
+       .last_use = 8,
+       .inflation = 0,
+       .restore_seconds = 0.17},
+  };
+  // Both used at the same inflation: the cheap idle state goes first.
+  EXPECT_THAT(ReclaimOrder(c), ElementsAre(1U, 0U));
+  // Idle state used again once reclaims raised the value past the plan's
+  // cost: the plan, unused since, goes first.
+  c[1].inflation = 5.0;
+  EXPECT_THAT(ReclaimOrder(c), ElementsAre(0U, 1U));
+  const auto plan = SelectReclaim(c, 1);
+  ASSERT_EQ(plan.priorities.size(), 1U);
+  EXPECT_NEAR(plan.priorities[0], 5.12, 0.01);
+  // The value only rises.
+  const double before = jitllm::memory::ReclaimInflation();
+  jitllm::memory::RaiseReclaimInflation(before + 1.5);
+  EXPECT_DOUBLE_EQ(jitllm::memory::ReclaimInflation(), before + 1.5);
+  jitllm::memory::RaiseReclaimInflation(before);
+  EXPECT_DOUBLE_EQ(jitllm::memory::ReclaimInflation(), before + 1.5);
+}
+
+// Staleness decays the expected cost directly: a plan (about 6 s a GiB)
+// unused for a handful of reclaims, or for minutes, ranks below an idle
+// conversation used just now (0.2 s a GiB), whatever the inflation did;
+// within a kind the order stays strict least recent use.
+TEST(ReclaimOrder, AStalePlanFallsBelowAFreshConversationWithinAFewReclaims) {
+  const ReclaimCandidate plan{.kind = ReclaimKind::kPlan,
+                              .owner = 0,
+                              .id = 1,
+                              .bytes = kGiB / 64,
+                              .last_use = 1,
+                              .restore_seconds = 6.0 / 64};
+  const ReclaimCandidate fresh{.kind = ReclaimKind::kIdleState,
+                               .owner = 0,
+                               .id = 2,
+                               .bytes = kGiB,
+                               .last_use = 9,
+                               .restore_seconds = 0.2};
+  // Used at the same time: the plan stays.
+  std::vector<ReclaimCandidate> c = {plan, fresh};
+  EXPECT_THAT(ReclaimOrder(c), ElementsAre(1U, 0U));
+  // Unused for k reclaims since (each raising the inflation by what it
+  // took, about 0.2): the first k at which the plan goes first.
+  std::uint64_t k = 0;
+  for (; k < 64; ++k) {
+    c[0].reclaims_since = k;
+    c[1].inflation = 0.2 * static_cast<double>(k);
+    if (ReclaimOrder(c).front() == 0U) {
+      break;
+    }
+  }
+  EXPECT_LE(k, 5U);
+  // Unused for minutes with no reclaim at all: it goes first too.
+  c[0].reclaims_since = 0;
+  c[1].inflation = 0;
+  c[0].idle_seconds = 30 * 60;
+  EXPECT_EQ(ReclaimOrder(c).front(), 0U);
+  // Within a kind, staler is never ranked after fresher.
+  std::vector<ReclaimCandidate> plans = {plan, plan};
+  plans[0].id = 1;
+  plans[0].reclaims_since = 0;
+  plans[0].idle_seconds = 1;
+  plans[1].id = 2;
+  plans[1].reclaims_since = 3;
+  plans[1].idle_seconds = 90;
+  EXPECT_THAT(ReclaimOrder(plans), ElementsAre(1U, 0U));
+}
+
+// No more than needed: a few KiB do not cost an idle conversation when a
+// later candidate covers them at no more absolute cost to restore.
+TEST(ReclaimOrder, ATinyNeedTakesASmallSufficientCandidateNotAConversation) {
+  std::vector<ReclaimCandidate> c = {
+      {.kind = ReclaimKind::kIdleState,
+       .owner = 0,
+       .id = 1,
+       .bytes = 451 * (kGiB >> 10U),
+       .last_use = 1,
+       .restore_seconds = 0.08},
+      {.kind = ReclaimKind::kPlan,
+       .owner = 0,
+       .id = 2,
+       .bytes = 3 * (kGiB >> 10U),
+       .last_use = 1,
+       .restore_seconds = 0.03},
+  };
+  ASSERT_THAT(ReclaimOrder(c), ElementsAre(0U, 1U));  // the conversation is cheaper a byte
+  const auto tiny = SelectReclaim(c, 4096);
+  EXPECT_THAT(tiny.victims, ElementsAre(1U));
+  EXPECT_TRUE(tiny.sufficient);
+  // A need the plan does not cover, or a plan that costs more to rebuild
+  // than the conversation to spill, keeps the order.
+  EXPECT_THAT(SelectReclaim(c, 64 * (kGiB >> 10U)).victims, ElementsAre(0U));
+  c[1].restore_seconds = 0.2;
+  EXPECT_THAT(SelectReclaim(c, 4096).victims, ElementsAre(0U));
+}
+
+// An optional charge reclaims only what costs less to restore than what it
+// charges, and all of it or nothing; a plan and its graph count once.
+TEST(ReclaimOrder, AReclaimTakesOnlyWhatIsCheaperAndCountsAPlanWithItsGraphOnce) {
+  const std::vector<ReclaimCandidate> c = {
+      {.kind = ReclaimKind::kGraph,
+       .owner = 0,
+       .id = 1,
+       .bytes = 40,
+       .last_use = 1,
+       .restore_seconds = 0.000001},
+      {.kind = ReclaimKind::kPlan,
+       .owner = 0,
+       .id = 1,
+       .bytes = 50,  // 10 of its own beside its graph's 40
+       .last_use = 1,
+       .restore_seconds = 0.01},
+      {.kind = ReclaimKind::kIdleState,
+       .owner = 0,
+       .id = 2,
+       .bytes = 1000,
+       .last_use = 2,
+       .restore_seconds = 0.0000001},
+  };
+  // Everything: the idle state, the graph, then the plan's own 10.
+  const auto all = SelectReclaim(c, 2000);
+  EXPECT_EQ(all.bytes, 1050U);
+  EXPECT_FALSE(all.sufficient);
+  // Below the graphs' priority: only the idle state.
+  const auto cost = KindCosts(c);
+  const double graph = jitllm::memory::ReclaimPriority(c[0], cost);
+  const auto cheaper = SelectReclaim(c, 2000, graph);
+  EXPECT_THAT(cheaper.victims, ElementsAre(2U));
+  EXPECT_FALSE(cheaper.sufficient);
+  EXPECT_TRUE(SelectReclaim(c, 500, graph).sufficient);
+}
+
+// The running model's in-use floor: its most recently used plans up to its
+// plan_floor_bytes (their own bytes, not their graphs'), with their graphs,
+// are never candidates; its older ones and every other model's stay.
+TEST(ReclaimOrder, TheRunningModelsInUseFloorIsNeverTaken) {
+  const auto plan = [](std::uint32_t owner, std::uint64_t id, std::uint64_t bytes,
+                       std::uint64_t used, bool running) {
+    return ReclaimCandidate{.kind = ReclaimKind::kPlan,
+                            .owner = owner,
+                            .id = id,
+                            .bytes = bytes,
+                            .last_use = used,
+                            .restore_seconds = 0.05,
+                            .running = running};
+  };
+  const auto graph = [](std::uint32_t owner, std::uint64_t id, std::uint64_t bytes,
+                        std::uint64_t used, bool running) {
+    return ReclaimCandidate{.kind = ReclaimKind::kGraph,
+                            .owner = owner,
+                            .id = id,
+                            .bytes = bytes,
+                            .last_use = used,
+                            .restore_seconds = 0.01,
+                            .running = running};
+  };
+  const std::vector<ReclaimCandidate> all = {
+      plan(0, 1, 100, 1, true),                                // the oldest: not in the floor
+      plan(0, 2, 1100, 5, true),                               // 100 of its own beside its graph
+      graph(0, 2, 1000, 5, true),   plan(0, 3, 100, 9, true),  // the newest
+      plan(1, 4, 1100, 10, false),  // another model's: 100 of its own beside its graph
+      graph(1, 4, 1000, 10, false),
+  };
+  // A floor of 150: the newest (100), then the next (100 of its own) reaches it.
+  std::vector<ReclaimCandidate> c = all;
+  ProtectFloor(c, 150);
+  ASSERT_EQ(c.size(), 3U);
+  EXPECT_EQ(c[0].id, 1U);
+  EXPECT_EQ(c[1].id, 4U);
+  EXPECT_EQ(c[2].id, 4U);
+  // A floor its newest plan alone covers keeps only that one.
+  c = all;
+  ProtectFloor(c, 100);
+  EXPECT_EQ(c.size(), all.size() - 1);
+  EXPECT_TRUE(std::ranges::none_of(c, [](const ReclaimCandidate& x) { return x.id == 3; }));
+  // A floor of 0 keeps nothing back; one past everything keeps every
+  // running plan and graph back, never another model's.
+  c = all;
+  ProtectFloor(c, 0);
+  EXPECT_EQ(c.size(), all.size());
+  c = all;
+  ProtectFloor(c, kGiB);
+  ASSERT_EQ(c.size(), 2U);
+  EXPECT_FALSE(c[0].running);
+  EXPECT_FALSE(c[1].running);
+  // So a reclaim asking for everything takes the rest, not the floor (the
+  // other model's plan and graph counted once).
+  c = all;
+  ProtectFloor(c, 150);
+  EXPECT_EQ(SelectReclaim(c, kGiB).bytes, 100U + 100U + 1000U);
 }
 
 }  // namespace

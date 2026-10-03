@@ -60,6 +60,18 @@ add_executable(cohort_schedule_test cohort_schedule_test.cc)
 target_link_libraries(cohort_schedule_test PRIVATE jitllm_runtime)
 jitllm_gtest(cohort_schedule_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# When pressure on memory from outside has the runtime trim: its target,
+# hysteresis and back-off, from readings of the test's own.
+add_executable(pressure_trim_test pressure_trim_test.cc)
+target_link_libraries(pressure_trim_test PRIVATE jitllm_runtime)
+jitllm_gtest(pressure_trim_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# Room for a swap's incoming model: reclaimed in whole extents and checked
+# again, against a ledger whose charge moves in whole extents.
+add_executable(swap_room_test swap_room_test.cc)
+target_link_libraries(swap_room_test PRIVATE jitllm_runtime)
+jitllm_gtest(swap_room_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The chat route (D-097): requests and their bounds, the bind resolution and
 # Host guard, and the server over real loopback sockets with a fake backend.
 add_executable(api_test api_test.cc)

@@ -5,10 +5,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <format>
+#include <functional>
+#include <mutex>
 #include <optional>
+#include <span>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "catalog/catalog.h"
 #include "engine/paged_node.h"
@@ -24,7 +31,22 @@ using support::Address;
 using support::Error;
 using support::Round;
 
+// SizedArena's scratch (one for the process: plans are built on the
+// driver's thread and, at setup, on the starting one).
+struct Scratch {
+  std::mutex mutex;
+  std::optional<kg::TensorArena> arena;
+  std::size_t tensors = 0;
+  std::atomic<std::uint64_t> bytes{0};
+};
+Scratch& TheScratch() {
+  static Scratch scratch;
+  return scratch;
+}
+
 }  // namespace
+
+std::uint64_t ScratchArenaBytes() { return TheScratch().bytes.load(); }
 
 std::expected<void, std::string> PlaceAndPlan(PlannedBase& out, std::span<ggml_tensor* const> nodes,
                                               std::span<ggml_tensor* const> inputs,
@@ -110,6 +132,82 @@ std::uint64_t PlannedHostBytes(const PlannedBase& planned) {
 std::uint64_t NextPlanUse() {
   static std::atomic<std::uint64_t> next{0};
   return next.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
+namespace {
+// The steps under way on this thread (PlanStep): how deep, and the first
+// one's start.
+thread_local std::uint32_t step_depth = 0;
+thread_local std::uint64_t step_start = kNoStep;
+}  // namespace
+
+PlanStep::PlanStep() {
+  if (step_depth++ == 0) {
+    step_start = NextPlanUse();
+  }
+}
+
+PlanStep::~PlanStep() {
+  if (--step_depth == 0) {
+    step_start = kNoStep;
+  }
+}
+
+std::uint64_t PlanStepStart() { return step_start; }
+
+void CollectPlans(std::span<PlanCacheBase* const> caches, std::uint32_t owner, bool running,
+                  std::vector<memory::ReclaimCandidate>& out) {
+  for (PlanCacheBase* cache : caches) {
+    if (cache != nullptr) {
+      cache->Collect(owner, running, out);
+    }
+  }
+}
+
+std::uint64_t ReclaimPlan(std::span<PlanCacheBase* const> caches, memory::ReclaimKind kind,
+                          std::uint64_t serial) {
+  for (PlanCacheBase* cache : caches) {
+    if (cache != nullptr) {
+      if (const std::uint64_t freed = cache->Reclaim(kind, serial); freed != 0) {
+        return freed;
+      }
+    }
+  }
+  return 0;
+}
+
+std::expected<kg::TensorArena, std::string> SizedArena(
+    std::size_t estimate, const std::function<bool(kg::TensorArena&)>& build) {
+  // The process's scratch arena, grown to the largest estimate seen: the
+  // first build's tensors are only counted, then forgotten.
+  Scratch& s = TheScratch();
+  const std::scoped_lock lock(s.mutex);
+  if (!s.arena || s.tensors < estimate) {
+    s.arena.reset();
+    s.bytes.store(0);
+    auto made = kg::TensorArena::Create(estimate);
+    if (!made) {
+      return Error(made.error().detail);
+    }
+    s.arena.emplace(std::move(*made));
+    s.tensors = estimate;
+    s.bytes.store(s.arena->bytes());
+  }
+  kg::TensorArena& scratch = *s.arena;
+  scratch.Reset();
+  // Within the estimate, as a build in an arena of that size would be.
+  const bool built = build(scratch) && scratch.used() <= estimate * ggml_tensor_overhead();
+  const std::size_t used = scratch.used();
+  scratch.Reset();
+  // A build that failed is the caller's own to report, over an arena of
+  // the estimate as before.
+  auto sized = built ? kg::TensorArena::CreateBytes(used + ggml_tensor_overhead(),
+                                                    estimate * ggml_tensor_overhead())
+                     : kg::TensorArena::Create(estimate);
+  if (!sized) {
+    return Error(sized.error().detail);
+  }
+  return std::move(*sized);
 }
 
 void CheckCoverage(const PagedNode& node, int owner, std::span<ggml_tensor* const> nodes,

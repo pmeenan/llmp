@@ -139,6 +139,8 @@ enum class Kind : std::uint8_t {
   kClientPort,     // [client] port
   kClientCount,    // [client] max_connections, max_queued
   kClientSeconds,  // [client] stall_seconds, deadline_cap_seconds
+  kMemoryHours,    // [memory] retention_hours
+  kMemoryGib,      // [memory] spill_budget_gib
 };
 
 struct KeySpec {
@@ -164,6 +166,8 @@ const std::vector<KeySpec>& Schema() {
       {.path = {"client", "max_queued"}, .kind = Kind::kClientCount, .member = false},
       {.path = {"client", "stall_seconds"}, .kind = Kind::kClientSeconds, .member = false},
       {.path = {"client", "deadline_cap_seconds"}, .kind = Kind::kClientSeconds, .member = false},
+      {.path = {"memory", "retention_hours"}, .kind = Kind::kMemoryHours, .member = false},
+      {.path = {"memory", "spill_budget_gib"}, .kind = Kind::kMemoryGib, .member = false},
       {.path = {"storage", "data_dir"}, .kind = Kind::kAbsolutePath, .member = false},
       {.path = {"storage", "installed"}, .kind = Kind::kRolePath, .member = false},
       {.path = {"storage", "spill"}, .kind = Kind::kRolePath, .member = false},
@@ -466,6 +470,10 @@ class Validator {
         return "an integer";
       case Kind::kClientSeconds:
         return "an integer of seconds";
+      case Kind::kMemoryHours:
+        return "an integer of hours";
+      case Kind::kMemoryGib:
+        return "an integer of GiB";
     }
     return "";
   }
@@ -614,6 +622,24 @@ class Validator {
           stall_seconds_ = static_cast<std::uint32_t>(value->get());
         } else {
           deadline_cap_seconds_ = static_cast<std::uint32_t>(value->get());
+        }
+        break;
+      }
+      case Kind::kMemoryHours:
+      case Kind::kMemoryGib: {
+        const bool hours = spec->kind == Kind::kMemoryHours;
+        const std::int64_t least = hours ? 1 : 0;
+        const std::int64_t most = hours ? kMaxRetentionHours : kMaxSpillBudgetGib;
+        const auto* value = node.as_integer();
+        if (value == nullptr) {
+          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
+        } else if (value->get() < least || value->get() > most) {
+          out_.At(leaf,
+                  std::format("{} must be from {} to {}, not {}", key, least, most, value->get()));
+        } else if (hours) {
+          retention_hours_ = static_cast<std::uint32_t>(value->get());
+        } else {
+          spill_budget_gib_ = static_cast<std::uint32_t>(value->get());
         }
         break;
       }
@@ -953,6 +979,8 @@ class Validator {
     config.client.max_queued = max_queued_.value_or(kDefaultMaxQueued);
     config.client.stall_seconds = stall_seconds_.value_or(kDefaultStallSeconds);
     config.client.deadline_cap_seconds = deadline_cap_seconds_.value_or(kDefaultDeadlineCapSeconds);
+    config.memory.retention_hours = retention_hours_.value_or(kDefaultRetentionHours);
+    config.memory.spill_budget_gib = spill_budget_gib_.value_or(kDefaultSpillBudgetGib);
     if (config.membership && config.storage.long_term) {
       for (const KeyPath& path : {KeyPath{"cluster_file"}, KeyPath{"credentials", "ca_file"},
                                   KeyPath{"credentials", "certificate_file"},
@@ -1076,6 +1104,8 @@ class Validator {
   std::optional<std::uint32_t> max_connections_;
   std::optional<std::uint32_t> max_queued_;
   std::optional<std::uint32_t> stall_seconds_;
+  std::optional<std::uint32_t> retention_hours_;
+  std::optional<std::uint32_t> spill_budget_gib_;
   std::optional<std::uint32_t> deadline_cap_seconds_;
 };
 

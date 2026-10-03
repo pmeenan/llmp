@@ -43,6 +43,18 @@ class TensorArena {
  public:
   // Room for `tensors` tensors, views and operation nodes.
   static std::expected<TensorArena, KernelFailure> Create(std::size_t tensors);
+  // Exactly `bytes` of metadata (at least one tensor's): what an earlier
+  // build of the same graph used (engine/planned.h SizedArena), standing
+  // for the `stands_for` bytes that build was checked against (Reserve
+  // answers as it did there; 0: for itself).
+  static std::expected<TensorArena, KernelFailure> CreateBytes(std::size_t bytes,
+                                                               std::size_t stands_for = 0);
+  // Every tensor forgotten: the arena is empty again (a scratch arena's
+  // reuse). Nothing built on it may be used afterwards.
+  void Reset();
+  // Ends a sized arena's standing for its estimate (CreateBytes), once the
+  // identical build is done: later checks see its own room.
+  void Seal() { stands_for_ = 0; }
 
   TensorArena(TensorArena&&) noexcept;
   TensorArena& operator=(TensorArena&& other) noexcept;
@@ -54,6 +66,8 @@ class TensorArena {
   ggml_context* context() const { return context_.get(); }
   // The host bytes it holds (its tensors' metadata), whatever it uses.
   std::size_t bytes() const { return capacity_; }
+  // The bytes its tensors use of them (GGML's used memory).
+  std::size_t used() const;
   // Refused unless `tensors` more fit.
   std::expected<void, KernelFailure> Reserve(std::size_t tensors) const;
 
@@ -71,6 +85,7 @@ class TensorArena {
   std::vector<std::byte> buffer_;  // the metadata, before the context that uses it
   std::unique_ptr<ggml_context, Free> context_;
   std::size_t capacity_ = 0;
+  std::size_t stands_for_ = 0;  // CreateBytes
 };
 
 }  // namespace jitllm::kernels::ggml

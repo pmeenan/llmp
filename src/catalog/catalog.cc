@@ -593,6 +593,9 @@ std::expected<void, CatalogError> Catalog::CompleteEvict(const Ticket& ticket) {
   }
   view.discarded = false;
   view.preserved = preserved;  // written back whole: a load restores them
+  if (preserved) {
+    view.saved_generation = view.content_generation;
+  }
   (*record)->writing_back = false;
   Recount(**record, before);
   return {};

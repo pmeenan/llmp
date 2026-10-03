@@ -65,8 +65,10 @@
 #include "engine/paged_node.h"
 #include "execution/adaptive_depth.h"
 #include "execution/sampling.h"
+#include "memory/reclaim.h"
 #include "runtime/commands.h"
 #include "runtime/prefill.h"
+#include "runtime/pressure_trim.h"
 #include "runtime/turn_reuse.h"
 #include "scheduler/scheduler.h"
 #include "tokenizer/tokenizer.h"
@@ -145,7 +147,12 @@ struct SwapParts {
   std::uint64_t spilled_bytes = 0;  // the outgoing state written back
   std::uint64_t handed_off = 0;
   std::uint64_t released_unused = 0;
-  std::uint64_t dropped_graphs = 0;  // the outgoing model's graphs, dropped with its plans
+  std::uint64_t dropped_graphs = 0;  // graphs the reclaim order took for the incoming model
+  // A failed Activate that left the node as it was (the outgoing model
+  // resident and usable, the incoming one not): the swap was refused for
+  // room, before it started or with its effects undone. Only the request
+  // that needed it fails.
+  bool refused = false;
   Clock::time_point requested;
   Clock::time_point ready;  // setup's end
 };
@@ -169,22 +176,38 @@ class Served {
   // What a chunk builds on the host before staging it (its inputs), at
   // most: the node's fixed memory beside what the catalog maps.
   virtual std::uint64_t host_input_bytes() const { return 0; }
-  // The most host and driver memory its cached plans and graphs may hold
-  // (engine/planned.h caps): set apart beside the catalog's budget, as the
-  // host inputs are, by the start's memory guard. Only the resident model
-  // keeps them: a swap drops the outgoing model's (Server::Activate).
-  virtual std::uint64_t plan_host_bytes() const { return 0; }
-  // How plan_host_bytes() is made up, for the start's log (empty: none).
+  // What one step of the model holds of plans at once at most
+  // (engine/planned.h): set apart beside the catalog's budget, as the host
+  // inputs are, by the start's memory guard. Every plan and graph past it
+  // is charged inside the budget and given back through the node's one
+  // reclaim order (Server::Reclaim); a swap keeps them (D-090 as amended).
+  virtual std::uint64_t plan_floor_bytes() const { return 0; }
+  // What its kept graphs took of the device's free memory at their
+  // captures (the count's check, for the teardown's log).
+  virtual std::uint64_t graph_measured_bytes() const { return 0; }
+  // How plan_floor_bytes() is made up, for the start's log (empty: none).
   virtual std::string plan_report() const { return {}; }
   // Why a model that batches concurrent requests serves this artifact one
   // at a time, for the start's log (empty: it batches as configured, or
   // never batches). A model is never refused only because its artifact
   // cannot batch.
   virtual std::string serial_reason() const { return {}; }
+  // Its plans and graphs as candidates for the reclaim order (memory/
+  // reclaim.h), `owner` its registration index, `running` if resident;
+  // and one's reclaim: the bytes it freed (0: gone or held).
+  virtual void ReclaimCandidates(std::uint32_t /*owner*/, bool /*running*/,
+                                 std::vector<memory::ReclaimCandidate>& /*out*/) {}
+  virtual std::uint64_t Reclaim(memory::ReclaimKind /*kind*/, std::uint64_t /*id*/) { return 0; }
   virtual Status Register() = 0;
   virtual Status Bind() = 0;
   virtual std::vector<catalog::ExtentId> weights() const = 0;
   virtual std::vector<catalog::ExtentId> state() const { return {}; }
+  // A swap's incremental write-back: the state extents nothing wrote since
+  // their spill files last held them (released without writing,
+  // scheduler::EvictOptions::unchanged); and, after the swap's write-back,
+  // whether it wrote the rest (`whole`) or failed.
+  virtual std::vector<catalog::ExtentId> unchanged_state() const { return {}; }
+  virtual void StateWrittenBack(bool /*whole*/) {}
   virtual bool HasRetainedState() const { return false; }
   virtual const catalog::Closure& everything() const = 0;
   // Execution may protect fewer idle retained states than full swaps do.
@@ -278,9 +301,12 @@ class Llm : public Served {
     bool HasRetainedState() const { return !history_.empty(); }
     Status Clear();
     // Clears an idle branch's retained state (its finished conversation's
-    // reuse cache) while it is outside the selected cohort, for peers that
-    // need the capacity. Families without separate native slots refuse.
+    // reuse cache) while it is outside the selected cohort. Families
+    // without separate native slots refuse.
     Status ReleaseIdleState();
+    // Whether its state is spilled (Llm::SpillIdle): resident again only
+    // once its next prompt's first unit restores it.
+    bool spilled() const;
     void Forget();
     Status Prefill(std::span<const std::int32_t> tokens, std::vector<float>& last,
                    const PrefillGoOn& go_on = {}, PrefillRun* run = nullptr);
@@ -293,9 +319,13 @@ class Llm : public Served {
                          bool fresh = false);
     // Host-only admission. The session owns the supplied prompt and performs
     // reuse, chunks and checkpointing only through declared completed units.
+    // With `resume`, `tokens` may equal the history exactly (a generation
+    // set aside for its peers, its state spilled): the session then only
+    // restores the state and completes with no logits (ResumeGeneration
+    // needs none).
     std::expected<std::unique_ptr<PromptSession>, std::string> BeginPrompt(
-        std::span<const std::int32_t> tokens, std::uint32_t stable_boundary = 0,
-        bool fresh = false) &;
+        std::span<const std::int32_t> tokens, std::uint32_t stable_boundary = 0, bool fresh = false,
+        bool resume = false) &;
     std::size_t turn_checkpoints() const { return turn_checkpoints_.size(); }
     std::uint64_t turn_checkpoint_bytes() const;
     std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
@@ -305,9 +335,10 @@ class Llm : public Served {
         Generation& out) & = delete;
     // Continues a generation `out` whose anchor (its last token, generated
     // and reported but not yet in the state) follows exactly this branch's
-    // history: after a preemption discarded the state and a prompt session
-    // rebuilt it from the history the preempted session published. Nothing
-    // is chosen or reported again; `last` only proves that prompt completed.
+    // history: after a preemption spilled the state and a prompt session
+    // restored it (or discarded it and rebuilt it by prefill from the history
+    // the preempted session published). Nothing is chosen or reported again;
+    // `last` is not read (empty after a restore).
     std::expected<std::unique_ptr<GenerationSession>, std::string> ResumeGeneration(
         const std::vector<float>& last, const GenerateOptions& options, Generation& out) &;
     std::expected<std::unique_ptr<GenerationSession>, std::string> ResumeGeneration(
@@ -343,7 +374,19 @@ class Llm : public Served {
     std::uint64_t seed_ = 0;
     std::vector<execution::SamplingCandidate> scratch_;
     std::vector<TurnCheckpoint> turn_checkpoints_;
-    Clock::time_point history_used_ = Clock::now();
+    // When its history was last extended or reused, with the reclaim
+    // order's inflation value then (memory::ReclaimInflation): its
+    // retention's clock and its priority in the order.
+    struct UseStamp {
+      Clock::time_point at = Clock::now();
+      memory::ReclaimStamp reclaim = memory::StampUse();
+      UseStamp& operator=(Clock::time_point when) {
+        at = when;
+        reclaim = memory::StampUse();
+        return *this;
+      }
+    };
+    UseStamp history_used_;
     bool generation_active_ = false;
     bool capacity_refused_ = false;
     const PromptSession* prompt_session_ = nullptr;
@@ -373,10 +416,64 @@ class Llm : public Served {
   // the refused branch's session still open; empty clears it.
   using CapacityReclaim = std::function<bool(const Branch& refused)>;
   void set_capacity_reclaim(CapacityReclaim reclaim) { capacity_reclaim_ = std::move(reclaim); }
-  // The branch other than `keep` with no session open that retains the most
-  // conversation state (an idle conversation's reuse cache), if any: what
-  // Branch::ReleaseIdleState frees first.
-  std::optional<std::size_t> LargestIdleBranch(const Branch& keep) const;
+  // Spill, not clear (docs/runtime-serving.md#state-capacity-in-a-cohort):
+  // an idle branch's state (no session open, not leased by a request)
+  // written to its slot's spill file and its backing released, between
+  // completed units; its history kept, so its next turn restores the state
+  // exactly and continues it (the prompt's first unit). A branch whose
+  // state cannot be spilled (unknown contents) is cleared instead.
+  Status SpillIdle(Branch& branch);
+  // The same for a cohort member set aside for its peers (its sessions
+  // ended at a completed unit, its state still leased): it leaves the
+  // request's lease, and begins again from its restored state.
+  Status SpillSetAside(Branch& branch);
+  // Whether a branch is idle: no session open, its state not leased by a
+  // request open on the model's stream.
+  bool BranchIdle(const Branch& branch) const;
+  // What a branch's state holds (resident, spilled, or written back by a
+  // swap), what of it is resident (0 while spilled), and spilled.
+  std::uint64_t StateBytes(const Branch& branch) const;
+  std::uint64_t ResidentStateBytes(const Branch& branch) const;
+  std::uint64_t SpilledStateBytes(const Branch& branch) const;
+  // When a branch was last used (its history extended or reused): its
+  // retention's clock and the reclaim order's recency.
+  Clock::time_point LastUsed(const Branch& branch) const;
+  // The reclaim order's stamp at that last use (GreedyDual, memory/
+  // reclaim.h): its idle state's priority beside its cost.
+  memory::ReclaimStamp LastStamp(const Branch& branch) const;
+  // What spilling its resident state would write: only what changed since
+  // the slot's spill file last held it (written back, or restored from it).
+  std::uint64_t SpillWriteBytes(const Branch& branch) const;
+  // What of `tokens` a prompt on `branch` would reuse, as its first unit
+  // decides (host-only): its live history when the prompt continues it,
+  // else the latest turn checkpoint inside their common prefix; 0 when
+  // neither, or when the branch's state is unusable or past its retention.
+  std::size_t ReusablePrefix(const Branch& branch, std::span<const std::int32_t> tokens) const;
+  // How long an idle conversation's state, resident or spilled, and its
+  // turn checkpoints stay reusable (`[memory] retention_hours`; D-055's
+  // idle cap): past it the next turn starts afresh.
+  void set_retention(Clock::duration retention) { retention_ = retention; }
+  Clock::duration retention() const { return retention_; }
+  // Where it reports what the runtime's log should show (a turn
+  // checkpoint not captured or not restored); unset, nothing is reported.
+  void set_log(std::function<void(std::string_view)> log) { log_ = std::move(log); }
+  // After a capacity refusal of `branch` (StateRefusedFor): the bytes its
+  // refused growth or restore asked for (0: unknown).
+  std::uint64_t RefusedBytes(const Branch& branch) const {
+    CheckBranch(branch);
+    return RefusedBytesFor(branch);
+  }
+  // Spills and restores so far, measured: the reclaim order's cost of idle
+  // state (Server::Reclaim).
+  struct SpillStats {
+    std::uint64_t spills = 0;
+    std::uint64_t spilled_bytes = 0;
+    double spill_seconds = 0;
+    std::uint64_t restores = 0;
+    std::uint64_t restored_bytes = 0;
+    double restore_seconds = 0;
+  };
+  const SpillStats& spill_stats() const { return spill_stats_; }
   bool llm() const override { return true; }
   // The prefill chunk's rows, and the configuration's prefill_chunk if set
   // (max_rows is at most it, capped by the model at its context).
@@ -476,7 +573,7 @@ class Llm : public Served {
    private:
     friend class Llm;
     PromptSession(Llm& model, Branch& branch, std::span<const std::int32_t> tokens,
-                  std::uint32_t stable_boundary, bool fresh);
+                  std::uint32_t stable_boundary, bool fresh, bool resume);
     void NextPhase();
     void Stop();
     Status Fail(std::string error);
@@ -485,6 +582,7 @@ class Llm : public Served {
     const std::vector<std::int32_t> tokens_;
     const std::uint32_t stable_boundary_;
     const bool fresh_;
+    const bool resume_;
     std::vector<float> last_;
     std::uint32_t reused_ = 0;
     PrefillRun run_;
@@ -691,6 +789,23 @@ class Llm : public Served {
   virtual Status ReleaseIdleStateFor(Branch& /*branch*/) {
     return std::unexpected("this model keeps no idle conversation state apart");
   }
+  // A branch's native state spilled to its slot's spill file, and restored
+  // (a clean capacity refusal: StateRefusedFor true, still spilled);
+  // whether it is spilled, and what its spill holds; whether a request
+  // open on the model's stream leases its state now.
+  virtual Status SpillFor(Branch& /*branch*/) {
+    return std::unexpected("this model keeps no idle conversation state apart");
+  }
+  virtual Status RestoreFor(Branch& /*branch*/) { return {}; }
+  virtual bool SpilledFor(const Branch& /*branch*/) const { return false; }
+  virtual std::uint64_t SpilledBytesFor(const Branch& /*branch*/) const { return 0; }
+  virtual bool LeasedFor(const Branch& /*branch*/) const { return true; }
+  virtual std::uint64_t RefusedBytesFor(const Branch& /*branch*/) const { return 0; }
+  // What a spill of its resident state would write (SpillWriteBytes); by
+  // default all of it.
+  virtual std::uint64_t SpillWriteBytesFor(const Branch& branch) const {
+    return UsedStateBytesFor(branch);
+  }
   virtual Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left);
   virtual std::uint64_t TargetStateBaseFor(const Branch& branch) const;
   virtual std::uint64_t TargetStateBytesFor(const Branch& branch) const;
@@ -765,11 +880,11 @@ class Llm : public Served {
   Status CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool& stopped,
                                const PromptSession* prompt = nullptr);
   Status ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t& reused,
-                     bool fresh, const PrefillGoOn& go_on, bool& stopped,
+                     bool fresh, bool resume, const PrefillGoOn& go_on, bool& stopped,
                      const PromptSession* prompt = nullptr);
   std::expected<std::unique_ptr<PromptSession>, std::string> BeginPrompt(
       Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
-      bool fresh);
+      bool fresh, bool resume = false);
   std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
       Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
       Generation& out, bool resume = false);
@@ -790,9 +905,21 @@ class Llm : public Served {
   std::array<std::unique_ptr<Branch>, kMaxBranches - 1> extra_branches_;
   std::uint32_t branch_count_ = 1;
   bool branches_prepared_ = false;
+  SpillStats spill_stats_;
+  // Restores the branch's spilled state (a prompt's first unit): a clean
+  // capacity refusal sets `refused`, the branch still spilled.
+  Status RestoreSpilled(Branch& branch, bool& refused);
+  Status Spill(Branch& branch, bool set_aside);
 
  protected:
   std::filesystem::path checkpoint_directory_;
+  Clock::duration retention_ = kTurnCheckpointRetention;
+  std::function<void(std::string_view)> log_;
+  void Say(std::string_view text) const {
+    if (log_) {
+      log_(text);
+    }
+  }
 };
 
 // The image pipeline (Qwen-Image-2.1).
@@ -862,6 +989,59 @@ class Server {
   // Every eviction's backing no load took released (after a swap).
   Status WaitReleased();
 
+  // The node's one reclaim order (memory/reclaim.h; D-055 as amended
+  // 2026-10-02; docs/retention-policy.md#victims-spill-and-exhaustion):
+  // everything that can give memory back, whoever holds it (every model's
+  // plans and graphs, and with `states` the resident model's idle
+  // conversations' state, spilled), the kinds cheapest to restore a byte
+  // first by their measured costs, least recently used within a kind,
+  // until `needed` bytes are freed. On the driver's thread between
+  // completed units (or from a charge inside a step, which it spares); the
+  // freed heap returned to the system. Returns what it freed; `why` names
+  // the occasion in its log line (counts and bytes only, D-014).
+  // `running`: the model about to run (the resident one by default),
+  // whose in-use floor is never taken (memory::ProtectFloor: its most
+  // recently used plans up to its plan_floor_bytes, with their graphs) and
+  // whose other plans and graphs go last within their kinds. All of it or
+  // nothing: when the order cannot free `needed`, nothing is taken (the
+  // caller waits or refuses), and no more than `needed` is taken
+  // (candidates are whole). With `below_kind` (an optional charge of that
+  // kind, a graph's capture), only what costs less to restore than it.
+  // `partial` (pressure from outside): whatever part of it the order has.
+  std::uint64_t Reclaim(std::uint64_t needed, bool states, std::string_view why,
+                        const Served* running = nullptr,
+                        std::optional<memory::ReclaimKind> below_kind = std::nullopt,
+                        bool partial = false);
+  // Between units and when idle (the chat route's driver): spilled
+  // conversations past `[memory] retention_hours` deleted, and past
+  // `spill_budget_gib` the least recently used deleted first; and when
+  // memory from outside presses (PressureTrim: MemAvailable under its low
+  // mark, or a full memory stall), one reclaim of what would restore its
+  // target headroom, spaced by a growing back-off while it persists.
+  void Maintain();
+  // What a swap to `m` pages in beyond what it evicts and the budget's free
+  // room: reclaimed before the swap (its plans and graphs; the outgoing
+  // state is spilled by the swap itself).
+  Status MakeRoomForSwap(Served& m, std::span<const catalog::ExtentId> out);
+  // After a swap from `out` to `in` failed partway: what of `in` came in
+  // (its weights and state) evicted again and `out` loaded back whole, so
+  // `out` stays resident and usable; an error when that could not be done
+  // either (no model is then resident: the next activation loads one whole).
+  Status UndoSwap(Served& out, Served& in);
+  // Evicts a model's resident weights and conversation state (state
+  // written back), never the shared workspace or its own pinned memory.
+  Status EvictPaged(Served& m);
+  // Whether the node can go on after a failed activation (its scheduler has
+  // not faulted): the failure is then the request's alone (D-102, recovery
+  // first); otherwise the service stops for its supervisor's restart.
+  bool NodeHealthy();
+  // Spilled conversations deleted, the least recently used first, until
+  // what is spilled and `extra` more fit `[memory] spill_budget_gib`; false
+  // if they still do not.
+  bool KeepWithinSpillBudget(std::uint64_t extra);
+  // What every model's spilled conversations hold on disk now.
+  std::uint64_t SpilledBytes();
+
   engine::PagedNode& node() { return node_; }
   MemorySampler& memory() { return memory_; }
   bool handoff() const { return handoff_; }
@@ -872,9 +1052,9 @@ class Server {
   // one model runs at a time), which the start's memory guard counts beside
   // its margin.
   std::uint64_t host_input_bytes() const { return host_inputs_; }
-  // The largest model's plans' and graphs' bound (Served::plan_host_bytes):
-  // only the resident model keeps its plans.
-  std::uint64_t plan_host_bytes() const { return plans_; }
+  // The most one step of any model holds of plans at once (Served::
+  // plan_floor_bytes): what the start's guard set apart beside the budget.
+  std::uint64_t plan_floor_bytes() const { return plans_; }
   std::uint64_t workspace_bytes() const { return workspace_; }  // the shared activations and pool
 
  private:
@@ -896,7 +1076,7 @@ class Server {
   std::uint64_t budget_ = 0;
   std::uint64_t fixed_ = 0;
   std::uint64_t host_inputs_ = 0;
-  std::uint64_t plans_ = 0;  // plan_host_bytes()
+  std::uint64_t plans_ = 0;  // plan_floor_bytes()
   std::uint64_t workspace_ = 0;
   void* snapshot_ = nullptr;
   std::uint64_t snapshot_capacity_ = 0;
@@ -907,6 +1087,13 @@ class Server {
   // Models whose conversation state was spilled by a swap out (and is
   // restored when they come back).
   std::vector<const Served*> spilled_;
+  // The reclaim order's state (Reclaim, Maintain).
+  bool reclaiming_ = false;
+  std::uint64_t reclaims_short_ = 0;  // reclaims that took nothing: too little to take
+  Clock::duration retention_;
+  std::uint64_t spill_budget_ = 0;
+  Clock::time_point next_maintenance_;
+  PressureTrim pressure_;  // when pressure from outside has it trim
 };
 
 // The commands (commands.h), on a started server; the process's exit

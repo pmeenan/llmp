@@ -187,6 +187,12 @@ struct ExtentView {
   // them at the same content generation. Cleared when a load completes,
   // since the resident copy is then the live one.
   bool preserved = false;
+  // The content generation a write-back eviction last saved at its place
+  // (0: none). While it equals content_generation, the place holds these
+  // contents unless a job wrote them in place since they were restored
+  // (which only their owner knows): an eviction its owner declares
+  // unchanged then writes nothing (scheduler::EvictOptions::unchanged).
+  std::uint64_t saved_generation = 0;
   std::uint32_t leases = 0;
   std::uint32_t registrations = 0;
   // The last *actual* use (a consumer ran against it), as a logical tick;

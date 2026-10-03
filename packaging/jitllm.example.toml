@@ -104,6 +104,21 @@ schema_version = 2
 # stall_seconds = 120
 # deadline_cap_seconds = 14400
 
+[memory]
+# Conversation state under memory pressure (D-055 as amended 2026-10-02).
+# An idle conversation's state stays resident while the memory budget has
+# room; when it is needed, the runtime writes it to the spill directory
+# ([storage] spill) and restores it exactly at the conversation's next
+# turn, rather than prefilling it again. An idle conversation, resident or
+# spilled, and its turn checkpoints stay reusable for retention_hours
+# (1 to 8760) after their last use.
+# retention_hours = 24
+# The most spilled conversation state the spill directory keeps (0 to
+# 1048576 GiB), a swapped-out model's conversations included: past it the
+# least recently used is deleted first. 0 keeps none: idle state is then
+# dropped, and its next turn prefills again.
+# spill_budget_gib = 128
+
 # A cluster member's keys (cluster_file, node_id, [credentials], [control])
 # are written by cluster enrollment, which arrives in M6a; this build
 # refuses to run as a member.

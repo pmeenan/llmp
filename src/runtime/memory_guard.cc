@@ -24,7 +24,7 @@ std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard) {
   if (a != 0 && !fits) {
     return std::unexpected(std::format(
         "the largest model's weights ({:.1f} GiB), a model's largest host-built chunk inputs "
-        "({:.1f} GiB), a model's plans and graphs ({:.1f} GiB) and a {:.0f} GiB margin do not "
+        "({:.1f} GiB), a model step's plans ({:.1f} GiB) and a {:.0f} GiB margin do not "
         "fit the {:.1f} GiB available beside this node's fixed memory ({:.1f} GiB)",
         gib(guard.largest), gib(guard.host_inputs), gib(guard.plans), gib(kUncountedMargin),
         gib(guard.available), gib(guard.fixed)));

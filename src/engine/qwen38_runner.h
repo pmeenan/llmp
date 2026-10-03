@@ -44,8 +44,12 @@
 // - Decode graphs (D-090, graph_runs.h): a one-row chunk (and a verify, and
 //   a draft) whose shape has run once launch by launch is captured and
 //   later runs of that shape replay it. The gather's row count is data the
-//   device reads (ple_rows.h), never a launch parameter. At most kMaxGraphs
-//   are kept, the target's and the drafter's together.
+//   device reads (ple_rows.h), never a launch parameter. Every plan and
+//   graph, the drafter's and the waves' too, is charged to the node as it
+//   is kept and given back through the node's one reclaim order
+//   (planned.h); a graph with no room even after a reclaim is not made.
+// - An idle slot's state spills to its spill file (Slot::Spill) and comes
+//   back before its next work (Slot::Restore), exactly as it left.
 // - Speculation (Qwen38Options::drafter; docs/experiments/qwen38-mtp/): the
 //   MTP drafter's own v0 artifact paged beside the target's (its dense
 //   groups as regions, its experts as a slab), binding the target's token
@@ -195,22 +199,6 @@ struct PleStats {
 class Qwen38Runner final : public PagedModel {
  public:
   using Status = engine::Status;
-  // The most graphs kept (D-090): with speculation a context window holds
-  // a decode step's, a verify's two (with and without its logits' copy) and
-  // a draft's four (its catch-up of 1 to 4 rows); two windows' worth, so a
-  // step past a 256-cell boundary does not recapture the steps before it.
-  static constexpr std::size_t kMaxGraphs = 16;
-  // And what they may hold, as counted (kGraphNodeHostBytes a node its plan
-  // launches): 16 graphs measured 105 MiB at 12 KiB a node at C4 (140 MiB
-  // at 16 KiB), and a capture past it alone is not made.
-  static constexpr std::uint64_t kMaxGraphBytes = std::uint64_t{192} << 20U;
-  // The most plans kept, host memory outside the catalog (plan_host_bytes()):
-  // chunk and drafter plans every slot's together, and each kind of wave.
-  // The measured working set: 24 plans in all, 250 MiB, at C4.
-  static constexpr std::size_t kMaxChunkPlans = 24;
-  static constexpr std::size_t kMaxMtpPlans = 24;
-  static constexpr std::size_t kMaxTargetWaves = 4;
-  static constexpr std::size_t kMaxDraftWaves = 16;
 
   Qwen38Runner(PagedNode& node, const Qwen38Options& options, int owner, std::uint32_t stream)
       : node_(node),
@@ -305,16 +293,28 @@ class Qwen38Runner final : public PagedModel {
   void DropPlans();
   std::size_t plans() const;
   std::size_t graphs() const;
-  // The most host and driver memory the plans and graphs may hold: every
-  // cap times its kind's largest plan (PlannedHostBytes; a wave every
-  // slot's and its composition) or graph (kGraphNodeHostBytes a node),
-  // measured at Setup. The memory guard counts it beside the catalog's
-  // budget (Served::plan_host_bytes).
-  std::uint64_t plan_host_bytes() const { return plan_host_bytes_; }
-  // How plan_host_bytes() is made up, for the start's log.
+  // What one step holds at once at most (its plans, PlannedHostBytes; a
+  // wave's every slot's and its composition), measured at Setup: a chunk
+  // beside a drafter pass, or a target wave beside a draft wave. The memory
+  // guard sets it apart beside the catalog's budget (Served::
+  // plan_floor_bytes); every plan and graph past it is charged inside the
+  // budget (planned.h PlanAccount).
+  std::uint64_t plan_floor_bytes() const { return plan_floor_bytes_; }
+  // How plan_floor_bytes() is made up, for the start's log.
   const std::string& plan_report() const { return plan_report_; }
   // What the kept plans hold now, as counted (PlannedHostBytes).
   std::uint64_t cached_plan_bytes() const;
+  // What the kept graphs hold now, as counted (kGraphNodeHostBytes a node).
+  std::uint64_t cached_graph_bytes() const;
+  // What they took of the device's free memory at their captures.
+  std::uint64_t graph_measured_bytes() const;
+  // Its plans and graphs as candidates for the node's reclaim order
+  // (memory/reclaim.h), and one's reclaim (Dsv4Runner's, the same).
+  void ReclaimCandidates(std::uint32_t owner, bool running,
+                         std::vector<memory::ReclaimCandidate>& out);
+  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id);
+  std::uint64_t reclaimed_plans() const;
+  std::uint64_t reclaimed_graphs() const;
   double plan_seconds() const { return plan_seconds_; }
   const PleStats& ple() const { return ple_; }
   // Decode graphs on or off for the next chunks; captured graphs are kept.
@@ -326,6 +326,9 @@ class Qwen38Runner final : public PagedModel {
   // (the target's, then the drafter's).
   std::vector<catalog::ExtentId> weights() const;
   std::vector<catalog::ExtentId> state() const;
+  // A swap's incremental write-back (Dsv4Runner's).
+  std::vector<catalog::ExtentId> unchanged_state() const;
+  void StateWrittenBack(bool whole);
   std::uint64_t weight_read_bytes() const { return weights_.read_bytes() + dweights_.read_bytes(); }
   std::uint64_t state_bytes() const { return layout_.bytes; }
   std::uint64_t state_base() const { return live_.base(kTarget); }
@@ -386,15 +389,19 @@ class Qwen38Runner final : public PagedModel {
 
     LiveState live{"Qwen3.8"};  // target, then MTP drafter
     Qwen38Model model;
-    ChunkPlans plans{kMaxChunkPlans};
-    MtpPlans mplans{kMaxMtpPlans};
+    ChunkPlans plans;
+    MtpPlans mplans;
     // Working state, charged for the model's life and never spilled.
     Mapped commit;
     kernels::ggml::Qwen38CommitArgs commit_args;
     kernels::ggml::RangeCopy* carry = nullptr;
     std::uint32_t pending_rows = 0;
     bool verify_restores_streams = false;
-    bool state_refused = false;  // the last EnsureState's clean capacity refusal (Slot)
+    bool state_refused = false;  // the last EnsureState's (or Restore's) clean capacity refusal
+    // Its state written to its spill file and its backing released
+    // (Slot::Spill): outside every closure until Restore brings it back.
+    bool spilled = false;
+    SpillTrack track;  // what its spill file holds (an incremental spill)
     const std::uint32_t slot;
     catalog::Closure fence;
   };
@@ -428,6 +435,28 @@ class Qwen38Runner final : public PagedModel {
     // idle conversation's reuse cache), between completed units. Refused
     // for a selected slot, which clears through Clear.
     Status ClearIdle() { return owner_.ClearIdle(request_); }
+    // Spills this slot's state to its spill file, between completed units
+    // (an idle conversation, or a member set aside for its peers): its
+    // backing released, the state exactly as it was once Restore brings it
+    // back. Only what changed since the spill file last held the state is
+    // written (SpillTrack). Refused while a verify awaits its Accept.
+    Status Spill() { return owner_.Spill(request_); }
+    // What a Spill now would write (0 while spilled).
+    std::uint64_t spill_write_bytes() const { return owner_.SpillWriteBytes(request_); }
+    // Brings a spilled slot's state back before its next work: a clean
+    // capacity refusal sets state_refused(), the state still spilled.
+    Status Restore() { return owner_.Restore(request_); }
+    bool spilled() const { return request_.spilled; }
+    // Whether the request open on the stream leases its state now.
+    bool held() const {
+      return (owner_.active_mask_ & (1U << request_.slot)) != 0 &&
+             owner_.node_.InRequest(owner_.stream_);
+    }
+    // What its last refused growth asked for (LiveState::refused_bytes).
+    std::uint64_t refused_bytes() const { return request_.live.refused_bytes(); }
+    std::uint64_t spilled_bytes() const {
+      return request_.spilled ? request_.live.extents().size() * kPagedExtent : 0;
+    }
     // A decode step's state, its caches backed through the alignment a
     // shared wave reads (DecodeReadAlign): a capacity refusal is then this
     // request's own, here, and never the shared wave's.
@@ -598,14 +627,21 @@ class Qwen38Runner final : public PagedModel {
   void CheckFailedJob();
   Status BindRequest(RequestState& request);
   Status SetupSnapshot(RequestState& request);
-  // Before a capture of `adding_bytes` (planned.h RoomForGraphs): room
-  // under kMaxGraphs and kMaxGraphBytes, every graph counted; false if it
-  // alone exceeds them (not captured then).
-  bool RoomForGraphs(std::uint64_t adding_bytes);
-  // Before planning a chunk (or drafter) shape: room under kMaxChunkPlans
-  // (kMaxMtpPlans), every slot's together.
-  void RoomForChunkPlan();
-  void RoomForMtpPlan();
+  // Every plan cache: each slot's chunk and drafter plans, and the waves'.
+  std::array<PlanCacheBase*, (2 * kRequestSlots) + 2> PlanCaches();
+  std::array<const PlanCacheBase*, (2 * kRequestSlots) + 2> PlanCaches() const;
+  // Active, and its state resident (not spilled).
+  Status CheckResident(const RequestState& request) const;
+  Status Spill(RequestState& request);
+  Status Restore(RequestState& request);
+  // An incremental spill's split, and what it would write (Dsv4Runner's).
+  void SplitForSpill(const RequestState& request, std::vector<catalog::ExtentId>& written,
+                     std::vector<catalog::ExtentId>& unchanged) const;
+  std::uint64_t SpillWriteBytes(const RequestState& request) const;
+  // The state ranges writes from `positions` on may change (a turn
+  // checkpoint's, and an incremental spill's record).
+  std::expected<std::vector<LiveState::Range>, std::string> StateWrites(
+      std::uint32_t positions) const;
   Status Clear(RequestState& request);
   Status ClearIdle(RequestState& request);
   // The state through `positions`, its caches read through `positions` rounded
@@ -714,7 +750,7 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t activation_bytes_ = 0;
   std::uint64_t scratch_bytes_ = 0;
   std::uint64_t host_input_bytes_ = 0;
-  std::uint64_t plan_host_bytes_ = 0;  // plan_host_bytes()
+  std::uint64_t plan_floor_bytes_ = 0;  // plan_floor_bytes()
   std::string plan_report_;
   Qwen38SetupBudget setup_budget_;
   // Additional fixed pinned output slices, indexed by sealed slot rather
@@ -732,8 +768,10 @@ class Qwen38Runner final : public PagedModel {
 
   ChunkPlans& plans_ = default_request_.plans;  // cleared before the launch context (Release)
   MtpPlans& mplans_ = default_request_.mplans;
-  TargetWaves target_waves_{kMaxTargetWaves};
-  DraftWaves draft_waves_{kMaxDraftWaves};
+  TargetWaves target_waves_;
+  DraftWaves draft_waves_;
+  // What the plans and graphs hold, charged to the node (Bind).
+  PlanAccount account_;
   Qwen38WaveStats last_wave_;
   GraphStats graph_stats_;
   GraphStats draft_stats_;

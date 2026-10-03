@@ -69,6 +69,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -300,9 +301,21 @@ class PagedNode {
   // before a job reads or writes it. Before Start.
   Status ReserveState(Mapped& mapped, std::string name, std::uint64_t bytes, int owner);
   // Pinned host memory, cataloged as staging. After Run, added on the
-  // scheduler's thread and refused beyond the execution budget.
+  // scheduler's thread within the execution budget: what does not fit has
+  // the reclaimer free it first (as ChargeHost does), and is refused only
+  // when it still does not.
   std::expected<void*, std::string> Pinned(std::uint64_t bytes, int owner,
                                            std::vector<catalog::ExtentId>& staging);
+  // Pinned staging set apart once, at the runtime's start, for one user at
+  // a time (a turn checkpoint's capture or restore, engine/
+  // checkpoint_file.h), so a budget full of reclaimable plans, graphs and
+  // idle state never starves it. TakeStaging returns it if it is at least
+  // `bytes` and free (nullptr otherwise: the caller allocates its own);
+  // ReturnStaging gives it back, or, `proven` false (a copy's completion
+  // unknown), keeps it out of use to the process's end.
+  Status ReserveStaging(std::uint64_t bytes);
+  void* TakeStaging(std::uint64_t bytes);
+  void ReturnStaging(void* pointer, bool proven);
   // Caller proves no access is in flight. Removes its staging extent.
   Status FreePinned(void* pointer);
   // Unknown completion: retain the allocation until process exit.
@@ -315,6 +328,45 @@ class PagedNode {
   bool RetireRing(std::unique_ptr<providers::Storage> ring, std::span<void* const> landings);
   // Pinned allocations RetireRing kept from Close's frees.
   std::size_t kept_pinned() const { return kept_pinned_.size(); }
+
+  // Memory the node counts beside the catalog's extents (D-090 as amended
+  // 2026-10-02): the models' plans and graphs (engine/planned.h
+  // PlanAccount), host heap and driver memory. The first `floor` bytes of
+  // them are what the start's guard sets apart outside the budget (what
+  // one step of the largest model holds at once); the rest is charged
+  // inside the budget, as one pinned runtime extent of the domain in whole
+  // 2 MiB steps, so every materialization's check against the budget sees
+  // it and growing state can take it back through the reclaim order.
+  // Unset (a harness), nothing is charged: plans and graphs are only
+  // counted, as before the runtime set its floor.
+  void SetHostFloor(std::uint64_t floor) { host_floor_ = floor; }
+  // What a charge or a pinned allocation that does not fit asks first: free
+  // at least `needed` bytes through the node's one reclaim order (the
+  // runtime's), between completed jobs, sparing what the step under way
+  // holds; all of it or nothing. What asks: a plan (a cache charge a step
+  // needs) or a graph's capture (an optional cache charge, which takes
+  // only what costs less to restore than a graph) displace only other
+  // plans and graphs, never conversation state; pinned staging (a turn
+  // checkpoint's, a snapshot's) may spill idle conversations too.
+  // Returns what it freed. Unset, nothing is reclaimed.
+  enum class ReclaimFor : std::uint8_t { kPlan, kGraph, kStaging };
+  using Reclaimer = std::function<std::uint64_t(std::uint64_t needed, ReclaimFor what)>;
+  void SetReclaimer(Reclaimer reclaimer) { reclaimer_ = std::move(reclaimer); }
+  // Charges `bytes` more (on the driver's thread): false, charging
+  // nothing, when they do not fit beside the occupancy even after the
+  // reclaimer ran, unless `required` (what a step needs to run at all),
+  // which is always taken: the excess then refuses later growth until a
+  // reclaim gives it back.
+  bool ChargeHost(std::uint64_t bytes, bool required);
+  void UnchargeHost(std::uint64_t bytes);
+  // Every model's counted bytes, and the part charged inside the budget.
+  std::uint64_t host_counted() const { return host_total_; }
+  std::uint64_t host_charged() const { return host_charged_; }
+  // How often a required charge went past the budget (the floor too small
+  // for a step's plans), for the runtime's log.
+  std::uint64_t host_overcharges() const { return host_overcharges_; }
+  // The budget less the domain's occupancy, now (0 if it is past it).
+  std::expected<std::uint64_t, std::string> FreeBytes();
 
   void AddSpan(const Span& span) { spans_.push_back(span); }
   void EraseSpans(const std::function<bool(const Span&)>& which) { std::erase_if(spans_, which); }
@@ -450,6 +502,26 @@ class PagedNode {
   // Left to the process's end on purpose (RetireRing): never freed.
   std::vector<void*> kept_pinned_;
   std::vector<providers::Storage*> kept_rings_;
+
+  // The host memory charged beside the catalog (ChargeHost).
+  bool Recharge(std::uint64_t total, bool force, std::uint64_t* shortfall);
+  std::uint64_t host_floor_ = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t host_total_ = 0;
+  std::uint64_t host_charged_ = 0;  // the extent's size: whole extents past the floor
+  std::uint64_t host_overcharges_ = 0;
+  catalog::ExtentId host_extent_;
+  Reclaimer reclaimer_;
+  bool reclaiming_ = false;
+  // The reclaimer asked for `needed` (ChargeHost, Pinned); what it freed.
+  std::uint64_t AskReclaim(std::uint64_t needed, ReclaimFor what);
+  // The bytes past the budget an allocation of `bytes` would take now (0:
+  // it fits), on the scheduler's thread.
+  std::uint64_t Shortfall(std::uint64_t bytes) const;
+
+  // ReserveStaging's buffer.
+  void* staging_ = nullptr;
+  std::uint64_t staging_bytes_ = 0;
+  bool staging_taken_ = false;
 
   // Before the scheduler, so it outlives the programs that refer to it.
   std::map<std::uint32_t, std::unique_ptr<OpenRequest>> requests_;  // by stream

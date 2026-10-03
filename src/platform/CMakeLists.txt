@@ -11,10 +11,11 @@
 # service manager's readiness protocol, and job processes in delegated
 # cgroups with their confinement; a minimal io_uring ring; the event loop,
 # wakers and signal watch the chat route runs on, its socket calls and
-# random bytes; and the node's interface addresses and names for its
-# listeners.
+# random bytes; the node's interface addresses and names for its
+# listeners; and memory pressure from outside the runtime (MemAvailable,
+# PSI) with the heap's free pages returned.
 add_library(jitllm_platform STATIC files.cc host_probe.cc path_trust.cc direct_io.cc crash_policy.cc
                                    lock_file.cc sd_notify.cc job.cc confine.cc io_uring.cc
-                                   interfaces.cc event_loop.cc sockets.cc)
+                                   interfaces.cc event_loop.cc sockets.cc memory_pressure.cc)
 target_include_directories(jitllm_platform PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_platform PUBLIC jitllm_report PRIVATE jitllm_warnings)

@@ -667,7 +667,8 @@ recurrent state (preserve while resumable: residency, valid spill, or
 reconstruction) · reusable completed-prefix state (retain by reuse and
 recovery value; invalidate correctly) · scratch (recycle after final
 consumers; don't spill dead scratch) · graph/runtime objects and kernel code
-(coarse cleanup only, initially) · communication buffers (stable backing for
+(planned shapes and captured graphs: counted, reclaimed by measured cost,
+D-090 as amended) · communication buffers (stable backing for
 registrations) · transfer staging, including D-081's landing zone
 (bounded, pre-reserved; a separately declared persistent pool, not part
 of `F`) · transient
@@ -836,7 +837,19 @@ it on recorded traces (M9 in [plan.md](plan.md#milestone-ladder)):
 The baseline has no hysteresis, minimum residency or reload-cost weighting.
 Those confirmed features, a frequency/recency policy and §9's cost-aware
 heuristic each replace it only after beating it on the same recorded
-traces. Dependency-group scoring stays deferred (features.md). The M0 study
+traces. *As built in M3 (D-055 as amended 2026-10-02):* the runtime's
+reclaim order (`memory/reclaim.h`, `Server::Reclaim`) already weighs
+restore cost: every reclaimable kind, captured graphs, plans (host and
+driver memory charged inside the budget past one step's floor, D-090 as
+amended) and idle conversation state (spilled, not cleared, writing only
+what changed), and idle weights once partial eviction produces them, goes
+by GreedyDual-Size over its measured cost to restore a byte freed (stale
+entries fall behind fresh cheap ones as reclaims go on), least recently
+used within a kind, the running model's last; the scheduler's
+extent-level choice (`memory/victims.h`) stays the baseline for what it
+sees (discarded, then clean weights). Details in the
+[retention policy](retention-policy.md#victims-spill-and-exhaustion) and
+[runtime-serving](runtime-serving.md#registration-and-the-swap). Dependency-group scoring stays deferred (features.md). The M0 study
 replayed global deterministic LRU with whole-closure acquisition. It
 recommends first measuring an eager load of the active dense model that
 preserves inactive extents
@@ -857,6 +870,7 @@ combined:
 | Commitments: `F`, `R(G)`, `J` and the active envelopes | Commitment ledger |
 | Occupancy by class: weights (leased, eligible), admitted state, retained entries, workspace and activations, I/O and communication buffers, runtime metadata, loading, evicting or awaiting write-back, quarantined, pool-held, and non-evictable backend or unknown allocations | Occupancy ledger, with shared backing counted once |
 | Spill: bytes held and bytes written in the rolling window | Retention cache and storage service |
+| Plans and captured graphs (host heap and driver memory outside extents) | Each runner's account, counted (`engine/planned.h`); past one step's floor, a pinned runtime extent in the occupancy ledger (D-090 as amended 2026-10-02) |
 | The runtime process's ordinary allocations | OS accounting for the process (RSS, its cgroup), which on the Spark misses VMM backing: device backing never appears, and host backing only while mapped with access |
 | Driver bookkeeping for the backing | Derived: the kernel's unreclaimable slab, about 34 KiB per 2 MiB extent while it exists and more while mapped on the Spark; charged to `F` |
 | Unattributed: the drop in `MemAvailable` not explained by cataloged occupancy, driver bookkeeping, ordinary allocations or page cache | Derived; a discrepancy to explain, never free memory |

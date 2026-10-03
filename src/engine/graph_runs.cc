@@ -112,6 +112,8 @@ Queued GraphRuns::Queue(PlanRuns& runs, const Copies& inputs,
       stats.nodes += captured->nodes();
       stats.memory_bytes +=
           static_cast<std::int64_t>(free_before) - static_cast<std::int64_t>(free_after);
+      runs.seconds = captured->capture_seconds() + captured->instantiate_seconds();
+      runs.measured_bytes = free_before > free_after ? free_before - free_after : 0;
       runs.graph.emplace(std::move(*captured));
       runs.copies = inputs;
       q.path = RunPath::kCaptured;
