@@ -1682,7 +1682,11 @@ family" guide, and its long-context scaling work.
         are the caller's per request (OpenAI's `size`, vLLM-Omni's
         diffusion fields), as for Qwen-Image; the card's defaults (12
         steps, CFG 1.0, 2,048² or 1,024²) are the defaults and the tested
-        points, not limits. Its components run as one composition (D-089), sharing
+        points, not limits. A width or height that isn't a multiple of
+        the model's granule (16 here) is rounded up to the next one, not
+        refused, and the image comes back at the size generated (owner,
+        2026-10-03); only malformed or out-of-range values are refused.
+        The same rule applies to every image model's routes. Its components run as one composition (D-089), sharing
         the image phases, VAE and route code with Qwen-Image's rather than
         a second pipeline.
       - `/v1/videos` asynchronous jobs for MiniMax H3, on D-041's job
