@@ -1921,7 +1921,8 @@ std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& aren
   if (count == 0 || count > kDsv4WaveSlots ||
       (options.inject ? shape.inject_rows.size() != count
                       : std::ranges::any_of(shape.inject_rows, [](auto r) { return r != 0; }))) {
-    return Rejected("a DeepSeek V4 wave takes one to four slots, each injected or none");
+    return Rejected(std::format("a DeepSeek V4 wave takes one to {} slots, each injected or none",
+                                kDsv4WaveSlots));
   }
   if (!options.fused || options.row_invariant || options.outa_prefill) {
     return Rejected("a DeepSeek V4 wave runs the fast plan's fused form alone");

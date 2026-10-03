@@ -75,9 +75,10 @@
 //   device into its staged rows (equal to the host's lookup,
 //   CheckDeviceEmbedding), then the verify's graph.
 // - Independent requests (Dsv4Options::wave_slots; docs/engine.md,
-//   "Independent request state"): up to four request slots, each its own
-//   live state (the target's and the DSpark ring), verify snapshot, output
-//   staging and plans bound to its state; the weights, workspace, staging
+//   "Independent request state"): up to kMaxRequestSlots request slots,
+//   each its own live state (the target's and the DSpark ring), verify
+//   snapshot, output staging and plans bound to its state; the weights,
+//   workspace, staging
 //   and launch context shared (request_cohort.h). A wave (dsv4_graph.h
 //   Dsv4WaveGraph) runs one decode step, or each slot's draft and one joined
 //   verify, for several slots in one job: every row-local product reads its
@@ -145,9 +146,11 @@ struct Dsv4Options {
   // And on partial chunks too (Dsv4Model): off for the harnesses unless
   // asked, on in serving.
   bool prefill_outa_hca_partial = false;
-  // Independent request slots (1 to 4): 1 keeps the default request alone,
-  // as the harnesses run; more provision that many request states (each
-  // its own virtual state ceiling, snapshot and output staging) and waves.
+  // Independent request slots (1 to kMaxRequestSlots): 1 keeps the default
+  // request alone, as the harnesses run; more provision that many request
+  // states (each its own virtual state ceiling, snapshot and output
+  // staging) and waves. Only a slot's state grows with use; its fixed
+  // buffers are a few MiB (docs/experiments/request-slots/).
   std::uint32_t wave_slots = 1;
 };
 
@@ -378,6 +381,10 @@ class Dsv4Runner final : public PagedModel {
   std::uint64_t drafter_read_bytes() const { return dweights_.read_bytes(); }
   std::uint32_t draft_rows() const { return o_.draft_rows; }
   std::uint32_t max_verify() const { return o_.max_verify; }
+  // What a slot's state holds once it has run through `positions` (Slot::
+  // used_state_bytes then; the DSpark ring whole), from empty: an
+  // admission's estimate. Host-only.
+  std::expected<std::uint64_t, std::string> StateBytesThrough(std::uint32_t positions) const;
   // The device's time for `count` replays of the decode graph of the step
   // at n_past, queued back to back in one job with one input (the same
   // token and position each time): the decode step's GPU time without the
@@ -685,7 +692,7 @@ class Dsv4Runner final : public PagedModel {
   // A verify's snapshot: the ranges it writes, saved.
   Status PlanSnapshot(RequestState& request, const model::Dsv4ChunkInputs& in);
   Status RefreshClosures() { return RefreshClosures(cohort_.active()); }
-  Status RefreshClosures(std::uint8_t protected_mask);
+  Status RefreshClosures(SlotMask protected_mask);
   // Every plan cache: each slot's chunk and draft plans, and the waves'.
   std::array<PlanCacheBase*, (2 * kRequestSlots) + 1> PlanCaches();
   std::array<const PlanCacheBase*, (2 * kRequestSlots) + 1> PlanCaches() const;
@@ -766,12 +773,21 @@ class Dsv4Runner final : public PagedModel {
   int owner_;
   std::uint32_t stream_;
   RunnerResources resources_;
+  // Every possible slot's host object (each small; only provisioned ones
+  // hold state, plans or staging), at stable addresses.
+  template <std::size_t... I>
+  static std::array<RequestState, sizeof...(I)> MakeRequests(std::index_sequence<I...> /*slots*/) {
+    return {{RequestState(static_cast<std::uint32_t>(I + 1))...}};
+  }
+  template <std::size_t... I>
+  std::array<Slot, sizeof...(I) + 1> MakeSlots(std::index_sequence<I...> /*slots*/) {
+    return {{Slot(*this, default_request_), Slot(*this, additional_requests_[I])...}};
+  }
   RequestState default_request_;
-  std::array<RequestState, kRequestSlots - 1> additional_requests_{
-      {RequestState(1), RequestState(2), RequestState(3)}};
-  std::array<Slot, kRequestSlots> request_slots_{
-      {Slot(*this, default_request_), Slot(*this, additional_requests_[0]),
-       Slot(*this, additional_requests_[1]), Slot(*this, additional_requests_[2])}};
+  std::array<RequestState, kRequestSlots - 1> additional_requests_ =
+      MakeRequests(std::make_index_sequence<kRequestSlots - 1>{});
+  std::array<Slot, kRequestSlots> request_slots_ =
+      MakeSlots(std::make_index_sequence<kRequestSlots - 1>{});
   LiveState& live_ = default_request_.live;  // the default request's
   RequestCohort cohort_{"DeepSeek"};
   GraphRuns runs_;

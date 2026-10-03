@@ -771,6 +771,50 @@ decode_floor_tok_s = 5
   EXPECT_THAT(failures, Contains(HasSubstr("models.picture: drafter, speculation")));
 }
 
+// A model's request slots (docs/runtime-serving.md#request-slots): absent,
+// the model's own default; configured, 1 to 16, and only on an artifact.
+TEST(NodeConfigTest, ReadsMaxSlots) {
+  const NodeConfig config =
+      Parsed(std::format(R"(schema_version = 2
+[models.a]
+artifact = "{0}"
+max_slots = 1
+[models.b]
+artifact = "{1}"
+max_slots = 16
+[models.c]
+artifact = "{2}"
+)",
+                         std::string(64, 'a'), std::string(64, 'b'), std::string(64, 'c')));
+  ASSERT_THAT(config.models, SizeIs(3));
+  EXPECT_EQ(config.models[0].max_slots, 1U);
+  EXPECT_EQ(config.models[1].max_slots, jitllm::config::kMaxModelSlots);
+  EXPECT_FALSE(config.models[2].max_slots.has_value());
+
+  const auto failures = Failures(std::format(
+      R"(schema_version = 2
+[models.none]
+artifact = "{0}"
+max_slots = 0
+[models.over]
+artifact = "{1}"
+max_slots = 17
+[models.text]
+artifact = "{2}"
+max_slots = "4"
+[models.pipeline]
+composition = "{3}"
+max_slots = 2
+)",
+      std::string(64, 'a'), std::string(64, 'b'), std::string(64, 'c'), std::string(64, 'd')));
+  EXPECT_THAT(
+      failures,
+      Contains(HasSubstr("models.none.max_slots must be from 1 to 16 request slots, not 0")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.over.max_slots must be from 1 to 16")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.text.max_slots must be an integer")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline: drafter, speculation")));
+}
+
 TEST(NodeConfigTest, ModelsAreOwnedOnce) {
   // Any number of models (NamesAnyNumberOfModels); a model's table in two
   // files merges; one key set twice does not.

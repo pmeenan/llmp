@@ -1154,7 +1154,7 @@ it appears.
       matched 8K HTTP C4 +20% and C2 +9.8%, C1 unchanged with an identical
       reply. Native leads current TensorFold NVFP4 at C1/C2, is level at C4 and trails
       legacy Mia 18% at C4; replies under concurrency vary with arrival timing.
-- [ ] **Request slots sized by memory** (the owner, 2026-10-03). A
+- [x] **Request slots sized by memory** (the owner, 2026-10-03). A
       model's number of concurrent request slots is no longer fixed at
       four: it follows the memory the node has free for slots (each
       slot's fixed buffers and state, under D-055's reclaim order and
@@ -1164,6 +1164,21 @@ it appears.
       significantly, that knee becomes the model's default cap,
       configurable. Wave kernels past their current 16-row joined
       products (four slots at depth four) need wider paths for this.
+      Done (D-104, [request slots](experiments/request-slots/README.md)):
+      `max_slots` per model (1 to 16) over a fallback knee of 4 for both
+      LLMs (with plans warm, past four DeepSeek DSpark gains 9.3% then
+      2.6% with short prompts and nothing with long while each request
+      slows 24% then 12%, its wave-form chooser extended to widths 5–8,
+      plain past five; Qwen3.8 gains nothing at any width; a burst's
+      median request finishes later; a large cap also costs cold plan
+      building, 68 s and 2.7 GiB of plans for Qwen3.8 at sixteen); a
+      request joins only when its prompt's
+      state fits beside its peers', else it waits in the queue; Qwen3.8's
+      workspace is sized from its widest wave (7.45 → 2.17 GiB fixed at
+      four slots), and a slot's fixed buffers cost 4–16 MiB. Wider joined
+      products were not built: a wave's cost follows its rows (Qwen3.8 at
+      depth 1, eight requests in one sixteen-row group, measured slower).
+      The cap's calibration is D-103's.
       Proposed alongside, not yet decided: fair-share preemption when
       slots are full (setting the longest generator aside, exact
       resume), time-slicing a pending model switch instead of draining

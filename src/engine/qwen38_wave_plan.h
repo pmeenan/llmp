@@ -18,7 +18,9 @@
 
 namespace jitllm::engine {
 
-inline constexpr std::size_t kQwen38WaveSlots = 4;
+// The most slots a wave composes: the runner's kMaxRequestSlots
+// (request_cohort.h). Slot sets below are masks of these, bit i slot i.
+inline constexpr std::size_t kQwen38WaveSlots = 16;
 
 // Native runner bindings, in strictly ascending slot order. Model metadata,
 // weights and mapped places remain the caller's. No admission or lease is
@@ -51,7 +53,7 @@ struct Qwen38WaveStats {
   std::uint64_t packed_bytes = 0;
   std::uint64_t full_head_pairs = 0;
   std::uint64_t head_packed_bytes = 0;
-  std::uint8_t paired_slots = 0;
+  std::uint32_t paired_slots = 0;
 };
 
 // Owns fresh per-slot descriptors and a separate composition arena. It never
@@ -76,7 +78,7 @@ class Qwen38WavePlanned : public PlannedBase {
   const kernels::ggml::Qwen38MtpGraph* draft(std::size_t slot) const;
   std::span<ggml_tensor* const> nodes() const { return nodes_; }
   std::span<ggml_tensor* const> inputs() const { return inputs_; }
-  std::uint8_t active_slots() const { return active_slots_; }
+  std::uint32_t active_slots() const { return active_slots_; }
   const Qwen38WaveStats& stats() const { return stats_; }
   // What it holds on the host as its runner counts it (planned.h
   // PlannedHostBytes): every slot's plan, its own arenas and joined plan.
@@ -101,17 +103,10 @@ class Qwen38WavePlanned : public PlannedBase {
   std::optional<kernels::ggml::TensorArena> head_arena_;
   std::vector<Product> head_products_;
   Qwen38WaveStats stats_;
-  std::uint8_t active_slots_ = 0;
+  std::uint32_t active_slots_ = 0;
 };
 
-// The most a wave of `slots` slots holds on the host (host_bytes()) when
-// each slot's plan holds at most `slot_bytes` (PlannedHostBytes), launches
-// at most `slot_nodes` nodes and has at most `products` products eligible to
-// be shared: every slot's plan, the composition's arenas and the joined plan.
-std::uint64_t Qwen38WaveHostBound(std::uint64_t slot_bytes, std::uint64_t slot_nodes,
-                                  std::uint64_t products, std::uint64_t slots);
-
-// Geometry-only eligibility, shared with conservative provisioning. The
+// Geometry-only eligibility. The
 // composer separately authenticates the immutable leaf and MMF selectors.
 bool Qwen38FullHeadPairCandidate(const ggml_tensor* tensor);
 
@@ -120,8 +115,8 @@ bool Qwen38FullHeadPairCandidate(const ggml_tensor* tensor);
 // parameters and compatible layouts; one-row vector products stay scalar.
 bool Qwen38HcPairCandidate(const ggml_tensor* tensor);
 
-// One to four actual slots, each one to four rows. Groups of consecutive
-// compatible slots (in ascending order, up to all four) coalesce
+// One to kQwen38WaveSlots actual slots, each one to four rows. Groups of
+// consecutive compatible slots (in ascending order) coalesce
 // corresponding MXFP8-vector and routed-GEMV products, each at most
 // sixteen rows, with paid GGML concats and split views. A lone slot,
 // incompatible phase/product sequence or diagnostic capture retains the

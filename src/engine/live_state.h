@@ -128,6 +128,9 @@ class LiveState {
   // Used extents in region order, bounded to each layout's bytes.
   std::vector<Range> used_ranges() const;
   std::uint64_t used_bytes() const;
+  // What used_bytes() would be with only these ranges used: their extents,
+  // each bounded to its layout's bytes. Host-only; nothing is materialized.
+  std::expected<std::uint64_t, std::string> UsedBytesOf(std::span<const Range> ranges) const;
 
   // After the node's Start: each extent's write-back place in an unnamed
   // direct-I/O spill file in `directory`, region by region.

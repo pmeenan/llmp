@@ -76,6 +76,13 @@ schema_version = 2
 # 100000.
 # prefill_floor_tok_s = 100
 # decode_floor_tok_s = 5
+# Request slots: how many of the model's chat requests run at once (each
+# its own conversation state, and an idle conversation kept for reuse), 1
+# to 16; by default the model's measured knee (DeepSeek V4 and Qwen3.8: 4),
+# DeepSeek with DSpark at most 8. Below it, memory decides: a request joins
+# only when its prompt's state fits beside the others' (docs/runtime-
+# serving.md, "Request slots").
+# max_slots = 4
 # For an artifact whose metadata keeps no tokenizer or chat template: the
 # checkpoint's, owned by root or the runtime's user and writable by nobody
 # else.

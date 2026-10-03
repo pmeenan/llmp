@@ -110,24 +110,45 @@ std::vector<std::size_t> ReclaimOrder(std::span<const ReclaimCandidate> candidat
   return order;
 }
 
-ReclaimPlan SelectReclaim(std::span<const ReclaimCandidate> candidates, std::uint64_t needed,
-                          double below) {
+double ReuseChance(const ReclaimCandidate& candidate) {
+  return std::exp2(-((static_cast<double>(candidate.reclaims_since) / kReuseHalfLifeReclaims) +
+                     (candidate.idle_seconds / kReuseHalfLifeSeconds)));
+}
+
+namespace {
+
+// The order's selection (SelectReclaim) among the candidates whose kind is
+// in `kinds` (bit k: kind k), and in `expected` the victims' expected cost
+// to restore (each its restore seconds times its chance of reuse). With
+// `skip_large`, an entry larger than what is still needed is passed over
+// while a later entry of its kind would fit in what is left (a newer small
+// conversation before an old large one); least recent use stands
+// otherwise.
+ReclaimPlan SelectFrom(std::span<const ReclaimCandidate> candidates,
+                       std::span<const std::size_t> all_order, std::uint64_t needed, double below,
+                       const std::array<double, kReclaimKinds>& cost, unsigned kinds,
+                       bool skip_large, double& expected) {
   ReclaimPlan plan;
-  const std::array<double, kReclaimKinds> cost = KindCosts(candidates);
+  expected = 0;
   // A plan's bytes include its graphs': a graph taken before its plan is
   // not counted again, and a graph whose plan was taken is skipped.
   std::vector<std::pair<std::uint32_t, std::uint64_t>> plans;
   std::vector<std::pair<std::uint32_t, std::uint64_t>> graphs;
-  const auto graph_bytes = [&](const ReclaimCandidate& plan_candidate) -> std::uint64_t {
+  const auto graph_of = [&](const ReclaimCandidate& plan_candidate) -> const ReclaimCandidate* {
     for (const ReclaimCandidate& c : candidates) {
       if (c.kind == ReclaimKind::kGraph && c.owner == plan_candidate.owner &&
           c.id == plan_candidate.id) {
-        return c.bytes;
+        return &c;
       }
     }
-    return 0;
+    return nullptr;
   };
-  const std::vector<std::size_t> order = ReclaimOrder(candidates);
+  std::vector<std::size_t> order;
+  for (const std::size_t i : all_order) {
+    if ((kinds & (1U << static_cast<unsigned>(candidates[i].kind))) != 0) {
+      order.push_back(i);
+    }
+  }
   std::vector<bool> taken(order.size(), false);
   for (std::size_t p = 0; p < order.size(); ++p) {
     if (plan.bytes >= needed) {
@@ -142,6 +163,16 @@ ReclaimPlan SelectReclaim(std::span<const ReclaimCandidate> candidates, std::uin
     // another kind that covers the rest at no more absolute cost to
     // restore (within a kind, least recent use stands).
     const std::uint64_t left = needed - plan.bytes;
+    if (skip_large && candidates[order[p]].bytes > left) {
+      bool later_fits = false;
+      for (std::size_t q = p + 1; q < order.size() && !later_fits; ++q) {
+        const ReclaimCandidate& later = candidates[order[q]];
+        later_fits = !taken[q] && later.kind == candidates[order[p]].kind && later.bytes <= left;
+      }
+      if (later_fits) {
+        continue;
+      }
+    }
     if (candidates[order[p]].bytes / 8 > left) {
       for (std::size_t q = p + 1; q < order.size(); ++q) {
         const ReclaimCandidate& alt = candidates[order[q]];
@@ -165,6 +196,7 @@ ReclaimPlan SelectReclaim(std::span<const ReclaimCandidate> candidates, std::uin
       break;  // the rest cost as much to restore as what is charged, or more
     }
     std::uint64_t b = c.bytes;
+    double seconds = std::max(c.restore_seconds, 0.0);
     const auto handle = std::pair(c.owner, c.id);
     if (c.kind == ReclaimKind::kGraph) {
       if (std::ranges::find(plans, handle) != plans.end()) {
@@ -173,16 +205,59 @@ ReclaimPlan SelectReclaim(std::span<const ReclaimCandidate> candidates, std::uin
       graphs.push_back(handle);
     } else if (c.kind == ReclaimKind::kPlan) {
       if (std::ranges::find(graphs, handle) != graphs.end()) {
-        b -= std::min(b, graph_bytes(c));
+        if (const ReclaimCandidate* graph = graph_of(c); graph != nullptr) {
+          b -= std::min(b, graph->bytes);
+          seconds = std::max(0.0, seconds - std::max(graph->restore_seconds, 0.0));
+        }
       }
       plans.push_back(handle);
     }
     plan.victims.push_back(i);
     plan.priorities.push_back(priority);
     plan.bytes = b > UINT64_MAX - plan.bytes ? UINT64_MAX : plan.bytes + b;
+    expected += seconds * ReuseChance(c);
   }
   plan.sufficient = plan.bytes >= needed;
   return plan;
+}
+
+}  // namespace
+
+ReclaimPlan SelectReclaim(std::span<const ReclaimCandidate> candidates, std::uint64_t needed,
+                          double below) {
+  const std::array<double, kReclaimKinds> cost = KindCosts(candidates);
+  const std::vector<std::size_t> order = ReclaimOrder(candidates);
+  unsigned present = 0;
+  for (const std::size_t i : order) {
+    present |= 1U << static_cast<unsigned>(candidates[i].kind);
+  }
+  // The order over every kind, and over each smaller set of the kinds
+  // present: the cheapest total expected cost to restore that covers the
+  // need wins (ties keep the larger set's, every kind's first). The order
+  // ranks a GiB; a small need can cost less to restore from a costlier
+  // kind's few small entries than from one large cheap one (a whole idle
+  // conversation for a few MiB). Each selection keeps the order within its
+  // kinds, but for one variant: an entry larger than what is still needed
+  // may give way to a later, smaller one of its kind that fits (an old
+  // large conversation for a newer small one).
+  double best_expected = 0;
+  ReclaimPlan best =
+      SelectFrom(candidates, order, needed, below, cost, present, false, best_expected);
+  for (unsigned kinds = present; kinds != 0; kinds = (kinds - 1) & present) {
+    for (const bool skip_large : {false, true}) {
+      if (kinds == present && !skip_large) {
+        continue;
+      }
+      double expected = 0;
+      ReclaimPlan plan =
+          SelectFrom(candidates, order, needed, below, cost, kinds, skip_large, expected);
+      if (plan.sufficient && (!best.sufficient || expected < best_expected)) {
+        best = std::move(plan);
+        best_expected = expected;
+      }
+    }
+  }
+  return best;
 }
 
 void ProtectFloor(std::vector<ReclaimCandidate>& candidates, std::uint64_t floor_bytes) {

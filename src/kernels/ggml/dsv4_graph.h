@@ -312,8 +312,10 @@ std::size_t Dsv4GraphTensors(const model::Dsv4Profile& profile);
 // rows in a wave equal its verify alone bit for bit; a wave of one-row
 // steps gives its vector products the one-token launch (jitllm_ops.h
 // SetVecQOneToken), so each slot's row equals its step alone bit for bit.
-// A wave mixing one-row and wider slots keeps the wider launch.
-inline constexpr std::size_t kDsv4WaveSlots = 4;
+// A wave mixing one-row and wider slots keeps the wider launch. Every
+// slot's rows count toward kDsv4WaveRows, so sixteen one-row steps (the
+// engine's kMaxRequestSlots) fill a wave.
+inline constexpr std::size_t kDsv4WaveSlots = 16;
 inline constexpr std::int64_t kDsv4WaveRows = 16;
 
 // Each slot's chunk shape, in wave order (their layout fields equal), and

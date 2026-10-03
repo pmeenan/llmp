@@ -199,6 +199,9 @@ class Served {
   // never batches). A model is never refused only because its artifact
   // cannot batch.
   virtual std::string serial_reason() const { return {}; }
+  // Its request slots and where their number came from, for the start's
+  // log (empty: a model without them).
+  virtual std::string slots_report() const { return {}; }
   // Its plans and graphs as candidates for the reclaim order (memory/
   // reclaim.h), `owner` its registration index, `running` if resident;
   // and one's reclaim: the bytes it freed (0: gone or held).
@@ -425,7 +428,8 @@ class Llm : public Served {
   Llm();
   Branch& default_branch() & { return default_branch_; }
   const Branch& default_branch() const& { return default_branch_; }
-  static constexpr std::size_t kMaxBranches = 4;
+  // A branch a native request slot (engine/request_cohort.h kMaxRequestSlots).
+  static constexpr std::size_t kMaxBranches = 16;
   std::size_t branches() const { return branch_count_; }
   // A stable model-owned wrapper. Looking it up performs no native work.
   std::expected<Branch*, std::string> branch(std::size_t index) &;
@@ -463,6 +467,10 @@ class Llm : public Served {
   std::uint64_t StateBytes(const Branch& branch) const;
   std::uint64_t ResidentStateBytes(const Branch& branch) const;
   std::uint64_t SpilledStateBytes(const Branch& branch) const;
+  // What a branch's state would hold once it has run through `positions`,
+  // from empty, as ResidentStateBytes counts it: an admission's estimate
+  // (docs/runtime-serving.md#request-slots). 0 when the model cannot say.
+  virtual std::uint64_t StateBytesThrough(std::uint32_t /*positions*/) const { return 0; }
   // When a branch was last used (its history extended or reused): its
   // retention's clock and the reclaim order's recency.
   Clock::time_point LastUsed(const Branch& branch) const;
@@ -997,6 +1005,26 @@ class Image : public Served {
   virtual Status Finish(std::string& sha) = 0;
 };
 
+// The reclaim order's candidates for `model`'s idle conversations
+// (Server::Reclaim): each idle branch (BranchIdle) with resident state,
+// but `spare` (a request's chosen branch, which admission must not spill
+// for its own room), its restore cost a spill of what changed and a
+// restore at the rates given, or its recomputation when idle state is
+// dropped (no spill budget).
+struct IdleStateRates {
+  double spill_rate = 0;    // bytes a second
+  double restore_rate = 0;  // bytes a second
+  bool dropped = false;     // no spill budget: dropped, recomputed at its next turn
+};
+void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const Llm::Branch* spare,
+                            const IdleStateRates& rates,
+                            std::vector<memory::ReclaimCandidate>& out);
+
+// Whether `needed` bytes are free (`free`, unknown: yes), or `reclaim` of
+// the shortfall frees all of it (Server::RoomFor's rule).
+bool RoomFor(std::uint64_t needed, std::optional<std::uint64_t> free,
+             const std::function<std::uint64_t(std::uint64_t)>& reclaim);
+
 // The node with the configured models on it.
 class Server {
  public:
@@ -1075,7 +1103,14 @@ class Server {
   std::uint64_t Reclaim(std::uint64_t needed, bool states, std::string_view why,
                         const Served* running = nullptr,
                         std::optional<memory::ReclaimKind> below_kind = std::nullopt,
-                        bool partial = false);
+                        bool partial = false, const Llm::Branch* spare = nullptr);
+  // Whether the resident model has `needed` bytes of the budget for another
+  // request slot's state (docs/runtime-serving.md#request-slots): free now,
+  // or freed through the reclaim order (Reclaim with idle state, all of it
+  // or nothing), never spilling `spare` (the branch the request is about to
+  // continue or clear). On the driver's thread between completed units. An
+  // unreadable budget says yes: the cohort's capacity policy still governs.
+  bool RoomFor(std::uint64_t needed, std::string_view why, const Llm::Branch* spare = nullptr);
   // Between units and when idle (the chat route's driver): spilled
   // conversations past `[memory] retention_hours` deleted, and past
   // `spill_budget_gib` the least recently used deleted first; and when

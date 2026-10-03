@@ -485,6 +485,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     if (!AdmissionOpen(Snapshot())) {
       return std::unique_ptr<api::CooperativeBackend::Work>{};
     }
+    // A request already found no memory for a slot waits for a peer to
+    // retire before it is looked at again (below).
+    if (memory_wait_.Blocked(static_cast<std::size_t>(claimed))) {
+      return std::unique_ptr<api::CooperativeBackend::Work>{};
+    }
     // A request that yielded its place continues from its generation so far
     // (ChatResume); any other is rendered now.
     const auto* resume = static_cast<const ChatResume*>(request.resume);
@@ -534,6 +539,29 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     auto branch = model.branch(slot);
     if (!branch) {
       return std::unexpected(Failure(500, "the model's conversation branch is unavailable"));
+    }
+    // Request slots follow memory (docs/runtime-serving.md#request-slots):
+    // beside its peers, a request joins only where the budget holds its
+    // prompt's state and what its peers' prompts have yet to take, free or
+    // freed through the reclaim order (idle conversations spilled, stale
+    // plans and graphs dropped). Otherwise it waits first in the queue until
+    // a peer retires. A lone request always starts: the capacity policy
+    // governs it as before.
+    if (claimed != 0 && server_.resident() == &model) {
+      std::uint64_t needed = PromptStateToCome(model, **branch, rendered->tokens.size());
+      for (const ChatWork* peer : cohort_) {
+        if (peer != nullptr && !peer->terminal() && peer->stage == ChatWork::Stage::kPrompt) {
+          needed += PromptStateToCome(model, peer->branch, peer->rendered.tokens.size());
+        }
+      }
+      if (needed != 0 && !server_.RoomFor(needed, "a request slot", *branch)) {
+        memory_wait_.NoRoom();
+        Say(log_, std::format("{}'s request waits for memory for a request slot: {:.1f} MiB of "
+                              "prompt state to come for {} tokens beside {} active requests",
+                              model.name(), static_cast<double>(needed) / (1U << 20U),
+                              rendered->tokens.size(), claimed));
+        return std::unique_ptr<api::CooperativeBackend::Work>{};
+      }
     }
     const Floors floors = ModelFloors(model);
     const auto swap_bytes = SwapBytes(model);
@@ -846,6 +874,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         .yielded = std::move(yielded)};
     cohort_[frame.slot] = nullptr;
     frame.retired = true;
+    memory_wait_.MemberRetired();  // its state is idle now, and reclaimable
     frame.generation_session.reset();
     frame.prompt_session.reset();
     if (peers == 1) {
@@ -1569,6 +1598,16 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     frame.stage = ChatWork::Stage::kPrompt;
   }
 
+  // What a prompt of `tokens` on `branch` has yet to take of the budget:
+  // its state through its tokens and its first step, less what the branch
+  // holds now (continued, or cleared for it).
+  static std::uint64_t PromptStateToCome(const Llm& model, const Llm::Branch& branch,
+                                         std::size_t tokens) {
+    const auto positions =
+        static_cast<std::uint32_t>(std::min<std::size_t>(tokens + 1, model.context()));
+    return StateToCome(model.StateBytesThrough(positions), model.ResidentStateBytes(branch));
+  }
+
   void Fail(std::string what) {
     Say(log_, what);
     if (failure_.empty()) {
@@ -1590,6 +1629,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   std::uint64_t admissions_ = 0;
   bool selected_swap_ = false;
   bool cohort_native_touched_ = false;
+  // The queue's head found no memory for a request slot: it waits until a
+  // member retires (Start, Retire).
+  MemoryWait memory_wait_;
 };
 
 // The reverse lookups' time at startup, all of them together: MagicDNS

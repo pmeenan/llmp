@@ -1595,7 +1595,8 @@ class FakeCooperative final : public api::CooperativeBackend {
 
   std::atomic<unsigned> started{0}, advances{0}, peak{0}, polls{0}, live{0};
   std::atomic<unsigned> paused_units{0}, paused_skips{0}, yielded{0}, resumed{0};
-  std::atomic<unsigned> capacity{api::kMaxActiveRequests}, capacity_deferrals{0};
+  // The model's request slots (Start defers past them).
+  std::atomic<unsigned> capacity{4}, capacity_deferrals{0};
   std::atomic<unsigned> cancelled{0}, retired{0}, destroyed{0}, deferrals{0};
   std::atomic<unsigned> rejections{0}, rejections_between_units{0};
   std::atomic<bool> pause_units{false}, release{false}, fail_unit{false};
@@ -3263,10 +3264,13 @@ TEST_F(ServerTest, StoppingEndsARunningRequest) {
 
 TEST_F(ServerTest, CooperativeRequestsJoinAnExistingDecodeAndStayBounded) {
   StartCooperative();
+  // A model of six request slots: more than four run at once, never more
+  // than six.
+  cooperative_->capacity.store(6);
   cooperative_->pause_units.store(true);
   const int first = Connect(Post(Chat("long", R"(,"max_tokens":12)")));
   ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
-  std::array<int, 4> later{};
+  std::array<int, 7> later{};
   for (int& fd : later) {
     fd = Connect(Post(Chat("short", R"(,"max_tokens":4)")));
   }
@@ -3274,8 +3278,8 @@ TEST_F(ServerTest, CooperativeRequestsJoinAnExistingDecodeAndStayBounded) {
   EXPECT_THAT(Exchange("GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"),
               StartsWith("HTTP/1.1 200 "));
   cooperative_->release.store(true);
-  ASSERT_TRUE(WaitFor([&] { return cooperative_->peak.load() == api::kMaxActiveRequests; }));
-  EXPECT_EQ(cooperative_->peak.load(), api::kMaxActiveRequests);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->peak.load() == 6; }));
+  EXPECT_EQ(cooperative_->peak.load(), 6U);
   std::string pending;
   for (const int fd : later) {
     EXPECT_THAT(ReadResponse(fd, pending),
@@ -3285,8 +3289,8 @@ TEST_F(ServerTest, CooperativeRequestsJoinAnExistingDecodeAndStayBounded) {
   EXPECT_THAT(ReadResponse(first, pending),
               AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":12)")));
   (void)::close(first);
-  ASSERT_TRUE(WaitFor([&] { return cooperative_->destroyed.load() == 5; }));
-  EXPECT_EQ(cooperative_->retired.load(), 5U);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->destroyed.load() == 8; }));
+  EXPECT_EQ(cooperative_->retired.load(), 8U);
   EXPECT_EQ(backend_.chat_calls.load(), 0U);
   EXPECT_FALSE(cooperative_->early_destruction.load());
 }

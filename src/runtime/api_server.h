@@ -23,8 +23,9 @@
 // 408; a slow one that keeps sending is never cut off (D-102).
 // The thread that calls Run is the backend's (the node's one driver): it
 // takes queued requests in arrival order. Backends without a cooperative
-// capability run one to its end; a cooperative backend admits up to four
-// same-model requests and advances declared units, draining before an
+// capability run one to its end; a cooperative backend admits as many
+// same-model requests as the model has request slots (at most
+// kMaxActiveRequests) and advances declared units, draining before an
 // incompatible FIFO head. The driver watches the caller's wake descriptor
 // (the runtime's signals) between units. By default the queue has no count
 // and no wait limit (D-102); with max_queued set, more get a 429 with
@@ -258,15 +259,19 @@ class CooperativeBackend {
   CooperativeBackend& operator=(CooperativeBackend&&) = delete;
   virtual ~CooperativeBackend() = default;
   // Fast host-only eligibility, called with the queue lock held. No waits
-  // or callbacks. The driver batches only one model and at most four works.
+  // or callbacks. The driver batches only one model and at most
+  // kMaxActiveRequests works; Start defers past the model's own slots.
   // This descriptor is borrowed only for this call.
   virtual bool Supports(const Request& request) const = 0;
   // Validation and admission/session creation only; native work belongs to
-  // Advance. A null work means capacity deferred: no Admit, output, mutation
-  // or retained reference. With no active work it falls back to Complete.
-  // An Error likewise retains no references and ends only this request.
-  // On success, Request itself, its parsed members and Exchange have stable
-  // addresses until Retire proves their references retired.
+  // Advance, but for one exception: admission by memory may give memory
+  // back through the node's reclaim order (spilling idle conversations
+  // outside the cohort, dropping plans and graphs), completed jobs on the
+  // driver between units, as a refused unit's reclaim does
+  // (docs/runtime-serving.md#request-slots). A null work means capacity deferred: no Admit, output,
+  // mutation or retained reference. With no active work it falls back to Complete. An Error
+  // likewise retains no references and ends only this request. On success, Request itself, its
+  // parsed members and Exchange have stable addresses until Retire proves their references retired.
   virtual std::expected<std::unique_ptr<Work>, Error> Start(const Request& request,
                                                             Exchange& exchange) = 0;
   // A unit of Phase::kPaused means every runnable work waits for its
@@ -282,7 +287,9 @@ class CooperativeBackend {
   virtual Retirement Retire(Work& work) = 0;
 };
 
-inline constexpr std::size_t kMaxActiveRequests = 4;
+// The most works a cooperative backend runs at once: a model's most request
+// slots (engine/request_cohort.h kMaxRequestSlots).
+inline constexpr std::size_t kMaxActiveRequests = 16;
 
 class Backend {
  public:

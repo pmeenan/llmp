@@ -618,7 +618,8 @@ With a drafter, the runtime now chooses each wave's form per width
 (`execution/adaptive_wave_mode.h`; `serving.cc` `RunPreparedGenerationWave`)
 from counted tokens and a recorded cost, never from wall time:
 - **Cost.** For each width, a DSpark wave's time in plain decode waves:
-  1.94, 2.21 and 2.90 at widths 2, 3 and 4 (151/78, 197/89, 249/86 ms
+  1.94, 2.21 and 2.90 at widths 2, 3 and 4 (widths 5 to 8, added with
+  more request slots: [request slots](../request-slots/README.md#deepseeks-wave-form-past-four-requests); 151/78, 197/89, 249/86 ms
   above). They are recorded per model (`kWaveCost` in `serving.cc`) and
   must be measured again when the wave step changes, as per-slot streams
   would change it.

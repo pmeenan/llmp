@@ -18,6 +18,7 @@
 #include <format>
 #include <print>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "artifact/artifact.h"
@@ -90,8 +91,32 @@ constexpr std::uint32_t kDsv4WidePrefillContext = 262144;  // the widest context
 constexpr std::uint32_t kQwen38PrefillRows = 4096;
 // The draft depth of each request in a Qwen3.8 wave of more than one.
 constexpr std::uint32_t kSharedWaveDepth = 2;
-// DeepSeek's independent request slots (engine/dsv4_runner.h): waves of up to four.
-constexpr std::uint32_t kDsv4RequestSlots = 4;
+// A model's request slots by default (`[models.<name>] max_slots`;
+// docs/runtime-serving.md#request-slots): the knee where adding a slot
+// stops raising the completed-token rate enough to pay for slowing every
+// request (docs/experiments/request-slots/).
+constexpr std::uint32_t kDsv4DefaultSlots = 4;
+constexpr std::uint32_t kQwen38DefaultSlots = 4;
+static_assert(Llm::kMaxBranches == engine::kMaxRequestSlots);
+static_assert(config::kMaxModelSlots == engine::kMaxRequestSlots);
+
+// The request slots a model serves (D-103's layers): the owner's override
+// (`max_slots`), else the fallback constant until calibration on this
+// machine measures the knee; at most `most` (what its waves can hold).
+// `report` names the value's source, for the start's log.
+std::uint32_t SlotsOf(const config::ModelEntry& entry, std::uint32_t fallback, std::uint32_t most,
+                      std::string_view why_most, std::string& report) {
+  const std::uint32_t asked = entry.max_slots.value_or(fallback);
+  const std::uint32_t slots = std::min(asked, most);
+  report = std::format(
+      "{} request slot{} ({}", slots, slots == 1 ? "" : "s",
+      entry.max_slots ? std::format("override: max_slots {}", asked) : std::string("fallback"));
+  if (slots < asked) {
+    report += std::format(", at most {}: {}", most, why_most);
+  }
+  report += ")";
+  return slots;
+}
 
 // The reclaim order's cost of idle conversation state (Server::Reclaim):
 // its write-back and its restore, at the node's rates measured so far, and
@@ -211,7 +236,8 @@ class Dsv4 final : public Llm {
     node_ = &node;
     checkpoint_directory_ = roles.spill;
     speculate_ = !drafter_id_.empty() && entry.speculation && !plain;
-    wave_mode_ = execution::AdaptiveWaveMode(kWaveCost, WaveForce(entry.wave_form));
+    wave_mode_ = execution::AdaptiveWaveMode(kWaveCost, WaveForce(entry.wave_form),
+                                             CutRows(options_.max_verify));
     context_ = entry.context;
     options_.artifact = roles.installed / artifact_id_;
     options_.out = roles.spill;
@@ -223,11 +249,16 @@ class Dsv4 final : public Llm {
         model::Dsv4MostRows(model::Dsv4Flash(), entry.context));
     options_.max_rows = max_rows_;
     options_.graphs = true;
-    // Four request slots share the weights and workspace, each with its own
+    // Request slots share the weights and workspace, each with its own
     // conversation state: concurrent chat requests decode in waves
     // (engine/dsv4_runner.h), whose row-local products read each weight
-    // once for all of them.
-    options_.wave_slots = kDsv4RequestSlots;
+    // once for all of them. With DSpark each request's verify joins a wave
+    // with at least two rows, so a wave of sixteen holds eight.
+    options_.wave_slots =
+        SlotsOf(entry, kDsv4DefaultSlots,
+                speculate_ ? static_cast<std::uint32_t>(engine::Dsv4Runner::kWaveRows / 2)
+                           : static_cast<std::uint32_t>(engine::kMaxRequestSlots),
+                "a DSpark verify takes two of a wave's sixteen rows", slots_report_);
     // The output-A/HCA prefill on every prefill chunk of 64 rows or more,
     // where it passes every registered quality control on both GGUFs under
     // the tie-aware rule (docs/experiments/ds4-output-prefix, "Default-on
@@ -325,6 +356,7 @@ class Dsv4 final : public Llm {
   }
   std::string plan_report() const override { return runner_.plan_report(); }
   std::string serial_reason() const override { return runner_.serial_reason(); }
+  std::string slots_report() const override { return slots_report_; }
   Status Register() override { return runner_.Register(); }
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
@@ -355,6 +387,9 @@ class Dsv4 final : public Llm {
   }
   bool supports_generation_waves() const override { return runner_.waves_provisioned(); }
   std::size_t generation_wave_capacity() const override { return runner_.wave_capacity(); }
+  std::uint64_t StateBytesThrough(std::uint32_t positions) const override {
+    return runner_.StateBytesThrough(positions).value_or(0);
+  }
   std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
   Status AfterLoad() override { return runner_.CheckHashRouting(); }
   Status CheckPlaces() override { return runner_.CheckPlaces(); }
@@ -644,10 +679,7 @@ class Dsv4 final : public Llm {
     // A verify of one row (a step ending at a mask width, or the last
     // token) runs alone: a wave of wider verifies would give it the
     // multi-row launch, not its own step's arithmetic. So does a lone one.
-    const auto share = [](std::size_t count) {
-      return std::max<std::uint32_t>(
-          2, static_cast<std::uint32_t>(engine::Dsv4Runner::kWaveRows / count));
-    };
+    const auto share = [](std::size_t count) { return WaveShare(count); };
     std::vector<std::size_t> joined;
     std::vector<std::size_t> alone;
     for (std::size_t i = 0; i < prepared.size(); ++i) {
@@ -786,6 +818,7 @@ class Dsv4 final : public Llm {
   std::string artifact_id_;
   std::string drafter_id_;  // empty: none
   fs::path store_;
+  std::string slots_report_;
   engine::Dsv4Options options_;  // before the runner, which keeps a reference
   engine::Dsv4Runner runner_;
   std::array<engine::Dsv4Runner::Slot*, engine::Dsv4Runner::kRequestSlots> native_slots_{};
@@ -794,8 +827,31 @@ class Dsv4 final : public Llm {
   // by width, measured through the runtime with each form forced (GB10,
   // community GGUF, four 124-token chats, 2026-10-03: 151 / 78, 197 / 89
   // and 249 / 86 ms at widths 2, 3 and 4; docs/experiments/deepseek-
-  // batching). To be measured again when a wave's cost changes.
-  static constexpr execution::AdaptiveWaveMode::Costs kWaveCost = {0, 0, 1.94, 2.21, 2.90};
+  // batching). Widths 5 to 8 (more request slots, D-104), each form's wave
+  // timed in the wave check (`jitllm_spec_runner --check wave --slots N`,
+  // same GGUF, 2026-10-03): 262 / 102, 239 / 114, 279 / 127 and 316 / 140
+  // ms, a DSpark verify then three rows a request at width 5 and two past
+  // it, so past five a draft-verify wave (at most two tokens a request)
+  // never pays (docs/experiments/request-slots). Fallbacks until D-103's
+  // calibration on the machine measures them; to be measured again when a
+  // wave's cost changes.
+  static constexpr execution::AdaptiveWaveMode::Costs kWaveCost = {0,    0,    1.94, 2.21, 2.90,
+                                                                   2.58, 2.10, 2.20, 2.25};
+  // A request's share of a draft-verify wave's rows among `count`: all
+  // sixteen's, at least two (so DSpark takes at most eight requests).
+  static std::uint32_t WaveShare(std::size_t count) {
+    return std::max<std::uint32_t>(
+        2, static_cast<std::uint32_t>(engine::Dsv4Runner::kWaveRows / count));
+  }
+  // By width, a draft-verify wave's verify rows a request where its share
+  // cuts them below the full verify's `most` (AdaptiveWaveMode::Rows).
+  static execution::AdaptiveWaveMode::Rows CutRows(std::uint32_t most) {
+    execution::AdaptiveWaveMode::Rows rows{};
+    for (std::uint32_t w = 2; w <= execution::AdaptiveWaveMode::kMaxWidth; ++w) {
+      rows[w] = WaveShare(w) < most ? WaveShare(w) : 0;
+    }
+    return rows;
+  }
   // The model's configured wave form (wave_form): chosen, or forced for
   // exactness controls.
   static execution::AdaptiveWaveMode::Force WaveForce(config::WaveForm form) {
@@ -839,11 +895,15 @@ class Qwen38 final : public Llm {
                                  model::Qwen38MostRows(entry.context, false));
     options_.max_rows = max_rows_;
     options_.graphs = true;
-    // Four execution slots share weights and workspace while each branch
-    // retains its own native state: up to four requests decode in one wave
+    // Request slots share weights and workspace while each branch retains
+    // its own native state: the requests decode in one wave
     // (engine/qwen38_wave_plan.h), whose row-local products read each weight
-    // once (C2/C4 HTTP screens: +9.8%/+20% over two slots of pairs).
-    options_.wave_slots = 4;
+    // once for a group of up to sixteen rows (C2/C4 HTTP screens: +9.8%/+20%
+    // over two slots of pairs).
+    options_.wave_slots =
+        SlotsOf(entry, kQwen38DefaultSlots, static_cast<std::uint32_t>(engine::kMaxRequestSlots),
+                {}, slots_report_);
+    options_.request_slots = options_.wave_slots;
     if (speculate_) {
       options_.drafter = roles.installed / drafter_id_;
       options_.draft_rows = max_rows_ >= 4 ? 3 : 2;
@@ -938,14 +998,14 @@ class Qwen38 final : public Llm {
     if (auto setup = runner_.Setup(); !setup) {
       return setup;
     }
-    for (std::size_t i = 0; i < native_slots_.size(); ++i) {
+    for (std::size_t i = 0; i < runner_.request_slots(); ++i) {
       auto slot = runner_.request_slot(i);
       if (!slot) {
         return std::unexpected(slot.error());
       }
       native_slots_[i] = *slot;
     }
-    return PrepareBranches(static_cast<std::uint32_t>(native_slots_.size()), 3);
+    return PrepareBranches(static_cast<std::uint32_t>(runner_.request_slots()), 3);
   }
   std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
   std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
@@ -960,6 +1020,7 @@ class Qwen38 final : public Llm {
     return runner_.Reclaim(kind, id);
   }
   std::string plan_report() const override { return runner_.plan_report(); }
+  std::string slots_report() const override { return slots_report_; }
   Status Register() override { return runner_.Register(); }
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
@@ -976,7 +1037,7 @@ class Qwen38 final : public Llm {
     return SelectBranches(active);
   }
   Status SelectBranches(std::span<Branch* const> active) override {
-    if (active.size() > native_slots_.size()) {
+    if (active.size() > runner_.request_slots()) {
       return Error("too many Qwen native conversation branches");
     }
     std::array<engine::Qwen38Runner::Slot*, engine::Qwen38Runner::kRequestSlots> selected{};
@@ -1026,6 +1087,9 @@ class Qwen38 final : public Llm {
   }
   bool supports_generation_waves() const override { return runner_.waves_provisioned(); }
   std::size_t generation_wave_capacity() const override { return runner_.wave_capacity(); }
+  std::uint64_t StateBytesThrough(std::uint32_t positions) const override {
+    return runner_.StateBytesThrough(positions).value_or(0);
+  }
 
  protected:
   Status RunChunk(std::span<const std::int32_t> all, std::uint32_t n_past, bool inject,
@@ -1409,6 +1473,7 @@ class Qwen38 final : public Llm {
   std::optional<fs::path> tokenizer_path_;
   std::optional<fs::path> template_path_;
   fs::path store_;
+  std::string slots_report_;
   engine::Qwen38Options options_;  // before the runner, which keeps a reference
   engine::Qwen38Runner runner_;
   std::array<engine::Qwen38Runner::Slot*, engine::Qwen38Runner::kRequestSlots> native_slots_{};
@@ -3425,6 +3490,8 @@ Status Server::Start(bool snapshot) {
     }
     if (const auto reason = m->serial_reason(); !reason.empty()) {
       Log(std::format("model {}: serves one request at a time ({})", m->name(), reason));
+    } else if (const auto slots = m->slots_report(); !slots.empty()) {
+      Log(std::format("model {}: {}", m->name(), slots));
     }
   }
   if (auto r = node_.MapWorkspace(activations, pool); !r) {
@@ -3844,9 +3911,58 @@ bool Server::KeepWithinSpillBudget(std::uint64_t extra) {
   return fits;
 }
 
+void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const Llm::Branch* spare,
+                            const IdleStateRates& rates,
+                            std::vector<memory::ReclaimCandidate>& out) {
+  for (std::size_t slot = 0; slot < model.branches(); ++slot) {
+    auto b = model.branch(slot);
+    if (!b || *b == spare || !model.BranchIdle(**b) || (*b)->history().empty()) {
+      continue;
+    }
+    const std::uint64_t bytes = model.ResidentStateBytes(**b);
+    if (bytes == 0) {
+      continue;
+    }
+    // A spill writes only what changed since its last one; a restore reads
+    // it all.
+    const auto size = static_cast<double>(bytes);
+    const auto writes = static_cast<double>(model.SpillWriteBytes(**b));
+    out.push_back(
+        {.kind = memory::ReclaimKind::kIdleState,
+         .owner = owner,
+         .id = slot,
+         .bytes = bytes,
+         .last_use = static_cast<std::uint64_t>(model.LastUsed(**b).time_since_epoch().count()),
+         .restore_seconds = rates.dropped
+                                ? size * kRecomputeSecondsPerByte
+                                : (writes / rates.spill_rate) + (size / rates.restore_rate),
+         .running = running});
+    memory::SetUse(out.back(), model.LastStamp(**b));
+  }
+}
+
+bool RoomFor(std::uint64_t needed, std::optional<std::uint64_t> free,
+             const std::function<std::uint64_t(std::uint64_t)>& reclaim) {
+  if (needed == 0 || !free || *free >= needed) {
+    return true;
+  }
+  return reclaim(needed - *free) >= needed - *free;
+}
+
+bool Server::RoomFor(std::uint64_t needed, std::string_view why, const Llm::Branch* spare) {
+  if (needed == 0 || !started_ || torn_down_) {
+    return true;
+  }
+  auto free = node_.FreeBytes();
+  return runtime::RoomFor(
+      needed, free ? std::optional(*free) : std::nullopt, [&](std::uint64_t shortfall) {
+        return Reclaim(shortfall, true, why, nullptr, std::nullopt, false, spare);
+      });
+}
+
 std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_view why,
                               const Served* running, std::optional<memory::ReclaimKind> below_kind,
-                              bool partial) {
+                              bool partial, const Llm::Branch* spare) {
   if (reclaiming_ || !started_ || torn_down_ || needed == 0) {
     return 0;
   }
@@ -3900,31 +4016,10 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     memory::ProtectFloor(candidates, running != nullptr ? running->plan_floor_bytes() : 0);
     if (states && resident_ != nullptr && resident_->llm()) {
       idle_owner = static_cast<Llm*>(resident_);
-      for (std::size_t slot = 0; slot < idle_owner->branches(); ++slot) {
-        auto b = idle_owner->branch(slot);
-        if (!b || !idle_owner->BranchIdle(**b) || (*b)->history().empty()) {
-          continue;
-        }
-        const std::uint64_t bytes = idle_owner->ResidentStateBytes(**b);
-        if (bytes == 0) {
-          continue;
-        }
-        // A spill writes only what changed since its last one; a restore
-        // reads it all.
-        const auto size = static_cast<double>(bytes);
-        const auto writes = static_cast<double>(idle_owner->SpillWriteBytes(**b));
-        candidates.push_back(
-            {.kind = memory::ReclaimKind::kIdleState,
-             .owner = resident_index,
-             .id = slot,
-             .bytes = bytes,
-             .last_use =
-                 static_cast<std::uint64_t>(idle_owner->LastUsed(**b).time_since_epoch().count()),
-             .restore_seconds = spill_budget_ == 0 ? size * kRecomputeSecondsPerByte
-                                                   : (writes / spill_rate) + (size / restore_rate),
-             .running = resident_ == running});
-        memory::SetUse(candidates.back(), idle_owner->LastStamp(**b));
-      }
+      AddIdleStateCandidates(
+          *idle_owner, resident_index, resident_ == running, spare,
+          {.spill_rate = spill_rate, .restore_rate = restore_rate, .dropped = spill_budget_ == 0},
+          candidates);
     }
     cost = memory::KindCosts(candidates);
     double below = std::numeric_limits<double>::infinity();

@@ -13,6 +13,26 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- A model's concurrent chat requests are no longer fixed at four (D-104):
+  each LLM has request slots up to a cap, `[models.<name>] max_slots` (1
+  to 16; a new key compatible with schema version 2, a minor bump of the
+  0.x line), by default the measured knee (4 for DeepSeek V4 Flash and
+  Qwen3.8 Flash Next with today's 16-row joined products; DeepSeek with
+  DSpark takes at most 8, its waves of six to eight plain by the wave-form
+  choice's measured costs), and the start logs the value and its source.
+  Below the cap memory decides: a request joins the running ones only
+  when the budget holds its prompt's state beside theirs, free or freed
+  through the reclaim order, and otherwise waits first in the queue
+  instead of being admitted to wait or be set aside. Qwen3.8's wave
+  workspace is now sized from its widest measured wave instead of four
+  prefill chunks: 7.45 → 2.17 GiB fixed with four slots, 5.45 GiB more
+  room for conversation state, and a slot costs about 16 MiB of fixed
+  buffers (DeepSeek with DSpark about 4 MiB). The reclaim order now covers
+  a need at the least total expected cost to restore, so a small need
+  takes a few stale plans and graphs instead of spilling a whole idle
+  conversation, and admission never spills the conversation its request
+  continues.
+
 - Memory is used fully and given back gracefully under pressure (D-055
   and D-090 as amended 2026-10-02): plans and graphs no longer have fixed
   counts and survive a swap, growing into free memory; idle conversations

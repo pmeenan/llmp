@@ -218,7 +218,7 @@ seeded-sampling evidence in this study.
   One turn only: no quality, continuation or swap claim.
 - **Waves and the fused decode form:** its F16 HC mixing weights now take
   the fast plan's fused form (`jitllm.dsv4.hc_mix` widens them to F32
-  exactly), so it starts with four request slots and decodes in waves
+  exactly), so it starts with its request slots (four by default) and decodes in waves
   (between `64faee6` and this fix the runtime refused to start it). Wave
   controls (`--check wave`, 2 and 4 slots, plain): 142/142 and 332/332
   rows byte-identical to each slot alone. Its single-request decode now

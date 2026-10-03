@@ -46,7 +46,9 @@
 
 namespace jitllm::runtime {
 
-inline constexpr std::size_t kCohortSlots = 4;
+// A cohort's most members: a model's most request slots
+// (engine/request_cohort.h kMaxRequestSlots).
+inline constexpr std::size_t kCohortSlots = 16;
 
 enum class CapacityWait : std::uint8_t {
   kNone,       // runnable (or terminal)
@@ -88,6 +90,27 @@ std::optional<std::size_t> NextRestart(Cohort& cohort);
 
 // Whether a new member may join: none waits for capacity.
 bool AdmissionOpen(const Cohort& cohort);
+
+// Admission by memory (docs/runtime-serving.md#request-slots): what a
+// prompt has yet to take of the budget, its state through its tokens and
+// first step (`total`, Llm::StateBytesThrough) less what its branch holds
+// now (`held`: continued, or cleared for it).
+inline std::uint64_t StateToCome(std::uint64_t total, std::uint64_t held) {
+  return total > held ? total - held : 0;
+}
+
+// The queue's head looked at for memory: once a request found no room
+// beside its peers, none is looked at again until a member retires (its
+// state then idle, reclaimable); a request alone always starts.
+class MemoryWait {
+ public:
+  bool Blocked(std::size_t claimed) const { return claimed != 0 && waiting_; }
+  void NoRoom() { waiting_ = true; }
+  void MemberRetired() { waiting_ = false; }
+
+ private:
+  bool waiting_ = false;
+};
 
 // Whether a member may run its next unit.
 inline bool Runnable(const CohortMember& member) {

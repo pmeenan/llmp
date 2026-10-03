@@ -39,6 +39,78 @@ one Spark and on two.
 
 ---
 
+## D-104: Request slots follow memory up to a per-model cap at the measured knee  (2026-10-03, status: accepted at the owner's direction of 2026-10-03; the request-slot cap is one of D-103's settings; replaces the fixed four request slots of the Qwen3.8 and DeepSeek chat backends; adds a public configuration key, D-016)
+
+**Decision.**
+
+- **The cap.** A model's request slots (requests it runs at once, each
+  its own conversation branch and native state, and as many idle
+  conversations kept for reuse) resolve as D-103's settings do:
+  `[models.<name>] max_slots` (1 to 16, a key compatible with schema
+  version 2) overrides; otherwise calibration on the machine once it is
+  built; until then the fallback, each model's measured knee: 4 for
+  DeepSeek V4 Flash and Qwen3.8 Flash Next. The start logs the value and
+  its source.
+- **The knee** is where another slot stops raising the completed-token
+  rate enough to pay for slowing every request. With plans warm (a
+  second burst in one service), past four DeepSeek DSpark gains 9.3%
+  then 2.6% with short prompts and nothing with long ones while each
+  request decodes 24% then 12% slower, Qwen3.8 gains nothing at any
+  width while each request decodes 36–48% slower, and a burst's median
+  request completes later with eight slots than with four on both models
+  ([request slots](experiments/request-slots/README.md#warm-plans)).
+- **The most slots: 16**, the joined products' sixteen rows (sixteen
+  one-row decode steps). DeepSeek with DSpark takes at most 8, a verify
+  of at least two rows a request; a larger cap is lowered and logged.
+  Wider joined products raise it; on this evidence they would not move
+  the knee (a wave's cost follows its rows) and are not built.
+- **Memory decides below the cap.** While its model is resident, a
+  request joins its model's running requests only when the execution
+  budget holds its prompt's state and what its peers' prompts have yet to
+  take, free or freed through D-055's reclaim order (all of it or nothing,
+  never spilling the branch the request takes); otherwise it waits first
+  in the queue until a peer retires. A lone request always starts, and one
+  arriving while its model is made resident joins as before. Under
+  pressure the cohort shrinks as D-055 as amended set out (idle state
+  spilled first, a member set aside only when none can go on).
+- **A slot's fixed buffers are set up at start for the cap**: its verify
+  snapshot and output staging, 15.8 MiB for Qwen3.8 and 4.2 MiB for
+  DeepSeek with DSpark, measured. Its state, the part that grows, is lazy
+  and reclaimable already, so lazy funding of the buffers is not built.
+  Shared workspace is sized by what the widest wave measures at setup,
+  not as a multiple of the slots (Qwen3.8: 6.80 → 1.53 GiB at four).
+
+**Context.** The owner's plan item of 2026-10-03 ("Request slots sized by
+memory"). Four slots had been fixed since the batching work; Qwen3.8's
+workspace was four times a prefill chunk's activations, so its slots were
+expensive (7.45 GiB fixed) though waves run only few-row shapes.
+
+**Consequences.** The cap's calibration on the machine is D-103's work:
+it measures the same knee (completed rate against each request's) per
+artifact and device. DeepSeek's wave-form choice is costed to width 8:
+widths 5 to 8 from each form's measured wave time (fallbacks for that
+calibration), and a width whose verify is cut below a full one counts its
+acceptance against the cut and is plain where the cut cannot pay (widths
+6 to 8). Under severe memory pressure admission keeps waiting out of the
+cohort at about the same rate (a matched A/B with Qwen3.8, 1.45 GiB of
+state room: 0.6% lower rate, the median request 5.8% sooner). D-055's
+reclaim order now takes, among its selections over each set of kinds,
+the cheapest total expected cost to restore that covers a need, so a
+small need takes a few stale plans and graphs rather than a whole idle
+conversation (least recent use within a kind stays, but that an entry
+larger than what is still needed gives way to a later one of its kind
+that fits). A large cap costs plan building and plan memory: every new
+wave composition is planned when first met, and more slots meet far more
+of them, so planning goes on through a service's life and grows steeply
+with the cap (Qwen3.8 over two bursts: 1.8 s and 210 MiB of plans at four
+slots, 68 s and 2.7 GiB at sixteen; against a single cold burst's, the
+second burst alone still planned about 3.6 s at eight and 28 s at
+sixteen).
+
+**Reopen if** joined products or kernels change a wave's cost per row
+(then measure the knee again), or admission's estimate costs throughput
+outside severe pressure.
+
 ## D-103: A model's settings resolve in three layers: derived default, calibration on this machine, owner override  (2026-10-03, status: accepted at the owner's request of 2026-10-03; applies to every model setting; extends D-096's `[models]` tables)
 
 **Decision.** Users bring any model, so no setting is chosen for a named

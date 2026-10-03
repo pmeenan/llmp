@@ -311,4 +311,20 @@ TEST(CohortCapacity, ASharedCapacityAlwaysFinishesAndFailsOnlyWhatCannotFitAlone
   EXPECT_GT(reclaims, 100);
 }
 
+// Admission by memory (docs/runtime-serving.md#request-slots): a prompt's
+// state to come is its state less what its branch holds; once a request
+// found no room beside its peers none is looked at again until a member
+// retires, and a request alone always starts.
+TEST(CohortCapacity, AdmissionByMemoryWaitsForARetirementNeverAlone) {
+  EXPECT_EQ(rt::StateToCome(700, 200), 500U);
+  EXPECT_EQ(rt::StateToCome(200, 700), 0U);  // a shorter prompt on a fuller branch
+  rt::MemoryWait wait;
+  EXPECT_FALSE(wait.Blocked(3));
+  wait.NoRoom();
+  EXPECT_TRUE(wait.Blocked(3));
+  EXPECT_FALSE(wait.Blocked(0));  // alone, it starts
+  wait.MemberRetired();
+  EXPECT_FALSE(wait.Blocked(2));
+}
+
 }  // namespace

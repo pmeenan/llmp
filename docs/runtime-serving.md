@@ -53,6 +53,8 @@ drafter = "dd2d3f9c…"    # optional: its speculative drafter (DSpark, MTP)
 # prefill_chunk = 4096   # rows of a prefill chunk; default by model (below)
 # prefill_floor_tok_s = 100  # tokens a second: the floors the chat route figures
 # decode_floor_tok_s = 5      #   a request's work at (progress and deadlines, below)
+# max_slots = 4          # requests at once at most, 1 to 16; default by model
+                         #   (request slots, below); memory decides below it
 
 [models."qwen3.8"]
 artifact = "c4fb47a9…"
@@ -73,9 +75,9 @@ composition = "eca21baa…"  # a pipeline (D-089)
 
 A model names exactly one artifact or composition; the artifact-only keys
 (drafter, speculation, wave form, context, prefill chunk, the floors,
-tokenizer, chat template) are refused on a composition, and an artifact
-serves one model. A node names as many models as it likes: the library may
-exceed memory (D-102). The runner follows the artifact's architecture
+max_slots, tokenizer, chat template) are refused on a composition, and an
+artifact serves one model. A node names as many models as it likes: the
+library may exceed memory (D-102). The runner follows the artifact's architecture
 (`deepseek4`, `qwen4exp`) or the composition's (Qwen-Image); another is
 refused at registration. Every
 artifact is opened under the store's trust rules (only root and the
@@ -155,7 +157,10 @@ the least recently used goes first, the running model's last; never its
 in-use floor (its most recently used plans up to its `plan_floor_bytes`,
 with their graphs) nor anything a step under way holds. A reclaim takes
 all it was asked for or nothing (the caller then waits or refuses), and
-no more. Cache charges (a plan, a graph's capture) displace only other
+no more. The order ranks a GiB, so a reclaim takes the same order over
+each smaller set of the kinds too and keeps whichever covers the need at
+the least total expected cost to restore: 55 MiB comes from a few stale
+graphs, not a 704 MiB idle conversation (D-104). Cache charges (a plan, a graph's capture) displace only other
 plans and graphs, never conversation state; a graph's capture takes only
 what costs less to restore than a graph, and one refused is not asked
 again for the next 1, 2, 4 … 256 uses of its plan. Conversation state is
@@ -244,7 +249,10 @@ verify), each step accepting the drafts the target agrees with; `--plain` decode
 sample instead (a `temperature` above 0): seeded, each token drawn at its
 position in the conversation (execution/sampling.h), and when speculating
 each draft accepted by speculative sampling (`VerifyDraft`), so the
-tokens are distributed as plain sampling's; a seed repeats a reply. (Plain
+tokens are distributed as plain sampling's; a seed repeats a reply, but
+for a DeepSeek request in waves of more than four, whose verify is cut to
+its share of the wave's rows and so accepts drafts at other positions,
+depending on its peers ([request slots](#request-slots)). (Plain
 and speculative sampling turn one seed into different tokens, so DeepSeek
 keeps every wave with a sampling member speculative, below.)
 Qwen3.8 greedy speculation chooses depth two or three using a moving
@@ -795,16 +803,18 @@ deadline is set before it renders, but other requests wait for it, as for
 any unit.
 
 An optional internal `CooperativeBackend` interface lets the same driver own
-up to four stable request frames for one model, admitting new work between
-completed units. Each request retains its own response, deadline, cancellation
+as many stable request frames for one model as it has request slots
+([below](#request-slots)), admitting new work between completed units.
+Each request retains its own response, deadline, cancellation
 and backpressure (a member whose client is behind is left out of decode units;
 when every runnable member is, the backend declares a paused unit and the server
 waits for a reader, a new request or the runtime stopping);
 switching models drains the active group first. Retirement must prove that no
 work still borrows a frame before it can be freed. The production Qwen chat
-backend funds four active requests, which decode in shared waves at draft
-depth 2 (a lone request keeps its adaptive depth; past two, drafts run per
-request). A fifth waits for retirement and then refills
+backend's active requests decode in shared waves at draft depth 2 (a lone
+request keeps its adaptive depth; past two, drafts run per request). A
+request past the model's slots, or one that finds no memory for its
+state beside its peers', waits for a retirement and then refills
 the group; a different model or literal completion waits for the group to drain.
 The prompt with the fewest tokens left to prefill (after what its
 conversation can reuse) gets the next prompt unit, the oldest of equals.
@@ -815,8 +825,10 @@ regardless, so a long prompt is not starved. A generating request waits
 for at most one prompt unit between its waves
 (`runtime/cohort_schedule.h`;
 [prompt order](experiments/deepseek-batching/README.md#prompt-order-adopted)).
-Compatible small-row target/draft products of up to four requests share
-weights (sixteen rows a product; MXFP8 and routed outputs bit for bit); independent
+Compatible small-row target/draft products of consecutive requests share
+weights while their rows fit sixteen (four requests of a depth-2 verify's
+three rows, five at most; more requests form more groups; MXFP8 and routed
+outputs bit for bit); independent
 attention, recurrence, logits and commits remain branch-owned. Eligible groups
 of three- or four-row BF16 target heads use one ordinary MMF product of up to
 sixteen columns with paid input concatenations. Compatible multirow HC
@@ -824,13 +836,15 @@ BF16 products also share immutable weights through their original cuBLAS path,
 with independent preparation and nonlinear mixing. Unsupported shapes keep
 their original products.
 
-The production DeepSeek chat backend funds four active requests (four
-native slots, `engine/dsv4_runner.h`). Their decode steps run as waves: plain,
-one row each. With DSpark, a wave of two or more is either each request's
-own draft block then one joined verify of every request's natural rows (up
-to four each, sixteen in all), or one plain row each with the drafter still
-fed. The tokens draft-verify waves accept, against a per-width cost measured
-for the model, choose between them (`execution/adaptive_wave_mode.h`). The
+The production DeepSeek chat backend's active requests (one native slot
+each, `engine/dsv4_runner.h`; [request slots](#request-slots)) decode in
+waves: plain, one row each. With DSpark, a wave of two or more is either
+each request's own draft block then one joined verify of every request's
+rows (its natural four up to four requests, sixteen in all; past four,
+each its share of sixteen, at least two, so DSpark takes at most eight
+slots), or one plain row each with the drafter still fed. The tokens
+draft-verify waves accept, against a per-width cost measured for the
+model (widths 2 to 8), choose between them (`execution/adaptive_wave_mode.h`). The
 choice reads no clock, so the same requests in the same waves since the
 service started choose the same forms, and a wave with a sampling member
 always speculates. A lone request, and a request whose verify is one row
@@ -843,7 +857,9 @@ is plain decode, sampling members included, while a lone request still
 speculates (to compare the two wave forms). Neither is a tuning knob.
 
 Each request's rows, drafts, accepted tokens and state equal the same steps
-alone bit for bit. Without a drafter, concurrency itself therefore does not
+alone bit for bit (wave checks at 2 to 8 slots; past four requests a
+DSpark verify takes fewer rows than alone, so its steps are not the same
+steps). Without a drafter, concurrency itself therefore does not
 change a reply. With DSpark it can: a greedy request may take plain steps in
 a wave where alone it speculates, and the two forms' arithmetic differs, so
 its reply at four requests may differ from its reply alone (both greedy;
@@ -867,8 +883,66 @@ quantized (through GGML's product, a request at a time), but needs each
 layer's expert products to be `jitllm.vecq` types with gate and up alike in
 type and shape. An artifact whose experts are not is still served, one
 request at a time, and the start logs `model NAME: serves one request at a
-time (no waves of 4 requests: layer N: ...)`. A model is never refused
+time (no waves of N requests: layer N: ...)`. A model is never refused
 only because its artifact cannot batch.
+
+### Request slots
+
+A model's request slots are how many of its requests run at once, each
+with its own conversation branch and native state; they are also how many
+idle conversations it keeps for reuse. Their number resolves as D-103's
+settings do (D-104): `[models.<name>] max_slots` (1 to 16) overrides it;
+otherwise the fallback, each model's measured knee, applies until
+calibration on the machine measures its own: **4 for DeepSeek V4 Flash and
+4 for Qwen3.8 Flash Next**. The knee is where another slot stops raising
+the completed-token rate enough to pay for slowing every request. With
+plans warm (a second burst in one service), past four DeepSeek DSpark
+(its waves of six to eight chosen plain, above) gains 9.3% at six and
+2.6% more at eight with short prompts, nothing with long ones, while each
+request decodes 24% and then 12% slower; Qwen3.8 gains nothing at any
+width (its depth-2 verifies split into groups that each read the
+weights, and a row's routed experts are mostly its own) while each
+request decodes 36–48% slower ([request
+slots](experiments/request-slots/README.md#warm-plans)). A larger cap
+also plans each wave composition when first met and meets far more of
+them, so planning goes on through the service's life and grows steeply
+with the cap: across two bursts Qwen3.8 planned 1.8 s at four slots and
+68 s at sixteen, holding 0.2 and 2.7 GiB of plans (charged inside the
+budget and reclaimable, but taken from conversation-state room). The start logs the
+value and its source (`model NAME: 4 request slots (fallback)`). Sixteen
+is the most a model takes: sixteen one-row decode steps fill the joined
+products' sixteen rows; with DSpark, DeepSeek takes at most eight (a
+verify of at least two rows a request), and a larger `max_slots` is
+lowered with the reason logged.
+
+Below the cap, memory decides. While its model is resident, a request
+joins its model's running requests only when the execution budget holds
+its prompt's state and what its peers' prompts have yet to take (each
+`Llm::StateBytesThrough` its tokens and first step, less what its branch
+holds already, which it continues or clears): free in the budget, or
+freed through the reclaim order (idle conversations spilled, stale plans
+and graphs dropped; all of it or nothing, `Server::RoomFor`), never
+spilling the branch the request takes. That reclaim runs in the
+cooperative backend's `Start`, between completed units, the one native
+work admission does. Otherwise the request waits first in the queue,
+logged (`waits for memory for a request slot`), and is looked at again
+when a running request retires. A lone request always starts, and one
+that arrives while its model is being made resident joins as before. In
+a matched A/B with Qwen3.8 at 1.45 GiB of state room, admission kept
+requests waiting in the queue rather than in the cohort at a 0.6% lower
+rate, the median request completing 5.8% sooner.
+Under pressure the cohort shrinks as before ([state
+capacity](#state-capacity-in-a-cohort)): idle conversations spill first,
+and a running request is set aside (spilled) only when no member can go
+on. A slot's fixed buffers (its verify snapshot, output staging and
+descriptors) are set up at start for the cap: about 16 MiB a slot for
+Qwen3.8 and 4 MiB for DeepSeek with DSpark, measured. Its state, which
+grows to hundreds of MiB or GiB with its conversation, takes memory only
+as it is used and goes back through the reclaim order when idle.
+Qwen3.8's wave workspace is sized from its widest wave as measured at
+setup, not from four prefill chunks: 6.80 → 1.53 GiB at four slots, so
+more slots cost no workspace and its conversation-state room grows by
+5.45 GiB.
 
 Cancellation ends only its request at a completed boundary. Before releasing a
 frame or admitting its replacement, an explicit native stream fence proves
@@ -927,8 +1001,10 @@ again later. Every other failure ends its request as before. The policy
   cannot be spilled is cleared and rebuilt by prefill (whose rounding may
   then differ; tokens already streamed never change).
 - While any member waits or is preempted, no new request joins the cohort;
-  it stays first in the queue. Admission reserves nothing else: a request
-  that cannot fit beside its peers waits as above instead.
+  it stays first in the queue. Admission reserves nothing, but a request
+  whose prompt's state does not fit beside its peers' waits in the queue
+  instead of joining ([request slots](#request-slots)); one that grows
+  past its estimate waits as above.
 
 So only a request that cannot fit alone fails for capacity; under pressure
 the cohort serves fewer requests at a time. A waiting member keeps its
@@ -947,14 +1023,15 @@ logs each wait, preemption, reclaim and refusal with slots, token counts
 and bytes only.
 
 An LLM's stable `Branch` owns its prompt history, sampling key, session guard,
-turn checkpoints and adaptive draft-depth policy. Qwen3.8 and DeepSeek map up to four branches
-to independent native request slots, with one shared set of model weights. Other
+turn checkpoints and adaptive draft-depth policy. Qwen3.8 and DeepSeek map a branch
+to each independent native request slot ([request slots](#request-slots)),
+with one shared set of model weights. Other
 families retain their default branch. Each resumable generation session forwards
 its completed units to its own branch; saving, restoring or clearing a branch
 does not change another branch's history or policy. Prefix matching chooses a
 reuse opportunity among free branches; it does not identify a conversation.
-The execution capacity (the runner's funded wave slots, four for Qwen and
-DeepSeek chat) is separate from the retained branch slots.
+Every slot both runs a request and retains an idle one's state for
+reuse; a model whose artifact cannot batch has one.
 
 `Branch::BeginPrompt` owns a bounded prompt copy without native work. Its
 `PromptSession` advances one reuse/restore, prefill chunk or turn-checkpoint unit
@@ -1238,7 +1315,8 @@ short DeepSeek and Qwen prompts, with speculation on and off.
   eviction, admission and the switching policy come with M5 and M6.
 - The chat route is M3's minimal one: no tools, no reasoning controls,
   no credentials (the optional API key is M5's), no CORS, no Responses or
-  Messages routes. Qwen and DeepSeek chat share up to four requests; other
+  Messages routes. Qwen and DeepSeek chat share up to their request slots
+  (four by default; [request slots](#request-slots)); other
   families and literal completions run one at a time. The front door is
   M5's.
 - The tailnet is found at startup; a node whose Tailscale comes up later

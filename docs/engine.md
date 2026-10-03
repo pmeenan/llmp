@@ -84,7 +84,9 @@ joined problems).
 
 ## Independent request state
 
-`Qwen38Runner` exposes four stable request slots. Each owns its target and MTP
+`Qwen38Runner` exposes stable request slots (`Qwen38Options::request_slots`,
+the model's cap in serving; at most `kMaxRequestSlots`, 16,
+`request_cohort.h`). Each owns its target and MTP
 live state, verify snapshot, commit state, pending cursor and plan caches. The
 weights, launch context, stream, staging and workspace remain shared. The scalar
 runner methods use slot zero. `SelectSlots` selects an execution closure over the
@@ -94,12 +96,17 @@ not a spilled one (a swap in does not restore it; its next turn does).
 Every slot's plans and graphs are charged to one account. A slot outside the
 selected set spills (`Slot::Spill`: its state out of every closure, written to
 its spill file, its backing released) and restores (`Slot::Restore`) before
-its next work; Clear discards a spilled slot's saved state too. Serving provisions two concurrent
-execution slots separately from these four stable state slots, with conservative
-activation, scratch, staging and host-input bounds checked before work.
+its next work; Clear discards a spilled slot's saved state too. Setup plans
+the widest waves its slots can run (every slot at the context's end with
+its most rows, target and draft) over placeless addresses, and the shared
+workspace, pool, staging and host inputs are the larger of a chunk's
+needs and those waves', with a quarter's margin: a slot adds its few-row
+shapes, not another prefill chunk's (6.80 → 1.53 GiB of workspace at four
+slots; [request slots](experiments/request-slots/README.md)).
 
 `qwen38_wave_plan.h` composes fresh per-slot plans without rewriting scalar
-caches. Consecutive compatible slots (up to all four) form a group whose
+caches. Consecutive compatible slots form a group while their rows fit
+sixteen (more slots form more groups), whose
 target/draft MXFP8 and routed vector products join at up to sixteen rows,
 charging concatenation and retaining independent output views; the wide
 MXFP8 and expert-major routed kernels give each request's products bit for
@@ -128,8 +135,8 @@ The production Qwen and DeepSeek chat backends drive prompt and generation units
 through the shared driver seams; literal completions retain scalar entry points.
 A native fence proves retirement before any borrowed owner is released.
 
-`Dsv4Runner` has the same four slots (`Dsv4Options::wave_slots`; one, the
-harnesses' default, provisions slot zero alone), each with its own target state,
+`Dsv4Runner` has the same slots (`Dsv4Options::wave_slots`, up to 16; one,
+the harnesses' default, provisions slot zero alone), each with its own target state,
 DSpark ring, verify snapshot, output staging and plans, its cohort rules from
 `request_cohort.h`. Its waves are not composed from per-slot plans: the graph
 builder takes several slots' chunk shapes (`dsv4_graph.h` `Dsv4WaveGraph`) and

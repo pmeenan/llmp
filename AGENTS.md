@@ -279,11 +279,14 @@ registered quality control passes on both GGUFs under the owner's
 tie-aware greedy rule (D-085, 2026-10-03); with the wave pair-scan fix,
 7K chat C4 is 1.08× ds4 in one session before partial chunks, which add
 5–8% more.
-Qwen chat decodes up to four requests in one wave (joined products of up to
-16 rows, MXFP8/routed bit-exact per request; depth 2 when shared). Against
+Concurrent requests follow memory up to a per-model slot cap (`max_slots`,
+up to 16; both LLMs' measured knee is 4 with today's 16-row joined
+products, D-104). Qwen chat decodes its requests in one wave (joined
+products of up to 16 rows, MXFP8/routed bit-exact per request; depth 2
+when shared). Against
 current TensorFold NVFP4 it leads at C1/C2 and is level at C4 (25.7 / 29.7 /
 32.2 vs 21.5 / 24.8 / 31.9 completed tok/s, separate sessions), trailing
-legacy Mia 18% at C4. DeepSeek chat batches up to four requests in exact
+legacy Mia 18% at C4. DeepSeek chat batches its requests in exact
 waves (C4 +29.0% plain, +4.5% DSpark; matched replies byte-identical across
 C1/C2/C4) and leads llama.cpp `--parallel 4` on the same GGUF by 42–51%
 ([batching](docs/experiments/deepseek-batching/README.md)). Memory is

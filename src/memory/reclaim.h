@@ -110,11 +110,25 @@ double ReclaimPriority(const ReclaimCandidate& candidate,
 // break by kind, the running model's last, last use, owner, then id.
 std::vector<std::size_t> ReclaimOrder(std::span<const ReclaimCandidate> candidates);
 
+// A candidate's chance of reuse: halved per kReuseHalfLifeReclaims
+// reclaims and per kReuseHalfLifeSeconds idle since its last use.
+double ReuseChance(const ReclaimCandidate& candidate);
+
 // Candidates in reclaim order until their bytes cover `needed`, only those
 // whose priority is below `below` (an optional charge reclaims only what
 // costs less to restore than what it charges). A plan and its graph are
-// counted once. `sufficient` says whether they cover it; a caller that
-// needs all of it reclaims nothing otherwise.
+// counted once. The order ranks a GiB, so the same is taken over each
+// smaller set of the kinds present too, and the selection that covers the
+// need at the least total expected cost to restore (each victim's restore
+// seconds times its chance of reuse) wins: a small need takes a few small
+// plans and graphs rather than a whole idle conversation when they cost
+// less to bring back. Within a kind the order, strict least recent use,
+// stands, but that an entry larger than what is still needed may give way
+// to a later one of its kind that fits. Victims chosen this way can stand
+// later in the full order, so raising the inflation to their priorities
+// (RaiseReclaimInflation) can raise it more than the full order's first
+// victims would have. `sufficient` says whether they cover it; a caller
+// that needs all of it reclaims nothing otherwise.
 struct ReclaimPlan {
   std::vector<std::size_t> victims;  // indices into the candidates
   std::vector<double> priorities;    // each victim's priority, for ReclaimInflation

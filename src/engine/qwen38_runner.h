@@ -93,6 +93,7 @@
 #include "engine/ple_rows.h"
 #include "engine/qwen38_plan.h"
 #include "engine/qwen38_wave_plan.h"
+#include "engine/request_cohort.h"
 #include "engine/runner_resources.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/qwen38_commit.h"
@@ -129,15 +130,21 @@ struct Qwen38Options {
   // Verify's optional capture selects its distinct plan per call.
   std::uint64_t routed_capture = 0;
   // Internal opt-in provisioning, before Setup: 1 preserves scalar budgets;
-  // 2..4 additionally bound decode waves. No runtime/API capability is enabled
-  // merely by allocating this storage. Wide/injected prefill stays scalar.
+  // 2..request_slots additionally bound decode waves. No runtime/API
+  // capability is enabled merely by allocating this storage. Wide/injected
+  // prefill stays scalar.
   std::uint32_t wave_slots = 1;
+  // The request states provisioned (1 to kMaxRequestSlots, at least
+  // wave_slots): each its own virtual state ceilings, verify snapshot and
+  // plans. The harnesses keep four; serving sets the model's cap.
+  std::uint32_t request_slots = 4;
 };
 
 // Setup-only diagnostic arithmetic. Scalar values use the same measured plan
 // maxima with wave_slots=1; provisioned values are the actual allocations.
-// Both preserve all four branch ceilings/snapshots. Virtual ceilings do not
-// claim physical backing or simultaneous maximum-context admission.
+// Both preserve every provisioned branch's ceilings/snapshots. Virtual
+// ceilings do not claim physical backing or simultaneous maximum-context
+// admission.
 struct Qwen38SetupBudget {
   std::uint64_t scalar_activations = 0;
   std::uint64_t scalar_scratch = 0;
@@ -407,7 +414,8 @@ class Qwen38Runner final : public PagedModel {
   };
 
  public:
-  static constexpr std::size_t kRequestSlots = 4;
+  static constexpr std::size_t kRequestSlots = kMaxRequestSlots;
+  static_assert(kQwen38WaveSlots == kRequestSlots);
   // Borrowed from its one runner through fenced Release. A slot cannot move,
   // be constructed by callers, or redirect work to another runner. Scalar
   // prefill writes directly into its own state; shared staging is reused
@@ -449,7 +457,7 @@ class Qwen38Runner final : public PagedModel {
     bool spilled() const { return request_.spilled; }
     // Whether the request open on the stream leases its state now.
     bool held() const {
-      return (owner_.active_mask_ & (1U << request_.slot)) != 0 &&
+      return (owner_.active_mask_ & (SlotMask{1} << request_.slot)) != 0 &&
              owner_.node_.InRequest(owner_.stream_);
     }
     // What its last refused growth asked for (LiveState::refused_bytes).
@@ -560,13 +568,19 @@ class Qwen38Runner final : public PagedModel {
   };
   bool waves_provisioned() const { return !released_ && wave_logits_ != nullptr; }
   std::uint32_t wave_capacity() const { return waves_provisioned() ? o_.wave_slots : 1; }
+  // The request states Setup provisioned (Qwen38Options::request_slots).
+  std::size_t request_slots() const { return slot_count_; }
+  // What a slot's state holds once it has run through `positions` (Slot::
+  // used_state_bytes then), from empty: an admission's estimate. Host-only.
+  std::expected<std::uint64_t, std::string> StateBytesThrough(std::uint32_t positions) const;
   // Read after successful Setup and before node.Start. No native dispatch or
   // catalog access; initialized range accounting is separate from the unused
   // virtual ceilings.
   Qwen38SetupBudget setup_budget() const;
-  // One to four rows each (Draft: <=4 pending rows, <=3 passes). Pairing
-  // retains the same <=8-row implementations. Incompatible fixed pairs and
-  // odd slots keep their original operations inside the owned joint plan.
+  // One to four rows each (Draft: <=4 pending rows, <=3 passes), up to
+  // wave_capacity() slots. Groups of consecutive compatible slots share
+  // products of at most sixteen rows (qwen38_wave_plan.h); incompatible
+  // slots keep their original operations inside the owned joint plan.
   // paired=false is a paid composition control, not a different math tier.
   // ChunkWave never injects: prefill/injection and diagnostic captures use
   // the existing Slot scalar entry points. Mixed phases form separate units.
@@ -591,14 +605,14 @@ class Qwen38Runner final : public PagedModel {
   };
   struct TargetWaveKey {
     std::array<ChunkKey, kRequestSlots> slots{};
-    std::uint8_t mask = 0;
-    std::uint8_t logits = 0;  // fixed pinned output copy pattern
+    SlotMask mask = 0;
+    SlotMask logits = 0;  // fixed pinned output copy pattern
     bool paired = true;
     bool operator==(const TargetWaveKey&) const = default;
   };
   struct DraftWaveKey {
     std::array<kernels::ggml::Qwen38MtpShape, kRequestSlots> slots{};
-    std::uint8_t mask = 0;
+    SlotMask mask = 0;
     bool paired = true;
     bool operator==(const DraftWaveKey&) const = default;
   };
@@ -617,8 +631,11 @@ class Qwen38Runner final : public PagedModel {
   Status CheckWaveSources(std::span<const std::pair<ggml_tensor*, const void*>> sources,
                           const Qwen38WavePlanned& planned) const;
   Status CheckWaveOutput(const ggml_tensor* tensor, ggml_type type, std::uint64_t bytes) const;
-  std::array<RequestState*, kRequestSlots> Requests();
-  std::array<const RequestState*, kRequestSlots> Requests() const;
+  // The provisioned request states, slot 0 first.
+  std::span<RequestState* const> Requests() { return std::span(requests_).first(slot_count_); }
+  std::span<const RequestState* const> Requests() const {
+    return std::span(const_requests_).first(slot_count_);
+  }
   Status CheckActive(const RequestState& request) const;
   void FaultCohort();
   // Job's Status alone does not distinguish a known fenced refusal from
@@ -627,7 +644,8 @@ class Qwen38Runner final : public PagedModel {
   void CheckFailedJob();
   Status BindRequest(RequestState& request);
   Status SetupSnapshot(RequestState& request);
-  // Every plan cache: each slot's chunk and drafter plans, and the waves'.
+  // Every plan cache: each slot's chunk and drafter plans (every possible
+  // slot's, empty unless provisioned), and the waves'.
   std::array<PlanCacheBase*, (2 * kRequestSlots) + 2> PlanCaches();
   std::array<const PlanCacheBase*, (2 * kRequestSlots) + 2> PlanCaches() const;
   // Active, and its state resident (not spilled).
@@ -650,6 +668,10 @@ class Qwen38Runner final : public PagedModel {
                      std::uint32_t read_align = 256);
   // The most coarsely a decode wave of this runner reads the caches.
   std::uint32_t DecodeReadAlign() const;
+  // The state ranges (the target's and the drafter's) a slot uses through
+  // `positions`, its caches read through `read_align`.
+  std::expected<std::vector<LiveState::Range>, std::string> StateRanges(
+      std::uint32_t positions, std::uint32_t read_align) const;
   Status Chunk(RequestState& request, std::span<const std::int32_t> history, std::uint32_t n_past,
                std::vector<float>& logits, bool inject);
   Status Draft(RequestState& request, std::span<const std::int32_t> history,
@@ -696,7 +718,7 @@ class Qwen38Runner final : public PagedModel {
   Status Usable() const;
   Status Usable(const RequestState& request) const;
   Status RefreshClosures();
-  Status RefreshClosures(std::uint8_t protected_mask);
+  Status RefreshClosures(SlotMask protected_mask);
   Status EnsureState(std::uint32_t positions);
   // The drafter's shape and pass inputs for `rows` rows from `first` and
   // `passes` - 1 single rows after them.
@@ -711,12 +733,30 @@ class Qwen38Runner final : public PagedModel {
   int owner_;
   std::uint32_t stream_;
   RunnerResources resources_;
+  // Every possible slot's host object (each small; only the provisioned
+  // ones, Requests(), hold state, snapshots or plans), at stable addresses.
+  template <std::size_t... I>
+  static std::array<RequestState, sizeof...(I)> MakeRequests(std::index_sequence<I...> /*slots*/) {
+    return {{RequestState(static_cast<std::uint32_t>(I + 1))...}};
+  }
+  template <std::size_t... I>
+  std::array<Slot, sizeof...(I) + 1> MakeSlots(std::index_sequence<I...> /*slots*/) {
+    return {{Slot(*this, default_request_), Slot(*this, additional_requests_[I])...}};
+  }
+  template <typename Request, std::size_t... I>
+  std::array<Request*, sizeof...(I) + 1> Pointers(std::index_sequence<I...> /*slots*/) {
+    return {&default_request_, &additional_requests_[I]...};
+  }
   RequestState default_request_;
-  std::array<RequestState, 3> additional_requests_{
-      {RequestState(1), RequestState(2), RequestState(3)}};
-  std::array<Slot, kRequestSlots> request_slots_{
-      {Slot(*this, default_request_), Slot(*this, additional_requests_[0]),
-       Slot(*this, additional_requests_[1]), Slot(*this, additional_requests_[2])}};
+  std::array<RequestState, kRequestSlots - 1> additional_requests_ =
+      MakeRequests(std::make_index_sequence<kRequestSlots - 1>{});
+  std::array<Slot, kRequestSlots> request_slots_ =
+      MakeSlots(std::make_index_sequence<kRequestSlots - 1>{});
+  std::array<RequestState*, kRequestSlots> requests_ =
+      Pointers<RequestState>(std::make_index_sequence<kRequestSlots - 1>{});
+  std::array<const RequestState*, kRequestSlots> const_requests_ =
+      Pointers<const RequestState>(std::make_index_sequence<kRequestSlots - 1>{});
+  std::size_t slot_count_ = 1;  // Requests(): Qwen38Options::request_slots from Setup
   LiveState& live_ = default_request_.live;
   GraphRuns runs_;
 
@@ -761,10 +801,10 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t wave_logit_words_ = 0;  // each slot's stride
 
   catalog::Closure everything_;
-  catalog::Closure fence_;        // the state: what a clear or a fence leases
-  catalog::Closure execution_;    // shared resources and every active initialized slot
-  std::uint8_t active_mask_ = 1;  // legacy default request until explicitly changed
-  bool cohort_faulted_ = false;   // lost protection/unknown shared completion: retirement only
+  catalog::Closure fence_;       // the state: what a clear or a fence leases
+  catalog::Closure execution_;   // shared resources and every active initialized slot
+  SlotMask active_mask_ = 1;     // legacy default request until explicitly changed
+  bool cohort_faulted_ = false;  // lost protection/unknown shared completion: retirement only
 
   ChunkPlans& plans_ = default_request_.plans;  // cleared before the launch context (Release)
   MtpPlans& mplans_ = default_request_.mplans;

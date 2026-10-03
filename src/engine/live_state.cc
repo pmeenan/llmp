@@ -133,6 +133,37 @@ std::uint64_t LiveState::used_bytes() const {
   return total;
 }
 
+std::expected<std::uint64_t, std::string> LiveState::UsedBytesOf(
+    std::span<const Range> ranges) const {
+  std::vector<std::pair<std::size_t, std::size_t>> extents;
+  for (const Range& range : ranges) {
+    if (range.region >= regions_.size()) {
+      return Error("a used state range names no region");
+    }
+    const Region& r = regions_[range.region];
+    if (range.offset > r.bytes || range.bytes > r.bytes - range.offset) {
+      return Error("a used state range is outside its layout");
+    }
+    if (range.bytes == 0) {
+      continue;
+    }
+    const auto first = static_cast<std::size_t>(range.offset / kExtent);
+    const auto last = static_cast<std::size_t>((range.offset + range.bytes - 1) / kExtent);
+    for (std::size_t i = first; i <= last; ++i) {
+      extents.emplace_back(range.region, i);
+    }
+  }
+  std::ranges::sort(extents);
+  const auto [begin, end] = std::ranges::unique(extents);
+  extents.erase(begin, end);
+  std::uint64_t total = 0;
+  for (const auto& [ri, i] : extents) {
+    const std::uint64_t offset = i * kExtent;
+    total += std::min(kExtent, regions_[ri].bytes - offset);
+  }
+  return total;
+}
+
 std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const Range> ranges,
                                                 const catalog::Closure* keep, bool* over_budget) {
   if (over_budget != nullptr) {

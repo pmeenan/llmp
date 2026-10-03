@@ -64,7 +64,7 @@
 //   plus "other" (the exit's bound: 0.1).
 // - probe (fast plan): a diagnostic of one forced-run token (--probe-step);
 //   see Probe below and docs/experiments/dsv4-decode/probe.py.
-// - wave (--slots N, 2 to 4; docs/experiments/deepseek-batching/): N
+// - wave (--slots N, 2 to 16; docs/experiments/deepseek-batching/): N
 //   request slots (engine/dsv4_runner.h), the first N decode and chat
 //   prompts one a slot; without --drafter, plain decode waves. First each
 //   slot alone (selected alone) prefills and generates --tokens: plain
@@ -139,6 +139,7 @@
 #include "catalog/catalog.h"
 #include "chat/chat.h"
 #include "dsv4_common.h"
+#include "engine/request_cohort.h"
 #include "execution/sampling.h"
 #include "fp16_runner.h"
 #include "ggml.h"
@@ -2070,6 +2071,9 @@ Status Harness::Wave() {
   std::uint64_t waves = 0;
   std::uint64_t wave_tokens = 0;
   std::map<std::size_t, std::uint64_t> widths;
+  // Each width's joined waves' time (the wave form's per-width cost:
+  // a DSpark wave's time over a plain one's, serving.cc kWaveCost).
+  std::map<std::size_t, double> width_seconds;
   double wave_seconds = 0;
   std::optional<std::uint64_t> discard_stale;  // none: nothing discarded
   bool discard_rerun_exact = false;
@@ -2174,7 +2178,9 @@ Status Harness::Wave() {
         if (auto r = wave_spec ? dsv4_.DraftVerifyWave(joined) : dsv4_.DecodeWave(joined); !r) {
           return r;
         }
-        wave_seconds += Seconds(Clock::now() - wave);
+        const double took = Seconds(Clock::now() - wave);
+        wave_seconds += took;
+        width_seconds[joined.size()] += took;
         ++waves;
         ++widths[joined.size()];
       }
@@ -2336,8 +2342,12 @@ Status Harness::Wave() {
     problems_.emplace_back("slot 0's discarded step did not re-run to its solo result");
   }
   std::string width_json;
+  std::string width_ms_json;
   for (const auto& [width, count] : widths) {
     width_json += std::format("{}\"{}\":{}", width_json.empty() ? "" : ",", width, count);
+    const double ms = 1e3 * width_seconds[width] / static_cast<double>(count);
+    width_ms_json += std::format("{}\"{}\":{:.3f}", width_ms_json.empty() ? "" : ",", width, ms);
+    std::println("wave check: width {}: {} waves, {:.3f} ms a wave", width, count, ms);
   }
   std::string_view form = spec ? "DSpark" : "plain";
   if (alternate) {
@@ -2351,13 +2361,14 @@ Status Harness::Wave() {
   results_.push_back(std::format(
       R"({{"check":"wave","slots":{},"speculative":{},"share":{},"solo_tokens":{},)"
       R"("solo_seconds":{:.4f},"wave_tokens":{},"wave_seconds":{:.4f},"waves":{},"widths":{{{}}},)"
+      R"("width_ms":{{{}}},)"
       R"("rows_compared":{},"rows_identical":{},"argmax_agree":{},"largest_difference":{:.6f},)"
       R"("margin_move_p50":{:.6f},"margin_move_p99":{:.6f},"margin_move_max":{:.6f},)"
       R"("exact_mismatches":{},"discard_stale_bytes":{},"discard_rerun_exact":{},)"
       R"("left_unchanged":{}}})",
       slots, spec ? "true" : "false", share, solo_tokens, solo_seconds, wave_tokens, wave_seconds,
-      waves, width_json, rows_compared, rows_identical, argmax_agree, largest, quantile(0.5),
-      quantile(0.99), moves.empty() ? 0.0 : moves.back(), exact_mismatches,
+      waves, width_json, width_ms_json, rows_compared, rows_identical, argmax_agree, largest,
+      quantile(0.5), quantile(0.99), moves.empty() ? 0.0 : moves.back(), exact_mismatches,
       discard_stale ? std::format("{}", *discard_stale) : std::string("null"),
       discard_rerun_exact ? "true" : "false", left_unchanged ? "true" : "false"));
   return {};
@@ -2379,7 +2390,7 @@ Status Harness::PlanMemory() {
   using Slot = jb::Dsv4Runner::Slot;
   const std::uint32_t slots = o_.dsv4.wave_slots;
   if (slots < 2) {
-    return Error("the plan-memory check needs --slots 2 to 4");
+    return Error("the plan-memory check needs --slots 2 to 16");
   }
   std::vector<Slot*> handles;
   for (std::uint32_t i = 0; i < slots; ++i) {
@@ -2685,7 +2696,7 @@ Status Harness::PlanMemory() {
 Status Harness::Capacity() {
   using Slot = jb::Dsv4Runner::Slot;
   if (o_.dsv4.wave_slots < 2 || o_.state_budget_mib == 0) {
-    return Error("the capacity check needs --slots 2 to 4 and --state-budget-mib");
+    return Error("the capacity check needs --slots 2 to 16 and --state-budget-mib");
   }
   std::array<Slot*, 2> slots{};
   for (std::uint32_t i = 0; i < 2; ++i) {
@@ -3147,7 +3158,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--state-budget-mib") {
       ok = number(o.state_budget_mib) && o.state_budget_mib > 0;
     } else if (a == "--slots") {
-      ok = number(o.dsv4.wave_slots) && o.dsv4.wave_slots >= 2 && o.dsv4.wave_slots <= 4;
+      ok = number(o.dsv4.wave_slots) && o.dsv4.wave_slots >= 2 &&
+           o.dsv4.wave_slots <= jitllm::engine::kMaxRequestSlots;
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -3170,7 +3182,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "[--prefill-outa-hca on|off] [--fp16-artifact DIR "
         "--fp16-tokens FILE "
         "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N] "
-        "[--slots N (wave, plan-memory, capacity: 2-4)] [--wave-mode verify|decode|alternate] "
+        "[--slots N (wave, plan-memory, capacity: 2-16)] [--wave-mode verify|decode|alternate] "
         "[--state-budget-mib N]");
   }
   // The paired control needs the all-row workspace for its original arm.

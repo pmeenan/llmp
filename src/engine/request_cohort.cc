@@ -30,17 +30,17 @@ Status RequestCohort::Check(const PagedNode& node, std::uint32_t stream, std::ui
   return {};
 }
 
-std::expected<std::uint8_t, std::string> RequestCohort::MaskOf(
+std::expected<SlotMask, std::string> RequestCohort::MaskOf(
     std::span<const std::uint32_t> slots) const {
-  if (slots.size() > kSlots) {
-    return Error(std::format("at most {} {} request slots", kSlots, model_));
+  if (slots.size() > slots_) {
+    return Error(std::format("at most {} {} request slots", slots_, model_));
   }
-  std::uint8_t mask = 0;
+  SlotMask mask = 0;
   for (const std::uint32_t slot : slots) {
-    if (slot >= kSlots) {
+    if (slot >= slots_) {
       return Error(std::format("a {} request slot outside the runner", model_));
     }
-    const auto bit = static_cast<std::uint8_t>(1U << slot);
+    const SlotMask bit = SlotMask{1} << slot;
     if ((mask & bit) != 0) {
       return Error(std::format("a {} request slot occurs twice", model_));
     }
@@ -51,7 +51,7 @@ std::expected<std::uint8_t, std::string> RequestCohort::MaskOf(
 
 std::expected<RequestCohort::Closures, std::string> RequestCohort::Build(
     const catalog::Catalog& catalog, std::span<const ExtentId> shared,
-    std::span<const LiveState* const> states, std::uint8_t protected_mask) const {
+    std::span<const LiveState* const> states, SlotMask protected_mask) const {
   std::vector<ExtentId> all(shared.begin(), shared.end());
   std::vector<ExtentId> active(shared.begin(), shared.end());
   std::vector<ExtentId> state;
@@ -63,7 +63,7 @@ std::expected<RequestCohort::Closures, std::string> RequestCohort::Build(
     const std::vector<ExtentId> live = states[slot]->extents();
     all.insert(all.end(), live.begin(), live.end());
     state.insert(state.end(), live.begin(), live.end());
-    if ((protected_mask & (1U << slot)) != 0) {
+    if ((protected_mask & (SlotMask{1} << slot)) != 0) {
       active.insert(active.end(), live.begin(), live.end());
     }
     auto fence = catalog.ClosureOfExtents(live);

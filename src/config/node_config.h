@@ -101,6 +101,10 @@ inline constexpr std::uint32_t kDefaultPrefillFloor = 100;
 inline constexpr std::uint32_t kMaxPrefillFloor = 1'000'000;
 inline constexpr std::uint32_t kDefaultDecodeFloor = 5;
 inline constexpr std::uint32_t kMaxDecodeFloor = 100'000;
+// A model's concurrent request slots, when configured: at most the joined
+// products' sixteen rows (engine/request_cohort.h kMaxRequestSlots;
+// docs/runtime-serving.md#request-slots).
+inline constexpr std::uint32_t kMaxModelSlots = 16;
 
 // How a speculative model steps a wave of concurrent requests
 // (docs/runtime-serving.md): chosen per wave from counted acceptance, or
@@ -137,6 +141,12 @@ struct ModelEntry {
   // request, may take (docs/runtime-serving.md#progress-and-deadlines).
   std::uint32_t prefill_floor_tok_s = kDefaultPrefillFloor;
   std::uint32_t decode_floor_tok_s = kDefaultDecodeFloor;
+  // With an artifact: the most requests it serves at once (1 to
+  // kMaxModelSlots), each a request slot of its own; absent, the model's
+  // default, the measured knee of its throughput against each request's
+  // rate (docs/runtime-serving.md#request-slots). Memory decides how many
+  // run at a time below it.
+  std::optional<std::uint32_t> max_slots;
   // With an artifact whose kept metadata has no tokenizer or chat template
   // (M3's Qwen3.8 import kept config.json only): the checkpoint's
   // tokenizer.json and chat template, absolute paths the runtime reads

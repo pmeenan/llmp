@@ -30,7 +30,7 @@ using jitllm::engine::LiveState;
 using jitllm::engine::RequestCohort;
 
 TEST(RequestCohortTest, TheDefaultRequestIsSlotZeroAndMasksAreDistinctSlots) {
-  RequestCohort cohort("DeepSeek");
+  RequestCohort cohort("DeepSeek", 4);
   EXPECT_EQ(cohort.active(), 1U);
   EXPECT_TRUE(cohort.IsActive(0));
   EXPECT_FALSE(cohort.IsActive(1));
@@ -50,6 +50,24 @@ TEST(RequestCohortTest, TheDefaultRequestIsSlotZeroAndMasksAreDistinctSlots) {
   auto none = cohort.MaskOf({});
   ASSERT_TRUE(none.has_value());
   EXPECT_EQ(*none, 0U);
+}
+
+TEST(RequestCohortTest, ARunnerSetUpWithMoreSlotsMasksUpToTheMaximum) {
+  RequestCohort cohort("Qwen3.8");
+  // Before its runner's setup only the default request exists.
+  EXPECT_FALSE(cohort.MaskOf(std::array<std::uint32_t, 1>{1}).has_value());
+  cohort.set_slots(jitllm::engine::kMaxRequestSlots);
+  std::array<std::uint32_t, jitllm::engine::kMaxRequestSlots> all{};
+  for (std::uint32_t i = 0; i < all.size(); ++i) {
+    all[i] = i;
+  }
+  auto mask = cohort.MaskOf(all);
+  ASSERT_TRUE(mask.has_value());
+  EXPECT_EQ(*mask, 0xFFFFU);
+  cohort.Select(*mask);
+  EXPECT_TRUE(cohort.IsActive(15));
+  EXPECT_FALSE(cohort.IsActive(16));
+  EXPECT_FALSE(cohort.MaskOf(std::array<std::uint32_t, 1>{16}).has_value());
 }
 
 TEST(RequestCohortTest, ClosuresHoldTheSharedExtentsAndOnlyProtectedSlots) {

@@ -28,6 +28,7 @@
 #include "ggml.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
+#include "memory/reclaim.h"
 #include "runtime/serving.h"
 #include "tokenizer/tokenizer.h"
 #include "tokenizer/unicode.h"
@@ -282,12 +283,13 @@ class FakeLlm : public rt::Llm {
 
 class NativeBranchesFake final : public FakeLlm {
  public:
-  explicit NativeBranchesFake(bool speculative = false, std::size_t wave_capacity = 4)
+  explicit NativeBranchesFake(bool speculative = false, std::size_t wave_capacity = 4,
+                              std::uint32_t branches = 4)
       : FakeLlm(speculative), wave_capacity_(wave_capacity) {
     for (auto& leaf : leaves_) {
       leaf = std::make_unique<FakeLlm>(speculative);
     }
-    EXPECT_TRUE(PrepareBranches(4, 3).has_value());
+    EXPECT_TRUE(PrepareBranches(branches, 3).has_value());
   }
   bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
   bool supports_generation_waves() const override { return true; }
@@ -1231,6 +1233,106 @@ TEST(LlmScores, AGenerationWaveCapacityRefusalLeavesSparseActiveBranchesUntouche
   ASSERT_TRUE((*opened_c)->Finish().has_value());
   EXPECT_THAT((*c)->history(), ElementsAre(4));
   EXPECT_EQ(model.native_state(1).chunks, 1U);
+}
+
+// A model of eight request slots (docs/runtime-serving.md#request-slots)
+// runs every branch in one generation wave, each its own continuation;
+// a ninth branch does not exist.
+TEST(LlmScores, EightBranchesRunInOneGenerationWave) {
+  constexpr std::size_t kSlots = 8;
+  NativeBranchesFake model(false, kSlots, kSlots);
+  EXPECT_EQ(model.branches(), kSlots);
+  EXPECT_FALSE(model.branch(kSlots).has_value());
+  rt::GenerateOptions options;
+  options.max_tokens = 3;
+  options.stop = false;
+  std::array<std::vector<float>, kSlots> last;
+  std::array<rt::Generation, kSlots> results;
+  std::array<std::unique_ptr<rt::Llm::GenerationSession>, kSlots> sessions;
+  std::array<rt::Llm::GenerationSession*, kSlots> wave{};
+  for (std::size_t slot = 0; slot < kSlots; ++slot) {
+    auto branch = model.branch(slot);
+    ASSERT_TRUE(branch.has_value());
+    const std::array<std::int32_t, 1> prompt = {static_cast<std::int32_t>(slot)};
+    ASSERT_TRUE((*branch)->Prefill(prompt, last[slot]).has_value());
+    auto opened = (*branch)->BeginGeneration(last[slot], options, results[slot]);
+    ASSERT_TRUE(opened.has_value());
+    sessions[slot] = std::move(*opened);
+    wave[slot] = sessions[slot].get();
+  }
+  ASSERT_TRUE(model.RunGenerationWave(wave).has_value());
+  ASSERT_TRUE(model.RunGenerationWave(wave).has_value());
+  for (std::size_t slot = 0; slot < kSlots; ++slot) {
+    ASSERT_TRUE(sessions[slot]->done());
+    ASSERT_TRUE(sessions[slot]->Finish().has_value());
+    const auto at = [slot](std::size_t k) { return static_cast<std::int32_t>((slot + k) % 8); };
+    EXPECT_THAT(results[slot].tokens, ElementsAre(at(1), at(2), at(3))) << slot;
+    auto branch = model.branch(slot);
+    ASSERT_TRUE(branch.has_value());
+    EXPECT_EQ((*branch)->history(), model.native_state(slot).target) << slot;
+  }
+}
+
+// Admission by memory (docs/runtime-serving.md#request-slots): its reclaim
+// never spills the branch the request is about to continue or clear (its
+// state counts as the request's own already); every other idle branch with
+// resident state is a candidate, a leased or empty one is not.
+TEST(LlmScores, AdmissionsReclaimSparesTheChosenBranch) {
+  NativeBranchesFake model;
+  std::vector<float> last;
+  for (const std::size_t slot : {0U, 1U, 3U}) {
+    auto branch = model.branch(slot);
+    ASSERT_TRUE(branch.has_value());
+    const std::array<std::int32_t, 2> prompt = {static_cast<std::int32_t>(slot), 1};
+    ASSERT_TRUE((*branch)->Prefill(prompt, last).has_value());
+  }
+  const rt::IdleStateRates rates{.spill_rate = 11.0e9, .restore_rate = 14.5e9};
+  const auto ids = [](const std::vector<jitllm::memory::ReclaimCandidate>& c) {
+    std::vector<std::uint64_t> out;
+    for (const auto& x : c) {
+      EXPECT_EQ(x.kind, jitllm::memory::ReclaimKind::kIdleState);
+      EXPECT_GT(x.bytes, 0U);
+      out.push_back(x.id);
+    }
+    return out;
+  };
+  std::vector<jitllm::memory::ReclaimCandidate> all;
+  rt::AddIdleStateCandidates(model, 0, true, nullptr, rates, all);
+  EXPECT_THAT(ids(all), ElementsAre(0U, 1U, 3U));  // slot 2 holds nothing
+  auto chosen = model.branch(1);
+  ASSERT_TRUE(chosen.has_value());
+  std::vector<jitllm::memory::ReclaimCandidate> spared;
+  rt::AddIdleStateCandidates(model, 0, true, *chosen, rates, spared);
+  EXPECT_THAT(ids(spared), ElementsAre(0U, 3U));
+  // A branch the request open on the stream leases is no candidate either.
+  auto peer = model.branch(0);
+  ASSERT_TRUE(peer.has_value());
+  const std::array<rt::Llm::Branch*, 1> selected = {*peer};
+  ASSERT_TRUE(model.SelectBranches(selected).has_value());
+  model.lease_held = true;
+  std::vector<jitllm::memory::ReclaimCandidate> leased;
+  rt::AddIdleStateCandidates(model, 0, true, *chosen, rates, leased);
+  EXPECT_THAT(ids(leased), ElementsAre(3U));
+  model.lease_held = false;
+}
+
+// Room for a request slot: free bytes, else a reclaim that frees all of the
+// shortfall; an unreadable budget leaves it to the capacity policy.
+TEST(LlmScores, RoomForAsksTheReclaimOnlyForTheShortfall) {
+  std::uint64_t asked = 0;
+  const auto reclaim = [&](std::uint64_t freed) {
+    return [&asked, freed](std::uint64_t shortfall) {
+      asked = shortfall;
+      return freed;
+    };
+  };
+  EXPECT_TRUE(rt::RoomFor(100, 150, reclaim(0)));
+  EXPECT_EQ(asked, 0U);
+  EXPECT_TRUE(rt::RoomFor(100, 60, reclaim(40)));
+  EXPECT_EQ(asked, 40U);
+  EXPECT_FALSE(rt::RoomFor(100, 60, reclaim(39)));
+  EXPECT_TRUE(rt::RoomFor(100, std::nullopt, reclaim(0)));
+  EXPECT_TRUE(rt::RoomFor(0, 0, reclaim(0)));
 }
 
 TEST(LlmScores, AGenerationWavePreparationRefusalKeepsAnAlreadyPreparedPeer) {

@@ -1028,7 +1028,7 @@ TEST(Dsv4Test, AWaveJoinsRowLocalWorkAndKeepsEachSlotsStateItsOwn) {
   // Refused: past the rows the products keep column-invariant, more than
   // four slots, the reference form, a head narrowed, layouts that differ.
   const auto refused = [&](const kg::Dsv4WaveShape& s, const kg::Dsv4GraphOptions& o) {
-    auto a = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, 5));
+    auto a = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, kg::kDsv4WaveSlots + 1));
     return a.has_value() && !kg::BuildDsv4WaveGraph(*a, p, *binding, s, o).has_value();
   };
   const kg::Dsv4GraphOptions fused{.expert_stride = strides, .fused = true};
@@ -1055,8 +1055,19 @@ TEST(Dsv4Test, AWaveJoinsRowLocalWorkAndKeepsEachSlotsStateItsOwn) {
   ASSERT_TRUE(eight.has_value());
   wide.slots.assign(3, kg::Dsv4ShapeOf(*state, *eight));
   EXPECT_TRUE(refused(wide, fused));  // 24 rows
+  // Sixteen one-row decode steps fill a wave (the most request slots); a
+  // seventeenth slot is refused.
+  kg::Dsv4WaveShape most;
+  most.slots.assign(kg::kDsv4WaveSlots, shape.slots[0]);
+  {
+    auto a = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, kg::kDsv4WaveSlots));
+    ASSERT_TRUE(a.has_value());
+    auto sixteen = kg::BuildDsv4WaveGraph(*a, p, *binding, most, fused);
+    ASSERT_TRUE(sixteen.has_value()) << Why(sixteen);
+    EXPECT_EQ(sixteen->slots.size(), kg::kDsv4WaveSlots);
+  }
   kg::Dsv4WaveShape many;
-  many.slots.assign(5, shape.slots[0]);
+  many.slots.assign(kg::kDsv4WaveSlots + 1, shape.slots[0]);
   EXPECT_TRUE(refused(many, fused));
   EXPECT_TRUE(refused(shape, {.expert_stride = strides}));
   kg::Dsv4WaveShape narrowed = shape;

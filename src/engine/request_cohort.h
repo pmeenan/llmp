@@ -3,10 +3,11 @@
 
 // A runner's independent request states (docs/engine.md, "Independent
 // request state"): the skeleton's part of serving several conversations of
-// one model at once. A runner keeps up to kSlots request states, each its
-// own LiveState (its caches, its drafter's, its verify snapshot) at stable
-// addresses, beside one set of weights, staging and launch context. This
-// holds what is the same for every family:
+// one model at once. A runner keeps the request states its model was set up
+// with (at most kMaxRequestSlots), each its own LiveState (its caches, its
+// drafter's, its verify snapshot) at stable addresses, beside one set of
+// weights, staging and launch context. This holds what is the same for
+// every family:
 //
 // - the active set a driver selected between completed units, and the rule
 //   that more than one active slot runs only under one held stream request
@@ -40,25 +41,42 @@
 
 namespace jitllm::engine {
 
+// The most request slots a runner keeps: a model's configured cap
+// (`[models.<name>] max_slots`, docs/runtime-serving.md#request-slots) is at
+// most this. It is the joined products' row capacity (kDsv4WaveRows, the
+// wave kernels' sixteen columns): sixteen one-row decode steps fill one
+// wave. Wider waves raise it.
+inline constexpr std::size_t kMaxRequestSlots = 16;
+// A set of request slots, bit i slot i.
+using SlotMask = std::uint32_t;
+static_assert(kMaxRequestSlots <= sizeof(SlotMask) * 8);
+
 class RequestCohort {
  public:
   using Status = engine::Status;
-  static constexpr std::size_t kSlots = 4;
+  static constexpr std::size_t kSlots = kMaxRequestSlots;
 
-  // `model` names it in refusals ("DeepSeek").
-  explicit RequestCohort(std::string_view model) : model_(model) {}
+  // `model` names it in refusals ("DeepSeek"); `slots` the request slots
+  // its runner provisioned (set_slots once it knows them).
+  explicit RequestCohort(std::string_view model, std::size_t slots = 1)
+      : model_(model), slots_(slots) {}
 
-  std::uint8_t active() const { return active_; }
+  SlotMask active() const { return active_; }
   bool faulted() const { return faulted_; }
-  bool IsActive(std::uint32_t slot) const { return slot < kSlots && (active_ & (1U << slot)) != 0; }
+  std::size_t slots() const { return slots_; }
+  // Before any selection but the default request's (a runner's Setup).
+  void set_slots(std::size_t slots) { slots_ = slots; }
+  bool IsActive(std::uint32_t slot) const {
+    return slot < slots_ && (active_ & (SlotMask{1} << slot)) != 0;
+  }
 
   // Before a slot's work: the cohort healthy, the slot active, and several
   // active slots only under a held request on `stream`.
   Status Check(const PagedNode& node, std::uint32_t stream, std::uint32_t slot) const;
-  // The mask of distinct slots below kSlots, refused otherwise.
-  std::expected<std::uint8_t, std::string> MaskOf(std::span<const std::uint32_t> slots) const;
+  // The mask of distinct provisioned slots, refused otherwise.
+  std::expected<SlotMask, std::string> MaskOf(std::span<const std::uint32_t> slots) const;
   // The active set (Refresh then protects it).
-  void Select(std::uint8_t mask) { active_ = mask; }
+  void Select(SlotMask mask) { active_ = mask; }
 
   // The closures over `shared` extents and the slots' states (`states[i]`
   // slot i's; null for a slot not provisioned), `protected_mask` the slots
@@ -72,7 +90,7 @@ class RequestCohort {
   std::expected<Closures, std::string> Build(const catalog::Catalog& catalog,
                                              std::span<const catalog::ExtentId> shared,
                                              std::span<const LiveState* const> states,
-                                             std::uint8_t protected_mask) const;
+                                             SlotMask protected_mask) const;
   // The held request (if any) refreshed to `execution`; a refusal may have
   // ended the old lease, so it faults the cohort.
   Status Hold(PagedNode& node, std::uint32_t stream, const catalog::Closure& execution,
@@ -88,7 +106,8 @@ class RequestCohort {
 
  private:
   std::string_view model_;
-  std::uint8_t active_ = 1;  // the default request until selected
+  std::size_t slots_ = 1;
+  SlotMask active_ = 1;  // the default request until selected
   bool faulted_ = false;
 };
 

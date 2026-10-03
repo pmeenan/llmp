@@ -191,6 +191,55 @@ TEST(AdaptiveWaveModeTest, ProbesFollowAcceptanceAndTheScheduleRepeats) {
   EXPECT_EQ(a, before);
 }
 
+// Past four requests (more request slots, D-104) a DeepSeek verify takes
+// its share of a wave's sixteen rows: three a request at width 5, two at 6
+// to 8 (serving.cc CutRows), against widths 5 to 8's measured costs.
+constexpr AdaptiveWaveMode::Costs kWideCost = {0, 0, 1.94, 2.21, 2.90, 2.58, 2.10, 2.20, 2.25};
+constexpr AdaptiveWaveMode::Rows kCutRows = {0, 0, 0, 0, 0, 3, 2, 2, 2};
+
+TEST(AdaptiveWaveModeTest, AWidthWhoseCutVerifyCannotPayIsPlainFromTheStart) {
+  AdaptiveWaveMode policy(kWideCost, AdaptiveWaveMode::Force::kNone, kCutRows);
+  // Two tokens a request at most, against 2.1 to 2.25 plain waves: plain
+  // before any acceptance is seen, and no probe makes it speculate.
+  for (std::uint32_t w = 6; w <= 8; ++w) {
+    EXPECT_EQ(policy.Choose(w), Mode::kPlain) << w;
+    EXPECT_EQ(RunWaves(policy, w, 200, 1), 200U) << w;
+  }
+  EXPECT_EQ(policy.Choose(6, /*sampling=*/true), Mode::kSpeculative);
+  const AdaptiveWaveMode spec(kWideCost, AdaptiveWaveMode::Force::kSpeculative, kCutRows);
+  EXPECT_EQ(spec.Choose(8), Mode::kSpeculative);
+  // Narrower widths still speculate first.
+  EXPECT_EQ(policy.Choose(4), Mode::kSpeculative);
+}
+
+TEST(AdaptiveWaveModeTest, ACutVerifyCountsAgainstItsRowsAndDoesNotFeedTheAverage) {
+  // Full verifies keeping four tokens a request: past width 5's cost even
+  // at its three rows, so width 5 speculates.
+  AdaptiveWaveMode high(kWideCost, AdaptiveWaveMode::Force::kNone, kCutRows);
+  RunWaves(high, 4, 6, 4);
+  EXPECT_NEAR(high.kept(), 4.0, 1e-9);
+  EXPECT_EQ(high.Choose(5), Mode::kSpeculative);
+  // Width 5's own waves (at most three a request) leave the average alone.
+  const double before = high.kept();
+  high.Observe(5, Mode::kSpeculative, 5, 5);
+  EXPECT_EQ(high.kept(), before);
+  // 2.5 a request: past widths 2 and 3's costs, below width 5's 2.58.
+  AdaptiveWaveMode mid(kWideCost, AdaptiveWaveMode::Force::kNone, kCutRows);
+  RunWaves(mid, 2, 3, 2);
+  for (std::uint32_t i = 0; i < 40; ++i) {
+    mid.Observe(4, Mode::kSpeculative, 10, 4);
+  }
+  EXPECT_EQ(mid.Choose(3), Mode::kSpeculative);
+  EXPECT_EQ(mid.Choose(5), Mode::kPlain);
+  // It never probes: plain throughout while narrower waves say so.
+  EXPECT_EQ(RunWaves(mid, 5, 200, 3), 200U);
+  // Before any full verify it runs plain (measured faster, docs/
+  // experiments/request-slots), not an uninformed draft-verify wave.
+  const AdaptiveWaveMode fresh(kWideCost, AdaptiveWaveMode::Force::kNone, kCutRows);
+  EXPECT_EQ(fresh.Choose(5), Mode::kPlain);
+  EXPECT_EQ(fresh.Choose(4), Mode::kSpeculative);
+}
+
 TEST(AdaptiveWaveModeTest, OnlyCompleteVerifiesFeedTheAverage) {
   // Two of four requests verified their full rows and kept 3 each; the
   // others' cut-short verifies do not dilute the average.

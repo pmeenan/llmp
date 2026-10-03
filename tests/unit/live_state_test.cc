@@ -139,6 +139,25 @@ TEST_F(LiveStateTest, OnlyUsedExtentsAreMappedAndTheirFirstContentsAreZero) {
   EXPECT_FALSE(*again);
 }
 
+// An admission's estimate (Llm::StateBytesThrough): what used_bytes() would
+// be with only these ranges used, each extent once, materializing nothing.
+TEST_F(LiveStateTest, UsedBytesOfIsWhatUseWouldLeaveAndMapsNothing) {
+  const std::array<en::LiveState::Range, 3> ranges = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16},
+      en::LiveState::Range{.region = 0, .offset = 8, .bytes = 16},  // the same extent
+      en::LiveState::Range{.region = 0, .offset = (3 * kExtent) + 5, .bytes = kExtent}};
+  auto estimate = model_.live.UsedBytesOf(ranges);
+  ASSERT_TRUE(estimate) << jitllm::test_support::Failed(estimate).value_or("");
+  EXPECT_EQ(*estimate, 3 * kExtent);
+  EXPECT_TRUE(model_.live.extents().empty());
+  EXPECT_EQ(Occupancy(), fixed_);
+  ASSERT_TRUE(model_.live.Use(node_, ranges));
+  EXPECT_EQ(model_.live.used_bytes(), *estimate);
+  const std::array<en::LiveState::Range, 1> outside = {
+      en::LiveState::Range{.region = 0, .offset = 8 * kExtent, .bytes = 1}};
+  EXPECT_FALSE(model_.live.UsedBytesOf(outside));
+}
+
 TEST_F(LiveStateTest, InvalidRangesCannotPartiallyGrowState) {
   const std::array<en::LiveState::Range, 2> ranges = {
       en::LiveState::Range{.region = 0, .offset = 0, .bytes = 1},

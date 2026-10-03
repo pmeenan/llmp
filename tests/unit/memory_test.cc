@@ -573,6 +573,81 @@ TEST(ReclaimOrder, ATinyNeedTakesASmallSufficientCandidateNotAConversation) {
   EXPECT_THAT(SelectReclaim(c, 4096).victims, ElementsAre(0U));
 }
 
+// A small need costs less to cover from several small entries of a costlier
+// kind than from one large cheap one: 55 MiB for a request slot takes seven
+// stale 8 MiB graphs (about 0.02 s to capture again), not a 704 MiB idle
+// conversation (0.12 s to spill and restore), though the order ranks the
+// conversation's GiB cheaper. The graphs go in strict least recent use;
+// a need the graphs cannot cover takes the conversation.
+TEST(ReclaimOrder, ASmallNeedTakesTheCheapestTotalToRestoreNotACheapGiB) {
+  constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
+  std::vector<ReclaimCandidate> c = {
+      {.kind = ReclaimKind::kIdleState,
+       .owner = 0,
+       .id = 1,
+       .bytes = 704 * kMiB,
+       .last_use = 100,
+       .restore_seconds = (704.0 / 1024) * 0.17},
+  };
+  for (std::uint64_t g = 0; g < 10; ++g) {
+    c.push_back({.kind = ReclaimKind::kGraph,
+                 .owner = 0,
+                 .id = 10 + g,
+                 .bytes = 8 * kMiB,
+                 .last_use = 50 - g,  // the last pushed is the oldest
+                 .restore_seconds = (8.0 / 1024) * 0.36});
+  }
+  ASSERT_EQ(ReclaimOrder(c).front(), 0U);  // the conversation is cheaper a GiB
+  const auto small = SelectReclaim(c, 55 * kMiB);
+  EXPECT_TRUE(small.sufficient);
+  EXPECT_EQ(small.bytes, 56 * kMiB);
+  EXPECT_THAT(small.victims, ElementsAre(10U, 9U, 8U, 7U, 6U, 5U, 4U));
+  // Ten graphs hold 80 MiB: a need past them takes the conversation.
+  const auto large = SelectReclaim(c, 100 * kMiB);
+  EXPECT_THAT(large.victims, ElementsAre(0U));
+  // Graphs that cost more in all than the conversation keep the order.
+  for (std::size_t i = 1; i < c.size(); ++i) {
+    c[i].restore_seconds = 0.05;
+  }
+  EXPECT_THAT(SelectReclaim(c, 55 * kMiB).victims, ElementsAre(0U));
+}
+
+// Within a kind too: 100 MiB beside an old 704 MiB conversation, a newer
+// 30 MiB one and ten 8 MiB graphs takes the 30 MiB conversation and nine
+// graphs (about 0.03 s to restore), not the old 704 MiB one (0.12 s); the
+// old one gives way only because a later conversation fits what is left.
+TEST(ReclaimOrder, AnOldLargeEntryGivesWayToALaterOneOfItsKindThatFits) {
+  constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
+  std::vector<ReclaimCandidate> c = {
+      {.kind = ReclaimKind::kIdleState,
+       .owner = 0,
+       .id = 1,
+       .bytes = 704 * kMiB,
+       .last_use = 100,
+       .restore_seconds = (704.0 / 1024) * 0.17},
+      {.kind = ReclaimKind::kIdleState,
+       .owner = 0,
+       .id = 2,
+       .bytes = 30 * kMiB,
+       .last_use = 200,
+       .restore_seconds = (30.0 / 1024) * 0.17},
+  };
+  for (std::uint64_t g = 0; g < 10; ++g) {
+    c.push_back({.kind = ReclaimKind::kGraph,
+                 .owner = 0,
+                 .id = 10 + g,
+                 .bytes = 8 * kMiB,
+                 .last_use = 50 - g,  // the last pushed is the oldest
+                 .restore_seconds = (8.0 / 1024) * 0.36});
+  }
+  const auto plan = SelectReclaim(c, 100 * kMiB);
+  EXPECT_TRUE(plan.sufficient);
+  EXPECT_EQ(plan.bytes, 102 * kMiB);
+  EXPECT_THAT(plan.victims, ElementsAre(1U, 11U, 10U, 9U, 8U, 7U, 6U, 5U, 4U, 3U));
+  // A need only the old one covers takes it.
+  EXPECT_THAT(SelectReclaim(c, 200 * kMiB).victims, ElementsAre(0U));
+}
+
 // An optional charge reclaims only what costs less to restore than what it
 // charges, and all of it or nothing; a plan and its graph count once.
 TEST(ReclaimOrder, AReclaimTakesOnlyWhatIsCheaperAndCountsAPlanWithItsGraphOnce) {

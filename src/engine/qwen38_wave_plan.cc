@@ -38,7 +38,7 @@ bool Qwen38FullHeadPairCandidate(const ggml_tensor* t) {
          t->ne[3] == 1 && ggml_is_contiguous(t);
 }
 
-// Target-wave geometry shared with conservative workspace provisioning. Original one-row GemvBf16
+// Target-wave geometry. Original one-row GemvBf16
 // uses a different vector kernel; only the existing multirow cuBLAS path may be combined.
 bool Qwen38HcPairCandidate(const ggml_tensor* t) {
   namespace kg = kernels::ggml;
@@ -108,7 +108,7 @@ bool SameModel(const Qwen38Model& a, const Qwen38Model& b) {
 template <typename Request>
 std::expected<std::vector<Range>, std::string> MutablePlaces(std::span<const Request> requests) {
   if (requests.empty() || requests.size() > kQwen38WaveSlots) {
-    return Error("a Qwen3.8 wave requires one to four slots");
+    return Error(std::format("a Qwen3.8 wave requires one to {} slots", kQwen38WaveSlots));
   }
   std::vector<Range> ranges;
   const Qwen38Model* first = nullptr;
@@ -423,10 +423,14 @@ struct Qwen38WaveBuilder {
                                                   std::span<const Range> mutable_places,
                                                   const HeadGroups& heads) {
     std::size_t products = 0;
+    // A shared product's descriptors: its members' concats, the product and
+    // a view a member, within four a member of the widest group.
+    std::size_t widest = 1;
     for (const Group& g : groups) {
       if (g.size() > 1) {
         products += static_cast<std::size_t>(std::ranges::count_if(lists[g.front()], Eligible));
       }
+      widest = std::max(widest, g.size());
     }
     if (products > kMaxPairedProducts) {
       return Error("Qwen3.8 wave exceeds its shared product bound");
@@ -472,7 +476,7 @@ struct Qwen38WaveBuilder {
       }
     }
     if (products != 0) {
-      auto arena = kg::TensorArena::Create(products * 4 * kQwen38WaveSlots);
+      auto arena = kg::TensorArena::Create(products * 4 * widest);
       if (!arena) {
         return Error(arena.error().detail);
       }
@@ -543,7 +547,7 @@ struct Qwen38WaveBuilder {
           for (std::size_t k = 0; k < g.size(); ++k) {
             const auto s = g[k];
             ++at[s];
-            out.stats_.paired_slots |= static_cast<std::uint8_t>(1U << s);
+            out.stats_.paired_slots |= std::uint32_t{1} << s;
             ggml_tensor* original = head.originals[k];
             ggml_tensor* split = head.views[k];
             for (ggml_tensor*& held : out.keep_) {
@@ -577,7 +581,7 @@ struct Qwen38WaveBuilder {
             return Error("Qwen3.8 wave lost a preflighted product barrier");
           }
         }
-        if (auto room = out.arena->Reserve(4 * kQwen38WaveSlots); !room) {
+        if (auto room = out.arena->Reserve(4 * widest); !room) {
           return Error(room.error().detail);
         }
         ggml_context* c = out.arena->context();
@@ -643,7 +647,7 @@ struct Qwen38WaveBuilder {
         out.nodes_.insert(out.nodes_.end(), split.begin(), split.end());
         out.products_.push_back({members, both});
         for (std::size_t k = 0; k < members.size(); ++k) {
-          out.stats_.paired_slots |= static_cast<std::uint8_t>(1U << g[k]);
+          out.stats_.paired_slots |= std::uint32_t{1} << g[k];
           for (ggml_tensor*& held : out.keep_) {
             if (held == members[k]) {
               held = split[k];
@@ -798,7 +802,7 @@ struct Qwen38WaveBuilder {
         }
       }
       order.push_back(s);
-      out->active_slots_ |= static_cast<std::uint8_t>(1U << s);
+      out->active_slots_ |= std::uint32_t{1} << s;
       // Whether this slot may join the group of the slot before it.
       if (i != 0) {
         compatible[s] = r.kind == requests[i - 1].kind && r.kind.capture_routed == 0 &&
@@ -845,7 +849,7 @@ struct Qwen38WaveBuilder {
         out->keep_.insert(out->keep_.end(), held->begin(), held->end());
       }
       order.push_back(s);
-      out->active_slots_ |= static_cast<std::uint8_t>(1U << s);
+      out->active_slots_ |= std::uint32_t{1} << s;
       // Whether this slot may join the group of the slot before it.
       if (i != 0) {
         compatible[s] = SameDraftPhase(requests[i - 1].shape, r.shape);
@@ -864,19 +868,6 @@ Qwen38WavePlanned::~Qwen38WavePlanned() {
   // Drop bound descriptor references while every original arena is alive.
   // Captured graphs and completion-aware retirement remain the caller's.
   bound.reset();
-}
-
-std::uint64_t Qwen38WaveHostBound(std::uint64_t slot_bytes, std::uint64_t slot_nodes,
-                                  std::uint64_t products, std::uint64_t slots) {
-  const std::uint64_t overhead = ggml_tensor_overhead();
-  const std::uint64_t shared = std::min<std::uint64_t>(products, kMaxPairedProducts);
-  // The products' arena and the heads' (Target and Draft below).
-  const std::uint64_t arenas = ((shared + 1) * 4 * kQwen38WaveSlots) * overhead;
-  // The joined plan launches every slot's nodes and each product's concats
-  // and views; its node lists hold them again.
-  const std::uint64_t joined =
-      slots * (slot_nodes + (shared * 4)) * (kPlanNodeHostBytes + (3 * sizeof(ggml_tensor*)));
-  return (slots * slot_bytes) + arenas + joined;
 }
 
 std::uint64_t Qwen38WavePlanned::host_bytes() const {

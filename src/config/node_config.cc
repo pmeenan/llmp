@@ -250,10 +250,11 @@ enum class ModelKey : std::uint8_t {
   kTokenizer,
   kChatTemplate,
   kWaveForm,
+  kMaxSlots,
 };
 
 std::optional<ModelKey> FindModelKey(std::string_view key) {
-  static constexpr std::array<std::pair<std::string_view, ModelKey>, 11> kKeys = {{
+  static constexpr std::array<std::pair<std::string_view, ModelKey>, 12> kKeys = {{
       {"artifact", ModelKey::kArtifact},
       {"composition", ModelKey::kComposition},
       {"drafter", ModelKey::kDrafter},
@@ -265,6 +266,7 @@ std::optional<ModelKey> FindModelKey(std::string_view key) {
       {"tokenizer", ModelKey::kTokenizer},
       {"chat_template", ModelKey::kChatTemplate},
       {"wave_form", ModelKey::kWaveForm},
+      {"max_slots", ModelKey::kMaxSlots},
   }};
   for (const auto& [name, value] : kKeys) {
     if (name == key) {
@@ -898,6 +900,19 @@ class Validator {
         }
         break;
       }
+      case ModelKey::kMaxSlots: {
+        const auto* value = node.as_integer();
+        if (value == nullptr) {
+          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
+        } else if (std::cmp_less(value->get(), 1) ||
+                   std::cmp_greater(value->get(), kMaxModelSlots)) {
+          out_.At(leaf, std::format("{} must be from 1 to {} request slots, not {}", key,
+                                    kMaxModelSlots, value->get()));
+        } else {
+          model.entry.max_slots = static_cast<std::uint32_t>(value->get());
+        }
+        break;
+      }
       case ModelKey::kTokenizer:
       case ModelKey::kChatTemplate: {
         const auto* text = node.as_string();
@@ -952,13 +967,13 @@ class Validator {
       if (m.artifact.has_value() == m.composition.has_value()) {
         problem("a model names exactly one of artifact (a model) and composition (a pipeline)");
       }
-      if (m.composition &&
-          (m.drafter || m.tokenizer || m.chat_template || model.context_set ||
-           model.speculation_set || m.prefill_chunk || model.floors_set || model.wave_form_set)) {
+      if (m.composition && (m.drafter || m.tokenizer || m.chat_template || model.context_set ||
+                            model.speculation_set || m.prefill_chunk || model.floors_set ||
+                            model.wave_form_set || m.max_slots)) {
         problem(
             "drafter, speculation, context, prefill_chunk, prefill_floor_tok_s, "
-            "decode_floor_tok_s, tokenizer, chat_template and wave_form are a model artifact's "
-            "keys, not a composition's");
+            "decode_floor_tok_s, max_slots, tokenizer, chat_template and wave_form are a model "
+            "artifact's keys, not a composition's");
       }
       if (m.artifact && m.drafter && *m.artifact == *m.drafter) {
         problem("an artifact cannot be its own drafter");

@@ -5,10 +5,11 @@
 // host over a synthetic binding shaped as the artifact's (the CUTLASS
 // expert layout, as qwen38_test.cc's) with a model of the device's choices:
 // no device and no model files.
-// - Up to four consecutive compatible slots form one group: each MXFP8
-//   vector and routed product joins every member's rows (up to sixteen),
-//   ragged row counts included, and their three- or four-row full heads
-//   join in one product with a view a slot.
+// - Consecutive compatible slots form one group while their rows fit
+//   sixteen: each MXFP8 vector and routed product joins every member's
+//   rows, ragged row counts included, and their three- or four-row full
+//   heads join in one product with a view a slot; more slots form more
+//   groups (eight of three rows: five, then three; sixteen of one: one).
 // - A verify group also joins its HC products.
 // - A slot whose kind differs from the one before it starts a new group.
 // - Without pairing, every slot keeps its own products.
@@ -386,6 +387,60 @@ TEST_F(Qwen38WavePlanTest, AVerifyGroupJoinsItsHcProducts) {
   EXPECT_EQ(shared.wide.size(), lone.hc.size());
   EXPECT_EQ(Count(shared.mxfp8, 16), lone.mxfp8.size());
   EXPECT_EQ(Count(shared.routed, 16), lone.routed.size());
+}
+
+// Eight slots of three rows (a shared wave's depth-two verifies): groups fill
+// each joined product to at most sixteen rows, five slots (fifteen rows)
+// then three (nine), and every slot joins one, with a head a group.
+TEST_F(Qwen38WavePlanTest, EightSlotsFormGroupsWithinSixteenRows) {
+  const engine::Qwen38ChunkKind verify{.verify = true};
+  const Products lone = Lone(verify);
+  std::array<Request, 8> eight{};
+  for (std::uint32_t s = 0; s < 8; ++s) {
+    eight[s] = {.slot = s, .n_past = 100 + (s * 450), .rows = 3, .kind = verify};
+  }
+  auto planned = Plan(eight);
+  ASSERT_TRUE(planned.has_value()) << planned.error();
+  const auto& w = **planned;
+  EXPECT_EQ(w.active_slots(), 0xFFU);
+  EXPECT_EQ(w.stats().paired_slots, 0xFFU);
+  EXPECT_EQ(w.stats().mxfp8_pairs, 2 * lone.mxfp8.size());
+  EXPECT_EQ(w.stats().routed_pairs, 2 * lone.routed.size());
+  const Products shared = Of(w.nodes());
+  EXPECT_EQ(Count(shared.mxfp8, 15), lone.mxfp8.size());
+  EXPECT_EQ(Count(shared.mxfp8, 9), lone.mxfp8.size());
+  EXPECT_EQ(shared.mxfp8.size(), 2 * lone.mxfp8.size());
+  EXPECT_EQ(Count(shared.routed, 15), lone.routed.size());
+  EXPECT_EQ(Count(shared.routed, 9), lone.routed.size());
+  ASSERT_EQ(w.head_products().size(), 2U);
+  const auto [narrow, wide] =
+      std::minmax(w.head_products()[0].together->ne[1], w.head_products()[1].together->ne[1]);
+  EXPECT_EQ(narrow, 9);
+  EXPECT_EQ(wide, 15);
+}
+
+// Sixteen one-row slots (a plain decode wave at the most slots) share every
+// product as one group of sixteen rows.
+TEST_F(Qwen38WavePlanTest, SixteenOneRowSlotsShareAsOneGroup) {
+  const std::array<Request, 1> one = {Request{.slot = 0, .n_past = 100, .rows = 1}};
+  auto alone = Plan(one);
+  ASSERT_TRUE(alone.has_value()) << alone.error();
+  const Products lone = Of((*alone)->nodes());
+  ASSERT_FALSE(lone.mxfp8.empty());
+  std::array<Request, engine::kQwen38WaveSlots> all{};
+  for (std::uint32_t s = 0; s < all.size(); ++s) {
+    all[s] = {.slot = s, .n_past = 100 + (s * 200), .rows = 1};
+  }
+  auto planned = Plan(all);
+  ASSERT_TRUE(planned.has_value()) << planned.error();
+  const auto& w = **planned;
+  EXPECT_EQ(w.active_slots(), 0xFFFFU);
+  EXPECT_EQ(w.stats().paired_slots, 0xFFFFU);
+  const Products shared = Of(w.nodes());
+  EXPECT_EQ(Count(shared.mxfp8, 16), lone.mxfp8.size());
+  EXPECT_EQ(shared.mxfp8.size(), lone.mxfp8.size());
+  EXPECT_EQ(Count(shared.routed, 16), lone.routed.size());
+  EXPECT_EQ(shared.routed.size(), lone.routed.size());
 }
 
 // A slot whose kind differs from the slot before it starts a new group:

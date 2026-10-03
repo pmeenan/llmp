@@ -4,6 +4,7 @@
 #ifndef JITLLM_EXECUTION_ADAPTIVE_WAVE_MODE_H_
 #define JITLLM_EXECUTION_ADAPTIVE_WAVE_MODE_H_
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -30,15 +31,29 @@ namespace jitllm::execution {
 //   draft-verify waves follow every 64 of them, so the average follows
 //   acceptance.
 // - A forced form (an exactness control) takes every wave of two or more.
+// - A width whose verify is cut to fewer rows a request than a narrow
+//   wave's (`rows`: DeepSeek's past four requests, each its share of a
+//   wave's sixteen rows) commits at most those rows a request: the
+//   average counts against that bound (min(kept, rows)), its waves do not
+//   feed the average (they would pull it below the full verifies') and it
+//   never probes: it follows the average narrower waves' full verifies
+//   keep, plain until they have kept enough, and always where the bound
+//   cannot pay the width's cost.
 class AdaptiveWaveMode {
  public:
   enum class Mode : std::uint8_t { kSpeculative, kPlain };
   enum class Force : std::uint8_t { kNone, kSpeculative, kPlain };
-  static constexpr std::uint32_t kMaxWidth = 4;
+  // The widest wave costed: a speculative model's most request slots (a
+  // DSpark verify of at least two of a wave's sixteen rows,
+  // docs/runtime-serving.md#request-slots).
+  static constexpr std::uint32_t kMaxWidth = 8;
   using Costs = std::array<double, kMaxWidth + 1>;  // by width; 0: none
+  // By width, the most tokens a draft-verify wave commits a request when
+  // its verify is cut below a full one's; 0: a full verify.
+  using Rows = std::array<std::uint32_t, kMaxWidth + 1>;
 
-  explicit AdaptiveWaveMode(Costs cost = {}, Force force = Force::kNone)
-      : cost_(cost), force_(force) {}
+  explicit AdaptiveWaveMode(Costs cost = {}, Force force = Force::kNone, Rows rows = {})
+      : cost_(cost), force_(force), rows_(rows) {}
 
   Mode Choose(std::uint32_t width, bool sampling = false) const {
     if (width < 2 || width > kMaxWidth) {
@@ -47,7 +62,16 @@ class AdaptiveWaveMode {
     if (force_ != Force::kNone) {
       return force_ == Force::kPlain ? Mode::kPlain : Mode::kSpeculative;
     }
-    if (sampling || cost_[width] <= 0 || probe_left_ > 0 || seen_ < kExplore) {
+    if (sampling || cost_[width] <= 0) {
+      return Mode::kSpeculative;
+    }
+    if (rows_[width] != 0) {
+      // Its own waves cannot teach the average: it follows what the full
+      // verifies of narrower waves have shown, plain until they have.
+      const bool pays = rows_[width] > cost_[width] && seen_ >= kExplore;
+      return pays ? preferred_[width] : Mode::kPlain;
+    }
+    if (probe_left_ > 0 || seen_ < kExplore) {
       return Mode::kSpeculative;
     }
     return preferred_[width];
@@ -78,6 +102,9 @@ class AdaptiveWaveMode {
     if (probe_left_ > 0) {
       --probe_left_;
     }
+    if (rows_[width] != 0) {
+      return;  // a cut verify: below the full verifies' acceptance
+    }
     const double kept = static_cast<double>(tokens) / complete;
     ++seen_;
     kept_ = seen_ == 1 ? kept : kept_ + ((kept - kept_) / 8);
@@ -88,9 +115,10 @@ class AdaptiveWaveMode {
       if (cost_[w] <= 0) {
         continue;
       }
-      if (preferred_[w] == Mode::kSpeculative && kept_ * 1.03 < cost_[w]) {
+      const double can = rows_[w] != 0 ? std::min<double>(kept_, rows_[w]) : kept_;
+      if (preferred_[w] == Mode::kSpeculative && can * 1.03 < cost_[w]) {
         preferred_[w] = Mode::kPlain;
-      } else if (preferred_[w] == Mode::kPlain && kept_ > cost_[w] * 1.03) {
+      } else if (preferred_[w] == Mode::kPlain && can > cost_[w] * 1.03) {
         preferred_[w] = Mode::kSpeculative;
       }
     }
@@ -107,11 +135,14 @@ class AdaptiveWaveMode {
   static constexpr std::uint32_t kProbeEvery = 64;
   Costs cost_;
   Force force_;
+  Rows rows_;
   std::uint64_t seen_ = 0;
   double kept_ = 0;
-  std::array<Mode, kMaxWidth + 1> preferred_{Mode::kSpeculative, Mode::kSpeculative,
-                                             Mode::kSpeculative, Mode::kSpeculative,
-                                             Mode::kSpeculative};
+  std::array<Mode, kMaxWidth + 1> preferred_ = [] {
+    std::array<Mode, kMaxWidth + 1> all{};
+    all.fill(Mode::kSpeculative);
+    return all;
+  }();
   std::uint32_t since_probe_ = 0;
   std::uint32_t probe_left_ = 0;
 };

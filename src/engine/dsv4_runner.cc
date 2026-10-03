@@ -99,14 +99,22 @@ void SetDsv4ServedPrefill(Dsv4Options& options) {
 // ------------------------------------------------------------------ slots
 
 std::array<Dsv4Runner::RequestState*, Dsv4Runner::kRequestSlots> Dsv4Runner::Requests() {
-  return {&default_request_, additional_requests_.data(), &additional_requests_[1],
-          &additional_requests_[2]};
+  std::array<RequestState*, kRequestSlots> all{};
+  all[0] = &default_request_;
+  for (std::size_t i = 1; i < kRequestSlots; ++i) {
+    all[i] = &additional_requests_[i - 1];
+  }
+  return all;
 }
 
 std::array<const Dsv4Runner::RequestState*, Dsv4Runner::kRequestSlots> Dsv4Runner::Requests()
     const {
-  return {&default_request_, additional_requests_.data(), &additional_requests_[1],
-          &additional_requests_[2]};
+  std::array<const RequestState*, kRequestSlots> all{};
+  all[0] = &default_request_;
+  for (std::size_t i = 1; i < kRequestSlots; ++i) {
+    all[i] = &additional_requests_[i - 1];
+  }
+  return all;
 }
 
 std::array<LiveState*, Dsv4Runner::kRequestSlots> Dsv4Runner::States() {
@@ -129,8 +137,8 @@ Status Dsv4Runner::SelectSlots(std::span<Slot* const> active) {
     return Error("the DeepSeek cohort requires retirement");
   }
   std::array<std::uint32_t, kRequestSlots> indices{};
-  if (active.size() > kRequestSlots) {
-    return Error("at most four DeepSeek request slots");
+  if (active.size() > wave_slots_) {
+    return Error(std::format("at most {} DeepSeek request slots", wave_slots_));
   }
   for (std::size_t i = 0; i < active.size(); ++i) {
     const Slot* slot = active[i];
@@ -355,7 +363,15 @@ Status Dsv4Runner::Setup() {
                              o_.context, md::kDsv4FlashContext));
   }
   if (o_.wave_slots == 0 || o_.wave_slots > kRequestSlots || (o_.wave_slots > 1 && o_.exact)) {
-    return Error("DeepSeek request slots: one to four, several only in the fast plan");
+    return Error(std::format("DeepSeek request slots: one to {}, several only in the fast plan",
+                             kRequestSlots));
+  }
+  // A DSpark verify joins a wave with at least two rows a slot.
+  if (!o_.drafter.empty() && o_.wave_slots > static_cast<std::uint32_t>(kWaveRows / 2)) {
+    return Error(
+        std::format("DeepSeek with a drafter takes at most {} request slots (a verify of "
+                    "at least two of a wave's {} rows a slot)",
+                    kWaveRows / 2, kWaveRows));
   }
   wave_slots_ = o_.wave_slots;
   serial_reason_.clear();
@@ -415,6 +431,7 @@ Status Dsv4Runner::Setup() {
       wave_slots_ = 1;
     }
   }
+  cohort_.set_slots(wave_slots_);
   // The state first: its extents come before the weights' in a closure, so
   // a swap back restores it before paging the weights in. Every request
   // slot's: the default one's, then the others' in order.
@@ -638,7 +655,7 @@ Status Dsv4Runner::Setup() {
   // the largest inputs fit; each slot's draft block's below it.
   verify_base_ = Round(input_bytes / 2, 256);
   draft_staging_ = Round(draft_inputs + 256, 4096);
-  if (draft_staging_ * kRequestSlots > verify_base_) {
+  if (draft_staging_ * wave_slots_ > verify_base_) {
     return Error("the draft blocks' staging does not fit below the verify's");
   }
 
@@ -824,7 +841,7 @@ Status Dsv4Runner::CheckPlaces() {
   return {};
 }
 
-Status Dsv4Runner::RefreshClosures(std::uint8_t protected_mask) {
+Status Dsv4Runner::RefreshClosures(SlotMask protected_mask) {
   auto refreshed = node_.Call(
       [&]() -> Status {
         auto& catalog = node_.catalog();
@@ -867,7 +884,7 @@ Status Dsv4Runner::RefreshClosures(std::uint8_t protected_mask) {
           draft.insert(draft.end(), common.begin(), common.end());
           for (const RequestState* request : Requests()) {
             if (request->provisioned && !request->spilled &&
-                (protected_mask & (1U << request->slot)) != 0) {
+                (protected_mask & (SlotMask{1} << request->slot)) != 0) {
               const auto live = request->live.extents();
               draft.insert(draft.end(), live.begin(), live.end());
             }
@@ -942,7 +959,7 @@ Status Dsv4Runner::Clear(RequestState& request) {
   }
   // Remove only this slot's state from the held request; the shared
   // extents and every other active slot's state stay protected.
-  const auto others = static_cast<std::uint8_t>(cohort_.active() & ~(1U << request.slot));
+  const SlotMask others = cohort_.active() & ~(SlotMask{1} << request.slot);
   if (auto protected_others = RefreshClosures(others); !protected_others) {
     return protected_others;
   }
@@ -1132,6 +1149,23 @@ Status Dsv4Runner::EnsureState(RequestState& request, std::uint32_t positions) {
     return std::unexpected(used.error());
   }
   return *used ? RefreshClosures() : Status{};
+}
+
+std::expected<std::uint64_t, std::string> Dsv4Runner::StateBytesThrough(
+    std::uint32_t positions) const {
+  // EnsureState's ranges, as a slot's growth through `positions` takes them.
+  auto needed = md::Dsv4UsedState(layout_, std::min(positions, o_.context));
+  if (!needed) {
+    return std::unexpected(needed.error());
+  }
+  std::vector<LiveState::Range> ranges;
+  for (const auto& range : *needed) {
+    ranges.push_back({.region = kTarget, .offset = range.offset, .bytes = range.bytes});
+  }
+  if (speculative()) {
+    ranges.push_back({.region = kDrafter, .offset = 0, .bytes = dlayout_.bytes});
+  }
+  return live_.UsedBytesOf(ranges);
 }
 
 Status Dsv4Runner::CheckHashRouting() {
@@ -2289,7 +2323,7 @@ Status Dsv4Runner::PrepareRestoreState(RequestState& request,
   }
   // The held request without this slot's state, which Retain needs
   // unleased; every other active slot stays protected.
-  const auto others = static_cast<std::uint8_t>(cohort_.active() & ~(1U << request.slot));
+  const SlotMask others = cohort_.active() & ~(SlotMask{1} << request.slot);
   if (auto protected_others = RefreshClosures(others); !protected_others) {
     return protected_others;
   }
