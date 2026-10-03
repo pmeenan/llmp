@@ -1179,11 +1179,14 @@ it appears.
       products were not built: a wave's cost follows its rows (Qwen3.8 at
       depth 1, eight requests in one sixteen-row group, measured slower).
       The cap's calibration is D-103's.
-      Proposed alongside, not yet decided: fair-share preemption when
-      slots are full (setting the longest generator aside, exact
-      resume), time-slicing a pending model switch instead of draining
-      the batch (D-069, pulled from M6), and literal completions joining
-      the batch.
+      Owner decisions (2026-10-03): no preemption of long-running
+      responses when slots fill (they keep making progress; a new request
+      waits for a slot); **time-slice a pending model switch** instead of
+      draining the batch (D-069's time-slicing, pulled from M6: the
+      running batch's members are set aside with their state spilled and
+      resumed exactly after the other model's turn); and **literal
+      completions join the batch** as cohort members instead of waiting
+      for it to drain. Both are open work.
 - [ ] **Model settings in three layers** (D-103, the owner, 2026-10-03):
       a table-driven `[models.NAME]` schema where every model setting can
       be overridden; one resolved settings record per model at
