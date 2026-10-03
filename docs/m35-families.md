@@ -53,7 +53,8 @@ Optional, by usage or a feature a smaller set already covers: MiniMax
 M2.7 (IQ3_XXS), Laguna S 2.1, Step 3.7 Flash, Ling 3.0 flash, Nemotron 3.5
 Lightning, Cohere North Mini Code, Mistral Medium 3.5, and a legacy tier
 ([below](#optional-checkpoints)). Generative media gets its own track:
-MiniMax H3 for video ([below](#generative-media-video-and-image)).
+MiniMax H3 for video and, owner-named, Ming-Image-0.1-Design as a second
+image model ([below](#generative-media-video-and-image)).
 
 Excluded: Phi and Granite (stale or weak, nothing unique in wide use),
 Kimi K2/K3, MiniMax M3, GLM-5.x, Mistral Large 3, Llama 4 Maverick,
@@ -900,6 +901,47 @@ A new category beside M3's Qwen-Image, for the owner's MiniMax H3.
   (`ideogram-ai/ideogram-4-fp8@ee79a7237b519f1402ceacf952f30c8a31ec5073`,
   9.3B single-stream DiT on a Qwen3-VL-8B encoder, FP8 and NF4 only,
   non-commercial); FLUX.2-klein-9B is the alternative.
+- **Image, owner-named (2026-10-03):
+  `inclusionAI/Ming-Image-0.1-Design@208087ada1486931692c1896f38d4cd16ff3df82`**
+  (created 2026-09-17, updated 2026-09-23; MIT;
+  [card](https://huggingface.co/inclusionAI/Ming-Image-0.1-Design)), a
+  second text-to-image model for fleshing out the image pipelines and
+  API. Text-rich design: UI screens, infographics, posters, with
+  readable text, and RGBA output with transparent backgrounds. Read from
+  its configs on 2026-10-03; nothing was downloaded or run.
+  - DiT `DiffusionTransformer`: dim 3,840, 30 layers + 2 refiner layers,
+    30 heads (no GQA), QK-norm, 3-axis RoPE (axes 32/48/48, θ 256),
+    patch 2, 16 latent channels, caption features 2,560 wide; 12.31 GB in
+    BF16, about 6.15B parameters
+    ([config](https://huggingface.co/inclusionAI/Ming-Image-0.1-Design/raw/main/transformer/config.json)).
+  - Conditioning: `mllm` is a `BailingMM2NativeForConditionalGeneration`
+    (`bailingmm_moe_v2_lite`: 20 layers, hidden 2,048, 16 heads / 4 KV,
+    256 experts a layer; 34.0 GB in BF16) whose config names a Qwen2.5-ViT
+    tower (the weight index carries no vision tensors), then a `connector`,
+    a Qwen2 1.5B causal LM (28 layers, hidden 1,536) stored in F32
+    (6.17 GB), and an `mlp` projection
+    ([mllm](https://huggingface.co/inclusionAI/Ming-Image-0.1-Design/raw/main/mllm/config.json),
+    [connector](https://huggingface.co/inclusionAI/Ming-Image-0.1-Design/raw/main/connector/config.json)).
+  - VAE `AutoencoderKLQwenImage` with `input_channels` 4 and z 16: Qwen-Image's
+    VAE family taking RGBA
+    ([config](https://huggingface.co/inclusionAI/Ming-Image-0.1-Design/raw/main/vae/config.json)).
+  - Sampling: `FlowMatchEulerDiscreteScheduler`, shift 6.0, no dynamic
+    shifting; the card recommends 12 steps, CFG 1.0 (no unconditional
+    pass), 2,048² (or 1,024² for speed).
+  - Fit: about 53 GB of weights at their stored precisions, so it fits a
+    Spark whole, and runs as phases under D-089 like Qwen-Image. The card
+    validates only one 80 GiB GPU; GB10 behaviour is unknown.
+  - Reference: [inclusionAI/Ming-Image](https://github.com/inclusionAI/Ming-Image)
+    (`infer.py`, MIT), and vLLM-Omni per the card; pin both at entry.
+  - New for jitLLM: an MoE multimodal encoder as text conditioner, a
+    causal-LM connector, RGBA latents and alpha in the image API, a
+    2,048² latent sequence (about 16K tokens at patch 2 over 8× VAE
+    downsampling, arithmetic), and a second DiT layout beside
+    Qwen-Image's (refiner layers, 3-axis RoPE). Shares the VAE family and the
+    flow-matching scheduler with Qwen-Image.
+  - Companion (not planned): `Ming-Image-0.1-Design-Layer` decomposes a
+    finished design into editable transparent layers, an output shape no
+    current route has.
 
 ## Media inputs, decision models and generation APIs
 

@@ -1671,6 +1671,17 @@ family" guide, and its long-context scaling work.
       - `POST /v1/images/generations` and `/v1/images/edits` for
         Qwen-Image-2.1, in OpenAI's shape with vLLM-Omni's diffusion
         fields. Edits take reference images and a mask.
+      - **Ming-Image-0.1-Design** (owner, 2026-10-03), a second
+        text-to-image model to flesh out the image pipelines and API
+        ([details](m35-families.md#generative-media-video-and-image)):
+        a 6B DiT conditioned by a Bailing MoE multimodal encoder
+        through a Qwen2 1.5B connector, and Qwen-Image's
+        VAE with four channels, so it generates RGBA. Through
+        `/v1/images/generations`, including OpenAI's
+        `background: "transparent"`, at its 1,024² and 2,048² sizes with
+        12 steps. Its components run as one composition (D-089), sharing
+        the image phases, VAE and route code with Qwen-Image's rather than
+        a second pipeline.
       - `/v1/videos` asynchronous jobs for MiniMax H3, on D-041's job
         machinery, with generated media kept only until fetched or
         expired.
@@ -1753,7 +1764,10 @@ the correctness, speed and long-context ones:
   are at least as good as each reference's on the GB10 (D-085). Open
   WebUI speaks through `/v1/audio/speech` unmodified.
 - **Generation routes:** Qwen-Image's generated and edited images from
-  the routes equal the native pipeline's for the same seed, and Open
+  the routes equal the native pipeline's for the same seed;
+  Ming-Image-0.1-Design's opaque and transparent images match its
+  reference pipeline's for the same seed within bounds, alpha included,
+  at least as fast on the GB10 (D-085), and Open
   WebUI generates through them unmodified, and through the WebUI routes,
   SillyTavern does too. Open WebUI shows an image returned in a chat
   response. Transcriptions from the audio carrier match its reference
