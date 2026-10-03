@@ -303,7 +303,7 @@ std::expected<std::vector<std::size_t>, Error> DictSorted(const Py& x) {
 
 class Gemma4Writer {
  public:
-  explicit Gemma4Writer(bool null_word) : null_word_(null_word) {}
+  Gemma4Writer(bool null_word, std::size_t max_bytes) : w_(max_bytes), null_word_(null_word) {}
 
   Writer& w() { return w_; }
 
@@ -689,7 +689,7 @@ std::expected<Rendered, Error> RenderGemma4Variant(const Conversation& c,
   const bool preserve = variant.july && c.preserve_thinking.value_or(false);
   enum class Prev : std::uint8_t { kNone, kThink, kTool, kToolCall, kToolResponse };
   Prev prev = Prev::kNone;
-  Gemma4Writer g(variant.july);
+  Gemma4Writer g(variant.july, c.max_render_bytes);
   Writer& w = g.w();
 
   w.Special(kBos);
@@ -874,7 +874,7 @@ std::expected<Rendered, Error> RenderGemma3(const Conversation& c) {
   if (messages.empty()) {
     return Fail(Rule::kInvalid, "no messages");  // the template reads messages[0]
   }
-  Writer w;
+  Writer w(c.max_render_bytes);
   w.Special(kBos);
   std::string prefix;
   std::size_t start = 0;

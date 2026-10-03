@@ -7,6 +7,7 @@
 #include <charconv>
 #include <cstddef>
 #include <format>
+#include <limits>
 #include <string>
 #include <system_error>
 
@@ -85,11 +86,8 @@ std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,
       if (!PlausibleName(model)) {
         return Error("--turn names no model");
       }
-      if (text.empty() || text.size() > kMaxTurnBytes) {
-        return Error(std::format("a turn's text is 1 to {} bytes", kMaxTurnBytes));
-      }
-      if (o.chat.turns.size() == kMaxTurns) {
-        return Error(std::format("at most {} turns", kMaxTurns));
+      if (text.empty()) {
+        return Error("a turn's text must not be empty");
       }
       o.chat.turns.push_back({.model = std::string(model), .text = std::string(text)});
       continue;
@@ -100,7 +98,7 @@ std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,
     const std::string_view v = args[++i];
     bool ok = true;
     if (a == "--image-prompt") {
-      ok = !v.empty() && v.size() <= kMaxTurnBytes;
+      ok = !v.empty() && v.size() <= kMaxImagePromptBytes;
       o.serving.image_prompt = v;
     } else if (a == "--image-noise") {
       ok = !v.empty();
@@ -109,7 +107,9 @@ std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,
       ok = !v.empty();
       o.serving.report = v;
     } else if (o.command == Command::kChat && a == "--max-tokens") {
-      ok = Number<std::uint32_t>(v, 1, kMaxGenerated, o.chat.max_tokens);
+      // At most what the model's context has left, checked per turn.
+      ok =
+          Number<std::uint32_t>(v, 1, std::numeric_limits<std::uint32_t>::max(), o.chat.max_tokens);
     } else if (o.command == Command::kSwapTable && a == "--pairs") {
       std::string_view rest = v;
       while (ok && !rest.empty()) {
@@ -124,12 +124,14 @@ std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,
           o.table.pairs.emplace_back(pair.substr(0, colon), pair.substr(colon + 1));
         }
       }
-      ok = ok && !o.table.pairs.empty() && o.table.pairs.size() <= kMaxTurns;
+      ok = ok && !o.table.pairs.empty();
     } else if (o.command == Command::kSwapTable && a == "--context-text") {
       ok = !v.empty();
       o.table.context_text = v;
     } else if (o.command == Command::kSwapTable && a == "--context-tokens") {
-      ok = Number<std::uint32_t>(v, 32, config::kMaxContext, o.table.context_tokens);
+      // The selected model's usable context decides (Table::Context).
+      ok = Number<std::uint32_t>(v, 32, std::numeric_limits<std::uint32_t>::max(),
+                                 o.table.context_tokens);
     } else if (o.command == Command::kSwapTable && a == "--continue") {
       ok = Number<std::uint32_t>(v, 1, 1024, o.table.continue_tokens);
     } else if (o.command == Command::kSwapTable && a == "--cycles") {
@@ -139,7 +141,7 @@ std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,
     } else if (o.command == Command::kSwapTable && a == "--handoff") {
       ok = OnOff(v, o.table.handoff);
     } else if (o.command == Command::kSwapTable && a == "--short-prompt") {
-      ok = !v.empty() && v.size() <= kMaxTurnBytes;
+      ok = !v.empty();
       o.table.short_prompt = v;
     } else if (o.command == Command::kSwapTable && a == "--image-expect") {
       // A SHA-256 as the table prints it: 64 lowercase hex digits.

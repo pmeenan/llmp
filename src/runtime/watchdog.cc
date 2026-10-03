@@ -37,6 +37,8 @@ std::string_view PhaseName(Phase phase) {
       return "decoding";
     case Phase::kFinishing:
       return "finishing a request";
+    case Phase::kPaused:
+      return "waiting for a client to read";
   }
   return "unknown";
 }
@@ -53,6 +55,7 @@ double ExpectedSeconds(Phase phase, std::uint64_t size, const Floors& floors) {
     case Phase::kIdle:
     case Phase::kStarting:
     case Phase::kFinishing:
+    case Phase::kPaused:
       break;
   }
   return 0;
@@ -90,7 +93,8 @@ bool Watchdog::Beat(Phase next, double expected, WatchClock::time_point now) {
 bool Watchdog::Idle(WatchClock::time_point now) { return Beat(Phase::kIdle, 0, now); }
 
 bool Watchdog::Check(WatchClock::time_point now) {
-  if (health_.phase == Phase::kIdle || !health_.healthy || now < due_) {
+  if (health_.phase == Phase::kIdle || health_.phase == Phase::kPaused || !health_.healthy ||
+      now < due_) {
     return false;
   }
   health_.healthy = false;
@@ -100,7 +104,7 @@ bool Watchdog::Check(WatchClock::time_point now) {
 }
 
 std::optional<WatchClock::time_point> Watchdog::due() const {
-  if (health_.phase == Phase::kIdle || !health_.healthy) {
+  if (health_.phase == Phase::kIdle || health_.phase == Phase::kPaused || !health_.healthy) {
     return std::nullopt;
   }
   return due_;

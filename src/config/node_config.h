@@ -83,13 +83,15 @@ struct Membership {
   Control control;
 };
 
-// The models a node serves (D-096): `[models.<name>]`, one table a model.
-inline constexpr std::size_t kMaxModels = 16;
+// The models a node serves (D-096): `[models.<name>]`, one table a model,
+// as many as the configuration names (the library may exceed memory,
+// D-102).
 inline constexpr std::size_t kMaxModelName = 64;
-// A model's conversation state, in tokens: the default, and its bounds.
+// A model's conversation state, in tokens: the default, and its least.
+// There is no generic ceiling (D-102): registration checks each
+// checkpoint's own (runtime/model_limits.h); a 32-bit count is the type's.
 inline constexpr std::uint32_t kDefaultContext = 262144;
 inline constexpr std::uint32_t kMinContext = 512;
-inline constexpr std::uint32_t kMaxContext = 1048576;
 // A prefill chunk's rows, when a model's are configured.
 inline constexpr std::uint32_t kMaxPrefillChunk = 262144;
 // The throughput floors, in tokens a second, that the chat route figures a
@@ -156,28 +158,60 @@ struct ModelEntry {
 //                    at startup as served without it.
 //   port             the port of "loopback", "tailscale" and an address
 //                    written without one: 1-65535, default 8114
-//   max_connections  open connections, idle ones included: 1-65536,
-//                    default 1024
-//   max_queued       chat requests waiting behind the running one: 1-1024,
-//                    default 64
-//   stall_seconds    how long the backend may make no progress (no prefill
-//                    chunk, decode step or swap ending) before the request
-//                    fails and the backend is marked unhealthy: 30-3600,
-//                    default 120 (D-097's owner note of 2026-09-29)
-//   deadline_cap_seconds  the most a non-streaming request's scaled
-//                    deadline may be: 60-86400, default 14400 (4 hours)
+// Every other key is a limit, permissive by default (D-102): absent, a
+// count or time limit does not apply and a byte limit follows the host's
+// memory (runtime/intake_limits.h). An owner may set a stricter one.
+//   max_connections  open connections, idle ones included: absent, the
+//                    open-file hard limit less the runtime's own files
+//   max_queued       requests waiting behind the active ones: absent, no
+//                    count (memory and descriptors bound them)
+//   queue_wait_seconds  how long a non-streaming request may wait in the
+//                    queue before a 429: absent, no limit
+//   stall_seconds    how long the backend may make no progress before the
+//                    watchdog reports a stall: default 120
+//   stall_action     "report" (default: log, health, service status) or
+//                    "fail" (the stalled requests end, what is queued and
+//                    what arrives gets 503 until the backend moves)
+//   deadline_cap_seconds  set, a non-streaming request's deadline: its
+//                    scaled work (watchdog.h), at most this; absent, none
+//   idle_seconds     a kept-alive connection idle between requests: 60
+//   request_inactivity_seconds  a request's head or body with no byte
+//                    arriving for this long gets a 408: default 60
+//   write_inactivity_seconds  set, a client that takes no output for this
+//                    long is dropped; absent, it gets backpressure only
+//   hang_seconds     no progress of either kind the runtime watches (a
+//                    unit's end, a page-in event) while work is under way
+//                    for this long is a confirmed hang: the runtime exits
+//                    for its supervisor to restart it; absent, the larger
+//                    of the engine's step patience (600 s) and five stall
+//                    times; at least 60
+//   request_memory_bytes  the most the request memory may hold (bodies,
+//                    parses, queued requests, renderings, stop matchers,
+//                    unread stream output, responses); absent, the floor
+//                    set apart at the start (256 MiB) and the state room
+//                    the budget leaves beside the largest model, charged
+//                    to the budget as requests grow (runtime/intake_limits.h)
+//   max_body_bytes, stream_buffer_bytes  a request body's most and a
+//                    stream's unread output before its request pauses:
+//                    absent, from the request memory (and the largest
+//                    context)
+// Seconds are 1 to kMaxClientSeconds (hang_seconds from kMinHangSeconds),
+// counts 1 to 2^32-1, bytes from their least to the type's.
 inline constexpr std::uint16_t kDefaultClientPort = 8114;
-inline constexpr std::uint32_t kDefaultMaxConnections = 1024;
-inline constexpr std::uint32_t kMaxConnectionsCeiling = 65536;
-inline constexpr std::uint32_t kDefaultMaxQueued = 64;
-inline constexpr std::uint32_t kMaxQueuedCeiling = 1024;
 inline constexpr std::uint32_t kDefaultStallSeconds = 120;
-inline constexpr std::uint32_t kMinStallSeconds = 30;
-inline constexpr std::uint32_t kMaxStallSeconds = 3600;
-inline constexpr std::uint32_t kDefaultDeadlineCapSeconds = 14400;
-inline constexpr std::uint32_t kMinDeadlineCapSeconds = 60;
-inline constexpr std::uint32_t kMaxDeadlineCapSeconds = 86400;
+inline constexpr std::uint32_t kDefaultIdleSeconds = 60;
+inline constexpr std::uint32_t kDefaultRequestInactivitySeconds = 60;
+// A confirmed hang's least time: under it, a slow but healthy unit (a swap
+// from a slow disk) could pass for one.
+inline constexpr std::uint32_t kMinHangSeconds = 60;
+// Thirty days: the watchdog's arithmetic bound on an allowance
+// (runtime/watchdog.cc), and far past any wait a person means.
+inline constexpr std::uint32_t kMaxClientSeconds = 2'592'000;
+// The JSON parser's 32-bit offsets bound one request body (base/json.h).
+inline constexpr std::uint64_t kMaxBodyCeiling = 0xFFFF'FFFFULL;
 inline constexpr std::size_t kMaxBindEntries = 16;
+
+enum class StallAction : std::uint8_t { kReport, kFail };
 
 struct ClientEndpoint {
   std::string address;  // canonical text, as inet_ntop writes it ("127.0.0.1", "::1")
@@ -196,10 +230,19 @@ struct ClientConfig {
   std::vector<BindEntry> bind = {{.kind = BindEntry::Kind::kLoopback, .endpoint = {}},
                                  {.kind = BindEntry::Kind::kTailscale, .endpoint = {}}};
   std::uint16_t port = kDefaultClientPort;
-  std::uint32_t max_connections = kDefaultMaxConnections;
-  std::uint32_t max_queued = kDefaultMaxQueued;
+  std::optional<std::uint32_t> max_connections;
+  std::optional<std::uint32_t> max_queued;
+  std::optional<std::uint32_t> queue_wait_seconds;
   std::uint32_t stall_seconds = kDefaultStallSeconds;
-  std::uint32_t deadline_cap_seconds = kDefaultDeadlineCapSeconds;
+  StallAction stall_action = StallAction::kReport;
+  std::optional<std::uint32_t> deadline_cap_seconds;
+  std::uint32_t idle_seconds = kDefaultIdleSeconds;
+  std::uint32_t request_inactivity_seconds = kDefaultRequestInactivitySeconds;
+  std::optional<std::uint32_t> write_inactivity_seconds;
+  std::optional<std::uint32_t> hang_seconds;
+  std::optional<std::uint64_t> request_memory_bytes;
+  std::optional<std::uint64_t> max_body_bytes;
+  std::optional<std::uint64_t> stream_buffer_bytes;
 };
 
 // Conversation state under memory pressure ([memory]; D-055 as amended

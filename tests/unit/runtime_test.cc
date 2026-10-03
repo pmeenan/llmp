@@ -41,6 +41,7 @@
 #include "platform/files.h"
 #include "platform/lock_file.h"
 #include "platform/sd_notify.h"
+#include "runtime/intake_limits.h"
 #include "runtime/memory_guard.h"
 #include "runtime/model_limits.h"
 #include "runtime/prefill.h"
@@ -168,15 +169,21 @@ TEST(RuntimeArguments, Commands) {
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->command.table.context_tokens, 1048576U);
 
-  const std::string long_text(jitllm::runtime::kMaxTurnBytes + 1, 'x');
+  // No generic context cap (D-102): the model's usable context decides.
+  options = jitllm::runtime::ParseArguments(
+      std::array<std::string_view, 3>{"swap-table", "--context-tokens", "4294967295"});
+  ASSERT_TRUE(options.has_value()) << options.error();
+  EXPECT_EQ(options->command.table.context_tokens, 4294967295U);
+
+  const std::string long_image_prompt(jitllm::runtime::kMaxImagePromptBytes + 1, 'x');
   const std::string upper_sha(64, 'A');  // hex, but not as the table prints it
   for (const std::vector<std::string_view>& bad : {
            std::vector<std::string_view>{"chat"},  // no turn
            {"chat", "--turn", "ds"},
            {"chat", "--turn", "ds", ""},
-           {"chat", "--turn", "ds", long_text},
+           {"chat", "--image-prompt", long_image_prompt, "--turn", "ds", "Hi"},
            {"chat", "--max-tokens", "0", "--turn", "ds", "Hi"},
-           {"chat", "--max-tokens", "8193", "--turn", "ds", "Hi"},
+           {"chat", "--max-tokens", "4294967296", "--turn", "ds", "Hi"},
            {"chat", "--cycles", "1", "--turn", "ds", "Hi"},  // swap-table's
            {"swap-table", "--turn", "ds", "Hi"},             // chat's
            {"swap-table", "--pairs", "a:a"},
@@ -184,7 +191,8 @@ TEST(RuntimeArguments, Commands) {
            {"swap-table", "--pairs", ""},
            {"swap-table", "--cycles", "9"},
            {"swap-table", "--cycles", "0"},
-           {"swap-table", "--context-tokens", "1048577"},
+           {"swap-table", "--context-tokens", "4294967296"},
+           {"swap-table", "--context-tokens", "31"},
            {"swap-table", "--image-expect", upper_sha},
            {"swap-table", "--zero-context", "yes"},
            {"swap-table", "--image-expect", "abc"},
@@ -192,11 +200,28 @@ TEST(RuntimeArguments, Commands) {
        }) {
     EXPECT_FALSE(jitllm::runtime::ParseArguments(bad).has_value()) << bad.front();
   }
-  std::vector<std::string_view> many = {"chat"};
-  for (std::size_t i = 0; i <= jitllm::runtime::kMaxTurns; ++i) {
-    many.insert(many.end(), {"--turn", "ds", "Hi"});
+  // Turns, a turn's text and --max-tokens have no caps of their own
+  // (D-102): the command line bounds them, and the model's context
+  // --max-tokens when each turn runs.
+  const std::string long_text(std::size_t{256} << 10U, 'x');
+  std::vector<std::string_view> many = {"chat", "--max-tokens", "4294967295"};
+  for (std::size_t i = 0; i < 100; ++i) {
+    many.insert(many.end(), {"--turn", "ds", i == 0 ? std::string_view(long_text) : "Hi"});
   }
-  EXPECT_FALSE(jitllm::runtime::ParseArguments(many).has_value());
+  options = jitllm::runtime::ParseArguments(many);
+  ASSERT_TRUE(options.has_value()) << options.error();
+  EXPECT_EQ(options->command.chat.turns.size(), 100U);
+  EXPECT_EQ(options->command.chat.turns.front().text.size(), long_text.size());
+  EXPECT_EQ(options->command.chat.max_tokens, 4294967295U);
+  std::vector<std::string_view> pairs = {"swap-table", "--pairs"};
+  std::string list;
+  for (int i = 0; i < 100; ++i) {
+    list += std::format("{}a{}:b{}", i == 0 ? "" : ",", i, i);
+  }
+  pairs.emplace_back(list);
+  options = jitllm::runtime::ParseArguments(pairs);
+  ASSERT_TRUE(options.has_value()) << options.error();
+  EXPECT_EQ(options->command.table.pairs.size(), 100U);
 }
 
 // A host without a GPU this build targets (or, as in the workstation
@@ -654,6 +679,217 @@ TEST(Watchdog, AStallMarksTheBackendUnhealthyUntilItsNextBeat) {
   EXPECT_EQ(dog.health().stalls, 2U);
   EXPECT_TRUE(dog.Idle(at + seconds(300)));  // the request ended: recovered, idle
   EXPECT_FALSE(dog.Check(at + seconds(9000)));
+}
+
+// A request waiting for its client to read (backpressure, D-102) is not
+// the backend stalling: nothing is watched while paused, however long.
+TEST(Watchdog, APauseForAClientIsNotAStall) {
+  const auto start = WatchClock::time_point{} + std::chrono::hours(1);
+  Watchdog dog(seconds(120), start);
+  (void)dog.Beat(Phase::kDecode, 0, start);
+  EXPECT_FALSE(dog.Beat(Phase::kPaused, 0, start + seconds(10)));
+  EXPECT_FALSE(dog.due().has_value());
+  EXPECT_FALSE(dog.Check(start + std::chrono::hours(48)));
+  EXPECT_TRUE(dog.health().healthy);
+  EXPECT_EQ(dog.health().phase, Phase::kPaused);
+  EXPECT_EQ(jitllm::runtime::PhaseName(Phase::kPaused), "waiting for a client to read");
+  // Resumed, the unit is watched again.
+  const auto resumed = start + std::chrono::hours(48);
+  (void)dog.Beat(Phase::kDecode, 0, resumed);
+  EXPECT_FALSE(dog.Check(resumed + seconds(119)));
+  EXPECT_TRUE(dog.Check(resumed + seconds(120)));
+}
+
+// The request memory (intake_limits.h, D-102): a 256 MiB floor set apart,
+// growing within the budget to the floor and the state room (or [client]
+// request_memory_bytes); a body a sixteenth of that and at most the largest
+// context's bytes; a stream's unread output a sixty-fourth of the floor,
+// 1 to 64 MiB. [client] replaces each.
+TEST(IntakeLimits, FollowTheRequestMemoryUnlessConfigured) {
+  using jitllm::runtime::ContextBodyBytes;
+  using jitllm::runtime::DeriveIntakeLimits;
+  using jitllm::runtime::RequestFloor;
+  constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
+  constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
+  EXPECT_EQ(RequestFloor({}), 256 * kMiB);
+  jitllm::config::ClientConfig capped;
+  capped.request_memory_bytes = 64 * kMiB;
+  EXPECT_EQ(RequestFloor(capped), 64 * kMiB);
+  // About a Spark's beside DeepSeek V4 Flash: ~15 GiB of state room.
+  const auto l = DeriveIntakeLimits(256 * kMiB, 16 * kGiB, 0, {});
+  EXPECT_EQ(l.request_floor, 256 * kMiB);
+  EXPECT_EQ(l.request_capacity, 16 * kGiB);
+  EXPECT_EQ(l.max_body, kGiB);  // was 16 MiB
+  EXPECT_EQ(l.stream_buffer, 4 * kMiB);
+  // The largest context's bytes bound a body too: a 4,096-token model's
+  // prompt of 16-byte tokens, escaped, is under 2 MiB.
+  const std::uint64_t context = ContextBodyBytes(4096, 16);
+  EXPECT_EQ(context, (std::uint64_t{4096} * 96) + kMiB);
+  EXPECT_EQ(DeriveIntakeLimits(256 * kMiB, 16 * kGiB, context, {}).max_body, context);
+  // DeepSeek V4 at 300,000 tokens of up to 128 bytes: its 221 MiB.
+  EXPECT_EQ(DeriveIntakeLimits(256 * kMiB, 16 * kGiB, ContextBodyBytes(300'000, 128), {}).max_body,
+            ContextBodyBytes(300'000, 128));
+  // Unknown room: the nominal gigabyte; a huge one, the parser's ceiling.
+  const auto nominal = DeriveIntakeLimits(256 * kMiB, 0, 0, {});
+  EXPECT_EQ(nominal.request_capacity, kGiB);
+  EXPECT_EQ(nominal.max_body, 64 * kMiB);
+  const auto huge = DeriveIntakeLimits(256 * kMiB, std::uint64_t{1} << 40U, 0, {});
+  EXPECT_EQ(huge.max_body, jitllm::config::kMaxBodyCeiling);
+  // Configured values replace the derived ones; request_memory_bytes caps
+  // the capacity and, smaller than it, the floor.
+  jitllm::config::ClientConfig client;
+  client.max_body_bytes = kGiB;
+  client.stream_buffer_bytes = 4096;
+  client.request_memory_bytes = 2 * kGiB;
+  const auto set = DeriveIntakeLimits(256 * kMiB, 16 * kGiB, 0, client);
+  EXPECT_EQ(set.request_capacity, 2 * kGiB);
+  EXPECT_EQ(set.max_body, kGiB);
+  EXPECT_EQ(set.stream_buffer, 4096U);
+  const auto small = DeriveIntakeLimits(RequestFloor(capped), 16 * kGiB, 0, capped);
+  EXPECT_EQ(small.request_floor, 64 * kMiB);
+  EXPECT_EQ(small.request_capacity, 64 * kMiB);
+  EXPECT_EQ(small.max_body, 4 * kMiB);
+  EXPECT_EQ(small.stream_buffer, kMiB);
+}
+
+// The pool grows past its floor through the driver's grower: the driver's
+// own charges ask it at once; others' are refused and wanted, and the
+// driver grows to them between units (Settle), or counts a denial; the
+// grant is given back toward what is used. Memory already built is
+// charged past the grant (Force), and waits.
+TEST(IntakeLimits, TheRequestMemoryGrowsThroughTheDriver) {
+  using jitllm::runtime::MemoryCharge;
+  constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
+  jitllm::runtime::RequestMemory pool(8 * kMiB, 64 * kMiB);
+  EXPECT_FALSE(pool.grows());  // no driver yet
+  std::uint64_t held = 8 * kMiB;
+  bool allow = true;
+  pool.SetDriver(
+      std::this_thread::get_id(),
+      [&](std::uint64_t to) {
+        if (to > held && !allow) {
+          return false;
+        }
+        held = to;
+        return true;
+      },
+      4 * kMiB, std::chrono::seconds(10));
+  EXPECT_TRUE(pool.grows());
+  // The driver's charge grows the grant at once, in 2 MiB steps.
+  MemoryCharge driver;
+  EXPECT_TRUE(driver.Add(pool, 9 * kMiB));
+  EXPECT_EQ(pool.grant(), 10 * kMiB);
+  EXPECT_EQ(held, 10 * kMiB);
+  // Another thread's charge is refused and wanted; Settle grows to it.
+  bool other = true;
+  std::thread([&] { other = pool.TryCharge(20 * kMiB); }).join();
+  EXPECT_FALSE(other);
+  std::uint64_t epoch = pool.epoch();
+  pool.Settle();
+  EXPECT_EQ(pool.grant(), 34 * kMiB);  // 29 wanted, 4 slack, rounded
+  EXPECT_GT(pool.epoch(), epoch);      // its waiters try again
+  std::thread([&] { other = pool.TryCharge(20 * kMiB); }).join();
+  EXPECT_TRUE(other);
+  // A release alone tells no waiter; a Settle that finds what was wanted
+  // fits now does.
+  std::thread([&] { other = pool.TryCharge(10 * kMiB); }).join();
+  EXPECT_FALSE(other);  // 39 of 34
+  epoch = pool.epoch();
+  pool.Release(5 * kMiB);
+  EXPECT_EQ(pool.epoch(), epoch);
+  pool.Settle();
+  EXPECT_GT(pool.epoch(), epoch);
+  EXPECT_EQ(pool.grant(), 34 * kMiB);  // no growth: it fits
+  pool.Force(5 * kMiB);                // as it was
+  // Past the capacity: refused, never wanted.
+  std::thread([&] { other = pool.TryCharge(64 * kMiB); }).join();
+  EXPECT_FALSE(other);
+  // A denial: the grower cannot take more.
+  allow = false;
+  std::thread([&] { other = pool.TryCharge(10 * kMiB); }).join();
+  EXPECT_FALSE(other);
+  const std::uint64_t denials = pool.denials();
+  pool.Settle();
+  EXPECT_EQ(pool.denials(), denials + 1);
+  EXPECT_EQ(pool.grant(), 34 * kMiB);
+  // Released, the grant is given back toward what is used (the floor), but
+  // only once nothing has wanted more for a while: not under a request
+  // growing in steps.
+  pool.Release(20 * kMiB);
+  driver.Reset();
+  pool.Settle();
+  EXPECT_EQ(pool.grant(), 34 * kMiB);
+  pool.Settle(4 * kMiB, std::chrono::milliseconds(0));
+  EXPECT_EQ(pool.grant(), 8 * kMiB);
+  EXPECT_EQ(held, 8 * kMiB);
+  // Forced past the grant: charged, and later charges wait.
+  MemoryCharge built;
+  built.Force(pool, 12 * kMiB);
+  EXPECT_EQ(pool.used(), 12 * kMiB);
+  EXPECT_FALSE(pool.TryChargeGranted(1));
+  allow = true;
+  pool.Settle(0, std::chrono::seconds(10));
+  EXPECT_EQ(pool.grant(), 14 * kMiB);  // the byte that waited too, rounded
+  built.Reset();
+  EXPECT_EQ(pool.used(), 0U);
+}
+
+// The pool's accounting: charges fit or are refused whole, and release.
+TEST(IntakeLimits, TheRequestMemoryChargesAndReleases) {
+  using jitllm::runtime::MemoryCharge;
+  jitllm::runtime::RequestMemory pool(1000);
+  {
+    MemoryCharge a;
+    EXPECT_TRUE(a.Add(pool, 600));
+    EXPECT_TRUE(a.Add(pool, 300));
+    EXPECT_EQ(a.bytes(), 900U);
+    MemoryCharge b;
+    EXPECT_FALSE(b.Add(pool, 101));  // nothing charged
+    EXPECT_EQ(pool.used(), 900U);
+    EXPECT_TRUE(b.Add(pool, 100));
+    MemoryCharge moved = std::move(b);
+    EXPECT_EQ(pool.used(), 1000U);
+    EXPECT_FALSE(pool.TryCharge(1));
+  }
+  EXPECT_EQ(pool.used(), 0U);
+  EXPECT_FALSE(pool.TryCharge(1001));
+}
+
+// A rendering's most: what a prompt that fits the context could occupy
+// (context × longest token, four times under NFC), at least 1 MiB;
+// connections: the open-file limit less the runtime's own.
+TEST(IntakeLimits, RenderingAndConnectionsFollowTheirResources) {
+  using jitllm::runtime::ConnectionsFor;
+  using jitllm::runtime::RenderBytes;
+  constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
+  EXPECT_EQ(RenderBytes(262'144, 128, false), 32 * kMiB);  // DeepSeek V4
+  EXPECT_EQ(RenderBytes(262'144, 128, true), 128 * kMiB);  // NFC: four times
+  EXPECT_EQ(RenderBytes(512, 16, false), kMiB);            // the floor
+  EXPECT_EQ(RenderBytes(0xFFFF'FFFFU, 1024, true), std::uint64_t{0xFFFF'FFFFU} * 4096);
+  EXPECT_EQ(ConnectionsFor(524'288), 524'288U - 256);
+  EXPECT_EQ(ConnectionsFor(1024), 768U);
+  EXPECT_EQ(ConnectionsFor(100), 16U);
+}
+
+// The request memory's floor is set apart beside the margin: the guard
+// counts it, and only it (what passes it is charged inside the budget).
+TEST(MemoryGuard, CountsTheRequestMemoryFloor) {
+  using jitllm::runtime::CheckMemoryGuard;
+  using jitllm::runtime::GuardReserve;
+  using jitllm::runtime::kRequestMemoryFloor;
+  using jitllm::runtime::kUncountedMargin;
+  constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
+  const std::uint64_t weights = 90 * kGiB;
+  const std::uint64_t exact = weights + kGiB + kUncountedMargin + kRequestMemoryFloor;
+  const jitllm::runtime::MemoryGuard guard{
+      .largest = weights, .host_inputs = kGiB, .available = exact, .requests = kRequestMemoryFloor};
+  EXPECT_TRUE(CheckMemoryGuard(guard).has_value());
+  EXPECT_EQ(GuardReserve(guard), kGiB + kRequestMemoryFloor + kUncountedMargin);
+  auto short_by_one = guard;
+  short_by_one.available = exact - 1;
+  const auto refused = CheckMemoryGuard(short_by_one);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_THAT(refused.error(), HasSubstr("request_memory_bytes"));
 }
 
 // The start's memory guard (memory_guard.h): the largest model's weights,

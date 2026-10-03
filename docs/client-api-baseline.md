@@ -256,19 +256,25 @@ M3's chat route does this for Chat Completions now (D-097): `: keepalive`
 comment lines every 15 s without output, from the headers on, through the
 queue, a swap and prefill. A stream that waits 15 s in the queue is
 admitted then, with its headers and role chunk, so the queue counts as
-admission for it; its queue expiry afterwards is an in-stream
-`rate_limit_error`, not the 429 below, and a stream admitted within 15 s
-keeps the 400s and 429s before headers.
+admission for it; a stream admitted within 15 s keeps the 400s before
+headers. Since D-102 (2026-10-03) the route's queue has no count and no
+wait by default, so it sends no 429; an owner who sets `[client]
+max_queued` or `queue_wait_seconds` gets the 429 below for those limits.
+A stream whose client stops reading pauses at its next completed step
+(backpressure) instead of being cut off.
 
 Non-streaming requests, including `stream: false`, receive one JSON result
 or protocol-shaped JSON error; hold headers until the outcome is known and
 never send SSE keepalives. Pin and test each client's non-streaming timeout
 bound separately. Document when long switches exceed that bound instead of
-silently enabling streaming. A server request deadline produces a
-protocol-shaped 504 before headers and initiates completion-safe cancellation;
-disconnects also initiate cancellation, never premature backing reclamation.
-Pre-admission queue expiry remains 429. A timeout does not authorize automatic
-replay or promise exactly-once inference (D-047).
+silently enabling streaming. A server request deadline, where one is
+configured, produces a protocol-shaped 504 before headers and initiates
+completion-safe cancellation; disconnects also initiate cancellation, never
+premature backing reclamation. Pre-admission queue expiry, where configured,
+remains 429. By default (D-102) neither applies: a non-streaming request
+waits its turn and runs to its end, its client's own timeout the only
+clock. A timeout does not authorize automatic replay or promise
+exactly-once inference (D-047).
 
 Documented streaming client bounds the profiles must stay inside:
 
@@ -288,10 +294,10 @@ Documented streaming client bounds the profiles must stay inside:
 | Unknown model ID | 404 in the protocol's shape (`model_not_found`, `not_found_error`, Ollama's `model 'x' not found`) |
 | Known model with no prepared artifact on any node | 503 with `x-should-retry: false`; the message names the install job route; inference never downloads |
 | Oversized request or headers | 413 before expensive work |
-| Queue full, maximum queue wait exceeded, over budget now | 429 with integer `retry-after` of at most 60 and `x-should-retry: true` |
-| Overloaded or draining | 503 with `retry-after` of at most 60 |
-| Switch, warm or prefill in progress | Not an error: for SSE, admit, send headers and the first event, keep alive; for non-streaming, await the JSON outcome within the request deadline (D-047) |
-| Non-streaming server request deadline expires | 504 in the protocol's JSON error shape before headers; initiate completion-safe cancellation (D-047) |
+| Queue full, maximum queue wait exceeded, over budget now | 429 with integer `retry-after` of at most 60 and `x-should-retry: true`; only for limits an owner configured (`[client] max_queued`, `queue_wait_seconds`; none by default, D-102), and the message names the key |
+| Overloaded or draining | 503 with `retry-after` of at most 60 (a request's memory past what the request memory has free now, too many connections for the descriptors, the runtime stopping); a request larger than the whole request memory is a 413 |
+| Switch, warm or prefill in progress | Not an error: for SSE, admit, send headers and the first event, keep alive; for non-streaming, await the JSON outcome (within a configured request deadline, D-047; none by default, D-102) |
+| Non-streaming server request deadline expires | Only with `[client] deadline_cap_seconds` set (D-102): 504 in the protocol's JSON error shape before headers; initiate completion-safe cancellation (D-047) |
 
 For streaming responses, after headers, failures use the protocol's in-stream error form and terminate
 without a success marker. Retried requests are not proof that an earlier
@@ -337,11 +343,14 @@ top-level `jitllm` body object; M5 fixes the individual names.
 ## Shared correctness and limits
 
 M3's minimal endpoint fixed its bounds in
-[runtime-serving.md](runtime-serving.md#the-chat-route) (D-097); M5's
-front door extends them to its routes. Before M5's front door accepts
-external input, specify numeric bounds on request/header
-bytes, history, tools, argument size, output, queued requests and stream
-buffers. Reject oversized or unsupported input before expensive work. Test
+[runtime-serving.md](runtime-serving.md#the-chat-route) (D-097), since
+derived from real resources (D-102: memory, descriptors, the model's
+context, a parser's stack; counts and times that bounded only abuse are
+gone or owner options); M5's front door extends them to its routes the
+same way. Before M5's front door accepts external input, specify the bound
+and the resource it protects for request/header bytes, history, tools,
+argument size, output, queued requests and stream buffers. Reject
+oversized or unsupported input before expensive work. Test
 malformed JSON, invalid tool links, unsupported modalities and unavailable
 models. No prompt/tool payload logging by default. Usage and cache accounting
 must reflect actual work; cache hints do not grant retention or identify a

@@ -13,8 +13,11 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -22,12 +25,12 @@
 #include "base/report.h"
 #include "base/sha256.h"
 #include "runtime/commands.h"
+#include "runtime/intake_limits.h"
 #include "runtime/serving.h"
 
 namespace jitllm::runtime {
 namespace {
 
-constexpr std::size_t kMaxContextText = std::size_t{16} << 20U;
 constexpr std::uint32_t kShortContext = 16;  // an LLM A's prompt at 0 context
 
 std::unexpected<std::string> Error(std::string what) { return std::unexpected(std::move(what)); }
@@ -161,11 +164,19 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
       chat::Conversation conversation;
       conversation.messages = messages;
       l.Defaults(conversation);
+      conversation.max_render_bytes = l.render_bytes();
       std::uint32_t stable_boundary = 0;
       auto tokens = l.RenderChat(conversation, &stable_boundary);
       if (!tokens) {
         return Error(std::format("turn {}: {}", index + 1, tokens.error()));
       }
+      // --max-tokens is bounded by the model's context, not a fixed cap
+      // (D-102): the turn generates at most what the context has left.
+      if (tokens->size() >= l.usable_context()) {
+        return Error(std::format("turn {}: its {} tokens do not fit {}'s usable context of {}",
+                                 index + 1, tokens->size(), l.name(), l.usable_context()));
+      }
+      const auto room = static_cast<std::uint32_t>(l.usable_context() - tokens->size());
       Generation generation;
       std::uint32_t reused = 0;
       double prefill = 0;
@@ -183,7 +194,7 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
         prefill = Seconds(first - start);
         top = TopLogits(last);
         return l.Generate(last,
-                          {.max_tokens = o.max_tokens,
+                          {.max_tokens = std::min(o.max_tokens, room),
                            .stop = !o.ignore_stop,
                            .keep_logits = false,
                            .sampling = std::nullopt,
@@ -342,6 +353,8 @@ class Table {
   const SwapTableOptions& o_;
   const ServingOptions& serving_;
   std::FILE* out_;
+  std::unique_ptr<RequestMemory> memory_;  // the request memory, once a context is read
+  MemoryCharge text_charge_;               // text_'s bytes in it
   std::string text_;
   std::map<std::string, std::vector<std::int32_t>> context_;  // by LLM
   std::map<std::string, std::string> first_outputs_;          // B's, by pair
@@ -359,16 +372,36 @@ Status Table::Context(Llm& a) {
     if (o_.context_text.empty()) {
       return Error("an LLM A needs --context-text");
     }
+    // The file is read whole and tokenized, so the request memory bounds it
+    // as it bounds the chat route's requests (D-102; runtime/intake_limits.h):
+    // the text, then its tokenization's working set, charged to the pool
+    // the start set apart and, past it, to the budget through the reclaim
+    // order (this thread is the node's driver).
+    if (memory_ == nullptr) {
+      memory_ =
+          std::make_unique<RequestMemory>(server_.request_memory(), server_.request_capacity());
+      memory_->SetDriver(std::this_thread::get_id(),
+                         [this](std::uint64_t to) { return server_.SetRequestMemory(to); });
+    }
+    const std::uint64_t most = memory_->capacity();
+    std::error_code size_error;
+    const auto size = std::filesystem::file_size(o_.context_text, size_error);
+    if (size_error || size == 0 || size > most || !text_charge_.Add(*memory_, size)) {
+      return Error(
+          std::format("{} is empty, unreadable or over {} bytes (the request memory, "
+                      "[client] request_memory_bytes)",
+                      o_.context_text.string(), most));
+    }
     std::ifstream file(o_.context_text, std::ios::binary);
     text_.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    if (text_.empty() || text_.size() > kMaxContextText) {
-      return Error(std::format("{} is empty, unreadable or over {} bytes", o_.context_text.string(),
-                               kMaxContextText));
+    if (text_.empty() || text_.size() > most) {
+      return Error(
+          std::format("{} is empty, unreadable or over {} bytes", o_.context_text.string(), most));
     }
   }
-  auto ids = a.EncodeText(text_);
+  auto ids = a.EncodeText(text_, memory_.get());
   if (!ids) {
-    return std::unexpected(ids.error());
+    return std::unexpected(ids.error() + " ([client] request_memory_bytes bounds it)");
   }
   if (ids->size() < o_.context_tokens) {
     return Error(std::format("{} has {} of {}'s tokens, fewer than {}", o_.context_text.string(),
@@ -395,6 +428,7 @@ Status Table::FirstOutput(Served& b, std::string& hash) {
                           .reasoning_content = std::nullopt,
                           .tool_calls = {}});
     l.Defaults(c);
+    c.max_render_bytes = l.render_bytes();
     auto tokens = l.RenderChat(c);
     if (!tokens) {
       return std::unexpected(tokens.error());

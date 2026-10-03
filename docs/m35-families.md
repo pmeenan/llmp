@@ -988,6 +988,7 @@ a carrier on 2026-10-02:
 (Apache-2.0, 8.0B, 4.4M downloads in 30 days).
 It takes 16 kHz audio as 128 mel bins, about 30 s a clip, through a
 ≈300M conformer, and shares Gemma 4's tokenizer, template and vision.
+Longer audio is split into such windows, not refused (D-102).
 llama.cpp, vLLM, SGLang and transformers run it. Alternatives:
 - `nvidia/Nemotron-3-Nano-Omni-30B-A3B`: audio, image and video in one
   model, NVIDIA license;
@@ -1020,6 +1021,10 @@ llama.cpp, vLLM, SGLang and transformers run it. Alternatives:
 - **Workers AI** serves Clef with the same body. Its limits are 1–64
   questions, at most 4 images (data URLs, PNG, JPEG or WebP) and 64K
   tokens ([model page](https://developers.cloudflare.com/workers-ai/models/clef/)).
+  jitLLM does not adopt the counts as its limits (D-102, 2026-10-03): no
+  question or image counts, TypeSafe's option (2–255) and score-level
+  (2–10) ranges as wire ranges, image bytes and pixels from memory and
+  the model's context.
 - **The models.** Both are Apache-2.0
   ([clef](https://huggingface.co/Cloudflare/clef),
   [clef-flash](https://huggingface.co/Cloudflare/clef-flash)).

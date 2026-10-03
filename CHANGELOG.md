@@ -233,6 +233,39 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   token 8.3 → 7.3 s on the
   community GGUF, 9.4 → 8.3 s on the 0731). Replies change with the
   arithmetic.
+- The chat route's limits follow real resources and default to permissive
+  (D-102): no message, content-part or stop-string counts, no 8 MiB
+  message or 128-byte stop caps, and no queue count, queue wait or
+  non-streaming deadline unless `[client]` sets one (`max_queued`,
+  `queue_wait_seconds`, `deadline_cap_seconds`). Requests' host memory is
+  one pool charged by what each request really holds, bodies as they
+  arrive, parses, queued requests, renderings, tokenizations and a
+  stream's unread output included: 256 MiB is set apart at the start, and
+  past it the pool grows within the memory budget, displacing caches and
+  idle conversations, and shrinks as requests end (`request_memory_bytes`
+  caps it); what cannot fit is refused before the work (413, or 503 to
+  retry); a prompt that cannot fit the model's context is refused before
+  it is queued. A body follows the pool and the largest configured context (on
+  a Spark serving DeepSeek V4 Flash at 300K tokens, 221 MiB instead of 16
+  MiB; `max_body_bytes`), connections the open-file hard limit. A stream
+  whose client stops reading pauses, and if it keeps others waiting
+  yields its place, continuing once its client reads. Large bodies parse off the I/O
+  thread; stop strings of any number are matched together in one shared
+  automaton; a chat text longer than any prompt that fits is refused
+  before rendering, and tokenization works in bounded windows. JSON
+  values follow the body (a 1M-token ID prompt parses) and nest to 64.
+  `max_tokens` and literal top scores (`logprobs`, `prompt_logprobs`, now
+  up to the vocabulary) are bounded by the model, not fixed caps. A stall
+  is reported (log, health, service status) without failing requests
+  (`stall_action = "fail"` restores that); head and body timeouts count
+  inactivity (`request_inactivity_seconds`); a stream whose client stops
+  reading pauses at a completed step instead of being dropped after 30 s
+  (`write_inactivity_seconds` restores a drop). Chat templates have no
+  step or work caps: a long rendering ends when its request does, and
+  rendering bounds follow the model's context and memory. The
+  configuration no longer caps models at 16 or contexts at 1,048,576. All
+  earlier configurations and requests stay valid: `schema_version` 2 and
+  `jitllm-inference-version` 1 are unchanged.
 - DeepSeek serves its output-A/HCA prefill by default on full 4,096-row
   chunks, where it passes every registered quality bound on both GGUFs:
   7K-token chat completes 7% faster alone and 12% faster four at a time
@@ -389,6 +422,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   a short one 35% less. Draft ids are now bounded to the vocabulary before
   any lookup, so a drafter's non-finite logits can no longer index past a
   table.
+- A chat prompt over 4 MiB of rendered text, or over 4,194,304 tokens, was
+  refused by the tokenizer's library defaults below the body limit and
+  DeepSeek's 1M context; the chat and literal routes now bound
+  tokenization by the rendering and the model's context.
 - `jitllm-runtime` refused to start the community DeepSeek V4 Flash
   IQ2_XXS GGUF ("a DeepSeek V4 wave needs every layer in the fast plan's
   fused form"): its F16 hyper-connection mixing weights kept every layer

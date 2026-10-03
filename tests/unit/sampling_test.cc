@@ -107,7 +107,39 @@ TEST(TokenScores, RefusesInvalidTargetsAndNonJsonDistributions) {
   EXPECT_FALSE(ex::ScoreToken(std::vector<float>{0, -INFINITY}, 1, 1));
   EXPECT_FALSE(ex::ScoreToken(std::vector<float>{0}, -1, 1));
   EXPECT_FALSE(ex::ScoreToken(std::vector<float>{0}, 1, 1));
-  EXPECT_FALSE(ex::ScoreToken(std::vector<float>{0}, 0, 6));
+  // More top scores than the row asks for all of it (D-102: no cap of 5).
+  const auto all = ex::ScoreToken(std::vector<float>{0}, 0, 6);
+  ASSERT_TRUE(all.has_value());
+  EXPECT_EQ(all->top.size(), 1U);
+}
+
+// Many top scores (D-102 raised the API's 5 to the vocabulary) keep the
+// few-score ordering and ranks: more likely first, ties by the lower ID,
+// equal logits sharing the first one's rank; the whole row in order.
+TEST(TokenScores, ManyTopScoresKeepTheOrderAndRanks) {
+  std::vector<float> row(5000);
+  for (std::size_t i = 0; i < row.size(); ++i) {
+    row[i] = static_cast<float>((i * 7919) % 97) - 40.0F;  // many ties
+  }
+  row[17] = -INFINITY;  // padding: never a candidate
+  const auto few = ex::ScoreToken(row, 3, 16);
+  const auto many = ex::ScoreToken(row, 3, 4000);
+  const auto whole = ex::ScoreToken(row, 3, 5000);
+  ASSERT_TRUE(few.has_value() && many.has_value() && whole.has_value());
+  ASSERT_GE(many->top.size(), 4000U);
+  EXPECT_EQ(whole->top.size(), row.size() - 1);  // every finite logit, the actual among them
+  for (std::size_t j = 0; j < 16; ++j) {
+    EXPECT_EQ(few->top[j].id, many->top[j].id) << j;
+    EXPECT_EQ(few->top[j].rank, many->top[j].rank) << j;
+    EXPECT_DOUBLE_EQ(few->top[j].logprob, many->top[j].logprob) << j;
+  }
+  for (std::size_t j = 1; j < whole->top.size(); ++j) {
+    const auto& a = whole->top[j - 1];
+    const auto& b = whole->top[j];
+    EXPECT_TRUE(a.logprob > b.logprob || (a.logprob == b.logprob && a.id < b.id)) << j;
+    EXPECT_EQ(b.rank, a.logprob == b.logprob ? a.rank : static_cast<std::uint32_t>(j + 1)) << j;
+  }
+  EXPECT_DOUBLE_EQ(whole->logprob, many->logprob);
 }
 
 TEST(Sample, TemperatureZeroIsGreedy) {

@@ -12,7 +12,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -178,17 +180,15 @@ TEST(ChatTemplates, HeavyCopiesFailTheirFirstProbe) {
   EXPECT_LT(seconds, 10.0);
 }
 
-// Probes share one pool, a single rendering's bounds: a copy that stays just
-// under each probe's budget, probe after probe, spends the pool and belongs
-// to no family, rather than costing registration hundreds of probes.
+// Probes share one pool with its own fixed basis (kProbePool; renderings
+// themselves are uncapped, D-102): a copy that stays just under each
+// probe's budget, probe after probe, spends the pool and belongs to no
+// family, rather than costing registration hundreds of probes.
 TEST(ChatTemplates, BusyCopiesSpendOnePool) {
-  chat::jinja::Limits pool;
-  pool.max_steps = 5'000'000;
-  const auto plain = chat::jinja::Template::Parse(Template("qwen3.8"), pool);
+  const auto plain = chat::jinja::Template::Parse(Template("qwen3.8"));
   const auto busy = chat::jinja::Template::Parse(
-      "{%- for i in range(1000) -%}{%- for j in range(200) -%}{%- endfor -%}{%- endfor -%}" +
-          Template("qwen3.8"),
-      pool);
+      "{%- for i in range(1000) -%}{%- for j in range(100) -%}{%- endfor -%}{%- endfor -%}" +
+      Template("qwen3.8"));
   ASSERT_TRUE(plain.has_value() && busy.has_value());
   const auto natives = chat::NativeTemplates();
   const auto qwen =
@@ -196,22 +196,41 @@ TEST(ChatTemplates, BusyCopiesSpendOnePool) {
   ASSERT_NE(qwen, natives.end());
   chat::jinja::Usage spent;
   EXPECT_TRUE(chat::ProbeEquivalent(*qwen, *plain, QwenFacts(), &spent));
-  EXPECT_LT(spent.steps, pool.max_steps);
-  spent = {};
+  EXPECT_LT(spent.steps, chat::kProbePool.steps / 10);
+  // A registration whose probes have spent all but 2,000,000 steps of the
+  // pool (earlier families' probes draw on it too): each busy probe passes
+  // its own budget, and the pool runs out after a few.
+  spent = {.steps = chat::kProbePool.steps - 2'000'000, .work_bytes = 0};
+  const auto started = std::chrono::steady_clock::now();
   EXPECT_FALSE(chat::ProbeEquivalent(*qwen, *busy, QwenFacts(), &spent));
-  EXPECT_LE(spent.steps, pool.max_steps + 1);
+  EXPECT_GE(spent.steps, chat::kProbePool.steps);
+  EXPECT_LE(spent.steps, chat::kProbePool.steps + 1);
+  EXPECT_LT(std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
+            60.0);
 }
 
 // The scan for control tokens in the template's text is charged to the
-// rendering's work bound: text that could start a control token at every
-// byte is refused rather than scanned uncharged.
+// rendering's work: text that could start a control token at every byte
+// is refused under a work budget (a probe's), and like the rendering it is
+// cancellable when uncapped (D-102), not scanned uncharged.
 TEST(ChatTemplates, ControlTokenScansAreCharged) {
-  auto t = chat::ChatTemplate::ForText("{{ '<' * 30000000 }}", QwenFacts());
-  ASSERT_TRUE(t.has_value()) << t.error();
+  auto program = chat::jinja::Template::Parse("{{ '<' * 30000000 }}");
+  ASSERT_TRUE(program.has_value());
   chat::Conversation c;
   c.messages.push_back({chat::Role::kUser, "hi", std::nullopt, {}});
   c.add_generation_prompt = false;
-  EXPECT_EQ(Failed(t->Render(c), &chat::Error::rule), chat::Rule::kUnsupported);
+  EXPECT_EQ(Failed(chat::RenderInterpreted(*program, c, QwenFacts(), std::nullopt,
+                                           {.max_work_bytes = std::uint64_t{2} << 30U}),
+                   &chat::Error::rule),
+            chat::Rule::kUnsupported);
+  std::size_t asked = 0;
+  const std::function<bool()> stop = [&asked] { return ++asked >= 2; };
+  auto t = chat::ChatTemplate::ForText("{{ '<' * 30000000 }}", QwenFacts());
+  ASSERT_TRUE(t.has_value()) << t.error();
+  const auto cancelled = t->Render(c, std::nullopt, &stop);
+  ASSERT_FALSE(cancelled.has_value());
+  EXPECT_TRUE(cancelled.error().cancelled) << cancelled.error().ToString();
+  EXPECT_EQ(asked, 2U);
   auto ok = chat::ChatTemplate::ForText("{{ '<|im_start|>' * 1000 }}", QwenFacts());
   ASSERT_TRUE(ok.has_value()) << ok.error();
   const auto r = ok->Render(c);
@@ -309,10 +328,16 @@ TEST(ChatTemplates, InterpreterRefusalsAreTyped) {
   chat::Conversation c;
   c.messages.push_back({chat::Role::kUser, "hi", std::nullopt, {}});
   EXPECT_EQ(Failed(raising->Render(c), &chat::Error::rule), chat::Rule::kInvalid);
+  // A rendering that would run for hours has no step cap (D-102): it ends
+  // when its request does, as a cancellation.
   auto looping = chat::ChatTemplate::ForText(
       "{% for i in range(100000) %}{% for j in range(100000) %}{% endfor %}{% endfor %}", {});
   ASSERT_TRUE(looping.has_value());
-  EXPECT_EQ(Failed(looping->Render(c), &chat::Error::rule), chat::Rule::kUnsupported);
+  const auto by = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+  const std::function<bool()> ended = [by] { return std::chrono::steady_clock::now() >= by; };
+  const auto stopped = looping->Render(c, std::nullopt, &ended);
+  EXPECT_EQ(Failed(stopped, &chat::Error::rule), chat::Rule::kUnsupported);
+  EXPECT_TRUE(!stopped.has_value() && stopped.error().cancelled);
   EXPECT_FALSE(chat::ChatTemplate::ForText("{% extends 'base' %}", {}).has_value());
   EXPECT_FALSE(chat::ChatTemplate::ForText("{{ x | nosuchfilter }}", {}).has_value());
 }

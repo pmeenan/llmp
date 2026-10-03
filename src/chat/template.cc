@@ -13,6 +13,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -113,7 +114,9 @@ Error FromJinja(const jinja::Error& e) {
   if (e.code == jinja::Code::kRaised || e.code == jinja::Code::kRuntime) {
     rule = Rule::kInvalid;  // what Jinja2 itself raises
   }
-  return Error{rule, e.reason, kNoItem, e.line};
+  Error out{rule, e.reason, kNoItem, e.line};
+  out.cancelled = e.code == jinja::Code::kCancelled;
+  return out;
 }
 
 // The control tokens in the template's own text: leftmost, longest.
@@ -146,12 +149,24 @@ class SpecialScanner {
     return length + (starts * per_start_);
   }
 
-  void Scan(std::string_view text, std::size_t offset, std::size_t length,
-            std::vector<tokenizer::SpecialSpan>& out) const {
+  // False when `cancelled` (asked every jinja::kCancelWorkBytes of Cost's
+  // measure, as the interpreter asks) said to stop.
+  bool Scan(std::string_view text, std::size_t offset, std::size_t length,
+            std::vector<tokenizer::SpecialSpan>& out, const std::function<bool()>* cancelled,
+            std::uint64_t& work) const {
     const std::size_t end = offset + length;
+    std::uint64_t next_check = work + jinja::kCancelWorkBytes;
     for (std::size_t at = offset; at < end;) {
+      if (cancelled != nullptr && work >= next_check) {
+        next_check = work + jinja::kCancelWorkBytes;
+        if (*cancelled && (*cancelled)()) {
+          return false;
+        }
+      }
+      ++work;
       std::size_t found = 0;
       if (first_[static_cast<unsigned char>(text[at])]) {
+        work += per_start_;
         for (const std::size_t n : lengths_) {
           if (n <= end - at && texts_.contains(text.substr(at, n))) {
             found = n;
@@ -166,6 +181,7 @@ class SpecialScanner {
         ++at;
       }
     }
+    return true;
   }
 
  private:
@@ -182,20 +198,22 @@ class SpecialScanner {
 // times at these bounds, not hundreds of times at the full ones.
 constexpr jinja::Budget kProbeBudget{.max_steps = 500'000, .max_work_bytes = 16U << 20U};
 
-// The next probe's budget: kProbeBudget, within what is left of one full
-// rendering's bounds after `spent`. Every probe of a registration draws on
-// that one pool, so a template that passes probe after probe, each just
-// under kProbeBudget, costs no more than a single full rendering; none
-// once the pool is spent.
-std::optional<jinja::Budget> ProbeBudget(const jinja::Template& program, jinja::Usage& spent) {
-  const jinja::Limits& l = program.limits();
-  if (spent.steps >= l.max_steps || spent.work_bytes >= l.max_work_bytes) {
+// The next probe's budget: kProbeBudget, within what is left of kProbePool
+// after `spent`. Every probe of a registration draws on that one pool, so a
+// template that passes probe after probe, each just under kProbeBudget,
+// costs no more than the pool; none once it is spent.
+std::optional<jinja::Budget> ProbeBudget(jinja::Usage& spent) {
+  if (spent.steps >= kProbePool.steps || spent.work_bytes >= kProbePool.work_bytes) {
     return std::nullopt;
   }
   return jinja::Budget{
-      .max_steps = std::min(kProbeBudget.max_steps, l.max_steps - spent.steps),
-      .max_work_bytes = std::min(kProbeBudget.max_work_bytes, l.max_work_bytes - spent.work_bytes),
-      .usage = &spent};
+      .max_steps = std::min(kProbeBudget.max_steps, kProbePool.steps - spent.steps),
+      .max_work_bytes =
+          std::min(kProbeBudget.max_work_bytes, kProbePool.work_bytes - spent.work_bytes),
+      .usage = &spent,
+      .cancelled = nullptr,
+      .max_live_bytes = 0,
+      .max_output_bytes = 0};
 }
 
 // A fixed clock for probes: no family renderer reads one.
@@ -366,7 +384,7 @@ Verdict Probe(const Template& native, const jinja::Template& program, const Toke
   if (!mine && mine.error().rule == Rule::kUnsupported) {
     return Verdict::kSkip;
   }
-  const auto budget = ProbeBudget(program, spent);
+  const auto budget = ProbeBudget(spent);
   if (!budget) {
     return Verdict::kDiffer;  // the pool is spent: no family's template costs that much
   }
@@ -386,7 +404,7 @@ Verdict Probe(const Template& native, const jinja::Template& program, const Toke
 // message's content, if any.
 std::optional<std::string> EndOfTurn(const jinja::Template& program, const TokenFacts& tokens,
                                      jinja::Usage& spent) {
-  const auto budget = ProbeBudget(program, spent);
+  const auto budget = ProbeBudget(spent);
   if (!budget) {
     return std::nullopt;
   }
@@ -434,11 +452,12 @@ std::expected<Rendered, Error> RenderInterpreted(const jinja::Template& program,
                                                  const TokenFacts& tokens,
                                                  const std::optional<jinja::CivilTime>& now,
                                                  jinja::Budget budget) {
-  // The scan for control tokens is charged to the rendering's work bound.
-  const jinja::Limits& limits = program.limits();
+  // The scan for control tokens is charged to the rendering's work: to a
+  // probe's budget, when it has one (an ordinary rendering's work is not
+  // capped, D-102; the scan is linear in its output).
   const std::uint64_t max_work = budget.max_work_bytes != 0
-                                     ? std::min(budget.max_work_bytes, limits.max_work_bytes)
-                                     : limits.max_work_bytes;
+                                     ? budget.max_work_bytes
+                                     : std::numeric_limits<std::uint64_t>::max();
   jinja::Usage own;
   jinja::Usage& used = budget.usage != nullptr ? *budget.usage : own;
   const jinja::Usage before = used;
@@ -458,8 +477,14 @@ std::expected<Rendered, Error> RenderInterpreted(const jinja::Template& program,
               .reason = "the template built or scanned more bytes than its bound"});
   }
   Rendered out;
+  std::uint64_t scanned = 0;
   for (const auto& [offset, length] : rendered->trusted) {
-    scanner.Scan(rendered->text, offset, length, out.specials);
+    if (!scanner.Scan(rendered->text, offset, length, out.specials, budget.cancelled, scanned)) {
+      Error cancelled{.rule = Rule::kUnsupported,
+                      .reason = "the rendering was cancelled: its request ended"};
+      cancelled.cancelled = true;
+      return std::unexpected(cancelled);
+    }
   }
   out.text = std::move(rendered->text);
   if (conversation.add_generation_prompt) {
@@ -525,12 +550,15 @@ bool ProbeEquivalent(const Template& native, const jinja::Template& program,
 }
 
 std::expected<ChatTemplate, std::string> ChatTemplate::ForText(std::string_view template_text,
-                                                               TokenFacts tokens) {
+                                                               TokenFacts tokens,
+                                                               const jinja::Limits& limits) {
   ChatTemplate t;
   t.sha256_ = base::ToHex(base::Sha256().Update(template_text).Finish());
   t.tokens_ = std::move(tokens);
+  t.max_bytes_ = limits.max_output_bytes;
+  t.max_live_bytes_ = limits.max_live_bytes;
   jinja::Usage probes;  // what every probe of this registration used (ProbeBudget)
-  auto program = jinja::Template::Parse(template_text);
+  auto program = jinja::Template::Parse(template_text, limits);
   if (program) {
     // Kept beside a native renderer too, for the cases it does not implement.
     t.program_ = std::make_unique<jinja::Template>(std::move(*program));
@@ -574,8 +602,9 @@ std::string_view ChatTemplate::name() const {
   return native_ != nullptr ? native_->name : std::string_view("interpreted");
 }
 
-std::expected<Rendered, Error> ChatTemplate::Render(
-    const Conversation& conversation, const std::optional<jinja::CivilTime>& now) const {
+std::expected<Rendered, Error> ChatTemplate::Render(const Conversation& conversation,
+                                                    const std::optional<jinja::CivilTime>& now,
+                                                    const std::function<bool()>* cancelled) const {
   if (native_ != nullptr) {
     auto rendered = native_->render(conversation);
     // A case the native renderer does not implement is the template's to
@@ -586,7 +615,13 @@ std::expected<Rendered, Error> ChatTemplate::Render(
       return rendered;
     }
   }
-  return RenderInterpreted(*program_, conversation, tokens_, now);
+  return RenderInterpreted(*program_, conversation, tokens_, now,
+                           jinja::Budget{.max_steps = 0,
+                                         .max_work_bytes = 0,
+                                         .usage = nullptr,
+                                         .cancelled = cancelled,
+                                         .max_live_bytes = conversation.max_live_bytes,
+                                         .max_output_bytes = conversation.max_render_bytes});
 }
 
 }  // namespace jitllm::chat

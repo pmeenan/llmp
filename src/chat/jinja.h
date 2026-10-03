@@ -12,8 +12,12 @@
 // Untrusted input: the template comes from a checkpoint and the values from
 // a client. Nothing reaches files, the network, the environment or process
 // state; the only callables are a fixed list of filters, tests, methods and
-// globals; and every resource has a bound (Limits). A bound reached is an
-// error, never a truncated rendering. Where Jinja2 would raise, rendering
+// globals; and memory and nesting have bounds (Limits). A bound reached is
+// an error, never a truncated rendering. Time is not bounded (D-102): a
+// rendering's steps and the bytes it builds or scans are counted, and a
+// caller's cancellation (Budget::cancelled) is asked every few thousand
+// steps and megabytes, so a long rendering stops when its request ends;
+// only a Budget (probes) caps them. Where Jinja2 would raise, rendering
 // fails too; where jitLLM does not implement what Jinja2 would do, parsing
 // or rendering is refused rather than approximated.
 //
@@ -29,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -40,20 +45,28 @@
 
 namespace jitllm::chat::jinja {
 
+// The template's own bounds (its size and syntax tree), the stack's
+// (nesting), memory's (values held, one string, the output) and Jinja2's
+// sandbox MAX_RANGE. Serving derives the memory bounds from the model's
+// context and the host's memory (runtime/intake_limits.h RenderBytes);
+// these defaults are the library's.
 struct Limits {
   std::size_t max_template_bytes = std::size_t{1} << 20U;
-  std::size_t max_nodes = std::size_t{1} << 18U;  // AST nodes
-  std::size_t max_parse_depth = 256;              // nested blocks and expression tree depth
-  std::size_t max_eval_depth = 512;               // evaluator recursion, macros included
-  std::size_t max_macro_depth = 32;               // nested macro calls
-  std::size_t max_value_depth = 64;               // nested lists and mappings
-  std::uint64_t max_steps = 50'000'000;           // evaluation steps
-  std::uint64_t max_work_bytes = std::uint64_t{2} << 30U;  // bytes built or scanned
-  std::size_t max_live_bytes = std::size_t{256} << 20U;    // bytes held by values at once
-  std::size_t max_string_bytes = std::size_t{64} << 20U;   // one string
+  std::size_t max_nodes = std::size_t{1} << 18U;          // AST nodes
+  std::size_t max_parse_depth = 256;                      // nested blocks and expression tree depth
+  std::size_t max_eval_depth = 512;                       // evaluator recursion, macros included
+  std::size_t max_macro_depth = 32;                       // nested macro calls
+  std::size_t max_value_depth = 64;                       // nested lists and mappings
+  std::size_t max_live_bytes = std::size_t{256} << 20U;   // bytes held by values at once
+  std::size_t max_string_bytes = std::size_t{64} << 20U;  // one string
   std::size_t max_output_bytes = std::size_t{32} << 20U;
   std::size_t max_range = 100'000;  // Jinja2's sandbox MAX_RANGE
 };
+
+// How often a rendering asks its cancellation: every this many steps, and
+// every this many bytes built or scanned (each a few milliseconds' work).
+inline constexpr std::uint64_t kCancelSteps = std::uint64_t{1} << 16U;
+inline constexpr std::uint64_t kCancelWorkBytes = std::uint64_t{4} << 20U;
 
 enum class Code : std::uint8_t {
   kSyntax,       // the template does not parse
@@ -61,6 +74,7 @@ enum class Code : std::uint8_t {
   kLimit,        // a bound reached
   kRaised,       // the template called raise_exception
   kRuntime,      // what Jinja2 raises at run time: an undefined value used, a type error
+  kCancelled,    // the caller's cancellation said to stop (Budget::cancelled)
 };
 
 struct Error {
@@ -132,13 +146,22 @@ struct Usage {
   std::uint64_t work_bytes = 0;
 };
 
-// Tighter bounds for one rendering than the template's Limits (probes use
-// them); zero keeps the template's own. A rendering adds what it used to
-// `usage` when one is given (probes share one pool).
+// One rendering's caps on its steps and work bytes (probes use them; zero:
+// none), where to add what it used (`usage`, when given: probes share one
+// pool), and its cancellation: asked every kCancelSteps steps and
+// kCancelWorkBytes of work, true stops the rendering with kCancelled. It
+// runs on the rendering's thread and must be cheap.
+// `max_live_bytes` and `max_output_bytes`, when not zero, lower the
+// template's Limits for this rendering (serving bounds a rendering by what
+// its request was charged, D-102); a value's string bound follows the live
+// one.
 struct Budget {
   std::uint64_t max_steps = 0;
   std::uint64_t max_work_bytes = 0;
   Usage* usage = nullptr;
+  const std::function<bool()>* cancelled = nullptr;
+  std::size_t max_live_bytes = 0;
+  std::size_t max_output_bytes = 0;
 };
 
 // A parsed template. Immutable; renderings may run concurrently.
@@ -153,8 +176,8 @@ class Template {
   ~Template();
 
   // Renders with the given top-level variables. Without `now`,
-  // strftime_now is refused; `budget` lowers the step and work bounds for
-  // this rendering.
+  // strftime_now is refused; `budget` caps this rendering's steps and work
+  // and carries its cancellation.
   std::expected<Rendered, Error> Render(const std::vector<std::pair<std::string, Input>>& variables,
                                         const std::optional<CivilTime>& now = std::nullopt,
                                         Budget budget = {}) const;

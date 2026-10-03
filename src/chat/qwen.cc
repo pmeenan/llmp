@@ -114,7 +114,7 @@ std::expected<Rendered, Error> RenderQwen(const Conversation& c, const Variant& 
     ++systems;
   }
 
-  Writer w;
+  Writer w(c.max_render_bytes);
   if (!c.tools.empty()) {
     w.Special(kImStart);
     w.Text("system\n");

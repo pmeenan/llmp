@@ -16,11 +16,17 @@
 //   alone.
 // - Health. A stall marks the backend unhealthy until its next beat (the
 //   unit it hung in returned); the record keeps the phase, the last
-//   progress, the stalls counted and when the last began.
-// - Deadlines. A stream has none. A non-streaming request's is its whole
-//   work figured the same way, capped: min(cap, stall + kWorkMargin ×
-//   (swap bytes / kSwapFloorBytesPerSecond + prompt tokens / prefill floor
-//   + max_tokens / decode floor)).
+//   progress, the stalls counted and when the last began. Detection is not
+//   a limit (D-102): what a stall does is the server's choice
+//   ([client] stall_action), by default a report only.
+// - Paused. A request waiting for its client to read (backpressure) is
+//   not the backend stalling: nothing is watched while paused.
+// - Deadlines. A stream has none, and by default nor does a non-streaming
+//   request (D-102). With [client] deadline_cap_seconds set, a
+//   non-streaming request's is its whole work figured the same way,
+//   capped: min(cap, stall + kWorkMargin × (swap bytes /
+//   kSwapFloorBytesPerSecond + prompt tokens / prefill floor + max_tokens /
+//   decode floor)).
 
 #ifndef JITLLM_RUNTIME_WATCHDOG_H_
 #define JITLLM_RUNTIME_WATCHDOG_H_
@@ -44,6 +50,7 @@ enum class Phase : std::uint8_t {
   kPrefill,    // a prefill chunk
   kDecode,     // generation steps
   kFinishing,  // work after a response (a swap's leftover backing released)
+  kPaused,     // waiting for a client to read its stream (backpressure): not a stall
 };
 std::string_view PhaseName(Phase phase);
 
@@ -99,10 +106,10 @@ class Watchdog {
   bool Idle(WatchClock::time_point now);
   // Whether the work under way has passed its allowance since the last
   // beat: true once a stall, which marks the backend unhealthy until its
-  // next beat.
+  // next beat. Never while idle or paused.
   bool Check(WatchClock::time_point now);
-  // When Check turns true unless a beat comes first; none while idle or
-  // already stalled.
+  // When Check turns true unless a beat comes first; none while idle,
+  // paused or already stalled.
   std::optional<WatchClock::time_point> due() const;
 
  private:

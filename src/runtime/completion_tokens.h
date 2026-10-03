@@ -3,6 +3,10 @@
 
 // Bounded literal prompt admission and compact score metadata, independent
 // of the device/model runner so CPU controls exercise BOS and byte tokens.
+// The bounds are the model's (its context and vocabulary) and the
+// response's bytes (`response_bytes`: the request memory's, D-102): score
+// rows and their top scores are figured against it before any work, and
+// charged as they are made.
 
 #ifndef JITLLM_RUNTIME_COMPLETION_TOKENS_H_
 #define JITLLM_RUNTIME_COMPLETION_TOKENS_H_
@@ -24,10 +28,16 @@ struct LiteralPrompt {
   std::vector<std::int32_t> tokens;
   std::string text;
   bool added_bos = false;
+  std::uint64_t score_bytes = 0;  // what its score rows are charged, at most
 };
+// With `memory`, a text prompt's tokenization is charged to it while it
+// runs (Tokenizer::EncodeWorkingBytes and the tokens), and refused when it
+// does not fit.
 std::expected<LiteralPrompt, Error> PrepareLiteralPrompt(const CompletionRequest& request,
                                                          const tokenizer::Tokenizer& tokenizer,
-                                                         std::uint32_t context);
+                                                         std::uint32_t context,
+                                                         std::size_t response_bytes,
+                                                         RequestMemory* memory = nullptr);
 std::size_t TextCharacters(std::string_view text);
 
 // No borrowed vocabulary row survives Add. Offset tracks decoded Unicode
@@ -35,8 +45,10 @@ std::size_t TextCharacters(std::string_view text);
 // Finish flushes a trailing partial sequence at the prompt/output boundary.
 class LiteralRows {
  public:
+  // `budget` is the response bytes charged so far, shared by the request's
+  // rows, which may reach `limit`.
   LiteralRows(const tokenizer::Tokenizer& tokenizer, bool as_id, bool controls, std::size_t offset,
-              std::size_t& budget);
+              std::size_t& budget, std::size_t limit);
   std::expected<TokenLogprob, Error> Add(std::int32_t id, std::span<const float> logits,
                                          std::uint32_t top, bool first = false,
                                          bool hidden = false);
@@ -49,6 +61,7 @@ class LiteralRows {
   bool as_id_;
   std::size_t offset_;
   std::size_t& budget_;
+  std::size_t limit_;
 };
 
 }  // namespace jitllm::runtime::api

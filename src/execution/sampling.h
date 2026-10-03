@@ -67,8 +67,10 @@ std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits)
 
 // Natural target log probabilities, before temperature or truncation. At
 // least the top-1 and supplied token are returned, even when top_count is
-// zero. Negative-infinity padding is excluded; a supplied token with zero
-// probability cannot be represented as a finite JSON score and is refused.
+// zero; top_count may be up to the whole row (O(V log k); more asks for
+// all of it). Negative-infinity
+// padding is excluded; a supplied token with zero probability cannot be
+// represented as a finite JSON score and is refused.
 struct TokenScores {
   struct Ranked {
     std::int32_t id = 0;

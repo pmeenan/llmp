@@ -359,6 +359,14 @@ class PagedNode {
   // reclaim gives it back.
   bool ChargeHost(std::uint64_t bytes, bool required);
   void UnchargeHost(std::uint64_t bytes);
+  // The chat route's request memory past the start's floor (runtime/
+  // intake_limits.h, D-102), charged inside the budget as its own pinned
+  // runtime extent in whole extents and set to `bytes` (on the driver's
+  // thread): growth that does not fit is refused (false, nothing changed,
+  // what it lacks in *shortfall; the caller reclaims and asks again), and
+  // shrinking always succeeds.
+  bool SetRequestCharge(std::uint64_t bytes, std::uint64_t* shortfall = nullptr);
+  std::uint64_t request_charged() const { return request_charged_; }
   // Every model's counted bytes, and the part charged inside the budget.
   std::uint64_t host_counted() const { return host_total_; }
   std::uint64_t host_charged() const { return host_charged_; }
@@ -505,6 +513,13 @@ class PagedNode {
 
   // The host memory charged beside the catalog (ChargeHost).
   bool Recharge(std::uint64_t total, bool force, std::uint64_t* shortfall);
+  // One pinned runtime extent `held`, of `charged` bytes, set to `bytes` in
+  // whole extents: growth that does not fit the budget is refused (unless
+  // `force`), the shortfall in *shortfall.
+  bool ChargeRuntime(catalog::ExtentId& held, std::uint64_t& charged, std::uint64_t bytes,
+                     bool force, std::uint64_t* shortfall, std::string_view what);
+  std::uint64_t request_charged_ = 0;
+  catalog::ExtentId request_extent_;
   std::uint64_t host_floor_ = std::numeric_limits<std::uint64_t>::max();
   std::uint64_t host_total_ = 0;
   std::uint64_t host_charged_ = 0;  // the extent's size: whole extents past the floor

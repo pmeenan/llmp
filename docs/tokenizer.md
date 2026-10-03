@@ -69,7 +69,28 @@ nothing is dropped (llama.cpp silently drops bytes a vocabulary lacks).
 offset of the first ill-formed sequence; `ReplaceInvalidUtf8` (maximal
 subparts to U+FFFD, as Python's `replace` and WHATWG do) is the caller's
 explicit lossy choice. `EncodeOptions` bounds the input (4 MiB by default)
-and the output (2^22 tokens). Memory is linear in the input and work is
+and the output (2^22 tokens); serving passes its own bounds (D-102): a
+chat rendering's own bytes and the model's usable context in tokens, a
+literal prompt's bytes and the context, a command's text its bytes, so no
+prompt is cut below what the body and the context admit (a 4 MiB+ chat
+renders and tokenizes, `llm_scores_test`). A text longer than `max_tokens`
+times the vocabulary's longest token (four times that under NFC, which
+composes text at most threefold) cannot fit and is refused
+(`kOutputTooLarge`) before it is decoded. Memory follows the longest
+window, not the text: a fragment past `kEncodeWindowBytes` (1 MiB) is
+encoded a window at a time, cut at the last cut point within the window
+(or the first after it): before an ASCII letter or digit that follows a
+newline, or before a space between an ASCII letter or digit and an ASCII
+letter. No pre-tokenizer's piece spans one (a newline ends its run, a
+letter or digit run ends at a space, matching looks only forward from
+there) and NFC composes across neither, so the tokens are the whole
+fragment's (`WindowCutsSplitNoPieceAndNoComposition` checks every cut in
+random text against all three pre-tokenizers and NFC). Serving charges
+`Tokenizer::EncodeWorkingBytes` (96 bytes a byte of the longest window)
+and the tokens to the request memory before encoding; a text whose
+longest stretch without a cut point could never be held (its window past
+the request memory's capacity) is refused as the prompt's shape
+(`context_length_exceeded`), not as memory busy. Work is
 O(n log n) (NFC sorts combining runs, BPE uses a heap), except that
 special-token matching may take up to 256 trie steps per byte: on spark-b
 4 MiB takes 0.1–1.1 s with the real vocabularies and about 7 s with a
@@ -186,9 +207,11 @@ A model's template renders one of three ways (D-067 as amended
    works hard besides (or burns its budget on purpose) differs at its
    first probe instead of costing registration hundreds of full
    renderings; and all the probes of one registration (every family's,
-   and the end-of-turn probe) draw on one pool of a single rendering's
-   bounds, so a copy that stays just under each probe's budget, probe
-   after probe, spends the pool and is interpreted. A repackaged copy of a supported template
+   and the end-of-turn probe) draw on one pool with its own fixed basis
+   (`chat::kProbePool`: 50,000,000 steps and 2 GiB of work, what a
+   single rendering's bounds were before D-102 lifted them), so a copy
+   that stays just under each probe's budget, probe after probe, spends
+   the pool and is interpreted. A repackaged copy of a supported template
    (other spacing, comments or line ends) renders natively; any change to
    what it renders falls through to the interpreter.
 3. **Interpreted:** the template itself, through the interpreter below.
@@ -317,11 +340,17 @@ template's own text, which `ChatTemplate` keeps beside every native
 renderer; the stop tokens stay the native renderer's. The fallback is the
 template's own rendering, with the interpreter's semantics and evidence
 (below), not a native approximation. A native rendering is bounded as
-the interpreter's output is (32 MiB, `jinja::Limits::max_output_bytes`):
-past it the renderer drops what it is given and refuses (no fallback, the
-interpreter would refuse too), so text repeated per message (Gemma 4
-prints the last call's name for every tool result) costs no more than the
-bound.
+the interpreter's output is (`Conversation::max_render_bytes`, which
+serving sets to the template's `jinja::Limits::max_output_bytes`; the
+library's default 32 MiB): past it the renderer drops what it is given and
+refuses (no fallback, the interpreter would refuse too), so text repeated
+per message (Gemma 4 prints the last call's name for every tool result)
+costs no more than the bound. Serving derives the bound from the model
+(D-102): four times its context times its vocabulary's longest token, what
+a prompt that fits the context could occupy, at least 32 MiB and at most
+a sixteenth of memory (`runtime/intake_limits.h` `RenderBytes`); a value's
+string bound is at least that and the values held at once at least four
+times it.
 
 **Supported.** DeepSeek V4: roles system, user, assistant and tool;
 request-level tools, DSML tool calls, reasoning, `enable_thinking` (the
@@ -423,7 +452,25 @@ strftime directive other than `%Y %y %m %d %e %H %I %M %S %j %p %B %b %A
 %a %%` (with `-` for no padding). Where Jinja2 raises (an undefined value's
 attribute, a type error, `raise_exception`), rendering returns `kInvalid`;
 a bound or an unimplemented feature returns `kUnsupported`. The bounds are
-D-067's, in `chat::jinja::Limits`. A value's text or JSON stops at the
+D-067's, in `chat::jinja::Limits`, as D-102 amended them: memory (values
+held, one string, the output), nesting (the stack), the template's own size
+and syntax tree, and Jinja2's `MAX_RANGE`. A rendering may lower the memory
+bounds (`jinja::Budget::max_live_bytes` and `max_output_bytes`, from
+`Conversation::max_live_bytes` and `max_render_bytes`): serving sets them
+from what the request is charged, four times its messages' bytes and 16
+MiB of values, 1 MiB of output, within the model's bounds
+(runtime-serving.md#the-chat-route). Time is not bounded: the steps
+and bytes built or scanned are still counted, as below, but they are no
+longer caps (50,000,000 steps and 2 GiB before); instead the rendering asks
+its caller's cancellation every 65,536 steps and every 4 MiB of work
+(`jinja::Budget::cancelled`), and serving answers it from the request (a
+client gone, the runtime stopping, a configured deadline, which is set
+before rendering), so a template
+that would run for hours stops within milliseconds of its request ending
+(`kCancelled`; `jinja_test` checks a 50,100,000-iteration loop renders to
+its end, about 4 s on spark, and hostile templates end by a bound or their
+cancellation). Only a `Budget` caps steps and work, as probes use it. A
+value's text or JSON stops at the
 string bound as it grows, so one string held many times over costs no
 more than that; comparisons charge every byte they compare; substring
 searches (`in`, `find`, `rfind`, `count`, `split`, `rsplit`, `replace`)
@@ -436,7 +483,8 @@ bytes; scans that build nothing (prefix and suffix tests, case tests,
 `from_json`, `int`, `float`, `%` and `strftime_now` formats, `tojson`'s
 key sorts) are charged as scanned; a loop's own copy of what it iterates
 is held as live bytes while it runs; the scan for the control tokens a
-rendering places is charged to its work. Containers release what they
+rendering places is charged to its work (and asks the cancellation as the
+rendering does). Containers release what they
 hold without recursing, so no chain of them can exhaust the stack.
 
 Case mapping is Python's, in full (`chat/pycase.h`): `upper`, `lower`,
@@ -447,12 +495,13 @@ folding by str.lower, and the `lower` and `upper` tests by str.islower and
 str.isupper; `pycase_test` checks every code point and 1,020 strings
 against Python 3.12.3 and Jinja2 3.1.6. ASCII runs map byte for byte (about
 330 MB/s on spark-b's GB10), other text a code point at a time through the
-tables (40 to 80 MB/s), so the work bound charges case mapping and the
-case tests 2 per ASCII byte and 16 per other byte: spending the whole
-bound on them is refused within 3.3 s (Greek with combining marks
+tables (40 to 80 MB/s), so the work count charges case mapping and the
+case tests 2 per ASCII byte and 16 per other byte: spending the former 2
+GiB bound on them took at most 3.3 s (Greek with combining marks
 title-cased, the slowest measured; 2.5 s upper-casing Cyrillic, 1.1 s
 testing CJK with `is lower`, 1.3 s mapping ASCII; before the charges,
-Cyrillic took 15 s and CJK 18 s).
+Cyrillic took 15 s and CJK 18 s), so the cancellation, asked every 4 MiB
+of that count, is asked every few milliseconds of such work.
 
 Known narrowings, none met by the corpus: filters Jinja2 returns as generators
 (`map`, `select`, `items`, `reverse`) are lists here, so printing one
@@ -480,7 +529,8 @@ checkpoint only when a control token starts there.
 **Evidence** ([chat-template-corpus](experiments/chat-template-corpus/README.md)):
 `jinja_test` compares 133 snippet templates (`jinja-snippets.json`) with
 transformers 5.12.1 (Jinja2 3.1.6), text and errors, and drives every
-bound with hostile templates and a 20,000-mutation fuzz;
+bound and the cancellation with hostile templates and a 20,000-mutation
+fuzz;
 `chat_template_test` checks the choice of renderer and that the
 interpreter reproduces every case of the five in-tree pinned templates'
 fixtures; `chat_corpus_test` (label `models`, the corpus on the Sparks)

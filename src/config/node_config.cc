@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <format>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -135,13 +136,48 @@ enum class Kind : std::uint8_t {
   kInterfaces,
   kPeerScopes,
   kProfile,
-  kClientBind,     // a bind entry or an array of them (D-097)
-  kClientPort,     // [client] port
-  kClientCount,    // [client] max_connections, max_queued
-  kClientSeconds,  // [client] stall_seconds, deadline_cap_seconds
-  kMemoryHours,    // [memory] retention_hours
-  kMemoryGib,      // [memory] spill_budget_gib
+  kClientBind,         // a bind entry or an array of them (D-097)
+  kClientPort,         // [client] port
+  kClientInteger,      // [client]'s counts, seconds and bytes (kClientIntegers)
+  kClientStallAction,  // [client] stall_action
+  kMemoryHours,        // [memory] retention_hours
+  kMemoryGib,          // [memory] spill_budget_gib
 };
+
+// [client]'s integer limits (D-102) and their ranges: counts and seconds
+// fit 32 bits; bytes start at a least that leaves the route usable.
+struct ClientInteger {
+  std::string_view key;
+  std::int64_t least;
+  std::int64_t most;
+  std::string_view unit;  // for messages: "", " seconds", " bytes"
+};
+constexpr std::int64_t kU32 = 0xFFFF'FFFFLL;
+constexpr std::int64_t kSeconds = kMaxClientSeconds;
+constexpr std::int64_t kBytes = std::numeric_limits<std::int64_t>::max();
+constexpr std::array<ClientInteger, 12> kClientIntegers = {{
+    {"max_connections", 1, kU32, ""},
+    {"max_queued", 1, kU32, ""},
+    {"queue_wait_seconds", 1, kSeconds, " seconds"},
+    {"stall_seconds", 1, kSeconds, " seconds"},
+    {"deadline_cap_seconds", 1, kSeconds, " seconds"},
+    {"idle_seconds", 1, kSeconds, " seconds"},
+    {"request_inactivity_seconds", 1, kSeconds, " seconds"},
+    {"write_inactivity_seconds", 1, kSeconds, " seconds"},
+    {"hang_seconds", kMinHangSeconds, kSeconds, " seconds"},
+    {"request_memory_bytes", std::int64_t{1} << 24, kBytes, " bytes"},
+    {"max_body_bytes", 1024, static_cast<std::int64_t>(kMaxBodyCeiling), " bytes"},
+    {"stream_buffer_bytes", 4096, kBytes, " bytes"},
+}};
+
+const ClientInteger* FindClientInteger(std::string_view key) {
+  for (const ClientInteger& c : kClientIntegers) {
+    if (c.key == key) {
+      return &c;
+    }
+  }
+  return nullptr;
+}
 
 struct KeySpec {
   KeyPath path;
@@ -162,10 +198,23 @@ const std::vector<KeySpec>& Schema() {
       {.path = {"limits", "profile"}, .kind = Kind::kProfile, .member = false},
       {.path = {"client", "bind"}, .kind = Kind::kClientBind, .member = false},
       {.path = {"client", "port"}, .kind = Kind::kClientPort, .member = false},
-      {.path = {"client", "max_connections"}, .kind = Kind::kClientCount, .member = false},
-      {.path = {"client", "max_queued"}, .kind = Kind::kClientCount, .member = false},
-      {.path = {"client", "stall_seconds"}, .kind = Kind::kClientSeconds, .member = false},
-      {.path = {"client", "deadline_cap_seconds"}, .kind = Kind::kClientSeconds, .member = false},
+      {.path = {"client", "max_connections"}, .kind = Kind::kClientInteger, .member = false},
+      {.path = {"client", "max_queued"}, .kind = Kind::kClientInteger, .member = false},
+      {.path = {"client", "queue_wait_seconds"}, .kind = Kind::kClientInteger, .member = false},
+      {.path = {"client", "stall_seconds"}, .kind = Kind::kClientInteger, .member = false},
+      {.path = {"client", "stall_action"}, .kind = Kind::kClientStallAction, .member = false},
+      {.path = {"client", "deadline_cap_seconds"}, .kind = Kind::kClientInteger, .member = false},
+      {.path = {"client", "idle_seconds"}, .kind = Kind::kClientInteger, .member = false},
+      {.path = {"client", "request_inactivity_seconds"},
+       .kind = Kind::kClientInteger,
+       .member = false},
+      {.path = {"client", "write_inactivity_seconds"},
+       .kind = Kind::kClientInteger,
+       .member = false},
+      {.path = {"client", "hang_seconds"}, .kind = Kind::kClientInteger, .member = false},
+      {.path = {"client", "request_memory_bytes"}, .kind = Kind::kClientInteger, .member = false},
+      {.path = {"client", "max_body_bytes"}, .kind = Kind::kClientInteger, .member = false},
+      {.path = {"client", "stream_buffer_bytes"}, .kind = Kind::kClientInteger, .member = false},
       {.path = {"memory", "retention_hours"}, .kind = Kind::kMemoryHours, .member = false},
       {.path = {"memory", "spill_budget_gib"}, .kind = Kind::kMemoryGib, .member = false},
       {.path = {"storage", "data_dir"}, .kind = Kind::kAbsolutePath, .member = false},
@@ -468,10 +517,10 @@ class Validator {
         return "a bind entry or an array of them";
       case Kind::kClientPort:
         return "an integer port";
-      case Kind::kClientCount:
+      case Kind::kClientInteger:
         return "an integer";
-      case Kind::kClientSeconds:
-        return "an integer of seconds";
+      case Kind::kClientStallAction:
+        return R"("report" or "fail")";
       case Kind::kMemoryHours:
         return "an integer of hours";
       case Kind::kMemoryGib:
@@ -595,35 +644,27 @@ class Validator {
         }
         break;
       }
-      case Kind::kClientCount: {
-        const bool connections = leaf.path.back() == "max_connections";
-        const std::int64_t ceiling = connections ? kMaxConnectionsCeiling : kMaxQueuedCeiling;
+      case Kind::kClientInteger: {
+        const ClientInteger* range = FindClientInteger(leaf.path.back());
         const auto* value = node.as_integer();
-        if (value == nullptr) {
+        if (range == nullptr) {
+          out_.At(leaf, std::format("unknown key {}", key));  // not reached: the schema's
+        } else if (value == nullptr) {
           out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
-        } else if (value->get() < 1 || value->get() > ceiling) {
-          out_.At(leaf, std::format("{} must be from 1 to {}, not {}", key, ceiling, value->get()));
-        } else if (connections) {
-          max_connections_ = static_cast<std::uint32_t>(value->get());
+        } else if (value->get() < range->least || value->get() > range->most) {
+          out_.At(leaf, std::format("{} must be from {} to {}{}, not {}", key, range->least,
+                                    range->most, range->unit, value->get()));
         } else {
-          max_queued_ = static_cast<std::uint32_t>(value->get());
+          client_integers_[std::string(range->key)] = static_cast<std::uint64_t>(value->get());
         }
         break;
       }
-      case Kind::kClientSeconds: {
-        const bool stall = leaf.path.back() == "stall_seconds";
-        const std::int64_t least = stall ? kMinStallSeconds : kMinDeadlineCapSeconds;
-        const std::int64_t most = stall ? kMaxStallSeconds : kMaxDeadlineCapSeconds;
-        const auto* value = node.as_integer();
-        if (value == nullptr) {
-          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
-        } else if (value->get() < least || value->get() > most) {
-          out_.At(leaf, std::format("{} must be from {} to {} seconds, not {}", key, least, most,
-                                    value->get()));
-        } else if (stall) {
-          stall_seconds_ = static_cast<std::uint32_t>(value->get());
+      case Kind::kClientStallAction: {
+        const auto* text = node.as_string();
+        if (text == nullptr || (text->get() != "report" && text->get() != "fail")) {
+          out_.At(leaf, std::format(R"({} must be "report" or "fail")", key));
         } else {
-          deadline_cap_seconds_ = static_cast<std::uint32_t>(value->get());
+          stall_action_ = text->get() == "fail" ? StallAction::kFail : StallAction::kReport;
         }
         break;
       }
@@ -817,9 +858,10 @@ class Validator {
         if (value == nullptr) {
           out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
         } else if (std::cmp_less(value->get(), kMinContext) ||
-                   std::cmp_greater(value->get(), kMaxContext)) {
+                   std::cmp_greater(value->get(), std::numeric_limits<std::uint32_t>::max())) {
+          // No generic ceiling (D-102): registration checks the checkpoint's.
           out_.At(leaf, std::format("{} must be from {} to {} tokens, not {}", key, kMinContext,
-                                    kMaxContext, value->get()));
+                                    std::numeric_limits<std::uint32_t>::max(), value->get()));
         } else {
           model.entry.context = static_cast<std::uint32_t>(value->get());
           model.context_set = true;
@@ -890,8 +932,9 @@ class Validator {
   }
 
   // The models, each checked as a whole: exactly one of artifact and
-  // composition, the artifact-only keys only with an artifact, no artifact
-  // serving two models or its own drafter, and at most kMaxModels.
+  // composition, the artifact-only keys only with an artifact, and no
+  // artifact serving two models or its own drafter. Their number is not
+  // bounded: the library may exceed memory (D-102).
   std::vector<ModelEntry> Models() {
     std::vector<ModelEntry> models;
     std::map<std::string, std::string> used;  // an ID to the model naming it
@@ -933,10 +976,6 @@ class Validator {
       if (ok) {
         models.push_back(m);
       }
-    }
-    if (models_.size() > kMaxModels) {
-      out_.Document(std::format("the configuration names {} models, more than {}", models_.size(),
-                                kMaxModels));
     }
     return models;
   }
@@ -993,10 +1032,7 @@ class Validator {
       config.client.bind = *bind_;
     }
     config.client.port = client_port_.value_or(kDefaultClientPort);
-    config.client.max_connections = max_connections_.value_or(kDefaultMaxConnections);
-    config.client.max_queued = max_queued_.value_or(kDefaultMaxQueued);
-    config.client.stall_seconds = stall_seconds_.value_or(kDefaultStallSeconds);
-    config.client.deadline_cap_seconds = deadline_cap_seconds_.value_or(kDefaultDeadlineCapSeconds);
+    Client(config.client);
     config.memory.retention_hours = retention_hours_.value_or(kDefaultRetentionHours);
     config.memory.spill_budget_gib = spill_budget_gib_.value_or(kDefaultSpillBudgetGib);
     if (config.membership && config.storage.long_term) {
@@ -1011,6 +1047,39 @@ class Validator {
       }
     }
     return config;
+  }
+
+  // [client]'s limits: what was set, the rest at their defaults (D-102).
+  void Client(ClientConfig& client) {
+    const auto get = [&](std::string_view key) -> std::optional<std::uint64_t> {
+      const auto it = client_integers_.find(std::string(key));
+      return it == client_integers_.end() ? std::nullopt : std::optional(it->second);
+    };
+    const auto u32 = [&](std::string_view key) -> std::optional<std::uint32_t> {
+      const auto v = get(key);
+      return v ? std::optional(static_cast<std::uint32_t>(*v)) : std::nullopt;
+    };
+    client.max_connections = u32("max_connections");
+    client.max_queued = u32("max_queued");
+    client.queue_wait_seconds = u32("queue_wait_seconds");
+    client.stall_seconds = u32("stall_seconds").value_or(kDefaultStallSeconds);
+    client.stall_action = stall_action_;
+    client.deadline_cap_seconds = u32("deadline_cap_seconds");
+    client.idle_seconds = u32("idle_seconds").value_or(kDefaultIdleSeconds);
+    client.request_inactivity_seconds =
+        u32("request_inactivity_seconds").value_or(kDefaultRequestInactivitySeconds);
+    client.write_inactivity_seconds = u32("write_inactivity_seconds");
+    client.hang_seconds = u32("hang_seconds");
+    client.request_memory_bytes = get("request_memory_bytes");
+    client.max_body_bytes = get("max_body_bytes");
+    client.stream_buffer_bytes = get("stream_buffer_bytes");
+    if (client.max_body_bytes && client.request_memory_bytes &&
+        *client.request_memory_bytes < *client.max_body_bytes) {
+      KeyProblem({"client", "max_body_bytes"},
+                 std::format("client.max_body_bytes ({}) must be at most client."
+                             "request_memory_bytes ({}): a body is charged to that pool",
+                             *client.max_body_bytes, *client.request_memory_bytes));
+    }
   }
 
   Storage Roles() {
@@ -1120,12 +1189,10 @@ class Validator {
   std::map<std::string, std::string> peer_scopes_;
   std::optional<std::vector<BindEntry>> bind_;
   std::optional<std::uint16_t> client_port_;
-  std::optional<std::uint32_t> max_connections_;
-  std::optional<std::uint32_t> max_queued_;
-  std::optional<std::uint32_t> stall_seconds_;
+  std::map<std::string, std::uint64_t> client_integers_;  // kClientIntegers' keys
+  StallAction stall_action_ = StallAction::kReport;
   std::optional<std::uint32_t> retention_hours_;
   std::optional<std::uint32_t> spill_budget_gib_;
-  std::optional<std::uint32_t> deadline_cap_seconds_;
 };
 
 }  // namespace

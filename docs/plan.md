@@ -1688,12 +1688,15 @@ family" guide, and its long-context scaling work.
         repository. Its row-pair "N-layout" fits CSA compression.
       - **Audio:** no pinned checkpoint keeps an audio encoder, so Gemma
         4 E4B-it joins as the audio carrier (owner, 2026-10-02): 16 kHz,
-        128 mels, at most 30 s per clip, sharing Gemma 4's tokenizer,
-        template and vision.
+        128 mels, 30 s per encoder window, sharing Gemma 4's tokenizer,
+        template and vision. Longer audio is split into windows, not
+        refused (D-102).
       - **Intake** on the chat route: Chat Completions `image_url`,
         `input_audio` and vLLM's `video_url`, inline data only, with
         remote URL fetching off by default. Byte, pixel, frame and
-        duration bounds are fixed before decoding. The image, audio and
+        duration bounds are set before decoding, derived from memory and
+        the model's context (encoder tokens) rather than fixed counts,
+        configurable, permissive by default (D-102). The image, audio and
         video decoders are chosen under D-017 and D-080, and they and the
         intake take the heavy path.
 - [ ] **Decision models over the Jev API** (D-101, the owner,
@@ -1710,6 +1713,11 @@ family" guide, and its long-context scaling work.
       - **Wire behavior:** confidence follows TypeSafe's published
         formulas; Clef's reference reports the top probability instead,
         and that difference is recorded.
+      - **Intake bounds** (D-102 revises D-101's starting bounds): no
+        question or image counts (Workers AI's 1–64 questions and 4
+        images are not adopted); TypeSafe's wire ranges stay (2–255
+        options, 2–10 score levels); image bytes and pixels follow memory
+        and the context, as the chat route's media do.
       - **Clients:** the TypeSafe Python and JavaScript SDKs, unmodified,
         pointed at jitLLM by base URL.
 - [ ] **Media generation routes** (D-101, the owner, 2026-10-02):

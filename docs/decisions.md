@@ -162,6 +162,31 @@ after an audit of about 70 limits):
   the knobs exist for owners who want one. Longer media (audio past an
   encoder's window) is split, not refused. M4's cluster limits are
   revised the same way before M4.
+- **Landed (intake, deadlines, template, configuration; the hang
+  recovery follows):** `[client]` gains `queue_wait_seconds`,
+  `stall_action`, `idle_seconds`, `request_inactivity_seconds`,
+  `write_inactivity_seconds`, `hang_seconds`, `request_memory_bytes`,
+  `max_body_bytes` and `stream_buffer_bytes`; `max_connections`,
+  `max_queued` and `deadline_cap_seconds` become optional (absent: no
+  limit, or the descriptors'), and the old ranges widen to the types'.
+  Requests' host memory is one pool, the request memory, charged by what
+  each request really holds (bodies as they arrive, parses, queued
+  requests, renderings, tokenizations, stop matchers, unread output as it
+  grows, responses), refusing before the work (413, or 503 to retry). Only
+  a 256 MiB floor is set apart beside the memory guard's margin; past it
+  the driver charges request memory to the catalog's budget through the
+  reclaim order like any other need (it displaces caches and idle state,
+  D-055, and is never reclaimed itself) and gives it back as requests end,
+  so the state room is not cut up front (the owner, 2026-10-03);
+  `request_memory_bytes` is an optional cap. A paused reader that keeps
+  queued requests waiting yields its place, parked until its client reads,
+  and continues from its kept state. Until hang recovery
+  lands, a confirmed hang (nothing moving for `hang_seconds`) exits for
+  the supervisor to restart the process. Every earlier configuration
+  still parses, so `schema_version` stays 2; requests that were valid
+  stay valid, so `jitllm-inference-version` stays 1 (D-062). The values
+  and what each protects are in
+  [runtime-serving.md](runtime-serving.md#the-chat-route).
 
 ## D-101: Decision models through the Jev/SystemOne API, multimodal file inputs with each family's bring-up, and OpenAI-shaped media generation routes  (2026-10-02, status: accepted at the owner's request of 2026-10-02, with the owner's answers that day on DeepSeek V4 Flash Vision-Exp, the audio carrier, confidence and the TTS testbeds; scope and plan only, nothing built; moves D-042's file inputs from M10 to M3.5 and M4; makes decision heads an exception to D-044's classification deferral; schedules the image-output API features.md left unscheduled; adds public routes, D-016)
 
@@ -336,7 +361,7 @@ The facts and sources are in [m35-families.md](m35-families.md#media-inputs-deci
   then serve it directly as well.
 - A planned checkpoint's encoder needs live streaming.
 
-## D-100: Literal Completions expose target likelihoods through OpenAI echo/logprobs and vLLM prompt_logprobs, including zero-token scoring  (2026-09-30, status: accepted by the owner's explicit API authorization; adds a bounded inference route to D-097; establishes inference surface version 1 under D-062)
+## D-100: Literal Completions expose target likelihoods through OpenAI echo/logprobs and vLLM prompt_logprobs, including zero-token scoring  (2026-09-30, status: accepted by the owner's explicit API authorization; adds a bounded inference route to D-097; establishes inference surface version 1 under D-062; its fixed score-row, top-score and response bounds replaced by context- and memory-derived ones under D-102, 2026-10-03, runtime-serving.md)
 
 **Decision.** Add non-streaming `POST /v1/completions` for one raw text
 prompt or one exact token-ID sequence. Apply no chat template. Honor legacy
@@ -462,7 +487,7 @@ Docker's default profile admits io_uring again, or DGX OS stops shipping
 Docker or the container toolkit; a port starts and its package manager is
 chosen; or the primary platform stops being Debian-based (D-027).
 
-## D-097: M3's chat route: `[client]` binds loopback and the tailnet by default, a strict OpenAI subset with fixed intake bounds that ignores unknown fields by name, persistent connections on an event loop, one request at a time behind a bounded queue  (2026-09-28, status: accepted by the owner, 2026-09-28, as amended, with authentication optional on every binding confirmed; adds configuration keys and an HTTP API, D-016 public surfaces; fixes D-073's `[client]` table to its four keys; amended by the owner on 2026-09-29: a progress watchdog and scaled non-streaming deadlines replace the fixed request deadline, adding two `[client]` keys and two model keys; with the owner's note on D-014, amends D-014 and D-045's rule that a non-loopback binding needs credentials; otherwise a subset of D-040's and D-045's M5 contract)
+## D-097: M3's chat route: `[client]` binds loopback and the tailnet by default, a strict OpenAI subset with fixed intake bounds that ignores unknown fields by name, persistent connections on an event loop, one request at a time behind a bounded queue  (2026-09-28, status: accepted by the owner, 2026-09-28, as amended, with authentication optional on every binding confirmed; adds configuration keys and an HTTP API, D-016 public surfaces; fixes D-073's `[client]` table to its four keys; amended by the owner on 2026-09-29: a progress watchdog and scaled non-streaming deadlines replace the fixed request deadline, adding two `[client]` keys and two model keys; with the owner's note on D-014, amends D-014 and D-045's rule that a non-loopback binding needs credentials; otherwise a subset of D-040's and D-045's M5 contract; its fixed intake bounds, queue, timeouts and deadlines replaced under D-102, 2026-10-03: limits from memory, descriptors and the model's context, inactivity timeouts, backpressure, stalls reported, and the rest owner options, [client] keys added, runtime-serving.md)
 
 **Decision.** With models configured (D-096), the runtime service serves
 [runtime-serving.md](runtime-serving.md#the-chat-route)'s chat route. The
@@ -3439,7 +3464,7 @@ Each of those would have ruled these shapes out.
   path its D-052 or D-036 performance gates.
 - M7 finds that a shape needs a special case in the resource core.
 
-## D-067: Chat templates are rendered by native family renderers first, and otherwise by a bounded, sandboxed Jinja-subset interpreter of the checkpoint's own template  (2026-09-23, status: accepted; amended by the owner on 2026-10-02 (below), which replaces "template code from a checkpoint never runs in a jitLLM process" and "no generic fallback"; specializes D-009's untrusted-checkpoint rule and D-043's rendering contract)
+## D-067: Chat templates are rendered by native family renderers first, and otherwise by a bounded, sandboxed Jinja-subset interpreter of the checkpoint's own template  (2026-09-23, status: accepted; amended by the owner on 2026-10-02 (below), which replaces "template code from a checkpoint never runs in a jitLLM process" and "no generic fallback"; specializes D-009's untrusted-checkpoint rule and D-043's rendering contract; its step and work bounds became cancellation points and its output, string and live bounds follow the model's context and memory under D-102, 2026-10-03, tokenizer.md; the probe pool keeps its fixed basis)
 
 **Amendment (owner, 2026-10-02).** Any model, quantization or repack a
 user brings gets chat routes when its template can be rendered exactly:

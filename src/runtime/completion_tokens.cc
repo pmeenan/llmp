@@ -41,15 +41,48 @@ std::size_t TextCharacters(std::string_view text) {
 
 std::expected<LiteralPrompt, Error> PrepareLiteralPrompt(const CompletionRequest& request,
                                                          const tokenizer::Tokenizer& tokenizer,
-                                                         std::uint32_t context) {
+                                                         std::uint32_t context,
+                                                         std::size_t response_bytes,
+                                                         RequestMemory* memory) {
+  // Top scores up to the model's vocabulary (D-102); the response's bytes
+  // bound how many rows may carry them (below).
+  for (const auto& [name, count] : {std::pair{"logprobs", request.logprobs},
+                                    std::pair{"prompt_logprobs", request.prompt_logprobs}}) {
+    if (count && std::cmp_greater(*count, tokenizer.size())) {
+      return std::unexpected(
+          Error{.status = 400,
+                .type = "invalid_request_error",
+                .message = std::format("{} must be at most the model's vocabulary size, {}", name,
+                                       tokenizer.size()),
+                .param = name,
+                .code = {}});
+    }
+  }
   LiteralPrompt prompt{.tokens = request.token_ids, .text = {}, .added_bos = false};
   if (request.prompt) {
-    if (!tokenizer.Encode(*request.prompt,
-                          {.special = tokenizer::SpecialTokens::kParse,
-                           .add_bos_eos = false,
-                           .max_bytes = kMaxMessageBytes,
-                           .max_tokens = context},
-                          prompt.tokens)) {
+    // The text's bytes are the body's; its tokens the context's (D-102),
+    // and its tokenization's working set the request memory's.
+    MemoryCharge charge;
+    if (memory != nullptr) {
+      const std::uint64_t need = tokenizer::Tokenizer::EncodeWorkingBytes(*request.prompt) +
+                                 (std::uint64_t{2} * sizeof(std::int32_t) *
+                                  std::min<std::uint64_t>(request.prompt->size() + 1, context));
+      if (!charge.Add(*memory, need)) {
+        return std::unexpected(MemoryRefusal(*memory, need, "tokenizing the prompt"));
+      }
+    }
+    auto encoded = tokenizer.Encode(*request.prompt,
+                                    {.special = tokenizer::SpecialTokens::kParse,
+                                     .add_bos_eos = false,
+                                     .max_bytes = request.prompt->size(),
+                                     .max_tokens = context},
+                                    prompt.tokens);
+    if (!encoded && encoded.error().rule == tokenizer::Rule::kOutputTooLarge) {
+      return std::unexpected(BadPrompt(
+          std::format("the prompt is longer than the model's context of {} tokens", context),
+          "context_length_exceeded"));
+    }
+    if (!encoded) {
       return std::unexpected(BadPrompt("the literal prompt cannot be tokenized"));
     }
     const auto bos = tokenizer.bos();
@@ -73,26 +106,42 @@ std::expected<LiteralPrompt, Error> PrepareLiteralPrompt(const CompletionRequest
                   "enabled model BOS",
                   "context_length_exceeded"));
   }
+  // Score rows: the context bounds their number (prompt plus output, as
+  // checked above); the response's bytes, with their top scores, bound
+  // what they may hold. Each row is charged as LiteralRows::Add charges
+  // it, at least: twice its own bytes and its top scores' (the supplied
+  // token's among them).
   const bool score_prompt = request.prompt_logprobs || (request.echo && request.logprobs);
-  const std::uint64_t rows = (score_prompt ? prompt.tokens.size() : 0) +
-                             (request.logprobs ? std::uint64_t{max_tokens} : 0);
-  if (rows > kMaxCompletionScoreRows) {
-    return std::unexpected(
-        BadPrompt("too many score rows; use explicit rolling windows", "score_limit_exceeded"));
+  const std::uint64_t prompt_top = std::max(request.prompt_logprobs.value_or(0),
+                                            request.echo ? request.logprobs.value_or(0) : 0);
+  const auto row_bytes = [](std::uint64_t top) {
+    return 2 * (kScoreRowBytes + ((top + 1) * kTopScoreBytes));
+  };
+  const std::uint64_t charged =
+      (score_prompt ? prompt.tokens.size() * row_bytes(prompt_top) : 0) +
+      (request.logprobs ? std::uint64_t{max_tokens} * row_bytes(*request.logprobs) : 0);
+  if (charged > response_bytes) {
+    return std::unexpected(BadPrompt(
+        std::format("the score rows would pass the response's {} bytes (the request memory, "
+                    "[client] request_memory_bytes); use explicit rolling windows or fewer top "
+                    "scores",
+                    response_bytes),
+        "score_limit_exceeded"));
   }
+  prompt.score_bytes = charged;
   std::string decoded;
   tokenizer::StreamDecoder decoder(tokenizer, {.control_tokens = true});
   for (const auto id : std::span(prompt.tokens).subspan(prompt.added_bos ? 1 : 0)) {
     if (!decoder.Push(id, decoded)) {
       return std::unexpected(BadPrompt("the prompt cannot be decoded"));
     }
-    if (decoded.size() > kMaxCompletionResponseBytes / 6) {
+    if (decoded.size() > response_bytes / 6) {
       return std::unexpected(
           BadPrompt("decoded prompt exceeds the bounded response size", "response_too_large"));
     }
   }
   decoder.Finish(decoded);
-  if (decoded.size() > kMaxCompletionResponseBytes / 6) {
+  if (decoded.size() > response_bytes / 6) {
     return std::unexpected(
         BadPrompt("decoded prompt exceeds the bounded response size", "response_too_large"));
   }
@@ -107,17 +156,19 @@ std::expected<LiteralPrompt, Error> PrepareLiteralPrompt(const CompletionRequest
 }
 
 LiteralRows::LiteralRows(const tokenizer::Tokenizer& tokenizer, bool as_id, bool controls,
-                         std::size_t offset, std::size_t& budget)
+                         std::size_t offset, std::size_t& budget, std::size_t limit)
     : tokenizer_(tokenizer),
       decoder_(tokenizer, {.control_tokens = controls}),
       as_id_(as_id),
       offset_(offset),
-      budget_(budget) {}
+      budget_(budget),
+      limit_(limit) {}
 
 std::expected<TokenLogprob, Error> LiteralRows::Add(std::int32_t id, std::span<const float> logits,
                                                     std::uint32_t top, bool first, bool hidden) {
   if (id < 0 || std::cmp_greater_equal(id, tokenizer_.size()) ||
-      tokenizer_.Kind(id) == tokenizer::TokenKind::kUnused || top > kMaxCompletionTopLogprobs) {
+      tokenizer_.Kind(id) == tokenizer::TokenKind::kUnused ||
+      std::cmp_greater(top, tokenizer_.size())) {
     return std::unexpected(Error{.status = 500,
                                  .type = "server_error",
                                  .message = "a score row has an invalid token or top-score count",
@@ -146,12 +197,12 @@ std::expected<TokenLogprob, Error> LiteralRows::Add(std::int32_t id, std::span<c
                          .rank = value.rank});
     }
   }
-  std::size_t bytes = 256 + (6 * row.token.size());
+  std::size_t bytes = kScoreRowBytes + (6 * row.token.size());
   for (const auto& value : row.top) {
-    bytes += 128 + (6 * value.token.size());
+    bytes += kTopScoreBytes + (6 * value.token.size());
   }
   bytes *= 2;  // prompt metadata can appear in both response forms
-  if (budget_ > kMaxCompletionResponseBytes || bytes > kMaxCompletionResponseBytes - budget_) {
+  if (budget_ > limit_ || bytes > limit_ - budget_) {
     return std::unexpected(Error{.status = 413,
                                  .type = "invalid_request_error",
                                  .message = "completion scores exceed the bounded response size",

@@ -524,6 +524,9 @@ std::string Error::ToString() const {
     case Code::kRuntime:
       s = "runtime";
       break;
+    case Code::kCancelled:
+      s = "cancelled";
+      break;
   }
   s += ": ";
   s += reason;
@@ -641,7 +644,7 @@ std::expected<void, Error> AppendRepr(const Value& v, std::string& out, Arena& a
     return r;
   }
   if (!arena.Work(out.size() - before)) {
-    return Fail(Code::kLimit, arena.reason());
+    return Fail(arena.cancelled() ? Code::kCancelled : Code::kLimit, arena.reason());
   }
   return {};
 }
@@ -656,7 +659,7 @@ std::expected<void, Error> AppendJson(const Value& v, const JsonOptions& options
     return r;
   }
   if (!arena.Work(out.size() - before + sort_work)) {
-    return Fail(Code::kLimit, arena.reason());
+    return Fail(arena.cancelled() ? Code::kCancelled : Code::kLimit, arena.reason());
   }
   return {};
 }

@@ -270,7 +270,7 @@ merge of differing membership views is permitted.
 | `control.interfaces` | `auto` (validated selected interconnects) or explicit selector array. Selector uses adapter identity/physical port or an exact interface name override; auto excludes management unless fallback was enabled |
 | `control.peer_scopes` | Optional table mapping member UUIDs to an observer-local interface selector for shared unscoped IPv6 link-local seeds |
 | `client.bind` | Conductor only, default loopback; enabling remote binding requires TLS and client authentication configuration under D-014. Workers reject a client-listener setting |
-| `limits.profile` | `initial-v2`, selecting all bounds below. No numeric overrides in v2; a changed profile requires an explicit versioned design update |
+| `limits.profile` | `initial-v2`, selecting all bounds below. *Revised by D-102 (2026-10-03), before M4 builds it:* the bounds become permissive defaults derived from each node's resources, and each one an owner may set (stricter included) as a node-local key, as `[client]`'s are (runtime-serving.md); peers agree on the protocol's own framing values, not on local pool sizes |
 
 Seed addresses use `IPv4:port`, `[IPv6]:port` or `DNS-name:port` strings.
 Shared IPv6 seeds never carry an observer-local zone/interface name. A node
@@ -487,6 +487,21 @@ resource-progress guarantees. This first profile has no numeric override negotia
 same profile identity, while local memory pressure may reduce actual admission
 below every ceiling. Charge actual allocations to each node.
 
+*Revised by D-102 (2026-10-03), to apply before M4 builds the request
+path:* limits come from real resources, not time or abuse caps. Each pool
+below (transport, input, stream, control) is a share of the node's memory,
+each count of sockets or attempts what descriptors and memory allow, and
+each is a configurable node-local key, permissive by default. Time limits
+on work become inactivity limits (no bytes, no credit, no progress for N
+seconds) or owner options: a request's input that keeps arriving, a
+deferred admission that waits behind progressing work and a stream whose
+reader is slow (it pauses on credits) are never cut off by a clock.
+Detection stays: heartbeats, the handshake and reconciliation deadlines and
+status resolution detect a dead peer, and a lost peer still starts orphan
+cancellation. The protocol's own framing (a network message's 64 KiB, a
+control record's) stays fixed. The table keeps the initial values for
+reference; M4's design pass fixes the derived ones.
+
 | Limit | Initial value and meaning |
 | --- | --- |
 | Connections | 64 node-wide sockets total including at most 8 pending TLS/hello handshakes, at most 2 pending per source address; one admission session and at most one inventory probe per authenticated peer. Reserve a slot/buffer allowance for established authority control |
@@ -494,12 +509,12 @@ below every ceiling. Charge actual allocations to each node.
 | Dedicated-QSFP address scan | 1024 interface/IPv4 target pairs and address observations/window, 32 pending address probes, 64 targets/s, 1 s deadline each; report truncation. This sub-budget is separate from authenticated verification |
 | Setup discovery | 60 s window; at most 64 candidates and 16 addresses/candidate; at most 4 candidate-verification probes in flight, each with 3 s deadline; no retry beyond window |
 | Network message | 64 KiB including the JSON object; bounded chunks use base64 and count encoded bytes too |
-| Request input | 8 MiB decoded total per request, shared with client admission limit; 30 s input-receive deadline. Oversize input fails explicitly before inference |
+| Request input | 8 MiB decoded total per request, shared with client admission limit; 30 s input-receive deadline. Oversize input fails explicitly before inference. *D-102:* the client admission limit follows memory (runtime-serving.md) and the deadline becomes an inactivity limit |
 | Worker outstanding attempts | 32 per node including deferred/receiving/running/cleanup records; terminal cache 256 records plus one high-water scalar per live session |
 | Input buffers | 64 MiB node-wide decoded input pool, reserved before request-body acceptance, including conductor forwarding/local inputs |
 | Conductor outstanding attempts | 256 total; the 32-attempt per-node ceiling still applies. Includes unknown attempts until reconciled or their session is fenced and the node takes sole cleanup ownership |
-| Deferred admission | 30 s without a grant, then no-start rejection/cancellation. Once started, generation is not capped by this queue deadline |
-| Stream buffering | 1 MiB response data per attempt at each hop, within an 8 MiB node-wide stream pool; lack of credits pauses producers. No credit for 30 s cancels the stream |
+| Deferred admission | 30 s without a grant, then no-start rejection/cancellation. Once started, generation is not capped by this queue deadline. *D-102:* no default wait while admitted work progresses; an owner option |
+| Stream buffering | 1 MiB response data per attempt at each hop, within an 8 MiB node-wide stream pool; lack of credits pauses producers. No credit for 30 s cancels the stream. *D-102:* pools from memory; a reader without credit only pauses its producer unless an owner sets an inactivity limit |
 | Control buffering | Separate 1 MiB node-wide bounded control pool; at most 64 KiB each record. If unavailable, stop accepting/reading additional work and preserve existing cancellation/heartbeat capacity |
 | Heartbeats | Every 2 s; reports older than 6 s are ineligible for new placement; 10 s without authenticated progress marks connection lost and starts orphan cancellation |
 | Status resolution | 10 s to resolve uncertain dispatch for the client; fail explicitly when exhausted. Worker cleanup may outlast it and remains charged |

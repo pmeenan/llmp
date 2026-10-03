@@ -25,6 +25,11 @@
 //   Every plan and graph past it is charged inside the budget and given
 //   back through the reclaim order (D-090 as amended 2026-10-02), so the
 //   guard sets apart only this in-use minimum, not a worst case.
+// - The request memory's floor (intake_limits.h): what requests hold in
+//   host memory (bodies, parses, renderings, unread output) is one pool
+//   charged by real size (D-102); its first 256 MiB are set apart here,
+//   and what passes them is charged inside the budget as requests grow,
+//   through the reclaim order, like any other need.
 
 #ifndef JITLLM_RUNTIME_MEMORY_GUARD_H_
 #define JITLLM_RUNTIME_MEMORY_GUARD_H_
@@ -43,14 +48,19 @@ struct MemoryGuard {
   std::uint64_t plans = 0;        // the most one step of a model holds of plans
   std::uint64_t available = 0;  // MemAvailable after the models' own memory was mapped; 0: unknown
   std::uint64_t fixed = 0;      // the node's mapped memory (reported in the refusal)
+  // The request memory's floor (intake_limits.h): requests' host memory set
+  // apart beside the margin; what passes it is charged inside the budget.
+  std::uint64_t requests = 0;
 };
 
 // Everything the guard sets apart from the available memory beside the
-// weights: the host inputs, the plans and kUncountedMargin.
+// weights: the host inputs, the plans, the request memory and
+// kUncountedMargin.
 std::uint64_t GuardReserve(const MemoryGuard& guard);
 
 // Refused, saying what did not fit, unless largest + host_inputs + plans +
-// kUncountedMargin fit `available`; an unknown `available` (0) passes.
+// requests + kUncountedMargin fit `available`; an unknown `available` (0)
+// passes.
 std::expected<void, std::string> CheckMemoryGuard(const MemoryGuard& guard);
 
 }  // namespace jitllm::runtime

@@ -90,11 +90,7 @@ std::expected<std::string, Error> Content(const json::Value& content, const std:
     return Bad(std::format("{}.content must be a string or an array of text parts", at),
                at + ".content");
   }
-  if (content.size() > kMaxContentParts) {
-    return Bad(
-        std::format("{}.content has {} parts, more than {}", at, content.size(), kMaxContentParts),
-        at + ".content");
-  }
+  // Any number of parts: their bytes are the body's (D-102).
   std::string text;
   for (std::size_t j = 0; j < content.size(); ++j) {
     const json::Value part = content.at(j);
@@ -121,9 +117,6 @@ std::expected<std::string, Error> Content(const json::Value& content, const std:
     auto piece = part.find("text");
     if (!piece || !piece->is_string()) {
       return Bad(where + ".text must be a string", where + ".text");
-    }
-    if (text.size() + piece->string().size() > kMaxMessageBytes) {
-      return Bad(std::format("{} is longer than {} bytes", at, kMaxMessageBytes), at);
     }
     text += piece->string();
   }
@@ -215,43 +208,55 @@ std::expected<Message, Error> ParseMessage(const json::Value& m, std::size_t ind
   if (!has_content) {
     return Bad(at + ".content is required", at + ".content");
   }
-  if (out.content.size() > kMaxMessageBytes ||
-      (out.reasoning && out.reasoning->size() > kMaxMessageBytes)) {
-    return Bad(std::format("{} is longer than {} bytes", at, kMaxMessageBytes), at);
-  }
   return out;
 }
 
-std::expected<std::vector<std::string>, Error> ParseStop(const json::Value& v) {
-  std::vector<std::string> stops;
+// The stop strings, as one shared matcher. Any number and length: their
+// bytes are the body's, and matching costs a few steps an output byte
+// whatever they are (StopMatcher, D-102). The list and the matcher's tables
+// are charged to `charge` (the parse's) as they are made.
+std::expected<std::shared_ptr<const StopMatcher>, Error> ParseStop(const json::Value& v,
+                                                                   RequestMemory* memory,
+                                                                   MemoryCharge& charge) {
+  std::vector<std::string_view> stops;
   const auto one = [&](const json::Value& s, const std::string& where) -> std::optional<Error> {
     if (!s.is_string()) {
       return Bad(where + " must be a string", where).error();
     }
-    if (s.string().empty() || s.string().size() > kMaxStopBytes) {
-      return Bad(std::format("{} must be 1 to {} bytes", where, kMaxStopBytes), where).error();
+    if (s.string().empty()) {
+      return Bad(where + " must not be empty", where).error();
     }
-    stops.emplace_back(s.string());
+    stops.push_back(s.string());  // the document's, which outlives the build
     return std::nullopt;
   };
   if (v.is_string()) {
     if (auto e = one(v, "stop")) {
       return std::unexpected(*e);
     }
-    return stops;
-  }
-  if (!v.is_array()) {
+  } else if (!v.is_array()) {
     return Bad("stop must be a string or an array of strings", "stop");
-  }
-  if (v.size() > kMaxStops) {
-    return Bad(std::format("stop has {} strings, more than {}", v.size(), kMaxStops), "stop");
-  }
-  for (std::size_t i = 0; i < v.size(); ++i) {
-    if (auto e = one(v.at(i), std::format("stop[{}]", i))) {
-      return std::unexpected(*e);
+  } else {
+    if (memory != nullptr && !charge.Add(*memory, v.size() * sizeof(std::string_view))) {
+      return std::unexpected(MemoryRefusal(*memory, v.size() * sizeof(std::string_view), "stop"));
+    }
+    stops.reserve(v.size());
+    for (std::size_t i = 0; i < v.size(); ++i) {
+      if (auto e = one(v.at(i), std::format("stop[{}]", i))) {
+        return std::unexpected(*e);
+      }
     }
   }
-  return stops;
+  if (stops.empty()) {
+    return std::shared_ptr<const StopMatcher>();
+  }
+  // Its tables charged as they grow: a node a distinct prefix, so a
+  // million copies of one stop string cost what one does.
+  auto built = StopMatcher::Build(stops, memory, &charge);
+  if (!built) {
+    // What the request needed by then: more than the pool can never fit.
+    return std::unexpected(MemoryRefusal(*memory, charge.bytes() + built.error(), "stop"));
+  }
+  return std::make_shared<const StopMatcher>(std::move(*built));
 }
 
 std::expected<std::uint32_t, Error> ParseMaxTokens(const json::Value& v, std::string_view name,
@@ -297,11 +302,28 @@ constexpr std::array<std::string_view, 31> kKnown = {"max_tokens",
                                                      "parallel_tool_calls",
                                                      "store"};
 
-std::expected<ChatRequest, Error> ParseRequest(std::string_view body, CompletionRequest* literal) {
-  const json::Limits limits{.max_bytes = kMaxBodyBytes,
+std::expected<ChatRequest, Error> ParseRequest(std::string_view body, CompletionRequest* literal,
+                                               RequestMemory* memory) {
+  // The server bounds the body's bytes (its max_body, from memory). Every
+  // value takes at least a byte, so a body's own size bounds its values and
+  // strings: a token-ID prompt is one value a token. The parser's 32-bit
+  // offsets bound a body (config::kMaxBodyCeiling); depth is its stack's.
+  // The working set is charged before parsing: the document's tables and
+  // strings, and the request built from them (its strings are the body's
+  // at most; a prompt ID, four bytes, takes at least two of the body's).
+  MemoryCharge charge;
+  if (memory != nullptr) {
+    const std::uint64_t working =
+        std::uint64_t{json::ParseWorkingBytes(body)} + (std::uint64_t{2} * body.size());
+    if (!charge.Add(*memory, working)) {
+      return std::unexpected(MemoryRefusal(*memory, working, "the request body"));
+    }
+  }
+  const std::size_t bytes = std::min<std::size_t>(body.size(), config::kMaxBodyCeiling);
+  const json::Limits limits{.max_bytes = static_cast<std::size_t>(config::kMaxBodyCeiling),
                             .max_depth = kMaxJsonDepth,
-                            .max_values = kMaxJsonValues,
-                            .max_string_bytes = kMaxBodyBytes};
+                            .max_values = bytes + 1,
+                            .max_string_bytes = bytes + 1};
   auto document = json::Parse(body, limits);
   if (!document) {
     return Bad(std::format("the body is not valid JSON: {}", document.error().ToString()));
@@ -334,11 +356,10 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
     } else if (literal != nullptr && key == "prompt") {
       has_prompt = true;
       if (v.is_string()) {
-        if (v.string().size() > kMaxMessageBytes) {
-          return Bad("prompt exceeds the text byte limit", name);
-        }
-        literal->prompt = std::string(v.string());
-      } else if (v.is_array() && v.size() > 0 && v.size() <= kMaxTokensCeiling) {
+        literal->prompt = std::string(v.string());  // its bytes are the body's
+      } else if (v.is_array() && v.size() > 0) {
+        // One value a token, bounded by the body; the model's context decides.
+        literal->token_ids.reserve(v.size());
         for (std::size_t i = 0; i < v.size(); ++i) {
           const auto token = v.at(i).int64();
           if (!v.at(i).is_integer() || !token || *token < 0 ||
@@ -370,11 +391,13 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
       }
     } else if (literal != nullptr && (key == "logprobs" || key == "prompt_logprobs")) {
       if (!v.is_null()) {
+        // Up to the vocabulary: the largest a tokenizer accepts here, the
+        // model's own and the response's bytes at admission (D-102).
         const auto count = v.int64();
         if (!v.is_integer() || !count || *count < 0 ||
-            std::cmp_greater(*count, kMaxCompletionTopLogprobs)) {
+            std::cmp_greater(*count, kMaxTopLogprobsAtParse)) {
           return Bad(
-              std::format("{} must be an integer from 0 to {}", name, kMaxCompletionTopLogprobs),
+              std::format("{} must be an integer from 0 to the model's vocabulary size", name),
               name);
         }
         (key == "logprobs" ? literal->logprobs : literal->prompt_logprobs) =
@@ -414,10 +437,8 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
       if (!v.is_array() || v.size() == 0) {
         return Bad("messages must be a non-empty array", "messages");
       }
-      if (v.size() > kMaxMessages) {
-        return Bad(std::format("messages has {} entries, more than {}", v.size(), kMaxMessages),
-                   "messages");
-      }
+      // Any number: their bytes are the body's, their tokens the context's.
+      request.messages.reserve(v.size());
       for (std::size_t i = 0; i < v.size(); ++i) {
         auto m = ParseMessage(v.at(i), i, ignored);
         if (!m) {
@@ -476,7 +497,7 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
       }
       request.seed = static_cast<std::uint64_t>(*s);
     } else if (key == "stop") {
-      auto stops = ParseStop(v);
+      auto stops = ParseStop(v, memory, charge);
       if (!stops) {
         return std::unexpected(stops.error());
       }
@@ -592,13 +613,57 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
 
 }  // namespace
 
-std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body) {
-  return ParseRequest(body, nullptr);
+Error MemoryRefusal(const RequestMemory& memory, std::uint64_t bytes, std::string_view what) {
+  if (bytes > memory.capacity()) {
+    return Error{
+        .status = 413,
+        .type = "invalid_request_error",
+        .message = std::format("{} needs {} bytes of request memory, more than the node's {} "
+                               "([client] request_memory_bytes)",
+                               what, bytes, memory.capacity()),
+        .param = {},
+        .code = "request_too_large"};
+  }
+  return Error{
+      .status = 503,
+      .type = "server_error",
+      .message = std::format("{} needs {} bytes of request memory, which other requests hold now "
+                             "({} of {}; [client] request_memory_bytes); retry",
+                             what, bytes, memory.used(), memory.capacity()),
+      .param = {},
+      .code = "request_memory_busy"};
 }
 
-std::expected<CompletionRequest, Error> ParseCompletionRequest(std::string_view body) {
+std::uint64_t RequestBytes(const ChatRequest& request) {
+  std::uint64_t bytes = sizeof(ChatRequest) + request.model.capacity();
+  bytes += request.messages.capacity() * sizeof(Message);
+  for (const Message& m : request.messages) {
+    bytes += m.content.capacity() + (m.reasoning ? m.reasoning->capacity() : 0);
+  }
+  bytes += request.ignored.capacity() * sizeof(std::string);
+  for (const std::string& name : request.ignored) {
+    bytes += name.capacity();
+  }
+  if (request.stop) {
+    bytes += request.stop->bytes();
+  }
+  return bytes;
+}
+
+std::uint64_t RequestBytes(const CompletionRequest& request) {
+  return RequestBytes(request.options) + (sizeof(CompletionRequest) - sizeof(ChatRequest)) +
+         (request.prompt ? request.prompt->capacity() : 0) +
+         (request.token_ids.capacity() * sizeof(std::int32_t));
+}
+
+std::expected<ChatRequest, Error> ParseChatRequest(std::string_view body, RequestMemory* memory) {
+  return ParseRequest(body, nullptr, memory);
+}
+
+std::expected<CompletionRequest, Error> ParseCompletionRequest(std::string_view body,
+                                                               RequestMemory* memory) {
   CompletionRequest literal;
-  auto options = ParseRequest(body, &literal);
+  auto options = ParseRequest(body, &literal, memory);
   if (!options) {
     return std::unexpected(options.error());
   }
@@ -684,29 +749,31 @@ std::expected<std::string, Error> LiteralCompletionJson(std::string_view id, std
                                                         const CompletionRequest& request,
                                                         std::string_view content,
                                                         const LiteralResult& result, Finish finish,
-                                                        const Usage& usage) {
+                                                        const Usage& usage, std::size_t max_bytes) {
   std::size_t allowance = 1024;
   const auto charge = [&](std::size_t bytes) {
-    if (bytes > kMaxCompletionResponseBytes - allowance) {
+    if (allowance > max_bytes || bytes > max_bytes - allowance) {
       return false;
     }
     allowance += bytes;
     return true;
   };
   const auto charge_text = [&](std::string_view text) {
-    return text.size() <= kMaxCompletionResponseBytes / 6 && charge(6 * text.size());
+    return text.size() <= max_bytes / 6 && charge(6 * text.size());
   };
+  // A row's top scores: those asked for, and the supplied token beside them.
+  const std::size_t most_top =
+      std::size_t{std::max(
+          {request.logprobs.value_or(0), request.prompt_logprobs.value_or(0), std::uint32_t{1}})} +
+      1;
   const auto charge_rows = [&](std::span<const TokenLogprob> rows) {
-    if (rows.size() > kMaxCompletionScoreRows) {
-      return false;
-    }
     for (const auto& row : rows) {
-      if (!charge(256) || !charge_text(row.token) || row.top.size() > 6 ||
+      if (!charge(kScoreRowBytes) || !charge_text(row.token) || row.top.size() > most_top ||
           (row.logprob && (!std::isfinite(*row.logprob) || *row.logprob > 0))) {
         return false;
       }
       for (const auto& score : row.top) {
-        if (!charge(128) || !charge_text(score.token) || !std::isfinite(score.logprob) ||
+        if (!charge(kTopScoreBytes) || !charge_text(score.token) || !std::isfinite(score.logprob) ||
             score.logprob > 0 || score.rank == 0) {
           return false;
         }
@@ -811,7 +878,7 @@ std::expected<std::string, Error> LiteralCompletionJson(std::string_view id, std
       Quoted(id), created, Quoted(request.options.model), Quoted(text),
       request.logprobs ? arrays(result.logprobs) : "null", FinishName(finish), prompt_scores,
       UsageJson(usage));
-  if (body.size() > kMaxCompletionResponseBytes) {
+  if (body.size() > max_bytes) {
     return std::unexpected(Error{.status = 413,
                                  .type = "invalid_request_error",
                                  .message = "completion exceeds the bounded response size",
@@ -876,6 +943,148 @@ OutputText::Out OutputText::Reasoning(std::string_view text) {
   return {.reasoning = std::string(text), .content = {}};
 }
 
+// ---------------------------------------------------------------- StopMatcher
+
+std::uint64_t StopMatcher::BuildBytes(std::size_t count, std::size_t bytes) {
+  // A node a byte at most, and the root, its table grown by doubling (every
+  // allocation charged as it is made); the breadth-first queue beside.
+  static_cast<void>(count);
+  return sizeof(StopMatcher) +
+         ((std::uint64_t{bytes} + 1) * ((2 * sizeof(Node)) + sizeof(std::uint32_t)));
+}
+
+std::size_t StopMatcher::bytes() const {
+  return sizeof(StopMatcher) + (nodes_.capacity() * sizeof(Node));
+}
+
+std::uint32_t StopMatcher::Child(std::uint32_t node, unsigned char byte) const {
+  if (node == 0) {
+    return root_[byte];
+  }
+  for (std::uint32_t c = nodes_[node].child; c != 0; c = nodes_[c].sibling) {
+    if (nodes_[c].byte == byte) {
+      return c;
+    }
+  }
+  return 0;
+}
+
+std::uint32_t StopMatcher::Next(std::uint32_t state, unsigned char byte) const {
+  for (;;) {
+    const std::uint32_t c = Child(state, byte);
+    if (c != 0 || state == 0) {
+      return c;
+    }
+    state = nodes_[state].fail;
+  }
+}
+
+StopMatcher StopMatcher::Build(std::span<const std::string_view> stops) {
+  auto built = Build(stops, nullptr, nullptr);
+  return built ? std::move(*built) : StopMatcher();  // uncharged: always built
+}
+
+std::expected<StopMatcher, std::uint64_t> StopMatcher::Build(
+    std::span<const std::string_view> stops, RequestMemory* memory, MemoryCharge* charge) {
+  // Each allocation charged before it is made: the table grows by doubling.
+  const auto grow = [&](std::size_t bytes) {
+    return memory == nullptr || charge == nullptr || charge->Add(*memory, bytes);
+  };
+  StopMatcher m;
+  if (!grow(64 * sizeof(Node))) {
+    return std::unexpected(std::uint64_t{64 * sizeof(Node)});
+  }
+  m.nodes_.reserve(64);
+  m.nodes_.emplace_back();  // the root
+  m.count_ = stops.size();
+  for (std::string_view s : stops) {
+    m.longest_ = std::max(m.longest_, s.size());
+    std::uint32_t node = 0;
+    for (const char ch : s) {
+      const auto byte = static_cast<unsigned char>(ch);
+      std::uint32_t next = m.Child(node, byte);
+      if (next == 0) {
+        if (m.nodes_.size() == m.nodes_.capacity()) {
+          const std::size_t more = 2 * m.nodes_.capacity();
+          if (!grow(more * sizeof(Node))) {
+            return std::unexpected(std::uint64_t{more * sizeof(Node)});
+          }
+          m.nodes_.reserve(more);
+        }
+        next = static_cast<std::uint32_t>(m.nodes_.size());
+        Node n;
+        n.depth = m.nodes_[node].depth + 1;
+        n.byte = byte;
+        if (node == 0) {
+          m.root_[byte] = next;
+        } else {
+          n.sibling = m.nodes_[node].child;
+          m.nodes_[node].child = next;
+        }
+        m.nodes_.push_back(n);
+      }
+      node = next;
+    }
+    if (node != 0) {
+      m.nodes_[node].out = m.nodes_[node].depth;  // a stop string ends here
+    }
+  }
+  // Failure links breadth first, so a node's suffix (shallower) is linked
+  // before it; `out` is a node's own stop string, else its suffix's.
+  std::vector<std::uint32_t> queue;
+  if (!grow(m.nodes_.size() * sizeof(std::uint32_t))) {
+    return std::unexpected(std::uint64_t{m.nodes_.size() * sizeof(std::uint32_t)});
+  }
+  queue.reserve(m.nodes_.size());
+  for (const std::uint32_t c : m.root_) {
+    if (c != 0) {
+      queue.push_back(c);  // fail = 0
+    }
+  }
+  for (std::size_t head = 0; head < queue.size(); ++head) {
+    const std::uint32_t u = queue[head];
+    for (std::uint32_t v = m.nodes_[u].child; v != 0; v = m.nodes_[v].sibling) {
+      const unsigned char byte = m.nodes_[v].byte;
+      std::uint32_t f = m.nodes_[u].fail;
+      std::uint32_t link = m.Child(f, byte);
+      while (link == 0 && f != 0) {
+        f = m.nodes_[f].fail;
+        link = m.Child(f, byte);
+      }
+      m.nodes_[v].fail = link;
+      if (m.nodes_[v].out == 0) {
+        m.nodes_[v].out = m.nodes_[link].out;
+      }
+      queue.push_back(v);
+    }
+  }
+  // Grown by doubling: the request holds the matcher as long as it lives,
+  // so it is copied to an exact allocation (libstdc++'s shrink_to_fit does
+  // nothing without exceptions, RE-044).
+  if (m.nodes_.capacity() > m.nodes_.size()) {
+    if (!grow(m.nodes_.size() * sizeof(Node))) {
+      return std::unexpected(std::uint64_t{m.nodes_.size() * sizeof(Node)});
+    }
+    std::vector<Node>(m.nodes_.begin(), m.nodes_.end()).swap(m.nodes_);
+  }
+  return m;
+}
+
+// ---------------------------------------------------------------- OutputText
+
+OutputText::OutputText(const std::vector<std::string>& stops) {
+  std::vector<std::string_view> views;
+  views.reserve(stops.size());
+  for (const std::string& s : stops) {
+    if (!s.empty()) {
+      views.emplace_back(s);  // an empty one matches nowhere (the route refuses one)
+    }
+  }
+  if (!views.empty()) {
+    stops_ = std::make_shared<const StopMatcher>(StopMatcher::Build(views));
+  }
+}
+
 OutputText::Out OutputText::Content(std::string_view text) {
   if (stopped_) {
     return {};
@@ -889,12 +1098,24 @@ OutputText::Out OutputText::Content(std::string_view text) {
     return {};
   }
   content_started_ = true;
-  held_ += text;
-  // The earliest stop string ends the answer before it.
-  std::size_t first = std::string::npos;
-  for (const std::string& stop : stops_) {
-    first = std::min(first, held_.find(stop));
+  if (!stops_) {
+    return {.reasoning = {}, .content = std::string(text)};
   }
+  const std::size_t fresh = held_.size();
+  held_ += text;
+  // The matcher reads the new bytes; the stop string that starts first,
+  // among those the text so far holds, ends the answer before it. At each
+  // byte the longest stop string ending there starts first, and the held
+  // text always covers the matcher's depth, so a start is never before it.
+  std::size_t first = std::string::npos;
+  std::uint32_t state = state_;
+  for (std::size_t i = fresh; i < held_.size(); ++i) {
+    state = stops_->Next(state, static_cast<unsigned char>(held_[i]));
+    if (const std::uint32_t matched = stops_->matched(state); matched != 0) {
+      first = std::min<std::size_t>(first, i + 1 - matched);
+    }
+  }
+  state_ = state;
   if (first != std::string::npos) {
     Out out{.reasoning = {}, .content = held_.substr(0, first)};
     held_.clear();
@@ -902,15 +1123,7 @@ OutputText::Out OutputText::Content(std::string_view text) {
     return out;
   }
   // Hold back the longest tail that begins some stop string.
-  std::size_t hold = 0;
-  for (const std::string& stop : stops_) {
-    for (std::size_t n = std::min(stop.size() - 1, held_.size()); n > hold; --n) {
-      if (std::string_view(held_).substr(held_.size() - n) == std::string_view(stop).substr(0, n)) {
-        hold = n;
-        break;
-      }
-    }
-  }
+  const std::size_t hold = stops_->depth(state);
   Out out{.reasoning = {}, .content = held_.substr(0, held_.size() - hold)};
   held_.erase(0, held_.size() - hold);
   return out;

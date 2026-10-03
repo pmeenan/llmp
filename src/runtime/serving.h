@@ -43,11 +43,13 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <expected>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -67,6 +69,7 @@
 #include "execution/sampling.h"
 #include "memory/reclaim.h"
 #include "runtime/commands.h"
+#include "runtime/intake_limits.h"
 #include "runtime/prefill.h"
 #include "runtime/pressure_trim.h"
 #include "runtime/turn_reuse.h"
@@ -115,9 +118,13 @@ class ResidentTimes final : public scheduler::PageInObserver {
   explicit ResidentTimes(std::size_t extents) : at_(extents) {}
   void Staged(catalog::ExtentId extent, scheduler::PageInEvent event) override;
   Clock::time_point Latest(std::span<const catalog::ExtentId> extents) const;
+  // Every event so far, of any kind: progress for the chat route's hang
+  // watch (api_server.h ServerOptions::activity). Any thread.
+  std::uint64_t events() const { return events_.load(std::memory_order_relaxed); }
 
  private:
   std::vector<Clock::time_point> at_;
+  std::atomic<std::uint64_t> events_{0};
 };
 
 // How a model's chunks ran: launched, captured as decode graphs and
@@ -269,6 +276,27 @@ struct GenerateOptions {
   // False cancels after this completed step. Rows are borrowed only during
   // the call and never accumulated unless keep_logits was also requested.
   std::function<bool(std::int32_t, std::span<const float>)> on_logits = nullptr;
+};
+
+// Llm::RenderChat's bounds and why it failed (D-102).
+struct ChatRenderOptions {
+  std::size_t max_tokens = std::numeric_limits<std::size_t>::max();  // the context's
+  const std::function<bool()>* cancelled = nullptr;                  // the request's end
+  // When given, the tokenization's working set (Tokenizer::EncodeWorkingBytes
+  // and the tokens) is charged to it while it runs; when it does not fit,
+  // kMemory, with the bytes it needed in *memory_needed; when it could
+  // never fit (a stretch without a cut point whose window passes the
+  // memory's capacity), kUnbroken, with that stretch's bytes.
+  RequestMemory* memory = nullptr;
+  std::uint64_t* memory_needed = nullptr;
+};
+enum class ChatRenderFailure : std::uint8_t { kOther, kTooLong, kCancelled, kMemory, kUnbroken };
+
+// What rendering a conversation may take (Llm::RenderChargeFor, D-102).
+struct RenderCharge {
+  std::uint64_t output = 0;  // the rendering's bytes (Conversation::max_render_bytes)
+  std::uint64_t live = 0;    // an interpreted rendering's values (Conversation::max_live_bytes)
+  std::uint64_t bytes = 0;   // what its request is charged while it renders
 };
 
 // A model with a conversation: DeepSeek V4 Flash, Qwen3.8 Flash Next.
@@ -491,11 +519,37 @@ class Llm : public Served {
   const tokenizer::Tokenizer& tokenizer() const { return *tokenizer_; }
 
   // Tokens of plain text (no template; BOS first where the vocabulary has
-  // one, as the reference runs fed it).
-  std::expected<std::vector<std::int32_t>, std::string> EncodeText(std::string_view text) const;
-  // A conversation rendered by the model's chat template and tokenized.
+  // one, as the reference runs fed it). Bounded by the text itself; with
+  // `memory`, the encoding's working set is charged to it while it runs
+  // (when it does not fit, an error, with the bytes it needed in *needed).
+  std::expected<std::vector<std::int32_t>, std::string> EncodeText(
+      std::string_view text, RequestMemory* memory = nullptr,
+      std::uint64_t* needed = nullptr) const;
+  // A conversation of `messages` messages holding `message_bytes` renders
+  // to at most min(render_bytes(), 4 × message_bytes + kRenderBytesPerMessage
+  // × messages + 1 MiB); an interpreted rendering's values hold at most
+  // min(the template's bound, that + 16 MiB). It is charged that output,
+  // and where the template may interpret, a second rendering (without the
+  // generation prompt), the values and the interpreter's copy of the
+  // messages.
+  static constexpr std::uint64_t kRenderBytesPerMessage = 4096;
+  RenderCharge RenderChargeFor(std::uint64_t message_bytes, std::size_t messages) const;
+  // A conversation rendered by the model's chat template and tokenized,
+  // bounded by the model, not by fixed caps (D-102): the rendering by
+  // conversation.max_render_bytes (at most render_bytes(); RenderChargeFor),
+  // the tokens by `options.max_tokens` (past them, kTooLong: the context is
+  // exceeded, as when the rendering passes render_bytes()).
+  // `options.cancelled`, asked as an interpreted template renders, ends it
+  // (kCancelled: the request ended).
   std::expected<std::vector<std::int32_t>, std::string> RenderChat(
-      const chat::Conversation& conversation, std::uint32_t* stable_boundary = nullptr) const;
+      const chat::Conversation& conversation, std::uint32_t* stable_boundary = nullptr,
+      const ChatRenderOptions& options = {}, ChatRenderFailure* failure = nullptr) const;
+  // A rendering's most bytes: what a prompt that fits the usable context
+  // could occupy (runtime/intake_limits.h RenderBytes); a conversation
+  // whose text alone is longer cannot fit, and is refused before rendering.
+  std::size_t render_bytes() const { return render_bytes_; }
+  // The vocabulary's longest token text, in bytes.
+  std::size_t longest_token() const { return longest_token_; }
   // Text of generated tokens (control tokens left out).
   std::string Detokenize(std::span<const std::int32_t> tokens) const;
   // Template options this model's reference runs rendered with.
@@ -868,6 +922,8 @@ class Llm : public Served {
   bool bos_ = false;  // EncodeText puts BOS first
   std::unique_ptr<tokenizer::Tokenizer> tokenizer_;
   std::optional<chat::ChatTemplate> template_;
+  std::size_t render_bytes_ = chat::jinja::Limits{}.max_output_bytes;  // set by UseTemplate
+  std::size_t longest_token_ = 1;                                      // likewise
   std::vector<std::int32_t> stops_;
   std::optional<std::int32_t> think_start_;
   std::optional<std::int32_t> think_end_;
@@ -1064,6 +1120,23 @@ class Server {
   // plan_floor_bytes): what the start's guard set apart beside the budget.
   std::uint64_t plan_floor_bytes() const { return plans_; }
   std::uint64_t workspace_bytes() const { return workspace_; }  // the shared activations and pool
+  // The request memory's floor set apart at Start (intake_limits.h), out of
+  // the catalog's budget: kRequestMemoryFloor, or [client]
+  // request_memory_bytes when smaller; and the most it may grow to: that
+  // key, or the floor and the state room.
+  std::uint64_t request_memory() const { return request_memory_; }
+  std::uint64_t request_capacity() const;
+  // The request memory's grower (RequestMemory::Grower; on the driver):
+  // set to `to` bytes, what passes the floor charged inside the budget
+  // through the reclaim order (PagedNode::SetRequestCharge); whether it
+  // holds `to` now.
+  bool SetRequestMemory(std::uint64_t to);
+  // The bytes a body needs to carry the largest registered context's
+  // prompt (intake_limits.h ContextBodyBytes).
+  std::uint64_t context_body_bytes() const;
+  // Page-in events the scheduler has reported (ResidentTimes): a count
+  // that moves while weights or state page in. Any thread.
+  std::uint64_t page_in_events() const { return times_.events(); }
 
  private:
   Status Make(const config::ModelEntry& entry, int index, std::string_view architecture);
@@ -1085,6 +1158,8 @@ class Server {
   std::uint64_t fixed_ = 0;
   std::uint64_t host_inputs_ = 0;
   std::uint64_t plans_ = 0;  // plan_floor_bytes()
+  std::uint64_t request_memory_ = kRequestMemoryFloor;
+  std::uint64_t state_room_ = 0;  // the budget beside the fixed memory and the largest weights
   std::uint64_t workspace_ = 0;
   void* snapshot_ = nullptr;
   std::uint64_t snapshot_capacity_ = 0;

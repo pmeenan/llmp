@@ -211,7 +211,7 @@ std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& c) {
     return std::unexpected(schemas.error());
   }
 
-  Writer w;
+  Writer w(c.max_render_bytes);
   w.Special(kBos);
   if (thinking) {
     w.Text(effort_prefix);
@@ -311,7 +311,7 @@ std::expected<Rendered, Error> RenderDeepSeekV4ChatV2(const Conversation& c) {
     return std::unexpected(schemas.error());
   }
 
-  Writer w;
+  Writer w(c.max_render_bytes);
   w.Special(kBos);
   w.Text(system);
   if (!c.tools.empty()) {

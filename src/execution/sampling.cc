@@ -107,7 +107,9 @@ std::expected<std::int32_t, SamplingError> Greedy(std::span<const float> logits)
 
 std::expected<TokenScores, SamplingError> ScoreToken(std::span<const float> logits,
                                                      std::int32_t token, std::uint32_t top_count) {
-  if (token < 0 || std::cmp_greater_equal(token, logits.size()) || top_count > 5) {
+  // Up to the whole row (D-102 raised the API's 5 to the vocabulary); more
+  // than the row asks for all of it.
+  if (token < 0 || std::cmp_greater_equal(token, logits.size())) {
     return std::unexpected(SamplingError::kInvalidParams);
   }
   const auto scan = ScanLogits(logits);
@@ -117,10 +119,22 @@ std::expected<TokenScores, SamplingError> ScoreToken(std::span<const float> logi
   if (!std::isfinite(logits[static_cast<std::size_t>(token)])) {
     return std::unexpected(SamplingError::kInvalidLogits);
   }
+  const auto at = [&](std::int32_t id) { return logits[static_cast<std::size_t>(id)]; };
+  // More likely first, then the lower ID.
+  const auto before = [&](std::int32_t a, std::int32_t b) {
+    return at(a) > at(b) || (at(a) == at(b) && a < b);
+  };
+  // Few top scores (the common case) are kept by insertion as the scan
+  // goes; many by a partial sort of every finite logit's ID: O(V log k)
+  // either way, never O(V k).
+  constexpr std::size_t kInsertionMost = 16;
   double sum = 0;
   std::uint32_t token_rank = 1;
   std::vector<std::int32_t> best;
-  const std::size_t keep = std::max(top_count, 1U);
+  const std::size_t keep = std::min<std::size_t>(std::max(top_count, 1U), logits.size());
+  if (keep > kInsertionMost) {
+    best.reserve(logits.size());
+  }
   for (std::size_t i = 0; i < logits.size(); ++i) {
     const double value = logits[i];
     if (!std::isfinite(value)) {
@@ -128,26 +142,38 @@ std::expected<TokenScores, SamplingError> ScoreToken(std::span<const float> logi
     }
     sum += std::exp(value - scan->max);
     token_rank += static_cast<std::uint32_t>(value > logits[static_cast<std::size_t>(token)]);
-    const auto at = std::ranges::find_if(
+    if (keep > kInsertionMost) {
+      best.push_back(static_cast<std::int32_t>(i));
+      continue;
+    }
+    const auto place = std::ranges::find_if(
         best, [&](std::int32_t id) { return value > logits[static_cast<std::size_t>(id)]; });
-    if (std::cmp_less(best.size(), keep) || at != best.end()) {
-      best.insert(at, static_cast<std::int32_t>(i));
+    if (std::cmp_less(best.size(), keep) || place != best.end()) {
+      best.insert(place, static_cast<std::int32_t>(i));
       if (best.size() > keep) {
         best.pop_back();
       }
     }
   }
+  if (keep > kInsertionMost) {
+    const auto end = best.begin() + static_cast<std::ptrdiff_t>(std::min(keep, best.size()));
+    std::partial_sort(best.begin(), end, best.end(), before);
+    best.erase(end, best.end());
+  }
   const double norm = std::log(sum);
   const auto score = [&](std::int32_t id) {
-    return (static_cast<double>(logits[static_cast<std::size_t>(id)]) - scan->max) - norm;
+    return (static_cast<double>(at(id)) - scan->max) - norm;
   };
   TokenScores out{.logprob = score(token), .top = {}};
-  for (const auto id : best) {
-    const auto rank =
-        1 + static_cast<std::uint32_t>(std::ranges::count_if(best, [&](std::int32_t other) {
-          return logits[static_cast<std::size_t>(other)] > logits[static_cast<std::size_t>(id)];
-        }));
-    out.top.push_back({.id = id, .logprob = score(id), .rank = rank});
+  out.top.reserve(best.size() + 1);
+  // `best` is in order: a rank is one more than the entries strictly above,
+  // so equal logits share the first one's.
+  std::uint32_t rank = 1;
+  for (std::size_t j = 0; j < best.size(); ++j) {
+    if (j > 0 && at(best[j]) != at(best[j - 1])) {
+      rank = static_cast<std::uint32_t>(j + 1);
+    }
+    out.top.push_back({.id = best[j], .logprob = score(best[j]), .rank = rank});
   }
   if (std::ranges::find(best, token) == best.end()) {
     out.top.push_back({.id = token, .logprob = out.logprob, .rank = token_rank});

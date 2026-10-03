@@ -24,8 +24,13 @@
 // Inputs are untrusted and bounded: text must be well-formed UTF-8 (refused
 // with its offset otherwise; unicode::ReplaceInvalidUtf8 is the caller's
 // explicit lossy choice), at most EncodeOptions::max_bytes long, and the
-// output at most max_tokens long. Memory is linear in the input and work
-// O(n log n), with up to 256 special-token trie steps per input byte.
+// output at most max_tokens long. A text with more bytes than max_tokens
+// times the longest token's (four times that under NFC, which shortens text
+// at most threefold) cannot fit and is refused before any work. Work is
+// O(n log n), with up to 256 special-token trie steps per input byte, and
+// memory follows the longest window, not the text (D-102): a fragment is
+// encoded in windows of about kEncodeWindowBytes, cut only where neither
+// normalization nor any pre-tokenizer joins across (EncodeWorkingBytes).
 // A Tokenizer is immutable once created; Encode and Decode are safe to call
 // from several threads at once.
 
@@ -77,6 +82,20 @@ struct TokenizerSpec {
 inline constexpr std::size_t kMaxVocabulary = std::size_t{1} << 22U;
 inline constexpr std::size_t kMaxTokenBytes = 1024;
 
+// Encoding's windows: a fragment longer than this is cut, at the last cut
+// point within it (or the first after it, if none), into windows encoded
+// one at a time. A cut point is before an ASCII letter or digit that
+// follows a newline, or before a space between an ASCII letter or digit and
+// an ASCII letter: no pre-tokenizer's piece and no NFC composition spans
+// one, so the tokens are those of the whole fragment.
+inline constexpr std::size_t kEncodeWindowBytes = std::size_t{1} << 20U;
+// What encoding allocates beside its output, at most, per byte of its
+// longest window: the code points (4), NFC's decomposition (up to four code
+// points a character, its vector grown by doubling: 32), the pieces'
+// lengths and the pre-tokenizer's stages (12), and a piece's merging
+// (symbols, links and candidates, 36; its bytes, up to 3 more), rounded up.
+inline constexpr std::size_t kEncodeBytesPerWindowByte = 96;
+
 enum class SpecialTokens : std::uint8_t {
   kUserDefinedOnly,  // llama.cpp's parse_special = false
   kParse,            // also control tokens: llama.cpp's parse_special = true, HF's default
@@ -121,6 +140,15 @@ class Tokenizer {
   TokenKind Kind(TokenId id) const;
   // The token whose text is exactly `text`, of any kind.
   std::optional<TokenId> Find(std::string_view text) const;
+  // The longest token's bytes: a normal token's decoded bytes, a special
+  // token's text. A text of n bytes encodes to at least n / this tokens.
+  std::size_t longest_token_bytes() const;
+
+  // The bytes Encode or EncodeMarked allocates for `text` at most, beside
+  // its output: kEncodeBytesPerWindowByte a byte of its longest window
+  // (kEncodeWindowBytes, or longer where the text has no cut point). A
+  // caller charges this before encoding untrusted text. A scan of the text.
+  static std::uint64_t EncodeWorkingBytes(std::string_view text);
 
   // Appends text's tokens to out.
   std::expected<void, Error> Encode(std::string_view text, const EncodeOptions& options,

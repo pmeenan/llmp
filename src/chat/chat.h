@@ -51,7 +51,8 @@
 // list) rather than approximating it (kUnsupported), and ChatTemplate then
 // renders that case through the interpreter. Where the template raises an
 // exception, rendering returns kInvalid. A native rendering is bounded as
-// the interpreter's output is (jinja::Limits::max_output_bytes).
+// the interpreter's output is (Conversation::max_render_bytes, which
+// serving sets for each request within the model's bound).
 
 #ifndef JITLLM_CHAT_CHAT_H_
 #define JITLLM_CHAT_CHAT_H_
@@ -59,6 +60,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -89,6 +91,9 @@ struct Error {
   // A native rendering grew past the interpreter's output bound: the
   // interpreter would refuse it too, so ChatTemplate does not retry it there.
   bool bound = false;
+  // The caller's cancellation stopped an interpreted rendering (its request
+  // ended; jinja::Budget::cancelled).
+  bool cancelled = false;
 
   std::string ToString() const;
 };
@@ -118,6 +123,12 @@ struct Conversation {
   std::optional<bool> enable_thinking;
   std::optional<std::string> reasoning_effort;
   std::optional<bool> preserve_thinking;  // Qwen3.8 and Gemma 4 read it
+  // A rendering's most bytes (an interpreted one's at most its template's
+  // jinja::Limits::max_output_bytes too), and an interpreted rendering's
+  // values' (0: its template's): serving sets them from what the request is
+  // charged, within the model's bound (Llm::RenderCharge, D-102).
+  std::size_t max_render_bytes = jinja::Limits{}.max_output_bytes;
+  std::size_t max_live_bytes = 0;
 };
 
 enum class BoundaryKind : std::uint8_t {
@@ -190,9 +201,12 @@ class ChatTemplate {
   };
 
   // The renderer for a template's text; an error names the template's hash
-  // and what the interpreter could not accept.
+  // and what the interpreter could not accept. `limits` bound its
+  // interpreted renderings (serving derives their memory bounds,
+  // runtime/intake_limits.h RenderBytes); max_bytes() is their output's.
   static std::expected<ChatTemplate, std::string> ForText(std::string_view template_text,
-                                                          TokenFacts tokens);
+                                                          TokenFacts tokens,
+                                                          const jinja::Limits& limits = {});
 
   ChatTemplate(ChatTemplate&&) noexcept;
   ChatTemplate& operator=(ChatTemplate&&) noexcept;
@@ -203,11 +217,23 @@ class ChatTemplate {
   // `now` is strftime_now's clock for an interpreted template. A case a
   // native renderer does not implement (kUnsupported, short of the output
   // bound) renders through the interpreter, from the template's own text;
-  // the stop tokens stay the native renderer's.
+  // the stop tokens stay the native renderer's. An interpreted rendering
+  // has no time or work bound (D-102): `cancelled`, when given, is asked
+  // as it goes (jinja::Budget::cancelled), and true ends it (an Error
+  // with `cancelled`). A native rendering is linear in its conversation.
   std::expected<Rendered, Error> Render(const Conversation& conversation,
-                                        const std::optional<jinja::CivilTime>& now = {}) const;
+                                        const std::optional<jinja::CivilTime>& now = {},
+                                        const std::function<bool()>* cancelled = nullptr) const;
 
   How how() const { return how_; }
+  // Whether a rendering may run through the interpreter (an interpreted
+  // template, or a native one's fallback).
+  bool interprets() const { return program_ != nullptr; }
+  // The interpreter's live-value bound (its Limits').
+  std::size_t max_live_bytes() const { return max_live_bytes_; }
+  // An interpreted rendering's output bound (its Limits'); a conversation's
+  // max_render_bytes may lower it.
+  std::size_t max_bytes() const { return max_bytes_; }
   std::string_view sha256() const { return sha256_; }
   // The native renderer's name, or "interpreted".
   std::string_view name() const;
@@ -224,6 +250,8 @@ class ChatTemplate {
   std::unique_ptr<jinja::Template> program_;
   TokenFacts tokens_;
   std::vector<std::string> stop_;
+  std::size_t max_bytes_ = jinja::Limits{}.max_output_bytes;
+  std::size_t max_live_bytes_ = jinja::Limits{}.max_live_bytes;
 };
 
 // The interpreter's rendering of a conversation, with the specials its
@@ -236,11 +264,17 @@ std::expected<Rendered, Error> RenderInterpreted(const jinja::Template& program,
                                                  const std::optional<jinja::CivilTime>& now,
                                                  jinja::Budget budget = {});
 
+// All of one registration's probes: a heuristic with its own fixed basis
+// (what one rendering's former bounds were, about 6 s of a GB10 core),
+// since renderings themselves are no longer capped (D-102).
+inline constexpr jinja::Usage kProbePool{.steps = 50'000'000,
+                                         .work_bytes = std::uint64_t{2} << 30U};
+
 // A native renderer's output equals the template's own on the family's
 // probe corpus (docs/tokenizer.md): the evidence for How::kNativeByProbe.
-// Probes draw on one pool, a single rendering's bounds: `spent` (its own
-// when null) carries what earlier probes used, across families; once it is
-// spent the template is no family's.
+// Probes draw on one pool, kProbePool: `spent` (its own when null) carries
+// what earlier probes used, across families; once it is spent the template
+// is no family's.
 bool ProbeEquivalent(const Template& native, const jinja::Template& program,
                      const TokenFacts& tokens, jinja::Usage* spent = nullptr);
 

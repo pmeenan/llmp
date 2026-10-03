@@ -14,9 +14,12 @@
 #ifndef JITLLM_CHAT_JINJA_INTERNAL_H_
 #define JITLLM_CHAT_JINJA_INTERNAL_H_
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -31,12 +34,19 @@ namespace jitllm::chat::jinja {
 
 // ---------------------------------------------------------------- accounting
 
-// What one rendering may consume (Limits): steps, bytes built or scanned,
-// and bytes held at once. The first bound reached records an error; every
-// later Charge fails too.
+// What one rendering consumes: steps and bytes built or scanned, counted,
+// capped only by a Budget (probes) and checked against the caller's
+// cancellation every kCancelSteps steps and kCancelWorkBytes bytes (D-102:
+// no time bound, but a long rendering stops when its request ends); and
+// bytes held at once, bounded by Limits. The first bound reached, or the
+// cancellation, records an error; every later Charge fails too.
 class Arena {
  public:
-  explicit Arena(const Limits& limits) : limits_(limits) {}
+  Arena(const Limits& limits, const Budget& budget)
+      : limits_(Lowered(limits, budget)),
+        max_steps_(budget.max_steps != 0 ? budget.max_steps : kNone),
+        max_work_(budget.max_work_bytes != 0 ? budget.max_work_bytes : kNone),
+        cancelled_(budget.cancelled) {}
   Arena(const Arena&) = delete;
   Arena& operator=(const Arena&) = delete;
   Arena(Arena&&) = delete;
@@ -45,19 +55,39 @@ class Arena {
 
   const Limits& limits() const { return limits_; }
   bool Step() {
-    if (++steps_ > limits_.max_steps) {
-      return Fail("the template took more steps than its bound");
+    if (++steps_ > max_steps_) {
+      return Fail("the template took more steps than its budget");
+    }
+    if ((steps_ & (kCancelSteps - 1)) == 0 && Cancelled()) {
+      return false;
     }
     return ok();
   }
   // Bytes about to be built or scanned.
   bool Work(std::size_t bytes) {
     work_ += bytes;
-    if (work_ > limits_.max_work_bytes) {
-      return Fail("the template built or scanned more bytes than its bound");
+    if (work_ > max_work_) {
+      return Fail("the template built or scanned more bytes than its budget");
+    }
+    if (work_ >= next_check_) {
+      next_check_ = work_ + kCancelWorkBytes;
+      if (Cancelled()) {
+        return false;
+      }
     }
     return ok();
   }
+  // Whether the caller said to stop; if so the rendering fails with
+  // Code::kCancelled.
+  bool Cancelled() {
+    if (failed_ || cancelled_ == nullptr || !*cancelled_ || !(*cancelled_)()) {
+      return false;
+    }
+    cancel_ = true;
+    (void)Fail("the rendering was cancelled: its request ended");
+    return true;
+  }
+  bool cancelled() const { return cancel_; }
   bool Hold(std::size_t bytes) {
     live_ += bytes;
     if (live_ > limits_.max_live_bytes) {
@@ -76,18 +106,35 @@ class Arena {
   bool ok() const { return !failed_; }
   std::string_view reason() const { return reason_; }
   // Bytes that may still be built or scanned (a comparison stops there).
-  std::uint64_t remaining_work() const {
-    return work_ < limits_.max_work_bytes ? limits_.max_work_bytes - work_ : 0;
-  }
+  std::uint64_t remaining_work() const { return work_ < max_work_ ? max_work_ - work_ : 0; }
   std::uint64_t steps() const { return steps_; }
   std::uint64_t work() const { return work_; }
 
  private:
-  const Limits& limits_;
+  static constexpr std::uint64_t kNone = std::numeric_limits<std::uint64_t>::max();
+
+  // The program's limits, with this rendering's lower memory bounds.
+  static Limits Lowered(Limits limits, const Budget& budget) {
+    if (budget.max_live_bytes != 0) {
+      limits.max_live_bytes = std::min(limits.max_live_bytes, budget.max_live_bytes);
+      limits.max_string_bytes = std::min(limits.max_string_bytes, budget.max_live_bytes);
+    }
+    if (budget.max_output_bytes != 0) {
+      limits.max_output_bytes = std::min(limits.max_output_bytes, budget.max_output_bytes);
+    }
+    return limits;
+  }
+
+  const Limits limits_;
+  std::uint64_t max_steps_;
+  std::uint64_t max_work_;
+  const std::function<bool()>* cancelled_;
   std::uint64_t steps_ = 0;
   std::uint64_t work_ = 0;
+  std::uint64_t next_check_ = kCancelWorkBytes;
   std::size_t live_ = 0;
   bool failed_ = false;
+  bool cancel_ = false;
   std::string_view reason_;
 };
 

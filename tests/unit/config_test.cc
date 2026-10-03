@@ -114,10 +114,21 @@ TEST(NodeConfigTest, VersionAloneIsTheDefaults) {
   EXPECT_EQ(config.client.bind[0].kind, Kind::kLoopback);
   EXPECT_EQ(config.client.bind[1].kind, Kind::kTailscale);
   EXPECT_EQ(config.client.port, 8114);
-  EXPECT_EQ(config.client.max_connections, 1024U);
-  EXPECT_EQ(config.client.max_queued, 64U);
+  // Every limit permissive by default (D-102): no count, wait or deadline,
+  // the byte limits derived from memory, a stall reported only.
+  EXPECT_FALSE(config.client.max_connections.has_value());
+  EXPECT_FALSE(config.client.max_queued.has_value());
+  EXPECT_FALSE(config.client.queue_wait_seconds.has_value());
   EXPECT_EQ(config.client.stall_seconds, 120U);
-  EXPECT_EQ(config.client.deadline_cap_seconds, 14400U);
+  EXPECT_EQ(config.client.stall_action, jitllm::config::StallAction::kReport);
+  EXPECT_FALSE(config.client.deadline_cap_seconds.has_value());
+  EXPECT_EQ(config.client.idle_seconds, 60U);
+  EXPECT_EQ(config.client.request_inactivity_seconds, 60U);
+  EXPECT_FALSE(config.client.write_inactivity_seconds.has_value());
+  EXPECT_FALSE(config.client.hang_seconds.has_value());
+  EXPECT_FALSE(config.client.request_memory_bytes.has_value());
+  EXPECT_FALSE(config.client.max_body_bytes.has_value());
+  EXPECT_FALSE(config.client.stream_buffer_bytes.has_value());
 }
 
 // The chat route's listener (D-097 as amended 2026-09-28): symbolic
@@ -131,8 +142,12 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
   EXPECT_EQ(four.client.bind[0].endpoint.port, 9000);
   const NodeConfig list = Parsed(
       "schema_version = 2\n[client]\nbind = [\"loopback\", \"[::]\", \"0.0.0.0:80\", "
-      "\"[FD7A:115C:A1E0::1]:9\", \"192.168.1.5\"]\nport = 9100\nmax_connections = 65536\n"
-      "max_queued = 1\nstall_seconds = 30\ndeadline_cap_seconds = 86400\n");
+      "\"[FD7A:115C:A1E0::1]:9\", \"192.168.1.5\"]\nport = 9100\nmax_connections = 1000000\n"
+      "max_queued = 1\nstall_seconds = 7200\ndeadline_cap_seconds = 2592000\n"
+      "queue_wait_seconds = 1\nstall_action = \"fail\"\nidle_seconds = 5\n"
+      "request_inactivity_seconds = 600\nwrite_inactivity_seconds = 30\n"
+      "max_body_bytes = 4294967295\nrequest_memory_bytes = 8589934592\n"
+      "stream_buffer_bytes = 4096\nhang_seconds = 900\n");
   ASSERT_EQ(list.client.bind.size(), 5U);
   EXPECT_EQ(list.client.bind[0].kind, Kind::kLoopback);
   EXPECT_EQ(list.client.bind[1].endpoint.address, "::");
@@ -143,10 +158,19 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
   EXPECT_EQ(list.client.bind[3].endpoint.address, "fd7a:115c:a1e0::1");
   EXPECT_EQ(list.client.bind[4].endpoint.address, "192.168.1.5");
   EXPECT_EQ(list.client.port, 9100);
-  EXPECT_EQ(list.client.max_connections, 65536U);
+  EXPECT_EQ(list.client.max_connections, 1000000U);
   EXPECT_EQ(list.client.max_queued, 1U);
-  EXPECT_EQ(list.client.stall_seconds, 30U);
-  EXPECT_EQ(list.client.deadline_cap_seconds, 86400U);
+  EXPECT_EQ(list.client.stall_seconds, 7200U);
+  EXPECT_EQ(list.client.deadline_cap_seconds, 2592000U);
+  EXPECT_EQ(list.client.queue_wait_seconds, 1U);
+  EXPECT_EQ(list.client.stall_action, jitllm::config::StallAction::kFail);
+  EXPECT_EQ(list.client.idle_seconds, 5U);
+  EXPECT_EQ(list.client.request_inactivity_seconds, 600U);
+  EXPECT_EQ(list.client.write_inactivity_seconds, 30U);
+  EXPECT_EQ(list.client.max_body_bytes, 4294967295U);
+  EXPECT_EQ(list.client.request_memory_bytes, 8589934592U);
+  EXPECT_EQ(list.client.stream_buffer_bytes, 4096U);
+  EXPECT_EQ(list.client.hang_seconds, 900U);
   const NodeConfig six = Parsed("schema_version = 2\nclient.bind = \"[::1]:8114\"\n");
   EXPECT_EQ(six.client.bind[0].endpoint.address, "::1");
   for (const std::string_view bad :
@@ -166,20 +190,40 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
               ElementsAre(HasSubstr("client.bind must be a string or an array of strings")));
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nport = 0\n"),
               ElementsAre(HasSubstr("client.port must be from 1 to 65535, not 0")));
-  EXPECT_THAT(Failures("schema_version = 2\n[client]\nmax_connections = 65537\n"),
-              ElementsAre(HasSubstr("client.max_connections must be from 1 to 65536")));
+  // Only the types' and arithmetic's ranges remain (D-102).
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nmax_connections = 4294967296\n"),
+              ElementsAre(HasSubstr("client.max_connections must be from 1 to 4294967295")));
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nmax_queued = 0\n"),
-              ElementsAre(HasSubstr("client.max_queued must be from 1 to 1024")));
+              ElementsAre(HasSubstr("client.max_queued must be from 1 to 4294967295")));
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nmax_queued = \"4\"\n"),
               ElementsAre(HasSubstr("client.max_queued must be an integer")));
-  EXPECT_THAT(Failures("schema_version = 2\n[client]\nstall_seconds = 29\n"),
-              ElementsAre(HasSubstr("client.stall_seconds must be from 30 to 3600 seconds")));
-  EXPECT_THAT(Failures("schema_version = 2\n[client]\nstall_seconds = 3601\n"),
-              ElementsAre(HasSubstr("client.stall_seconds must be from 30 to 3600 seconds")));
-  EXPECT_THAT(Failures("schema_version = 2\n[client]\ndeadline_cap_seconds = 59\n"),
-              ElementsAre(HasSubstr("client.deadline_cap_seconds must be from 60 to 86400")));
+  EXPECT_TRUE(Parsed("schema_version = 2\n[client]\nstall_seconds = 1\n").client.stall_seconds ==
+              1U);
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nstall_seconds = 0\n"),
+              ElementsAre(HasSubstr("client.stall_seconds must be from 1 to 2592000 seconds")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nstall_seconds = 2592001\n"),
+              ElementsAre(HasSubstr("client.stall_seconds must be from 1 to 2592000 seconds")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\ndeadline_cap_seconds = 0\n"),
+              ElementsAre(HasSubstr("client.deadline_cap_seconds must be from 1 to 2592000")));
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nstall_seconds = 120.0\n"),
               ElementsAre(HasSubstr("client.stall_seconds must be an integer, not a float")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nstall_action = \"restart\"\n"),
+              ElementsAre(HasSubstr(R"(client.stall_action must be "report" or "fail")")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nmax_body_bytes = 4294967296\n"),
+              ElementsAre(HasSubstr("client.max_body_bytes must be from 1024 to 4294967295")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nstream_buffer_bytes = 4095\n"),
+              ElementsAre(HasSubstr("client.stream_buffer_bytes must be from 4096")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nrequest_memory_bytes = 1048576\n"),
+              ElementsAre(HasSubstr("client.request_memory_bytes must be from 16777216")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nmax_body_bytes = 33554432\n"
+                       "request_memory_bytes = 16777216\n"),
+              ElementsAre(HasSubstr("client.max_body_bytes (33554432) must be at most "
+                                    "client.request_memory_bytes (16777216)")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nhang_seconds = 59\n"),
+              ElementsAre(HasSubstr("client.hang_seconds must be from 60 to 2592000 seconds")));
+  // The removed keys are unknown now.
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nbody_budget_bytes = 1048576\n"),
+              ElementsAre(HasSubstr("unknown key client.body_budget_bytes")));
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nhosts = []\n"),
               ElementsAre(HasSubstr("unknown key client.hosts")));
 }
@@ -356,8 +400,8 @@ TEST(NodeConfigTest, ReportsEveryProblemNotJustTheFirst) {
 TEST(NodeConfigTest, UnknownKeysAndTablesAreFatal) {
   EXPECT_THAT(Failures("schema_version = 2\n[storage]\nspil = \"x\"\n"),
               ElementsAre(HasSubstr("unknown key storage.spil")));
-  // [client] has bind, port, max_connections, max_queued, stall_seconds and
-  // deadline_cap_seconds (D-097); the front door's other keys arrive in M5.
+  // [client] has bind, port and the limits (D-097, D-102); the front door's
+  // other keys arrive in M5.
   EXPECT_THAT(Failures("schema_version = 2\n[client]\ncredential = \"x\"\n"),
               ElementsAre(HasSubstr("unknown key client.credential")));
   EXPECT_THAT(Failures("schema_version = 2\nstorage = \"x\"\n"),
@@ -570,7 +614,7 @@ artifact = "{0}"
   EXPECT_THAT(failures, Contains(HasSubstr("models.both: a model names exactly one of")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline: drafter, speculation, context")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.short.artifact must be an ID string")));
-  EXPECT_THAT(failures, Contains(HasSubstr("models.small.context must be from 512 to 1048576")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.small.context must be from 512 to 4294967295")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.self: an artifact cannot be its own drafter")));
   EXPECT_THAT(failures, Contains(HasSubstr("an installed artifact serves one model")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.odd.tokenizer must be an absolute path")));
@@ -630,8 +674,11 @@ wave_form = "plain"
                                            "keys, not a composition's")));
 }
 
-TEST(NodeConfigTest, ContextDefaultsAndCeilingRemainSchemaTwo) {
-  for (const auto context : {512U, 262144U, 262145U, 1048576U}) {
+// No generic context ceiling (D-102): the configuration takes any 32-bit
+// count from the least; registration checks the checkpoint's own
+// (model_limits.h, runtime_test).
+TEST(NodeConfigTest, ContextHasNoGenericCeiling) {
+  for (const auto context : {512U, 262144U, 262145U, 1048576U, 1048577U, 4294967295U}) {
     const NodeConfig config =
         Parsed(std::format("schema_version = 2\n[models.m]\nartifact = \"{}\"\ncontext = {}\n",
                            std::string(64, 'a'), context));
@@ -639,9 +686,19 @@ TEST(NodeConfigTest, ContextDefaultsAndCeilingRemainSchemaTwo) {
     EXPECT_EQ(config.models.front().context, context);
   }
   EXPECT_THAT(
-      Failures(std::format("schema_version = 2\n[models.m]\nartifact = \"{}\"\ncontext = 1048577\n",
-                           std::string(64, 'a'))),
-      ElementsAre(HasSubstr("context must be from 512 to 1048576 tokens, not 1048577")));
+      Failures(
+          std::format("schema_version = 2\n[models.m]\nartifact = \"{}\"\ncontext = 4294967296\n",
+                      std::string(64, 'a'))),
+      ElementsAre(HasSubstr("context must be from 512 to 4294967295 tokens, not 4294967296")));
+}
+
+// The model library may exceed memory (D-102): no count of models.
+TEST(NodeConfigTest, NamesAnyNumberOfModels) {
+  std::string text = "schema_version = 2\n";
+  for (int i = 0; i < 40; ++i) {
+    text += std::format("[models.m{}]\nartifact = \"{:064x}\"\n", i, i + 1);
+  }
+  EXPECT_THAT(Parsed(text).models, SizeIs(40));
 }
 
 // A model's context from its minimum, its prefill chunk (configured, or
@@ -699,7 +756,7 @@ decode_floor_tok_s = 5
 )",
       std::string(64, 'a'), std::string(64, 'b'), std::string(64, 'c'), std::string(64, 'd'),
       std::string(64, 'e'), std::string(64, 'f'), std::string(64, '0'), std::string(64, '1')));
-  EXPECT_THAT(failures, Contains(HasSubstr("models.below.context must be from 512 to 1048576")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.below.context must be from 512 to 4294967295")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.none.prefill_chunk must be from 1 to 262144")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.over.prefill_chunk must be from 1 to 262144")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.text.prefill_chunk must be an integer")));
@@ -714,13 +771,9 @@ decode_floor_tok_s = 5
   EXPECT_THAT(failures, Contains(HasSubstr("models.picture: drafter, speculation")));
 }
 
-TEST(NodeConfigTest, ModelsAreBoundedAndOwnedOnce) {
-  std::string many = "schema_version = 2\n";
-  for (int i = 0; i < 17; ++i) {
-    many += std::format("[models.m{}]\nartifact = \"{:064x}\"\n", i, i + 1);
-  }
-  EXPECT_THAT(Failures(many), Contains(HasSubstr("names 17 models, more than 16")));
-  // A model's table in two files merges; one key set twice does not.
+TEST(NodeConfigTest, ModelsAreOwnedOnce) {
+  // Any number of models (NamesAnyNumberOfModels); a model's table in two
+  // files merges; one key set twice does not.
   const std::string a = std::format("schema_version = 2\n[models.x]\nartifact = \"{}\"\n", kDsv4);
   const NodeConfig merged = Parsed(
       {{"a.toml", a},

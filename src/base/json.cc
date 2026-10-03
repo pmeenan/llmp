@@ -109,10 +109,24 @@ void AppendQuoted(std::string_view text, std::string& out) {
   out.push_back('"');
 }
 
+// A Document::Node's bytes (ParseWorkingBytes; checked in Parser).
+constexpr std::size_t kNodeBytes = 12;
+
 class Parser {
  public:
   Parser(std::string_view text, const Limits& limits, Document& doc)
       : text_(text), limits_(limits), doc_(doc) {}
+
+  // Exactly reserved, so no table doubles past what ParseWorkingBytes
+  // charged: `values` nodes, children and pending children, and the
+  // strings' bytes.
+  void Reserve(std::size_t values, std::size_t string_bytes) {
+    doc_.nodes_.reserve(values);
+    doc_.kids_.reserve(values);
+    doc_.text_.reserve(string_bytes);
+    pending_.reserve(values);
+  }
+  static_assert(sizeof(Document::Node) == kNodeBytes, "ParseWorkingBytes counts a node's bytes");
 
   std::expected<void, Error> Run() {
     doc_.nodes_.emplace_back();  // the root is node 0
@@ -483,6 +497,37 @@ class Parser {
   std::vector<std::uint32_t> pending_;  // children of the containers being parsed
 };
 
+std::size_t MaxValues(std::string_view text) {
+  std::size_t values = 1;
+  bool in_string = false;
+  bool escaped = false;
+  for (const char c : text) {
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (c == '\\') {
+        escaped = true;
+      } else if (c == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      in_string = true;
+    } else if (c == '[' || c == '{' || c == ',' || c == ':') {
+      ++values;
+    }
+  }
+  return values;
+}
+
+std::size_t ParseWorkingBytes(std::string_view text) {
+  // A value's node, its place among its parent's children and while its
+  // parent is parsed; and the unescaped strings and number texts, at most
+  // the text's bytes.
+  return (MaxValues(text) * (kNodeBytes + (2 * sizeof(std::uint32_t)))) + text.size();
+}
+
 std::expected<Document, Error> Parse(std::string_view text, const Limits& limits) {
   if (text.size() > limits.max_bytes) {
     return std::unexpected(Error{"document too large", 0});
@@ -492,6 +537,9 @@ std::expected<Document, Error> Parse(std::string_view text, const Limits& limits
   }
   Document doc;
   Parser parser(text, limits, doc);
+  // At most max_values, which also bounds the scan's count.
+  parser.Reserve(std::min(MaxValues(text), limits.max_values),
+                 std::min(text.size(), limits.max_string_bytes));
   if (auto r = parser.Run(); !r) {
     return std::unexpected(r.error());
   }

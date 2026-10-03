@@ -171,18 +171,7 @@ struct Args {
 class Renderer {
  public:
   Renderer(const Program& program, const std::optional<CivilTime>& now, Budget budget)
-      : program_(program),
-        limits_(program.limits),
-        arena_(limits_),
-        now_(now),
-        usage_(budget.usage) {
-    if (budget.max_steps != 0) {
-      limits_.max_steps = std::min(limits_.max_steps, budget.max_steps);
-    }
-    if (budget.max_work_bytes != 0) {
-      limits_.max_work_bytes = std::min(limits_.max_work_bytes, budget.max_work_bytes);
-    }
-  }
+      : program_(program), arena_(program.limits, budget), now_(now), usage_(budget.usage) {}
   Renderer(const Renderer&) = delete;
   Renderer& operator=(const Renderer&) = delete;
   Renderer(Renderer&&) = delete;
@@ -235,7 +224,9 @@ class Renderer {
  private:
   // ----------------------------------------------------------------- helpers
 
-  std::unexpected<Error> Bound() const { return Fail(Code::kLimit, arena_.reason()); }
+  std::unexpected<Error> Bound() const {
+    return Fail(arena_.cancelled() ? Code::kCancelled : Code::kLimit, arena_.reason());
+  }
 
   // Lookups by name, their searches charged (FindMember). A bound reached
   // fails the next step; loops without one check arena_.ok().
@@ -3731,8 +3722,7 @@ class Renderer {
   }
 
   const Program& program_;
-  Limits limits_;  // the program's, with this rendering's step bound
-  Arena arena_;
+  Arena arena_;  // the program's limits, this rendering's budget and cancellation
   const std::optional<CivilTime>& now_;
   Usage* usage_;  // where to add what this rendering used, if anywhere
   // Objects that can close a reference cycle (a scope holding a macro that

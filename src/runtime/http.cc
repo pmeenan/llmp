@@ -223,7 +223,8 @@ std::expected<Request, Failure> ParseHead(std::string_view full, const Limits& l
   }
   request.body_bytes = static_cast<std::size_t>(std::max<std::int64_t>(length, 0));
   if (request.body_bytes > limits.max_body_bytes) {
-    return Fail(413, std::format("the body is longer than {} bytes", limits.max_body_bytes));
+    return Fail(413, std::format("the body is longer than {} bytes ([client] max_body_bytes)",
+                                 limits.max_body_bytes));
   }
   if (const std::string* expect = request.Find("expect")) {
     if (!EqualsIgnoringCase(*expect, "100-continue")) {

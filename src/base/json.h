@@ -116,6 +116,17 @@ class Document {
 
 std::expected<Document, Error> Parse(std::string_view text, const Limits& limits = {});
 
+// The most a document parsed from `text` can have values (a scan that
+// counts the structural characters outside strings: every value but the
+// root follows a '[', '{', ',' or ':'). Parse reserves its tables for this
+// many, so they never grow by doubling.
+std::size_t MaxValues(std::string_view text);
+
+// The bytes Parse allocates for `text` at most besides the text itself:
+// its value, child and pending tables for MaxValues and its strings'
+// bytes. A caller charges this before parsing untrusted input.
+std::size_t ParseWorkingBytes(std::string_view text);
+
 // Whether bytes are well-formed UTF-8 (Unicode 15.1, table 3-7); on failure
 // the offset of the first byte of the first ill-formed sequence.
 std::optional<std::size_t> FirstInvalidUtf8(std::string_view bytes);

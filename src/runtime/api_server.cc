@@ -29,6 +29,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -40,6 +41,7 @@
 #include "base/surface_versions.h"
 #include "platform/crash_policy.h"
 #include "platform/event_loop.h"
+#include "platform/memory_pressure.h"
 #include "platform/sockets.h"
 
 namespace jitllm::runtime::api {
@@ -66,6 +68,20 @@ constexpr std::size_t kReadChunk = 65536;
 // an unasked 100); one that closed entirely answers with a reset, which
 // ends the request as a disconnect.
 constexpr std::string_view kProcessing = "HTTP/1.1 102 Processing\r\n\r\n";
+// A body's buffer grows by doubling from this, charged as it grows.
+constexpr std::size_t kFirstBodyBytes = std::size_t{64} << 10U;
+// How often a body waiting for the request memory tries again (a check of
+// the pool's epoch, not a parse), and how often the parse thread looks.
+constexpr auto kMemoryRetry = std::chrono::milliseconds(50);
+constexpr auto kParseRetryPoll = std::chrono::milliseconds(50);
+// A request that held this much of the request memory gives the C
+// library's free heap back to the system when it ends (D-102): a large
+// parse leaves many small allocations freed.
+constexpr std::uint64_t kTrimAfterBytes = std::uint64_t{16} << 20U;
+// Consecutive pauses with no paused member before the cohort is a fault
+// (a member's reader may resume between the backend's look and the
+// server's: that pass only resumes).
+constexpr int kMaxEmptyPauses = 16;
 
 // Empties a buffer, giving back its allocation when that is large.
 void Release(std::string& buffer) {
@@ -163,17 +179,21 @@ struct Server::Channel {
   Clock::time_point queued_at;
   std::chrono::seconds idle_timeout{0};
 
-  std::string out;           // bytes the I/O thread has not taken yet
-  std::string literal_body;  // kept separately so transfer never copies a large body
-  std::size_t response_reserved = 0;
-  bool head_sent = false;   // the head is in `out` or gone out
-  bool chunked = false;     // the body is framed in chunks
-  bool keep_alive = false;  // the connection serves another request after this
-  bool ended = false;       // the response is whole
-  bool gone = false;        // the client left or stopped reading: the generation ends
-  bool stalled = false;     // the watchdog answered it: the generation ends
-  bool queued = false;      // waiting in Server::queue_
-  bool dirty = false;       // on Server::dirty_
+  std::string out;              // bytes the I/O thread has not taken yet
+  std::string body;             // a non-streaming body, kept apart so it is moved, never copied
+  MemoryCharge response;        // `body`'s allocation, which follows it to the socket
+  MemoryCharge unread;          // `out`'s allocation, as a stream's output grows
+  Clock::time_point paused_at;  // when `paused` was last set
+  bool head_sent = false;       // the head is in `out` or gone out
+  bool chunked = false;         // the body is framed in chunks
+  bool keep_alive = false;      // the connection serves another request after this
+  bool ended = false;           // the response is whole
+  bool gone = false;            // the client left (or was dropped): the generation ends
+  bool stalled = false;         // the watchdog answered it: the generation ends
+  bool paused = false;          // more unread than stream_buffer: the request waits (backpressure)
+  bool queued = false;          // waiting in Server::queue_
+  bool parked = false;          // yielded and waiting for its client to read (Server::parked_)
+  bool dirty = false;           // on Server::dirty_
   Clock::time_point last_out;
 
   // Everything below: with Server::mutex_ held.
@@ -225,13 +245,13 @@ struct Server::Channel {
   // event after it (the stream then ends without [DONE]).
   void PutError(const Error& error, std::vector<std::string> extra = {}) {
     if (!head_sent) {
-      const std::string body = ErrorJson(error);
+      const std::string json = ErrorJson(error);
       if (error.status == 429 || error.status == 503) {
         extra.push_back(std::format("Retry-After: {}", kRetryAfterSeconds));
         extra.emplace_back("x-should-retry: true");
       }
-      PutHead(error.status, kJson, body.size(), std::move(extra));
-      PutBody(body);
+      PutHead(error.status, kJson, json.size(), std::move(extra));
+      PutBody(json);
     } else if (stream) {
       PutEvent(ErrorJson(error));
     }
@@ -257,15 +277,19 @@ struct Server::Connection {
   std::string in;
   std::size_t head_end = 0;
   http::Request request;
-  std::size_t reserved = 0;  // of the body budget
+  MemoryCharge body;  // `in`'s allocation while it holds a body (the request memory)
+  // The body's buffer could not grow now: the connection is not read until
+  // the driver grows the request memory, or refuses (its denials past
+  // `wait_denials`).
+  bool memory_wait = false;
+  std::uint64_t wait_denials = 0;
   Clock::time_point idle_by;
-  Clock::time_point head_by;
-  Clock::time_point body_by;
+  Clock::time_point inactive_by;  // a head or body: when no byte arriving gets a 408
   Clock::time_point linger_by;
   Clock::time_point progress_at;  // the last write that went out, or when output became pending
   std::string wbuf;
   std::size_t woff = 0;
-  std::size_t response_reserved = 0;  // follows a literal body's full allocation
+  MemoryCharge response;  // a non-streaming body's allocation, in `wbuf`
   std::shared_ptr<Channel> channel;
   bool close_after = false;   // pipelined, refused mid-request, or input closed: no reuse
   bool input_closed = false;  // the peer shut its sending side after a whole request
@@ -277,13 +301,70 @@ struct Server::Connection {
   bool pending_output() const { return woff < wbuf.size(); }
 };
 
+// ---------------------------------------------------------------- Parse
+
+// A body to parse, on the I/O thread or (kParseOffThreadBytes and longer)
+// the parse thread, and what came of it.
+struct Server::Parse {
+  std::uint64_t connection = 0;
+  std::shared_ptr<Channel> channel;
+  bool literal_route = false;
+  std::string body;
+  MemoryCharge body_charge;  // the body's buffer
+  std::expected<ChatRequest, Error> parsed;
+  std::optional<CompletionRequest> literal;
+  MemoryCharge request_charge;  // the parsed request's bytes
+  std::uint64_t denials = 0;    // the request memory's when it began to wait
+  bool large = false;           // its body was large (the heap is trimmed after it)
+
+  // Parses, charging the parse's working set as it goes, then the parsed
+  // request; frees the body. False, the body kept, when the request memory
+  // cannot take the charges now but its driver may grow it (`may_wait`):
+  // the caller waits for it and runs the parse again.
+  bool Run(RequestMemory& memory, bool may_wait) {
+    if (literal_route) {
+      auto raw = ParseCompletionRequest(body, &memory);
+      if (raw) {
+        parsed = raw->options;
+        literal = std::move(*raw);
+      } else {
+        parsed = std::unexpected(raw.error());
+      }
+    } else {
+      parsed = ParseChatRequest(body, &memory);
+    }
+    const auto busy = [&] {
+      return !parsed && parsed.error().code == "request_memory_busy" && may_wait && memory.grows();
+    };
+    if (parsed) {
+      const std::uint64_t bytes = literal ? RequestBytes(*literal) : RequestBytes(*parsed);
+      if (!request_charge.Add(memory, bytes)) {
+        parsed = std::unexpected(MemoryRefusal(memory, bytes, "the parsed request"));
+        literal.reset();
+      }
+    }
+    if (busy()) {
+      literal.reset();
+      return false;
+    }
+    large = body.size() >= kTrimAfterBytes;
+    std::string().swap(body);
+    body_charge.Reset();
+    if (large) {
+      platform::ReleaseFreeHeap();  // the parse's many small allocations, freed
+    }
+    return true;
+  }
+};
+
 // ---------------------------------------------------------------- Stream
 
 // One admitted request's response as the driver makes it.
 class Server::Stream final : public Exchange {
  public:
   // `started`: when the driver took the request up, which a non-streaming
-  // deadline counts from.
+  // deadline counts from (a request that yielded its place: when it was
+  // first taken up, its response's progress carried on from `pending`).
   Stream(Server& server, Pending& pending, int wake_fd, const std::function<bool()>& on_wake,
          Clock::time_point started, bool cooperative = false)
       : server_(server),
@@ -291,16 +372,29 @@ class Server::Stream final : public Exchange {
         channel_(*pending.channel),
         wake_fd_(wake_fd),
         on_wake_(on_wake),
-        started_(started),
-        text_(pending.request.stop),
-        cooperative_(cooperative) {}
+        started_(pending.started.value_or(started)),
+        text_(pending.text ? std::move(*pending.text) : OutputText(pending.request.stop)),
+        usage_(pending.usage),
+        reasoning_(std::move(pending.reasoning)),
+        content_(std::move(pending.content)),
+        text_charge_(std::move(pending.text_charge)),
+        pauses_(pending.pauses),
+        cooperative_(cooperative) {
+    pending.text.reset();
+    if (!pending_.request.stream && server_.options_.deadline_cap) {
+      // Set before any work, so a configured deadline ends a long rendering
+      // too; Admit then scales it to the request's work, within the cap.
+      deadline_ = started_ + *server_.options_.deadline_cap;
+    }
+  }
 
   bool Admit(const Admission& admission) override {
     usage_.prompt_tokens = admission.prompt_tokens;
     floors_ = admission.floors;
-    if (!pending_.request.stream) {
-      // A stream has no deadline; a non-streaming request's is its work's.
-      deadline_ = started_ + ScaledDeadline(server_.options_.stall, server_.options_.deadline_cap,
+    if (!pending_.request.stream && server_.options_.deadline_cap) {
+      // A stream has no deadline, nor by default a non-streaming request
+      // (D-102); with a cap configured, its work's, at most the cap.
+      deadline_ = started_ + ScaledDeadline(server_.options_.stall, *server_.options_.deadline_cap,
                                             floors_, admission.swap_bytes, admission.prompt_tokens,
                                             admission.max_tokens);
     }
@@ -319,7 +413,7 @@ class Server::Stream final : public Exchange {
   }
   bool Reasoning(std::string_view text) override {
     Emit(text_.Reasoning(text));
-    return Check(std::nullopt, 0);
+    return Backpressure() && Check(std::nullopt, 0);
   }
   bool Content(std::string_view text) override {
     Emit(text_.Content(text));
@@ -327,9 +421,31 @@ class Server::Stream final : public Exchange {
       Progress(std::nullopt, 0);  // the answer is whole: nothing else to ask
       return false;
     }
-    return Check(std::nullopt, 0);
+    return Backpressure() && Check(std::nullopt, 0);
   }
-  bool Continue() override { return Check(std::nullopt, 0); }
+  bool Continue() override { return Backpressure() && Check(std::nullopt, 0); }
+  bool Paused() const override {
+    const std::scoped_lock lock(server_.mutex_);
+    return PausedLocked();
+  }
+  bool Yielding() const override { return yielding_; }
+  // A cooperative member that yields (Work::Yield).
+  void SetYielding() { yielding_ = true; }
+
+  // A yielded request's response so far, for its next Stream (Requeue, or
+  // a deferral back to the queue); `taken_up`: it ran, so its next Stream
+  // counts from when it was first taken up.
+  void Carry(Pending& pending, bool taken_up) {
+    pending.text = std::move(text_);
+    pending.usage = usage_;
+    pending.reasoning = std::move(reasoning_);
+    pending.content = std::move(content_);
+    pending.text_charge = std::move(text_charge_);
+    pending.pauses = pauses_;
+    if (taken_up) {
+      pending.started = started_;
+    }
+  }
 
   // Hands the rest of the response to the I/O thread for the backend's
   // result; the status for the log.
@@ -340,16 +456,38 @@ class Server::Stream final : public Exchange {
         return channel_.stalled ? 504 : 499;
       }
     }
-    // Large literal score arrays are driver-owned. Serialize without the
-    // shared I/O lock so another connection can still disconnect or read.
-    std::optional<std::expected<std::string, Error>> literal_body;
-    if (pending_.literal && result) {
+    // A non-streaming body (large literal score arrays among them) is the
+    // driver's: made without the shared I/O lock, so another connection can
+    // still disconnect or read, and charged to the request memory by its
+    // allocation, which follows it to the socket.
+    std::optional<std::expected<std::string, Error>> body;
+    MemoryCharge body_charge;
+    if (!pending_.request.stream && result && !timed_out_ && !stopping_) {
       EmitLocked(text_.Finish());  // non-streaming: only local strings
       usage_.completion_tokens = result->completion_tokens;
       usage_.cached_tokens = result->cached_tokens;
       const Finish finish = result->stopped || text_.stopped() ? Finish::kStop : Finish::kLength;
-      literal_body = LiteralCompletionJson(channel_.id, channel_.created, *pending_.literal,
-                                           content_, result->literal, finish, usage_);
+      // The body's most: what the request memory could hold besides it.
+      const std::uint64_t most = server_.memory_->capacity();
+      body = pending_.literal
+                 ? LiteralCompletionJson(channel_.id, channel_.created, *pending_.literal, content_,
+                                         result->literal, finish, usage_,
+                                         static_cast<std::size_t>(most))
+                 : std::expected<std::string, Error>(CompletionJson(
+                       channel_.id, channel_.created, pending_.request.model, content_,
+                       reasoning_.empty() ? std::nullopt : std::optional<std::string>(reasoning_),
+                       finish, usage_));
+      std::string().swap(content_);
+      std::string().swap(reasoning_);
+      text_charge_.Reset();
+      // Charged as it goes to the socket (on the driver, the request memory
+      // grows for it); one that cannot be held beside what slow readers
+      // keep is refused (503), so they cannot retain responses without
+      // bound.
+      if (*body && !body_charge.Add(*server_.memory_, (*body)->capacity())) {
+        body = std::unexpected(
+            MemoryRefusal(*server_.memory_, (*body)->capacity(), "the completed response"));
+      }
       timed_out_ = timed_out_ || Clock::now() > deadline_;
     }
     int status = 200;
@@ -364,7 +502,7 @@ class Server::Stream final : public Exchange {
         channel_.PutError(result.error());
         status = result.error().status;
       } else {
-        if (!pending_.literal) {
+        if (pending_.request.stream) {
           EmitLocked(text_.Finish());
         }
         usage_.completion_tokens = result->completion_tokens;
@@ -397,35 +535,16 @@ class Server::Stream final : public Exchange {
             }
             channel_.PutBody("data: [DONE]\n\n");
             channel_.PutEnd();
+          } else if (!body || !*body) {
+            const Error error =
+                body ? body->error() : Refusal(500, "the response was not made", "internal");
+            channel_.PutError(error);
+            status = error.status;
           } else {
-            auto body = literal_body
-                            ? std::move(*literal_body)
-                            : std::expected<std::string, Error>(CompletionJson(
-                                  channel_.id, channel_.created, model, content_,
-                                  reasoning_.empty() ? std::nullopt
-                                                     : std::optional<std::string>(reasoning_),
-                                  finish, usage_));
-            if (!body) {
-              channel_.PutError(body.error());
-              status = body.error().status;
-            } else if (pending_.literal &&
-                       (body->capacity() > server_.options_.response_budget ||
-                        server_.response_in_use_ >
-                            server_.options_.response_budget - body->capacity())) {
-              channel_.PutError(Refusal(503, "completed response buffers are full; retry later",
-                                        "response_budget_exceeded"));
-              status = 503;
-            } else {
-              channel_.PutHead(200, kJson, body->size());
-              if (pending_.literal) {
-                channel_.response_reserved = body->capacity();
-                server_.response_in_use_ += channel_.response_reserved;
-                channel_.literal_body = std::move(*body);
-              } else {
-                channel_.PutBody(*body);
-              }
-              channel_.PutEnd();
-            }
+            channel_.PutHead(200, kJson, (*body)->size());
+            channel_.response = std::move(body_charge);
+            channel_.body = std::move(**body);
+            channel_.PutEnd();
           }
         }
       }
@@ -436,7 +555,8 @@ class Server::Stream final : public Exchange {
   }
 
   const Usage& usage() const { return usage_; }
-  bool slow() const { return slow_; }
+  // How often the request paused for its client (backpressure).
+  std::uint64_t pauses() const { return pauses_; }
 
  private:
   // With the lock held.
@@ -451,6 +571,13 @@ class Server::Stream final : public Exchange {
     if (!pending_.request.stream) {
       reasoning_ += out.reasoning;
       content_ += out.content;
+      // The text so far, charged by its allocation as it grows (bounded by
+      // the context's tokens). Already held: past the grant it is charged
+      // anyway, for the driver to grow it, and later charges wait.
+      const std::uint64_t held = reasoning_.capacity() + content_.capacity();
+      if (held > text_charge_.bytes()) {
+        text_charge_.Force(*server_.memory_, held - text_charge_.bytes());
+      }
       return;
     }
     if (channel_.gone || channel_.stalled || (out.reasoning.empty() && out.content.empty())) {
@@ -467,13 +594,67 @@ class Server::Stream final : public Exchange {
       channel_.PutEvent(ChunkJson(channel_.id, channel_.created, pending_.request.model,
                                   Delta::kContent, out.content));
     }
-    if (channel_.out.size() > server_.options_.max_unsent) {
-      // A reader this far behind is not reading: it is dropped rather than
-      // let the buffer grow.
-      channel_.gone = true;
-      slow_ = true;
+    // The unread output, charged as it grows (within the grant: this is
+    // the middle of a unit, where the driver does not reclaim). What the
+    // request memory cannot take now is still held, charged past the grant
+    // for the driver to grow it, and pauses the request like a reader
+    // behind.
+    bool over = false;
+    if (const std::uint64_t held = channel_.out.capacity(); held > channel_.unread.bytes()) {
+      const std::uint64_t more = held - channel_.unread.bytes();
+      if (!channel_.unread.Add(*server_.memory_, more, true)) {
+        channel_.unread.Force(*server_.memory_, more);
+        over = true;
+      }
+    }
+    if (over || channel_.out.size() > server_.options_.intake.stream_buffer) {
+      // A reader this far behind gets backpressure (D-102): the request
+      // pauses at this completed step until the I/O thread has handed the
+      // buffer to the socket (Server::Flush clears it), instead of the
+      // buffer growing or the client being dropped.
+      if (!channel_.paused) {
+        channel_.paused = true;
+        channel_.paused_at = Clock::now();
+        ++pauses_;
+      }
     }
     Dirty();
+  }
+
+  // With the lock held: paused, and not ended otherwise.
+  bool PausedLocked() const { return channel_.paused && !channel_.gone && !channel_.stalled; }
+
+  // The serial path waits here, at a completed step, while its client is
+  // behind; a cooperative backend leaves the request out of its units
+  // instead (Paused). False once the runtime stops, or when the request is
+  // to yield its place: queued requests waited behind its pause for
+  // ServerOptions::yield_after (Yielding).
+  bool Backpressure() {
+    if (yielding_) {
+      return false;
+    }
+    if (cooperative_ || !pending_.request.stream) {
+      return true;
+    }
+    {
+      const std::scoped_lock lock(server_.mutex_);
+      if (!PausedLocked()) {
+        return true;
+      }
+    }
+    const bool go_on = server_.AwaitReaders(
+        [this] { return PausedLocked() && !server_.YieldDueLocked(channel_, Clock::now()); },
+        wake_fd_, on_wake_);
+    if (!go_on) {
+      stopping_ = true;
+      return false;
+    }
+    const std::scoped_lock lock(server_.mutex_);
+    if (PausedLocked() && server_.YieldDueLocked(channel_, Clock::now())) {
+      yielding_ = true;
+      return false;
+    }
+    return true;
   }
 
   void Emit(const OutputText::Out& out) {
@@ -507,7 +688,13 @@ class Server::Stream final : public Exchange {
   // A beat (above), then whether the generation goes on.
   bool Check(std::optional<Phase> next, double expected) {
     Progress(next, expected);
-    if (timed_out_ || stopping_) {
+    if (!cooperative_) {
+      // Between a serial request's steps the driver settles the request
+      // memory (a cohort's settles between its units, Backend::Maintain),
+      // so bodies and parses waiting for it do not wait for the request.
+      server_.memory_->Settle();
+    }
+    if (timed_out_ || stopping_ || yielding_) {
       return false;
     }
     {
@@ -540,11 +727,13 @@ class Server::Stream final : public Exchange {
   Floors floors_;
   OutputText text_;
   Usage usage_;
-  std::string reasoning_;
+  std::string reasoning_;  // a non-streaming response's text so far
   std::string content_;
+  MemoryCharge text_charge_;  // theirs, in the request memory
   bool timed_out_ = false;
   bool stopping_ = false;
-  bool slow_ = false;
+  bool yielding_ = false;
+  std::uint64_t pauses_ = 0;  // under the server's lock
   bool cooperative_ = false;
 };
 
@@ -560,8 +749,9 @@ struct Server::Active {
   Active(Server& server, Pending request, int wake_fd, const std::function<bool()>& on_wake)
       : pending(std::move(request)),
         request{.options = pending.request,
-                .literal = pending.literal ? &*pending.literal : nullptr},
-        started(Clock::now()),
+                .literal = pending.literal ? &*pending.literal : nullptr,
+                .resume = pending.resume.get()},
+        started(pending.started.value_or(Clock::now())),
         exchange(server, pending, wake_fd, on_wake, started, true) {}
 };
 
@@ -570,6 +760,10 @@ struct Server::Active {
 Server::Server(Backend& backend, ServerOptions options)
     : backend_(backend),
       options_(std::move(options)),
+      memory_(options_.memory != nullptr
+                  ? options_.memory
+                  : std::make_shared<RequestMemory>(options_.intake.request_capacity,
+                                                    options_.intake.request_capacity)),
       models_(backend.Models()),
       created_(static_cast<std::int64_t>(std::time(nullptr))),
       loop_(platform::EventLoop::Open()),
@@ -582,6 +776,10 @@ Server::~Server() {
   if (io_.joinable()) {
     stop_.Signal();
     io_.join();
+  }
+  if (parser_.joinable()) {
+    parser_.request_stop();
+    parser_.join();
   }
 }
 
@@ -622,11 +820,6 @@ Health Server::health() const {
   return watchdog_.health();
 }
 
-std::size_t Server::response_bytes() const {
-  const std::scoped_lock lock(mutex_);
-  return response_in_use_;
-}
-
 void Server::HealthChanged() const {
   if (!options_.on_health) {
     return;
@@ -660,6 +853,48 @@ void Server::WatchBackend(Clock::time_point now, std::vector<std::uint64_t>& end
     }
     const Health& health = watchdog_.health();
     const Clock::duration idle = now - health.last_progress;
+    if (!options_.stall_fails) {
+      // Detection is not a limit (D-102): reported, while the requests go
+      // on (a hang that never returns is the node's to end).
+      Log(std::format(
+          "the model backend made no progress for {:.1f} s ({}; stall {}); it is reported "
+          "unhealthy until it makes progress; its {} active and {} queued requests go on",
+          Seconds(idle), PhaseName(health.phase), health.stalls, running_.size(), queue_.size()));
+    } else {
+      FailStalledLocked(idle, ended);
+    }
+  }
+  HealthChanged();
+}
+
+std::string Server::HangLocked(Clock::time_point now) {
+  // Progress of any kind: a unit's beat (the watchdog's) or the backend's
+  // own activity changing (page-in progress), whichever came last.
+  const std::uint64_t activity = options_.activity ? options_.activity() : 0;
+  if (activity != backend_activity_ || backend_activity_at_ == Clock::time_point{}) {
+    backend_activity_ = activity;
+    backend_activity_at_ = now;
+  }
+  const Health& health = watchdog_.health();
+  if (health.phase == Phase::kIdle || health.phase == Phase::kPaused) {
+    return {};
+  }
+  const std::chrono::milliseconds limit = options_.hang.value_or(
+      std::max<std::chrono::milliseconds>(kHangFloor, kHangStalls * options_.stall));
+  const Clock::time_point since = std::max(health.last_progress, backend_activity_at_);
+  if (now - since < limit) {
+    return {};
+  }
+  return std::format(
+      "the model backend made no progress of any kind for {:.0f} s ({}: no unit ended and no "
+      "page-in moved): a confirmed hang; the runtime exits for its supervisor to restart it "
+      "([client] hang_seconds)",
+      Seconds(now - since), PhaseName(health.phase));
+}
+
+void Server::FailStalledLocked(Clock::duration idle, std::vector<std::uint64_t>& ended) {
+  const Health& health = watchdog_.health();
+  {
     std::string which = "no request";
     for (const auto& running : running_) {
       if (running->ended || running->gone) {
@@ -677,7 +912,12 @@ void Server::WatchBackend(Clock::time_point now, std::vector<std::uint64_t>& end
         std::format("the model backend made no progress for {:.1f} s ({}; stall {}): {}; it is "
                     "unhealthy, and requests get 503 until it makes progress",
                     Seconds(idle), PhaseName(health.phase), health.stalls, which));
-    // Nothing queued would run before the backend moves again.
+    // Nothing queued (or parked) would run before the backend moves again.
+    for (Pending& p : parked_) {
+      p.channel->parked = false;
+      queue_.push_back(std::move(p));
+    }
+    parked_.clear();
     for (Pending& p : queue_) {
       Channel& ch = *p.channel;
       ch.queued = false;
@@ -687,7 +927,7 @@ void Server::WatchBackend(Clock::time_point now, std::vector<std::uint64_t>& end
     }
     queue_.clear();
   }
-  HealthChanged();
+  drained_.notify_all();  // a paused request ends too
 }
 
 void Server::Watch(Connection& c) {
@@ -698,8 +938,9 @@ void Server::Watch(Connection& c) {
   // except while lingering, which reads to the end and then drops.
   std::uint32_t want = c.input_closed ? 0U : platform::kPeerClosed;
   if (c.state == Connection::State::kLinger ||
-      (!c.input_closed && (c.state != Connection::State::kBusy || !c.close_after))) {
-    want |= platform::kReadable;
+      (!c.input_closed && !c.memory_wait &&
+       (c.state != Connection::State::kBusy || !c.close_after))) {
+    want |= platform::kReadable;  // not while its body waits for the request memory
   }
   if (c.pending_output()) {
     want |= platform::kWritable;
@@ -793,19 +1034,28 @@ void Server::Drop(Connection& c) {
     const std::scoped_lock lock(mutex_);
     if (c.channel) {
       c.channel->gone = true;
+      if (c.channel->paused) {
+        drained_.notify_all();  // its request no longer waits for it
+      }
       if (c.channel->queued) {
         c.channel->queued = false;
         std::erase_if(queue_, [&](const Pending& p) { return p.channel == c.channel; });
       }
-      Release(c.channel->literal_body);
-      response_in_use_ -= std::exchange(c.channel->response_reserved, 0);
-      Release(c.channel->out);
+      if (c.channel->parked) {
+        c.channel->parked = false;
+        std::erase_if(parked_, [&](const Pending& p) { return p.channel == c.channel; });
+      }
+      Release(c.channel->body);
+      c.channel->response.Reset();
+      std::string().swap(c.channel->out);
+      c.channel->unread.Reset();
     }
     Release(c.wbuf);
-    response_in_use_ -= std::exchange(c.response_reserved, 0);
+    c.response.Reset();
   }
-  body_in_use_ -= c.reserved;
-  c.reserved = 0;
+  Release(c.in);
+  c.body.Reset();
+  c.memory_wait = false;
   loop_.Remove(c.fd.get());
   c.fd = http::Fd();
   c.channel.reset();
@@ -832,8 +1082,8 @@ void Server::Refuse(Connection& c, const Error& error, std::vector<std::string> 
     channel->http10 = c.request.http10;
     channel->idle_timeout = std::chrono::duration_cast<std::chrono::seconds>(options_.idle_timeout);
     c.channel = std::move(channel);
-    body_in_use_ -= c.reserved;
-    c.reserved = 0;
+    Release(c.in);
+    c.body.Reset();
   }
   c.state = Connection::State::kBusy;
   {
@@ -856,13 +1106,23 @@ void Server::Flush(Connection& c) {
       bool keep_alive = false;
       {
         const std::scoped_lock lock(mutex_);
-        response_in_use_ -= std::exchange(c.response_reserved, 0);
+        c.response.Reset();
         if (c.channel) {
           if (!c.channel->out.empty()) {
+            // Its allocation's charge follows it to the socket.
             c.wbuf.swap(c.channel->out);
-          } else if (!c.channel->literal_body.empty()) {
-            c.wbuf.swap(c.channel->literal_body);
-            c.response_reserved = std::exchange(c.channel->response_reserved, 0);
+            c.response = std::move(c.channel->unread);
+            if (c.channel->paused) {
+              // The client took what was sent before: its request goes on,
+              // with up to stream_buffer more to fill before it waits again
+              // (a request that yielded its place is queued again).
+              c.channel->paused = false;
+              drained_.notify_all();
+              UnparkLocked(*c.channel);
+            }
+          } else if (!c.channel->body.empty()) {
+            c.wbuf.swap(c.channel->body);
+            c.response = std::move(c.channel->response);
           }
           ended = c.channel->ended;
           gone = c.channel->gone;
@@ -880,6 +1140,7 @@ void Server::Flush(Connection& c) {
           if (keep_alive && !c.close_after && !draining_) {
             c.state = Connection::State::kIdle;
             Release(c.in);
+            c.body.Reset();  // a refused request's body, or one no route read
             c.head_end = 0;
             c.request = {};
             c.idle_by = Clock::now() + options_.idle_timeout;
@@ -918,7 +1179,7 @@ void Server::OnReadable(Connection& c) {
   const http::Limits limits{.max_header_bytes = kMaxHeaderBytes,
                             .max_headers = kMaxHeaders,
                             .max_target_bytes = kMaxTargetBytes,
-                            .max_body_bytes = kMaxBodyBytes};
+                            .max_body_bytes = static_cast<std::size_t>(options_.intake.max_body)};
   std::array<char, kReadChunk> chunk{};
   while (!c.dead) {
     if (c.state == State::kLinger) {
@@ -962,6 +1223,11 @@ void Server::OnReadable(Connection& c) {
     std::size_t most = kReadChunk;
     if (c.state == State::kBody) {
       most = std::min(most, c.head_end + c.request.body_bytes - c.in.size());
+      // Room for it in the request memory first, or the connection waits,
+      // unread, until the driver grows the memory (or refuses).
+      if (const Growth grown = GrowBody(c, most); grown != Growth::kOk) {
+        return;
+      }
     } else {
       most = std::min(most,
                       limits.max_header_bytes + 4 - std::min(c.in.size(), limits.max_header_bytes));
@@ -979,11 +1245,11 @@ void Server::OnReadable(Connection& c) {
     }
     c.last_active = ++activity_;
     if (c.state == State::kIdle) {
-      const auto now = Clock::now();
       c.state = State::kHead;
-      c.head_by = now + options_.head_timeout;
-      c.body_by = now + options_.body_timeout;
     }
+    // An inactivity timeout (D-102): a request that keeps sending, however
+    // slowly, is never cut off; one that sends nothing for this long is.
+    c.inactive_by = Clock::now() + options_.request_inactivity;
     c.in.append(chunk.data(), static_cast<std::size_t>(n));
     if (c.state == State::kHead) {
       auto end = http::FindHeadEnd(c.in, limits);
@@ -1001,17 +1267,17 @@ void Server::OnReadable(Connection& c) {
       }
       c.head_end = **end;
       c.request = std::move(*request);
+      c.state = State::kBody;
+      // The body is charged to the request memory as it arrives, not as
+      // declared (D-102): a client that declares a large body and sends
+      // little holds little. What arrived with the head is charged now; a
+      // body the memory cannot take now waits (RetryBody), and is not
+      // asked to continue until it can.
       if (c.request.body_bytes > 0) {
-        if (body_in_use_ + c.request.body_bytes > options_.body_budget) {
-          Refuse(c, Refusal(503, "too many request bodies are arriving at once; retry later"));
+        if (const Growth grown = GrowBody(c, 0); grown != Growth::kOk) {
           return;
         }
-        body_in_use_ += c.request.body_bytes;
-        c.reserved = c.request.body_bytes;
-        // The buffer grows to what the budget was charged for, no further.
-        c.in.reserve(c.head_end + c.request.body_bytes);
       }
-      c.state = State::kBody;
       if (c.request.expect_continue && c.in.size() < c.head_end + c.request.body_bytes) {
         c.wbuf.append(kContinue);
         c.progress_at = Clock::now();
@@ -1022,23 +1288,32 @@ void Server::OnReadable(Connection& c) {
       }
     }
     if (c.state == State::kBody && c.in.size() >= c.head_end + c.request.body_bytes) {
-      http::Request request = std::move(c.request);
-      request.body = c.in.substr(c.head_end, request.body_bytes);
-      if (c.in.size() > c.head_end + request.body_bytes) {
-        c.close_after = true;  // bytes after the body: a pipelined request
-      }
-      Release(c.in);  // the body's bytes are the request's now, not the connection's
-      body_in_use_ -= c.reserved;
-      c.reserved = 0;
-      c.request = {};
-      c.request.http10 = request.http10;
-      OnRequest(c, std::move(request));
+      BodyArrived(c);
       return;
     }
   }
 }
 
+void Server::BodyArrived(Connection& c) {
+  http::Request request = std::move(c.request);
+  if (c.in.size() > c.head_end + request.body_bytes) {
+    c.close_after = true;  // bytes after the body: a pipelined request
+  }
+  // The body's bytes are the request's now, not the connection's: moved,
+  // not copied, since a body may be large (D-102).
+  c.in.erase(0, c.head_end);
+  c.in.resize(request.body_bytes);
+  request.body = std::move(c.in);
+  c.in = std::string();
+  c.request = {};
+  c.request.http10 = request.http10;
+  OnRequest(c, std::move(request));
+}
+
 void Server::OnRequest(Connection& c, http::Request request) {
+  // The body's charge is the request's now: handed to its parse, or
+  // released with the body when another route answers or refuses it.
+  MemoryCharge body_charge = std::move(c.body);
   auto channel = std::make_shared<Channel>();
   channel->connection = c.id;
   channel->id = RequestId();
@@ -1125,21 +1400,187 @@ void Server::OnRequest(Connection& c, http::Request request) {
     Refuse(c, Refusal(415, "the body must be Content-Type: application/json"));
     return;
   }
-  std::optional<CompletionRequest> literal;
-  std::expected<ChatRequest, Error> parsed;
-  if (literal_route) {
-    auto raw = ParseCompletionRequest(request.body);
-    if (raw) {
-      parsed = raw->options;
-      literal = std::move(*raw);
-    } else {
-      parsed = std::unexpected(raw.error());
-    }
-  } else {
-    parsed = ParseChatRequest(request.body);
+  auto parse = std::make_unique<Parse>();
+  parse->connection = c.id;
+  parse->channel = channel;
+  parse->literal_route = literal_route;
+  parse->body = std::move(request.body);
+  parse->body_charge = std::move(body_charge);
+  // A large body is parsed on the parse thread, so this thread goes on
+  // serving every other connection (TakeParsed hands it back); so is one
+  // the request memory cannot take now, which waits there for it.
+  if (parse->body.size() < kParseOffThreadBytes && parse->Run(*memory_, true)) {
+    OnParsed(c, *parse);
+    return;
   }
-  request.body.clear();
-  request.body.shrink_to_fit();
+  {
+    const std::scoped_lock lock(parse_mutex_);
+    parse_in_.push_back(std::move(parse));
+  }
+  parse_ready_.notify_one();
+}
+
+void Server::TakeParsed() {
+  std::vector<std::unique_ptr<Parse>> done;
+  {
+    const std::scoped_lock lock(parse_mutex_);
+    done.swap(parse_out_);
+  }
+  bool large = false;
+  for (const std::unique_ptr<Parse>& parse : done) {
+    large = large || parse->large;
+    // The connection may have gone (or moved on) while its body parsed.
+    if (auto it = connections_.find(parse->connection);
+        it != connections_.end() && !it->second->dead && it->second->channel == parse->channel) {
+      OnParsed(*it->second, *parse);
+    }
+  }
+  done.clear();
+  if (large) {
+    // A large request refused here (an unknown model, a prompt that cannot
+    // fit) leaves its many small allocations freed: back to the system.
+    platform::ReleaseFreeHeap();
+  }
+}
+
+void Server::ParseLoop(const std::stop_token& stop) {
+  if (auto stack = platform::InstallThreadSignalStack(); !stack) {
+    Log("the chat route's parse thread has no signal stack: " + stack.error());
+  }
+  // Parses the request memory cannot take now are set aside, so the bodies
+  // behind them go on, and tried again only when what may let them fit
+  // moves (RequestMemory::epoch: the grant grown or shrunk, a denial, room
+  // now); one the driver could not grow the memory for is refused (503).
+  std::deque<std::unique_ptr<Parse>> waiting;
+  std::uint64_t seen = memory_->epoch();
+  const auto hand_back = [this](std::unique_ptr<Parse> parse) {
+    {
+      const std::scoped_lock lock(parse_mutex_);
+      parse_out_.push_back(std::move(parse));
+    }
+    WakeIo();
+  };
+  for (;;) {
+    std::unique_ptr<Parse> parse;
+    {
+      std::unique_lock lock(parse_mutex_);
+      const auto ready = [this] { return !parse_in_.empty(); };
+      if (waiting.empty()) {
+        if (!parse_ready_.wait(lock, stop, ready)) {
+          return;  // stopping
+        }
+      } else {
+        (void)parse_ready_.wait_for(lock, stop, kParseRetryPoll, ready);
+        if (stop.stop_requested()) {
+          return;
+        }
+      }
+      if (!parse_in_.empty()) {
+        parse = std::move(parse_in_.front());
+        parse_in_.pop_front();
+      }
+    }
+    if (parse != nullptr) {
+      parse->denials = memory_->denials();
+      if (parse->Run(*memory_, true)) {
+        hand_back(std::move(parse));
+      } else {
+        waiting.push_back(std::move(parse));
+      }
+    }
+    if (const std::uint64_t epoch = memory_->epoch(); epoch != seen && !waiting.empty()) {
+      seen = epoch;
+      const std::uint64_t denials = memory_->denials();
+      for (auto it = waiting.begin(); it != waiting.end();) {
+        if ((*it)->Run(*memory_, denials == (*it)->denials)) {
+          hand_back(std::move(*it));
+          it = waiting.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    } else if (waiting.empty()) {
+      seen = memory_->epoch();
+    }
+  }
+}
+
+Server::Growth Server::GrowBody(Connection& c, std::size_t more) {
+  const std::size_t whole = c.head_end + c.request.body_bytes;
+  const std::size_t need = c.in.size() + more;
+  std::size_t target = c.in.capacity();
+  if (need > target) {
+    target = std::min(whole, std::max({need, 2 * c.in.capacity(), kFirstBodyBytes}));
+  }
+  if (target > c.body.bytes() && !c.body.Add(*memory_, target - c.body.bytes())) {
+    if (target > memory_->capacity() || !memory_->grows()) {
+      Refuse(c, MemoryRefusal(*memory_, target, "the request body"));
+      return Growth::kRefused;
+    }
+    // Not now: the connection is not read until the driver grows the
+    // request memory (RetryBody), its inactivity clock held meanwhile.
+    if (!c.memory_wait) {
+      c.memory_wait = true;
+      c.wait_denials = memory_->denials();
+      Watch(c);
+    }
+    return Growth::kWait;
+  }
+  if (target > c.in.capacity()) {
+    c.in.reserve(target);
+    // The library may round an allocation up: charged as it is.
+    if (c.in.capacity() > c.body.bytes()) {
+      c.body.Force(*memory_, c.in.capacity() - c.body.bytes());
+    }
+  }
+  return Growth::kOk;
+}
+
+void Server::RetryBody(Connection& c) {
+  if (c.dead || !c.memory_wait) {
+    return;
+  }
+  c.inactive_by = Clock::now() + options_.request_inactivity;
+  const std::size_t remaining = c.head_end + c.request.body_bytes - c.in.size();
+  const bool denied = memory_->denials() != c.wait_denials;
+  switch (GrowBody(c, std::min(kReadChunk, remaining))) {
+    case Growth::kRefused:
+      return;
+    case Growth::kWait:
+      if (denied) {
+        // The driver could not grow the request memory for it: refused now
+        // (503, to retry), not left waiting.
+        c.memory_wait = false;
+        Refuse(c, MemoryRefusal(*memory_, c.body.bytes() + std::min(kReadChunk, remaining),
+                                "the request body"));
+      }
+      return;
+    case Growth::kOk:
+      break;
+  }
+  c.memory_wait = false;
+  if (remaining == 0) {
+    Watch(c);
+    BodyArrived(c);  // it had all arrived with its head
+    return;
+  }
+  if (c.request.expect_continue) {
+    c.wbuf.append(kContinue);
+    c.progress_at = Clock::now();
+    Flush(c);
+    if (c.dead) {
+      return;
+    }
+  }
+  Watch(c);
+  OnReadable(c);
+}
+
+void Server::OnParsed(Connection& c, Parse& parse) {
+  const std::shared_ptr<Channel>& channel = parse.channel;
+  const bool literal_route = parse.literal_route;
+  std::expected<ChatRequest, Error>& parsed = parse.parsed;
+  std::optional<CompletionRequest>& literal = parse.literal;
   if (!parsed) {
     Refuse(c, parsed.error());
     return;
@@ -1167,6 +1608,31 @@ void Server::OnRequest(Connection& c, http::Request request) {
     Refuse(c, error);
     return;
   }
+  // A prompt that cannot fit the model's context is refused before it is
+  // queued (D-102): text longer than any prompt that fits could render to
+  // (the model checks the same before rendering), or more token IDs than
+  // the context holds. It would otherwise hold the request memory while it
+  // waits, only to be refused.
+  std::uint64_t text = 0;
+  for (const Message& m : parsed->messages) {
+    text += m.content.size() + (m.reasoning ? m.reasoning->size() : 0);
+  }
+  if (literal && literal->prompt) {
+    text += literal->prompt->size();
+  }
+  if ((model->render_bytes != 0 && text > model->render_bytes) ||
+      (literal && model->context != 0 && literal->token_ids.size() > model->context)) {
+    Error error = Refusal(
+        400,
+        std::format("This model's maximum context length is {} tokens. However, your {} resulted "
+                    "in more than {} tokens. Please reduce the length of the {}.",
+                    model->context, literal ? "prompt" : "messages", model->context,
+                    literal ? "prompt" : "messages"),
+        "context_length_exceeded");
+    error.param = literal ? "prompt" : "messages";
+    Refuse(c, error);
+    return;
+  }
   channel->model = parsed->model;
   if (literal_route) {
     channel->id.replace(0, 9, "cmpl-");
@@ -1175,14 +1641,37 @@ void Server::OnRequest(Connection& c, http::Request request) {
   channel->queued_at = Clock::now();
   bool stopping = false;
   bool unhealthy = false;
+  bool no_room = false;
   {
     const std::scoped_lock lock(mutex_);
     stopping = stopping_;
-    unhealthy = !watchdog_.health().healthy;
-    if (!stopping && !unhealthy && queue_.size() < options_.max_queued) {
+    // Unhealthy refuses only when the owner asked stalls to fail requests;
+    // by default a stall is reported and requests still queue (D-102).
+    unhealthy = options_.stall_fails && !watchdog_.health().healthy;
+    // Queued requests hold at most all but a quarter of the request
+    // memory's current grant (not what it could grow to: growth needs the
+    // reclaim order to free room, and queued requests must not hold room
+    // a running conversation's state may need), leaving the driver
+    // headroom for the request it takes up (its rendering and tokenization
+    // are charged then). The headroom is not a promise: growth beyond the
+    // grant still needs the reclaim order.
+    std::uint64_t queued = parse.request_charge.bytes();
+    for (const Pending& p : queue_) {
+      queued += p.charge.bytes();
+    }
+    const std::uint64_t grant = std::max(memory_->grant(), memory_->used());
+    no_room = queued > grant - (grant / kQueueHeadroomShare);
+    if (!stopping && !unhealthy && !no_room &&
+        (!options_.max_queued || queue_.size() < *options_.max_queued)) {
       channel->queued = true;
-      queue_.push_back(
-          {.channel = channel, .request = std::move(*parsed), .literal = std::move(literal)});
+      Pending pending;
+      pending.channel = channel;
+      pending.request = std::move(*parsed);
+      pending.literal = std::move(literal);
+      pending.charge = std::move(parse.request_charge);
+      queue_.push_back(std::move(pending));
+      ++enqueued_;
+      drained_.notify_all();  // a cohort waiting for its readers may admit it
       ready_.Signal();
       return;
     }
@@ -1203,10 +1692,22 @@ void Server::OnRequest(Connection& c, http::Request request) {
     Refuse(c, Refusal(503, "the runtime is stopping"), {}, false);
     return;
   }
-  Log(std::format("request {}: 429, {} requests queued", channel->id, options_.max_queued));
+  if (no_room) {
+    Log(std::format("request {}: 503, the queued requests hold the request memory", channel->id));
+    Refuse(c,
+           Refusal(503,
+                   "the queued requests hold all the request memory but the driver's headroom "
+                   "([client] request_memory_bytes); retry",
+                   "request_memory_busy"),
+           {}, false);
+    return;
+  }
+  const std::size_t most = options_.max_queued.value_or(0);
+  Log(std::format("request {}: 429, {} requests queued", channel->id, most));
   Refuse(c,
-         Refusal(429,
-                 std::format("{} requests are already waiting; retry later", options_.max_queued)),
+         Refusal(429, std::format("{} requests are already waiting ([client] max_queued); retry "
+                                  "later",
+                                  most)),
          {}, false);
 }
 
@@ -1278,30 +1779,46 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
   // The backend: a stall ends the running request and refuses the queue.
   std::vector<std::uint64_t> expired;
   WatchBackend(now, expired);
-  // The queue: a non-streaming request that waited too long gets a 429; a
-  // stream, held by keepalives, waits as long as the backend makes
-  // progress.
+  if (!hang_reported_ && options_.on_hang) {
+    std::string why;
+    {
+      const std::scoped_lock lock(mutex_);
+      why = HangLocked(now);
+    }
+    if (!why.empty()) {
+      hang_reported_ = true;
+      Log(why);
+      options_.on_hang(why);
+    }
+  }
+  // The queue: only with queue_wait set does a non-streaming request that
+  // waited that long get a 429 (D-102); a stream, held by keepalives,
+  // waits its turn.
   {
     const std::scoped_lock lock(mutex_);
     if (const auto due = watchdog_.due()) {
       soon(*due);
     }
-    std::erase_if(queue_, [&](const Pending& p) {
-      Channel& ch = *p.channel;
-      if (ch.stream) {
-        return false;
-      }
-      if (now - ch.queued_at < options_.queue_wait) {
-        soon(ch.queued_at + options_.queue_wait);
-        return false;
-      }
-      ch.queued = false;
-      Log(std::format("request {}: 429 after waiting {} s in the queue", ch.id,
-                      options_.queue_wait.count() / 1000));
-      ch.PutError(Refusal(429, "the request waited too long behind others; retry later"));
-      expired.push_back(ch.connection);
-      return true;
-    });
+    if (const auto wait = options_.queue_wait) {
+      std::erase_if(queue_, [&](const Pending& p) {
+        Channel& ch = *p.channel;
+        if (ch.stream) {
+          return false;
+        }
+        if (now - ch.queued_at < *wait) {
+          soon(ch.queued_at + *wait);
+          return false;
+        }
+        ch.queued = false;
+        Log(std::format("request {}: 429 after waiting {} s in the queue", ch.id,
+                        std::chrono::duration_cast<std::chrono::seconds>(*wait).count()));
+        ch.PutError(Refusal(429,
+                            "the request waited longer than [client] queue_wait_seconds behind "
+                            "others; retry later"));
+        expired.push_back(ch.connection);
+        return true;
+      });
+    }
   }
   for (const std::uint64_t id : expired) {
     if (auto it = connections_.find(id); it != connections_.end()) {
@@ -1323,12 +1840,22 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
         break;
       case State::kHead:
       case State::kBody: {
-        const Clock::time_point by = c.state == State::kHead ? c.head_by : c.body_by;
-        if (now >= by) {
-          Refuse(c, Refusal(408, c.state == State::kHead ? "the request head took too long"
-                                                         : "the request body took too long"));
+        if (c.memory_wait) {
+          // Waiting for the request memory, not for the client: tried again
+          // as the driver grows it (or refuses), never timed out meanwhile.
+          RetryBody(c);
+          soon(now + kMemoryRetry);
+          break;
+        }
+        if (now >= c.inactive_by) {
+          Refuse(c, Refusal(408, std::format("no byte of the request's {} arrived for {} s "
+                                             "([client] request_inactivity_seconds)",
+                                             c.state == State::kHead ? "head" : "body",
+                                             std::chrono::duration_cast<std::chrono::seconds>(
+                                                 options_.request_inactivity)
+                                                 .count())));
         } else {
-          soon(by);
+          soon(c.inactive_by);
         }
         break;
       }
@@ -1340,13 +1867,16 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
         }
         break;
       case State::kBusy: {
-        if (c.pending_output()) {
-          if (now - c.progress_at >= options_.write_timeout) {
-            Log("a client stopped reading its response; the connection is closed");
+        if (c.pending_output() && options_.write_inactivity) {
+          // Only when configured (D-102): otherwise a client that stops
+          // reading holds its own buffer, and a stream's request waits.
+          if (now - c.progress_at >= *options_.write_inactivity) {
+            Log("a client took no output for [client] write_inactivity_seconds; the connection "
+                "is closed");
             Drop(c);
             break;
           }
-          soon(c.progress_at + options_.write_timeout);
+          soon(c.progress_at + *options_.write_inactivity);
         }
         bool added = false;
         if (c.channel) {
@@ -1451,6 +1981,7 @@ void Server::Loop() {
         }
       } else if (tag == kWakeTag) {
         io_wake_.Drain();
+        TakeParsed();
         std::vector<std::uint64_t> dirty;
         {
           const std::scoped_lock lock(mutex_);
@@ -1490,17 +2021,93 @@ void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& o
       return;
     }
     running_.push_back(pending.channel);
+    // Whatever is queued now waits for this request alone: a paused stream
+    // yields its place to it (YieldDueLocked).
+    blocked_ = true;
     recovered = BeatLocked(Phase::kStarting, 0);
   }
   if (recovered) {
     HealthChanged();
   }
   Stream stream(*this, pending, wake_fd, on_wake, started);
-  const std::expected<Completion, Error> result = pending.literal
-                                                      ? backend_.Complete(*pending.literal, stream)
-                                                      : backend_.Complete(pending.request, stream);
+  std::expected<Completion, Error> result;
+  if (pending.literal) {
+    result = backend_.Complete(*pending.literal, stream);
+  } else if (const std::shared_ptr<Yielded> from = std::move(pending.resume); from != nullptr) {
+    result = backend_.Resume(pending.request, stream, *from);
+  } else {
+    result = backend_.Complete(pending.request, stream);
+  }
+  {
+    const std::scoped_lock lock(mutex_);
+    blocked_ = false;
+  }
+  if (result && result->yielded != nullptr) {
+    Requeue(pending, stream, std::move(result->yielded));
+    Progress(Phase::kIdle, 0);
+    return;
+  }
   FinishResponse(pending, stream, result, started);
   Progress(Phase::kIdle, 0);
+}
+
+bool Server::YieldDueLocked(const Channel& channel, Clock::time_point now) const {
+  return blocked_ && !queue_.empty() && channel.paused && !channel.gone && !channel.stalled &&
+         now - channel.paused_at >= options_.yield_after;
+}
+
+void Server::Requeue(Pending& pending, Stream& stream, std::shared_ptr<Yielded> yielded) {
+  stream.Carry(pending, true);
+  pending.resume = std::move(yielded);
+  bool recovered = false;
+  {
+    const std::scoped_lock lock(mutex_);
+    std::erase(running_, pending.channel);
+    recovered = BeatLocked(Phase::kFinishing, 0);
+    Channel& channel = *pending.channel;
+    if (channel.gone || channel.stalled) {
+      Log(std::format("request {}: {} as it yielded its place", channel.id,
+                      channel.gone ? "499, the client left" : "504, the backend stalled"));
+    } else {
+      // Positions and counts only (D-014).
+      Log(
+          std::format("request {}: its client has read nothing for {:.1f} s while {} requests "
+                      "wait; it yields its place and continues once its client reads",
+                      channel.id, Seconds(Clock::now() - channel.paused_at), queue_.size()));
+      if (channel.paused) {
+        // Parked until its client reads (Flush, UnparkLocked): taken up
+        // while it still could not send, it would only yield again (after
+        // its model was swapped back in).
+        channel.parked = true;
+        parked_.push_back(std::move(pending));
+      } else {
+        channel.queued = true;
+        queue_.push_back(std::move(pending));
+        ++enqueued_;
+        ready_.Signal();
+      }
+    }
+  }
+  if (recovered) {
+    HealthChanged();
+  }
+}
+
+void Server::UnparkLocked(const Channel& channel) {
+  if (!channel.parked) {
+    return;
+  }
+  const auto at =
+      std::ranges::find_if(parked_, [&](const Pending& p) { return p.channel.get() == &channel; });
+  if (at == parked_.end()) {
+    return;
+  }
+  at->channel->parked = false;
+  at->channel->queued = true;
+  queue_.push_back(std::move(*at));
+  parked_.erase(at);
+  ++enqueued_;
+  ready_.Signal();
 }
 
 void Server::Progress(Phase next, double expected) {
@@ -1512,6 +2119,39 @@ void Server::Progress(Phase next, double expected) {
   if (recovered) {
     HealthChanged();
   }
+}
+
+bool Server::AwaitReaders(const std::function<bool()>& paused, int wake_fd,
+                          const std::function<bool()>& on_wake) {
+  Phase before = Phase::kDecode;
+  {
+    const std::scoped_lock lock(mutex_);
+    before = watchdog_.health().phase;
+  }
+  // A pause is not a stall: the watchdog watches nothing until it ends.
+  Progress(Phase::kPaused, 0);
+  bool stopped = false;
+  {
+    std::unique_lock lock(mutex_);
+    while (paused() && !stopping_) {
+      // The runtime's signals are the driver's to read: woken every 100 ms
+      // to look, or at once when the I/O thread hands output on or a client
+      // leaves.
+      (void)drained_.wait_for(lock, std::chrono::milliseconds(100));
+      lock.unlock();
+      const bool wake = Readable(wake_fd) && on_wake();
+      // The driver waits here, so it settles the request memory here too:
+      // a body or a parse waiting for it is not held up by a stuck reader.
+      memory_->Settle();
+      lock.lock();
+      if (wake) {
+        stopping_ = true;
+      }
+    }
+    stopped = stopping_;
+  }
+  Progress(before == Phase::kPaused ? Phase::kDecode : before, 0);
+  return !stopped;
 }
 
 void Server::FinishResponse(Pending& pending, Stream& stream,
@@ -1536,14 +2176,27 @@ void Server::FinishResponse(Pending& pending, Stream& stream,
   if (stalled) {
     why = " (the backend made no progress)";
   } else if (status == 499) {
-    why = stream.slow() ? " (the client stopped reading)" : " (the client left)";
+    why = " (the client left)";
   }
   Log(std::format(
       "request {}: {} {}{}, {} prompt tokens ({} cached), {} generated, {:.3f} s "
-      "({:.3f} s queued)",
+      "({:.3f} s queued){}",
       channel.id, pending.request.model, status, why, u.prompt_tokens, u.cached_tokens,
-      u.completion_tokens, Seconds(Clock::now() - started), Seconds(started - channel.queued_at)));
+      u.completion_tokens, Seconds(Clock::now() - started), Seconds(started - channel.queued_at),
+      stream.pauses() == 0
+          ? std::string()
+          : std::format(", paused {} times for its client to read", stream.pauses())));
+  // A large request's many small allocations, freed with it, go back to
+  // the system once it is gone (TrimIfOwed).
+  trim_owed_ = trim_owed_ || pending.charge.bytes() >= kTrimAfterBytes;
   backend_.AfterResponse();
+}
+
+void Server::TrimIfOwed() {
+  if (trim_owed_) {
+    trim_owed_ = false;
+    platform::ReleaseFreeHeap();
+  }
 }
 
 std::expected<void, std::string> Server::ServeCooperative(Pending first,
@@ -1587,14 +2240,19 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
   if (!start(initial)) {
     // A request that cannot join an empty cohort must not wait forever.
     // Start's no-effects contract makes one serial fallback safe.
+    // A yielded request's response so far.
+    initial->exchange.Carry(initial->pending, initial->pending.resume != nullptr);
     Serve(initial->pending, wake_fd, on_wake);
     Progress(Phase::kIdle, 0);
     return {};
   }
   const auto retire = [&](bool stop) {
     std::erase_if(active, [&](const std::unique_ptr<Active>& frame) {
+      // A member yielding its place (Work::Yield) ends at its completed
+      // step; it is not cancelled unless the runtime stops or fails.
+      const bool yielding = frame->exchange.Yielding();
       const bool go_on = frame->exchange.Continue();
-      if (!go_on || stop || !fatal.empty()) {
+      if ((!go_on && !yielding) || stop || !fatal.empty()) {
         frame->work->Cancel();
       } else if (!frame->work->terminal()) {
         return false;
@@ -1609,10 +2267,16 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
         retired.result = std::unexpected(
             Refusal(500, "the model backend failed; the runtime is stopping", "backend_failed"));
       }
+      if (retired.result && retired.result->yielded != nullptr) {
+        Requeue(frame->pending, frame->exchange, std::move(retired.result->yielded));
+        return true;
+      }
       FinishResponse(frame->pending, frame->exchange, retired.result, frame->started);
       return true;
     });
+    TrimIfOwed();
   };
+  int empty_pauses = 0;  // consecutive kPaused units with no member paused (M1's race)
   while (!active.empty()) {
     if (Readable(wake_fd) && on_wake()) {
       const std::scoped_lock lock(mutex_);
@@ -1645,6 +2309,7 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     // Failed or departed starters do not grow active.size(). Bound attempts
     // as well as live works so an endless invalid FIFO cannot starve decode.
     std::size_t attempts = 0;
+    bool deferred = false;  // the backend could not take the head now
     while (!drain && active.size() < kMaxActiveRequests && attempts < kMaxActiveRequests) {
       std::optional<Pending> pending;
       {
@@ -1654,8 +2319,9 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
         }
         Pending& head = queue_.front();
         if (head.request.model != active.front()->pending.request.model ||
-            !cooperative.Supports(
-                {.options = head.request, .literal = head.literal ? &*head.literal : nullptr})) {
+            !cooperative.Supports({.options = head.request,
+                                   .literal = head.literal ? &*head.literal : nullptr,
+                                   .resume = head.resume.get()})) {
           drain = true;  // never refill past an incompatible FIFO head
           break;
         }
@@ -1666,10 +2332,36 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
       ++attempts;
       auto frame = std::make_unique<Active>(*this, std::move(*pending), wake_fd, on_wake);
       if (!start(frame)) {
+        // Restored to the queue's head as it came: its carried response
+        // (a yielded request's) goes back with it.
+        frame->exchange.Carry(frame->pending, frame->pending.resume != nullptr);
         const std::scoped_lock lock(mutex_);
         frame->pending.channel->queued = true;
         queue_.push_front(std::move(frame->pending));
+        deferred = true;
         break;
+      }
+    }
+    // Backpressure that blocks others (D-102): the queue waits on this
+    // cohort (it must drain for another model, or is full) while a member
+    // waits for its client. Such a member yields its place once paused for
+    // yield_after (Work::Yield); one that cannot yet goes on.
+    std::vector<Active*> yielding;
+    {
+      const std::scoped_lock lock(mutex_);
+      blocked_ = drain || deferred || active.size() >= kMaxActiveRequests;
+      const auto now = Clock::now();
+      for (const auto& frame : active) {
+        if (!frame->exchange.Yielding() && YieldDueLocked(*frame->pending.channel, now)) {
+          yielding.push_back(frame.get());
+        }
+      }
+    }
+    bool yielded = false;
+    for (Active* frame : yielding) {
+      if (frame->work->Yield()) {
+        frame->exchange.SetYielding();
+        yielded = true;
       }
     }
     if (!backend_.healthy() && fatal.empty()) {
@@ -1685,8 +2377,8 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     if (active.empty()) {
       break;
     }
-    if (stop || !fatal.empty()) {
-      continue;
+    if (stop || !fatal.empty() || yielded) {
+      continue;  // a member yielding its place retires first
     }
 
     // Between completed units: the backend's housekeeping (it leaves every
@@ -1697,11 +2389,58 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
       work[i] = active[i]->work.get();
     }
     const std::span<CooperativeBackend::Work* const> wave(work.data(), active.size());
+    // The queue as the unit is chosen: a request that arrives after it ends
+    // a pause's wait (below), even one that arrives while it is chosen.
+    std::uint64_t seen = 0;
+    {
+      const std::scoped_lock lock(mutex_);
+      seen = enqueued_;
+    }
     auto next = cooperative.NextUnit(wave);
     if (!next) {
       fatal = next.error().empty() ? "no cooperative backend unit" : next.error();
       continue;
     }
+    if (next->phase == Phase::kPaused) {
+      // Every runnable request waits for its client to read (backpressure,
+      // D-102): wait until one of them reads or leaves, a request arrives
+      // (it may join), one is due to yield its place, or the runtime stops;
+      // the next pass then retires, admits, yields or advances.
+      std::vector<const Channel*> waiting;
+      Clock::time_point yield_due = Clock::time_point::max();
+      {
+        const std::scoped_lock lock(mutex_);
+        for (const auto& frame : active) {
+          const Channel& ch = *frame->pending.channel;
+          if (ch.paused && !ch.gone && !ch.stalled) {
+            waiting.push_back(&ch);
+            if (blocked_ && !queue_.empty()) {
+              yield_due = std::min(yield_due, ch.paused_at + options_.yield_after);
+            }
+          }
+        }
+      }
+      if (waiting.empty()) {
+        // A reader caught up (or left) between the backend's look and this
+        // one: only resume. The same with nothing paused, pass after pass,
+        // is the backend's fault.
+        if (++empty_pauses > kMaxEmptyPauses) {
+          fatal = "the cooperative backend keeps pausing while no request waits for its client";
+        }
+        continue;
+      }
+      empty_pauses = 0;
+      std::ignore = AwaitReaders(
+          [this, &waiting, seen, yield_due] {
+            return enqueued_ == seen && Clock::now() < yield_due &&
+                   std::ranges::all_of(
+                       waiting,
+                       [](const Channel* ch) { return ch->paused && !ch->gone && !ch->stalled; });
+          },
+          wake_fd, on_wake);
+      continue;
+    }
+    empty_pauses = 0;
     if (next->phase == Phase::kIdle || !std::isfinite(next->expected_seconds) ||
         next->expected_seconds < 0) {
       fatal = "invalid cooperative backend unit";
@@ -1733,6 +2472,7 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
   if (!added) {
     return std::unexpected(std::format("the event loop: {}", added.error().value()));
   }
+  parser_ = std::jthread([this](const std::stop_token& stop) { ParseLoop(stop); });
   io_ = std::jthread([this] { Loop(); });
   CooperativeBackend* const cooperative = backend_.cooperative();
   std::expected<void, std::string> result;
@@ -1775,12 +2515,15 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
         queue_.pop_front();
       }
       if (cooperative != nullptr &&
-          cooperative->Supports(
-              {.options = next->request, .literal = next->literal ? &*next->literal : nullptr})) {
+          cooperative->Supports({.options = next->request,
+                                 .literal = next->literal ? &*next->literal : nullptr,
+                                 .resume = next->resume.get()})) {
         result = ServeCooperative(std::move(*next), *cooperative, wake_fd, on_wake);
       } else {
         Serve(*next, wake_fd, on_wake);
       }
+      next.reset();
+      TrimIfOwed();
       if (!result) {
         break;
       }
@@ -1801,6 +2544,11 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
   {
     const std::scoped_lock lock(mutex_);
     stopping_ = true;
+    for (Pending& p : parked_) {
+      p.channel->parked = false;
+      queue_.push_back(std::move(p));
+    }
+    parked_.clear();
     for (Pending& p : queue_) {
       Channel& channel = *p.channel;
       channel.queued = false;
@@ -1817,6 +2565,8 @@ std::expected<void, std::string> Server::Run(int wake_fd, const std::function<bo
   WakeIo();
   stop_.Signal();
   io_.join();
+  parser_.request_stop();
+  parser_.join();
   return result;
 }
 

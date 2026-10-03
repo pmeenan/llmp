@@ -13,18 +13,24 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
+#include "chat/chat.h"
 #include "engine/qwen38_wave_plan.h"
 #include "ggml.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "runtime/serving.h"
+#include "tokenizer/tokenizer.h"
+#include "tokenizer/unicode.h"
 
 namespace {
 
@@ -138,6 +144,11 @@ class FakeLlm : public rt::Llm {
   void ConfigurePrefill(std::uint32_t context, std::uint32_t rows) {
     context_ = context;
     max_rows_ = rows;
+  }
+  // A tokenizer and chat template, as registration gives a model them.
+  rt::Status UseChat(jitllm::tokenizer::Tokenizer tokenizer, std::string_view chat_template) {
+    tokenizer_ = std::make_unique<jitllm::tokenizer::Tokenizer>(std::move(tokenizer));
+    return UseTemplate(chat_template);
   }
 
   static std::vector<float> Row(std::int32_t next) {
@@ -497,6 +508,76 @@ class NativeBranchesFake final : public FakeLlm {
   std::array<std::uint32_t, kMaxBranches> cursors_{};
   std::array<bool, kMaxBranches> selected_{};
 };
+
+// GPT-2's byte alphabet, for a byte-level vocabulary without merges: every
+// byte of text is a token.
+std::string ByteText(unsigned b) {
+  const auto printable = [](unsigned x) {
+    return (x >= 0x21 && x <= 0x7E) || (x >= 0xA1 && x <= 0xAC) || x >= 0xAE;
+  };
+  unsigned n = 0;
+  for (unsigned x = 0; x < b; ++x) {
+    n += printable(x) ? 0 : 1;
+  }
+  std::string out;
+  jitllm::tokenizer::unicode::AppendUtf8(printable(b) ? b : 256 + n, out);
+  return out;
+}
+
+jitllm::tokenizer::Tokenizer ByteTokenizer() {
+  jitllm::tokenizer::TokenizerSpec spec;
+  for (unsigned b = 0; b < 256; ++b) {
+    spec.tokens.push_back(ByteText(b));
+    spec.kinds.push_back(jitllm::tokenizer::TokenKind::kNormal);
+  }
+  for (const char* control : {"<|im_start|>", "<|im_end|>", "<|endoftext|>"}) {
+    spec.tokens.emplace_back(control);
+    spec.kinds.push_back(jitllm::tokenizer::TokenKind::kControl);
+  }
+  spec.eos = 258;
+  auto t = jitllm::tokenizer::Tokenizer::Create(std::move(spec));
+  EXPECT_TRUE(t.has_value()) << t.error().ToString();
+  return std::move(*t);
+}
+
+// The prompt-size chain follows the model, not the tokenizer's library
+// defaults (D-102): a chat over 4 MiB, more than 2^22 tokens, renders and
+// tokenizes when the context holds it (the route's bodies and the model's
+// context, not 4 MiB, bound it), and the context's bound is reported as
+// such, before any model work.
+TEST(LlmRender, AChatOverFourMiBRendersWithinTheContext) {
+  FakeLlm model;
+  model.ConfigurePrefill(8'000'000, 8);
+  ASSERT_TRUE(model
+                  .UseChat(ByteTokenizer(),
+                           "{% for m in messages %}<|im_start|>{{ m.role }}\n{{ m.content }}"
+                           "<|im_end|>\n{% endfor %}{% if add_generation_prompt %}<|im_start|>"
+                           "assistant\n{% endif %}")
+                  .has_value());
+  // At least the floor; four times the context times the longest token.
+  EXPECT_GE(model.render_bytes(), std::size_t{32} << 20U);
+  const std::size_t bytes = (std::size_t{4} << 20U) + 300'000;  // past 2^22 tokens too
+  jitllm::chat::Conversation c;
+  c.messages.push_back({jitllm::chat::Role::kUser, std::string(bytes, 'x'), std::nullopt, {}});
+  c.max_render_bytes = model.render_bytes();
+  std::uint32_t boundary = 0;
+  rt::ChatRenderFailure failure = rt::ChatRenderFailure::kOther;
+  auto tokens = model.RenderChat(c, &boundary, {.max_tokens = model.usable_context()}, &failure);
+  ASSERT_TRUE(tokens.has_value()) << tokens.error();
+  EXPECT_GT(tokens->size(), std::size_t{1} << 22U);
+  EXPECT_EQ(tokens->size(), bytes + 1 + 5 + 1 + 1 + 1 + 10);  // the template's tokens around it
+  EXPECT_EQ(tokens->front(), 256);                            // <|im_start|>, a control token
+  // Past the context: a typed failure, so the route answers 400
+  // context_length_exceeded rather than an internal error.
+  tokens = model.RenderChat(c, nullptr, {.max_tokens = 1000}, &failure);
+  ASSERT_FALSE(tokens.has_value());
+  EXPECT_EQ(failure, rt::ChatRenderFailure::kTooLong);
+  // A cancellation ends an interpreted rendering (the request ended).
+  const std::function<bool()> ended = [] { return true; };
+  tokens = model.RenderChat(c, nullptr, {.cancelled = &ended}, &failure);
+  ASSERT_FALSE(tokens.has_value());
+  EXPECT_EQ(failure, rt::ChatRenderFailure::kCancelled);
+}
 
 TEST(LlmScores, TeacherForcesStopIdsAndKeepsAllInjectionState) {
   FakeLlm model(true);

@@ -44,13 +44,34 @@ const jinja::CivilTime kNow{.year = 2026,
 
 std::expected<jinja::Rendered, jinja::Error> Render(std::string_view source,
                                                     const Variables& variables = {},
-                                                    const jinja::Limits& limits = {}) {
+                                                    const jinja::Limits& limits = {},
+                                                    const jinja::Budget& budget = {}) {
   auto t = jinja::Template::Parse(source, limits);
   if (!t) {
     return std::unexpected(t.error());
   }
-  return t->Render(variables, kNow);
+  return t->Render(variables, kNow, budget);
 }
+
+// A cancellation that says to stop once `after` has passed since it was
+// made, counting how often it was asked.
+struct Deadline {
+  explicit Deadline(std::chrono::milliseconds after)
+      : by(std::chrono::steady_clock::now() + after), ask([this] {
+          ++asked;
+          return std::chrono::steady_clock::now() >= by;
+        }) {}
+  // `ask` refers to this object: it stays where it was made.
+  Deadline(const Deadline&) = delete;
+  Deadline& operator=(const Deadline&) = delete;
+  Deadline(Deadline&&) = delete;
+  Deadline& operator=(Deadline&&) = delete;
+  ~Deadline() = default;
+
+  std::chrono::steady_clock::time_point by;
+  std::size_t asked = 0;
+  std::function<bool()> ask;
+};
 
 std::string Text(std::string_view source, const Variables& variables = {}) {
   auto r = Render(source, variables);
@@ -207,9 +228,12 @@ TEST(JinjaProvenance, ClientFormattingArgumentsAreNotTrusted) {
 
 // ------------------------------------------------------------------ bounds
 
-// Each hostile template ends with a refusal, quickly: never a hang, a crash
-// or a truncated rendering.
-TEST(JinjaBounds, HostileTemplatesAreRefused) {
+// Each hostile template ends with a refusal or, where only time would bound
+// it, its cancellation, quickly: never a hang, a crash or a truncated
+// rendering. Time and work are not capped (D-102), so a template that
+// would run for hours ends when its caller says (here after 300 ms); a
+// memory, depth or range bound still refuses it on its own.
+TEST(JinjaBounds, HostileTemplatesAreRefusedOrCancelled) {
   // Templates as long as their bound allows: many names, parameters, keys
   // or keyword arguments, each searched by name.
   const auto names = [](std::string_view pattern, int n) {
@@ -345,12 +369,58 @@ TEST(JinjaBounds, HostileTemplatesAreRefused) {
   };
   for (const auto& [source, code] : cases) {
     const auto started = std::chrono::steady_clock::now();
-    const auto r = Render(source);
+    Deadline cancel(std::chrono::milliseconds(300));
+    const auto r = Render(source, {}, {}, {.cancelled = &cancel.ask});
     const auto seconds =
         std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    EXPECT_EQ(Failed(r, &jinja::Error::code), code) << source;
+    const std::optional<jinja::Code> got = Failed(r, &jinja::Error::code);
+    if (code == jinja::Code::kLimit) {
+      EXPECT_TRUE(got == jinja::Code::kLimit || got == jinja::Code::kCancelled)
+          << source << ": " << (r ? std::string("rendered") : r.error().ToString());
+    } else {
+      EXPECT_EQ(got, code) << source;
+    }
+    // One bounded operation may finish after the cancellation said stop
+    // (each is linear in a value the memory bounds hold).
     EXPECT_LT(seconds, 30.0) << source;
   }
+}
+
+// A rendering past the former 50,000,000-step cap runs to its end when
+// nobody cancels it (D-102), asking its cancellation as it goes.
+TEST(JinjaBounds, LongRenderingsAreNotCapped) {
+  Deadline never(std::chrono::hours(24));
+  const auto r =
+      Render("{% for i in range(100000) %}{% for j in range(501) %}{% endfor %}{% endfor %}done",
+             {}, {}, {.cancelled = &never.ask});
+  ASSERT_TRUE(r.has_value()) << r.error().ToString();
+  EXPECT_EQ(r->text, "done");
+  // Every kCancelSteps steps: 50,100,000 iterations ask at least 764 times.
+  EXPECT_GE(never.asked, 50'100'000U / jinja::kCancelSteps);
+}
+
+// A cancellation stops a rendering within a few thousand steps or a few
+// megabytes of work of being asked to: by steps (an endless loop), by work
+// (one long scan per step), and as kCancelled, never kLimit.
+TEST(JinjaBounds, CancellationStopsARendering) {
+  std::size_t asked = 0;
+  const std::function<bool()> third = [&asked] { return ++asked >= 3; };
+  const auto steps =
+      Render("{% for i in range(100000) %}{% for j in range(100000) %}{% endfor %}{% endfor %}", {},
+             {}, {.cancelled = &third});
+  EXPECT_EQ(Failed(steps, &jinja::Error::code), jinja::Code::kCancelled);
+  EXPECT_EQ(asked, 3U);
+  EXPECT_NE(Failed(steps, &jinja::Error::reason).value_or("").find("cancelled"),
+            std::string_view::npos);
+  asked = 0;
+  const auto work = Render(
+      "{% set s = 'x' * 8000000 %}{% for i in range(100000) %}{% set n = s|length %}"
+      "{% set t = s ~ '' %}{% endfor %}",
+      {}, {}, {.cancelled = &third});
+  EXPECT_EQ(Failed(work, &jinja::Error::code), jinja::Code::kCancelled);
+  EXPECT_EQ(asked, 3U);
+  // Without a cancellation the same small rendering completes, as before.
+  EXPECT_EQ(Text("{% for i in range(1000) %}{% endfor %}ok"), "ok");
 }
 
 // A loop's own copy of what it iterates (a filtered list) is held while it
@@ -383,12 +453,13 @@ TEST(JinjaBounds, LongChainsAreReleasedWithoutRecursion) {
 TEST(JinjaBounds, ABoundReachedLastIsStillRefused) {
   const std::string big(1000, 'x');
   const Variables v = {{"a", jinja::Input::String(big)}, {"b", jinja::Input::String(big)}};
-  jinja::Limits limits;
-  limits.max_work_bytes = 2500;  // the two inputs, and not their comparison
-  EXPECT_EQ(Failed(Render("{{ a == b }}", v, limits), &jinja::Error::code), jinja::Code::kLimit);
-  limits.max_work_bytes = 4000;
+  // A budget's work cap (probes'): the two inputs, and not their comparison.
+  EXPECT_EQ(Failed(Render("{{ a == b }}", v, {}, {.max_work_bytes = 2500}), &jinja::Error::code),
+            jinja::Code::kLimit);
   EXPECT_EQ(Text("{{ a == b }}", v), "True");
-  EXPECT_EQ(Render("{{ a == b }}", v, limits).transform([](const auto& r) { return r.text; }),
+  EXPECT_EQ(Render("{{ a == b }}", v, {}, {.max_work_bytes = 4000}).transform([](const auto& r) {
+    return r.text;
+  }),
             "True");
 }
 
@@ -433,11 +504,11 @@ TEST(JinjaBounds, LimitsAreConfigurable) {
       Failed(Render("{% for i in range(1000) %}xx{% endfor %}", {}, output), &jinja::Error::code),
       jinja::Code::kLimit);
   EXPECT_TRUE(Render("{% for i in range(400) %}xx{% endfor %}", {}, output).has_value());
-  jinja::Limits steps;
-  steps.max_steps = 1000;
-  EXPECT_EQ(Failed(Render("{% for i in range(1000) %}{{ i }}{% endfor %}", {}, steps),
-                   &jinja::Error::code),
-            jinja::Code::kLimit);
+  // Steps are capped only by a budget (probes'), not by the Limits.
+  EXPECT_EQ(
+      Failed(Render("{% for i in range(1000) %}{{ i }}{% endfor %}", {}, {}, {.max_steps = 1000}),
+             &jinja::Error::code),
+      jinja::Code::kLimit);
 }
 
 // Large client values stay fast: lookups in a big mapping are indexed.
@@ -699,17 +770,16 @@ TEST(JinjaFuzz, GrammarTemplatesRenderOrFailCleanly) {
   Variables v;
   AddObject(doc->root(), v);
   jinja::Limits limits;
-  limits.max_steps = 200'000;
-  limits.max_work_bytes = std::uint64_t{16} << 20U;
   limits.max_live_bytes = std::size_t{16} << 20U;
   limits.max_string_bytes = std::size_t{1} << 20U;
   limits.max_output_bytes = std::size_t{1} << 20U;
+  const jinja::Budget budget{.max_steps = 200'000, .max_work_bytes = std::uint64_t{16} << 20U};
   std::size_t rendered = 0;
   for (int i = 0; i < 3000; ++i) {
     const std::string t = "{% set ns = namespace(x=1) %}{% macro m() %}M{% endmacro %}" + stmt(3);
     auto program = jinja::Template::Parse(t, limits);
     ASSERT_TRUE(program.has_value()) << t << ": " << program.error().ToString();
-    const auto r = program->Render(v, kNow);
+    const auto r = program->Render(v, kNow, budget);
     if (r) {
       ++rendered;
       for (const auto& [offset, length] : r->trusted) {

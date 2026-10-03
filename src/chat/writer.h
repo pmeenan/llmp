@@ -6,10 +6,11 @@
 // Internal to the renderers.
 //
 // The text is bounded as the interpreter's output is
-// (jinja::Limits::max_output_bytes): past the bound the writer drops what
-// it is given, so a renderer that repeats client text (a name per tool
-// result) does no more work than the bound, and Finish refuses the
-// rendering.
+// (Conversation::max_render_bytes, which serving sets to the template's
+// jinja::Limits::max_output_bytes, from the model's context and memory,
+// D-102): past the bound the writer drops what it is given, so a renderer
+// that repeats client text (a name per tool result) does no more work than
+// the bound, and Finish refuses the rendering.
 
 #ifndef JITLLM_CHAT_WRITER_H_
 #define JITLLM_CHAT_WRITER_H_

@@ -546,7 +546,16 @@ TEST(Renderers, OutputIsBounded) {
     ASSERT_FALSE(r.has_value());
     EXPECT_TRUE(r.error().bound);
   }
+  // The bound is the conversation's (serving sets the model's, from its
+  // context and memory, D-102): a larger one renders the same text.
+  big.max_render_bytes = std::size_t{64} << 20U;
+  for (const auto render : {chat::RenderQwen38, chat::RenderDeepSeekV4, chat::RenderGemma3}) {
+    const auto r = render(big);
+    ASSERT_TRUE(r.has_value()) << r.error().ToString();
+    EXPECT_GT(r->text.size(), std::size_t{32} << 20U);
+  }
   // Within the bound, the same renderers render.
+  big.max_render_bytes = chat::Conversation{}.max_render_bytes;
   big.messages[0].content = std::string(std::size_t{16} << 20U, 'x');
   for (const auto render :
        {chat::RenderQwen38, chat::RenderDeepSeekV4, chat::RenderGemma3, chat::RenderGemma4}) {

@@ -364,22 +364,32 @@ std::expected<void*, std::string> PagedNode::Pinned(std::uint64_t bytes, int own
 
 bool PagedNode::Recharge(std::uint64_t total, bool force, std::uint64_t* shortfall) {
   const std::uint64_t past = total > host_floor_ ? total - host_floor_ : 0;
-  const std::uint64_t charge = (past + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
-  if (charge == host_charged_) {
+  return ChargeRuntime(host_extent_, host_charged_, past, force, shortfall, "plans and graphs");
+}
+
+bool PagedNode::SetRequestCharge(std::uint64_t bytes, std::uint64_t* shortfall) {
+  return ChargeRuntime(request_extent_, request_charged_, bytes, bytes <= request_charged_,
+                       shortfall, "request memory");
+}
+
+bool PagedNode::ChargeRuntime(catalog::ExtentId& held, std::uint64_t& charged, std::uint64_t bytes,
+                              bool force, std::uint64_t* shortfall, std::string_view what) {
+  const std::uint64_t charge = (bytes + kPagedExtent - 1) / kPagedExtent * kPagedExtent;
+  if (charge == charged) {
     return true;
   }
   // Before the scheduler runs, or once it stopped, there is nothing to
   // charge against: only the count changes.
   if (scheduler_ == nullptr || torn_down_) {
-    host_charged_ = charge;
+    charged = charge;
     return true;
   }
   bool fits = true;
   auto changed = Call(
       [&]() -> Status {
         const std::uint64_t occupancy = catalog_.OccupancyOf(domain_).Total().value();
-        const std::uint64_t others = occupancy - std::min(occupancy, host_charged_);
-        if (charge > host_charged_ && !force &&
+        const std::uint64_t others = occupancy - std::min(occupancy, charged);
+        if (charge > charged && !force &&
             (others > budget_.value() || charge > budget_.value() - others)) {
           fits = false;
           if (shortfall != nullptr) {
@@ -387,11 +397,11 @@ bool PagedNode::Recharge(std::uint64_t total, bool force, std::uint64_t* shortfa
           }
           return {};
         }
-        if (host_extent_.valid()) {
-          if (!catalog_.ReleasePinned(host_extent_) || !catalog_.RemoveExtent(host_extent_)) {
-            return Error("forgetting the plans' charge");
+        if (held.valid()) {
+          if (!catalog_.ReleasePinned(held) || !catalog_.RemoveExtent(held)) {
+            return Error(std::format("forgetting the {}' charge", what));
           }
-          host_extent_ = {};
+          held = {};
         }
         if (charge != 0) {
           auto extent = catalog_.AddExtent({.domain = domain_,
@@ -401,19 +411,19 @@ bool PagedNode::Recharge(std::uint64_t total, bool force, std::uint64_t* shortfa
                                             .content = {}},
                                            true);
           if (!extent) {
-            return Error("charging the plans");
+            return Error(std::format("charging the {}", what));
           }
-          host_extent_ = *extent;
+          held = *extent;
         }
         return {};
       },
-      "charging plans and graphs");
+      std::format("charging {}", what));
   if (!changed) {
     // Only the count is kept; the catalog's charge is what it was.
     return force;
   }
   if (fits) {
-    host_charged_ = charge;
+    charged = charge;
   }
   return fits;
 }

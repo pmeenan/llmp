@@ -38,6 +38,7 @@
 #include "platform/host_probe.h"
 #include "platform/memory_pressure.h"
 #include "platform/path_trust.h"
+#include "runtime/intake_limits.h"
 #include "runtime/memory_guard.h"
 #include "runtime/model_limits.h"
 #include "runtime/prefill.h"
@@ -1523,6 +1524,7 @@ void MemorySampler::Loop() {
 }
 
 void ResidentTimes::Staged(catalog::ExtentId extent, scheduler::PageInEvent event) {
+  events_.fetch_add(1, std::memory_order_relaxed);
   if (event == scheduler::PageInEvent::kResident && extent.index() < at_.size()) {
     at_[extent.index()] = Clock::now();
   }
@@ -1643,34 +1645,126 @@ Status Llm::SaveState(void* host) { return default_branch_.SaveState(host); }
 
 Status Llm::RestoreState(void* host) { return default_branch_.RestoreState(host); }
 
-std::expected<std::vector<std::int32_t>, std::string> Llm::EncodeText(std::string_view text) const {
+std::expected<std::vector<std::int32_t>, std::string> Llm::EncodeText(std::string_view text,
+                                                                      RequestMemory* memory,
+                                                                      std::uint64_t* needed) const {
   std::vector<tokenizer::TokenId> ids;
-  if (auto r = tokenizer_->Encode(text, {.add_bos_eos = true}, ids); !r) {
+  // The working set and the tokens (a byte each at most, grown by
+  // doubling), charged while they are built.
+  MemoryCharge charge;
+  if (memory != nullptr) {
+    const std::uint64_t need = tokenizer::Tokenizer::EncodeWorkingBytes(text) +
+                               (std::uint64_t{2} * sizeof(tokenizer::TokenId) * (text.size() + 2));
+    if (!charge.Add(*memory, need)) {
+      if (needed != nullptr) {
+        *needed = need;
+      }
+      return Error(std::format("encoding the text needs {} bytes of request memory", need));
+    }
+  }
+  // Bounded by the text itself (D-102): every token covers at least a
+  // byte, beside a BOS and an EOS.
+  if (auto r = tokenizer_->Encode(text,
+                                  {.special = tokenizer::SpecialTokens::kUserDefinedOnly,
+                                   .add_bos_eos = true,
+                                   .max_bytes = text.size(),
+                                   .max_tokens = text.size() + 2},
+                                  ids);
+      !r) {
     return Error(r.error().ToString());
   }
   if (tokenizer_->bos() && (ids.empty() || ids.front() != *tokenizer_->bos())) {
     ids.insert(ids.begin(), *tokenizer_->bos());  // BOS first, as the references fed it
   }
-  return std::vector<std::int32_t>(ids.begin(), ids.end());
+  return ids;
+}
+
+RenderCharge Llm::RenderChargeFor(std::uint64_t message_bytes, std::size_t messages) const {
+  constexpr std::uint64_t kMiB = std::uint64_t{1} << 20U;
+  // Four times the text, and a message's framing (role headers, turn
+  // markers) for each message, however short.
+  const std::uint64_t framing = std::uint64_t{messages} * kRenderBytesPerMessage;
+  const std::uint64_t scaled = message_bytes > (std::numeric_limits<std::uint64_t>::max() / 8) ||
+                                       framing > (std::numeric_limits<std::uint64_t>::max() / 8)
+                                   ? std::numeric_limits<std::uint64_t>::max() / 4
+                                   : (4 * message_bytes) + framing;
+  RenderCharge c;
+  c.output = std::min<std::uint64_t>(render_bytes_, scaled + kMinRenderBytes);
+  c.bytes = c.output;
+  if (template_ && template_->interprets()) {
+    c.live = std::min<std::uint64_t>(template_->max_live_bytes(), scaled + (16 * kMiB));
+    c.bytes += c.output + c.live + (2 * message_bytes);
+  }
+  return c;
 }
 
 std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
-    const chat::Conversation& conversation, std::uint32_t* stable_boundary) const {
+    const chat::Conversation& conversation, std::uint32_t* stable_boundary,
+    const ChatRenderOptions& options, ChatRenderFailure* failure) const {
   if (stable_boundary != nullptr) {
     *stable_boundary = 0;
+  }
+  if (failure != nullptr) {
+    *failure = ChatRenderFailure::kOther;
   }
   if (!template_) {
     return Error(std::format("{} has no chat template (D-067)", name_));
   }
-  auto rendered = template_->Render(conversation, LocalTime());
+  auto rendered = template_->Render(conversation, LocalTime(), options.cancelled);
   if (!rendered) {
+    if (failure != nullptr && rendered.error().cancelled) {
+      *failure = ChatRenderFailure::kCancelled;
+    } else if (failure != nullptr && rendered.error().bound &&
+               conversation.max_render_bytes >= render_bytes_) {
+      // Longer than any prompt that fits the context could render.
+      *failure = ChatRenderFailure::kTooLong;
+    }
     return Error(rendered.error().ToString());
   }
+  // The tokenization's working set and its tokens (a byte each at most,
+  // grown by doubling), charged while they are built.
+  MemoryCharge charge;
+  if (options.memory != nullptr) {
+    const std::uint64_t window = tokenizer::Tokenizer::EncodeWorkingBytes(rendered->text);
+    const std::uint64_t need =
+        window + (std::uint64_t{2} * sizeof(tokenizer::TokenId) *
+                  std::min<std::uint64_t>(rendered->text.size(), options.max_tokens));
+    if (need > options.memory->capacity()) {
+      // A stretch without a cut point too long to tokenize here at all,
+      // whatever else the node holds: the prompt's shape, not the moment.
+      if (failure != nullptr) {
+        *failure = ChatRenderFailure::kUnbroken;
+      }
+      if (options.memory_needed != nullptr) {
+        *options.memory_needed = window / tokenizer::kEncodeBytesPerWindowByte;
+      }
+      return Error("the conversation holds text too long without a break to tokenize");
+    }
+    if (!charge.Add(*options.memory, need)) {
+      if (failure != nullptr) {
+        *failure = ChatRenderFailure::kMemory;
+      }
+      if (options.memory_needed != nullptr) {
+        *options.memory_needed = need;
+      }
+      return Error(std::format("tokenizing the rendering needs {} bytes of request memory", need));
+    }
+  }
+  // The rendering's own bytes (already within its bound) and the caller's
+  // token bound, not the tokenizer's library defaults: a prompt is bounded
+  // by the model's context (D-102).
   std::vector<tokenizer::TokenId> ids;
   std::vector<std::size_t> span_tokens;
-  if (auto r = tokenizer_->EncodeMarked(rendered->text, rendered->specials, {}, ids,
-                                        stable_boundary == nullptr ? nullptr : &span_tokens);
+  if (auto r = tokenizer_->EncodeMarked(rendered->text, rendered->specials,
+                                        {.special = tokenizer::SpecialTokens::kUserDefinedOnly,
+                                         .add_bos_eos = false,
+                                         .max_bytes = rendered->text.size(),
+                                         .max_tokens = options.max_tokens},
+                                        ids, stable_boundary == nullptr ? nullptr : &span_tokens);
       !r) {
+    if (failure != nullptr && r.error().rule == tokenizer::Rule::kOutputTooLarge) {
+      *failure = ChatRenderFailure::kTooLong;
+    }
     return Error(r.error().ToString());
   }
   if (stable_boundary != nullptr) {
@@ -1686,7 +1780,7 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
       }
     }
   }
-  return std::vector<std::int32_t>(ids.begin(), ids.end());
+  return ids;
 }
 
 std::string Llm::Detokenize(std::span<const std::int32_t> tokens) const {
@@ -1741,7 +1835,19 @@ std::expected<bool, std::string> Llm::Keep(Branch& branch, std::span<const float
 }
 
 Status Llm::UseTemplate(std::string_view text) {
-  auto chosen = chat::ChatTemplate::ForText(text, chat::TokenFacts::From(*tokenizer_));
+  // A rendering's bounds follow the model (D-102): what a prompt that fits
+  // its context could occupy; a value and the values held at once scale
+  // with it, never below the library's own. The longest token's bytes: a
+  // normal token's decoded, a special token's text.
+  const std::size_t longest = tokenizer_->longest_token_bytes();
+  longest_token_ = longest;
+  render_bytes_ = static_cast<std::size_t>(RenderBytes(
+      context_, longest, tokenizer_->normalization() == tokenizer::Normalization::kNfc));
+  chat::jinja::Limits limits;
+  limits.max_output_bytes = render_bytes_;
+  limits.max_string_bytes = std::max(limits.max_string_bytes, render_bytes_);
+  limits.max_live_bytes = std::max(limits.max_live_bytes, 2 * render_bytes_);
+  auto chosen = chat::ChatTemplate::ForText(text, chat::TokenFacts::From(*tokenizer_), limits);
   if (!chosen) {
     return Error(chosen.error());
   }
@@ -3346,21 +3452,30 @@ Status Server::Start(bool snapshot) {
   plans_ = plans + engine::ScratchArenaBytes();
   plans = plans_;
   const std::uint64_t available = MemorySampler::Available();
-  const MemoryGuard bounds = {.largest = largest,
-                              .host_inputs = host_inputs,
-                              .plans = plans,
-                              .available = available,
-                              .fixed = fixed_};
+  MemoryGuard bounds = {.largest = largest,
+                        .host_inputs = host_inputs,
+                        .plans = plans,
+                        .available = available,
+                        .fixed = fixed_,
+                        .requests = 0};
+  // Requests' host memory (intake_limits.h, D-102): a small floor set apart
+  // here, out of the catalog's budget, so the requests a route admits never
+  // take the margin the driver and the models' state count on; past it the
+  // route charges what requests hold to the budget as it goes
+  // (SetRequestMemory), through the reclaim order.
+  request_memory_ = RequestFloor(config_.client);
+  bounds.requests = request_memory_;
   const auto guard = CheckMemoryGuard(bounds);
-  Log(
-      std::format("allocation guard: {{\"format\":\"jitllm-wave-startup-guard-v1\","
-                  "\"fixed_catalog_bytes\":{},\"shared_activation_bytes\":{},"
-                  "\"shared_scratch_bytes\":{},\"largest_weight_extent_bytes\":{},"
-                  "\"host_input_bytes\":{},\"plan_floor_bytes\":{},\"uncounted_margin_bytes\":{},"
-                  "\"available_after_fixed_bytes\":{},\"available_known\":{},"
-                  "\"guard_passed\":{},\"registered_state_virtual_extent_bytes\":{}}}",
-                  fixed_, activations, pool, largest, host_inputs, plans, kUncountedMargin,
-                  available, available != 0, guard.has_value(), node_.StateCapacity()));
+  Log(std::format(
+      "allocation guard: {{\"format\":\"jitllm-wave-startup-guard-v1\","
+      "\"fixed_catalog_bytes\":{},\"shared_activation_bytes\":{},"
+      "\"shared_scratch_bytes\":{},\"largest_weight_extent_bytes\":{},"
+      "\"host_input_bytes\":{},\"plan_floor_bytes\":{},\"uncounted_margin_bytes\":{},"
+      "\"available_after_fixed_bytes\":{},\"available_known\":{},"
+      "\"guard_passed\":{},\"registered_state_virtual_extent_bytes\":{},"
+      "\"request_memory_bytes\":{}}}",
+      fixed_, activations, pool, largest, host_inputs, plans, kUncountedMargin, available,
+      available != 0, guard.has_value(), node_.StateCapacity(), request_memory_));
   if (!guard) {
     return std::unexpected(guard.error());
   }
@@ -3418,17 +3533,19 @@ Status Server::Start(bool snapshot) {
   // The state room: what the budget leaves the conversations beside the
   // fixed memory and the largest model's weights.
   const std::uint64_t room = budget_ > fixed_ + largest ? budget_ - fixed_ - largest : 0;
+  state_room_ = room;
   Log(std::format(
       "serving {} models; budget {:.2f} GiB ({:.2f} GiB fixed, the workspace {:.2f}; host-built "
-      "chunk inputs {:.2f} GiB and a step's plans {:.2f} GiB beside it); conversation state "
-      "room {:.2f} GiB beside the largest weights; {:.2f} GiB available; idle conversations "
-      "spill, kept {} h within {} GiB",
+      "chunk inputs {:.2f} GiB, a step's plans {:.2f} GiB and {:.2f} GiB of request memory "
+      "beside it); conversation state room {:.2f} GiB beside the largest weights; {:.2f} GiB "
+      "available; idle conversations spill, kept {} h within {} GiB",
       models_.size(), static_cast<double>(budget_) / (1ULL << 30U),
       static_cast<double>(fixed_) / (1ULL << 30U), static_cast<double>(workspace_) / (1ULL << 30U),
       static_cast<double>(host_inputs_) / (1ULL << 30U),
-      static_cast<double>(plans_) / (1ULL << 30U), static_cast<double>(room) / (1ULL << 30U),
-      static_cast<double>(available) / (1ULL << 30U), config_.memory.retention_hours,
-      config_.memory.spill_budget_gib));
+      static_cast<double>(plans_) / (1ULL << 30U),
+      static_cast<double>(request_memory_) / (1ULL << 30U),
+      static_cast<double>(room) / (1ULL << 30U), static_cast<double>(available) / (1ULL << 30U),
+      config_.memory.retention_hours, config_.memory.spill_budget_gib));
   for (const auto& m : models_) {
     if (m->llm()) {
       static_cast<Llm&>(*m).set_retention(retention_);
@@ -3436,6 +3553,49 @@ Status Server::Start(bool snapshot) {
     }
   }
   return {};
+}
+
+std::uint64_t Server::context_body_bytes() const {
+  std::uint64_t most = 0;
+  for (const auto& m : models_) {
+    if (m->llm()) {
+      const auto& l = static_cast<const Llm&>(*m);
+      most = std::max(most, ContextBodyBytes(l.usable_context(), l.longest_token()));
+    }
+  }
+  return most;
+}
+
+std::uint64_t Server::request_capacity() const {
+  if (config_.client.request_memory_bytes) {
+    return *config_.client.request_memory_bytes;
+  }
+  return request_memory_ + state_room_;
+}
+
+bool Server::SetRequestMemory(std::uint64_t to) {
+  if (!started_ || torn_down_) {
+    return to <= request_memory_;
+  }
+  // Past the floor, charged inside the budget; what does not fit has the
+  // reclaim order free it (plans, graphs, idle conversations spilled; the
+  // request memory itself is never reclaimed), all of it or nothing.
+  const std::uint64_t past = to > request_memory_ ? to - request_memory_ : 0;
+  std::uint64_t shortfall = 0;
+  if (node_.SetRequestCharge(past, &shortfall)) {
+    return true;
+  }
+  for (int attempt = 0; attempt < 3 && shortfall != 0; ++attempt) {
+    const std::uint64_t ask = ((shortfall + kExtent - 1) / kExtent * kExtent) + kExtent;
+    if (Reclaim(ask, true, "request memory") == 0) {
+      break;
+    }
+    shortfall = 0;
+    if (node_.SetRequestCharge(past, &shortfall)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 Status Server::TearDown() {

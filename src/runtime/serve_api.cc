@@ -13,14 +13,17 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <expected>
 #include <format>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -30,6 +33,7 @@
 #include "chat/chat.h"
 #include "config/node_config.h"
 #include "platform/event_loop.h"
+#include "platform/host_probe.h"
 #include "platform/interfaces.h"
 #include "platform/job.h"
 #include "platform/sd_notify.h"
@@ -41,6 +45,7 @@
 #include "runtime/cohort_schedule.h"
 #include "runtime/commands.h"
 #include "runtime/completion_tokens.h"
+#include "runtime/intake_limits.h"
 #include "runtime/prefill.h"
 #include "runtime/runtime.h"
 #include "runtime/serving.h"
@@ -83,8 +88,47 @@ struct ChatPrompt {
   bool reasoning = false;
 };
 
-std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatRequest& request) {
+// The context's refusal, for a conversation that cannot fit before it is
+// rendered or tokenized.
+api::Error ContextExceeded(std::uint32_t usable) {
+  return Failure(400,
+                 std::format("This model's maximum context length is {} tokens. However, your "
+                             "messages resulted in more than {} tokens. Please reduce the length "
+                             "of the messages.",
+                             usable, usable),
+                 "context_length_exceeded", "messages");
+}
+
+// Renders and counts a chat request on the driver. Its bounds are the
+// model's (D-102): a conversation whose text alone is longer than a prompt
+// that fits the usable context could render to (Llm::render_bytes) is
+// refused before it is copied or rendered; the rendering is bounded by its
+// messages' bytes (Llm::RenderChargeFor) and its tokens by the usable
+// context. Each step is charged to the request memory (`memory`) before
+// it runs: the conversation's copy of the messages, the rendering, the
+// tokenization. The exchange is asked as it goes, so a client that leaves,
+// the runtime stopping or a configured deadline (set before rendering) end
+// a long rendering (it is not moved off the driver: other requests wait
+// for it, as for any unit).
+std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatRequest& request,
+                                                  api::Exchange& exchange, RequestMemory& memory) {
+  const std::uint32_t usable = model.usable_context();
+  std::uint64_t text = 0;
+  for (const api::Message& message : request.messages) {
+    text += message.content.size() + (message.reasoning ? message.reasoning->size() : 0);
+  }
+  if (text > model.render_bytes()) {
+    return std::unexpected(ContextExceeded(usable));
+  }
+  const RenderCharge render = model.RenderChargeFor(text, request.messages.size());
+  const std::uint64_t copied = text + (request.messages.size() * sizeof(chat::Message));
+  MemoryCharge charge;
+  if (!charge.Add(memory, copied + render.bytes)) {
+    return std::unexpected(
+        api::MemoryRefusal(memory, copied + render.bytes, "rendering the conversation"));
+  }
   chat::Conversation conversation;
+  conversation.messages.reserve(request.messages.size());
   for (const api::Message& message : request.messages) {
     chat::Role role = chat::Role::kUser;
     if (message.role == api::Role::kSystem) {
@@ -98,14 +142,44 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
                                      .tool_calls = {}});
   }
   model.Defaults(conversation);
+  conversation.max_render_bytes = static_cast<std::size_t>(render.output);
+  conversation.max_live_bytes = static_cast<std::size_t>(render.live);
   ChatPrompt result;
-  auto rendered = model.RenderChat(conversation, &result.stable_boundary);
+  const std::function<bool()> cancelled = [&exchange] { return !exchange.Continue(); };
+  ChatRenderFailure failure = ChatRenderFailure::kOther;
+  std::uint64_t needed = 0;
+  auto rendered = model.RenderChat(
+      conversation, &result.stable_boundary,
+      {.max_tokens = usable, .cancelled = &cancelled, .memory = &memory, .memory_needed = &needed},
+      &failure);
+  if (!rendered && failure == ChatRenderFailure::kTooLong) {
+    return std::unexpected(ContextExceeded(usable));
+  }
+  if (!rendered && failure == ChatRenderFailure::kMemory) {
+    return std::unexpected(api::MemoryRefusal(memory, needed, "tokenizing the conversation"));
+  }
+  if (!rendered && failure == ChatRenderFailure::kUnbroken) {
+    // Text the tokenizer cannot cut into windows (no line break or word
+    // boundary) and cannot hold whole: the prompt's shape, refused as the
+    // context is.
+    return std::unexpected(Failure(
+        400,
+        std::format("The messages hold {} bytes of text without a line break or a space between "
+                    "words; this model tokenizes at most {} bytes without one. Please break up "
+                    "the text.",
+                    needed, memory.capacity() / tokenizer::kEncodeBytesPerWindowByte),
+        "context_length_exceeded", "messages"));
+  }
+  if (!rendered && failure == ChatRenderFailure::kCancelled) {
+    // The exchange answers for why (the client gone, the runtime stopping).
+    return std::unexpected(
+        Failure(503, "the request ended while its conversation was rendered", "request_ended"));
+  }
   if (!rendered) {
     return std::unexpected(
         Failure(400, "the conversation cannot be rendered: " + rendered.error(), {}, "messages"));
   }
   result.tokens = std::move(*rendered);
-  const std::uint32_t usable = model.usable_context();
   const auto prompt = static_cast<std::uint32_t>(result.tokens.size());
   if (prompt >= usable) {
     return std::unexpected(
@@ -182,12 +256,56 @@ class ChatOutput final {
     }
   }
 
+  // Where the output stands (a partial character held back, inside the
+  // reasoning or not): a request that yields its place continues from it.
+  struct State {
+    tokenizer::StreamDecoder decoder;
+    bool thinking = false;
+    bool any_content = false;
+  };
+  State Save() const {
+    return {.decoder = decoder_, .thinking = thinking_, .any_content = any_content_};
+  }
+  void Restore(const State& state) {
+    decoder_ = state.decoder;
+    thinking_ = state.thinking;
+    any_content_ = state.any_content;
+  }
+
  private:
   Llm& model_;
   api::Exchange& exchange_;
   tokenizer::StreamDecoder decoder_;
   bool thinking_ = false;
   bool any_content_ = false;
+};
+
+// A chat request that yielded its place (api::Exchange::Yielding): what it
+// continues from, on either path. Its state is kept as a finished turn's
+// (resident, or spilled when memory needs it), so taking it up again
+// reuses it (Llm::ReusablePrefix) and prefills only what it lost.
+struct ChatResume final : api::Yielded {
+  ChatResume(ChatPrompt prompt, Generation so_far, const GenerateOptions& options,
+             ChatOutput::State out, std::uint32_t cached)
+      : rendered(std::move(prompt)),
+        generation(std::move(so_far)),
+        sampling(options.sampling),
+        seed(options.seed),
+        output(std::move(out)),
+        reused(cached) {
+    // The prompt and every generated token but the last (the anchor:
+    // reported, and not yet in the state).
+    history = rendered.tokens;
+    history.insert(history.end(), generation.tokens.begin(), generation.tokens.end() - 1);
+    generation.cancelled = false;
+  }
+  ChatPrompt rendered;
+  Generation generation;  // so far
+  std::vector<std::int32_t> history;
+  std::optional<execution::SamplingParams> sampling;
+  std::uint64_t seed = 0;
+  ChatOutput::State output;
+  std::uint32_t reused = 0;  // the first turn's cached tokens, for its usage
 };
 
 // A serial request's state-capacity policy on its model for the request's
@@ -270,10 +388,24 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     ChatWork(ChatWork&&) = delete;
     ChatWork& operator=(ChatWork&&) = delete;
     bool terminal() const override {
-      return cancelled || error.has_value() || stage == Stage::kDone ||
+      return cancelled || yielding || error.has_value() || stage == Stage::kDone ||
              (generation_session != nullptr && generation_session->done());
     }
-    void Cancel() override { cancelled = true; }
+    void Cancel() override {
+      cancelled = true;
+      yielding = false;  // cancelled, it ends; it does not continue
+    }
+    // Yields only a generation under way that is not set aside or waiting
+    // for capacity (its continuation is its generation so far).
+    bool Yield() override {
+      if (generation_session == nullptr || generation_session->done() ||
+          generation.tokens.empty() || wait != CapacityWait::kNone || resume || error ||
+          cancelled) {
+        return false;
+      }
+      yielding = true;
+      return true;
+    }
 
     NodeBackend& owner;
     Llm& model;
@@ -293,6 +425,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     Stage stage = Stage::kPrompt;
     std::uint32_t reused = 0;
     bool cancelled = false;
+    bool yielding = false;  // yields its place (Yield): retired with a continuation
     bool native_touched = false;
     bool retired = false;
     // State capacity (cohort_capacity.h): admission order, whether it
@@ -313,8 +446,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   static_assert(kCohortSlots == Llm::kMaxBranches);
 
  public:
-  NodeBackend(Server& server, const config::NodeConfig& config, std::FILE* log)
-      : server_(server), config_(config), log_(log) {}
+  // `memory`: the request memory (intake_limits.h), which the chat route
+  // shares; renderings, tokenizations and literal scores are charged to it.
+  NodeBackend(Server& server, const config::NodeConfig& config,
+              std::shared_ptr<RequestMemory> memory, std::FILE* log)
+      : server_(server), config_(config), memory_(std::move(memory)), log_(log) {}
 
   // Only models with funded independent slots opt in. Literal completion,
   // scoring and unsupported models retain their ordinary entry points.
@@ -349,10 +485,17 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     if (!AdmissionOpen(Snapshot())) {
       return std::unique_ptr<api::CooperativeBackend::Work>{};
     }
-    auto rendered = PrepareChat(model, request.options);
+    // A request that yielded its place continues from its generation so far
+    // (ChatResume); any other is rendered now.
+    const auto* resume = static_cast<const ChatResume*>(request.resume);
+    std::expected<ChatPrompt, api::Error> rendered =
+        resume != nullptr ? std::expected<ChatPrompt, api::Error>(resume->rendered)
+                          : PrepareChat(model, request.options, exchange, *memory_);
     if (!rendered) {
       return std::unexpected(rendered.error());
     }
+    const std::vector<std::int32_t>& wanted =
+        resume != nullptr ? resume->history : rendered->tokens;
     // Choose only an unclaimed model-owned branch. Prefix matching is a
     // reuse preference, never conversation identity or retention policy:
     // the branch whose state this prompt can actually reuse the most of
@@ -372,7 +515,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       if (!branch) {
         return std::unexpected(Failure(500, "the model's conversation branch is unavailable"));
       }
-      const std::size_t reusable = model.ReusablePrefix(**branch, rendered->tokens);
+      const std::size_t reusable = model.ReusablePrefix(**branch, wanted);
       const bool empty = !(*branch)->HasRetainedState();
       const Clock::time_point used = model.LastUsed(**branch);
       const bool better = slot == cohort_.size() || reusable > best ||
@@ -396,8 +539,21 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     const auto swap_bytes = SwapBytes(model);
     auto frame = std::make_unique<ChatWork>(*this, model, **branch, slot, request.options, exchange,
                                             std::move(*rendered), floors, swap_bytes);
+    if (resume != nullptr) {
+      // Its state rebuilt to the history it yielded at (restored, reused or
+      // prefilled), then its generation continues from the anchor
+      // (BeginChatGeneration's resume): nothing is chosen or sent again.
+      frame->resume = true;
+      frame->resume_tokens = resume->history;
+      frame->generation = resume->generation;
+      frame->options.sampling = resume->sampling;
+      frame->options.seed = resume->seed;
+      frame->output.Restore(resume->output);
+      frame->reused = resume->reused;
+    }
     auto prompt =
-        frame->branch.BeginPrompt(frame->rendered.tokens, frame->rendered.stable_boundary);
+        frame->branch.BeginPrompt(frame->resume ? frame->resume_tokens : frame->rendered.tokens,
+                                  frame->rendered.stable_boundary, false, frame->resume);
     if (!prompt) {
       frame->retired = true;  // no session or native work retained a reference
       return std::unexpected(Failure(500, "the prompt could not be admitted: " + prompt.error()));
@@ -434,12 +590,19 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     // and a generating member waits for at most one prompt unit.
     std::vector<ScheduledMember> members;
     std::vector<ChatWork*> frames;
+    bool paused = false;
     for (auto* base : work) {
       auto& frame = static_cast<ChatWork&>(*base);
       if (frame.wait != CapacityWait::kNone) {
         continue;  // waits for state capacity (cohort_capacity.h)
       }
       if (frame.stage == ChatWork::Stage::kGeneration) {
+        // A stream whose client is behind waits at its completed step
+        // (backpressure, D-102); the others go on.
+        if (frame.exchange.Paused()) {
+          paused = true;
+          continue;
+        }
         selected_decode_.push_back(&frame);
         members.push_back({.stage = ScheduledMember::Stage::kGeneration,
                            .admitted = frame.admitted,
@@ -467,6 +630,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return api::CooperativeBackend::Unit{.phase = Phase::kDecode, .expected_seconds = expected};
     }
     selected_decode_.clear();
+    if (prompt == nullptr && paused) {
+      // Every runnable member waits for its client: the server waits for
+      // one to read or leave.
+      return api::CooperativeBackend::Unit{.phase = Phase::kPaused, .expected_seconds = 0};
+    }
     if (prompt == nullptr) {
       return std::unexpected("an active chat cohort has no next completed unit");
     }
@@ -657,13 +825,25 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         }
       }
     }
-    if (!frame.error && !frame.generation.tokens.empty()) {
+    // Yielding its place (D-102): its state stays as a finished turn's, and
+    // it continues from its generation so far when taken up again, unless
+    // the generation ended whole anyway.
+    const bool yields = frame.yielding && !frame.error && !frame.generation.stopped &&
+                        !frame.generation.tokens.empty() &&
+                        frame.generation.tokens.size() < frame.options.max_tokens;
+    std::shared_ptr<api::Yielded> yielded;
+    if (yields) {
+      yielded = std::make_shared<ChatResume>(frame.rendered, frame.generation, frame.options,
+                                             frame.output.Save(), frame.reused);
+    } else if (!frame.error && !frame.generation.tokens.empty()) {
       frame.output.Finish();  // including a generation preempted and not yet resumed
     }
     api::Completion result{
         .completion_tokens = static_cast<std::uint32_t>(frame.generation.tokens.size()),
         .cached_tokens = frame.reused,
-        .stopped = frame.generation.stopped};
+        .stopped = frame.generation.stopped,
+        .literal = {},
+        .yielded = std::move(yielded)};
     cohort_[frame.slot] = nullptr;
     frame.retired = true;
     frame.generation_session.reset();
@@ -691,13 +871,16 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     std::vector<api::ModelInfo> models;
     for (const config::ModelEntry& entry : config_.models) {
       if (entry.composition) {
-        models.push_back({.name = entry.name, .chat = false, .context = 0});
+        models.push_back({.name = entry.name, .chat = false, .context = 0, .render_bytes = 0});
         continue;
       }
       Served* m = server_.Find(entry.name);
       if (m != nullptr && m->llm()) {
-        models.push_back(
-            {.name = entry.name, .chat = true, .context = static_cast<Llm&>(*m).usable_context()});
+        const auto& l = static_cast<Llm&>(*m);
+        models.push_back({.name = entry.name,
+                          .chat = true,
+                          .context = l.usable_context(),
+                          .render_bytes = l.render_bytes()});
       }
     }
     return models;
@@ -710,13 +893,44 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return std::unexpected(Failure(404, "The model does not exist", "model_not_found", "model"));
     }
     auto& l = static_cast<Llm&>(*m);
-    auto rendered = PrepareChat(l, request);
+    auto rendered = PrepareChat(l, request, exchange, *memory_);
     if (!rendered) {
       return std::unexpected(rendered.error());
     }
-    const std::vector<std::int32_t>& tokens = rendered->tokens;
-    const auto prompt = static_cast<std::uint32_t>(tokens.size());
-    const std::uint32_t max_tokens = rendered->max_tokens;
+    return SerialChat(l, request, exchange, std::move(*rendered), nullptr);
+  }
+
+  std::expected<api::Completion, api::Error> Resume(const api::ChatRequest& request,
+                                                    api::Exchange& exchange,
+                                                    const api::Yielded& from) override {
+    Served* m = server_.Find(request.model);
+    if (m == nullptr || !m->llm()) {
+      return std::unexpected(Failure(404, "The model does not exist", "model_not_found", "model"));
+    }
+    // Only this backend yields, so only its continuations come back.
+    const auto& resume = static_cast<const ChatResume&>(from);
+    return SerialChat(static_cast<Llm&>(*m), request, exchange, resume.rendered, &resume);
+  }
+
+  // A chat request on the serial path, from its rendering, or continuing
+  // from where it yielded its place (`resume`).
+  std::expected<api::Completion, api::Error> SerialChat(Llm& l, const api::ChatRequest& request,
+                                                        api::Exchange& exchange,
+                                                        ChatPrompt rendered,
+                                                        const ChatResume* resume) {
+    Served* const m = &l;
+    // Continuing: the prompt and everything generated so far (the state
+    // holds most of it), and the generation's remaining tokens.
+    std::vector<std::int32_t> continued;
+    if (resume != nullptr) {
+      continued = resume->history;
+      continued.push_back(resume->generation.tokens.back());
+    }
+    const std::vector<std::int32_t>& tokens = resume != nullptr ? continued : rendered.tokens;
+    const auto prompt = static_cast<std::uint32_t>(rendered.tokens.size());
+    const std::uint32_t done =
+        resume != nullptr ? static_cast<std::uint32_t>(resume->generation.tokens.size()) : 0;
+    const std::uint32_t max_tokens = rendered.max_tokens - done;
     // What making the model resident pages in: its weights and its state,
     // and the resident conversation's state written back (an upper bound;
     // the watchdog allows the swap for it, watchdog.h).
@@ -733,17 +947,25 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         entry != config_.models.end()) {
       floors = {.prefill = entry->prefill_floor_tok_s, .decode = entry->decode_floor_tok_s};
     }
+    // Its usage: what so far it continues from.
+    const auto so_far = [&](std::uint32_t cached) {
+      return api::Completion{.completion_tokens = done,
+                             .cached_tokens = resume != nullptr ? resume->reused : cached,
+                             .stopped = false,
+                             .literal = {},
+                             .yielded = nullptr};
+    };
     if (!exchange.Admit({.prompt_tokens = prompt,
                          .max_tokens = max_tokens,
                          .swap_bytes = swap_bytes,
                          .floors = floors})) {
-      return api::Completion{};
+      return so_far(0);
     }
 
     swapped_ = server_.resident() != m;
     if (swapped_ && !exchange.Next(Phase::kSwap, swap_bytes)) {
       swapped_ = false;
-      return api::Completion{};
+      return so_far(0);
     }
     if (auto r = server_.Activate(*m, parts_); !r) {
       if (!server_.NodeHealthy()) {  // otherwise recovered (D-102): this request only
@@ -757,7 +979,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     // the backend stalled, the deadline, the runtime stopping) ends it
     // here, before any of its model work. The exchange answers for it.
     if (!exchange.Continue()) {
-      return api::Completion{};
+      return so_far(0);
     }
 
     GenerateOptions options{.max_tokens = max_tokens,
@@ -766,7 +988,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
                             .sampling = std::nullopt,
                             .seed = 0,
                             .on_tokens = {}};
-    if (request.temperature > 0) {
+    if (resume != nullptr) {
+      options.sampling = resume->sampling;
+      options.seed = resume->seed;
+    } else if (request.temperature > 0) {
       options.sampling =
           execution::SamplingParams{.temperature = static_cast<float>(request.temperature),
                                     .top_k = request.top_k,
@@ -774,7 +999,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
                                     .min_p = static_cast<float>(request.min_p)};
       options.seed = request.seed.value_or(RandomSeed());
     }
-    ChatOutput output(l, exchange, rendered->reasoning);
+    ChatOutput output(l, exchange, rendered.reasoning);
+    if (resume != nullptr) {
+      output.Restore(resume->output);
+    }
     options.on_tokens = [&](std::span<const std::int32_t> fresh) { return output.Push(fresh); };
 
     Generation generation;
@@ -794,8 +1022,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       // prefill: an ordinary end, the state holding the chunks that ran
       // (serving.h Llm::Prefill).
       std::vector<float> last;
-      if (auto r =
-              l.PreparePrompt(tokens, rendered->stable_boundary, last, reused, go_on, &prefill);
+      if (auto r = l.PreparePrompt(tokens, rendered.stable_boundary, last, reused, go_on, &prefill);
           !r) {
         return capacity(r, "the prompt could not be processed: ");
       }
@@ -817,13 +1044,31 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       Say(log_, std::format("{}'s prefill stopped after {} chunks: the state holds {} of the "
                             "prompt's {} tokens",
                             m->name(), prefill.chunks, l.history().size(), tokens.size()));
-      return api::Completion{.completion_tokens = 0, .cached_tokens = reused, .stopped = false};
+      return so_far(reused);
+    }
+    // Yielding its place (D-102): ended at this completed step, unless the
+    // generation is whole anyway; it continues from here when taken up.
+    if (exchange.Yielding() && !generation.stopped && !generation.tokens.empty() &&
+        generation.tokens.size() < max_tokens) {
+      Generation all = resume != nullptr ? resume->generation : Generation{};
+      all.tokens.insert(all.tokens.end(), generation.tokens.begin(), generation.tokens.end());
+      const auto total = static_cast<std::uint32_t>(all.tokens.size());
+      auto yielded =
+          std::make_shared<ChatResume>(std::move(rendered), std::move(all), options, output.Save(),
+                                       resume != nullptr ? resume->reused : reused);
+      return api::Completion{.completion_tokens = total,
+                             .cached_tokens = yielded->reused,
+                             .stopped = false,
+                             .literal = {},
+                             .yielded = std::move(yielded)};
     }
     output.Finish();
     return api::Completion{
-        .completion_tokens = static_cast<std::uint32_t>(generation.tokens.size()),
-        .cached_tokens = reused,
-        .stopped = generation.stopped};
+        .completion_tokens = done + static_cast<std::uint32_t>(generation.tokens.size()),
+        .cached_tokens = resume != nullptr ? resume->reused : reused,
+        .stopped = generation.stopped,
+        .literal = {},
+        .yielded = nullptr};
   }
 
   std::expected<api::Completion, api::Error> Complete(const api::CompletionRequest& request,
@@ -834,7 +1079,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return std::unexpected(Failure(404, "The model does not exist", "model_not_found", "model"));
     }
     auto& llm = static_cast<Llm&>(*model);
-    auto prompt = api::PrepareLiteralPrompt(request, llm.tokenizer(), llm.usable_context());
+    // A response's most: what the request memory holds (D-102); its score
+    // rows are charged to it before any work (below).
+    const auto response_bytes = static_cast<std::size_t>(memory_->capacity());
+    auto prompt = api::PrepareLiteralPrompt(request, llm.tokenizer(), llm.usable_context(),
+                                            response_bytes, memory_.get());
     if (!prompt) {
       return std::unexpected(prompt.error());
     }
@@ -844,8 +1093,15 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     api::Completion result;
     result.literal.prompt_text = std::move(prompt->text);
     std::size_t budget = 1024 + (6 * result.literal.prompt_text.size());
-    if (budget > api::kMaxCompletionResponseBytes) {
+    if (budget > response_bytes) {
       return std::unexpected(Failure(413, "prompt echo exceeds the response size", {}, "prompt"));
+    }
+    // The rows it will hold, at most (PrepareLiteralPrompt figured them),
+    // and its text: charged while it runs (the completed body is charged
+    // in its place when it is made).
+    MemoryCharge rows;
+    if (const std::uint64_t held = prompt->score_bytes + budget; !rows.Add(*memory_, held)) {
+      return std::unexpected(api::MemoryRefusal(*memory_, held, "the completion's scores"));
     }
     std::uint64_t swap_bytes = 0;
     if (server_.resident() != model) {
@@ -889,10 +1145,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     }
     std::optional<api::Error> output_problem;
     api::LiteralRows prompt_rows(llm.tokenizer(), request.return_tokens_as_token_ids, true, 0,
-                                 budget);
+                                 budget, response_bytes);
     api::LiteralRows generated_rows(
         llm.tokenizer(), request.return_tokens_as_token_ids, false,
-        request.echo ? api::TextCharacters(result.literal.prompt_text) : 0, budget);
+        request.echo ? api::TextCharacters(result.literal.prompt_text) : 0, budget, response_bytes);
     const std::uint32_t prompt_top = std::max(request.prompt_logprobs.value_or(0),
                                               request.echo ? request.logprobs.value_or(0) : 0);
     const auto add_prompt = [&](std::int32_t id, std::span<const float> row, bool first) {
@@ -945,7 +1201,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
           return false;
         }
       }
-      if (6 * piece.size() > api::kMaxCompletionResponseBytes - budget) {
+      if (budget > response_bytes || 6 * piece.size() > response_bytes - budget) {
         output_problem =
             Failure(413, "completion text exceeds the response size", "response_too_large");
         return false;
@@ -1006,7 +1262,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     decoder.Finish(rest);
     generated_rows.Finish();
     if (!rest.empty()) {
-      if (6 * rest.size() > api::kMaxCompletionResponseBytes - budget) {
+      if (budget > response_bytes || 6 * rest.size() > response_bytes - budget) {
         return std::unexpected(Failure(413, "completion text exceeds the response size",
                                        "response_unrepresentable", "logprobs"));
       }
@@ -1039,6 +1295,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   // or the spill budget, and memory pressure from outside (Server::Maintain).
   void Maintain() override {
     if (failure_.empty()) {
+      // The request memory grown to what the I/O and parse threads wanted
+      // (or a denial counted), or given back toward what is used.
+      memory_->Settle();
       server_.Maintain();
     }
   }
@@ -1319,6 +1578,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
 
   Server& server_;
   const config::NodeConfig& config_;
+  std::shared_ptr<RequestMemory> memory_;  // the request memory (intake_limits.h)
   std::FILE* log_;
   SwapParts parts_;
   bool swapped_ = false;
@@ -1331,9 +1591,6 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   bool selected_swap_ = false;
   bool cohort_native_touched_ = false;
 };
-
-// Descriptors the node needs besides the chat route's connections.
-constexpr std::uint64_t kReservedFiles = 256;
 
 // The reverse lookups' time at startup, all of them together: MagicDNS
 // answers in milliseconds, and a resolver that does not answer costs no
@@ -1390,8 +1647,22 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
     std::optional<NodeBackend> backend;
     std::optional<api::Server> http;
     if (started) {
-      backend.emplace(server, config, log);
+      // The limits that follow memory (D-102), or what [client] sets: the
+      // request memory the start reserved beside the guard's margin, a
+      // body's most within it and the largest configured context's bytes.
+      const IntakeLimits intake =
+          DeriveIntakeLimits(server.request_memory(), server.request_capacity(),
+                             server.context_body_bytes(), config.client);
+      auto memory = std::make_shared<RequestMemory>(intake.request_floor, intake.request_capacity);
+      // This thread is the driver: its charges grow the request memory at
+      // once, through the reclaim order; the I/O and parse threads' wait
+      // for Maintain to grow it (RequestMemory::Settle).
+      memory->SetDriver(std::this_thread::get_id(),
+                        [&server](std::uint64_t to) { return server.SetRequestMemory(to); });
+      backend.emplace(server, config, memory, log);
       api::ServerOptions options;
+      options.intake = intake;
+      options.memory = memory;
       std::vector<std::string> unauthenticated;
       if (auto listening = ResolveBind(config.client, log); !listening) {
         started = std::unexpected(listening.error());
@@ -1402,35 +1673,75 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       }
       const std::vector<config::ClientEndpoint> endpoints = options.bind;
       const std::string names = HostNames(options.hosts);
-      options.max_queued = config.client.max_queued;
-      options.max_connections = config.client.max_connections;
-      options.stall = std::chrono::seconds(config.client.stall_seconds);
-      options.deadline_cap = std::chrono::seconds(config.client.deadline_cap_seconds);
+      const config::ClientConfig& client = config.client;
+      const auto seconds = [](std::optional<std::uint32_t> s) {
+        return s ? std::optional<std::chrono::milliseconds>(std::chrono::seconds(*s))
+                 : std::nullopt;
+      };
+      options.max_queued = client.max_queued;
+      options.queue_wait = seconds(client.queue_wait_seconds);
+      options.stall = std::chrono::seconds(client.stall_seconds);
+      options.stall_fails = client.stall_action == config::StallAction::kFail;
+      options.deadline_cap = seconds(client.deadline_cap_seconds);
+      options.idle_timeout = std::chrono::seconds(client.idle_seconds);
+      options.request_inactivity = std::chrono::seconds(client.request_inactivity_seconds);
+      options.write_inactivity = seconds(client.write_inactivity_seconds);
+      // A confirmed hang (nothing at all moves: no unit's beat, no page-in)
+      // ends the process for its supervisor (jitllm.service restarts it on
+      // failure): D-102's interim until hang recovery lands. The I/O thread
+      // tells it; the driver may be the thread that hangs, so nothing is
+      // torn down.
+      options.hang = seconds(client.hang_seconds);
+      options.activity = [&server] { return server.page_in_events(); };
+      options.on_hang = [log](const std::string& why) {
+        Say(log, "exiting: " + why);
+        std::ignore = platform::NotifyServiceManager("STATUS=exiting after a confirmed hang");
+        std::_Exit(kExitFailure);
+      };
       // The server logs each change of the backend's health; the service
       // manager's status line says it too (`systemctl status`).
       const std::size_t served = backend->Models().size();
-      options.on_health = [log, served](const Health& health) {
-        const std::string status =
-            health.healthy ? std::format("STATUS=serving {} models on the chat route", served)
-                           : std::format(
-                                 "STATUS=the model backend is not making progress ({}); refusing "
-                                 "requests until it does",
-                                 PhaseName(health.phase));
+      const bool fails = options.stall_fails;
+      options.on_health = [log, served, fails](const Health& health) {
+        std::string status = std::format("STATUS=serving {} models on the chat route", served);
+        if (!health.healthy) {
+          status = std::format("STATUS=the model backend is not making progress ({}); {}",
+                               PhaseName(health.phase),
+                               fails ? "refusing requests until it does" : "requests wait for it");
+        }
         if (auto notified = platform::NotifyServiceManager(status); !notified) {
           Say(log, notified.error());
         }
       };
       // Each connection is a descriptor; the rest (model files, the
-      // node's own) fit in kReservedFiles.
-      const std::uint64_t files =
-          platform::RaiseOpenFileLimit(std::uint64_t{options.max_connections} + kReservedFiles);
-      if (files < std::uint64_t{options.max_connections} + kReservedFiles) {
-        const std::uint64_t fits = files > kReservedFiles + 16 ? files - kReservedFiles : 16;
+      // node's own) fit in kReservedFiles. Without max_connections the
+      // route keeps what the open-file hard limit allows (D-102).
+      const std::uint64_t want = client.max_connections
+                                     ? std::uint64_t{*client.max_connections} + kReservedFiles
+                                     : std::numeric_limits<std::uint64_t>::max();
+      const std::uint64_t files = platform::RaiseOpenFileLimit(want);
+      const std::uint64_t fits = ConnectionsFor(files);
+      if (client.max_connections && fits < *client.max_connections) {
         Say(log, std::format("the open-file limit is {}: the chat route keeps at most {} "
                              "connections, not the {} configured",
-                             files, fits, options.max_connections));
-        options.max_connections = static_cast<std::size_t>(fits);
+                             files, fits, *client.max_connections));
       }
+      options.max_connections = static_cast<std::size_t>(
+          client.max_connections ? std::min<std::uint64_t>(*client.max_connections, fits) : fits);
+      const std::chrono::milliseconds hang = options.hang.value_or(
+          std::max<std::chrono::milliseconds>(api::kHangFloor, api::kHangStalls * options.stall));
+      Say(log, std::format("the chat route's limits: request memory {} bytes set apart, growing "
+                           "within the budget to {} bytes{} (bodies, parses, renderings, unread "
+                           "output, responses); bodies up to {} bytes; a stream pauses past {} "
+                           "unread bytes; {} connections; queue {}; stalls reported after {} s{}; "
+                           "a confirmed hang after {} s exits",
+                           intake.request_floor, intake.request_capacity,
+                           client.request_memory_bytes ? " ([client] request_memory_bytes)" : "",
+                           intake.max_body, intake.stream_buffer, options.max_connections,
+                           client.max_queued ? std::format("at most {}", *client.max_queued)
+                                             : std::string("unbounded"),
+                           client.stall_seconds, fails ? " (and fail requests)" : "",
+                           std::chrono::duration_cast<std::chrono::seconds>(hang).count()));
       options.log = log;
       if (started) {
         http.emplace(*backend, std::move(options));

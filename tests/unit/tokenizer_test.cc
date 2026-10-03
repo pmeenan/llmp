@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
 #include <optional>
 #include <random>
 #include <span>
@@ -413,6 +414,150 @@ TEST(Encode, LongRunsStayLinear) {
   const std::string spaces(1U << 20U, ' ');
   const auto ids = Encode(t, spaces);
   EXPECT_EQ(ids.size(), 1U << 19U);
+}
+
+// The windows' cut rule as tokenizer.h documents it (kEncodeWindowBytes),
+// written independently: before an ASCII letter or digit after a newline,
+// or before a space between an ASCII letter or digit and an ASCII letter.
+bool DocumentedCut(std::u32string_view t, std::size_t p) {
+  const auto letter = [](char32_t c) {
+    return (c >= U'a' && c <= U'z') || (c >= U'A' && c <= U'Z');
+  };
+  const auto alnum = [&](char32_t c) { return letter(c) || (c >= U'0' && c <= U'9'); };
+  if (t[p - 1] == U'\n') {
+    return alnum(t[p]);
+  }
+  return t[p] == U' ' && p + 1 < t.size() && alnum(t[p - 1]) && letter(t[p + 1]);
+}
+
+std::vector<std::uint32_t> PieceLengths(PreTokenizer p, std::u32string_view cps) {
+  std::vector<std::uint32_t> lengths;
+  tok::PreTokenize(p, std::span(cps.data(), cps.size()), lengths);
+  return lengths;
+}
+
+// Every cut point splits the pieces of every pre-tokenizer exactly where
+// the halves' own pieces meet, and NFC of the halves is NFC of the whole:
+// so encoding window by window gives the whole text's tokens.
+TEST(Encode, WindowCutsSplitNoPieceAndNoComposition) {
+  // Code points by value, so nothing invisible sits in the source: e and a
+  // combining acute, the acute alone, CJK, katakana, a zero-width joiner,
+  // Hangul jamo L and V (composing), an emoji, an Arabic-Indic digit, and
+  // a precomposed e acute.
+  const auto cps = [](std::initializer_list<char32_t> c) { return std::u32string(c); };
+  const std::array<std::u32string, 28> atoms = {U"a",
+                                                U"Zed",
+                                                U"q",
+                                                U"7",
+                                                U"421",
+                                                U" ",
+                                                U"  ",
+                                                U"\n",
+                                                U"\r\n",
+                                                U"\n\n",
+                                                U"\t",
+                                                U"'s",
+                                                U"'LL",
+                                                U"!",
+                                                U"#inc",
+                                                U"...",
+                                                cps({0x65, 0x301}),
+                                                cps({0x301}),
+                                                cps({0x4E2D, 0x6587}),
+                                                cps({0x30C6}),
+                                                cps({0x200D}),
+                                                cps({0x1100, 0x1161}),
+                                                cps({0x1F600}),
+                                                cps({0x663}),
+                                                U" !!",
+                                                U"x",
+                                                cps({0xE9}),
+                                                U"\n "};
+  // NOLINTNEXTLINE(bugprone-random-generator-seed): reproducible
+  std::mt19937 rng(20261003);
+  std::uniform_int_distribution<std::size_t> pick(0, atoms.size() - 1);
+  std::uniform_int_distribution<std::size_t> count(1, 120);
+  std::size_t cuts = 0;
+  for (int round = 0; round < 400; ++round) {
+    std::u32string text;
+    for (std::size_t n = count(rng); n > 0; --n) {
+      text += atoms[pick(rng)];
+    }
+    for (std::size_t p = 1; p < text.size(); ++p) {
+      if (!DocumentedCut(text, p)) {
+        continue;
+      }
+      ++cuts;
+      const std::u32string_view whole(text);
+      for (const PreTokenizer pre :
+           {PreTokenizer::kQwen2, PreTokenizer::kQwen35, PreTokenizer::kDeepSeekV3}) {
+        std::vector<std::uint32_t> halves = PieceLengths(pre, whole.substr(0, p));
+        const std::vector<std::uint32_t> right = PieceLengths(pre, whole.substr(p));
+        halves.insert(halves.end(), right.begin(), right.end());
+        ASSERT_EQ(halves, PieceLengths(pre, whole))
+            << tok::PreTokenizerName(pre) << " at " << p << " of " << Utf8(text);
+      }
+      std::vector<char32_t> nfc(text.begin(), text.end());
+      std::vector<char32_t> left(text.begin(), text.begin() + static_cast<std::ptrdiff_t>(p));
+      std::vector<char32_t> right(text.begin() + static_cast<std::ptrdiff_t>(p), text.end());
+      uni::ToNfc(nfc);
+      uni::ToNfc(left);
+      uni::ToNfc(right);
+      left.insert(left.end(), right.begin(), right.end());
+      ASSERT_EQ(left, nfc) << "NFC at " << p << " of " << Utf8(text);
+    }
+  }
+  EXPECT_GT(cuts, 300U);  // the texts had cut points to check
+}
+
+// A text past kEncodeWindowBytes encodes window by window, with the tokens
+// of its lines encoded one at a time (each line under a window), including
+// a stretch longer than a window with no cut point (scanned forward), under
+// NFC and each pre-tokenizer; its working set follows the widest window.
+TEST(Encode, WindowedEncodingMatchesLineByLine) {
+  std::string text;
+  while (text.size() < 2 * tok::kEncodeWindowBytes) {
+    text += "hello world 123 h\xC3\xA9llo e\xCC\x81 don't\n";
+    text += "  indented!!\n\nWell said\r\n9 lives\n";
+  }
+  const std::size_t stretch = tok::kEncodeWindowBytes + (tok::kEncodeWindowBytes / 2);
+  text += std::string(stretch, '!');
+  text += "\nlast line";
+  // The widest window: from the cut in "9| lives\n" through the stretch to
+  // the cut before "last" (7 bytes before it, 1 after).
+  EXPECT_EQ(tok::Tokenizer::EncodeWorkingBytes(text),
+            std::uint64_t{stretch + 8} * tok::kEncodeBytesPerWindowByte);
+  EXPECT_EQ(tok::Tokenizer::EncodeWorkingBytes("short text"),
+            std::uint64_t{10} * tok::kEncodeBytesPerWindowByte);
+  for (const PreTokenizer pre :
+       {PreTokenizer::kQwen2, PreTokenizer::kQwen35, PreTokenizer::kDeepSeekV3}) {
+    Vocab v;
+    v.spec.pre_tokenizer = pre;
+    v.spec.normalization = tok::Normalization::kNfc;
+    v.Merge("h", "e");
+    v.Merge("l", "l");
+    v.Merge("he", "ll");
+    v.Merge(" ", "w");
+    v.Merge("!", "!");
+    v.Merge("\n", "\n");
+    const tok::Tokenizer t = v.Build();
+    tok::EncodeOptions o;
+    o.max_bytes = text.size();
+    o.max_tokens = text.size();
+    const auto whole = Encode(t, text, o);
+    std::vector<TokenId> lines;
+    std::size_t start = 0;
+    for (std::size_t p = 1; p <= text.size(); ++p) {
+      const bool cut = p < text.size() && text[p - 1] == '\n' &&
+                       std::isalnum(static_cast<unsigned char>(text[p])) != 0;
+      if (cut || p == text.size()) {
+        const auto line = Encode(t, std::string_view(text).substr(start, p - start), o);
+        lines.insert(lines.end(), line.begin(), line.end());
+        start = p;
+      }
+    }
+    EXPECT_EQ(whole, lines) << tok::PreTokenizerName(pre);
+  }
 }
 
 TEST(Encode, AddsBosAndEosOnlyWhenAsked) {

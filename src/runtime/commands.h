@@ -41,9 +41,13 @@
 
 namespace jitllm::runtime {
 
-inline constexpr std::size_t kMaxTurns = 64;
-inline constexpr std::size_t kMaxTurnBytes = std::size_t{64} << 10U;
-inline constexpr std::uint32_t kMaxGenerated = 8192;
+// The commands' turns, texts and pairs have no count or byte caps of their
+// own (D-102): the command line's own limits bound them (Linux: an argument
+// of at most 128 KiB, all of them at most a quarter of the stack limit),
+// and --max-tokens and --context-tokens are checked against the model's
+// context when they run. The image prompt keeps its bound until the image
+// pipeline's own sizes are settled (M3.5's image work).
+inline constexpr std::size_t kMaxImagePromptBytes = std::size_t{64} << 10U;
 inline constexpr std::string_view kDefaultImagePrompt =
     "A red ceramic teapot on a plain wooden table, soft daylight, no text.";
 inline constexpr std::string_view kDefaultShortPrompt =

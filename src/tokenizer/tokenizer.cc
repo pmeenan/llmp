@@ -32,6 +32,56 @@ namespace {
 constexpr std::size_t kMaxSpecialBytes = 256;
 constexpr std::uint32_t kNone = std::numeric_limits<std::uint32_t>::max();
 
+bool AsciiLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+bool AsciiAlnum(char c) { return AsciiLetter(c) || (c >= '0' && c <= '9'); }
+
+// Whether encoding may cut `text` before byte p (0 < p < size): before an
+// ASCII letter or digit that follows a newline, or before a space between
+// an ASCII letter or digit and an ASCII letter. Every pre-tokenizer's piece
+// ends there whatever follows (a newline ends its run, and a letter or
+// digit run ends at a space; no alternative joins a newline to a following
+// letter or digit, or a space to a preceding one), and matching from there
+// looks only forward; NFC composes neither (each side is a starter that
+// composes with nothing before it).
+bool CutAt(std::string_view text, std::size_t p) {
+  const char before = text[p - 1];
+  const char at = text[p];
+  if (before == '\n') {
+    return AsciiAlnum(at);
+  }
+  return at == ' ' && p + 1 < text.size() && AsciiAlnum(before) && AsciiLetter(text[p + 1]);
+}
+
+// The end of the window that starts at `start`: the last cut point within
+// kEncodeWindowBytes of it, else the first after, else the text's end.
+// Linear over a text: a window's backward scan crosses only bytes past the
+// last window's cut point, or ends in a forward scan the next window starts
+// after.
+std::size_t WindowEnd(std::string_view text, std::size_t start) {
+  if (text.size() - start <= kEncodeWindowBytes) {
+    return text.size();
+  }
+  const std::size_t limit = start + kEncodeWindowBytes;
+  for (std::size_t p = limit; p > start; --p) {
+    if (CutAt(text, p)) {
+      return p;
+    }
+  }
+  for (std::size_t p = limit + 1; p < text.size(); ++p) {
+    if (CutAt(text, p)) {
+      return p;
+    }
+  }
+  return text.size();
+}
+
+// a * b, saturating.
+std::size_t Times(std::size_t a, std::size_t b) {
+  return a != 0 && b > std::numeric_limits<std::size_t>::max() / a
+             ? std::numeric_limits<std::size_t>::max()
+             : a * b;
+}
+
 // GPT-2's byte alphabet: each byte is one code point; printable Latin-1
 // bytes are themselves, the rest are 256 and up in byte order.
 std::array<char32_t, 256> ByteAlphabet() {
@@ -124,6 +174,7 @@ struct Tokenizer::Impl {
   std::optional<TokenId> eos;
   bool add_bos = false;
   bool add_eos = false;
+  std::size_t longest = 1;  // the longest token's bytes (decoded, or a special's text)
 
   // The longest special token matching at text[p], allowed by `special`,
   // or -1.
@@ -175,7 +226,12 @@ struct Tokenizer::Impl {
       }
       // (rank, left position): the lowest rank first, then the leftmost.
       using Candidate = std::pair<std::uint32_t, std::uint32_t>;
-      std::priority_queue<Candidate, std::vector<Candidate>, std::greater<>> queue;
+      // At most n - 1 first candidates and two a merge, so its storage
+      // never doubles past them (kEncodeBytesPerWindowByte).
+      std::vector<Candidate> storage;
+      storage.reserve((3 * n) - 3);
+      std::priority_queue<Candidate, std::vector<Candidate>, std::greater<>> queue(
+          std::greater<>(), std::move(storage));
       auto consider = [&](std::uint32_t left) {
         if (left == kNone || next[left] == kNone) {
           return;
@@ -219,9 +275,22 @@ struct Tokenizer::Impl {
     return {};
   }
 
-  // Encodes text containing no special token (a fragment).
+  // Encodes text containing no special token (a fragment), a window at a
+  // time (kEncodeWindowBytes).
   std::expected<void, Error> EncodeFragment(std::string_view text, const EncodeOptions& options,
                                             std::vector<TokenId>& out, std::size_t base) const {
+    for (std::size_t start = 0; start < text.size();) {
+      const std::size_t end = WindowEnd(text, start);
+      if (auto e = EncodeWindow(text.substr(start, end - start), options, out, base); !e) {
+        return e;
+      }
+      start = end;
+    }
+    return {};
+  }
+
+  std::expected<void, Error> EncodeWindow(std::string_view text, const EncodeOptions& options,
+                                          std::vector<TokenId>& out, std::size_t base) const {
     if (text.empty()) {
       return {};
     }
@@ -233,6 +302,7 @@ struct Tokenizer::Impl {
       unicode::ToNfc(cps);
     }
     std::vector<std::uint32_t> lengths;
+    lengths.reserve(cps.size());  // a piece a code point at most
     PreTokenize(pre_tokenizer, cps, lengths);
     std::size_t start = 0;
     std::string bytes;
@@ -274,6 +344,14 @@ struct Tokenizer::Impl {
     if (text.size() > options.max_bytes) {
       return std::unexpected(
           Error{Rule::kInputTooLarge, "text longer than max_bytes", options.max_bytes});
+    }
+    // Every token covers at most `longest` bytes of normalized text, and NFC
+    // shortens text at most threefold: a longer text has more tokens than
+    // max_tokens, which is known before any work.
+    if (text.size() >
+        Times(Times(options.max_tokens, longest), normalization == Normalization::kNfc ? 4 : 1)) {
+      return std::unexpected(
+          Error{Rule::kOutputTooLarge, "more tokens than max_tokens", options.max_tokens});
     }
     if (auto valid = unicode::ValidateUtf8(text); !valid) {
       return valid;
@@ -383,8 +461,10 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
         }
         bytes.push_back(static_cast<char>(it->second));
       }
+      impl->longest = std::max(impl->longest, bytes.size());
       continue;
     }
+    impl->longest = std::max(impl->longest, text.size());
     // A special token: add it to the trie.
     if (text.size() > kMaxSpecialBytes) {
       return fail(Rule::kBounds, "special token longer than the matcher's bound", id);
@@ -463,6 +543,18 @@ std::string_view Tokenizer::Text(TokenId id) const {
   return impl_->tokens[static_cast<std::size_t>(id)];
 }
 TokenKind Tokenizer::Kind(TokenId id) const { return impl_->kinds[static_cast<std::size_t>(id)]; }
+
+std::size_t Tokenizer::longest_token_bytes() const { return impl_->longest; }
+
+std::uint64_t Tokenizer::EncodeWorkingBytes(std::string_view text) {
+  std::size_t widest = 0;
+  for (std::size_t start = 0; start < text.size();) {
+    const std::size_t end = WindowEnd(text, start);
+    widest = std::max(widest, end - start);
+    start = end;
+  }
+  return std::uint64_t{widest} * kEncodeBytesPerWindowByte;
+}
 
 std::optional<TokenId> Tokenizer::Find(std::string_view text) const {
   const auto it = impl_->by_text.find(text);

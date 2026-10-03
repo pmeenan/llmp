@@ -28,6 +28,22 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-044: libstdc++'s `shrink_to_fit` does nothing under `-fno-exceptions`  (2026-10-03, status: worked-around)
+
+Environment: the SDK's Clang with GCC 16.2's libstdc++, `-fno-exceptions`
+(D-066), `spark`. Observed: a `std::vector` reserved for 1,000,001
+elements and then `shrink_to_fit()` kept its whole capacity (a stop-string
+matcher of 27 nodes held 24 MB; `api_test`
+StopMatcher.BuildsWithinItsChargeAndIsShared). libstdc++ implements the
+request for containers through `std::__shrink_to_fit_aux`
+(`bits/alloc_traits.h`): a copy-and-swap inside `try`, compiled only when
+`__cpp_exceptions` is defined; otherwise it returns without shrinking (the
+standard makes the request non-binding). `std::string::shrink_to_fit`
+calls `reserve()` and does shrink. Expected: an exact allocation.
+Workaround: copy into an exactly sized vector and swap
+(`std::vector<T>(v.begin(), v.end()).swap(v)`). Impact: an allocation kept
+silently, and memory accounting that trusts the shrink undercounts.
+
 ## RE-043: `rsync -a` of an older source over a build tree leaves stale objects  (2026-10-03, status: worked-around)
 
 Environment: a Spark build tree (`ninja`, preset `spark-native`) fed by
