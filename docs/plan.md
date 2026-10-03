@@ -1678,8 +1678,11 @@ family" guide, and its long-context scaling work.
         through a Qwen2 1.5B connector, and Qwen-Image's
         VAE with four channels, so it generates RGBA. Through
         `/v1/images/generations`, including OpenAI's
-        `background: "transparent"`, at its 1,024² and 2,048² sizes with
-        12 steps. Its components run as one composition (D-089), sharing
+        `background: "transparent"`. Size, step count, guidance and seed
+        are the caller's per request (OpenAI's `size`, vLLM-Omni's
+        diffusion fields), as for Qwen-Image; the card's defaults (12
+        steps, CFG 1.0, 2,048² or 1,024²) are the defaults and the tested
+        points, not limits. Its components run as one composition (D-089), sharing
         the image phases, VAE and route code with Qwen-Image's rather than
         a second pipeline.
       - `/v1/videos` asynchronous jobs for MiniMax H3, on D-041's job

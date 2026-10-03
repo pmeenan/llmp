@@ -927,7 +927,11 @@ A new category beside M3's Qwen-Image, for the owner's MiniMax H3.
     ([config](https://huggingface.co/inclusionAI/Ming-Image-0.1-Design/raw/main/vae/config.json)).
   - Sampling: `FlowMatchEulerDiscreteScheduler`, shift 6.0, no dynamic
     shifting; the card recommends 12 steps, CFG 1.0 (no unconditional
-    pass), 2,048² (or 1,024² for speed).
+    pass), 2,048² (or 1,024² for speed). These are defaults: size, steps,
+    guidance and seed are per-request inputs, as in Qwen-Image's native
+    pipeline. Sizes are bounded by the VAE's 8× and the patch of 2
+    (multiples of 16) and by the RoPE table (512 positions an axis,
+    about 8,192 pixels a side, arithmetic), not fixed.
   - Fit: about 53 GB of weights at their stored precisions, so it fits a
     Spark whole, and runs as phases under D-089 like Qwen-Image. The card
     validates only one 80 GiB GPU; GB10 behaviour is unknown.
