@@ -75,8 +75,9 @@ std::expected<SlabSpec, std::string> SlabOf(const artifact::Artifact& artifact,
 // position are masked or hidden from selection by position: no result
 // changes (model/qwen38.h Qwen38Chunk). They are still read (the vector
 // attention and the block scores read every cell), so a wave's EnsureState
-// backs the caches through the same alignment.
-std::uint32_t WaveReadAlign(std::size_t slots) { return slots > 1 ? 2048 : 256; }
+// backs the caches through the same alignment (Qwen38Runner::WaveReadAlign:
+// Qwen38Options::wave_read_align, 2,048 cells by default).
+constexpr std::uint32_t kLoneReadAlign = 256;
 
 }  // namespace
 
@@ -1462,6 +1463,10 @@ Status Qwen38Runner::EnsureState(std::uint32_t positions) {
 }
 
 std::uint32_t Qwen38Runner::DecodeReadAlign() const { return WaveReadAlign(o_.wave_slots); }
+
+std::uint32_t Qwen38Runner::WaveReadAlign(std::size_t slots) const {
+  return slots > 1 ? std::max(o_.wave_read_align, kLoneReadAlign) : kLoneReadAlign;
+}
 
 std::expected<std::vector<LiveState::Range>, std::string> Qwen38Runner::StateRanges(
     std::uint32_t positions, std::uint32_t read_align) const {

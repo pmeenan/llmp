@@ -21,6 +21,13 @@
 // Both are local: they run in the runtime's own process, holding its
 // process lock, and open no listener (D-014). Parsing is vendor-free; the
 // commands themselves need a CUDA build (serving.h).
+//
+//   settings    every configured model's settings as registration resolves
+//               them (D-103, model_settings.h), each with its source; with
+//               --json one JSON object. It only reads the configuration,
+//               the installed artifacts and the calibration records: no
+//               process lock (so it runs beside the service), no device
+//               context or memory, any build.
 
 #ifndef JITLLM_RUNTIME_COMMANDS_H_
 #define JITLLM_RUNTIME_COMMANDS_H_
@@ -53,7 +60,7 @@ inline constexpr std::string_view kDefaultImagePrompt =
 inline constexpr std::string_view kDefaultShortPrompt =
     "What is the capital of France? Answer in one sentence.";
 
-enum class Command : std::uint8_t { kService, kChat, kSwapTable };
+enum class Command : std::uint8_t { kService, kChat, kSwapTable, kSettings };
 
 struct Turn {
   std::string model;
@@ -100,6 +107,7 @@ struct CommandOptions {
   ServingOptions serving;
   ChatOptions chat;
   SwapTableOptions table;
+  bool json = false;  // settings --json
 };
 
 // Parses a command's arguments (after its name).

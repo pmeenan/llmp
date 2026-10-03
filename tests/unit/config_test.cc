@@ -40,6 +40,7 @@ using ::testing::Contains;
 using ::testing::ElementsAre;
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
+using ::testing::Not;
 using ::testing::SizeIs;
 
 const fs::path kAnchor = "/var/lib/jitllm/enrollment";
@@ -560,9 +561,10 @@ image = {{ composition = "{3}" }}
   EXPECT_EQ(deepseek.name, "deepseek");
   EXPECT_EQ(deepseek.artifact, std::string(kDsv4));
   EXPECT_EQ(deepseek.drafter, std::string(kDspark));
-  EXPECT_TRUE(deepseek.speculation);
-  EXPECT_EQ(deepseek.context, jitllm::config::kDefaultContext);
-  EXPECT_EQ(deepseek.context, 262144U);
+  // Settings not set are not overrides: registration resolves them (D-103).
+  EXPECT_TRUE(deepseek.overrides.empty());
+  EXPECT_FALSE(deepseek.Bool("speculation").has_value());
+  EXPECT_FALSE(deepseek.Integer("context").has_value());
   EXPECT_FALSE(deepseek.composition.has_value());
   const auto& image = config.models[1];
   EXPECT_EQ(image.name, "image");
@@ -570,8 +572,9 @@ image = {{ composition = "{3}" }}
   EXPECT_FALSE(image.artifact.has_value());
   const auto& qwen = config.models[2];
   EXPECT_EQ(qwen.name, "qwen3.8");
-  EXPECT_FALSE(qwen.speculation);
-  EXPECT_EQ(qwen.context, 4096U);
+  EXPECT_EQ(qwen.Bool("speculation"), false);
+  EXPECT_EQ(qwen.Integer("context"), 4096);
+  EXPECT_THAT(qwen.overrides, SizeIs(2));
   EXPECT_EQ(qwen.tokenizer, fs::path("/opt/qwen/tokenizer.json"));
   EXPECT_EQ(qwen.chat_template, fs::path("/opt/qwen/chat_template.jinja"));
 }
@@ -612,7 +615,8 @@ artifact = "{0}"
   EXPECT_THAT(failures, Contains(HasSubstr("models.Upper: a model's name is 1-64 characters")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.none: a model names exactly one of")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.both: a model names exactly one of")));
-  EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline: drafter, speculation, context")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline.drafter is a model artifact's key, "
+                                           "not a composition's")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.short.artifact must be an ID string")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.small.context must be from 512 to 4294967295")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.self: an artifact cannot be its own drafter")));
@@ -641,15 +645,14 @@ wave_form = "plain"
                                                std::string(64, 'a'), std::string(64, 'b'),
                                                std::string(64, 'c'), std::string(64, 'd')));
   ASSERT_THAT(config.models, SizeIs(4));
-  using jitllm::config::WaveForm;
   EXPECT_EQ(config.models[0].name, "auto");
-  EXPECT_EQ(config.models[0].wave_form, WaveForm::kAuto);
+  EXPECT_EQ(config.models[0].Text("wave_form"), "auto");
   EXPECT_EQ(config.models[1].name, "chosen");
-  EXPECT_EQ(config.models[1].wave_form, WaveForm::kAuto);
+  EXPECT_FALSE(config.models[1].Text("wave_form").has_value());
   EXPECT_EQ(config.models[2].name, "drafted");
-  EXPECT_EQ(config.models[2].wave_form, WaveForm::kSpeculative);
+  EXPECT_EQ(config.models[2].Text("wave_form"), "speculative");
   EXPECT_EQ(config.models[3].name, "plain");
-  EXPECT_EQ(config.models[3].wave_form, WaveForm::kPlain);
+  EXPECT_EQ(config.models[3].Text("wave_form"), "plain");
 
   const auto failures = Failures(std::format(
       R"(schema_version = 2
@@ -670,8 +673,8 @@ wave_form = "plain"
   EXPECT_THAT(
       failures,
       Contains(HasSubstr(R"(models.flag.wave_form must be "auto", "speculative" or "plain")")));
-  EXPECT_THAT(failures, Contains(HasSubstr("chat_template and wave_form are a model artifact's "
-                                           "keys, not a composition's")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline.wave_form is a model artifact's key, "
+                                           "not a composition's")));
 }
 
 // No generic context ceiling (D-102): the configuration takes any 32-bit
@@ -683,7 +686,7 @@ TEST(NodeConfigTest, ContextHasNoGenericCeiling) {
         Parsed(std::format("schema_version = 2\n[models.m]\nartifact = \"{}\"\ncontext = {}\n",
                            std::string(64, 'a'), context));
     ASSERT_THAT(config.models, SizeIs(1));
-    EXPECT_EQ(config.models.front().context, context);
+    EXPECT_EQ(config.models.front().Integer("context"), context);
   }
   EXPECT_THAT(
       Failures(
@@ -717,13 +720,13 @@ artifact = "{1}"
 )",
                                                std::string(64, 'a'), std::string(64, 'b')));
   ASSERT_THAT(config.models, SizeIs(2));
-  EXPECT_EQ(config.models[0].context, jitllm::config::kMinContext);
-  EXPECT_EQ(config.models[0].prefill_chunk, 4096U);
-  EXPECT_FALSE(config.models[1].prefill_chunk.has_value());
-  EXPECT_EQ(config.models[0].prefill_floor_tok_s, 250U);
-  EXPECT_EQ(config.models[0].decode_floor_tok_s, 1U);
-  EXPECT_EQ(config.models[1].prefill_floor_tok_s, 100U);
-  EXPECT_EQ(config.models[1].decode_floor_tok_s, 5U);
+  EXPECT_EQ(config.models[0].Integer("context"), jitllm::config::kMinContext);
+  EXPECT_EQ(config.models[0].Integer("prefill_chunk"), 4096);
+  EXPECT_FALSE(config.models[1].Integer("prefill_chunk").has_value());
+  EXPECT_EQ(config.models[0].Integer("prefill_floor_tok_s"), 250);
+  EXPECT_EQ(config.models[0].Integer("decode_floor_tok_s"), 1);
+  EXPECT_FALSE(config.models[1].Integer("prefill_floor_tok_s").has_value());
+  EXPECT_FALSE(config.models[1].Integer("decode_floor_tok_s").has_value());
 
   const auto failures = Failures(std::format(
       R"(schema_version = 2
@@ -760,15 +763,16 @@ decode_floor_tok_s = 5
   EXPECT_THAT(failures, Contains(HasSubstr("models.none.prefill_chunk must be from 1 to 262144")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.over.prefill_chunk must be from 1 to 262144")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.text.prefill_chunk must be an integer")));
-  EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline: drafter, speculation, context, "
-                                           "prefill_chunk")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline.prefill_chunk is a model artifact's "
+                                           "key, not a composition's")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.slow.prefill_floor_tok_s must be from 1 to "
                                            "1000000 tokens a second, not 0")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.slow.decode_floor_tok_s must be from 1 to "
                                            "100000 tokens a second")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.fast.prefill_floor_tok_s must be from 1 to")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.fast.decode_floor_tok_s must be an integer")));
-  EXPECT_THAT(failures, Contains(HasSubstr("models.picture: drafter, speculation")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.picture.decode_floor_tok_s is a model "
+                                           "artifact's key")));
 }
 
 // A model's request slots (docs/runtime-serving.md#request-slots): absent,
@@ -787,9 +791,9 @@ artifact = "{2}"
 )",
                          std::string(64, 'a'), std::string(64, 'b'), std::string(64, 'c')));
   ASSERT_THAT(config.models, SizeIs(3));
-  EXPECT_EQ(config.models[0].max_slots, 1U);
-  EXPECT_EQ(config.models[1].max_slots, jitllm::config::kMaxModelSlots);
-  EXPECT_FALSE(config.models[2].max_slots.has_value());
+  EXPECT_EQ(config.models[0].Integer("max_slots"), 1);
+  EXPECT_EQ(config.models[1].Integer("max_slots"), jitllm::config::kMaxModelSlots);
+  EXPECT_FALSE(config.models[2].Integer("max_slots").has_value());
 
   const auto failures = Failures(std::format(
       R"(schema_version = 2
@@ -812,7 +816,156 @@ max_slots = 2
       Contains(HasSubstr("models.none.max_slots must be from 1 to 16 request slots, not 0")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.over.max_slots must be from 1 to 16")));
   EXPECT_THAT(failures, Contains(HasSubstr("models.text.max_slots must be an integer")));
-  EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline: drafter, speculation")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.pipeline.max_slots is a model artifact's key")));
+}
+
+// D-103's table-driven schema: a valid value of every key (its least, or
+// its first choice) is kept for a model of its kind and refused on the
+// other kind; past its range each is refused, naming the key.
+std::string ValidValue(const jitllm::config::ModelKeySpec& spec) {
+  using jitllm::config::ModelKeyType;
+  switch (spec.type) {
+    case ModelKeyType::kId:
+      return std::format("\"{}\"", std::string(64, '9'));
+    case ModelKeyType::kPath:
+      return "\"/opt/model/file\"";
+    case ModelKeyType::kBool:
+      return "false";
+    case ModelKeyType::kInteger:
+      return std::format("{}", spec.least);
+    case ModelKeyType::kReal:
+      return std::format("{:.6f}", spec.real_most);
+    case ModelKeyType::kChoice:
+      return std::format("\"{}\"", spec.choices.back());
+    case ModelKeyType::kReals:
+      return std::format("[{:.6f}, {:.6f}]", spec.real_most, spec.real_most);
+    case ModelKeyType::kText:
+      return "\"<x>\"";
+  }
+  return "0";
+}
+
+TEST(NodeConfigTest, EveryModelKeyIsTableDriven) {
+  using jitllm::config::kArtifactModels;
+  using jitllm::config::kCompositionModels;
+  using jitllm::config::ModelKeys;
+  using jitllm::config::ModelKeyType;
+  for (const auto& spec : ModelKeys()) {
+    if (spec.key == "artifact" || spec.key == "composition") {
+      continue;
+    }
+    SCOPED_TRACE(spec.key);
+    EXPECT_EQ(jitllm::config::FindModelKey(spec.key), &spec);
+    EXPECT_FALSE(spec.summary.empty());
+    const std::string value = ValidValue(spec);
+    for (const bool artifact : {true, false}) {
+      const std::string text =
+          std::format("schema_version = 2\n[models.m]\n{} = \"{}\"\n{} = {}\n",
+                      artifact ? "artifact" : "composition", std::string(64, 'a'), spec.key, value);
+      const std::vector<SourceText> files = {{.name = "a.toml", .text = text}};
+      const auto parsed = ParseNodeConfig(files, kAnchor);
+      const bool takes = (spec.kinds & (artifact ? kArtifactModels : kCompositionModels)) != 0;
+      ASSERT_EQ(parsed.has_value(), takes) << text;
+      if (!parsed) {
+        EXPECT_THAT(Messages(parsed.error()),
+                    Contains(HasSubstr(std::format("models.m.{} is a", spec.key))));
+        continue;
+      }
+      ASSERT_THAT(parsed->models, SizeIs(1));
+      const auto& m = parsed->models[0];
+      // An identity key fills its field; a setting is an override.
+      EXPECT_EQ(m.overrides.contains(spec.key), spec.setting);
+      if (spec.type == ModelKeyType::kInteger) {
+        EXPECT_EQ(m.Integer(spec.key), spec.least);
+      } else if (spec.type == ModelKeyType::kReal) {
+        EXPECT_EQ(m.Real(spec.key), spec.real_most);
+      } else if (spec.type == ModelKeyType::kReals) {
+        EXPECT_EQ(m.Reals(spec.key), (std::vector<double>{spec.real_most, spec.real_most}));
+      } else if (spec.type == ModelKeyType::kBool) {
+        EXPECT_EQ(m.Bool(spec.key), false);
+      }
+    }
+    // Past its range, or of another type.
+    std::vector<std::string> bad;
+    switch (spec.type) {
+      case ModelKeyType::kInteger:
+        bad = {std::format("{}", spec.most + 1), "\"1\"", "1.5"};
+        if (spec.least > 0) {
+          bad.push_back(std::format("{}", spec.least - 1));
+        }
+        break;
+      case ModelKeyType::kReal:
+        bad = {std::format("{:.6f}", spec.real_most + 1), "\"1\"", "nan"};
+        break;
+      case ModelKeyType::kReals: {
+        std::string many = "[1";  // one more than it holds
+        for (std::size_t i = 0; i < spec.most_items; ++i) {
+          many += ", 1";
+        }
+        bad = {"[]", std::format("[{:.6f}]", spec.real_most + 1), "1.0", "[\"1\"]", many + "]"};
+        break;
+      }
+      case ModelKeyType::kChoice:
+        bad = {"\"neither\"", "true"};
+        break;
+      case ModelKeyType::kBool:
+        bad = {"1", "\"true\""};
+        break;
+      case ModelKeyType::kText:
+        bad = {std::format("\"{}\"", std::string(static_cast<std::size_t>(spec.most) + 1, 'x')),
+               R"("a\u0007b")", "1"};
+        break;
+      case ModelKeyType::kId:
+        bad = {"\"abc\"", "1"};
+        break;
+      case ModelKeyType::kPath:
+        bad = {"\"relative/path\"", "1"};
+        break;
+    }
+    const std::string kind = (spec.kinds & kArtifactModels) != 0 ? "artifact" : "composition";
+    for (const std::string& v : bad) {
+      const auto failures =
+          Failures(std::format("schema_version = 2\n[models.m]\n{} = \"{}\"\n{} = {}\n", kind,
+                               std::string(64, 'a'), spec.key, v));
+      EXPECT_THAT(failures, Contains(HasSubstr(std::format("models.m.{}", spec.key)))) << v;
+    }
+  }
+}
+
+TEST(NodeConfigTest, ChecksModelKeyRules) {
+  const auto failures = Failures(std::format(R"(schema_version = 2
+[models.a]
+artifact = "{0}"
+wave_read_align = 3000
+[models.b]
+artifact = "{1}"
+wave_costs = [1.5, 0, 2.9]
+top_p = 0
+[models.c]
+composition = "{2}"
+image_size = 1000
+[models.d]
+artifact = "{3}"
+colour = "blue"
+)",
+                                             std::string(64, 'a'), std::string(64, 'b'),
+                                             std::string(64, 'c'), std::string(64, 'd')));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.a.wave_read_align must be a power of two")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.b.top_p must be greater than 0 and at most 1")));
+  EXPECT_THAT(failures, Contains(HasSubstr("models.c.image_size must be a multiple of 32")));
+  EXPECT_THAT(failures, Contains(HasSubstr("unknown key models.d.colour")));
+  EXPECT_THAT(failures, Not(Contains(HasSubstr("models.b.wave_costs"))));
+  // Applicability to an architecture is registration's: the schema takes
+  // a DeepSeek setting on any artifact.
+  const NodeConfig config =
+      Parsed(std::format("schema_version = 2\n[models.q]\nartifact = \"{}\"\nwave_costs = [2, "
+                         "2.5]\ntemperature = 0.6\nreasoning_start = \"\"\n",
+                         std::string(64, 'a')));
+  ASSERT_THAT(config.models, SizeIs(1));
+  EXPECT_EQ(config.models[0].Reals("wave_costs"), (std::vector<double>{2.0, 2.5}));
+  EXPECT_EQ(config.models[0].Real("temperature"), 0.6);
+  EXPECT_EQ(config.models[0].Text("reasoning_start"), "");
+  EXPECT_FALSE(config.models[0].Integer("temperature").has_value());  // of its key's type only
 }
 
 TEST(NodeConfigTest, ModelsAreOwnedOnce) {

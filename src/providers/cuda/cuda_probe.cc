@@ -187,4 +187,18 @@ void DescribeDevices(const std::filesystem::path& root, base::Report& report) {
   cuda::DescribeCuda(cuda::ProbeCuda(root), report);
 }
 
+std::string DeviceIdentity(const std::filesystem::path& root) {
+  const cuda::CudaFacts facts = cuda::ProbeCuda(root);
+  std::string device = "no device";
+  for (const cuda::CudaDeviceFacts& d : facts.devices) {
+    if (d.ordinal == cuda::kUsedDevice && d.error.empty()) {
+      device = std::format("{} sm_{}{}", d.name, d.major, d.minor);
+    }
+  }
+  return std::format("{}, driver {}, CUDA {}", device,
+                     facts.nvidia.version.empty() ? "unknown" : facts.nvidia.version,
+                     facts.driver_version > 0 ? cuda::CudaVersionText(facts.driver_version)
+                                              : std::string("unknown"));
+}
+
 }  // namespace jitllm::providers

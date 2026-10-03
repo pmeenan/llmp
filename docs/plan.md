@@ -1197,6 +1197,15 @@ it appears.
       cost), then the hand-tuned kernel schedule tables. Lands after the
       in-flight intake-limit, request-slot and DeepSeek wave changes,
       which all touch the same `[models]` keys.
+      *Landed:* the table-driven schema with every setting a key, the
+      resolved record with sources, derived defaults (context, sampling,
+      draft rows, reasoning markers), the start's log and `jitllm-runtime
+      settings` ([model settings](runtime-serving.md#model-settings)); the
+      calibration record and passive first-use calibrations of the floors,
+      recompute cost, DeepSeek's wave costs and Qwen3.8's depth cost
+      ([calibration](runtime-serving.md#calibration)). Open: prefill chunk
+      rows and the slot knee (controlled runs), then the kernel schedule
+      tables.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

@@ -60,7 +60,8 @@ std::string_view PhaseName(Phase phase);
 inline constexpr double kWorkMargin = 3.0;
 inline constexpr double kSwapFloorBytesPerSecond = 1e9;
 
-// A model's throughput floors, in tokens a second (config::ModelEntry).
+// A model's throughput floors, in tokens a second (its settings'
+// prefill_floor_tok_s and decode_floor_tok_s, model_settings.h).
 struct Floors {
   std::uint32_t prefill = config::kDefaultPrefillFloor;
   std::uint32_t decode = config::kDefaultDecodeFloor;

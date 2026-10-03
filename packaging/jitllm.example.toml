@@ -89,8 +89,43 @@ schema_version = 2
 # tokenizer = "/path/to/tokenizer.json"
 # chat_template = "/path/to/chat_template.jinja"
 #
+# Every other setting of a model (D-103) is derived from its artifact
+# (its metadata, never its name), calibrated on this machine, or the
+# constant measured on a GB10; any may be set here instead. `jitllm-runtime
+# settings` lists each model's with its source; docs/runtime-serving.md,
+# "Model settings", lists them all. For example:
+# A request's sampling when it sends none: the checkpoint's own defaults
+# (generation_config.json, GGUF general.sampling.*: Qwen3.8's GGUFs keep
+# top_k 20 and top_p 0.95), else OpenAI's.
+# temperature = 1.0
+# top_p = 1.0
+# top_k = 0
+# min_p = 0.0
+# The reasoning markers, tokens of the vocabulary ("" for none): by
+# default "<think>" and "</think>" where it has both.
+# reasoning_start = "<think>"
+# reasoning_end = "</think>"
+# Drafts a speculative step proposes (DeepSeek: at most its drafter's
+# block; Qwen3.8: 2 or 3).
+# draft_rows = 3
+# DeepSeek's draft-verify wave time over a plain wave's at widths 2 to 8,
+# and its output-A/HCA prefill (qualified; false for ordinary arithmetic).
+# wave_costs = [2.08, 2.52, 2.81, 2.40, 2.12, 2.21, 2.23]
+# prefill_outa_hca = true
+# prefill_outa_hca_partial = true
+# The reclaim order's cost of recomputing dropped conversation state, a
+# token of the conversation.
+# recompute_ms_per_token = 1.4
+#
+# Measured settings are recorded under [storage] state, in calibration/
+# (one file per artifact); delete a file to have it measured again.
+#
 # [models.image]
 # composition = "<64 hex digits>"
+# The image's width and height (64 to 2048, a multiple of 32; its latents
+# must match) and denoising steps (2 to 100).
+# image_size = 1024
+# image_steps = 40
 
 [client]
 # Where the service listens for /v1/chat/completions and /v1/models when

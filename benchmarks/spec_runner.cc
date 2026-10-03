@@ -2072,9 +2072,9 @@ Status Harness::Wave() {
   std::uint64_t wave_tokens = 0;
   std::map<std::size_t, std::uint64_t> widths;
   // Each width's joined waves' time (the wave form's per-width cost:
-  // a DSpark wave's time over a plain one's, serving.cc kWaveCost), and
-  // each call's: their median calibrates the cost (the first waves of a
-  // width plan and capture, which the mean includes).
+  // a DSpark wave's time over a plain one's, model_settings.h
+  // kDsv4WaveCosts), and each call's: their median calibrates the cost (the
+  // first waves of a width plan and capture, which the mean includes).
   std::map<std::size_t, double> width_seconds;
   std::map<std::size_t, std::vector<double>> width_times;
   double wave_seconds = 0;

@@ -568,6 +568,12 @@ TEST(Files, AvailableMemoryAndAnonymousFiles) {
   ASSERT_TRUE(memory.has_value());
   const jitllm::platform::OwnedDescriptor owned(*memory);
   EXPECT_EQ(::ftruncate(owned.get(), 4096), 0);
+  // The test's own executable: a size and a time (the calibration key's
+  // stamp of an untracked build).
+  const auto stamp = jitllm::platform::RunningExecutableStamp();
+  ASSERT_TRUE(stamp.has_value());
+  EXPECT_GT(stamp.value_or(jitllm::platform::ExecutableStamp{}).size, 0U);
+  EXPECT_GT(stamp.value_or(jitllm::platform::ExecutableStamp{}).modified_ns, 0);
 }
 
 // The direct-I/O opens: a shard opened for direct reads (and, on a

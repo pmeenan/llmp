@@ -626,8 +626,9 @@ from counted tokens and a recorded cost, never from wall time:
   ([request slots](../request-slots/README.md#deepseeks-wave-form-past-four-requests)),
   2.58, 2.12, 2.21 and 2.23 with lanes; 2.08, 2.52, 2.81 and 2.40 at
   widths 2 to 5 with [joined drafts](#joined-draft-blocks). They are recorded per model
-  (`kWaveCost` in `serving.cc`, a calibrated value under D-103) and are
-  measured again when the wave step changes.
+  (`kDsv4WaveCosts` in `runtime/model_settings.h`, the fallbacks of the
+  `wave_costs` setting under D-103) and are measured again when the wave
+  step changes.
 - **Acceptance.** One moving average (weight 1/8) over the service's
   draft-verify waves of any width, of the tokens each commits per
   request. As Qwen's draft depth does, it counts only complete verifies:

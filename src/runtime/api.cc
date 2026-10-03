@@ -469,6 +469,7 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
         return Bad(std::format("temperature must be a number from 0 to {}", kMaxTemperature), name);
       }
       request.temperature = *t;
+      request.sent |= ChatRequest::kSentTemperature;
     } else if (key == "top_p") {
       const std::optional<double> p = v.is_number() ? v.float64() : std::nullopt;
       // The sampler takes a float: a value that rounds to 0 there would be
@@ -477,6 +478,7 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
         return Bad("top_p must be a number greater than 0 and at most 1", name);
       }
       request.top_p = *p;
+      request.sent |= ChatRequest::kSentTopP;
     } else if (key == "top_k") {
       const std::optional<std::int64_t> n = v.int64();
       if (!v.is_integer() || !n || *n < -1 || *n >= kMaxTopK) {
@@ -484,12 +486,14 @@ std::expected<ChatRequest, Error> ParseRequest(std::string_view body, Completion
                    name);
       }
       request.top_k = *n < 0 ? 0U : static_cast<std::uint32_t>(*n);
+      request.sent |= ChatRequest::kSentTopK;
     } else if (key == "min_p") {
       const std::optional<double> p = v.is_number() ? v.float64() : std::nullopt;
       if (!p || !std::isfinite(*p) || *p < 0 || *p > 1) {
         return Bad("min_p must be a number from 0 to 1", name);
       }
       request.min_p = *p;
+      request.sent |= ChatRequest::kSentMinP;
     } else if (key == "seed") {
       const std::optional<std::int64_t> s = v.int64();
       if (!v.is_integer() || !s) {

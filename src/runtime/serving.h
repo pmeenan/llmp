@@ -68,11 +68,15 @@
 #include "execution/adaptive_depth.h"
 #include "execution/sampling.h"
 #include "memory/reclaim.h"
+#include "runtime/api.h"
+#include "runtime/calibration.h"
 #include "runtime/commands.h"
 #include "runtime/intake_limits.h"
+#include "runtime/model_settings.h"
 #include "runtime/prefill.h"
 #include "runtime/pressure_trim.h"
 #include "runtime/turn_reuse.h"
+#include "runtime/watchdog.h"
 #include "scheduler/scheduler.h"
 #include "tokenizer/tokenizer.h"
 
@@ -243,9 +247,13 @@ class Served {
   // Experimental allocation diagnostics, read after successful Setup and
   // before node.Start. Empty for runners without detailed diagnostics.
   virtual std::string allocation_report() const { return {}; }
+  // Its settings as registration resolved them (D-103), each with its
+  // source; the reasoning markers once Setup read the vocabulary.
+  const ModelSettings& settings() const { return settings_; }
 
  protected:
   std::string name_;
+  ModelSettings settings_;
 };
 
 // A generation's result.
@@ -520,8 +528,32 @@ class Llm : public Served {
   // need rows past the last token (Qwen3.8's MTP drafts).
   virtual std::uint32_t usable_context() const { return context_; }
   bool speculative() const { return speculate_; }
-  // The template's reasoning markers as tokens (Qwen3.8's and DeepSeek's
-  // "<think>" and "</think>"), where the vocabulary has them.
+  // The throughput floors the chat route figures this model's work at
+  // (watchdog.h), resolved once at registration (D-103).
+  Floors floors() const {
+    return {.prefill = settings_.prefill_floor_tok_s.value,
+            .decode = settings_.decode_floor_tok_s.value};
+  }
+  // A request's sampling defaults where it sends none (api.h): the
+  // checkpoint's own, an override, or OpenAI's.
+  api::SamplingDefaults sampling_defaults() const {
+    return {.temperature = settings_.temperature.value,
+            .top_p = settings_.top_p.value,
+            .top_k = settings_.top_k.value,
+            .min_p = settings_.min_p.value};
+  }
+  // Its calibration on this machine (calibration.h): what its uses measure
+  // (the driver's thread records), and its record: the key it is measured
+  // for and the values known (the record's when it registered, then what
+  // Server::RecordCalibrations wrote).
+  CalibrationSamples& calibration_samples() { return calibration_samples_; }
+  struct CalibrationRecord {
+    CalibrationKey key;
+    Calibration known;
+  };
+  CalibrationRecord& calibration_record() { return calibration_record_; }
+  // The reasoning markers as tokens (settings' reasoning_start and
+  // reasoning_end: "<think>" and "</think>" where the vocabulary has them).
   std::optional<std::int32_t> think_start() const { return think_start_; }
   std::optional<std::int32_t> think_end() const { return think_end_; }
   const tokenizer::Tokenizer& tokenizer() const { return *tokenizer_; }
@@ -650,6 +682,10 @@ class Llm : public Served {
     std::vector<float> last_;
     std::uint32_t reused_ = 0;
     PrefillRun run_;
+    // Its chunks' seconds, and whether they started at position 0: a whole
+    // prefill, which measures the recompute cost (calibration.h).
+    double chunk_seconds_ = 0;
+    bool from_zero_ = false;
     Phase phase_ = Phase::kReuse;
     Status ran_;
     bool checkpoint_pending_ = false;
@@ -918,8 +954,10 @@ class Llm : public Served {
   std::expected<bool, std::string> Keep(Branch& branch, std::span<const float> row,
                                         std::int32_t draft, std::uint64_t position,
                                         std::int32_t& next);
-  // Finds the reasoning markers in the vocabulary (after the tokenizer).
-  void FindThinkTokens();
+  // The model's tokenizer, reasoning markers (its settings') and chat
+  // template, from its artifact or the files `entry` names
+  // (model_settings.h ReadChatAssets); then UseTemplate.
+  Status UseChatAssets(const artifact::Artifact& artifact, const config::ModelEntry& entry);
   // Chooses how the model's chat template renders (chat::ChatTemplate) and
   // its stop tokens (after the tokenizer); an error refuses the model.
   Status UseTemplate(std::string_view text);
@@ -937,6 +975,10 @@ class Llm : public Served {
   std::vector<std::int32_t> stops_;
   std::optional<std::int32_t> think_start_;
   std::optional<std::int32_t> think_end_;
+  // Adaptive draft depth's cost of a third draft over two (its settings').
+  double depth_cost_ratio_ = kQwen38DepthCostRatio;
+  CalibrationSamples calibration_samples_;
+  CalibrationRecord calibration_record_;
 
  private:
   Status Clear(Branch& branch, const PromptSession* prompt = nullptr);
@@ -1124,8 +1166,13 @@ class Server {
   // `spill_budget_gib` the least recently used deleted first; and when
   // memory from outside presses (PressureTrim: MemAvailable under its low
   // mark, or a full memory stall), one reclaim of what would restore its
-  // target headroom, spaced by a growing back-off while it persists.
+  // target headroom, spaced by a growing back-off while it persists; and
+  // each model's newly measured calibration recorded (RecordCalibrations).
   void Maintain();
+  // Writes each model's calibration record when its uses measured a value
+  // it did not have (calibration.h), in force from the next registration.
+  // Also at teardown.
+  void RecordCalibrations();
   // What a swap to `m` pages in beyond what it evicts and the budget's free
   // room: reclaimed before the swap (its plans and graphs; the outgoing
   // state is spilled by the swap itself).
@@ -1182,7 +1229,7 @@ class Server {
   std::uint64_t page_in_events() const { return times_.events(); }
 
  private:
-  Status Make(const config::ModelEntry& entry, int index, std::string_view architecture);
+  Status Make(const config::ModelEntry& entry, const ModelSettings& settings, int index);
   void Log(std::string_view text);
 
   const config::NodeConfig& config_;

@@ -192,7 +192,19 @@ What a new family writes, and nothing else:
   variants of a verify's plan.
 - `runtime/serving.cc`: a `Served`/`Llm` adapter that forwards to the
   runner (its tokenizer and template, chunks, speculative step, its
-  `CheckPlaces`), and the architecture name that selects it.
+  `CheckPlaces`), and the architecture name that selects it. The adapter
+  takes every setting from the model's `ModelSettings`, never from a
+  constant of its own (D-103).
+- `runtime/model_settings.*` and `config/node_config.cc`'s `ModelKeys`:
+  the family's settings. Its runner's context ceiling
+  (`RunnerContextCeiling`); the metadata its defaults derive from (the
+  trained context, the drafter's block, sampling defaults: read by
+  `ArtifactFactsOf`, never a checkpoint's name or hash); each setting of
+  its own a key in `ModelKeys` naming the architectures that use it, its
+  fallback a constant in `model_settings.h` with what measured it, its
+  resolution in `ResolveSettings` and its line in `ModelSettings::Lines`
+  (the unit test checks every key is listed). A measured speed trade
+  becomes a calibration once the machine can measure it.
 
 Outside the engine, a family may also need its import to a prepared
 artifact (`docs/experiments/artifact-layout/import_m3.py` today), its

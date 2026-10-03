@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -34,6 +35,7 @@
 #include <toml++/toml.hpp>
 #include <tuple>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/report.h"
@@ -235,45 +237,6 @@ const KeySpec* FindSpec(const KeyPath& path) {
     }
   }
   return nullptr;
-}
-
-// A model's keys (D-096): [models.<name>] holds these.
-enum class ModelKey : std::uint8_t {
-  kArtifact,
-  kComposition,
-  kDrafter,
-  kSpeculation,
-  kContext,
-  kPrefillChunk,
-  kPrefillFloor,
-  kDecodeFloor,
-  kTokenizer,
-  kChatTemplate,
-  kWaveForm,
-  kMaxSlots,
-};
-
-std::optional<ModelKey> FindModelKey(std::string_view key) {
-  static constexpr std::array<std::pair<std::string_view, ModelKey>, 12> kKeys = {{
-      {"artifact", ModelKey::kArtifact},
-      {"composition", ModelKey::kComposition},
-      {"drafter", ModelKey::kDrafter},
-      {"speculation", ModelKey::kSpeculation},
-      {"context", ModelKey::kContext},
-      {"prefill_chunk", ModelKey::kPrefillChunk},
-      {"prefill_floor_tok_s", ModelKey::kPrefillFloor},
-      {"decode_floor_tok_s", ModelKey::kDecodeFloor},
-      {"tokenizer", ModelKey::kTokenizer},
-      {"chat_template", ModelKey::kChatTemplate},
-      {"wave_form", ModelKey::kWaveForm},
-      {"max_slots", ModelKey::kMaxSlots},
-  }};
-  for (const auto& [name, value] : kKeys) {
-    if (name == key) {
-      return value;
-    }
-  }
-  return std::nullopt;
 }
 
 // [models] and each [models.<name>]: tables whose keys are names.
@@ -815,141 +778,180 @@ class Validator {
     }
   }
 
+  // A model's key, checked against its schema (ModelKeys): its value kept
+  // for the model, by key.
   void ModelLeaf(const Entry& leaf) {
     const std::string key = KeyText(leaf.path);
     NoteModel(leaf.path[1], leaf);
-    const std::optional<ModelKey> which = FindModelKey(leaf.path[2]);
-    if (!which) {
+    const ModelKeySpec* spec = FindModelKey(leaf.path[2]);
+    if (spec == nullptr) {
       out_.At(leaf, std::format("unknown key {}", key));
       return;
     }
     found_.entries[leaf.path] = &leaf;
     WorkingModel& model = models_.at(leaf.path[1]);
-    const toml::node& node = *leaf.node;
-    switch (*which) {
-      case ModelKey::kArtifact:
-      case ModelKey::kComposition:
-      case ModelKey::kDrafter: {
+    auto value = ModelValue(*spec, key, *leaf.node);
+    if (!value) {
+      out_.At(leaf, value.error());
+      return;
+    }
+    model.set.emplace_back(spec, &leaf);
+    if (spec->type == ModelKeyType::kId || spec->type == ModelKeyType::kPath) {
+      const std::string& text = std::get<std::string>(*value);
+      if (spec->key == "artifact") {
+        model.entry.artifact = text;
+      } else if (spec->key == "composition") {
+        model.entry.composition = text;
+      } else if (spec->key == "drafter") {
+        model.entry.drafter = text;
+      } else if (spec->key == "tokenizer") {
+        model.entry.tokenizer = fs::path(text);
+      } else if (spec->key == "chat_template") {
+        model.entry.chat_template = fs::path(text);
+      }
+      return;
+    }
+    model.entry.overrides[std::string(spec->key)] = std::move(*value);
+  }
+
+  // A value of a model's key, or the problem with it.
+  static std::expected<SettingValue, std::string> ModelValue(const ModelKeySpec& spec,
+                                                             const std::string& key,
+                                                             const toml::node& node) {
+    const auto bad = [](std::string message) { return std::unexpected(std::move(message)); };
+    const auto real_range = [&](double value) -> std::optional<std::string> {
+      const bool low = spec.real_open ? value <= spec.real_least : value < spec.real_least;
+      if (!std::isfinite(value) || low || value > spec.real_most) {
+        return spec.real_open
+                   ? std::format("greater than {} and at most {}{}", spec.real_least,
+                                 spec.real_most, spec.unit)
+                   : std::format("from {} to {}{}", spec.real_least, spec.real_most, spec.unit);
+      }
+      return std::nullopt;
+    };
+    switch (spec.type) {
+      case ModelKeyType::kId: {
         const auto* text = node.as_string();
         if (text == nullptr || !IsContentId(text->get())) {
-          out_.At(leaf,
-                  std::format("{} must be an ID string: 64 lowercase hexadecimal digits", key));
-          break;
+          return bad(std::format("{} must be an ID string: 64 lowercase hexadecimal digits", key));
         }
-        std::optional<std::string>* into = &model.entry.drafter;
-        if (*which == ModelKey::kArtifact) {
-          into = &model.entry.artifact;
-        } else if (*which == ModelKey::kComposition) {
-          into = &model.entry.composition;
-        }
-        *into = text->get();
-        break;
+        return SettingValue(text->get());
       }
-      case ModelKey::kSpeculation: {
-        const auto* value = node.as_boolean();
-        if (value == nullptr) {
-          out_.At(leaf, std::format("{} must be a boolean, not {}", key, TypeName(node)));
-          break;
-        }
-        model.entry.speculation = value->get();
-        model.speculation_set = true;
-        break;
-      }
-      case ModelKey::kContext: {
-        const auto* value = node.as_integer();
-        if (value == nullptr) {
-          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
-        } else if (std::cmp_less(value->get(), kMinContext) ||
-                   std::cmp_greater(value->get(), std::numeric_limits<std::uint32_t>::max())) {
-          // No generic ceiling (D-102): registration checks the checkpoint's.
-          out_.At(leaf, std::format("{} must be from {} to {} tokens, not {}", key, kMinContext,
-                                    std::numeric_limits<std::uint32_t>::max(), value->get()));
-        } else {
-          model.entry.context = static_cast<std::uint32_t>(value->get());
-          model.context_set = true;
-        }
-        break;
-      }
-      case ModelKey::kPrefillChunk: {
-        const auto* value = node.as_integer();
-        if (value == nullptr) {
-          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
-        } else if (std::cmp_less(value->get(), 1) ||
-                   std::cmp_greater(value->get(), kMaxPrefillChunk)) {
-          out_.At(leaf, std::format("{} must be from 1 to {} rows, not {}", key, kMaxPrefillChunk,
-                                    value->get()));
-        } else {
-          model.entry.prefill_chunk = static_cast<std::uint32_t>(value->get());
-        }
-        break;
-      }
-      case ModelKey::kPrefillFloor:
-      case ModelKey::kDecodeFloor: {
-        const bool prefill = *which == ModelKey::kPrefillFloor;
-        const std::uint32_t most = prefill ? kMaxPrefillFloor : kMaxDecodeFloor;
-        const auto* value = node.as_integer();
-        if (value == nullptr) {
-          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
-        } else if (std::cmp_less(value->get(), 1) || std::cmp_greater(value->get(), most)) {
-          out_.At(leaf, std::format("{} must be from 1 to {} tokens a second, not {}", key, most,
-                                    value->get()));
-        } else {
-          (prefill ? model.entry.prefill_floor_tok_s : model.entry.decode_floor_tok_s) =
-              static_cast<std::uint32_t>(value->get());
-          model.floors_set = true;
-        }
-        break;
-      }
-      case ModelKey::kMaxSlots: {
-        const auto* value = node.as_integer();
-        if (value == nullptr) {
-          out_.At(leaf, std::format("{} must be an integer, not {}", key, TypeName(node)));
-        } else if (std::cmp_less(value->get(), 1) ||
-                   std::cmp_greater(value->get(), kMaxModelSlots)) {
-          out_.At(leaf, std::format("{} must be from 1 to {} request slots, not {}", key,
-                                    kMaxModelSlots, value->get()));
-        } else {
-          model.entry.max_slots = static_cast<std::uint32_t>(value->get());
-        }
-        break;
-      }
-      case ModelKey::kTokenizer:
-      case ModelKey::kChatTemplate: {
+      case ModelKeyType::kPath: {
         const auto* text = node.as_string();
         if (text == nullptr) {
-          out_.At(leaf, std::format("{} must be a string path, not {}", key, TypeName(node)));
-          break;
+          return bad(std::format("{} must be a string path, not {}", key, TypeName(node)));
         }
         if (auto problem = PathProblem(text->get(), true)) {
-          out_.At(leaf, std::format("{} {}", key, *problem));
-          break;
+          return bad(std::format("{} {}", key, *problem));
         }
-        (*which == ModelKey::kTokenizer ? model.entry.tokenizer : model.entry.chat_template) =
-            fs::path(text->get());
-        break;
+        return SettingValue(text->get());
       }
-      case ModelKey::kWaveForm: {
-        const auto* text = node.as_string();
-        if (text != nullptr && text->get() == "auto") {
-          model.entry.wave_form = WaveForm::kAuto;
-        } else if (text != nullptr && text->get() == "speculative") {
-          model.entry.wave_form = WaveForm::kSpeculative;
-        } else if (text != nullptr && text->get() == "plain") {
-          model.entry.wave_form = WaveForm::kPlain;
-        } else {
-          out_.At(leaf, std::format(R"({} must be "auto", "speculative" or "plain")", key));
-          break;
+      case ModelKeyType::kBool: {
+        const auto* value = node.as_boolean();
+        if (value == nullptr) {
+          return bad(std::format("{} must be a boolean, not {}", key, TypeName(node)));
         }
-        model.wave_form_set = true;
-        break;
+        return SettingValue(value->get());
+      }
+      case ModelKeyType::kInteger: {
+        const auto* value = node.as_integer();
+        if (value == nullptr) {
+          return bad(std::format("{} must be an integer, not {}", key, TypeName(node)));
+        }
+        const std::int64_t v = value->get();
+        if (v < spec.least || v > spec.most) {
+          return bad(std::format("{} must be from {} to {}{}, not {}", key, spec.least, spec.most,
+                                 spec.unit, v));
+        }
+        if (spec.multiple > 1 && v % spec.multiple != 0) {
+          return bad(std::format("{} must be a multiple of {}, not {}", key, spec.multiple, v));
+        }
+        if (spec.power_of_two && (v & (v - 1)) != 0) {
+          return bad(std::format("{} must be a power of two, not {}", key, v));
+        }
+        return SettingValue(v);
+      }
+      case ModelKeyType::kReal: {
+        std::optional<double> v;
+        if (const auto* real = node.as_floating_point()) {
+          v = real->get();
+        } else if (const auto* integer = node.as_integer()) {
+          v = static_cast<double>(integer->get());
+        }
+        if (!v) {
+          return bad(std::format("{} must be a number, not {}", key, TypeName(node)));
+        }
+        if (auto range = real_range(*v)) {
+          return bad(std::format("{} must be {}, not {}", key, *range, *v));
+        }
+        return SettingValue(*v);
+      }
+      case ModelKeyType::kChoice: {
+        const auto* text = node.as_string();
+        if (text != nullptr && std::ranges::find(spec.choices, text->get()) != spec.choices.end()) {
+          return SettingValue(text->get());
+        }
+        std::string list;
+        for (std::size_t i = 0; i < spec.choices.size(); ++i) {
+          if (i != 0) {
+            list += i + 1 == spec.choices.size() ? " or " : ", ";
+          }
+          list += std::format("\"{}\"", spec.choices[i]);
+        }
+        return bad(std::format("{} must be {}", key, list));
+      }
+      case ModelKeyType::kReals: {
+        const auto* array = node.as_array();
+        if (array == nullptr) {
+          return bad(std::format("{} must be an array of numbers, not {}", key, TypeName(node)));
+        }
+        if (array->empty() || array->size() > spec.most_items) {
+          return bad(std::format("{} must hold 1 to {} numbers, not {}", key, spec.most_items,
+                                 array->size()));
+        }
+        std::vector<double> values;
+        for (std::size_t i = 0; i < array->size(); ++i) {
+          const toml::node& item = (*array)[i];
+          std::optional<double> v;
+          if (const auto* real = item.as_floating_point()) {
+            v = real->get();
+          } else if (const auto* integer = item.as_integer()) {
+            v = static_cast<double>(integer->get());
+          }
+          if (!v) {
+            return bad(std::format("{}[{}] must be a number, not {}", key, i, TypeName(item)));
+          }
+          if (auto range = real_range(*v)) {
+            return bad(std::format("{}[{}] must be {}, not {}", key, i, *range, *v));
+          }
+          values.push_back(*v);
+        }
+        return SettingValue(std::move(values));
+      }
+      case ModelKeyType::kText: {
+        const auto* text = node.as_string();
+        if (text == nullptr) {
+          return bad(std::format("{} must be a string, not {}", key, TypeName(node)));
+        }
+        const std::string& s = text->get();
+        if (std::cmp_greater(s.size(), spec.most)) {
+          return bad(std::format("{} must be at most {} bytes, not {}", key, spec.most, s.size()));
+        }
+        if (base::Printable(s) != s) {
+          return bad(
+              std::format("{} must not contain control or invisible formatting characters", key));
+        }
+        return SettingValue(s);
       }
     }
+    return bad(std::format("unknown key {}", key));  // not reached
   }
 
   // The models, each checked as a whole: exactly one of artifact and
-  // composition, the artifact-only keys only with an artifact, and no
-  // artifact serving two models or its own drafter. Their number is not
-  // bounded: the library may exceed memory (D-102).
+  // composition, each key one its kind takes (ModelKeys), and no artifact
+  // serving two models or its own drafter. Their number is not bounded:
+  // the library may exceed memory (D-102).
   std::vector<ModelEntry> Models() {
     std::vector<ModelEntry> models;
     std::map<std::string, std::string> used;  // an ID to the model naming it
@@ -966,14 +968,16 @@ class Validator {
       };
       if (m.artifact.has_value() == m.composition.has_value()) {
         problem("a model names exactly one of artifact (a model) and composition (a pipeline)");
-      }
-      if (m.composition && (m.drafter || m.tokenizer || m.chat_template || model.context_set ||
-                            model.speculation_set || m.prefill_chunk || model.floors_set ||
-                            model.wave_form_set || m.max_slots)) {
-        problem(
-            "drafter, speculation, context, prefill_chunk, prefill_floor_tok_s, "
-            "decode_floor_tok_s, max_slots, tokenizer, chat_template and wave_form are a model "
-            "artifact's keys, not a composition's");
+      } else {
+        const std::uint8_t kind = m.artifact ? kArtifactModels : kCompositionModels;
+        for (const auto& [spec, at] : model.set) {
+          if ((spec->kinds & kind) == 0) {
+            out_.At(*at, std::format("{} is a {}'s key, not a {}'s", KeyText(at->path),
+                                     kind == kArtifactModels ? "composition" : "model artifact",
+                                     kind == kArtifactModels ? "model artifact" : "composition"));
+            ok = false;
+          }
+        }
       }
       if (m.artifact && m.drafter && *m.artifact == *m.drafter) {
         problem("an artifact cannot be its own drafter");
@@ -1184,10 +1188,8 @@ class Validator {
     ModelEntry entry;
     const Entry* at = nullptr;  // where it first appears
     bool bad_name = false;
-    bool context_set = false;
-    bool speculation_set = false;
-    bool floors_set = false;
-    bool wave_form_set = false;
+    // Every valid key it sets, and where.
+    std::vector<std::pair<const ModelKeySpec*, const Entry*>> set;
   };
 
   Collector& out_;
@@ -1210,7 +1212,218 @@ class Validator {
   std::optional<std::uint32_t> spill_budget_gib_;
 };
 
+constexpr std::array<std::string_view, 3> kWaveForms = {"auto", "speculative", "plain"};
+constexpr std::int64_t kU32Max = 0xFFFF'FFFF;
+
+// The schema of a [models.<name>] table (D-096, D-103): what names the
+// model's files, then every setting, each with its type and range. The
+// settings' sources and defaults are runtime/model_settings.h's.
+constexpr std::array kModelKeys = std::to_array<ModelKeySpec>({
+    {.key = "artifact",
+     .type = ModelKeyType::kId,
+     .kinds = kArtifactModels,
+     .setting = false,
+     .summary = "the installed artifact (a model)"},
+    {.key = "composition",
+     .type = ModelKeyType::kId,
+     .kinds = kCompositionModels,
+     .setting = false,
+     .summary = "the installed composition (a pipeline)"},
+    {.key = "drafter",
+     .type = ModelKeyType::kId,
+     .setting = false,
+     .summary = "the speculative drafter's artifact"},
+    {.key = "tokenizer",
+     .type = ModelKeyType::kPath,
+     .setting = false,
+     .summary = "tokenizer.json, for an artifact that keeps none"},
+    {.key = "chat_template",
+     .type = ModelKeyType::kPath,
+     .setting = false,
+     .summary = "the chat template, for an artifact that keeps none"},
+    {.key = "context",
+     .least = kMinContext,
+     .most = kU32Max,
+     .unit = " tokens",
+     .summary = "tokens of conversation state"},
+    {.key = "speculation", .type = ModelKeyType::kBool, .summary = "decode with the drafter"},
+    {.key = "prefill_chunk",
+     .least = 1,
+     .most = kMaxPrefillChunk,
+     .unit = " rows",
+     .summary = "rows of a prefill chunk (capped by the model at its context)"},
+    {.key = "max_slots",
+     .least = 1,
+     .most = kMaxModelSlots,
+     .unit = " request slots",
+     .summary = "requests at once at most"},
+    {.key = "prefill_floor_tok_s",
+     .least = 1,
+     .most = kMaxPrefillFloor,
+     .unit = " tokens a second",
+     .summary = "the prefill speed the chat route's allowances assume"},
+    {.key = "decode_floor_tok_s",
+     .least = 1,
+     .most = kMaxDecodeFloor,
+     .unit = " tokens a second",
+     .summary = "the decode speed the chat route's allowances assume"},
+    {.key = "recompute_ms_per_token",
+     .type = ModelKeyType::kReal,
+     .real_least = 0,
+     .real_most = 1e6,
+     .real_open = true,
+     .unit = " milliseconds a token",
+     .summary = "the reclaim order's cost of recomputing dropped state, a token"},
+    {.key = "temperature",
+     .type = ModelKeyType::kReal,
+     .real_least = 0,
+     .real_most = 2,
+     .summary = "a request's temperature when it sends none (0: greedy)"},
+    {.key = "top_p",
+     .type = ModelKeyType::kReal,
+     .real_least = 0,
+     .real_most = 1,
+     .real_open = true,
+     .summary = "a request's top_p when it sends none"},
+    {.key = "top_k",
+     .least = 0,
+     .most = (std::int64_t{1} << 31) - 1,
+     .summary = "a request's top_k when it sends none (0: off)"},
+    {.key = "min_p",
+     .type = ModelKeyType::kReal,
+     .real_least = 0,
+     .real_most = 1,
+     .summary = "a request's min_p when it sends none (0: off)"},
+    {.key = "reasoning_start",
+     .type = ModelKeyType::kText,
+     .most = 256,
+     .summary = "the token opening reasoning (empty: none)"},
+    {.key = "reasoning_end",
+     .type = ModelKeyType::kText,
+     .most = 256,
+     .summary = "the token closing reasoning (empty: none)"},
+    {.key = "draft_rows",
+     .architectures = "deepseek4 qwen4exp",
+     .least = 1,
+     .most = 16,
+     .unit = " rows",
+     .summary = "drafts a speculative step proposes at most"},
+    {.key = "wave_form",
+     .type = ModelKeyType::kChoice,
+     .architectures = "deepseek4",
+     .choices = kWaveForms,
+     .summary = "a speculative wave's form: chosen, or forced"},
+    {.key = "wave_costs",
+     .type = ModelKeyType::kReals,
+     .architectures = "deepseek4",
+     .real_least = 0,
+     .real_most = 1000,
+     .most_items = kMaxWaveCostWidths,
+     .summary = "draft-verify wave time over plain, widths 2 up (0: always speculate)"},
+    {.key = "prefill_outa_hca",
+     .type = ModelKeyType::kBool,
+     .architectures = "deepseek4",
+     .summary = "output-A/HCA prefill on full 4,096-row chunks (quality-qualified)"},
+    {.key = "prefill_outa_hca_partial",
+     .type = ModelKeyType::kBool,
+     .architectures = "deepseek4",
+     .summary = "and on every chunk of 64 rows or more (quality-qualified)"},
+    {.key = "draft_vocab",
+     .architectures = "qwen4exp",
+     .least = 0,
+     .most = std::int64_t{1} << 22,
+     .unit = " rows",
+     .summary = "the draft head's vocabulary rows (0: all)"},
+    {.key = "depth_cost_ratio",
+     .type = ModelKeyType::kReal,
+     .architectures = "qwen4exp",
+     .real_least = 0,
+     .real_most = 100,
+     .real_open = true,
+     .summary = "a three-draft step's time over a two-draft step's"},
+    {.key = "shared_wave_depth",
+     .architectures = "qwen4exp",
+     .least = 1,
+     .most = 16,
+     .unit = " drafts",
+     .summary = "drafts a request in a wave of several"},
+    {.key = "draft_wave_max",
+     .architectures = "qwen4exp",
+     .least = 1,
+     .most = 16,
+     .unit = " requests",
+     .summary = "requests drafting in one joined wave; past it each drafts alone"},
+    {.key = "wave_read_align",
+     .architectures = "qwen4exp",
+     .least = 256,
+     .most = 65536,
+     .power_of_two = true,
+     .unit = " positions",
+     .summary = "the state a wave reads, rounded up to this"},
+    {.key = "image_size",
+     .kinds = kCompositionModels,
+     .least = 64,
+     .most = 2048,
+     .multiple = 32,
+     .unit = " pixels",
+     .summary = "the image's width and height"},
+    {.key = "image_steps",
+     .kinds = kCompositionModels,
+     .least = 2,
+     .most = 100,
+     .unit = " steps",
+     .summary = "denoising steps"},
+});
+
+template <typename T>
+std::optional<T> OverrideOf(const ModelEntry& entry, std::string_view key) {
+  const auto it = entry.overrides.find(key);
+  if (it == entry.overrides.end()) {
+    return std::nullopt;
+  }
+  const T* value = std::get_if<T>(&it->second);
+  return value == nullptr ? std::nullopt : std::optional<T>(*value);
+}
+
 }  // namespace
+
+std::span<const ModelKeySpec> ModelKeys() { return kModelKeys; }
+
+const ModelKeySpec* FindModelKey(std::string_view key) {
+  const auto* const it = std::ranges::find(kModelKeys, key, &ModelKeySpec::key);
+  return it == kModelKeys.end() ? nullptr : it;
+}
+
+bool KeyAppliesTo(const ModelKeySpec& spec, std::string_view architecture) {
+  if (spec.architectures.empty()) {
+    return true;
+  }
+  std::string_view rest = spec.architectures;
+  while (!rest.empty()) {
+    const std::size_t space = rest.find(' ');
+    if (rest.substr(0, space) == architecture) {
+      return true;
+    }
+    rest = space == std::string_view::npos ? std::string_view() : rest.substr(space + 1);
+  }
+  return false;
+}
+
+std::optional<bool> ModelEntry::Bool(std::string_view key) const {
+  return OverrideOf<bool>(*this, key);
+}
+std::optional<std::int64_t> ModelEntry::Integer(std::string_view key) const {
+  return OverrideOf<std::int64_t>(*this, key);
+}
+std::optional<double> ModelEntry::Real(std::string_view key) const {
+  return OverrideOf<double>(*this, key);
+}
+std::optional<std::string> ModelEntry::Text(std::string_view key) const {
+  return OverrideOf<std::string>(*this, key);
+}
+std::optional<std::vector<double>> ModelEntry::Reals(std::string_view key) const {
+  return OverrideOf<std::vector<double>>(*this, key);
+}
 
 std::string FormatDiagnostic(const Diagnostic& diagnostic) {
   // Values from the files reach logs and terminals: nothing in them may

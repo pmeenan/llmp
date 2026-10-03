@@ -50,7 +50,10 @@ const std::string_view kCommandUsage =
     "      [--continue N] [--cycles N] [--zero-context on|off] [--handoff on|off]\n"
     "      [--short-prompt TEXT] [--image-expect SHA256] [SERVING]\n"
     "      M3's swap table: every ordered pair (or those named) A->B->A\n"
-    "  SERVING: [--plain] [--image-prompt TEXT] [--image-noise FILE] [--report FILE]\n";
+    "  SERVING: [--plain] [--image-prompt TEXT] [--image-noise FILE] [--report FILE]\n"
+    "  settings [--json]\n"
+    "      every configured model's settings, each with its source (derived,\n"
+    "      calibrated, override, fallback); reads only, beside a running service\n";
 
 std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,
                                                         std::span<const std::string_view> args) {
@@ -59,6 +62,15 @@ std::expected<CommandOptions, std::string> ParseCommand(std::string_view name,
     o.command = Command::kChat;
   } else if (name == "swap-table") {
     o.command = Command::kSwapTable;
+  } else if (name == "settings") {
+    o.command = Command::kSettings;
+    for (const std::string_view a : args) {
+      if (a != "--json") {
+        return Error(std::format("{} is not an option of settings", a));
+      }
+      o.json = true;
+    }
+    return o;
   } else {
     return Error(std::format("unknown command '{}'", name));
   }

@@ -31,6 +31,7 @@
 #include "platform/path_trust.h"
 #include "platform/sd_notify.h"
 #include "providers/device_probe.h"
+#include "runtime/model_settings.h"
 
 namespace jitllm::runtime {
 namespace {
@@ -246,6 +247,26 @@ int Run(std::span<const std::string_view> args, std::FILE* log, ServeFunction se
     (void)std::fwrite(kUsage.data(), 1, kUsage.size(), stdout);
     (void)std::fwrite(kCommandUsage.data(), 1, kCommandUsage.size(), stdout);
     return std::fflush(stdout) == 0 ? kExitOk : kExitFailure;
+  }
+  if (options->command.command == Command::kSettings) {
+    // Reads only: the configuration as the service reads it, then each
+    // model's artifacts (D-103). No lock, roles or device.
+    config::LoadOptions load{.main_file = options->config,
+                             .main_file_optional = !options->config_given,
+                             .anchor = options->anchor,
+                             .trusted_uid = ::geteuid()};
+    auto loaded = config::LoadNodeConfig(load);
+    if (!loaded) {
+      for (const config::Diagnostic& diagnostic : loaded.error()) {
+        Log(log, "configuration: " + config::FormatDiagnostic(diagnostic));
+      }
+      Log(log, "the configuration is not valid");
+      return kExitRefused;
+    }
+    if (loaded->models.empty()) {
+      Log(log, "the configuration names no models ([models.<name>], D-096)");
+    }
+    return PrintSettings(*loaded, options->command.json, stdout, log);
   }
   auto started = Start(*options, log);
   if (!started) {

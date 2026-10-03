@@ -55,6 +55,8 @@ drafter = "dd2d3f9c…"    # optional: its speculative drafter (DSpark, MTP)
 # decode_floor_tok_s = 5      #   a request's work at (progress and deadlines, below)
 # max_slots = 4          # requests at once at most, 1 to 16; default by model
                          #   (request slots, below); memory decides below it
+# ... and every other setting (model settings, below): each absent key
+#     derived from the artifact, calibrated, or its measured fallback
 
 [models."qwen3.8"]
 artifact = "c4fb47a9…"
@@ -73,10 +75,10 @@ composition = "eca21baa…"  # a pipeline (D-089)
                              #   (0: idle state is dropped, never kept spilled)
 ```
 
-A model names exactly one artifact or composition; the artifact-only keys
-(drafter, speculation, wave form, context, prefill chunk, the floors,
-max_slots, tokenizer, chat template) are refused on a composition, and an
-artifact serves one model. A node names as many models as it likes: the
+A model names exactly one artifact or composition; every other key is a
+setting (below), each taken by an artifact's model, a composition's or
+both, and refused on the other kind; an artifact serves one model. A
+node names as many models as it likes: the
 library may exceed memory (D-102). The runner follows the artifact's architecture
 (`deepseek4`, `qwen4exp`) or the composition's (Qwen-Image); another is
 refused at registration. Every
@@ -99,6 +101,142 @@ name and allowed range. These are virtual ceilings: initialized state grows
 inside the physical budget and can be refused when it no longer fits.
 The 1M DeepSeek ceiling is not a claim that a 1M conversation fits one Spark.
 The widening preserves `schema_version = 2` and the HTTP API version (D-062).
+
+## Model settings
+
+Users bring any model, so no setting is chosen for a named checkpoint
+(D-103). Every setting of a model resolves once at registration, before
+the model is constructed (`runtime/model_settings.h`), from three layers,
+later ones winning:
+
+1. **derived** from the artifact itself: its architecture, its kept
+   metadata (the GGUF's keys, or `config.json` and
+   `generation_config.json`), its drafter's metadata and its vocabulary;
+   never a checkpoint's name or hash;
+2. **calibrated** on this machine, for a measured speed trade, recorded
+   per artifact, drafter, device, driver and build (calibration, below);
+3. **override**: the key in `[models.<name>]`.
+
+A setting none of them gives takes its **fallback**: the constant M3
+measured on a GB10 (`spark-b`). The schema is one table
+(`config::ModelKeys`): each key's type and range and which models take it;
+an unknown key is refused, as is one the model's kind does not take. A key
+the model's architecture does not use (a DeepSeek wave setting on Qwen3.8)
+is logged as ignored. An override the artifact cannot honour (a context
+past the checkpoint's ceiling, more drafts than the drafter proposes) is
+refused before the device node opens, naming the model and the bound.
+
+The start logs every effective value with its source once the model is
+set up (`model NAME: settings context=262144 (fallback) speculation=true
+(derived) ...`), and `jitllm-runtime settings [--json]` lists each with
+what it came from, reading only the configuration and the installed
+artifacts (no process lock, no device), so it runs beside the service.
+
+| Key | Models | Type and range | Default and its source |
+| --- | --- | --- | --- |
+| `context` | LLM | tokens, 512 to 2^32−1 | derived: the trained context (GGUF `<arch>.context_length`, `config.json` `max_position_embeddings`, or the original context times a rope scaling factor where that is longer) when below 262,144, within the runner's own ceiling; else fallback 262,144. An override past the ceiling is refused |
+| `speculation` | LLM | boolean | derived: true with a drafter, false without (`--plain`: false) |
+| `prefill_chunk` | LLM | rows, 1 to 262,144 | fallback: 4,096 (DeepSeek above 262,144 tokens of context: 2,048); then capped by the model at its context (below) |
+| `max_slots` | LLM | 1 to 16 | fallback: 4, the measured knee; DeepSeek with DSpark at most 8 (below) |
+| `prefill_floor_tok_s` | LLM | tokens a second, 1 to 1,000,000 | calibrated: a third of the measured prefill speed at short context; else fallback 100 (progress and deadlines, below) |
+| `decode_floor_tok_s` | LLM | tokens a second, 1 to 100,000 | calibrated: a third of the measured decode speed a request at short context (its steps', or its waves' with the peers sharing them); else fallback 5 |
+| `recompute_ms_per_token` | LLM | milliseconds, above 0 to 10^6 | calibrated: the slowest of three whole prefills of 8,192 tokens or more, a token; else fallback 1.4, DeepSeek's prefill (16,384 tokens in 22.9 s). The reclaim order's cost of dropping an idle conversation is its tokens at this cost |
+| `temperature`, `top_p`, `top_k`, `min_p` | LLM | as a request's | derived: the checkpoint's `generation_config.json` (`do_sample: false`: temperature 0) or GGUF `general.sampling.*`: DeepSeek V4 Flash's GGUFs temperature 1 and top_p 1, Qwen3.8's GGUF quantizations top_k 20 and top_p 0.95 (the UD-IQ3_XXS); else fallback: OpenAI's (1, 1, off, off), as for the Qwen3.8 NVFP4 artifact, which keeps none. A request's own field always wins |
+| `reasoning_start`, `reasoning_end` | LLM | a token's text, at most 256 bytes; `""`: none | derived: `<think>` and `</think>` where the vocabulary has both; else none. An override must be a token of the vocabulary |
+| `draft_rows` | DeepSeek, Qwen3.8 | 1 to 16 | DeepSeek: fallback 3 (its verify one row more), derived the drafter's `dflash.block_size` when smaller; more than the block is refused. Qwen3.8: fallback 3, 2 to 3 only (its MTP passes) |
+| `wave_form` | DeepSeek | `"auto"`, `"speculative"`, `"plain"` | fallback `"auto"` (waves, below) |
+| `wave_costs` | DeepSeek | 1 to 7 numbers, 0 to 1,000 | calibrated: each width's measured draft-verify wave time over its plain one's; else fallback, measured on a GB10 with wave lanes and joined drafts (2.08, 2.52, 2.81, 2.40, 2.12, 2.21, 2.23); calibrated widths replace theirs, and an override's widths (from 2) replace both, the rest keeping theirs; 0 always speculates at that width |
+| `prefill_outa_hca` | DeepSeek | boolean | fallback true: the output-A/HCA prefill on full 4,096-row chunks, qualified ([ds4-output-prefix](experiments/ds4-output-prefix/README.md#default-on-acceptance)); false for the ordinary arithmetic |
+| `prefill_outa_hca_partial` | DeepSeek | boolean | fallback true: and on every chunk of 64 rows or more; listed false when `prefill_outa_hca` is off, which it needs |
+| `draft_vocab` | Qwen3.8 | rows, 0 to 4,194,304; 0: all | fallback 65,536 |
+| `depth_cost_ratio` | Qwen3.8 | above 0 to 100 | calibrated: a three-draft step's measured time over a two-draft step's; else fallback 1.16 (adaptive depth, below) |
+| `shared_wave_depth` | Qwen3.8 | drafts, 1 to 16 | fallback 2: a request's drafts in a wave of several; at most `draft_rows` (listed so) |
+| `draft_wave_max` | Qwen3.8 | requests, 1 to 16 | fallback 2: past it each request drafts alone |
+| `wave_read_align` | Qwen3.8 | a power of two, 256 to 65,536 | fallback 2,048: the cells a wave reads, rounded up (no result changes; coarser keeps plans replayable) |
+| `image_size` | composition | pixels, 64 to 2,048, a multiple of 32 | fallback 1,024 (its latents file must match) |
+| `image_steps` | composition | 2 to 100 | fallback 40 |
+
+`artifact`, `composition`, `drafter`, `tokenizer` and `chat_template` name
+the model's files rather than settings. The quality-qualified choices
+(`prefill_outa_hca`, its partial form) keep their qualification (D-085):
+their defaults are what passed, and an owner may turn them off for
+exactness. Kernel schedules (the D2R, IQ2 pair, output-A and MXFP8 tables)
+are still chosen by hand-tuned tables for the GB10 and the measured
+shapes; their calibration on the machine is later work.
+
+### Calibration
+
+A model's measured speed trades are calibrated on the machine from its
+first uses, passively, with nothing run at startup
+(`runtime/calibration.h`): its prefill chunks' speed and its decode
+steps' and waves' speed a request at short context (under 32,768 tokens;
+prefill chunks of 1,024 rows or more, since a short prompt's chunk is
+mostly fixed cost; the floors are a third of each, the margin for depth),
+whole prefills' cost a token (the recompute cost; prefills of 8,192 tokens
+or more), DeepSeek's draft-verify and plain wave times at each width, and
+Qwen3.8's three-draft and two-draft step times. A value is the median of
+at least eight samples; the recompute cost is the slowest of the first
+three whole prefills, since prefill slows with depth and a long
+conversation's cost is what the reclaim order must not underrate (a cost
+a byte of state measured on short prefills did: 12 s a GiB for DeepSeek
+at 3,549 tokens, 6 s for Qwen3.8 at 9,000, against 64 at 16,384, so it
+counts tokens instead). A wave counts only when steady and
+matched between the forms: none that planned or captured a graph (a
+shape's first waves), and a draft-verify wave only when every member's
+full verify joined it (not one cut by a mask width or the reply's end,
+or run alone). Until a width's cost is calibrated, DeepSeek alternates
+the two forms at that width, at most 32 waves, until each form has its
+samples (auto `wave_form` only, never with a sampling member); after
+that the counted choice runs as before.
+
+The alternation is not visible in throughput, and adds no new kind of
+reply variation. Measured on `spark-b` (wave lanes build, four
+concurrent 124-token chats, 512 tokens each, two bursts per fresh
+service, alternating cells): with the community GGUF the first burst of
+a service that calibrated ran 42.76 and 43.27 completed tokens a second
+against 42.74 and 43.85 for services with the calibration in force, and
+the warm bursts 43.14 and 43.79 against 43.80 and 43.28; with the Unsloth
+UD-Q2_K_XL, 41.36 against 41.65 (warm 42.22 against 42.66). Width 4's
+calibrated cost was 2.94 (community) and 2.90 (Unsloth) against the
+harness's 2.99, so the same waves ran plain; forcing every wave
+speculative on the Unsloth GGUF ran 38.39 to 38.86 against plain's 42.75
+to 43.23, confirming that choice. In auto `wave_form` the replies to
+concurrent requests already vary between runs with the waves they join
+(no two of these services' bursts gave the same replies, calibrated or
+not); the exactness controls `wave_form = "speculative"` and `"plain"`
+never alternate.
+
+Once a value is measured it is written, between units and at teardown, to
+`<storage.state>/calibration/<artifact ID>.json` (0600 in a 0700
+directory, written to a new file, synced and renamed over the old):
+
+```json
+{"format":"jitllm-model-calibration-v1","artifact":"8a355bfb…","drafter":"dd2d3f9c…",
+ "device":"NVIDIA GB10 sm_121, driver 580.95.05, CUDA 13.0","build":"0.3.0-dev.12+g…",
+ "settings":"speculation=true draft_rows=3 prefill_chunk=4096 max_slots=4 prefill_outa_hca=true/true wave_form=auto",
+ "values":{"prefill_floor_tok_s":333,"decode_floor_tok_s":7,
+           "recompute_ms_per_token":1.25,"wave_costs":[2.08,null,2.81],"depth_cost_ratio":1.1}}
+```
+
+`wave_costs` holds widths from 2, `null` where unmeasured. `settings`
+names what the measurements depend on, as resolved without calibration
+(an override, a derived value or the fallback): speculation (off with
+`--plain`), draft rows, prefill chunk rows, request slots, the
+output-A/HCA prefill and the wave form. `build` is the version; for a tree
+without Git metadata or with uncommitted changes, whose version stays the
+same between builds (`0.1.0-dev+unknown`), it adds the executable's size
+and modification time, so each rebuild measures again. The record is
+in force from the next registration, never mid-service, so a running
+schedule never changes with wall time; the start logs whether it is in
+force. A record for another drafter, device, driver, build or settings is
+stale: not used, and measured again. To measure again on purpose, delete
+the file (with the runtime stopped, or before its next start). One that is not this format, names another
+artifact, holds a key other than the calibrated ones (the five above,
+`prefill_chunk` and `max_slots`) or a value outside its key's range, or that
+users other than root and the runtime's could change, is refused, logged
+and replaced the same way. Prefill chunk rows and the request-slot knee
+need controlled runs and keep their fallbacks; the record already takes
+them. An override always wins over a calibration.
 
 ## Registration and the swap
 
@@ -150,8 +288,9 @@ idle. The lowest goes first, and each reclaim raises the inflation to
 what it took. Measured on `spark-b`, idle state (0.17 s a GiB) goes
 before graphs (0.2–0.4) and plans (2–15) used at the same time, while a
 plan or graph unused for three reclaims or a quarter of an hour falls
-behind a conversation used just now; recomputing state (64 s a GiB) is
-never chosen while spill has room
+behind a conversation used just now; recomputing state (its tokens at the
+model's `recompute_ms_per_token`, 1.4 ms until calibrated: 23 s for
+16,384 tokens) is never chosen while spill has room
 ([memory-pressure](experiments/memory-pressure/README.md)). Within a kind
 the least recently used goes first, the running model's last; never its
 in-use floor (its most recently used plans up to its `plan_floor_bytes`,
@@ -256,7 +395,8 @@ depending on its peers ([request slots](#request-slots)). (Plain
 and speculative sampling turn one seed into different tokens, so DeepSeek
 keeps every wave with a sampling member speculative, below.)
 Qwen3.8 greedy speculation chooses depth two or three using a moving
-acceptance average and a measured relative step cost of 1.16. It tries
+acceptance average and a measured relative step cost of 1.16 (its
+`depth_cost_ratio`, model settings above). It tries
 four complete steps at each depth, then probes the other depth for four
 steps after 32 observations; a change needs a predicted 3% gain. Output-
 or context-truncated verifies do not train the policy. Its schedule is
@@ -492,6 +632,18 @@ text and its tokenization's working set are charged to the request memory
 the start reserved, as the route's requests are (below). Run by hand, a
 command stops on
 SIGINT or SIGTERM at once; the kernel frees its memory and spill files.
+
+    jitllm-runtime [--config FILE] settings [--json]
+
+`settings` lists every configured model's settings (above), each with its
+value, source and what it came from, as a table or one JSON object
+(`{"models":[{"name","architecture","settings":{KEY:{"value","source",
+"basis"}},"ignored":[...],"calibration":NOTE}]}`, the note whether a
+calibration record is in force). It reads the configuration, the installed
+artifacts and the calibration records only, under the same trust rules:
+no process lock, no device memory or context of its own, so it runs in any
+build and beside the running service. Run it as the runtime's user. It exits 1 when a model's settings
+cannot be resolved (each reason logged), 78 for an invalid configuration.
 
 ## The chat route
 
@@ -913,7 +1065,8 @@ them, so planning goes on through the service's life and grows steeply
 with the cap: across two bursts Qwen3.8 planned 1.8 s at four slots and
 68 s at sixteen, holding 0.2 and 2.7 GiB of plans (charged inside the
 budget and reclaimable, but taken from conversation-state room). The start logs the
-value and its source (`model NAME: 4 request slots (fallback)`). Sixteen
+value and its source (`model NAME: 4 request slots (fallback: the knee
+measured on a GB10 (D-104))`). Sixteen
 is the most a model takes: sixteen one-row decode steps fill the joined
 products' sixteen rows; with DSpark, DeepSeek takes at most eight (a
 verify of at least two rows a request), and a larger `max_slots` is

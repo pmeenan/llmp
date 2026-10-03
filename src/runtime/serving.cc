@@ -45,8 +45,6 @@
 #include "runtime/prefill.h"
 #include "runtime/swap_room.h"
 #include "scheduler/programs.h"
-#include "tokenizer/gguf.h"
-#include "tokenizer/hf.h"
 
 namespace jitllm::runtime {
 namespace {
@@ -73,49 +71,23 @@ namespace fs = std::filesystem;
 namespace ja = jitllm::artifact;
 
 constexpr std::uint64_t kExtent = engine::kPagedExtent;
-// The most a tokenizer or template file may be.
-constexpr std::size_t kMaxTokenizerBytes = std::size_t{64} << 20U;
 // Extents the page-in observer tracks (the M3 models use about 100,000).
 constexpr std::size_t kObservedExtents = std::size_t{1} << 18U;
-// Each model's prefill chunk when its prefill_chunk is not configured
-// (docs/runtime-serving.md#prefill-chunks-and-cancellation): the fastest
-// measured through the runtime at 8K and 32K tokens within the memory
-// bound (DeepSeek: 4,096 rows 12-15% faster than 2,048, 8,192 no faster);
-// then capped by the model at its context (prefill.h). DeepSeek's
-// attention mask is sized for the whole context, so above 262,144 tokens
-// its default stays 2,048 rows: at 1,048,576, 4,096 would fix 2.14 GiB
-// more and take that from the measured 1M conversation's state.
-constexpr std::uint32_t kDsv4PrefillRows = 4096;
-constexpr std::uint32_t kDsv4DeepPrefillRows = 2048;
-constexpr std::uint32_t kDsv4WidePrefillContext = 262144;  // the widest context at 4,096
-constexpr std::uint32_t kQwen38PrefillRows = 4096;
-// The draft depth of each request in a Qwen3.8 wave of more than one.
-constexpr std::uint32_t kSharedWaveDepth = 2;
-// A model's request slots by default (`[models.<name>] max_slots`;
-// docs/runtime-serving.md#request-slots): the knee where adding a slot
-// stops raising the completed-token rate enough to pay for slowing every
-// request (docs/experiments/request-slots/).
-constexpr std::uint32_t kDsv4DefaultSlots = 4;
-constexpr std::uint32_t kQwen38DefaultSlots = 4;
+// Each model's settings (prefill chunk, request slots, drafting, waves,
+// floors, sampling) resolve at registration in model_settings.h's three
+// layers (D-103); their fallbacks are its constants, which name what the
+// engine does too.
 static_assert(Llm::kMaxBranches == engine::kMaxRequestSlots);
 static_assert(config::kMaxModelSlots == engine::kMaxRequestSlots);
+static_assert(kDsv4SpeculativeMostSlots == engine::Dsv4Runner::kWaveRows / 2);
+static_assert(config::kMaxWaveCostWidths + 1 == execution::AdaptiveWaveMode::kMaxWidth);
 
-// The request slots a model serves (D-103's layers): the owner's override
-// (`max_slots`), else the fallback constant until calibration on this
-// machine measures the knee; at most `most` (what its waves can hold).
-// `report` names the value's source, for the start's log.
-std::uint32_t SlotsOf(const config::ModelEntry& entry, std::uint32_t fallback, std::uint32_t most,
-                      std::string_view why_most, std::string& report) {
-  const std::uint32_t asked = entry.max_slots.value_or(fallback);
-  const std::uint32_t slots = std::min(asked, most);
-  report = std::format(
-      "{} request slot{} ({}", slots, slots == 1 ? "" : "s",
-      entry.max_slots ? std::format("override: max_slots {}", asked) : std::string("fallback"));
-  if (slots < asked) {
-    report += std::format(", at most {}: {}", most, why_most);
-  }
-  report += ")";
-  return slots;
+// A model's request slots for the start's log, and where their number came
+// from (its settings).
+std::string SlotsReport(const ModelSettings& s) {
+  const std::uint32_t slots = s.max_slots.value;
+  return std::format("{} request slot{} ({}: {})", slots, slots == 1 ? "" : "s",
+                     SourceName(s.max_slots.source), s.max_slots.basis);
 }
 
 // The reclaim order's cost of idle conversation state (Server::Reclaim):
@@ -123,12 +95,10 @@ std::uint32_t SlotsOf(const config::ModelEntry& entry, std::uint32_t fallback, s
 // before any at the rates measured on a GB10 (spark-b, DeepSeek's four
 // slots' state, 1.42 GB written back at 11.0 GB/s and read again at 14.5
 // GB/s; docs/experiments/memory-pressure). Dropping it instead (no spill
-// budget) costs its recomputation: 64 s a GiB measured for DeepSeek's
-// prefill (16,384 tokens, 368 MiB of state in 22.9 s), the lower of the two
-// models' (Qwen3.8's state is denser a token).
+// budget) costs its recomputation: its tokens at the model's
+// recompute_ms_per_token.
 constexpr double kSpillBytesPerSecond = 11.0e9;
 constexpr double kRestoreBytesPerSecond = 14.5e9;
-constexpr double kRecomputeSecondsPerByte = 64.0 / static_cast<double>(1ULL << 30U);
 // A graph's capture and instantiation a GiB counted, measured on a GB10
 // (0.33–0.45 s in the services' logs): what a graph's capture weighs
 // against before any graph is held (Server::Reclaim).
@@ -140,72 +110,10 @@ std::unexpected<std::string> Error(std::string what) { return std::unexpected(st
 
 double Seconds(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
 
-std::string Errno(int error) { return std::strerror(error); }  // NOLINT(concurrency-mt-unsafe)
-
-// A file the configuration names, under its trust rules (D-073): every
-// directory on the way and the file itself root's or the runtime user's
-// and writable by nobody else; opened without following links, and the
-// file the walk approved.
-std::expected<std::string, std::string> ReadTrustedFile(const fs::path& path, uid_t trusted,
-                                                        std::size_t limit) {
-  auto walked = platform::WalkTrusted(path, trusted, false);
-  if (!walked) {
-    return Error(std::format("{}: {}", path.string(), walked.error()));
-  }
-  if (!walked->exists) {
-    return Error(std::format("{} does not exist", path.string()));
-  }
-  const int fd =
-      ::open(walked->resolved.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC | O_NOCTTY);
-  if (fd < 0) {
-    return Error(std::format("{}: {}", path.string(), Errno(errno)));
-  }
-  struct stat status{};
-  std::string bytes;
-  std::string problem;
-  if (::fstat(fd, &status) != 0) {
-    problem = Errno(errno);
-  } else if (!S_ISREG(status.st_mode) || status.st_dev != walked->status.st_dev ||
-             status.st_ino != walked->status.st_ino) {
-    problem = "not the regular file the trust walk approved";
-  } else if (platform::OthersCanWrite(status, trusted, fd)) {
-    problem = "other users can write it";
-  } else if (std::cmp_greater(status.st_size, limit)) {
-    problem = std::format("larger than {} bytes", limit);
-  } else {
-    bytes.resize(static_cast<std::size_t>(status.st_size));
-    std::size_t done = 0;
-    while (done < bytes.size()) {
-      const ssize_t n =
-          ::pread(fd, bytes.data() + done, bytes.size() - done, static_cast<off_t>(done));
-      if (n < 0 && errno == EINTR) {
-        continue;
-      }
-      if (n <= 0) {
-        problem = n < 0 ? Errno(errno) : "shorter than it was";
-        break;
-      }
-      done += static_cast<std::size_t>(n);
-    }
-  }
-  (void)::close(fd);
-  if (!problem.empty()) {
-    return Error(std::format("{}: {}", path.string(), problem));
-  }
-  return bytes;
-}
-
 // An installed artifact, opened under the store's trust rules (D-056's
 // integrity rests on them) and its ID checked; the runner opens it again.
 std::expected<ja::Artifact, std::string> OpenTrusted(const fs::path& store, const std::string& id) {
-  ja::OpenOptions options;
-  options.expected_id = id;
-  options.trusted_owner = ::geteuid();
-  auto opened = ja::Artifact::Open(store / id, options);
-  if (!opened) {
-    return Error(std::format("artifact {}: {}", id, opened.error().ToString()));
-  }
-  return std::move(*opened);
+  return OpenInstalled(store, id);
 }
 
 std::string GraphJson(const GraphCounts& g) {
@@ -226,44 +134,52 @@ GraphCounts Sum(const engine::GraphStats& a, const engine::GraphStats& b, std::s
 // DeepSeek V4 Flash (engine/dsv4_runner.h), with DSpark as its drafter.
 class Dsv4 final : public Llm {
  public:
-  Dsv4(engine::PagedNode& node, const config::ModelEntry& entry, const config::RuntimeRoles& roles,
-       bool plain, int index)
-      : artifact_id_(entry.artifact.value_or("")),
+  Dsv4(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
+       const config::RuntimeRoles& roles, int index)
+      : entry_(entry),
+        artifact_id_(entry.artifact.value_or("")),
         drafter_id_(entry.drafter.value_or("")),
         store_(roles.installed),
         runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
     name_ = entry.name;
+    settings_ = settings;
     node_ = &node;
     checkpoint_directory_ = roles.spill;
-    speculate_ = !drafter_id_.empty() && entry.speculation && !plain;
-    wave_mode_ = execution::AdaptiveWaveMode(kWaveCost, WaveForce(entry.wave_form),
+    speculate_ = !drafter_id_.empty() && settings.speculation.value;
+    // DSpark's drafts a step, and its verify's rows: the anchor and them.
+    options_.draft_rows = settings.draft_rows.value;
+    options_.max_verify = settings.draft_rows.value + 1;
+    execution::AdaptiveWaveMode::Costs costs{};
+    for (std::size_t w = 0; w < settings.wave_costs.value.size() && w + 2 < costs.size(); ++w) {
+      costs[w + 2] = settings.wave_costs.value[w];
+    }
+    wave_mode_ = execution::AdaptiveWaveMode(costs, WaveForce(settings.wave_form.value),
                                              CutRows(options_.max_verify));
-    context_ = entry.context;
+    context_ = settings.context.value;
     options_.artifact = roles.installed / artifact_id_;
     options_.out = roles.spill;
-    options_.context = entry.context;
-    configured_rows_ = entry.prefill_chunk;
-    max_rows_ = PrefillChunkRows(
-        entry.context, entry.prefill_chunk,
-        entry.context > kDsv4WidePrefillContext ? kDsv4DeepPrefillRows : kDsv4PrefillRows,
-        model::Dsv4MostRows(model::Dsv4Flash(), entry.context));
+    options_.context = context_;
+    configured_rows_ = settings.prefill_chunk.value;
+    max_rows_ = PrefillChunkRows(context_, std::nullopt, settings.prefill_chunk.value,
+                                 model::Dsv4MostRows(model::Dsv4Flash(), context_));
     options_.max_rows = max_rows_;
     options_.graphs = true;
     // Request slots share the weights and workspace, each with its own
     // conversation state: concurrent chat requests decode in waves
     // (engine/dsv4_runner.h), whose row-local products read each weight
     // once for all of them. With DSpark each request's verify joins a wave
-    // with at least two rows, so a wave of sixteen holds eight.
-    options_.wave_slots =
-        SlotsOf(entry, kDsv4DefaultSlots,
-                speculate_ ? static_cast<std::uint32_t>(engine::Dsv4Runner::kWaveRows / 2)
-                           : static_cast<std::uint32_t>(engine::kMaxRequestSlots),
-                "a DSpark verify takes two of a wave's sixteen rows", slots_report_);
-    // The output-A/HCA prefill on every prefill chunk of 64 rows or more,
-    // where it passes every registered quality control on both GGUFs under
-    // the tie-aware rule (docs/experiments/ds4-output-prefix, "Default-on
-    // acceptance").
-    engine::SetDsv4ServedPrefill(options_);
+    // with at least two rows, so a wave of sixteen holds eight (the
+    // settings' cap).
+    options_.wave_slots = settings.max_slots.value;
+    slots_report_ = SlotsReport(settings);
+    // The output-A/HCA prefill: on full 4,096-row chunks, and on every
+    // prefill chunk of 64 rows or more, where it passes every registered
+    // quality control on both GGUFs under the tie-aware rule
+    // (docs/experiments/ds4-output-prefix, "Default-on acceptance"): the
+    // served defaults, which an owner may turn off for exactness.
+    options_.prefill_outa_hca = settings.prefill_outa_hca.value;
+    options_.prefill_outa_hca_partial =
+        settings.prefill_outa_hca.value && settings.prefill_outa_hca_partial.value;
     if (speculate_) {
       options_.drafter = roles.installed / drafter_id_;
     }
@@ -309,38 +225,7 @@ class Dsv4 final : public Llm {
     }
     // The tokenizer and template from the artifact's kept GGUF metadata
     // (import rule 7): the first shard's.
-    std::string kv;
-    for (const ja::ListedFile& f : artifact->files()) {
-      if (f.role == ja::FileRole::kSourceMetadata && f.path.ends_with(".kv.gguf") &&
-          (kv.empty() || f.path.contains("-00001-of-"))) {
-        kv = f.path.substr(5);
-      }
-    }
-    if (kv.empty()) {
-      return Error("the artifact keeps no GGUF metadata, so no tokenizer");
-    }
-    auto bytes = artifact->ReadMetadata(kv);
-    if (!bytes) {
-      return Error(std::format("{}: {}", kv, bytes.error().ToString()));
-    }
-    auto read = tokenizer::ReadGgufTokenizer(std::as_bytes(std::span(*bytes)));
-    if (!read) {
-      return Error(std::format("{}: {}", kv, read.error().ToString()));
-    }
-    auto created = tokenizer::Tokenizer::Create(std::move(read->spec));
-    if (!created) {
-      return Error(std::format("{}: {}", kv, created.error().ToString()));
-    }
-    tokenizer_ = std::make_unique<tokenizer::Tokenizer>(std::move(*created));
-    FindThinkTokens();
-    // A model is refused here, like Qwen3.8, when it could serve no turn.
-    if (!read->has_chat_template) {
-      return Error(std::format("{} keeps no chat template, so it has no chat turns", kv));
-    }
-    if (auto used = UseTemplate(read->chat_template); !used) {
-      return used;
-    }
-    return {};
+    return UseChatAssets(*artifact, entry_);
   }
   std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
   std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
@@ -607,15 +492,41 @@ class Dsv4 final : public Llm {
     const auto width = static_cast<std::uint32_t>(prepared.size());
     const bool sampled = std::ranges::any_of(
         prepared, [this](const PreparedGeneration& unit) { return sampling(*unit.branch); });
-    const auto mode = wave_mode_.Choose(width, sampled);
+    auto mode = wave_mode_.Choose(width, sampled);
+    // Until this width's cost is calibrated on this machine, its waves
+    // alternate the forms, at most kExploreWaves of them, so both are timed
+    // (calibration.h); a forced form or a sampling member never does.
+    if (!sampled && settings_.wave_form.value == config::WaveForm::kAuto &&
+        width - 2 < calibration_record_.known.wave_costs.size() &&
+        !calibration_record_.known.wave_costs[width - 2] && explored_[width] < kExploreWaves) {
+      mode = explored_[width] % 2 == 0 ? execution::AdaptiveWaveMode::Mode::kSpeculative
+                                       : execution::AdaptiveWaveMode::Mode::kPlain;
+      ++explored_[width];
+    }
     std::uint32_t tokens = 0;
     std::uint32_t complete = 0;
+    const double planned = runner_.plan_seconds();
+    const std::uint64_t captured = runner_.graph_stats().captured + runner_.draft_stats().captured;
+    const auto started = Clock::now();
     auto waved = mode == execution::AdaptiveWaveMode::Mode::kPlain
                      ? PlainWave(prepared)
                      : SpeculativeWave(prepared, tokens, complete);
+    const double seconds = Seconds(Clock::now() - started);
     // A sampling member's speculation accepts differently: not observed.
     if (waved && !sampled) {
       wave_mode_.Observe(width, mode, tokens, complete);
+    }
+    // Each form's wave time at this width: the calibration of its cost
+    // (calibration.h), in force from the next start, never this service's.
+    // Only steady waves count, matched between the forms: none that
+    // planned or captured a graph (a shape's first waves), and a
+    // draft-verify wave only when every member's full verify joined it
+    // (not one cut by a mask width or the reply's end, or run alone).
+    const bool speculative = mode == execution::AdaptiveWaveMode::Mode::kSpeculative;
+    if (waved && runner_.plan_seconds() == planned &&
+        runner_.graph_stats().captured + runner_.draft_stats().captured == captured &&
+        (!speculative || complete == width)) {
+      calibration_samples_.Wave(width, speculative, seconds);
     }
     return waved;
   }
@@ -815,6 +726,7 @@ class Dsv4 final : public Llm {
     base::Check(native_slots_[index] != nullptr, "native conversation slots are not ready");
     return *native_slots_[index];
   }
+  config::ModelEntry entry_;  // its tokenizer and template files, if named
   std::string artifact_id_;
   std::string drafter_id_;  // empty: none
   fs::path store_;
@@ -822,23 +734,10 @@ class Dsv4 final : public Llm {
   engine::Dsv4Options options_;  // before the runner, which keeps a reference
   engine::Dsv4Runner runner_;
   std::array<engine::Dsv4Runner::Slot*, engine::Dsv4Runner::kRequestSlots> native_slots_{};
-  // With DSpark: draft-verify or plain waves, by width (RunPreparedGenerationWave).
-  // The calibration: a draft-verify wave's time over a plain decode wave's,
-  // by width: the median joined wave of `jitllm_spec_runner --check wave
-  // --slots N --wave-mode verify|decode` (GB10, community GGUF, wave lanes
-  // on, 2026-10-03; docs/experiments/deepseek-batching, "Wave lanes" and
-  // "Joined draft blocks"): with joined drafts, 127.5 / 61.3, 180.0 /
-  // 71.5, 231.2 / 82.3 and 229.0 / 95.6 ms at widths 2 to 5; with lanes,
-  // 224.7 / 106.1, 258.0 / 116.6 and 287.3 / 129.1 ms at widths 6 to 8
-  // (more request slots, D-104; past five a joined draft's rows exceed a
-  // wave's, so each block runs alone), each from `--slots N`. A
-  // DSpark verify then takes three rows a request at width 5 and two past
-  // it, so past five a draft-verify wave (at most two tokens a request)
-  // never pays (docs/experiments/request-slots). Fallbacks until D-103's
-  // calibration on the machine measures them; to be measured again when a
-  // wave's cost changes.
-  static constexpr execution::AdaptiveWaveMode::Costs kWaveCost = {0,    0,    2.08, 2.52, 2.81,
-                                                                   2.40, 2.12, 2.21, 2.23};
+  // With DSpark: draft-verify or plain waves, by width (RunPreparedGenerationWave),
+  // as the settings' wave_costs (a draft-verify wave's time over a plain
+  // decode wave's, by width; model_settings.h kDsv4WaveCosts measured them
+  // with each form forced) and wave_form choose.
   // A request's share of a draft-verify wave's rows among `count`: all
   // sixteen's, at least two (so DSpark takes at most eight requests).
   static std::uint32_t WaveShare(std::size_t count) {
@@ -867,34 +766,39 @@ class Dsv4 final : public Llm {
     }
     return execution::AdaptiveWaveMode::Force::kNone;
   }
-  execution::AdaptiveWaveMode wave_mode_{kWaveCost};
+  execution::AdaptiveWaveMode wave_mode_;
+  // By width, the waves run to calibrate its cost (RunPreparedGenerationWave):
+  // at most four times a value's samples, half of each form, since a
+  // shape's first waves plan and capture and do not count.
+  static constexpr std::size_t kExploreWaves = 4 * CalibrationSamples::kSamples;
+  std::array<std::size_t, execution::AdaptiveWaveMode::kMaxWidth + 1> explored_{};
 };
 
 // Qwen3.8 Flash Next (engine/qwen38_runner.h), with its MTP block as its
 // drafter.
 class Qwen38 final : public Llm {
  public:
-  Qwen38(engine::PagedNode& node, const config::ModelEntry& entry,
-         const config::RuntimeRoles& roles, bool plain, int index)
-      : artifact_id_(entry.artifact.value_or("")),
+  Qwen38(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
+         const config::RuntimeRoles& roles, int index)
+      : entry_(entry),
+        artifact_id_(entry.artifact.value_or("")),
         drafter_id_(entry.drafter.value_or("")),
-        tokenizer_path_(entry.tokenizer),
-        template_path_(entry.chat_template),
         store_(roles.installed),
         runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
     name_ = entry.name;
+    settings_ = settings;
     node_ = &node;
-    speculate_ = !drafter_id_.empty() && entry.speculation && !plain;
+    speculate_ = !drafter_id_.empty() && settings.speculation.value;
     checkpoint_directory_ = roles.spill;
-    context_ = entry.context;
+    context_ = settings.context.value;
     options_.artifact = roles.installed / artifact_id_;
     options_.out = roles.spill;
-    options_.context = entry.context;
-    configured_rows_ = entry.prefill_chunk;
+    options_.context = context_;
+    configured_rows_ = settings.prefill_chunk.value;
     // (The runner's fast graph builds no mask of every cell by every row, so
     // RE-037's bound does not cap its chunks.)
-    max_rows_ = PrefillChunkRows(entry.context, entry.prefill_chunk, kQwen38PrefillRows,
-                                 model::Qwen38MostRows(entry.context, false));
+    max_rows_ = PrefillChunkRows(context_, std::nullopt, settings.prefill_chunk.value,
+                                 model::Qwen38MostRows(context_, false));
     options_.max_rows = max_rows_;
     options_.graphs = true;
     // Request slots share weights and workspace while each branch retains
@@ -902,13 +806,20 @@ class Qwen38 final : public Llm {
     // (engine/qwen38_wave_plan.h), whose row-local products read each weight
     // once for a group of up to sixteen rows (C2/C4 HTTP screens: +9.8%/+20%
     // over two slots of pairs).
-    options_.wave_slots =
-        SlotsOf(entry, kQwen38DefaultSlots, static_cast<std::uint32_t>(engine::kMaxRequestSlots),
-                {}, slots_report_);
+    options_.wave_slots = settings.max_slots.value;
     options_.request_slots = options_.wave_slots;
+    slots_report_ = SlotsReport(settings);
+    options_.wave_read_align = settings.wave_read_align.value;
+    depth_cost_ratio_ = settings.depth_cost_ratio.value;
+    shared_wave_depth_ = settings.shared_wave_depth.value;
+    draft_wave_max_ = settings.draft_wave_max.value;
     if (speculate_) {
       options_.drafter = roles.installed / drafter_id_;
-      options_.draft_rows = max_rows_ >= 4 ? 3 : 2;
+      // A verify takes the anchor and the drafts: a chunk of fewer than
+      // four rows holds two drafts at most.
+      options_.draft_rows =
+          max_rows_ >= 4 ? settings.draft_rows.value : std::min(settings.draft_rows.value, 2U);
+      options_.draft_vocab = settings.draft_vocab.value;
     }
   }
 
@@ -961,40 +872,7 @@ class Qwen38 final : public Llm {
     // The tokenizer and template: kept in the artifact's metadata, or (M3's
     // import kept config.json only) the checkpoint's, which the
     // configuration names.
-    const auto source = [&](std::string_view kept, const std::optional<fs::path>& named,
-                            std::string_view key) -> std::expected<std::string, std::string> {
-      auto meta = artifact->ReadMetadata(kept);
-      if (meta) {
-        return std::move(*meta);
-      }
-      if (meta.error().rule != ja::Rule::kFileSet) {  // kept, but not as listed
-        return Error(std::format("{}: {}", kept, meta.error().ToString()));
-      }
-      if (!named.has_value()) {
-        return Error(
-            std::format("the artifact keeps no {} and models.{}.{} is not set", kept, name_, key));
-      }
-      return ReadTrustedFile(named.value_or(fs::path()), ::geteuid(), kMaxTokenizerBytes);
-    };
-    auto json = source("tokenizer.json", tokenizer_path_, "tokenizer");
-    if (!json) {
-      return std::unexpected(json.error());
-    }
-    auto spec = tokenizer::ReadHfTokenizer(*json);
-    if (!spec) {
-      return Error("tokenizer: " + spec.error().ToString());
-    }
-    auto created = tokenizer::Tokenizer::Create(std::move(*spec));
-    if (!created) {
-      return Error("tokenizer: " + created.error().ToString());
-    }
-    tokenizer_ = std::make_unique<tokenizer::Tokenizer>(std::move(*created));
-    FindThinkTokens();
-    auto text = source("chat_template.jinja", template_path_, "chat_template");
-    if (!text) {
-      return std::unexpected(text.error());
-    }
-    if (auto used = UseTemplate(*text); !used) {
+    if (auto used = UseChatAssets(*artifact, entry_); !used) {
       return used;
     }
     if (auto setup = runner_.Setup(); !setup) {
@@ -1214,6 +1092,7 @@ class Qwen38 final : public Llm {
     if (depth > options_.context - pos) {
       return Error("the drafts would pass the context");
     }
+    const auto started = Clock::now();
     std::vector<std::int32_t> drafts;
     if (auto r = NativeSlot(branch).Draft(all, drafts, nullptr, depth); !r) {
       return r;
@@ -1230,6 +1109,11 @@ class Qwen38 final : public Llm {
     if (auto r = NativeSlot(branch).Verify(input, pos, argmax, rows_needed ? &verified : nullptr);
         !r) {
       return r;
+    }
+    // A full greedy step's time by its depth: the calibration of the depth
+    // cost ratio (calibration.h), in force from the next start.
+    if (!sampling(branch) && rows == depth + 1 && pos < CalibrationSamples::kShortContext) {
+      calibration_samples_.DraftStep(depth, Seconds(Clock::now() - started));
     }
     return JudgeVerify(branch, drafts, pos, depth, argmax, verified, kept, logits, drafted);
   }
@@ -1252,11 +1136,11 @@ class Qwen38 final : public Llm {
   }
 
   Status ClearStateFor(Branch& branch) override {
-    BranchDecoding(branch) = execution::AdaptiveDepth(3);
+    BranchDecoding(branch) = execution::AdaptiveDepth(3, depth_cost_ratio_);
     return NativeSlot(branch).Clear();
   }
   Status ReleaseIdleStateFor(Branch& branch) override {
-    BranchDecoding(branch) = execution::AdaptiveDepth(3);
+    BranchDecoding(branch) = execution::AdaptiveDepth(3, depth_cost_ratio_);
     return NativeSlot(branch).ClearIdle();
   }
   Status SpillFor(Branch& branch) override { return NativeSlot(branch).Spill(); }
@@ -1312,15 +1196,17 @@ class Qwen38 final : public Llm {
     std::vector<Frame> frames(prepared.size());
     std::vector<engine::Qwen38Runner::DraftWork> drafts;
     drafts.reserve(prepared.size());
+    const auto started = Clock::now();
     for (std::size_t i = 0; i < prepared.size(); ++i) {
       PreparedGeneration& unit = prepared[i];
       Frame& frame = frames[i];
-      // A shared wave drafts two tokens a request: each verify row past that
-      // reads its own routed experts for every member, so the third draft's
-      // acceptance no longer pays for itself (C2/C4 HTTP screens: +8%/+15%
-      // over adaptive depth). A lone request keeps its adaptive depth.
+      // A shared wave drafts shared_wave_depth tokens a request (two: each
+      // verify row past that reads its own routed experts for every member,
+      // so the third draft's acceptance no longer pays for itself; C2/C4
+      // HTTP screens: +8%/+15% over adaptive depth). A lone request keeps
+      // its adaptive depth.
       frame.depth =
-          std::min(DraftDepthFor(*unit.branch), prepared.size() > 1 ? kSharedWaveDepth : 3U);
+          std::min(DraftDepthFor(*unit.branch), prepared.size() > 1 ? shared_wave_depth_ : 3U);
       if (frame.depth > context_ - unit.step.position) {
         return Error("the drafts would pass the context");
       }
@@ -1329,10 +1215,11 @@ class Qwen38 final : public Llm {
                         .drafts = &frame.drafts,
                         .passes = frame.depth});
     }
-    // Past two requests each drafts alone, on its own cached graphs: a draft
-    // wave's graph keys every slot's pending rows (one to four), so a wider
-    // wave's graphs would seldom repeat (C4 HTTP screen: 3.6% faster).
-    if (drafts.size() > 2) {
+    // Past draft_wave_max requests (two) each drafts alone, on its own
+    // cached graphs: a draft wave's graph keys every slot's pending rows
+    // (one to four), so a wider wave's graphs would seldom repeat (C4 HTTP
+    // screen: 3.6% faster).
+    if (drafts.size() > draft_wave_max_) {
       for (std::size_t i = 0; i < prepared.size(); ++i) {
         if (auto ran = NativeSlot(*prepared[i].branch)
                            .Draft(prepared[i].step.all, frames[i].drafts, nullptr, frames[i].depth);
@@ -1386,6 +1273,13 @@ class Qwen38 final : public Llm {
           unit.failed_prefix_valid = true;
         }
       }
+    }
+    // A lone greedy request's full step by its depth: the calibration of
+    // the depth cost ratio (calibration.h), in force from the next start.
+    if (prepared.size() == 1 && prepared[0].result && !sampling(*prepared[0].branch) &&
+        frames[0].drafts.size() == frames[0].depth &&
+        prepared[0].step.position < CalibrationSamples::kShortContext) {
+      calibration_samples_.DraftStep(frames[0].depth, Seconds(Clock::now() - started));
     }
     return {};
   }
@@ -1470,12 +1364,15 @@ class Qwen38 final : public Llm {
     base::Check(native_slots_[index] != nullptr, "native conversation slots are not ready");
     return *native_slots_[index];
   }
+  config::ModelEntry entry_;  // its tokenizer and template files, if named
   std::string artifact_id_;
   std::string drafter_id_;  // empty: none
-  std::optional<fs::path> tokenizer_path_;
-  std::optional<fs::path> template_path_;
   fs::path store_;
   std::string slots_report_;
+  // A wave's drafts a request, and the most requests drafting in one
+  // joined wave (its settings').
+  std::uint32_t shared_wave_depth_ = kQwen38SharedWaveDepth;
+  std::uint32_t draft_wave_max_ = kQwen38DraftWaveMax;
   engine::Qwen38Options options_;  // before the runner, which keeps a reference
   engine::Qwen38Runner runner_;
   std::array<engine::Qwen38Runner::Slot*, engine::Qwen38Runner::kRequestSlots> native_slots_{};
@@ -1484,17 +1381,20 @@ class Qwen38 final : public Llm {
 // The Qwen-Image-2.1 pipeline (engine/qwen_image_runner.h).
 class QwenImage final : public Image {
  public:
-  QwenImage(engine::PagedNode& node, const config::ModelEntry& entry,
+  QwenImage(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
             const config::RuntimeRoles& roles, const ServingOptions& serving, int index)
       : composition_id_(entry.composition.value_or("")),
         store_(roles.installed),
         runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
     name_ = entry.name;
+    settings_ = settings;
     options_.store = roles.installed;
     options_.composition = composition_id_;
     options_.noise = serving.image_noise;
     options_.out = roles.spill;
     options_.prompt = serving.image_prompt;
+    options_.size = settings.image_size.value;
+    options_.steps = settings.image_steps.value;
   }
 
   engine::PagedModel& paged() override { return runner_; }
@@ -1937,9 +1837,36 @@ Status Llm::UseTemplate(std::string_view text) {
   return {};
 }
 
-void Llm::FindThinkTokens() {
-  think_start_ = tokenizer_->Find("<think>");
-  think_end_ = tokenizer_->Find("</think>");
+Status Llm::UseChatAssets(const ja::Artifact& artifact, const config::ModelEntry& entry) {
+  auto assets = ReadChatAssets(artifact, entry, ::geteuid());
+  if (!assets) {
+    return std::unexpected(assets.error());
+  }
+  auto created = tokenizer::Tokenizer::Create(std::move(assets->spec));
+  if (!created) {
+    return Error(std::format("{}: {}", assets->from, created.error().ToString()));
+  }
+  tokenizer_ = std::make_unique<tokenizer::Tokenizer>(std::move(*created));
+  // The reasoning markers (D-103): an override, else the vocabulary's
+  // "<think>" pair, else none.
+  if (auto r = ResolveReasoning(settings_, entry,
+                                [this](std::string_view text) { return tokenizer_->Find(text); });
+      !r) {
+    return r;
+  }
+  const auto find = [this](const std::string& text) -> std::optional<std::int32_t> {
+    return text.empty() ? std::nullopt : tokenizer_->Find(text);
+  };
+  think_start_ = find(settings_.reasoning_start.value);
+  think_end_ = find(settings_.reasoning_end.value);
+  // A model is refused when it could serve no turn.
+  if (!assets->chat_template) {
+    return Error(
+        std::format("{} keeps no chat template and models.{}.chat_template is not set, "
+                    "so it has no chat turns",
+                    assets->from, entry.name));
+  }
+  return UseTemplate(*assets->chat_template);
 }
 
 Status Llm::PrepareBranches(std::uint32_t count, std::uint32_t draft_depth) {
@@ -1949,11 +1876,12 @@ Status Llm::PrepareBranches(std::uint32_t count, std::uint32_t draft_depth) {
   }
   for (std::uint32_t slot = 1; slot < count; ++slot) {
     extra_branches_[slot - 1] = std::unique_ptr<Branch>(new Branch(*this, slot));
-    extra_branches_[slot - 1]->decoding_ = execution::AdaptiveDepth(draft_depth);
-    extra_branches_[slot - 1]->saved_decoding_ = execution::AdaptiveDepth(draft_depth);
+    extra_branches_[slot - 1]->decoding_ = execution::AdaptiveDepth(draft_depth, depth_cost_ratio_);
+    extra_branches_[slot - 1]->saved_decoding_ =
+        execution::AdaptiveDepth(draft_depth, depth_cost_ratio_);
   }
-  default_branch_.decoding_ = execution::AdaptiveDepth(draft_depth);
-  default_branch_.saved_decoding_ = execution::AdaptiveDepth(draft_depth);
+  default_branch_.decoding_ = execution::AdaptiveDepth(draft_depth, depth_cost_ratio_);
+  default_branch_.saved_decoding_ = execution::AdaptiveDepth(draft_depth, depth_cost_ratio_);
   branch_count_ = count;
   branches_prepared_ = true;
   return {};
@@ -2672,7 +2600,15 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity
     branch_.history_used_ = Clock::now();
     run_.end = end;
     ++run_.chunks;
-    run_.longest = std::max(run_.longest, Seconds(Clock::now() - started));
+    const double seconds = Seconds(Clock::now() - started);
+    run_.longest = std::max(run_.longest, seconds);
+    // Its speed, and a whole prefill's cost a token (calibration.h).
+    model_.calibration_samples_.PrefillChunk(at, next->rows, seconds);
+    from_zero_ = from_zero_ || at == 0;
+    chunk_seconds_ += seconds;
+    if (from_zero_ && end == tokens_.size()) {
+      model_.calibration_samples_.Prefill(end, chunk_seconds_);
+    }
   }
   NextPhase();
   return {};
@@ -2725,19 +2661,30 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
   }
   last.clear();
   auto completed = static_cast<std::uint32_t>(branch.history_.size());
+  const bool from_zero = branch.history_.empty();
+  double chunk_seconds = 0;
   auto ran = RunPrefillChunks(
       static_cast<std::uint32_t>(branch.history_.size()), static_cast<std::uint32_t>(all.size()),
       max_rows_,
       [&](std::uint32_t at, std::uint32_t n) {
+        auto started = Clock::now();
         auto chunk = RunChunkFor(branch, std::span(all).first(at + n), at, speculate_, last);
         // A capacity refusal ran nothing: the same chunk again once freed.
         for (std::size_t reclaimed = 0;
              !chunk && CapacityRefused(branch) && reclaimed < kMaxBranches && ReclaimFor(branch);
              ++reclaimed) {
+          started = Clock::now();
           chunk = RunChunkFor(branch, std::span(all).first(at + n), at, speculate_, last);
         }
         if (chunk) {
           completed = at + n;
+          // Its speed, and a whole prefill's cost a token (calibration.h).
+          const double seconds = Seconds(Clock::now() - started);
+          calibration_samples_.PrefillChunk(at, n, seconds);
+          chunk_seconds += seconds;
+          if (from_zero && completed == all.size()) {
+            calibration_samples_.Prefill(completed, chunk_seconds);
+          }
         } else {
           branch.capacity_refused_ = CapacityRefused(branch);
         }
@@ -3072,6 +3019,7 @@ Status Llm::GenerationSession::RunScalarStep(bool defer_capacity) {
   if (!step) {
     return std::unexpected(step.error());
   }
+  const auto started = Clock::now();
   if (step->speculative) {
     std::vector<std::int32_t> kept;
     std::vector<std::vector<float>> logits;
@@ -3080,6 +3028,9 @@ Status Llm::GenerationSession::RunScalarStep(bool defer_capacity) {
     if (!ran) {
       return FailStep(ran.error());
     }
+    // Its decode speed (calibration.h: the decode floor's).
+    model_.calibration_samples_.DecodeStep(step->position, static_cast<double>(kept.size()),
+                                           Seconds(Clock::now() - started));
     // SpecStep already updated the legacy counter, including partial failures.
     return ApplySpeculative(std::move(kept), std::move(logits), 0);
   }
@@ -3087,6 +3038,7 @@ Status Llm::GenerationSession::RunScalarStep(bool defer_capacity) {
   if (auto ran = model_.RunChunkFor(branch_, step->all, step->position, false, row); !ran) {
     return FailStep(ran.error());
   }
+  model_.calibration_samples_.DecodeStep(step->position, 1.0, Seconds(Clock::now() - started));
   return ApplyPlain(std::move(row));
 }
 
@@ -3163,12 +3115,28 @@ Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions, bool
   }
   std::ranges::sort(prepared, {},
                     [this](const PreparedGeneration& unit) { return BranchIndex(*unit.branch); });
+  const auto started = Clock::now();
   if (auto ran = RunPreparedGenerationWave(prepared); !ran) {
     for (PreparedGeneration& unit : prepared) {
       unit.session->out_.drafted += unit.drafted;
     }
     fail_cohort(ran.error());
     return ran;
+  }
+  {
+    // Each request's decode speed in the wave (calibration.h: the decode
+    // floor's): the tokens it committed, on average, over the wave's time.
+    const double seconds = Seconds(Clock::now() - started);
+    std::size_t tokens = 0;
+    std::uint32_t at = std::numeric_limits<std::uint32_t>::max();
+    for (const PreparedGeneration& unit : prepared) {
+      if (unit.result) {
+        tokens += unit.step.speculative ? unit.kept.size() : 1;
+      }
+      at = std::min(at, unit.step.position);
+    }
+    calibration_samples_.DecodeStep(
+        at, static_cast<double>(tokens) / static_cast<double>(prepared.size()), seconds);
   }
   for (PreparedGeneration& unit : prepared) {
     if (!unit.result) {
@@ -3354,7 +3322,7 @@ void Server::Log(std::string_view text) {
   (void)std::fflush(log_);
 }
 
-Status Server::Make(const config::ModelEntry& entry, int index, std::string_view architecture) {
+Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settings, int index) {
   if (entry.composition) {
     if (options_.image_noise.empty()) {
       Log(
@@ -3363,15 +3331,16 @@ Status Server::Make(const config::ModelEntry& entry, int index, std::string_view
                       entry.name));
       return {};
     }
-    models_.push_back(std::make_unique<QwenImage>(node_, entry, roles_, options_, index));
+    models_.push_back(std::make_unique<QwenImage>(node_, entry, settings, roles_, options_, index));
     return {};
   }
-  if (architecture == "deepseek4") {
-    models_.push_back(std::make_unique<Dsv4>(node_, entry, roles_, options_.plain, index));
-  } else if (architecture == "qwen4exp") {
-    models_.push_back(std::make_unique<Qwen38>(node_, entry, roles_, options_.plain, index));
+  if (settings.architecture == "deepseek4") {
+    models_.push_back(std::make_unique<Dsv4>(node_, entry, settings, roles_, index));
+  } else if (settings.architecture == "qwen4exp") {
+    models_.push_back(std::make_unique<Qwen38>(node_, entry, settings, roles_, index));
   } else {
-    return Error(std::format("model {}: no runner for architecture {}", entry.name, architecture));
+    return Error(
+        std::format("model {}: no runner for architecture {}", entry.name, settings.architecture));
   }
   return {};
 }
@@ -3438,36 +3407,59 @@ Status Server::Start(bool snapshot) {
   if (config_.models.empty()) {
     return Error("the configuration names no models ([models.<name>], D-096)");
   }
-  // Check every LLM's checkpoint ceiling before opening the device node or
-  // constructing runners. An invalid model later in the list must not
-  // cause any earlier model's resources to be allocated either.
-  std::vector<std::string> architectures;
-  architectures.reserve(config_.models.size());
+  // Every model's settings (D-103: derived from its artifacts, calibrated on
+  // this machine, or overridden), its checkpoint's ceiling among them,
+  // resolved before opening the device node or constructing runners. An
+  // invalid model later in the list must not cause any earlier model's
+  // resources to be allocated either.
+  std::vector<ModelSettings> settings;
+  std::vector<Llm::CalibrationRecord> calibrations;
+  settings.reserve(config_.models.size());
   for (const config::ModelEntry& entry : config_.models) {
-    if (entry.composition) {
-      architectures.emplace_back();
-      continue;
+    auto facts = ReadArtifactFacts(entry, roles_.installed);
+    if (!facts) {
+      return Error(std::format("model {}: {}", entry.name, facts.error()));
     }
-    auto artifact = OpenTrusted(roles_.installed, entry.artifact.value_or(""));
-    if (!artifact) {
-      return Error(std::format("model {}: {}", entry.name, artifact.error()));
+    // Its calibration on this machine, if one is recorded for this device,
+    // driver and build (calibration.h); a reading costs a small file.
+    Llm::CalibrationRecord record;
+    if (!entry.composition) {
+      // Keyed by the settings its measurements depend on, as they resolve
+      // without calibration.
+      auto uncalibrated = ResolveSettings(entry, *facts, nullptr, options_.plain);
+      if (!uncalibrated) {
+        return Error(std::format("model {}: {}", entry.name, uncalibrated.error()));
+      }
+      record.key = CalibrationKeyOf(entry, *uncalibrated);
+      const CalibrationRead read = ReadCalibration(roles_.state, record.key, ::geteuid());
+      Log(std::format("model {}: calibration {}", entry.name, read.note));
+      if (read.calibration) {
+        record.known = *read.calibration;
+      }
     }
-    const std::string& architecture = artifact->model().architecture;
-    if (auto context = CheckModelContext(architecture, entry.context); !context) {
-      return Error(std::format("model {}: {}", entry.name, context.error()));
+    auto resolved = ResolveSettings(entry, *facts, record.known.empty() ? nullptr : &record.known,
+                                    options_.plain);
+    if (!resolved) {
+      return Error(std::format("model {}: {}", entry.name, resolved.error()));
     }
-    architectures.push_back(architecture);
+    for (const std::string& ignored : resolved->ignored) {
+      Log(std::format("model {}: ignored {}", entry.name, ignored));
+    }
+    settings.push_back(std::move(*resolved));
+    calibrations.push_back(std::move(record));
   }
   if (auto r = node_.Open(); !r) {
     return r;
   }
   // Each model's stream and owner: its place among the registered.
-  std::size_t entry_index = 0;
-  for (const config::ModelEntry& entry : config_.models) {
-    if (auto r = Make(entry, static_cast<int>(models_.size()), architectures[entry_index]); !r) {
+  for (std::size_t i = 0; i < config_.models.size(); ++i) {
+    const std::size_t before = models_.size();
+    if (auto r = Make(config_.models[i], settings[i], static_cast<int>(models_.size())); !r) {
       return r;
     }
-    ++entry_index;
+    if (models_.size() > before && models_.back()->llm()) {
+      static_cast<Llm&>(*models_.back()).calibration_record() = std::move(calibrations[i]);
+    }
   }
   if (models_.empty()) {
     return Error("no configured model could be registered");
@@ -3501,6 +3493,9 @@ Status Server::Start(bool snapshot) {
     Log(std::format("model {}: set up in {:.2f} s, {} weight extents ({:.2f} GB read a load){}",
                     m->name(), Seconds(Clock::now() - started), m->weights().size(),
                     static_cast<double>(m->weight_read_bytes()) / 1e9, chunks));
+    // Each effective setting and its source (D-103; `jitllm-runtime
+    // settings` lists them with what each came from).
+    Log(std::format("model {}: settings {}", m->name(), m->settings().Summary()));
     if (const auto report = m->allocation_report(); !report.empty()) {
       Log(std::format("allocation model {}: {}", m->name(), report));
     }
@@ -3689,6 +3684,7 @@ Status Server::TearDown() {
     return {};
   }
   if (started_) {
+    RecordCalibrations();
     // What the incremental spills and swaps left unwritten, and the
     // reclaims that found too little to take (counts and bytes only).
     if (auto stats = node_.Stats(); stats) {
@@ -3953,7 +3949,8 @@ void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const
          .bytes = bytes,
          .last_use = static_cast<std::uint64_t>(model.LastUsed(**b).time_since_epoch().count()),
          .restore_seconds = rates.dropped
-                                ? size * kRecomputeSecondsPerByte
+                                ? static_cast<double>((*b)->history().size()) *
+                                      model.settings().recompute_ms_per_token.value / 1000.0
                                 : (writes / rates.spill_rate) + (size / rates.restore_rate),
          .running = running});
     memory::SetUse(out.back(), model.LastStamp(**b));
@@ -4241,6 +4238,29 @@ Status Server::UndoSwap(Served& out, Served& in) {
   return out.AfterLoad();  // its checks after a load, as after a swap
 }
 
+void Server::RecordCalibrations() {
+  for (const auto& m : models_) {
+    if (!m->llm()) {
+      continue;
+    }
+    auto& l = static_cast<Llm&>(*m);
+    Llm::CalibrationRecord& record = l.calibration_record();
+    auto measured = l.calibration_samples().Take(record.known);
+    if (!measured) {
+      continue;
+    }
+    // Recorded for the next registration; this service keeps its settings,
+    // so a running schedule never changes with wall time (calibration.h).
+    if (auto written = WriteCalibration(roles_.state, record.key, *measured); !written) {
+      Log(std::format("model {}: calibration not recorded: {}", m->name(), written.error()));
+      continue;
+    }
+    record.known = *measured;
+    Log(std::format("model {}: calibration recorded, in force from the next start: {}", m->name(),
+                    FormatCalibration(*measured, record.key)));
+  }
+}
+
 void Server::Maintain() {
   if (!started_ || torn_down_ || reclaiming_) {
     return;
@@ -4277,6 +4297,7 @@ void Server::Maintain() {
                     config_.memory.retention_hours));
   }
   (void)KeepWithinSpillBudget(0);
+  RecordCalibrations();
   // Pressure from outside the runtime: other processes share the node's
   // memory (D-004). One reclaim of what would restore the target headroom,
   // spaced by a back-off while the pressure persists (PressureTrim), never

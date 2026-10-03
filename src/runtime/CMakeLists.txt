@@ -4,21 +4,25 @@
 # The node runtime process (/usr/libexec/jitllm/jitllm-runtime once
 # packaged, D-063): startup, readiness and stop (runtime.h), the serving
 # commands' arguments (commands.h), a prefill's chunks (prefill.h), the
-# start's memory guard (memory_guard.h), checkpoint ceilings (model_limits.h),
+# start's memory guard (memory_guard.h), serving's choices from a binding (model_limits.h),
 # a chat cohort's state-capacity policy (cohort_capacity.h) and schedule
 # (cohort_schedule.h), when pressure from outside has it trim
 # (pressure_trim.h), room for a swap (swap_room.h), and the chat route's
 # HTTP, requests, binding, server, watchdog and memory-derived limits
 # (http.h, api.h, binding.h, api_server.h, watchdog.h, intake_limits.h;
-# D-097, D-102), all vendor-free.
+# D-097, D-102), and each model's settings in three layers and their
+# calibration on the machine (model_settings.h, calibration.h; D-103), all
+# vendor-free.
 add_library(jitllm_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc binding.cc
-                                  cohort_capacity.cc cohort_schedule.cc completion_tokens.cc
-                                  intake_limits.cc memory_guard.cc model_limits.cc prefill.cc
-                                  pressure_trim.cc swap_room.cc watchdog.cc)
+                                  calibration.cc cohort_capacity.cc cohort_schedule.cc
+                                  completion_tokens.cc intake_limits.cc memory_guard.cc
+                                  model_limits.cc model_settings.cc prefill.cc pressure_trim.cc
+                                  swap_room.cc watchdog.cc)
 target_include_directories(jitllm_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_link_libraries(jitllm_runtime PUBLIC jitllm_config jitllm_platform
+target_link_libraries(jitllm_runtime PUBLIC jitllm_artifact jitllm_config jitllm_platform
+                                            jitllm_tokenizer
                       PRIVATE jitllm_build_info jitllm_report jitllm_device_probe jitllm_json
-                              jitllm_sampling jitllm_tokenizer jitllm_warnings)
+                              jitllm_sampling jitllm_warnings)
 
 # The serving commands themselves (serving.h, D-096): the configured models
 # on the engine's paged node, in CUDA builds; elsewhere a refusal.

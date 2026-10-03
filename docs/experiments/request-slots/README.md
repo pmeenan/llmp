@@ -214,7 +214,7 @@ wave:
 The wave check's plain waves run 62 against the runtime's 78 ms at width
 2, so its ratios there sit above the runtime's recorded costs; at width 4
 they agree (2.94 and 2.90). Widths 5 to 8 take the wave check's ratios,
-as fallbacks for D-103's calibration (`kWaveCost`, `serving.cc`). Past
+as fallbacks for D-103's calibration (`kDsv4WaveCosts`, `runtime/model_settings.h`). Past
 four requests a request's verify is cut to its share of sixteen rows, so
 a draft-verify wave commits at most three tokens a request at width 5 and
 two past it. The chooser now knows each width's cut (`Rows`): it counts

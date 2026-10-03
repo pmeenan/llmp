@@ -159,7 +159,7 @@ class Exchange {
     std::uint32_t prompt_tokens = 0;  // the whole conversation, rendered
     std::uint32_t max_tokens = 0;     // the completion's limit
     std::uint64_t swap_bytes = 0;     // what making the model resident pages in (0: it is)
-    Floors floors;                    // the model's (config::ModelEntry)
+    Floors floors;                    // the model's (its settings, model_settings.h)
   };
   // Once, after the model's own checks and before any model work: a
   // streaming response starts here unless it already has, and a

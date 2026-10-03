@@ -81,6 +81,21 @@ std::uint64_t RandomSeed() {
   return seed;
 }
 
+// A request's sampling: each field it sent, else the model's default (its
+// settings: the checkpoint's own, an override, or OpenAI's; D-103). None
+// at temperature 0: greedy.
+std::optional<execution::SamplingParams> SamplingOf(const api::ChatRequest& request,
+                                                    const Llm& model) {
+  const api::SamplingDefaults s = request.Sampling(model.sampling_defaults());
+  if (s.temperature <= 0) {
+    return std::nullopt;
+  }
+  return execution::SamplingParams{.temperature = static_cast<float>(s.temperature),
+                                   .top_k = s.top_k,
+                                   .top_p = static_cast<float>(s.top_p),
+                                   .min_p = static_cast<float>(s.min_p)};
+}
+
 struct ChatPrompt {
   std::vector<std::int32_t> tokens;
   std::uint32_t stable_boundary = 0;
@@ -368,12 +383,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
           output(model, exchange, this->rendered.reasoning) {
       options.max_tokens = this->rendered.max_tokens;
       options.stop = true;
-      if (request.temperature > 0) {
-        options.sampling =
-            execution::SamplingParams{.temperature = static_cast<float>(request.temperature),
-                                      .top_k = request.top_k,
-                                      .top_p = static_cast<float>(request.top_p),
-                                      .min_p = static_cast<float>(request.min_p)};
+      options.sampling = SamplingOf(request, model);
+      if (options.sampling) {
         options.seed = request.seed.value_or(RandomSeed());
       }
       options.on_tokens = [this](std::span<const std::int32_t> fresh) {
@@ -563,7 +574,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         return std::unique_ptr<api::CooperativeBackend::Work>{};
       }
     }
-    const Floors floors = ModelFloors(model);
+    const Floors floors = model.floors();
     const auto swap_bytes = SwapBytes(model);
     auto frame = std::make_unique<ChatWork>(*this, model, **branch, slot, request.options, exchange,
                                             std::move(*rendered), floors, swap_bytes);
@@ -977,12 +988,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         swap_bytes += static_cast<Llm&>(*out).state_snapshot_bytes();
       }
     }
-    Floors floors;
-    if (const auto entry =
-            std::ranges::find(config_.models, request.model, &config::ModelEntry::name);
-        entry != config_.models.end()) {
-      floors = {.prefill = entry->prefill_floor_tok_s, .decode = entry->decode_floor_tok_s};
-    }
+    const Floors floors = l.floors();
     // Its usage: what so far it continues from.
     const auto so_far = [&](std::uint32_t cached) {
       return api::Completion{.completion_tokens = done,
@@ -1027,12 +1033,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     if (resume != nullptr) {
       options.sampling = resume->sampling;
       options.seed = resume->seed;
-    } else if (request.temperature > 0) {
-      options.sampling =
-          execution::SamplingParams{.temperature = static_cast<float>(request.temperature),
-                                    .top_k = request.top_k,
-                                    .top_p = static_cast<float>(request.top_p),
-                                    .min_p = static_cast<float>(request.min_p)};
+    } else if (auto sampling = SamplingOf(request, l)) {
+      options.sampling = sampling;
       options.seed = request.seed.value_or(RandomSeed());
     }
     ChatOutput output(l, exchange, rendered.reasoning);
@@ -1146,12 +1148,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         swap_bytes += static_cast<Llm&>(*out).state_snapshot_bytes();
       }
     }
-    Floors floors;
-    if (const auto entry =
-            std::ranges::find(config_.models, controls.model, &config::ModelEntry::name);
-        entry != config_.models.end()) {
-      floors = {.prefill = entry->prefill_floor_tok_s, .decode = entry->decode_floor_tok_s};
-    }
+    Floors floors = llm.floors();
     if (score_prompt) {
       // Pure scoring is one-row target work, not tiled prefill. Its scaled
       // deadline and per-row watchdog allowance must use the decode floor.
@@ -1209,12 +1206,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
                             .seed = 0,
                             .on_tokens = {},
                             .on_logits = {}};
-    if (controls.temperature > 0) {
-      options.sampling =
-          execution::SamplingParams{.temperature = static_cast<float>(controls.temperature),
-                                    .top_k = controls.top_k,
-                                    .top_p = static_cast<float>(controls.top_p),
-                                    .min_p = static_cast<float>(controls.min_p)};
+    if (auto sampling = SamplingOf(controls, llm)) {
+      options.sampling = sampling;
       options.seed = controls.seed.value_or(RandomSeed());
     }
     if (request.logprobs) {
@@ -1341,13 +1334,6 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   std::string failure() const override { return failure_; }
 
  private:
-  Floors ModelFloors(const Llm& model) const {
-    const auto entry = std::ranges::find(config_.models, model.name(), &config::ModelEntry::name);
-    return entry == config_.models.end()
-               ? Floors{}
-               : Floors{.prefill = entry->prefill_floor_tok_s, .decode = entry->decode_floor_tok_s};
-  }
-
   std::uint64_t SwapBytes(Llm& model) const {
     if (server_.resident() == &model) {
       return 0;

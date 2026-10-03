@@ -51,6 +51,15 @@ std::optional<std::uint64_t> FileGeneration(int fd);
 // failure.
 std::expected<int, int> OpenAnonymousMemoryFile(const char* name);
 
+// The running executable's size and modification time (nanoseconds since
+// the epoch), which change when it is rebuilt: Linux's /proc/self/exe;
+// macOS would use _NSGetExecutablePath. None on failure.
+struct ExecutableStamp {
+  std::uint64_t size = 0;
+  std::int64_t modified_ns = 0;
+};
+std::optional<ExecutableStamp> RunningExecutableStamp();
+
 }  // namespace jitllm::platform
 
 #endif  // JITLLM_PLATFORM_FILES_H_

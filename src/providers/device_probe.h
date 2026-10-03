@@ -16,12 +16,18 @@
 #define JITLLM_PROVIDERS_DEVICE_PROBE_H_
 
 #include <filesystem>
+#include <string>
 
 #include "base/report.h"
 
 namespace jitllm::providers {
 
 void DescribeDevices(const std::filesystem::path& root, base::Report& report);
+
+// The device the build uses and its driver, as one line that changes when
+// either does (D-103's calibration key): "NVIDIA GB10 sm_121, driver
+// 580.95.05, CUDA 13.0". "none" in a build without a device provider.
+std::string DeviceIdentity(const std::filesystem::path& root);
 
 }  // namespace jitllm::providers
 

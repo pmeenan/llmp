@@ -51,6 +51,19 @@ target_link_libraries(runtime_test PRIVATE jitllm_runtime jitllm_platform)
 jitllm_gtest(runtime_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
+# A model's settings in three layers (D-103): sources, precedence, refused
+# and ignored overrides, the reasoning markers, the listing.
+add_executable(model_settings_test model_settings_test.cc)
+target_link_libraries(model_settings_test PRIVATE jitllm_runtime jitllm_config)
+jitllm_gtest(model_settings_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# The calibration record (D-103): its format, key, atomic write and trusted
+# read, and what a model's first uses measure.
+add_executable(calibration_test calibration_test.cc)
+target_link_libraries(calibration_test PRIVATE jitllm_runtime)
+jitllm_gtest(calibration_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 # A chat cohort's state-capacity policy: who waits, fails, is preempted.
 add_executable(cohort_capacity_test cohort_capacity_test.cc)
 target_link_libraries(cohort_capacity_test PRIVATE jitllm_runtime)

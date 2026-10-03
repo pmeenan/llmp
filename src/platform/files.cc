@@ -7,6 +7,7 @@
 #include <linux/fs.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -104,6 +105,17 @@ std::expected<int, int> OpenAnonymousMemoryFile(const char* name) {
     return std::unexpected(errno);
   }
   return fd;
+}
+
+std::optional<ExecutableStamp> RunningExecutableStamp() {
+  struct stat status{};
+  if (::stat("/proc/self/exe", &status) != 0) {
+    return std::nullopt;
+  }
+  return ExecutableStamp{
+      .size = static_cast<std::uint64_t>(status.st_size),
+      .modified_ns = (static_cast<std::int64_t>(status.st_mtim.tv_sec) * 1'000'000'000) +
+                     static_cast<std::int64_t>(status.st_mtim.tv_nsec)};
 }
 
 }  // namespace jitllm::platform

@@ -22,11 +22,13 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "base/surface_versions.h"
@@ -89,7 +91,7 @@ struct Membership {
 inline constexpr std::size_t kMaxModelName = 64;
 // A model's conversation state, in tokens: the default, and its least.
 // There is no generic ceiling (D-102): registration checks each
-// checkpoint's own (runtime/model_limits.h); a 32-bit count is the type's.
+// checkpoint's own (runtime/model_settings.h); a 32-bit count is the type's.
 inline constexpr std::uint32_t kDefaultContext = 262144;
 inline constexpr std::uint32_t kMinContext = 512;
 // A prefill chunk's rows, when a model's are configured.
@@ -105,11 +107,75 @@ inline constexpr std::uint32_t kMaxDecodeFloor = 100'000;
 // products' sixteen rows (engine/request_cohort.h kMaxRequestSlots;
 // docs/runtime-serving.md#request-slots).
 inline constexpr std::uint32_t kMaxModelSlots = 16;
+// wave_costs' widths: 2 to 8, a speculative model's widest costed wave
+// (execution/adaptive_wave_mode.h kMaxWidth).
+inline constexpr std::size_t kMaxWaveCostWidths = 7;
 
 // How a speculative model steps a wave of concurrent requests
 // (docs/runtime-serving.md): chosen per wave from counted acceptance, or
 // always draft-verify, or always plain decode (exactness controls).
 enum class WaveForm : std::uint8_t { kAuto, kSpeculative, kPlain };
+
+// A model's settings (D-103): every one resolves at registration as a
+// default derived from the artifact, a calibration on this machine, or the
+// owner's override in [models.<name>] (runtime/model_settings.h). The
+// override's value as its table wrote it, checked against its key's schema
+// (ModelKeys); a real key's integer is read as a real.
+using SettingValue = std::variant<bool, std::int64_t, double, std::string, std::vector<double>>;
+
+// What a [models.<name>] key is: its value's type, and for a setting its
+// range. The table below (ModelKeys) is the whole schema of a model's
+// table: a key not in it is refused, and so is one the model's kind does
+// not take.
+enum class ModelKeyType : std::uint8_t {
+  kId,       // 64 lowercase hex digits: an installed artifact or composition
+  kPath,     // an absolute path in normal form
+  kBool,     // true or false
+  kInteger,  // least to most, a multiple of `multiple`, a power of two if `power_of_two`
+  kReal,     // real_least (exclusive if real_open) to real_most; an integer is a real
+  kChoice,   // one of `choices`
+  kReals,    // 1 to most_items reals, each real_least to real_most
+  kText,     // a string of at most `most` bytes, printable, without control characters
+};
+
+// Which models take a key: an artifact's (an LLM), a composition's (a
+// pipeline), or both.
+inline constexpr std::uint8_t kArtifactModels = 1;
+inline constexpr std::uint8_t kCompositionModels = 2;
+
+// Designated initializers in the table may omit any member (NOLINT).
+// NOLINTBEGIN(readability-redundant-member-init)
+struct ModelKeySpec {
+  std::string_view key{};
+  ModelKeyType type = ModelKeyType::kInteger;
+  std::uint8_t kinds = kArtifactModels;
+  // False for what names a model's files (artifact, composition, drafter,
+  // tokenizer, chat_template); true for a setting the runtime resolves.
+  bool setting = true;
+  // The architectures that use the setting, space-separated ("deepseek4",
+  // "qwen4exp"); empty, every one of its kinds. Registration logs an
+  // override that the model's architecture does not use, and ignores it.
+  std::string_view architectures{};
+  std::int64_t least = 0;
+  std::int64_t most = 0;
+  std::int64_t multiple = 1;
+  bool power_of_two = false;
+  double real_least = 0;
+  double real_most = 0;
+  bool real_open = false;  // real_least itself excluded
+  std::size_t most_items = 0;
+  std::span<const std::string_view> choices{};
+  std::string_view unit{};  // for messages: " tokens", " rows", ...
+  // What it sets, in a few words (the settings command's listing).
+  std::string_view summary{};
+};
+// NOLINTEND(readability-redundant-member-init)
+
+// Every [models.<name>] key, in the order the settings command lists them.
+std::span<const ModelKeySpec> ModelKeys();
+const ModelKeySpec* FindModelKey(std::string_view key);
+// Whether `spec` applies to a model of `architecture` (its kinds aside).
+bool KeyAppliesTo(const ModelKeySpec& spec, std::string_view architecture);
 
 // One model: the name the CLI (and later the API) asks for, and what the
 // installed store holds for it. Nothing here has touched the store.
@@ -124,35 +190,22 @@ struct ModelEntry {
   // With an artifact: its speculative drafter's artifact (DSpark, MTP;
   // D-089's drafter binding). Speculation is then the default decode.
   std::optional<std::string> drafter;
-  bool speculation = true;
-  // With an artifact: a speculative model's form for waves of two or more
-  // requests, "auto" (the default), "speculative" or "plain". DeepSeek's
-  // waves take it; a model without waves of both forms ignores it.
-  WaveForm wave_form = WaveForm::kAuto;
-  // With an artifact: the tokens of conversation state its runner holds.
-  std::uint32_t context = kDefaultContext;
-  // With an artifact: the rows of a prefill chunk (1 to kMaxPrefillChunk);
-  // absent, the runtime's default for the model. Either way at most what
-  // the model allows at its context (docs/runtime-serving.md#prefill-chunks).
-  std::optional<std::uint32_t> prefill_chunk;
-  // With an artifact: conservative prefill and decode throughputs (tokens
-  // a second, 1 to kMaxPrefillFloor and kMaxDecodeFloor) from which the
-  // chat route figures how long a prefill chunk, and a non-streaming
-  // request, may take (docs/runtime-serving.md#progress-and-deadlines).
-  std::uint32_t prefill_floor_tok_s = kDefaultPrefillFloor;
-  std::uint32_t decode_floor_tok_s = kDefaultDecodeFloor;
-  // With an artifact: the most requests it serves at once (1 to
-  // kMaxModelSlots), each a request slot of its own; absent, the model's
-  // default, the measured knee of its throughput against each request's
-  // rate (docs/runtime-serving.md#request-slots). Memory decides how many
-  // run at a time below it.
-  std::optional<std::uint32_t> max_slots;
   // With an artifact whose kept metadata has no tokenizer or chat template
   // (M3's Qwen3.8 import kept config.json only): the checkpoint's
   // tokenizer.json and chat template, absolute paths the runtime reads
   // under the same trust rules as the configuration.
   std::optional<std::filesystem::path> tokenizer;
   std::optional<std::filesystem::path> chat_template;
+  // Every setting its table sets, by key (ModelKeys' settings): the
+  // owner's overrides (D-103), each of its key's type and in its range.
+  std::map<std::string, SettingValue, std::less<>> overrides;
+
+  // An override's value, if set (of the key's type, as ModelKeys says).
+  std::optional<bool> Bool(std::string_view key) const;
+  std::optional<std::int64_t> Integer(std::string_view key) const;
+  std::optional<double> Real(std::string_view key) const;
+  std::optional<std::string> Text(std::string_view key) const;
+  std::optional<std::vector<double>> Reals(std::string_view key) const;
 };
 
 // The chat route's listener (M3's minimal /v1/chat/completions; D-097 as

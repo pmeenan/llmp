@@ -4,6 +4,7 @@
 // The CPU-only profile's device probe: no device provider (D-026).
 
 #include <filesystem>
+#include <string>
 
 #include "base/report.h"
 #include "providers/device_probe.h"
@@ -13,5 +14,7 @@ namespace jitllm::providers {
 void DescribeDevices(const std::filesystem::path& /*root*/, base::Report& report) {
   report.AddSection("devices").Add("provider", "none (a CPU-only build, D-026)");
 }
+
+std::string DeviceIdentity(const std::filesystem::path& /*root*/) { return "none"; }
 
 }  // namespace jitllm::providers

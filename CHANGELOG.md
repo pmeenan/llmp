@@ -13,6 +13,38 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Every model setting resolves in three layers (D-103): a default derived
+  from the artifact (the trained context, the checkpoint's sampling
+  defaults, the drafter's block, the vocabulary's reasoning markers; never
+  a checkpoint's name), a calibration on the machine, or an override in
+  `[models.<name>]`, else the constant measured on a GB10. Calibration is
+  measured from a model's first uses (the progress floors, the recompute
+  cost, DeepSeek's wave costs per width, Qwen3.8's draft depth cost) and
+  recorded under the state directory per artifact, device, driver, build
+  and the settings the measurements depend on (a new on-disk record,
+  `jitllm-model-calibration-v1`; delete it to measure again), in force
+  from the next start; a stale record is measured again, a corrupt one
+  refused and replaced. The reclaim order's cost of recomputing dropped
+  state is now a cost a token (`recompute_ms_per_token`), scaled by each
+  conversation's tokens. The model table's schema is one table of keys, types, ranges and
+  the models that take them, with new keys for every setting the runtime
+  had fixed (sampling defaults, reasoning markers, draft rows, DeepSeek's
+  wave costs and output-A/HCA prefill switches, Qwen3.8's draft
+  vocabulary, depth cost, shared-wave depth, joined-draft width and wave
+  read alignment, the reclaim order's recompute cost, the image's size and
+  steps): compatible with schema version 2, a minor bump of the 0.x line.
+  A request that sends no temperature, top_p, top_k or min_p now samples
+  with the model's default, which is the checkpoint's own where its
+  artifact keeps one (`do_sample: false` is greedy): unchanged for
+  DeepSeek V4 Flash's GGUFs (temperature 1, top_p 1) and the Qwen3.8
+  NVFP4 artifact (none kept), but Qwen3.8's GGUF quantizations now sample
+  with their checkpoint's top_k 20 and top_p 0.95 when a request sends
+  neither. The start logs each value and its source, and the new
+  `jitllm-runtime settings [--json]` lists them with what each came from,
+  beside a running service. A key a composition does not take is now
+  refused naming that key; the throughput floors are resolved once per
+  model instead of looked up per request.
+
 - A model's concurrent chat requests are no longer fixed at four (D-104):
   each LLM has request slots up to a cap, `[models.<name>] max_slots` (1
   to 16; a new key compatible with schema version 2, a minor bump of the

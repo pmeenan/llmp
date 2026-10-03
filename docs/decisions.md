@@ -152,6 +152,58 @@ resolve.
 **Reopen if** calibration proves too slow or unstable to run at
 registration (then ship measured tables per hardware class instead).
 
+**Landed (the schema, the record, its listing and the first calibrations).**
+`[models.<name>]` is one table-driven schema (`config::ModelKeys`: each
+key's type, range, the models that take it and the architectures that use
+it), replacing the hand-written key list and composition refusal; every
+setting the runtime had fixed is a key (sampling defaults, reasoning
+markers, draft rows, DeepSeek's wave costs and output-A/HCA switches,
+Qwen3.8's draft vocabulary, depth cost ratio, shared-wave depth,
+joined-draft width and read alignment, the recompute cost, the image's
+size and steps). Each model's `ModelSettings` resolves once before the
+device node opens (`runtime/model_settings.h`), each value tagged with its
+source and what it came from; derived today: the context within the
+trained context (GGUF `<arch>.context_length`, `config.json`
+`max_position_embeddings`), speculation from the drafter, DSpark's draft
+rows within its `dflash.block_size`, sampling defaults from
+`generation_config.json` or GGUF `general.sampling.*`, and the reasoning
+markers from the vocabulary (`do_sample: false` reads as temperature 0,
+greedy). A request's own sampling field still wins; an absent one takes
+the model's default. That changes what some requests sample with:
+DeepSeek V4 Flash's GGUFs keep temperature 1 and top_p 1 and the Qwen3.8
+NVFP4 artifact keeps none, as before, but Qwen3.8's GGUF quantizations
+keep the checkpoint's top_k 20 and top_p 0.95 (the UD-IQ3_XXS), which
+now apply to requests that send neither: the checkpoint's intent, as
+vLLM's `--generation-config auto` reads it. Every request that was valid
+stays valid and no field or encoding changes, so
+`jitllm-inference-version` stays 1 (D-062). The floors are
+resolved once onto the model rather than looked up per request. The start
+logs every value with its source; `jitllm-runtime settings [--json]`
+lists them without the process lock or a device. New keys only, every
+earlier configuration still valid, so `schema_version` stays 2 (D-062).
+The calibration record is a new on-disk format,
+`jitllm-model-calibration-v1` under `roles.state/calibration/<artifact>.json`,
+keyed by the artifact, drafter, device and driver
+(`providers::DeviceIdentity`), build (its version, and for an
+uncommitted or untracked tree the executable's size and time) and the
+settings the measurements depend on (speculation, draft rows, prefill
+chunk, request slots, the output-A/HCA prefill, the wave form); a stale
+record is not used, a corrupt or foreign one refused, both re-measured,
+and deleting the file resets it
+([calibration](runtime-serving.md#calibration)). Measured passively from
+first uses, nothing at startup: the floors (a third of the short-context
+prefill and decode speeds), the recompute cost a token (the slowest of
+three whole prefills of 8,192 tokens or more, scaled by each idle
+conversation's tokens), DeepSeek's wave costs per
+width (from steady, matched waves only; an uncalibrated width's first
+waves, at most 32, alternate the forms, with no measurable throughput
+cost) and Qwen3.8's depth cost ratio. A value is in force from the next
+registration, never mid-service, so schedules stay independent of wall
+time within a service. Prefill chunk rows and the slot knee need
+controlled runs and keep their fallbacks (the record takes them); kernel
+schedule tables (D2R, IQ2 pair, output-A, MXFP8 tiers) are not yet
+settings; their calibration is a later milestone.
+
 ## D-102: Limits come from real resources, not time or abuse caps  (2026-10-03, status: accepted at the owner's direction of 2026-10-03; applies across the runtime; amends how D-067's interpreter bounds, D-097's intake bounds and deadlines, and D-101's starting bounds are chosen; each affected limit is changed in its own reviewed task)
 
 **Decision.** jitLLM is run locally by the hardware's owner, not offered

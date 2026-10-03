@@ -138,6 +138,10 @@ struct Qwen38Options {
   // wave_slots): each its own virtual state ceilings, verify snapshot and
   // plans. The harnesses keep four; serving sets the model's cap.
   std::uint32_t request_slots = 4;
+  // The cells a wave of two or more reads, rounded up to this (a power of
+  // two, at least 256: a lone request's alignment); serving sets the
+  // model's wave_read_align (runtime/model_settings.h).
+  std::uint32_t wave_read_align = 2048;
 };
 
 // Setup-only diagnostic arithmetic. Scalar values use the same measured plan
@@ -668,6 +672,9 @@ class Qwen38Runner final : public PagedModel {
                      std::uint32_t read_align = 256);
   // The most coarsely a decode wave of this runner reads the caches.
   std::uint32_t DecodeReadAlign() const;
+  // How coarsely a wave of `slots` requests reads the caches: a lone
+  // request 256 cells, a wider wave Qwen38Options::wave_read_align.
+  std::uint32_t WaveReadAlign(std::size_t slots) const;
   // The state ranges (the target's and the drafter's) a slot uses through
   // `positions`, its caches read through `read_align`.
   std::expected<std::vector<LiveState::Range>, std::string> StateRanges(

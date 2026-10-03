@@ -1,25 +1,18 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Registration checks the configured context against the supported
-// checkpoint before opening the node or allocating a model's resources.
+// What serving chooses from a model's binding. (A model's context ceiling
+// is its settings', model_settings.h RunnerContextCeiling and the trained
+// context, checked before the node opens.)
 
 #ifndef JITLLM_RUNTIME_MODEL_LIMITS_H_
 #define JITLLM_RUNTIME_MODEL_LIMITS_H_
-
-#include <cstdint>
-#include <expected>
-#include <string>
-#include <string_view>
 
 namespace jitllm::model {
 struct Dsv4Binding;
 }
 
 namespace jitllm::runtime {
-
-std::expected<void, std::string> CheckModelContext(std::string_view architecture,
-                                                   std::uint32_t context);
 
 // Production frontier selection is measured for Flash's Q4_K head and
 // F32 hyperconnection product. Other bound formats keep every head row.

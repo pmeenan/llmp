@@ -138,14 +138,37 @@ class StopMatcher {
   std::size_t longest_ = 0;
 };
 
+// A model's sampling defaults (its settings, D-103): what a request that
+// sends none of a field samples with.
+struct SamplingDefaults {
+  double temperature = 1.0;
+  double top_p = 1.0;
+  std::uint32_t top_k = 0;
+  double min_p = 0.0;
+};
+
 struct ChatRequest {
   std::string model;
   std::vector<Message> messages;  // at least one, the last the user's
   std::optional<std::uint32_t> max_tokens;
+  // Each as sent; one not sent takes the model's default (Sampling).
   double temperature = 1.0;  // [0, 2]; 0 is greedy (OpenAI's default is 1)
   double top_p = 1.0;        // (0, 1]
   std::uint32_t top_k = 0;   // 0 (or -1 sent): off
   double min_p = 0.0;        // [0, 1]; 0: off
+  // Which of the four the request sent (kSent* bits).
+  std::uint8_t sent = 0;
+  static constexpr std::uint8_t kSentTemperature = 1;
+  static constexpr std::uint8_t kSentTopP = 2;
+  static constexpr std::uint8_t kSentTopK = 4;
+  static constexpr std::uint8_t kSentMinP = 8;
+  // The request's sampling: each field it sent, else `defaults`'.
+  SamplingDefaults Sampling(const SamplingDefaults& defaults) const {
+    return {.temperature = (sent & kSentTemperature) != 0 ? temperature : defaults.temperature,
+            .top_p = (sent & kSentTopP) != 0 ? top_p : defaults.top_p,
+            .top_k = (sent & kSentTopK) != 0 ? top_k : defaults.top_k,
+            .min_p = (sent & kSentMinP) != 0 ? min_p : defaults.min_p};
+  }
   std::optional<std::uint64_t> seed;
   // Matched against the answer's text; shared, never copied (null: none).
   std::shared_ptr<const StopMatcher> stop;

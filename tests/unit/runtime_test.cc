@@ -44,6 +44,7 @@
 #include "runtime/intake_limits.h"
 #include "runtime/memory_guard.h"
 #include "runtime/model_limits.h"
+#include "runtime/model_settings.h"
 #include "runtime/prefill.h"
 #include "runtime/watchdog.h"
 
@@ -174,6 +175,20 @@ TEST(RuntimeArguments, Commands) {
       std::array<std::string_view, 3>{"swap-table", "--context-tokens", "4294967295"});
   ASSERT_TRUE(options.has_value()) << options.error();
   EXPECT_EQ(options->command.table.context_tokens, 4294967295U);
+
+  // The settings listing (D-103): --json only.
+  options = jitllm::runtime::ParseArguments(std::array<std::string_view, 1>{"settings"});
+  ASSERT_TRUE(options.has_value()) << options.error();
+  EXPECT_EQ(options->command.command, Command::kSettings);
+  EXPECT_FALSE(options->command.json);
+  options = jitllm::runtime::ParseArguments(
+      std::array<std::string_view, 4>{"--config", "a.toml", "settings", "--json"});
+  ASSERT_TRUE(options.has_value()) << options.error();
+  EXPECT_EQ(options->command.command, Command::kSettings);
+  EXPECT_TRUE(options->command.json);
+  EXPECT_FALSE(
+      jitllm::runtime::ParseArguments(std::array<std::string_view, 2>{"settings", "--plain"})
+          .has_value());
 
   const std::string long_image_prompt(jitllm::runtime::kMaxImagePromptBytes + 1, 'x');
   const std::string upper_sha(64, 'A');  // hex, but not as the table prints it
@@ -444,22 +459,13 @@ TEST(ModelContext, FrontierHeadSelectionStaysWithinTheMeasuredFormatAndShape) {
   EXPECT_FALSE(Dsv4FrontierHeadForServing(binding));
 }
 
-TEST(ModelContext, ChecksTheCheckpointCeilingBeforeSetup) {
-  using jitllm::runtime::CheckModelContext;
-  for (const std::string_view architecture : {"deepseek4", "qwen4exp"}) {
-    EXPECT_TRUE(CheckModelContext(architecture, 512).has_value());
-    EXPECT_TRUE(CheckModelContext(architecture, jitllm::config::kDefaultContext).has_value());
-    EXPECT_FALSE(CheckModelContext(architecture, 511).has_value());
-  }
-  EXPECT_TRUE(CheckModelContext("deepseek4", 1048576).has_value());
-  auto refused = CheckModelContext("deepseek4", 1048577);
-  ASSERT_FALSE(refused.has_value());
-  EXPECT_THAT(refused.error(), HasSubstr("deepseek4's supported range 512 to 1048576"));
-  refused = CheckModelContext("qwen4exp", 262145);
-  ASSERT_FALSE(refused.has_value());
-  EXPECT_THAT(refused.error(), HasSubstr("qwen4exp's supported range 512 to 262144"));
-  EXPECT_FALSE(CheckModelContext("qwen4exp", 1048576).has_value());
-  EXPECT_FALSE(CheckModelContext("unknown", 262144).has_value());
+// The runners' own ceilings (model_settings.h; resolution refuses a
+// context past them before setup: model_settings_test).
+TEST(ModelContext, TheRunnersCeilings) {
+  using jitllm::runtime::RunnerContextCeiling;
+  EXPECT_EQ(RunnerContextCeiling("deepseek4"), 1048576U);
+  EXPECT_EQ(RunnerContextCeiling("qwen4exp"), 262144U);
+  EXPECT_EQ(RunnerContextCeiling("unknown"), 0U);
 }
 
 // A prefill's chunk (runtime/prefill.h): the configured or default rows,
