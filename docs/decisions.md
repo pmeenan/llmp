@@ -61,11 +61,17 @@ capability … across the board").
   strings, questions, queue length and the like) are removed or raised to
   what memory actually allows.
 - Detection is not a limit: watchdogs that notice a hung backend or a
-  dead peer may report, log and recover, but they are not tuned to cut
-  off slow, healthy work. Connection hygiene that frees idle resources
+  dead peer are not tuned to cut off slow, healthy work. A genuine hang
+  is recovered (owner, 2026-10-03): escalating as far as needed —
+  cancel the stuck work, evict or reset the model, and restart the
+  whole process if nothing less frees it — keeping data loss minimal
+  (conversation state spilled or checkpointed where it can be), but
+  recovery comes first. Connection hygiene that frees idle resources
   (idle keep-alive) stays where it costs the user nothing.
 - Where a bound remains, it is configurable, documented with the resource
-  it protects, and refusal messages name it.
+  it protects, and refusal messages name it. Owners may configure
+  stricter limits, abuse-style ones included (for example when binding
+  beyond loopback), but every default is permissive (owner, 2026-10-03).
 
 **Context.** Earlier choices bounded work by time or count for abuse
 resistance: the template interpreter's step and work budgets (worst case
