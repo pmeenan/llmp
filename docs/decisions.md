@@ -1686,7 +1686,13 @@ The machinery around development was holding it back.
   continuation), and for Qwen3.8 its recorded fast runs `hq-32k-fast` and
   `hq-128k-fast`. Changing a reference is the owner's decision, and so is
   a reference with an outside step past the per-step tolerance or more
-  than two outside steps; `judge.py` refuses both. Over the forced steps,
+  than two outside steps; `judge.py` refuses both. The references are a
+  fixed quality baseline, so accepted changes don't ratchet it down; the
+  owner may grant a specific, recorded exception for a big win, either
+  re-basing a reference (for example after a change that improves
+  quality) or accepting one configuration past the bounds (owner,
+  2026-10-03). A new model or format sets its own reference from its
+  first accepted run. Over the forced steps,
   with the oracle's token *o*, jitLLM's
   argmax *c*, and the near-tie bound *B* recorded for that history (0.947
   nats for DeepSeek's 32K/128K histories, 1.765 for Qwen3.8's):
