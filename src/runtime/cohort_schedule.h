@@ -10,9 +10,11 @@
 //   what its conversation can reuse) goes next, the oldest of equals, so a
 //   short prompt is not held behind a long one that arrived first, and
 //   prompts of equal length finish one after another instead of all at the
-//   end. A prompt passed over for kPromptAgeUnits other prompt units goes
-//   next regardless (the one passed over most, then the oldest), so a long
-//   prompt is not starved while other members cycle short ones.
+//   end. A prompt passed over for kPromptAgeUnits other prompt units that
+//   prefilled rows (a reuse or checkpoint unit prefills none: serve_api.cc)
+//   goes next (the one passed over most, then the oldest), so a long prompt
+//   is not starved while other members cycle short ones, unless the
+//   shortest is a started prompt about to finish (kPromptFinishRows).
 // - Decode: a generating member waits for at most one prompt unit: once one
 //   has run since its last wave (or since its prompt ended), a wave of every
 //   generating member runs before the next prompt unit. The wait is bounded
@@ -31,6 +33,9 @@ namespace jitllm::runtime {
 
 // A prompt waits for at most this many other prompt units.
 inline constexpr std::uint32_t kPromptAgeUnits = 12;
+// A started prompt with at most this many tokens left goes before an aged
+// one: finishing it costs little and gives its first token.
+inline constexpr std::uint32_t kPromptFinishRows = 256;
 
 // One runnable cohort member, as the schedule sees it.
 struct ScheduledMember {
@@ -40,6 +45,9 @@ struct ScheduledMember {
   std::uint32_t remaining = 0;  // a prompt's tokens left to prefill
   std::uint32_t passed = 0;     // a prompt's: other prompt units since its own last
   std::uint32_t waited = 0;     // a generation's: prompt units since its last wave
+  // A prompt's: started (its reuse settled) with at most kPromptFinishRows
+  // tokens left.
+  bool finishing = false;
 };
 
 struct ScheduleChoice {

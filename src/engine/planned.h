@@ -86,13 +86,15 @@ std::uint64_t ScratchArenaBytes();
 // addresses and every computed node at its own, planned; the activations
 // placed (`keep` live to the end); then, unless `activations` is 0 (measure
 // only), bound in [activations, + activation_bytes), planned again, which
-// must give the same plan.
+// must give the same plan. With `lanes`, both plans take its concurrent
+// lanes (graph_plan.h AssignLanes) before the placement.
 std::expected<void, std::string> PlaceAndPlan(PlannedBase& out, std::span<ggml_tensor* const> nodes,
                                               std::span<ggml_tensor* const> inputs,
                                               std::span<ggml_tensor* const> keep,
                                               const kernels::ggml::DeviceChoices& choices,
                                               std::uint64_t activations,
-                                              std::uint64_t activation_bytes);
+                                              std::uint64_t activation_bytes,
+                                              const kernels::ggml::LaneTags* lanes = nullptr);
 
 // The scratch `planned`'s plan needs, checked against the launch context's
 // pool, and its implementations bound against `registry` (D-053). `what`

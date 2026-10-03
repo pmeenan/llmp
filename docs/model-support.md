@@ -238,7 +238,8 @@ seeded-sampling evidence in this study.
   decode alone (7K C1 +31%, 124-token +54%). At C4 DSpark waves trailed
   plain ones (−6% / −12%). Each wave now chooses DSpark or plain decode
   from counted acceptance against a measured per-width cost, which puts
-  C4 1–4% under plain on both artifacts
+  C4 1–4% under plain on both artifacts (2–4% once wave lanes sped
+  plain waves up more than DSpark's)
   ([deepseek-batching](experiments/deepseek-batching/README.md#adaptive-dspark-and-plain-waves)).
 
 ## DSpark

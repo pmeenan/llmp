@@ -20,6 +20,7 @@
 #include "catalog/catalog.h"
 #include "engine/paged_node.h"
 #include "engine/support.h"
+#include "kernels/ggml/implementations.h"
 
 namespace jitllm::engine {
 
@@ -48,12 +49,10 @@ Scratch& TheScratch() {
 
 std::uint64_t ScratchArenaBytes() { return TheScratch().bytes.load(); }
 
-std::expected<void, std::string> PlaceAndPlan(PlannedBase& out, std::span<ggml_tensor* const> nodes,
-                                              std::span<ggml_tensor* const> inputs,
-                                              std::span<ggml_tensor* const> keep,
-                                              const kg::DeviceChoices& choices,
-                                              std::uint64_t activations,
-                                              std::uint64_t activation_bytes) {
+std::expected<void, std::string> PlaceAndPlan(
+    PlannedBase& out, std::span<ggml_tensor* const> nodes, std::span<ggml_tensor* const> inputs,
+    std::span<ggml_tensor* const> keep, const kg::DeviceChoices& choices, std::uint64_t activations,
+    std::uint64_t activation_bytes, const kg::LaneTags* lanes) {
   constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;
   std::uint64_t leaf = kDistinct - (std::uint64_t{1} << 40U);
   for (ggml_tensor* input : inputs) {
@@ -64,6 +63,9 @@ std::expected<void, std::string> PlaceAndPlan(PlannedBase& out, std::span<ggml_t
   auto first = kg::PlanGraph(nodes, /*fusion=*/false, choices);
   if (!first) {
     return Error(first.error().detail);
+  }
+  if (lanes != nullptr) {
+    kg::AssignLanes(*first, *lanes, kg::UsesCublas);
   }
   auto placement = kg::PlaceActivations(nodes, *first, inputs, 256, keep);
   if (!placement) {
@@ -89,6 +91,9 @@ std::expected<void, std::string> PlaceAndPlan(PlannedBase& out, std::span<ggml_t
   if (!second) {
     return Error(second.error().detail);
   }
+  if (lanes != nullptr) {
+    kg::AssignLanes(*second, *lanes, kg::UsesCublas);
+  }
   if (!kg::SamePlan(*first, *second)) {
     return Error("the plan changed once the activations were placed");
   }
@@ -99,13 +104,29 @@ std::expected<void, std::string> PlaceAndPlan(PlannedBase& out, std::span<ggml_t
 std::expected<void, std::string> BindPlanned(PlannedBase& planned, kg::LaunchContext& launch,
                                              const execution::Registry& registry,
                                              std::string_view what) {
+  if (launch.lanes() < kg::kMaxLanes && !planned.plan.regions.empty()) {
+    // A context without lanes runs everything on its stream. The placement
+    // stays as made for lanes, which only lives longer.
+    planned.plan.regions.clear();
+    for (kg::PlanStep& step : planned.plan.steps) {
+      step.lane = 0;
+    }
+  }
   auto scratch = kg::PlanScratch(launch, planned.plan);
   if (!scratch) {
     return Error(scratch.error().detail);
   }
-  if (*scratch > launch.workspace().size.value()) {
+  if (*scratch > launch.scratch_size(0).value()) {
     return Error(std::format("{}'s scratch ({} bytes) exceeds the pool ({} bytes)", what, *scratch,
-                             launch.workspace().size.value()));
+                             launch.scratch_size(0).value()));
+  }
+  auto lane_scratch = kg::PlanLaneScratch(launch, planned.plan);
+  if (!lane_scratch) {
+    return Error(lane_scratch.error().detail);
+  }
+  if (*lane_scratch > launch.scratch_size(1).value()) {
+    return Error(std::format("{}'s lane scratch ({} bytes) exceeds a lane's pool ({} bytes)", what,
+                             *lane_scratch, launch.scratch_size(1).value()));
   }
   planned.scratch = *scratch;
   auto bound = kg::BoundGraph::Bind(registry, planned.plan);

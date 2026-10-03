@@ -2072,8 +2072,11 @@ Status Harness::Wave() {
   std::uint64_t wave_tokens = 0;
   std::map<std::size_t, std::uint64_t> widths;
   // Each width's joined waves' time (the wave form's per-width cost:
-  // a DSpark wave's time over a plain one's, serving.cc kWaveCost).
+  // a DSpark wave's time over a plain one's, serving.cc kWaveCost), and
+  // each call's: their median calibrates the cost (the first waves of a
+  // width plan and capture, which the mean includes).
   std::map<std::size_t, double> width_seconds;
+  std::map<std::size_t, std::vector<double>> width_times;
   double wave_seconds = 0;
   std::optional<std::uint64_t> discard_stale;  // none: nothing discarded
   bool discard_rerun_exact = false;
@@ -2183,6 +2186,7 @@ Status Harness::Wave() {
         width_seconds[joined.size()] += took;
         ++waves;
         ++widths[joined.size()];
+        width_times[joined.size()].push_back(took);
       }
       for (std::size_t k = 0; k < active.size(); ++k) {
         const std::uint32_t i = active[k];
@@ -2349,6 +2353,12 @@ Status Harness::Wave() {
     width_ms_json += std::format("{}\"{}\":{:.3f}", width_ms_json.empty() ? "" : ",", width, ms);
     std::println("wave check: width {}: {} waves, {:.3f} ms a wave", width, count, ms);
   }
+  std::string width_ms;
+  for (auto& [width, times] : width_times) {
+    std::ranges::sort(times);
+    width_ms += std::format("{}\"{}\":{:.3f}", width_ms.empty() ? "" : ",", width,
+                            times[times.size() / 2] * 1000);
+  }
   std::string_view form = spec ? "DSpark" : "plain";
   if (alternate) {
     form = "plain and DSpark by turns";
@@ -2361,14 +2371,14 @@ Status Harness::Wave() {
   results_.push_back(std::format(
       R"({{"check":"wave","slots":{},"speculative":{},"share":{},"solo_tokens":{},)"
       R"("solo_seconds":{:.4f},"wave_tokens":{},"wave_seconds":{:.4f},"waves":{},"widths":{{{}}},)"
-      R"("width_ms":{{{}}},)"
+      R"("width_ms":{{{}}},"width_median_ms":{{{}}},)"
       R"("rows_compared":{},"rows_identical":{},"argmax_agree":{},"largest_difference":{:.6f},)"
       R"("margin_move_p50":{:.6f},"margin_move_p99":{:.6f},"margin_move_max":{:.6f},)"
       R"("exact_mismatches":{},"discard_stale_bytes":{},"discard_rerun_exact":{},)"
       R"("left_unchanged":{}}})",
       slots, spec ? "true" : "false", share, solo_tokens, solo_seconds, wave_tokens, wave_seconds,
-      waves, width_json, width_ms_json, rows_compared, rows_identical, argmax_agree, largest,
-      quantile(0.5), quantile(0.99), moves.empty() ? 0.0 : moves.back(), exact_mismatches,
+      waves, width_json, width_ms_json, width_ms, rows_compared, rows_identical, argmax_agree,
+      largest, quantile(0.5), quantile(0.99), moves.empty() ? 0.0 : moves.back(), exact_mismatches,
       discard_stale ? std::format("{}", *discard_stale) : std::string("null"),
       discard_rerun_exact ? "true" : "false", left_unchanged ? "true" : "false"));
   return {};
@@ -3160,6 +3170,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--slots") {
       ok = number(o.dsv4.wave_slots) && o.dsv4.wave_slots >= 2 &&
            o.dsv4.wave_slots <= jitllm::engine::kMaxRequestSlots;
+    } else if (a == "--wave-lanes") {
+      o.dsv4.wave_lanes = v == "on";
+      ok = v == "on" || v == "off";
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -3183,6 +3196,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "--fp16-tokens FILE "
         "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N] "
         "[--slots N (wave, plan-memory, capacity: 2-16)] [--wave-mode verify|decode|alternate] "
+        "[--wave-lanes on|off] "
         "[--state-budget-mib N]");
   }
   // The paired control needs the all-row workspace for its original arm.

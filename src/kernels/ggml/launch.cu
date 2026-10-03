@@ -98,6 +98,15 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
 
 }  // namespace
 
+// A concurrent lane (LaunchContext::ConfigureLanes): its stream, the event
+// others wait on, and a GGML context over a pool of its own.
+struct LaunchContext::Lane {
+  cudaStream_t stream = nullptr;
+  cudaEvent_t event = nullptr;
+  std::unique_ptr<WorkspacePool> pool;
+  std::unique_ptr<ggml_backend_cuda_context> context;
+};
+
 std::expected<std::unique_ptr<LaunchContext>, KernelFailure> LaunchContext::Create(
     int device, providers::DeviceExecution& execution, providers::StreamId stream,
     Workspace workspace, CublasHandle* cublas) {
@@ -191,15 +200,115 @@ LaunchContext::~LaunchContext() {
     context_->cublas_handles[device_][0] = nullptr;
     --cublas_->borrowers_;
   }
+  ReleaseLanes();
+}
+
+void LaunchContext::ReleaseLanes() {
+  for (const std::unique_ptr<Lane>& lane : lanes_) {
+    // Take back the stream and pool lent to the lane's GGML context, so its
+    // destructor (with the lane, below) finds nothing of ours to destroy.
+    lane->context->streams[device_][0] = nullptr;
+    (void)lane->context->pools[device_][0].release();
+    // Work in flight completes first; CUDA frees the stream after it.
+    (void)cudaEventDestroy(lane->event);
+    (void)cudaStreamDestroy(lane->stream);
+  }
+  lanes_.clear();
+  if (stream_event_ != nullptr) {
+    (void)cudaEventDestroy(static_cast<cudaEvent_t>(stream_event_));
+    stream_event_ = nullptr;
+  }
+  lane_scratch_ = 0;
+  active_ = 0;
+}
+
+std::expected<void, KernelFailure> LaunchContext::ConfigureLanes(std::uint32_t count,
+                                                                 base::Bytes lane_scratch) {
+  if (!lanes_.empty() || capturing_ || faulted_) {
+    return Rejected("lanes are made once, outside a capture, on a usable context");
+  }
+  const std::uint64_t each = (lane_scratch.value() + 255) / 256 * 256;
+  if (count == 0 || each * count > workspace_.size.value()) {
+    return Rejected(std::format("{} lanes of {} bytes of scratch exceed the workspace ({} bytes)",
+                                count, each, workspace_.size.value()));
+  }
+  cudaEvent_t own = nullptr;
+  if (cudaEventCreateWithFlags(&own, cudaEventDisableTiming) != cudaSuccess) {
+    (void)cudaGetLastError();
+    return Rejected("an event for the lanes");
+  }
+  stream_event_ = own;
+  const std::uint64_t start = workspace_.size.value() - (each * count);
+  for (std::uint32_t i = 0; i < count; ++i) {
+    auto lane = std::make_unique<Lane>();
+    if (cudaStreamCreateWithFlags(&lane->stream, cudaStreamNonBlocking) != cudaSuccess ||
+        cudaEventCreateWithFlags(&lane->event, cudaEventDisableTiming) != cudaSuccess) {
+      (void)cudaGetLastError();
+      // This lane has no GGML context yet; the ones made are released as
+      // the destructor releases them (each once).
+      if (lane->stream != nullptr) {
+        (void)cudaStreamDestroy(lane->stream);
+      }
+      ReleaseLanes();
+      return Rejected("a stream or event for a lane");
+    }
+    lane->pool = std::make_unique<WorkspacePool>(workspace_.base + start + (i * each), each);
+    lane->context = std::make_unique<ggml_backend_cuda_context>(device_);
+    lane->context->streams[device_][0] = lane->stream;
+    lane->context->pools[device_][0].reset(lane->pool.get());
+    lanes_.push_back(std::move(lane));
+  }
+  lane_scratch_ = each;
+  return {};
+}
+
+void LaunchContext::SelectLane(std::uint32_t lane) {
+  base::Check(lane <= lanes_.size(), "a lane the context has");
+  active_ = lane;
+}
+
+void* LaunchContext::StreamOf(std::uint32_t lane) const {
+  return lane == 0 ? native_.handle : lanes_[lane - 1]->stream;
+}
+
+std::expected<void, KernelFailure> LaunchContext::LaneWait(std::uint32_t waiter, std::uint32_t on) {
+  if (waiter > lanes_.size() || on > lanes_.size() || waiter == on) {
+    return Rejected("a lane wait between two of the context's lanes");
+  }
+  auto* const event = static_cast<cudaEvent_t>(on == 0 ? stream_event_ : lanes_[on - 1]->event);
+  if (cudaEventRecord(event, static_cast<cudaStream_t>(StreamOf(on))) != cudaSuccess ||
+      cudaStreamWaitEvent(static_cast<cudaStream_t>(StreamOf(waiter)), event, 0) != cudaSuccess) {
+    const cudaError_t error = cudaGetLastError();
+    faulted_ = true;
+    return std::unexpected(
+        KernelFailure{.error = KernelError::kUnknown,
+                      .detail = std::string("a lane's event: ") + cudaGetErrorString(error)});
+  }
+  return {};
+}
+
+base::Bytes LaunchContext::scratch_size(std::uint32_t lane) const {
+  if (lane != 0) {
+    return base::Bytes(lane <= lanes_.size() ? lane_scratch_ : 0);
+  }
+  return base::Bytes(workspace_.size.value() - (lane_scratch_ * lanes_.size()));
+}
+
+ggml_backend_cuda_context* LaunchContext::ActiveContext() {
+  return active_ == 0 ? context_.get() : lanes_[active_ - 1]->context.get();
+}
+
+WorkspacePool& LaunchContext::ActivePool() {
+  return active_ == 0 ? *pool_ : *lanes_[active_ - 1]->pool;
 }
 
 std::expected<void, KernelFailure> LaunchContext::Begin(base::Bytes scratch) {
   if (faulted_) {
     return Rejected("the launch context faulted earlier; its stream awaits recovery");
   }
-  if (scratch > workspace_.size) {
-    return Rejected(std::format("the operation needs {} bytes of scratch; the workspace has {}",
-                                scratch.value(), workspace_.size.value()));
+  if (scratch > scratch_size(active_)) {
+    return Rejected(std::format("the operation needs {} bytes of scratch; lane {}'s pool has {}",
+                                scratch.value(), active_, scratch_size(active_).value()));
   }
   // The run is queued work on the stream, which the provider must know of
   // before any launch (launch.h).
@@ -230,12 +339,12 @@ std::expected<void, KernelFailure> LaunchContext::Begin(base::Bytes scratch) {
     return std::unexpected(KernelFailure{.error = KernelError::kUnknown,
                                          .detail = "a CUDA error outside a launch: " + *stray});
   }
-  pool_->Limit(scratch.value());
+  ActivePool().Limit(scratch.value());
   return {};
 }
 
 std::expected<void, KernelFailure> LaunchContext::End() {
-  base::Check(pool_->empty(), "GGML launchers return their scratch before they return");
+  base::Check(ActivePool().empty(), "GGML launchers return their scratch before they return");
   // Some launchers queue kernels without checking the launch (MMF's), so
   // the runtime's record, clear since Begin, is read too. Reading it
   // clears it, so it is not taken for a later launch's; a sticky error
@@ -244,6 +353,12 @@ std::expected<void, KernelFailure> LaunchContext::End() {
   auto error = internal::TakeCudaError();
   if (!error && unchecked != cudaSuccess) {
     error = std::string("an unchecked kernel launch failed: ") + cudaGetErrorString(unchecked);
+  }
+  // A lane lends no cuBLAS handle; one GGML made there would queue
+  // outside the run's order and hold memory nothing counts.
+  if (!error && active_ != 0 &&
+      lanes_[active_ - 1]->context->cublas_handles[device_][0] != nullptr) {
+    error = std::string("an operation on a lane created a cuBLAS handle");
   }
   if (error) {
     faulted_ = true;

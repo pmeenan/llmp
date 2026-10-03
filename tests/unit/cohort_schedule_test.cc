@@ -27,7 +27,8 @@ ScheduledMember Prompt(std::uint64_t admitted, std::uint32_t remaining, std::uin
           .admitted = admitted,
           .remaining = remaining,
           .passed = passed,
-          .waited = 0};
+          .waited = 0,
+          .finishing = false};
 }
 
 ScheduledMember Generating(std::uint64_t admitted, std::uint32_t waited) {
@@ -35,7 +36,8 @@ ScheduledMember Generating(std::uint64_t admitted, std::uint32_t waited) {
           .admitted = admitted,
           .remaining = 0,
           .passed = 0,
-          .waited = waited};
+          .waited = waited,
+          .finishing = false};
 }
 
 ScheduleChoice Next(const std::vector<ScheduledMember>& members) { return NextCohortUnit(members); }
@@ -160,6 +162,18 @@ TEST(CohortSchedule, ALongPromptIsNotStarvedByShortOnes) {
   EXPECT_EQ(Next({Prompt(2, 900, kPromptAgeUnits), Prompt(1, 950, kPromptAgeUnits), Prompt(3, 10)})
                 .prompt,
             std::optional<std::size_t>(1));
+}
+
+// A started prompt about to finish (its last few rows) goes before an aged
+// one: aging bounds a wait in units, and this unit costs little and gives a
+// first token. One not started yet (still to settle its reuse) does not.
+TEST(CohortSchedule, AStartedPromptAboutToFinishGoesBeforeAnAgedOne) {
+  ScheduledMember tail = Prompt(2, 2);
+  tail.finishing = true;
+  EXPECT_EQ(Next({Prompt(1, 4096, kPromptAgeUnits), tail}).prompt, std::optional<std::size_t>(1));
+  EXPECT_EQ(Next({Prompt(1, 4096, kPromptAgeUnits), Prompt(2, 2)}).prompt,
+            std::optional<std::size_t>(0));
+  EXPECT_LE(kPromptFinishRows, 512U);
 }
 
 }  // namespace

@@ -10,6 +10,7 @@
 #include <expected>
 #include <format>
 #include <limits>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -112,7 +113,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       taken[k] = true;
     }
     plan.steps.push_back(
-        {.operation = operation, .implementation = name, .nodes = std::move(nodes)});
+        {.operation = operation, .implementation = name, .nodes = std::move(nodes), .lane = 0});
   };
   std::unordered_map<std::size_t, Dsv4HcPostExpertsNodes> deferred;
   for (std::size_t i = 0; i < graph.size(); ++i) {
@@ -615,9 +616,123 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
 
 bool SamePlan(const GraphPlan& a, const GraphPlan& b) {
   return std::ranges::equal(a.steps, b.steps, [](const PlanStep& x, const PlanStep& y) {
-    return x.operation == y.operation && x.implementation == y.implementation && x.nodes == y.nodes;
+    return x.operation == y.operation && x.implementation == y.implementation &&
+           x.nodes == y.nodes && x.lane == y.lane;
   });
 }
+
+void AssignLanes(GraphPlan& plan, const LaneTags& tags,
+                 const std::function<bool(std::string_view)>& on_stream) {
+  plan.regions.clear();
+  if (tags.empty()) {
+    return;
+  }
+  const auto stays = [&](std::string_view implementation) {
+    return on_stream ? on_stream(implementation)
+                     : implementation == kMulMatCublas || implementation == kGemmBf16Name;
+  };
+  std::unordered_map<const ggml_tensor*, LaneTag> tag;
+  tag.reserve(tags.size());
+  for (const auto& [tensor, t] : tags) {
+    tag.emplace(tensor, t);
+  }
+  std::map<std::uint32_t, GraphPlan::Region> spans;
+  for (std::size_t s = 0; s < plan.steps.size(); ++s) {
+    PlanStep& step = plan.steps[s];
+    step.lane = 0;
+    for (const ggml_tensor* node : step.nodes) {
+      const auto found = tag.find(node);
+      if (found == tag.end() || found->second.region == 0) {
+        continue;
+      }
+      const LaneTag& t = found->second;
+      const auto at = static_cast<std::uint32_t>(s);
+      const auto [it, added] = spans.try_emplace(t.region, GraphPlan::Region{at, at});
+      if (!added) {
+        it->second.first = std::min(it->second.first, at);
+        it->second.last = std::max(it->second.last, at);
+      }
+      if (t.lane <= kMaxLanes && !stays(step.implementation)) {
+        step.lane = t.lane;
+      }
+      break;
+    }
+  }
+  std::vector<GraphPlan::Region> ordered;
+  ordered.reserve(spans.size());
+  for (const auto& [region, span] : spans) {
+    ordered.push_back(span);
+  }
+  std::ranges::sort(ordered, {}, &GraphPlan::Region::first);
+  for (const GraphPlan::Region& span : ordered) {
+    if (!plan.regions.empty() && span.first <= plan.regions.back().last) {
+      plan.regions.back().last = std::max(plan.regions.back().last, span.last);
+    } else {
+      plan.regions.push_back(span);
+    }
+  }
+  // A lane step outside every region would have no fork or join.
+  std::size_t r = 0;
+  for (std::size_t s = 0; s < plan.steps.size(); ++s) {
+    while (r < plan.regions.size() && plan.regions[r].last < s) {
+      ++r;
+    }
+    if (r == plan.regions.size() || s < plan.regions[r].first) {
+      plan.steps[s].lane = 0;
+    }
+  }
+}
+
+std::vector<std::uint8_t> LaneOrder::Before(std::uint8_t lane,
+                                            std::span<const ggml_tensor* const> reads,
+                                            std::span<const ggml_tensor* const> writes) const {
+  std::array<bool, kLanes> need{};
+  const auto after = [&](std::uint8_t other, std::uint64_t at) {
+    if (other != lane && at != 0 && seen_[lane][other] < at) {
+      need[other] = true;
+    }
+  };
+  for (const ggml_tensor* t : reads) {
+    if (const auto found = access_.find(t); found != access_.end()) {
+      after(found->second.writer, found->second.written);
+    }
+  }
+  for (const ggml_tensor* t : writes) {
+    if (const auto found = access_.find(t); found != access_.end()) {
+      after(found->second.writer, found->second.written);
+      for (std::size_t other = 0; other < kLanes; ++other) {
+        after(static_cast<std::uint8_t>(other), found->second.read[other]);
+      }
+    }
+  }
+  std::vector<std::uint8_t> out;
+  for (std::size_t other = 0; other < kLanes; ++other) {
+    if (need[other]) {
+      out.push_back(static_cast<std::uint8_t>(other));
+    }
+  }
+  return out;
+}
+
+void LaneOrder::Waited(std::uint8_t waiter, std::uint8_t on) { seen_[waiter][on] = queued_[on]; }
+
+void LaneOrder::Queued(std::uint8_t lane, std::span<const ggml_tensor* const> reads,
+                       std::span<const ggml_tensor* const> writes) {
+  const std::uint64_t at = ++queued_[lane];
+  for (const ggml_tensor* t : reads) {
+    access_[t].read[lane] = at;
+  }
+  // A write waited for every earlier reader and writer on other lanes, and
+  // follows its own lane's in order: only it is outstanding now.
+  for (const ggml_tensor* t : writes) {
+    Access& a = access_[t];
+    a = Access{};
+    a.writer = lane;
+    a.written = at;
+  }
+}
+
+void LaneOrder::Reset() { access_.clear(); }
 
 std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const GraphPlan& plan,
                                                          std::span<ggml_tensor* const> inputs,
@@ -671,6 +786,29 @@ std::expected<Placement, KernelFailure> PlaceActivations(GraphNodes graph, const
         if (const auto found = index.find(Storage(src)); found != index.end()) {
           Life& life = lives[found->second];
           life.last = std::max(life.last, static_cast<std::int64_t>(s));
+        }
+      }
+    }
+  }
+  // Concurrent lanes (AssignLanes): what a region's steps compute or read
+  // lives for the region's whole span, as its steps run in any order.
+  for (const GraphPlan::Region& region : plan.regions) {
+    const auto first = static_cast<std::int64_t>(region.first);
+    const auto last = static_cast<std::int64_t>(region.last);
+    const auto widen = [&](const ggml_tensor* t) {
+      if (const auto found = index.find(Storage(t)); found != index.end()) {
+        Life& life = lives[found->second];
+        life.first = life.first < 0 ? life.first : std::min(life.first, first);
+        life.last = std::max(life.last, last);
+      }
+    };
+    for (std::size_t s = region.first; s <= region.last && s < plan.steps.size(); ++s) {
+      for (const ggml_tensor* node : plan.steps[s].nodes) {
+        widen(node);
+        for (const ggml_tensor* src : node->src) {
+          if (src != nullptr) {
+            widen(src);
+          }
         }
       }
     }

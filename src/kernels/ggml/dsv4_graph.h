@@ -62,6 +62,7 @@
 #include <vector>
 
 #include "ggml.h"
+#include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/tensors.h"
 #include "model/dspark.h"
 #include "model/dsv4.h"
@@ -337,6 +338,10 @@ struct Dsv4WaveGraph {
   // (layers, the injection's ring); the joined fields are null.
   std::vector<Dsv4Graph> slots;
   std::vector<std::int64_t> first;  // each slot's first row in the wave
+  // Each layer's slots' attention and state operations, one concurrent lane
+  // a slot and a region a layer (graph_plan.h AssignLanes); their outputs'
+  // joining is the stream's, in the region.
+  LaneTags lanes;
 
   // The host-built inputs, in the order they are copied: the joined ones,
   // then each slot's.

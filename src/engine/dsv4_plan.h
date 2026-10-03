@@ -71,6 +71,10 @@ struct Dsv4Model {
   // tie-aware quality rule (docs/experiments/ds4-output-prefix, "Default-on
   // acceptance"); off for the harnesses unless asked.
   bool prefill_outa_hca_partial = false;
+  // A wave's slots' attention and state operations on concurrent lanes
+  // (Dsv4WaveGraph::lanes; on a context with lanes): the same kernels, each
+  // slot's rows bit for bit as on one stream.
+  bool wave_lanes = true;
 };
 
 // DeepSeek's DSpark drafter beside its target (model/dspark.h): its places

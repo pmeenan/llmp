@@ -228,6 +228,14 @@ the average, so it never probes and runs plain until narrower waves have
 shown enough (plain was measured faster there, 46.0 against 41.1 tok/s in
 the wave check). Unit-tested (`adaptive_depth_test`).
 
+*With wave lanes* ([deepseek-batching](../deepseek-batching/README.md#wave-lanes),
+2026-10-03), every width's cost is now the wave check's median ratio,
+lanes on (the means above include each width's first, planning wave):
+2.18, 2.68 and 2.99 at widths 2 to 4 (`ln2`), and at widths 5 to 8
+246.9 / 95.6, 224.7 / 106.1, 258.0 / 116.6 and 287.3 / 129.1 ms: 2.58,
+2.12, 2.21 and 2.23 (`spark:~/scratch/dss5/s9c`, `s9w`). Widths 5 to 8
+barely move; past five the bound still cannot pay the cost.
+
 Through the runtime, same session, production configuration
 (`8a355bfb…` with DSpark), the rebased build (on main `318638a`) with the
 chosen form (*auto*) against each form forced (`wave_form`) and main:

@@ -152,6 +152,8 @@ struct Dsv4Options {
   // staging) and waves. Only a slot's state grows with use; its fixed
   // buffers are a few MiB (docs/experiments/request-slots/).
   std::uint32_t wave_slots = 1;
+  // A wave's slots on concurrent lanes (Dsv4Model::wave_lanes).
+  bool wave_lanes = true;
 };
 
 // The prefill arithmetic jitllm-runtime serves DeepSeek with: the
@@ -805,6 +807,7 @@ class Dsv4Runner final : public PagedModel {
   float* wave_logits_ = nullptr;
   std::uint64_t activation_bytes_ = 0;
   std::uint64_t scratch_bytes_ = 0;
+  std::uint64_t lane_scratch_ = 0;  // each wave lane's pool (ConfigureLanes)
   std::uint64_t host_input_bytes_ = 0;
   std::uint64_t snapshot_bytes_ = 0;    // a slot's verify snapshot
   std::uint64_t draft_staging_ = 0;     // a slot's draft inputs' staging stride

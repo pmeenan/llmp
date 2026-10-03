@@ -1166,7 +1166,7 @@ top-k on a patched path without it (licensing.md).
 **Reopen if.** A license admitted as permissive turns out to carry an
 obligation or restriction above, or the owner narrows the rule.
 
-## D-090: Decode steps replay as captured CUDA graphs at pinned places; a swap brings every address a graph names back  (2026-09-28, status: accepted by the M3 decode-graphs slice under the owner's overnight delegation, for review with it; pinned places confirmed by the owner, 2026-09-28, graphs' worth re-measured with a lease per request the same day and kept (below); answers D-086's graph-capture reopen condition and amends its contract with graphs; establishes what D-033 left open, graph survival across unmap and remap)
+## D-090: Decode steps replay as captured CUDA graphs at pinned places; a swap brings every address a graph names back  (2026-09-28, status: accepted by the M3 decode-graphs slice under the owner's overnight delegation, for review with it; pinned places confirmed by the owner, 2026-09-28, graphs' worth re-measured with a lease per request the same day and kept (below); answers D-086's graph-capture reopen condition and amends its contract with graphs; establishes what D-033 left open, graph survival across unmap and remap; amended 2026-10-03: a graph may record the launch context's lanes)
 
 **Decision.**
 - **What a graph holds.** A graph is captured per model, plan and chunk
@@ -1329,6 +1329,17 @@ places stay pinned. A plan's arena now holds what its graph uses (a
 DeepSeek decode plan 1.8 MiB of a 9.4 MiB estimate). The image pipeline's
 recorded step is charged the same way. **Reopen if** a model must move
 between swaps, as above.
+
+**Amended 2026-10-03** (wave lanes, under the owner's delegation of M3
+judgement calls; D-086 as amended the same day). A capture still begins
+and ends on the model's stream, but a DeepSeek wave's graph also records
+its lanes' fork and join: the launch context's own lane streams wait on
+an event of the model's stream, are captured into the same graph through
+that dependency, and are joined back to it before the capture ends, so
+the graph is one replay on the model's stream as before. The lanes'
+streams, events and scratch pools are the launch context's, made once at
+bind and destroyed with it after its graphs; their pools are fixed
+places in the node's workspace, as the stream's pool is.
 
 ## D-089: A model of several components is one v0 artifact per component and a content-addressed composition that names them by ID  (2026-09-28, status: accepted by the main agent under the owner's overnight delegation (2026-09-28); confirmed by the owner, 2026-09-28; experimental under D-018 like the rest of v0; settles plan.md's M3 open question and artifact-format.md's "Companion and multi-component artifacts" for pipelines)
 
@@ -1637,7 +1648,7 @@ plus the work that cannot overlap it exceeds it), a model's reference
 format cannot be supported under D-017 and D-080, or the owner moves the
 product milestones ahead of the swap work.
 
-## D-086: The M2 operation contract: registry-bound implementations run as device jobs over leased closures, with itemized phase envelopes and a catalog-exact memory account  (2026-09-27, status: accepted; settles the backend proof's P6; makes D-053's contract concrete; records D-052 as amended by D-085, D-053 and D-081 after the proof; its "M3's serving needs graph capture" reopen condition met by D-087's decode graphs, and answered on 2026-09-28 by D-090: graphs replay at pinned places; a job's own lease amended by D-093: a request may hold one lease for all its steps)
+## D-086: The M2 operation contract: registry-bound implementations run as device jobs over leased closures, with itemized phase envelopes and a catalog-exact memory account  (2026-09-27, status: accepted; settles the backend proof's P6; makes D-053's contract concrete; records D-052 as amended by D-085, D-053 and D-081 after the proof; its "M3's serving needs graph capture" reopen condition met by D-087's decode graphs, and answered on 2026-09-28 by D-090: graphs replay at pinned places; a job's own lease amended by D-093: a request may hold one lease for all its steps; its one stream amended 2026-10-03: a run may fork onto the launch context's lanes and join back)
 
 **Decision.** What M2's backend proof built and checked becomes the
 internal contract M3 builds on
@@ -1757,6 +1768,21 @@ in the same change; the [M2 record](m2-record.md) and the report list them.
   then need the relocation rules. *Met; answered by D-090 (2026-09-28):
   places are pinned, and a job may replay a graph captured on its stream.*
 - A phase kind's working set cannot be itemized from its plan.
+
+**Amended 2026-10-03** (wave lanes, under the owner's delegation of M3
+judgement calls; [wave lanes](experiments/deepseek-batching/README.md#wave-lanes)).
+"Queues only on the provider stream it is given" now reads: queues on
+the provider stream it is given, or on a concurrent lane of the K-C
+launch context that forks from and joins back to that stream within the
+same run (`LaunchContext::ConfigureLanes`, `BoundGraph::Run`). The
+launch context creates its lanes' streams and events once, at bind,
+outside any job and outside the provider, and owns them for its life; no
+implementation creates one. Every lane waits for the given stream before
+its first launch and the given stream waits for every lane before the
+run ends, so the job's fence on the given stream covers all of its work,
+and its lease, scratch (each lane's pool is carved from the declared
+workspace) and failure handling are unchanged. cuBLAS steps stay on the
+given stream, whose handle and workspace they borrow.
 - The loose process-level memory comparison fails and the excess is
   jitLLM's own.
 

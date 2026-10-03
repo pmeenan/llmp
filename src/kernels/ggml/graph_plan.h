@@ -29,12 +29,14 @@
 #ifndef JITLLM_KERNELS_GGML_GRAPH_PLAN_H_
 #define JITLLM_KERNELS_GGML_GRAPH_PLAN_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <functional>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -138,13 +140,86 @@ struct PlanStep {
   execution::Operation operation = execution::Operation::kAdd;
   std::string_view implementation;
   std::vector<ggml_tensor*> nodes;
+  // The lane it runs on (AssignLanes): 0, the context's stream, or 1 to
+  // kMaxLanes, a concurrent lane inside a region.
+  std::uint8_t lane = 0;
 };
+
+// Concurrent lanes. A graph builder may tag nodes that run independently of
+// one another (a wave's slots' attention and state operations) with a lane
+// and a region (LaneTag). AssignLanes gives each step its nodes' lane and
+// records each region's span of steps. Over a region's span, BoundGraph::Run
+// queues each lane's steps on a stream of its own (LaunchContext lanes): the
+// lanes wait for everything queued before the span, a step waits for the
+// steps on other lanes that last wrote what it reads or writes, or read
+// what it writes since (LaneOrder), and the context's stream waits for
+// every lane at the span's end. PlaceActivations keeps every
+// tensor a step in a span computes or reads live for the whole span, so
+// tensors of concurrent steps never share bytes. Each lane draws its scratch
+// from a pool of its own. The same kernels run with the same operands, so
+// each step computes what it computes on one stream, bit for bit.
+inline constexpr std::uint32_t kMaxLanes = 4;
+struct LaneTag {
+  std::uint8_t lane = 0;     // 1 to kMaxLanes; 0 keeps the step on the stream
+  std::uint32_t region = 0;  // 1 on; 0 is no region
+};
+using LaneTags = std::vector<std::pair<const ggml_tensor*, LaneTag>>;
 
 struct GraphPlan {
   std::vector<PlanStep> steps;
+  // Each region's first and last steps, in order and disjoint.
+  struct Region {
+    std::uint32_t first = 0;
+    std::uint32_t last = 0;
+  };
+  std::vector<Region> regions;
 
   // The plan as the registry takes it (execution/registry.h).
   std::vector<execution::Choice> Choices() const;
+};
+
+// Gives `plan`'s steps their nodes' lanes and records the regions' spans;
+// regions whose spans overlap are joined. A step whose implementation
+// `on_stream` names keeps lane 0: one that borrows cuBLAS, whose handle and
+// workspace are the context stream's (implementations.h UsesCublas; without
+// `on_stream`, GGML's cuBLAS product and jitllm.gemm.bf16).
+void AssignLanes(GraphPlan& plan, const LaneTags& tags,
+                 const std::function<bool(std::string_view)>& on_stream = {});
+
+// The order concurrent lanes need inside a region (BoundGraph::Run): before
+// a step, the other lanes it must wait for. A step waits for the last
+// writer of every tensor it reads or writes (read after write, write after
+// write) and for every lane that read a tensor it writes since that write
+// (write after read). Tensors are storage (a view counts as its source);
+// two separate leaf tensors bound to overlapping memory are not linked, so
+// lanes must not share memory through distinct leaves.
+// Lane 0 is the context's stream; a wait covers everything the awaited lane
+// has queued so far.
+class LaneOrder {
+ public:
+  static constexpr std::size_t kLanes = kMaxLanes + 1;
+
+  // The lanes `lane` must wait for before a step reading `reads` and
+  // writing `writes`, each once, in lane order.
+  std::vector<std::uint8_t> Before(std::uint8_t lane, std::span<const ggml_tensor* const> reads,
+                                   std::span<const ggml_tensor* const> writes) const;
+  // `waiter` waited for everything `on` has queued.
+  void Waited(std::uint8_t waiter, std::uint8_t on);
+  // A step queued on `lane`.
+  void Queued(std::uint8_t lane, std::span<const ggml_tensor* const> reads,
+              std::span<const ggml_tensor* const> writes);
+  // A region ended: every lane joined to the stream, nothing outstanding.
+  void Reset();
+
+ private:
+  struct Access {
+    std::uint8_t writer = 0;
+    std::uint64_t written = 0;                 // the writer's count at the write; 0: none
+    std::array<std::uint64_t, kLanes> read{};  // each lane's count at its last read since
+  };
+  std::array<std::uint64_t, kLanes> queued_{};
+  std::array<std::array<std::uint64_t, kLanes>, kLanes> seen_{};
+  std::unordered_map<const ggml_tensor*, Access> access_;
 };
 
 // The module's implementation names (implementations.h).

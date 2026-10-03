@@ -618,11 +618,13 @@ With a drafter, the runtime now chooses each wave's form per width
 (`execution/adaptive_wave_mode.h`; `serving.cc` `RunPreparedGenerationWave`)
 from counted tokens and a recorded cost, never from wall time:
 - **Cost.** For each width, a DSpark wave's time in plain decode waves:
-  1.94, 2.21 and 2.90 at widths 2, 3 and 4 (widths 5 to 8, added with
-  more request slots: [request slots](../request-slots/README.md#deepseeks-wave-form-past-four-requests); 151/78, 197/89, 249/86 ms
-  above). They are recorded per model (`kWaveCost` in `serving.cc`) and
-  must be measured again when the wave step changes, as per-slot streams
-  would change it.
+  first 1.94, 2.21 and 2.90 at widths 2, 3 and 4 (151/78, 197/89,
+  249/86 ms above), now 2.18, 2.68 and 2.99 with
+  [wave lanes](#wave-lanes); widths 5 to 8, added with more request
+  slots ([request slots](../request-slots/README.md#deepseeks-wave-form-past-four-requests)),
+  2.58, 2.12, 2.21 and 2.23 with lanes. They are recorded per model
+  (`kWaveCost` in `serving.cc`, a calibrated value under D-103) and are
+  measured again when the wave step changes.
 - **Acceptance.** One moving average (weight 1/8) over the service's
   draft-verify waves of any width, of the tokens each commits per
   request. As Qwen's draft depth does, it counts only complete verifies:
@@ -688,13 +690,139 @@ The plain replies equal them too. The earlier adaptive build chose by
 measured wall time (`h16`–`h19`) and gained 2–11%. It was replaced
 because its schedules, and so its replies, could change between runs.
 
+### Wave lanes
+
+A wave's slots each run their own compressors, indexer, attention and
+cache writes, about 12 ms of the 86 ms four-request step, one after
+another on the stream. They now run concurrently, one CUDA stream a slot,
+inside the wave's captured graph:
+- **Tags.** `BuildDsv4WaveGraph` tags each slot's attention and state
+  operations with a lane (slot `s` on lane `s mod 4 + 1`) and each
+  layer's block with a region (`Dsv4WaveGraph::lanes`).
+- **Plan.** `AssignLanes` (`kernels/ggml/graph_plan.h`) gives each step
+  its lane and records each region's span of steps. A step that borrows
+  cuBLAS stays on the stream, whose handle and workspace it uses.
+  `PlaceActivations` keeps everything a region's steps compute or read
+  live for the whole span, so concurrent steps never share bytes.
+- **Run.** `BoundGraph::Run` (`kernels/ggml/executor.h`) forks every lane
+  from the stream at a region's start. A step waits for the other lanes
+  that computed what it reads, and the stream joins every lane at the
+  region's end. Each lane is a stream, an event and a scratch pool of its
+  own, carved from the workspace's end (`LaunchContext::ConfigureLanes`).
+- **Exactness.** The same kernels run with the same operands, so each
+  step computes what it computes on one stream. Wave checks
+  (`jitllm_spec_runner --check wave --wave-lanes on|off`, 96 tokens,
+  community unless named) show this at widths 2 to 4. Plain rows are
+  identical (332 of 332 at four slots, both artifacts). DSpark drafts and
+  verify rows equal each slot alone, with 0 stale bytes after a discarded
+  verify. Alternating forms give 82 of 82 rows (original 84 of 84).
+  `CudaGraphTest.LanesComputeWhatTheStreamAloneComputes` checks the
+  executor launch by launch, captured and replayed. Through the runtime,
+  plain and forced-DSpark replies equal those without lanes byte for
+  byte.
+
+Median joined wave, same session (`ln2`):
+
+| Wave | Width | Lanes off: ms | Lanes on: ms |
+| --- | ---: | ---: | ---: |
+| Plain decode (injected) | 2 | 61.8 | 60.9 |
+| Plain decode (injected) | 3 | 74.2 | 71.5 |
+| Plain decode (injected) | 4 | 86.5 | 82.8 (−4.3%) |
+| Plain, no drafter, community | 4 | 85.5 | 81.0 (−5.3%) |
+| Plain, no drafter, original | 4 | 87.6 | 83.4 (−4.9%) |
+| Draft-verify | 2 | 133.4 | 132.7 |
+| Draft-verify | 3 | 194.9 | 191.8 |
+| Draft-verify | 4 | 252.2 | 247.2 (−2.0%) |
+
+A draft-verify wave gains less: its four draft blocks still run one after
+another, and they are most of its time over a plain wave's. Those
+medians, lanes on, are the costs above (verify over decode: 2.18, 2.68,
+2.99). Measured in the harness, lanes off, the same ratios are 2.16,
+2.63 and 2.92. The runtime's earlier per-wave timing gave 1.94 and 2.21
+at widths 2 and 3, but its plain waves there took 78 and 89 ms against
+the harness's 62 and 74. Those were means over the
+8 and 12 waves of each width a cell runs, which include each width's
+first wave, which plans and captures its shape. Their medians are 70.3
+and 76.9 ms and their minima 62.1 and 74.1 ms, the harness's. Width 4,
+with many more waves, agrees (2.92 against 2.90).
+
+HTTP C4 cells, same session (`h23s`, `h23`), fresh service per cell:
+- Lanes off with the first costs: the source without lanes
+  (`options_.wave_lanes = false`; main's).
+- Lanes, first costs: lanes on with the costs before.
+- Lanes: lanes on with the new costs, the source as committed.
+
+| Cell, tok/s | Plain: off | Plain: lanes | DSpark only: lanes | Chosen: off | Chosen: lanes, first costs | Chosen: lanes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Community 124-token | 43.33 | 45.43 (+4.8%) | 39.02 | 41.56 | 43.29 | 43.46 (+4.6%) |
+| Original 124-token | 41.31 | 43.26 (+4.7%) | 38.82 | 40.31 | 41.40 | 42.37 (+5.1%) |
+| Community 7K | 19.52 | 19.90 (+1.9%) | 18.34 | 19.01 | 19.19 | 19.26 (+1.3%) |
+| Original 7K | 17.94 | 18.26 (+1.8%) | 17.66 | 17.53 | 17.37 | 17.73 (+1.1%) |
+
+- **Plain waves.** Lanes make them 4.7–4.8% faster at 124 tokens and
+  1.8–1.9% at 7K, where prefill dominates the wall (within this study's
+  noise).
+- **Chosen form.** It gains 4.6–5.1% at 124 tokens with lanes and the new
+  costs (1.1–1.3% at 7K, within noise). Against
+  the first costs with lanes, the new costs are level on community and
+  2.1–2.3% faster on the original; that is within this study's noise.
+- **Gaps.** The chosen form now lands 2.1–4.3% under plain waves at
+  124 tokens and 2.9–3.2% at 7K. It is 0.4–11.4% over DSpark alone.
+- **Replies.** Plain and DSpark-only replies equal the lanes-off build's
+  (and `dss6`'s) byte for byte.
+
+Joining the draft blocks (one graph over every slot's draft rows, the
+drafter's weights read once) is the next cut at the DSpark wave's cost.
+
+In every engine of this session, the 7K cells' second first token came
+at 18.8–22.2 s, against 14.7–17.2 s in `h22`; only the second moved. The
+source without lanes shows it too, so it is not the lanes'. It comes from
+the memory-pressure change (340e368): the slot choice now
+hands the warm-up's slot 0 to the youngest request, whose stale history
+shares two tokens with its prompt. The schedule counted those as reused,
+so that prompt looked shortest and its zero-row reuse unit ran first,
+and the extra unit aged a 4,096-row chunk ahead of the second prompt's
+final two rows. Fixed (`cohort_schedule.h`, `serving.cc`):
+- `remaining_rows()` counts only what the prompt's reuse would keep
+  (`Llm::ReusableFor`), so a stale history counts for nothing.
+- A unit that prefills no rows (a reuse or a checkpoint) ages no other
+  prompt.
+- A started prompt with at most 256 tokens left goes before an aged one.
+
+Same 7K C4 cells after the fix (`h26`): first tokens 7.2 / 14.7 / 22.3 /
+30.0 s (community) and 8.4 / 16.9 / 25.7 / 34.6 s (original). Their
+replies equal the lanes cells' byte for byte, at 19.94 and 18.29 tok/s.
+On main's request slots (c1dde25), the same cells (`h27`) give 7.3 /
+14.8 / 22.5 / 30.3 s and 8.4 / 16.9 / 25.7 / 34.6 s, the same replies.
+Wave checks there (`s9w`, `s9c`) stay exact with lanes shared past four
+slots (slot s on lane s mod 4 + 1, `LaneOrder` ordering any shared
+tensor): DSpark at 2, 4 and 8 slots with 0 mismatches and 0 stale bytes,
+alternating forms 82 of 82 rows, and plain decode waves at 5 to 8 slots
+427/427, 522/522, 617/617 and 712/712 rows.
+
+Width 3 costs: with lanes, the recalibrated 2.68 makes width 3 mostly
+plain where 2.21 kept DSpark. Short C2 and C3 cells, same session,
+first costs against the recalibrated ones (`h25s-comm`, `h25s-orig`):
+
+| Cell, tok/s | First costs | Recalibrated |
+| --- | ---: | ---: |
+| Community C2 | 37.41 | 37.24 |
+| Community C3 | 37.76 | 38.93 (+3.1%) |
+| Original C2 | 36.03 | 36.39 |
+| Original C3 | 39.00 | 39.09 |
+
+The recalibrated costs are level or better, so they stay.
+
 Records: `spark:~/scratch/dss5/` (`v2`, `v3`, `h1`–`h6`, `q1`, `bin/`,
 profile `v3/wave4.sqlite`; the adopted scheduling `h10`, `h10s`, `q2` and
 profile `short4.sqlite`; the community drafter `dr`, `h9`, `h9s`; the
 wall-time adaptive waves `h16`–`h19`, `h17s` with the per-wave timing
 behind the costs; the chosen form `h20s`, `h21s`, `h20`, binaries
 `bin/det7` and `bin/spec7`; the final source `h22s`, `h22`, `w8`, binary
-`bin/det8`), controller
+`bin/det8`; wave lanes `ln2` (harness, with per-width medians), `h23s`,
+`h23`, binaries `bin/ln-b`, `bin/ln-a0` and `bin/ln-a1`; the review's
+fixes `s8w`, `h26`, `h25s-comm`, `h25s-orig`, binary `bin/s8`; on
+request slots `s9w`, `s9c`, `h27`, binary `bin/s9`), controller
 `runx.py` over `dss0/tools/run.py`, 2026-10-03.
 
 ## Plan memory
@@ -841,8 +969,9 @@ cleared as idle; once idle slot 0 is cleared, slot 1 grows and runs.
   ([above](#prompt-order-adopted)).
 - **Plain waves instead of DSpark from three requests.** DSpark is 12.6%
   faster at three slots and level at four; not adopted.
-- **One launch for every slot's attention and state operations.** Open.
-  About 12 ms of the 86 ms four-request step.
+- **One launch for every slot's attention and state operations.** Open,
+  after [wave lanes](#wave-lanes) ran them concurrently (86.5 → 82.8 ms
+  four-request step). Batched kernels would cut what lanes leave.
 - **DSpark at four requests through the runtime.** Mostly closed by
   [choosing the form per wave](#adaptive-dspark-and-plain-waves): 1–4%
   under plain waves at C4, against 5–12% before. A joined draft block (one launch for

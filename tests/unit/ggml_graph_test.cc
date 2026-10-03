@@ -328,6 +328,122 @@ TEST(Qwen2GraphTest, AFinalViewKeepsItsSourceAlive) {
   }
 }
 
+// Concurrent lanes (graph_plan.h AssignLanes): steps take their nodes'
+// lanes, a region spans its tagged steps (overlapping ones joined), and
+// what a region's steps compute or read lives for the whole span, so two
+// lanes' tensors never share bytes though each dies early in step order.
+TEST(Qwen2GraphTest, LanesSpanRegionsAndKeepTheirTensorsApart) {
+  auto arena = kg::TensorArena::Create(32);
+  ASSERT_TRUE(arena.has_value());
+  ggml_context* c = arena->context();
+  ggml_tensor* x = ggml_new_tensor_1d(c, GGML_TYPE_F32, 1024);
+  ggml_tensor* before = ggml_add(c, x, x);           // the stream's, before
+  ggml_tensor* a1 = ggml_mul(c, before, before);     // lane 1
+  ggml_tensor* a2 = ggml_add(c, a1, a1);             // lane 1, a1 dies
+  ggml_tensor* b1 = ggml_mul(c, before, x);          // lane 2
+  ggml_tensor* b2 = ggml_add(c, b1, b1);             // lane 2, b1 dies
+  ggml_tensor* joined = ggml_add(c, a2, b2);         // the stream's, in the region
+  ggml_tensor* after = ggml_mul(c, joined, joined);  // after the region
+  const std::vector<ggml_tensor*> nodes = {before, a1, a2, b1, b2, joined, after};
+  kg::LaneTags tags = {{a1, {1, 7}}, {a2, {1, 7}}, {b1, {2, 7}}, {b2, {2, 7}}, {joined, {0, 7}}};
+  auto plan = kg::PlanGraph(nodes, false, ModelDevice());
+  ASSERT_TRUE(plan.has_value()) << plan.error().detail;
+  ASSERT_EQ(plan->steps.size(), nodes.size());
+  kg::AssignLanes(*plan, tags);
+  std::vector<std::uint8_t> lanes;
+  for (const kg::PlanStep& step : plan->steps) {
+    lanes.push_back(step.lane);
+  }
+  EXPECT_EQ(lanes, (std::vector<std::uint8_t>{0, 1, 1, 2, 2, 0, 0}));
+  ASSERT_EQ(plan->regions.size(), 1U);
+  EXPECT_EQ(plan->regions[0].first, 1U);
+  EXPECT_EQ(plan->regions[0].last, 5U);
+  const std::array<ggml_tensor*, 1> inputs = {x};
+  const auto placement = kg::PlaceActivations(nodes, *plan, inputs, 128);
+  ASSERT_TRUE(placement.has_value()) << placement.error().detail;
+  const auto ranges = Ranges(*placement);
+  // On one stream a1 could share bytes with b1 or b2; on lanes they run at
+  // once, so the region's tensors all stay apart.
+  const std::vector<ggml_tensor*> region = {before, a1, a2, b1, b2, joined};
+  for (std::size_t i = 0; i < region.size(); ++i) {
+    for (std::size_t j = i + 1; j < region.size(); ++j) {
+      const auto [ilo, ihi] = ranges.at(region[i]);
+      const auto [jlo, jhi] = ranges.at(region[j]);
+      EXPECT_TRUE(ihi <= jlo || jhi <= ilo) << i << " and " << j;
+    }
+  }
+  // The same plan without lanes: no regions, every step on the stream.
+  auto plain = kg::PlanGraph(nodes, false, ModelDevice());
+  ASSERT_TRUE(plain.has_value());
+  EXPECT_TRUE(plain->regions.empty());
+  EXPECT_FALSE(kg::SamePlan(*plan, *plain));
+  // Overlapping regions are joined; a lane step outside any region (none
+  // tagged with a region) stays on the stream; a cuBLAS product keeps
+  // lane 0 within its region.
+  kg::LaneTags overlapping = {{a1, {1, 1}}, {a2, {1, 2}}, {b1, {2, 2}}, {b2, {2, 1}}};
+  kg::AssignLanes(*plain, overlapping);
+  ASSERT_EQ(plain->regions.size(), 1U);
+  EXPECT_EQ(plain->regions[0].first, 1U);
+  EXPECT_EQ(plain->regions[0].last, 4U);
+  kg::AssignLanes(*plain, {{a1, {1, 0}}});
+  EXPECT_TRUE(plain->regions.empty());
+  EXPECT_EQ(plain->steps[1].lane, 0U);
+  // A step whose implementation must stay on the stream (one borrowing
+  // cuBLAS) keeps lane 0 inside its region; the region is unchanged.
+  kg::AssignLanes(*plan, tags,
+                  [](std::string_view implementation) { return implementation == kg::kMulName; });
+  lanes.clear();
+  for (const kg::PlanStep& step : plan->steps) {
+    lanes.push_back(step.lane);
+  }
+  EXPECT_EQ(lanes, (std::vector<std::uint8_t>{0, 0, 1, 0, 2, 0, 0}));
+  ASSERT_EQ(plan->regions.size(), 1U);
+  EXPECT_EQ(plan->regions[0].first, 1U);
+  EXPECT_EQ(plan->regions[0].last, 5U);
+}
+
+// The order concurrent lanes keep inside a region (graph_plan.h LaneOrder):
+// a read waits for the tensor's last writer on another lane, a write for its
+// last writer and for every other lane that read it since, a lane never
+// waits for itself, a wait covers everything the awaited lane queued, and a
+// region's end clears it all.
+TEST(Qwen2GraphTest, LanesOrderEveryReadAndWriteAcrossLanes) {
+  auto arena = kg::TensorArena::Create(8);
+  ASSERT_TRUE(arena.has_value());
+  ggml_context* c = arena->context();
+  const ggml_tensor* x = ggml_new_tensor_1d(c, GGML_TYPE_F32, 16);
+  const ggml_tensor* y = ggml_new_tensor_1d(c, GGML_TYPE_F32, 16);
+  const ggml_tensor* z = ggml_new_tensor_1d(c, GGML_TYPE_F32, 16);
+  using Lanes = std::vector<std::uint8_t>;
+  using Ts = std::vector<const ggml_tensor*>;
+  kg::LaneOrder order;
+  // Lane 1 writes x; lane 2 reads it (read after write).
+  EXPECT_EQ(order.Before(1, Ts{}, Ts{x}), Lanes{});
+  order.Queued(1, Ts{}, Ts{x});
+  EXPECT_EQ(order.Before(1, Ts{x}, Ts{y}), Lanes{});  // its own lane, in order
+  EXPECT_EQ(order.Before(2, Ts{x}, Ts{y}), Lanes{1});
+  order.Waited(2, 1);
+  EXPECT_EQ(order.Before(2, Ts{x}, Ts{y}), Lanes{});  // the wait covers it
+  order.Queued(2, Ts{x}, Ts{y});
+  // Lane 3 overwrites x: after its writer (lane 1) and its reader (lane 2).
+  EXPECT_EQ(order.Before(3, Ts{}, Ts{x}), (Lanes{1, 2}));
+  // The stream writes y, which lane 2 wrote (write after write).
+  EXPECT_EQ(order.Before(0, Ts{}, Ts{y}), Lanes{2});
+  order.Waited(3, 1);
+  order.Waited(3, 2);
+  order.Queued(3, Ts{}, Ts{x});
+  // Readers before lane 3's write are settled; a later read of x follows
+  // lane 3 alone; z, untouched, needs nothing.
+  EXPECT_EQ(order.Before(1, Ts{x}, Ts{z}), Lanes{3});
+  EXPECT_EQ(order.Before(4, Ts{z}, Ts{z}), Lanes{});
+  // A wait covers only what was queued by then.
+  order.Waited(4, 3);
+  order.Queued(3, Ts{}, Ts{z});
+  EXPECT_EQ(order.Before(4, Ts{z}, Ts{}), Lanes{3});
+  order.Reset();
+  EXPECT_EQ(order.Before(4, Ts{x, y, z}, Ts{x, y, z}), Lanes{});
+}
+
 TEST(Qwen2GraphTest, AnUnchangedPlanIsTheSamePlan) {
   const Chunk c = Build(1, 256, 512);
   const auto a = kg::PlanGraph(c.graph.nodes, true, ModelDevice());

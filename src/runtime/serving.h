@@ -626,9 +626,11 @@ class Llm : public Served {
     Status Finish();
     std::uint32_t reused() const { return reused_; }
     // The prompt tokens left to prefill, a scheduling hint
-    // (runtime/cohort_schedule.h): before its reuse, past the branch's
-    // history's common prefix with the prompt.
+    // (runtime/cohort_schedule.h): before its reuse, past what the reuse
+    // would keep (Llm::ReusableFor; none of a stale history).
     std::uint32_t remaining_rows() const;
+    // Its reuse settled: its first unit ran.
+    bool started() const;
     const PrefillRun& run() const { return run_; }
     const std::vector<float>& last() const { return last_; }
 
@@ -954,6 +956,12 @@ class Llm : public Served {
   Status ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t& reused,
                      bool fresh, bool resume, const PrefillGoOn& go_on, bool& stopped,
                      const PromptSession* prompt = nullptr);
+  // The prompt tokens ReusePrompt would keep now, without its effects
+  // (ReusablePrefix, with its fresh and resume cases): the live history it
+  // continues, or a matching turn checkpoint's boundary; none where it
+  // would clear (a stale history that shares a few tokens).
+  std::uint32_t ReusableFor(const Branch& branch, std::span<const std::int32_t> tokens, bool fresh,
+                            bool resume) const;
   std::expected<std::unique_ptr<PromptSession>, std::string> BeginPrompt(
       Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
       bool fresh, bool resume = false);

@@ -71,8 +71,21 @@ DeviceChoices DeviceChoicesOf(const LaunchContext& launch) {
 
 std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& launch,
                                                         const GraphPlan& plan) {
+  return PlanScratchOn(launch, plan, false);
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanLaneScratch(const LaunchContext& launch,
+                                                            const GraphPlan& plan) {
+  return PlanScratchOn(launch, plan, true);
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& launch,
+                                                          const GraphPlan& plan, bool lanes) {
   std::uint64_t most = 0;
   for (const PlanStep& step : plan.steps) {
+    if ((step.lane != 0) != lanes) {
+      continue;
+    }
     std::expected<std::uint64_t, KernelFailure> planned = 0;
     if (step.implementation == kMulMatCublas) {
       auto cublas = PlanMulMatCublas(launch, step.nodes.front());
@@ -164,7 +177,7 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
         return Rejected(std::format("step {} ({}): {}{}", i, kernel->name(), checked.error().detail,
                                     Describe(planned.nodes)));
       }
-      steps.push_back({.kernel = *kernel, .nodes = planned.nodes});
+      steps.push_back({.kernel = *kernel, .nodes = planned.nodes, .lane = planned.lane});
       continue;
     }
     auto kernel = Kernel::Bind(implementation);
@@ -175,26 +188,157 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
       return Rejected(std::format("step {} ({}): {}{}", i, kernel->name(), checked.error().detail,
                                   Describe(planned.nodes)));
     }
-    steps.push_back({.kernel = *kernel, .nodes = planned.nodes});
+    if (planned.lane != 0 && UsesCublas(kernel->name())) {
+      // Its handle and workspace are the context stream's (graph_plan.h
+      // AssignLanes): on a lane it would queue on the stream, out of order.
+      return Rejected(std::format("step {} ({}) borrows cuBLAS but is on lane {}", i,
+                                  kernel->name(), planned.lane));
+    }
+    steps.push_back({.kernel = *kernel, .nodes = planned.nodes, .lane = planned.lane});
   }
-  return BoundGraph(std::move(*bound), std::move(steps));
+  return BoundGraph(std::move(*bound), std::move(steps), plan.regions);
+}
+
+std::expected<void, KernelFailure> BoundGraph::RunStep(LaunchContext& launch, std::size_t i) const {
+  const Step& step = steps_[i];
+  std::expected<void, KernelFailure> ran;
+  if (const auto* rms = std::get_if<RmsNormMulKernel>(&step.kernel)) {
+    ran = rms->Run(launch, step.nodes[0], step.nodes[1]);
+  } else {
+    ran = std::get<Kernel>(step.kernel).Run(launch, step.nodes);
+  }
+  if (!ran) {
+    return std::unexpected(KernelFailure{
+        .error = ran.error().error, .detail = std::format("step {}: {}", i, ran.error().detail)});
+  }
+  return {};
 }
 
 std::expected<void, KernelFailure> BoundGraph::Run(LaunchContext& launch) const {
+  if (!regions_.empty() && launch.lanes() >= kMaxLanes) {
+    return RunLanes(launch);
+  }
   for (std::size_t i = 0; i < steps_.size(); ++i) {
-    const Step& step = steps_[i];
-    std::expected<void, KernelFailure> ran;
-    if (const auto* rms = std::get_if<RmsNormMulKernel>(&step.kernel)) {
-      ran = rms->Run(launch, step.nodes[0], step.nodes[1]);
-    } else {
-      ran = std::get<Kernel>(step.kernel).Run(launch, step.nodes);
-    }
-    if (!ran) {
-      return std::unexpected(KernelFailure{
-          .error = ran.error().error, .detail = std::format("step {}: {}", i, ran.error().detail)});
+    if (auto r = RunStep(launch, i); !r) {
+      return r;
     }
   }
   return {};
+}
+
+// The lanes' protocol (graph_plan.h AssignLanes, LaneOrder). Lane 0 is the
+// context's stream. At a region's first step every lane waits for the
+// stream (so for everything queued before), a step waits for each other
+// lane that last wrote what it reads or writes, or read what it writes
+// since, and at the region's last step the stream waits for every lane.
+std::expected<void, KernelFailure> BoundGraph::RunLanes(LaunchContext& launch) const {
+  constexpr std::size_t kLanes = LaneOrder::kLanes;
+  LaneOrder order;
+  std::size_t region = 0;
+  bool open = false;
+  const auto storage = [](const ggml_tensor* t) {
+    while (t->view_src != nullptr) {
+      t = t->view_src;
+    }
+    return t;
+  };
+  const auto wait = [&](std::uint8_t waiter,
+                        std::uint8_t on) -> std::expected<void, KernelFailure> {
+    if (auto r = launch.LaneWait(waiter, on); !r) {
+      return r;
+    }
+    order.Waited(waiter, on);
+    return {};
+  };
+  // The stream waits for every lane (each forked lane is joined back, as a
+  // capture requires, whether or not it ran anything).
+  const auto close = [&]() -> std::expected<void, KernelFailure> {
+    std::expected<void, KernelFailure> joined;
+    for (std::uint8_t lane = 1; lane < kLanes; ++lane) {
+      auto r = wait(0, lane);
+      if (joined && !r) {
+        joined = r;
+      }
+    }
+    launch.SelectLane(0);
+    open = false;
+    order.Reset();
+    return joined;
+  };
+  // Every lane waits for the stream: what a region reads, and the bytes its
+  // tensors take, are the stream's until it opens.
+  const auto fork = [&]() -> std::expected<void, KernelFailure> {
+    open = true;
+    for (std::uint8_t lane = 1; lane < kLanes; ++lane) {
+      if (auto r = wait(lane, 0); !r) {
+        return r;
+      }
+    }
+    return {};
+  };
+  // What a step reads and writes, as storage.
+  std::vector<const ggml_tensor*> reads;
+  std::vector<const ggml_tensor*> writes;
+  const auto accesses = [&](const Step& step) {
+    reads.clear();
+    writes.clear();
+    for (const ggml_tensor* node : step.nodes) {
+      writes.push_back(storage(node));
+      for (const ggml_tensor* src : node->src) {
+        if (src != nullptr) {
+          reads.push_back(storage(src));
+        }
+      }
+    }
+  };
+  // Waits for the other lanes `step` must follow (LaneOrder).
+  const auto inputs = [&](std::uint8_t lane) -> std::expected<void, KernelFailure> {
+    for (const std::uint8_t other : order.Before(lane, reads, writes)) {
+      if (auto r = wait(lane, other); !r) {
+        return r;
+      }
+    }
+    return {};
+  };
+  std::expected<void, KernelFailure> result;
+  for (std::size_t i = 0; i < steps_.size() && result; ++i) {
+    while (region < regions_.size() && regions_[region].last < i) {
+      ++region;
+    }
+    const bool inside = region < regions_.size() && i >= regions_[region].first;
+    if (inside && !open) {
+      result = fork();
+      if (!result) {
+        break;
+      }
+    }
+    const Step& step = steps_[i];
+    const std::uint8_t lane = inside ? step.lane : 0;
+    if (open) {
+      accesses(step);
+      result = inputs(lane);
+      if (!result) {
+        break;
+      }
+    }
+    launch.SelectLane(lane);
+    result = RunStep(launch, i);
+    if (open) {
+      order.Queued(lane, reads, writes);
+    }
+    if (result && open && i == regions_[region].last) {
+      result = close();
+    }
+  }
+  if (open) {
+    // Joined even after a failure, so the stream's fence covers every lane.
+    auto closed = close();
+    if (result && !closed) {
+      result = closed;
+    }
+  }
+  launch.SelectLane(0);
+  return result;
 }
 
 }  // namespace jitllm::kernels::ggml

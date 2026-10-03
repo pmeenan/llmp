@@ -105,8 +105,9 @@ TEST(AdaptiveDepthTest, ACheckpointRestoresTheSameChoicesThroughRejectionsAndPro
 using jitllm::execution::AdaptiveWaveMode;
 using Mode = AdaptiveWaveMode::Mode;
 
-// DeepSeek's calibration (serving.cc kWaveCost): a draft-verify wave
-// costs about 1.9, 2.2 and 2.9 plain waves at widths 2, 3 and 4.
+// A calibration like DeepSeek's (serving.cc kWaveCost; its first, without
+// wave lanes): a draft-verify wave costs about 1.9, 2.2 and 2.9 plain waves
+// at widths 2, 3 and 4.
 constexpr AdaptiveWaveMode::Costs kCost = {0, 0, 1.94, 2.21, 2.90};
 
 // `waves` waves of `width`: a draft-verify wave commits `kept` tokens a

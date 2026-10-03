@@ -165,6 +165,12 @@ class RmsNormMulKernel {
 
 // One of the module's other implementations (above), over its operation's
 // nodes in the order listed there.
+// Whether a declared implementation launches cuBLAS on the launch context's
+// lent handle, whose stream and workspace are the context stream's: such a
+// step stays on lane 0 (graph_plan.h AssignLanes), and on a lane the
+// context lends it no handle (launch.h cublas).
+bool UsesCublas(std::string_view implementation);
+
 class Kernel {
  public:
   // Refused unless `implementation` is one of those this module declares,

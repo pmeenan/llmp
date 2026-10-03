@@ -488,7 +488,8 @@ Status Dsv4Runner::Setup() {
                      .rot = kg::HadamardMatrix(profile_.indexer_head_dim),
                      .exact = o_.exact,
                      .prefill_outa_hca = o_.prefill_outa_hca && !o_.exact && !o_.full_window,
-                     .prefill_outa_hca_partial = o_.prefill_outa_hca_partial};
+                     .prefill_outa_hca_partial = o_.prefill_outa_hca_partial,
+                     .wave_lanes = o_.wave_lanes};
   if (speculative()) {
     dmodel_ = DsparkModel{.artifact = &dweights_.artifact(),
                           .profile = &dprofile_,
@@ -503,6 +504,7 @@ Status Dsv4Runner::Setup() {
   }
   std::uint64_t most_activations = 0;
   std::uint64_t most_scratch = 0;
+  std::uint64_t most_lane_scratch = 0;  // a wave lane's (graph_plan.h AssignLanes)
   std::uint64_t most_inputs = 0;
   std::uint64_t draft_inputs = 0;
   // The largest plan of each kind (PlannedHostBytes) and the most nodes any
@@ -528,6 +530,11 @@ Status Dsv4Runner::Setup() {
         return Error(scratch.error().detail);
       }
       most_scratch = std::max(most_scratch, *scratch);
+      auto lane_scratch = kg::PlanLaneScratch(**measure, planned.plan);
+      if (!lane_scratch) {
+        return Error(lane_scratch.error().detail);
+      }
+      most_lane_scratch = std::max(most_lane_scratch, *lane_scratch);
       most_inputs = std::max(most_inputs, planned.inputs_bytes);
       return {};
     };
@@ -647,6 +654,12 @@ Status Dsv4Runner::Setup() {
   // Margins: other shapes of these widths place a little differently.
   activation_bytes_ = Round(most_activations + (most_activations / 4), kExtent);
   scratch_bytes_ = Round(most_scratch + (most_scratch / 4) + (1U << 20U), kExtent);
+  // A wave's slots run their attention and state operations on concurrent
+  // lanes, each with a scratch pool of its own past the stream's.
+  lane_scratch_ = wave_slots_ > 1 && o_.wave_lanes
+                      ? Round(most_lane_scratch + (most_lane_scratch / 4) + (1U << 18U), 256)
+                      : 0;
+  scratch_bytes_ = Round(scratch_bytes_ + (kg::kMaxLanes * lane_scratch_), kExtent);
   const std::uint64_t input_bytes = Round((most_inputs * 2) + (1U << 20U), kExtent);
   // A chunk's host-built inputs (Dsv4ChunkInputs and the embedding rows)
   // are the staged bytes again, on the host.
@@ -946,6 +959,12 @@ Status Dsv4Runner::Bind() {
   }
   if (auto r = resources_.BindLaunch(scratch_bytes_); !r) {
     return r;
+  }
+  if (lane_scratch_ > 0) {
+    if (auto r = resources_.launch().ConfigureLanes(kg::kMaxLanes, base::Bytes(lane_scratch_));
+        !r) {
+      return Error(r.error().detail);
+    }
   }
   runs_.SetLaunch(&resources_.launch());
   return {};

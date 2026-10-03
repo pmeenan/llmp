@@ -221,6 +221,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- DeepSeek's concurrent requests now run their own attention and state
+  work at the same time, one CUDA stream each, inside a wave, with each
+  request's results unchanged bit for bit. At four 124-token requests
+  plain waves complete 4.7–4.8% more tokens a second, and with DSpark
+  4.6–5.1%, whose wave-form costs were measured again (at 7K, where
+  prefill dominates, the gains are within noise).
 - With its DSpark drafter, DeepSeek now chooses per wave of concurrent
   requests between draft-verify waves and plain decode waves: the tokens
   draft-verify waves accept against a cost measured for each wave width.
@@ -435,6 +441,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Concurrent chat prompts again prefill in order of what is really left:
+  a conversation's stale history no longer counts as reused, a unit that
+  prefills nothing ages no other prompt, and a started prompt about to
+  finish goes before an aged one. At four 7K-token requests the second
+  first token comes at 14.7 s again instead of 18.8 s.
 - DeepSeek's DSpark drafter failed with the community IQ2_XXS GGUF ("get_rows
   of quantized rows into F32"): the verify's device lookup of the drafts'
   rows now takes its F16 token table. With the drafter, one 7K-token chat

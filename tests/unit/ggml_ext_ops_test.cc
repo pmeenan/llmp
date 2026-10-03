@@ -574,7 +574,9 @@ TEST_F(GgmlExtOpsTest, RawQ2D2rPreservesItsOwnCapturedProductAndPlansAllScratch)
   ASSERT_TRUE(scratch.has_value()) << (scratch ? "" : scratch.error().detail);
   const kg::GraphPlan plan{.steps = {{.operation = jitllm::execution::Operation::kMulMatId,
                                       .implementation = kg::kMulMatIdQ2D2r,
-                                      .nodes = {product}}}};
+                                      .nodes = {product},
+                                      .lane = 0}},
+                           .regions = {}};
   const auto planned = kg::PlanScratch(launch(), plan);
   ASSERT_TRUE(planned.has_value()) << (planned ? "" : planned.error().detail);
   EXPECT_EQ(*planned, *scratch);
@@ -1910,7 +1912,9 @@ TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeCapturedScratchAndPreservesOwnRepeats)
     ASSERT_TRUE(scratch.has_value()) << (scratch ? "" : scratch.error().detail);
     const kg::GraphPlan plan{.steps = {{.operation = jitllm::execution::Operation::kFlashAttn,
                                         .implementation = kg::kDsv4HcaTokentileName,
-                                        .nodes = {node}}}};
+                                        .nodes = {node},
+                                        .lane = 0}},
+                             .regions = {}};
     const auto planned = kg::PlanScratch(launch(), plan);
     ASSERT_TRUE(planned.has_value());
     EXPECT_EQ(*planned, *scratch);

@@ -824,19 +824,19 @@ class Dsv4 final : public Llm {
   std::array<engine::Dsv4Runner::Slot*, engine::Dsv4Runner::kRequestSlots> native_slots_{};
   // With DSpark: draft-verify or plain waves, by width (RunPreparedGenerationWave).
   // The calibration: a draft-verify wave's time over a plain decode wave's,
-  // by width, measured through the runtime with each form forced (GB10,
-  // community GGUF, four 124-token chats, 2026-10-03: 151 / 78, 197 / 89
-  // and 249 / 86 ms at widths 2, 3 and 4; docs/experiments/deepseek-
-  // batching). Widths 5 to 8 (more request slots, D-104), each form's wave
-  // timed in the wave check (`jitllm_spec_runner --check wave --slots N`,
-  // same GGUF, 2026-10-03): 262 / 102, 239 / 114, 279 / 127 and 316 / 140
-  // ms, a DSpark verify then three rows a request at width 5 and two past
+  // by width: the median joined wave of `jitllm_spec_runner --check wave
+  // --slots N --wave-mode verify|decode` (GB10, community GGUF, wave lanes
+  // on, 2026-10-03; docs/experiments/deepseek-batching, "Wave lanes"):
+  // 132.7 / 60.9, 191.8 / 71.5 and 247.2 / 82.8 ms at widths 2, 3 and 4;
+  // 246.9 / 95.6, 224.7 / 106.1, 258.0 / 116.6 and 287.3 / 129.1 ms at
+  // widths 5 to 8 (more request slots, D-104), each from `--slots N`. A
+  // DSpark verify then takes three rows a request at width 5 and two past
   // it, so past five a draft-verify wave (at most two tokens a request)
   // never pays (docs/experiments/request-slots). Fallbacks until D-103's
   // calibration on the machine measures them; to be measured again when a
   // wave's cost changes.
-  static constexpr execution::AdaptiveWaveMode::Costs kWaveCost = {0,    0,    1.94, 2.21, 2.90,
-                                                                   2.58, 2.10, 2.20, 2.25};
+  static constexpr execution::AdaptiveWaveMode::Costs kWaveCost = {0,    0,    2.18, 2.68, 2.99,
+                                                                   2.58, 2.12, 2.21, 2.23};
   // A request's share of a draft-verify wave's rows among `count`: all
   // sixteen's, at least two (so DSpark takes at most eight requests).
   static std::uint32_t WaveShare(std::size_t count) {
@@ -2366,6 +2366,21 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
   return {};
 }
 
+std::uint32_t Llm::ReusableFor(const Branch& branch, std::span<const std::int32_t> tokens,
+                               bool fresh, bool resume) const {
+  if (fresh) {
+    return 0;
+  }
+  const std::size_t prefix = ReusablePrefix(branch, tokens);
+  // A generation set aside for its peers resumes from its whole prompt.
+  if (prefix == 0 && resume && !branch.history_.empty() &&
+      branch.history_.size() == tokens.size() && !branch.needs_clear_ && StateUsableFor(branch) &&
+      CommonPrefix(branch.history_, tokens) == tokens.size()) {
+    return static_cast<std::uint32_t>(tokens.size());
+  }
+  return static_cast<std::uint32_t>(prefix);
+}
+
 Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t& reused,
                         bool fresh, bool resume, const PrefillGoOn& go_on, bool& stopped,
                         const PromptSession* prompt) {
@@ -2529,6 +2544,8 @@ std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::BeginPrompt
 
 bool Llm::PromptSession::done() const { return complete_ || finished_; }
 
+bool Llm::PromptSession::started() const { return phase_ != Phase::kReuse; }
+
 std::expected<Llm::PromptSession::Unit, std::string> Llm::PromptSession::NextUnit() const {
   if (done() || advancing_) {
     return Error("the prompt has no next unit");
@@ -2551,11 +2568,11 @@ std::uint32_t Llm::PromptSession::remaining_rows() const {
   if (done()) {
     return 0;
   }
-  const std::vector<std::int32_t>& history = branch_.history_;
-  std::size_t at = history.size();
+  std::size_t at = branch_.history_.size();
   if (phase_ == Phase::kReuse) {
-    // Not reused yet: what the branch's history shares with the prompt.
-    at = static_cast<std::size_t>(std::ranges::mismatch(history, tokens_).in1 - history.begin());
+    // Not reused yet: what the reuse would keep (none of a stale history
+    // that merely shares a few tokens with the prompt).
+    at = model_.ReusableFor(branch_, tokens_, fresh_, resume_);
   }
   return at >= tokens_.size() ? 0 : static_cast<std::uint32_t>(tokens_.size() - at);
 }

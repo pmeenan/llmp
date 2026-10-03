@@ -37,7 +37,9 @@ ScheduleChoice NextCohortUnit(std::span<const ScheduledMember> members) {
   if (generating && (due || !shortest)) {
     return {.decode = true, .prompt = std::nullopt};
   }
-  return {.decode = false, .prompt = aged ? aged : shortest};
+  // A started prompt about to finish goes before an aged one.
+  const bool finishing = shortest && members[*shortest].finishing;
+  return {.decode = false, .prompt = aged && !finishing ? aged : shortest};
 }
 
 }  // namespace jitllm::runtime

@@ -9,7 +9,8 @@
 // position and its cache cell vary per step as input data, copied from
 // pinned staging inside the graph, as the DeepSeek runner's are.
 // - A captured graph replays bit for bit what launching the plan step by
-//   step computes, and the cache it writes is the same.
+//   step computes, and the cache it writes is the same; so do the plan's
+//   two products on concurrent lanes (graph_plan.h AssignLanes).
 // - After full swaps A→B→A, with and without the handoff (A's cache written
 //   back and restored, its weights paged in again into backing that is not
 //   what they had), A's places are the pinned ones, and its graph, never
@@ -317,6 +318,9 @@ class GraphModel final : public ts::PagedModel {
     ggml_tensor* rows = ggml_reshape_2d(c, out_, kOut, 1);
     ggml_tensor* write = ggml_set_rows(c, cache, rows, cell_);
     nodes_ = {x, n, s, q, f, a, scores_, heads, out_, rows, write};
+    q_ = q;
+    f_ = f;
+    sum_ = a;
     kg::BindDistinct(nodes_, act + kComputedAt);
     ASSERT_LT(Address(out_->data) + ggml_nbytes(out_), act + node_.activations().bytes);
     auto plan = kg::PlanGraph(nodes_, /*fusion=*/false, kg::DeviceChoicesOf(*launch_));
@@ -336,6 +340,44 @@ class GraphModel final : public ts::PagedModel {
     ASSERT_LE(*scratch, pool_bytes);
     auto bound = kg::BoundGraph::Bind(*registry_, *plan);
     ASSERT_TRUE(bound.has_value()) << bound.error().detail;
+    bound_.emplace(std::move(*bound));
+    plan_ = std::move(*plan);
+  }
+
+  // Concurrent lanes (graph_plan.h AssignLanes; executor.h BoundGraph::Run):
+  // the Q8_0 product on lane 1, the F16 one on lane 2 and their sum on the
+  // stream, one region; the context's lanes made, the plan bound again and
+  // any graph dropped, so the next capture records the lanes' fork and join.
+  void UseLanes() {
+    if (!plan_.has_value()) {
+      FAIL() << "the plan is bound first";
+    }
+    kg::GraphPlan lanes = *plan_;
+    kg::AssignLanes(lanes, {{q_, {.lane = 1, .region = 1}},
+                            {f_, {.lane = 2, .region = 1}},
+                            {sum_, {.lane = 0, .region = 1}}});
+    ASSERT_EQ(lanes.regions.size(), 1U);
+    auto lane_scratch = kg::PlanLaneScratch(*launch_, lanes);
+    ASSERT_TRUE(lane_scratch.has_value());
+    EXPECT_GT(*lane_scratch, 0U);  // MMVQ's quantized activations, from lane 1's pool
+    ASSERT_TRUE(node_
+                    .Job(
+                        fence_,
+                        [&](jitllm::providers::NativeStream) {
+                          return launch_->ConfigureLanes(kg::kMaxLanes, Bytes(*lane_scratch))
+                                     ? sc::JobResult::kQueued
+                                     : sc::JobResult::kNotStarted;
+                        },
+                        "making the lanes", 0)
+                    .has_value());
+    ASSERT_EQ(launch_->lanes(), kg::kMaxLanes);
+    auto scratch = kg::PlanScratch(*launch_, lanes);
+    ASSERT_TRUE(scratch.has_value());
+    ASSERT_LE(*scratch, launch_->scratch_size(0).value());
+    auto bound = kg::BoundGraph::Bind(*registry_, lanes);
+    ASSERT_TRUE(bound.has_value()) << bound.error().detail;
+    EXPECT_TRUE(bound->has_lanes());
+    graph_.reset();
     bound_.emplace(std::move(*bound));
   }
 
@@ -520,6 +562,10 @@ class GraphModel final : public ts::PagedModel {
   ggml_tensor* cell_ = nullptr;
   ggml_tensor* out_ = nullptr;
   ggml_tensor* scores_ = nullptr;
+  ggml_tensor* q_ = nullptr;
+  ggml_tensor* f_ = nullptr;
+  ggml_tensor* sum_ = nullptr;
+  std::optional<kg::GraphPlan> plan_;
   std::size_t steps_ = 0;
   std::unique_ptr<kg::LaunchContext> launch_;
   std::optional<kg::BoundGraph> bound_;
@@ -673,6 +719,25 @@ TEST_F(CudaGraphTest, AReplayEqualsTheStepLaunchedLaunchByLaunch) {
       "uploaded in {:.1f} us",
       graph->nodes(), a_.steps(), graph->capture_seconds() * 1e6,
       graph->instantiate_seconds() * 1e6);
+}
+
+// Concurrent lanes compute bit for bit what the stream alone computes,
+// launch by launch, captured (the lanes' fork and join in the graph) and
+// replayed, and the cache they write is the same.
+TEST_F(CudaGraphTest, LanesComputeWhatTheStreamAloneComputes) {
+  std::vector<std::uint16_t> control_cache;
+  const auto control = Control(control_cache);
+  ASSERT_EQ(control.size(), static_cast<std::size_t>(kSteps));
+  a_.UseLanes();
+  a_.ClearCache();
+  for (int k = 0; k < kSteps; ++k) {
+    auto out = a_.Step(k, ModeOf(k));
+    ASSERT_TRUE(out.has_value()) << "step " << k << ": " << out.error();
+    EXPECT_EQ(*out, control[static_cast<std::size_t>(k)]) << "step " << k;
+  }
+  EXPECT_EQ(a_.Cache(), control_cache);
+  EXPECT_EQ(a_.captures(), 1);
+  EXPECT_FALSE(a_.launch().faulted());
 }
 
 // A→B→A twice, with the handoff and without: A's cache written back and

@@ -978,6 +978,12 @@ std::expected<void, KernelFailure> RmsNormMulKernel::Run(LaunchContext& launch, 
 
 std::string_view RmsNormMulKernel::name() const { return entry_->name; }
 
+bool UsesCublas(std::string_view implementation) {
+  // The declarations above whose launchers take the lent cuBLAS handle
+  // (MulMatCublas, RunGemmBf16); a new one belongs here.
+  return implementation == "ggml.mul_mat.cublas" || implementation == "jitllm.gemm.bf16";
+}
+
 std::expected<Kernel, KernelFailure> Kernel::Bind(const execution::Implementation& implementation) {
   for (const Entry& entry : kKernels) {
     if (entry.name != implementation.name) {

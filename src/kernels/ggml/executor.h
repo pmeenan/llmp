@@ -38,6 +38,12 @@ DeviceChoices DeviceChoicesOf(const LaunchContext& launch);
 // (ops_ext.h). The other implementations draw none.
 std::expected<std::uint64_t, KernelFailure> PlanScratch(const LaunchContext& launch,
                                                         const GraphPlan& plan);
+// The same over the steps of the concurrent lanes (graph_plan.h AssignLanes),
+// each of which draws from a lane's pool; PlanScratch counts the others.
+std::expected<std::uint64_t, KernelFailure> PlanLaneScratch(const LaunchContext& launch,
+                                                            const GraphPlan& plan);
+std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& launch,
+                                                          const GraphPlan& plan, bool lanes);
 
 // A plan whose every step is bound to an implementation of this build.
 class BoundGraph {
@@ -47,22 +53,30 @@ class BoundGraph {
   static std::expected<BoundGraph, KernelFailure> Bind(const execution::Registry& registry,
                                                        const GraphPlan& plan);
 
-  // Runs every step in order on the context's stream; stops at the first
-  // step refused or faulted (launch.h), which is returned.
+  // Runs every step in order on the context's stream, a region's lane steps
+  // on the context's lanes (graph_plan.h AssignLanes; on the stream if the
+  // context has none); stops at the first step refused or faulted
+  // (launch.h), which is returned, every lane joined back first.
   std::expected<void, KernelFailure> Run(LaunchContext& launch) const;
 
   const execution::BoundPlan& bound() const { return bound_; }
+  bool has_lanes() const { return !regions_.empty(); }
 
  private:
   struct Step {
     std::variant<Kernel, RmsNormMulKernel> kernel;
     std::vector<ggml_tensor*> nodes;
+    std::uint8_t lane = 0;
   };
-  BoundGraph(execution::BoundPlan bound, std::vector<Step> steps)
-      : bound_(std::move(bound)), steps_(std::move(steps)) {}
+  BoundGraph(execution::BoundPlan bound, std::vector<Step> steps,
+             std::vector<GraphPlan::Region> regions)
+      : bound_(std::move(bound)), steps_(std::move(steps)), regions_(std::move(regions)) {}
+  std::expected<void, KernelFailure> RunStep(LaunchContext& launch, std::size_t i) const;
+  std::expected<void, KernelFailure> RunLanes(LaunchContext& launch) const;
 
   execution::BoundPlan bound_;
   std::vector<Step> steps_;
+  std::vector<GraphPlan::Region> regions_;
 };
 
 }  // namespace jitllm::kernels::ggml

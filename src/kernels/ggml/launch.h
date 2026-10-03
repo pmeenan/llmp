@@ -55,6 +55,7 @@
 #include <expected>
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "base/bytes.h"
 #include "kernels/ggml/tensors.h"
@@ -137,9 +138,28 @@ class LaunchContext {
     if (auto begun = Begin(scratch); !begun) {
       return begun;
     }
-    std::forward<Launch>(launch)(*context_);
+    std::forward<Launch>(launch)(*ActiveContext());
     return End();
   }
+
+  // Concurrent lanes (graph_plan.h AssignLanes; executor.h BoundGraph::Run):
+  // `count` streams of the context's own, each with a GGML context and a
+  // scratch pool of `lane_scratch` bytes carved from the workspace's end,
+  // which the stream's pool then no longer uses. A lane borrows no cuBLAS
+  // handle. Made once, outside any capture; refused if the workspace has
+  // no room for them. A lane's work belongs to the stream's run or capture
+  // only through LaneWait: the caller makes each lane wait for the stream
+  // before its first launch and the stream wait for each lane before the
+  // run ends (BoundGraph::Run does), so the stream's fence covers it.
+  std::expected<void, KernelFailure> ConfigureLanes(std::uint32_t count, base::Bytes lane_scratch);
+  std::uint32_t lanes() const { return static_cast<std::uint32_t>(lanes_.size()); }
+  // Where the next Run launches: 0, the context's stream, or a lane.
+  void SelectLane(std::uint32_t lane);
+  // Makes `waiter`'s stream wait for what `on`'s stream has queued so far
+  // (0 is the context's stream).
+  std::expected<void, KernelFailure> LaneWait(std::uint32_t waiter, std::uint32_t on);
+  // The scratch a run on `lane` may draw.
+  base::Bytes scratch_size(std::uint32_t lane) const;
 
   // Captures what `record(*this)` queues on the context's stream (its runs,
   // and copies the caller queues on the same stream) into a graph, which it
@@ -178,8 +198,10 @@ class LaunchContext {
   }
   int device() const { return device_; }
   Workspace workspace() const { return workspace_; }
-  // The lent cuBLAS handle, if any.
-  const CublasHandle* cublas() const { return cublas_; }
+  // The lent cuBLAS handle, if any, while the stream is selected: a lane
+  // has none (its stream is not the handle's), so an operation needing one
+  // is refused there (implementations.h UsesCublas).
+  const CublasHandle* cublas() const { return active_ == 0 ? cublas_ : nullptr; }
 
  private:
   LaunchContext(int device, providers::DeviceExecution& execution, providers::StreamId stream,
@@ -188,6 +210,15 @@ class LaunchContext {
 
   std::expected<void, KernelFailure> Begin(base::Bytes scratch);
   std::expected<void, KernelFailure> End();
+  // Destroys the lanes' streams and events and their GGML contexts, each
+  // once, what was lent to those taken back first (the destructor, and
+  // ConfigureLanes after a partial failure).
+  void ReleaseLanes();
+  ggml_backend_cuda_context* ActiveContext();
+  WorkspacePool& ActivePool();
+  void* StreamOf(std::uint32_t lane) const;
+
+  struct Lane;
   std::expected<void, KernelFailure> BeginCapture();
   std::expected<CapturedGraph, KernelFailure> EndCapture(
       std::expected<void, KernelFailure> recorded);
@@ -203,6 +234,10 @@ class LaunchContext {
   std::unique_ptr<ggml_backend_cuda_context> context_;
   Workspace workspace_;
   CublasHandle* cublas_;
+  std::vector<std::unique_ptr<Lane>> lanes_;
+  std::uint32_t active_ = 0;
+  std::uint64_t lane_scratch_ = 0;
+  void* stream_event_ = nullptr;  // cudaEvent_t: the stream's, for LaneWait
   bool faulted_ = false;
   bool capturing_ = false;
   std::int64_t capture_started_ = 0;  // steady_clock ticks, while capturing

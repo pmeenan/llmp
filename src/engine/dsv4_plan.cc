@@ -341,8 +341,9 @@ std::expected<std::unique_ptr<Dsv4WavePlanned>, std::string> PlanDsv4Wave(
   kg::SetDsv4PrefillStages(device, true);
   device.ds4_hca = false;
   const auto inputs = g.inputs();
-  if (auto placed =
-          PlaceAndPlan(*out, g.joined.nodes, inputs, keep, device, activations, activation_bytes);
+  // Each slot's attention and state operations on a lane of its own.
+  if (auto placed = PlaceAndPlan(*out, g.joined.nodes, inputs, keep, device, activations,
+                                 activation_bytes, m.wave_lanes ? &g.lanes : nullptr);
       !placed) {
     return std::unexpected(placed.error());
   }

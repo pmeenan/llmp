@@ -144,6 +144,9 @@ class Builder {
   // A target chunk's DSpark injection leaves: the drafter's weights and ring.
   std::expected<void, KernelFailure> InjectLeaves(const Dsv4Injection& inject);
   void Build();
+  // A wave's concurrent lanes (Dsv4WaveGraph::lanes), tagged as Build makes
+  // the tensors.
+  void SetLanes(LaneTags* lanes) { lanes_ = lanes; }
   // A DSpark draft block (the drafter's blocks over the binding's head).
   std::expected<void, KernelFailure> DraftInputs(DsparkGraph& d, const model::DsparkBinding& b);
   void BuildDraft(DsparkGraph& d);
@@ -246,6 +249,35 @@ class Builder {
   bool sparse_;
   std::span<Segment> segs_;  // a wave's slots; empty for one chunk
   std::vector<ggml_tensor*> expanded_;
+  LaneTags* lanes_ = nullptr;
+  std::uint32_t regions_ = 0;
+  ggml_tensor* cursor_ = nullptr;  // the context's last tensor Last found
+
+  // The context's last tensor so far (null if none).
+  ggml_tensor* Last() {
+    ggml_tensor* t = cursor_ != nullptr ? cursor_ : ggml_get_first_tensor(c_);
+    if (t == nullptr) {
+      return nullptr;
+    }
+    for (ggml_tensor* next = ggml_get_next_tensor(c_, t); next != nullptr;
+         next = ggml_get_next_tensor(c_, next)) {
+      t = next;
+    }
+    cursor_ = t;
+    return t;
+  }
+  // Tags the tensors made since `mark` (Last before them) with a lane and
+  // region.
+  void Tag(ggml_tensor* mark, std::uint8_t lane, std::uint32_t region) {
+    if (lanes_ == nullptr) {
+      return;
+    }
+    for (ggml_tensor* t = mark != nullptr ? ggml_get_next_tensor(c_, mark)
+                                          : ggml_get_first_tensor(c_);
+         t != nullptr; t = ggml_get_next_tensor(c_, t)) {
+      lanes_->emplace_back(t, LaneTag{.lane = lane, .region = region});
+    }
+  }
   // The fast plan's activations quantized once (Q8Of), by input.
   std::unordered_map<const ggml_tensor*, ggml_tensor*> q8_;
 
@@ -1201,9 +1233,15 @@ ggml_tensor* Builder::AttentionWave(std::uint32_t il_u, ggml_tensor* cur) {
   Expand(kv);
 
   // Each slot: its compressors' blocks and ring rows, its window cells, its
-  // indexer's selection and its attention, over its own state.
+  // indexer's selection and its attention, over its own state; with lanes,
+  // each slot's on a lane of its own, the layer a region.
   ggml_tensor* out = nullptr;
+  const std::uint32_t region = lanes_ != nullptr ? ++regions_ : 0;
+  // Slots past kMaxLanes share lanes in turn (a lane's steps run in order).
+  std::uint32_t slot = 0;
   for (const Segment& seg : segs_) {
+    const auto lane = static_cast<std::uint8_t>((slot++ % kMaxLanes) + 1);
+    ggml_tensor* const mark = lanes_ != nullptr ? Last() : nullptr;
     const Dsv4ChunkShape& s = *seg.s;
     Dsv4Graph& sg = *seg.g;
     const Dsv4LayerTensors& sl = sg.layers[il_u];
@@ -1261,7 +1299,14 @@ ggml_tensor* Builder::AttentionWave(std::uint32_t il_u, ggml_tensor* cur) {
       ggml_tensor* k = GetK(sl.raw_k, s.raw_n_kv);
       one = AttnMhaRow(q_s, k, sg.raw_mask, l.attn_sinks, window, true);
     }
+    if (lanes_ != nullptr) {
+      Tag(mark, lane, region);
+    }
+    ggml_tensor* const joined = lanes_ != nullptr ? Last() : nullptr;
     out = out != nullptr ? ggml_concat(c_, out, one, 1) : one;
+    if (lanes_ != nullptr) {
+      Tag(joined, 0, region);  // the stream's, in the region
+    }
   }
 
   out = ggml_reshape_3d(c_, out, head, heads, nt);
@@ -1975,6 +2020,7 @@ std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& aren
   Dsv4ChunkShape joined = lead;
   joined.rows = rows;
   Builder builder(arena.context(), profile, binding, joined, wave.joined, options, true, segments);
+  builder.SetLanes(&wave.lanes);
   builder.WaveInputs();
   if (auto weights = builder.Weights(); !weights) {
     return std::unexpected(weights.error());

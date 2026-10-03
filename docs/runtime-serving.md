@@ -817,11 +817,15 @@ request past the model's slots, or one that finds no memory for its
 state beside its peers', waits for a retirement and then refills
 the group; a different model or literal completion waits for the group to drain.
 The prompt with the fewest tokens left to prefill (after what its
-conversation can reuse) gets the next prompt unit, the oldest of equals.
-So a short prompt is not held behind a long one that arrived first, and
-prompts of equal length finish one after another, each streaming its first
-token in turn. A prompt passed over for 12 other prompt units goes next
-regardless, so a long prompt is not starved. A generating request waits
+conversation's reuse would actually keep: a stale history that only shares
+a few tokens counts for nothing) gets the next prompt unit, the oldest of
+equals. So a short prompt is not held behind a long one that arrived
+first, and prompts of equal length finish one after another, each
+streaming its first token in turn. A prompt passed over for 12 other
+prompt units that prefilled rows (a reuse or checkpoint unit prefills
+none) goes next, so a long prompt is not starved, unless the shortest is
+a started prompt with at most 256 tokens left, which finishes first. A
+generating request waits
 for at most one prompt unit between its waves
 (`runtime/cohort_schedule.h`;
 [prompt order](experiments/deepseek-batching/README.md#prompt-order-adopted)).

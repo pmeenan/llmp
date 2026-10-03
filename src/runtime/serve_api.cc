@@ -636,14 +636,18 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
                            .admitted = frame.admitted,
                            .remaining = 0,
                            .passed = 0,
-                           .waited = frame.waited});
+                           .waited = frame.waited,
+                           .finishing = false});
         frames.push_back(&frame);
       } else if (frame.stage == ChatWork::Stage::kPrompt) {
-        members.push_back({.stage = ScheduledMember::Stage::kPrompt,
-                           .admitted = frame.admitted,
-                           .remaining = frame.prompt_session->remaining_rows(),
-                           .passed = frame.passed,
-                           .waited = 0});
+        const std::uint32_t remaining = frame.prompt_session->remaining_rows();
+        members.push_back(
+            {.stage = ScheduledMember::Stage::kPrompt,
+             .admitted = frame.admitted,
+             .remaining = remaining,
+             .passed = frame.passed,
+             .waited = 0,
+             .finishing = frame.prompt_session->started() && remaining <= kPromptFinishRows});
         frames.push_back(&frame);
       }
     }
@@ -738,14 +742,17 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     if (selected_prompt_ != nullptr) {
       ChatWork& frame = *std::exchange(selected_prompt_, nullptr);
       frame.native_touched = true;
-      // The schedule's counters (cohort_schedule.h), as this unit runs.
+      // The schedule's counters (cohort_schedule.h), as this unit runs; a
+      // unit that prefills no rows (a reuse, a checkpoint) ages no one.
+      const auto unit = frame.prompt_session->NextUnit();
+      const bool ages = unit && unit->rows > 0;
       for (ChatWork* other : cohort_) {
         if (other == nullptr || other == &frame) {
           continue;
         }
         if (other->stage == ChatWork::Stage::kGeneration) {
           ++other->waited;
-        } else if (other->stage == ChatWork::Stage::kPrompt) {
+        } else if (other->stage == ChatWork::Stage::kPrompt && ages) {
           ++other->passed;
         }
       }

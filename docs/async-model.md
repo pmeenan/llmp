@@ -34,7 +34,7 @@ The initial service roles are:
 | --- | --- |
 | Scheduler/catalog owner | Short serialized policy and state transitions; local execution and conductor requests use the same admission path |
 | Storage service | Bounded direct-file submission and completion harvesting; owns its I/O queue and registration bookkeeping |
-| Device submission/VMM service | Ordered backend launches, mapping and backing operations; explicit CUDA context/stream ownership stays in the provider |
+| Device submission/VMM service | Ordered backend launches, mapping and backing operations; explicit CUDA context/stream ownership stays in the provider (a launch context's lane streams excepted: its own, forked from and joined to a provider stream within a run) |
 | Device completion service | Queries recorded completion fences independently of a possibly blocking submission/VMM call; reports observations |
 | Network/front-door service | Bounded protocol work, transport completions, cancellation and backpressure; conductor traffic has no per-expert authority |
 | Bounded CPU workers | Tokenization, hashing, plan preparation and other potentially long host work; no catalog mutation |
@@ -269,7 +269,12 @@ with those tests ([M2 record](m2-record.md), task lanes). Choices they settle:
   proven, so the extent is quarantined, never resident again.
 - Kernel work is a job the submission lane runs on one of its streams; the
   lane fences after it, and the job's lease holds until that fence is seen
-  complete.
+  complete. A job's work may fork onto concurrent streams the K-C launch
+  context owns (its lanes, D-086 and D-090 as amended 2026-10-03), but
+  only within one run that joins them back to the job's stream, so that
+  stream's fence still covers everything the job queued. The provider
+  owns the job streams; the launch context owns its lanes' streams and
+  events, made once at bind outside any job.
 - How the threads wait (the runtime wake, D-094,
   [runtime-wake](experiments/runtime-wake/README.md)): a sleeping thread
   wakes slowly on the Spark (RE-017), and a step's path crosses four. The
