@@ -176,6 +176,11 @@ class Served {
   virtual std::uint64_t plan_host_bytes() const { return 0; }
   // How plan_host_bytes() is made up, for the start's log (empty: none).
   virtual std::string plan_report() const { return {}; }
+  // Why a model that batches concurrent requests serves this artifact one
+  // at a time, for the start's log (empty: it batches as configured, or
+  // never batches). A model is never refused only because its artifact
+  // cannot batch.
+  virtual std::string serial_reason() const { return {}; }
   virtual Status Register() = 0;
   virtual Status Bind() = 0;
   virtual std::vector<catalog::ExtentId> weights() const = 0;

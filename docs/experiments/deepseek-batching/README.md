@@ -151,8 +151,10 @@ interleaved on Spark A on 2026-10-02 (22:00–22:45 EDT). It splits each
 engine's time into prefill and decode. Every native cell's output is
 greedy, and so is ds4's. Each cell is one sample.
 
-**Matching is partial.** Main cannot serve the community IQ2_XXS artifact
-(`cd39d504…`) that ds4 runs; it refuses at start:
+**Matching is partial.** Main `64faee6` cannot serve the community IQ2_XXS
+artifact (`cd39d504…`) that ds4 runs (since fixed:
+[community artifact in waves](#community-artifact-in-waves)); it refuses
+at start:
 
 > measuring a wave of 4 slots: a DeepSeek V4 wave needs every layer in
 > the fast plan's fused form
@@ -302,11 +304,8 @@ That figure is inferred, not measured. The chat route's turn boundary
    rows. This is most of the remaining 7K prefill gap.
 2. **Output-A/HCA by default** (or as a per-alias flag). It gains 22% per
    full chunk.
-3. **F16 HC mixes in the fused form.** Accepting them would restore main's
-   ability to start the community artifact, give it waves, and lift its
-   solo decode from 19.6 tok/s toward the original's 21.9. This is a
-   regression from 64faee6 to fix first: the support matrix lists the
-   artifact as served.
+3. **F16 HC mixes in the fused form.** Done: see
+   [below](#community-artifact-in-waves).
 4. **A multi-token vecq launch with the one-token reduction order** (open
    above). It would read each weight once per wave while keeping rows
    exact, the C4 decode lever (99 vs 82 ms).
@@ -335,6 +334,59 @@ That figure is inferred, not measured. The chat route's turn boundary
 - **Peak `MemAvailable` drop.** Native community 87–88 GiB, original 97–98
   (DSpark 108–109), ds4 105–106.
 - **Raw records.** `spark:~/scratch/ds4m/` (`records/`, `tools/`, `shim/`).
+
+## Community artifact in waves
+
+The fused form now takes any HC mixing-weight type. `jitllm.dsv4.hc_mix`
+reads F32, F16 and BF16 weights, widening each to F32 exactly, so the sums
+keep one order for every type. A quantized mix takes GGML's product inside
+an otherwise fused layer, per slot in a wave. The community artifact
+(F16 mixes) therefore starts with four slots, decodes in waves, and its
+single-request decode takes the fused form too. A wave still needs each
+layer's expert products to be `jitllm.vecq` types; an artifact whose
+experts are not is served one request at a time, with a log line, instead
+of refused (`Dsv4WaveSupport`).
+
+**Exactness and quality.**
+- Wave controls (`--check wave`, plain, community): 2 slots 142/142 and
+  4 slots 332/332 rows byte-identical to each slot alone, every argmax
+  the same, a leaving slot's state unchanged. The original artifact's 4
+  slots: 332/332, as before.
+- Forced 8K ds4 trajectory (`jitllm_dsv4_exec`, community): all 32
+  argmaxes agree with ds4 (the unfused base: also 32), and all 32 equal
+  the base's. The prefill row is byte-identical to the base's; the 31
+  decode rows move by at most 5.45 (mean RMS 0.29). Against ds4's own
+  logits for those 31 rows, the fused form's mean RMS is 0.450 (the
+  unfused base's 0.444) and its largest difference 5.86 (base 7.35). A
+  forced repeat is byte-identical.
+- Original artifact through the runtime: every 7K reply at C1 and C4 is
+  byte-identical to the earlier session's (`ds4m`).
+
+**HTTP cells.** The [same-session](#against-ds4-same-session) protocol,
+one sample a cell, measured back to back on Spark A. *Serial* is main's
+runtime limited to one slot by the shim, the community artifact's serving
+before this change (unfused decode, one request at a time).
+
+| Arm | 7K C1 | 7K C4 | 124-token C1 | 124-token C4 |
+| --- | ---: | ---: | ---: | ---: |
+| Community, serial | 10.913 | 10.990 | 18.781 | 18.873 |
+| Community, waves (this change) | 11.170 | 15.502 | 19.493 | 38.648 |
+| Original, plain waves (this change) | 11.127 | 14.410 | — | — |
+| ds4, community (earlier session, above) | 13.234 | 16.687 | 20.85 | 46.55 |
+
+- Single-request decode on the community artifact rises from 19.3–19.5
+  to 20.1–20.3 tok/s at HTTP (the original's: 21.6); on the forced 8K
+  trajectory, from 17.25 to 18.64–18.79 tok/s.
+- C4 rises +41% (7K) and +105% (124 tokens). Against ds4's earlier cells
+  that is 0.93× and 0.83×. The C4 decode wave is the 99 ms step above
+  (10.1–10.5 tok/s a request).
+- Replies are byte-identical across C1 and C4. They differ from the serial
+  arm's, whose decode took the unfused form.
+- Peak `MemAvailable` drop at C4: 89.3 GiB (serial 88.0).
+
+Records: `spark:~/scratch/dss0/` (`wave-*`, `forced-*`, `records/`),
+controller `tools/run.py` (the `ds4m` one with this build's arms),
+jobs `dss0-checks` and `dss0-http`, 2026-10-02.
 
 ## Plan memory
 

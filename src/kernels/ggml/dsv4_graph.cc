@@ -91,6 +91,21 @@ Rope LayerRope(const model::Dsv4Profile& p, std::uint32_t ratio) {
 // LLAMA_ROPE_TYPE_NORM: consecutive pairs.
 constexpr int kRopeMode = 0;
 
+// The fast plan's fused form's conditions (Builder::Fused, Dsv4WaveSupport):
+// the profile's, which the hyper-connection kernels and routed products
+// take, and a layer's expert weights', each a jitllm.vecq type with gate and
+// up alike.
+bool FusedProfile(const model::Dsv4Profile& p) {
+  return p.hc == 4 && (std::int64_t{p.width} * p.hc) % (kDsv4HcChunks * kDsv4HcChunkThreads) == 0 &&
+         p.width % 1024 == 0 && p.width <= 8192 && p.experts == 256;
+}
+
+bool FusedTypes(ggml_type up, ggml_type gate, ggml_type down, ggml_type up_shared,
+                ggml_type gate_shared, ggml_type down_shared) {
+  return VecQType(up) && gate == up && VecQType(down) && VecQType(up_shared) &&
+         gate_shared == up_shared && VecQType(down_shared);
+}
+
 // A wave's slot (BuildDsv4WaveGraph): its inputs and state, its shape, and
 // its rows among the wave's.
 struct Segment {
@@ -210,11 +225,13 @@ class Builder {
   ggml_tensor* HcPreFused(ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale, ggml_tensor* base,
                           ggml_tensor* norm, ggml_tensor** post, ggml_tensor** comb);
   ggml_tensor* MoeFused(std::uint32_t il, ggml_tensor* cur);
-  // HcPre and Norm, fused or not.
+  // HcPre and Norm: in a fused layer whose mixing weights jitllm.dsv4.hc_mix
+  // reads, HcPreFused; otherwise (a quantized mix, or an unfused layer)
+  // GGML's product, a wave's per slot as FloatMm runs it.
   ggml_tensor* PreNorm(std::uint32_t il, ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale,
                        ggml_tensor* base, ggml_tensor* norm, ggml_tensor** post,
                        ggml_tensor** comb) {
-    if (Fused(il)) {
+    if (Fused(il) && Dsv4HcMixWeightType(fn->type)) {
       return HcPreFused(x, fn, scale, base, norm, post, comb);
     }
     return Norm(HcPre(x, fn, scale, base, post, comb, static_cast<int>(il)), norm);
@@ -246,10 +263,13 @@ class Builder {
   // GGML's float vector kernel keeps each column's sums independent of the
   // count up to this many columns (graph_plan.h kRowInvariantColumns); a
   // wider wave runs a float product per slot over its rows, as each slot's
-  // own chunk does, and joins the results.
+  // own chunk does, and joins the results. A quantized weight's GGML
+  // product (MMVQ) picks its launch by the column count, so a wave runs it
+  // per slot at any width.
   static constexpr std::int64_t kVectorFloatColumns = 8;
   ggml_tensor* FloatMm(ggml_tensor* w, ggml_tensor* x, bool f32_acc = false) {
-    if (segs_.empty() || x->ne[1] <= kVectorFloatColumns || x->ne[2] != 1 || x->ne[3] != 1) {
+    if (segs_.empty() || (x->ne[1] <= kVectorFloatColumns && !ggml_is_quantized(w->type)) ||
+        x->ne[2] != 1 || x->ne[3] != 1) {
       ggml_tensor* out = ggml_mul_mat(c_, w, x);
       if (f32_acc) {
         ggml_prec_set_acc(out, GGML_PREC_F32);
@@ -606,7 +626,7 @@ ggml_tensor* Builder::HcPre(ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale,
                                    Dsv4HcNormF16Fits(flat, p_.rms_eps)
                                ? Dsv4HcNormF16(c_, flat, p_.rms_eps)
                                : ggml_rms_norm(c_, flat, p_.rms_eps);
-  ggml_tensor* mixes = ggml_mul_mat(c_, fn, flat_norm);
+  ggml_tensor* mixes = FloatMm(fn, flat_norm);
   ggml_tensor* scale_pre = ggml_view_1d(c_, scale, 1, ggml_row_size(scale->type, 0));
   ggml_tensor* scale_post = ggml_view_1d(c_, scale, 1, ggml_row_size(scale->type, 1));
   ggml_tensor* base_pre = ggml_view_1d(c_, base, hc, ggml_row_size(base->type, 0));
@@ -1247,10 +1267,15 @@ ggml_tensor* Builder::AttentionWave(std::uint32_t il_u, ggml_tensor* cur) {
     oa = VecQ(c_, l.out_a, Q8Of(out), nullptr, nt, true);
     oa = ggml_reshape_2d(c_, oa, std::int64_t{p_.o_lora} * groups, nt);
   } else {
-    out = ggml_permute(c_, out, 0, 2, 1, 3);
-    oa = ggml_mul_mat(c_, l.out_a, out);
-    oa = ggml_permute(c_, oa, 0, 2, 1, 3);
-    oa = ggml_cont_2d(c_, oa, std::int64_t{p_.o_lora} * groups, nt);
+    // A weight jitllm.vecq has no kernel for: GGML's grouped product, whose
+    // launch follows the column count, a slot at a time over its own rows,
+    // as each slot's own chunk runs it (Attention), joined.
+    for (const Segment& seg : segs_) {
+      ggml_tensor* one = ggml_mul_mat(c_, l.out_a, ggml_permute(c_, Rows3(out, seg), 0, 2, 1, 3));
+      one = ggml_permute(c_, one, 0, 2, 1, 3);
+      one = ggml_cont_2d(c_, one, std::int64_t{p_.o_lora} * groups, seg.s->rows);
+      oa = oa != nullptr ? ggml_concat(c_, oa, one, 1) : one;
+    }
   }
   out = Mm(l.out_b, oa);
   Name(out, "attn_out", il);
@@ -1382,19 +1407,17 @@ ggml_tensor* Builder::Moe(std::uint32_t il_u, ggml_tensor* cur) {
 }
 
 bool Builder::Fused(std::uint32_t il) const {
-  if (!o_.fused || s_.rows > VecQRows() || p_.hc != 4 ||
-      (std::int64_t{p_.width} * p_.hc) % (kDsv4HcChunks * kDsv4HcChunkThreads) != 0 ||
-      p_.width % 1024 != 0 || p_.width > 8192 || p_.experts != 256) {
+  if (!o_.fused || s_.rows > VecQRows() || !FusedProfile(p_)) {
     return false;
   }
+  // The mixing weights' type is not a condition: PreNorm takes GGML's
+  // product for a type jitllm.dsv4.hc_mix does not read.
   const Dsv4LayerTensors& l = g_.layers[il];
-  return VecQType(l.up_exps->type) && l.gate_exps->type == l.up_exps->type &&
-         VecQType(l.down_exps->type) && VecQType(l.up_shexp->type) &&
-         l.gate_shexp->type == l.up_shexp->type && VecQType(l.down_shexp->type) &&
+  return FusedTypes(l.up_exps->type, l.gate_exps->type, l.down_exps->type, l.up_shexp->type,
+                    l.gate_shexp->type, l.down_shexp->type) &&
          ggml_are_same_shape(l.up_exps, l.gate_exps) &&
          ggml_are_same_stride(l.up_exps, l.gate_exps) &&
-         ggml_are_same_shape(l.up_shexp, l.gate_shexp) && l.hc_attn_fn->type == GGML_TYPE_F32 &&
-         l.hc_ffn_fn->type == GGML_TYPE_F32;
+         ggml_are_same_shape(l.up_shexp, l.gate_shexp);
 }
 
 ggml_tensor* Builder::HcPreFused(ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale,
@@ -1849,6 +1872,35 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
   }
   builder.Build();
   return g;
+}
+
+std::expected<void, KernelFailure> Dsv4WaveSupport(const model::Dsv4Profile& profile,
+                                                   const model::Dsv4Binding& binding) {
+  if (!FusedProfile(profile) || binding.layers.size() != profile.layers) {
+    return Rejected("the profile's widths do not take the fast plan's fused form");
+  }
+  for (std::uint32_t il = 0; il < profile.layers; ++il) {
+    const model::Dsv4Layer& w = binding.layers[il];
+    std::array<ggml_type, 6> types{};
+    const std::array<const model::Dsv4Tensor*, 6> tensors = {
+        &w.up_exps, &w.gate_exps, &w.down_exps, &w.up_shexp, &w.gate_shexp, &w.down_shexp};
+    for (std::size_t i = 0; i < tensors.size(); ++i) {
+      auto type = GgmlTypeOf(tensors[i]->type);
+      if (!type) {
+        return std::unexpected(type.error());
+      }
+      types[i] = *type;
+    }
+    if (!FusedTypes(types[0], types[1], types[2], types[3], types[4], types[5]) ||
+        w.up_exps.ne != w.gate_exps.ne || w.up_shexp.ne != w.gate_shexp.ne) {
+      return Rejected(std::format(
+          "layer {}: the routed experts' up/gate/down ({}/{}/{}) and the shared expert's "
+          "({}/{}/{}) are not jitllm.vecq types with gate and up alike in type and shape",
+          il, w.up_exps.type, w.gate_exps.type, w.down_exps.type, w.up_shexp.type,
+          w.gate_shexp.type, w.down_shexp.type));
+    }
+  }
+  return {};
 }
 
 std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& arena,

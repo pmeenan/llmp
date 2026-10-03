@@ -1068,6 +1068,165 @@ TEST(Dsv4Test, AWaveJoinsRowLocalWorkAndKeepsEachSlotsStateItsOwn) {
   EXPECT_TRUE(refused({}, fused));
 }
 
+// Waves, and a decode step's fused form, take every mixing-weight type a
+// GGUF stores: F32 (UD-Q2_K_XL), F16 (the community GGUF) and BF16 through
+// jitllm.dsv4.hc_mix, a quantized one through GGML's product, a slot at a
+// time in a wave. What cannot wave is an expert the fused form cannot
+// take: Dsv4WaveSupport names the first such layer and its types, and the
+// wave builder refuses it too (the runner then serves one request at a
+// time).
+TEST(Dsv4Test, WavesTakeAnyMixingWeightTypeAndRefuseOnlyUnfusedExperts) {
+  const md::Dsv4Profile& p = md::Dsv4Flash();
+  auto state = md::Dsv4State(p, 8192, 512, md::Dsv4Window::kRing);
+  ASSERT_TRUE(state.has_value());
+  kg::DeviceChoices device = ModelDevice();
+  device.fuse_norms = true;
+  device.vector_floats = true;
+  const auto plan_of = [&](std::span<ggml_tensor* const> nodes,
+                           std::span<ggml_tensor* const> inputs) {
+    std::uint64_t next = std::uint64_t{1} << 40U;
+    const auto bind_leaf = [&](ggml_tensor* t) {
+      if (t != nullptr && t->data == nullptr && t->view_src == nullptr) {
+        kg::TensorArena::Bind(t, next);
+        next += ((ggml_nbytes(t) + 255) / 256 * 256) + 256;
+      }
+    };
+    for (ggml_tensor* t : inputs) {
+      bind_leaf(t);
+    }
+    for (ggml_tensor* node : nodes) {
+      for (ggml_tensor* src : node->src) {
+        if (src != nullptr && src->op == GGML_OP_NONE) {
+          bind_leaf(src);
+        }
+      }
+    }
+    kg::BindDistinct(nodes, std::uint64_t{1} << 46U);
+    return kg::PlanGraph(nodes, false, device);
+  };
+  const auto count = [](const kg::GraphPlan& plan, std::string_view name) {
+    return std::ranges::count_if(plan.steps,
+                                 [&](const auto& step) { return step.implementation == name; });
+  };
+  // Four one-row decode steps, and one alone.
+  kg::Dsv4WaveShape shape;
+  for (const std::uint32_t n_past : {100U, 2000U, 5000U, 7000U}) {
+    auto chunk = md::Dsv4Chunk(p, *state, n_past, 1, false);
+    ASSERT_TRUE(chunk.has_value()) << Why(chunk);
+    shape.slots.push_back(kg::Dsv4ShapeOf(*state, *chunk));
+  }
+  const kg::Dsv4GraphOptions fused{.fused = true};
+  const auto mixes_typed = [&](std::string_view type) {
+    auto resources = GgufLike(p);
+    for (auto& r : resources) {
+      const std::string& role = r.roles[0];
+      if (role.ends_with("hc_attn_fn.weight") || role.ends_with("hc_ffn_fn.weight") ||
+          role == "output_hc_fn.weight") {
+        r.type = type;
+      }
+    }
+    return resources;
+  };
+  for (const std::string_view type : {"F32", "F16", "BF16", "Q8_0"}) {
+    const auto resources = mixes_typed(type);
+    auto binding = md::BindDsv4(p, "deepseek4", resources);
+    ASSERT_TRUE(binding.has_value()) << type << ": " << Why(binding);
+    const auto support = kg::Dsv4WaveSupport(p, *binding);
+    EXPECT_TRUE(support.has_value()) << type << ": " << Why(support);
+    auto arena = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, shape.slots.size()));
+    ASSERT_TRUE(arena.has_value());
+    auto wave = kg::BuildDsv4WaveGraph(*arena, p, *binding, shape, fused);
+    ASSERT_TRUE(wave.has_value()) << type << ": " << Why(wave);
+    auto plan = plan_of(wave->joined.nodes, wave->inputs());
+    ASSERT_TRUE(plan.has_value()) << type << ": " << Why(plan);
+    auto one_arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+    ASSERT_TRUE(one_arena.has_value());
+    auto one = kg::BuildDsv4Graph(*one_arena, p, *binding, shape.slots[0], fused);
+    ASSERT_TRUE(one.has_value()) << type << ": " << Why(one);
+    auto one_plan = plan_of(one->nodes, one->inputs());
+    ASSERT_TRUE(one_plan.has_value()) << type << ": " << Why(one_plan);
+    // Both in the fused form: the routed products jitllm.vecq's.
+    EXPECT_GT(count(*one_plan, kg::kVecQName), 0) << type;
+    EXPECT_EQ(count(*plan, kg::kVecQName), count(*one_plan, kg::kVecQName)) << type;
+    const bool mixed = type != "Q8_0";
+    const std::int64_t layers_mixes = 2 * std::int64_t{p.layers};
+    EXPECT_EQ(count(*one_plan, kg::kDsv4HcMixName), mixed ? layers_mixes : 0) << type;
+    EXPECT_EQ(count(*plan, kg::kDsv4HcMixName), mixed ? layers_mixes : 0) << type;
+    // A quantized mix: GGML's product of each slot's own row.
+    std::int64_t products = 0;
+    for (const ggml_tensor* node : wave->joined.nodes) {
+      if (node->op == GGML_OP_MUL_MAT && std::cmp_equal(node->src[0]->ne[0], p.hc_width()) &&
+          std::cmp_equal(node->src[0]->ne[1], p.hc_mix())) {
+        ++products;
+        EXPECT_EQ(node->src[1]->ne[1], 1) << type;
+      }
+    }
+    EXPECT_EQ(products, mixed ? 0 : layers_mixes * std::int64_t{4}) << type;
+  }
+  // Attention weights jitllm.vecq has no kernel for (Q4_0), output-A among
+  // them, beside quantized mixes: still a wave, and every GGML product of a
+  // quantized weight a slot's own row, as its own chunk runs it.
+  {
+    auto resources = mixes_typed("Q8_0");
+    for (auto& r : resources) {
+      const std::string& role = r.roles[0];
+      for (const char* name : {"attn_q_a.weight", "attn_q_b.weight", "attn_kv.weight",
+                               "attn_output_a.weight", "attn_output_b.weight"}) {
+        if (role.ends_with(name)) {
+          r.type = "Q4_0";
+        }
+      }
+    }
+    auto binding = md::BindDsv4(p, "deepseek4", resources);
+    ASSERT_TRUE(binding.has_value()) << Why(binding);
+    EXPECT_TRUE(kg::Dsv4WaveSupport(p, *binding).has_value());
+    auto arena = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, shape.slots.size()));
+    ASSERT_TRUE(arena.has_value());
+    auto wave = kg::BuildDsv4WaveGraph(*arena, p, *binding, shape, fused);
+    ASSERT_TRUE(wave.has_value()) << Why(wave);
+    auto plan = plan_of(wave->joined.nodes, wave->inputs());
+    ASSERT_TRUE(plan.has_value()) << Why(plan);
+    std::int64_t out_a = 0;
+    std::int64_t quantized = 0;
+    for (const ggml_tensor* node : wave->joined.nodes) {
+      if (node->op != GGML_OP_MUL_MAT || !ggml_is_quantized(node->src[0]->type)) {
+        continue;
+      }
+      ++quantized;
+      EXPECT_EQ(node->src[1]->ne[1], 1) << node->src[0]->ne[0] << "x" << node->src[0]->ne[1];
+      if (std::cmp_equal(node->src[0]->ne[2], p.o_groups)) {
+        ++out_a;
+      }
+    }
+    EXPECT_EQ(out_a, std::int64_t{p.layers} * 4);
+    EXPECT_GE(quantized, std::int64_t{p.layers} * 4 * 7);  // five Q4_0 and two mixes a layer
+  }
+  // Experts the fused form cannot take: a down product jitllm.vecq has no
+  // kernel for, gate and up of different types.
+  const auto refused = [&](std::string_view role, std::string_view type, std::uint32_t layer) {
+    auto resources = mixes_typed("F16");
+    std::ranges::find_if(resources, [&](const md::Dsv4Resource& r) {
+      return r.roles[0] == role;
+    })->type = type;
+    auto binding = md::BindDsv4(p, "deepseek4", resources);
+    ASSERT_TRUE(binding.has_value()) << role << ": " << Why(binding);
+    const auto support = kg::Dsv4WaveSupport(p, *binding);
+    ASSERT_FALSE(support.has_value()) << role;
+    EXPECT_TRUE(Why(support).starts_with(std::format("layer {}:", layer))) << Why(support);
+    EXPECT_TRUE(Why(support).contains(type)) << Why(support);
+    auto arena = kg::TensorArena::Create(kg::Dsv4WaveGraphTensors(p, shape.slots.size()));
+    ASSERT_TRUE(arena.has_value());
+    EXPECT_FALSE(kg::BuildDsv4WaveGraph(*arena, p, *binding, shape, fused).has_value()) << role;
+    // A chunk alone still builds (in the unfused form for that layer).
+    auto one_arena = kg::TensorArena::Create(kg::Dsv4GraphTensors(p));
+    ASSERT_TRUE(one_arena.has_value());
+    auto one = kg::BuildDsv4Graph(*one_arena, p, *binding, shape.slots[0], fused);
+    EXPECT_TRUE(one.has_value()) << role << ": " << Why(one);
+  };
+  refused("blk.5.ffn_down_exps.weight", "Q4_0", 5);
+  refused("blk.7.ffn_gate_exps.weight", "IQ2_XXS", 7);
+}
+
 // The fast plan's attention mask is F16 [ring cells + compressed cells,
 // rows], and the MMA kernel takes its planes' strides in 32 bits (RE-037):
 // the widest chunk Dsv4MostRows admits keeps every attention's operands

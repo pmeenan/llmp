@@ -13,7 +13,8 @@
 // - a token's sums do not depend on the other tokens of its chunk under one
 //   configuration (the dense form's reads shared);
 // - the routing, the combination, the hyper-connection pre-mix and the
-//   compressor against FP64 host references;
+//   compressor against FP64 host references, and the pre-mix's F16 and
+//   BF16 weights against their F32 values bit for bit;
 // - what their checks refuse, and the registry's declarations.
 
 #include "kernels/ggml/dsv4_fast.h"
@@ -923,6 +924,59 @@ TEST_F(Dsv4FastTest, TheHyperConnectionPreMixMatchesFp64) {
     }
     ExpectNear(got, want, 1e-9, what);
   }
+}
+
+// F16 and BF16 mixing weights (the community GGUF's are F16) widen to
+// their exact F32 values: the mix's partial sums equal the F32 weights'
+// launch over those values bit for bit, at one token and several. A
+// quantized type is refused (the graph takes GGML's product for it).
+TEST_F(Dsv4FastTest, TheMixReadsF16AndBf16WeightsAsTheirF32Values) {
+  constexpr std::int64_t kWidth = 4096;
+  constexpr std::int64_t kHc = 4;
+  constexpr std::int64_t kMixes = 24;
+  constexpr std::int64_t kFlat = kWidth * kHc;
+  const std::vector<float> source = Normal(61, static_cast<std::size_t>(kFlat * kMixes), 0.01f);
+  std::vector<ggml_fp16_t> f16(source.size());
+  std::vector<ggml_bf16_t> bf16(source.size());
+  ggml_fp32_to_fp16_row(source.data(), f16.data(), static_cast<std::int64_t>(source.size()));
+  ggml_fp32_to_bf16_row(source.data(), bf16.data(), static_cast<std::int64_t>(source.size()));
+  std::vector<float> f16_wide(source.size());
+  std::vector<float> bf16_wide(source.size());
+  ggml_fp16_to_fp32_row(f16.data(), f16_wide.data(), static_cast<std::int64_t>(source.size()));
+  ggml_bf16_to_fp32_row(bf16.data(), bf16_wide.data(), static_cast<std::int64_t>(source.size()));
+  for (const std::int64_t tokens : {1, 5}) {
+    const std::vector<float> x =
+        Normal(62 + static_cast<std::uint64_t>(tokens), static_cast<std::size_t>(kFlat * tokens));
+    ggml_tensor* xt = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kWidth, kHc, tokens), x);
+    const auto mixed = [&](ggml_tensor* weights) {
+      ggml_tensor* mix = Place(kg::Dsv4HcMix(c(), xt, weights));
+      Launched(kg::RunDsv4HcMix(launch(), mix),
+               std::format("{} x {}", ggml_type_name(weights->type), tokens));
+      return Download(mix);
+    };
+    const auto f32_of = [&](const std::vector<float>& values) {
+      return mixed(Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kFlat, kMixes), values));
+    };
+    const std::vector<float> half_got =
+        mixed(Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, kFlat, kMixes), f16));
+    const std::vector<float> half_want = f32_of(f16_wide);
+    ASSERT_EQ(half_got.size(), half_want.size());
+    EXPECT_EQ(std::memcmp(half_got.data(), half_want.data(), half_got.size() * sizeof(float)), 0)
+        << "F16 x " << tokens;
+    const std::vector<float> bf16_got =
+        mixed(Place(ggml_new_tensor_2d(c(), GGML_TYPE_BF16, kFlat, kMixes), bf16));
+    const std::vector<float> bf16_want = f32_of(bf16_wide);
+    ASSERT_EQ(bf16_got.size(), bf16_want.size());
+    EXPECT_EQ(std::memcmp(bf16_got.data(), bf16_want.data(), bf16_got.size() * sizeof(float)), 0)
+        << "BF16 x " << tokens;
+  }
+  EXPECT_TRUE(kg::Dsv4HcMixWeightType(GGML_TYPE_F32));
+  EXPECT_TRUE(kg::Dsv4HcMixWeightType(GGML_TYPE_F16));
+  EXPECT_TRUE(kg::Dsv4HcMixWeightType(GGML_TYPE_BF16));
+  EXPECT_FALSE(kg::Dsv4HcMixWeightType(GGML_TYPE_Q8_0));
+  ggml_tensor* xt = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kWidth, kHc, 1));
+  ggml_tensor* quantized = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q8_0, kFlat, kMixes));
+  EXPECT_FALSE(kg::CheckDsv4HcMix(Place(kg::Dsv4HcMix(c(), xt, quantized))).has_value());
 }
 
 TEST_F(Dsv4FastTest, TheCompressorMatchesFp64AndGivesZerosForMaskedBlocks) {

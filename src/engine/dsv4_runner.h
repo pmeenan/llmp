@@ -551,8 +551,14 @@ class Dsv4Runner final : public PagedModel {
   // empty set selects the shared extents alone (a drained retirement).
   Status SelectSlots(std::span<Slot* const> active);
   bool cohort_usable() const { return !cohort_.faulted(); }
-  bool waves_provisioned() const { return !released_ && o_.wave_slots > 1; }
-  std::uint32_t wave_capacity() const { return waves_provisioned() ? o_.wave_slots : 1; }
+  bool waves_provisioned() const { return !released_ && wave_slots_ > 1; }
+  std::uint32_t wave_capacity() const { return waves_provisioned() ? wave_slots_ : 1; }
+  // Why Setup provisioned one request slot where Dsv4Options::wave_slots
+  // asked for several (the artifact's weights cannot take a wave,
+  // kernels/ggml Dsv4WaveSupport): the model then serves one request at a
+  // time instead of being refused. Empty when the slots asked for are
+  // provisioned.
+  const std::string& serial_reason() const { return serial_reason_; }
 
   // One wave step of a slot: its anchor (the last sampled token, at `pos`,
   // not yet in its state) and, for a speculative wave, the verify's rows
@@ -706,6 +712,10 @@ class Dsv4Runner final : public PagedModel {
   std::uint64_t draft_staging_ = 0;    // a slot's draft inputs' staging stride
   std::uint64_t plan_host_bytes_ = 0;  // plan_host_bytes()
   std::string plan_report_;
+  // The request slots provisioned: Dsv4Options::wave_slots, or 1 when the
+  // weights cannot take a wave (serial_reason_).
+  std::uint32_t wave_slots_ = 1;
+  std::string serial_reason_;
 
   catalog::Closure everything_;
   catalog::Closure execution_;  // the shared extents and the active slots' state

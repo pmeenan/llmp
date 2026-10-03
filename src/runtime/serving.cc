@@ -285,6 +285,7 @@ class Dsv4 final : public Llm {
   std::uint64_t host_input_bytes() const override { return runner_.host_input_bytes(); }
   std::uint64_t plan_host_bytes() const override { return runner_.plan_host_bytes(); }
   std::string plan_report() const override { return runner_.plan_report(); }
+  std::string serial_reason() const override { return runner_.serial_reason(); }
   Status Register() override { return runner_.Register(); }
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
@@ -2959,6 +2960,9 @@ Status Server::Start(bool snapshot) {
     }
     if (const auto report = m->plan_report(); !report.empty()) {
       Log(std::format("model {}: plans and graphs at most {}", m->name(), report));
+    }
+    if (const auto reason = m->serial_reason(); !reason.empty()) {
+      Log(std::format("model {}: serves one request at a time ({})", m->name(), reason));
     }
   }
   if (auto r = node_.MapWorkspace(activations, pool); !r) {

@@ -33,7 +33,7 @@ no model is there yet, so measured speeds are given as headlines only.
 | Model | Role | Status | Level |
 | --- | --- | --- | --- |
 | [DeepSeek V4 Flash 0731](#deepseek-v4-flash-0731) UD-Q2_K_XL | target | Served (M3) | paged-correct |
-| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Served (M3), one chat turn checked; refused at start since `64faee6` (F16 HC mixes vs DeepSeek waves) | resident-correct, short oracle trajectories |
+| [DeepSeek V4 community IQ2_XXS](#deepseek-v4-community-iq2_xxs) | target | Served (M3), four-request waves; matched HTTP cells | resident-correct, short oracle trajectories |
 | [DSpark](#dspark) for DeepSeek V4 Flash 0731 (Q8_0) | drafter | Served (M3), with its target | paged-correct |
 | [Qwen3.8 Flash Next](#qwen38-flash-next) NVFP4 | target | Served (M3) | paged-correct, one accepted greedy divergence (below) |
 | [Qwen3.8 MTP](#qwen38-mtp) | drafter | Served (M3), with its target | paged-correct |
@@ -208,11 +208,20 @@ seeded-sampling evidence in this study.
   loopback (system "Be brief.", a question asking for a one-word answer)
   returned reasoning and the answer "Paris", ending at the stop token, 19
   prompt tokens.
-  One turn only: no quality, continuation, swap or timing claim.
-  Since main `64faee6` (four-slot DeepSeek waves) the runtime refuses to
-  start this artifact. The wave needs every layer in the fused form, which
-  requires F32 HC mix weights, and this GGUF's are F16
-  ([deepseek-batching](experiments/deepseek-batching/README.md#against-ds4-same-session)).
+  One turn only: no quality, continuation or swap claim.
+- **Waves and the fused decode form:** its F16 HC mixing weights now take
+  the fast plan's fused form (`jitllm.dsv4.hc_mix` widens them to F32
+  exactly), so it starts with four request slots and decodes in waves
+  (between `64faee6` and this fix the runtime refused to start it). Wave
+  controls (`--check wave`, 2 and 4 slots, plain): 142/142 and 332/332
+  rows byte-identical to each slot alone. Its single-request decode now
+  takes the fused form as well; on the forced 8K ds4 trajectory all 32
+  argmaxes still agree with ds4, the prefill row is unchanged, the decode
+  rows move by at most 5.45 (RMS 0.29) from the unfused form's, and a
+  forced repeat is byte-identical. Against ds4's own decode logits the
+  fused form's mean RMS is 0.450 (unfused 0.444), its largest difference
+  5.86 (unfused 7.35). Timing and HTTP cells:
+  [deepseek-batching](experiments/deepseek-batching/README.md#community-artifact-in-waves).
 
 ## DSpark
 

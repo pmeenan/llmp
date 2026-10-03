@@ -611,6 +611,14 @@ reuses a cached prefix continues from whichever free branch holds the
 longest one, whose earlier prefill may have been chunked differently
 ([report](experiments/deepseek-batching/README.md): C4 +29.0% plain, +4.5%
 DSpark on the matched 7K protocol).
+A wave needs every layer in the fast plan's fused form, which takes HC
+mixing weights in F32, F16 or BF16 (through its own mix kernel) or
+quantized (through GGML's product, a request at a time), but needs each
+layer's expert products to be `jitllm.vecq` types with gate and up alike in
+type and shape. An artifact whose experts are not is still served, one
+request at a time, and the start logs `model NAME: serves one request at a
+time (no waves of 4 requests: layer N: ...)`. A model is never refused
+only because its artifact cannot batch.
 
 Cancellation ends only its request at a completed boundary. Before releasing a
 frame or admitting its replacement, an explicit native stream fence proves

@@ -19,6 +19,8 @@
 // token that selected the expert. A token's partial sums are the same
 // whatever other tokens share the read.
 
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -863,12 +865,19 @@ constexpr int kMixThreads = static_cast<int>(kDsv4HcChunkThreads);
 constexpr int kPreThreads = 1024;
 constexpr int kPreMaxPerThread = 8;  // widths up to 8,192
 
+// A mixing weight as F32: exact for F16 and BF16.
+__device__ __forceinline__ float HcWeight(float w) { return w; }
+__device__ __forceinline__ float HcWeight(half w) { return __half2float(w); }
+__device__ __forceinline__ float HcWeight(nv_bfloat16 w) { return __bfloat162float(w); }
+
 // Each block: one chunk of the flattened values of up to kMixTokens tokens,
 // their dot products with the kMixes weight rows and their sums of squares.
-// A token's sums are the same whatever tokens share the block.
-template <int kMixTokens>
+// A token's sums are the same whatever tokens share the block. The weights
+// are F32, F16 or BF16 (W), each widened to F32 exactly, so the sums' order
+// and arithmetic are the same for every weight type.
+template <int kMixTokens, typename W>
 __global__ void __launch_bounds__(kMixThreads)
-    HcMixKernel(const float* x, const float* fn, float* partials, int flat, int tokens) {
+    HcMixKernel(const float* x, const W* fn, float* partials, int flat, int tokens) {
   ggml_cuda_pdl_sync();
   const int c = static_cast<int>(blockIdx.x);
   const int t0 = static_cast<int>(blockIdx.y) * kMixTokens;
@@ -879,7 +888,7 @@ __global__ void __launch_bounds__(kMixThreads)
     float w[kMixes];
 #pragma unroll
     for (int j = 0; j < kMixes; ++j) {
-      w[j] = fn[(static_cast<std::ptrdiff_t>(j) * flat) + k];
+      w[j] = HcWeight(fn[(static_cast<std::ptrdiff_t>(j) * flat) + k]);
     }
 #pragma unroll
     for (int i = 0; i < kMixTokens; ++i) {
@@ -919,6 +928,24 @@ __global__ void __launch_bounds__(kMixThreads)
     }
     partials[(((static_cast<std::ptrdiff_t>(t0 + i) * kDsv4HcChunks) + c) * (kMixes + 1)) + j] = s;
   }
+}
+
+template <typename W>
+void LaunchHcMix(const float* x, const W* fn, float* partials, int flat, int tokens,
+                 cudaStream_t stream) {
+  if (tokens == 1) {
+    ggml_cuda_kernel_launch(
+        HcMixKernel<1, W>,
+        ggml_cuda_kernel_launch_params(dim3(kDsv4HcChunks, 1), dim3(kMixThreads), 0, stream), x, fn,
+        partials, flat, tokens);
+    return;
+  }
+  constexpr int kTokens = 4;  // a block's tokens, reading the weights once
+  const dim3 grid(static_cast<unsigned>(kDsv4HcChunks),
+                  static_cast<unsigned>((tokens + kTokens - 1) / kTokens));
+  ggml_cuda_kernel_launch(HcMixKernel<kTokens, W>,
+                          ggml_cuda_kernel_launch_params(grid, dim3(kMixThreads), 0, stream), x, fn,
+                          partials, flat, tokens);
 }
 
 __device__ __forceinline__ float Sigmoid(float x) { return 1.0f / (1.0f + expf(-x)); }
@@ -1237,22 +1264,21 @@ std::expected<void, KernelFailure> RunDsv4HcMix(LaunchContext& launch, ggml_tens
     const int flat = static_cast<int>(x->ne[0] * x->ne[1]);
     const int tokens = static_cast<int>(x->ne[2]);
     const auto* xs = static_cast<const float*>(x->data);
-    const auto* fn = static_cast<const float*>(node->src[1]->data);
     auto* out = static_cast<float*>(node->data);
-    // CheckDsv4HcMix: flat is a multiple of kDsv4HcChunks · kMixThreads.
-    if (tokens == 1) {
-      ggml_cuda_kernel_launch(HcMixKernel<1>,
-                              ggml_cuda_kernel_launch_params(
-                                  dim3(kDsv4HcChunks, 1), dim3(kMixThreads), 0, context.stream()),
-                              xs, fn, out, flat, tokens);
-    } else {
-      constexpr int kTokens = 4;  // a block's tokens, reading the weights once
-      const dim3 grid(static_cast<unsigned>(kDsv4HcChunks),
-                      static_cast<unsigned>((tokens + kTokens - 1) / kTokens));
-      ggml_cuda_kernel_launch(
-          HcMixKernel<kTokens>,
-          ggml_cuda_kernel_launch_params(grid, dim3(kMixThreads), 0, context.stream()), xs, fn, out,
-          flat, tokens);
+    // CheckDsv4HcMix: flat is a multiple of kDsv4HcChunks · kMixThreads, and
+    // the weights F32, F16 or BF16.
+    const ggml_tensor* fn = node->src[1];
+    const cudaStream_t stream = context.stream();
+    switch (fn->type) {
+      case GGML_TYPE_F16:
+        LaunchHcMix(xs, static_cast<const half*>(fn->data), out, flat, tokens, stream);
+        break;
+      case GGML_TYPE_BF16:
+        LaunchHcMix(xs, static_cast<const nv_bfloat16*>(fn->data), out, flat, tokens, stream);
+        break;
+      default:
+        LaunchHcMix(xs, static_cast<const float*>(fn->data), out, flat, tokens, stream);
+        break;
     }
   });
 }

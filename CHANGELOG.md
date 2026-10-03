@@ -301,6 +301,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- `jitllm-runtime` refused to start the community DeepSeek V4 Flash
+  IQ2_XXS GGUF ("a DeepSeek V4 wave needs every layer in the fast plan's
+  fused form"): its F16 hyper-connection mixing weights kept every layer
+  off the fused form that four-request waves need. The fused form now
+  takes F16 and BF16 mixing weights (and quantized ones through GGML's
+  product), so that artifact starts, serves four requests in waves
+  (+41% at four 7K-token requests over one at a time), and its
+  single-request decode takes the fused form too (+4%). An artifact whose
+  weights cannot form a wave is now served one request at a time, with a
+  log line at start, instead of being refused.
 - Stopping `jitllm-runtime` with two models configured, after a swap,
   logged "a compute stream could not be fenced" and exited with a failure
   status: the stop's fence of the swapped-out model's stream tried to page

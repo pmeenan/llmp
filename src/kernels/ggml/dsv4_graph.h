@@ -343,11 +343,21 @@ struct Dsv4WaveGraph {
 
 std::size_t Dsv4WaveGraphTensors(const model::Dsv4Profile& profile, std::size_t slots);
 
+// Whether the binding's weights let every layer take the fast plan's fused
+// form, which a wave needs: the profile's widths, and each layer's routed
+// and shared expert products jitllm.vecq types with gate and up alike. The
+// mixing weights' type is not a condition (F32, F16 and BF16 take
+// jitllm.dsv4.hc_mix; another type GGML's product). Refused with the first
+// layer that does not, and its types: a runner then serves one request at a
+// time rather than refusing the model.
+std::expected<void, KernelFailure> Dsv4WaveSupport(const model::Dsv4Profile& profile,
+                                                   const model::Dsv4Binding& binding);
+
 // Builds a wave's graph (options.fused, the fast plan only: no reference,
 // row-invariant or prefill stage form). Refused if a slot's shape is not
 // one the state holds, the slots' layouts differ, the rows exceed
 // kDsv4WaveRows, an injection's rows do not fit its slot, or a layer would
-// not take the fast plan's fused form.
+// not take the fast plan's fused form (Dsv4WaveSupport).
 std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& arena,
                                                                const model::Dsv4Profile& profile,
                                                                const model::Dsv4Binding& binding,

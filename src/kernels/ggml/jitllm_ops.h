@@ -830,9 +830,12 @@ ggml_tensor* Dsv4Route(ggml_context* context, ggml_tensor* logits, ggml_tensor* 
 // F32 [n, tokens]: F32 [n, tokens].
 ggml_tensor* Dsv4Combine(ggml_context* context, ggml_tensor* down, ggml_tensor* route,
                          ggml_tensor* shared);
-// `x` F32 [width, hc, tokens] packed, `fn` F32 [width · hc, mixes]: F32
-// [mixes + 1, kDsv4HcChunks, tokens].
+// `x` F32 [width, hc, tokens] packed, `fn` [width · hc, mixes] of a type
+// Dsv4HcMixWeightType takes: F32 [mixes + 1, kDsv4HcChunks, tokens]. Each
+// weight is widened to F32 exactly, so every type's sums take one order.
 ggml_tensor* Dsv4HcMix(ggml_context* context, ggml_tensor* x, ggml_tensor* fn);
+// The mixing weights' types jitllm.dsv4.hc_mix reads: F32, F16 and BF16.
+bool Dsv4HcMixWeightType(ggml_type type);
 // `partials` a jitllm.dsv4.hc_mix node over `x`; `scale` F32 [3], `base`
 // F32 [(2 + hc) · hc], `norm` F32 [width].
 ggml_tensor* Dsv4HcPre(ggml_context* context, ggml_tensor* partials, ggml_tensor* x,

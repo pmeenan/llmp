@@ -164,8 +164,7 @@ std::uint64_t Dsv4Runner::cached_plan_bytes() const {
 
 bool Dsv4Runner::RoomForGraphs(std::size_t adding, std::uint64_t adding_bytes) {
   // Every graph counts: the draft blocks' and the waves' with the chunks'.
-  const std::size_t most =
-      o_.wave_slots > 1 ? kMaxWaveGraphs : kMaxGraphs + (speculative() ? 1 : 0);
+  const std::size_t most = wave_slots_ > 1 ? kMaxWaveGraphs : kMaxGraphs + (speculative() ? 1 : 0);
   auto& more = additional_requests_;
   return engine::RoomForGraphs(most, kMaxGraphBytes, adding, adding_bytes, graph_stats_,
                                default_request_.plans, default_request_.dplans, more[0].plans,
@@ -224,6 +223,8 @@ Status Dsv4Runner::Setup() {
   if (o_.wave_slots == 0 || o_.wave_slots > kRequestSlots || (o_.wave_slots > 1 && o_.exact)) {
     return Error("DeepSeek request slots: one to four, several only in the fast plan");
   }
+  wave_slots_ = o_.wave_slots;
+  serial_reason_.clear();
   if (auto r = weights_.Open(o_.artifact); !r) {
     return r;
   }
@@ -270,11 +271,21 @@ Status Dsv4Runner::Setup() {
     }
     dlayout_ = std::move(*dlayout);
   }
+  // Waves need every layer in the fast plan's fused form. An artifact whose
+  // weights cannot take it is served, one request at a time, rather than
+  // refused: one request slot, and the reason for the start's log.
+  if (wave_slots_ > 1) {
+    if (auto support = kg::Dsv4WaveSupport(profile_, binding_); !support) {
+      serial_reason_ =
+          std::format("no waves of {} requests: {}", wave_slots_, support.error().detail);
+      wave_slots_ = 1;
+    }
+  }
   // The state first: its extents come before the weights' in a closure, so
   // a swap back restores it before paging the weights in. Every request
   // slot's: the default one's, then the others' in order.
   for (RequestState* request : Requests()) {
-    if (request->slot >= o_.wave_slots) {
+    if (request->slot >= wave_slots_) {
       continue;
     }
     const std::string slot = request->slot == 0 ? "" : std::format(" (slot {})", request->slot);
@@ -425,14 +436,14 @@ Status Dsv4Runner::Setup() {
       }
       draft_inputs = (*planned)->inputs_bytes;
     }
-    if (o_.wave_slots > 1) {
+    if (wave_slots_ > 1) {
       // The widest waves at the context's end: every slot a decode step
       // (beside a drafter, injected) and every slot an equal share of a
       // verify's rows.
       const auto wave = [&](std::uint32_t rows) -> Status {
         kg::Dsv4WaveShape shape;
-        std::vector<std::uint64_t> states(o_.wave_slots, std::uint64_t{1} << 45U);
-        for (std::uint32_t s = 0; s < o_.wave_slots; ++s) {
+        std::vector<std::uint64_t> states(wave_slots_, std::uint64_t{1} << 45U);
+        for (std::uint32_t s = 0; s < wave_slots_; ++s) {
           auto in = md::Dsv4Chunk(profile_, layout_, o_.context - rows, rows, false);
           if (!in) {
             return std::unexpected(in.error());
@@ -447,7 +458,7 @@ Status Dsv4Runner::Setup() {
                                     speculative() ? &dmodel_ : nullptr, states);
         if (!planned) {
           return Error(
-              std::format("measuring a wave of {} slots: {}", o_.wave_slots, planned.error()));
+              std::format("measuring a wave of {} slots: {}", wave_slots_, planned.error()));
         }
         return account(**planned, wave_host);
       };
@@ -455,7 +466,7 @@ Status Dsv4Runner::Setup() {
         return r;
       }
       const auto share = std::min<std::uint32_t>(
-          o_.max_verify, static_cast<std::uint32_t>(kg::kDsv4WaveRows) / o_.wave_slots);
+          o_.max_verify, static_cast<std::uint32_t>(kg::kDsv4WaveRows) / wave_slots_);
       if (speculative() && share > 0) {
         if (auto r = wave(share); !r) {
           return r;
@@ -466,7 +477,7 @@ Status Dsv4Runner::Setup() {
   // The plans' and graphs' bound (plan_host_bytes): every cap at its kind's
   // largest plan, each slot's draft block, and the graphs' budget.
   {
-    const std::uint64_t slots = o_.wave_slots;
+    const std::uint64_t slots = wave_slots_;
     const std::uint64_t waves = slots > 1 ? kMaxWavePlans * wave_host : 0;
     const std::uint64_t graphs = kMaxGraphBytes;  // a capture past it alone is not made
     plan_host_bytes_ =
@@ -520,7 +531,7 @@ Status Dsv4Runner::Setup() {
       }
     }
   }
-  if (o_.wave_slots > 1) {
+  if (wave_slots_ > 1) {
     auto logits = resources_.Pinned(static_cast<std::uint64_t>(kg::kDsv4WaveRows) * profile_.vocab *
                                     sizeof(float));
     if (!logits) {
@@ -1010,7 +1021,7 @@ void Dsv4Runner::CheckWave(const kg::Dsv4WaveGraph& graph) {
 void Dsv4Runner::Settle(RequestState& request, bool saved, bool wrote, bool unknown) {
   const bool uncertain = unknown || resources_.launch().faulted();
   request.live.Settle(saved, wrote, uncertain);
-  if (uncertain && o_.wave_slots > 1) {
+  if (uncertain && wave_slots_ > 1) {
     // The shared stream's effect is unknown: no slot is proven intact.
     cohort_.Fault(States());
   }
@@ -1084,10 +1095,10 @@ Status Dsv4Runner::Rollback(RequestState& request) {
   }
   auto rolled = request.live.Rollback(node_, execution_, stream_, resources_.launch(),
                                       "restoring a verify's rejected rows");
-  if (!rolled && o_.wave_slots > 1) {
+  if (!rolled && wave_slots_ > 1) {
     cohort_.CheckFailedJob(node_, stream_, execution_, States());
   }
-  if (resources_.launch().faulted() && o_.wave_slots > 1) {
+  if (resources_.launch().faulted() && wave_slots_ > 1) {
     cohort_.Fault(States());
   }
   return rolled;
@@ -1230,7 +1241,7 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
     posted = node_.Job(execution_, std::move(job), "a DeepSeek chunk", stream_);
   }
   if (!posted || !ran || !alongside || launch.faulted()) {
-    if (!posted && o_.wave_slots > 1) {
+    if (!posted && wave_slots_ > 1) {
       cohort_.CheckFailedJob(node_, stream_, execution_, States());
     }
     // Never left half-written: a verify is undone, anything else that may
@@ -1328,7 +1339,7 @@ Status Dsv4Runner::Draft(RequestState& request, std::uint32_t pos0, std::int32_t
   };
   auto posted = node_.Job(draft_closure_, std::move(job), "a DSpark draft", stream_);
   if (!posted || !ran || launch.faulted()) {
-    if (!posted && o_.wave_slots > 1) {
+    if (!posted && wave_slots_ > 1) {
       cohort_.CheckFailedJob(node_, stream_, execution_, States());
     }
     // A draft writes only its own block's ring cells, past the committed
@@ -1552,7 +1563,7 @@ Status Dsv4Runner::DraftVerify(RequestState& request, std::uint32_t pos, std::in
   };
   auto posted = node_.Job(execution_, std::move(job), "a DSpark draft and its verify", stream_);
   if (!posted || !ran || launch.faulted()) {
-    if (!posted && o_.wave_slots > 1) {
+    if (!posted && wave_slots_ > 1) {
       cohort_.CheckFailedJob(node_, stream_, execution_, States());
     }
     // Never left half-written: the verify is undone before the next job's
@@ -1581,7 +1592,7 @@ Status Dsv4Runner::DecodeWave(std::span<const WaveWork> work) { return Wave(work
 Status Dsv4Runner::DraftVerifyWave(std::span<const WaveWork> work) { return Wave(work, true); }
 
 Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
-  if (!waves_provisioned() || work.empty() || work.size() > o_.wave_slots ||
+  if (!waves_provisioned() || work.empty() || work.size() > wave_slots_ ||
       (spec && !speculative()) || model_.exact) {
     return Error("a DeepSeek wave needs provisioned slots (and a drafter to verify)");
   }
@@ -1947,7 +1958,7 @@ Status Dsv4Runner::SaveUsedState(RequestState& request, void* host,
   }
   LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
   auto copied = request.live.Copy(node_, request.fence, stream_, host, ranges, true, &retirement);
-  if (retirement == LiveState::CopyRetirement::kUnproven && o_.wave_slots > 1) {
+  if (retirement == LiveState::CopyRetirement::kUnproven && wave_slots_ > 1) {
     cohort_.Fault(States());
   }
   return copied;
@@ -2004,7 +2015,7 @@ Status Dsv4Runner::CopyCheckpointState(RequestState& request, void* host,
   if (!copied) {
     request.live.Quarantine();
   }
-  if (retirement == LiveState::CopyRetirement::kUnproven && o_.wave_slots > 1) {
+  if (retirement == LiveState::CopyRetirement::kUnproven && wave_slots_ > 1) {
     cohort_.Fault(States());
   }
   return copied;
@@ -2050,7 +2061,7 @@ Status Dsv4Runner::ReadState(RequestState& request, std::vector<std::byte>& targ
   LiveState::CopyRetirement retirement = LiveState::CopyRetirement::kProven;
   auto read = request.live.Read(node_, request.fence, stream_, "reading the DeepSeek state", out,
                                 &retirement);
-  if (retirement == LiveState::CopyRetirement::kUnproven && o_.wave_slots > 1) {
+  if (retirement == LiveState::CopyRetirement::kUnproven && wave_slots_ > 1) {
     cohort_.Fault(States());
   }
   return read;

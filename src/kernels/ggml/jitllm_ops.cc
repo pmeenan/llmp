@@ -2038,6 +2038,10 @@ ggml_tensor* Dsv4OutA(ggml_context* context, ggml_tensor* weights, ggml_tensor* 
   return node;
 }
 
+bool Dsv4HcMixWeightType(ggml_type type) {
+  return type == GGML_TYPE_F32 || type == GGML_TYPE_F16 || type == GGML_TYPE_BF16;
+}
+
 ggml_tensor* Dsv4HcMix(ggml_context* context, ggml_tensor* x, ggml_tensor* fn) {
   return Custom(context, GGML_TYPE_F32, {fn->ne[1] + 1, kDsv4HcChunks, x->ne[2], 1}, {x, fn},
                 kTagDsv4HcMix.data());
@@ -2243,11 +2247,13 @@ std::expected<void, KernelFailure> CheckDsv4HcMix(const ggml_tensor* node) {
   const ggml_tensor* x = node->src[0];
   const ggml_tensor* fn = node->src[1];
   const std::int64_t flat = x->ne[0] * x->ne[1];
-  if (!IsF32(x) || !IsF32(fn) || x->ne[1] != kDsv4HcStreams || fn->ne[0] != flat ||
-      fn->ne[1] != kDsv4HcMixes || !Shaped(node, kDsv4HcMixes + 1, kDsv4HcChunks, x->ne[2]) ||
+  if (!IsF32(x) || !Dsv4HcMixWeightType(fn->type) || x->ne[1] != kDsv4HcStreams ||
+      fn->ne[0] != flat || fn->ne[1] != kDsv4HcMixes ||
+      !Shaped(node, kDsv4HcMixes + 1, kDsv4HcChunks, x->ne[2]) ||
       flat % (kDsv4HcChunks * kDsv4HcChunkThreads) != 0 || std::cmp_greater(flat, kInt32Max) ||
       x->ne[2] > 65535 || !Aligned(x, 16) || !Aligned(fn, 16)) {
-    return Rejected("streams F32 [width, 4, tokens] and mixing weights F32 [4 · width, 24]");
+    return Rejected(
+        "streams F32 [width, 4, tokens] and mixing weights F32, F16 or BF16 [4 · width, 24]");
   }
   return CheckDense(node, {x, fn});
 }
