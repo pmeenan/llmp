@@ -168,6 +168,7 @@ bool Dsv4Runner::HasRetainedState() const {
 
 void Dsv4Runner::DropPlans() {
   waves_.Clear();
+  dwaves_.Clear();
   for (RequestState* request : Requests()) {
     request->plans.Clear();
     request->dplans.Clear();
@@ -184,7 +185,7 @@ std::size_t Dsv4Runner::plans() const {
 }
 
 std::size_t Dsv4Runner::graphs() const {
-  std::size_t count = waves_.graphs();
+  std::size_t count = waves_.graphs() + dwaves_.graphs();
   for (const RequestState* request : Requests()) {
     count += request->plans.graphs() + request->dplans.graphs();
   }
@@ -192,7 +193,7 @@ std::size_t Dsv4Runner::graphs() const {
 }
 
 std::uint64_t Dsv4Runner::cached_graph_bytes() const {
-  std::uint64_t bytes = waves_.graph_bytes();
+  std::uint64_t bytes = waves_.graph_bytes() + dwaves_.graph_bytes();
   for (const RequestState* request : Requests()) {
     bytes += request->plans.graph_bytes() + request->dplans.graph_bytes();
   }
@@ -200,7 +201,7 @@ std::uint64_t Dsv4Runner::cached_graph_bytes() const {
 }
 
 std::uint64_t Dsv4Runner::graph_measured_bytes() const {
-  std::uint64_t bytes = waves_.graph_measured_bytes();
+  std::uint64_t bytes = waves_.graph_measured_bytes() + dwaves_.graph_measured_bytes();
   for (const RequestState* request : Requests()) {
     bytes += request->plans.graph_measured_bytes() + request->dplans.graph_measured_bytes();
   }
@@ -208,7 +209,7 @@ std::uint64_t Dsv4Runner::graph_measured_bytes() const {
 }
 
 std::uint64_t Dsv4Runner::cached_plan_bytes() const {
-  std::uint64_t bytes = waves_.host_bytes();
+  std::uint64_t bytes = waves_.host_bytes() + dwaves_.host_bytes();
   for (const RequestState* request : Requests()) {
     bytes += request->plans.host_bytes() + request->dplans.host_bytes();
   }
@@ -226,6 +227,7 @@ std::uint64_t Dsv4Runner::cached_arena_used(bool capacity) const {
     });
   };
   add(waves_);
+  add(dwaves_);
   for (const RequestState* request : Requests()) {
     add(request->plans);
     add(request->dplans);
@@ -233,24 +235,26 @@ std::uint64_t Dsv4Runner::cached_arena_used(bool capacity) const {
   return bytes;
 }
 
-std::array<PlanCacheBase*, (2 * Dsv4Runner::kRequestSlots) + 1> Dsv4Runner::PlanCaches() {
-  std::array<PlanCacheBase*, (2 * kRequestSlots) + 1> caches{};
+std::array<PlanCacheBase*, (2 * Dsv4Runner::kRequestSlots) + 2> Dsv4Runner::PlanCaches() {
+  std::array<PlanCacheBase*, (2 * kRequestSlots) + 2> caches{};
   for (RequestState* request : Requests()) {
     caches[std::size_t{2} * request->slot] = &request->plans;
     caches[(std::size_t{2} * request->slot) + 1] = &request->dplans;
   }
-  caches.back() = &waves_;
+  caches[2 * kRequestSlots] = &waves_;
+  caches.back() = &dwaves_;
   return caches;
 }
 
-std::array<const PlanCacheBase*, (2 * Dsv4Runner::kRequestSlots) + 1> Dsv4Runner::PlanCaches()
+std::array<const PlanCacheBase*, (2 * Dsv4Runner::kRequestSlots) + 2> Dsv4Runner::PlanCaches()
     const {
-  std::array<const PlanCacheBase*, (2 * kRequestSlots) + 1> caches{};
+  std::array<const PlanCacheBase*, (2 * kRequestSlots) + 2> caches{};
   for (const RequestState* request : Requests()) {
     caches[std::size_t{2} * request->slot] = &request->plans;
     caches[(std::size_t{2} * request->slot) + 1] = &request->dplans;
   }
-  caches.back() = &waves_;
+  caches[2 * kRequestSlots] = &waves_;
+  caches.back() = &dwaves_;
   return caches;
 }
 
@@ -507,10 +511,12 @@ Status Dsv4Runner::Setup() {
   std::uint64_t most_lane_scratch = 0;  // a wave lane's (graph_plan.h AssignLanes)
   std::uint64_t most_inputs = 0;
   std::uint64_t draft_inputs = 0;
+  std::uint64_t draft_wave_inputs = 0;  // a joined draft's, every slot's
   // The largest plan of each kind (PlannedHostBytes) and the most nodes any
   // plan launches, for plan_floor_bytes().
   std::uint64_t chunk_host = 0;
   std::uint64_t draft_host = 0;
+  std::uint64_t draft_wave_host = 0;
   std::uint64_t wave_host = 0;
   std::uint64_t most_nodes = 0;
   {
@@ -633,6 +639,27 @@ Status Dsv4Runner::Setup() {
           return r;
         }
       }
+      // Every slot's draft block as one graph, the widest whose rows fit a
+      // wave's.
+      const auto joined =
+          std::min<std::uint32_t>({wave_slots_, static_cast<std::uint32_t>(kg::kDsv4WaveSlots),
+                                   static_cast<std::uint32_t>(kg::kDsv4WaveRows) /
+                                       std::max<std::uint32_t>(o_.draft_rows, 1)});
+      joined_drafts_ =
+          speculative() && o_.joined_drafts && !model_.exact && joined >= 2 && o_.draft_rows >= 2;
+      if (joined_drafts_) {
+        const std::vector<std::uint64_t> rings(joined, std::uint64_t{1} << 45U);
+        auto planned =
+            PlanDsparkWave(dmodel_, rings, o_.draft_rows, choices, 0, 0, model_.wave_lanes);
+        if (!planned) {
+          return Error(
+              std::format("measuring a joined draft of {} slots: {}", joined, planned.error()));
+        }
+        if (auto r = account(**planned, draft_wave_host); !r) {
+          return r;
+        }
+        draft_wave_inputs = (*planned)->inputs_bytes;
+      }
     }
   }
   // What one step holds at once at most (plan_floor_bytes): a chunk (or a
@@ -642,7 +669,8 @@ Status Dsv4Runner::Setup() {
     const std::uint64_t slots = wave_slots_;
     const std::uint64_t draft = speculative() ? draft_host : 0;
     const std::uint64_t chunk_step = chunk_host + draft;
-    const std::uint64_t wave_step = slots > 1 ? wave_host + (slots * draft) : 0;
+    const std::uint64_t wave_step =
+        slots > 1 ? wave_host + std::max(slots * draft, draft_wave_host) : 0;
     plan_floor_bytes_ = std::max(chunk_step, wave_step);
     const auto mib = [](std::uint64_t bytes) { return static_cast<double>(bytes) / (1U << 20U); };
     plan_report_ = std::format(
@@ -671,6 +699,9 @@ Status Dsv4Runner::Setup() {
   if (draft_staging_ * wave_slots_ > verify_base_) {
     return Error("the draft blocks' staging does not fit below the verify's");
   }
+  // A joined draft's inputs from the staging's start, below the verify's
+  // (the draft blocks' places: one or the other runs in a wave).
+  joined_drafts_ = joined_drafts_ && draft_wave_inputs + 256 <= verify_base_;
 
   auto inputs = resources_.Pinned(input_bytes);
   std::uint64_t table_bytes = 0;
@@ -952,6 +983,7 @@ Status Dsv4Runner::Bind() {
     request->dplans.set_account(&account_);
   }
   waves_.set_account(&account_);
+  dwaves_.set_account(&account_);
   for (RequestState* request : Requests()) {
     if (request->provisioned) {
       BindSlot(*request);
@@ -1320,6 +1352,35 @@ std::expected<Dsv4Runner::WavePlans::Entry*, std::string> Dsv4Runner::PlannedWav
   const std::uint64_t bytes = PlannedHostBytes(**planned);
   const std::uint64_t nodes = PlannedNodes(**planned);
   return &waves_.Add(key, std::move(*planned), bytes, nodes, seconds);
+}
+
+std::expected<Dsv4Runner::DraftWavePlans::Entry*, std::string> Dsv4Runner::PlannedDraftWave(
+    const DraftWaveKey& key) {
+  if (DraftWavePlans::Entry* found = dwaves_.Find(key); found != nullptr) {
+    return found;
+  }
+  const auto start = std::chrono::steady_clock::now();
+  std::vector<std::uint64_t> rings;
+  rings.reserve(key.count);
+  const auto requests = Requests();
+  for (std::uint32_t i = 0; i < key.count; ++i) {
+    rings.push_back(requests[key.slots[i]]->live.base(kDrafter));
+  }
+  kg::LaunchContext& launch = resources_.launch();
+  auto planned =
+      PlanDsparkWave(dmodel_, rings, o_.draft_rows, kg::DeviceChoicesOf(launch),
+                     node_.activations().base, node_.activations().bytes, model_.wave_lanes);
+  if (!planned) {
+    return std::unexpected(planned.error());
+  }
+  if (auto r = BindPlanned(**planned, launch, resources_.registry(), "the joined draft"); !r) {
+    return std::unexpected(r.error());
+  }
+  const double seconds = Seconds(std::chrono::steady_clock::now() - start);
+  plan_seconds_ += seconds;
+  const std::uint64_t bytes = PlannedHostBytes(**planned);
+  const std::uint64_t nodes = PlannedNodes(**planned);
+  return &dwaves_.Add(key, std::move(*planned), bytes, nodes, seconds);
 }
 
 // BP-A1's check (planned.h): the state is live state (the target's and the
@@ -1968,13 +2029,19 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
     std::optional<md::DsparkBlockInputs> block;
     std::vector<std::int32_t> tokens;
     Dsv4HostInputs dhost;
-    DraftPlans::Entry* draft = nullptr;
+    DraftPlans::Entry* draft = nullptr;  // its own block's (none in a joined draft)
     bool dcapture = false;
+    void* drafts = nullptr;  // where its draft block's drafts are, on the device
     ggml_tensor* lookup = nullptr;
     Queued dq;
     bool saved = false;
   };
   std::array<Frame, kRequestSlots> frames;
+  // Every slot's draft block as one graph (JoinedDrafts).
+  DraftWavePlans::Entry* jdraft = nullptr;
+  bool jcapture = false;
+  DsparkWaveHostInputs jhost;
+  Queued jq;
   WaveKey key;
   key.verify = spec;
   std::uint32_t previous = 0;
@@ -2074,19 +2141,39 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
   const std::uint64_t embd_at = (*copies)[0][2];
   const std::uint64_t tokens_at = (*copies)[1][2];
   const std::uint64_t width_bytes = std::uint64_t{profile_.width} * sizeof(float);
+  const bool joined = spec && JoinedDrafts(count);
   if (spec) {
-    for (std::size_t i = 0; i < count; ++i) {
-      Frame& f = frames[i];
-      auto dplanned = PlannedDraft(*f.request);
+    if (joined) {
+      // Every slot's block in one graph: each slot's drafts equal its own
+      // block's (dsv4_graph.h BuildDsparkWaveGraph).
+      DraftWaveKey dkey{.count = static_cast<std::uint32_t>(count)};
+      for (std::size_t i = 0; i < count; ++i) {
+        dkey.slots[i] = frames[i].request->slot;
+      }
+      auto dplanned = PlannedDraftWave(dkey);
       if (!dplanned) {
         return std::unexpected(dplanned.error());
       }
-      f.draft = *dplanned;
-      f.dcapture = f.draft->runs[0].CaptureDue(runs_.graphs());
+      jdraft = *dplanned;
+      jcapture = jdraft->runs[0].CaptureDue(runs_.graphs());
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+      Frame& f = frames[i];
+      if (joined) {
+        f.drafts = jdraft->planned->graph.drafts[i]->data;
+      } else {
+        auto dplanned = PlannedDraft(*f.request);
+        if (!dplanned) {
+          return std::unexpected(dplanned.error());
+        }
+        f.draft = *dplanned;
+        f.dcapture = f.draft->runs[0].CaptureDue(runs_.graphs());
+        f.drafts = f.draft->planned->graph.drafts->data;
+      }
       if (f.rows > 1) {
         const auto first = static_cast<std::uint64_t>(g.first[i]) + 1;
-        auto node = DraftRowsNode(f.request->slot, f.rows - 1, f.draft->planned->graph.drafts->data,
-                                  embd_at + (first * width_bytes));
+        auto node =
+            DraftRowsNode(f.request->slot, f.rows - 1, f.drafts, embd_at + (first * width_bytes));
         if (!node) {
           return std::unexpected(node.error());
         }
@@ -2103,7 +2190,8 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
   // Each graph charged before its capture; one with no room even after a
   // reclaim is not made (that plan runs launch by launch).
   const bool capture = run.CaptureDue(runs_.graphs()) && waves_.ChargeGraph(entry);
-  for (std::size_t i = 0; i < count; ++i) {
+  jcapture = jcapture && dwaves_.ChargeGraph(*jdraft);
+  for (std::size_t i = 0; i < count && !joined; ++i) {
     frames[i].dcapture =
         frames[i].dcapture && frames[i].request->dplans.ChargeGraph(*frames[i].draft);
   }
@@ -2129,42 +2217,76 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
       }
     }
     if (spec) {
-      for (std::size_t i = 0; i < count; ++i) {
-        Frame& f = frames[i];
-        const DsparkPlanned& dp = *f.draft->planned;
-        if (auto r = BuildDsparkInputs(f.request->model, dp.graph, *f.block, table(), f.dhost);
+      if (joined) {
+        const DsparkWavePlanned& dp = *jdraft->planned;
+        std::array<const md::DsparkBlockInputs*, kRequestSlots> blocks{};
+        std::array<RunCopy, kRequestSlots> doutputs{};
+        for (std::size_t i = 0; i < count; ++i) {
+          blocks[i] = &*frames[i].block;
+          doutputs[i] =
+              RunCopy{Address(frames[i].request->drafts), Address(dp.graph.drafts[i]->data),
+                      std::uint64_t{o_.draft_rows} * sizeof(std::int32_t)};
+        }
+        if (auto r = BuildDsparkWaveInputs(frames[0].request->model, dp.graph,
+                                           std::span(blocks).first(count), table(), jhost);
             !r) {
           return failed(r.error(), false);
         }
-        auto dcopies = runs_.Stage(f.dhost.sources, DraftStagingAt(*f.request));
+        // From the staging's start, below the verify's (the blocks' own
+        // places, which no block of this wave uses).
+        auto dcopies = runs_.Stage(jhost.sources, 0);
         if (!dcopies) {
           return failed(dcopies.error(), false);
         }
         for (const auto& copy : *dcopies) {
-          if (copy[2] + copy[1] > DraftStagingAt(*f.request) + draft_staging_ ||
-              copy[2] + copy[1] > verify_base_) {
-            return failed("a draft's inputs reach past its staging", false);
+          if (copy[2] + copy[1] > verify_base_) {
+            return failed("a joined draft's inputs reach past its staging", false);
           }
         }
-        const std::array<RunCopy, 1> doutputs = {
-            RunCopy{Address(f.request->drafts), Address(dp.graph.drafts->data),
-                    std::uint64_t{o_.draft_rows} * sizeof(std::int32_t)}};
-        f.dq = runs_.Queue(f.draft->runs[0], *dcopies, {}, *f.draft->planned->bound, doutputs,
-                           f.dcapture, draft_stats_, native);
-        if (!f.dq.result) {
-          return failed(f.dq.result.error().detail,
-                        f.dq.result.error().error == kg::KernelError::kUnknown);
+        jq = runs_.Queue(jdraft->runs[0], *dcopies, {}, *jdraft->planned->bound,
+                         std::span(doutputs).first(count), jcapture, draft_stats_, native);
+        if (!jq.result) {
+          return failed(jq.result.error().detail,
+                        jq.result.error().error == kg::KernelError::kUnknown);
+        }
+      }
+      for (std::size_t i = 0; i < count; ++i) {
+        Frame& f = frames[i];
+        if (!joined) {
+          const DsparkPlanned& dp = *f.draft->planned;
+          if (auto r = BuildDsparkInputs(f.request->model, dp.graph, *f.block, table(), f.dhost);
+              !r) {
+            return failed(r.error(), false);
+          }
+          auto dcopies = runs_.Stage(f.dhost.sources, DraftStagingAt(*f.request));
+          if (!dcopies) {
+            return failed(dcopies.error(), false);
+          }
+          for (const auto& copy : *dcopies) {
+            if (copy[2] + copy[1] > DraftStagingAt(*f.request) + draft_staging_ ||
+                copy[2] + copy[1] > verify_base_) {
+              return failed("a draft's inputs reach past its staging", false);
+            }
+          }
+          const std::array<RunCopy, 1> doutputs = {
+              RunCopy{Address(f.request->drafts), Address(dp.graph.drafts->data),
+                      std::uint64_t{o_.draft_rows} * sizeof(std::int32_t)}};
+          f.dq = runs_.Queue(f.draft->runs[0], *dcopies, {}, *f.draft->planned->bound, doutputs,
+                             f.dcapture, draft_stats_, native);
+          if (!f.dq.result) {
+            return failed(f.dq.result.error().detail,
+                          f.dq.result.error().error == kg::KernelError::kUnknown);
+          }
         }
         if (f.rows > 1) {
           // This slot's drafts into its staged tokens after its anchor, and
           // their embedding rows into its staged rows after the anchor's.
           const auto first = static_cast<std::uint64_t>(g.first[i]) + 1;
-          if (!ClampDrafts(dp.graph.drafts->data, f.rows - 1, profile_.vocab, native)) {
+          if (!ClampDrafts(f.drafts, f.rows - 1, profile_.vocab, native)) {
             return failed("bounding the drafts' ids", true);
           }
           if (!providers::CopyAsync(native, staging + tokens_at + (first * sizeof(std::int32_t)),
-                                    dp.graph.drafts->data,
-                                    std::uint64_t{f.rows - 1} * sizeof(std::int32_t),
+                                    f.drafts, std::uint64_t{f.rows - 1} * sizeof(std::int32_t),
                                     providers::CopyKind::kDeviceToHost)
                    .ok()) {
             return failed("the drafts' copy into the wave's tokens", true);
@@ -2208,13 +2330,18 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
   Count(graph_stats_, wq.path);
   Count(wave_stats_, wq.path);
   last_path_ = wq.path;
+  if (joined) {
+    Count(draft_stats_, jq.path);
+  }
   for (std::size_t i = 0; i < count; ++i) {
     Frame& f = frames[i];
     const WaveWork& w = work[i];
     const float* from = wave_logits_ + (static_cast<std::size_t>(g.first[i]) * profile_.vocab);
     w.logits->assign(from, from + (std::size_t{f.rows} * profile_.vocab));
     if (spec) {
-      Count(draft_stats_, f.dq.path);
+      if (!joined) {
+        Count(draft_stats_, f.dq.path);
+      }
       f.request->live.Verified(f.rows);
       const auto* values = static_cast<const std::int32_t*>(f.request->drafts);
       w.drafts->assign(values, values + o_.draft_rows);

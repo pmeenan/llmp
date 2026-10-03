@@ -1033,8 +1033,9 @@ TEST(Dsv4Test, AWaveJoinsRowLocalWorkAndKeepsEachSlotsStateItsOwn) {
   };
   const kg::Dsv4GraphOptions fused{.expert_stride = strides, .fused = true};
   // Four four-row verifies (16 rows): the vector products still joined,
-  // the float products (router, indexer weights, head mixes) a slot at a
-  // time, as each slot's own chunk runs them.
+  // the float products (router, indexer weights, head mixes) over two
+  // slots at a time (eight rows, where each column's sums are its own
+  // chunk's).
   kg::Dsv4WaveShape full;
   full.slots.assign(4, shape.slots[1]);
   {
@@ -1046,8 +1047,8 @@ TEST(Dsv4Test, AWaveJoinsRowLocalWorkAndKeepsEachSlotsStateItsOwn) {
     ASSERT_TRUE(plan16.has_value()) << Why(plan16);
     EXPECT_EQ(count(*plan16, kg::kVecQName), count(*one_plan, kg::kVecQName));
     // Per layer the router, per CSA layer the indexer's weights, the head's
-    // mixes: each slot's.
-    EXPECT_EQ(count(*plan16, kg::kMulMatVecFRows), 4 * (43 + 21 + 1));
+    // mixes: each pair of slots'.
+    EXPECT_EQ(count(*plan16, kg::kMulMatVecFRows), 2 * (43 + 21 + 1));
     EXPECT_EQ(count(*plan, kg::kMulMatVecFRows), 43 + 21 + 1);
   }
   kg::Dsv4WaveShape wide;

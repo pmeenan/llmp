@@ -826,17 +826,19 @@ class Dsv4 final : public Llm {
   // The calibration: a draft-verify wave's time over a plain decode wave's,
   // by width: the median joined wave of `jitllm_spec_runner --check wave
   // --slots N --wave-mode verify|decode` (GB10, community GGUF, wave lanes
-  // on, 2026-10-03; docs/experiments/deepseek-batching, "Wave lanes"):
-  // 132.7 / 60.9, 191.8 / 71.5 and 247.2 / 82.8 ms at widths 2, 3 and 4;
-  // 246.9 / 95.6, 224.7 / 106.1, 258.0 / 116.6 and 287.3 / 129.1 ms at
-  // widths 5 to 8 (more request slots, D-104), each from `--slots N`. A
+  // on, 2026-10-03; docs/experiments/deepseek-batching, "Wave lanes" and
+  // "Joined draft blocks"): with joined drafts, 127.5 / 61.3, 180.0 /
+  // 71.5, 231.2 / 82.3 and 229.0 / 95.6 ms at widths 2 to 5; with lanes,
+  // 224.7 / 106.1, 258.0 / 116.6 and 287.3 / 129.1 ms at widths 6 to 8
+  // (more request slots, D-104; past five a joined draft's rows exceed a
+  // wave's, so each block runs alone), each from `--slots N`. A
   // DSpark verify then takes three rows a request at width 5 and two past
   // it, so past five a draft-verify wave (at most two tokens a request)
   // never pays (docs/experiments/request-slots). Fallbacks until D-103's
   // calibration on the machine measures them; to be measured again when a
   // wave's cost changes.
-  static constexpr execution::AdaptiveWaveMode::Costs kWaveCost = {0,    0,    2.18, 2.68, 2.99,
-                                                                   2.58, 2.12, 2.21, 2.23};
+  static constexpr execution::AdaptiveWaveMode::Costs kWaveCost = {0,    0,    2.08, 2.52, 2.81,
+                                                                   2.40, 2.12, 2.21, 2.23};
   // A request's share of a draft-verify wave's rows among `count`: all
   // sixteen's, at least two (so DSpark takes at most eight requests).
   static std::uint32_t WaveShare(std::size_t count) {

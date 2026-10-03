@@ -429,6 +429,12 @@ std::expected<void, std::string> BuildDsv4WaveInputs(const Dsv4Model& m, const k
   return {};
 }
 
+namespace {
+void BindDsparkWeights(const DsparkModel& d, kg::Dsv4Graph& core, ggml_tensor* markov_w1,
+                       ggml_tensor* markov_w2);
+kg::DeviceChoices DraftChoices(const DsparkModel& d, const kg::DeviceChoices& choices);
+}  // namespace
+
 std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
     const DsparkModel& d, std::int64_t rows, const kg::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes) {
@@ -450,14 +456,76 @@ std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
   }
   out->graph = std::move(*graph);
   kg::DsparkGraph& g = out->graph;
-  // The drafter's blocks at its places, its head's output the target's.
+  BindDsparkWeights(d, g.core, g.markov_w1, g.markov_w2);
+  for (std::uint32_t il = 0; il < d.profile->blocks.layers; ++il) {
+    kg::TensorArena::Bind(g.core.layers[il].raw_k, d.places.state + d.state->offsets[il]);
+  }
+  const std::vector<ggml_tensor*> keep = {g.logits, g.drafts};
+  const auto inputs = g.inputs();
+  if (auto placed = PlaceAndPlan(*out, g.core.nodes, inputs, keep, DraftChoices(d, choices),
+                                 activations, activation_bytes);
+      !placed) {
+    return std::unexpected(placed.error());
+  }
+  return out;
+}
+
+std::expected<std::unique_ptr<DsparkWavePlanned>, std::string> PlanDsparkWave(
+    const DsparkModel& d, std::span<const std::uint64_t> rings, std::int64_t rows,
+    const kg::DeviceChoices& choices, std::uint64_t activations, std::uint64_t activation_bytes,
+    bool lanes) {
+  if (d.exact || rings.size() < 2) {
+    return Error("a joined draft runs the fast plan over two rings or more");
+  }
+  auto out = std::make_unique<DsparkWavePlanned>();
+  const kg::Dsv4GraphOptions options{.expert_stride = d.places.stride, .fused = true};
+  const std::size_t slots = rings.size();
+  auto arena =
+      SizedArena(kg::DsparkWaveGraphTensors(*d.profile, rows, slots), [&](kg::TensorArena& a) {
+        return kg::BuildDsparkWaveGraph(a, *d.profile, *d.binding, rows, slots, d.state->ring,
+                                        options)
+            .has_value();
+      });
+  if (!arena) {
+    return std::unexpected(arena.error());
+  }
+  out->arena.emplace(std::move(*arena));
+  auto graph = kg::BuildDsparkWaveGraph(*out->arena, *d.profile, *d.binding, rows, slots,
+                                        d.state->ring, options);
+  out->arena->Seal();
+  if (!graph) {
+    return Error(graph.error().detail);
+  }
+  out->graph = std::move(*graph);
+  kg::DsparkWaveGraph& g = out->graph;
+  BindDsparkWeights(d, g.joined, g.markov_w1, g.markov_w2);  // the joined graph holds no ring
+  for (std::size_t i = 0; i < slots; ++i) {
+    for (std::uint32_t il = 0; il < d.profile->blocks.layers; ++il) {
+      kg::TensorArena::Bind(g.slots[i].layers[il].raw_k, rings[i] + d.state->offsets[il]);
+    }
+  }
+  const std::vector<ggml_tensor*> keep(g.drafts.begin(), g.drafts.end());
+  const auto inputs = g.inputs();
+  if (auto placed = PlaceAndPlan(*out, g.joined.nodes, inputs, keep, DraftChoices(d, choices),
+                                 activations, activation_bytes, lanes ? &g.lanes : nullptr);
+      !placed) {
+    return std::unexpected(placed.error());
+  }
+  return out;
+}
+
+namespace {
+
+// The drafter's blocks at its places, its head's output the target's.
+void BindDsparkWeights(const DsparkModel& d, kg::Dsv4Graph& core, ggml_tensor* markov_w1,
+                       ggml_tensor* markov_w2) {
   const md::DsparkBinding& b = *d.binding;
   const auto bind = [](ggml_tensor* t, std::uint64_t address) {
     kg::TensorArena::Bind(t, address);
   };
   for (std::uint32_t il = 0; il < d.profile->blocks.layers; ++il) {
     const md::Dsv4Layer& r = b.blocks.layers[il];
-    kg::Dsv4LayerTensors& l = g.core.layers[il];
+    kg::Dsv4LayerTensors& l = core.layers[il];
     for (const auto& [t, w] : std::initializer_list<std::pair<ggml_tensor*, const md::Dsv4Tensor*>>{
              {l.attn_norm, &r.attn_norm},
              {l.attn_sinks, &r.attn_sinks},
@@ -485,29 +553,27 @@ std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
     bind(l.up_exps, d.places.array(r.up_exps.index));
     bind(l.gate_exps, d.places.array(r.gate_exps.index));
     bind(l.down_exps, d.places.array(r.down_exps.index));
-    bind(l.raw_k, d.places.state + d.state->offsets[il]);
   }
-  bind(g.core.output_norm, d.places.resource(b.blocks.output_norm.index));
-  bind(g.core.hc_head_fn, d.places.resource(b.blocks.hc_head_fn.index));
-  bind(g.core.hc_head_base, d.places.resource(b.blocks.hc_head_base.index));
-  bind(g.core.hc_head_scale, d.places.resource(b.blocks.hc_head_scale.index));
-  bind(g.core.output, d.target_resource(b.blocks.output.index));
-  bind(g.markov_w1, d.places.resource(b.markov_w1.index));
-  bind(g.markov_w2, d.places.resource(b.markov_w2.index));
-  const std::vector<ggml_tensor*> keep = {g.logits, g.drafts};
-  const auto inputs = g.inputs();
+  bind(core.output_norm, d.places.resource(b.blocks.output_norm.index));
+  bind(core.hc_head_fn, d.places.resource(b.blocks.hc_head_fn.index));
+  bind(core.hc_head_base, d.places.resource(b.blocks.hc_head_base.index));
+  bind(core.hc_head_scale, d.places.resource(b.blocks.hc_head_scale.index));
+  bind(core.output, d.target_resource(b.blocks.output.index));
+  bind(markov_w1, d.places.resource(b.markov_w1.index));
+  bind(markov_w2, d.places.resource(b.markov_w2.index));
+}
+
+// A draft block's device choices (as a joined draft's).
+kg::DeviceChoices DraftChoices(const DsparkModel& d, const kg::DeviceChoices& choices) {
   kg::DeviceChoices device = choices;
   device.fuse_norms = !d.exact;
   device.vector_floats = !d.exact;
   device.pair_experts = !d.exact;
   device.wide_sparse_attention = !d.exact;
-  if (auto placed =
-          PlaceAndPlan(*out, g.core.nodes, inputs, keep, device, activations, activation_bytes);
-      !placed) {
-    return std::unexpected(placed.error());
-  }
-  return out;
+  return device;
 }
+
+}  // namespace
 
 std::expected<void, std::string> Dsv4EmbeddingRows(const Dsv4Model& m,
                                                    std::span<const std::int32_t> tokens,
@@ -548,6 +614,44 @@ std::expected<void, std::string> BuildDsparkInputs(const Dsv4Model& m, const kg:
                  {g.core.positions, in.positions.data()},
                  {g.core.raw_k_idxs, in.cells.data()},
                  {g.core.raw_mask, in.mask.data()}};
+  return {};
+}
+
+std::expected<void, std::string> BuildDsparkWaveInputs(
+    const Dsv4Model& m, const kg::DsparkWaveGraph& g,
+    std::span<const md::DsparkBlockInputs* const> blocks, std::span<const std::byte> table,
+    DsparkWaveHostInputs& out) {
+  if (blocks.size() != g.slots.size()) {
+    return Error("a joined draft's blocks are not its graph's slots");
+  }
+  out.tokens.clear();
+  out.positions.clear();
+  for (std::size_t i = 0; i < blocks.size(); ++i) {
+    const md::DsparkBlockInputs& in = *blocks[i];
+    const kg::Dsv4Graph& sg = g.slots[i];
+    if (std::cmp_not_equal(in.tokens.size(), sg.raw_k_idxs->ne[0]) ||
+        std::cmp_not_equal(in.positions.size(), in.tokens.size()) ||
+        std::cmp_not_equal(in.cells.size(), in.tokens.size()) ||
+        std::cmp_not_equal(in.mask.size(), ggml_nelements(sg.raw_mask)) ||
+        std::cmp_not_equal(out.tokens.size(), g.first[i])) {
+      return Error("a joined draft's block is not its slot's");
+    }
+    out.tokens.insert(out.tokens.end(), in.tokens.begin(), in.tokens.end());
+    out.positions.insert(out.positions.end(), in.positions.begin(), in.positions.end());
+  }
+  if (std::cmp_not_equal(out.tokens.size(), g.tokens->ne[0])) {
+    return Error("a joined draft's rows are not its graph's");
+  }
+  if (auto rows = Dsv4EmbeddingRows(m, out.tokens, table, out.embd); !rows) {
+    return rows;
+  }
+  out.sources = {{g.joined.embd, out.embd.data()},
+                 {g.tokens, out.tokens.data()},
+                 {g.joined.positions, out.positions.data()}};
+  for (std::size_t i = 0; i < blocks.size(); ++i) {
+    out.sources.emplace_back(g.slots[i].raw_k_idxs, blocks[i]->cells.data());
+    out.sources.emplace_back(g.slots[i].raw_mask, blocks[i]->mask.data());
+  }
   return {};
 }
 

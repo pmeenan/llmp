@@ -150,8 +150,24 @@ class Builder {
   // A DSpark draft block (the drafter's blocks over the binding's head).
   std::expected<void, KernelFailure> DraftInputs(DsparkGraph& d, const model::DsparkBinding& b);
   void BuildDraft(DsparkGraph& d);
+  // A joined draft (BuildDsparkWaveGraph): the joined rows' inputs and each
+  // slot's, then the blocks over every slot's rows and each slot's Markov
+  // head.
+  std::expected<void, KernelFailure> DraftWaveInputs(DsparkWaveGraph& d,
+                                                     const model::DsparkBinding& b);
+  void BuildDraftWave(DsparkWaveGraph& d);
 
  private:
+  // The drafter's blocks over the rows (each slot's attention over its own
+  // ring in a joined draft), its hyper-connection head and final norm, and
+  // the target's head: the logits, [vocab, rows].
+  ggml_tensor* DraftTrunk();
+  // The Markov head over `nt` rows of `logits` from row `first`, whose
+  // block tokens (the anchor first) `tokens` holds from `first`: each row's
+  // logits biased by the row before it's argmax (the anchor's for the
+  // first), the biased rows joined.
+  ggml_tensor* Markov(ggml_tensor* logits, ggml_tensor* tokens, ggml_tensor* w1, ggml_tensor* w2,
+                      std::int64_t first, std::int64_t nt);
   // A named intermediate, as llama.cpp's callback names it.
   void Name(ggml_tensor* t, std::string_view name, int il) {
     g_.named.emplace_back(il >= 0 ? std::format("{}-{}", name, il) : std::string(name), t);
@@ -294,8 +310,9 @@ class Builder {
   std::int64_t VecQRows() const { return segs_.empty() ? kVecQTokens : kDsv4WaveRows; }
   // GGML's float vector kernel keeps each column's sums independent of the
   // count up to this many columns (graph_plan.h kRowInvariantColumns); a
-  // wider wave runs a float product per slot over its rows, as each slot's
-  // own chunk does, and joins the results. A quantized weight's GGML
+  // wider wave runs a float product over each group of whole slots whose
+  // rows fit that count (each slot's columns as its own chunk's), and joins
+  // the results. A quantized weight's GGML
   // product (MMVQ) picks its launch by the column count, so a wave runs it
   // per slot at any width.
   static constexpr std::int64_t kVectorFloatColumns = 8;
@@ -308,13 +325,25 @@ class Builder {
       }
       return out;
     }
+    // Whole slots together while their rows fit the invariant count (a
+    // float weight's product; a quantized one's a slot at a time).
     ggml_tensor* joined = nullptr;
-    for (const Segment& seg : segs_) {
-      ggml_tensor* one = ggml_mul_mat(c_, w, Rows2(x, seg));
+    for (std::size_t i = 0; i < segs_.size();) {
+      std::size_t j = i + 1;
+      std::int64_t rows = segs_[i].s->rows;
+      while (!ggml_is_quantized(w->type) && j < segs_.size() &&
+             rows + segs_[j].s->rows <= kVectorFloatColumns) {
+        rows += segs_[j].s->rows;
+        ++j;
+      }
+      ggml_tensor* part = ggml_view_2d(c_, x, x->ne[0], rows, x->nb[1],
+                                       static_cast<std::size_t>(segs_[i].first) * x->nb[1]);
+      ggml_tensor* one = ggml_mul_mat(c_, w, part);
       if (f32_acc) {
         ggml_prec_set_acc(one, GGML_PREC_F32);
       }
       joined = joined != nullptr ? ggml_concat(c_, joined, one, 1) : one;
+      i = j;
     }
     return joined;
   }
@@ -1295,9 +1324,14 @@ ggml_tensor* Builder::AttentionWave(std::uint32_t il_u, ggml_tensor* cur) {
       ggml_tensor* kq_mask =
           Dsv4SparseMask(c_, sg.raw_mask, nullptr, sg.hca_visible, s.raw_cells, s.hca_n_kv);
       one = AttnMhaRow(q_s, k, kq_mask, l.attn_sinks, window + s.hca_n_kv, true);
-    } else {
+    } else if (sparse_) {
       ggml_tensor* k = GetK(sl.raw_k, s.raw_n_kv);
       one = AttnMhaRow(q_s, k, sg.raw_mask, l.attn_sinks, window, true);
+    } else {
+      // A joined draft's block (BuildDsparkWaveGraph): Attention's window
+      // attention over the slot's whole ring, as its own block runs it.
+      ggml_tensor* k = GetK(sl.raw_k, s.raw_n_kv);
+      one = AttnMhaRow(q_s, k, sg.raw_mask, l.attn_sinks, 0);
     }
     if (lanes_ != nullptr) {
       Tag(mark, lane, region);
@@ -1684,10 +1718,30 @@ std::expected<void, KernelFailure> Builder::DraftInputs(DsparkGraph& d,
   return {};
 }
 
-// graph_dsv4's token batch (dflash.cpp:886-1001) and
-// build_dspark_markov_head (dflash.cpp:293-404) for one block, anchor
-// first (sample_from_anchor), without the confidence head.
-void Builder::BuildDraft(DsparkGraph& d) {
+std::expected<void, KernelFailure> Builder::DraftWaveInputs(DsparkWaveGraph& d,
+                                                            const model::DsparkBinding& b) {
+  const std::int64_t n = s_.rows;
+  g_.embd = ggml_new_tensor_2d(c_, GGML_TYPE_F32, p_.width, n);
+  d.tokens = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
+  g_.positions = ggml_new_tensor_1d(c_, GGML_TYPE_I32, n);
+  for (Segment& seg : segs_) {
+    Dsv4Graph& sg = *seg.g;
+    sg.raw_k_idxs = ggml_new_tensor_1d(c_, GGML_TYPE_I64, seg.s->rows);
+    sg.raw_mask = ggml_new_tensor_4d(c_, GGML_TYPE_F16, seg.s->raw_n_kv, seg.s->rows, 1, 1);
+  }
+  auto w1 = Leaf(c_, b.markov_w1, "markov_w1");
+  auto w2 = Leaf(c_, b.markov_w2, "markov_w2");
+  if (!w1 || !w2) {
+    return std::unexpected(!w1 ? w1.error() : w2.error());
+  }
+  d.markov_w1 = *w1;
+  d.markov_w2 = *w2;
+  return {};
+}
+
+// graph_dsv4's token batch (dflash.cpp:886-1001): the blocks, the
+// hyper-connection head, the norm and the target's head.
+ggml_tensor* Builder::DraftTrunk() {
   const std::int64_t nt = s_.rows;
   const std::int64_t hc = p_.hc;
   ggml_tensor* inp = ggml_reshape_3d(c_, g_.embd, p_.width, 1, nt);
@@ -1701,7 +1755,7 @@ void Builder::BuildDraft(DsparkGraph& d) {
     ggml_tensor* comb = nullptr;
     ggml_tensor* cur = PreNorm(il_u, inpl, l.hc_attn_fn, l.hc_attn_scale, l.hc_attn_base,
                                l.attn_norm, &post, &comb);
-    cur = Attention(il_u, cur);
+    cur = segs_.empty() ? Attention(il_u, cur) : AttentionWave(il_u, cur);
     inpl = ggml_dsv4_hc_post(c_, cur, residual, post, comb);
     residual = inpl;
     if (Fused(il_u)) {
@@ -1724,26 +1778,60 @@ void Builder::BuildDraft(DsparkGraph& d) {
   cur = Norm(cur, g_.output_norm);
   g_.logits = Mm(g_.output, cur);  // [vocab, rows]
   Expand(g_.logits);
-  // The Markov head: each slot's logits biased by the slot before it, the
-  // anchor before slot 0.
-  const std::int64_t vocab = g_.logits->ne[0];
-  ggml_tensor* prev = ggml_view_1d(c_, d.tokens, 1, 0);
+  return g_.logits;
+}
+
+// build_dspark_markov_head (dflash.cpp:293-404): each block row's logits
+// biased by the row before it, the anchor before the first.
+ggml_tensor* Builder::Markov(ggml_tensor* logits, ggml_tensor* tokens, ggml_tensor* w1,
+                             ggml_tensor* w2, std::int64_t first, std::int64_t nt) {
+  const std::int64_t vocab = logits->ne[0];
+  ggml_tensor* prev = ggml_view_1d(c_, tokens, 1, static_cast<std::size_t>(first) * tokens->nb[0]);
   ggml_tensor* cat = nullptr;
   for (std::int64_t i = 0; i < nt; ++i) {
-    ggml_tensor* w1_prev = ggml_get_rows(c_, d.markov_w1, prev);  // [rank, 1]
-    ggml_tensor* bias = ggml_mul_mat(c_, d.markov_w2, w1_prev);   // [vocab, 1]
-    ggml_tensor* base = ggml_view_2d(c_, g_.logits, vocab, 1, g_.logits->nb[1],
-                                     static_cast<std::size_t>(i) * g_.logits->nb[1]);
+    ggml_tensor* w1_prev = ggml_get_rows(c_, w1, prev);  // [rank, 1]
+    ggml_tensor* bias = ggml_mul_mat(c_, w2, w1_prev);   // [vocab, 1]
+    ggml_tensor* base = ggml_view_2d(c_, logits, vocab, 1, logits->nb[1],
+                                     static_cast<std::size_t>(first + i) * logits->nb[1]);
     ggml_tensor* col = ggml_add(c_, base, bias);
     cat = cat != nullptr ? ggml_concat(c_, cat, col, 1) : col;
     if (i + 1 < nt) {
       prev = Argmax(c_, col);
     }
   }
-  d.logits = cat;
+  return cat;
+}
+
+// One block, anchor first (sample_from_anchor), without the confidence
+// head.
+void Builder::BuildDraft(DsparkGraph& d) {
+  ggml_tensor* logits = DraftTrunk();
+  d.logits = Markov(logits, d.tokens, d.markov_w1, d.markov_w2, 0, s_.rows);
   Name(d.logits, "dspark_logits", -1);
-  d.drafts = Argmax(c_, cat);
+  d.drafts = Argmax(c_, d.logits);
   Expand(d.drafts);
+  g_.nodes = GraphOrder(expanded_);
+}
+
+// Every slot's block: the trunk over the joined rows, then each slot's
+// Markov head over its rows, on a lane of its own with lanes (the chains
+// are independent; one region).
+void Builder::BuildDraftWave(DsparkWaveGraph& d) {
+  ggml_tensor* logits = DraftTrunk();
+  const std::uint32_t region = lanes_ != nullptr ? ++regions_ : 0;
+  std::uint32_t slot = 0;
+  for (const Segment& seg : segs_) {
+    const auto lane = static_cast<std::uint8_t>((slot++ % kMaxLanes) + 1);
+    ggml_tensor* const mark = lanes_ != nullptr ? Last() : nullptr;
+    ggml_tensor* biased =
+        Markov(logits, d.tokens, d.markov_w1, d.markov_w2, seg.first, seg.s->rows);
+    ggml_tensor* drafts = Argmax(c_, biased);
+    Expand(drafts);
+    d.drafts.push_back(drafts);
+    if (lanes_ != nullptr) {
+      Tag(mark, lane, region);
+    }
+  }
   g_.nodes = GraphOrder(expanded_);
 }
 
@@ -1793,6 +1881,14 @@ std::vector<ggml_tensor*> DsparkGraph::inputs() const {
   return {core.embd, tokens, core.positions, core.raw_k_idxs, core.raw_mask};
 }
 
+std::vector<ggml_tensor*> DsparkWaveGraph::inputs() const {
+  std::vector<ggml_tensor*> all = {joined.embd, tokens, joined.positions};
+  for (const Dsv4Graph& s : slots) {
+    all.insert(all.end(), {s.raw_k_idxs, s.raw_mask});
+  }
+  return all;
+}
+
 ggml_tensor* Dsv4Graph::Named(std::string_view name) const {
   for (const auto& [n, t] : named) {
     if (n == name) {
@@ -1837,6 +1933,15 @@ std::size_t Dsv4WaveGraphTensors(const model::Dsv4Profile& profile, std::size_t 
 std::size_t DsparkGraphTensors(const model::DsparkProfile& profile, std::int64_t rows) {
   // The blocks as a target chunk's layers, and the Markov head's six a slot.
   return 256 + (std::size_t{profile.blocks.layers} * 512) + (static_cast<std::size_t>(rows) * 8);
+}
+
+std::size_t DsparkWaveGraphTensors(const model::DsparkProfile& profile, std::int64_t rows,
+                                   std::size_t slots) {
+  // The joined blocks, and each slot's inputs, ring, attention (with a float
+  // product a slot past the column-invariant count) and Markov head.
+  return DsparkGraphTensors(profile, rows * static_cast<std::int64_t>(slots)) +
+         (slots * (128 + (std::size_t{profile.blocks.layers} * 128) +
+                   (static_cast<std::size_t>(rows) * 16)));
 }
 
 std::expected<ggml_type, KernelFailure> GgmlTypeOf(std::string_view name) {
@@ -2074,6 +2179,51 @@ std::expected<DsparkGraph, KernelFailure> BuildDsparkGraph(TensorArena& arena,
     return std::unexpected(weights.error());
   }
   builder.BuildDraft(d);
+  return d;
+}
+
+std::expected<DsparkWaveGraph, KernelFailure> BuildDsparkWaveGraph(
+    TensorArena& arena, const model::DsparkProfile& profile, const model::DsparkBinding& binding,
+    std::int64_t rows, std::size_t slots, std::int64_t ring, const Dsv4GraphOptions& options) {
+  const model::Dsv4Profile& p = profile.blocks;
+  if (rows <= 0 || std::cmp_greater(rows, profile.block_size) ||
+      std::cmp_not_equal(ring, profile.ring) || ring % 256 != 0 ||
+      binding.blocks.layers.size() != p.layers || p.hc != 4 || p.heads % p.o_groups != 0 ||
+      !options.features.empty() || options.inject || options.row_invariant) {
+    return Rejected("not a DSpark draft block this drafter runs");
+  }
+  if (slots < 2 || slots > kDsv4WaveSlots || !options.fused ||
+      rows * static_cast<std::int64_t>(slots) > kDsv4WaveRows) {
+    return Rejected(
+        "a joined draft takes two blocks or more of the fast plan, within a wave's rows");
+  }
+  if (auto room = arena.Reserve(DsparkWaveGraphTensors(profile, rows, slots)); !room) {
+    return std::unexpected(room.error());
+  }
+  // Each slot's blocks read its whole ring, window only, as its own block.
+  const Dsv4ChunkShape shape{.rows = rows, .raw_n_kv = ring, .raw_cells = ring};
+  DsparkWaveGraph d;
+  d.slots.resize(slots);
+  std::vector<Segment> segments(slots);
+  for (std::size_t i = 0; i < slots; ++i) {
+    const std::int64_t first = rows * static_cast<std::int64_t>(i);
+    segments[i] = {.g = &d.slots[i], .s = &shape, .first = first, .inject_rows = 0};
+    d.first.push_back(first);
+  }
+  const Dsv4ChunkShape joined{
+      .rows = rows * static_cast<std::int64_t>(slots), .raw_n_kv = ring, .raw_cells = ring};
+  Builder builder(arena.context(), p, binding.blocks, joined, d.joined, options, false, segments);
+  builder.SetLanes(&d.lanes);
+  if (auto inputs = builder.DraftWaveInputs(d, binding); !inputs) {
+    return std::unexpected(inputs.error());
+  }
+  if (auto weights = builder.Weights(); !weights) {
+    return std::unexpected(weights.error());
+  }
+  if (!builder.AllFused()) {
+    return Rejected("a joined draft needs every block in the fast plan's fused form");
+  }
+  builder.BuildDraftWave(d);
   return d;
 }
 

@@ -26,6 +26,7 @@
 #include <expected>
 #include <format>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -620,6 +621,78 @@ TEST(DsparkTest, TheDraftBlocksGraphChainsTheMarkovHeadOnArgmax) {
   EXPECT_FALSE(kg::BuildDsparkGraph(*again, d, *dbinding, 3, 512, {}).has_value());
   EXPECT_FALSE(
       kg::BuildDsparkGraph(*again, d, *dbinding, 3, 256, {.row_invariant = true}).has_value());
+}
+
+// Several requests' draft blocks as one graph (a DSpark wave's): the
+// vector products joined (as many as one block has, each weight read once
+// for every slot's rows), each slot's attention over its own ring, its
+// Markov head and its drafts its own, those on concurrent lanes.
+TEST(DsparkTest, AJoinedDraftJoinsTheProductsAndKeepsEachSlotsBlock) {
+  const md::Dsv4Profile target_profile = WindowOnlyTarget();
+  const std::vector<md::Dsv4Resource> target_resources = Target(target_profile);
+  auto target = md::BindDsv4(target_profile, "deepseek4", target_resources);
+  ASSERT_TRUE(target.has_value());
+  const md::DsparkProfile& d = md::DsparkDeepSeekV4Flash();
+  const std::vector<md::Dsv4Resource> drafter = Drafter();
+  auto dbinding = md::BindDspark(d, "dflash", drafter, target_profile, *target);
+  ASSERT_TRUE(dbinding.has_value());
+  const kg::Dsv4GraphOptions fused{.fused = true};
+  auto one_arena = kg::TensorArena::Create(kg::DsparkGraphTensors(d, 3));
+  ASSERT_TRUE(one_arena.has_value());
+  auto one = kg::BuildDsparkGraph(*one_arena, d, *dbinding, 3, 256, fused);
+  ASSERT_TRUE(one.has_value()) << Why(one);
+  auto arena = kg::TensorArena::Create(kg::DsparkWaveGraphTensors(d, 3, 4));
+  ASSERT_TRUE(arena.has_value());
+  auto joined = kg::BuildDsparkWaveGraph(*arena, d, *dbinding, 3, 4, 256, fused);
+  ASSERT_TRUE(joined.has_value()) << Why(joined);
+  ASSERT_EQ(joined->slots.size(), 4U);
+  EXPECT_EQ(joined->first, (std::vector<std::int64_t>{0, 3, 6, 9}));
+  EXPECT_EQ(joined->joined.embd->ne[1], 12);
+  EXPECT_EQ(joined->tokens->ne[0], 12);
+  EXPECT_EQ(joined->joined.logits->ne[1], 12);
+  EXPECT_EQ(joined->inputs().size(), 3U + (4U * 2U));
+  ASSERT_EQ(joined->drafts.size(), 4U);
+  for (const ggml_tensor* drafts : joined->drafts) {
+    EXPECT_EQ(drafts->type, GGML_TYPE_I32);
+    EXPECT_EQ(drafts->ne[0], 3);
+  }
+  for (const kg::Dsv4Graph& slot : joined->slots) {
+    ASSERT_EQ(slot.layers.size(), d.blocks.layers);
+    EXPECT_EQ(slot.layers[0].raw_k->ne[1], 256);  // its own ring
+    EXPECT_EQ(slot.raw_mask->ne[1], 3);
+  }
+  const auto argmaxes = [](std::span<ggml_tensor* const> nodes) {
+    return std::ranges::count_if(
+        nodes, [](const ggml_tensor* n) { return kg::JitllmOpOf(n) == kg::JitllmOp::kArgmax; });
+  };
+  EXPECT_EQ(argmaxes(one->core.nodes), 3);
+  EXPECT_EQ(argmaxes(joined->joined.nodes), 4 * 3);
+  EXPECT_FALSE(joined->lanes.empty());
+  BindAll(*one, one->core.nodes);
+  BindAll(*joined, joined->joined.nodes);
+  auto one_plan = kg::PlanGraph(one->core.nodes, false, ModelDevice(false));
+  ASSERT_TRUE(one_plan.has_value()) << Why(one_plan);
+  auto plan = kg::PlanGraph(joined->joined.nodes, false, ModelDevice(false));
+  ASSERT_TRUE(plan.has_value()) << Why(plan);
+  const auto count = [](const kg::GraphPlan& p, std::string_view name) {
+    return std::ranges::count_if(p.steps,
+                                 [&](const kg::PlanStep& s) { return s.implementation == name; });
+  };
+  EXPECT_GT(count(*one_plan, kg::kVecQName), 0);
+  EXPECT_EQ(count(*plan, kg::kVecQName), count(*one_plan, kg::kVecQName));
+  std::size_t attention = 0;
+  for (const auto& step : plan->steps) {
+    attention += step.operation == jitllm::execution::Operation::kFlashAttn ? 1 : 0;
+  }
+  EXPECT_EQ(attention, 4U * d.blocks.layers);
+  // Refusals: one block, six of three rows (18, past a wave's 16), a block
+  // past the drafter's, the reference form.
+  auto again = kg::TensorArena::Create(kg::DsparkWaveGraphTensors(d, 6, 6));
+  ASSERT_TRUE(again.has_value());
+  EXPECT_FALSE(kg::BuildDsparkWaveGraph(*again, d, *dbinding, 3, 1, 256, fused).has_value());
+  EXPECT_FALSE(kg::BuildDsparkWaveGraph(*again, d, *dbinding, 3, 6, 256, fused).has_value());
+  EXPECT_FALSE(kg::BuildDsparkWaveGraph(*again, d, *dbinding, 6, 3, 256, fused).has_value());
+  EXPECT_FALSE(kg::BuildDsparkWaveGraph(*again, d, *dbinding, 3, 4, 256, {}).has_value());
 }
 
 }  // namespace

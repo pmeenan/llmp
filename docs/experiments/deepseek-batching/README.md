@@ -33,7 +33,9 @@ DSpark reply at C4 may differ from C1 unless `wave_form = "speculative"`.
   - **Verify rows.** `jitllm.vecq` gives each token the same arithmetic at
     any count from 2 to 16, so it now takes 16 tokens. GGML's float vector
     kernel is count-invariant only to 8 columns, so past 8 rows a wave
-    runs the router, indexer-weight and head-mix products per slot.
+    runs the router, indexer-weight and head-mix products per slot (since
+    [joined drafts](#joined-draft-blocks), per group of whole slots within
+    8 rows).
   - **One-row steps.** A wave of these sets `SetVecQOneToken`, which gives
     each token the one-token launch. Weights are read again from cache for
     each token.
@@ -619,10 +621,11 @@ With a drafter, the runtime now chooses each wave's form per width
 from counted tokens and a recorded cost, never from wall time:
 - **Cost.** For each width, a DSpark wave's time in plain decode waves:
   first 1.94, 2.21 and 2.90 at widths 2, 3 and 4 (151/78, 197/89,
-  249/86 ms above), now 2.18, 2.68 and 2.99 with
-  [wave lanes](#wave-lanes); widths 5 to 8, added with more request
-  slots ([request slots](../request-slots/README.md#deepseeks-wave-form-past-four-requests)),
-  2.58, 2.12, 2.21 and 2.23 with lanes. They are recorded per model
+  249/86 ms above), 2.18, 2.68 and 2.99 with [wave lanes](#wave-lanes);
+  widths 5 to 8, added with more request slots
+  ([request slots](../request-slots/README.md#deepseeks-wave-form-past-four-requests)),
+  2.58, 2.12, 2.21 and 2.23 with lanes; 2.08, 2.52, 2.81 and 2.40 at
+  widths 2 to 5 with [joined drafts](#joined-draft-blocks). They are recorded per model
   (`kWaveCost` in `serving.cc`, a calibrated value under D-103) and are
   measured again when the wave step changes.
 - **Acceptance.** One moving average (weight 1/8) over the service's
@@ -772,7 +775,8 @@ HTTP C4 cells, same session (`h23s`, `h23`), fresh service per cell:
   (and `dss6`'s) byte for byte.
 
 Joining the draft blocks (one graph over every slot's draft rows, the
-drafter's weights read once) is the next cut at the DSpark wave's cost.
+drafter's weights read once) is the next cut at the DSpark wave's cost
+([below](#joined-draft-blocks)).
 
 In every engine of this session, the 7K cells' second first token came
 at 18.8–22.2 s, against 14.7–17.2 s in `h22`; only the second moved. The
@@ -813,6 +817,85 @@ first costs against the recalibrated ones (`h25s-comm`, `h25s-orig`):
 
 The recalibrated costs are level or better, so they stay.
 
+### Joined draft blocks
+
+Profiled (`nsys`, community, four slots, lanes on; `jd/w4v`), a
+four-request DSpark wave is four draft blocks of 8.3 ms each, one after
+another, and a 213 ms joined verify. The verify's routed experts (16 rows,
+96 token-expert pairs) are most of that. So joining the draft blocks could
+cut at most the blocks' shared reads, about 13% of the wave.
+
+A DSpark wave now drafts every slot's block in one graph
+(`BuildDsparkWaveGraph`, `kernels/ggml/dsv4_graph.h`; `PlanDsparkWave`;
+the runner's `DraftWavePlans`), when the blocks' rows fit a wave's 16
+(three-row blocks: up to five requests; past five each block runs alone):
+- **Row-local work joined.** Every product reads its weight once for all
+  slots' rows: the blocks' projections, routed and shared experts and the
+  target's vocabulary head. `jitllm.vecq` gives each row the same sums at
+  any count of two or more.
+- **Per slot.** Each slot's attention runs over its own ring under its
+  own window mask, as its own block's. Its Markov head chain and argmax
+  run over its own rows. Both are on a lane of their own.
+- **Float products.** Past GGML's eight column-invariant columns, a float
+  product (router, hyper-connection head) now runs over groups of whole
+  slots that fit eight columns instead of one slot at a time. This holds
+  for verify waves too (two products of eight rows at four slots, not
+  four of four).
+- **Staging.** The joined inputs are staged where the per-slot blocks'
+  are, below the verify's. A wave whose blocks do not fit, or a lone
+  request, keeps its own block. `Dsv4Options::joined_drafts` (spec
+  runner `--joined-drafts on|off`) turns joining off.
+
+Each slot's drafts and verify rows equal its own block's and verify's.
+Wave checks (96 tokens) show this at widths 2 to 5, community, and at 4,
+original: 0 mismatches, 0 stale bytes after a discarded verify, and
+alternating forms 82 of 82 (original 84 of 84) rows. At 8 slots, where
+the blocks run alone, too; plain decode waves at 2 to 5 slots stay
+identical (`jd4`, on main's request slots and lanes). A new unit test
+(`DsparkTest.AJoinedDraftJoinsTheProductsAndKeepsEachSlotsBlock`) checks
+the graph: as many vector products as one block, and each slot's
+attention, Markov head and drafts.
+
+Median draft-verify wave, same harness (`jd2`, `jd3`):
+
+| Width | Separate blocks: ms | Joined: ms | Joined, float products grouped: ms |
+| ---: | ---: | ---: | ---: |
+| 2 (community) | 131.6 | 128.4 | 128.6 |
+| 3 (community) | 190.7 | 183.5 | 179.8 |
+| 4 (community) | 248.5 | 235.2 | 232.2 (−6.6%) |
+| 4 (original) | 253.3 | 244.2 | 243.8 (−3.8%) |
+
+Rebased on main's request slots (`jd4`, one session): four slots
+joined against separate blocks 231.2 against 240.9 ms (−4.0%), and five
+slots (fifteen rows joined) 229.0 against 246.9 ms in `s9c` (−7.3%).
+The costs above are measured again with that build: 2.08, 2.52, 2.81 and
+2.40 at widths 2 to 5 (127.5 / 61.3, 180.0 / 71.5, 231.2 / 82.3,
+229.0 / 95.6 ms); widths 6 to 8 keep the lanes' 2.12, 2.21 and 2.23.
+Width 5's lower cost (a verify of three rows a request there) lets it
+speculate while narrower waves keep more than 2.47 tokens a request
+(2.66 before).
+
+Through the runtime, same session, main (`bin/s9`, lanes and the
+first costs) against this build with the chosen form, fresh service per
+cell:
+
+| Cell, tok/s | Main | Joined drafts |
+| --- | ---: | ---: |
+| Community 124-token C4 | 43.98 | 43.45 |
+| Original 124-token C4 | 41.01 | 42.05 |
+| Community 7K C4 | 19.20 | 19.39 |
+
+All within this study's noise. At four requests the chosen form runs
+mostly plain waves (a DSpark wave there must keep 2.73 tokens a
+request), so a cheaper DSpark wave changes little end to end. A same-
+session width-5 DSpark wave takes 242.8 ms with joined drafts off and
+230.3 ms on (−5.2%), but a C5 HTTP cell (five 124-token prompts,
+community, four cells each) is level with main within noise: 39.99
+against 40.36 tok/s, and the lower width-5 cost changes nothing (40.03
+with the old 2.58). The gain shows only where DSpark waves are forced
+or acceptance runs higher than in these cells.
+The 7K first tokens keep the fixed order (7.3 / 15.0 / 23.1 / 31.5 s).
+
 Records: `spark:~/scratch/dss5/` (`v2`, `v3`, `h1`–`h6`, `q1`, `bin/`,
 profile `v3/wave4.sqlite`; the adopted scheduling `h10`, `h10s`, `q2` and
 profile `short4.sqlite`; the community drafter `dr`, `h9`, `h9s`; the
@@ -822,7 +905,10 @@ behind the costs; the chosen form `h20s`, `h21s`, `h20`, binaries
 `bin/det8`; wave lanes `ln2` (harness, with per-width medians), `h23s`,
 `h23`, binaries `bin/ln-b`, `bin/ln-a0` and `bin/ln-a1`; the review's
 fixes `s8w`, `h26`, `h25s-comm`, `h25s-orig`, binary `bin/s8`; on
-request slots `s9w`, `s9c`, `h27`, binary `bin/s9`), controller
+request slots `s9w`, `s9c`, `h27`, binary `bin/s9`; joined drafts
+`jd/w4v` profile, `jd2`, `jd3`, `h24s`, `h24`; rebased `jd4`, `h28s`,
+`h28s5` (failed: the short workload has four prompts), `h28`, binary
+`bin/jdn`; the review's C5 cells `spark:~/scratch/rvjd/`), controller
 `runx.py` over `dss0/tools/run.py`, 2026-10-03.
 
 ## Plan memory
@@ -974,9 +1060,11 @@ cleared as idle; once idle slot 0 is cleared, slot 1 grows and runs.
   four-request step). Batched kernels would cut what lanes leave.
 - **DSpark at four requests through the runtime.** Mostly closed by
   [choosing the form per wave](#adaptive-dspark-and-plain-waves): 1–4%
-  under plain waves at C4, against 5–12% before. A joined draft block (one launch for
-  every slot's draft) would cut the DSpark wave's cost at its source.
-- **Joined DSpark draft blocks.** Open. A wave runs one draft per slot.
+  under plain waves at C4, against 5–12% before. [Joined draft
+  blocks](#joined-draft-blocks) cut the DSpark wave's own cost; its
+  verify's routed experts remain most of it.
+- **Joined DSpark draft blocks.** Done ([above](#joined-draft-blocks)):
+  4–7% off a four-request DSpark wave.
 - **Literal completions (`/v1/completions`).** Open. They remain serial.
 
 ## Provenance

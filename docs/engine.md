@@ -146,9 +146,10 @@ head) run once over every slot's rows, while each slot's compressors, indexer,
 attention, cache writes and DSpark injection run on its own state. A wave holds
 at most 16 rows and keeps each request's rows bit-identical to its steps alone:
 `jitllm.vecq` is count-invariant from 2 to 16 tokens, float products past GGML's
-8-column vector kernel run per slot, so do GGML's products of quantized
+8-column vector kernel run over groups of whole slots that fit its eight
+columns, GGML's products of quantized
 weights `jitllm.vecq` has no kernel for (the dense products, quantized HC
-mixes and the attention output's grouped product), a wave of one-row steps takes the vector
+mixes and the attention output's grouped product) run per slot, a wave of one-row steps takes the vector
 product's one-token configuration (`SetVecQOneToken`: each token's sums its
 step's; dense products four tokens a pass), and the drafter's injection
 (GGML MMVQ) runs per slot. A wave needs every layer in the fused form

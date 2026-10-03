@@ -172,6 +172,17 @@ std::expected<std::unique_ptr<DsparkPlanned>, std::string> PlanDsparkDraft(
     const DsparkModel& d, std::int64_t rows, const kernels::ggml::DeviceChoices& choices,
     std::uint64_t activations, std::uint64_t activation_bytes);
 
+// Several requests' draft blocks as one graph (dsv4_graph.h
+// BuildDsparkWaveGraph): `d`'s weights, each slot's ring at `rings` (in
+// wave order), `rows` rows a block; with `lanes`, each slot's attention and
+// Markov head on a concurrent lane. As PlanDsparkDraft; refused for the
+// reference mode.
+using DsparkWavePlanned = PlannedGraph<kernels::ggml::DsparkWaveGraph>;
+std::expected<std::unique_ptr<DsparkWavePlanned>, std::string> PlanDsparkWave(
+    const DsparkModel& d, std::span<const std::uint64_t> rings, std::int64_t rows,
+    const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
+    std::uint64_t activation_bytes, bool lanes);
+
 // A chunk's host-built inputs, in the graph's copy order: each input
 // tensor and the bytes it takes (owned here, so they live as long as this).
 struct Dsv4HostInputs {
@@ -233,6 +244,22 @@ std::expected<void, std::string> BuildDsparkInputs(const Dsv4Model& m,
                                                    const model::DsparkBlockInputs& in,
                                                    std::span<const std::byte> table,
                                                    Dsv4HostInputs& out);
+
+// A joined draft's host-built inputs (DsparkWaveGraph::inputs' order).
+struct DsparkWaveHostInputs {
+  std::vector<float> embd;
+  std::vector<std::int32_t> tokens;
+  std::vector<std::int32_t> positions;
+  std::vector<std::pair<ggml_tensor*, const void*>> sources;
+};
+
+// Its blocks' inputs (each slot's DsparkBlock, in wave order; they and what
+// they hold must outlive `out`'s use): the joined rows' embedding rows from
+// the target's table, tokens and positions, and each slot's cells and mask.
+std::expected<void, std::string> BuildDsparkWaveInputs(
+    const Dsv4Model& m, const kernels::ggml::DsparkWaveGraph& g,
+    std::span<const model::DsparkBlockInputs* const> blocks, std::span<const std::byte> table,
+    DsparkWaveHostInputs& out);
 
 // The row's greedy token: its largest logit's index, the lowest among
 // equals (as the harnesses and llama.cpp's greedy sampler choose).

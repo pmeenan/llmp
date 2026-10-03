@@ -154,6 +154,9 @@ struct Dsv4Options {
   std::uint32_t wave_slots = 1;
   // A wave's slots on concurrent lanes (Dsv4Model::wave_lanes).
   bool wave_lanes = true;
+  // A DSpark wave's draft blocks as one graph (PlanDsparkWave), each slot's
+  // drafts its own block's bit for bit; off, a block a slot.
+  bool joined_drafts = true;
 };
 
 // The prefill arithmetic jitllm-runtime serves DeepSeek with: the
@@ -660,6 +663,14 @@ class Dsv4Runner final : public PagedModel {
     bool operator==(const WaveKey&) const = default;
   };
   using WavePlans = PlanCache<WaveKey, Dsv4WavePlanned>;
+  // A joined draft's key: its slots' indices in wave order (the rings it
+  // binds); every block has the draft's rows.
+  struct DraftWaveKey {
+    std::uint32_t count = 0;
+    std::array<std::uint32_t, kRequestSlots> slots{};
+    bool operator==(const DraftWaveKey&) const = default;
+  };
+  using DraftWavePlans = PlanCache<DraftWaveKey, DsparkWavePlanned>;
 
   // `part`'s places (paged_weights.h): its dense groups, a slab per layer
   // (`experts` each; the strides in `stride`), and with `table` the token
@@ -678,6 +689,15 @@ class Dsv4Runner final : public PagedModel {
                                                          std::uint32_t first = 0);
   std::expected<DraftPlans::Entry*, std::string> PlannedDraft(RequestState& request);
   std::expected<WavePlans::Entry*, std::string> PlannedWave(const WaveKey& key);
+  std::expected<DraftWavePlans::Entry*, std::string> PlannedDraftWave(const DraftWaveKey& key);
+  // Whether a DSpark wave of `count` slots drafts as one graph. One-row
+  // blocks never join: a lone one-row block takes jitllm.vecq's one-token
+  // launch, whose sums the joined multi-token launch does not reproduce.
+  bool JoinedDrafts(std::size_t count) const {
+    return joined_drafts_ && o_.draft_rows >= 2 && count >= 2 &&
+           count <= kernels::ggml::kDsv4WaveSlots &&
+           std::cmp_less_equal(count * o_.draft_rows, kernels::ggml::kDsv4WaveRows);
+  }
   void Check(const kernels::ggml::Dsv4Graph& graph);
   void CheckWave(const kernels::ggml::Dsv4WaveGraph& graph);
   // After a failed job (LiveState::Settle), with the launch context's
@@ -695,9 +715,10 @@ class Dsv4Runner final : public PagedModel {
   Status PlanSnapshot(RequestState& request, const model::Dsv4ChunkInputs& in);
   Status RefreshClosures() { return RefreshClosures(cohort_.active()); }
   Status RefreshClosures(SlotMask protected_mask);
-  // Every plan cache: each slot's chunk and draft plans, and the waves'.
-  std::array<PlanCacheBase*, (2 * kRequestSlots) + 1> PlanCaches();
-  std::array<const PlanCacheBase*, (2 * kRequestSlots) + 1> PlanCaches() const;
+  // Every plan cache: each slot's chunk and draft plans, the waves' and the
+  // joined drafts'.
+  std::array<PlanCacheBase*, (2 * kRequestSlots) + 2> PlanCaches();
+  std::array<const PlanCacheBase*, (2 * kRequestSlots) + 2> PlanCaches() const;
   // After a plan was dropped: DumpLast's plan may have gone with it.
   void ForgetLastPlanned();
   // Where a slot's draft block's inputs are staged (fixed per slot: its
@@ -827,6 +848,10 @@ class Dsv4Runner final : public PagedModel {
   catalog::Closure draft_closure_;
 
   WavePlans waves_;
+  DraftWavePlans dwaves_;  // joined drafts (JoinedDrafts)
+  // Joined drafts measured at Setup and their inputs staged below the
+  // verify's (Dsv4Options::joined_drafts, if they fit).
+  bool joined_drafts_ = false;
   // What the plans and graphs hold, charged to the node (Bind).
   PlanAccount account_;
   std::vector<std::string> dump_;              // set_dump

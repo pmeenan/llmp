@@ -417,6 +417,49 @@ std::expected<DsparkGraph, KernelFailure> BuildDsparkGraph(TensorArena& arena,
                                                            std::int64_t rows, std::int64_t ring,
                                                            const Dsv4GraphOptions& options);
 
+// Several requests' draft blocks as one graph (a DSpark wave's drafts): the
+// blocks' rows joined, in wave order, through every row-local operation
+// (the products read each weight once for every slot's rows), and each
+// slot's attention over its own ring and its Markov head over its own rows,
+// as BuildDsv4WaveGraph joins a wave's verifies. Each slot's drafts equal
+// its own draft block's (BuildDsparkGraph) bit for bit: jitllm.vecq gives
+// each row the same sums at any count of two or more, a float product past
+// GGML's column-invariant count runs over groups of whole slots that fit
+// its eight columns, and the rest is per row or per slot.
+struct DsparkWaveGraph {
+  // The joined rows: embd and positions every slot's; the weights, the
+  // head and its logits; no state.
+  Dsv4Graph joined;
+  // Each slot's cells (raw_k_idxs), window mask (raw_mask) and ring (its
+  // layers' raw_k).
+  std::vector<Dsv4Graph> slots;
+  ggml_tensor* tokens = nullptr;  // I32 [rows]: every slot's block (each anchor first)
+  ggml_tensor* markov_w1 = nullptr;
+  ggml_tensor* markov_w2 = nullptr;
+  std::vector<ggml_tensor*> drafts;  // each slot's I32 [its rows]
+  std::vector<std::int64_t> first;   // each slot's first row in the joined rows
+  // Each slot's attention and Markov head on a concurrent lane (graph_plan.h
+  // AssignLanes), as Dsv4WaveGraph::lanes.
+  LaneTags lanes;
+
+  // The host-built inputs, in the order they are copied: the joined ones,
+  // then each slot's.
+  std::vector<ggml_tensor*> inputs() const;
+};
+
+// How many tensors a joined draft of `slots` blocks creates at most.
+std::size_t DsparkWaveGraphTensors(const model::DsparkProfile& profile, std::int64_t rows,
+                                   std::size_t slots);
+
+// Builds `slots` draft blocks of `rows` rows each over rings of `ring`
+// cells. Refused as BuildDsparkGraph refuses, for fewer than two slots or
+// more than kDsv4WaveSlots, past kDsv4WaveRows rows in all, or if a block
+// layer is not in the fast plan's fused form (whose products are the
+// column-invariant ones).
+std::expected<DsparkWaveGraph, KernelFailure> BuildDsparkWaveGraph(
+    TensorArena& arena, const model::DsparkProfile& profile, const model::DsparkBinding& binding,
+    std::int64_t rows, std::size_t slots, std::int64_t ring, const Dsv4GraphOptions& options);
+
 // The GGML type of a type name, if GGML has one.
 std::expected<ggml_type, KernelFailure> GgmlTypeOf(std::string_view name);
 

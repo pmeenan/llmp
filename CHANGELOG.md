@@ -227,6 +227,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   plain waves complete 4.7–4.8% more tokens a second, and with DSpark
   4.6–5.1%, whose wave-form costs were measured again (at 7K, where
   prefill dominates, the gains are within noise).
+- A DeepSeek DSpark wave now drafts every request's block in one graph,
+  reading the drafter's and the head's weights once for all of them, with
+  each request's drafts unchanged bit for bit: a DSpark wave of four or
+  five requests takes 4–5% less time (same session). End to end at four
+  and five requests the rate is unchanged within noise, since the chosen
+  form mostly runs plain waves there.
 - With its DSpark drafter, DeepSeek now chooses per wave of concurrent
   requests between draft-verify waves and plain decode waves: the tokens
   draft-verify waves accept against a cost measured for each wave width.

@@ -3173,6 +3173,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--wave-lanes") {
       o.dsv4.wave_lanes = v == "on";
       ok = v == "on" || v == "off";
+    } else if (a == "--joined-drafts") {
+      o.dsv4.joined_drafts = v == "on";
+      ok = v == "on" || v == "off";
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -3196,7 +3199,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "--fp16-tokens FILE "
         "--fp16-expect SHA256] [--seeds N] [--sampled FILE] [--probe-step N] "
         "[--slots N (wave, plan-memory, capacity: 2-16)] [--wave-mode verify|decode|alternate] "
-        "[--wave-lanes on|off] "
+        "[--wave-lanes on|off] [--joined-drafts on|off] "
         "[--state-budget-mib N]");
   }
   // The paired control needs the all-row workspace for its original arm.
