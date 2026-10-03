@@ -283,6 +283,13 @@ target_link_libraries(chat_test PRIVATE jitllm_chat jitllm_json jitllm_base)
 jitllm_gtest(chat_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 
+# Python's str case operations (chat/pycase.h) against Python 3.12 over
+# every code point, and against Jinja2's title filter.
+add_executable(pycase_test pycase_test.cc)
+target_link_libraries(pycase_test PRIVATE jitllm_chat jitllm_json jitllm_tokenizer jitllm_base)
+jitllm_gtest(pycase_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+
 # The Jinja-subset interpreter: snippets against transformers' text,
 # provenance, and its bounds under hostile templates.
 add_executable(jinja_test jinja_test.cc)

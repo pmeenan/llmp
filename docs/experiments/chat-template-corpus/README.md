@@ -22,6 +22,18 @@ templates ([tokenizer.md](../../tokenizer.md#the-template-interpreter)).
 - `random_conversations.py SEED COUNT` writes random conversations in the
   same form, for `collect.py render` and `chat_corpus_test` pointed at
   them (its docstring says how).
+- `gemma_fixtures.py` writes the Gemma renderers' fixtures
+  (`tests/unit/data/chat/gemma-4.json`, `gemma-4-e.json`,
+  `gemma-4-2604.json`, `gemma-3.json`; `chat_test`): its cases, the
+  independent review's among them, rendered by transformers on three
+  Google Gemma 4 templates (in `tests/unit/data/chat/templates`,
+  Apache-2.0, with Google's four earlier 31B ones that
+  `chat_template_test` checks the choice of renderer on) and Gemma 3's
+  (Gemma terms; the corpus copy).
+- `pycase_reference.py` writes `tests/unit/data/chat/pycase-reference.json`
+  (`pycase_test`): Python 3.12.3's upper, lower, title and capitalize of
+  every code point, islower and isupper as ranges, and 1,020 strings
+  through each operation and Jinja2 3.1.6's `title` filter.
 
 Template texts and their renderings stay outside the repository, in
 `~/.local/share/jitllm/chat-templates/` on `spark` and `spark-b`.
@@ -43,10 +55,29 @@ venv/bin/python collect.py render --out REVIEW/models/chat-templates \
     --conversations REVIEW/data/chat/corpus-conversations.json
 ```
 
+The Gemma entries (all but the three first Gemma rows below) were added
+the same evening, merged into the manifest without refetching the rest:
+
+```sh
+venv/bin/python collect.py fetch --out ~/.local/share/jitllm/chat-templates --only gemma-4-e4b-it \
+    gemma-4-26b-a4b-it-fp8 gemma-4-31b-it-nvfp4 gemma-4-31b-it-unsloth-gguf gemma-4-e4b-it-unsloth-gguf \
+    gemma-4-e4b-it-lmstudio-gguf gemma-3-1b-it-gguf gemma-3n-e4b-it gemma-3-270m-it
+venv/bin/python collect.py render ...   # both conversation sets, as above
+venv/bin/python gemma_fixtures.py --gemma4 tests/unit/data/chat/templates/gemma-4.jinja \
+    --gemma4-e tests/unit/data/chat/templates/gemma-4-e.jinja \
+    --gemma4-2604 tests/unit/data/chat/templates/gemma-4-20260428.jinja \
+    --gemma3 ~/.local/share/jitllm/chat-templates/templates/gemma-3-4b-it.jinja --out tests/unit/data/chat
+```
+
+Google's own Gemma 3 repositories are gated (no anonymous download); the
+GGUFs converted from them (`ggml-org`, `bartowski`, `lmstudio-community`,
+`MaziyarPanahi`) all embed Unsloth's copy's template, `7de1c58e…`.
+
 The tests ran on `spark` (spark-c4e2), `spark-native` RelWithDebInfo, SDK
 `aarch64-e0a0c85c42806fb1`; the review's sanitizer runs in a build of the
 same configure with `JITLLM_SANITIZE="address;undefined"` and
-`JITLLM_CUDA=OFF`.
+`JITLLM_CUDA=OFF`. The Gemma additions' tests ran on `spark-b`, the same
+build configuration.
 
 ## Corpus
 
@@ -62,8 +93,17 @@ same configure with `JITLLM_SANITIZE="address;undefined"` and
 | qwen3-8b | Qwen/Qwen3-8B (b968826d) | `a55ee1b1…` | interpreter |
 | qwen2.5-7b-instruct | Qwen/Qwen2.5-7B-Instruct (a09a3545) | `cd8e9439…` | interpreter |
 | qwen3-coder-30b-a3b | Qwen/Qwen3-Coder-30B-A3B-Instruct (b2cff646) | `5a38bfa0…` | interpreter |
-| gemma-4-26b-a4b-it, gemma-4-31b-it | google/gemma-4-26B-A4B-it (4d7ae498), google/gemma-4-31B-it (842da379) | `ae53464b…` | interpreter |
-| gemma-3-4b-it | unsloth/gemma-3-4b-it (bf46152c) | `7de1c58e…` | interpreter |
+| gemma-4-26b-a4b-it, gemma-4-31b-it | google/gemma-4-26B-A4B-it (4d7ae498), google/gemma-4-31B-it (842da379) | `ae53464b…` | native, hash |
+| gemma-3-4b-it | unsloth/gemma-3-4b-it (bf46152c) | `7de1c58e…` | native, hash |
+| gemma-4-e4b-it | google/gemma-4-E4B-it (ee0ef602; E2B's is the same) | `0a2c8073…` | native, hash (E2B/E4B) |
+| gemma-4-26b-a4b-it-fp8 | RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic (ed35d7ab): Google's without the final newline | `6a1015c4…` | native, probe |
+| gemma-4-e4b-it-lmstudio-gguf | lmstudio-community/gemma-4-E4B-it-GGUF (99210a71), Q4_K_M metadata: E4B's without the final newline | `603a42db…` | native, probe (E2B/E4B) |
+| gemma-4-31b-it-unsloth-gguf | unsloth/gemma-4-31B-it-GGUF (c1ac76e9), Q4_K_M metadata; also its 12B, 26B-A4B, QAT GGUFs and safetensors copies | `845f1ee4…` | native, probe (Unsloth variant) |
+| gemma-4-e4b-it-unsloth-gguf | unsloth/gemma-4-E4B-it-GGUF (bfc15c38), Q4_K_M metadata | `241c50d8…` | native, probe (E2B/E4B, Unsloth variant) |
+| gemma-4-31b-it-nvfp4 | nvidia/Gemma-4-31B-IT-NVFP4 (4135a98a): Google's template of 2026-04-28 (google/gemma-4-31B-it@145dc250); also NVIDIA's 26B-A4B | `94899c0f…` | native, probe (2026-04 variant) |
+| gemma-3-1b-it-gguf | ggml-org/gemma-3-1b-it-GGUF (f9c28bcd), Q4_K_M metadata | `7de1c58e…` | native, hash |
+| gemma-3n-e4b-it | unsloth/gemma-3n-E4B-it (45e9fb1d): Gemma 3's with audio and image parts | `ac03dcb3…` | native, probe |
+| gemma-3-270m-it | unsloth/gemma-3-270m-it (23cf460f) | `af95fbef…` | native, probe |
 | gpt-oss-120b | openai/gpt-oss-120b (b5c939de) | `a4c9919c…` | interpreter |
 | kimi-linear-48b-a3b | moonshotai/Kimi-Linear-48B-A3B-Instruct (e1df551a) | `75e3cd76…` | interpreter |
 | kimi-k2-instruct | moonshotai/Kimi-K2-Instruct (fd1984e2) | `39e8c195…` | interpreter |
@@ -84,6 +124,13 @@ same configure with `JITLLM_SANITIZE="address;undefined"` and
 The manifest records each file's full hash, its BOS and EOS texts and the
 repository's declared license.
 
+A survey of 50 popular Gemma repositories on 2026-10-02 found no other
+template in current use: Google's 12B, the QAT GGUFs and AWQ, MLX and
+other repacks carry `ae53464b…`, the E2B's `0a2c8073…`, Unsloth's
+Gemma 4 repositories its two variants. Google's earlier Gemma 4 templates
+(the release of 2026-04-02 and the revision of 2026-04-10, `2dfbfc7d…` and
+`85a08664…` for 31B) differ further and stay interpreted.
+
 ## Results
 
 - **Snippets:** 133 of 133 agree with transformers: 103 texts byte for
@@ -93,9 +140,9 @@ repository's declared license.
   steps, searches, strips, reversal, indents, `sum` of strings; case tests
   of any value, underscores in numbers, `%` with a mapping, a repeated
   keyword).
-- **Corpus:** 29 templates × 19 conversations; all 537 renderings equal
-  transformers' byte for byte, and every refusal (14 cases, the templates'
-  own raises in Gemma 3, Mistral, Llama 3.x, DeepSeek V3.1 and Qwen3.8) is
+- **Corpus:** 38 templates × 19 conversations; all 696 renderings equal
+  transformers' byte for byte, and every refusal (26 cases, the templates'
+  own raises in Gemma 3 and its variants, Mistral, Llama 3.x, DeepSeek V3.1 and Qwen3.8) is
   refused. That holds for the interpreter alone and for what
   `ChatTemplate` chooses (native or interpreted). Every template parses.
 - **Random conversations (review):** 200 conversations drawn at random
@@ -103,8 +150,9 @@ repository's declared license.
   from a pool of tags, control-token texts, Jinja syntax, Unicode and
   whitespace, reasoning, tool calls, tools and options), rendered by
   `collect.py render` and checked by `chat_corpus_test` pointed at them:
-  all 4,055 interpreted renderings equal transformers' and every refusal
-  is refused. The test's served-path check fails only where DeepSeek's
+  all 5,318 interpreted renderings (38 templates) equal transformers' and
+  every refusal is refused; so do all the Gemma templates' native
+  renderings. The test's served-path check fails only where DeepSeek's
   native renderers refuse a reasoning effort other than low, high and max
   that its templates render (unchanged native behaviour, after
   encoding_dsv4.py). In a scratch harness, the five native-family
@@ -112,17 +160,52 @@ repository's declared license.
   renderers and through the interpreter on 20,000 further random
   conversations each (efforts and `preserve_thinking` included) never
   render different texts.
-- **Choice:** the five pinned-hash templates render natively by hash, both
-  Unsloth Qwen3.8 GGUF templates natively by probe, and the other 22
-  through the interpreter.
-- **Pinned fixtures:** the interpreter, given each of the three pinned
-  templates, reproduces every case of its existing chat fixture, the
-  jitLLM-refused cases' `reference_text` included.
+- **Choice:** the ten pinned-hash templates render natively by hash; both
+  Unsloth Qwen3.8 GGUF templates and the seven Gemma variants (Unsloth's,
+  NVIDIA's 2026-04 one, the copies without a final newline, Gemma 3n's and
+  270m's) natively by probe; the other 19 through the interpreter.
+- **Gemma renderers against their templates:** `chat_corpus_test` renders
+  3,000 random conversations of its own (every role order, Gemma's
+  channel and turn markers in content, reasoning, tool calls with object,
+  null, string and list arguments and keys out of case order or
+  non-ASCII, and tool declarations through every branch of Gemma 4's
+  notation, malformed ones included) through each of the twelve Gemma
+  templates natively and interpreted: the same text (1,984 to 2,563 per
+  Gemma 4 template, 290 per Gemma 3 one) or both refuse, every one; none
+  is refused as unsupported (keys such as `Ünïcode` and `città` sort by
+  Python's full lower case in both).
+- **Pinned fixtures:** the interpreter, given each of the five pinned
+  templates in the tree (DeepSeek's two, Qwen3.8's, Gemma 4's two), and
+  Google's 2026-04-28 Gemma 4 template, reproduces every case of its chat
+  fixture, the jitLLM-refused cases' `reference_text` included.
+- **Review (2026-10-02):** the independent review's 28 conversations on
+  the twelve Gemma corpus templates and Google's 31B templates of
+  2026-04-02, 2026-04-10 and 2026-05-18, rendered by transformers: all
+  420 served renderings equal or both refuse. Its finding that the
+  2026-04-10 template passed for the 2026-04 variant (a system message
+  without content, schema-key properties, blank content beside tool
+  results) led to the variant probes; 2026-04-02 and 2026-04-10 are now
+  interpreted, 2026-05-18 rendered as the 2026-04 variant.
+  Its second round found ASCII-only case mapping served where a native
+  renderer deferred to the interpreter (`строка`, `ß`, keys sorting
+  differently once lower-cased in full): case mapping is now Python's in
+  full in both (`pycase_test` checks every code point against Python
+  3.12.3), and its five `fb-` cases are in the Gemma fixtures. On its
+  harness (now with the DeepSeek and Qwen corpus templates too) every
+  served rendering equals transformers' or both refuse, but for one
+  unchanged DeepSeek 0731 case: an empty conversation with tools, which
+  the native renderer renders and the template refuses (the chat route
+  never sends one: its last message must be the user's).
 - **Long conversation:** 3,001 messages, about 1 MiB of text: every
   template renders within the bounds; Gemma 4's (quadratic in messages)
   took 1.2 s, using 23 million of the 50 million steps and 0.48 GB of the
-  2 GiB of work; DeepSeek 0731's 0.6 s (13.8 million steps); the rest
-  0.01–0.12 s.
+  2 GiB of work (each Gemma 4 variant 1.16–1.20 s); DeepSeek 0731's 0.6 s
+  (13.8 million steps); the rest 0.01–0.12 s. The native Gemma renderers
+  are linear: 20,000 messages with tool rounds (over 1 MiB) render through
+  Gemma 4's and its 2026-04 variant, and 20,000 through Gemma 3's, in 8 ms
+  together (`chat_test`); on 1,000 messages the two Google Gemma 4
+  renderers equal their templates' interpreted text and control tokens
+  (`chat_template_test`).
 - **Hostile templates:** nested loops of 10^10 iterations, doubling
   strings, deep recursion and nesting, huge repetitions and ranges, one
   string held millions of times over and printed, compared or serialized,
@@ -140,14 +223,16 @@ repository's declared license.
 
 ## Limitations
 
-The corpus is 29 templates, chosen from the M3 and M3.5 families and
+The corpus is 38 templates, chosen from the M3 and M3.5 families and
 popular repacks; any template outside it is checked only by the snippet
 and fixture tests. Probe equivalence is evidence on the probe corpus, not a
 proof for every conversation. Renderings use jitLLM's message shape (no
 tool-call IDs, names or content parts), so templates that require those
 refuse such requests, as transformers does.
 
-Gemma 4's template is quadratic in messages: it used 23 million steps on
-the 3,001-message conversation, so (extrapolated, not measured) one of
-about 4,400 such messages reaches the 50,000,000-step bound and is
-refused.
+Gemma 4's templates are quadratic in messages: interpreted, Google's used
+23 million steps on the 3,001-message conversation, so (extrapolated, not
+measured) one of about 4,400 such messages reaches the 50,000,000-step
+bound and is refused (beyond the chat route's intake of 1,024 messages).
+It applies only to Gemma 4 templates no native renderer serves (Google's
+two earliest); the native renderers are linear.

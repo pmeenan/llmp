@@ -5,8 +5,8 @@
 // fixed set of filters, tests, methods and globals. Semantics follow Jinja2
 // 3.1 under transformers' ImmutableSandboxedEnvironment and Python's own
 // for the methods; docs/tokenizer.md records where the subset is narrower
-// (case mapping is ASCII-only, integers are 64-bit, some format and strftime
-// directives are refused).
+// (integers are 64-bit, some format and strftime directives are refused).
+// Case mapping is Python's in full (chat/pycase.h).
 
 #include <algorithm>
 #include <array>
@@ -30,6 +30,7 @@
 #include "base/json.h"
 #include "chat/jinja.h"
 #include "chat/jinja_internal.h"
+#include "chat/pycase.h"
 
 namespace jitllm::chat::jinja {
 namespace {
@@ -126,9 +127,23 @@ enum class Flow : std::uint8_t { kNormal, kBreak, kContinue };
 // about the time that copying does.
 constexpr std::uint64_t kValueWork = 128;
 
+// Case mapping and case tests (chat/pycase.h) cost more than copying: ASCII
+// maps at about 330 MB/s, other text, each code point looked up in the UCD
+// tables, at 40 to 80 MB/s (spark-b's GB10). Their bytes are charged that
+// much more, so that the work bound spent on them takes about as long as
+// on anything else (at most 3.3 s measured, docs/tokenizer.md).
+constexpr std::uint64_t kCaseWorkAscii = 2;
+constexpr std::uint64_t kCaseWorkOther = 16;
+
+std::uint64_t CaseWork(std::string_view text) {
+  std::uint64_t other = 0;
+  for (const char c : text) {
+    other += static_cast<unsigned char>(c) >= 0x80 ? 1 : 0;
+  }
+  return ((text.size() - other) * kCaseWorkAscii) + (other * kCaseWorkOther);
+}
+
 char AsciiLower(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
-char AsciiUpper(char c) { return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c; }
-bool AsciiLetter(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
 
 // Arguments of a filter, test, method or global call.
 struct Args {
@@ -2242,39 +2257,67 @@ class Renderer {
     return Take(out);
   }
 
-  // ASCII case mapping that keeps byte offsets, so provenance carries over.
-  std::expected<Value, Error> MapCase(const Value& v, std::string_view how) {
+  // Python's case mapping (chat/pycase.h); each code point's mapping keeps
+  // the provenance of the code point it maps.
+  std::expected<Value, Error> MapCase(const Value& v, CaseOp op) {
     const jinja::Str& s = v.str();
-    if (!arena_.Work(s.text.size())) {
+    if (!arena_.Work(CaseWork(s.text))) {
       return Bound();
     }
-    StrBuilder b;
-    b.Append(s);
-    std::string& text = b.raw().text;
-    const bool upper = how == "upper";
-    const bool lower = how == "lower";
-    const bool capitalize = how == "capitalize";
-    const bool title = how == "title";
-    bool word_start = true;
-    for (std::size_t i = 0; i < text.size(); ++i) {
-      char& c = text[i];
-      if (upper) {
-        c = AsciiUpper(c);
-      } else if (lower) {
-        c = AsciiLower(c);
-      } else if (capitalize) {
-        c = i == 0 ? AsciiUpper(c) : AsciiLower(c);
-      } else if (title) {
-        if (AsciiLetter(c)) {
-          c = word_start ? AsciiUpper(c) : AsciiLower(c);
-          word_start = false;
-        } else {
-          word_start = (static_cast<unsigned char>(c) & 0x80U) == 0;
+    class Sink final : public CaseSink {
+     public:
+      explicit Sink(const jinja::Str& s) : s_(s) {}
+      void Emit(std::size_t source_offset, std::size_t source_length,
+                std::string_view mapped) override {
+        // One code point, or an ASCII run mapped byte for byte: each output
+        // byte takes its source byte's provenance.
+        const bool bytewise = mapped.size() == source_length;
+        std::size_t at = 0;
+        while (at < mapped.size()) {
+          const std::size_t source = source_offset + (bytewise ? at : 0);
+          while (range_ < s_.trusted.size() &&
+                 s_.trusted[range_].offset + s_.trusted[range_].length <= source) {
+            ++range_;
+          }
+          const bool in = range_ < s_.trusted.size() && s_.trusted[range_].offset <= source;
+          std::size_t n = mapped.size() - at;  // the rest, unless a range edge comes first
+          if (bytewise && range_ < s_.trusted.size()) {
+            const Range& r = s_.trusted[range_];
+            n = std::min(n, (in ? r.offset + r.length : r.offset) - source);
+          }
+          b.Append(mapped.substr(at, n), in);
+          at += n;
         }
       }
+      StrBuilder b;
+
+     private:
+      const jinja::Str& s_;
+      std::size_t range_ = 0;
+    } sink(s);
+    MapPythonCase(s.text, op, sink);
+    // A mapping grows a code point at most threefold.
+    if (!arena_.Work(sink.b.size())) {
+      return Bound();
     }
-    b.set_markup(s.markup);
-    return Take(b);
+    if (sink.b.size() > arena_.limits().max_string_bytes) {
+      return Fail(Code::kLimit, "a string longer than its bound");
+    }
+    sink.b.set_markup(s.markup);
+    return Take(sink.b);
+  }
+
+  static CaseOp CaseOpNamed(std::string_view name, bool filter) {
+    if (name == "upper") {
+      return CaseOp::kUpper;
+    }
+    if (name == "lower") {
+      return CaseOp::kLower;
+    }
+    if (name == "capitalize") {
+      return CaseOp::kCapitalize;
+    }
+    return filter ? CaseOp::kJinjaTitle : CaseOp::kTitle;  // the filter's rule, or str.title
   }
 
   std::expected<Value, Error> Join(const std::vector<Value>& items, const Value* separator,
@@ -2315,7 +2358,7 @@ class Renderer {
         return Split(receiver, args, name == "rsplit");
       }
       if (name == "upper" || name == "lower" || name == "title" || name == "capitalize") {
-        return MapCase(receiver, name);
+        return MapCase(receiver, CaseOpNamed(name, false));
       }
       if (name == "startswith" || name == "endswith") {
         const Value* prefix = args.Get(0, "prefix");
@@ -2794,7 +2837,7 @@ class Renderer {
     if (case_sensitive || !v.is_string()) {
       return v;
     }
-    return MapCase(v, "lower");
+    return MapCase(v, CaseOp::kLower);
   }
 
   std::expected<Value, Error> Sorted(std::vector<Value> items, bool reverse, bool case_sensitive,
@@ -2954,7 +2997,7 @@ class Renderer {
       if (!s) {
         return s;
       }
-      return MapCase(*s, name);
+      return MapCase(*s, CaseOpNamed(name, true));
     }
     if (name == "replace") {
       auto s = need_string();
@@ -3620,20 +3663,10 @@ class Renderer {
         }
       }
       const std::string_view text = v.is_string() ? std::string_view(v.str().text) : b.text();
-      if (!arena_.Work(text.size())) {
+      if (!arena_.Work(CaseWork(text))) {
         return Bound();
       }
-      const bool lower = name == "lower";
-      bool cased = false;
-      for (const char c : text) {
-        if (AsciiLetter(c)) {
-          cased = true;
-          if (lower != (c >= 'a' && c <= 'z')) {
-            return false;
-          }
-        }
-      }
-      return cased;
+      return name == "lower" ? PythonIsLower(text) : PythonIsUpper(text);
     }
     if (name == "divisibleby" || name == "even" || name == "odd") {
       if (!v.is_integral()) {

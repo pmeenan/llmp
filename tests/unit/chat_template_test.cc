@@ -15,6 +15,7 @@
 #include <deque>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/json.h"
@@ -57,6 +58,31 @@ chat::TokenFacts QwenFacts() {
   return f;
 }
 
+chat::TokenFacts GemmaFacts() {
+  chat::TokenFacts f;
+  f.bos = "<bos>";
+  f.eos = "<eos>";
+  f.control = {"<pad>",
+               "<eos>",
+               "<bos>",
+               "<|tool>",
+               "<tool|>",
+               "<|tool_call>",
+               "<tool_call|>",
+               "<|tool_response>",
+               "<tool_response|>",
+               R"(<|"|>)",
+               "<|think|>",
+               "<|channel>",
+               "<channel|>",
+               "<|turn>",
+               "<turn|>",
+               "<|image|>",
+               "<start_of_turn>",
+               "<end_of_turn>"};
+  return f;
+}
+
 std::string Replace(std::string s, std::string_view from, std::string_view to,
                     bool required = true) {
   std::size_t at = 0;
@@ -91,7 +117,9 @@ std::vector<Pinned> PinnedTemplates() {
   return {
       {"deepseek-v4-0731", "deepseek-v4-0731", "deepseek-v4-flash-0731", DeepSeekFacts()},
       {"deepseek-v4-chat-v2", "deepseek-v4-chat-v2", "deepseek-v4-flash-chat-v2", DeepSeekFacts()},
-      {"qwen3.8", "qwen3.8", "qwen3.8-flash-next", QwenFacts()}};
+      {"qwen3.8", "qwen3.8", "qwen3.8-flash-next", QwenFacts()},
+      {"gemma-4", "gemma-4", "gemma-4", GemmaFacts()},
+      {"gemma-4-e", "gemma-4-e", "gemma-4-e", GemmaFacts()}};
 }
 
 TEST(ChatTemplates, PinnedTemplatesAreNativeByHash) {
@@ -126,6 +154,8 @@ TEST(ChatTemplates, ChangedTemplatesAreInterpreted) {
       {Replace(Template("deepseek-v4-0731"), "Reasoning Effort: Absolute maximum",
                "Reasoning Effort: Maximum"),
        DeepSeekFacts()},
+      {Replace(Template("gemma-4"), "<|tool_call>call:", "<|tool_call>call: "), GemmaFacts()},
+      {Replace(Template("gemma-4-e"), R"('<|think|>\n')", R"('<|think|>')"), GemmaFacts()},
   };
   for (std::size_t i = 0; i < changed.size(); ++i) {
     auto t = chat::ChatTemplate::ForText(changed[i].first, changed[i].second);
@@ -285,6 +315,196 @@ TEST(ChatTemplates, InterpreterRefusalsAreTyped) {
   EXPECT_EQ(Failed(looping->Render(c), &chat::Error::rule), chat::Rule::kUnsupported);
   EXPECT_FALSE(chat::ChatTemplate::ForText("{% extends 'base' %}", {}).has_value());
   EXPECT_FALSE(chat::ChatTemplate::ForText("{{ x | nosuchfilter }}", {}).has_value());
+}
+
+// Unsloth's edit of Gemma 4's template (its GGUFs and checkpoints): string
+// tool-call arguments render instead of raising. No hash pins it; probes
+// with unparsed arguments tell it from Google's.
+TEST(ChatTemplates, GemmaUnslothVariantIsNativeByProbe) {
+  constexpr std::string_view kRaise =
+      R"({%- else -%}
+                        {{- raise_exception(
+                            "chat_template: tool_calls[].function.arguments must be a "
+                            "JSON object (mapping), not a string. Deserialize arguments "
+                            "before passing to the template."
+                        ) -}})";
+  constexpr std::string_view kRender = R"({%- elif function['arguments'] is string -%}
+                        {%- set argstr = function['arguments'] | trim -%}
+                        {%- if argstr[:1] == '{' and argstr[-1:] == '}' -%}
+                            {{- argstr[1:-1] -}}
+                        {%- else -%}
+                            {{- function['arguments'] -}}
+                        {%- endif -%})";
+  for (const auto& [file, native] :
+       {std::pair{"gemma-4", "gemma-4-unsloth"}, std::pair{"gemma-4-e", "gemma-4-e-unsloth"}}) {
+    auto t = chat::ChatTemplate::ForText(Replace(Template(file), kRaise, kRender), GemmaFacts());
+    ASSERT_TRUE(t.has_value()) << t.error();
+    EXPECT_EQ(t->how(), chat::ChatTemplate::How::kNativeByProbe) << file;
+    EXPECT_EQ(t->name(), native) << file;
+    EXPECT_EQ(t->stop(), (std::vector<std::string>{"<turn|>", "<|tool_response>"})) << file;
+  }
+}
+
+// The native renderer equals the template's own rendering on a long
+// conversation of tool rounds, where the template's per-message rescans
+// cost it quadratic work.
+TEST(ChatTemplates, GemmaLongConversationsMatchTheTemplate) {
+  const auto args = json::Parse(R"({"city": "Oslo", "days": 3, "extra": [null, 1.5, "x"]})");
+  ASSERT_TRUE(args.has_value());
+  chat::Conversation c;
+  c.messages.push_back({chat::Role::kSystem, "You are helpful.", std::nullopt, {}});
+  for (int i = 0; c.messages.size() < 1'000; ++i) {
+    c.messages.push_back({chat::Role::kUser, "question " + std::to_string(i), std::nullopt, {}});
+    if (i % 5 == 0) {
+      c.messages.push_back(
+          {chat::Role::kAssistant, "", "thinking", {{"get_weather", args->root()}}});
+      c.messages.push_back({chat::Role::kTool, "cold", std::nullopt, {}});
+    }
+    c.messages.push_back({chat::Role::kAssistant, "answer", "why", {}});
+  }
+  c.messages.push_back({chat::Role::kUser, "last", std::nullopt, {}});
+  c.enable_thinking = true;
+  c.preserve_thinking = true;
+  for (const std::string_view file : {"gemma-4", "gemma-4-e"}) {
+    auto program = chat::jinja::Template::Parse(Template(file));
+    ASSERT_TRUE(program.has_value());
+    auto native = chat::ChatTemplate::ForText(Template(file), GemmaFacts());
+    ASSERT_TRUE(native.has_value());
+    ASSERT_EQ(native->how(), chat::ChatTemplate::How::kNativeByHash);
+    const auto mine = native->Render(c);
+    const auto theirs = chat::RenderInterpreted(*program, c, GemmaFacts(), std::nullopt);
+    ASSERT_TRUE(mine.has_value() && theirs.has_value()) << file;
+    EXPECT_EQ(mine->text, theirs->text) << file;
+    // The same control tokens, where the interpreter found them in the
+    // template's own text.
+    ASSERT_EQ(mine->specials.size(), theirs->specials.size()) << file;
+    for (std::size_t i = 0; i < mine->specials.size(); ++i) {
+      EXPECT_EQ(mine->specials[i].offset, theirs->specials[i].offset) << file << " " << i;
+      EXPECT_EQ(mine->specials[i].length, theirs->specials[i].length) << file << " " << i;
+    }
+  }
+}
+
+// Google's earlier Gemma 4 templates for 31B: 2026-04-02 and 2026-04-10
+// render differently from every native renderer (the variant probes find
+// where: a system message without content printed as `None`, schema-key
+// properties always filtered, a turn closed after tool results beside
+// blank content), so the interpreter renders them; 2026-04-28 (NVIDIA's
+// NVFP4 checkpoints') and 2026-05-18, which differs from it only in tool
+// results given as content parts, are the 2026-04 variant's.
+TEST(ChatTemplates, GemmaHistoricalTemplatesChooseTheirRenderer) {
+  const std::vector<std::pair<std::string_view, std::string_view>> expected = {
+      {"gemma-4-20260402", "interpreted"},
+      {"gemma-4-20260410", "interpreted"},
+      {"gemma-4-20260428", "gemma-4-2604"},
+      {"gemma-4-20260518", "gemma-4-2604"},
+  };
+  for (const auto& [file, name] : expected) {
+    auto t = chat::ChatTemplate::ForText(Template(file), GemmaFacts());
+    ASSERT_TRUE(t.has_value()) << file << ": " << t.error();
+    EXPECT_EQ(t->name(), name) << file;
+    EXPECT_EQ(t->how(), name == "interpreted" ? chat::ChatTemplate::How::kInterpreted
+                                              : chat::ChatTemplate::How::kNativeByProbe)
+        << file;
+  }
+  // The 2026-04-28 template's own fixture, through the interpreter.
+  auto program = chat::jinja::Template::Parse(Template("gemma-4-20260428"));
+  ASSERT_TRUE(program.has_value());
+  const json::Document doc = LoadJson("chat/gemma-4-2604.json");
+  const json::Value cases = Get(doc.root(), "cases");
+  std::size_t rendered = 0;
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    const json::Value c = cases.at(i);
+    std::deque<json::Document> arguments;
+    const auto r = chat::RenderInterpreted(*program, ConversationFrom(c, &arguments), GemmaFacts(),
+                                           std::nullopt);
+    if (const auto want = c.find("text")) {
+      ASSERT_TRUE(r.has_value()) << Get(c, "name").string();
+      EXPECT_EQ(r->text, want->string()) << Get(c, "name").string();
+      ++rendered;
+    } else {
+      EXPECT_EQ(Failed(r, &chat::Error::rule), chat::Rule::kInvalid) << Get(c, "name").string();
+    }
+  }
+  EXPECT_GE(rendered, 50U);
+}
+
+// What serving renders equals transformers' rendering on every case of the
+// Gemma 4 templates' fixtures, case mapping beyond ASCII included (the
+// second review's fb- cases: a Cyrillic type upper-cased, keys that sort
+// differently once lower-cased in full, `ß` upper-cased to `SS`).
+TEST(ChatTemplates, ServedGemmaRenderingsEqualTransformers) {
+  for (const auto& [file, fixture] :
+       {std::pair{"gemma-4", "gemma-4"}, std::pair{"gemma-4-e", "gemma-4-e"},
+        std::pair{"gemma-4-20260428", "gemma-4-2604"}}) {
+    auto t = chat::ChatTemplate::ForText(Template(file), GemmaFacts());
+    ASSERT_TRUE(t.has_value()) << file;
+    ASSERT_NE(t->how(), chat::ChatTemplate::How::kInterpreted) << file;
+    const json::Document doc = LoadJson("chat/" + std::string(fixture) + ".json");
+    const json::Value cases = Get(doc.root(), "cases");
+    std::size_t fb = 0;
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+      const json::Value c = cases.at(i);
+      const std::string_view name = Get(c, "name").string();
+      std::deque<json::Document> arguments;
+      const auto served = t->Render(ConversationFrom(c, &arguments));
+      if (const auto want = c.find("text")) {
+        ASSERT_TRUE(served.has_value()) << file << "/" << name << ": " << served.error().ToString();
+        EXPECT_EQ(served->text, want->string()) << file << "/" << name;
+        fb += name.starts_with("fb-") ? 1 : 0;
+      } else {
+        EXPECT_EQ(Failed(served, &chat::Error::rule), chat::Rule::kInvalid) << file << "/" << name;
+      }
+    }
+    EXPECT_EQ(fb, 5U) << file;
+  }
+}
+
+// A case a native renderer does not implement renders through the
+// interpreter, from the template's own text, and equals transformers'
+// rendering: DeepSeek's renderer refuses preserve_thinking, which its
+// template does not read, so the fixture's rendering without it is
+// transformers' with it. The stop tokens stay the native renderer's. Past
+// the output bound nothing is retried.
+TEST(ChatTemplates, NativeRefusalsFallBackToTheTemplate) {
+  auto t = chat::ChatTemplate::ForText(Template("deepseek-v4-0731"), DeepSeekFacts());
+  ASSERT_TRUE(t.has_value());
+  ASSERT_EQ(t->how(), chat::ChatTemplate::How::kNativeByHash);
+  const json::Document doc = LoadJson("chat/deepseek-v4-0731.json");
+  const json::Value cases = Get(doc.root(), "cases");
+  std::size_t compared = 0;
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    const json::Value c = cases.at(i);
+    const auto want = c.find("text");
+    if (!want || c.find("options")) {
+      continue;
+    }
+    std::deque<json::Document> arguments;
+    chat::Conversation conv = ConversationFrom(c, &arguments);
+    conv.preserve_thinking = true;
+    EXPECT_EQ(Failed(chat::RenderDeepSeekV4(conv), &chat::Error::rule), chat::Rule::kUnsupported);
+    const auto served = t->Render(conv);
+    ASSERT_TRUE(served.has_value()) << Get(c, "name").string();
+    EXPECT_EQ(served->text, want->string()) << Get(c, "name").string();
+    ++compared;
+  }
+  EXPECT_GE(compared, 5U);
+  EXPECT_EQ(t->stop(), (std::vector<std::string>{"<｜end▁of▁sentence｜>"}));
+  // Too long a rendering: the native renderer's refusal stands.
+  auto gemma = chat::ChatTemplate::ForText(Template("gemma-4"), GemmaFacts());
+  ASSERT_TRUE(gemma.has_value());
+  const std::string name(std::size_t{1} << 20U, 'n');
+  const auto empty = json::Parse("{}");
+  ASSERT_TRUE(empty.has_value());
+  chat::Conversation big;
+  big.messages.push_back({chat::Role::kUser, "go", std::nullopt, {}});
+  big.messages.push_back({chat::Role::kAssistant, "", std::nullopt, {{name, empty->root()}}});
+  for (int i = 0; i < 1000; ++i) {
+    big.messages.push_back({chat::Role::kTool, "r", std::nullopt, {}});
+  }
+  const auto refused = gemma->Render(big);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_TRUE(refused.error().bound);
 }
 
 }  // namespace

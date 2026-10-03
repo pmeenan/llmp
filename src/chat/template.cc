@@ -218,6 +218,14 @@ constexpr std::string_view kArgsParis = R"({"city": "Paris", "days": 3, "unit": 
 constexpr std::string_view kArgsTokyo =
     R"({"city": "東京", "days": 3, "extra": {"nested": [1, 2.5, null, true], "s": "a\nb"}})";
 constexpr std::string_view kArgsOslo = R"({"city": "Oslo"})";
+// Arguments a client sent as JSON that is not an object: a string holding
+// an object, a plain string, a list.
+constexpr std::string_view kArgsString = R"(" {\"city\": \"Oslo\"} ")";
+constexpr std::string_view kArgsPlain = R"("Oslo, 3 days")";
+constexpr std::string_view kArgsList = R"(["Oslo", 3])";
+// A tool whose properties are named like schema keys.
+constexpr std::string_view kSchemaKeysTool =
+    R"({"type": "function", "function": {"name": "lookup", "description": "Look up.", "parameters": {"type": "object", "properties": {"type": {"type": "string"}, "description": {"type": "string", "description": "what"}, "city": {"type": "string"}}, "required": ["type"]}}})";
 
 // The documents the probe conversations' JSON points into.
 struct ProbeDocs {
@@ -226,6 +234,10 @@ struct ProbeDocs {
   base::json::Document paris;
   base::json::Document tokyo;
   base::json::Document oslo;
+  base::json::Document string;
+  base::json::Document plain;
+  base::json::Document list;
+  base::json::Document schema_keys;
 };
 
 std::optional<ProbeDocs> ParseProbeDocs() {
@@ -234,11 +246,17 @@ std::optional<ProbeDocs> ParseProbeDocs() {
   auto paris = base::json::Parse(kArgsParis);
   auto tokyo = base::json::Parse(kArgsTokyo);
   auto oslo = base::json::Parse(kArgsOslo);
-  if (!weather || !search || !paris || !tokyo || !oslo) {
+  auto string = base::json::Parse(kArgsString);
+  auto plain = base::json::Parse(kArgsPlain);
+  auto list = base::json::Parse(kArgsList);
+  auto schema_keys = base::json::Parse(kSchemaKeysTool);
+  if (!weather || !search || !paris || !tokyo || !oslo || !string || !plain || !list ||
+      !schema_keys) {
     return std::nullopt;
   }
-  return ProbeDocs{std::move(*weather), std::move(*search), std::move(*paris), std::move(*tokyo),
-                   std::move(*oslo)};
+  return ProbeDocs{std::move(*weather), std::move(*search), std::move(*paris),
+                   std::move(*tokyo),   std::move(*oslo),   std::move(*string),
+                   std::move(*plain),   std::move(*list),   std::move(*schema_keys)};
 }
 
 Message M(Role role, std::optional<std::string> content,
@@ -301,6 +319,40 @@ std::vector<Conversation> ProbeConversations(const ProbeDocs& d) {
        M(R::kAssistant, "Bye!", "farewell")},
       false, false);
   add({M(R::kAssistant, "Hello, I am ready.", "Opening."), M(R::kUser, "Hi")});
+  return out;
+}
+
+// Conversations where the variants of a family's template part (Template's
+// probe_variants; Gemma 4's), probed first, as they tell those variants
+// apart: tool calls whose arguments are not an object, which a variant may
+// render, ignore or refuse; a system message without content, which one
+// prints as `None`; a property named like a schema key (`type`,
+// `description`), which one always filters out; and whitespace content
+// beside tool results, after which one closes the turn.
+std::vector<Conversation> VariantConversations(const ProbeDocs& d) {
+  using R = Role;
+  std::vector<Conversation> out;
+  for (const base::json::Document* args : {&d.string, &d.plain, &d.list}) {
+    Conversation c;
+    c.messages = {M(R::kUser, "Weather in Oslo?"),
+                  M(R::kAssistant, "", std::nullopt, {{"get_weather", args->root()}}),
+                  M(R::kTool, "cold"), M(R::kUser, "Thanks.")};
+    c.tools = {d.weather.root()};
+    out.push_back(std::move(c));
+  }
+  Conversation none;
+  none.messages = {M(R::kSystem, std::nullopt), M(R::kUser, "Hi")};
+  out.push_back(std::move(none));
+  Conversation keys;
+  keys.messages = {M(R::kUser, "Look it up.")};
+  keys.tools = {d.schema_keys.root()};
+  out.push_back(std::move(keys));
+  Conversation blank;
+  blank.messages = {M(R::kUser, "Weather in Oslo?"),
+                    M(R::kAssistant, "  ", std::nullopt, {{"get_weather", d.oslo.root()}}),
+                    M(R::kTool, "cold"), M(R::kUser, "Thanks.")};
+  blank.tools = {d.weather.root()};
+  out.push_back(std::move(blank));
   return out;
 }
 
@@ -439,7 +491,14 @@ bool ProbeEquivalent(const Template& native, const jinja::Template& program,
     return v != Verdict::kDiffer;
   };
   constexpr std::array<std::optional<bool>, 3> kThinking = {std::nullopt, true, false};
+  std::vector<Conversation> conversations;
+  if (native.probe_variants) {
+    conversations = VariantConversations(*docs);
+  }
   for (Conversation& c : ProbeConversations(*docs)) {
+    conversations.push_back(std::move(c));
+  }
+  for (Conversation& c : conversations) {
     for (const std::optional<bool> thinking : kThinking) {
       c.enable_thinking = thinking;
       if (!probe(c)) {
@@ -471,18 +530,21 @@ std::expected<ChatTemplate, std::string> ChatTemplate::ForText(std::string_view 
   t.sha256_ = base::ToHex(base::Sha256().Update(template_text).Finish());
   t.tokens_ = std::move(tokens);
   jinja::Usage probes;  // what every probe of this registration used (ProbeBudget)
+  auto program = jinja::Template::Parse(template_text);
+  if (program) {
+    // Kept beside a native renderer too, for the cases it does not implement.
+    t.program_ = std::make_unique<jinja::Template>(std::move(*program));
+  }
   if (const Template* native = FindTemplate(t.sha256_)) {
     t.how_ = How::kNativeByHash;
     t.native_ = native;
   } else {
-    auto program = jinja::Template::Parse(template_text);
-    if (!program) {
+    if (!t.program_) {
       return std::unexpected(std::format(
           "its chat template (SHA-256 {}) has no native renderer and the interpreter does not "
           "accept it: {}, so it has no chat turns (D-067)",
           t.sha256_, program.error().ToString()));
     }
-    t.program_ = std::make_unique<jinja::Template>(std::move(*program));
     for (const Template& family : NativeTemplates()) {
       if (ProbeEquivalent(family, *t.program_, t.tokens_, &probes)) {
         t.how_ = How::kNativeByProbe;
@@ -495,7 +557,6 @@ std::expected<ChatTemplate, std::string> ChatTemplate::ForText(std::string_view 
     for (const std::string_view s : t.native_->stop.tokens) {
       t.stop_.emplace_back(s);
     }
-    t.program_.reset();
     return t;
   }
   t.how_ = How::kInterpreted;
@@ -516,7 +577,14 @@ std::string_view ChatTemplate::name() const {
 std::expected<Rendered, Error> ChatTemplate::Render(
     const Conversation& conversation, const std::optional<jinja::CivilTime>& now) const {
   if (native_ != nullptr) {
-    return native_->render(conversation);
+    auto rendered = native_->render(conversation);
+    // A case the native renderer does not implement is the template's to
+    // render (or refuse), unless it reached the output bound, which the
+    // interpreter shares.
+    if (rendered || rendered.error().rule != Rule::kUnsupported || rendered.error().bound ||
+        !program_) {
+      return rendered;
+    }
   }
   return RenderInterpreted(*program_, conversation, tokens_, now);
 }

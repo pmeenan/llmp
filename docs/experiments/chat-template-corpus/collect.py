@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Collects the chat-template corpus and renders its references (README.md).
 
-    collect.py fetch  --out DIR [--models DIR]
+    collect.py fetch  --out DIR [--models DIR] [--only NAME...]
     collect.py render --out DIR --conversations FILE
 
 `fetch` downloads, read-only over HTTPS, each corpus entry's chat template
@@ -13,7 +13,9 @@ from the metadata at the head of a GGUF file (an HTTP range read; no
 weights are fetched). Local GGUF and template files under --models are read
 in place. It writes DIR/templates/<name>.jinja and DIR/manifest.json (repo,
 revision, file, SHA-256, BOS and EOS texts, the repository's declared
-license).
+license). With --only it fetches just the named entries and merges them
+into the existing manifest, leaving the others' pinned revisions as they
+were.
 
 `render` renders every template on every conversation of the committed
 conversation corpus with transformers' render_jinja_template (the function
@@ -61,6 +63,15 @@ CORPUS = [
     ("gemma-4-26b-a4b-it", "google/gemma-4-26B-A4B-it", "hf", None),
     ("gemma-4-31b-it", "google/gemma-4-31B-it", "hf", None),
     ("gemma-3-4b-it", "unsloth/gemma-3-4b-it", "hf", None),
+    ("gemma-4-e4b-it", "google/gemma-4-E4B-it", "hf", None),
+    ("gemma-4-26b-a4b-it-fp8", "RedHatAI/gemma-4-26B-A4B-it-FP8-dynamic", "hf", None),
+    ("gemma-4-31b-it-nvfp4", "nvidia/Gemma-4-31B-IT-NVFP4", "hf", None),
+    ("gemma-4-31b-it-unsloth-gguf", "unsloth/gemma-4-31B-it-GGUF", "gguf", None),
+    ("gemma-4-e4b-it-unsloth-gguf", "unsloth/gemma-4-E4B-it-GGUF", "gguf", None),
+    ("gemma-4-e4b-it-lmstudio-gguf", "lmstudio-community/gemma-4-E4B-it-GGUF", "gguf", None),
+    ("gemma-3-1b-it-gguf", "ggml-org/gemma-3-1b-it-GGUF", "gguf", None),
+    ("gemma-3n-e4b-it", "unsloth/gemma-3n-E4B-it", "hf", None),
+    ("gemma-3-270m-it", "unsloth/gemma-3-270m-it", "hf", None),
     ("gpt-oss-120b", "openai/gpt-oss-120b", "hf", None),
     ("kimi-linear-48b-a3b", "moonshotai/Kimi-Linear-48B-A3B-Instruct", "hf", None),
     ("kimi-k2-instruct", "moonshotai/Kimi-K2-Instruct", "hf", None),
@@ -166,7 +177,11 @@ def fetch(args) -> int:
     (out / "templates").mkdir(parents=True, exist_ok=True)
     models = pathlib.Path(args.models) if args.models else None
     manifest = {}
+    if args.only:  # add or refresh only these entries; keep the rest of the manifest
+        manifest = json.loads((out / "manifest.json").read_text())
     for name, repo, kind, file in CORPUS:
+        if args.only and name not in args.only:
+            continue
         try:
             info = repo_info(repo)
             rev = info["sha"]
@@ -286,6 +301,7 @@ def main() -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--models")
     p.add_argument("--conversations")
+    p.add_argument("--only", nargs="+", help="fetch: only these entries, merged into the manifest")
     args = p.parse_args()
     return fetch(args) if args.command == "fetch" else render(args)
 

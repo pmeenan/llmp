@@ -126,6 +126,36 @@ std::uint8_t CombiningClass(char32_t cp) {
 
 namespace {
 
+CaseMapping MapCase(std::span<const data::CaseMapping> table, char32_t cp) {
+  CaseMapping m;
+  const auto it = std::ranges::lower_bound(table, cp, {}, &data::CaseMapping::code_point);
+  if (it == table.end() || it->code_point != cp) {
+    m.code_points[0] = cp;
+    m.length = 1;
+    return m;
+  }
+  m.length = it->length;
+  std::ranges::copy(data::kCaseParts.subspan(it->offset, it->length), m.code_points.begin());
+  return m;
+}
+
+bool InRanges(std::span<const data::CodePointRange> ranges, char32_t cp) {
+  const auto it = std::ranges::lower_bound(ranges, cp, {}, &data::CodePointRange::last);
+  return it != ranges.end() && it->first <= cp;
+}
+
+}  // namespace
+
+CaseMapping ToLowerFull(char32_t cp) { return MapCase(data::kLowerFull, cp); }
+CaseMapping ToUpperFull(char32_t cp) { return MapCase(data::kUpperFull, cp); }
+CaseMapping ToTitleFull(char32_t cp) { return MapCase(data::kTitleFull, cp); }
+bool IsLowercase(char32_t cp) { return InRanges(data::kLowercase, cp); }
+bool IsUppercase(char32_t cp) { return InRanges(data::kUppercase, cp); }
+bool IsCased(char32_t cp) { return InRanges(data::kCased, cp); }
+bool IsCaseIgnorable(char32_t cp) { return InRanges(data::kCaseIgnorable, cp); }
+
+namespace {
+
 // The length of the well-formed sequence at p[0] (with n bytes available),
 // or, when it is ill formed, 0 and the length of its maximal subpart in
 // *subpart (at least 1). A truncated but so-far valid sequence at the end

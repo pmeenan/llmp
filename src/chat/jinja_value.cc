@@ -19,7 +19,6 @@
 
 #include "chat/jinja_internal.h"
 #include "chat/pyjson.h"
-#include "tokenizer/unicode.h"
 
 namespace jitllm::chat::jinja {
 namespace {
@@ -56,45 +55,7 @@ std::unexpected<Error> TooLong() { return Fail(Code::kLimit, "a string longer th
 
 // Python's repr() of a string; false once `out` is longer than `limit`.
 bool AppendStrRepr(std::string_view s, std::size_t limit, std::string& out) {
-  const bool single = !s.contains('\'') || s.contains('"');
-  const char quote = single ? '\'' : '"';
-  out.push_back(quote);
-  for (std::size_t at = 0; at < s.size();) {
-    if (out.size() > limit) {
-      return false;
-    }
-    std::size_t length = 0;
-    const char32_t cp = DecodeAt(s, at, length);
-    if (cp == static_cast<char32_t>(quote) || cp == U'\\') {
-      out.push_back('\\');
-      out.push_back(static_cast<char>(cp));
-    } else if (cp == U'\t') {
-      out += "\\t";
-    } else if (cp == U'\n') {
-      out += "\\n";
-    } else if (cp == U'\r') {
-      out += "\\r";
-    } else if (cp < 0x20 || cp == 0x7F) {
-      out += "\\x";
-      AppendHex(cp, 2, out);
-    } else if (cp >= 0x80 && !Printable(cp)) {
-      if (cp < 0x100) {
-        out += "\\x";
-        AppendHex(cp, 2, out);
-      } else if (cp < 0x10000) {
-        out += "\\u";
-        AppendHex(cp, 4, out);
-      } else {
-        out += "\\U";
-        AppendHex(cp, 8, out);
-      }
-    } else {
-      out.append(s.substr(at, length));
-    }
-    at += length;
-  }
-  out.push_back(quote);
-  return out.size() <= limit;
+  return AppendPythonStringRepr(s, out, limit);
 }
 
 // json.dumps of a string; false once `out` is longer than `limit`.
@@ -828,29 +789,7 @@ std::expected<bool, Error> Less(const Value& a, const Value& b, std::uint64_t& w
 }
 
 char32_t DecodeAt(std::string_view s, std::size_t at, std::size_t& length) {
-  const auto b0 = static_cast<unsigned char>(s[at]);
-  if (b0 < 0x80) {
-    length = 1;
-    return b0;
-  }
-  std::size_t n = 0;
-  char32_t cp = 0;
-  if ((b0 & 0xE0U) == 0xC0U) {
-    n = 2;
-    cp = b0 & 0x1FU;
-  } else if ((b0 & 0xF0U) == 0xE0U) {
-    n = 3;
-    cp = b0 & 0x0FU;
-  } else {
-    n = 4;
-    cp = b0 & 0x07U;
-  }
-  n = std::min(n, s.size() - at);
-  for (std::size_t i = 1; i < n; ++i) {
-    cp = (cp << 6U) | (static_cast<unsigned char>(s[at + i]) & 0x3FU);
-  }
-  length = n;
-  return cp;
+  return DecodeUtf8At(s, at, length);
 }
 
 std::size_t CodePoints(std::string_view s) {
@@ -889,24 +828,6 @@ std::size_t SpaceAt(std::string_view s, std::size_t at) {
   return space ? length : 0;
 }
 
-bool Printable(char32_t cp) {
-  using tokenizer::unicode::Category;
-  if (cp == U' ') {
-    return true;
-  }
-  switch (tokenizer::unicode::GetCategory(cp)) {
-    case Category::kCc:
-    case Category::kCf:
-    case Category::kCs:
-    case Category::kCo:
-    case Category::kCn:
-    case Category::kZl:
-    case Category::kZp:
-    case Category::kZs:
-      return false;
-    default:
-      return true;
-  }
-}
+bool Printable(char32_t cp) { return PythonPrintable(cp); }
 
 }  // namespace jitllm::chat::jinja

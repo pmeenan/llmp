@@ -355,18 +355,20 @@ The tables are therefore UCD 15.1.0 data.
 
 **What jitLLM uses instead.** `tools/gen-unicode-tables` (jitLLM's,
 Apache-2.0; a developer-run build tool) generates
-`src/tokenizer/unicode_data.cc` from three UCD 15.1.0 files and checks each:
+`src/tokenizer/unicode_data.cc` from five UCD 15.1.0 files and checks each:
 
 | File | SHA-256 |
 | --- | --- |
 | UnicodeData.txt | `2fc713e6a31a87c4850a37fe2caffa4218180fadb5de86b43a143ddb4581fb86` |
 | PropList.txt | `05672956317b6296bc2ec3d6cef1f6452b57ff4f2efc6dc55b0a19277d5fcfd1` |
 | DerivedNormalizationProps.txt | `8875dccee2bc1a7c1fe568a3b502a9e78c9e0495afd96b6568b4294d0ed1f7e1` |
+| SpecialCasing.txt | `55a477efd933a52cd27e6a9bf70265bb2d8814af31aab07767abc8eb421f27ef` |
+| DerivedCoreProperties.txt | `f55d0db69123431a7317868725b1fcbf1eab6b265d756d1bd7f0f6d9f9ee108b` |
 | NormalizationTest.txt (tests only) | `871238e37e3be0696ec2bd0891119a041b052da1a84485eda05a5438724b223e` |
 
 | Field | Record |
 | --- | --- |
-| Role | Incorporated data: general categories, White_Space, NFC quick-check values, combining classes, canonical decompositions and compositions, compiled into `jitllm_tokenizer` |
+| Role | Incorporated data: general categories, White_Space, NFC quick-check values, combining classes, canonical decompositions and compositions, and the full case mappings and case properties (Lowercase, Uppercase, Cased, Case_Ignorable) that Python's str operations use, compiled into `jitllm_tokenizer` |
 | Version | Unicode Character Database 15.1.0 (release 2023-09) |
 | License | Unicode License V3 (SPDX `Unicode-3.0`; [LICENSES/Unicode-3.0.txt](../LICENSES/Unicode-3.0.txt)). The files point to unicode.org's terms of use, which (read 2026-09-28) place every data file under `/Public/` under that license |
 | In a binary | None shipped yet: `jitllm` and `jitllm-runtime` do not link `jitllm_tokenizer` (the swap runner and the chat route will). Tests and harnesses link it |
@@ -397,14 +399,28 @@ published Philox known-answer vectors (values, cited in the test).
 documentation and its observed behaviour under transformers; no code of
 Jinja2 (BSD-3-Clause), minja or llama.cpp's Jinja engine (MIT) is
 incorporated. Its tests compare with transformers 5.12.1 and Jinja2 3.1.6,
-run as reference tools like those above. Three pinned templates are
-committed as test data with their own terms in `.license` sidecars
-(`tests/unit/data/chat/templates/`: the 0731 GGUF's, Unsloth's, Apache-2.0
-by its own notice with the MIT format text it ports from
-`encoding_dsv4.py`, so `Apache-2.0 AND MIT`; the community chat-v2 GGUF's,
-MIT; the Qwen3.8 NVFP4
-checkpoint's, Apache-2.0). The 29-template corpus stays outside the
-repository, fetched by `docs/experiments/chat-template-corpus/collect.py`
+run as reference tools like those above. Nine templates are committed as
+test data with their own terms in `.license` sidecars
+(`tests/unit/data/chat/templates/`): five pinned by native renderers'
+fixtures (the 0731 GGUF's, Unsloth's, Apache-2.0 by its own notice with
+the MIT format text it ports from `encoding_dsv4.py`, so `Apache-2.0 AND
+MIT`; the community chat-v2 GGUF's, MIT; the Qwen3.8 NVFP4 checkpoint's,
+Apache-2.0; Gemma 4's of `google/gemma-4-31B-it@842da379` and of
+`google/gemma-4-E4B-it@ee0ef602`), and Google's four earlier Gemma 4
+templates (`google/gemma-4-31B-it` at `419b2efe`, `e51e7dcd`, `145dc250`
+and `fcf23027`), which test the choice of renderer. Each Gemma 4 template
+is Apache-2.0: the repository declares `apache-2.0` at every one of those
+revisions (Hugging Face's model card metadata, checked 2026-10-02).
+Gemma 3's template comes from repositories under the Gemma terms, which
+are not a permissive license, so it is not committed: its fixture
+(`gemma-3.json`) holds only jitLLM's own conversations rendered, and the
+template text stays in the corpus. `tests/unit/data/chat/pycase-reference.json`
+is Python 3.12.3's case data for every code point (from its Unicode
+15.0.0 database) and its case operations on jitLLM's strings: data
+derived from the Unicode Character Database, under `Apache-2.0 AND
+Unicode-3.0` in its sidecar, like `src/tokenizer/unicode_data.cc`. The
+38-template corpus stays outside
+the repository, fetched by `docs/experiments/chat-template-corpus/collect.py`
 ([README](experiments/chat-template-corpus/README.md)); template text is
 model data under the owner's 2026-09-28 reading above.
 

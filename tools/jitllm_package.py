@@ -96,7 +96,8 @@ IN_TREE_UNITS = {
         "download": "https://www.unicode.org/Public/15.1.0/ucd/",
         "notice": "unicode",
         "enters": "The tokenizer's tables, src/tokenizer/unicode_data.cc, which tools/gen-unicode-tables generates "
-                  "from UnicodeData.txt, PropList.txt and DerivedNormalizationProps.txt (D-088)",
+                  "from UnicodeData.txt, PropList.txt, DerivedNormalizationProps.txt, SpecialCasing.txt and "
+                  "DerivedCoreProperties.txt (D-088)",
     },
 }
 

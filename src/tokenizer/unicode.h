@@ -3,7 +3,8 @@
 
 // Unicode for the tokenizer: code point properties from the Unicode
 // Character Database 15.1.0 (unicode_data.h, D-088), strict UTF-8, and
-// Normalization Form C.
+// Normalization Form C; and the full case mappings and case properties
+// Python's str operations use, for the chat templates (src/chat/pycase.h).
 //
 // UCD 15.1.0 is the version llama.cpp's tables at the pinned revision were
 // generated from (docs/licensing.md), so the pre-tokenizers classify code
@@ -12,6 +13,7 @@
 #ifndef JITLLM_TOKENIZER_UNICODE_H_
 #define JITLLM_TOKENIZER_UNICODE_H_
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -70,6 +72,24 @@ bool IsPunctuation(char32_t cp);  // P
 bool IsSymbol(char32_t cp);       // S
 bool IsWhiteSpace(char32_t cp);   // the White_Space property
 std::uint8_t CombiningClass(char32_t cp);
+
+// Full case mappings as Python's str operations use them (CPython's
+// _PyUnicode_ToLowerFull and the like): SpecialCasing.txt's unconditional
+// mappings, else the simple ones; 1 to 3 code points. Final_Sigma, the one
+// conditional mapping Python applies, is the caller's (src/chat/pycase.h).
+struct CaseMapping {
+  std::array<char32_t, 3> code_points{};
+  std::size_t length = 0;
+  std::span<const char32_t> view() const { return {code_points.data(), length}; }
+};
+CaseMapping ToLowerFull(char32_t cp);
+CaseMapping ToUpperFull(char32_t cp);
+CaseMapping ToTitleFull(char32_t cp);
+// The derived core properties Python's case operations and tests read.
+bool IsLowercase(char32_t cp);      // Lowercase
+bool IsUppercase(char32_t cp);      // Uppercase
+bool IsCased(char32_t cp);          // Cased
+bool IsCaseIgnorable(char32_t cp);  // Case_Ignorable
 
 // Strict UTF-8 (Unicode table 3-7): decodes all of `text`, appending its
 // code points, or refuses with kInvalidUtf8 at the first ill-formed

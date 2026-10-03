@@ -34,13 +34,24 @@
 //   <think> blocks, `enable_thinking`, `reasoning_effort` and
 //   `preserve_thinking`; and Unsloth's GGUF variant of it (merged leading
 //   system messages, `high` effort as `xhigh`, no user query required).
+// - Gemma 3, the template Unsloth's and the converted Gemma 3 GGUFs carry:
+//   roles system (first, prefixed to the first user turn), user and
+//   assistant (`model`) alternating, as the template requires.
+// - Gemma 4, google/gemma-4-31B-it's template (2026-07-15) and the E2B/E4B
+//   checkpoints': roles system, user, assistant and tool; tool declarations
+//   in Gemma's notation, tool calls and the tool results after them, the
+//   thought channel, `enable_thinking` and `preserve_thinking`; and
+//   variants chosen by probe: Unsloth's two (string tool-call arguments
+//   render) and Google's 2026-04-28 template (NVIDIA's NVFP4 checkpoints).
 // - Qwen-Image 2.1's text-to-image prompt (the pinned diffusers pipeline's
 //   fixed template, not a chat template): RenderQwenImagePrompt.
 //
 // A native renderer refuses what its template does not support (another
 // role, an image, a DeepSeek task or latest_reminder, a message-level tool
-// list) rather than approximating it. Where the template raises an
-// exception, rendering returns kInvalid.
+// list) rather than approximating it (kUnsupported), and ChatTemplate then
+// renders that case through the interpreter. Where the template raises an
+// exception, rendering returns kInvalid. A native rendering is bounded as
+// the interpreter's output is (jinja::Limits::max_output_bytes).
 
 #ifndef JITLLM_CHAT_CHAT_H_
 #define JITLLM_CHAT_CHAT_H_
@@ -75,6 +86,9 @@ struct Error {
   std::string_view reason;          // static text
   std::uint64_t item = kNoItem;     // usually a message index
   std::uint32_t template_line = 0;  // where an interpreted template failed, from 1
+  // A native rendering grew past the interpreter's output bound: the
+  // interpreter would refuse it too, so ChatTemplate does not retry it there.
+  bool bound = false;
 
   std::string ToString() const;
 };
@@ -103,7 +117,7 @@ struct Conversation {
   // Template options; absent means the template's own default.
   std::optional<bool> enable_thinking;
   std::optional<std::string> reasoning_effort;
-  std::optional<bool> preserve_thinking;  // Qwen3.8 only
+  std::optional<bool> preserve_thinking;  // Qwen3.8 and Gemma 4 read it
 };
 
 enum class BoundaryKind : std::uint8_t {
@@ -137,6 +151,11 @@ struct Template {
   StopRules stop;
   // The reasoning_effort values the renderer accepts, which probes try.
   std::span<const std::string_view> probe_efforts;
+  // Probes first try the conversations where the family's template variants
+  // part (Gemma 4's): unparsed tool-call arguments, a system message without
+  // content, properties named like schema keys, blank content beside tool
+  // results (template.cc's VariantConversations).
+  bool probe_variants = false;
 };
 
 // The native renderer for a template hash, or nullptr.
@@ -181,7 +200,10 @@ class ChatTemplate {
   ChatTemplate& operator=(const ChatTemplate&) = delete;
   ~ChatTemplate();
 
-  // `now` is strftime_now's clock for an interpreted template.
+  // `now` is strftime_now's clock for an interpreted template. A case a
+  // native renderer does not implement (kUnsupported, short of the output
+  // bound) renders through the interpreter, from the template's own text;
+  // the stop tokens stay the native renderer's.
   std::expected<Rendered, Error> Render(const Conversation& conversation,
                                         const std::optional<jinja::CivilTime>& now = {}) const;
 
@@ -226,6 +248,12 @@ std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& conversation
 std::expected<Rendered, Error> RenderDeepSeekV4ChatV2(const Conversation& conversation);
 std::expected<Rendered, Error> RenderQwen38(const Conversation& conversation);
 std::expected<Rendered, Error> RenderQwen38Unsloth(const Conversation& conversation);
+std::expected<Rendered, Error> RenderGemma3(const Conversation& conversation);
+std::expected<Rendered, Error> RenderGemma4(const Conversation& conversation);
+std::expected<Rendered, Error> RenderGemma4E(const Conversation& conversation);
+std::expected<Rendered, Error> RenderGemma4Unsloth(const Conversation& conversation);
+std::expected<Rendered, Error> RenderGemma4EUnsloth(const Conversation& conversation);
+std::expected<Rendered, Error> RenderGemma4April(const Conversation& conversation);
 
 // Qwen-Image 2.1's text-to-image prompt around `prompt` (an empty prompt
 // becomes " ", as the pipeline does), and how many leading tokens of the

@@ -170,6 +170,16 @@ TEST(JinjaProvenance, TransformsKeepWhereEachByteCameFrom) {
             (std::vector<std::string>{"[", "<T>", "]|", "|", "-x|", "|{\"k\": \"v\"}|13|2"}));
 }
 
+// Case mapping keeps each byte's provenance across the ASCII runs it maps
+// whole and the code points it maps one by one.
+TEST(JinjaProvenance, CaseMappingKeepsProvenance) {
+  const Variables v = {{"c", jinja::Input::String("ab ΣΣ cd")}};
+  const auto r = Render("{{ ('xy' ~ c ~ 'zΣ')|upper }}|{{ ('XY' ~ c ~ 'Σ.').lower() }}", v);
+  ASSERT_TRUE(r.has_value()) << r.error().ToString();
+  EXPECT_EQ(r->text, "XYAB ΣΣ CDZΣ|xyab σς cdς.");
+  EXPECT_EQ(TrustedPieces(*r), (std::vector<std::string>{"XY", "ZΣ|xy", "ς."}));
+}
+
 TEST(JinjaProvenance, ClientNumbersAndKeysAreNotTrusted) {
   auto doc = json::Parse(R"({"n": 7, "m": {"<|k|>": 1}})");
   ASSERT_TRUE(doc.has_value());
@@ -309,6 +319,15 @@ TEST(JinjaBounds, HostileTemplatesAreRefused) {
        jinja::Code::kLimit},
       // Scans that build nothing: case tests, parses, formats.
       {"{% set b = 'x' * 60000000 %}" + loop + "{% set x = b is lower %}" + end,
+       jinja::Code::kLimit},
+      // Case mapping beyond ASCII looks up every code point: charged more per
+      // byte than copying (the slowest, Greek with combining marks title-cased,
+      // refused after about 3.3 s on spark-b).
+      {"{% set b = 'ΑΣ\u0301' * 10000000 %}" + loop + "{% set x = b.title() %}" + end,
+       jinja::Code::kLimit},
+      {"{% set b = 'Жж' * 10000000 %}" + loop + "{% set x = b|upper ~ b|lower %}" + end,
+       jinja::Code::kLimit},
+      {"{% set b = '東京' * 10000000 %}" + loop + "{% set x = b is lower %}" + end,
        jinja::Code::kLimit},
       {"{% set b = (' ' * 60000000) ~ '0' %}" + loop + "{% set x = b|from_json %}" + end,
        jinja::Code::kLimit},

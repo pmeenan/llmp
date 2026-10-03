@@ -291,7 +291,7 @@ std::expected<Rendered, Error> RenderDeepSeekV4(const Conversation& c) {
     w.Special(kAssistant);
     w.Special(thinking ? kThinkStart : kThinkEnd);
   }
-  return w.Take();
+  return w.Finish();
 }
 
 std::expected<Rendered, Error> RenderDeepSeekV4ChatV2(const Conversation& c) {
@@ -382,7 +382,7 @@ std::expected<Rendered, Error> RenderDeepSeekV4ChatV2(const Conversation& c) {
     w.Special(kAssistant);
     w.Special(thinking ? kThinkStart : kThinkEnd);
   }
-  return w.Take();
+  return w.Finish();
 }
 
 }  // namespace jitllm::chat

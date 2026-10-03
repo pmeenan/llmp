@@ -1149,8 +1149,9 @@ accepted".
   tokenizer optional, or no Unicode data at all.
 - **Own tables.** jitLLM does not copy llama.cpp's file.
   `tools/gen-unicode-tables` generates `src/tokenizer/unicode_data.cc` from UnicodeData.txt,
-  PropList.txt and DerivedNormalizationProps.txt of UCD 15.1.0, each pinned
-  by SHA-256, with its own layout (two-stage tables, NFC data) and no use of
+  PropList.txt and DerivedNormalizationProps.txt of UCD 15.1.0 (and, since
+  2026-10-02, SpecialCasing.txt and DerivedCoreProperties.txt, for Python's
+  case operations in the chat templates), each pinned by SHA-256, with its own layout (two-stage tables, NFC data) and no use of
   Python's `unicodedata`. The file declares `Apache-2.0 AND Unicode-3.0` and
   Unicode's copyright. UCD 15.1.0 keeps the pre-tokenizers' classification
   identical to llama.cpp's, the oracle for DeepSeek V4.
@@ -3228,18 +3229,23 @@ user brings gets chat routes when its template can be rendered exactly:
 - **Native family renderers first.** A native renderer serves a template
   when its SHA-256 is one the renderer's golden fixtures pin (as before),
   or when it is *probe-equivalent*: the interpreter renders the
-  template's own text on the family's probe corpus (23 conversations ×
-  thinking unset/on/off × each reasoning effort the renderer accepts ×
-  `preserve_thinking` off; tools, tool calls and results, reasoning,
-  empty and missing content, Unicode, whitespace, every role order) and
-  the native renderer's text equals it on every probe, or both refuse it
-  (the template raises; the renderer returns `kInvalid`). A probe the
+  template's own text on the family's probe corpus (23 conversations, and
+  six more where a family's template variants part, Gemma 4's, ×
+  thinking unset/on/off × each reasoning effort the renderer accepts × `preserve_thinking` off; tools, tool calls and
+  results, reasoning, empty and missing content, Unicode, whitespace,
+  every role order) and the native renderer's text equals it on every
+  probe, or both refuse it (the template raises; the renderer returns
+  `kInvalid`). A probe the
   native renderer does not implement (`kUnsupported`) is no evidence
   either way; at least 30 equal renderings are required. Renderers are
   per family with variant options (Qwen3.8's covers the checkpoint's
   template and Unsloth's GGUF variant); a variant without fixtures of its
   own has no pinned hash and is chosen only by probe. Equivalence is
-  evidence on the probe corpus, not a proof for every conversation.
+  evidence on the probe corpus, not a proof for every conversation. A
+  request the chosen native renderer does not implement (`kUnsupported`)
+  renders through the interpreter, from the template's own text, with
+  the native renderer's stop tokens; a native rendering is bounded as
+  the interpreter's output is.
 - **Otherwise the template itself, interpreted.** A bounded, sandboxed
   interpreter (`src/chat/jinja*`) renders the subset of Jinja2 that chat
   templates use, with Hugging Face transformers' semantics
@@ -3258,8 +3264,9 @@ user brings gets chat routes when its template can be rendered exactly:
   (the model then has no chat routes, as before) or the request when it
   runs; nothing else is approximated. The subset is knowingly narrower
   than Jinja2 in a few corners no corpus template meets, where it renders
-  differently instead (docs/tokenizer.md lists them: ASCII-only case
-  mapping, generators printed, attributes of numbers).
+  differently instead (docs/tokenizer.md lists them: generators printed,
+  attributes of numbers). Case mapping is Python's in full (amended
+  2026-10-02; it was ASCII-only).
 - **Bounds** (`chat::jinja::Limits`, each reached as an error, never a
   truncated rendering): template 1 MiB; 262,144 syntax nodes; tree and
   block nesting 256; evaluator recursion 512; macro nesting 32; list and

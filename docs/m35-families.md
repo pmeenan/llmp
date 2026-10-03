@@ -145,7 +145,7 @@ checkpoints above by number.
 | Tekken (131,072, tiktoken-based) | Mistral Nemo onward | new | 6 |
 | tiktoken 163,840 | Kimi | new | 5 |
 | Other byte-level BPE pre-tokenizers | GLM (151–155K), MiniMax (200K), Laguna (digit split), Granite (100K) | new per family | 13 |
-| Templates: harmony channels, ATEM, Gemma channels, `[INST]`/`[THINK]`, Kimi sections, GLM `[gMASK]` | per family | rendering through the interpreter (D-067 as amended; Gemma 4, gpt-oss, Kimi, GLM-4.7, Mistral Small 4, Nemotron 3, Llama, MiMo match transformers in the [template corpus](experiments/chat-template-corpus/README.md); ATEM not checked); stop rules (harmony's `<\|call\|>` and channel ends) and output parsing remain per family; a native renderer only where one is needed | 1, 2, 5, 6, 9, 13 |
+| Templates: harmony channels, ATEM, Gemma channels, `[INST]`/`[THINK]`, Kimi sections, GLM `[gMASK]` | per family | Gemma 3 and 4 (and their Unsloth, E2B/E4B and 2026-04 variants) render natively and in linear time; the rest through the interpreter (D-067 as amended; gpt-oss, Kimi, GLM-4.7, Mistral Small 4, Nemotron 3, Llama, MiMo match transformers in the [template corpus](experiments/chat-template-corpus/README.md); ATEM not checked); stop rules (harmony's `<\|call\|>` and channel ends) and output parsing remain per family; a native renderer only where one is needed | 1, 2, 5, 6, 9, 13 |
 | Stored MTP layer | Qwen3.5/3.8, Ornith, GLM, Nemotron | have (Qwen3.8, one layer) | 4, 10, 13 |
 | Multi-layer MTP | MiMo V2 (3), Step (3) | new | 3 |
 | KV-sharing assistant drafter (Q-only, centroid head) | Gemma 4 | new | 1, 11 |

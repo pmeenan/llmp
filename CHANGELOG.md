@@ -23,6 +23,22 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   tokens in the template's own text become control tokens. Models whose
   templates were refused at registration now register; the request and
   response formats and `jitllm-inference-version` are unchanged.
+- Native renderers for the Gemma 3 and Gemma 4 chat templates (template
+  support only: jitLLM has no Gemma runner yet). By hash: Google's Gemma 4
+  template (`ae53464b…`, 26B-A4B, 31B, 12B and its QAT GGUFs), the E2B and
+  E4B one (`0a2c8073…`) and Gemma 3's (`7de1c58e…`, Unsloth's copies and
+  the converted GGUFs surveyed); by probe: Unsloth's Gemma 4 templates,
+  Google's of 2026-04-28 and 2026-05-18 (NVIDIA's NVFP4 checkpoints carry
+  the first), Gemma 3n's and 270m's. They equal transformers byte for
+  byte, in time linear in the conversation (the templates themselves are
+  quadratic). Gemma 4 stops at `<turn|>` and at `<|tool_response>` (as its
+  generation_config.json lists), so a model given tools ends its turn at a
+  call instead of writing the tool's response itself.
+- A case a native chat renderer does not implement now renders through
+  the interpreter from the template's own text instead of failing the
+  request, and native renderings are bounded as interpreted ones are
+  (32 MiB of text).
+
 - The community DeepSeek V4 Flash IQ2_XXS GGUF's "chat-v2" template
   (`antirez/deepseek-v4-gguf@f71f23d5`, SHA-256 `87249207…`) has a native
   renderer, so that model registers with chat routes instead of being
@@ -149,6 +165,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Chat templates' case mapping (`upper`, `lower`, `capitalize`, `title`,
+  case-insensitive `dictsort`, `sort` and `unique`, the `lower` and `upper`
+  tests) is now Python's in full, as transformers renders it, instead of
+  ASCII-only: `ß` upper-cases to `SS`, Cyrillic and Greek map (with the
+  final sigma), and the `title` filter follows Jinja2's own rule. The
+  Unicode tables gain the case data of UCD 15.1.0's SpecialCasing.txt and
+  DerivedCoreProperties.txt.
 - DeepSeek prefills in 4,096-row chunks by default (was 2,048): 12-15%
   faster at 8K-32K tokens on the 0731 GGUF for 1.28 GiB more fixed memory.
   Above a 262,144-token context the default stays 2,048 rows, whose

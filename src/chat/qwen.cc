@@ -267,7 +267,7 @@ std::expected<Rendered, Error> RenderQwen(const Conversation& c, const Variant& 
       w.Text("\n");
     }
   }
-  return w.Take();
+  return w.Finish();
 }
 
 }  // namespace

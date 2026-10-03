@@ -24,13 +24,16 @@ constexpr auto kChatV2Efforts = std::to_array<std::string_view>({"high", "unknow
 constexpr auto kQwenEfforts = std::to_array<std::string_view>({"xhigh", "medium", "low"});
 constexpr auto kQwenUnslothEfforts =
     std::to_array<std::string_view>({"xhigh", "high", "medium", "low"});
+// Gemma's templates read no reasoning effort: probes check it is ignored.
+constexpr auto kGemmaEfforts = std::to_array<std::string_view>({"high"});
 
 // The native renderers. Each hash is of the template's exact UTF-8 bytes
 // as the checkpoint ships it, pinned by that template's fixtures
 // (docs/tokenizer.md records where from); a template with another hash may
 // still be recognized by probe equivalence. Unsloth's Qwen3.8 GGUF variant
-// has no pinned hash: probe equivalence alone selects it.
-const std::array<Template, 4> kTemplates = {{
+// and the Gemma 4 variants have no pinned hash: probe equivalence alone
+// selects them.
+const std::array<Template, 10> kTemplates = {{
     {"e643c31fcec17f342f72296e02c46d35846bf4c70f6a0271f23bad73fd4eb645", "deepseek-v4-flash-0731",
      &RenderDeepSeekV4, StopRules{{"<｜end▁of▁sentence｜>"}}, kDeepSeekEfforts},
     {"872492071c22c8d2025238120309ffbddddb666b49f4433f55c19b69bf51af27",
@@ -40,6 +43,18 @@ const std::array<Template, 4> kTemplates = {{
      &RenderQwen38, StopRules{{"<|im_end|>", "<|endoftext|>"}}, kQwenEfforts},
     {"", "qwen3.8-flash-next-unsloth", &RenderQwen38Unsloth,
      StopRules{{"<|im_end|>", "<|endoftext|>"}}, kQwenUnslothEfforts},
+    {"7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4", "gemma-3", &RenderGemma3,
+     StopRules{{"<end_of_turn>"}}, kGemmaEfforts},
+    {"ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4", "gemma-4", &RenderGemma4,
+     StopRules{{"<turn|>", "<|tool_response>"}}, kGemmaEfforts, true},
+    {"0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5", "gemma-4-e",
+     &RenderGemma4E, StopRules{{"<turn|>", "<|tool_response>"}}, kGemmaEfforts, true},
+    {"", "gemma-4-unsloth", &RenderGemma4Unsloth, StopRules{{"<turn|>", "<|tool_response>"}},
+     kGemmaEfforts, true},
+    {"", "gemma-4-e-unsloth", &RenderGemma4EUnsloth, StopRules{{"<turn|>", "<|tool_response>"}},
+     kGemmaEfforts, true},
+    {"", "gemma-4-2604", &RenderGemma4April, StopRules{{"<turn|>", "<|tool_response>"}},
+     kGemmaEfforts, true},
 }};
 
 }  // namespace

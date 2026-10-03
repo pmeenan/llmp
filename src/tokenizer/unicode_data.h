@@ -41,6 +41,20 @@ struct Composition {
   char32_t composite;
 };
 
+// A code point's full case mapping: `length` code points at `offset` in
+// kCaseParts.
+struct CaseMapping {
+  char32_t code_point;
+  std::uint16_t offset;
+  std::uint8_t length;
+};
+
+// Code points first..last, inclusive.
+struct CodePointRange {
+  char32_t first;
+  char32_t last;
+};
+
 extern const std::string_view kVersion;
 // Two-stage tables: index[cp >> 8] names the block holding cp's byte.
 extern const std::span<const std::uint16_t, kBlocks> kPropertyIndex;
@@ -52,6 +66,18 @@ extern const std::span<const Decomposition> kDecompositions;
 extern const std::span<const char32_t> kDecompositionParts;
 // Sorted by (first, second).
 extern const std::span<const Composition> kCompositions;
+// Python's full case mappings, where they are not the code point itself;
+// sorted by code point.
+extern const std::span<const CaseMapping> kLowerFull;
+extern const std::span<const CaseMapping> kUpperFull;
+extern const std::span<const CaseMapping> kTitleFull;
+extern const std::span<const char32_t> kCaseParts;
+// The Lowercase, Uppercase, Cased and Case_Ignorable properties: sorted,
+// disjoint, not adjacent.
+extern const std::span<const CodePointRange> kLowercase;
+extern const std::span<const CodePointRange> kUppercase;
+extern const std::span<const CodePointRange> kCased;
+extern const std::span<const CodePointRange> kCaseIgnorable;
 
 }  // namespace jitllm::tokenizer::unicode_data
 
