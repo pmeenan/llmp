@@ -39,6 +39,52 @@ one Spark and on two.
 
 ---
 
+## D-102: Limits come from real resources, not time or abuse caps  (2026-10-03, status: accepted at the owner's direction of 2026-10-03; applies across the runtime; amends how D-067's interpreter bounds, D-097's intake bounds and deadlines, and D-101's starting bounds are chosen; each affected limit is changed in its own reviewed task)
+
+**Decision.** jitLLM is run locally by the hardware's owner, not offered
+as a service, so maximum flexibility and capability come before
+protection against abuse (owner, 2026-10-03: "Where possible, we
+shouldn't impose time-based hard limits. Just RAM or other actual hard
+limits … DoS is less important than giving them maximum flexibility and
+capability … across the board").
+
+- A hard limit exists only where a real resource requires it: memory
+  (host, device, staging), disk, descriptors, a model's context or
+  position table, an artifact's or format's own bounds, or arithmetic
+  overflow. Its value follows that resource, measured or derived, and
+  scales with the hardware where it can.
+- No time-based hard limit stops legitimate work: no wall-clock caps on a
+  request, a render, a generation or a job, and no work budgets chosen to
+  bound CPU time. Long work stays cancellable by the client and between
+  units, and progress is reported.
+- Count caps that exist only to bound abuse (messages a request, stop
+  strings, questions, queue length and the like) are removed or raised to
+  what memory actually allows.
+- Detection is not a limit: watchdogs that notice a hung backend or a
+  dead peer may report, log and recover, but they are not tuned to cut
+  off slow, healthy work. Connection hygiene that frees idle resources
+  (idle keep-alive) stays where it costs the user nothing.
+- Where a bound remains, it is configurable, documented with the resource
+  it protects, and refusal messages name it.
+
+**Context.** Earlier choices bounded work by time or count for abuse
+resistance: the template interpreter's step and work budgets (worst case
+about 6 s, D-067), the chat route's intake table (1 to 1,024 messages, 4
+stop strings, a 64-request queue, a non-streaming deadline capped at 4
+hours, head and body arrival timeouts, D-097), and similar starting
+bounds in D-101. Those suit a public service, not a local owner, whose
+agents may send long histories, big batches or slow, huge generations.
+
+**Consequences.** An audit lists every such limit with the resource it
+protects (or none) and a proposed change; each change lands in its own
+reviewed task, with docs and tests. Memory-derived bounds stay, made
+configurable. The privacy defaults (D-014: loopback and tailnet binding)
+are unchanged; an owner who binds the inference endpoint elsewhere may
+want abuse limits back, which configuration can provide.
+
+**Reopen if** jitLLM is offered as a shared or public service, or a
+removed limit turns out to protect a real resource.
+
 ## D-101: Decision models through the Jev/SystemOne API, multimodal file inputs with each family's bring-up, and OpenAI-shaped media generation routes  (2026-10-02, status: accepted at the owner's request of 2026-10-02, with the owner's answers that day on DeepSeek V4 Flash Vision-Exp, the audio carrier, confidence and the TTS testbeds; scope and plan only, nothing built; moves D-042's file inputs from M10 to M3.5 and M4; makes decision heads an exception to D-044's classification deferral; schedules the image-output API features.md left unscheduled; adds public routes, D-016)
 
 **Decision.**
