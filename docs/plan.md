@@ -1154,6 +1154,21 @@ it appears.
       matched 8K HTTP C4 +20% and C2 +9.8%, C1 unchanged with an identical
       reply. Native leads current TensorFold NVFP4 at C1/C2, is level at C4 and trails
       legacy Mia 18% at C4; replies under concurrency vary with arrival timing.
+- [ ] **Request slots sized by memory** (the owner, 2026-10-03). A
+      model's number of concurrent request slots is no longer fixed at
+      four: it follows the memory the node has free for slots (each
+      slot's fixed buffers and state, under D-055's reclaim order and
+      D-102), and grows or shrinks as that changes. Measure each model's
+      throughput and per-request latency as slots rise, at short and long
+      prompts; where returns diminish and individual requests are delayed
+      significantly, that knee becomes the model's default cap,
+      configurable. Wave kernels past their current 16-row joined
+      products (four slots at depth four) need wider paths for this.
+      Proposed alongside, not yet decided: fair-share preemption when
+      slots are full (setting the longest generator aside, exact
+      resume), time-slicing a pending model switch instead of draining
+      the batch (D-069, pulled from M6), and literal completions joining
+      the batch.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then
