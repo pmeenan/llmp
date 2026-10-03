@@ -2020,6 +2020,17 @@ new matched controls ([exl3-bringup.md](exl3-bringup.md)).
       deletion at startup; miss reasons and fallback reporting.
 - [ ] **Partial eviction** of a quiescent model, reloading only missing
       dependencies (D-008).
+- [ ] **Swap pipelining and load order** (owner, 2026-10-02): explore
+      overlapping page-in with execution, so each layer runs once its
+      extents are resident instead of after the whole closure (graphs wait
+      on per-layer load completion or split per layer), and order page-in
+      by first use: dense and attention weights and restored state before
+      later layers, a drafter (DeepSeek's DSpark, Qwen3.8's MTP) after the
+      first token. Measure time to first token after a swap at several
+      prompt lengths, cached continuation included, against M3's
+      load-then-run full swap (DeepSeek's page-in is about 8 s of a
+      9.7 s worst swap,
+      [fast-swap](experiments/fast-swap/swap.md)); keep what pays.
 - [ ] **Concurrency when it fits:** all-resident cohorts under
       full-envelope checks, reporting whether requests ran concurrently or
       time-sliced.
@@ -2161,6 +2172,11 @@ sustained-use schedule and duration.
 - [ ] **Loading policies:** eager active-model loading that keeps inactive
       extents (the feasibility study's recommended first policy) and routed
       demand paging, both selectable, compared at the named budgets.
+      With M6's swap pipelining: after a swap, load the routed experts
+      each layer selects ahead of a background load of the rest, demand
+      reads taking priority over background reads on the shared SSD
+      bandwidth, and measure time to first token for a continuation
+      against loading everything first (owner, 2026-10-02).
 - [ ] **Expert layout:** expert compaction and demand-paged dispatch from
       the M7 GGML proof, building on M3's initial pointer-table or
       uniform-stride choice per format, and the MoE mapping in v0 artifacts.
