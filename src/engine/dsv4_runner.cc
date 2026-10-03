@@ -68,6 +68,11 @@ constexpr std::uint32_t kRangeCapacity = 4096;
 
 }  // namespace
 
+void SetDsv4ServedPrefill(Dsv4Options& options) {
+  options.prefill_outa_hca = true;
+  options.prefill_outa_hca_partial = true;
+}
+
 // ------------------------------------------------------------------ slots
 
 std::array<Dsv4Runner::RequestState*, Dsv4Runner::kRequestSlots> Dsv4Runner::Requests() {

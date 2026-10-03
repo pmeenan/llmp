@@ -136,13 +136,21 @@ struct Dsv4Options {
   // The output-A/HCA prefill on full 4,096-row chunks (Dsv4Model): off for
   // the harnesses unless asked, on in serving. No public configuration.
   bool prefill_outa_hca = false;
-  // And on partial chunks too: internal, off (Dsv4Model).
+  // And on partial chunks too (Dsv4Model): off for the harnesses unless
+  // asked, on in serving.
   bool prefill_outa_hca_partial = false;
   // Independent request slots (1 to 4): 1 keeps the default request alone,
   // as the harnesses run; more provision that many request states (each
   // its own virtual state ceiling, snapshot and output staging) and waves.
   std::uint32_t wave_slots = 1;
 };
+
+// The prefill arithmetic jitllm-runtime serves DeepSeek with: the
+// output-A/HCA prefill on every prefill chunk of 64 to 4,096 rows, a
+// prompt's last, partial one included (docs/experiments/ds4-output-prefix,
+// "Default-on acceptance"). Its own guards keep other weights, devices and
+// chunks on ordinary math.
+void SetDsv4ServedPrefill(Dsv4Options& options);
 
 // What a chunk computes beside its target rows' own work.
 enum class Dsv4ChunkKind : std::uint8_t {

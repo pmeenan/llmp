@@ -102,8 +102,9 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
   | Exact (reference) mode, `--exact on` | harness only: llama.cpp's graph node for node, unfused, and D-092's row-invariant verify |
 
 - **Prefill arithmetic:** the runtime serves the output-A/HCA prefill on
-  full 4,096-row chunks (both DeepSeek GGUFs), qualified against the
-  32K/128K oracle histories, 128K perplexity and the 127K answer task
+  every prefill chunk of 64 to 4,096 rows (both DeepSeek GGUFs), qualified
+  against the 32K/128K oracle histories under the tie-aware greedy rule
+  (D-085, 2026-10-03), 128K perplexity and the 127K answer task
   ([default-on acceptance](experiments/ds4-output-prefix/README.md#default-on-acceptance)).
 - **Context:** exercised at 4,096 (against the oracle) and at 8,704, the
   runtime's original default (8,192 tokens of conversation in the swap

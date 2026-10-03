@@ -346,23 +346,34 @@ __launch_bounds__(W * 32, 1) __global__ void VecQKernel(const VecQDesc a) {
   } else {
     // One block per distinct expert of the chunk (and row block): the
     // first (token, slot) pair naming it computes every pair that does.
+    // The first warp scans the pairs 32 at a time (a wave's 16 rows name
+    // up to 128; one thread's serial scan of them cost more than the
+    // short rows' products), keeping them in pair order.
     const int s = static_cast<int>(blockIdx.y);
     expert = a.ids[((s / a.used) * a.ids_stride) + (s % a.used)];
-    if (tid == 0) {
+    if (threadIdx.y == 0) {
+      const int lane = static_cast<int>(threadIdx.x);
+      const int total = a.tokens * a.used;
       int n = 0;
       bool owner = true;
-      for (int s2 = 0; s2 < a.tokens * a.used; ++s2) {
+      for (int base = 0; base < total && owner; base += 32) {
+        const int s2 = base + lane;
         const int t = s2 / a.used;
         const int k = s2 % a.used;
-        if (a.ids[(t * a.ids_stride) + k] == expert) {
-          if (s2 < s) {
-            owner = false;
-            break;
-          }
-          pairs[n++] = (t << 8) | k;
+        const bool match = s2 < total && a.ids[(t * a.ids_stride) + k] == expert;
+        const unsigned ballot = __ballot_sync(0xffffffffU, match);
+        if (n == 0 && ballot != 0) {
+          // The first pair naming the expert owns it.
+          owner = base + __ffs(static_cast<int>(ballot)) - 1 == s;
         }
+        if (owner && match) {
+          pairs[n + __popc(ballot & ((1U << lane) - 1U))] = (t << 8) | k;
+        }
+        n += __popc(ballot);
       }
-      count = owner ? n : 0;
+      if (lane == 0) {
+        count = owner ? n : 0;
+      }
     }
   }
   __syncthreads();

@@ -202,11 +202,11 @@ class Dsv4 final : public Llm {
     // (engine/dsv4_runner.h), whose row-local products read each weight
     // once for all of them.
     options_.wave_slots = kDsv4RequestSlots;
-    // The output-A/HCA prefill on full 4,096-row chunks, where it passes
-    // every registered quality bound on both GGUFs
-    // (docs/experiments/ds4-output-prefix, "Default-on acceptance"); its
-    // own guards keep other weights, devices and chunks on ordinary math.
-    options_.prefill_outa_hca = true;
+    // The output-A/HCA prefill on every prefill chunk of 64 rows or more,
+    // where it passes every registered quality control on both GGUFs under
+    // the tie-aware rule (docs/experiments/ds4-output-prefix, "Default-on
+    // acceptance").
+    engine::SetDsv4ServedPrefill(options_);
     if (speculate_) {
       options_.drafter = roles.installed / drafter_id_;
     }

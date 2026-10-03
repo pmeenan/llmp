@@ -274,9 +274,11 @@ adds 4.15% whole-prefill throughput with byte-exact full heads. The ds4
 stage mechanisms are now fast-plan defaults on prefill chunks of 64 rows
 or more, a prompt's last, partial one included, and on the 0731 GGUF's
 types (runtime 7K prefill +3–4% on both GGUFs). Output-A/HCA is now
-serving's default on full 4,096-row chunks, where every registered quality
-control passes on both GGUFs (7K chat +7% alone, +12% at C4); partial
-chunks fail the 32K history and stay off.
+serving's default on every prefill chunk of 64 rows or more, where every
+registered quality control passes on both GGUFs under the owner's
+tie-aware greedy rule (D-085, 2026-10-03); with the wave pair-scan fix,
+7K chat C4 is 1.08× ds4 in one session before partial chunks, which add
+5–8% more.
 Qwen chat decodes up to four requests in one wave (joined products of up to
 16 rows, MXFP8/routed bit-exact per request; depth 2 when shared). Against
 current TensorFold NVFP4 it leads at C1/C2 and is level at C4 (25.7 / 29.7 /

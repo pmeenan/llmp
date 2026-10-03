@@ -12,11 +12,23 @@
         reference form); at each step the change in A's top-two logit margin
         when B scores the same two tokens; the bound is the 99th percentile.
     judge.py greedy ORACLE.json HARNESS NAME --vocab V --bound B
+                    [--reference REF [--tolerance T]]
         jitLLM forced on the oracle's greedy tokens: at each step its argmax
         is the oracle's token, or the oracle's log-probability margin between
         its token and jitLLM's argmax is below B (a near-tie; when jitLLM's
         argmax is outside the oracle's top list, the margin is at least the
         oracle token's lead over the list's last). Every exception is listed.
+        `strict_pass`: no step outside (the rule before 2026-10-03). With
+        REF, the model's pinned reference run on this history (NAME's
+        logits; D-085 names each, and changing one is the owner's decision),
+        `pass` applies the tie-aware rule (the owner, 2026-10-03; README.md,
+        "Correctness"): every outside step a tie flip (jitLLM's own logit
+        margin of its argmax over the oracle's token below B, and its NLL of
+        that token less than B above the oracle's own), at most max(2, REF's
+        outside steps) of them, and the oracle continuation's conditional
+        perplexity ratio to the oracle's own at most T (default 0.005) above
+        REF's. A REF with an outside step past the per-step tolerance, or
+        more than 2, is refused. Without REF, `pass` is `strict_pass`.
     judge.py repeat A B NAME --vocab V
         Two runs of the same forced prompt: the first step whose logits
         differ, and the largest difference (RE-031).
@@ -65,7 +77,12 @@ def load_logits(directory, name, vocab):
 
 
 def arg(flag, default=None, cast=str):
-    return cast(sys.argv[sys.argv.index(flag) + 1]) if flag in sys.argv else default
+    if flag not in sys.argv:
+        return default
+    at = sys.argv.index(flag) + 1
+    if at >= len(sys.argv):
+        raise SystemExit(f"{flag} needs a value")
+    return cast(sys.argv[at])
 
 
 def inputs(oracle_path, outdir, name):
@@ -96,25 +113,73 @@ def noise(a_dir, b_dir, name, vocab):
             "argmax_equal": int(sum(np.argmax(a[k]) == np.argmax(b[k]) for k in range(steps)))}
 
 
-def greedy(oracle_path, harness, name, vocab, bound):
-    record = json.loads(Path(oracle_path).read_text())
-    logits = load_logits(harness, name, vocab)
+def score(record, logits, bound):
+    """One forced run against the oracle: agreement, near-ties, outside steps
+    split into tie flips and violations, and the continuation ratio."""
     steps = len(record["steps"])
     require_count(len(logits), steps, "greedy rows")
-    agree, near, violations = 0, [], []
+    agree, near, outside, flips, violations = 0, [], [], [], []
+    excess = []  # jitLLM's NLL of the oracle's token minus the oracle's own
     for k in range(steps):
         step = record["steps"][k]
-        mine = int(np.argmax(logits[k]))
+        row = logits[k]
+        peak = float(row.max())
+        nll = peak + math.log(float(np.exp(row - peak).sum())) - float(row[step["id"]])
+        excess.append(nll + float(step["logprob"]))
+        mine = int(np.argmax(row))
         if mine == step["id"]:
             agree += 1
             continue
         top = {int(t): float(v) for t, v in step["top"]}
         lead = step["logprob"] - top.get(mine, min(top.values()) if top else -math.inf)
         entry = {"step": k, "oracle": step["id"], "jitllm": mine, "oracle_margin": lead,
-                 "in_top": mine in top}
-        (near if lead < bound and mine in top else violations).append(entry)
-    return {"steps": steps, "agree": agree, "near_ties": near, "violations": violations,
-            "bound": bound, "pass": not violations}
+                 "in_top": mine in top, "jitllm_margin": float(row[mine] - row[step["id"]]),
+                 "nll_excess": excess[-1]}
+        if lead < bound and mine in top:
+            near.append(entry)
+            continue
+        outside.append(entry)
+        # The per-step tolerance (README.md, "Correctness"): jitLLM itself
+        # holds the oracle's token within the bound, and its NLL of that
+        # token is within the bound of the oracle's own. An owner-accepted
+        # tolerance, not a calibrated test of a tie.
+        tie = entry["jitllm_margin"] < bound and entry["nll_excess"] < bound
+        (flips if tie else violations).append(entry)
+    # The oracle continuation's conditional perplexity against the oracle's
+    # own (the oracle's greedy path, so every engine sits above 1).
+    continuation = math.exp(sum(excess) / steps)
+    return {"steps": steps, "agree": agree, "near_ties": near, "outside": len(outside),
+            "tie_flips": flips, "violations": violations, "continuation_ratio": continuation}
+
+
+def greedy(oracle_path, harness, name, vocab, bound, reference, tolerance):
+    record = json.loads(Path(oracle_path).read_text())
+    result = score(record, load_logits(harness, name, vocab), bound)
+    result.update(bound=bound, strict_pass=result["outside"] == 0)
+    if reference is None:
+        # Without the model's reference run only the strict rule applies.
+        result["pass"] = result["strict_pass"]
+        return result
+    if not reference or not (Path(reference) / f"{name}.logits.f32").is_file():
+        raise SystemExit(f"--reference {reference!r}: no {name}.logits.f32 there")
+    ref = score(record, load_logits(reference, name, vocab), bound)
+    if ref["violations"] or ref["outside"] > 2:
+        raise SystemExit(
+            f"the reference run {reference} has {ref['outside']} outside steps, "
+            f"{len(ref['violations'])} past the per-step tolerance: a reference past "
+            "the tolerance or the default cap of 2 needs an owner decision")
+    # The tie-aware rule (the owner, 2026-10-03; D-085 as refined): every
+    # outside step a tie flip, no more of them than max(2, the reference's
+    # outside steps), and the continuation ratio at most `tolerance` above
+    # the reference run's (the model's pinned reference on this history).
+    cap = max(2, ref["outside"])
+    allowed = ref["continuation_ratio"] + tolerance
+    result.update(reference={"outside": ref["outside"],
+                             "continuation_ratio": ref["continuation_ratio"]},
+                  flip_cap=cap, continuation_allowed=allowed, tolerance=tolerance)
+    result["pass"] = (not result["violations"] and result["outside"] <= cap and
+                      result["continuation_ratio"] <= allowed)
+    return result
 
 
 def repeat(a_dir, b_dir, name, vocab):
@@ -157,7 +222,8 @@ def main():
     elif command == "noise":
         result = noise(sys.argv[2], sys.argv[3], sys.argv[4], vocab)
     elif command == "greedy":
-        result = greedy(sys.argv[2], sys.argv[3], sys.argv[4], vocab, arg("--bound", 1.0, float))
+        result = greedy(sys.argv[2], sys.argv[3], sys.argv[4], vocab, arg("--bound", 1.0, float),
+                        arg("--reference"), arg("--tolerance", 0.005, float))
     elif command == "repeat":
         result = repeat(sys.argv[2], sys.argv[3], sys.argv[4], vocab)
     elif command == "ppl":

@@ -174,14 +174,24 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- DeepSeek's output-A/HCA prefill now also takes a prompt's last, partial
+  chunk (64 rows or more), which passes every quality control under the
+  owner's tie-aware greedy rule: 7K-token chat completes 5% faster alone
+  and 7.3% (community GGUF) and 8.5% (0731) faster four at a time (first
+  token 8.3 → 7.3 s on the
+  community GGUF, 9.4 → 8.3 s on the 0731). Replies change with the
+  arithmetic.
 - DeepSeek serves its output-A/HCA prefill by default on full 4,096-row
   chunks, where it passes every registered quality bound on both GGUFs:
   7K-token chat completes 7% faster alone and 12% faster four at a time
   (first token 9.8 → 8.3 s on the community GGUF, 10.9 → 9.4 s on the
-  0731). Replies change with the arithmetic; partial chunks keep ordinary
-  math. Those plans are no longer keyed by chunk position, so chunks of
+  0731). Replies change with the arithmetic. Those plans are no longer keyed by chunk position, so chunks of
   one shape share a plan. Four-request decode waves read each dense
-  weight once for all requests (bit-identical to before, +2–3% a wave).
+  weight once for all requests and find their routed experts' rows with
+  one warp's ballots instead of one thread's scan (bit-identical to
+  before, waves 7% faster). With output-A/HCA, four concurrent 7K-token
+  chats complete 15–16% faster on both GGUFs, and four 124-token chats
+  12% faster.
 - DeepSeek prefill is 3–4% faster on both GGUFs through the runtime
   (matched 7K-token prompts, one and four at a time). A prompt's last,
   partial prefill chunk of 64 rows or more now takes the stage mechanisms

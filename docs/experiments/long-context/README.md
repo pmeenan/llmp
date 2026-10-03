@@ -607,6 +607,18 @@ between the two is under the bound. **The bound was recorded before each
 model's first comparison:** the 99th percentile of the top-two margin's
 move between jitLLM's default fast plan and its reference form
 (`--exact`), forced on the same tokens at 32K (dsv4-decode's rule).
+**Since 2026-10-03 the greedy control is tie-aware** (the owner, D-085),
+judged against the model's pinned reference run for the history (D-085
+names them; changing one is the owner's decision). Outside steps are
+allowed only up to
+max(2, the reference's), and each must meet a per-step tolerance: jitLLM's
+own margin of its argmax over the oracle's token, and its NLL of that
+token above the oracle's own, both below the bound. The oracle
+continuation's conditional perplexity ratio to the oracle's own may also
+exceed the reference run's by at most 0.5 points. `judge.py greedy
+--reference` reports both verdicts (`pass`, `strict_pass`). The results
+below were judged under the earlier, strict rule, and each still passes
+([re-scoring](../ds4-output-prefix/README.md#tie-aware-re-scoring-and-partial-chunks)).
 Perplexity: the second half of one window of the book, against
 llama-perplexity (DeepSeek) and vLLM's prompt log-probabilities (Qwen3.8),
 on the oracle's own token IDs.

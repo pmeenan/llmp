@@ -58,6 +58,88 @@ class JudgeTest(unittest.TestCase):
         self.oracle.write_text(json.dumps({"steps": []}))
         self.greedy(self.b, ok=False)
 
+    # The oracle prefers token 0 by 2.9 nats at every step (outside a 1.0
+    # bound). [3, 0] agrees; [2.9, 3.0] is a tie flip (jitLLM's own margin
+    # 0.1, its NLL of token 0 0.644 nats over the oracle's).
+    AGREE, FLIP = [3, 0], [2.9, 3.0]
+
+    def tie_aware(self, rows, reference=None, ok=True):
+        self.oracle.write_text(json.dumps({"steps": [
+            {"id": 0, "logprob": -0.1, "top": [[0, -0.1], [1, -3.0]]}
+        ] * len(rows)}))
+        self.logits("a", rows)
+        extra = []
+        if reference is not None:
+            self.logits("b", reference)
+            extra = ["--reference", self.b]
+        return self.judge("greedy", self.oracle, self.a, "probe", "--vocab", 2, "--bound", 1.0,
+                          *extra, ok=ok)
+
+    def test_tie_aware_rule_needs_a_reference(self):
+        rows = [self.AGREE] * 299 + [self.FLIP]
+        # Without the model's reference run, only the strict rule.
+        result = self.tie_aware(rows, ok=False)
+        self.assertFalse(result["strict_pass"])
+        result = self.tie_aware(rows, [self.AGREE] * 300)
+        self.assertFalse(result["strict_pass"])
+        self.assertEqual([f["step"] for f in result["tie_flips"]], [299])
+
+    def test_tie_aware_per_step_tolerance(self):
+        clean = [self.AGREE] * 300
+        # jitLLM decisive (margin 3): a violation.
+        rows = [self.AGREE] * 299 + [[0, 3]]
+        self.assertEqual(self.tie_aware(rows, clean, ok=False)["violations"][0]["step"], 299)
+        # Margin 0.9, but its NLL 1.14 nats over the oracle's: a violation.
+        rows = [self.AGREE] * 299 + [[2.0, 2.9]]
+        self.assertEqual(self.tie_aware(rows, clean, ok=False)["violations"][0]["step"], 299)
+
+    def test_tie_flips_are_capped(self):
+        rows = [self.AGREE] * 2997 + [self.FLIP] * 3
+        # Three flips against a reference with none: past max(2, 0).
+        result = self.tie_aware(rows, [self.AGREE] * 3000, ok=False)
+        self.assertEqual((result["violations"], result["flip_cap"]), ([], 2))
+        # Two pass, against a reference with none or with two.
+        two = [self.AGREE] * 2998 + [self.FLIP] * 2
+        self.tie_aware(two, [self.AGREE] * 3000)
+        self.assertEqual(self.tie_aware(two, two)["flip_cap"], 2)
+
+    def test_a_reference_past_the_rule_is_refused(self):
+        # A reference with three outside steps (past the default cap), or
+        # one past the per-step tolerance, needs the owner's decision.
+        rows = [self.AGREE] * 2997 + [self.FLIP] * 3
+        self.assertIsNone(self.tie_aware(rows, rows, ok=False))
+        decisive = [self.AGREE] * 299 + [[0, 3]]
+        self.assertIsNone(self.tie_aware([self.AGREE] * 300, decisive, ok=False))
+
+    def test_a_missing_reference_is_a_clean_error(self):
+        self.oracle.write_text(json.dumps({"steps": [
+            {"id": 0, "logprob": -0.1, "top": [[0, -0.1], [1, -3.0]]}] * 2}))
+        empty = self.root / "empty"
+        empty.mkdir()
+        for args in (["--reference", empty], ["--reference", self.root / "absent"],
+                     ["--reference"]):
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    [sys.executable, "-B", str(JUDGE), "greedy", str(self.oracle), str(self.a),
+                     "probe", "--vocab", "2", "--bound", "1.0", *map(str, args)],
+                    capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertTrue(result.stderr.strip())
+
+    def test_continuation_is_relative_to_the_reference(self):
+        # Every step agrees, but each holds the oracle's token less firmly:
+        # the continuation ratio rises far past the reference's.
+        result = self.tie_aware([[1, 0]] * 300, [self.AGREE] * 300, ok=False)
+        self.assertGreater(result["continuation_ratio"],
+                           result["reference"]["continuation_ratio"] + 0.005)
+        # A model whose accepted run sits well above the oracle (as Qwen3.8's
+        # does, about 2%): the same continuation, and one flip, pass.
+        reference = [[1, 0]] * 300
+        result = self.tie_aware(reference, reference)
+        self.assertGreater(result["continuation_ratio"], 1.02)
+        self.tie_aware([[1, 0]] * 299 + [self.FLIP], reference)
+
     def test_repeat_and_noise_require_matching_nonempty_captures(self):
         for command in ("repeat", "noise"):
             with self.subTest(command=command):

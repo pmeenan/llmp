@@ -22,11 +22,18 @@ namespace {
 namespace kg = kernels::ggml;
 namespace md = model;
 
-TEST(Dsv4PrefillPlan, InternalOptionDefaultsOff) {
+// Off for the harnesses unless asked; serving turns on both, partial
+// chunks included (docs/experiments/ds4-output-prefix, "Tie-aware
+// re-scoring and partial chunks").
+TEST(Dsv4PrefillPlan, HarnessesDefaultOffServingTakesEveryChunk) {
   EXPECT_FALSE(Dsv4Options{}.prefill_outa_hca);
   EXPECT_FALSE(Dsv4Model{}.prefill_outa_hca);
   EXPECT_FALSE(Dsv4Options{}.prefill_outa_hca_partial);
   EXPECT_FALSE(Dsv4Model{}.prefill_outa_hca_partial);
+  Dsv4Options served;
+  SetDsv4ServedPrefill(served);
+  EXPECT_TRUE(served.prefill_outa_hca);
+  EXPECT_TRUE(served.prefill_outa_hca_partial);
 }
 
 TEST(Dsv4PrefillPlan, RefusesInvalidFirstPositionBeforeGraphAllocation) {
@@ -36,9 +43,9 @@ TEST(Dsv4PrefillPlan, RefusesInvalidFirstPositionBeforeGraphAllocation) {
   Dsv4Model m;
   m.state = &state;
   m.prefill_outa_hca = true;
-  // A full 4,096-row chunk takes HCA; with the internal partial option any
-  // prefill chunk of 64 to 4,096 rows (a prompt's last, partial chunk
-  // included). A first position is refused for any other chunk, without
+  // A full 4,096-row chunk takes HCA; with the partial option (serving's
+  // default) any prefill chunk of 64 to 4,096 rows (a prompt's last,
+  // partial chunk included). A first position is refused for any other chunk, without
   // the option, past the compressed width it qualifies at, or past the
   // context.
   const kg::Dsv4ChunkShape hca{.rows = 2947, .hca_n_kv = 256};

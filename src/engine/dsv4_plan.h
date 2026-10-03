@@ -67,9 +67,9 @@ struct Dsv4Model {
   // the 256-compressed shape. Other rows retain ordinary math.
   bool prefill_outa_hca = false;
   // And on every prefill chunk of kDsv4StageMinRows to 4,096 rows, a
-  // prompt's last, partial one included. Internal and off: it failed the
-  // registered 32K fixed-history bound (docs/experiments/ds4-output-prefix,
-  // "Default-on acceptance").
+  // prompt's last, partial one included: serving's default too, under the
+  // tie-aware quality rule (docs/experiments/ds4-output-prefix, "Default-on
+  // acceptance"); off for the harnesses unless asked.
   bool prefill_outa_hca_partial = false;
 };
 

@@ -16,10 +16,12 @@ held-out perplexity condition and the frozen 127K-token variable-binding
 answer task, and passes the original-checkpoint 128K forced trajectory.
 These are focused attribution/quality results. The guarded native adapter
 also gains 4.97% in its own screen with exact candidate logits.
-**The runtime now serves DeepSeek with output-A/HCA on full 4,096-row
-chunks by default**, where every registered quality control passes on both
-GGUFs; partial chunks keep ordinary math, because there one control fails
-([default-on acceptance](#default-on-acceptance)).
+**The runtime now serves DeepSeek with output-A/HCA on every prefill chunk
+of 64 rows or more by default.** On full 4,096-row chunks every registered
+quality control passes on both GGUFs. Partial chunks fail the strict 32K
+history at two rows but pass under the owner's tie-aware rule
+([default-on acceptance](#default-on-acceptance),
+[tie-aware re-scoring](#tie-aware-re-scoring-and-partial-chunks)).
 
 ## Captured first-layer screen
 
@@ -567,23 +569,26 @@ against ds4's. `jitllm_dsv4_exec`, compact experts, frontier heads, Spark A,
   chunks pass. Its likelihood of the oracle's continuation is level
   with the others: 1.344718 against 1.344124 (full chunks) and 1.344185
   (current default). These are near-tie flips of a strict per-row gate,
-  but under the registered rule they fail, so partial chunks stay off
-  (`Dsv4Model::prefill_outa_hca_partial`, internal; `jitllm_dsv4_exec
-  --outa-partial`).
+  but under the registered rule they fail, so partial chunks stayed off
+  (`Dsv4Model::prefill_outa_hca_partial`; `jitllm_dsv4_exec
+  --outa-partial`). The owner's tie-aware rule admits them
+  ([below](#tie-aware-re-scoring-and-partial-chunks)).
 - **Repeats.** A fresh repeat of the every-chunk 32K run reproduces its
   logits byte for byte (`f5669a25…`).
 
 **The default.** `jitllm-runtime` turns the combination on for DeepSeek
-(`Dsv4Options::prefill_outa_hca`), on full 4,096-row chunks. Its own guards
-keep everything else on ordinary math:
+(`Dsv4Options::prefill_outa_hca`), on full 4,096-row chunks, and since the
+tie-aware rule on partial ones too (`prefill_outa_hca_partial`,
+[below](#tie-aware-re-scoring-and-partial-chunks)). Its own guards keep
+everything else on ordinary math:
 - output-A takes only Q8_0 [4,096, 8,192] output-A weights on a GB10;
   unless every layer's are, the runner turns the combination off
   entirely, output-A included;
 - HCA takes only chunks whose HCA layers' compressed cells are 256 wide
   (positions below 32,768);
-- partial, decode and verify chunks, and the reference mode, are
-  unchanged. A DSpark model's injected prefill chunks take it like plain
-  ones (acceptance [below](#dspark-with-output-ahca)).
+- chunks under 64 rows, decode and verify chunks, and the reference mode,
+  are unchanged. A DSpark model's injected prefill chunks take it like
+  plain ones (acceptance [below](#dspark-with-output-ahca)).
 
 **Plans are no longer keyed by position.** HCA reads the chunk's first
 position as a host scalar. Each run now sets it on the cached plan's HCA
@@ -629,11 +634,24 @@ Records: `spark:~/scratch/dss3/` (`q32-*`, `q128-*`, `ppl128-4096`,
 ### DSpark with output-A/HCA
 
 With the drafter loaded, a prompt's prefill chunks inject the drafter's
-ring, and a full chunk's injected plan takes output-A/HCA like a plain
-one. Acceptance was measured on the original artifact (the drafter does
-not run with the community one):
-- **Through the runtime.** Fresh service per cell, main `6052286`
-  against this build, same session, 7K chat:
+ring, and an injected plan takes output-A/HCA like a plain one: on full
+chunks, and since the tie-aware rule on partial ones too. Acceptance was
+measured on the original artifact. (The drafter did not yet run with the
+community one; that is fixed separately.)
+- **Partial chunks too, through the runtime.** Fresh service per cell,
+  full chunks only (`4a250b4` with the wave pair scan) against partial
+  chunks too, same session, 7K chat:
+  - C1: 15.09 → 16.12 tok/s completed (+6.8%); first token 9.4 → 8.3 s;
+    decode after the first token 33.5 → 33.8 tok/s, so acceptance is
+    level.
+  - C4: 16.86 → 17.92 (+6.3%); completions 60.2–60.7 → 55.7–57.1 s.
+    With partial chunks the four prompts prefilled one after another
+    (first tokens 8.4 / 16.8 / 25.2 / 33.8 s, against 36.8–37.6 s
+    together). Both cells peaked at the service's budget (109.3 GiB
+    `MemAvailable` drop), so the cohort's capacity policy likely held the
+    later prompts. That is not isolated.
+- **Full chunks, through the runtime.** Fresh service per cell, main
+  `6052286` against the full-chunk build, same session, 7K chat:
   - C1: 13.68 → 15.00 tok/s completed (+9.6%); decode after the first
     token 32.7 → 33.3 tok/s, so acceptance is level.
   - C4 (DSpark waves): 14.75 → 16.69 (+13.2%); decode 9.9–10.0 → 10.6–11.0
@@ -642,9 +660,99 @@ not run with the community one):
   tokens each, output-A/HCA off against on: acceptance 86 of 111 (0.775)
   against 83 of 114 (0.728). These are short samples of different token
   sequences, so they are no evidence of a change. The short prompts, with
-  no full chunk, are unchanged (0.556, 0.612, 0.778 in both arms).
+  no full chunk, are unchanged (0.556, 0.612, 0.778 in both arms). That
+  run had output-A/HCA on full chunks only; since partial chunks take it,
+  the short prompts' chunks of 64 rows or more take it too, and this
+  check was not repeated.
 
-Records: `spark:~/scratch/dss5/` (`h7`, `r34/greedy-*`), 2026-10-03.
+Records: `spark:~/scratch/dss5/` (`h7`, `h11`, `r34/greedy-*`),
+2026-10-03.
+
+### Tie-aware re-scoring and partial chunks
+
+The owner's tie-aware greedy rule (2026-10-03, D-085, refined after review
+the same day) replaced the strict per-row gate. Each history is judged
+against the model's pinned **reference run**. For DeepSeek that is
+output-A/HCA on full 4,096-row chunks (32K +1.075%, 128K +1.127%); it stays
+the reference although the shipped default is now every chunk, so the
+reference does not ratchet. For Qwen3.8 it is `hq-32k-fast` and
+`hq-128k-fast`. Changing a reference is the owner's decision. `judge.py`
+also refuses a reference with an outside step past the per-step
+tolerance, or more than two.
+- **Outside steps.** At most max(2, the reference's), here 2.
+- **Per-step tolerance.** Each outside step must have jitLLM's own margin
+  of its argmax over the oracle's token below the bound (0.947 nats), and
+  its NLL of the oracle's token less than the bound above the oracle's
+  own. This is an owner-accepted tolerance, not a calibrated test of a
+  tie. At step 249, the one step it has decided, jitLLM's paths spread
+  0.65–1.13 nats of NLL excess; two runs of the phase-1 fast plan on one
+  build gave 0.99 and 1.13 (RE-031). The bound sits inside that spread.
+  From the oracle's side the step is no tie (probabilities 0.909 and
+  0.066).
+- **Continuation.** The oracle continuation's conditional perplexity ratio
+  to the oracle's own may exceed the reference run's by at most 0.5
+  points. That is twice the largest recorded repeat variation (0.25
+  points, between those phase-1 runs; later repeats are bit-identical).
+  The bound is relative because every engine sits above the oracle on the
+  oracle's own greedy path, by an amount that depends on the pair:
+  Qwen3.8's passing 32K control sits at +2.05%.
+- **Unchanged.** Held-out perplexity (3%) and the answer task.
+
+`judge.py greedy --reference` (long-context) reports both verdicts. Every
+recorded run, judged again from its saved logits:
+
+| Run | 32K: equal / near / outside | Outside steps: oracle margin, jitLLM margin, NLL excess | 32K continuation | 128K: equal / near / outside, continuation | Strict / tie-aware |
+| --- | --- | --- | --- | --- | --- |
+| Full 4,096-row chunks (the reference) | 492 / 20 / 0 | — | +1.075% | 500 / 12 / 0, +1.127% | pass / pass |
+| Output-A/HCA off (the previous default) | 492 / 19 / 1 | 249: 2.616, 0.041, 0.653 | +1.079% | — | fail / **pass** |
+| Every chunk (partial tails too) | 491 / 19 / 2 | 249: 2.616, 0.458, 0.891; 333: 1.022, 0.578, 0.646 | +1.119% | 499 / 13 / 0, +0.875% | fail / **pass** |
+| 2,048-row chunks | 493 / 19 / 0 | — | +0.509% | — | pass / pass |
+| Output-A alone on every chunk | 488 / 23 / 1 | 306: 1.115, 0.097, 0.489 | **+1.748%** | — | fail / **fail** |
+| Rejected: IQ3_XXS routed down, a warp's row | 491 / 20 / 1 | 249: 2.616, 0.808, **1.118** | +1.539% | 502 / 10 / 0, +0.430% | fail / **fail** |
+| Phase 1 fast plan, run 1 / run 2 | 500 / 10 / 2; 497 / 14 / 1 | 249: 2.616, 0.625, **0.990** (333 a flip); 249: 2.616, 0.839, **1.133** | +0.825%; +1.077% | +1.386% (one run, 0 outside) | fail / **fail** |
+| Phase 1 and 2 reference form (`--exact`) | 498 / 14 / 0 | — | +0.518%, +0.539% | — | pass / pass |
+| Phase 2 fast plan, three runs | 493 / 19 / 0 | — | +0.610% (bit-identical) | — | pass / pass |
+| Qwen3.8 32K fast (its reference), and its repeat | 474 / 38 / 0 | — | +2.046% | +1.451% (0 outside) | pass / pass |
+| Qwen3.8 32K reference form (`--exact`) | 475 / 35 / 2 | 202: 1.875, 0.138, 0.710; 272: 1.875, 0.145, 0.992 | +2.466% | — | fail / pass |
+
+Every recorded run that passed the strict rule passes the refined one, on
+both models; the recorded verdicts stand. Qwen3.8's fast runs pass
+against themselves by construction, as their own reference. Only its
+reference form's pass is new information. The rule does not admit everything
+the strict rule failed. Output-A alone fails on its continuation (+0.67
+points over the reference). The rejected kernel variant
+([deepseek-batching](../deepseek-batching/README.md#four-request-wave-step-and-scheduling))
+and both phase-1 fast-plan runs fail on step 249's NLL excess. That step
+sits inside the engine's own variation, so these verdicts follow the
+owner's tolerance; they are not measured differences.
+
+**Partial chunks by default.** Every chunk passes both histories. It uses
+the whole flip cap (two) and is 0.044 points over the reference's
+continuation. It matches full chunks on the held-out perplexity and the
+127K answer task, which have no partial tail, and on the community 8K
+trajectory, whose 8,192 tokens are two full chunks. So `jitllm-runtime`
+now sets `prefill_outa_hca_partial` too (`SetDsv4ServedPrefill`, pinned by
+a unit test): output-A/HCA takes every prefill chunk of 64 to 4,096 rows.
+The option stays as the off switch (`jitllm_dsv4_exec --outa-partial`
+turns it on in the harness). On this build the every-chunk 32K and 128K
+histories repeat their logits byte for byte (`f5669a25…`, `55162439…`).
+
+Through the runtime: fresh service per cell, the previous default (full
+chunks; the wave pair-scan build) against partial chunks too, same
+session.
+
+| Cell | Community | Original |
+| --- | --- | --- |
+| 7K chat, C1: first token, s | 8.27 → 7.26 | 9.36 → 8.34 |
+| 7K chat, C1: completed tok/s | 12.23 → 12.86 (+5.2%) | 12.15 → 12.76 (+5.0%) |
+| 7K chat, C4: completed tok/s | 18.52 → 19.88 (+7.3%) | 16.77 → 18.19 (+8.5%) |
+| Three turns, first tokens, s (7K, +7K, +7K) | 8.33 / 8.52 / 8.61 → 7.39 / 7.79 / 7.95 | — |
+
+Replies change with the arithmetic of the 2,947-row tail. Decode rates
+are unchanged.
+
+Records: `spark:~/scratch/dss5/` (`rejudge2`, `tie`, `h8`, `t8`; the
+earlier records in `~/.local/share/jitllm/m3lc/raw/`), 2026-10-03.
 
 ## Provenance
 

@@ -1594,7 +1594,7 @@ in the same change; the [M2 record](m2-record.md) and the report list them.
 - The loose process-level memory comparison fails and the excess is
   jitLLM's own.
 
-## D-085: Anything that runs longer than 10 minutes runs only when its result is needed  (2026-09-27, status: accepted; the owner added speed before bit exactness on 2026-09-28; amends D-084's milestone-gate tiers, D-061's tiers, and how D-079's protocols are sized)
+## D-085: Anything that runs longer than 10 minutes runs only when its result is needed  (2026-09-27, status: accepted; the owner added speed before bit exactness on 2026-09-28 and the tie-aware greedy rule on 2026-10-03; amends D-084's milestone-gate tiers, D-061's tiers, and how D-079's protocols are sized)
 
 **Decision.** The owner, on 2026-09-27: any operation that takes more than
 10 minutes should run "only when actually necessary and not as part of any
@@ -1678,6 +1678,46 @@ The machinery around development was holding it back.
   quality or the sampling distribution; trades of quality for speed are
   quality/performance modes, a runtime flag per model alias, off by
   default (the deferred quality/performance-modes item).
+- **The tie-aware greedy rule (the owner, 2026-10-03; refined after
+  review the same day).** The fixed-history greedy control no longer fails
+  on a few near-tie flips. It is judged against the model's pinned
+  **reference run** for that history. For DeepSeek these are the
+  output-A/HCA runs on full 4,096-row chunks (32K +1.075%, 128K +1.127%
+  continuation), and for Qwen3.8 its recorded fast runs `hq-32k-fast` and
+  `hq-128k-fast`. Changing a reference is the owner's decision, and so is
+  a reference with an outside step past the per-step tolerance or more
+  than two outside steps; `judge.py` refuses both. Over the forced steps,
+  with the oracle's token *o*, jitLLM's
+  argmax *c*, and the near-tie bound *B* recorded for that history (0.947
+  nats for DeepSeek's 32K/128K histories, 1.765 for Qwen3.8's):
+  - *c* = *o*, or the oracle's margin of *o* over *c* below *B*: as before.
+  - Otherwise the step is outside. Each outside step must meet a per-step
+    tolerance: jitLLM's own logit margin of *c* over *o* below *B*, and its
+    NLL of *o* less than *B* above the oracle's own NLL of *o*. This is an
+    owner-accepted tolerance, not a calibrated test of a tie. At DeepSeek's
+    step 249, the one step it has decided, jitLLM's paths spread from
+    0.65 to 1.13 nats of NLL excess (two runs of the phase-1 fast plan on
+    one build, RE-031, gave 0.99 and 1.13), so it sits inside the engine's
+    own variation there. From the oracle's side that step is no tie
+    (probabilities 0.909 and 0.066).
+  - At most max(2, the reference run's outside steps) steps are outside.
+  - The oracle continuation's conditional perplexity ratio to the oracle's
+    own (every engine sits above the oracle on its own greedy path, by a
+    pair-dependent amount) is at most 0.5 percentage points above the
+    reference run's. That is twice the largest repeat variation the
+    records allow: 0.25 points between the two phase-1 fast-plan runs.
+    Later repeats are bit-identical.
+  - The other aggregate bounds stand unchanged: held-out perplexity within
+    3%, and each history's retrieval and answer tasks.
+
+  The rule is `judge.py greedy --reference REF`
+  (`docs/experiments/long-context/judge.py`). `pass` applies it, and
+  `strict_pass` reports the earlier rule; without a reference, `pass` is
+  the strict rule. The re-scoring of every recorded configuration on
+  both models is in
+  [ds4-output-prefix](experiments/ds4-output-prefix/README.md#tie-aware-re-scoring-and-partial-chunks),
+  which also records the partial-chunk default the rule admits. Each
+  recorded run that passed the strict rule passes it too.
 
 **Reopen if.** A regression that a skipped long run would have caught
 costs more than the time the rule saves.

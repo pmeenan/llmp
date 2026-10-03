@@ -18,8 +18,8 @@
 //                    [--probe-step N]
 //
 // - --outa-prefill / --ds4-hca: the output-A/HCA prefill on full 4,096-row
-//   chunks, as serving runs it (engine/dsv4_plan.h Dsv4Model); with
-//   --outa-partial on every prefill chunk, the internal option.
+//   chunks (engine/dsv4_plan.h Dsv4Model); with --outa-partial on every
+//   prefill chunk, as serving runs it.
 // - --ds4-stages / --q2-d2r (both on by default, as production's fast plan;
 //   docs/experiments/ds4-prefill-stages): the ds4 prefill stage mechanisms
 //   and the D2R Q2_K down product, each under its own shape guard; off, the

@@ -301,18 +301,23 @@ That figure is inferred, not measured. The chat route's turn boundary
 
 1. **Partial-chunk prefill.** Generalize the 4,096-row-only mechanisms
    (output-A, HCA, D2R down, pair write-back) to any chunk of up to 4,096
-   rows. This is most of the remaining 7K prefill gap.
+   rows. This is most of the remaining 7K prefill gap. Done: the stage
+   mechanisms take every chunk of 64 rows or more, and so does
+   output-A/HCA under the tie-aware rule
+   ([tie-aware re-scoring](../ds4-output-prefix/README.md#tie-aware-re-scoring-and-partial-chunks)).
 2. **Output-A/HCA by default** (or as a per-alias flag). It gains 22% per
-   full chunk.
+   full chunk. Done
+   ([default-on acceptance](../ds4-output-prefix/README.md#default-on-acceptance)).
 3. **F16 HC mixes in the fused form.** Done: see
    [below](#community-artifact-in-waves).
 4. **A multi-token vecq launch with the one-token reduction order.** Done
-   for dense products (+2–3% a wave, [below](#not-adopted-and-open)); the
-   99 vs 82 ms gap lies elsewhere.
-5. **Scheduling.**
+   for dense products (+2–3% a wave, [below](#not-adopted-and-open)). The
+   wave step's profile then found the routed products' pair scan
+   ([wave step](#four-request-wave-step-and-scheduling)).
+5. **Scheduling.** Both measured and not adopted
+   ([below](#four-request-wave-step-and-scheduling)):
    - Finish the oldest prompt first, then alternate its decode with later
-     prompts, for earlier first tokens. Measure the throughput cost: ds4's
-     interleaving narrows its steps.
+     prompts, for earlier first tokens.
    - Prefer plain waves over DSpark from three active requests.
 6. **The original artifact's prefill** (11.2 s for 7K tokens). Its
    IQ3_XXS/IQ2_XS experts and F32 HC mixes bypass the stage mechanisms.
@@ -387,6 +392,104 @@ before this change (unfused decode, one request at a time).
 Records: `spark:~/scratch/dss0/` (`wave-*`, `forced-*`, `records/`),
 controller `tools/run.py` (the `ds4m` one with this build's arms),
 jobs `dss0-checks` and `dss0-http`, 2026-10-02.
+
+## Four-request wave step and scheduling
+
+**Profile.** `nsys` with graph nodes traced, community artifact,
+`--check wave --slots 4`; kernel time per graph replay, ms:
+
+| Kernels | One request | Wave of four, before | Wave of four, after |
+| --- | ---: | ---: | ---: |
+| Graph span | 49.5 | 93.4 | 86.0 |
+| `jitllm.vecq`, all | 39.3 | 73.5 | 65.8 |
+| — routed gate+up | 5.6 | 22.1 | 19.5 |
+| — routed down | 3.4 | 18.1 | 12.7 |
+| Attention | 1.3 | 5.3 | 5.3 |
+| Compressor, cache writes, row gathers | 1.4 | 5.4 | 5.5 |
+| Float products (MMVF) | 5.2 | 6.2 | 6.3 |
+
+The routed down ran at about 145 GB/s in waves, against 205 alone. One
+thread of each routed block scanned every (token, slot) pair of the
+product for the block's expert, serially: 24 pairs in a wave of four, 6
+alone. The down's rows are short (eight Q2_K blocks of 2,048 values), so
+the scan cost more than the product. Now the block's first warp scans 32
+pairs a ballot, keeping the pairs in order; no sum changes.
+
+- `vecq_bench`, four tokens of distinct experts, in the wave's one-token
+  configuration (`block r2 w4 p1`): Q2_K down 411 → 286 µs, IQ3_XXS down
+  513 → 345, IQ2_XS gate+up 517 → 495. The bench's four-token default row
+  (`warp r2 w4 p1`) barely moves (about 1.01× in the review's runs).
+- Wave controls stay 332/332 rows byte-identical on both artifacts. The
+  four-slot waves take 7.85 s against 8.44 (community; main 8.60) and
+  8.00 against 8.57 (original; main 8.79).
+- What remains of the step is mostly reads. The routed products run near
+  bandwidth: about 210 GB/s if a layer's four requests name 22 distinct
+  experts, as in `vecq_bench` (an estimate; the wave's own expert count
+  was not recorded). The dense ones read each weight once (33.5 ms
+  against 30.3 alone). Per-slot attention, compressor and
+  state operations add about 12 ms and 2,444 kernels over one request,
+  the next lever (a multi-slot launch).
+- Two variant changes were tried. The Q2_K down four rows a block is
+  bit-identical but, after the fix, no faster; it was dropped. The
+  IQ3_XXS down a warp's row changes the sums and fails the 32K history
+  at step 249 (2.616 nats), so it was dropped too.
+
+**HTTP cells, same session.** The [same-session](#against-ds4-same-session)
+protocol, one sample a cell. *This tree* adds output-A/HCA on full
+chunks ([default-on acceptance](../ds4-output-prefix/README.md#default-on-acceptance)),
+dense products read once a wave, and the pair scan, to main `6052286`.
+
+| Arm | 7K C4 tok/s | 7K C4 decode, tok/s a request | 124-token C4 tok/s |
+| --- | ---: | ---: | ---: |
+| Main, community | 16.01 | 10.2 | 38.87 |
+| This tree, community | 18.57 | 11.3–11.4 | 43.52 |
+| Main, original | 14.76 | 9.8–9.9 | — |
+| This tree, original | 17.03 | 11.2–11.3 | — |
+| ds4, community | 17.13 | — | 46.68 |
+
+- 7K C4 gains 16.0% (community) and 15.4% (original) on main and leads
+  ds4 1.08× (it trailed 0.93×). 124-token C4 gains 12.0%: 0.93× ds4,
+  from 0.83×. Its decode step is 85.5 ms against ds4's ~80.
+- 124-token replies are byte-identical to main's. The 7K replies change
+  with output-A/HCA and are the same at every concurrency.
+- A 124-token prompt's first token takes 3.1 s against ds4's 0.8 (open).
+
+**Oldest prompt first.** Main's backend alternates prompt units across
+requests (round robin), with one decode wave after each unit, so four
+concurrent prompts finish prefill together. Taking the oldest prompt
+first was measured with one decode wave a unit, and with decode waves for
+a share of each unit's time. Community 7K C4, one sample a cell:
+
+| Policy | tok/s | First tokens, s | Completions, s |
+| --- | ---: | --- | --- |
+| Round robin (main) | 18.59 | 32.3–32.8 | 54.7–55.1 |
+| Oldest first, one wave a unit | 18.27 | 8.2 / 16.7 / 25.3 / 33.9 | 54.7–56.0 |
+| Oldest first, decode 0.25 × unit time | 17.10 | 8.3 / 18.6 / 29.2 / 39.8 | 52.4–59.9 |
+| Oldest first, decode 0.5 × unit time | 16.14 | 8.3 / 20.6 / 33.1 / 45.7 | 49.8–63.4 |
+| Oldest first, decode 1.0 × unit time | 14.23 | 8.3 / 24.7 / 41.2 / 57.7 | 38.2–71.9 |
+| ds4 | 17.17 | 6.5 / 16.8 / 27.3 / 37.9 | 56.9–59.7 |
+
+The first three rows and ds4 share a session. The original artifact
+loses 1.6% with one wave a unit (17.09 → 16.82). Qwen at 8K C4, two runs
+each, ABBA, loses 2.3% (32.30 / 32.08 → 31.25 / 31.63), its first
+completion a little later. Replies are byte-identical across policies.
+
+A request decoding alone takes about 50 ms a token, against 21.5 in a
+full wave. Decode time spent before every prompt has prefilled therefore
+costs throughput, about twice what it gains in first completion. One wave
+a unit only staggers the first tokens. **Not adopted.** Agents and
+subagents wait on completions, and those come no earlier.
+
+**Plain waves against DSpark from three requests.** Original artifact with
+the drafter, `--check wave`, 96 tokens a request: three slots, DSpark
+39.63 tok/s against injected decode waves' 35.21; four slots, 40.34
+against 40.85. DSpark stays. The drafter cannot run with the community
+artifact: the wave check fails with "get_rows of quantized rows into
+F32" (open).
+
+Records: `spark:~/scratch/dss5/` (`v2`, `v3`, `h1`–`h6`, `q1`, `bin/`,
+profile `v3/wave4.sqlite`), controller `runx.py` over `dss0/tools/run.py`,
+2026-10-03.
 
 ## Plan memory
 
@@ -513,8 +616,20 @@ cleared as idle; once idle slot 0 is cleared, slot 1 grows and runs.
   main's 8.60 (community) and 8.57 against 8.79 (original), and HTTP C4
   decode rises from 10.1 to 10.4 tok/s a request
   ([output-A default](../ds4-output-prefix/README.md#default-on-acceptance)
-  cells). The remaining gap to ds4's four-row step (99 vs 82 ms) is
-  not the dense products' reads; it needs a profile of the wave step.
+  cells). The remaining gap to ds4's four-row step (99 vs 82 ms) was
+  not the dense products' reads; the
+  [wave step's profile](#four-request-wave-step-and-scheduling) found the
+  routed products' pair scan.
+- **Oldest prompt first, with or without more decode between units.**
+  Measured, not adopted: no earlier completions for 1.6–2.3% throughput,
+  or earlier first completions for much more
+  ([above](#four-request-wave-step-and-scheduling)).
+- **Plain waves instead of DSpark from three requests.** DSpark is 12.6%
+  faster at three slots and level at four; not adopted.
+- **One launch for every slot's attention and state operations.** Open.
+  About 12 ms of the 86 ms four-request step.
+- **DSpark with the community artifact.** Open: the drafter's row gather
+  refuses the artifact's quantized rows.
 - **Joined DSpark draft blocks.** Open. A wave runs one draft per slot.
 - **Literal completions (`/v1/completions`).** Open. They remain serial.
 

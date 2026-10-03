@@ -180,6 +180,13 @@ int main(int argc, char** argv) {
        true, 356.0},
       {"routed gate+up MXFP4 4096x2048, 3 tokens", GGML_TYPE_MXFP4, 4096, 2048, true, 3, true,
        false, 0},
+      // The community IQ2_XXS GGUF's routed experts, alone and a wave's four.
+      {"routed gate+up IQ2_XXS 4096x2048, 1 token", GGML_TYPE_IQ2_XXS, 4096, 2048, true, 1, true,
+       false, 0},
+      {"routed gate+up IQ2_XXS 4096x2048, 4 tokens", GGML_TYPE_IQ2_XXS, 4096, 2048, true, 4, true,
+       false, 0},
+      {"routed down Q2_K 2048x4096, 1 token", GGML_TYPE_Q2_K, 2048, 4096, true, 1, false, true, 0},
+      {"routed down Q2_K 2048x4096, 4 tokens", GGML_TYPE_Q2_K, 2048, 4096, true, 4, false, true, 0},
       {"shared gate+up Q5_K 4096x2048, 1 token", GGML_TYPE_Q5_K, 4096, 2048, false, 1, true, false,
        59.7},
       {"shared down Q6_K 2048x4096, 1 token", GGML_TYPE_Q6_K, 2048, 4096, false, 1, false, false,
