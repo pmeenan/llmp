@@ -48,6 +48,7 @@ struct Qwen38WavePlacement {
 };
 
 struct Qwen38WaveStats {
+  std::uint64_t vecq_pairs = 0;
   std::uint64_t mxfp8_pairs = 0;
   std::uint64_t routed_pairs = 0;
   std::uint64_t packed_bytes = 0;
@@ -118,7 +119,10 @@ bool Qwen38HcPairCandidate(const ggml_tensor* tensor);
 // One to kQwen38WaveSlots actual slots, each one to four rows. Groups of
 // consecutive compatible slots (in ascending order) coalesce
 // corresponding MXFP8-vector and routed-GEMV products, each at most
-// sixteen rows, with paid GGML concats and split views. A lone slot,
+// sixteen rows, with paid GGML concats and split views. One-row GGUF
+// vecq products also join, packing F32 inputs and quantizing the joined
+// rows; the shared product uses the one-token reduction configuration.
+// Routed groups also fit the kernel's 128 (token, expert) pairs. A lone slot,
 // incompatible phase/product sequence or diagnostic capture retains the
 // original operations. Ragged row counts may group; MTP pass/head/confidence
 // differences do not. Compatible target verification groups also coalesce

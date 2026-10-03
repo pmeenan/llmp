@@ -310,7 +310,8 @@ TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
   for (const auto& [type, k] :
        {Dense{GGML_TYPE_Q8_0, 4096}, Dense{GGML_TYPE_Q4_K, 4096}, Dense{GGML_TYPE_Q5_K, 4096},
         Dense{GGML_TYPE_Q6_K, 2048}, Dense{GGML_TYPE_Q8_0, 32768}, Dense{GGML_TYPE_Q8_0, 1056},
-        Dense{GGML_TYPE_IQ2_XS, 4096}, Dense{GGML_TYPE_IQ3_XXS, 2048}}) {
+        Dense{GGML_TYPE_IQ2_XS, 4096}, Dense{GGML_TYPE_IQ3_XXS, 2048}, Dense{GGML_TYPE_Q6_K, 2560},
+        Dense{GGML_TYPE_Q8_0, 640}, Dense{GGML_TYPE_Q8_0, 320}, Dense{GGML_TYPE_Q8_0, 10240}}) {
     const std::vector<std::uint8_t> bytes = Quantize(type, k, kOut, 11);
     ggml_tensor* w = Place(ggml_new_tensor_2d(c(), type, k, kOut), bytes);
     const std::vector<float> x = Normal(12, static_cast<std::size_t>(k * 16));
@@ -401,28 +402,41 @@ TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
   // with every token on the same six experts (each expert's block computes
   // all four tokens in one pass): a one-token launch's tokens equal each
   // token alone.
-  constexpr std::int64_t kFewExperts = 16;
-  for (const ggml_type rtype :
-       {GGML_TYPE_IQ2_XXS, GGML_TYPE_Q2_K, GGML_TYPE_MXFP4, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ2_XS}) {
-    ggml_tensor* rw = Place(ggml_new_tensor_3d(c(), rtype, k, kOut, kFewExperts),
-                            Quantize(rtype, k, kOut * kFewExperts, 15));
+  constexpr std::int64_t kFewExperts = 32;
+  struct Routed {
+    ggml_type type;
+    std::int64_t width;
+    bool per_slot;
+    std::int64_t used;
+  };
+  for (const auto& [rtype, width, per_slot, used] :
+       {Routed{GGML_TYPE_IQ2_XXS, k, false, kUsed}, Routed{GGML_TYPE_Q2_K, k, false, kUsed},
+        Routed{GGML_TYPE_MXFP4, k, false, kUsed}, Routed{GGML_TYPE_IQ3_XXS, k, false, kUsed},
+        Routed{GGML_TYPE_IQ2_XS, k, false, kUsed}, Routed{GGML_TYPE_IQ2_S, 2560, false, 10},
+        Routed{GGML_TYPE_IQ4_NL, 640, true, 10}}) {
+    ggml_tensor* rw = Place(ggml_new_tensor_3d(c(), rtype, width, kOut, kFewExperts),
+                            Quantize(rtype, width, kOut * kFewExperts, 15));
+    const std::int64_t input_rows = per_slot ? used : 1;
+    const std::vector<float> values = Normal(16, static_cast<std::size_t>(width * input_rows * 16));
     for (const bool glu : {false, true}) {
       const std::string what = std::format("routed {}{}", ggml_type_name(rtype), glu ? " GLU" : "");
       const auto run = [&](std::int64_t first, std::int64_t tokens, bool one_token) {
         ggml_tensor* in =
-            Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, tokens),
-                  std::vector<float>(x.begin() + (first * k), x.begin() + ((first + tokens) * k)));
+            Place(per_slot ? ggml_new_tensor_3d(c(), GGML_TYPE_F32, width, used, tokens)
+                           : ggml_new_tensor_2d(c(), GGML_TYPE_F32, width, tokens),
+                  std::vector<float>(values.begin() + (first * width * input_rows),
+                                     values.begin() + ((first + tokens) * width * input_rows)));
         std::vector<std::int32_t> same_ids;
         for (std::int64_t t = 0; t < tokens; ++t) {
-          for (std::int64_t u = 0; u < kUsed; ++u) {
+          for (std::int64_t u = 0; u < used; ++u) {
             same_ids.push_back(static_cast<std::int32_t>((u * 2) + 3));
           }
         }
-        ggml_tensor* ids = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, tokens), same_ids);
+        ggml_tensor* ids = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, used, tokens), same_ids);
         ggml_tensor* q8 = Place(kg::QuantizeQ8(c(), in));
         ggml_tensor* node =
-            Place(glu ? kg::VecQ(c(), rw, q8, ids, tokens, false, rw, kg::VecQGlu::kSwiglu)
-                      : kg::VecQ(c(), rw, q8, ids, tokens, false));
+            Place(glu ? kg::VecQ(c(), rw, q8, ids, tokens, per_slot, rw, kg::VecQGlu::kSwiglu)
+                      : kg::VecQ(c(), rw, q8, ids, tokens, per_slot));
         if (one_token) {
           kg::SetVecQOneToken(node);
         }
@@ -432,8 +446,8 @@ TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
       const std::vector<float> wave = run(0, 4, true);
       for (std::int64_t t = 0; t < 4; ++t) {
         const std::vector<float> alone = run(t, 1, false);
-        EXPECT_TRUE(same(wave, alone, static_cast<std::size_t>(kUsed * kOut),
-                         static_cast<std::size_t>(t * kUsed * kOut)))
+        EXPECT_TRUE(same(wave, alone, static_cast<std::size_t>(used * kOut),
+                         static_cast<std::size_t>(t * used * kOut)))
             << what << " token " << t;
       }
     }

@@ -279,6 +279,10 @@ registered quality control passes on both GGUFs under the owner's
 tie-aware greedy rule (D-085, 2026-10-03); with the wave pair-scan fix,
 7K chat C4 is 1.08× ds4 in one session before partial chunks, which add
 5–8% more.
+Qwen's GGUF one-row waves now share dense and routed quantized products
+and the full head, with exact heads and state against unjoined waves;
+UD-IQ3_XXS plain C4 gains 69.6% at 183 tokens, 29.4% at 8,258 tokens
+([GGUF waves](docs/experiments/qwen38-gguf/README.md#one-row-gguf-waves-2026-10-03)).
 Concurrent requests follow memory up to a per-model slot cap (`max_slots`,
 up to 16; both LLMs' measured knee is 4 with today's 16-row joined
 products, D-104). Qwen chat decodes its requests in one wave (joined

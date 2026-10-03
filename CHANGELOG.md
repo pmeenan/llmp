@@ -291,6 +291,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Qwen3.8 GGUF concurrent decode now shares dense and routed quantized
+  products and the full target head across requests, with byte-identical
+  full logits and state against the original waves, including graph replay.
 - DeepSeek's concurrent requests now run their own attention and state
   work at the same time, one CUDA stream each, inside a wave, with each
   request's results unchanged bit for bit. At four 124-token requests

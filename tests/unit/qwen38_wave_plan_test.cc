@@ -28,6 +28,8 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -135,6 +137,106 @@ std::vector<md::Qwen38Resource> ArtifactLike(const md::Qwen38Profile& p) {
                         .group_offset = group_offset,
                         .readable = ne[0] * ne[1]});
       group_offset += ne[0] * ne[1];
+    }
+  }
+  r.insert(r.end(), arrays.begin(), arrays.end());
+  return r;
+}
+
+// GGUF fixture, the same UD-IQ3_XXS shapes as qwen38_test.cc.
+std::uint64_t GgufReadable(std::string_view type, std::span<const std::uint64_t> ne) {
+  ggml_type format = GGML_TYPE_F32;
+  for (const auto& [name, candidate] :
+       {std::pair{"F32", GGML_TYPE_F32}, std::pair{"BF16", GGML_TYPE_BF16},
+        std::pair{"Q6_K", GGML_TYPE_Q6_K}, std::pair{"Q8_0", GGML_TYPE_Q8_0},
+        std::pair{"IQ2_S", GGML_TYPE_IQ2_S}, std::pair{"IQ4_NL", GGML_TYPE_IQ4_NL}}) {
+    if (type == name) {
+      format = candidate;
+      break;
+    }
+  }
+  std::uint64_t bytes = ggml_row_size(format, static_cast<std::int64_t>(ne[0]));
+  for (std::size_t i = 1; i < ne.size(); ++i) {
+    bytes *= ne[i];
+  }
+  return bytes;
+}
+
+std::vector<md::Qwen38Resource> GgufLike(const md::Qwen38Profile& p) {
+  std::vector<md::Qwen38Resource> r;
+  std::vector<md::Qwen38Resource> arrays;
+  const auto ggml = [&](std::string name, std::string type, std::vector<std::uint64_t> ne) {
+    const std::uint64_t readable = GgufReadable(type, ne);
+    r.push_back({.roles = {std::move(name)},
+                 .plain = false,
+                 .type = std::move(type),
+                 .ne = std::move(ne),
+                 .readable = readable});
+  };
+  ggml("token_embd.weight", "Q6_K", {2560, 248320});
+  ggml("output.weight", "Q6_K", {2560, 248320});
+  ggml("output_hc_norm.weight", "F32", {10240});
+  ggml("output_hc_down.weight", "Q8_0", {10240, 320});
+  ggml("output_hc_up.weight", "Q8_0", {320, 10240});
+  ggml("per_layer_token_embd.weight", "IQ4_NL", {160, kTableRows});
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    const std::string n = std::format("blk.{}.", il);
+    for (const char* kind : {"attn", "ffn"}) {
+      ggml(std::format("{}hc_{}_norm.weight", n, kind), "F32", {10240});
+      ggml(std::format("{}hc_{}_down.weight", n, kind), "Q8_0", {10240, 320});
+      ggml(std::format("{}hc_{}_up.weight", n, kind), "Q8_0", {320, 10240});
+      ggml(std::format("{}hc_{}_inject.weight", n, kind), "F32", {10240, 4});
+    }
+    if (p.linear(il)) {
+      ggml(n + "attn_qkv.weight", "Q6_K", {2560, 10240});
+      ggml(n + "attn_gate.weight", "Q6_K", {2560, 6144});
+      ggml(n + "ssm_beta.weight", "F32", {2560, 48});
+      ggml(n + "ssm_alpha.weight", "F32", {2560, 48});
+      ggml(n + "ssm_dt.bias", "F32", {48});
+      ggml(n + "ssm_a", "F32", {48});
+      ggml(n + "ssm_conv1d.weight", "F32", {4, 10240});
+      ggml(n + "ssm_norm.weight", "F32", {128});
+      ggml(n + "ssm_out.weight", "Q6_K", {6144, 2560});
+    } else {
+      ggml(n + "attn_q.weight", "Q6_K", {2560, 12288});
+      ggml(n + "attn_k.weight", "Q6_K", {2560, 512});
+      ggml(n + "attn_v.weight", "Q6_K", {2560, 512});
+      ggml(n + "attn_output.weight", "Q6_K", {6144, 2560});
+      ggml(n + "attn_q_norm.weight", "F32", {256});
+      ggml(n + "attn_k_norm.weight", "F32", {256});
+      ggml(n + "indexer.q_proj.weight", "BF16", {2560, 512});
+      ggml(n + "indexer.k_proj.weight", "BF16", {2560, 128});
+      ggml(n + "indexer.q_norm.weight", "F32", {128});
+      ggml(n + "indexer.k_norm.weight", "F32", {128});
+    }
+    if (il == 1) {
+      ggml(n + "ple_key.weight", "Q8_0", {2560, 10240});
+      ggml(n + "ple_value.weight", "Q8_0", {2560, 2560});
+      for (const char* part : {"key", "query", "conv"}) {
+        ggml(std::format("{}ple_norm_{}.weight", n, part), "F32", {10240});
+      }
+      ggml(n + "ple_conv1d.weight", "F32", {4, 10240});
+    }
+    ggml(n + "ffn_gate_inp.weight", "F32", {2560, 512});
+    ggml(n + "ffn_gate_inp_shexp.weight", "F32", {2560});
+    ggml(n + "ffn_gate_shexp.weight", "Q6_K", {2560, 640});
+    ggml(n + "ffn_up_shexp.weight", "Q6_K", {2560, 640});
+    ggml(n + "ffn_down_shexp.weight", "Q8_0", {640, 2560});
+    std::uint64_t group_offset = 0;
+    for (const auto& [proj, type, ne] :
+         {std::tuple{"gate", "IQ2_S", std::vector<std::uint64_t>{2560, 640}},
+          std::tuple{"up", "IQ2_S", std::vector<std::uint64_t>{2560, 640}},
+          std::tuple{"down", "IQ4_NL", std::vector<std::uint64_t>{640, 2560}}}) {
+      const std::uint64_t readable = GgufReadable(type, ne);
+      arrays.push_back({.roles = {std::format("{}ffn_{}_exps.weight", n, proj)},
+                        .plain = false,
+                        .type = type,
+                        .ne = ne,
+                        .expert_array = true,
+                        .count = 512,
+                        .group_offset = group_offset,
+                        .readable = readable});
+      group_offset += (readable + 255) / 256 * 256;
     }
   }
   r.insert(r.end(), arrays.begin(), arrays.end());
@@ -306,6 +408,84 @@ class Qwen38WavePlanTest : public ::testing::Test {
   std::optional<md::Qwen38CommitLayout> commit_;
   std::array<engine::Qwen38Model, engine::kQwen38WaveSlots> models_{};
 };
+
+class Qwen38GgufWavePlanTest : public Qwen38WavePlanTest {
+ protected:
+  void SetUp() override {
+    Qwen38WavePlanTest::SetUp();
+    auto binding = md::BindQwen38(p_, "qwen4exp", GgufLike(p_));
+    ASSERT_TRUE(binding.has_value()) << binding.error();
+    ASSERT_TRUE(binding->gguf());
+    binding_.emplace(std::move(*binding));
+    for (auto& model : models_) {
+      model.binding = &*binding_;
+      model.mtp_state = nullptr;
+      model.commit = nullptr;
+      model.cutlass = false;
+      model.places.stride.assign(p_.layers, 1977840);
+    }
+  }
+};
+
+// Plain GGUF waves retain one-token reductions for dense, shared GLU,
+// routed GLU and per-expert down products. Ten experts per token cap a
+// group at twelve slots (120 pairs), even though dense products take sixteen.
+TEST_F(Qwen38GgufWavePlanTest, JoinsOneRowProductsWithinTheRoutedPairLimit) {
+  for (const std::uint32_t count : {1U, 2U, 3U, 4U, 16U}) {
+    std::vector<Request> requests;
+    requests.reserve(count);
+    for (std::uint32_t s = 0; s < count; ++s) {
+      requests.push_back({.slot = s, .n_past = 100 + (s * 200), .rows = 1});
+    }
+    auto alone = Plan(std::span(requests).first(1));
+    ASSERT_TRUE(alone.has_value()) << alone.error();
+    const auto scalar = static_cast<std::uint64_t>(std::ranges::count_if(
+        (*alone)->nodes(),
+        [](const ggml_tensor* t) { return kg::JitllmOpOf(t) == kg::JitllmOp::kVecQ; }));
+    ASSERT_GT(scalar, 0);
+    auto planned = Plan(requests);
+    ASSERT_TRUE(planned.has_value()) << planned.error();
+    const auto& wave = **planned;
+    const std::uint64_t groups = count > 12 ? 2 : 1;
+    EXPECT_EQ(wave.stats().vecq_pairs, count == 1 ? 0 : groups * scalar);
+    std::uint64_t products = 0;
+    for (const ggml_tensor* t : wave.nodes()) {
+      if (kg::JitllmOpOf(t) != kg::JitllmOp::kVecQ) {
+        continue;
+      }
+      ++products;
+      EXPECT_EQ(kg::VecQOneToken(t), count > 1);
+      EXPECT_TRUE(kg::CheckVecQ(t).has_value());
+      const bool routed = t->src[2] != nullptr && t->src[2]->type == GGML_TYPE_I32;
+      const auto tokens = kg::JitllmOpInt(t, 0);
+      EXPECT_LE(tokens, kg::kVecQMaxTokens);
+      if (routed) {
+        EXPECT_LE(tokens * t->src[2]->ne[0], 128);
+      }
+    }
+    EXPECT_EQ(products, groups * scalar);
+    EXPECT_EQ(wave.stats().paired_slots, count == 1 ? 0U : (1U << count) - 1U);
+    EXPECT_EQ(wave.stats().full_head_pairs, 0U);
+    // The quantized full head is also split, so a slot never reads another's logits.
+    if (count > 1) {
+      EXPECT_NE(wave.target(0)->logits->view_src, nullptr);
+    }
+    auto unpaired = Plan(requests, false);
+    ASSERT_TRUE(unpaired.has_value()) << unpaired.error();
+    EXPECT_EQ((*unpaired)->stats().vecq_pairs, 0U);
+    EXPECT_EQ((*unpaired)->stats().paired_slots, 0U);
+  }
+}
+
+// Multirow GGUF products use token-count-dependent reductions and stay scalar.
+TEST_F(Qwen38GgufWavePlanTest, MultirowGgufProductsStayOriginal) {
+  const std::array<Request, 2> requests = {Request{.slot = 0, .n_past = 100, .rows = 2},
+                                           Request{.slot = 1, .n_past = 700, .rows = 2}};
+  auto planned = Plan(requests);
+  ASSERT_TRUE(planned.has_value()) << planned.error();
+  EXPECT_EQ((*planned)->stats().vecq_pairs, 0U);
+  EXPECT_EQ((*planned)->stats().paired_slots, 0U);
+}
 
 // Four slots of four rows at different depths: one group whose every
 // product reads its weights once for sixteen rows, and one full head of

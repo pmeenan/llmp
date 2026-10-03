@@ -1113,6 +1113,15 @@ BF16 products also share immutable weights through their original cuBLAS path,
 with independent preparation and nonlinear mixing. Unsupported shapes keep
 their original products.
 
+GGUF Qwen's plain, one-row waves also join compatible dense and routed
+`jitllm.vecq` products, including the quantized full head. Paid F32 input
+packing and Q8 preparation feed the existing one-token reduction path;
+joined routed groups fit the 128-pair kernel bound (twelve requests with
+ten experts each; wider waves form multiple groups). Multirow products
+keep their original launches. Full heads and final state match unjoined
+waves byte for byte with eager execution and graph replay
+([GGUF qualification](experiments/qwen38-gguf/README.md#one-row-gguf-waves-2026-10-03)).
+
 The production DeepSeek chat backend's active requests (one native slot
 each, `engine/dsv4_runner.h`; [request slots](#request-slots)) decode in
 waves: plain, one row each. With DSpark, a wave of two or more is either

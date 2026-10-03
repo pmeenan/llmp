@@ -127,3 +127,97 @@ these types and shapes, took decode from 31.5 to 33.8 tok/s (+7%).
   same vocabulary; the GGUF's tokenizer does not normalize to NFC).
 - Prefill at depth (32K and beyond) and the swap table were not measured
   for this artifact.
+
+## One-row GGUF waves (2026-10-03)
+
+Qwen's GGUF decode waves now join compatible `jitllm.vecq` dense and
+routed products, including the quantized full head. Each request keeps its
+own attention, recurrence, routing and state. The composer concatenates
+original F32 inputs and quantizes them through the existing Q8 producer;
+this added preparation, and the original Q8 nodes still needed by other
+consumers, are paid. Joined products use `SetVecQOneToken`, preserving the
+one-row kernel's reduction. Multirow products and unsupported dense groups
+keep their original launches. The routed kernel's 128-pair bound limits
+this model's ten-expert groups to twelve slots (sixteen slots split 12+4).
+
+Qualification on `spark-b` uses the UD-IQ3_XXS artifact above. Planner
+controls cover widths 1, 2, 3, 4 and 16, the original multirow fallback,
+head views and every joined operation's validator. The GPU operand control
+compares each joined row bit for bit with its original one-token launch:
+Q6_K at K=2560, Q8_0 at K=320/640/10240, IQ2_S gate/up at K=2560, and
+IQ4_NL down at K=640 with per-expert inputs, ten selected experts, and
+GLU both on and off.
+
+The reusable [full-model harness](../../../benchmarks/qwen38_gguf_wave.cc)
+runs the first four native prompts for 32 fixed greedy-history decode
+steps, then repeats with 2,050 filler tokens prepended to enter QSA's
+selection path. Widths 2, 3 and 4 each run with joining off/on, eagerly
+and with graph capture/replay. At read alignment 256, all 2,304 full logit
+rows and 72 final-state comparisons match solo execution byte for byte.
+At production alignment 2048, 1,728 full logit rows and 54 final-state
+comparisons match the unjoined eager waves at the same width (18 unjoined
+states supply the references). Each of the twelve graph-enabled cells per
+alignment captures one wave and replays 31; both runs finish with zero
+coverage violations and proven retirement. Production alignment changes
+attention geometry even without joining, so this second control qualifies
+joining against unchanged waves, not scalar equality.
+
+Run `jitllm_qwen38_gguf_wave ARTIFACT docs/experiments/qwen38-native/prompts.tsv
+NEW_STATE_DIR 256`, then again with a fresh directory and `2048`.
+The default alignment is 2048. No MTP drafter is involved.
+
+**HTTP timing.** Same-session bookends on `spark-b`, GB10, driver
+580.178.04, pinned SDK `aarch64-e0a0c85c42806fb1` (NVCC 13.4.92),
+`spark-native` RelWithDebInfo, baseline main `3452c86` versus this change.
+Source lock SHA-256 `440f03cdb52921c6c55843819e6ac950a5b2c4aafdc01055e52a0af3117ce32e`;
+runtime executable SHA-256: baseline
+`d4ae7dcbd21386420c16cb3b2dd9071f6b2bf441e570bcc9021377486beea3d5`,
+joined `8697b2e25445e982236410906707d615ba3f8ec5086ea86c802610fc2e7ea1d1`.
+Both use the same artifact, context 32,768, 4,096-row prefill, default four
+slots and 2048-cell wave read alignment, without a drafter. Each cell
+starts a fresh service, primes the load with one token, then launches one
+barrier-synchronized greedy burst; every request asks for 256 outputs.
+Rate is completed tokens divided by burst wall time, including prefill,
+planning and graph capture, excluding load/prime. Per-request decode rate
+excludes time to first token. Memory is the peak `MemAvailable` drop
+during the burst, relative to before service startup. All preparation and response delivery are paid.
+
+The short prompts are four variants of a printing-press essay request,
+three service records and distinct request tags, 183 tokens each, zero
+cached prompt tokens. The original screen uses baseline/joined/baseline
+at C4; the expansion reverses order, joined/baseline/joined at C1/C2/C4.
+
+| Short cell | Baseline completed tok/s | Joined completed tok/s | Gain against baseline/mean bookends |
+| --- | ---: | ---: | ---: |
+| C4 screen (A/B/A) | 28.636 / 28.771 | 48.740 | +69.81% |
+| C1 expansion (B/A/B) | 31.070 | 31.221 / 31.198 | +0.45% |
+| C2 expansion | 31.236 | 41.039 / 40.850 | +31.08% |
+| C4 expansion | 28.638 | 48.634 / 48.523 | +69.63% |
+
+Screen baseline bookends move +0.47%; expansion joined bookends move
+−0.08%, −0.46% and −0.23% at C1/C2/C4. In expansion C4, median request
+latency falls from 35.408 s to 20.728/20.780 s, median per-request decode
+rises from 7.572 to 13.397/13.366 tok/s, latest first token falls from
+3.276 to 3.117/3.175 s, and memory is 56.008 versus 55.933/56.035 GiB.
+These are native old/new comparisons on UD-IQ3_XXS, not a new comparison
+against llama.cpp, TensorFold or Mia's NVFP4 checkpoint.
+
+The long C4 burst uses the existing `u0`–`u3` service-record requests
+(`~/scratch/slots/inputs/u*.request.json`), 8,258 served tokens each,
+zero cached tokens. Baseline/joined/baseline completes at
+15.949 / 20.601 / 15.887 tok/s: **+29.42%** against mean baseline,
+whose bookends move −0.39%. Median request latency is
+63.733 / 49.254 / 63.975 s; latest first token
+31.261 / 31.115 / 31.442 s; median per-request decode
+5.748 / 8.579 / 5.730 tok/s; memory
+56.900 / 57.036 / 56.937 GiB. All four long replies match across all three
+arms. Across both workloads all 45 requests complete 256 output tokens
+with finish `length`, zero memory/capacity waits and clean service exits.
+
+Greedy HTTP text varies even between baseline C4 bookends as requests
+arrive into different waves; this timing study makes no invariant-reply
+claim. The fixed-history full-head/state controls above qualify the
+joining change separately. No sampled distribution or GGUF MTP result
+follows; other quantizations and the NVFP4/Mia concurrency gap remain open.
+Raw receipts, full response text, service logs and qualification output
+remain outside Git under `spark-b:~/scratch/qvecq/` and supervised job logs.

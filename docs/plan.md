@@ -1154,6 +1154,12 @@ it appears.
       matched 8K HTTP C4 +20% and C2 +9.8%, C1 unchanged with an identical
       reply. Native leads current TensorFold NVFP4 at C1/C2, is level at C4 and trails
       legacy Mia 18% at C4; replies under concurrency vary with arrival timing.
+      Qwen's [GGUF one-row waves](experiments/qwen38-gguf/README.md#one-row-gguf-waves-2026-10-03)
+      also share dense/routed quantized products and the full head; eager and
+      captured/replayed full heads and state are exact against unjoined waves.
+      Matched plain HTTP gains 31.08% at C2 and 69.63% at C4 on 183-token
+      prompts, 29.42% at C4 on 8,258-token prompts (256 outputs, UD-IQ3_XXS).
+      This format-specific improvement does not close the NVFP4/Mia gap.
 - [x] **Request slots sized by memory** (the owner, 2026-10-03). A
       model's number of concurrent request slots is no longer fixed at
       four: it follows the memory the node has free for slots (each

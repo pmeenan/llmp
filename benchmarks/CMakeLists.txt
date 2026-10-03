@@ -265,6 +265,12 @@ if(JITLLM_CUDA)
                                                    jitllm_warnings)
   target_link_options(jitllm_qwen38_spec PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # GGUF target waves: fixed-history logits/state against solo or unjoined steps.
+  add_executable(jitllm_qwen38_gguf_wave qwen38_gguf_wave.cc)
+  target_link_libraries(jitllm_qwen38_gguf_wave PRIVATE jitllm_paged_runners
+                        jitllm_base jitllm_warnings)
+  target_link_options(jitllm_qwen38_gguf_wave PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   # Temporary C2 shared-row mechanism proof, no serving/default selection.
   add_executable(jitllm_qwen38_batch qwen38_batch_main.cc qwen38_batch.cc
                  qwen38_batch_graph.cc qwen38_batch_generation.cc)

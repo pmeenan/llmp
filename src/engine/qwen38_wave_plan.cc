@@ -143,9 +143,17 @@ std::expected<std::vector<Range>, std::string> MutablePlaces(std::span<const Req
   return ranges;
 }
 
+bool VecQRouted(const ggml_tensor* t) {
+  return t->src[2] != nullptr && t->src[2]->type == GGML_TYPE_I32;
+}
+
 bool Eligible(const ggml_tensor* t) {
   const auto op = kg::JitllmOpOf(t);
-  return op == kg::JitllmOp::kMxfp8MulMatVec || op == kg::JitllmOp::kMoeGemv;
+  // Only one-row GGUF steps: the shared launch retains their reduction.
+  // Multirow products and grouped products keep their original operations.
+  return op == kg::JitllmOp::kMxfp8MulMatVec || op == kg::JitllmOp::kMoeGemv ||
+         (op == kg::JitllmOp::kVecQ && kg::JitllmOpInt(t, 0) == 1 &&
+          (VecQRouted(t) || t->src[0]->ne[2] == 1));
 }
 
 bool SameImmutableLeaf(const ggml_tensor* a, const ggml_tensor* b,
@@ -207,6 +215,22 @@ bool Match(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mu
       b->type != GGML_TYPE_F32 || a->ne[0] != b->ne[0]) {
     return false;
   }
+  if (kg::JitllmOpOf(a) == kg::JitllmOp::kVecQ) {
+    const bool routed = VecQRouted(a);
+    if (routed != VecQRouted(b) || a->ne[2] != b->ne[2] || a->ne[3] != b->ne[3] ||
+        a->ne[1] != b->ne[1] || a->src[1] == nullptr || b->src[1] == nullptr ||
+        kg::JitllmOpOf(a->src[1]) != kg::JitllmOp::kQuantizeQ8 ||
+        kg::JitllmOpOf(b->src[1]) != kg::JitllmOp::kQuantizeQ8) {
+      return false;
+    }
+    const auto* gate_a = a->src[routed ? 3 : 2];
+    const auto* gate_b = b->src[routed ? 3 : 2];
+    const bool per_slot = kg::JitllmOpInt(a, 1) != 0;
+    return ((gate_a == nullptr && gate_b == nullptr) ||
+            SameImmutableLeaf(gate_a, gate_b, mutable_places)) &&
+           Concatenable(a->src[1]->src[0], b->src[1]->src[0], per_slot ? 2 : 1, GGML_TYPE_F32) &&
+           (!routed || Concatenable(a->src[2], b->src[2], 1, GGML_TYPE_I32));
+  }
   if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
     return SameImmutableLeaf(a->src[1], b->src[1], mutable_places) &&
            Concatenable(a->src[2], b->src[2], 1, GGML_TYPE_F32) && a->ne[1] >= 1 && a->ne[1] <= 4 &&
@@ -229,11 +253,16 @@ bool Match(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mu
 // The rows a product joins (columns; a routed product's tokens) and the
 // most its shared kernel takes.
 std::int64_t JoinedRows(const ggml_tensor* t) {
+  if (kg::JitllmOpOf(t) == kg::JitllmOp::kVecQ) {
+    return kg::JitllmOpInt(t, 0);
+  }
   return kg::JitllmOpOf(t) == kg::JitllmOp::kMoeGemv ? t->ne[2] : t->ne[1];
 }
 
 std::int64_t JoinedLimit(const ggml_tensor* t) {
   switch (kg::JitllmOpOf(t)) {
+    case kg::JitllmOp::kVecQ:
+      return VecQRouted(t) ? std::min(kg::kVecQMaxTokens, 128 / t->ne[1]) : kg::kVecQMaxTokens;
     case kg::JitllmOp::kMoeGemv:
       return kg::kMoeGemvWaveTokens;
     case kg::JitllmOp::kMxfp8MulMatVec:
@@ -602,6 +631,38 @@ struct Qwen38WaveBuilder {
             offset += static_cast<std::size_t>(m->ne[1]) * both->nb[1];
           }
           out.stats_.packed_bytes += ggml_nbytes(x);
+        } else if (kg::JitllmOpOf(a) == kg::JitllmOp::kVecQ) {
+          const bool routed = VecQRouted(a);
+          const bool per_slot = kg::JitllmOpInt(a, 1) != 0;
+          std::vector<ggml_tensor*> ids;
+          for (ggml_tensor* m : members) {
+            xs.push_back(m->src[1]->src[0]);
+            if (routed) {
+              ids.push_back(m->src[2]);
+            }
+          }
+          // Keep the scalar Q8 nodes for any other consumers. Packing F32
+          // inputs and quantizing the joined rows preserves the ordinary
+          // Q8 producer contract; all packing and repeated quantization is paid.
+          ggml_tensor* x = ConcatAll(c, xs, per_slot ? 2 : 1, made);
+          ggml_tensor* q8 = kg::QuantizeQ8(c, x);
+          made.push_back(q8);
+          ggml_tensor* joined_ids = routed ? ConcatAll(c, ids, 1, made) : nullptr;
+          both = kg::VecQ(c, a->src[0], q8, joined_ids, static_cast<std::int64_t>(members.size()),
+                          per_slot, a->src[routed ? 3 : 2],
+                          static_cast<kg::VecQGlu>(kg::JitllmOpInt(a, 2)), kg::JitllmOpFloat(a, 3));
+          kg::SetVecQOneToken(both);
+          for (std::size_t k = 0; k < members.size(); ++k) {
+            const ggml_tensor* m = members[k];
+            if (routed) {
+              split.push_back(ggml_view_3d(c, both, m->ne[0], m->ne[1], 1, both->nb[1], both->nb[2],
+                                           k * both->nb[2]));
+            } else {
+              split.push_back(ggml_view_2d(c, both, m->ne[0], 1, both->nb[1], k * both->nb[1]));
+            }
+          }
+          out.stats_.packed_bytes += ggml_nbytes(x) + (routed ? ggml_nbytes(joined_ids) : 0);
+          ++out.stats_.vecq_pairs;
         } else if (kg::JitllmOpOf(a) == kg::JitllmOp::kMxfp8MulMatVec) {
           for (ggml_tensor* m : members) {
             xs.push_back(m->src[2]);
@@ -654,6 +715,17 @@ struct Qwen38WaveBuilder {
             }
           }
           Redirect(lists, members[k], split[k]);
+          if (out.target_[g[k]] != nullptr) {
+            auto& graph = out.target_[g[k]]->graph;
+            if (graph.logits == members[k]) {
+              graph.logits = split[k];
+            }
+            for (auto& named : graph.named) {
+              if (named.second == members[k]) {
+                named.second = split[k];
+              }
+            }
+          }
         }
       }
       if (out.nodes_.size() == emitted) {
