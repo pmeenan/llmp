@@ -466,6 +466,10 @@ class Llm : public Served {
     void Cancel();
     Status Finish();
     std::uint32_t reused() const { return reused_; }
+    // The prompt tokens left to prefill, a scheduling hint
+    // (runtime/cohort_schedule.h): before its reuse, past the branch's
+    // history's common prefix with the prompt.
+    std::uint32_t remaining_rows() const;
     const PrefillRun& run() const { return run_; }
     const std::vector<float>& last() const { return last_; }
 

@@ -22,7 +22,9 @@
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
+#include "kernels/paging/paging.h"
 #include "providers/device_runtime.h"
 #include "scheduler/commands.h"
 #include "scheduler/scheduler.h"
@@ -59,6 +61,27 @@ bool OutAWeights(const md::Dsv4Binding& b) {
 }
 using support::Round;
 using support::Seconds;
+
+// A draft block's ids, bounded to the vocabulary in place before anything
+// reads them (the verify's tokens and its rows' lookup): the drafter's
+// argmax over non-finite logits gives -1. Queued on the job's stream.
+bool ClampDrafts(void* drafts, std::uint32_t count, std::uint32_t vocab,
+                 providers::NativeStream native) {
+  return kernels::paging::ClampTokens(static_cast<std::int32_t*>(drafts), count,
+                                      static_cast<std::int32_t>(vocab), native.handle);
+}
+
+// The device's token-embedding lookup (the drafts' rows, and
+// CheckDeviceEmbedding's): GGML's float gather for an F32, F16 or BF16
+// table (the community GGUF's is F16), its quantized gather otherwise. Each
+// widens exactly as the host's lookup does (Dsv4EmbeddingRows).
+std::expected<void, kg::KernelFailure> LookUpRows(kg::LaunchContext& launch, ggml_tensor* rows) {
+  const ggml_type type = rows->src[0]->type;
+  if (type == GGML_TYPE_F32 || type == GGML_TYPE_F16 || type == GGML_TYPE_BF16) {
+    return kg::GetRows(launch, rows);
+  }
+  return kg::GetRowsExt(launch, rows);
+}
 
 constexpr std::uint64_t kExtent = kPagedExtent;
 // The most snapshot ranges a verify saves: at most 8 rows of about 230
@@ -1570,13 +1593,16 @@ Status Dsv4Runner::DraftVerify(RequestState& request, std::uint32_t pos, std::in
       // The drafts into the staged tokens after the anchor, and their
       // embedding rows into the staged rows after the anchor's.
       const std::uint64_t tokens_at = (*vcopies)[1][2];
+      if (!ClampDrafts(dg.drafts->data, rows - 1, profile_.vocab, native)) {
+        return failed("bounding the drafts' ids", true);
+      }
       if (!providers::CopyAsync(native, staging + tokens_at + sizeof(std::int32_t), dg.drafts->data,
                                 std::uint64_t{rows - 1} * sizeof(std::int32_t),
                                 providers::CopyKind::kDeviceToHost)
                .ok()) {
         return failed("the drafts' copy into the verify's tokens", true);
       }
-      if (auto r = kg::GetRowsExt(launch, lookup); !r) {
+      if (auto r = LookUpRows(launch, lookup); !r) {
         return failed(r.error().detail, r.error().error == kg::KernelError::kUnknown);
       }
     }
@@ -1835,6 +1861,9 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
           // This slot's drafts into its staged tokens after its anchor, and
           // their embedding rows into its staged rows after the anchor's.
           const auto first = static_cast<std::uint64_t>(g.first[i]) + 1;
+          if (!ClampDrafts(dp.graph.drafts->data, f.rows - 1, profile_.vocab, native)) {
+            return failed("bounding the drafts' ids", true);
+          }
           if (!providers::CopyAsync(native, staging + tokens_at + (first * sizeof(std::int32_t)),
                                     dp.graph.drafts->data,
                                     std::uint64_t{f.rows - 1} * sizeof(std::int32_t),
@@ -1842,7 +1871,7 @@ Status Dsv4Runner::Wave(std::span<const WaveWork> work, bool spec) {
                    .ok()) {
             return failed("the drafts' copy into the wave's tokens", true);
           }
-          if (auto r = kg::GetRowsExt(launch, f.lookup); !r) {
+          if (auto r = LookUpRows(launch, f.lookup); !r) {
             return failed(r.error().detail, r.error().error == kg::KernelError::kUnknown);
           }
         }
@@ -1950,7 +1979,7 @@ std::expected<std::uint64_t, std::string> Dsv4Runner::CheckDeviceEmbedding() {
                    .ok()) {
             return sc::JobResult::kUnknown;
           }
-          if (auto r = kg::GetRowsExt(launch, rows); !r) {
+          if (auto r = LookUpRows(launch, rows); !r) {
             failed = r.error().detail;
             return sc::JobResult::kFailed;
           }

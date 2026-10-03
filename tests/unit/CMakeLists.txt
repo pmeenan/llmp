@@ -56,6 +56,10 @@ add_executable(cohort_capacity_test cohort_capacity_test.cc)
 target_link_libraries(cohort_capacity_test PRIVATE jitllm_runtime)
 jitllm_gtest(cohort_capacity_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(cohort_schedule_test cohort_schedule_test.cc)
+target_link_libraries(cohort_schedule_test PRIVATE jitllm_runtime)
+jitllm_gtest(cohort_schedule_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 # The chat route (D-097): requests and their bounds, the bind resolution and
 # Host guard, and the server over real loopback sockets with a fake backend.
 add_executable(api_test api_test.cc)

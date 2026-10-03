@@ -644,12 +644,15 @@ community one; that is fixed separately.)
   - C1: 15.09 → 16.12 tok/s completed (+6.8%); first token 9.4 → 8.3 s;
     decode after the first token 33.5 → 33.8 tok/s, so acceptance is
     level.
-  - C4: 16.86 → 17.92 (+6.3%); completions 60.2–60.7 → 55.7–57.1 s.
-    With partial chunks the four prompts prefilled one after another
-    (first tokens 8.4 / 16.8 / 25.2 / 33.8 s, against 36.8–37.6 s
-    together). Both cells peaked at the service's budget (109.3 GiB
-    `MemAvailable` drop), so the cohort's capacity policy likely held the
-    later prompts. That is not isolated.
+  - C4, corrected: 16.36 → 17.86 tok/s (+9.2%), completions 62.4–62.6 →
+    55.9–57.3 s, both arms with main's round-robin schedule (a later
+    session, main `2c42d6f` against the full-chunk build). The first C4
+    cell here (16.86 → 17.92) was confounded. Its partial-chunk binary
+    carried a stale object of the experimental oldest-prompt-first
+    schedule: `rsync` kept the older source's time, so `ninja` did not
+    rebuild it. That schedule, not the capacity policy, prefilled the
+    prompts one after another. The cells logged no capacity waits, and the
+    host read nothing from disk after the load (`/proc/vmstat` `pgpgin`).
 - **Full chunks, through the runtime.** Fresh service per cell, main
   `6052286` against the full-chunk build, same session, 7K chat:
   - C1: 13.68 → 15.00 tok/s completed (+9.6%); decode after the first
@@ -665,8 +668,8 @@ community one; that is fixed separately.)
   the short prompts' chunks of 64 rows or more take it too, and this
   check was not repeated.
 
-Records: `spark:~/scratch/dss5/` (`h7`, `h11`, `r34/greedy-*`),
-2026-10-03.
+Records: `spark:~/scratch/dss5/` (`h7`, `h11`, `h15`, `io-*.tsv`,
+`r34/greedy-*`), 2026-10-03.
 
 ### Tie-aware re-scoring and partial chunks
 

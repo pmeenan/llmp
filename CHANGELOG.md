@@ -174,6 +174,17 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Concurrent chat prompts now prefill shortest remaining first, so a short
+  prompt no longer waits behind a long one that arrived first, and equal
+  prompts each stream their first token in turn instead of all at once at
+  the end. A long prompt still runs after at most 12 others' prefill units,
+  and a generating request waits for at most one prefill unit between its
+  tokens. With one ~32K-token DeepSeek prompt followed by three short
+  ones, the short prompts' first tokens come at 4.8–6.9 s instead of
+  18.6–19.0 s; four 124-token chats' at 0.9 / 1.7 / 2.5 / 3.4 s instead
+  of 3.0–3.5 s. Throughput is 1–2% lower for four equal prompts (their
+  first finishers decode between the others' prefill units). DeepSeek's
+  replies are unchanged.
 - DeepSeek's output-A/HCA prefill now also takes a prompt's last, partial
   chunk (64 rows or more), which passes every quality control under the
   owner's tie-aware greedy rule: 7K-token chat completes 5% faster alone
@@ -330,6 +341,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- DeepSeek's DSpark drafter failed with the community IQ2_XXS GGUF ("get_rows
+  of quantized rows into F32"): the verify's device lookup of the drafts'
+  rows now takes its F16 token table. With the drafter, one 7K-token chat
+  completes in 24% less time than without it (16.98 against 12.93 tok/s),
+  a short one 35% less. Draft ids are now bounded to the vocabulary before
+  any lookup, so a drafter's non-finite logits can no longer index past a
+  table.
 - `jitllm-runtime` refused to start the community DeepSeek V4 Flash
   IQ2_XXS GGUF ("a DeepSeek V4 wave needs every layer in the fast plan's
   fused form"): its F16 hyper-connection mixing weights kept every layer

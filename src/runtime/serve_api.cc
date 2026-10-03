@@ -38,6 +38,7 @@
 #include "runtime/api_server.h"
 #include "runtime/binding.h"
 #include "runtime/cohort_capacity.h"
+#include "runtime/cohort_schedule.h"
 #include "runtime/commands.h"
 #include "runtime/completion_tokens.h"
 #include "runtime/prefill.h"
@@ -295,6 +296,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     // preemption mid-generation, the tokens its state is rebuilt from (the
     // prompt and every generated token but the unprocessed anchor).
     std::uint64_t admitted = 0;
+    // The schedule's counters (cohort_schedule.h): while it prefills, the
+    // other prompt units since its own last; while it generates, the prompt
+    // units since its last wave.
+    std::uint32_t passed = 0;
+    std::uint32_t waited = 0;
     CapacityWait wait = CapacityWait::kNone;
     std::string refusal;
     bool resume = false;
@@ -407,8 +413,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
           .expected_seconds =
               static_cast<double>(SwapBytes(*cohort_model_)) / kSwapFloorBytesPerSecond};
     }
-    ChatWork* prompt = nullptr;
-    std::size_t prompt_distance = cohort_.size();
+    // The schedule (cohort_schedule.h): the prompt with the fewest tokens
+    // left goes next, a long one passed over for a bounded number of units,
+    // and a generating member waits for at most one prompt unit.
+    std::vector<ScheduledMember> members;
+    std::vector<ChatWork*> frames;
     for (auto* base : work) {
       auto& frame = static_cast<ChatWork&>(*base);
       if (frame.wait != CapacityWait::kNone) {
@@ -416,15 +425,24 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       }
       if (frame.stage == ChatWork::Stage::kGeneration) {
         selected_decode_.push_back(&frame);
+        members.push_back({.stage = ScheduledMember::Stage::kGeneration,
+                           .admitted = frame.admitted,
+                           .remaining = 0,
+                           .passed = 0,
+                           .waited = frame.waited});
+        frames.push_back(&frame);
       } else if (frame.stage == ChatWork::Stage::kPrompt) {
-        const auto distance = (frame.slot + cohort_.size() - next_prompt_slot_) % cohort_.size();
-        if (distance < prompt_distance) {
-          prompt = &frame;
-          prompt_distance = distance;
-        }
+        members.push_back({.stage = ScheduledMember::Stage::kPrompt,
+                           .admitted = frame.admitted,
+                           .remaining = frame.prompt_session->remaining_rows(),
+                           .passed = frame.passed,
+                           .waited = 0});
+        frames.push_back(&frame);
       }
     }
-    if (!selected_decode_.empty() && (prefer_decode_ || prompt == nullptr)) {
+    const ScheduleChoice choice = NextCohortUnit(members);
+    ChatWork* prompt = choice.prompt ? frames[*choice.prompt] : nullptr;
+    if (choice.decode) {
       double expected = 0;
       for (const ChatWork* frame : selected_decode_) {
         expected +=
@@ -491,8 +509,18 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     if (selected_prompt_ != nullptr) {
       ChatWork& frame = *std::exchange(selected_prompt_, nullptr);
       frame.native_touched = true;
-      next_prompt_slot_ = (frame.slot + 1) % cohort_.size();
-      prefer_decode_ = true;
+      // The schedule's counters (cohort_schedule.h), as this unit runs.
+      for (ChatWork* other : cohort_) {
+        if (other == nullptr || other == &frame) {
+          continue;
+        }
+        if (other->stage == ChatWork::Stage::kGeneration) {
+          ++other->waited;
+        } else if (other->stage == ChatWork::Stage::kPrompt) {
+          ++other->passed;
+        }
+      }
+      frame.passed = 0;
       const PrefillGoOn go_on = [&frame](std::uint32_t rows) {
         return !frame.cancelled && frame.exchange.Next(Phase::kPrefill, rows);
       };
@@ -529,13 +557,15 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       stepped.push_back(frame);
     }
     selected_decode_.clear();
-    prefer_decode_ = false;
     if (sessions.empty()) {
       return {};
     }
     if (auto advanced = cohort_model_->RunGenerationWave(sessions, true); !advanced) {
       Fail("the native chat generation wave failed: " + advanced.error());
       return advanced;
+    }
+    for (ChatWork* frame : stepped) {
+      frame->waited = 0;
     }
     std::vector<ChatWork*> refused;
     for (ChatWork* frame : stepped) {
@@ -1062,6 +1092,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     frame.resume_tokens = {};
     frame.generation_session = std::move(*generation);
     frame.stage = ChatWork::Stage::kGeneration;
+    frame.waited = 0;
     // Last logits are no longer borrowed by generation: Begin already chose
     // the first token. The callback and options remain in this stable frame.
     frame.prompt_session.reset();
@@ -1268,9 +1299,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   Llm* cohort_model_ = nullptr;
   ChatWork* selected_prompt_ = nullptr;
   std::vector<ChatWork*> selected_decode_;
-  std::size_t next_prompt_slot_ = 0;
   std::uint64_t admissions_ = 0;
-  bool prefer_decode_ = true;
   bool selected_swap_ = false;
   bool cohort_native_touched_ = false;
 };

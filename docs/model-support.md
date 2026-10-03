@@ -202,7 +202,7 @@ product changes its logits (heads move up to 3.87 on partial chunks); its
 over the mechanisms-off control with unaligned partial chunks
 ([stage mechanisms](experiments/ds4-prefill-stages/README.md)).
 ds4's default caches use FP8/FP4, so same weights alone do not establish
-equivalent cache policies. This variant has no DSpark, swap/restore or
+equivalent cache policies. This variant has no swap/restore or
 seeded-sampling evidence in this study.
 
 - **Template:** `87249207…` ("chat-v2", above), read from the artifact;
@@ -229,6 +229,15 @@ seeded-sampling evidence in this study.
   fused form's mean RMS is 0.450 (unfused 0.444), its largest difference
   5.86 (unfused 7.35). Timing and HTTP cells:
   [deepseek-batching](experiments/deepseek-batching/README.md#community-artifact-in-waves).
+- **DSpark** (2026-10-03): the 0731 drafter runs with this artifact. The
+  verify's device lookup of the drafts' rows now takes its F16 token table
+  and equals the host's for every token. Greedy speculation has no
+  near-tie violations on the eight `--check greedy` prompts (acceptance
+  0.48–0.82). Forced rejections leave 0 stale bytes, and DSpark waves at
+  2 and 4 slots equal each slot alone. Through the runtime it leads plain
+  decode alone (7K C1 +31%, 124-token +54%) and trails plain waves at
+  C4 (−6% / −12%)
+  ([deepseek-batching](experiments/deepseek-batching/README.md#dspark-with-the-community-artifact)).
 
 ## DSpark
 

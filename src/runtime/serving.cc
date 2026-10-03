@@ -2066,6 +2066,19 @@ std::expected<Llm::PromptSession::Unit, std::string> Llm::PromptSession::NextUni
   return unit;
 }
 
+std::uint32_t Llm::PromptSession::remaining_rows() const {
+  if (done()) {
+    return 0;
+  }
+  const std::vector<std::int32_t>& history = branch_.history_;
+  std::size_t at = history.size();
+  if (phase_ == Phase::kReuse) {
+    // Not reused yet: what the branch's history shares with the prompt.
+    at = static_cast<std::size_t>(std::ranges::mismatch(history, tokens_).in1 - history.begin());
+  }
+  return at >= tokens_.size() ? 0 : static_cast<std::uint32_t>(tokens_.size() - at);
+}
+
 void Llm::PromptSession::NextPhase() {
   const auto at = branch_.history_.size();
   if (checkpoint_pending_ && at == stable_boundary_) {

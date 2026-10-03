@@ -5,7 +5,7 @@
 # (paging.h): filling device ranges and gathering Qwen3.8's n-gram rows.
 # Not registry-bound operations (D-053). CUDA builds only.
 if(JITLLM_CUDA)
-  add_library(jitllm_paging_kernels STATIC fill_ranges.cu gather_rows.cu)
+  add_library(jitllm_paging_kernels STATIC clamp_tokens.cu fill_ranges.cu gather_rows.cu)
   target_include_directories(jitllm_paging_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
   target_link_libraries(jitllm_paging_kernels PRIVATE jitllm_warnings)
   # sm_121a, as the GGML module's units build, and the profile's discrete

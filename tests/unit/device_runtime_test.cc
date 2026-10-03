@@ -6,19 +6,24 @@
 // fills and copies on a job's stream land in pinned host memory; timing
 // marks measure the span between them; recorded work replays what it
 // recorded, with the data its pinned inputs hold at replay; and the error
-// state reads clear. The engine's jobs use nothing else of the device.
+// state reads clear. The engine's jobs use nothing else of the device,
+// besides its own paging kernels (kernels/paging/paging.h), of which the
+// draft-id guard is checked here.
 
 #include "providers/device_runtime.h"
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <utility>
 
+#include "kernels/paging/paging.h"
 #include "providers/device_execution.h"
 
 namespace {
@@ -119,6 +124,28 @@ TEST_F(DeviceRuntimeTest, FillsAndCopiesOnAJobsStream) {
   ASSERT_TRUE(pr::CopyAsync(native, host_, on_device_, kBytes, pr::CopyKind::kDeviceToHost).ok());
   Finish();
   EXPECT_TRUE(HostHolds(0x3C));
+}
+
+// The engine's draft-id guard (kernels/paging/paging.h ClampTokens): ids
+// outside [0, limit) become 0, the rest are kept.
+TEST_F(DeviceRuntimeTest, DraftIdsAreBoundedToTheVocabulary) {
+  const pr::NativeStream native = Native();
+  constexpr std::int32_t kLimit = 129280;
+  const std::array<std::int32_t, 7> ids = {
+      -1, 0, 5, kLimit - 1, kLimit, kLimit + 3, std::numeric_limits<std::int32_t>::min()};
+  const std::size_t bytes = sizeof(ids);
+  std::memcpy(host_, ids.data(), bytes);
+  ASSERT_TRUE(pr::CopyAsync(native, on_device_, host_, bytes, pr::CopyKind::kHostToDevice).ok());
+  ASSERT_TRUE(jitllm::kernels::paging::ClampTokens(static_cast<std::int32_t*>(on_device_),
+                                                   static_cast<std::uint32_t>(ids.size()), kLimit,
+                                                   native.handle));
+  std::memset(host_, 0xFF, bytes);
+  ASSERT_TRUE(pr::CopyAsync(native, host_, on_device_, bytes, pr::CopyKind::kDeviceToHost).ok());
+  Finish();
+  std::array<std::int32_t, 7> got{};
+  std::memcpy(got.data(), host_, bytes);
+  EXPECT_EQ(got, (std::array<std::int32_t, 7>{0, 0, 5, kLimit - 1, 0, 0, 0}));
+  EXPECT_TRUE(jitllm::kernels::paging::ClampTokens(nullptr, 0, kLimit, native.handle));
 }
 
 TEST_F(DeviceRuntimeTest, TimingMarksMeasureTheirSpan) {

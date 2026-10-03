@@ -28,6 +28,21 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-043: `rsync -a` of an older source over a build tree leaves stale objects  (2026-10-03, status: worked-around)
+
+Environment: a Spark build tree (`ninja`, preset `spark-native`) fed by
+`rsync -a` from more than one workstation worktree. `rsync -a` keeps each
+source's modification time. A file copied from a worktree whose copy is
+older than the one built last goes back in time, and `ninja` rebuilds only
+an output older than its inputs. So the old object stays, and the build
+links code the tree no longer holds, with no warning. Observed: a binary
+built from one branch carried another branch's scheduler. It confounded
+an HTTP comparison (`ds4-output-prefix`, "DSpark with output-A/HCA") and
+its explanation, and the binary's checks ran over mixed objects.
+Work-around: copy with checksums and fresh times (`rsync -rlpc`, no `-t`),
+or `touch` what was copied, and compare a rebuilt binary's hash against
+an expected one before measuring.
+
 ## RE-042: Clang's CUDA parser requires a cuRAND header absent from the trimmed SDK  (2026-10-02, status: worked-around)
 
 On Spark A, SDK `aarch64-e0a0c85c42806fb1`, Clang22.1.8 and CUDA13.4.92,

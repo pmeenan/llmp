@@ -452,7 +452,9 @@ dense products read once a wave, and the pair scan, to main `6052286`.
   from 0.83×. Its decode step is 85.5 ms against ds4's ~80.
 - 124-token replies are byte-identical to main's. The 7K replies change
   with output-A/HCA and are the same at every concurrency.
-- A 124-token prompt's first token takes 3.1 s against ds4's 0.8 (open).
+- A 124-token prompt's first token took 3.1 s against ds4's 0.8. Prompt
+  units are now taken shortest remaining first
+  ([below](#prompt-order-adopted)), and the first comes at 0.9 s.
 
 **Oldest prompt first.** Main's backend alternates prompt units across
 requests (round robin), with one decode wave after each unit, so four
@@ -476,20 +478,120 @@ completion a little later. Replies are byte-identical across policies.
 
 A request decoding alone takes about 50 ms a token, against 21.5 in a
 full wave. Decode time spent before every prompt has prefilled therefore
-costs throughput, about twice what it gains in first completion. One wave
-a unit only staggers the first tokens. **Not adopted.** Agents and
-subagents wait on completions, and those come no earlier.
+costs throughput, about twice what it gains in first completion. These
+variants were not adopted; see [below](#prompt-order-adopted) for the
+order adopted later.
 
 **Plain waves against DSpark from three requests.** Original artifact with
 the drafter, `--check wave`, 96 tokens a request: three slots, DSpark
 39.63 tok/s against injected decode waves' 35.21; four slots, 40.34
-against 40.85. DSpark stays. The drafter cannot run with the community
-artifact: the wave check fails with "get_rows of quantized rows into
-F32" (open).
+against 40.85. DSpark stays.
+
+### Prompt order, adopted
+
+The short prompts' first-token gap was not waves. A 124-token prompt
+runs a 122-row chunk, its turn checkpoint and a 2-row chunk. The
+122-row chunk reads nearly every routed expert once (0.55 s of GPU time
+in `nsys`, mostly `mul_mat_q` and the D2R down). Round robin ran all four
+prompts' first chunks before any prompt's last unit. So every first
+token waited about 2.3 s behind the other prompts, against ds4's
+sequential 0.8 s for the first.
+
+**First try: oldest prompt first.** That fixed the equal-length cells:
+124-token C4 first tokens went from 3.0–3.5 s to 0.9 / 1.7 / 2.5 / 3.4 s
+at unchanged throughput. Generating requests waited up to 4 s between
+waves (`kDecodeStall`). Review found two faults:
+- **Head-of-line blocking.** A long prompt that arrives first holds every
+  short one behind it. In a mixed C4 cell (one ~32K prompt, then three
+  126-token prompts 0.3 s later), the short prompts' first tokens went
+  from 18.6–19.0 s (round robin) to 38.8–40.5 s for DeepSeek, and from
+  7.9–8.4 to 16.0–17.0 s for Qwen3.8.
+- **The stall bound.** The clock was checked only before a unit was
+  chosen, so the measured gaps reached 5.7 s (DeepSeek) and 5.1 s
+  (Qwen3.8). And 4 s is a DeepSeek chunk, while Qwen3.8's take under 2 s,
+  so its streaming stall grew from 1.9 to 5.1 s. Partial waves did run
+  between prompt units, too.
+
+**Adopted: shortest remaining prompt first, bounded by units**
+(`runtime/cohort_schedule.h`, unit-tested; `serve_api.cc`
+`NodeBackend::NextUnit`, shared with Qwen3.8):
+- **Order.** The prompt with the fewest tokens left to prefill goes next,
+  the oldest of equals. A prompt not yet started counts what its
+  conversation can reuse. Prompts of equal length still finish one after
+  another.
+- **Aging.** A prompt passed over for 12 other prompt units goes next
+  regardless, so a long prompt cannot be starved by short ones cycling
+  through the other slots.
+- **Stall bound.** A generating request waits for at most one prompt
+  unit: once one has run since its last wave, a wave runs before the
+  next. That is round robin's cadence, bounded by a unit rather than a
+  clock.
+
+Same session, fresh service per cell, against round robin (the review's
+build of this tree with main's schedule). Mixed C4: one ~32K prompt
+(32 outputs) and three 126-token prompts (200 outputs), arriving 0.3 s
+apart, long first (LF) or short first (SF):
+
+| Cell | Round robin: short first tokens, s | Adopted | Round robin: tok/s | Adopted | Largest gap, s |
+| --- | --- | --- | ---: | ---: | --- |
+| DeepSeek, LF | 18.6 / 18.8 / 19.0 | 4.8 / 5.8 / 6.9 | 12.45 | 12.31 | 4.50 → 4.53 |
+| DeepSeek, SF | 6.1 / 10.7 / 10.9 | 0.9 / 1.9 / 3.0 | 12.34 | 12.13 | 4.52 → 4.60 |
+| Qwen3.8, LF (two runs) | 7.9–8.4 | 2.2 / 3.0 / 3.9 | 24.43, 24.37 | 23.56, 23.56 | 1.84 → 1.86 |
+| Qwen3.8, SF (two runs) | 2.8 / 5.0 / 5.3 | 0.5 / 1.3 / 2.2 | 23.69, 23.70 | 23.68, 23.76 | 1.85 → 1.84 |
+
+The long prompt's own first token comes about 0.7–0.9 s later. The
+DeepSeek SF row is from the first build, with 8 units of aging; the rest
+use 12. Equal-length cells (7K C4, four prompts at once, 256 outputs):
+
+| Cell | Round robin | Adopted |
+| --- | --- | --- |
+| DeepSeek community: tok/s | 19.90 | 19.60 |
+| DeepSeek community: first tokens, s | 28.5–29.0 | 7.3 / 14.7 / 22.4 / 30.0 |
+| DeepSeek original: tok/s | 18.18 | 18.01 |
+| Qwen3.8 8K C4 (ABBA, two runs each): tok/s | 32.27 / 31.96 | 31.29 / 31.70 |
+
+Equal-length throughput is 0.9–2.0% below round robin. The mixed Qwen3.8
+long-first cell is 3.3–3.6% slower in two runs. The cost is the bound's:
+a request that finishes prefill early decodes in partial waves, one after
+each later prompt unit, where round robin finished every prompt together
+before decoding.
+DeepSeek's replies are byte-identical across schedules. Qwen3.8's vary
+with timing under either schedule (its round robin runs differ from each
+other).
+
+### DSpark with the community artifact
+
+The drafter's verify embeds its drafts on the device. That lookup took
+only quantized token tables, but the community GGUF's is F16, so it
+failed ("get_rows of quantized rows into F32"). The runner's lookup
+(`LookUpRows`, `engine/dsv4_runner.cc`) now gives F32, F16 and BF16 tables
+to GGML's float gather. That widens exactly, as the host's lookup does.
+Checks on the community artifact with the drafter (`jitllm_spec_runner`):
+- the device lookup equals the host's for all 129,280 tokens' rows;
+- greedy speculation: every speculative token the plain engine's argmax,
+  or a near-tie within the verify's noise (2.61); no violations on the
+  eight prompts;
+- forced rejections: 0 stale bytes over 7.8 GB compared;
+- DSpark waves at 2 and 4 slots: identical to each slot alone.
+
+Acceptance per prompt is 0.48–0.82 (original artifact: 0.56–0.78).
+Through the runtime, same session, community, DSpark against plain:
+
+| Cell | Plain | DSpark |
+| --- | ---: | ---: |
+| 7K C1: tok/s | 12.93 | 16.98 (+31%) |
+| 7K C4: tok/s | 19.94 | 18.77 (−5.9%) |
+| 124-token C1: tok/s | 19.72 | 30.40 (+54%) |
+| 124-token C4: tok/s | 43.88 | 38.64 (−11.9%) |
+
+As on the original artifact, DSpark leads alone but trails plain waves at
+four requests through the runtime, though the harness's wave check finds
+them level (42.54 against 42.29 tok/s). The HTTP C4 gap is open.
 
 Records: `spark:~/scratch/dss5/` (`v2`, `v3`, `h1`–`h6`, `q1`, `bin/`,
-profile `v3/wave4.sqlite`), controller `runx.py` over `dss0/tools/run.py`,
-2026-10-03.
+profile `v3/wave4.sqlite`; the adopted scheduling `h10`, `h10s`, `q2` and
+profile `short4.sqlite`; the community drafter `dr`, `h9`, `h9s`),
+controller `runx.py` over `dss0/tools/run.py`, 2026-10-03.
 
 ## Plan memory
 
@@ -620,16 +722,20 @@ cleared as idle; once idle slot 0 is cleared, slot 1 grows and runs.
   not the dense products' reads; the
   [wave step's profile](#four-request-wave-step-and-scheduling) found the
   routed products' pair scan.
-- **Oldest prompt first, with or without more decode between units.**
-  Measured, not adopted: no earlier completions for 1.6–2.3% throughput,
-  or earlier first completions for much more
-  ([above](#four-request-wave-step-and-scheduling)).
+- **Partial decode waves between prompt units.** Measured, not adopted:
+  no earlier completions for 1.6–2.3% throughput, or earlier first
+  completions for much more
+  ([above](#four-request-wave-step-and-scheduling)). The adopted order is
+  shortest remaining prompt first, with one prompt unit between waves
+  ([above](#prompt-order-adopted)).
 - **Plain waves instead of DSpark from three requests.** DSpark is 12.6%
   faster at three slots and level at four; not adopted.
 - **One launch for every slot's attention and state operations.** Open.
   About 12 ms of the 86 ms four-request step.
-- **DSpark with the community artifact.** Open: the drafter's row gather
-  refuses the artifact's quantized rows.
+- **DSpark at four requests through the runtime.** Open: on both
+  artifacts DSpark C4 trails plain waves at HTTP (community 7K −5.9%,
+  124-token −11.9%) while the harness's wave check finds them level.
+  Plain waves from four requests would change replies against C1.
 - **Joined DSpark draft blocks.** Open. A wave runs one draft per slot.
 - **Literal completions (`/v1/completions`).** Open. They remain serial.
 

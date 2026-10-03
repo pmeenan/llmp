@@ -3,8 +3,9 @@
 
 // jitLLM's own small CUDA kernels that the engine's device jobs queue
 // around the paging of weights and rows (engine/paged_weights.h,
-// engine/ple_rows.h): filling device ranges, and gathering Qwen3.8's
-// n-gram rows from their pinned landing. Data movement, not operations of
+// engine/ple_rows.h): filling device ranges, gathering Qwen3.8's n-gram
+// rows from their pinned landing, and bounding draft token ids before they
+// index a table. Data movement and guards, not operations of
 // a model's plan, so they are not registry-bound (D-053). A backend
 // without them fills and gathers with its own (docs/portability.md).
 //
@@ -34,6 +35,11 @@ bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t v
 bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
                    const std::uint32_t* count, std::uint32_t max_count, std::uint32_t row_bytes,
                    std::byte* slots, void* stream);
+
+// Replaces each of `count` device token ids outside [0, limit) with 0 in
+// place: a drafter's argmax over non-finite logits gives -1, which would
+// index past a token table (engine/dsv4_runner.cc, the drafts' rows).
+bool ClampTokens(std::int32_t* tokens, std::uint32_t count, std::int32_t limit, void* stream);
 
 }  // namespace jitllm::kernels::paging
 

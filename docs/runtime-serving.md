@@ -588,8 +588,16 @@ backend funds four active requests, which decode in shared waves at draft
 depth 2 (a lone request keeps its adaptive depth; past two, drafts run per
 request). A fifth waits for retirement and then refills
 the group; a different model or literal completion waits for the group to drain.
-Prefill chunks alternate fairly between branches, with ready decode work between
-them. Compatible small-row target/draft products of up to four requests share
+The prompt with the fewest tokens left to prefill (after what its
+conversation can reuse) gets the next prompt unit, the oldest of equals.
+So a short prompt is not held behind a long one that arrived first, and
+prompts of equal length finish one after another, each streaming its first
+token in turn. A prompt passed over for 12 other prompt units goes next
+regardless, so a long prompt is not starved. A generating request waits
+for at most one prompt unit between its waves
+(`runtime/cohort_schedule.h`;
+[prompt order](experiments/deepseek-batching/README.md#prompt-order-adopted)).
+Compatible small-row target/draft products of up to four requests share
 weights (sixteen rows a product; MXFP8 and routed outputs bit for bit); independent
 attention, recurrence, logits and commits remain branch-owned. Eligible groups
 of three- or four-row BF16 target heads use one ordinary MMF product of up to
