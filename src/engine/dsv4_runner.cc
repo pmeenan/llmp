@@ -48,6 +48,15 @@ std::optional<std::uint32_t> HcaFirstPosition(const Dsv4Model& model,
   }
   return std::nullopt;
 }
+
+// Whether every layer's output-A weights are the Q8_0 [4,096, 8,192] the
+// output-A prefill takes (kernels/ggml/dsv4_outa.h): only then can its
+// HCA run, so only then is a plan an HCA plan.
+bool OutAWeights(const md::Dsv4Binding& b) {
+  return std::ranges::all_of(b.layers, [](const md::Dsv4Layer& l) {
+    return l.out_a.type == "Q8_0" && l.out_a.ne == std::vector<std::uint64_t>{4096, 8192};
+  });
+}
 using support::Round;
 using support::Seconds;
 
@@ -336,7 +345,8 @@ Status Dsv4Runner::Setup() {
                                 .state = std::uint64_t{1} << 45U},
                      .rot = kg::HadamardMatrix(profile_.indexer_head_dim),
                      .exact = o_.exact,
-                     .prefill_outa_hca = o_.prefill_outa_hca && !o_.exact && !o_.full_window};
+                     .prefill_outa_hca = o_.prefill_outa_hca && !o_.exact && !o_.full_window,
+                     .prefill_outa_hca_partial = o_.prefill_outa_hca_partial};
   if (speculative()) {
     dmodel_ = DsparkModel{.artifact = &dweights_.artifact(),
                           .profile = &dprofile_,
@@ -364,7 +374,8 @@ Status Dsv4Runner::Setup() {
     if (!measure) {
       return std::unexpected(measure.error());
     }
-    model_.prefill_outa_hca = model_.prefill_outa_hca && kg::Dsv4OutASupported(**measure);
+    model_.prefill_outa_hca =
+        model_.prefill_outa_hca && kg::Dsv4OutASupported(**measure) && OutAWeights(binding_);
     const kg::DeviceChoices choices = kg::DeviceChoicesOf(**measure);
     const auto account = [&](const PlannedBase& planned, std::uint64_t& host) -> Status {
       host = std::max(host, PlannedHostBytes(planned));
@@ -896,8 +907,17 @@ Status Dsv4Runner::CheckHashRouting() {
 }
 
 std::expected<Dsv4Runner::ChunkPlans::Entry*, std::string> Dsv4Runner::Planned(
-    RequestState& request, const ChunkKey& key) {
+    RequestState& request, const ChunkKey& key, std::uint32_t first) {
   if (ChunkPlans::Entry* found = request.plans.Find(key); found != nullptr) {
+    if (key.hca) {
+      // The plan's HCA nodes take this chunk's position (no re-plan); it
+      // is never captured (Chunk), which this refuses to rely on.
+      if (auto r = SetDsv4HcaFirstPosition(request.model, found->planned->graph, first,
+                                           found->has_graph());
+          !r) {
+        return std::unexpected(r.error());
+      }
+    }
     return found;
   }
   const auto start = std::chrono::steady_clock::now();
@@ -910,7 +930,7 @@ std::expected<Dsv4Runner::ChunkPlans::Entry*, std::string> Dsv4Runner::Planned(
   kg::LaunchContext& launch = resources_.launch();
   auto planned = PlanDsv4Chunk(request.model, key.shape, kg::DeviceChoicesOf(launch), dump_,
                                node_.activations().base, node_.activations().bytes, speculation,
-                               key.first_position);
+                               key.hca ? std::optional<std::uint32_t>(first) : std::nullopt);
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -1148,10 +1168,15 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
           ? 1
           : 0;
   const auto shape = kg::Dsv4ShapeOf(layout_, *in, requested_outputs);
-  auto planned = Planned(request, {.shape = shape,
-                                   .kind = kind,
-                                   .inject_rows = static_cast<std::int64_t>(inject.cells.size()),
-                                   .first_position = HcaFirstPosition(model, shape, n_past)});
+  // A plain or injected prefill chunk may take HCA; a verify never does
+  // (PlanDsv4Chunk refuses it).
+  const bool hca = !verify && Dsv4PrefillHca(model, shape);
+  auto planned = Planned(request,
+                         {.shape = shape,
+                          .kind = kind,
+                          .inject_rows = static_cast<std::int64_t>(inject.cells.size()),
+                          .hca = hca},
+                         n_past);
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -1163,9 +1188,9 @@ Status Dsv4Runner::Chunk(RequestState& request, std::uint32_t n_past,
   const std::uint32_t out_rows = verify ? rows : 1;
   // Decode graphs (D-090): replay a shape's graph; capture a one-row
   // shape (or a verify's) that has run once launch by launch; otherwise
-  // launch by launch.
-  bool capture =
-      runs.CaptureDue(runs_.graphs()) && ((rows == 1 && kind == Dsv4ChunkKind::kPlain) || verify);
+  // launch by launch. An HCA plan never: its position changes each run.
+  bool capture = !hca && runs.CaptureDue(runs_.graphs()) &&
+                 ((rows == 1 && kind == Dsv4ChunkKind::kPlain) || verify);
   if (capture && !RoomForGraphs(1, entry.nodes * kGraphNodeHostBytes)) {
     capture = false;  // past the graph caps alone: launch by launch
   }

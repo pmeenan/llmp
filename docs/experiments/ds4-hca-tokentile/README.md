@@ -128,8 +128,12 @@ masks and compressed visibility counts; structural checks do not inspect
 arbitrary device-mask contents. The validator requires packed interleaved
 Q, packed joined F16 KV, shared K/V identity, packed sinks/output,
 standard scale, zero ALiBi/softcap, exact sparse bounds and nonoverlapping
-read/write ranges. Scratch cannot overlap operands. First position is
-immutable plan metadata, with an explicitly bounded position-keyed cache.
+read/write ranges. Scratch cannot overlap operands. First position was
+immutable plan metadata here, with a bounded position-keyed cache. In
+production (output-A/HCA by default on full chunks, 2026-10-03) plans are
+keyed by shape and each run sets the position; such a plan is never
+captured, and a captured one is refused
+([default-on acceptance](../ds4-output-prefix/README.md#default-on-acceptance)).
 
 Records, counts and mirror use one planned, cataloged workspace scope.
 The executor plans the whole aligned payload; insufficient workspace

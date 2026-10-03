@@ -133,8 +133,11 @@ struct Dsv4Options {
   // Production fast prefill needs only the last head row. Generic and
   // diagnostic callers opt in explicitly; exact/verify stay all-row.
   bool frontier_head = false;
-  // Internal experiment, off by default; no public runtime/config option.
+  // The output-A/HCA prefill on full 4,096-row chunks (Dsv4Model): off for
+  // the harnesses unless asked, on in serving. No public configuration.
   bool prefill_outa_hca = false;
+  // And on partial chunks too: internal, off (Dsv4Model).
+  bool prefill_outa_hca_partial = false;
   // Independent request slots (1 to 4): 1 keeps the default request alone,
   // as the harnesses run; more provision that many request states (each
   // its own virtual state ceiling, snapshot and output staging) and waves.
@@ -182,9 +185,11 @@ class Dsv4Runner final : public PagedModel {
     kernels::ggml::Dsv4ChunkShape shape;
     Dsv4ChunkKind kind = Dsv4ChunkKind::kPlain;
     std::int64_t inject_rows = 0;
-    // HCA's host scalar; present only for plans HCA's token tile admits
-    // (a chunk of 64 rows or more whose ring holds rows + 256 cells).
-    std::optional<std::uint32_t> first_position = std::nullopt;
+    // Whether the plan takes the output-A/HCA prefill's HCA
+    // (Dsv4PrefillHca). Its host scalar, the chunk's first position, is
+    // not part of the key: each run sets it (SetDsv4HcaFirstPosition), so
+    // chunks of one shape at other positions share the plan.
+    bool hca = false;
     bool operator==(const ChunkKey&) const = default;
   };
   using ChunkPlans = PlanCache<ChunkKey, Dsv4Planned>;
@@ -608,8 +613,11 @@ class Dsv4Runner final : public PagedModel {
   std::array<LiveState*, kRequestSlots> States();
   Status SetupSlot(RequestState& request, std::uint64_t snapshot_bytes);
   void BindSlot(RequestState& request);
-  std::expected<ChunkPlans::Entry*, std::string> Planned(RequestState& request,
-                                                         const ChunkKey& key);
+  // A chunk's plan, found or made. `first` is the chunk's first position:
+  // an HCA plan (key.hca) is made for it, and either way is set to it
+  // before it runs (SetDsv4HcaFirstPosition).
+  std::expected<ChunkPlans::Entry*, std::string> Planned(RequestState& request, const ChunkKey& key,
+                                                         std::uint32_t first = 0);
   std::expected<DraftPlans::Entry*, std::string> PlannedDraft(RequestState& request);
   std::expected<WavePlans::Entry*, std::string> PlannedWave(const WaveKey& key);
   void Check(const kernels::ggml::Dsv4Graph& graph);

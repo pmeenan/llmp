@@ -109,10 +109,20 @@ void BindDsv4State(const Dsv4Model& m, std::uint64_t base, kg::Dsv4Graph& g) {
   }
 }
 
+namespace {
+
+// Whether a chunk of these rows takes the output-A/HCA prefill: a full
+// 4,096-row chunk, or with prefill_outa_hca_partial any prefill chunk.
+bool OutAHcaRows(const Dsv4Model& m, std::int64_t rows) {
+  return rows == kg::kDsv4HcaMaxRows ||
+         (m.prefill_outa_hca_partial && rows >= kg::kDsv4HcaMinRows && rows <= kg::kDsv4HcaMaxRows);
+}
+
+}  // namespace
+
 bool Dsv4PrefillHca(const Dsv4Model& m, const kg::Dsv4ChunkShape& shape) {
   return !m.exact && m.prefill_outa_hca && m.state->window == md::Dsv4Window::kRing &&
-         shape.rows >= kg::kDsv4HcaMinRows && shape.rows <= kg::kDsv4HcaMaxRows &&
-         shape.hca_n_kv == 256;
+         OutAHcaRows(m, shape.rows) && shape.hca_n_kv == 256;
 }
 
 std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
@@ -120,8 +130,10 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     std::span<const std::string> keep_names, std::uint64_t activations,
     std::uint64_t activation_bytes, const Dsv4Speculation& speculation,
     std::optional<std::uint32_t> first_position) {
+  // A verify never takes the output-A/HCA prefill (its rows are captured
+  // as a graph, which would keep one position).
   if (first_position &&
-      (!Dsv4PrefillHca(m, shape) ||
+      (speculation.verify || !Dsv4PrefillHca(m, shape) ||
        static_cast<std::uint64_t>(*first_position) + static_cast<std::uint64_t>(shape.rows) >
            m.state->context)) {
     return Error("the prefill plan's first position is not an HCA prefill chunk's in its context");
@@ -136,8 +148,8 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     return Error(arena.error().detail);
   }
   out->arena.emplace(std::move(*arena));
-  const bool outa_prefill =
-      !m.exact && m.prefill_outa_hca && m.state->window == md::Dsv4Window::kRing;
+  const bool outa_prefill = !m.exact && !speculation.verify && m.prefill_outa_hca &&
+                            m.state->window == md::Dsv4Window::kRing && OutAHcaRows(m, shape.rows);
   kg::Dsv4GraphOptions options{.expert_stride = m.places.stride,
                                .row_invariant = speculation.verify && m.exact,
                                .fused = !m.exact,
@@ -214,6 +226,29 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     return std::unexpected(placed.error());
   }
   return out;
+}
+
+std::expected<void, std::string> SetDsv4HcaFirstPosition(const Dsv4Model& m, kg::Dsv4Graph& g,
+                                                         std::uint32_t first, bool captured) {
+  if (!g.prefill_first_position || g.positions == nullptr) {
+    return Error("not an HCA prefill plan");
+  }
+  if (captured) {
+    // A replay would keep the captured position whatever is set here.
+    return Error("an HCA prefill plan was captured as a graph");
+  }
+  const auto rows = static_cast<std::uint64_t>(g.positions->ne[0]);
+  if (std::uint64_t{first} + rows > m.state->context) {
+    return Error("the prefill plan's first position is not an HCA prefill chunk's in its context");
+  }
+  for (auto* node : g.nodes) {
+    if (node->op == GGML_OP_FLASH_ATTN_EXT &&
+        node->op_params[kg::kDsv4HcaTagParam] == kg::kDsv4HcaTag) {
+      kg::MarkDsv4HcaTokentile(node, first);
+    }
+  }
+  g.prefill_first_position = first;
+  return {};
 }
 
 void BindDsparkInjection(const DsparkModel& d, kg::Dsv4Graph& g) {

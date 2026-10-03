@@ -270,14 +270,17 @@ std::expected<void, KernelFailure> CheckHcPost(const ggml_tensor* node);
 // column tiles, which ops_ext.h checks against the mask's rows.
 std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node);
 
-// Experimental ds4 HCA adapter. The binder vouches for the canonical
-// 128-row causal ring mask and floor((first + row + 1) / 128) HCA counts.
-// This is a trusted binder contract, not a content check of arbitrary device
-// masks/counts. Metadata is benchmark-local: its plan cache must include first
-// position, and captured replays cannot change that scalar position.
+// The ds4 HCA adapter. The binder vouches for the canonical 128-row causal
+// ring mask and floor((first + row + 1) / 128) HCA counts. This is a
+// trusted binder contract, not a content check of arbitrary device
+// masks/counts. The first position is a host scalar read at launch: the
+// fast plan's output-A/HCA prefill (engine/dsv4_plan.h Dsv4PrefillHca, on
+// in serving for full 4,096-row chunks) sets it before each run
+// (SetDsv4HcaFirstPosition), so such a plan runs launch by launch and is
+// never captured; a captured replay would keep the captured position.
 // The operation accepts packed F32 [token, 64, 512] Q/output, one joined
 // F16 K/V ring + compressed prefix and 64 F32 sinks. It changes arithmetic,
-// retaining the stored F16 cache. No production builder enables this tag.
+// retaining the stored F16 cache.
 inline constexpr int kDsv4HcaFirstParam = 7;
 inline constexpr int kDsv4HcaTagParam = 8;
 inline constexpr std::int32_t kDsv4HcaTag = 0x48434131;

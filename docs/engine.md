@@ -136,7 +136,8 @@ at most 16 rows and keeps each request's rows bit-identical to its steps alone:
 8-column vector kernel run per slot, so do GGML's products of quantized
 weights `jitllm.vecq` has no kernel for (the dense products, quantized HC
 mixes and the attention output's grouped product), a wave of one-row steps takes the vector
-product's one-token launch (`SetVecQOneToken`), and the drafter's injection
+product's one-token configuration (`SetVecQOneToken`: each token's sums its
+step's; dense products four tokens a pass), and the drafter's injection
 (GGML MMVQ) runs per slot. A wave needs every layer in the fused form
 (`Dsv4WaveSupport`: each layer's expert products `jitllm.vecq` types; the HC
 mixing weights may be any type). Setup checks it before provisioning slots;

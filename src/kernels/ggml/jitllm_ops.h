@@ -815,10 +815,12 @@ ggml_tensor* QuantizeQ8(ggml_context* context, ggml_tensor* x);
 ggml_tensor* VecQ(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8, ggml_tensor* ids,
                   std::int64_t tokens, bool per_slot, ggml_tensor* gate = nullptr,
                   VecQGlu glu = VecQGlu::kNone, float limit = 0.0f);
-// A vecq node takes the launch a one-token product of its shape takes,
-// whatever its tokens: each token's sums then equal a one-token step's bit
-// for bit, its weights read again from cache for each token (a wave of
-// one-row steps, dsv4_graph.h Dsv4WaveGraph).
+// A vecq node takes the configuration a one-token product of its shape
+// takes (its rows, warps and reduction), whatever its tokens: each token's
+// sums then equal a one-token step's bit for bit (a wave of one-row steps,
+// dsv4_graph.h Dsv4WaveGraph). A dense product without a GLU computes four
+// tokens a pass, reading each weight block once for them; routed and GLU
+// products one token a pass, their weights read again from cache.
 void SetVecQOneToken(ggml_tensor* node);
 bool VecQOneToken(const ggml_tensor* node);
 // `logits` F32 [experts, tokens]; `bias` F32 [experts] or null; `table`

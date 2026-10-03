@@ -61,10 +61,16 @@ struct Dsv4Model {
   // row-invariant plan (D-092). Off (the default): jitLLM's fused plan and
   // a batched verify, judged coarsely against llama.cpp.
   bool exact = false;
-  // Internal opt-in for the qualified 4K output-A/HCA prefill combination.
+  // The output-A/HCA prefill combination on full 4,096-row chunks (the
+  // qualified shape; serving's default, docs/experiments/ds4-output-prefix):
   // OutA keeps its descriptor fallback; HCA requires all layers' OutA and
-  // the qualified 4K/256-compressed shape. Other rows retain ordinary math.
+  // the 256-compressed shape. Other rows retain ordinary math.
   bool prefill_outa_hca = false;
+  // And on every prefill chunk of kDsv4StageMinRows to 4,096 rows, a
+  // prompt's last, partial one included. Internal and off: it failed the
+  // registered 32K fixed-history bound (docs/experiments/ds4-output-prefix,
+  // "Default-on acceptance").
+  bool prefill_outa_hca_partial = false;
 };
 
 // DeepSeek's DSpark drafter beside its target (model/dspark.h): its places
@@ -103,10 +109,11 @@ void BindDsv4Weights(const Dsv4Model& m, kernels::ggml::Dsv4Graph& g);
 void BindDsv4State(const Dsv4Model& m, std::uint64_t base, kernels::ggml::Dsv4Graph& g);
 
 // Whether a chunk of this shape takes the combined output-A/HCA prefill's
-// HCA (with Dsv4Model::prefill_outa_hca, the fast plan): a prefill chunk of
-// kDsv4HcaMinRows to kDsv4HcaMaxRows rows (a prompt's last, partial chunk
-// included) while the HCA layers' compressed cells are 256 wide. Its plan
-// then holds the chunk's first position (PlanDsv4Chunk `first_position`).
+// HCA (with Dsv4Model::prefill_outa_hca, the fast plan): a full 4,096-row
+// chunk (with prefill_outa_hca_partial, any prefill chunk of
+// kDsv4HcaMinRows to kDsv4HcaMaxRows rows) while the HCA layers'
+// compressed cells are 256 wide. Its plan then holds the chunk's first
+// position (PlanDsv4Chunk `first_position`).
 bool Dsv4PrefillHca(const Dsv4Model& m, const kernels::ggml::Dsv4ChunkShape& shape);
 
 // Builds, binds, plans and places one chunk shape's graph: every computed
@@ -122,6 +129,17 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     std::uint64_t activations, std::uint64_t activation_bytes,
     const Dsv4Speculation& speculation = {},
     std::optional<std::uint32_t> first_position = std::nullopt);
+
+// Sets an HCA prefill plan's chunk position: its HCA nodes' host scalar and
+// the position its inputs are authenticated against (BuildDsv4Inputs), so a
+// chunk of the same shape at another position runs the same plan. HCA
+// reads its position only at launch, so such a plan must run launch by
+// launch: refused when `captured` (the plan has a graph, whose replay would
+// keep the captured position), for a plan without HCA, or for a chunk past
+// the context.
+std::expected<void, std::string> SetDsv4HcaFirstPosition(const Dsv4Model& m,
+                                                         kernels::ggml::Dsv4Graph& g,
+                                                         std::uint32_t first, bool captured);
 
 // Binds a chunk graph's DSpark injection: the drafter's fc, norms and wkv,
 // and its ring.

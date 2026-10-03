@@ -15,8 +15,11 @@ step. The HCA/output-A combination also passes the registered 128K
 held-out perplexity condition and the frozen 127K-token variable-binding
 answer task, and passes the original-checkpoint 128K forced trajectory.
 These are focused attribution/quality results. The guarded native adapter
-also gains 4.97% in its own screen with exact candidate logits; runtime
-defaults remain unchanged and broader acceptance is separate.
+also gains 4.97% in its own screen with exact candidate logits.
+**The runtime now serves DeepSeek with output-A/HCA on full 4,096-row
+chunks by default**, where every registered quality control passes on both
+GGUFs; partial chunks keep ordinary math, because there one control fails
+([default-on acceptance](#default-on-acceptance)).
 
 ## Captured first-layer screen
 
@@ -527,6 +530,121 @@ The [scoped IQ2 validation](../ds4-iq2-occ2/README.md) records the combined
 source receipts and final compiled controls. Source-only
 REUSE/header checking passes 1,168 headers across 1,290 source paths with
 no problems. Any serving-default decision remains separate.
+
+## Default-on acceptance
+
+The owner's rule allows speed over bit-exactness only at the same quality.
+Each configuration below runs the registered controls unchanged: the
+original UD-Q2_K_XL checkpoint's 32K and 128K fixed histories against the
+same-checkpoint llama.cpp oracle (0.947-nat bound, no row outside), its
+128K held-out perplexity (3% around 1.9298), the frozen 127K answer task,
+and on the community GGUF ds4's own 8K trajectory and the 32K perplexity
+against ds4's. `jitllm_dsv4_exec`, compact experts, frontier heads, Spark A,
+2026-10-03.
+
+| Configuration | 32K history (equal / near / outside) | 128K history | 128K PPL | Community 8K vs ds4 |
+| --- | --- | --- | --- | --- |
+| Current default (output-A/HCA off) | 492 / 19 / **1** (step 249) | — | — | 32 / 32 |
+| Output-A/HCA on full 4,096-row chunks | 492 / 20 / 0 | 500 / 12 / 0 | 1.928842 (−0.05%) | 32 / 32 |
+| Output-A/HCA on every chunk (partial tails too) | 491 / 19 / **2** (steps 249, 333) | 499 / 13 / 0 | (no tails) | — |
+| Output-A alone on every chunk | 488 / 23 / **1** (step 306) | — | — | — |
+| Output-A/HCA, 2,048-row chunks | 493 / 19 / 0 | — | — | — |
+
+- **Full chunks pass every control.** Their logits are byte-identical to
+  the earlier qualified runs: the 32K and 128K histories' full-logit
+  hashes equal `a2d70ac4…` and `d842b48c…` above, and the 128K
+  perplexity losses equal `b6d39c8d…`. The 127K answer task runs 31 full
+  chunks and no tail, the same path, so its earlier pass stands. The
+  community GGUF's 32K perplexity in 4,096-row chunks is 2.981815 against
+  ds4's 2.980670 (+0.04%,
+  [stage mechanisms](../ds4-prefill-stages/README.md)).
+- **Partial chunks fail the 32K history.** With its 3,033-row tail also
+  through output-A/HCA, two rows fall outside the bound: step 249 (oracle
+  margin 2.62, the row the current default also fails) and step 333
+  (1.02). Output-A alone on the tail fails step 306 (1.12). The same
+  partial-chunk path passes the 128K history (its 1,840-row tail takes
+  output-A; HCA is past its 256 compressed cells there) and 2,048-row
+  chunks pass. Its likelihood of the oracle's continuation is level
+  with the others: 1.344718 against 1.344124 (full chunks) and 1.344185
+  (current default). These are near-tie flips of a strict per-row gate,
+  but under the registered rule they fail, so partial chunks stay off
+  (`Dsv4Model::prefill_outa_hca_partial`, internal; `jitllm_dsv4_exec
+  --outa-partial`).
+- **Repeats.** A fresh repeat of the every-chunk 32K run reproduces its
+  logits byte for byte (`f5669a25…`).
+
+**The default.** `jitllm-runtime` turns the combination on for DeepSeek
+(`Dsv4Options::prefill_outa_hca`), on full 4,096-row chunks. Its own guards
+keep everything else on ordinary math:
+- output-A takes only Q8_0 [4,096, 8,192] output-A weights on a GB10;
+  unless every layer's are, the runner turns the combination off
+  entirely, output-A included;
+- HCA takes only chunks whose HCA layers' compressed cells are 256 wide
+  (positions below 32,768);
+- partial, decode and verify chunks, and the reference mode, are
+  unchanged. A DSpark model's injected prefill chunks take it like plain
+  ones (acceptance [below](#dspark-with-output-ahca)).
+
+**Plans are no longer keyed by position.** HCA reads the chunk's first
+position as a host scalar. Each run now sets it on the cached plan's HCA
+nodes and on the position its inputs authenticate
+(`SetDsv4HcaFirstPosition`), so 4,096-row chunks of one shape at other
+positions share a plan. Because the position changes each run, such a
+plan is never captured as a graph, and setting a position on a captured
+one is refused (a replay would keep the captured scalar). A verify never
+takes HCA; its plan builder refuses a position.
+
+**Aligned and unaligned chunks.** The registered controls prefill from
+position 0, so their full chunks start at multiples of 4,096. Served
+chunks often do not: a conversation's later turn starts after its reused
+history. The registered controls cover the aligned case only. An A/B in
+the Stages 3–4 review (original GGUF with DSpark, output-A/HCA on; short
+prefixes of 16–63 rows, then two full 4,096-row chunks) found the shared
+plan's frontier heads byte-identical to main's position-keyed plans at
+every offset, so the mechanism is exact unaligned; quality at unaligned
+positions rests on that equivalence, the kernel-level tests and the
+runtime cells, not on a registered control.
+
+**Through the runtime** (fresh service per cell, main `6052286` against
+this build, same session):
+
+| Cell | Community, main / new | Original, main / new |
+| --- | --- | --- |
+| 7K chat, C1: first token, s | 9.81 / 8.26 | 10.88 / 9.37 |
+| 7K chat, C1: completed tok/s | 11.38 / 12.23 (+7.5%) | 11.30 / 12.12 (+7.3%) |
+| 7K chat, C4: completed tok/s | 15.94 / 17.77 (+11.5%) | 14.72 / 16.43 (+11.6%) |
+| Three-turn conversation, first tokens, s (7K, +7K, +7K) | 9.83 / 9.73 / 9.66 → 8.34 / 8.53 / 8.59 | 10.97 / 10.92 / 10.81 → 9.43 / 9.63 / 9.77 |
+
+- **Multi-turn.** Later turns prefill a ~7K suffix at an unaligned
+  position. Their first tokens stay 1.1–1.3 s ahead of main's, which
+  plans each new shape too. A second conversation of the same first-turn
+  shape reuses the plan (8.14 against 8.34 s first time).
+- **Replies.** Replies change with the arithmetic (the replies are
+  byte-identical across C1 and C4 within each arm). Decode rates are
+  unchanged.
+
+Records: `spark:~/scratch/dss3/` (`q32-*`, `q128-*`, `ppl128-4096`,
+`comm-forced-8k`, `turns`, `records/long`).
+
+### DSpark with output-A/HCA
+
+With the drafter loaded, a prompt's prefill chunks inject the drafter's
+ring, and a full chunk's injected plan takes output-A/HCA like a plain
+one. Acceptance was measured on the original artifact (the drafter does
+not run with the community one):
+- **Through the runtime.** Fresh service per cell, main `6052286`
+  against this build, same session, 7K chat:
+  - C1: 13.68 → 15.00 tok/s completed (+9.6%); decode after the first
+    token 32.7 → 33.3 tok/s, so acceptance is level.
+  - C4 (DSpark waves): 14.75 → 16.69 (+13.2%); decode 9.9–10.0 → 10.6–11.0
+    tok/s a request.
+- **`jitllm_spec_runner --check greedy`**, the four 7K chat prompts, 32
+  tokens each, output-A/HCA off against on: acceptance 86 of 111 (0.775)
+  against 83 of 114 (0.728). These are short samples of different token
+  sequences, so they are no evidence of a change. The short prompts, with
+  no full chunk, are unchanged (0.556, 0.612, 0.778 in both arms).
+
+Records: `spark:~/scratch/dss5/` (`h7`, `r34/greedy-*`), 2026-10-03.
 
 ## Provenance
 

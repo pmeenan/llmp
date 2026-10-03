@@ -13,9 +13,13 @@
 //                    [--bench-prefill N --bench-decode N] [--exact on|off]
 //                    [--compact-experts] [--frontier-head]
 //                    [--ds4-stages on|off] [--q2-d2r on|off]
+//                    [--outa-prefill [--ds4-hca] [--outa-partial]]
 //                    [--probe-head]
 //                    [--probe-step N]
 //
+// - --outa-prefill / --ds4-hca: the output-A/HCA prefill on full 4,096-row
+//   chunks, as serving runs it (engine/dsv4_plan.h Dsv4Model); with
+//   --outa-partial on every prefill chunk, the internal option.
 // - --ds4-stages / --q2-d2r (both on by default, as production's fast plan;
 //   docs/experiments/ds4-prefill-stages): the ds4 prefill stage mechanisms
 //   and the D2R Q2_K down product, each under its own shape guard; off, the
@@ -550,6 +554,9 @@ struct Model {
   bool d2r_experts = true;
   bool ds4_hca = false;
   bool outa_prefill = false;
+  // Output-A/HCA on partial chunks too, as production's internal
+  // Dsv4Model::prefill_outa_hca_partial (off: full 4,096-row chunks).
+  bool outa_partial = false;
   bool ds4_stages = true;
   bool wide_sparse = true;
 };
@@ -643,9 +650,12 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   // As production (engine/dsv4_plan.cc): a named dump plans without the
   // stage mechanisms, which leave some named tensors unwritten.
   const bool stages = !m.exact && m.ds4_stages && keep_names.empty();
+  // Output-A/HCA on full 4,096-row chunks, or with --outa-partial on every
+  // chunk the operations take, as production's Dsv4Model options.
+  const bool outa_rows = shape.rows == kg::kDsv4OutAMaxRows || m.outa_partial;
   kg::Dsv4GraphOptions options{.expert_stride = m.weights->stride,
                                .fused = !m.exact,
-                               .outa_prefill = !m.exact && m.outa_prefill};
+                               .outa_prefill = !m.exact && m.outa_prefill && outa_rows};
   kg::SetDsv4PrefillStages(options, stages);
   auto graph = kg::BuildDsv4Graph(*out->arena, *m.profile, *m.binding, shape, options);
   if (!graph) {
@@ -664,7 +674,7 @@ std::expected<std::unique_ptr<Planned>, std::string> PlanChunk(
   kg::SetDsv4PrefillStages(device, stages);
   // --q2-d2r off: the pair's quantizing write-back takes the Q2_K down.
   device.d2r_experts = !m.exact && m.d2r_experts && keep_names.empty();
-  device.ds4_hca = !m.exact && m.ds4_hca;
+  device.ds4_hca = !m.exact && m.ds4_hca && outa_rows;
   if (device.ds4_hca) {
     // The literal core takes first position as a host scalar. Only this
     // benchmark's opt-in cache includes it; no runtime plan changes.
@@ -781,8 +791,11 @@ class Runner {
     std::unique_ptr<Planned> once;
     if (keep.empty()) {
       // A chunk the HCA core may take holds its first position in its plan.
-      const auto position_key =
-          m_.ds4_hca && rows >= kg::kDsv4HcaMinRows && rows <= kg::kDsv4HcaMaxRows ? n_past : 0;
+      const auto chunk_rows = static_cast<std::int64_t>(rows);
+      const bool hca_rows = chunk_rows == kg::kDsv4HcaMaxRows ||
+                            (m_.outa_partial && chunk_rows >= kg::kDsv4HcaMinRows &&
+                             chunk_rows <= kg::kDsv4HcaMaxRows);
+      const auto position_key = m_.ds4_hca && hca_rows ? n_past : 0;
       auto found = std::ranges::find_if(
           cache_, [&](const auto& e) { return e.shape == shape && e.position == position_key; });
       if (found == cache_.end()) {
@@ -1427,7 +1440,8 @@ struct Options {
   bool compact_experts = false;  // the experimental device-built expert tile list
   bool d2r_experts = true;       // --q2-d2r off: the fast plan without its D2R down product
   bool ds4_hca = false;          // default-off literal ds4 HCA arithmetic comparison
-  bool outa_prefill = false;     // default-off native output-A graph operation (prefill chunks)
+  bool outa_prefill = false;     // default-off native output-A graph operation (4,096-row chunks)
+  bool outa_partial = false;     // --outa-partial: output-A/HCA on partial chunks too
   bool ds4_stages = true;        // --ds4-stages off: without the ds4 prefill stage mechanisms
   bool wide_sparse = true;       // diagnostic override; exact mode always uses the primitive
   bool frontier_head = false;    // only the last prefill head row; PPL/diagnostics stay all-row
@@ -1515,6 +1529,8 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.ds4_hca = true;
     } else if (a == "--outa-prefill") {
       o.outa_prefill = true;
+    } else if (a == "--outa-partial") {
+      o.outa_partial = true;
     } else if (a == "--frontier-head") {
       o.frontier_head = true;
     } else if (a == "--probe-head") {
@@ -1684,6 +1700,7 @@ Status Run(const Options& o) {
               .d2r_experts = o.d2r_experts,
               .ds4_hca = o.ds4_hca,
               .outa_prefill = o.outa_prefill,
+              .outa_partial = o.outa_partial,
               .ds4_stages = o.ds4_stages,
               .wide_sparse = o.wide_sparse};
 

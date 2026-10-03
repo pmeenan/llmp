@@ -299,39 +299,59 @@ TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
     return true;
   };
   constexpr std::int64_t kOut = 256;
-  for (const ggml_type type : {GGML_TYPE_Q8_0, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K}) {
-    const std::int64_t k = 4096;
+  // The one-token configurations these shapes take: one row a block (short
+  // Q8_0, IQ2_XS), eight warps (long Q8_0 rows, the K-quants' two-pass
+  // rows), four rows a block (Q8_0 rows under one pass) — each four tokens
+  // a pass under SetVecQOneToken.
+  struct Dense {
+    ggml_type type;
+    std::int64_t k;
+  };
+  for (const auto& [type, k] :
+       {Dense{GGML_TYPE_Q8_0, 4096}, Dense{GGML_TYPE_Q4_K, 4096}, Dense{GGML_TYPE_Q5_K, 4096},
+        Dense{GGML_TYPE_Q6_K, 2048}, Dense{GGML_TYPE_Q8_0, 32768}, Dense{GGML_TYPE_Q8_0, 1056},
+        Dense{GGML_TYPE_IQ2_XS, 4096}, Dense{GGML_TYPE_IQ3_XXS, 2048}}) {
     const std::vector<std::uint8_t> bytes = Quantize(type, k, kOut, 11);
     ggml_tensor* w = Place(ggml_new_tensor_2d(c(), type, k, kOut), bytes);
     const std::vector<float> x = Normal(12, static_cast<std::size_t>(k * 16));
-    const auto run = [&](std::int64_t tokens, bool one_token) {
-      ggml_tensor* first = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, tokens),
-                                 std::vector<float>(x.begin(), x.begin() + (k * tokens)));
-      ggml_tensor* q8 = Place(kg::QuantizeQ8(c(), first));
-      ggml_tensor* node = Place(kg::VecQ(c(), w, q8, nullptr, tokens, false));
-      if (one_token) {
-        kg::SetVecQOneToken(node);
-        EXPECT_TRUE(kg::VecQOneToken(node));
+    for (const bool glu : {false, true}) {
+      const std::string what = std::format("{} k{}{}", ggml_type_name(type), k, glu ? " GLU" : "");
+      // With the GLU, w is both gate and up (the shared expert's form).
+      const auto node_of = [&](ggml_tensor* q8, std::int64_t tokens) {
+        return glu ? kg::VecQ(c(), w, q8, nullptr, tokens, false, w, kg::VecQGlu::kSwigluClamp,
+                              10.0f)
+                   : kg::VecQ(c(), w, q8, nullptr, tokens, false);
+      };
+      const auto run = [&](std::int64_t first, std::int64_t tokens, bool one_token) {
+        ggml_tensor* in =
+            Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, tokens),
+                  std::vector<float>(x.begin() + (first * k), x.begin() + ((first + tokens) * k)));
+        ggml_tensor* q8 = Place(kg::QuantizeQ8(c(), in));
+        ggml_tensor* node = Place(node_of(q8, tokens));
+        if (one_token) {
+          kg::SetVecQOneToken(node);
+          EXPECT_TRUE(kg::VecQOneToken(node));
+        }
+        EXPECT_TRUE(kg::CheckVecQ(node).has_value()) << what;
+        return RunVecQ(q8, node, std::format("{} x {}", what, tokens));
+      };
+      if (!glu) {
+        const std::vector<float> two = run(0, 2, false);
+        const std::vector<float> sixteen = run(0, 16, false);
+        EXPECT_TRUE(same(two, sixteen, 2 * kOut)) << what << ": 16 tokens";
       }
-      EXPECT_TRUE(kg::CheckVecQ(node).has_value());
-      return RunVecQ(q8, node, std::format("{} x {}", ggml_type_name(type), tokens));
-    };
-    const std::vector<float> two = run(2, false);
-    const std::vector<float> sixteen = run(16, false);
-    EXPECT_TRUE(same(two, sixteen, 2 * kOut)) << ggml_type_name(type) << ": 16 tokens";
-    const std::vector<float> one = run(1, false);
-    const std::vector<float> four = run(4, true);
-    EXPECT_TRUE(same(one, four, kOut)) << ggml_type_name(type) << ": one-token launch";
-    // And each later token of the one-token launch equals that token alone.
-    for (std::int64_t t = 1; t < 4; ++t) {
-      ggml_tensor* row = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, 1),
-                               std::vector<float>(x.begin() + (t * k), x.begin() + ((t + 1) * k)));
-      ggml_tensor* q8 = Place(kg::QuantizeQ8(c(), row));
-      ggml_tensor* node = Place(kg::VecQ(c(), w, q8, nullptr, 1, false));
-      const std::vector<float> alone = RunVecQ(q8, node, "alone");
-      EXPECT_TRUE(
-          same(four, alone, static_cast<std::size_t>(kOut), static_cast<std::size_t>(t * kOut)))
-          << ggml_type_name(type) << " token " << t;
+      // A wave's one-token launch, four tokens a pass (and three, a pass
+      // part full; and six, a second pass): each token equals that token
+      // alone, bit for bit.
+      for (const std::int64_t tokens : {4, 3, 6}) {
+        const std::vector<float> wave = run(0, tokens, true);
+        for (std::int64_t t = 0; t < tokens; ++t) {
+          const std::vector<float> alone = run(t, 1, false);
+          EXPECT_TRUE(
+              same(wave, alone, static_cast<std::size_t>(kOut), static_cast<std::size_t>(t * kOut)))
+              << what << ": token " << t << " of a one-token launch of " << tokens;
+        }
+      }
     }
   }
   // Routed: sixteen tokens of six experts each (96 pairs), token 0 against
@@ -377,6 +397,47 @@ TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
                      static_cast<std::size_t>(t * kUsed * kOut)))
         << "routed token " << t;
   }
+  // The routed types of both DeepSeek artifacts, gate/up (GLU) and down,
+  // with every token on the same six experts (each expert's block computes
+  // all four tokens in one pass): a one-token launch's tokens equal each
+  // token alone.
+  constexpr std::int64_t kFewExperts = 16;
+  for (const ggml_type rtype :
+       {GGML_TYPE_IQ2_XXS, GGML_TYPE_Q2_K, GGML_TYPE_MXFP4, GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ2_XS}) {
+    ggml_tensor* rw = Place(ggml_new_tensor_3d(c(), rtype, k, kOut, kFewExperts),
+                            Quantize(rtype, k, kOut * kFewExperts, 15));
+    for (const bool glu : {false, true}) {
+      const std::string what = std::format("routed {}{}", ggml_type_name(rtype), glu ? " GLU" : "");
+      const auto run = [&](std::int64_t first, std::int64_t tokens, bool one_token) {
+        ggml_tensor* in =
+            Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, tokens),
+                  std::vector<float>(x.begin() + (first * k), x.begin() + ((first + tokens) * k)));
+        std::vector<std::int32_t> same_ids;
+        for (std::int64_t t = 0; t < tokens; ++t) {
+          for (std::int64_t u = 0; u < kUsed; ++u) {
+            same_ids.push_back(static_cast<std::int32_t>((u * 2) + 3));
+          }
+        }
+        ggml_tensor* ids = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, tokens), same_ids);
+        ggml_tensor* q8 = Place(kg::QuantizeQ8(c(), in));
+        ggml_tensor* node =
+            Place(glu ? kg::VecQ(c(), rw, q8, ids, tokens, false, rw, kg::VecQGlu::kSwiglu)
+                      : kg::VecQ(c(), rw, q8, ids, tokens, false));
+        if (one_token) {
+          kg::SetVecQOneToken(node);
+        }
+        EXPECT_TRUE(kg::CheckVecQ(node).has_value()) << what;
+        return RunVecQ(q8, node, std::format("{} x {}", what, tokens));
+      };
+      const std::vector<float> wave = run(0, 4, true);
+      for (std::int64_t t = 0; t < 4; ++t) {
+        const std::vector<float> alone = run(t, 1, false);
+        EXPECT_TRUE(same(wave, alone, static_cast<std::size_t>(kUsed * kOut),
+                         static_cast<std::size_t>(t * kUsed * kOut)))
+            << what << " token " << t;
+      }
+    }
+  }
 }
 
 // Every launch configuration on every weight type, dense, with and without
@@ -404,7 +465,7 @@ TEST_F(Dsv4FastTest, EveryConfigurationCoversEveryTypeTailRowsAndPaddedRows) {
                                        {GGML_TYPE_IQ3_XXS, 1024}}};
   constexpr float kLimit = 7.0f;
   // Each configuration's rows a block reads together (dsv4_fast.cu kVariants).
-  constexpr std::array<std::int64_t, 11> kRows = {1, 1, 2, 1, 2, 4, 1, 2, 2, 1, 4};
+  constexpr std::array<std::int64_t, 14> kRows = {1, 1, 2, 1, 2, 4, 1, 2, 2, 1, 4, 1, 4, 4};
   ASSERT_EQ(kg::VecQVariants(), static_cast<int>(kRows.size()));
   for (const Case& test : cases) {
     for (const std::int64_t nrows : {130, 129}) {

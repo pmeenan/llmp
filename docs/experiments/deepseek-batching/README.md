@@ -306,9 +306,9 @@ That figure is inferred, not measured. The chat route's turn boundary
    full chunk.
 3. **F16 HC mixes in the fused form.** Done: see
    [below](#community-artifact-in-waves).
-4. **A multi-token vecq launch with the one-token reduction order** (open
-   above). It would read each weight once per wave while keeping rows
-   exact, the C4 decode lever (99 vs 82 ms).
+4. **A multi-token vecq launch with the one-token reduction order.** Done
+   for dense products (+2–3% a wave, [below](#not-adopted-and-open)); the
+   99 vs 82 ms gap lies elsewhere.
 5. **Scheduling.**
    - Finish the oldest prompt first, then alternate its decode with later
      prompts, for earlier first tokens. Measure the throughput cost: ds4's
@@ -495,10 +495,26 @@ cleared as idle; once idle slot 0 is cleared, slot 1 grows and runs.
   keep byte-identical replies.
 - **Injected decode waves instead of DSpark waves past 2 slots.** 14.27 at
   HTTP C4, no better than the adopted waves.
-- **A multi-token vecq launch with the one-token reduction order.** Open.
-  It would read each weight once while keeping one-row exactness, and could
-  recover the ~10% cost of `SetVecQOneToken` on plain waves, as the wide
-  MXFP8 kernel did for Qwen.
+- **A multi-token vecq launch with the one-token reduction order.** Done,
+  for dense products, with a small gain. Each one-token configuration
+  (rows, warps, reduction) now has a four-tokens-a-pass sibling whose
+  tokens' sums equal the one-token launch's bit for bit (unit-tested on
+  every DeepSeek type, dense, GLU and routed, at 3, 4 and 6 tokens).
+  `vecq_bench` at four tokens, GB10:
+  - Dense products read once gain: Q8_0 1024×32768 179 → 152 µs,
+    8192×4096 172 → 162, the Q4_K head 2,059 → 1,845.
+  - Routed and GLU products lose: routed IQ2_XS gate+up 517 → 677 µs,
+    IQ3_XXS down 517 → 709, the Q5_K shared gate+up 62 → 84. A wave's
+    four requests rarely share an expert, so a pass has nothing to share
+    and only pays the registers.
+  So a wave of one-row steps takes the sibling for dense products without
+  a GLU and keeps one token a pass elsewhere. The 4-slot plain wave
+  control stays 332/332 byte-identical; its waves take 8.44 s against
+  main's 8.60 (community) and 8.57 against 8.79 (original), and HTTP C4
+  decode rises from 10.1 to 10.4 tok/s a request
+  ([output-A default](../ds4-output-prefix/README.md#default-on-acceptance)
+  cells). The remaining gap to ds4's four-row step (99 vs 82 ms) is
+  not the dense products' reads; it needs a profile of the wave step.
 - **Joined DSpark draft blocks.** Open. A wave runs one draft per slot.
 - **Literal completions (`/v1/completions`).** Open. They remain serial.
 

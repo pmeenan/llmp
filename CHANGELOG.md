@@ -174,6 +174,14 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- DeepSeek serves its output-A/HCA prefill by default on full 4,096-row
+  chunks, where it passes every registered quality bound on both GGUFs:
+  7K-token chat completes 7% faster alone and 12% faster four at a time
+  (first token 9.8 → 8.3 s on the community GGUF, 10.9 → 9.4 s on the
+  0731). Replies change with the arithmetic; partial chunks keep ordinary
+  math. Those plans are no longer keyed by chunk position, so chunks of
+  one shape share a plan. Four-request decode waves read each dense
+  weight once for all requests (bit-identical to before, +2–3% a wave).
 - DeepSeek prefill is 3–4% faster on both GGUFs through the runtime
   (matched 7K-token prompts, one and four at a time). A prompt's last,
   partial prefill chunk of 64 rows or more now takes the stage mechanisms

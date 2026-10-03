@@ -501,8 +501,36 @@ constexpr Variant kVariants[] = {
     {"warp r2 w4 p1", 2, 4, 1, true},   {"warp r4 w2 p1", 4, 2, 1, true},
     {"block r1 w4 p4", 1, 4, 4, false}, {"block r2 w4 p4", 2, 4, 4, false},
     {"warp r2 w4 p4", 2, 4, 4, true},   {"warp r1 w4 p4", 1, 4, 4, true},
-    {"block r4 w4 p1", 4, 4, 1, false},
+    {"block r4 w4 p1", 4, 4, 1, false}, {"block r1 w8 p4", 1, 8, 4, false},
+    {"warp r4 w2 p4", 4, 2, 4, true},   {"block r4 w4 p4", 4, 4, 4, false},
 };
+
+// The four-token sibling of each one-token configuration: the same rows,
+// warps and form, so every token's sums take the one-token launch's
+// arithmetic bit for bit (each (token, row) sum is independent of the
+// others a pass computes), while a pass reads each weight block once for
+// four tokens. A wave of one-row steps (SetVecQOneToken) takes it for its
+// dense products without a GLU (RunVecQ).
+int FourTokenSibling(int variant) {
+  switch (variant) {
+    case 0:
+      return 6;
+    case 1:
+      return 11;
+    case 2:
+      return 7;
+    case 3:
+      return 9;
+    case 4:
+      return 8;
+    case 5:
+      return 12;
+    case 10:
+      return 13;
+    default:
+      return variant;  // already four tokens a pass
+  }
+}
 constexpr int kVariantCount = static_cast<int>(sizeof(kVariants) / sizeof(kVariants[0]));
 
 template <ggml_type type, int R, int W, int P, bool kWarpRows>
@@ -555,8 +583,17 @@ void LaunchVariant(const VecQDesc& d, int variant, cudaStream_t stream) {
     case 9:
       Launch<type, 1, 4, 4, true>(d, stream);
       break;
-    default:
+    case 10:
       Launch<type, 4, 4, 1, false>(d, stream);
+      break;
+    case 11:
+      Launch<type, 1, 8, 4, false>(d, stream);
+      break;
+    case 12:
+      Launch<type, 4, 2, 4, true>(d, stream);
+      break;
+    default:
+      Launch<type, 4, 4, 4, false>(d, stream);
       break;
   }
 }
@@ -1199,10 +1236,20 @@ std::expected<void, KernelFailure> RunVecQ(LaunchContext& launch, ggml_tensor* n
     a.limit = JitllmOpFloat(node, 3);
     int variant = -1;
     if (VecQOneToken(node)) {
-      // The launch a one-token product of this shape takes (SetVecQOneToken).
+      // The configuration a one-token product of this shape takes
+      // (SetVecQOneToken): each token's sums are its one-token product's
+      // bit for bit. A dense product without a GLU takes it four tokens a
+      // pass, each weight block read once for four tokens; routed and GLU
+      // products keep one token a pass, which measured faster on the GB10
+      // (vecq_bench, four tokens: routed IQ2_XS gate+up 517 against 677
+      // us, Q5_K shared gate+up 62 against 84; dense Q8_0 1024x32768 179
+      // against 152, the Q4_K head 2,059 against 1,845).
       VecQDesc one = a;
       one.tokens = 1;
       variant = DefaultVariant(w->type, one);
+      if (!routed && gate == nullptr) {
+        variant = FourTokenSibling(variant);
+      }
     }
     if (!LaunchVecQ(w->type, a, variant, context.stream())) {
       // CheckVecQ admits only what the default launches.
