@@ -1685,7 +1685,12 @@ family" guide, and its long-context scaling work.
         points, not limits. A width or height that isn't a multiple of
         the model's granule (16 here) is rounded up to the next one, not
         refused, and the image comes back at the size generated (owner,
-        2026-10-03); only malformed or out-of-range values are refused.
+        2026-10-03). A size past the model's maximum (a side limit or a
+        pixel-count limit, whichever binds) is scaled down by one factor
+        for both sides, keeping the aspect ratio, and each side then
+        rounded down to the granule so it stays within the maximum
+        (owner, 2026-10-03). Only malformed or non-positive values are
+        refused.
         The same rule applies to every image model's routes. Its components run as one composition (D-089), sharing
         the image phases, VAE and route code with Qwen-Image's rather than
         a second pipeline.
