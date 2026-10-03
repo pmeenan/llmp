@@ -1370,9 +1370,30 @@ TEST(Dsv4Test, OutAPrefillRequiresItsQualifiedShapeAndDisjointOutput) {
   x->nb[2] += sizeof(float);
   EXPECT_FALSE(kg::CheckDsv4OutA(out).has_value());
   x->nb[2] = saved;
+  // Positions must match the heads' rows.
   auto wrong = *x;
   wrong.ne[2] = 2048;
   EXPECT_FALSE(kg::Dsv4OutAFits(w, &wrong, pos, params));
+  // Any chunk of 64 to 4,096 rows (a prompt's last, partial chunk): its
+  // output holds the rows rounded up to whole 16-row tiles.
+  for (const std::int64_t rows : {std::int64_t{2947}, kg::kDsv4OutAMinRows}) {
+    auto* xs = ggml_new_tensor_3d(c, GGML_TYPE_F32, 512, 64, rows);
+    auto* ps = ggml_new_tensor_1d(c, GGML_TYPE_I32, rows);
+    ASSERT_TRUE(kg::Dsv4OutAFits(w, xs, ps, params)) << rows;
+    auto* partial = kg::Dsv4OutA(c, w, xs, ps, params);
+    EXPECT_EQ(partial->ne[1], kg::Dsv4OutARows(rows));
+    EXPECT_EQ(partial->ne[1] % 16, 0);
+    kg::TensorArena::Bind(xs, std::uint64_t{1} << 43U);
+    kg::TensorArena::Bind(ps, std::uint64_t{1} << 45U);
+    kg::TensorArena::Bind(partial, address);
+    EXPECT_TRUE(kg::CheckDsv4OutA(partial).has_value()) << rows;
+  }
+  EXPECT_EQ(kg::Dsv4OutARows(2947), 2960);
+  for (const std::int64_t rows : {kg::kDsv4OutAMinRows - 1, kg::kDsv4OutAMaxRows + 1}) {
+    auto* xs = ggml_new_tensor_3d(c, GGML_TYPE_F32, 512, 64, rows);
+    auto* ps = ggml_new_tensor_1d(c, GGML_TYPE_I32, rows);
+    EXPECT_FALSE(kg::Dsv4OutAFits(w, xs, ps, params)) << rows;
+  }
   wrong = *w;
   wrong.type = GGML_TYPE_Q5_K;
   EXPECT_FALSE(kg::Dsv4OutAFits(&wrong, x, pos, params));
@@ -1388,7 +1409,7 @@ TEST(Dsv4Test, OutAPrefillIsOptInAndKeepsUnrotatedHeadsLive) {
   ASSERT_TRUE(binding.has_value()) << Why(binding);
   auto state = md::Dsv4State(p, 8192, 4096);
   ASSERT_TRUE(state.has_value());
-  for (const auto rows : {1U, 2048U, 4096U}) {
+  for (const auto rows : {1U, 8U, 2048U, 2947U, 4096U}) {
     auto chunk = md::Dsv4Chunk(p, *state, 0, rows);
     ASSERT_TRUE(chunk.has_value()) << Why(chunk);
     for (const auto mode : {0, 1, 2}) {
@@ -1415,7 +1436,22 @@ TEST(Dsv4Test, OutAPrefillIsOptInAndKeepsUnrotatedHeadsLive) {
       ASSERT_TRUE(plan.has_value()) << Why(plan);
       const auto count = std::ranges::count_if(
           plan->steps, [](const auto& step) { return step.implementation == kg::kDsv4OutAName; });
-      EXPECT_EQ(count, mode == 1 && rows == 4096 ? p.layers : 0);
+      // Every prefill chunk (a prompt's last, partial one included); decode
+      // and verify chunks keep their own form.
+      const auto chunk_rows = static_cast<std::int64_t>(rows);
+      EXPECT_EQ(count, mode == 1 && chunk_rows >= kg::kDsv4OutAMinRows ? p.layers : 0) << rows;
+      if (count != 0 && kg::Dsv4OutARows(chunk_rows) != chunk_rows) {
+        // out_b reads the chunk's rows of the tile-rounded output.
+        std::int64_t views = 0;
+        for (const auto* node : graph->nodes) {
+          if (node->op == GGML_OP_MUL_MAT && node->src[1]->view_src != nullptr &&
+              kg::JitllmOpOf(node->src[1]->view_src) == kg::JitllmOp::kDsv4OutA) {
+            ++views;
+            EXPECT_EQ(node->src[1]->ne[1], chunk_rows);
+          }
+        }
+        EXPECT_EQ(views, std::int64_t{p.layers});
+      }
       // The coalesced repack (the fast plan's default) takes each one.
       auto fast_device = ModelDevice();
       fast_device.outa_fast_pack = true;
@@ -1485,14 +1521,15 @@ TEST(Dsv4Test, PrefillStageMechanismsSelectOnlyWhereTheirGuardsAdmit) {
        {Case{false, 4, true, true}, Case{false, 63, true, true}, Case{false, 2048, true, true},
         Case{false, 2048, false, false}, Case{true, 4, true, true}, Case{true, 64, true, true},
         Case{true, 2048, true, true}, Case{true, 2048, false, false}, Case{true, 4096, true, true},
-        Case{true, 4096, true, false}}) {
+        Case{true, 4096, true, false}, Case{true, 2947, true, true}, Case{true, 2947, true, false},
+        Case{true, 1024, true, true}, Case{true, 1024, true, false}}) {
     const std::string what =
         std::format("{} {} rows, stages {}, D2R {}", test.community ? "community" : "original",
                     test.rows, test.stages, test.d2r);
     const auto resources = test.community ? CommunityLike(p) : GgufLike(p);
     auto binding = md::BindDsv4(p, "deepseek4", resources);
     ASSERT_TRUE(binding.has_value()) << what << ": " << Why(binding);
-    auto state = md::Dsv4State(p, 8192, test.rows == 4096 ? 4096 : 2048, md::Dsv4Window::kRing);
+    auto state = md::Dsv4State(p, 8192, test.rows > 2048 ? 4096 : 2048, md::Dsv4Window::kRing);
     ASSERT_TRUE(state.has_value()) << what;
     auto chunk = md::Dsv4Chunk(p, *state, 0, test.rows, false);
     ASSERT_TRUE(chunk.has_value()) << what << ": " << Why(chunk);
@@ -1530,7 +1567,8 @@ TEST(Dsv4Test, PrefillStageMechanismsSelectOnlyWhereTheirGuardsAdmit) {
     device.q2_d2r_fits = [](const ggml_tensor* node) {
       return node->src[0]->type == GGML_TYPE_Q2_K && node->src[0]->ne[0] == 2048 &&
              node->src[0]->ne[1] == 4096 && node->src[0]->ne[2] == 256 &&
-             node->src[1]->ne[2] == 4096 && node->src[2]->ne[0] == 6;
+             node->src[1]->ne[2] >= kg::kDsv4StageMinRows &&
+             node->src[1]->ne[2] <= kg::kDsv4StageMaxRows && node->src[2]->ne[0] == 6;
     };
     // And of the GB10 write-back pair's device condition (mul_mat_q.cu).
     device.pair_glu_fits = [](const ggml_tensor*, const ggml_tensor*) { return true; };
@@ -1547,10 +1585,20 @@ TEST(Dsv4Test, PrefillStageMechanismsSelectOnlyWhereTheirGuardsAdmit) {
     const bool community = wide && test.community;
     // Layer 0's attention mix input alone; every later mix input with the
     // post before it, each FFN post but the last forming the expert sum.
-    EXPECT_EQ(count(kg::kDsv4HcNormF16Name), community ? 1 : 0) << what;
-    EXPECT_EQ(count(kg::kDsv4HcPostNormF16Name), community ? layers : 0) << what;
-    EXPECT_EQ(count(kg::kDsv4HcPostExpertsNormF16Name), community ? layers - 1 : 0) << what;
-    if (community) {
+    // Both artifacts: the community's F16 mixing weights take F16 rows, the
+    // original's F32 ones F32 rows.
+    EXPECT_EQ(count(kg::kDsv4HcNormF16Name), wide ? 1 : 0) << what;
+    EXPECT_EQ(count(kg::kDsv4HcPostNormF16Name), wide ? layers : 0) << what;
+    EXPECT_EQ(count(kg::kDsv4HcPostExpertsNormF16Name), wide ? layers - 1 : 0) << what;
+    std::ptrdiff_t f32_rows = 0;
+    for (const ggml_tensor* node : graph->nodes) {
+      if (kg::JitllmOpOf(node) == kg::JitllmOp::kDsv4HcNormF16) {
+        EXPECT_EQ(node->type, test.community ? GGML_TYPE_F16 : GGML_TYPE_F32) << what;
+        f32_rows += node->type == GGML_TYPE_F32 ? 1 : 0;
+      }
+    }
+    EXPECT_EQ(f32_rows, wide && !test.community ? 2 * layers : 0) << what;
+    if (wide) {
       EXPECT_EQ(count(kg::kHcPostName), 1) << what;  // the last, before the head
     } else if (test.rows > kg::kVecQTokens) {
       EXPECT_EQ(count(kg::kHcPostName), 2 * layers) << what;
@@ -1567,13 +1615,16 @@ TEST(Dsv4Test, PrefillStageMechanismsSelectOnlyWhereTheirGuardsAdmit) {
       // The compressors' and indexer's Q8_0 products of one input.
       EXPECT_GE(dense, 41) << what;
     }
-    const bool glu = community && test.rows == 4096;
-    EXPECT_EQ(count(kg::kMulMatIdQPairGlu), glu && test.d2r ? layers : 0) << what;
-    EXPECT_EQ(count(kg::kMulMatIdQ2D2r),
-              test.community && test.rows == 4096 && test.d2r ? layers : 0)
-        << what;
-    EXPECT_EQ(count(kg::kMulMatIdQPairGluQ8), glu && !test.d2r ? layers : 0) << what;
-    EXPECT_EQ(count(kg::kMulMatIdQCompactPrequant), glu && !test.d2r ? layers : 0) << what;
+    // The write-back pair on every compact chunk (from 2,048 rows, a
+    // prompt's last, partial one included); D2R on every prefill chunk.
+    // Both artifacts' gate/up pairs (IQ2_XXS, IQ2_XS); the quantizing
+    // write-back only beside the community's Q2_K down without D2R.
+    const bool glu = wide && test.rows >= kg::kDsv4CompactMinRows;
+    const bool q8 = glu && test.community && !test.d2r;
+    EXPECT_EQ(count(kg::kMulMatIdQPairGlu), glu && !q8 ? layers : 0) << what;
+    EXPECT_EQ(count(kg::kMulMatIdQ2D2r), community && test.d2r ? layers : 0) << what;
+    EXPECT_EQ(count(kg::kMulMatIdQPairGluQ8), q8 ? layers : 0) << what;
+    EXPECT_EQ(count(kg::kMulMatIdQCompactPrequant), q8 ? layers : 0) << what;
     EXPECT_EQ(count(kg::kMulMatIdQPairCompact),
               test.rows >= kg::kDsv4CompactMinRows && !glu ? layers : 0)
         << what;

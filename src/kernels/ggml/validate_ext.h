@@ -110,11 +110,29 @@ std::expected<void, KernelFailure> CheckMulMatIdQCompact(const ggml_tensor* node
 std::expected<void, KernelFailure> CheckMulMatIdQPair(const ggml_tensor* first,
                                                       const ggml_tensor* second);
 
-// The measured IQ2 compact-pair geometry. Device/compact eligibility is
-// checked by the CUDA planner; ordinary pairs keep their existing contract.
-bool IsMulMatIdQPairIq2Occ2(const ggml_tensor* first, const ggml_tensor* second);
+// The rows of the DeepSeek V4 prefill chunks the ds4 stage mechanisms take
+// (docs/experiments/ds4-prefill-stages): a full 4,096-row chunk or any
+// shorter one, a prompt's last, partial chunk included, down to this
+// floor; decode and verify chunks keep their own forms.
+inline constexpr std::int64_t kDsv4StageMinRows = 64;
+inline constexpr std::int64_t kDsv4StageMaxRows = 4096;
 
-// Experimental (docs/experiments/ds4-prefill-stages): that IQ2 pair, up then gate,
+// The compact expert products' floor (GGML mmq.cuh
+// mmq_compact_expert_capacity: 256 tokens), which the IQ2 pair needs.
+inline constexpr std::int64_t kDsv4StagePairMinRows = 256;
+
+// The measured IQ2 compact-pair geometry (DeepSeek V4's IQ2_XXS gate and up
+// experts over a prefill chunk of kDsv4StagePairMinRows to
+// kDsv4StageMaxRows tokens), which takes the occupancy-two J64 product
+// (patch 0005). Device/compact eligibility is checked by the CUDA planner;
+// ordinary pairs keep their existing contract.
+bool IsMulMatIdQPairIq2Occ2(const ggml_tensor* first, const ggml_tensor* second);
+// The pairs whose up product can write the activation (below): that one,
+// and the same geometry of IQ2_XS experts (UD-Q2_K_XL), whose products
+// keep GGML's ordinary J128 compact launch.
+bool IsMulMatIdQPairGluPair(const ggml_tensor* first, const ggml_tensor* second);
+
+// Experimental (docs/experiments/ds4-prefill-stages): such an IQ2 pair, up then gate,
 // followed by swiglu_clamp(gate, up) of the same packed F32 shape. Fits is
 // structural (the planner); Check adds binding and output separation.
 bool MulMatIdQPairGluFits(const ggml_tensor* up, const ggml_tensor* gate, const ggml_tensor* glu);
@@ -125,7 +143,8 @@ float MulMatIdQPairGluLimit(const ggml_tensor* glu);
 // And the Q2_K down product of that activation, whose input the pair's
 // write-back already quantized (D2S6 Q8_1 MMQ blocks in the activation's bytes).
 bool MulMatIdQCompactPrequantFits(const ggml_tensor* down, const ggml_tensor* glu);
-// Experimental: two dense Q8_0 MMQ products of one F32 activation, which then
+// Experimental: two dense MMQ products of one block-quantized type (Q8_0,
+// the K-quants, the IQ types; not FP4) and one F32 activation, which then
 // share one Q8_1 quantization of it (each product's own, identically).
 bool MulMatQPairDenseFits(const ggml_tensor* a, const ggml_tensor* b);
 std::expected<void, KernelFailure> CheckMulMatQPairDense(const ggml_tensor* a,

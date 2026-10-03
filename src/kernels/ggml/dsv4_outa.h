@@ -27,9 +27,15 @@ struct Dsv4OutAParams {
   float beta_slow = 0;
 };
 
-// The first opt-in shape: unrotated packed F32[512,64,4096,1], raw
-// Q8_0[4096,1024,8,1], and I32 positions. Emits F32[8192,4096,1,1].
-// Other graph shapes retain inverse RoPE, native MMQ and its layout copy.
+// A prefill chunk of T rows, kDsv4OutAMinRows <= T <= kDsv4OutAMaxRows:
+// unrotated packed F32[512,64,T,1], raw Q8_0[4096,1024,8,1], and I32
+// positions [T]. Emits F32[8192,Dsv4OutARows(T),1,1]: the core stores whole
+// 16-row WMMA tiles, so the output holds T rounded up to 16 rows, of which
+// the graph reads the first T. Decode and verify chunks, and other graph
+// shapes, retain inverse RoPE, native MMQ and its layout copy.
+inline constexpr std::int64_t kDsv4OutAMinRows = 64;
+inline constexpr std::int64_t kDsv4OutAMaxRows = 4096;
+constexpr std::int64_t Dsv4OutARows(std::int64_t rows) { return (rows + 15) / 16 * 16; }
 bool Dsv4OutAFits(const ggml_tensor* w, const ggml_tensor* x, const ggml_tensor* pos,
                   const Dsv4OutAParams& params);
 ggml_tensor* Dsv4OutA(ggml_context* context, ggml_tensor* weights, ggml_tensor* heads,

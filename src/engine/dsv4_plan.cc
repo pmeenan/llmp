@@ -16,6 +16,7 @@
 
 #include "engine/support.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"
 
 namespace jitllm::engine {
@@ -108,14 +109,22 @@ void BindDsv4State(const Dsv4Model& m, std::uint64_t base, kg::Dsv4Graph& g) {
   }
 }
 
+bool Dsv4PrefillHca(const Dsv4Model& m, const kg::Dsv4ChunkShape& shape) {
+  return !m.exact && m.prefill_outa_hca && m.state->window == md::Dsv4Window::kRing &&
+         shape.rows >= kg::kDsv4HcaMinRows && shape.rows <= kg::kDsv4HcaMaxRows &&
+         shape.hca_n_kv == 256;
+}
+
 std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
     const Dsv4Model& m, const kg::Dsv4ChunkShape& shape, const kg::DeviceChoices& choices,
     std::span<const std::string> keep_names, std::uint64_t activations,
     std::uint64_t activation_bytes, const Dsv4Speculation& speculation,
     std::optional<std::uint32_t> first_position) {
-  if (first_position && (shape.rows != 4096 ||
-                         static_cast<std::uint64_t>(*first_position) + 4096 > m.state->context)) {
-    return Error("the prefill plan's first position leaves its 4K context");
+  if (first_position &&
+      (!Dsv4PrefillHca(m, shape) ||
+       static_cast<std::uint64_t>(*first_position) + static_cast<std::uint64_t>(shape.rows) >
+           m.state->context)) {
+    return Error("the prefill plan's first position is not an HCA prefill chunk's in its context");
   }
   if ((m.exact || speculation.verify || !keep_names.empty()) && shape.outputs != 0 &&
       shape.outputs != shape.rows) {
@@ -185,7 +194,7 @@ std::expected<std::unique_ptr<Dsv4Planned>, std::string> PlanDsv4Chunk(
           g.nodes,
           [](const auto* node) { return kg::JitllmOpOf(node) == kg::JitllmOp::kDsv4OutA; }),
       m.profile->layers);
-  device.ds4_hca = outa_prefill && all_outa && shape.rows == 4096 && shape.hca_n_kv == 256;
+  device.ds4_hca = outa_prefill && all_outa && Dsv4PrefillHca(m, shape);
   if (device.ds4_hca) {
     if (!first_position) {
       return Error("the combined prefill HCA plan needs its first position");
@@ -505,7 +514,7 @@ std::expected<void, std::string> BuildDsv4Inputs(const Dsv4Model& m, const kg::D
   // against the real host positions before any copies or dispatch.
   if (g.prefill_first_position) {
     const std::uint32_t first = *g.prefill_first_position;
-    if (in.positions.size() != rows || rows != 4096 || in.positions.front() < 0 ||
+    if (in.positions.size() != rows || rows == 0 || in.positions.front() < 0 ||
         std::cmp_not_equal(in.positions.front(), first) ||
         !std::ranges::equal(in.positions,
                             std::views::iota(static_cast<std::int64_t>(first),

@@ -322,14 +322,32 @@ TEST_F(GgmlExtValidateTest, Iq2OccupancyTwoPairsKeepTheMeasuredGeometryAndOrigin
   routed_ids->nb[2] = routed_ids->nb[1] * 4096;
   routed_ids->nb[3] = routed_ids->nb[2];
   EXPECT_TRUE(kg::IsMulMatIdQPairIq2Occ2(first, second));
-  for (const auto& [a, b] : {pair(GGML_TYPE_IQ2_XS, 4096, 2048, 256, 6, 4096),
+  // Any chunk from the compact list's 256 tokens to 4,096: a prompt's last,
+  // partial chunk too.
+  for (const std::int64_t tokens :
+       {kg::kDsv4StagePairMinRows, std::int64_t{2047}, std::int64_t{2947}, kg::kDsv4StageMaxRows}) {
+    const auto [a, b] = pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 256, 6, tokens);
+    EXPECT_TRUE(kg::IsMulMatIdQPairIq2Occ2(a, b)) << tokens;
+  }
+  EXPECT_TRUE(kg::IsMulMatIdQPairGluPair(first, second));
+  // UD-Q2_K_XL's IQ2_XS gate/up experts write the activation too, over
+  // GGML's ordinary J128 launch (the occupancy-two one is IQ2_XXS's).
+  {
+    const auto [a, b] = pair(GGML_TYPE_IQ2_XS, 4096, 2048, 256, 6, 2947);
+    EXPECT_FALSE(kg::IsMulMatIdQPairIq2Occ2(a, b));
+    EXPECT_TRUE(kg::IsMulMatIdQPairGluPair(a, b));
+  }
+  for (const auto& [a, b] : {pair(GGML_TYPE_IQ2_S, 4096, 2048, 256, 6, 4096),
+                             pair(GGML_TYPE_IQ3_XXS, 4096, 2048, 256, 6, 4096),
                              pair(GGML_TYPE_IQ2_XXS, 2048, 2048, 256, 6, 4096),
                              pair(GGML_TYPE_IQ2_XXS, 4096, 4096, 256, 6, 4096),
                              pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 128, 6, 4096),
                              pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 256, 5, 4096),
-                             pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 256, 6, 2048),
+                             pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 256, 6, 255),
+                             pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 256, 6, 4097),
                              pair(GGML_TYPE_IQ2_XXS, 4096, 2048, 256, 6, 4096, false)}) {
     EXPECT_FALSE(kg::IsMulMatIdQPairIq2Occ2(a, b));
+    EXPECT_FALSE(kg::IsMulMatIdQPairGluPair(a, b));
   }
   // Padded outputs still satisfy the ordinary pair contract, but they do
   // not enter the fixed packed-output specialization.

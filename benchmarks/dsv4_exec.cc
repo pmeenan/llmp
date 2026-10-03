@@ -780,7 +780,9 @@ class Runner {
     Planned* p = nullptr;
     std::unique_ptr<Planned> once;
     if (keep.empty()) {
-      const auto position_key = m_.ds4_hca && (rows == 2048 || rows == 4096) ? n_past : 0;
+      // A chunk the HCA core may take holds its first position in its plan.
+      const auto position_key =
+          m_.ds4_hca && rows >= kg::kDsv4HcaMinRows && rows <= kg::kDsv4HcaMaxRows ? n_past : 0;
       auto found = std::ranges::find_if(
           cache_, [&](const auto& e) { return e.shape == shape && e.position == position_key; });
       if (found == cache_.end()) {
@@ -1425,7 +1427,7 @@ struct Options {
   bool compact_experts = false;  // the experimental device-built expert tile list
   bool d2r_experts = true;       // --q2-d2r off: the fast plan without its D2R down product
   bool ds4_hca = false;          // default-off literal ds4 HCA arithmetic comparison
-  bool outa_prefill = false;     // default-off native output-A graph operation at4096 rows
+  bool outa_prefill = false;     // default-off native output-A graph operation (prefill chunks)
   bool ds4_stages = true;        // --ds4-stages off: without the ds4 prefill stage mechanisms
   bool wide_sparse = true;       // diagnostic override; exact mode always uses the primitive
   bool frontier_head = false;    // only the last prefill head row; PPL/diagnostics stay all-row
@@ -1541,11 +1543,11 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   if (o.artifact.empty() || o.out.empty()) {
     return Error("--artifact and --out are required");
   }
-  if (o.ds4_hca && (o.exact || (o.max_rows != 2048 && o.max_rows != 4096))) {
-    return Error("--ds4-hca requires the fast plan and --max-rows 2048 or 4096");
+  if (o.ds4_hca && (o.exact || o.max_rows > kg::kDsv4HcaMaxRows)) {
+    return Error("--ds4-hca requires the fast plan and --max-rows of at most 4096");
   }
-  if (o.outa_prefill && (o.exact || o.max_rows != 4096)) {
-    return Error("--outa-prefill requires fast mode and4096-row prefill");
+  if (o.outa_prefill && (o.exact || o.max_rows > kg::kDsv4OutAMaxRows)) {
+    return Error("--outa-prefill requires fast mode and --max-rows of at most 4096");
   }
   if (o.probe_step != 0 && (o.force.empty() || o.probe_step >= o.generate)) {
     return Error("--probe-step needs --force and a step below --generate");

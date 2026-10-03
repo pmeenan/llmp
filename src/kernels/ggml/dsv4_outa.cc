@@ -16,9 +16,10 @@ bool Dsv4OutAFits(const ggml_tensor* w, const ggml_tensor* x, const ggml_tensor*
                   const Dsv4OutAParams& p) {
   if (w == nullptr || w->type != GGML_TYPE_Q8_0 || w->ne[0] != 4096 || w->ne[1] != 1024 ||
       w->ne[2] != 8 || w->ne[3] != 1 || !detail::IsF32(x) || x->ne[0] != 512 || x->ne[1] != 64 ||
-      x->ne[2] != 4096 || x->ne[3] != 1 || pos == nullptr || pos->type != GGML_TYPE_I32 ||
-      pos->ne[0] != 4096 || pos->ne[1] != 1 || pos->ne[2] != 1 || pos->ne[3] != 1 ||
-      !detail::Packed(w) || !detail::Packed(x) || !detail::Packed(pos)) {
+      x->ne[2] < kDsv4OutAMinRows || x->ne[2] > kDsv4OutAMaxRows || x->ne[3] != 1 ||
+      pos == nullptr || pos->type != GGML_TYPE_I32 || pos->ne[0] != x->ne[2] || pos->ne[1] != 1 ||
+      pos->ne[2] != 1 || pos->ne[3] != 1 || !detail::Packed(w) || !detail::Packed(x) ||
+      !detail::Packed(pos)) {
     return false;
   }
   if (p.original_context < 0 || !std::isfinite(p.base) || p.base <= 0 || !std::isfinite(p.scale) ||
@@ -55,8 +56,8 @@ std::expected<void, KernelFailure> CheckDsv4OutA(const ggml_tensor* node) {
   const auto* x = node->src[1];
   const auto* pos = node->src[2];
   if (!Dsv4OutAFits(w, x, pos, Dsv4OutAParamsOf(node)) || !detail::IsF32(node) ||
-      node->ne[0] != 8192 || node->ne[1] != 4096 || node->ne[2] != 1 || node->ne[3] != 1 ||
-      !detail::Packed(node) || !detail::AllSane({node, w, x, pos}) ||
+      node->ne[0] != 8192 || node->ne[1] != Dsv4OutARows(x->ne[2]) || node->ne[2] != 1 ||
+      node->ne[3] != 1 || !detail::Packed(node) || !detail::AllSane({node, w, x, pos}) ||
       !detail::AllCurrent({node, w, x, pos}) || !detail::Aligned(node, 16) ||
       !detail::Aligned(w, alignof(std::uint16_t)) || !detail::Aligned(x, 16) ||
       !detail::Aligned(pos, alignof(std::int32_t)) || !detail::Disjoint(node, w, false) ||

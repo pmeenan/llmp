@@ -54,12 +54,14 @@ std::expected<void, KernelFailure> CheckDsv4HcNormF16(const ggml_tensor* norm) {
   }
   const ggml_tensor* flat = norm->src[0];
   if (!Dsv4HcNormF16Fits(flat, JitllmOpEps(norm)) ||
-      !Shaped(norm, GGML_TYPE_F16, kFlat, flat->ne[1], 1) || !detail::AllSane({norm, flat}) ||
-      !detail::AllCurrent({norm, flat}) || !detail::Aligned(norm, 16) ||
-      !detail::Aligned(flat, 16) || !detail::Disjoint(norm, flat, false)) {
+      (!Shaped(norm, GGML_TYPE_F16, kFlat, flat->ne[1], 1) &&
+       !Shaped(norm, GGML_TYPE_F32, kFlat, flat->ne[1], 1)) ||
+      !detail::AllSane({norm, flat}) || !detail::AllCurrent({norm, flat}) ||
+      !detail::Aligned(norm, 16) || !detail::Aligned(flat, 16) ||
+      !detail::Disjoint(norm, flat, false)) {
     return detail::Rejected(
-        "DeepSeek HC F16 norm requires canonical F32 [16384, rows] input and a disjoint F16 "
-        "output");
+        "DeepSeek HC F16 norm requires canonical F32 [16384, rows] input and a disjoint F16 or "
+        "F32 output");
   }
   return {};
 }

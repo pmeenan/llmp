@@ -330,19 +330,35 @@ std::expected<void, KernelFailure> CheckMulMatIdQPair(const ggml_tensor* first,
   return {};
 }
 
-bool IsMulMatIdQPairIq2Occ2(const ggml_tensor* first, const ggml_tensor* second) {
+namespace {
+
+// DeepSeek V4's gate/up expert pair of `type` over a prefill chunk of
+// kDsv4StagePairMinRows to kDsv4StageMaxRows tokens, packed.
+bool Dsv4ExpertPairOf(const ggml_tensor* first, const ggml_tensor* second, ggml_type type) {
   if (!CheckMulMatIdQPair(first, second)) {
     return false;
   }
   const auto* weights = first->src[0];
   const auto* source = first->src[1];
   const auto* ids = first->src[2];
+  const std::int64_t tokens = source->ne[2];
   constexpr std::array<std::int64_t, 4> weight_shape{4096, 2048, 256, 1};
-  constexpr std::array<std::int64_t, 4> input_shape{4096, 1, 4096, 1};
-  constexpr std::array<std::int64_t, 4> ids_shape{6, 4096, 1, 1};
-  return weights->type == GGML_TYPE_IQ2_XXS && std::ranges::equal(weights->ne, weight_shape) &&
+  const std::array<std::int64_t, 4> input_shape{4096, 1, tokens, 1};
+  const std::array<std::int64_t, 4> ids_shape{6, tokens, 1, 1};
+  return tokens >= kDsv4StagePairMinRows && tokens <= kDsv4StageMaxRows && weights->type == type &&
+         std::ranges::equal(weights->ne, weight_shape) &&
          std::ranges::equal(source->ne, input_shape) && std::ranges::equal(ids->ne, ids_shape) &&
          AllPacked({source, first, second});
+}
+
+}  // namespace
+
+bool IsMulMatIdQPairIq2Occ2(const ggml_tensor* first, const ggml_tensor* second) {
+  return Dsv4ExpertPairOf(first, second, GGML_TYPE_IQ2_XXS);
+}
+
+bool IsMulMatIdQPairGluPair(const ggml_tensor* first, const ggml_tensor* second) {
+  return IsMulMatIdQPairIq2Occ2(first, second) || Dsv4ExpertPairOf(first, second, GGML_TYPE_IQ2_XS);
 }
 
 float MulMatIdQPairGluLimit(const ggml_tensor* glu) {
@@ -355,20 +371,27 @@ float MulMatIdQPairGluLimit(const ggml_tensor* glu) {
 bool MulMatIdQCompactPrequantFits(const ggml_tensor* down, const ggml_tensor* glu) {
   if (down == nullptr || glu == nullptr || down->op != GGML_OP_MUL_MAT_ID || down->src[1] != glu ||
       down->src[0] == nullptr || down->src[2] == nullptr || glu->src[1] == nullptr ||
-      down->src[2] != glu->src[1]->src[2] || down->src[0]->type != GGML_TYPE_Q2_K) {
+      down->src[2] != glu->src[1]->src[2] || down->src[0]->type != GGML_TYPE_Q2_K ||
+      glu->src[1]->src[0] == nullptr || glu->src[1]->src[0]->type != GGML_TYPE_IQ2_XXS) {
+    // The quantizing write-back is the IQ2_XXS pair's (mul_mat_q_glu.cuh).
     return false;
   }
+  const std::int64_t tokens = glu->ne[2];
   constexpr std::array<std::int64_t, 4> weight_shape{2048, 4096, 256, 1};
-  constexpr std::array<std::int64_t, 4> input_shape{2048, 6, 4096, 1};
-  return std::ranges::equal(down->src[0]->ne, weight_shape) &&
+  const std::array<std::int64_t, 4> input_shape{2048, 6, tokens, 1};
+  return tokens >= kDsv4StagePairMinRows && tokens <= kDsv4StageMaxRows &&
+         std::ranges::equal(down->src[0]->ne, weight_shape) &&
          std::ranges::equal(glu->ne, input_shape) && IsF32(glu) && AllPacked({glu, down});
 }
 
 bool MulMatQPairDenseFits(const ggml_tensor* a, const ggml_tensor* b) {
   if (a == nullptr || b == nullptr || a == b || a->op != GGML_OP_MUL_MAT ||
       b->op != GGML_OP_MUL_MAT || a->src[1] == nullptr || a->src[1] != b->src[1] ||
-      a->src[0] == nullptr || b->src[0] == nullptr || a->src[0]->type != GGML_TYPE_Q8_0 ||
-      b->src[0]->type != GGML_TYPE_Q8_0) {
+      a->src[0] == nullptr || b->src[0] == nullptr || a->src[0]->type != b->src[0]->type ||
+      !ggml_is_quantized(a->src[0]->type) || a->src[0]->type == GGML_TYPE_MXFP4 ||
+      a->src[0]->type == GGML_TYPE_NVFP4) {
+    // Two products of one block-quantized type (one Q8_1 activation layout);
+    // CheckMulMatQ admits only types with MMQ instances.
     return false;
   }
   const ggml_tensor* x = a->src[1];
@@ -405,7 +428,7 @@ std::expected<void, KernelFailure> CheckMulMatIdQCompactPrequant(const ggml_tens
 bool MulMatIdQPairGluFits(const ggml_tensor* up, const ggml_tensor* gate, const ggml_tensor* glu) {
   if (glu == nullptr || glu->op != GGML_OP_GLU ||
       ggml_get_glu_op(glu) != GGML_GLU_OP_SWIGLU_CLAMP || glu->src[0] != gate ||
-      glu->src[1] != up || glu->view_src != nullptr || !IsMulMatIdQPairIq2Occ2(up, gate)) {
+      glu->src[1] != up || glu->view_src != nullptr || !IsMulMatIdQPairGluPair(up, gate)) {
     return false;
   }
   std::int32_t swapped = 0;

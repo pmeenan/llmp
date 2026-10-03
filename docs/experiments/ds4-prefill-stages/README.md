@@ -139,19 +139,21 @@ selected only with `--q2-d2r off`.
 Each mechanism keeps its guard, so what selects depends on the checkpoint
 and the chunk size. Decode and verify chunks (under 64 rows) are unchanged.
 
-| Item | Guard | Original 0731 (served) | Community IQ2_XXS |
+| Item | Guard | Original 0731 | Community IQ2_XXS |
 | --- | --- | --- | --- |
-| 1. D2R down | GB10, Q2_K down, 4,096-row chunks | No: IQ3_XXS/MXFP4 down | 4,096-row chunks |
-| 2. F16 HC rows | 64+ rows, F16 HC mix weights | No: F32 mixes | Yes |
-| 3a/3b. Pair write-back | GB10 IQ2_XXS occupancy-two pair, 4,096 rows | No: IQ2_XS | 4,096-row chunks (3a) |
-| 4. Expert sum in the HC post | With 2 | No | Yes |
+| 1. D2R down | GB10, Q2_K down, chunks of 64–4,096 rows | No: IQ3_XXS/MXFP4 down | Every prefill chunk |
+| 2. HC mix-input rows | 64+ rows; F16 rows for F16 mix weights, F32 rows (rms_norm's own) for F32 ones | Yes (F32 rows) | Yes (F16 rows) |
+| 3a. Pair write-back | GB10 compact IQ2_XXS (occupancy-two J64) or IQ2_XS (J128) pair, 256–4,096 rows | Yes (IQ2_XS) | Compact chunks (2,048+ rows) |
+| 3b. Its Q8 form | 3a's IQ2_XXS pair beside a Q2_K down product, without D2R | No | With `--q2-d2r off` |
+| 4. Expert sum in the HC post | With 2 | Yes | Yes |
 | 5. Shared F16 input | F16-weight products of one input, 64+ rows | No: Q8_0/F32 | Yes |
-| 6. Output-A repack | With opt-in output-A (4,096 rows) | Not by default | Not by default |
-| 7. Dense Q8_0 pairs | Two Q8_0 products of one input, 64+ rows | Q8_0 products sharing an input (41+ pairs) | Q-A/KV, shared up/gate (86) |
+| 6. Output-A repack | With opt-in output-A (64–4,096 rows) | Not by default | Not by default |
+| 7. Dense pairs | Two products of one quantized type and one input, 64+ rows | Q8_0 compressor pairs, Q5_K/Q6_K shared up/gate | Q-A/KV, shared up/gate (86) |
 | 8. F16 Q | 64+ rows, fused Q-head | Yes | Yes |
 
-Production DeepSeek prefill uses 2,048-row chunks. On the served original
-checkpoint, only items 7 and 8 apply.
+Production DeepSeek prefill uses 4,096-row chunks, and every chunk of a
+prompt takes these mechanisms, its last, partial one included
+([partial chunks and other quant types](#partial-chunks-and-other-quant-types)).
 
 **2,048-row screen.** `jitllm_dsv4_exec` ran three processes, OFF/ON/OFF
 (`--ds4-stages`/`--q2-d2r` off, then the defaults). Settings: the same
@@ -208,3 +210,111 @@ by later clang-format and clang-tidy fixes: whitespace, include order and
 test-only changes. Raw records are under
 `spark:~/scratch/m3-ds4-prod-defaults-records/` (`controls-r1`,
 `runtime-r1`), and the kit is under `~/scratch/m3-ds4-prod-defaults/`.
+
+## Partial chunks and other quant types
+
+Two generalizations of the mechanisms above, measured on both artifacts
+against same-session baselines on Spark A (2026-10-03).
+
+**Every chunk of a prompt (Stage 1).** D2R, the IQ2 pair write-back, and
+the opt-in output-A and HCA were guarded to whole 4,096-row chunks, so a
+prompt's last chunk (2,947 rows of a 7,043-token prompt) fell back to the
+slower forms. Each now takes any prefill chunk up to 4,096 rows:
+- D2R and HCA from 64 rows, the IQ2 pair from 256 (the compact expert
+  list's floor, patch 0005 widened to match).
+- Output-A from 64 rows. Its core stores whole 16-row tiles, so its
+  output holds the rows rounded up to 16 and output-B reads the chunk's.
+- HCA's plan holds the chunk's first position, as it did for full chunks.
+
+A token's rows do not depend on the chunk around them (unit-tested for D2R,
+output-A and the pair), so a partial chunk takes the arithmetic a full one
+does; full chunks are unchanged byte for byte.
+
+**The original artifact's types (Stage 2).** Three mechanisms now take the
+UD-Q2_K_XL types, each byte-exact:
+- Item 2's rows for F32 mixing weights are F32: native rms_norm's output
+  itself, written by the HC post, so item 4's expert sum follows.
+- Item 7 pairs any two products of one quantized type, such as the
+  shared expert's Q5_K up/gate.
+- Item 3a writes the activation from IQ2_XS pairs too, over GGML's
+  ordinary J128 compact launch. The occupancy-two J64 form measured slower
+  for IQ2_XS: 29.8 against 23.6 ms for a 4,096-token pair, so it stays
+  IQ2_XXS's.
+
+**Prefill screen** (`jitllm_dsv4_exec`, base / new / base processes, 4,096-row
+chunks, compact experts, frontier heads; seconds, gain against the bookends'
+mean):
+
+| Artifact, arm | 8,192 (2 × 4,096) | 7,043 (4,096 + 2,947) | 5,120 (+ 1,024) | 4,352 (+ 256) |
+| --- | --- | --- | --- | --- |
+| Community, default | 10.51 vs 10.49 (−0.1%) | 9.26 vs 9.73 (+5.0%) | 7.06 vs 7.26 (+2.8%) | 6.00 vs 6.15 (+2.4%) |
+| Community, output-A/HCA | 7.62 vs 7.63 (+0.1%) | 6.78 vs 8.22 (+21.3%) | 5.21 vs 5.77 (+10.8%) | 4.42 vs 4.64 (+4.9%) |
+| Original, default | 11.79 vs 12.20 (+3.5%) | 10.48 vs 10.79 (+3.0%) | 7.98 vs 8.22 (+3.1%) | 6.82 vs 7.04 (+3.2%) |
+| Original, output-A/HCA | 8.98 vs 9.39 (+4.5%) | 8.02 vs 9.33 (+16.4%) | 6.17 vs 6.76 (+9.6%) | 5.28 vs 5.55 (+5.2%) |
+
+With output-A/HCA the community's 7,043-token prompt prefills in 6.78 s
+in the in-process bench. That is not matched with ds4's 6.53 s, an HTTP
+wall time from another session
+([deepseek-batching](../deepseek-batching/README.md#against-ds4-same-session)):
+in that session native output-A/HCA took 8.72 s over HTTP against 8.22 s
+in the bench, so the served gap is larger.
+Bookends moved at most 0.8%.
+
+**Through the runtime** (default configuration, no output-A/HCA; the
+matched 7,043-token chat prompts; main `eb2bd43` against this build, fresh
+service per cell):
+
+| Cell | Community, main / new | Original, main / new |
+| --- | --- | --- |
+| Prefill C1, s | 10.20 / 9.79 (+4.2%) | 11.23 / 10.87 (+3.3%) |
+| Prefill C4 (four prompts), s | 40.46 / 38.94 (+3.9%) | 44.85 / 43.39 (+3.4%) |
+| 7K, 256 outputs, C1 tok/s | 11.19 / 11.40 | 11.13 / 11.31 |
+
+**Exactness and quality.**
+- Original, default: every frontier head of the four prompts is
+  byte-identical to the base's, and the runtime's 7K reply is too.
+- Full chunks (8,192 tokens): byte-identical heads on both artifacts and
+  both arms.
+- Partial chunks where D2R or output-A/HCA newly apply: heads move (at
+  most 5.08), every argmax is unchanged.
+- 32K perplexity with `--max-rows 2944`, second half, output-A/HCA on.
+  These chunks are full chunks of a smaller maximum, not partial ones,
+  and HCA's token-tile ring (3,072 cells, below rows + 256) refuses all
+  but the last 384-row chunk, so this tests D2R and output-A, not HCA:
+  - community 2.974572 (the base's chunks without the mechanisms
+    2.977401; 4,096-row chunks 2.981815; ds4 2.980670);
+  - original 1.854154 (base 1.851820; 4,096-row 1.852931; llama.cpp
+    1.8528).
+- 32K perplexity at production `--max-rows 4096` with unaligned partial
+  chunks (the review's override: 1037, 63, 64, 65, 255, 256, 257, 1,
+  4095, 2947, 4096, 100, 2049, then 4,096-row chunks), second half:
+
+  | Artifact | Default | Mechanisms off | Output-A/HCA on |
+  | --- | ---: | ---: | ---: |
+  | Original | 1.852025 | 1.852025 | 1.849846 |
+  | Community | 2.990857 | 2.975034 | 2.979310 |
+
+  The original's default and mechanisms-off per-token NLLs are
+  byte-identical at every chunk size. The community default's D2R moves
+  perplexity +0.53%; output-A/HCA's per-chunk mean ΔNLL is at most 0.028
+  with HCA taken at unaligned positions. All are inside the registered
+  3% bound. D2R rows of partial chunks (64 to 4,095 tokens) equal the
+  4,096-token run's first rows byte for byte.
+- Runner (`--check frontier`, original with DSpark, output-A/HCA, the
+  7,043-token prompt): the target state, DSpark ring and continuation are
+  exact across all-head and frontier arms and repeats, the partial chunk
+  planned with its first position.
+- Unit tests: partial-chunk D2R rows equal a full chunk's; partial output-A
+  rows equal the full chunk's first rows, its padding inside the rounded
+  output; the IQ2_XS write-back equals GGML's pair and SwiGLU byte for byte;
+  F32 rows equal rms_norm; Q5_K and Q6_K dense pairs equal their separate
+  products.
+
+**Provenance.** Spark A (`spark-c4e2`, GB10, driver 580.178.04). Base
+binaries: main-equivalent `dsbchal4` (`jitllm_dsv4_exec` `793601a9…`),
+runtime main `eb2bd43` (`a49a4d1f…`). New: this build (`jitllm_dsv4_exec`
+`6fdad0ed…`, runtime `af841d9b…`); the original's default and output-A/HCA
+rows are its final build's screen, the community's the screen before the
+IQ2_XS write-back, which their path does not take. Patch 0005's tree
+`e86191a0…`. Raw records under `spark:~/scratch/dss1/` (`screen3`,
+`screen4`, `ppl`, `frontier-orig-oa`, `records`).

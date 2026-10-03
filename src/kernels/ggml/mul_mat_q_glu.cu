@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // A copy of ggml mmq.cuh's compact-expert branch of mul_mat_q and of
-// mul_mat_q_process_tile, specialized to the occupancy-two J64 IQ2_XXS
-// pair product (patch 0005), with one change: the MMA write-back applies
+// mul_mat_q_process_tile, specialized to the occupancy-two J64 IQ2_XXS and
+// IQ2_XS pair products (patch 0005), with one change: the MMA write-back applies
 // unary.cuh's ggml_cuda_op_swiglu_clamp_single to the separately written
 // gate value and this product, and stores the activation instead of the up
 // product. Products, accumulation order and the activation's arithmetic are
@@ -16,18 +16,26 @@
 
 #include "common.cuh"
 #include "kernels/ggml/mul_mat_q_glu.cuh"
+#include "kernels/ggml/validate_ext.h"
 #include "mmq.cuh"
 #include "unary.cuh"
 
 namespace jitllm::kernels::ggml {
 namespace {
 
-constexpr ggml_type kType = GGML_TYPE_IQ2_XXS;
-constexpr int kJ = 64;
 constexpr bool kFallback = false;
 
-template <bool kQ8>
-__launch_bounds__(ggml_cuda_mmq_get_nthreads(kType, kJ, kFallback), 2) __global__
+// The launch the pair's gate product takes: for IQ2_XXS (the community
+// GGUF's gate/up experts) patch 0005's occupancy-two J64 product, for
+// IQ2_XS (UD-Q2_K_XL's) GGML's ordinary J128 compact product.
+template <ggml_type kType>
+constexpr int kJOf = kType == GGML_TYPE_IQ2_XXS ? 64 : 128;
+template <ggml_type kType>
+constexpr int kOccupancyOf =
+    kType == GGML_TYPE_IQ2_XXS ? 2 : ggml_cuda_mmq_get_occupancy(kType, kJOf<kType>, kFallback);
+
+template <ggml_type kType, bool kQ8, int kJ = kJOf<kType>>
+__launch_bounds__(ggml_cuda_mmq_get_nthreads(kType, kJ, kFallback), kOccupancyOf<kType>) __global__
     void Iq2PairGluUpKernel(const char* __restrict__ x, const int* __restrict__ y,
                             const int32_t* __restrict__ ids_dst,
                             const int32_t* __restrict__ expert_bounds, float* __restrict__ dst,
@@ -89,7 +97,7 @@ __launch_bounds__(ggml_cuda_mmq_get_nthreads(kType, kJ, kFallback), 2) __global_
   dst += offset_dst;
   gate += offset_dst;
 
-  // mul_mat_q_process_tile<IQ2_XXS, 64, false, false>, kb0 0..blocks_per_ne00.
+  // mul_mat_q_process_tile<kType, kJ, false, false>, kb0 0..blocks_per_ne00.
   int* tile_y = ids_dst_shared + kJ;
   int* tile_x = tile_y + GGML_PAD(kJ * MMQ_TILE_Y_K, nwarps * warp_size);
   constexpr int ne_block = QK8_1_MMQ;
@@ -220,15 +228,18 @@ __launch_bounds__(ggml_cuda_mmq_get_nthreads(kType, kJ, kFallback), 2) __global_
 #endif  // defined(TURING_MMA_AVAILABLE)
 }
 
-}  // namespace
-
-cudaError_t LaunchIq2PairGluUp(ggml_backend_cuda_context& ctx, const mmq_args& args,
-                               const float* gate, float limit, void* q8, cudaStream_t stream) {
+template <ggml_type kType, bool kQ8>
+cudaError_t Launch(ggml_backend_cuda_context& ctx, const mmq_args& args, const float* gate,
+                   float limit, void* q8, cudaStream_t stream) {
+  constexpr int kJ = kJOf<kType>;
   const int device = ggml_cuda_get_device();
   const int cc = ggml_cuda_info().devices[device].cc;
+  // DeepSeek V4's IQ2 gate/up experts over a prefill chunk of
+  // kDsv4StagePairMinRows to kDsv4StageMaxRows tokens, six experts a token.
   if (cc != 1210 || args.type_x != kType || args.ncols_x != 4096 || args.nrows_x != 2048 ||
-      args.ncols_dst != 24576 || args.ncols_y != 24576 || args.nrows_dst != 2048 ||
-      args.ncols_max != 4096 || args.nchannels_x != 256 || args.nchannels_y != 256 ||
+      args.ncols_max < kDsv4StagePairMinRows || args.ncols_max > kDsv4StageMaxRows ||
+      args.ncols_dst != 6 * args.ncols_max || args.ncols_y != args.ncols_dst ||
+      args.nrows_dst != 2048 || args.nchannels_x != 256 || args.nchannels_y != 256 ||
       args.nsamples_x != 1 || args.nsamples_y != 1 || args.ids_dst == nullptr ||
       args.expert_bounds == nullptr || !mmq_use_compact_experts(args, kJ)) {
     return cudaErrorInvalidValue;
@@ -242,14 +253,10 @@ cudaError_t LaunchIq2PairGluUp(ggml_backend_cuda_context& ctx, const mmq_args& a
   // tiles, after the column ids: they must fit the kernel's shared memory.
   const size_t staged =
       static_cast<size_t>(kJ) * (sizeof(int) + (static_cast<size_t>(config.I + 4) * sizeof(float)));
-  if (q8 != nullptr && staged > nbytes_shared) {
+  if (kQ8 != (q8 != nullptr) || (kQ8 && staged > nbytes_shared)) {
     return cudaErrorInvalidValue;
   }
-  if (q8 != nullptr) {
-    CUDA_SET_SHARED_MEMORY_LIMIT(Iq2PairGluUpKernel<true>, static_cast<int>(nbytes_shared));
-  } else {
-    CUDA_SET_SHARED_MEMORY_LIMIT(Iq2PairGluUpKernel<false>, static_cast<int>(nbytes_shared));
-  }
+  CUDA_SET_SHARED_MEMORY_LIMIT((Iq2PairGluUpKernel<kType, kQ8>), static_cast<int>(nbytes_shared));
   const auto nty = static_cast<unsigned>((args.nrows_x + config.I - 1) / config.I);
   const uint3 blocks_per_ne00_fd =
       init_fastdiv_values(static_cast<uint64_t>(args.ncols_x / ggml_cuda_type_traits<kType>::qk));
@@ -261,13 +268,30 @@ cudaError_t LaunchIq2PairGluUp(ggml_backend_cuda_context& ctx, const mmq_args& a
   mmq_expert_tiles<kJ><<<1, 256, static_cast<size_t>(args.nchannels_x + 1) * sizeof(int), stream>>>(
       args.expert_bounds, tiles.ptr, static_cast<int>(args.nchannels_x), capacity);
   const dim3 grid(nty, static_cast<unsigned>(capacity), 1);
-  auto* const kernel = q8 != nullptr ? Iq2PairGluUpKernel<true> : Iq2PairGluUpKernel<false>;
-  kernel<<<grid, block_dims, nbytes_shared, stream>>>(
+  Iq2PairGluUpKernel<kType, kQ8><<<grid, block_dims, nbytes_shared, stream>>>(
       args.x, args.y, args.ids_dst, args.expert_bounds, args.dst, gate, limit, blocks_per_ne00_fd,
       static_cast<int>(args.nrows_x), static_cast<int>(args.stride_row_x),
       static_cast<int>(args.ncols_y), static_cast<int>(args.nrows_dst), channel_ratio_fd,
       static_cast<int>(args.stride_channel_x), tiles.ptr, q8, static_cast<int>(args.ncols_y));
   return cudaGetLastError();
+}
+
+}  // namespace
+
+cudaError_t LaunchIq2PairGluUp(ggml_backend_cuda_context& ctx, const mmq_args& args,
+                               const float* gate, float limit, void* q8, cudaStream_t stream) {
+  // The quantizing write-back is the IQ2_XXS pair's alone (validate_ext.h
+  // MulMatIdQCompactPrequantFits).
+  switch (args.type_x) {
+    case GGML_TYPE_IQ2_XXS:
+      return q8 != nullptr ? Launch<GGML_TYPE_IQ2_XXS, true>(ctx, args, gate, limit, q8, stream)
+                           : Launch<GGML_TYPE_IQ2_XXS, false>(ctx, args, gate, limit, q8, stream);
+    case GGML_TYPE_IQ2_XS:
+      return q8 != nullptr ? cudaErrorInvalidValue
+                           : Launch<GGML_TYPE_IQ2_XS, false>(ctx, args, gate, limit, q8, stream);
+    default:
+      return cudaErrorInvalidValue;
+  }
 }
 
 }  // namespace jitllm::kernels::ggml

@@ -43,7 +43,7 @@ using support::Pointer;
 std::optional<std::uint32_t> HcaFirstPosition(const Dsv4Model& model,
                                               const kg::Dsv4ChunkShape& shape,
                                               std::uint32_t first) {
-  if (!model.exact && model.prefill_outa_hca && shape.rows == 4096 && shape.hca_n_kv == 256) {
+  if (Dsv4PrefillHca(model, shape)) {
     return first;
   }
   return std::nullopt;
@@ -389,8 +389,9 @@ Status Dsv4Runner::Setup() {
                                  {o_.max_rows, 1, Dsv4ChunkKind::kPlain}};
     // Past the HCA fast path's 256 compressed cells, fund the ordinary
     // 512-cell attention fallback as well as the existing context-end probe.
-    if (model_.prefill_outa_hca && o_.max_rows == 4096 && o_.context >= 32768 + 4096) {
-      probes.push_back({32768, 4096, Dsv4ChunkKind::kPlain});
+    if (model_.prefill_outa_hca && o_.max_rows <= kg::kDsv4HcaMaxRows &&
+        o_.context >= 32768 + o_.max_rows) {
+      probes.push_back({32768, o_.max_rows, Dsv4ChunkKind::kPlain});
     }
     if (speculative()) {
       probes.push_back({0, o_.max_rows, Dsv4ChunkKind::kInject});

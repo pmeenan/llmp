@@ -1023,8 +1023,12 @@ it appears.
       continuation are byte-exact at 2,048 rows on both checkpoints, and the
       original-checkpoint 32K fixed-history control is byte-identical. At
       production's 2,048-row chunks they gain 7.21% on the community
-      checkpoint but 1.41% on the served original checkpoint, where only
-      F16 Q and dense Q8_0 pairs apply; runtime 8K prefill gains 1.26%.
+      checkpoint but 1.41% on the served original checkpoint, where then
+      only F16 Q and dense Q8_0 pairs applied; runtime 8K prefill gained
+      1.26%. Since 2026-10-03 they also take partial chunks and the
+      original's F32 HC, IQ2_XS and K-quant shared-expert types (runtime 7K
+      +3–4% on both,
+      [partial chunks](experiments/ds4-prefill-stages/README.md#partial-chunks-and-other-quant-types)).
       Production DeepSeek chunks are now 4,096 rows, 12.1% faster at 8K
       than 2,048 ([DeepSeek concurrent](experiments/deepseek-concurrent/README.md)).
       These different-factor screens are not added together or recorded as

@@ -229,8 +229,8 @@ struct Dsv4GraphOptions {
   // each byte-identical to the graph without it; with `fused`, the fast
   // plan's defaults (SetDsv4PrefillStages). Each HC mix input of at least
   // 64 rows with F16 mix weights is normalized straight to F16 rows that
-  // the mix product reads, fused with the preceding HC post where one
-  // exists.
+  // the mix product reads (with F32 mix weights, to F32 rows: rms_norm's
+  // own), fused with the preceding HC post where one exists.
   bool hc_f16_rows = false;
   // The attention input's F16-weight products (compressor, indexer
   // compressor and projection) of at least 64 rows read one shared F16 copy

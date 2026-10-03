@@ -267,13 +267,15 @@ The [M3 optimization status](docs/m3-optimization-status.md) tracks remaining
 engine gaps and the independent review's suggestions. The complete literal
 ds4 benchmark matches all original logits at 8K/32K within 2.4%/0.71% of
 its speed. Native stage restoration is incomplete: ordered reduction and
-Q-head fusions are landed; the guarded default-off 4096-row output-A adapter
+Q-head fusions are landed; the guarded default-off output-A adapter
 gains 4.97%. Output-A plus experimental HCA passes the unchanged 32K/128K
 greedy bounds, 128K perplexity and one long-answer control; production
 runner integration is checked and remains default-off; scoped IQ2 tuning
 adds 4.15% whole-prefill throughput with byte-exact full heads. The ds4
-stage mechanisms are now fast-plan defaults (with output-A/HCA, community
-4096-row 8K is within ~1–2% of literal ds4; served runtime prefill +1.26%).
+stage mechanisms are now fast-plan defaults on prefill chunks of 64 rows
+or more, a prompt's last, partial one included, and on the 0731 GGUF's
+types (runtime 7K prefill +3–4% on both GGUFs; with output-A/HCA the
+community 7K prompt prefills in 6.8 s in-process, not matched with ds4).
 Broader acceptance remains open, and HCA stays off by default.
 Qwen chat decodes up to four requests in one wave (joined products of up to
 16 rows, MXFP8/routed bit-exact per request; depth 2 when shared). Against

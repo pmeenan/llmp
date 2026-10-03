@@ -9,6 +9,11 @@
 // operand bytes are unchanged; the F32 normalized tensor is never written.
 // Where the norm follows the HC post of the previous block, one kernel
 // writes the expanded F32 streams and these rows together.
+//
+// For F32 mixing weights (DeepSeek V4 0731 UD-Q2_K_XL) the same node writes
+// F32 rows: native rms_norm's output itself, byte for byte, which the F32
+// product reads as it read rms_norm's; the post's fusion and the expert
+// sum's (below) then apply as for F16 rows. The names keep "F16".
 
 #ifndef JITLLM_KERNELS_GGML_DSV4_HC_NORM_H_
 #define JITLLM_KERNELS_GGML_DSV4_HC_NORM_H_
@@ -30,8 +35,10 @@ inline constexpr const char* kDsv4HcPostNormF16Name = "jitllm.dsv4.hc_post_norm_
 // The flat streams this takes: canonical F32 [16384, rows], rows at most
 // 65535, and a finite positive epsilon.
 bool Dsv4HcNormF16Fits(const ggml_tensor* flat, float eps);
-// F16 [16384, rows]: the custom node (jitllm_ops.h kDsv4HcNormF16).
-ggml_tensor* Dsv4HcNormF16(ggml_context* context, ggml_tensor* flat, float eps);
+// `type` (F16, or F32) [16384, rows]: the custom node (jitllm_ops.h
+// kDsv4HcNormF16).
+ggml_tensor* Dsv4HcNormF16(ggml_context* context, ggml_tensor* flat, float eps,
+                           ggml_type type = GGML_TYPE_F16);
 std::expected<void, KernelFailure> CheckDsv4HcNormF16(const ggml_tensor* norm);
 
 // The HC post, its zero-offset flat reshape and this norm, consecutive in

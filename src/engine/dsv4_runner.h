@@ -182,7 +182,8 @@ class Dsv4Runner final : public PagedModel {
     kernels::ggml::Dsv4ChunkShape shape;
     Dsv4ChunkKind kind = Dsv4ChunkKind::kPlain;
     std::int64_t inject_rows = 0;
-    // HCA's host scalar; present only for eligible 4K/256-compressed plans.
+    // HCA's host scalar; present only for plans HCA's token tile admits
+    // (a chunk of 64 rows or more whose ring holds rows + 256 cells).
     std::optional<std::uint32_t> first_position = std::nullopt;
     bool operator==(const ChunkKey&) const = default;
   };

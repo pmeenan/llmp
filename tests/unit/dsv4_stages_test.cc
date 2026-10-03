@@ -291,6 +291,11 @@ TEST_F(Dsv4StagesTest, TheHcMixInputRowsAreTheNativeNormRoundedToNearest) {
     ASSERT_TRUE(kg::CheckDsv4HcNormF16(rows16).has_value()) << what;
     Launched(kg::RunDsv4HcNormF16(launch(), rows16), what + " F16 rows");
     ExpectSameBytes(Download<ggml_fp16_t>(rows16), Halves(Download(norm)), what);
+    // With F32 mixing weights, F32 rows: rms_norm's own output.
+    auto* rows32 = Place(kg::Dsv4HcNormF16(c(), flat, kEps, GGML_TYPE_F32));
+    ASSERT_TRUE(kg::CheckDsv4HcNormF16(rows32).has_value()) << what;
+    Launched(kg::RunDsv4HcNormF16(launch(), rows32), what + " F32 rows");
+    ExpectSameBytes(Download(rows32), Download(norm), what + " F32");
   }
   auto* flat = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kFlat, 8));
   EXPECT_FALSE(kg::Dsv4HcNormF16Fits(flat, 0.0f));
@@ -324,6 +329,12 @@ TEST_F(Dsv4StagesTest, TheHcPostWritesItsStreamsAndTheNextMixInputRows) {
     Launched(kg::RunDsv4HcPostNormF16(launch(), post, norm), what);
     ExpectSameBytes(Download(post), want_streams, what + " streams");
     ExpectSameBytes(Download<ggml_fp16_t>(norm), Halves(want_norm), what + " mix-input rows");
+    // F32 rows (F32 mixing weights): the native norm itself.
+    auto* norm32 = Place(kg::Dsv4HcNormF16(c(), flat, kEps, GGML_TYPE_F32));
+    ASSERT_TRUE(kg::CheckDsv4HcPostNormF16(post, norm32).has_value()) << what;
+    Launched(kg::RunDsv4HcPostNormF16(launch(), post, norm32), what + " F32");
+    ExpectSameBytes(Download(post), want_streams, what + " streams beside F32 rows");
+    ExpectSameBytes(Download(norm32), want_norm, what + " F32 mix-input rows");
     // Outputs over an input are refused before any launch.
     auto alias = *norm;
     alias.data = in.streams->data;
@@ -376,6 +387,12 @@ TEST_F(Dsv4StagesTest, TheHcPostFormsTheExpertSumItLeavesUnwritten) {
     ExpectSameBytes(Download<ggml_fp16_t>(norm), Halves(want_norm), what + " mix-input rows");
     ExpectSameBytes(Download(reduce), sentinel, what + " reduction unwritten");
     ExpectSameBytes(Download(add), sentinel, what + " sum unwritten");
+    // F32 rows (F32 mixing weights): the native norm itself.
+    auto* norm32 = Place(kg::Dsv4HcNormF16(c(), flat, kEps, GGML_TYPE_F32));
+    ASSERT_TRUE(kg::CheckDsv4HcPostExpertsNormF16(reduce, add, post, norm32).has_value()) << what;
+    Launched(kg::RunDsv4HcPostExpertsNormF16(launch(), reduce, add, post, norm32), what + " F32");
+    ExpectSameBytes(Download(post), want_streams, what + " streams beside F32 rows");
+    ExpectSameBytes(Download(norm32), want_norm, what + " F32 mix-input rows");
   }
 }
 
@@ -580,181 +597,247 @@ TEST_F(Dsv4StagesTest, OutputAsCoalescedRepackGivesTheSameProduct) {
   auto* coalesced = Place(kg::Dsv4OutA(c(), w, x, pos, params));
   Launched(kg::RunDsv4OutA(launch(), original), "output-A");
   Launched(kg::RunDsv4OutA(launch(), coalesced, true), "output-A, coalesced repack");
-  ExpectSameBytes(Download(coalesced), Download(original), "output-A");
+  const auto full = Download(original);
+  ExpectSameBytes(Download(coalesced), full, "output-A");
+  // A prompt's last, partial chunk: its rows equal the full chunk's first
+  // rows byte for byte, and the core's whole 16-row tiles stay inside the
+  // output's rounded rows (the guard after them is untouched).
+  for (const std::int64_t rows : {std::int64_t{2947}, std::int64_t{64}, std::int64_t{100}}) {
+    const std::string what = std::format("output-A, {} rows", rows);
+    auto* xs = ggml_view_3d(c(), x, 512, 64, rows, x->nb[1], x->nb[2], 0);
+    auto* ps = ggml_view_1d(c(), pos, rows, 0);
+    ASSERT_TRUE(kg::Dsv4OutAFits(w, xs, ps, params)) << what;
+    auto* partial = kg::Dsv4OutA(c(), w, xs, ps, params);
+    ASSERT_EQ(partial->ne[1], kg::Dsv4OutARows(rows)) << what;
+    const std::size_t bytes = ggml_nbytes(partial);
+    const std::uint64_t address = Allocate(bytes + 256);
+    kg::TensorArena::Bind(partial, address);
+    std::array<std::uint8_t, 256> guard{};
+    guard.fill(0xA5);
+    ASSERT_EQ(cudaMemcpy(reinterpret_cast<std::byte*>(address) + bytes,  // NOLINT
+                         guard.data(), guard.size(), cudaMemcpyHostToDevice),
+              cudaSuccess);
+    Launched(kg::RunDsv4OutA(launch(), partial, true), what);
+    const auto got = Download(partial);
+    const auto n = static_cast<std::size_t>(rows * 8192);
+    ASSERT_GE(got.size(), n);
+    EXPECT_EQ(std::memcmp(got.data(), full.data(), n * sizeof(float)), 0) << what;
+    std::array<std::uint8_t, 256> after{};
+    ASSERT_EQ(cudaMemcpy(after.data(), reinterpret_cast<std::byte*>(address) + bytes,  // NOLINT
+                         after.size(), cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    EXPECT_EQ(after, guard) << what;
+  }
 }
 
 TEST_F(Dsv4StagesTest, DenseQ8PairsShareOneQuantizationExactly) {
-  auto* w1 = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q8_0, kWidth, 512),
-                   RandomBlocks(GGML_TYPE_Q8_0, kWidth, 512, 421, {0}, 1.0f / 2048));
-  auto* w2 = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q8_0, kWidth, 1024),
-                   RandomBlocks(GGML_TYPE_Q8_0, kWidth, 1024, 422, {0}, 1.0f / 2048));
-  for (const std::int64_t rows : {64, 2048}) {
-    const std::string what = std::format("{} rows", rows);
-    auto* x = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, rows),
-                    Normal(423 + static_cast<std::uint64_t>(rows), N(kWidth * rows)));
-    auto* ref1 = Place(ggml_mul_mat(c(), w1, x));
-    auto* ref2 = Place(ggml_mul_mat(c(), w2, x));
-    Launched(kg::MulMatQ(launch(), ref1), what + " first alone");
-    Launched(kg::MulMatQ(launch(), ref2), what + " second alone");
-    auto* a = Place(ggml_mul_mat(c(), w1, x));
-    auto* b = Place(ggml_mul_mat(c(), w2, x));
-    ASSERT_TRUE(kg::MulMatQPairDenseFits(a, b)) << what;
-    ASSERT_TRUE(kg::CheckMulMatQPairDense(a, b).has_value()) << what;
-    const auto scratch = kg::PlanMulMatQPairDense(launch(), a, b);
-    ASSERT_TRUE(scratch.has_value()) << what;
-    launch().ResetScratchPeak();
-    Launched(kg::MulMatQPairDense(launch(), a, b), what + " pair");
-    EXPECT_LE(launch().scratch_peak().value(), *scratch) << what;
-    ExpectSameBytes(Download(a), Download(ref1), what + " first");
-    ExpectSameBytes(Download(b), Download(ref2), what + " second");
-    // The planner pairs them only when asked, as one step at the first's place.
-    const std::array<ggml_tensor*, 2> nodes = {a, b};
-    auto choices = kg::DeviceChoicesOf(launch());
-    const auto separate = kg::PlanGraph(nodes, false, choices);
-    ASSERT_TRUE(separate.has_value()) << what;
-    ASSERT_EQ(separate->steps.size(), 2U) << what;
-    EXPECT_EQ(separate->steps[0].implementation, kg::kMulMatQ);
-    choices.dense_pair = true;
-    const auto paired = kg::PlanGraph(nodes, false, choices);
-    ASSERT_TRUE(paired.has_value()) << what;
-    ASSERT_EQ(paired->steps.size(), 1U) << what;
-    EXPECT_EQ(paired->steps[0].implementation, kg::kMulMatQPairDense);
-    EXPECT_EQ(paired->steps[0].nodes, (std::vector<ggml_tensor*>{a, b}));
-    const auto planned = kg::PlanScratch(launch(), *paired);
-    ASSERT_TRUE(planned.has_value()) << what;
-    EXPECT_EQ(*planned, *scratch) << what;
+  // Q8_0 (the community artifact's Q-A/KV and shared experts), and the
+  // original artifact's Q5_K shared up/gate, and Q6_K: the F16 scales'
+  // byte offsets in each block.
+  struct Typed {
+    ggml_type type = GGML_TYPE_COUNT;
+    std::initializer_list<std::size_t> scales;
+  };
+  for (const Typed& typed :
+       {Typed{GGML_TYPE_Q8_0, {0}}, Typed{GGML_TYPE_Q5_K, {0, 2}}, Typed{GGML_TYPE_Q6_K, {208}}}) {
+    auto* w1 = Place(ggml_new_tensor_2d(c(), typed.type, kWidth, 512),
+                     RandomBlocks(typed.type, kWidth, 512, 421, typed.scales, 1.0f / 2048));
+    auto* w2 = Place(ggml_new_tensor_2d(c(), typed.type, kWidth, 1024),
+                     RandomBlocks(typed.type, kWidth, 1024, 422, typed.scales, 1.0f / 2048));
+    for (const std::int64_t rows : {64, 2048}) {
+      const std::string what = std::format("{} {} rows", ggml_type_name(typed.type), rows);
+      auto* x = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, rows),
+                      Normal(423 + static_cast<std::uint64_t>(rows), N(kWidth * rows)));
+      auto* ref1 = Place(ggml_mul_mat(c(), w1, x));
+      auto* ref2 = Place(ggml_mul_mat(c(), w2, x));
+      Launched(kg::MulMatQ(launch(), ref1), what + " first alone");
+      Launched(kg::MulMatQ(launch(), ref2), what + " second alone");
+      auto* a = Place(ggml_mul_mat(c(), w1, x));
+      auto* b = Place(ggml_mul_mat(c(), w2, x));
+      ASSERT_TRUE(kg::MulMatQPairDenseFits(a, b)) << what;
+      ASSERT_TRUE(kg::CheckMulMatQPairDense(a, b).has_value()) << what;
+      const auto scratch = kg::PlanMulMatQPairDense(launch(), a, b);
+      ASSERT_TRUE(scratch.has_value()) << what;
+      launch().ResetScratchPeak();
+      Launched(kg::MulMatQPairDense(launch(), a, b), what + " pair");
+      EXPECT_LE(launch().scratch_peak().value(), *scratch) << what;
+      ExpectSameBytes(Download(a), Download(ref1), what + " first");
+      ExpectSameBytes(Download(b), Download(ref2), what + " second");
+      // The planner pairs them only when asked, as one step at the first's place.
+      const std::array<ggml_tensor*, 2> nodes = {a, b};
+      auto choices = kg::DeviceChoicesOf(launch());
+      const auto separate = kg::PlanGraph(nodes, false, choices);
+      ASSERT_TRUE(separate.has_value()) << what;
+      ASSERT_EQ(separate->steps.size(), 2U) << what;
+      EXPECT_EQ(separate->steps[0].implementation, kg::kMulMatQ);
+      choices.dense_pair = true;
+      const auto paired = kg::PlanGraph(nodes, false, choices);
+      ASSERT_TRUE(paired.has_value()) << what;
+      ASSERT_EQ(paired->steps.size(), 1U) << what;
+      EXPECT_EQ(paired->steps[0].implementation, kg::kMulMatQPairDense);
+      EXPECT_EQ(paired->steps[0].nodes, (std::vector<ggml_tensor*>{a, b}));
+      const auto planned = kg::PlanScratch(launch(), *paired);
+      ASSERT_TRUE(planned.has_value()) << what;
+      EXPECT_EQ(*planned, *scratch) << what;
+    }
+    auto* narrow = ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, 63);
+    EXPECT_FALSE(
+        kg::MulMatQPairDenseFits(ggml_mul_mat(c(), w1, narrow), ggml_mul_mat(c(), w2, narrow)));
+    auto* x = ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, 64);
+    auto* y = ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, 64);
+    EXPECT_FALSE(kg::MulMatQPairDenseFits(ggml_mul_mat(c(), w1, x), ggml_mul_mat(c(), w2, y)));
+    // Two types (two Q8_1 layouts, or one layout's two kernels) never pair.
+    auto* other = ggml_new_tensor_2d(
+        c(), typed.type == GGML_TYPE_Q5_K ? GGML_TYPE_Q6_K : GGML_TYPE_Q5_K, kWidth, 512);
+    EXPECT_FALSE(kg::MulMatQPairDenseFits(ggml_mul_mat(c(), other, x), ggml_mul_mat(c(), w2, x)));
+    auto* odd = ggml_new_tensor_2d(c(), typed.type, kWidth, 96);
+    EXPECT_FALSE(kg::MulMatQPairDenseFits(ggml_mul_mat(c(), odd, x), ggml_mul_mat(c(), w2, x)));
   }
-  auto* narrow = ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, 63);
-  EXPECT_FALSE(
-      kg::MulMatQPairDenseFits(ggml_mul_mat(c(), w1, narrow), ggml_mul_mat(c(), w2, narrow)));
+  // Nor do float or FP4 weights.
   auto* x = ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, 64);
-  auto* y = ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, 64);
-  EXPECT_FALSE(kg::MulMatQPairDenseFits(ggml_mul_mat(c(), w1, x), ggml_mul_mat(c(), w2, y)));
-  auto* q5 = ggml_new_tensor_2d(c(), GGML_TYPE_Q5_K, kWidth, 512);
-  EXPECT_FALSE(kg::MulMatQPairDenseFits(ggml_mul_mat(c(), q5, x), ggml_mul_mat(c(), w2, x)));
-  auto* odd = ggml_new_tensor_2d(c(), GGML_TYPE_Q8_0, kWidth, 96);
-  EXPECT_FALSE(kg::MulMatQPairDenseFits(ggml_mul_mat(c(), odd, x), ggml_mul_mat(c(), w2, x)));
+  for (const ggml_type type : {GGML_TYPE_F16, GGML_TYPE_MXFP4}) {
+    auto* a = ggml_new_tensor_2d(c(), type, kWidth, 512);
+    auto* b = ggml_new_tensor_2d(c(), type, kWidth, 1024);
+    EXPECT_FALSE(kg::MulMatQPairDenseFits(ggml_mul_mat(c(), a, x), ggml_mul_mat(c(), b, x)))
+        << ggml_type_name(type);
+  }
 }
 
 TEST_F(Dsv4StagesTest, TheIq2PairWritesItsActivationAndTheDownProductsInputExactly) {
   if (ComputeCapability() != 1210) {
     GTEST_SKIP() << "the IQ2 occupancy-two pair is GB10 only";
   }
-  // The measured shape: 256 experts, six routes a token, 4,096 tokens.
+  // The measured shape: 256 experts, six routes a token, a full 4,096-token
+  // chunk and a prompt's last, partial one; the community GGUF's IQ2_XXS
+  // gate/up experts, and UD-Q2_K_XL's IQ2_XS (each a block's F16 d first).
   constexpr std::int64_t kInner = 4096;
   constexpr std::int64_t kMiddle = 2048;
   constexpr std::int64_t kExperts = 256;
   constexpr std::int64_t kUsed = 6;
-  constexpr std::int64_t kTokens = 4096;
-  const float limit = md::Dsv4Flash().swiglu_limit;
-  auto* gate_w =
-      Place(ggml_new_tensor_3d(c(), GGML_TYPE_IQ2_XXS, kInner, kMiddle, kExperts),
-            RandomBlocks(GGML_TYPE_IQ2_XXS, kInner, kMiddle * kExperts, 431, {0}, 1.0f / 1024));
-  auto* up_w =
-      Place(ggml_new_tensor_3d(c(), GGML_TYPE_IQ2_XXS, kInner, kMiddle, kExperts),
-            RandomBlocks(GGML_TYPE_IQ2_XXS, kInner, kMiddle * kExperts, 432, {0}, 1.0f / 1024));
-  // Q2_K: the F16 d and dmin follow 16 scale and 64 code bytes.
-  auto* down_w =
-      Place(ggml_new_tensor_3d(c(), GGML_TYPE_Q2_K, kMiddle, kInner, kExperts),
-            RandomBlocks(GGML_TYPE_Q2_K, kMiddle, kInner * kExperts, 433, {80, 82}, 1.0f / 2048));
-  auto* x = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kInner, 1, kTokens),
-                  Normal(434, N(kInner * kTokens)));
-  std::vector<std::int32_t> ids;
-  std::mt19937 random(435);  // NOLINT(bugprone-random-generator-seed): reproducible
-  std::vector<std::int32_t> experts(N(kExperts));
-  std::ranges::iota(experts, 0);
-  for (std::int64_t t = 0; t < kTokens; ++t) {
-    // Six distinct experts a token, one of them popular, as real routing is.
-    std::shuffle(experts.begin(), experts.end(), random);
-    if (t % 3 == 0) {
-      std::iter_swap(experts.begin(), std::ranges::find(experts, 7));
-    }
-    ids.insert(ids.end(), experts.begin(), experts.begin() + kUsed);
-  }
-  auto* routes = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, kTokens), ids);
-  auto* gate = Place(ggml_mul_mat_id(c(), gate_w, x, routes));
-  auto* up = Place(ggml_mul_mat_id(c(), up_w, x, routes));
-  auto* glu = Place(ggml_swiglu_clamp(c(), gate, up, limit));
-  auto* down = Place(ggml_mul_mat_id(c(), down_w, glu, routes));
-  ASSERT_TRUE(kg::IsMulMatIdQPairIq2Occ2(up, gate));
-  ASSERT_TRUE(kg::MulMatIdQPairGluFits(up, gate, glu));
-  ASSERT_TRUE(kg::MulMatIdQCompactPrequantFits(down, glu));
-  ASSERT_TRUE(kg::CheckMulMatIdQPairGlu(up, gate, glu).has_value());
-  ASSERT_TRUE(kg::CheckMulMatIdQCompactPrequant(down).has_value());
-
-  // The ordinary compact plan: the occupancy-two pair, the activation, the
-  // down product with its own quantization.
-  Launched(kg::MulMatIdQPair(launch(), gate, up, true), "compact pair");
-  Launched(kg::SwiGluClamp(launch(), glu), "SwiGLU clamp");
-  Launched(kg::MulMatIdQCompact(launch(), down), "compact down");
-  const auto want_gate = Download(gate);
-  const auto want_glu = Download(glu);
-  const auto want_down = Download(down);
-  ASSERT_TRUE(std::ranges::all_of(want_glu, [](float v) { return std::isfinite(v); }));
-  ASSERT_TRUE(std::ranges::any_of(want_down, [](float v) { return v != 0.0f; }));
-
-  const auto pair_scratch = kg::PlanMulMatIdQPair(launch(), up, gate, true);
-  ASSERT_TRUE(pair_scratch.has_value());
-  Poison(gate);
-  Poison(glu);
-  launch().ResetScratchPeak();
-  Launched(kg::MulMatIdQPairGlu(launch(), up, gate, glu), "activation write-back");
-  EXPECT_LE(launch().scratch_peak().value(), *pair_scratch);
-  ExpectSameBytes(Download(gate), want_gate, "gate beside the write-back");
-  ExpectSameBytes(Download(glu), want_glu, "activation write-back");
-
-  Poison(glu);
-  Poison(down);
-  launch().ResetScratchPeak();
-  Launched(kg::MulMatIdQPairGluQ8(launch(), up, gate, glu), "quantizing write-back");
-  EXPECT_LE(launch().scratch_peak().value(), *pair_scratch);
-  const auto down_scratch = kg::PlanMulMatIdQCompact(launch(), down);
-  ASSERT_TRUE(down_scratch.has_value());
-  launch().ResetScratchPeak();
-  Launched(kg::MulMatIdQCompactPrequant(launch(), down), "prequantized down");
-  EXPECT_LE(launch().scratch_peak().value(), *down_scratch);
-  ExpectSameBytes(Download(down), want_down, "down over the quantizing write-back");
-
-  // Selection: the plain compact plan; with the stage mechanisms, the
-  // write-back with D2R taking the Q2_K down product; without D2R, the
-  // quantizing write-back and the prequantized down.
-  const std::array<ggml_tensor*, 4> nodes = {gate, up, glu, down};
-  auto choices = kg::DeviceChoicesOf(launch());
-  choices.pair_experts = true;
-  choices.compact_experts = true;
-  const auto names = [&](const kg::DeviceChoices& device) {
-    auto plan = kg::PlanGraph(nodes, false, device);
-    EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
-    std::vector<std::string_view> out;
-    if (plan) {
-      for (const auto& step : plan->steps) {
-        out.push_back(step.implementation);
+  for (const auto& [kPairType, kTokens] : {std::pair{GGML_TYPE_IQ2_XXS, std::int64_t{4096}},
+                                           std::pair{GGML_TYPE_IQ2_XXS, std::int64_t{2947}},
+                                           std::pair{GGML_TYPE_IQ2_XS, std::int64_t{4096}}}) {
+    SCOPED_TRACE(std::format("{}, {} tokens", ggml_type_name(kPairType), kTokens));
+    const float limit = md::Dsv4Flash().swiglu_limit;
+    auto* gate_w =
+        Place(ggml_new_tensor_3d(c(), kPairType, kInner, kMiddle, kExperts),
+              RandomBlocks(kPairType, kInner, kMiddle * kExperts, 431, {0}, 1.0f / 1024));
+    auto* up_w = Place(ggml_new_tensor_3d(c(), kPairType, kInner, kMiddle, kExperts),
+                       RandomBlocks(kPairType, kInner, kMiddle * kExperts, 432, {0}, 1.0f / 1024));
+    // Q2_K: the F16 d and dmin follow 16 scale and 64 code bytes.
+    auto* down_w =
+        Place(ggml_new_tensor_3d(c(), GGML_TYPE_Q2_K, kMiddle, kInner, kExperts),
+              RandomBlocks(GGML_TYPE_Q2_K, kMiddle, kInner * kExperts, 433, {80, 82}, 1.0f / 2048));
+    auto* x = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, kInner, 1, kTokens),
+                    Normal(434, N(kInner * kTokens)));
+    std::vector<std::int32_t> ids;
+    std::mt19937 random(435);  // NOLINT(bugprone-random-generator-seed): reproducible
+    std::vector<std::int32_t> experts(N(kExperts));
+    std::ranges::iota(experts, 0);
+    for (std::int64_t t = 0; t < kTokens; ++t) {
+      // Six distinct experts a token, one of them popular, as real routing is.
+      std::shuffle(experts.begin(), experts.end(), random);
+      if (t % 3 == 0) {
+        std::iter_swap(experts.begin(), std::ranges::find(experts, 7));
       }
-      EXPECT_TRUE(kg::PlanScratch(launch(), *plan).has_value());
+      ids.insert(ids.end(), experts.begin(), experts.begin() + kUsed);
     }
-    return out;
-  };
-  using Names = std::vector<std::string_view>;
-  EXPECT_EQ(names(choices),
-            (Names{kg::kMulMatIdQPairCompact, kg::kSwiGluClampName, kg::kMulMatIdQCompact}));
-  kg::SetDsv4PrefillStages(choices, true);
-  EXPECT_EQ(names(choices), (Names{kg::kMulMatIdQPairGlu, kg::kMulMatIdQ2D2r}));
-  choices.d2r_experts = false;
-  EXPECT_EQ(names(choices), (Names{kg::kMulMatIdQPairGluQ8, kg::kMulMatIdQCompactPrequant}));
-  choices.compact_experts = false;
-  EXPECT_EQ(names(choices), (Names{kg::kMulMatIdQPair, kg::kSwiGluClampName, kg::kMulMatIdQ}));
+    auto* routes = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, kUsed, kTokens), ids);
+    auto* gate = Place(ggml_mul_mat_id(c(), gate_w, x, routes));
+    auto* up = Place(ggml_mul_mat_id(c(), up_w, x, routes));
+    auto* glu = Place(ggml_swiglu_clamp(c(), gate, up, limit));
+    auto* down = Place(ggml_mul_mat_id(c(), down_w, glu, routes));
+    // IQ2_XXS: the occupancy-two J64 pair and the quantizing write-back;
+    // IQ2_XS: GGML's J128 compact pair and the F32 write-back alone.
+    const bool occ2 = kPairType == GGML_TYPE_IQ2_XXS;
+    EXPECT_EQ(kg::IsMulMatIdQPairIq2Occ2(up, gate), occ2);
+    ASSERT_TRUE(kg::IsMulMatIdQPairGluPair(up, gate));
+    ASSERT_TRUE(kg::MulMatIdQPairGluFits(up, gate, glu));
+    ASSERT_EQ(kg::MulMatIdQCompactPrequantFits(down, glu), occ2);
+    ASSERT_TRUE(kg::CheckMulMatIdQPairGlu(up, gate, glu).has_value());
+    ASSERT_EQ(kg::CheckMulMatIdQCompactPrequant(down).has_value(), occ2);
 
-  // An activation over the pair's operands is refused before any launch.
-  auto alias = *glu;
-  alias.data = x->data;
-  EXPECT_FALSE(kg::CheckMulMatIdQPairGlu(up, gate, &alias).has_value());
-  // So is any other shape: the same pair over fewer tokens.
-  auto* fewer = ggml_view_3d(c(), x, kInner, 1, 2048, x->nb[1], x->nb[2], 0);
-  auto* fewer_routes = ggml_view_2d(c(), routes, kUsed, 2048, routes->nb[1], 0);
-  auto* small_gate = Place(ggml_mul_mat_id(c(), gate_w, fewer, fewer_routes));
-  auto* small_up = Place(ggml_mul_mat_id(c(), up_w, fewer, fewer_routes));
-  auto* small_glu = Place(ggml_swiglu_clamp(c(), small_gate, small_up, limit));
-  EXPECT_FALSE(kg::MulMatIdQPairGluFits(small_up, small_gate, small_glu));
+    // The ordinary compact plan: the occupancy-two pair, the activation, the
+    // down product with its own quantization.
+    Launched(kg::MulMatIdQPair(launch(), gate, up, true), "compact pair");
+    Launched(kg::SwiGluClamp(launch(), glu), "SwiGLU clamp");
+    Launched(kg::MulMatIdQCompact(launch(), down), "compact down");
+    const auto want_gate = Download(gate);
+    const auto want_glu = Download(glu);
+    const auto want_down = Download(down);
+    ASSERT_TRUE(std::ranges::all_of(want_glu, [](float v) { return std::isfinite(v); }));
+    ASSERT_TRUE(std::ranges::any_of(want_down, [](float v) { return v != 0.0f; }));
+
+    const auto pair_scratch = kg::PlanMulMatIdQPair(launch(), up, gate, true);
+    ASSERT_TRUE(pair_scratch.has_value());
+    Poison(gate);
+    Poison(glu);
+    launch().ResetScratchPeak();
+    Launched(kg::MulMatIdQPairGlu(launch(), up, gate, glu), "activation write-back");
+    EXPECT_LE(launch().scratch_peak().value(), *pair_scratch);
+    ExpectSameBytes(Download(gate), want_gate, "gate beside the write-back");
+    ExpectSameBytes(Download(glu), want_glu, "activation write-back");
+
+    if (occ2) {
+      Poison(glu);
+      Poison(down);
+      launch().ResetScratchPeak();
+      Launched(kg::MulMatIdQPairGluQ8(launch(), up, gate, glu), "quantizing write-back");
+      EXPECT_LE(launch().scratch_peak().value(), *pair_scratch);
+      const auto down_scratch = kg::PlanMulMatIdQCompact(launch(), down);
+      ASSERT_TRUE(down_scratch.has_value());
+      launch().ResetScratchPeak();
+      Launched(kg::MulMatIdQCompactPrequant(launch(), down), "prequantized down");
+      EXPECT_LE(launch().scratch_peak().value(), *down_scratch);
+      ExpectSameBytes(Download(down), want_down, "down over the quantizing write-back");
+    } else {
+      EXPECT_FALSE(kg::MulMatIdQPairGluQ8(launch(), up, gate, glu).has_value());
+    }
+
+    // Selection: the plain compact plan; with the stage mechanisms, the
+    // write-back with D2R taking the Q2_K down product; without D2R, the
+    // quantizing write-back and the prequantized down.
+    const std::array<ggml_tensor*, 4> nodes = {gate, up, glu, down};
+    auto choices = kg::DeviceChoicesOf(launch());
+    choices.pair_experts = true;
+    choices.compact_experts = true;
+    const auto names = [&](const kg::DeviceChoices& device) {
+      auto plan = kg::PlanGraph(nodes, false, device);
+      EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
+      std::vector<std::string_view> out;
+      if (plan) {
+        for (const auto& step : plan->steps) {
+          out.push_back(step.implementation);
+        }
+        EXPECT_TRUE(kg::PlanScratch(launch(), *plan).has_value());
+      }
+      return out;
+    };
+    using Names = std::vector<std::string_view>;
+    EXPECT_EQ(names(choices),
+              (Names{kg::kMulMatIdQPairCompact, kg::kSwiGluClampName, kg::kMulMatIdQCompact}));
+    kg::SetDsv4PrefillStages(choices, true);
+    EXPECT_EQ(names(choices), (Names{kg::kMulMatIdQPairGlu, kg::kMulMatIdQ2D2r}));
+    choices.d2r_experts = false;
+    EXPECT_EQ(names(choices), occ2 ? (Names{kg::kMulMatIdQPairGluQ8, kg::kMulMatIdQCompactPrequant})
+                                   : (Names{kg::kMulMatIdQPairGlu, kg::kMulMatIdQCompact}));
+    choices.compact_experts = false;
+    EXPECT_EQ(names(choices), (Names{kg::kMulMatIdQPair, kg::kSwiGluClampName, kg::kMulMatIdQ}));
+
+    // An activation over the pair's operands is refused before any launch.
+    auto alias = *glu;
+    alias.data = x->data;
+    EXPECT_FALSE(kg::CheckMulMatIdQPairGlu(up, gate, &alias).has_value());
+    // So is a chunk below the compact expert list's floor.
+    auto* fewer =
+        ggml_view_3d(c(), x, kInner, 1, kg::kDsv4StagePairMinRows - 1, x->nb[1], x->nb[2], 0);
+    auto* fewer_routes =
+        ggml_view_2d(c(), routes, kUsed, kg::kDsv4StagePairMinRows - 1, routes->nb[1], 0);
+    auto* small_gate = Place(ggml_mul_mat_id(c(), gate_w, fewer, fewer_routes));
+    auto* small_up = Place(ggml_mul_mat_id(c(), up_w, fewer, fewer_routes));
+    auto* small_glu = Place(ggml_swiglu_clamp(c(), small_gate, small_up, limit));
+    EXPECT_FALSE(kg::MulMatIdQPairGluFits(small_up, small_gate, small_glu));
+  }
 }
 
 TEST_F(Dsv4StagesTest, TheRegistryDeclaresAndBindsTheStageImplementations) {

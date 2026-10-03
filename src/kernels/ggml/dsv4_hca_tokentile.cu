@@ -96,11 +96,15 @@ void Recorded(int result) {
 
 bool Dsv4HcaTokentileFits(const LaunchContext& launch, const ggml_tensor* node) {
   if (!CheckDsv4HcaTokentile(node) || !Supported(launch)) return false;
+  // Any prefill chunk of the ring's (raw cells: its most rows and 256; the
+  // mirror copies the chunk's rows and the 127 before them, wherever they
+  // sit in the ring), at the compressed widths measured: 256 cells, and
+  // 1,024 for chunks of up to 2,048 rows.
   const auto tokens = node->src[0]->ne[1];
   const auto raw = JitllmOpInt(node->src[3], 0);
   const auto compressed = node->src[1]->ne[1] - raw;
-  return raw == tokens + 256 && ((tokens == 2048 && (compressed == 256 || compressed == 1024)) ||
-                                 (tokens == 4096 && compressed == 256));
+  return tokens >= kDsv4HcaMinRows && tokens <= kDsv4HcaMaxRows && raw >= tokens + 256 &&
+         (compressed == 256 || (compressed == 1024 && tokens <= 2048));
 }
 
 std::expected<std::uint64_t, KernelFailure> PlanDsv4HcaTokentile(const LaunchContext& launch,

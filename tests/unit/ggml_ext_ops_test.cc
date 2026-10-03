@@ -638,6 +638,65 @@ TEST_F(GgmlExtOpsTest, RawQ2D2rPreservesItsOwnCapturedProductAndPlansAllScratch)
   EXPECT_FALSE(kg::PlanGraph(nodes, false, choices).has_value());  // original verify bound wins
 }
 
+// A prompt's last, partial prefill chunk takes D2R as a full chunk does: a
+// token's rows do not depend on the other tokens of its chunk (the first 77
+// tokens of 129 alone equal theirs among all 129 byte for byte), and the
+// automatic selection admits DeepSeek V4's down experts over any chunk of
+// 64 to 4,096 tokens.
+TEST_F(GgmlExtOpsTest, RawQ2D2rRowsDoNotDependOnTheChunkAndPartialChunksSelectIt) {
+  constexpr std::int64_t k = 512;
+  constexpr std::int64_t m = 130;
+  constexpr std::int64_t experts = 16;
+  constexpr std::int64_t used = 6;
+  constexpr std::int64_t tokens = 129;
+  constexpr std::int64_t part = 77;
+  auto weights = Quantize(GGML_TYPE_Q2_K, k, m * experts, 81);
+  auto* w = Place(ggml_new_tensor_3d(c(), GGML_TYPE_Q2_K, k, m, experts), weights.bytes);
+  auto* x = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, k, used, tokens),
+                  Normal(82, static_cast<std::size_t>(k * used * tokens)));
+  std::vector<std::int32_t> ids(static_cast<std::size_t>(used * tokens));
+  for (std::int64_t t = 0; t < tokens; ++t) {
+    for (std::int64_t slot = 0; slot < used; ++slot) {
+      ids[static_cast<std::size_t>((t * used) + slot)] =
+          static_cast<std::int32_t>((slot + (3 * t)) % experts);
+    }
+  }
+  auto* routes = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, used, tokens), ids);
+  auto* whole = Place(ggml_mul_mat_id(c(), w, x, routes));
+  auto* x_part = ggml_view_3d(c(), x, k, used, part, x->nb[1], x->nb[2], 0);
+  auto* routes_part = ggml_view_2d(c(), routes, used, part, routes->nb[1], 0);
+  auto* partial = Place(ggml_mul_mat_id(c(), w, x_part, routes_part));
+  Launched(kg::MulMatIdQ2D2r(launch(), whole), "raw Q2 whole chunk");
+  Launched(kg::MulMatIdQ2D2r(launch(), partial), "raw Q2 partial chunk");
+  const auto all = Download(whole);
+  const auto some = Download(partial);
+  ASSERT_EQ(some.size(), static_cast<std::size_t>(m * used * part));
+  EXPECT_EQ(std::memcmp(some.data(), all.data(), some.size() * sizeof(float)), 0);
+
+  // The selection predicate over the model's shapes (bound, never read).
+  const auto model = [&](std::int64_t chunk) {
+    auto* mw = ggml_new_tensor_3d(c(), GGML_TYPE_Q2_K, 2048, 4096, 256);
+    auto* mx = ggml_new_tensor_3d(c(), GGML_TYPE_F32, 2048, 6, chunk);
+    auto* mi = ggml_new_tensor_2d(c(), GGML_TYPE_I32, 6, chunk);
+    auto* node = ggml_mul_mat_id(c(), mw, mx, mi);
+    std::uint64_t at = std::uint64_t{1} << 44U;
+    for (ggml_tensor* t : {mw, mx, mi, node}) {
+      TensorArena::Bind(t, at);
+      at += (ggml_nbytes(t) + 4095) / 4096 * 4096;
+    }
+    return kg::MulMatIdQ2D2rFits(launch(), node);
+  };
+  if (ComputeCapability() == 1210) {
+    for (const std::int64_t chunk :
+         {kg::kDsv4StageMinRows, std::int64_t{2947}, kg::kDsv4StageMaxRows}) {
+      EXPECT_TRUE(model(chunk)) << chunk;
+    }
+  }
+  for (const std::int64_t chunk : {kg::kDsv4StageMinRows - 1, kg::kDsv4StageMaxRows + 1}) {
+    EXPECT_FALSE(model(chunk)) << chunk;
+  }
+}
+
 TEST_F(GgmlExtOpsTest, CompactExpertTilesPreservePartialRowsAndFallbackShapes) {
   constexpr std::int64_t kInner = 1024;
   constexpr std::int64_t kUsed = 2;

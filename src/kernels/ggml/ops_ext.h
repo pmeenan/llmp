@@ -80,8 +80,11 @@ std::expected<void, KernelFailure> MulMatIdQCompact(LaunchContext& launch, ggml_
 // Experimental raw Q2_K product under the same maps and D2S6 Q8 activation
 // preparation. ds4's direct-to-register arithmetic differs from GGML's
 // half-rounded coefficient arithmetic. No permanent weight replica.
-// Automatic selection is restricted to the measured GB10 prefill shape;
-// direct controls may call the bounded generic operation.
+// Automatic selection is restricted to the measured GB10 prefill weights
+// (DeepSeek V4's Q2_K down experts) over prefill chunks of
+// kDsv4StageMinRows to kDsv4StageMaxRows tokens (validate_ext.h), a
+// prompt's last, partial chunk included; direct controls may call the
+// bounded generic operation.
 bool MulMatIdQ2D2rFits(const LaunchContext& launch, const ggml_tensor* node);
 std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQ2D2r(const LaunchContext& launch,
                                                               const ggml_tensor* node);
@@ -97,13 +100,15 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContex
                                                               bool compact_experts = false);
 std::expected<void, KernelFailure> MulMatIdQPair(LaunchContext& launch, ggml_tensor* first,
                                                  ggml_tensor* second, bool compact_experts = false);
-// Experimental (docs/experiments/ds4-prefill-stages): the GB10 IQ2 occupancy-two
-// pair with swiglu_clamp(gate, up) written by the up product (gate first),
-// the up output itself unwritten. Scratch as PlanMulMatIdQPair's compact pair.
+// Experimental (docs/experiments/ds4-prefill-stages): the GB10 IQ2 compact
+// pair (validate_ext.h IsMulMatIdQPairGluPair: IQ2_XXS's occupancy-two J64
+// launch, IQ2_XS's ordinary J128 one) with swiglu_clamp(gate, up) written
+// by the up product (gate first), the up output itself unwritten. Scratch
+// as PlanMulMatIdQPair's compact pair.
 std::expected<void, KernelFailure> MulMatIdQPairGlu(LaunchContext& launch, ggml_tensor* up,
                                                     ggml_tensor* gate, ggml_tensor* glu);
 // Whether this device runs that pair over these operands (GB10 alone has
-// the occupancy-two kernel): the planner's device guard (graph_plan.h
+// these kernels): the planner's device guard (graph_plan.h
 // DeviceChoices::pair_glu_fits), so that other devices keep the plain pair.
 bool MulMatIdQPairGluSupported(const LaunchContext& launch, const ggml_tensor* up,
                                const ggml_tensor* gate);
@@ -113,8 +118,9 @@ std::expected<void, KernelFailure> MulMatIdQPairGluQ8(LaunchContext& launch, ggm
                                                       ggml_tensor* gate, ggml_tensor* glu);
 std::expected<void, KernelFailure> MulMatIdQCompactPrequant(LaunchContext& launch,
                                                             ggml_tensor* down);
-// Experimental: two dense Q8_0 products of one activation sharing its Q8_1
-// quantization (validate_ext.h MulMatQPairDenseFits).
+// Experimental: two dense products of one quantized type and one
+// activation, sharing its Q8_1 quantization (validate_ext.h
+// MulMatQPairDenseFits).
 std::expected<std::uint64_t, KernelFailure> PlanMulMatQPairDense(const LaunchContext& launch,
                                                                  const ggml_tensor* a,
                                                                  const ggml_tensor* b);
@@ -286,9 +292,12 @@ std::expected<void, KernelFailure> FlashAttnMma(LaunchContext& launch, ggml_tens
 
 // Literal ds4 four-token/G8 HCA core, with native F16 ring bit-copy and
 // original dense causal records in one planned scratch scope. Selection
-// is default-off and restricted to GB10 HCA graphs with rows + 256 raw:
-// 2,048 rows with 256/1,024 compressed cells, or 4,096 rows with 256.
-// Direct controls admit tails.
+// is default-off and restricted to GB10 HCA graphs of prefill chunks of
+// kDsv4HcaMinRows to kDsv4HcaMaxRows rows (tails included) whose ring holds
+// at least the rows + 256 raw cells: 256 compressed cells, or 1,024 for
+// chunks of up to 2,048 rows.
+inline constexpr std::int64_t kDsv4HcaMinRows = kDsv4StageMinRows;
+inline constexpr std::int64_t kDsv4HcaMaxRows = kDsv4StageMaxRows;
 // Plan sets the core's 88,576-byte shared-memory opt-in before capture;
 // Run never changes CUDA function attributes or allocates hidden storage.
 bool Dsv4HcaTokentileFits(const LaunchContext& launch, const ggml_tensor* node);

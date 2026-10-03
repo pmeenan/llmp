@@ -5,6 +5,7 @@ Leave generic MMQ configuration rows unchanged. Add a distinct default-false
 kernel template specialization and instantiate its guarded GB10 bridge only
 in the existing O3 IQ2 defining unit. Native paired dispatch funds the J64
 worklist while preserving ordinary map/scatter preparation and J128 guards.
+The bridge takes DeepSeek V4's gate/up experts over 256 to 4,096 tokens.
 
 diff --git a/ggml/src/ggml-cuda/mmq.cuh b/ggml/src/ggml-cuda/mmq.cuh
 index 4db5a39..e1013d7 100644
@@ -103,9 +104,9 @@ index 233d934..f4cc3a2 100644
 +cudaError_t ggml_cuda_mul_mat_iq2_occ2_pair_product(
 +        ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
 +    if (ggml_cuda_info().devices[ctx.device].cc != 1210 || args.type_x != GGML_TYPE_IQ2_XXS ||
-+            args.ncols_x != 4096 || args.nrows_x != 2048 || args.ncols_dst != 24576 ||
-+            args.ncols_y != 24576 || args.nrows_dst != 2048 || args.ncols_max != 4096 ||
-+            args.ncols_opt != 4096 || args.nchannels_x != 256 || args.nchannels_y != 256 ||
++            args.ncols_x != 4096 || args.nrows_x != 2048 || args.ncols_max < 256 ||
++            args.ncols_max > 4096 || args.ncols_dst != 6 * args.ncols_max || args.ncols_y != args.ncols_dst ||
++            args.nrows_dst != 2048 || args.ncols_opt != args.ncols_max || args.nchannels_x != 256 || args.nchannels_y != 256 ||
 +            args.nsamples_x != 1 || args.nsamples_y != 1 || !mmq_use_compact_experts(args, 64)) {
 +        return cudaErrorInvalidValue;
 +    }

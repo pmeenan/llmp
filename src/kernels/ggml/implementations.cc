@@ -113,14 +113,15 @@ constexpr std::array<Kernel::Entry, 111> kKernels = {{
     {.name = kDsv4HcNormF16Name,
      .operation = execution::Operation::kRmsNorm,
      .variant = "HcNormF16Kernel: native 1024-thread flat RMS reduction and F32 scale, then RN "
-                "F16 rows for the HC mix product (experimental)",
+                "F16 rows (or the F32 rows) for the HC mix product (experimental)",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4HcNormF16(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4HcNormF16(launch, n[0]); }},
     {.name = kDsv4HcPostExpertsNormF16Name,
      .operation = execution::Operation::kHcPost,
      .variant = "HcPostNormF16Kernel<true>: the ordered six-slot expert reduction and shared add "
-                "formed in the HC post, then F32 streams and F16 mix-input rows (experimental)",
+                "formed in the HC post, then F32 streams and F16 (or F32) mix-input rows "
+                "(experimental)",
      .arity = 4,
      .check = [](ConstNodes n) { return CheckDsv4HcPostExpertsNormF16(n[0], n[1], n[2], n[3]); },
      .run = [](LaunchContext& launch,
@@ -128,7 +129,7 @@ constexpr std::array<Kernel::Entry, 111> kKernels = {{
     {.name = kDsv4HcPostNormF16Name,
      .operation = execution::Operation::kHcPost,
      .variant = "HcPostNormF16Kernel: native HC post FMAs into F32 streams, then the native "
-                "flat RMS and RN F16 mix-input rows (experimental)",
+                "flat RMS and RN F16 (or F32) mix-input rows (experimental)",
      .arity = 2,
      .check = [](ConstNodes n) { return CheckDsv4HcPostNormF16(n[0], n[1]); },
      .run = [](LaunchContext& launch,

@@ -102,6 +102,13 @@ void BindDsv4Weights(const Dsv4Model& m, kernels::ggml::Dsv4Graph& g);
 // layout (a wave slot's).
 void BindDsv4State(const Dsv4Model& m, std::uint64_t base, kernels::ggml::Dsv4Graph& g);
 
+// Whether a chunk of this shape takes the combined output-A/HCA prefill's
+// HCA (with Dsv4Model::prefill_outa_hca, the fast plan): a prefill chunk of
+// kDsv4HcaMinRows to kDsv4HcaMaxRows rows (a prompt's last, partial chunk
+// included) while the HCA layers' compressed cells are 256 wide. Its plan
+// then holds the chunk's first position (PlanDsv4Chunk `first_position`).
+bool Dsv4PrefillHca(const Dsv4Model& m, const kernels::ggml::Dsv4ChunkShape& shape);
+
 // Builds, binds, plans and places one chunk shape's graph: every computed
 // tensor first at its own address, then placed in `activations` (0 to
 // measure only), planned again, which must give the same plan. `keep`

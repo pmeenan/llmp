@@ -60,9 +60,73 @@ const ggml_cuda_device_info::cuda_device_info& Device(const LaunchContext& launc
   return ggml_cuda_info().devices[launch.device()];
 }
 
+// mmq.cu's dispatch of one MMQ launch by weight type, over the types
+// CheckMulMatQ admits (the build's instance units).
+void MmqCase(ggml_type type, ggml_backend_cuda_context& context, const mmq_args& args,
+             cudaStream_t stream) {
+  switch (type) {
+    case GGML_TYPE_Q8_0:
+      mul_mat_q_case<GGML_TYPE_Q8_0>(context, args, stream);
+      break;
+    case GGML_TYPE_Q2_K:
+      mul_mat_q_case<GGML_TYPE_Q2_K>(context, args, stream);
+      break;
+    case GGML_TYPE_Q3_K:
+      mul_mat_q_case<GGML_TYPE_Q3_K>(context, args, stream);
+      break;
+    case GGML_TYPE_Q4_K:
+      mul_mat_q_case<GGML_TYPE_Q4_K>(context, args, stream);
+      break;
+    case GGML_TYPE_Q5_K:
+      mul_mat_q_case<GGML_TYPE_Q5_K>(context, args, stream);
+      break;
+    case GGML_TYPE_Q6_K:
+      mul_mat_q_case<GGML_TYPE_Q6_K>(context, args, stream);
+      break;
+    case GGML_TYPE_Q4_0:
+      mul_mat_q_case<GGML_TYPE_Q4_0>(context, args, stream);
+      break;
+    case GGML_TYPE_Q2_0:
+      mul_mat_q_case<GGML_TYPE_Q2_0>(context, args, stream);
+      break;
+    case GGML_TYPE_IQ1_S:
+      mul_mat_q_case<GGML_TYPE_IQ1_S>(context, args, stream);
+      break;
+    case GGML_TYPE_IQ2_XXS:
+      mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, stream);
+      break;
+    case GGML_TYPE_IQ2_XS:
+      mul_mat_q_case<GGML_TYPE_IQ2_XS>(context, args, stream);
+      break;
+    case GGML_TYPE_IQ2_S:
+      mul_mat_q_case<GGML_TYPE_IQ2_S>(context, args, stream);
+      break;
+    case GGML_TYPE_IQ3_XXS:
+      mul_mat_q_case<GGML_TYPE_IQ3_XXS>(context, args, stream);
+      break;
+    case GGML_TYPE_IQ3_S:
+      mul_mat_q_case<GGML_TYPE_IQ3_S>(context, args, stream);
+      break;
+    case GGML_TYPE_IQ4_NL:
+      mul_mat_q_case<GGML_TYPE_IQ4_NL>(context, args, stream);
+      break;
+    case GGML_TYPE_IQ4_XS:
+      mul_mat_q_case<GGML_TYPE_IQ4_XS>(context, args, stream);
+      break;
+    default:
+      GGML_ABORT("an MMQ type passed validation without its case");
+  }
+}
+
 bool Iq2Occ2Pair(const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
                  bool compact_experts) {
   return compact_experts && Device(launch).cc == 1210 && IsMulMatIdQPairIq2Occ2(first, second);
+}
+
+// The pairs whose up product writes the activation (mul_mat_q_glu.cuh).
+bool GluPair(const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
+             bool compact_experts) {
+  return compact_experts && Device(launch).cc == 1210 && IsMulMatIdQPairGluPair(first, second);
 }
 
 constexpr std::uint64_t kBlock = 256;  // the pool's block boundary (launch.h)
@@ -448,10 +512,15 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContex
     return ordinary;
   }
   // The producer's original J128 Q8/ID guards stay intact. Only the
-  // sequential compact worklist grows from 448 to 640 int2 entries.
-  const auto before = mmq_compact_expert_capacity(GGML_TYPE_IQ2_XXS, 2048, 4096, 24576, 256, 128);
-  const auto after = mmq_compact_expert_capacity(GGML_TYPE_IQ2_XXS, 2048, 4096, 24576, 256, 64);
-  return ordinary + (static_cast<std::uint64_t>(after - before) * sizeof(int2));
+  // sequential compact worklist grows (at 4,096 tokens from 448 to 640 int2
+  // entries), by what J64 tiles add over J128 for this chunk's tokens.
+  const auto tokens = first->src[1]->ne[2];
+  const auto rows = tokens * first->src[2]->ne[0];
+  const ggml_type type = first->src[0]->type;
+  const auto before = mmq_compact_expert_capacity(type, 2048, tokens, rows, 256, 128);
+  const auto after = mmq_compact_expert_capacity(type, 2048, tokens, rows, 256, 64);
+  return ordinary +
+         (static_cast<std::uint64_t>(std::max<std::int64_t>(after - before, 0)) * sizeof(int2));
 }
 
 std::expected<ExpertMmqLayout, KernelFailure> DescribeMulMatIdQPairPrepared(
@@ -586,8 +655,8 @@ std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml
     return std::unexpected(scratch.error());
   }
   const bool iq2_occ2 = Iq2Occ2Pair(launch, first, second, compact_experts);
-  if (glu != nullptr && !iq2_occ2) {
-    return Rejected("the pair activation write-back takes the GB10 IQ2 occupancy-two pair only");
+  if (glu != nullptr && !GluPair(launch, first, second, compact_experts)) {
+    return Rejected("the pair activation write-back takes the GB10 IQ2_XXS and IQ2_XS pairs only");
   }
   return launch.Run(base::Bytes(*scratch), [first, second, compact_experts, capture, iq2_occ2, glu,
                                             glu_q8,
@@ -728,7 +797,13 @@ std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml
           }
           break;
         case GGML_TYPE_IQ2_XS:
-          mul_mat_q_case<GGML_TYPE_IQ2_XS>(context, args, stream);
+          if (activation) {
+            CUDA_CHECK(LaunchIq2PairGluUp(context, args, static_cast<const float*>(second->data),
+                                          MulMatIdQPairGluLimit(glu), glu_q8 ? glu->data : nullptr,
+                                          stream));
+          } else {
+            mul_mat_q_case<GGML_TYPE_IQ2_XS>(context, args, stream);
+          }
           break;
         case GGML_TYPE_IQ3_XXS:
           mul_mat_q_case<GGML_TYPE_IQ3_XXS>(context, args, stream);
@@ -782,7 +857,7 @@ std::expected<void, KernelFailure> MulMatIdQPairGlu(LaunchContext& launch, ggml_
 
 bool MulMatIdQPairGluSupported(const LaunchContext& launch, const ggml_tensor* up,
                                const ggml_tensor* gate) {
-  return Iq2Occ2Pair(launch, up, gate, /*compact_experts=*/true);
+  return GluPair(launch, up, gate, /*compact_experts=*/true);
 }
 
 std::expected<void, KernelFailure> MulMatIdQCompact(LaunchContext& launch, ggml_tensor* node) {
@@ -815,14 +890,16 @@ std::expected<void, KernelFailure> MulMatQPairDense(LaunchContext& launch, ggml_
   }
   return launch.Run(base::Bytes(*scratch), [a, b](ggml_backend_cuda_context& context) {
     // ggml_cuda_mul_mat_q's dense branch (mmq.cu), quantizing the shared
-    // activation once for both Q8_0 products.
+    // activation once for both products of the one type (whose rows are
+    // whole 128-row tiles: no fallback configuration).
     const ggml_tensor* src1 = a->src[1];
+    const ggml_type type = a->src[0]->type;
     cudaStream_t stream = context.stream();
     const int cc = ggml_cuda_info().devices[context.device].cc;
     const std::int64_t ne10 = src1->ne[0];
     const std::int64_t ne11 = src1->ne[1];
     const std::int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
-    const int j_max = ggml_cuda_mmq_get_J_max(GGML_TYPE_Q8_0, false, cc, ne11);
+    const int j_max = ggml_cuda_mmq_get_J_max(type, false, cc, ne11);
     const auto nbytes =
         (static_cast<std::size_t>(ne11 * ne10_padded) * sizeof(block_q8_1_mmq) / QK8_1_MMQ) +
         (static_cast<std::size_t>(j_max) * sizeof(block_q8_1_mmq));
@@ -830,8 +907,8 @@ std::expected<void, KernelFailure> MulMatQPairDense(LaunchContext& launch, ggml_
     const auto s11 = static_cast<std::int64_t>(src1->nb[1] / sizeof(float));
     const auto s12 = static_cast<std::int64_t>(src1->nb[2] / sizeof(float));
     const auto s13 = static_cast<std::int64_t>(src1->nb[3] / sizeof(float));
-    quantize_mmq_q8_1_cuda(static_cast<const float*>(src1->data), nullptr, q8.get(), GGML_TYPE_Q8_0,
-                           ne10, s11, s12, s13, ne10_padded, ne11, 1, 1, stream);
+    quantize_mmq_q8_1_cuda(static_cast<const float*>(src1->data), nullptr, q8.get(), type, ne10,
+                           s11, s12, s13, ne10_padded, ne11, 1, 1, stream);
     CUDA_CHECK(cudaGetLastError());
     const std::int64_t y12 = ne11 * ne10_padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
                              (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
@@ -863,7 +940,7 @@ std::expected<void, KernelFailure> MulMatQPairDense(LaunchContext& launch, ggml_
                              static_cast<std::int64_t>(node->nb[3] / sizeof(float)),
                              node->ne[1],
                              node->ne[1]};
-      mul_mat_q_case<GGML_TYPE_Q8_0>(context, args, stream);
+      MmqCase(type, context, args, stream);
     }
   });
 }

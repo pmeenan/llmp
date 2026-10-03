@@ -5,13 +5,15 @@
 // The locked GGML arithmetic of dsv4-hc.cu's HC post and norm.cu's
 // rms_norm_f32<1024> over the flattened 16384 columns, followed by the F16
 // rounding of convert.cu's F32-to-F16 conversion, which the cuBLAS product
-// otherwise applies to the F32 normalized tensor.
+// otherwise applies to the F32 normalized tensor (or, for F32 mixing
+// weights, rms_norm's F32 output as it is).
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
 #include <cstddef>
 #include <expected>
+#include <type_traits>
 
 #include "base/bytes.h"
 #include "common.cuh"
@@ -26,19 +28,27 @@ constexpr int kThreads = 1024;
 constexpr int kPerThread = 16;  // 16384 columns
 
 // Native rms_norm's reduction (ascending tid + j * 1024 local FMA sums,
-// block_reduce<SUM, 1024>, mean, rsqrt) and F32 scale * x, then RN F16.
-__device__ __forceinline__ void NormalizeToF16(const float (&value)[kPerThread], float sum,
-                                               float epsilon, half* out, int tid) {
+// block_reduce<SUM, 1024>, mean, rsqrt) and F32 scale * x: stored as is
+// (T float, rms_norm's own output), or then RN F16 (T half).
+template <typename T>
+__device__ __forceinline__ void NormalizeTo(const float (&value)[kPerThread], float sum,
+                                            float epsilon, T* out, int tid) {
   extern __shared__ float sums[];
   sum = block_reduce<block_reduce_method::SUM, kThreads>(sum, sums);
   const float scale = rsqrtf(__fadd_rn(__fmul_rn(sum, 1.0f / 16384.0f), epsilon));
 #pragma unroll
   for (int j = 0; j < kPerThread; ++j) {
-    out[tid + (j * kThreads)] = __float2half_rn(__fmul_rn(scale, value[j]));
+    const float y = __fmul_rn(scale, value[j]);
+    if constexpr (std::is_same_v<T, half>) {
+      out[tid + (j * kThreads)] = __float2half_rn(y);
+    } else {
+      out[tid + (j * kThreads)] = y;
+    }
   }
 }
 
-__global__ __launch_bounds__(kThreads) void HcNormF16Kernel(const float* x, half* normalized,
+template <typename T>
+__global__ __launch_bounds__(kThreads) void HcNormF16Kernel(const float* x, T* normalized,
                                                             float epsilon) {
   const int tid = static_cast<int>(threadIdx.x);
   const auto row = static_cast<std::size_t>(blockIdx.x);
@@ -52,18 +62,18 @@ __global__ __launch_bounds__(kThreads) void HcNormF16Kernel(const float* x, half
     value[j] = v;
     sum = __fmaf_rn(v, v, sum);
   }
-  NormalizeToF16(value, sum, epsilon, normalized, tid);
+  NormalizeTo(value, sum, epsilon, normalized, tid);
 }
 
 // With kExperts, x is formed here: the ordered six-slot reduction of
 // dsv4_weighted_reduce.cu (one multiply, five ascending adds) plus the
 // shared expert (the add), as their separate kernels compute it.
-template <bool kExperts>
+template <bool kExperts, typename T>
 __global__ __launch_bounds__(kThreads) void HcPostNormF16Kernel(
     const float* __restrict__ x, const float* __restrict__ down, const float* __restrict__ route,
     const float* __restrict__ shared, const float* __restrict__ residual,
     const float* __restrict__ post, const float* __restrict__ comb, float* __restrict__ expanded,
-    half* __restrict__ normalized, float epsilon) {
+    T* __restrict__ normalized, float epsilon) {
   const int tid = static_cast<int>(threadIdx.x);
   const auto row = static_cast<std::size_t>(blockIdx.x);
   residual += row * 16384;
@@ -126,7 +136,17 @@ __global__ __launch_bounds__(kThreads) void HcPostNormF16Kernel(
     expanded[col] = v;
     sum = __fmaf_rn(v, v, sum);
   }
-  NormalizeToF16(value, sum, epsilon, normalized, tid);
+  NormalizeTo(value, sum, epsilon, normalized, tid);
+}
+
+// The norm's rows as the kernels take them: half for F16, float for F32.
+template <typename F>
+void WithRows(ggml_tensor* norm, F&& launch) {
+  if (norm->type == GGML_TYPE_F32) {
+    launch(static_cast<float*>(norm->data));
+  } else {
+    launch(static_cast<half*>(norm->data));
+  }
 }
 
 }  // namespace
@@ -136,12 +156,13 @@ std::expected<void, KernelFailure> RunDsv4HcNormF16(LaunchContext& launch, ggml_
     return checked;
   }
   const auto* x = static_cast<const float*>(norm->src[0]->data);
-  auto* normalized = static_cast<half*>(norm->data);
   const auto rows = static_cast<unsigned>(norm->ne[1]);
   const float epsilon = JitllmOpEps(norm);
   return launch.Run(base::Bytes(0), [=](auto& context) {
-    HcNormF16Kernel<<<rows, kThreads, 32 * sizeof(float), context.stream()>>>(x, normalized,
-                                                                              epsilon);
+    WithRows(norm, [&](auto* normalized) {
+      HcNormF16Kernel<<<rows, kThreads, 32 * sizeof(float), context.stream()>>>(x, normalized,
+                                                                                epsilon);
+    });
     CUDA_CHECK(cudaGetLastError());
   });
 }
@@ -156,12 +177,13 @@ std::expected<void, KernelFailure> RunDsv4HcPostNormF16(LaunchContext& launch, g
   const auto* weights = static_cast<const float*>(post->src[2]->data);
   const auto* comb = static_cast<const float*>(post->src[3]->data);
   auto* expanded = static_cast<float*>(post->data);
-  auto* normalized = static_cast<half*>(norm->data);
   const auto rows = static_cast<unsigned>(post->ne[2]);
   const float epsilon = JitllmOpEps(norm);
   return launch.Run(base::Bytes(0), [=](auto& context) {
-    HcPostNormF16Kernel<false><<<rows, kThreads, 32 * sizeof(float), context.stream()>>>(
-        x, nullptr, nullptr, nullptr, residual, weights, comb, expanded, normalized, epsilon);
+    WithRows(norm, [&](auto* normalized) {
+      HcPostNormF16Kernel<false><<<rows, kThreads, 32 * sizeof(float), context.stream()>>>(
+          x, nullptr, nullptr, nullptr, residual, weights, comb, expanded, normalized, epsilon);
+    });
     CUDA_CHECK(cudaGetLastError());
   });
 }
@@ -181,12 +203,13 @@ std::expected<void, KernelFailure> RunDsv4HcPostExpertsNormF16(LaunchContext& la
   const auto* weights = static_cast<const float*>(post->src[2]->data);
   const auto* comb = static_cast<const float*>(post->src[3]->data);
   auto* expanded = static_cast<float*>(post->data);
-  auto* normalized = static_cast<half*>(norm->data);
   const auto rows = static_cast<unsigned>(post->ne[2]);
   const float epsilon = JitllmOpEps(norm);
   return launch.Run(base::Bytes(0), [=](auto& context) {
-    HcPostNormF16Kernel<true><<<rows, kThreads, 32 * sizeof(float), context.stream()>>>(
-        nullptr, down, route, shared, residual, weights, comb, expanded, normalized, epsilon);
+    WithRows(norm, [&](auto* normalized) {
+      HcPostNormF16Kernel<true><<<rows, kThreads, 32 * sizeof(float), context.stream()>>>(
+          nullptr, down, route, shared, residual, weights, comb, expanded, normalized, epsilon);
+    });
     CUDA_CHECK(cudaGetLastError());
   });
 }

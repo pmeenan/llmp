@@ -434,15 +434,21 @@ sinks bound (RE-030).
   row unchanged. The specialized IQ2_XXS/J64/nonfallback/compact kernel
   requests two CTAs per SM. Its single bridge is defined in the existing
   O3 IQ2 instance unit; no duplicate defining translation unit is added.
+  (The same specialization for IQ2_XS measured slower than its ordinary
+  J128 compact product on GB10, 29.8 vs 23.6 ms for a 4,096-token pair,
+  so it is not offered.)
 - **Dispatch:** only the native paired-compact path on GB10, with weights
-  `[4096,2048,256,1]`, broadcast input `[4096,1,4096,1]`, six routes per
-  token and 4,096 tokens. Input and both outputs must be packed;
+  `[4096,2048,256,1]`, broadcast input `[4096,1,T,1]`, six routes per
+  token and T of 256 to 4,096 tokens (a full prefill chunk, or a prompt's
+  last, partial one; 256 is the compact expert list's floor). Input and
+  both outputs must be packed;
   IDs keep their original validated token stride (including top-k views).
   Existing weight-stride and disjointness validation remains mandatory.
   The original map/scatter preparation and J128 dummy guards remain;
-  sequential J64 worklists require 640 rather than 448 entries (+1,536
-  bytes). Single products, ordinary pairs, other formats/geometries and
-  other devices retain their existing launches.
+  sequential J64 worklists require 640 rather than 448 entries at 4,096
+  tokens (+1,536 bytes; fewer at fewer tokens). Single products, ordinary
+  pairs, other formats/geometries and other devices retain their existing
+  launches.
 - **Evidence:** one captured real-input J128/J64-occ2/J128 comparison
   improves resident paired-product rate 28.05%, with 0.51% bookend movement
   and all six full gate/up outputs byte-exact. One paid native 8K

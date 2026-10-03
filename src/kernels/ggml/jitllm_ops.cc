@@ -2023,16 +2023,17 @@ ggml_tensor* Dsv4F16Copy(ggml_context* context, ggml_tensor* x) {
   return Custom(context, GGML_TYPE_F16, {x->ne[0], x->ne[1], 1, 1}, {x}, kTagDsv4F16Copy.data());
 }
 
-ggml_tensor* Dsv4HcNormF16(ggml_context* context, ggml_tensor* flat, float eps) {
-  return WithEps(Custom(context, GGML_TYPE_F16, {flat->ne[0], flat->ne[1], 1, 1}, {flat},
-                        kTagDsv4HcNormF16.data()),
-                 eps);
+ggml_tensor* Dsv4HcNormF16(ggml_context* context, ggml_tensor* flat, float eps, ggml_type type) {
+  return WithEps(
+      Custom(context, type, {flat->ne[0], flat->ne[1], 1, 1}, {flat}, kTagDsv4HcNormF16.data()),
+      eps);
 }
 
 ggml_tensor* Dsv4OutA(ggml_context* context, ggml_tensor* weights, ggml_tensor* heads,
                       ggml_tensor* positions, const Dsv4OutAParams& params) {
   static_assert(sizeof(params) == 28 && kEpsOffset + sizeof(params) <= GGML_MAX_OP_PARAMS);
-  ggml_tensor* node = Custom(context, GGML_TYPE_F32, {8192, heads->ne[2], 1, 1},
+  // The core stores whole 16-row tiles: the output holds the rows rounded up.
+  ggml_tensor* node = Custom(context, GGML_TYPE_F32, {8192, Dsv4OutARows(heads->ne[2]), 1, 1},
                              {weights, heads, positions}, kTagDsv4OutA.data());
   std::memcpy(reinterpret_cast<char*>(node->op_params) + kEpsOffset, &params, sizeof(params));
   return node;

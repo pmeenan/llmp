@@ -174,6 +174,17 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- DeepSeek prefill is 3–4% faster on both GGUFs through the runtime
+  (matched 7K-token prompts, one and four at a time). A prompt's last,
+  partial prefill chunk of 64 rows or more now takes the stage mechanisms
+  a full chunk takes (D2R; the IQ2 pair's activation write-back on
+  compact chunks; with the opt-in output-A/HCA prefill, those too: the
+  community GGUF's 7K prompt then prefills 21% faster, in 6.8 s). On the
+  community GGUF partial chunks' logits move with D2R (32K perplexity
+  +0.53%, inside the 3% bound). The 0731 UD-Q2_K_XL GGUF's F32
+  hyper-connection mixes, IQ2_XS gate/up experts and Q5_K/Q6_K shared
+  experts now take the fused HC norm, expert sum, write-back and shared
+  quantization; its replies are unchanged byte for byte.
 - Chat templates' case mapping (`upper`, `lower`, `capitalize`, `title`,
   case-insensitive `dictsort`, `sort` and `unique`, the `lower` and `upper`
   tests) is now Python's in full, as transformers renders it, instead of

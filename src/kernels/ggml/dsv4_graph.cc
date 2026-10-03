@@ -621,11 +621,14 @@ ggml_tensor* Builder::HcPre(ggml_tensor* x, ggml_tensor* fn, ggml_tensor* scale,
   const std::int64_t hc = p_.hc;
   const std::int64_t nt = x->ne[2];
   ggml_tensor* flat = ggml_reshape_2d(c_, x, p_.hc_width(), nt);
-  // The F16 rows are exactly what the product would convert the F32 norm to.
-  ggml_tensor* flat_norm = o_.fused && o_.hc_f16_rows && nt >= 64 && fn->type == GGML_TYPE_F16 &&
-                                   Dsv4HcNormF16Fits(flat, p_.rms_eps)
-                               ? Dsv4HcNormF16(c_, flat, p_.rms_eps)
-                               : ggml_rms_norm(c_, flat, p_.rms_eps);
+  // The F16 rows are exactly what the product would convert the F32 norm
+  // to; for F32 mixing weights, F32 rows are the norm itself. Either way
+  // the post before them writes them (dsv4_hc_norm.h).
+  const bool rows = o_.fused && o_.hc_f16_rows && nt >= 64 &&
+                    (fn->type == GGML_TYPE_F16 || fn->type == GGML_TYPE_F32) &&
+                    Dsv4HcNormF16Fits(flat, p_.rms_eps);
+  ggml_tensor* flat_norm =
+      rows ? Dsv4HcNormF16(c_, flat, p_.rms_eps, fn->type) : ggml_rms_norm(c_, flat, p_.rms_eps);
   ggml_tensor* mixes = FloatMm(fn, flat_norm);
   ggml_tensor* scale_pre = ggml_view_1d(c_, scale, 1, ggml_row_size(scale->type, 0));
   ggml_tensor* scale_post = ggml_view_1d(c_, scale, 1, ggml_row_size(scale->type, 1));
@@ -1092,7 +1095,13 @@ ggml_tensor* Builder::Attention(std::uint32_t il_u, ggml_tensor* cur) {
       Dsv4OutAFits(l.out_a, out, g_.positions, outa_params)) {
     // The direct dependency retains unrotated heads through the disjoint
     // canonical output write. No inverse-RoPE tensor or output layout copy.
-    out = Mm(l.out_b, Dsv4OutA(c_, l.out_a, out, g_.positions, outa_params));
+    // Its output's rows are the chunk's rounded up to 16 (Dsv4OutARows):
+    // out_b reads the chunk's.
+    ggml_tensor* low = Dsv4OutA(c_, l.out_a, out, g_.positions, outa_params);
+    if (low->ne[1] != nt) {
+      low = ggml_view_2d(c_, low, low->ne[0], nt, low->nb[1], 0);
+    }
+    out = Mm(l.out_b, low);
     Name(out, "attn_out", il);
     return out;
   }

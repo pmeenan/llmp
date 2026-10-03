@@ -35,7 +35,8 @@ bool MulMatIdQ2D2rFits(const LaunchContext& launch, const ggml_tensor* node) {
   const auto* w = node->src[0];
   const auto* x = node->src[1];
   return ggml_cuda_info().devices[launch.device()].cc == 1210 && w->ne[0] == 2048 &&
-         w->ne[1] == 4096 && w->ne[2] == 256 && x->ne[2] == 4096 && node->src[2]->ne[0] == 6;
+         w->ne[1] == 4096 && w->ne[2] == 256 && x->ne[2] >= kDsv4StageMinRows &&
+         x->ne[2] <= kDsv4StageMaxRows && node->src[2]->ne[0] == 6;
 }
 
 std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQ2D2r(const LaunchContext& launch,

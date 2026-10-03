@@ -26,14 +26,38 @@ TEST(Dsv4PrefillPlan, InternalOptionDefaultsOff) {
 TEST(Dsv4PrefillPlan, RefusesInvalidFirstPositionBeforeGraphAllocation) {
   md::Dsv4StateLayout state;
   state.context = 8192;
+  state.window = md::Dsv4Window::kRing;
   Dsv4Model m;
   m.state = &state;
-  for (const auto& [rows, first] :
-       {std::pair{2048, 0U}, std::pair{4096, 4097U}, std::pair{4096, UINT32_MAX}}) {
-    auto planned = PlanDsv4Chunk(m, {.rows = rows}, {}, {}, 0, 0, {}, first);
+  m.prefill_outa_hca = true;
+  // Any prefill chunk of 64 to 4,096 rows takes HCA (a prompt's last,
+  // partial chunk included); a first position is refused for any other
+  // chunk, without the option, past the compressed width it qualifies at,
+  // or past the context.
+  const kg::Dsv4ChunkShape hca{.rows = 2947, .hca_n_kv = 256};
+  EXPECT_TRUE(Dsv4PrefillHca(m, hca));
+  EXPECT_TRUE(Dsv4PrefillHca(m, {.rows = 64, .hca_n_kv = 256}));
+  EXPECT_TRUE(Dsv4PrefillHca(m, {.rows = 4096, .hca_n_kv = 256}));
+  EXPECT_FALSE(Dsv4PrefillHca(m, {.rows = 63, .hca_n_kv = 256}));
+  EXPECT_FALSE(Dsv4PrefillHca(m, {.rows = 4097, .hca_n_kv = 256}));
+  EXPECT_FALSE(Dsv4PrefillHca(m, {.rows = 2947, .hca_n_kv = 512}));
+  Dsv4Model off = m;
+  off.prefill_outa_hca = false;
+  EXPECT_FALSE(Dsv4PrefillHca(off, hca));
+  Dsv4Model exact = m;
+  exact.exact = true;
+  EXPECT_FALSE(Dsv4PrefillHca(exact, hca));
+  for (const auto& [rows, first] : {std::pair{32, 0U}, std::pair{4097, 0U}, std::pair{4096, 4097U},
+                                    std::pair{2947, 5246U}, std::pair{4096, UINT32_MAX}}) {
+    auto planned = PlanDsv4Chunk(m, {.rows = rows, .hca_n_kv = 256}, {}, {}, 0, 0, {}, first);
     ASSERT_FALSE(planned.has_value());
-    EXPECT_EQ(planned.error(), "the prefill plan's first position leaves its 4K context");
+    EXPECT_EQ(planned.error(),
+              "the prefill plan's first position is not an HCA prefill chunk's in its context");
   }
+  auto unqualified = PlanDsv4Chunk(off, hca, {}, {}, 0, 0, {}, 0U);
+  ASSERT_FALSE(unqualified.has_value());
+  EXPECT_EQ(unqualified.error(),
+            "the prefill plan's first position is not an HCA prefill chunk's in its context");
 }
 
 TEST(Dsv4PrefillPlan, AuthenticatesActualPositionsBeforeEmbeddingOrSubmission) {
@@ -75,8 +99,13 @@ TEST(Dsv4PrefillPlan, AuthenticatesActualPositionsBeforeEmbeddingOrSubmission) {
   input.positions.front() = 4096;
   input.positions.pop_back();
   refused();
+  // A shorter chunk (a prompt's last) at the cached position authenticates.
   input.positions.resize(2048);
   tokens.resize(2048);
+  auto partial = BuildDsv4Inputs(m, graph, input, tokens, {}, host);
+  ASSERT_FALSE(partial.has_value());
+  EXPECT_EQ(partial.error(), type.error().detail);
+  input.positions[5] += 1;
   refused();
 }
 

@@ -120,9 +120,13 @@ std::expected<void, KernelFailure> RunDsv4OutA(LaunchContext& launch, ggml_tenso
     CUDA_CHECK(cudaGetLastError());
     if (internal::CudaErrorPending()) return;
     // The borrowed core queues table zero/preparation and the full canonical
-    // product on this provider-owned stream. No output-B or D4 emission.
+    // product on this provider-owned stream. No output-B or D4 emission. Its
+    // table holds the rows rounded up to 128 (kTable: 4,096, the most), and
+    // it stores whole 16-row tiles, which the output's rows hold
+    // (Dsv4OutARows).
+    const auto rows = static_cast<std::uint32_t>(node->src[1]->ne[2]);
     CUDA_CHECK(ds4_product::OutA(scales, codes, static_cast<const float*>(node->src[1]->data),
-                                 static_cast<float*>(node->data), table, nullptr, 4096, rope,
+                                 static_cast<float*>(node->data), table, nullptr, rows, rope,
                                  context.stream()));
   });
 }
