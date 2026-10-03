@@ -4,6 +4,7 @@
 #include "engine/paged_node.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
@@ -41,7 +42,6 @@ using support::Address;
 using support::Error;
 using support::Joined;
 
-constexpr auto kPatience = std::chrono::minutes(10);
 // A request's driver spins from this long before a step's expected end
 // until this long after it (the device lanes' defaults, DeviceSettings).
 constexpr auto kSpinAhead = std::chrono::microseconds(1000);
@@ -58,13 +58,16 @@ constexpr std::size_t kLaneHandoff = 256;
 constexpr std::size_t kEventsAhead = (2 * ((2 * kLaneHandoff) + 1)) + 16;
 
 // A fence after everything queued on the stream, seen complete and
-// released; false if it could not be, or its outcome is unknown.
-bool Fence(providers::DeviceExecution& execution, providers::StreamId stream) {
+// released; false if it could not be, or its outcome is unknown, or it was
+// not seen complete within `quiet` (before the scheduler exists, the fence
+// is all there is to watch).
+bool Fence(providers::DeviceExecution& execution, providers::StreamId stream,
+           std::chrono::milliseconds quiet) {
   const auto fence = execution.Record(stream);
   if (!fence) {
     return false;
   }
-  const auto give_up = std::chrono::steady_clock::now() + kPatience;
+  const auto give_up = std::chrono::steady_clock::now() + quiet;
   while (std::chrono::steady_clock::now() < give_up) {
     const auto state = execution.Query(*fence);
     if (!state) {
@@ -78,15 +81,215 @@ bool Fence(providers::DeviceExecution& execution, providers::StreamId stream) {
   return false;
 }
 
+// Drives `round` until `done` holds, or until nothing has moved (`progress`
+// unchanged) for `quiet`: an inline teardown's wait.
+template <typename Done, typename Round, typename Progress>
+void DriveUntil(Done done, Round round, Progress progress, std::chrono::milliseconds quiet) {
+  std::uint64_t seen = progress();
+  auto give_up = std::chrono::steady_clock::now() + quiet;
+  while (!done()) {
+    const auto now = std::chrono::steady_clock::now();
+    if (const std::uint64_t moved = progress(); moved != seen) {
+      seen = moved;
+      give_up = now + quiet;
+    } else if (now > give_up) {
+      return;
+    }
+    round();
+  }
+}
+
 }  // namespace
 
+WaitVerdict QuietPatience::Check(const WaitState& wait, std::uint64_t /*progress*/) {
+  const auto now = std::chrono::steady_clock::now();
+  if (!wait.cancelled) {
+    return now - wait.progressed >= quiet_ ? WaitVerdict::kCancel : WaitVerdict::kWait;
+  }
+  return now - std::max(wait.progressed, *wait.cancelled) >= quiet_ ? WaitVerdict::kGiveUp
+                                                                    : WaitVerdict::kWait;
+}
+
+// One wait of the driver's under its patience.
+class PagedNode::Waiter {
+ public:
+  Waiter(PagedNode& node, std::string_view what)
+      : node_(node), patience_(node.patience()), seen_(node.progress()) {
+    const auto now = std::chrono::steady_clock::now();
+    state_ = {.what = what, .began = now, .progressed = now, .cancelled = std::nullopt};
+    next_ = now + kPatienceCheck;
+    patience_.Begin();
+  }
+  Waiter(const Waiter&) = delete;
+  Waiter& operator=(const Waiter&) = delete;
+  Waiter(Waiter&&) = delete;
+  Waiter& operator=(Waiter&&) = delete;
+  // A wait that ends is the driver's progress.
+  ~Waiter() {
+    patience_.End();
+    node_.waits_ended_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  // What to do now: kCancel at most once (the caller cancels its request),
+  // kGiveUp, or kWait.
+  WaitVerdict Poll(std::chrono::steady_clock::time_point now) {
+    const std::uint64_t progress = node_.progress();
+    if (progress != seen_) {
+      seen_ = progress;
+      state_.progressed = now;
+    }
+    if (now < next_) {
+      return WaitVerdict::kWait;
+    }
+    next_ = now + kPatienceCheck;
+    const WaitVerdict verdict = patience_.Check(state_, progress);
+    if (verdict == WaitVerdict::kCancel) {
+      if (state_.cancelled) {
+        return WaitVerdict::kWait;
+      }
+      state_.cancelled = now;
+      std::println(stderr, "{}: nothing moved for {:.0f} s: its request is cancelled (a hang)",
+                   state_.what, std::chrono::duration<double>(now - state_.progressed).count());
+    }
+    return verdict;
+  }
+  bool cancelled() const { return state_.cancelled.has_value(); }
+
+ private:
+  PagedNode& node_;
+  Patience& patience_;
+  std::uint64_t seen_ = 0;
+  WaitState state_;
+  std::chrono::steady_clock::time_point next_;
+};
+
+void PagedNode::GiveUp(std::string_view what) {
+  // Returning would leave the program, or a job it queued, pointing into
+  // frames that are gone.
+  std::println(stderr, "{} did not finish, nor drain once cancelled: aborting", what);
+  std::abort();
+}
+
+std::uint64_t PagedNode::progress() const {
+  return (board_ != nullptr ? board_->publications() : 0) +
+         waits_ended_.load(std::memory_order_relaxed);
+}
+
+std::size_t CountingStorage::in_flight() const {
+  return inner_.in_flight() + held_.size() + cancelled_.size();
+}
+
+std::optional<std::chrono::steady_clock::time_point> CountingStorage::oldest_in_flight() const {
+  const std::int64_t ns = oldest_ns_.load(std::memory_order_acquire);
+  if (ns == 0) {
+    return std::nullopt;
+  }
+  return std::chrono::steady_clock::time_point(
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::nanoseconds(ns)));
+}
+
+void CountingStorage::Started(std::uint64_t token) {
+  const auto now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                       .count();
+  started_.insert_or_assign(token, std::max<std::int64_t>(now, 1));
+  Publish();
+}
+
+void CountingStorage::Ended(std::span<const providers::IoCompletion> done) {
+  for (const providers::IoCompletion& completion : done) {
+    started_.erase(completion.token);
+  }
+  Publish();
+}
+
+void CountingStorage::Publish() {
+  std::int64_t oldest = 0;
+  for (const auto& entry : started_) {
+    oldest = oldest == 0 ? entry.second : std::min(oldest, entry.second);
+  }
+  oldest_ns_.store(oldest, std::memory_order_release);
+}
+
 providers::Submission CountingStorage::Submit(const providers::IoRequest& request) {
+  if (hold_ != nullptr && request.kind == providers::IoKind::kRead &&
+      hold_->load(std::memory_order_acquire)) {
+    if (in_flight() >= inner_.depth()) {
+      return providers::Submission::kNotStarted;  // as a full ring refuses it
+    }
+    // The provider keeps what it needs of the segments: a copy.
+    held_.push_back(request);
+    held_.back().segments = {};
+    held_segments_.emplace_back(request.segments.begin(), request.segments.end());
+    held.fetch_add(1, std::memory_order_relaxed);
+    Started(request.token);
+    return providers::Submission::kAccepted;
+  }
+  PassHeld();
   const auto submitted = inner_.Submit(request);
   if (submitted != providers::Submission::kNotStarted) {
     requests.fetch_add(1, std::memory_order_relaxed);
     pieces.fetch_add(std::max<std::size_t>(request.segments.size(), 1), std::memory_order_relaxed);
+    Started(request.token);
   }
   return submitted;
+}
+
+void CountingStorage::PassHeld() {
+  if (held_.empty() || (hold_ != nullptr && hold_->load(std::memory_order_acquire))) {
+    return;
+  }
+  while (!held_.empty()) {
+    providers::IoRequest request = held_.front();
+    request.segments = held_segments_.front();
+    const auto submitted = inner_.Submit(request);
+    if (submitted == providers::Submission::kNotStarted) {
+      return;  // the ring is full: the rest go on later
+    }
+    // Accepted or unknown: its completion comes from the ring either way.
+    requests.fetch_add(1, std::memory_order_relaxed);
+    pieces.fetch_add(std::max<std::size_t>(request.segments.size(), 1), std::memory_order_relaxed);
+    held_.erase(held_.begin());
+    held_segments_.erase(held_segments_.begin());
+  }
+}
+
+providers::Submission CountingStorage::Cancel(std::uint64_t token) {
+  for (std::size_t i = 0; i < held_.size(); ++i) {
+    if (held_[i].token == token) {
+      if (!cancellable_) {
+        // As a drive's: the cancellation is taken, the read goes on.
+        return providers::Submission::kAccepted;
+      }
+      // Never started: it completes as cancelled at the next harvest.
+      cancelled_.push_back(token);
+      held_.erase(held_.begin() + static_cast<std::ptrdiff_t>(i));
+      held_segments_.erase(held_segments_.begin() + static_cast<std::ptrdiff_t>(i));
+      return providers::Submission::kAccepted;
+    }
+  }
+  return inner_.Cancel(token);
+}
+
+std::size_t CountingStorage::Harvest(std::span<providers::IoCompletion> out, bool wait) {
+  PassHeld();
+  std::size_t produced = 0;
+  while (produced < out.size() && !cancelled_.empty()) {
+    out[produced++] = {.token = cancelled_.front(), .result = -ECANCELED};
+    cancelled_.erase(cancelled_.begin());
+  }
+  if (produced == 0 && wait && !held_.empty() && inner_.in_flight() == 0) {
+    // Only held reads: nothing will come from the ring, so do not wait in
+    // it; the lane comes back for a cancellation or the hold's release.
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return 0;
+  }
+  produced += inner_.Harvest(out.subspan(produced), produced == 0 && wait);
+  if (produced != 0) {
+    Ended(out.first(produced));
+  }
+  return produced;
 }
 
 PagedNode::~PagedNode() {
@@ -97,10 +300,8 @@ PagedNode::~PagedNode() {
   // released: a model's memory may still be in use.
   scheduler_->RequestShutdown();
   if (threads_.empty()) {
-    const auto give_up = std::chrono::steady_clock::now() + kPatience;
-    while (!scheduler_->Stopped() && std::chrono::steady_clock::now() < give_up) {
-      Round();
-    }
+    DriveUntil([this] { return scheduler_->Stopped().has_value(); }, [this] { Round(); },
+               [this] { return progress(); }, settings_.quiet);
   } else {
     threads_.front().join();
   }
@@ -206,7 +407,8 @@ Status PagedNode::Open() {
     return Error(std::format("the storage ring: {}", storage.error().message()));
   }
   storage_ = std::move(*storage);
-  counting_ = std::make_unique<CountingStorage>(*storage_);
+  counting_ = std::make_unique<CountingStorage>(*storage_, settings_.hold_reads,
+                                                settings_.hold_cancellable);
   domain_ = catalog_.AddDomain("gb10");
   // The zone first: a persistent pool, mapped before anything pages.
   return MapResident(zone_, "the landing zone", settings_.slots * settings_.slot_bytes,
@@ -742,30 +944,34 @@ void PagedNode::Round() {
 }
 
 Status PagedNode::Await(Done& done, std::string_view what, std::uint64_t request) {
-  auto give_up = std::chrono::steady_clock::now() + kPatience;
   bool cancelled = false;
-  // `gone`, not `retired`: the program is destroyed after Retired(), and
-  // its destructor is its last touch of `done`.
-  while (!done.gone.load()) {
-    if (std::chrono::steady_clock::now() > give_up) {
-      if (cancelled) {
-        // Returning would leave the program, or a job it queued, pointing
-        // into frames that are gone.
-        std::println(stderr, "{} did not finish, nor drain once cancelled: aborting", what);
-        std::abort();
+  {
+    Waiter wait(*this, what);
+    // `gone`, not `retired`: the program is destroyed after Retired(), and
+    // its destructor is its last touch of `done`.
+    while (!done.gone.load()) {
+      switch (wait.Poll(std::chrono::steady_clock::now())) {
+        case WaitVerdict::kCancel:
+          Cancel(request);
+          break;
+        case WaitVerdict::kGiveUp:
+          GiveUp(what);
+        case WaitVerdict::kWait:
+          break;
       }
-      cancelled = true;
-      give_up = std::chrono::steady_clock::now() + kPatience;
-      Cancel(request);
+      if (threads_.empty()) {
+        Round();  // --lanes inline, or before the lane threads start
+      } else {
+        std::this_thread::sleep_for(std::chrono::microseconds(20));
+      }
     }
-    if (threads_.empty()) {
-      Round();  // --lanes inline, or before the lane threads start
-    } else {
-      std::this_thread::sleep_for(std::chrono::microseconds(20));
-    }
+    cancelled = wait.cancelled();
   }
   if (cancelled) {
-    return Error(std::format("{} did not finish: cancelled, and drained", what));
+    hang_cancelled_ = true;
+    ++hang_cancels_;
+    return Error(std::format(
+        "{} did not finish: nothing moved, so it was cancelled (a hang), and it drained", what));
   }
   if (done.outcome.load() != static_cast<int>(sc::TaskOutcome::kSucceeded)) {
     const int error = done.error.load();
@@ -990,21 +1196,39 @@ Status PagedNode::BeginRequest(std::uint32_t stream, const catalog::Closure& clo
     }
   }
   // Until its lease is held, or its task has ended without one.
-  auto give_up = std::chrono::steady_clock::now() + kPatience;
   bool cancelled = false;
-  while (!open->channel.held.load(std::memory_order_acquire) && !open->done.gone.load()) {
-    if (std::chrono::steady_clock::now() > give_up && !cancelled) {
-      cancelled = true;
-      Cancel(open->request);  // Await below waits for the drain
-    }
-    if (threads_.empty()) {
-      Round();
-    } else {
-      std::this_thread::sleep_for(std::chrono::microseconds(20));
+  {
+    Waiter wait(*this, what);
+    while (!open->channel.held.load(std::memory_order_acquire) && !open->done.gone.load()) {
+      switch (wait.Poll(std::chrono::steady_clock::now())) {
+        case WaitVerdict::kCancel:
+          cancelled = true;
+          Cancel(open->request);  // Await below waits for the drain
+          break;
+        case WaitVerdict::kGiveUp:
+          GiveUp(what);
+        case WaitVerdict::kWait:
+          break;
+      }
+      if (cancelled) {
+        break;
+      }
+      if (threads_.empty()) {
+        Round();
+      } else {
+        std::this_thread::sleep_for(std::chrono::microseconds(20));
+      }
     }
   }
   if (cancelled || !open->channel.held.load(std::memory_order_acquire)) {
+    const std::uint64_t counted = hang_cancels_;
     auto ended = Await(open->done, what, open->request);
+    if (cancelled) {
+      hang_cancelled_ = true;
+      hang_cancels_ = counted + 1;
+      return Error(std::format("{}: no lease: nothing moved, so it was cancelled (a hang){}", what,
+                               ended ? "" : ": " + ended.error()));
+    }
     return Error(std::format("{}: no lease{}", what, ended ? "" : ": " + ended.error()));
   }
   requests_.emplace(stream, std::move(open));
@@ -1045,29 +1269,35 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
   // runtime's lanes do (docs/experiments/runtime-wake/): asleep through
   // most of the step, spinning around its likely ends (the last few steps'
   // walls), woken early by the task's report whenever it sleeps.
-  auto give_up = called + kPatience;
   const auto spin_ahead = settings_.spin_ahead.value_or(kSpinAhead);
   bool cancelled = false;
-  while (open.channel.steps.load(std::memory_order_acquire) == before && !open.done.gone.load()) {
-    const auto now = std::chrono::steady_clock::now();
-    if (now > give_up) {
-      if (cancelled) {
-        std::println(stderr, "{} did not finish, nor drain once cancelled: aborting", what);
-        std::abort();
+  {
+    Waiter wait(*this, what);
+    while (open.channel.steps.load(std::memory_order_acquire) == before && !open.done.gone.load()) {
+      const auto now = std::chrono::steady_clock::now();
+      switch (wait.Poll(now)) {
+        case WaitVerdict::kCancel:
+          cancelled = true;
+          Cancel(open.request);
+          break;
+        case WaitVerdict::kGiveUp:
+          GiveUp(what);
+        case WaitVerdict::kWait:
+          break;
       }
-      cancelled = true;
-      give_up = std::chrono::steady_clock::now() + kPatience;
-      Cancel(open.request);
-    }
-    const auto next = open.walls.Next(now - called, kSpinPast);
-    if (threads_.empty()) {
-      Round();
-    } else if (open.walls.known() && !next) {
-      (void)open.channel.reported.WaitFor(kSpinPast);  // longer than any: sleep, woken by it
-    } else if (next && now < called + *next - spin_ahead) {
-      (void)open.channel.reported.WaitUntil(called + *next - spin_ahead);
-    } else {
-      std::this_thread::yield();  // around a likely end, or none known yet
+      const auto next = open.walls.Next(now - called, kSpinPast);
+      if (threads_.empty()) {
+        Round();
+      } else if (open.walls.known() && !next) {
+        (void)open.channel.reported.WaitFor(kSpinPast);  // longer than any: sleep, woken by it
+      } else if (next && now < called + *next - spin_ahead) {
+        // Woken by the report; at least every kPatienceCheck, to ask the
+        // patience.
+        (void)open.channel.reported.WaitUntil(
+            std::min(called + *next - spin_ahead, now + kPatienceCheck));
+      } else {
+        std::this_thread::yield();  // around a likely end, or none known yet
+      }
     }
   }
   (void)open.channel.reported.Consume();
@@ -1076,9 +1306,22 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
     // The request's task ended (cancelled, or failed): nothing holds the
     // job, which never ran, any more.
     open.channel.job = nullptr;
+    const std::uint64_t counted = hang_cancels_;
     auto ended = Await(open.done, open.what, open.request);
     requests_.erase(stream);  // `open` is gone from here on
+    if (cancelled) {
+      hang_cancelled_ = true;
+      hang_cancels_ = counted + 1;
+      return Error(std::format("{}: nothing moved, so its request was cancelled (a hang){}", what,
+                               ended ? "" : ": " + ended.error()));
+    }
     return Error(std::format("{}: the request ended{}", what, ended ? "" : ": " + ended.error()));
+  }
+  if (cancelled) {
+    // The step completed after all (the cancellation came too late to stop
+    // it); the request it belonged to is cancelled, and its next step ends.
+    hang_cancelled_ = true;
+    ++hang_cancels_;
   }
   Note(stream, called, timing);
   if (open.channel.step_failed.load(std::memory_order_relaxed)) {
@@ -1236,10 +1479,8 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
     }
     scheduler_->RequestShutdown();
     if (threads_.empty()) {
-      const auto give_up = std::chrono::steady_clock::now() + kPatience;
-      while (!scheduler_->Stopped() && std::chrono::steady_clock::now() < give_up) {
-        Round();
-      }
+      DriveUntil([this] { return scheduler_->Stopped().has_value(); }, [this] { Round(); },
+                 [this] { return progress(); }, settings_.quiet);
       stopped_ = scheduler_->Stopped();
     } else {
       threads_.front().join();
@@ -1277,7 +1518,7 @@ Status PagedNode::TearDown(std::span<PagedModel* const> models) {
     // have queued work on its stream (the EXL3 launch context zeroes its
     // lock area): each compute stream is fenced before any memory goes.
     for (std::size_t i = 0; i < settings_.compute_streams && i < streams_.size(); ++i) {
-      if (!Fence(*execution_, streams_[i])) {
+      if (!Fence(*execution_, streams_[i], settings_.quiet)) {
         problems.emplace_back("a compute stream could not be fenced: backing is left as it is");
         return Joined(problems);
       }

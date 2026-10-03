@@ -8,9 +8,10 @@
 //   then a drafter's), each laid out by the model (model/*.h) and reserved at
 //   setup before the weights' places, so a closure (sorted by identity)
 //   restores the state before paging the weights in. Every extent is
-//   kPreserve with a write-back place, a 2 MiB range of one unnamed
-//   direct-I/O spill file (numbered across the regions): evicting it writes
-//   it back through the zone (D-081's reverse path) and loading it restores
+//   kPreserve with a write-back place, a 2 MiB range of one direct-I/O
+//   spill file (numbered across the regions; unnamed, or a named
+//   owner-only file kept across a restart, D-105): evicting it writes it
+//   back through the zone (D-081's reverse path) and loading it restores
 //   it, at the place registered, pinned (D-090).
 // - The quarantine: a job that failed after it may have written the state
 //   leaves it unusable until it is cleared, so the state is never left
@@ -38,6 +39,7 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -48,6 +50,7 @@
 #include "engine/paged_node.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "platform/kept_files.h"
 #include "scheduler/scheduler.h"
 
 namespace jitllm::engine {
@@ -132,9 +135,27 @@ class LiveState {
   // each bounded to its layout's bytes. Host-only; nothing is materialized.
   std::expected<std::uint64_t, std::string> UsedBytesOf(std::span<const Range> ranges) const;
 
-  // After the node's Start: each extent's write-back place in an unnamed
-  // direct-I/O spill file in `directory`, region by region.
+  // Where the spill file lives: an unnamed file in `directory`, gone with
+  // the process; or, with `dir` (an open private directory) and `name`,
+  // that named owner-only file, which survives a restart (D-105), emptied
+  // first unless `keep` (its contents adopted from the process before:
+  // then it must be exactly the regions' size).
+  struct SpillPlace {
+    std::filesystem::path directory;
+    int dir = -1;
+    std::string name;
+    bool keep = false;
+  };
+  // After the node's Start: each extent's write-back place in the spill
+  // file, region by region.
   Status RegisterSpill(PagedNode& node, const std::filesystem::path& directory);
+  Status RegisterSpill(PagedNode& node, const SpillPlace& place);
+  // A named spill file's identity (device, inode, generation); none while
+  // it is unnamed.
+  const std::optional<platform::FileIdentity>& spill_identity() const { return spill_identity_; }
+  // A region's bytes in the spill file (whole 2 MiB extents), and its name.
+  std::uint64_t mapped_bytes(std::size_t region) const;
+  std::string_view region_name(std::size_t region) const;
   // Adds every extent not where it was registered, or not pinned there
   // (D-090), to `check`. On the scheduler's thread.
   void CheckPlaces(const scheduler::Scheduler& scheduler, PlaceCheck& check) const;
@@ -173,6 +194,11 @@ class LiveState {
 
   bool quarantined() const { return quarantined_; }
   void Quarantine() { quarantined_ = true; }
+  // A spilled state that a cohort's fault quarantined in passing (D-102's
+  // hang recovery): usable again when nothing could have touched it, every
+  // used extent nonresident with its contents preserved and none
+  // quarantined in the catalog; true then. Otherwise it stays quarantined.
+  bool LiftIfPreserved(PagedNode& node);
   // Refused while quarantined.
   Status Usable() const;
 
@@ -242,6 +268,7 @@ class LiveState {
   std::string model_;
   std::vector<Region> regions_;
   int spill_fd_ = -1;
+  std::optional<platform::FileIdentity> spill_identity_;
   void* host_copy_ = nullptr;
   PagedNode* host_node_ = nullptr;
   std::uint64_t host_capacity_ = 0;

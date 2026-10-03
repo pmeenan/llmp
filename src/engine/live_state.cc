@@ -268,15 +268,22 @@ std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const
   return true;
 }
 
+std::uint64_t LiveState::mapped_bytes(std::size_t region) const {
+  return region < regions_.size() ? regions_[region].mapped.bytes : 0;
+}
+
+std::string_view LiveState::region_name(std::size_t region) const {
+  return region < regions_.size() ? std::string_view(regions_[region].mapped.name)
+                                  : std::string_view();
+}
+
 LiveState::Status LiveState::RegisterSpill(PagedNode& node,
                                            const std::filesystem::path& directory) {
-  std::filesystem::create_directories(directory);
-  const auto opened = platform::OpenUnnamedDirectFile(directory);
-  if (!opened) {
-    return Error(std::format("the spill file in {}: {}", directory.string(),
-                             std::generic_category().message(opened.error())));
-  }
-  spill_fd_ = *opened;
+  return RegisterSpill(node,
+                       SpillPlace{.directory = directory, .dir = -1, .name = {}, .keep = false});
+}
+
+LiveState::Status LiveState::RegisterSpill(PagedNode& node, const SpillPlace& place) {
   std::uint64_t file_bytes = 0;
   for (const Region& r : regions_) {
     if (r.mapped.bytes >
@@ -284,6 +291,30 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node,
       return Error("the state's spill file exceeds its offset range");
     }
     file_bytes += r.mapped.bytes;
+  }
+  if (place.dir >= 0) {
+    // A named file kept across a restart (D-105): owner-only, never through
+    // a link; its contents kept only when adopted, and then exactly whole.
+    auto opened = platform::OpenPrivateFile(
+        place.dir, place.name.c_str(),
+        {.write = true, .create = true, .truncate = !place.keep, .direct = true});
+    if (!opened) {
+      return Error(std::format("the spill file {}: {}", place.name,
+                               std::generic_category().message(opened.error())));
+    }
+    spill_fd_ = opened->fd;
+    spill_identity_ = opened->identity;
+    if (place.keep && opened->bytes != file_bytes) {
+      return Error(std::format("the kept spill file {} is not the state's size", place.name));
+    }
+  } else {
+    std::filesystem::create_directories(place.directory);
+    const auto opened = platform::OpenUnnamedDirectFile(place.directory);
+    if (!opened) {
+      return Error(std::format("the spill file in {}: {}", place.directory.string(),
+                               std::generic_category().message(opened.error())));
+    }
+    spill_fd_ = *opened;
   }
   if (::ftruncate(spill_fd_, static_cast<off_t>(file_bytes)) != 0) {
     return Error("sizing the sparse conversation spill file");
@@ -676,6 +707,30 @@ LiveState::Status LiveState::Read(PagedNode& node, const catalog::Closure& fence
   return {};
 }
 
+bool LiveState::LiftIfPreserved(PagedNode& node) {
+  if (!quarantined_) {
+    return true;
+  }
+  const std::vector<ExtentId> used = extents();
+  bool preserved = true;
+  auto checked = node.Call(
+      [&]() -> Status {
+        for (const ExtentId id : used) {
+          const auto view = node.catalog().Describe(id);
+          if (!view || view->state != catalog::ExtentState::kNonresident || !view->preserved) {
+            preserved = false;
+          }
+        }
+        return {};
+      },
+      "checking a spilled state untouched");
+  if (!checked || !preserved) {
+    return false;
+  }
+  quarantined_ = false;
+  return true;
+}
+
 LiveState::Status LiveState::Usable() const {
   if (quarantined_) {
     return Error(
@@ -832,7 +887,9 @@ void LiveState::Release(providers::VmmProvider& memory, std::vector<std::string>
     host_capacity_ = 0;
   }
   if (spill_fd_ >= 0) {
-    (void)::close(spill_fd_);  // unnamed: nothing outlives the process
+    // An unnamed file goes with it; a named one stays for the next process
+    // to adopt or empty (D-105).
+    (void)::close(spill_fd_);
     spill_fd_ = -1;
   }
 }

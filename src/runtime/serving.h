@@ -72,9 +72,11 @@
 #include "runtime/calibration.h"
 #include "runtime/commands.h"
 #include "runtime/intake_limits.h"
+#include "runtime/kept_record.h"
 #include "runtime/model_settings.h"
 #include "runtime/prefill.h"
 #include "runtime/pressure_trim.h"
+#include "runtime/state_keeper.h"
 #include "runtime/turn_reuse.h"
 #include "runtime/watchdog.h"
 #include "scheduler/scheduler.h"
@@ -235,6 +237,14 @@ class Served {
   // Forgets every plan and graph: the next chunks plan (and capture) again,
   // as a model first used in the process would.
   virtual void DropPlans() {}
+  // D-102's hang recovery, rung 2 (Server::RecoverModel): after its stream
+  // was fenced and with no request open on it, the model made usable again
+  // in place (an LLM's runner recovered, the conversations whose state it
+  // discarded forgotten). By default its plans and graphs are dropped.
+  virtual Status RecoverInPlace() {
+    DropPlans();
+    return {};
+  }
   virtual double plan_seconds() const { return 0; }
   // What a model reads on demand during its chunks (Qwen3.8's n-gram rows).
   virtual double demand_seconds() const { return 0; }
@@ -507,6 +517,59 @@ class Llm : public Served {
     CheckBranch(branch);
     return RefusedBytesFor(branch);
   }
+  // Conversations kept across a restart (D-105; runtime/kept_record.h,
+  // runtime/state_keeper.h). The server sets them before the node's
+  // Register, when it keeps conversations: each slot's spill file is then
+  // named beneath the model's private directory (and kept as it is for the
+  // slots in `adopt`, whose records validated), and turn checkpoints too.
+  struct Kept {
+    StateKeeper* keeper = nullptr;
+    std::size_t model = 0;  // the keeper's index for this model
+    int directory = -1;     // the model's private directory (the keeper's)
+    kept::Identity identity;
+    std::vector<std::uint32_t> adopt;  // slots whose files hold kept conversations
+  };
+  void set_kept(Kept kept);
+  bool keeps() const { return kept_.keeper != nullptr; }
+  // The identity a kept record of this model must match: its runner's
+  // state layout (after Setup). Empty: this model keeps none.
+  virtual std::string KeptLayout() const { return {}; }
+  // What the runner keeps of a slot, for its record's checks at adoption:
+  // its regions' bytes in the file and their layouts' bytes.
+  virtual std::vector<std::uint64_t> KeptRegions() const { return {}; }
+  virtual std::vector<std::uint64_t> KeptLayouts() const { return {}; }
+  // A slot's record written in the background (StateKeeper::Keep) once its
+  // spill file holds its whole, settled state: after a spill or a swap's
+  // write-back. Nothing otherwise.
+  void KeepBranch(Branch& branch);
+  // Its record removed before its state may change on disk or come back
+  // (a restore, a clear, a swap bringing the model in).
+  void Unkeep(const Branch& branch);
+  // The same by slot index (a runner's RecoverInPlace names slots).
+  void UnkeepSlot(std::uint32_t slot) {
+    if (auto b = this->branch(slot); b) {
+      Unkeep(**b);
+    }
+  }
+  // An idle branch's owed verify restore (or commit) run now, so its state
+  // can be kept whole: only when no request holds the model's stream (the
+  // branch is selected alone for it). False when it could not.
+  bool SettleIdle(Branch& branch);
+  // A kept conversation adopted into `branch` (at start, after the node
+  // runs): its slot spilled with the record's extents, its history,
+  // cursor, decoding and last use, and the turn checkpoints that open.
+  Status Adopt(Branch& branch, kept::Record& record);
+  // At the process's end: the named checkpoint files stay for the next.
+  void PreserveKeptFiles();
+  // D-102's rung 2: the conversations of the slots in `discarded` (a
+  // runner's RecoverInPlace) forgotten: their state is gone.
+  void ForgetDiscarded(std::uint32_t discarded);
+  // An idle branch's turn checkpoints past their retention dropped (their
+  // files deleted), its kept record rewritten without them (Server::
+  // Maintain: retention holds while the service runs, not only at its
+  // next start). How many went.
+  std::size_t ExpireTurnCheckpoints(Branch& branch, Clock::time_point now);
+
   // Spills and restores so far, measured: the reclaim order's cost of idle
   // state (Server::Reclaim).
   struct SpillStats {
@@ -904,6 +967,18 @@ class Llm : public Served {
   virtual Status SpillFor(Branch& /*branch*/) {
     return std::unexpected("this model keeps no idle conversation state apart");
   }
+  // D-105's hooks over a branch's native slot: its live state, whether its
+  // spill file holds its whole settled state, whether its last verify
+  // still owes a restore, its adoption of a kept conversation, and where
+  // its slots' spill files live.
+  virtual const engine::LiveState* KeptLiveFor(const Branch& /*branch*/) const { return nullptr; }
+  virtual bool KeptWholeFor(const Branch& /*branch*/) const { return false; }
+  virtual bool OwedFor(const Branch& /*branch*/) const { return false; }
+  virtual Status AdoptFor(Branch& /*branch*/, std::span<const engine::LiveState::Range> /*used*/) {
+    return std::unexpected("this model keeps no conversation across a restart");
+  }
+  virtual void SetSpillPlaces(
+      const std::function<engine::LiveState::SpillPlace(std::uint32_t)>& /*place*/) {}
   virtual Status RestoreFor(Branch& /*branch*/) { return {}; }
   virtual bool SpilledFor(const Branch& /*branch*/) const { return false; }
   virtual std::uint64_t SpilledBytesFor(const Branch& /*branch*/) const { return 0; }
@@ -1035,6 +1110,8 @@ class Llm : public Served {
 
  protected:
   std::filesystem::path checkpoint_directory_;
+  Kept kept_;
+  std::uint64_t checkpoint_serial_ = 0;  // the next kept checkpoint file's
   Clock::duration retention_ = kTurnCheckpointRetention;
   std::function<void(std::string_view)> log_;
   void Say(std::string_view text) const {
@@ -1090,6 +1167,11 @@ class Server {
   // a lazy pinned copy of initialized LLM state (snapshot()), for
   // a check that saves a state and puts it back. Once.
   Status Start(bool snapshot);
+  // Called by Start after each step that made progress (a model set up, a
+  // kept conversation checked): the service tells its manager to extend
+  // its start timeout (EXTEND_TIMEOUT_USEC), so a slow start is never cut
+  // short while one that stops making progress still is. Before Start.
+  void set_start_progress(std::function<void()> progress) { start_progress_ = std::move(progress); }
   void* snapshot() const { return snapshot_; }
   Status SaveSnapshot(Llm& model);
   Status RestoreSnapshot(Llm& model);
@@ -1185,6 +1267,15 @@ class Server {
   // Evicts a model's resident weights and conversation state (state
   // written back), never the shared workspace or its own pinned memory.
   Status EvictPaged(Served& m);
+  // D-102's hang recovery. FenceModel: the model's stream fenced, any
+  // request still open on it ended first: proof that nothing it queued
+  // still runs (a fence that never completes is the hang ladder's to
+  // escalate). RecoverModel, rung 2, after a hang's cancellation drained:
+  // fenced, recovered in place (Served::RecoverInPlace) and evicted, its
+  // weights and the state it kept written back, so its next activation
+  // loads it whole; an error when nothing less than a restart frees it.
+  Status FenceModel(Served& m);
+  Status RecoverModel(Served& m);
   // Whether the node can go on after a failed activation (its scheduler has
   // not faulted): the failure is then the request's alone (D-102, recovery
   // first); otherwise the service stops for its supervisor's restart.
@@ -1227,10 +1318,36 @@ class Server {
   // Page-in events the scheduler has reported (ResidentTimes): a count
   // that moves while weights or state page in. Any thread.
   std::uint64_t page_in_events() const { return times_.events(); }
+  // The node's progress count (engine::PagedNode::progress): moves with any
+  // lane's completion or any wait of the driver's ending. Any thread, once
+  // started.
+  std::uint64_t progress() const { return node_.progress(); }
+  // The node's waits' patience (D-102's hang recovery; not owned).
+  void SetPatience(engine::Patience* patience) { node_.SetPatience(patience); }
+  // A test hook (engine/paged_node.h CountingStorage): while set, the
+  // node's reads are held, as a stuck drive's would be. Any thread.
+  void HoldReads(bool hold) { hold_reads_.store(hold, std::memory_order_release); }
+
+  // Conversations kept across a restart (D-105): at a graceful stop, the
+  // resident model's idle conversations are settled and spilled (their
+  // records follow), then the keeper writes every record queued, until
+  // `deadline`; `progress` is called at least every second meanwhile (the
+  // service manager's extension of its stop timeout). On the driver, after
+  // the last request.
+  void Persist(Clock::time_point deadline, const std::function<void()>& progress);
+  // The keeper's records queued so far written, until `deadline` (the hang
+  // recovery's last resort: any thread). True if none is left.
+  bool DrainKept(Clock::time_point deadline);
 
  private:
   Status Make(const config::ModelEntry& entry, const ModelSettings& settings, int index);
   void Log(std::string_view text);
+  // D-105 at Start: before the node's Register, the kept conversations'
+  // records read and checked (their files hashed), everything else in the
+  // models' directories removed, and each model told where its files are;
+  // after the node runs, the conversations adopted.
+  Status PrepareKept();
+  void AdoptKept();
 
   const config::NodeConfig& config_;
   const config::RuntimeRoles& roles_;
@@ -1238,6 +1355,20 @@ class Server {
   std::FILE* log_;
   MemorySampler memory_;
   ResidentTimes times_;
+  // Before the node and the models, so it outlives the files they name.
+  std::unique_ptr<StateKeeper> keeper_;
+  std::atomic<bool> hold_reads_{false};  // HoldReads; the node reads it
+  std::function<void()> start_progress_;
+  void StartProgress() const {
+    if (start_progress_) {
+      start_progress_();
+    }
+  }
+  struct PendingAdoption {
+    Llm* model = nullptr;
+    kept::Record record;
+  };
+  std::vector<PendingAdoption> adoptions_;
   engine::PagedNode node_;
   std::vector<std::unique_ptr<Served>> models_;
   Served* resident_ = nullptr;

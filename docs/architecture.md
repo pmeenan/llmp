@@ -784,8 +784,10 @@ landing slot, fenced, and the slot written to the state's place with
 direct I/O. Only once the whole range is written is the backing released,
 and the catalog then marks the contents preserved at the same content
 generation, so a later load restores them (D-086). In M2 the place is a
-process-private unnamed file, and M3's swapped-out conversation state can
-use the same; D-055's spill role and retention arrive in M6.
+process-private unnamed file; M3's service names each request slot's file
+in the spill role and keeps a conversation wholly on disk across a
+restart by a validated record (D-105); D-055's full retention arrives in
+M6.
 
 A request's lease (M3) is an ordinary catalog lease held longer, so no
 eviction of its extents can begin while it is held (invariant 6). A swap
@@ -910,7 +912,9 @@ prefix length) are pinned at M5 exit from measured state sizes and headroom.
 Spill-full or expiry invalidates only eligible reusable entries; active work
 retains a valid recovery path or safely fails under the admission policy.
 Spill is deleted at startup, so no crash durability or indefinite retention
-is promised.
+is promised; M3's service keeps a conversation wholly on disk across a
+restart only through a record it validates whole, within the same
+retention (D-105).
 
 Cache identity covers artifact/model version (every component artifact of a
 composed context, D-068), relevant execution settings
@@ -1421,12 +1425,16 @@ does not stop a pipe handler such as the hosts' apport
 on each host that an abort writes neither a core file nor an apport report. A
 debug core is an explicit, documented owner opt-in. A restarted runtime has a
 new incarnation, so peers reject its predecessor's sessions and grants, and
-startup deletes spill. The runtime handles every core-dumping signal by
-exiting (`_exit(128 + signal)`) rather than dumping, is non-dumpable from
-before `main` for the faults a handler cannot catch, and every thread it
-starts installs its own signal stack. The unit restarts it after a crash
-and after exit 75 (the host not ready yet), but not after exit 78, a
-refusal a restart would only repeat (D-074).
+startup deletes spill (M3's service adopts the conversations it kept
+whole, by validated records, D-105). The runtime handles every
+core-dumping signal by exiting (`_exit(128 + signal)`) rather than
+dumping, is non-dumpable from before `main` for the faults a handler
+cannot catch, and every thread it starts installs its own signal stack.
+The unit restarts it after a crash, after a hang its recovery could not
+free in the process (D-102: cancel the stuck work, reset the model, then
+exit 1; [runtime-serving](runtime-serving.md#hang-recovery)) and after
+exit 75 (the host not ready yet), never giving up, but not after exit
+78, a refusal a restart would only repeat (D-074).
 
 **Startup** runs in this order; a failed step stops it:
 
@@ -1446,7 +1454,9 @@ refusal a restart would only repeat (D-074).
    startup. Without an anchor, a standalone configuration is still refused
    while `state` holds enrollment or epoch records (D-063).
 5. Run the direct-I/O probe on `installed` and `spill`, check the spill
-   marker and delete runtime-named spill files (D-055).
+   marker and delete runtime-named spill files (D-055); M3's service
+   adopts, once its models are set up, the conversations it kept whole and
+   removes everything else it finds there (D-105).
 6. For each unfinished job record from an earlier incarnation, try its
    lock without waiting. A free lock means the job has ended: settle the
    record and rescan the IDs it names. A held lock keeps the models and
@@ -1471,7 +1481,8 @@ operations and registrations drain, spill files whose I/O has retired are
 deleted, and backing is released (D-048; drain-before-restart upgrades in
 features.md). Startup deletion covers crashes. Work whose completion cannot
 be reconciled faults the shutdown instead of reporting its capacity
-reclaimed.
+reclaimed. M3's service instead spills its idle conversations at a
+graceful stop and keeps them, recorded, for the next start (D-105).
 
 ## Front door and management
 

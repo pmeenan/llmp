@@ -39,6 +39,7 @@
 #include <stop_token>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -783,6 +784,311 @@ TEST(CudaPagedNodeTest, AStalledReadKeepsItsLandingPastTeardown) {
   EXPECT_EQ(done[0].result, kBytes);
   EXPECT_EQ(landing[kBytes - 1], std::byte{0x5a});
   EXPECT_EQ(ring->in_flight(), 0U);
+}
+
+// ------------------------------------------------- D-102's hang recovery
+
+// The node's settings for a hang test: two streams, and the node's own
+// patience over `quiet`; held reads cancellable (as reads still queued) or
+// not (as a drive's).
+ts::NodeSettings HangSettings(std::chrono::milliseconds quiet,
+                              const std::atomic<bool>* hold = nullptr, bool cancellable = true) {
+  ts::NodeSettings settings{
+      .compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false};
+  settings.quiet = quiet;
+  settings.hold_reads = hold;
+  settings.hold_cancellable = cancellable;
+  return settings;
+}
+
+// The runtime ladder's shape, with short times, recorded: a wait whose node
+// made no progress for `quiet` is cancelled (rung 1); one whose
+// cancellation has not drained `quiet` after it with nothing moving is
+// where the ladder would restart the process (rung 3): recorded, and the
+// wait goes on (the test then frees it).
+class RecordingPatience final : public jitllm::engine::Patience {
+ public:
+  explicit RecordingPatience(std::chrono::milliseconds quiet) : quiet_(quiet) {}
+  void Begin() override { ++begun; }
+  void End() override { ++ended; }
+  jitllm::engine::WaitVerdict Check(const jitllm::engine::WaitState& wait,
+                                    std::uint64_t /*progress*/) override {
+    const auto now = std::chrono::steady_clock::now();
+    if (!wait.cancelled) {
+      if (now - wait.progressed < quiet_) {
+        return jitllm::engine::WaitVerdict::kWait;
+      }
+      ++cancels;
+      return jitllm::engine::WaitVerdict::kCancel;
+    }
+    if (now - std::max(wait.progressed, *wait.cancelled) >= quiet_) {
+      gave_up.store(true);
+    }
+    return jitllm::engine::WaitVerdict::kWait;
+  }
+  std::atomic<int> begun{0};
+  std::atomic<int> ended{0};
+  std::atomic<int> cancels{0};
+  std::atomic<bool> gave_up{false};
+
+ private:
+  std::chrono::milliseconds quiet_;
+};
+
+// Rung 1 on the real device: a page-in whose reads hang (held by the
+// storage's test hook, as a stuck drive would) makes no progress; the
+// node's patience cancels the load's request, the held reads complete as
+// cancelled, and the load fails, flagged as a hang's. Nothing else is
+// lost: once reads flow again the same weights page in and read back
+// whole, and the teardown releases everything. A healthy load is never
+// cut short.
+TEST(CudaPagedNodeTest, AHungPageInIsCancelledAndTheNodeGoesOn) {
+  std::atomic<bool> hold{false};
+  ts::PagedNode node(HangSettings(std::chrono::milliseconds(500), &hold));
+  Model first(node, 0);
+  Model second(node, 1);
+  const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
+  ts::Status ran = node.Open();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent).has_value());
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + ((kExtents[0] + kExtents[1]) * kExtent))).has_value());
+  first.Register();
+  second.Register();
+  node.Run();
+  std::vector<ts::LoadStats> log;
+  ran = node.Load(second.weights(), "a healthy page-in", log);
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_FALSE(node.TakeHangCancelled());
+
+  hold.store(true);
+  const auto start = std::chrono::steady_clock::now();
+  ran = node.Load(first.weights(), "a hung page-in", log);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_NE(ran.error().find("a hang"), std::string::npos) << ran.error();
+  EXPECT_TRUE(node.TakeHangCancelled());
+  EXPECT_FALSE(node.TakeHangCancelled());  // taken
+  EXPECT_EQ(node.hang_cancels(), 1U);
+  EXPECT_GT(node.counting().held.load(), 0U);
+  EXPECT_GE(seconds, 0.5);
+  EXPECT_LT(seconds, 30.0);
+  std::println("a hung page-in cancelled and drained after {:.3f} s", seconds);
+
+  hold.store(false);
+  ran = node.Load(first.weights(), "the page-in again", log);
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  ran = first.ReadBack();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_TRUE(first.Intact());
+  ran = second.ReadBack();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_TRUE(second.Intact());
+  const ts::Status finished = node.TearDown(teardown);
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+}
+
+// A read the drive holds is not ended by its cancellation (io_uring's is
+// best effort): the hung page-in's wait still returns, failed and flagged
+// as a hang's, but the read stays in flight, which the node's oldest_io
+// shows (the hang ladder keeps the cancellation undrained on it, so rung 2
+// never reuses what the read lands in: rung 3 instead). Once the drive
+// lets it go, it completes and the node goes on.
+TEST(CudaPagedNodeTest, AStuckReadOutlivesItsCancelledWait) {
+  std::atomic<bool> hold{false};
+  ts::PagedNode node(HangSettings(std::chrono::minutes(10), &hold, false));
+  RecordingPatience patience(std::chrono::milliseconds(300));
+  node.SetPatience(&patience);
+  Model first(node, 0);
+  Model second(node, 1);
+  const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
+  ts::Status ran = node.Open();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent).has_value());
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + ((kExtents[0] + kExtents[1]) * kExtent))).has_value());
+  first.Register();
+  second.Register();
+  node.Run();
+  EXPECT_FALSE(node.oldest_io().has_value());
+
+  hold.store(true);
+  const auto start = std::chrono::steady_clock::now();
+  // The drive lets the reads go after 5 s (a regression that waits for
+  // them then fails instead of hanging).
+  std::jthread releaser([&](const std::stop_token& stop) {
+    const auto until = start + std::chrono::seconds(5);
+    while (!stop.stop_requested() && std::chrono::steady_clock::now() < until) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    hold.store(false);
+  });
+  std::vector<ts::LoadStats> log;
+  ran = node.Load(first.weights(), "a page-in on a stuck drive", log);
+  const auto returned = std::chrono::steady_clock::now();
+  const auto oldest = node.oldest_io();
+  const double seconds = std::chrono::duration<double>(returned - start).count();
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_NE(ran.error().find("a hang"), std::string::npos) << ran.error();
+  EXPECT_TRUE(node.TakeHangCancelled());
+  EXPECT_EQ(patience.cancels.load(), 1);
+  EXPECT_LT(seconds, 4.5);  // the wait returned while the read was held
+  ASSERT_TRUE(oldest.has_value());
+  EXPECT_LE(oldest.value_or(returned), start + std::chrono::seconds(1));
+  std::println(
+      "a page-in on a stuck drive: its wait returned after {:.3f} s with a read still "
+      "in flight",
+      seconds);
+  releaser.join();
+  // The reads complete once let go.
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (node.oldest_io().has_value() && std::chrono::steady_clock::now() < until) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_FALSE(node.oldest_io().has_value());
+  ran = node.Load(first.weights(), "the page-in again", log);
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  ran = first.ReadBack();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_TRUE(first.Intact());
+  const ts::Status finished = node.TearDown(teardown);
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+}
+
+// Rung 1 at a request's lease: its materialization hangs on held reads,
+// the lease wait cancels, and BeginRequest fails flagged as a hang's; the
+// request opens once reads flow.
+TEST(CudaPagedNodeTest, AHungLeaseIsCancelledAndTheRequestOpensLater) {
+  std::atomic<bool> hold{true};
+  ts::PagedNode node(HangSettings(std::chrono::milliseconds(500), &hold));
+  Model first(node, 0);
+  Model second(node, 1);
+  const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
+  ts::Status ran = node.Open();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent).has_value());
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + ((kExtents[0] + kExtents[1]) * kExtent))).has_value());
+  first.Register();
+  second.Register();
+  node.Run();
+  ran = node.BeginRequest(0, first.closure(), "a hung lease");
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_NE(ran.error().find("a hang"), std::string::npos) << ran.error();
+  EXPECT_TRUE(node.TakeHangCancelled());
+  EXPECT_FALSE(node.InRequest(0));
+  hold.store(false);
+  ran = node.BeginRequest(0, first.closure(), "the lease again");
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  ran = first.ReadBack();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_TRUE(first.Intact());
+  ran = node.EndRequest(0);
+  EXPECT_TRUE(ran.has_value()) << ran.error();
+  const ts::Status finished = node.TearDown(teardown);
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+}
+
+// Rung 3's case on the real device: a job whose stream waits on a gate
+// that never opens (a hung kernel) cannot be cancelled: the wait cancels
+// its request, nothing drains, and the patience reaches the point where the
+// runtime's ladder restarts the process (recorded here; the default
+// patience aborts). Opened then, the stream completes, the wait drains and
+// fails flagged as a hang's, and the node goes on.
+TEST(CudaPagedNodeTest, AHungStreamCannotBeCancelledSoItsPatienceGivesUp) {
+  ts::PagedNode node(HangSettings(std::chrono::minutes(10)));
+  RecordingPatience patience(std::chrono::milliseconds(300));
+  node.SetPatience(&patience);
+  Model first(node, 0);
+  Model second(node, 1);
+  const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
+  ts::Status ran = node.Open();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  first.Setup(Scratch());
+  second.Setup(Scratch());
+  ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent).has_value());
+  const std::uint64_t fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+  ASSERT_TRUE(node.Start(Bytes(fixed + ((kExtents[0] + kExtents[1]) * kExtent))).has_value());
+  first.Register();
+  second.Register();
+  node.Run();
+  ran = first.ReadBack();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+
+  void* flag = nullptr;
+  ASSERT_EQ(cudaHostAlloc(&flag, sizeof(std::uint32_t), cudaHostAllocMapped), cudaSuccess);
+  std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(flag)).store(0);
+  void* device_flag = nullptr;
+  ASSERT_EQ(cudaHostGetDevicePointer(&device_flag, flag, 0), cudaSuccess);
+  // The gate opens once the patience gave up, or after 30 s (a regression
+  // then fails instead of hanging).
+  std::atomic<bool> timed_out{false};
+  std::jthread opener([&](const std::stop_token& stop) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!stop.stop_requested() && !patience.gave_up.load() &&
+           std::chrono::steady_clock::now() < until) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    timed_out = !patience.gave_up.load();
+    std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(flag)).store(1);
+  });
+  const auto gated = [device_flag](jitllm::providers::NativeStream native) {
+    if (cuStreamWaitValue32(static_cast<CUstream>(native.handle),
+                            reinterpret_cast<CUdeviceptr>(device_flag), 1,
+                            CU_STREAM_WAIT_VALUE_GEQ) != CUDA_SUCCESS) {
+      return sc::JobResult::kUnknown;
+    }
+    return sc::JobResult::kQueued;
+  };
+  ran = node.Job(first.closure(), gated, "a hung job", 0);
+  opener.join();
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_NE(ran.error().find("a hang"), std::string::npos) << ran.error();
+  EXPECT_FALSE(timed_out.load());
+  EXPECT_TRUE(patience.gave_up.load());
+  EXPECT_EQ(patience.cancels.load(), 1);
+  EXPECT_TRUE(node.TakeHangCancelled());
+
+  // The same within a request: the step's wait cancels its request; the
+  // step completes once the gate opens, too late to stop it, and the
+  // cancellation is still flagged.
+  std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(flag)).store(0);
+  patience.gave_up.store(false);
+  ran = node.BeginRequest(0, first.closure(), "a request");
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  std::jthread opener2([&](const std::stop_token& stop) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!stop.stop_requested() && !patience.gave_up.load() &&
+           std::chrono::steady_clock::now() < until) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::atomic_ref<std::uint32_t>(*static_cast<std::uint32_t*>(flag)).store(1);
+  });
+  std::ignore = node.Job(first.closure(), gated, "a hung step", 0);
+  opener2.join();
+  EXPECT_TRUE(patience.gave_up.load());
+  EXPECT_EQ(patience.cancels.load(), 2);
+  EXPECT_TRUE(node.TakeHangCancelled());
+  if (node.InRequest(0)) {
+    std::ignore = node.EndRequest(0);  // its task was cancelled: it may report so
+  }
+  EXPECT_GT(patience.begun.load(), 0);
+  EXPECT_EQ(patience.begun.load(), patience.ended.load());  // every wait told its end
+
+  // The node goes on: the weights read back whole.
+  ran = first.ReadBack();
+  ASSERT_TRUE(ran.has_value()) << ran.error();
+  EXPECT_TRUE(first.Intact());
+  const ts::Status finished = node.TearDown(teardown);
+  EXPECT_TRUE(finished.has_value()) << finished.error();
+  (void)cudaFreeHost(flag);
 }
 
 }  // namespace

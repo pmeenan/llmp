@@ -19,6 +19,7 @@
 #include "base/build_info.h"
 #include "base/json.h"
 #include "platform/files.h"
+#include "platform/kept_files.h"
 #include "providers/device_probe.h"
 
 namespace jitllm::runtime {
@@ -294,62 +295,22 @@ std::string FormatCalibration(const Calibration& c, const CalibrationKey& key) {
 
 std::expected<void, std::string> WriteCalibration(const fs::path& state, const CalibrationKey& key,
                                                   const Calibration& calibration) {
+  // A directory of this user's that only it can enter, the record replaced
+  // whole and atomically (platform/kept_files.h, as D-105's records are).
   const fs::path dir = state / "calibration";
-  if (::mkdir(dir.c_str(), 0700) != 0 && errno != EEXIST) {
-    return std::unexpected(std::format("{}: {}", dir.string(), Errno(errno)));
+  const auto dfd = platform::OpenPrivateDirectory(-1, dir.c_str());
+  if (!dfd) {
+    return std::unexpected(std::format(
+        "{}: {}", dir.string(),
+        dfd.error() == EPERM ? std::string("not a directory of this user's that only it can enter")
+                             : Errno(dfd.error())));
   }
-  const int dfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-  if (dfd < 0) {
-    return std::unexpected(std::format("{}: {}", dir.string(), Errno(errno)));
-  }
-  std::string problem;
-  struct stat status{};
   const std::string name = std::format("{}.json", key.artifact);
-  const std::string temporary = std::format(".{}.{}.tmp", name, ::getpid());
-  if (::fstat(dfd, &status) != 0) {
-    problem = Errno(errno);
-  } else if (status.st_uid != ::geteuid() || (status.st_mode & 0077U) != 0) {
-    problem = "not a directory of this user's that only it can enter";
-  } else {
-    const std::string text = FormatCalibration(calibration, key) + "\n";
-    (void)::unlinkat(dfd, temporary.c_str(), 0);  // a crashed write's, if any
-    const int fd = ::openat(dfd, temporary.c_str(),
-                            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-    if (fd < 0) {
-      problem = Errno(errno);
-    } else {
-      std::size_t done = 0;
-      while (done < text.size()) {
-        const ssize_t n = ::write(fd, text.data() + done, text.size() - done);
-        if (n < 0 && errno == EINTR) {
-          continue;
-        }
-        if (n <= 0) {
-          problem = n < 0 ? Errno(errno) : "a short write";
-          break;
-        }
-        done += static_cast<std::size_t>(n);
-      }
-      if (problem.empty() && ::fsync(fd) != 0) {
-        problem = Errno(errno);
-      }
-      if (::close(fd) != 0 && problem.empty()) {
-        problem = Errno(errno);
-      }
-      if (problem.empty() && ::renameat(dfd, temporary.c_str(), dfd, name.c_str()) != 0) {
-        problem = Errno(errno);
-      }
-      if (problem.empty() && ::fsync(dfd) != 0) {
-        problem = Errno(errno);
-      }
-      if (!problem.empty()) {
-        (void)::unlinkat(dfd, temporary.c_str(), 0);
-      }
-    }
-  }
-  (void)::close(dfd);
-  if (!problem.empty()) {
-    return std::unexpected(std::format("{}: {}", (dir / name).string(), problem));
+  const auto written =
+      platform::ReplacePrivateFile(*dfd, name.c_str(), FormatCalibration(calibration, key) + "\n");
+  (void)::close(*dfd);
+  if (!written) {
+    return std::unexpected(std::format("{}: {}", (dir / name).string(), Errno(written.error())));
   }
   return {};
 }

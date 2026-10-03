@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/work_pulse.h"
 #include "tokenizer/error.h"
 #include "tokenizer/pretokenize.h"
 #include "tokenizer/unicode.h"
@@ -138,6 +139,8 @@ std::string_view RuleName(Rule rule) {
       return "vocabulary";
     case Rule::kBounds:
       return "bounds";
+    case Rule::kCancelled:
+      return "cancelled";
   }
   return "unknown";
 }
@@ -280,6 +283,11 @@ struct Tokenizer::Impl {
   std::expected<void, Error> EncodeFragment(std::string_view text, const EncodeOptions& options,
                                             std::vector<TokenId>& out, std::size_t base) const {
     for (std::size_t start = 0; start < text.size();) {
+      // A window at a time: a beat of the thread's pulse (a long encoding
+      // is progress, not a hang), and a cancellation checkpoint (D-102).
+      if (!base::Pulse()) {
+        return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", start});
+      }
       const std::size_t end = WindowEnd(text, start);
       if (auto e = EncodeWindow(text.substr(start, end - start), options, out, base); !e) {
         return e;

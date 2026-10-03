@@ -142,6 +142,10 @@ class CalibrationSamples {
   // The values measured so far over `known` (the record's, or none):
   // nullopt when nothing is new since the last Take.
   std::optional<Calibration> Take(const Calibration& known);
+  // Every sample not yet taken dropped: a hang's cancelled unit (D-102) may
+  // have been timed among them, and a hang's wait is no measure of the
+  // machine. Measuring starts over.
+  void Forget() { *this = CalibrationSamples{}; }
 
  private:
   static std::optional<double> Median(std::vector<double> samples);

@@ -204,29 +204,123 @@ struct NodeSettings {
   // Unset, the runtime's default (1 ms).
   // NOLINTNEXTLINE(readability-redundant-member-init)
   std::optional<std::chrono::microseconds> spin_ahead = {};
+  // The node's own patience (QuietPatience) when SetPatience gives none:
+  // how long a wait may see nothing move before its request is cancelled
+  // (D-102: no progress, not a time limit).
+  std::chrono::milliseconds quiet{std::chrono::minutes(10)};
+  // A test hook only (CountingStorage): while set, reads are held, and
+  // with hold_cancellable a held read completes as cancelled when the lane
+  // cancels it (otherwise, as a drive's, it does not).
+  const std::atomic<bool>* hold_reads = nullptr;
+  bool hold_cancellable = false;
 };
 
 // What the storage lane hands io_uring (BP-P1): requests, and the pieces
 // they carry (a segment each; a plain request is one). Counted on the
 // lane's thread, read between loads.
+//
+// Every operation it hands on is timed until its completion is harvested:
+// the oldest still in flight tells D-102's hang recovery whether a
+// cancelled wait's own reads and writes drained (oldest_in_flight).
+//
+// A test hook (NodeSettings::hold_reads): while the flag it is given is
+// set, reads are held instead of handed on, accepted but neither started
+// nor completed, as a read stuck in a drive or a hung mount would be (D-102's
+// hang recovery is tested with it). As a real drive's, a held read is not
+// cancelled by the lane's cancellation (io_uring's is best effort: a read
+// the device has does not end), and is handed on once the flag clears.
+// With `cancellable`, a held read instead completes as cancelled
+// (-ECANCELED) when the lane cancels it, as one still queued would. Unset,
+// nothing is held.
 class CountingStorage final : public providers::Storage {
  public:
-  explicit CountingStorage(providers::Storage& inner) : inner_(inner) {}
+  explicit CountingStorage(providers::Storage& inner, const std::atomic<bool>* hold = nullptr,
+                           bool cancellable = false)
+      : inner_(inner), hold_(hold), cancellable_(cancellable) {}
   std::size_t depth() const override { return inner_.depth(); }
-  std::size_t in_flight() const override { return inner_.in_flight(); }
+  std::size_t in_flight() const override;
   providers::Submission Submit(const providers::IoRequest& request) override;
-  providers::Submission Cancel(std::uint64_t token) override { return inner_.Cancel(token); }
-  std::size_t Harvest(std::span<providers::IoCompletion> out, bool wait) override {
-    return inner_.Harvest(out, wait);
-  }
+  providers::Submission Cancel(std::uint64_t token) override;
+  std::size_t Harvest(std::span<providers::IoCompletion> out, bool wait) override;
   void Wake() override { inner_.Wake(); }
+
+  // When the oldest operation still in flight (submitted, its completion
+  // not yet harvested) was submitted; none when nothing is. Any thread.
+  std::optional<std::chrono::steady_clock::time_point> oldest_in_flight() const;
 
   std::atomic<std::uint64_t> requests{0};
   std::atomic<std::uint64_t> pieces{0};
+  // Reads held so far (the test hook). Any thread.
+  std::atomic<std::uint64_t> held{0};
 
  private:
+  // Held reads handed on once the hold clears, as the ring takes them.
+  void PassHeld();
+  // The lane's thread: an operation submitted, or completions harvested;
+  // the oldest published again.
+  void Started(std::uint64_t token);
+  void Ended(std::span<const providers::IoCompletion> done);
+  void Publish();
+
   providers::Storage& inner_;
+  const std::atomic<bool>* hold_;
+  bool cancellable_;
+  // The lane's thread only: reads held (with their segments' copies), and
+  // held reads cancelled (their completions not yet harvested).
+  std::vector<providers::IoRequest> held_;
+  std::vector<std::vector<providers::IoSegment>> held_segments_;
+  std::vector<std::uint64_t> cancelled_;
+  // The lane's thread only: each operation in flight and when it was
+  // submitted (steady clock, nanoseconds).
+  std::map<std::uint64_t, std::int64_t> started_;
+  // The oldest of started_, for any thread: 0 when none.
+  std::atomic<std::int64_t> oldest_ns_{0};
 };
+
+// How the driver's waits tell a hang from slow work (D-102;
+// docs/runtime-serving.md#hang-recovery). Every wait of the driver's
+// (Post's, a request's lease, a step) tells its patience when it begins and
+// ends, and asks it every kPatienceCheck while it waits what to do, with the
+// node's progress count (PagedNode::progress) as it reads it then.
+enum class WaitVerdict : std::uint8_t {
+  kWait,    // go on waiting
+  kCancel,  // cancel the request waited for (once), then wait for it to drain
+  kGiveUp,  // it will never drain: the node aborts the process (the default's last resort)
+};
+struct WaitState {
+  std::string_view what;
+  std::chrono::steady_clock::time_point began;
+  // When the wait last saw the node's progress count move (or began).
+  std::chrono::steady_clock::time_point progressed;
+  // When it cancelled its request (unset: it has not).
+  std::optional<std::chrono::steady_clock::time_point> cancelled;
+};
+class Patience {
+ public:
+  Patience() = default;
+  Patience(const Patience&) = delete;
+  Patience& operator=(const Patience&) = delete;
+  Patience(Patience&&) = delete;
+  Patience& operator=(Patience&&) = delete;
+  virtual ~Patience() = default;
+  virtual void Begin() {}
+  virtual void End() {}
+  virtual WaitVerdict Check(const WaitState& wait, std::uint64_t progress) = 0;
+};
+// The node's own patience, when nothing else is given (the harnesses, the
+// serving commands): a wait whose node made no progress for `quiet` is
+// cancelled, and one that has not drained `quiet` after that, with nothing
+// moving, gives up. No time limit stops a wait that keeps moving.
+class QuietPatience final : public Patience {
+ public:
+  explicit QuietPatience(std::chrono::milliseconds quiet) : quiet_(quiet) {}
+  WaitVerdict Check(const WaitState& wait, std::uint64_t progress) override;
+
+ private:
+  std::chrono::milliseconds quiet_;
+};
+// How often a wait asks its patience.
+inline constexpr std::chrono::milliseconds kPatienceCheck{50};
 
 // What a model gives the node's teardown.
 class PagedModel {
@@ -388,11 +482,39 @@ class PagedNode {
   std::optional<catalog::MemoryClass> Covered(std::uint64_t address, std::uint64_t bytes, int owner,
                                               bool resident = true) const;
 
+  // The driver's waits' patience (D-102): unset (or null), the node's own
+  // QuietPatience over NodeSettings::quiet. The runtime gives its hang
+  // ladder's (runtime/hang_ladder.h). Not owned; outlives the node's waits.
+  void SetPatience(Patience* patience) { patience_ = patience; }
+  // NodeSettings::quiet: the node's own patience, and how long a wait of
+  // the runtime's own that sees nothing move gives up after.
+  std::chrono::milliseconds quiet() const { return settings_.quiet; }
+  // Any thread: a count that moves whenever the node makes progress of any
+  // kind: a lane's completion published (a fence seen complete, a read or
+  // write landed, a VMM operation), or a wait of the driver's ending.
+  std::uint64_t progress() const;
+  // Any thread, once started: when the oldest storage operation still in
+  // flight was submitted (CountingStorage::oldest_in_flight); none when
+  // none is. A cancelled wait returns while its reads may still be in the
+  // drive: the hang ladder judges its cancellation drained on these.
+  std::optional<std::chrono::steady_clock::time_point> oldest_io() const {
+    return counting_ != nullptr ? counting_->oldest_in_flight() : std::nullopt;
+  }
+  // Whether a wait failed because its patience cancelled its request (a
+  // hang's rung 1) since the last call; clears it. The runtime then fails
+  // the requests that needed the work and recovers the model in place.
+  bool TakeHangCancelled() { return std::exchange(hang_cancelled_, false); }
+  std::uint64_t hang_cancels() const { return hang_cancels_; }
+  // The storage wrapper (its held reads, NodeSettings::hold_reads).
+  const CountingStorage& counting() const { return *counting_; }
+
   // Posts a program and waits for it to be destroyed. It refers to `done`,
   // and a job it queues may refer to the caller's frame, so this never
-  // returns while either may still run: past the patience it cancels the
-  // request and waits for the drain, and aborts the process if even that
-  // does not come.
+  // returns while either may still run. Its patience may cancel the request
+  // (when nothing moves: a hang's rung 1), and the wait then goes on until
+  // the cancellation drains; the default patience aborts the process if
+  // even that does not come (the runtime's ladder exits for its supervisor
+  // instead).
   Status Post(std::unique_ptr<scheduler::TaskProgram> program, scheduler::ProgramDone& done,
               std::string_view what);
   Status Await(scheduler::ProgramDone& done, std::string_view what, std::uint64_t request);
@@ -478,6 +600,12 @@ class PagedNode {
   };
 
   void Round();
+  // One wait of the driver's under its patience: Begin and End told, the
+  // node's progress watched, the patience asked every kPatienceCheck.
+  class Waiter;
+  Patience& patience() { return patience_ != nullptr ? *patience_ : own_patience_; }
+  // A cancelled wait's patience gave up: the default's last resort.
+  [[noreturn]] static void GiveUp(std::string_view what);
   // `job`, timed into `timing` and between the stream's events.
   scheduler::DeviceJob Timed(scheduler::DeviceJob job, std::uint32_t stream, Timing& timing);
   void Note(std::uint32_t stream, std::chrono::steady_clock::time_point called,
@@ -490,6 +618,10 @@ class PagedNode {
       std::span<const catalog::ExtentId> extents);
 
   NodeSettings settings_;
+  QuietPatience own_patience_{settings_.quiet};
+  Patience* patience_ = nullptr;
+  std::uint64_t hang_cancels_ = 0;
+  std::atomic<std::uint64_t> waits_ended_{0};  // part of progress()
   std::unique_ptr<providers::VmmProvider> memory_;
   std::unique_ptr<providers::DeviceExecution> execution_;
   std::unique_ptr<providers::Storage> storage_;
@@ -551,6 +683,7 @@ class PagedNode {
   std::optional<std::expected<void, scheduler::Fault>> stopped_;
   std::uint64_t request_ = 0;
   bool torn_down_ = false;
+  bool hang_cancelled_ = false;   // TakeHangCancelled
   std::vector<StepTimes> times_;  // by compute stream
   // By compute stream: the marks before and after its job.
   std::vector<std::pair<providers::TimingMark, providers::TimingMark>> events_;

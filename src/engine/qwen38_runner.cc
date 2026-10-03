@@ -994,7 +994,9 @@ Status Qwen38Runner::Register() {
     }
   }
   for (RequestState* request : Requests()) {
-    if (auto r = request->live.RegisterSpill(node_, o_.out); !r) {
+    auto r = o_.spill_place ? request->live.RegisterSpill(node_, o_.spill_place(request->slot))
+                            : request->live.RegisterSpill(node_, o_.out);
+    if (!r) {
       return r;
     }
   }
@@ -1305,11 +1307,94 @@ Status Qwen38Runner::Clear(RequestState& request) {
   request.track.Lost();
   if (cleared) {
     request.spilled = false;  // nothing left in its spill file either
+    request.adopted.clear();
+    request.adopted_bytes = 0;
   }
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
   }
   return cleared;
+}
+
+Status Qwen38Runner::Adopt(RequestState& request, std::span<const LiveState::Range> used) {
+  if (released_ || cohort_faulted_) {
+    return Error("the Qwen3.8 cohort requires retirement");
+  }
+  if (request.spilled || !request.live.extents().empty() || used.empty() ||
+      ((active_mask_ & (SlotMask{1} << request.slot)) != 0 && node_.InRequest(stream_))) {
+    return Error("a Qwen3.8 slot adopts a kept conversation only while it holds none");
+  }
+  if (auto bytes = request.live.UsedBytesOf(used); !bytes) {
+    return std::unexpected(bytes.error());
+  }
+  // Spilled, outside every closure, until Restore reads it from the file.
+  request.adopted.assign(used.begin(), used.end());
+  request.adopted_bytes = used.size() * kPagedExtent;
+  request.spilled = true;
+  request.track.Lost();
+  return RefreshClosures();
+}
+
+std::expected<SlotMask, std::string> Qwen38Runner::RecoverInPlace(
+    const std::function<void(std::uint32_t slot)>& before_discard) {
+  if (released_) {
+    return Error("the Qwen3.8 runner is released");
+  }
+  if (node_.InRequest(stream_)) {
+    return Error("a request is still open on Qwen3.8's stream");
+  }
+  if (resources_.launch().faulted()) {
+    return Error(
+        "Qwen3.8's launch context faulted: a launch of unknown outcome is not proven "
+        "retired");
+  }
+  const bool faulted = cohort_faulted_;
+  cohort_faulted_ = false;
+  active_mask_ = 1;
+  SlotMask discarded = 0;
+  for (RequestState* request : Requests()) {
+    // On disk since before the failure, and nothing ran on it: kept.
+    if (request->spilled && request->live.LiftIfPreserved(node_)) {
+      continue;
+    }
+    if (!faulted && !request->live.quarantined()) {
+      continue;  // untouched by the failed work
+    }
+    if (before_discard) {
+      before_discard(request->slot);
+    }
+    request->state_refused = false;
+    request->pending_rows = 0;
+    request->verify_restores_streams = false;
+    const Status cleared = request->live.DiscardGrowingState(node_);
+    request->track.Lost();
+    if (!cleared) {
+      FaultCohort();
+      return Error(std::format("discarding a Qwen3.8 slot's state: {}", cleared.error()));
+    }
+    request->spilled = false;
+    request->adopted.clear();
+    request->adopted_bytes = 0;
+    discarded |= SlotMask{1} << request->slot;
+  }
+  DropPlans();
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    return std::unexpected(refreshed.error());
+  }
+  return discarded;
+}
+
+std::string Qwen38Runner::kept_layout() const {
+  // Every slot's state has slot 0's layout. Version 1 of the state format:
+  // a change to what a region's bytes mean bumps it.
+  const LiveState& live = default_request_.live;
+  std::string layout =
+      std::format("qwen38-state/1;context={};mtp={};regions=", o_.context, speculative() ? 1 : 0);
+  for (std::size_t i = 0; i < live.regions(); ++i) {
+    layout += std::format("{}{}:{}:{}", i == 0 ? "" : ",", live.region_name(i), live.bytes(i),
+                          live.mapped_bytes(i));
+  }
+  return layout;
 }
 
 Status Qwen38Runner::ClearIdle(RequestState& request) {
@@ -1330,6 +1415,8 @@ Status Qwen38Runner::ClearIdle(RequestState& request) {
   request.track.Lost();
   if (cleared) {
     request.spilled = false;  // nothing left in its spill file either
+    request.adopted.clear();
+    request.adopted_bytes = 0;
   }
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
@@ -1428,6 +1515,22 @@ Status Qwen38Runner::Restore(RequestState& request) {
   }
   if (released_ || cohort_faulted_) {
     return Error("the Qwen3.8 cohort requires retirement");
+  }
+  if (!request.adopted.empty()) {
+    // Kept from the process before (D-105): its extents are fresh here, and
+    // their first load reads them from the named spill file, which holds
+    // them (LiveState::Use), under the budget: a clean refusal leaves it
+    // spilled for the runtime to make room.
+    bool over_budget = false;
+    if (auto used = request.live.Use(node_, request.adopted, nullptr, &over_budget); !used) {
+      request.state_refused = over_budget && !cohort_faulted_;
+      return std::unexpected(used.error());
+    }
+    request.adopted.clear();
+    request.adopted_bytes = 0;
+    request.spilled = false;
+    request.track.Saved();  // the file holds the state as it is now
+    return RefreshClosures();
   }
   catalog::Closure closure;
   const std::vector<ExtentId> extents = request.live.extents();

@@ -39,6 +39,114 @@ one Spark and on two.
 
 ---
 
+## D-105: Conversations kept across a restart: named owner-only spill files, a hashed record per request slot, adopted only when everything validates  (2026-10-03, status: accepted at the owner's direction of 2026-10-03 (D-102, "a genuine hang should be recovered … minimizing data loss"); amends D-055's "spill files stay unnamed, private and deleted at startup" and its "no durable spill format"; a durable on-disk format, a D-016 public surface, so it is versioned and refuses what it does not read)
+
+**Decision.**
+
+- **What survives.** A request slot's conversation survives a restart of
+  the service (graceful, a crash, or a hang's restart) when its whole
+  state is on disk: spilled by the reclaim order, written back by a swap,
+  or spilled at a graceful stop. Its slot's spill file is a named
+  owner-only file instead of an unnamed one, and beside it a **record**
+  describes it. A new process adopts the conversation, with its turn
+  checkpoints, and its next turn restores the state exactly from the file
+  instead of prefilling it again. State resident at a crash or a hang's
+  exit is lost (its next turn prefills), and so is anything a record does
+  not describe exactly.
+- **Where.** `conversations/<artifact ID>/` beneath the spill role (mode
+  0700), each file 0600, opened for direct I/O, never through a link, and
+  refused unless the runtime's user owns it with those modes and one
+  link: `slot-N.state` (the slot's spill file), `slot-N.record`,
+  `slot-N.turn-K.state` (its turn checkpoints, each a file of whole state
+  pages). A model's directory is named by its artifact's ID.
+- **The record, format version 1** (`runtime/kept_record.h`;
+  docs/runtime-serving.md#conversations-kept-across-a-restart): strict
+  JSON with every field required and nothing else, written whole by a
+  temporary file renamed over it, ending with the SHA-256 of everything
+  before it. It names the build that wrote it (version, commit and the
+  executable file's device, inode, generation, size and modification
+  time), the artifact and drafter, the runner's state layout (format
+  version, context, drafter, each region's name and bytes), the slot,
+  the spill file's identity (device, inode, inode generation) and size,
+  each used 2 MiB extent with the SHA-256 of its bytes in the file, the
+  conversation's tokens, speculation cursor, adaptive draft depth and last
+  use (wall-clock), and each turn checkpoint with its file's identity, its
+  pages and their digests. A record cut short or edited fails its digest;
+  one of another build, model, layout or slot, past its retention, with a
+  token outside the vocabulary or an extent outside the layout is refused
+  whole; a file that is not the one it names or does not hash as it says
+  is refused; a checkpoint that fails alone is left out alone.
+- **A record exists only while its slot's state is wholly on disk** and
+  nothing has written its file since. The driver removes it before
+  anything may change the file or make the state live again (a restore, a
+  swap bringing the model in, a clear, a discard), and queues a new one
+  after a spill or a swap's write-back completes with the state settled (a
+  verify's owed restore run first where nothing holds the stream). A
+  keeper thread then syncs the files, hashes them (four threads) and
+  writes the record unless the slot was invalidated meanwhile (a sequence
+  number a slot), off the driver's path. So a crash at any moment leaves a
+  record that describes its files exactly, or none. The hashing is
+  background work: its threads run at the lowest CPU and I/O priority,
+  wait between extents while a swap or a prefill runs (and briefly after),
+  and stop at the next extent once their slot is invalidated.
+- **At start** the service reads each slot's record, checks it, hashes the
+  files it names, and adopts what validates; everything else in the
+  directory (refused records and their files, unadopted slots' files,
+  other models' directories, stale temporary files) is removed, and the
+  start logs each refusal and adoption (counts, never content, D-014).
+- **At a graceful stop** (SIGTERM) the resident model's idle conversations
+  are settled and spilled, and the keeper writes every record queued,
+  while it makes progress; the service manager's stop timeout is extended
+  as it goes. **At a hang's exit** (D-102's rung 3) the records already
+  queued get at most 10 s; nothing new is spilled, since the device may be
+  what hangs.
+- **Retention and exposure.** This widens D-014's exposure, and the owner
+  can turn it off: the records hold each kept conversation's tokens (its
+  prompt text, recoverable with the tokenizer) and its spill and
+  checkpoint files hold its KV state, on disk under the runtime's user
+  (0600 files, 0700 directories), where before D-105 spilled state lived
+  only in unlinked files and nothing outlived the process. What the
+  runtime enforces: `[memory] retention_hours` while it runs (an idle
+  conversation, and each turn checkpoint, past it are deleted with their
+  files and records) and at its next start (by each conversation's
+  recorded last use and each checkpoint's creation); `spill_budget_gib`
+  counts adopted state; a budget of 0, or `[memory] keep_across_restart =
+  false`, keeps nothing, and the directory is removed at start. What it
+  cannot: while the service is stopped, or after a crash, kept files stay
+  until the next start enforces retention, however long that is; a
+  graceful stop (SIGTERM) spills and records every idle conversation still
+  resident, so it writes to disk what a stop before D-105 discarded; and
+  removing the package keeps them (purging it removes the default spill
+  directory's `conversations/`; a spill directory configured elsewhere is
+  the owner's to empty). Only the service keeps conversations: the serving
+  commands spill to unnamed files as before and leave what the service
+  kept alone.
+
+**Context.** D-102's recovery escalates to restarting the process when
+nothing less frees a hang; the owner asked that data loss be minimal. Spill
+files were unnamed (O_TMPFILE) and nothing survived a restart (D-055: "no
+code, configuration schema, public API or durable spill format is
+introduced"). Hashing: base::Sha256 hashes about 360 MB/s a core on a GB10
+(`spark-b`, 2026-10-03), so digests are computed off the driver's path and
+in parallel, never on a spill's: a graceful stop measured 1.85 GiB hashed
+in 1.5 s, a start's adoption about 1.2 GB/s.
+
+**Consequences.** The kept files' format is a compatibility surface:
+another version refuses them (they cost a prefill), and a change to what a
+region's bytes mean bumps the runner's state-format version in its layout.
+Another build, or this one rebuilt or reinstalled, adopts nothing (its
+executable's identity differs), so an upgrade starts cold. Conversations a
+crash leaves resident, or with a verify's restore owed while a cohort held
+the stream, are not kept. The digests detect a torn, truncated, mixed-up or
+corrupted file and any edit; they do not stop someone with the runtime
+user's access, who could rewrite the record too; that is D-014's
+permission check's job.
+
+**Reopen if** adoption's hashing costs a start too much on large states
+(then keep per-extent digests incrementally), an upgrade must keep
+conversations (then a cross-version reader), or shared-prefix entries
+(M6) need their own records.
+
 ## D-104: Request slots follow memory up to a per-model cap at the measured knee  (2026-10-03, status: accepted at the owner's direction of 2026-10-03; the request-slot cap is one of D-103's settings; replaces the fixed four request slots of the Qwen3.8 and DeepSeek chat backends; adds a public configuration key, D-016)
 
 **Decision.**
@@ -311,6 +419,42 @@ after an audit of about 70 limits):
   stay valid, so `jitllm-inference-version` stays 1 (D-062). The values
   and what each protects are in
   [runtime-serving.md](runtime-serving.md#the-chat-route).
+- **Landed (hang recovery, 2026-10-03):** the engine's fixed patience
+  (cancel after 10 minutes, abort after 10 more) is progress-based: a
+  driver's wait (a program, a request's lease, a step) watches the node's
+  progress count (every lane's completion published: fences, reads and
+  writes, VMM operations; and its waits ending) and asks its patience. In
+  the service one hang ladder (`runtime/hang_ladder.h`), fed by the chat
+  route's beats and the node's progress, confirms a hang when work under
+  way (a unit, or a node wait between units) has made no progress of any
+  kind for `hang_seconds` and its unit has passed its allowance (so a swap
+  from a slow disk, which keeps landing reads, or a long prefill chunk,
+  allowed its expected time, is never one; the driver's long CPU work,
+  a rendering or a tokenization, beats a pulse that counts too; a
+  graph's capture runs inside a device job, covered by its unit's
+  allowance), and escalates, logging each rung with why: **rung 1**
+  the driver's node wait cancels the request it waits for, or its CPU work
+  is asked to stop at its next cancellation checkpoint; **rung 2**, once
+  that drained (the driver moved again and no storage operation submitted
+  before the cancellation is still in flight: a read a drive holds is not
+  ended by its cancellation, though the wait that needed it returns), the
+  requests that needed the work fail (503 `backend_hung`) and the model is
+  reset in place (its stream fenced, every slot the failure may have
+  touched discarded, spilled ones kept, the cohort's fault lifted, plans
+  and graphs dropped, its weights and kept state evicted for a whole
+  reload), and the service goes on; **rung 3**, when the cancellation does
+  not drain within `min(hang_seconds, 60 s)` (a read still in the drive, a
+  device that hangs, CPU work that never reaches a checkpoint), when a
+  model hangs again before serving a request since its last reset, or when
+  rung 2 fails: the records already queued get 10 s, then the process
+  exits (status 1) for its supervisor. Conversations survive the restart
+  under D-105. `jitllm.service` no longer gives up on a failing start (no
+  start limit; restarts back off from 5 s to 30 s, short because systemd
+  255 never takes the back-off back while the unit runs), and its start (5 minutes) and
+  stop (90 s) timeouts are extended while the start registers and adopts
+  and the stop spills and records, so healthy slow work is not cut off.
+  `[client] hang_seconds` keeps its key and default; `schema_version`
+  stays 2.
 
 ## D-101: Decision models through the Jev/SystemOne API, multimodal file inputs with each family's bring-up, and OpenAI-shaped media generation routes  (2026-10-02, status: accepted at the owner's request of 2026-10-02, with the owner's answers that day on DeepSeek V4 Flash Vision-Exp, the audio carrier, confidence and the TTS testbeds; scope and plan only, nothing built; moves D-042's file inputs from M10 to M3.5 and M4; makes decision heads an exception to D-044's classification deferral; schedules the image-output API features.md left unscheduled; adds public routes, D-016)
 
@@ -2696,7 +2840,7 @@ needs a direct request for the change at hand unless the owner extends it.
 **Reopen if.** Agents commit something the user did not ask for, or other
 contributors join and need a merge policy.
 
-## D-074: The arm64 package from CPack, a runtime that refuses rather than restarts, crashes that exit instead of dumping, and jobs in delegated cgroups  (2026-09-24, status: accepted; implements D-027's and D-063's package, unit and process lock (moving the lock out of D-063's /run/jitllm), the architecture's crash-dump rule (D-014) and the job-containment choice; settles licensing.md's seven package decisions with the owner)
+## D-074: The arm64 package from CPack, a runtime that refuses rather than restarts, crashes that exit instead of dumping, and jobs in delegated cgroups  (2026-09-24, status: accepted; implements D-027's and D-063's package, unit and process lock (moving the lock out of D-063's /run/jitllm), the architecture's crash-dump rule (D-014) and the job-containment choice; settles licensing.md's seven package decisions with the owner; a failing start is retried, never given up on, since D-102's hang recovery, 2026-10-03)
 
 **Decision.** How M1's Package and Confined job proof items build the
 installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
@@ -4922,7 +5066,7 @@ provider's backing cannot take a group from a 4 KiB-aligned run; tooling or
 parser evidence favours another container; or D-018's gate records a
 compatibility policy.
 
-## D-055: Capacity-driven state retention with a 24-hour idle cap; M4's named workload is the Qwen2.5-0.5B FP16/EXL3 pair  (2026-09-22, status: accepted; specializes D-024, D-031 and D-036; its M3, M4, M5 and M7 are M5, M6, M7 and M9 under D-087; its initial victim order replaced on 2026-10-02 by one reclaim order by measured restore cost, with plans and graphs registered, idle state spilled rather than cleared and `[memory]` retention and spill-budget keys (below))
+## D-055: Capacity-driven state retention with a 24-hour idle cap; M4's named workload is the Qwen2.5-0.5B FP16/EXL3 pair  (2026-09-22, status: accepted; specializes D-024, D-031 and D-036; its M3, M4, M5 and M7 are M5, M6, M7 and M9 under D-087; its initial victim order replaced on 2026-10-02 by one reclaim order by measured restore cost, with plans and graphs registered, idle state spilled rather than cleared and `[memory]` retention and spill-budget keys (below); the service's spill files named and kept across a restart by D-105, 2026-10-03)
 
 **Decision.** Reusable conversation state follows the
 [retention policy](retention-policy.md):
@@ -7238,6 +7382,15 @@ as an error. Credentials are an optional feature, an M5 item (an optional
 API key, as llama-server and vLLM have), never a precondition for a
 binding. The rest of this entry (management local by default, no prompt
 or state logging, protected spill files) is unchanged.
+
+**Note (2026-10-03, D-105).** Spilled state may now outlive the process:
+conversations wholly on disk are kept across a restart in owner-only
+files whose records hold their tokens, so prompt text and KV state stay
+on disk while the service is stopped, until its next start enforces their
+retention (D-105 states the exposure). `[memory] keep_across_restart =
+false` restores the earlier lifetime (nothing outlives the process), and
+purging the package removes the default spill directory's kept files.
+Nothing is logged of them but counts.
 
 **Reopen if.** A deployment model beyond a single owner's local nodes is
 adopted.

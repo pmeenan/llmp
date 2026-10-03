@@ -78,7 +78,10 @@ check "the package reinstalls as an upgrade" dpkg -i "$deb"
 check "the package removes" dpkg -r jitllm
 check "its files are gone" sh -c '! test -e /usr/bin/jitllm && ! test -e /usr/libexec/jitllm/jitllm-runtime'
 check "the data directory and user stay" sh -c 'test -d /var/lib/jitllm/models && getent passwd jitllm >/dev/null'
+check "a kept conversation stands in" setpriv --reuid=jitllm --regid=jitllm --init-groups \
+  sh -c 'umask 077 && mkdir -p /var/lib/jitllm/spill/conversations/a && : > /var/lib/jitllm/spill/conversations/a/slot-0.record'
 check "the package purges" dpkg -P jitllm
 check "the data directory and user still stay" sh -c 'test -d /var/lib/jitllm/models && getent passwd jitllm >/dev/null'
+check "the kept conversations are gone (D-105)" sh -c '! test -e /var/lib/jitllm/spill/conversations && test -d /var/lib/jitllm/spill'
 check "the unit is no longer enabled" sh -c '! test -e /etc/systemd/system/multi-user.target.wants/jitllm.service'
 echo "install-test: passed"

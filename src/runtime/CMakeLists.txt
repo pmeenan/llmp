@@ -7,29 +7,32 @@
 # start's memory guard (memory_guard.h), serving's choices from a binding (model_limits.h),
 # a chat cohort's state-capacity policy (cohort_capacity.h) and schedule
 # (cohort_schedule.h), when pressure from outside has it trim
-# (pressure_trim.h), room for a swap (swap_room.h), and the chat route's
+# (pressure_trim.h), room for a swap (swap_room.h), the chat route's
 # HTTP, requests, binding, server, watchdog and memory-derived limits
 # (http.h, api.h, binding.h, api_server.h, watchdog.h, intake_limits.h;
-# D-097, D-102), and each model's settings in three layers and their
-# calibration on the machine (model_settings.h, calibration.h; D-103), all
-# vendor-free.
+# D-097, D-102), each model's settings in three layers and their
+# calibration on the machine (model_settings.h, calibration.h; D-103),
+# hang recovery's ladder (hang_ladder.h, D-102), and the records of
+# conversations kept across a restart with their keeper (kept_record.h,
+# state_keeper.h, D-105), all vendor-free.
 add_library(jitllm_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc binding.cc
                                   calibration.cc cohort_capacity.cc cohort_schedule.cc
-                                  completion_tokens.cc intake_limits.cc memory_guard.cc
-                                  model_limits.cc model_settings.cc prefill.cc pressure_trim.cc
-                                  swap_room.cc watchdog.cc)
+                                  completion_tokens.cc hang_ladder.cc intake_limits.cc
+                                  kept_record.cc memory_guard.cc model_limits.cc model_settings.cc
+                                  prefill.cc pressure_trim.cc state_keeper.cc swap_room.cc
+                                  watchdog.cc)
 target_include_directories(jitllm_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_runtime PUBLIC jitllm_artifact jitllm_config jitllm_platform
                                             jitllm_tokenizer
-                      PRIVATE jitllm_build_info jitllm_report jitllm_device_probe jitllm_json
-                              jitllm_sampling jitllm_warnings)
+                      PRIVATE jitllm_base jitllm_build_info jitllm_report jitllm_device_probe
+                              jitllm_json jitllm_sampling jitllm_warnings)
 
 # The serving commands themselves (serving.h, D-096): the configured models
 # on the engine's paged node, in CUDA builds; elsewhere a refusal.
 if(JITLLM_CUDA)
   add_library(jitllm_runtime_serving STATIC serving.cc serve_commands.cc serve_api.cc)
   target_link_libraries(jitllm_runtime_serving PUBLIC jitllm_runtime jitllm_engine jitllm_sampling
-                        PRIVATE jitllm_base jitllm_platform jitllm_warnings)
+                        PRIVATE jitllm_base jitllm_build_info jitllm_platform jitllm_warnings)
 else()
   add_library(jitllm_runtime_serving STATIC serving_none.cc)
   target_link_libraries(jitllm_runtime_serving PUBLIC jitllm_runtime PRIVATE jitllm_warnings)

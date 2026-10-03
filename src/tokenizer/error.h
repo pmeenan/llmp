@@ -28,6 +28,8 @@ enum class Rule : std::uint8_t {
   kUnsupported,  // well formed, but a feature or variant jitLLM does not implement
   kVocabulary,   // inconsistent: duplicate texts, merges of unknown tokens, missing bytes
   kBounds,       // over a cap on counts or sizes
+  // Work.
+  kCancelled,  // the calling thread's pulse asked it to stop (base/work_pulse.h, D-102)
 };
 
 // The rule's name ("invalid-utf8").

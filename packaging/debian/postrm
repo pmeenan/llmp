@@ -4,13 +4,20 @@
 #
 # The jitllm package's postrm. Removing or purging the package keeps
 # /var/lib/jitllm, /etc/jitllm and the jitllm user: installed models,
-# records and configuration are the owner's to delete.
+# records and configuration are the owner's to delete. Purging removes the
+# conversations kept across a restart (D-105) in the default spill
+# directory: their tokens and state are no one's to keep once the package
+# is purged (D-014). A spill directory configured elsewhere is the
+# owner's to empty.
 set -e
 
 if [ -z "$DPKG_ROOT" ] && [ -d /run/systemd/system ]; then
   systemctl --system daemon-reload >/dev/null || true
 fi
 if [ "$1" = purge ] && [ -z "$DPKG_ROOT" ]; then
+  if [ -d /var/lib/jitllm/spill/conversations ] && [ ! -L /var/lib/jitllm/spill/conversations ]; then
+    rm -rf --one-file-system /var/lib/jitllm/spill/conversations
+  fi
   if [ -x /usr/bin/deb-systemd-helper ]; then
     deb-systemd-helper purge jitllm.service >/dev/null || true
     deb-systemd-helper unmask jitllm.service >/dev/null || true

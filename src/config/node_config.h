@@ -242,12 +242,14 @@ struct ModelEntry {
 //                    arriving for this long gets a 408: default 60
 //   write_inactivity_seconds  set, a client that takes no output for this
 //                    long is dropped; absent, it gets backpressure only
-//   hang_seconds     no progress of either kind the runtime watches (a
-//                    unit's end, a page-in event) while work is under way
-//                    for this long is a confirmed hang: the runtime exits
-//                    for its supervisor to restart it; absent, the larger
-//                    of the engine's step patience (600 s) and five stall
-//                    times; at least 60
+//   hang_seconds     no progress of any kind (a unit's end, a lane's
+//                    completion: a fence, a read or write, a VMM
+//                    operation) while work is under way for this long,
+//                    past the unit's own allowance, is a confirmed hang,
+//                    which is recovered (runtime/hang_ladder.h: the work
+//                    cancelled, the model reset, the process restarted
+//                    only when nothing less frees it); absent, the larger
+//                    of 600 s and five stall times; at least 60
 //   request_memory_bytes  the most the request memory may hold (bodies,
 //                    parses, queued requests, renderings, stop matchers,
 //                    unread stream output, responses); absent, the floor
@@ -321,6 +323,11 @@ struct MemoryConfig {
   std::uint32_t retention_hours = kDefaultRetentionHours;
   // 0: idle conversations are never kept spilled (dropped instead).
   std::uint32_t spill_budget_gib = kDefaultSpillBudgetGib;
+  // Conversations wholly on disk survive a restart of the service (D-105):
+  // their tokens and state stay in owner-only files beneath the spill role
+  // until retention or the budget removes them. false: nothing outlives the
+  // process (the spill files stay unnamed, as before D-105).
+  bool keep_across_restart = true;
 };
 
 // Parses one bind entry ("loopback", "tailscale", "127.0.0.1:8114",

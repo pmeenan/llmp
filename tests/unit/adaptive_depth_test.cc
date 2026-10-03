@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <span>
 
 #include "execution/adaptive_wave_mode.h"
 
@@ -239,6 +240,39 @@ TEST(AdaptiveWaveModeTest, ACutVerifyCountsAgainstItsRowsAndDoesNotFeedTheAverag
   const AdaptiveWaveMode fresh(kWideCost, AdaptiveWaveMode::Force::kNone, kCutRows);
   EXPECT_EQ(fresh.Choose(5), Mode::kPlain);
   EXPECT_EQ(fresh.Choose(4), Mode::kSpeculative);
+}
+
+// A kept conversation's record carries the depth's whole state (D-105):
+// loaded back it makes the same choices as the one saved, through its
+// probes; words no state could have are refused.
+TEST(AdaptiveDepthTest, ItsStateSavesAndLoadsWhole) {
+  AdaptiveDepth depth(3);
+  for (std::uint32_t i = 0; i < 45; ++i) {
+    depth.Observe(depth.Choose(), (i % 3) + 1);
+  }
+  const auto words = depth.Save();
+  const auto load = AdaptiveDepth::Load(words);
+  ASSERT_TRUE(load.has_value());
+  AdaptiveDepth loaded = load.value_or(AdaptiveDepth(1));
+  EXPECT_EQ(loaded, depth);
+  for (std::uint32_t i = 0; i < 80; ++i) {
+    ASSERT_EQ(loaded.Choose(), depth.Choose()) << i;
+    loaded.Observe(loaded.Choose(), (i % 4) + 1);
+    depth.Observe(depth.Choose(), (i % 4) + 1);
+  }
+  EXPECT_FALSE(AdaptiveDepth::Load(std::span(words).first(10)).has_value());
+  auto bad = words;
+  bad[0] = 9;  // a depth past 7
+  EXPECT_FALSE(AdaptiveDepth::Load(bad).has_value());
+  bad = words;
+  bad[2] = 5;  // a preferred depth that is neither
+  EXPECT_FALSE(AdaptiveDepth::Load(bad).has_value());
+  bad = words;
+  bad[8] = 0x7ff8000000000000ULL;  // a NaN average
+  EXPECT_FALSE(AdaptiveDepth::Load(bad).has_value());
+  bad = words;
+  bad[6] = 5;  // a probe longer than any
+  EXPECT_FALSE(AdaptiveDepth::Load(bad).has_value());
 }
 
 TEST(AdaptiveWaveModeTest, OnlyCompleteVerifiesFeedTheAverage) {

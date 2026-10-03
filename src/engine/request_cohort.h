@@ -98,6 +98,14 @@ class RequestCohort {
 
   // Every slot quarantined; no further dispatch until retirement.
   void Fault(std::span<LiveState* const> states);
+  // Retirement after a fault (D-102's hang recovery, rung 2): its runner
+  // fenced the stream (nothing it queued still runs) and recovered every
+  // slot's state; the fault lifts and the default request alone is
+  // selected.
+  void Recover() {
+    faulted_ = false;
+    active_ = 1;
+  }
   // After a failed job: a scheduler fault, an execution extent no longer at
   // its generation or quarantined, or several active slots without a held
   // request fault the cohort. Otherwise the failure stays local.

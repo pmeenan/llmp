@@ -9,12 +9,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <expected>
+#include <filesystem>
 #include <format>
 #include <functional>
 #include <limits>
@@ -23,6 +25,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -30,6 +33,7 @@
 
 #include "base/check.h"
 #include "base/report.h"
+#include "base/work_pulse.h"
 #include "chat/chat.h"
 #include "config/node_config.h"
 #include "platform/event_loop.h"
@@ -45,6 +49,7 @@
 #include "runtime/cohort_schedule.h"
 #include "runtime/commands.h"
 #include "runtime/completion_tokens.h"
+#include "runtime/hang_ladder.h"
 #include "runtime/intake_limits.h"
 #include "runtime/prefill.h"
 #include "runtime/runtime.h"
@@ -59,11 +64,53 @@ namespace {
 // extent of state.
 constexpr std::uint64_t kExtentBytes = std::uint64_t{2} << 20U;
 
+// D-105 at the process's end. A hang's last resort writes the conversation
+// records already queued for at most this long (best effort, bounded:
+// recovery comes first). A graceful stop keeps conversations for at most
+// kPersistLongest, giving up sooner only when nothing moves (Server::
+// Persist), and asks the service manager each second for kStopExtension
+// more.
+constexpr auto kLastResortKeep = std::chrono::seconds(10);
+constexpr auto kPersistLongest = std::chrono::hours(1);
+constexpr std::chrono::microseconds kStopExtension = std::chrono::seconds(15);
+// A start step's extension of the start timeout: jitllm.service's
+// TimeoutStartSec.
+constexpr std::chrono::microseconds kStartExtension = std::chrono::minutes(5);
+// How often the driver asks the hang ladder whether a cancellation drained
+// (NodeBackend::AwaitDrained).
+constexpr auto kDrainPoll = std::chrono::milliseconds(20);
+
 void Say(std::FILE* log, std::string_view text) {
   const std::string line = std::format("jitllm-runtime: {}\n", base::Printable(text));
   (void)std::fwrite(line.data(), 1, line.size(), log);
   (void)std::fflush(log);
 }
+
+// The node's waits under the hang ladder (D-102): each wait counts as work
+// under way while it lasts, feeds the ladder the node's progress as it
+// polls, and cancels its request at rung 1 when it began before the hang
+// was confirmed (a later wait is new work). Rung 3 is the ladder's last
+// resort, run by whichever thread entered it: the wait itself never gives
+// up.
+class LadderPatience final : public engine::Patience {
+ public:
+  explicit LadderPatience(HangLadder& ladder) : ladder_(ladder) {}
+  void Begin() override { ladder_.BeginWait(); }
+  void End() override { ladder_.EndWait(); }
+  engine::WaitVerdict Check(const engine::WaitState& wait, std::uint64_t progress) override {
+    const auto now = Clock::now();
+    ladder_.Activity(progress, now);
+    (void)ladder_.Check(now);
+    if (ladder_.rung() == HangLadder::Rung::kCancel && !wait.cancelled &&
+        wait.began <= ladder_.cancelled_at()) {
+      return engine::WaitVerdict::kCancel;
+    }
+    return engine::WaitVerdict::kWait;
+  }
+
+ private:
+  HangLadder& ladder_;
+};
 
 api::Error Failure(int status, std::string message, std::string code = {}, std::string param = {}) {
   return api::Error{.status = status,
@@ -160,7 +207,14 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
   conversation.max_render_bytes = static_cast<std::size_t>(render.output);
   conversation.max_live_bytes = static_cast<std::size_t>(render.live);
   ChatPrompt result;
-  const std::function<bool()> cancelled = [&exchange] { return !exchange.Continue(); };
+  // Each check beats the driver's pulse (a long rendering or tokenization
+  // is progress, not a hang), and stops it when a confirmed hang's rung 1
+  // asks the CPU work under way to stop (D-102).
+  base::WorkPulse* pulse = base::ThreadPulse();
+  const std::uint64_t cancels = pulse != nullptr ? pulse->cancels() : 0;
+  const std::function<bool()> cancelled = [&exchange] {
+    return !base::Pulse() || !exchange.Continue();
+  };
   ChatRenderFailure failure = ChatRenderFailure::kOther;
   std::uint64_t needed = 0;
   auto rendered = model.RenderChat(
@@ -184,6 +238,15 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
                     "the text.",
                     needed, memory.capacity() / tokenizer::kEncodeBytesPerWindowByte),
         "context_length_exceeded", "messages"));
+  }
+  if (!rendered && failure == ChatRenderFailure::kCancelled && pulse != nullptr &&
+      pulse->cancels() != cancels) {
+    // Stopped by the hang ladder (rung 1): the work stops here, so the
+    // next request's is not asked to stop too.
+    pulse->Clear();
+    return std::unexpected(Failure(
+        503, "the conversation's rendering made no progress and was cancelled: retry the request",
+        "backend_hung"));
   }
   if (!rendered && failure == ChatRenderFailure::kCancelled) {
     // The exchange answers for why (the client gone, the runtime stopping).
@@ -460,8 +523,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   // `memory`: the request memory (intake_limits.h), which the chat route
   // shares; renderings, tokenizations and literal scores are charged to it.
   NodeBackend(Server& server, const config::NodeConfig& config,
-              std::shared_ptr<RequestMemory> memory, std::FILE* log)
-      : server_(server), config_(config), memory_(std::move(memory)), log_(log) {}
+              std::shared_ptr<RequestMemory> memory, std::FILE* log, HangLadder* ladder = nullptr)
+      : server_(server), config_(config), memory_(std::move(memory)), log_(log), ladder_(ladder) {}
 
   // Only models with funded independent slots opt in. Literal completion,
   // scoring and unsupported models retain their ordinary entry points.
@@ -699,6 +762,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     if (auto valid = CheckCohort(work); !valid) {
       return valid;
     }
+    // Whether this unit's waits were cancelled for a hang (rung 1), asked
+    // after it.
+    (void)server_.node().TakeHangCancelled();
     if (selected_swap_) {
       selected_swap_ = false;
       bool needed = false;
@@ -716,6 +782,12 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       swapped_ = server_.resident() != cohort_model_;
       if (auto activated = server_.Activate(*cohort_model_, parts_); !activated) {
         swapped_ = false;
+        if (server_.node().TakeHangCancelled()) {
+          Say(log_,
+              "hang recovery: the swap's hung work was cancelled; the swap failed and only "
+              "the requests that needed it fail");
+          (void)AwaitDrained();  // a read still in the drive: rung 3
+        }
         if (server_.NodeHealthy()) {
           // Recovery first (D-102): a swap refused for room, or failed and
           // undone (or not: no model resident, the next activation loads one
@@ -747,6 +819,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     cohort_native_touched_ = true;
     // All active states stay protected even while just one branch prefills.
     if (auto selected = SelectCohort(); !selected) {
+      if (server_.node().TakeHangCancelled()) {
+        return HangCohort("selecting the native chat cohort");
+      }
       Fail("selecting the native chat cohort: " + selected.error());
       return selected;
     }
@@ -772,6 +847,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         return !frame.cancelled && frame.exchange.Next(Phase::kPrefill, rows);
       };
       if (auto advanced = frame.prompt_session->Advance(go_on, true); !advanced) {
+        if (server_.node().TakeHangCancelled()) {
+          return HangCohort("a prompt's unit");
+        }
         std::string error = "the prompt could not be processed: " + advanced.error();
         if (frame.prompt_session->refused()) {
           frame.refusal = std::move(error);
@@ -782,6 +860,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         }
         Rebalance();
         return {};  // own failure; Retire independently proves references
+      }
+      if (server_.node().TakeHangCancelled()) {
+        return HangCohort("a prompt's unit");  // a step ended after its request was cancelled
       }
       if (frame.prompt_session->done()) {
         auto begun = BeginChatGeneration(frame);
@@ -808,8 +889,14 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return {};
     }
     if (auto advanced = cohort_model_->RunGenerationWave(sessions, true); !advanced) {
+      if (server_.node().TakeHangCancelled()) {
+        return HangCohort("a generation wave");
+      }
       Fail("the native chat generation wave failed: " + advanced.error());
       return advanced;
+    }
+    if (server_.node().TakeHangCancelled()) {
+      return HangCohort("a generation wave");  // a step ended after its request was cancelled
     }
     for (ChatWork* frame : stepped) {
       frame->waited = 0;
@@ -856,7 +943,25 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     }
     const auto peers =
         std::ranges::count_if(cohort_, [](const ChatWork* peer) { return peer != nullptr; });
-    if (cohort_native_touched_) {
+    if (cohort_native_touched_ && hang_reset_ != nullptr) {
+      // After a hang's cancellation (rung 2) the cohort may be faulted: a
+      // fence of the model's stream, not the cohort's retirement, proves
+      // that nothing queued still borrows this owner's frame. A fence that
+      // cannot be made, or a cancellation that never drained, leaves
+      // nothing less than a restart (rung 3).
+      if (!AwaitDrained()) {
+        return {.result = std::unexpected(HungFailure()), .references_retired = false};
+      }
+      if (auto fenced = server_.FenceModel(frame.model); !fenced) {
+        if (ladder_ != nullptr) {
+          ladder_->Restart(
+              std::format("the {} cohort's stream could not be fenced after its "
+                          "hung work was cancelled: {}",
+                          frame.model.name(), fenced.error()));
+        }
+        return {.result = std::unexpected(HungFailure()), .references_retired = false};
+      }
+    } else if (cohort_native_touched_) {
       // The explicit fence hook, not a session status or StateUsable flag,
       // proves that native copies/jobs no longer borrow this owner's frame.
       const auto retired = server_.RetireRequestBranches(frame.model, peers == 1);
@@ -884,6 +989,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     } else if (!frame.error && !frame.generation.tokens.empty()) {
       frame.output.Finish();  // including a generation preempted and not yet resumed
     }
+    if (!frame.error && ladder_ != nullptr) {
+      ladder_->Served(frame.model.name());  // a later hang may reset it again
+    }
     api::Completion result{
         .completion_tokens = static_cast<std::uint32_t>(frame.generation.tokens.size()),
         .cached_tokens = frame.reused,
@@ -900,6 +1008,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       cohort_native_touched_ = false;
       selected_prompt_ = nullptr;
       selected_decode_.clear();
+      if (Llm* hung = std::exchange(hang_reset_, nullptr); hung != nullptr) {
+        // The last member of a cohort whose work hung: the model is reset.
+        (void)RecoverFromHang(*hung, std::format("the {} cohort's unit", hung->name()));
+      }
     } else {
       // Its state is no longer leased once the cohort is next selected:
       // members waiting for capacity retry (cohort_capacity.h).
@@ -1009,7 +1121,17 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       swapped_ = false;
       return so_far(0);
     }
+    (void)server_.node().TakeHangCancelled();  // asked after the work (D-102)
     if (auto r = server_.Activate(*m, parts_); !r) {
+      if (server_.node().TakeHangCancelled()) {
+        Say(log_,
+            "hang recovery: the swap's hung work was cancelled; the swap failed and only "
+            "the request that needed it fails");
+        if (!AwaitDrained()) {  // a read still in the drive: rung 3
+          swapped_ = false;
+          return std::unexpected(HungFailure());
+        }
+      }
       if (!server_.NodeHealthy()) {  // otherwise recovered (D-102): this request only
         Fail(std::format("making {} resident: {}", m->name(), r.error()));
       }
@@ -1070,8 +1192,16 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return capacity(l.Generate(last, options, generation), "the generation failed: ");
     });
     if (!ran) {
+      if (server_.node().TakeHangCancelled()) {
+        return std::unexpected(RecoverFromHang(*m, std::format("{}'s request", m->name())));
+      }
       Fail(std::format("{}'s request: {}", m->name(), ran.error()));
       return std::unexpected(Failure(500, "the generation failed; the runtime is stopping"));
+    }
+    if (server_.node().TakeHangCancelled()) {
+      // A step ended after its request was cancelled for a hang: the reply
+      // so far stands, and the model is reset for the next.
+      (void)RecoverFromHang(*m, std::format("{}'s request", m->name()));
     }
     if (capacity.refusal()) {
       RefusedAlone(l);
@@ -1101,6 +1231,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
                              .yielded = std::move(yielded)};
     }
     output.Finish();
+    if (ladder_ != nullptr) {
+      ladder_->Served(m->name());  // a later hang may reset it again
+    }
     return api::Completion{
         .completion_tokens = done + static_cast<std::uint32_t>(generation.tokens.size()),
         .cached_tokens = resume != nullptr ? resume->reused : reused,
@@ -1165,7 +1298,14 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       swapped_ = false;
       return api::Completion{};
     }
+    (void)server_.node().TakeHangCancelled();  // asked after the work (D-102)
     if (auto activated = server_.Activate(*model, parts_); !activated) {
+      if (server_.node().TakeHangCancelled()) {
+        Say(log_,
+            "hang recovery: the swap's hung work was cancelled; the swap failed and only "
+            "the request that needed it fails");
+        (void)AwaitDrained();  // a read still in the drive: rung 3
+      }
       if (!server_.NodeHealthy()) {  // otherwise recovered (D-102): this request only
         Fail("making the literal completion model resident: " + activated.error());
       }
@@ -1277,8 +1417,14 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return capacity(llm.Generate(last, options, generation), "the generation failed: ");
     });
     if (!ran) {
+      if (server_.node().TakeHangCancelled()) {
+        return std::unexpected(RecoverFromHang(*model, "a literal completion"));
+      }
       Fail("the literal completion failed: " + ran.error());
       return std::unexpected(Failure(500, "the completion failed; the runtime is stopping"));
+    }
+    if (server_.node().TakeHangCancelled()) {
+      (void)RecoverFromHang(*model, "a literal completion");
     }
     if (capacity.refusal()) {
       RefusedAlone(llm);
@@ -1299,6 +1445,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     }
     result.completion_tokens = static_cast<std::uint32_t>(generation.tokens.size());
     result.stopped = max_tokens == 0 || generation.stopped;
+    if (ladder_ != nullptr) {
+      ladder_->Served(model->name());  // a later hang may reset it again
+    }
     return result;
   }
 
@@ -1608,10 +1757,97 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     }
   }
 
+  // D-102's hang recovery, rung 2: a unit's work hung and its cancellation
+  // drained (the node's waits flag it). The requests that needed it fail
+  // with a 503 to retry, and the model is reset in place (Server::
+  // RecoverModel); when that cannot be done, rung 3 (the ladder's last
+  // resort restarts the process). `what` names the work.
+  api::Error RecoverFromHang(Served& m, std::string_view what) {
+    // Only once the cancellation drained: a read the drive still holds
+    // would land in what the reset frees (a stuck read is rung 3's).
+    if (!AwaitDrained()) {
+      Fail(std::format("{}'s hung work did not drain after its cancellation", m.name()));
+      return HungFailure();  // reached only when the last resort returns (a test's)
+    }
+    if (ladder_ != nullptr) {
+      if (auto again = ladder_->Resetting(m.name()); again) {
+        ladder_->Restart(*again);
+        Fail(*again);  // reached only when the last resort returns (a test's)
+        return HungFailure();
+      }
+    }
+    Say(log_, std::format("hang recovery, rung 2 (reset the model in place): {} failed after its "
+                          "hung work was cancelled and drained; {} is reset in place",
+                          what, m.name()));
+    if (auto recovered = server_.RecoverModel(m); !recovered) {
+      const std::string why = std::format(
+          "rung 2 could not reset model {} in place ({}): nothing less than a restart frees it",
+          m.name(), recovered.error());
+      if (ladder_ != nullptr) {
+        ladder_->Restart(why);
+      }
+      Fail(why);  // reached only when the last resort returns (a test's): the service stops
+    } else {
+      Say(log_, std::format("hang recovery, rung 2: model {} was reset in place and evicted; its "
+                            "next request loads it whole, and the service goes on",
+                            m.name()));
+    }
+    return HungFailure();
+  }
+  // After a hang's cancellation (rung 1), the driver waits until it drained
+  // (the ladder watches again: the driver moved and nothing the work
+  // submitted is still in flight) before it frees or reuses anything the
+  // work touched. False when it did not drain within its grace: the ladder
+  // entered rung 3 (whose last resort exits; a test's returns).
+  bool AwaitDrained() {
+    if (ladder_ == nullptr) {
+      return true;
+    }
+    while (ladder_->rung() == HangLadder::Rung::kCancel) {
+      const auto now = Clock::now();
+      ladder_->Activity(server_.progress(), now);
+      (void)ladder_->Check(now);
+      if (ladder_->rung() != HangLadder::Rung::kCancel) {
+        break;
+      }
+      std::this_thread::sleep_for(kDrainPoll);
+    }
+    return ladder_->rung() != HangLadder::Rung::kRestart;
+  }
+  static api::Error HungFailure() {
+    return Failure(503,
+                   "the model's work hung and was cancelled, and the model was reset: retry the "
+                   "request",
+                   "backend_hung");
+  }
+  // A cooperative unit's hang (rung 2 in a cohort): every member fails with
+  // a 503; the model is reset once the last of them retires (Retire), after
+  // a fence of its stream proves their native references retired.
+  std::expected<void, std::string> HangCohort(std::string_view what) {
+    hang_reset_ = cohort_model_;
+    std::size_t members = 0;
+    for (ChatWork* frame : cohort_) {
+      if (frame != nullptr && !frame->retired) {
+        frame->error = HungFailure();
+        ++members;
+      }
+    }
+    selected_prompt_ = nullptr;
+    selected_decode_.clear();
+    Say(log_, std::format("hang recovery, rung 2 (reset the model in place): {} failed after its "
+                          "hung work was cancelled; its {} requests fail, and {} is reset once "
+                          "they retire and the cancellation drained",
+                          what, members, cohort_model_ != nullptr ? cohort_model_->name() : ""));
+    return {};
+  }
+
   Server& server_;
   const config::NodeConfig& config_;
   std::shared_ptr<RequestMemory> memory_;  // the request memory (intake_limits.h)
   std::FILE* log_;
+  HangLadder* ladder_ = nullptr;
+  // The model a cohort's hang left to reset once its members retire.
+  Llm* hang_reset_ = nullptr;
   SwapParts parts_;
   bool swapped_ = false;
   std::string failure_;  // a node failure: the service stops
@@ -1674,11 +1910,81 @@ std::string HostNames(const api::HostGuard& hosts) {
 
 int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles,
                std::FILE* log) {
-  const ServingOptions serving;  // speculative where there is a drafter; no image prompt
+  // Speculative where there is a drafter; no image prompt; conversations
+  // kept across a restart (D-105).
+  ServingOptions serving;
+  serving.keep_conversations = true;
   int status = kExitOk;
+  // Hang recovery (D-102; hang_ladder.h): one ladder for the chat route's
+  // watch and the node's waits, outliving both (the teardown's waits are
+  // watched too). Its last resort exits for the supervisor; nothing is torn
+  // down (the driver may be the thread that hangs).
+  const config::ClientConfig& client_limits = config.client;
+  const std::chrono::milliseconds hang =
+      client_limits.hang_seconds
+          ? std::chrono::milliseconds(std::chrono::seconds(*client_limits.hang_seconds))
+          : api::DefaultHang(std::chrono::seconds(client_limits.stall_seconds));
+  HangLadder ladder(hang, Clock::now());
+  ladder.set_log([log](std::string_view line) { Say(log, std::string(line)); });
+  // What can be kept is kept first, briefly (D-105): the conversation
+  // records already queued are written (their spill files are whole on
+  // disk); nothing new is spilled, since the device may be what hangs.
+  std::atomic<Server*> running{nullptr};
+  ladder.set_last_resort([log, &running](const std::string& /*why*/) {
+    std::ignore = platform::NotifyServiceManager("STATUS=exiting after a confirmed hang");
+    if (Server* server = running.load(); server != nullptr) {
+      const bool kept = server->DrainKept(Clock::now() + kLastResortKeep);
+      Say(log, kept ? "the conversation records queued were written"
+                    : "some conversation records queued were not written in time");
+    }
+    Say(log, "exiting for the supervisor to restart the runtime (hang recovery's last resort)");
+    std::_Exit(kExitFailure);
+  });
+  LadderPatience patience(ladder);
+  // This thread is the driver: its long CPU work beats the ladder's pulse
+  // and stops when rung 1 asks it to (base/work_pulse.h).
+  base::SetThreadPulse(&ladder.pulse());
+  // The test hook below (JITLLM_TEST_HOLD_READS): with
+  // JITLLM_TEST_HOLD_READS_CANCELLABLE=1 a held read completes as cancelled
+  // when the lane cancels it (as a read still queued would); otherwise, as
+  // a read a drive holds, it does not.
+  // NOLINTNEXTLINE(concurrency-mt-unsafe): read before any thread starts
+  if (const char* cancellable = std::getenv("JITLLM_TEST_HOLD_READS_CANCELLABLE");
+      cancellable != nullptr && std::string_view(cancellable) == "1") {
+    serving.hold_cancellable = true;
+  }
   {
     Server server(config, roles, serving, log);
+    server.SetPatience(&patience);
+    // Each step of the start that made progress extends the service
+    // manager's start timeout (jitllm.service's TimeoutStartSec).
+    server.set_start_progress([] {
+      std::ignore = platform::NotifyServiceManager(
+          std::format("EXTEND_TIMEOUT_USEC={}", kStartExtension.count()));
+    });
+    running.store(&server);
+    // A test hook (D-102's hang recovery, tested end to end): with
+    // JITLLM_TEST_HOLD_READS naming a file, the node's reads are held while
+    // that file exists, as a stuck drive's would be. Unset in service.
+    std::jthread hold_watch;
+    // NOLINTNEXTLINE(concurrency-mt-unsafe): read before any thread starts
+    if (const char* path = std::getenv("JITLLM_TEST_HOLD_READS"); path != nullptr && *path != 0) {
+      Say(log, std::format("test hook: the node's reads are held while {} exists ({})", path,
+                           serving.hold_cancellable ? "cancellable, as queued reads"
+                                                    : "not cancellable, as a drive's"));
+      hold_watch = std::jthread([&server, file = std::string(path)](const std::stop_token& stop) {
+        while (!stop.stop_requested()) {
+          std::error_code error;
+          server.HoldReads(std::filesystem::exists(file, error));
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        server.HoldReads(false);
+      });
+    }
     auto started = server.Start(false);
+    // A cancellation drains only once nothing submitted before it is still
+    // in flight (a read a drive holds does not end when cancelled).
+    ladder.set_operations([&server] { return server.node().oldest_io(); });
     std::optional<NodeBackend> backend;
     std::optional<api::Server> http;
     if (started) {
@@ -1694,7 +2000,7 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       // for Maintain to grow it (RequestMemory::Settle).
       memory->SetDriver(std::this_thread::get_id(),
                         [&server](std::uint64_t to) { return server.SetRequestMemory(to); });
-      backend.emplace(server, config, memory, log);
+      backend.emplace(server, config, memory, log, &ladder);
       api::ServerOptions options;
       options.intake = intake;
       options.memory = memory;
@@ -1721,18 +2027,12 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       options.idle_timeout = std::chrono::seconds(client.idle_seconds);
       options.request_inactivity = std::chrono::seconds(client.request_inactivity_seconds);
       options.write_inactivity = seconds(client.write_inactivity_seconds);
-      // A confirmed hang (nothing at all moves: no unit's beat, no page-in)
-      // ends the process for its supervisor (jitllm.service restarts it on
-      // failure): D-102's interim until hang recovery lands. The I/O thread
-      // tells it; the driver may be the thread that hangs, so nothing is
-      // torn down.
-      options.hang = seconds(client.hang_seconds);
-      options.activity = [&server] { return server.page_in_events(); };
-      options.on_hang = [log](const std::string& why) {
-        Say(log, "exiting: " + why);
-        std::ignore = platform::NotifyServiceManager("STATUS=exiting after a confirmed hang");
-        std::_Exit(kExitFailure);
-      };
+      // A genuine hang is recovered (D-102): the I/O thread feeds the ladder
+      // the node's progress (any lane's completion, any wait of the
+      // driver's ending) and escalates it; the node's waits cancel at its
+      // rung 1, and its last resort restarts the process.
+      options.ladder = &ladder;
+      options.activity = [&server] { return server.progress(); };
       // The server logs each change of the backend's health; the service
       // manager's status line says it too (`systemctl status`).
       const std::size_t served = backend->Models().size();
@@ -1763,13 +2063,12 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       }
       options.max_connections = static_cast<std::size_t>(
           client.max_connections ? std::min<std::uint64_t>(*client.max_connections, fits) : fits);
-      const std::chrono::milliseconds hang = options.hang.value_or(
-          std::max<std::chrono::milliseconds>(api::kHangFloor, api::kHangStalls * options.stall));
       Say(log, std::format("the chat route's limits: request memory {} bytes set apart, growing "
                            "within the budget to {} bytes{} (bodies, parses, renderings, unread "
                            "output, responses); bodies up to {} bytes; a stream pauses past {} "
                            "unread bytes; {} connections; queue {}; stalls reported after {} s{}; "
-                           "a confirmed hang after {} s exits",
+                           "a hang confirmed after {} s without progress is recovered (cancel, "
+                           "reset the model, restart)",
                            intake.request_floor, intake.request_capacity,
                            client.request_memory_bytes ? " ([client] request_memory_bytes)" : "",
                            intake.max_body, intake.stream_buffer, options.max_connections,
@@ -1841,6 +2140,17 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
           status = kExitFailure;
         } else {
           Say(log, "stopping");
+          // A graceful stop keeps the conversations for the next start
+          // (D-105): spilled and recorded, telling the service manager it is
+          // still working (each extension a few seconds past the last), so
+          // its stop timeout never cuts a stop that makes progress.
+          const auto extend = [] {
+            std::ignore = platform::NotifyServiceManager(
+                std::format("EXTEND_TIMEOUT_USEC={}", kStopExtension.count()));
+          };
+          extend();
+          server.Persist(Clock::now() + kPersistLongest, extend);
+          extend();  // and the teardown that follows
         }
       }
     }
@@ -1849,7 +2159,10 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       Say(log, "stopping: " + stopped.error());
       status = kExitFailure;
     }
+    ladder.set_operations({});  // the server goes
+    running.store(nullptr);
   }
+  base::SetThreadPulse(nullptr);  // the ladder goes
   return status;
 }
 

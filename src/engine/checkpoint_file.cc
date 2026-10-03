@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstring>
+#include <format>
 #include <limits>
 #include <system_error>
 #include <utility>
@@ -126,41 +127,119 @@ std::expected<std::vector<Range>, std::string> CheckpointPages(std::span<const R
 }
 
 CheckpointFile::CheckpointFile(CheckpointFile&& other) noexcept
-    : fd_(std::exchange(other.fd_, -1)), bytes_(other.bytes_), ranges_(std::move(other.ranges_)) {}
+    : fd_(std::exchange(other.fd_, -1)),
+      bytes_(other.bytes_),
+      ranges_(std::move(other.ranges_)),
+      dir_(std::exchange(other.dir_, -1)),
+      name_(std::move(other.name_)),
+      identity_(other.identity_),
+      preserve_(other.preserve_) {
+  other.name_.clear();
+}
 
 CheckpointFile& CheckpointFile::operator=(CheckpointFile&& other) noexcept {
   if (this != &other) {
-    if (fd_ >= 0) {
-      (void)::close(fd_);
-    }
+    Close();
     fd_ = std::exchange(other.fd_, -1);
     bytes_ = other.bytes_;
     ranges_ = std::move(other.ranges_);
+    dir_ = std::exchange(other.dir_, -1);
+    name_ = std::move(other.name_);
+    other.name_.clear();
+    identity_ = other.identity_;
+    preserve_ = other.preserve_;
   }
   return *this;
 }
 
-CheckpointFile::~CheckpointFile() {
+CheckpointFile::~CheckpointFile() { Close(); }
+
+void CheckpointFile::Close() {
   if (fd_ >= 0) {
     (void)::close(fd_);
+    fd_ = -1;
   }
+  // A named file goes with its checkpoint, unless the process is ending
+  // with it kept for the next (Preserve).
+  if (dir_ >= 0 && !name_.empty() && !preserve_) {
+    (void)::unlinkat(dir_, name_.c_str(), 0);
+  }
+  dir_ = -1;
+  name_.clear();
+}
+
+std::uint64_t CheckpointFile::file_bytes() const {
+  std::uint64_t total = 0;
+  for (const Range& range : ranges_) {
+    total += support::Round(range.bytes, kAlignment);
+  }
+  return total;
+}
+
+std::expected<CheckpointFile, std::string> CheckpointFile::Adopt(int dir, std::string name,
+                                                                 std::vector<Range> ranges) {
+  if (auto valid = Validate(ranges); !valid) {
+    return std::unexpected(valid.error());
+  }
+  auto opened = platform::OpenPrivateFile(
+      dir, name.c_str(), {.write = false, .create = false, .truncate = false, .direct = true});
+  if (!opened) {
+    return std::unexpected(std::format("the kept checkpoint {}: {}", name,
+                                       std::system_category().message(opened.error())));
+  }
+  CheckpointFile checkpoint;
+  checkpoint.fd_ = opened->fd;
+  checkpoint.dir_ = dir;
+  checkpoint.name_ = std::move(name);
+  checkpoint.identity_ = opened->identity;
+  checkpoint.ranges_ = std::move(ranges);
+  for (const Range& range : checkpoint.ranges_) {
+    checkpoint.bytes_ += range.bytes;
+  }
+  if (opened->bytes != checkpoint.file_bytes()) {
+    // Refused, and removed with it: a record naming it drops it next time.
+    return std::unexpected(
+        std::format("the kept checkpoint {} is not the size of its pages", checkpoint.name_));
+  }
+  return checkpoint;
 }
 
 std::expected<CheckpointFile, CheckpointFailure> CheckpointFile::Capture(
     PagedNode& node, const std::filesystem::path& directory, std::span<const Range> ranges,
     const Copy& copy, const Continue& go_on) {
+  return Capture(node, Place{.directory = directory, .dir = -1, .name = {}}, ranges, copy, go_on);
+}
+
+std::expected<CheckpointFile, CheckpointFailure> CheckpointFile::Capture(
+    PagedNode& node, const Place& place, std::span<const Range> ranges, const Copy& copy,
+    const Continue& go_on) {
   if (auto valid = Validate(ranges); !valid) {
     return Failure(valid.error());
   }
   if (go_on && !go_on()) {
     return Failure("checkpoint capture cancelled", false, true);
   }
-  auto opened = platform::OpenUnnamedDirectFile(directory);
-  if (!opened) {
-    return Failure("opening checkpoint file: " + std::system_category().message(opened.error()));
-  }
   CheckpointFile checkpoint;
-  checkpoint.fd_ = *opened;
+  if (place.dir >= 0) {
+    // Named, owner-only (D-105): a failed capture removes it (the
+    // destructor), so only a whole one stays.
+    auto opened = platform::OpenPrivateFile(
+        place.dir, place.name.c_str(),
+        {.write = true, .create = true, .truncate = true, .direct = true});
+    if (!opened) {
+      return Failure("opening checkpoint file: " + std::system_category().message(opened.error()));
+    }
+    checkpoint.fd_ = opened->fd;
+    checkpoint.dir_ = place.dir;
+    checkpoint.name_ = place.name;
+    checkpoint.identity_ = opened->identity;
+  } else {
+    auto opened = platform::OpenUnnamedDirectFile(place.directory);
+    if (!opened) {
+      return Failure("opening checkpoint file: " + std::system_category().message(opened.error()));
+    }
+    checkpoint.fd_ = *opened;
+  }
   Staging staging(node);
   if (auto allocated = staging.Open(); !allocated) {
     return Failure(allocated.error());

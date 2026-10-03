@@ -51,12 +51,17 @@ std::optional<std::uint64_t> FileGeneration(int fd);
 // failure.
 std::expected<int, int> OpenAnonymousMemoryFile(const char* name);
 
-// The running executable's size and modification time (nanoseconds since
-// the epoch), which change when it is rebuilt: Linux's /proc/self/exe;
-// macOS would use _NSGetExecutablePath. None on failure.
+// The running executable file's identity: its size and modification time
+// (nanoseconds since the epoch), which change when it is rebuilt, and its
+// device, inode and inode generation (FileGeneration; unset where the
+// filesystem reports none), which change when it is reinstalled: Linux's
+// /proc/self/exe; macOS would use _NSGetExecutablePath. None on failure.
 struct ExecutableStamp {
   std::uint64_t size = 0;
   std::int64_t modified_ns = 0;
+  std::uint64_t device = 0;
+  std::uint64_t inode = 0;
+  std::optional<std::uint64_t> generation;
 };
 std::optional<ExecutableStamp> RunningExecutableStamp();
 

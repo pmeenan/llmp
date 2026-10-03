@@ -44,13 +44,14 @@
 // by default a stall only reports. With stall_fails the active requests
 // also end (a 504 before the headers, an in-stream error after), their
 // generation is cancelled as when a client leaves, what is queued gets a
-// 503 and so do new requests until the next beat. A hung unit that never
-// returns is the node's to end (its per-step patience,
-// engine/paged_node.h); one that hangs where no patience watches (a driver
-// spinning or deadlocked) is a confirmed hang once nothing at all moves (no
-// beat, no page-in) for ServerOptions::hang: `on_hang` is told, and the
-// runtime exits for its supervisor to restart it (D-102's interim until
-// hang recovery lands). A request has no fixed deadline: a stream runs
+// 503 and so do new requests until the next beat. A genuine hang is
+// recovered (D-102, hang_ladder.h): the I/O thread feeds the beats and the
+// node's progress to the hang ladder, which confirms a hang once nothing at
+// all moves for ServerOptions::hang past the unit's allowance, and
+// escalates: the driver's node wait cancels the stuck work (the backend
+// then fails the requests that needed it and recovers its model), and
+// when nothing less frees it the ladder's last resort restarts the
+// process for its supervisor. A request has no fixed deadline: a stream runs
 // until it is done or its client leaves; a non-streaming one too unless
 // deadline_cap is set, when it ends at its scaled deadline (watchdog.h
 // ScaledDeadline, capped there).
@@ -128,6 +129,7 @@
 #include "platform/event_loop.h"
 #include "runtime/api.h"
 #include "runtime/binding.h"
+#include "runtime/hang_ladder.h"
 #include "runtime/http.h"
 #include "runtime/intake_limits.h"
 #include "runtime/watchdog.h"
@@ -378,11 +380,13 @@ struct ServerOptions {
   // A paused stream that keeps queued requests waiting this long yields
   // its place (Exchange::Yielding).
   std::chrono::milliseconds yield_after{std::chrono::seconds(10)};
-  // A confirmed hang: work under way and no progress of any kind (a unit's
-  // beat, nor `activity` changing: page-in progress) for `hang` (none: the
-  // larger of kHangFloor and kHangStalls stall times). `on_hang` is called
-  // once, on the I/O thread, with why; the runtime exits for its
-  // supervisor to restart it (D-102's interim before hang recovery).
+  // Hang recovery (D-102; hang_ladder.h). The I/O thread feeds `ladder` the
+  // backend's activity (`activity`: the node's progress count, read each
+  // sweep) and advances it; the server's beats tell it each unit and its
+  // allowance. Without one the server makes its own, of `hang` (none:
+  // DefaultHang) with `on_hang` its last resort (run once, on the I/O
+  // thread, with why), as the tests do. Not owned: it outlives the server.
+  HangLadder* ladder = nullptr;
   std::optional<std::chrono::milliseconds> hang;
   std::function<std::uint64_t()> activity;
   std::function<void(const std::string&)> on_hang;
@@ -393,10 +397,11 @@ struct ServerOptions {
   std::function<void(const Health&)> on_health;
 };
 
-// The hang's default (ServerOptions::hang): the engine's own patience for a
-// step (engine/paged_node.cc), or this many stall times if longer.
+// The hang's default ([client] hang_seconds absent): ten minutes, or this
+// many stall times if longer.
 inline constexpr std::chrono::minutes kHangFloor{10};
 inline constexpr int kHangStalls = 5;
+std::chrono::milliseconds DefaultHang(std::chrono::milliseconds stall);
 
 // A body at least this large is parsed on the server's parse thread, so the
 // I/O thread goes on serving every other connection meanwhile.
@@ -480,8 +485,8 @@ class Server {
   void RetryBody(Connection& c);
   // A whole body arrived: the request handed on (OnRequest).
   void BodyArrived(Connection& c);
-  // A confirmed hang (ServerOptions::hang), with mutex_ held: why, or empty.
-  std::string HangLocked(Clock::time_point now);
+  // Hang recovery's watch (ServerOptions::ladder), without mutex_ held.
+  void WatchHang(Clock::time_point now);
   // Answers with an error; `log`: a line with the status (never the
   // message, which may quote the request).
   void Refuse(Connection& c, const Error& error, std::vector<std::string> extra = {},
@@ -538,6 +543,9 @@ class Server {
 
   Backend& backend_;
   ServerOptions options_;
+  // Hang recovery's ladder: options_.ladder, or the server's own.
+  std::unique_ptr<HangLadder> own_ladder_;
+  HangLadder* ladder_ = nullptr;
   // The request memory (ServerOptions::memory): declared before everything
   // that holds a charge to it, so it outlives them.
   std::shared_ptr<RequestMemory> memory_;
@@ -553,11 +561,8 @@ class Server {
 
   // The I/O thread's own.
   std::unordered_map<std::uint64_t, std::unique_ptr<Connection>> connections_;  // by ID
-  std::uint64_t next_id_ = 0;              // connections are numbered from 1
-  std::uint64_t activity_ = 0;             // a clock of connection activity, for eviction
-  std::uint64_t backend_activity_ = 0;     // ServerOptions::activity, last seen
-  Clock::time_point backend_activity_at_;  // when it last changed
-  bool hang_reported_ = false;
+  std::uint64_t next_id_ = 0;   // connections are numbered from 1
+  std::uint64_t activity_ = 0;  // a clock of connection activity, for eviction
   Clock::time_point accept_paused_until_;
   Clock::time_point out_of_files_logged_;
   bool draining_ = false;

@@ -839,7 +839,9 @@ Status Dsv4Runner::Register() {
   }
   for (RequestState* request : Requests()) {
     if (request->provisioned) {
-      if (auto r = request->live.RegisterSpill(node_, o_.out); !r) {
+      auto r = o_.spill_place ? request->live.RegisterSpill(node_, o_.spill_place(request->slot))
+                              : request->live.RegisterSpill(node_, o_.out);
+      if (!r) {
         return r;
       }
     }
@@ -1018,11 +1020,95 @@ Status Dsv4Runner::Clear(RequestState& request) {
   request.track.Lost();
   if (cleared) {
     request.spilled = false;  // nothing left in its spill file either
+    request.adopted.clear();
+    request.adopted_bytes = 0;
   }
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;
   }
   return cleared;
+}
+
+Status Dsv4Runner::Adopt(RequestState& request, std::span<const LiveState::Range> used) {
+  if (released_ || cohort_.faulted()) {
+    return Error("the DeepSeek cohort requires retirement");
+  }
+  if (!request.provisioned || request.spilled || !request.live.extents().empty() || used.empty() ||
+      (cohort_.IsActive(request.slot) && node_.InRequest(stream_))) {
+    return Error("a DeepSeek slot adopts a kept conversation only while it holds none");
+  }
+  if (auto bytes = request.live.UsedBytesOf(used); !bytes) {
+    return std::unexpected(bytes.error());
+  }
+  // Spilled, outside every closure, until Restore reads it from the file.
+  request.adopted.assign(used.begin(), used.end());
+  request.adopted_bytes = used.size() * kPagedExtent;
+  request.spilled = true;
+  request.track.Lost();
+  return RefreshClosures();
+}
+
+std::expected<SlotMask, std::string> Dsv4Runner::RecoverInPlace(
+    const std::function<void(std::uint32_t slot)>& before_discard) {
+  if (released_) {
+    return Error("the DeepSeek runner is released");
+  }
+  if (node_.InRequest(stream_)) {
+    return Error("a request is still open on DeepSeek's stream");
+  }
+  if (resources_.launch().faulted()) {
+    return Error(
+        "DeepSeek's launch context faulted: a launch of unknown outcome is not proven "
+        "retired");
+  }
+  const bool faulted = cohort_.faulted();
+  cohort_.Recover();
+  SlotMask discarded = 0;
+  for (RequestState* request : Requests()) {
+    if (!request->provisioned) {
+      continue;
+    }
+    // On disk since before the failure, and nothing ran on it: kept.
+    if (request->spilled && request->live.LiftIfPreserved(node_)) {
+      continue;
+    }
+    if (!faulted && !request->live.quarantined()) {
+      continue;  // untouched by the failed work
+    }
+    if (before_discard) {
+      before_discard(request->slot);
+    }
+    request->state_refused = false;
+    const Status cleared = request->live.DiscardGrowingState(node_);
+    request->track.Lost();
+    if (!cleared) {
+      cohort_.Fault(States());
+      return Error(std::format("discarding a DeepSeek slot's state: {}", cleared.error()));
+    }
+    request->spilled = false;
+    request->adopted.clear();
+    request->adopted_bytes = 0;
+    discarded |= SlotMask{1} << request->slot;
+  }
+  DropPlans();
+  if (auto refreshed = RefreshClosures(); !refreshed) {
+    return std::unexpected(refreshed.error());
+  }
+  return discarded;
+}
+
+std::string Dsv4Runner::kept_layout() const {
+  // Every slot's state has slot 0's layout. Version 1 of the state format:
+  // a change to what a region's bytes mean bumps it.
+  const LiveState& live = default_request_.live;
+  std::string layout =
+      std::format("deepseek4-state/1;context={};dspark={};window={};regions=", o_.context,
+                  speculative() ? 1 : 0, o_.full_window || o_.exact ? "full" : "ring");
+  for (std::size_t i = 0; i < live.regions(); ++i) {
+    layout += std::format("{}{}:{}:{}", i == 0 ? "" : ",", live.region_name(i), live.bytes(i),
+                          live.mapped_bytes(i));
+  }
+  return layout;
 }
 
 Status Dsv4Runner::Spill(RequestState& request) {
@@ -1115,6 +1201,22 @@ Status Dsv4Runner::Restore(RequestState& request) {
   if (released_ || cohort_.faulted()) {
     return Error("the DeepSeek cohort requires retirement");
   }
+  if (!request.adopted.empty()) {
+    // Kept from the process before (D-105): its extents are fresh here, and
+    // their first load reads them from the named spill file, which holds
+    // them (LiveState::Use), under the budget: a clean refusal leaves it
+    // spilled for the runtime to make room.
+    bool over_budget = false;
+    if (auto used = request.live.Use(node_, request.adopted, nullptr, &over_budget); !used) {
+      request.state_refused = over_budget && !cohort_.faulted();
+      return std::unexpected(used.error());
+    }
+    request.adopted.clear();
+    request.adopted_bytes = 0;
+    request.spilled = false;
+    request.track.Saved();  // the file holds the state as it is now
+    return RefreshClosures();
+  }
   catalog::Closure closure;
   const std::vector<ExtentId> extents = request.live.extents();
   if (auto described = node_.Call(
@@ -1164,6 +1266,8 @@ Status Dsv4Runner::ClearIdle(RequestState& request) {
   request.track.Lost();
   if (cleared) {
     request.spilled = false;
+    request.adopted.clear();
+    request.adopted_bytes = 0;
   }
   if (auto refreshed = RefreshClosures(); !refreshed) {
     return refreshed;

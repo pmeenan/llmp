@@ -6,8 +6,12 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <span>
 
 namespace jitllm::execution {
 
@@ -71,6 +75,59 @@ class AdaptiveDepth {
   }
 
   bool operator==(const AdaptiveDepth&) const = default;
+
+  std::uint32_t maximum() const { return maximum_; }
+  double relative_cost() const { return relative_cost_; }
+  // The same state at another relative cost (a calibration measured since
+  // it was saved, D-103); an invalid cost keeps its own.
+  AdaptiveDepth WithCost(double relative_cost) const {
+    AdaptiveDepth out = *this;
+    if (std::isfinite(relative_cost) && relative_cost > 0) {
+      out.relative_cost_ = relative_cost;
+    }
+    return out;
+  }
+
+  // Its whole state as words (a kept conversation's record, D-105), and
+  // back: Load refuses words that no state Save could give (a depth out of
+  // its range, a probe of another depth, a count or average not a number).
+  static constexpr std::size_t kWords = 11;
+  std::array<std::uint64_t, kWords> Save() const {
+    return {maximum_,
+            minimum_,
+            preferred_,
+            std::bit_cast<std::uint64_t>(relative_cost_),
+            since_probe_,
+            probe_depth_,
+            probe_left_,
+            stats_[0].seen,
+            std::bit_cast<std::uint64_t>(stats_[0].kept),
+            stats_[1].seen,
+            std::bit_cast<std::uint64_t>(stats_[1].kept)};
+  }
+  static std::optional<AdaptiveDepth> Load(std::span<const std::uint64_t> words) {
+    if (words.size() != kWords || words[0] < 1 || words[0] > 7) {
+      return std::nullopt;
+    }
+    const auto cost = std::bit_cast<double>(words[3]);
+    AdaptiveDepth out(static_cast<std::uint32_t>(words[0]), cost);
+    const auto kept0 = std::bit_cast<double>(words[8]);
+    const auto kept1 = std::bit_cast<double>(words[10]);
+    const auto valid_kept = [](double kept) { return std::isfinite(kept) && kept >= 0; };
+    if (out.relative_cost_ != cost || words[1] != out.minimum_ ||
+        (words[2] != out.minimum_ && words[2] != out.maximum_) || words[4] >= 32 ||
+        (words[5] != 0 && words[5] != out.minimum_ && words[5] != out.maximum_) || words[6] > 4 ||
+        !valid_kept(kept0) || !valid_kept(kept1)) {
+      return std::nullopt;
+    }
+    out.preferred_ = static_cast<std::uint32_t>(words[2]);
+    out.since_probe_ = static_cast<std::uint32_t>(words[4]);
+    out.probe_depth_ = static_cast<std::uint32_t>(words[5]);
+    out.probe_left_ = static_cast<std::uint32_t>(words[6]);
+    out.stats_[0] = {.seen = words[7], .kept = kept0};
+    out.stats_[1] = {.seen = words[9], .kept = kept1};
+    return out;
+  }
 
  private:
   struct Stats {

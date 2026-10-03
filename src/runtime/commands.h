@@ -80,6 +80,15 @@ struct ServingOptions {
   // A JSON report of every number, written at the end (optional). It holds
   // prompts' token counts and the generated text only for chat.
   std::filesystem::path report;
+  // Conversations kept across a restart (D-105): the service keeps them;
+  // the commands, which measure from a known start, leave what the service
+  // kept alone and spill to unnamed files as before.
+  bool keep_conversations = false;
+  // A test hook (D-102's hang recovery; engine/paged_node.h
+  // CountingStorage): reads held by Server::HoldReads complete as
+  // cancelled when the lane cancels them. Otherwise, as a drive's, they
+  // do not.
+  bool hold_cancellable = false;
 };
 
 struct ChatOptions {

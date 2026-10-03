@@ -52,6 +52,7 @@
 #include "runtime/api_server.h"
 #include "runtime/binding.h"
 #include "runtime/completion_tokens.h"
+#include "runtime/hang_ladder.h"
 #include "runtime/http.h"
 #include "runtime/intake_limits.h"
 #include "runtime/watchdog.h"
@@ -1234,6 +1235,23 @@ class FakeBackend final : public api::Backend {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
       }
     }
+    if (text == "hangwait") {
+      // A unit hung inside a node wait (engine/paged_node.h): the wait polls
+      // the ladder, cancels its request at rung 1, and the cancellation
+      // drains (the node's count moves); the request fails alone.
+      started.store(true);
+      ladder->BeginWait();
+      while (ladder->rung() != jitllm::runtime::HangLadder::Rung::kCancel) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+      ++*activity;
+      ladder->EndWait();
+      return std::unexpected(api::Error{.status = 503,
+                                        .type = "server_error",
+                                        .message = "the work hung and was cancelled",
+                                        .param = {},
+                                        .code = "backend_hung"});
+    }
     if (text == "hang") {
       started.store(true);
       while (!release.load()) {
@@ -1389,6 +1407,9 @@ class FakeBackend final : public api::Backend {
   std::atomic<unsigned> chat_calls{0};
   std::atomic<unsigned> yields{0};
   std::atomic<unsigned> resumes{0};
+  // "hangwait"'s ladder and the node's progress count it moves.
+  jitllm::runtime::HangLadder* ladder = nullptr;
+  std::atomic<std::uint64_t>* activity = nullptr;
   api::CooperativeBackend* cooperative() override { return cooperative_backend; }
 
   // A request memory this backend grows, as the node's does (Maintain on
@@ -3435,9 +3456,11 @@ TEST_F(ServerTest, AFullCohortsPausedReaderYieldsItsPlace) {
   EXPECT_EQ(cooperative_->cancelled.load(), 0U);
 }
 
-// D-102's interim before hang recovery: work under way with nothing moving
-// at all (no beat, no backend activity) for `hang` is a confirmed hang,
-// told once; activity (page-in progress) keeps a long unit from being one.
+// D-102's hang recovery: work under way with nothing moving at all (no
+// beat, no backend activity) for `hang`, past its unit's allowance, is a
+// confirmed hang; with the driver outside any node wait no cancellation
+// reaches it, so the ladder's last resort runs (rung 3), once; activity
+// (the node's progress) keeps a long unit from being one.
 TEST_F(ServerTest, AConfirmedHangIsToldOnceAndActivityIsProgress) {
   Stop();
   std::atomic<int> hangs{0};
@@ -3445,6 +3468,7 @@ TEST_F(ServerTest, AConfirmedHangIsToldOnceAndActivityIsProgress) {
   std::atomic<bool> moving{true};
   api::ServerOptions options;
   options.hang = std::chrono::milliseconds(400);
+  options.stall = std::chrono::milliseconds(100);  // the unit's allowance
   options.activity = [&activity] { return activity.load(); };
   options.on_hang = [&hangs](const std::string& why) {
     EXPECT_THAT(why, HasSubstr("hang_seconds"));
@@ -3473,6 +3497,37 @@ TEST_F(ServerTest, AConfirmedHangIsToldOnceAndActivityIsProgress) {
   std::this_thread::sleep_for(std::chrono::milliseconds(600));
   EXPECT_EQ(hangs.load(), 1);  // once, and never while idle
   Stop();                      // before what the options borrow goes
+}
+
+// Rung 1 through the chat route: a unit hung in a node wait is cancelled
+// once the ladder confirms it; the cancellation drains, the request fails
+// alone, the ladder watches again and the next request is served. No last
+// resort runs.
+TEST_F(ServerTest, AHungNodeWaitIsCancelledAndTheRouteGoesOn) {
+  Stop();
+  std::atomic<std::uint64_t> activity{0};
+  std::atomic<int> restarts{0};
+  jitllm::runtime::HangLadder ladder(std::chrono::milliseconds(400),
+                                     std::chrono::steady_clock::now());
+  ladder.set_last_resort([&restarts](const std::string& /*why*/) { ++restarts; });
+  api::ServerOptions options;
+  options.ladder = &ladder;
+  options.activity = [&activity] { return activity.load(); };
+  options.stall = std::chrono::milliseconds(100);
+  backend_.ladder = &ladder;
+  backend_.activity = &activity;
+  backend_.release.store(false);
+  Start(options);
+  const std::string failed = Exchange(Post(Chat("hangwait")));
+  EXPECT_THAT(failed, AllOf(StartsWith("HTTP/1.1 503 "), HasSubstr("backend_hung")));
+  EXPECT_EQ(ladder.cancels(), 1U);
+  EXPECT_TRUE(WaitFor([&] { return ladder.drained() == 1; }));
+  EXPECT_EQ(ladder.rung(), jitllm::runtime::HangLadder::Rung::kWatching);
+  EXPECT_THAT(Exchange(Post(Chat("hello"))), StartsWith("HTTP/1.1 200 "));
+  EXPECT_EQ(restarts.load(), 0);
+  Stop();  // before what the options borrow goes
+  backend_.ladder = nullptr;
+  backend_.activity = nullptr;
 }
 
 // Backpressure in a cohort (D-102): a stream whose client stops reading is

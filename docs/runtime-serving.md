@@ -31,10 +31,13 @@ its own signal stack first (D-074's crash policy); and failures are values
 up to the command, which exits 1 with them in the log. Lifetimes stay as
 the harnesses proved them (D-048): the node's driver posts a program to a
 bounded control queue (waiting while it is full) and never returns while
-the program, or a job it queued, may still refer to its frame; past ten
-minutes it cancels the request and waits for the drain, and if even that
-does not come it aborts the process rather than free memory a job may
-still use. A swap or eviction asked for between a request's steps ends
+the program, or a job it queued, may still refer to its frame. Each of
+its waits watches the node's progress and asks its patience
+([hang recovery](#hang-recovery)): when nothing moves it cancels the
+request and waits for the drain, and if even that does not come the
+process ends rather than free memory a job may still use (the service's
+ladder exits for its supervisor; the commands' own patience, ten minutes
+without progress each way, aborts). A swap or eviction asked for between a request's steps ends
 that request first; teardown ends every request, fences each model's
 stream, evicts every managed extent and checks every backing released.
 
@@ -70,9 +73,13 @@ composition = "eca21baa…"  # a pipeline (D-089)
 [memory]                     # D-055 as amended 2026-10-02 (below)
 # retention_hours = 24       # idle conversations, resident or spilled, and their
                              #   turn checkpoints stay reusable this long: 1 to 8,760
+                             #   (across a restart too, D-105)
 # spill_budget_gib = 128     # spilled conversation state kept on disk at most,
                              #   the least recently used deleted first: 0 to 1,048,576
-                             #   (0: idle state is dropped, never kept spilled)
+                             #   (0: idle state is dropped, never kept spilled,
+                             #   and nothing is kept across a restart)
+# keep_across_restart = true # conversations wholly on disk survive a restart
+                             #   (D-105); false: nothing outlives the process
 ```
 
 A model names exactly one artifact or composition; every other key is a
@@ -363,8 +370,10 @@ of counts, bytes and the measured costs (D-014).
 
 One model is resident at a time (M3's full swap). Activating another
 (`Server::Activate`) is one `SwapProgram`: the resident LLM's conversation
-state written back through the zone to an unnamed spill file in
-`storage.spill` if it holds a conversation (a model with none keeps its
+state written back through the zone to each slot's spill file in
+`storage.spill` (named and kept across a restart in the service,
+[below](#conversations-kept-across-a-restart); unnamed for the commands)
+if it holds a conversation (a model with none keeps its
 state resident), its weights evicted with their backing parked for the
 incoming loads (D-033's handoff), and the incoming model's whole closure
 paged in, its state restored if it had been spilled. Then the model's own
@@ -434,8 +443,11 @@ the complete footprint and drops newer tail pages, then restores the
 speculation cursor and adaptive schedule. It also discards checkpoints
 newer than the selected boundary.
 
-Each checkpoint owns an unnamed private direct-I/O file in the spill
-directory. One cataloged 2 MiB staging buffer plus alignment space is
+Each checkpoint owns a private direct-I/O file in the spill directory:
+in the service a named owner-only file kept across a restart with its
+conversation (removed when the checkpoint is dropped,
+[below](#conversations-kept-across-a-restart)), unnamed for the
+commands. One cataloged 2 MiB staging buffer plus alignment space is
 allocated only during a transfer. The cache does not keep pinned payload
 copies between turns. A failed allocation or disk write skips publication;
 a failed restore clears before recomputing. Uncertain device completion
@@ -451,7 +463,8 @@ an idle conversation's spilled state, expire after as long unused: the
 driver deletes them between units and while idle, and a lookup treats
 them as gone whether or not it has. Physical file cleanup of checkpoints
 is lazy at the model's next request or destruction, and `Clear`,
-`Forget`, a diagnostic full-state restore and restart drop all entries.
+`Forget` and a diagnostic full-state restore drop all entries; a restart
+keeps those of conversations whose whole state was on disk (D-105).
 
 An idle conversation the reclaim order spills keeps its history: its
 next turn's first unit restores its state exactly from the slot's spill
@@ -468,6 +481,111 @@ with: this slice's image runner (being reworked by the image-speed slice)
 takes them at setup, so a process serves one image prompt, and the latents
 come from a file (the reference's for its seed; a native seeded generator
 is still to come).
+
+## Conversations kept across a restart
+
+The service keeps a request slot's conversation across a restart of the
+process (graceful, a crash, or [hang recovery](#hang-recovery)'s
+restart) when its whole state is on disk: spilled by the reclaim order,
+written back by a swap, or spilled at a graceful stop (D-105). The next
+process adopts it with its turn checkpoints, and its next turn restores
+the state exactly from disk instead of prefilling it again: the reply
+equals the one an uninterrupted process gives. State resident at a crash
+or a hang's exit is not kept (its next turn prefills). The serving
+commands keep nothing and leave what the service kept alone.
+
+**The files** (beneath the spill role, `conversations/<artifact ID>/`,
+mode 0700; each file 0600, owned by the runtime's user, one link, never
+opened through a link): `slot-N.state` is slot N's spill file (each used
+2 MiB extent at its place, region by region), `slot-N.record` its record,
+`slot-N.turn-K.state` its turn checkpoints (whole state pages, each at a
+4 KiB-rounded place). A model's directory is named by its artifact's ID.
+
+**The record** (`runtime/kept_record.h`, format version 1) is strict JSON,
+written whole (a temporary file synced and renamed over it, the directory
+synced) and ending with the SHA-256 of everything before it:
+
+| Field | What it holds | Refused when |
+| --- | --- | --- |
+| `format`, `version` | `jitllm-kept-conversation`, 1 | another format or version |
+| `build` | the version, commit, SDK, target and the executable file's device, inode, inode generation, size and modification time | not this build's (another build, or this one rebuilt or reinstalled) |
+| `artifact`, `drafter`, `layout` | the model's artifact and drafter IDs; the runner's state format version, context, drafter and each region's name and bytes | not this model's or layout's (a changed context is another layout) |
+| `slot`, `file`, `device`, `inode`, `generation`, `file_bytes`, `regions` | the slot, its spill file's name, identity and size, each region's bytes in it | another slot's, or not the file it names, or another size |
+| `extents` | each used extent (region, index) with the SHA-256 of its 2 MiB in the file | outside its region or layout, out of order, none, or a digest the file does not match |
+| `tokens`, `cursor`, `decoding`, `used_unix_ms` | every token the state has seen, the speculation cursor and adaptive draft depth that go with it (its relative cost is the machine's calibration's now, D-103, never a reason to refuse), and the last use (wall clock) | a token outside the vocabulary, more than the context, a draft depth of another maximum, past `retention_hours`, or more than a minute in the future |
+| `checkpoints` | each turn checkpoint: its file and identity, position, creation, pages, footprint, cursor, draft depth and each page's SHA-256 | (that checkpoint alone is left out) |
+| `digest` | the SHA-256 of the record before it | the record cut short or edited |
+
+A record exists only while its slot's state is wholly on disk and nothing
+has written the file since: the driver removes it before anything may
+change the file or make the state live again (a turn restoring it, a swap
+bringing the model in, a clear, a discard, retention, the spill budget),
+and after a spill or a swap's write-back completes, with the state
+settled (a verify's owed restore run first, where no request holds the
+model's stream), queues a new one. A keeper thread (`runtime/
+state_keeper.h`) syncs the files, hashes them on four threads and writes
+the record unless the slot was invalidated meanwhile, off the driver's
+path; turn checkpoints, which never change, are hashed once. The hashing
+is background work: its threads run at the lowest CPU and I/O priority
+(nice 19, the idle I/O class), wait between extents while a swap or a
+prefill runs and for 250 ms after, and stop at the next extent once their
+slot is invalidated. A crash at any moment leaves a record that
+describes its files exactly, or none.
+
+**At start**, before the models register, each slot's record is read,
+checked and its files hashed; what validates is adopted (its spill file
+kept as it is, its history, cursor, draft depth and last use restored,
+the slot marked spilled until a turn restores it), and everything else in
+the directory is removed: refused records and their files, other slots'
+files, other models' directories, temporary files. The start logs each
+refusal with its reason and each adoption with its token count, never
+content (D-014), and extends the service manager's start timeout as it
+goes. **At a graceful stop** (SIGTERM) the resident model's idle
+conversations are settled and spilled, and the keeper writes every record
+queued while it makes progress (a minute without any ends the wait),
+extending the stop timeout as it goes; the log says how many and how much
+was hashed. **At a hang's exit** the records already queued get at most
+10 s; nothing new is spilled.
+
+Retention and the spill budget apply while the service runs and across
+the restart: an idle conversation, adopted or not, expires
+`retention_hours` after its last use and each turn checkpoint
+`retention_hours` after its creation (deleted with their files, the
+record rewritten without an expired checkpoint), an adopted
+conversation's state counts toward `spill_budget_gib`, and a budget of
+0, or `[memory] keep_across_restart = false`, keeps nothing (the
+directory is removed at start).
+
+**What this exposes** (D-105, D-014's note). The records hold each kept
+conversation's tokens (its text, through the tokenizer) and the spill
+and checkpoint files its KV state, owner-only, where before D-105
+nothing outlived the process. While the service is stopped, or after a
+crash, nothing enforces retention until the next start; a graceful stop
+writes every idle conversation still resident to disk; removing the
+package keeps the files, and purging it removes the default spill
+directory's `conversations/` (one configured elsewhere is the owner's to
+empty). An owner who wants nothing on disk past the process sets
+`keep_across_restart = false`.
+
+**Measured** (`spark-b`, GB10, 2026-10-03; DeepSeek V4 Flash with DSpark
+and Qwen3.8 with MTP at contexts 32,768 and 33,792, greedy;
+[hang recovery](experiments/hang-recovery/README.md)): a Qwen3.8
+conversation of two turns (265 tokens), written back by a swap to
+DeepSeek, then the service stopped with SIGTERM (5.0 s, 1.8 GiB hashed in
+2.1 s at the hashing's background priority), killed with SIGKILL once its
+record existed, or exited by hang recovery's rung 3 and restarted by
+systemd, then started again: each adopted it (the start 3.5 s, under the
+calibration the first process recorded), and its third turn reused all 265
+tokens and replied exactly as the uninterrupted control did, reasoning
+and answer. DeepSeek's conversation, spilled by the graceful stop, was
+adopted too and its second turn restored its turn checkpoint from the
+adopted file and replied as the control did (killed, it was resident and
+prefilled again). One byte flipped in the spill file, or the restart with
+another context, refused Qwen3.8's (`its digests differ`, `its state
+layout is not this runner's`; DeepSeek's still adopted) and the turn
+prefilled from the start. The background hashing cost the swaps nothing
+measurable: three alternations of the two models swapped in 9.42–9.47 s
+and 7.64–7.70 s with records kept, 9.47–9.51 s and 7.73–7.76 s without.
 
 ## Prefill chunks and cancellation
 
@@ -668,7 +786,8 @@ request_inactivity_seconds = 60   # a head or body with no byte arriving this lo
 # queue_wait_seconds = 120        # absent: a non-streaming request waits its turn
 # deadline_cap_seconds = 14400    # absent: no non-streaming deadline
 # write_inactivity_seconds = 30   # absent: a client that stops reading gets backpressure
-# hang_seconds = 600              # absent: the larger of 600 s and five stall times; at least 60
+# hang_seconds = 600              # no progress this long, past the unit's allowance: a hang,
+                                  #   recovered; absent: the larger of 600 s and five stall times; at least 60
 # request_memory_bytes = 2147483648  # absent: no cap (256 MiB set apart, the rest charged to the budget)
 # max_body_bytes = 134217728      # absent: 1/16 of the request memory and the largest context's bytes
 # stream_buffer_bytes = 4194304   # absent: 1/64 of the 256 MiB floor, 1 to 64 MiB
@@ -893,9 +1012,11 @@ and takes a 102 or 103 as the final response. The 102 only reaches a
 client that half-closed and is still reading, which none of those
 libraries does, or one that has gone; a client that half-closes should
 parse 1xx (RFC 9110, section 15.2). A half-close before the request is
-whole is a disconnect. A failure of the node itself (a swap or a job
-that failed) ends the request with a 500 or 503 and stops the service
-with status 1. A request whose conversation state does not fit the
+whole is a disconnect. Work that hung and was cancelled ends the
+requests that needed it with a 503 `backend_hung` and the model is reset
+in place ([hang recovery](#hang-recovery)); any other failure of the
+node itself (a job that failed) ends the request with a 500 or 503 and
+stops the service with status 1. A request whose conversation state does not fit the
 execution budget even alone is not one: it fails with a 500 and the
 service goes on ([state capacity](#state-capacity-in-a-cohort)).
 
@@ -1222,8 +1343,9 @@ its client leaves. An owner may opt into the earlier behaviour: with
 `deadline_cap_seconds` a non-streaming request, whose client hears nothing
 until the end, has a deadline scaled to its work (`runtime/watchdog.h`,
 vendor-free and tested on a synthetic clock and with the fake backend).
-Recovering a genuine hang (cancel, reset the model, restart the process)
-is D-102's later part. Through the route on `spark` (2026-09-29,
+A genuine hang is recovered: the stuck work cancelled, the model reset in
+place, and only when nothing less frees it the process restarted
+([hang recovery](#hang-recovery)). Through the route on `spark` (2026-09-29,
 DeepSeek plain at context 131,072), the 128,821-token prompt the old
 deadline stopped streamed to its end: 836.8 s to the first token,
 `[DONE]` at 845.8 s, 55 keepalive comments 15 s apart, no stall.
@@ -1267,31 +1389,99 @@ go on, and a backend that was only slow finishes them. With
 
 **Unhealthy.** Until the backend's next beat (the unit it hung in
 returning) the health says so; `GET /v1/models` always answers. The next
-beat makes it healthy again, and the log says so. A
-unit that never returns does not hang the service: the node's own
-patience for a step (`engine/paged_node.h`) cancels its request after ten
-minutes, the failed step stops the service with status 1 (a node
-failure, as before), and if even the cancellation never drains the
-process aborts ten minutes later; `jitllm.service` restarts it either way
-(`Restart=on-failure`).
+beat makes it healthy again, and the log says so. A unit that never
+returns does not hang the service: it is a hang, recovered as below.
 
-**A confirmed hang** (D-102's interim until hang recovery lands). Where no
-patience watches, a driver spinning or deadlocked on the CPU would wait
-forever. So the I/O thread also watches for work under way with neither
-kind of progress it can see: no unit's beat (a swap, a prefill chunk, a
-decode step ending) and no page-in event (the scheduler's), for
-`hang_seconds` (absent: the larger of the engine's 600 s patience and
-five stall times, 600 s by default; at least 60). Fences and lanes are not
-watched: a unit whose kernels run long without paging is covered by its
-beat at its end, so `hang_seconds` must exceed the longest healthy unit. A
-pause for a client is not work under way. Then it logs why and the
-process exits with status 1 for `jitllm.service` to restart it; nothing
-is torn down (the driver may be the thread that hangs), so the requests
-under way and queued end with their connections. The gap until part B:
-the restart loses the queue and every conversation's resident state
-(spilled state survives only within the process, D-102), and a hang is
-found only after `hang_seconds`, during which streams get keepalives and
-non-streaming requests silence.
+### Hang recovery
+
+D-102 (the owner, 2026-10-03: "A genuine hang should be recovered …
+minimizing data loss but recovery is the main goal"). One hang ladder
+(`runtime/hang_ladder.h`, vendor-free and tested on a clock of its own)
+tells a hang from slow work and escalates; the chat route's I/O thread,
+which never waits on the model, and the node's driver both drive it.
+
+**What is progress.** Any of: a unit's beat (above), the node's progress
+count moving (`engine::PagedNode::progress`: every completion a lane
+publishes, a fence seen complete, a read or write landed, a VMM
+operation; and every wait of the driver's that ends), or the driver's
+long CPU work beating its pulse (`base/work_pulse.h`: a template's
+rendering at each of its cancellation checks, a tokenization at each
+window; a graph's capture and instantiation run on the lane thread
+inside a device job, covered by that unit's allowance). **Work under way**
+is a unit (not idle, not paused for a client) or a wait of the driver's
+on the node between units (housekeeping, a teardown). **A confirmed
+hang** is work under way with no progress of any kind for `hang_seconds`
+(absent: the larger of 600 s and five stall times; at least 60) that has
+also passed its unit's allowance. So healthy slow work is never one,
+however long: a swap from a slow disk keeps landing reads, and one long
+job (a wide prefill chunk) is allowed its expected time at the floors.
+
+**The rungs**, each logged with why:
+
+1. **Cancel the stuck work.** The driver's wait on the node cancels the
+   request it waits for (a program, a request's lease, a step;
+   `engine::Patience`): the wait fails, flagged as a hang's. Outside any
+   node wait, the driver's CPU work is asked to stop at its next
+   cancellation check (its pulse): a rendering or tokenization fails with
+   a 503 `backend_hung`. **The cancellation has drained** once the driver
+   moved again and no storage operation submitted before it is still in
+   flight (`engine::PagedNode::oldest_io`). A wait's cancellation ends
+   only the request's interest: a read still queued is cancelled, but one
+   the drive (or a hung mount) holds is not (io_uring's cancellation is
+   best effort), and the wait returns without it. Until that read
+   completes, nothing the work touched is freed or reused.
+2. **Reset the model in place**, only once the cancellation drained. The
+   requests that needed the work fail (a 503 `backend_hung` to retry; a
+   cohort's members all), and once they retire the model's stream is
+   fenced (proof that nothing it queued still runs), every slot the
+   failure may have touched has its state discarded (one spilled before
+   it is kept), its cohort's fault lifts, its plans and graphs are
+   dropped, its calibration samples not yet recorded are dropped (the
+   hung unit's time is no measure, D-103), and its weights and the state
+   it kept are evicted (their records written, D-105), so its next
+   request loads it whole. The service goes on; a swap whose reads hung
+   fails only the requests that needed it, as any failed swap does, once
+   its cancellation drained.
+3. **Restart the process.** When the cancellation does not drain within
+   the shorter of `hang_seconds` and 60 s (a read the drive still holds, a
+   device that hangs: a fence that never completes cannot be cancelled,
+   CPU work that never reaches a cancellation check), when a model hangs
+   again before it served a request since rung 2 reset it (resetting it
+   again would loop), or when rung 2 cannot reset the model, the ladder's
+   last resort runs on the thread that saw it: the conversation
+   records already queued get at most 10 s, and the process exits with
+   status 1 for `jitllm.service` to restart it. Nothing is torn down (the
+   driver may be the thread that hangs); requests under way and queued
+   end with their connections. Conversations whose whole state was on
+   disk survive the restart ([kept](#conversations-kept-across-a-restart));
+   resident ones prefill again.
+
+The serving commands have no ladder: their waits' own patience cancels
+after ten minutes without progress and aborts after ten more.
+
+**Measured** (`spark-b`, GB10, 2026-10-03; [hang
+recovery](experiments/hang-recovery/README.md)). Through the service
+(Qwen3.8 and DeepSeek V4 Flash registered, `hang_seconds = 60`): with the
+node's reads held by a test hook (`JITLLM_TEST_HOLD_READS`) in its
+cancellable form (reads still queued), a new conversation's state growth
+made no progress; rung 1 cancelled it at 60 s and it drained at once;
+rung 2 failed its request (503 after 62.6 s) and reset and evicted
+Qwen3.8; once reads flowed the next request reloaded it and continued
+the earlier conversation from its kept state (172 of 192 prompt tokens
+cached); the process never exited. With the hook in its default form (a
+read the drive holds, which its cancellation does not end), under a
+systemd user unit: rung 1 cancelled the wait at 60 s and the wait
+returned, but the read stayed in flight, so rung 2 never reset the model;
+rung 3 exited at 120 s, systemd restarted the service (ready 131.8 s
+after the request), and it adopted the kept Qwen3.8 conversation, whose
+next turn reused all 265 tokens and replied as the uninterrupted control
+did. On the device (`cuda_paged_node_test`): a held page-in, and a
+request's lease, cancelled after 0.5 s quiet and drained; a page-in on a
+drive that holds its read returned failed while the read stayed in
+flight (`oldest_io`), and loaded whole once it completed; a stream gated
+on a value that never comes could not be drained, and the patience
+reached rung 3 after another 0.3 s quiet (recorded in place of the exit,
+then the gate opened and the node went on).
 
 **Health.** The watchdog keeps the backend's health: healthy or not, the
 phase (idle, starting, swapping, prefilling, decoding, finishing, waiting
@@ -1353,10 +1543,8 @@ whole 258,856-token prefill about 45 minutes, inside such a deadline's 2
 hours 11 minutes or more. A
 swap's allowance covers a disk that pages in at a third of 1 GB/s or
 more; a slower one (a hard disk, a NAS) is reported as stalled unless
-`stall_seconds` is larger (with the default report, nothing fails).
-The node's own patience for a step, ten minutes, bounds every unit
-whatever its allowance, so a `stall_seconds` above 600 leaves a hung step
-to it alone (D-102's later part makes that patience progress-based).
+`stall_seconds` is larger (with the default report, nothing fails), and
+since its reads keep landing it is never a hang.
 
 ## Literal completions and likelihoods
 
@@ -1500,8 +1688,9 @@ short DeepSeek and Qwen prompts, with speculation on and off.
   output (the kernel's socket buffers take that much first). Chat
   rendering runs on the driver: cancellable, charged and bounded, but not
   concurrent with other requests' units.
-- A genuine hang is reported, not yet recovered: escalation (cancel, reset
-  the model, restart the process) and restart-surviving spill are D-102's
-  later part; until then the node's ten-minute step patience, and a
-  confirmed hang (nothing moving for `hang_seconds`), stop the service for
-  `jitllm.service` to restart, losing the queue and resident state.
+- A genuine hang is found only after `hang_seconds` without progress
+  (streams get keepalives meanwhile, non-streaming requests silence). A
+  device that hangs cannot be recovered in-process: the restart loses the
+  queue and the conversations then resident (those wholly on disk are
+  kept, D-105). Conversations are kept only by the same build; an upgrade
+  starts cold.

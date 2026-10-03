@@ -177,8 +177,11 @@ An entry lasts until one of these ends it:
 4. **Invalidation:** the artifact is removed or replaced (after D-054's
    quiescence), a plan or configuration change alters identity, or a restore
    fails its integrity or coverage check.
-5. **Restart:** retention is same-process. Startup deletes every spill file
-   and no entry survives a restart; crash durability stays a deferred feature.
+5. **Restart:** the M6 design's retention is same-process: startup
+   deletes every spill file and no entry survives a restart. M3's runtime
+   keeps a conversation whose whole state is on disk across a restart, by
+   a validated record (D-105, below); M6's entry classes decide theirs
+   when they arrive.
 
 Ending an entry drops its claims. It never frees blocks that other entries
 claim or admitted work uses, and ending one class's entries never ends the
@@ -292,7 +295,20 @@ Retention is `[memory] retention_hours` (below), enforced by the driver
 between units and while idle for resident and spilled state alike; the
 spill budget is `[memory] spill_budget_gib`, past which the least
 recently used spilled conversation, a swapped-out model's included, is
-deleted first. Plans and graphs are charged inside the budget past one
+deleted first. A conversation whose whole state is on disk (spilled, or
+written back by a swap, or spilled at a graceful stop) survives a
+restart of the service: its slot's spill file is a named owner-only file
+with a record the next process validates (build, model, layout, the
+files' identity and SHA-256 digests) and adopts, with its turn
+checkpoints; retention runs on from its recorded last use (each turn
+checkpoint from its creation, enforced while the service runs as well as
+at the next start), and the spill budget counts it (D-105,
+[runtime-serving](runtime-serving.md#conversations-kept-across-a-restart)).
+While the service is stopped nothing enforces retention until it starts
+again; `[memory] keep_across_restart = false` keeps nothing past the
+process, and purging the package removes the default spill directory's
+kept conversations.
+Plans and graphs are charged inside the budget past one
 step's floor (D-090 as amended), so growing state reclaims them through
 the same order. M6's state is small next to its weights, so it cannot show
 whether idle state within a large `M_state` starves weight residency. M7
@@ -333,7 +349,10 @@ read or I/O error invalidates the entry and falls back to recomputation,
 with the reason reported. Because spill is deleted at startup and never read
 by another process or version, its encoding is an internal implementation
 detail, not an on-disk compatibility format; adopting crash durability would
-need a versioned format decision.
+need a versioned format decision. M3's runtime made that decision for its
+conversations (D-105): named owner-only spill files with a versioned,
+hashed record a slot, read back only by the same build
+([runtime-serving](runtime-serving.md#conversations-kept-across-a-restart)).
 
 Spill and weight transfers share one drive and one memory bandwidth. Demand
 from an admitted phase outranks retention writes, and a write that frees a
@@ -604,7 +623,7 @@ without a vendor SDK, as M2's did.
 | Cancellation during decode with late I/O | Only a prefix confirmed by retirement is published; uncertain completion publishes nothing and quarantines (D-048) |
 | Expiry, release or eviction aimed at an admitted or suspended request's state | Refused; admitted state is outside retention (D-050) |
 | Ten times more distinct conversations than the entry caps | Metadata stays within its bound; least recently refreshed entries go; no unbounded growth |
-| Restart with spill present; a planted link or wrong owner in the spill directory | Startup deletes spill and refuses an unsafe directory; no entry survives |
+| Restart with spill present; a planted link or wrong owner in the spill directory | Startup deletes spill and refuses an unsafe directory; no entry survives (M3's runtime keeps a conversation only through a record it validates whole, D-105: a link, a wrong owner or mode, another build or a digest that differs is refused and removed) |
 | Entry chosen for a queued request is evicted before admission | Lookup repeats at admission; a miss recomputes; nothing was pinned while queued |
 | Fake backend: sliding-window coverage (RE-007's rollback), recurrent snapshot positions, unvalidated adapter | Resume only at valid boundaries, otherwise an earlier checkpoint or recomputation |
 | Concurrent A and B requests at `B_all` | Admitted as one cohort; both progress; outputs match serial controls |

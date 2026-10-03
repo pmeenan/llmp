@@ -108,14 +108,24 @@ std::expected<int, int> OpenAnonymousMemoryFile(const char* name) {
 }
 
 std::optional<ExecutableStamp> RunningExecutableStamp() {
-  struct stat status{};
-  if (::stat("/proc/self/exe", &status) != 0) {
+  const int fd = ::open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
     return std::nullopt;
   }
+  struct stat status{};
+  if (::fstat(fd, &status) != 0 || !S_ISREG(status.st_mode)) {
+    (void)::close(fd);
+    return std::nullopt;
+  }
+  const std::optional<std::uint64_t> generation = FileGeneration(fd);
+  (void)::close(fd);
   return ExecutableStamp{
       .size = static_cast<std::uint64_t>(status.st_size),
       .modified_ns = (static_cast<std::int64_t>(status.st_mtim.tv_sec) * 1'000'000'000) +
-                     static_cast<std::int64_t>(status.st_mtim.tv_nsec)};
+                     static_cast<std::int64_t>(status.st_mtim.tv_nsec),
+      .device = static_cast<std::uint64_t>(status.st_dev),
+      .inode = static_cast<std::uint64_t>(status.st_ino),
+      .generation = generation};
 }
 
 }  // namespace jitllm::platform

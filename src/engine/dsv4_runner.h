@@ -157,6 +157,10 @@ struct Dsv4Options {
   // A DSpark wave's draft blocks as one graph (PlanDsparkWave), each slot's
   // drafts its own block's bit for bit; off, a block a slot.
   bool joined_drafts = true;
+  // Where each slot's spill file lives (LiveState::SpillPlace), asked once
+  // at Register; unset, an unnamed file in `out`. The runtime names them
+  // to keep conversations across a restart (D-105).
+  std::function<LiveState::SpillPlace(std::uint32_t slot)> spill_place;
 };
 
 // The prefill arithmetic jitllm-runtime serves DeepSeek with: the
@@ -233,6 +237,11 @@ class Dsv4Runner final : public PagedModel {
     bool spilled = false;
     SpillTrack track;        // what its spill file holds (an incremental spill)
     catalog::Closure fence;  // its state alone
+    // A conversation kept from the process before (D-105, Slot::Adopt):
+    // the ranges its named spill file holds, spilled until Restore loads
+    // them as its state (LiveState::Use reads fresh extents from the file).
+    std::vector<LiveState::Range> adopted;
+    std::uint64_t adopted_bytes = 0;
   };
 
  public:
@@ -551,8 +560,27 @@ class Dsv4Runner final : public PagedModel {
     std::uint64_t refused_bytes() const { return request_.live.refused_bytes(); }
     // What its spill file holds of its state while it is spilled.
     std::uint64_t spilled_bytes() const {
+      if (!request_.adopted.empty()) {
+        return request_.adopted_bytes;
+      }
       return request_.spilled ? request_.live.extents().size() * kPagedExtent : 0;
     }
+    // D-105: its state as a kept record describes it. The live state (its
+    // regions and spill file), whether a restore or commit is still owed
+    // by its last verify (Settle it first: the record must hold the state
+    // whole), and whether its spill file holds all of its state, settled,
+    // as written last (a spill or a swap's write-back completed).
+    const LiveState& live() const { return request_.live; }
+    bool owed() const { return request_.live.owed() || request_.live.verify_rows() != 0; }
+    bool kept_whole() const {
+      return request_.track.on_disk && request_.adopted.empty() && !request_.live.quarantined() &&
+             !owed() && !request_.live.extents().empty();
+    }
+    // Adopts a conversation kept from the process before (D-105): its
+    // spill file (registered kept) holds `used`; the slot is spilled until
+    // Restore loads them. Before any work on it, after the node runs.
+    Status Adopt(std::span<const LiveState::Range> used) { return owner_.Adopt(request_, used); }
+    bool adopted() const { return !request_.adopted.empty(); }
     Status ReserveStateThrough(std::uint32_t positions) {
       return owner_.EnsureState(request_, positions);
     }
@@ -612,6 +640,22 @@ class Dsv4Runner final : public PagedModel {
   };
   // Host-only lookup of a provisioned slot; no admission or native work.
   std::expected<Slot*, std::string> request_slot(std::size_t index);
+  // What a kept conversation's record must match to be adopted (D-105):
+  // the state format's version, the context, whether the drafter's ring is
+  // kept beside the target's state, and each region's name and bytes.
+  // After Setup.
+  std::string kept_layout() const;
+  // D-102's hang recovery, rung 2: after its stream was fenced (nothing it
+  // queued still runs) and with no request open on it, the runner usable
+  // again. Every slot the failed work may have touched (resident while the
+  // cohort faulted, or quarantined) has its state discarded; a spilled
+  // slot's, on disk since before, is kept; the cohort's fault lifts; plans
+  // and graphs are dropped. Refused with its launch context faulted (an
+  // unknown launch is not proven retired). The slots discarded;
+  // `before_discard` (if set) is told each slot before its state changes
+  // (its kept record goes first, D-105).
+  std::expected<SlotMask, std::string> RecoverInPlace(
+      const std::function<void(std::uint32_t slot)>& before_discard = {});
   // Between completed units only. With several active slots the driver
   // holds one request on this stream over execution_closure(); refreshing
   // an open request keeps their union. A failure faults the cohort. An
@@ -757,6 +801,7 @@ class Dsv4Runner final : public PagedModel {
   Status ClearIdle(RequestState& request);
   Status Spill(RequestState& request);
   Status Restore(RequestState& request);
+  Status Adopt(RequestState& request, std::span<const LiveState::Range> used);
   // An incremental spill's split of a slot's initialized extents (what its
   // record says changed since its spill file held it, and the rest); with
   // no standing record, every extent is `written`.

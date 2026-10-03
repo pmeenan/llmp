@@ -79,6 +79,20 @@ add_executable(pressure_trim_test pressure_trim_test.cc)
 target_link_libraries(pressure_trim_test PRIVATE jitllm_runtime)
 jitllm_gtest(pressure_trim_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+# D-102's hang ladder: what is and is not a hang, its rungs and its last
+# resort, on a clock of the test's own.
+add_executable(hang_ladder_test hang_ladder_test.cc)
+target_link_libraries(hang_ladder_test PRIVATE jitllm_runtime)
+jitllm_gtest(hang_ladder_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
+# D-105's conversations kept across a restart, host-side: their owner-only
+# files, their record's format and checks, and the keeper that writes
+# records in the background.
+add_executable(kept_state_test kept_state_test.cc)
+target_link_libraries(kept_state_test PRIVATE jitllm_runtime jitllm_platform jitllm_base)
+jitllm_gtest(kept_state_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
+
 # Room for a swap's incoming model: reclaimed in whole extents and checked
 # again, against a ledger whose charge moves in whole extents.
 add_executable(swap_room_test swap_room_test.cc)

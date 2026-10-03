@@ -171,9 +171,13 @@ schema_version = 2
 # A client that takes no output for this long is dropped; absent, a stream
 # whose client stops reading pauses until it reads (backpressure).
 # write_inactivity_seconds = 30
-# Work under way with nothing moving at all (no unit ending, no page-in)
-# for this long is a confirmed hang: the runtime exits for systemd to
-# restart it. Absent, the larger of 600 and five stall times; at least 60.
+# Work under way with nothing moving at all (no unit ending, no fence
+# completing, no read or write landing) for this long, past the unit's own
+# allowance, is a confirmed hang, which is recovered: the stuck work is
+# cancelled (only the requests that needed it fail) and its model reset in
+# place, and only when nothing less frees it does the runtime exit for
+# systemd to restart it. Slow work that keeps moving is never a hang.
+# Absent, the larger of 600 and five stall times; at least 60.
 # hang_seconds = 600
 # The request memory: one pool every request's host memory is charged to
 # (bodies as they arrive, parses, queued requests, renderings, stop
@@ -197,13 +201,22 @@ schema_version = 2
 # ([storage] spill) and restores it exactly at the conversation's next
 # turn, rather than prefilling it again. An idle conversation, resident or
 # spilled, and its turn checkpoints stay reusable for retention_hours
-# (1 to 8760) after their last use.
+# (1 to 8760) after their last use. A conversation whose state is wholly
+# on disk (spilled, written back by a swap, or spilled when the service
+# stops) survives a restart: owner-only files and a checked record in the
+# spill directory's conversations/ (D-105), within the same retention.
 # retention_hours = 24
 # The most spilled conversation state the spill directory keeps (0 to
 # 1048576 GiB), a swapped-out model's conversations included: past it the
 # least recently used is deleted first. 0 keeps none: idle state is then
-# dropped, and its next turn prefills again.
+# dropped, its next turn prefills again, and nothing survives a restart.
 # spill_budget_gib = 128
+# Whether conversations wholly on disk survive a restart (D-105). Their
+# records hold each conversation's tokens and their files its state, kept
+# while the service is stopped until its next start enforces retention.
+# false: nothing outlives the process (the spill files stay unnamed, and
+# what an earlier start kept is removed).
+# keep_across_restart = true
 
 # A cluster member's keys (cluster_file, node_id, [credentials], [control])
 # are written by cluster enrollment, which arrives in M6a; this build

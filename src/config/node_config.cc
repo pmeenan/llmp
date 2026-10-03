@@ -144,6 +144,7 @@ enum class Kind : std::uint8_t {
   kClientStallAction,  // [client] stall_action
   kMemoryHours,        // [memory] retention_hours
   kMemoryGib,          // [memory] spill_budget_gib
+  kMemoryKeep,         // [memory] keep_across_restart
 };
 
 // [client]'s integer limits (D-102) and their ranges: counts and seconds
@@ -219,6 +220,7 @@ const std::vector<KeySpec>& Schema() {
       {.path = {"client", "stream_buffer_bytes"}, .kind = Kind::kClientInteger, .member = false},
       {.path = {"memory", "retention_hours"}, .kind = Kind::kMemoryHours, .member = false},
       {.path = {"memory", "spill_budget_gib"}, .kind = Kind::kMemoryGib, .member = false},
+      {.path = {"memory", "keep_across_restart"}, .kind = Kind::kMemoryKeep, .member = false},
       {.path = {"storage", "data_dir"}, .kind = Kind::kAbsolutePath, .member = false},
       {.path = {"storage", "installed"}, .kind = Kind::kRolePath, .member = false},
       {.path = {"storage", "spill"}, .kind = Kind::kRolePath, .member = false},
@@ -490,6 +492,8 @@ class Validator {
         return "an integer of hours";
       case Kind::kMemoryGib:
         return "an integer of GiB";
+      case Kind::kMemoryKeep:
+        return "a boolean";
     }
     return "";
   }
@@ -648,6 +652,15 @@ class Validator {
           retention_hours_ = static_cast<std::uint32_t>(value->get());
         } else {
           spill_budget_gib_ = static_cast<std::uint32_t>(value->get());
+        }
+        break;
+      }
+      case Kind::kMemoryKeep: {
+        const auto* value = node.as_boolean();
+        if (value == nullptr) {
+          out_.At(leaf, std::format("{} must be a boolean, not {}", key, TypeName(node)));
+        } else {
+          keep_across_restart_ = value->get();
         }
         break;
       }
@@ -1054,6 +1067,7 @@ class Validator {
     Client(config.client);
     config.memory.retention_hours = retention_hours_.value_or(kDefaultRetentionHours);
     config.memory.spill_budget_gib = spill_budget_gib_.value_or(kDefaultSpillBudgetGib);
+    config.memory.keep_across_restart = keep_across_restart_.value_or(true);
     if (config.membership && config.storage.long_term) {
       for (const KeyPath& path : {KeyPath{"cluster_file"}, KeyPath{"credentials", "ca_file"},
                                   KeyPath{"credentials", "certificate_file"},
@@ -1210,6 +1224,7 @@ class Validator {
   StallAction stall_action_ = StallAction::kReport;
   std::optional<std::uint32_t> retention_hours_;
   std::optional<std::uint32_t> spill_budget_gib_;
+  std::optional<bool> keep_across_restart_;
 };
 
 constexpr std::array<std::string_view, 3> kWaveForms = {"auto", "speculative", "plain"};

@@ -44,7 +44,45 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   beside a running service. A key a composition does not take is now
   refused naming that key; the throughput floors are resolved once per
   model instead of looked up per request.
-
+- A genuine hang is recovered (D-102): the engine's fixed ten-minute step
+  patience is gone, and a hang is work under way with no progress of any
+  kind (no unit ending, no fence completing, no read or write landing)
+  for `[client] hang_seconds` past its unit's allowance, so slow healthy
+  work (a swap from a slow disk, a long prefill chunk, a long rendering
+  or tokenization, which now beat as they go) never counts. The runtime
+  then cancels the stuck work, and once the cancellation drained (nothing
+  submitted before it still in flight: a read a drive holds is not ended
+  by its cancellation), fails only the requests that needed it (503
+  `backend_hung`) and resets the model in place (its stream fenced, the
+  touched conversation state discarded, plans and graphs dropped, the
+  model reloaded whole on its next request) while the service goes on;
+  only when nothing less frees it (a read the drive never returns, a hung
+  device, a stuck driver, a model that hangs again before serving a
+  request, a failed reset) does it exit for systemd to restart it. Each
+  step is logged with why.
+- Conversations survive a restart of the service (D-105, a new versioned
+  on-disk format, version 1, a minor bump of the 0.x line): a
+  conversation whose state is wholly on disk (spilled,
+  written back by a swap, or spilled at a graceful stop) is kept in named
+  owner-only files beneath the spill role with a hashed record, and the
+  next start adopts it after checking the build, model, layout, files and
+  their SHA-256 digests, so its next turn restores the state exactly
+  instead of prefilling again (measured: the same reply as an
+  uninterrupted run, all 265 prior tokens reused, after a SIGTERM or a
+  SIGKILL). A record that does not validate is refused and its files
+  removed; retention and the spill budget apply while the service runs
+  and across the restart, and a spill budget of 0 keeps nothing. The
+  records hold the conversations' tokens and their files the state, on
+  disk while the service is stopped: the new `[memory]
+  keep_across_restart = false` (compatible with schema version 2) keeps
+  nothing past the process, and purging the package removes the default
+  spill directory's kept conversations. The records are hashed in the
+  background at the lowest priority, waiting while a swap or a prefill
+  runs.
+- `jitllm.service` retries a failing start forever, backing off from 5 s
+  to 30 s (it gave up after ten starts in five minutes), and its
+  start and stop timeouts are extended while the start registers and
+  adopts conversations and the stop spills and records them.
 - A model's concurrent chat requests are no longer fixed at four (D-104):
   each LLM has request slots up to a cap, `[models.<name>] max_slots` (1
   to 16; a new key compatible with schema version 2, a minor bump of the

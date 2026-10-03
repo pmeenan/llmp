@@ -7,6 +7,7 @@
 #include <format>
 #include <utility>
 
+#include "base/work_pulse.h"
 #include "engine/support.h"
 #include "providers/device_runtime.h"
 
@@ -102,7 +103,14 @@ Queued GraphRuns::Queue(PlanRuns& runs, const Copies& inputs,
   if (capture) {
     const std::size_t free_before =
         providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
+    // A capture and its instantiation run on the CPU, seconds for a large
+    // plan. In the service they run inside a device job on the lane thread,
+    // which has no pulse, so these beats only reach a caller on the driver
+    // thread; there a capture is covered by its unit's allowance instead
+    // (D-102).
+    (void)base::Pulse();
     auto captured = launch_->Capture(queue);
+    (void)base::Pulse();
     const std::size_t free_after =
         providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
     (void)providers::TakeLastError();

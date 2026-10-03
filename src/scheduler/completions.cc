@@ -156,6 +156,7 @@ std::optional<Terminal> CompletionBoard::ReadTerminal(const Mailbox& mailbox,
 }
 
 void CompletionBoard::Announce(std::uint32_t index) {
+  publications_.fetch_add(1, std::memory_order_relaxed);
   if (mailboxes_[index].queued.exchange(true, std::memory_order_acq_rel)) {
     return;  // already queued; the owner reads it after this publication
   }

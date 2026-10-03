@@ -137,6 +137,13 @@ class CompletionBoard {
   // (base::WakeFlag::Anticipate). A hint; it publishes nothing.
   void Anticipate(base::WakeFlag::Clock::time_point until) { wake_.Anticipate(until); }
 
+  // Any thread: every new observation recorded so far (an acceptance, a
+  // terminal result or a later proof), of any operation: a count that
+  // moves whenever any lane completes anything (a fence seen complete, a
+  // read or write landed, a VMM operation). The runtime's hang watch reads
+  // it as progress (D-102; engine/paged_node.h PagedNode::progress).
+  std::uint64_t publications() const { return publications_.load(std::memory_order_relaxed); }
+
   std::size_t open() const { return open_count_; }
   std::size_t capacity() const { return count_; }
   // The owner: mailboxes Open can issue now. A mailbox whose generation is
@@ -199,6 +206,7 @@ class CompletionBoard {
   std::vector<Mailbox> mailboxes_;
   std::size_t count_;
   base::WakeFlag& wake_;
+  std::atomic<std::uint64_t> publications_{0};  // publications()
   // Owner only: free mailboxes, a ring of free_count_ entries from
   // free_head_, in the order they were freed.
   std::vector<std::uint32_t> free_;

@@ -19,10 +19,13 @@
 #include <print>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <tuple>
 #include <utility>
 
 #include "artifact/artifact.h"
 #include "artifact/composition.h"
+#include "base/build_info.h"
 #include "base/check.h"
 #include "base/report.h"
 #include "engine/dsv4_plan.h"
@@ -37,6 +40,7 @@
 #include "platform/crash_policy.h"
 #include "platform/files.h"
 #include "platform/host_probe.h"
+#include "platform/kept_files.h"
 #include "platform/memory_pressure.h"
 #include "platform/path_trust.h"
 #include "runtime/intake_limits.h"
@@ -127,6 +131,76 @@ GraphCounts Sum(const engine::GraphStats& a, const engine::GraphStats& b, std::s
           .replayed = a.replayed + b.replayed,
           .refused = a.refused + b.refused,
           .kept = kept};
+}
+
+// ------------------------------------------- conversations kept (D-105)
+
+// A slot's regions' bytes in its spill file (whole extents), or their
+// layouts' bytes.
+std::vector<std::uint64_t> KeptRegionsOf(const engine::LiveState& live, bool mapped) {
+  std::vector<std::uint64_t> out;
+  out.reserve(live.regions());
+  for (std::size_t i = 0; i < live.regions(); ++i) {
+    out.push_back(mapped ? live.mapped_bytes(i) : live.bytes(i));
+  }
+  return out;
+}
+
+std::string Errno(int error) { return std::system_category().message(error); }
+
+// Wall-clock milliseconds for a steady time point, and back: a record's
+// times survive a restart, the steady clock's do not.
+std::int64_t UnixMs(Clock::time_point at) {
+  const auto unix = std::chrono::system_clock::now() - (Clock::now() - at);
+  return std::chrono::duration_cast<std::chrono::milliseconds>(unix.time_since_epoch()).count();
+}
+Clock::time_point SteadyAt(std::int64_t unix_ms) {
+  const auto unix = std::chrono::system_clock::time_point(std::chrono::milliseconds(unix_ms));
+  return Clock::now() -
+         std::chrono::duration_cast<Clock::duration>(std::chrono::system_clock::now() - unix);
+}
+std::int64_t NowUnixMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+kept::FileId KeptId(const platform::FileIdentity& id) {
+  return {.device = id.device, .inode = id.inode, .generation = id.generation};
+}
+
+std::vector<kept::Range> KeptRanges(std::span<const engine::LiveState::Range> ranges) {
+  std::vector<kept::Range> out;
+  out.reserve(ranges.size());
+  for (const auto& r : ranges) {
+    out.push_back(
+        {.region = static_cast<std::uint32_t>(r.region), .offset = r.offset, .bytes = r.bytes});
+  }
+  return out;
+}
+
+std::vector<engine::LiveState::Range> LiveRanges(std::span<const kept::Range> ranges) {
+  std::vector<engine::LiveState::Range> out;
+  out.reserve(ranges.size());
+  for (const auto& r : ranges) {
+    out.push_back({.region = r.region, .offset = r.offset, .bytes = r.bytes});
+  }
+  return out;
+}
+
+// What this build is, for a kept record: its version and commit, and the
+// executable file's identity, so another build, or this one rebuilt or
+// reinstalled, never adopts what it did not write.
+std::string KeptBuild() {
+  const base::BuildInfo& info = base::GetBuildInfo();
+  const auto stamp = platform::RunningExecutableStamp();
+  const std::string exe =
+      stamp ? std::format("{}:{}:{}:{}:{}", stamp->device, stamp->inode,
+                          stamp->generation ? std::to_string(*stamp->generation) : "-", stamp->size,
+                          stamp->modified_ns)
+            : std::string("unknown");
+  return std::format("{};{}{};{};{};exe={}", info.version, info.commit,
+                     info.modified ? "+modified" : "", info.sdk, info.target, exe);
 }
 
 // ---------------------------------------------------------------- the models
@@ -396,6 +470,39 @@ class Dsv4 final : public Llm {
   }
   bool StateUsableFor(const Branch& branch) const override {
     return NativeSlot(branch).state_usable();
+  }
+
+ public:
+  // Kept across a restart (D-105).
+  std::string KeptLayout() const override { return runner_.kept_layout(); }
+  std::vector<std::uint64_t> KeptRegions() const override {
+    return KeptRegionsOf(NativeSlot(default_branch()).live(), true);
+  }
+  std::vector<std::uint64_t> KeptLayouts() const override {
+    return KeptRegionsOf(NativeSlot(default_branch()).live(), false);
+  }
+  // D-102's rung 2.
+  Status RecoverInPlace() override {
+    auto discarded = runner_.RecoverInPlace([this](std::uint32_t slot) { UnkeepSlot(slot); });
+    if (!discarded) {
+      return std::unexpected(discarded.error());
+    }
+    ForgetDiscarded(*discarded);
+    return {};
+  }
+
+ protected:
+  const engine::LiveState* KeptLiveFor(const Branch& branch) const override {
+    return &NativeSlot(branch).live();
+  }
+  bool KeptWholeFor(const Branch& branch) const override { return NativeSlot(branch).kept_whole(); }
+  bool OwedFor(const Branch& branch) const override { return NativeSlot(branch).owed(); }
+  Status AdoptFor(Branch& branch, std::span<const engine::LiveState::Range> used) override {
+    return NativeSlot(branch).Adopt(used);
+  }
+  void SetSpillPlaces(
+      const std::function<engine::LiveState::SpillPlace(std::uint32_t)>& place) override {
+    options_.spill_place = place;
   }
   Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t left) override {
     const std::uint32_t rows = speculate_ ? VerifyRows(pos, left, runner_.max_verify()) : 1U;
@@ -1157,6 +1264,47 @@ class Qwen38 final : public Llm {
     const auto& slot = NativeSlot(branch);
     return slot.spilled() ? slot.spilled_bytes() : slot.refused_bytes();
   }
+
+ public:
+  // Kept across a restart (D-105).
+  std::string KeptLayout() const override { return runner_.kept_layout(); }
+  std::vector<std::uint64_t> KeptRegions() const override {
+    return KeptRegionsOf(NativeSlot(default_branch()).live(), true);
+  }
+  std::vector<std::uint64_t> KeptLayouts() const override {
+    return KeptRegionsOf(NativeSlot(default_branch()).live(), false);
+  }
+  // D-102's rung 2.
+  Status RecoverInPlace() override {
+    auto discarded = runner_.RecoverInPlace([this](std::uint32_t slot) { UnkeepSlot(slot); });
+    if (!discarded) {
+      return std::unexpected(discarded.error());
+    }
+    ForgetDiscarded(*discarded);
+    for (std::size_t i = 0; i < branches(); ++i) {
+      if ((*discarded & (engine::SlotMask{1} << i)) != 0) {
+        if (auto b = branch(i); b) {
+          // As a cleared state's.
+          BranchDecoding(**b) = execution::AdaptiveDepth(3, depth_cost_ratio_);
+        }
+      }
+    }
+    return {};
+  }
+
+ protected:
+  const engine::LiveState* KeptLiveFor(const Branch& branch) const override {
+    return &NativeSlot(branch).live();
+  }
+  bool KeptWholeFor(const Branch& branch) const override { return NativeSlot(branch).kept_whole(); }
+  bool OwedFor(const Branch& branch) const override { return NativeSlot(branch).owed(); }
+  Status AdoptFor(Branch& branch, std::span<const engine::LiveState::Range> used) override {
+    return NativeSlot(branch).Adopt(used);
+  }
+  void SetSpillPlaces(
+      const std::function<engine::LiveState::SpillPlace(std::uint32_t)>& place) override {
+    options_.spill_place = place;
+  }
   void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
   void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
   execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
@@ -1732,6 +1880,9 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
     if (failure != nullptr && r.error().rule == tokenizer::Rule::kOutputTooLarge) {
       *failure = ChatRenderFailure::kTooLong;
     }
+    if (failure != nullptr && r.error().rule == tokenizer::Rule::kCancelled) {
+      *failure = ChatRenderFailure::kCancelled;
+    }
     return Error(r.error().ToString());
   }
   if (stable_boundary != nullptr) {
@@ -1985,6 +2136,215 @@ std::size_t Llm::ReusablePrefix(const Branch& branch, std::span<const std::int32
   return match ? boundaries[*match].position : 0;
 }
 
+// ------------------------------------------- conversations kept (D-105)
+
+void Llm::set_kept(Kept kept) {
+  kept_ = std::move(kept);
+  if (kept_.keeper == nullptr) {
+    SetSpillPlaces({});
+    return;
+  }
+  // Each slot's spill file named beneath the model's private directory,
+  // kept as it is for the slots whose records validated.
+  SetSpillPlaces([dir = kept_.directory, adopt = kept_.adopt,
+                  spill = checkpoint_directory_](std::uint32_t slot) {
+    return engine::LiveState::SpillPlace{.directory = spill,
+                                         .dir = dir,
+                                         .name = kept::StateFileName(slot),
+                                         .keep = std::ranges::contains(adopt, slot)};
+  });
+}
+
+void Llm::Unkeep(const Branch& branch) {
+  if (kept_.keeper != nullptr) {
+    kept_.keeper->Invalidate(kept_.model, BranchIndex(branch));
+  }
+}
+
+bool Llm::SettleIdle(Branch& branch) {
+  if (!OwedFor(branch)) {
+    return true;
+  }
+  if (node_->InRequest(paged().stream()) || !BranchIdle(branch) || SpilledFor(branch) ||
+      !StateUsableFor(branch)) {
+    return false;
+  }
+  // Selected alone (no request holds the stream), its owed restore runs as
+  // the next job's would have: the same bytes, now.
+  std::array<Branch*, 1> alone{&branch};
+  if (auto selected = SelectBranches(alone); !selected) {
+    return false;
+  }
+  return SettleFor(branch).has_value();
+}
+
+void Llm::KeepBranch(Branch& branch) {
+  if (kept_.keeper == nullptr || branch.history_.empty() || branch.needs_clear_ ||
+      !KeptWholeFor(branch)) {
+    return;
+  }
+  const engine::LiveState* live = KeptLiveFor(branch);
+  if (live == nullptr || !live->spill_identity()) {
+    return;
+  }
+  kept::Record r;
+  r.identity = kept_.identity;
+  r.slot = BranchIndex(branch);
+  r.file = kept::StateFileName(r.slot);
+  r.id = KeptId(*live->spill_identity());
+  for (std::size_t i = 0; i < live->regions(); ++i) {
+    r.regions.push_back(live->mapped_bytes(i));
+    r.file_bytes += live->mapped_bytes(i);
+  }
+  for (const engine::LiveState::Range& range : live->used_ranges()) {
+    r.extents.push_back({.region = static_cast<std::uint32_t>(range.region),
+                         .index = static_cast<std::uint32_t>(range.offset / kExtent),
+                         .digest = {}});
+  }
+  r.tokens = branch.history_;
+  r.cursor = CursorFor(branch);
+  const auto decoding = TurnDecodingStateFor(branch).Save();
+  r.decoding.assign(decoding.begin(), decoding.end());
+  r.used_unix_ms = UnixMs(branch.history_used_.at);
+  for (const TurnCheckpoint& c : branch.turn_checkpoints_) {
+    if (!c.file.identity() || c.file.name().empty() || c.boundary.position > r.tokens.size()) {
+      continue;
+    }
+    const auto words = c.decoding.Save();
+    r.checkpoints.push_back({.file = c.file.name(),
+                             .id = KeptId(*c.file.identity()),
+                             .file_bytes = c.file.file_bytes(),
+                             .position = static_cast<std::uint32_t>(c.boundary.position),
+                             .created_unix_ms = UnixMs(c.boundary.created),
+                             .ranges = KeptRanges(c.file.ranges()),
+                             .footprint = KeptRanges(c.footprint),
+                             .cursor = c.cursor,
+                             .decoding = {words.begin(), words.end()},
+                             .digests = {}});
+  }
+  kept_.keeper->Keep(kept_.model, std::move(r));
+}
+
+Status Llm::Adopt(Branch& branch, kept::Record& record) {
+  CheckIdleGeneration(branch);
+  const engine::LiveState* live = KeptLiveFor(branch);
+  if (live == nullptr || kept_.keeper == nullptr) {
+    return Error("this model keeps no conversation across a restart");
+  }
+  // The slot's turn checkpoint files the branch does not hold (left out,
+  // or all of them when nothing was adopted) go: nothing stays unused.
+  const std::uint32_t slot = BranchIndex(branch);
+  const auto remove_unused_checkpoints = [&]() {
+    auto entries = platform::ListPrivateDirectory(kept_.directory);
+    if (!entries) {
+      return;
+    }
+    for (const platform::DirectoryEntry& entry : *entries) {
+      const auto named = kept::ParseFileName(entry.name);
+      if (named && named->kind == kept::NameOf::Kind::kCheckpoint && named->slot == slot &&
+          std::ranges::none_of(branch.turn_checkpoints_, [&](const TurnCheckpoint& t) {
+            return t.file.name() == entry.name;
+          })) {
+        std::ignore = platform::RemovePrivate(kept_.directory, entry.name.c_str());
+      }
+    }
+  };
+  // A record not adopted goes, so no later start tries it again.
+  const auto refused = [&](std::string why) -> Status {
+    const std::string name = kept::RecordFileName(slot);
+    std::ignore = platform::RemovePrivate(kept_.directory, name.c_str());
+    remove_unused_checkpoints();
+    return Error(std::move(why));
+  };
+  // The draft depth's state is the conversation's; its relative cost is the
+  // machine's, calibrated (D-103) and perhaps measured again since: the
+  // model's own now, never a reason to refuse.
+  const double cost = BranchDecoding(branch).relative_cost();
+  const auto same = [&](const execution::AdaptiveDepth& depth) {
+    return depth.maximum() == BranchDecoding(branch).maximum();
+  };
+  const auto loaded = execution::AdaptiveDepth::Load(record.decoding);
+  if (!loaded.has_value() || !same(*loaded)) {
+    return refused("its adaptive draft depth is not this model's");
+  }
+  const execution::AdaptiveDepth decoding = loaded->WithCost(cost);
+  // Its extents as the slot's used ranges, each bounded to its layout.
+  std::vector<engine::LiveState::Range> used;
+  used.reserve(record.extents.size());
+  for (const kept::Extent& extent : record.extents) {
+    const std::uint64_t offset = std::uint64_t{extent.index} * kExtent;
+    used.push_back({.region = extent.region,
+                    .offset = offset,
+                    .bytes = std::min(kExtent, live->bytes(extent.region) - offset)});
+  }
+  // Its checkpoints, each opened (one that does not is left out).
+  std::vector<TurnCheckpoint> checkpoints;
+  for (kept::Checkpoint& c : record.checkpoints) {
+    const auto depth = execution::AdaptiveDepth::Load(c.decoding);
+    if (!depth.has_value() || !same(*depth)) {
+      Say(
+          std::format("{}: a kept turn checkpoint at {} tokens was left out: its draft depth is "
+                      "not this model's",
+                      name(), c.position));
+      continue;
+    }
+    auto file = engine::CheckpointFile::Adopt(kept_.directory, c.file, LiveRanges(c.ranges));
+    if (!file) {
+      Say(std::format("{}: a kept turn checkpoint at {} tokens was left out: {}", name(),
+                      c.position, file.error()));
+      continue;
+    }
+    checkpoints.push_back(
+        {.boundary = {.position = c.position, .created = SteadyAt(c.created_unix_ms)},
+         .file = std::move(*file),
+         .footprint = LiveRanges(c.footprint),
+         .cursor = c.cursor,
+         .decoding = depth->WithCost(cost)});
+    if (const auto named = kept::ParseFileName(c.file); named) {
+      checkpoint_serial_ = std::max(checkpoint_serial_, named->serial + 1);
+    }
+  }
+  if (auto adopted = AdoptFor(branch, used); !adopted) {
+    return refused(adopted.error());
+  }
+  branch.history_ = record.tokens;
+  branch.needs_clear_ = false;
+  branch.history_used_ = SteadyAt(record.used_unix_ms);
+  SetCursorFor(branch, record.cursor);
+  RestoreTurnDecodingStateFor(branch, decoding);
+  branch.turn_checkpoints_ = std::move(checkpoints);
+  remove_unused_checkpoints();
+  // The record stays: it describes the slot's file as it is.
+  std::erase_if(record.checkpoints, [&](const kept::Checkpoint& c) {
+    return std::ranges::none_of(branch.turn_checkpoints_,
+                                [&](const TurnCheckpoint& t) { return t.file.name() == c.file; });
+  });
+  kept_.keeper->Adopted(kept_.model, record);
+  return {};
+}
+
+void Llm::ForgetDiscarded(std::uint32_t discarded) {
+  for (std::uint32_t slot = 0; slot < branch_count_; ++slot) {
+    if ((discarded & (std::uint32_t{1} << slot)) != 0) {
+      Branch& branch = slot == 0 ? default_branch_ : *extra_branches_[slot - 1];
+      Forget(branch);
+      branch.needs_clear_ = false;  // its runner discarded it already
+    }
+  }
+}
+
+void Llm::PreserveKeptFiles() {
+  const auto preserve = [](Branch& branch) {
+    for (TurnCheckpoint& checkpoint : branch.turn_checkpoints_) {
+      checkpoint.file.Preserve();
+    }
+  };
+  preserve(default_branch_);
+  for (std::uint32_t slot = 1; slot < branch_count_; ++slot) {
+    preserve(*extra_branches_[slot - 1]);
+  }
+}
+
 Status Llm::SpillIdle(Branch& branch) { return Spill(branch, false); }
 
 Status Llm::SpillSetAside(Branch& branch) { return Spill(branch, true); }
@@ -2003,6 +2363,11 @@ Status Llm::Spill(Branch& branch, bool set_aside) {
   if (branch.needs_clear_ || branch.history_.empty() || !StateUsableFor(branch)) {
     return set_aside ? Error("no exact state to spill") : ReleaseIdleState(branch);
   }
+  // Kept across a restart (D-105): its last verify's owed restore runs
+  // first where nothing holds the stream, so the file holds it whole.
+  if (!set_aside && kept_.keeper != nullptr) {
+    (void)SettleIdle(branch);
+  }
   // What it writes (only what changed since its last spill): the measured
   // rate's bytes.
   const std::uint64_t bytes = SpillWriteBytesFor(branch);
@@ -2020,6 +2385,7 @@ Status Llm::Spill(Branch& branch, bool set_aside) {
   ++spill_stats_.spills;
   spill_stats_.spilled_bytes += bytes;
   spill_stats_.spill_seconds += Seconds(Clock::now() - started);
+  KeepBranch(branch);  // its record follows, in the background
   return {};
 }
 
@@ -2028,6 +2394,8 @@ Status Llm::RestoreSpilled(Branch& branch, bool& refused) {
   if (!SpilledFor(branch)) {
     return {};
   }
+  // Live again: its file may change from here on (D-105).
+  Unkeep(branch);
   const std::uint64_t bytes = SpilledBytesFor(branch);
   const auto started = Clock::now();
   if (auto restored = RestoreFor(branch); !restored) {
@@ -2205,6 +2573,7 @@ void Llm::CheckIdleGeneration(const Branch& branch, const PromptSession* prompt)
 
 void Llm::Forget(Branch& branch, const PromptSession* prompt) {
   CheckIdleGeneration(branch, prompt);
+  Unkeep(branch);
   branch.turn_checkpoints_.clear();
   branch.history_.clear();
   branch.needs_clear_ = true;
@@ -2212,6 +2581,7 @@ void Llm::Forget(Branch& branch, const PromptSession* prompt) {
 
 Status Llm::Clear(Branch& branch, const PromptSession* prompt) {
   CheckIdleGeneration(branch, prompt);
+  Unkeep(branch);
   branch.turn_checkpoints_.clear();
   if (auto r = ClearStateFor(branch); !r) {
     return r;
@@ -2224,6 +2594,7 @@ Status Llm::Clear(Branch& branch, const PromptSession* prompt) {
 
 Status Llm::ReleaseIdleState(Branch& branch) {
   CheckIdleGeneration(branch);
+  Unkeep(branch);
   branch.turn_checkpoints_.clear();
   branch.history_.clear();
   if (auto released = ReleaseIdleStateFor(branch); !released) {
@@ -2233,6 +2604,21 @@ Status Llm::ReleaseIdleState(Branch& branch) {
   branch.needs_clear_ = false;
   branch.history_used_ = Clock::now();
   return {};
+}
+
+std::size_t Llm::ExpireTurnCheckpoints(Branch& branch, Clock::time_point now) {
+  if (!BranchIdle(branch)) {
+    return 0;
+  }
+  const std::size_t expired = std::erase_if(branch.turn_checkpoints_, [&](const TurnCheckpoint& c) {
+    return now - c.boundary.created >= retention_;
+  });
+  // Their files went with them; a kept record names them no more.
+  if (expired != 0 && kept_.keeper != nullptr &&
+      kept_.keeper->Kept(kept_.model, BranchIndex(branch))) {
+    KeepBranch(branch);
+  }
+  return expired;
 }
 
 std::uint64_t Llm::Branch::turn_checkpoint_bytes() const {
@@ -2264,8 +2650,15 @@ Status Llm::CaptureTurnCheckpoint(Branch& branch, const PrefillGoOn& go_on, bool
   const engine::CheckpointFile::Continue progress =
       go_on ? engine::CheckpointFile::Continue([&]() { return go_on(0); })
             : engine::CheckpointFile::Continue{};
+  // Named, beneath the model's private directory, when conversations are
+  // kept across a restart (D-105): a record may name it.
+  engine::CheckpointFile::Place place{.directory = checkpoint_directory_, .dir = -1, .name = {}};
+  if (kept_.keeper != nullptr) {
+    place.dir = kept_.directory;
+    place.name = kept::CheckpointFileName(BranchIndex(branch), checkpoint_serial_++);
+  }
   auto file = engine::CheckpointFile::Capture(
-      *node_, checkpoint_directory_, *ranges,
+      *node_, place, *ranges,
       [&](void* host, std::span<const engine::LiveState::Range> page) {
         return CopyCheckpointStateFor(branch, host, page, true);
       },
@@ -2583,6 +2976,7 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity
     const auto at = static_cast<std::uint32_t>(branch_.history_.size());
     const auto end = at + next->rows;
     const auto started = Clock::now();
+    const StateKeeper::Quiet quiet(model_.kept_.keeper);  // records' hashing waits
     auto chunk =
         model_.RunChunkFor(branch_, std::span(tokens_).first(end), at, model_.speculate_, last_);
     if (!chunk) {
@@ -2644,6 +3038,8 @@ Status Llm::PromptSession::Finish() {
 Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::vector<float>& last,
                     const PrefillGoOn& go_on, PrefillRun* run) {
   CheckIdleGeneration(branch);
+  // Records' hashing waits while the prompt prefills (StateKeeper::Quiet).
+  const StateKeeper::Quiet quiet(kept_.keeper);
   branch.capacity_refused_ = false;
   if (branch.needs_clear_) {
     if (auto r = Clear(branch); !r) {
@@ -3273,6 +3669,7 @@ Status Llm::RestoreState(Branch& branch, void* host) {
   if (host == nullptr && !branch.saved_ranges_.empty()) {
     return Error("the conversation snapshot has no source buffer");
   }
+  Unkeep(branch);
   if (auto r = SettleFor(branch); !r) {
     return r;
   }
@@ -3304,7 +3701,12 @@ Server::Server(const config::NodeConfig& config, const config::RuntimeRoles& rol
              .coalesce = false,
              .copy_lane = true,
              .slot_bytes = engine::kSlabSlotBytes,
-             .observer = &times_}),
+             .observer = &times_,
+             .poll_window = std::nullopt,
+             .spin_ahead = std::nullopt,
+             .quiet = std::chrono::minutes(10),
+             .hold_reads = &hold_reads_,
+             .hold_cancellable = options.hold_cancellable}),
       retention_(std::chrono::hours(config.memory.retention_hours)),
       spill_budget_(std::uint64_t{config.memory.spill_budget_gib} << 30U) {}
 
@@ -3471,6 +3873,7 @@ Status Server::Start(bool snapshot) {
   std::uint64_t plans = 0;
   for (const auto& m : models_) {
     const auto started = Clock::now();
+    StartProgress();
     if (auto r = m->Setup(); !r) {
       return Error(std::format("model {}: {}", m->name(), r.error()));
     }
@@ -3507,6 +3910,11 @@ Status Server::Start(bool snapshot) {
     } else if (const auto slots = m->slots_report(); !slots.empty()) {
       Log(std::format("model {}: {}", m->name(), slots));
     }
+  }
+  // Conversations the process before kept (D-105): read, checked and
+  // their files named before the node registers them.
+  if (auto kept = PrepareKept(); !kept) {
+    return kept;
   }
   if (auto r = node_.MapWorkspace(activations, pool); !r) {
     return r;
@@ -3572,6 +3980,7 @@ Status Server::Start(bool snapshot) {
   if (auto r = node_.Start(base::Bytes(budget_)); !r) {
     return r;
   }
+  StartProgress();
   for (const auto& m : models_) {
     if (auto r = m->Register(); !r) {
       return Error(std::format("model {}: {}", m->name(), r.error()));
@@ -3633,7 +4042,290 @@ Status Server::Start(bool snapshot) {
       static_cast<Llm&>(*m).set_log([this](std::string_view text) { Log(text); });
     }
   }
+  AdoptKept();
   return {};
+}
+
+Status Server::PrepareKept() {
+  if (!options_.keep_conversations) {
+    return {};  // a command: what the service kept is left alone
+  }
+  const bool any_llm = std::ranges::any_of(models_, [](const auto& m) { return m->llm(); });
+  const auto stamp = platform::RunningExecutableStamp();
+  const bool wanted = config_.memory.keep_across_restart && spill_budget_ != 0;
+  const bool keep = any_llm && wanted && stamp.has_value();
+  const int spill = ::open(roles_.spill.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (spill < 0) {
+    return Error(std::format("the spill directory {}: {}", roles_.spill.string(), Errno(errno)));
+  }
+  const std::string root_name(kept::kDirectory);
+  if (!keep) {
+    // Nothing is kept with a spill budget of 0 (idle state is dropped) or
+    // with [memory] keep_across_restart false, and nothing kept before
+    // stays (D-014: its retention is explicit).
+    if (any_llm && wanted) {
+      Log("conversations are not kept across a restart: the executable's identity is unknown");
+    } else if (any_llm && !config_.memory.keep_across_restart) {
+      Log("conversations are not kept across a restart ([memory] keep_across_restart false)");
+    }
+    std::ignore = platform::RemovePrivate(spill, root_name.c_str());
+    (void)::close(spill);
+    return {};
+  }
+  auto opened = platform::OpenPrivateDirectory(spill, root_name.c_str());
+  (void)::close(spill);
+  if (!opened) {
+    Log(std::format("conversations are not kept across a restart: {}/{}: {}", roles_.spill.string(),
+                    root_name, Errno(opened.error())));
+    return {};
+  }
+  const int root = *opened;
+  // Hashing a record's files: a few cores, off the driver's path.
+  keeper_ = std::make_unique<StateKeeper>(4, [this](std::string_view line) { Log(line); });
+  const std::string build = KeptBuild();
+  const std::int64_t now = NowUnixMs();
+  const std::int64_t retention_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(retention_).count();
+  std::vector<std::string> kept_dirs;
+  std::size_t adopted_count = 0;
+  std::uint64_t adopted_bytes = 0;
+  for (const auto& m : models_) {
+    if (!m->llm()) {
+      continue;
+    }
+    auto& l = static_cast<Llm&>(*m);
+    const auto entry = std::ranges::find(config_.models, l.name(), &config::ModelEntry::name);
+    const std::string artifact = entry != config_.models.end() ? entry->artifact.value_or("") : "";
+    const std::string layout = l.KeptLayout();
+    if (!kept::ValidDirectoryName(artifact) || layout.empty()) {
+      Log(
+          std::format("model {}: its conversations are not kept across a restart (its artifact "
+                      "ID names no directory)",
+                      l.name()));
+      continue;
+    }
+    auto dir = platform::OpenPrivateDirectory(root, artifact.c_str());
+    if (!dir) {
+      Log(std::format("model {}: its conversations are not kept across a restart: {}: {}", l.name(),
+                      artifact, Errno(dir.error())));
+      continue;
+    }
+    kept_dirs.push_back(artifact);
+    const std::size_t index = keeper_->AddModel(*dir);
+    const kept::Identity identity{
+        .build = build,
+        .artifact = artifact,
+        .drafter = l.speculative() && entry->drafter ? *entry->drafter : std::string(),
+        .layout = layout};
+    kept::Expected expected{.identity = identity,
+                            .slot = 0,
+                            .regions = l.KeptRegions(),
+                            .layouts = l.KeptLayouts(),
+                            .context = l.usable_context(),
+                            .vocabulary = static_cast<std::uint32_t>(l.tokenizer().size()),
+                            .now_unix_ms = now,
+                            .retention_ms = retention_ms};
+    // Each slot's record, checked whole and its files hashed; a record
+    // that does not validate is refused and its files emptied.
+    std::vector<std::uint32_t> adopt;
+    std::vector<std::string> keep_files;
+    for (std::uint32_t slot = 0; slot < l.branches(); ++slot) {
+      const std::string record_name = kept::RecordFileName(slot);
+      auto text = platform::ReadPrivateFile(*dir, record_name.c_str(), kept::kMostRecordBytes);
+      if (!text) {
+        if (text.error() != ENOENT) {
+          Log(std::format("model {}: slot {}'s kept conversation was refused: its record: {}",
+                          l.name(), slot, Errno(text.error())));
+        }
+        continue;
+      }
+      expected.slot = slot;
+      std::vector<std::string> dropped;
+      auto record = kept::Decode(*text);
+      std::string why;
+      if (!record) {
+        why = record.error();
+      } else if (auto checked = kept::Check(*record, expected, &dropped); !checked) {
+        why = checked.error();
+      }
+      // The files: the very ones the record names, whole, hashing as it says.
+      const auto verify = [&](const std::string& name, const kept::FileId& id, std::uint64_t bytes,
+                              std::span<const kept::Place> places,
+                              std::span<const kept::Digest> digests) -> std::string {
+        auto file = platform::OpenPrivateFile(
+            *dir, name.c_str(),
+            {.write = false, .create = false, .truncate = false, .direct = true});
+        if (!file) {
+          return std::format("{}: {}", name, Errno(file.error()));
+        }
+        const int fd = file->fd;
+        const bool same = KeptId(file->identity) == id && file->bytes == bytes;
+        const auto hashed =
+            same ? HashPlaces(fd, places, 8) : std::vector<std::optional<kept::Digest>>{};
+        (void)::close(fd);
+        if (!same) {
+          return std::format("{} is not the file its record was made for", name);
+        }
+        for (std::size_t i = 0; i < hashed.size(); ++i) {
+          if (!hashed[i] || *hashed[i] != digests[i]) {
+            return std::format("{} does not hold what its record says (its digests differ)", name);
+          }
+        }
+        return {};
+      };
+      if (why.empty()) {
+        std::vector<kept::Place> places;
+        std::vector<kept::Digest> digests;
+        for (const kept::Extent& extent : record->extents) {
+          places.push_back(
+              {.offset = kept::ExtentOffset(record->regions, extent), .bytes = kept::kExtentBytes});
+          digests.push_back(extent.digest);
+        }
+        why = verify(record->file, record->id, record->file_bytes, places, digests);
+      }
+      if (!why.empty()) {
+        Log(std::format("model {}: slot {}'s kept conversation was refused: {}", l.name(), slot,
+                        why));
+        continue;
+      }
+      std::erase_if(record->checkpoints, [&](const kept::Checkpoint& c) {
+        const std::string bad =
+            verify(c.file, c.id, c.file_bytes, kept::CheckpointPlaces(c), c.digests);
+        if (!bad.empty()) {
+          dropped.push_back(bad);
+        }
+        return !bad.empty();
+      });
+      for (const std::string& line : dropped) {
+        Log(std::format("model {}: slot {}: a kept turn checkpoint was left out: {}", l.name(),
+                        slot, line));
+      }
+      adopt.push_back(slot);
+      keep_files.push_back(record->file);
+      keep_files.push_back(record_name);
+      for (const kept::Checkpoint& c : record->checkpoints) {
+        keep_files.push_back(c.file);
+      }
+      adopted_bytes += record->extents.size() * kExtent;
+      ++adopted_count;
+      adoptions_.push_back({.model = &l, .record = std::move(*record)});
+      StartProgress();
+    }
+    // Nothing else stays: unadopted slots' files, other records, stale
+    // temporary files (D-014: what is kept is explicit).
+    if (auto entries = platform::ListPrivateDirectory(*dir); entries) {
+      for (const platform::DirectoryEntry& listed : *entries) {
+        if (!std::ranges::contains(keep_files, listed.name)) {
+          std::ignore = platform::RemovePrivate(*dir, listed.name.c_str());
+        }
+      }
+    }
+    l.set_kept({.keeper = keeper_.get(),
+                .model = index,
+                .directory = *dir,
+                .identity = identity,
+                .adopt = std::move(adopt)});
+  }
+  // Models no longer configured keep nothing.
+  if (auto entries = platform::ListPrivateDirectory(root); entries) {
+    for (const platform::DirectoryEntry& entry : *entries) {
+      if (!std::ranges::contains(kept_dirs, entry.name)) {
+        std::ignore = platform::RemovePrivate(root, entry.name.c_str());
+      }
+    }
+  }
+  (void)::close(root);
+  Log(
+      std::format("conversations are kept across a restart in {}/{} (D-105): {} adopted ({:.1f} "
+                  "MiB of state)",
+                  roles_.spill.string(), root_name, adopted_count,
+                  static_cast<double>(adopted_bytes) / (1U << 20U)));
+  return {};
+}
+
+void Server::AdoptKept() {
+  for (PendingAdoption& pending : adoptions_) {
+    Llm& l = *pending.model;
+    const std::uint32_t slot = pending.record.slot;
+    auto branch = l.branch(slot);
+    Status adopted =
+        branch ? l.Adopt(**branch, pending.record) : Status(std::unexpected(branch.error()));
+    if (adopted) {
+      Log(std::format(
+          "model {}: slot {} adopted a kept conversation of {} tokens ({} turn "
+          "checkpoints); its next turn restores it",
+          l.name(), slot, pending.record.tokens.size(), pending.record.checkpoints.size()));
+      continue;
+    }
+    Log(std::format("model {}: slot {}'s kept conversation was not adopted: {}", l.name(), slot,
+                    adopted.error()));
+    // Its file was kept as it is: emptied (a slot's fresh state reads zeros
+    // from it), and its record removed.
+    if (branch) {
+      std::ignore = (*branch)->ReleaseIdleState();
+    }
+  }
+  adoptions_.clear();
+}
+
+void Server::Persist(Clock::time_point deadline, const std::function<void()>& progress) {
+  if (keeper_ == nullptr || !started_ || torn_down_) {
+    return;
+  }
+  std::size_t spilled = 0;
+  std::uint64_t bytes = 0;
+  auto told = Clock::now();
+  if (resident_ != nullptr && resident_->llm()) {
+    auto& l = static_cast<Llm&>(*resident_);
+    for (std::size_t i = 0; i < l.branches() && Clock::now() < deadline; ++i) {
+      auto b = l.branch(i);
+      if (!b || (*b)->history().empty() || !l.BranchIdle(**b) || l.ResidentStateBytes(**b) == 0) {
+        continue;
+      }
+      const std::uint64_t held = l.ResidentStateBytes(**b);
+      if (auto r = l.SpillIdle(**b); r) {
+        ++spilled;
+        bytes += held;
+      }
+      if (Clock::now() - told >= std::chrono::seconds(1)) {
+        progress();
+        told = Clock::now();
+      }
+    }
+  }
+  // The models a swap wrote back have their records already queued. The
+  // keeper writes them while it makes progress (bytes hashed, records
+  // written), however long that takes; a minute with nothing moving ends
+  // the wait (a hung drive), as does the deadline.
+  bool drained = false;
+  const auto moved = [this] {
+    const StateKeeper::Stats s = keeper_->stats();
+    return s.hashed_bytes + s.written + s.failed + s.stale;
+  };
+  std::uint64_t seen = moved();
+  auto quiet_until = Clock::now() + std::chrono::minutes(1);
+  while (!(drained = keeper_->Drain(std::min(deadline, Clock::now() + std::chrono::seconds(1))))) {
+    const auto now = Clock::now();
+    if (const std::uint64_t at = moved(); at != seen) {
+      seen = at;
+      quiet_until = now + std::chrono::minutes(1);
+    }
+    if (now >= deadline || now >= quiet_until) {
+      break;
+    }
+    progress();
+  }
+  const StateKeeper::Stats stats = keeper_->stats();
+  Log(
+      std::format("kept for the next start: {} conversations spilled ({:.1f} MiB); records {} "
+                  "written in all, {} pending{}; {:.1f} MiB hashed in {:.2f} s",
+                  spilled, static_cast<double>(bytes) / (1U << 20U), stats.written,
+                  keeper_->pending(), drained ? "" : " (the stop's time ran out)",
+                  static_cast<double>(stats.hashed_bytes) / (1U << 20U), stats.hash_seconds));
+}
+
+bool Server::DrainKept(Clock::time_point deadline) {
+  return keeper_ == nullptr || keeper_->Drain(deadline);
 }
 
 std::uint64_t Server::context_body_bytes() const {
@@ -3747,6 +4439,11 @@ Status Server::TearDown() {
   models.reserve(models_.size());
   for (const auto& m : models_) {
     models.push_back(&m->paged());
+    // Kept checkpoints' files stay for the next start (D-105): those no
+    // record names it removes.
+    if (m->llm()) {
+      static_cast<Llm&>(*m).PreserveKeptFiles();
+    }
   }
   return node_.TearDown(models);
 }
@@ -3820,7 +4517,10 @@ Server::ReferenceRetirement Server::RetireRequestBranches(Llm& model, bool last_
 }
 
 Status Server::WaitReleased() {
-  const auto give_up = Clock::now() + std::chrono::minutes(2);
+  // Progress-based (D-102): only evictions that stop finishing for the
+  // node's quiet time are given up on, however long the whole takes.
+  auto give_up = Clock::now() + node_.quiet();
+  std::size_t before = std::numeric_limits<std::size_t>::max();
   for (;;) {
     std::size_t left = 0;
     if (auto r = node_.Call(
@@ -3835,8 +4535,13 @@ Status Server::WaitReleased() {
     if (left == 0) {
       return {};
     }
-    if (Clock::now() > give_up) {
-      return Error("backing no load took was not released");
+    if (left < before) {
+      before = left;
+      give_up = Clock::now() + node_.quiet();
+    } else if (Clock::now() > give_up) {
+      return Error(
+          "backing no load took was not released: no eviction finished for the node's "
+          "quiet time");
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
@@ -4204,6 +4909,55 @@ Status Server::EvictPaged(Served& m) {
   return resident.empty() ? Status{} : node_.Evict(resident);
 }
 
+Status Server::FenceModel(Served& m) {
+  const std::uint32_t stream = m.paged().stream();
+  if (node_.InRequest(stream)) {
+    // Its task may have ended with the cancellation: ending it only frees
+    // what it held.
+    std::ignore = node_.EndRequest(stream);
+  }
+  return node_.Job(
+      catalog::Closure{}, [](providers::NativeStream) { return scheduler::JobResult::kQueued; },
+      "fencing a model's stream after a hang", stream);
+}
+
+Status Server::RecoverModel(Served& m) {
+  if (!NodeHealthy()) {
+    return Error("the node's scheduler faulted");
+  }
+  if (auto fenced = FenceModel(m); !fenced) {
+    return Error(std::format("its stream could not be fenced: {}", fenced.error()));
+  }
+  if (auto recovered = m.RecoverInPlace(); !recovered) {
+    return recovered;
+  }
+  if (m.llm()) {
+    // The hung unit may have been timed: no calibration counts it (D-103).
+    static_cast<Llm&>(m).calibration_samples().Forget();
+  }
+  // Evicted, so its next activation loads it whole: its weights, and the
+  // state it kept (idle conversations) written back.
+  if (auto evicted = EvictPaged(m); !evicted) {
+    return Error(std::format("evicting it: {}", evicted.error()));
+  }
+  if (resident_ == &m) {
+    resident_ = nullptr;
+  }
+  if (m.llm() && m.HasRetainedState() && std::ranges::find(spilled_, &m) == spilled_.end()) {
+    // As a swap's write-back: the conversations it kept are wholly on disk,
+    // and their records follow (D-105).
+    m.StateWrittenBack(true);
+    spilled_.push_back(&m);
+    auto& l = static_cast<Llm&>(m);
+    for (std::size_t i = 0; i < l.branches(); ++i) {
+      if (auto b = l.branch(i); b && !(*b)->spilled()) {
+        l.KeepBranch(**b);
+      }
+    }
+  }
+  return {};
+}
+
 Status Server::UndoSwap(Served& out, Served& in) {
   // What of the incoming model came in goes out again (its state written
   // back to its place), then the outgoing model comes back whole: its
@@ -4280,6 +5034,9 @@ void Server::Maintain() {
     auto& l = static_cast<Llm&>(*m);
     for (std::size_t i = 0; i < l.branches(); ++i) {
       auto b = l.branch(i);
+      if (b) {
+        (void)l.ExpireTurnCheckpoints(**b, now);
+      }
       if (!b || !l.BranchIdle(**b) || (*b)->history().empty() ||
           now - l.LastUsed(**b) < retention_) {
         continue;
@@ -4322,6 +5079,9 @@ void Server::Maintain() {
 }
 
 Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_state) {
+  // Records' hashing waits while a swap moves the models (StateKeeper::
+  // Quiet): their reads and the swap's share the drive.
+  const StateKeeper::Quiet quiet(keeper_.get());
   parts = SwapParts{};
   parts.to = m.name();
   if (resident_ == &m) {
@@ -4333,6 +5093,17 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   }
   swap_before_ = *before;
   const bool restoring = std::ranges::find(spilled_, &m) != spilled_.end();
+  // The incoming model's conversations a swap wrote back come back live:
+  // their records go first (D-105). Those the reclaim order spilled stay
+  // on disk, and kept, until a turn restores them.
+  if (m.llm()) {
+    auto& in = static_cast<Llm&>(m);
+    for (std::size_t i = 0; i < in.branches(); ++i) {
+      if (auto b = in.branch(i); b && !(*b)->spilled()) {
+        in.Unkeep(**b);
+      }
+    }
+  }
   parts.requested = Clock::now();
   Clock::time_point evicted = parts.requested;
   Clock::time_point loaded;
@@ -4405,6 +5176,16 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
             std::format("{}: {} conversations deleted, the least recently used, for the spill "
                         "budget of {} GiB before its swap-out",
                         out.name(), deleted, spill_budget_ >> 30U));
+      }
+      // Kept across a restart (D-105): each conversation's last verify's
+      // owed restore runs first (no request holds the stream during a
+      // swap), so the write-back holds it whole.
+      if (l.keeps()) {
+        for (std::size_t i = 0; i < l.branches(); ++i) {
+          if (auto b = l.branch(i); b && l.ResidentStateBytes(**b) != 0) {
+            (void)l.SettleIdle(**b);
+          }
+        }
       }
       // Its state first, so its write-backs start first; what nothing wrote
       // since its slot's spill file last held it is released without
@@ -4479,6 +5260,13 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     if (parts.with_state) {
       out.StateWrittenBack(true);
       spilled_.push_back(&out);
+      // Its conversations are wholly on disk: their records follow (D-105).
+      auto& l = static_cast<Llm&>(out);
+      for (std::size_t i = 0; i < l.branches(); ++i) {
+        if (auto b = l.branch(i); b && !(*b)->spilled()) {
+          l.KeepBranch(**b);
+        }
+      }
     }
     evicted = report.evicted;
     loaded = report.loaded;

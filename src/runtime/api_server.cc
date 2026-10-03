@@ -770,7 +770,25 @@ Server::Server(Backend& backend, ServerOptions options)
       stop_(platform::Waker::Open()),
       io_wake_(platform::Waker::Open()),
       ready_(platform::Waker::Open()),
-      watchdog_(options_.stall, Clock::now()) {}
+      watchdog_(options_.stall, Clock::now()) {
+  if (options_.ladder != nullptr) {
+    ladder_ = options_.ladder;
+    return;
+  }
+  // A ladder of the server's own (the tests'): `hang`, or its default, and
+  // `on_hang` its last resort.
+  own_ladder_ = std::make_unique<HangLadder>(options_.hang.value_or(DefaultHang(options_.stall)),
+                                             Clock::now());
+  own_ladder_->set_log([this](std::string_view line) { Log(line); });
+  if (options_.on_hang) {
+    own_ladder_->set_last_resort(options_.on_hang);
+  }
+  ladder_ = own_ladder_.get();
+}
+
+std::chrono::milliseconds DefaultHang(std::chrono::milliseconds stall) {
+  return std::max<std::chrono::milliseconds>(kHangFloor, kHangStalls * stall);
+}
 
 Server::~Server() {
   if (io_.joinable()) {
@@ -833,6 +851,10 @@ void Server::HealthChanged() const {
 bool Server::BeatLocked(Phase next, double expected) {
   const auto now = Clock::now();
   const Health before = watchdog_.health();
+  // The hang ladder (hang_ladder.h) sees the same beat: the unit that
+  // follows and the allowance the watchdog gives it.
+  ladder_->Unit(next != Phase::kIdle && next != Phase::kPaused,
+                Allowance(watchdog_.stall(), expected), PhaseName(next), now);
   if (!watchdog_.Beat(next, expected, now)) {
     return false;
   }
@@ -867,29 +889,15 @@ void Server::WatchBackend(Clock::time_point now, std::vector<std::uint64_t>& end
   HealthChanged();
 }
 
-std::string Server::HangLocked(Clock::time_point now) {
-  // Progress of any kind: a unit's beat (the watchdog's) or the backend's
-  // own activity changing (page-in progress), whichever came last.
-  const std::uint64_t activity = options_.activity ? options_.activity() : 0;
-  if (activity != backend_activity_ || backend_activity_at_ == Clock::time_point{}) {
-    backend_activity_ = activity;
-    backend_activity_at_ = now;
+void Server::WatchHang(Clock::time_point now) {
+  // Progress of any kind: a unit's beat (the ladder sees each, BeatLocked)
+  // or the backend's own activity moving (the node's progress count). The
+  // ladder logs each rung it enters; entering rung 3 runs its last resort
+  // here, on the I/O thread, which never waits on the model.
+  if (options_.activity) {
+    ladder_->Activity(options_.activity(), now);
   }
-  const Health& health = watchdog_.health();
-  if (health.phase == Phase::kIdle || health.phase == Phase::kPaused) {
-    return {};
-  }
-  const std::chrono::milliseconds limit = options_.hang.value_or(
-      std::max<std::chrono::milliseconds>(kHangFloor, kHangStalls * options_.stall));
-  const Clock::time_point since = std::max(health.last_progress, backend_activity_at_);
-  if (now - since < limit) {
-    return {};
-  }
-  return std::format(
-      "the model backend made no progress of any kind for {:.0f} s ({}: no unit ended and no "
-      "page-in moved): a confirmed hang; the runtime exits for its supervisor to restart it "
-      "([client] hang_seconds)",
-      Seconds(now - since), PhaseName(health.phase));
+  (void)ladder_->Check(now);
 }
 
 void Server::FailStalledLocked(Clock::duration idle, std::vector<std::uint64_t>& ended) {
@@ -1779,18 +1787,7 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
   // The backend: a stall ends the running request and refuses the queue.
   std::vector<std::uint64_t> expired;
   WatchBackend(now, expired);
-  if (!hang_reported_ && options_.on_hang) {
-    std::string why;
-    {
-      const std::scoped_lock lock(mutex_);
-      why = HangLocked(now);
-    }
-    if (!why.empty()) {
-      hang_reported_ = true;
-      Log(why);
-      options_.on_hang(why);
-    }
-  }
+  WatchHang(now);
   // The queue: only with queue_wait set does a non-streaming request that
   // waited that long get a 429 (D-102); a stream, held by keepalives,
   // waits its turn.

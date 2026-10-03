@@ -235,10 +235,15 @@ TEST(NodeConfigTest, MemoryKeepsConversationsAsConfigured) {
   const NodeConfig defaults = Parsed("schema_version = 2\n");
   EXPECT_EQ(defaults.memory.retention_hours, 24U);
   EXPECT_EQ(defaults.memory.spill_budget_gib, 128U);
-  const NodeConfig set =
-      Parsed("schema_version = 2\n[memory]\nretention_hours = 1\nspill_budget_gib = 0\n");
+  EXPECT_TRUE(defaults.memory.keep_across_restart);
+  const NodeConfig set = Parsed(
+      "schema_version = 2\n[memory]\nretention_hours = 1\nspill_budget_gib = 0\n"
+      "keep_across_restart = false\n");
   EXPECT_EQ(set.memory.retention_hours, 1U);
   EXPECT_EQ(set.memory.spill_budget_gib, 0U);
+  EXPECT_FALSE(set.memory.keep_across_restart);
+  EXPECT_THAT(Failures("schema_version = 2\n[memory]\nkeep_across_restart = 1\n"),
+              ElementsAre(HasSubstr("memory.keep_across_restart must be a boolean")));
   const NodeConfig most = Parsed(
       "schema_version = 2\nmemory.retention_hours = 8760\nmemory.spill_budget_gib = "
       "1048576\n");
