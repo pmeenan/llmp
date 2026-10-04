@@ -3,7 +3,7 @@
 
 # M3 optimization status
 
-Snapshot: 2026-10-03. **Neither remaining engine comparison
+Snapshot: 2026-10-04. **Neither remaining engine comparison
 gap is closed.** Pipeline reproduction, a useful individual replacement,
 and a selected serving default are different outcomes. This page tracks
 closure; individual reports retain conditions and evidence.
@@ -123,7 +123,11 @@ to 4,096-row DeepSeek chunks, 12.1% faster at 8K and 14.9% at 32K than
 2,048 ([DeepSeek concurrent](experiments/deepseek-concurrent/README.md)).
 On the other Spark, the positive captured GDN factor selects a bounded native
 wave-composition screen with independent F32 state/output ranges, graph
-dependencies and paid packing. That integration is unstarted. A separate
+dependencies and paid packing. That [integration now completes](experiments/qwen38-gdn-cohort/README.md#native-wave-integration-screen--2026-10-04):
+all full target rows and final state match the unmodified control, with
+capture/replay and 1,404 recurrence cohort launches. Verify median is
+107.399 ms against disabled bookends of 107.228 / 107.018 ms, so it is not
+adopted. The isolated serial-launch gain does not establish a wave gain. A separate
 sparse-attention cohort factor would retain per-request selection and caches;
 it is also unstarted and is distinct from the rejected shared-cell union.
 Use one representative bookended screen to settle each candidate. Investigate

@@ -123,12 +123,70 @@ B was explicitly returned after a strong retirement probe found 117.230 GiB
 free, no GPU/container/native-model work, and zero busy GPU jobs. Successful
 build/run supervisors 3981842/3982645 both completed with zero status.
 
-The next candidate remains unstarted: a real wave composition of four native
-GDN recurrence nodes using bounded per-request records, preserving F32
-arithmetic, update=false and independent state/output ranges. Likely source
-files are `src/engine/qwen38_wave_plan.{h,cc}`,
-`src/kernels/ggml/jitllm_fused.cu` and a private launch descriptor.
-It still needs graph/dependency/funding authentication and a paid model
-comparison; convolution, normalization and Accept/Discard behavior must
-remain unchanged.
+## Native wave integration screen — 2026-10-04
+
+**Exact, but no measured wave gain; not adopted.** The private integration
+composes four matched, non-writing GDN verifies into one launch, using the
+unchanged F32 arithmetic body and independent input, state and output ranges.
+It places all four outputs together before activation allocation. Existing
+lane dependencies fence each slot's preceding work before the combined launch.
+By-value records need no new device allocation or packing kernel; host packing
+is inside the verify clock. Ragged, one-row and smaller groups retain the
+original launch. Convolution, normalization and Accept/Discard stay unchanged.
+
+Spark A (`spark-c4e2`), driver 580.178.04, CUDA 13.4.92, SDK
+`aarch64-e0a0c85c42806fb1`. Each fresh process prefills the first four prompts
+in `fast-swap/prompts.json`, then generates 96 outputs per slot. The context
+is 16,384, chunk 4,096, vocabulary head 47,172, lanes on and graphs on.
+The existing `--check wave` uses depth two, irrespective of the driver's
+`--draft 3` setting. These are short in-process controls with the benchmark's
+drafter-injected prefill, not 8K HTTP requests or runtime-prefill timings.
+
+| Chronological arm | Draft median ms | Verify median ms | GDN cohort launches |
+| --- | ---: | ---: | ---: |
+| Unmodified copied benchmark | 21.434 | 107.109 | 0 |
+| Refactored, disabled before | 21.511 | 107.228 | 0 |
+| Combined recurrence enabled | 21.594 | 107.399 | 1,404 |
+| Refactored, disabled after | 21.451 | 107.018 | 0 |
+
+The enabled verify median is 0.258% higher than the disabled bookends'
+mean (107.123 ms); their after/before movement is -0.196%. This single screen
+does not establish a confidence interval. The earlier 26.51% operator gain
+against four serial launches did not transfer to a native wave already using
+concurrent lanes. This does not exclude other shapes or recurrence schedules.
+
+All four arms complete 43 waves and 384 generated tokens. Every slot's
+complete target-row hash, generated-token hash and final initialized-state
+hash equals the copied unmodified benchmark. Each arm captures two target
+wave graphs and replays 38; the enabled arm executes 1,404 cohort launches,
+while the disabled arms execute zero. Full-model output/state agreement
+therefore covers actual capture/replay and ordinary accepted/rejected drafts,
+not merely an operator golden. There is no swap/recovery, sampled quality,
+HTTP throughput or memory-envelope qualification of this candidate.
+
+`gdn-wave-build3` and `gdn-wave-screen1` both finish successfully under the
+installed GPU supervisor. All four model children return zero and are reaped
+(31.28–31.47 s each); admission and retirement probes pass around every arm.
+Final retirement finds 116.296 GiB available, no GPU/container/native-model
+processes and no busy or waiting GPU job. The diagnostic prototype remains
+outside main. No production suite or HTTP ladder ran for this rejected screen.
+
+The patch against `ce8173b`, per-file source hashes, controller and raw outputs
+are retained in workstation scratch
+`/home/pmeenan/scratch/jitllm-m3-qwen-gdn-waves-2026-10-04/`.
+Spark A retains the controller and outputs in `~/scratch/gdn-waves/`, and the
+private build in `~/src/jitLLM-wt/gdnw4/`. Reproduction uses that source patch,
+the pinned target artifact `c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93`,
+drafter `8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40`
+and `Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json`.
+
+| Integration provenance | SHA-256 |
+| --- | --- |
+| Source patch | 3ce45bae14634fcb0610c5a6258285c0c9d0e249a9b8b527633c5bc19936f47f |
+| Per-file source hashes | 00542a34ee3a8e255749010544756dd28b336542bae4299b37e031272913915d |
+| Controller | 2fa13166684f52844f0d10c63bfeec8250698b3b49b250d4028d2bff7f49237e |
+| Prompt source | d212009dadf1ddbf945c8dc7ad0214ba444236baf57c8ed9019c3ebe6b0805b4 |
+| Unmodified copied benchmark | 4d3228cc89520db7c7866d78a4c5db6ac5bdbbcd79e4363d192063e9ab52ae93 |
+| Refactored benchmark (both settings) | 8a98e510ee702042eaa256f0a7760cfac010d04884c188c5be20a9bca2f2d2d4 |
+| Successful controller receipt | 69435eba8a3758f8294eae1de8b0a2852ef805222350a5431d8cc0bef6351096 |
 

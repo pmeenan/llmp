@@ -1145,8 +1145,12 @@ it appears.
       A separate [four-request captured GDN factor](experiments/qwen38-gdn-cohort/README.md)
       lowers paid operator replay wall 26.51%, with exact F32 outputs and
       unchanged operands/state/guards. Graphs are disabled and both arms
-      use the same private arithmetic-body refactor. Native wave integration,
-      graph/recovery controls and actual serving impact are untested.
+      use the same private arithmetic-body refactor. A subsequent
+      [native wave integration screen](experiments/qwen38-gdn-cohort/README.md#native-wave-integration-screen--2026-10-04)
+      matches every full target row and final state against the unmodified
+      control with capture/replay, but has no measured gain: verify median
+      107.399 ms versus disabled bookends 107.228 / 107.018 ms. It is not
+      adopted; swap/recovery and actual serving impact remain untested.
       All packing
       is paid. Overflow waits
       for a retired slot. Model changes now pause the group at completed
