@@ -1893,7 +1893,10 @@ class ServerTest : public ::testing::Test {
   }
 
   static bool WaitFor(const std::function<bool()>& predicate) {
-    for (int i = 0; i < 2000 && !predicate(); ++i) {
+    for (int i = 0; i < 2000; ++i) {
+      if (predicate()) {
+        return true;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return predicate();
@@ -1985,6 +1988,14 @@ class ServerTest : public ::testing::Test {
   std::expected<void, std::string> result_;
   std::jthread thread_;
 };
+
+TEST_F(ServerTest, WaitForRetainsAnObservedTransientCondition) {
+  int observations = 0;
+  // A paused driver can resume before a second observation. Seeing the
+  // requested phase once satisfies this helper's wait.
+  EXPECT_TRUE(WaitFor([&] { return ++observations == 1; }));
+  EXPECT_EQ(observations, 1);
+}
 
 TEST_F(ServerTest, AnswersAChatCompletion) {
   const std::string response = Exchange(Post(Chat("Hello world")));
