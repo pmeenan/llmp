@@ -1051,6 +1051,14 @@ it appears.
       regression, but both paths fail parts of the strict rubric. HCA stays
       off by default; these tests do not approve a quality exception.
 - [ ] **Concurrent-request comparisons** (the owner, 2026-10-01).
+      The [current matched DeepSeek screen](experiments/deepseek-matched-serving/README.md)
+      (2026-10-04) uses identical 7,043-token inputs with no prompt reuse,
+      native buffered literal completions and ds4 buffered non-thinking chat.
+      One-output native wall is 9.16% longer; at 256 outputs, C1 wall is
+      1.71% longer and C2/C4 completed-token rates lead 13.16%/18.36%.
+      All 21 requests complete, native memory drops are lower, and native
+      bookend replies match. Different full reference replies, buffered phase
+      clocks and the remaining protocols leave the broader gate open.
       Engine comparisons cover one request and concurrent generation
       requests, beginning with 1, 2 and 4 on the same resident model.
       Compare actual aggregate throughput and each request's latency,

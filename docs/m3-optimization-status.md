@@ -8,6 +8,15 @@ gap is closed.** Pipeline reproduction, a useful individual replacement,
 and a selected serving default are different outcomes. This page tracks
 closure; individual reports retain conditions and evidence.
 
+The [matched DeepSeek serving screen](experiments/deepseek-matched-serving/README.md)
+now pays the same uncached 7,043 input IDs on both engines. Native's one-output
+wall is 9.16% longer than ds4; at 256 outputs, C1 wall is 1.71% longer and
+C2/C4 completed-token rates lead by 13.16%/18.36%. All 21 longer requests
+complete, with no errors or reused prompt tokens, and native peak memory
+drop is lower. These buffered literal/chat routes match model inputs;
+they do not isolate decode, establish a cross-engine quality pass or close
+the broader performance gate. Native bookend replies repeat exactly.
+
 ## Remaining gaps
 
 | Question | Established result | Still needed |
