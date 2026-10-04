@@ -223,10 +223,13 @@ batching (2026-10-04). Each bring-up records which techniques apply, where
 its plan selects them, any shape or format limits, and its solo and batched
 correctness, speed and memory evidence. A supported status includes that
 batching qualification; a serial bring-up is an intermediate control.
-M4's
+Use the latest TensorFold at each applicable family, quantization or
+optimization task under [reference comparisons](reference-comparisons.md),
+including supported single-Spark paths in M3.5. M4's
 [Kindling and TensorFold references](m4-references.md) add multi-node
-techniques only after their recipes and measured two-Spark behavior are
-re-pinned at entry. Their claimed rankings are not local measurements.
+techniques after their recipes and measured two-Spark behavior are
+re-pinned; TensorFold refreshes per task as well as at entry. Their claimed
+rankings are not local measurements.
 
 
 ### Qwen expert-major group cap — 2026-10-04

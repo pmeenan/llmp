@@ -37,7 +37,15 @@ the same two-node workload ourselves before making performance claims.
 
 ## TensorFold on two Sparks
 
-TensorFold is already an M4 comparator. Its
+TensorFold is an M3.5 and M4 competitive target wherever it supports the
+configuration. Use the latest revision **at each applicable task**, then
+freeze it for matched runs, under [reference comparisons](reference-comparisons.md).
+That document records the 2026-10-04 coverage observation, including
+experimental CUDA EXL3/TR3 for GLM; confirm layout compatibility with M4's
+target before selecting a same-format oracle. The pins below are historical
+observations, not default versions for future work.
+
+The previously inspected
 [GLM recipe](https://github.com/ashhart/TensorFold/blob/9cd52ab4daba68ddd09be89be8f23ad43175e821/docs/recipes/glm-5.3-flash.md)
 runs a CUDA engine on two Sparks over NCCL in NVIDIA's
 `pytorch:26.07-py3` container. The checkpoint
@@ -47,8 +55,8 @@ Rank 1 starts first, then rank 0, both with `--tp 2` and the same master
 address. MTP and optional DFlash2 drafting are documented.
 
 The recipe also documents an experimental Mia EXL3 checkpoint path.
-Measure that as a same-format comparator if its format and pins match
+Measure the current version as a same-format comparator if its format and pins match
 M4's final target, as well as the affine checkpoint's cross-quantization
 speed/memory result. Re-pin at entry: M3's audited version is
 `71377a5373ed7b394f1b480ba2a6a3986b03af1c`; the observed 2026-09-29
-HEAD is `9cd52ab4daba68ddd09be89be8f23ad43175e821`.
+HEAD was `9cd52ab4daba68ddd09be89be8f23ad43175e821`.

@@ -506,6 +506,12 @@ engine (owner, 2026-10-04). The final comparison covers the production solo
 and optimized batched paths and gates supported status under the criteria
 below.
 
+Use the latest TensorFold at the time of each applicable task as an
+additional competitive performance target, refreshing and then freezing
+its pin under [reference comparisons](reference-comparisons.md) (owner,
+2026-10-04). Same-format correctness oracles remain required; cross-format
+TensorFold comparisons report speed, memory and separate quality controls.
+
 - **Correctness:** greedy tokens match the same-format oracle except
   near-ties, under the recorded-first noise bound; perplexity within a few
   percent; speculation, where present, meets M3's speculation criteria.
@@ -620,7 +626,7 @@ requantization from optimizations at unchanged quality.
 
 | Model | Correctness oracle (same format) | Performance comparators | Cross-quantization (speed and memory only) |
 | --- | --- | --- | --- |
-| GLM-5.3 Flash | Mia's EXL3 configuration | Mia's configuration | TensorFold (MLX 4-bit) |
+| GLM-5.3 Flash | Same-format EXL3 configuration, re-pinned at entry | Latest TensorFold where the EXL3 layout matches; Mia's configuration | TensorFold (MLX affine) |
 | DeepSeek v4.1 Flash | Mia's configuration | Mia's configuration | none |
 
 **Scope:**
@@ -632,7 +638,8 @@ requantization from optimizations at unchanged quality.
       (AGPL or mixed, D-080); and whether Mia's ExLlamaV3 revisions'
       formats match our `6b84a21`.
 - [ ] **Baselines:** Mia's two-Spark configurations and TensorFold, run by
-      us, measured as in M3.
+      us, measured as in M3. Refresh TensorFold for each applicable task
+      under [reference comparisons](reference-comparisons.md).
 - [ ] **Conductor, minimal** (pulled from M6a): one configured two-node
       topology that loads both shards at once and runs each phase on both
       ranks. Discovery, enrollment, cluster trust and general placement

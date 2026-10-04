@@ -35,6 +35,12 @@ convolutions, grouped routing) have optional carriers
 ([below](#optional-checkpoints)); the older generations' features are
 judged one by one in [Legacy-tier features](#legacy-tier-features).
 
+The table names same-format reference candidates. Also use the latest
+TensorFold wherever its current backend, model and format support permits,
+re-pinning at each task under [reference comparisons](reference-comparisons.md).
+Different-format TensorFold targets add measured speed/memory comparisons
+and separate quality controls; they do not replace those oracles.
+
 | # | Checkpoint (family) | Form | Formats, reference | Max context | New for jitLLM |
 | --- | --- | --- | --- | ---: | --- |
 | 1 | Gemma 4 26B-A4B-it (Google) | MoE 25.2B/3.8B | GGUF UD-Q4_K_M, llama.cpp; EXL3 mcg 2.54/3.10/4.10, ExLlamaV3 | 262,144 | 5:1 sliding/global, per-type head dims, K=V globals, GeGLU, sandwich norms, final softcap, ▁-BPE 262K, dense MLP beside MoE, KV-sharing assistant drafter, EXL3 MoE |
