@@ -2181,8 +2181,11 @@ std::expected<void, KernelFailure> CheckVecQ(const ggml_tensor* node) {
   }
   const std::int64_t one_token = JitllmOpInt(node, 4);
   if (tokens < 1 || tokens > kVecQMaxTokens || (per_slot != 0 && per_slot != 1) || glu < 0 ||
-      glu > 2 || ((glu != 0) != (gate != nullptr)) || (one_token != 0 && one_token != 1)) {
+      glu > 3 || ((glu != 0) != (gate != nullptr)) || (one_token != 0 && one_token != 1)) {
     return Rejected("1 to 16 tokens, and gate weights exactly with a GLU");
+  }
+  if (glu == static_cast<std::int64_t>(VecQGlu::kGeGlu) && JitllmOpFloat(node, 3) != 0.0f) {
+    return Rejected("GeGLU uses GELU-tanh without a clamp limit");
   }
   if (gate != nullptr && (!VecQWeights(gate) || gate->type != w->type ||
                           !ggml_are_same_shape(gate, w) || !ggml_are_same_stride(gate, w))) {

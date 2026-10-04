@@ -37,6 +37,7 @@
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
 #include "quantize.cuh"
+#include "unary.cuh"
 #include "vecdotq.cuh"
 
 namespace jitllm::kernels::ggml {
@@ -154,6 +155,9 @@ constexpr __host__ __device__ bool Prefetches(ggml_type type) {
 __device__ __forceinline__ float Silu(float x) { return x / (1.0f + expf(-x)); }
 
 __device__ __forceinline__ float Glu(int glu, float gate, float up, float limit) {
+  if (glu == static_cast<int>(VecQGlu::kGeGlu)) {
+    return ggml_cuda_op_gelu_single(gate) * up;
+  }
   if (glu == static_cast<int>(VecQGlu::kSwigluClamp)) {
     gate = fminf(gate, limit);
     up = fmaxf(fminf(up, limit), -limit);

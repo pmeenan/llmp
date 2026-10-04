@@ -164,6 +164,36 @@ double LegacyBlockProduct(ggml_type type, const std::uint8_t* weight,
   return static_cast<double>(dw) * (static_cast<double>(sum) * da - (five ? 16.0 : 8.0) * sa);
 }
 
+// Scalar Q4_K reference: decode each 32-value scale/minimum and nibble,
+// independently of the packed CUDA DP4A arrangement. The minimum uses the
+// sum of quantized Q8 codes, unlike affine legacy formats' stored sum.
+double Q4KBlockProduct(const std::uint8_t* w, const std::uint8_t* q8) {
+  const auto half_at = [](const std::uint8_t* p) {
+    ggml_fp16_t bits = 0;
+    std::memcpy(&bits, p, sizeof(bits));
+    return static_cast<double>(ggml_fp16_to_fp32(bits));
+  };
+  const auto* scales = w + 4;
+  const auto* codes = w + 16;
+  double total = 0;
+  for (int group = 0; group < 8; ++group) {
+    const int scale =
+        group < 4 ? scales[group] & 63 : (scales[group + 4] & 15) | ((scales[group - 4] >> 6) << 4);
+    const int minimum =
+        group < 4 ? scales[group + 4] & 63 : (scales[group + 4] >> 4) | ((scales[group] >> 6) << 4);
+    const auto* a = q8 + group * 36;
+    int product = 0, sum = 0;
+    for (int i = 0; i < 32; ++i) {
+      const int code = (codes[(group / 2) * 32 + i] >> ((group % 2) * 4)) & 15;
+      const int value = static_cast<std::int8_t>(a[4 + i]);
+      product += code * value;
+      sum += value;
+    }
+    total += half_at(a) * (half_at(w) * scale * product - half_at(w + 2) * minimum * sum);
+  }
+  return total;
+}
+
 class Dsv4FastTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -251,6 +281,204 @@ class Dsv4FastTest : public ::testing::Test {
   std::unique_ptr<LaunchContext> launch_;
   std::unique_ptr<TensorArena> arena_;
 };
+
+TEST_F(Dsv4FastTest, GemmaQuantGeGluPreservesFusedSlabAndIndependentRows) {
+  constexpr std::int64_t k = 2816, experts = 128, used = 8;
+  for (const bool routed : {true, false}) {
+    const auto type = routed ? GGML_TYPE_Q4_K : GGML_TYPE_Q8_0;
+    const std::int64_t n = routed ? 704 : 2112;
+    const std::int64_t count = routed ? experts : 1;
+    auto* owner = ggml_new_tensor_3d(c(), type, k, 2 * n, count);
+    const std::size_t row = owner->nb[1];
+    const std::size_t pitch = owner->nb[2] + ggml_row_size(type, 512);
+    owner->nb[2] = pitch;
+    owner->nb[3] = pitch * static_cast<std::size_t>(count);
+    const auto address = Allocate(owner->nb[3]);
+    ASSERT_EQ(cudaMemset(reinterpret_cast<void*>(address), 0, owner->nb[3]), cudaSuccess);
+    TensorArena::Bind(owner, address);
+    kg::MarkRowPaddingReadable(owner);
+    const auto bytes = Quantize(type, k, 2 * n, 491);
+    const std::int64_t populated = routed ? 127 : 0;
+    ASSERT_EQ(
+        cudaMemcpy(reinterpret_cast<void*>(address + static_cast<std::size_t>(populated) * pitch),
+                   bytes.data(), bytes.size(), cudaMemcpyHostToDevice),
+        cudaSuccess);
+    const auto weight_view = [&](std::size_t offset) {
+      auto* v = ggml_view_3d(c(), owner, k, n, count, row, pitch, offset);
+      TensorArena::Bind(v, address + offset);
+      kg::MarkRowPaddingReadable(v);
+      return v;
+    };
+    auto* gate = weight_view(0);
+    auto* up = weight_view(static_cast<std::size_t>(n) * row);
+    if (routed) EXPECT_NE(pitch % 256, 0);
+    for (const std::int64_t tokens : {1, 2, 4}) {
+      auto input_values = Normal(492, static_cast<std::size_t>(k * tokens), 0.5f);
+      if (tokens == 2)
+        for (std::int64_t i = 0; i < k; ++i) input_values[static_cast<std::size_t>(i)] *= 1e-6f;
+      if (tokens == 4)
+        for (std::int64_t i = 3 * k; i < 4 * k; ++i)
+          input_values[static_cast<std::size_t>(i)] *= 10;
+      auto* input = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, k, 1, tokens), input_values);
+      std::vector<std::int32_t> routes(static_cast<std::size_t>(used * tokens));
+      for (std::int64_t t = 0; t < tokens; ++t)
+        for (std::int64_t u = 0; u < used; ++u)
+          routes[static_cast<std::size_t>(t * used + u)] = (u + t) % 3 == 0 ? 0 : 127;
+      auto* ids =
+          routed ? Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, used, tokens), routes) : nullptr;
+      auto* q8 = Place(kg::QuantizeQ8(c(), input));
+      auto* g = Place(kg::VecQ(c(), gate, q8, ids, tokens, false));
+      auto* u = Place(kg::VecQ(c(), up, q8, ids, tokens, false));
+      auto* reference = Place(ggml_geglu_split(c(), g, u));
+      auto* fused = kg::VecQ(c(), up, q8, ids, tokens, false, gate, kg::VecQGlu::kGeGlu);
+      const std::size_t size = ggml_nbytes(fused);
+      const auto guarded = Allocate(size + 512);
+      ASSERT_EQ(cudaMemset(reinterpret_cast<void*>(guarded), 0xa5, size + 512), cudaSuccess);
+      TensorArena::Bind(fused, guarded + 256);
+      for (auto* node : {g, u, fused}) kg::SetVecQOneToken(node);
+      ASSERT_TRUE(kg::CheckVecQ(fused));
+      ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);  // default-stream setup before provider work
+      Launched(kg::RunQuantizeQ8(launch(), q8), "prepare");
+      Launched(kg::RunVecQ(launch(), g), "gate");
+      Launched(kg::RunVecQ(launch(), u), "up");
+      Launched(kg::GeGlu(launch(), reference), "unfused GELU-tanh");
+      Launched(kg::RunVecQ(launch(), fused), "fused GELU-tanh");
+      const auto want = Download(reference), got = Download(fused);
+      ASSERT_EQ(got.size(), want.size());
+      EXPECT_EQ(std::memcmp(got.data(), want.data(), size), 0);
+      const auto submission = execution_->Submission(stream_);
+      ASSERT_TRUE(submission);
+      const auto native_stream = reinterpret_cast<cudaStream_t>(submission->handle);
+      ASSERT_EQ(cudaStreamBeginCapture(native_stream, cudaStreamCaptureModeThreadLocal),
+                cudaSuccess);
+      Launched(kg::RunQuantizeQ8(launch(), q8), "captured prepare");
+      Launched(kg::RunVecQ(launch(), fused), "captured writer");
+      cudaGraph_t captured = nullptr;
+      cudaGraphExec_t executable = nullptr;
+      ASSERT_EQ(cudaStreamEndCapture(native_stream, &captured), cudaSuccess);
+      ASSERT_EQ(cudaGraphInstantiate(&executable, captured, nullptr, nullptr, 0), cudaSuccess);
+      ASSERT_EQ(cudaGraphLaunch(executable, native_stream), cudaSuccess);
+      ASSERT_EQ(cudaGraphLaunch(executable, native_stream), cudaSuccess);
+      const auto replayed = Download(fused);
+      ASSERT_EQ(replayed.size(), got.size());
+      EXPECT_EQ(std::memcmp(replayed.data(), got.data(), size), 0);
+      ASSERT_EQ(cudaGraphExecDestroy(executable), cudaSuccess);
+      ASSERT_EQ(cudaGraphDestroy(captured), cudaSuccess);
+      auto* refused =
+          Place(kg::VecQ(c(), up, q8, ids, tokens, false, gate, kg::VecQGlu::kGeGlu, 1.0f));
+      ASSERT_EQ(cudaMemset(refused->data, 0xa5, ggml_nbytes(refused)), cudaSuccess);
+      const auto before_refusal = Download<std::uint8_t>(refused);
+      launch().ResetScratchPeak();
+      EXPECT_FALSE(kg::RunVecQ(launch(), refused).has_value());
+      EXPECT_EQ(launch().scratch_peak().value(), 0);
+      EXPECT_FALSE(launch().faulted());
+      EXPECT_EQ(before_refusal, Download<std::uint8_t>(refused));
+      const auto gates = Download(g), ups = Download(u);
+      std::vector<double> oracle(got.size());
+      for (std::size_t i = 0; i < oracle.size(); ++i) {
+        const double x = gates[i];
+        oracle[i] = 0.5 * x *
+                    (1 + std::tanh(std::sqrt(2.0 / std::acos(-1.0)) * x * (1 + 0.044715 * x * x))) *
+                    ups[i];
+      }
+      ExpectNear(got, oracle, 1e-10, "independent FP64 tanh GELU");
+      if (routed && tokens == 1) {
+        const auto prepared = Download<std::uint8_t>(q8);
+        for (const std::int64_t output_row : {0, 17, 703}) {
+          double scalar = 0;
+          for (std::int64_t block = 0; block < k / 256; ++block)
+            scalar += Q4KBlockProduct(bytes.data() + static_cast<std::size_t>(output_row) * row +
+                                          static_cast<std::size_t>(block) * 144,
+                                      prepared.data() + static_cast<std::size_t>(block) * 8 * 36);
+          const auto slot = std::find(routes.begin(), routes.end(), 127) - routes.begin();
+          const double value = gates[static_cast<std::size_t>(slot * n + output_row)];
+          EXPECT_LE(std::abs(value - scalar), 2e-5 * std::max(1.0, std::abs(scalar)));
+        }
+      }
+      if (routed && tokens == 1) {
+        auto* down_weights = ggml_new_tensor_3d(c(), GGML_TYPE_Q5_1, n, k, experts);
+        const auto down_pitch = down_weights->nb[2] + ggml_row_size(GGML_TYPE_Q5_1, 512);
+        down_weights->nb[2] = down_pitch;
+        down_weights->nb[3] = down_pitch * static_cast<std::size_t>(experts);
+        EXPECT_EQ(down_pitch % 48, 0);
+        EXPECT_NE(down_pitch % 256, 0);
+        const auto down_address = Allocate(down_weights->nb[3]);
+        ASSERT_EQ(cudaMemset(reinterpret_cast<void*>(down_address), 0, down_weights->nb[3]),
+                  cudaSuccess);
+        TensorArena::Bind(down_weights, down_address);
+        kg::MarkRowPaddingReadable(down_weights);
+        const auto down_bytes = Quantize(GGML_TYPE_Q5_1, n, k, 493);
+        ASSERT_EQ(cudaMemcpy(reinterpret_cast<void*>(down_address + 127 * down_pitch),
+                             down_bytes.data(), down_bytes.size(), cudaMemcpyHostToDevice),
+                  cudaSuccess);
+        ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+        auto* down_q8 = Place(kg::QuantizeQ8(c(), fused));
+        auto* down = Place(kg::VecQ(c(), down_weights, down_q8, ids, tokens, true));
+        kg::SetVecQOneToken(down);
+        const auto down_got = RunVecQ(down_q8, down, "actual Q5_1 down with per-slot activation");
+        const auto prepared = Download<std::uint8_t>(down_q8);
+        const auto slot = std::find(routes.begin(), routes.end(), 127) - routes.begin();
+        for (const std::int64_t output_row : {0, 17, 2815}) {
+          double scalar = 0;
+          for (std::int64_t block = 0; block < n / 32; ++block) {
+            scalar += LegacyBlockProduct(
+                GGML_TYPE_Q5_1,
+                down_bytes.data() + static_cast<std::size_t>(output_row) * down_weights->nb[1] +
+                    static_cast<std::size_t>(block) * 24,
+                prepared.data() + static_cast<std::size_t>(slot) * 32 * 36 +
+                    static_cast<std::size_t>(block) * 36);
+          }
+          const double value = down_got[static_cast<std::size_t>(slot * k + output_row)];
+          EXPECT_LE(std::abs(value - scalar), 2e-5 * std::max(1.0, std::abs(scalar)));
+        }
+        auto* original_down = Place(ggml_mul_mat_id(c(), down_weights, fused, ids));
+        Launched(kg::MulMatVecQ(launch(), original_down), "matched ordinary Q5_1 down");
+        ExpectNear(down_got, Download(original_down), 1e-10, "complete expert chain down");
+      }
+      for (std::int64_t t = 0; t < tokens; ++t) {
+        auto* solo_input = Place(
+            ggml_new_tensor_3d(c(), GGML_TYPE_F32, k, 1, 1),
+            std::vector<float>(input_values.begin() + t * k, input_values.begin() + (t + 1) * k));
+        auto* solo_q8 = Place(kg::QuantizeQ8(c(), solo_input));
+        auto* solo_ids = routed ? Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, used, 1),
+                                        std::vector<std::int32_t>(routes.begin() + t * used,
+                                                                  routes.begin() + (t + 1) * used))
+                                : nullptr;
+        auto* solo =
+            Place(kg::VecQ(c(), up, solo_q8, solo_ids, 1, false, gate, kg::VecQGlu::kGeGlu));
+        kg::SetVecQOneToken(solo);
+        const auto alone = RunVecQ(solo_q8, solo, "independent solo");
+        EXPECT_EQ(std::memcmp(alone.data(), got.data() + static_cast<std::size_t>(t) * alone.size(),
+                              alone.size() * sizeof(float)),
+                  0);
+      }
+      if (tokens > 1) {
+        std::fill(input_values.begin(), input_values.begin() + k, 0.0f);
+        ASSERT_EQ(cudaMemcpy(input->data, input_values.data(), ggml_nbytes(input),
+                             cudaMemcpyHostToDevice),
+                  cudaSuccess);
+        ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+        const auto inactive = RunVecQ(q8, fused, "zero inactive first row");
+        const auto columns = static_cast<std::size_t>(n * (routed ? used : 1));
+        EXPECT_TRUE(std::all_of(inactive.begin(),
+                                inactive.begin() + static_cast<std::ptrdiff_t>(columns),
+                                [](float x) { return x == 0; }));
+        EXPECT_EQ(std::memcmp(inactive.data() + columns, got.data() + columns,
+                              (got.size() - columns) * sizeof(float)),
+                  0);
+      }
+      std::array<std::uint8_t, 256> before{}, after{};
+      ASSERT_EQ(
+          cudaMemcpy(before.data(), reinterpret_cast<void*>(guarded), 256, cudaMemcpyDeviceToHost),
+          cudaSuccess);
+      ASSERT_EQ(cudaMemcpy(after.data(), reinterpret_cast<void*>(guarded + 256 + size), 256,
+                           cudaMemcpyDeviceToHost),
+                cudaSuccess);
+      EXPECT_TRUE(std::all_of(before.begin(), before.end(), [](auto x) { return x == 0xa5; }));
+      EXPECT_EQ(before, after);
+    }
+  }
+}
 
 TEST_F(Dsv4FastTest, DenseAndGroupedProductsMatchGgmlsVectorKernel) {
   struct Case {

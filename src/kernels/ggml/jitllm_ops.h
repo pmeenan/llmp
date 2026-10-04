@@ -812,7 +812,7 @@ inline constexpr std::int64_t kVecQTokens = 8;
 inline constexpr std::int64_t kVecQMaxTokens = 16;
 inline constexpr std::int64_t kDsv4HcChunks = 256;
 inline constexpr std::int64_t kDsv4HcChunkThreads = 64;  // a hc_mix block's threads
-enum class VecQGlu : std::int32_t { kNone = 0, kSwiglu = 1, kSwigluClamp = 2 };
+enum class VecQGlu : std::int32_t { kNone = 0, kSwiglu = 1, kSwigluClamp = 2, kGeGlu = 3 };
 // `x` F32 [k, rows, planes]: I8, the Q8_1 blocks of rows · planes rows.
 ggml_tensor* QuantizeQ8(ggml_context* context, ggml_tensor* x);
 // Dense: `weights` [k, n], `q8` of [k, tokens]: F32 [n, tokens]. Grouped
@@ -822,6 +822,8 @@ ggml_tensor* QuantizeQ8(ggml_context* context, ggml_tensor* x);
 // of [k, tokens] (each token's row serves its slots) or, with `per_slot`,
 // of [k, used, tokens]: F32 [n, used, tokens]. `gate` (optional): weights of
 // `weights`' type, shape and strides; the result is glu(gate · x, weights · x).
+// kGeGlu uses the pinned GELU-tanh and requires a zero clamp limit.
+// Callers opt into it; ordinary products plus split GeGLU remain the fallback.
 ggml_tensor* VecQ(ggml_context* context, ggml_tensor* weights, ggml_tensor* q8, ggml_tensor* ids,
                   std::int64_t tokens, bool per_slot, ggml_tensor* gate = nullptr,
                   VecQGlu glu = VecQGlu::kNone, float limit = 0.0f);

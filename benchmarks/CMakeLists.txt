@@ -127,6 +127,14 @@ if(JITLLM_CUDA)
                                                         jitllm_warnings)
   target_link_options(jitllm_gemma_quant_bench PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  add_executable(jitllm_gemma_geglu_quant_bench gemma_geglu_quant.cc)
+  target_include_directories(jitllm_gemma_geglu_quant_bench SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_gemma_geglu_quant_bench PRIVATE jitllm_ggml_kernels
+                          jitllm_cuda_device_memory jitllm_warnings)
+  target_link_options(jitllm_gemma_geglu_quant_bench PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   add_executable(jitllm_gemma_attention_bench gemma_attention.cc)
   target_include_directories(jitllm_gemma_attention_bench SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")

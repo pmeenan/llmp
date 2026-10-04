@@ -145,13 +145,19 @@ The [floating GeGLU screen](experiments/gemma-activations/README.md) checks
 matched F32 accumulation at K2816 with F16 weights: N704 gains while N2112
 loses. GeGLU fusion has its own eligibility callback, off by default;
 neither approved Gemma GGUF's quantized FFN weights take this MMVF path.
-Quantized gate/up and activation/quantization fusion transfer remains owed.
+The explicit quantized `VecQGlu::kGeGlu` writer now calls the pinned GELU
+helper at Q4_K expert704 and Q8_0 shared2112 widths. Its [paid complete expert
+chain](experiments/gemma-quant-geglu/README.md) separates input-preparation
+reuse from writer fusion; no universal writer default is justified. It keeps
+full runtime slab strides and canonical tails, including pitches not aligned
+to 256. Standard activation/Q8 writeback remains separate; no Q4_K shared
+block decode rewrite or paired-MMQ transfer is adopted.
 
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls
-and GELU/GeGLU primitive controls. Quantized GeGLU fusion and model-execution
-gaps remain; solo/batched execution
+and GELU/GeGLU primitive controls, including the explicit quantized writer.
+Model selection and model-execution gaps remain; solo/batched execution
 qualification remains owed before either checkpoint is supported.
 
 ## Rejected kernels: pieces worth retaining

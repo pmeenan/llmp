@@ -59,6 +59,60 @@ class GgmlExtValidateTest : public ::testing::Test {
   std::uint64_t next_ = 0;
 };
 
+TEST_F(GgmlExtValidateTest, GemmaQuantGeGluUsesExactGateViewsAndNoClamp) {
+  constexpr std::int64_t k = 2816, ffn = 704, experts = 128;
+  auto* owner = New(GGML_TYPE_Q4_K, k, 2 * ffn, experts);
+  // A legal whole-block slab pitch that deliberately is not 256 aligned.
+  const std::size_t pitch = owner->nb[2] + 2 * ggml_type_size(GGML_TYPE_Q4_K);
+  owner->nb[2] = pitch;
+  owner->nb[3] = pitch * static_cast<std::size_t>(experts);
+  const auto gate_view = [&](std::size_t offset) {
+    auto* view = ggml_view_3d(c(), owner, k, ffn, experts, owner->nb[1], pitch, offset);
+    TensorArena::Bind(view, reinterpret_cast<std::uintptr_t>(owner->data) + offset);
+    return view;
+  };
+  auto* gate = gate_view(0);
+  auto* up = gate_view(static_cast<std::size_t>(ffn) * owner->nb[1]);
+  EXPECT_NE(pitch % 256, 0);
+  for (const std::int64_t rows : {1, 2, 4}) {
+    auto* input = New(GGML_TYPE_F32, k, 1, rows);
+    auto* q8 = Bound(kg::QuantizeQ8(c(), input));
+    auto* ids = New(GGML_TYPE_I32, 8, rows);
+    auto* node = Bound(kg::VecQ(c(), up, q8, ids, rows, false, gate, kg::VecQGlu::kGeGlu));
+    kg::SetVecQOneToken(node);
+    Accepted(kg::CheckVecQ(node));
+    for (const float limit : {1.0f, -1.0f, std::numeric_limits<float>::infinity(),
+                              std::numeric_limits<float>::quiet_NaN()}) {
+      Refused(kg::CheckVecQ(
+          Bound(kg::VecQ(c(), up, q8, ids, rows, false, gate, kg::VecQGlu::kGeGlu, limit))));
+    }
+    Refused(kg::CheckVecQ(
+        Bound(kg::VecQ(c(), up, q8, ids, rows, false, nullptr, kg::VecQGlu::kGeGlu))));
+    Refused(kg::CheckVecQ(
+        Bound(kg::VecQ(c(), up, q8, ids, rows, false, gate, static_cast<kg::VecQGlu>(4)))));
+    auto* bad_gate = New(GGML_TYPE_Q8_0, k, ffn, experts);
+    Refused(kg::CheckVecQ(
+        Bound(kg::VecQ(c(), up, q8, ids, rows, false, bad_gate, kg::VecQGlu::kGeGlu))));
+    auto* aliased = kg::VecQ(c(), up, q8, ids, rows, false, gate, kg::VecQGlu::kGeGlu);
+    TensorArena::Bind(aliased, reinterpret_cast<std::uintptr_t>(q8->data));
+    Refused(kg::CheckVecQ(aliased));
+    const auto old = gate->nb[2];
+    gate->nb[2] += ggml_type_size(gate->type);
+    Refused(kg::CheckVecQ(node));
+    gate->nb[2] = old;
+    Accepted(kg::CheckVecQ(node));
+    const auto address = reinterpret_cast<std::uintptr_t>(owner->data);
+    TensorArena::Bind(owner, address + 256);
+    Refused(kg::CheckVecQ(node));
+    TensorArena::Bind(owner, address);
+    Accepted(kg::CheckVecQ(node));
+  }
+  auto* x = New(GGML_TYPE_F32, k, 1, 16);
+  auto* q8 = Bound(kg::QuantizeQ8(c(), x));
+  auto* ids = New(GGML_TYPE_I32, 9, 16);
+  Refused(kg::CheckVecQ(Bound(kg::VecQ(c(), up, q8, ids, 16, false, gate, kg::VecQGlu::kGeGlu))));
+}
+
 TEST_F(GgmlExtValidateTest, GemmaLocalAttentionChecksBothPrimitivesAndFallbackSelection) {
   for (const std::int64_t heads : {16, 32}) {
     for (const std::int64_t rows : {1, 2, 4, 16, 33}) {
