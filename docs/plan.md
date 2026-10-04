@@ -499,6 +499,12 @@ it appears.
       The 1.0 bound is qwen38-native's, not dsv4-decode's later rule (the
       verify's own noise, p99 0.23–2.39 per prompt, measured afterwards);
       it is kept as the stricter test.
+      A [same-history first-verify screen](experiments/qwen38-same-history/README.md)
+      now compares four adjacent 32K anchors against the pinned fast Mia
+      launcher: native accepts 9/12 actual drafts versus 11/12, with both
+      native head layouts identical. The fourth anchor's deficit is a
+      proposal difference where both targets agree on the shared input.
+      Broader acceptance parity remains open; no bound or math default changes.
 - [x] **The swap path:** evict the outgoing model and hand its backing to
       the incoming one (D-033's handoff, pulled from M6; D-081), with
       page-in through the landing zone overlapping the rest. Creating and

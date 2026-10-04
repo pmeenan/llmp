@@ -13,7 +13,7 @@
 //                      --check greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|wave
 //                      [--reference FILE] [--tokens N] [--context N]
 //                      [--graphs on|off] [--draft N] [--draft-vocab N]
-//                      [--adaptive-depth on|off]
+//                      [--adaptive-depth on|off] [--prompt-token-ids on|off]
 //                      [--runtime-prefill on|off] [--profile-decode on|off]
 //                      [--repeats N] [--margin B] [--seeds N] [--sampled FILE]
 //                      [--only ID] [--poll-us N] [--window P]
@@ -289,6 +289,7 @@ struct Options {
   double window = 0.0;
   bool adaptive_depth = false;
   bool runtime_prefill = false;
+  bool prompt_token_ids = false;
   bool profile_decode = false;
   std::filesystem::path sampled;
   std::string only;
@@ -312,7 +313,9 @@ struct Step {
   double draft_seconds = 0;
   double verify_seconds = 0;
   std::vector<std::int32_t> drafts;
-  std::vector<std::uint64_t> state;  // fingerprints after the commit (forced checks)
+  std::vector<std::int32_t> verdicts;  // literal-history diagnostic, every verify row
+  std::string verify_sha;              // its complete F32 rows
+  std::vector<std::uint64_t> state;    // fingerprints after the commit (forced checks)
 };
 
 // A generation: the tokens after the prompt (the first from the prefill)
@@ -503,6 +506,37 @@ Status Harness::Tokenize() {
   const auto render = [&](jitllm::base::json::Value entry) -> std::expected<Prompt, std::string> {
     Prompt p;
     const auto id = entry.find("id");
+    if (o_.prompt_token_ids) {
+      const auto ids = entry.find("prompt_token_ids");
+      if (!id || !id->is_string() || id->string().empty() || !ids || !ids->is_array() ||
+          ids->size() == 0 || ids->size() >= o_.qwen.context ||
+          o_.tokens + std::uint64_t{o_.qwen.draft_rows} > o_.qwen.context - ids->size()) {
+        return Error("a literal prompt needs an id, token IDs and room for output/lookahead");
+      }
+      if (id->string().size() > 128 || !std::ranges::all_of(id->string(), [](char ch) {
+            return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                   (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.';
+          })) {
+        return Error("a literal prompt id must use letters, digits, hyphens, dots or underscores");
+      }
+      p.id = std::string(id->string());
+      p.ids.reserve(ids->size());
+      for (std::size_t i = 0; i < ids->size(); ++i) {
+        const auto token = ids->at(i).int64();
+        if (!token || *token < 0 || std::cmp_greater_equal(*token, md::Qwen38Flash().vocab)) {
+          return Error("a literal prompt token is outside the target vocabulary");
+        }
+        p.ids.push_back(static_cast<std::int32_t>(*token));
+      }
+      if (const auto boundary = entry.find("stable_boundary")) {
+        const auto value = boundary->int64();
+        if (!value || *value < 0 || std::cmp_greater(*value, p.ids.size())) {
+          return Error("a literal prompt stable boundary is outside its token IDs");
+        }
+        p.stable_boundary = static_cast<std::uint32_t>(*value);
+      }
+      return p;
+    }
     const auto messages = entry.find("messages");
     if (!id || !messages || !messages->is_array()) {
       return Error("a prompt without an id or messages");
@@ -555,7 +589,19 @@ Status Harness::Tokenize() {
       if (!p) {
         return std::unexpected(p.error());
       }
+      if (o_.prompt_token_ids) {
+        const auto duplicate = [&](const Prompt& known) { return known.id == p->id; };
+        if (std::ranges::any_of(decode_, duplicate) || std::ranges::any_of(chat_, duplicate)) {
+          return Error(std::format("duplicate literal prompt id {}", p->id));
+        }
+      }
       into->push_back(std::move(*p));
+    }
+  }
+  if (o_.prompt_token_ids) {
+    const auto selected = [&](const Prompt& p) { return o_.only.empty() || p.id == o_.only; };
+    if (!std::ranges::any_of(decode_, selected) && !std::ranges::any_of(chat_, selected)) {
+      return Error("the literal-history check needs at least one matching prompt");
     }
   }
   if (o_.reference.empty()) {
@@ -965,6 +1011,23 @@ Status Harness::Speculate(const Prompt& prompt, std::uint32_t count,
     }
     step.verify_seconds = Seconds(Clock::now() - verifying);
     out.verify_seconds += step.verify_seconds;
+    if (o_.prompt_token_ids && index == 0) {
+      if (logits.size() != std::size_t{rows} * vocab ||
+          !std::ranges::all_of(logits, [](float value) { return std::isfinite(value); })) {
+        return Error("a literal-history first verify has malformed or nonfinite logits");
+      }
+      step.verdicts = argmax;
+      jitllm::base::Sha256 hash;
+      hash.Update(std::as_bytes(std::span(logits)));
+      step.verify_sha = jitllm::base::ToHex(hash.Finish());
+      std::ofstream file(o_.out / (prompt.id + "-first-verify.f32"), std::ios::binary);
+      file.write(reinterpret_cast<const char*>(logits.data()),
+                 static_cast<std::streamsize>(logits.size() * sizeof(float)));
+      file.close();
+      if (!file.good()) {
+        return Error("cannot write the literal-history first verify's rows");
+      }
+    }
     if (auto r = Judge(step, argmax, logits, pos, history, sampling, seed, scratch, out); !r) {
       return r;
     }
@@ -1016,7 +1079,8 @@ Status Harness::Greedy() {
   for (const Prompt& prompt : prompts) {
     const bool decode =
         std::ranges::any_of(decode_, [&](const Prompt& p) { return p.id == prompt.id; });
-    const std::uint32_t count = decode ? o_.tokens : std::min<std::uint32_t>(o_.tokens, 32);
+    const std::uint32_t count =
+        decode || o_.prompt_token_ids ? o_.tokens : std::min<std::uint32_t>(o_.tokens, 32);
     Generation plain;
     if (!timing) {
       if (auto r = InRequest("a plain generation", [&] { return Plain(prompt, count, plain); });
@@ -1029,7 +1093,7 @@ Status Harness::Greedy() {
         }
       }
     }
-    const std::size_t repeats = decode ? o_.repeats : 1;
+    const std::size_t repeats = decode || o_.prompt_token_ids ? o_.repeats : 1;
     std::vector<double> rates;
     Generation spec;
     Generation first_run;
@@ -1070,6 +1134,11 @@ Status Harness::Greedy() {
         bool same = first_run.tokens == spec.tokens;
         for (std::size_t i = 0; same && keep && i < spec.logits.size(); ++i) {
           same = i < first_run.logits.size() && SameBits(first_run.logits[i], spec.logits[i]);
+        }
+        if (o_.prompt_token_ids) {
+          same = same && !first_run.steps.empty() && !spec.steps.empty() &&
+                 first_run.steps.front().verify_sha == spec.steps.front().verify_sha &&
+                 first_run.steps.front().verdicts == spec.steps.front().verdicts;
         }
         if (!same) {
           problems_.push_back(std::format(
@@ -1174,19 +1243,35 @@ Status Harness::Greedy() {
       }
       return out;
     };
+    const auto counts = [](std::span<const std::uint64_t> values) {
+      std::string out;
+      for (const auto value : values) {
+        out += std::format("{}{}", out.empty() ? "" : ",", value);
+      }
+      return out;
+    };
+    const Step& first_step = spec.steps.front();
+    jitllm::base::Sha256 prompt_hash;
+    prompt_hash.Update(std::as_bytes(std::span(prompt.ids)));
     results_.push_back(std::format(
         R"({{"check":"{}","prompt":"{}","prompt_tokens":{},"stable_boundary":{},"generated":{},"plain_tok_s":{:.3f},)"
         R"("spec_tok_s":[{}],"drafted":{},"accepted":{},"acceptance":{:.4f},)"
         R"("acceptance_by_position":[{}],"verifies":{},"draft_depths":{{{}}},"verify_rows":{{{}}},)"
         R"("step_trace":[{}],"depth_cost_ms":{{{}}},)"
+        R"("offered_by_position":[{}],"accepted_by_position":[{}],"prompt_ids_sha256":"{}",)"
+        R"("first_verify":{{"position":{},"anchor_token":{},"drafts":[{}],"verdicts":[{}],"logits_sha256":"{}","rows":{},"kept":{},"next_token":{}}},)"
         R"("step_ms":{{"draft":{:.3f},"verify":{:.3f},"all":{:.3f}}},"text":{},)"
         R"("prompt_ids":[{}],"plain_tokens":[{}],"spec_tokens":[{}],)"
         R"("plain_logits_sha256":"{}","spec_logits_sha256":"{}"}})",
         timing ? "timing" : "greedy", prompt.id, prompt.ids.size(), prompt.stable_boundary, count,
         plain_rate, rates_json, spec.drafted, spec.accepted, acceptance, positions_json,
-        spec.verifies, depths_json, rows_json, trace, costs_json, spec.draft_seconds * per_step_ms,
-        spec.verify_seconds * per_step_ms, spec.decode_seconds * per_step_ms, escaped,
-        ids(prompt.ids), ids(plain.tokens), ids(spec.tokens), LogitsDigest(plain.logits),
+        spec.verifies, depths_json, rows_json, trace, costs_json, counts(offered),
+        counts(by_position), jitllm::base::ToHex(prompt_hash.Finish()), first_step.pos,
+        spec.tokens.front(), ids(first_step.drafts), ids(first_step.verdicts),
+        first_step.verify_sha, first_step.rows, first_step.kept, first_step.next,
+        spec.draft_seconds * per_step_ms, spec.verify_seconds * per_step_ms,
+        spec.decode_seconds * per_step_ms, escaped, ids(prompt.ids), ids(plain.tokens),
+        ids(spec.tokens), LogitsDigest(plain.logits),
         LogitsDigest(first_run.logits.empty() ? spec.logits : first_run.logits)));
   }
   return {};
@@ -2761,16 +2846,17 @@ Status Harness::Write() {
   const jb::Dsv4GraphStats& d = qwen_.draft_stats();
   std::ofstream(o_.out / "spec.json")
       << std::format(
-             R"({{"check":"{}","draft_rows":{},"draft_vocab":{},"draft_head_input":"f32","adaptive_depth":{},"window":{},"runtime_prefill":{},"load_seconds":{:.2f},)"
+             R"({{"check":"{}","draft_rows":{},"draft_vocab":{},"draft_head_input":"f32","adaptive_depth":{},"window":{},"runtime_prefill":{},"prompt_token_ids":{},"load_seconds":{:.2f},)"
              R"("read_bytes":{},"drafter_read_bytes":{},"peak_memavailable_drop_bytes":{},)"
              R"("graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{},"dropped":{}}},)"
              R"("draft_graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{}}},)"
              R"("ple_seconds":{:.3f},"results":[{}],"problems":[{}]}})",
              o_.check, o_.qwen.draft_rows, o_.qwen.draft_vocab,
              o_.adaptive_depth ? "true" : "false", o_.window, o_.runtime_prefill ? "true" : "false",
-             load_seconds_, qwen_.weight_read_bytes(), qwen_.drafter_read_bytes(), drop, g.eager,
-             g.captured, g.replayed, g.refused, g.dropped, d.eager, d.captured, d.replayed,
-             d.refused, qwen_.ple().seconds, all, problems)
+             o_.prompt_token_ids ? "true" : "false", load_seconds_, qwen_.weight_read_bytes(),
+             qwen_.drafter_read_bytes(), drop, g.eager, g.captured, g.replayed, g.refused,
+             g.dropped, d.eager, d.captured, d.replayed, d.refused, qwen_.ple().seconds, all,
+             problems)
       << '\n';
   std::println(
       "peak MemAvailable drop: {:.2f} GiB; graphs {} replayed, {} captured, {} refused ({})",
@@ -2836,6 +2922,9 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
     } else if (a == "--adaptive-depth") {
       o.adaptive_depth = v == "on";
       ok = v == "on" || v == "off";
+    } else if (a == "--prompt-token-ids") {
+      o.prompt_token_ids = v == "on";
+      ok = v == "on" || v == "off";
     } else if (a == "--runtime-prefill") {
       o.runtime_prefill = v == "on";
       ok = v == "on" || v == "off";
@@ -2891,7 +2980,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "projection|wave "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
         "[--draft-vocab N] [--adaptive-depth on|off] "
-        "[--runtime-prefill on|off] "
+        "[--runtime-prefill on|off] [--prompt-token-ids on|off] "
         "[--profile-decode on|off] "
         "[--repeats N] [--margin B] [--seeds N] "
         "[--sampled FILE] [--only ID] "
@@ -2903,6 +2992,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
   }
   if ((o.check == "wave") != (o.qwen.wave_slots > 1)) {
     return Error("the wave check, and only it, takes --slots 2-4");
+  }
+  if (o.prompt_token_ids && (o.check != "greedy" || o.repeats != 2 || o.adaptive_depth ||
+                             o.window != 0.0 || o.qwen.draft_rows != 3 || o.tokens < 5)) {
+    return Error(
+        "literal prompt IDs require greedy, two repeats, fixed depth three, no "
+        "confidence window and at least five outputs");
   }
   if (preparing && (o.chat_template.empty() || o.stop_metadata.empty())) {
     return Error("vocab-prepare requires --template and --stop-metadata");
