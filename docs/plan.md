@@ -1259,6 +1259,10 @@ it appears.
       ([calibration](runtime-serving.md#calibration)). Open: prefill chunk
       rows and the slot knee (controlled runs), then the kernel schedule
       tables.
+      [Controlled Qwen chunk screens](experiments/qwen38-prefill-chunks/README.md)
+      retain 4,096 rows: 8,192 gains 2.69% at fresh 8K C4 with 4.58% more
+      memory, but another four-slot prompt family is slower. No calibration
+      value is selected; DeepSeek chunks and controlled slot knees remain open.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

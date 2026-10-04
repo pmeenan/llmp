@@ -174,6 +174,11 @@ shapes; their calibration on the machine is later work.
 
 ### Calibration
 
+[Controlled Qwen chunk screens](experiments/qwen38-prefill-chunks/README.md)
+retain the 4,096-row fallback: 8,192 improves one fresh 8K C4 cell by
+2.69% with 4.58% more memory, but loses on another prompt family. These
+runs do not install a new calibrated value.
+
 A model's measured speed trades are calibrated on the machine from its
 first uses, passively, with nothing run at startup
 (`runtime/calibration.h`): its prefill chunks' speed and its decode

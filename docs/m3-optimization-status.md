@@ -19,6 +19,15 @@ the broader performance gate. Native bookend replies repeat exactly.
 
 ## Remaining gaps
 
+The [controlled Qwen chunk screens](experiments/qwen38-prefill-chunks/README.md)
+retain the 4,096-row fallback. At fresh 8K C4, 8,192 rows gain 2.69%
+completed-token throughput with 4.58% more memory; 2,048 rows lose 9.28%.
+The larger chunk preserves the difficult 32K anchor's complete logits and
+four-slot waves' complete target rows/tokens, but a second prompt family
+is 3.75% slower through its in-process check. Whole-state hashes span
+different MTP history-buffer sizes and do not judge cross-chunk state
+equivalence. No new default or calibrated value is selected.
+
 | Question | Established result | Still needed |
 | --- | --- | --- |
 | Can jitLLM reproduce ds4's complete pipeline? | Yes. Full logits match byte for byte at 8K and 32K; throughput trails by 2.4% and 0.71%. | No repeat of this prerequisite. |
