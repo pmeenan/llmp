@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Qwen speculative verifies fuse the recurrent alpha/beta pointwise chains
+  with original F32 arithmetic and saved-row restoration. A matched four-
+  request 8K HTTP screen improves completed-token throughput by 1.34%.
+
 - Qwen settings list the effective selected MTP head size and explain a
   capped request. Benchmark diagnostics record actual head kind and rows;
   the selected artifact's execution remains unchanged.

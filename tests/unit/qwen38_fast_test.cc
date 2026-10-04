@@ -819,6 +819,146 @@ TEST_F(Qwen38FastTest, GdnHistoryShiftsTheOldHistoryForShortChunks) {
 // jitllm.gdn.step is the columns kernel over the state in place: its
 // attention output and the state it leaves equal gated_delta_net's (planned
 // as jitllm.gated_delta_net.columns) output rows and state rows bit for bit.
+// This comparison runs the original pinned GGML CUDA operations rather
+// than substituting CPU math. In particular fast-math's FTZ and the
+// softplus branch at 20 must agree at every F32 rounding boundary.
+TEST_F(Qwen38FastTest, GdnGatesAreTheOriginalPointwiseChainsAndSavedViews) {
+  constexpr std::int64_t heads = 48;
+  const float tiny = std::numeric_limits<float>::denorm_min();
+  const float inf = std::numeric_limits<float>::infinity();
+  const std::array edges{0.0f,
+                         -0.0f,
+                         tiny,
+                         -tiny,
+                         std::numeric_limits<float>::min(),
+                         -std::numeric_limits<float>::min(),
+                         -100.0f,
+                         -90.0f,
+                         -20.0f,
+                         std::nextafter(20.0f, 0.0f),
+                         20.0f,
+                         std::nextafter(20.0f, inf),
+                         21.0f,
+                         80.0f,
+                         100.0f,
+                         inf,
+                         -inf,
+                         0.125f,
+                         -0.125f,
+                         std::nextafter(1.0f, 0.0f),
+                         std::nextafter(1.0f, inf)};
+  for (const std::int64_t rows : {1, 2, 3, 4, 8, 16}) {
+    SCOPED_TRACE(rows);
+    auto alpha_h = Normal(100 + static_cast<std::uint64_t>(rows),
+                          static_cast<std::size_t>(heads * rows), 5.0f);
+    auto beta_h = Normal(200 + static_cast<std::uint64_t>(rows), alpha_h.size(), 5.0f);
+    auto bias_h = Normal(300, static_cast<std::size_t>(heads));
+    auto a_h = Normal(400, static_cast<std::size_t>(heads));
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+      bias_h[i] = 0.0f;
+      a_h[i] = -0.5f;
+      for (std::int64_t t = 0; t < rows; ++t) {
+        const std::size_t at = static_cast<std::size_t>(t * heads) + i;
+        alpha_h[at] = edges[i];
+        beta_h[at] = edges[(i + static_cast<std::size_t>(t)) % edges.size()];
+      }
+    }
+    // Cancellation and a subnormal add/multiply are also original GPU
+    // operations, so this exercises their actual FTZ rather than assuming it.
+    bias_h[30] = -16.0f;
+    alpha_h[30] = std::nextafter(16.0f, inf);
+    bias_h[31] = tiny;
+    alpha_h[31] = -tiny;
+    a_h[31] = -0.0f;
+    // Normal multiplier with a subnormal result, and subnormal input
+    // multiplier: both must flush exactly as the original MUL node does.
+    alpha_h[32] = 0.0f;
+    bias_h[32] = 0.0f;
+    a_h[32] = -std::numeric_limits<float>::min();
+    alpha_h[33] = 20.0f;
+    bias_h[33] = 0.0f;
+    a_h[33] = -tiny;
+    ggml_tensor* alpha = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, rows), alpha_h);
+    ggml_tensor* beta = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, rows), beta_h);
+    ggml_tensor* bias = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, heads), bias_h);
+    ggml_tensor* a = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, heads), a_h);
+    ggml_tensor* ref_gate = ggml_mul(c(), ggml_softplus(c(), ggml_add(c(), alpha, bias)), a);
+    ggml_tensor* ref_beta = ggml_sigmoid(c(), beta);
+    ggml_tensor* fused = kg::GdnGates(c(), alpha, beta, bias, a);
+    const std::size_t stride = ggml_row_size(GGML_TYPE_F32, heads);
+    const std::size_t plane = stride * static_cast<std::size_t>(rows);
+    ggml_tensor* gate_view =
+        ggml_view_4d(c(), fused, 1, heads, rows, 1, sizeof(float), stride, plane, 0);
+    ggml_tensor* beta_view =
+        ggml_view_4d(c(), fused, 1, heads, rows, 1, sizeof(float), stride, plane, plane);
+    std::vector<std::int64_t> ids_h(static_cast<std::size_t>(rows));
+    std::ranges::iota(ids_h, 0);
+    ggml_tensor* ids = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_I64, rows), ids_h);
+    const std::vector<float> blank(alpha_h.size(), 0.0f);
+    ggml_tensor* gate_saved = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, rows), blank);
+    ggml_tensor* beta_saved = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, rows), blank);
+    // The graph's Save consumer uses precisely this reshape/set_rows chain.
+    ggml_tensor* save_gate =
+        ggml_set_rows(c(), gate_saved, ggml_reshape_2d(c(), gate_view, heads, rows), ids);
+    ggml_tensor* save_beta =
+        ggml_set_rows(c(), beta_saved, ggml_reshape_2d(c(), beta_view, heads, rows), ids);
+    Run({ref_gate, ref_beta, save_gate, save_beta});
+    EXPECT_EQ(PlannedFor(fused), kg::kGdnGatesName);
+    const auto gate_bits = Download<std::uint32_t>(ref_gate);
+    const auto beta_bits = Download<std::uint32_t>(ref_beta);
+    EXPECT_EQ(Download<std::uint32_t>(gate_view), gate_bits);
+    EXPECT_EQ(Download<std::uint32_t>(beta_view), beta_bits);
+    EXPECT_EQ(Download<std::uint32_t>(gate_saved), gate_bits);
+    EXPECT_EQ(Download<std::uint32_t>(beta_saved), beta_bits);
+    const auto fused_bits = Download<std::uint32_t>(fused);
+    ASSERT_EQ(fused_bits.size(), gate_bits.size() + beta_bits.size());
+    EXPECT_TRUE(std::equal(gate_bits.begin(), gate_bits.end(), fused_bits.begin()));
+    EXPECT_TRUE(std::equal(beta_bits.begin(), beta_bits.end(),
+                           fused_bits.begin() + static_cast<std::ptrdiff_t>(gate_bits.size())));
+  }
+}
+
+TEST_F(Qwen38FastTest, GdnGatesRefuseAliasedMisalignedStaleOrTooManyRows) {
+  constexpr std::int64_t heads = 48;
+  constexpr std::int64_t rows = 2;
+  const std::vector<float> values(static_cast<std::size_t>(heads * rows), 1.0f);
+  const std::vector<float> weights(static_cast<std::size_t>(heads), 1.0f);
+  ggml_tensor* alpha = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, rows), values);
+  ggml_tensor* beta = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, rows), values);
+  ggml_tensor* bias = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, heads), weights);
+  ggml_tensor* a = Leaf(ggml_new_tensor_1d(c(), GGML_TYPE_F32, heads), weights);
+  ggml_tensor* gates = kg::GdnGates(c(), alpha, beta, bias, a);
+  TensorArena::Bind(gates, Allocate(ggml_nbytes(gates)));
+  ASSERT_TRUE(kg::CheckGdnGates(gates).has_value());
+  void* output = gates->data;
+  for (const ggml_tensor* input : {alpha, beta, bias, a}) {
+    gates->data = input->data;
+    EXPECT_FALSE(kg::CheckGdnGates(gates).has_value());
+  }
+  gates->data = static_cast<char*>(output) + 1;
+  EXPECT_FALSE(kg::CheckGdnGates(gates).has_value());
+  gates->data = output;
+  ggml_tensor* view = ggml_view_2d(c(), alpha, heads, rows, alpha->nb[1], 0);
+  kg::BindViews(std::vector<ggml_tensor*>{view});
+  gates->src[0] = view;
+  ASSERT_TRUE(kg::CheckGdnGates(gates).has_value());
+  void* backing = alpha->data;
+  alpha->data = beta->data;  // The view still names the previous backing.
+  EXPECT_FALSE(kg::CheckGdnGates(gates).has_value());
+  alpha->data = backing;
+  gates->src[0] = alpha;
+  ASSERT_TRUE(kg::CheckGdnGates(gates).has_value());
+  // The CUDA launcher flattens at most sixteen rows. A valid larger
+  // descriptor must refuse before launch rather than silently truncate.
+  const std::vector<float> wide(static_cast<std::size_t>(heads * 17), 1.0f);
+  ggml_tensor* alpha17 = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, 17), wide);
+  ggml_tensor* beta17 = Leaf(ggml_new_tensor_2d(c(), GGML_TYPE_F32, heads, 17), wide);
+  ggml_tensor* gates17 = kg::GdnGates(c(), alpha17, beta17, bias, a);
+  TensorArena::Bind(gates17, Allocate(ggml_nbytes(gates17)));
+  EXPECT_FALSE(kg::CheckGdnGates(gates17).has_value());
+  EXPECT_FALSE(kg::RunGdnGates(launch(), gates17).has_value());
+}
+
 TEST_F(Qwen38FastTest, GdnStepIsTheColumnsRecurrenceInPlace) {
   constexpr std::int64_t d = 128;
   constexpr std::int64_t qk_heads = 16;

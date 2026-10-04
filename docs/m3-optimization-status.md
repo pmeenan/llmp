@@ -65,6 +65,14 @@ tokens and target/drafter states exact. C4's wider joined drafting remains
 unadopted: it cancels the head gain and changes drafter-state arithmetic.
 The production draft-wave limit stays two; this does not close C4 parity.
 
+Qwen's [verify alpha/beta fusion](experiments/qwen38-gdn-gates/README.md)
+retains both Linear products and original saved-row restoration while
+replacing four pointwise launches with one. C4 verify latency falls 1.11%;
+matched uncached 8K C4 HTTP gains 1.34%, with 0.36% bookend wall movement.
+Fixed-history tokens, full target rows and initialized target/drafter
+states remain exact, including a swap with rejected rows awaiting restore.
+Prefill and the exact plan retain the primitives; broader parity stays open.
+
 DeepSeek's [wide IQ2_XXS gate/up pass screens](experiments/deepseek-expert-passes/README.md)
 share weight decoding across four or two tokens with the original warp-row
 arithmetic. Both pass the existing exact solo/wave, discard/retry and

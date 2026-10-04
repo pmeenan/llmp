@@ -514,6 +514,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case JitllmOp::kGdnHistory:
             add(Operation::kCont, kGdnHistoryName, i, {node}, 1);
             break;
+          case JitllmOp::kGdnGates:
+            add(Operation::kUnary, kGdnGatesName, i, {node}, 1);
+            break;
           case JitllmOp::kGdnStep:
             add(Operation::kGatedDeltaNet, kGdnStepName, i, {node}, 1);
             break;

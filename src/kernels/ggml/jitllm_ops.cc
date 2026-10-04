@@ -107,6 +107,7 @@ constinit std::array kTagDsv4HcMix = std::to_array("jitllm.dsv4.hc_mix");
 constinit std::array kTagDsv4HcPre = std::to_array("jitllm.dsv4.hc_pre");
 constinit std::array kTagDsv4Compress = std::to_array("jitllm.dsv4.compress");
 constinit std::array kTagGdnStep = std::to_array("jitllm.gdn.step");
+constinit std::array kTagGdnGates = std::to_array("jitllm.gdn.gates");
 constinit std::array kTagDsv4LidTopK = std::to_array("jitllm.dsv4.lid_topk");
 constinit std::array kTagDsv4SparseMask = std::to_array("jitllm.dsv4.sparse_mask");
 
@@ -198,13 +199,14 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 43> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 44> fused = {{
       {kTagDsv4F16Copy.data(), JitllmOp::kDsv4F16Copy},
       {kTagDsv4HcNormF16.data(), JitllmOp::kDsv4HcNormF16},
       {kTagDsv4WeightedReduce.data(), JitllmOp::kDsv4WeightedReduce},
       {kTagDsv4QHead.data(), JitllmOp::kDsv4QHead},
       {kTagDsv4OutA.data(), JitllmOp::kDsv4OutA},
       {kTagGdnStep.data(), JitllmOp::kGdnStep},
+      {kTagGdnGates.data(), JitllmOp::kGdnGates},
       {kTagDsv4LidTopK.data(), JitllmOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), JitllmOp::kDsv4SparseMask},
       {kTagQsaPool.data(), JitllmOp::kQsaPool},
@@ -461,6 +463,12 @@ ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps
   return WithInts(
       Custom(context, GGML_TYPE_F32, {taps * x->ne[0], 1, 1, 1}, {x}, kTagGdnHistory.data()),
       {taps});
+}
+
+ggml_tensor* GdnGates(ggml_context* context, ggml_tensor* alpha, ggml_tensor* beta,
+                      ggml_tensor* dt_bias, ggml_tensor* ssm_a) {
+  return Custom(context, GGML_TYPE_F32, {alpha->ne[0], alpha->ne[1], 2, 1},
+                {alpha, beta, dt_bias, ssm_a}, kTagGdnGates.data());
 }
 
 ggml_tensor* GdnStep(ggml_context* context, ggml_tensor* q, ggml_tensor* k, ggml_tensor* v,
@@ -1159,6 +1167,28 @@ std::expected<void, KernelFailure> CheckGdnNormGate(const ggml_tensor* node) {
     return Rejected("an aligned output");
   }
   return CheckDense(node, {o, weight, z});
+}
+
+std::expected<void, KernelFailure> CheckGdnGates(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kGdnGates, 4); !checked) {
+    return checked;
+  }
+  const ggml_tensor* alpha = node->src[0];
+  const ggml_tensor* beta = node->src[1];
+  const ggml_tensor* dt_bias = node->src[2];
+  const ggml_tensor* ssm_a = node->src[3];
+  const std::int64_t rows = alpha->ne[1];
+  if (!IsF32(alpha) || !Shaped(alpha, 48, rows, 1) || !IsF32(beta) || !Shaped(beta, 48, rows, 1) ||
+      !Vector(dt_bias, 48) || !Vector(ssm_a, 48) || !IsF32(node) || !Shaped(node, 48, rows, 2) ||
+      rows < 1 || rows > 16) {
+    return Rejected("F32 alpha/beta [48, 1..16], dt_bias/ssm_a [48], output [48, rows, 2]");
+  }
+  for (const ggml_tensor* tensor : {node, alpha, beta, dt_bias, ssm_a}) {
+    if (!Aligned(tensor, sizeof(float))) {
+      return Rejected("aligned F32 operands and output");
+    }
+  }
+  return CheckDense(node, {alpha, beta, dt_bias, ssm_a});
 }
 
 std::expected<void, KernelFailure> CheckGdnStep(const ggml_tensor* node) {

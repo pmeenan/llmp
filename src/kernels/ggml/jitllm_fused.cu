@@ -1498,6 +1498,23 @@ __global__ void __launch_bounds__(kRouterWarps * 32)
   }
 }
 
+// Each intermediate rounds as its own GGML F32 node. This file has
+// GGML's fast-math flags; expf/logf and the 20.0 threshold are unary.cu's
+// expressions, including their FTZ behavior. No recurrence or state write.
+__global__ void GdnGatesKernel(const float* __restrict__ alpha, const float* __restrict__ beta,
+                               const float* __restrict__ dt_bias, const float* __restrict__ ssm_a,
+                               float* __restrict__ dst, int n) {
+  const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (i >= n) {
+    return;
+  }
+  const int h = i % 48;
+  const float x = __fadd_rn(alpha[i], dt_bias[h]);
+  const float sp = x > 20.0f ? x : logf(1.0f + expf(x));
+  dst[i] = __fmul_rn(sp, ssm_a[h]);
+  dst[n + i] = Sigmoid(beta[i]);
+}
+
 __global__ void Bf16Kernel(const float* __restrict__ x, nv_bfloat16* __restrict__ dst,
                            std::int64_t n) {
   const std::int64_t i = (static_cast<std::int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
@@ -1630,6 +1647,20 @@ std::expected<void, KernelFailure> RunGatedDeltaNetColumns(LaunchContext& launch
         dst + (static_cast<std::int64_t>(kS) * heads * tokens), heads, static_cast<int>(q->ne[1]),
         tokens, f(q->nb[1]), f(q->nb[2]), f(v->nb[1]), f(v->nb[2]), f(beta->nb[1]), f(beta->nb[2]),
         1.0f / sqrtf(static_cast<float>(kS)));
+  });
+}
+
+std::expected<void, KernelFailure> RunGdnGates(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckGdnGates(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const int n = 48 * static_cast<int>(node->ne[1]);
+    GdnGatesKernel<<<Blocks(n, kThreads), kThreads, 0, context.stream()>>>(
+        static_cast<const float*>(node->src[0]->data),
+        static_cast<const float*>(node->src[1]->data),
+        static_cast<const float*>(node->src[2]->data),
+        static_cast<const float*>(node->src[3]->data), static_cast<float*>(node->data), n);
   });
 }
 

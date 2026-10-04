@@ -131,6 +131,7 @@ enum class JitllmOp : std::uint8_t {
   kDsv4HcPre,
   kDsv4Compress,
   kGdnStep,
+  kGdnGates,
   kDsv4LidTopK,
   kDsv4SparseMask,
   kDsv4WeightedReduce,
@@ -323,6 +324,14 @@ ggml_tensor* GdnHistory(ggml_context* context, ggml_tensor* x, std::int64_t taps
 std::expected<void, KernelFailure> CheckGdnConv(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckGdnNormGate(const ggml_tensor* node);
 std::expected<void, KernelFailure> CheckGdnHistory(const ggml_tensor* node);
+//   jitllm.gdn.gates     Qwen verify's two pointwise chains, with the
+//                        original F32 rounding: sigmoid(beta) and
+//                        softplus(alpha + dt_bias) * ssm_a.
+// `alpha`, `beta` F32 [48, t], `dt_bias`, `ssm_a` F32 [48], 1 <= t <= 16:
+// F32 [48, t, 2], gate in the first plane and beta in the second.
+ggml_tensor* GdnGates(ggml_context* context, ggml_tensor* alpha, ggml_tensor* beta,
+                      ggml_tensor* dt_bias, ggml_tensor* ssm_a);
+std::expected<void, KernelFailure> CheckGdnGates(const ggml_tensor* node);
 //   jitllm.gdn.step      the fast graph's decode form of the gated delta rule
 //                        (up to kGatedDeltaNetLanesTokens tokens): the
 //                        jitllm.gated_delta_net.columns recurrence, the same
@@ -342,6 +351,7 @@ ggml_tensor* GdnStep(ggml_context* context, ggml_tensor* q, ggml_tensor* k, ggml
                      bool write_state = true);
 std::expected<void, KernelFailure> CheckGdnStep(const ggml_tensor* node);
 class LaunchContext;
+std::expected<void, KernelFailure> RunGdnGates(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> RunGdnStep(LaunchContext& launch, ggml_tensor* node);
 
 // The routed experts over the CUTLASS layout (moe_layout.h), for

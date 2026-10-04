@@ -88,7 +88,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 111> kKernels = {{
+constexpr std::array<Kernel::Entry, 112> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -778,6 +778,13 @@ constexpr std::array<Kernel::Entry, 111> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckGdnHistory(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunGdnHistory(launch, n[0]); }},
+    {.name = "jitllm.gdn.gates",
+     .operation = execution::Operation::kUnary,
+     .variant = "GdnGatesKernel: paired sigmoid(beta) and softplus(alpha + dt_bias) * ssm_a, "
+                "the original GGML F32 rounding points",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGdnGates(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return RunGdnGates(launch, n[0]); }},
     {.name = "jitllm.gdn.step",
      .operation = execution::Operation::kGatedDeltaNet,
      .variant = "GdnColumnsKernel<4> over the state in place: the columns kernel's arithmetic, "

@@ -126,7 +126,11 @@ of state capacity refuses that request rather than failing the shared wave
 (which would stop the node). `TargetWave` and `DraftWave` validate placement
 and bindings before dispatch, then publish outputs only after the completed job.
 Each successful verify retains its own snapshot until acceptance or explicit
-discard restores that branch's prior target and MTP state.
+discard restores that branch's prior target and MTP state. Fast Qwen verifies
+with 48 value heads, dimension 128 and up to sixteen rows fuse the alpha/beta
+pointwise chains into two F32 planes. Both Linear products, recurrence and
+saved-row consumers remain original; prefill and exact plans keep the
+primitives ([controls](experiments/qwen38-gdn-gates/README.md)).
 
 Clearing or restoring one destination first renews the request's protection of
 its peers, then discards only the destination's eligible backing and renews the

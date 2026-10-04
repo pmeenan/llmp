@@ -1010,13 +1010,24 @@ ggml_tensor* Builder::LinearAttention(const Qwen38LayerTensors& l, ggml_tensor* 
   qkv = ggml_reshape_3d(c_, qkv, qkv->ne[0], nt, 1);
   ggml_tensor* z = Linear(l.z, in, RowsType(nt));
   ggml_tensor* beta = Linear(l.beta, in);
-  beta = ggml_reshape_4d(c_, beta, 1, hv, nt, 1);
-  beta = ggml_sigmoid(c_, beta);
   ggml_tensor* alpha = Linear(l.alpha, in);
-  alpha = ggml_reshape_3d(c_, alpha, hv, nt, 1);
-  ggml_tensor* alpha_sp = ggml_softplus(c_, ggml_add(c_, alpha, l.dt_bias));
-  ggml_tensor* gate = ggml_mul(c_, alpha_sp, l.ssm_a);
-  gate = ggml_reshape_4d(c_, gate, 1, hv, nt, 1);
+  ggml_tensor* gate = nullptr;
+  if (fast_ && verify_ && d == 128 && hv == 48 && nt <= 16) {
+    // Keep both products and the recurrence's commit/saved rows unchanged.
+    // Prefill keeps the original pointwise chains.
+    ggml_tensor* gates = GdnGates(c_, alpha, beta, l.dt_bias, l.ssm_a);
+    const std::size_t row = ggml_row_size(GGML_TYPE_F32, hv);
+    const std::size_t plane = row * U(nt);
+    gate = ggml_view_4d(c_, gates, 1, hv, nt, 1, sizeof(float), row, plane, 0);
+    beta = ggml_view_4d(c_, gates, 1, hv, nt, 1, sizeof(float), row, plane, plane);
+  } else {
+    beta = ggml_reshape_4d(c_, beta, 1, hv, nt, 1);
+    beta = ggml_sigmoid(c_, beta);
+    alpha = ggml_reshape_3d(c_, alpha, hv, nt, 1);
+    ggml_tensor* alpha_sp = ggml_softplus(c_, ggml_add(c_, alpha, l.dt_bias));
+    gate = ggml_mul(c_, alpha_sp, l.ssm_a);
+    gate = ggml_reshape_4d(c_, gate, 1, hv, nt, 1);
+  }
   ggml_tensor* state = ggml_reshape_4d(c_, l.recurrent, d, d, hv, 1);
   const std::int64_t history = p_.conv - 1;
   // jitLLM's convolution (jitllm.gdn.conv) reads the history and the rows
