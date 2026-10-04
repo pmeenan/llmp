@@ -40,11 +40,12 @@ using detail::Product;
 using detail::Rejected;
 using detail::Span;
 
-constexpr std::array<ggml_type, 18> kQuantizedWeightTypes = {
-    GGML_TYPE_Q8_0,    GGML_TYPE_Q4_K,   GGML_TYPE_Q5_K,   GGML_TYPE_Q6_K,  GGML_TYPE_IQ2_XS,
-    GGML_TYPE_IQ3_XXS, GGML_TYPE_MXFP4,  GGML_TYPE_NVFP4,  GGML_TYPE_Q2_K,  GGML_TYPE_IQ2_XXS,
-    GGML_TYPE_Q4_0,    GGML_TYPE_Q2_0,   GGML_TYPE_Q3_K,   GGML_TYPE_IQ1_S, GGML_TYPE_IQ2_S,
-    GGML_TYPE_IQ3_S,   GGML_TYPE_IQ4_NL, GGML_TYPE_IQ4_XS,
+constexpr std::array<ggml_type, 21> kQuantizedWeightTypes = {
+    GGML_TYPE_Q8_0,    GGML_TYPE_Q4_K,  GGML_TYPE_Q5_K,  GGML_TYPE_Q6_K,  GGML_TYPE_IQ2_XS,
+    GGML_TYPE_IQ3_XXS, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4, GGML_TYPE_Q2_K,  GGML_TYPE_IQ2_XXS,
+    GGML_TYPE_Q4_1,    GGML_TYPE_Q5_0,  GGML_TYPE_Q5_1,  GGML_TYPE_Q4_0,  GGML_TYPE_Q2_0,
+    GGML_TYPE_Q3_K,    GGML_TYPE_IQ1_S, GGML_TYPE_IQ2_S, GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL,
+    GGML_TYPE_IQ4_XS,
 };
 
 // MarkRowPaddingReadable's bit: above every GGML_TENSOR_FLAG_* (ggml.h).
@@ -101,8 +102,18 @@ std::expected<void, KernelFailure> CheckQuantizedOperands(const ggml_tensor* wei
       !ElementStrides(out) || !Aligned(input, sizeof(float)) || !Aligned(out, sizeof(float))) {
     return Rejected("a quantized product needs contiguous, aligned F32 rows");
   }
-  if (!StridesFitInt(weights) || !StridesFitInt(input) || !StridesFitInt(out) ||
-      Span(input) > kInt32Max || Span(out) > kInt32Max) {
+  // MMQ and both MMVQ kernels combine row/channel/sample offsets in
+  // signed int quant-block indices. Checking individual strides is not
+  // enough: a later expert can overflow their sum. Include the final
+  // 512-value step, whose readable tail the binder funds for short rows.
+  // Span counts native quant blocks, not scalar weights or bytes; unused
+  // dimensions contribute no stride to it.
+  const std::uint64_t tail_blocks =
+      static_cast<std::uint64_t>((kRowPadding - weights->ne[0] % kRowPadding) % kRowPadding) /
+      static_cast<std::uint64_t>(ggml_blck_size(weights->type));
+  if (!StridesFitInt(weights) || Span(weights) > kInt32Max + 1 - tail_blocks ||
+      !StridesFitInt(input) || !StridesFitInt(out) || Span(input) > kInt32Max ||
+      Span(out) > kInt32Max) {
     return Rejected("a quantized product beyond the kernels' 32-bit indexing");
   }
   for (const ggml_tensor* tensor : {weights, input, out}) {
@@ -176,6 +187,15 @@ void MarkRowPaddingReadable(ggml_tensor* weights) {
 
 bool RowPaddingReadable(const ggml_tensor* weights) {
   return weights != nullptr && (weights->flags & kRowPaddingReadable) != 0;
+}
+
+std::expected<void, KernelFailure> CheckMmvqRowFootprint(const ggml_tensor* node,
+                                                         std::int64_t rows_per_block) {
+  if (node == nullptr || node->src[0] == nullptr || rows_per_block < 1 || rows_per_block > 32 ||
+      node->src[0]->ne[1] < 1 || node->src[0]->ne[1] % rows_per_block != 0) {
+    return Rejected("ordinary MMVQ needs whole output row blocks; use the guarded row primitive");
+  }
+  return {};
 }
 
 std::expected<void, KernelFailure> CheckMulMatQ(const ggml_tensor* node) {

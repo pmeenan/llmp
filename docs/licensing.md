@@ -125,7 +125,9 @@ MMQ instance unit Qwen3.8 added, `template-instances/mmq-instance-nvfp4.cu`,
 likewise, checked the same day; and the eight Qwen3.8's GGUF
 quantizations added, `mmq-instance-{q4_0,q2_0,q3_k,iq1_s,iq2_s,iq3_s,iq4_nl,iq4_xs}.cu`,
 each upstream's generated one-line `DECL_MMQ_CASE` unit with no header of
-its own, checked 2026-10-02). jitLLM's GGUF n-gram row lookup
+its own, checked 2026-10-02; the legacy Q4_1/Q5_0/Q5_1 instance units
+are the same unchanged generated wrappers with no additional notice or
+header closure, checked 2026-10-04). jitLLM's GGUF n-gram row lookup
 (`jitllm_ops.cu` `QRowsKernel`) calls GGML's `dequantize.cuh` functions
 and reads its `kvalues_iq4nl` table through the include, copying neither.
 Upstream's

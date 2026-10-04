@@ -49,6 +49,14 @@ using VecDot = float (*)(const void* __restrict__ vbq, const block_q8_1* __restr
 
 constexpr __device__ VecDot DotOf(ggml_type type) {
   switch (type) {
+    case GGML_TYPE_Q4_0:
+      return vec_dot_q4_0_q8_1;
+    case GGML_TYPE_Q4_1:
+      return vec_dot_q4_1_q8_1;
+    case GGML_TYPE_Q5_0:
+      return vec_dot_q5_0_q8_1;
+    case GGML_TYPE_Q5_1:
+      return vec_dot_q5_1_q8_1;
     case GGML_TYPE_Q8_0:
       return vec_dot_q8_0_q8_1;
     case GGML_TYPE_Q2_K:
@@ -85,6 +93,14 @@ constexpr __device__ VecDot DotOf(ggml_type type) {
 
 constexpr __host__ __device__ int VdrOf(ggml_type type) {
   switch (type) {
+    case GGML_TYPE_Q4_0:
+      return VDR_Q4_0_Q8_1_MMVQ;
+    case GGML_TYPE_Q4_1:
+      return VDR_Q4_1_Q8_1_MMVQ;
+    case GGML_TYPE_Q5_0:
+      return VDR_Q5_0_Q8_1_MMVQ;
+    case GGML_TYPE_Q5_1:
+      return VDR_Q5_1_Q8_1_MMVQ;
     case GGML_TYPE_Q8_0:
       return VDR_Q8_0_Q8_1_MMVQ;
     case GGML_TYPE_Q2_K:
@@ -147,8 +163,8 @@ __device__ __forceinline__ float Glu(int glu, float gate, float up, float limit)
 
 // The live tokens' (m of P) dot products over one weight block, row i of
 // `acc`: GGML's vec_dot_*_q8_1 of (kbx, kqs) for each token, the weights
-// loaded and decoded once for all of them where the type is DeepSeek's
-// (IQ2_XS, IQ3_XXS, Q8_0, MXFP4); each token's arithmetic is the
+// loaded and decoded once for IQ2_XS, IQ3_XXS, Q8_0, MXFP4 and the legacy
+// Q4_0/Q4_1/Q5_0/Q5_1/IQ4_NL formats; each token's arithmetic is the
 // single-token function's.
 template <ggml_type type, int P, int R>
 __device__ __forceinline__ void DotMulti(const void* vx, const block_q8_1* const (&y)[P], int kby,
@@ -223,6 +239,125 @@ __device__ __forceinline__ void DotMulti(const void* vx, const block_q8_1* const
           sumi = ggml_cuda_dp4a(gh[l0 / 2], get_int_b4(b8->qs, l0 + 1), sumi);
         }
         sumi = ((ls * sumi) + (sumi / 2)) / 2;
+        const float d = dw * __low2float(b8->ds);
+        acc[j][i] += d * static_cast<float>(sumi);
+      }
+    }
+  } else if constexpr (type == GGML_TYPE_Q4_0) {
+    // GGML's original helper arithmetic; only weight loads move outside
+    // the token loop. Each column keeps its own activation sums/scales.
+    const auto* b = static_cast<const block_q4_0*>(vx) + kbx;
+    int v[VDR_Q4_0_Q8_1_MMVQ];
+#pragma unroll
+    for (int l = 0; l < VDR_Q4_0_Q8_1_MMVQ; ++l) {
+      v[l] = get_int_b2(b->qs, kqs + l);
+    }
+    const auto scale = b->d;
+#pragma unroll
+    for (int j = 0; j < P; ++j) {
+      if (j < m) {
+        const auto* b8 = &y[j][kby];
+        int u[2 * VDR_Q4_0_Q8_1_MMVQ];
+#pragma unroll
+        for (int l = 0; l < VDR_Q4_0_Q8_1_MMVQ; ++l) {
+          u[2 * l] = get_int_b4(b8->qs, kqs + l);
+          u[2 * l + 1] = get_int_b4(b8->qs, kqs + l + QI4_0);
+        }
+        acc[j][i] += vec_dot_q4_0_q8_1_impl<VDR_Q4_0_Q8_1_MMVQ>(v, u, scale, b8->ds);
+      }
+    }
+  } else if constexpr (type == GGML_TYPE_Q4_1) {
+    // GGML's original helper arithmetic; only weight loads move outside
+    // the token loop. Each column keeps its own activation sums/scales.
+    const auto* b = static_cast<const block_q4_1*>(vx) + kbx;
+    int v[VDR_Q4_1_Q8_1_MMVQ];
+#pragma unroll
+    for (int l = 0; l < VDR_Q4_1_Q8_1_MMVQ; ++l) {
+      v[l] = get_int_b4(b->qs, kqs + l);
+    }
+    const auto scale = b->dm;
+#pragma unroll
+    for (int j = 0; j < P; ++j) {
+      if (j < m) {
+        const auto* b8 = &y[j][kby];
+        int u[2 * VDR_Q4_1_Q8_1_MMVQ];
+#pragma unroll
+        for (int l = 0; l < VDR_Q4_1_Q8_1_MMVQ; ++l) {
+          u[2 * l] = get_int_b4(b8->qs, kqs + l);
+          u[2 * l + 1] = get_int_b4(b8->qs, kqs + l + QI4_1);
+        }
+        acc[j][i] += vec_dot_q4_1_q8_1_impl<VDR_Q4_1_Q8_1_MMVQ>(v, u, scale, b8->ds);
+      }
+    }
+  } else if constexpr (type == GGML_TYPE_Q5_0) {
+    // GGML's original helper arithmetic; only weight loads move outside
+    // the token loop. Each column keeps its own activation sums/scales.
+    const auto* b = static_cast<const block_q5_0*>(vx) + kbx;
+    int vl[VDR_Q5_0_Q8_1_MMVQ];
+    int vh[VDR_Q5_0_Q8_1_MMVQ];
+#pragma unroll
+    for (int l = 0; l < VDR_Q5_0_Q8_1_MMVQ; ++l) {
+      vl[l] = get_int_b2(b->qs, kqs + l);
+      vh[l] = get_int_b2(b->qh, 0) >> (4 * (kqs + l));
+    }
+    const auto scale = b->d;
+#pragma unroll
+    for (int j = 0; j < P; ++j) {
+      if (j < m) {
+        const auto* b8 = &y[j][kby];
+        int u[2 * VDR_Q5_0_Q8_1_MMVQ];
+#pragma unroll
+        for (int l = 0; l < VDR_Q5_0_Q8_1_MMVQ; ++l) {
+          u[2 * l] = get_int_b4(b8->qs, kqs + l);
+          u[2 * l + 1] = get_int_b4(b8->qs, kqs + l + QI5_0);
+        }
+        acc[j][i] += vec_dot_q5_0_q8_1_impl<VDR_Q5_0_Q8_1_MMVQ>(vl, vh, u, scale, b8->ds);
+      }
+    }
+  } else if constexpr (type == GGML_TYPE_Q5_1) {
+    // GGML's original helper arithmetic; only weight loads move outside
+    // the token loop. Each column keeps its own activation sums/scales.
+    const auto* b = static_cast<const block_q5_1*>(vx) + kbx;
+    int vl[VDR_Q5_1_Q8_1_MMVQ];
+    int vh[VDR_Q5_1_Q8_1_MMVQ];
+#pragma unroll
+    for (int l = 0; l < VDR_Q5_1_Q8_1_MMVQ; ++l) {
+      vl[l] = get_int_b4(b->qs, kqs + l);
+      vh[l] = get_int_b4(b->qh, 0) >> (4 * (kqs + l));
+    }
+    const auto scale = b->dm;
+#pragma unroll
+    for (int j = 0; j < P; ++j) {
+      if (j < m) {
+        const auto* b8 = &y[j][kby];
+        int u[2 * VDR_Q5_1_Q8_1_MMVQ];
+#pragma unroll
+        for (int l = 0; l < VDR_Q5_1_Q8_1_MMVQ; ++l) {
+          u[2 * l] = get_int_b4(b8->qs, kqs + l);
+          u[2 * l + 1] = get_int_b4(b8->qs, kqs + l + QI5_1);
+        }
+        acc[j][i] += vec_dot_q5_1_q8_1_impl<VDR_Q5_1_Q8_1_MMVQ>(vl, vh, u, scale, b8->ds);
+      }
+    }
+  } else if constexpr (type == GGML_TYPE_IQ4_NL) {
+    const auto* b = static_cast<const block_iq4_nl*>(vx) + kbx;
+    int2 v[VDR_IQ4_NL_Q8_1_MMVQ];
+#pragma unroll
+    for (int l = 0; l < VDR_IQ4_NL_Q8_1_MMVQ; ++l) {
+      v[l] = get_int_from_table_16(get_int_b2(b->qs, kqs + l), kvalues_iq4nl);
+    }
+    const float dw = __half2float(b->d);
+#pragma unroll
+    for (int j = 0; j < P; ++j) {
+      if (j < m) {
+        const auto* b8 = &y[j][kby];
+        const int* q8 = reinterpret_cast<const int*>(b8->qs) + kqs;
+        int sumi = 0;
+#pragma unroll
+        for (int l = 0; l < VDR_IQ4_NL_Q8_1_MMVQ; ++l) {
+          sumi = ggml_cuda_dp4a(v[l].x, q8[l], sumi);
+          sumi = ggml_cuda_dp4a(v[l].y, q8[l + 4], sumi);
+        }
         const float d = dw * __low2float(b8->ds);
         acc[j][i] += d * static_cast<float>(sumi);
       }
@@ -618,6 +753,14 @@ int LanesPerRow(int k) {
 
 int LanesPerRowOf(ggml_type type, int k) {
   switch (type) {
+    case GGML_TYPE_Q4_0:
+      return LanesPerRow<GGML_TYPE_Q4_0>(k);
+    case GGML_TYPE_Q4_1:
+      return LanesPerRow<GGML_TYPE_Q4_1>(k);
+    case GGML_TYPE_Q5_0:
+      return LanesPerRow<GGML_TYPE_Q5_0>(k);
+    case GGML_TYPE_Q5_1:
+      return LanesPerRow<GGML_TYPE_Q5_1>(k);
     case GGML_TYPE_Q8_0:
       return LanesPerRow<GGML_TYPE_Q8_0>(k);
     case GGML_TYPE_Q2_K:
@@ -728,6 +871,18 @@ bool LaunchVecQ(ggml_type type, const VecQDesc& d, int variant, cudaStream_t str
     return false;
   }
   switch (type) {
+    case GGML_TYPE_Q4_0:
+      LaunchVariant<GGML_TYPE_Q4_0>(d, variant, stream);
+      break;
+    case GGML_TYPE_Q4_1:
+      LaunchVariant<GGML_TYPE_Q4_1>(d, variant, stream);
+      break;
+    case GGML_TYPE_Q5_0:
+      LaunchVariant<GGML_TYPE_Q5_0>(d, variant, stream);
+      break;
+    case GGML_TYPE_Q5_1:
+      LaunchVariant<GGML_TYPE_Q5_1>(d, variant, stream);
+      break;
     case GGML_TYPE_Q8_0:
       LaunchVariant<GGML_TYPE_Q8_0>(d, variant, stream);
       break;

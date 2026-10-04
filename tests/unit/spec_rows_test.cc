@@ -143,8 +143,14 @@ class SpecRowsTest : public ::testing::Test {
   template <typename T = float>
   ggml_tensor* Place(ggml_tensor* tensor, const std::vector<T>& data = {}) {
     const std::size_t size = ggml_nbytes(tensor);
-    const std::uint64_t address = Allocate(size);
+    const std::uint64_t address =
+        Allocate(size + (ggml_is_quantized(tensor->type) ? ggml_row_size(tensor->type, 512) : 0));
     TensorArena::Bind(tensor, address);
+    if (ggml_is_quantized(tensor->type)) {
+      EXPECT_EQ(
+          cudaMemset(reinterpret_cast<void*>(address + size), 0, ggml_row_size(tensor->type, 512)),
+          cudaSuccess);
+    }
     if (!data.empty()) {
       EXPECT_EQ(data.size() * sizeof(T), size);
       EXPECT_EQ(cudaMemcpy(reinterpret_cast<void*>(address), data.data(), size,  // NOLINT
@@ -185,6 +191,126 @@ bool SameBits(const std::vector<float>& a, const std::vector<float>& b) {
   return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
 }
 
+TEST_F(SpecRowsTest, LegacyPartialRowBlocksReadOnlyRealRowsAndPreserveOutputGaps) {
+  constexpr std::int64_t k = 704, n = 129, padded_n = 256, columns = 4;
+  for (const ggml_type type : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1,
+                               GGML_TYPE_IQ4_NL, GGML_TYPE_Q8_0}) {
+    const auto bytes = Quantize(type, k, n, 129);
+    auto* w = Place(ggml_new_tensor_2d(c(), type, k, n), bytes);
+    kg::MarkRowPaddingReadable(w);  // Place funds exactly one canonical tail.
+    const auto x = Normal(130, static_cast<std::size_t>(k * columns));
+    auto* input = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, columns), x);
+    auto* out = ggml_mul_mat(c(), w, input);
+    out->nb[1] = static_cast<std::size_t>(n + 4) * sizeof(float);
+    out->nb[2] = out->nb[1] * columns;
+    out->nb[3] = out->nb[2];
+    const std::size_t output_size = out->nb[2] + 64;
+    const auto address = Allocate(output_size);
+    TensorArena::Bind(out, address);
+    ASSERT_EQ(cudaMemset(out->data, 0xAB, output_size), cudaSuccess);
+    Launched(kg::MulMatVecQRows(launch(), out), ggml_type_name(type));
+    Finish();
+    std::vector<std::uint8_t> guarded(output_size);
+    ASSERT_EQ(cudaMemcpy(guarded.data(), out->data, guarded.size(), cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    const std::size_t row_bytes = ggml_row_size(type, k);
+    std::vector<std::uint8_t> ref_bytes(static_cast<std::size_t>(padded_n) * row_bytes, 0);
+    std::copy(bytes.begin(), bytes.end(), ref_bytes.begin());
+    auto* ref_w = Place(ggml_new_tensor_2d(c(), type, k, padded_n), ref_bytes);
+    kg::MarkRowPaddingReadable(ref_w);
+    for (std::int64_t j = 0; j < columns; ++j) {
+      auto* one = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, k, 1),
+                        std::vector<float>(x.begin() + j * k, x.begin() + (j + 1) * k));
+      auto* original = Place(ggml_mul_mat(c(), ref_w, one));
+      Launched(kg::MulMatVecQ(launch(), original), "padded original one-column reference");
+      const auto want = Download(original);
+      EXPECT_EQ(std::memcmp(guarded.data() + static_cast<std::size_t>(j) * out->nb[1], want.data(),
+                            static_cast<std::size_t>(n) * sizeof(float)),
+                0);
+      const std::size_t gap =
+          static_cast<std::size_t>(j) * out->nb[1] + static_cast<std::size_t>(n) * sizeof(float);
+      for (std::size_t b = gap; b < (static_cast<std::size_t>(j) + 1) * out->nb[1]; ++b) {
+        EXPECT_EQ(guarded[b], 0xAB);
+      }
+    }
+    EXPECT_TRUE(std::all_of(guarded.begin() + static_cast<std::ptrdiff_t>(out->nb[2]),
+                            guarded.end(), [](std::uint8_t b) { return b == 0xAB; }));
+  }
+}
+
+TEST_F(SpecRowsTest, RoutedPartialRowsPreserveExpertAndOutputStrideGaps) {
+  constexpr std::int64_t k = 704, n = 129, padded_n = 256, experts = 3, used = 2, tokens = 4;
+  for (const ggml_type type :
+       {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_IQ4_NL}) {
+    SCOPED_TRACE(ggml_type_name(type));
+    const auto bytes = Quantize(type, k, n * experts, 331);
+    const std::size_t row_bytes = ggml_row_size(type, k);
+    const std::size_t slice = row_bytes * n;
+    const std::size_t unit = std::lcm(ggml_type_size(type), std::size_t{256});
+    const std::size_t pitch = ((slice + ggml_row_size(type, 512) + unit - 1) / unit) * unit;
+    auto* w = ggml_new_tensor_3d(c(), type, k, n, experts);
+    w->nb[2] = pitch;
+    w->nb[3] = pitch * experts;
+    std::vector<std::uint8_t> strided(ggml_nbytes(w), 0);
+    std::vector<std::uint8_t> reference(row_bytes * padded_n * experts, 0);
+    for (std::int64_t e = 0; e < experts; ++e) {
+      std::memcpy(strided.data() + pitch * static_cast<std::size_t>(e),
+                  bytes.data() + slice * static_cast<std::size_t>(e), slice);
+      std::memcpy(reference.data() + row_bytes * padded_n * static_cast<std::size_t>(e),
+                  bytes.data() + slice * static_cast<std::size_t>(e), slice);
+    }
+    Place(w, strided);
+    kg::MarkRowPaddingReadable(w);
+    auto* ref_w = Place(ggml_new_tensor_3d(c(), type, k, padded_n, experts), reference);
+    kg::MarkRowPaddingReadable(ref_w);
+    auto* input = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, k, used, tokens),
+                        Normal(332, static_cast<std::size_t>(k * used * tokens)));
+    // Duplicate routes alternate with distinct routes; unused ID storage
+    // contains invalid indices so an accidental packed read cannot pass.
+    const std::vector<std::int32_t> ids = {0, 0, -1, -1, 2, 1, -1, -1, 1, 1, -1, -1, 0, 2, -1, -1};
+    auto* storage = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, used + 2, tokens), ids);
+    auto* routes = ggml_view_2d(c(), storage, used, tokens, storage->nb[1], 0);
+    TensorArena::Bind(routes, Address(storage));
+    auto* out = ggml_mul_mat_id(c(), w, input, routes);
+    out->nb[1] = static_cast<std::size_t>(n + 4) * sizeof(float);
+    out->nb[2] = out->nb[1] * (used + 1);
+    out->nb[3] = out->nb[2] * tokens;
+    const std::size_t output_size = out->nb[3] + 64;
+    TensorArena::Bind(out, Allocate(output_size));
+    ASSERT_EQ(cudaMemset(out->data, 0xAB, output_size), cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    ASSERT_TRUE(kg::MulMatVecQRows(launch(), out).has_value());
+    Finish();
+    std::vector<std::uint8_t> guarded(output_size);
+    ASSERT_EQ(cudaMemcpy(guarded.data(), out->data, output_size, cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    std::vector<bool> written(output_size, false);
+    for (std::int64_t t = 0; t < tokens; ++t) {
+      auto* one = Leaf(GGML_TYPE_F32, {k, used, 1, 1},
+                       Address(input) + input->nb[2] * static_cast<std::size_t>(t));
+      auto* one_ids = Leaf(GGML_TYPE_I32, {used, 1, 1, 1},
+                           Address(routes) + routes->nb[1] * static_cast<std::size_t>(t));
+      auto* original = Place(ggml_mul_mat_id(c(), ref_w, one, one_ids));
+      ASSERT_TRUE(kg::MulMatVecQ(launch(), original).has_value());
+      const auto want = Download(original);
+      for (std::int64_t u = 0; u < used; ++u) {
+        const std::size_t begin =
+            out->nb[2] * static_cast<std::size_t>(t) + out->nb[1] * static_cast<std::size_t>(u);
+        const std::size_t count = static_cast<std::size_t>(n) * sizeof(float);
+        EXPECT_EQ(std::memcmp(guarded.data() + begin, want.data() + padded_n * u, count), 0)
+            << "token " << t << " route " << u;
+        std::fill(written.begin() + static_cast<std::ptrdiff_t>(begin),
+                  written.begin() + static_cast<std::ptrdiff_t>(begin + count), true);
+      }
+    }
+    for (std::size_t b = 0; b < output_size; ++b) {
+      if (!written[b]) {
+        ASSERT_EQ(guarded[b], 0xAB) << "output gap byte " << b;
+      }
+    }
+  }
+}
+
 TEST_F(SpecRowsTest, EveryColumnOfARowInvariantProductIsItsOneColumnLaunch) {
   struct Case {
     ggml_type type;
@@ -195,7 +321,12 @@ TEST_F(SpecRowsTest, EveryColumnOfARowInvariantProductIsItsOneColumnLaunch) {
   // drafter: q_b (k 1,024), q_a, kv, the compressors and the shared
   // expert's gate and up (4,096), its down (2,048), wo_b (8,192), the
   // drafter's fc (12,288), the head (Q4_K, 4,096), and wo_a's eight groups.
-  const std::array<Case, 11> cases = {{{GGML_TYPE_Q8_0, 1024, 1},
+  const std::array<Case, 16> cases = {{{GGML_TYPE_Q4_0, 704, 1},
+                                       {GGML_TYPE_Q4_1, 2816, 1},
+                                       {GGML_TYPE_Q5_0, 704, 1},
+                                       {GGML_TYPE_Q5_1, 704, 1},
+                                       {GGML_TYPE_IQ4_NL, 2816, 1},
+                                       {GGML_TYPE_Q8_0, 1024, 1},
                                        {GGML_TYPE_Q8_0, 4096, 1},
                                        {GGML_TYPE_Q8_0, 8192, 1},
                                        {GGML_TYPE_Q8_0, 12288, 1},
@@ -210,6 +341,7 @@ TEST_F(SpecRowsTest, EveryColumnOfARowInvariantProductIsItsOneColumnLaunch) {
   for (const Case& test : cases) {
     const std::vector<std::uint8_t> bytes = Quantize(test.type, test.k, kOut * test.groups, 5);
     ggml_tensor* w = Place(ggml_new_tensor_3d(c(), test.type, test.k, kOut, test.groups), bytes);
+    kg::MarkRowPaddingReadable(w);
     for (std::int64_t columns = 1; columns <= kg::kRowsMaxColumns; ++columns) {
       const std::string what = std::string(ggml_type_name(test.type)) + " k " +
                                std::to_string(test.k) + " groups " + std::to_string(test.groups) +

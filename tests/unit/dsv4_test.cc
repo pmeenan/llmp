@@ -1175,7 +1175,7 @@ TEST(Dsv4Test, WavesTakeAnyMixingWeightTypeAndRefuseOnlyUnfusedExperts) {
     }
     EXPECT_EQ(products, mixed ? 0 : layers_mixes * std::int64_t{4}) << type;
   }
-  // Attention weights jitllm.vecq has no kernel for (Q4_0), output-A among
+  // Attention weights jitllm.vecq has no kernel for (IQ1_S), output-A among
   // them, beside quantized mixes: still a wave, and every GGML product of a
   // quantized weight a slot's own row, as its own chunk runs it.
   {
@@ -1185,7 +1185,7 @@ TEST(Dsv4Test, WavesTakeAnyMixingWeightTypeAndRefuseOnlyUnfusedExperts) {
       for (const char* name : {"attn_q_a.weight", "attn_q_b.weight", "attn_kv.weight",
                                "attn_output_a.weight", "attn_output_b.weight"}) {
         if (role.ends_with(name)) {
-          r.type = "Q4_0";
+          r.type = "IQ1_S";
         }
       }
     }
@@ -1211,7 +1211,7 @@ TEST(Dsv4Test, WavesTakeAnyMixingWeightTypeAndRefuseOnlyUnfusedExperts) {
       }
     }
     EXPECT_EQ(out_a, std::int64_t{p.layers} * 4);
-    EXPECT_GE(quantized, std::int64_t{p.layers} * 4 * 7);  // five Q4_0 and two mixes a layer
+    EXPECT_GE(quantized, std::int64_t{p.layers} * 4 * 7);  // five IQ1_S and two mixes a layer
   }
   // Experts the fused form cannot take: a down product jitllm.vecq has no
   // kernel for, gate and up of different types.
@@ -1235,7 +1235,7 @@ TEST(Dsv4Test, WavesTakeAnyMixingWeightTypeAndRefuseOnlyUnfusedExperts) {
     auto one = kg::BuildDsv4Graph(*one_arena, p, *binding, shape.slots[0], fused);
     EXPECT_TRUE(one.has_value()) << role << ": " << Why(one);
   };
-  refused("blk.5.ffn_down_exps.weight", "Q4_0", 5);
+  refused("blk.5.ffn_down_exps.weight", "IQ1_S", 5);
   refused("blk.7.ffn_gate_exps.weight", "IQ2_XXS", 7);
 }
 

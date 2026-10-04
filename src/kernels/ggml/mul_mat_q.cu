@@ -40,10 +40,12 @@
     !defined(GGML_JITLLM_MMQ_Q5_K) || !defined(GGML_JITLLM_MMQ_Q6_K) ||      \
     !defined(GGML_JITLLM_MMQ_IQ2_XS) || !defined(GGML_JITLLM_MMQ_IQ3_XXS) || \
     !defined(GGML_JITLLM_MMQ_MXFP4) || !defined(GGML_JITLLM_MMQ_NVFP4) ||    \
-    !defined(GGML_JITLLM_MMQ_Q4_0) || !defined(GGML_JITLLM_MMQ_Q2_0) ||      \
-    !defined(GGML_JITLLM_MMQ_Q3_K) || !defined(GGML_JITLLM_MMQ_IQ1_S) ||     \
-    !defined(GGML_JITLLM_MMQ_IQ2_S) || !defined(GGML_JITLLM_MMQ_IQ3_S) ||    \
-    !defined(GGML_JITLLM_MMQ_IQ4_NL) || !defined(GGML_JITLLM_MMQ_IQ4_XS)
+    !defined(GGML_JITLLM_MMQ_Q4_1) || !defined(GGML_JITLLM_MMQ_Q5_0) ||      \
+    !defined(GGML_JITLLM_MMQ_Q5_1) || !defined(GGML_JITLLM_MMQ_Q4_0) ||      \
+    !defined(GGML_JITLLM_MMQ_Q2_0) || !defined(GGML_JITLLM_MMQ_Q3_K) ||      \
+    !defined(GGML_JITLLM_MMQ_IQ1_S) || !defined(GGML_JITLLM_MMQ_IQ2_S) ||    \
+    !defined(GGML_JITLLM_MMQ_IQ3_S) || !defined(GGML_JITLLM_MMQ_IQ4_NL) ||   \
+    !defined(GGML_JITLLM_MMQ_IQ4_XS)
 #error "validate_ext.h's quantized weight types need their MMQ instance units"
 #endif
 
@@ -81,6 +83,15 @@ void MmqCase(ggml_type type, ggml_backend_cuda_context& context, const mmq_args&
       break;
     case GGML_TYPE_Q6_K:
       mul_mat_q_case<GGML_TYPE_Q6_K>(context, args, stream);
+      break;
+    case GGML_TYPE_Q4_1:
+      mul_mat_q_case<GGML_TYPE_Q4_1>(context, args, stream);
+      break;
+    case GGML_TYPE_Q5_0:
+      mul_mat_q_case<GGML_TYPE_Q5_0>(context, args, stream);
+      break;
+    case GGML_TYPE_Q5_1:
+      mul_mat_q_case<GGML_TYPE_Q5_1>(context, args, stream);
       break;
     case GGML_TYPE_Q4_0:
       mul_mat_q_case<GGML_TYPE_Q4_0>(context, args, stream);
@@ -265,6 +276,9 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatVecQ(const LaunchContext& 
   }
   if (*path != QuantMulMatPath::kVector) {
     return Rejected("upstream does not select MMVQ for these operands");
+  }
+  if (auto rows = CheckMmvqRowFootprint(node, MmvqRowsPerBlock(launch, node)); !rows) {
+    return std::unexpected(rows.error());
   }
   const ggml_tensor* input = node->src[1];
   // The launcher's grid: row blocks, then output channels and samples, or
@@ -581,6 +595,15 @@ std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml
           mul_mat_q_case<GGML_TYPE_IQ3_XXS>(context, args, stream);
           break;
         // The other types Qwen3.8's GGUF quantizations mix.
+        case GGML_TYPE_Q4_1:
+          mul_mat_q_case<GGML_TYPE_Q4_1>(context, args, stream);
+          break;
+        case GGML_TYPE_Q5_0:
+          mul_mat_q_case<GGML_TYPE_Q5_0>(context, args, stream);
+          break;
+        case GGML_TYPE_Q5_1:
+          mul_mat_q_case<GGML_TYPE_Q5_1>(context, args, stream);
+          break;
         case GGML_TYPE_Q4_0:
           mul_mat_q_case<GGML_TYPE_Q4_0>(context, args, stream);
           break;

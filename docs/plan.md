@@ -296,7 +296,10 @@ family" guide, and its long-context scaling work.
       - MLX affine;
       - EXL3.
 
-      Each is as fast as its same-format reference.
+      Each is as fast as its same-format reference. The bounded
+      [legacy quant primitive slice](experiments/m35-legacy-quants/README.md)
+      adds compiled/operand coverage and transfer controls; whole-engine
+      format and model qualification remain open.
 - [ ] **MLX affine import** (moved from M9 by the owner, 2026-09-29):
       import and run TensorFold's MLX 4-bit checkpoints (reconcile the
       group size, 32 or 64), starting with Qwen3.8 Flash Next's, so

@@ -28,6 +28,23 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-045: GGML MMVQ dots rows past a partial output block  (2026-10-04, status: worked-around)
+
+Environment: pinned llama.cpp b10964, GB10, SDK NVCC 13.4.92. Independent
+review found ordinary and jitLLM row-invariant MMVQ unconditionally read all
+rows in the final selected row block. Q5_1 K704/N129 selects four rows;
+three extra 528-byte rows exceed the canonical 384-byte tail. The finding
+was proved from the launch geometry and dot loop without submitting an
+unsafe GPU launch. It also affects existing formats at eligible small K.
+
+The own kernel now bounds prefetch, reads and output writes by actual N.
+Ordinary launch planning reproduces the pinned row-block selection for all
+21 compiled types and rejects partial blocks before submission. N129
+canonical-tail and strided-output controls cover the guarded path; ordinary
+refusal leaves sentinels unchanged. Do not silently enlarge the promised
+tail to a full row block. See [GGML handoff](upstream/ggml.md#mmvq-reads-rounded-output-rows-re-045)
+and [quant controls](experiments/m35-legacy-quants/README.md).
+
 ## RE-044: libstdc++'s `shrink_to_fit` does nothing under `-fno-exceptions`  (2026-10-03, status: worked-around)
 
 Environment: the SDK's Clang with GCC 16.2's libstdc++, `-fno-exceptions`

@@ -68,6 +68,16 @@ bookend movement. Original full heads remain golden; native repeats exactly
 with the same final argmax but different logits. This closes one consumer
 screen, not Q/KV producers or a quality gate; no cross-family gain is claimed.
 
+The [M3.5 legacy primitive screen](experiments/m35-legacy-quants/README.md)
+extends Q4_0/Q4_1/Q5_0/Q5_1/IQ4_NL row-invariant and joined VecQ mechanics,
+with shared input preparation and original per-column arithmetic. Q5_1 at
+Gemma's K704/N2816/128-expert/top8 shape shows a P1 gain only for synthetic
+disjoint four-row routes; two/eight shared experts favor ordinary MMVQ, and
+P4 loses in all measured patterns. No universal Gemma dispatch or format/
+model supported status follows. Ordinary partial output-row blocks are
+explicitly refused where pinned MMVQ would over-read (RE-045); the own
+row-invariant kernel guards them.
+
 ## Coverage
 
 | Implementation family | Current consumer and source | Techniques to compare |
@@ -131,9 +141,9 @@ they have no text-model equivalent.
 
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
-independent request segments. It records the Q5_1 routed-product and GeGLU
-primitive gaps; implementation and solo/batched execution qualification remain
-owed before either checkpoint is supported.
+independent request segments. It records the checked Q5_1 primitive controls
+and remaining GeGLU and model-execution gaps; solo/batched execution
+qualification remains owed before either checkpoint is supported.
 
 ## Rejected kernels: pieces worth retaining
 

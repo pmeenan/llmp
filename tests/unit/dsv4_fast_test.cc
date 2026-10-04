@@ -124,6 +124,46 @@ std::uint64_t Address(const ggml_tensor* t) { return reinterpret_cast<std::uintp
 double Silu(double x) { return x / (1.0 + std::exp(-x)); }
 double Sigmoid(double x) { return 1.0 / (1.0 + std::exp(-x)); }
 
+bool LegacyAffineOrOffset(ggml_type type) {
+  return type == GGML_TYPE_Q4_0 || type == GGML_TYPE_Q4_1 || type == GGML_TYPE_Q5_0 ||
+         type == GGML_TYPE_Q5_1;
+}
+
+// Independent scalar block reference, decoding every nibble/high bit
+// rather than reproducing the CUDA packed DP4A loop. Q8_1 stores a rounded
+// sum of the original inputs separately from the quantized input values.
+// On GB10 affine dot helpers also multiply scales/minima in half precision.
+double LegacyBlockProduct(ggml_type type, const std::uint8_t* weight,
+                          const std::uint8_t* activation) {
+  const auto half_at = [](const std::uint8_t* p) {
+    ggml_fp16_t bits = 0;
+    std::memcpy(&bits, p, sizeof(bits));
+    return ggml_fp16_to_fp32(bits);
+  };
+  const bool affine = type == GGML_TYPE_Q4_1 || type == GGML_TYPE_Q5_1;
+  const bool five = type == GGML_TYPE_Q5_0 || type == GGML_TYPE_Q5_1;
+  const float dw = half_at(weight);
+  const float da = half_at(activation);
+  const float sa = half_at(activation + 2);
+  const std::size_t prefix = affine ? 4U : 2U;
+  std::uint32_t high = 0;
+  if (five) {
+    std::memcpy(&high, weight + prefix, sizeof(high));
+  }
+  const auto* codes = weight + prefix + (five ? 4U : 0U);
+  int sum = 0;
+  for (unsigned i = 0; i < 32; ++i) {
+    const int low = i < 16 ? codes[i] & 15 : codes[i - 16] >> 4;
+    const int code = low + (five ? static_cast<int>((high >> i) & 1U) * 16 : 0);
+    sum += code * static_cast<std::int8_t>(activation[4 + i]);
+  }
+  if (affine) {
+    const auto round_half = [](float v) { return ggml_fp16_to_fp32(ggml_fp32_to_fp16(v)); };
+    return static_cast<double>(sum) * round_half(dw * da) + round_half(half_at(weight + 2) * sa);
+  }
+  return static_cast<double>(dw) * (static_cast<double>(sum) * da - (five ? 16.0 : 8.0) * sa);
+}
+
 class Dsv4FastTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -308,10 +348,12 @@ TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
     std::int64_t k;
   };
   for (const auto& [type, k] :
-       {Dense{GGML_TYPE_Q8_0, 4096}, Dense{GGML_TYPE_Q4_K, 4096}, Dense{GGML_TYPE_Q5_K, 4096},
-        Dense{GGML_TYPE_Q6_K, 2048}, Dense{GGML_TYPE_Q8_0, 32768}, Dense{GGML_TYPE_Q8_0, 1056},
-        Dense{GGML_TYPE_IQ2_XS, 4096}, Dense{GGML_TYPE_IQ3_XXS, 2048}, Dense{GGML_TYPE_Q6_K, 2560},
-        Dense{GGML_TYPE_Q8_0, 640}, Dense{GGML_TYPE_Q8_0, 320}, Dense{GGML_TYPE_Q8_0, 10240}}) {
+       {Dense{GGML_TYPE_Q4_0, 704}, Dense{GGML_TYPE_Q4_1, 2816}, Dense{GGML_TYPE_Q5_0, 704},
+        Dense{GGML_TYPE_Q5_1, 704}, Dense{GGML_TYPE_IQ4_NL, 2816}, Dense{GGML_TYPE_Q8_0, 4096},
+        Dense{GGML_TYPE_Q4_K, 4096}, Dense{GGML_TYPE_Q5_K, 4096}, Dense{GGML_TYPE_Q6_K, 2048},
+        Dense{GGML_TYPE_Q8_0, 32768}, Dense{GGML_TYPE_Q8_0, 1056}, Dense{GGML_TYPE_IQ2_XS, 4096},
+        Dense{GGML_TYPE_IQ3_XXS, 2048}, Dense{GGML_TYPE_Q6_K, 2560}, Dense{GGML_TYPE_Q8_0, 640},
+        Dense{GGML_TYPE_Q8_0, 320}, Dense{GGML_TYPE_Q8_0, 10240}}) {
     const std::vector<std::uint8_t> bytes = Quantize(type, k, kOut, 11);
     ggml_tensor* w = Place(ggml_new_tensor_2d(c(), type, k, kOut), bytes);
     const std::vector<float> x = Normal(12, static_cast<std::size_t>(k * 16));
@@ -413,7 +455,9 @@ TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
        {Routed{GGML_TYPE_IQ2_XXS, k, false, kUsed}, Routed{GGML_TYPE_Q2_K, k, false, kUsed},
         Routed{GGML_TYPE_MXFP4, k, false, kUsed}, Routed{GGML_TYPE_IQ3_XXS, k, false, kUsed},
         Routed{GGML_TYPE_IQ2_XS, k, false, kUsed}, Routed{GGML_TYPE_IQ2_S, 2560, false, 10},
-        Routed{GGML_TYPE_IQ4_NL, 640, true, 10}}) {
+        Routed{GGML_TYPE_IQ4_NL, 640, true, 10}, Routed{GGML_TYPE_Q4_0, 2816, false, 8},
+        Routed{GGML_TYPE_Q4_1, 2816, false, 8}, Routed{GGML_TYPE_Q5_0, 704, true, 8},
+        Routed{GGML_TYPE_Q5_1, 704, true, 8}}) {
     ggml_tensor* rw = Place(ggml_new_tensor_3d(c(), rtype, width, kOut, kFewExperts),
                             Quantize(rtype, width, kOut * kFewExperts, 15));
     const std::int64_t input_rows = per_slot ? used : 1;
@@ -454,6 +498,72 @@ TEST_F(Dsv4FastTest, WaveLaunchesKeepEachTokensSumsBitForBit) {
   }
 }
 
+TEST_F(Dsv4FastTest, GemmaQ51DownJoinsTopEightStridedDuplicateRoutesExactly) {
+  constexpr std::int64_t k = 704, n = 2816, experts = 128, used = 8;
+  auto* w = ggml_new_tensor_3d(c(), GGML_TYPE_Q5_1, k, n, experts);
+  const auto raw = Quantize(GGML_TYPE_Q5_1, k, n * experts, 704);
+  const std::size_t slice = w->nb[2];
+  const std::size_t unit = std::lcm(ggml_type_size(GGML_TYPE_Q5_1), std::size_t{256});
+  const std::size_t tail = ggml_row_size(GGML_TYPE_Q5_1, 512);
+  w->nb[2] = (slice + tail + unit - 1) / unit * unit;
+  w->nb[3] = w->nb[2] * experts;
+  std::vector<std::uint8_t> padded(ggml_nbytes(w) + tail, 0);
+  for (std::size_t e = 0; e < static_cast<std::size_t>(experts); ++e) {
+    std::memcpy(padded.data() + e * w->nb[2], raw.data() + e * slice, slice);
+  }
+  TensorArena::Bind(w, Allocate(padded.size()));
+  ASSERT_EQ(cudaMemcpy(w->data, padded.data(), padded.size(), cudaMemcpyHostToDevice), cudaSuccess);
+  kg::MarkRowPaddingReadable(w);
+  const auto values = Normal(705, static_cast<std::size_t>(k * used * 16));
+  for (const std::int64_t tokens : {1, 2, 4, 16}) {
+    std::vector<std::int32_t> routes(static_cast<std::size_t>((used + 2) * tokens), -1);
+    for (std::int64_t t = 0; t < tokens; ++t) {
+      for (std::int64_t u = 0; u < used; ++u) {
+        routes[static_cast<std::size_t>(t * (used + 2) + u)] =
+            static_cast<std::int32_t>((t * 3 + (u / 2) * 7) % experts);
+      }
+    }
+    auto* id_storage = Place(ggml_new_tensor_2d(c(), GGML_TYPE_I32, used + 2, tokens), routes);
+    auto* ids = ggml_view_2d(c(), id_storage, used, tokens, id_storage->nb[1], 0);
+    TensorArena::Bind(ids, Address(id_storage));
+    auto* input = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, k, used, tokens),
+                        std::vector<float>(values.begin(), values.begin() + k * used * tokens));
+    auto* q8 = Place(kg::QuantizeQ8(c(), input));
+    auto* joined = Place(kg::VecQ(c(), w, q8, ids, tokens, true));
+    kg::SetVecQOneToken(joined);
+    const auto got = RunVecQ(q8, joined, "Gemma Q5_1 joined top8");
+    for (std::int64_t t = 0; t < tokens; ++t) {
+      auto* solo_input = Leaf(GGML_TYPE_F32, {k, used, 1, 1},
+                              Address(input) + static_cast<std::uint64_t>(t) * input->nb[2]);
+      auto* solo_ids = Leaf(GGML_TYPE_I32, {used, 1, 1, 1},
+                            Address(ids) + static_cast<std::uint64_t>(t) * ids->nb[1]);
+      auto* solo_q8 = Place(kg::QuantizeQ8(c(), solo_input));
+      auto* solo = Place(kg::VecQ(c(), w, solo_q8, solo_ids, 1, true));
+      const auto want = RunVecQ(solo_q8, solo, "Gemma Q5_1 solo top8");
+      EXPECT_EQ(std::memcmp(got.data() + t * used * n, want.data(), want.size() * sizeof(float)),
+                0);
+      auto* original = Place(ggml_mul_mat_id(c(), w, solo_input, solo_ids));
+      Launched(kg::MulMatVecQ(launch(), original), "Gemma Q5_1 original top8");
+      ExpectNear(want, Download(original), 1e-10, "Gemma Q5_1 original arithmetic");
+    }
+    // A departed column can be zeroed without changing other columns.
+    // Scheduling/cancellation itself remains the runner's contract.
+    ASSERT_EQ(cudaMemset(static_cast<char*>(input->data) +
+                             static_cast<std::size_t>(tokens - 1) * input->nb[2],
+                         0, static_cast<std::size_t>(k * used) * sizeof(float)),
+              cudaSuccess);
+    // Default-stream memset is asynchronous relative to our nonblocking
+    // execution stream. Complete the host fixture update before preparing Q8.
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    const auto retired = RunVecQ(q8, joined, "Gemma Q5_1 inactive final column");
+    EXPECT_EQ(std::memcmp(got.data(), retired.data(),
+                          static_cast<std::size_t>((tokens - 1) * used * n) * sizeof(float)),
+              0);
+    EXPECT_TRUE(std::ranges::all_of(retired.begin() + (tokens - 1) * used * n, retired.end(),
+                                    [](float v) { return v == 0.0f; }));
+  }
+}
+
 // Every launch configuration on every weight type, dense, with and without
 // the GLU, at row counts that leave a warp-form grid's last block partly
 // past the rows (130) or that only one-row configurations take (129), and
@@ -466,7 +576,12 @@ TEST_F(Dsv4FastTest, EveryConfigurationCoversEveryTypeTailRowsAndPaddedRows) {
     ggml_type type;
     std::int64_t k;
   };
-  const std::array<Case, 11> cases = {{{GGML_TYPE_Q8_0, 1024},
+  const std::array<Case, 16> cases = {{{GGML_TYPE_Q4_0, 704},
+                                       {GGML_TYPE_Q4_1, 2816},
+                                       {GGML_TYPE_Q5_0, 704},
+                                       {GGML_TYPE_Q5_1, 704},
+                                       {GGML_TYPE_IQ4_NL, 2816},
+                                       {GGML_TYPE_Q8_0, 1024},
                                        {GGML_TYPE_Q2_K, 1024},
                                        {GGML_TYPE_IQ2_XXS, 1024},
                                        {GGML_TYPE_Q8_0, 1056},
@@ -523,6 +638,46 @@ TEST_F(Dsv4FastTest, EveryConfigurationCoversEveryTypeTailRowsAndPaddedRows) {
             }
           }
         }
+        // Legacy helpers use the Q8_1 half sum (and affine helpers round
+        // scale products to half). Ideal dequantized FP64 sums omit those
+        // terms. Retain upstream's FP64 bound, then qualify both the original
+        // and transferred kernels against independent scalar blocks.
+        if (LegacyAffineOrOffset(test.type)) {
+          const std::int64_t padded_rows = (nrows + 127) / 128 * 128;
+          const std::size_t row_bytes = ggml_row_size(test.type, test.k);
+          std::vector<std::uint8_t> reference_weights(
+              row_bytes * static_cast<std::size_t>(padded_rows) + ggml_row_size(test.type, 512), 0);
+          std::memcpy(reference_weights.data(), bytes.data(), bytes.size());
+          auto* original_w = ggml_new_tensor_2d(c(), test.type, test.k, padded_rows);
+          TensorArena::Bind(original_w, Allocate(reference_weights.size()));
+          ASSERT_EQ(cudaMemcpy(original_w->data, reference_weights.data(), reference_weights.size(),
+                               cudaMemcpyHostToDevice),
+                    cudaSuccess);
+          kg::MarkRowPaddingReadable(original_w);
+          auto* original = Place(ggml_mul_mat(c(), original_w, input));
+          Launched(kg::MulMatVecQ(launch(), original), what + " original legacy helper");
+          const auto all = Download(original);
+          std::vector<float> helper(plain.size());
+          for (std::int64_t t = 0; t < tokens; ++t) {
+            std::copy_n(all.begin() + t * padded_rows, nrows, helper.begin() + t * nrows);
+          }
+          ExpectNear(helper, plain, 5e-4, what + " original versus FP64");
+          std::fill(plain.begin(), plain.end(), 0.0);
+          for (std::int64_t t = 0; t < tokens; ++t) {
+            for (std::int64_t r = 0; r < nrows; ++r) {
+              double sum = 0.0;
+              for (std::int64_t b = 0; b < test.k / 32; ++b) {
+                sum += LegacyBlockProduct(
+                    test.type,
+                    bytes.data() + static_cast<std::size_t>(r) * row_bytes +
+                        static_cast<std::size_t>(b) * ggml_type_size(test.type),
+                    blocks.data() + static_cast<std::size_t>(t * y_row + b) * 36);
+              }
+              plain[static_cast<std::size_t>(t * nrows + r)] = sum;
+            }
+          }
+          ExpectNear(helper, plain, 1e-10, what + " original versus independent scalar blocks");
+        }
         std::vector<double> glu(plain.size());
         for (std::size_t i = 0; i < plain.size(); ++i) {
           const double r = plain[i];
@@ -562,7 +717,8 @@ TEST_F(Dsv4FastTest, EveryConfigurationCoversEveryTypeTailRowsAndPaddedRows) {
             // more than float rounding (IQ2_XS's and IQ3_XXS's integer scale
             // rounding, the K-quants' minimums over the unquantized sums);
             // one output of the 390 missing or misplaced is about 3e-3.
-            ExpectNear(got, with_glu ? glu : plain, 1e-4, name);
+            ExpectNear(got, with_glu ? glu : plain, LegacyAffineOrOffset(test.type) ? 1e-10 : 1e-4,
+                       name);
           }
         }
       }

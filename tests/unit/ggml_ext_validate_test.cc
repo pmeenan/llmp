@@ -60,7 +60,7 @@ class GgmlExtValidateTest : public ::testing::Test {
 };
 
 TEST_F(GgmlExtValidateTest, QuantizedProductsTakeTheCompiledTypesAtWholeRowSteps) {
-  EXPECT_EQ(kg::QuantizedWeightTypes().size(), 18U);
+  EXPECT_EQ(kg::QuantizedWeightTypes().size(), 21U);
   for (const ggml_type type : kg::QuantizedWeightTypes()) {
     EXPECT_TRUE(kg::IsQuantizedWeightType(type)) << ggml_type_name(type);
     ggml_tensor* w = New(type, 4096, 256);
@@ -70,7 +70,7 @@ TEST_F(GgmlExtValidateTest, QuantizedProductsTakeTheCompiledTypesAtWholeRowSteps
   EXPECT_TRUE(kg::IsQuantizedWeightType(GGML_TYPE_NVFP4));   // Qwen3.8's experts
   EXPECT_TRUE(kg::IsQuantizedWeightType(GGML_TYPE_IQ2_S));   // Qwen3.8 GGUF's experts
   EXPECT_TRUE(kg::IsQuantizedWeightType(GGML_TYPE_IQ4_NL));  // and its n-gram table
-  EXPECT_FALSE(kg::IsQuantizedWeightType(GGML_TYPE_Q4_1));
+  EXPECT_TRUE(kg::IsQuantizedWeightType(GGML_TYPE_Q4_1));
   EXPECT_FALSE(kg::IsQuantizedWeightType(GGML_TYPE_IQ1_M));  // no MMQ upstream
   // Rows short of a 512-element step (Qwen3.8's 640-element down
   // projection): refused unless the binder vouches for their padding, and
@@ -509,6 +509,129 @@ TEST_F(GgmlExtValidateTest, RopeTakesTheModelsModesOffsetsAndPositions) {
                                                65536, 10000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
 }
 
+TEST_F(GgmlExtValidateTest, LegacyProductsRequireReadablePaddingAndValidOperands) {
+  for (const ggml_type type :
+       {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_IQ4_NL}) {
+    auto* w = New(type, 704, 2816, 128);
+    auto* x = New(GGML_TYPE_F32, 704, 8, 4);
+    auto* ids = New(GGML_TYPE_I32, 8, 4);
+    auto* node = Bound(ggml_mul_mat_id(c(), w, x, ids));
+    Refused(kg::CheckMulMatIdQ(node));
+    kg::MarkRowPaddingReadable(w);
+    Accepted(kg::CheckMulMatIdQ(node));
+    auto* half = New(GGML_TYPE_F16, 704, 8, 4);
+    Refused(kg::CheckMulMatIdQ(Bound(ggml_mul_mat_id(c(), w, half, ids))));
+    ids->ne[0] = 7;
+    Refused(kg::CheckMulMatIdQ(node));
+    ids->ne[0] = 8;
+    w->nb[2] += 1;
+    Refused(kg::CheckMulMatIdQ(node));
+  }
+}
+
+TEST_F(GgmlExtValidateTest, ProductBlockOffsetsIncludeAllUsedDimensionsAndTheFinalStep) {
+  for (const ggml_type type : kg::QuantizedWeightTypes()) {
+    SCOPED_TRACE(ggml_type_name(type));
+    for (const std::int64_t k : {512, 768}) {
+      for (const int axis : {2, 3}) {
+        SCOPED_TRACE(k);
+        SCOPED_TRACE(axis);
+        auto* w = New(type, k, 128, axis == 2 ? 3 : 1, axis == 3 ? 3 : 1);
+        auto* x = New(GGML_TYPE_F32, k, 1, axis == 2 ? 3 : 1, axis == 3 ? 3 : 1);
+        auto* node = Bound(ggml_mul_mat(c(), w, x));
+        // Far-separated fictional bindings accommodate even the largest
+        // quant-block size without overlapping another operand.
+        TensorArena::Bind(w, 1ULL << 40);
+        TensorArena::Bind(x, 1ULL << 44);
+        TensorArena::Bind(node, 1ULL << 46);
+        kg::MarkRowPaddingReadable(w);
+        const auto block = static_cast<std::uint64_t>(ggml_blck_size(type));
+        const auto size = ggml_type_size(type);
+        const std::uint64_t row_blocks = static_cast<std::uint64_t>(k) / block;
+        const std::uint64_t tail_blocks = static_cast<std::uint64_t>(512 - k % 512) % 512 / block;
+        // Last used index = 2*pitch + 128*row_blocks + tail - 1.
+        // At K512 this is exactly INT32_MAX; short rows include their
+        // final padded step. No bound uses a product of unused strides.
+        const std::uint64_t pitch = ((1ULL << 31) - 128 * row_blocks - tail_blocks) / 2;
+        w->nb[axis] = pitch * size;
+        if (axis == 2) {
+          w->nb[3] = w->nb[2];  // unused sample stride
+        }
+        Accepted(kg::CheckMulMatQ(node));
+        w->nb[axis] += size;
+        Refused(kg::CheckMulMatQ(node));
+        if (axis == 2) {
+          auto* input = New(GGML_TYPE_F32, k, 2, 1);
+          auto* ids = New(GGML_TYPE_I32, 2, 1);
+          auto* routed = Bound(ggml_mul_mat_id(c(), w, input, ids));
+          TensorArena::Bind(input, 1ULL << 44);
+          TensorArena::Bind(ids, 1ULL << 45);
+          TensorArena::Bind(routed, 1ULL << 46);
+          Refused(kg::CheckMulMatIdQ(routed));
+          w->nb[axis] -= size;
+          Accepted(kg::CheckMulMatIdQ(routed));
+          input->ne[1] = 1;  // broadcast instead of independent slots
+          Accepted(kg::CheckMulMatIdQ(routed));
+          w->nb[axis] += size;
+          Refused(kg::CheckMulMatIdQ(routed));
+        }
+      }
+    }
+  }
+}
+
+TEST_F(GgmlExtValidateTest, PairedProductsCheckBothCombinedWeightBlockSpans) {
+  for (const ggml_type type : kg::QuantizedWeightTypes()) {
+    if (type == GGML_TYPE_MXFP4 || type == GGML_TYPE_NVFP4) {
+      continue;  // these formats have no paired implementation
+    }
+    SCOPED_TRACE(ggml_type_name(type));
+    for (const bool routed : {false, true}) {
+      auto* a = New(type, 512, 128, routed ? 3 : 1);
+      auto* b = New(type, 512, 128, routed ? 3 : 1);
+      auto* x = New(GGML_TYPE_F32, 512, routed ? 2 : 64);
+      auto* ids = New(GGML_TYPE_I32, 2);
+      auto* first = Bound(routed ? ggml_mul_mat_id(c(), a, x, ids) : ggml_mul_mat(c(), a, x));
+      auto* second = Bound(routed ? ggml_mul_mat_id(c(), b, x, ids) : ggml_mul_mat(c(), b, x));
+      TensorArena::Bind(a, 1ULL << 40);
+      TensorArena::Bind(b, 1ULL << 43);
+      TensorArena::Bind(x, 1ULL << 44);
+      TensorArena::Bind(ids, 1ULL << 45);
+      TensorArena::Bind(first, 1ULL << 46);
+      TensorArena::Bind(second, 1ULL << 47);
+      const auto check = [&](const ggml_tensor* left, const ggml_tensor* right) {
+        return routed ? kg::CheckMulMatIdQPair(left, right)
+                      : kg::CheckMulMatQPairDense(left, right);
+      };
+      Accepted(check(first, second));
+      const int axis = routed ? 2 : 1;
+      b->nb[axis] = (1ULL << 30) * ggml_type_size(type);
+      if (routed) {
+        b->nb[3] = b->nb[2];
+      }
+      Refused(check(first, second));
+      Refused(check(second, first));
+    }
+  }
+}
+
+TEST_F(GgmlExtValidateTest, OrdinaryMmvqRequiresWholeSelectedOutputRowBlocks) {
+  for (const ggml_type type : kg::QuantizedWeightTypes()) {
+    auto* w = New(type, 512, 129);
+    auto* x = New(GGML_TYPE_F32, 512, 1);
+    auto* node = Bound(ggml_mul_mat(c(), w, x));
+    Accepted(kg::CheckMmvqRowFootprint(node, 1));
+    Refused(kg::CheckMmvqRowFootprint(node, 2));
+    Refused(kg::CheckMmvqRowFootprint(node, 4));
+    Refused(kg::CheckMmvqRowFootprint(node, 0));
+    w->ne[1] = 130;
+    Accepted(kg::CheckMmvqRowFootprint(node, 2));
+    Refused(kg::CheckMmvqRowFootprint(node, 4));
+    w->ne[1] = 132;
+    Accepted(kg::CheckMmvqRowFootprint(node, 4));
+  }
+}
+
 TEST_F(GgmlExtValidateTest, GathersAndScattersTakeTheModelsTypes) {
   Accepted(kg::CheckGetRowsExt(
       Bound(ggml_get_rows(c(), New(GGML_TYPE_Q5_K, 4096, 129280), New(GGML_TYPE_I32, 5)))));
@@ -517,7 +640,7 @@ TEST_F(GgmlExtValidateTest, GathersAndScattersTakeTheModelsTypes) {
   // Not whole super-blocks; a type not compiled for the products.
   Refused(kg::CheckGetRowsExt(
       Bound(ggml_get_rows(c(), New(GGML_TYPE_Q8_0, 96, 10), New(GGML_TYPE_I32, 5)))));
-  Refused(kg::CheckGetRowsExt(
+  Accepted(kg::CheckGetRowsExt(
       Bound(ggml_get_rows(c(), New(GGML_TYPE_Q4_1, 4096, 10), New(GGML_TYPE_I32, 5)))));
   // A product type GGML's get_rows has no case for (getrows.cu aborts).
   Refused(kg::CheckGetRowsExt(

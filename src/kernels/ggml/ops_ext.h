@@ -121,9 +121,14 @@ std::expected<void, KernelFailure> MulMatQPairDense(LaunchContext& launch, ggml_
 // arithmetic of GGML's one-column MMVQ launch, so a verify's row equals the
 // decode step it stands for bit for bit; a dense block still reads its
 // weight rows once for every column. Weights of the types jitLLM's models
-// bring (Q8_0, Q2_K, Q4_K, Q5_K, Q6_K, IQ2_XXS, IQ2_XS, IQ3_XXS, MXFP4); the scratch is
+// bring (Q8_0, Q2_K, Q4_K, Q5_K, Q6_K, IQ2_XXS, IQ2_XS, IQ3_XXS, MXFP4,
+// Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL); partial row blocks guard every weight
+// read and output. The scratch is
 // MMVQ's Q8_1 activations.
 inline constexpr std::int64_t kRowsMaxColumns = 8;
+// The original pinned MMVQ launch's output row block, for checked nodes.
+// Used only to prove its unguarded rounded-row reads before submission.
+int MmvqRowsPerBlock(const LaunchContext& launch, const ggml_tensor* node);
 std::expected<std::uint64_t, KernelFailure> PlanMulMatVecQRows(const LaunchContext& launch,
                                                                const ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatVecQRows(LaunchContext& launch, ggml_tensor* node);

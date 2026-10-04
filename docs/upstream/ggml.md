@@ -24,7 +24,39 @@ Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
 then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
 sinks bound (RE-030).
 
+## MMVQ reads rounded output rows (RE-045)
+
+- **Status:** pinned limitation, guarded by jitLLM's launch plan; current
+  upstream master has not been checked for this finding.
+- **Found:** 2026-10-04 during independent review of legacy quant primitives.
+- **Problem:** pinned `mmvq.cu` dots every selected rows-per-block row even
+  in the final partial block. Q5_1 K704/N129 on GB10 selects four rows:
+  the final block reads three additional 528-byte rows, while the canonical
+  512-value tail funds only 384 bytes. No faulting launch was needed to
+  establish the source bounds violation.
+- **jitLLM's workaround:** ordinary MMVQ derives the pinned host-table/type/
+  small-K geometry and refuses N not divisible by the selected row block,
+  for all compiled types, before submission. Its own row-invariant kernel
+  receives actual N and guards reads, prefetch and writes; partial rows and
+  output-stride gaps are tested with canonical padding only.
+- **Proposed action:** before upstreaming, verify current master, then pass
+  actual N to the dot loop and bound its row reads. No upstream numerical
+  source patch is carried in this slice. See the
+  [bounded controls](../experiments/m35-legacy-quants/README.md).
+
 ## 32-bit strides: flash attention's mask and `ggml_permute` (RE-037)
+
+The pinned quantized products have a related limit: MMQ's `offset_x`
+(`mmq.cuh:1061,1155,1239`) and MMVQ's `kbx_offset`
+(`mmvq.cu:697,895`) are signed 32-bit native quant-block indices, even
+though their host arguments use wider integers. jitLLM now validates the
+combined row/channel/sample block span and the final padded 512-value step,
+not just each stride. For example, Q5_1 [512,128,3] with a whole-block expert
+pitch of 2^30 blocks passes individual stride checks but expert 2 starts at
+2^31, which cannot be indexed. Host-only boundary and planning controls
+prove refusal without submitting an unsafe operation. This is a native
+operand-check correction; no additional numerical source patch is carried,
+and current upstream master has not been checked.
 
 - **Status:** `ggml_permute`: fixed upstream after the pin, in #29227
   (`c21284cdf`, in master `8019dc563`, b11254); it comes with the pin bump.
@@ -313,6 +345,11 @@ sinks bound (RE-030).
   - the null-buffer guard (its own entry above) and building without CUB
     (below).
   `0002-jitllm-build.patch` adds jitLLM's CMake for the files it compiles.
+  The 2026-10-04 legacy primitive slice adds the unchanged generated
+  Q4_1/Q5_0/Q5_1 MMQ instance units beside the existing Q4_0/IQ4_NL units.
+  Native ordinary/paired dispatch and validators name that same closure.
+  Row-invariant and joined vector products use the pinned original dot
+  helpers; no upstream numerical source or format is changed.
 - **Upstream master:** all still needed at `8019dc563`. At master, the
   `common.cuh` and `mmq.cu` switch hunks no longer apply; 0002 applies.
 - **Proposed action:** none upstream, apart from the null-buffer guard.

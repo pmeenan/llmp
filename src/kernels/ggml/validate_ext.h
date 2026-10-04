@@ -71,6 +71,13 @@ enum class QuantMulMatPath : std::uint8_t {
 // packed rows of whole blocks at a 16-byte
 // aligned base; activations and output have F32 rows at any whole-element
 // strides, their channels and samples whole multiples of the weights'.
+// Combined weight offsets, including a shorter row's final padded step,
+// must fit the kernels' signed 32-bit quant-block indexing.
+// The original MMVQ kernel reads every row of a rounded output block.
+// Canonical last-row padding promises no additional complete weight rows;
+// require whole row blocks, otherwise use the guarded row primitive.
+std::expected<void, KernelFailure> CheckMmvqRowFootprint(const ggml_tensor* node,
+                                                         std::int64_t rows_per_block);
 std::expected<void, KernelFailure> CheckMulMatQ(const ggml_tensor* node);
 
 // The same for a ggml_mul_mat_id node: weights [k, n, experts] of a type

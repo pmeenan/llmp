@@ -80,6 +80,16 @@ using VecDot = float (*)(const void* __restrict__ vbq, const block_q8_1* __restr
 // The weight types jitLLM's models bring to vector products.
 constexpr __device__ VecDot RowsVecDot(ggml_type type) {
   switch (type) {
+    case GGML_TYPE_Q4_0:
+      return vec_dot_q4_0_q8_1;
+    case GGML_TYPE_Q4_1:
+      return vec_dot_q4_1_q8_1;
+    case GGML_TYPE_Q5_0:
+      return vec_dot_q5_0_q8_1;
+    case GGML_TYPE_Q5_1:
+      return vec_dot_q5_1_q8_1;
+    case GGML_TYPE_IQ4_NL:
+      return vec_dot_iq4_nl_q8_1;
     case GGML_TYPE_Q8_0:
       return vec_dot_q8_0_q8_1;
     case GGML_TYPE_Q2_K:
@@ -105,6 +115,30 @@ constexpr __device__ VecDot RowsVecDot(ggml_type type) {
 
 constexpr __host__ __device__ int RowsVdr(ggml_type type) {
   switch (type) {
+    case GGML_TYPE_Q4_0:
+      return VDR_Q4_0_Q8_1_MMVQ;
+    case GGML_TYPE_Q4_1:
+      return VDR_Q4_1_Q8_1_MMVQ;
+    case GGML_TYPE_Q5_0:
+      return VDR_Q5_0_Q8_1_MMVQ;
+    case GGML_TYPE_Q5_1:
+      return VDR_Q5_1_Q8_1_MMVQ;
+    case GGML_TYPE_IQ4_NL:
+      return VDR_IQ4_NL_Q8_1_MMVQ;
+    case GGML_TYPE_Q2_0:
+      return VDR_Q2_0_Q8_1_MMVQ;
+    case GGML_TYPE_Q3_K:
+      return VDR_Q3_K_Q8_1_MMVQ;
+    case GGML_TYPE_IQ2_S:
+      return VDR_IQ2_S_Q8_1_MMVQ;
+    case GGML_TYPE_IQ3_S:
+      return VDR_IQ3_S_Q8_1_MMVQ;
+    case GGML_TYPE_IQ4_XS:
+      return VDR_IQ4_XS_Q8_1_MMVQ;
+    case GGML_TYPE_NVFP4:
+      return VDR_NVFP4_Q8_1_MMVQ;
+    case GGML_TYPE_IQ1_S:
+      return 1;  // pinned get_vdr_mmvq default
     case GGML_TYPE_Q8_0:
       return VDR_Q8_0_Q8_1_MMVQ;
     case GGML_TYPE_Q2_K:
@@ -273,13 +307,14 @@ __launch_bounds__(RowsWarps(type, RowsDeviceTable(), small_k, halve_iters) *
                       ggml_cuda_get_physical_warp_size(),
                   1) __global__
     void MulMatVecQRowsKernel(const void* vx_ptr, const void* vy_ptr, const int32_t* ids_ptr,
-                              float* dst_ptr, const uint32_t ncols_x, const uint3 nchannels_y,
-                              const uint32_t stride_row_x, const uint32_t stride_col_y,
-                              const uint32_t stride_col_dst, const uint3 channel_ratio,
-                              const uint32_t stride_channel_x, const uint32_t stride_channel_y,
-                              const uint32_t stride_channel_dst, const uint3 sample_ratio,
-                              const uint32_t stride_sample_x, const uint32_t stride_sample_y,
-                              const uint32_t stride_sample_dst, const uint32_t ids_stride) {
+                              float* dst_ptr, const uint32_t ncols_x, const uint32_t nrows_x,
+                              const uint3 nchannels_y, const uint32_t stride_row_x,
+                              const uint32_t stride_col_y, const uint32_t stride_col_dst,
+                              const uint3 channel_ratio, const uint32_t stride_channel_x,
+                              const uint32_t stride_channel_y, const uint32_t stride_channel_dst,
+                              const uint3 sample_ratio, const uint32_t stride_sample_x,
+                              const uint32_t stride_sample_y, const uint32_t stride_sample_dst,
+                              const uint32_t ids_stride) {
   const void* GGML_CUDA_RESTRICT vx = vx_ptr;
   const void* GGML_CUDA_RESTRICT vy = vy_ptr;
   const int32_t* GGML_CUDA_RESTRICT ids = ids_ptr;
@@ -347,9 +382,11 @@ __launch_bounds__(RowsWarps(type, RowsDeviceTable(), small_k, halve_iters) *
       if (kbx_pf < blocks_per_row_x) {
 #pragma unroll
         for (int i = 0; i < rows_per_cuda_block; ++i) {
-          const size_t off =
-              (size_t)(kbx_offset + i * stride_row_x + kbx_pf) * ggml_cuda_type_traits<type>::bs;
-          RowsPrefetchL2((const char*)vx + off);
+          if (uint32_t(row0 + i) < nrows_x) {
+            const size_t off =
+                (size_t)(kbx_offset + i * stride_row_x + kbx_pf) * ggml_cuda_type_traits<type>::bs;
+            RowsPrefetchL2((const char*)vx + off);
+          }
         }
       }
     }
@@ -359,8 +396,10 @@ __launch_bounds__(RowsWarps(type, RowsDeviceTable(), small_k, halve_iters) *
     for (int j = 0; j < ncols; ++j) {
 #pragma unroll
       for (int i = 0; i < rows_per_cuda_block; ++i) {
-        tmp[j][i] += vec_dot_q_cuda(vx, &y[j * stride_col_y + kby],
-                                    kbx_offset + i * stride_row_x + kbx, kqs);
+        if (uint32_t(row0 + i) < nrows_x) {
+          tmp[j][i] += vec_dot_q_cuda(vx, &y[j * stride_col_y + kby],
+                                      kbx_offset + i * stride_row_x + kbx, kqs);
+        }
       }
     }
   }
@@ -395,7 +434,7 @@ __launch_bounds__(RowsWarps(type, RowsDeviceTable(), small_k, halve_iters) *
       }
       tmp[j][i] = warp_reduce_sum<warp_size>(tmp[j][i]);
 
-      if (threadIdx.x == i && (rows_per_cuda_block == 1 || uint32_t(row0 + i) < stride_col_dst)) {
+      if (threadIdx.x == i && uint32_t(row0 + i) < nrows_x) {
         dst[j * stride_col_dst + i] = tmp[j][i];
       }
     }
@@ -413,6 +452,11 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
 
 bool RowsType(ggml_type type) {
   switch (type) {
+    case GGML_TYPE_Q4_0:
+    case GGML_TYPE_Q4_1:
+    case GGML_TYPE_Q5_0:
+    case GGML_TYPE_Q5_1:
+    case GGML_TYPE_IQ4_NL:
     case GGML_TYPE_Q2_K:
     case GGML_TYPE_IQ2_XXS:
     case GGML_TYPE_Q8_0:
@@ -473,7 +517,7 @@ void LaunchRows(const RowsArgs& a, RowsTable table, int warp_size, cudaStream_t 
   const ggml_cuda_kernel_launch_params params(block_nums, block_dims, 0, stream);
   ggml_cuda_kernel_launch(
       MulMatVecQRowsKernel<type, ncols, small_k, halve_iters, per_token>, params, a.vx, a.vy, a.ids,
-      a.dst, static_cast<uint32_t>(a.ncols_x), nchannels_y_fd,
+      a.dst, static_cast<uint32_t>(a.ncols_x), static_cast<uint32_t>(a.nrows_x), nchannels_y_fd,
       static_cast<uint32_t>(a.stride_row_x), static_cast<uint32_t>(a.stride_col_y),
       static_cast<uint32_t>(a.stride_col_dst), channel_ratio_fd,
       static_cast<uint32_t>(a.stride_channel_x), static_cast<uint32_t>(a.stride_channel_y),
@@ -517,18 +561,10 @@ void SwitchColumns(const RowsArgs& a, bool per_token, RowsTable table, int warp_
   }
 }
 
-// mul_mat_vec_q_switch_ncols_dst's one-column case (mmvq.cu:1068-1130):
-// the small-K and halved-iteration choices as ncols_dst = 1 makes them.
-template <ggml_type type>
-void LaunchType(const RowsArgs& a, bool per_token, int cc, int warp_size, cudaStream_t stream) {
-  const RowsTable table = RowsHostTable(cc);
-  constexpr int qk = ggml_cuda_type_traits<type>::qk;
-  constexpr int qi = ggml_cuda_type_traits<type>::qi;
-  constexpr int vdr = RowsVdr(type);
-  const int blocks_per_row_x = a.ncols_x / qk;
-  const int blocks_per_iter_1warp = vdr * warp_size / qi;
-
-  // should_use_small_k(1)
+// Pinned should_use_small_k(1); shared by the original MMVQ read-footprint
+// plan and our guarded row-invariant launch, so eligibility cannot drift.
+bool SmallK(ggml_type type, RowsTable table, int cc, int blocks_per_row_x,
+            int blocks_per_iter_1warp) {
   bool small_k = false;
   {
     const int nwarps = RowsWarps(type, table, false, false);
@@ -551,6 +587,21 @@ void LaunchType(const RowsArgs& a, bool per_token, int cc, int warp_size, cudaSt
       small_k = false;
     }
   }
+  return small_k;
+}
+
+// mul_mat_vec_q_switch_ncols_dst's one-column case (mmvq.cu:1068-1130):
+// the small-K and halved-iteration choices as ncols_dst = 1 makes them.
+template <ggml_type type>
+void LaunchType(const RowsArgs& a, bool per_token, int cc, int warp_size, cudaStream_t stream) {
+  const RowsTable table = RowsHostTable(cc);
+  constexpr int qk = ggml_cuda_type_traits<type>::qk;
+  constexpr int qi = ggml_cuda_type_traits<type>::qi;
+  constexpr int vdr = RowsVdr(type);
+  const int blocks_per_row_x = a.ncols_x / qk;
+  const int blocks_per_iter_1warp = vdr * warp_size / qi;
+
+  const bool small_k = SmallK(type, table, cc, blocks_per_row_x, blocks_per_iter_1warp);
   // should_halve_iters: the GB10's wider block, never with ids.
   bool halve_iters = false;
   if (table == kRowsGb10 && !per_token) {
@@ -576,6 +627,21 @@ void LaunchType(const RowsArgs& a, bool per_token, int cc, int warp_size, cudaSt
 void LaunchSwitchType(ggml_type type, const RowsArgs& a, bool per_token, int cc, int warp_size,
                       cudaStream_t stream) {
   switch (type) {
+    case GGML_TYPE_Q4_0:
+      LaunchType<GGML_TYPE_Q4_0>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_Q4_1:
+      LaunchType<GGML_TYPE_Q4_1>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_Q5_0:
+      LaunchType<GGML_TYPE_Q5_0>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_Q5_1:
+      LaunchType<GGML_TYPE_Q5_1>(a, per_token, cc, warp_size, stream);
+      break;
+    case GGML_TYPE_IQ4_NL:
+      LaunchType<GGML_TYPE_IQ4_NL>(a, per_token, cc, warp_size, stream);
+      break;
     case GGML_TYPE_Q8_0:
       LaunchType<GGML_TYPE_Q8_0>(a, per_token, cc, warp_size, stream);
       break;
@@ -608,7 +674,101 @@ void LaunchSwitchType(ggml_type type, const RowsArgs& a, bool per_token, int cc,
   }
 }
 
+template <ggml_type type>
+int OriginalRowBlock(int k, int cc, int warp_size) {
+  const RowsTable table = RowsHostTable(cc);
+  const int blocks = k / ggml_cuda_type_traits<type>::qk;
+  const int per_warp = RowsVdr(type) * warp_size / ggml_cuda_type_traits<type>::qi;
+  const bool small = SmallK(type, table, cc, blocks, per_warp);
+  // A halved-iteration GB10 launch is considered only when !small_k,
+  // whose row block is one regardless of the promoted warp count.
+  return RowsPerBlock(table, small, RowsWarps(type, table, small, false));
+}
+
 }  // namespace
+
+int MmvqRowsPerBlock(const LaunchContext& launch, const ggml_tensor* node) {
+  const auto& device = ggml_cuda_info().devices[launch.device()];
+  const auto* w = node->src[0];
+  const bool routed = node->op == GGML_OP_MUL_MAT_ID;
+  const auto columns = routed ? node->ne[2] : node->src[1]->ne[1];
+  if (columns > 1) {
+    // The pinned dedicated MoE multi-token kernel uses two rows; dense
+    // ncols2..8 uses two for generic/Turing/GB10 tables, one for RDNA.
+    const auto table = RowsHostTable(device.cc);
+    return routed || table == kRowsGeneric || table == kRowsGcn || table == kRowsTuring ||
+                   table == kRowsGb10
+               ? 2
+               : 1;
+  }
+  switch (w->type) {
+    case GGML_TYPE_Q4_0:
+      return OriginalRowBlock<GGML_TYPE_Q4_0>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_Q4_1:
+      return OriginalRowBlock<GGML_TYPE_Q4_1>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_Q5_0:
+      return OriginalRowBlock<GGML_TYPE_Q5_0>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_Q5_1:
+      return OriginalRowBlock<GGML_TYPE_Q5_1>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_IQ4_NL:
+      return OriginalRowBlock<GGML_TYPE_IQ4_NL>(static_cast<int>(w->ne[0]), device.cc,
+                                                device.warp_size);
+    case GGML_TYPE_Q8_0:
+      return OriginalRowBlock<GGML_TYPE_Q8_0>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_Q2_K:
+      return OriginalRowBlock<GGML_TYPE_Q2_K>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_IQ2_XXS:
+      return OriginalRowBlock<GGML_TYPE_IQ2_XXS>(static_cast<int>(w->ne[0]), device.cc,
+                                                 device.warp_size);
+    case GGML_TYPE_MXFP4:
+      return OriginalRowBlock<GGML_TYPE_MXFP4>(static_cast<int>(w->ne[0]), device.cc,
+                                               device.warp_size);
+    case GGML_TYPE_Q4_K:
+      return OriginalRowBlock<GGML_TYPE_Q4_K>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_Q5_K:
+      return OriginalRowBlock<GGML_TYPE_Q5_K>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_Q6_K:
+      return OriginalRowBlock<GGML_TYPE_Q6_K>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_IQ2_XS:
+      return OriginalRowBlock<GGML_TYPE_IQ2_XS>(static_cast<int>(w->ne[0]), device.cc,
+                                                device.warp_size);
+    case GGML_TYPE_IQ3_XXS:
+      return OriginalRowBlock<GGML_TYPE_IQ3_XXS>(static_cast<int>(w->ne[0]), device.cc,
+                                                 device.warp_size);
+    case GGML_TYPE_Q2_0:
+      return OriginalRowBlock<GGML_TYPE_Q2_0>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_Q3_K:
+      return OriginalRowBlock<GGML_TYPE_Q3_K>(static_cast<int>(w->ne[0]), device.cc,
+                                              device.warp_size);
+    case GGML_TYPE_IQ1_S:
+      return OriginalRowBlock<GGML_TYPE_IQ1_S>(static_cast<int>(w->ne[0]), device.cc,
+                                               device.warp_size);
+    case GGML_TYPE_IQ2_S:
+      return OriginalRowBlock<GGML_TYPE_IQ2_S>(static_cast<int>(w->ne[0]), device.cc,
+                                               device.warp_size);
+    case GGML_TYPE_IQ3_S:
+      return OriginalRowBlock<GGML_TYPE_IQ3_S>(static_cast<int>(w->ne[0]), device.cc,
+                                               device.warp_size);
+    case GGML_TYPE_IQ4_XS:
+      return OriginalRowBlock<GGML_TYPE_IQ4_XS>(static_cast<int>(w->ne[0]), device.cc,
+                                                device.warp_size);
+    case GGML_TYPE_NVFP4:
+      return OriginalRowBlock<GGML_TYPE_NVFP4>(static_cast<int>(w->ne[0]), device.cc,
+                                               device.warp_size);
+    default:
+      return 0;  // the ordinary plan rejects unknown geometry
+  }
+}
 
 std::expected<std::uint64_t, KernelFailure> PlanMulMatVecQRows(const LaunchContext& launch,
                                                                const ggml_tensor* node) {

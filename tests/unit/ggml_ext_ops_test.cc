@@ -198,8 +198,14 @@ class GgmlExtOpsTest : public ::testing::Test {
   template <typename T = float>
   ggml_tensor* Place(ggml_tensor* tensor, const std::vector<T>& data = {}) {
     const std::size_t size = ggml_nbytes(tensor);
-    const std::uint64_t address = Allocate(size);
+    const std::uint64_t address =
+        Allocate(size + (ggml_is_quantized(tensor->type) ? ggml_row_size(tensor->type, 512) : 0));
     TensorArena::Bind(tensor, address);
+    if (ggml_is_quantized(tensor->type)) {
+      EXPECT_EQ(
+          cudaMemset(reinterpret_cast<void*>(address + size), 0, ggml_row_size(tensor->type, 512)),
+          cudaSuccess);
+    }
     if (!data.empty()) {
       EXPECT_EQ(data.size() * sizeof(T), size);
       EXPECT_EQ(cudaMemcpy(reinterpret_cast<void*>(address), data.data(), size,  // NOLINT
@@ -278,6 +284,77 @@ double QuantizedBound(ggml_type type, QuantMulMatPath path, int cc) {
              : kMulMatNmse;
 }
 
+TEST_F(GgmlExtOpsTest, ProductPlansRefuseCombinedWeightBlockOffsets) {
+  for (const ggml_type type : kg::QuantizedWeightTypes()) {
+    SCOPED_TRACE(ggml_type_name(type));
+    auto arena = TensorArena::Create(64).value();
+    auto* context = arena.context();
+    std::uint64_t next = 1ULL << 44;
+    const auto bound = [&next](ggml_tensor* tensor) {
+      TensorArena::Bind(tensor, next);
+      next += 1ULL << 42;
+      return tensor;
+    };
+    for (const bool routed : {false, true}) {
+      for (const bool broadcast : {false, true}) {
+        auto* w = bound(ggml_new_tensor_3d(context, type, 512, 128, 3));
+        // Each block stride fits an int, but selecting expert/channel 2
+        // wraps its combined signed block offset past INT32_MAX.
+        w->nb[2] = (1ULL << 30) * ggml_type_size(type);
+        w->nb[3] = w->nb[2];  // unused sample stride stays representable
+        auto* input = bound(ggml_new_tensor_3d(context, GGML_TYPE_F32, 512,
+                                               routed && !broadcast ? 2 : 1, routed ? 1 : 3));
+        auto* ids = bound(ggml_new_tensor_2d(context, GGML_TYPE_I32, 2, 1));
+        auto* node = bound(routed ? ggml_mul_mat_id(context, w, input, ids)
+                                  : ggml_mul_mat(context, w, input));
+        EXPECT_FALSE((routed ? kg::CheckMulMatIdQ(node) : kg::CheckMulMatQ(node)).has_value());
+        EXPECT_FALSE(kg::PlanMulMatVecQ(launch(), node).has_value());
+        EXPECT_FALSE(kg::PlanMulMatVecQRows(launch(), node).has_value());
+        EXPECT_FALSE(kg::PlanMulMatQ(launch(), node).has_value());
+        // These are planning-only calls over fictional addresses. A
+        // rejected product must never try to submit either operand.
+        EXPECT_FALSE(launch().faulted());
+        w->nb[2] = ((1ULL << 29) * ggml_type_size(type));
+        w->nb[3] = w->nb[2];
+        EXPECT_TRUE(kg::PlanMulMatVecQ(launch(), node).has_value());
+      }
+    }
+  }
+}
+
+TEST_F(GgmlExtOpsTest, OrdinaryMmvqRefusesRoundedWeightRowsBeforeSubmission) {
+  for (const ggml_type type : kg::QuantizedWeightTypes()) {
+    auto arena = TensorArena::Create(64).value();
+    for (const bool routed : {false, true}) {
+      for (const std::int64_t columns : {1, 2, 4, 8}) {
+        auto* w = Place(ggml_new_tensor_3d(arena.context(), type, 512, 129, routed ? 2 : 1));
+        auto* x = Place(ggml_new_tensor_3d(arena.context(), GGML_TYPE_F32, 512,
+                                           routed ? 1 : columns, routed ? columns : 1));
+        auto* ids = routed
+                        ? Place(ggml_new_tensor_2d(arena.context(), GGML_TYPE_I32, 2, columns),
+                                std::vector<std::int32_t>(static_cast<std::size_t>(2 * columns), 0))
+                        : nullptr;
+        auto* node = Place(routed ? ggml_mul_mat_id(arena.context(), w, x, ids)
+                                  : ggml_mul_mat(arena.context(), w, x));
+        const int rpb = kg::MmvqRowsPerBlock(launch(), node);
+        if (routed && columns > 1) {
+          EXPECT_EQ(rpb, 2);  // pinned dedicated multi-token MoE geometry
+        }
+        ASSERT_GT(rpb, 0);
+        if (rpb == 1) {
+          continue;  // this selected one-row launch has no rounded read
+        }
+        ASSERT_EQ(cudaMemset(node->data, 0xAB, ggml_nbytes(node)), cudaSuccess);
+        EXPECT_EQ(FailedCode(kg::PlanMulMatVecQ(launch(), node)), KernelError::kRejected);
+        EXPECT_EQ(FailedCode(kg::MulMatVecQ(launch(), node)), KernelError::kRejected);
+        const auto untouched = Download<std::uint8_t>(node);
+        EXPECT_TRUE(std::ranges::all_of(untouched, [](std::uint8_t b) { return b == 0xAB; }));
+        EXPECT_FALSE(launch().faulted());
+      }
+    }
+  }
+}
+
 TEST_F(GgmlExtOpsTest, QuantizedProductsMatchTheReferenceAsUpstreamRoutesThem) {
   const int cc = ComputeCapability();
   // DeepSeek V4 Flash UD-Q2_K_XL's weight types, with their projections' k:
@@ -287,21 +364,27 @@ TEST_F(GgmlExtOpsTest, QuantizedProductsMatchTheReferenceAsUpstreamRoutesThem) {
     ggml_type type;
     std::int64_t k;
   };
-  const std::array<Case, 9> cases = {{{GGML_TYPE_Q8_0, 4096},
-                                      {GGML_TYPE_Q2_K, 2048},
-                                      {GGML_TYPE_IQ2_XXS, 4096},
-                                      {GGML_TYPE_Q4_K, 4096},
-                                      {GGML_TYPE_Q5_K, 4096},
-                                      {GGML_TYPE_Q6_K, 2048},
-                                      {GGML_TYPE_IQ2_XS, 4096},
-                                      {GGML_TYPE_IQ3_XXS, 2048},
-                                      {GGML_TYPE_MXFP4, 2048}}};
+  const std::array<Case, 14> cases = {{{GGML_TYPE_Q4_0, 704},
+                                       {GGML_TYPE_Q4_1, 2816},
+                                       {GGML_TYPE_Q5_0, 2816},
+                                       {GGML_TYPE_Q5_1, 704},
+                                       {GGML_TYPE_IQ4_NL, 2816},
+                                       {GGML_TYPE_Q8_0, 4096},
+                                       {GGML_TYPE_Q2_K, 2048},
+                                       {GGML_TYPE_IQ2_XXS, 4096},
+                                       {GGML_TYPE_Q4_K, 4096},
+                                       {GGML_TYPE_Q5_K, 4096},
+                                       {GGML_TYPE_Q6_K, 2048},
+                                       {GGML_TYPE_IQ2_XS, 4096},
+                                       {GGML_TYPE_IQ3_XXS, 2048},
+                                       {GGML_TYPE_MXFP4, 2048}}};
   constexpr std::int64_t kRowsOut = 256;
   for (const Case& test : cases) {
     const std::string type = ggml_type_name(test.type);
     const Quantized weights = Quantize(test.type, test.k, kRowsOut, 11);
-    for (const std::int64_t columns : {1, 5, 48}) {
+    for (const std::int64_t columns : {1, 2, 4, 16, 48}) {
       ggml_tensor* w = Place(ggml_new_tensor_2d(c(), test.type, test.k, kRowsOut), weights.bytes);
+      kg::MarkRowPaddingReadable(w);
       const std::vector<float> x = Normal(12, static_cast<std::size_t>(test.k * columns));
       ggml_tensor* input = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, test.k, columns), x);
       ggml_tensor* product = Place(ggml_mul_mat(c(), w, input));
@@ -347,7 +430,10 @@ TEST_F(GgmlExtOpsTest, ExpertProductsMatchTheReferenceAsUpstreamRoutesThem) {
     std::int64_t k;
     bool broadcast;
   };
-  const std::array<Case, 5> cases = {{{GGML_TYPE_IQ2_XXS, 4096, true},
+  const std::array<Case, 8> cases = {{{GGML_TYPE_Q4_1, 2816, true},
+                                      {GGML_TYPE_Q5_0, 2816, true},
+                                      {GGML_TYPE_Q5_1, 704, false},
+                                      {GGML_TYPE_IQ2_XXS, 4096, true},
                                       {GGML_TYPE_Q2_K, 2048, false},
                                       {GGML_TYPE_IQ2_XS, 4096, true},
                                       {GGML_TYPE_IQ3_XXS, 2048, false},
@@ -359,6 +445,7 @@ TEST_F(GgmlExtOpsTest, ExpertProductsMatchTheReferenceAsUpstreamRoutesThem) {
                                std::to_string(tokens) + (test.broadcast ? " (broadcast)" : "");
       ggml_tensor* w =
           Place(ggml_new_tensor_3d(c(), test.type, test.k, kOut, kExperts), weights.bytes);
+      kg::MarkRowPaddingReadable(w);
       const std::int64_t rows_in = test.broadcast ? 1 : kUsed;
       const std::vector<float> x = Normal(22, static_cast<std::size_t>(test.k * rows_in * tokens));
       ggml_tensor* input =
@@ -460,7 +547,7 @@ TEST_F(GgmlExtOpsTest, PairedExpertPreparationMatchesSeparateProductsExactly) {
         auto quantized = Quantize(type, kInner, kOut * kExperts, static_cast<unsigned>(51 + wi));
         auto* w = ggml_new_tensor_3d(c(), type, kInner, kOut, kExperts);
         const std::size_t slice = w->nb[2];
-        const std::size_t unit = std::lcm(ggml_type_size(type), std::size_t{16});
+        const std::size_t unit = std::lcm(ggml_type_size(type), std::size_t{256});
         ASSERT_NE(unit, 0U);
         const std::size_t stride = ((slice + (3000 * wi) + unit - 1) / unit) * unit;
         w->nb[2] = stride;
@@ -886,8 +973,8 @@ TEST_F(GgmlExtOpsTest, QuantizedChecksRefuseWhatTheLaunchersWouldNotTake) {
   ggml_tensor* short_x = ggml_view_2d(c(), x, 4064, 2, x->nb[1], 0);
   ggml_tensor* short_rows = Place(ggml_mul_mat(c(), short_w, short_x));
   EXPECT_EQ(FailedCode(kg::CheckMulMatQ(short_rows)), KernelError::kRejected);
-  ggml_tensor* q4_1 = Place(ggml_new_tensor_2d(c(), GGML_TYPE_Q4_1, 4096, 32));
-  EXPECT_EQ(FailedCode(kg::CheckMulMatQ(Place(ggml_mul_mat(c(), q4_1, x)))),
+  ggml_tensor* iq1_m = Place(ggml_new_tensor_2d(c(), GGML_TYPE_IQ1_M, 4096, 32));
+  EXPECT_EQ(FailedCode(kg::CheckMulMatQ(Place(ggml_mul_mat(c(), iq1_m, x)))),
             KernelError::kRejected);
   ggml_tensor* x16 = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 4096, 2));
   EXPECT_EQ(FailedCode(kg::CheckMulMatQ(Place(ggml_mul_mat(c(), w, x16)))), KernelError::kRejected);
@@ -1353,6 +1440,25 @@ TEST_F(GgmlExtOpsTest, RopeWithOffsetsYarnAndSectionsMatchesTheReference) {
 }
 
 // ---- Gathers and scatters ----
+
+TEST_F(GgmlExtOpsTest, LegacyGetRowsDequantizesAllApprovedFormats) {
+  constexpr std::int64_t k = 2816, rows = 8;
+  const std::vector<std::int32_t> indices = {7, 0, 3, 3};
+  for (const ggml_type type :
+       {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_IQ4_NL}) {
+    const auto quantized = Quantize(type, k, rows, 2816);
+    auto* w = Place(ggml_new_tensor_2d(c(), type, k, rows), quantized.bytes);
+    auto* ids = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, 4), indices);
+    auto* gathered = Place(ggml_get_rows(c(), w, ids));
+    Launched(kg::GetRowsExt(launch(), gathered), ggml_type_name(type));
+    std::vector<double> want;
+    for (const auto index : indices) {
+      want.insert(want.end(), quantized.values.begin() + index * k,
+                  quantized.values.begin() + (index + 1) * k);
+    }
+    ExpectNmse(Download(gathered), want, 1e-10, ggml_type_name(type));
+  }
+}
 
 TEST_F(GgmlExtOpsTest, GetRowsDequantizesAndSetRowsWritesExactly) {
   // DeepSeek V4's Q5_K token embedding, and its hash-routing table of I32
