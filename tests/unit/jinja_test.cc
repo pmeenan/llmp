@@ -13,6 +13,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -20,6 +22,7 @@
 #include <vector>
 
 #include "base/json.h"
+#include "chat/jinja_internal.h"
 #include "expected_error.h"
 #include "tokenizer_fixtures.h"
 
@@ -421,6 +424,139 @@ TEST(JinjaBounds, CancellationStopsARendering) {
   EXPECT_EQ(asked, 3U);
   // Without a cancellation the same small rendering completes, as before.
   EXPECT_EQ(Text("{% for i in range(1000) %}{% endfor %}ok"), "ok");
+}
+
+// Cancellation is charged inside a single recursive comparison, after the
+// operands already exist. Distinct containers share equal large strings;
+// neither container nor string identity may bypass comparison accounting.
+TEST(JinjaBounds, CompoundComparisonsPollCancellation) {
+  const auto text =
+      jinja::Value::String(jinja::MakeStr(nullptr, std::string(1U << 20U, 'x'), true));
+  auto left = std::make_shared<jinja::List>();
+  auto right = std::make_shared<jinja::List>();
+  left->items.assign(32, text);
+  right->items.assign(32, text);
+  const auto a = jinja::Value::MakeList(left);
+  const auto b = jinja::Value::MakeList(right);
+  auto nested_left = std::make_shared<jinja::List>();
+  auto nested_right = std::make_shared<jinja::List>();
+  nested_left->items = {a};
+  nested_right->items = {b};
+  auto mapping_left = std::make_shared<jinja::Dict>();
+  auto mapping_right = std::make_shared<jinja::Dict>();
+  mapping_left->members.emplace_back("values", a);
+  mapping_right->members.emplace_back("values", b);
+  for (int which = 0; which < 4; ++which) {
+    std::size_t asked = 0;
+    const std::function<bool()> third = [&asked] { return ++asked >= 3; };
+    jinja::Arena arena({}, {.cancelled = &third});
+    if (which == 0) {
+      EXPECT_FALSE(jinja::Equal(a, a, arena));
+    } else if (which == 1) {
+      EXPECT_FALSE(jinja::Equal(a, b, arena));
+    } else if (which == 2) {
+      const auto less = jinja::Less(jinja::Value::MakeList(nested_left),
+                                    jinja::Value::MakeList(nested_right), arena);
+      ASSERT_TRUE(less.has_value());
+      EXPECT_FALSE(*less);
+    } else {
+      EXPECT_FALSE(jinja::Equal(jinja::Value::MakeDict(mapping_left),
+                                jinja::Value::MakeDict(mapping_right), arena));
+    }
+    EXPECT_TRUE(arena.cancelled()) << which;
+    EXPECT_EQ(asked, 3U) << which;
+    EXPECT_LE(arena.work(), (3 * jinja::kCancelWorkBytes) + (1U << 20U) + 64U) << which;
+  }
+}
+
+// JSON integer texts can be as large as strings; repeating a bigint must
+// charge its decimal comparison, rather than only the value header.
+TEST(JinjaBounds, BigIntegerComparisonsPollCancellation) {
+  const auto digits =
+      jinja::Value::BigInt(jinja::MakeStr(nullptr, std::string(1U << 20U, '9'), false));
+  auto left = std::make_shared<jinja::List>();
+  auto right = std::make_shared<jinja::List>();
+  left->items.assign(32, digits);
+  right->items.assign(32, digits);
+  std::size_t asked = 0;
+  const std::function<bool()> third = [&asked] { return ++asked >= 3; };
+  jinja::Arena arena({}, {.cancelled = &third});
+  EXPECT_FALSE(jinja::Equal(jinja::Value::MakeList(left), jinja::Value::MakeList(right), arena));
+  EXPECT_TRUE(arena.cancelled());
+  EXPECT_EQ(asked, 3U);
+  EXPECT_LE(arena.work(), (3 * jinja::kCancelWorkBytes) + (1U << 20U) + 64U);
+  jinja::Arena exact({}, {.max_work_bytes = 18});
+  const auto small = jinja::Value::BigInt(jinja::MakeStr(nullptr, "99", false));
+  EXPECT_TRUE(jinja::Equal(small, small, exact));
+  EXPECT_TRUE(exact.ok());
+  EXPECT_EQ(exact.work(), 18U);
+  jinja::Arena short_budget({}, {.max_work_bytes = 17});
+  EXPECT_FALSE(jinja::Equal(small, small, short_budget));
+  EXPECT_FALSE(short_budget.ok());
+}
+
+TEST(JinjaBounds, RecursiveComparisonCancellationIsReported) {
+  for (const std::string_view comparison :
+       {"a == b", "a < b", "a in [b]", "{'values': a} == {'values': b}"}) {
+    std::size_t asked = 0;
+    const std::function<bool()> third = [&asked] { return ++asked >= 3; };
+    const std::string source =
+        "{% set s = 'x' * 131072 %}{% set a = [s] * 128 %}{% set b = [s] * 128 %}{{ " +
+        std::string(comparison) + " }}";
+    const auto r = Render(source, {}, {}, {.cancelled = &third});
+    EXPECT_EQ(Failed(r, &jinja::Error::code), jinja::Code::kCancelled) << comparison;
+    EXPECT_EQ(asked, 3U) << comparison;
+  }
+}
+
+TEST(JinjaBounds, MemberLookupsPollCancellation) {
+  const std::string key(jinja::kCancelWorkBytes, 'x');
+  jinja::Namespace names;
+  // Three same-length misses, each scanning a key-sized name.
+  for (const char c : std::string_view("abc")) {
+    names.members.emplace_back(std::string(key.size(), c), jinja::Value::Int(1));
+  }
+  std::size_t asked = 0;
+  const std::function<bool()> third = [&asked] { return ++asked >= 3; };
+  jinja::Arena arena({}, {.cancelled = &third});
+  EXPECT_EQ(names.Find(key, arena), nullptr);
+  EXPECT_TRUE(arena.cancelled());
+  EXPECT_EQ(asked, 3U);
+  EXPECT_EQ(arena.work(), 3 * (jinja::kEntryWork + key.size()));
+  // An indexed mapping charges its hash/compare before touching the key.
+  jinja::Dict indexed;
+  for (int i = 0; i < 17; ++i) {
+    indexed.members.emplace_back(std::to_string(i), jinja::Value::Int(i));
+  }
+  indexed.BuildIndex();
+  const std::function<bool()> stop = [] { return true; };
+  jinja::Arena hashed({}, {.cancelled = &stop});
+  EXPECT_EQ(indexed.Find(key, hashed), nullptr);
+  EXPECT_TRUE(hashed.cancelled());
+  EXPECT_EQ(hashed.work(), jinja::kEntryWork + (2 * key.size()));
+}
+
+TEST(JinjaBounds, IncrementalComparisonsKeepBudgetsAndNaNSemantics) {
+  auto list = std::make_shared<jinja::List>();
+  list->items = {jinja::Value::String(jinja::MakeStr(nullptr, "xx", true))};
+  const auto value = jinja::Value::MakeList(list);
+  jinja::Arena exact({}, {.max_work_bytes = 34});
+  EXPECT_TRUE(jinja::Equal(value, value, exact));
+  EXPECT_TRUE(exact.ok());
+  EXPECT_EQ(exact.work(), 34U);
+  jinja::Arena short_budget({}, {.max_work_bytes = 33});
+  EXPECT_FALSE(jinja::Equal(value, value, short_budget));
+  EXPECT_FALSE(short_budget.ok());
+  EXPECT_FALSE(short_budget.cancelled());
+  EXPECT_EQ(short_budget.work(), 34U);
+  list->items = {jinja::Value::Float(std::numeric_limits<double>::quiet_NaN())};
+  jinja::Arena ordinary({}, {});
+  EXPECT_FALSE(jinja::Equal(value, value, ordinary));
+  const auto less = jinja::Less(value, value, ordinary);
+  ASSERT_TRUE(less.has_value());
+  EXPECT_FALSE(*less);
+  EXPECT_TRUE(ordinary.ok());
+  EXPECT_EQ(Text("{{ [1, ['xx']] == [1, ['xx']] }} {{ [1, ['xx']] < [1, ['xy']] }}"), "True True");
 }
 
 // A loop's own copy of what it iterates (a filtered list) is held while it

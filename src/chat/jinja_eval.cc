@@ -95,13 +95,16 @@ struct Scope final : Object {
   std::shared_ptr<const Scope> parent;
   std::vector<std::pair<std::string, Value>> vars;
 
-  // A variable, through the enclosing scopes; null when none has it. `work`
-  // grows by what the searches cost (FindMember): a scope may hold as many
+  // A variable, through the enclosing scopes; null when none has it. Each
+  // search charges the arena (FindMember): a scope may hold as many
   // variables as the template names.
-  const Value* Find(std::string_view name, std::uint64_t& work) const {
+  const Value* Find(std::string_view name, Arena& arena) const {
     for (const Scope* s = this; s != nullptr; s = s->parent.get()) {
-      if (const Value* v = FindMember(s->vars, name, work)) {
+      if (const Value* v = FindMember(s->vars, name, arena)) {
         return v;
+      }
+      if (!arena.ok()) {
+        return nullptr;
       }
     }
     return nullptr;
@@ -109,13 +112,16 @@ struct Scope final : Object {
   // Sets a variable of this scope, its search charged; false when that
   // reaches a bound.
   bool Set(std::string_view name, Value v, Arena& arena) {
-    std::uint64_t work = 0;
-    if (Value* existing = FindMember(vars, name, work)) {
+    Value* existing = FindMember(vars, name, arena);
+    if (!arena.ok()) {
+      return false;
+    }
+    if (existing != nullptr) {
       *existing = std::move(v);
     } else {
       vars.emplace_back(std::string(name), std::move(v));
     }
-    return arena.Work(work);
+    return true;
   }
 };
 
@@ -228,26 +234,12 @@ class Renderer {
     return Fail(arena_.cancelled() ? Code::kCancelled : Code::kLimit, arena_.reason());
   }
 
-  // Lookups by name, their searches charged (FindMember). A bound reached
-  // fails the next step; loops without one check arena_.ok().
+  // Lookups charge each comparison and stop on cancellation or a bound.
   const Value* FindIn(const Scope& scope, std::string_view name) {
-    std::uint64_t work = 0;
-    const Value* v = scope.Find(name, work);
-    (void)arena_.Work(work);
-    return v;
+    return scope.Find(name, arena_);
   }
-  const Value* FindIn(const Dict& d, std::string_view key) {
-    std::uint64_t work = 0;
-    const Value* v = d.Find(key, work);
-    (void)arena_.Work(work);
-    return v;
-  }
-  Value* FindIn(Namespace& ns, std::string_view key) {
-    std::uint64_t work = 0;
-    Value* v = ns.Find(key, work);
-    (void)arena_.Work(work);
-    return v;
-  }
+  const Value* FindIn(const Dict& d, std::string_view key) { return d.Find(key, arena_); }
+  Value* FindIn(Namespace& ns, std::string_view key) { return ns.Find(key, arena_); }
   // What a call's arguments cost each filter, test or method that reads
   // them: Args::Get searches the keywords by name.
   bool ChargeArgs(const Args& args) {
@@ -268,16 +260,10 @@ class Renderer {
   // step).
   // Eq's result is meaningless once a bound is reached: callers check
   // arena_.ok(), and Run refuses a rendering that reached one.
-  bool Eq(const Value& a, const Value& b) {
-    std::uint64_t work = 0;
-    const bool equal = Equal(a, b, work, arena_.remaining_work());
-    (void)arena_.Work(work);
-    return equal;
-  }
+  bool Eq(const Value& a, const Value& b) { return Equal(a, b, arena_); }
   std::expected<bool, Error> Lt(const Value& a, const Value& b) {
-    std::uint64_t work = 0;
-    auto less = Less(a, b, work, arena_.remaining_work());
-    if (!arena_.Work(work)) {
+    auto less = Less(a, b, arena_);
+    if (!arena_.ok()) {
       return Bound();
     }
     return less;
@@ -869,9 +855,8 @@ class Renderer {
           }
           // A later duplicate key replaces the earlier: each key searches
           // those before it, charged (FindMember).
-          std::uint64_t work = 0;
-          Value* existing = FindMember(members, k->str().text, work);
-          if (!arena_.Work(work)) {
+          Value* existing = FindMember(members, k->str().text, arena_);
+          if (!arena_.ok()) {
             return Bound();
           }
           if (existing != nullptr) {

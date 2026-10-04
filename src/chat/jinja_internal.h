@@ -170,17 +170,21 @@ class Held {
 // arguments): about what reading this many bytes costs.
 inline constexpr std::uint64_t kEntryWork = 4;
 
-// A linear search of (name, value) pairs for `key`: `work` grows by
+// A linear search of (name, value) pairs for `key`, charging the arena
 // kEntryWork an entry passed and the bytes of every name of the key's
 // length compared, so a search meets the work bound in about the time it
 // takes however many names, or how long a key, it compares.
 template <typename Members>
-auto FindMember(Members& members, std::string_view key, std::uint64_t& work)
+auto FindMember(Members& members, std::string_view key, Arena& arena)
     -> decltype(&members.front().second) {
   for (auto& [k, v] : members) {
-    work += kEntryWork;
+    if (!arena.Work(kEntryWork)) {
+      return nullptr;
+    }
     if (k.size() == key.size()) {
-      work += key.size();
+      if (!arena.Work(key.size())) {
+        return nullptr;
+      }
       if (k == key) {
         return &v;
       }
@@ -278,9 +282,9 @@ struct Dict final : Object {
   std::unordered_map<std::string_view, std::size_t> index;
 
   void BuildIndex();
-  // `work` grows by what the lookup costs (FindMember; the key's bytes
-  // hashed for an indexed mapping).
-  const Value* Find(std::string_view key, std::uint64_t& work) const;
+  // Charges each lookup before its comparisons (FindMember; the key's
+  // bytes hashed for an indexed mapping).
+  const Value* Find(std::string_view key, Arena& arena) const;
 };
 
 struct Namespace final : Object {
@@ -292,7 +296,7 @@ struct Namespace final : Object {
   ~Namespace() override;
 
   std::vector<std::pair<std::string, Value>> members;
-  Value* Find(std::string_view key, std::uint64_t& work);
+  Value* Find(std::string_view key, Arena& arena);
 };
 
 struct Loop;
@@ -635,14 +639,11 @@ std::expected<void, Error> AppendJson(const Value& v, const JsonOptions& options
                                       Arena& arena);
 
 bool Truthy(const Value& v);
-// Python's ==; `work` counts the bytes compared (16 a value, and the bytes
-// of strings). Past `budget` it stops early with a meaningless result: the
-// caller's charge of `work` then fails.
-bool Equal(const Value& a, const Value& b, std::uint64_t& work, std::uint64_t budget);
-// Python's <, or an error for unorderable kinds; `work` and `budget` as
-// for Equal.
-std::expected<bool, Error> Less(const Value& a, const Value& b, std::uint64_t& work,
-                                std::uint64_t budget);
+// Python's ==; charges each value and string comparison before scanning it.
+// A failed arena stops recursion with a meaningless result; callers refuse it.
+bool Equal(const Value& a, const Value& b, Arena& arena);
+// Python's <, or an error for unorderable kinds; charging as for Equal.
+std::expected<bool, Error> Less(const Value& a, const Value& b, Arena& arena);
 
 // Substring search in time linear in the text and the needle
 // (Knuth-Morris-Pratt), as Python's two-way search is: no search scans a

@@ -559,6 +559,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Jinja container comparisons and member lookups poll request cancellation
+  while scanning their values, including repeated references to large strings.
+
 - The cross SDK includes a pinned ARM shared GCC support runtime for
   cuBLAS, allowing CPU test discovery under qemu without changing the
   compiler or jitLLM's static C++ runtime.

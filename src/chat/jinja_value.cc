@@ -328,17 +328,20 @@ void Dict::BuildIndex() {
   }
 }
 
-const Value* Dict::Find(std::string_view key, std::uint64_t& work) const {
+const Value* Dict::Find(std::string_view key, Arena& arena) const {
   if (!index.empty()) {
-    work += kEntryWork + (2 * key.size());  // hashed, and compared where it matches
+    // Hashed, and compared where it matches.
+    if (!arena.Work(kEntryWork + (2 * key.size()))) {
+      return nullptr;
+    }
     const auto it = index.find(key);
     return it == index.end() ? nullptr : &members[it->second].second;
   }
-  return FindMember(members, key, work);
+  return FindMember(members, key, arena);
 }
 
-Value* Namespace::Find(std::string_view key, std::uint64_t& work) {
-  return FindMember(members, key, work);
+Value* Namespace::Find(std::string_view key, Arena& arena) {
+  return FindMember(members, key, arena);
 }
 
 // ------------------------------------------------------- deferred release
@@ -690,14 +693,18 @@ bool Truthy(const Value& v) {
   return false;
 }
 
-bool Equal(const Value& a, const Value& b, std::uint64_t& work, std::uint64_t budget) {
-  work += 16;
-  if (work > budget) {
+bool Equal(const Value& a, const Value& b, Arena& arena) {
+  if (!arena.Work(16)) {
     return false;
   }
   if (a.is_number() && b.is_number()) {
     if (a.kind() == Kind::kBigInt || b.kind() == Kind::kBigInt) {
-      return a.kind() == b.kind() && a.str().text == b.str().text;
+      if (a.kind() != b.kind()) {
+        return false;
+      }
+      const auto& x = a.str().text;
+      const auto& y = b.str().text;
+      return x.size() == y.size() && arena.Work(x.size()) && x == y;
     }
     if (a.kind() == Kind::kFloat || b.kind() == Kind::kFloat) {
       return a.number() == b.number();
@@ -717,8 +724,7 @@ bool Equal(const Value& a, const Value& b, std::uint64_t& work, std::uint64_t bu
       if (x.size() != y.size()) {
         return false;
       }
-      work += x.size();
-      return work <= budget && x == y;
+      return arena.Work(x.size()) && x == y;
     }
     case Kind::kList: {
       const List& x = a.list();
@@ -727,7 +733,7 @@ bool Equal(const Value& a, const Value& b, std::uint64_t& work, std::uint64_t bu
         return false;
       }
       for (std::size_t i = 0; i < x.items.size(); ++i) {
-        if (!Equal(x.items[i], y.items[i], work, budget)) {
+        if (!Equal(x.items[i], y.items[i], arena)) {
           return false;
         }
       }
@@ -740,11 +746,11 @@ bool Equal(const Value& a, const Value& b, std::uint64_t& work, std::uint64_t bu
         return false;
       }
       for (const auto& [k, v] : x.members) {
-        const Value* other = y.Find(k, work);
-        if (work > budget) {
+        const Value* other = y.Find(k, arena);
+        if (!arena.ok()) {
           return false;
         }
-        if (other == nullptr || !Equal(v, *other, work, budget)) {
+        if (other == nullptr || !Equal(v, *other, arena)) {
           return false;
         }
       }
@@ -759,10 +765,8 @@ bool Equal(const Value& a, const Value& b, std::uint64_t& work, std::uint64_t bu
   }
 }
 
-std::expected<bool, Error> Less(const Value& a, const Value& b, std::uint64_t& work,
-                                std::uint64_t budget) {
-  work += 16;
-  if (work > budget) {
+std::expected<bool, Error> Less(const Value& a, const Value& b, Arena& arena) {
+  if (!arena.Work(16)) {
     return false;
   }
   if (a.is_number() && b.is_number() && a.kind() != Kind::kBigInt && b.kind() != Kind::kBigInt) {
@@ -772,8 +776,7 @@ std::expected<bool, Error> Less(const Value& a, const Value& b, std::uint64_t& w
     return a.integer() < b.integer();
   }
   if (a.is_string() && b.is_string()) {
-    work += std::min(a.str().text.size(), b.str().text.size());
-    if (work > budget) {
+    if (!arena.Work(std::min(a.str().text.size(), b.str().text.size()))) {
       return false;
     }
     return Compare3(a.str().text, b.str().text) < 0;
@@ -782,8 +785,11 @@ std::expected<bool, Error> Less(const Value& a, const Value& b, std::uint64_t& w
     const List& x = a.list();
     const List& y = b.list();
     for (std::size_t i = 0; i < x.items.size() && i < y.items.size(); ++i) {
-      if (!Equal(x.items[i], y.items[i], work, budget)) {
-        return Less(x.items[i], y.items[i], work, budget);
+      if (!Equal(x.items[i], y.items[i], arena)) {
+        if (!arena.ok()) {
+          return false;
+        }
+        return Less(x.items[i], y.items[i], arena);
       }
     }
     return x.items.size() < y.items.size();
