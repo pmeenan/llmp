@@ -369,6 +369,103 @@ std::expected<Gemma4Binding, std::string> BindGemma4(const Gemma4Profile& p,
   return BindGemma4(p, artifact.model().architecture, resources);
 }
 
+std::expected<void, std::string> CheckGemma4Binding(const Gemma4Profile& p,
+                                                    const Gemma4Binding& b) {
+  if (!ProfileValid(p) || b.layers.size() != p.layers) {
+    return Refused("not a complete approved Gemma4 binding");
+  }
+  const auto same = [](const Gemma4Tensor& a, const Gemma4Tensor& z) {
+    return a.index == z.index && a.type == z.type && a.ne == z.ne &&
+           a.expert_array == z.expert_array && a.group_offset == z.group_offset &&
+           a.readable == z.readable;
+  };
+  if (!same(b.token_embd, b.output)) {
+    return Refused("Gemma4 head no longer aliases its embedding");
+  }
+  // Reconstruct roles from public descriptors and reuse artifact admission's
+  // checked shape/type/readability contract. Shared identities must agree;
+  // resource numbering is retained for the execution caller, not redefined.
+  std::vector<Gemma4Resource> resources;
+  std::vector<const Gemma4Tensor*> identities;
+  bool consistent = true;
+  const auto add = [&](const Gemma4Tensor& t, std::string role) {
+    if (!consistent || t.ne.empty() || t.ne.size() > 2 ||
+        artifact::FindGgmlType(t.type) == nullptr) {
+      consistent = false;
+      return;  // Do not duplicate unbounded public rank/type storage before refusal.
+    }
+    const auto at = std::ranges::find_if(identities, [&](const Gemma4Tensor* old) {
+      return old->expert_array == t.expert_array && old->index == t.index;
+    });
+    if (at != identities.end()) {
+      consistent = consistent && same(**at, t);
+      resources[static_cast<std::size_t>(at - identities.begin())].roles.push_back(std::move(role));
+    } else {
+      identities.push_back(&t);
+      resources.push_back({.roles = {std::move(role)},
+                           .type = t.type,
+                           .ne = t.ne,
+                           .expert_array = t.expert_array,
+                           .count = t.expert_array ? p.experts : 0,
+                           .group_offset = t.group_offset,
+                           .readable = t.readable});
+    }
+  };
+  add(b.token_embd, "token_embd.weight");
+  add(b.output_norm, "output_norm.weight");
+  add(b.rope_freqs, "rope_freqs.weight");
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    const auto& l = b.layers[il];
+    if (l.tied_kv != !p.local(il) || (l.tied_kv && !same(l.k, l.v))) {
+      return Refused("Gemma4 global K-as-V identity differs from its profile");
+    }
+    const auto prefix = std::format("blk.{}.", il);
+    for (const auto& [t, name] : std::vector<std::pair<const Gemma4Tensor*, std::string_view>>{
+             {&l.attn_norm, "attn_norm.weight"},
+             {&l.q, "attn_q.weight"},
+             {&l.k, "attn_k.weight"},
+             {&l.out, "attn_output.weight"},
+             {&l.q_norm, "attn_q_norm.weight"},
+             {&l.k_norm, "attn_k_norm.weight"},
+             {&l.attn_post_norm, "post_attention_norm.weight"},
+             {&l.ffn_norm, "ffn_norm.weight"},
+             {&l.gate, "ffn_gate.weight"},
+             {&l.up, "ffn_up.weight"},
+             {&l.down, "ffn_down.weight"},
+             {&l.ffn_post_norm, "post_ffw_norm.weight"}}) {
+      add(*t, prefix + std::string(name));
+    }
+    if (!l.tied_kv) add(l.v, prefix + "attn_v.weight");
+    for (const auto& [t, name] :
+         std::vector<std::pair<const std::optional<Gemma4Tensor>*, std::string_view>>{
+             {&l.output_scale, "layer_output_scale.weight"},
+             {&l.router, "ffn_gate_inp.weight"},
+             {&l.router_scale, "ffn_gate_inp.scale"},
+             {&l.ffn_pre_norm_2, "pre_ffw_norm_2.weight"},
+             {&l.ffn_post_norm_1, "post_ffw_norm_1.weight"},
+             {&l.ffn_post_norm_2, "post_ffw_norm_2.weight"},
+             {&l.gate_up_exps, "ffn_gate_up_exps.weight"},
+             {&l.gate_exps, "ffn_gate_exps.weight"},
+             {&l.up_exps, "ffn_up_exps.weight"},
+             {&l.down_exps, "ffn_down_exps.weight"},
+             {&l.expert_scale, "ffn_down_exps.scale"}}) {
+      if (t->has_value()) add(**t, prefix + std::string(name));
+    }
+  }
+  if (!consistent) return Refused("Gemma4 shared resource descriptors disagree");
+  const auto arrays = static_cast<std::uint32_t>(
+      std::ranges::count_if(identities, [](const Gemma4Tensor* t) { return t->expert_array; }));
+  const auto ordinary = static_cast<std::uint32_t>(identities.size()) - arrays;
+  for (const auto* t : identities) {
+    if (t->index >= (t->expert_array ? arrays : ordinary)) {
+      return Refused("Gemma4 binding resource identities have gaps or exceed their domain");
+    }
+  }
+  auto checked = BindGemma4(p, "gemma4", resources);
+  if (!checked) return std::unexpected(checked.error());
+  return {};
+}
+
 std::expected<void, std::string> CheckGemma4RopeFactors(const Gemma4Profile& p,
                                                         std::span<const float> factors) {
   if (!ProfileValid(p) || factors.size() != p.global_head_dim / 2 ||

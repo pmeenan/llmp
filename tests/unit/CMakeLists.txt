@@ -318,6 +318,22 @@ target_link_libraries(gemma4_test PRIVATE jitllm_model jitllm_artifact jitllm_js
 jitllm_gtest(gemma4_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 
+add_executable(gemma4_graph_test gemma4_graph_test.cc)
+target_link_libraries(gemma4_graph_test PRIVATE jitllm_ggml_tensors jitllm_artifact jitllm_json)
+jitllm_gtest(gemma4_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+if(JITLLM_CUDA)
+  add_executable(gemma4_exec_test gemma4_exec_test.cc)
+  target_link_libraries(gemma4_exec_test PRIVATE jitllm_engine jitllm_json jitllm_cuda_device_memory)
+  target_include_directories(gemma4_exec_test SYSTEM PRIVATE
+      "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  jitllm_gpu_gtest(gemma4_exec_test ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+  add_executable(gemma4_plan_test gemma4_plan_test.cc)
+  target_link_libraries(gemma4_plan_test PRIVATE jitllm_engine jitllm_json)
+  jitllm_gtest(gemma4_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit
+               ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+endif()
+
 # The native tokenizer (M3) on synthetic vocabularies, in every profile.
 add_executable(tokenizer_test tokenizer_test.cc)
 target_link_libraries(tokenizer_test PRIVATE jitllm_tokenizer)

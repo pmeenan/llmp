@@ -175,8 +175,10 @@ operations alone ([report](experiments/deepseek-batching/README.md)).
 
 The [Gemma 4 foundation](gemma4.md) supplies checked profiles, strict tensor
 bindings, bounded independent-slot KV layouts and segmented host inputs.
-It has no execution graph or runner yet; its transfer checklist records the
-primitive and optimized-batching qualification required by the next slices.
+It also supplies segmented text graphs and a checked plan adapter, with
+complete-layer diagnostic controls. It has no serving runner yet; its
+transfer checklist records the whole-model, optimized-batching and reference
+qualification required by the next slices.
 
 What a new family writes, and nothing else:
 

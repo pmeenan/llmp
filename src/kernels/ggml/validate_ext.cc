@@ -16,6 +16,7 @@
 
 #include "ggml.h"
 #include "kernels/ggml/jitllm_ops.h"
+#include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_util.h"
 
 namespace jitllm::kernels::ggml {
@@ -764,9 +765,7 @@ std::expected<void, KernelFailure> CheckRopeExt(const ggml_tensor* node) {
   if (!IsF32(x) || !IsF32(node) || positions->type != GGML_TYPE_I32) {
     return Rejected("RoPE over F32 with I32 positions");
   }
-  if (node->src[2] != nullptr) {
-    return Rejected("RoPE with frequency factors is not implemented");
-  }
+  if (auto factors = CheckRopeFrequencyFactors(node); !factors) return factors;
   // op_params (ggml_rope_impl, ggml.c:4288-4318).
   const std::int32_t n_dims = node->op_params[1];
   const std::int32_t mode = node->op_params[2];
@@ -820,7 +819,7 @@ std::expected<void, KernelFailure> CheckRopeExt(const ggml_tensor* node) {
     return Rejected("RoPE operands beyond the kernel's 32-bit indexing or grid, or misaligned");
   }
   if (!AllCurrent({node, x, positions}) || !Disjoint(node, x, /*in_place=*/true) ||
-      Overlap(node, positions)) {
+      Overlap(node, positions) || (node->src[2] != nullptr && Overlap(node, node->src[2]))) {
     return Rejected("a stale view, or an output overlapping an operand other than in place");
   }
   return {};

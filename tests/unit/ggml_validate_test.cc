@@ -580,13 +580,15 @@ TEST_F(GgmlOpsValidateTest, RopeTakesNeoxOverF32AndMayRunInPlace) {
                                               static_cast<int>(kHead), GGML_ROPE_TYPE_NEOX, 32768,
                                               1000000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))
                   .has_value());
-  // The normal mode and frequency factors launch other kernels.
+  // Normal mode uses the extended launcher. Checked factors are also valid
+  // for the NEOX primitive and its fused KV store.
   Rejected(CheckRope(Bound(ggml_rope_ext(context(), x, positions, nullptr, static_cast<int>(kHead),
                                          GGML_ROPE_TYPE_NORMAL, 32768, 1000000.0f, 1.0f, 0.0f, 1.0f,
                                          32.0f, 1.0f))));
-  Rejected(CheckRope(
-      Bound(ggml_rope_ext(context(), x, positions, F32(kHead / 2), static_cast<int>(kHead),
-                          GGML_ROPE_TYPE_NEOX, 32768, 1000000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
+  EXPECT_TRUE(CheckRope(Bound(ggml_rope_ext(context(), x, positions, F32(kHead / 2),
+                                            static_cast<int>(kHead), GGML_ROPE_TYPE_NEOX, 32768,
+                                            1000000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f)))
+                  .has_value());
   // A rotation offset, an odd rotated part and an output over the positions.
   ggml_tensor* offset = Bound(QwenRope(context(), x, positions));
   offset->op_params[15] = 2;

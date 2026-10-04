@@ -63,6 +63,7 @@ struct Gemma4Tensor {
   std::vector<std::uint64_t> ne;
   bool expert_array = false;
   std::uint64_t group_offset = 0, readable = 0;
+  bool operator==(const Gemma4Tensor&) const = default;
 };
 struct Gemma4Layer {
   Gemma4Tensor attn_norm, q, k, v, out, q_norm, k_norm, attn_post_norm;
@@ -73,10 +74,12 @@ struct Gemma4Layer {
   std::optional<Gemma4Tensor> output_scale;
   std::optional<Gemma4Tensor> router, router_scale, ffn_pre_norm_2, ffn_post_norm_1,
       ffn_post_norm_2, gate_up_exps, gate_exps, up_exps, down_exps, expert_scale;
+  bool operator==(const Gemma4Layer&) const = default;
 };
 struct Gemma4Binding {
   Gemma4Tensor token_embd, output, output_norm, rope_freqs;
   std::vector<Gemma4Layer> layers;
+  bool operator==(const Gemma4Binding&) const = default;
 };
 // Missing/duplicate/unread roles, wrong shapes, integer or malformed matrix
 // types, and malformed expert storage are refused. Recognition of a GGML
@@ -86,6 +89,11 @@ std::expected<Gemma4Binding, std::string> BindGemma4(const Gemma4Profile& profil
                                                      std::span<const Gemma4Resource> resources);
 std::expected<Gemma4Binding, std::string> BindGemma4(const Gemma4Profile& profile,
                                                      const artifact::Artifact& artifact);
+// Checks public/mutable binding descriptors through the same strict role and
+// storage contract as artifact admission. Execution builders call this before
+// GGML sees any dimensions; tied identities must describe the same storage.
+std::expected<void, std::string> CheckGemma4Binding(const Gemma4Profile& profile,
+                                                    const Gemma4Binding& binding);
 // Global n_rot is 512, not 128. Preserve the checkpoint's 256 F32 frequency
 // factors; their large finite suffix encodes proportional RoPE.
 std::expected<void, std::string> CheckGemma4RopeFactors(const Gemma4Profile& profile,

@@ -469,7 +469,7 @@ std::expected<CublasMulMat, KernelFailure> CheckMulMatCublas(const ggml_tensor* 
 namespace {
 
 // What jitLLM's RoPE takes, fused or not: forward NEOX over F32 rows with
-// I32 positions, no frequency factors and no rotation offset, and what the
+// I32 positions, optional packed F32 frequency factors and no rotation offset, and what the
 // launcher and kernel assume of the input (rope.cu:122-197, 401-445,
 // 536-694). The node itself is checked by the caller: the fused launcher
 // never writes it.
@@ -487,8 +487,8 @@ std::expected<void, KernelFailure> CheckRopeInput(const ggml_tensor* rope) {
   const std::int32_t n_dims = rope->op_params[1];
   const std::int32_t mode = rope->op_params[2];
   const std::int32_t offset = rope->op_params[15];
-  if (mode != GGML_ROPE_TYPE_NEOX || offset != 0 || rope->src[2] != nullptr) {
-    return Rejected("NEOX RoPE without frequency factors or a rotation offset");
+  if (mode != GGML_ROPE_TYPE_NEOX || offset != 0) {
+    return Rejected("NEOX RoPE without a rotation offset");
   }
   if (AnyEmpty({rope, x, positions}) || !AllSane({x, positions})) {
     return Rejected("RoPE on an empty or unmeasurable tensor");
@@ -515,7 +515,7 @@ std::expected<void, KernelFailure> CheckRopeInput(const ggml_tensor* rope) {
   if (!Current(x) || !Current(positions)) {
     return Rejected("a stale view");
   }
-  return {};
+  return CheckRopeFrequencyFactors(rope);
 }
 
 // ggml_cuda_cpy_as_memcpy_2d (static in cpy.cu:391-427): whether the copy
@@ -654,6 +654,29 @@ std::expected<void, KernelFailure> CheckSetRows(const ggml_tensor* node) {
   return {};
 }
 
+std::expected<void, KernelFailure> CheckRopeFrequencyFactors(const ggml_tensor* rope) {
+  if (rope == nullptr) return Rejected("no RoPE descriptor");
+  const auto* f = rope->src[2];
+  if (f == nullptr) return {};
+  if (rope->op != GGML_OP_ROPE || rope->op_params[2] != GGML_ROPE_TYPE_NEOX ||
+      rope->op_params[15] != 0 || rope->op_params[1] <= 0 || rope->op_params[1] % 2 != 0 ||
+      !Bound(f) || !IsF32(f) || !Extent(f) || !ggml_is_vector(f) ||
+      f->ne[0] != rope->op_params[1] / 2 || !Packed(f) || Span(f) > kInt32Max ||
+      !Aligned(f, sizeof(float)) || !Current(f)) {
+    return Rejected("forward NEOX RoPE takes a current packed F32 factor per rotated pair");
+  }
+  for (const auto* view = f; view->view_src != nullptr; view = view->view_src) {
+    const auto* parent = view->view_src;
+    const auto child_bytes = Extent(view);
+    const auto parent_bytes = IsF32(parent) ? Extent(parent) : std::nullopt;
+    if (!child_bytes || !parent_bytes || view->view_offs > *parent_bytes ||
+        *child_bytes > *parent_bytes - view->view_offs) {
+      return Rejected("RoPE factor view exceeds its source storage");
+    }
+  }
+  return {};
+}
+
 std::expected<void, KernelFailure> CheckRope(const ggml_tensor* rope) {
   if (auto checked = CheckRopeInput(rope); !checked) {
     return checked;
@@ -666,7 +689,8 @@ std::expected<void, KernelFailure> CheckRope(const ggml_tensor* rope) {
   // Each thread rotates one pair and writes it where it read it, so the
   // output may be exactly the input (upstream's in-place case, rope.cu:588).
   if (!Current(rope) || !Disjoint(rope, x, /*in_place=*/true) ||
-      !Disjoint(rope, rope->src[1], /*in_place=*/false)) {
+      !Disjoint(rope, rope->src[1], /*in_place=*/false) ||
+      (rope->src[2] != nullptr && !Disjoint(rope, rope->src[2], /*in_place=*/false))) {
     return Rejected("a stale view, or an output overlapping an input other than in place");
   }
   return {};
@@ -720,7 +744,8 @@ std::expected<void, KernelFailure> CheckRopeSetRows(const ggml_tensor* rope,
   }
   if (!AllCurrent({set_rows, ids}) || !Disjoint(set_rows, x, /*in_place=*/false) ||
       !Disjoint(set_rows, rope->src[1], /*in_place=*/false) ||
-      !Disjoint(set_rows, ids, /*in_place=*/false)) {
+      !Disjoint(set_rows, ids, /*in_place=*/false) ||
+      (rope->src[2] != nullptr && !Disjoint(set_rows, rope->src[2], /*in_place=*/false))) {
     return Rejected("a stale view, or a destination overlapping an operand");
   }
   return {};

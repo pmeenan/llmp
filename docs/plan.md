@@ -229,8 +229,8 @@ family" guide, and its long-context scaling work.
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:
         [verified profiles/bindings](gemma4.md), bounded state and independent
-        request-segment host inputs. No importer, graph, runner or inference
-        support is claimed; execution and optimized batching remain owed.
+        request-segment host inputs. No serving runner or inference support is
+        claimed; whole-model execution and optimized batching remain owed.
       - [x] Gemma GELU-tanh and split GeGLU primitive fallbacks,
         with separately gated floating MMVF fusion and a
         [bounded synthetic screen](experiments/gemma-activations/README.md).
@@ -239,6 +239,10 @@ family" guide, and its long-context scaling work.
         GQA2 vector/MMA selection, independent ring masks and funded scratch;
         [pinned primitive controls](experiments/gemma-local-attention/README.md).
         Whole-model quality, performance and optimized batching remain owed.
+
+      - [x] Gemma segmented GGML text graphs and checked bound plans, with
+        complete-layer, independent-slot and captured-replay diagnostic controls;
+        serving, device masks and whole-model/reference qualification remain owed.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

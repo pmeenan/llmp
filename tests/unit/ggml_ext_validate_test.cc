@@ -643,7 +643,8 @@ TEST_F(GgmlExtValidateTest, RopeTakesTheModelsModesOffsetsAndPositions) {
   Refused(kg::CheckRopeExt(
       Bound(ggml_rope_multi(c(), x, New(GGML_TYPE_I32, 20), nullptr, 64, empty.data(),
                             GGML_ROPE_TYPE_MROPE, 262144, 1e7f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
-  // Frequency factors are not implemented.
+  // Frequency factors remain refused for normal rotation; the checked
+  // forward NEOX factor extension is exercised by Gemma graph controls.
   Refused(kg::CheckRopeExt(Bound(ggml_rope_ext(c(), q, positions, New(GGML_TYPE_F32, 32), 64, 0,
                                                65536, 10000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f))));
 }

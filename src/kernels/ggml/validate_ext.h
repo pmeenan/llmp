@@ -200,7 +200,8 @@ std::expected<void, KernelFailure> CheckSwiGluClamp(const ggml_tensor* node);
 // (rope.cu:535-707): normal, NEOX, multi-section (MROPE) or interleaved
 // multi-section (IMROPE) rotation of an even part of each head, starting at
 // ggml_rope_set_offset's offset, with YaRN's parameters and I32 positions (4
-// per token for the multi-section modes); no frequency factors and no
+// per token for the multi-section modes); optional packed F32 frequency
+// factors only for forward NEOX without offset, and no
 // vision mode. In place or into F32 at any whole-element strides.
 std::expected<void, KernelFailure> CheckRopeExt(const ggml_tensor* node);
 

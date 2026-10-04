@@ -1,13 +1,13 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Gemma 4 model foundation
+# Gemma 4 model and graph foundation
 
 `src/model/gemma4.h` describes the approved 26B-A4B and 31B text models:
 fixed profiles, strict GGML artifact bindings, bounded state layouts,
 initialized read/write footprints and independent request-segment inputs.
-This foundation supplies no importer, execution graph, kernel selection,
-runner, assistant or inference support. Both checkpoints remain unsupported
+The segmented GGML graph and checked plan adapter described below extend
+this foundation. They supply no serving runner, assistant or inference support. Both checkpoints remain unsupported
 in the [support matrix](model-support.md); the family task remains open.
 
 ## Verified contracts
@@ -59,8 +59,8 @@ norm before residual addition; FFNs use GeGLU, sandwich norms and the
 per-layer scalar. On 26B the dense FFN runs beside routed experts, each with
 its own post norm. Routing uses the attention residual's unweighted RMSNorm,
 scales by 1/√hidden-width and the learned router input scale, then softmax,
-top-eight selection/normalization and per-expert down scaling. These are
-future graph obligations, not executed behavior of this foundation.
+top-eight selection/normalization and per-expert down scaling. The segmented graph preserves these arithmetic contracts; whole-model
+execution and reference qualification remain open.
 
 The actual 26B mix is F32 ×392, Q8_0 ×207, Q4_K ×30 and Q5_1 ×29. Every
 expert gate/up array is fused Q4_K `[2816,1408,128]`; down arrays are
@@ -97,7 +97,7 @@ not an unsupported arbitrary rollback claim.
 A chunk concatenates bounded segments with unique slot IDs and independent
 past positions. Each segment retains its own global/local cell indices,
 read widths, masks and output-row span; positions restart independently and
-outputs refer to the flattened rows. Compatible products can later join
+outputs refer to the flattened rows. The graph joins compatible products across
 these rows without joining caches or nonlinear state. Total rows are bounded
 by the layout's chunk limit and slots by sixteen.
 
@@ -115,7 +115,7 @@ not admit an otherwise unfunded multi-gigabyte reference mask.
 CPU tests cover both actual contracts and refusals, tied identities,
 full-context virtual bounds, initialized/write footprints, slot isolation,
 solo/batch mask equality and fake cache results against unrolled causal/window
-references. These validate the foundation, without executing model arithmetic.
+references. These validate the model foundation independently of the graph tests.
 
 ## Activation primitives
 
@@ -160,8 +160,72 @@ the pinned signed iteration and efficiency arithmetic.
 
 The [bounded attention controls](experiments/gemma-local-attention/README.md)
 compare original selected kernels, mathematical ring-mask references and paid
-captured execution. They qualify primitives; the model graph, device-generated
-masks, cache ownership, whole-model quality and optimized batching remain open.
+captured execution. They qualify primitives; device-generated masks, runner cache ownership,
+whole-model quality and optimized batching remain open.
+
+## Segmented graph and bound plans
+
+`src/kernels/ggml/gemma4_graph.h` builds complete text chunks for the verified
+26B-A4B and 31B bindings. Row-local dense, routed and head products join the
+flattened request rows. Each segment keeps separate attention, positions,
+mask leaves and F16 K/V caches. Global attention reuses the raw K projection
+for V before applying K's learned norm and full 512-dimensional factor RoPE.
+Routing retains the selected expert's scale before its weighted contribution
+and an ordered eight-term sum. Final attention retains every cache write
+when optional frontier narrowing removes unrequested FFN/head rows.
+
+`src/engine/gemma4_plan.h` checks every logical weight/array/slot region before
+binding, places activations and selects registered primitive/fused operations.
+Activation regions are checked against every supplied immutable weight/array
+and retained slot, including storage unused by a diagnostic graph. Active
+slots must also remain disjoint from every supplied peer slot and weight.
+A prepared expert stride aligns the readable member to the joint 16-byte and
+GGML block-size quantum; on-disk 256-byte member alignment alone is insufficient
+for Q4_K/Q5_1 executable views. The caller still owns catalog residency,
+initialized cache cells, charged activation/workspace/input envelopes and
+completion fences. This adapter does not perform admission, paging or serving.
+
+Rows, slot IDs and padded read widths define shape reuse; absolute positions
+are fresh data, including at local ring wraps. `Gemma4Sources` authenticates
+fresh positions, cache indices and every causal/window mask bit, and checks
+a caller-held host grant before
+constructing padded reference masks. These O(rows × attended cells) masks are
+for diagnostics. Production long-context execution still requires a qualified
+device descriptor-to-mask primitive using the same graph mask inputs; the
+model's default chunk descriptors remain O(rows + slots).
+
+Explicit diagnostic options may start from hidden inputs and execute a checked
+layer interval without a head, using the same arithmetic builder as a full
+chunk. Production defaults require all layers from token input and the tied
+softcapped head. `graph.hidden` is the pre-output-norm feature;
+`output_normalized` exists on head graphs. A future assistant must consume the
+pinned post-final-norm feature and preserve every required row when frontier
+narrowing is enabled. No assistant behavior is implemented here.
+
+Forward NEOX RoPE accepts a current packed F32 factor for each rotated pair,
+including the verified global `[256]` vector. Ordinary and fused cache-store
+implementations retain output/operand alias, stride, span and generation
+checks. Frequency factors do not enable backward, non-NEOX or offset variants.
+The existing unfactored extended RoPE contracts remain separate.
+
+Shared Q8_1 preparation and row-preserving VecQ products are an explicit
+experimental graph option, default off. The option shares preparation among
+eligible consumers but does not select a GeGLU quantization writer. Generic
+floating GeGLU fusion also remains off. A primitive plan is always available;
+selected policies require complete-layer and whole-model measurement before
+adoption. D256/GQA2 local and D512/GQA8 global attention use separate checked
+registry implementations, with each request's cache independently bound.
+
+The diagnostic primitive baseline leaves nine learned RMSNorm/weight
+products unfused per complete local or global layer. Explicit
+`DeviceChoices::fuse_norms` binds all nine fusions across one, two and four
+independent segments, with synthetic complete-layer and captured-state
+controls. This is a diagnostic policy, not an adopted serving default.
+RoPE/cache-store fusion binds no nodes in this graph, including solo chunks:
+the projection reshape and per-segment views do not fit the existing fusion
+pattern, and generic graph fusion is disabled here. The separately checked
+factor-aware fused primitive does not close this graph dispatch gap.
+Qualified norm/RoPE-store selection and optimized batching remain owed.
 
 ## Required execution and optimization qualification
 
@@ -172,11 +236,11 @@ For these actual GGUF files the next slices owe:
 
 | Transfer or contract | Eligibility and required qualification |
 | --- | --- |
-| Primitive completeness | Split F32 GeGLU and packed F32 GELU-tanh fallbacks are checked. Integrate them in the future graph, preserving RMSNorm/scale, V norm, sandwich order, softcap/tanh and full-width proportional RoPE. Floating MMVF fusion stays off until model/shape qualification; quantized GeGLU writers remain owed. |
+| Primitive completeness | Split F32 GeGLU and packed F32 GELU-tanh fallbacks are checked. The graph integrates these primitives, preserving RMSNorm/scale, V norm, sandwich order, softcap/tanh and full-width proportional RoPE. Floating MMVF fusion stays off until model/shape qualification; quantized GeGLU writers remain owed. |
 | Q5_1 expert down | [Legacy primitive controls](experiments/m35-legacy-quants/README.md) cover ordinary/routed products, row-preserving and joined columns at K704/N2816/top-eight routes. Synthetic overlap measurements retain ordinary MMVQ where faster; model routing, selected dispatch, prefill and the last-layer Q8_0 execution remain to be qualified. Do not select a Q2_K or IQ2 kernel by analogy. |
 | Shared input preparation | Reuse eligible Q8_1 preparation across ordinary Q8/K-quant products and fused gate/up reads, retaining maps/strides and Gemma's router and GeGLU arithmetic. DeepSeek's SwiGLU activation writer cannot transfer unchanged. |
 | Routed prefill scheduling | Check compact expert-major tiles and full-K arithmetic for Q4_K fused gate/up and Q5_1 down at actual shapes/chunk sizes; keep only qualified speed/memory winners. Raw expert groups must remain authoritative for later paging. |
-| Attention and device masks | Local D256/GQA2 vector and MMA primitives have bounded ring-mask, shape-selection and scratch controls. Integrate them and the existing global D512/group8 path with each model's independent caches and scale1.0. Generate causal/window masks from descriptors on device where qualified; never invent sparse global attention. |
+| Attention and device masks | The graph keeps checked local D256/GQA2 vector/MMA and global D512/GQA8 attention separate. Local primitives have ring-mask, shape-selection and scratch controls; complete model dispatch and device descriptor masks remain to be qualified. Preserve independent caches and scale1.0; never invent sparse global attention. |
 | Join products across requests | Apply Qwen/DeepSeek joined dense/routed/head products when operand/quant contracts fit. Preserve per-segment outputs, original one-token sums, stable route pair order and separate attention/state. Qualify scalar versus joined logits/state and departed/cancelled slots. |
 | Lanes, graphs and lifetimes | Reuse request cohorts, completion-aware leases, stable-address graphs, charged per-lane scratch and hazard ordering. Shape/read-alignment choices must back padded cells and preserve exact continuation across capture/replay, spill/restore and time-slicing. |
 | Bounded state and staging | Use initialized read/write footprints, growing extents, bounded host inputs, shared maximum workspace and separately owned slot state; measure peak memory for solo and batched envelopes at context boundaries. |

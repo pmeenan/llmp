@@ -17,6 +17,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   selection, independent ring masks and charged capture workspace. Gemma
   whole-model execution and batching qualification remain separate.
 
+- Gemma 4 segmented text graph and checked plan foundations, with independent
+  slot caches, global frequency-factor RoPE and complete-layer diagnostics.
+  Serving and whole-model reference qualification remain separate.
+
 - Native GGML Q4_1/Q5_0/Q5_1 product primitives and legacy Q4_0/Q4_1/Q5_0/
   Q5_1/IQ4_NL row-preserving and joined vector products, with readable
   padding and independent column controls. Model qualification remains separate.
