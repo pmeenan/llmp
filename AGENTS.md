@@ -257,8 +257,9 @@ the tailnet (D-096, D-097, D-100). DeepSeek V4 Flash, Qwen3.8 Flash Next and
 Qwen-Image-2.1 execute natively with paging, saved state and stable-address
 graphs; Qwen3.8 also runs from its GGUF quantizations (UD-IQ3_XXS checked
 against llama.cpp, [qwen38-gguf](docs/experiments/qwen38-gguf/README.md)).
-The recorded 32-swap table's worst LLM swap is 9.75 s against the
-20 s exit bound. Both LLMs run to 262,144 tokens; state grows with use,
+The [final 32-swap table](docs/experiments/m3-final-swap/README.md)'s worst LLM
+swap is 9.853 s against the 20 s exit bound, with exact restored state,
+continuations and image controls. Both LLMs run to 262,144 tokens; state grows with use,
 spills initialized extents, and turn checkpoints preserve exact continuation
 when earlier reasoning is removed, including across swaps. Maximum-context
 timing, retrieval and continuing-context swaps are recorded in
@@ -303,8 +304,8 @@ used fully: plans and graphs are uncapped inside the budget, idle
 conversations spill and resume exactly, and one reclaim order by measured
 cost gives back under pressure
 ([memory-pressure](docs/experiments/memory-pressure/README.md)). Qwen
-same-history acceptance, the remaining native prefill gap, final image-inclusive swap
-gate and frozen M3 record remain open. The [standard-client gate](docs/experiments/m3-standard-client/README.md)
+same-history acceptance, the remaining native prefill gap and frozen M3
+record remain open. The [standard-client gate](docs/experiments/m3-standard-client/README.md)
 passes through the unchanged OpenAI SDK, including model switches and streaming. Workstation checks are deferred
 until implementations settle; package checks remain owed before shipment.
 

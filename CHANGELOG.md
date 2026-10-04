@@ -541,6 +541,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Fresh LLM rows in `swap-table` now generate one greedy token before
+  ending their clocks. Their complete prefill-head hashes still check
+  repeatability; saved-context returns retain their decode-step endpoint.
+  Previously fresh rows stopped after prefill, before token selection.
+
 - Concurrent chat prompts again prefill in order of what is really left:
   a conversation's stale history no longer counts as reused, a unit that
   prefills nothing ages no other prompt, and a started prompt about to

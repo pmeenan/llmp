@@ -440,6 +440,21 @@ Status Table::FirstOutput(Served& b, std::string& hash) {
     if (auto r = l.Prefill(*tokens, last); !r) {
       return r;
     }
+    Generation first;
+    if (auto r = l.Generate(last,
+                            {.max_tokens = 1,
+                             .stop = false,
+                             .keep_logits = false,
+                             .sampling = std::nullopt,
+                             .seed = 0,
+                             .on_tokens = {}},
+                            first);
+        !r) {
+      return r;
+    }
+    if (first.tokens.size() != 1) {
+      return Error("the swap endpoint did not generate its first token");
+    }
     hash = Sha256(std::as_bytes(std::span(last)));
     // B's conversation ends here: nothing of it is spilled when A returns
     // (as the harness's B, whose state was cleared each time).
@@ -691,10 +706,28 @@ Status Table::Pair(Served& a, Served& b) {
                                          return s;
                                        }
                                        std::vector<float> row;
-                                       auto s = l.Prefill(prompt, row);
+                                       if (auto s = l.Prefill(prompt, row); !s) {
+                                         return s;
+                                       }
+                                       Generation generated;
+                                       if (auto s = l.Generate(row,
+                                                               {.max_tokens = 1,
+                                                                .stop = false,
+                                                                .keep_logits = false,
+                                                                .sampling = std::nullopt,
+                                                                .seed = 0,
+                                                                .on_tokens = {}},
+                                                               generated);
+                                           !s) {
+                                         return s;
+                                       }
+                                       if (generated.tokens.size() != 1) {
+                                         return Error(
+                                             "the swap endpoint did not generate its first token");
+                                       }
                                        first = Clock::now();
                                        ba.output = Sha256(std::as_bytes(std::span(row)));
-                                       return s;
+                                       return {};
                                      });
           !r) {
         return r;

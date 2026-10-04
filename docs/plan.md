@@ -1490,6 +1490,11 @@ it appears.
   104 s back with A's 8K state restored (75–93 s per switch in M0's run
   of the older revision), and diffusers at 212 s from process start to
   Qwen-Image's first denoising step.
+  **Final refresh passed 2026-10-04:** all 32 rows/six ordered pairs in one
+  production process, worst LLM/prepared 9.853 s with corrected fresh-token
+  endpoints, exact 8K states/16-token continuations and pinned regenerated
+  images, with prepared 8K LLM graphs retained/replayed
+  ([final table](experiments/m3-final-swap/README.md)).
 - **LLM correctness:** on a short prompt set, greedy tokens match the
   model's same-format oracle (table above), with small logit differences
   allowed, and perplexity on a fixed text is within a few percent of the

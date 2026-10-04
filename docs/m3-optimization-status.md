@@ -164,7 +164,7 @@ at completed units and resume their exact continuations after one substitute
 cohort ([model turns](experiments/model-turns/README.md)); literal completions
 now join those cohorts, with scores and response state preserved across
 switches ([controls](experiments/literal-batching/README.md)). M3 remains open for the performance/quality and
-concurrency items above, the final image-inclusive swap gate and frozen record, and
+concurrency items above, the frozen record, and
 the deferred workstation/package checks. No package ships before the owed
 checks. There is no claim here that all review suggestions, native pipeline
 restoration, or the M3 gate are complete.
@@ -176,3 +176,10 @@ DeepSeek and streamed Qwen, matching the native controls' visible text,
 reasoning and token accounting with natural stops. Production identity,
 client isolation and strong retirement controls pass. This does not close
 the separate performance/quality or image-inclusive swap criteria.
+
+The [final image-inclusive swap table](experiments/m3-final-swap/README.md)
+passes all 32 rows in one production process, with corrected fresh-token
+endpoints: worst LLM and prepared swap 9.853 s. Restored 8K states and
+16-token continuations, the pinned image control and four regenerated images
+are exact; prepared 8K LLM graphs replay. This closes the current
+implementation's final swap check, without closing the speed/quality gate.
