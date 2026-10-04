@@ -71,7 +71,7 @@ struct CalibrationKey {
 };
 
 // The settings a measurement depends on, as resolved without calibration
-// (override, derived or fallback): speculation, draft rows, prefill chunk
+// (override, derived or fallback): context, speculation, draft rows, prefill chunk
 // rows, request slots, the output-A/HCA prefill and the wave form; Qwen's
 // wave lanes, effective draft vocabulary, shared draft cap, joined-draft
 // limit, wave read alignment and depth cost ratio. Another configuration
@@ -79,6 +79,10 @@ struct CalibrationKey {
 // calibration, so the recorded ratio does not invalidate its own key.
 // Override presence for the chunk, slot cap and depth ratio also matters:
 // setting the fallback value explicitly bypasses a calibrated value.
+// DeepSeek also keys its uncalibrated wave costs and the number of leading
+// widths overridden: equal fallback-valued prefixes of different lengths
+// can bypass different calibrated widths. Its own calibrated costs do not
+// invalidate the key, which registration resolves without calibration.
 std::string MeasuredWith(const ModelSettings& s);
 
 // This build's identity: its version, and for a tree without Git metadata

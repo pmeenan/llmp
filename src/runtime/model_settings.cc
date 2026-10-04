@@ -715,6 +715,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     }
   }
   const std::vector<double> asked_costs = entry.Reals("wave_costs").value_or(std::vector<double>{});
+  s.wave_costs_override_count = asked_costs.size();
   for (std::size_t w = 0; w < asked_costs.size() && w < costs.size(); ++w) {
     costs[w] = asked_costs[w];
   }

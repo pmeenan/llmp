@@ -226,7 +226,7 @@ directory, written to a new file, synced and renamed over the old):
 ```json
 {"format":"jitllm-model-calibration-v1","artifact":"8a355bfb…","drafter":"dd2d3f9c…",
  "device":"NVIDIA GB10 sm_121, driver 580.95.05, CUDA 13.0","build":"0.3.0-dev.12+g…",
- "settings":"speculation=true draft_rows=3 prefill_chunk=4096 max_slots=4 prefill_outa_hca=true/true wave_form=auto prefill_chunk_override=false max_slots_override=false",
+ "settings":"speculation=true draft_rows=3 prefill_chunk=4096 max_slots=4 prefill_outa_hca=true/true wave_form=auto prefill_chunk_override=false max_slots_override=false context=262144 wave_costs=[2.08,2.52,2.81,2.4,2.12,2.21,2.23] wave_costs_override=false wave_costs_override_count=0",
  "values":{"prefill_floor_tok_s":333,"decode_floor_tok_s":7,
            "recompute_ms_per_token":1.25,"wave_costs":[2.08,null,2.81],"depth_cost_ratio":1.1}}
 ```
@@ -234,8 +234,16 @@ directory, written to a new file, synced and renamed over the old):
 `wave_costs` holds widths from 2, `null` where unmeasured. `settings`
 names what the measurements depend on, as resolved without calibration
 (an override, a derived value or the fallback): speculation (off with
-`--plain`), draft rows, prefill chunk rows, request slots, the
-output-A/HCA prefill and the wave form.
+`--plain`), effective context, draft rows, prefill chunk rows, request slots,
+the output-A/HCA prefill and the wave form. Context matters even when the
+configured prefill chunk is unchanged: the runtime caps its actual rows by
+the context. DeepSeek also keys the seven wave costs resolved without
+calibration, override presence and the number of leading widths explicitly
+overridden. An equal fallback-valued override can hide a calibrated cost;
+two such prefixes of different lengths can hide different widths, even
+when their uncalibrated vectors are identical. Recorded wave costs do not
+invalidate their own key, since registration and `settings` resolve the
+lookup policy without calibration.
 For Qwen it also includes wave lanes, effective `draft_vocab`,
 `shared_wave_depth`, `draft_wave_max`, `wave_read_align` and the
 uncalibrated `depth_cost_ratio`. These alter the paid work or adaptive

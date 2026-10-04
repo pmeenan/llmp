@@ -559,6 +559,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Calibration records become stale when effective context or DeepSeek
+  automatic wave-cost overrides change. Equal fallback-valued overrides
+  and different override-prefix lengths have distinct dependencies. The
+  existing record format and fresh serving defaults are unchanged.
+
 - Fresh LLM rows in `swap-table` now generate one greedy token before
   ending their clocks. Their complete prefill-head hashes still check
   repeatability; saved-context returns retain their decode-step endpoint.

@@ -78,6 +78,7 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   EXPECT_EQ(s.wave_form.value, jitllm::config::WaveForm::kAuto);
   EXPECT_EQ(s.wave_costs.value, (std::vector<double>(jitllm::runtime::kDsv4WaveCosts.begin(),
                                                      jitllm::runtime::kDsv4WaveCosts.end())));
+  EXPECT_EQ(s.wave_costs_override_count, 0U);
   EXPECT_TRUE(s.prefill_outa_hca.value);
   EXPECT_TRUE(s.prefill_outa_hca_partial.value);
   EXPECT_TRUE(s.ignored.empty());
@@ -334,6 +335,7 @@ TEST(ModelSettings, LayersResolveInOrder) {
     partial.overrides["wave_costs"] = std::vector<double>{3.0};
     const ModelSettings p = Resolved(partial, facts, &measured);
     EXPECT_EQ(p.wave_costs.source, SettingSource::kOverride);
+    EXPECT_EQ(p.wave_costs_override_count, 1U);
     ASSERT_EQ(p.wave_costs.value.size(), 7U);
     EXPECT_EQ(p.wave_costs.value[0], 3.0);
     EXPECT_EQ(p.wave_costs.value[1], jitllm::runtime::kDsv4WaveCosts[1]);
@@ -345,6 +347,7 @@ TEST(ModelSettings, LayersResolveInOrder) {
   entry.overrides["wave_costs"] = std::vector<double>{0.0, 3.0};
   const ModelSettings w = Resolved(entry, facts);
   EXPECT_EQ(w.wave_costs.source, SettingSource::kOverride);
+  EXPECT_EQ(w.wave_costs_override_count, 2U);
   ASSERT_EQ(w.wave_costs.value.size(), 7U);
   EXPECT_EQ(w.wave_costs.value[0], 0.0);
   EXPECT_EQ(w.wave_costs.value[1], 3.0);

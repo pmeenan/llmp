@@ -251,6 +251,10 @@ struct ModelSettings {
   // DeepSeek V4.
   Setting<config::WaveForm> wave_form;
   Setting<std::vector<double>> wave_costs;  // widths 2 up
+  // How many leading widths the owner overrides. The resolved vector alone
+  // cannot distinguish equal fallback-valued prefixes that hide different
+  // calibrated widths. Internal dependency metadata, not another setting.
+  std::size_t wave_costs_override_count = 0;
   Setting<bool> prefill_outa_hca;
   Setting<bool> prefill_outa_hca_partial;
   // Qwen3.8.
