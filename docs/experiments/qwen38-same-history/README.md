@@ -3,9 +3,11 @@
 
 # Qwen first-verify acceptance on the same history
 
-2026-10-03: four adjacent anchors from one frozen 32K history expose a
-draft-proposal deficit. Native accepts 9 of 12 offered drafts; the pinned
-Mia reference accepts 11 of 12. Native's curated 47,172-row and prefix
+2026-10-04: matched cold cache paths accept 9 of 12 offered drafts in
+both engines on four adjacent anchors from one frozen 32K history. The
+earlier 9/12 native versus 11/12 Mia comparison used fresh native state
+but reused reference prefixes; that gap is not established as a stable
+native proposal deficit. Native's curated 47,172-row and prefix
 65,536-row heads give identical proposals and complete first-verify heads
 on these anchors. This is a representative diagnostic, not acceptance
 parity across contexts, a performance comparison, or a new quality bound.
@@ -287,3 +289,112 @@ no new unit suite or workstation tier was needed for these diagnostic drivers.
 | Native 4,096 before spec.json | `a1d6edb319fd72ba5e9e5fd55afd27e57e707f8673b916bb4c15edcb4ccfac40` |
 | Native 2,048 spec.json | `36316ab42202dd8dcf6c6bc40944eafb92da5fbecf2db5c8ddaca821f0df4526` |
 | Native 4,096 after spec.json | `45dd16715baab445fbf1a56d1df7161eee1ffbce4a102027177ae07f4bf44c3c` |
+
+
+## Matched all-cold anchors (2026-10-04)
+
+Fresh production native collection and five independently salted reference
+requests match acceptance on these four anchors. Every reference request
+reports zero cached prompt tokens. The fifth request repeats p3 with another
+fresh salt and is reported separately from the four unique-anchor total.
+Native independently clears/prefills each anchor and repeats its greedy
+control twice. No cache-precision or arithmetic setting was changed to
+obtain this agreement.
+
+| Entry | Prompt tokens | Both engines' drafts | Both engines' target verdicts | Accepted / offered, each |
+| --- | ---: | --- | --- | ---: |
+| p0 | 31,743 | 1144, 4087, 1156 | 1144, 4087, 1156, 579 | 3 / 3 |
+| p1 | 31,744 | 4087, 1156, 579 | 4087, 1156, 579, 1330 | 3 / 3 |
+| p2 | 31,745 | 1156, 579, 1622 | 1156, 579, 1330, 13 | 2 / 3 |
+| p3 | 31,746 | 579, 1622, 13 | 579, 1330, 13, 14235 | 1 / 3 |
+| Mia p3 cold repeat | 31,746 | 579, 1622, 13 | 579, 1330, 13, 14235 | 1 / 3 |
+
+Both engines total 9/12 on the four unique anchors; the separate reference
+repeat also accepts 1/3. All twenty compared target rows, including that
+repeat, have the same conditioning and argmax. Descriptive maximum absolute
+logit differences range from 1.700 to 4.475 and mean absolute differences
+from 0.267 to 0.644. These are not quality tolerances. Mia's repeated p3
+logits differ bytewise while proposals and all four verdicts agree. The
+legacy client field `own_repeat_ids_equal` compares its first two requests
+(p0/p1 in this schedule), so it is excluded from the p3 repeat conclusion;
+that conclusion uses the two independently joined first-verify traces. Native's
+own repeats pass its existing greedy/near-tie controls. The preceding cache
+collections include cold p3 with 3/3 acceptance, so cold input alone is not
+proof of stable reference repeatability. This collection does not establish
+broader context/step acceptance parity or close a performance/quality gate.
+
+Native runs on Spark A from compiled production `5f37654`, prefix head
+65,536, context 33,792, fixed depth three, 4,096-row runtime prefill,
+nine greedy output tokens and two repeats. Its complete first-verify
+proposals match the historical prefix and curated heads above; the curated
+head was not recollected in this run. The frozen control executable lives
+beside its SDK libraries in `qtile/build/spark-native/benchmarks/` and uses
+no numeric or library environment overrides. The live `qtile` source tree
+later holds rejected expert-tile variants and is not the source identity
+of this control binary; a separate compiled-source inventory is retained.
+
+Mia runs on Spark B using the canonical fast loader/observer and unchanged
+reference inference settings above, deterministic switches off, curated
+47,172 head and 2,048-row prefill. Only request scheduling/cache salts
+change: p0, p1, p2, p3, then a fresh p3 repeat. Startup takes 175.160 s.
+Each public reply supplies nine output IDs, but only the actually observed
+first verify qualifies acceptance. Copying/hashing full logits remains
+inside the decode clock; no inference-speed claim follows.
+
+The reference controller verifies actual image, loader, model, mounted
+source and inference identities, and joins each observed sampler request
+to its exact API response. It stops/removes its owned container and reaps
+the launcher, with no cleanup errors. Its stop returns zero; the launcher
+exit code is not recorded. The native child exits zero and is reaped. All
+four strong admission/retirement gates pass with at least 105 GiB available
+and clear GPU/container/native-model probes.
+
+[cache_control.py](cache_control.py) materializes the measured
+`mia-cold-all-client.py` and `mia-cold-all-run.py` from the pinned originals
+listed above. It authenticates every emitted byte against the measured
+SHA-256. Use external base `~/scratch/qwen-cold-anchors/` with the original
+history, launch environment, pinned launcher and observer payloads; its
+frozen lifetime helpers stay in `~/scratch/m3-serving-concurrent-r1/frozen-v2/`.
+Run the controller on Spark B under installed `spark-job --gpu`, bracketed
+by the strong preflight helper. Native uses the literal prompts and arguments
+above, with the same artifacts/checkpoint/tokenizer as the original study.
+
+Run the analyzer on a Spark with:
+
+```text
+python3 compare.py --native NATIVE/model --mia MIA --cache-path all-cold --out NEW_REPORT
+```
+
+It requires the exact cold schedule, the authenticated request receipt,
+five distinct nonempty salts, zero reported reuse on all five requests,
+matching request/control identities and finite, complete, hashed target
+rows. The original mixed-cache schedule remains the default mode for
+historical analysis; relabeling it all-cold is rejected.
+
+| Evidence | SHA-256 |
+| --- | --- |
+| Native benchmark | `6ef0eb4a0426139262cb26b80d11428c775a3d3ebe6384ad9305c78384c712c6` |
+| Native compiled-source inventory (487 files) | `4a05996429a4d9f1988dda047782ab61897c50fe83fff61096d5266149b77235` |
+| Literal prompt JSON | `99b8d31bff352bcd5f076f424ef03a941cd58ccb2fd51a9a8045bec271458cce` |
+| Native controller | `a2af1e79a6f6d8ed6dd3c4912a853fc5cfb4870783b9627acb771f0eaef36375` |
+| Native retirement receipt | `8c21b7152776c1f19ba9d7d6c040118bea54945dc6a5102baf92b96e307e0ca8` |
+| Native spec.json | `eef499097af7f1563d02cda3088b7497c04b7fb3d474ed407315e3e0f7c090a7` |
+| Mia controller | `15ef442afd3baef3eeac184ca03f3aba2e56e9020e30b4726e14f00b2860cab4` |
+| Mia client | `32c03d9ee10e7f55b6bb2aad23b64ca42ec4f197300f6ed72c129fc02fd779bc` |
+| Mia request receipt | `8b98d3df68910b6d84628da8a8712e43f8f4d1dc89eeb75dcddad8c14089c24e` |
+| Mia collection/retirement receipt | `97b3144bb61be614b82614740655b43b50ad94a89f23b025d46c079af1294a0e` |
+| Mia strong-gate supervision | `c73a4509c3754035345e5ae3ab1020738b67f30c1ce5114258c83c1549d0fbe2` |
+
+Raw records remain at `spark:~/scratch/qwen-cold-anchors/native-cold-all/`
+and `spark-b:~/scratch/qwen-cold-anchors/{mia-cold-all,supervision.json}`;
+local copies are in `~/scratch/jitllm-m3-qwen-cold-anchors-2026-10-04/`.
+Jobs `qwen-cold-all-native`, `qwen-cold-all-mia`,
+`qwen-cold-all-analysis` and final `qwen-cold-all-analysis-check3` finish
+zero and are waited on. The final check authenticates all eight generated
+controller/client pins, validates both cold and historical analyses, and
+rejects two mislabeled schedules and four tampered receipts (reused repeat
+trace, hidden prompt reuse in actual usage, unmeasured controller and
+inconsistent sampler count). An initial check had a missing copied source
+file; it is excluded and corrected before these final checks. No
+runtime arithmetic/default changes or repeated full unit suite follow
+from this diagnostic; workstation/package checks remain deferred.

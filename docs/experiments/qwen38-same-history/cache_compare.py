@@ -22,7 +22,7 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def reference(directory, schedule, two_paths=False, deterministic=False):
+def reference(directory, schedule, two_paths=False, deterministic=False, all_cold=False):
     receipt = read(directory / 'receipt.json')
     require(receipt['complete'] and receipt['body_complete'] and receipt['container_absent']
             and receipt['launch_reaped'] and not receipt['cleanup_errors']
@@ -37,8 +37,12 @@ def reference(directory, schedule, two_paths=False, deterministic=False):
     require(all(actual[k] == expected for k in ('VLLM_QSA_DET_TOPK', 'VLLM_MOE_DET_FINALIZE')),
             'actual diagnostic determinism settings differ')
     label = directory.name
-    require(label in ('mia-cold-p3', 'mia-cache-paths', 'mia-cache-det1'), 'measured collection name required')
-    client_name = 'mia-cold-p3-client.py' if label == 'mia-cold-p3' else 'mia-cache-paths-client.py'
+    require(not all_cold or (not two_paths and not deterministic and label == 'mia-cold-all'),
+            'all-cold collection must use the measured default-mode controller')
+    require(label in ('mia-cold-p3', 'mia-cache-paths', 'mia-cache-det1', 'mia-cold-all')
+            and (label != 'mia-cold-all' or all_cold), 'measured collection name required')
+    client_name = ('mia-cold-all-client.py' if all_cold else
+                   'mia-cold-p3-client.py' if label == 'mia-cold-p3' else 'mia-cache-paths-client.py')
     require(receipt['controller_sha256'] == OUTPUTS[label + '-run.py']
             and receipt['client_sha256'] == OUTPUTS[client_name]
             and (not deterministic or receipt['helper_sha256'] == OUTPUTS['mia-det1-helper.py']),
@@ -63,11 +67,18 @@ def reference(directory, schedule, two_paths=False, deterministic=False):
             and anchors['identity']['pid'] == receipt['identity']['container_pid']
             and anchors['identity']['started'] == receipt['identity']['container_started_at'],
             'client and verified launch identity must agree')
+    require(anchors['source_sha256'] == receipt['client_sha256']
+            and anchors['history_sha256'] == receipt['history_sha256'],
+            'client/history receipt pins must match the measured controller')
     controls = receipt['controls']
     requests = anchors['requests']
     require(len(controls) == len(requests) == len(schedule)
             and [(c['position'], c['repeat']) for c in controls] == schedule,
             'exact cache-control schedule required')
+    if all_cold:
+        salts = [r['cache_salt'] for r in requests]
+        require(all(isinstance(s, str) and s for s in salts) and len(set(salts)) == len(schedule),
+                'independent cold cache salts required')
     if two_paths:
         salts = [r['cache_salt'] for r in requests]
         require(salts[0] == salts[1] and salts[2] == salts[3] == salts[4]
@@ -102,7 +113,7 @@ def reference(directory, schedule, two_paths=False, deterministic=False):
                 and first['sampled_tokens'] == first['drafts'][:count] + [first['verdicts'][count]]
                 and request['token_ids'][1:1 + first['kept']] == first['sampled_tokens'],
                 'actual sampler must agree with complete target rows')
-        cold = index in (0, 2) if two_paths else index == 0
+        cold = True if all_cold else index in (0, 2) if two_paths else index == 0
         require(control['cached_tokens'] == (0 if cold else 31616), 'observed cold/warm counts differ')
         result.append(dict(position=position, repeat=control['repeat'], cached_tokens=control['cached_tokens'],
                            anchor=first['anchor_token'], drafts=first['drafts'], verdicts=first['verdicts'],

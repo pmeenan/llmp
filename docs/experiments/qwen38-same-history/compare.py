@@ -65,15 +65,23 @@ def main():
     parser.add_argument('--native', action='append', type=Path, required=True)
     parser.add_argument('--mia', type=Path, required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--cache-path', choices=('original', 'all-cold'), default='original')
     args = parser.parse_args()
     mia = read(args.mia / 'receipt.json')
     require(mia['complete'] and mia['container_absent'] and mia['launch_reaped']
             and mia['timing_qualified'] is False and len(mia['controls']) == 5,
             'all reference controls and owned retirement required')
-    require([(x['position'], x['repeat']) for x in mia['controls']]
-            == [(0, False), (0, True), (1, False), (2, False), (3, False)],
-            'exact cold/repeat/adjacent reference schedule required')
-    report = dict(complete=False, timing_qualified=False, scope='four adjacent anchors from one frozen 32K history',
+    schedule = ([(0, False), (0, True), (1, False), (2, False), (3, False)]
+                if args.cache_path == 'original'
+                else [(0, False), (1, False), (2, False), (3, False), (3, True)])
+    require([(x['position'], x['repeat']) for x in mia['controls']] == schedule,
+            'exact recorded reference schedule required')
+    if args.cache_path == 'all-cold':
+        # Shared checker authenticates actual API usage and unique sampler
+        # identities, in addition to the measured controller/launch pins.
+        from cache_compare import reference
+        reference(args.mia, schedule, all_cold=True)
+    report = dict(complete=False, timing_qualified=False, cache_path=args.cache_path, scope='four adjacent anchors from one frozen 32K history',
                   native_retirement_qualification='requires external supervisor success; spec.json alone does not prove retirement',
                   reference_receipt_sha256=hashlib.sha256((args.mia / 'receipt.json').read_bytes()).hexdigest(),
                   pairs=[])
@@ -98,6 +106,13 @@ def main():
             check_verdicts(first, left)
             check_verdicts(other, right)
             n, m = accepted(first), accepted(other)
+            if args.cache_path == 'all-cold':
+                require(len(cell['spec_tok_s']) == 2
+                        and cell['generated'] == len(cell['spec_tokens']) == len(cell['plain_tokens']) == 9
+                        and cell['step_trace'][0] == [cell['prompt_tokens'], 3, 4, n + 1]
+                        and first['next_token'] == first['verdicts'][n]
+                        and cell['spec_tokens'][:n + 2] == [first['anchor_token']] + first['drafts'][:n] + [first['next_token']],
+                        'complete repeated native control and actual sampled prefix required')
             require(m == other['accepted'], 'reference actual sampler count differs')
             anchor_equal = first['anchor_token'] == other['anchor_token']
             common = 1 if anchor_equal else 0

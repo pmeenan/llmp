@@ -21,6 +21,8 @@ OUTPUTS = {
     'mia-cache-paths-run.py': '710dcab7a48dbb1a099578df8855545086741be1dc64ee69f9e9f1111686fc40',
     'mia-det1-helper.py': '8f24cf10db459066ff24f55be4348a71e295320eb5d67e66b257f51739a85536',
     'mia-cache-det1-run.py': '7ce595c975a45dcb27dca078967331005e4ed01011d137e3be0db44769b09b9e',
+    'mia-cold-all-client.py': '32c03d9ee10e7f55b6bb2aad23b64ca42ec4f197300f6ed72c129fc02fd779bc',
+    'mia-cold-all-run.py': '15ef442afd3baef3eeac184ca03f3aba2e56e9020e30b4726e14f00b2860cab4',
 }
 
 
@@ -79,6 +81,26 @@ def main():
     det = change(det, 'requested_environment=requested, observer_sha256=',
         "requested_environment=requested, diagnostic_settings='both recipe determinism knobs on; no timing qualification', helper_sha256=sha(helper_path), observer_sha256=")
     made['mia-cache-det1-run.py'] = det
+    all_client = change(originals['client'], 'schedule.insert(1, (0, True))',
+        'schedule = [(0, False), (1, False), (2, False), (3, False), (3, True)]\n'
+        '        require(args.limit == 4 and args.previous is None, "four cold anchors and a cold p3 repeat required")')
+    all_client = change(all_client, 'prompt = prefix + continuation[:position]',
+        "salt = 'jitllm-anchor-' + uuid.uuid4().hex\n            prompt = prefix + continuation[:position]")
+    all_client = change(all_client, "'position': position, 'repeat': repeat, 'complete': False",
+        "'position': position, 'repeat': repeat, 'cache_salt': salt, 'complete': False")
+    made['mia-cold-all-client.py'] = all_client
+    all_cold = change(originals['controller'], "BASE = Path('/home/pmeenan/scratch/acceptance')",
+        "BASE = Path('/home/pmeenan/scratch/qwen-cold-anchors')")
+    all_cold = change(all_cold, "'mia-first-verify-fast2'", "'mia-cold-all'")
+    all_cold = change(all_cold, "client = FROZEN / 'mia-anchor-client.py'", "client = BASE / 'mia-cold-all-client.py'")
+    all_cold = change(all_cold,
+        "                  launcher_sha256=sha(BASE / 'mia-launch.py'),",
+        "                  controller_sha256=sha(Path(__file__)), client_sha256=sha(BASE / 'mia-cold-all-client.py'),\n"
+        "                  launcher_sha256=sha(BASE / 'mia-launch.py'),")
+    all_cold = change(all_cold, "        rows = [json.loads(p.read_text()) for p in traces.glob('*.json')]",
+        "        require(all(r['cached_tokens']==0 for r in anchors['requests']), 'every independently salted cold request must consume all prompt IDs')\n"
+        "        rows = [json.loads(p.read_text()) for p in traces.glob('*.json')]")
+    made['mia-cold-all-run.py'] = all_cold
     for name, body in made.items():
         raw = body.encode()
         if hashlib.sha256(raw).hexdigest() != OUTPUTS[name]:

@@ -508,6 +508,10 @@ it appears.
       then find reference draft and target variation: the two-draft gap is
       not established as stable, and a repeated deterministic cache path
       matches native at 1/3. Smaller native prefill chunks retain its drafts.
+      A [matched all-cold collection](experiments/qwen38-same-history/README.md#matched-all-cold-anchors-2026-10-04)
+      now accepts 9/12 in both engines, with zero reference prompt reuse and
+      a separate cold p3 repeat also matching native. All twenty conditioned
+      target-row argmaxes agree; reference logits still vary on that repeat.
       Broader acceptance parity remains open; no bound or math default changes.
 - [x] **The swap path:** evict the outgoing model and hand its backing to
       the incoming one (D-033's handoff, pulled from M6; D-081), with
