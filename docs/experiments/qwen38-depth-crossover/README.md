@@ -132,3 +132,86 @@ The archived source, exact compile/link commands, linked-archive hashes,
 raw JSON, controls and validated summaries are in the same external
 `m3-qwen-paired-depth` directory. The unadopted precision diagnostic stays
 outside the production tree.
+
+## Twelve-column composite screen — 2026-10-04
+
+The complete tensor-core path also loses at the representative joined C4
+QKV shape: twelve input columns, K=2,560 and N=10,240. Retain the production
+F32-input vector path. This is one generated-operand screen, with no model
+trial, precision adoption or global threshold change.
+
+The archived diagnostic above is reused with only its accepted column bound
+extended from eight to twelve. It links the checked `580aab0` GDN baseline's
+kernel archives from an owned Spark A tree. Subsequent calibration and
+documentation commits do not change those kernels. Its control calls the
+actual `RunMxfp8MulMatVec` launcher, whose authenticated GB10 dispatch selects
+the staged twelve-column, two-row, sixteen-warp kernel. Every candidate call
+invokes the actual F32 input quantization, weight-scale swizzle and F32
+CUTLASS GEMM wrappers, without moving either conversion outside the call.
+
+Spark A (`spark-c4e2`), GB10 with 48 SMs and 24-MiB L2, driver 580.178.04,
+CUDA 13.4.92, SDK `aarch64-e0a0c85c42806fb1`. The F32 input has twelve
+padding elements per column. Ten address-distinct banks hold identical
+generated weights, totaling **270,336,000 bytes (257.8125 MiB)**. Each
+64-call captured graph cycles through every bank. Each arm requests a
+20-ms warmup, then takes the median of three CUDA-event batches, each replaying
+two graphs for 128 actual calls. Event time is divided by those calls.
+Allocation, host planning, capture and correctness checks are outside
+these device-time measurements; all three candidate GPU operations are
+inside every timed graph call.
+
+| Chronological arm | Complete operator µs |
+| --- | ---: |
+| Production vector before | 143.58900 |
+| Quantize + swizzle + F32 tensor core | 145.94226 |
+| Production vector after | 144.00101 |
+
+Candidate latency is **1.49328% higher** than the mean vector controls:
+`(145.94226 / mean(143.58900, 144.00101) − 1) × 100`.
+Control latency moves **+0.28694%**. This composite does not establish a
+gain, and no component timing or sole-cause explanation is inferred.
+It does not rule out different shapes or reuse of a conversion already
+owed by another consumer.
+
+All 122,880 candidate output values repeat bit for bit; nonfinite values,
+changed guard bytes, input-quantization errors and weight-swizzle errors
+are zero. The sampled FP64 reference covers 768 outputs from the actual
+quantized operands: NMSE `2.07334478181e-12`, below the original diagnostic's
+`1e-10` bound. Against the original F32-input vector, all 122,880 output
+value bit patterns differ and NMSE is `5.55564643371e-4`. That difference is reported without
+relaxing a model quality gate or treating quantized-operand correctness as
+cross-engine or model parity.
+
+Runtime layout metadata reports **40,960 bytes** of quantized-input storage,
+**819,200 bytes** of swizzled-weight scales and **zero** GEMM workspace bytes.
+The external fixture still allocates its generic 32-MiB launch scratch and
+256-byte guards on each side of its buffers; zero GEMM workspace is not a
+claim of zero fixture storage or measured process memory. No model state or
+serving memory claim follows.
+
+Installed GPU-supervised `mx12-tc-build1` and `mx12-tc-screen1` both complete
+zero and are waited on. The bounded compile/link/targeted lint child takes
+10.393 s, and the diagnostic child 0.768 s; both exit zero and are reaped.
+All four strong 105-GiB pre/post gates pass with clear GPU, container and
+native-model probes, and at least 116.346 GiB available. The 487-file compiled
+source inventory and linked kernel archives match before and after both
+jobs. No production source changes or full unit suite are needed for this
+rejected external precision diagnostic under the M3 experimental override.
+
+| Item | SHA-256 |
+| --- | --- |
+| Diagnostic source (parser-bound change only) | `8028bd8ce817296f574a00780e52ec30de71d6b73508a49a129fc83fb4bf497f` |
+| Diagnostic executable | `a744679faa4a8addeeb20ef7562992826ee950c246c6a62cfa3cc231a9322437` |
+| Compiled source inventory | `34556cfa35be0168d903d2123dd489e37f18ba8533283dc35f3747770347d0ca` |
+| GGML kernel archive | `35d466313f24aa8b744af821ef4f5242f3733c2ddcf72b9ffaa454192dfea35a` |
+| CUTLASS archive | `7b5650c8389f9530bba57cb4144c1b32f2a26be7252ff0d2d5c4f32dffda3280` |
+| Frozen SDK compile/link commands | `00e2d65c74c86251fbf6e5a4ab4a578575876721cef1d269c8e04f4d590898eb` |
+| Supervisor-facing controller | `1b930d7d0cdaa716bd7e45b7f6114080cb45d95881faf940e25ed1d9b49dd05f` |
+| Validated screen receipt | `2b4e59e8e07ea1b17b4d101d4df172d1c38a3d94f14def9cb493dc21a9dff6f5` |
+
+Replay the external executable with
+`--shape 12,10240,2560 --padding 12 --reps 128 --warmup-ms 20`.
+The archived original source and parser-only adaptation, exact build
+commands, source/library pins, generated-input recipe, raw output and
+supervised receipts remain outside Git at `spark:~/scratch/mxfp8-twelve-tc/`
+and `/home/pmeenan/scratch/jitllm-m3-qwen-mxfp8-twelve-tc-2026-10-04/` locally.
