@@ -1261,7 +1261,7 @@ it appears.
       calibration record and passive first-use calibrations of the floors,
       recompute cost, DeepSeek's wave costs and Qwen3.8's depth cost
       ([calibration](runtime-serving.md#calibration)). Open: prefill chunk
-      rows and the slot knee outside the controlled Qwen profile below,
+      rows and the slot knee outside the controlled profiles below,
       then the kernel schedule tables.
       [Controlled Qwen chunk screens](experiments/qwen38-prefill-chunks/README.md)
       retain 4,096 rows: 8,192 gains 2.69% at fresh 8K C4 with 4.58% more
@@ -1273,8 +1273,16 @@ it appears.
       median request latency rises about 48%. An owned settings-only record
       with the runtime-generated key accepts `max_slots: 4` as calibrated,
       while explicit slot overrides and a smaller head invalidate it.
-      Production state and defaults are unchanged; other Qwen profiles and
-      DeepSeek controlled slot calibration remain open.
+      A [controlled DeepSeek comparison](experiments/deepseek-slot-knee/README.md)
+      also retains four for the community+DSpark automatic profile: six
+      gains 16.36% / 21.79% short throughput with 25.74% / 22.88% higher
+      median latency; one long cell gains 6.70% with 9.30% / 10.26% higher
+      mean/median latency. Six remains an explicit throughput/tail option.
+      A separate current-build prime produces a real key for an owned
+      slot-only record; four is calibrated, while explicit slot or wave-cost
+      overrides and a changed context make it stale. Historical measurements
+      remain on their original build/key. Production state and defaults
+      are unchanged; broader profile calibration remains open.
 - [ ] **Long context** (the owner, 2026-09-29: coding clients run at long
       context by default, so M3 measures and fully optimizes it, not only
       8K). Each LLM runs a context ladder of 8K, 32K, 64K and 128K, then

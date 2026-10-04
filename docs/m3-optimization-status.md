@@ -27,8 +27,16 @@ retains four for its selected-head/4,096-row profile: six slots are neutral
 in completed-token throughput and increase median request latency about
 48% on two six-request short bursts. The runtime-generated key accepts a
 controlled `max_slots: 4` in isolated owned state; overrides and a smaller
-head invalidate it. Production state/defaults are unchanged. Other Qwen
-profiles and DeepSeek controlled slot calibration remain open.
+head invalidate it. Production state/defaults are unchanged.
+The [controlled DeepSeek slot comparison](experiments/deepseek-slot-knee/README.md)
+also retains four for its community+DSpark automatic profile. Six pays the
+same six requests at every cap: short throughput gains 16.36% / 21.79%
+with median latency 25.74% / 22.88% higher; one long cell gains 6.70% with
+mean/median latency 9.30% / 10.26% higher. Six remains an explicit
+throughput/tail option. A separate current-build prime produces an authentic
+key for an owned slot-only calibrated-four record; explicit slot or
+wave-cost-prefix overrides and a changed context invalidate it. Historical performance keys are
+unchanged. Other profiles and broader slot calibration remain open.
 
 ## Remaining gaps
 

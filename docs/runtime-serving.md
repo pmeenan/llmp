@@ -271,8 +271,14 @@ need controlled runs; the record already takes them. The
 [controlled Qwen slot screen](experiments/qwen38-slot-knee/README.md) retains
 four for the measured selected-head/4,096-row profile and proves its
 calibrated source in isolated owned state. No production record or default
-changes. Other Qwen profiles and DeepSeek still need controlled slot
-calibration. An override always wins over a calibration.
+changes. The [controlled DeepSeek comparison](experiments/deepseek-slot-knee/README.md)
+also retains four for the community+DSpark automatic profile: six raises
+throughput but delays mean/median completion, and remains an explicit
+throughput/tail option. A separate current-build prime supplies the actual
+key for an owned slot-only record; explicit slot or wave-cost-prefix
+overrides and a changed context make it stale. The performance measurements keep their original
+build/key. Broader profiles still need controlled calibration. An override
+always wins over a calibration.
 
 ## Registration and the swap
 
@@ -1220,7 +1226,15 @@ request decodes 24% and then 12% slower; Qwen3.8 gains nothing at any
 width (its depth-2 verifies split into groups that each read the
 weights, and a row's routed experts are mostly its own) while each
 request decodes 36–48% slower ([request
-slots](experiments/request-slots/README.md#warm-plans)). A larger cap
+slots](experiments/request-slots/README.md#warm-plans)). Those historical
+DeepSeek gains use the original artifact and unmatched counts. A later
+[matched community-artifact control](experiments/deepseek-slot-knee/README.md)
+always pays six requests: six slots gain 16.36% / 21.79% short throughput
+with 25.74% / 22.88% higher median latency; a long cell gains 6.70% with
+9.30% / 10.26% higher mean/median latency. It retains four for the primary
+latency-focused profile, while six remains a throughput/tail option. Its
+second burst includes automatic width exploration and acceptance state,
+not just warmed plans. A larger cap
 also plans each wave composition when first met and meets far more of
 them, so planning goes on through the service's life and grows steeply
 with the cap: across two bursts Qwen3.8 planned 1.8 s at four slots and
