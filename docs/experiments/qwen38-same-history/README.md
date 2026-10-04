@@ -173,3 +173,117 @@ On a Spark, run `python3 compare.py --native CURATED --native PREFIX
 schedule, complete paid-work and cleanup receipt, matching prompt hashes
 and anchors, finite complete F32 rows and their hashes, and consistent
 actual acceptance. Raw inputs, rows, logs and receipts stay outside Git.
+
+## Cache-path and repeat controls (2026-10-04)
+
+The fourth anchor's reference acceptance varies with the recorded cache path
+and between default-mode repeats. The original 9/12 versus 11/12 screen is
+valid for its recorded requests, but does not establish a stable two-draft
+native deficit. Native's 2,048-row prefill does not change this anchor's
+proposals or acceptance. No arithmetic change, acceptance-parity claim,
+performance gate or quality exception follows from these diagnostics.
+
+Mia runs on Spark B with the same pinned fast launcher, image, checkpoint,
+observer and inference settings above. Each collection starts a fresh service.
+Every listed p3 request supplies the same 31,746 prompt IDs and anchor 1156;
+all requests complete nine output tokens. The two-path collections use a
+separate cache salt for each path: p3 cold → p3 repeat, then p0 cold → p3 →
+p3 repeat. Actual cache counts distinguish cold from reuse; both paths' warm
+requests reuse 31,616 tokens. Observed readiness is 159.14 / 159.09 / 193.14 s
+for the cold-p3, two-path default and two-path deterministic collections.
+Observation costs remain inside the decode clock; no inference timings qualify.
+
+| Collection / request | Cached tokens | Drafts | Accepted / offered |
+| --- | ---: | --- | ---: |
+| Default cold-p3, p3 cold | 0 | 579, 1330, 8806 | 3 / 3 |
+| Default cold-p3, p3 repeat | 31,616 | 579, 1622, 13 | 1 / 3 |
+| Default two-path, p3 cold | 0 | 579, 1330, 8806 | 3 / 3 |
+| Default two-path, p3 repeat | 31,616 | 579, 1330, 8806 | 3 / 3 |
+| Default two-path, p3 after p0 | 31,616 | 579, 1622, 13 | 1 / 3 |
+| Default two-path, p3 repeat after p0 | 31,616 | 579, 1330, 8806 | 1 / 3 |
+| Deterministic two-path, p3 cold | 0 | 579, 1622, 13 | 1 / 3 |
+| Deterministic two-path, p3 repeat | 31,616 | 579, 1330, 8806 | 3 / 3 |
+| Deterministic two-path, p3 after p0 | 31,616 | 579, 1622, 13 | 1 / 3 |
+| Deterministic two-path, p3 repeat after p0 | 31,616 | 579, 1622, 13 | 1 / 3 |
+
+The deterministic diagnostic turns on both recipe switches,
+`VLLM_QSA_DET_TOPK=1` and `VLLM_MOE_DET_FINALIZE=1`; actual container
+settings are verified. It is a separate diagnostic configuration, not a
+replacement for the pinned performance comparator. Its last two complete
+four-row target heads repeat byte-exactly (SHA-256
+`f2f0d63200a4d9423f9ac0175cada5f2bc93b7d5253a5fa7ea86cf204d27dabc`),
+with the same drafts and acceptance as native. Its cold and first cached
+p3 requests still differ. These few observations neither establish general
+reference repeatability nor isolate a particular cache or arithmetic operation.
+
+The default two-path p3 repeat after p0 rejects draft 1330 because its target
+chooses 1622 after the shared anchor and first draft; the preceding request's
+target chose 1330 on that same conditioning. Thus target variation, as well
+as draft variation, affects these counts. The first cold-p3 collection also
+changes p2's acceptance from the historical 2/3 to 3/3. Comparing only prompt
+IDs or adding those counts to the historical total hides these differences.
+Future same-history acceptance controls must record request order, cache
+counts, actual drafts and complete target heads, and include reference repeats.
+Broader acceptance qualification remains open.
+
+Native on Spark A uses the same target/drafter and existing unmodified
+benchmark, context 33,792, fixed depth three, head 47,172, runtime prefill and
+two independent greedy repeats, with p3 selected alone. Three supervised
+invocations use chunk rows 4,096 → 2,048 → 4,096. Each passes all nine-output
+greedy controls with zero violations. All three propose 579, 1622, 13 and
+accept 1/3. The 4,096-row first-verify heads are byte-identical (SHA-256
+`5a2d9ad6882028869e92b7427d99dc0065a49c2fa2c5c0493800170b8615f556`);
+2,048 rows changes the full head bytes
+(`2ff0f6c4670548e3088a948892dbdccd25ced4e48284d8ed42b67c1a2f4718c3`),
+while retaining all four argmaxes. The executable SHA-256 is
+`4d3228cc89520db7c7866d78a4c5db6ac5bdbbcd79e4363d192063e9ab52ae93`.
+Chunk size, executable identity and retirement are established by the
+archived supervisor commands/receipts, not by `spec.json` alone.
+
+### Reproduce and validate
+
+[cache_control.py](cache_control.py) materializes the exact measured diagnostic
+controllers/clients from the pinned originals, checking input and generated
+source hashes. On B, pass `--controller ~/scratch/acceptance/mia-first-verify-run.py`,
+`--client ~/scratch/m3-serving-concurrent-r1/frozen-v2/mia-anchor-client.py`,
+`--helper ~/scratch/m3-serving-concurrent-r1/frozen-v2/jitllm-mia-concurrent-run.py`
+and `--out ~/scratch/acceptance`. Run each emitted `mia-cold-p3-run.py`,
+`mia-cache-paths-run.py` and `mia-cache-det1-run.py` under installed
+`spark-job start --gpu --timeout 600`, then wait. Each requires its output
+directory to be absent; archive a prior output before re-running. The
+existing pinned observer, loader payload, launcher and frozen history above
+are prerequisites. Controllers verify actual launch settings and owned
+retirement; generated source pins are embedded in the materializer.
+
+For native, use the earlier benchmark command with `--only p3`, head 47,172
+and each of the three chunk-row settings, with separate output directories.
+The measured collection instead filtered the input to its identical p3 entry;
+its I32 digest remains the p3 digest above. Keep the supervisor commands and
+successful completion records alongside the output.
+
+Run [cache_compare.py](cache_compare.py) on a Spark with `--cold COLD_P3
+--paths DEFAULT_PATHS --det DETERMINISTIC_PATHS --native-before BEFORE
+--native-small SMALL --native-after AFTER --out NEW_JSON`. It validates
+complete finite F32 payloads/hashes and actual argmaxes, prompt digests,
+exact API/worker identity joins, actual sampled prefixes, cache salts/counts,
+launch determinism settings, cleanup and native head bookends. It reports
+only the collected controls; it does not qualify speed or general parity.
+
+Raw reference files remain on B at `~/scratch/acceptance/{mia-cold-p3,
+mia-cache-paths,mia-cache-det1}`. Native controls remain on A at
+`~/scratch/acceptance/native-p3-{4096-before,2048,4096-after}`; reference
+copies and `cache-analysis-qualified.json` are on A beside them. Jobs
+`qaccept-cold-p3`, `qaccept-cache-paths`, `qaccept-cache-det1`,
+`qaccept-p3-chunks` and `qaccept-cache-analysis-qualified` all completed with
+exit zero and were waited on. Every reference container was removed and
+its launcher reaped with no cleanup errors. No production code changed;
+no new unit suite or workstation tier was needed for these diagnostic drivers.
+
+| Evidence | SHA-256 |
+| --- | --- |
+| Cold-p3 reference receipt | `6e7e678751b844dbc1820508221002128b446a0d7e9c6b3b2250727465be6fd9` |
+| Default two-path reference receipt | `cacec5edd2d4bdd709afb3125db4194ea492f2513fa48ab3895b6da8c6b36528` |
+| Deterministic two-path reference receipt | `3c6ab11912c56fdd5ec33001a42bdf1bef98d8779d9061484c54ce3f079545df` |
+| Native 4,096 before spec.json | `a1d6edb319fd72ba5e9e5fd55afd27e57e707f8673b916bb4c15edcb4ccfac40` |
+| Native 2,048 spec.json | `36316ab42202dd8dcf6c6bc40944eafb92da5fbecf2db5c8ddaca821f0df4526` |
+| Native 4,096 after spec.json | `45dd16715baab445fbf1a56d1df7161eee1ffbce4a102027177ae07f4bf44c3c` |

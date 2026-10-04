@@ -504,6 +504,10 @@ it appears.
       launcher: native accepts 9/12 actual drafts versus 11/12, with both
       native head layouts identical. The fourth anchor's deficit is a
       proposal difference where both targets agree on the shared input.
+      [Cache-path and repeat controls](experiments/qwen38-same-history/README.md#cache-path-and-repeat-controls-2026-10-04)
+      then find reference draft and target variation: the two-draft gap is
+      not established as stable, and a repeated deterministic cache path
+      matches native at 1/3. Smaller native prefill chunks retain its drafts.
       Broader acceptance parity remains open; no bound or math default changes.
 - [x] **The swap path:** evict the outgoing model and hand its backing to
       the incoming one (D-033's handoff, pulled from M6; D-081), with

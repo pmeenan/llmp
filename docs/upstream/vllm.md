@@ -124,3 +124,22 @@ comes from vLLM.
 - **Proposed action:** optional: a short comment to the recipe's authors.
   Low priority; their workaround still works.
 - **Links:** RE-029 in [rough-edges.md](../rough-edges.md).
+
+## Same-history acceptance varies across cache paths and repeats
+
+2026-10-04, pinned image/recipe above, Spark B. The [native/reference
+controls](../experiments/qwen38-same-history/README.md#cache-path-and-repeat-controls-2026-10-04)
+supply identical 31,746 prompt IDs and record actual three-draft first
+verifies. Default-mode p3 acceptance varies from 1/3 to 3/3; a warm repeat
+changes a target argmax on the same conditioning as well as draft proposals.
+With both recipe determinism switches enabled, one p0-warmed p3 repeat
+has byte-identical full target heads and matches native at 1/3, but cold
+and cached p3 still differ. This does not isolate a faulty operation or
+establish general repeatability; the image is a private build, and upstream
+main was not tested.
+
+Reference acceptance diagnostics must record request order, cache counts,
+actual draft IDs and target heads, and repeat the reference. The original
+four-anchor 9/12 versus 11/12 observation is not a stable-deficit proof. No
+engine patch or upstream report is ready; preserve the linked reproduction
+and isolate the cache/math path before attributing a defect.

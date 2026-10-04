@@ -395,6 +395,13 @@ and its deterministic mode, the oracle's, sets `VLLM_QSA_DET_TOPK=1`
 (baselines.md). DeepSeek V4's top-k
 (the lightning indexer's) showed no such difference until the
 prefill-chunk slice (below).
+The 2026-10-04 [same-history cache controls](experiments/qwen38-same-history/README.md#cache-path-and-repeat-controls-2026-10-04)
+record actual reference draft and target variation at identical prompt IDs.
+Even with both recipe determinism switches on, cold and cached requests
+can differ; one repeated cache path does have byte-identical target heads.
+Cache counts, request order and reference repeats are required when
+interpreting acceptance; this is not proof that top-k causes every
+difference. See the [reference handoff](upstream/vllm.md#same-history-acceptance-varies-across-cache-paths-and-repeats).
 Impact: jitLLM's Qwen3.8 is not repeatable past 2,051 cells; any
 bit-identity check there must compare against the same state, not a rerun
 (the swap runner snapshots the state and runs the unswapped continuation
