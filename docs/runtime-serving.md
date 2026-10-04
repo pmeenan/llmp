@@ -259,8 +259,12 @@ artifact, holds a key other than the calibrated ones (the five above,
 `prefill_chunk` and `max_slots`) or a value outside its key's range, or that
 users other than root and the runtime's could change, is refused, logged
 and replaced the same way. Prefill chunk rows and the request-slot knee
-need controlled runs and keep their fallbacks; the record already takes
-them. An override always wins over a calibration.
+need controlled runs; the record already takes them. The
+[controlled Qwen slot screen](experiments/qwen38-slot-knee/README.md) retains
+four for the measured selected-head/4,096-row profile and proves its
+calibrated source in isolated owned state. No production record or default
+changes. Other Qwen profiles and DeepSeek still need controlled slot
+calibration. An override always wins over a calibration.
 
 ## Registration and the swap
 

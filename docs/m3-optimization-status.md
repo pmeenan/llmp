@@ -22,6 +22,14 @@ corrects requested-versus-effective row labels: the installed selected MTP
 head has 47,172 rows even when 65,536 is requested. Existing timings and
 acceptance counts remain valid; those nominal caps are not two layouts.
 
+The [controlled Qwen slot-cap screen](experiments/qwen38-slot-knee/README.md)
+retains four for its selected-head/4,096-row profile: six slots are neutral
+in completed-token throughput and increase median request latency about
+48% on two six-request short bursts. The runtime-generated key accepts a
+controlled `max_slots: 4` in isolated owned state; overrides and a smaller
+head invalidate it. Production state/defaults are unchanged. Other Qwen
+profiles and DeepSeek controlled slot calibration remain open.
+
 ## Remaining gaps
 
 The [controlled Qwen chunk screens](experiments/qwen38-prefill-chunks/README.md)
