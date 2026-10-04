@@ -186,3 +186,13 @@ M3.5 applies the same comparison to its new EXL3 and legacy families. M4's
 [Kindling and TensorFold references](m4-references.md) add multi-node
 techniques only after their recipes and measured two-Spark behavior are
 re-pinned at entry. Their claimed rankings are not local measurements.
+
+
+### Qwen expert-major group cap — 2026-10-04
+
+The private NVFP4/MTP C4 reduction from eight to four matching slots is
+neutral/slower: 106.947 ms versus 106.667 / 106.060 ms original verify
+bookends, +0.549% against their mean. All per-slot tokens, full verify rows
+and initialized final state hashes match. Keep the production cap eight;
+this is no measured register/occupancy result. See the
+[screen](experiments/qwen38-four-request-waves/README.md#smaller-expert-sharing-groups--2026-10-04).

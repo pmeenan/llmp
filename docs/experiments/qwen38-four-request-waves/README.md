@@ -353,3 +353,53 @@ without a confidence interval or an updated C1/C2 result.
 | Controller | `c3c0ebe1072d7cd8127ab16d2866dafa148d57011fbce3b2a3f59a4e39c8da07` |
 | Frozen client | `4f76adb8e36bb97e04c30f22d28d8d2ffc985d67aa4621f083ac92fc5e85d8f3` |
 | Frozen input receipt | `d5a35e6341e53de0286cfd777e4fadd707c12cf9d18f95010a4a38ffac0ab59d` |
+
+
+## Smaller expert-sharing groups — 2026-10-04
+
+Reducing the private expert-major group cap from eight slots to four is
+**not adopted**. The representative original/candidate/original control
+measures verify medians 106.667 / 106.947 / 106.060 ms: the candidate is
+0.549% slower than the mean original, with -0.569% original bookend movement.
+This does not justify replacing the production eight-slot grouping or
+expanding into a serving/context ladder.
+
+The motivation was fewer live accumulators in `GemvExperts`; a repeated
+expert selected more than four times instead needs several groups. Only
+`kMatched = 8` changes to four, without changing dispatch, output tiles,
+quantization, per-token reductions or solo verify. Register use, actual
+occupancy and weight-traffic changes were not measured; none is inferred
+from the neutral whole-wave result.
+
+Spark B, driver 580.178.04, CUDA 13.4.92 and SDK
+`aarch64-e0a0c85c42806fb1`. The private worktree is based on `4412786`.
+`jitllm_qwen38_spec --check wave` uses the NVFP4/MTP artifacts above,
+65,536-entry prefix head, four slots, lanes on, context 16,384,
+4,096-row prefill, depth two within shared waves and 96 generated tokens per
+slot. Inputs are the first two decode and first two chat entries from
+`fast-swap/prompts.json`. This is an in-process short-prompt verify clock,
+excluding prefill and draft time, not an HTTP throughput measurement.
+
+All three arms produce 43 waves. Four token-history hashes, four complete
+verify-row hashes and four final initialized target/drafter-state hashes
+match exactly across all arms. Each captures two verify graphs and replays
+38. Processes finish in 31.05–31.51 seconds, return zero and are reaped;
+strong admission and retirement gates pass around every arm. The installed
+GPU-supervised build and `qwen-expert-screen4` jobs finish successfully and
+are waited on. No runtime source from this experiment lands; the diagnostic
+optimization override defers full suites for rejected candidates.
+
+Raw records, controller and one-line patch remain outside Git under
+`~/scratch/qwen-expert-groups/` on Spark B and
+`/home/pmeenan/scratch/jitllm-m3-qwen-expert-groups-2026-10-04/` locally.
+The source worktree is `/home/pmeenan/src/jitLLM-qwen-expert-groups` and its
+Spark copy `~/src/jitLLM-wt/qxgrp001/`. Repeat its `screen.py` in a fresh
+output directory under the installed GPU supervisor and wait; it compares
+complete per-slot hashes, completion and capture/replay as well as medians.
+
+| Identity | SHA-256 |
+| --- | --- |
+| Original benchmark | `c2351f846370d201a2546f7781522b0fd9dd5f8c6fa877acde0fc3df9084164c` |
+| Four-slot candidate | `d27c4569c88264478371f46ff71a622c8703c25330fbf0f3f00bde68a8937730` |
+| Controller | `82a97a0ab9514cf87f64633550d30476dbdd14c9cc2f07a6e1938517e1567286` |
+| Candidate patch | `a3bcd071b6c69c7c5cf54c6755f8d84f6f3a9266454b7f074976eae4b8ad703c` |
