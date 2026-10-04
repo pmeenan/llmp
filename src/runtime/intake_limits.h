@@ -50,9 +50,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <thread>
+#include <vector>
 
 #include "config/node_config.h"
 
@@ -126,8 +129,11 @@ class RequestMemory {
   // order) or shrinks it: whether it now holds `to`.
   using Grower = std::function<bool(std::uint64_t to)>;
 
-  explicit RequestMemory(std::uint64_t floor, std::uint64_t capacity = 0)
-      : floor_(floor), capacity_(capacity == 0 ? floor : capacity), grant_(floor) {}
+  // `exact`: the driver grower receives incoming bytes for growth and zero
+  // for trim, and charges used() + incoming. Releases during reclaim can
+  // therefore reduce the target; no floor/slack belongs to this pool.
+  explicit RequestMemory(std::uint64_t floor, std::uint64_t capacity = 0, bool exact = false)
+      : floor_(floor), capacity_(capacity == 0 ? floor : capacity), exact_(exact), grant_(floor) {}
   RequestMemory(const RequestMemory&) = delete;
   RequestMemory& operator=(const RequestMemory&) = delete;
   RequestMemory(RequestMemory&&) = delete;
@@ -181,6 +187,8 @@ class RequestMemory {
 
   const std::uint64_t floor_;
   const std::uint64_t capacity_;
+  // Native histories: no grant slack, and reclaim may release owners during growth.
+  const bool exact_;
   mutable std::mutex mutex_;
   std::uint64_t grant_;
   std::uint64_t used_ = 0;
@@ -221,6 +229,28 @@ class MemoryCharge {
   RequestMemory* pool_ = nullptr;
   std::uint64_t bytes_ = 0;
 };
+
+// Fund replacement capacity, including simultaneous old/new storage, before
+// allocating. On refusal neither storage nor its ownership charge changes.
+bool ReserveTokenStorage(std::vector<std::int32_t>& tokens, MemoryCharge& charge,
+                         RequestMemory& memory, std::size_t capacity);
+struct TokenReclaimGroup {
+  std::size_t end = 0;  // exclusive end in the recency-ordered history capacities
+  std::uint64_t catalog_bytes = 0;
+};
+// One recency prefix just far enough to cover `needed` catalog bytes (or
+// all it can free). A single candidate keeps rounding credits independent
+// of the selector's victim order. `used` includes pending admission bytes.
+// Partial trailing capacities that free no quantum stay retained.
+std::vector<TokenReclaimGroup> GroupTokenReclaim(
+    std::span<const std::uint64_t> capacities, std::uint64_t used, std::uint64_t quantum,
+    std::uint64_t needed = std::numeric_limits<std::uint64_t>::max());
+// During native admission, replace actual token-catalog release with the
+// decrease in the rounded prospective target; retain other catalog release.
+std::uint64_t TokenReclaimCredit(std::uint64_t catalog_drop, std::uint64_t token_drop,
+                                 std::uint64_t target_drop);
+
+void ReleaseTokenStorage(std::vector<std::int32_t>& tokens, MemoryCharge& charge);
 
 }  // namespace jitllm::runtime
 

@@ -578,3 +578,57 @@ TEST(StateKeeper, AdoptionEmptiesWhatTheRecordDoesNotList) {
 }
 
 }  // namespace
+
+TEST(StateKeeper, PendingTokenCopyKeepsItsChargeThroughInvalidationAndRetirement) {
+  namespace rt = jitllm::runtime;
+  const fs::path root = Scratch("charged-keeper");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  rt::RequestMemory memory(4096);
+  {
+    StateKeeper keeper(1, {});
+    const std::size_t index = keeper.AddModel(::dup(model.fd));
+    const StateKeeper::Quiet quiet(&keeper);
+    const auto file = WriteExtents(model.fd, "slot-1.state", 1, 5);
+    for (int serial = 0; serial < 32; ++serial) {
+      rt::MemoryCharge tokens;
+      kept::Record r = Sample();
+      std::vector<std::int32_t>().swap(r.tokens);
+      ASSERT_TRUE(rt::ReserveTokenStorage(r.tokens, tokens, memory, 64));
+      r.tokens.assign(64, serial);
+      r.slot = 1;
+      r.file = kept::StateFileName(1);
+      r.id = Id(file);
+      r.regions = {kExtent};
+      r.file_bytes = kExtent;
+      r.extents = {{.region = 0, .index = 0, .digest = {}}};
+      r.checkpoints.clear();
+      keeper.Keep(index, std::move(r), std::move(tokens));
+      EXPECT_LE(memory.used(), 2 * 64 * sizeof(std::int32_t));
+    }
+    keeper.Invalidate(index, 1);
+    ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  }
+  EXPECT_EQ(memory.used(), 0U);
+  fs::remove_all(root);
+}
+
+TEST(KeptRecord, DecodingFundsIndependentTokenCapacityBeforeAllocation) {
+  namespace rt = jitllm::runtime;
+  const auto text = kept::Encode(Sample());
+  rt::RequestMemory tiny(1);
+  rt::MemoryCharge refusal;
+  EXPECT_FALSE(kept::Decode(text, &tiny, &refusal));
+  EXPECT_EQ(tiny.used(), 0U);
+  rt::RequestMemory roomy(4096);
+  rt::MemoryCharge tokens;
+  {
+    auto record = kept::Decode(text, &roomy, &tokens);
+    ASSERT_TRUE(record);
+    EXPECT_EQ(tokens.bytes(), record->tokens.capacity() * sizeof(std::int32_t));
+    EXPECT_EQ(roomy.used(), tokens.bytes());
+  }
+  tokens.Reset();
+  EXPECT_EQ(roomy.used(), 0U);
+}

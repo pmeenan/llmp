@@ -40,6 +40,7 @@
 #ifndef JITLLM_RUNTIME_SERVING_H_
 #define JITLLM_RUNTIME_SERVING_H_
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -406,7 +407,7 @@ class Llm : public Served {
     std::uint64_t state_snapshot_bytes() const;
     Status SaveState(void* host);
     Status RestoreState(void* host);
-    void InvalidateStateSnapshot() { saved_valid_ = false; }
+    void InvalidateStateSnapshot();
     // Whether the last serial Prefill, ScorePrompt, PreparePrompt or
     // Generate of this branch ended on a capacity refusal (Llm::
     // set_capacity_reclaim): the state usable at its completed prefix.
@@ -420,10 +421,14 @@ class Llm : public Served {
 
     Llm& model_;
     const std::uint32_t slot_;
+    MemoryCharge history_charge_;
     std::vector<std::int32_t> history_;
     // A possibly run failed step invalidates this branch until native clear.
     bool needs_clear_ = false;
+    MemoryCharge saved_history_charge_;
     std::vector<std::int32_t> saved_history_;
+    MemoryCharge verify_tokens_charge_;
+    std::vector<std::int32_t> verify_tokens_;
     std::uint32_t saved_cursor_ = 0;
     std::vector<engine::LiveState::Range> saved_ranges_;
     bool saved_valid_ = false;
@@ -445,6 +450,7 @@ class Llm : public Served {
     };
     UseStamp history_used_;
     bool generation_active_ = false;
+    bool funding_history_ = false;
     std::atomic<std::uint32_t> continuations_{0};
     bool capacity_refused_ = false;
     const PromptSession* prompt_session_ = nullptr;
@@ -453,6 +459,11 @@ class Llm : public Served {
   };
 
   Llm();
+  // Attach before any history allocation; the pool outlives this model.
+  void SetTokenMemory(RequestMemory& memory);
+  std::uint64_t token_history_bytes() const;
+  std::uint64_t IdleHistoryBytes(const Branch& branch) const;
+  bool HistoryReclaimable(const Branch& branch) const;
   Branch& default_branch() & { return default_branch_; }
   const Branch& default_branch() const& { return default_branch_; }
   // A branch a native request slot (engine/request_cohort.h kMaxRequestSlots).
@@ -740,15 +751,16 @@ class Llm : public Served {
 
    private:
     friend class Llm;
-    PromptSession(Llm& model, Branch& branch, std::span<const std::int32_t> tokens,
-                  std::uint32_t stable_boundary, bool fresh, bool resume, bool scoring,
+    PromptSession(Llm& model, Branch& branch, std::uint32_t stable_boundary, bool fresh,
+                  bool resume, bool scoring,
                   std::function<bool(std::int32_t, std::span<const float>)> on_row);
     void NextPhase();
     void Stop();
     Status Fail(std::string error);
     Llm& model_;
     Branch& branch_;
-    const std::vector<std::int32_t> tokens_;
+    MemoryCharge tokens_charge_;
+    std::vector<std::int32_t> tokens_;
     const std::uint32_t stable_boundary_;
     const bool fresh_;
     const bool resume_;
@@ -837,6 +849,7 @@ class Llm : public Served {
     Branch& branch_;
     const GenerateOptions& options_;
     Generation& out_;
+    MemoryCharge all_charge_;
     std::vector<std::int32_t> all_;
     std::uint32_t position_ = 0;
     std::uint32_t left_ = 0;
@@ -1114,6 +1127,25 @@ class Llm : public Served {
   // freed capacity for it to run again (set_capacity_reclaim).
   bool CapacityRefused(const Branch& branch) const;
   bool ReclaimFor(const Branch& branch);
+
+ protected:
+  virtual std::uint32_t StepTokenBoundFor(const Branch& branch, std::uint32_t left) const {
+    return std::min(left, BranchDecoding(branch).maximum() + 1);
+  }
+  virtual std::size_t TokenScratchCapacityFor(const Branch&, std::size_t, std::uint32_t) const {
+    return 0;
+  }
+  bool ReserveTokenScratch(Branch& branch, std::size_t tokens, std::uint32_t left);
+  std::vector<std::int32_t>& VerifyTokens(Branch& branch) { return branch.verify_tokens_; }
+  bool ReserveTokens(Branch& branch, std::vector<std::int32_t>& tokens, MemoryCharge& charge,
+                     std::size_t capacity);
+  void ReleaseTokens(std::vector<std::int32_t>& tokens, MemoryCharge& charge);
+  void PublishTokens(Branch& branch, std::vector<std::int32_t>& tokens, MemoryCharge& charge,
+                     std::size_t size);
+
+ private:
+  RequestMemory local_token_memory_{std::numeric_limits<std::uint64_t>::max()};
+  RequestMemory* token_memory_ = &local_token_memory_;
   Branch default_branch_;
   CapacityReclaim capacity_reclaim_;
   std::array<std::unique_ptr<Branch>, kMaxBranches - 1> extra_branches_;
@@ -1274,7 +1306,8 @@ class Server {
   std::uint64_t Reclaim(std::uint64_t needed, bool states, std::string_view why,
                         const Served* running = nullptr,
                         std::optional<memory::ReclaimKind> below_kind = std::nullopt,
-                        bool partial = false, const Llm::Branch* spare = nullptr);
+                        bool partial = false, const Llm::Branch* spare = nullptr,
+                        std::uint64_t token_incoming = 0);
   // Whether the resident model has `needed` bytes of the budget for another
   // request slot's state (docs/runtime-serving.md#request-slots): free now,
   // or freed through the reclaim order (Reclaim with idle state, all of it
@@ -1371,6 +1404,9 @@ class Server {
   // through the reclaim order (PagedNode::SetRequestCharge); whether it
   // holds `to` now.
   bool SetRequestMemory(std::uint64_t to);
+  bool SetTokenMemory(std::uint64_t incoming);
+  std::uint64_t token_history_bytes() const { return token_memory_.used(); }
+  std::uint64_t token_catalog_bytes() const { return node_.token_charged(); }
   // The bytes a body needs to carry the largest registered context's
   // prompt (intake_limits.h ContextBodyBytes).
   std::uint64_t context_body_bytes() const;
@@ -1415,6 +1451,7 @@ class Server {
   MemorySampler memory_;
   ResidentTimes times_;
   // Before the node and the models, so it outlives the files they name.
+  RequestMemory token_memory_{0, std::numeric_limits<std::uint64_t>::max(), true};
   std::unique_ptr<StateKeeper> keeper_;
   std::atomic<bool> hold_reads_{false};  // HoldReads; the node reads it
   std::function<void()> start_progress_;
@@ -1425,6 +1462,7 @@ class Server {
   }
   struct PendingAdoption {
     Llm* model = nullptr;
+    MemoryCharge token_charge;
     kept::Record record;
   };
   std::vector<PendingAdoption> adoptions_;
@@ -1433,6 +1471,8 @@ class Server {
   Served* resident_ = nullptr;
   bool handoff_ = true;
   bool started_ = false;
+  bool token_catalog_ready_ = false;
+  std::uint64_t startup_token_capacity_ = 0;
   bool torn_down_ = false;
   std::uint64_t budget_ = 0;
   std::uint64_t fixed_ = 0;

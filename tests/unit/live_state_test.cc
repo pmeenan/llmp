@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -25,6 +26,7 @@
 #include "expected_error.h"
 #include "platform/direct_io.h"
 #include "providers/device_runtime.h"
+#include "runtime/intake_limits.h"
 #include "scheduler/commands.h"
 
 namespace {
@@ -664,3 +666,91 @@ TEST(LiveStateBufferTest, UnprovenCopyRefusesReuseAndKeepsItsDestinationUntilExi
 }
 
 }  // namespace
+
+class TokenCapacityStateTest : public LiveStateTest {
+  std::uint64_t BudgetExtents() const override { return 2; }
+};
+
+TEST_F(TokenCapacityStateTest, NativeHistoryReclaimReleasesRoundedCatalogOccupancy) {
+  namespace rt = jitllm::runtime;
+  rt::RequestMemory memory(0, 8 * kExtent, true);
+  rt::MemoryCharge idle_charge;
+  std::vector<std::int32_t> idle;
+  unsigned reclaims = 0;
+  memory.SetDriver(std::this_thread::get_id(), [&](std::uint64_t incoming) {
+    std::uint64_t shortfall = 0;
+    if (node_.SetTokenCharge(memory.used() + incoming, &shortfall)) {
+      return true;
+    }
+    ++reclaims;
+    rt::ReleaseTokenStorage(idle, idle_charge);
+    memory.Settle();
+    return node_.SetTokenCharge(memory.used() + incoming, &shortfall);
+  });
+  ASSERT_TRUE(
+      rt::ReserveTokenStorage(idle, idle_charge, memory, 3 * kExtent / (2 * sizeof(std::int32_t))));
+  EXPECT_EQ(memory.used(), 3 * kExtent / 2);
+  EXPECT_EQ(node_.token_charged(), 2 * kExtent);
+  EXPECT_EQ(Occupancy(), fixed_ + 2 * kExtent);
+  rt::MemoryCharge active_charge;
+  std::vector<std::int32_t> active;
+  ASSERT_TRUE(
+      rt::ReserveTokenStorage(active, active_charge, memory, kExtent / sizeof(std::int32_t)));
+  EXPECT_EQ(reclaims, 1U);
+  EXPECT_TRUE(idle.empty());
+  EXPECT_EQ(memory.used(), kExtent);
+  EXPECT_EQ(memory.grant(), kExtent);
+  EXPECT_EQ(node_.token_charged(), kExtent);
+  EXPECT_EQ(Occupancy(), fixed_ + kExtent);
+  rt::ReleaseTokenStorage(active, active_charge);
+  memory.Settle();
+  EXPECT_EQ(node_.token_charged(), 0U);
+  EXPECT_EQ(Occupancy(), fixed_);
+}
+
+class TokenBoundaryStateTest : public LiveStateTest {
+  std::uint64_t BudgetExtents() const override { return 1; }
+};
+
+TEST_F(TokenBoundaryStateTest, TinyIdleHistoryAvoidsAnUnfundedProspectiveExtent) {
+  namespace rt = jitllm::runtime;
+  rt::RequestMemory memory(0, 4 * kExtent, true);
+  rt::MemoryCharge idle_charge;
+  std::vector<std::int32_t> idle;
+  rt::MemoryCharge protected_charge;
+  std::vector<std::int32_t> protected_tokens;
+  unsigned reclaims = 0;
+  memory.SetDriver(std::this_thread::get_id(), [&](std::uint64_t incoming) {
+    std::uint64_t shortfall = 0;
+    if (node_.SetTokenCharge(memory.used() + incoming, &shortfall)) {
+      return true;
+    }
+    const std::array<std::uint64_t, 1> capacities{idle_charge.bytes()};
+    const auto groups =
+        rt::GroupTokenReclaim(capacities, memory.used() + incoming, kExtent, shortfall);
+    if (groups.empty()) {
+      return false;
+    }
+    ++reclaims;
+    rt::ReleaseTokenStorage(idle, idle_charge);
+    memory.Settle();
+    return node_.SetTokenCharge(memory.used() + incoming, &shortfall);
+  });
+  ASSERT_TRUE(rt::ReserveTokenStorage(idle, idle_charge, memory, 8));
+  ASSERT_TRUE(rt::ReserveTokenStorage(protected_tokens, protected_charge, memory,
+                                      (kExtent - 32) / sizeof(std::int32_t)));
+  EXPECT_EQ(memory.used(), kExtent);
+  EXPECT_EQ(node_.token_charged(), kExtent);
+  rt::MemoryCharge incoming_charge;
+  std::vector<std::int32_t> incoming;
+  ASSERT_TRUE(rt::ReserveTokenStorage(incoming, incoming_charge, memory, 8));
+  EXPECT_EQ(reclaims, 1U);
+  EXPECT_TRUE(idle.empty());
+  EXPECT_EQ(memory.used(), kExtent);
+  EXPECT_EQ(node_.token_charged(), kExtent);
+  EXPECT_EQ(Occupancy(), fixed_ + kExtent);
+  rt::ReleaseTokenStorage(incoming, incoming_charge);
+  rt::ReleaseTokenStorage(protected_tokens, protected_charge);
+  memory.Settle();
+  EXPECT_EQ(Occupancy(), fixed_);
+}

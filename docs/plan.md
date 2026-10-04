@@ -194,11 +194,14 @@ family" guide, and its long-context scaling work.
       the list (AGENTS.md: agents never invent supported model
       combinations). Weight licenses are informational (D-087).
       Approved selection: [m35-families.md](m35-families.md).
-- [ ] **Native token-history accounting and reclaim** (M3 review P2,
-      2026-10-04; [current gap](runtime-serving.md#the-chat-route)):
-      close this engine gap before expanding the model library or request
-      concurrency. Native prompt/generation sessions and model-owned
-      retained histories currently consume the fixed uncounted margin.
+- [x] **Native token-history accounting and reclaim** (M3 review P2,
+      2026-10-04; [accounting](runtime-serving.md#the-chat-route),
+      [checks](experiments/m35-token-history/README.md)):
+      completed before expanding the model library or request concurrency.
+      Native session, retained, snapshot, verification and persistence token
+      capacities have explicit ownership and pre-allocation funding, outside
+      the fixed uncounted margin. Both M3 LLMs pass exact 8K state/continuation
+      controls; small-budget CPU/fake and rounded-catalog GPU regressions pass.
       - Charge actual allocated capacity for `PromptSession::tokens_`,
         `GenerationSession::all_`, `Branch::history_` and
         `Branch::saved_history_`, including temporary copies on admission,

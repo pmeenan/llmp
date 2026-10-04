@@ -59,6 +59,11 @@
 
 #include "base/sha256.h"
 
+namespace jitllm::runtime {
+class RequestMemory;
+class MemoryCharge;
+}  // namespace jitllm::runtime
+
 namespace jitllm::runtime::kept {
 
 inline constexpr std::string_view kFormat = "jitllm-kept-conversation";
@@ -157,7 +162,8 @@ std::string Encode(const Record& record);
 // A record read back: well-formed, every field present with its type and
 // nothing else, and its digest its text's. Not yet checked against the
 // adopting process (Check).
-std::expected<Record, std::string> Decode(std::string_view text);
+std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* memory = nullptr,
+                                          MemoryCharge* token_charge = nullptr);
 
 // Where an extent lies in its spill file.
 std::uint64_t ExtentOffset(std::span<const std::uint64_t> regions, const Extent& extent);

@@ -460,6 +460,8 @@ class PagedNode {
   // what it lacks in *shortfall; the caller reclaims and asks again), and
   // shrinking always succeeds.
   bool SetRequestCharge(std::uint64_t bytes, std::uint64_t* shortfall = nullptr);
+  bool SetTokenCharge(std::uint64_t bytes, std::uint64_t* shortfall = nullptr);
+  std::uint64_t token_charged() const { return token_charged_; }
   std::uint64_t request_charged() const { return request_charged_; }
   // Every model's counted bytes, and the part charged inside the budget.
   std::uint64_t host_counted() const { return host_total_; }
@@ -650,6 +652,8 @@ class PagedNode {
   // `force`), the shortfall in *shortfall.
   bool ChargeRuntime(catalog::ExtentId& held, std::uint64_t& charged, std::uint64_t bytes,
                      bool force, std::uint64_t* shortfall, std::string_view what);
+  std::uint64_t token_charged_ = 0;
+  catalog::ExtentId token_extent_;
   std::uint64_t request_charged_ = 0;
   catalog::ExtentId request_extent_;
   std::uint64_t host_floor_ = std::numeric_limits<std::uint64_t>::max();

@@ -71,6 +71,21 @@ std::optional<chat::jinja::CivilTime> LocalTime() {
                                 .yearday = tm.tm_yday};
 }
 
+class HistoryFundingGuard {
+ public:
+  explicit HistoryFundingGuard(bool& funding)
+      : funding_(funding), before_(std::exchange(funding, true)) {}
+  HistoryFundingGuard(const HistoryFundingGuard&) = delete;
+  HistoryFundingGuard& operator=(const HistoryFundingGuard&) = delete;
+  HistoryFundingGuard(HistoryFundingGuard&&) = delete;
+  HistoryFundingGuard& operator=(HistoryFundingGuard&&) = delete;
+  ~HistoryFundingGuard() { funding_ = before_; }
+
+ private:
+  bool& funding_;
+  bool before_;
+};
+
 namespace fs = std::filesystem;
 namespace ja = jitllm::artifact;
 
@@ -1196,10 +1211,21 @@ class Qwen38 final : public Llm {
     NativeSlot(branch).set_pending_rows(value);
   }
 
+  std::size_t TokenScratchCapacityFor(const Branch& branch, std::size_t tokens,
+                                      std::uint32_t left) const override {
+    return speculate_ ? tokens + std::min(left, DraftDepthFor(branch)) : 0;
+  }
+
   Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
                      std::uint32_t left, std::vector<std::int32_t>& kept,
                      std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
                      bool* prefix_kept = nullptr) override {
+    if (!ReserveTokenScratch(branch, all.size(), left)) {
+      if (prefix_kept != nullptr) {
+        *prefix_kept = true;
+      }
+      return Error("native verify history exceeds the execution budget");
+    }
     // Sampling's position keys keep their existing fixed draft schedule.
     // Greedy chooses its depth from deterministic acceptance observations.
     const auto depth = DraftDepthFor(branch);
@@ -1215,7 +1241,8 @@ class Qwen38 final : public Llm {
     const auto rows = std::min<std::uint32_t>(
         {static_cast<std::uint32_t>(drafts.size()) + 1, left, options_.context - pos});
     drafts.resize(rows - 1);
-    std::vector<std::int32_t> input(all.begin(), all.end());
+    auto& input = VerifyTokens(branch);
+    input.assign(all.begin(), all.end());
     input.insert(input.end(), drafts.begin(), drafts.end());
     std::vector<std::int32_t> argmax;
     std::vector<float> verified;
@@ -1346,7 +1373,6 @@ class Qwen38 final : public Llm {
     struct Frame {
       std::uint32_t depth = 0;
       std::vector<std::int32_t> drafts;
-      std::vector<std::int32_t> input;
       std::vector<std::int32_t> argmax;
       std::vector<float> verified;
     };
@@ -1398,11 +1424,12 @@ class Qwen38 final : public Llm {
           std::min<std::uint32_t>({static_cast<std::uint32_t>(frame.drafts.size()) + 1,
                                    unit.step.left, context_ - unit.step.position});
       frame.drafts.resize(rows - 1);
-      frame.input.assign(unit.step.all.begin(), unit.step.all.end());
-      frame.input.insert(frame.input.end(), frame.drafts.begin(), frame.drafts.end());
+      auto& input = VerifyTokens(*unit.branch);
+      input.assign(unit.step.all.begin(), unit.step.all.end());
+      input.insert(input.end(), frame.drafts.begin(), frame.drafts.end());
       verifies.push_back(
           {.slot = &NativeSlot(*unit.branch),
-           .history = frame.input,
+           .history = input,
            .n_past = unit.step.position,
            .argmax = &frame.argmax,
            .logits = unit.step.need_logits || sampling(*unit.branch) ? &frame.verified : nullptr});
@@ -1683,6 +1710,83 @@ Clock::time_point ResidentTimes::Latest(std::span<const catalog::ExtentId> exten
 // ---------------------------------------------------------------- an LLM
 
 Llm::Llm() : default_branch_(*this) {}
+
+void Llm::SetTokenMemory(RequestMemory& memory) {
+  base::Check(token_history_bytes() == 0, "changing a model's token pool with live history");
+  for (std::size_t slot = 0; slot < branches(); ++slot) {
+    const auto b = branch(slot);
+    base::Check(b && !(*b)->generation_active_ && (*b)->prompt_session_ == nullptr &&
+                    !(*b)->funding_history_,
+                "changing a model's token pool with an active session");
+  }
+  token_memory_ = &memory;
+}
+
+std::uint64_t Llm::token_history_bytes() const {
+  std::uint64_t bytes = 0;
+  for (std::uint32_t slot = 0; slot < branch_count_; ++slot) {
+    const Branch& b = slot == 0 ? default_branch_ : *extra_branches_[slot - 1];
+    bytes += b.history_charge_.bytes() + b.saved_history_charge_.bytes() +
+             b.verify_tokens_charge_.bytes();
+  }
+  return bytes;
+}
+
+std::uint64_t Llm::IdleHistoryBytes(const Branch& branch) const {
+  CheckBranch(branch);
+  return branch.history_charge_.bytes() + branch.verify_tokens_charge_.bytes();
+}
+
+bool Llm::HistoryReclaimable(const Branch& branch) const {
+  return BranchIdle(branch) && !branch.HeldByContinuation() && !branch.funding_history_ &&
+         !branch.saved_valid_;
+}
+
+bool Llm::ReserveTokens(Branch& branch, std::vector<std::int32_t>& tokens, MemoryCharge& charge,
+                        std::size_t capacity) {
+  if (capacity <= tokens.capacity()) {
+    return true;
+  }
+  const bool was_funding = std::exchange(branch.funding_history_, true);
+  // Preserve amortized growth under pressure too: exact one-token growth
+  // would repeatedly copy the whole conversation near the budget limit.
+  const std::size_t grown =
+      std::max(capacity, std::min(std::size_t{context_} + 1, tokens.capacity() * 2));
+  const bool funded = ReserveTokenStorage(tokens, charge, *token_memory_, grown);
+  token_memory_->Settle(0, std::chrono::milliseconds{0});
+  branch.funding_history_ = was_funding;
+  return funded;
+}
+
+bool Llm::ReserveTokenScratch(Branch& branch, std::size_t tokens, std::uint32_t left) {
+  return ReserveTokens(branch, branch.verify_tokens_, branch.verify_tokens_charge_,
+                       TokenScratchCapacityFor(branch, tokens, left));
+}
+
+void Llm::ReleaseTokens(std::vector<std::int32_t>& tokens, MemoryCharge& charge) {
+  ReleaseTokenStorage(tokens, charge);
+  token_memory_->Settle(0, std::chrono::milliseconds{0});
+}
+
+void Llm::PublishTokens(Branch& branch, std::vector<std::int32_t>& tokens, MemoryCharge& charge,
+                        std::size_t size) {
+  base::Check(size <= tokens.size(), "publishing beyond the funded history");
+  if (size == 0) {
+    ReleaseTokens(tokens, charge);
+    ReleaseTokens(branch.history_, branch.history_charge_);
+    return;
+  }
+  tokens.resize(size);
+  branch.history_.swap(tokens);
+  std::swap(branch.history_charge_, charge);
+  ReleaseTokens(tokens, charge);
+}
+
+void Llm::Branch::InvalidateStateSnapshot() {
+  saved_valid_ = false;
+  model_.ReleaseTokens(saved_history_, saved_history_charge_);
+  saved_ranges_.clear();
+}
 
 Llm::Branch::~Branch() {
   base::Check(!generation_active_, "a branch with an active generation was destroyed");
@@ -2114,7 +2218,8 @@ bool Llm::AnyBranchHasRetainedState() const {
 
 bool Llm::BranchIdle(const Branch& branch) const {
   CheckBranch(branch);
-  return !branch.generation_active_ && branch.prompt_session_ == nullptr && !LeasedFor(branch);
+  return !branch.generation_active_ && branch.prompt_session_ == nullptr &&
+         !branch.funding_history_ && !LeasedFor(branch);
 }
 
 std::uint64_t Llm::StateBytes(const Branch& branch) const {
@@ -2218,7 +2323,14 @@ void Llm::KeepBranch(Branch& branch) {
   if (live == nullptr || !live->spill_identity()) {
     return;
   }
+  MemoryCharge token_charge;
   kept::Record r;
+  if (!ReserveTokens(branch, r.tokens, token_charge, branch.history_.size())) {
+    Unkeep(branch);
+    Say(std::format("{}: a conversation record was not kept: token history memory refused",
+                    name()));
+    return;
+  }
   r.identity = kept_.identity;
   r.slot = BranchIndex(branch);
   r.file = kept::StateFileName(r.slot);
@@ -2253,11 +2365,12 @@ void Llm::KeepBranch(Branch& branch) {
                              .decoding = {words.begin(), words.end()},
                              .digests = {}});
   }
-  kept_.keeper->Keep(kept_.model, std::move(r));
+  kept_.keeper->Keep(kept_.model, std::move(r), std::move(token_charge));
 }
 
 Status Llm::Adopt(Branch& branch, kept::Record& record) {
   CheckIdleGeneration(branch);
+  const HistoryFundingGuard funding(branch.funding_history_);
   const engine::LiveState* live = KeptLiveFor(branch);
   if (live == nullptr || kept_.keeper == nullptr) {
     return Error("this model keeps no conversation across a restart");
@@ -2334,6 +2447,9 @@ Status Llm::Adopt(Branch& branch, kept::Record& record) {
     if (const auto named = kept::ParseFileName(c.file); named) {
       checkpoint_serial_ = std::max(checkpoint_serial_, named->serial + 1);
     }
+  }
+  if (!ReserveTokens(branch, branch.history_, branch.history_charge_, record.tokens.size())) {
+    return refused("native adopted history exceeds the execution budget");
   }
   if (auto adopted = AdoptFor(branch, used); !adopted) {
     return refused(adopted.error());
@@ -2607,7 +2723,8 @@ void Llm::Forget(Branch& branch, const PromptSession* prompt) {
   CheckIdleGeneration(branch, prompt);
   Unkeep(branch);
   branch.turn_checkpoints_.clear();
-  branch.history_.clear();
+  ReleaseTokens(branch.history_, branch.history_charge_);
+  ReleaseTokens(branch.verify_tokens_, branch.verify_tokens_charge_);
   branch.needs_clear_ = true;
 }
 
@@ -2618,7 +2735,8 @@ Status Llm::Clear(Branch& branch, const PromptSession* prompt) {
   if (auto r = ClearStateFor(branch); !r) {
     return r;
   }
-  branch.history_.clear();
+  ReleaseTokens(branch.history_, branch.history_charge_);
+  ReleaseTokens(branch.verify_tokens_, branch.verify_tokens_charge_);
   branch.needs_clear_ = false;
   branch.history_used_ = Clock::now();
   return {};
@@ -2631,7 +2749,8 @@ Status Llm::ReleaseIdleState(Branch& branch) {
   CheckIdleGeneration(branch);
   Unkeep(branch);
   branch.turn_checkpoints_.clear();
-  branch.history_.clear();
+  ReleaseTokens(branch.history_, branch.history_charge_);
+  ReleaseTokens(branch.verify_tokens_, branch.verify_tokens_charge_);
   if (auto released = ReleaseIdleStateFor(branch); !released) {
     branch.needs_clear_ = true;  // its next use clears whatever is left
     return released;
@@ -2868,13 +2987,11 @@ Status Llm::PreparePrompt(Branch& branch, std::span<const std::int32_t> tokens,
   return result;
 }
 
-Llm::PromptSession::PromptSession(Llm& model, Branch& branch, std::span<const std::int32_t> tokens,
-                                  std::uint32_t stable_boundary, bool fresh, bool resume,
-                                  bool scoring,
+Llm::PromptSession::PromptSession(Llm& model, Branch& branch, std::uint32_t stable_boundary,
+                                  bool fresh, bool resume, bool scoring,
                                   std::function<bool(std::int32_t, std::span<const float>)> on_row)
     : model_(model),
       branch_(branch),
-      tokens_(tokens.begin(), tokens.end()),
       stable_boundary_(stable_boundary),
       fresh_(fresh),
       resume_(resume),
@@ -2898,9 +3015,15 @@ std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::BeginPrompt
   if (branch.generation_active_ || branch.prompt_session_ != nullptr) {
     return Error("the conversation already has an active session");
   }
-  auto session = std::unique_ptr<PromptSession>(new PromptSession(
-      *this, branch, tokens, stable_boundary, fresh, resume, scoring, std::move(on_row)));
+  auto session = std::unique_ptr<PromptSession>(
+      new PromptSession(*this, branch, stable_boundary, fresh, resume, scoring, std::move(on_row)));
   branch.prompt_session_ = session.get();
+  if (!ReserveTokens(branch, session->tokens_, session->tokens_charge_, tokens.size())) {
+    session->Cancel();
+    (void)session->Finish();
+    return Error("native prompt history exceeds the execution budget");
+  }
+  session->tokens_.assign(tokens.begin(), tokens.end());
   return session;
 }
 
@@ -2953,7 +3076,7 @@ void Llm::PromptSession::NextPhase() {
 Status Llm::PromptSession::Fail(std::string error) {
   branch_.needs_clear_ = branch_.needs_clear_ || !model_.StateUsableFor(branch_);
   if (branch_.needs_clear_) {
-    branch_.history_.clear();
+    model_.ReleaseTokens(branch_.history_, branch_.history_charge_);
   }
   last_.clear();
   complete_ = true;
@@ -3014,6 +3137,13 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity
   } else {
     const auto at = static_cast<std::uint32_t>(branch_.history_.size());
     const auto end = at + next->rows;
+    if (!model_.ReserveTokens(branch_, branch_.history_, branch_.history_charge_, end)) {
+      refused_ = defer_capacity;
+      if (defer_capacity) {
+        return Error("native retained history exceeds the execution budget");
+      }
+      return Fail("native retained history exceeds the execution budget");
+    }
     const auto started = Clock::now();
     const StateKeeper::Quiet quiet(model_.kept_.keeper);  // records' hashing waits
     auto chunk =
@@ -3077,11 +3207,12 @@ Status Llm::PromptSession::Finish() {
     if (scoring_ && ran_ && run_.chunks != 0) {
       if (auto settled = model_.SettleFor(branch_); !settled) {
         branch_.needs_clear_ = true;
-        branch_.history_.clear();
+        model_.ReleaseTokens(branch_.history_, branch_.history_charge_);
         last_.clear();
         ran_ = std::move(settled);
       }
     }
+    model_.ReleaseTokens(tokens_, tokens_charge_);
     branch_.prompt_session_ = nullptr;
     finished_ = true;
   }
@@ -3091,6 +3222,7 @@ Status Llm::PromptSession::Finish() {
 Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::vector<float>& last,
                     const PrefillGoOn& go_on, PrefillRun* run) {
   CheckIdleGeneration(branch);
+  const HistoryFundingGuard funding(branch.funding_history_);
   // Records' hashing waits while the prompt prefills (StateKeeper::Quiet).
   const StateKeeper::Quiet quiet(kept_.keeper);
   branch.capacity_refused_ = false;
@@ -3102,7 +3234,17 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
   if (tokens.empty()) {
     return Error("nothing to prefill");
   }
-  std::vector<std::int32_t> all = branch.history_;
+  const std::size_t total = branch.history_.size() + tokens.size();
+  if (total > context_) {
+    return Error("the prompt exceeds the context");
+  }
+  MemoryCharge all_charge;
+  std::vector<std::int32_t> all;
+  if (!ReserveTokens(branch, all, all_charge, total)) {
+    branch.capacity_refused_ = true;
+    return Error("native prefill history exceeds the execution budget");
+  }
+  all.insert(all.end(), branch.history_.begin(), branch.history_.end());
   all.insert(all.end(), tokens.begin(), tokens.end());
   if (all.size() > context_) {
     return Error(
@@ -3143,10 +3285,12 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
   if (!ran) {
     branch.needs_clear_ = !StateUsableFor(branch);
     if (branch.needs_clear_) {
-      branch.history_.clear();
+      ReleaseTokens(branch.history_, branch.history_charge_);
+      ReleaseTokens(branch.verify_tokens_, branch.verify_tokens_charge_);
     } else {
-      branch.history_.assign(all.begin(), all.begin() + completed);
+      PublishTokens(branch, all, all_charge, completed);
     }
+    ReleaseTokens(all, all_charge);
     last.clear();
     return Error(std::format("{}'s prefill: {}", name_, ran.error()));
   }
@@ -3157,8 +3301,7 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
   // the history is their prefix (which the next prefill continues from,
   // through the same chunk boundaries), and there are no logits to
   // generate from.
-  all.resize(ran->end);
-  branch.history_ = std::move(all);
+  PublishTokens(branch, all, all_charge, ran->end);
   branch.history_used_ = Clock::now();
   if (ran->stopped) {
     last.clear();
@@ -3171,6 +3314,7 @@ Status Llm::ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens,
                         const std::function<bool(std::int32_t, std::span<const float>)>& on_row,
                         const PrefillGoOn& go_on, PrefillRun* run) {
   CheckIdleGeneration(branch);
+  const HistoryFundingGuard funding(branch.funding_history_);
   branch.capacity_refused_ = false;
   if (!branch.history_.empty() || tokens.empty() || tokens.size() > context_) {
     return Error("literal scoring needs an empty history and a nonempty prompt within context");
@@ -3187,6 +3331,10 @@ Status Llm::ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens,
       completed.stopped = true;
       break;
     }
+    if (!ReserveTokens(branch, branch.history_, branch.history_charge_, at + 1)) {
+      branch.capacity_refused_ = true;
+      return Error("native scoring history exceeds the execution budget");
+    }
     const auto started = Clock::now();
     auto ran = RunChunkFor(branch, tokens.first(std::size_t{at} + 1), at, speculate_, last);
     // A capacity refusal ran nothing: the same row again once freed.
@@ -3199,7 +3347,8 @@ Status Llm::ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens,
       branch.capacity_refused_ = CapacityRefused(branch);
       branch.needs_clear_ = !StateUsableFor(branch);
       if (branch.needs_clear_) {
-        branch.history_.clear();
+        ReleaseTokens(branch.history_, branch.history_charge_);
+        ReleaseTokens(branch.verify_tokens_, branch.verify_tokens_charge_);
       }
       last.clear();
       return Error(std::format("{}'s scoring: the row at {}: {}", name_, at, ran.error()));
@@ -3215,7 +3364,8 @@ Status Llm::ScorePrompt(Branch& branch, std::span<const std::int32_t> tokens,
   }
   if (auto settled = SettleFor(branch); !settled) {
     branch.needs_clear_ = true;
-    branch.history_.clear();
+    ReleaseTokens(branch.history_, branch.history_charge_);
+    ReleaseTokens(branch.verify_tokens_, branch.verify_tokens_charge_);
     last.clear();
     return settled;
   }
@@ -3287,6 +3437,9 @@ bool Llm::GenerationSession::Report() {
 }
 
 Status Llm::GenerationSession::Begin(const std::vector<float>& last, bool resume) {
+  if (!model_.ReserveTokens(branch_, all_, all_charge_, branch_.history_.size() + 1)) {
+    return Error("native generation history exceeds the execution budget");
+  }
   branch_.sampling_.reset();
   if (options_.sampling && options_.sampling->temperature > 0) {
     branch_.sampling_ = options_.sampling;
@@ -3340,6 +3493,17 @@ std::expected<Llm::GenerationSession::Step, std::string> Llm::GenerationSession:
     return std::unexpected(ran_.error());
   }
   left_ = static_cast<std::uint32_t>(options_.max_tokens - out_.tokens.size());
+  const auto step_tokens = model_.speculate_ ? model_.StepTokenBoundFor(branch_, left_) : 1U;
+  if (!model_.ReserveTokens(branch_, all_, all_charge_, all_.size() + step_tokens) ||
+      !model_.ReserveTokenScratch(branch_, all_.size(), left_)) {
+    refusal_ = "native generation history exceeds the execution budget";
+    if (defer_capacity) {
+      return std::unexpected(refusal_);
+    }
+    ran_ = Error(refusal_);
+    failed_prefix_valid_ = true;
+    return std::unexpected(ran_.error());
+  }
   if (auto prepared = model_.PrepareDecodeStateFor(branch_, position_, left_); !prepared) {
     if (defer_capacity && model_.StateRefusedFor(branch_) && model_.StateUsableFor(branch_)) {
       // Refused before dispatch: the session stays active and unprepared,
@@ -3424,6 +3588,8 @@ Status Llm::GenerationSession::ApplyTokens(std::vector<std::int32_t> kept,
   // The anchor and the accepted drafts are in the state now; the last
   // kept token is the next anchor. The generation ends at a stop token,
   // though the state holds what was accepted after it.
+  base::Check(kept.size() <= all_.capacity() - all_.size(),
+              "completed generation exceeded its funded token bound");
   position_ += static_cast<std::uint32_t>(kept.size());
   all_.insert(all_.end(), kept.begin(), kept.end());
   for (std::size_t i = 0; i < kept.size() && out_.tokens.size() < options_.max_tokens; ++i) {
@@ -3620,6 +3786,8 @@ void Llm::GenerationSession::Cancel() {
 
 void Llm::GenerationSession::Close() {
   branch_.sampling_.reset();
+  model_.ReleaseTokens(all_, all_charge_);
+  model_.ReleaseTokens(branch_.verify_tokens_, branch_.verify_tokens_charge_);
   branch_.generation_active_ = false;
   finished_ = true;
 }
@@ -3637,18 +3805,18 @@ Status Llm::GenerationSession::Finish() {
       if (auto settled = model_.SettleFor(branch_); !settled) {
         ran_ = Error(std::format("{}; settling failed: {}", ran_.error(), settled.error()));
       } else {
-        branch_.history_.assign(all_.begin(), all_.begin() + position_);
+        model_.PublishTokens(branch_, all_, all_charge_, position_);
         branch_.needs_clear_ = false;
         Close();
         return ran_;
       }
     }
     branch_.needs_clear_ = true;
-    branch_.history_.clear();
+    model_.ReleaseTokens(branch_.history_, branch_.history_charge_);
     Close();
     return ran_;
   }
-  branch_.history_.assign(all_.begin(), all_.begin() + position_);
+  model_.PublishTokens(branch_, all_, all_charge_, position_);
   branch_.history_used_ = Clock::now();
   if (out_.tokens.size() > options_.max_tokens) {
     out_.tokens.resize(options_.max_tokens);
@@ -3658,7 +3826,7 @@ Status Llm::GenerationSession::Finish() {
   }
   if (auto settled = model_.SettleFor(branch_); !settled) {
     branch_.needs_clear_ = true;
-    branch_.history_.clear();
+    model_.ReleaseTokens(branch_.history_, branch_.history_charge_);
     ran_ = settled;
   }
   Close();
@@ -3701,16 +3869,26 @@ Status Llm::Generate(Branch& branch, const std::vector<float>& last, const Gener
 
 Status Llm::SaveState(Branch& branch, void* host) {
   CheckIdleGeneration(branch);
+  const HistoryFundingGuard funding(branch.funding_history_);
+  if (!ReserveTokens(branch, branch.saved_history_, branch.saved_history_charge_,
+                     branch.history_.size())) {
+    return Error("native snapshot history exceeds the execution budget");
+  }
   branch.saved_valid_ = false;
   if (auto r = SettleFor(branch); !r) {
+    branch.InvalidateStateSnapshot();
     return r;
   }
   auto ranges = UsedStateRangesFor(branch);
   if (auto r = SaveUsedStateFor(branch, host, ranges); !r) {
+    branch.InvalidateStateSnapshot();
     return r;
   }
   branch.saved_ranges_ = std::move(ranges);
   branch.saved_history_ = branch.history_;
+  if (branch.saved_history_.empty()) {
+    ReleaseTokens(branch.saved_history_, branch.saved_history_charge_);
+  }
   branch.saved_cursor_ = CursorFor(branch);
   SaveDecodingStateFor(branch);
   branch.saved_valid_ = true;
@@ -3719,11 +3897,16 @@ Status Llm::SaveState(Branch& branch, void* host) {
 
 Status Llm::RestoreState(Branch& branch, void* host) {
   CheckIdleGeneration(branch);
+  const HistoryFundingGuard funding(branch.funding_history_);
   if (!branch.saved_valid_) {
     return Error("no completed conversation snapshot to restore");
   }
   if (host == nullptr && !branch.saved_ranges_.empty()) {
     return Error("the conversation snapshot has no source buffer");
+  }
+  if (!ReserveTokens(branch, branch.history_, branch.history_charge_,
+                     branch.saved_history_.size())) {
+    return Error("native restored history exceeds the execution budget");
   }
   Unkeep(branch);
   if (auto r = SettleFor(branch); !r) {
@@ -3731,6 +3914,7 @@ Status Llm::RestoreState(Branch& branch, void* host) {
   }
   if (auto r = RestoreUsedStateFor(branch, host, branch.saved_ranges_); !r) {
     branch.needs_clear_ = true;
+    ReleaseTokens(branch.history_, branch.history_charge_);
     return r;
   }
   branch.history_ = branch.saved_history_;
@@ -3967,6 +4151,20 @@ Status Server::Start(bool snapshot) {
       Log(std::format("model {}: {}", m->name(), slots));
     }
   }
+  const auto startup_available = MemorySampler::Available();
+  const MemoryGuard startup_guard{.largest = largest,
+                                  .host_inputs = host_inputs,
+                                  .plans = plans + engine::ScratchArenaBytes(),
+                                  .available = startup_available,
+                                  .fixed = 0,
+                                  .requests = RequestFloor(config_.client)};
+  const auto startup_reserve = GuardReserve(startup_guard) + largest + activations + pool;
+  startup_token_capacity_ =
+      startup_available > startup_reserve ? startup_available - startup_reserve : 0;
+  token_memory_.SetDriver(
+      std::this_thread::get_id(),
+      [this](std::uint64_t incoming) { return SetTokenMemory(incoming); }, 0,
+      std::chrono::milliseconds{0});
   // Conversations the process before kept (D-105): read, checked and
   // their files named before the node registers them.
   if (auto kept = PrepareKept(); !kept) {
@@ -4011,16 +4209,17 @@ Status Server::Start(bool snapshot) {
   request_memory_ = RequestFloor(config_.client);
   bounds.requests = request_memory_;
   const auto guard = CheckMemoryGuard(bounds);
-  Log(std::format(
-      "allocation guard: {{\"format\":\"jitllm-wave-startup-guard-v1\","
-      "\"fixed_catalog_bytes\":{},\"shared_activation_bytes\":{},"
-      "\"shared_scratch_bytes\":{},\"largest_weight_extent_bytes\":{},"
-      "\"host_input_bytes\":{},\"plan_floor_bytes\":{},\"uncounted_margin_bytes\":{},"
-      "\"available_after_fixed_bytes\":{},\"available_known\":{},"
-      "\"guard_passed\":{},\"registered_state_virtual_extent_bytes\":{},"
-      "\"request_memory_bytes\":{}}}",
-      fixed_, activations, pool, largest, host_inputs, plans, kUncountedMargin, available,
-      available != 0, guard.has_value(), node_.StateCapacity(), request_memory_));
+  Log(
+      std::format("allocation guard: {{\"format\":\"jitllm-wave-startup-guard-v1\","
+                  "\"fixed_catalog_bytes\":{},\"shared_activation_bytes\":{},"
+                  "\"shared_scratch_bytes\":{},\"largest_weight_extent_bytes\":{},"
+                  "\"host_input_bytes\":{},\"plan_floor_bytes\":{},\"uncounted_margin_bytes\":{},"
+                  "\"available_after_fixed_bytes\":{},\"available_known\":{},"
+                  "\"guard_passed\":{},\"registered_state_virtual_extent_bytes\":{},"
+                  "\"request_memory_bytes\":{},\"native_token_history_bytes\":{}}}",
+                  fixed_, activations, pool, largest, host_inputs, plans, kUncountedMargin,
+                  available, available != 0, guard.has_value(), node_.StateCapacity(),
+                  request_memory_, token_memory_.used()));
   if (!guard) {
     return std::unexpected(guard.error());
   }
@@ -4094,9 +4293,14 @@ Status Server::Start(bool snapshot) {
       config_.memory.retention_hours, config_.memory.spill_budget_gib));
   for (const auto& m : models_) {
     if (m->llm()) {
+      static_cast<Llm&>(*m).SetTokenMemory(token_memory_);
       static_cast<Llm&>(*m).set_retention(retention_);
       static_cast<Llm&>(*m).set_log([this](std::string_view text) { Log(text); });
     }
+  }
+  token_catalog_ready_ = true;
+  if (!SetTokenMemory(0)) {
+    return Error("kept token histories do not fit the execution budget");
   }
   AdoptKept();
   return {};
@@ -4197,7 +4401,8 @@ Status Server::PrepareKept() {
       }
       expected.slot = slot;
       std::vector<std::string> dropped;
-      auto record = kept::Decode(*text);
+      MemoryCharge token_charge;
+      auto record = kept::Decode(*text, &token_memory_, &token_charge);
       std::string why;
       if (!record) {
         why = record.error();
@@ -4273,7 +4478,8 @@ Status Server::PrepareKept() {
       }
       adopted_bytes += record->extents.size() * kExtent;
       ++adopted_count;
-      adoptions_.push_back({.model = &l, .record = std::move(*record)});
+      adoptions_.push_back(
+          {.model = &l, .token_charge = std::move(token_charge), .record = std::move(*record)});
       StartProgress();
     }
     // Nothing else stays: unadopted slots' files, other records, stale
@@ -4331,6 +4537,7 @@ void Server::AdoptKept() {
     }
   }
   adoptions_.clear();
+  token_memory_.Settle(0, std::chrono::milliseconds{0});
 }
 
 void Server::Persist(Clock::time_point deadline, const std::function<void()>& progress) {
@@ -4451,6 +4658,29 @@ bool Server::SetRequestMemory(std::uint64_t to) {
     shortfall = 0;
     if (node_.SetRequestCharge(past, &shortfall)) {
       return true;
+    }
+  }
+  return false;
+}
+
+bool Server::SetTokenMemory(std::uint64_t incoming) {
+  if (!started_ || torn_down_) {
+    return false;
+  }
+  if (!token_catalog_ready_) {
+    const auto used = token_memory_.used();
+    return used <= startup_token_capacity_ && incoming <= startup_token_capacity_ - used;
+  }
+  std::uint64_t shortfall = 0;
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    // Reclaim may have retired histories since this grow began.
+    const auto target = token_memory_.used() + incoming;
+    if (node_.SetTokenCharge(target, &shortfall)) {
+      return true;
+    }
+    if (attempt == 3 || Reclaim(shortfall, true, "native token history", nullptr, std::nullopt,
+                                false, nullptr, incoming) == 0) {
+      return false;
     }
   }
   return false;
@@ -4808,7 +5038,8 @@ bool Server::RoomFor(std::uint64_t needed, std::string_view why, const Llm::Bran
 
 std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_view why,
                               const Served* running, std::optional<memory::ReclaimKind> below_kind,
-                              bool partial, const Llm::Branch* spare) {
+                              bool partial, const Llm::Branch* spare,
+                              std::uint64_t token_incoming) {
   if (reclaiming_ || !started_ || torn_down_ || needed == 0) {
     return 0;
   }
@@ -4845,16 +5076,72 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
   std::size_t dropped = 0;
   bool took = false;
   Llm* idle_owner = nullptr;
+  struct HistoryVictim {
+    Llm* model;
+    Llm::Branch* branch;
+    std::uint32_t owner;
+    std::uint64_t slot;
+  };
+  std::vector<HistoryVictim> histories;
+  std::vector<TokenReclaimGroup> history_groups;
   // The candidates afresh each round (memory::RunReclaim): every model's
   // plans and graphs, and with `states` the resident model's idle state.
   const auto gather = [&](std::vector<memory::ReclaimCandidate>& candidates, double& below) {
     idle_owner = nullptr;
+    histories.clear();
+    history_groups.clear();
     std::uint32_t resident_index = 0;
     for (std::uint32_t i = 0; i < models_.size(); ++i) {
       models_[i]->ReclaimCandidates(i, models_[i].get() == running, candidates);
+      if (states && models_[i]->llm()) {
+        auto& model = static_cast<Llm&>(*models_[i]);
+        for (std::size_t slot = 0; slot < model.branches(); ++slot) {
+          auto branch = model.branch(slot);
+          if (!branch || *branch == spare || !model.HistoryReclaimable(**branch)) {
+            continue;
+          }
+          const auto bytes = model.IdleHistoryBytes(**branch);
+          if (bytes == 0) {
+            continue;
+          }
+          histories.push_back({.model = &model, .branch = *branch, .owner = i, .slot = slot});
+        }
+      }
       if (models_[i].get() == resident_) {
         resident_index = i;
       }
+    }
+    std::ranges::sort(histories, [](const HistoryVictim& a, const HistoryVictim& b) {
+      return a.model->LastUsed(*a.branch) < b.model->LastUsed(*b.branch);
+    });
+    std::vector<std::uint64_t> capacities;
+    capacities.reserve(histories.size());
+    for (const auto& history : histories) {
+      capacities.push_back(history.model->IdleHistoryBytes(*history.branch));
+    }
+    history_groups =
+        GroupTokenReclaim(capacities, token_memory_.used() + token_incoming, kExtent, needed);
+    std::size_t first = 0;
+    for (const auto& group : history_groups) {
+      const auto& oldest = histories[first];
+      double seconds = 0;
+      bool group_running = false;
+      for (std::size_t i = first; i < group.end; ++i) {
+        const auto& h = histories[i];
+        seconds += static_cast<double>(h.branch->history().size()) *
+                   h.model->settings().recompute_ms_per_token.value / 1000.0;
+        group_running = group_running || h.model == running;
+      }
+      candidates.push_back({.kind = memory::ReclaimKind::kTokenHistory,
+                            .owner = oldest.owner,
+                            .id = oldest.slot,
+                            .bytes = group.catalog_bytes,
+                            .last_use = static_cast<std::uint64_t>(
+                                oldest.model->LastUsed(*oldest.branch).time_since_epoch().count()),
+                            .restore_seconds = seconds,
+                            .running = group_running});
+      memory::SetUse(candidates.back(), oldest.model->LastStamp(*oldest.branch));
+      first = group.end;
     }
     // The running model's next step finds what its last ones used.
     memory::ProtectFloor(candidates, running != nullptr ? running->plan_floor_bytes() : 0);
@@ -4878,7 +5165,42 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
   };
   const auto take = [&](const memory::ReclaimCandidate& c) -> std::uint64_t {
     std::uint64_t got = 0;
-    if (c.kind == memory::ReclaimKind::kIdleState) {
+    if (c.kind == memory::ReclaimKind::kTokenHistory) {
+      std::size_t first = 0;
+      const auto prospective = [&]() {
+        const auto target = token_memory_.used() + token_incoming;
+        return (target / kExtent + (target % kExtent != 0 ? 1U : 0U)) * kExtent;
+      };
+      const auto before = prospective();
+      const auto charged_before = node_.token_charged();
+      const auto free_before = node_.FreeBytes();
+      for (const auto& group : history_groups) {
+        const auto& oldest = histories[first];
+        if (oldest.owner == c.owner && oldest.slot == c.id) {
+          for (std::size_t i = first; i < group.end; ++i) {
+            auto& h = histories[i];
+            if (h.branch != spare && h.model->HistoryReclaimable(*h.branch)) {
+              std::ignore = h.branch->ReleaseIdleState();
+            }
+          }
+          break;
+        }
+        first = group.end;
+      }
+      const auto after = prospective();
+      const auto free_after = node_.FreeBytes();
+      const auto actual_tokens = charged_before - std::min(charged_before, node_.token_charged());
+      // Dropping a history can also release its resident native state. Count
+      // the measured catalog gain once, including overlapping idle victims.
+      got = free_before && free_after && *free_after >= *free_before ? *free_after - *free_before
+                                                                     : actual_tokens;
+      if (token_incoming != 0) {
+        const auto target_drop = before - std::min(before, after);
+        // The incoming allocation can change which rounded boundary matters.
+        // Replace actual token release with the prospective target decrease.
+        got = TokenReclaimCredit(got, actual_tokens, target_drop);
+      }
+    } else if (c.kind == memory::ReclaimKind::kIdleState) {
       if (idle_owner == nullptr) {
         return 0;  // only the resident model's idle state is a candidate
       }
@@ -4938,11 +5260,12 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
     Log(std::format(
         "reclaimed {:.1f} MiB of {:.1f} MiB needed for {}: {} graphs ({:.1f} MiB), {} plans "
         "({:.1f} MiB), {} idle conversations {} ({:.1f} MiB); measured s a GiB: graphs {:.2f}, "
-        "plans {:.2f}, idle state {:.2f}",
+        "plans {:.2f}, idle state {:.2f}; {} history groups discarded ({:.1f} MiB capacity)",
         mib(freed), mib(needed), why, count[k(K::kGraph)], mib(freed_by[k(K::kGraph)]),
         count[k(K::kPlan)], mib(freed_by[k(K::kPlan)]), count[k(K::kIdleState)],
         dropped != 0 ? "dropped" : "spilled", mib(freed_by[k(K::kIdleState)]), cost[k(K::kGraph)],
-        cost[k(K::kPlan)], cost[k(K::kIdleState)]));
+        cost[k(K::kPlan)], cost[k(K::kIdleState)], count[k(K::kTokenHistory)],
+        mib(freed_by[k(K::kTokenHistory)])));
   }
   reclaiming_ = false;
   return freed;
@@ -5147,6 +5470,7 @@ void Server::Maintain() {
   if (!started_ || torn_down_ || reclaiming_) {
     return;
   }
+  token_memory_.Settle(0, std::chrono::milliseconds{0});
   const auto now = Clock::now();
   if (now < next_maintenance_) {
     return;

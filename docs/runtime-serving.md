@@ -984,16 +984,38 @@ history, and active request token vectors are charged as completed steps grow
 them. Keepalive comments are not queued while response bytes already wait
 for a socket, so they cannot grow a paused reader's output indefinitely.
 
-Native prompt/generation sessions and model-owned retained token histories
-still consume the uncounted margin rather than an explicit catalog or
-request-memory charge. Clearing a branch retains its vectors' capacity;
-large histories across a growing model library can therefore outgrow that
-margin even after device state is discarded. Catalog charges and reclaim
-for these allocations remain a resource-accounting gap, assigned to
-[M3.5's native token-history task](plan.md#m35--model-families--in-progress)
-before expanding the model library or request concurrency.
+Native prompt and generation sessions, retained branch histories, diagnostic
+snapshot histories and Qwen's speculative verify inputs have independent
+capacity charges. A dedicated zero-floor host pool charges those capacities
+inside the catalog's execution budget, separately from the request pool and
+the uncounted margin. Growth funds the replacement while the old allocation
+still lives; refusal preserves the completed prefix and dispatches no native
+unit. Generation retirement transfers its buffer and charge into the branch.
+Geometric capacity growth keeps long generation amortized under pressure;
+a refused growth preserves its completed prefix.
 
-Its first 256 MiB (the floor) are set apart at the start beside the memory
+Idle host histories are reclaim candidates across all registered models,
+including swapped and spilled models. A recency prefix frees just enough
+whole catalog extents to cover the requested need. Reclaim measures the
+catalog decrease; during native admission it also credits a prospective
+extent that deleting idle tokens avoids allocating. Admission always checks
+the resulting catalog target again before granting capacity.
+Reclaim discards the history with its
+retained state; spilling alone preserves and charges the tokens needed to
+restore an exact continuation. Active sessions, held continuations, the
+branch being admitted and valid diagnostic snapshots are protected. Clear,
+forget, discard and expiry release obsolete vector capacity; a diagnostic
+snapshot owns its separate history until explicit invalidation. Queued and
+worker-owned persistence records hold separately funded token copies through
+supersession, invalidation and worker retirement. At startup, kept-record
+tokens are funded before decoding against available memory after the startup
+reserve, then charged to the catalog before adoption. The startup allocation
+report includes `native_token_history_bytes`; ordinary chat and swap-table
+reports also expose it and `native_token_catalog_bytes`. The dedicated pool reports
+allocated token bytes, and its catalog occupancy rounds their aggregate to
+whole 2 MiB extents.
+
+The request pool's first 256 MiB (the floor) are set apart at the start beside the memory
 guard's margin. Past the floor the driver charges what requests hold to
 the catalog's budget like any other need, through the reclaim order (it
 displaces plans, graphs and idle conversations, D-055; request memory is

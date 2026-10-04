@@ -170,7 +170,7 @@ void StateKeeper::Invalidate(std::size_t model, std::uint32_t slot) {
   }
 }
 
-void StateKeeper::Keep(std::size_t model, kept::Record record) {
+void StateKeeper::Keep(std::size_t model, kept::Record record, MemoryCharge tokens) {
   {
     const std::scoped_lock lock(mutex_);
     const SlotState& state = slots_[{model, record.slot}];
@@ -180,7 +180,7 @@ void StateKeeper::Keep(std::size_t model, kept::Record record) {
     stats_.stale += std::erase_if(queue_, [&](const Job& job) {
       return job.model == model && job.record.slot == record.slot;
     });
-    queue_.push_back({.model = model, .sequence = state.sequence, .record = std::move(record)});
+    queue_.emplace_back(model, state.sequence, std::move(record), std::move(tokens));
   }
   ready_.notify_one();
 }

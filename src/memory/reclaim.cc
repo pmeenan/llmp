@@ -62,6 +62,8 @@ std::string_view ToString(ReclaimKind kind) {
       return "graph";
     case ReclaimKind::kPlan:
       return "plan";
+    case ReclaimKind::kTokenHistory:
+      return "idle token history";
     case ReclaimKind::kIdleState:
       return "idle conversation state";
   }

@@ -178,6 +178,9 @@ class FakeLlm : public rt::Llm {
   std::vector<std::int32_t> step = {2, 3, 4};
 
  protected:
+  std::uint32_t StepTokenBoundFor(const Branch&, std::uint32_t left) const override {
+    return std::min<std::uint32_t>(left, static_cast<std::uint32_t>(step.size()));
+  }
   rt::Status RunChunk(std::span<const std::int32_t> all, std::uint32_t past, bool inject,
                       std::vector<float>& row) override {
     EXPECT_EQ(past, target.size());
@@ -2696,3 +2699,228 @@ TEST(LlmScores, ASerialGenerationReleasesIdleStateThenEndsTypedWhenAlone) {
 }
 
 }  // namespace
+
+TEST(TokenHistory, PromptAdmissionAndRetirementChargeActualCapacity) {
+  rt::RequestMemory memory(1024);
+  FakeLlm model;
+  model.SetTokenMemory(memory);
+  const std::vector<std::int32_t> prompt(16, 2);
+  auto session = model.default_branch().BeginPrompt(prompt);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(memory.used(), prompt.size() * sizeof(std::int32_t));
+  while (!(*session)->done()) {
+    ASSERT_TRUE((*session)->Advance());
+  }
+  EXPECT_EQ(memory.used(), prompt.size() * sizeof(std::int32_t) + model.token_history_bytes());
+  ASSERT_TRUE((*session)->Finish());
+  EXPECT_EQ(memory.used(), model.history().capacity() * sizeof(std::int32_t));
+  ASSERT_TRUE(model.Clear());
+  EXPECT_EQ(model.history().capacity(), 0U);
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST(TokenHistory, RefusedAdmissionPreservesAliasedCompletedPrefix) {
+  rt::RequestMemory memory(64);
+  FakeLlm model;
+  model.SetTokenMemory(memory);
+  std::vector<float> last;
+  const std::vector<std::int32_t> prompt(16, 2);
+  ASSERT_TRUE(model.Prefill(prompt, last));
+  const auto before = model.history();
+  auto refused = model.default_branch().BeginPrompt(model.history(), 0, false, true);
+  EXPECT_FALSE(refused);
+  EXPECT_EQ(model.history(), before);
+  EXPECT_EQ(model.target, before);
+  EXPECT_EQ(memory.used(), model.history().capacity() * sizeof(std::int32_t));
+  ASSERT_TRUE(model.Clear());
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST(TokenHistory, ConcurrentSessionsCannotSpendOneAnothersCapacity) {
+  rt::RequestMemory memory(128);
+  NativeBranchesFake model;
+  model.SetTokenMemory(memory);
+  auto first = model.branch(1);
+  auto second = model.branch(2);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  const std::vector<std::int32_t> prompt(16, 2);
+  auto active = (*first)->BeginPrompt(prompt);
+  ASSERT_TRUE(active);
+  auto peer = (*second)->BeginPrompt(prompt);
+  ASSERT_TRUE(peer);
+  ASSERT_TRUE((*active)->Advance());
+  auto refused = (*active)->Advance({}, true);
+  EXPECT_FALSE(refused);
+  EXPECT_TRUE((*active)->refused());
+  EXPECT_EQ(model.native_state(1).chunks, 0U);
+  (*peer)->Cancel();
+  ASSERT_TRUE((*peer)->Finish());
+  ASSERT_TRUE((*active)->Advance());
+  (*active)->Cancel();
+  ASSERT_TRUE((*active)->Finish());
+  EXPECT_EQ(memory.used(), (*first)->history().capacity() * sizeof(std::int32_t));
+  ASSERT_TRUE((*first)->ReleaseIdleState());
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST(TokenHistory, GenerationRefusalStartsNoNativeWorkAndKeepsPrefix) {
+  rt::RequestMemory memory(36);
+  FakeLlm model;
+  model.SetTokenMemory(memory);
+  std::vector<float> last;
+  const std::array<std::int32_t, 4> prompt{0, 1, 2, 3};
+  ASSERT_TRUE(model.Prefill(prompt, last));
+  rt::Generation out;
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  auto session = model.BeginGeneration(last, options, out);
+  ASSERT_TRUE(session);
+  const auto chunks = model.chunks;
+  auto refused = (*session)->RunScalarStep(true);
+  EXPECT_FALSE(refused);
+  EXPECT_TRUE((*session)->refused());
+  EXPECT_EQ(model.chunks, chunks);
+  (*session)->Cancel();
+  ASSERT_TRUE((*session)->Finish());
+  EXPECT_EQ(model.history(), std::vector<std::int32_t>(prompt.begin(), prompt.end()));
+  EXPECT_EQ(model.target, model.history());
+  EXPECT_EQ(memory.used(), model.history().capacity() * sizeof(std::int32_t));
+  model.Forget();
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST(TokenHistory, SnapshotsOwnIndependentCapacityUntilInvalidation) {
+  rt::RequestMemory memory(512);
+  NativeBranchesFake model;
+  model.SetTokenMemory(memory);
+  auto branch = model.branch(1);
+  ASSERT_TRUE(branch);
+  const std::vector<std::int32_t> prompt(8, 2);
+  std::vector<float> last;
+  ASSERT_TRUE((*branch)->Prefill(prompt, last));
+  ASSERT_TRUE((*branch)->SaveState(reinterpret_cast<void*>(1)));
+  EXPECT_EQ(memory.used(), 2 * prompt.size() * sizeof(std::int32_t));
+  EXPECT_FALSE(model.HistoryReclaimable(**branch));
+  ASSERT_TRUE((*branch)->Clear());
+  EXPECT_EQ((*branch)->history().capacity(), 0U);
+  EXPECT_EQ(memory.used(), prompt.size() * sizeof(std::int32_t));
+  ASSERT_TRUE((*branch)->RestoreState(reinterpret_cast<void*>(1)));
+  EXPECT_EQ((*branch)->history(), prompt);
+  EXPECT_EQ(model.native_state(1).target, prompt);
+  EXPECT_EQ(memory.used(), 2 * prompt.size() * sizeof(std::int32_t));
+  (*branch)->InvalidateStateSnapshot();
+  EXPECT_TRUE(model.HistoryReclaimable(**branch));
+  EXPECT_EQ(memory.used(), prompt.size() * sizeof(std::int32_t));
+  ASSERT_TRUE((*branch)->ReleaseIdleState());
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST(TokenHistory, SpilledContinuationsRetainTokensUntilTheirOwnerRetires) {
+  rt::RequestMemory memory(256);
+  NativeBranchesFake model;
+  model.SetTokenMemory(memory);
+  auto branch = model.branch(1);
+  ASSERT_TRUE(branch);
+  const std::vector<std::int32_t> prompt(8, 2);
+  std::vector<float> last;
+  ASSERT_TRUE((*branch)->Prefill(prompt, last));
+  (*branch)->HoldContinuation();
+  EXPECT_FALSE(model.HistoryReclaimable(**branch));
+  ASSERT_TRUE(model.SpillIdle(**branch));
+  EXPECT_EQ(memory.used(), (*branch)->history().capacity() * sizeof(std::int32_t));
+  EXPECT_FALSE((*branch)->ReleaseIdleState());
+  auto resumed = (*branch)->BeginPrompt((*branch)->history(), 0, false, true);
+  ASSERT_TRUE(resumed);
+  ASSERT_TRUE((*resumed)->Advance());
+  ASSERT_TRUE((*resumed)->Finish());
+  EXPECT_EQ(model.native_state(1).target, prompt);
+  (*branch)->ReleaseContinuation();
+  ASSERT_TRUE((*branch)->ReleaseIdleState());
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+class HistoryLlm final : public FakeLlm {
+ protected:
+  bool LeasedFor(const Branch&) const override { return false; }
+};
+
+TEST(TokenHistory, ARepeatedLongRequestLibraryReclaimsIdleCapacity) {
+  rt::RequestMemory memory(0, 4096, true);
+  std::vector<std::unique_ptr<HistoryLlm>> models;
+  unsigned reclaimed = 0;
+  memory.SetDriver(std::this_thread::get_id(), [&](std::uint64_t incoming) {
+    if (memory.used() + incoming > 320) {
+      for (const auto& model : models) {
+        if (model->HistoryReclaimable(model->default_branch()) && !model->history().empty()) {
+          const auto cleared = model->Clear();
+          EXPECT_TRUE(cleared);
+          if (!cleared) {
+            return false;
+          }
+          ++reclaimed;
+          if (memory.used() + incoming <= 320) {
+            break;
+          }
+        }
+      }
+    }
+    return memory.used() + incoming <= 320;
+  });
+  for (unsigned index = 0; index < 24; ++index) {
+    models.push_back(std::make_unique<HistoryLlm>());
+    auto& model = *models.back();
+    model.SetTokenMemory(memory);
+    for (unsigned repeat = 0; repeat < 3; ++repeat) {
+      const std::vector<std::int32_t> prompt(24, static_cast<std::int32_t>(repeat));
+      auto session = model.default_branch().BeginPrompt(prompt, 0, true);
+      ASSERT_TRUE(session);
+      while (!(*session)->done()) {
+        ASSERT_TRUE((*session)->Advance());
+      }
+      ASSERT_TRUE((*session)->Finish());
+      EXPECT_EQ(model.target, prompt);
+      std::uint64_t actual = 0;
+      for (const auto& item : models) {
+        actual += item->history().capacity() * sizeof(std::int32_t);
+      }
+      EXPECT_EQ(memory.used(), actual);
+      EXPECT_LE(memory.used(), 320U);
+    }
+  }
+  EXPECT_GT(reclaimed, 0U);
+  models.clear();
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST(TokenHistory, NearBudgetGrowthRefusesInsteadOfCopyingEachGeneratedToken) {
+  rt::RequestMemory memory(0, 4096, true);
+  unsigned growth_requests = 0;
+  memory.SetDriver(std::this_thread::get_id(), [&](std::uint64_t incoming) {
+    if (incoming != 0) {
+      ++growth_requests;
+    }
+    return memory.used() + incoming <= 1024;
+  });
+  FakeLlm model;
+  model.ConfigurePrefill(512, 64);
+  model.SetTokenMemory(memory);
+  const std::vector<std::int32_t> prompt(64, 2);
+  std::vector<float> last;
+  ASSERT_TRUE(model.Prefill(prompt, last));
+  rt::GenerateOptions options;
+  options.max_tokens = 100;
+  options.stop = false;
+  rt::Generation out;
+  auto session = model.BeginGeneration(last, options, out);
+  ASSERT_TRUE(session);
+  const auto before = growth_requests;
+  EXPECT_FALSE((*session)->RunScalarStep(true));
+  EXPECT_TRUE((*session)->refused());
+  EXPECT_EQ(growth_requests - before, 1U);  // no repeated exact-size fallback
+  EXPECT_EQ(model.chunks, 1U);
+  (*session)->Cancel();
+  ASSERT_TRUE((*session)->Finish());
+  EXPECT_EQ(model.history(), prompt);
+}

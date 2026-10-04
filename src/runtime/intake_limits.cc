@@ -12,6 +12,7 @@
 #include <thread>
 #include <utility>
 
+#include "base/check.h"
 #include "config/node_config.h"
 
 namespace jitllm::runtime {
@@ -130,7 +131,7 @@ bool RequestMemory::TryCharge(std::uint64_t bytes) {
   }
   // The driver's own charge: the grant grows now, through the reclaim
   // order, or the charge is refused.
-  if (!Grow(lock, std::min(capacity_, RoundUp(used_ + bytes)))) {
+  if (!Grow(lock, std::min(capacity_, exact_ ? used_ + bytes : RoundUp(used_ + bytes)))) {
     ++denials_;
     ++epoch_;
     return false;
@@ -168,14 +169,15 @@ bool RequestMemory::Grow(std::unique_lock<std::mutex>& lock, std::uint64_t to) {
   if (to <= grant_) {
     return true;
   }
+  const std::uint64_t incoming = to - used_;
   growing_ = true;
   const Grower grower = grower_;
   lock.unlock();
-  const bool grown = grower(to);
+  const bool grown = grower(exact_ ? incoming : to);
   lock.lock();
   growing_ = false;
   if (grown) {
-    grant_ = to;
+    grant_ = exact_ ? used_ + incoming : to;
     demand_at_ = std::chrono::steady_clock::now();
     ++epoch_;
   }
@@ -204,7 +206,30 @@ void RequestMemory::Settle() {
 
 void RequestMemory::Settle(std::uint64_t slack, std::chrono::milliseconds quiet) {
   std::unique_lock lock(mutex_);
-  if (!grower_ || growing_) {
+  if (!grower_) {
+    return;
+  }
+  if (exact_) {
+    // A reclaim inside Grow releases histories on this same driver. Reduce
+    // the grant/catalog charge now, while preserving the outer growth guard.
+    if (std::this_thread::get_id() != driver_) {
+      return;
+    }
+    const std::uint64_t before = grant_;
+    grant_ = std::max(floor_, used_);
+    const bool was_growing = std::exchange(growing_, true);
+    const Grower grower = grower_;
+    lock.unlock();
+    const bool shrunk = grower(0);
+    lock.lock();
+    growing_ = was_growing;
+    if (!shrunk) {
+      grant_ = before;
+    }
+    ++epoch_;
+    return;
+  }
+  if (growing_) {
     return;
   }
   if (wanting_) {
@@ -287,6 +312,69 @@ void MemoryCharge::Reset() {
   }
   pool_ = nullptr;
   bytes_ = 0;
+}
+
+bool ReserveTokenStorage(std::vector<std::int32_t>& tokens, MemoryCharge& charge,
+                         RequestMemory& memory, std::size_t capacity) {
+  if (capacity <= tokens.capacity()) {
+    return true;
+  }
+  if (capacity > std::numeric_limits<std::uint64_t>::max() / sizeof(std::int32_t)) {
+    return false;
+  }
+  MemoryCharge replacement_charge;
+  if (!replacement_charge.Add(memory, capacity * sizeof(std::int32_t))) {
+    return false;
+  }
+  std::vector<std::int32_t> replacement;
+  replacement.reserve(capacity);
+  // The pinned libstdc++ allocates exactly reserve(n) on an empty vector.
+  base::Check(replacement.capacity() == capacity, "token vector exceeded its funded capacity");
+  replacement.insert(replacement.end(), tokens.begin(), tokens.end());
+  tokens.swap(replacement);
+  // Free old storage before releasing its charge.
+  std::vector<std::int32_t>().swap(replacement);
+  charge = std::move(replacement_charge);
+  return true;
+}
+
+std::vector<TokenReclaimGroup> GroupTokenReclaim(std::span<const std::uint64_t> capacities,
+                                                 std::uint64_t used, std::uint64_t quantum,
+                                                 std::uint64_t needed) {
+  std::vector<TokenReclaimGroup> groups;
+  if (quantum == 0) {
+    return groups;
+  }
+  const auto rounded = [quantum](std::uint64_t bytes) {
+    return bytes / quantum + (bytes % quantum != 0 ? 1U : 0U);
+  };
+  const std::uint64_t charged = rounded(used);
+  for (std::size_t i = 0; i < capacities.size(); ++i) {
+    used -= std::min(used, capacities[i]);
+    const auto after = rounded(used);
+    const auto credit = (charged - after) * quantum;
+    if (credit != 0) {
+      if (groups.empty()) {
+        groups.push_back({.end = i + 1, .catalog_bytes = credit});
+      } else if (credit > groups.front().catalog_bytes) {
+        groups.front() = {.end = i + 1, .catalog_bytes = credit};
+      }
+      if (credit >= needed) {
+        break;
+      }
+    }
+  }
+  return groups;
+}
+
+std::uint64_t TokenReclaimCredit(std::uint64_t catalog_drop, std::uint64_t token_drop,
+                                 std::uint64_t target_drop) {
+  return catalog_drop - std::min(catalog_drop, token_drop) + target_drop;
+}
+
+void ReleaseTokenStorage(std::vector<std::int32_t>& tokens, MemoryCharge& charge) {
+  std::vector<std::int32_t>().swap(tokens);
+  charge.Reset();
 }
 
 }  // namespace jitllm::runtime

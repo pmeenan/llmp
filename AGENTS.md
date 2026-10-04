@@ -281,9 +281,10 @@ four-slot numerical control, 1,567-test Spark suite, ARM cross/qemu suite
 and package install/purge fixture pass. Whole shipment tiers remain owed
 before publishing a package.
 
-M3.5 is in progress: native token-history accounting first, then approved
-model checkpoints, legacy fixtures, Bonsai, formats
-with EXL3 in focus, remaining batching/skeleton gaps, media file inputs,
+M3.5 is in progress. Native token histories now have explicit capacity
+charges and idle reclaim; both M3 LLMs retain exact 8K continuations.
+Next are approved model checkpoints, legacy fixtures, Bonsai, formats with
+EXL3 in focus, the remaining batching/skeleton gaps, media file inputs,
 Clef/Clef-flash over the Jev API and media generation routes (D-101).
 That scope includes batching compatible decision and image requests/phases.
 [Plan](docs/plan.md), [family set](docs/m35-families.md). M4 follows on two

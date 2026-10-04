@@ -259,7 +259,7 @@ if(JITLLM_CUDA)
   jitllm_gpu_gtest(slab_layout_test)
 
   add_executable(live_state_test live_state_test.cc)
-  target_link_libraries(live_state_test PRIVATE jitllm_engine)
+  target_link_libraries(live_state_test PRIVATE jitllm_runtime jitllm_engine)
   jitllm_gpu_gtest(live_state_test
                    ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 

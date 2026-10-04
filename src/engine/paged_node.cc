@@ -569,6 +569,11 @@ bool PagedNode::Recharge(std::uint64_t total, bool force, std::uint64_t* shortfa
   return ChargeRuntime(host_extent_, host_charged_, past, force, shortfall, "plans and graphs");
 }
 
+bool PagedNode::SetTokenCharge(std::uint64_t bytes, std::uint64_t* shortfall) {
+  return ChargeRuntime(token_extent_, token_charged_, bytes, bytes <= token_charged_, shortfall,
+                       "native token histories");
+}
+
 bool PagedNode::SetRequestCharge(std::uint64_t bytes, std::uint64_t* shortfall) {
   return ChargeRuntime(request_extent_, request_charged_, bytes, bytes <= request_charged_,
                        shortfall, "request memory");

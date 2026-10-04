@@ -47,6 +47,7 @@
 #include <utility>
 #include <vector>
 
+#include "runtime/intake_limits.h"
 #include "runtime/kept_record.h"
 
 namespace jitllm::runtime {
@@ -98,7 +99,7 @@ class StateKeeper {
   // are computed and the record written in the background. Only its latest
   // queued record stays; Invalidate drops that copy immediately. The worker
   // holds at most one other record while hashing it.
-  void Keep(std::size_t model, kept::Record record);
+  void Keep(std::size_t model, kept::Record record, MemoryCharge tokens = {});
   // A record adopted at start: it exists (Invalidate removes it); its
   // checkpoints' digests are known.
   void Adopted(std::size_t model, const kept::Record& record);
@@ -147,8 +148,25 @@ class StateKeeper {
 
  private:
   struct Job {
+    Job() = default;
+    Job(std::size_t owner, std::uint64_t version, kept::Record value, MemoryCharge charge)
+        : model(owner), sequence(version), tokens(std::move(charge)), record(std::move(value)) {}
+    Job(const Job&) = delete;
+    Job& operator=(const Job&) = delete;
+    Job(Job&&) = default;
+    Job& operator=(Job&& other) noexcept {
+      if (this != &other) {
+        // Deallocate the old record while its old charge still owns it.
+        record = std::move(other.record);
+        tokens = std::move(other.tokens);
+        model = other.model;
+        sequence = other.sequence;
+      }
+      return *this;
+    }
     std::size_t model = 0;
     std::uint64_t sequence = 0;
+    MemoryCharge tokens;
     kept::Record record;
   };
   struct SlotState {

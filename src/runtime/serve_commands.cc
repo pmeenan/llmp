@@ -306,8 +306,10 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
   return WriteReport(
       serving.report,
       std::format("{{\"command\":\"chat\",\"budget\":{},\"fixed\":{},\"workspace\":{},\n"
+                  " \"native_token_history_bytes\":{},\"native_token_catalog_bytes\":{},\n"
                   " \"models\":{{\n  {}}},\n \"turns\":[\n  {}]}}\n",
-                  server.budget(), server.fixed_bytes(), server.workspace_bytes(), models, turns));
+                  server.budget(), server.fixed_bytes(), server.workspace_bytes(),
+                  server.token_history_bytes(), server.token_catalog_bytes(), models, turns));
 }
 
 // ---------------------------------------------------------------- swap-table
@@ -844,11 +846,13 @@ std::string Table::Json() const {
   return std::format(
       "{{\"command\":\"swap-table\",\"handoff\":{},\"context_tokens\":{},\"continue\":{},"
       "\"cycles\":{},\"context_sha256\":\"{}\",\"budget\":{},\"fixed\":{},"
+      "\"native_token_history_bytes\":{},\"native_token_catalog_bytes\":{},"
       "\"mem_available_start\":{},\"mem_available_low\":{},\n \"models\":{{\n  {}}},\n"
       " \"problems\":[{}],\n \"positioning\":[\n  {}],\n \"rows\":[\n  {}]}}\n",
       o_.handoff ? "true" : "false", o_.context_tokens, o_.continue_tokens, o_.cycles,
       Sha256(std::as_bytes(std::span(text_))), server_.budget(), server_.fixed_bytes(),
-      server_.memory().start(), server_.memory().all(), models, problems, positioning, rows);
+      server_.token_history_bytes(), server_.token_catalog_bytes(), server_.memory().start(),
+      server_.memory().all(), models, problems, positioning, rows);
 }
 
 }  // namespace

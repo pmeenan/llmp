@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Native prompt, generation, retained and snapshot token histories are
+  charged by allocated capacity before growth. Idle histories across the
+  model library can release that memory with their state; active and
+  paused exact continuations retain their funded tokens.
+
 - Native Gemma 4 GGUF tokenization: raw UTF-8 BPE, space markers, byte
   fallback, pinned reference agreement and mode-aware request memory bounds.
 

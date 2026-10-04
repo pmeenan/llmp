@@ -969,3 +969,166 @@ TEST(MemoryGuard, CountsThePlansBesideTheMargin) {
 }
 
 }  // namespace
+
+TEST(TokenStorage, GrowthFundsBothAllocationsAndRefusalChangesNothing) {
+  using namespace jitllm::runtime;
+  RequestMemory memory(48);
+  MemoryCharge charge;
+  std::vector<std::int32_t> tokens;
+  ASSERT_TRUE(ReserveTokenStorage(tokens, charge, memory, 4));
+  tokens.assign({1, 2, 3, 4});
+  EXPECT_EQ(charge.bytes(), tokens.capacity() * sizeof(std::int32_t));
+  EXPECT_FALSE(ReserveTokenStorage(tokens, charge, memory, 9));
+  EXPECT_EQ(tokens, (std::vector<std::int32_t>{1, 2, 3, 4}));
+  EXPECT_EQ(memory.used(), 16U);
+  ASSERT_TRUE(ReserveTokenStorage(tokens, charge, memory, 8));
+  EXPECT_EQ(charge.bytes(), tokens.capacity() * sizeof(std::int32_t));
+  EXPECT_EQ(memory.used(), 32U);
+  tokens.clear();
+  EXPECT_EQ(memory.used(), 32U);  // capacity remains owned until retirement
+  ReleaseTokenStorage(tokens, charge);
+  EXPECT_EQ(tokens.capacity(), 0U);
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST(TokenStorage, OwnershipTransfersWithTheStorage) {
+  using namespace jitllm::runtime;
+  RequestMemory memory(64);
+  MemoryCharge first_charge;
+  std::vector<std::int32_t> first;
+  ASSERT_TRUE(ReserveTokenStorage(first, first_charge, memory, 8));
+  first.assign(8, 1);
+  MemoryCharge second_charge = std::move(first_charge);
+  std::vector<std::int32_t> second = std::move(first);
+  EXPECT_EQ(first_charge.bytes(), 0U);
+  EXPECT_EQ(second_charge.bytes(), second.capacity() * sizeof(std::int32_t));
+  EXPECT_EQ(memory.used(), 32U);
+  ReleaseTokenStorage(second, second_charge);
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST(TokenStorage, ExactGrowthRecomputesAfterNestedReclaimAndShrinksImmediately) {
+  using namespace jitllm::runtime;
+  RequestMemory memory(0, 1024, true);
+  std::uint64_t held = 0;
+  MemoryCharge idle_charge;
+  std::vector<std::int32_t> idle;
+  unsigned reclaimed = 0;
+  memory.SetDriver(std::this_thread::get_id(), [&](std::uint64_t incoming) {
+    if (memory.used() + incoming > 64 && reclaimed == 0) {
+      ++reclaimed;
+      ReleaseTokenStorage(idle, idle_charge);
+      memory.Settle();  // shrink inside the grower's reclaim
+    }
+    if (memory.used() + incoming > 64) {
+      return false;
+    }
+    held = memory.used() + incoming;
+    return true;
+  });
+  ASSERT_TRUE(ReserveTokenStorage(idle, idle_charge, memory, 8));
+  MemoryCharge active_charge;
+  std::vector<std::int32_t> active;
+  ASSERT_TRUE(ReserveTokenStorage(active, active_charge, memory, 12));
+  EXPECT_EQ(reclaimed, 1U);
+  EXPECT_EQ(memory.grant(), 48U);
+  EXPECT_EQ(memory.used(), 48U);
+  EXPECT_EQ(held, 48U);
+  ReleaseTokenStorage(active, active_charge);
+  memory.Settle();
+  EXPECT_EQ(memory.grant(), 0U);
+  EXPECT_EQ(held, 0U);
+}
+
+TEST(TokenStorage, WorkerReleaseDoesNotCallTheDriversCatalog) {
+  using namespace jitllm::runtime;
+  RequestMemory memory(0, 1024, true);
+  unsigned calls = 0;
+  memory.SetDriver(std::this_thread::get_id(), [&](std::uint64_t) {
+    ++calls;
+    return true;
+  });
+  MemoryCharge charge;
+  std::vector<std::int32_t> tokens;
+  ASSERT_TRUE(ReserveTokenStorage(tokens, charge, memory, 8));
+  const auto before = calls;
+  std::thread worker([&] {
+    ReleaseTokenStorage(tokens, charge);
+    memory.Settle();
+  });
+  worker.join();
+  EXPECT_EQ(calls, before);
+  EXPECT_EQ(memory.used(), 0U);
+  memory.Settle();
+  EXPECT_EQ(memory.grant(), 0U);
+  EXPECT_GT(calls, before);
+}
+
+TEST(TokenStorage, ReclaimCreditsTinyAndCombinedHistoriesAtCatalogBoundaries) {
+  using namespace jitllm::runtime;
+  constexpr std::uint64_t extent = 2U << 20U;
+  const std::array<std::uint64_t, 1> tiny{32};
+  const auto one = GroupTokenReclaim(tiny, extent + 32, extent);
+  ASSERT_EQ(one.size(), 1U);
+  EXPECT_EQ(one[0].end, 1U);
+  EXPECT_EQ(one[0].catalog_bytes, extent);
+  EXPECT_TRUE(GroupTokenReclaim(tiny, extent, extent).empty());
+  const std::array<std::uint64_t, 2> halves{extent / 2, extent / 2};
+  const auto combined = GroupTokenReclaim(halves, extent, extent);
+  ASSERT_EQ(combined.size(), 1U);
+  EXPECT_EQ(combined[0].end, 2U);
+  EXPECT_EQ(combined[0].catalog_bytes, extent);
+}
+
+TEST(TokenStorage, ReclaimGroupsDoNotCreditCapacityThatDependsOnAnEarlierVictim) {
+  using namespace jitllm::runtime;
+  constexpr std::uint64_t extent = 2U << 20U;
+  constexpr std::uint64_t used = 3 * extent + 8;
+  const std::array<std::uint64_t, 2> capacities{3 * extent + 4, 4};
+  const auto groups = GroupTokenReclaim(capacities, used, extent);
+  const auto rounded = [](std::uint64_t bytes) { return ((bytes + extent - 1) / extent) * extent; };
+  std::size_t first = 0;
+  for (const auto& group : groups) {
+    std::uint64_t freed = 0;
+    for (std::size_t i = first; i < group.end; ++i) {
+      freed += capacities[i];
+    }
+    // Reclaim selection may skip a large oldest group for a smaller later
+    // one. Each candidate must therefore work without an earlier victim.
+    EXPECT_LE(group.catalog_bytes, rounded(used) - rounded(used - freed));
+    first = group.end;
+  }
+}
+
+TEST(TokenStorage, OnePrefixCreditsProspectiveBoundaryWithoutDuplicatingItsBonus) {
+  using namespace jitllm::runtime;
+  constexpr std::uint64_t extent = 2U << 20U;
+  const std::array<std::uint64_t, 1> tiny{32};
+  EXPECT_TRUE(GroupTokenReclaim(tiny, extent, extent, extent).empty());
+  const auto avoided = GroupTokenReclaim(tiny, extent + 32, extent, extent);
+  ASSERT_EQ(avoided.size(), 1U);
+  EXPECT_EQ(avoided[0].end, 1U);
+  EXPECT_EQ(avoided[0].catalog_bytes, extent);
+  const std::array<std::uint64_t, 4> pieces{16, 16, 16, 16};
+  const auto combined = GroupTokenReclaim(pieces, extent + 32, extent, 2 * extent);
+  ASSERT_EQ(combined.size(), 1U);
+  EXPECT_EQ(combined[0].end, 2U);
+  EXPECT_EQ(combined[0].catalog_bytes, extent);
+}
+
+TEST(TokenStorage, AdmissionCreditsTheProspectiveBoundaryAndOtherCatalogRelease) {
+  using namespace jitllm::runtime;
+  constexpr std::uint64_t extent = 2U << 20U;
+  // Existing usage 2E+32, incoming E-32, idle capacity E+32: its deletion
+  // frees two currently charged extents but reduces the admission target
+  // by only one. Resident state released with it counts independently.
+  const std::array<std::uint64_t, 1> idle{extent + 32};
+  const auto group = GroupTokenReclaim(idle, 3 * extent, extent, 2 * extent);
+  ASSERT_EQ(group.size(), 1U);
+  EXPECT_EQ(group[0].catalog_bytes, extent);
+  EXPECT_EQ(TokenReclaimCredit(2 * extent, 2 * extent, group[0].catalog_bytes), extent);
+  EXPECT_EQ(TokenReclaimCredit(5 * extent, 2 * extent, group[0].catalog_bytes), 4 * extent);
+  // Conversely, an idle tiny allocation can avoid new backing while
+  // leaving current catalog occupancy unchanged.
+  EXPECT_EQ(TokenReclaimCredit(0, 0, extent), extent);
+}

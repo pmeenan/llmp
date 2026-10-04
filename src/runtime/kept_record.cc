@@ -22,6 +22,7 @@
 
 #include "base/json.h"
 #include "base/sha256.h"
+#include "runtime/intake_limits.h"
 
 namespace jitllm::runtime::kept {
 namespace {
@@ -495,7 +496,8 @@ std::string Encode(const Record& r) {
   return out;
 }
 
-std::expected<Record, std::string> Decode(std::string_view text) {
+std::expected<Record, std::string> Decode(std::string_view text, RequestMemory* memory,
+                                          MemoryCharge* token_charge) {
   if (text.size() > kMostRecordBytes) {
     return Bad("it is larger than any record");
   }
@@ -603,7 +605,13 @@ std::expected<Record, std::string> Decode(std::string_view text) {
   if (!tokens.is_array()) {
     return Bad("its tokens are not an array");
   }
-  r.tokens.reserve(tokens.size());
+  if (memory != nullptr && token_charge != nullptr) {
+    if (!ReserveTokenStorage(r.tokens, *token_charge, *memory, tokens.size())) {
+      return Bad("its token history exceeds available memory");
+    }
+  } else {
+    r.tokens.reserve(tokens.size());
+  }
   for (std::size_t i = 0; i < tokens.size(); ++i) {
     auto token = Get<std::uint32_t>(tokens.at(i), "a token");
     if (!token || *token > static_cast<std::uint32_t>(std::numeric_limits<std::int32_t>::max())) {

@@ -63,12 +63,13 @@ struct ReclaimStamp {
 ReclaimStamp StampUse();
 
 enum class ReclaimKind : std::uint8_t {
-  kIdleWeights,  // clean weights of a model between its requests: paged in again
-  kGraph,        // a captured graph, its plan kept: captured again from it
-  kPlan,         // a planned shape with its graphs: planned again at its next use
-  kIdleState,    // an idle conversation's resident state: spilled, restored at its next turn
+  kIdleWeights,   // clean weights of a model between its requests: paged in again
+  kGraph,         // a captured graph, its plan kept: captured again from it
+  kPlan,          // a planned shape with its graphs: planned again at its next use
+  kIdleState,     // an idle conversation's resident state: spilled, restored at its next turn
+  kTokenHistory,  // idle host tokens and state: discarded, recomputed at next turn
 };
-inline constexpr std::size_t kReclaimKinds = 4;
+inline constexpr std::size_t kReclaimKinds = 5;
 
 std::string_view ToString(ReclaimKind kind);
 
