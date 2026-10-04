@@ -72,6 +72,18 @@
       "kind": "pypi",
       "index": "https://pypi.org/pypi/<project>/<version>/json",
       "verified": "SHA-256 and size from PyPI's JSON API on 2026-09-24, recomputed from the download; none of these files has a PEP 740 attestation"
+    },
+    "ubuntu-noble-runtime": {
+      "kind": "apt",
+      "base_url": "https://ports.ubuntu.com/ubuntu-ports/",
+      "suite": "noble",
+      "keyring": "/usr/share/keyrings/ubuntu-archive-keyring.gpg",
+      "signing_key_fingerprint": "F6ECB3762474EDA9D21B7022871920D1991BC93C",
+      "inrelease_sha256": "cdb2f31d809f589719a53c6ad15f255b27569c4059542ada282aaa21b8e164b0",
+      "packages_xz_sha256": {
+        "main/binary-arm64/Packages.xz": "4a1901e6124fb0a111f5dffc8f5c14474f449e2ecfa71f2eaf0b29917edb53f9"
+      },
+      "verified": "gpgv good signature on noble InRelease dated 2024-04-25, fetched 2026-10-04; Packages.xz SHA-256 from signed InRelease; both package SHA-256 and sizes from authenticated index, recomputed from downloads. libgcc-s1 requires gcc-14-base at the same version and libc6 >= 2.35 (existing sysroot 2.39)."
     }
   },
   "artifacts": {
@@ -353,6 +365,17 @@
       "sha256": "be349094a0e56ff8a8f4f0c45db87c372b4de1e68a1b898f0f329497802ee85b",
       "size": 28536884
     },
+    "deb/gcc-14-base/arm64": {
+      "package": "gcc-14-base",
+      "version": "14-20240412-0ubuntu1",
+      "arch": "arm64",
+      "source": "ubuntu-noble-runtime",
+      "urls": [
+        "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/gcc-14-base_14-20240412-0ubuntu1_arm64.deb"
+      ],
+      "sha256": "a473987e9704cbfa2c795b7c94b57f38ed2b27f7068c8338e1deed9bbf279877",
+      "size": 47626
+    },
     "deb/libc6-dev/arm64": {
       "package": "libc6-dev",
       "version": "2.39-0ubuntu8.9",
@@ -508,6 +531,17 @@
       ],
       "sha256": "8ca101e1058d1c2e022d88376a8c8712655b4c4ec08c6723484a07d961a63591",
       "size": 579480470
+    },
+    "deb/libgcc-s1/arm64": {
+      "package": "libgcc-s1",
+      "version": "14-20240412-0ubuntu1",
+      "arch": "arm64",
+      "source": "ubuntu-noble-runtime",
+      "urls": [
+        "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgcc-s1_14-20240412-0ubuntu1_arm64.deb"
+      ],
+      "sha256": "bb1c262f2ac9aeb357d3344a06f22f1057306694f6200896775a03ecced08b13",
+      "size": 61720
     },
     "deb/libllvm22/amd64": {
       "package": "libllvm22",

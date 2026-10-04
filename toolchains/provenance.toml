@@ -130,6 +130,14 @@ ships = true
 enters = "Every executable (D-060): the C++ headers, libstdc++.a (which contains libsupc++), libgcc.a, libgcc_eh.a and crtbeginS.o/crtendS.o. Embedded code linked routinely: HP and SGI STL code, Ryu (taken under BSL-1.0) with any <format> or <print>, libiberty's cp-demangle (GPL-2.0-or-later WITH GCC-exception-2.0) through the terminate handler, glibc soft-fp comparisons (LGPL-2.1-or-later with a linking exception) and Unicode-derived <format> tables. Only when used: fast_float (MIT) with floating-point std::from_chars, the tz database (public domain) with chrono time zones, IBM-HRL and Siek code with ext/pb_ds or concept checks. libatomic.a is not on the link line."
 notices = ["hp-sgi-stl", "unicode", "fast-float", "ibm-hrl", "siek"]
 
+[units.cross-libgcc-runtime]
+artifacts = ["deb/gcc-14-base", "deb/libgcc-s1"]
+category = "platform"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+ships = false
+enters = "Nothing shipped: Ubuntu noble arm64 libgcc_s.so.1 satisfies cuBLAS's dynamic dependency in the cross sysroot under qemu-user. jitLLM still links the source-built GCC 16.2 support libraries statically; the installed package still depends on the target's libgcc-s1 rather than bundling this library. gcc-14-base carries the matching copyright and GCC Runtime Library Exception, reached by the libgcc-s1 documentation symlink."
+notices = []
+
 [units.gcc-build-inputs]
 artifacts = ["source/gcc-prerequisite/gettext", "source/gcc-prerequisite/gmp", "source/gcc-prerequisite/isl",
              "source/gcc-prerequisite/mpc", "source/gcc-prerequisite/mpfr"]

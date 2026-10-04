@@ -5,6 +5,7 @@
 Run: python3 -m unittest discover -s tools/tests
 """
 
+import copy
 import dataclasses
 import hashlib
 import importlib.machinery
@@ -74,6 +75,75 @@ class ManifestAndLock(unittest.TestCase):
             self.assertEqual(len(comp["packages"]), len(set(comp["packages"])))
             self.assertTrue(comp["module"])
         self.assertIn("libmagic1t64", [n for n, _, _ in sdklib.prerequisites(sdk)])  # python-magic
+
+
+class CrossRuntime(unittest.TestCase):
+    def test_runtime_closure_is_locked_and_assembled_after_gcc(self):
+        sdk = sdklib.load("x86_64")
+        names = [name for name, _ in sdk.components()]
+        runtime = sdk.manifest["components"]["sysroot-aarch64-runtime"]
+        self.assertGreater(names.index("sysroot-aarch64-runtime"), names.index("gcc-runtime-aarch64"))
+        self.assertNotIn("sysroot-aarch64-runtime", [n for n, _ in sdklib.load("aarch64").components()])
+        self.assertEqual(runtime["kind"], "debs")
+        self.assertEqual(runtime["arch"], "arm64")
+        self.assertEqual(runtime["dest"], sdk.manifest["components"]["sysroot-aarch64"]["dest"])
+        self.assertEqual(runtime["packages"], ["gcc-14-base", "libgcc-s1"])
+        base = sdk.artifact("deb/gcc-14-base/arm64")
+        lib = sdk.artifact("deb/libgcc-s1/arm64")
+        self.assertEqual(base["version"], lib["version"])
+        self.assertEqual(base["source"], lib["source"])
+        # libgcc-s1's authenticated dependency is libc6 >= 2.35.
+        self.assertGreaterEqual(tuple(map(int, sdk.artifact("deb/libc6/arm64")["version"].split("-")[0].split("."))),
+                                (2, 35))
+
+    def test_runtime_pin_changes_do_not_rebuild_static_gcc(self):
+        sdk = sdklib.load("x86_64")
+        manifest = copy.deepcopy(sdk.manifest)
+        manifest["hosts"]["x86_64"]["components"].remove("sysroot-aarch64-runtime")
+        del manifest["components"]["sysroot-aarch64-runtime"]
+        lock = copy.deepcopy(sdk.lock)
+        del lock["artifacts"]["deb/gcc-14-base/arm64"]
+        del lock["artifacts"]["deb/libgcc-s1/arm64"]
+        before = dataclasses.replace(sdk, manifest=manifest, lock=lock)
+        with mock.patch.object(setup, "tool_version", return_value="same host tool"):
+            for name in ("gcc-runtime", "gcc-runtime-aarch64"):
+                comp = sdk.manifest["components"][name]
+                self.assertEqual(setup.gcc_cache_dir(before, comp), setup.gcc_cache_dir(sdk, comp))
+
+    def test_runtime_merge_keeps_static_outputs_and_copyright_link(self):
+        sdk = sdklib.load("x86_64")
+        comp = sdk.manifest["components"]["sysroot-aarch64-runtime"]
+        with tempfile.TemporaryDirectory() as tmp:
+            staging = pathlib.Path(tmp)
+            dest = staging / comp["dest"]
+            static = dest / "opt/gcc/lib/gcc/aarch64-linux-gnu/16/libgcc.a"
+            static.parent.mkdir(parents=True)
+            static.write_bytes(b"unchanged static GCC 16")
+            libc = dest / "usr/lib/aarch64-linux-gnu/libc.so.6"
+            libc.parent.mkdir(parents=True)
+            libc.write_bytes(b"unchanged glibc")
+            setup.relative_link(dest / "lib", dest / "usr/lib")
+            def extract(deb, root):
+                if deb.name == "gcc-14-base":
+                    doc = root / "usr/share/doc/gcc-14-base"
+                    doc.mkdir(parents=True)
+                    (doc / "copyright").write_bytes(b"GCC Runtime Library Exception")
+                else:
+                    lib = root / "usr/lib/aarch64-linux-gnu/libgcc_s.so.1"
+                    lib.parent.mkdir(parents=True)
+                    lib.write_bytes(b"separate shared runtime")
+                    (root / "usr/share/doc/libgcc-s1").symlink_to("gcc-14-base")
+            with (mock.patch.object(setup, "fetch", side_effect=lambda _, key: pathlib.Path(key.split("/")[1])),
+                  mock.patch.object(setup, "extract_deb", side_effect=extract)):
+                receipt = setup.install_debs(sdk, comp, staging)
+                self.assertEqual(receipt["artifacts"], ["deb/gcc-14-base/arm64", "deb/libgcc-s1/arm64"])
+                self.assertEqual(static.read_bytes(), b"unchanged static GCC 16")
+                self.assertEqual(libc.read_bytes(), b"unchanged glibc")
+                self.assertEqual((dest / "lib/aarch64-linux-gnu/libgcc_s.so.1").read_bytes(), b"separate shared runtime")
+                self.assertEqual((dest / "usr/share/doc/libgcc-s1/copyright").read_bytes(), b"GCC Runtime Library Exception")
+                # A second merge cannot overwrite a runtime already present.
+                with self.assertRaisesRegex(sdklib.SdkError, "already exists"):
+                    setup.install_debs(sdk, comp, staging)
 
 
 class Provenance(unittest.TestCase):

@@ -45,7 +45,7 @@ the root for the current checkout.
 | `cuda/` | NVCC, CRT, libNVVM, libnvptxcompiler, cudart (including `libcudart_static.a`), CCCL and the driver's link stub (`targets/*/lib/stubs/libcuda.so`); x86-64 hosts also get `targets/sbsa-linux` for cross builds. Run NVCC as `cuda/bin/nvcc`: it finds its configuration beside the path it is invoked by, so a symlink elsewhere breaks it |
 | `cmake/`, `ninja/` | CMake and Ninja release binaries |
 | `gcc/<triple>/` | The host's GCC 16.2 runtime: `include/c++/16`, `lib64/{libstdc++,libsupc++,libatomic}.a` and `lib/gcc/<triple>/16/{crt*.o,libgcc.a,libgcc_eh.a}`. Select it with `--gcc-install-dir=<root>/gcc/<triple>/lib/gcc/<triple>/16` |
-| `sysroot/aarch64-linux-gnu/` | x86-64 hosts only: the Spark sysroot (glibc 2.39 and kernel headers from pinned Ubuntu arm64 packages) with the cross-built GCC runtime at `opt/gcc`, in the same layout |
+| `sysroot/aarch64-linux-gnu/` | x86-64 hosts only: the Spark sysroot (glibc 2.39 and kernel headers from pinned Ubuntu arm64 packages) with the cross-built GCC runtime at `opt/gcc`, in the same layout, plus the separately pinned Ubuntu `libgcc_s.so.1` needed by cuBLAS under qemu-user |
 | `pkgs/` | The unpacked package trees behind `llvm/` and `cuda/`, including their copyright files |
 | `python/reuse/` | x86-64 hosts only: the `reuse` wheel and its dependencies' wheels, unpacked. `python3 -B -I -S` runs it with nothing else importable and writes no bytecode here (`Sdk.python_tool` in [jitllm_sdk.py](../tools/jitllm_sdk.py)); `doctor` checks its version |
 | `sdk.json` | The receipt: identity, input digests, versions, each component's artifacts and GCC build inputs, and a digest of the whole tree |
@@ -64,6 +64,15 @@ are cached by SHA-256 and re-verified on every use. GCC runtime builds are
 cached by their own inputs (sources, flags, target, sysroot packages and the
 build host's compiler and binutils), so an unrelated pin change does not
 rebuild GCC.
+
+The cross sysroot's runtime-only `libgcc-s1` and matching `gcc-14-base`
+14-20240412-0ubuntu1 come from Ubuntu noble's signed arm64 index. They are
+assembled after the original sysroot and GCC runtime, so they do not change
+GCC's build inputs or static libraries. `libgcc-s1` needs glibc ≥ 2.35, which
+the pinned 2.39 sysroot provides. Its copyright symlink resolves to the
+included base-package documentation. This shared runtime only supports
+cross-test loading of cuBLAS; it is not bundled into jitLLM's package,
+which retains its target-system `libgcc-s1` dependency (D-076).
 
 Each cached GCC build records its inputs and a content digest, checked before
 reuse. If a cache is incomplete, modified, or predates this integrity record,

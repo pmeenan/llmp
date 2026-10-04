@@ -3458,6 +3458,13 @@ what a binary must carry.
   are rewritten to stay inside it, and `/lib` points at `usr/lib` as on
   the target. Native x86-64 builds keep the host's `libc6-dev` (≥ 2.39, a
   declared prerequisite).
+  Since 2026-10-04, a separate runtime-only component adds Ubuntu noble's
+  `libgcc-s1` and matching `gcc-14-base` 14-20240412-0ubuntu1, authenticated
+  through the signed arm64 index, after sysroot and GCC assembly. This
+  satisfies D-076's cuBLAS dependency during qemu-user test discovery without
+  changing the GCC build-input key or replacing its static support libraries.
+  The package continues to depend on the target system's `libgcc-s1`;
+  this cross-test library is not shipped.
 - **AArch64 GCC runtime.** On x86-64 build hosts, D-060's GCC 16.2 runtime
   for the Spark target is cross-built from the same source, prerequisites
   and configure flags, adding `--target=aarch64-linux-gnu --with-sysroot`

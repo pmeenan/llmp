@@ -559,6 +559,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- The cross SDK includes a pinned ARM shared GCC support runtime for
+  cuBLAS, allowing CPU test discovery under qemu without changing the
+  compiler or jitLLM's static C++ runtime.
+
 - Package provenance checks read license sidecars for JSON and other
   noncommentable source files, while code still requires embedded headers.
 

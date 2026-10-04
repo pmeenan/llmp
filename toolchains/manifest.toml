@@ -37,7 +37,7 @@ reuse = "6.2.0"          # D-071, the check gate's REUSE lint
 triple = "x86_64-linux-gnu"
 deb_arch = "amd64"
 components = ["llvm", "llvm-aarch64-runtimes", "cuda", "cuda-sbsa-target", "cublas", "cublas-sbsa-target",
-              "cmake", "ninja", "gcc-runtime", "sysroot-aarch64", "gcc-runtime-aarch64", "reuse"]
+              "cmake", "ninja", "gcc-runtime", "sysroot-aarch64", "gcc-runtime-aarch64", "sysroot-aarch64-runtime", "reuse"]
 prerequisites = "prerequisites/ubuntu-24.04-x86_64.txt"
 
 [hosts.aarch64]
@@ -146,6 +146,17 @@ kind = "gcc"
 target = "aarch64-linux-gnu"
 sysroot = "sysroot/aarch64-linux-gnu"
 dest = "sysroot/aarch64-linux-gnu/opt/gcc"
+
+[components.sysroot-aarch64-runtime]
+# cuBLAS needs libgcc_s.so.1 even when jitLLM links GCC 16.2 statically.
+# Runtime-only Ubuntu closure, merged after the sysroot and GCC build so
+# it changes neither the cross compiler's inputs nor its static outputs.
+kind = "debs"
+arch = "arm64"
+dest = "sysroot/aarch64-linux-gnu"
+packages = ["gcc-14-base", "libgcc-s1"]
+select = ["usr/lib/aarch64-linux-gnu/libgcc_s.so.1",
+          "usr/share/doc/gcc-14-base", "usr/share/doc/libgcc-s1"]
 
 [components.reuse]
 # The REUSE lint tool and its Python dependencies (D-071), for the check
