@@ -559,6 +559,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- DeepSeek automatic calibration exploration respects explicitly supplied
+  wave-cost prefixes, including zero, which always speculates. Widths
+  outside the override prefix retain bounded first-use exploration.
+
 - Calibration records become stale when effective context or DeepSeek
   automatic wave-cost overrides change. Equal fallback-valued overrides
   and different override-prefix lengths have distinct dependencies. The

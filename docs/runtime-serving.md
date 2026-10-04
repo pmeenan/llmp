@@ -199,8 +199,11 @@ shape's first waves), and a draft-verify wave only when every member's
 full verify joined it (not one cut by a mask width or the reply's end,
 or run alone). Until a width's cost is calibrated, DeepSeek alternates
 the two forms at that width, at most 32 waves, until each form has its
-samples (auto `wave_form` only, never with a sampling member); after
-that the counted choice runs as before.
+samples (auto `wave_form` only, never with a sampling member). Widths
+within an explicit `wave_costs` prefix keep their configured adaptive
+choice instead: zero always speculates, and a finite cost follows counted
+acceptance. Unoverridden widths still explore; after exploration the
+counted choice runs as before.
 
 The alternation is not visible in throughput, and adds no new kind of
 reply variation. Measured on `spark-b` (wave lanes build, four

@@ -618,4 +618,161 @@ TEST(Calibration, MeasuresFirstUses) {
   EXPECT_EQ(merged.value_or(Calibration{}).prefill_floor_tok_s, 341U);
 }
 
+using WaveMode = jitllm::execution::AdaptiveWaveMode;
+using WaveChoice = WaveMode::Mode;
+using WaveExploration = jitllm::runtime::WaveCostExploration;
+
+// The real counted policy, fed the resolver's costs; exploration receives
+// its selected mode exactly as the DeepSeek runner does.
+WaveMode CountedWaveMode(const jitllm::runtime::ModelSettings& settings) {
+  WaveMode::Costs costs{};
+  for (std::size_t i = 0; i < settings.wave_costs.value.size(); ++i) {
+    costs[i + 2] = settings.wave_costs.value[i];
+  }
+  WaveMode::Force force = WaveMode::Force::kNone;
+  if (settings.wave_form.value == jitllm::config::WaveForm::kPlain) {
+    force = WaveMode::Force::kPlain;
+  } else if (settings.wave_form.value == jitllm::config::WaveForm::kSpeculative) {
+    force = WaveMode::Force::kSpeculative;
+  }
+  return WaveMode(costs, force);
+}
+
+TEST(Calibration, ExplicitWaveCostsKeepZeroAndCountedChoicesThroughExploration) {
+  jitllm::config::ModelEntry entry;
+  entry.name = "ds";
+  entry.overrides["wave_costs"] = std::vector<double>{0, 2.08};
+  jitllm::runtime::ArtifactFacts facts;
+  facts.architecture = "deepseek4";
+  facts.drafter_architecture = "dflash";
+  const auto resolved = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_EQ(resolved->wave_costs_override_count, 2U);
+  WaveMode zero_counted = CountedWaveMode(*resolved);
+  WaveMode finite_counted = CountedWaveMode(*resolved);
+  WaveExploration explore;
+  for (std::size_t i = 0; i < WaveExploration::kWaves + 8; ++i) {
+    SCOPED_TRACE(i);
+    // Zero always speculates even when one kept token would never pay a
+    // finite cost. The second supplied cost pays three kept tokens and
+    // also stays speculative, including odd exploratory wave numbers.
+    const auto zero = explore.Choose(zero_counted.Choose(2), 2, false, *resolved, Calibration{});
+    EXPECT_EQ(zero, WaveChoice::kSpeculative);
+    zero_counted.Observe(2, zero, 2, 2);
+    const auto finite =
+        explore.Choose(finite_counted.Choose(3), 3, false, *resolved, Calibration{});
+    EXPECT_EQ(finite, WaveChoice::kSpeculative);
+    finite_counted.Observe(3, finite, 9, 3);
+  }
+  // A finite override remains adaptive rather than forcing speculation:
+  // three full verifies keeping only their anchor switch to plain.
+  WaveMode low_acceptance = CountedWaveMode(*resolved);
+  WaveExploration low_explore;
+  for (int i = 0; i < 3; ++i) {
+    const auto selected =
+        low_explore.Choose(low_acceptance.Choose(3), 3, false, *resolved, Calibration{});
+    EXPECT_EQ(selected, WaveChoice::kSpeculative);
+    low_acceptance.Observe(3, selected, 3, 3);
+  }
+  EXPECT_EQ(low_explore.Choose(low_acceptance.Choose(3), 3, false, *resolved, Calibration{}),
+            WaveChoice::kPlain);
+}
+
+TEST(Calibration, ExplicitPrefixLeavesOnlyUnknownSuffixWidthsExploring) {
+  jitllm::config::ModelEntry entry;
+  entry.name = "ds";
+  entry.overrides["wave_costs"] = std::vector<double>{0};
+  jitllm::runtime::ArtifactFacts facts;
+  facts.architecture = "deepseek4";
+  facts.drafter_architecture = "dflash";
+  const auto resolved = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(resolved.has_value());
+  WaveMode counted = CountedWaveMode(*resolved);
+  WaveExploration explore;
+  // Width two's override does not consume width three's exploration.
+  for (std::size_t i = 0; i < WaveExploration::kWaves; ++i) {
+    EXPECT_EQ(explore.Choose(counted.Choose(2), 2, false, *resolved, Calibration{}),
+              WaveChoice::kSpeculative);
+    const auto selected = explore.Choose(counted.Choose(3), 3, false, *resolved, Calibration{});
+    EXPECT_EQ(selected, i % 2 == 0 ? WaveChoice::kSpeculative : WaveChoice::kPlain);
+    counted.Observe(3, selected, 3, 3);
+  }
+  EXPECT_EQ(explore.Choose(counted.Choose(3), 3, false, *resolved, Calibration{}),
+            WaveChoice::kPlain);  // bounded exploration ends; low acceptance decides
+
+  Calibration known;
+  known.wave_costs[0] = 1000;  // an explicit prefix still replaces a calibrated value
+  known.wave_costs[1] = 1.5;
+  const auto calibrated = jitllm::runtime::ResolveSettings(entry, facts, &known, false);
+  ASSERT_TRUE(calibrated.has_value());
+  EXPECT_EQ(calibrated->wave_costs.value[0], 0);
+  EXPECT_EQ(calibrated->wave_costs.value[1], 1.5);
+  WaveMode paid = CountedWaveMode(*calibrated);
+  WaveExploration measured;
+  for (std::size_t i = 0; i < WaveExploration::kWaves; ++i) {
+    const auto selected = measured.Choose(paid.Choose(3), 3, false, *calibrated, known);
+    EXPECT_EQ(selected, WaveChoice::kSpeculative);
+    paid.Observe(3, selected, 9, 3);
+  }
+}
+
+TEST(Calibration, ForcedAndSampledWavesDoNotConsumeCalibrationExploration) {
+  jitllm::config::ModelEntry entry;
+  entry.name = "ds";
+  jitllm::runtime::ArtifactFacts facts;
+  facts.architecture = "deepseek4";
+  facts.drafter_architecture = "dflash";
+  const auto automatic = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(automatic.has_value());
+  WaveMode counted = CountedWaveMode(*automatic);
+  WaveExploration explore;
+  for (std::size_t i = 0; i < WaveExploration::kWaves; ++i) {
+    EXPECT_EQ(explore.Choose(counted.Choose(2, true), 2, true, *automatic, Calibration{}),
+              WaveChoice::kSpeculative);
+  }
+  for (const std::string form : {"plain", "speculative"}) {
+    entry.overrides["wave_form"] = form;
+    const auto forced = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+    ASSERT_TRUE(forced.has_value());
+    WaveMode policy = CountedWaveMode(*forced);
+    const auto expected = form == "plain" ? WaveChoice::kPlain : WaveChoice::kSpeculative;
+    for (std::size_t i = 0; i < WaveExploration::kWaves; ++i) {
+      for (const bool sampled : {false, true}) {
+        EXPECT_EQ(explore.Choose(policy.Choose(2, sampled), 2, sampled, *forced, Calibration{}),
+                  expected);
+      }
+    }
+  }
+  // Those bypassed waves leave this width's first unknown-cost samples
+  // untouched, and a count-zero profile retains the existing alternation.
+  for (std::size_t i = 0; i < WaveExploration::kWaves; ++i) {
+    EXPECT_EQ(explore.Choose(counted.Choose(2), 2, false, *automatic, Calibration{}),
+              i % 2 == 0 ? WaveChoice::kSpeculative : WaveChoice::kPlain);
+  }
+}
+
+TEST(Calibration, FullWaveCostPrefixIncludesWidthEightAndInvalidWidthsStayUnchanged) {
+  jitllm::config::ModelEntry entry;
+  entry.name = "ds";
+  entry.overrides["wave_costs"] = std::vector<double>(7, 0);
+  jitllm::runtime::ArtifactFacts facts;
+  facts.architecture = "deepseek4";
+  facts.drafter_architecture = "dflash";
+  const auto all = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(all.has_value());
+  EXPECT_EQ(all->wave_costs_override_count, 7U);
+  WaveMode counted = CountedWaveMode(*all);
+  WaveExploration explore;
+  for (std::size_t i = 0; i < WaveExploration::kWaves + 1; ++i) {
+    for (std::uint32_t width = 2; width <= WaveMode::kMaxWidth; ++width) {
+      EXPECT_EQ(explore.Choose(counted.Choose(width), width, false, *all, Calibration{}),
+                WaveChoice::kSpeculative);
+    }
+  }
+  for (const std::uint32_t width : {0U, 1U, 9U, 1000U}) {
+    EXPECT_EQ(explore.Choose(WaveChoice::kPlain, width, false, *all, Calibration{}),
+              WaveChoice::kPlain);
+  }
+}
+
 }  // namespace

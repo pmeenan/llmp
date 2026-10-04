@@ -599,17 +599,8 @@ class Dsv4 final : public Llm {
     const auto width = static_cast<std::uint32_t>(prepared.size());
     const bool sampled = std::ranges::any_of(
         prepared, [this](const PreparedGeneration& unit) { return sampling(*unit.branch); });
-    auto mode = wave_mode_.Choose(width, sampled);
-    // Until this width's cost is calibrated on this machine, its waves
-    // alternate the forms, at most kExploreWaves of them, so both are timed
-    // (calibration.h); a forced form or a sampling member never does.
-    if (!sampled && settings_.wave_form.value == config::WaveForm::kAuto &&
-        width - 2 < calibration_record_.known.wave_costs.size() &&
-        !calibration_record_.known.wave_costs[width - 2] && explored_[width] < kExploreWaves) {
-      mode = explored_[width] % 2 == 0 ? execution::AdaptiveWaveMode::Mode::kSpeculative
-                                       : execution::AdaptiveWaveMode::Mode::kPlain;
-      ++explored_[width];
-    }
+    const auto mode = wave_cost_exploration_.Choose(wave_mode_.Choose(width, sampled), width,
+                                                    sampled, settings_, calibration_record_.known);
     std::uint32_t tokens = 0;
     std::uint32_t complete = 0;
     const double planned = runner_.plan_seconds();
@@ -874,11 +865,7 @@ class Dsv4 final : public Llm {
     return execution::AdaptiveWaveMode::Force::kNone;
   }
   execution::AdaptiveWaveMode wave_mode_;
-  // By width, the waves run to calibrate its cost (RunPreparedGenerationWave):
-  // at most four times a value's samples, half of each form, since a
-  // shape's first waves plan and capture and do not count.
-  static constexpr std::size_t kExploreWaves = 4 * CalibrationSamples::kSamples;
-  std::array<std::size_t, execution::AdaptiveWaveMode::kMaxWidth + 1> explored_{};
+  WaveCostExploration wave_cost_exploration_;
 };
 
 // Qwen3.8 Flash Next (engine/qwen38_runner.h), with its MTP block as its

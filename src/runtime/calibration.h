@@ -50,6 +50,7 @@
 #include <vector>
 
 #include "config/node_config.h"
+#include "execution/adaptive_wave_mode.h"
 #include "runtime/model_settings.h"
 
 namespace jitllm::runtime {
@@ -166,6 +167,23 @@ class CalibrationSamples {
   std::vector<double> depth2_;
   std::vector<double> depth3_;
   bool fresh_ = false;  // a sample since the last Take
+};
+
+// DeepSeek's bounded first-use wave-cost measurement. Keep the adaptive
+// choice for explicit cost prefixes, calibrated widths, forced forms and
+// sampling members. Other widths alternate so both forms can be measured;
+// this exploration never changes the cost in force during the service.
+class WaveCostExploration {
+ public:
+  // Four times a median's samples: half of each form, allowing for the
+  // first waves' planning and capture, which do not count as samples.
+  static constexpr std::size_t kWaves = 4 * CalibrationSamples::kSamples;
+  execution::AdaptiveWaveMode::Mode Choose(execution::AdaptiveWaveMode::Mode selected,
+                                           std::uint32_t width, bool sampled,
+                                           const ModelSettings& settings, const Calibration& known);
+
+ private:
+  std::array<std::size_t, execution::AdaptiveWaveMode::kMaxWidth + 1> explored_{};
 };
 
 }  // namespace jitllm::runtime

@@ -436,4 +436,22 @@ std::optional<Calibration> CalibrationSamples::Take(const Calibration& known) {
   return c;
 }
 
+execution::AdaptiveWaveMode::Mode WaveCostExploration::Choose(
+    execution::AdaptiveWaveMode::Mode selected, std::uint32_t width, bool sampled,
+    const ModelSettings& settings, const Calibration& known) {
+  if (sampled || settings.wave_form.value != config::WaveForm::kAuto || width < 2 ||
+      width > execution::AdaptiveWaveMode::kMaxWidth) {
+    return selected;
+  }
+  const std::size_t cost = width - 2;
+  if (cost < settings.wave_costs_override_count || cost >= known.wave_costs.size() ||
+      known.wave_costs[cost] || explored_[width] >= kWaves) {
+    return selected;
+  }
+  const auto mode = explored_[width] % 2 == 0 ? execution::AdaptiveWaveMode::Mode::kSpeculative
+                                              : execution::AdaptiveWaveMode::Mode::kPlain;
+  ++explored_[width];
+  return mode;
+}
+
 }  // namespace jitllm::runtime
