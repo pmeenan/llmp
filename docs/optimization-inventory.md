@@ -102,7 +102,7 @@ they have no text-model equivalent.
 
 | Technique | Already used | Missing or conditional consumer | Action and evidence |
 | --- | --- | --- | --- |
-| Select the pinned attention arm by head grouping and query shape | Gemma local D256/F16 primitive: GB10 solo vector, group2 MMA for multiple rows/sequences | Gemma graph and whole-model solo/batched execution | Tile4/8/16/32 and paid mask/fixup scratch follow the pinned selector. Independent 16/32-head ring controls and original/capture comparison are [bounded primitive evidence](experiments/gemma-local-attention/README.md); device masks, model quality and optimized batching remain owed. Existing D64 vector and D256/D512 group8 routes retain their identities. |
+| Select the pinned attention arm by head grouping and query shape | Gemma local D256/F16 primitive: GB10 solo vector, group2 MMA for multiple rows/sequences | Gemma graph and whole-model solo/batched execution | Tile4/8/16/32 and paid mask/fixup scratch follow the pinned selector. Independent 16/32-head ring controls and original/capture comparison are [bounded primitive evidence](experiments/gemma-local-attention/README.md); model quality and optimized batching remain owed. Checked per-segment device masks have [separate bounded controls](experiments/gemma-device-masks/README.md). Existing D64 vector and D256/D512 group8 routes retain their identities. |
 | Keep only selected attention cells | DeepSeek's window plus indexer selection; Qwen3.8's kept QSA cells | A dense-attention family has no equivalent sparse selection | Shared principle is adopted. Model selection semantics remain authoritative; do not invent sparsity for another architecture. [Long context](experiments/long-context/README.md) |
 | Reuse a sparse query tile's union of KV rows | DeepSeek fast CSA/window attention through shared `mma_wide` | Generic D256/D512 attention; Qwen's separate QSA implementation | Unknown/reference defaults stay off. Count-based HCA retains ordinary MMA after a faithful-floor all-wide 32K oracle failure; this semantic split passes fresh 32K/128K repeats and matched PPL. D256 overlap/disjoint gains 4.58×/2.20×; D512 gains 1.50× overlapping but 0.556× disjoint. Fresh sampled top16-plus-other TV passes at 0.0034 / 0.0098 / 0.0186 / 0.0112; subsequent maximum-context timing, neutral retrieval and exact continuing-context swaps are recorded in the final-context report. The real Qwen paired-query transfer regresses despite passing operator bounds; see the rejected-kernel entry. [ds4 study](experiments/ds4-study/README.md), [diagnosis](experiments/dsv4-frontier-head/README.md#head-arithmetic-and-quality), [final context](experiments/m3-final-context/README.md), [QSA transfer](experiments/qwen38-qsa-pair/README.md) |
 | Prepare an input once for adjacent products | Qwen prefill reuses BF16/MXFP8 input forms; ordinary GGUF gate/up can share Q8 and route preparation | Other products that consume the same logical input; raw NVFP4 has a different contract | The ordinary pair is generic but default-off outside measured DeepSeek fast plans; its 8K model gain was 0.8%, not a decisive product speedup. Check conversions and map identity before sharing. [ds4 study](experiments/ds4-study/README.md) |
@@ -159,6 +159,15 @@ independent request segments. It records the checked Q5_1 primitive controls
 and GELU/GeGLU primitive controls, including the explicit quantized writer.
 Model selection and model-execution gaps remain; solo/batched execution
 qualification remains owed before either checkpoint is supported.
+
+Gemma's optional graph-owned causal/ring mask producer replaces mandatory
+host O(rows × context) mask construction/staging with fresh I32 positions.
+One global/local mask pair per independent segment is reused across layers;
+all query/cell padding is initialized to negative infinity. The funded host
+reference path remains available, and source checks still authenticate tokens,
+positions and cache indices. [Bounded mask controls](experiments/gemma-device-masks/README.md)
+compare complete paid layers and captured execution. This transfer closes a
+primitive/input staging gap, not whole-model serving or batching qualification.
 
 ## Rejected kernels: pieces worth retaining
 

@@ -242,7 +242,10 @@ family" guide, and its long-context scaling work.
 
       - [x] Gemma segmented GGML text graphs and checked bound plans, with
         complete-layer, independent-slot and captured-replay diagnostic controls;
-        serving, device masks and whole-model/reference qualification remain owed.
+        serving and whole-model/reference qualification remain owed.
+      - [x] Gemma graph-owned causal/ring device masks, with funded host
+        reference inputs and [exact mask/replay controls](experiments/gemma-device-masks/README.md).
+        Whole-model adoption, optimized serving and reference gates remain owed.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

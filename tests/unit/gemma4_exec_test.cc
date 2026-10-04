@@ -19,6 +19,7 @@
 #include <iostream>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -187,7 +188,8 @@ class Gemma4ExecTest : public ::testing::Test {
     std::vector<ggml_fp16_t> keys, values;
   };
   Run Execute(std::uint32_t layer, std::span<const std::uint32_t> slots, std::uint32_t rows,
-              std::uint32_t past, bool shared, bool head = false, bool fused_norms = false) {
+              std::uint32_t past, bool shared, bool head = false, bool fused_norms = false,
+              bool device_masks = false) {
     Run run;
     std::vector<std::vector<std::int32_t>> tokens(slots.size(), std::vector<std::int32_t>(rows, 1));
     std::vector<md::Gemma4Segment> segments;
@@ -203,7 +205,7 @@ class Gemma4ExecTest : public ::testing::Test {
         }
       if (head) frontier.push_back(static_cast<std::int32_t>((i + 1) * rows - 1));
     }
-    run.chunk = std::move(*md::Gemma4Chunk(p_, state_, segments, true));
+    run.chunk = std::move(*md::Gemma4Chunk(p_, state_, segments, !device_masks));
     for (const auto& s : run.chunk.segments)
       shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
     shape.outputs = static_cast<std::uint32_t>(frontier.size());
@@ -212,7 +214,8 @@ class Gemma4ExecTest : public ::testing::Test {
                       .layer_count = 1,
                       .hidden_input = true,
                       .head = head,
-                      .shared_q8 = shared};
+                      .shared_q8 = shared,
+                      .device_masks = device_masks};
     auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(p_, slots.size()));
     EXPECT_TRUE(arena);
     auto graph = kg::BuildGemma4Graph(*arena, p_, binding_, state_, shape, model_.options);
@@ -375,10 +378,22 @@ class Gemma4ExecTest : public ::testing::Test {
       offset += static_cast<std::size_t>(state_.tensors[std::size_t{layer} * 2].bytes / 2);
     }
   }
-  double Time(const Run& run) {
-    for (int i = 0; i < 4; ++i) {
+  double Time(const Run& run, bool captured = false, std::uint64_t* peak = nullptr) {
+    launch_->ResetScratchPeak();
+    std::optional<kg::CapturedGraph> graph;
+    if (captured) {
+      auto recorded =
+          launch_->Capture([&](auto& context) { return run.planned->bound->Run(context); });
+      EXPECT_TRUE(recorded);
+      if (!recorded) return 0;
+      graph.emplace(std::move(*recorded));
+    }
+    const auto submit = [&] {
       Stage(run);
-      EXPECT_TRUE(run.planned->bound->Run(*launch_));
+      EXPECT_TRUE(graph ? launch_->Launch(*graph) : run.planned->bound->Run(*launch_));
+    };
+    for (int i = 0; i < 4; ++i) {
+      submit();
     }
     cudaEvent_t start{}, end{};
     EXPECT_EQ(cudaEventCreate(&start), cudaSuccess);
@@ -386,8 +401,7 @@ class Gemma4ExecTest : public ::testing::Test {
     auto stream = reinterpret_cast<cudaStream_t>(execution_->Submission(stream_).value().handle);
     EXPECT_EQ(cudaEventRecord(start, stream), cudaSuccess);
     for (int i = 0; i < 32; ++i) {
-      Stage(run);
-      EXPECT_TRUE(run.planned->bound->Run(*launch_));
+      submit();
     }
     EXPECT_EQ(cudaEventRecord(end, stream), cudaSuccess);
     EXPECT_EQ(cudaEventSynchronize(end), cudaSuccess);
@@ -395,6 +409,13 @@ class Gemma4ExecTest : public ::testing::Test {
     EXPECT_EQ(cudaEventElapsedTime(&milliseconds, start, end), cudaSuccess);
     EXPECT_EQ(cudaEventDestroy(start), cudaSuccess);
     EXPECT_EQ(cudaEventDestroy(end), cudaSuccess);
+    auto* out = run.planned->graph.logits != nullptr ? run.planned->graph.logits
+                                                     : run.planned->graph.hidden;
+    std::vector<float> actual(run.output.size());
+    EXPECT_EQ(cudaMemcpy(actual.data(), out->data, ggml_nbytes(out), cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    EXPECT_EQ(std::memcmp(actual.data(), run.output.data(), ggml_nbytes(out)), 0);
+    if (peak != nullptr) *peak = launch_->scratch_peak().value();
     return static_cast<double>(milliseconds) * 1000 / 32;
   }
   bool positive_values_ = true;
@@ -604,6 +625,80 @@ TEST_F(Gemma4ExecTest, TiedQuantHeadSoftcapMatchesIndependentScalar) {
   EXPECT_LT(max, 0.03);
   Repeat(run);
 }
+TEST_F(Gemma4ExecTest, DeviceMasksKeepTheCompleteLayerAndCapturedStateExact) {
+  const std::array<std::uint32_t, 4> slots{0, 1, 2, 3};
+  for (const auto layer : {0U, 5U})
+    for (const auto count : {1U, 4U}) {
+      const auto selected = std::span(slots).first(count);
+      auto host = Execute(layer, selected, 1, 1279, false);
+      auto device = Execute(layer, selected, 1, 1279, false, false, false, true);
+      ASSERT_NE(host.planned, nullptr);
+      ASSERT_NE(device.planned, nullptr);
+      EXPECT_EQ(
+          std::memcmp(host.output.data(), device.output.data(), host.output.size() * sizeof(float)),
+          0);
+      EXPECT_TRUE(device.sources.masks.empty());
+      Reference(device, layer);
+      Repeat(device);
+      if (std::getenv("JITLLM_GEMMA_MASK_SCREEN") != nullptr) {  // NOLINT(concurrency-mt-unsafe)
+        const auto a = Time(host), b = Time(device), after = Time(host);
+        std::uint64_t host_peak = 0, device_peak = 0;
+        const auto ca = Time(host, true, &host_peak), cb = Time(device, true, &device_peak),
+                   cafter = Time(host, true);
+        std::cout << "GEMMA_MASK_LAYER_SCREEN layer=" << layer << " slots=" << count
+                  << " rows=1 host_us=" << a << " device_us=" << b << " host_after_us=" << after
+                  << " host_source_bytes=" << en::Gemma4SourceBytes(host.planned->graph).value()
+                  << " device_source_bytes=" << en::Gemma4SourceBytes(device.planned->graph).value()
+                  << " capture_host_us=" << ca << " capture_device_us=" << cb
+                  << " capture_host_after_us=" << cafter
+                  << " host_staged_bytes=" << host.planned->inputs_bytes
+                  << " device_staged_bytes=" << device.planned->inputs_bytes
+                  << " host_pool_peak=" << host_peak << " device_pool_peak=" << device_peak
+                  << " host_activation_bytes=" << host.planned->placement.extent
+                  << " device_activation_bytes=" << device.planned->placement.extent
+                  << " host_plan_scratch=" << host.planned->scratch
+                  << " device_plan_scratch=" << device.planned->scratch << '\n';
+      }
+    }
+}
+
+TEST_F(Gemma4ExecTest, DeviceMasksKeepThirtyThreeQueryChunksAndCapturedStateExact) {
+  // Local capacity remains 1,280 at this chunk size; existing slot storage
+  // is unchanged. The mask now has two physical 32-query tiles.
+  state_ = std::move(*md::Gemma4State(p_, 4096, 33));
+  const std::array<std::uint32_t, 1> slots{0};
+  for (const auto layer : {0U, 5U}) {
+    auto host = Execute(layer, slots, 33, 1279, false);
+    auto device = Execute(layer, slots, 33, 1279, false, false, false, true);
+    ASSERT_NE(host.planned, nullptr);
+    ASSERT_NE(device.planned, nullptr);
+    EXPECT_EQ(
+        std::memcmp(host.output.data(), device.output.data(), host.output.size() * sizeof(float)),
+        0);
+    Reference(device, layer);
+    Repeat(device);
+    if (std::getenv("JITLLM_GEMMA_MASK_SCREEN") != nullptr) {  // NOLINT(concurrency-mt-unsafe)
+      const auto a = Time(host), b = Time(device), after = Time(host);
+      std::uint64_t host_peak = 0, device_peak = 0;
+      const auto ca = Time(host, true, &host_peak), cb = Time(device, true, &device_peak),
+                 cafter = Time(host, true);
+      std::cout << "GEMMA_MASK_LAYER_SCREEN layer=" << layer << " slots=1 rows=33 host_us=" << a
+                << " device_us=" << b << " host_after_us=" << after
+                << " host_source_bytes=" << en::Gemma4SourceBytes(host.planned->graph).value()
+                << " device_source_bytes=" << en::Gemma4SourceBytes(device.planned->graph).value()
+                << " capture_host_us=" << ca << " capture_device_us=" << cb
+                << " capture_host_after_us=" << cafter
+                << " host_staged_bytes=" << host.planned->inputs_bytes
+                << " device_staged_bytes=" << device.planned->inputs_bytes
+                << " host_pool_peak=" << host_peak << " device_pool_peak=" << device_peak
+                << " host_activation_bytes=" << host.planned->placement.extent
+                << " device_activation_bytes=" << device.planned->placement.extent
+                << " host_plan_scratch=" << host.planned->scratch
+                << " device_plan_scratch=" << device.planned->scratch << '\n';
+    }
+  }
+}
+
 TEST_F(Gemma4ExecTest, OptionalPaidWholeLayerScreen) {
   // Ordinary test gate pays correctness, not timing. This bounded experiment
   // measures EVERY primitive/preparation/attention/store in the complete plan.

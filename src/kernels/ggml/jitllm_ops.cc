@@ -109,6 +109,7 @@ constinit std::array kTagDsv4Compress = std::to_array("jitllm.dsv4.compress");
 constinit std::array kTagGdnStep = std::to_array("jitllm.gdn.step");
 constinit std::array kTagGdnGates = std::to_array("jitllm.gdn.gates");
 constinit std::array kTagDsv4LidTopK = std::to_array("jitllm.dsv4.lid_topk");
+constinit std::array kTagGemma4Mask = std::to_array("jitllm.gemma4.mask");
 constinit std::array kTagDsv4SparseMask = std::to_array("jitllm.dsv4.sparse_mask");
 
 // Where a norm's epsilon sits in op_params: after GGML's custom parameters.
@@ -199,7 +200,7 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 44> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 45> fused = {{
       {kTagDsv4F16Copy.data(), JitllmOp::kDsv4F16Copy},
       {kTagDsv4HcNormF16.data(), JitllmOp::kDsv4HcNormF16},
       {kTagDsv4WeightedReduce.data(), JitllmOp::kDsv4WeightedReduce},
@@ -209,6 +210,7 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
       {kTagGdnGates.data(), JitllmOp::kGdnGates},
       {kTagDsv4LidTopK.data(), JitllmOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), JitllmOp::kDsv4SparseMask},
+      {kTagGemma4Mask.data(), JitllmOp::kGemma4Mask},
       {kTagQsaPool.data(), JitllmOp::kQsaPool},
       {kTagQsaTopK.data(), JitllmOp::kQsaTopK},
       {kTagQsaAttn.data(), JitllmOp::kQsaAttn},
@@ -2315,6 +2317,54 @@ std::expected<void, KernelFailure> CheckDsv4HcPre(const ggml_tensor* node) {
     return Rejected("a jitllm.dsv4.hc_mix of the streams, their scales, bases and norm weight");
   }
   return CheckDense(node, {partials, x, node->src[2], node->src[3], node->src[4]});
+}
+
+// ---------------------------------------------------------------- Gemma 4 attention masks
+
+ggml_tensor* Gemma4Mask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
+                        std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
+                        std::int32_t window, std::int32_t context_limit) {
+  const auto padded_rows = (std::int64_t{rows} + 31) / 32 * 32;
+  return WithInts(Custom(context, GGML_TYPE_F16, {cells, padded_rows, 1, 1}, {positions},
+                         kTagGemma4Mask.data()),
+                  {first_row, rows, capacity, window, context_limit});
+}
+
+bool Gemma4MaskFits(const ggml_tensor* node) {
+  if (node == nullptr || JitllmOpOf(node) != JitllmOp::kGemma4Mask || node->src[0] == nullptr ||
+      node->src[1] != nullptr)
+    return false;
+  constexpr std::int64_t max = std::numeric_limits<std::int32_t>::max();
+  const auto* positions = node->src[0];
+  const std::int64_t first = JitllmOpInt(node, 0), rows = JitllmOpInt(node, 1),
+                     capacity = JitllmOpInt(node, 2), window = JitllmOpInt(node, 3),
+                     limit = JitllmOpInt(node, 4);
+  // Refuse public descriptor endpoints before padding, shape products,
+  // GGML byte calculations or the kernel's integer narrowing.
+  if (first < 0 || rows < 1 || rows > max - 31 || capacity < 1 || capacity % 256 != 0 ||
+      limit < 1 || window < 0 || node->ne[0] < 1 || node->ne[0] > max / 2 ||
+      node->ne[0] % 256 != 0 || node->ne[0] > capacity || node->ne[1] < 1 ||
+      node->ne[1] > max / 2 || node->ne[2] != 1 || node->ne[3] != 1 || positions->ne[0] < 1 ||
+      positions->ne[0] > max / 4 || positions->ne[1] != 1 || positions->ne[2] != 1 ||
+      positions->ne[3] != 1 || first > positions->ne[0] || rows > positions->ne[0] - first ||
+      node->ne[0] > max / 2 / node->ne[1])
+    return false;
+  const std::int64_t padded_rows = (rows + 31) / 32 * 32;
+  const std::int64_t retained = std::min(limit, window + rows);
+  if ((window != 0 && capacity < retained) || node->type != GGML_TYPE_F16 ||
+      positions->type != GGML_TYPE_I32 || !Shaped(node, node->ne[0], padded_rows, 1) ||
+      AnyEmpty({node, positions}) || !AllSane({node, positions}) || !Packed(positions) ||
+      !Packed(node))
+    return false;
+  return true;
+}
+
+std::expected<void, KernelFailure> CheckGemma4Mask(const ggml_tensor* node) {
+  if (auto checked = CheckCustom(node, JitllmOp::kGemma4Mask, 1); !checked) return checked;
+  if (!Gemma4MaskFits(node) || !AllCurrent({node, node->src[0]}) || !Aligned(node, 2) ||
+      !Aligned(node->src[0], 4) || !Disjoint(node, node->src[0], false))
+    return Rejected("Gemma4 packed F16 causal/ring mask from current disjoint I32 positions");
+  return {};
 }
 
 // ---------------------------------------------------------------- DeepSeek V4's sparse attention

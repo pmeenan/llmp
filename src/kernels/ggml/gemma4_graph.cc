@@ -158,14 +158,26 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     first += s.rows;
     seg.global_cells = ggml_new_tensor_1d(c, GGML_TYPE_I64, s.rows);
     seg.local_cells = ggml_new_tensor_1d(c, GGML_TYPE_I64, s.rows);
-    seg.global_mask = ggml_new_tensor_2d(c, GGML_TYPE_F16, s.global_n_kv,
-                                         static_cast<std::int64_t>(Pad(s.rows, 32)));
-    seg.local_mask = ggml_new_tensor_2d(c, GGML_TYPE_F16, s.local_n_kv,
-                                        static_cast<std::int64_t>(Pad(s.rows, 32)));
-    seg.caches.resize(p.layers);
-    for (auto* t : {seg.global_cells, seg.local_cells, seg.global_mask, seg.local_mask}) {
-      g.inputs.push_back(t);
+    if (o.device_masks) {
+      seg.global_mask = Gemma4Mask(
+          c, g.positions, s.global_n_kv, static_cast<std::int32_t>(seg.first_row),
+          static_cast<std::int32_t>(s.rows), static_cast<std::int32_t>(state.global_cells), 0,
+          static_cast<std::int32_t>(state.context));
+      seg.local_mask = Gemma4Mask(
+          c, g.positions, s.local_n_kv, static_cast<std::int32_t>(seg.first_row),
+          static_cast<std::int32_t>(s.rows), static_cast<std::int32_t>(state.local_cells),
+          static_cast<std::int32_t>(p.window), static_cast<std::int32_t>(state.context));
+    } else {
+      seg.global_mask = ggml_new_tensor_2d(c, GGML_TYPE_F16, s.global_n_kv,
+                                           static_cast<std::int64_t>(Pad(s.rows, 32)));
+      seg.local_mask = ggml_new_tensor_2d(c, GGML_TYPE_F16, s.local_n_kv,
+                                          static_cast<std::int64_t>(Pad(s.rows, 32)));
+      g.inputs.push_back(seg.global_mask);
+      g.inputs.push_back(seg.local_mask);
     }
+    seg.caches.resize(p.layers);
+    g.inputs.push_back(seg.global_cells);
+    g.inputs.push_back(seg.local_cells);
     g.segments.push_back(std::move(seg));
   }
   const auto weight = [&](const md::Gemma4Tensor& r) {
@@ -191,6 +203,12 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     return t;
   };
   std::vector<ggml_tensor*> expanded;
+  // Diagnostic partial-layer comparisons still produce both mask kinds,
+  // matching the host path's staged global+local masks. Complete graphs
+  // reuse these same two producers through every corresponding layer.
+  if (o.device_masks)
+    for (const auto& segment : g.segments)
+      for (auto* mask : {segment.global_mask, segment.local_mask}) expanded.push_back(mask);
   const auto named = [&](std::string name, ggml_tensor* t) {
     ggml_set_name(t, name.c_str());
     g.named.emplace_back(std::move(name), t);

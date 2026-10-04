@@ -16,6 +16,7 @@
 #include "base/check.h"
 #include "expected_error.h"
 #include "gemma4_fixture.h"
+#include "kernels/ggml/jitllm_ops.h"
 
 namespace {
 namespace en = jitllm::engine;
@@ -34,11 +35,11 @@ struct Case {
     state = std::move(*md::Gemma4State(p, 4096, 16));
     Set(slots, past);
   }
-  void Set(std::uint32_t slots, std::uint32_t past) {
+  void Set(std::uint32_t slots, std::uint32_t past, bool masks = true) {
     const std::array<std::int32_t, 2> tokens{1, 2};
     std::vector<md::Gemma4Segment> segments;
     for (std::uint32_t i = 0; i < slots; ++i) segments.push_back({i, past + i * 256, tokens});
-    input = std::move(*md::Gemma4Chunk(p, state, segments, true));
+    input = std::move(*md::Gemma4Chunk(p, state, segments, masks));
     shape = {};
     frontier.clear();
     for (const auto& s : input.segments) {
@@ -71,6 +72,72 @@ en::Gemma4Model Places(const Case& c, const kg::Gemma4Graph& g) {
   }
   return m;
 }
+TEST(Gemma4Plan, DeviceMaskSourcesStayBoundedAndAuthenticateFreshPositionsAndProducers) {
+  for (const auto slots : {1U, 2U, 4U, 16U}) {
+    Case c;
+    c.state = std::move(*md::Gemma4State(c.p, 4096, 32));
+    c.Set(slots, 0, false);
+    auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, slots));
+    ASSERT_TRUE(arena);
+    kg::Gemma4GraphOptions options;
+    options.device_masks = true;
+    auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+    ASSERT_TRUE(g);
+    auto bytes = en::Gemma4SourceBytes(*g);
+    ASSERT_TRUE(bytes);
+    EXPECT_LT(*bytes, 1024);
+    EXPECT_FALSE(en::Gemma4Sources(*g, c.input, c.frontier, {}, *bytes - 1));
+    auto sources = en::Gemma4Sources(*g, c.input, c.frontier, {}, *bytes);
+    ASSERT_TRUE(sources);
+    EXPECT_TRUE(sources->masks.empty());
+    EXPECT_EQ(sources->sources.size(), g->inputs.size());
+    for (const auto& segment : g->segments)
+      for (const auto* mask : {segment.global_mask, segment.local_mask}) {
+        EXPECT_TRUE(kg::Gemma4MaskFits(mask));
+        EXPECT_EQ(std::ranges::find(g->inputs, mask), g->inputs.end());
+        EXPECT_EQ(std::count(g->nodes.begin(), g->nodes.end(), mask), 1);
+      }
+    auto bad = c.input;
+    ++bad.positions[0];
+    EXPECT_FALSE(en::Gemma4Sources(*g, bad, c.frontier, {}, *bytes));
+    bad = c.input;
+    ++bad.segments[0].local_cells[0];
+    EXPECT_FALSE(en::Gemma4Sources(*g, bad, c.frontier, {}, *bytes));
+    bad = c.input;
+    bad.tokens[0] = -1;
+    EXPECT_FALSE(en::Gemma4Sources(*g, bad, c.frontier, {}, *bytes));
+    g->options.device_masks = false;
+    EXPECT_FALSE(en::Gemma4SourceBytes(*g));
+    g->options.device_masks = true;
+    auto* producer = g->segments[0].local_mask;
+    producer->src[0] = g->tokens;
+    EXPECT_FALSE(en::Gemma4SourceBytes(*g));
+    producer->src[0] = g->positions;
+    EXPECT_TRUE(en::Gemma4SourceBytes(*g));
+  }
+}
+
+TEST(Gemma4Plan, DeviceMasksReuseTheSameGraphAcrossARingWrap) {
+  Case c(1, 2559);
+  c.Set(1, 2559, false);
+  auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 1));
+  ASSERT_TRUE(arena);
+  kg::Gemma4GraphOptions options;
+  options.device_masks = true;
+  auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+  ASSERT_TRUE(g);
+  const auto bytes = en::Gemma4SourceBytes(*g);
+  ASSERT_TRUE(bytes);
+  ASSERT_TRUE(en::Gemma4Sources(*g, c.input, c.frontier, {}, *bytes));
+  c.Set(1, 2561, false);
+  EXPECT_EQ(c.shape, g->shape);
+  const auto after = en::Gemma4Sources(*g, c.input, c.frontier, {}, *bytes);
+  ASSERT_TRUE(after);
+  EXPECT_TRUE(after->masks.empty());
+  EXPECT_EQ(c.input.segments[0].local_cells, (std::vector<std::int64_t>{1, 2}));
+  EXPECT_EQ(g->segments[0].shape.n_past, 2559U);
+}
+
 TEST(Gemma4Plan, BoundedBindingRefusesShortOverlappingAndOverflowingRegionsWithoutPartialBind) {
   Case c(2);
   auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2));

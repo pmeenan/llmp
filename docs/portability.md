@@ -221,6 +221,14 @@ unfused path that exists:
   modulation and channel norms; 2D complex and NEOX RoPE; row embedding,
   transpose, nearest 2× upsampling, the Euler step and F32-to-BF16
   conversion. All jitLLM kernels today.
+- **Gemma 4 graph:** quantized `mul_mat`/`mul_mat_id`, embedding `get_rows`,
+  `rms_norm`, learned mul, GELU-tanh and split GeGLU, factor-aware NEOX RoPE,
+  per-slot D256/GQA2 and D512/GQA8 masked attention, `set_rows`, routing top-k,
+  softmax and ordered expert sum. Device-mask mode additionally needs a packed
+  I32-position-to-F16 causal/ring `kFill` implementation (`jitllm.gemma4.mask`);
+  the funded host-reference-mask graph remains the primitive alternative for
+  a backend without it. Descriptor planning/validation is CPU-buildable and
+  the engine/provider interfaces contain no CUDA types.
 - **EXL3:** the FP16 set without `soft_max`, plus F16 and F32
   conversion, attention at D 64, the EXL3 dequant and GEMM, and a half
   bias add.

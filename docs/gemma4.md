@@ -164,15 +164,16 @@ the pinned signed iteration and efficiency arithmetic.
 
 The [bounded attention controls](experiments/gemma-local-attention/README.md)
 compare original selected kernels, mathematical ring-mask references and paid
-captured execution. They qualify primitives; device-generated masks, runner cache ownership,
-whole-model quality and optimized batching remain open.
+captured execution. They qualify attention primitives; runner cache ownership,
+whole-model quality and optimized batching remain open. The separate device-mask controls below
+qualify mask production.
 
 ## Segmented graph and bound plans
 
 `src/kernels/ggml/gemma4_graph.h` builds complete text chunks for the verified
 26B-A4B and 31B bindings. Row-local dense, routed and head products join the
 flattened request rows. Each segment keeps separate attention, positions,
-mask leaves and F16 K/V caches. Global attention reuses the raw K projection
+masks and F16 K/V caches. Global attention reuses the raw K projection
 for V before applying K's learned norm and full 512-dimensional factor RoPE.
 Routing retains the selected expert's scale before its weighted contribution
 and an ordered eight-term sum. Final attention retains every cache write
@@ -191,12 +192,24 @@ completion fences. This adapter does not perform admission, paging or serving.
 
 Rows, slot IDs and padded read widths define shape reuse; absolute positions
 are fresh data, including at local ring wraps. `Gemma4Sources` authenticates
-fresh positions, cache indices and every causal/window mask bit, and checks
-a caller-held host grant before
-constructing padded reference masks. These O(rows × attended cells) masks are
-for diagnostics. Production long-context execution still requires a qualified
-device descriptor-to-mask primitive using the same graph mask inputs; the
-model's default chunk descriptors remain O(rows + slots).
+fresh positions and cache indices, and checks a caller-held host grant.
+With `Gemma4GraphOptions::device_masks`, each segment owns one checked F16
+causal and one local ring-mask producer reading fresh packed I32 positions.
+These outputs are activations reused across layers, rather than host inputs.
+Every padded cell/query element is initialized; queries are padded to 32,
+including the attention prepass's final partial tile. Local capacity retains
+at least `min(context, window + whole_chunk_rows)` cells, preventing later
+chunk writes from overwriting a visible earlier query cell.
+
+`Gemma4Sources` omits host masks only after authenticating the graph-owned
+producers, their positions source and exact segment parameters. Token,
+position, cache-cell and funding checks remain in both modes. Device mode
+rejects supplied host mask arrays; diagnostic mode validates every supplied
+causal/window bit and constructs funded padded reference masks. The device
+mode's host descriptors remain O(rows + slots), with mask outputs charged to
+activation storage. The option remains explicit; runner adoption and
+whole-model qualification are separate. [Device-mask controls](experiments/gemma-device-masks/README.md)
+record exact bytes, fresh captured positions and paid complete-layer comparisons.
 
 Explicit diagnostic options may start from hidden inputs and execute a checked
 layer interval without a head, using the same arithmetic builder as a full
@@ -244,7 +257,7 @@ For these actual GGUF files the next slices owe:
 | Q5_1 expert down | [Legacy primitive controls](experiments/m35-legacy-quants/README.md) cover ordinary/routed products, row-preserving and joined columns at K704/N2816/top-eight routes. Synthetic overlap measurements retain ordinary MMVQ where faster; model routing, selected dispatch, prefill and the last-layer Q8_0 execution remain to be qualified. Do not select a Q2_K or IQ2 kernel by analogy. |
 | Shared input preparation | Reuse eligible Q8_1 preparation across ordinary Q8/K-quant products and fused gate/up reads, retaining maps/strides and Gemma's router and GeGLU arithmetic. DeepSeek's SwiGLU activation writer cannot transfer unchanged. |
 | Routed prefill scheduling | Check compact expert-major tiles and full-K arithmetic for Q4_K fused gate/up and Q5_1 down at actual shapes/chunk sizes; keep only qualified speed/memory winners. Raw expert groups must remain authoritative for later paging. |
-| Attention and device masks | The graph keeps checked local D256/GQA2 vector/MMA and global D512/GQA8 attention separate. Local primitives have ring-mask, shape-selection and scratch controls; complete model dispatch and device descriptor masks remain to be qualified. Preserve independent caches and scale1.0; never invent sparse global attention. |
+| Attention and device masks | The graph keeps checked local D256/GQA2 vector/MMA and global D512/GQA8 attention separate. Local primitives have ring-mask, shape-selection and scratch controls. Checked per-segment device mask production preserves fresh positions and independent caches; complete model dispatch remains to be qualified. Preserve independent caches and scale1.0; never invent sparse global attention. |
 | Join products across requests | Apply Qwen/DeepSeek joined dense/routed/head products when operand/quant contracts fit. Preserve per-segment outputs, original one-token sums, stable route pair order and separate attention/state. Qualify scalar versus joined logits/state and departed/cancelled slots. |
 | Lanes, graphs and lifetimes | Reuse request cohorts, completion-aware leases, stable-address graphs, charged per-lane scratch and hazard ordering. Shape/read-alignment choices must back padded cells and preserve exact continuation across capture/replay, spill/restore and time-slicing. |
 | Bounded state and staging | Use initialized read/write footprints, growing extents, bounded host inputs, shared maximum workspace and separately owned slot state; measure peak memory for solo and batched envelopes at context boundaries. |

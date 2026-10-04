@@ -49,6 +49,9 @@ struct Gemma4GraphOptions {
   // Q8_1 preparation per logical input and preserve one-token sums. A false
   // reference build retains ordinary GGML primitives. No GeGLU writer.
   bool shared_q8 = false;
+  // Graph-owned causal/ring mask producers from fresh positions. false
+  // retains the fully funded diagnostic host-mask source path.
+  bool device_masks = false;
   // Narrow after final attention, before its sandwich norm, as the pinned
   // reference's masked frontier. false retains every final hidden row.
   bool narrow_final = false;
@@ -64,7 +67,7 @@ struct Gemma4SegmentTensors {
   ggml_tensor* global_cells = nullptr;
   ggml_tensor* local_cells = nullptr;
   // F16 masks have padded query columns for upstream attention's prepass.
-  // Host sources must zero/fill all padding, not just logical query rows.
+  // Producers or diagnostic host sources fill every padded query/cell.
   ggml_tensor* global_mask = nullptr;
   ggml_tensor* local_mask = nullptr;
   std::vector<std::pair<ggml_tensor*, ggml_tensor*>> caches;

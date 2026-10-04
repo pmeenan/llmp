@@ -26,6 +26,31 @@
 namespace jitllm::kernels::ggml {
 namespace {
 
+// The entire padded output is initialized. Position data is fresh at replay;
+// invalid positions produce -inf rather than being cast to a large index.
+__global__ void Gemma4MaskKernel(const std::int32_t* positions, std::uint16_t* mask,
+                                 std::int64_t elements, int cells, int first, int rows,
+                                 int capacity, int window, int limit) {
+  const std::int64_t index = std::int64_t{blockIdx.x} * blockDim.x + threadIdx.x;
+  if (index >= elements) return;
+  const int row = static_cast<int>(index / cells);
+  const int cell = static_cast<int>(index % cells);
+  bool visible = false;
+  if (row < rows) {
+    const int position = positions[first + row];
+    if (position >= 0 && position < limit) {
+      if (window == 0)
+        visible = cell <= position && cell < limit;
+      else {
+        const std::int64_t distance =
+            (std::int64_t{position % capacity} + capacity - cell) % capacity;
+        visible = distance < window && distance <= position;
+      }
+    }
+  }
+  mask[index] = visible ? 0 : 0xFC00;
+}
+
 // An E8M0 scale: 2^(e - 127); e = 255 is NaN (OCP MX v1.0).
 __device__ __forceinline__ float E8m0(std::uint8_t e) {
   if (e == 0) {
@@ -959,6 +984,20 @@ std::expected<void, KernelFailure> RunMxfp8Gemm(LaunchContext& launch, ggml_tens
         .detail = std::format("CUTLASS refused the MXFP8 product (status {})", status - 1)});
   }
   return {};
+}
+
+std::expected<void, KernelFailure> RunGemma4Mask(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckGemma4Mask(node); !checked) return checked;
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    const auto elements = ggml_nelements(node);
+    constexpr int threads = 256;
+    Gemma4MaskKernel<<<static_cast<unsigned>((elements + threads - 1) / threads), threads, 0,
+                       context.stream()>>>(static_cast<const std::int32_t*>(node->src[0]->data),
+                                           static_cast<std::uint16_t*>(node->data), elements,
+                                           static_cast<int>(node->ne[0]), JitllmOpInt(node, 0),
+                                           JitllmOpInt(node, 1), JitllmOpInt(node, 2),
+                                           JitllmOpInt(node, 3), JitllmOpInt(node, 4));
+  });
 }
 
 }  // namespace jitllm::kernels::ggml

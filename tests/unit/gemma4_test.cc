@@ -547,4 +547,37 @@ TEST(Gemma4, MaskStrideBoundaryRefusesBeforeAllocationAndBatchEnvelopeDoesNotOve
                            3 * sizeof(md::Gemma4SegmentInputs));
   EXPECT_GT(*envelope, std::numeric_limits<std::uint32_t>::max());
 }
+TEST(Gemma4, DeviceRingAlgebraMatchesTheExplicitRetainedAbsolutePositionMap) {
+  std::uint64_t checked = 0;
+  for (const auto* p : {&md::Gemma4_26BA4B(), &md::Gemma4_31B()}) {
+    for (const auto chunk_rows : {1U, 2U, 4U, 16U, 1025U}) {
+      const auto state = md::Gemma4State(*p, 262144, chunk_rows);
+      ASSERT_TRUE(state);
+      const auto capacity = state->local_cells;
+      for (const auto past :
+           {0U, capacity - 2, capacity - 1, capacity, capacity + 1, 262144U - chunk_rows}) {
+        const auto end = past + chunk_rows;
+        // Explicit slot map after the WHOLE chunk's writes. Its latest held
+        // absolute position is independent of the producer's distance formula.
+        std::vector<std::int64_t> held(capacity, -1);
+        const auto first = end > capacity ? end - capacity : 0;
+        for (std::uint32_t absolute = first; absolute < end; ++absolute)
+          held[absolute % capacity] = absolute;
+        for (std::uint32_t r = 0; r < chunk_rows; ++r) {
+          const auto query = past + r;
+          for (std::uint32_t cell = 0; cell < capacity; ++cell) {
+            const bool reference =
+                held[cell] >= 0 && held[cell] <= query && query - held[cell] < p->window;
+            const std::uint64_t distance =
+                (std::uint64_t{query % capacity} + capacity - cell) % capacity;
+            EXPECT_EQ(reference, distance < p->window && distance <= query);
+            ++checked;
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GT(checked, 725760);
+}
+
 }  // namespace

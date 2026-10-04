@@ -64,6 +64,7 @@
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
+#include "model/gemma4.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/cuda/cuda_device_memory.h"
 #include "providers/device_execution.h"
@@ -245,6 +246,131 @@ class GgmlExtOpsTest : public ::testing::Test {
   std::unique_ptr<LaunchContext> launch_;
   std::unique_ptr<TensorArena> arena_;
 };
+
+TEST_F(GgmlExtOpsTest, GemmaDeviceMasksFillEveryPaddedByteAndRefreshCapturedPositions) {
+  const auto submission = execution_->Submission(stream_);
+  ASSERT_TRUE(submission);
+  const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
+  for (const auto* profile : {&jitllm::model::Gemma4_26BA4B(), &jitllm::model::Gemma4_31B()}) {
+    for (const auto segments : {1, 2, 4, 16}) {
+      const int rows = segments == 16 ? 16 : segments;
+      const int first_past = segments == 1 ? 0 : segments == 16 ? 262144 - rows - 15 * 7 : 1279;
+      const int capacity = 1280;
+      const int cells = segments == 16 ? 262144 : segments == 1 ? 256 : 1536;
+      std::vector<std::int32_t> positions(static_cast<std::size_t>(rows * segments));
+      for (int segment = 0; segment < segments; ++segment)
+        for (int r = 0; r < rows; ++r)
+          positions[static_cast<std::size_t>(segment * rows + r)] = first_past + segment * 7 + r;
+      auto* input = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, rows * segments), positions);
+      for (int segment = 0; segment < segments; ++segment) {
+        for (const bool local : {false, true}) {
+          const int read_cells = local ? (segments == 1 ? 256 : capacity) : cells;
+          auto* node = kg::Gemma4Mask(c(), input, read_cells, segment * rows, rows,
+                                      local ? capacity : 262144,
+                                      local ? static_cast<int>(profile->window) : 0, 262144);
+          const auto bytes = ggml_nbytes(node);
+          const auto address = Allocate(bytes + 512);
+          TensorArena::Bind(node, address + 256);
+          ASSERT_EQ(cudaMemsetAsync(reinterpret_cast<void*>(address), 0xa5, bytes + 512, stream),
+                    cudaSuccess);
+          const auto expected = [&] {
+            std::vector<std::uint16_t> mask(bytes / 2, 0xFC00);
+            const int end = positions[static_cast<std::size_t>(segment * rows)] + rows;
+            for (int r = 0; r < rows; ++r) {
+              const int query = positions[static_cast<std::size_t>(segment * rows + r)];
+              if (query < 0 || query >= 262144) continue;
+              if (!local) {
+                std::fill_n(mask.begin() + static_cast<std::ptrdiff_t>(r * read_cells),
+                            std::min(read_cells, query + 1), 0);
+              } else {
+                // Independent latest-retained absolute cell map after whole chunk.
+                for (int cell = 0; cell < read_cells; ++cell) {
+                  if (cell >= end) continue;
+                  const int held = cell + ((end - 1 - cell) / capacity) * capacity;
+                  if (held <= query && query - held < static_cast<int>(profile->window))
+                    mask[static_cast<std::size_t>(r * read_cells + cell)] = 0;
+                }
+              }
+            }
+            return mask;
+          };
+          ASSERT_TRUE(kg::CheckGemma4Mask(node));
+          launch().ResetScratchPeak();
+          ASSERT_TRUE(kg::RunGemma4Mask(launch(), node));
+          EXPECT_EQ(Download<std::uint16_t>(node), expected());
+          EXPECT_EQ(launch().scratch_peak().value(), 0);
+          auto captured =
+              launch().Capture([&](auto& context) { return kg::RunGemma4Mask(context, node); });
+          ASSERT_TRUE(captured);
+          // Every row is a fresh position value; address/shape/capture stay fixed.
+          const int delta = segments == 16 ? -32 : 32;
+          for (int r = 0; r < rows; ++r)
+            positions[static_cast<std::size_t>(segment * rows + r)] += delta;
+          ASSERT_EQ(cudaMemcpyAsync(input->data, positions.data(), ggml_nbytes(input),
+                                    cudaMemcpyHostToDevice, stream),
+                    cudaSuccess);
+          ASSERT_TRUE(launch().Launch(*captured));
+          EXPECT_EQ(Download<std::uint16_t>(node), expected());
+          for (int r = 0; r < rows; ++r)
+            positions[static_cast<std::size_t>(segment * rows + r)] -= delta;
+          ASSERT_EQ(cudaMemcpyAsync(input->data, positions.data(), ggml_nbytes(input),
+                                    cudaMemcpyHostToDevice, stream),
+                    cudaSuccess);
+          // Invalid position values are safe masked rows, never unsigned indices.
+          for (const auto bad_position : {-1, std::numeric_limits<std::int32_t>::max()}) {
+            auto invalid = positions;
+            invalid[static_cast<std::size_t>(segment * rows)] = bad_position;
+            ASSERT_EQ(cudaMemcpyAsync(input->data, invalid.data(), ggml_nbytes(input),
+                                      cudaMemcpyHostToDevice, stream),
+                      cudaSuccess);
+            ASSERT_TRUE(launch().Launch(*captured));
+            const auto actual = Download<std::uint16_t>(node);
+            EXPECT_TRUE(std::all_of(actual.begin(), actual.begin() + read_cells,
+                                    [](auto value) { return value == 0xFC00; }));
+          }
+          ASSERT_EQ(cudaMemcpyAsync(input->data, positions.data(), ggml_nbytes(input),
+                                    cudaMemcpyHostToDevice, stream),
+                    cudaSuccess);
+          const auto old_type = input->type;
+          input->type = GGML_TYPE_F32;
+          const auto before = Download<std::uint16_t>(node);
+          EXPECT_FALSE(kg::RunGemma4Mask(launch(), node));
+          EXPECT_EQ(before, Download<std::uint16_t>(node));
+          EXPECT_FALSE(launch().faulted());
+          input->type = old_type;
+          std::array<std::uint8_t, 256> prefix{}, suffix{};
+          Finish();
+          ASSERT_EQ(cudaMemcpy(prefix.data(), reinterpret_cast<void*>(address), 256,
+                               cudaMemcpyDeviceToHost),
+                    cudaSuccess);
+          ASSERT_EQ(cudaMemcpy(suffix.data(), reinterpret_cast<void*>(address + 256 + bytes), 256,
+                               cudaMemcpyDeviceToHost),
+                    cudaSuccess);
+          EXPECT_TRUE(
+              std::all_of(prefix.begin(), prefix.end(), [](auto value) { return value == 0xa5; }));
+          EXPECT_EQ(prefix, suffix);
+        }
+      }
+    }
+  }
+  // Upstream's mask prepass reads 1,025 logical queries rounded to 1,056.
+  constexpr int rows = 1025, cells = 1280;
+  std::vector<std::int32_t> positions(rows);
+  std::iota(positions.begin(), positions.end(), 0);
+  auto* input = Place(ggml_new_tensor_1d(c(), GGML_TYPE_I32, rows), positions);
+  for (const int window : {0, 1024}) {
+    auto* mask = Place(
+        kg::Gemma4Mask(c(), input, cells, 0, rows, window == 0 ? 262144 : 2304, window, 262144));
+    ASSERT_EQ(mask->ne[1], 1056);
+    ASSERT_TRUE(kg::RunGemma4Mask(launch(), mask));
+    const auto actual = Download<std::uint16_t>(mask);
+    for (int r = 0; r < 1056; ++r)
+      for (int cell = 0; cell < cells; ++cell) {
+        const bool visible = r < rows && cell <= r && (window == 0 || r - cell < window);
+        ASSERT_EQ(actual[static_cast<std::size_t>(r * cells + cell)], visible ? 0 : 0xFC00);
+      }
+  }
+}
 
 // ---- Quantized weights ----
 

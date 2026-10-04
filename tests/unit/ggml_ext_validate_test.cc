@@ -59,6 +59,75 @@ class GgmlExtValidateTest : public ::testing::Test {
   std::uint64_t next_ = 0;
 };
 
+TEST_F(GgmlExtValidateTest, GemmaDeviceMaskGuardsItsEntirePaddedOutputBeforeSubmission) {
+  auto* positions = New(GGML_TYPE_I32, 32);
+  const auto make = [&](std::int32_t first = 4, std::int32_t rows = 16,
+                        std::int32_t capacity = 1280, std::int32_t window = 1024) {
+    return Bound(kg::Gemma4Mask(c(), positions, 1280, first, rows, capacity, window, 262144));
+  };
+  auto* node = make();
+  Accepted(kg::CheckGemma4Mask(node));
+  EXPECT_TRUE(kg::Gemma4MaskFits(node));
+  Refused(kg::CheckGemma4Mask(make(-1)));
+  Refused(kg::CheckGemma4Mask(make(17)));
+  Refused(kg::CheckGemma4Mask(make(4, 16, 1280, -1)));
+  Refused(kg::CheckGemma4Mask(make(4, 16, 1024)));
+  auto* short_context = Bound(kg::Gemma4Mask(c(), positions, 256, 0, 16, 256, 1024, 128));
+  Accepted(kg::CheckGemma4Mask(short_context));  // entire short context retained
+  const auto address = reinterpret_cast<std::uintptr_t>(node->data);
+  TensorArena::Bind(node, reinterpret_cast<std::uintptr_t>(positions->data));
+  Refused(kg::CheckGemma4Mask(node));
+  TensorArena::Bind(node, address + 1);
+  Refused(kg::CheckGemma4Mask(node));
+  TensorArena::Bind(node, address);
+  const auto row_stride = node->nb[1];
+  node->nb[1] += 2;
+  Refused(kg::CheckGemma4Mask(node));
+  node->nb[1] = row_stride;
+  positions->type = GGML_TYPE_F32;
+  Refused(kg::CheckGemma4Mask(node));
+  positions->type = GGML_TYPE_I32;
+  Accepted(kg::CheckGemma4Mask(node));
+  auto* owner = New(GGML_TYPE_I32, 64);
+  auto* view = ggml_view_1d(c(), owner, 32, 4);
+  TensorArena::Bind(view, reinterpret_cast<std::uintptr_t>(owner->data) + 4);
+  auto* stale = Bound(kg::Gemma4Mask(c(), view, 1280, 0, 16, 1280, 1024, 262144));
+  Accepted(kg::CheckGemma4Mask(stale));
+  TensorArena::Bind(owner, reinterpret_cast<std::uintptr_t>(owner->data) + 4);
+  Refused(kg::CheckGemma4Mask(stale));
+  for (const std::int64_t cells : {33554176, 33554432}) {
+    auto* limit = Bound(
+        kg::Gemma4Mask(c(), positions, cells, 0, 1, static_cast<std::int32_t>(cells), 0, 262144));
+    if (cells == 33554176)
+      Accepted(kg::CheckGemma4Mask(limit));
+    else
+      Refused(kg::CheckGemma4Mask(limit));
+  }
+  for (const auto extreme :
+       {std::numeric_limits<std::int64_t>::max(), std::numeric_limits<std::int64_t>::min()}) {
+    for (const int axis : {0, 1}) {
+      const auto original = node->ne[axis];
+      node->ne[axis] = extreme;
+      Refused(kg::CheckGemma4Mask(node));
+      node->ne[axis] = original;
+    }
+    const auto original = positions->ne[0];
+    positions->ne[0] = extreme;
+    Refused(kg::CheckGemma4Mask(node));
+    positions->ne[0] = original;
+  }
+  // Parameters are I32; the full positive endpoint is also refused before
+  // computing query padding or combining window/row bounds.
+  auto* extreme_rows = make(0, std::numeric_limits<std::int32_t>::max());
+  Refused(kg::CheckGemma4Mask(extreme_rows));
+  const std::array<ggml_tensor*, 1> nodes{node};
+  auto plan = kg::PlanGraph(nodes, false, {});
+  ASSERT_TRUE(plan);
+  ASSERT_EQ(plan->steps.size(), 1);
+  EXPECT_EQ(plan->steps[0].implementation, kg::kGemma4MaskName);
+  EXPECT_EQ(plan->steps[0].operation, jitllm::execution::Operation::kFill);
+}
+
 TEST_F(GgmlExtValidateTest, GemmaQuantGeGluUsesExactGateViewsAndNoClamp) {
   constexpr std::int64_t k = 2816, ffn = 704, experts = 128;
   auto* owner = New(GGML_TYPE_Q4_K, k, 2 * ffn, experts);

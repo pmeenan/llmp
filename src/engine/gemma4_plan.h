@@ -43,9 +43,9 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
     const kernels::ggml::DeviceChoices& choices, std::uint64_t activations,
     std::uint64_t activation_bytes, std::span<const std::string> keep = {});
 
-// Diagnostics only: padded host reference masks. A production device-mask
-// primitive can fill the SAME graph mask inputs without this O(rows*n_kv)
-// host path. `chunk`/`hidden` must outlive staging, the returned object owns
+// Device-mask graphs stage only fresh row/segment sources. Diagnostic graphs
+// also own/stage padded host reference masks; their O(rows*n_kv) host cost is
+// fully funded. `chunk`/`hidden` must outlive staging, the returned object owns
 // frontier IDs and every padded mask. `funded_bytes` is a caller-held grant,
 // checked before allocation, not an internally obtained memory reservation.
 struct Gemma4HostInputs {

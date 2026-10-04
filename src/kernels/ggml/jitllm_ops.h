@@ -140,7 +140,23 @@ enum class JitllmOp : std::uint8_t {
   kDsv4HcNormF16,
   kDsv4F16Copy,
   kQRows,
+  kGemma4Mask,
 };
+
+class LaunchContext;
+
+// F16 [cells, Pad(rows,32)] causal or local-ring mask. Positions is a
+// packed I32 vector; first_row selects the independent segment. window=0
+// means global causal, otherwise capacity must retain window+whole chunk
+// (or the entire context). Padded query/cell rows and invalid positions are
+// always -inf. No host-built matrix or scratch is needed.
+inline constexpr const char* kGemma4MaskName = "jitllm.gemma4.mask";
+ggml_tensor* Gemma4Mask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
+                        std::int32_t first_row, std::int32_t rows, std::int32_t capacity,
+                        std::int32_t window, std::int32_t context_limit);
+bool Gemma4MaskFits(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckGemma4Mask(const ggml_tensor* node);
+std::expected<void, KernelFailure> RunGemma4Mask(LaunchContext& launch, ggml_tensor* node);
 
 // The operation a GGML_OP_CUSTOM node names, or kNone.
 JitllmOp JitllmOpOf(const ggml_tensor* node);
