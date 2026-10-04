@@ -19,12 +19,14 @@ def main() -> int:
     mode.add_argument("--lock", type=pathlib.Path)
     mode.add_argument("--tree", type=pathlib.Path)
     parser.add_argument("--modules", default="")
+    parser.add_argument("--cuda", choices=("on", "off"), help="select a build's CUDA/CPU closure")
     args = parser.parse_args()
     if args.tree is not None:
         print(tree_digest(args.tree))
     else:
         modules = [m for m in args.modules.split(",") if m]
-        select(load_lock(args.lock, modules=modules), modules)
+        cuda = None if args.cuda is None else args.cuda == "on"
+        select(load_lock(args.lock, modules=modules, cuda=cuda), modules, cuda=cuda)
     return 0
 
 

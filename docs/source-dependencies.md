@@ -108,7 +108,10 @@ clears those gates nor changes D-017's allowlist.
 ## Preparation and build
 
 1. **Select before acquiring.** Resolve the finite closure for the requested
-   CPU/CUDA, native/cross and license profile from the lock. Optional
+   CPU/CUDA, native/cross and license profile from the lock. Default
+   preparation retains the CPU/CUDA superset of the license profile;
+   configure excludes `requires_cuda: true` components from a CPU build
+   before executing their CMake and records that selected closure. Optional
    implementation modules are in the default selection (D-080; the tooling
    still selects none, since the lock has none yet), and the
    copyleft-disabled profile is the build-time opt-out. Reject a dependency on a disabled or

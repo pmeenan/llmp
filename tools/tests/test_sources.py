@@ -76,6 +76,10 @@ class CheckedInLock(unittest.TestCase):
 
     def test_core_selection(self):
         self.assertEqual(srclib.select(srclib.load_lock(), []),
+                         ["cutlass", "ggml", "ds4", "exllamav3", "googletest", "tomlplusplus"])
+        self.assertEqual(srclib.select(srclib.load_lock(), [], cuda=True),
+                         srclib.select(srclib.load_lock(), []))
+        self.assertEqual(srclib.select(srclib.load_lock(), [], cuda=False),
                          ["cutlass", "exllamav3", "ggml", "googletest", "tomlplusplus"])
 
     def test_mise_tasks(self):
@@ -488,6 +492,24 @@ class Selection(unittest.TestCase):
         data = lock({"a": component(depends=["o"]), "o": component(tier="optional", module="m")}, self.MODULES)
         with self.assertRaisesRegex(SourceError, "does not select"):
             srclib.select(data, [])
+
+    def test_cuda_condition_preserves_preparation_and_legacy_selection(self):
+        data = lock({"a": component(), "b": component(requires_cuda=True, depends=["a"]),
+                     "c": component(requires_cuda=False)})
+        self.assertEqual(srclib.select(data, []), ["a", "b", "c"])
+        self.assertEqual(srclib.select(data, [], cuda=True), ["a", "b", "c"])
+        self.assertEqual(srclib.select(data, [], cuda=False), ["a", "c"])
+        data["components"]["a"]["depends"] = ["b"]
+        data["components"]["b"]["depends"] = []
+        with self.assertRaisesRegex(SourceError, "does not select"):
+            srclib.select(data, [], cuda=False)
+
+    def test_cuda_condition_requires_a_boolean(self):
+        for value in (None, 0, 1, "ON", "OFF", [], {}):
+            with self.subTest(value=value):
+                problems = srclib.validate_lock(lock({"a": component(requires_cuda=value)}),
+                                               pathlib.Path("."), check_patch_files=False)
+                self.assertTrue(any("requires_cuda must be a boolean" in p for p in problems), problems)
 
     def test_prepared_dir_names_the_tree(self):
         self.assertEqual(srclib.prepared_dir(pathlib.Path("/s"), "x", component()), pathlib.Path("/s/x-" + "c" * 16))

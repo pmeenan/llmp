@@ -3,7 +3,7 @@
 
 # Checks a build receipt against the source lock it names (D-057): the lock's
 # digest and the SDK identity, the profile's closure (every core component
-# plus those of the enabled modules, nothing else), each component's tree
+# plus those of the enabled modules, filtered by the CUDA setting), each component's tree
 # against the lock, and that the receipt is official exactly when no
 # component comes from a local override.
 #
@@ -36,6 +36,11 @@ get(schema "${receipt}" schema)
 get(recorded_lock "${receipt}" source_lock sha256)
 get(sdk "${receipt}" sdk)
 get(official "${receipt}" official)
+string(JSON cuda_type TYPE "${receipt}" cuda)
+if(NOT cuda_type STREQUAL "BOOLEAN")
+  message(FATAL_ERROR "${RECEIPT}: cuda must be a boolean")
+endif()
+get(cuda "${receipt}" cuda)
 string(JSON module_count LENGTH "${receipt}" modules)
 set(modules "")
 if(module_count GREATER 0)
@@ -62,6 +67,16 @@ math(EXPR last "${count} - 1")
 foreach(i RANGE ${last})
   string(JSON id MEMBER "${lock}" components ${i})
   string(JSON tier GET "${lock}" components ${id} tier)
+  string(JSON condition_type ERROR_VARIABLE condition_error TYPE "${lock}" components ${id} requires_cuda)
+  if(NOT condition_error)
+    if(NOT condition_type STREQUAL "BOOLEAN")
+      message(FATAL_ERROR "${LOCK}: ${id}: requires_cuda must be a boolean")
+    endif()
+    get(requires_cuda "${lock}" components ${id} requires_cuda)
+    if(requires_cuda AND NOT cuda)
+      continue()
+    endif()
+  endif()
   if(tier STREQUAL "core")
     list(APPEND expected ${id})
   else()

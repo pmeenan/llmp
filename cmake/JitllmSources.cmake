@@ -240,8 +240,13 @@ function(jitllm_sources_add)
   # Use preparation's complete schema/admission checks even when prepared
   # trees already exist. Editing the lock must not bypass them at configure.
   list(JOIN JITLLM_MODULES "," validation_modules)
+  if(JITLLM_CUDA)
+    set(validation_cuda on)
+  else()
+    set(validation_cuda off)
+  endif()
   execute_process(COMMAND "${JITLLM_PYTHON}" "${_JITLLM_SOURCE_INSPECTOR}"
-                          --lock "${arg_LOCK}" --modules "${validation_modules}"
+                          --lock "${arg_LOCK}" --modules "${validation_modules}" --cuda "${validation_cuda}"
                   RESULT_VARIABLE validation_result ERROR_VARIABLE validation_error)
   if(NOT validation_result STREQUAL "0")
     message(FATAL_ERROR "${validation_error}")
@@ -279,6 +284,16 @@ function(jitllm_sources_add)
     _jitllm_lock_get(tier PATH components ${id} tier TYPE STRING)
     if(NOT kind STREQUAL "archive" OR NOT machine STREQUAL "target")
       message(FATAL_ERROR "${id}: only archive components for the target machine are supported (kind ${kind}, machine ${machine})")
+    endif()
+    string(JSON requires_cuda ERROR_VARIABLE condition_error GET "${_jitllm_lock_json}"
+                components ${id} requires_cuda)
+    # The shared validator already rejects nonboolean conditions. Legacy
+    # locks omit the condition and select the component in both builds.
+    if(condition_error)
+      set(requires_cuda FALSE)
+    endif()
+    if(requires_cuda AND NOT JITLLM_CUDA)
+      continue()
     endif()
     if(tier STREQUAL "core")
       list(APPEND selected ${id})

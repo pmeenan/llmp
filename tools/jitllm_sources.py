@@ -90,11 +90,13 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
-def load_lock(path: pathlib.Path = LOCK, *, modules: list[str] | None = None) -> dict:
+def load_lock(path: pathlib.Path = LOCK, *, modules: list[str] | None = None,
+              cuda: bool | None = None) -> dict:
     """Validates metadata, then patch bytes for the selected closure.
 
     None checks every component's patches (the explicit --check action).
     An empty list checks only core patches, without reading excluded files.
+    cuda=None selects preparation's CPU/CUDA superset; a bool selects the build's closure.
     """
     try:
         lock = json.loads(path.read_text(), object_pairs_hook=_unique_object)
@@ -102,7 +104,7 @@ def load_lock(path: pathlib.Path = LOCK, *, modules: list[str] | None = None) ->
         raise SourceError(f"cannot read the source lock {path}: {e}") from None
     problems = validate_lock(lock, path.parent, check_patch_files=False)
     if not problems:
-        selected = lock["components"] if modules is None else select(lock, modules)
+        selected = lock["components"] if modules is None else select(lock, modules, cuda=cuda)
         for cid in selected:
             problems += _patch_file_problems(cid, lock["components"][cid]["patches"], path.parent)
     if problems:
@@ -223,6 +225,8 @@ def validate_lock(lock: object, base: pathlib.Path, *, check_patch_files: bool =
                 problems.append(f"{where}: {key} must be one of {', '.join(allowed)}, not {comp.get(key)!r}")
         if not isinstance(comp.get("version"), str) or not comp["version"]:
             problems.append(f"{where}: version is missing")
+        if "requires_cuda" in comp and type(comp["requires_cuda"]) is not bool:
+            problems.append(f"{where}: requires_cuda must be a boolean")
         tier = comp.get("tier")
         module = comp.get("module")
         if tier == "optional":
@@ -347,11 +351,12 @@ def dependency_order(components: dict, ids: list[str]) -> list[str]:
     return order
 
 
-def select(lock: dict, modules: list[str]) -> list[str]:
+def select(lock: dict, modules: list[str], *, cuda: bool | None = None) -> list[str]:
     """The closure for a profile: core components plus the enabled modules' own, in dependency order.
 
     Raises before anything is fetched if a module is unknown or a selected
-    component needs one that the profile leaves out.
+    component needs one that the profile leaves out. Preparation selects the
+    CPU/CUDA superset by default; configure passes its actual CUDA setting.
     """
     unknown = sorted(set(modules) - set(lock.get("modules", {})))
     if unknown:
@@ -359,7 +364,8 @@ def select(lock: dict, modules: list[str]) -> list[str]:
         raise SourceError(f"unknown module(s) {', '.join(unknown)}; the lock declares {declared}")
     components = lock["components"]
     chosen = [cid for cid, comp in components.items()
-              if comp["tier"] == "core" or comp.get("module") in modules]
+              if (comp["tier"] == "core" or comp.get("module") in modules)
+              and (cuda is not False or not comp.get("requires_cuda", False))]
     for cid in chosen:
         for dep in components[cid]["depends"]:
             if dep not in chosen:

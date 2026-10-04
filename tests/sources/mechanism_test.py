@@ -222,6 +222,14 @@ PROJECT = {
         # holds is visible to the app.
         target_include_directories(fixture_app PRIVATE "${CMAKE_BINARY_DIR}")
         target_link_libraries(fixture_app PRIVATE fixture_core)
+        if(TARGET fixture_cuda AND NOT FIXTURE_SKIP_CUDA_LINK)
+          target_link_libraries(fixture_app PRIVATE fixture_cuda)
+          target_compile_definitions(fixture_app PRIVATE FIXTURE_WITH_CUDA)
+        endif()
+        if(FIXTURE_CUDA_HEADER)
+          target_include_directories(fixture_app PRIVATE "${FIXTURE_CUDA_HEADER}")
+          target_compile_definitions(fixture_app PRIVATE FIXTURE_IMPORT_CUDA_HEADER)
+        endif()
         if("fixture-optional" IN_LIST JITLLM_MODULES)
           target_link_libraries(fixture_app PRIVATE fixture_opt)
           target_compile_definitions(fixture_app PRIVATE FIXTURE_WITH_OPTIONAL)
@@ -240,6 +248,10 @@ PROJECT = {
     "app.cc": """
         #include <cstdio>
         #include "core.h"
+        #if defined(FIXTURE_WITH_CUDA) || defined(FIXTURE_IMPORT_CUDA_HEADER)
+        #include "cuda.h"
+        static_assert(FIXTURE_CUDA_VALUE == 7);
+        #endif
         #ifdef FIXTURE_WITH_OPTIONAL
         #include "opt.h"
         #elif __has_include("opt-outside-payload.h")
@@ -247,11 +259,33 @@ PROJECT = {
         #endif
         int main() {
           std::printf("%d\\n", fixture_core_value());
+        #ifdef FIXTURE_WITH_CUDA
+          std::printf("%d\\n", fixture_cuda_value());
+        #endif
         #ifdef FIXTURE_WITH_OPTIONAL
           std::printf("%s\\n", fixture_opt_marker());
         #endif
           return 0;
         }
+        """,
+}
+
+CUDA_ONLY = {
+    "CMakeLists.txt": """
+        cmake_minimum_required(VERSION 4.4.3)
+        project(cuda_only_fixture LANGUAGES CXX)
+        file(TOUCH "${FIXTURE_MARKERS}/cuda-lib")
+        add_library(fixture_cuda STATIC cuda.cc)
+        target_include_directories(fixture_cuda PUBLIC include)
+        """,
+    "include/cuda.h": """
+        #pragma once
+        #define FIXTURE_CUDA_VALUE 7
+        int fixture_cuda_value();
+        """,
+    "cuda.cc": """
+        #include "cuda.h"
+        int fixture_cuda_value() { return FIXTURE_CUDA_VALUE; }
         """,
 }
 
@@ -357,7 +391,7 @@ class Fixture:
         targets = {"core-lib": "fixture_core", "opt-lib": "fixture_opt", "bad-fetch": "fixture_bad_fetch",
                    "bad-find": "fixture_bad_find", "bad-link": "fixture_bad_link",
                    "bad-exceptions": "fixture_bad_exceptions", "bad-archive": "fixture_bad_archive",
-                   "keep-lib": "fixture_keep"}
+                   "keep-lib": "fixture_keep", "cuda-lib": "fixture_cuda"}
         self.data["components"][cid]["cmake"]["targets"] = [targets[cid]]
 
     def save(self, data: dict | None = None, path: pathlib.Path | None = None) -> pathlib.Path:
@@ -432,10 +466,97 @@ def check_closure(fx: Fixture, build_dir: pathlib.Path, *, ok=True, expect=None,
                 "--source-dir", fx.project, "--sdk", ARGS.sdk, "--ninja", ARGS.ninja, *extra], ok=ok, expect=expect)
 
 
-def check_receipt(fx: Fixture, build_dir: pathlib.Path) -> str:
+def check_receipt(fx: Fixture, build_dir: pathlib.Path, *, ok=True, expect=None) -> str:
     return run([ARGS.cmake, f"-DRECEIPT={build_dir / 'jitllm-receipt.json'}", f"-DLOCK={fx.lock}",
                 f"-DSDK_IDENTITY={receipt(build_dir)['sdk']}", "-P",
-                pathlib.Path(__file__).with_name("check_receipt.cmake")], ok=True)
+                pathlib.Path(__file__).with_name("check_receipt.cmake")], ok=ok, expect=expect)
+
+
+def check_cuda_selection(work: pathlib.Path) -> None:
+    fx = Fixture(work)
+    fx.add("cuda-lib", "1", CUDA_ONLY, tier="core")
+    fx.data["components"]["cuda-lib"]["requires_cuda"] = True
+    fx.save()
+    sources, cache = work / "sources", work / "cache"
+    prepare(fx, sources, cache)
+    check(cached(cache) == {fx.data["components"][c]["archive"]["sha256"] for c in ("core-lib", "cuda-lib")},
+          "default preparation did not retain the CPU/CUDA superset")
+    cuda_source = srclib.prepared_dir(sources, "cuda-lib", fx.data["components"]["cuda-lib"])
+    reset_markers(fx)
+    cpu = work / "build-cpu"
+    configure(fx, cpu, sources)
+    check(markers(fx) == {"core-lib"}, "CPU configure executed CUDA-only component CMake")
+    build(cpu)
+    check_receipt(fx, cpu)
+    check_closure(fx, cpu)
+    cpu_receipt = receipt(cpu)
+    check(cpu_receipt["cuda"] is False and [c["id"] for c in cpu_receipt["components"]] == ["core-lib"],
+          f"CPU receipt {cpu_receipt}")
+
+    # This synthetic component uses ordinary C++ so both selections can be
+    # exercised without a CUDA compiler; real CUDA inventory is checked by
+    # sources.closure in each CUDA-enabled production build.
+    cuda = work / "build-cuda"
+    configure(fx, cuda, sources, extra=["-DJITLLM_CUDA=ON"])
+    build(cuda)
+    check(run([cuda / "fixture_app"], ok=True).split() == ["2", "7"], "CUDA-only component was not consumed")
+    check_receipt(fx, cuda)
+    check_closure(fx, cuda)
+    cuda_receipt = receipt(cuda)
+    check(cuda_receipt["cuda"] is True and {c["id"] for c in cuda_receipt["components"]} == {"core-lib", "cuda-lib"},
+          f"CUDA receipt {cuda_receipt}")
+
+    path = cpu / "jitllm-receipt.json"
+    saved = path.read_text()
+    forged = json.loads(saved)
+    forged["components"] = cuda_receipt["components"]
+    path.write_text(json.dumps(forged))
+    check_receipt(fx, cpu, ok=False, expect="the receipt's closure")
+    check_closure(fx, cpu, ok=False, expect="which nothing compiles or links")
+    path.write_text(saved)
+    path = cuda / "jitllm-receipt.json"
+    saved = path.read_text()
+    forged = json.loads(saved)
+    forged["components"] = cpu_receipt["components"]
+    path.write_text(json.dumps(forged))
+    check_receipt(fx, cuda, ok=False, expect="the receipt's closure")
+    check_closure(fx, cuda, ok=False, expect="from no component in the receipt")
+    path.write_text(saved)
+
+    # Selecting a component never exempts it from the strict usage check.
+    unused = work / "build-unused"
+    configure(fx, unused, sources, extra=["-DJITLLM_CUDA=ON", "-DFIXTURE_SKIP_CUDA_LINK=ON"])
+    build(unused)
+    check_closure(fx, unused, ok=False, expect="which nothing compiles or links")
+    imported = work / "build-imported"
+    configure(fx, imported, sources, extra=[f"-DFIXTURE_CUDA_HEADER={cuda_source / 'include'}"])
+    build(imported)
+    check_closure(fx, imported, ok=False, expect="a prepared tree the receipt does not select")
+
+    # Disabling CUDA cleans the old component's outputs and never executes
+    # its CMake again. The new receipt and actual inventory agree.
+    reset_markers(fx)
+    configure(fx, cuda, sources)
+    check(markers(fx) == {"core-lib"}, "CUDA-only CMake ran after switching to CPU")
+    check(not files_named(cuda / "third_party", "*cuda-lib*"), "CUDA-only build outputs survived selection")
+    build(cuda)
+    check_receipt(fx, cuda)
+    check_closure(fx, cuda)
+
+    for value in (None, 0, 1, "ON", "OFF", [], {}):
+        data = json.loads(json.dumps(fx.data))
+        data["components"]["cuda-lib"]["requires_cuda"] = value
+        fx.save(data)
+        reset_markers(fx)
+        configure(fx, work / "build-invalid", sources, ok=False, expect="requires_cuda must be a boolean")
+        check(not markers(fx), "a malformed CUDA condition executed component CMake")
+    data = json.loads(json.dumps(fx.data))
+    data["components"]["core-lib"]["depends"] = ["cuda-lib"]
+    fx.save(data)
+    reset_markers(fx)
+    configure(fx, work / "build-disabled-dependency", sources, ok=False, expect="does not select")
+    check(not markers(fx), "a dependency on a disabled component executed component CMake")
+    fx.save()
 
 
 def main() -> int:
@@ -481,6 +602,8 @@ def main() -> int:
         check("opt-lib" not in text and "fixture_opt" not in text, f"{name} mentions the optional module")
     check_receipt(fx, b)
     check_closure(fx, b)
+    step("CUDA-only source selection, receipt authentication and strict inventory")
+    check_cuda_selection(work / "cuda-selection")
     # This build defines _GLIBCXX_ASSERTIONS nowhere, so one that must define
     # it everywhere fails (D-083).
     check_closure(fx, b, ok=False, expect="does not define _GLIBCXX_ASSERTIONS", extra=["--libstdcxx-assertions"])

@@ -33,7 +33,7 @@ GB10 shape; ordinary MMQ configurations remain unchanged.
 | Step | Where | Does |
 | --- | --- | --- |
 | Prepare | `mise run prepare` ([tools/prepare-sources](../tools/prepare-sources)); `mise run setup` runs it after the SDK | Validates the lock, selects the profile's closure, then fetches each archive into the persistent cache (`~/.cache/jitllm/downloads/<sha256>/`, shared with the SDK and re-verified on every use). One parser, Python's `tarfile`, both checks and unpacks it (D-078): it refuses an archive with anything but plain files and directories at safe paths, two members at one path or a member inside a file member, then writes the checked members through tarfile's `data` filter, stripping a single top-level directory and keeping only the `archive.keep` paths if the lock names any. The unpacked tree must hold only directories and singly linked regular files. It then applies the recorded patches and checks the tree digest before the tree appears as `build/sources/<id>-<tree>` |
-| Configure | [cmake/JitllmSources.cmake](../cmake/JitllmSources.cmake) | Validates the whole lock with the same Python code ([tools/inspect-sources](../tools/inspect-sources)), selects the same closure, checks each prepared tree's digest, and only then adds the components as `SYSTEM`, `EXCLUDE_FROM_ALL` subprojects with their locked options. It never downloads. It rejects `FETCHCONTENT_SOURCE_DIR_*`, dependency providers and project-include hooks, makes FetchContent population of a declared dependency fail inside components (whatever their policy level), and fails on any `find_package()` lookup the lock does not declare |
+| Configure | [cmake/JitllmSources.cmake](../cmake/JitllmSources.cmake) | Validates the whole lock with the same Python code ([tools/inspect-sources](../tools/inspect-sources)), selects the build's CPU/CUDA closure, checks each selected prepared tree's digest, and only then adds the components as `SYSTEM`, `EXCLUDE_FROM_ALL` subprojects with their locked options. It never downloads. It rejects `FETCHCONTENT_SOURCE_DIR_*`, dependency providers and project-include hooks, makes FetchContent population of a declared dependency fail inside components (whatever their policy level), and fails on any `find_package()` lookup the lock does not declare |
 | Build | [cmake/sources/verify.cmake](../cmake/sources/verify.cmake) | Checks each tree on every build before anything that uses it compiles, so an edit after configure (an added file, a mode change, an edit that keeps the timestamp) fails the build |
 | Receipt | `build/<preset>/jitllm-receipt.json` | Records what configure used: the lock's digest, the SDK identity, the license profile and modules, and each component's version, license, archive digest, patches, tree, options and source directory. It is official only when no component came from an override |
 
@@ -69,6 +69,16 @@ that a later build uses still fails the inventory check. The lock has no
 optional modules yet. `tests/sources/` checks all of this on a
 synthetic one.
 
+Preparation keeps the CPU/CUDA superset of the selected license profile.
+Configure excludes a component marked `requires_cuda: true` when
+`JITLLM_CUDA` is off, before executing that component's CMake. A missing
+condition or `false` selects it in either build. The receipt records the
+actual CUDA setting, selected components and the full source-lock digest;
+the receipt and compile/link inventory checks must both agree with that
+selection. Dependencies on excluded components fail. DS4 is CUDA-only:
+all six core components are prepared, while CPU builds select five and
+CUDA builds select six. The component's pins and license tier are unchanged.
+
 ## What the checks cannot see
 
 Component build scripts run with the user's rights; CMake has no sandbox.
@@ -101,6 +111,7 @@ saw.
 | `category`, `tier`, `module` | D-017's classification. `implementation` is incorporated code. `core` needs a license in `CORE_LICENSES` (`tools/jitllm_sources.py`: any recognized permissive license, and MPL-2.0; D-017, D-091); `optional` needs a `module`. A core component never depends on an optional one |
 | `use` | `test` if only test executables link it (never shipped; `sources.closure` refuses a shipped executable built from it), else `product` |
 | `machine` | `target`: built with the profile's target toolchain. Build-host tools and generators are not supported until the first one needs a host build |
+| `requires_cuda` | Optional boolean, default `false`. `true` excludes the component from a CUDA-free build's configure and receipt; preparation retains it. It is a build condition, independent of the license tier |
 | `archive` | `file`, `urls` (https), `sha256` and `size`. Bytes that change under the same URL are an error, not a lock update. A tar archive, plain or gzip-, xz- or bzip2-compressed, judged by its leading bytes. Members must be plain files and directories, one per path, none inside a file member. Optional `keep`: the paths (files or directories, relative to the unpacked tree, sorted, none inside another) that preparation keeps; the rest is never written and never reaches the tree digest, configure or the build. Every kept path must hold a file; a discarded member's name need only be printable ASCII without `\`. `keep` narrows the tree, not the license review: an archive holding implementation outside the component's tier still cannot be fetched and filtered ([source-dependencies.md](../docs/source-dependencies.md)) |
 | `patches` | Ordered `path` (relative to this directory, conventionally `patches/<id>/`) and `sha256`, applied exactly: git-style unified diffs of text files with no fuzz, renames, mode changes or binary hunks. Text before the first file and git's signature are skipped; any other line between files is an error |
 | `tree_sha256` | The prepared tree's digest: SHA-256 over one `<sha256> <x or -> <path>` line per file, sorted by path, where `x` marks an owner-executable file. Symbolic links, special files and empty trees are refused |

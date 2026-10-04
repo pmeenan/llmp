@@ -4972,6 +4972,15 @@ unrecorded system-package substitutions. Keep source caches separate from
 target/profile build products. Unrecorded local edits must be identified and
 excluded from official release receipts.
 
+The source lock's optional boolean `requires_cuda` (2026-10-04) makes a
+component's CUDA-only build condition explicit. Preparation retains the
+selected license profile's CPU/CUDA superset; configure and the receipt
+select the actual build's closure. Omission means both builds. The full
+lock digest remains authenticated, and dependencies on disabled components
+fail before their CMake runs. This keeps DS4 out of CPU receipts without
+weakening the requirement that every recorded component has an actual
+compile or link consumer.
+
 **Context.** CMake is already selected, and D-053 needs audited GGML/EXL3
 source slices with owned dispatch rather than whole upstream runtimes.
 FetchContent supplies archive acquisition without another resolver; vendoring

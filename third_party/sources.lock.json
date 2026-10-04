@@ -4,6 +4,7 @@
   "modules": {},
   "components": {
     "ds4": {
+      "requires_cuda": true,
       "version": "batched-serving-76d51ef",
       "kind": "archive",
       "category": "implementation",
