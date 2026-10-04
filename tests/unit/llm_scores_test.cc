@@ -634,6 +634,196 @@ TEST(LlmScores, CancellationRetainsOnlyCompletedPrefixAndCanContinue) {
   EXPECT_FALSE(model.ScorePrompt(prompt, last, {}).has_value());
 }
 
+TEST(LlmScores, ResumableScoringMatchesSerialRowsInjectionAndLastHead) {
+  FakeLlm serial(true);
+  FakeLlm stepped(true);
+  const std::array<std::int32_t, 5> prompt{0, 7, 2, 3, 1};
+  std::vector<std::pair<std::int32_t, std::vector<float>>> expected;
+  std::vector<float> last;
+  ASSERT_TRUE(serial
+                  .ScorePrompt(prompt, last,
+                               [&](std::int32_t id, std::span<const float> row) {
+                                 expected.emplace_back(id,
+                                                       std::vector<float>(row.begin(), row.end()));
+                                 return true;
+                               })
+                  .has_value());
+  std::vector<std::pair<std::int32_t, std::vector<float>>> actual;
+  auto session = stepped.default_branch().BeginScoringPrompt(
+      prompt, [&](std::int32_t id, std::span<const float> row) {
+        actual.emplace_back(id, std::vector<float>(row.begin(), row.end()));
+        return true;
+      });
+  ASSERT_TRUE(session.has_value());
+  while (!(*session)->done()) {
+    auto unit = (*session)->NextUnit();
+    ASSERT_TRUE(unit.has_value());
+    EXPECT_EQ(unit->rows, unit->phase == rt::Llm::PromptSession::Phase::kChunk ? 1U : 0U);
+    ASSERT_TRUE((*session)->Advance().has_value());
+  }
+  ASSERT_TRUE((*session)->Finish().has_value());
+  ASSERT_TRUE((*session)->Finish().has_value());
+  EXPECT_EQ(actual, expected);
+  EXPECT_EQ((*session)->last(), last);
+  EXPECT_EQ(stepped.history(), serial.history());
+  EXPECT_EQ(stepped.target, serial.target);
+  EXPECT_EQ(stepped.injection, serial.injection);
+  EXPECT_EQ(stepped.chunks, serial.chunks);
+  EXPECT_EQ(stepped.settlements, 1U);
+}
+
+TEST(LlmScores, PurePromptSessionsMayFillTheEntireContextButNeverExceedIt) {
+  for (const bool scoring : {false, true}) {
+    FakeLlm model;
+    const std::vector<std::int32_t> prompt(32, 1);
+    std::vector<float> serial_last;
+    ASSERT_TRUE(model.Prefill(prompt, serial_last).has_value());
+    EXPECT_FALSE(model.Prefill(std::array<std::int32_t, 1>{1}, serial_last).has_value());
+    unsigned reported = 0;
+    auto opened = scoring ? model.default_branch().BeginScoringPrompt(
+                                prompt,
+                                [&](std::int32_t id, std::span<const float> row) {
+                                  EXPECT_EQ(id, 1);
+                                  EXPECT_EQ(row.size(), 8U);
+                                  ++reported;
+                                  return true;
+                                })
+                          : model.default_branch().BeginPrompt(prompt, 0, true);
+    ASSERT_TRUE(opened.has_value());
+    auto& session = **opened;
+    while (!session.done()) {
+      ASSERT_TRUE(session.Advance().has_value());
+    }
+    ASSERT_TRUE(session.Finish().has_value());
+    EXPECT_EQ(session.run().end, 32U);
+    EXPECT_EQ(model.default_branch().history(), prompt);
+    EXPECT_EQ(reported, scoring ? 31U : 0U);
+    EXPECT_FALSE(model.default_branch().BeginPrompt(std::vector<std::int32_t>(33, 1)).has_value());
+  }
+}
+
+TEST(LlmScores, ResumableScoringSpillsAndContinuesOnlyTheRemainingRows) {
+  NativeBranchesFake model(true);
+  auto branch = model.branch(1);
+  ASSERT_TRUE(branch.has_value());
+  const std::array<std::int32_t, 6> prompt{0, 7, 2, 3, 1, 4};
+  std::vector<std::int32_t> scored;
+  const auto on_row = [&](std::int32_t id, std::span<const float> row) {
+    EXPECT_EQ(std::vector<float>(row.begin(), row.end()),
+              FakeLlm::Row((prompt[scored.size()] + 1) % 8));
+    scored.push_back(id);
+    return true;
+  };
+  auto session = (*branch)->BeginScoringPrompt(prompt, on_row);
+  ASSERT_TRUE(session.has_value());
+  ASSERT_TRUE((*session)->Advance().has_value());  // fresh history
+  for (unsigned i = 0; i < 2; ++i) {
+    ASSERT_TRUE((*session)->Advance().has_value());
+  }
+  EXPECT_THAT(scored, ElementsAre(7, 2));
+  (*session)->Cancel();
+  ASSERT_TRUE((*session)->Finish().has_value());
+  session->reset();
+  (*branch)->HoldContinuation();
+  ASSERT_TRUE(model.SpillIdle(**branch).has_value());
+  model.set_retention(rt::Clock::duration::zero());
+  auto resumed = (*branch)->BeginScoringPrompt(prompt, on_row, true);
+  ASSERT_TRUE(resumed.has_value());
+  while (!(*resumed)->done()) {
+    ASSERT_TRUE((*resumed)->Advance().has_value());
+  }
+  ASSERT_TRUE((*resumed)->Finish().has_value());
+  EXPECT_THAT(scored, ElementsAre(7, 2, 3, 1, 4));
+  EXPECT_EQ(model.native_state(1).chunks, prompt.size());
+  EXPECT_EQ(model.native_state(1).target, (*branch)->history());
+  EXPECT_EQ(model.native_state(1).injection, (*branch)->history());
+  EXPECT_EQ((*resumed)->last(), FakeLlm::Row(5));
+  EXPECT_EQ(model.restores, 1U);
+  (*branch)->ReleaseContinuation();
+}
+
+TEST(LlmScores, AnUntouchedScorerDoesNotSettleOrDiscardASpilledContinuation) {
+  NativeBranchesFake model(true);
+  auto branch = model.branch(1);
+  ASSERT_TRUE(branch.has_value());
+  const std::array<std::int32_t, 4> prompt{0, 1, 2, 3};
+  auto session = (*branch)->BeginScoringPrompt(prompt, {});
+  ASSERT_TRUE(session.has_value());
+  ASSERT_TRUE((*session)->Advance().has_value());
+  ASSERT_TRUE((*session)->Advance().has_value());
+  (*session)->Cancel();
+  ASSERT_TRUE((*session)->Finish().has_value());
+  session->reset();
+  (*branch)->HoldContinuation();
+  ASSERT_TRUE(model.SpillIdle(**branch).has_value());
+  const auto prefix = (*branch)->history();
+  const auto settlements = model.native_state(1).settlements;
+  model.native_state(1).fail_settle = true;  // native rollback refuses an unrestored slot
+  auto untouched = (*branch)->BeginScoringPrompt(prompt, {}, true);
+  ASSERT_TRUE(untouched.has_value());
+  (*untouched)->Cancel();
+  ASSERT_TRUE((*untouched)->Finish().has_value());
+  untouched->reset();
+  EXPECT_EQ((*branch)->history(), prefix);
+  EXPECT_TRUE(model.native_state(1).spilled);
+  EXPECT_EQ(model.native_state(1).settlements, settlements);
+  EXPECT_EQ(model.restores, 0U);
+  model.native_state(1).fail_settle = false;
+  auto continued = (*branch)->BeginScoringPrompt(prompt, {}, true);
+  ASSERT_TRUE(continued.has_value());
+  while (!(*continued)->done()) {
+    ASSERT_TRUE((*continued)->Advance().has_value());
+  }
+  ASSERT_TRUE((*continued)->Finish().has_value());
+  EXPECT_EQ((*branch)->history(), std::vector<std::int32_t>(prompt.begin(), prompt.end()));
+  EXPECT_EQ(model.native_state(1).chunks, prompt.size());
+  EXPECT_EQ(model.restores, 1U);
+  (*branch)->ReleaseContinuation();
+}
+
+TEST(LlmScores, ResumableScoringRetriesCapacityBeforeAnyRowIsReported) {
+  NativeBranchesFake model;
+  const std::array<std::int32_t, 3> prompt{0, 1, 2};
+  unsigned reported = 0;
+  auto session =
+      model.default_branch().BeginScoringPrompt(prompt, [&](std::int32_t, std::span<const float>) {
+        ++reported;
+        return true;
+      });
+  ASSERT_TRUE(session.has_value());
+  ASSERT_TRUE((*session)->Advance().has_value());
+  model.budget = 0;
+  EXPECT_FALSE((*session)->Advance({}, true).has_value());
+  EXPECT_TRUE((*session)->refused());
+  EXPECT_EQ(reported, 0U);
+  EXPECT_TRUE(model.history().empty());
+  model.budget = 3;
+  while (!(*session)->done()) {
+    ASSERT_TRUE((*session)->Advance().has_value());
+  }
+  ASSERT_TRUE((*session)->Finish().has_value());
+  EXPECT_EQ(reported, 2U);
+  EXPECT_EQ(model.chunks, 3U);
+}
+
+TEST(LlmScores, ResumableScoringStopsAtItsCallbackAndPreservesSettlementFailure) {
+  FakeLlm model;
+  const std::array<std::int32_t, 3> prompt{0, 1, 2};
+  auto session = model.default_branch().BeginScoringPrompt(
+      prompt, [](std::int32_t, std::span<const float>) { return false; });
+  ASSERT_TRUE(session.has_value());
+  ASSERT_TRUE((*session)->Advance().has_value());
+  ASSERT_TRUE((*session)->Advance().has_value());
+  EXPECT_TRUE((*session)->done());
+  EXPECT_TRUE((*session)->run().stopped);
+  EXPECT_THAT(model.history(), ElementsAre(0));
+  EXPECT_EQ(model.chunks, 1U);
+  model.fail_settle = true;
+  EXPECT_FALSE((*session)->Finish().has_value());
+  EXPECT_TRUE(model.history().empty());
+  EXPECT_TRUE((*session)->last().empty());
+}
+
 TEST(LlmScores, UnknownCompletionInvalidatesHistoryBeforeFreshUse) {
   FakeLlm model;
   model.fail_chunk = 2;

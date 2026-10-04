@@ -368,14 +368,16 @@ struct ChatResume final : api::Yielded {
   ChatResume(ChatResume&&) = delete;
   ChatResume& operator=(ChatResume&&) = delete;
   ChatResume(ChatPrompt prompt, Generation so_far, const GenerateOptions& options,
-             ChatOutput::State out, std::uint32_t cached, Llm::Branch* held = nullptr)
+             ChatOutput::State out, std::uint32_t cached, Llm::Branch* held = nullptr,
+             std::shared_ptr<api::LiteralOutput> literal = nullptr)
       : rendered(std::move(prompt)),
         generation(std::move(so_far)),
         sampling(options.sampling),
         seed(options.seed),
         output(std::move(out)),
         reused(cached),
-        held_branch(held) {
+        held_branch(held),
+        literal(std::move(literal)) {
     if (held_branch != nullptr) {
       held_branch->HoldContinuation();
     }
@@ -400,6 +402,7 @@ struct ChatResume final : api::Yielded {
   ChatOutput::State output;
   std::uint32_t reused = 0;  // the first turn's cached tokens, for its usage
   Llm::Branch* held_branch = nullptr;
+  std::shared_ptr<api::LiteralOutput> literal;
 };
 
 // A serial request's state-capacity policy on its model for the request's
@@ -449,7 +452,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     enum class Stage { kPrompt, kGeneration, kDone };
     ChatWork(NodeBackend& owner, Llm& model, Llm::Branch& branch, std::size_t slot,
              const api::ChatRequest& request, api::Exchange& exchange, ChatPrompt rendered,
-             Floors floors, std::uint64_t swap_bytes)
+             Floors floors, std::uint64_t swap_bytes,
+             std::shared_ptr<api::LiteralOutput> literal = nullptr)
         : owner(owner),
           model(model),
           branch(branch),
@@ -459,7 +463,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
           rendered(std::move(rendered)),
           floors(floors),
           swap_bytes(swap_bytes),
-          output(model, exchange, this->rendered.reasoning) {
+          output(model, exchange, this->rendered.reasoning),
+          literal(std::move(literal)) {
       options.max_tokens = this->rendered.max_tokens;
       options.stop = true;
       options.sampling = SamplingOf(request, model);
@@ -467,8 +472,21 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         options.seed = request.seed.value_or(RandomSeed());
       }
       options.on_tokens = [this](std::span<const std::int32_t> fresh) {
-        return output.Push(fresh);
+        if (this->literal == nullptr) {
+          return output.Push(fresh);
+        }
+        bool said = false;
+        const bool sent = this->literal->Push(fresh, [this, &said](std::string_view piece) {
+          said = true;
+          return this->exchange.Content(piece);
+        });
+        return sent && (said || this->exchange.Continue());
       };
+      if (this->literal != nullptr && this->literal->score_generation()) {
+        options.on_logits = [this](std::int32_t id, std::span<const float> row) {
+          return this->literal->GeneratedRow(id, row) && this->exchange.Continue();
+        };
+      }
     }
     ~ChatWork() override {
       base::Check(retired, "a cooperative chat owner was freed before retirement");
@@ -523,6 +541,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     const Floors floors;
     const std::uint64_t swap_bytes;
     ChatOutput output;
+    std::shared_ptr<api::LiteralOutput> literal;
     GenerateOptions options;
     Generation generation;
     std::unique_ptr<Llm::PromptSession> prompt_session;
@@ -561,14 +580,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
               std::shared_ptr<RequestMemory> memory, std::FILE* log, HangLadder* ladder = nullptr)
       : server_(server), config_(config), memory_(std::move(memory)), log_(log), ladder_(ladder) {}
 
-  // Only models with funded independent slots opt in. Literal completion,
-  // scoring and unsupported models retain their ordinary entry points.
+  // Chat and literal requests share funded independent slots. Unsupported
+  // models retain their ordinary entry points.
   api::CooperativeBackend* cooperative() override { return this; }
 
   bool Supports(const api::CooperativeBackend::Request& request) const override {
-    if (request.literal != nullptr) {
-      return false;
-    }
     Served* model = server_.Find(request.options.model);
     return model != nullptr && model->llm() &&
            static_cast<Llm&>(*model).supports_generation_waves();
@@ -602,9 +618,28 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     // A request that yielded its place continues from its generation so far
     // (ChatResume); any other is rendered now.
     const auto* resume = static_cast<const ChatResume*>(request.resume);
-    std::expected<ChatPrompt, api::Error> rendered =
-        resume != nullptr ? std::expected<ChatPrompt, api::Error>(resume->rendered)
-                          : PrepareChat(model, request.options, exchange, *memory_);
+    std::shared_ptr<api::LiteralOutput> literal = resume != nullptr ? resume->literal : nullptr;
+    std::expected<ChatPrompt, api::Error> rendered;
+    if (resume != nullptr) {
+      rendered = resume->rendered;
+    } else if (request.literal != nullptr) {
+      auto prepared =
+          api::PrepareLiteralPrompt(*request.literal, model.tokenizer(), model.usable_context(),
+                                    memory_->capacity(), memory_.get());
+      if (!prepared) {
+        return std::unexpected(prepared.error());
+      }
+      auto output =
+          api::LiteralOutput::Create(*request.literal, *prepared, model.tokenizer(), *memory_);
+      if (!output) {
+        return std::unexpected(output.error());
+      }
+      literal = std::move(*output);
+      rendered = ChatPrompt{.tokens = std::move(prepared->tokens),
+                            .max_tokens = request.options.max_tokens.value_or(16)};
+    } else {
+      rendered = PrepareChat(model, request.options, exchange, *memory_);
+    }
     if (!rendered) {
       return std::unexpected(rendered.error());
     }
@@ -636,7 +671,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
           (resume == nullptr || resume->held_branch != *branch)) {
         continue;
       }
-      const std::size_t reusable = model.ReusablePrefix(**branch, wanted);
+      const std::size_t reusable = literal != nullptr ? 0 : model.ReusablePrefix(**branch, wanted);
       const bool empty = !(*branch)->HasRetainedState();
       const Clock::time_point used = model.LastUsed(**branch);
       const bool better = slot == cohort_.size() || reusable > best ||
@@ -679,10 +714,14 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         return std::unique_ptr<api::CooperativeBackend::Work>{};
       }
     }
-    const Floors floors = model.floors();
+    Floors floors = model.floors();
+    if (literal != nullptr && literal->score_prompt()) {
+      floors.prefill = floors.decode;  // teacher forcing is one-row target work
+    }
     const auto swap_bytes = SwapBytes(model);
-    auto frame = std::make_unique<ChatWork>(*this, model, **branch, slot, request.options, exchange,
-                                            std::move(*rendered), floors, swap_bytes);
+    auto frame =
+        std::make_unique<ChatWork>(*this, model, **branch, slot, request.options, exchange,
+                                   std::move(*rendered), floors, swap_bytes, std::move(literal));
     if (resume != nullptr) {
       // Its state rebuilt to the history it yielded at (restored, reused or
       // prefilled), then its generation continues from the anchor
@@ -697,9 +736,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       frame->output.Restore(resume->output);
       frame->reused = resume->reused;
     }
-    auto prompt =
-        frame->branch.BeginPrompt(frame->resume ? frame->resume_tokens : frame->rendered.tokens,
-                                  frame->rendered.stable_boundary, false, frame->resume);
+    auto prompt = WorkPrompt(*frame);
     if (!prompt) {
       frame->retired = true;  // no session or native work retained a reference
       return std::unexpected(Failure(500, "the prompt could not be admitted: " + prompt.error()));
@@ -919,6 +956,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       if (server_.node().TakeHangCancelled()) {
         return HangCohort("a prompt's unit");  // a step ended after its request was cancelled
       }
+      if (frame.literal != nullptr && unit && unit->phase == Llm::PromptSession::Phase::kReuse) {
+        frame.literal->PromptStarted();
+      }
       if (frame.prompt_session->done()) {
         auto begun = BeginChatGeneration(frame);
         Rebalance();
@@ -1047,20 +1087,33 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
                               std::min(frame.branch.history().size(), frame.rendered.tokens.size()),
                               frame.rendered.tokens.size(), frame.generation.tokens.size()));
       }
-      yielded = std::make_shared<ChatResume>(frame.rendered, frame.generation, frame.options,
-                                             frame.output.Save(), frame.reused,
-                                             frame.model_paused ? &frame.branch : nullptr);
+      yielded = std::make_shared<ChatResume>(
+          frame.rendered, frame.generation, frame.options, frame.output.Save(), frame.reused,
+          frame.model_paused ? &frame.branch : nullptr, frame.literal);
     } else if (!frame.error && !frame.generation.tokens.empty()) {
-      frame.output.Finish();  // including a generation preempted and not yet resumed
+      if (frame.literal == nullptr) {
+        frame.output.Finish();  // including a generation preempted and not yet resumed
+      }
+    }
+    api::LiteralResult literal_result;
+    if (frame.literal != nullptr && !yields) {
+      if (!frame.error) {
+        (void)frame.literal->Finish(
+            [&frame](std::string_view piece) { return frame.exchange.Content(piece); });
+        if (frame.literal->error()) {
+          frame.error = *frame.literal->error();
+        }
+      }
+      literal_result = frame.literal->TakeResult();
     }
     if (!frame.error && ladder_ != nullptr) {
       ladder_->Served(frame.model.name());  // a later hang may reset it again
     }
     api::Completion result{
         .completion_tokens = static_cast<std::uint32_t>(frame.generation.tokens.size()),
-        .cached_tokens = frame.reused,
-        .stopped = frame.generation.stopped,
-        .literal = {},
+        .cached_tokens = frame.literal != nullptr ? 0 : frame.reused,
+        .stopped = frame.rendered.max_tokens == 0 || frame.generation.stopped,
+        .literal = std::move(literal_result),
         .yielded = std::move(yielded)};
     cohort_[frame.slot] = nullptr;
     frame.retired = true;
@@ -1607,6 +1660,23 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     return server_.SelectRequestBranches(*cohort_model_, std::span(branches).first(count));
   }
 
+  static std::expected<std::unique_ptr<Llm::PromptSession>, std::string> WorkPrompt(
+      ChatWork& frame) {
+    if (frame.literal != nullptr && frame.literal->score_prompt() && !frame.resume) {
+      return frame.branch.BeginScoringPrompt(
+          frame.rendered.tokens,
+          [&frame](std::int32_t id, std::span<const float> row) {
+            return frame.literal->PromptRow(frame.prompt_session->run().end, id, row) &&
+                   frame.exchange.Continue();
+          },
+          frame.literal->prompt_started());
+    }
+    const bool started = frame.literal != nullptr && frame.literal->prompt_started();
+    return frame.branch.BeginPrompt(frame.resume ? frame.resume_tokens : frame.rendered.tokens,
+                                    frame.rendered.stable_boundary,
+                                    frame.literal != nullptr && !started, frame.resume || started);
+  }
+
   static Status BeginChatGeneration(ChatWork& frame) {
     if (!frame.resume && !frame.continued) {
       frame.reused = frame.prompt_session->reused();
@@ -1614,6 +1684,17 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     const bool stopped = frame.prompt_session->run().stopped;
     if (auto finished = frame.prompt_session->Finish(); !finished) {
       frame.error = Failure(500, "the prompt failed: " + finished.error());
+      return {};
+    }
+    if (frame.literal != nullptr) {
+      frame.literal->EndPrompt();
+      if (frame.literal->error()) {
+        frame.error = *frame.literal->error();
+        return {};
+      }
+    }
+    if (frame.rendered.max_tokens == 0) {
+      frame.stage = ChatWork::Stage::kDone;
       return {};
     }
     if (stopped || frame.cancelled || !frame.exchange.Next(Phase::kDecode, 0)) {
@@ -1793,12 +1874,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return;
     }
     ChatWork& frame = *cohort_[*restart];
-    const std::vector<std::int32_t>& tokens =
-        frame.resume ? frame.resume_tokens : frame.rendered.tokens;
     // A generation set aside resumes from its spilled state: its prompt
     // only restores it (BeginPrompt's `resume`).
-    auto prompt =
-        frame.branch.BeginPrompt(tokens, frame.rendered.stable_boundary, false, frame.resume);
+    auto prompt = WorkPrompt(frame);
     if (!prompt) {
       frame.error = Failure(500, "the request could not begin again: " + prompt.error());
       return;

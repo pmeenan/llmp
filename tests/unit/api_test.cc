@@ -944,6 +944,84 @@ TEST(LiteralTokens, RefusesScoreCountBeforeDecodingAndPreservesBpeIds) {
   EXPECT_EQ(refused.error().param, "prompt_logprobs");
 }
 
+TEST(LiteralTokens, ContinuedOutputKeepsByteOffsetsRowsAndTheirMemoryCharge) {
+  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
+  ASSERT_TRUE(tokenizer.has_value());
+  auto request = api::ParseCompletionRequest(
+      R"({"model":"alpha","prompt":[195,169,226],"max_tokens":3,"echo":true,
+          "logprobs":0,"prompt_logprobs":1})");
+  ASSERT_TRUE(request.has_value());
+  auto prompt = api::PrepareLiteralPrompt(*request, *tokenizer, 16, kResponse);
+  ASSERT_TRUE(prompt.has_value());
+  jitllm::runtime::RequestMemory memory(kResponse);
+  auto output = api::LiteralOutput::Create(*request, *prompt, *tokenizer, memory);
+  ASSERT_TRUE(output.has_value());
+  const auto charged = memory.used();
+  EXPECT_GT(charged, 1024U);
+  auto continuation = *output;
+  output->reset();
+  EXPECT_EQ(memory.used(), charged);
+  std::vector<float> row(tokenizer->size(), 0);
+  ASSERT_TRUE(continuation->PromptRow(1, 169, row));
+  ASSERT_TRUE(continuation->PromptRow(1, 169, row));  // replayed state adds no duplicate
+  ASSERT_TRUE(continuation->PromptRow(2, 226, row));
+  continuation->EndPrompt();
+  std::string text;
+  const auto send = [&](std::string_view piece) {
+    text += piece;
+    return true;
+  };
+  ASSERT_TRUE(continuation->GeneratedRow(195, row));
+  ASSERT_TRUE(continuation->Push(std::array<std::int32_t, 1>{195}, send));
+  EXPECT_TRUE(text.empty());
+  auto resumed = continuation;
+  continuation.reset();
+  ASSERT_TRUE(resumed->GeneratedRow(169, row));
+  ASSERT_TRUE(resumed->Push(std::array<std::int32_t, 1>{169}, send));
+  ASSERT_TRUE(resumed->GeneratedRow(257, row));  // stop token has a row and no text
+  ASSERT_TRUE(resumed->Finish(send));
+  EXPECT_EQ(text, "é");
+  auto result = resumed->TakeResult();
+  EXPECT_EQ(memory.used(), 0U);
+  EXPECT_EQ(result.prompt_text, "é�");
+  ASSERT_EQ(result.prompt_logprobs.size(), 3U);
+  EXPECT_FALSE(result.prompt_logprobs[0].logprob.has_value());
+  ASSERT_EQ(result.logprobs.size(), 6U);
+  EXPECT_EQ(result.logprobs[3].text_offset, 2U);
+  EXPECT_EQ(result.logprobs[4].text_offset, 2U);
+  EXPECT_EQ(result.logprobs[5].text_offset, 3U);
+}
+
+TEST(LiteralTokens, OutputRefusesUnfundedOrMissingRowsWithoutLeakingItsCharge) {
+  auto tokenizer = jitllm::tokenizer::Tokenizer::Create(LiteralVocabulary(false));
+  ASSERT_TRUE(tokenizer.has_value());
+  auto request = api::ParseCompletionRequest(
+      R"({"model":"alpha","prompt":[65,66,67],"max_tokens":0,"prompt_logprobs":0})");
+  ASSERT_TRUE(request.has_value());
+  auto prompt = api::PrepareLiteralPrompt(*request, *tokenizer, 16, kResponse);
+  ASSERT_TRUE(prompt.has_value());
+  jitllm::runtime::RequestMemory small(1024, kResponse);
+  auto refused = api::LiteralOutput::Create(*request, *prompt, *tokenizer, small);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().status, 503U);
+  EXPECT_EQ(small.used(), 0U);
+  prompt = api::PrepareLiteralPrompt(*request, *tokenizer, 16, kResponse);
+  ASSERT_TRUE(prompt.has_value());
+  jitllm::runtime::RequestMemory memory(kResponse);
+  auto output = api::LiteralOutput::Create(*request, *prompt, *tokenizer, memory);
+  ASSERT_TRUE(output.has_value());
+  std::vector<float> row(tokenizer->size(), 0);
+  EXPECT_FALSE((*output)->PromptRow(2, 67, row));
+  const auto& error = (*output)->error();
+  if (error.has_value()) {
+    EXPECT_EQ(error->code, "invalid_score_row");
+  } else {
+    ADD_FAILURE() << "the out-of-order score row has no error";
+  }
+  output->reset();
+  EXPECT_EQ(memory.used(), 0U);
+}
+
 TEST(LiteralJson, ZeroTopCountKeepsActualTokenOnlyWhenOtherFormAskedForTopOne) {
   auto request = api::ParseCompletionRequest(
       R"({"model":"m","prompt":[1,2],"max_tokens":0,"echo":true,"logprobs":1,"prompt_logprobs":0})");
@@ -1506,6 +1584,7 @@ class FakeCooperative final : public api::CooperativeBackend {
   bool Supports(const Request& request) const override {
     return (request.options.model == "alpha" ||
             (second_model.load() && request.options.model == "tiny")) &&
+           (request.literal == nullptr || literal_enabled.load()) &&
            (request.literal != nullptr || request.options.messages.back().content != "serial");
   }
   std::expected<std::unique_ptr<Work>, api::Error> Start(const Request& request,
@@ -1535,6 +1614,7 @@ class FakeCooperative final : public api::CooperativeBackend {
       ++resumed;
       if (resumed.load() == 1 && serial_calls != nullptr) {
         first_resume_serial_calls.store(serial_calls->load());
+        started_at_first_resume.store(started.load());
         tiny_started_at_first_resume.store(tiny_started.load());
       }
     }
@@ -1626,6 +1706,9 @@ class FakeCooperative final : public api::CooperativeBackend {
     if (job.yielding) {
       result.yielded = std::make_shared<Ticked>(job.ticks);
       ++yielded;
+      if (job.request.literal != nullptr && disable_literal_after_yield.load()) {
+        literal_enabled.store(false);
+      }
     }
     if (job.request.literal != nullptr) {
       result.literal.prompt_text = job.request.literal->prompt.value_or("");
@@ -1641,9 +1724,11 @@ class FakeCooperative final : public api::CooperativeBackend {
   std::atomic<unsigned> started{0}, advances{0}, peak{0}, polls{0}, live{0};
   std::atomic<unsigned> paused_units{0}, paused_skips{0}, yielded{0}, resumed{0};
   std::atomic<unsigned> first_resume_serial_calls{0};
+  std::atomic<unsigned> started_at_first_resume{0};
   std::atomic<unsigned> tiny_peak{0}, tiny_switch_attempts{0}, tiny_started{0};
   std::atomic<unsigned> tiny_started_at_first_resume{0};
   std::atomic<bool> second_model{false}, pause_substitute{false};
+  std::atomic<bool> literal_enabled{true}, disable_literal_after_yield{false};
   std::atomic<bool> substitute_entered{false}, release_substitute{false};
   // The model's request slots (Start defers past them).
   std::atomic<unsigned> capacity{4}, capacity_deferrals{0};
@@ -3346,6 +3431,74 @@ TEST_F(ServerTest, CooperativeRequestsJoinAnExistingDecodeAndStayBounded) {
   EXPECT_FALSE(cooperative_->early_destruction.load());
 }
 
+TEST_F(ServerTest, CooperativeLiteralAndChatRequestsShareADecodeAndKeepTheirResponses) {
+  StartCooperative();
+  cooperative_->capacity.store(2);
+  cooperative_->pause_units.store(true);
+  const int literal =
+      Connect(Literal(R"({"model":"alpha","prompt":"raw","max_tokens":12,"echo":true})"));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int chat = Connect(Post(Chat("short", R"(,"max_tokens":4)")));
+  EXPECT_THAT(Exchange("GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"),
+              StartsWith("HTTP/1.1 200 "));
+  cooperative_->release.store(true);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->peak.load() == 2; }));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(chat, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("content":"xxxx")")));
+  EXPECT_THAT(ReadResponse(literal, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":12)"),
+                    HasSubstr(R"("text":"rawxxxxxxxxxxxx")")));
+  (void)::close(chat);
+  (void)::close(literal);
+  EXPECT_EQ(backend_.chat_calls.load(), 0U);
+  EXPECT_EQ(backend_.literal_calls.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, ALiteralAndChatCohortResumeAfterAModelSwitch) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  StartCooperative(options);
+  cooperative_->capacity.store(2);
+  const int literal =
+      Connect(Literal(R"({"model":"alpha","prompt":"raw","max_tokens":80,"echo":true})"));
+  const int chat = Connect(Post(Chat("long", R"(,"max_tokens":80)")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->started.load() == 2; }));
+  EXPECT_THAT(Exchange(Post(Chat("substitute", "", "tiny"))), StartsWith("HTTP/1.1 200 "));
+  EXPECT_EQ(cooperative_->yielded.load(), 2U);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->resumed.load() == 2; }));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(literal, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":80)"),
+                    HasSubstr(R"("text":"raw)" + std::string(80, 'x') + "\"")));
+  EXPECT_THAT(ReadResponse(chat, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":80)"),
+                    HasSubstr(R"("content":")" + std::string(80, 'x') + "\"")));
+  (void)::close(literal);
+  (void)::close(chat);
+  EXPECT_EQ(backend_.literal_calls.load(), 0U);
+  EXPECT_EQ(cooperative_->cancelled.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, LiteralFallbackRefusesAnUnsupportedContinuationInsteadOfRestarting) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  StartCooperative(options);
+  cooperative_->disable_literal_after_yield.store(true);
+  const int literal = Connect(Literal(R"({"model":"alpha","prompt":"raw","max_tokens":80})"));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  EXPECT_THAT(Exchange(Post(Chat("substitute", "", "tiny"))), StartsWith("HTTP/1.1 200 "));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(literal, pending),
+              AllOf(StartsWith("HTTP/1.1 500 "), HasSubstr("cannot continue")));
+  (void)::close(literal);
+  EXPECT_EQ(cooperative_->yielded.load(), 1U);
+  EXPECT_EQ(backend_.literal_calls.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
 TEST_F(ServerTest, CooperativeCapacityDefersThenRefillsWithoutSerialFallback) {
   StartCooperative();
   cooperative_->capacity.store(2);
@@ -3575,6 +3728,38 @@ TEST_F(ServerTest, ASubstituteRefusalStillResumesThePausedRequest) {
   EXPECT_EQ(cooperative_->yielded.load(), 1U);
   EXPECT_EQ(cooperative_->resumed.load(), 1U);
   EXPECT_EQ(cooperative_->cancelled.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, ADepartedSubstituteRestoresOriginalsBeforeAFreshLiteralRequest) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  options.queue_wait = std::chrono::milliseconds(200);
+  StartCooperative(options);
+  cooperative_->capacity.store(1);
+  cooperative_->pause_retirement.store(true);
+  const int original = Connect(Literal(R"({"model":"alpha","prompt":"raw","max_tokens":12})"));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int substitute = Connect(Post(Chat("substitute", "", "tiny")));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->retirement_entered.load(); }));
+  std::string pending;
+  // Its 429 proves that the different-model head has left the queue
+  // while the original's retirement still holds the driver.
+  EXPECT_THAT(ReadResponse(substitute, pending), StartsWith("HTTP/1.1 429 "));
+  const int later = Connect(Literal(R"({"model":"alpha","prompt":"later","max_tokens":2})"));
+  EXPECT_THAT(Exchange("GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"),
+              StartsWith("HTTP/1.1 200 "));
+  cooperative_->release_retirement.store(true);
+  EXPECT_THAT(ReadResponse(original, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":12)")));
+  EXPECT_THAT(ReadResponse(later, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":2)")));
+  for (const int fd : {original, substitute, later}) {
+    (void)::close(fd);
+  }
+  EXPECT_EQ(cooperative_->resumed.load(), 1U);
+  EXPECT_EQ(cooperative_->started_at_first_resume.load(), 1U);
+  EXPECT_EQ(backend_.literal_calls.load(), 0U);
   EXPECT_FALSE(cooperative_->early_destruction.load());
 }
 

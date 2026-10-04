@@ -1147,8 +1147,9 @@ it appears.
       is paid. Overflow waits
       for a retired slot. Model changes now pause the group at completed
       units and resume its exact continuations after one substitute cohort
-      ([model turns](experiments/model-turns/README.md)); same-model literal
-      completions still wait for it to drain. Independent request failures
+      ([model turns](experiments/model-turns/README.md)); literal completions
+      now join those cohorts with their own scores and raw prompts
+      ([controls](experiments/literal-batching/README.md)). Independent request failures
       retain completed peers; native fences prove retirement before releasing a frame. Matched comparison
       and final gate qualification remain open.
       Prompt preparation now uses a branch-owned resumable session: host-only
@@ -1209,7 +1210,9 @@ it appears.
       configurable 30-second resident-work turn, protected branch identity
       through spill/restore and original cached-token usage across partial
       prompt pauses ([controls](experiments/model-turns/README.md)). Literal
-      completions joining the cohort remain open.
+      completions now join the cohort, preserving likelihood rows and
+      Unicode offsets across partial-prompt and generation switches
+      ([controls](experiments/literal-batching/README.md)).
 - [ ] **Model settings in three layers** (D-103, the owner, 2026-10-03):
       a table-driven `[models.NAME]` schema where every model setting can
       be overridden; one resolved settings record per model at

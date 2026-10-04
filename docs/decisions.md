@@ -662,8 +662,15 @@ workspace or context ceilings. Scoring has decode-like throughput and
 does not exercise large prefill tiles; it is not evidence for a changed
 2,048-row attention implementation. Each target step advances the existing
 watchdog, and cancellation retires completed work before releasing the
-request. Retained score rows and response bytes have independent fixed
-bounds; larger evaluations use explicit windows.
+request. Retained score rows and response bytes follow context and memory
+(D-102); larger evaluations use explicit windows.
+
+Independent literal requests join each model's native cohorts alongside
+chat requests (owner, 2026-10-03). Prompt scores still use one-row target
+work, interleaved with peers; generation joins plain or speculative waves.
+Scores, decoder offsets and response state remain funded while a model
+switch pauses the cohort and survive its exact continuation. This adds no
+multi-prompt wire shape or inference-version change.
 
 The response carries the legacy parallel arrays and vLLM's ID-keyed prompt
 score objects. A terminal generated stop token retains its probability
@@ -683,7 +690,7 @@ remain under D-097/M5. The [runtime contract](runtime-serving.md#literal-complet
 records the exact fields and bounds.
 
 **Reopen if.** An evaluation needs faster tiled scoring, wider score/output
-bounds or streaming/batched completions. Extend the runner only with
+bounds or streaming/multi-prompt completions. Extend the runner only with
 explicit workspace, state, cancellation and same-history numerical controls;
 do not silently replace the one-row likelihood path with another precision
 or a sampled/filtered distribution.

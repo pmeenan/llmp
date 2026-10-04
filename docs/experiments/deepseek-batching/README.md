@@ -131,7 +131,7 @@ byte-identical to the earlier run's, at every concurrency.
   - DSpark: +50.6% / +48.0% / +41.6%.
   - Plain: +45.1% / +48.1% / +47.5%.
 - **ds4.** The comparison is not matched. ds4 ran a different artifact,
-  through literal completions, which still run one at a time. On those
+  through literal completions, which ran one at a time in this comparison. On those
   numbers native plain trails by 15.9% / 9.2% / 11.9% (before: 16.1% /
   23.8% / 32.2%). Native plain C1 measured the same on both artifacts
   (11.06 / 11.09). The [same-session comparison](#against-ds4-same-session)

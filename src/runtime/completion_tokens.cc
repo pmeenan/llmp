@@ -7,6 +7,7 @@
 #include <format>
 #include <utility>
 
+#include "base/check.h"
 #include "execution/sampling.h"
 #include "tokenizer/unicode.h"
 
@@ -228,6 +229,153 @@ void LiteralRows::Finish() {
   std::string rest;
   decoder_.Finish(rest);
   offset_ += TextCharacters(rest);
+}
+
+LiteralOutput::LiteralOutput(const CompletionRequest& request, LiteralPrompt& prompt,
+                             const tokenizer::Tokenizer& tokenizer, std::size_t limit)
+    : result_{.prompt_text = std::move(prompt.text), .logprobs = {}, .prompt_logprobs = {}},
+      budget_(1024 + (6 * result_.prompt_text.size())),
+      limit_(limit),
+      echo_(request.echo),
+      logprobs_(request.logprobs),
+      prompt_logprobs_(request.prompt_logprobs),
+      prompt_top_(std::max(request.prompt_logprobs.value_or(0),
+                           request.echo ? request.logprobs.value_or(0) : 0)),
+      score_prompt_(prompt_logprobs_ || (echo_ && logprobs_)),
+      prompt_rows_(tokenizer, request.return_tokens_as_token_ids, true, 0, budget_, limit_),
+      generated_rows_(tokenizer, request.return_tokens_as_token_ids, false,
+                      echo_ ? TextCharacters(result_.prompt_text) : 0, budget_, limit_),
+      decoder_(tokenizer, {}) {}
+
+std::expected<std::shared_ptr<LiteralOutput>, Error> LiteralOutput::Create(
+    const CompletionRequest& request, LiteralPrompt& prompt, const tokenizer::Tokenizer& tokenizer,
+    RequestMemory& memory) {
+  if (prompt.tokens.empty()) {
+    return std::unexpected(BadPrompt("literal response needs a nonempty prompt"));
+  }
+  const auto limit = static_cast<std::size_t>(memory.capacity());
+  if (limit < 1024 || prompt.text.size() > (limit - 1024) / 6) {
+    return std::unexpected(Error{.status = 413,
+                                 .type = "invalid_request_error",
+                                 .message = "prompt echo exceeds the response size",
+                                 .param = "prompt",
+                                 .code = "response_too_large"});
+  }
+  auto output =
+      std::shared_ptr<LiteralOutput>(new LiteralOutput(request, prompt, tokenizer, limit));
+  const std::uint64_t held = prompt.score_bytes + output->budget_;
+  if (!output->charge_.Add(memory, held)) {
+    return std::unexpected(MemoryRefusal(memory, held, "the completion's scores"));
+  }
+  if (output->score_prompt_ &&
+      !output->PromptRow(0, prompt.tokens.front(), {}, true, prompt.added_bos)) {
+    if (!output->error_) {
+      base::Fatal("a failed initial literal row has no error");
+    }
+    return std::unexpected(*output->error_);
+  }
+  return output;
+}
+
+bool LiteralOutput::PromptRow(std::size_t position, std::int32_t id, std::span<const float> row,
+                              bool first, bool hidden) {
+  if (error_) {
+    return false;
+  }
+  if (position < prompt_rows_seen_) {
+    return true;  // a capacity rebuild, not another row in the response
+  }
+  if (position != prompt_rows_seen_ || prompt_ended_) {
+    error_ = Error{.status = 500,
+                   .type = "server_error",
+                   .message = "literal prompt rows arrived out of order",
+                   .param = "prompt_logprobs",
+                   .code = "invalid_score_row"};
+    return false;
+  }
+  auto scored = prompt_rows_.Add(id, row, prompt_top_, first, hidden);
+  if (!scored) {
+    error_ = scored.error();
+    return false;
+  }
+  if (echo_ && logprobs_) {
+    result_.logprobs.push_back(*scored);
+  }
+  if (prompt_logprobs_) {
+    result_.prompt_logprobs.push_back(std::move(*scored));
+  }
+  ++prompt_rows_seen_;
+  return true;
+}
+
+void LiteralOutput::EndPrompt() {
+  if (!prompt_ended_) {
+    prompt_rows_.Finish();
+    prompt_ended_ = true;
+  }
+}
+
+bool LiteralOutput::GeneratedRow(std::int32_t id, std::span<const float> row) {
+  if (error_) {
+    return false;
+  }
+  if (!logprobs_) {
+    return true;
+  }
+  auto scored = generated_rows_.Add(id, row, *logprobs_);
+  if (!scored) {
+    error_ = scored.error();
+    return false;
+  }
+  result_.logprobs.push_back(std::move(*scored));
+  return true;
+}
+
+bool LiteralOutput::Text(std::string_view piece, const Send& send) {
+  if (budget_ > limit_ || piece.size() > (limit_ - budget_) / 6) {
+    error_ = Error{.status = 413,
+                   .type = "invalid_request_error",
+                   .message = "completion text exceeds the response size",
+                   .param = "prompt",
+                   .code = "response_too_large"};
+    return false;
+  }
+  budget_ += 6 * piece.size();
+  return piece.empty() || send(piece);
+}
+
+bool LiteralOutput::Push(std::span<const std::int32_t> fresh, const Send& send) {
+  if (error_) {
+    return false;
+  }
+  std::string piece;
+  for (const auto id : fresh) {
+    if (!decoder_.Push(id, piece)) {
+      error_ = Error{.status = 500,
+                     .type = "server_error",
+                     .message = "a generated token cannot be decoded",
+                     .param = "logprobs",
+                     .code = "invalid_model_token"};
+      return false;
+    }
+  }
+  return Text(piece, send);
+}
+
+bool LiteralOutput::Finish(const Send& send) {
+  if (error_) {
+    return false;
+  }
+  EndPrompt();
+  generated_rows_.Finish();
+  std::string rest;
+  decoder_.Finish(rest);
+  return Text(rest, send);
+}
+
+LiteralResult LiteralOutput::TakeResult() {
+  charge_.Reset();
+  return std::move(result_);
 }
 
 }  // namespace jitllm::runtime::api

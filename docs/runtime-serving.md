@@ -1090,7 +1090,8 @@ backend's active requests decode in shared waves at draft depth 2 (a lone
 request keeps its adaptive depth; past two, drafts run per request). A
 request past the model's slots, or one that finds no memory for its
 state beside its peers', waits for a retirement and then refills
-the group; same-model literal completions currently wait for the group to drain.
+the group. Literal completions join the same cohort, with their own raw
+prompts and score metadata.
 The prompt with the fewest tokens left to prefill (after what its
 conversation's reuse would actually keep: a stale history that only shares
 a few tokens counts for nothing) gets the next prompt unit, the oldest of
@@ -1236,8 +1237,8 @@ more slots cost no workspace and its conversation-state room grows by
 Cancellation ends only its request at a completed boundary. Before releasing a
 frame or admitting its replacement, an explicit native stream fence proves
 that copies and jobs have retired. Unknown completion stops shared execution
-and retains the borrowed owners. The image pipeline and `/v1/completions`, including
-likelihood scoring, retain their ordinary serial entry points.
+and retains the borrowed owners. The image pipeline and models without
+native generation waves retain their ordinary serial entry points.
 
 ### Pending model switches
 
@@ -1335,8 +1336,8 @@ the cohort serves fewer requests at a time. A waiting member keeps its
 deadline, cancellation and client checks between every unit. A cohort of
 one reclaims first, then fails with the refusal.
 
-The serial path (`Complete`: literal completions and scoring, and chat for
-models without a cohort) runs alone, as a cohort of one. Its prefill chunk,
+The serial path (`Complete`: chat or literal requests for models without
+a cohort) runs alone, as a cohort of one. Its prefill chunk,
 scored row, decode step or spilled state's restore refused this way
 (DeepSeek's runner types the same refusal) has the reclaim order free what
 it asked for and runs again (`Llm::set_capacity_reclaim`); once nothing is
@@ -1596,9 +1597,13 @@ since its reads keep landing it is never a hang.
 
 `POST /v1/completions` accepts one `prompt`: raw UTF-8 text or a nonempty
 array of exact nonnegative int32 token IDs. It applies no chat template,
-reasoning split or prefix reuse. Each request starts from cleared state,
-under the same bounded queue, browser guards, swap and request lease as
-chat. Idle chat branches' retained state gives way to it when the state's
+reasoning split or prefix reuse. Each request starts from its own cleared
+branch, under the same bounded queue, browser guards, swap and request
+lease as chat. Each model's literal requests share native cohorts with
+its chat requests. Scored prompts advance in completed
+one-row teacher-forcing units, interleaved with peer work; generated rows
+join the ordinary plain or speculative decode waves. Idle chat branches'
+retained state gives way to it when the state's
 capacity refuses it; one that cannot fit alone fails with a 500
 ([state capacity](#state-capacity-in-a-cohort)). Admission validates IDs
 against the actual model vocabulary, refuses unused padding IDs and checks
@@ -1612,7 +1617,9 @@ vocabulary size; was 0–5 before D-102),
 Text adds BOS only when the tokenizer enables it and the prompt does not
 already start with it; no EOS is added. Exact IDs are never changed.
 An empty text prompt needs an enabled BOS; otherwise it is a 400.
-`max_tokens` defaults to 16 and accepts zero. `stream: true`, batches,
+`max_tokens` defaults to 16 and accepts zero, including a prompt filling
+the whole usable context when no output is requested. `stream: true`,
+multiple prompts in one request,
 suffix insertion, embeddings, truncation and restricted token-ID sets are
 refused; `n`/`best_of` must be 1, `min_tokens` 0, `ignore_eos` and beam
 search false, and `skip_special_tokens` true. Other known unsupported
@@ -1694,8 +1701,12 @@ floor for its watchdog allowance (and a configured deadline) and does not exerci
 large prefill tiles. Ordinary unscored generation keeps tiled prefill.
 Cancellation stops between target steps and retires owed commits/rollback
 before the request lease is released. Full recurrent and drafter-injection
-state remains intact for generation after a scored prompt. Faster tiled
-scoring and streaming/batched literal completions are future work.
+state remains intact for generation after a scored prompt. A paused
+literal request retains its score rows, decoder offsets and funded
+response state across the other model's turn, then resumes its own branch
+without repeating rows or generated tokens. Unsupported carried requests
+fail explicitly rather than restarting from the prompt. Faster tiled or
+jointly batched prompt scoring and streamed literal output are future work.
 
 Validated on Spark on 2026-09-30 against completed native target rows for
 short DeepSeek and Qwen prompts, with speculation on and off.
@@ -1706,9 +1717,9 @@ short DeepSeek and Qwen prompts, with speculation on and off.
   eviction, admission and the switching policy come with M5 and M6.
 - The chat route is M3's minimal one: no tools, no reasoning controls,
   no credentials (the optional API key is M5's), no CORS, no Responses or
-  Messages routes. Qwen and DeepSeek chat share up to their request slots
+  Messages routes. Qwen and DeepSeek chat and literal completions share up to their request slots
   (four by default; [request slots](#request-slots)); other
-  families and literal completions run one at a time. The front door is
+  families run one at a time. The front door is
   M5's.
 - The tailnet is found at startup; a node whose Tailscale comes up later
   serves it after a restart. `jitllm.service` is ordered after

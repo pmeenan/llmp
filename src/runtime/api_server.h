@@ -336,6 +336,17 @@ class Backend {
                                  .param = {},
                                  .code = {}});
   }
+  virtual std::expected<Completion, Error> Resume(const CompletionRequest& request,
+                                                  Exchange& exchange, const Yielded& from) {
+    (void)request;
+    (void)exchange;
+    (void)from;
+    return std::unexpected(Error{.status = 500,
+                                 .type = "server_error",
+                                 .message = "the literal request cannot continue",
+                                 .param = {},
+                                 .code = {}});
+  }
   // Absent, every request retains the existing serial Complete path.
   virtual CooperativeBackend* cooperative() { return nullptr; }
   // After the response is handed to the I/O thread: work off the

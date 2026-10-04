@@ -381,6 +381,13 @@ class Llm : public Served {
     std::expected<std::unique_ptr<PromptSession>, std::string> BeginPrompt(
         std::span<const std::int32_t> tokens, std::uint32_t stable_boundary = 0, bool fresh = false,
         bool resume = false) &;
+    // Literal teacher forcing in completed one-row units, as ScorePrompt.
+    // A new scorer clears history; a resumed scorer restores its completed
+    // prefix and reports only rows beyond it. The first supplied token has
+    // no preceding row and remains the caller's responsibility.
+    std::expected<std::unique_ptr<PromptSession>, std::string> BeginScoringPrompt(
+        std::span<const std::int32_t> tokens,
+        std::function<bool(std::int32_t, std::span<const float>)> on_row, bool resume = false) &;
     std::size_t turn_checkpoints() const { return turn_checkpoints_.size(); }
     std::uint64_t turn_checkpoint_bytes() const;
     std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
@@ -739,7 +746,8 @@ class Llm : public Served {
    private:
     friend class Llm;
     PromptSession(Llm& model, Branch& branch, std::span<const std::int32_t> tokens,
-                  std::uint32_t stable_boundary, bool fresh, bool resume);
+                  std::uint32_t stable_boundary, bool fresh, bool resume, bool scoring,
+                  std::function<bool(std::int32_t, std::span<const float>)> on_row);
     void NextPhase();
     void Stop();
     Status Fail(std::string error);
@@ -749,6 +757,8 @@ class Llm : public Served {
     const std::uint32_t stable_boundary_;
     const bool fresh_;
     const bool resume_;
+    const bool scoring_;
+    const std::function<bool(std::int32_t, std::span<const float>)> on_row_;
     std::vector<float> last_;
     std::uint32_t reused_ = 0;
     PrefillRun run_;
@@ -1088,7 +1098,8 @@ class Llm : public Served {
                             bool resume) const;
   std::expected<std::unique_ptr<PromptSession>, std::string> BeginPrompt(
       Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t stable_boundary,
-      bool fresh, bool resume = false);
+      bool fresh, bool resume = false, bool scoring = false,
+      std::function<bool(std::int32_t, std::span<const float>)> on_row = {});
   std::expected<std::unique_ptr<GenerationSession>, std::string> BeginGeneration(
       Branch& branch, const std::vector<float>& last, const GenerateOptions& options,
       Generation& out, bool resume = false);

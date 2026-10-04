@@ -288,7 +288,7 @@ Qwen waves also run each request's attention and recurrence concurrently
 from four slots, with exact logits and state; short C4 HTTP gains 3.76%
 with NVFP4/MTP and 7.65% with UD-IQ3_XXS
 ([wave lanes](docs/experiments/qwen38-four-request-waves/README.md#wave-lanes)).
-Concurrent requests follow memory up to a per-model slot cap (`max_slots`,
+Concurrent chat and literal requests follow memory up to a per-model slot cap (`max_slots`,
 up to 16; both LLMs' measured knee is 4 with today's 16-row joined
 products, D-104). Qwen chat decodes its requests in one wave (joined
 products of up to 16 rows, MXFP8/routed bit-exact per request; depth 2

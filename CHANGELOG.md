@@ -13,6 +13,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Literal `/v1/completions` requests join Qwen and DeepSeek's native
+  cohorts alongside chat requests. Prompt and generated likelihoods,
+  Unicode offsets, response state and sampling survive model switches;
+  zero-token scoring is supported at the full context. Unsupported
+  continuations fail explicitly rather than restarting. Compatible with
+  inference API version 1, a minor change in the 0.x line (D-100).
+
 - A pending model switch pauses a running chat cohort at completed units
   after `[client] model_turn_seconds` of resident work (default 30), serves
   one substitute cohort, then resumes the original requests ahead of later

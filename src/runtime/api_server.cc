@@ -2032,7 +2032,11 @@ void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& o
   Stream stream(*this, pending, wake_fd, on_wake, started);
   std::expected<Completion, Error> result;
   if (pending.literal) {
-    result = backend_.Complete(*pending.literal, stream);
+    if (const std::shared_ptr<Yielded> from = std::move(pending.resume); from != nullptr) {
+      result = backend_.Resume(*pending.literal, stream, *from);
+    } else {
+      result = backend_.Complete(*pending.literal, stream);
+    }
   } else if (const std::shared_ptr<Yielded> from = std::move(pending.resume); from != nullptr) {
     result = backend_.Resume(pending.request, stream, *from);
   } else {
@@ -2510,7 +2514,11 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     std::optional<Pending> replacement;
     {
       const std::scoped_lock lock(mutex_);
-      if (!stopping_ && fatal.empty() && !queue_.empty()) {
+      // The different-model head may have left while native retirement
+      // waited. A fresh same-model request must wait for the originals'
+      // held slots, rather than falling back to a serial clear of one.
+      if (!stopping_ && fatal.empty() && !queue_.empty() &&
+          queue_.front().request.model != suspended.front().request.model) {
         replacement.emplace(std::move(queue_.front()));
         replacement->channel->queued = false;
         queue_.pop_front();

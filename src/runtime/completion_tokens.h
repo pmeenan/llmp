@@ -14,6 +14,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -62,6 +65,58 @@ class LiteralRows {
   std::size_t offset_;
   std::size_t& budget_;
   std::size_t limit_;
+};
+
+// Host-owned literal response state shared by completed-unit continuations.
+// It borrows the model's tokenizer, never an Exchange or request descriptor.
+// Text/row decoder offsets and the charged score buffers survive a pause;
+// TakeResult ends that charge before serialization charges the final body.
+class LiteralOutput final {
+ public:
+  ~LiteralOutput() = default;
+  using Send = std::function<bool(std::string_view)>;
+  static std::expected<std::shared_ptr<LiteralOutput>, Error> Create(
+      const CompletionRequest& request, LiteralPrompt& prompt,
+      const tokenizer::Tokenizer& tokenizer, RequestMemory& memory);
+  LiteralOutput(const LiteralOutput&) = delete;
+  LiteralOutput& operator=(const LiteralOutput&) = delete;
+  LiteralOutput(LiteralOutput&&) = delete;
+  LiteralOutput& operator=(LiteralOutput&&) = delete;
+  bool score_prompt() const { return score_prompt_; }
+  bool score_generation() const { return logprobs_.has_value(); }
+  bool prompt_started() const { return prompt_started_; }
+  void PromptStarted() { prompt_started_ = true; }
+  // Position is the supplied token's index, not the preceding distribution's.
+  // Rebuilding cleared state may revisit already reported prompt rows.
+  bool PromptRow(std::size_t position, std::int32_t id, std::span<const float> row,
+                 bool first = false, bool hidden = false);
+  void EndPrompt();
+  bool GeneratedRow(std::int32_t id, std::span<const float> row);
+  bool Push(std::span<const std::int32_t> fresh, const Send& send);
+  bool Finish(const Send& send);
+  const std::optional<Error>& error() const { return error_; }
+  LiteralResult TakeResult();
+
+ private:
+  LiteralOutput(const CompletionRequest& request, LiteralPrompt& prompt,
+                const tokenizer::Tokenizer& tokenizer, std::size_t limit);
+  bool Text(std::string_view piece, const Send& send);
+  LiteralResult result_;
+  std::size_t budget_;
+  const std::size_t limit_;
+  MemoryCharge charge_;
+  const bool echo_;
+  const std::optional<std::uint32_t> logprobs_;
+  const std::optional<std::uint32_t> prompt_logprobs_;
+  const std::uint32_t prompt_top_;
+  const bool score_prompt_;
+  LiteralRows prompt_rows_;
+  LiteralRows generated_rows_;
+  tokenizer::StreamDecoder decoder_;
+  std::optional<Error> error_;
+  std::size_t prompt_rows_seen_ = 0;
+  bool prompt_ended_ = false;
+  bool prompt_started_ = false;
 };
 
 }  // namespace jitllm::runtime::api

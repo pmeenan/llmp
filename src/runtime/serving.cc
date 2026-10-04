@@ -1698,6 +1698,12 @@ std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::Branch::Beg
   return model_.BeginPrompt(*this, tokens, stable_boundary, fresh, resume);
 }
 
+std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::Branch::BeginScoringPrompt(
+    std::span<const std::int32_t> tokens,
+    std::function<bool(std::int32_t, std::span<const float>)> on_row, bool resume) & {
+  return model_.BeginPrompt(*this, tokens, 0, !resume, resume, true, std::move(on_row));
+}
+
 std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::Branch::BeginGeneration(
     const std::vector<float>& last, const GenerateOptions& options, Generation& out) & {
   return model_.BeginGeneration(*this, last, options, out);
@@ -2838,13 +2844,17 @@ Status Llm::PreparePrompt(Branch& branch, std::span<const std::int32_t> tokens,
 }
 
 Llm::PromptSession::PromptSession(Llm& model, Branch& branch, std::span<const std::int32_t> tokens,
-                                  std::uint32_t stable_boundary, bool fresh, bool resume)
+                                  std::uint32_t stable_boundary, bool fresh, bool resume,
+                                  bool scoring,
+                                  std::function<bool(std::int32_t, std::span<const float>)> on_row)
     : model_(model),
       branch_(branch),
       tokens_(tokens.begin(), tokens.end()),
       stable_boundary_(stable_boundary),
       fresh_(fresh),
-      resume_(resume) {}
+      resume_(resume),
+      scoring_(scoring),
+      on_row_(std::move(on_row)) {}
 
 Llm::PromptSession::~PromptSession() {
   base::Check(finished_, "an unfinished prompt session was destroyed");
@@ -2852,9 +2862,9 @@ Llm::PromptSession::~PromptSession() {
 
 std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::BeginPrompt(
     Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t stable_boundary, bool fresh,
-    bool resume) {
+    bool resume, bool scoring, std::function<bool(std::int32_t, std::span<const float>)> on_row) {
   CheckBranch(branch);
-  if (tokens.empty() || tokens.size() >= context_ || stable_boundary >= tokens.size()) {
+  if (tokens.empty() || tokens.size() > context_ || stable_boundary >= tokens.size()) {
     return Error("the prompt or its turn boundary is outside the context");
   }
   if (max_rows_ == 0) {
@@ -2863,8 +2873,8 @@ std::expected<std::unique_ptr<Llm::PromptSession>, std::string> Llm::BeginPrompt
   if (branch.generation_active_ || branch.prompt_session_ != nullptr) {
     return Error("the conversation already has an active session");
   }
-  auto session = std::unique_ptr<PromptSession>(
-      new PromptSession(*this, branch, tokens, stable_boundary, fresh, resume));
+  auto session = std::unique_ptr<PromptSession>(new PromptSession(
+      *this, branch, tokens, stable_boundary, fresh, resume, scoring, std::move(on_row)));
   branch.prompt_session_ = session.get();
   return session;
 }
@@ -2883,7 +2893,7 @@ std::expected<Llm::PromptSession::Unit, std::string> Llm::PromptSession::NextUni
     const auto end =
         checkpoint_pending_ ? stable_boundary_ : static_cast<std::uint32_t>(tokens_.size());
     base::Check(at < end, "a prompt chunk has no rows");
-    unit.rows = std::min(model_.max_rows_, end - at);
+    unit.rows = scoring_ ? 1 : std::min(model_.max_rows_, end - at);
     if (unit.rows >= kPrefillTiledFrom) {
       unit.rows -= unit.rows % kPrefillRowTile;
     }
@@ -3001,11 +3011,17 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity
     const double seconds = Seconds(Clock::now() - started);
     run_.longest = std::max(run_.longest, seconds);
     // Its speed, and a whole prefill's cost a token (calibration.h).
-    model_.calibration_samples_.PrefillChunk(at, next->rows, seconds);
+    if (!scoring_) {
+      model_.calibration_samples_.PrefillChunk(at, next->rows, seconds);
+    }
     from_zero_ = from_zero_ || at == 0;
     chunk_seconds_ += seconds;
-    if (from_zero_ && end == tokens_.size()) {
+    if (!scoring_ && from_zero_ && end == tokens_.size()) {
       model_.calibration_samples_.Prefill(end, chunk_seconds_);
+    }
+    if (scoring_ && end < tokens_.size() && on_row_ && !on_row_(tokens_[end], last_)) {
+      Stop();
+      return {};
     }
   }
   NextPhase();
@@ -3033,6 +3049,14 @@ Status Llm::PromptSession::Finish() {
   }
   if (!finished_) {
     base::Check(branch_.prompt_session_ == this, "a prompt lost its branch ownership");
+    if (scoring_ && ran_ && run_.chunks != 0) {
+      if (auto settled = model_.SettleFor(branch_); !settled) {
+        branch_.needs_clear_ = true;
+        branch_.history_.clear();
+        last_.clear();
+        ran_ = std::move(settled);
+      }
+    }
     branch_.prompt_session_ = nullptr;
     finished_ = true;
   }
@@ -3055,7 +3079,7 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
   }
   std::vector<std::int32_t> all = branch.history_;
   all.insert(all.end(), tokens.begin(), tokens.end());
-  if (all.size() >= context_) {
+  if (all.size() > context_) {
     return Error(
         std::format("{} tokens do not fit {}'s context of {}", all.size(), name_, context_));
   }
