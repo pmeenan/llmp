@@ -47,6 +47,15 @@ the owner's M9 deferral beside the qualification evidence.
 
 Nothing is distributed-correct: two-node execution is M4's.
 
+## Architecture foundations
+
+Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
+bounded independent-slot state and segmented host-input descriptions in
+`model/gemma4.h`. The [foundation contract](gemma4.md) records actual pinned
+metadata, CPU/fake controls and required optimization/batching qualification.
+Neither checkpoint has an importer, graph or runner in this slice; both
+remain unsupported for inference.
+
 ## Chat templates
 
 A chat template renders natively when a native renderer is registered for

@@ -778,7 +778,7 @@ current design.
 | 4. LongRoPE: per-dimension short and long divisor sets, a fixed attention factor, the long set once the context exceeds `original_max_position_embeddings` | Microsoft Phi-3-mini/medium-128k (2024-04), Phi-3.5-mini and MoE (2024-08), Phi-4-mini (2025-02, rotary 0.75) ([config](https://huggingface.co/microsoft/Phi-3.5-mini-instruct/raw/main/config.json)) | Phi-4-mini 378K, Phi-3.5-mini 355K, Phi-3-mini-128k 147K, Phi-3.5-MoE 138K | both. vLLM uses the long set for every position when `max_model_len` exceeds the original length ([code](https://raw.githubusercontent.com/vllm-project/vllm/main/vllm/model_executor/layers/rotary_embedding/phi3_long_rope_scaled_rope.py)); llama.cpp does so when the per-sequence context does | not updated: Microsoft's newest Phi (Phi-4-reasoning-vision, 2026-01) has no RoPE scaling | small: per-dimension divisors take llama3 scaling's form (7, 8) and the factor is YaRN's; choosing the set is new | **Implement:** choose the set per context, as both references do |
 | 5. LayerNorm in the LLM path (mean-subtracting; no bias at Cohere, bias elsewhere) | Cohere Command R (2024-03), R7B, A (2025-03), A+ (2026-05), North (2026-06); Inception Jais 2 (2025-12); Phi-2, Falcon, StableLM 2, StarCoder2, GPT-J/NeoX, Bloom (2021–2024) | Command R v01 183K, Command A+ 40K; Phi-2 576K; Pythia-160m 3.37M (research) | both | not updated at Cohere and Jais 2; abandoned elsewhere | small: `ggml_norm` (the DiT has a BF16 LayerNorm) | **Implement,** with row 6 |
 | 6. Parallel attention and FFN from one norm (`x + attn + ffn`) | Cohere as in row 5 (`use_parallel_block` true through Command A+, [modeling](https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/cohere2/modeling_cohere2.py)); Falcon 1/2 (2023–2024), GPT-J/NeoX, Phi-2, StableLM 2 12B | as row 5 | both | not updated at Cohere; abandoned elsewhere (Falcon 3 is a Llama, Falcon-H1 a hybrid) | small: block topology | **Implement:** Cohere still ships it, and rows 5 and 6 together also cover Falcon, Phi-2, StableLM and GPT-J/NeoX |
-| 7. Legacy GGUF blocks Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL | Google's QAT GGUFs (Q4_0: Gemma 3 2025-03 → Gemma 4 2026-06). Any K- or I-quant tensor whose row is not a multiple of 256 falls back: Q4_K→Q5_0, Q5_K→Q5_1, Q6_K→Q8_0, Q2_K/Q3_K→Q4_0, I-quants→IQ4_NL ([`llama-quant.cpp`](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/src/llama-quant.cpp)) | gemma-4-E2B QAT Q4_0 515K; fallback use not countable | llama.cpp MMVQ and MMQ; vLLM moved GGUF to a plugin ([#39612](https://github.com/vllm-project/vllm/pull/39612), 2026-06) | current | small: the kernels are in jitLLM's GGML pin | **Implement:** checkpoint 1's 704-wide down experts likely carry fallback types |
+| 7. Legacy GGUF blocks Q4_0, Q4_1, Q5_0, Q5_1, IQ4_NL | Google's QAT GGUFs (Q4_0: Gemma 3 2025-03 → Gemma 4 2026-06). Any K- or I-quant tensor whose row is not a multiple of 256 falls back: Q4_K→Q5_0, Q5_K→Q5_1, Q6_K→Q8_0, Q2_K/Q3_K→Q4_0, I-quants→IQ4_NL ([`llama-quant.cpp`](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/src/llama-quant.cpp)) | gemma-4-E2B QAT Q4_0 515K; fallback use not countable | llama.cpp MMVQ and MMQ; vLLM moved GGUF to a plugin ([#39612](https://github.com/vllm-project/vllm/pull/39612), 2026-06) | current | small: the kernels are in jitLLM's GGML pin | **Implement:** checkpoint 1's verified 704-wide down experts carry Q5_1 (layers 0–28) and Q8_0 (layer 29) |
 | 8. Softmax top-k without renormalisation, beside shared experts | Qwen1.5-MoE (2024-03), Qwen2-57B-A14B (2024-06), DeepSeek V2 and V2-Lite (2024-05) ([config](https://huggingface.co/deepseek-ai/DeepSeek-V2-Lite/raw/main/config.json)) | Coder-V2-Lite 906K, Qwen1.5-MoE-A2.7B 463K, V2-Lite 233K | both | abandoned: Qwen3+ and DeepSeek V3+ renormalise or use sigmoid | small: a router flag | **Defer** until one is wanted; Coder-V2-Lite (MLA covered) would carry it |
 | 9. Sparsemixer routing (two masked softmaxes, weights not renormalised, [modeling](https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/phimoe/modeling_phimoe.py)) | Phi-3.5-MoE (2024-08), Phi-tiny/mini-MoE (2025-06) | 138K, 86K, 31K | both | not updated since 2025-06 | small | **Defer** |
 | 10. Dynamic NTK RoPE | Qwen 1 (2023-08), InternLM2/2.5 (2024), InternLM3 (2025-01) | InternLM3 75K, InternLM2.5 39K | both (llama.cpp's dynamic handling not verified) | abandoned: InternLM now builds on Qwen and GLM | small | **Drop** |
@@ -807,11 +807,13 @@ Notes:
   current design. The deferred rows are medium or large, or small but
   with a single low-use carrier. The dropped rows are ones the
   references have removed, or ones whose use is research or CI.
-- **Fallback types in approved files.** Gemma 4 26B's experts are 704
-  wide, not a multiple of 256, so under llama.cpp's rule the
-  UD-Q4_K_M file's `ffn_down_exps` would be Q5_0, Q5_1 or Q8_0. This
-  is inferred from the rule; the file's tensor types were not read. The
-  importer should list every GGUF's types before choosing kernels.
+- **Fallback types in approved files.** The pinned Gemma 4 26B UD-Q4_K_M
+  tensor directory is now checked: F32 ×392, Q8_0 ×207, Q4_K ×30,
+  Q5_1 ×29. Its 704-wide down expert arrays carry Q5_1 on layers 0–28
+  and Q8_0 on layer 29. The [Gemma foundation](gemma4.md) retains the
+  actual metadata/tensor contracts; routed Q5_1 execution and optimized
+  batching still need qualification. Each importer must inventory types
+  before choosing kernels.
 - **Found in passing (not legacy): 1- and 2-bit Bonsai.** PrismML's
   `Q1_0` (±1, one FP16 scale per 128) and `Q2_0` (ternary codes, one
   scale per 64) have been in upstream GGML since 2026-04 and 2026-07,
@@ -1254,8 +1256,8 @@ from M9) so TensorFold becomes a same-format comparator.
 - OpenRouter's own ranking tables (read through its collection pages).
 - Whether ExLlamaV3 v1.5.3 includes the aarch64 build guards.
 - Legacy tier:
-  - Which GGUF types the approved files actually hold: Gemma 4 26B's
-    fallback types were inferred, not read.
+  - Which GGUF types the remaining approved files actually hold; Gemma 4
+    26B and 31B now have complete verified tensor-type contracts.
   - Whether llama.cpp honours InternLM's dynamic NTK.
   - Whether Ternary-Bonsai-27B's `Q2_0` file is unrotated and runs on
     stock llama.cpp. Bonsai 2's card warns that its own rotated weights

@@ -227,6 +227,10 @@ family" guide, and its long-context scaling work.
         Spark checks of exact continuations on both M3 LLMs.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
+      - [x] Gemma 4 26B-A4B and 31B architecture foundation:
+        [verified profiles/bindings](gemma4.md), bounded state and independent
+        request-segment host inputs. No importer, graph, runner or inference
+        support is claimed; execution and optimized batching remain owed.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or
@@ -484,6 +488,12 @@ family" guide, and its long-context scaling work.
 **Exit criteria**, per approved family and form (MoE, dense). D-101's
 decision and speech models meet their own criteria below in place of
 the correctness, speed and long-context ones:
+
+After each new model or quantization is integrated, run and record a matched
+quality and performance comparison against its pinned same-format reference
+engine (owner, 2026-10-04). The final comparison covers the production solo
+and optimized batched paths and gates supported status under the criteria
+below.
 
 - **Correctness:** greedy tokens match the same-format oracle except
   near-ties, under the recorded-first noise bound; perplexity within a few

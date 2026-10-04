@@ -173,6 +173,11 @@ operations alone ([report](experiments/deepseek-batching/README.md)).
 
 ## Adding a model family
 
+The [Gemma 4 foundation](gemma4.md) supplies checked profiles, strict tensor
+bindings, bounded independent-slot KV layouts and segmented host inputs.
+It has no execution graph or runner yet; its transfer checklist records the
+primitive and optimized-batching qualification required by the next slices.
+
 What a new family writes, and nothing else:
 
 - `model/<family>.h`: its profile, the binding to an artifact, its state

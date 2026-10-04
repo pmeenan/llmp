@@ -129,6 +129,12 @@ they have no text-model equivalent.
 | Match a draft head's input rounding | Qwen's bounded retained-input diagnostic and external replay; serving remains F32 input | Learned draft heads with a proved rounding difference | On 12 real inputs per head, BF16 RN/widen plus the original vector product changed no choices and added 2–3 µs; the charged BF16 library product was about 40% slower. Neither arm was integrated or tested for full-model acceptance. Selected IDs/depth remain separate factors. [Draft-input experiment](experiments/qwen38-draft-input/README.md) |
 | Portable text seeds and local draft-vocabulary adaptation | No implementation; deferred by the owner to later optimization passes | Models with a selectable draft head and full target verification | Tokenize curated prose/code/output-format strings with each model's tokenizer, including boundary variants and actual output/stop delimiters; do not share token IDs or match decoded labels alone. Combine seeds with representative answer frequencies, then separately test bounded local output/verifier counts and charged between-request updates. Keep frozen held-out data independent, a broad fallback and unchanged target/distribution gates. [Study and follow-up](experiments/qwen38-own-draft-vocab/protocol.md) |
 
+Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
+maps these selected techniques to its actual GGUF operand contracts and
+independent request segments. It records the Q5_1 routed-product and GeGLU
+primitive gaps; implementation and solo/batched execution qualification remain
+owed before either checkpoint is supported.
+
 ## Rejected kernels: pieces worth retaining
 
 A rejection applies to its tested shape, precision and surrounding work.
