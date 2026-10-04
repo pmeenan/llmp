@@ -144,14 +144,16 @@ downgrade a heavy-path change to the light loop on their own.
 - **Tests travel with behaviour.** A behaviour change without a test needs a
   stated reason in the handoff note.
 - **At most about two streams of work at once** (D-084), each in its own
-  worktree and its own copy on `spark-b` (synced with `rsync -a --delete
-  --exclude /build/ --exclude /.git`). Check `git status` first; if there
+  worktree and its own copy on a Spark (synced with `rsync -rlpc
+  --exclude=.git --exclude=/build`). Check `git status` first; if there
   are changes you didn't make, you're iterating on in-flight work, not
   starting fresh.
-  When handing a warm Spark build between worktrees or bases, force a
-  rebuild of units whose source or headers changed. `rsync -a` preserves
-  source timestamps; an older timestamp can otherwise leave a newer object
-  from the previous tree in place even though its contents differ.
+  When handing a warm Spark build between worktrees or bases, synchronize
+  sources before building. The checksum comparison transfers changed bytes,
+  and without timestamp preservation those files receive fresh modification
+  times so the build sees the changes. Never use `-a` or `-t`: preserving an
+  older source timestamp can leave a newer object from the previous tree
+  in place even though its contents differ.
 - **Scratch files stay out of the tree.**
 - **Notes stay out of the docs.** Handoff and review notes live in the final
   message and the commit, not in the documents they describe. Process detail
@@ -173,37 +175,41 @@ downgrade a heavy-path change to the light loop on their own.
 
 ## Long runs on the Sparks
 
-Anything run detached on a Spark for more than a minute (a baseline, a
-ladder of rungs, a timing batch) runs under `tools/spark-job`, from the
-tree's copy on that Spark, and is waited on with it. Its supervisor records
+Every Spark build, test, lint or measurement job runs through the installed
+`~/.local/bin/spark-job start --gpu`, then is waited on with the same installed
+tool. Detached runs longer than a minute also use it. Use the installed
+supervisor, not a source tree's `tools/spark-job`. Its supervisor records
 how every job ended (exit code, signal, timeout, kill) and `status` reports
 a supervisor that died without a record as `lost`, so a crash ends a wait
 instead of hanging it. No `nohup bash q.sh &`, and no loops that wait for a
 marker line in a log or for a process name to disappear: a crashed step
 never writes the marker.
 
-    ssh spark-b 'cd ~/src/X && tools/spark-job start --name ctx-ladder --gpu --timeout 7200 --steps rungs.txt'
-    ssh spark-b '~/src/X/tools/spark-job wait ctx-ladder'    # as a background task
+    ssh spark-b 'cd ~/src/X && ~/.local/bin/spark-job start --gpu --name ctx-part1 --timeout 600 --steps rungs-part1.txt'
+    ssh spark-b '~/.local/bin/spark-job wait ctx-part1'    # as a background task
 
-- **Start** with `--timeout` (the process group gets SIGTERM, then SIGKILL)
-  and `--gpu` when the job touches the GPU. `--gpu` jobs on a host are
+- **Start** with `--gpu` and a timeout of at most 600 seconds by default
+  (the process group gets SIGTERM, then SIGKILL). Split longer batches into
+  separately supervised and waited jobs. D-085's needed-now exception above
+  still applies to a justified longer run; state its expected time and why
+  it is needed before starting it. `--gpu` jobs on a host are
   mutually exclusive: a second one waits for the first to end (shown as
   "waiting for the GPU" in `status` and `busy`, logging whom it waits for),
   then starts by itself; its `--timeout` counts from when it gets the GPU,
-  and `--no-wait` refuses at once instead. So every GPU run, builds' test
-  suites and measurements included, goes through `spark-job start --gpu`;
+  and `--no-wait` refuses at once instead. Builds, tests and lint jobs use
+  the same `--gpu` lock even when they do no GPU work;
   checking `busy` first is no longer enough on its own, since two agents
   can both see the host free. A queue is a `--steps` file,
   one command per line; a failed step is recorded and the queue moves on
   (`--stop-on-fail` to stop, `--step-timeout` for a stalled rung).
-- **Wait** with `spark-job wait NAME` run as a background task; it exits 0
-  only for success and prints the failed steps and the log's tail
-  otherwise. `status`, `tail` and `kill` cover the rest.
+- **Wait** with `~/.local/bin/spark-job wait NAME` run as a background task;
+  it exits 0 only for success and prints the failed steps and the log's
+  tail otherwise. `status`, `tail` and `kill` cover the rest.
 - **Harnesses that loop over cases** (context rungs, prompts, model pairs)
   catch each case's error, record it with the case, and continue, so one
   bad case (an HTTP 400, an out-of-memory) costs one row, not the run.
-- **Hand a Spark over by checking `spark-job busy`** (exit 1 while a `--gpu`
-  job or any GPU compute process runs; it also lists `--gpu` jobs waiting),
+- **Hand a Spark over by checking `~/.local/bin/spark-job busy`** (exit 1
+  while a `--gpu` job or any GPU compute process runs; it also lists `--gpu` jobs waiting),
   not by messages alone. The lock covers `spark-job` jobs only: GPU work
   started outside it shows only in `busy`'s nvidia-smi listing.
 - **Profiler completion is separate from application completion.** A
@@ -213,4 +219,4 @@ never writes the marker.
   lifetime. A profiler's successful exit cannot qualify an unfinished
   model result.
 - **Clean up when finishing:** kill your own jobs that are still running,
-  and run `spark-job gc` to remove old finished ones.
+  and run `~/.local/bin/spark-job gc` to remove old finished ones.
