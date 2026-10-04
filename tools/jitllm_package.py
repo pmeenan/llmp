@@ -40,6 +40,7 @@ import tempfile
 import tomllib
 import uuid
 
+import jitllm_headers as headers
 import jitllm_sdk as sdklib
 import jitllm_sources as srclib
 
@@ -245,13 +246,52 @@ def built_from(build: pathlib.Path, ninja: pathlib.Path) -> set[pathlib.Path]:
 _LICENSE_TAG = re.compile("SPDX-" + r"License-Identifier:\s*(.*?)\s*(?:\*/|-->)?\s*$")
 
 
-def declared_license(path: pathlib.Path) -> str | None:
-    """The license expression in path's header (its first ten lines), or None."""
+def license_text(path: pathlib.Path) -> str:
     try:
-        head = path.read_text(encoding="utf-8", errors="replace").splitlines()[:10]
-    except OSError as e:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as e:
         raise PackageError(f"cannot read {path}: {e}") from None
-    return next((match[1] for line in head if (match := _LICENSE_TAG.search(line))), None)
+
+
+def header_license(path: pathlib.Path, text: str) -> str | None:
+    expressions = {match[1] for line in text.splitlines()[:headers.HEADER_LINES]
+                   if (match := _LICENSE_TAG.search(line))}
+    if len(expressions) > 1:
+        raise PackageError(f"{path} has conflicting license identifiers")
+    return next(iter(expressions), None)
+
+
+def sidecar_license(path: pathlib.Path, text: str) -> str | None:
+    expression = header_license(path, text)
+    if expression is None:
+        return None
+    # Late conflicting tags must not replace the license in the read window.
+    if any(match[1] != expression for line in text.splitlines() if (match := _LICENSE_TAG.search(line))):
+        raise PackageError(f"{path} has conflicting license identifiers")
+    return expression
+
+
+def declared_license(path: pathlib.Path) -> str | None:
+    """The embedded license, or a noncommentable file's adjacent sidecar (D-029, D-071)."""
+    text = license_text(path)
+    if path.name.endswith(headers.SIDECAR):
+        return sidecar_license(path, text)
+    try:
+        style = headers.style_of(path.as_posix(), text.split("\n", 1)[0].encode())
+    except ValueError as e:
+        raise PackageError(str(e)) from None
+    sidecar = pathlib.Path(str(path) + headers.SIDECAR)
+    embedded = header_license(path, text)
+    if style is not None:
+        if sidecar.exists():
+            raise PackageError(f"{path} can hold a comment; embed its license and remove {sidecar}")
+        return embedded
+    if not sidecar.is_file():
+        return None
+    expression = sidecar_license(sidecar, license_text(sidecar))
+    if embedded is not None and embedded != expression:
+        raise PackageError(f"{path} and {sidecar} have conflicting license identifiers")
+    return expression
 
 
 def check_in_tree_units(root: pathlib.Path = REPO) -> None:

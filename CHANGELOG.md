@@ -559,6 +559,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Package provenance checks read license sidecars for JSON and other
+  noncommentable source files, while code still requires embedded headers.
+
 - CUDA-free builds exclude the CUDA-only DS4 source component from their
   receipts, so the strict source inventory agrees with the CPU build.
 

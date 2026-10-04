@@ -190,6 +190,63 @@ class InTreeUnits(unittest.TestCase):
             with self.subTest(files=sorted(files)), self.assertRaises(package.PackageError):
                 package.check_in_tree_units(self.tree(files))
 
+    def sidecar_tree(self, expression="Apache-2.0"):
+        listed = next(iter(package.IN_TREE_UNITS.values()))["files"][0]
+        root = self.tree({listed: "Apache-2.0 AND Unicode-3.0"})
+        data = root / "src/metadata.json"
+        data.write_text('{"schema":1}\n')
+        sidecar = pathlib.Path(str(data) + ".license")
+        tag = "SPDX-" + "License-Identifier:"
+        copyright_tag = "SPDX-" + "FileCopyrightText:"
+        sidecar.write_text(f"{copyright_tag} 2026 jitLLM contributors\n{tag} {expression}\n")
+        return root, data, sidecar
+
+    def test_json_uses_its_sidecar_and_remains_in_the_inventory(self):
+        root, data, sidecar = self.sidecar_tree()
+        self.assertEqual(package.declared_license(data), "Apache-2.0")
+        self.assertEqual(package.declared_license(sidecar), "Apache-2.0")
+        package.check_in_tree_units(root)
+        sidecar.unlink()
+        self.assertIsNone(package.declared_license(data))
+        with self.assertRaises(package.PackageError):
+            package.check_in_tree_units(root)
+
+    def test_malformed_and_unrecorded_sidecars_are_refused(self):
+        for expression in ("", "Apache-2.0 garbage", "LicenseRef-unknown"):
+            with self.subTest(expression=expression):
+                root, _, _ = self.sidecar_tree(expression)
+                with self.assertRaises(package.PackageError):
+                    package.check_in_tree_units(root)
+        root, _, sidecar = self.sidecar_tree()
+        sidecar.write_text("copyright only\n")
+        with self.assertRaises(package.PackageError):
+            package.check_in_tree_units(root)
+        sidecar.write_bytes(b"\xff\n")
+        with self.assertRaises(package.PackageError):
+            package.check_in_tree_units(root)
+
+    def test_conflicting_sidecar_declarations_are_refused(self):
+        for padding in ("", "\n" * 12):
+            with self.subTest(padding=len(padding)):
+                root, _, sidecar = self.sidecar_tree()
+                tag = "SPDX-" + "License-Identifier:"
+                sidecar.write_text(sidecar.read_text() + padding + f"{tag} MIT\n")
+                with self.assertRaisesRegex(package.PackageError, "conflicting"):
+                    package.check_in_tree_units(root)
+        root, data, _ = self.sidecar_tree()
+        tag = "SPDX-" + "License-Identifier:"
+        data.write_text(f"// {tag} MIT\n{{}}\n")
+        with self.assertRaisesRegex(package.PackageError, "conflicting"):
+            package.check_in_tree_units(root)
+
+    def test_a_sidecar_cannot_rescue_code_without_an_embedded_header(self):
+        root, data, sidecar = self.sidecar_tree()
+        code = data.with_suffix(".cc")
+        data.rename(code)
+        sidecar.rename(pathlib.Path(str(code) + ".license"))
+        with self.assertRaisesRegex(package.PackageError, "can hold a comment"):
+            package.check_in_tree_units(root)
+
     def test_built_from_reads_ninja_and_fails_loudly(self):
         root = self.tree({})
         build = root / "build"
