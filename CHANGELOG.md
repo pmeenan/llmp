@@ -569,6 +569,34 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Package purge deletes kept conversations as the service user, so a
+  service-owned parent path swapped for a symlink cannot redirect a root
+  deletion.
+
+- Spark jobs keep their GPU lock in the child as well as the supervisor;
+  losing the supervisor no longer admits another job alongside orphaned
+  work, and orphaned or waiting jobs report the host busy.
+
+- Paused streams no longer accumulate keepalive comments behind pending
+  output. Prepared prompt tokens keep their request-memory charge through
+  shared continuation ownership; continuation copies and growing request
+  token histories are charged until they retire.
+
+- Incremental stop matching compacts retained text only after enough
+  bytes are emitted, avoiding repeated copies of a long stop prefix.
+
+- Kept-conversation work queues retain only the latest record for each
+  model slot and release invalidated queued copies immediately, bounding
+  stale history storage while hashing yields to inference.
+
+- Jinja scope variables count toward live memory. Mixed integer/float
+  comparisons preserve integer precision and unordered NaN comparisons;
+  float floor division and remainder match Python, while complex powers
+  and overflowing float powers are refused.
+
+- A failed diagnostic DeepSeek tensor dump keeps its pinned destination
+  alive when submitted DMA retirement is unproven.
+
 - The engine's paging kernels (range fills, n-gram row gathers, draft-id
   clamps) clear the CUDA error a failed launch leaves, so it no longer
   surfaces in a later, unrelated check, and the DeepSeek prefill HCA

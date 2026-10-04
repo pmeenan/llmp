@@ -203,6 +203,11 @@ never writes the marker.
   can both see the host free. A queue is a `--steps` file,
   one command per line; a failed step is recorded and the queue moves on
   (`--stop-on-fail` to stop, `--step-timeout` for a stalled rung).
+  The child inherits the GPU lock: a lost supervisor does not admit
+  overlapping work while that child survives. Admission also waits for a
+  lost job's surviving process group, even when a wrapper's descendants
+  close inherited descriptors. `busy` reports such orphaned work and waiting
+  jobs; `kill` retires a lost job's remaining process group.
 - **Wait** with `~/.local/bin/spark-job wait NAME` run as a background task;
   it exits 0 only for success and prints the failed steps and the log's
   tail otherwise. `status`, `tail` and `kill` cover the rest.

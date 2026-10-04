@@ -223,6 +223,19 @@ std::uint64_t RequestBytes(const CompletionRequest& request);
 // says what needed it.
 Error MemoryRefusal(const RequestMemory& memory, std::uint64_t bytes, std::string_view what);
 
+// Immutable prepared prompt IDs shared by active work and continuations.
+// Their charge follows the allocation until its last owner releases it.
+class PromptTokens {
+ public:
+  static std::expected<std::shared_ptr<const PromptTokens>, Error> Hold(
+      std::vector<std::int32_t> tokens, RequestMemory& memory);
+  const std::vector<std::int32_t>& values() const { return tokens_; }
+
+ private:
+  std::vector<std::int32_t> tokens_;
+  MemoryCharge charge_;
+};
+
 // The unknown fields requests have carried, by name (never a value;
 // D-014): how often, and when first and last (Unix seconds). At most
 // kMaxNames names; later new names are only counted. Thread-safe.
@@ -346,7 +359,10 @@ class OutputText {
  private:
   std::shared_ptr<const StopMatcher> stops_;
   std::uint32_t state_ = 0;  // the matcher's, over the answer so far
-  std::string held_;         // answer text that may begin a stop string
+  // The unconsumed tail may begin a stop string. An emitted prefix stays
+  // allocated until compacting it moves at most as many bytes as emitted.
+  std::string held_;
+  std::size_t held_start_ = 0;
   bool had_reasoning_ = false;
   bool content_started_ = false;
   bool stopped_ = false;

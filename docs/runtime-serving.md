@@ -577,8 +577,10 @@ change the file or make the state live again (a turn restoring it, a swap
 bringing the model in, a clear, a discard, retention, the spill budget),
 and after a spill or a swap's write-back completes, with the state
 settled (a verify's owed restore run first, where no request holds the
-model's stream), queues a new one. A keeper thread (`runtime/
-state_keeper.h`) syncs the files, hashes them on four threads and writes
+model's stream), queues a new one. Only the latest queued record for each
+slot stays, and invalidation drops its queued token and checkpoint copies
+immediately; the worker may hold one other record while hashing. A keeper
+thread (`runtime/state_keeper.h`) syncs the files, hashes them on four threads and writes
 the record unless the slot was invalidated meanwhile, off the driver's
 path (written and synced beside its name, renamed over it under the
 keeper's lock only while the slot is still current, its directory synced
@@ -946,9 +948,9 @@ is a `data: {"error":...}` event, and the stream ends without `[DONE]`.
 **Keepalives** (D-045). A streamed request that has waited 15 s in the
 queue is admitted then: its headers and role chunk go out, so the client
 sees it accepted. From its headers on, a stream that has sent nothing for
-15 s gets a `: keepalive` comment line, queued, swapping, prefilling or
-paused for its reader, well inside the named clients' 300 s stream-idle
-bounds (client-api-baseline.md). A stream has no fixed queue wait: it
+15 s gets a `: keepalive` comment line while queued, swapping or prefilling,
+when no earlier response bytes await delivery, well inside the named
+clients' 300 s stream-idle bounds (client-api-baseline.md). A stream has no fixed queue wait: it
 waits its turn. A stream admitted early can then only fail in the stream:
 the model's refusal (the context exceeded) is an in-stream
 `invalid_request_error`, and with `stall_action = "fail"` the backend
@@ -976,6 +978,20 @@ takes it), the conversation's rendering and tokenization while they run
 where the template may interpret, the tokenizer's longest window and the
 tokens), a literal completion's score rows, a non-streaming response's
 text as it grows, and a completed body until the socket has taken it.
+Prepared prompt IDs remain charged through their shared ownership by active
+work and paused requests. Continuations charge their copied generation and
+history, and active request token vectors are charged as completed steps grow
+them. Keepalive comments are not queued while response bytes already wait
+for a socket, so they cannot grow a paused reader's output indefinitely.
+
+Native prompt/generation sessions and model-owned retained token histories
+still consume the uncounted margin rather than an explicit catalog or
+request-memory charge. Clearing a branch retains its vectors' capacity;
+large histories across a growing model library can therefore outgrow that
+margin even after device state is discarded. Catalog charges and reclaim
+for these allocations remain a resource-accounting gap, assigned to
+[M3.5's native token-history task](plan.md#m35--model-families--pending)
+before expanding the model library or request concurrency.
 
 Its first 256 MiB (the floor) are set apart at the start beside the memory
 guard's margin. Past the floor the driver charges what requests hold to

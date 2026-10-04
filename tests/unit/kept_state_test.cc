@@ -392,6 +392,55 @@ TEST(KeptRecord, FileNamesAreTheSlotsOwn) {
 
 // --------------------------------------------------------------- the keeper
 
+TEST(StateKeeper, QuietKeepsOnlyTheLatestQueuedRecordPerSlot) {
+  const fs::path root = Scratch("bounded-keeper");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  const pf::FileIdentity first = WriteExtents(model.fd, "slot-1.state", 1, 5);
+  const pf::FileIdentity second = WriteExtents(model.fd, "slot-2.state", 1, 9);
+  StateKeeper keeper(1, {});
+  const std::size_t index = keeper.AddModel(::dup(model.fd));
+  const StateKeeper::Quiet quiet(&keeper);
+  kept::Record r = Sample();
+  r.slot = 1;
+  r.file = kept::StateFileName(1);
+  r.id = Id(first);
+  r.regions = {kExtent};
+  r.file_bytes = kExtent;
+  r.extents = {{.region = 0, .index = 0, .digest = {}}};
+  r.checkpoints.clear();
+  for (int i = 0; i < 64; ++i) {
+    r.tokens = {i};
+    keeper.Keep(index, r);
+    // One being hashed and at most one waiting, whichever the thread's
+    // ordering; Quiet prevents either from finishing its hash.
+    EXPECT_LE(keeper.pending(), 2U);
+  }
+  kept::Record other = r;
+  other.slot = 2;
+  other.file = kept::StateFileName(2);
+  other.id = Id(second);
+  keeper.Keep(index, other);
+  EXPECT_LE(keeper.pending(), 3U);
+  keeper.Invalidate(index, 1);
+  // The invalidated slot's queued copy is gone; another slot's stays.
+  EXPECT_LE(keeper.pending(), 2U);
+  r.tokens = {1234};
+  keeper.Keep(index, r);
+  // Drain bypasses Quiet; the latest record and the other slot both survive.
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  auto text = pf::ReadPrivateFile(model.fd, "slot-1.record", kept::kMostRecordBytes);
+  ASSERT_TRUE(text.has_value());
+  auto written = kept::Decode(*text);
+  ASSERT_TRUE(written.has_value()) << written.error();
+  EXPECT_EQ(written->tokens, r.tokens);
+  EXPECT_TRUE(keeper.Kept(index, 1));
+  EXPECT_TRUE(keeper.Kept(index, 2));
+  EXPECT_EQ(keeper.pending(), 0U);
+  fs::remove_all(root);
+}
+
 TEST(StateKeeper, ARecordDescribesItsFilesExactly) {
   const fs::path root = Scratch("keeper");
   fs::create_directories(root);

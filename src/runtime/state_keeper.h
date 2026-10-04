@@ -95,7 +95,9 @@ class StateKeeper {
   void Invalidate(std::size_t model, std::uint32_t slot);
   // The driver: the slot's spill file holds `record`'s state, written
   // whole and completed; its digests (and its checkpoints', unless known)
-  // are computed and the record written in the background.
+  // are computed and the record written in the background. Only its latest
+  // queued record stays; Invalidate drops that copy immediately. The worker
+  // holds at most one other record while hashing it.
   void Keep(std::size_t model, kept::Record record);
   // A record adopted at start: it exists (Invalidate removes it); its
   // checkpoints' digests are known.
@@ -135,7 +137,7 @@ class StateKeeper {
 
   struct Stats {
     std::uint64_t written = 0;  // records written
-    std::uint64_t stale = 0;    // dropped: invalidated while being made
+    std::uint64_t stale = 0;    // dropped: invalidated or superseded
     std::uint64_t failed = 0;   // dropped: a file could not be read or written
     std::uint64_t hashed_bytes = 0;
     double hash_seconds = 0;

@@ -2886,7 +2886,9 @@ installed product (`packaging/`, `src/runtime/`, `src/platform/job.*`,
   NVIDIA's minimum driver for CUDA 13.x minor-version compatibility (CUDA
   Toolkit release notes, table 3, checked 2026-09-24; the build carries
   SASS only); and `systemd`, whose `systemd-sysusers` and
-  `systemd-tmpfiles` the scripts run.
+  `systemd-tmpfiles` the scripts run; and `util-linux`, whose `runuser`
+  keeps purge's deletion of conversation files under the service user's
+  permissions, including if an owner-controlled parent is replaced by a link.
 - **Install, upgrade, removal.** postinst creates the user and the data
   directory, then enables and starts the service on first install and
   restarts it on upgrade (drain-before-restart upgrades stay M8's).

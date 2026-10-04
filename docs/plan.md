@@ -194,6 +194,34 @@ family" guide, and its long-context scaling work.
       the list (AGENTS.md: agents never invent supported model
       combinations). Weight licenses are informational (D-087).
       Proposal, awaiting the owner: [m35-families.md](m35-families.md).
+- [ ] **Native token-history accounting and reclaim** (M3 review P2,
+      2026-10-04; [current gap](runtime-serving.md#the-chat-route)):
+      close this engine gap before expanding the model library or request
+      concurrency. Native prompt/generation sessions and model-owned
+      retained histories currently consume the fixed uncounted margin.
+      - Charge actual allocated capacity for `PromptSession::tokens_`,
+        `GenerationSession::all_`, `Branch::history_` and
+        `Branch::saved_history_`, including temporary copies on admission,
+        generation, checkpoint save and restore. Use the existing host
+        catalog/request-memory mechanisms with explicit ownership;
+        shared storage is charged once and independent copies separately.
+      - Acquire capacity before allocation or growth. Refusal leaves the
+        completed prefix usable and starts no unfunded native work.
+        Reclaim must protect active and held continuation histories and
+        avoid recursively reclaiming the branch being admitted.
+      - Reclaim idle histories with their retained state. Clear, forget,
+        discard, expiry and snapshot invalidation release obsolete vector
+        capacity and its charge once no session, continuation or valid
+        snapshot needs it. A spilled continuation keeps the tokens needed
+        for exact restore.
+        Charges survive every transfer of ownership and appear in the
+        memory breakdown, outside the fixed uncounted margin.
+      - Add small-budget regressions for repeated long requests across a
+        growing model library, concurrent sessions, cancellation, expiry,
+        snapshot save/restore and model-switch continuations. Check actual
+        vector capacity against charges, clean refusal and release after
+        retirement, including CPU/fake coverage of the accounting and
+        Spark checks of exact continuations on both M3 LLMs.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - import to a v0 artifact;
@@ -462,6 +490,14 @@ the correctness, speed and long-context ones:
   format). Each request's greedy output equals its output when run
   alone, except near-ties. Forked branches share their prefix state
   without copying it until they diverge.
+- **Host token memory:** the native token-history task above is complete.
+  Session, retained-history and snapshot vector capacities are charged
+  for their full lifetime; under a small budget, growth refuses or
+  reclaims before allocation without corrupting a completed prefix.
+  Repeated use and expiry across a growing model library leave no
+  accumulating obsolete history capacity, and exact continuations survive
+  reclaim and model switches. The memory breakdown explains these bytes
+  without spending the fixed uncounted margin.
 - **Formats:** every format in the approved covering set runs with the
   same correctness and speed criteria against its same-format reference.
   EXL3 decode and prefill are faster than ExLlamaV3's on the GB10, dense

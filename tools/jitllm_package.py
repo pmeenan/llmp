@@ -386,6 +386,8 @@ def generate(build: pathlib.Path, sdk: sdklib.Sdk, out: pathlib.Path) -> dict:
         depends.append(CUBLAS_DEPENDS)
     # systemd-sysusers and systemd-tmpfiles run from the maintainer scripts.
     depends.append("systemd")
+    # runuser drops purge's deletion of owner-controlled spill files to the service user.
+    depends.append("util-linux")
 
     products = [c for c in receipt["components"] if c["use"] == "product"]
     units = shipped_units(provenance, cuda)

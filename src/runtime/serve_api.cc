@@ -120,6 +120,22 @@ api::Error Failure(int status, std::string message, std::string code = {}, std::
                     .code = std::move(code)};
 }
 
+std::optional<api::Error> FundHistory(MemoryCharge& charge, RequestMemory& memory,
+                                      std::uint64_t held, bool granted) {
+  if (held <= charge.bytes()) {
+    return std::nullopt;
+  }
+  const std::uint64_t more = held - charge.bytes();
+  if (charge.Add(memory, more, granted)) {
+    return std::nullopt;
+  }
+  // The completed step already grew its vector. Keep it accounted until
+  // retirement, and stop before another step. Callbacks cannot reclaim
+  // native state in the middle of work.
+  charge.Force(memory, more);
+  return api::MemoryRefusal(memory, held, "the request token history");
+}
+
 std::uint64_t RandomSeed() {
   std::uint64_t seed = 0;
   if (!platform::FillRandom(std::as_writable_bytes(std::span(&seed, 1)))) {
@@ -144,7 +160,8 @@ std::optional<execution::SamplingParams> SamplingOf(const api::ChatRequest& requ
 }
 
 struct ChatPrompt {
-  std::vector<std::int32_t> tokens;
+  std::shared_ptr<const api::PromptTokens> token_storage;
+  const std::vector<std::int32_t>& tokens() const { return token_storage->values(); }
   std::uint32_t stable_boundary = 0;
   std::uint32_t max_tokens = 0;
   bool reasoning = false;
@@ -257,8 +274,12 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
     return std::unexpected(
         Failure(400, "the conversation cannot be rendered: " + rendered.error(), {}, "messages"));
   }
-  result.tokens = std::move(*rendered);
-  const auto prompt = static_cast<std::uint32_t>(result.tokens.size());
+  auto held = api::PromptTokens::Hold(std::move(*rendered), memory);
+  if (!held) {
+    return std::unexpected(held.error());
+  }
+  result.token_storage = std::move(*held);
+  const auto prompt = static_cast<std::uint32_t>(result.tokens().size());
   if (prompt >= usable) {
     return std::unexpected(
         Failure(400,
@@ -279,11 +300,11 @@ std::expected<ChatPrompt, api::Error> PrepareChat(Llm& model, const api::ChatReq
         "context_length_exceeded", "messages"));
   }
   if (model.think_start() && model.think_end()) {
-    const auto marker =
-        std::ranges::find_if(result.tokens.rbegin(), result.tokens.rend(), [&](std::int32_t token) {
+    const auto marker = std::ranges::find_if(
+        result.tokens().rbegin(), result.tokens().rend(), [&](std::int32_t token) {
           return token == *model.think_start() || token == *model.think_end();
         });
-    result.reasoning = marker != result.tokens.rend() && *marker == *model.think_start();
+    result.reasoning = marker != result.tokens().rend() && *marker == *model.think_start();
   }
   return result;
 }
@@ -368,14 +389,15 @@ struct ChatResume final : api::Yielded {
   ChatResume(ChatResume&&) = delete;
   ChatResume& operator=(ChatResume&&) = delete;
   ChatResume(ChatPrompt prompt, Generation so_far, const GenerateOptions& options,
-             ChatOutput::State out, std::uint32_t cached, Llm::Branch* held = nullptr,
-             std::shared_ptr<api::LiteralOutput> literal = nullptr)
+             ChatOutput::State out, std::uint32_t cached, MemoryCharge charge,
+             Llm::Branch* held = nullptr, std::shared_ptr<api::LiteralOutput> literal = nullptr)
       : rendered(std::move(prompt)),
         generation(std::move(so_far)),
         sampling(options.sampling),
         seed(options.seed),
         output(std::move(out)),
         reused(cached),
+        token_charge(std::move(charge)),
         held_branch(held),
         literal(std::move(literal)) {
     if (held_branch != nullptr) {
@@ -383,7 +405,9 @@ struct ChatResume final : api::Yielded {
     }
     // The prompt and every generated token but the last (the anchor:
     // reported, and not yet in the state).
-    history = rendered.tokens;
+    history.reserve(rendered.tokens().size() +
+                    (generation.tokens.empty() ? 0 : generation.tokens.size() - 1));
+    history.insert(history.end(), rendered.tokens().begin(), rendered.tokens().end());
     if (!generation.tokens.empty()) {
       history.insert(history.end(), generation.tokens.begin(), generation.tokens.end() - 1);
     }
@@ -401,9 +425,27 @@ struct ChatResume final : api::Yielded {
   std::uint64_t seed = 0;
   ChatOutput::State output;
   std::uint32_t reused = 0;  // the first turn's cached tokens, for its usage
+  MemoryCharge token_charge;
   Llm::Branch* held_branch = nullptr;
   std::shared_ptr<api::LiteralOutput> literal;
 };
+
+std::expected<std::shared_ptr<ChatResume>, api::Error> KeepContinuation(
+    const ChatPrompt& prompt, const Generation& generation, const GenerateOptions& options,
+    ChatOutput::State output, std::uint32_t reused, RequestMemory& memory,
+    Llm::Branch* branch = nullptr, std::shared_ptr<api::LiteralOutput> literal = nullptr) {
+  // Charge both copies before constructing them. The immutable prompt
+  // itself is shared with the continuation and already owns its charge.
+  const std::uint64_t ids = prompt.tokens().size() + generation.tokens.size() +
+                            (generation.tokens.empty() ? 0 : generation.tokens.size() - 1);
+  MemoryCharge charge;
+  const std::uint64_t bytes = sizeof(ChatResume) + ids * sizeof(std::int32_t);
+  if (!charge.Add(memory, bytes)) {
+    return std::unexpected(api::MemoryRefusal(memory, bytes, "the request continuation"));
+  }
+  return std::make_shared<ChatResume>(prompt, generation, options, std::move(output), reused,
+                                      std::move(charge), branch, std::move(literal));
+}
 
 // A serial request's state-capacity policy on its model for the request's
 // duration (Llm::set_capacity_reclaim); cleared when it ends.
@@ -472,6 +514,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         options.seed = request.seed.value_or(RandomSeed());
       }
       options.on_tokens = [this](std::span<const std::int32_t> fresh) {
+        if (!FundTokens(true)) {
+          return false;
+        }
         if (this->literal == nullptr) {
           return output.Push(fresh);
         }
@@ -531,6 +576,16 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return true;
     }
 
+    bool FundTokens(bool granted) {
+      const std::uint64_t held =
+          (generation.tokens.capacity() + resume_tokens.capacity()) * sizeof(std::int32_t);
+      if (auto refused = FundHistory(token_charge, *owner.memory_, held, granted)) {
+        error = std::move(refused);
+        return false;
+      }
+      return true;
+    }
+
     NodeBackend& owner;
     Llm& model;
     Llm::Branch& branch;
@@ -570,6 +625,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     bool continued = false;       // original cached-token usage survives a prompt pause too
     bool switch_restore = false;  // restore generating peers before resuming their wave
     std::vector<std::int32_t> resume_tokens;
+    MemoryCharge token_charge;
   };
   static_assert(kCohortSlots == Llm::kMaxBranches);
 
@@ -635,7 +691,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         return std::unexpected(output.error());
       }
       literal = std::move(*output);
-      rendered = ChatPrompt{.tokens = std::move(prepared->tokens),
+      auto held = api::PromptTokens::Hold(std::move(prepared->tokens), *memory_);
+      if (!held) {
+        return std::unexpected(held.error());
+      }
+      rendered = ChatPrompt{.token_storage = std::move(*held),
                             .max_tokens = request.options.max_tokens.value_or(16)};
     } else {
       rendered = PrepareChat(model, request.options, exchange, *memory_);
@@ -644,7 +704,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return std::unexpected(rendered.error());
     }
     const std::vector<std::int32_t>& wanted =
-        resume != nullptr ? resume->history : rendered->tokens;
+        resume != nullptr ? resume->history : rendered->tokens();
     // Choose only an unclaimed model-owned branch. Prefix matching is a
     // reuse preference, never conversation identity or retention policy:
     // the branch whose state this prompt can actually reuse the most of
@@ -699,10 +759,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     // a peer retires. A lone request always starts: the capacity policy
     // governs it as before.
     if (claimed != 0 && server_.resident() == &model) {
-      std::uint64_t needed = PromptStateToCome(model, **branch, rendered->tokens.size());
+      std::uint64_t needed = PromptStateToCome(model, **branch, rendered->tokens().size());
       for (const ChatWork* peer : cohort_) {
         if (peer != nullptr && !peer->terminal() && peer->stage == ChatWork::Stage::kPrompt) {
-          needed += PromptStateToCome(model, peer->branch, peer->rendered.tokens.size());
+          needed += PromptStateToCome(model, peer->branch, peer->rendered.tokens().size());
         }
       }
       if (needed != 0 && !server_.RoomFor(needed, "a request slot", *branch)) {
@@ -710,7 +770,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         Say(log_, std::format("{}'s request waits for memory for a request slot: {:.1f} MiB of "
                               "prompt state to come for {} tokens beside {} active requests",
                               model.name(), static_cast<double>(needed) / (1U << 20U),
-                              rendered->tokens.size(), claimed));
+                              rendered->tokens().size(), claimed));
         return std::unique_ptr<api::CooperativeBackend::Work>{};
       }
     }
@@ -735,6 +795,10 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       frame->options.seed = resume->seed;
       frame->output.Restore(resume->output);
       frame->reused = resume->reused;
+      if (!frame->FundTokens(false)) {
+        frame->retired = true;  // no session or native work borrowed it
+        return std::unexpected(*frame->error);
+      }
     }
     auto prompt = WorkPrompt(*frame);
     if (!prompt) {
@@ -742,10 +806,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return std::unexpected(Failure(500, "the prompt could not be admitted: " + prompt.error()));
     }
     frame->prompt_session = std::move(*prompt);
-    if (!exchange.Admit({.prompt_tokens = static_cast<std::uint32_t>(frame->rendered.tokens.size()),
-                         .max_tokens = frame->rendered.max_tokens,
-                         .swap_bytes = swap_bytes,
-                         .floors = floors})) {
+    if (!exchange.Admit(
+            {.prompt_tokens = static_cast<std::uint32_t>(frame->rendered.tokens().size()),
+             .max_tokens = frame->rendered.max_tokens,
+             .swap_bytes = swap_bytes,
+             .floors = floors})) {
       frame->Cancel();  // retired normally; no native unit has run
     }
     frame->admitted = ++admissions_;
@@ -1081,15 +1146,21 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     std::shared_ptr<api::Yielded> yielded;
     if (yields) {
       if (frame.model_paused) {
-        Say(log_, std::format("{}'s request paused for a model switch: {} of {} prompt tokens "
-                              "processed, {} generated",
-                              frame.model.name(),
-                              std::min(frame.branch.history().size(), frame.rendered.tokens.size()),
-                              frame.rendered.tokens.size(), frame.generation.tokens.size()));
+        Say(log_,
+            std::format("{}'s request paused for a model switch: {} of {} prompt tokens "
+                        "processed, {} generated",
+                        frame.model.name(),
+                        std::min(frame.branch.history().size(), frame.rendered.tokens().size()),
+                        frame.rendered.tokens().size(), frame.generation.tokens.size()));
       }
-      yielded = std::make_shared<ChatResume>(
-          frame.rendered, frame.generation, frame.options, frame.output.Save(), frame.reused,
-          frame.model_paused ? &frame.branch : nullptr, frame.literal);
+      auto kept = KeepContinuation(frame.rendered, frame.generation, frame.options,
+                                   frame.output.Save(), frame.reused, *memory_,
+                                   frame.model_paused ? &frame.branch : nullptr, frame.literal);
+      if (!kept) {
+        frame.error = kept.error();
+      } else {
+        yielded = std::move(*kept);
+      }
     } else if (!frame.error && !frame.generation.tokens.empty()) {
       if (frame.literal == nullptr) {
         frame.output.Finish();  // including a generation preempted and not yet resumed
@@ -1204,8 +1275,13 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         continued.push_back(resume->generation.tokens.back());
       }
     }
-    const std::vector<std::int32_t>& tokens = resume != nullptr ? continued : rendered.tokens;
-    const auto prompt = static_cast<std::uint32_t>(rendered.tokens.size());
+    MemoryCharge token_charge;
+    if (auto refused = FundHistory(token_charge, *memory_,
+                                   continued.capacity() * sizeof(std::int32_t), false)) {
+      return std::unexpected(*refused);
+    }
+    const std::vector<std::int32_t>& tokens = resume != nullptr ? continued : rendered.tokens();
+    const auto prompt = static_cast<std::uint32_t>(rendered.tokens().size());
     const std::uint32_t done =
         resume != nullptr ? static_cast<std::uint32_t>(resume->generation.tokens.size()) : 0;
     const std::uint32_t max_tokens = rendered.max_tokens - done;
@@ -1282,9 +1358,14 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     if (resume != nullptr) {
       output.Restore(resume->output);
     }
-    options.on_tokens = [&](std::span<const std::int32_t> fresh) { return output.Push(fresh); };
-
     Generation generation;
+    std::optional<api::Error> token_problem;
+    options.on_tokens = [&](std::span<const std::int32_t> fresh) {
+      const std::uint64_t held =
+          (generation.tokens.capacity() + continued.capacity()) * sizeof(std::int32_t);
+      token_problem = FundHistory(token_charge, *memory_, held, true);
+      return !token_problem && output.Push(fresh);
+    };
     std::uint32_t reused = 0;
     PrefillRun prefill;
     // Each chunk is a unit the watchdog allows for its rows (watchdog.h).
@@ -1326,6 +1407,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       RefusedAlone(l);
       return std::unexpected(Failure(500, *capacity.refusal()));
     }
+    if (token_problem) {
+      return std::unexpected(*token_problem);
+    }
     if (prefill.stopped) {
       // Token counts and times only (D-014); the exchange answers for why.
       Say(log_, std::format("{}'s prefill stopped after {} chunks: the state holds {} of the "
@@ -1337,17 +1421,24 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     // generation is whole anyway; it continues from here when taken up.
     if (exchange.Yielding() && !generation.stopped && !generation.tokens.empty() &&
         generation.tokens.size() < max_tokens) {
+      MemoryCharge combined;
+      const std::uint64_t bytes = (done + generation.tokens.size()) * sizeof(std::int32_t);
+      if (!combined.Add(*memory_, 2 * bytes)) {
+        return std::unexpected(api::MemoryRefusal(*memory_, 2 * bytes, "the continued generation"));
+      }
       Generation all = resume != nullptr ? resume->generation : Generation{};
       all.tokens.insert(all.tokens.end(), generation.tokens.begin(), generation.tokens.end());
       const auto total = static_cast<std::uint32_t>(all.tokens.size());
-      auto yielded =
-          std::make_shared<ChatResume>(std::move(rendered), std::move(all), options, output.Save(),
-                                       resume != nullptr ? resume->reused : reused);
+      auto yielded = KeepContinuation(rendered, all, options, output.Save(),
+                                      resume != nullptr ? resume->reused : reused, *memory_);
+      if (!yielded) {
+        return std::unexpected(yielded.error());
+      }
       return api::Completion{.completion_tokens = total,
-                             .cached_tokens = yielded->reused,
+                             .cached_tokens = (*yielded)->reused,
                              .stopped = false,
                              .literal = {},
-                             .yielded = std::move(yielded)};
+                             .yielded = std::move(*yielded)};
     }
     output.Finish();
     if (ladder_ != nullptr) {
@@ -1377,7 +1468,11 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     if (!prompt) {
       return std::unexpected(prompt.error());
     }
-    const auto& tokens = prompt->tokens;
+    auto prompt_tokens = api::PromptTokens::Hold(std::move(prompt->tokens), *memory_);
+    if (!prompt_tokens) {
+      return std::unexpected(prompt_tokens.error());
+    }
+    const auto& tokens = (*prompt_tokens)->values();
     const auto max_tokens = controls.max_tokens.value_or(16);
     const bool score_prompt = request.prompt_logprobs || (request.echo && request.logprobs);
     api::Completion result;
@@ -1480,7 +1575,14 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         return exchange.Continue();
       };
     }
+    Generation generation;
+    MemoryCharge token_charge;
     options.on_tokens = [&](std::span<const std::int32_t> fresh) {
+      if (auto refused = FundHistory(token_charge, *memory_,
+                                     generation.tokens.capacity() * sizeof(std::int32_t), true)) {
+        output_problem = std::move(refused);
+        return false;
+      }
       std::string piece;
       for (const auto id : fresh) {
         if (!decoder.Push(id, piece)) {
@@ -1497,7 +1599,6 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       budget += 6 * piece.size();
       return piece.empty() ? exchange.Continue() : exchange.Content(piece);
     };
-    Generation generation;
     PrefillRun prefill;
     // As chat's serial turn: idle branches' retained state gives way to this
     // request, and a refusal it still meets fails the request alone.
@@ -1664,7 +1765,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       ChatWork& frame) {
     if (frame.literal != nullptr && frame.literal->score_prompt() && !frame.resume) {
       return frame.branch.BeginScoringPrompt(
-          frame.rendered.tokens,
+          frame.rendered.tokens(),
           [&frame](std::int32_t id, std::span<const float> row) {
             return frame.literal->PromptRow(frame.prompt_session->run().end, id, row) &&
                    frame.exchange.Continue();
@@ -1672,7 +1773,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
           frame.literal->prompt_started());
     }
     const bool started = frame.literal != nullptr && frame.literal->prompt_started();
-    return frame.branch.BeginPrompt(frame.resume ? frame.resume_tokens : frame.rendered.tokens,
+    return frame.branch.BeginPrompt(frame.resume ? frame.resume_tokens : frame.rendered.tokens(),
                                     frame.rendered.stable_boundary,
                                     frame.literal != nullptr && !started, frame.resume || started);
   }
@@ -1782,7 +1883,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       // when it ends, and its anchor is not processed yet.
       const std::size_t held =
           frame->generation_session != nullptr
-              ? frame->rendered.tokens.size() + frame->generation.tokens.size() - 1
+              ? frame->rendered.tokens().size() + frame->generation.tokens.size() - 1
               : frame->branch.history().size();
       if (frame->wait == CapacityWait::kBlocked) {
         Say(log_, std::format("{}'s request in slot {} waits for conversation-state capacity at "
@@ -1835,6 +1936,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
         // The prompt and the generated tokens the state holds; the anchor
         // stays in frame.generation, already streamed.
         frame.resume_tokens = frame.branch.history();
+        (void)frame.FundTokens(true);
         frame.resume = true;
         frame.stage = ChatWork::Stage::kPrompt;
       }

@@ -654,6 +654,17 @@ std::uint64_t RequestBytes(const ChatRequest& request) {
   return bytes;
 }
 
+std::expected<std::shared_ptr<const PromptTokens>, Error> PromptTokens::Hold(
+    std::vector<std::int32_t> tokens, RequestMemory& memory) {
+  auto held = std::make_shared<PromptTokens>();
+  const std::uint64_t bytes = sizeof(PromptTokens) + tokens.capacity() * sizeof(std::int32_t);
+  if (!held->charge_.Add(memory, bytes)) {
+    return std::unexpected(MemoryRefusal(memory, bytes, "the prepared prompt tokens"));
+  }
+  held->tokens_ = std::move(tokens);
+  return held;
+}
+
 std::uint64_t RequestBytes(const CompletionRequest& request) {
   return RequestBytes(request.options) + (sizeof(CompletionRequest) - sizeof(ChatRequest)) +
          (request.prompt ? request.prompt->capacity() : 0) +
@@ -1121,19 +1132,30 @@ OutputText::Out OutputText::Content(std::string_view text) {
   }
   state_ = state;
   if (first != std::string::npos) {
-    Out out{.reasoning = {}, .content = held_.substr(0, first)};
+    Out out{.reasoning = {}, .content = held_.substr(held_start_, first - held_start_)};
     held_.clear();
+    held_start_ = 0;
     stopped_ = true;
     return out;
   }
   // Hold back the longest tail that begins some stop string.
   const std::size_t hold = stops_->depth(state);
-  Out out{.reasoning = {}, .content = held_.substr(0, held_.size() - hold)};
-  held_.erase(0, held_.size() - hold);
+  const std::size_t end = held_.size() - hold;
+  Out out{.reasoning = {}, .content = held_.substr(held_start_, end - held_start_)};
+  held_start_ = end;
+  // Moving a long retained prefix after every small piece is quadratic.
+  // Compact only once the consumed prefix is at least the retained tail;
+  // each moved byte is then paid for by a byte already emitted.
+  if (held_start_ >= hold) {
+    held_.erase(0, held_start_);
+    held_start_ = 0;
+  }
   return out;
 }
 
 OutputText::Out OutputText::Finish() {
+  held_.erase(0, held_start_);
+  held_start_ = 0;
   Out out{.reasoning = {}, .content = std::move(held_)};
   held_.clear();
   return out;

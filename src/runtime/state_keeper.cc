@@ -147,6 +147,14 @@ void StateKeeper::Invalidate(std::size_t model, std::uint32_t slot) {
   SlotState& state = slots_[{model, slot}];
   ++state.sequence;
   invalidations_.fetch_add(1, std::memory_order_release);
+  // The worker may be yielding to prompt or swap work for a long time.
+  // Drop stale token/checkpoint copies now instead of retaining them until
+  // it catches up; the one it already owns still checks its sequence.
+  stats_.stale += std::erase_if(
+      queue_, [&](const Job& job) { return job.model == model && job.record.slot == slot; });
+  if (queue_.empty() && !busy_) {
+    idle_.notify_all();
+  }
   if (state.kept) {
     const std::string name = kept::RecordFileName(slot);
     if (auto removed = platform::RemovePrivate(models_.at(model), name.c_str()); !removed) {
@@ -166,6 +174,12 @@ void StateKeeper::Keep(std::size_t model, kept::Record record) {
   {
     const std::scoped_lock lock(mutex_);
     const SlotState& state = slots_[{model, record.slot}];
+    // Only the latest record for a slot is useful. In particular, repeated
+    // spills must not accumulate whole conversation copies while hashing
+    // is quiet or slower than the driver.
+    stats_.stale += std::erase_if(queue_, [&](const Job& job) {
+      return job.model == model && job.record.slot == record.slot;
+    });
     queue_.push_back({.model = model, .sequence = state.sequence, .record = std::move(record)});
   }
   ready_.notify_one();

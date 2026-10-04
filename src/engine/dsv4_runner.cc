@@ -2710,11 +2710,15 @@ Status Dsv4Runner::DumpLast(std::vector<Dumped>& out) {
         return sc::JobResult::kQueued;
       },
       "reading a DeepSeek chunk's dump", stream_);
-  if (posted) {
-    for (std::size_t i = 0; i < reads.size(); ++i) {
-      const auto* bytes = static_cast<const std::byte*>(host) + reads[i].at;
-      out[i].bytes.assign(bytes, bytes + reads[i].bytes);
-    }
+  if (!posted) {
+    // A failed job need not prove that DMA retired. This diagnostic's
+    // allocation stays pinned until process exit, as unproven state-copy
+    // destinations do; never free memory a copy may still write.
+    return posted;
+  }
+  for (std::size_t i = 0; i < reads.size(); ++i) {
+    const auto* bytes = static_cast<const std::byte*>(host) + reads[i].at;
+    out[i].bytes.assign(bytes, bytes + reads[i].bytes);
   }
   providers::FreePinned(host);
   return posted;

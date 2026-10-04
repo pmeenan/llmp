@@ -29,11 +29,13 @@ in $JITLLM_JOBS_DIR, else $XDG_DATA_HOME/jitllm/jobs, else
 started, where, by which supervisor), child.json (the running step's process
 group), steps.json (queue progress), final.json (how it ended) and log.
 
---gpu jobs on one host are mutually exclusive: the supervisor holds an
+--gpu jobs on one host are mutually exclusive: the supervisor and its child hold an
 exclusive lock (flock on .gpu.lock in the state directory) for the job's
 whole life, so a second --gpu job waits, logging whom it waits for once a
 minute, and starts by itself when the first ends, however it ends (the
-kernel drops the lock when the supervisor exits or dies). A waiting job
+kernel drops the lock once both the supervisor and its child have exited).
+Admission also checks lost jobs' surviving process groups: a wrapper's descendants
+may close the inherited descriptor before the wrapper exits. A waiting job
 shows as "waiting for the GPU" in `status` and `busy`; its --timeout counts
 from when it gets the GPU, and `kill` ends the wait. With --no-wait,
 `start` takes the lock itself and refuses at once if another --gpu job holds
@@ -80,10 +82,29 @@ def gpu_lock_path(root: pathlib.Path) -> pathlib.Path:
     return root / ".gpu.lock"
 
 
-def try_gpu_lock(fd: int) -> bool:
+def gpu_orphan(root: pathlib.Path) -> dict | None:
+    """A local --gpu job whose supervisor is lost but process group survives."""
+    for directory in sorted(d for d in root.iterdir() if d.is_dir()):
+        try:
+            info = job_state(directory)
+        except FileNotFoundError:
+            # gc and completed-name reuse may remove an entry after the
+            # scan. Both already refuse to remove surviving orphan groups.
+            continue
+        if info["state"] == "lost" and info.get("gpu") and info.get("orphans"):
+            return info
+    return None
+
+
+def try_gpu_lock(fd: int, root: pathlib.Path) -> bool:
     """Takes the host's GPU lock on fd without blocking; False if another job holds it."""
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # A wrapper may close descriptors in a subprocess before exiting.
+        # Its surviving group must still retire before another job starts.
+        if gpu_orphan(root) is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
         return True
     except OSError as e:
         if e.errno in (errno.EAGAIN, errno.EACCES):
@@ -93,11 +114,15 @@ def try_gpu_lock(fd: int) -> bool:
 
 def gpu_holder(root: pathlib.Path) -> str:
     """Who holds the GPU lock, as far as the holder recorded it."""
+    if orphan := gpu_orphan(root):
+        return f"{orphan['name']} (its supervisor is lost; its process group still runs)"
     holder = read_json(root / ".gpu.json") or {}
     name = holder.get("name")
     if not name or not (root / name).is_dir():
         return "another --gpu job"
     info = job_state(root / name)
+    if info["state"] == "lost" and info.get("orphans"):
+        return f"{name} (its supervisor is lost; its child still runs)"
     if info["state"] != "running" or info.get("gpu_waiting"):
         return "another --gpu job"
     return f"{name} (running for {span(time.time() - holder.get('since', time.time()))})"
@@ -304,7 +329,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         gpu_fd = None
         if args.no_wait:  # take the GPU here, so the refusal is immediate; the supervisor inherits it
             gpu_fd = os.open(gpu_lock_path(root), os.O_RDWR | os.O_CREAT, 0o644)
-            if not try_gpu_lock(gpu_fd):
+            if not try_gpu_lock(gpu_fd, root):
                 os.close(gpu_fd)
                 print(f"spark-job: the GPU is held by {gpu_holder(root)}; not started (--no-wait)",
                       file=sys.stderr)
@@ -363,7 +388,7 @@ class Supervisor:
             self.gpu_fd = os.open(gpu_lock_path(root), os.O_RDWR | os.O_CREAT, 0o644)
             began = time.monotonic()
             last_note = None
-            while not try_gpu_lock(self.gpu_fd):
+            while not try_gpu_lock(self.gpu_fd, root):
                 if self.stop_reason:
                     return {"state": "killed", "reason": f"{self.stop_reason}, waiting for the GPU"}
                 if last_note is None:
@@ -401,6 +426,7 @@ class Supervisor:
         try:
             proc = subprocess.Popen(argv, cwd=self.job["cwd"], stdin=subprocess.DEVNULL, stdout=self.log,
                                     stderr=self.log, start_new_session=True,
+                                    pass_fds=(self.gpu_fd,) if self.gpu_fd is not None else (),
                                     umask=self.job.get("umask", 0o022))
         except OSError as e:
             self.note(f"cannot start {shlex.join(argv)}: {e}")
@@ -612,10 +638,13 @@ def cmd_busy(args: argparse.Namespace) -> int:
     root = jobs_root()
     infos = [job_state(d) for d in sorted(root.iterdir()) if d.is_dir()] if root.is_dir() else []
     gpu_jobs = [i for i in infos if i["state"] == "running" and i.get("gpu") and not i.get("gpu_waiting")]
+    gpu_orphans = [i for i in infos if i["state"] == "lost" and i.get("gpu") and i.get("orphans")]
     waiting = [i for i in infos if i["state"] == "running" and i.get("gpu_waiting")]
     others = [i for i in infos if i["state"] == "running" and not i.get("gpu")]
     for info in gpu_jobs:
         print(f"gpu job {info['name']} running for {span(time.time() - info['start'])} (cwd {info['cwd']})")
+    for info in gpu_orphans:
+        print(f"gpu job {info['name']} has a lost supervisor and a running child (cwd {info['cwd']})")
     for info in sorted(waiting, key=lambda i: i["gpu_waiting"]):
         print(f"gpu job {info['name']} waiting for the GPU for {span(time.time() - info['gpu_waiting'])}"
               f" (cwd {info['cwd']})")
@@ -626,7 +655,7 @@ def cmd_busy(args: argparse.Namespace) -> int:
         print("nvidia-smi: not available")
     else:
         groups = {(read_json(pathlib.Path(i["dir"]) / "child.json") or {}).get("pgid"): i["name"]
-                  for i in gpu_jobs + others}  # a waiting job has no child yet
+                  for i in gpu_jobs + gpu_orphans + others}  # a waiting job has no child yet
         print(f"nvidia-smi compute processes: {len(procs)}")
         for line in procs:
             pid = line.split(",")[0].strip()
@@ -637,7 +666,7 @@ def cmd_busy(args: argparse.Namespace) -> int:
                 pgid = None
             owner = f"  [job {groups[pgid]}]" if pgid in groups else "  [not a spark-job job]"
             print(f"  {line}{owner}")
-    busy = bool(gpu_jobs or procs)
+    busy = bool(gpu_jobs or gpu_orphans or waiting or procs)
     print(f"{socket.gethostname()}: {'busy' if busy else 'free'} ({len(gpu_jobs)} --gpu job(s), "
           f"{len(waiting)} waiting, {len(procs or [])} GPU compute process(es))")
     return 1 if busy else 0

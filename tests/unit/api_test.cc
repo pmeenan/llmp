@@ -486,6 +486,32 @@ TEST(OutputText, MatchesOverlappingAndLongStopsAcrossPieces) {
   EXPECT_TRUE(thousand.stopped());
 }
 
+TEST(OutputText, CompactsLongPrefixesAndCarriesOnlyTheUnconsumedTail) {
+  const std::string prefix(4095, 'a');
+  const std::string stop = prefix + 'b';
+  api::OutputText text({stop});
+  EXPECT_TRUE(text.Content(prefix).content.empty());
+  // More than twice the retained prefix forces repeated compaction. Every
+  // extra 'a' is emitted exactly once and the possible stop stays held.
+  for (std::size_t i = 0; i < 2 * prefix.size() + 17; ++i) {
+    EXPECT_EQ(text.Content("a").content, "a");
+  }
+  auto continued = text;  // a yielded response carries its offset too
+  EXPECT_EQ(continued.Finish().content, prefix);
+  EXPECT_TRUE(continued.Finish().content.empty());
+  // Matching across pieces after compaction discards the retained stop,
+  // together with all text that follows it in the same piece.
+  EXPECT_TRUE(text.Content("b trailing").content.empty());
+  EXPECT_TRUE(text.stopped());
+  EXPECT_TRUE(text.Finish().content.empty());
+
+  api::OutputText mismatch({stop});
+  EXPECT_TRUE(mismatch.Content(prefix).content.empty());
+  EXPECT_EQ(mismatch.Content("aaaaa").content, "aaaaa");
+  EXPECT_EQ(mismatch.Content("x").content, prefix + 'x');
+  EXPECT_TRUE(mismatch.Finish().content.empty());
+}
+
 TEST(OutputText, SplitsReasoningAndTrimsTheAnswersStart) {
   api::OutputText text({"x"});
   EXPECT_EQ(text.Reasoning("I think x").reasoning, "I think x");  // no stop in reasoning
@@ -4013,6 +4039,48 @@ TEST_F(ServerTest, CooperativeBackpressurePausesOnlyTheSlowReader) {
   ASSERT_TRUE(WaitFor([&] { return cooperative_->destroyed.load() == 2; }));
   EXPECT_EQ(cooperative_->cancelled.load(), 0U);
   EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST(PromptTokens, ChargeFollowsTheLastSharedOwner) {
+  jitllm::runtime::RequestMemory memory(4096);
+  std::vector<std::int32_t> tokens(100, 42);
+  tokens.reserve(200);
+  const auto bytes = sizeof(api::PromptTokens) + tokens.capacity() * sizeof(std::int32_t);
+  auto first = api::PromptTokens::Hold(std::move(tokens), memory);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_EQ(memory.used(), bytes);
+  auto continuation = *first;
+  first->reset();
+  EXPECT_EQ(memory.used(), bytes);
+  EXPECT_EQ(continuation->values(), std::vector<std::int32_t>(100, 42));
+  continuation.reset();
+  EXPECT_EQ(memory.used(), 0U);
+  auto refused = api::PromptTokens::Hold(std::vector<std::int32_t>(2048), memory);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().status, 413);
+  EXPECT_EQ(memory.used(), 0U);
+}
+
+TEST_F(ServerTest, KeepalivesDoNotGrowAPausedReadersOutput) {
+  api::ServerOptions options;
+  options.intake.stream_buffer = std::size_t{64} << 10U;
+  options.keepalive = std::chrono::milliseconds(1);
+  StartCooperative(options);
+  const int slow = Open(4096);
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+      slow, Post(Chat("pour", R"(,"stream":true,"max_tokens":2000)"))));
+  ASSERT_TRUE(WaitFor([&] { return BackendHealth().phase == jitllm::runtime::Phase::kPaused; }));
+  // Let the socket's final writes settle, then observe several keepalive
+  // intervals with no reader. Comments must not grow the pending buffer.
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const std::size_t pending = server_->output_bytes();
+  ASSERT_GT(pending, options.intake.stream_buffer);
+  const unsigned advances = cooperative_->advances.load();
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  EXPECT_EQ(cooperative_->advances.load(), advances);
+  EXPECT_LE(server_->output_bytes(), pending);
+  (void)::close(slow);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->destroyed.load() == 1; }));
 }
 
 TEST_F(ServerTest, CooperativeDeadlinesDoNotEndAnotherRequestsStream) {

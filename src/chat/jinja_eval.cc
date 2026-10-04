@@ -119,6 +119,9 @@ struct Scope final : Object {
     if (existing != nullptr) {
       *existing = std::move(v);
     } else {
+      if (!Charge(&arena, name.size() + sizeof(Value) + 32)) {
+        return false;
+      }
       vars.emplace_back(std::string(name), std::move(v));
     }
     return true;
@@ -201,6 +204,9 @@ class Renderer {
 
   std::expected<Rendered, Error> Run(const std::vector<std::pair<std::string, Input>>& variables) {
     auto globals = std::make_shared<Scope>();
+    if (!globals->Charge(&arena_, 64)) {
+      return Bound();
+    }
     for (const auto& [name, input] : variables) {
       auto v = FromInput(input, 1);
       if (!v) {
@@ -1469,25 +1475,48 @@ class Renderer {
         case Op::kMul:
           return Value::Float(x * y, trusted);
         case Op::kFloorDiv:
-          if (y == 0.0) {
-            return Fail(Code::kRuntime, "division by zero");
-          }
-          return Value::Float(std::floor(x / y), trusted);
         case Op::kMod: {
           if (y == 0.0) {
             return Fail(Code::kRuntime, "division by zero");
           }
           double m = std::fmod(x, y);
-          if (m != 0.0 && ((m < 0) != (y < 0))) {
-            m += y;
+          double q = (x - m) / y;
+          if (m != 0.0) {
+            if ((m < 0) != (y < 0)) {
+              m += y;
+              q -= 1.0;
+            }
+          } else {
+            m = std::copysign(0.0, y);
           }
-          return Value::Float(m, trusted);
+          if (op == Op::kMod) {
+            return Value::Float(m, trusted);
+          }
+          // Python derives the quotient from the remainder to avoid a
+          // rounded division crossing an integer (1.0 // 0.1 is 9.0).
+          double floor = std::floor(q);
+          if (q != 0.0) {
+            if (q - floor > 0.5) {
+              floor += 1.0;
+            }
+          } else {
+            floor = std::copysign(0.0, x / y);
+          }
+          return Value::Float(floor, trusted);
         }
         case Op::kPow:
           if (x == 0.0 && y < 0) {
             return Fail(Code::kRuntime, "division by zero");
           }
-          return Value::Float(std::pow(x, y), trusted);
+          if (x < 0.0 && std::isfinite(x) && std::isfinite(y) && std::trunc(y) != y) {
+            return Fail(Code::kUnsupported, "a complex power result");
+          }
+          if (const double power = std::pow(x, y);
+              std::isinf(power) && std::isfinite(x) && std::isfinite(y)) {
+            return Fail(Code::kRuntime, "a floating-point power overflow");
+          } else {
+            return Value::Float(power, trusted);
+          }
         default:
           break;
       }
@@ -1648,18 +1677,18 @@ class Renderer {
       case Op::kGt:
         return Lt(b, a);
       case Op::kLe: {
-        auto lt = Lt(b, a);
-        if (!lt) {
-          return lt;
-        }
-        return !*lt;
-      }
-      case Op::kGe: {
         auto lt = Lt(a, b);
         if (!lt) {
           return lt;
         }
-        return !*lt;
+        return *lt ? lt : CheckedEq(a, b);
+      }
+      case Op::kGe: {
+        auto lt = Lt(b, a);
+        if (!lt) {
+          return lt;
+        }
+        return *lt ? lt : CheckedEq(a, b);
       }
       case Op::kIn:
         return Contains(b, a);

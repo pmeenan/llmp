@@ -5,6 +5,7 @@
 import json
 import os
 import pathlib
+import runpy
 import signal
 import subprocess
 import sys
@@ -233,13 +234,74 @@ class SparkJobTest(unittest.TestCase):
         result, _ = self.wait("patient")  # waited ~4 s for the GPU, longer than its --timeout of 3
         self.assertEqual(result.returncode, 0, result.stdout)
 
-    def test_gpu_lock_freed_when_the_supervisor_dies(self):
+    def test_gpu_lock_outlives_a_lost_supervisor_until_its_child_exits(self):
         self.start("doomed", "--gpu", "--", "sleep", "60")
-        self.wait_for(lambda: (self.tmp / "jobs" / "doomed" / "gpu.json").exists())
+        self.wait_for(lambda: (self.tmp / "jobs" / "doomed" / "child.json").exists())
+        child = json.loads((self.tmp / "jobs" / "doomed" / "child.json").read_text())["pid"]
         os.kill(self.state("doomed")["supervisor"]["pid"], signal.SIGKILL)
         self.wait_for(lambda: self.state("doomed")["state"] == "lost")
+        self.assertTrue(pid_alive(child))
+        busy = self.run_tool("busy")
+        self.assertEqual(busy.returncode, 1, busy.stdout)
+        self.assertIn("lost supervisor and a running child", busy.stdout)
+        collected = self.run_tool("gc", "--older-than", "0")
+        self.assertEqual(collected.returncode, 0, collected.stderr)
+        self.assertTrue((self.tmp / "jobs" / "doomed").is_dir())
+        self.assertTrue(self.state("doomed")["orphans"])
+        refused = self.run_tool("start", "--name", "eager", "--gpu", "--no-wait", "--", "true")
+        self.assertEqual(refused.returncode, 1, refused.stdout)
         self.start("after", "--gpu", "--", "true")
+        self.wait_for(lambda: self.state("after").get("gpu_waiting"))
+        self.assertTrue(pid_alive(child))
+        self.assertEqual(self.run_tool("kill", "doomed").returncode, 0)
+        self.assertFalse(pid_alive(child))
         self.assertEqual(self.wait("after")[0].returncode, 0)
+
+    def test_gpu_admission_waits_for_a_lost_wrappers_descendants(self):
+        # Python's default close_fds removes the inherited GPU descriptor
+        # from the worker. Once its wrapper exits, only the group guard
+        # can keep a second GPU job from overlapping the worker.
+        worker_file = self.tmp / "worker"
+        release = self.tmp / "release"
+        wrapper = ("import pathlib,subprocess,time; "
+                   "worker=subprocess.Popen(['sleep','60'],close_fds=True); "
+                   f"pathlib.Path({str(worker_file)!r}).write_text(str(worker.pid)); "
+                   f"release=pathlib.Path({str(release)!r}); "
+                   "\nwhile not release.exists(): time.sleep(.01)")
+        self.start("wrapper", "--gpu", "--", sys.executable, "-B", "-c", wrapper)
+        self.wait_for(worker_file.exists)
+        child = json.loads((self.tmp / "jobs" / "wrapper" / "child.json").read_text())["pid"]
+        worker = int(worker_file.read_text())
+        os.kill(self.state("wrapper")["supervisor"]["pid"], signal.SIGKILL)
+        self.wait_for(lambda: self.state("wrapper")["state"] == "lost")
+        release.touch()
+        self.wait_for(lambda: not pid_alive(child))
+        self.assertTrue(pid_alive(worker))
+        self.assertTrue(self.state("wrapper")["orphans"])
+        refused = self.run_tool("start", "--name", "eager", "--gpu", "--no-wait", "--", "true")
+        self.assertEqual(refused.returncode, 1, refused.stdout)
+        self.assertIn("process group still runs", refused.stderr)
+        self.start("after", "--gpu", "--", "true")
+        self.wait_for(lambda: self.state("after").get("gpu_waiting"))
+        self.assertTrue(pid_alive(worker))
+        self.assertEqual(self.run_tool("kill", "wrapper").returncode, 0)
+        self.assertFalse(pid_alive(worker))
+        self.assertEqual(self.wait("after")[0].returncode, 0)
+
+    def test_gpu_orphan_scan_tolerates_concurrent_completed_job_removal(self):
+        helper = runpy.run_path(str(TOOL))["gpu_orphan"]
+        root = self.tmp / "jobs"
+        directory = root / "completed"
+        directory.mkdir(parents=True)
+        original = helper.__globals__["job_state"]
+
+        def removed_before_read(path):
+            self.assertEqual(path, directory)
+            directory.rmdir()
+            return original(path)  # its initial directory stat now fails
+
+        helper.__globals__["job_state"] = removed_before_read
+        self.assertIsNone(helper(root))
 
 
 if __name__ == "__main__":

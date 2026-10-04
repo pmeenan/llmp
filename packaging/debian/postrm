@@ -15,11 +15,12 @@ if [ -z "$DPKG_ROOT" ] && [ -d /run/systemd/system ]; then
   systemctl --system daemon-reload >/dev/null || true
 fi
 if [ "$1" = purge ] && [ -z "$DPKG_ROOT" ]; then
-  # The runtime's user owns /var/lib/jitllm: neither component may be a
-  # link it planted to point this root rm elsewhere.
+  # The runtime's user owns /var/lib/jitllm. Refuse existing links and
+  # delete as that user: swapping a parent for a link after these checks
+  # must never turn package purge into a root deletion elsewhere.
   if [ ! -L /var/lib/jitllm/spill ] && [ -d /var/lib/jitllm/spill/conversations ] &&
     [ ! -L /var/lib/jitllm/spill/conversations ]; then
-    rm -rf --one-file-system /var/lib/jitllm/spill/conversations
+    /usr/sbin/runuser -u jitllm -- rm -rf --one-file-system /var/lib/jitllm/spill/conversations
   fi
   if [ -x /usr/bin/deb-systemd-helper ]; then
     deb-systemd-helper purge jitllm.service >/dev/null || true

@@ -597,6 +597,50 @@ TEST(JinjaBounds, IncrementalComparisonsKeepBudgetsAndNaNSemantics) {
   EXPECT_EQ(Text("{{ [1, ['xx']] == [1, ['xx']] }} {{ [1, ['xx']] < [1, ['xy']] }}"), "True True");
 }
 
+TEST(JinjaValues, MixedNumericComparisonsKeepIntegerPrecision) {
+  EXPECT_EQ(Text("{{ 9007199254740993 == 9007199254740992.0 }} "
+                 "{{ 9007199254740993 > 9007199254740992.0 }} "
+                 "{{ 9223372036854775807 < 9223372036854775808.0 }} "
+                 "{{ -9223372036854775807 > -9223372036854775808.0 }}"),
+            "False True True True");
+  EXPECT_EQ(Text("{{ 1 == 1.0 }} {{ 1 < 1.5 }} {{ -1 > -1.5 }} "
+                 "{{ 1.5 > 1 }} {{ -1.5 < -1 }}"),
+            "True True True True True");
+}
+
+TEST(JinjaValues, FloatFloorDivisionMatchesPython) {
+  EXPECT_EQ(Text("{{ 1.0 // 0.1 }} {{ -1.0 // 0.1 }} "
+                 "{{ 1.0 // -0.1 }} {{ -1.0 // -0.1 }}"),
+            "9.0 -10.0 -10.0 9.0");
+  EXPECT_EQ(Text("{{ 0.0 % -1.0 }} {{ 0.0 // -1.0 }}"), "-0.0 -0.0");
+  EXPECT_EQ(Text("{{ 'nan'|float <= 1 }} {{ 'nan'|float >= 1 }} "
+                 "{{ 1 <= 'nan'|float }} {{ 1 >= 'nan'|float }}"),
+            "False False False False");
+}
+
+TEST(JinjaValues, PowersRefuseComplexResultsAndReportOverflow) {
+  EXPECT_EQ(Failed(Render("{{ (-1.0) ** 0.5 }}"), &jinja::Error::code), jinja::Code::kUnsupported);
+  EXPECT_EQ(Failed(Render("{{ 2.0 ** 1024 }}"), &jinja::Error::code), jinja::Code::kRuntime);
+  EXPECT_EQ(Text("{{ (-2.0) ** 3.0 }} {{ 2.0 ** -1024 }}"), "-8.0 5.562684646268003e-309");
+  EXPECT_EQ(Text("{{ ('-inf'|float) ** 0.5 }} {{ ('-inf'|float) ** -0.5 }}"), "inf 0.0");
+}
+
+TEST(JinjaBounds, ScopeVariablesAreHeld) {
+  std::string source;
+  for (std::size_t i = 0; i < 100; ++i) {
+    source += "{% set v" + std::to_string(i) + " = 1 %}";
+  }
+  jinja::Limits limits;
+  limits.max_live_bytes = 1024;
+  const auto r = Render(source, {}, limits);
+  EXPECT_EQ(Failed(r, &jinja::Error::code), jinja::Code::kLimit);
+  Variables variables;
+  for (std::size_t i = 0; i < 100; ++i) {
+    variables.emplace_back("v" + std::to_string(i), jinja::Input::Int(1));
+  }
+  EXPECT_EQ(Failed(Render("ok", variables, limits), &jinja::Error::code), jinja::Code::kLimit);
+}
+
 // A loop's own copy of what it iterates (a filtered list) is held while it
 // runs: loops nested over one long list meet the live bound, not memory's.
 TEST(JinjaBounds, LoopCopiesAreHeld) {

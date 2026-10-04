@@ -5,6 +5,7 @@
 import io
 import os
 import pathlib
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -276,6 +277,77 @@ class Provenance(unittest.TestCase):
         for name, notice in records["notices"].items():
             with self.subTest(notice=name):
                 self.assertGreater(len(package.extract(notice["extract"], sdk.root)), 100)
+
+
+class Purge(unittest.TestCase):
+    """Run the real purge script with scratch paths and credential-command shims."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = pathlib.Path(self._tmp.name)
+        self.data = self.root / "data"
+        self.spill = self.data / "spill"
+        (self.spill / "conversations" / "a").mkdir(parents=True)
+        (self.spill / "conversations" / "a" / "record").write_text("tokens")
+        (self.data / "models").mkdir()
+        (self.data / "models" / "keep").write_text("model")
+        self.victim = self.root / "victim"
+        (self.victim / "conversations").mkdir(parents=True)
+        (self.victim / "conversations" / "keep").write_text("protected")
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        self.marker = self.root / "credentials"
+        runuser = self.bin / "runuser"
+        runuser.write_text(f"#!{sys.executable}\n"
+                           "import os, pathlib, subprocess, sys\n"
+                           "assert sys.argv[1:5] == ['-u', 'jitllm', '--', 'rm']\n"
+                           "pathlib.Path(os.environ['PURGE_CREDENTIALS']).write_text('jitllm')\n"
+                           "env = dict(os.environ, PURGE_DROPPED='1')\n"
+                           "sys.exit(subprocess.run(sys.argv[4:], env=env).returncode)\n")
+        runuser.chmod(0o755)
+        rm = self.bin / "rm"
+        rm.write_text(f"#!{sys.executable}\n"
+                      "import os, pathlib, subprocess, sys\n"
+                      "if os.environ.get('PURGE_RACE') == '1':\n"
+                      "    spill = pathlib.Path(os.environ['PURGE_SPILL'])\n"
+                      "    spill.rename(spill.with_name('oldspill'))\n"
+                      "    spill.symlink_to(os.environ['PURGE_VICTIM'], target_is_directory=True)\n"
+                      "    if os.environ.get('PURGE_DROPPED') == '1':\n"
+                      "        sys.exit(1)  # simulate the protected directory refusing this user\n"
+                      "sys.exit(subprocess.run(['/bin/rm', *sys.argv[1:]]).returncode)\n")
+        rm.chmod(0o755)
+        source = (TOOLS.parent / "packaging" / "debian" / "postrm").read_text()
+        source = source.replace("/var/lib/jitllm", str(self.data))
+        source = source.replace("/usr/sbin/runuser", str(runuser))
+        source = source.replace("/run/systemd/system", str(self.root / "no-systemd"))
+        source = source.replace("/usr/bin/deb-systemd-helper", str(self.root / "no-helper"))
+        self.script = self.root / "postrm"
+        self.script.write_text(source)
+        self.env = dict(os.environ, DPKG_ROOT="", PATH=f"{self.bin}:{os.environ['PATH']}",
+                        PURGE_CREDENTIALS=str(self.marker), PURGE_SPILL=str(self.spill),
+                        PURGE_VICTIM=str(self.victim))
+
+    def purge(self, race=False):
+        return subprocess.run(["sh", str(self.script), "purge"],
+                              env=dict(self.env, PURGE_RACE="1" if race else "0"),
+                              capture_output=True, text=True, timeout=10)
+
+    def test_default_conversations_deleted_as_service_user_only(self):
+        result = self.purge()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.marker.read_text(), "jitllm")
+        self.assertFalse((self.spill / "conversations").exists())
+        self.assertTrue((self.data / "models" / "keep").exists())
+        self.assertTrue((self.victim / "conversations" / "keep").exists())
+
+    def test_parent_link_swap_cannot_gain_root_deletion(self):
+        # rm's shim swaps the owner-controlled parent after postrm's link checks.
+        # A privileged rm deletes the victim; the credential shim refuses it.
+        result = self.purge(race=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.marker.read_text(), "jitllm")
+        self.assertTrue((self.victim / "conversations" / "keep").exists())
 
 
 if __name__ == "__main__":

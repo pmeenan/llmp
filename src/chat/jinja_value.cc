@@ -7,6 +7,7 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -314,6 +315,39 @@ int Compare3(std::string_view a, std::string_view b) {
     return 0;
   }
   return c < 0 ? -1 : 1;
+}
+
+// Compare without rounding an int64 to double. Outside this half-open
+// range the float orders directly; inside it conversion to int64 is safe
+// and preserves the float's integer part, including either signed zero.
+std::partial_ordering IntegerFloat(std::int64_t i, double f) {
+  if (std::isnan(f)) {
+    return std::partial_ordering::unordered;
+  }
+  if (f >= 0x1p63) {
+    return std::partial_ordering::less;
+  }
+  if (f < -0x1p63) {
+    return std::partial_ordering::greater;
+  }
+  const auto whole = static_cast<std::int64_t>(f);
+  if (i != whole) {
+    return i <=> whole;
+  }
+  return static_cast<double>(i) <=> f;
+}
+
+std::partial_ordering NumericOrder(const Value& a, const Value& b) {
+  if (a.kind() == Kind::kFloat && b.kind() == Kind::kFloat) {
+    return a.number() <=> b.number();
+  }
+  if (b.kind() == Kind::kFloat) {
+    return IntegerFloat(a.integer(), b.number());
+  }
+  if (a.kind() == Kind::kFloat) {
+    return 0 <=> IntegerFloat(b.integer(), a.number());
+  }
+  return a.integer() <=> b.integer();
 }
 
 }  // namespace
@@ -733,10 +767,7 @@ bool Equal(const Value& a, const Value& b, Arena& arena) {
       const auto& y = b.str().text;
       return x.size() == y.size() && arena.Work(x.size()) && x == y;
     }
-    if (a.kind() == Kind::kFloat || b.kind() == Kind::kFloat) {
-      return a.number() == b.number();
-    }
-    return a.integer() == b.integer();
+    return NumericOrder(a, b) == 0;
   }
   if (a.kind() != b.kind()) {
     return false;
@@ -797,10 +828,7 @@ std::expected<bool, Error> Less(const Value& a, const Value& b, Arena& arena) {
     return false;
   }
   if (a.is_number() && b.is_number() && a.kind() != Kind::kBigInt && b.kind() != Kind::kBigInt) {
-    if (a.kind() == Kind::kFloat || b.kind() == Kind::kFloat) {
-      return a.number() < b.number();
-    }
-    return a.integer() < b.integer();
+    return NumericOrder(a, b) < 0;
   }
   if (a.is_string() && b.is_string()) {
     if (!arena.Work(std::min(a.str().text.size(), b.str().text.size()))) {

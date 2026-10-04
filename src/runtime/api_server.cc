@@ -1902,11 +1902,15 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
                 soon(ch.queued_at + options_.keepalive);
               }
             } else if (ch.head_sent) {
-              if (now >= ch.last_out + options_.keepalive) {
+              // Pending bytes already keep the stream alive as soon as the
+              // client reads. A paused reader must not accumulate comments
+              // forever outside the generation's bounded output buffer.
+              const bool pending = c.pending_output() || !ch.out.empty();
+              if (!pending && now >= ch.last_out + options_.keepalive) {
                 ch.PutBody(": keepalive\n\n");
                 added = true;
               }
-              soon(ch.last_out + options_.keepalive);
+              soon(pending ? now + options_.keepalive : ch.last_out + options_.keepalive);
             }
           }
         }
@@ -1918,12 +1922,19 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
     }
   }
   std::size_t held = 0;
+  std::size_t output = 0;
   for (const auto& [id, c] : connections_) {
     if (!c->dead) {
       held += c->in.capacity() + c->wbuf.capacity();
+      output += c->wbuf.size() - c->woff;
+      const std::scoped_lock lock(mutex_);
+      if (c->channel) {
+        output += c->channel->out.size() + c->channel->body.size();
+      }
     }
   }
   held_bytes_.store(held, std::memory_order_relaxed);
+  output_bytes_.store(output, std::memory_order_relaxed);
   return next;
 }
 

@@ -451,6 +451,8 @@ class Server {
   // by capacity), as of the I/O thread's last pass (at least once a
   // second). Between requests a connection keeps at most 16 KiB of each.
   std::size_t held_bytes() const { return held_bytes_.load(std::memory_order_relaxed); }
+  // Response bytes still waiting for sockets, as of the same I/O pass.
+  std::size_t output_bytes() const { return output_bytes_.load(std::memory_order_relaxed); }
   // The request memory pool (ServerOptions::memory), and what is charged
   // to it now (requests' bodies, parses, queued requests, unread output
   // and responses).
@@ -589,6 +591,7 @@ class Server {
   Clock::time_point out_of_files_logged_;
   bool draining_ = false;
   std::atomic<std::size_t> held_bytes_{0};  // written by the I/O thread, read by any
+  std::atomic<std::size_t> output_bytes_{0};
 
   // Under mutex_: the queue, every channel's shared state, stopping_,
   // the watchdog and the running request.
