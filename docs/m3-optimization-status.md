@@ -164,7 +164,15 @@ at completed units and resume their exact continuations after one substitute
 cohort ([model turns](experiments/model-turns/README.md)); literal completions
 now join those cohorts, with scores and response state preserved across
 switches ([controls](experiments/literal-batching/README.md)). M3 remains open for the performance/quality and
-concurrency items above, the final swap/client gate and frozen record, and
+concurrency items above, the final image-inclusive swap gate and frozen record, and
 the deferred workstation/package checks. No package ships before the owed
 checks. There is no claim here that all review suggestions, native pipeline
 restoration, or the M3 gate are complete.
+
+
+The [standard-client criterion passes](experiments/m3-standard-client/README.md)
+on 2026-10-04: unmodified OpenAI SDK 3.3.1 completes DeepSeek → Qwen →
+DeepSeek and streamed Qwen, matching the native controls' visible text,
+reasoning and token accounting with natural stops. Production identity,
+client isolation and strong retirement controls pass. This does not close
+the separate performance/quality or image-inclusive swap criteria.

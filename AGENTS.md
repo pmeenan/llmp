@@ -303,8 +303,9 @@ used fully: plans and graphs are uncapped inside the budget, idle
 conversations spill and resume exactly, and one reclaim order by measured
 cost gives back under pressure
 ([memory-pressure](docs/experiments/memory-pressure/README.md)). Qwen
-same-history acceptance, the remaining native prefill gap, final swap/client
-gate and frozen M3 record remain open. Workstation checks are deferred
+same-history acceptance, the remaining native prefill gap, final image-inclusive swap
+gate and frozen M3 record remain open. The [standard-client gate](docs/experiments/m3-standard-client/README.md)
+passes through the unchanged OpenAI SDK, including model switches and streaming. Workstation checks are deferred
 until implementations settle; package checks remain owed before shipment.
 
 M3.5 follows M3: the approved 13 model checkpoints, legacy fixtures, Bonsai,

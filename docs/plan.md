@@ -1576,7 +1576,11 @@ it appears.
     each turn's new tokens, including with a reasoning model whose client
     drops earlier reasoning.
 - A standard OpenAI-compatible client completes a chat with each LLM
-  through the minimal route, swapping between them.
+  through the minimal route, swapping between them. **Passed 2026-10-04**:
+  the unchanged OpenAI SDK 3.3.1 completes DeepSeek → Qwen → DeepSeek,
+  then Qwen streaming; visible/reasoning channels and token counts equal
+  native controls, with natural stops and clean retirement
+  ([standard client](experiments/m3-standard-client/README.md)).
 - The source-lock widening, the swap path and the chat route's request
   parser pass their adversarial challenge (heavy path).
 
