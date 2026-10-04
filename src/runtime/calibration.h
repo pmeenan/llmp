@@ -26,7 +26,7 @@
 // What is measured, passively, from a model's first uses
 // (CalibrationSamples): its prefill and decode speeds at short context
 // (the floors are a third of them, the margin for depth), prefill's cost a
-// GiB of the state it builds (the reclaim order's recompute cost),
+// token (the reclaim order's recompute cost),
 // DeepSeek's draft-verify against plain wave times at each width, and
 // Qwen3.8's three-draft against two-draft step times. A value is recorded
 // once enough samples agree; it is in force from the next registration,
@@ -72,8 +72,13 @@ struct CalibrationKey {
 
 // The settings a measurement depends on, as resolved without calibration
 // (override, derived or fallback): speculation, draft rows, prefill chunk
-// rows, request slots, the output-A/HCA prefill and the wave form. Another
-// configuration of them makes a record stale.
+// rows, request slots, the output-A/HCA prefill and the wave form; Qwen's
+// wave lanes, effective draft vocabulary, shared draft cap, joined-draft
+// limit, wave read alignment and depth cost ratio. Another configuration
+// of them makes a record stale. The depth ratio here is resolved without
+// calibration, so the recorded ratio does not invalidate its own key.
+// Override presence for the chunk, slot cap and depth ratio also matters:
+// setting the fallback value explicitly bypasses a calibrated value.
 std::string MeasuredWith(const ModelSettings& s);
 
 // This build's identity: its version, and for a tree without Git metadata

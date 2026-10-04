@@ -295,7 +295,10 @@ keyed by the artifact, drafter, device and driver
 (`providers::DeviceIdentity`), build (its version, and for an
 uncommitted or untracked tree the executable's size and time) and the
 settings the measurements depend on (speculation, draft rows, prefill
-chunk, request slots, the output-A/HCA prefill, the wave form); a stale
+chunk, request slots, the output-A/HCA prefill, the wave form; Qwen's wave
+lanes, effective draft vocabulary, shared draft cap, joined-draft limit,
+read alignment and uncalibrated depth-cost ratio, including override presence
+for the calibrated chunk, slot cap and depth ratio); a stale
 record is not used, a corrupt or foreign one refused, both re-measured,
 and deleting the file resets it
 ([calibration](runtime-serving.md#calibration)). Measured passively from

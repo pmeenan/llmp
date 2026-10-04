@@ -80,11 +80,18 @@ std::string MeasuredWith(const ModelSettings& s) {
   };
   std::string measured = std::format(
       "speculation={} draft_rows={} prefill_chunk={} max_slots={} prefill_outa_hca={}/{} "
-      "wave_form={}",
+      "wave_form={} prefill_chunk_override={} max_slots_override={}",
       s.speculation.value, s.draft_rows.value, s.prefill_chunk.value, s.max_slots.value,
-      s.prefill_outa_hca.value, s.prefill_outa_hca_partial.value, form());
+      s.prefill_outa_hca.value, s.prefill_outa_hca_partial.value, form(),
+      s.prefill_chunk.source == SettingSource::kOverride,
+      s.max_slots.source == SettingSource::kOverride);
   if (s.architecture == "qwen4exp") {
-    measured += std::format(" wave_lanes={}", s.wave_lanes.value);
+    measured += std::format(
+        " wave_lanes={} draft_vocab={} shared_wave_depth={} draft_wave_max={} "
+        "wave_read_align={} depth_cost_ratio={} depth_cost_ratio_override={}",
+        s.wave_lanes.value, s.draft_vocab.value, s.shared_wave_depth.value, s.draft_wave_max.value,
+        s.wave_read_align.value, s.depth_cost_ratio.value,
+        s.depth_cost_ratio.source == SettingSource::kOverride);
   }
   return measured;
 }

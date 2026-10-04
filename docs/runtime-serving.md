@@ -226,7 +226,7 @@ directory, written to a new file, synced and renamed over the old):
 ```json
 {"format":"jitllm-model-calibration-v1","artifact":"8a355bfb…","drafter":"dd2d3f9c…",
  "device":"NVIDIA GB10 sm_121, driver 580.95.05, CUDA 13.0","build":"0.3.0-dev.12+g…",
- "settings":"speculation=true draft_rows=3 prefill_chunk=4096 max_slots=4 prefill_outa_hca=true/true wave_form=auto",
+ "settings":"speculation=true draft_rows=3 prefill_chunk=4096 max_slots=4 prefill_outa_hca=true/true wave_form=auto prefill_chunk_override=false max_slots_override=false",
  "values":{"prefill_floor_tok_s":333,"decode_floor_tok_s":7,
            "recompute_ms_per_token":1.25,"wave_costs":[2.08,null,2.81],"depth_cost_ratio":1.1}}
 ```
@@ -235,9 +235,20 @@ directory, written to a new file, synced and renamed over the old):
 names what the measurements depend on, as resolved without calibration
 (an override, a derived value or the fallback): speculation (off with
 `--plain`), draft rows, prefill chunk rows, request slots, the
-output-A/HCA prefill and the wave form. `build` is the version; for a tree
-without Git metadata or with uncommitted changes, whose version stays the
-same between builds (`0.1.0-dev+unknown`), it adds the executable's size
+output-A/HCA prefill and the wave form.
+For Qwen it also includes wave lanes, effective `draft_vocab`,
+`shared_wave_depth`, `draft_wave_max`, `wave_read_align` and the
+uncalibrated `depth_cost_ratio`. These alter the paid work or adaptive
+policy; a change makes the old measurements stale. Override presence for
+the calibrated chunk, slot cap and depth ratio is also keyed: setting a
+fallback value explicitly can bypass a different calibrated value. The
+ratio used in the key is the override or fallback, so a recorded ratio does not invalidate
+itself. The record format stays v1; earlier dependency strings are
+stale and are measured again.
+
+`build` is the version; for a tree without Git metadata or with uncommitted
+changes, whose version stays the same between builds (`0.1.0-dev+unknown`),
+it adds the executable's size
 and modification time, so each rebuild measures again. The record is
 in force from the next registration, never mid-service, so a running
 schedule never changes with wall time; the start logs whether it is in

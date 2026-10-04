@@ -40,7 +40,8 @@ CalibrationKey Key() {
           .build = "0.3.0-dev.1+g1234567",
           .settings =
               "speculation=true draft_rows=3 prefill_chunk=4096 max_slots=4 "
-              "prefill_outa_hca=true/true wave_form=auto"};
+              "prefill_outa_hca=true/true wave_form=auto prefill_chunk_override=false "
+              "max_slots_override=false"};
 }
 
 Calibration Measured() {
@@ -111,6 +112,145 @@ TEST(Calibration, ChangingQwenWaveLanesInvalidatesItsMeasurements) {
   EXPECT_FALSE(read.calibration.has_value());
   EXPECT_FALSE(read.refused);
   EXPECT_THAT(read.note, StartsWith("stale"));
+}
+
+TEST(Calibration, ChangingQwenDraftOrWavePolicyInvalidatesItsMeasurements) {
+  jitllm::runtime::ModelSettings measured;
+  measured.architecture = "qwen4exp";
+  measured.draft_vocab.value = 47172;
+  measured.shared_wave_depth.value = 2;
+  measured.draft_wave_max.value = 2;
+  measured.wave_read_align.value = 2048;
+  measured.depth_cost_ratio.value = 1.16;
+  CalibrationKey original = Key();
+  original.settings = jitllm::runtime::MeasuredWith(measured);
+  const std::string text = FormatCalibration(Measured(), original);
+  ASSERT_TRUE(ParseCalibration(text, original).calibration.has_value());
+  for (int which = 0; which < 5; ++which) {
+    SCOPED_TRACE(which);
+    auto changed = measured;
+    switch (which) {
+      case 0:
+        changed.draft_vocab.value = 16384;
+        break;
+      case 1:
+        changed.shared_wave_depth.value = 1;
+        break;
+      case 2:
+        changed.draft_wave_max.value = 4;
+        break;
+      case 3:
+        changed.wave_read_align.value = 4096;
+        break;
+      default:
+        changed.depth_cost_ratio.value = 1.2;
+        break;
+    }
+    CalibrationKey current = original;
+    current.settings = jitllm::runtime::MeasuredWith(changed);
+    const auto read = ParseCalibration(text, current);
+    EXPECT_FALSE(read.calibration.has_value());
+    EXPECT_FALSE(read.refused);
+    EXPECT_THAT(read.note, StartsWith("stale"));
+  }
+}
+
+TEST(Calibration, QwenKeysEffectiveHeadRowsWithoutItsCalibratedRatio) {
+  jitllm::config::ModelEntry entry;
+  entry.name = "qwen";
+  entry.artifact = Key().artifact;
+  entry.drafter = Key().drafter;
+  jitllm::runtime::ArtifactFacts facts;
+  facts.architecture = "qwen4exp";
+  facts.drafter_architecture = "qwen4exp-mtp";
+  facts.drafter_selected_rows = 47172;
+  const auto initial = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(initial.has_value());
+  CalibrationKey key = Key();
+  key.settings = jitllm::runtime::MeasuredWith(*initial);
+  const std::string text = FormatCalibration(Measured(), key);
+  for (const std::int64_t requested : {0, 65536}) {
+    entry.overrides["draft_vocab"] = requested;
+    const auto uncalibrated = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+    ASSERT_TRUE(uncalibrated.has_value());
+    EXPECT_EQ(uncalibrated->draft_vocab.value, 47172U);
+    CalibrationKey current = key;
+    current.settings = jitllm::runtime::MeasuredWith(*uncalibrated);
+    const auto read = ParseCalibration(text, current);
+    ASSERT_TRUE(read.calibration.has_value()) << read.note;
+    const Calibration recorded = read.calibration.value_or(Calibration{});
+    const auto resolved = jitllm::runtime::ResolveSettings(entry, facts, &recorded, false);
+    ASSERT_TRUE(resolved.has_value());
+    EXPECT_EQ(resolved->depth_cost_ratio.value, 1.1);
+    EXPECT_EQ(resolved->depth_cost_ratio.source, jitllm::runtime::SettingSource::kCalibrated);
+    // Registration's next lookup resolves without calibration again.
+    const auto next = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+    ASSERT_TRUE(next.has_value());
+    EXPECT_EQ(jitllm::runtime::MeasuredWith(*next), key.settings);
+  }
+  entry.overrides["draft_vocab"] = std::int64_t{16384};
+  const auto smaller = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(smaller.has_value());
+  CalibrationKey changed = key;
+  changed.settings = jitllm::runtime::MeasuredWith(*smaller);
+  EXPECT_FALSE(ParseCalibration(text, changed).calibration.has_value());
+  // An earlier v1 Qwen record omitting these policy dependencies is stale,
+  // rather than corrupt, even when every other key component still agrees.
+  CalibrationKey old = key;
+  const auto policy = old.settings.find(" draft_vocab=");
+  ASSERT_NE(policy, std::string::npos);
+  old.settings.erase(policy);
+  const auto legacy = ParseCalibration(FormatCalibration(Measured(), old), key);
+  EXPECT_FALSE(legacy.calibration.has_value());
+  EXPECT_FALSE(legacy.refused);
+  EXPECT_THAT(legacy.note, StartsWith("stale"));
+}
+
+TEST(Calibration, ExplicitFallbackOverridesInvalidateCalibratedExecutionPolicy) {
+  jitllm::config::ModelEntry entry;
+  entry.name = "qwen";
+  entry.artifact = Key().artifact;
+  entry.drafter = Key().drafter;
+  jitllm::runtime::ArtifactFacts facts;
+  facts.architecture = "qwen4exp";
+  facts.drafter_architecture = "qwen4exp-mtp";
+  const auto fallback = jitllm::runtime::ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(fallback.has_value());
+  Calibration calibrated = Measured();
+  calibrated.prefill_chunk = 8192;
+  calibrated.max_slots = 8;
+  const auto active = jitllm::runtime::ResolveSettings(entry, facts, &calibrated, false);
+  ASSERT_TRUE(active.has_value());
+  EXPECT_EQ(active->prefill_chunk.value, 8192U);
+  EXPECT_EQ(active->max_slots.value, 8U);
+  EXPECT_EQ(active->depth_cost_ratio.value, 1.1);
+  CalibrationKey original = Key();
+  original.settings = jitllm::runtime::MeasuredWith(*fallback);
+  const std::string text = FormatCalibration(calibrated, original);
+  for (const std::string name : {"prefill_chunk", "max_slots", "depth_cost_ratio"}) {
+    SCOPED_TRACE(name);
+    auto owner = entry;
+    if (name == "prefill_chunk") {
+      owner.overrides[name] = static_cast<std::int64_t>(fallback->prefill_chunk.value);
+    } else if (name == "max_slots") {
+      owner.overrides[name] = static_cast<std::int64_t>(fallback->max_slots.value);
+    } else {
+      owner.overrides[name] = fallback->depth_cost_ratio.value;
+    }
+    const auto uncalibrated = jitllm::runtime::ResolveSettings(owner, facts, nullptr, false);
+    ASSERT_TRUE(uncalibrated.has_value());
+    CalibrationKey overridden = original;
+    overridden.settings = jitllm::runtime::MeasuredWith(*uncalibrated);
+    const auto changed = ParseCalibration(text, overridden);
+    EXPECT_FALSE(changed.calibration.has_value());
+    EXPECT_FALSE(changed.refused);
+    EXPECT_THAT(changed.note, StartsWith("stale"));
+    // Removing an override can also enable a different calibrated policy.
+    const auto removed = ParseCalibration(FormatCalibration(calibrated, overridden), original);
+    EXPECT_FALSE(removed.calibration.has_value());
+    EXPECT_FALSE(removed.refused);
+    EXPECT_THAT(removed.note, StartsWith("stale"));
+  }
 }
 
 // Measured for another device, driver, build, drafter or measured-with
