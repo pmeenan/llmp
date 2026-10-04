@@ -403,3 +403,42 @@ complete per-slot hashes, completion and capture/replay as well as medians.
 | Four-slot candidate | `d27c4569c88264478371f46ff71a622c8703c25330fbf0f3f00bde68a8937730` |
 | Controller | `82a97a0ab9514cf87f64633550d30476dbdd14c9cc2f07a6e1938517e1567286` |
 | Candidate patch | `a3bcd071b6c69c7c5cf54c6755f8d84f6f3a9266454b7f074976eae4b8ad703c` |
+
+
+## Plain versus speculative C4 — 2026-10-04
+
+The existing speculative policy remains the faster form for this fresh
+8K HTTP screen. Same-binary speculative/plain/speculative arms complete
+32.1499 / 27.5954 / 31.8453 tokens/s: speculation gains 15.95% over plain,
+with +0.957% speculative bookend wall movement. This does not justify
+switching the representative four-request cell to plain decoding. A chooser
+inside speculative Qwen remains unmeasured; this is a service-level
+`speculation` toggle, without preserving/funding an idle drafter in the
+plain arm or measuring the cost of switching forms mid-response.
+
+The same Spark B, production runtime, artifacts, 65,536-entry prefix head,
+context 33,792, chunk 4,096, slots four, lanes, frozen common-v2 inputs,
+excluded prime and buffered client apply as in the fast-start Mia refresh
+above. Every measured request pays for 8,256 uncached prompt tokens and
+256 outputs. All 12 return HTTP 200, length finishes and explicit zero cached
+tokens, with no sampler errors; all services return zero and are reaped,
+and every strong admission and retirement probe passes. The plain service
+registers the configured drafter artifact but disables speculation; it
+funds no live drafter. No claim of output equality between forms or quality
+bound qualification follows. Arrival-dependent wave composition remains.
+
+| Arm | Burst wall s | Completed tokens/s | Request latencies s, in input order | Peak MemAvailable drop GiB |
+| --- | ---: | ---: | --- | ---: |
+| Speculative before | 31.8508 | 32.1499 | 30.9368, 31.4059, 31.8503, 29.9525 | 81.280 |
+| Plain | 37.1076 | 27.5954 | 35.8523, 36.8238, 37.1076, 36.3887 | 78.444 |
+| Speculative after | 32.1554 | 31.8453 | 31.0540, 30.3588, 32.1552, 30.8798 | 81.386 |
+
+The installed GPU-supervised `qwen-plain-c4-screen` job completes
+successfully and is waited on. Raw records and the private controller are
+external at `~/scratch/qwen-plain-screen/` on Spark B and
+`/home/pmeenan/scratch/jitllm-m3-qwen-plain-screen-2026-10-04/` locally.
+The controller SHA-256 is
+`603f33e750c17ca5b4b76869dd13410ab070d4b4b8778404e09a649a793a3d51`;
+runtime, source inventory, frozen client and inputs retain the hashes above.
+This diagnostic adds no production implementation or adopted harness;
+unused inherited Mia options do not form a qualified launcher contract.
