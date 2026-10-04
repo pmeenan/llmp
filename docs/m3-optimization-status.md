@@ -3,18 +3,21 @@
 
 # M3 optimization status
 
-Snapshot: 2026-10-04. **Neither remaining engine comparison
-gap is closed.** Pipeline reproduction, a useful individual replacement,
+Snapshot: 2026-10-04. **Remaining Qwen/DeepSeek speed gaps are accepted
+for M3 and deferred to M9 by the owner.** The measurements still show those
+gaps. Pipeline reproduction, a useful individual replacement,
 and a selected serving default are different outcomes. This page tracks
 closure; individual reports retain conditions and evidence.
 
-**Tuning paused, 2026-10-04.** The owner suggested pinning Qwen/DeepSeek
-optimization unless a large win was already queued. Experiments are stopped
-at production main `3decb36`; selected defaults stay in place. No queued
-candidate has a proven large end-to-end gain. This pauses investigation;
-it does not waive an exit criterion or mark M3 complete. Known speed misses,
-reference-quality qualification and broader same-history evidence remain
-open. The frozen M3 record and owed workstation/package checks remain pending.
+**Owner speed exception, 2026-10-04.** The owner explicitly accepts all
+remaining Qwen/DeepSeek speed gaps for M3 and defers further optimization to
+M9's full-engine pass. Experiments stopped at production main `3decb36`;
+selected defaults stay in place. No queued candidate has a proven large
+end-to-end gain. Known speed misses remain recorded; the exception does
+not turn them into parity passes or mark M3 complete. Reference-quality
+qualification, the frozen M3 record and owed build/package qualification
+remain separate. Broader same-history acceptance is a retained diagnostic
+investigation.
 
 The latest [paired shared-expert MXFP8 screen](experiments/qwen38-shared-mxfp8/README.md)
 illustrates the distinction: operator latency falls 28.64%, but the paid C4
@@ -138,7 +141,8 @@ the later default-on output-A/HCA qualification summarized below.
 Existing short and long oracle/PPL controls, forced rejections, sampled
 harness distributions and exact own-path restoration remain evidence for
 their pinned profiles. Qwen's owner-accepted short-prompt divergence and
-DeepSeek's tie-aware rule remain as documented; this pause adds no exception.
+DeepSeek's tie-aware rule remain as documented; the owner's speed exception
+changes no correctness, memory or swap bound.
 Final record preparation must distinguish inherited controls from an
 unqualified profile, rather than rerun every historical ladder.
 
@@ -147,7 +151,7 @@ unqualified profile, rather than rerun every historical ladder.
 | Final same-reference numerical qualification | Qwen's concurrent wave comparisons and the matched DeepSeek serving timings do not judge oracle likelihood or near-tie bounds. Qualify the final claimed concurrent profiles under the existing bounds; full-row equality to a native control alone does not establish cross-engine quality. Preserve the completed solo/long-profile controls. |
 | Sampled route/cohort qualification | Harness plain/speculative histograms pass their registered bounds; runtime seed repeat is a different check. Map those controls to the frozen route/cohort sampling path before claiming that configuration's distribution gate. Run a focused missing control only where that mapping is unsupported. |
 | Qwen same-history acceptance (diagnostic investigation) | The matched all-cold collection accepts 9/12 in each engine at four adjacent 32K anchors, with a separate p3 repeat. Broader histories, contexts and steps remain unqualified. Broader parity is a retained investigation, not an additional exit criterion; this diagnostic does not replace target-quality or speed criteria. |
-| Performance and long-context speed | Qwen's fresh C4 Mia comparison remains about 15% behind; no head clears every strict long-context rung. DeepSeek's matched 7K plain cells are useful but do not isolate all prefill/decode or speculative comparisons. The existing criteria remain open, including their concurrency and memory scopes. |
+| Speed exception and M9 follow-up | Qwen's fresh C4 Mia comparison remains about 15% behind; no head clears every strict long-context rung. DeepSeek's matched 7K plain cells are useful but do not isolate all prefill/decode or speculative comparisons. The owner accepts all remaining Qwen/DeepSeek speed gaps for M3, including concurrent and long-context speed/scaling; further optimization moves to M9. Memory and correctness criteria remain unchanged. |
 | Frozen record and shipment checks | Current swap/client and long-state controls pass on their recorded binaries. Assemble their source/profile and inherited-control mapping in the M3 record. Deferred workstation/package checks are still owed before shipment. |
 
 The next useful numerical acceptance control is a bounded current-profile
@@ -155,9 +159,10 @@ Qwen concurrent verify check on a frozen 32K history against the registered
 oracle/near-tie rule. It must identify the actual physical draft head and
 wave shape, retain conditioned inputs, and record reference cache paths and
 repeats. This is a recommendation, not a queued job or a new tolerance.
-A broader acceptance study, oracle-noise measurement, additional stage ports,
-head certification and calibration of other profiles remain separate
-investigations; none is converted into a pass by pausing tuning.
+Additional stage ports, speed-focused head certification and calibration
+of other profiles move to M9's full-engine optimization pass. Broader acceptance and oracle-noise
+studies remain diagnostic investigations; none is converted into a
+correctness pass by the speed exception.
 
 ## Independent review recommendations
 
@@ -237,8 +242,8 @@ capture/replay and 1,404 recurrence cohort launches. Verify median is
 adopted. The isolated serial-launch gain does not establish a wave gain. A separate
 sparse-attention cohort factor would retain per-request selection and caches;
 it is also unstarted and is distinct from the rejected shared-cell union.
-These are retained optimization leads, not queued work after the tuning
-pause. Any resumed experiment should use one representative paid screen,
+These are retained leads for M9's full-engine optimization pass, not queued
+M3 work. Any resumed experiment should use one representative paid screen,
 record reference variation before attributing a stable proposal deficit,
 and expand only for an unresolved decision or selected implementation's
 qualification. No isolated operator gain supplies an end-to-end gate pass.
@@ -248,8 +253,8 @@ swap controls are complete. Pending model switches now pause chat cohorts
 at completed units and resume their exact continuations after one substitute
 cohort ([model turns](experiments/model-turns/README.md)); literal completions
 now join those cohorts, with scores and response state preserved across
-switches ([controls](experiments/literal-batching/README.md)). M3 remains open for the performance/quality and
-concurrency items above, the frozen record, and
+switches ([controls](experiments/literal-batching/README.md)). M3 remains open for the correctness and
+concurrency qualification above, the frozen record, and
 the deferred workstation/package checks. No package ships before the owed
 checks. There is no claim here that all review suggestions, native pipeline
 restoration, or the M3 gate are complete.
@@ -267,4 +272,5 @@ passes all 32 rows in one production process, with corrected fresh-token
 endpoints: worst LLM and prepared swap 9.853 s. Restored 8K states and
 16-token continuations, the pinned image control and four regenerated images
 are exact; prepared 8K LLM graphs replay. This closes the current
-implementation's final swap check, without closing the speed/quality gate.
+implementation's final swap check. It does not establish numerical
+qualification or turn the accepted speed gaps into measured parity.

@@ -142,15 +142,18 @@ without a re-prefill, and each model is as correct, as fast and as lean as
 its reference. A full swap: the outgoing model leaves, and no expert is
 demand-paged. The owner's first real work after M2 (D-087).
 
-**Tuning paused, 2026-10-04:** the owner suggested pinning Qwen/DeepSeek
-optimization unless a large win was already queued; experiments are stopped
-at production main `3decb36`, with selected defaults retained. No queued
-candidate has a proven large end-to-end gain. Known performance misses,
-long-context speed and final concurrent reference-quality qualification
-remain open, as do broader same-history acceptance and the frozen record.
+**Owner speed exception, 2026-10-04:** the owner accepts all remaining
+Qwen/DeepSeek speed gaps for M3 and defers further optimization to M9's
+full-engine pass. Experiments stopped at production main `3decb36`, with
+selected defaults retained; no queued candidate has a proven large
+end-to-end gain. The recorded speed misses remain evidence, not parity
+passes. Final concurrent reference-quality qualification, the frozen
+record and owed build/package checks remain open. Broader same-history
+acceptance remains a diagnostic investigation.
 The [acceptance audit](m3-optimization-status.md#acceptance-evidence-still-owed)
-separates missing evidence from retained optimization leads. No exit bound
-or quality exception changes, and this milestone remains in progress.
+separates missing correctness evidence from optimization deferred to M9.
+The speed exception changes no correctness, memory or swap bound, and this
+milestone remains in progress.
 
 **Entry:** M2 exit. Before a model's first native evaluation, its
 checkpoint, reference engines and their configurations are pinned and their
@@ -1582,6 +1585,11 @@ it appears.
   admission limits and memory. Establish parity in both scenarios before
   claiming a performance gate passes; existing single-request results
   qualify only that scenario. Do not count streamed chunks as tokens.
+  *Owner exception, 2026-10-04:* remaining Qwen/DeepSeek speed gaps,
+  including solo/concurrent and plain/speculative prefill/decode, are
+  accepted for M3 and deferred to M9's full-engine optimization pass.
+  Recorded misses remain visible; this is not a measured parity pass.
+  Memory and correctness bounds are unchanged.
 - **Long context** (the owner, 2026-09-29):
   - **Speed:** at 32K, 64K, 128K and each model's measured one-Spark
     maximum, prefill and decode (plain and speculative) are at least the
@@ -1598,6 +1606,10 @@ it appears.
     463 → ~230 tok/s, decode 22 → 10.8), while llama.cpp's sparse path
     stays nearly flat (prefill 286 → 229, decode 18.8 → 14.7 from 32K to
     256K).
+    *Owner exception, 2026-10-04:* remaining Qwen/DeepSeek long-context
+    speed and scaling gaps are accepted for M3 and deferred to M9. Depth
+    correctness, exact saved-state continuation and swap bounds remain
+    required.
   - **Correctness at depth:**
     - greedy tokens match the oracle except near-ties on long real
       prompts (code: a repository's files as context) at 32K and 128K;
@@ -2533,6 +2545,14 @@ partial-retention benefit workload are pinned before acceptance runs
 
 **Scope:**
 
+- [ ] **Full-engine optimization pass** (owner, 2026-10-04): resume the
+      remaining Qwen/DeepSeek prefill, decode, concurrent and long-context
+      speed/scaling work accepted as M3 exceptions. Use the retained
+      [comparisons and leads](m3-optimization-status.md), including whole
+      producer/consumer chains, draft acceptance and state/head delivery.
+      Re-pin profiles and comparators at entry; qualify correctness and
+      paid end-to-end benefit before selecting a change. Frozen unmeasured
+      prototypes carry no adoption or speed claim.
 - [ ] **Larger-than-memory library:** DeepSeek V4 Flash with Qwen3.8 Flash
       Next on one node is the canonical pair (D-036). M3 runs both, with
       their compressed attention and indexers, Qwen3.8's sparse n-gram rows
