@@ -718,7 +718,8 @@
       "revision": "b8439110eec0230facbe4ddf0dffe01b8f769be0",
       "tracked_files": 70,
       "license": "AGPL-3.0-or-later (README); root LICENSE is the AGPL-3.0 text",
-      "license_sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+      "license_sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+      "new_runs": "mia-single-fast-start; this entry preserves the original recipe provenance"
     },
     {
       "id": "vllm-image-default",
@@ -792,6 +793,17 @@
       "built_with": "upstream's .devops/cuda.Dockerfile at the revision, target full, CUDA_VERSION=13.4.1 (upstream's cuda13 images use it), CUDA_DOCKER_ARCH=121a-real (upstream's default list includes 121a-real), on spark-b; llama-server --version: build 11254, commit 8019dc563",
       "includes": "sparse flash-attention prefill for DeepSeek V4 (#29298, dc9879cf) and for Qwen3.8 (#28770, 3cf03257); the ggml_permute stride fix (#29227, c21284cd)",
       "note": "the long-context comparator (docs/experiments/long-context); upstream published no image for b11254 (the newest was b11243); the b10964 image stays the 8K oracle"
+    },
+    {
+      "id": "mia-single-fast-start",
+      "checked": "2026-10-03",
+      "base": "mia-single",
+      "image": "vllm-image-default",
+      "launcher": "mia-launch.py",
+      "launcher_sha256": "c8353f04dc30e5d0f298217edc0ef52ec2f24bcfdb6c396e57a700468760e088",
+      "manifest": "mia-launch.json",
+      "manifest_sha256": "8db60820065dc61dd07d94de430bc5a0734d7019368d14c765d8e9cda2e0e41e",
+      "note": "Required default for new Mia runs (owner 2026-10-02/03); instanttensor0.2.0, mandatory PLE safetensors override, V2 and persistent Triton cache. Historical startup data remains unchanged."
     }
   ]
 }

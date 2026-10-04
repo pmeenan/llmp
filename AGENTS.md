@@ -121,7 +121,8 @@ affected docs. Until then, these govern.
   model combinations, or license permissions. Each slice's check builds
   natively on a Spark. Nothing that runs over 10 minutes (the
   workstation tiers, timing batches, nsys passes) runs unless its result
-  is needed now. (D-011, D-012, D-084, D-085)
+  is needed now. New Mia reference runs use the [pinned fast-start launcher](docs/experiments/fast-swap/baselines.md#default-mia-launcher-for-new-runs-2026-10-03).
+  (D-011, D-012, D-084, D-085)
 - **Apache-2.0 core with license tiers; reuse under actual licenses.**
   jitLLM's own code is Apache-2.0. Any permissive license is allowed in
   the core (D-091), as is MPL-2.0; copyleft lives in optional modules,

@@ -58,6 +58,49 @@ the same greedy request gave different tokens within 3–29 tokens on five of
 the six prompts, so the Qwen3.8 oracle is its deterministic mode
 ([below](#greedy-reference-data)).
 
+## Default Mia launcher for new runs (2026-10-03)
+
+Use [mia-launch.py](mia-launch.py) with [mia-launch.json](mia-launch.json),
+including for correctness and acceptance studies. The owner selected the
+measured fast-start recipe on 2026-10-02 and reaffirmed it on 2026-10-03.
+The tables above retain their original, unpatched startup measurements;
+those launches are historical evidence, not the default for new work.
+
+The launcher pins the original recipe and image, the complete installed
+`instanttensor` 0.2.0 payload, and the PLE loader patch. It selects
+`--load-format instanttensor`, V2 and the persistent Triton cache.
+**The PLE CPU worker must still use safetensors:** its independent checkpoint
+pass must not stage the full model through the GPU beside the main load.
+The [pinned patch](mia-ple-loader.patch) supplies that override. The owner's
+[startup study](../../upstream/vllm.md#start-in-25-min-instead-of-11-load-with-instanttensor-and-persist-tritons-cache)
+measured 151–160 s to readiness after the first launch, 211 s on the first.
+These are that study's numbers, not a new startup measurement.
+
+Both Sparks now retain the recipe and payload at
+`~/.local/share/mia-load-study/{mia-perf,pylib}/`. To prepare another
+checkout, use recipe `b8439110eec0230facbe4ddf0dffe01b8f769be0` and apply
+`mia-ple-loader.patch` with `git apply`; copy the original installed payload
+from a Spark with `rsync -rlpc`. The complete file inventory in the JSON pin
+must match; a different wheel or installation needs its own qualified pin.
+The loader is an external reference dependency, not part of jitLLM's runtime.
+Keep each experiment's original `.env` and explicit inference settings.
+
+Inside an installed `spark-job --gpu` job, launch with:
+
+```sh
+python3 -B /ABS/REPO/docs/experiments/fast-swap/mia-launch.py \
+  --recipe /home/pmeenan/.local/share/mia-load-study/mia-perf \
+  --pylib /home/pmeenan/.local/share/mia-load-study/pylib
+```
+
+Set the experiment's owned container name, port, model/cache/head/depth,
+graph and sampling overrides before this command. Keep the existing
+supervised readiness and owned-container retirement controller around it;
+the launcher replaces only its `start.sh` invocation. Record the actual
+container arguments/environment, mounted loader hashes and generated overlay
+hashes, including its PLE worker, at readiness and after collection.
+Do not infer unchanged logits or throughput merely from faster loading.
+
 ## Conditions
 
 | Item | Value |

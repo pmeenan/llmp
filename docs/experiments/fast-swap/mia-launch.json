@@ -1,0 +1,29 @@
+{
+  "format": "jitllm-mia-launch-v1",
+  "checked": "2026-10-03",
+  "recipe_revision": "b8439110eec0230facbe4ddf0dffe01b8f769be0",
+  "image": "sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8",
+  "loader": "instanttensor",
+  "loader_version": "0.2.0",
+  "loader_license": "Apache-2.0",
+  "recipe_license": "AGPL-3.0-or-later",
+  "ple_generator_sha256": "78756a741b439fe74d3ef6486d60ff5ae0efc05c1725bbe0a6419d9508b79626",
+  "loader_files": {
+    ".lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "instanttensor/_C.cpython-312-aarch64-linux-gnu.so": "b9c16d62cde3fa28f6954d82b9d887e7873e9c4ad31b8915490dafbb26a8d756",
+    "instanttensor/__init__.py": "c907c0eff48f281a47fe2415dc2c6927e5cc2805c0a6e7986083c16fe04dabd8",
+    "instanttensor/_impl.py": "4c5dc40095b859612ff13cb013db1d5f6cfcb21ff2921413cb7cc6c5e0258cb7",
+    "instanttensor-0.2.0.dist-info/INSTALLER": "e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9",
+    "instanttensor-0.2.0.dist-info/METADATA": "ccc3be5795ee869286096a9886e494b90369d1bbfa7bf5ba4df3dfeff2e4b4e2",
+    "instanttensor-0.2.0.dist-info/RECORD": "00b1effda0d75e74da7b45a6330202fe9807647975c07c23a9d4b6184c4e5eeb",
+    "instanttensor-0.2.0.dist-info/REQUESTED": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "instanttensor-0.2.0.dist-info/WHEEL": "0ff5ab1013c270087b2ec4055fd5567cc15c966cfa24eccb41c92e119b5639f7",
+    "instanttensor-0.2.0.dist-info/licenses/LICENSE": "8a931b48d78a5c5fa7911e430ff758b19edf3f4161af6dd3a9a05b4c70437a30",
+    "instanttensor-0.2.0.dist-info/top_level.txt": "665550b2c04e5cb9c238fc1b3baa50ed5522561611bbbd06c8821a628ccbc0ff"
+  },
+  "canonical_recipe": "~/.local/share/mia-load-study/mia-perf",
+  "canonical_pylib": "~/.local/share/mia-load-study/pylib",
+  "inference_policy": "Preserve the experiment's checkpoint, context, sampling, MTP head/depth, DET flags, cache precision and graph settings; this wrapper selects loading and the existing V2 runner only.",
+  "ple_patch": "mia-ple-loader.patch",
+  "ple_patch_sha256": "2166305e4f34d875733ce420856eb0214b2f78984ed1faad31cb594c2222372e"
+}

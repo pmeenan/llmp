@@ -1,0 +1,24 @@
+diff --git a/files/patch_ple_offload.py b/files/patch_ple_offload.py
+index 91d118f..926debd 100644
+--- a/files/patch_ple_offload.py
++++ b/files/patch_ple_offload.py
+@@ -258,6 +258,19 @@ patch("connector.py", [
+ # worker.py: done-flag signalling + memory-mapped packed PLE table.
+ # --------------------------------------------------------------------------
+ patch("worker.py", [
++    (
++        "        loader = get_model_loader(load_config)\n",
++        "        # This pass filters the whole checkpoint for the PLE tensors on\n"
++        "        # the CPU. A GPU-direct loader chosen for the main model would\n"
++        "        # stage every file through GPU memory a second time, beside the\n"
++        "        # main worker's load, which runs one Spark out of memory.\n"
++        "        if load_config.load_format in (\"instanttensor\", \"fastsafetensors\"):\n"
++        "            import copy\n"
++        "\n"
++        "            load_config = copy.copy(load_config)\n"
++        "            load_config.load_format = \"safetensors\"\n"
++        "        loader = get_model_loader(load_config)\n",
++    ),
+     (
+         "import contextlib\n"
+         "import multiprocessing.process\n",

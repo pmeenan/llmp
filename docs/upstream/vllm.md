@@ -48,8 +48,13 @@ comes from vLLM.
   0.2.0; the PLE worker's safetensors override is mandatory. The original
   package and patched recipe are retained at
   `spark:~/.local/share/mia-load-study/{pylib,mia-perf}/`, with the method in
-  `/home/pmeenan/src/mia-load-study/issue-runs.sh`. Historical unpatched
-  runs retain their original provenance.
+  `/home/pmeenan/src/mia-load-study/issue-runs.sh`. The owner reaffirmed
+  this on 2026-10-03: all new runs use the repository
+  [pinned launcher](../experiments/fast-swap/mia-launch.py) and its
+  [complete payload pin](../experiments/fast-swap/mia-launch.json); the
+  [replay instructions](../experiments/fast-swap/baselines.md#default-mia-launcher-for-new-runs-2026-10-03)
+  include the mandatory PLE override. Both Sparks retain the package and
+  patched recipe. Historical unpatched runs retain their original provenance.
 
 ## Lazy safetensors views copy to the GPU at 0.13–0.2 GB/s on the GB10
 
