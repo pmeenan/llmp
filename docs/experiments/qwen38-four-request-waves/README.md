@@ -269,3 +269,87 @@ four funded slots, production draft head/policy. External supervised job
 receipts and raw records are under `~/scratch/qlanes/{screen,quality,
 gguf-screen,gguf-exact-off,gguf-exact-on,final-http,final-mtp}` on Spark B;
 the inherited width screen is under `~/scratch/qx` on Spark.
+
+
+## Fast-start Mia refresh — 2026-10-04
+
+A fresh native/Mia/native C4 cell leaves native **15.01% below Mia's
+completed-token rate**: 32.44 / 31.91 native bookends versus 37.86 tokens/s.
+Native bookend wall movement is +1.66%. This refresh includes the landed
+wave lanes and tighter slot workspace. It measures the remaining gap;
+it does not qualify cross-engine output quality or the whole M3 exit.
+
+Spark B (`spark-56f5`), driver 580.178.04, CUDA 13.4.92, SDK
+`aarch64-e0a0c85c42806fb1`. All three arms use fresh services and state,
+the frozen common-v2 buffered client, four 8,256-token rendered prompts,
+greedy decoding and 256 outputs per request. Each service completes an
+excluded one-output prime before the measured barrier-released burst.
+Rates count usage-reported completed tokens from the first submission
+through the last completed response, paying prefill, generation and queueing.
+There is no streamed time to first token or isolated decode measurement.
+
+| Arm | Burst wall s | Completed tokens/s | Request latencies s, in input order | Peak MemAvailable drop GiB | Ready s |
+| --- | ---: | ---: | --- | ---: | ---: |
+| Native before | 31.5652 | 32.4408 | 30.4729, 29.1460, 31.5638, 31.5644 | 81.285 | 3.145 |
+| Fast-start Mia | 27.0467 | 37.8604 | 27.0424, 27.0464, 26.2092, 25.5980 | 101.421 | 172.239 |
+| Native after | 32.0886 | 31.9117 | 30.9650, 29.6376, 32.0872, 32.0886 | 81.275 | 3.905 |
+
+All 12 measured replies return HTTP 200, 256 outputs, length finishes,
+8,256 prompt tokens and explicit zero cached tokens: 3,072 completed tokens.
+Native bookends have identical content, reasoning and usage for every input.
+Mia supplies complete 256-token output-ID records; native does not claim
+API output IDs. Matching inputs is grounded in the frozen complete native/HF
+rendered-ID controls and pinned template/tokenizer assets, with API counts
+checked again here; Mia also returns complete prompt IDs, but fresh native engine-side capture
+and a fresh cross-engine ID comparison were not performed.
+Native and Mia use different draft and state arithmetic. The fixed quality
+references remain unchanged, and no quality-bound verdict follows from this
+throughput screen.
+
+Native uses the production NVFP4 target `c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93`
+and MTP drafter `8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40`,
+context 33,792, chunk 4,096, max slots four and the 65,536-entry prefix draft
+head. Shared waves draft depth two; a lone request remains adaptive.
+Target KV is F16 and recurrent state F32. The source file inventory matches
+main through `4412786` before and after both native arms; the runtime is the
+final checked literal-cohort implementation (1,543 Spark tests passed).
+
+Mia uses the [pinned fast-start launcher](../fast-swap/baselines.md#default-mia-launcher-for-new-runs-2026-10-03)
+with the original performance policy: determinism off, fixed MTP depth three,
+curated 47,172-entry head, FP8 KV and BF16 recurrent/draft IO, chunk 2,048,
+context 33,792 and max sequences four. Compilation is disabled; decode graphs
+use sizes 4/8/12/16. The image is
+`sha256:fc120ece0a388cc0aa1caad4a9f1cd92113484ab7ec2fd0efadd62585be05bf8`,
+recipe `b8439110eec0230facbe4ddf0dffe01b8f769be0`, with the qualified
+instanttensor 0.2.0 payload, `V2=1` and persistent Triton cache. There is no
+observer patch. The offline HF snapshot and read-only checkpoint mount use
+`Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6`; actual code/vocabulary mount
+hashes and five model assets match their qualification pins before and after.
+All 38 checkpoint/PLE file stat identities also remain unchanged; this is
+not a fresh hash of every weight payload. Readiness takes 172 seconds with
+the retained compilation cache, without a cold page-cache claim.
+
+Memory is sampled every 250 ms from before startup through shutdown. The
+native mean peak MemAvailable drop is 0.801 times Mia's. These are host
+budget measurements, not GPU allocator occupancy. All samplers finish
+without errors. Both native services return zero and are reaped. The Mia launcher is
+retired and reaped; the owned recipe stop returns zero and its container
+is absent. All strong admission and retirement probes pass, and the final
+GPU probe finds no compute process or busy/waiting job.
+
+The installed GPU-supervised job `qwen-fast-serving-c4` completes successfully
+and is waited on. Raw records and the controller remain outside Git at
+`~/scratch/qwen-fast-serving/screen1/` on Spark B and
+`/home/pmeenan/scratch/jitllm-m3-qwen-fast-serving-2026-10-04/` locally.
+Reproduction uses that controller's native-before/Mia/native-after order,
+the canonical launcher and frozen common-v2 inputs from
+`~/scratch/m3-serving-concurrent-r1/inputs-v2/`. This is one bookended screen,
+without a confidence interval or an updated C1/C2 result.
+
+| Identity | SHA-256 |
+| --- | --- |
+| Native runtime | `cc7706fd1d17a3033374b87677ebd384644913b50f0d9426a73b74e394d92f24` |
+| Production source inventory | `62b29cbd9f576cd44d94d5451534d055caac184030e75d0e99fa5640dc958339` |
+| Controller | `c3c0ebe1072d7cd8127ab16d2866dafa148d57011fbce3b2a3f59a4e39c8da07` |
+| Frozen client | `4f76adb8e36bb97e04c30f22d28d8d2ffc985d67aa4621f083ac92fc5e85d8f3` |
+| Frozen input receipt | `d5a35e6341e53de0286cfd777e4fadd707c12cf9d18f95010a4a38ffac0ab59d` |

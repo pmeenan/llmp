@@ -38,7 +38,12 @@ from four requests, with exact full logits and final state on short and
 long fixed histories. The short C4 HTTP screens gain 3.76% with NVFP4/MTP
 and 7.65% with UD-IQ3_XXS plain decode
 ([wave lanes](experiments/qwen38-four-request-waves/README.md#wave-lanes)).
-The NVFP4/Mia concurrency gap above remains open.
+The NVFP4/Mia concurrency gap remains open. A [fresh fast-start Mia C4 screen](experiments/qwen38-four-request-waves/README.md#fast-start-mia-refresh--2026-10-04)
+on 2026-10-04 measures 32.44 / 31.91 native bookends versus 37.86 completed
+tokens/s at 8,256 input tokens: native is 15.01% below Mia, with 1.66% native
+bookend wall movement and peak MemAvailable drop 0.801 times Mia's. Mia
+reaches readiness in 172 seconds. This refresh includes wave lanes and the
+tighter workspace; it does not qualify cross-engine quality.
 
 DeepSeek's [wide IQ2_XXS gate/up pass screens](experiments/deepseek-expert-passes/README.md)
 share weight decoding across four or two tokens with the original warp-row

@@ -1193,7 +1193,11 @@ it appears.
       now run private attention and recurrence concurrently from four requests,
       with exact full logits and initialized state on NVFP4 and GGUF.
       Short C4 HTTP gains 3.76% with NVFP4/MTP and 7.65% with UD-IQ3_XXS;
-      the longer comparison with Mia remains open.
+      the [fresh 8K C4 Mia comparison](experiments/qwen38-four-request-waves/README.md#fast-start-mia-refresh--2026-10-04)
+      measures 32.44 / 31.91 native bookends versus 37.86 completed tokens/s,
+      a remaining 15.01% deficit (172-second fast-start Mia readiness).
+      Native's peak MemAvailable drop is 0.801 times Mia's; this screen
+      supplies no cross-engine quality verdict.
 - [x] **Request slots sized by memory** (the owner, 2026-10-03). A
       model's number of concurrent request slots is no longer fixed at
       four: it follows the memory the node has free for slots (each

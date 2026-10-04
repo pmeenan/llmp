@@ -295,7 +295,7 @@ products of up to 16 rows, MXFP8/routed bit-exact per request; depth 2
 when shared). Against
 current TensorFold NVFP4 it leads at C1/C2 and is level at C4 (25.7 / 29.7 /
 32.2 vs 21.5 / 24.8 / 31.9 completed tok/s, separate sessions), trailing
-legacy Mia 18% at C4. DeepSeek chat batches its requests in exact
+fast-start Mia 15% at C4 in the [fresh comparison](docs/experiments/qwen38-four-request-waves/README.md#fast-start-mia-refresh--2026-10-04). DeepSeek chat batches its requests in exact
 waves (C4 +29.0% plain, +4.5% DSpark; matched replies byte-identical across
 C1/C2/C4) and leads llama.cpp `--parallel 4` on the same GGUF by 42–51%
 ([batching](docs/experiments/deepseek-batching/README.md)). Memory is
