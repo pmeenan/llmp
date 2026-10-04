@@ -17,8 +17,9 @@ evidence updates it in the same change ([workflow](workflow.md)).
 
 - **Served (M3):** registered by `jitllm-runtime` from `[models.<name>]`
   and run by its `chat` and `swap-table` commands
-  ([runtime-serving](runtime-serving.md)). No endpoint exists yet, and
-  M3's exit has not been judged.
+  ([runtime-serving](runtime-serving.md)). The LLMs also serve native Chat
+  Completions and literal Completions on loopback and the tailnet. M3 acceptance is
+  recorded per profile in the [M3 record](m3-record.md).
 - **Harness-only:** runs only in a benchmark harness under `benchmarks/`.
 - **Fixture:** a small M2 test model, harness-only, never served.
 
@@ -26,7 +27,9 @@ evidence updates it in the same change ([workflow](workflow.md)).
 [features.md](features.md) (unsupported, import-only, resident-correct,
 paged-correct, distributed-correct, performance-validated) that the linked
 evidence reaches. Performance-validated means a milestone exit judged it;
-no model is there yet, so measured speeds are given as headlines only.
+an accepted milestone speed exception does not establish measured parity.
+The [M3 record](m3-record.md) keeps the remaining Qwen/DeepSeek gaps and
+the owner's M9 deferral beside the qualification evidence.
 
 ## Summary
 
@@ -98,7 +101,7 @@ are in [tokenizer.md](tokenizer.md#chat-templates).
   | --- | --- |
   | Greedy, plain | runtime (`--plain`) and harnesses |
   | Greedy, speculative with DSpark | runtime (the default with a drafter) and `jitllm_spec_runner` |
-  | Seeded sampling, plain and speculative | `jitllm_spec_runner`, whose distribution checks it passed; the runtime's chat route (`temperature` > 0, D-097), the same sampler, checked there only for repeating by seed |
+  | Seeded sampling, plain and speculative | `jitllm_spec_runner` and the runtime's chat/literal routes; harness histograms qualify the shared sampler, with serving branch/key/resume mapping reviewed ([mapping](experiments/qwen38-concurrent-oracle/README.md#sampling-evidence-applicability)); no new HTTP histogram measurement |
   | Exact (reference) mode, `--exact on` | harness only: llama.cpp's graph node for node, unfused, and D-092's row-invariant verify |
 
 - **Prefill arithmetic:** the runtime serves the output-A/HCA prefill on
@@ -287,7 +290,7 @@ seeded-sampling evidence in this study.
   | --- | --- |
   | Greedy, plain | runtime (`--plain`) and harnesses |
   | Greedy, speculative with MTP (adaptive depth 2–3; fallback cap 65,536, selected artifacts capped at their physical rows) | runtime (the default with a drafter) and `jitllm_qwen38_spec --draft 3 --adaptive-depth on` |
-  | Seeded sampling, plain and speculative | `jitllm_qwen38_spec`; the runtime's chat route (`temperature` > 0, D-097), the same sampler, not yet checked there |
+  | Seeded sampling, plain and speculative | `jitllm_qwen38_spec` and the runtime's chat/literal routes; shared sampler and branch/key/resume mapping reviewed ([mapping](experiments/qwen38-concurrent-oracle/README.md#sampling-evidence-applicability)); no new HTTP histogram measurement |
   | Exact (reference) form, `--exact` | harness only (`jitllm_qwen38_exec`); speculation has no exact mode |
 
 - **Context:** exercised to 8,704 (8,192-token prefill and the swap
@@ -310,6 +313,14 @@ seeded-sampling evidence in this study.
   504 rows; the default chunk is 4,096 rows at every context
   ([prefill chunks](runtime-serving.md#prefill-chunks-and-cancellation)).
 - **Verified:**
+  - Current four-slot NVFP4/MXFP8 waves on one frozen 32K oracle history:
+    all eight 512-row cells pass the unchanged near-tie rule (477 agreements,
+    35 near-ties, zero outside). Complete rows and initialized target/MTP
+    state match across slots and repeats; actual selected head 47,172 rows,
+    shared draft depth two and 12-row verifies plus a four-row tail
+    ([concurrent control](experiments/qwen38-concurrent-oracle/README.md)).
+    This forced-conditioning check supplies no natural acceptance trajectory
+    or unrestricted quality claim for other histories/widths.
   - Against Mia's vLLM (the same checkpoint, deterministic mode, MTP
     off): greedy equal except near-ties on 191 of 192 steps, perplexity
     −0.8 to −1.2%; state spill and restore bit-identical

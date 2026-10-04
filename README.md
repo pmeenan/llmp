@@ -46,34 +46,29 @@ Key properties (confirmed scope):
 
 Almost all code is written by AI agents working from the project
 documentation. Every change gets a separate review pass, and a human directs
-the work, reviews it, and is the sole committer.
+the work and reviews it. During M3, the main agent has standing authority
+to commit reviewed, checked tasks; agents never push.
 
 ## Status
 
-**Pre-release. M0 (plan the plan), M1 (bootstrap) and M2 (the resource
-core and backend proof) are done; M3 (a fast full model swap on one
-Spark) is in progress.** The runtime's `chat` and `swap-table` commands
-serve M3's models by hand, in the runtime's own process, swapping between
-them; the service itself serves nothing yet.
-The design brief is in [docs/ideation.md](docs/ideation.md); the living plan,
-feature matrix, architecture, and decision log are in `docs/`. The application
-so far is a node runtime that reads its configuration, prepares its storage,
-checks the host and waits (as a service it serves nothing yet), packaged as an arm64
-`.deb` with its systemd unit, and a `jitllm` command that reports its version
-and, with `jitllm doctor`, what a host offers it: configuration and storage,
-driver, GPUs, VMM granularity and RDMA.
-Planned distribution is a signed apt repository for DGX Spark; changes are
-recorded in [CHANGELOG.md](CHANGELOG.md).
+**Pre-release. M0 through M3 are complete; M3.5 is next.** The native runtime serves Chat Completions and literal
+Completions with target likelihoods, batches compatible requests, and
+preserves conversation state across model switches. Its final swap table
+covers DeepSeek V4 Flash, Qwen3.8 Flash Next and Qwen-Image-2.1, with a worst
+prepared LLM swap of 9.853 s against the 20 s bound.
 
-First comes fast swapping of whole large models: DeepSeek V4 Flash, Qwen3.8
-Flash Next and Qwen-Image-2.1 on one Spark in M3, aiming at about 10 s from
-a swap to the first token, with the conversation's state restored, then
-models sharded across two Sparks in M4. M5 serves the small fixtures end to
-end through the standard client protocols. The first useful product target
-is M6: chat with A, switch to B under memory pressure, then resume A with
-retained state, through an unmodified client. M6a adds configured placement
-across nodes; demand-paged MoE and sharding under pressure have separate
-later gates. See [the plan](docs/plan.md).
+The owner accepts remaining Qwen/DeepSeek speed gaps for M3 and defers tuning
+to M9's full-engine optimization pass. The [M3 record](docs/m3-record.md)
+retains measured gaps, quality evidence and checks; the [living plan](docs/plan.md)
+owns later work. The arm64 package includes the runtime, systemd service
+and native diagnostic command. Planned distribution is a signed apt
+repository for DGX Spark; changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+
+M3.5 adds the approved model families, formats, decision models and media
+routes on this engine skeleton. M4 follows with two Sparks; M5 completes the
+standard front door. M6 adds partial retention under memory pressure,
+M6a configured placement across nodes, and later milestones add demand-paged
+MoE, sharding and full-engine optimization. See [the plan](docs/plan.md).
 
 ## Development setup
 
@@ -168,11 +163,14 @@ license, the notices of everything the binaries carry
 annotated example configuration. The package ships no configuration: with
 none, the runtime is a standalone node with the defaults. Removing or
 purging the package keeps `/var/lib/jitllm`, `/etc/jitllm` and the user.
+Purge removes jitLLM-owned spill and kept-conversation files, preserving
+model storage.
 
 The runtime reads `/etc/jitllm/jitllm.toml` and the fragments in
 `/etc/jitllm/jitllm.d/` (D-073), prepares its storage roles, checks the host
-as `jitllm doctor` does, reports readiness and waits; a minimal chat route
-arrives at the end of M3, and the front door in M5. A refusal at startup
+as `jitllm doctor` does, registers configured models and serves the minimal
+chat/completions route on loopback and the tailnet. The full front door
+arrives in M5. A refusal at startup
 exits 78, which the unit does not restart after; `journalctl -u jitllm`
 and `jitllm doctor` say why. For a development run,
 name the configuration and the enrollment anchor (the process lock is

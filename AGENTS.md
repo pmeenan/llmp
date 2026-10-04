@@ -180,6 +180,7 @@ the commit gate.
 | [docs/m0-record.md](docs/m0-record.md) | Where an M0 result came from: each planning task, spike and reference run with its evidence links and caveats. Frozen history |
 | [docs/m1-record.md](docs/m1-record.md) | Where an M1 result came from: each bootstrap item's outcome, verification hosts and hand-offs. Frozen history |
 | [docs/m2-record.md](docs/m2-record.md) | Where an M2 result came from: each resource-core and backend-proof item's outcome, commits, reports and caveats, and the gate. Frozen history |
+| [docs/m3-record.md](docs/m3-record.md) | Frozen M3 task history, accepted speed exceptions, final profile/quality and swap evidence, build/package checks and work handed on |
 | [docs/vision.md](docs/vision.md) | Why the project exists, who it's for, success criteria, non-goals |
 | [docs/features.md](docs/features.md) | The feature matrix: confirmed scope, proposed additions, open questions |
 | [docs/architecture.md](docs/architecture.md) | System map: processes, components and layers, request path, data model, memory and residency, providers, errors, pager invariants; links the detailed designs |
@@ -251,68 +252,37 @@ the commit gate.
 
 ## Current status
 
-**M0, M1 and M2 are complete; M3 is in progress.** The runtime serves Chat
-Completions and literal Completions with target likelihoods on loopback and
-the tailnet (D-096, D-097, D-100). DeepSeek V4 Flash, Qwen3.8 Flash Next and
-Qwen-Image-2.1 execute natively with paging, saved state and stable-address
-graphs; Qwen3.8 also runs from its GGUF quantizations (UD-IQ3_XXS checked
-against llama.cpp, [qwen38-gguf](docs/experiments/qwen38-gguf/README.md)).
-The [final 32-swap table](docs/experiments/m3-final-swap/README.md)'s worst LLM
-swap is 9.853 s against the 20 s exit bound, with exact restored state,
-continuations and image controls. Both LLMs run to 262,144 tokens; state grows with use,
-spills initialized extents, and turn checkpoints preserve exact continuation
-when earlier reasoning is removed, including across swaps. Maximum-context
-timing, retrieval and continuing-context swaps are recorded in
+**M0 through M3 are complete; M3.5 is next.**
+The runtime serves Chat Completions and literal Completions with target
+likelihoods on loopback and the tailnet. DeepSeek V4 Flash, Qwen3.8 Flash
+Next (native NVFP4/MXFP8 and checked GGUF) and Qwen-Image-2.1 execute with
+paging, initialized-state spill/restore and stable-address graphs. Both
+LLMs batch chat and literal completions; pending model switches time-slice
+at completed units and resume exact continuations. Active responses keep
+making progress while new same-model requests wait for slots.
+
+The final 32-row/six-pair production swap table passes: worst prepared LLM
+swap 9.853 s against the 20 s bound, exact 8K states and continuations,
+retained/replayed graphs and exact images. The standard OpenAI client gate
+passes. Both LLMs execute to 262K; DeepSeek also completes the measured 1M
+profile. Long retrieval, turn reuse and continuing-context swaps pass in
 [final context](docs/experiments/m3-final-context/README.md).
 
-The [M3 optimization status](docs/m3-optimization-status.md) tracks remaining
-engine gaps and the independent review's suggestions. The complete literal
-ds4 benchmark matches all original logits at 8K/32K within 2.4%/0.71% of
-its speed. Native stage restoration is incomplete: ordered reduction and
-Q-head fusions are landed; the output-A adapter gains 4.97%. Output-A plus
-HCA passes the unchanged 32K/128K greedy bounds, 128K perplexity and one
-long-answer control on full chunks; scoped IQ2 tuning
-adds 4.15% whole-prefill throughput with byte-exact full heads. The ds4
-stage mechanisms are now fast-plan defaults on prefill chunks of 64 rows
-or more, a prompt's last, partial one included, and on the 0731 GGUF's
-types (runtime 7K prefill +3–4% on both GGUFs). Output-A/HCA is now
-serving's default on every prefill chunk of 64 rows or more, where every
-registered quality control passes on both GGUFs under the owner's
-tie-aware greedy rule (D-085, 2026-10-03); with the wave pair-scan fix,
-7K chat C4 is 1.08× ds4 in one session before partial chunks, which add
-5–8% more.
-Qwen's GGUF one-row waves now share dense and routed quantized products
-and the full head, with exact heads and state against unjoined waves;
-UD-IQ3_XXS plain C4 gains 69.6% at 183 tokens, 29.4% at 8,258 tokens
-([GGUF waves](docs/experiments/qwen38-gguf/README.md#one-row-gguf-waves-2026-10-03)).
-Qwen waves also run each request's attention and recurrence concurrently
-from four slots, with exact logits and state; short C4 HTTP gains 3.76%
-with NVFP4/MTP and 7.65% with UD-IQ3_XXS
-([wave lanes](docs/experiments/qwen38-four-request-waves/README.md#wave-lanes)).
-Concurrent chat and literal requests follow memory up to a per-model slot cap (`max_slots`,
-up to 16; both LLMs' measured knee is 4 with today's 16-row joined
-products, D-104). Qwen chat decodes its requests in one wave (joined
-products of up to 16 rows, MXFP8/routed bit-exact per request; depth 2
-when shared); its selected MTP heads also share exact vector products
-([controls](docs/experiments/qwen38-draft-head-waves/README.md)). Against
-current TensorFold NVFP4 it leads at C1/C2 and is level at C4 (25.7 / 29.7 /
-32.2 vs 21.5 / 24.8 / 31.9 completed tok/s, separate sessions), trailing
-fast-start Mia 15% at C4 in the [fresh comparison](docs/experiments/qwen38-four-request-waves/README.md#fast-start-mia-refresh--2026-10-04). DeepSeek chat batches its requests in exact
-waves (C4 +29.0% plain, +4.5% DSpark; matched replies byte-identical across
-C1/C2/C4) and leads llama.cpp `--parallel 4` on the same GGUF by 42–51%
-([batching](docs/experiments/deepseek-batching/README.md)). Memory is
-used fully: plans and graphs are uncapped inside the budget, idle
-conversations spill and resume exactly, and one reclaim order by measured
-cost gives back under pressure
-([memory-pressure](docs/experiments/memory-pressure/README.md)). Qwen
-same-history acceptance, the remaining native prefill gap and frozen M3
-record remain open. The [standard-client gate](docs/experiments/m3-standard-client/README.md)
-passes through the unchanged OpenAI SDK, including model switches and streaming. Workstation checks are deferred
-until implementations settle; package checks remain owed before shipment.
+The owner accepts the remaining Qwen/DeepSeek speed gaps for M3 and defers
+further tuning to **M9's full-engine optimization pass** (2026-10-04).
+The latest matched Qwen C4 rate is about 15% below fast Mia; the gap and
+long-context misses remain measurements, not parity passes. Quality,
+memory and exact-state requirements remain unchanged. The
+[M3 record](docs/m3-record.md) retains the task history, qualified profiles,
+exceptions, checks and later work; [optimization status](docs/m3-optimization-status.md)
+retains the detailed comparisons and unadopted leads. The current Qwen
+four-slot numerical control, 1,567-test Spark suite, ARM cross/qemu suite
+and package install/purge fixture pass. Whole shipment tiers remain owed
+before publishing a package.
 
-M3.5 follows M3: the approved 13 model checkpoints, legacy fixtures, Bonsai,
-formats with EXL3 in focus, remaining continuous batching/skeleton gaps,
-media file inputs, Clef over the Jev API and media generation routes (D-101)
-([plan](docs/plan.md), [family set](docs/m35-families.md)). M4 follows on
-two Sparks; [reference engines](docs/m4-references.md) are re-pinned at entry.
-Detailed historical results belong in the plan and experiment reports.
+M3.5 follows: approved model checkpoints, legacy fixtures, Bonsai, formats
+with EXL3 in focus, remaining batching/skeleton gaps, media file inputs,
+Clef/Clef-flash over the Jev API and media generation routes (D-101).
+That scope includes batching compatible decision and image requests/phases.
+[Plan](docs/plan.md), [family set](docs/m35-families.md). M4 follows on two
+Sparks; [reference engines](docs/m4-references.md) are re-pinned at entry.
