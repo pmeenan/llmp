@@ -59,6 +59,143 @@ class GgmlExtValidateTest : public ::testing::Test {
   std::uint64_t next_ = 0;
 };
 
+TEST_F(GgmlExtValidateTest, GemmaLocalAttentionChecksBothPrimitivesAndFallbackSelection) {
+  for (const std::int64_t heads : {16, 32}) {
+    for (const std::int64_t rows : {1, 2, 4, 16, 33}) {
+      auto* q = New(GGML_TYPE_F32, 256, rows, heads);
+      auto* k = New(GGML_TYPE_F16, 256, 1280, heads / 2);
+      auto* v = New(GGML_TYPE_F16, 256, 1280, heads / 2);
+      auto* mask = New(GGML_TYPE_F16, 1280, rows);
+      auto* node = Bound(ggml_flash_attn_ext(c(), q, k, v, mask, 1.0f, 0, 0));
+      ggml_prec_set_acc(node, GGML_PREC_F32);
+      Accepted(kg::CheckFlashAttnVec256(node));
+      Accepted(kg::CheckFlashAttnMmaGqa2(node));
+      Refused(kg::CheckFlashAttnMma(node));  // existing group8 contract stays closed
+      Refused(kg::CheckFlashAttnVec(node));  // existing D64 contract stays closed
+      const std::array<ggml_tensor*, 1> nodes = {node};
+      auto fallback = kg::PlanGraph(nodes, false, {});
+      ASSERT_TRUE(fallback.has_value());
+      EXPECT_EQ(fallback->steps.front().implementation, kg::kFlashAttnMmaGqa2Name);
+      kg::DeviceChoices device;
+      device.flash_attn_vec256 = [](const ggml_tensor* n) { return n->src[0]->ne[1] == 1; };
+      auto selected = kg::PlanGraph(nodes, false, device);
+      ASSERT_TRUE(selected.has_value());
+      EXPECT_EQ(selected->steps.front().implementation,
+                rows == 1 ? kg::kFlashAttnVec256Name : kg::kFlashAttnMmaGqa2Name);
+      auto* sinks = New(GGML_TYPE_F32, heads);
+      node->src[4] = sinks;
+      Refused(kg::CheckFlashAttnMmaGqa2(node));
+      Refused(kg::CheckFlashAttnVec256(node));
+      node->src[4] = nullptr;
+      node->op_params[4] = 128;
+      Refused(kg::CheckFlashAttnMmaGqa2(node));
+      node->op_params[4] = 0;
+      mask->nb[1] += 2;
+      Refused(kg::CheckFlashAttnMmaGqa2(node));
+      Refused(kg::CheckFlashAttnVec256(node));
+    }
+  }
+}
+
+TEST_F(GgmlExtValidateTest, AttentionBoundsCombinedQueryBytesAndKvHeadOffsets) {
+  constexpr std::size_t limit = 1ULL << 31;
+  for (const int family : {0, 1, 2}) {  // local group2, existing group8, D128 MHA
+    const std::int64_t d = family == 2 ? 128 : 256;
+    const std::int64_t heads = family == 0 ? 6 : family == 1 ? 24 : 3;
+    const int sequences = family == 2 ? 1 : 2;
+    auto* q = New(GGML_TYPE_F32, d, 1, heads, sequences);
+    auto* k = New(GGML_TYPE_F16, d, 256, 3, sequences);
+    auto* v = New(GGML_TYPE_F16, d, 256, 3, sequences);
+    auto* mask = family == 2 ? nullptr : New(GGML_TYPE_F16, 256, 1, 1, sequences);
+    auto* node = Bound(ggml_flash_attn_ext(c(), q, k, v, mask, 1, 0, 0));
+    const auto check = [&] {
+      return family == 0   ? kg::CheckFlashAttnMmaGqa2(node)
+             : family == 1 ? kg::CheckFlashAttnMma(node)
+                           : kg::CheckFlashAttnMma128(node);
+    };
+    const int stride = family == 2 ? 2 : 3;
+    const auto saved_query_stride = q->nb[stride];
+    q->nb[stride] = family == 2 ? ((limit - static_cast<std::size_t>(d * 4) - 1) / 2 / 16) * 16
+                                : limit - static_cast<std::size_t>(d * heads * 4) - 16;
+    Accepted(check());  // final addressed byte stays below signed maximum
+    q->nb[stride] += 16;
+    Refused(check());  // individual strides still fit; combined Q bytes do not
+    q->nb[stride] = saved_query_stride;
+    for (auto* kv : {k, v}) {
+      const auto saved = kv->nb[2];
+      kv->nb[2] = (limit / 2) - 16;
+      Accepted(check());
+      kv->nb[2] += 16;
+      Refused(check());  // two times the head stride exceeds signed maximum
+      kv->nb[2] = saved;
+    }
+  }
+  for (const std::int64_t d : {64, 256}) {
+    auto* q = New(GGML_TYPE_F32, d, 1, 4);
+    auto* k = New(GGML_TYPE_F16, d, 256, 2);
+    auto* v = New(GGML_TYPE_F16, d, 256, 2);
+    auto* node = Bound(ggml_flash_attn_ext(c(), q, k, v, New(GGML_TYPE_F16, 256, 1), 1, 0, 0));
+    ggml_prec_set_acc(node, GGML_PREC_F32);
+    const auto check = [&] {
+      return d == 64 ? kg::CheckFlashAttnVec(node) : kg::CheckFlashAttnVec256(node);
+    };
+    q->nb[2] = ((limit - static_cast<std::size_t>(d * 4) - 1) / 3 / 16) * 16;
+    Accepted(check());
+    q->nb[2] += 16;
+    Refused(check());
+    q->nb[2] = static_cast<std::size_t>(d * 4);
+    q->ne[2] = node->ne[1] = 6;
+    node->nb[2] = node->nb[3] = static_cast<std::size_t>(6 * d * 4);
+    k->ne[2] = v->ne[2] = 3;
+    for (auto* kv : {k, v}) {
+      const auto saved = kv->nb[2];
+      kv->nb[2] = (limit / 2) - 16;
+      Accepted(check());
+      kv->nb[2] += 16;
+      Refused(check());
+      kv->nb[2] = saved;
+    }
+  }
+}
+
+TEST_F(GgmlExtValidateTest, VectorMaskRowStartsFitSignedBytesAtThePaddedCellBoundary) {
+  // Pinned vector attention forms mask + nb31*ic0 before converting to
+  // half elements. Its last two-column tile starts at query row 1024.
+  // The mask's half-element count still fits int on either side of this
+  // byte-offset boundary. Fictional bindings are never dereferenced.
+  constexpr std::int64_t rows = 1025, mask_rows = 1026, cells = 1048320;
+  constexpr std::uint64_t signed_byte_limit = (1ULL << 31) - 1;
+  for (const std::int64_t d : {64, 256}) {
+    SCOPED_TRACE(d);
+    auto* q = New(GGML_TYPE_F32, d, rows, 2);
+    auto* k = New(GGML_TYPE_F16, d, cells, 1);
+    auto* v = New(GGML_TYPE_F16, d, cells, 1);
+    auto* mask = New(GGML_TYPE_F16, cells, mask_rows);
+    auto* node = Bound(ggml_flash_attn_ext(c(), q, k, v, mask, 1, 0, 0));
+    ggml_prec_set_acc(node, GGML_PREC_F32);
+    const auto check = [&] {
+      return d == 64 ? kg::CheckFlashAttnVec(node) : kg::CheckFlashAttnVec256(node);
+    };
+    EXPECT_LE(mask->nb[1] * (rows - 1), signed_byte_limit);
+    Accepted(check());
+    for (auto* kv : {k, v}) {
+      kv->ne[1] += 256;
+      kv->nb[2] = kv->nb[3] = kv->nb[1] * static_cast<std::size_t>(kv->ne[1]);
+    }
+    mask->ne[0] += 256;
+    mask->nb[1] += 512;
+    mask->nb[2] = mask->nb[3] = mask->nb[1] * mask_rows;
+    EXPECT_EQ(mask->nb[1] * (rows - 1), 1ULL << 31);
+    EXPECT_LT(static_cast<std::uint64_t>(ggml_nelements(mask)), signed_byte_limit);
+    Refused(check());
+    // The same physically padded mask remains valid for fewer real
+    // query rows: its allocated row count must not inflate the offset.
+    q->ne[1] = node->ne[2] = 1023;
+    node->nb[3] = node->nb[2] * 1023;
+    Accepted(check());
+  }
+}
+
 TEST_F(GgmlExtValidateTest, QuantizedProductsTakeTheCompiledTypesAtWholeRowSteps) {
   EXPECT_EQ(kg::QuantizedWeightTypes().size(), 21U);
   for (const ggml_type type : kg::QuantizedWeightTypes()) {

@@ -1209,7 +1209,8 @@ std::expected<void, KernelFailure> CheckHcPost(const ggml_tensor* node) {
   return {};
 }
 
-std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node) {
+static std::expected<void, KernelFailure> CheckFlashAttnMmaGroup(const ggml_tensor* node,
+                                                                 bool group2) {
   if (node == nullptr || node->op != GGML_OP_FLASH_ATTN_EXT || !Bound(node) ||
       !Bound(node->src[0]) || !Bound(node->src[1]) || !Bound(node->src[2]) ||
       !Bound(node->src[3])) {
@@ -1259,10 +1260,15 @@ std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node) {
   if (sinks != nullptr && (q->ne[2] / k->ne[2]) % 8 != 0) {
     return Rejected("sinks need a multiple of 8 query heads per KV head");
   }
+  if (group2 &&
+      (d != 256 || sinks != nullptr || node->op_params[4] != 0 || !(ParamF32(node, 0) > 0.0f) ||
+       !(ParamF32(node, 0) < std::numeric_limits<float>::infinity()))) {
+    return Rejected("group2 MMA requires D256, positive finite scale, no sinks or sparse gather");
+  }
   // The GQA-grouped kernels (fattn.cu:218-268): padded cells, a query-head
-  // group of 8, and 16-byte strides everywhere.
-  if (k->ne[1] % 256 != 0 || q->ne[2] / k->ne[2] <= 4) {
-    return Rejected("cells in multiples of 256 and more than 4 query heads per KV head");
+  // group of 2 or 8, and 16-byte strides everywhere.
+  if (k->ne[1] % 256 != 0 || (group2 ? q->ne[2] / k->ne[2] != 2 : q->ne[2] / k->ne[2] <= 4)) {
+    return Rejected("padded cells and the compiled query-head group ratio are required");
   }
   if (q->nb[0] != ggml_type_size(q->type) || k->nb[0] != sizeof(ggml_fp16_t) ||
       v->nb[0] != sizeof(ggml_fp16_t) || mask->nb[0] != sizeof(ggml_fp16_t) ||
@@ -1272,8 +1278,10 @@ std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node) {
   }
   // The kernel takes extents, Q's strides and the others' first three as
   // int (fattn-mma-f16.cuh:1766-1787), and indexes the output in int.
-  if (Span(node) > kInt32Max) {
-    return Rejected("flash attention output beyond the kernel's 32-bit indexing");
+  if (Span(node) > kInt32Max || Span(q) > kInt32Max / ggml_type_size(q->type) ||
+      k->nb[2] > kInt32Max / static_cast<std::uint64_t>(std::max<std::int64_t>(1, k->ne[2] - 1)) ||
+      v->nb[2] > kInt32Max / static_cast<std::uint64_t>(std::max<std::int64_t>(1, v->ne[2] - 1))) {
+    return Rejected("flash attention beyond the kernel's output/Q/head 32-bit indexing");
   }
   for (const ggml_tensor* tensor : {q, k, v, mask}) {
     for (int i = 0; i < GGML_MAX_DIMS; ++i) {
@@ -1295,6 +1303,13 @@ std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node) {
     return Rejected("an output overlapping the sinks");
   }
   return {};
+}
+
+std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node) {
+  return CheckFlashAttnMmaGroup(node, false);
+}
+std::expected<void, KernelFailure> CheckFlashAttnMmaGqa2(const ggml_tensor* node) {
+  return CheckFlashAttnMmaGroup(node, true);
 }
 
 void MarkDsv4HcaTokentile(ggml_tensor* node, std::uint32_t first) {
@@ -1373,8 +1388,10 @@ std::expected<void, KernelFailure> CheckFlashAttnMma128(const ggml_tensor* node)
       !AlignedEverywhere(v, 16) || !Packed(node) || !Aligned(node, 16)) {
     return Rejected("contiguous rows at 16-byte strides, and a packed output");
   }
-  if (Span(node) > kInt32Max) {
-    return Rejected("flash attention output beyond the kernel's 32-bit indexing");
+  if (Span(node) > kInt32Max || Span(q) > kInt32Max / ggml_type_size(q->type) ||
+      k->nb[2] > kInt32Max / static_cast<std::uint64_t>(std::max<std::int64_t>(1, k->ne[2] - 1)) ||
+      v->nb[2] > kInt32Max / static_cast<std::uint64_t>(std::max<std::int64_t>(1, v->ne[2] - 1))) {
+    return Rejected("flash attention beyond the kernel's output/Q/head 32-bit indexing");
   }
   for (const ggml_tensor* tensor : {q, k, v}) {
     for (int i = 0; i < GGML_MAX_DIMS; ++i) {

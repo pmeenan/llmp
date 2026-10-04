@@ -57,6 +57,8 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
 DeviceChoices DeviceChoicesOf(const LaunchContext& launch) {
   return {
       .mul_mat = [&launch](const ggml_tensor* node) { return SelectMulMat(launch, node); },
+      .flash_attn_vec256 =
+          [&launch](const ggml_tensor* node) { return FlashAttnVec256Selected(launch, node); },
       .vector_fusible =
           [&launch](const ggml_tensor* node) { return MulMatVecFusible(launch, node); },
       .quant = [&launch](const ggml_tensor* node) { return SelectMulMatQ(launch, node); },
@@ -129,6 +131,14 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
     } else if (step.implementation == kDsv4OutAName ||
                step.implementation == kDsv4OutAFastPackName) {
       planned = PlanDsv4OutA(launch, step.nodes.front());
+    } else if (step.implementation == kFlashAttnVec256Name) {
+      auto attention = PlanFlashAttnVec256(launch, step.nodes.front());
+      if (!attention) return std::unexpected(attention.error());
+      planned = attention->scratch;
+    } else if (step.implementation == kFlashAttnMmaGqa2Name) {
+      auto attention = PlanFlashAttnMmaGqa2(launch, step.nodes.front());
+      if (!attention) return std::unexpected(attention.error());
+      planned = attention->scratch;
     } else if (step.implementation == kFlashAttnMmaName ||
                step.implementation == kFlashAttnMmaWideName) {
       auto attention = PlanFlashAttnMma(launch, step.nodes.front(),

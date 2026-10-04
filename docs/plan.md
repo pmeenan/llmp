@@ -235,6 +235,10 @@ family" guide, and its long-context scaling work.
         with separately gated floating MMVF fusion and a
         [bounded synthetic screen](experiments/gemma-activations/README.md).
         Quantized writers and model/optimized-batching qualification remain owed.
+      - [x] Gemma D256/F16 local attention primitives, with checked
+        GQA2 vector/MMA selection, independent ring masks and funded scratch;
+        [pinned primitive controls](experiments/gemma-local-attention/README.md).
+        Whole-model quality, performance and optimized batching remain owed.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

@@ -543,6 +543,31 @@ and current upstream master has not been checked.
   and test fixtures. No runtime ID validation or new duplicate-routing
   semantics is claimed by the jitLLM port.
 
+## Flash-attention signed iteration and efficiency bounds
+
+- **Source:** pinned `fattn-common.cuh` launcher and `fattn-mma-f16.cuh`
+  stream-k iteration indexing at llama.cpp b10964.
+- **Issue:** `ntiles_KV * ntiles_dst` and kernel iteration products are signed
+  int before widening. The launcher's efficiency helpers also multiply by 100
+  before division. Bounded tensor extents/output alone do not bound these
+  products when operand rows or sequences share storage. Combined Q byte
+  spans and K/V head byte offsets also need bounds before their int products;
+  K/V sequence products already use int64. Vector mask row starts multiply
+  row stride by query index in int too; their byte offsets need a bound.
+- **jitLLM workaround:** checked D64/D256 vector planning bounds the worst
+  candidate tile count at `INT32_MAX/100`, conservatively including trials
+  that might never be visited. D128 and shared D256/D512 MMA planning
+  bounds output tiles at that efficiency limit and total KV/output iterations
+  plus the last unaligned tile advance at `INT32_MAX`, rejecting oversized metadata before submission. Validators separately bound combined Q bytes and
+  K/V head offsets and vector mask row starts, preserving int64 K/V
+  sequence addressing. KV ceil division must also fund its signed addition
+  before dividing, including unpadded D128 extents. Ordinary
+  eligible shapes still call unchanged pinned kernels. [RE-046](../rough-edges.md#re-046-ggml-flash-attention-total-iterations-use-signed-integers--2026-10-04-status-worked-around).
+- **Additional compiled closure:** Gemma local attention instantiates the
+  unchanged F16 D256 vector case and D256/group2 MMA query tiles 4/8/16/32 in
+  jitLLM wrapper units. No upstream source patch or pin change; the lock's
+  license inventory records the additional wrapper.
+
 ## Upstream changes to adopt
 
 Checked 2026-09-29 at master `8019dc563`.

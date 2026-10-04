@@ -55,11 +55,14 @@
 #include "expected_error.h"
 #include "ggml.h"
 #include "kernels/ggml/executor.h"
+#include "kernels/ggml/fattn_mma.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
+#include "kernels/ggml/ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
+#include "kernels/ggml/validate.h"
 #include "kernels/ggml/validate_ext.h"
 #include "providers/cuda/cuda_device_execution.h"
 #include "providers/cuda/cuda_device_memory.h"
@@ -1800,6 +1803,406 @@ TEST_F(GgmlExtOpsTest, HyperConnectionsMatchTheReference) {
 }
 
 // ---- Flash attention ----
+
+TEST_F(GgmlExtOpsTest, GemmaLocalAttentionRefusesOverflowingTotalIterationsBeforeSubmission) {
+  // Each extent, Q stride and output index fits the primitive's contract,
+  // but output tiles times KV tiles exceeds the pinned launcher's int.
+  // Symbolic bindings make this a metadata-only check: no large buffers
+  // are allocated and no kernel may dereference these addresses.
+  constexpr std::int64_t rows = 131040, cells = 2097152, heads = 16, sequences = 4;
+  auto arena = TensorArena::Create(16).value();
+  auto* context = arena.context();
+  std::uint64_t next = 1ULL << 44;
+  const auto bound = [&next](ggml_tensor* tensor) {
+    TensorArena::Bind(tensor, next);
+    next += 1ULL << 42;
+    return tensor;
+  };
+  auto* q = bound(ggml_new_tensor_4d(context, GGML_TYPE_F32, 256, rows, heads, sequences));
+  q->nb[1] = 0;
+  q->nb[2] = 16;
+  q->nb[3] = 0;
+  auto* k = bound(ggml_new_tensor_4d(context, GGML_TYPE_F16, 256, cells, heads / 2, sequences));
+  auto* v = bound(ggml_new_tensor_4d(context, GGML_TYPE_F16, 256, cells, heads / 2, sequences));
+  for (auto* tensor : {k, v}) tensor->nb[2] = tensor->nb[3] = 16;
+  auto* mask = bound(ggml_new_tensor_4d(context, GGML_TYPE_F16, cells, rows, 1, sequences));
+  // A shared visibility row is valid for every query and sequence; unused
+  // dimension strides need not describe an enormous packed mask.
+  auto* node = bound(ggml_flash_attn_ext(context, q, k, v, mask, 1, 0, 0));
+  mask->nb[1] = 0;
+  mask->nb[2] = 16;
+  mask->nb[3] = 0;
+  ggml_prec_set_acc(node, GGML_PREC_F32);
+  const auto checked = kg::CheckFlashAttnMmaGqa2(node);
+  ASSERT_TRUE(checked.has_value()) << (checked ? "" : checked.error().detail);
+  EXPECT_EQ(FailedCode(kg::PlanFlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
+  const std::array<ggml_tensor*, 1> nodes = {node};
+  auto graph = kg::PlanGraph(nodes, false, kg::DeviceChoicesOf(launch()));
+  ASSERT_TRUE(graph.has_value());
+  EXPECT_EQ(graph->steps.front().implementation, kg::kFlashAttnMmaGqa2Name);
+  EXPECT_EQ(FailedCode(kg::PlanScratch(launch(), *graph)), KernelError::kRejected);
+  launch().ResetScratchPeak();
+  EXPECT_EQ(FailedCode(kg::FlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
+  EXPECT_EQ(launch().scratch_peak().value(), 0);
+  EXPECT_FALSE(launch().faulted());
+  EXPECT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+}
+
+TEST_F(GgmlExtOpsTest, GemmaAndLegacyMmaPlansBoundTheLastPaddedKvTile) {
+  // The pinned Ampere+ configurations use KV tiles of 32 at D256/group2
+  // with eight query columns, 64 at D256/group8 with one query column,
+  // 32 at D512/group8 with one query column, and 128 at unmasked D128/MHA
+  // with eight query columns. Each case below has
+  // a final safe 256-cell block after including the kernel's transient
+  // addition of one extra KV tile before modulo. The next padding block
+  // is refused. Only metadata is bound; admitted plans never run.
+  struct Shape {
+    std::int64_t d, rows, heads, kv_heads, kv_tile;
+  };
+  for (const Shape shape : {Shape{256, 8, 128, 64, 32}, Shape{256, 1, 1024, 128, 64},
+                            Shape{512, 1, 512, 64, 32}, Shape{128, 8, 256, 256, 128}}) {
+    SCOPED_TRACE(
+        std::format("D{} rows{} heads{} KV{}", shape.d, shape.rows, shape.heads, shape.kv_heads));
+    auto arena = TensorArena::Create(16).value();
+    auto* context = arena.context();
+    std::uint64_t next = 1ULL << 44;
+    const auto bound = [&next](ggml_tensor* tensor) {
+      TensorArena::Bind(tensor, next);
+      next += 1ULL << 42;
+      return tensor;
+    };
+    const std::int64_t dst_tiles = shape.kv_heads;
+    const std::int64_t max_iterations = (1LL << 31) / (dst_tiles + 1);
+    const std::int64_t cells = (max_iterations * shape.kv_tile / 256) * 256;
+    EXPECT_LE((cells / shape.kv_tile) * (dst_tiles + 1), 1LL << 31);
+    EXPECT_GT(((cells + 256) / shape.kv_tile) * (dst_tiles + 1), 1LL << 31);
+    auto* q =
+        bound(ggml_new_tensor_4d(context, GGML_TYPE_F32, shape.d, shape.rows, shape.heads, 1));
+    auto* k = bound(ggml_new_tensor_4d(context, GGML_TYPE_F16, shape.d, cells, shape.kv_heads, 1));
+    auto* v = bound(ggml_new_tensor_4d(context, GGML_TYPE_F16, shape.d, cells, shape.kv_heads, 1));
+    for (auto* tensor : {k, v}) {
+      tensor->nb[1] = 0;
+      tensor->nb[2] = tensor->nb[3] = 16;
+    }
+    ggml_tensor* mask = nullptr;
+    if (shape.d != 128) {
+      mask = bound(ggml_new_tensor_2d(context, GGML_TYPE_F16, cells, shape.rows));
+    }
+    auto* node = bound(ggml_flash_attn_ext(context, q, k, v, mask, 1, 0, 0));
+    if (mask != nullptr) {
+      mask->nb[1] = 0;
+      mask->nb[2] = mask->nb[3] = 16;
+    }
+    ggml_prec_set_acc(node, GGML_PREC_F32);
+    const bool group2 = shape.heads / shape.kv_heads == 2;
+    const auto check = [&] {
+      if (shape.d == 128) return kg::CheckFlashAttnMma128(node);
+      return group2 ? kg::CheckFlashAttnMmaGqa2(node) : kg::CheckFlashAttnMma(node);
+    };
+    const auto plan = [&] {
+      if (shape.d == 128) return kg::PlanFlashAttnMma128(launch(), node);
+      return group2 ? kg::PlanFlashAttnMmaGqa2(launch(), node)
+                    : kg::PlanFlashAttnMma(launch(), node);
+    };
+    ASSERT_TRUE(check().has_value());
+    const auto admitted = plan();
+    ASSERT_TRUE(admitted.has_value()) << (admitted ? "" : admitted.error().detail);
+    EXPECT_EQ(admitted->columns, shape.rows);
+    k->ne[1] += 256;
+    v->ne[1] += 256;
+    if (mask != nullptr) mask->ne[0] += 256;
+    ASSERT_TRUE(check().has_value());
+    EXPECT_EQ(FailedCode(plan()), KernelError::kRejected);
+    // This earlier total-only endpoint is also refused: a last partial
+    // partition can overflow kbc+iter_k or kb0_start+kbc_stop before
+    // subtraction/modulo, even though total iterations fit signed int.
+    k->ne[1] = v->ne[1] = 1073741568;
+    if (mask != nullptr) mask->ne[0] = k->ne[1];
+    EXPECT_LE((k->ne[1] / shape.kv_tile) * dst_tiles, (1LL << 31) - 1);
+    EXPECT_GT((k->ne[1] / shape.kv_tile) * (dst_tiles + 1), 1LL << 31);
+    ASSERT_TRUE(check().has_value());
+    EXPECT_EQ(FailedCode(plan()), KernelError::kRejected);
+    EXPECT_FALSE(launch().faulted());
+  }
+}
+
+TEST_F(GgmlExtOpsTest, UnpaddedD128CellsKeepThePinnedCeilingSumRepresentable) {
+  // This unmasked primitive permits unpadded cells. Its pinned eight-query
+  // configuration has 128-cell KV tiles and forms (ne11+127) in int.
+  // Small output/Q storage and broadcast KV rows keep other bounds valid.
+  // Only metadata is planned; these fictional addresses never execute.
+  constexpr std::int64_t cells = (1LL << 31) - 128;
+  auto arena = TensorArena::Create(16).value();
+  auto* context = arena.context();
+  std::uint64_t next = 1ULL << 44;
+  const auto bound = [&next](ggml_tensor* tensor) {
+    TensorArena::Bind(tensor, next);
+    next += 1ULL << 42;
+    return tensor;
+  };
+  auto* q = bound(ggml_new_tensor_3d(context, GGML_TYPE_F32, 128, 1, 1));
+  auto* k = bound(ggml_new_tensor_3d(context, GGML_TYPE_F16, 128, cells, 1));
+  auto* v = bound(ggml_new_tensor_3d(context, GGML_TYPE_F16, 128, cells, 1));
+  for (auto* kv : {k, v}) {
+    kv->nb[1] = 0;
+    kv->nb[2] = kv->nb[3] = 16;
+  }
+  auto* node = bound(ggml_flash_attn_ext(context, q, k, v, nullptr, 1, 0, 0));
+  ggml_prec_set_acc(node, GGML_PREC_F32);
+  ASSERT_TRUE(kg::CheckFlashAttnMma128(node).has_value());
+  const auto admitted = kg::PlanFlashAttnMma128(launch(), node);
+  ASSERT_TRUE(admitted.has_value()) << (admitted ? "" : admitted.error().detail);
+  EXPECT_EQ(admitted->columns, 8);
+  EXPECT_EQ(cells + 127, (1LL << 31) - 1);
+  k->ne[1] = v->ne[1] = cells + 1;
+  ASSERT_TRUE(kg::CheckFlashAttnMma128(node).has_value());
+  EXPECT_EQ(k->ne[1] + 127, 1LL << 31);
+  EXPECT_EQ(FailedCode(kg::PlanFlashAttnMma128(launch(), node)), KernelError::kRejected);
+  EXPECT_FALSE(launch().faulted());
+}
+
+TEST_F(GgmlExtOpsTest, GemmaAndLegacyVectorPlansBoundTailEfficiencyArithmetic) {
+  // The pinned launcher multiplies its trial block count by 100 in int.
+  // Probe the final 256-cell padding block admitted by that bound and the
+  // next block at both the existing D64 and new D256 vector identities.
+  // KV row/head broadcasts keep the symbolic backing spans small.
+  for (const std::int64_t d : {64, 256}) {
+    SCOPED_TRACE(d);
+    auto arena = TensorArena::Create(16).value();
+    auto* context = arena.context();
+    std::uint64_t next = 1ULL << 44;
+    const auto bound = [&next](ggml_tensor* tensor) {
+      TensorArena::Bind(tensor, next);
+      next += 1ULL << 42;
+      return tensor;
+    };
+    const std::int64_t cells = d == 64 ? 85899264 : 343597312;
+    auto* q = bound(ggml_new_tensor_3d(context, GGML_TYPE_F32, d, 1, 16));
+    auto* k = bound(ggml_new_tensor_3d(context, GGML_TYPE_F16, d, cells, 8));
+    auto* v = bound(ggml_new_tensor_3d(context, GGML_TYPE_F16, d, cells, 8));
+    for (auto* tensor : {k, v}) {
+      tensor->nb[1] = 0;
+      tensor->nb[2] = tensor->nb[3] = 16;
+    }
+    auto* mask = bound(ggml_new_tensor_2d(context, GGML_TYPE_F16, cells, 1));
+    auto* node = bound(ggml_flash_attn_ext(context, q, k, v, mask, 1, 0, 0));
+    ggml_prec_set_acc(node, GGML_PREC_F32);
+    const auto check = [&] {
+      return d == 64 ? kg::CheckFlashAttnVec(node) : kg::CheckFlashAttnVec256(node);
+    };
+    const auto plan = [&] {
+      return d == 64 ? kg::PlanFlashAttnVec(launch(), node)
+                     : kg::PlanFlashAttnVec256(launch(), node);
+    };
+    ASSERT_TRUE(check().has_value());
+    const auto admitted = plan();
+    ASSERT_TRUE(admitted.has_value()) << (admitted ? "" : admitted.error().detail);
+    k->ne[1] += 256;
+    v->ne[1] += 256;
+    mask->ne[0] += 256;
+    for (int i = 1; i < GGML_MAX_DIMS; ++i) mask->nb[i] += 512;
+    ASSERT_TRUE(check().has_value());
+    EXPECT_EQ(FailedCode(plan()), KernelError::kRejected);
+    EXPECT_FALSE(launch().faulted());
+  }
+}
+
+TEST_F(GgmlExtOpsTest, GemmaLocalPrefillRefusesUnfundedQueryTilesBeforeSubmission) {
+  constexpr std::int64_t rows = 1025, padded = 1056, cells = 1280, heads = 16;
+  auto* q = Place(ggml_new_tensor_4d(c(), GGML_TYPE_F32, 256, rows, heads, 1),
+                  Normal(361, static_cast<std::size_t>(256 * rows * heads), 0.1f));
+  auto* k = Place(ggml_new_tensor_4d(c(), GGML_TYPE_F16, 256, cells, heads / 2, 1),
+                  Halves(Normal(362, static_cast<std::size_t>(256 * cells * heads / 2), 0.1f)));
+  auto* v = Place(ggml_new_tensor_4d(c(), GGML_TYPE_F16, 256, cells, heads / 2, 1),
+                  Halves(Normal(363, static_cast<std::size_t>(256 * cells * heads / 2))));
+  std::vector<float> visibility(static_cast<std::size_t>(cells * padded),
+                                -std::numeric_limits<float>::infinity());
+  for (std::int64_t row = 0; row < rows; ++row) {
+    visibility[static_cast<std::size_t>(row * cells + row % cells)] = 0;
+  }
+  auto* mask = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, cells, padded), Halves(visibility));
+  auto* node = Place(ggml_flash_attn_ext(c(), q, k, v, mask, 1, 0, 0));
+  ggml_prec_set_acc(node, GGML_PREC_F32);
+  ASSERT_EQ(cudaMemset(node->data, 0xAB, ggml_nbytes(node)), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  mask->ne[1] = rows;
+  EXPECT_EQ(FailedCode(kg::PlanFlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(kg::FlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
+  const auto untouched = Download<std::uint8_t>(node);
+  EXPECT_TRUE(std::ranges::all_of(untouched, [](std::uint8_t b) { return b == 0xAB; }));
+  EXPECT_FALSE(launch().faulted());
+  mask->ne[1] = padded;
+  const auto plan = kg::PlanFlashAttnMmaGqa2(launch(), node);
+  ASSERT_TRUE(plan.has_value());
+  EXPECT_TRUE(plan->mask_prepass);
+  EXPECT_EQ(plan->columns, 32);
+  launch().ResetScratchPeak();
+  Launched(kg::FlashAttnMmaGqa2(launch(), node), "funded partial-query prefill tile");
+  EXPECT_LE(launch().scratch_peak().value(), plan->scratch);
+  const auto got = Download(node);
+  // Widen the actual uploaded F16 bytes. A single visible cell has the
+  // independent mathematical result V; also require pinned-case agreement.
+  const auto values = Download<ggml_fp16_t>(v);
+  std::vector<double> want(got.size());
+  for (std::int64_t row = 0; row < rows; ++row) {
+    for (std::int64_t h = 0; h < heads; ++h) {
+      for (std::int64_t i = 0; i < 256; ++i) {
+        want[static_cast<std::size_t>((row * heads + h) * 256 + i)] = ggml_fp16_to_fp32(
+            values[static_cast<std::size_t>(((h / 2) * cells + row % cells) * 256 + i)]);
+      }
+    }
+  }
+  Launched(launch().Run(jitllm::base::Bytes(plan->scratch),
+                        [node](ggml_backend_cuda_context& context) {
+                          kg::detail::FlashAttnMmaCaseGqa2(32)(context, node);
+                        }),
+           "pinned partial-query prefill tile");
+  const auto reference = Download(node);
+  EXPECT_EQ(std::memcmp(got.data(), reference.data(), got.size() * sizeof(float)), 0);
+  ExpectNmse(reference, want, kMulMatNmse, "pinned prefill single-visible-cell V reference");
+  ExpectNmse(got, want, kMulMatNmse, "registered prefill single-visible-cell V reference");
+}
+
+TEST_F(GgmlExtOpsTest, GemmaLocalAttentionPreservesIndependentRingMasksAndPlansScratch) {
+  constexpr std::int64_t d = 256, cells = 1280;
+  for (const std::int64_t heads : {16, 32}) {
+    for (const std::int64_t rows : {1, 2, 4, 8, 16, 33}) {
+      std::vector<float> first_sequence;
+      for (const std::int64_t sequences : {1, 2, 4}) {
+        auto arena = TensorArena::Create(128).value();
+        auto* ctx = arena.context();
+        const auto count = [](std::int64_t n) { return static_cast<std::size_t>(n); };
+        const auto q = Normal(371, count(d * rows * heads * sequences), 0.25f);
+        const auto k = Halves(Normal(372, count(d * cells * (heads / 2) * sequences), 0.25f));
+        const auto v = Halves(Normal(373, count(d * cells * (heads / 2) * sequences)));
+        const std::int64_t columns = rows <= 4 ? 4 : rows <= 8 ? 8 : rows <= 16 ? 16 : 32;
+        const std::int64_t mask_rows = (rows + columns - 1) / columns * columns;
+        std::vector<float> mask(count(cells * mask_rows * sequences),
+                                -std::numeric_limits<float>::infinity());
+        for (std::int64_t seq = 0; seq < sequences; ++seq) {
+          const std::int64_t first = cells - 2 + seq * 17;
+          for (std::int64_t r = 0; r < rows; ++r) {
+            const auto position = first + r;
+            for (std::int64_t p = position - 1023; p <= position; ++p) {
+              mask[count((seq * mask_rows + r) * cells + p % cells)] = 0;
+            }
+          }
+        }
+        // Projection outputs are packed [D,heads,rows,sequence]. Attention
+        // consumes their permuted view [D,rows,heads,sequence] without a copy.
+        std::vector<float> projection(q.size());
+        for (std::int64_t seq = 0; seq < sequences; ++seq)
+          for (std::int64_t h = 0; h < heads; ++h)
+            for (std::int64_t r = 0; r < rows; ++r)
+              for (std::int64_t i = 0; i < d; ++i)
+                projection[count(((seq * rows + r) * heads + h) * d + i)] =
+                    q[count(((seq * heads + h) * rows + r) * d + i)];
+        auto* packed_q =
+            Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, rows, sequences), projection);
+        auto* tq = ggml_permute(ctx, packed_q, 0, 2, 1, 3);
+        TensorArena::Bind(tq, reinterpret_cast<std::uintptr_t>(packed_q->data));
+        auto* tk = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, cells, heads / 2, sequences), k);
+        auto* tv = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, cells, heads / 2, sequences), v);
+        auto* tm = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, cells, mask_rows, 1, sequences),
+                         Halves(mask));
+        auto* node = Place(ggml_flash_attn_ext(ctx, tq, tk, tv, tm, 1, 0, 0));
+        ggml_prec_set_acc(node, GGML_PREC_F32);
+        const bool vector = rows == 1 && sequences == 1;
+        EXPECT_EQ(kg::FlashAttnVec256Selected(launch(), node), vector);
+        auto choices = kg::DeviceChoicesOf(launch());
+        const std::array<ggml_tensor*, 1> nodes = {node};
+        auto graph = kg::PlanGraph(nodes, false, choices);
+        ASSERT_TRUE(graph.has_value());
+        EXPECT_EQ(graph->steps.front().implementation,
+                  vector ? kg::kFlashAttnVec256Name : kg::kFlashAttnMmaGqa2Name);
+        const auto scratch = kg::PlanScratch(launch(), *graph);
+        ASSERT_TRUE(scratch.has_value());
+        auto mma = kg::PlanFlashAttnMmaGqa2(launch(), node);
+        ASSERT_TRUE(mma.has_value()) << (mma ? "" : mma.error().detail);
+        EXPECT_EQ(mma->group, 2);
+        EXPECT_EQ(mma->columns, columns);
+        EXPECT_EQ(mma->mask_prepass, sequences > 1);
+        launch().ResetScratchPeak();
+        Launched(
+            vector ? kg::FlashAttnVec256(launch(), node) : kg::FlashAttnMmaGqa2(launch(), node),
+            "selected local attention");
+        EXPECT_LE(launch().scratch_peak().value(), *scratch);
+        const auto got = Download(node);
+        if (sequences == 1)
+          first_sequence = got;
+        else {
+          std::vector<float> first(
+              got.begin(), got.begin() + static_cast<std::ptrdiff_t>(first_sequence.size()));
+          ExpectNmse(first, std::vector<double>(first_sequence.begin(), first_sequence.end()),
+                     kMulMatNmse, "independent first sequence matches solo");
+        }
+        // Pinned original case, separately launched with the checked paid scratch.
+        Launched(launch().Run(jitllm::base::Bytes(mma->scratch),
+                              [node, columns](ggml_backend_cuda_context& context) {
+                                kg::detail::FlashAttnMmaCaseGqa2(static_cast<int>(columns))(context,
+                                                                                            node);
+                              }),
+                 "pinned group2 reference");
+        const auto reference = Download(node);
+        if (!vector)
+          EXPECT_EQ(std::memcmp(got.data(), reference.data(), got.size() * sizeof(float)), 0);
+        std::vector<double> want(got.size());
+        std::vector<double> logits(count(cells));
+        for (std::int64_t seq = 0; seq < sequences; ++seq) {
+          for (std::int64_t h = 0; h < heads; ++h) {
+            for (std::int64_t r = 0; r < rows; ++r) {
+              double max = -std::numeric_limits<double>::infinity();
+              for (std::int64_t cell = 0; cell < cells; ++cell) {
+                if (std::isinf(mask[count((seq * mask_rows + r) * cells + cell)])) {
+                  logits[count(cell)] = -std::numeric_limits<double>::infinity();
+                  continue;
+                }
+                double dot = 0;
+                for (std::int64_t i = 0; i < d; ++i) {
+                  dot += static_cast<double>(q[count(((seq * heads + h) * rows + r) * d + i)]) *
+                         ggml_fp16_to_fp32(
+                             k[count(((seq * (heads / 2) + h / 2) * cells + cell) * d + i)]);
+                }
+                logits[count(cell)] = dot;  // scale1, never inverse sqrt(D)
+                max = std::max(max, dot);
+              }
+              double sum = 0;
+              for (double l : logits)
+                if (std::isfinite(l)) sum += std::exp(l - max);
+              for (std::int64_t cell = 0; cell < cells; ++cell) {
+                if (!std::isfinite(logits[count(cell)])) continue;
+                const double probability = std::exp(logits[count(cell)] - max) / sum;
+                for (std::int64_t i = 0; i < d; ++i) {
+                  want[count(((seq * rows + r) * heads + h) * d + i)] +=
+                      probability *
+                      ggml_fp16_to_fp32(
+                          v[count(((seq * (heads / 2) + h / 2) * cells + cell) * d + i)]);
+                }
+              }
+            }
+          }
+        }
+        ExpectNmse(got, want, kMulMatNmse, "Gemma local independent FP64 ring attention");
+        Launched(
+            vector ? kg::FlashAttnVec256(launch(), node) : kg::FlashAttnMmaGqa2(launch(), node),
+            "local exact repeat");
+        const auto repeated = Download(node);
+        EXPECT_EQ(std::memcmp(got.data(), repeated.data(), got.size() * sizeof(float)), 0);
+        if (sequences > 1) {
+          const auto saved = tm->ne[1];
+          tm->ne[1] = rows;
+          if (rows % columns != 0) {
+            EXPECT_EQ(FailedCode(kg::PlanFlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
+          }
+          tm->ne[1] = saved;
+          tm->ne[3] = 1;  // broadcast masks cannot fund this pre-pass
+          EXPECT_EQ(FailedCode(kg::PlanFlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
+          tm->ne[3] = sequences;
+        }
+      }
+    }
+  }
+}
 
 struct Attention {
   std::int64_t head{};

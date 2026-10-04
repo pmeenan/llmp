@@ -63,7 +63,7 @@ if(JITLLM_CUDA)
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
                                          fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu mmvq_rows.cu fattn_mma.cu
-                                         fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
+                                         fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
                                          jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu dsv4_fast.cu dsv4_sparse.cu
                                          qsa_sparse.cu
                                          cublas.cc executor.cc implementations.cc)
@@ -157,7 +157,7 @@ if(JITLLM_CUDA)
                    dsv4_graph.h dsv4_hca_tokentile.cu
                    executor.cc
                    executor.h fattn.cu fattn_mma.cu
-                   fattn_mma.h fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
+                   fattn_mma.h fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
                    fattn_mma_shape.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
                    implementations.h jitllm_fused.cu jitllm_moe.cu jitllm_ops.cc jitllm_ops.cu
@@ -212,7 +212,7 @@ if(JITLLM_CUDA)
   # the other launchers' wrappers. jitLLM's fusions of GGML nodes
   # (jitllm_fused.cu) build with the same flags, so that their arithmetic
   # compiles as the nodes' does.
-  set_source_files_properties(fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
+  set_source_files_properties(fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
                               mul_mat_q.cu mul_mat_q_glu.cu mul_mat_q2_d2r.cu mmvq_rows.cu ops_ext.cu jitllm_fused.cu jitllm_moe.cu
                               dsv4_fast.cu dsv4_sparse.cu dsv4_weighted_reduce.cu dsv4_qhead.cu dsv4_outa.cu dsv4_hc_norm.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")

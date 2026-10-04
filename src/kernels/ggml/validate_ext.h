@@ -259,6 +259,7 @@ std::expected<void, KernelFailure> CheckHcPost(const ggml_tensor* node);
 // gather only the unmasked cells (sparse); the mask pre-pass reads whole
 // column tiles, which ops_ext.h checks against the mask's rows.
 std::expected<void, KernelFailure> CheckFlashAttnMma(const ggml_tensor* node);
+std::expected<void, KernelFailure> CheckFlashAttnMmaGqa2(const ggml_tensor* node);
 
 // The ds4 HCA adapter. The binder vouches for the canonical 128-row causal
 // ring mask and floor((first + row + 1) / 128) HCA counts. This is a

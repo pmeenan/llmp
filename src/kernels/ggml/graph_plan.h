@@ -54,6 +54,9 @@ struct DeviceChoices {
   // The family ggml_cuda_mul_mat selects for a product, or a refusal where
   // it would take a path no implementation here has.
   std::function<std::expected<MulMatPath, KernelFailure>(const ggml_tensor*)> mul_mat;
+  // Pinned local D256/GQA2 solo choice. Without a device selector use
+  // the checked group2 MMA primitive; existing attention paths stay intact.
+  std::function<bool(const ggml_tensor*)> flash_attn_vec256 = nullptr;
   // ops.h MulMatVecFusible: the MMVF fusion gates' device condition.
   std::function<bool(const ggml_tensor*)> vector_fusible;
   // ops_ext.h SelectMulMatQ: the family upstream routes a quantized
@@ -286,6 +289,8 @@ inline constexpr std::string_view kLightningIndexerName = "ggml.lightning_indexe
 inline constexpr std::string_view kHcCombName = "ggml.dsv4_hc_comb";
 inline constexpr std::string_view kHcPreName = "ggml.dsv4_hc_pre";
 inline constexpr std::string_view kHcPostName = "ggml.dsv4_hc_post";
+inline constexpr std::string_view kFlashAttnVec256Name = "ggml.flash_attn_ext.vec_d256";
+inline constexpr std::string_view kFlashAttnMmaGqa2Name = "ggml.flash_attn_ext.mma_gqa2";
 inline constexpr std::string_view kFlashAttnMmaName = "ggml.flash_attn_ext.mma";
 inline constexpr std::string_view kFlashAttnMmaWideName = "jitllm.flash_attn_ext.mma_wide";
 inline constexpr std::string_view kDsv4HcaTokentileName = "jitllm.dsv4.hca_tokentile";

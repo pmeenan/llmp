@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Checked D256/F16 local attention primitives with GQA2 vector/MMA shape
+  selection, independent ring masks and charged capture workspace. Gemma
+  whole-model execution and batching qualification remain separate.
+
 - Native GGML Q4_1/Q5_0/Q5_1 product primitives and legacy Q4_0/Q4_1/Q5_0/
   Q5_1/IQ4_NL row-preserving and joined vector products, with readable
   padding and independent column controls. Model qualification remains separate.

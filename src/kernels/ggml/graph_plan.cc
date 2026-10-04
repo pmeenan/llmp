@@ -663,6 +663,14 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                           "512 only",
                           Where(graph, i)));
         }
+        if (node->src[0]->ne[0] == 256 && node->src[1] != nullptr && node->src[1]->ne[2] > 0 &&
+            node->src[0]->ne[2] == 2 * node->src[1]->ne[2]) {
+          add(Operation::kFlashAttn,
+              device.flash_attn_vec256 && device.flash_attn_vec256(node) ? kFlashAttnVec256Name
+                                                                         : kFlashAttnMmaGqa2Name,
+              i, {node}, 1);
+          break;
+        }
         if (device.ds4_hca && device.ds4_hca_fits && device.ds4_hca_fits(node)) {
           add(Operation::kFlashAttn, kDsv4HcaTokentileName, i, {node}, 1);
           break;

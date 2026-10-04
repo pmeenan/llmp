@@ -28,6 +28,28 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-046: GGML flash-attention total iterations use signed integers  (2026-10-04, status: worked-around)
+
+Environment: pinned llama.cpp b10964, GB10, NVCC 13.4.92. Independent review
+found that individually valid extents and output indexing do not bound
+`KV_tiles * output_tiles`. The pinned MMA kernel multiplies those iteration
+counts in signed int before widening; its launcher's efficiency helper also
+computes `100 * output_tiles` in int. Vector launch selection computes
+`100 * candidate_blocks` in int. Shared/broadcast operand strides can admit
+large logical shapes despite bounded output storage.
+
+The jitLLM vector planner conservatively bounds all searched candidates at
+`INT32_MAX/100`; the D128/D256/D512 MMA planner bounds output efficiency and
+total iterations plus the last unaligned iteration advance separately before
+pinned invocation. These are conservative admission bounds; a refused vector
+shape might have stopped searching before an overflow. Validators also bound combined
+Q byte spans, K/V head byte offsets and vector mask row byte starts,
+whose pinned products use int, while retaining int64 K/V sequence strides. KV ceil division also funds
+its signed addition before dividing, including unpadded D128 extents. Normal D64, D128, D256 and D512
+fixtures retain their selected kernels. Oversized metadata is refused before
+scratch use or device submission. See the [GGML handoff](upstream/ggml.md)
+and [primitive controls](experiments/gemma-local-attention/README.md).
+
 ## RE-045: GGML MMVQ dots rows past a partial output block  (2026-10-04, status: worked-around)
 
 Environment: pinned llama.cpp b10964, GB10, SDK NVCC 13.4.92. Independent
@@ -89,7 +111,7 @@ For this lint check, retain the actual entry's definitions and SDK include
 paths, replace NVCC-only driver flags with Clang CUDA host parsing flags,
 then supplement headers with `/usr/local/cuda-13.0/include`, after the SDK
 paths. The resulting changed-unit check passes. This workaround affects
-parsing only: production still compiles with NVCC13.4.92, unchanged native
+parsing only: production still compiles with NVCC 13.4.92, unchanged native
 flags and the pinned SDK libraries. Preserve the original and adapted
 entries; do not replace the production toolchain to repair lint.
 See the [Q-head report](experiments/dsv4-qhead/README.md) and

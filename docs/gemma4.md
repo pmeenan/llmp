@@ -138,6 +138,31 @@ GeGLU. The approved Q8_0 shared weights and Q4_K expert arrays are not
 eligible for this floating MMVF fusion. Quantized joined gate/up and
 activation/quantization writers remain to be implemented and measured.
 
+## Local attention primitives
+
+D256 local attention has checked F32 Q/output and F16 K/V/mask primitives
+for exactly two query heads per KV head. Query views are `[D,rows,heads,slots]`,
+including a permutation of packed projection rows; caches are
+`[D,cells,kv_heads,slots]`. Cells must be padded to a multiple of 256, with
+16-byte bases and strides. Scale 1 is preserved; sinks, ALiBi, softcap and
+sparse gathers are outside this local contract.
+
+The planner follows the pinned GGML overall selector on GB10: one query row
+and one slot use D256 vector attention, while multiple rows or slots use
+group2 MMA, with query tiles 4/8/16/32. Each slot's mask/cache remains separate.
+CPU planning without a device callback retains group2 as a primitive fallback.
+Existing D64 vector and D256/D512 group8 identities remain available. Mask
+prepasses need every row of the final query tile and every mask sequence
+physically backed; the mask sequence extent must equal the query sequence
+extent rather than relying on ordinary extent broadcasting. Scratch plans
+include mask scanning, partial results and fixup. Plans refuse shapes beyond
+the pinned signed iteration and efficiency arithmetic.
+
+The [bounded attention controls](experiments/gemma-local-attention/README.md)
+compare original selected kernels, mathematical ring-mask references and paid
+captured execution. They qualify primitives; the model graph, device-generated
+masks, cache ownership, whole-model quality and optimized batching remain open.
+
 ## Required execution and optimization qualification
 
 Every family/quant must adopt applicable selected Qwen/DeepSeek techniques
@@ -151,7 +176,7 @@ For these actual GGUF files the next slices owe:
 | Q5_1 expert down | [Legacy primitive controls](experiments/m35-legacy-quants/README.md) cover ordinary/routed products, row-preserving and joined columns at K704/N2816/top-eight routes. Synthetic overlap measurements retain ordinary MMVQ where faster; model routing, selected dispatch, prefill and the last-layer Q8_0 execution remain to be qualified. Do not select a Q2_K or IQ2 kernel by analogy. |
 | Shared input preparation | Reuse eligible Q8_1 preparation across ordinary Q8/K-quant products and fused gate/up reads, retaining maps/strides and Gemma's router and GeGLU arithmetic. DeepSeek's SwiGLU activation writer cannot transfer unchanged. |
 | Routed prefill scheduling | Check compact expert-major tiles and full-K arithmetic for Q4_K fused gate/up and Q5_1 down at actual shapes/chunk sizes; keep only qualified speed/memory winners. Raw expert groups must remain authoritative for later paging. |
-| Attention and device masks | Compare existing D256/D512 tensor-core attention with each model's GQA, local/global windows, independent caches and scale1.0. Generate causal/window masks from descriptors on device where qualified; never invent sparse global attention. |
+| Attention and device masks | Local D256/GQA2 vector and MMA primitives have bounded ring-mask, shape-selection and scratch controls. Integrate them and the existing global D512/group8 path with each model's independent caches and scale1.0. Generate causal/window masks from descriptors on device where qualified; never invent sparse global attention. |
 | Join products across requests | Apply Qwen/DeepSeek joined dense/routed/head products when operand/quant contracts fit. Preserve per-segment outputs, original one-token sums, stable route pair order and separate attention/state. Qualify scalar versus joined logits/state and departed/cancelled slots. |
 | Lanes, graphs and lifetimes | Reuse request cohorts, completion-aware leases, stable-address graphs, charged per-lane scratch and hazard ordering. Shape/read-alignment choices must back padded cells and preserve exact continuation across capture/replay, spill/restore and time-slicing. |
 | Bounded state and staging | Use initialized read/write footprints, growing extents, bounded host inputs, shared maximum workspace and separately owned slot state; measure peak memory for solo and batched envelopes at context boundaries. |

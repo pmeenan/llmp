@@ -128,6 +128,8 @@ std::expected<void, KernelFailure> CheckConvert(const ggml_tensor* node);
 // (ggml_cuda_flash_attn_ext_vec_case<64, F16, F16>) and launch_fattn read
 // and assert; the scratch it draws is ops.h PlanFlashAttnVec's.
 std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node);
+// D256 F16 KV, exact GQA2, one sequence; preserves the D64 contract.
+std::expected<void, KernelFailure> CheckFlashAttnVec256(const ggml_tensor* node);
 
 // MMVF with GGML's fusion arguments (ggml_cuda_mul_mat_vec_f,
 // mmvf.cu:634-729), for one activation column. Beyond CheckMulMat's rules

@@ -1026,7 +1026,8 @@ std::expected<void, KernelFailure> CheckConvert(const ggml_tensor* node) {
   return {};
 }
 
-std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node) {
+static std::expected<void, KernelFailure> CheckFlashAttnVecHead(const ggml_tensor* node,
+                                                                std::int64_t head) {
   if (node == nullptr || node->op != GGML_OP_FLASH_ATTN_EXT || !Bound(node)) {
     return Rejected("not a bound flash_attn_ext node");
   }
@@ -1038,7 +1039,7 @@ std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node) {
     return Rejected("attention over bound Q, K, V and mask, without sinks");
   }
   // The instance this implementation compiles:
-  // ggml_cuda_flash_attn_ext_vec_case<64, F16, F16> (fattn-vec.cuh:545-573)
+  // ggml_cuda_flash_attn_ext_vec_case<D, F16, F16> (fattn-vec.cuh:545-573)
   // through launch_fattn (fattn-common.cuh:975-1215): F32 Q and output, F16
   // K, V and mask (fattn-common.cuh:1000-1011).
   if (!IsF32(q) || !IsF32(node) || k->type != GGML_TYPE_F16 || v->type != GGML_TYPE_F16 ||
@@ -1048,16 +1049,19 @@ std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node) {
   if (AnyEmpty({node, q, k, v, mask}) || !AllSane({node, q, k, v, mask})) {
     return Rejected("attention over an empty or unmeasurable tensor");
   }
-  constexpr std::int64_t kHead = 64;
+  const std::int64_t kHead = head;
   constexpr std::int64_t kKqStride = 256;  // FATTN_KQ_STRIDE
-  // ggml_flash_attn_ext's shapes (ggml.c:5502-5544) at head size 64: Q
-  // [64, rows, heads], K and V [64, cells, kv heads], one sample, a whole
-  // number of query heads per KV head, the output [64, heads, rows].
+  // ggml_flash_attn_ext's shapes (ggml.c:5502-5544) at head size D: Q
+  // [D, rows, heads], K and V [D, cells, kv heads], one sample, a whole
+  // number of query heads per KV head, the output [D, heads, rows].
   if (q->ne[0] != kHead || k->ne[0] != kHead || v->ne[0] != kHead || q->ne[3] != 1 ||
       k->ne[3] != 1 || v->ne[3] != 1 || !ggml_are_same_shape(k, v) || q->ne[2] % k->ne[2] != 0 ||
       node->ne[0] != kHead || node->ne[1] != q->ne[2] || node->ne[2] != q->ne[1] ||
       node->ne[3] != 1) {
-    return Rejected("attention at head size 64 whose shapes do not follow from its operands");
+    return Rejected("vector attention whose shapes do not follow from its operands");
+  }
+  if (head == 256 && q->ne[2] / k->ne[2] != 2) {
+    return Rejected("D256 vector attention requires exactly two query heads per KV head");
   }
   // The attended cells padded to 256, as llama.cpp pads its cache and the
   // vector kernel requires (fattn.cu's selection); one F16 mask row per
@@ -1085,8 +1089,12 @@ std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node) {
   if (q->nb[0] != sizeof(float) || k->nb[0] != sizeof(ggml_fp16_t) ||
       v->nb[0] != sizeof(ggml_fp16_t) || !Packed(node) || !AlignedEverywhere(q, 16) ||
       !AlignedEverywhere(k, 16) || !AlignedEverywhere(v, 16) || !AlignedEverywhere(mask, 16) ||
-      !Aligned(node, 16) || Span(q) > kInt32Max || Span(k) > kInt32Max || Span(v) > kInt32Max ||
-      Span(mask) > kInt32Max || Span(node) > kInt32Max) {
+      !Aligned(node, 16) || Span(q) > kInt32Max / sizeof(float) || Span(k) > kInt32Max ||
+      Span(v) > kInt32Max || Span(mask) > kInt32Max || Span(node) > kInt32Max ||
+      mask->nb[1] >
+          kInt32Max / static_cast<std::uint64_t>(std::max<std::int64_t>(1, q->ne[1] - 1)) ||
+      k->nb[2] > kInt32Max / static_cast<std::uint64_t>(std::max<std::int64_t>(1, k->ne[2] - 1)) ||
+      v->nb[2] > kInt32Max / static_cast<std::uint64_t>(std::max<std::int64_t>(1, v->ne[2] - 1))) {
     return Rejected("attention operands beyond the kernel's alignment or 32-bit indexing");
   }
   if (!AllCurrent({node, q, k, v, mask}) || Overlap(node, q) || Overlap(node, k) ||
@@ -1094,6 +1102,13 @@ std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node) {
     return Rejected("a stale view, or an output overlapping an operand");
   }
   return {};
+}
+
+std::expected<void, KernelFailure> CheckFlashAttnVec(const ggml_tensor* node) {
+  return CheckFlashAttnVecHead(node, 64);
+}
+std::expected<void, KernelFailure> CheckFlashAttnVec256(const ggml_tensor* node) {
+  return CheckFlashAttnVecHead(node, 256);
 }
 
 }  // namespace jitllm::kernels::ggml

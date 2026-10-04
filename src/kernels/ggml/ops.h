@@ -138,6 +138,12 @@ std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVec(const LaunchContext
 // flash_attn_combine_results over the parallel blocks), drawing
 // PlanFlashAttnVec's scratch from the context's pool.
 std::expected<void, KernelFailure> FlashAttnVec(LaunchContext& launch, ggml_tensor* node);
+// D256 F16 KV vector primitive, exact GQA2 and one sequence. The pinned
+// overall selector chooses it for one query on Ada+; other rows use MMA.
+std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVec256(const LaunchContext& launch,
+                                                                const ggml_tensor* node);
+std::expected<void, KernelFailure> FlashAttnVec256(LaunchContext& launch, ggml_tensor* node);
+bool FlashAttnVec256Selected(const LaunchContext& launch, const ggml_tensor* node);
 
 // MMVF with GGML's fusion arguments, for one activation column, as the
 // FP16-F plan runs it: a product and its bias (or residual) add, written to

@@ -200,6 +200,7 @@ std::expected<void, KernelFailure> HcPost(LaunchContext& launch, ggml_tensor* no
 struct FlashAttnMmaPlan {
   int head = 0;     // D
   int columns = 0;  // ncols1
+  int group = 8;    // ncols2
   bool sparse = false;
   bool mask_prepass = false;
   int blocks = 0;
@@ -225,6 +226,12 @@ bool Dsv4HcaTokentileFits(const LaunchContext& launch, const ggml_tensor* node);
 std::expected<std::uint64_t, KernelFailure> PlanDsv4HcaTokentile(const LaunchContext& launch,
                                                                  const ggml_tensor* node);
 std::expected<void, KernelFailure> Dsv4HcaTokentile(LaunchContext& launch, ggml_tensor* node);
+
+// Exact GQA2 D256, dense mask, original query tiles4/8/16/32. The mask
+// pre-pass needs rounded tile rows when rows>=1024 or multiple sequences.
+std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMmaGqa2(const LaunchContext& launch,
+                                                                    const ggml_tensor* node);
+std::expected<void, KernelFailure> FlashAttnMmaGqa2(LaunchContext& launch, ggml_tensor* node);
 
 // The same kernels at head dimension 128 without grouping and without a
 // mask (validate_ext.h CheckFlashAttnMma128): the instance

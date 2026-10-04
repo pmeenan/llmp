@@ -201,7 +201,6 @@ std::unexpected<KernelFailure> Rejected(std::string detail) {
       KernelFailure{.error = KernelError::kRejected, .detail = std::move(detail)});
 }
 
-constexpr int kGroup = 8;              // ncols2: query heads per KV head in a tile
 constexpr int kKqStride = 256;         // FATTN_KQ_STRIDE
 constexpr std::uint64_t kBlock = 256;  // the pool's block boundary (launch.h)
 
@@ -209,10 +208,9 @@ std::uint64_t Round(std::uint64_t bytes) { return (bytes + kBlock - 1) / kBlock 
 
 }  // namespace
 
-std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchContext& launch,
-                                                                const ggml_tensor* node,
-                                                                bool wide_sparse) {
-  if (auto checked = CheckFlashAttnMma(node); !checked) {
+static std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMmaGroup(
+    const LaunchContext& launch, const ggml_tensor* node, bool wide_sparse, bool group2) {
+  if (auto checked = group2 ? CheckFlashAttnMmaGqa2(node) : CheckFlashAttnMma(node); !checked) {
     return std::unexpected(checked.error());
   }
   const ggml_tensor* q = node->src[0];
@@ -223,7 +221,9 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchCont
   if (!GGML_CUDA_CC_IS_NVIDIA(cc) || !turing_mma_available(cc)) {
     return Rejected("the MMA flash-attention kernels need Turing or later");
   }
+  const int kGroup = group2 ? 2 : 8;
   FlashAttnMmaPlan plan;
+  plan.group = kGroup;
   plan.head = static_cast<int>(q->ne[0]);
   // The optional sparse kernel shares a query tile's union. The original
   // path uses one sparse column at D512 and dense attention at D256.
@@ -231,7 +231,13 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchCont
   const bool any = node->op_params[kFlashAttnSparseParam] == 1;
   const bool sparse_eligible = n_kv_max > 0 && mask->ne[0] == k->ne[1] && mask->ne[1] >= q->ne[1] &&
                                k->ne[1] >= std::max<std::int64_t>(any ? 0 : 4096, 2LL * n_kv_max);
-  if (sparse_eligible && (plan.head == 512 || wide_sparse)) {
+  if (group2) {
+    plan.columns = q->ne[1] <= 4   ? 4
+                   : q->ne[1] <= 8 ? 8
+                   : (q->ne[1] <= 16 || ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_TURING)
+                       ? 16
+                       : 32;
+  } else if (sparse_eligible && (plan.head == 512 || wide_sparse)) {
     plan.columns = wide_sparse && q->ne[1] > 4 ? 8 : 1;
     plan.sparse = true;
   } else if (q->ne[1] <= 1) {
@@ -243,13 +249,14 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchCont
   } else {
     plan.columns = 8;
   }
-  auto shape = plan.head == 512
+  auto shape = group2 ? detail::FlashAttnMmaShapeGqa2(plan.columns, launch.device())
+               : plan.head == 512
                    ? detail::FlashAttnMmaShape512(plan.columns, plan.sparse, launch.device())
                    : detail::FlashAttnMmaShape256(plan.columns, plan.sparse, launch.device());
   if (!shape) {
     return std::unexpected(KernelFailure{.error = KernelError::kUnknown, .detail = shape.error()});
   }
-  // launch_fattn<DV, columns, 8> with stream-k (fattn-common.cuh:1085-1180).
+  // launch_fattn<DV, columns, group> with stream-k (fattn-common.cuh:1085-1180).
   const std::int64_t ncols = static_cast<std::int64_t>(plan.columns) * kGroup;
   const std::int64_t ntiles_x = (q->ne[1] + plan.columns - 1) / plan.columns;
   const std::int64_t gqa = q->ne[2] / k->ne[2];
@@ -281,7 +288,18 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchCont
     plan.scratch = static_cast<std::uint64_t>(ntiles_x * q->ne[3]) * sizeof(int);
   }
   const std::int64_t kv = gathered;
+  if (kv > INT32_MAX - (shape->kv_batch - 1)) {
+    return Rejected("flash attention beyond the pinned KV ceil-division arithmetic");
+  }
   const std::int64_t ntiles_kv = (kv + shape->kv_batch - 1) / shape->kv_batch;
+  // The pinned int loop advances kbc by iter_k before rounding, and forms
+  // kb0_start + kbc_stop before subtracting kbc. Fund both intermediate
+  // sums, not just the final total iteration count.
+  if (ntiles_dst > INT32_MAX / 100 ||
+      ntiles_kv > (static_cast<std::int64_t>(INT32_MAX) + 1) / (ntiles_dst + 1)) {
+    return Rejected(
+        "flash attention beyond the pinned 32-bit iteration/advance/efficiency arithmetic");
+  }
   // should_use_stream_k: always on NVIDIA from Ada Lovelace on, else below
   // 75% tile efficiency.
   const std::int64_t max_blocks = static_cast<std::int64_t>(shape->blocks_per_sm) * device.nsm;
@@ -311,6 +329,24 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchCont
   return plan;
 }
 
+std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma(const LaunchContext& launch,
+                                                                const ggml_tensor* node,
+                                                                bool wide_sparse) {
+  return PlanFlashAttnMmaGroup(launch, node, wide_sparse, false);
+}
+std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMmaGqa2(const LaunchContext& launch,
+                                                                    const ggml_tensor* node) {
+  return PlanFlashAttnMmaGroup(launch, node, false, true);
+}
+std::expected<void, KernelFailure> FlashAttnMmaGqa2(LaunchContext& launch, ggml_tensor* node) {
+  auto plan = PlanFlashAttnMmaGqa2(launch, node);
+  if (!plan) return std::unexpected(plan.error());
+  const auto run = detail::FlashAttnMmaCaseGqa2(plan->columns);
+  if (run == nullptr) return Rejected("no group2 MMA query tile");
+  return launch.Run(base::Bytes(plan->scratch),
+                    [node, run](ggml_backend_cuda_context& context) { run(context, node); });
+}
+
 std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchContext& launch,
                                                                    const ggml_tensor* node) {
   if (auto checked = CheckFlashAttnMma128(node); !checked) {
@@ -325,6 +361,7 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchC
   }
   FlashAttnMmaPlan plan;
   plan.head = 128;
+  plan.group = 1;
   // switch_ncols1 for ncols2 = 1 (fattn.cu:146-166).
   if (q->ne[1] <= 8) {
     plan.columns = 8;
@@ -347,7 +384,18 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchC
   if (ntiles_dst > INT32_MAX) {
     return Rejected("flash attention beyond the launcher's tile count");
   }
+  if (k->ne[1] > INT32_MAX - (shape->kv_batch - 1)) {
+    return Rejected("flash attention beyond the pinned KV ceil-division arithmetic");
+  }
   const std::int64_t ntiles_kv = (k->ne[1] + shape->kv_batch - 1) / shape->kv_batch;
+  // The pinned int loop advances kbc by iter_k before rounding, and forms
+  // kb0_start + kbc_stop before subtracting kbc. Fund both intermediate
+  // sums, not just the final total iteration count.
+  if (ntiles_dst > INT32_MAX / 100 ||
+      ntiles_kv > (static_cast<std::int64_t>(INT32_MAX) + 1) / (ntiles_dst + 1)) {
+    return Rejected(
+        "flash attention beyond the pinned 32-bit iteration/advance/efficiency arithmetic");
+  }
   const std::int64_t max_blocks = static_cast<std::int64_t>(shape->blocks_per_sm) * device.nsm;
   bool stream_k = GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_ADA_LOVELACE;
   if (!stream_k) {

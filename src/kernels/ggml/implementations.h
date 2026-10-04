@@ -60,6 +60,9 @@
 //   ggml.lightning_indexer.wmma  {lightning_indexer}     ops_ext.h LightningIndexer
 //   ggml.dsv4_hc_comb, _pre, _post                       ops_ext.h HcComb, HcPre, HcPost
 //   ggml.flash_attn_ext.mma      {flash_attn_ext}        ops_ext.h FlashAttnMma
+// For Gemma local D256 F16 attention with exactly two query heads per KV head:
+//   ggml.flash_attn_ext.vec_d256 {flash_attn_ext}        ops.h FlashAttnVec256
+//   ggml.flash_attn_ext.mma_gqa2 {flash_attn_ext}        ops_ext.h FlashAttnMmaGqa2
 // For Qwen-Image-2.1's denoiser (M3): multi-head attention at D = 128,
 // unmasked, any number of cells:
 //   ggml.flash_attn_ext.mma_d128 {flash_attn_ext}        ops_ext.h FlashAttnMma128
