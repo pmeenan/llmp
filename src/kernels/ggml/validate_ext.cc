@@ -489,6 +489,7 @@ std::expected<void, KernelFailure> CheckUnary(const ggml_tensor* node) {
       case GGML_UNARY_OP_SGN:
       case GGML_UNARY_OP_NEG:
       case GGML_UNARY_OP_SILU:
+      case GGML_UNARY_OP_GELU:  // tanh approximation, not GELU_ERF or GELU_QUICK
       case GGML_UNARY_OP_TANH:
       case GGML_UNARY_OP_RELU:
       case GGML_UNARY_OP_SIGMOID:

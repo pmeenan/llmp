@@ -26,6 +26,9 @@
 //   ggml.soft_max                {soft_max}              ops.h SoftMax
 //   ggml.cont                    {cont}                  ops.h Cont
 //   ggml.swiglu                  {glu}                   ops.h SwiGlu
+//   ggml.geglu                   {glu}                   ops.h GeGlu
+//   ggml.mul_mat_geglu.mmvf_fused {gate, up, glu}         ops.h MulMatVecGeGlu
+// GeGLU uses GELU-tanh; its primitive fallback is two products then GeGlu.
 //   ggml.mul_mat_add.mmvf_fused  {mul_mat, add}          ops.h MulMatVecBias
 //   ggml.mul_mat_glu.mmvf_fused  {gate, up, glu}         ops.h MulMatVecGlu
 // The three fused ones are FP16-F's; FP16-U runs their parts as separate

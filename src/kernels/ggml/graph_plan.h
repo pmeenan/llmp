@@ -85,6 +85,11 @@ struct DeviceChoices {
   // The same vector kernel selected for individual float products, rather
   // than all of them. Other products keep the ordinary device selector.
   std::function<bool(const ggml_tensor*)> vector_float_node = nullptr;
+  // Separate measured policy for GeGLU MMVF fusion, default off. Ordinary
+  // MMVF eligibility alone does not qualify GeGLU: the shared N2112 screen
+  // loses. The predicate receives the up product; full structural, precision
+  // and memory checks still apply. No current model enables this callback.
+  std::function<bool(const ggml_tensor*)> geglu_fusible = nullptr;
   // Fast plans may share preparation across adjacent ordinary MMQ expert
   // products. The default keeps one primitive step per graph node.
   bool pair_experts = false;
@@ -243,6 +248,8 @@ inline constexpr std::string_view kRopeSetRowsFused = "ggml.rope_set_rows.fused"
 inline constexpr std::string_view kSoftMaxName = "ggml.soft_max";
 inline constexpr std::string_view kContName = "ggml.cont";
 inline constexpr std::string_view kSwiGluName = "ggml.swiglu";
+inline constexpr std::string_view kGeGluName = "ggml.geglu";
+inline constexpr std::string_view kMulMatGeGluFused = "ggml.mul_mat_geglu.mmvf_fused";
 inline constexpr std::string_view kMulMatAddFused = "ggml.mul_mat_add.mmvf_fused";
 inline constexpr std::string_view kMulMatGluFused = "ggml.mul_mat_glu.mmvf_fused";
 // M3's (ops_ext.h), planned with fusion off only.

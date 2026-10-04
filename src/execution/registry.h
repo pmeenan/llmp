@@ -100,6 +100,9 @@ enum class Operation : std::uint8_t {
   kChannelNorm,        // each pixel's channels scaled to unit norm, times a weight
   kUpsample,           // nearest 2x upsampling
   kDupUpAdd,           // a shortcut's channels spread over 2x2 pixels, added
+  // Gemma 4 primitives (M3.5), preserving existing operation identities.
+  kGeGlu,        // GELU-tanh(gate) * up
+  kMulMatGeGlu,  // gate and up products of one input, then GELU-tanh GLU
 };
 
 std::string_view OperationName(Operation operation);

@@ -231,6 +231,10 @@ family" guide, and its long-context scaling work.
         [verified profiles/bindings](gemma4.md), bounded state and independent
         request-segment host inputs. No importer, graph, runner or inference
         support is claimed; execution and optimized batching remain owed.
+      - [x] Gemma GELU-tanh and split GeGLU primitive fallbacks,
+        with separately gated floating MMVF fusion and a
+        [bounded synthetic screen](experiments/gemma-activations/README.md).
+        Quantized writers and model/optimized-batching qualification remain owed.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

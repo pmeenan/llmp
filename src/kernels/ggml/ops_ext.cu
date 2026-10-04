@@ -71,6 +71,8 @@ Launcher UnaryLauncher(const ggml_tensor* node) {
       return &ggml_cuda_op_neg;
     case GGML_UNARY_OP_SILU:
       return &ggml_cuda_op_silu;
+    case GGML_UNARY_OP_GELU:
+      return &ggml_cuda_op_gelu;
     case GGML_UNARY_OP_TANH:
       return &ggml_cuda_op_tanh;
     case GGML_UNARY_OP_RELU:

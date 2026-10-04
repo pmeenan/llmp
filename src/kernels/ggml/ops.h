@@ -106,6 +106,8 @@ std::expected<void, KernelFailure> SoftMax(LaunchContext& launch, ggml_tensor* n
 std::expected<void, KernelFailure> Cont(LaunchContext& launch, ggml_tensor* node);
 // A ggml_swiglu_split node over F32.
 std::expected<void, KernelFailure> SwiGlu(LaunchContext& launch, ggml_tensor* node);
+// Split F32 GELU-tanh GLU; CheckGeGlu enforces the operand contract.
+std::expected<void, KernelFailure> GeGlu(LaunchContext& launch, ggml_tensor* node);
 
 // The EXL3 plan's operations beyond those above
 // (docs/experiments/backend-proof-p0/exl3-op-plan.json).
@@ -148,6 +150,9 @@ std::expected<void, KernelFailure> MulMatVecBias(LaunchContext& launch, ggml_ten
                                                  ggml_tensor* add);
 std::expected<void, KernelFailure> MulMatVecGlu(LaunchContext& launch, ggml_tensor* gate,
                                                 ggml_tensor* up, ggml_tensor* glu);
+// GELU-tanh counterpart; primitive fallback is two MulMatVecF then GeGlu.
+std::expected<void, KernelFailure> MulMatVecGeGlu(LaunchContext& launch, ggml_tensor* gate,
+                                                  ggml_tensor* up, ggml_tensor* glu);
 
 // The device's part of upstream's MMVF fusion gates
 // (ggml_cuda_should_fuse_mul_mat_vec_f, ggml-cuda.cu:1767-1792): F16, BF16

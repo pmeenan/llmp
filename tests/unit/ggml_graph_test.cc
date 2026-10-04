@@ -108,6 +108,106 @@ const std::vector<ggml_op>& LayerOps() {
   return ops;
 }
 
+TEST(GemmaActivationPlanTest, PlansPrimitiveAndEligibleFusionWithSeparateOperationNames) {
+  auto arena = kg::TensorArena::Create(96).value();
+  auto* c = arena.context();
+  auto device = ModelDevice();
+  device.geglu_fusible = [](const ggml_tensor* up) { return up->ne[0] == 704; };
+  for (const std::int64_t width : {2112, 704}) {
+    for (const std::int64_t rows : {1, 4}) {
+      auto* x = ggml_new_tensor_2d(c, GGML_TYPE_F32, 2816, rows);
+      auto* wg = ggml_new_tensor_2d(c, GGML_TYPE_F16, 2816, width);
+      auto* wu = ggml_new_tensor_2d(c, GGML_TYPE_F16, 2816, width);
+      auto* gate = ggml_mul_mat(c, wg, x);
+      auto* up = ggml_mul_mat(c, wu, x);
+      ggml_prec_set_acc(gate, GGML_PREC_F32);
+      ggml_prec_set_acc(up, GGML_PREC_F32);
+      auto* glu = ggml_geglu_split(c, gate, up);
+      std::array<ggml_tensor*, 1> outputs{glu};
+      auto nodes = kg::GraphOrder(outputs);
+      kg::BindDistinct(nodes, std::uint64_t{1} << 40U);
+      const auto ordinary = kg::PlanGraph(nodes, false, ModelDevice());
+      ASSERT_TRUE(ordinary);
+      ASSERT_EQ(ordinary->steps.size(), 3U);
+      EXPECT_EQ(ordinary->steps.back().implementation, kg::kGeGluName);
+      EXPECT_EQ(ordinary->steps.back().operation, jitllm::execution::Operation::kGeGlu);
+      const auto default_off = kg::PlanGraph(nodes, true, ModelDevice());
+      ASSERT_TRUE(default_off);
+      EXPECT_EQ(default_off->steps.size(), 3U);
+      const auto fused = kg::PlanGraph(nodes, true, device);
+      ASSERT_TRUE(fused);
+      EXPECT_EQ(fused->steps.size(), rows == 1 && width == 704 ? 1U : 3U);
+      EXPECT_EQ(fused->steps.back().implementation,
+                rows == 1 && width == 704 ? kg::kMulMatGeGluFused : kg::kGeGluName);
+      const std::array<ggml_tensor*, 1> keep{gate};
+      const auto kept = kg::PlanGraph(nodes, true, device, keep);
+      ASSERT_TRUE(kept);
+      EXPECT_EQ(kept->steps.size(), 3U);  // retained intermediate must be produced
+      ggml_prec_set_acc(up, GGML_PREC_DEFAULT);
+      const auto precise = kg::PlanGraph(nodes, true, device);
+      ASSERT_TRUE(precise);
+      EXPECT_EQ(precise->steps.size(), 3U);  // GLU params must not replace product precision
+      ggml_prec_set_acc(up, GGML_PREC_F32);
+      glu->op_params[1] = 1;
+      EXPECT_FALSE(kg::PlanGraph(nodes, false, ModelDevice()));
+      glu->op_params[1] = 0;
+      glu->op_params[0] = GGML_GLU_OP_GEGLU_ERF;
+      EXPECT_FALSE(kg::PlanGraph(nodes, false, ModelDevice()));
+    }
+  }
+}
+
+TEST(GemmaActivationPlanTest, GeluTanhUsesTheUnaryPrimitive) {
+  auto arena = kg::TensorArena::Create(8).value();
+  auto* x = ggml_new_tensor_2d(arena.context(), GGML_TYPE_F32, 2112, 4);
+  auto* gelu = ggml_gelu(arena.context(), x);
+  std::array<ggml_tensor*, 1> outputs{gelu};
+  const auto nodes = kg::GraphOrder(outputs);
+  const auto plan = kg::PlanGraph(nodes, false, ModelDevice());
+  ASSERT_TRUE(plan);
+  ASSERT_EQ(plan->steps.size(), 1U);
+  EXPECT_EQ(plan->steps[0].implementation, kg::kUnaryName);
+}
+
+TEST(GemmaActivationPlanTest, AdversarialRetainedViewsAndReadersKeepProductsLive) {
+  auto arena = kg::TensorArena::Create(24).value();
+  auto* c = arena.context();
+  auto* x = ggml_new_tensor_1d(c, GGML_TYPE_F32, 32);
+  auto* wg = ggml_new_tensor_2d(c, GGML_TYPE_F16, 32, 64);
+  auto* wu = ggml_new_tensor_2d(c, GGML_TYPE_F16, 32, 64);
+  auto* gate = ggml_mul_mat(c, wg, x);
+  auto* up = ggml_mul_mat(c, wu, x);
+  ggml_prec_set_acc(gate, GGML_PREC_F32);
+  ggml_prec_set_acc(up, GGML_PREC_F32);
+  auto* glu = ggml_geglu_split(c, gate, up);
+  auto device = ModelDevice();
+  device.geglu_fusible = [](const ggml_tensor*) { return true; };
+  const std::array<ggml_tensor*, 1> outputs{glu};
+  auto nodes = kg::GraphOrder(outputs);
+  kg::BindDistinct(nodes, std::uint64_t{1} << 40U);
+  const auto eligible = kg::PlanGraph(nodes, true, device);
+  ASSERT_TRUE(eligible);
+  ASSERT_EQ(eligible->steps.size(), 1U);
+  for (auto* product : {gate, up}) {
+    auto* retained = ggml_view_1d(c, product, 16, 16 * sizeof(float));
+    const std::array<ggml_tensor*, 1> keep{retained};
+    const auto kept = kg::PlanGraph(nodes, true, device, keep);
+    ASSERT_TRUE(kept);
+    ASSERT_EQ(kept->steps.size(), 3U);
+    EXPECT_EQ(kept->steps[0].nodes.back(), gate);
+    EXPECT_EQ(kept->steps[1].nodes.back(), up);
+    auto* reader = ggml_cont(c, product);
+    const std::array<ggml_tensor*, 2> extra_outputs{glu, reader};
+    auto extra_nodes = kg::GraphOrder(extra_outputs);
+    kg::BindDistinct(extra_nodes, std::uint64_t{1} << 40U);
+    const auto read = kg::PlanGraph(extra_nodes, true, device);
+    ASSERT_TRUE(read);
+    ASSERT_EQ(read->steps.size(), 4U);
+    EXPECT_EQ(read->steps[2].operation, jitllm::execution::Operation::kGeGlu);
+    EXPECT_EQ(read->steps[3].implementation, kg::kContName);
+  }
+}
+
 TEST(Qwen2GraphTest, HasLlamaCppsNodesInItsOrder) {
   const Chunk c = Build(32, 256, 512);
   const auto& nodes = c.graph.nodes;

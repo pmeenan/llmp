@@ -840,18 +840,22 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node) {
   return ContCopy::kScalar;
 }
 
-std::expected<void, KernelFailure> CheckSwiGlu(const ggml_tensor* node) {
-  if (node == nullptr || node->op != GGML_OP_GLU || ggml_get_glu_op(node) != GGML_GLU_OP_SWIGLU ||
-      !Bound(node) || !Bound(node->src[0]) || !Bound(node->src[1])) {
-    return Rejected("not a bound split SwiGLU node");
+namespace {
+std::expected<void, KernelFailure> CheckSplitGlu(const ggml_tensor* node, ggml_glu_op op) {
+  if (node == nullptr || node->op != GGML_OP_GLU || ggml_get_glu_op(node) != op || !Bound(node) ||
+      !Bound(node->src[0]) || !Bound(node->src[1])) {
+    return Rejected("not a bound split GLU node");
+  }
+  if (op == GGML_GLU_OP_GEGLU && node->op_params[1] != 0) {
+    return Rejected("swapped GeGLU is not implemented");
   }
   const ggml_tensor* gate = node->src[0];
   const ggml_tensor* up = node->src[1];
   if (!IsF32(gate) || !IsF32(up) || !IsF32(node)) {
-    return Rejected("SwiGLU over F32");
+    return Rejected("GLU over F32");
   }
   if (AnyEmpty({node, gate, up}) || !AllSane({node, gate, up})) {
-    return Rejected("SwiGLU on an empty or unmeasurable tensor");
+    return Rejected("GLU on an empty or unmeasurable tensor");
   }
   // ggml_glu_impl (ggml.c:2911-2935) and the launcher's asserts
   // (unary.cu:298-312): the kernel finds row r of each input r row strides
@@ -859,15 +863,15 @@ std::expected<void, KernelFailure> CheckSwiGlu(const ggml_tensor* node) {
   if (!ggml_are_same_shape(gate, up) || !ggml_are_same_shape(node, gate) ||
       !ggml_is_contiguous_1(gate) || !ggml_is_contiguous_1(up) || gate->nb[0] != sizeof(float) ||
       up->nb[0] != sizeof(float) || !ElementStrides(gate) || !ElementStrides(up) || !Packed(node)) {
-    return Rejected("SwiGLU over inputs of uniform rows into a packed output of their shape");
+    return Rejected("GLU over inputs of uniform rows into a packed output of their shape");
   }
   // Blocks of 256 threads (unary.cu:280-283).
   if (ggml_nelements(node) / 256 >= static_cast<std::int64_t>(kInt32Max)) {
-    return Rejected("SwiGLU beyond the launcher's grid");
+    return Rejected("GLU beyond the launcher's grid");
   }
   if (!Aligned(gate, sizeof(float)) || !Aligned(up, sizeof(float)) ||
       !Aligned(node, sizeof(float))) {
-    return Rejected("SwiGLU operands at misaligned addresses");
+    return Rejected("GLU operands at misaligned addresses");
   }
   // Each thread reads its element of both inputs and then writes it.
   if (!AllCurrent({node, gate, up}) || !Disjoint(node, gate, /*in_place=*/true) ||
@@ -875,6 +879,15 @@ std::expected<void, KernelFailure> CheckSwiGlu(const ggml_tensor* node) {
     return Rejected("a stale view, or an output overlapping an input other than in place");
   }
   return {};
+}
+
+}  // namespace
+
+std::expected<void, KernelFailure> CheckSwiGlu(const ggml_tensor* node) {
+  return CheckSplitGlu(node, GGML_GLU_OP_SWIGLU);
+}
+std::expected<void, KernelFailure> CheckGeGlu(const ggml_tensor* node) {
+  return CheckSplitGlu(node, GGML_GLU_OP_GEGLU);
 }
 
 std::expected<void, KernelFailure> CheckMulMatVecBias(const ggml_tensor* mul_mat,
@@ -912,12 +925,14 @@ std::expected<void, KernelFailure> CheckMulMatVecBias(const ggml_tensor* mul_mat
   return {};
 }
 
-std::expected<void, KernelFailure> CheckMulMatVecGlu(const ggml_tensor* gate, const ggml_tensor* up,
-                                                     const ggml_tensor* glu) {
+namespace {
+std::expected<void, KernelFailure> CheckMulMatVecSplitGlu(const ggml_tensor* gate,
+                                                          const ggml_tensor* up,
+                                                          const ggml_tensor* glu, ggml_glu_op op) {
   if (gate == nullptr || up == nullptr || glu == nullptr || glu->op != GGML_OP_GLU ||
-      ggml_get_glu_op(glu) != GGML_GLU_OP_SWIGLU || glu->src[0] != gate || glu->src[1] != up ||
+      ggml_get_glu_op(glu) != op || glu->src[0] != gate || glu->src[1] != up ||
       glu->op_params[1] != 0) {
-    return Rejected("not a split SwiGLU of the gate product by the up product");
+    return Rejected("not a split GLU of the gate product by the up product");
   }
   if (gate->op != GGML_OP_MUL_MAT || gate == up || gate->src[1] != up->src[1] || !IsF32(gate) ||
       gate->op_params[1] != GGML_HINT_NONE) {
@@ -947,6 +962,35 @@ std::expected<void, KernelFailure> CheckMulMatVecGlu(const ggml_tensor* gate, co
     return Rejected("stale gate weights, or an output overlapping them");
   }
   return {};
+}
+
+}  // namespace
+
+std::expected<void, KernelFailure> CheckMulMatVecGlu(const ggml_tensor* gate, const ggml_tensor* up,
+                                                     const ggml_tensor* glu) {
+  return CheckMulMatVecSplitGlu(gate, up, glu, GGML_GLU_OP_SWIGLU);
+}
+bool MulMatVecGeGluPrecisionFits(const ggml_tensor* gate, const ggml_tensor* up) {
+  if (gate == nullptr || up == nullptr || gate->src[0] == nullptr || up->src[0] == nullptr) {
+    return false;
+  }
+  // MMVF interprets the GLU enum in dst->op_params[0] as a non-default
+  // precision, selecting F32 accumulation. Ordinary F16 MMVF defaults to
+  // half accumulation: the fused path must not silently change that contract.
+  const auto fits = [](const ggml_tensor* node) {
+    return node->op_params[0] == GGML_PREC_F32 ||
+           (node->src[0]->type != GGML_TYPE_F16 && node->op_params[0] == GGML_PREC_DEFAULT);
+  };
+  return fits(gate) && fits(up);
+}
+
+std::expected<void, KernelFailure> CheckMulMatVecGeGlu(const ggml_tensor* gate,
+                                                       const ggml_tensor* up,
+                                                       const ggml_tensor* glu) {
+  if (!MulMatVecGeGluPrecisionFits(gate, up)) {
+    return Rejected("GeGLU MMVF fusion requires product accumulation compatible with F32");
+  }
+  return CheckMulMatVecSplitGlu(gate, up, glu, GGML_GLU_OP_GEGLU);
 }
 
 std::expected<void, KernelFailure> CheckConvert(const ggml_tensor* node) {

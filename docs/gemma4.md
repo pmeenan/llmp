@@ -117,6 +117,27 @@ full-context virtual bounds, initialized/write footprints, slot isolation,
 solo/batch mask equality and fake cache results against unrolled causal/window
 references. These validate the foundation, without executing model arithmetic.
 
+## Activation primitives
+
+The native GGML registry supplies F32 split GeGLU using GELU's tanh
+approximation (`ggml.geglu`) and packed F32 unary GELU-tanh (`ggml.unary`).
+GeGLU accepts uniform strided input rows, including views of the actual
+704-wide expert gate/up layout, and a packed output; exact packed in-place
+updates are permitted. Swapped, two-half packed, ERF and quick variants are
+refused. CPU checks and Spark controls cover solo/batch equality, expert
+views, near-zero and extreme finite inputs, aliases and current bindings.
+
+The separately named `ggml.mul_mat_geglu.mmvf_fused` implementation has
+primitive fallback through two products and `ggml.geglu`. It takes one
+activation row with compatible floating weights and F32 accumulation;
+F16 products must explicitly request F32. The planner's `geglu_fusible`
+policy callback defaults off. A [bounded synthetic screen](experiments/gemma-activations/README.md)
+at K2816 found a gain at N704 and a loss at N2112; neither result qualifies
+a model's selection. Four-row products retain ordinary matrix products and
+GeGLU. The approved Q8_0 shared weights and Q4_K expert arrays are not
+eligible for this floating MMVF fusion. Quantized joined gate/up and
+activation/quantization writers remain to be implemented and measured.
+
 ## Required execution and optimization qualification
 
 Every family/quant must adopt applicable selected Qwen/DeepSeek techniques
@@ -126,7 +147,7 @@ For these actual GGUF files the next slices owe:
 
 | Transfer or contract | Eligibility and required qualification |
 | --- | --- |
-| Primitive completeness | Add/qualify GeGLU and GELU-tanh fallbacks: current ordinary GLU validation selects SwiGLU and unary validation omits GELU, even though fusion recognition mentions GeGLU. Preserve RMSNorm/scale, V norm, sandwich order, softcap/tanh and full-width proportional RoPE. |
+| Primitive completeness | Split F32 GeGLU and packed F32 GELU-tanh fallbacks are checked. Integrate them in the future graph, preserving RMSNorm/scale, V norm, sandwich order, softcap/tanh and full-width proportional RoPE. Floating MMVF fusion stays off until model/shape qualification; quantized GeGLU writers remain owed. |
 | Q5_1 expert down | [Legacy primitive controls](experiments/m35-legacy-quants/README.md) cover ordinary/routed products, row-preserving and joined columns at K704/N2816/top-eight routes. Synthetic overlap measurements retain ordinary MMVQ where faster; model routing, selected dispatch, prefill and the last-layer Q8_0 execution remain to be qualified. Do not select a Q2_K or IQ2 kernel by analogy. |
 | Shared input preparation | Reuse eligible Q8_1 preparation across ordinary Q8/K-quant products and fused gate/up reads, retaining maps/strides and Gemma's router and GeGLU arithmetic. DeepSeek's SwiGLU activation writer cannot transfer unchanged. |
 | Routed prefill scheduling | Check compact expert-major tiles and full-K arithmetic for Q4_K fused gate/up and Q5_1 down at actual shapes/chunk sizes; keep only qualified speed/memory winners. Raw expert groups must remain authoritative for later paging. |

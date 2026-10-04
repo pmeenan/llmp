@@ -56,6 +56,7 @@
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/launch.h"
 #include "kernels/ggml/ops.h"
+#include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 #include "launch_recorder.h"
@@ -1136,6 +1137,388 @@ TEST_F(GgmlOpsTest, TheRegistryDeclaresBindsAndRunsEveryNewImplementation) {
   const std::array<ggml_tensor*, 2> two = {by_kernel, direct};
   EXPECT_EQ(FailedCode(swiglu.Run(*launch, two)), KernelError::kRejected);
   EXPECT_FALSE(launch->faulted());
+}
+
+// The pinned GGML definition uses the tanh approximation, rather than ERF.
+double GemmaGelu(double x) {
+  return 0.5 * x * (1.0 + std::tanh(0.79788456080286535588 * x * (1.0 + 0.044715 * x * x)));
+}
+
+TEST_F(GgmlOpsTest, GemmaGeGluMatchesTanhGeluAcrossRowsViewsAndMemoryDomains) {
+  namespace kg = jitllm::kernels::ggml;
+  const std::array<float, 14> values{0.0f,
+                                     -0.0f,
+                                     1e-8f,
+                                     -1e-8f,
+                                     0.1f,
+                                     -0.1f,
+                                     1.0f,
+                                     -1.0f,
+                                     4.0f,
+                                     -4.0f,
+                                     100.0f,
+                                     -100.0f,
+                                     std::numeric_limits<float>::max(),
+                                     -std::numeric_limits<float>::max()};
+  for (const auto memory : {Memory::kCudaMalloc, Memory::kDeviceVmm, Memory::kHostVmm}) {
+    auto arena = TensorArena::Create(192).value();
+    auto* c = arena.context();
+    auto launch = Launcher();
+    for (const std::int64_t width : {2112, 704}) {
+      const std::int64_t used = width == 704 ? 8 : 1;
+      constexpr std::int64_t rows = 4;
+      std::vector<float> both(static_cast<std::size_t>(2 * width * used * rows));
+      std::vector<double> want;
+      for (std::int64_t row = 0; row < used * rows; ++row) {
+        for (std::int64_t j = 0; j < width; ++j) {
+          const auto ix = static_cast<std::size_t>(row * 2 * width + j);
+          const float gate = values[static_cast<std::size_t>(row + j) % values.size()];
+          const float up = static_cast<float>((row + j) % 5 - 2) * 0.25f;
+          both[ix] = gate;
+          both[ix + static_cast<std::size_t>(width)] = up;
+          want.push_back(GemmaGelu(gate) * up);
+        }
+      }
+      auto* packed =
+          Place(memory, ggml_new_tensor_3d(c, GGML_TYPE_F32, 2 * width, used, rows), both);
+      auto* gate = ggml_view_3d(c, packed, width, used, rows, packed->nb[1], packed->nb[2], 0);
+      auto* up = ggml_view_3d(c, packed, width, used, rows, packed->nb[1], packed->nb[2],
+                              static_cast<std::size_t>(width) * sizeof(float));
+      auto* glu = Place(memory, ggml_geglu_split(c, gate, up));
+      Launched(kg::GeGlu(*launch, glu), "batched strided Gemma GeGLU");
+      const auto got = Download(glu);
+      for (const auto value : got) {
+        EXPECT_TRUE(std::isfinite(value));
+      }
+      ExpectClose(got, want, 3e-6, "Gemma GeGLU tanh reference");
+      for (std::int64_t row = 0; row < used * rows; ++row) {
+        auto* g = ggml_view_1d(c, packed, width, static_cast<std::size_t>(row) * packed->nb[1]);
+        auto* u = ggml_view_1d(c, packed, width,
+                               static_cast<std::size_t>(row) * packed->nb[1] +
+                                   static_cast<std::size_t>(width) * sizeof(float));
+        auto* solo = Place(memory, ggml_geglu_split(c, g, u));
+        Launched(kg::GeGlu(*launch, solo), "solo Gemma GeGLU");
+        const auto begin = got.begin() + row * width;
+        EXPECT_EQ(Bits(Download(solo)), Bits(std::vector<float>(begin, begin + width)));
+      }
+      // A packed gate/up pair can be overwritten exactly in place.
+      auto* g = Place(memory, ggml_new_tensor_2d(c, GGML_TYPE_F32, width, rows),
+                      Values(90, static_cast<std::size_t>(width * rows), 7));
+      auto* u = Place(memory, ggml_new_tensor_2d(c, GGML_TYPE_F32, width, rows),
+                      Values(91, static_cast<std::size_t>(width * rows)));
+      auto* ordinary = Place(memory, ggml_geglu_split(c, g, u));
+      Launched(kg::GeGlu(*launch, ordinary), "packed GeGLU");
+      const auto expected = Download(ordinary);
+      auto* inplace = ggml_geglu_split(c, g, u);
+      TensorArena::Bind(inplace, reinterpret_cast<std::uintptr_t>(g->data));
+      Launched(kg::GeGlu(*launch, inplace), "GeGLU in place over gate");
+      EXPECT_EQ(Bits(Download(inplace)), Bits(expected));
+      EXPECT_EQ(launch->scratch_peak(), Bytes(0));
+    }
+  }
+}
+
+TEST_F(GgmlOpsTest, GemmaGeluUnaryAndRegistryUseTheTanhPrimitive) {
+  namespace kg = jitllm::kernels::ggml;
+  auto arena = TensorArena::Create(16).value();
+  auto* c = arena.context();
+  auto launch = Launcher();
+  std::vector<float> input = Values(87, 2112 * 4, 8);
+  input[0] = std::numeric_limits<float>::max();
+  input[1] = -input[0];
+  input[2] = -0.0f;
+  input[3] = 1e-8f;
+  auto* x = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F32, 2112, 4), input);
+  auto* gelu = Place(Memory::kDeviceVmm, ggml_gelu(c, x));
+  Launched(kg::Unary(*launch, gelu), "Gemma GELU-tanh");
+  std::vector<double> want;
+  for (const float v : input) {
+    want.push_back(GemmaGelu(v));
+  }
+  const auto expected = Download(gelu);
+  for (const auto value : expected) {
+    EXPECT_TRUE(std::isfinite(value));
+  }
+  ExpectClose(expected, want, 1e-5, "Gemma GELU-tanh reference");
+  auto* inplace = ggml_gelu_inplace(c, x);
+  Launched(kg::Unary(*launch, inplace), "GELU-tanh in place");
+  EXPECT_EQ(Bits(Download(inplace)), Bits(expected));
+  auto* up = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F32, 2112, 4),
+                   Values(88, input.size()));
+  auto* glu = Place(Memory::kDeviceVmm, ggml_geglu_split(c, x, up));
+  const auto registry = jitllm::execution::Registry::Create(kg::Implementations()).value();
+  const auto ix = registry.Find("ggml.geglu");
+  ASSERT_TRUE(ix);
+  const std::array<jitllm::execution::Choice, 1> choices{
+      {{.operation = jitllm::execution::Operation::kGeGlu, .implementation = "ggml.geglu"}}};
+  const auto plan = jitllm::execution::Plan::Build(registry, choices).value();
+  const auto bound = jitllm::execution::Resolve(registry, plan).value();
+  auto kernel = kg::Kernel::Bind(bound.at(0)).value();
+  const std::array<ggml_tensor*, 1> nodes{glu};
+  Launched(kernel.Run(*launch, nodes), "GeGLU registry");
+  const auto by_registry = Download(glu);
+  Launched(kg::GeGlu(*launch, glu), "GeGLU direct");
+  EXPECT_EQ(Bits(Download(glu)), Bits(by_registry));
+  auto* erf = Place(Memory::kDeviceVmm, ggml_geglu_erf_split(c, x, up));
+  EXPECT_EQ(FailedCode(kg::GeGlu(*launch, erf)), KernelError::kRejected);
+  EXPECT_FALSE(launch->faulted());
+}
+
+TEST_F(GgmlOpsTest, GemmaFloatingGeGluFusionMatchesItsPrimitiveFallbackAndRefusesBatchFusion) {
+  namespace kg = jitllm::kernels::ggml;
+  auto arena = TensorArena::Create(48).value();
+  auto* c = arena.context();
+  auto launch = Launcher();
+  for (const std::int64_t width : {2112, 704}) {
+    auto* wg = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F16, 2816, width),
+                     Halves(82, static_cast<std::size_t>(2816 * width), 0.025f));
+    auto* wu = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F16, 2816, width),
+                     Halves(83, static_cast<std::size_t>(2816 * width), 0.025f));
+    for (const std::int64_t rows : {1, 4}) {
+      auto* x = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F32, 2816, rows),
+                      Values(84, static_cast<std::size_t>(2816 * rows)));
+      auto* gate = Place(Memory::kDeviceVmm, ggml_mul_mat(c, wg, x));
+      auto* up = Place(Memory::kDeviceVmm, ggml_mul_mat(c, wu, x));
+      ggml_prec_set_acc(gate, GGML_PREC_F32);
+      ggml_prec_set_acc(up, GGML_PREC_F32);
+      auto* glu = Place(Memory::kDeviceVmm, ggml_geglu_split(c, gate, up));
+      const auto fallback = [&] {
+        Launched(rows == 1 ? kg::MulMatVecF(*launch, gate) : kg::MulMatF(*launch, gate),
+                 "Gemma floating gate");
+        Launched(rows == 1 ? kg::MulMatVecF(*launch, up) : kg::MulMatF(*launch, up),
+                 "Gemma floating up");
+        Launched(kg::GeGlu(*launch, glu), "Gemma floating GeGLU fallback");
+      };
+      fallback();
+      const auto want = Download(glu);
+      const auto measure = [&](bool fused) {
+        cudaEvent_t start{}, end{};
+        EXPECT_EQ(cudaEventCreate(&start), cudaSuccess);
+        EXPECT_EQ(cudaEventCreate(&end), cudaSuccess);
+        auto stream =
+            reinterpret_cast<cudaStream_t>(execution_->Submission(stream_).value().handle);
+        for (int i = 0; i < 8; ++i) {
+          if (fused) {
+            Launched(kg::MulMatVecGeGlu(*launch, gate, up, glu), "fusion warmup");
+          } else {
+            fallback();
+          }
+        }
+        EXPECT_EQ(cudaEventRecord(start, stream), cudaSuccess);
+        for (int i = 0; i < 64; ++i) {
+          if (fused) {
+            Launched(kg::MulMatVecGeGlu(*launch, gate, up, glu), "fusion timing");
+          } else {
+            fallback();
+          }
+        }
+        EXPECT_EQ(cudaEventRecord(end, stream), cudaSuccess);
+        EXPECT_EQ(cudaEventSynchronize(end), cudaSuccess);
+        float ms = 0;
+        EXPECT_EQ(cudaEventElapsedTime(&ms, start, end), cudaSuccess);
+        EXPECT_EQ(cudaEventDestroy(start), cudaSuccess);
+        EXPECT_EQ(cudaEventDestroy(end), cudaSuccess);
+        return ms * 1000 / 64;
+      };
+      if (rows == 4) {
+        EXPECT_EQ(FailedCode(kg::MulMatVecGeGlu(*launch, gate, up, glu)), KernelError::kRejected);
+        if (std::getenv("JITLLM_GEMMA_ACTIVATION_TIMING") != nullptr &&
+            (width == 704 || std::getenv("JITLLM_GEMMA_ACTIVATION_TIMING_N704_ONLY") == nullptr)) {
+          const auto a1 = measure(false), a2 = measure(false);
+          std::cout << "GEMMA_GEGLU_FLOAT k=2816 n=" << width << " rows=4 fallback1_us=" << a1
+                    << " fallback2_us=" << a2 << " fused=unsupported\n";
+        }
+        continue;
+      }
+      ASSERT_TRUE(kg::MulMatVecFusible(*launch, up));
+      Launched(kg::MulMatVecGeGlu(*launch, gate, up, glu), "Gemma floating fused GeGLU");
+      const auto got = Download(glu);
+      std::vector<double> reference(want.begin(), want.end());
+      ExpectClose(got, reference, 3e-6, "fused versus primitive GeGLU");
+      const auto registry = jitllm::execution::Registry::Create(kg::Implementations()).value();
+      const std::array<jitllm::execution::Choice, 1> choices{
+          {{.operation = jitllm::execution::Operation::kMulMatGeGlu,
+            .implementation = "ggml.mul_mat_geglu.mmvf_fused"}}};
+      const auto plan = jitllm::execution::Plan::Build(registry, choices).value();
+      const auto bound = jitllm::execution::Resolve(registry, plan).value();
+      auto kernel = kg::Kernel::Bind(bound.at(0)).value();
+      const std::array<ggml_tensor*, 3> nodes{gate, up, glu};
+      Launched(kernel.Run(*launch, nodes), "fused GeGLU registry");
+      EXPECT_EQ(Bits(Download(glu)), Bits(got));
+      if (std::getenv("JITLLM_GEMMA_ACTIVATION_TIMING") != nullptr &&
+          (width == 704 || std::getenv("JITLLM_GEMMA_ACTIVATION_TIMING_N704_ONLY") == nullptr)) {
+        // Include both products and the activation; inputs/weights stay resident.
+        const auto a1 = measure(false), b = measure(true), a2 = measure(false);
+        std::cout << "GEMMA_GEGLU_FLOAT k=2816 n=" << width << " rows=1 fallback1_us=" << a1
+                  << " fused_us=" << b << " fallback2_us=" << a2 << "\n";
+      }
+    }
+  }
+}
+
+TEST_F(GgmlOpsTest, GemmaAdversarialOddRowsAndUpOverwritePreserveEveryElement) {
+  namespace kg = jitllm::kernels::ggml;
+  auto arena = TensorArena::Create(32).value();
+  auto* c = arena.context();
+  auto launch = Launcher();
+  constexpr std::int64_t width = 257;
+  constexpr std::int64_t row_width = 2 * width + 7;
+  constexpr std::int64_t rows = 6;
+  const std::array<float, 12> gates{-0.0f,
+                                    0.0f,
+                                    std::numeric_limits<float>::denorm_min(),
+                                    -std::numeric_limits<float>::denorm_min(),
+                                    -6.0f,
+                                    -5.0f,
+                                    -4.0f,
+                                    std::nextafter(-4.0f, 0.0f),
+                                    1e-20f,
+                                    -1e-20f,
+                                    std::numeric_limits<float>::max(),
+                                    -std::numeric_limits<float>::max()};
+  std::vector<float> input(static_cast<std::size_t>(row_width * rows), 12345.0f);
+  std::vector<double> want;
+  for (std::int64_t row = 0; row < rows; ++row) {
+    for (std::int64_t column = 0; column < width; ++column) {
+      const auto at = static_cast<std::size_t>(row * row_width + column);
+      const float gate = gates[static_cast<std::size_t>(row + column) % gates.size()];
+      const float up = static_cast<float>((row + column) % 7 - 3) / 8.0f;
+      input[at] = gate;
+      input[at + width] = up;
+      want.push_back(GemmaGelu(gate) * up);
+    }
+  }
+  auto* storage =
+      Place(Memory::kDeviceVmm, ggml_new_tensor_4d(c, GGML_TYPE_F32, row_width, 1, 3, 2), input);
+  auto* gate =
+      ggml_view_4d(c, storage, width, 1, 3, 2, storage->nb[1], storage->nb[2], storage->nb[3], 0);
+  auto* up = ggml_view_4d(c, storage, width, 1, 3, 2, storage->nb[1], storage->nb[2],
+                          storage->nb[3], width * sizeof(float));
+  auto* glu = Place(Memory::kDeviceVmm, ggml_geglu_split(c, gate, up));
+  const auto events = Record([&] { Launched(kg::GeGlu(*launch, glu), "odd padded GeGLU"); });
+  ASSERT_EQ(events.size(), 1U);
+  const auto got = Download(glu);
+  ASSERT_EQ(got.size(), want.size());
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    EXPECT_TRUE(std::isfinite(got[i])) << i;
+    EXPECT_LE(std::abs(static_cast<double>(got[i]) - want[i]), 1e-5 * (1 + std::abs(want[i]))) << i;
+  }
+  EXPECT_EQ(Bits(Download(storage)), Bits(input));  // including row-padding canaries
+  auto* packed_gate = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F32, width, rows),
+                            Values(101, got.size()));
+  auto* packed_up = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F32, width, rows),
+                          Values(102, got.size()));
+  auto* separate = Place(Memory::kDeviceVmm, ggml_geglu_split(c, packed_gate, packed_up));
+  Launched(kg::GeGlu(*launch, separate), "independent GeGLU output");
+  const auto expected = Download(separate);
+  auto* overwrite_up = ggml_geglu_split(c, packed_gate, packed_up);
+  TensorArena::Bind(overwrite_up, reinterpret_cast<std::uintptr_t>(packed_up->data));
+  Launched(kg::GeGlu(*launch, overwrite_up), "overwrite packed up");
+  EXPECT_EQ(Bits(Download(overwrite_up)), Bits(expected));
+}
+
+TEST_F(GgmlOpsTest, GemmaAdversarialRefusalsSubmitNoGpuWorkOrOutputWrites) {
+  namespace kg = jitllm::kernels::ggml;
+  auto arena = TensorArena::Create(32).value();
+  auto* c = arena.context();
+  auto launch = Launcher();
+  auto* gate = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F32, 257, 3));
+  auto* up = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F32, 257, 3));
+  const std::vector<float> canary(257 * 3, -12345.0f);
+  auto* glu = Place(Memory::kDeviceVmm, ggml_geglu_split(c, gate, up), canary);
+  auto* old_view = ggml_view_2d(c, gate, 257, 3, gate->nb[1], 0);
+  void* output = glu->data;
+  Finish();
+  const auto events = Record([&] {
+    ++up->ne[1];
+    EXPECT_EQ(FailedCode(kg::GeGlu(*launch, glu)), KernelError::kRejected);
+    --up->ne[1];
+    glu->data = static_cast<char*>(gate->data) + sizeof(float);
+    EXPECT_EQ(FailedCode(kg::GeGlu(*launch, glu)), KernelError::kRejected);
+    glu->data = output;
+    gate->nb[0] += sizeof(float);
+    EXPECT_EQ(FailedCode(kg::GeGlu(*launch, glu)), KernelError::kRejected);
+    gate->nb[0] -= sizeof(float);
+    glu->op_params[1] = 1;
+    EXPECT_EQ(FailedCode(kg::GeGlu(*launch, glu)), KernelError::kRejected);
+    glu->op_params[1] = 0;
+    void* original_gate = gate->data;
+    gate->data = up->data;
+    glu->src[0] = old_view;
+    EXPECT_EQ(FailedCode(kg::GeGlu(*launch, glu)), KernelError::kRejected);
+    gate->data = original_gate;
+    glu->src[0] = gate;
+  });
+  EXPECT_TRUE(events.empty());
+  EXPECT_EQ(Bits(Download(glu)), Bits(canary));
+  EXPECT_FALSE(launch->faulted());
+
+  auto* x = Place(Memory::kDeviceVmm, ggml_new_tensor_1d(c, GGML_TYPE_F32, 32));
+  auto* wg = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F16, 32, 64));
+  auto* wu = Place(Memory::kDeviceVmm, ggml_new_tensor_2d(c, GGML_TYPE_F16, 32, 64));
+  auto* g = ggml_mul_mat(c, wg, x);
+  auto* u = ggml_mul_mat(c, wu, x);
+  auto* fused = Place(Memory::kDeviceVmm, ggml_geglu_split(c, g, u));
+  Finish();
+  const auto precision_events = Record([&] {
+    ggml_prec_set_acc(g, GGML_PREC_F32);
+    EXPECT_EQ(FailedCode(kg::MulMatVecGeGlu(*launch, g, u, fused)), KernelError::kRejected);
+    ggml_prec_set_acc(g, GGML_PREC_DEFAULT);
+    ggml_prec_set_acc(u, GGML_PREC_F32);
+    EXPECT_EQ(FailedCode(kg::MulMatVecGeGlu(*launch, g, u, fused)), KernelError::kRejected);
+    ggml_prec_set_acc(g, GGML_PREC_F32);
+    void* saved = fused->data;
+    fused->data = wg->data;
+    EXPECT_EQ(FailedCode(kg::MulMatVecGeGlu(*launch, g, u, fused)), KernelError::kRejected);
+    fused->data = saved;
+  });
+  EXPECT_TRUE(precision_events.empty());
+  EXPECT_FALSE(launch->faulted());
+  const auto registry = jitllm::execution::Registry::Create(kg::Implementations()).value();
+  const std::array<jitllm::execution::Choice, 1> wrong{
+      {{.operation = jitllm::execution::Operation::kSwiGlu, .implementation = "ggml.geglu"}}};
+  EXPECT_FALSE(jitllm::execution::Plan::Build(registry, wrong));
+}
+
+TEST_F(GgmlOpsTest, GemmaAdversarialF32AndBf16FusionPreserveBroadcastChannels) {
+  namespace kg = jitllm::kernels::ggml;
+  auto arena = TensorArena::Create(32).value();
+  auto* c = arena.context();
+  auto launch = Launcher();
+  constexpr std::int64_t k = 64;
+  constexpr std::int64_t n = 64;
+  for (const auto type : {GGML_TYPE_F32, GGML_TYPE_BF16}) {
+    auto* wg = ggml_new_tensor_2d(c, type, k, n);
+    auto* wu = ggml_new_tensor_2d(c, type, k, n);
+    const auto gv = Values(103, k * n, 0.5f);
+    const auto uv = Values(104, k * n, 0.5f);
+    if (type == GGML_TYPE_F32) {
+      Place(Memory::kDeviceVmm, wg, gv);
+      Place(Memory::kDeviceVmm, wu, uv);
+    } else {
+      std::vector<ggml_bf16_t> gb, ub;
+      for (std::size_t i = 0; i < gv.size(); ++i) {
+        gb.push_back(ggml_fp32_to_bf16(gv[i]));
+        ub.push_back(ggml_fp32_to_bf16(uv[i]));
+      }
+      Place(Memory::kDeviceVmm, wg, gb);
+      Place(Memory::kDeviceVmm, wu, ub);
+    }
+    auto* x = Place(Memory::kDeviceVmm, ggml_new_tensor_3d(c, GGML_TYPE_F32, k, 1, 3),
+                    Values(105, k * 3));
+    auto* g = Place(Memory::kDeviceVmm, ggml_mul_mat(c, wg, x));
+    auto* u = Place(Memory::kDeviceVmm, ggml_mul_mat(c, wu, x));
+    auto* glu = Place(Memory::kDeviceVmm, ggml_geglu_split(c, g, u));
+    // F32/BF16 defaults already use F32 accumulation. Weights broadcast
+    // across three independent input channels, with one column per channel.
+    ASSERT_TRUE(kg::MulMatVecFusible(*launch, u));
+    Launched(kg::MulMatVecF(*launch, g), "broadcast gate fallback");
+    Launched(kg::MulMatVecF(*launch, u), "broadcast up fallback");
+    Launched(kg::GeGlu(*launch, glu), "broadcast activation fallback");
+    const auto expected = Download(glu);
+    Launched(kg::MulMatVecGeGlu(*launch, g, u, glu), "broadcast GeGLU fusion");
+    EXPECT_EQ(Bits(Download(glu)), Bits(expected)) << ggml_type_name(type);
+  }
 }
 
 }  // namespace

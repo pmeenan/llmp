@@ -1073,7 +1073,8 @@ TEST_F(GgmlExtOpsTest, ElementwiseFunctionsMatchTheReference) {
   ExpectNmse(Download(gate), want, kDefaultNmse, "sigmoid in place");
   // A function not launched here is refused.
   ggml_tensor* other = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kWidth, kRows), x);
-  EXPECT_EQ(FailedCode(kg::Unary(launch(), Place(ggml_gelu(c(), other)))), KernelError::kRejected);
+  EXPECT_EQ(FailedCode(kg::Unary(launch(), Place(ggml_gelu_erf(c(), other)))),
+            KernelError::kRejected);
 }
 
 TEST_F(GgmlExtOpsTest, ScaleClampFillRepeatSubAndDivMatchTheReference) {

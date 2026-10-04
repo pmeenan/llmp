@@ -109,6 +109,9 @@ std::expected<ContCopy, KernelFailure> CheckCont(const ggml_tensor* node);
 // A ggml_swiglu_split node over F32 (ggml_cuda_op_swiglu, unary.cu:287-350):
 // silu(gate) * up, element by element.
 std::expected<void, KernelFailure> CheckSwiGlu(const ggml_tensor* node);
+// Split F32 GELU-tanh(gate) * up with the same row/alias checks; never ERF,
+// quick, a packed two-half operand, or swapped GeGLU.
+std::expected<void, KernelFailure> CheckGeGlu(const ggml_tensor* node);
 
 // A ggml_cpy node converting a packed F32 tensor into a packed F16 one of
 // its shape (rounding to nearest even) or F16 into F32 (exactly):
@@ -141,6 +144,13 @@ std::expected<void, KernelFailure> CheckMulMatVecBias(const ggml_tensor* mul_mat
                                                       const ggml_tensor* add);
 std::expected<void, KernelFailure> CheckMulMatVecGlu(const ggml_tensor* gate, const ggml_tensor* up,
                                                      const ggml_tensor* glu);
+// The same one-column product fusion, with split GELU-tanh GLU.
+// Its accumulation is F32; F16 products must explicitly request F32.
+// This structural predicate is also used by the planner before binding.
+bool MulMatVecGeGluPrecisionFits(const ggml_tensor* gate, const ggml_tensor* up);
+std::expected<void, KernelFailure> CheckMulMatVecGeGlu(const ggml_tensor* gate,
+                                                       const ggml_tensor* up,
+                                                       const ggml_tensor* glu);
 
 // GGML's cuBLAS matrix multiplication (ggml_cuda_mul_mat_cublas_impl in
 // ggml-cuda.cu), as it would run for one node: what it converts into

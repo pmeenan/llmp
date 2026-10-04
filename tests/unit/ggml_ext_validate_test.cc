@@ -398,11 +398,13 @@ TEST_F(GgmlExtValidateTest, ElementwiseOperationsTakePackedF32OfOneShape) {
   ggml_tensor* x = New(GGML_TYPE_F32, 4096, 3);
   for (ggml_tensor* (*build)(ggml_context*, ggml_tensor*) :
        {ggml_abs, ggml_sgn, ggml_neg, ggml_silu, ggml_tanh, ggml_relu, ggml_sigmoid, ggml_exp,
-        ggml_softplus, ggml_sqrt}) {
+        ggml_softplus, ggml_sqrt, ggml_gelu}) {
     Accepted(kg::CheckUnary(Bound(build(c(), x))));
   }
   Accepted(kg::CheckUnary(ggml_sigmoid_inplace(c(), x)));  // in place
-  Refused(kg::CheckUnary(Bound(ggml_gelu(c(), x))));       // not launched here
+  Accepted(kg::CheckUnary(ggml_gelu_inplace(c(), x)));
+  Refused(kg::CheckUnary(Bound(ggml_gelu_erf(c(), x))));
+  Refused(kg::CheckUnary(Bound(ggml_gelu_quick(c(), x))));
   Refused(kg::CheckUnary(Bound(ggml_silu(c(), New(GGML_TYPE_F16, 4096, 3)))));
   // A strided view is not packed; nor is the unbound output.
   ggml_tensor* view = ggml_view_2d(c(), x, 2048, 3, x->nb[1], 0);

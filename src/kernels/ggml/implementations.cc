@@ -88,7 +88,7 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 112> kKernels = {{
+constexpr std::array<Kernel::Entry, 114> kKernels = {{
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "
@@ -242,6 +242,13 @@ constexpr std::array<Kernel::Entry, 112> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckSwiGlu(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return SwiGlu(launch, n[0]); }},
+    {.name = "ggml.geglu",
+     .operation = execution::Operation::kGeGlu,
+     .variant = "ggml_cuda_op_geglu: unary_gated_op_kernel<op_gelu, float>; upstream launch "
+                "configuration",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckGeGlu(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) { return GeGlu(launch, n[0]); }},
     {.name = "ggml.convert",
      .operation = execution::Operation::kConvert,
      .variant = "ggml_cuda_cpy between packed tensors: cpy_scalar_contiguous<float, half> or "
@@ -274,6 +281,15 @@ constexpr std::array<Kernel::Entry, 112> kKernels = {{
      .arity = 3,
      .check = [](ConstNodes n) { return CheckMulMatVecGlu(n[0], n[1], n[2]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatVecGlu(launch, n[0], n[1], n[2]); }},
+    {.name = "ggml.mul_mat_geglu.mmvf_fused",
+     .operation = execution::Operation::kMulMatGeGlu,
+     .variant = "ggml_cuda_mul_mat_vec_f with gate and GELU-tanh GLU, writing the GLU: "
+                "mul_mat_vec_f<T, type_acc, 1, block, true, false>, the GLU's parameters as "
+                "precision; upstream launch configuration",
+     .arity = 3,
+     .check = [](ConstNodes n) { return CheckMulMatVecGeGlu(n[0], n[1], n[2]); },
+     .run = [](LaunchContext& launch,
+               Nodes n) { return MulMatVecGeGlu(launch, n[0], n[1], n[2]); }},
     // DeepSeek V4 Flash and Qwen3.8 Flash (ops_ext.h).
     {.name = "ggml.mul_mat.mmvq",
      .operation = execution::Operation::kMatMul,
@@ -392,9 +408,10 @@ constexpr std::array<Kernel::Entry, 112> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return Scale(launch, n[0]); }},
     {.name = "ggml.unary",
      .operation = execution::Operation::kUnary,
-     .variant = "ggml_cuda_op_<function> for abs, sgn, neg, silu, tanh, relu, sigmoid, exp, "
-                "softplus and sqrt: unary_op_kernel<op_<function>, float>; upstream launch "
-                "configuration",
+     .variant =
+         "ggml_cuda_op_<function> for abs, sgn, neg, silu, GELU-tanh, tanh, relu, sigmoid, exp, "
+         "softplus and sqrt: unary_op_kernel<op_<function>, float>; upstream launch "
+         "configuration",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckUnary(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return Unary(launch, n[0]); }},

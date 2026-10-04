@@ -95,6 +95,10 @@ std::string_view OperationName(Operation operation) {
       return "cont";
     case Operation::kSwiGlu:
       return "swiglu";
+    case Operation::kGeGlu:
+      return "geglu";
+    case Operation::kMulMatGeGlu:
+      return "mul_mat_geglu";
     case Operation::kMulMatAdd:
       return "mul_mat_add";
     case Operation::kMulMatGlu:

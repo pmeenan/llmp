@@ -715,6 +715,86 @@ TEST_F(GgmlOpsValidateTest, SwiGluIsSplitAndMayRunInPlace) {
   Rejected(CheckSwiGlu(shifted));
 }
 
+TEST_F(GgmlOpsValidateTest, GemmaGeGluTakesIndependentUniformRowsAndRefusesVariants) {
+  namespace kg = jitllm::kernels::ggml;
+  for (const std::int64_t width : {2112, 704}) {
+    for (const std::int64_t rows : {1, 4}) {
+      auto* both = F32(2 * width, rows);
+      auto* gate = ggml_view_2d(context(), both, width, rows, both->nb[1], 0);
+      auto* up = ggml_view_2d(context(), both, width, rows, both->nb[1],
+                              static_cast<std::size_t>(width) * sizeof(float));
+      auto* glu = Bound(ggml_geglu_split(context(), gate, up));
+      EXPECT_TRUE(kg::CheckGeGlu(glu));
+      Rejected(CheckSwiGlu(glu));
+      Rejected(kg::CheckGeGlu(Bound(ggml_swiglu_split(context(), gate, up))));
+      glu->op_params[1] = 1;
+      Rejected(kg::CheckGeGlu(glu));
+      glu->op_params[1] = 0;
+      TensorArena::Bind(glu, reinterpret_cast<std::uintptr_t>(both->data));
+      Rejected(kg::CheckGeGlu(glu));  // strided gate cannot be overwritten densely
+    }
+  }
+  auto* gate = F32(704, 4);
+  auto* up = F32(704, 4);
+  auto* glu = ggml_geglu_split(context(), gate, up);
+  TensorArena::Bind(glu, reinterpret_cast<std::uintptr_t>(gate->data));
+  EXPECT_TRUE(kg::CheckGeGlu(glu));  // exact in place over packed gate
+  TensorArena::Bind(glu, reinterpret_cast<std::uintptr_t>(up->data));
+  EXPECT_TRUE(kg::CheckGeGlu(glu));
+  TensorArena::Bind(glu, reinterpret_cast<std::uintptr_t>(up->data) + sizeof(float));
+  Rejected(kg::CheckGeGlu(glu));
+  Rejected(kg::CheckGeGlu(Bound(ggml_geglu(context(), F32(1408, 4)))));
+  Rejected(kg::CheckGeGlu(Bound(ggml_geglu_erf_split(context(), gate, up))));
+  Rejected(kg::CheckGeGlu(Bound(ggml_geglu_quick_split(context(), gate, up))));
+  Rejected(kg::CheckGeGlu(Bound(
+      ggml_geglu_split(context(), Typed(GGML_TYPE_F16, 704, 4), Typed(GGML_TYPE_F16, 704, 4)))));
+  TensorArena::Bind(glu, kBase + 60 * kSlot + 1);
+  Rejected(kg::CheckGeGlu(glu));
+}
+
+TEST_F(GgmlOpsValidateTest, GemmaExpertGeGluViewsRequireUniformRowsAndCurrentBindings) {
+  namespace kg = jitllm::kernels::ggml;
+  auto* both = Typed(GGML_TYPE_F32, 1408, 8, 4);
+  auto* gate = ggml_view_3d(context(), both, 704, 8, 4, both->nb[1], both->nb[2], 0);
+  auto* up =
+      ggml_view_3d(context(), both, 704, 8, 4, both->nb[1], both->nb[2], 704 * sizeof(float));
+  auto* glu = Bound(ggml_geglu_split(context(), gate, up));
+  EXPECT_TRUE(kg::CheckGeGlu(glu));
+  up->nb[2] += sizeof(float);
+  Rejected(kg::CheckGeGlu(glu));
+  up->nb[2] -= sizeof(float);
+  up->nb[0] *= 2;
+  Rejected(kg::CheckGeGlu(glu));
+  up->nb[0] /= 2;
+  TensorArena::Bind(both, kBase + 99 * kSlot);  // stale children
+  Rejected(kg::CheckGeGlu(glu));
+}
+
+TEST_F(GgmlOpsValidateTest, GemmaMmvfGeGluFusionPreservesItsOwnOneColumnContract) {
+  namespace kg = jitllm::kernels::ggml;
+  for (const std::int64_t rows : {1, 4}) {
+    auto* x = F32(2816, rows);
+    auto* wg = Typed(GGML_TYPE_F16, 2816, 2112);
+    auto* wu = Typed(GGML_TYPE_F16, 2816, 2112);
+    auto* gate = ggml_mul_mat(context(), wg, x);
+    auto* up = ggml_mul_mat(context(), wu, x);
+    ggml_prec_set_acc(gate, GGML_PREC_F32);
+    ggml_prec_set_acc(up, GGML_PREC_F32);
+    auto* glu = Bound(ggml_geglu_split(context(), gate, up));
+    EXPECT_EQ(kg::CheckMulMatVecGeGlu(gate, up, glu).has_value(), rows == 1);
+    ggml_prec_set_acc(gate, GGML_PREC_DEFAULT);
+    Rejected(kg::CheckMulMatVecGeGlu(gate, up, glu));
+    ggml_prec_set_acc(gate, GGML_PREC_F32);
+    Rejected(CheckMulMatVecGlu(gate, up, glu));
+    Rejected(kg::CheckMulMatVecGeGlu(up, gate, glu));
+    glu->op_params[1] = 1;
+    Rejected(kg::CheckMulMatVecGeGlu(gate, up, glu));
+    glu->op_params[1] = 0;
+    TensorArena::Bind(glu, reinterpret_cast<std::uintptr_t>(wg->data));
+    Rejected(kg::CheckMulMatVecGeGlu(gate, up, glu));
+  }
+}
+
 TEST_F(GgmlOpsValidateTest, FusedMmvfTakesOneColumnAndItsOwnOperands) {
   ggml_tensor* x = F32(kWidth);
   ggml_tensor* w = Typed(GGML_TYPE_F16, kWidth, kWidth);

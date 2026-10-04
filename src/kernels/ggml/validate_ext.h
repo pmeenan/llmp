@@ -151,7 +151,7 @@ std::expected<void, KernelFailure> CheckMulMatHadamard(const ggml_tensor* node);
 
 // An elementwise function of one packed F32 tensor into a packed F32 tensor
 // of its shape, in place or not (unary.cu:138-155): a GGML_OP_UNARY node for
-// abs, sgn, neg, silu, tanh, relu, sigmoid, exp or softplus, or a
+// abs, sgn, neg, silu, GELU-tanh, tanh, relu, sigmoid, exp or softplus, or a
 // GGML_OP_SQRT node. The kernel counts elements in an int.
 std::expected<void, KernelFailure> CheckUnary(const ggml_tensor* node);
 

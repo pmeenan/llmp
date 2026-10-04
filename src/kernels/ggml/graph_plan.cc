@@ -179,8 +179,19 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       }
       if (node->op == GGML_OP_MUL_MAT) {
         if (const auto f = MulMatGluFusionAt(graph, i); f && device.vector_fusible(f->up)) {
-          add(Operation::kMulMatGlu, kMulMatGluFused, i, {f->gate, f->up, f->glu}, 3);
-          continue;
+          const auto op = ggml_get_glu_op(f->glu);
+          if (op == GGML_GLU_OP_GEGLU && device.geglu_fusible && device.geglu_fusible(f->up)) {
+            // The products are elided: keep/read dependencies must survive.
+            if (MulMatVecGeGluPrecisionFits(f->gate, f->up) &&
+                OnlyReader(graph, keep, f->gate, f->glu) &&
+                OnlyReader(graph, keep, f->up, f->glu)) {
+              add(Operation::kMulMatGeGlu, kMulMatGeGluFused, i, {f->gate, f->up, f->glu}, 3);
+              continue;
+            }
+          } else if (op == GGML_GLU_OP_SWIGLU) {
+            add(Operation::kMulMatGlu, kMulMatGluFused, i, {f->gate, f->up, f->glu}, 3);
+            continue;
+          }
         }
         if (const auto f = MulMatAddFusionAt(graph, i); f && device.vector_fusible(f->mul_mat)) {
           add(Operation::kMulMatAdd, kMulMatAddFused, i, {f->mul_mat, f->add}, 2);
@@ -404,8 +415,15 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           add(Operation::kSwiGluClamp, kSwiGluClampName, i, {node}, 1);
           break;
         }
+        if (ggml_get_glu_op(node) == GGML_GLU_OP_GEGLU && node->src[1] != nullptr &&
+            node->op_params[1] == 0) {
+          add(Operation::kGeGlu, kGeGluName, i, {node}, 1);
+          break;
+        }
         if (ggml_get_glu_op(node) != GGML_GLU_OP_SWIGLU || node->src[1] == nullptr) {
-          return Rejected(std::format("{}: only a split SwiGLU is implemented", Where(graph, i)));
+          return Rejected(
+              std::format("{}: only split SwiGLU and unswapped GELU-tanh GeGLU are implemented",
+                          Where(graph, i)));
         }
         add(Operation::kSwiGlu, kSwiGluName, i, {node}, 1);
         break;

@@ -244,6 +244,15 @@ std::expected<void, KernelFailure> SwiGlu(LaunchContext& launch, ggml_tensor* no
   });
 }
 
+std::expected<void, KernelFailure> GeGlu(LaunchContext& launch, ggml_tensor* node) {
+  if (auto checked = CheckGeGlu(node); !checked) {
+    return checked;
+  }
+  return launch.Run(base::Bytes(0), [node](ggml_backend_cuda_context& context) {
+    ggml_cuda_op_geglu(context, node);
+  });
+}
+
 std::expected<void, KernelFailure> MulMatVecBias(LaunchContext& launch, ggml_tensor* mul_mat,
                                                  ggml_tensor* add) {
   if (auto checked = CheckMulMatVecBias(mul_mat, add); !checked) {
@@ -265,6 +274,29 @@ std::expected<void, KernelFailure> MulMatVecBias(LaunchContext& launch, ggml_ten
 std::expected<void, KernelFailure> MulMatVecGlu(LaunchContext& launch, ggml_tensor* gate,
                                                 ggml_tensor* up, ggml_tensor* glu) {
   if (auto checked = CheckMulMatVecGlu(gate, up, glu); !checked) {
+    return checked;
+  }
+  if (!MulMatVecFusible(launch, up)) {
+    return Rejected("upstream does not select MMVF for the up product");
+  }
+  // As ggml_cuda_try_fuse calls it (ggml-cuda.cu:3950-3957): the up
+  // product's operands, the gate's weights, and the GLU as the node written,
+  // whose first parameter (its GLU operation) the launcher reads as the
+  // precision.
+  return launch.Run(base::Bytes(0), [gate, up, glu](ggml_backend_cuda_context& context) {
+    ggml_cuda_mm_fusion_args_host fusion{};
+    fusion.gate = gate->src[0];
+    fusion.glu_op = ggml_get_glu_op(glu);
+    float limit = 0.0f;
+    std::memcpy(&limit, &glu->op_params[3], sizeof(limit));
+    fusion.glu_limit = limit;
+    ggml_cuda_mul_mat_vec_f(context, up->src[0], up->src[1], nullptr, glu, &fusion);
+  });
+}
+
+std::expected<void, KernelFailure> MulMatVecGeGlu(LaunchContext& launch, ggml_tensor* gate,
+                                                  ggml_tensor* up, ggml_tensor* glu) {
+  if (auto checked = CheckMulMatVecGeGlu(gate, up, glu); !checked) {
     return checked;
   }
   if (!MulMatVecFusible(launch, up)) {
