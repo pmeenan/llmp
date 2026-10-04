@@ -136,3 +136,136 @@ earlier cell (spark-b, 2026-10-02; records under `~/scratch/ccqw-fix/`).
 
 Raw records are on spark-b under `~/scratch/cc-http/` and `~/scratch/cc-prof/`.
 The microbenchmarks are in `~/scratch/cc-mxbench/`.
+
+## Wave lanes
+
+On 2026-10-03, the Qwen wave builder began tagging each request's private
+attention and Gated DeltaNet work for a concurrent stream inside the wave.
+Shared products, packing and cuBLAS work remain on the owning stream;
+`LaneOrder` inserts dependencies for every overlapping read/write. The
+planner keeps concurrent activation lifetimes separate, and the runner
+charges separate per-lane scratch to its memory budget. `wave_lanes`
+defaults to true and is an owner override; its value invalidates calibration
+made with the other schedule. Waves below four requests retain one stream.
+
+The inherited NVFP4/MTP screen with the curated 47,172-entry draft head
+measured verify waves at 2/3/4 requests: lanes off 68.1/93.1/110.2 ms,
+on 71.5/94.8/104.2 ms. This sets the four-request threshold. The following
+qualification uses the production 65,536-entry prefix head instead.
+
+### Correctness
+
+`jitllm_qwen38_spec --check wave --slots 4 --tokens 96 --wave-lanes off|on`
+produces exactly 96 greedy tokens per slot with depth two, context 16,384
+and 4,096-row prefill chunks. Short inputs use the first two decode and
+first two chat prompts in `fast-swap/prompts.json`. The long fixture repeats
+350 public service records per prompt, exercising selected attention.
+Its JSON SHA-256 is `5613e76b48e0d31b899099ae0d127f306afe36341b5bb523c177c80cbc5c6022` (external `qlanes/long-prompts.json`).
+Regenerate it from the fast-swap JSON, replacing its decode list with four
+entries named `long-0` through `long-3`: each has one user message made of
+`Record {i:04}: a routine service ran for {i % 97} minutes with no errors.`
+for i = 0..349, newline-separated, followed by a newline and the original
+user message of the first two decode and first two chat entries respectively.
+Serialize with Python `json.dumps` (default separators) plus a newline;
+keep the other top-level fields.
+All four token-history hashes, complete verify-logit hashes and final
+initialized target/drafter state hashes match between schedules on both
+fixtures. Both schedules capture and replay verify graphs: short 2 captures
+and 38 replays, long 1 and 37. Each process completes and retires cleanly.
+
+| Fixed-history control | One-stream verify median | Concurrent verify median |
+| --- | ---: | ---: |
+| Short | 112.299 ms | 107.196 ms |
+| Long | 114.020 ms | 105.141 ms |
+
+Medians count only waves with all four slots active. These clocks exclude
+prefill and output handling; they are not serving rates.
+
+The optional FP16 roundtrip supplies `--fp16-artifact`, `--fp16-tokens`
+and `--fp16-expect` to the same wave control. After wave 25, all four slots
+have accepted a partial verify and still owe restoring an actual saved
+rejected row. The harness releases its request lease, spills every slot,
+evicts target/drafter weights, evaluates the FP16 control, then restores
+Qwen and continues. All token, complete verify-row and final state hashes
+equal the unswapped lane control. All 12 graphs survive; the first verify
+on return replays without capture, with 15 returning verify replays total.
+The FP16 complete-logit hash is the pinned
+`bb8ae5e7e3ac6da734173edb1111160a0c80a55c4279b94e67a8f90b142e7571`.
+
+The UD-IQ3_XXS GGUF harness toggles lanes with the optional final argument
+`jitllm_qwen38_gguf_wave ARTIFACT prompts.tsv OUT 2048 off|on`. Its short
+and long attention controls cover widths two, three and four, paired and
+unpaired products, eager execution and capture/replay. Each schedule passes
+1,728 compared complete rows, 12 captures and 372 replays with zero coverage
+violations and clean retirement. Across schedules the aggregate hash of all
+wave logits is `fdf3b131f82586ea3df03002cc0a8ecc923fbd4bb03beba785eb39077b087977`,
+and of final states `4734098a71fbf96b8ec5e53155363ab90e47f121685d15d634674e519797189b`.
+At the production 2,048-cell alignment the reference is the unpaired wave;
+this does not assert equivalence to the differently aligned scalar path.
+
+### Serving screen
+
+Each HTTP cell starts a fresh service, primes it, then releases the clients
+at one barrier. Requests use 183-token prompts and complete 256 outputs
+each with zero cached tokens. Rates pay prefill, graph preparation and
+queueing. The NVFP4 screen compares main `a40388a` with the lane candidate;
+the GGUF screen toggles `wave_lanes` in the same candidate binary.
+
+| C4 cell | Off, first | On | Off, second | Gain over mean off |
+| --- | ---: | ---: | ---: | ---: |
+| NVFP4 + MTP | 60.5895 tok/s | 62.6992 tok/s | 60.2670 tok/s | 3.76% |
+| UD-IQ3_XXS, plain | 48.6823 tok/s | 52.4566 tok/s | 48.7776 tok/s | 7.65% |
+
+Bookend drift is -0.53% and +0.20% respectively. HTTP replies still depend
+on arrival-driven wave composition, as before; they are not this exactness
+control. These short prompts do not close the 8K C4 comparison with Mia.
+
+A subsequent same-binary plain NVFP4 control uses the owner switch, reverse
+on/off order at short context and off/on at long context:
+
+| Plain NVFP4 cell | Off | On | Change |
+| --- | ---: | ---: | ---: |
+| Short C1 | 25.6780 tok/s | 25.9266 tok/s | +0.97% |
+| Short C2 | 35.0503 tok/s | 35.0695 tok/s | +0.05% |
+| Short C4 | 40.2538 tok/s | 43.3880 tok/s | +7.79% |
+| 8,258-token C4 | 26.2650 tok/s | 27.5971 tok/s | +5.07% |
+
+C1/C2 differences are within normal spread; they execute the same one-stream
+wave schedule. Long C4 first-token maximum is 15.621/15.676 s, median
+completion 38.503/36.617 s. The conservative lane scratch raises provisioned
+scratch from 174,063,616 to 868,220,928 bytes (662 MiB), paid from the budget;
+short plain C4 peak MemAvailable drop is 76.624/77.291 GiB, long
+77.635/78.555 GiB. This control funds four slots in both arms. A model capped
+below four provisions no lane scratch. All requests finish the full output
+budget, services exit zero, and there are no capacity waits or set-asides.
+
+Final same-binary NVFP4/MTP checks toggle the same owner setting with
+`speculation = true`, paying the same prompt/output work:
+
+| MTP C4 cell | Off | On | Change |
+| --- | ---: | ---: | ---: |
+| Short | 61.1857 tok/s | 62.9863 tok/s | +2.94% |
+| 8,258 tokens | 31.5163 tok/s | 31.6334 tok/s | +0.37% |
+
+Short order is off/on and long on/off. Long median decode rate is
+12.088/12.290 tok/s a request, maximum first-token
+16.599/16.589 s, median completion
+31.512/31.170 s, peak MemAvailable drop
+80.400/81.175 GiB. Every request finishes 256 outputs and every
+service exits zero. Arrival-driven changes in acceptance contribute to
+these HTTP rates; the fixed-history verify medians above isolate scheduling.
+The 8K difference is within spread, essentially neutral. Its rate still
+trails the earlier legacy Mia cell, so that gap is open.
+
+### Provenance
+
+Spark B (`spark-56f5`), NVIDIA GB10 sm_121, driver 580.178.04,
+CUDA toolkit 13.4.92; source based on `a40388a`, source-lock SHA-256
+`440f03cdb52921c6c55843819e6ac950a5b2c4aafdc01055e52a0af3117ce32e`.
+NVFP4 target `c4fb47a9…`, MTP `8600a998…`, checkpoint
+`Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6`; GGUF target
+`5356b5b0…` (UD-IQ3_XXS). HTTP context 32,768, prefill chunk 4,096,
+four funded slots, production draft head/policy. External supervised job
+receipts and raw records are under `~/scratch/qlanes/{screen,quality,
+gguf-screen,gguf-exact-off,gguf-exact-on,final-http,final-mtp}` on Spark B;
+the inherited width screen is under `~/scratch/qx` on Spark.

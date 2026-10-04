@@ -90,6 +90,16 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   EXPECT_EQ(q.shared_wave_depth.value, 2U);
   EXPECT_EQ(q.draft_wave_max.value, 2U);
   EXPECT_EQ(q.wave_read_align.value, 2048U);
+  EXPECT_TRUE(q.wave_lanes.value);
+}
+
+TEST(ModelSettings, OwnerCanDisableConcurrentWaveLanes) {
+  ModelEntry entry = Model("q");
+  entry.overrides["wave_lanes"] = false;
+  const ModelSettings q = Resolved(entry, Facts("qwen4exp"));
+  EXPECT_FALSE(q.wave_lanes.value);
+  EXPECT_EQ(q.wave_lanes.source, SettingSource::kOverride);
+  EXPECT_THAT(q.Summary(), HasSubstr("wave_lanes=false (override)"));
 }
 
 // Derived from the artifact: the trained context, the checkpoint's

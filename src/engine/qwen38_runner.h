@@ -146,6 +146,10 @@ struct Qwen38Options {
   // at Register; unset, an unnamed file in `out`. The runtime names them
   // to keep conversations across a restart (D-105).
   std::function<LiveState::SpillPlace(std::uint32_t slot)> spill_place;
+  // A wave's slots' own operations between shared products on concurrent
+  // lanes (Qwen38WavePlacement::lanes): the same kernels, each slot's
+  // results bit for bit as on one stream.
+  bool wave_lanes = true;
 };
 
 // Setup-only diagnostic arithmetic. Scalar values use the same measured plan
@@ -841,6 +845,7 @@ class Qwen38Runner final : public PagedModel {
   std::uint64_t* scrub_ = nullptr;  // pinned: Scrub's ranges
   std::uint64_t activation_bytes_ = 0;
   std::uint64_t scratch_bytes_ = 0;
+  std::uint64_t lane_scratch_ = 0;  // each wave lane's pool (ConfigureLanes)
   std::uint64_t host_input_bytes_ = 0;
   std::uint64_t plan_floor_bytes_ = 0;  // plan_floor_bytes()
   std::string plan_report_;

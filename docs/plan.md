@@ -1160,6 +1160,11 @@ it appears.
       Matched plain HTTP gains 31.08% at C2 and 69.63% at C4 on 183-token
       prompts, 29.42% at C4 on 8,258-token prompts (256 outputs, UD-IQ3_XXS).
       This format-specific improvement does not close the NVFP4/Mia gap.
+      Qwen's [wave lanes](experiments/qwen38-four-request-waves/README.md#wave-lanes)
+      now run private attention and recurrence concurrently from four requests,
+      with exact full logits and initialized state on NVFP4 and GGUF.
+      Short C4 HTTP gains 3.76% with NVFP4/MTP and 7.65% with UD-IQ3_XXS;
+      the longer comparison with Mia remains open.
 - [x] **Request slots sized by memory** (the owner, 2026-10-03). A
       model's number of concurrent request slots is no longer fixed at
       four: it follows the memory the node has free for slots (each

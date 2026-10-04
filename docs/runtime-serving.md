@@ -159,7 +159,8 @@ artifacts (no process lock, no device), so it runs beside the service.
 | `depth_cost_ratio` | Qwen3.8 | above 0 to 100 | calibrated: a three-draft step's measured time over a two-draft step's; else fallback 1.16 (adaptive depth, below) |
 | `shared_wave_depth` | Qwen3.8 | drafts, 1 to 16 | fallback 2: a request's drafts in a wave of several; at most `draft_rows` (listed so) |
 | `draft_wave_max` | Qwen3.8 | requests, 1 to 16 | fallback 2: past it each request drafts alone |
-| `wave_read_align` | Qwen3.8 | a power of two, 256 to 65,536 | fallback 2,048: the cells a wave reads, rounded up (no result changes; coarser keeps plans replayable) |
+| `wave_lanes` | Qwen3.8 | boolean | fallback true: independent work within a wave runs on per-request streams from four requests; smaller waves keep one stream |
+| `wave_read_align` | Qwen3.8 | a power of two, 256 to 65,536 | fallback 2,048: the cells a wave reads, rounded up (coarser keeps plans replayable; GGUF equivalence is qualified at the same alignment) |
 | `image_size` | composition | pixels, 64 to 2,048, a multiple of 32 | fallback 1,024 (its latents file must match) |
 | `image_steps` | composition | 2 to 100 | fallback 40 |
 

@@ -917,6 +917,7 @@ class Qwen38 final : public Llm {
     options_.request_slots = options_.wave_slots;
     slots_report_ = SlotsReport(settings);
     options_.wave_read_align = settings.wave_read_align.value;
+    options_.wave_lanes = settings.wave_lanes.value;
     depth_cost_ratio_ = settings.depth_cost_ratio.value;
     shared_wave_depth_ = settings.shared_wave_depth.value;
     draft_wave_max_ = settings.draft_wave_max.value;

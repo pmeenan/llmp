@@ -75,6 +75,8 @@ en::Status Check(en::PagedNode& node, en::Qwen38Runner& runner, const Histories&
     slots[i] = *slot;
   }
   std::uint64_t identical = 0;
+  jitllm::base::Sha256 wave_logits;
+  jitllm::base::Sha256 wave_states;
   for (const bool long_context : {false, true}) {
     Histories histories = prompts;
     if (long_context) {
@@ -166,6 +168,7 @@ en::Status Check(en::PagedNode& node, en::Qwen38Runner& runner, const Histories&
                     return Error("GGUF wave did not execute its requested product form");
                   }
                   for (std::size_t s = 0; s < width; ++s) {
+                    wave_logits.Update(std::as_bytes(std::span(logits[s])));
                     if (golden) {
                       expected[s].logits[i] = logits[s];
                       continue;
@@ -194,6 +197,7 @@ en::Status Check(en::PagedNode& node, en::Qwen38Runner& runner, const Histories&
                   if (!read) {
                     return read;
                   }
+                  wave_states.Update(hash);
                   if (golden) {
                     expected[s].state = hash;
                   } else if (hash != expected[s].state) {
@@ -220,21 +224,29 @@ en::Status Check(en::PagedNode& node, en::Qwen38Runner& runner, const Histories&
       "reference={} read_align={} exact rows={} captured={} replayed={} coverage_violations={}",
       read_align == 256 ? "scalar" : "unpaired-wave", read_align, identical, graphs.captured,
       graphs.replayed, runner.coverage_violations());
+  std::println("wave_logits_sha256={} wave_states_sha256={}",
+               jitllm::base::ToHex(wave_logits.Finish()),
+               jitllm::base::ToHex(wave_states.Finish()));
   return runner.coverage_violations() == 0 ? en::Status{} : Error("GGUF coverage violation");
 }
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 4 && argc != 5) {
-    std::println(stderr,
-                 "usage: jitllm_qwen38_gguf_wave ARTIFACT PROMPTS.tsv NEW_STATE_DIR [256|2048]");
+  if (argc < 4 || argc > 6) {
+    std::println(
+        stderr,
+        "usage: jitllm_qwen38_gguf_wave ARTIFACT PROMPTS.tsv NEW_STATE_DIR [256|2048] [on|off]");
     return 2;
   }
-  const std::string_view alignment = argc == 5 ? argv[4] : "2048";
+  const std::string_view alignment = argc >= 5 ? argv[4] : "2048";
   if (alignment != "256" && alignment != "2048") {
     return 2;
   }
   const std::uint32_t read_align = alignment == "256" ? 256 : 2048;
+  const std::string_view lanes = argc == 6 ? argv[5] : "on";
+  if (lanes != "on" && lanes != "off") {
+    return 2;
+  }
   Histories prompts;
   std::ifstream file(argv[2]);
   for (auto& ids : prompts) {
@@ -266,7 +278,8 @@ int main(int argc, char** argv) {
                                   .drafter = {},
                                   .wave_slots = 4,
                                   .wave_read_align = read_align,
-                                  .spill_place = {}};
+                                  .spill_place = {},
+                                  .wave_lanes = lanes == "on"};
   en::Qwen38Runner runner(node, options, 0, 0);
   std::vector<en::PagedModel*> entered;
   const auto execute = [&]() -> en::Status {

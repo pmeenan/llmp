@@ -255,6 +255,7 @@ struct ModelSettings {
   Setting<double> depth_cost_ratio;
   Setting<std::uint32_t> shared_wave_depth;
   Setting<std::uint32_t> draft_wave_max;
+  Setting<bool> wave_lanes;
   Setting<std::uint32_t> wave_read_align;
   // A composition (the image pipeline).
   Setting<std::uint32_t> image_size;

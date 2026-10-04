@@ -13,6 +13,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Qwen3.8 waves run each request's attention and recurrence on its own
+  stream from four requests, with shared products and dependencies ordered
+  inside the same graph. NVFP4 and GGUF retain exact logits and state.
+  `wave_lanes` in the model table defaults to true and can disable it;
+  compatible with configuration schema 2, a minor bump of the 0.x line.
+
 - Every model setting resolves in three layers (D-103): a default derived
   from the artifact (the trained context, the checkpoint's sampling
   defaults, the drafter's block, the vocabulary's reasoning markers; never

@@ -22,6 +22,10 @@ namespace jitllm::engine {
 // (request_cohort.h). Slot sets below are masks of these, bit i slot i.
 inline constexpr std::size_t kQwen38WaveSlots = 16;
 
+// The fewest slots a wave runs on lanes. Smaller waves were slower in the
+// GB10 screen; see docs/experiments/qwen38-four-request-waves/README.md.
+inline constexpr std::size_t kQwen38LaneSlots = 4;
+
 // Native runner bindings, in strictly ascending slot order. Model metadata,
 // weights and mapped places remain the caller's. No admission or lease is
 // obtained here: these must be owned slots of one live Qwen38Runner, with
@@ -45,6 +49,11 @@ struct Qwen38WavePlacement {
   bool paired = true;
   // The target runner enables sharing only through the guarded MMF path.
   bool share_target_head = false;
+  // Each slot's own operations between shared products on a concurrent lane
+  // (graph_plan.h AssignLanes; on a launch context with lanes) in a wave of
+  // kQwen38LaneSlots or more: the same kernels, each slot's results bit for
+  // bit as on one stream.
+  bool lanes = false;
 };
 
 struct Qwen38WaveStats {
@@ -103,6 +112,7 @@ class Qwen38WavePlanned : public PlannedBase {
   std::vector<Product> products_;
   std::optional<kernels::ggml::TensorArena> head_arena_;
   std::vector<Product> head_products_;
+  kernels::ggml::LaneTags lanes_;  // Qwen38WavePlacement::lanes
   Qwen38WaveStats stats_;
   std::uint32_t active_slots_ = 0;
 };

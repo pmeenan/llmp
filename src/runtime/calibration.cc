@@ -78,11 +78,15 @@ std::string MeasuredWith(const ModelSettings& s) {
     }
     return "auto";
   };
-  return std::format(
+  std::string measured = std::format(
       "speculation={} draft_rows={} prefill_chunk={} max_slots={} prefill_outa_hca={}/{} "
       "wave_form={}",
       s.speculation.value, s.draft_rows.value, s.prefill_chunk.value, s.max_slots.value,
       s.prefill_outa_hca.value, s.prefill_outa_hca_partial.value, form());
+  if (s.architecture == "qwen4exp") {
+    measured += std::format(" wave_lanes={}", s.wave_lanes.value);
+  }
+  return measured;
 }
 
 std::string BuildIdentity() {

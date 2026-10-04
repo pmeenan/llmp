@@ -365,7 +365,7 @@ class Qwen38WavePlanTest : public ::testing::Test {
   }
 
   std::expected<std::unique_ptr<engine::Qwen38WavePlanned>, std::string> Plan(
-      std::span<const Request> requests, bool paired = true) {
+      std::span<const Request> requests, bool paired = true, bool lanes = false) {
     if (!state_.has_value()) {
       return std::unexpected(std::string("the fixture has no state layout"));
     }
@@ -383,8 +383,8 @@ class Qwen38WavePlanTest : public ::testing::Test {
                         .shape = kg::Qwen38ShapeOf(state, *chunk, r.rows),
                         .kind = r.kind});
     }
-    return engine::PlanQwen38TargetWave(inputs, ModelDevice(),
-                                        {.paired = paired, .share_target_head = true});
+    return engine::PlanQwen38TargetWave(
+        inputs, ModelDevice(), {.paired = paired, .share_target_head = true, .lanes = lanes});
   }
 
   // A lone slot's products (the composition keeps them as they are).
@@ -523,6 +523,51 @@ TEST_F(Qwen38WavePlanTest, FourSlotsShareEveryProductAndTheirHeads) {
     EXPECT_EQ(logits->view_src, head.together) << s;
     EXPECT_EQ(logits->view_offs, s * 4 * head.together->nb[1]) << s;
   }
+}
+
+// With lanes, each slot's own operations between shared products run on a
+// lane of its own (slots in wave order), each stretch a region; the shared
+// products, their concatenations and views stay on the stream. The plan's
+// steps are otherwise the plan without lanes', step for step.
+TEST_F(Qwen38WavePlanTest, LanesCarryEachSlotsOwnOperations) {
+  const std::array<Request, 4> four = {
+      Request{.slot = 0, .n_past = 100, .rows = 4}, Request{.slot = 1, .n_past = 700, .rows = 4},
+      Request{.slot = 2, .n_past = 2100, .rows = 4}, Request{.slot = 3, .n_past = 3000, .rows = 4}};
+  auto plain = Plan(four);
+  ASSERT_TRUE(plain.has_value()) << plain.error();
+  auto laned = Plan(four, true, true);
+  ASSERT_TRUE(laned.has_value()) << laned.error();
+  const kg::GraphPlan& a = (*plain)->plan;
+  const kg::GraphPlan& b = (*laned)->plan;
+  EXPECT_TRUE(a.regions.empty());
+  ASSERT_FALSE(b.regions.empty());
+  ASSERT_EQ(a.steps.size(), b.steps.size());
+  std::array<std::size_t, kg::kMaxLanes + 1> on{};
+  for (std::size_t i = 0; i < b.steps.size(); ++i) {
+    EXPECT_EQ(a.steps[i].implementation, b.steps[i].implementation) << i;
+    ++on[b.steps[i].lane];
+  }
+  for (std::size_t lane = 0; lane <= kg::kMaxLanes; ++lane) {
+    EXPECT_GT(on[lane], 0U) << lane;
+  }
+  // Every shared product is the stream's.
+  const auto& w = **laned;
+  for (const kg::PlanStep& step : b.steps) {
+    for (const ggml_tensor* node : step.nodes) {
+      if (kg::JitllmOpOf(node) == kg::JitllmOp::kMxfp8MulMatVec && node->src[2]->ne[1] == 16) {
+        EXPECT_EQ(step.lane, 0U);
+      }
+    }
+  }
+  EXPECT_EQ(w.stats().paired_slots, 0xFU);
+  // Fewer slots than kQwen38LaneSlots stay on the stream.
+  const std::array<Request, 3> three = {Request{.slot = 0, .n_past = 100, .rows = 4},
+                                        Request{.slot = 1, .n_past = 700, .rows = 4},
+                                        Request{.slot = 2, .n_past = 2100, .rows = 4}};
+  auto narrow = Plan(three, true, true);
+  ASSERT_TRUE(narrow.has_value()) << narrow.error();
+  EXPECT_TRUE((*narrow)->plan.regions.empty());
+  EXPECT_EQ(engine::kQwen38LaneSlots, 4U);
 }
 
 // Three slots, not adjacent in slot number and of ragged rows (4, 3, 4),

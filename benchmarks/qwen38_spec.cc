@@ -10,13 +10,14 @@
 //
 //   jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE
 //                      --prompts FILE --out DIR
-//                      --check greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head
+//                      --check greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|wave
 //                      [--reference FILE] [--tokens N] [--context N]
 //                      [--graphs on|off] [--draft N] [--draft-vocab N]
 //                      [--adaptive-depth on|off]
 //                      [--runtime-prefill on|off] [--profile-decode on|off]
 //                      [--repeats N] [--margin B] [--seeds N] [--sampled FILE]
 //                      [--only ID] [--poll-us N] [--window P]
+//                      [--slots N (wave: 2-4)] [--wave-lanes on|off]
 //                      [--fp16-artifact DIR --fp16-tokens FILE --fp16-expect SHA256]
 //
 // --window P (0 to 1; default 0, off): TensorFold's adaptive window, the
@@ -72,6 +73,13 @@
 //   speculation continued: every step's state, token and logits equal the
 //   control's, and the drafts and verifies after the swap replay graphs
 //   captured before it (D-090's pinned places).
+// - wave: independent request slots decode at depth 2 in joined verify
+//   waves, with --slots 2-4 and --wave-lanes on|off. Records full tokens,
+//   every verify logit row and final target/drafter state SHA-256 per slot.
+//   With the optional FP16 fixture, swaps out and back after a replayed
+//   full-cohort verify rejected rows in every slot, each Accept's restore
+//   still owed; the first verify after return must replay a kept graph.
+//   Compare all three hash arrays against the identical no-fixture run.
 // - sampled-plain, sampled-spec: seeded sampling (temperature 1), plain or
 //   speculative (execution/sampling.h VerifyDraft, the greedy drafter's
 //   q = δ), for 4 prompts, --seeds seeds and the first 8 generated tokens;
@@ -414,6 +422,7 @@ class Harness {
   Status SwapOut();
   Status SwapIn();
   Status Sampled(bool speculative);
+  Status Wave();
   Status Write();
 
   const Options& o_;
@@ -2203,6 +2212,312 @@ Status Harness::Swap() {
 
 // Seeded sampling, plain or speculative: each prompt's token counts over
 // --seeds seeds and the first 8 generated tokens.
+// --check wave (--slots N, 2 to 4; --wave-lanes on|off): the first N
+// prompts (decode, then chat), each on a slot of its own, prefilled with the
+// drafter's injection and decoded greedily in waves as serving runs them
+// (serving.cc's Qwen RunPreparedGenerationWave): drafts at depth 2 (a draft
+// wave of up to two slots, past two each slot drafting alone), then one
+// verify wave, each slot's verdict its verify's argmaxes. Reports each
+// slot's tokens and a SHA-256 of every verify row it computed, and the
+// median draft and verify wave: two runs that differ only in their lanes
+// must report the same digests. With the optional FP16 fixture, swaps out
+// and back after a captured/replayed full-cohort verify has rejected rows
+// in every slot, each Accept's restore still owed. The first verify after
+// return must replay a kept graph. Runs with and without the fixture must
+// report identical token, full-logit-row and final-state hashes.
+Status Harness::Wave() {
+  if (with_fp16() && !o_.qwen.graphs) {
+    return Error("the wave swap check requires captured and replayed verify graphs");
+  }
+  const std::uint32_t n = o_.qwen.wave_slots;
+  constexpr std::uint32_t kDepth = 2;
+  std::vector<const Prompt*> prompts;
+  for (const auto* set : {&decode_, &chat_}) {
+    for (const Prompt& p : *set) {
+      if (prompts.size() < n) {
+        prompts.push_back(&p);
+      }
+    }
+  }
+  if (prompts.size() < n) {
+    return Error("the wave check needs a prompt a slot");
+  }
+  for (const Prompt* prompt : prompts) {
+    if (prompt->ids.empty() || prompt->ids.size() + o_.tokens + kDepth > o_.qwen.context) {
+      return Error("the wave check needs room for the prompt, output and draft lookahead");
+    }
+  }
+  std::vector<jb::Qwen38Runner::Slot*> slots;
+  for (std::uint32_t i = 0; i < n; ++i) {
+    auto slot = qwen_.request_slot(i);
+    if (!slot) {
+      return std::unexpected(slot.error());
+    }
+    slots.push_back(*slot);
+  }
+  struct Run {
+    std::vector<std::int32_t> all;  // the prompt and its tokens (the anchor last)
+    std::uint32_t generated = 0;
+    jitllm::base::Sha256 rows;
+  };
+  std::vector<Run> runs(n);
+  std::vector<double> draft_ms;
+  std::vector<double> verify_ms;
+  std::uint64_t waves = 0;
+  std::uint64_t verify_captured = 0;
+  std::uint64_t verify_replayed = 0;
+  std::uint64_t swapped_after_wave = 0;
+  std::size_t graphs_kept_at_swap = 0;
+  std::uint64_t verify_replayed_after_swap = 0;
+  std::uint32_t swap_owed_slots = 0;
+  bool expect_swap_replay = false;
+  const auto prefilled = InRequest("a wave cohort prefill", [&]() -> Status {
+    if (auto r = qwen_.SelectSlots(slots); !r) {
+      return r;
+    }
+    const std::uint32_t chunk = o_.qwen.max_rows;
+    for (std::uint32_t i = 0; i < n; ++i) {
+      const Prompt& p = *prompts[i];
+      std::vector<float> last;
+      for (std::uint32_t at = 0; at < p.ids.size(); at += chunk) {
+        const auto rows =
+            static_cast<std::uint32_t>(std::min<std::size_t>(chunk, p.ids.size() - at));
+        if (auto r = slots[i]->Chunk(std::span(p.ids).first(at + rows), at, last, true); !r) {
+          return r;
+        }
+      }
+      runs[i].all = p.ids;
+      runs[i].all.push_back(Argmax(last));
+      runs[i].generated = 1;
+    }
+    return {};
+  });
+  if (!prefilled) {
+    return prefilled;
+  }
+  while (true) {
+    std::vector<std::uint32_t> active;
+    for (std::uint32_t i = 0; i < n; ++i) {
+      if (runs[i].generated < o_.tokens) {
+        active.push_back(i);
+      }
+    }
+    if (active.empty()) {
+      break;
+    }
+    std::vector<jb::Qwen38Runner::Slot*> selected;
+    selected.reserve(active.size());
+    for (const std::uint32_t i : active) {
+      selected.push_back(slots[i]);
+    }
+    const auto ran = InRequest("a wave cohort step", [&]() -> Status {
+      if (auto r = qwen_.SelectSlots(selected); !r) {
+        return r;
+      }
+      std::vector<std::vector<std::int32_t>> drafts(active.size());
+      std::vector<jb::Qwen38Runner::DraftWork> dwork;
+      dwork.reserve(active.size());
+      for (std::size_t k = 0; k < active.size(); ++k) {
+        dwork.push_back({.slot = slots[active[k]],
+                         .history = runs[active[k]].all,
+                         .drafts = &drafts[k],
+                         .probabilities = nullptr,
+                         .passes = kDepth});
+      }
+      auto at = Clock::now();
+      if (active.size() > 2) {
+        for (std::size_t k = 0; k < active.size(); ++k) {
+          if (auto r = slots[active[k]]->Draft(runs[active[k]].all, drafts[k], nullptr, kDepth);
+              !r) {
+            return r;
+          }
+        }
+      } else if (active.size() > 1) {
+        if (auto r = qwen_.DraftWave(dwork); !r) {
+          return r;
+        }
+      } else if (auto r = slots[active[0]]->Draft(runs[active[0]].all, drafts[0], nullptr, kDepth);
+                 !r) {
+        return r;
+      }
+      if (active.size() == n) {
+        draft_ms.push_back(Seconds(Clock::now() - at) * 1e3);
+      }
+      std::vector<std::vector<std::int32_t>> inputs(active.size());
+      std::vector<std::vector<std::int32_t>> argmax(active.size());
+      std::vector<std::vector<float>> logits(active.size());
+      std::vector<jb::Qwen38Runner::VerifyWork> vwork;
+      for (std::size_t k = 0; k < active.size(); ++k) {
+        Run& r = runs[active[k]];
+        const auto rows = std::min<std::uint32_t>(
+            {static_cast<std::uint32_t>(drafts[k].size()) + 1, o_.tokens - r.generated,
+             o_.qwen.context - static_cast<std::uint32_t>(r.all.size() - 1)});
+        drafts[k].resize(rows - 1);
+        inputs[k] = r.all;
+        inputs[k].insert(inputs[k].end(), drafts[k].begin(), drafts[k].end());
+        vwork.push_back({.slot = slots[active[k]],
+                         .history = inputs[k],
+                         .n_past = static_cast<std::uint32_t>(r.all.size() - 1),
+                         .argmax = &argmax[k],
+                         .logits = &logits[k]});
+      }
+      const auto graph_before = qwen_.graph_stats();
+      at = Clock::now();
+      if (active.size() > 1) {
+        if (auto r = qwen_.VerifyWave(vwork); !r) {
+          return r;
+        }
+      } else if (auto r = slots[active[0]]->Verify(vwork[0].history, vwork[0].n_past, argmax[0],
+                                                   logits.data());
+                 !r) {
+        return r;
+      }
+      if (active.size() == n) {
+        verify_ms.push_back(Seconds(Clock::now() - at) * 1e3);
+      }
+      if (active.size() > 1) {
+        verify_captured += qwen_.graph_stats().captured - graph_before.captured;
+        verify_replayed += qwen_.graph_stats().replayed - graph_before.replayed;
+      }
+      if (expect_swap_replay) {
+        verify_replayed_after_swap = qwen_.graph_stats().replayed - graph_before.replayed;
+        if (verify_replayed_after_swap == 0 ||
+            qwen_.graph_stats().captured != graph_before.captured) {
+          return Error("the first verify wave after the swap did not replay its kept graph");
+        }
+        expect_swap_replay = false;
+      } else if (swapped_after_wave != 0 && active.size() > 1) {
+        verify_replayed_after_swap += qwen_.graph_stats().replayed - graph_before.replayed;
+      }
+      waves += active.size() > 1 ? 1 : 0;
+      bool restores_owed = active.size() == n;
+      for (std::size_t k = 0; k < active.size(); ++k) {
+        Run& r = runs[active[k]];
+        r.rows.Update(std::as_bytes(std::span(logits[k])));
+        std::uint32_t m = 0;
+        while (m < drafts[k].size() && argmax[k][m] == drafts[k][m]) {
+          ++m;
+        }
+        if (auto a = slots[active[k]]->Accept(m + 1); !a) {
+          return a;
+        }
+        r.all.insert(r.all.end(), drafts[k].begin(), drafts[k].begin() + m);
+        r.all.push_back(argmax[k][m]);
+        r.generated += m + 1;
+        const auto& live = slots[active[k]]->live();
+        const bool rejected_saved = std::ranges::any_of(live.saved(), [m](const auto& saved) {
+          return saved.row >= 0 && std::cmp_greater_equal(saved.row, m + 1);
+        });
+        restores_owed = restores_owed && m + 1 < argmax[k].size() && rejected_saved &&
+                        live.owed() && o_.tokens - r.generated >= kDepth + 1;
+      }
+      if (with_fp16() && swapped_after_wave == 0 && restores_owed && verify_captured != 0 &&
+          qwen_.graph_stats().replayed > graph_before.replayed) {
+        swap_owed_slots = n;
+      }
+      return {};
+    });
+    if (!ran) {
+      return ran;
+    }
+    if (swap_owed_slots != 0 && swapped_after_wave == 0) {
+      // Every completed Accept still owes rejected rows' restore. The
+      // request lease is gone: the swap writes all initialized slot state,
+      // while the snapshots and the captured graphs keep their places.
+      if (node_.InRequest(qwen_.stream())) {
+        return Error("the wave swap still holds its request lease");
+      }
+      const auto state = qwen_.state();
+      for (const auto* slot : slots) {
+        for (const auto extent : slot->live().extents()) {
+          if (std::ranges::find(state, extent) == state.end() ||
+              std::ranges::none_of(qwen_.everything().extents, [extent](const auto& member) {
+                return member.first == extent;
+              })) {
+            return Error("the wave swap omits an active slot's state extent");
+          }
+        }
+      }
+      graphs_kept_at_swap = qwen_.graphs();
+      if (auto out = SwapOut(); !out) {
+        return out;
+      }
+      if (auto in = SwapIn(); !in) {
+        return in;
+      }
+      if (qwen_.graphs() != graphs_kept_at_swap ||
+          !std::ranges::all_of(slots, [](const auto* slot) { return slot->live().owed(); })) {
+        return Error("the wave swap lost its graphs or settled an owed restore");
+      }
+      swapped_after_wave = waves;
+      expect_swap_replay = true;
+    }
+  }
+  if (with_fp16() && (swapped_after_wave == 0 || expect_swap_replay)) {
+    return Error(
+        "the wave swap needs a replayed full-cohort verify with rejected rows in every "
+        "slot and a subsequent wave");
+  }
+  if (o_.qwen.graphs && (verify_captured == 0 || verify_replayed == 0)) {
+    return Error("the wave check did not capture and replay its verify waves");
+  }
+  for (std::uint32_t i = 0; i < n; ++i) {
+    if (runs[i].generated != o_.tokens ||
+        runs[i].all.size() != prompts[i]->ids.size() + o_.tokens) {
+      return Error("a wave slot did not produce its requested output budget");
+    }
+  }
+  std::string states;
+  if (auto read = InRequest("wave final states",
+                            [&]() -> Status {
+                              if (auto selected = qwen_.SelectSlots(slots); !selected) {
+                                return selected;
+                              }
+                              for (std::uint32_t i = 0; i < n; ++i) {
+                                std::vector<std::byte> target;
+                                std::vector<std::byte> drafter;
+                                if (auto state = slots[i]->ReadState(target, drafter); !state) {
+                                  return state;
+                                }
+                                jitllm::base::Sha256 hash;
+                                hash.Update(target);
+                                hash.Update(drafter);
+                                states += std::format("{}\"{}\"", i == 0 ? "" : ",",
+                                                      jitllm::base::ToHex(hash.Finish()));
+                              }
+                              return {};
+                            });
+      !read) {
+    return read;
+  }
+  const auto median = [](std::vector<double> v) {
+    if (v.empty()) {
+      return 0.0;
+    }
+    std::ranges::sort(v);
+    return v[v.size() / 2];
+  };
+  std::string tokens;
+  std::string rows;
+  for (std::uint32_t i = 0; i < n; ++i) {
+    jitllm::base::Sha256 hash;
+    hash.Update(std::as_bytes(std::span(runs[i].all)));
+    tokens += std::format("{}\"{}\"", i == 0 ? "" : ",", jitllm::base::ToHex(hash.Finish()));
+    rows += std::format("{}\"{}\"", i == 0 ? "" : ",", jitllm::base::ToHex(runs[i].rows.Finish()));
+  }
+  std::println("wave check: {} slots, lanes {}: {} waves; draft {:.2f} ms, verify {:.2f} ms", n,
+               o_.qwen.wave_lanes ? "on" : "off", waves, median(draft_ms), median(verify_ms));
+  results_.push_back(std::format(
+      R"({{"check":"wave","slots":{},"lanes":{},"waves":{},"draft_median_ms":{:.3f},)"
+      R"("verify_median_ms":{:.3f},"tokens_sha256":[{}],"rows_sha256":[{}],"state_sha256":[{}],)"
+      R"("verify_captured":{},"verify_replayed":{},"swapped_after_wave":{},)"
+      R"("swap_owed_slots":{},"graphs_kept_at_swap":{},"verify_replayed_after_swap":{}}})",
+      n, o_.qwen.wave_lanes ? "true" : "false", waves, median(draft_ms), median(verify_ms), tokens,
+      rows, states, verify_captured, verify_replayed, swapped_after_wave, swap_owed_slots,
+      graphs_kept_at_swap, verify_replayed_after_swap));
+  return {};
+}
+
 Status Harness::Sampled(bool speculative) {
   const ex::SamplingParams params{.temperature = 1.0F, .top_k = 0, .top_p = 1.0F, .min_p = 0.0F};
   std::vector<Prompt> prompts(
@@ -2414,6 +2729,8 @@ Status Harness::Run() {
     checked = Sampled(false);
   } else if (o_.check == "sampled-spec") {
     checked = Sampled(true);
+  } else if (o_.check == "wave") {
+    checked = Wave();
   } else {
     checked = Error(std::format("no check {}", o_.check));
   }
@@ -2547,6 +2864,12 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
       o.fp16.tokens = v;
     } else if (a == "--fp16-expect") {
       o.fp16_expect = v;
+    } else if (a == "--slots") {
+      ok = number(o.qwen.wave_slots) && o.qwen.wave_slots >= 2 && o.qwen.wave_slots <= 4;
+      o.qwen.request_slots = std::max<std::uint32_t>(o.qwen.request_slots, o.qwen.wave_slots);
+    } else if (a == "--wave-lanes") {
+      o.qwen.wave_lanes = v == "on";
+      ok = v == "on" || v == "off";
     } else {
       return Error(std::format("unknown argument {}", a));
     }
@@ -2565,17 +2888,21 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "usage: jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE "
         "--prompts FILE --out DIR --check "
         "greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|routed-down|mxfp8-"
-        "projection "
+        "projection|wave "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
         "[--draft-vocab N] [--adaptive-depth on|off] "
         "[--runtime-prefill on|off] "
         "[--profile-decode on|off] "
         "[--repeats N] [--margin B] [--seeds N] "
         "[--sampled FILE] [--only ID] "
-        "[--poll-us N] [--window P] [--prefill-chunk N] [--fp16-artifact "
+        "[--poll-us N] [--window P] [--prefill-chunk N] [--slots N (wave: 2-4)] "
+        "[--wave-lanes on|off] [--fp16-artifact "
         "DIR --fp16-tokens FILE "
         "--fp16-expect "
         "SHA256]");
+  }
+  if ((o.check == "wave") != (o.qwen.wave_slots > 1)) {
+    return Error("the wave check, and only it, takes --slots 2-4");
   }
   if (preparing && (o.chat_template.empty() || o.stop_metadata.empty())) {
     return Error("vocab-prepare requires --template and --stop-metadata");

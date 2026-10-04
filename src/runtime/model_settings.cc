@@ -742,6 +742,8 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.draft_wave_max =
       Pick<std::uint32_t>(U32(entry.Integer("draft_wave_max")), basis("draft_wave_max"), {}, {}, {},
                           {}, kQwen38DraftWaveMax, "measured on a GB10");
+  s.wave_lanes = Pick<bool>(entry.Bool("wave_lanes"), basis("wave_lanes"), {}, {}, {}, {}, true,
+                            "measured four-request concurrent streams on a GB10");
   s.wave_read_align =
       Pick<std::uint32_t>(U32(entry.Integer("wave_read_align")), basis("wave_read_align"), {}, {},
                           {}, {}, kQwen38WaveReadAlign, "the plans' reuse across depths");
@@ -835,6 +837,8 @@ std::vector<ModelSettings::Line> ModelSettings::Lines() const {
       add(k, shared_wave_depth);
     } else if (k == "draft_wave_max") {
       add(k, draft_wave_max);
+    } else if (k == "wave_lanes") {
+      add(k, wave_lanes);
     } else if (k == "wave_read_align") {
       add(k, wave_read_align);
     } else if (k == "image_size") {

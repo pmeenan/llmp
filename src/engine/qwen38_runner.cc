@@ -522,6 +522,7 @@ Status Qwen38Runner::Setup() {
   // inputs and what their plans hold on the host.
   std::uint64_t wave_activations = 0;
   std::uint64_t wave_scratch = 0;
+  std::uint64_t lane_scratch = 0;  // a wave lane's (graph_plan.h AssignLanes)
   std::uint64_t wave_inputs = 0;
   std::uint64_t target_wave_host = 0;
   std::uint64_t draft_wave_host = 0;
@@ -655,6 +656,11 @@ Status Qwen38Runner::Setup() {
           return Error(scratch.error().detail);
         }
         wave_scratch = std::max(wave_scratch, *scratch);
+        auto lanes = kg::PlanLaneScratch(**measure, planned.plan);
+        if (!lanes) {
+          return Error(lanes.error().detail);
+        }
+        lane_scratch = std::max(lane_scratch, *lanes);
         wave_inputs = std::max(wave_inputs, planned.inputs_bytes);
         host = std::max(host, planned.host_bytes());
         return {};
@@ -674,7 +680,8 @@ Status Qwen38Runner::Setup() {
         targets.push_back(
             {s, &models[s], kg::Qwen38ShapeOf(layout_, *in, speculative() ? rows : 1), kind});
       }
-      auto target = PlanQwen38TargetWave(targets, choices, {.share_target_head = true});
+      auto target = PlanQwen38TargetWave(targets, choices,
+                                         {.share_target_head = true, .lanes = o_.wave_lanes});
       if (!target) {
         return Error(
             std::format("measuring a wave of {} slots: {}", o_.wave_slots, target.error()));
@@ -694,7 +701,7 @@ Status Qwen38Runner::Setup() {
         for (std::uint32_t s = 0; s < o_.wave_slots; ++s) {
           drafts.push_back({s, &models[s], shaped->first});
         }
-        auto draft = PlanQwen38DraftWave(drafts, choices);
+        auto draft = PlanQwen38DraftWave(drafts, choices, {.lanes = o_.wave_lanes});
         if (!draft) {
           return Error(
               std::format("measuring a draft wave of {} slots: {}", o_.wave_slots, draft.error()));
@@ -733,6 +740,16 @@ Status Qwen38Runner::Setup() {
   activation_bytes_ = Round(activation_bound + (activation_bound / 4), kExtent);
   const auto scratch_bound = std::max(most_scratch, wave_scratch);
   scratch_bytes_ = Round(scratch_bound + (scratch_bound / 4) + (1U << 20U), kExtent);
+  // A wave's slots run their own operations on concurrent lanes, each with
+  // a scratch pool of its own past the stream's.
+  // Short waves can use unselected attention instead of the selected
+  // end-context path measured above. Every lane retains one slot's
+  // ordinary operations, so its scalar maximum is a conservative bound.
+  lane_scratch = std::max(lane_scratch, most_scratch);
+  lane_scratch_ = o_.wave_slots >= kQwen38LaneSlots && o_.wave_lanes
+                      ? Round(lane_scratch + (lane_scratch / 4) + (1U << 18U), 256)
+                      : 0;
+  scratch_bytes_ = Round(scratch_bytes_ + (kg::kMaxLanes * lane_scratch_), kExtent);
   // A chunk's inputs and its drafter pass's (from the second half), or a
   // wave's every slot's at once.
   const std::uint64_t input_bytes =
@@ -1120,6 +1137,12 @@ Status Qwen38Runner::Bind() {
   draft_waves_.set_account(&account_);
   if (auto r = resources_.BindLaunch(scratch_bytes_); !r) {
     return r;
+  }
+  if (lane_scratch_ > 0) {
+    if (auto r = resources_.launch().ConfigureLanes(kg::kMaxLanes, base::Bytes(lane_scratch_));
+        !r) {
+      return Error(r.error().detail);
+    }
   }
   runs_.SetLaunch(&resources_.launch());
   return {};
@@ -1945,7 +1968,8 @@ std::expected<Qwen38Runner::TargetWaves::Entry*, std::string> Qwen38Runner::Plan
                                       {.activations = node_.activations().base,
                                        .bytes = node_.activations().bytes,
                                        .paired = key.paired,
-                                       .share_target_head = true});
+                                       .share_target_head = true,
+                                       .lanes = o_.wave_lanes});
   if (!planned) {
     return std::unexpected(planned.error());
   }
@@ -1982,7 +2006,8 @@ std::expected<Qwen38Runner::DraftWaves::Entry*, std::string> Qwen38Runner::Plann
   auto planned = PlanQwen38DraftWave(inputs, kg::DeviceChoicesOf(launch),
                                      {.activations = node_.activations().base,
                                       .bytes = node_.activations().bytes,
-                                      .paired = key.paired});
+                                      .paired = key.paired,
+                                      .lanes = o_.wave_lanes});
   if (!planned) {
     return std::unexpected(planned.error());
   }

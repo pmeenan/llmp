@@ -97,6 +97,22 @@ TEST(Calibration, KeysTheSettingsMeasuredWith) {
   EXPECT_THAT(jitllm::runtime::BuildIdentity(), Not(IsEmpty()));
 }
 
+TEST(Calibration, ChangingQwenWaveLanesInvalidatesItsMeasurements) {
+  jitllm::runtime::ModelSettings s;
+  s.architecture = "qwen4exp";
+  s.wave_lanes.value = true;
+  CalibrationKey on = Key();
+  on.settings = jitllm::runtime::MeasuredWith(s);
+  s.wave_lanes.value = false;
+  CalibrationKey off = on;
+  off.settings = jitllm::runtime::MeasuredWith(s);
+  EXPECT_NE(on.settings, off.settings);
+  const auto read = ParseCalibration(FormatCalibration(Measured(), on), off);
+  EXPECT_FALSE(read.calibration.has_value());
+  EXPECT_FALSE(read.refused);
+  EXPECT_THAT(read.note, StartsWith("stale"));
+}
+
 // Measured for another device, driver, build, drafter or measured-with
 // settings: not used, not an error (it is measured again).
 TEST(Calibration, AStaleRecordIsNotUsed) {

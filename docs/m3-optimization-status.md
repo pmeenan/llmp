@@ -24,6 +24,11 @@ byte for byte, eagerly and with capture/replay
 Matched UD-IQ3_XXS HTTP gains 31.08% at C2 and 69.63% at C4 for
 183-token prompts, and 29.42% at C4 for 8,258-token prompts (256 outputs
 each, plain decode; solo within 0.45%).
+Qwen now also runs private attention and recurrence on concurrent streams
+from four requests, with exact full logits and final state on short and
+long fixed histories. The short C4 HTTP screens gain 3.76% with NVFP4/MTP
+and 7.65% with UD-IQ3_XXS plain decode
+([wave lanes](experiments/qwen38-four-request-waves/README.md#wave-lanes)).
 The NVFP4/Mia concurrency gap above remains open.
 
 Reports: [literal 8K](experiments/ds4-complete-plan/README.md),

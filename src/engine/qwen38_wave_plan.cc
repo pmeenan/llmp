@@ -450,7 +450,7 @@ struct Qwen38WaveBuilder {
   static std::expected<void, std::string> Compose(Qwen38WavePlanned& out, const Lists& lists,
                                                   std::span<const Group> groups,
                                                   std::span<const Range> mutable_places,
-                                                  const HeadGroups& heads) {
+                                                  const HeadGroups& heads, bool lanes) {
     std::size_t products = 0;
     // A shared product's descriptors: its members' concats, the product and
     // a view a member, within four a member of the widest group.
@@ -523,16 +523,33 @@ struct Qwen38WaveBuilder {
       return Eligible(t) || t == head_at[slot] || (hc_slots[slot] && Qwen38HcPairCandidate(t));
     };
     Slots<std::size_t> at{};
+    // With lanes (graph_plan.h AssignLanes): each slot's own operations
+    // between two product barriers on a lane of its own (the slots in wave
+    // order, past kMaxLanes sharing lanes in turn), each pass a region; the
+    // shared products, their concatenations and views stay on the stream.
+    std::size_t slots = 0;
+    for (const Group& g : groups) {
+      slots += g.size();
+    }
+    lanes = lanes && slots >= kQwen38LaneSlots;
+    std::uint32_t region = 0;
     while (true) {
       // Every pass emits at least one descriptor or ends; a group whose
       // members wait on each other at different barriers would otherwise
       // spin here.
       const std::size_t emitted = out.nodes_.size();
       bool ready = false;
+      ++region;
+      std::uint32_t position = 0;
       for (const Group& g : groups) {
         for (const auto s : g) {
+          const auto lane = static_cast<std::uint8_t>((position++ % kg::kMaxLanes) + 1);
           while (at[s] < lists[s].size() && !barrier(s, lists[s][at[s]])) {
-            out.nodes_.push_back(lists[s][at[s]++]);
+            ggml_tensor* node = lists[s][at[s]++];
+            out.nodes_.push_back(node);
+            if (lanes) {
+              out.lanes_.emplace_back(node, kg::LaneTag{.lane = lane, .region = region});
+            }
           }
           ready = ready || at[s] != lists[s].size();
         }
@@ -821,11 +838,12 @@ struct Qwen38WaveBuilder {
     if (!heads) {
       return std::unexpected(heads.error());
     }
-    if (auto made = Compose(out, lists, groups, mutable_places, *heads); !made) {
+    if (auto made = Compose(out, lists, groups, mutable_places, *heads, placement.lanes); !made) {
       return made;
     }
-    if (auto made = PlaceAndPlan(out, out.nodes_, out.inputs_, out.keep_, choices,
-                                 placement.activations, placement.bytes);
+    if (auto made =
+            PlaceAndPlan(out, out.nodes_, out.inputs_, out.keep_, choices, placement.activations,
+                         placement.bytes, out.lanes_.empty() ? nullptr : &out.lanes_);
         !made) {
       return made;
     }
