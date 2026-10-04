@@ -26,7 +26,8 @@ changing only the prefill chunk setting within its triplet.
 ## Matched four-request HTTP screens
 
 Spark A uses the frozen [concurrent fixtures](../qwen38-four-request-waves/README.md),
-context 33,792, prefix head 65,536, four slots, normal speculative serving,
+context 33,792, selected head 47,172 (requested cap 65,536), four slots,
+normal speculative serving,
 wave lanes, greedy sampling and the unchanged two-slot draft-wave limit.
 Each request pays 8,256 uncached prompt tokens and returns 256 tokens,
 HTTP 200 and `length`. Counts come from complete buffered responses;
@@ -66,7 +67,8 @@ No numerical or library environment overrides are set.
 The [same-history study's](../qwen38-same-history/README.md) `p3` anchor
 contains 31,746 literal IDs, SHA-256
 `184d7c02214ef662c0e927ca63f4e0091eb42a918a1f79423c1be34b7303ae1e`.
-The check runs context 33,792, fixed depth three, prefix 65,536, nine
+The check runs context 33,792, fixed depth three, selected head 47,172
+(requested cap 65,536), nine
 outputs and two speculative repeats, including plain and teacher-forced
 controls. Each arm passes the existing near-tie and own-repeat checks.
 

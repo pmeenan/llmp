@@ -7,10 +7,10 @@
 both engines on four adjacent anchors from one frozen 32K history. The
 earlier 9/12 native versus 11/12 Mia comparison used fresh native state
 but reused reference prefixes; that gap is not established as a stable
-native proposal deficit. Native's curated 47,172-row and prefix
-65,536-row heads give identical proposals and complete first-verify heads
-on these anchors. This is a representative diagnostic, not acceptance
-parity across contexts, a performance comparison, or a new quality bound.
+native proposal deficit. Both nominal native caps, 47,172 and 65,536, execute the same selected
+47,172-row artifact and give identical proposals and complete first-verify
+heads. They do not compare two head layouts. This is a representative
+diagnostic, not acceptance parity across contexts, a performance comparison, or a new quality bound.
 
 ## Result
 
@@ -22,7 +22,7 @@ Native independently clears, prefills and repeats each request twice; its
 complete first-verify F32 rows repeat bit for bit. All nine-output native
 greedy controls pass the unchanged bound, with no reported problems.
 
-| Anchor offset | Prompt tokens | Anchor ID | Native drafts (both heads) | Mia drafts | Native accepted / offered | Mia accepted / offered | Mia cached tokens |
+| Anchor offset | Prompt tokens | Anchor ID | Native drafts (both requested caps) | Mia drafts | Native accepted / offered | Mia accepted / offered | Mia cached tokens |
 | --- | ---: | ---: | --- | --- | ---: | ---: | ---: |
 | 0, cold | 31,743 | 1596 | 1144, 4087, 1156 | 1144, 4087, 1156 | 3 / 3 | 3 / 3 | 0 |
 | 0, reference repeat | 31,743 | 1596 | 1144, 4087, 1156 | 1144, 4087, 1156 | 3 / 3 | 3 / 3 | 31,616 |
@@ -40,7 +40,7 @@ caused the different proposal.
 
 [compare.py](compare.py) independently checks all four raw rows against
 each engine's own recorded argmax, then compares cross-engine rows only
-while their conditioning tokens agree. All 18 such rows per native head
+while their conditioning tokens agree. All 18 such rows per native collection
 (including the reference repeat) have matching argmaxes. Their maximum
 absolute logit differences range from 1.984 to 3.964; mean absolute
 differences range from 0.299 to 0.607. Those differences are descriptive,
@@ -99,6 +99,10 @@ Run `jitllm_qwen38_spec` with the target/drafter/tokenizer paths,
 `--prompts INPUT --prompt-token-ids on --runtime-prefill on --context 33792
 --prefill-chunk 4096 --draft 3 --draft-vocab 47172 --check greedy
 --tokens 9 --repeats 2 --out OUTPUT`; repeat with `--draft-vocab 65536`.
+Both requested caps use the artifact's selected 47,172-row head; the
+65,536 request is capped, not a prefix-head comparison. An actual prefix
+comparison requires the unselected drafter artifact
+`056a750e3a90be3ae6a4b12bb963ce45290aaa6f52b5ba9799e777d491f80aea`.
 Literal mode requires greedy, two repeats, fixed depth three, no confidence
 window and at least five outputs. It rejects malformed IDs, duplicate
 entry names, empty selections and insufficient context before model admission.
@@ -157,8 +161,8 @@ launcher reaped, with no cleanup errors.
 
 | Evidence | SHA-256 |
 | --- | --- |
-| Curated native spec.json | `370d4c5f634316df0d5c2e3833d496cdc80221175a19bd51c78d42be10a23d7d` |
-| Prefix native spec.json | `3f4d5b8095c39bab75e229d07c39a389a29182b200ff093815995288b0ab4dae` |
+| Native spec.json, requested 47,172 | `370d4c5f634316df0d5c2e3833d496cdc80221175a19bd51c78d42be10a23d7d` |
+| Native spec.json, requested 65,536 | `3f4d5b8095c39bab75e229d07c39a389a29182b200ff093815995288b0ab4dae` |
 | Qualified Mia receipt.json | `3cb6198db3d5a029fc964aa64d4d558d42cfca24e1778aaf9542583eeb5f1903` |
 | Archived native executable, `spark:~/scratch/acceptance/bench-executable` | `0d491ac953bbd3bba90a2ae640dc6466e2cb58ed2f34d02311092ec675aa5cde` |
 
@@ -170,7 +174,7 @@ its requests but failed the collector's identity join; it is excluded
 from this paired result. Neither its captures nor historical generated
 windows establish acceptance parity or justify relaxing a quality bound.
 
-On a Spark, run `python3 compare.py --native CURATED --native PREFIX
+On a Spark, run `python3 compare.py --native REQUESTED_47172 --native REQUESTED_65536
 --mia MIA --out NEW_REPORT`. The analyzer requires the exact five-request
 schedule, complete paid-work and cleanup receipt, matching prompt hashes
 and anchors, finite complete F32 rows and their hashes, and consistent
@@ -323,11 +327,12 @@ collections include cold p3 with 3/3 acceptance, so cold input alone is not
 proof of stable reference repeatability. This collection does not establish
 broader context/step acceptance parity or close a performance/quality gate.
 
-Native runs on Spark A from compiled production `5f37654`, prefix head
-65,536, context 33,792, fixed depth three, 4,096-row runtime prefill,
+Native runs on Spark A from compiled production `5f37654`, selected head
+47,172 with requested cap 65,536, context 33,792, fixed depth three,
+4,096-row runtime prefill,
 nine greedy output tokens and two repeats. Its complete first-verify
-proposals match the historical prefix and curated heads above; the curated
-head was not recollected in this run. The frozen control executable lives
+proposals match both historical requested-cap collections above. This is
+a fresh collection of that same selected head, not a second head layout. The frozen control executable lives
 beside its SDK libraries in `qtile/build/spark-native/benchmarks/` and uses
 no numeric or library environment overrides. The live `qtile` source tree
 later holds rejected expert-tile variants and is not the source identity

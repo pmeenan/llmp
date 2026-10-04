@@ -129,7 +129,9 @@ def main():
                 comparisons.append(dict(row=index, native_verdict=first['verdicts'][index],
                                         reference_verdict=other['verdicts'][index],
                                         max_abs=max(differences), mean_abs=sum(differences) / VOCAB))
-            report['pairs'].append(dict(head_rows=native['draft_vocab'], position=control['position'],
+            report['pairs'].append(dict(requested_head_rows=native['draft_vocab'],
+                head_kind=native.get('draft_head_kind'), head_rows=native.get('draft_head_rows'),
+                position=control['position'],
                 reference_repeat=control['repeat'], cached_tokens=control['cached_tokens'],
                 prompt_i32_sha256=control['prompt_i32_sha256'], anchor_equal=anchor_equal,
                 native_offered=3, reference_offered=3, native_accepted=n, reference_accepted=m,

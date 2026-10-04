@@ -14,10 +14,11 @@ quality, final record and deferred workstation/package checks remain open.
 
 Spark B (`spark-56f5`), driver 580.178.04, CUDA 13.4.92, SDK
 `aarch64-e0a0c85c42806fb1`. One unchanged production runtime process registers
-original DeepSeek 0731 plus DSpark, Qwen NVFP4 plus prefix MTP and
+original DeepSeek 0731 plus DSpark, Qwen NVFP4 plus selected MTP and
 Qwen-Image-2.1. DeepSeek uses context 262,144 and forced
-`wave_form = "speculative"`; Qwen uses context 33,792 and the 65,536-entry
-prefix head. Both have 4,096-row prefill chunks and max slots four. No prior
+`wave_form = "speculative"`; Qwen uses context 33,792 and the selected
+47,172-entry head (requested cap 65,536). Both have 4,096-row prefill chunks
+and max slots four. No prior
 calibration/state directory is adopted. The source inventory pins the
 corrected production implementation, which
 passes all 1,543 Spark B tests, changed-file format/tidy and source lint.

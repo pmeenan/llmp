@@ -307,6 +307,9 @@ class Qwen38Runner final : public PagedModel {
   const GraphStats& draft_stats() const { return draft_stats_; }
   const model::Qwen38MtpState& mtp_state() const { return mtp_layout_; }
   std::uint64_t drafter_read_bytes() const { return dweights_.read_bytes(); }
+  // Effective head metadata after Open, distinct from a requested cap.
+  bool selected_draft_head() const { return dbinding_.selected_head(); }
+  std::uint32_t draft_head_rows() const;
 
   // Forgets every planned shape and its graph.
   void DropPlans();

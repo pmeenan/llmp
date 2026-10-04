@@ -145,6 +145,9 @@ struct ArtifactFacts {
   // drafts it proposes a step (GGUF <architecture>.block_size), if kept.
   std::string drafter_architecture;
   std::optional<std::uint64_t> drafter_block;
+  // Qwen MTP selected-head rows: the packed BF16 matrix and matching I32
+  // token map limit every request, even a larger nominal draft_vocab.
+  std::optional<std::uint32_t> drafter_selected_rows;
 };
 
 // The runner's own ceiling of an architecture's context (the position

@@ -20,10 +20,10 @@ record experiments and documentation. The source inventory matches main's
 No runtime implementation changes for this gate.
 
 Both the native `chat --fresh` control and service use independent fresh
-anchors/data, original DeepSeek 0731 plus DSpark and Qwen NVFP4 plus prefix
+anchors/data, original DeepSeek 0731 plus DSpark and Qwen NVFP4 plus selected
 MTP, greedy sampling, normal stops and output budget 256. DeepSeek context
 is 262,144, with `wave_form = "speculative"`; Qwen context is 33,792 with the
-65,536-entry prefix head. Both use 4,096-row prefill chunks and max slots
+selected 47,172-entry head (requested cap 65,536). Both use 4,096-row prefill chunks and max slots
 four. There is no imported calibration or execution/numerical environment
 override. Each client sends exactly this frozen user message:
 

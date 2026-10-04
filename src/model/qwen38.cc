@@ -429,7 +429,7 @@ const Qwen38Profile& Qwen38Flash() {
     p.ple_row = 160;
     p.ple_conv = 4;
     p.ple_eos = 248044;  // text_config.eos_token_id
-    p.vocab = 248320;
+    p.vocab = kQwen38FlashVocab;
     p.rms_eps = 1e-6f;
     return p;
   }();

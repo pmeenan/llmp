@@ -286,7 +286,7 @@ seeded-sampling evidence in this study.
   | Mode | Where |
   | --- | --- |
   | Greedy, plain | runtime (`--plain`) and harnesses |
-  | Greedy, speculative with MTP (adaptive depth 2–3, 65,536 draft rows) | runtime (the default with a drafter) and `jitllm_qwen38_spec --draft 3 --adaptive-depth on` |
+  | Greedy, speculative with MTP (adaptive depth 2–3; fallback cap 65,536, selected artifacts capped at their physical rows) | runtime (the default with a drafter) and `jitllm_qwen38_spec --draft 3 --adaptive-depth on` |
   | Seeded sampling, plain and speculative | `jitllm_qwen38_spec`; the runtime's chat route (`temperature` > 0, D-097), the same sampler, not yet checked there |
   | Exact (reference) form, `--exact` | harness only (`jitllm_qwen38_exec`); speculation has no exact mode |
 

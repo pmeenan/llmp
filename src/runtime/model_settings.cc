@@ -420,6 +420,25 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
   }
   if (drafter != nullptr) {
     facts.drafter_architecture = drafter->model().architecture;
+    if (facts.drafter_architecture == "qwen4exp-mtp") {
+      const auto head = drafter->FindResource("draft_output.weight");
+      const auto ids = drafter->FindResource("draft_output.ids");
+      if (head.has_value() != ids.has_value()) {
+        return Error("the selected draft head requires its weight and token map");
+      }
+      if (head) {
+        const auto& weight = drafter->resources()[*head].repr;
+        const auto& map = drafter->resources()[*ids].repr;
+        if (weight.family != ja::Family::kGgml || weight.type != "BF16" ||
+            weight.dims.size() != 2 || weight.dims[1] == 0 ||
+            weight.dims[1] > std::numeric_limits<std::uint32_t>::max() ||
+            map.family != ja::Family::kGgml || map.type != "I32" ||
+            map.dims != std::vector<std::uint64_t>{1, weight.dims[1]}) {
+          return Error("the selected draft head requires BF16 rows and a matching I32 token map");
+        }
+        facts.drafter_selected_rows = static_cast<std::uint32_t>(weight.dims[1]);
+      }
+    }
     if (const std::string kv = KeptGguf(*drafter); !kv.empty()) {
       const std::string block_key = std::format("{}.block_size", facts.drafter_architecture);
       const std::array<std::string_view, 1> keys = {block_key};
@@ -728,6 +747,21 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   // Qwen3.8's MTP and waves.
   s.draft_vocab = Pick<std::uint32_t>(U32(entry.Integer("draft_vocab")), basis("draft_vocab"), {},
                                       {}, {}, {}, kQwen38DraftVocab, "measured on a GB10");
+  // Keep the runner's refusal of a cap larger than its target vocabulary.
+  if (arch == "qwen4exp" && speculative && s.draft_vocab.value > model::kQwen38FlashVocab) {
+    return Error("draft_vocab exceeds the Qwen3.8 target vocabulary");
+  }
+  // The runner already caps selected heads; report that effective value
+  // before registration, preserving a smaller owner-selected limit.
+  if (arch == "qwen4exp" && speculative && facts.drafter_selected_rows &&
+      (s.draft_vocab.value == 0 || s.draft_vocab.value > *facts.drafter_selected_rows)) {
+    s.draft_vocab.basis += std::format(" ({} requested; selected draft head has {} rows)",
+                                       s.draft_vocab.value, *facts.drafter_selected_rows);
+    s.draft_vocab.value = *facts.drafter_selected_rows;
+    if (s.draft_vocab.source == SettingSource::kFallback) {
+      s.draft_vocab.source = SettingSource::kDerived;
+    }
+  }
   s.depth_cost_ratio =
       Pick<double>(entry.Real("depth_cost_ratio"), basis("depth_cost_ratio"), cal.depth_cost_ratio,
                    cal.basis, {}, {}, kQwen38DepthCostRatio, "measured on a GB10");

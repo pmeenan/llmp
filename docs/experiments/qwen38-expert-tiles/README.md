@@ -65,6 +65,9 @@ Each arm uses the same four entries from
 --draft 3 --draft-vocab 65536 --slots 4 --wave-lanes on
 ```
 
+The requested cap 65,536 executes the selected 47,172-row head in drafter
+`8600a998…`; it does not select an unselected prefix head.
+
 Shared waves retain production's effective depth two. The target artifact
 is `c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93`,
 drafter `8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40`,

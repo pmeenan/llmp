@@ -1889,6 +1889,16 @@ Qwen38Runner::MtpInputs(std::uint32_t first, std::uint32_t rows, std::uint32_t p
   return std::pair{shape, std::move(ins)};
 }
 
+std::uint32_t Qwen38Runner::draft_head_rows() const {
+  if (!speculative()) {
+    return 0;
+  }
+  const std::uint64_t available =
+      dbinding_.selected_head() ? dbinding_.draft_ids.ne[1] : profile_.vocab;
+  return static_cast<std::uint32_t>(
+      o_.draft_vocab == 0 ? available : std::min<std::uint64_t>(o_.draft_vocab, available));
+}
+
 Status Qwen38Runner::CheckWaveSlot(const Slot* slot, std::uint32_t previous) const {
   if (!waves_provisioned() || slot == nullptr || &slot->owner_ != this ||
       slot->index() >= slot_count_ || slot->index() + 1 <= previous) {

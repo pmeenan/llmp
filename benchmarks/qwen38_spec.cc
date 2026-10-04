@@ -2846,12 +2846,13 @@ Status Harness::Write() {
   const jb::Dsv4GraphStats& d = qwen_.draft_stats();
   std::ofstream(o_.out / "spec.json")
       << std::format(
-             R"({{"check":"{}","draft_rows":{},"draft_vocab":{},"draft_head_input":"f32","adaptive_depth":{},"window":{},"runtime_prefill":{},"prompt_token_ids":{},"load_seconds":{:.2f},)"
+             R"({{"check":"{}","draft_rows":{},"draft_vocab":{},"draft_head_kind":"{}","draft_head_rows":{},"draft_head_input":"f32","adaptive_depth":{},"window":{},"runtime_prefill":{},"prompt_token_ids":{},"load_seconds":{:.2f},)"
              R"("read_bytes":{},"drafter_read_bytes":{},"peak_memavailable_drop_bytes":{},)"
              R"("graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{},"dropped":{}}},)"
              R"("draft_graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{}}},)"
              R"("ple_seconds":{:.3f},"results":[{}],"problems":[{}]}})",
              o_.check, o_.qwen.draft_rows, o_.qwen.draft_vocab,
+             qwen_.selected_draft_head() ? "selected" : "prefix", qwen_.draft_head_rows(),
              o_.adaptive_depth ? "true" : "false", o_.window, o_.runtime_prefill ? "true" : "false",
              o_.prompt_token_ids ? "true" : "false", load_seconds_, qwen_.weight_read_bytes(),
              qwen_.drafter_read_bytes(), drop, g.eager, g.captured, g.replayed, g.refused,

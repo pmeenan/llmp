@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Qwen settings list the effective selected MTP head size and explain a
+  capped request. Benchmark diagnostics record actual head kind and rows;
+  the selected artifact's execution remains unchanged.
+
 - Qwen MTP waves share selected BF16 heads while retaining each column's
   ordinary vector arithmetic and independent state. A matched two-request
   HTTP screen improves completed-token throughput by 1.77%; the existing

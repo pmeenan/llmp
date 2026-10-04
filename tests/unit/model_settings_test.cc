@@ -93,6 +93,32 @@ TEST(ModelSettings, FallbacksWhenTheArtifactSaysNothing) {
   EXPECT_TRUE(q.wave_lanes.value);
 }
 
+TEST(ModelSettings, ReportsTheSelectedDraftHeadsPhysicalLimit) {
+  ArtifactFacts facts = Facts("qwen4exp", "qwen4exp-mtp");
+  facts.drafter_selected_rows = 47172;
+  const ModelSettings fallback = Resolved(Model("q", true), facts);
+  EXPECT_EQ(fallback.draft_vocab.value, 47172U);
+  EXPECT_EQ(fallback.draft_vocab.source, SettingSource::kDerived);
+  EXPECT_THAT(fallback.draft_vocab.basis, HasSubstr("65536 requested"));
+  EXPECT_THAT(fallback.draft_vocab.basis, HasSubstr("47172 rows"));
+  for (const std::uint32_t asked : {0U, 32768U, 65536U}) {
+    ModelEntry owner = Model("q", true);
+    owner.overrides["draft_vocab"] = static_cast<std::int64_t>(asked);
+    const ModelSettings result = Resolved(owner, facts);
+    EXPECT_EQ(result.draft_vocab.value, asked == 32768U ? asked : 47172U);
+    EXPECT_EQ(result.draft_vocab.source, SettingSource::kOverride);
+  }
+  ModelEntry oversized = Model("q", true);
+  oversized.overrides["draft_vocab"] = std::int64_t{4194304};
+  EXPECT_FALSE(ResolveSettings(oversized, facts, nullptr, false).has_value());
+  const ModelSettings prefix = Resolved(Model("q", true), Facts("qwen4exp", "qwen4exp-mtp"));
+  EXPECT_EQ(prefix.draft_vocab.value, 65536U);
+  EXPECT_EQ(prefix.draft_vocab.source, SettingSource::kFallback);
+  const ModelSettings plain = Resolved(Model("q", true), facts, nullptr, true);
+  EXPECT_FALSE(plain.speculation.value);
+  EXPECT_EQ(plain.draft_vocab.value, 65536U);
+}
+
 TEST(ModelSettings, OwnerCanDisableConcurrentWaveLanes) {
   ModelEntry entry = Model("q");
   entry.overrides["wave_lanes"] = false;

@@ -14,7 +14,7 @@ Spark A (`spark-c4e2`), driver 580.178.04, CUDA 13.4.92, SDK
 `aarch64-e0a0c85c42806fb1`. Target NVFP4 artifact
 `c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93`, MTP
 `8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40`,
-65,536-entry prefix head, depth two in shared waves and
+selected 47,172-entry head (requested cap 65,536), depth two in shared waves and
 4,096-row prefill chunks. In-process context capacity is 16,384, with
 96 outputs a request; serving context is 33,792, with 256 outputs.
 
@@ -39,7 +39,8 @@ CPU planning tests cover prefix and selected heads across all three passes,
 sparse slot IDs, unpaired/captured heads and different backing. The GPU
 operand test compares all columns 1–8 byte for byte with ordinary
 single-column MMVF at K=2,560 and N=16,384. Real-model controls below use
-the 65,536-entry prefix; no new curated-head performance claim follows.
+the selected 47,172-entry head; the recorded 65,536 argument is its
+requested cap, not an executed prefix layout.
 
 ## Representative in-process screens
 

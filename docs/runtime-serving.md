@@ -155,7 +155,7 @@ artifacts (no process lock, no device), so it runs beside the service.
 | `wave_costs` | DeepSeek | 1 to 7 numbers, 0 to 1,000 | calibrated: each width's measured draft-verify wave time over its plain one's; else fallback, measured on a GB10 with wave lanes and joined drafts (2.08, 2.52, 2.81, 2.40, 2.12, 2.21, 2.23); calibrated widths replace theirs, and an override's widths (from 2) replace both, the rest keeping theirs; 0 always speculates at that width |
 | `prefill_outa_hca` | DeepSeek | boolean | fallback true: the output-A/HCA prefill on full 4,096-row chunks, qualified ([ds4-output-prefix](experiments/ds4-output-prefix/README.md#default-on-acceptance)); false for the ordinary arithmetic |
 | `prefill_outa_hca_partial` | DeepSeek | boolean | fallback true: and on every chunk of 64 rows or more; listed false when `prefill_outa_hca` is off, which it needs |
-| `draft_vocab` | Qwen3.8 | rows, 0 to 4,194,304; 0: all | fallback 65,536 |
+| `draft_vocab` | Qwen3.8 | rows, 0 to 4,194,304; 0: all | fallback 65,536; with speculation, a selected head caps the effective rows at its physical row count (0: every selected row). The listing includes the requested cap and keeps an override's source; it does not select a prefix layout |
 | `depth_cost_ratio` | Qwen3.8 | above 0 to 100 | calibrated: a three-draft step's measured time over a two-draft step's; else fallback 1.16 (adaptive depth, below) |
 | `shared_wave_depth` | Qwen3.8 | drafts, 1 to 16 | fallback 2: a request's drafts in a wave of several; at most `draft_rows` (listed so) |
 | `draft_wave_max` | Qwen3.8 | requests, 1 to 16 | fallback 2: past it each request drafts alone |

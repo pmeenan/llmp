@@ -153,7 +153,8 @@ made with the other schedule. Waves below four requests retain one stream.
 The inherited NVFP4/MTP screen with the curated 47,172-entry draft head
 measured verify waves at 2/3/4 requests: lanes off 68.1/93.1/110.2 ms,
 on 71.5/94.8/104.2 ms. This sets the four-request threshold. The following
-qualification uses the production 65,536-entry prefix head instead.
+qualification uses that same selected 47,172-entry head with a requested
+cap of 65,536; GGUF/plain lane cells have no live draft head.
 
 ### Correctness
 
@@ -310,8 +311,8 @@ throughput screen.
 
 Native uses the production NVFP4 target `c4fb47a911207c11f935f932d05196dc1701aa0d886eac1b5e91934e554b5a93`
 and MTP drafter `8600a99819ce583a719ebfb457de8cac40b4d0bd1ebe557ceb13dff5961aee40`,
-context 33,792, chunk 4,096, max slots four and the 65,536-entry prefix draft
-head. Shared waves draft depth two; a lone request remains adaptive.
+context 33,792, chunk 4,096, max slots four and the selected 47,172-entry
+draft head (requested cap 65,536). Shared waves draft depth two; a lone request remains adaptive.
 Target KV is F16 and recurrent state F32. The source file inventory matches
 main through `4412786` before and after both native arms; the runtime is the
 final checked literal-cohort implementation (1,543 Spark tests passed).
@@ -376,7 +377,8 @@ from the neutral whole-wave result.
 Spark B, driver 580.178.04, CUDA 13.4.92 and SDK
 `aarch64-e0a0c85c42806fb1`. The private worktree is based on `4412786`.
 `jitllm_qwen38_spec --check wave` uses the NVFP4/MTP artifacts above,
-65,536-entry prefix head, four slots, lanes on, context 16,384,
+selected 47,172-entry head (requested cap 65,536), four slots, lanes on,
+context 16,384,
 4,096-row prefill, depth two within shared waves and 96 generated tokens per
 slot. Inputs are the first two decode and first two chat entries from
 `fast-swap/prompts.json`. This is an in-process short-prompt verify clock,
@@ -418,8 +420,9 @@ inside speculative Qwen remains unmeasured; this is a service-level
 `speculation` toggle, without preserving/funding an idle drafter in the
 plain arm or measuring the cost of switching forms mid-response.
 
-The same Spark B, production runtime, artifacts, 65,536-entry prefix head,
-context 33,792, chunk 4,096, slots four, lanes, frozen common-v2 inputs,
+The same Spark B, production runtime and artifacts apply: speculative arms
+use the selected 47,172-entry head (requested cap 65,536); plain has no live
+draft head. Context 33,792, chunk 4,096, slots four, lanes, frozen common-v2 inputs,
 excluded prime and buffered client apply as in the fast-start Mia refresh
 above. Every measured request pays for 8,256 uncached prompt tokens and
 256 outputs. All 12 return HTTP 200, length finishes and explicit zero cached

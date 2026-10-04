@@ -502,7 +502,7 @@ it appears.
       A [same-history first-verify screen](experiments/qwen38-same-history/README.md)
       now compares four adjacent 32K anchors against the pinned fast Mia
       launcher: native accepts 9/12 actual drafts versus 11/12, with both
-      native head layouts identical. The fourth anchor's deficit is a
+      nominal caps using the same selected 47,172-row head. The fourth anchor's deficit is a
       proposal difference where both targets agree on the shared input.
       [Cache-path and repeat controls](experiments/qwen38-same-history/README.md#cache-path-and-repeat-controls-2026-10-04)
       then find reference draft and target variation: the two-draft gap is
