@@ -325,9 +325,9 @@ clients generate images) are in
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Decision models over TypeSafe's Jev/SystemOne API (`POST /v1/systemone`) | confirmed | D-101, M3.5: wire-compatible with TypeSafe's OpenAPI spec and SDKs; Clef and Clef-flash as the test models; a prefill-only decision program feeding the model's joint schema head |
+| Decision models over TypeSafe's Jev/SystemOne API (`POST /v1/systemone`) | confirmed | D-101, M3.5: wire-compatible with TypeSafe's OpenAPI spec and SDKs; Clef and Clef-flash as the test models; a prefill-only decision program feeding the model's joint schema head; independent requests to each model batch internally |
 | Image, video and audio file inputs per family | confirmed | D-101: M3.5 for Qwen3.8 Flash Next and the M3.5 checkpoints whose files carry encoders, DeepSeek V4 Flash Vision-Exp and Gemma 4 E4B-it as the audio carrier; M4 for GLM-5.3 Flash and DeepSeek V4.1 Flash. Inline data only; remote URL fetching off by default |
-| Image generation and editing (`/v1/images/generations`, `/v1/images/edits`) | confirmed | D-101, M3.5: OpenAI's shape with vLLM-Omni's diffusion fields, for Qwen-Image-2.1 |
+| Image generation and editing (`/v1/images/generations`, `/v1/images/edits`) | confirmed | D-101, M3.5: OpenAI's shape with vLLM-Omni's diffusion fields; Qwen-Image-2.1 generation and edits, Ming-Image-0.1-Design generation including RGBA; compatible work batches across independent requests with their own settings and cancellation |
 | Video generation jobs (`/v1/videos`) | confirmed | D-101, M3.5: the asynchronous job shape vLLM-Omni, SGLang and LiteLLM serve, for MiniMax H3; generated media kept until fetched or expired |
 | Text-to-speech (`/v1/audio/speech`) | confirmed | D-101, M3.5: Breeze-TTS-2 and Kokoro-82M as testbeds (owner, 2026-10-02) |
 | MCP media server | confirmed | D-101, M3.5: an optional separate process exposing image and video generation as MCP tools, for coding agents whose built-in image generation cannot point at a local server |

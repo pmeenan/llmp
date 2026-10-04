@@ -1628,6 +1628,16 @@ family" guide, and its long-context scaling work.
         branches;
       - admission within the memory budget.
 
+      This applies to every added model family, including Clef and
+      Clef-flash's prefill-only decisions and image generation (owner,
+      2026-10-03). Compatible work from independent requests batches in
+      the encoders, decision heads, denoising steps and image decoders.
+      Each request keeps its own state, seed, guidance, step count,
+      size, edit inputs and cancellation. Different input lengths or
+      image sizes form compatible groups and interleave; they do not
+      disable batching for the model. Admission follows memory, and
+      waiting groups age so compatible arrivals cannot starve them.
+
       The chat route's one-request-at-a-time queue (D-097) becomes a
       batch scheduler. Batching applies to requests for the same model;
       different models still time-slice by swapping (D-019).
@@ -1760,6 +1770,8 @@ family" guide, and its long-context scaling work.
         reads every position's final-norm hidden state and the output-head
         rows of each option's tokens. It answers all of a request's
         questions jointly, with images and videos as Clef accepts them.
+        Independent requests to each decision model batch internally,
+        including the joint head, without requiring a batch API route.
       - **Wire behavior:** confidence follows TypeSafe's published
         formulas; Clef's reference reports the top probability instead,
         and that difference is recorded.
@@ -1771,6 +1783,12 @@ family" guide, and its long-context scaling work.
       - **Clients:** the TypeSafe Python and JavaScript SDKs, unmodified,
         pointed at jitLLM by base URL.
 - [ ] **Media generation routes** (D-101, the owner, 2026-10-02):
+      - **Image batching:** Qwen-Image-2.1 and
+        Ming-Image-0.1-Design join compatible phase work across requests,
+        including generation and edits where supported, under the
+        concurrency requirement above. Latents and random-number state
+        belong to each request; cancelling one retires its work without
+        cancelling its peers.
       - `POST /v1/images/generations` and `/v1/images/edits` for
         Qwen-Image-2.1, in OpenAI's shape with vLLM-Omni's diffusion
         fields. Edits take reference images and a mask.
@@ -1871,7 +1889,9 @@ the correctness, speed and long-context ones:
 - **Decision models:** Clef's and Clef-flash's per-option probabilities
   match their pinned reference within declared bounds, text-only and with
   images. The TypeSafe SDKs complete requests unmodified. Decision
-  requests batch with each other, and no state outlives a request.
+  requests to each model batch with each other, including requests with
+  different prompt lengths and question sets; their probabilities meet
+  the same bounds as solo requests. No state outlives a request.
 - **Speech:** with the same inputs, seed and sampling, Breeze's codebook
   logits match its reference's within declared bounds (teacher-forced),
   and its codec turns given codes into the reference's waveform within
@@ -1883,7 +1903,14 @@ the correctness, speed and long-context ones:
   the routes equal the native pipeline's for the same seed;
   Ming-Image-0.1-Design's opaque and transparent images match its
   reference pipeline's for the same seed within bounds, alpha included,
-  at least as fast on the GB10 (D-085), and Open
+  at least as fast on the GB10 (D-085). Both image models batch compatible
+  work across concurrent requests. Batched outputs meet the same
+  correctness bounds as solo outputs with each request's seed and
+  settings preserved; controls cover differing sizes, step counts and
+  cancellation of one peer. Report latency, aggregate throughput and
+  memory at concurrency 1, 2 and 4 where memory permits, against each
+  same-format reference, and record the measured memory limit and any
+  phase or shape restrictions. Open
   WebUI generates through them unmodified, and through the WebUI routes,
   SillyTavern does too. Open WebUI shows an image returned in a chat
   response. Transcriptions from the audio carrier match its reference

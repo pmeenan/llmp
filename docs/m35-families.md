@@ -1014,6 +1014,8 @@ llama.cpp, vLLM, SGLang and transformers run it. Alternatives:
     distance-normalized formula for score
     ([confidence](https://docs.typesafe.ai/confidence.md)).
   - **Not offered:** streaming or a batch route.
+    M3.5 requires jitLLM to batch independent requests to each decision
+    model internally; this does not require a batch wire route.
   - **Clients:** the TypeSafe SDKs (`typesafe-sdk` 0.7.2,
     `@typesafe-ai/sdk` 0.6.0, MIT; base URL from `TYPESAFE_BASE_URL`);
     Vercel AI Gateway and `@ai-sdk/typesafe-ai`; OpenRouter; Pydantic AI

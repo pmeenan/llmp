@@ -616,6 +616,10 @@ The facts and sources are in [m35-families.md](m35-families.md#media-inputs-deci
   (D-089), paged and released like other extents. Encoder outputs are
   request state.
 - **Batching:** decision requests batch like other requests (M3.5).
+  Image generation also batches compatible phase work across independent
+  requests (owner, 2026-10-03), preserving each request's size, seed,
+  guidance, step count, edit inputs and cancellation state. Different
+  lengths and sizes form compatible groups; admission follows memory.
 - **Versioning:** new routes are additive under D-062 and D-100: they
   keep `jitllm-inference-version: 1` unless one breaks an existing
   profile, and each adds its CHANGELOG line.
