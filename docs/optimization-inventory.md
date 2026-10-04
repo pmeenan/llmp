@@ -191,7 +191,14 @@ timing, whole-model timing and peak memory, correctness/rejection controls,
 and the resulting selection policy. Update this inventory and its source
 report when the outcome changes.
 
-M3.5 applies the same comparison to its new EXL3 and legacy families. M4's
+M3.5 applies the same comparison to its new EXL3 and legacy families.
+The owner requires every new family and quantization to adopt the applicable
+optimizations selected by the Qwen and DeepSeek paths and to support optimized
+batching (2026-10-04). Each bring-up records which techniques apply, where
+its plan selects them, any shape or format limits, and its solo and batched
+correctness, speed and memory evidence. A supported status includes that
+batching qualification; a serial bring-up is an intermediate control.
+M4's
 [Kindling and TensorFold references](m4-references.md) add multi-node
 techniques only after their recipes and measured two-Spark behavior are
 re-pinned at entry. Their claimed rankings are not local measurements.

@@ -221,6 +221,8 @@ std::string_view PreTokenizerName(PreTokenizer p) {
       return "qwen35";
     case PreTokenizer::kDeepSeekV3:
       return "deepseek-v3";
+    case PreTokenizer::kGemma4:
+      return "gemma4";
   }
   return "unknown";
 }
@@ -236,6 +238,17 @@ void PreTokenize(PreTokenizer p, Text text, std::vector<std::uint32_t>& lengths)
       const bool marks = p == PreTokenizer::kQwen35;
       Stage(text, whole, lengths,
             [&](Text t, std::size_t at, std::size_t e) { return MatchQwen(t, at, e, marks); });
+      return;
+    }
+    case PreTokenizer::kGemma4: {
+      for (std::size_t at = 0; at < text.size();) {
+        std::size_t end = at + 1;
+        while (end < text.size() && (text[end] == U'\n') == (text[at] == U'\n')) {
+          ++end;
+        }
+        lengths.push_back(static_cast<std::uint32_t>(end - at));
+        at = end;
+      }
       return;
     }
     case PreTokenizer::kDeepSeekV3: {

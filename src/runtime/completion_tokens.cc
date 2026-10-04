@@ -65,7 +65,7 @@ std::expected<LiteralPrompt, Error> PrepareLiteralPrompt(const CompletionRequest
     // and its tokenization's working set the request memory's.
     MemoryCharge charge;
     if (memory != nullptr) {
-      const std::uint64_t need = tokenizer::Tokenizer::EncodeWorkingBytes(*request.prompt) +
+      const std::uint64_t need = tokenizer.WorkingBytes(*request.prompt) +
                                  (std::uint64_t{2} * sizeof(std::int32_t) *
                                   std::min<std::uint64_t>(request.prompt->size() + 1, context));
       if (!charge.Add(*memory, need)) {

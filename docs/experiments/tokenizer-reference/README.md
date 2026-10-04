@@ -82,3 +82,18 @@ system message, a null content, system messages after the first), and
 - Neither reference matches `'ſ` (long s) as the `'s` contraction.
 - The DeepSeek GGUF template and `encoding_dsv4.py` agree on all 17 cases
   both define.
+
+## Gemma 4 raw UTF-8 BPE (M3.5), 2026-10-04
+
+`generate.py --only tokens --config gemma-4-26b-gguf` uses the same pinned
+llama.cpp image on `spark` and the approved
+`unsloth/gemma-4-26B-A4B-it-GGUF@c099eb48e663fd284577b04978a94ffccb261841`,
+`reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf`. Its first 15,784,342
+bytes are the complete GGUF header and metadata, SHA-256
+`9f1f00bb292382747a7035a8a3e5d5f41f31e7d7be80b2aefa044ff03434f990`.
+The generator checks those bytes and keeps them outside Git at
+`tokenizer-reference/gemma-4-26b/header.gguf`, which the models test reads;
+the oracle tokenizes from the full checkpoint. The fixture contains 92
+texts in both special-token modes, 184 encodings and 10,262 token IDs.
+The checkpoint's 262,144-token vocabulary has 256 byte fallback tokens
+and 514,906 ranked merges. No inference or Gemma runner is covered here.

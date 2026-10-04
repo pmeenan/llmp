@@ -25,6 +25,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/work_pulse.h"
 #include "expected_error.h"
 #include "tokenizer/error.h"
 #include "tokenizer/gguf.h"
@@ -791,6 +792,8 @@ GgufWriter SmallGguf(std::string_view pre = "qwen35") {
     switch (k) {
       case TokenKind::kNormal:
         return 1;
+      case TokenKind::kByte:
+        return 6;
       case TokenKind::kControl:
         return 3;
       case TokenKind::kUserDefined:
@@ -827,6 +830,250 @@ GgufWriter SmallGguf(std::string_view pre = "qwen35") {
   w.String("tokenizer.chat_template", "{{ messages }}");
   w.Ints("general.nested.ints", {1, 2, 3});
   return w;
+}
+
+// Raw UTF-8 BPE uses code points, whitespace markers and byte fallback.
+// Its merge paths can cross spaces, unlike the M3 byte-BPE windows.
+tok::TokenizerSpec RawSpec() {
+  tok::TokenizerSpec spec;
+  spec.pre_tokenizer = PreTokenizer::kGemma4;
+  constexpr std::string_view hex = "0123456789ABCDEF";
+  for (unsigned b = 0; b < 256; ++b) {
+    std::string text = "<0x00>";
+    text[3] = hex[b >> 4U];
+    text[4] = hex[b & 15U];
+    spec.tokens.push_back(text);
+    spec.kinds.push_back(TokenKind::kByte);
+  }
+  for (const std::string_view text :
+       {"a", "▁", "▁a", "a▁a", "\n", "\n\n", "\n\n\n", "é", "<bos>"}) {
+    spec.tokens.emplace_back(text);
+    spec.kinds.push_back(text == "<bos>" ? TokenKind::kControl : TokenKind::kNormal);
+  }
+  spec.merges = {{"▁", "a"}, {"a", "▁a"}, {"\n", "\n"}};
+  spec.bos = 264;
+  spec.add_bos = true;
+  return spec;
+}
+
+TEST(RawBpe, MergesAcrossSpacesPreservesWhitespaceAndFallsBackByByte) {
+  auto t = tok::Tokenizer::Create(RawSpec());
+  ASSERT_TRUE(t.has_value()) << t.error().ToString();
+  EXPECT_EQ(Encode(*t, "a a"), (std::vector<TokenId>{259}));
+  EXPECT_EQ(Encode(*t, "é🙂"), (std::vector<TokenId>{263, 0xF0, 0x9F, 0x99, 0x82}));
+  EXPECT_EQ(Encode(*t, "\n\n\n"), (std::vector<TokenId>{262}));
+  EXPECT_EQ(Encode(*t, "\n\n\n\n"), (std::vector<TokenId>{261, 261}));
+  const std::string text = " a a\r\n\t  é🙂";
+  std::string decoded;
+  ASSERT_TRUE(t->Decode(Encode(*t, text), {}, decoded).has_value());
+  EXPECT_EQ(decoded, text);
+  EXPECT_EQ(Encode(*t, "a", {.add_bos_eos = true}), (std::vector<TokenId>{264, 256}));
+  EXPECT_EQ(Encode(*t, "<bos>", {.special = tok::SpecialTokens::kParse}),
+            (std::vector<TokenId>{264}));
+  EXPECT_NE(Encode(*t, "<bos>"), (std::vector<TokenId>{264}));
+  EXPECT_EQ(Encode(*t, "▁"), (std::vector<TokenId>{257}));
+  EXPECT_EQ(t->longest_token_bytes(), 5U);
+}
+
+TEST(RawBpe, BoundsAndAccountingIncludeTheWholeInput) {
+  auto t = tok::Tokenizer::Create(RawSpec());
+  ASSERT_TRUE(t.has_value());
+  std::string text;
+  for (std::size_t i = 0; i < tok::kEncodeWindowBytes / 2; ++i) {
+    text += "a a\n";
+  }
+  EXPECT_EQ(t->WorkingBytes(text), text.size() * tok::kEncodeBytesPerWindowByte);
+  EXPECT_GT(t->WorkingBytes(text), tok::Tokenizer::EncodeWorkingBytes(text));
+  jitllm::base::WorkPulse pulse;
+  jitllm::base::SetThreadPulse(&pulse);
+  const auto ids = Encode(*t, text);
+  jitllm::base::SetThreadPulse(nullptr);
+  EXPECT_GT(pulse.beats(), 2U);
+  ASSERT_EQ(ids.size(), tok::kEncodeWindowBytes);
+  for (std::size_t i = 0; i < ids.size(); i += 2) {
+    ASSERT_EQ(ids[i], 259);
+    ASSERT_EQ(ids[i + 1], 260);
+  }
+  std::vector<TokenId> out;
+  pulse.Cancel();
+  jitllm::base::SetThreadPulse(&pulse);
+  auto cancelled = t->Encode("a a", {}, out);
+  jitllm::base::SetThreadPulse(nullptr);
+  ASSERT_FALSE(cancelled.has_value());
+  EXPECT_EQ(cancelled.error().rule, Rule::kCancelled);
+  auto r = t->Encode("a a", {.max_bytes = 2}, out);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().rule, Rule::kInputTooLarge);
+  r = t->Encode("🙂", {.max_tokens = 3}, out);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().rule, Rule::kOutputTooLarge);
+  out.clear();
+  const std::array spans = {tok::SpecialSpan{0, 6}};
+  r = t->EncodeMarked("<0x41>", spans, {}, out);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().rule, Rule::kSpecialToken);
+}
+
+TEST(RawBpe, RejectsMissingOrMalformedFallbackAndUnsafeSpecOptions) {
+  auto spec = RawSpec();
+  spec.kinds[0] = TokenKind::kUnused;
+  EXPECT_FALSE(tok::Tokenizer::Create(spec).has_value());
+  spec = RawSpec();
+  spec.tokens[0] = "<0xgg>";
+  EXPECT_FALSE(tok::Tokenizer::Create(spec).has_value());
+  spec = RawSpec();
+  spec.normalization = tok::Normalization::kNfc;
+  EXPECT_FALSE(tok::Tokenizer::Create(spec).has_value());
+  spec = RawSpec();
+  spec.kinds[257] = TokenKind::kUnused;
+  EXPECT_FALSE(tok::Tokenizer::Create(spec).has_value());
+}
+
+TEST(RawBpe, SpecialOnlyTextHonorsCancellationAndReportsProgress) {
+  auto spec = RawSpec();
+  spec.tokens.emplace_back("<user>");
+  spec.kinds.push_back(TokenKind::kUserDefined);
+  auto t = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(t.has_value());
+  jitllm::base::WorkPulse pulse;
+  pulse.Cancel();
+  std::vector<TokenId> out;
+  jitllm::base::SetThreadPulse(&pulse);
+  const auto parsed = t->Encode("<bos><user>", {.special = tok::SpecialTokens::kParse}, out);
+  const std::array spans = {tok::SpecialSpan{0, 5}};
+  const auto marked = t->EncodeMarked("<bos>", spans, {}, out);
+  jitllm::base::SetThreadPulse(nullptr);
+  EXPECT_EQ(Failed(parsed, &tok::Error::rule), Rule::kCancelled);
+  EXPECT_EQ(Failed(marked, &tok::Error::rule), Rule::kCancelled);
+  EXPECT_TRUE(out.empty());
+
+  pulse.Clear();
+  std::string text;
+  for (std::size_t i = 0; i < 65536; ++i) {
+    text += "<bos><user>";
+  }
+  const auto before = pulse.beats();
+  out.clear();
+  jitllm::base::SetThreadPulse(&pulse);
+  const auto progress = t->Encode(text, {.special = tok::SpecialTokens::kParse}, out);
+  jitllm::base::SetThreadPulse(nullptr);
+  ASSERT_TRUE(progress.has_value());
+  EXPECT_EQ(out.size(), 131072U);
+  EXPECT_GT(pulse.beats() - before, 2U);
+}
+
+TEST(RawBpe, HostileOverlapsRespectRanksAndPieceBoundaries) {
+  auto spec = RawSpec();
+  auto add = [&](std::string_view text) {
+    spec.tokens.emplace_back(text);
+    spec.kinds.push_back(TokenKind::kNormal);
+    return static_cast<TokenId>(spec.tokens.size() - 1);
+  };
+  const auto aa = add("aa");
+  const auto aaa = add("aaa");
+  add("aaaa");  // A whole token without a merge path must not be greedy.
+  add("a\n");   // A merge cannot escape the newline piece boundary.
+  spec.merges = {{"aa", "a"}, {"a", "aa"}, {"a", "a"}, {"a", "\n"}, {"\n", "\n"}};
+  spec.kinds[262] = TokenKind::kControl;  // The newline shortcut must check kind.
+  auto t = tok::Tokenizer::Create(spec);
+  ASSERT_TRUE(t.has_value());
+  EXPECT_EQ(Encode(*t, "aaaa"), (std::vector<TokenId>{aaa, 256}));
+  EXPECT_EQ(Encode(*t, "aaaaa"), (std::vector<TokenId>{aaa, aa}));
+  EXPECT_EQ(Encode(*t, "a\n\n\n"), (std::vector<TokenId>{256, 261, 260}));
+  EXPECT_EQ(Encode(*t, "\n\n\n", {.special = tok::SpecialTokens::kParse}),
+            (std::vector<TokenId>{262}));
+  spec.merges.emplace_back("a", "a");
+  EXPECT_EQ(Failed(tok::Tokenizer::Create(spec), &tok::Error::rule), Rule::kVocabulary);
+  spec = RawSpec();
+  spec.tokens.emplace_back("<0x41>a");
+  spec.kinds.push_back(TokenKind::kNormal);
+  spec.merges.emplace_back("<0x41>", "a");
+  EXPECT_EQ(Failed(tok::Tokenizer::Create(spec), &tok::Error::rule), Rule::kVocabulary);
+}
+
+TEST(RawBpe, AllFallbackBytesDecodeExactlyAndStreamAcrossTokenBoundaries) {
+  auto t = tok::Tokenizer::Create(RawSpec());
+  ASSERT_TRUE(t.has_value());
+  std::vector<TokenId> ids;
+  std::string expected;
+  for (unsigned b = 0; b < 256; ++b) {
+    ids.push_back(static_cast<TokenId>(b));
+    expected.push_back(static_cast<char>(b));
+  }
+  std::string decoded;
+  ASSERT_TRUE(t->Decode(ids, {}, decoded).has_value());
+  EXPECT_EQ(decoded, expected);
+  tok::StreamDecoder stream(*t, {});
+  std::string text;
+  for (const TokenId id : {0xE2, 0x82}) {
+    ASSERT_TRUE(stream.Push(id, text).has_value());
+    EXPECT_TRUE(text.empty());
+  }
+  ASSERT_TRUE(stream.Push(0xAC, text).has_value());
+  EXPECT_EQ(text, "€");
+  for (const TokenId id : {0xE2, 0x28, 0xA1, 0xF0, 0x9F}) {
+    ASSERT_TRUE(stream.Push(id, text).has_value());
+  }
+  EXPECT_EQ(text, "€�(�");
+  stream.Finish(text);
+  EXPECT_EQ(text, "€�(��");
+  EXPECT_EQ(Encode(*t, "<0x41>", {.special = tok::SpecialTokens::kParse}),
+            (std::vector<TokenId>{'<', '0', 'x', '4', '1', '>'}));
+}
+
+TEST(RawBpe, RefusesIndexOverflowWithoutReadingTheInput) {
+  auto t = tok::Tokenizer::Create(RawSpec());
+  ASSERT_TRUE(t.has_value());
+  // The view is intentionally not backed by that many bytes: refusal must
+  // precede validation, scanning or allocation.
+  const std::size_t too_large = std::size_t{1} << 32U;
+  const std::string_view hostile("a", too_large);
+  std::vector<TokenId> out = {123};
+  const auto result = t->Encode(hostile, {.max_bytes = too_large, .max_tokens = too_large}, out);
+  EXPECT_EQ(Failed(result, &tok::Error::rule), Rule::kInputTooLarge);
+  EXPECT_EQ(out, (std::vector<TokenId>{123}));
+  // A literal marker occupies three input bytes but still fits one token.
+  EXPECT_EQ(Encode(*t, "▁", {.max_tokens = 1}), (std::vector<TokenId>{257}));
+}
+
+GgufWriter RawGguf(std::string_view model = "gemma4", std::string_view pre = "",
+                   bool prefix = false) {
+  const auto spec = RawSpec();
+  GgufWriter w;
+  w.Header(pre.empty() ? 7 : 8);
+  w.String("tokenizer.ggml.model", model);
+  if (!pre.empty()) {
+    w.String("tokenizer.ggml.pre", pre);
+  }
+  w.Strings("tokenizer.ggml.tokens", spec.tokens);
+  std::vector<std::int32_t> kinds(256, 6);
+  kinds.insert(kinds.end(), 8, 1);
+  kinds.push_back(3);
+  w.Ints("tokenizer.ggml.token_type", kinds);
+  w.Strings("tokenizer.ggml.merges", {"▁ a", "a ▁a", "\n \n"});
+  w.U32("tokenizer.ggml.bos_token_id", 264);
+  w.Bool("tokenizer.ggml.add_bos_token", true);
+  w.Bool("tokenizer.ggml.add_space_prefix", prefix);
+  return w;
+}
+
+TEST(Gguf, RawUtf8BpeDefaultsAndStrictRefusals) {
+  for (const std::string_view pre : {"", "gemma4"}) {
+    const auto g = tok::ReadGgufTokenizer(RawGguf("gemma4", pre).Bytes());
+    ASSERT_TRUE(g.has_value()) << g.error().ToString();
+    EXPECT_EQ(g->pre, "gemma4");
+    EXPECT_EQ(g->spec.pre_tokenizer, PreTokenizer::kGemma4);
+    auto t = tok::Tokenizer::Create(g->spec);
+    ASSERT_TRUE(t.has_value()) << t.error().ToString();
+    EXPECT_EQ(Encode(*t, "a a"), (std::vector<TokenId>{259}));
+  }
+  EXPECT_FALSE(tok::ReadGgufTokenizer(RawGguf("gemma4", "qwen2").Bytes()).has_value());
+  EXPECT_FALSE(tok::ReadGgufTokenizer(RawGguf("gemma4", "", true).Bytes()).has_value());
+  EXPECT_FALSE(tok::ReadGgufTokenizer(RawGguf("gpt2", "qwen2").Bytes()).has_value());
+  const auto good = RawGguf();
+  for (std::size_t n = 0; n < good.Bytes().size(); ++n) {
+    EXPECT_FALSE(tok::ReadGgufTokenizer(good.Bytes().first(n)).has_value()) << n;
+  }
 }
 
 TEST(Gguf, ReadsTheTokenizer) {

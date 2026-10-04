@@ -247,7 +247,11 @@ struct Tokenizer::Impl {
       for (std::size_t i = 0; i + 1 < n; ++i) {
         consider(static_cast<std::uint32_t>(i));
       }
+      std::size_t work = 0;
       while (!queue.empty()) {
+        if ((++work & 0xFFFFU) == 0 && !base::Pulse()) {
+          return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", work});
+        }
         const auto [rank, left] = queue.top();
         queue.pop();
         const std::uint32_t right = next[left];
@@ -268,7 +272,11 @@ struct Tokenizer::Impl {
         consider(left);
       }
     }
+    std::size_t emitted = 0;
     for (const TokenId s : symbols) {
+      if ((++emitted & 0xFFFFU) == 0 && !base::Pulse()) {
+        return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", emitted});
+      }
       if (s >= 0) {
         if (auto e = Emit(s, options, out, base); !e) {
           return e;
@@ -288,7 +296,8 @@ struct Tokenizer::Impl {
       if (!base::Pulse()) {
         return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", start});
       }
-      const std::size_t end = WindowEnd(text, start);
+      const std::size_t end =
+          pre_tokenizer == PreTokenizer::kGemma4 ? text.size() : WindowEnd(text, start);
       if (auto e = EncodeWindow(text.substr(start, end - start), options, out, base); !e) {
         return e;
       }
@@ -309,6 +318,13 @@ struct Tokenizer::Impl {
     if (normalization == Normalization::kNfc) {
       unicode::ToNfc(cps);
     }
+    if (pre_tokenizer == PreTokenizer::kGemma4) {
+      for (char32_t& cp : cps) {
+        if (cp == U' ') {
+          cp = U'▁';
+        }
+      }
+    }
     std::vector<std::uint32_t> lengths;
     lengths.reserve(cps.size());  // a piece a code point at most
     PreTokenize(pre_tokenizer, cps, lengths);
@@ -316,12 +332,50 @@ struct Tokenizer::Impl {
     std::string bytes;
     std::string alphabet;
     std::vector<TokenId> symbols;
+    std::size_t pieces = 0;
     for (const std::uint32_t length : lengths) {
+      if ((++pieces & 0xFFFFU) == 0 && !base::Pulse()) {
+        return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", pieces});
+      }
       bytes.clear();
       for (std::size_t i = start; i < start + length; ++i) {
         unicode::AppendUtf8(cps[i], bytes);
       }
       start += length;
+      if (pre_tokenizer == PreTokenizer::kGemma4) {
+        // The pinned reference treats a whole newline run that is a token
+        // atomically, even when its merge path would choose other tokens.
+        const auto whole = by_text.find(bytes);
+        if (bytes[0] == '\n' && whole != by_text.end() &&
+            kinds[static_cast<std::size_t>(whole->second)] == TokenKind::kNormal) {
+          if (auto e = Emit(whole->second, options, out, base); !e) {
+            return e;
+          }
+          continue;
+        }
+        symbols.clear();
+        for (std::size_t at = 0; at < bytes.size();) {
+          if (at != 0 && (symbols.size() & 0xFFFFU) == 0 && !base::Pulse()) {
+            return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", at});
+          }
+          const unsigned char b = static_cast<unsigned char>(bytes[at]);
+          const std::size_t width = b < 0x80 ? 1 : b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4;
+          const auto it = by_text.find(std::string_view(bytes).substr(at, width));
+          if (it != by_text.end() &&
+              kinds[static_cast<std::size_t>(it->second)] == TokenKind::kNormal) {
+            symbols.push_back(it->second);
+          } else {
+            for (std::size_t i = at; i < at + width; ++i) {
+              symbols.push_back(byte_token[static_cast<unsigned char>(bytes[i])]);
+            }
+          }
+          at += width;
+        }
+        if (auto m = Merge(symbols, options, out, base); !m) {
+          return m;
+        }
+        continue;
+      }
       if (ignore_merges) {
         alphabet.clear();
         for (const char b : bytes) {
@@ -349,7 +403,7 @@ struct Tokenizer::Impl {
 
   std::expected<void, Error> Begin(std::string_view text, const EncodeOptions& options,
                                    std::vector<TokenId>& out, std::size_t base) const {
-    if (text.size() > options.max_bytes) {
+    if (text.size() > options.max_bytes || text.size() > kNone) {
       return std::unexpected(
           Error{Rule::kInputTooLarge, "text longer than max_bytes", options.max_bytes});
     }
@@ -360,6 +414,9 @@ struct Tokenizer::Impl {
         Times(Times(options.max_tokens, longest), normalization == Normalization::kNfc ? 4 : 1)) {
       return std::unexpected(
           Error{Rule::kOutputTooLarge, "more tokens than max_tokens", options.max_tokens});
+    }
+    if (!base::Pulse()) {
+      return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop"});
     }
     if (auto valid = unicode::ValidateUtf8(text); !valid) {
       return valid;
@@ -383,7 +440,14 @@ struct Tokenizer::Impl {
                                         const EncodeOptions& options, std::vector<TokenId>& out,
                                         std::size_t base) const {
     std::size_t fragment = 0;
+    std::size_t checkpoint = 65536;
     for (std::size_t p = 0; p < text.size();) {
+      if (p >= checkpoint) {
+        if (!base::Pulse()) {
+          return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", p});
+        }
+        checkpoint = p + 65536;
+      }
       std::size_t length = 0;
       const TokenId t = MatchSpecial(text, p, special, &length);
       if (t < 0) {
@@ -421,6 +485,10 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
   }
   if (spec.merges.size() > 2 * kMaxVocabulary) {
     return fail(Rule::kBounds, "merge count", spec.merges.size());
+  }
+  if (spec.pre_tokenizer == PreTokenizer::kGemma4 &&
+      (spec.normalization != Normalization::kNone || spec.ignore_merges)) {
+    return fail(Rule::kUnsupported, "raw UTF-8 BPE normalization or ignore-merges");
   }
   auto impl = std::make_unique<Impl>();
   impl->tokens = std::move(spec.tokens);
@@ -460,8 +528,31 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
     if (!impl->by_text.emplace(text, static_cast<TokenId>(id)).second) {
       return fail(Rule::kVocabulary, "two tokens with one text", id);
     }
+    if (kind == TokenKind::kByte) {
+      if (spec.pre_tokenizer != PreTokenizer::kGemma4 || text.size() != 6 ||
+          !text.starts_with("<0x") || text.back() != '>') {
+        return fail(Rule::kVocabulary, "invalid byte fallback token", id);
+      }
+      auto hex = [](char c) -> int {
+        return c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+      };
+      const int high = hex(text[3]);
+      const int low = hex(text[4]);
+      if (high < 0 || low < 0) {
+        return fail(Rule::kVocabulary, "invalid byte fallback token", id);
+      }
+      impl->decoded[id].push_back(static_cast<char>((high << 4) | low));
+      continue;
+    }
     if (kind == TokenKind::kNormal) {
       std::string& bytes = impl->decoded[id];
+      if (spec.pre_tokenizer == PreTokenizer::kGemma4) {
+        for (const char32_t cp : cps) {
+          unicode::AppendUtf8(cp == U'▁' ? U' ' : cp, bytes);
+        }
+        impl->longest = std::max(impl->longest, text.size());
+        continue;
+      }
       for (const char32_t cp : cps) {
         const auto it = byte_of.find(cp);
         if (it == byte_of.end()) {
@@ -493,12 +584,27 @@ std::expected<Tokenizer, Error> Tokenizer::Create(TokenizerSpec spec) {
   }
 
   for (unsigned b = 0; b < 256; ++b) {
+    if (spec.pre_tokenizer == PreTokenizer::kGemma4) {
+      constexpr std::string_view hex = "0123456789ABCDEF";
+      impl->byte_text[b] = "<0x00>";
+      impl->byte_text[b][3] = hex[b >> 4U];
+      impl->byte_text[b][4] = hex[b & 15U];
+    }
     const auto it = impl->by_text.find(impl->byte_text[b]);
     if (it == impl->by_text.end() ||
-        impl->kinds[static_cast<std::size_t>(it->second)] != TokenKind::kNormal) {
-      return fail(Rule::kVocabulary, "a byte has no normal token", b);
+        impl->kinds[static_cast<std::size_t>(it->second)] !=
+            (spec.pre_tokenizer == PreTokenizer::kGemma4 ? TokenKind::kByte : TokenKind::kNormal)) {
+      return fail(Rule::kVocabulary, "a byte has no fallback token", b);
     }
     impl->byte_token[b] = it->second;
+  }
+
+  if (spec.pre_tokenizer == PreTokenizer::kGemma4) {
+    const auto space = impl->by_text.find("▁");
+    if (space == impl->by_text.end() ||
+        impl->kinds[static_cast<std::size_t>(space->second)] != TokenKind::kNormal) {
+      return fail(Rule::kVocabulary, "raw UTF-8 BPE requires a whitespace marker token");
+    }
   }
 
   impl->merges.reserve(spec.merges.size());
@@ -564,6 +670,12 @@ std::uint64_t Tokenizer::EncodeWorkingBytes(std::string_view text) {
   return std::uint64_t{widest} * kEncodeBytesPerWindowByte;
 }
 
+std::uint64_t Tokenizer::WorkingBytes(std::string_view text) const {
+  return impl_->pre_tokenizer == PreTokenizer::kGemma4
+             ? std::uint64_t{text.size()} * kEncodeBytesPerWindowByte
+             : EncodeWorkingBytes(text);
+}
+
 std::optional<TokenId> Tokenizer::Find(std::string_view text) const {
   const auto it = impl_->by_text.find(text);
   if (it == impl_->by_text.end()) {
@@ -595,6 +707,9 @@ std::expected<void, Error> Tokenizer::EncodeMarked(std::string_view text,
   }
   std::size_t at = 0;
   for (std::size_t i = 0; i < spans.size(); ++i) {
+    if (i != 0 && (i & 0xFFFFU) == 0 && !base::Pulse()) {
+      return std::unexpected(Error{Rule::kCancelled, "the encoding was asked to stop", i});
+    }
     const SpecialSpan& s = spans[i];
     if (s.offset < at || s.length == 0 || s.offset > text.size() ||
         text.size() - s.offset < s.length) {
@@ -602,7 +717,8 @@ std::expected<void, Error> Tokenizer::EncodeMarked(std::string_view text,
           Error{Rule::kSpecialToken, "spans out of order or outside the text", i});
     }
     const auto token = Find(text.substr(s.offset, s.length));
-    if (!token || Kind(*token) == TokenKind::kNormal || Kind(*token) == TokenKind::kUnused) {
+    if (!token || Kind(*token) == TokenKind::kNormal || Kind(*token) == TokenKind::kByte ||
+        Kind(*token) == TokenKind::kUnused) {
       return std::unexpected(Error{Rule::kSpecialToken, "a span is not a special token", i});
     }
     if (auto e = impl_->EncodeText(text.substr(at, s.offset - at), SpecialTokens::kUserDefinedOnly,
@@ -635,6 +751,7 @@ std::expected<void, Error> Tokenizer::Decode(std::span<const TokenId> tokens,
     }
     const auto u = static_cast<std::size_t>(id);
     switch (impl_->kinds[u]) {
+      case TokenKind::kByte:
       case TokenKind::kNormal:
         out += impl_->decoded[u];
         break;

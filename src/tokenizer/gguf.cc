@@ -358,14 +358,20 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
   if (!has_template) {
     return std::unexpected(has_template.error());
   }
-  if (!*has_model || !*has_pre) {
+  if (!*has_model || (!*has_pre && model != "gemma4")) {
     return Fail(Rule::kFormat, "tokenizer model or pre-tokenizer missing");
   }
   out.has_chat_template = *has_template;
-  if (model != "gpt2") {
-    return Fail(Rule::kUnsupported, "tokenizer model other than gpt2 (byte-level BPE)");
+  if (model != "gpt2" && model != "gemma4") {
+    return Fail(Rule::kUnsupported, "tokenizer model other than gpt2 or gemma4");
   }
-  if (out.pre == "qwen2") {
+  if (model == "gemma4") {
+    if (*has_pre && out.pre != "gemma4") {
+      return Fail(Rule::kUnsupported, "Gemma4 pre-tokenizer");
+    }
+    out.pre = "gemma4";
+    out.spec.pre_tokenizer = PreTokenizer::kGemma4;
+  } else if (out.pre == "qwen2") {
     out.spec.pre_tokenizer = PreTokenizer::kQwen2;
   } else if (out.pre == "qwen35") {
     out.spec.pre_tokenizer = PreTokenizer::kQwen35;
@@ -410,7 +416,13 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
       case 5:
         out.spec.kinds.push_back(TokenKind::kUnused);
         break;
-      default:  // 2 unknown and 6 byte (SPM vocabularies), 0 undefined
+      case 6:
+        if (model == "gemma4") {
+          out.spec.kinds.push_back(TokenKind::kByte);
+          break;
+        }
+        [[fallthrough]];
+      default:  // 2 unknown (SPM vocabularies), 0 undefined
         return Fail(Rule::kUnsupported, "token type", i);
     }
   }

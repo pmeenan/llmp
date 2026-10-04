@@ -11,7 +11,8 @@
 // Supported: `tokenizer.ggml.model` "gpt2" (byte-level BPE) with the
 // pre-tokenizers `qwen2`, `qwen35`, `deepseek-v3` and `joyai-llm`, as
 // llama.cpp reads them; token types normal, control, user-defined and unused.
-// Anything else is refused as unsupported, not approximated.
+// Also "gemma4": raw UTF-8 BPE, optional `gemma4` pre-tokenizer, and
+// <0xNN> byte fallback tokens. Anything else is refused as unsupported.
 
 #ifndef JITLLM_TOKENIZER_GGUF_H_
 #define JITLLM_TOKENIZER_GGUF_H_

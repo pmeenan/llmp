@@ -1799,7 +1799,7 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::EncodeText(std::strin
   // doubling), charged while they are built.
   MemoryCharge charge;
   if (memory != nullptr) {
-    const std::uint64_t need = tokenizer::Tokenizer::EncodeWorkingBytes(text) +
+    const std::uint64_t need = tokenizer_->WorkingBytes(text) +
                                (std::uint64_t{2} * sizeof(tokenizer::TokenId) * (text.size() + 2));
     if (!charge.Add(*memory, need)) {
       if (needed != nullptr) {
@@ -1871,7 +1871,7 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
   // grown by doubling), charged while they are built.
   MemoryCharge charge;
   if (options.memory != nullptr) {
-    const std::uint64_t window = tokenizer::Tokenizer::EncodeWorkingBytes(rendered->text);
+    const std::uint64_t window = tokenizer_->WorkingBytes(rendered->text);
     const std::uint64_t need =
         window + (std::uint64_t{2} * sizeof(tokenizer::TokenId) *
                   std::min<std::uint64_t>(rendered->text.size(), options.max_tokens));

@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Native Gemma 4 GGUF tokenization: raw UTF-8 BPE, space markers, byte
+  fallback, pinned reference agreement and mode-aware request memory bounds.
+
 - Qwen speculative verifies fuse the recurrent alpha/beta pointwise chains
   with original F32 arithmetic and saved-row restoration. A matched four-
   request 8K HTTP screen improves completed-token throughput by 1.34%.

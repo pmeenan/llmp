@@ -147,7 +147,8 @@ struct Config {
   std::string_view llama_twin;  // the llama.cpp configuration a divergence must match instead
 };
 
-constexpr std::array<Config, 5> kConfigs = {{
+constexpr std::array<Config, 6> kConfigs = {{
+    {"gemma-4-26b-gguf", "gguf", ""},
     {"deepseek-v4-0731-gguf", "gguf", ""},
     {"qwen3.8-gguf", "gguf", ""},
     {"qwen3.8-nvfp4", "hf", ""},
@@ -216,7 +217,20 @@ TEST_P(Agreement, TokenForTokenWithTheReference) {
       if (t.normalization() == tok::Normalization::kNone) {
         std::string back;
         ASSERT_TRUE(t.Decode(ids, {.control_tokens = true}, back).has_value());
-        EXPECT_EQ(back, text) << name;
+        if (t.pre_tokenizer() == tok::PreTokenizer::kGemma4) {
+          std::string normalized;
+          for (std::size_t at = 0; at < text.size();) {
+            if (std::string_view(text).substr(at).starts_with("▁")) {
+              normalized += ' ';
+              at += 3;
+            } else {
+              normalized += text[at++];
+            }
+          }
+          EXPECT_EQ(back, normalized) << name;
+        } else {
+          EXPECT_EQ(back, text) << name;
+        }
       }
     }
   }

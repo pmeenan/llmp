@@ -990,7 +990,7 @@ request-memory charge. Clearing a branch retains its vectors' capacity;
 large histories across a growing model library can therefore outgrow that
 margin even after device state is discarded. Catalog charges and reclaim
 for these allocations remain a resource-accounting gap, assigned to
-[M3.5's native token-history task](plan.md#m35--model-families--pending)
+[M3.5's native token-history task](plan.md#m35--model-families--in-progress)
 before expanding the model library or request concurrency.
 
 Its first 256 MiB (the floor) are set apart at the start beside the memory

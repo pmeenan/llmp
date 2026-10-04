@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The native byte-level BPE tokenizer (M3; D-067, D-088). It encodes text
+// The native byte-level and Gemma4 raw UTF-8 BPE tokenizer (D-067, D-088). It encodes text
 // to token IDs and decodes them back, from a vocabulary that a loader
 // (gguf.h, hf.h) reads from untrusted model files, validated when the
 // tokenizer is created.
@@ -26,11 +26,14 @@
 // explicit lossy choice), at most EncodeOptions::max_bytes long, and the
 // output at most max_tokens long. A text with more bytes than max_tokens
 // times the longest token's (four times that under NFC, which shortens text
-// at most threefold) cannot fit and is refused before any work. Work is
+// at most threefold) cannot fit and is refused before any work. Gemma4
+// uses raw code-point symbols with ▁ for spaces, newline-run splitting
+// and <0xNN> fallback; it encodes whole fragments (WorkingBytes), since
+// merges may cross spaces. Normal raw tokens decode ▁ to a space. Work is
 // O(n log n), with up to 256 special-token trie steps per input byte, and
-// memory follows the longest window, not the text (D-102): a fragment is
+// byte-BPE memory follows the longest window, not the text (D-102): a fragment is
 // encoded in windows of about kEncodeWindowBytes, cut only where neither
-// normalization nor any pre-tokenizer joins across (EncodeWorkingBytes).
+// normalization nor its byte-BPE pre-tokenizer joins across (EncodeWorkingBytes).
 // A Tokenizer is immutable once created; Encode and Decode are safe to call
 // from several threads at once.
 
@@ -56,7 +59,8 @@ namespace jitllm::tokenizer {
 using TokenId = std::int32_t;
 
 enum class TokenKind : std::uint8_t {
-  kNormal,       // byte-level text; produced by BPE
+  kNormal,       // text; produced by BPE
+  kByte,         // raw UTF-8 BPE fallback, <0xNN>; decodes to one byte
   kControl,      // special: matched only when asked, decoded only when asked
   kUserDefined,  // always matched in text, decoded as its text
   kUnused,       // padding past the real vocabulary: never produced, decodes to nothing
@@ -66,7 +70,7 @@ enum class Normalization : std::uint8_t { kNone, kNfc };
 
 // A vocabulary as a loader reads it; Tokenizer::Create validates it.
 struct TokenizerSpec {
-  std::vector<std::string> tokens;  // by ID; normal tokens in the byte alphabet
+  std::vector<std::string> tokens;  // by ID; byte alphabet, or raw UTF-8 for kGemma4
   std::vector<TokenKind> kinds;     // by ID
   std::vector<std::pair<std::string, std::string>> merges;  // in rank order
   PreTokenizer pre_tokenizer = PreTokenizer::kQwen2;
@@ -82,7 +86,7 @@ struct TokenizerSpec {
 inline constexpr std::size_t kMaxVocabulary = std::size_t{1} << 22U;
 inline constexpr std::size_t kMaxTokenBytes = 1024;
 
-// Encoding's windows: a fragment longer than this is cut, at the last cut
+// Byte-BPE encoding's windows: a fragment longer than this is cut, at the last cut
 // point within it (or the first after it, if none), into windows encoded
 // one at a time. A cut point is before an ASCII letter or digit that
 // follows a newline, or before a space between an ASCII letter or digit and
@@ -140,15 +144,20 @@ class Tokenizer {
   TokenKind Kind(TokenId id) const;
   // The token whose text is exactly `text`, of any kind.
   std::optional<TokenId> Find(std::string_view text) const;
-  // The longest token's bytes: a normal token's decoded bytes, a special
+  // The longest token's bytes: a normal token's decoded bytes (raw UTF-8
+  // bytes for Gemma4, accounting for literal ▁ in the input), a special
   // token's text. A text of n bytes encodes to at least n / this tokens.
   std::size_t longest_token_bytes() const;
 
+  // Byte-BPE estimate (use WorkingBytes when the tokenizer is known).
   // The bytes Encode or EncodeMarked allocates for `text` at most, beside
   // its output: kEncodeBytesPerWindowByte a byte of its longest window
   // (kEncodeWindowBytes, or longer where the text has no cut point). A
   // caller charges this before encoding untrusted text. A scan of the text.
   static std::uint64_t EncodeWorkingBytes(std::string_view text);
+  // Mode-aware estimate: raw UTF-8 BPE can merge across spaces, so it
+  // charges the whole input rather than byte-BPE windows.
+  std::uint64_t WorkingBytes(std::string_view text) const;
 
   // Appends text's tokens to out.
   std::expected<void, Error> Encode(std::string_view text, const EncodeOptions& options,

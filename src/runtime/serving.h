@@ -298,10 +298,10 @@ struct GenerateOptions {
 struct ChatRenderOptions {
   std::size_t max_tokens = std::numeric_limits<std::size_t>::max();  // the context's
   const std::function<bool()>* cancelled = nullptr;                  // the request's end
-  // When given, the tokenization's working set (Tokenizer::EncodeWorkingBytes
+  // When given, the tokenization's working set (Tokenizer::WorkingBytes
   // and the tokens) is charged to it while it runs; when it does not fit,
   // kMemory, with the bytes it needed in *memory_needed; when it could
-  // never fit (a stretch without a cut point whose window passes the
+  // never fit (byte-BPE's longest window, or raw BPE's whole input, passes the
   // memory's capacity), kUnbroken, with that stretch's bytes.
   RequestMemory* memory = nullptr;
   std::uint64_t* memory_needed = nullptr;

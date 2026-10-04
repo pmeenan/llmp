@@ -34,7 +34,7 @@ struct LiteralPrompt {
   std::uint64_t score_bytes = 0;  // what its score rows are charged, at most
 };
 // With `memory`, a text prompt's tokenization is charged to it while it
-// runs (Tokenizer::EncodeWorkingBytes and the tokens), and refused when it
+// runs (Tokenizer::WorkingBytes and the tokens), and refused when it
 // does not fit.
 std::expected<LiteralPrompt, Error> PrepareLiteralPrompt(const CompletionRequest& request,
                                                          const tokenizer::Tokenizer& tokenizer,

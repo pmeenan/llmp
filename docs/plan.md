@@ -153,7 +153,7 @@ The [frozen M3 record](m3-record.md) retains all task history, evidence,
 exceptions and later work. Focused workstation, Spark and ARM package
 checks pass; whole shipment tiers remain owed before publishing a package.
 
-## M3.5 — Model families  `pending`
+## M3.5 — Model families  `in progress`
 
 Goal (the owner, 2026-09-29): build out the core engine across the major
 open model families, MoE and dense, before the system is built around it
@@ -193,7 +193,7 @@ family" guide, and its long-context scaling work.
       Flash stays in M4 (two Sparks). Agents propose; the owner approves
       the list (AGENTS.md: agents never invent supported model
       combinations). Weight licenses are informational (D-087).
-      Proposal, awaiting the owner: [m35-families.md](m35-families.md).
+      Approved selection: [m35-families.md](m35-families.md).
 - [ ] **Native token-history accounting and reclaim** (M3 review P2,
       2026-10-04; [current gap](runtime-serving.md#the-chat-route)):
       close this engine gap before expanding the model library or request
@@ -231,7 +231,15 @@ family" guide, and its long-context scaling work.
         recorded in the support matrix;
       - swaps in and out beside the M3 models;
       - speculation where the family ships MTP layers or drafters;
-      - the D-053 rule: a primitive fallback for every fused operation.
+      - the D-053 rule: a primitive fallback for every fused operation;
+      - **Optimization transfer and batching** (owner, 2026-10-04):
+        adopt all applicable optimizations already selected by the Qwen
+        and DeepSeek paths, using the
+        [inventory](optimization-inventory.md) to check each new family
+        and quantization. Record eligibility, actual dispatch and measured
+        correctness, speed and memory; account for shape or format limits.
+        A family or quantization's supported status includes optimized
+        batching, with the concurrency evidence below.
 - [ ] **Concurrent requests with continuous batching** (the owner,
       2026-09-29). The primary workload includes an agent plus
       subagents, which is several concurrent requests on the same

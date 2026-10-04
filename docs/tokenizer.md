@@ -3,8 +3,9 @@
 
 # Tokenizer, chat templates and sampling
 
-M3's native text front end (plan.md, "Tokenizer and chat templates";
-D-067, D-088): a byte-level BPE tokenizer for the M3 models, native
+The native text front end (M3 and M3.5; plan.md, "Tokenizer and chat templates";
+D-067, D-088): byte-level BPE for the M3 models and raw UTF-8 BPE
+for Gemma 4 GGUFs, native
 family renderers for their chat templates and a bounded, sandboxed
 Jinja-subset interpreter for any other template, stop tokens, and greedy and
 seeded sampling. All of it is CPU code with no vendor types and builds in
@@ -19,7 +20,7 @@ carries its notice ([licensing.md](licensing.md#tokenizer-unicode-tables-m3)).
 | Module | Holds |
 | --- | --- |
 | `base/json.h` (`jitllm_json`) | General RFC 8259 JSON from untrusted bytes: strict UTF-8, unescaped strings, numbers kept as text, duplicate keys refused, caps on size, depth, values and string bytes |
-| `tokenizer/` (`jitllm_tokenizer`) | `unicode.h` (UCD 15.1.0 properties, strict UTF-8, U+FFFD replacement, NFC), `pretokenize.h` (the three pre-tokenizers), `tokenizer.h` (vocabulary validation, encode, decode, streaming decode), `gguf.h` and `hf.h` (the readers of a GGUF file's tokenizer metadata and of `tokenizer.json`) |
+| `tokenizer/` (`jitllm_tokenizer`) | `unicode.h` (UCD 15.1.0 properties, strict UTF-8, U+FFFD replacement, NFC), `pretokenize.h` (the four pre-tokenizers), `tokenizer.h` (vocabulary validation, encode, decode, streaming decode), `gguf.h` and `hf.h` (the readers of a GGUF file's tokenizer metadata and of `tokenizer.json`) |
 | `chat/` (`jitllm_chat`) | `chat.h` (the conversation, the native renderers and their registry, `ChatTemplate`: the choice by hash, probe or interpreter; stop tokens, Python's `str.strip`), `jinja.h` (the Jinja-subset interpreter: `jinja_parse.cc`, `jinja_eval.cc`, `jinja_value.cc`), `pyjson.h` (JSON as Python's `json.dumps` prints it, and values as `str()` prints them); the family renderers `deepseek_v4.cc`, `qwen.cc` and `gemma.cc` |
 | `execution/sampling.h` (`jitllm_sampling`) | Greedy and seeded sampling |
 
@@ -60,8 +61,35 @@ tokenizers do for these vocabularies:
 4. **BPE** on each piece's bytes in the GPT-2 byte alphabet: the lowest
    merge rank first, the leftmost on a tie, until no ranked pair remains.
 
-**Byte fallback.** Creation requires a normal token for every byte and a
-token for every merge's result, so every well-formed text encodes and
+**Gemma 4 GGUF BPE.** `tokenizer.ggml.model = "gemma4"` selects raw
+UTF-8 BPE; its optional `tokenizer.ggml.pre` must also be `gemma4`.
+Spaces become U+2581 (`▁`), without NFC, a dummy prefix or whitespace
+removal. Pieces are newline runs and runs without newlines; their initial
+symbols are Unicode code points, with `<0xNN>` byte tokens for absent
+code points. Ranked merges use the same heap and leftmost tie rule as
+byte BPE. A whole newline run present in the vocabulary becomes that
+token directly, matching the pinned llama.cpp Gemma 4 shortcut. Decoding
+normal tokens replaces `▁` with spaces and byte tokens with their bytes;
+a literal `▁` in input therefore decodes to a space, as in the reference.
+Every byte fallback and the normal `▁` token are required; merges must
+name normal constituents and a normal result. BOS/EOS and marked control
+tokens retain their existing rules. This support is for GGUF metadata;
+Gemma `tokenizer.json` and classic score-ordered SentencePiece remain
+separate work.
+
+Raw BPE can merge across spaces, so it encodes a whole fragment and
+`Tokenizer::WorkingBytes` charges 96 bytes per input byte. Serving uses
+this mode-aware estimate; byte BPE keeps its windowed estimate. Replacing
+one space with three UTF-8 bytes still creates only one symbol because
+`▁` is required. Every other code point contributes at most its original
+byte count of symbols. Code points and piece lengths, expanded text,
+symbols and links, and at most three heap candidates per symbol remain
+within that charge. Merge queues and emission ask the thread pulse every
+65,536 iterations, so a large fragment has progress and cancellation
+checkpoints. Input and output caps still apply.
+
+**Byte fallback.** Byte BPE creation requires a normal token for every
+byte and a token for every merge's result, so every well-formed text encodes and
 nothing is dropped (llama.cpp silently drops bytes a vocabulary lacks).
 
 **Bounds and errors.** Input is untrusted: text must be well-formed UTF-8
@@ -76,17 +104,17 @@ prompt is cut below what the body and the context admit (a 4 MiB+ chat
 renders and tokenizes, `llm_scores_test`). A text longer than `max_tokens`
 times the vocabulary's longest token (four times that under NFC, which
 composes text at most threefold) cannot fit and is refused
-(`kOutputTooLarge`) before it is decoded. Memory follows the longest
+(`kOutputTooLarge`) before it is decoded. For byte BPE, memory follows the longest
 window, not the text: a fragment past `kEncodeWindowBytes` (1 MiB) is
 encoded a window at a time, cut at the last cut point within the window
 (or the first after it): before an ASCII letter or digit that follows a
 newline, or before a space between an ASCII letter or digit and an ASCII
-letter. No pre-tokenizer's piece spans one (a newline ends its run, a
+letter. No byte-BPE pre-tokenizer's piece spans one (a newline ends its run, a
 letter or digit run ends at a space, matching looks only forward from
 there) and NFC composes across neither, so the tokens are the whole
 fragment's (`WindowCutsSplitNoPieceAndNoComposition` checks every cut in
 random text against all three pre-tokenizers and NFC). Serving charges
-`Tokenizer::EncodeWorkingBytes` (96 bytes a byte of the longest window)
+`Tokenizer::WorkingBytes` (96 bytes a byte of the longest window for byte BPE)
 and the tokens to the request memory before encoding; a text whose
 longest stretch without a cut point could never be held (its window past
 the request memory's capacity) is refused as the prompt's shape
@@ -99,7 +127,8 @@ hostile one built for the worst case. Vocabulary caps:
 Every refusal is a named `Rule` with a static reason and an item.
 
 **Decoding** gives each token's bytes: normal tokens through the byte
-alphabet, user-defined tokens as their text, control tokens only when asked,
+alphabet (Gemma 4 normal tokens replace `▁` with spaces and byte fallback
+tokens decode to one byte), user-defined tokens as their text, control tokens only when asked,
 unused padding tokens as nothing. `StreamDecoder` holds back a trailing
 partial UTF-8 sequence and replaces what can never complete.
 
@@ -108,8 +137,9 @@ from a byte prefix of the file: counts and lengths are checked against the
 bytes left before anything is allocated, and the keys it uses against caps
 (2^16 keys, 16 MiB strings, 2^24 array elements); other keys are skipped
 unread; keys may not repeat, types must match. It accepts
-`gpt2` vocabularies with the four pre-tokenizer names above and token types
-normal, control, user-defined and unused. `ReadHfTokenizer` accepts the
+`gpt2` vocabularies with the three pre-tokenizer modes above and token types
+normal, control, user-defined and unused, and the Gemma 4 raw UTF-8 BPE
+metadata and byte fallback described above. `ReadHfTokenizer` accepts the
 `tokenizer.json` shape hf.h lists (BPE, NFC or no normalizer, the Split and
 ByteLevel sequences above, no stripping flags) and refuses the rest. The
 prepared artifact's tokenizer section is still the importer's to define;
@@ -154,6 +184,7 @@ without parsing special tokens (184 encodings per configuration):
 
 | Configuration | Source (under `~/.local/share/jitllm/` on the Sparks) | Reference | Result |
 | --- | --- | --- | --- |
+| `gemma-4-26b-gguf` | `tokenizer-reference/gemma-4-26b/header.gguf`, the approved 26B-A4B checkpoint's complete metadata; 262,144 tokens, `gemma4` | pinned llama.cpp | 184 of 184 equal |
 | `deepseek-v4-0731-gguf` | `models/unsloth/DeepSeek-V4-Flash-0731-GGUF@fbbb5b93/UD-Q2_K_XL/…-00001-of-00003.gguf`; 129,280 tokens, `joyai-llm` | llama.cpp `llama-tokenize` (the pinned image) | 184 of 184 equal |
 | `qwen3.8-gguf` | `reference-models/Q/UD-IQ3_XXS/…-00001-of-00003.gguf`; 248,320 tokens, `qwen35` | llama.cpp | 184 of 184 |
 | `qwen3.8-nvfp4` | `models/Mia-AiLab/Qwen3.8-Flash-Next-NVFP4@925d7be6/tokenizer.json`; NFC, qwen35 | Hugging Face tokenizers 0.22.2 | 184 of 184 |
@@ -163,7 +194,7 @@ without parsing special tokens (184 encodings per configuration):
 Ill-formed items are refused at the offset of their first ill-formed byte;
 their replaced text then agrees with the reference's tokens of Python's
 `replace` decoding. Decoding returns every non-normalizing encoding's text
-exactly. Where the references disagree with each other, jitLLM follows each
+exactly, except that Gemma 4 replaces a literal `▁` with a space. Where the references disagree with each other, jitLLM follows each
 model's oracle and records why:
 
 - **Unicode version.** Hugging Face's Oniguruma knows Unicode 16.0's emoji
@@ -392,8 +423,8 @@ every branch of the notation, tool rounds and chains, thinking,
 string formats, key order, the independent review's cases, the templates'
 refusals), and 4 image prompts. Text compares
 byte for byte in every profile (`chat_test`); token IDs compare with the
-references on the model files (`tokenizer_models_test`; no Gemma model
-files yet, so Gemma's are not compared): all equal, with
+references on the model files (`tokenizer_models_test`; Gemma rendered-chat
+token agreement remains outside the tokenizer-only slice): all equal, with
 DeepSeek's against llama.cpp (for chat-v2, llama.cpp on the community GGUF
 and the native tokenizer from its artifact's kept metadata, which equals
 the 0731 GGUF's) and against Hugging Face.

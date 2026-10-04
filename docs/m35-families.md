@@ -1,11 +1,12 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# M3.5 model families: capability coverage and checkpoint proposal
+# M3.5 model families: capability coverage and checkpoint selection
 
-**Status: proposal for the owner's approval (2026-09-29).** This answers
-[plan.md](plan.md#m35--model-families--pending)'s family-selection item. It
-is a desk study: nothing was downloaded or run. Revisions, parameter counts,
+**Status: covering set approved by the owner (2026-09-29); implementation
+in progress.** This answers
+[plan.md](plan.md#m35--model-families--in-progress)'s family-selection item. It
+began as a desk study. Revisions, parameter counts,
 sizes and download counts were read from the Hugging Face API and model
 files on 2026-09-29, and every fact links its source. Speeds from model
 cards, forums and community repositories are creator-reported, not ours.
@@ -22,9 +23,10 @@ per-family picks.
 Ten checkpoints (1–10 below) cover the architectural features of the
 current generations that fit one Spark, and the main formats: GGUF
 K-quants and MXFP4 (more I-quants through the optional MiniMax M2.7),
-NVFP4 in both layouts, FP8 blocks, AWQ, and EXL3 at several rates, mixed
+NVFP4, FP8 blocks, AWQ, and EXL3 at several rates, mixed
 ones included. GPTQ and per-tensor FP8 reuse the Marlin and FP8 paths;
-MLX stays M9's. Three more (11–13) are named by the owner or the plan, or
+MLX affine import joins M3.5 under the owner's recorded approval below.
+Three more (11–13) are named by the owner or the plan, or
 needed by M7 or M4, and add little new surface. Each has a same-format
 reference engine that runs on a GB10. Features that only older or
 second-tier checkpoints use (Gemma 2's attention softcap, LongRoPE,
@@ -189,7 +191,7 @@ jitLLM already runs these (from the repository; see
 | FP8, per tensor / per channel | static or per channel, dynamic per token | `s·fp8(q)` | CUTLASS scaled_mm sm120, cuBLASLt FP8 | works after the sm_12.1 guard fixes ([spark-vllm-docker #143](https://github.com/eugr/spark-vllm-docker/issues/143)) | mistralai, RedHatAI | no | optional (a small step after block FP8) |
 | AWQ | INT4, group 128, zero point | `s·(q−z)` | AWQ-Marlin | Marlin runs on sm_121; Machete is Hopper-only | casperhansen, cyankiwi | no | 8 |
 | GPTQ (v1/v2, compressed-tensors w4a16) | INT4/INT8, group 128 or per channel, optional act-order | `s·(q−z)` with permutation | Marlin (repacks at load) | Marlin runs | RedHatAI | no | 8's sibling (same kernel); optional |
-| MLX affine 4-bit | groups of 32/64, BF16 scale and bias | `s·q + b` | TensorFold's Triton kernels on CUDA | measured on our Sparks as a baseline | mlx-community, Vontra | no | M9 (unchanged; [tensorfold-assessment](tensorfold-assessment.md)) |
+| MLX affine 4-bit | groups of 32/64, BF16 scale and bias | `s·q + b` | TensorFold's Triton kernels on CUDA | measured on our Sparks as a baseline | mlx-community, Vontra | no | M3.5 import (owner, 2026-09-29; [tensorfold-assessment](tensorfold-assessment.md)) |
 | EXL3 | K = 1–8 per tensor (fractional targets = per-tensor mixes; fractional trellis since v1.5.1) | trellis decode → codebook → Hadamard-128 with `suh`/`svh` | ExLlamaV3 | jitLLM runs its kernels on `sm_121` | turboderp, Mia, community | dense, mcg, K 4/5/6/8 | 1, 3, 10, 11 ([below](#exl3-in-depth)) |
 | EXL2, bitsandbytes, HQQ | — | — | — | — | — | — | excluded ([below](#considered-and-excluded)) |
 
@@ -1196,7 +1198,7 @@ Qwen3.8 Flash Next, as a shakedown of the "adding a model family" guide.
 | EXL2 | Superseded by EXL3; turboderp's last EXL2 upload was 2025-05 |
 | bitsandbytes NF4/INT8 | Fine-tuning and research oriented; no top publisher ships it for these families; no GB10 serving reference |
 | HQQ | No top-publisher checkpoints; no GB10 reference |
-| MLX affine 4-bit | Stays M9's import item (TensorFold is its reference); unchanged here |
+| MLX affine 4-bit | Moved into M3.5 by the owner, 2026-09-29; TensorFold is its same-format reference |
 
 ## Open questions for the owner
 

@@ -36,8 +36,6 @@ import os
 import pathlib
 import subprocess
 
-import tokenizers
-import transformers
 
 LLAMA_IMAGE = "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7"
 
@@ -53,8 +51,13 @@ DEEPSEEK_DIR = "tokenizer-reference/deepseek-ai/DeepSeek-V4-Flash-0731@7872f01b"
 COMMUNITY_GGUF = ("models/antirez/deepseek-v4-gguf@f71f23d5/"
                   "DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf")
 
+# Gemma4 approved unsloth/gemma-4-26B-A4B-it-GGUF@c099eb48e663fd284577b04978a94ffccb261841.
+GEMMA4_GGUF = "reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+GEMMA4_HEADER = "tokenizer-reference/gemma-4-26b/header.gguf"
+
 # (name, kind, path relative to --models)
 CONFIGS = [
+    ("gemma-4-26b-gguf", "gguf", GEMMA4_HEADER),
     ("deepseek-v4-0731-gguf", "gguf", DEEPSEEK_GGUF),
     ("qwen3.8-gguf", "gguf", QWEN38_GGUF),
     ("qwen3.8-nvfp4", "hf", QWEN38_DIR + "/tokenizer.json"),
@@ -191,9 +194,22 @@ def tokens(args):
         valid[name], texts[name] = reference_text(data)
     results = {}
     for config, kind, rel in CONFIGS:
+        if args.config and config != args.config:
+            continue
         path = models / rel
+        oracle_rel = rel
+        if config == "gemma-4-26b-gguf":
+            # Exact metadata prefix of the approved file; avoid loading or
+            # hashing 17 GB of weights for a tokenizer-only comparison.
+            oracle_rel = GEMMA4_GGUF
+            prefix = (models / oracle_rel).open("rb").read(15784342)
+            digest = hashlib.sha256(prefix).hexdigest()
+            if digest != "9f1f00bb292382747a7035a8a3e5d5f41f31e7d7be80b2aefa044ff03434f990":
+                raise ValueError("Gemma4 header differs from the approved checkpoint")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(prefix)
         if kind == "gguf":
-            ids = llama_tokenize(models, rel, texts, pathlib.Path(args.work) / config)
+            ids = llama_tokenize(models, oracle_rel, texts, pathlib.Path(args.work) / config)
             reference = f"llama.cpp llama-tokenize, image {LLAMA_IMAGE} (b29c606e)"
         else:
             ids = hf_tokenize(path, texts)
@@ -626,7 +642,15 @@ def main() -> int:
     parser.add_argument("--models", required=True, help="~/.local/share/jitllm on a Spark")
     parser.add_argument("--work", required=True, help="scratch directory")
     parser.add_argument("--only", choices=("tokens", "chat"))
+    parser.add_argument("--config", choices=[x[0] for x in CONFIGS],
+                        help="generate one token configuration; requires --only tokens")
     args = parser.parse_args()
+    if args.config and args.only != "tokens":
+        parser.error("--config requires --only tokens")
+    if args.config != "gemma-4-26b-gguf":
+        global tokenizers, transformers
+        import tokenizers
+        import transformers
     if args.only != "chat":
         tokens(args)
     if args.only != "tokens":
