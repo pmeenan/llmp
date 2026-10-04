@@ -8,189 +8,31 @@
   "source_sha256": "8d5de76a7aaaf9131ba8f9cf35412863fef88299b39676ea4bcfb07aef7386e3",
   "retained_regions": [
     {
-      "first_line": 469,
-      "last_line": 497
-    },
-    {
-      "first_line": 561,
-      "last_line": 566
-    },
-    {
-      "first_line": 6629,
-      "last_line": 6634
-    },
-    {
-      "first_line": 7138,
-      "last_line": 7147
-    },
-    {
-      "first_line": 8754,
-      "last_line": 8810
-    },
-    {
-      "first_line": 9394,
-      "last_line": 9694
-    },
-    {
-      "first_line": 10068,
-      "last_line": 10969
-    },
-    {
-      "first_line": 11011,
-      "last_line": 11227
-    },
-    {
-      "first_line": 11307,
-      "last_line": 12302
-    },
-    {
       "first_line": 12313,
-      "last_line": 13685
+      "last_line": 12358
     },
     {
-      "first_line": 17704,
-      "last_line": 17751
+      "first_line": 12363,
+      "last_line": 12419
+    },
+    {
+      "first_line": 12432,
+      "last_line": 12577
+    },
+    {
+      "first_line": 12887,
+      "last_line": 12954
+    },
+    {
+      "first_line": 13001,
+      "last_line": 13231
+    },
+    {
+      "first_line": 13440,
+      "last_line": 13476
     }
   ],
   "numerical_functions": [
-    {
-      "name": "warp_sum_f32",
-      "first_line": 6629,
-      "last_line": 6634,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "warp_max_f32",
-      "first_line": 7138,
-      "last_line": 7143,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "dot4_f32",
-      "first_line": 7145,
-      "last_line": 7147,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "fp8_kv_read",
-      "first_line": 8765,
-      "last_line": 8779,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "fp8_kv_read4",
-      "first_line": 8789,
-      "last_line": 8810,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_prefill_raw_kernel",
-      "first_line": 9394,
-      "last_line": 9448,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_prefill_mixed_kernel",
-      "first_line": 9450,
-      "last_line": 9545,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_prefill_raw_softmax_kernel",
-      "first_line": 9547,
-      "last_line": 9590,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_prefill_mixed_softmax_kernel",
-      "first_line": 9592,
-      "last_line": 9648,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_prefill_pack_mixed_kv_kernel",
-      "first_line": 9650,
-      "last_line": 9678,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_prefill_unpack_heads_kernel",
-      "first_line": 9680,
-      "last_line": 9694,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_decode_mixed_kernel",
-      "first_line": 10068,
-      "last_line": 10498,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_decode_split_kernel",
-      "first_line": 10514,
-      "last_line": 10638,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_decode_combine_kernel",
-      "first_line": 10643,
-      "last_line": 10678,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_decode_hg_partial_kernel",
-      "first_line": 10708,
-      "last_line": 10928,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_decode_hg_combine_kernel",
-      "first_line": 10933,
-      "last_line": 10969,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_indexed_hg_partial_kernel",
-      "first_line": 11011,
-      "last_line": 11227,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_fp8_predecode_kernel",
-      "first_line": 11307,
-      "last_line": 11353,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_fp8_predecode_tslot_kernel",
-      "first_line": 11368,
-      "last_line": 11410,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_indexed_mixed_kernel",
-      "first_line": 11412,
-      "last_line": 11757,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_indexed_mixed_heads8_rb4_kernel",
-      "first_line": 11759,
-      "last_line": 11946,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_indexed_mixed_heads8_online_kernel",
-      "first_line": 11952,
-      "last_line": 12167,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_static_mixed_heads8_online_kernel",
-      "first_line": 12169,
-      "last_line": 12302,
-      "body_adaptation": "none"
-    },
     {
       "name": "tt_warp_sum_f32",
       "first_line": 12345,
@@ -201,12 +43,6 @@
       "name": "tt_warp_max_f32",
       "first_line": 12352,
       "last_line": 12357,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "tt_dot4_f32",
-      "first_line": 12359,
-      "last_line": 12361,
       "body_adaptation": "none"
     },
     {
@@ -261,24 +97,6 @@
       "name": "tt_ldmatrix_x2_trans_addr",
       "first_line": 12409,
       "last_line": 12418,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "tt_ldmatrix_x4",
-      "first_line": 12420,
-      "last_line": 12422,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "tt_ldmatrix_x2",
-      "first_line": 12424,
-      "last_line": 12426,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "tt_ldmatrix_x2_trans",
-      "first_line": 12428,
-      "last_line": 12430,
       "body_adaptation": "none"
     },
     {
@@ -360,36 +178,6 @@
       "body_adaptation": "none"
     },
     {
-      "name": "attention_tokentile_union_build_kernel",
-      "first_line": 12578,
-      "last_line": 12657,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_tokentile_union_sort_kernel",
-      "first_line": 12681,
-      "last_line": 12776,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_tokentile_raw_mirror_kernel",
-      "first_line": 12778,
-      "last_line": 12810,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_tokentile_comp_mirror_kernel",
-      "first_line": 12812,
-      "last_line": 12836,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "attention_tokentile_dense_build_kernel",
-      "first_line": 12844,
-      "last_line": 12885,
-      "body_adaptation": "none"
-    },
-    {
       "name": "tt_issue_record_stage_cp_async",
       "first_line": 12887,
       "last_line": 12907,
@@ -399,12 +187,6 @@
       "name": "tt_issue_kv_stage_cp_async",
       "first_line": 12909,
       "last_line": 12953,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "tt_load_score_q_frag",
-      "first_line": 12955,
-      "last_line": 12999,
       "body_adaptation": "none"
     },
     {
@@ -432,37 +214,13 @@
       "body_adaptation": "none"
     },
     {
-      "name": "attention_tokentile_hmma_kernel",
-      "first_line": 13232,
-      "last_line": 13438,
-      "body_adaptation": "none"
-    },
-    {
       "name": "tt_align16_const",
       "first_line": 13440,
       "last_line": 13442,
       "body_adaptation": "none"
-    },
-    {
-      "name": "attention_decode_mixed_heads8_online_kernel",
-      "first_line": 13481,
-      "last_line": 13685,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "indexed_topk_sort_512_asc_kernel",
-      "first_line": 17704,
-      "last_line": 17735,
-      "body_adaptation": "none"
-    },
-    {
-      "name": "topk_mask_kernel",
-      "first_line": 17737,
-      "last_line": 17751,
-      "body_adaptation": "none"
     }
   ],
-  "signature_adaptations": "Two packed FP8 reconstruction helpers accept a final immutable decode-table pointer. Fourteen packed-reader kernels accept that pointer and explicit native diagnostic operand. Self-suppressing lexical call aliases forward the table through original read calls; original numerical bodies are unchanged.",
+  "signature_adaptations": "none",
   "numerical_changes": [],
   "build_contract": {
     "original_flags": [
@@ -470,52 +228,14 @@
       "--use_fast_math",
       "-lineinfo"
     ],
-    "mxf4": "not used",
-    "native_stream_and_completion": "LaunchContext only; all scratch/operands borrowed and retained by caller through completion"
+    "native_stream_and_completion": "LaunchContext only, through dsv4_hca_tokentile.cu; all scratch/operands borrowed and retained by caller through completion"
   },
-  "scope": "Temporary swappable benchmark reference for matching the complete original ds4 pipeline before one-stage native substitutions. No production selector, default, permanent architecture or complete-plan equality/performance claim. Native integration and retirement from shipping builds follow measured comparison.",
-  "excluded": "Original runtime, streams, handles, scratch allocators, graph caches, environment parsing, model-map registry and diagnostic dumping. Original producer chains, visibility filters, selected-row ordering, sink normalization and default tier policy remain explicit in native dispatch.",
+  "scope": "The token-tile HCA helpers and stages that jitLLM's F16-Q copy of the original core (attention_tokentile_hmma_q16_kernel in dsv4_ds4_attention.cu) calls, for the DeepSeek V4 prefill HCA adapter (dsv4_hca_tokentile.cu). Every retained region is also byte-identical inside the locked cuda/attention/ds4_attn_tokentile.cu (patch 0002), which extracts ds4_cuda.cu 12313-12577 and 12844-13476.",
+  "excluded": "From those ranges: tt_dot4_f32 and the three unused tt_ldmatrix_* pointer wrappers, attention_tokentile_dense_build_kernel, the F32-Q loader tt_load_score_q_frag and the original F32-Q attention_tokentile_hmma_kernel (the locked unit builds the last three). The complete-plan benchmark's other original attention and indexer kernels were removed with it on 2026-10-04; commit ec8af04 holds them and their provenance.",
   "verification": {
-    "status": "qualified-operators-model-pending",
-    "scope": "Temporary swappable original ds4 benchmark reference; no production selection or complete-model equality, quality or performance claim.",
-    "host": "spark",
-    "date": "2026-09-30",
-    "sdk": "aarch64-e0a0c85c42806fb1",
-    "independent_whole_source_review": "Parent and independent reviewer clean; final SDK/style and causal-reference delta independently reviewed.",
-    "full_locked_tests": 1168,
-    "gpu_tests": 248,
-    "full_test_elapsed_seconds": 77.27,
-    "sdk_format_units": 10,
-    "sdk_host_tidies": 4,
-    "boundary_check": "passed",
-    "reuse_header_check": {
-      "checked": 1079,
-      "problems": []
-    },
-    "original_function_definitions": {
-      "indexer": 34,
-      "attention": 68
-    },
-    "original_full_regions_and_restored_bodies": "passed",
-    "native_cuda_flags_verified": [
-      "-O3",
-      "--use_fast_math",
-      "-lineinfo",
-      "--generate-code=arch=compute_121a,code=[sm_121a]"
-    ],
-    "source_inventory_unchanged": true,
-    "model_loaded": false,
-    "receipt_path": "spark:~/scratch/m3-ds4-attention-indexer-r1/check-r3/receipt.json",
-    "receipt_sha256": "c4a950f4f03535206c0d5985d1a09313605fa8b3bac2e482f216c93c26a4e4b6",
-    "original_correspondence_receipt_sha256": "9aeb3249cc7d219d9f506beadc54a2075b5866d8762fe47d4578cb871a81bc66",
-    "original_proof_controller_sha256": "89adf425ebdf59b50453539bc76cb3393ce15bbc77de9943ff247ad2c5f856e3",
-    "installed_sdk_receipt_sha256": "f38891fcc394ddf956aaa196c6895d7309148b8b5159b0c3a0459721946992bf",
-    "compile_database_sha256": "44bafbd704478e2314b5083dea8427c8721df57c38d89adb664b4a33833b4267",
-    "checked_metadata_sha256": "2b3a922a83926a48481e2b069652589573d50773964437f5006a2eb689d0f5c8",
-    "checks_pending": [
-      "Complete configured model equality and resident performance",
-      "Later model quality, long-context and state gates",
-      "Deferred workstation checks at optimization end"
-    ]
+    "status": "regions-verified",
+    "date": "2026-10-04",
+    "method": "Each retained region compared byte for byte with ds4_cuda.cu (SHA-256 above) from the locked archive, and found inside the prepared ds4_attn_tokentile.cu.",
+    "earlier_qualification": "The full original header (ec8af04) passed the Spark A source/region correspondence and 1,168-test locked check on 2026-09-30; the F16-Q core's checks are in docs/experiments/ds4-prefill-stages."
   }
 }

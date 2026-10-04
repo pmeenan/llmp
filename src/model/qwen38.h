@@ -471,6 +471,34 @@ struct Qwen38MtpState {
 std::expected<Qwen38MtpState, std::string> Qwen38MtpStateOf(const Qwen38Profile& profile,
                                                             const Qwen38StateLayout& state);
 
+// The drafter's work in a prefill chunk with the injection: the chunk's
+// `rows` rows from `n_past`, its export writing their streams to H[1 ..
+// rows], with `pending` rows' streams in H[1 .. pending] before it (the
+// rows the last verify kept, or the pending row the last injected chunk
+// left, then in H[0] too), at the positions before n_past. All pending
+// rows but the last catch up first, in a pass of their own before the
+// chunk overwrites their streams (`catch_up_rows` from `catch_up_first`,
+// streams from H[1]); the last's streams are copied to H[0] (`carry`, its
+// H row; 0: none) before the chunk's target rows run. Then one pass after
+// them over the positions whose next token the chunk holds (`rows` from
+// `first`, streams from H[hidden_row]): the pending row's from H[0] and the
+// chunk's rows but its last. With none pending, H[0] is as the last
+// injected chunk left it; at the sequence's start no row precedes the
+// chunk. Each pending row's drafter cell is so written from its own
+// streams, as a draft's catch-up writes it.
+struct Qwen38Injection {
+  std::uint32_t catch_up_first = 0;
+  std::uint32_t catch_up_rows = 0;  // 0: no catch-up pass
+  std::uint32_t carry = 0;
+  std::uint32_t first = 0;
+  std::uint32_t rows = 0;  // 0: no pass
+  std::uint32_t hidden_row = 0;
+};
+std::expected<Qwen38Injection, std::string> Qwen38InjectionOf(const Qwen38MtpState& state,
+                                                              std::uint32_t n_past,
+                                                              std::uint32_t rows,
+                                                              std::uint32_t pending);
+
 // What a speculative verify saves so that its accepted rows' writes, and
 // nothing else, reach the target's recurrent, convolution and n-gram
 // state (Qwen38Commit replays them; the verify writes none of that state):

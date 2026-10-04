@@ -8,7 +8,7 @@
 // recorded, with the data its pinned inputs hold at replay; and the error
 // state reads clear. The engine's jobs use nothing else of the device,
 // besides its own paging kernels (kernels/paging/paging.h), of which the
-// draft-id guard is checked here.
+// draft-id guard and the launchers' failure reporting are checked here.
 
 #include "providers/device_runtime.h"
 
@@ -146,6 +146,31 @@ TEST_F(DeviceRuntimeTest, DraftIdsAreBoundedToTheVocabulary) {
   std::memcpy(got.data(), host_, bytes);
   EXPECT_EQ(got, (std::array<std::int32_t, 7>{0, 0, 5, kLimit - 1, 0, 0, 0}));
   EXPECT_TRUE(jitllm::kernels::paging::ClampTokens(nullptr, 0, kLimit, native.handle));
+}
+
+// A paging launch that fails (a grid past CUDA's x limit, refused before
+// anything runs, so no operand is read) reports it and leaves no error
+// behind for a later check to take as its own; the next launch succeeds.
+TEST_F(DeviceRuntimeTest, AFailedPagingLaunchClearsItsError) {
+  namespace paging = jitllm::kernels::paging;
+  const pr::NativeStream native = Native();
+  constexpr std::uint32_t kTooMany = std::numeric_limits<std::uint32_t>::max();
+  EXPECT_FALSE(paging::FillRanges(nullptr, kTooMany, 0, native.handle));
+  EXPECT_TRUE(pr::PeekLastError().ok());
+  EXPECT_FALSE(
+      paging::GatherPleRows(nullptr, nullptr, nullptr, kTooMany, 1, nullptr, native.handle));
+  EXPECT_TRUE(pr::PeekLastError().ok());
+  const std::int32_t id = -1;
+  std::memcpy(host_, &id, sizeof(id));
+  ASSERT_TRUE(
+      pr::CopyAsync(native, on_device_, host_, sizeof(id), pr::CopyKind::kHostToDevice).ok());
+  EXPECT_TRUE(paging::ClampTokens(static_cast<std::int32_t*>(on_device_), 1, 8, native.handle));
+  ASSERT_TRUE(
+      pr::CopyAsync(native, host_, on_device_, sizeof(id), pr::CopyKind::kDeviceToHost).ok());
+  Finish();
+  std::int32_t got = -1;
+  std::memcpy(&got, host_, sizeof(got));
+  EXPECT_EQ(got, 0);
 }
 
 TEST_F(DeviceRuntimeTest, TimingMarksMeasureTheirSpan) {

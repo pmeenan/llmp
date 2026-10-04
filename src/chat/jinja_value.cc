@@ -542,16 +542,30 @@ std::string Error::ToString() const {
 }
 
 void StrBuilder::Append(std::string_view text, bool trusted) {
-  if (text.empty()) {
+  if (text.empty() || over_) {
     return;
   }
-  if (trusted) {
-    if (!s_.trusted.empty() &&
-        s_.trusted.back().offset + s_.trusted.back().length == s_.text.size()) {
-      s_.trusted.back().length += text.size();
-    } else {
-      s_.trusted.push_back({s_.text.size(), text.size()});
+  // A trusted piece extends the last range when it touches it (ordinary
+  // text costs no range per piece); otherwise it starts one.
+  const bool extends = trusted && !s_.trusted.empty() &&
+                       s_.trusted.back().offset + s_.trusted.back().length == s_.text.size();
+  const std::size_t grows = text.size() + (trusted && !extends ? sizeof(Range) : 0);
+  // Past the limit (or already past it, by raw() writes): dropped.
+  if (bytes() > limit_ || grows > limit_ - bytes()) {
+    over_ = true;
+    return;
+  }
+  if (held_ != nullptr) {
+    charged_ += grows;  // released with the rest, even when refused
+    if (!held_->Hold(grows)) {
+      over_ = true;
+      return;
     }
+  }
+  if (extends) {
+    s_.trusted.back().length += text.size();
+  } else if (trusted) {
+    s_.trusted.push_back({s_.text.size(), text.size()});
   }
   s_.text += text;
 }
@@ -559,6 +573,9 @@ void StrBuilder::Append(std::string_view text, bool trusted) {
 void StrBuilder::Append(const Str& s) { Append(s, 0, s.text.size()); }
 
 void StrBuilder::Append(const Str& s, std::size_t offset, std::size_t length) {
+  if (over_) {
+    return;
+  }
   const std::size_t end = offset + length;
   std::size_t at = offset;
   // The first range that ends after `offset` (ranges are sorted): a string
@@ -567,7 +584,7 @@ void StrBuilder::Append(const Str& s, std::size_t offset, std::size_t length) {
       s.trusted, [&](const Range& r) { return r.offset + r.length <= offset; });
   for (const Range& r : std::ranges::subrange(first, s.trusted.end())) {
     const std::size_t r_end = r.offset + r.length;
-    if (r.offset >= end) {
+    if (r.offset >= end || over_) {
       break;
     }
     const std::size_t from = std::max(r.offset, at);
@@ -580,6 +597,9 @@ void StrBuilder::Append(const Str& s, std::size_t offset, std::size_t length) {
 }
 
 std::shared_ptr<const Str> StrBuilder::Take(Arena* arena) {
+  const std::size_t held = bytes();
+  const bool over = over_;
+  Unhold();  // the string charges what it takes itself
   auto s = std::make_shared<Str>();
   s->text = std::move(s_.text);
   s->trusted = std::move(s_.trusted);
@@ -587,13 +607,15 @@ std::shared_ptr<const Str> StrBuilder::Take(Arena* arena) {
   s_.text.clear();
   s_.trusted.clear();
   s_.markup = false;
-  if (arena != nullptr) {
-    if (s->text.size() > arena->limits().max_string_bytes) {
+  over_ = false;
+  if (over || (arena != nullptr && held > arena->limits().max_string_bytes)) {
+    if (arena != nullptr) {
       arena->Fail("a string longer than its bound");
-      return nullptr;
     }
-    if (!arena->Work(s->text.size()) ||
-        !s->Charge(arena, s->text.size() + (s->trusted.size() * sizeof(Range)) + 64)) {
+    return nullptr;
+  }
+  if (arena != nullptr) {
+    if (!arena->Work(s->text.size()) || !s->Charge(arena, held + 64)) {
       return nullptr;
     }
   }
@@ -633,6 +655,11 @@ std::expected<void, Error> AppendStr(const Value& v, StrBuilder& out, Arena& are
       std::string text;
       if (auto r = AppendRepr(v, text, arena); !r) {
         return r;
+      }
+      // The repr is held while it is copied into the builder.
+      Held held(arena);
+      if (!held.Add(text.size())) {
+        return Fail(arena.cancelled() ? Code::kCancelled : Code::kLimit, arena.reason());
       }
       out.Append(text, false);
       return {};

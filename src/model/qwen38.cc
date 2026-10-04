@@ -1118,6 +1118,35 @@ std::expected<Qwen38MtpState, std::string> Qwen38MtpStateOf(const Qwen38Profile&
   return s;
 }
 
+std::expected<Qwen38Injection, std::string> Qwen38InjectionOf(const Qwen38MtpState& state,
+                                                              std::uint32_t n_past,
+                                                              std::uint32_t rows,
+                                                              std::uint32_t pending) {
+  if (rows == 0 || std::uint64_t{rows} + 1 > state.hidden_rows ||
+      std::uint64_t{n_past} + rows > state.context) {
+    return Refused(std::format("no injection for a chunk of {} rows at {}", rows, n_past));
+  }
+  Qwen38Injection in;
+  if (n_past == 0) {
+    // Nothing precedes the sequence: the chunk's rows but its last.
+    in.rows = rows - 1;
+    in.hidden_row = 1;
+    return in;
+  }
+  if (pending >= state.hidden_rows || pending > n_past) {
+    return Refused(std::format("{} pending streams rows before position {}", pending, n_past));
+  }
+  if (pending > 1) {
+    in.catch_up_first = n_past - pending;
+    in.catch_up_rows = pending - 1;
+  }
+  in.carry = pending;
+  in.first = n_past - 1;
+  in.rows = rows;
+  in.hidden_row = 0;
+  return in;
+}
+
 std::expected<Qwen38CommitLayout, std::string> Qwen38Commit(const Qwen38Profile& p,
                                                             std::uint32_t rows) {
   if (!ProfileIsSane(p) || rows == 0 || rows > 8) {

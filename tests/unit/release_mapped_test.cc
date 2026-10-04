@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// CPU-only setup-failure control; no CUDA context or model is opened.
+// ReleaseMapped (engine/paged_node.h) over fake device memory: a region
+// whose creation failed part way, or before its reservation, releases what
+// it holds and stays releasable. CPU only; no CUDA context is opened.
 #include <gtest/gtest.h>
 
 #include "base/bytes.h"
@@ -16,10 +18,10 @@ namespace fake = providers::fake;
 using jitllm::base::operator""_MiB;
 using jitllm::test_support::FailedCode;
 
-TEST(Ds4CompleteRetirement, PartialCreateFailureReleasesCompletedBackingAndReservation) {
+TEST(ReleaseMapped, PartialCreateFailureReleasesCompletedBackingAndReservation) {
   fake::FakeDeviceMemory memory(2_MiB, 4_MiB);
   engine::Mapped mapped;
-  mapped.name = "partial original reference setup";
+  mapped.name = "partially created region";
   mapped.bytes = (4_MiB).value();
   const auto reservation = memory.Reserve(4_MiB);
   ASSERT_TRUE(reservation.has_value());
@@ -51,10 +53,10 @@ TEST(Ds4CompleteRetirement, PartialCreateFailureReleasesCompletedBackingAndReser
   EXPECT_EQ(memory.reservations(), 0U);
 }
 
-TEST(Ds4CompleteRetirement, FailedReservationLeavesAnEmptyIdempotentOwner) {
+TEST(ReleaseMapped, FailedReservationLeavesAnEmptyIdempotentOwner) {
   fake::FakeDeviceMemory memory(2_MiB, 4_MiB);
   engine::Mapped mapped;
-  mapped.name = "failed original reference reservation";
+  mapped.name = "region whose reservation failed";
   mapped.bytes = (4_MiB).value();
   memory.FailNext(fake::Operation::kReserve, providers::ProviderError::kOutOfMemory);
   EXPECT_EQ(FailedCode(memory.Reserve(4_MiB)), providers::ProviderError::kOutOfMemory);

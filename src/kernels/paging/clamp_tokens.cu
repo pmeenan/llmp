@@ -29,7 +29,7 @@ bool ClampTokens(std::int32_t* tokens, std::uint32_t count, std::int32_t limit, 
   constexpr std::uint32_t kThreads = 128;
   ClampKernel<<<(count + kThreads - 1) / kThreads, kThreads, 0,
                 static_cast<cudaStream_t>(stream)>>>(tokens, count, limit);
-  return cudaPeekAtLastError() == cudaSuccess;
+  return cudaGetLastError() == cudaSuccess;
 }
 
 }  // namespace jitllm::kernels::paging

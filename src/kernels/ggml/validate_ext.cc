@@ -201,45 +201,6 @@ std::expected<void, KernelFailure> CheckMulMatQ(const ggml_tensor* node) {
   return {};
 }
 
-std::expected<void, KernelFailure> CheckMulMatQBorrowedD4(const ggml_tensor* node,
-                                                          const BorrowedMmqD4& input,
-                                                          std::uint64_t generation) {
-  if (auto checked = CheckMulMatQ(node); !checked) return checked;
-  const auto* weights = node->src[0];
-  const auto* source = node->src[1];
-  const std::array operands{weights, source, node};
-  if (weights->type != GGML_TYPE_Q8_0 || weights->ne[0] % kRowPadding != 0 ||
-      !AllPacked({weights, source, node}) ||
-      std::ranges::any_of(
-          operands, [](const auto* tensor) { return tensor->ne[2] != 1 || tensor->ne[3] != 1; }) ||
-      input.data == nullptr || reinterpret_cast<std::uintptr_t>(input.data) % 16 != 0 ||
-      generation == 0 || input.generation != generation || input.source != source->data) {
-    return Rejected("borrowed MMQ needs current packed dense Q8_0/D4 operands");
-  }
-  std::uint64_t payload = 0;
-  std::uint64_t needed = 0;
-  std::uint64_t end = 0;
-  const auto begin = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(input.data));
-  // Native J is at most128. Device planning repeats the actual selected
-  // guard requirement; these checked bytes bound every eligible tile.
-  if (__builtin_mul_overflow(static_cast<std::uint64_t>(source->ne[0] / 128),
-                             static_cast<std::uint64_t>(source->ne[1]), &payload) ||
-      __builtin_mul_overflow(payload, std::uint64_t{144}, &payload) ||
-      __builtin_add_overflow(payload, std::uint64_t{128} * 144, &needed) || input.bytes < needed ||
-      __builtin_add_overflow(begin, input.bytes, &end)) {
-    return Rejected("borrowed D4 payload/guard capacity or address overflows");
-  }
-  for (const auto* tensor : operands) {
-    const auto size = detail::Extent(tensor);
-    const auto start = reinterpret_cast<std::uintptr_t>(tensor->data);
-    if (!size || (begin < start + *size && start < end))
-      return Rejected("borrowed D4 overlaps a logical product operand");
-  }
-  if (Overlap(weights, source) || Overlap(weights, node) || Overlap(source, node))
-    return Rejected("borrowed MMQ logical operands must be distinct");
-  return {};
-}
-
 std::expected<void, KernelFailure> CheckMulMatIdQ(const ggml_tensor* node) {
   if (node == nullptr || node->op != GGML_OP_MUL_MAT_ID || node->src[0] == nullptr ||
       node->src[1] == nullptr || !Bound(node->src[2])) {
@@ -403,7 +364,7 @@ bool MulMatQPairDenseFits(const ggml_tensor* a, const ggml_tensor* b) {
 std::expected<void, KernelFailure> CheckMulMatQPairDense(const ggml_tensor* a,
                                                          const ggml_tensor* b) {
   if (!MulMatQPairDenseFits(a, b)) {
-    return Rejected("not two dense Q8_0 products of one packed F32 activation");
+    return Rejected("not two dense MMQ products of one type and one packed F32 activation");
   }
   if (auto checked = CheckMulMatQ(a); !checked) {
     return checked;
@@ -411,8 +372,10 @@ std::expected<void, KernelFailure> CheckMulMatQPairDense(const ggml_tensor* a,
   if (auto checked = CheckMulMatQ(b); !checked) {
     return checked;
   }
-  if (Overlap(a, b)) {
-    return Rejected("paired dense products overlap");
+  // The first product's output is written before the second reads its
+  // weights (and the second's while the first's may still be read).
+  if (Overlap(a, b) || Overlap(a, b->src[0]) || Overlap(b, a->src[0])) {
+    return Rejected("paired dense products overlap each other or the other weights");
   }
   return {};
 }

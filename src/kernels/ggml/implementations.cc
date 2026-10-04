@@ -342,8 +342,8 @@ constexpr std::array<Kernel::Entry, 112> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return MulMatIdQPair(launch, n[0], n[1], true); }},
     {.name = "jitllm.mul_mat.mmq_pair_dense",
      .operation = execution::Operation::kMatMul,
-     .variant = "two dense Q8_0 MMQ products sharing one Q8_1 quantization of their "
-                "activation (experimental)",
+     .variant = "two dense MMQ products of one block-quantized non-FP4 type sharing one Q8_1 "
+                "quantization of their activation (experimental)",
      .arity = 2,
      .check = [](ConstNodes n) { return CheckMulMatQPairDense(n[0], n[1]); },
      .run = [](LaunchContext& launch, Nodes n) { return MulMatQPairDense(launch, n[0], n[1]); }},

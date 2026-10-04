@@ -944,8 +944,12 @@ void Server::Watch(Connection& c) {
     return;
   }
   // A closed input side reads as ready forever: it is watched no longer,
-  // except while lingering, which reads to the end and then drops.
-  std::uint32_t want = c.input_closed ? 0U : platform::kPeerClosed;
+  // except while lingering, which reads to the end and then drops. Nor
+  // while a body waits, unread, for the request memory: the epoll watch is
+  // level-triggered, so a peer that shut its sending side would wake the
+  // loop on every pass until the body is read (a reset is still an error
+  // event); what it sent is read, and its close seen, once the body fits.
+  std::uint32_t want = (c.input_closed || c.memory_wait) ? 0U : platform::kPeerClosed;
   if (c.state == Connection::State::kLinger ||
       (!c.input_closed && !c.memory_wait &&
        (c.state != Connection::State::kBusy || !c.close_after))) {
@@ -1288,6 +1292,7 @@ void Server::OnReadable(Connection& c) {
         }
       }
       if (c.request.expect_continue && c.in.size() < c.head_end + c.request.body_bytes) {
+        c.request.expect_continue = false;  // answered once, not again after a memory wait
         c.wbuf.append(kContinue);
         c.progress_at = Clock::now();
         Flush(c);
@@ -1523,6 +1528,7 @@ Server::Growth Server::GrowBody(Connection& c, std::size_t more) {
   }
   if (target > c.body.bytes() && !c.body.Add(*memory_, target - c.body.bytes())) {
     if (target > memory_->capacity() || !memory_->grows()) {
+      c.memory_wait = false;  // refused: no longer waiting
       Refuse(c, MemoryRefusal(*memory_, target, "the request body"));
       return Growth::kRefused;
     }
@@ -1574,6 +1580,9 @@ void Server::RetryBody(Connection& c) {
     return;
   }
   if (c.request.expect_continue) {
+    // Only when the head's wait kept it from being sent: a body that waited
+    // mid-way was already told to continue.
+    c.request.expect_continue = false;
     c.wbuf.append(kContinue);
     c.progress_at = Clock::now();
     Flush(c);

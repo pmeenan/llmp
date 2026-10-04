@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <tuple>
@@ -258,6 +260,45 @@ ReclaimPlan SelectReclaim(std::span<const ReclaimCandidate> candidates, std::uin
     }
   }
   return best;
+}
+
+ReclaimRun RunReclaim(std::uint64_t needed, bool partial, const GatherReclaim& gather,
+                      const TakeReclaim& take) {
+  ReclaimRun run;
+  // Every victim tried so far, by kind, owner and handle: taken (gone) or
+  // failed, never offered again within this reclaim.
+  std::vector<std::tuple<ReclaimKind, std::uint32_t, std::uint64_t>> tried;
+  for (int round = 0; round < kReclaimRounds && run.freed < needed; ++round) {
+    std::vector<ReclaimCandidate> candidates;
+    double below = std::numeric_limits<double>::infinity();
+    gather(candidates, below);
+    std::erase_if(candidates, [&](const ReclaimCandidate& c) {
+      return std::ranges::find(tried, std::tuple(c.kind, c.owner, c.id)) != tried.end();
+    });
+    const ReclaimPlan plan = SelectReclaim(candidates, needed - run.freed, below);
+    if (!plan.sufficient) {
+      run.short_of_need = true;
+      if (!partial || plan.victims.empty()) {
+        break;
+      }
+    }
+    std::uint64_t got_round = 0;
+    for (std::size_t v = 0; v < plan.victims.size() && run.freed < needed; ++v) {
+      const ReclaimCandidate& c = candidates[plan.victims[v]];
+      tried.emplace_back(c.kind, c.owner, c.id);
+      const std::uint64_t got = take(c);
+      if (got != 0) {
+        RaiseReclaimInflation(plan.priorities[v]);
+        run.freed += got;
+        got_round += got;
+      }
+    }
+    // With `partial`, a selection short of the need was all there was.
+    if (!plan.sufficient && got_round != 0) {
+      break;
+    }
+  }
+  return run;
 }
 
 void ProtectFloor(std::vector<ReclaimCandidate>& candidates, std::uint64_t floor_bytes) {

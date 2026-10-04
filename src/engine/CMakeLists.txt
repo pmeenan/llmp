@@ -21,8 +21,6 @@ if(JITLLM_CUDA)
                                    dsv4_plan.cc dsv4_runner.cc qwen38_plan.cc qwen38_wave_plan.cc
                                    qwen38_runner.cc qwen_image_runner.cc)
   target_include_directories(jitllm_engine PUBLIC "${PROJECT_SOURCE_DIR}/src")
-  # Temporary matched-reference weight preparation through native jobs/IO.
-  target_sources(jitllm_engine PRIVATE dsv4_ds4_weights.cc dsv4_ds4_paged_weights.cc)
   target_link_libraries(jitllm_engine PUBLIC jitllm_scheduler jitllm_memory jitllm_storage
                                              jitllm_device_runtime jitllm_ggml_kernels
                                              jitllm_image_kernels jitllm_paging_kernels

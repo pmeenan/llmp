@@ -4,7 +4,7 @@
 # M3.5 model families: capability coverage and checkpoint proposal
 
 **Status: proposal for the owner's approval (2026-09-29).** This answers
-[plan.md](plan.md#m35--model-families-pending)'s family-selection item. It
+[plan.md](plan.md#m35--model-families--pending)'s family-selection item. It
 is a desk study: nothing was downloaded or run. Revisions, parameter counts,
 sizes and download counts were read from the Hugging Face API and model
 files on 2026-09-29, and every fact links its source. Speeds from model

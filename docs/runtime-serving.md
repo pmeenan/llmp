@@ -341,8 +341,13 @@ the least recently used goes first, the running model's last; never its
 in-use floor (its most recently used plans up to its `plan_floor_bytes`,
 with their graphs) nor anything a step under way holds. A reclaim takes
 all it was asked for or nothing (the caller then waits or refuses), and
-no more. The order ranks a GiB, so a reclaim takes the same order over
-each smaller set of the kinds too and keeps whichever covers the need at
+no more, with one exception: a victim that gives back less than it
+counted (held, or gone meanwhile) has the order select again for the rest
+without it, and if the rest cannot be covered the reclaim ends short,
+keeping what it took (its caller waits or refuses as for nothing). An
+idle conversation that could only be dropped while a continuation holds
+it is never a candidate. The order ranks a GiB, so a reclaim takes the
+same order over each smaller set of the kinds too and keeps whichever covers the need at
 the least total expected cost to restore: 55 MiB comes from a few stale
 graphs, not a 704 MiB idle conversation (D-104). Cache charges (a plan, a graph's capture) displace only other
 plans and graphs, never conversation state; a graph's capture takes only
@@ -360,7 +365,11 @@ error) is undone: what the swap brought in (the incoming model's weights
 and state, never the shared workspace or a runner's pinned memory) goes
 out again and the outgoing model loads back. If the undo fails too, or a
 model's first load fails, no model is resident and the next activation
-loads its model whole. In every case only the requests that needed the
+loads its model whole; a first load makes its room through the same
+order first. A model whose checks after its load fail (its places not
+pinned, or checks of what its kernels index, D-090) is evicted with its
+state written back rather than left resident, and its next activation
+loads and checks it again. In every case only the requests that needed the
 swap fail (503); the backend goes on (D-102: recovery first). Only a
 faulted node ends the process, by abort (signal 6) rather than an
 orderly stop, for its supervisor to restart. The turn checkpoints' staging is set apart at
@@ -386,8 +395,16 @@ Between units and while idle, the driver deletes idle conversations,
 resident or spilled, unused for `retention_hours`, and while the spilled
 state (a swap's written-back conversations included) passes
 `spill_budget_gib`, the least recently used spilled one; a spill that
-would pass the budget deletes those first, and with a budget of 0 idle
-state is dropped instead of spilled. It also reads MemAvailable and the
+would pass the budget deletes those first, counting the whole state it
+will hold on disk, not only what it writes (and deletes none when even
+all of them would not make room), and with a budget of 0 (or a
+state larger than the whole budget) idle state is dropped instead of
+spilled. A swap counts the outgoing model's state as its write-back
+leaves it (all of it on disk) and the incoming model's as resident:
+none of the incoming model's conversations is deleted for it, and one a
+request holds is never deleted; a swap that still does not fit is
+refused before anything moves, and the deletions wait until the swap's
+room is made, so a swap refused for room deletes nothing. It also reads MemAvailable and the
 kernel's pressure-stall information (`runtime/pressure_trim.h`): under 512
 MiB available, one reclaim through the same order asks for what would
 bring MemAvailable back to 1.5 GiB (the mark plus 1 GiB of headroom),
@@ -540,8 +557,8 @@ opened through a link): `slot-N.state` is slot N's spill file (each used
 4 KiB-rounded place). A model's directory is named by its artifact's ID.
 
 **The record** (`runtime/kept_record.h`, format version 1) is strict JSON,
-written whole (a temporary file synced and renamed over it, the directory
-synced) and ending with the SHA-256 of everything before it:
+written whole (a temporary file synced and renamed over it, only if it
+is still the file written, the directory synced) and ending with the SHA-256 of everything before it:
 
 | Field | What it holds | Refused when |
 | --- | --- | --- |
@@ -563,23 +580,34 @@ settled (a verify's owed restore run first, where no request holds the
 model's stream), queues a new one. A keeper thread (`runtime/
 state_keeper.h`) syncs the files, hashes them on four threads and writes
 the record unless the slot was invalidated meanwhile, off the driver's
-path; turn checkpoints, which never change, are hashed once. The hashing
-is background work: its threads run at the lowest CPU and I/O priority
+path (written and synced beside its name, renamed over it under the
+keeper's lock only while the slot is still current, its directory synced
+after, so a turn that invalidates a slot never waits on a sync); turn
+checkpoints, which never change, are hashed once. The hashing is
+background work: its threads run at the lowest CPU and I/O priority
 (nice 19, the idle I/O class), wait between extents while a swap or a
 prefill runs and for 250 ms after, and stop at the next extent once their
 slot is invalidated. A crash at any moment leaves a record that
-describes its files exactly, or none.
+describes its files exactly, or none, or one removed just before it (a
+removal is not synced) whose spill file may have changed since: the next
+start refuses it unless every extent it lists still hashes as recorded,
+and adopting it empties every extent of the file it does not list, so the
+conversation reads its own state and zeros beyond it, as a fresh slot
+does. Turn checkpoint files are covered whole by their digests.
 
 **At start**, before the models register, each slot's record is read,
 checked and its files hashed; what validates is adopted (its spill file
-kept as it is, its history, cursor, draft depth and last use restored,
-the slot marked spilled until a turn restores it), and everything else in
+kept as it is but for the extents its record does not list, which are
+emptied; its history, cursor, draft depth and last use restored, the
+slot marked spilled until a turn restores it), and everything else in
 the directory is removed: refused records and their files, other slots'
 files, other models' directories, temporary files. The start logs each
 refusal with its reason and each adoption with its token count, never
 content (D-014), and extends the service manager's start timeout as it
 goes. **At a graceful stop** (SIGTERM) the resident model's idle
-conversations are settled and spilled, and the keeper writes every record
+conversations are settled and spilled within the spill budget, the
+most recently used first, each deleting only spilled state used before
+it (the least recently used first); one that cannot fit is not kept, and the keeper writes every record
 queued while it makes progress (a minute without any ends the wait),
 extending the stop timeout as it goes; the log says how many and how much
 was hashed. **At a hang's exit** the records already queued get at most

@@ -134,6 +134,9 @@ production (output-A/HCA by default on full chunks, 2026-10-03) plans are
 keyed by shape and each run sets the position; such a plan is never
 captured, and a captured one is refused
 ([default-on acceptance](../ds4-output-prefix/README.md#default-on-acceptance)).
+Since 2026-10-04 the adapter itself also refuses a capture, whose replay
+would keep the first position; its unit control's captured repeats are
+now launch-by-launch repeats over the same reused pool.
 
 Records, counts and mirror use one planned, cataloged workspace scope.
 The executor plans the whole aligned payload; insufficient workspace

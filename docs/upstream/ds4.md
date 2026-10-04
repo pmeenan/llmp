@@ -5,8 +5,10 @@
 
 ## Original sparse attention and indexer comparison stages
 
-- **Status:** qualified temporary benchmark primitives; no production
-  selection, complete-model parity or model quality/speed result follows.
+- **Status:** retired with the complete-plan reference on 2026-10-04; commit
+  `ec8af04` is the last that holds them. They were qualified temporary
+  benchmark primitives; no production selection, complete-model parity or
+  model quality/speed result followed.
 - **Source:** the same authenticated `ds4_cuda.cu` pin, with 34 complete
   indexer and 68 complete attention definitions and retained-region
   provenance beside the native MIT cores. Original numerical bodies and
@@ -30,8 +32,11 @@
 
 ## Isolated original dense/vector products and headers
 
-- **Status:** temporary complete-plan comparison primitives; no production
-  selection or complete-model performance claim follows.
+- **Status:** retired with the complete-plan reference on 2026-10-04; commit
+  `ec8af04` is the last that holds them. The DeepSeek output-A stage
+  keeps one: the fused own output-A core (`dsv4_ds4_product_original.cuh`,
+  verbatim, behind `dsv4_ds4_product_raw.cu`). The thirteen original headers
+  stay in the prepared tree (patch 0003), but no jitLLM target includes them.
 - **Source:** the same original source pin. Four private numerical
   derivatives retain complete function spans (including embedding, conversion
   and fused wide Q/KV normalization); the companion source record lists each
@@ -54,8 +59,9 @@
 
 ## Literal compressor and aligned weight-repack primitives
 
-- **Status:** native numerical derivatives for the complete-plan benchmark;
-  no upstream patch or production selection change.
+- **Status:** retired with the complete-plan reference on 2026-10-04; commit
+  `ec8af04` is the last that holds them. No upstream patch or
+  production selection change followed.
 - **What:** nine complete compressor/RoPE functions and three original
   IQ2_XXS/Q2_K/Q8 repack kernels, with authenticated source pins and
   verbatim-function provenance beside their native cores.
@@ -75,7 +81,8 @@
 
 ## Literal wide-prefill normalization and hyper-connections
 
-- **Status:** source port for the complete-plan benchmark; no upstream patch.
+- **Status:** retired with the complete-plan reference on 2026-10-04; commit
+  `ec8af04` is the last that holds them. No upstream patch.
 - **What:** twelve full numerical functions from the study pin are copied
   under MIT into `src/kernels/ggml/dsv4_ds4_hc_core.cuh`, with source ranges
   in its companion provenance. They cover plain and weighted RMS with F16
@@ -162,8 +169,10 @@
 ## Raw Q2_K weight loader under jitLLM's launch contract
 
 - **Status:** local adaptation in
-  `third_party/patches/ds4/0001-jitllm-raw-q2-d2r.patch`;
-  benchmark-only native dispatch, off by default.
+  `third_party/patches/ds4/0001-jitllm-raw-q2-d2r.patch`; the fast
+  DeepSeek plan's default down product on GB10 prefill chunks of 64 to
+  4,096 rows ([stage mechanisms](../experiments/ds4-prefill-stages/README.md));
+  exact plans keep it off.
 - **What:** the original Q2_K D2R MMA and scatter read raw 84-byte GGUF
   blocks through an added loader, preserving its paired-row integer MMA
   and F32 accumulation from the stored half coefficients. Weight row and
@@ -175,9 +184,9 @@
   of a signed integer, then decodes it with `packed >> 16`. The raw
   interface therefore admits at most 32,768 experts; a 32,769-expert
   shape refuses before preparation. The worklist's column tiles and
-  total CUDA Y-grid bound are checked separately. Production-shaped
-  opt-in selection is limited to the measured GB10 Q2_K 2,048-input,
-  4,096-output, 256-expert, six-slot, 4,096-token product.
+  total CUDA Y-grid bound are checked separately. Selection is limited to
+  the measured GB10 Q2_K 2,048-input, 4,096-output, 256-expert, six-slot
+  product on chunks of 64 to 4,096 tokens.
 - **Arithmetic:** raw and original SoA D2R outputs are bit-identical on
   the captured real layer-zero input. Compared with native compact MMQ,
   the raw product's NMSE is `2.1331352209781956e-7`; the original D2R
@@ -192,8 +201,8 @@
   instantiations. The raw-Q2 launcher, down numerical template, worklist
   and availability/scratch helpers retain their complete original bodies.
   Original standalone source may still enable the guarded entries.
-  The separate literal comparison derivatives retain their original
-  numerical and header closure; this does not remove those study units.
+  The literal comparison derivatives that used the original header
+  closure were removed on 2026-10-04.
 - **License review:** the entire pinned archive was audited before
   narrowing `archive.keep`. The retained root MIT license names the
   ds4, Entrpi and GGML authors; the D2R source retains Marco Palaferri's
@@ -218,7 +227,8 @@
 - **Native adaptation:** bit-copy the F16 raw ring to a chronological
   mirror, prepare the original dense causal records, and run the core in
   one planned scratch scope. Negative prefix mirror rows are excluded by
-  the original `raw_row_min`. The default-off benchmark caches first
+  the original `raw_row_min`. The chunk's first position is a launch
+  parameter, so the adapter refuses graph capture. The default-off benchmark caches first
   position explicitly; native runtime builders and defaults are unchanged.
   Joined compressed state retains its original F16 bytes. The trusted
   binder tag vouches for canonical zero finite mask entries and causal
@@ -253,9 +263,10 @@
 
 ## Explicit cache/QAT numerical stages for the complete comparison
 
-- **Status:** checked native adapters are being prepared for the separate
-  complete-plan benchmark; they are not selected by production. A cache
-  stage alone does not establish complete-model parity or quality.
+- **Status:** retired with the complete-plan reference on 2026-10-04; commit
+  `ec8af04` is the last that holds them. They were never selected by
+  production. A cache stage alone does not establish complete-model parity
+  or quality.
 - **Source:** the same pinned `ds4_cuda.cu`, with original E4M3/power-of-two
   rounding, normalized Hadamard/E2M1 indexer rounding, packed layouts and
   batch raw-ring store. The reviewed MIT derivative is
@@ -277,10 +288,11 @@
 
 ## Literal router and routed/shared FFN for the temporary reference
 
-- **Status:** checked primitives for the temporary complete-prefill
-  benchmark; no upstream patch. The owner
-  intends to match the whole configured pipeline, restore native stages
-  individually to identify useful changes, then retire the literal reference.
+- **Status:** retired with the complete-plan reference on 2026-10-04; commit
+  `ec8af04` is the last that holds them. They were checked primitives
+  for the temporary complete-prefill benchmark, which matched the whole
+  configured pipeline and restored native stages individually before the
+  literal reference was retired; no upstream patch.
 - **Source:** `dsv4_ds4_moe_core.cuh` and `dsv4_ds4_moe_original.cuh`,
   under the study pin, plus the unchanged prepared original MMQ header
   closure. Companion provenance identifies five original CUDA units:

@@ -73,23 +73,6 @@ enum class QuantMulMatPath : std::uint8_t {
 // strides, their channels and samples whole multiples of the weights'.
 std::expected<void, KernelFailure> CheckMulMatQ(const ggml_tensor* node);
 
-// Borrowed dense Q8_0 MMQ activation: [K/128][columns] blocks of144 bytes,
-// four F32 scales and128 signed codes. The producer owns the bytes and
-// zero tail through completion; no preparation or allocation occurs here.
-// Source and generation authenticate the same current logical F32 input.
-struct BorrowedMmqD4 {
-  const void* data = nullptr;
-  std::uint64_t bytes = 0;
-  const void* source = nullptr;
-  std::uint64_t generation = 0;
-};
-// Packed single-plane raw Q8_0 weights and F32 input/output, K a whole512
-// values, and a guarded D4 range disjoint from every logical operand.
-// Device planning additionally checks actual native tile/guard/workspace.
-std::expected<void, KernelFailure> CheckMulMatQBorrowedD4(const ggml_tensor* node,
-                                                          const BorrowedMmqD4& input,
-                                                          std::uint64_t generation);
-
 // The same for a ggml_mul_mat_id node: weights [k, n, experts] of a type
 // above, activations [k, used or 1, tokens], I32 ids [used, tokens] naming
 // an expert in [0, experts) (the plan's bound), output [n, used, tokens]

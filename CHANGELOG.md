@@ -557,7 +557,86 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   registry; its pixels differ from the previous build's in the last bits
   of the VAE's convolutions (still within the bounds of diffusers' image).
 
+### Removed
+
+- The temporary complete ds4 prefill reference (the `jitllm_ds4_complete`
+  benchmark and its original cache, HC/norm, compressor, repack, product,
+  indexer, sparse-attention and router/FFN stages, weight preparation and
+  state layout) no longer builds into jitLLM's libraries; production keeps
+  the original output-A and F16-Q token-tile HCA cores it selects. Commit
+  `ec8af04` holds the rest
+  ([report](docs/experiments/ds4-complete-plan/README.md)).
+
 ### Fixed
+
+- The engine's paging kernels (range fills, n-gram row gathers, draft-id
+  clamps) clear the CUDA error a failed launch leaves, so it no longer
+  surfaces in a later, unrelated check, and the DeepSeek prefill HCA
+  kernel refuses graph capture, whose replay would keep a stale first
+  position.
+
+- A model whose post-load checks fail is evicted instead of staying
+  resident unchecked; a first load after a failed swap makes room through
+  the reclaim order; a graceful stop's spills and an oversized idle spill
+  respect the spill budget; and a refused swap keeps the incoming model's
+  conversations kept on disk.
+
+- The chat route answers `Expect: 100-continue` once even when the body
+  waits for request memory, and a half-closed client whose body waits no
+  longer spins the I/O loop.
+
+- Kept-conversation records with a speculation cursor past their tokens are
+  refused, a failed record removal is retried, and a record whose write
+  failed after its rename is still removed when its state changes.
+
+- Jinja `map` of `map` counts against the evaluation depth bound (a hostile
+  template could overflow the stack); `%d` and `int` of non-finite or
+  out-of-range floats, `float` of large integers, `'1e500'|float` and
+  `split(None, n)` remainders now match Python or refuse.
+
+- Jinja strings and renderings count their trusted ranges (16 bytes each)
+  toward the string and output bounds as they grow, so a template that
+  alternates its own text and a client's byte by byte can no longer hold
+  several times those bounds uncharged; the rendering's ranges pass to the
+  caller without a copy. The control tokens an interpreted template places
+  count toward the same output bound, so a template repeating a short
+  control token is refused rather than holding several times its output in
+  spans, and a container's repr and `tojson`'s text are charged while they
+  are copied.
+
+- Qwen drafts record every catch-up row for incremental spill, so kept
+  drafter cells are never stale on disk; DeepSeek's `pair_glu_q8` accepts
+  partial prefill chunks; and several kernel host checks are tightened.
+
+- A Qwen prefill chunk with the drafter's injection after a verify (a new
+  turn after speculative decoding) catches the MTP drafter up on every row
+  the verify kept, each from its own streams, instead of running the
+  previous position from a stale stream row and skipping the others; turns
+  no longer lose acceptance at their start (target output was unaffected).
+  A scalar Qwen verify saves the stream rows it overwrites, as a wave's
+  does, and a one-request speculative step (Qwen or DeepSeek) whose host
+  judgement fails undoes its verify and keeps the conversation's prefix,
+  as a wave already did, instead of clearing it.
+
+- Package purge refuses a symlinked spill directory before its root `rm`.
+
+- Adopting a kept conversation empties every extent of its spill file that
+  its record does not list, so a record whose removal had not reached the
+  disk before a power loss can no longer hand a later conversation's state
+  to the adopted one. The keeper writes and syncs a record and syncs its
+  directory outside its lock (only the rename is under it), so a turn
+  restoring a spilled conversation never waits on a disk sync, no
+  stale temporary record is left behind, and a temporary record is renamed
+  into place only while it is still the file the keeper wrote.
+
+- The spill budget counts what a spill or swap will hold on disk: an idle
+  spill and a graceful stop's count the conversation's whole state, and a
+  swap's write-back the outgoing model's whole state, never deleting the
+  incoming model's conversations for it, nor any until the swap's room is
+  made; a spill that cannot fit deletes nothing, and a graceful stop keeps
+  the most recently used conversations. A reclaim whose victim gives back
+  nothing selects again without it, and idle state that could only be
+  dropped while a continuation holds it is no longer offered.
 
 - Jinja container comparisons and member lookups poll request cancellation
   while scanning their values, including repeated references to large strings.

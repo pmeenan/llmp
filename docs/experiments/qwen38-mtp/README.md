@@ -59,6 +59,12 @@ layer's F16 K and V caches, its F32 indexer keys, and a stream buffer H of
 - A verify exports its rows' streams to H[1..rows] the same way.
 - The next draft's catch-up pass reads H[1..R]. R is 1 after a prefill, and
   the number of rows the last verify kept after a verify.
+- A prefill chunk with injection after a verify (a new turn) catches up the
+  same R rows first: rows 1..R−1 in a pass of their own (a job before the
+  chunk's, whose export overwrites them), and row R copied to H[0] at the
+  start of the chunk's job, so its pass covers that position too
+  (`Qwen38Injection` in `model/qwen38.h`; `jitllm_qwen38_spec --check turn`
+  compares the cells with a draft's own catch-up).
 
 **A step** is two jobs.
 
@@ -94,7 +100,9 @@ cells past the committed positions are rewritten before any row reads them.
 A failed verify is undone whole. Its stream rows may already overwrite the
 rows the next draft would read, so no draft runs until a verify is
 accepted or a chunk with the injection writes them again (a chunk without
-the injection also clears them). Any other failure that may have written
+the injection also clears them). A verify saves the stream rows it
+overwrites with its cells, so one discarded after a failed host judgement
+(`DiscardVerify`) leaves the previous pending rows in place. Any other failure that may have written
 the state quarantines it until `Clear`, as DeepSeek's runner does. The
 commit region is never spilled; it stays mapped across a swap, and a
 commit still owed at the swap runs at the next job after it.

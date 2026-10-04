@@ -79,6 +79,16 @@ std::expected<SlabSpec, std::string> SlabOf(const artifact::Artifact& artifact,
 // Qwen38Options::wave_read_align, 2,048 cells by default).
 constexpr std::uint32_t kLoneReadAlign = 256;
 
+// The first position a draft writes from (its spill record, SpillTrack):
+// its catch-up starts `pending` rows before the anchor (history's last
+// token), every row the last verify kept or the prefill left, so with
+// several kept rows it rewrites the drafter's cells before the previous
+// row's too.
+std::uint32_t DraftWritesFrom(std::size_t history, std::uint32_t pending) {
+  const std::size_t back = std::size_t{std::max<std::uint32_t>(pending, 1)} + 1;
+  return history > back ? static_cast<std::uint32_t>(history - back) : 0;
+}
+
 }  // namespace
 
 Qwen38Runner::~Qwen38Runner() = default;
@@ -919,13 +929,11 @@ Status Qwen38Runner::SetupSnapshot(RequestState& request) {
   const std::uint64_t block_keys =
       ((std::uint64_t{o_.draft_rows + 1} / profile_.indexer_ratio) + 1) * qsa *
       std::uint64_t{profile_.indexer_head_dim} * 2;
-  // Shared verifies can discard a completed result after host judgement
-  // fails. Preserve the overwritten pending MTP streams as well as KV cells;
-  // the default scalar allocation and verify path remain unchanged.
+  // A verify, scalar or a wave's, can be discarded whole after host
+  // judgement fails (DiscardVerify): the pending MTP streams rows it
+  // overwrites are saved as well as its KV cells.
   const std::uint64_t stream_saves =
-      o_.wave_slots > 1
-          ? std::uint64_t{o_.draft_rows + 1} * Round(std::uint64_t{profile_.hc_width()} * 4, 256)
-          : 0;
+      std::uint64_t{o_.draft_rows + 1} * Round(std::uint64_t{profile_.hc_width()} * 4, 256);
   const std::uint64_t commit_bytes =
       snapshot_offset +
       Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + block_keys + stream_saves + 4096,
@@ -938,10 +946,11 @@ Status Qwen38Runner::SetupSnapshot(RequestState& request) {
   }
   if (request.slot == 0) {
     setup_budget_.snapshot_per_branch = request.commit.bytes;
-    setup_budget_.scalar_snapshot_per_branch = Round(
-        snapshot_offset +
-            Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) + block_keys + 4096, 256),
-        kExtent);
+    setup_budget_.scalar_snapshot_per_branch =
+        Round(snapshot_offset + Round((std::uint64_t{o_.draft_rows + 1} * qsa * row_cells) +
+                                          block_keys + stream_saves + 4096,
+                                      256),
+              kExtent);
   }
   request.live.SnapshotAt(request.commit.base + snapshot_offset,
                           request.commit.bytes - snapshot_offset);
@@ -2417,7 +2426,7 @@ Status Qwen38Runner::DraftWave(std::span<const DraftWork> work, bool paired) {
   for (const DraftWork& w : work) {
     if (w.slot != nullptr && &w.slot->owner_ == this) {
       w.slot->request_.track.Wrote(
-          w.history.size() > 1 ? static_cast<std::uint32_t>(w.history.size() - 2) : 0);
+          DraftWritesFrom(w.history.size(), w.slot->request_.pending_rows));
     }
   }
   struct Frame {
@@ -2591,7 +2600,11 @@ Status Qwen38Runner::Chunk(std::span<const std::int32_t> history, std::uint32_t 
 Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> history,
                            std::uint32_t n_past, std::vector<float>& logits, bool inject) {
   const PlanStep step;  // the plans this step borrows stay until its job ends
-  request.track.Wrote(n_past);
+  // With the injection the drafter catches up the pending rows before the
+  // chunk's first position too.
+  request.track.Wrote(inject && n_past > 0
+                          ? DraftWritesFrom(std::size_t{n_past} + 1, request.pending_rows)
+                          : n_past);
   if (auto usable = Usable(request); !usable) {
     return usable;
   }
@@ -2605,6 +2618,14 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
     return Error("an empty chunk");
   }
   const auto rows = static_cast<std::uint32_t>(history.size() - n_past);
+  md::Qwen38Injection injection;
+  if (inject) {
+    auto injected = md::Qwen38InjectionOf(mtp_layout_, n_past, rows, request.pending_rows);
+    if (!injected) {
+      return std::unexpected(injected.error());
+    }
+    injection = *injected;
+  }
   // Without the selection's host masks, which the fast graph makes on the
   // device; built below if the planned graph reads them.
   auto in = md::Qwen38Chunk(profile_, layout_, hash_, history, n_past, rows, false);
@@ -2613,6 +2634,14 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   }
   if (auto used = EnsureState(request, n_past + rows); !used) {
     return used;
+  }
+  // The rows a verify kept but the last, before the chunk's export
+  // overwrites their streams (its own job: the staging is the chunk's next).
+  if (injection.catch_up_rows != 0) {
+    if (auto caught = CatchUp(request, history, injection.catch_up_first, injection.catch_up_rows);
+        !caught) {
+      return caught;
+    }
   }
   auto slots = ReadRows(*in);
   if (!slots) {
@@ -2641,20 +2670,20 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
     return std::unexpected(copies.error());
   }
   // The drafter's pass over the positions whose next token the chunk
-  // holds: the pending row of the chunk before (its streams in row 0) and
-  // the chunk's rows but its last (in rows 1 ..), or at the start of the
-  // sequence the chunk's rows but its last; then the last row's streams
-  // become the pending row (rows 0 and 1).
+  // holds (Qwen38Injection): the last pending row (its streams copied to
+  // row 0 before the chunk runs) and the chunk's rows but its last (in rows
+  // 1 ..), or at the start of the sequence the chunk's rows but its last;
+  // then the last row's streams become the pending row (rows 0 and 1).
   MtpPlans::Entry* mentry = nullptr;
   Copies mcopies;
   Qwen38MtpHostInputs mhost;
   std::vector<md::Qwen38ChunkInputs> mins;
   std::uint32_t carries = 0;
+  // request.carry: [0, 2) after the drafter's pass, [2] before the chunk.
+  constexpr std::uint32_t kCarryIn = 2;
   if (inject) {
-    const std::uint32_t mrows = n_past > 0 ? rows : rows - 1;
-    const std::uint32_t first = n_past > 0 ? n_past - 1 : 0;
-    if (mrows > 0) {
-      auto shaped = MtpInputs(first, mrows, 1, false, n_past > 0 ? 0 : 1);
+    if (injection.rows > 0) {
+      auto shaped = MtpInputs(injection.first, injection.rows, 1, false, injection.hidden_row);
       if (!shaped) {
         return std::unexpected(shaped.error());
       }
@@ -2664,7 +2693,8 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
         return std::unexpected(mplanned.error());
       }
       mentry = *mplanned;
-      Qwen38MtpSources(mentry->planned->graph, mins, history.subspan(first + 1, mrows), mhost);
+      Qwen38MtpSources(mentry->planned->graph, mins,
+                       history.subspan(injection.first + 1, injection.rows), mhost);
       auto staged = runs_.Stage(mhost.sources, mtp_base_);
       if (!staged) {
         return std::unexpected(staged.error());
@@ -2673,6 +2703,10 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
     }
     const std::uint64_t row = std::uint64_t{profile_.hc_width()} * sizeof(float);
     const std::uint64_t streams = request.live.base(kDrafter) + mtp_layout_.hidden;
+    if (injection.carry != 0) {
+      request.carry[kCarryIn] = {
+          .from = streams + (injection.carry * row), .to = streams, .bytes = row};
+    }
     request.carry[carries++] = {.from = streams + (rows * row), .to = streams, .bytes = row};
     if (rows != 1) {
       request.carry[carries++] = {
@@ -2702,6 +2736,16 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
       unknown = true;
       return sc::JobResult::kUnknown;
     }
+    // The last pending row's streams to row 0, before the chunk's export
+    // overwrites rows 1 .. (rewriting row 0 as it was meant: no state lost
+    // if the chunk then fails).
+    if (injection.carry != 0) {
+      if (auto r = kg::CopyRanges(launch, request.carry + kCarryIn, 1); !r) {
+        ran = Error(std::format("the drafter's pending row at {}: {}", n_past, r.error().detail));
+        unknown = true;
+        return sc::JobResult::kUnknown;
+      }
+    }
     const Queued queued =
         runs_.Queue(runs, *copies, gather, *p->bound, outputs, capture, graph_stats_, native);
     path = queued.path;
@@ -2712,7 +2756,8 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
         unknown = true;
         return sc::JobResult::kUnknown;
       }
-      return committing || queued.before ? sc::JobResult::kFailed : sc::JobResult::kNotStarted;
+      return committing || injection.carry != 0 || queued.before ? sc::JobResult::kFailed
+                                                                 : sc::JobResult::kNotStarted;
     }
     if (mentry != nullptr) {
       const Queued m = runs_.Queue(mentry->runs[0], mcopies, {}, *mentry->planned->bound, {}, false,
@@ -2754,6 +2799,68 @@ Status Qwen38Runner::Chunk(RequestState& request, std::span<const std::int32_t> 
   return {};
 }
 
+Status Qwen38Runner::CatchUp(RequestState& request, std::span<const std::int32_t> history,
+                             std::uint32_t first, std::uint32_t rows) {
+  // Their tokens index the target's table on the device.
+  for (const std::int32_t t : history.subspan(first + 1, rows)) {
+    if (t < 0 || std::cmp_greater_equal(t, profile_.vocab)) {
+      return Error(std::format("token {} is outside the vocabulary", t));
+    }
+  }
+  // A draft's catch-up pass without its head: the cells of these rows, from
+  // the streams the verify left in rows 1 ...
+  auto shaped = MtpInputs(first, rows, 1, false, 1);
+  if (!shaped) {
+    return std::unexpected(shaped.error());
+  }
+  auto planned = PlannedMtp(request, shaped->first);
+  if (!planned) {
+    return std::unexpected(planned.error());
+  }
+  MtpPlans::Entry& entry = **planned;
+  Qwen38MtpHostInputs host;
+  Qwen38MtpSources(entry.planned->graph, shaped->second, history.subspan(first + 1, rows), host);
+  auto copies = runs_.Stage(host.sources, 0);
+  if (!copies) {
+    return std::unexpected(copies.error());
+  }
+  kg::LaunchContext& launch = resources_.launch();
+  RunPath path = RunPath::kEager;
+  Status ran;
+  bool unknown = false;
+  auto job = [&](providers::NativeStream native) -> sc::JobResult {
+    if (auto r = request.live.QueueOwed(launch); !r) {
+      ran = Error(std::format("catch-up at {}: {}", first, r.error().detail));
+      unknown = true;
+      return sc::JobResult::kUnknown;
+    }
+    // Once a turn: launch by launch, never captured.
+    const Queued queued = runs_.Queue(entry.runs[0], *copies, {}, *entry.planned->bound, {}, false,
+                                      draft_stats_, native);
+    path = queued.path;
+    if (!queued.result) {
+      ran = Error(std::format("catch-up at {}: {}", first, queued.result.error().detail));
+      unknown = queued.result.error().error == kg::KernelError::kUnknown;
+      return unknown ? sc::JobResult::kUnknown : sc::JobResult::kFailed;
+    }
+    return sc::JobResult::kQueued;
+  };
+  const Status posted = node_.Job(execution_, std::move(job), "a Qwen3.8 MTP catch-up", stream_);
+  if (!posted || !ran || launch.faulted()) {
+    if (!posted) {
+      CheckFailedJob();
+    }
+    // As a draft's: the drafter's cells alone, rewritten by the next catch-up.
+    Settle(request, false, false, unknown);
+    if (launch.faulted()) {
+      return Error(std::format("catch-up at {}: the launch context faulted", first));
+    }
+    return !ran ? ran : Error(std::format("catch-up at {}: {}", first, posted.error()));
+  }
+  Count(draft_stats_, path);
+  return {};
+}
+
 Status Qwen38Runner::Draft(std::span<const std::int32_t> history, std::vector<std::int32_t>& drafts,
                            std::vector<float>* probabilities, std::uint32_t passes,
                            Qwen38DraftHeadCapture* head_capture) {
@@ -2764,8 +2871,8 @@ Status Qwen38Runner::Draft(RequestState& request, std::span<const std::int32_t> 
                            std::vector<std::int32_t>& drafts, std::vector<float>* probabilities,
                            std::uint32_t passes, Qwen38DraftHeadCapture* head_capture) {
   const PlanStep step;  // the plan this step borrows stays until its job ends
-  // The drafter catches up the previous target row before advancing.
-  request.track.Wrote(history.size() > 1 ? static_cast<std::uint32_t>(history.size() - 2) : 0);
+  // The drafter catches up the rows before the anchor before advancing.
+  request.track.Wrote(DraftWritesFrom(history.size(), request.pending_rows));
   if (head_capture != nullptr) {
     *head_capture = {};
     if (!o_.draft_head_capture || draft_head_capture_ == nullptr || capture_head_rows_ == 0) {
@@ -3088,6 +3195,18 @@ Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t>
       }
     }
   }
+  // And the streams rows it exports (rows 1 ..), which hold the pending
+  // rows before it: a verify discarded whole (DiscardVerify) puts them
+  // back, so its pending rows stay the next draft's, as a wave's do.
+  const std::uint64_t stream_row = std::uint64_t{profile_.hc_width()} * sizeof(float);
+  const std::uint64_t streams = request.live.base(kDrafter) + mtp_layout_.hidden;
+  for (std::uint32_t i = 0; i < rows; ++i) {
+    if (auto added =
+            request.live.Save(streams + (std::uint64_t{i + 1} * stream_row), stream_row, i);
+        !added) {
+      return added;
+    }
+  }
   const std::function<bool(void*)> gather = Gather(rows);
   // The argmaxes always; the logits (their own runs) when asked.
   PlanRuns& runs = entry.runs[logits != nullptr ? kWithLogits : kLean];
@@ -3147,6 +3266,7 @@ Status Qwen38Runner::Verify(RequestState& request, std::span<const std::int32_t>
   }
   Count(graph_stats_, path);
   request.live.Verified(rows);
+  request.verify_restores_streams = true;
   argmax.assign(argmax_host, argmax_host + rows);
   if (logits != nullptr) {
     const auto* values = static_cast<const float*>(logits_);

@@ -12,11 +12,12 @@
 #include <gtest/gtest.h>
 
 #include <array>
-#include <bit>
 #include <cstdint>
 #include <expected>
 #include <limits>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "ggml.h"
 #include "kernels/ggml/graph_plan.h"
@@ -108,48 +109,6 @@ TEST_F(GgmlExtValidateTest, QuantizedProductsTakeTheCompiledTypesAtWholeRowSteps
   ggml_tensor* hinted = Bound(ggml_mul_mat(c(), New(GGML_TYPE_Q8_0, 4096, 256), x));
   ggml_mul_mat_set_hint(hinted, GGML_HINT_SRC0_IS_HADAMARD);
   Refused(kg::CheckMulMatQ(hinted));
-}
-
-TEST_F(GgmlExtValidateTest, BorrowedDenseD4RefusesStaleGuardedAliasedAndUnsupportedOperands) {
-  auto* weights = New(GGML_TYPE_Q8_0, 8192, 4096);
-  auto* source = New(GGML_TYPE_F32, 8192, 4096);
-  auto* output = Bound(ggml_mul_mat(c(), weights, source));
-  const kg::BorrowedMmqD4 original{.data = std::bit_cast<const void*>(kBase + (next_++ * kSlot)),
-                                   .bytes = (4096ULL * (8192 / 128) * 144) + (256ULL * 144),
-                                   .source = source->data,
-                                   .generation = 7};
-  Accepted(kg::CheckMulMatQBorrowedD4(output, original, 7));
-  Refused(kg::CheckMulMatQBorrowedD4(nullptr, original, 7));
-  Refused(kg::CheckMulMatQBorrowedD4(output, original, 8));
-  auto bad = original;
-  bad.generation = 0;
-  Refused(kg::CheckMulMatQBorrowedD4(output, bad, 0));
-  bad = original;
-  bad.source = weights->data;
-  Refused(kg::CheckMulMatQBorrowedD4(output, bad, 7));
-  bad = original;
-  bad.bytes = (4096ULL * (8192 / 128) * 144) + (128ULL * 144) - 1;
-  Refused(kg::CheckMulMatQBorrowedD4(output, bad, 7));
-  bad = original;
-  bad.data = std::bit_cast<const void*>(UINT64_MAX - 15);
-  Refused(kg::CheckMulMatQBorrowedD4(output, bad, 7));
-  for (const auto* tensor : {weights, source, output}) {
-    bad = original;
-    bad.data = tensor->data;
-    Refused(kg::CheckMulMatQBorrowedD4(output, bad, 7));
-  }
-  auto* unsupported = Bound(ggml_mul_mat(c(), New(GGML_TYPE_Q2_K, 8192, 4096), source));
-  Refused(kg::CheckMulMatQBorrowedD4(unsupported, original, 7));
-  const auto stride = source->nb[1];
-  source->nb[1] += sizeof(float);
-  Refused(kg::CheckMulMatQBorrowedD4(output, original, 7));
-  source->nb[1] = stride;
-  auto* multiple = New(GGML_TYPE_F32, 8192, 4096, 2);
-  auto* broadcast = Bound(ggml_mul_mat(c(), weights, multiple));
-  bad = original;
-  bad.source = multiple->data;
-  bad.bytes *= 2;
-  Refused(kg::CheckMulMatQBorrowedD4(broadcast, bad, 7));
 }
 
 TEST_F(GgmlExtValidateTest, ExpertProductsFollowMulMatIdsShapes) {
@@ -357,6 +316,69 @@ TEST_F(GgmlExtValidateTest, Iq2OccupancyTwoPairsKeepTheMeasuredGeometryAndOrigin
   second->nb[2] -= second->nb[1];
   TensorArena::Bind(second, reinterpret_cast<std::uintptr_t>(first->data));
   EXPECT_FALSE(kg::IsMulMatIdQPairIq2Occ2(first, second));
+}
+
+TEST_F(GgmlExtValidateTest, PairWriteBacksArePlannedOnlyWhereNothingElseReadsWhatTheyLeave) {
+  // DeepSeek V4's IQ2_XXS gate/up experts, their swiglu_clamp and the Q2_K
+  // down product, at the measured shapes; a model of the GB10 device
+  // conditions, without D2R (so the quantizing write-back applies).
+  const std::int64_t tokens = kg::kDsv4StagePairMinRows;
+  auto* x = New(GGML_TYPE_F32, 4096, 1, tokens);
+  auto* routes = New(GGML_TYPE_I32, 6, tokens);
+  auto* gate = Bound(ggml_mul_mat_id(c(), New(GGML_TYPE_IQ2_XXS, 4096, 2048, 256), x, routes));
+  auto* up = Bound(ggml_mul_mat_id(c(), New(GGML_TYPE_IQ2_XXS, 4096, 2048, 256), x, routes));
+  auto* glu = Bound(ggml_swiglu_clamp(c(), gate, up, 10.0F));
+  auto* down = Bound(ggml_mul_mat_id(c(), New(GGML_TYPE_Q2_K, 2048, 4096, 256), glu, routes));
+  ASSERT_TRUE(kg::MulMatIdQPairGluFits(up, gate, glu));
+  ASSERT_TRUE(kg::MulMatIdQCompactPrequantFits(down, glu));
+  kg::DeviceChoices device;
+  device.quant = [](const ggml_tensor*) -> std::expected<kg::QuantMulMatPath, kg::KernelFailure> {
+    return kg::QuantMulMatPath::kTile;
+  };
+  device.pair_experts = true;
+  device.compact_experts = true;
+  device.pair_glu_fits = [](const ggml_tensor*, const ggml_tensor*) { return true; };
+  kg::SetDsv4PrefillStages(device, true);
+  using Names = std::vector<std::string_view>;
+  const auto names = [&](const std::vector<ggml_tensor*>& nodes,
+                         const std::vector<ggml_tensor*>& keep = {}) {
+    Names out;
+    const auto plan = kg::PlanGraph(nodes, false, device, keep);
+    EXPECT_TRUE(plan.has_value()) << (plan ? "" : plan.error().detail);
+    if (plan) {
+      for (const auto& step : plan->steps) {
+        out.push_back(step.implementation);
+      }
+    }
+    return out;
+  };
+  const std::vector<ggml_tensor*> base = {gate, up, glu, down};
+  const auto with = [&](ggml_tensor* last) {
+    std::vector<ggml_tensor*> nodes = base;
+    nodes.push_back(last);
+    return nodes;
+  };
+  // Only the down product reads the activation: the quantizing write-back.
+  EXPECT_EQ(names(base), (Names{kg::kMulMatIdQPairGluQ8, kg::kMulMatIdQCompactPrequant}));
+  // Any other reader of the activation would read D2S6 blocks: the F32
+  // write-back instead. A later node reading it, or reading a view of it.
+  const Names f32 = {kg::kMulMatIdQPairGlu, kg::kMulMatIdQCompact};
+  const Names f32_scaled = {kg::kMulMatIdQPairGlu, kg::kMulMatIdQCompact, kg::kScaleName};
+  EXPECT_EQ(names(with(Bound(ggml_scale(c(), glu, 2.0F)))), f32_scaled);
+  auto* rows = ggml_view_2d(c(), glu, 2048, 6, glu->nb[1], 0);
+  EXPECT_EQ(names(with(Bound(ggml_scale(c(), rows, 2.0F)))), f32_scaled);
+  // The graph's output viewing it, or a tensor read after the run.
+  EXPECT_EQ(names(with(rows)), f32);
+  EXPECT_EQ(names(base, {glu}), f32);
+  EXPECT_EQ(names(base, {rows}), f32);
+  EXPECT_EQ(names(base, {down}), (Names{kg::kMulMatIdQPairGluQ8, kg::kMulMatIdQCompactPrequant}));
+  // The write-back leaves the up output unwritten: where anything else reads
+  // it, the plain compact pair.
+  EXPECT_EQ(names(with(Bound(ggml_scale(c(), up, 2.0F)))),
+            (Names{kg::kMulMatIdQPairCompact, kg::kSwiGluClampName, kg::kMulMatIdQCompact,
+                   kg::kScaleName}));
+  EXPECT_EQ(names(base, {up}),
+            (Names{kg::kMulMatIdQPairCompact, kg::kSwiGluClampName, kg::kMulMatIdQCompact}));
 }
 
 TEST_F(GgmlExtValidateTest, TheHadamardProductNeedsItsHintAndARowTheTransformTakes) {

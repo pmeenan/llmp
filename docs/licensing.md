@@ -78,8 +78,12 @@ plan's default on its measured GB10 shape; the HCA core, also reached with
 F16 queries through jitLLM's own loader, remains opt-in and default off.
 That loader's kernel (`src/kernels/ggml/dsv4_ds4_attention.cu`, MIT AND
 Apache-2.0) is a copy of the original token-tile core that reads F16 Q
-rows, otherwise unchanged; the file's header names the ds4 authors and
-Entrpi.
+rows, otherwise unchanged, over the original helpers and stages it calls
+(`dsv4_ds4_attention_core.cuh`, MIT); the files' headers name the ds4
+authors and Entrpi. The DeepSeek output-A stage runs the original fused
+own output-A core (`dsv4_ds4_product_original.cuh`, MIT AND Apache-2.0,
+verbatim). Each copy's ranges are in its companion provenance. The
+complete-plan study's other original stages were removed after it.
 The whole archive audit and
 exact source scope are in the source lock. Packages carry the ds4 authors,
 Entrpi, GGML and Marco Palaferri MIT notices; no ds4 runtime or cache

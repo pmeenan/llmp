@@ -29,6 +29,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/sha256.h"
@@ -194,6 +195,54 @@ TEST(KeptFiles, PrivateDirectoriesAndFilesAreOwnerOnlyAndNeverLinks) {
   EXPECT_TRUE(pf::RemovePrivate(dir.fd, "gone"));
   EXPECT_TRUE(fs::exists(root / "conversations" / "a"));
   EXPECT_FALSE(fs::exists(root / "conversations" / "sub"));
+  // Replaced in steps: written and synced beside its name, renamed over it
+  // only when committed; abandoned, nothing of it stays.
+  auto third = pf::WritePrivateReplacement(dir.fd, "r", "third");
+  ASSERT_TRUE(third.has_value());
+  EXPECT_TRUE(fs::exists(root / "conversations" / "r.tmp"));
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "r", 1024).value_or(""), "second, longer");
+  ASSERT_TRUE(pf::CommitPrivateReplacement(dir.fd, "r", *third));
+  ASSERT_TRUE(pf::SyncDirectory(dir.fd));
+  EXPECT_FALSE(fs::exists(root / "conversations" / "r.tmp"));
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "r", 1024).value_or(""), "third");
+  auto fourth = pf::WritePrivateReplacement(dir.fd, "r", "fourth");
+  ASSERT_TRUE(fourth.has_value());
+  pf::AbandonPrivateReplacement(dir.fd, "r", *fourth);
+  EXPECT_FALSE(fs::exists(root / "conversations" / "r.tmp"));
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "r", 1024).value_or(""), "third");
+  // A temporary file that is no longer the private one written (a link put
+  // in its place) is never renamed over the name, and goes.
+  auto fifth = pf::WritePrivateReplacement(dir.fd, "r", "fifth");
+  ASSERT_TRUE(fifth.has_value());
+  ASSERT_EQ(::unlinkat(dir.fd, "r.tmp", 0), 0);
+  ASSERT_EQ(::symlinkat("a", dir.fd, "r.tmp"), 0);
+  EXPECT_EQ(pf::CommitPrivateReplacement(dir.fd, "r", *fifth).error_or(0), EPERM);
+  EXPECT_FALSE(fs::is_symlink(root / "conversations" / "r.tmp"));
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "r", 1024).value_or(""), "third");
+  // nothing to rename
+  EXPECT_FALSE(pf::CommitPrivateReplacement(dir.fd, "r", *fifth).has_value());
+  // Nor another private-looking regular file put in its place (same owner,
+  // mode and link count; made before the one written goes, so never its
+  // inode): refused and left to whoever made it, also by an abandon; the
+  // next write removes it.
+  auto sixth = pf::WritePrivateReplacement(dir.fd, "r", "sixth");
+  ASSERT_TRUE(sixth.has_value());
+  auto other = pf::OpenPrivateFile(dir.fd, "other", {.write = true, .create = true});
+  ASSERT_TRUE(other.has_value());
+  ASSERT_EQ(::write(other->fd, "foreign", 7), 7);
+  (void)::close(other->fd);
+  ASSERT_EQ(::renameat(dir.fd, "other", dir.fd, "r.tmp"), 0);
+  EXPECT_EQ(pf::CommitPrivateReplacement(dir.fd, "r", *sixth).error_or(0), EPERM);
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "r.tmp", 1024).value_or(""), "foreign");
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "r", 1024).value_or(""), "third");
+  pf::AbandonPrivateReplacement(dir.fd, "r", *sixth);
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "r.tmp", 1024).value_or(""), "foreign");
+  auto seventh = pf::WritePrivateReplacement(dir.fd, "r", "seventh");
+  ASSERT_TRUE(seventh.has_value());
+  ASSERT_TRUE(pf::CommitPrivateReplacement(dir.fd, "r", *seventh));
+  EXPECT_EQ(pf::ReadPrivateFile(dir.fd, "r", 1024).value_or(""), "seventh");
+  EXPECT_FALSE(fs::exists(root / "conversations" / "r.tmp"));
+  ASSERT_TRUE(pf::ReplacePrivateFile(dir.fd, "r", "second, longer"));
   const auto stamp = pf::RunningExecutableStamp();
   ASSERT_TRUE(stamp.has_value());
   EXPECT_NE(stamp.value_or(pf::ExecutableStamp{}).inode, 0U);
@@ -272,6 +321,7 @@ TEST(KeptRecord, AForeignOrExpiredRecordIsRefused) {
   refused([](kept::Record& c, kept::Expected&) { c.extents.clear(); }, "keeps no state");
   refused([](kept::Record& c, kept::Expected&) { c.tokens.push_back(129280); }, "vocabulary");
   refused([](kept::Record&, kept::Expected& e) { e.context = 5; }, "context");
+  refused([](kept::Record& c, kept::Expected&) { c.cursor = 7; }, "cursor");
   refused([](kept::Record&, kept::Expected& e) { e.now_unix_ms += e.retention_ms; }, "retention");
   // Edited times at the ends of their range overflow nothing.
   refused([](kept::Record& c, kept::Expected&) { c.used_unix_ms = kLeastMs; }, "retention");
@@ -285,7 +335,8 @@ TEST(KeptRecord, AForeignOrExpiredRecordIsRefused) {
            [](kept::Checkpoint& c) { c.created_unix_ms = kMostMs; },
            [](kept::Checkpoint& c) { c.ranges[0].offset = 5 * kExtent; },
            [](kept::Checkpoint& c) { c.file = kept::CheckpointFileName(3, 7); },
-           [](kept::Checkpoint& c) { c.digests.clear(); }}) {
+           [](kept::Checkpoint& c) { c.digests.clear(); },
+           [](kept::Checkpoint& c) { c.cursor = 5; }}) {
     kept::Record copy = r;
     change(copy.checkpoints[0]);
     std::vector<std::string> dropped;
@@ -293,6 +344,30 @@ TEST(KeptRecord, AForeignOrExpiredRecordIsRefused) {
     EXPECT_TRUE(copy.checkpoints.empty());
     EXPECT_EQ(dropped.size(), 1U);
   }
+}
+
+// What a record's extents do not cover of its spill file, region by
+// region in file order, adjacent runs joined (across regions too).
+TEST(KeptRecord, UnlistedPlacesAreWhatItsExtentsDoNotCover) {
+  kept::Record r = Sample();  // regions of 4 and 2 extents; (0,0), (0,1), (1,0) listed
+  const auto places = [](const kept::Record& record) {
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> out;
+    for (const kept::Place& p : kept::UnlistedPlaces(record)) {
+      out.emplace_back(p.offset, p.bytes);
+    }
+    return out;
+  };
+  using Runs = std::vector<std::pair<std::uint64_t, std::uint64_t>>;
+  EXPECT_EQ(places(r), (Runs{{2 * kExtent, 2 * kExtent}, {5 * kExtent, kExtent}}));
+  r.extents = {{.region = 0, .index = 0, .digest = {}}};
+  EXPECT_EQ(places(r), (Runs{{kExtent, 5 * kExtent}}));
+  r.extents = {{.region = 0, .index = 3, .digest = {}}, {.region = 1, .index = 1, .digest = {}}};
+  EXPECT_EQ(places(r), (Runs{{0, 3 * kExtent}, {4 * kExtent, kExtent}}));
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    r.extents.push_back({.region = 0, .index = i, .digest = {}});
+  }
+  r.extents.push_back({.region = 1, .index = 0, .digest = {}});
+  EXPECT_TRUE(places(r).empty());
 }
 
 TEST(KeptRecord, FileNamesAreTheSlotsOwn) {
@@ -384,6 +459,72 @@ TEST(StateKeeper, ARecordDescribesItsFilesExactly) {
   EXPECT_FALSE(keeper.Kept(index, 1));
   EXPECT_EQ(keeper.stats().written, 1U);
   EXPECT_GE(keeper.stats().stale, 20U);
+  // A record made stale after it was written beside its name leaves no
+  // temporary file.
+  EXPECT_FALSE(fs::exists(root / "model" / "slot-1.record.tmp"));
+
+  // Written again once nothing invalidates it; then the file changes
+  // (Invalidate first, as the driver does) and the slot is kept again.
+  keeper.Keep(index, r);
+  ASSERT_TRUE(keeper.Drain(std::chrono::steady_clock::now() + std::chrono::seconds(30)));
+  EXPECT_TRUE(fs::exists(root / "model" / "slot-1.record"));
+  EXPECT_FALSE(fs::exists(root / "model" / "slot-1.record.tmp"));
+  EXPECT_EQ(keeper.stats().written, 2U);
+  keeper.Invalidate(index, 1);
+  EXPECT_FALSE(fs::exists(root / "model" / "slot-1.record"));
+  fs::remove_all(root);
+}
+
+// Adopting a record empties every extent of its spill file it does not
+// list (D-105): a record whose removal never reached the disk can come
+// back after a crash while the file's other extents hold a later
+// conversation's state. The listed extents stay as they were; a file that
+// is not the record's is refused.
+TEST(StateKeeper, AdoptionEmptiesWhatTheRecordDoesNotList) {
+  const fs::path root = Scratch("unlisted");
+  fs::create_directories(root);
+  Dir model(root / "model");
+  ASSERT_GE(model.fd, 0);
+  const pf::FileIdentity state = WriteExtents(model.fd, "slot-0.state", 4, 3);
+  kept::Record r = Sample();
+  r.slot = 0;
+  r.file = kept::StateFileName(0);
+  r.id = Id(state);
+  r.regions = {3 * kExtent, kExtent};
+  r.file_bytes = 4 * kExtent;
+  r.extents = {{.region = 0, .index = 0, .digest = {}}, {.region = 0, .index = 2, .digest = {}}};
+  r.checkpoints.clear();
+  const auto hash = [&](std::span<const kept::Place> places) {
+    auto file = pf::OpenPrivateFile(model.fd, "slot-0.state", {.direct = true});
+    EXPECT_TRUE(file.has_value());
+    auto digests = HashPlaces(file->fd, places, 2);
+    (void)::close(file->fd);
+    return digests;
+  };
+  const std::array<kept::Place, 4> all = {{{.offset = 0, .bytes = kExtent},
+                                           {.offset = kExtent, .bytes = kExtent},
+                                           {.offset = 2 * kExtent, .bytes = kExtent},
+                                           {.offset = 3 * kExtent, .bytes = kExtent}}};
+  const auto before = hash(all);
+  // Not the file the record names: refused, nothing emptied.
+  kept::Record other = r;
+  other.id.inode += 1;
+  EXPECT_FALSE(jitllm::runtime::EmptyUnlisted(model.fd, other).empty());
+  EXPECT_EQ(hash(all), before);
+  ASSERT_EQ(jitllm::runtime::EmptyUnlisted(model.fd, r), "");
+  const auto after = hash(all);
+  const std::vector<std::byte> zeros(kExtent);
+  const auto zero = jitllm::base::Sha256().Update(std::span<const std::byte>(zeros)).Finish();
+  EXPECT_EQ(after[0], before[0]);
+  EXPECT_EQ(after[1], std::optional(zero));
+  EXPECT_EQ(after[2], before[2]);
+  EXPECT_EQ(after[3], std::optional(zero));
+  // Its size and identity stay: the record still names it.
+  auto file = pf::OpenPrivateFile(model.fd, "slot-0.state", {});
+  ASSERT_TRUE(file.has_value());
+  EXPECT_EQ(Id(file->identity), r.id);
+  EXPECT_EQ(file->bytes, 4 * kExtent);
+  (void)::close(file->fd);
   fs::remove_all(root);
 }
 

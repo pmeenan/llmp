@@ -14,9 +14,14 @@
 // extent of the spill file, each page of the turn checkpoints, which are
 // immutable and hashed once), and writes the record atomically, unless an
 // Invalidate came meanwhile (a sequence number a slot: the record would
-// describe a file that has changed since). So a crash at any moment leaves
-// either a record that describes its files exactly or none, and the driver
-// never waits for hashing.
+// describe a file that has changed since). The record is written and
+// synced beside its name off the lock, renamed over it under the lock if
+// its slot's sequence still holds, and its directory synced after, so the
+// driver never waits for hashing or a sync. A crash leaves a record that
+// describes its files exactly, or none, or one whose removal had not yet
+// reached the device (Invalidate syncs nothing): its file may have changed
+// since, which the next start's check of every listed extent refuses, and
+// its adoption empties every extent the record does not list (D-105).
 //
 // Vendor-free: the files are named beneath each model's private directory
 // (platform/kept_files.h), read with direct I/O. The CPU tests drive it
@@ -58,6 +63,12 @@ std::vector<std::optional<kept::Digest>> HashPlaces(int fd, std::span<const kept
                                                     std::atomic<std::uint64_t>* hashed = nullptr,
                                                     const std::function<bool()>& go_on = {},
                                                     bool background = false);
+
+// Empties what of a kept spill file its record does not list (kept::
+// UnlistedPlaces), beneath the model's private directory `dir`: the very
+// file the record names (its identity and size), opened again. Those
+// extents then read as zeros, as a fresh slot's do. Why not, or empty.
+std::string EmptyUnlisted(int dir, const kept::Record& record);
 
 class StateKeeper {
  public:
@@ -147,7 +158,9 @@ class StateKeeper {
   void Work(const std::stop_token& stop);
   // Hashes the job's files (no lock held); false with why if they do not
   // hold what it says, or if it went stale meanwhile (`stale` set).
-  bool Hash(Job& job, const std::stop_token& stop, std::string& why, bool& stale);
+  // `seen`: the Invalidates counted when its sequence was last checked.
+  bool Hash(Job& job, std::uint64_t seen, const std::stop_token& stop, std::string& why,
+            bool& stale);
   // Between places: waits while quiet (unless draining); false once the
   // job went stale (an Invalidate of its slot) or the keeper stops.
   bool GoOn(const Job& job, std::uint64_t seen, const std::stop_token& stop);
@@ -156,6 +169,7 @@ class StateKeeper {
 
   const std::size_t threads_;
   Log log_;
+  // Read unlocked in Hash and Work: safe only as AddModel runs at startup, before any Keep.
   std::vector<int> models_;
   mutable std::mutex mutex_;
   std::condition_variable_any ready_;
@@ -168,8 +182,8 @@ class StateKeeper {
       checkpoint_digests_;
   Stats stats_;
   std::atomic<std::uint64_t> hashed_{0};  // Stats::hashed_bytes, as it goes
-  // Invalidates so far: a job compares it with the count it began with
-  // before it looks up its slot's sequence (under the lock).
+  // Invalidates so far: a job compares it with the count read with its
+  // sequence check before it looks up its slot's sequence (under the lock).
   std::atomic<std::uint64_t> invalidations_{0};
   std::atomic<int> quiet_{0};                    // Quiets alive
   std::atomic<std::int64_t> quiet_until_ns_{0};  // the linger after the last

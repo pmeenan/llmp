@@ -117,7 +117,7 @@ class AdaptiveDepth {
     if (out.relative_cost_ != cost || words[1] != out.minimum_ ||
         (words[2] != out.minimum_ && words[2] != out.maximum_) || words[4] >= 32 ||
         (words[5] != 0 && words[5] != out.minimum_ && words[5] != out.maximum_) || words[6] > 4 ||
-        !valid_kept(kept0) || !valid_kept(kept1)) {
+        (words[6] != 0 && words[5] == 0) || !valid_kept(kept0) || !valid_kept(kept1)) {
       return std::nullopt;
     }
     out.preferred_ = static_cast<std::uint32_t>(words[2]);

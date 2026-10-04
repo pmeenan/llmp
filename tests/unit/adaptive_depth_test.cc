@@ -273,6 +273,10 @@ TEST(AdaptiveDepthTest, ItsStateSavesAndLoadsWhole) {
   bad = words;
   bad[6] = 5;  // a probe longer than any
   EXPECT_FALSE(AdaptiveDepth::Load(bad).has_value());
+  bad = words;
+  bad[5] = 0;  // a probe still to run, of no depth (Choose would give 0)
+  bad[6] = 2;
+  EXPECT_FALSE(AdaptiveDepth::Load(bad).has_value());
 }
 
 TEST(AdaptiveWaveModeTest, OnlyCompleteVerifiesFeedTheAverage) {

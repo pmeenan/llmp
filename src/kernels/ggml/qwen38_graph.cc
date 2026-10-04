@@ -1242,7 +1242,7 @@ ggml_tensor* Builder::Attention(const Qwen38LayerTensors& l, ggml_tensor* cur, i
   ggml_tensor* top_k = QsaTopK(l, in, il);
   // [(d · 2) · heads, nt]: per head, q then its gate
   ggml_tensor* q_full = Linear(l.q, in);
-  if ((capture_routed_ & (std::uint64_t{1} << il)) != 0) {
+  if (il < 64 && (capture_routed_ & (std::uint64_t{1} << il)) != 0) {
     capture_attention_input_ = in.x;
     capture_attention_projection_ = q_full;
   }
@@ -1394,7 +1394,7 @@ ggml_tensor* Builder::Moe(const Qwen38LayerTensors& l, ggml_tensor* cur, int il,
       ggml_tensor* shared_gate = shared_gate_dot();
       ggml_tensor* combined =
           MoeCombine(c_, down, selected, l.down_exps_scale, weights, sh, shared_gate);
-      if ((capture_routed_ & (std::uint64_t{1} << il)) != 0) {
+      if (il < 64 && (capture_routed_ & (std::uint64_t{1} << il)) != 0) {
         g_.routed.push_back({.layer = static_cast<std::uint32_t>(il),
                              .input = x,
                              .activation = act,

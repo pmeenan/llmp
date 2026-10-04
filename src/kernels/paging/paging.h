@@ -12,7 +12,9 @@
 // `stream` is the job's NativeStream handle (providers/device_execution.h),
 // which only these kernels unwrap (a cudaStream_t). Launches only queue
 // work there; completion is the caller's. Each returns false if the launch
-// failed. CUDA builds only.
+// failed, reading (and so clearing) the thread's last CUDA error as jitLLM's
+// other launchers do, so a failure is not left for a later check to report.
+// CUDA builds only.
 
 #ifndef JITLLM_KERNELS_PAGING_PAGING_H_
 #define JITLLM_KERNELS_PAGING_PAGING_H_

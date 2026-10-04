@@ -14,6 +14,3 @@ add_library(jitllm_model STATIC context.cc dspark.cc dsv4.cc qwen2.cc qwen2_exl3
                                 qwen_image.cc state.cc)
 target_include_directories(jitllm_model PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_model PUBLIC jitllm_base jitllm_catalog PRIVATE jitllm_artifact jitllm_warnings)
-
-# Temporary complete-ds4 benchmark state, distinct from production state.
-target_sources(jitllm_model PRIVATE dsv4_ds4_state.cc)

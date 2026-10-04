@@ -58,6 +58,39 @@ const ggml_tensor* Storage(const ggml_tensor* t) {
   return t;
 }
 
+// Whether `reader`, reading `tensor` itself, is the only reader of
+// `tensor`'s memory: no other node reads it, directly or through a view, no
+// view of it or write into it is in the graph, and neither the graph's last
+// node nor a tensor `keep` names (read after the run) is it or views it.
+// For an implementation that leaves `tensor` unwritten or overwrites it
+// with another form. dsv4_hc_norm.cc ReadElsewhere's scan, by storage.
+bool OnlyReader(GraphNodes graph, std::span<ggml_tensor* const> keep, const ggml_tensor* tensor,
+                const ggml_tensor* reader) {
+  const ggml_tensor* storage = Storage(tensor);
+  if (graph.empty() || Storage(graph.back()) == storage) {
+    return false;
+  }
+  for (const ggml_tensor* kept : keep) {
+    if (kept != nullptr && Storage(kept) == storage) {
+      return false;
+    }
+  }
+  for (const ggml_tensor* node : graph) {
+    if (node == tensor) {
+      continue;
+    }
+    if (Storage(node) == storage) {
+      return false;
+    }
+    for (const ggml_tensor* src : node->src) {
+      if (src != nullptr && Storage(src) == storage && (node != reader || src != tensor)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 std::string_view MulMatName(MulMatPath path) {
   switch (path) {
     case MulMatPath::kVector:
@@ -99,7 +132,8 @@ bool LaunchesNothing(const ggml_tensor* node) {
 }
 
 std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
-                                                  const DeviceChoices& device) {
+                                                  const DeviceChoices& device,
+                                                  std::span<ggml_tensor* const> keep) {
   if (fusion && device.row_invariant) {
     // Upstream's fused vector products pick their launch by the column
     // count: a row-invariant plan (D-092) cannot take them.
@@ -205,14 +239,21 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             return Rejected(std::format("{}: {}", Where(graph, i), path.error().detail));
           }
           if (device.dense_pair && *path == QuantMulMatPath::kTile) {
-            // A later dense Q8_0 product of the same activation joins this one.
+            // A later dense product of the same block-quantized type and
+            // activation (MulMatQPairDenseFits) joins this one.
             bool paired = false;
             for (std::size_t k = i + 1; k < graph.size() && k < i + 512; ++k) {
               ggml_tensor* other = graph[k];
-              if (other->view_src == node->src[1] && !LaunchesNothing(other)) {
+              if (other->view_src != nullptr && Storage(other) == Storage(node->src[1]) &&
+                  !LaunchesNothing(other)) {
                 break;  // a write into the activation: the later product reads it changed
               }
               if (taken[k] || !MulMatQPairDenseFits(node, other)) {
+                continue;
+              }
+              if (Storage(other->src[0])->op != GGML_OP_NONE) {
+                // Its weights are computed (perhaps after this node): it
+                // cannot run here.
                 continue;
               }
               const auto other_path = device.quant(other);
@@ -276,17 +317,22 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             if (second_path && *second_path == QuantMulMatPath::kTile) {
               // The graph orders the pair as its GLU's sources: gate, then up.
               ggml_tensor* glu = i + 2 < graph.size() ? graph[i + 2] : nullptr;
+              // The write-back leaves the up output unwritten: only the
+              // activation may read it.
               if (device.pair_glu && device.compact_experts && device.pair_glu_fits &&
                   glu != nullptr && glu->src[0] == node && glu->src[1] == second &&
-                  MulMatIdQPairGluFits(second, node, glu) && device.pair_glu_fits(second, node)) {
+                  MulMatIdQPairGluFits(second, node, glu) && device.pair_glu_fits(second, node) &&
+                  OnlyReader(graph, keep, second, glu)) {
                 ggml_tensor* down = i + 3 < graph.size() ? graph[i + 3] : nullptr;
                 // D2R reads the F32 activation and quantizes it itself
                 // (measured faster than the quantizing write-back).
                 const bool d2r_down = device.d2r_experts && device.q2_d2r_fits && down != nullptr &&
                                       down->op == GGML_OP_MUL_MAT_ID && device.q2_d2r_fits(down);
+                // The quantizing write-back leaves D2S6 blocks where the F32
+                // activation was: only the down product may read it.
                 if (device.pair_glu_q8 && !d2r_down && down != nullptr &&
                     down->op == GGML_OP_MUL_MAT_ID && MulMatIdQCompactPrequantFits(down, glu) &&
-                    CheckMulMatIdQCompact(down)) {
+                    CheckMulMatIdQCompact(down) && OnlyReader(graph, keep, glu, down)) {
                   const auto down_path = device.quant(down);
                   if (down_path && *down_path == QuantMulMatPath::kTile) {
                     add(Operation::kMulMatId, kMulMatIdQPairGluQ8, i, {second, node, glu}, 3);

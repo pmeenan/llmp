@@ -3,6 +3,17 @@
 
 # Temporary complete ds4 benchmark
 
+**Retired (2026-10-04).** The literal reference this report measures was
+removed once the study ended: `benchmarks/ds4_complete`, its original
+cache, HC/norm, compressor, repack, product, indexer, sparse-attention and
+router/FFN stages under `src/kernels/ggml/dsv4_ds4_*`, its weight
+preparation and state layout (`src/engine/dsv4_ds4_*`,
+`src/model/dsv4_ds4_state.*`) and their tests. Commit `ec8af04` is the
+last that holds them; check it out to rerun this report. Production keeps
+only what it uses of the study: the original output-A core
+(`dsv4_ds4_product_raw.cu`) and the F16-Q token-tile HCA core
+(`dsv4_ds4_attention.cu`), beside the locked D2R and HCA units.
+
 The goal is to match the pinned ds4 pipeline inside jitLLM at the same
 model, value/storage precisions, dispatch, chunking and output scope, then
 restore native stages one at a time to identify the causes of the performance

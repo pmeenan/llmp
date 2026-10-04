@@ -1862,11 +1862,11 @@ TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionMatchesTheReference) {
   }
 }
 
-// Qwen-Image-2.1's denoiser attention on GGML's kernels: D = 128, one query
-// head per KV head, no mask, cells not a multiple of 256 (the last KV tile
-// bounds-checked). The A/B its native kernel won (docs/experiments/
-// qwen-image-native); kept so that the comparison reruns.
-TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeCapturedScratchAndPreservesOwnRepeats) {
+// The ds4 HCA core plans its whole scratch, repeats its own output exactly
+// (also after the ordinary sparse attention reuses the same pool offsets),
+// and refuses a capture: its chunk's first position is a launch parameter
+// a replay would keep.
+TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeScratchRefusesCaptureAndPreservesOwnRepeats) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "the measured ds4 HCA arm is GB10 only";
   const auto exact = [](const std::vector<float>& got, const std::vector<float>& want) {
     ASSERT_EQ(got.size(), want.size());
@@ -1933,13 +1933,10 @@ TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeCapturedScratchAndPreservesOwnRepeats)
     const auto native = Download(control);
     ExpectNmse(original, std::vector<double>(native.begin(), native.end()), kFlashAttnNmse,
                "ds4 HCA versus native approximation");
-    auto graph =
-        launch().Capture([&](LaunchContext& context) -> std::expected<void, KernelFailure> {
-          if (auto r = kg::Dsv4HcaTokentile(context, node); !r) return r;
-          // Ordinary sparse preparation overwrites the same planned pool offsets.
-          return kg::FlashAttnMma(context, control);
-        });
-    ASSERT_TRUE(graph.has_value()) << (graph ? "" : graph.error().detail);
+    // A capture is refused, with the context as it was.
+    const auto graph = launch().Capture(
+        [&](LaunchContext& context) { return kg::Dsv4HcaTokentile(context, node); });
+    EXPECT_EQ(FailedCode(graph), KernelError::kRejected);
     for (const float scale : {1.0F, 0.5F}) {
       auto changed = queries;
       for (auto& value : changed) value *= scale;
@@ -1952,7 +1949,9 @@ TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeCapturedScratchAndPreservesOwnRepeats)
       Launched(kg::FlashAttnMma(launch(), control), "native changed query");
       const auto want_control = Download(control);
       for (int repeat = 0; repeat < 2; ++repeat) {
-        Launched(launch().Launch(*graph), "ds4 HCA graph and pool reuse");
+        // Ordinary sparse preparation overwrites the same pool offsets.
+        Launched(kg::Dsv4HcaTokentile(launch(), node), "ds4 HCA repeat after pool reuse");
+        Launched(kg::FlashAttnMma(launch(), control), "native repeat");
         exact(Download(node), want);
         exact(Download(control), want_control);
       }
@@ -1973,6 +1972,10 @@ TEST_F(GgmlExtOpsTest, Ds4HcaPlansItsWholeCapturedScratchAndPreservesOwnRepeats)
   }
 }
 
+// Qwen-Image-2.1's denoiser attention on GGML's kernels: D = 128, one query
+// head per KV head, no mask, cells not a multiple of 256 (the last KV tile
+// bounds-checked). The A/B its native kernel won (docs/experiments/
+// qwen-image-native); kept so that the comparison reruns.
 TEST_F(GgmlExtOpsTest, TensorCoreFlashAttentionAt128WithoutMaskMatchesTheReference) {
   struct Case {
     std::int64_t heads, rows, cells;

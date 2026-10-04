@@ -296,6 +296,7 @@ class NativeBranchesFake final : public FakeLlm {
   std::size_t generation_wave_capacity() const override { return wave_capacity_; }
   std::optional<std::uint32_t> nonfinite_wave_row;
   std::optional<std::uint32_t> failed_wave_judgement;
+  std::optional<std::uint32_t> failed_scalar_judgement;
   // The execution budget in state tokens, shared by every branch: growth
   // past it is refused for capacity before dispatch (StateRefusedFor).
   std::optional<std::size_t> budget;
@@ -398,7 +399,15 @@ class NativeBranchesFake final : public FakeLlm {
   }
   rt::Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
                          std::uint32_t left, std::vector<std::int32_t>& kept,
-                         std::vector<std::vector<float>>* logits, std::uint64_t& drafted) override {
+                         std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
+                         bool* prefix_kept = nullptr) override {
+    if (failed_scalar_judgement == BranchIndex(branch)) {
+      // Fake completed verify, judgement failed and the verify discarded.
+      if (prefix_kept != nullptr) {
+        *prefix_kept = true;
+      }
+      return std::unexpected("fake completed judgement failed");
+    }
     return Native(branch).FakeLlm::SpecStep(all, pos, left, kept, logits, drafted);
   }
   rt::Status SettleFor(Branch& branch) override { return Native(branch).FakeLlm::Settle(); }
@@ -1504,6 +1513,28 @@ TEST(LlmScores, AdmissionsReclaimSparesTheChosenBranch) {
   rt::AddIdleStateCandidates(model, 0, true, *chosen, rates, leased);
   EXPECT_THAT(ids(leased), ElementsAre(3U));
   model.lease_held = false;
+  // A conversation a continuation holds is spilled, never dropped (its
+  // drop is refused): with a spill budget of 0, or one smaller than its
+  // state, it is no candidate; one nothing holds is, at its recomputation.
+  auto held = model.branch(3);
+  ASSERT_TRUE(held.has_value());
+  (*held)->HoldContinuation();
+  std::vector<jitllm::memory::ReclaimCandidate> spilled;
+  rt::AddIdleStateCandidates(model, 0, true, nullptr, rates, spilled);
+  EXPECT_THAT(ids(spilled), ElementsAre(0U, 1U, 3U));
+  for (const std::uint64_t budget : {std::uint64_t{0}, model.ResidentStateBytes(**held) - 1}) {
+    rt::IdleStateRates small = rates;
+    small.spill_budget = budget;
+    std::vector<jitllm::memory::ReclaimCandidate> dropped;
+    rt::AddIdleStateCandidates(model, 0, true, nullptr, small, dropped);
+    EXPECT_THAT(ids(dropped), ElementsAre(0U, 1U)) << budget;
+  }
+  (*held)->ReleaseContinuation();
+  rt::IdleStateRates none = rates;
+  none.spill_budget = 0;
+  std::vector<jitllm::memory::ReclaimCandidate> unheld;
+  rt::AddIdleStateCandidates(model, 0, true, nullptr, none, unheld);
+  EXPECT_THAT(ids(unheld), ElementsAre(0U, 1U, 3U));
 }
 
 // Room for a request slot: free bytes, else a reclaim that frees all of the
@@ -1634,6 +1665,24 @@ TEST(LlmScores, ADiscardedWaveJudgementPreservesOnlyItsOwnPriorPrefixAndCursor) 
   EXPECT_EQ((*b)->history(), model.native_state(2).target);
   EXPECT_EQ(model.pending_cursor(**b), 4U);
   EXPECT_FALSE(model.native_state(2).pending);
+}
+
+TEST(LlmScores, ADiscardedScalarJudgementKeepsTheBranchsPrefix) {
+  NativeBranchesFake model(true);
+  auto a = model.branch(1);
+  ASSERT_TRUE(a.has_value());
+  std::vector<float> last;
+  ASSERT_TRUE((*a)->Prefill(std::array<std::int32_t, 1>{0}, last).has_value());
+  const auto target = model.native_state(1).target;
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  rt::Generation result;
+  model.failed_scalar_judgement = 1;
+  EXPECT_FALSE((*a)->Generate(last, options, result).has_value());
+  // The scalar step's undone verify keeps the prefix, as a wave's does.
+  EXPECT_EQ((*a)->history(), target);
+  EXPECT_EQ(model.native_state(1).target, target);
 }
 
 TEST(LlmScores, ResumablePromptAdmissionIsHostOnlyAndOwnsItsPrompt) {

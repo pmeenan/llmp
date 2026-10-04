@@ -31,7 +31,7 @@ bool FillRanges(const std::uint64_t* ranges, std::uint32_t count, std::uint8_t v
     return true;
   }
   FillKernel<<<count, 256, 0, static_cast<cudaStream_t>(stream)>>>(ranges, value);
-  return cudaPeekAtLastError() == cudaSuccess;
+  return cudaGetLastError() == cudaSuccess;
 }
 
 }  // namespace jitllm::kernels::paging

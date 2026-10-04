@@ -29,12 +29,13 @@ reduction order at the same quality; our own rollback, repeat and restored
 continuation remain exact. Changes that trade quality for speed need an
 explicit per-alias quality/performance mode, off by default.
 
-The complete literal ds4 path is a temporary benchmark reference. Match
-its configured end-to-end performance, restore native stages individually
-to isolate the causes, and adapt the useful mechanisms across applicable
-models and kernels. The final implementation should preserve jitLLM's
-architecture; unused reference code can leave shipping builds once the
-comparisons are recorded. [Matched-pipeline study](experiments/ds4-complete-plan/README.md).
+The complete literal ds4 path was a temporary benchmark reference for
+matching the configured end-to-end performance and restoring native stages
+individually to isolate the causes; the mechanisms adopted from it are
+recorded in this inventory and the M3 record. Its unused reference code left the
+tree on 2026-10-04 (commit `ec8af04` is the last that holds it); only the
+original output-A and F16-Q token-tile HCA cores that production selects
+remain. [Matched-pipeline study](experiments/ds4-complete-plan/README.md).
 
 The matched 8K reference's [paid-chain profile](experiments/ds4-restoration-profile/README.md)
 puts routed FFN at 35.55% and attention output at 17.94% of measured GPU

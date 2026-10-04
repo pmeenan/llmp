@@ -109,11 +109,12 @@ struct DeviceChoices {
   // shape guard; the fast DeepSeek plan's defaults (SetDsv4PrefillStages).
   // With compact experts, the measured GB10 IQ2 occupancy-two pair followed
   // by its swiglu_clamp writes the activation from the up product's
-  // write-back instead of the up output.
+  // write-back instead of the up output (where nothing else reads it).
   bool pair_glu = false;
   // And with it, the activation written as the following Q2_K down product's
-  // D2S6 input, which that product then reads without quantizing. Where
-  // d2r_experts takes that down product, the pair writes the F32 activation.
+  // D2S6 input, which that product then reads without quantizing (where
+  // nothing else reads the activation). Where d2r_experts takes that down
+  // product, the pair writes the F32 activation.
   bool pair_glu_q8 = false;
   // Where an HC post with F16 rows reads the routed experts' ordered
   // reduction plus the shared expert, form that sum in the post's kernel
@@ -121,8 +122,9 @@ struct DeviceChoices {
   bool hc_post_experts = false;
   // Output-A with a coalesced weight repack (identical bytes).
   bool outa_fast_pack = false;
-  // Two dense Q8_0 MMQ products of one activation share one quantization;
-  // the later product runs at the earlier one's place.
+  // Two dense MMQ products of one block-quantized type (not FP4) and one
+  // activation share one quantization; the later product runs at the
+  // earlier one's place.
   bool dense_pair = false;
 };
 
@@ -341,9 +343,14 @@ inline constexpr std::int64_t kRowInvariantColumns = 8;
 // Upstream's no-op nodes (ggml_cuda_is_view_or_noop).
 bool LaunchesNothing(const ggml_tensor* node);
 
-// The plan of `graph` (fusion.h's node order) with fusion on or off.
+// The plan of `graph` (fusion.h's node order) with fusion on or off. The
+// tensors `keep` names (PlaceActivations's) are read after the run: an
+// implementation that leaves a tensor unwritten or overwrites it with
+// another form (pair_glu, pair_glu_q8) is planned only where nothing but its
+// consumer reads that tensor, in the graph or after it.
 std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
-                                                  const DeviceChoices& device);
+                                                  const DeviceChoices& device,
+                                                  std::span<ggml_tensor* const> keep = {});
 
 // Whether two plans run the same implementations over the same nodes.
 bool SamePlan(const GraphPlan& a, const GraphPlan& b);

@@ -238,6 +238,42 @@ TEST(ChatTemplates, ControlTokenScansAreCharged) {
   EXPECT_EQ(r->specials.size(), 1000U);
 }
 
+// The control tokens a rendering places (16 bytes a span) count toward its
+// output bound with its text and trusted ranges: a template repeating a
+// short control token is refused before the spans hold several times its
+// output. A span per few hundred bytes, as real templates place them, does
+// not come near it.
+TEST(ChatTemplates, ControlTokenSpansCountTowardTheOutputBound) {
+  chat::TokenFacts facts;
+  facts.control = {"<s>"};
+  chat::Conversation c;
+  c.messages.push_back({chat::Role::kUser, "hi", std::nullopt, {}});
+  c.add_generation_prompt = false;
+  const chat::jinja::Budget mib{.max_output_bytes = std::size_t{1} << 20U};
+  // 60,000 spans: 180 KB of text and 960 KB of spans, past 1 MiB.
+  auto many = chat::jinja::Template::Parse("{{ '<s>' * 60000 }}");
+  ASSERT_TRUE(many.has_value());
+  const auto refused = chat::RenderInterpreted(*many, c, facts, std::nullopt, mib);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().rule, chat::Rule::kUnsupported);
+  EXPECT_FALSE(refused.error().cancelled);
+  EXPECT_NE(refused.error().reason.find("control tokens"), std::string_view::npos);
+  // 50,000: 150 KB and 800 KB, within it.
+  auto fewer = chat::jinja::Template::Parse("{{ '<s>' * 50000 }}");
+  ASSERT_TRUE(fewer.has_value());
+  const auto fits = chat::RenderInterpreted(*fewer, c, facts, std::nullopt, mib);
+  ASSERT_TRUE(fits.has_value()) << fits.error().ToString();
+  EXPECT_EQ(fits->specials.size(), 50'000U);
+  // Messages framed by control tokens, as templates place them.
+  auto framed = chat::jinja::Template::Parse(
+      "{% for i in range(2000) %}<s>user {{ messages[0].content }}<s>{% endfor %}");
+  ASSERT_TRUE(framed.has_value());
+  c.messages[0].content = std::string(200, 'x');
+  const auto ordinary = chat::RenderInterpreted(*framed, c, facts, std::nullopt, mib);
+  ASSERT_TRUE(ordinary.has_value()) << ordinary.error().ToString();
+  EXPECT_EQ(ordinary->specials.size(), 4000U);
+}
+
 // One family's template never passes for another's renderer.
 TEST(ChatTemplates, ProbesTellFamiliesApart) {
   const auto natives = chat::NativeTemplates();

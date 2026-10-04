@@ -1160,6 +1160,70 @@ TEST(Qwen38Test, TheMtpStateAndACommitAreSized) {
   EXPECT_FALSE(md::Qwen38Commit(p, 9).has_value());
 }
 
+// A prefill chunk with the injection after a verify that kept several rows
+// (their streams in H[1 .. kept]) runs the drafter over each kept row's
+// position from that row's own streams, as a draft's catch-up reads them
+// (row 1 + i for the position n_past - kept + i), then over the chunk's
+// rows but its last from the streams the chunk exports (H[1 ..]).
+TEST(Qwen38Test, AnInjectedChunkCatchesUpEveryPendingRowFromItsOwnStreams) {
+  const md::Qwen38Profile& p = md::Qwen38Flash();
+  auto target = md::Qwen38State(p, 4000, 512);
+  ASSERT_TRUE(target.has_value());
+  auto s = md::Qwen38MtpStateOf(p, *target);
+  ASSERT_TRUE(s.has_value()) << Why(s);
+  constexpr std::uint32_t kAt = 100;
+  constexpr std::uint32_t kRows = 8;
+  for (std::uint32_t pending = 1; pending <= 4; ++pending) {
+    auto in = md::Qwen38InjectionOf(*s, kAt, kRows, pending);
+    ASSERT_TRUE(in.has_value()) << Why(in);
+    // Each pending position once, with the H row a draft would read: the
+    // catch-up's from row 1, the last's carried from its row to row 0.
+    std::vector<std::uint32_t> row_of(pending, 0);
+    for (std::uint32_t r = 0; r < in->catch_up_rows; ++r) {
+      const std::uint32_t at = in->catch_up_first + r;
+      ASSERT_GE(at, kAt - pending);
+      ASSERT_LT(at, kAt);
+      EXPECT_EQ(row_of[at - (kAt - pending)], 0U);
+      row_of[at - (kAt - pending)] = 1 + r;
+    }
+    ASSERT_EQ(in->hidden_row, 0U);
+    ASSERT_EQ(in->first, kAt - 1);
+    ASSERT_NE(in->carry, 0U);
+    EXPECT_EQ(row_of[pending - 1], 0U);
+    row_of[pending - 1] = in->carry;
+    for (std::uint32_t i = 0; i < pending; ++i) {
+      EXPECT_EQ(row_of[i], 1 + i) << pending << " pending, row " << i;
+    }
+    // The pass: that row, then the chunk's rows but its last.
+    EXPECT_EQ(in->rows, kRows);
+  }
+  // A chunk at the sequence's start, with or without a stale cursor.
+  for (const std::uint32_t pending : {0U, 3U}) {
+    auto start = md::Qwen38InjectionOf(*s, 0, kRows, pending);
+    ASSERT_TRUE(start.has_value()) << Why(start);
+    EXPECT_EQ(start->catch_up_rows, 0U);
+    EXPECT_EQ(start->carry, 0U);
+    EXPECT_EQ(start->first, 0U);
+    EXPECT_EQ(start->rows, kRows - 1);
+    EXPECT_EQ(start->hidden_row, 1U);
+  }
+  auto lone = md::Qwen38InjectionOf(*s, 0, 1, 0);
+  ASSERT_TRUE(lone.has_value());
+  EXPECT_EQ(lone->rows, 0U);
+  // None pending: row 0 as the last injected chunk left it, nothing copied.
+  auto none = md::Qwen38InjectionOf(*s, kAt, kRows, 0);
+  ASSERT_TRUE(none.has_value());
+  EXPECT_EQ(none->catch_up_rows, 0U);
+  EXPECT_EQ(none->carry, 0U);
+  EXPECT_EQ(none->first, kAt - 1);
+  EXPECT_EQ(none->rows, kRows);
+  EXPECT_FALSE(md::Qwen38InjectionOf(*s, kAt, 0, 1).has_value());         // an empty chunk
+  EXPECT_FALSE(md::Qwen38InjectionOf(*s, kAt, 513, 1).has_value());       // past the streams rows
+  EXPECT_FALSE(md::Qwen38InjectionOf(*s, 3990, 11, 1).has_value());       // past the context
+  EXPECT_FALSE(md::Qwen38InjectionOf(*s, 2, kRows, 3).has_value());       // before position 0
+  EXPECT_FALSE(md::Qwen38InjectionOf(*s, kAt * 10, 1, 513).has_value());  // past the rows
+}
+
 TEST(Qwen38Test, RowsReadingMoreCellsAreTheChunksRowsOverThem) {
   const md::Qwen38Profile& p = md::Qwen38Flash();
   auto s = md::Qwen38State(p, 4096, 512);

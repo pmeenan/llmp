@@ -142,6 +142,37 @@ TEST(Jinja, FromJsonParsesAsLlamaCppDoes) {
             jinja::Code::kRuntime);
 }
 
+// Python's results where the subset once parted from them: split's
+// remainder once maxsplit is reached keeps its whitespace; float() of a
+// decimal beyond double's range is infinity or zero; int() of an infinite
+// float raises, of a NaN gives the default; and %d of a float that does not
+// fit int64 is refused, never converted.
+TEST(Jinja, SplitsAndNumbersAsPython) {
+  EXPECT_EQ(Text("{{ 'a b  '.split(None, 1) }}|{{ '  a b'.rsplit(None, 1) }}|"
+                 "{{ '  a  '.split(None, 0) }}|{{ '  a  '.rsplit(None, 0) }}|"
+                 "{{ 'a b c'.split(None, 1) }}|{{ ' a b c '.rsplit(None, 1) }}|"
+                 "{{ ' '.split(None, 0) }}"),
+            "['a', 'b  ']|['  a', 'b']|['a  ']|['  a']|['a', 'b c']|[' a b', 'c']|[]");
+  EXPECT_EQ(Text("{{ '1e500'|float }}|{{ '-1e500'|float }}|{{ '1e-500'|float }}|"
+                 "{{ '+-5'|float }}|{{ 'x'|int }}|{{ ('nan'|float)|int }}|{{ '%d' % -2.7 }}"),
+            "inf|-inf|0.0|0.0|0|0|-2");
+  EXPECT_EQ(Failed(Render("{{ '1e500'|int }}"), &jinja::Error::code), jinja::Code::kRuntime);
+  EXPECT_EQ(Failed(Render("{{ ('inf'|float)|int }}"), &jinja::Error::code), jinja::Code::kRuntime);
+  EXPECT_EQ(Failed(Render("{{ 1e19|int }}"), &jinja::Error::code), jinja::Code::kUnsupported);
+  EXPECT_EQ(Failed(Render("{{ '%d' % ('inf'|float) }}"), &jinja::Error::code),
+            jinja::Code::kRuntime);
+  EXPECT_EQ(Failed(Render("{{ '%d' % ('nan'|float) }}"), &jinja::Error::code),
+            jinja::Code::kRuntime);
+  EXPECT_EQ(Failed(Render("{{ '%d' % 1e300 }}"), &jinja::Error::code), jinja::Code::kUnsupported);
+  // A client's integer beyond int64: float() is its nearest double, int()
+  // is refused rather than replaced by the default.
+  const auto big = json::Parse("100000000000000000000");
+  ASSERT_TRUE(big.has_value());
+  const Variables b = {{"b", jinja::Input::Json(big->root())}};
+  EXPECT_EQ(Text("{{ b|float }}", b), "1e+20");
+  EXPECT_EQ(Failed(Render("{{ b|int }}", b), &jinja::Error::code), jinja::Code::kUnsupported);
+}
+
 TEST(Jinja, StrftimeNeedsAClock) {
   auto t = jinja::Template::Parse("{{ strftime_now('%Y') }}");
   ASSERT_TRUE(t.has_value());
@@ -271,6 +302,10 @@ TEST(JinjaBounds, HostileTemplatesAreRefusedOrCancelled) {
       {"{% set ns = namespace(l=[]) %}{% for i in range(100000) %}{% set ns.l = ns.l + "
        "['abcdefghijabcdefghij' * 100] %}{% endfor %}",
        jinja::Code::kLimit},
+      // `map` naming `map` again recurses a level per name (a string's
+      // character iterates as itself): bounded as evaluation depth, not by
+      // the stack.
+      {"{{ 'a'|map(" + names("'map'", 2000) + ", 'string')|list }}", jinja::Code::kLimit},
       {"{{ 2 ** 100 }}", jinja::Code::kUnsupported},
       {"{{ 9223372036854775807 + 1 }}", jinja::Code::kUnsupported},
       // One string held many times over: its text, JSON, format or indent
@@ -358,7 +393,10 @@ TEST(JinjaBounds, HostileTemplatesAreRefusedOrCancelled) {
        jinja::Code::kLimit},
       {"{% set b = (' ' * 60000000) ~ '0' %}" + loop + "{% set x = b|from_json %}" + end,
        jinja::Code::kLimit},
-      {"{% set b = '1' * 60000000 %}" + loop + "{% set x = b|int ~ b|float %}" + end,
+      // int of '1' * 60000000 raises as Python's does (its float is
+      // infinite): int is charged on a padded small number instead.
+      {"{% set b = '1' * 60000000 %}{% set w = (' ' * 60000000) ~ '1' %}" + loop +
+           "{% set x = w|int ~ b|float %}" + end,
        jinja::Code::kLimit},
       {"{% set f = '%-d' * 20000000 %}" + loop + "{% set x = strftime_now(f) %}" + end,
        jinja::Code::kLimit},
@@ -645,6 +683,93 @@ TEST(JinjaBounds, LimitsAreConfigurable) {
       Failed(Render("{% for i in range(1000) %}{{ i }}{% endfor %}", {}, {}, {.max_steps = 1000}),
              &jinja::Error::code),
       jinja::Code::kLimit);
+}
+
+// A string's and the rendering's trusted ranges count toward their bounds
+// with the text, as they grow: the template's text and a client's
+// alternating a byte at a time hold a 16-byte range per two bytes, eight
+// times the text, which once went uncharged until the string was finished
+// (and the output's never). Ordinary text, where each piece's trust runs
+// on, adds a range a piece at most.
+TEST(JinjaBounds, TrustedRangesCountTowardTheMemoryBounds) {
+  jinja::Limits small;
+  small.max_string_bytes = std::size_t{1} << 20U;
+  small.max_output_bytes = std::size_t{1} << 20U;
+  const auto chars = [](std::size_t n) {
+    return Variables{{"content", jinja::Input::String(std::string(n, 'a'))}};
+  };
+  // 100,000 characters: 200 KB of text, 100,000 ranges (1.6 MB).
+  const std::string interleave = "{% for c in content %}{{ c }}x{% endfor %}";
+  EXPECT_EQ(Failed(Render(interleave, chars(100'000), small), &jinja::Error::code),
+            jinja::Code::kLimit);
+  const auto fits = Render(interleave, chars(40'000), small);  // 80 KB and 640 KB of ranges
+  ASSERT_TRUE(fits.has_value()) << fits.error().ToString();
+  EXPECT_EQ(fits->text.size(), 80'000U);
+  EXPECT_EQ(fits->trusted.size(), 40'000U);
+  // A value's string: a mixed string repeated, a replacement around every
+  // code point, a join of alternating pieces.
+  for (const std::string_view t : {"{{ (content[:1] ~ 'x') * 100000 }}",
+                                   "{{ content|replace('', 'x') }}", "{{ content|join('x') }}"}) {
+    EXPECT_EQ(Failed(Render(t, chars(100'000), small), &jinja::Error::code), jinja::Code::kLimit)
+        << t;
+  }
+  EXPECT_TRUE(Render("{% set s = (content[:1] ~ 'x') * 30000 %}{{ s|length }}", chars(1), small)
+                  .has_value());
+  // Ordinary renderings are as before: long single-provenance text, and
+  // text that alternates by message rather than by byte.
+  const auto plain = Render("{{ 'ab' * 400000 }}<|{{ content }}|>", chars(200'000), small);
+  ASSERT_TRUE(plain.has_value()) << plain.error().ToString();
+  EXPECT_EQ(plain->trusted.size(), 2U);
+  const auto messages = Render("{% for i in range(1000) %}<|user|>{{ content }}<|end|>{% endfor %}",
+                               chars(500), small);
+  ASSERT_TRUE(messages.has_value()) << messages.error().ToString();
+  EXPECT_EQ(messages->trusted.size(), 1001U);  // each <|end|><|user|> one range
+}
+
+// A builder coalesces touching trusted pieces into one range, and with a
+// limit drops the append that would take its text and ranges past it.
+TEST(JinjaBounds, StrBuilderCountsItsRanges) {
+  jinja::StrBuilder b(64);
+  b.Append("ab", true);
+  b.Append("cd", true);  // runs on: still one range
+  EXPECT_EQ(b.bytes(), 4 + sizeof(jinja::Range));
+  b.Append("e", false);
+  b.Append("f", true);  // a second range
+  EXPECT_EQ(b.bytes(), 6 + (2 * sizeof(jinja::Range)));
+  EXPECT_FALSE(b.over());
+  b.Append(std::string(64 - b.bytes(), 'g'), false);  // exactly the limit
+  EXPECT_FALSE(b.over());
+  b.Append("h", true);
+  EXPECT_TRUE(b.over());
+  EXPECT_EQ(b.bytes(), 64U);
+  EXPECT_EQ(b.Take(nullptr), nullptr);  // refused, never truncated
+}
+
+// A set block's and a macro's output are held as they grow: they nest
+// (each building while the next runs), so each up to the output bound
+// would otherwise hold many times the live bound before any was charged.
+TEST(JinjaBounds, NestedOutputsAreHeldAsTheyGrow) {
+  jinja::Limits limits;
+  limits.max_live_bytes = std::size_t{1} << 20U;
+  limits.max_string_bytes = std::size_t{1} << 20U;
+  limits.max_output_bytes = std::size_t{1} << 20U;
+  // 600 KB of the template's text (short ranges: the lists stay small).
+  const std::string text =
+      "{% for i in range(300) %}{% for j in range(250) %}xxxxxxxx{% endfor %}{% endfor %}";
+  const std::string inner = "{% macro inner() %}" + text + "{% endmacro %}";
+  // 600 KB in the set block, then 600 KB more in the macro it calls.
+  const std::string nested =
+      inner + "{% set a %}" + text + "{{ inner()|length }}{% endset %}{{ a|length }}";
+  EXPECT_EQ(Failed(Render(nested, {}, limits), &jinja::Error::reason),
+            "the template's values held more bytes than their bound");
+  // One at a time, each released before the next: within the bound.
+  const auto apart = Render(inner + "{{ inner()|length }}{{ inner()|length }}", {}, limits);
+  ASSERT_TRUE(apart.has_value()) << apart.error().ToString();
+  EXPECT_EQ(apart->text, "600000600000");
+  limits.max_live_bytes = std::size_t{4} << 20U;
+  const auto room = Render(nested, {}, limits);
+  ASSERT_TRUE(room.has_value()) << room.error().ToString();
+  EXPECT_EQ(room->text, "600006");
 }
 
 // Large client values stay fast: lookups in a big mapping are indexed.

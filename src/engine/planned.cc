@@ -60,7 +60,8 @@ std::expected<void, std::string> PlaceAndPlan(
     leaf += Round(ggml_nbytes(input), 256) + 256;
   }
   kg::BindDistinct(nodes, kDistinct);
-  auto first = kg::PlanGraph(nodes, /*fusion=*/false, choices);
+  // What the caller keeps is read after the graph: never overwritten in place.
+  auto first = kg::PlanGraph(nodes, /*fusion=*/false, choices, keep);
   if (!first) {
     return Error(first.error().detail);
   }
@@ -87,7 +88,7 @@ std::expected<void, std::string> PlaceAndPlan(
     kg::TensorArena::Bind(tensor, activations + offset);
   }
   kg::BindViews(nodes);
-  auto second = kg::PlanGraph(nodes, false, choices);
+  auto second = kg::PlanGraph(nodes, false, choices, keep);
   if (!second) {
     return Error(second.error().detail);
   }

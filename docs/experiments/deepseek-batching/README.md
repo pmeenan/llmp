@@ -339,7 +339,7 @@ That figure is inferred, not measured. The chat route's turn boundary
   `DS4M_WAVE_SLOTS` and `DS4M_OUTA_HCA`, with the build's exact flags and
   link line. Records are in `shim/`.
 - **ds4.** `ds4-server` `b8ea076d…` (`76d51ef8`, 0.6.5), arguments as in
-  [deepseek-concurrent](../deepseek-concurrent/README.md#against-ds4).
+  [the same-session comparison](#against-ds4-same-session).
 - **Harness.** Controller `run.py` `31e1eff5…`, length screen `plen.py`
   `94cf0f67…`.
 - **Jobs.** Supervised jobs `ds4m-long`, `ds4m-ps` and `ds4m-plen`. The

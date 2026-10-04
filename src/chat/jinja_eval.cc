@@ -210,7 +210,7 @@ class Renderer {
         return Bound();
       }
     }
-    StrBuilder out;
+    StrBuilder out(arena_.limits().max_output_bytes);
     std::shared_ptr<Scope> scope = globals;
     auto flow = Exec(program_.body, scope, out);
     if (!flow) {
@@ -219,11 +219,14 @@ class Renderer {
     if (!arena_.ok()) {
       return Bound();  // a bound reached where no step followed to report it
     }
-    Rendered r;
-    for (const Range& range : out.raw().trusted) {
-      r.trusted.emplace_back(range.offset, range.length);
+    if (out.over()) {
+      return Fail(Code::kLimit, "the rendering is longer than its bound");
     }
+    // The output's text and ranges, within the output bound together, pass
+    // to the rendering as they are: no copy of the ranges.
+    Rendered r;
     r.text = std::move(out.raw().text);
+    r.trusted = std::move(out.raw().trusted);
     return r;
   }
 
@@ -294,6 +297,10 @@ class Renderer {
     }
     return Value::String(std::move(s));
   }
+  // A value's string's bound, for its builder: its text and trusted ranges
+  // (StrBuilder), as they grow.
+  std::size_t StringLimit() const { return arena_.limits().max_string_bytes; }
+  bool TooLong(const StrBuilder& b) const { return b.over() || b.bytes() > StringLimit(); }
   std::expected<Value, Error> Take(StrBuilder& b) {
     auto s = b.Take(&arena_);
     if (!s) {
@@ -303,7 +310,7 @@ class Renderer {
   }
   // A substring of a string value, with its provenance.
   std::expected<Value, Error> Sub(const jinja::Str& s, std::size_t offset, std::size_t length) {
-    StrBuilder b;
+    StrBuilder b(StringLimit());
     b.Append(s, offset, length);
     return Take(b);
   }
@@ -448,7 +455,12 @@ class Renderer {
       if (*flow != Flow::kNormal) {
         return flow;
       }
-      if (out.size() > arena_.limits().max_output_bytes) {
+      // The output's text and its trusted ranges (StrBuilder): its builder
+      // stops before they pass the bound.
+      if (!arena_.ok()) {
+        return Bound();  // a nested output held past the live bound (StrBuilder)
+      }
+      if (out.over() || out.bytes() > arena_.limits().max_output_bytes) {
         return Fail(Code::kLimit, "the rendering is longer than its bound", s->line);
       }
     }
@@ -522,7 +534,9 @@ class Renderer {
         return Flow::kNormal;
       }
       case StmtKind::kSetBlock: {
-        StrBuilder captured;
+        // Held as it grows: set blocks and macros nest, each one's output
+        // building while the next runs.
+        StrBuilder captured(arena_.limits().max_output_bytes, &arena_);
         auto flow = Exec(s.body, scope, captured);
         if (!flow) {
           return flow;
@@ -1269,7 +1283,7 @@ class Renderer {
       }
       const std::size_t n = CodePoints(s.text);
       const SliceRun run = AdjustSlice(static_cast<std::int64_t>(n), bounds[0], bounds[1], step);
-      StrBuilder b;
+      StrBuilder b(StringLimit());
       if (run.count == 0) {
         return Take(b);
       }
@@ -1311,7 +1325,7 @@ class Renderer {
   // ------------------------------------------------------------- operators
 
   std::expected<Value, Error> Concat(const Value& a, const Value& b) {
-    StrBuilder out;
+    StrBuilder out(StringLimit());
     if (auto r = AppendStr(a, out, arena_); !r) {
       return std::unexpected(r.error());
     }
@@ -1362,7 +1376,7 @@ class Renderer {
       if (a.str().text.size() + b.str().text.size() > arena_.limits().max_string_bytes) {
         return Fail(Code::kLimit, "a string longer than its bound");
       }
-      StrBuilder out;
+      StrBuilder out(StringLimit());
       const bool markup = a.str().markup || b.str().markup;
       if (markup && !a.str().markup) {
         AppendEscaped(a.str(), out);
@@ -1396,7 +1410,7 @@ class Renderer {
       if (n != 0 && s.text.size() > arena_.limits().max_string_bytes / n) {
         return Fail(Code::kLimit, "a string longer than its bound");
       }
-      StrBuilder out;
+      StrBuilder out(StringLimit());
       if (n != 0 && (s.trusted.empty() || s.all_trusted())) {
         // One provenance throughout: copy by doubling, not a piece at a time.
         std::string& text = out.raw().text;
@@ -1412,7 +1426,10 @@ class Renderer {
         }
         return Take(out);
       }
-      for (std::size_t i = 0; i < n; ++i) {
+      // Mixed provenance: a piece at a time, its ranges counted as the
+      // builder grows (a range per two bytes would hold eight times the
+      // text the check above bounds).
+      for (std::size_t i = 0; i < n && !out.over(); ++i) {
         out.Append(s);
       }
       return Take(out);
@@ -1820,7 +1837,7 @@ class Renderer {
       if (!frame->Set("kwargs", std::move(*kwargs), arena_)) {
         return Bound();
       }
-      StrBuilder out;
+      StrBuilder out(arena_.limits().max_output_bytes, &arena_);  // held: macros nest
       std::shared_ptr<Scope> scope = frame;
       auto flow = Exec(m.body, scope, out);
       if (!flow) {
@@ -2050,7 +2067,7 @@ class Renderer {
         end = at;
       }
     }
-    StrBuilder b;
+    StrBuilder b(StringLimit());
     b.Append(s, begin, end - begin);
     b.set_markup(s.markup);
     return Take(b);
@@ -2094,9 +2111,11 @@ class Renderer {
         }
         words.emplace_back(start, at - start);
       }
-      if (maxsplit >= 0 && words.size() > static_cast<std::size_t>(maxsplit) + 1) {
+      if (maxsplit >= 0 && words.size() > static_cast<std::size_t>(maxsplit)) {
         // The remainder keeps its whitespace on the far side: through the
-        // end for split, from the start for rsplit.
+        // end for split, from the start for rsplit. That holds for a last
+        // word reached by maxsplit too ('a b  '.split(None, 1) is
+        // ['a', 'b  ']), so a remainder starts once words reach maxsplit + 1.
         const auto keep = static_cast<std::size_t>(maxsplit);
         if (!from_right) {
           const std::size_t rest = words[keep].first;
@@ -2186,7 +2205,7 @@ class Renderer {
     if (!arena_.Work(s.text.size())) {
       return Bound();
     }
-    StrBuilder out;
+    StrBuilder out(StringLimit());
     std::size_t at = 0;
     std::int64_t done = 0;
     if (needle.empty()) {
@@ -2205,7 +2224,7 @@ class Renderer {
         DecodeAt(s.text, at, length);
         out.Append(s, at, length);
         at += length;
-        if (out.size() > arena_.limits().max_string_bytes) {
+        if (TooLong(out)) {
           return Fail(Code::kLimit, "a string longer than its bound");
         }
       }
@@ -2225,7 +2244,7 @@ class Renderer {
       out.Append(new_value.str());
       at = found + needle.size();
       ++done;
-      if (out.size() > arena_.limits().max_string_bytes) {
+      if (TooLong(out)) {
         return Fail(Code::kLimit, "a string longer than its bound");
       }
     }
@@ -2242,7 +2261,7 @@ class Renderer {
     }
     class Sink final : public CaseSink {
      public:
-      explicit Sink(const jinja::Str& s) : s_(s) {}
+      Sink(const jinja::Str& s, std::size_t limit) : b(limit), s_(s) {}
       void Emit(std::size_t source_offset, std::size_t source_length,
                 std::string_view mapped) override {
         // One code point, or an ASCII run mapped byte for byte: each output
@@ -2270,13 +2289,13 @@ class Renderer {
      private:
       const jinja::Str& s_;
       std::size_t range_ = 0;
-    } sink(s);
+    } sink(s, StringLimit());
     MapPythonCase(s.text, op, sink);
     // A mapping grows a code point at most threefold.
     if (!arena_.Work(sink.b.size())) {
       return Bound();
     }
-    if (sink.b.size() > arena_.limits().max_string_bytes) {
+    if (TooLong(sink.b)) {
       return Fail(Code::kLimit, "a string longer than its bound");
     }
     sink.b.set_markup(s.markup);
@@ -2298,7 +2317,7 @@ class Renderer {
 
   std::expected<Value, Error> Join(const std::vector<Value>& items, const Value* separator,
                                    const Value* attribute) {
-    StrBuilder out;
+    StrBuilder out(StringLimit());
     for (std::size_t i = 0; i < items.size(); ++i) {
       if (i != 0 && separator != nullptr) {
         if (auto r = AppendStr(*separator, out, arena_); !r) {
@@ -2316,7 +2335,7 @@ class Renderer {
       if (auto r = AppendStr(item, out, arena_); !r) {
         return std::unexpected(r.error());
       }
-      if (out.size() > arena_.limits().max_string_bytes) {
+      if (TooLong(out)) {
         return Fail(Code::kLimit, "a string longer than its bound");
       }
     }
@@ -2640,7 +2659,7 @@ class Renderer {
     if (!arena_.Work(f.size() * 4)) {
       return Bound();
     }
-    StrBuilder out;
+    StrBuilder out(StringLimit());
     std::size_t next = 0;
     std::size_t from = 0;
     for (std::size_t i = 0; i < f.size(); ++i) {
@@ -2669,13 +2688,25 @@ class Renderer {
         if (!a.is_number() || a.kind() == Kind::kBigInt) {
           return Fail(Code::kRuntime, "a %d format of something other than a number");
         }
-        const std::int64_t n =
-            a.is_integral() ? a.integer() : static_cast<std::int64_t>(std::trunc(a.number()));
+        std::int64_t n = a.integer();
+        if (!a.is_integral()) {
+          // Python's int() of the float: infinity and NaN raise; beyond
+          // int64 is Python's big integer, which the subset leaves out (a
+          // cast there would be undefined behaviour).
+          const double x = std::trunc(a.number());
+          if (!std::isfinite(x)) {
+            return Fail(Code::kRuntime, "a %d format of an infinite or NaN float");
+          }
+          if (x >= 0x1p63 || x < -0x1p63) {
+            return Fail(Code::kUnsupported, "an integer beyond 64 bits");
+          }
+          n = static_cast<std::int64_t>(x);
+        }
         out.Append(std::to_string(n), a.trusted());
       } else {
         return Fail(Code::kUnsupported, "a format directive other than %s, %d, %i or %%");
       }
-      if (out.size() > arena_.limits().max_string_bytes) {
+      if (TooLong(out)) {
         return Fail(Code::kLimit, "a string longer than its bound");
       }
     }
@@ -2749,7 +2780,11 @@ class Renderer {
     }
     // After the text: each value visited printed a byte, so a value shared
     // many times over (lists of lists of one list) costs no more than its
-    // bounded text.
+    // bounded text. The text is held while the string copies it.
+    Held held(arena_);
+    if (!held.Add(text.size())) {
+      return Bound();
+    }
     return Str(text, trusted && DeepTrusted(v));
   }
 
@@ -2879,7 +2914,7 @@ class Renderer {
     }
     const Value* first = args.Get(1, "first");
     const Value* blank = args.Get(2, "blank");
-    StrBuilder text;
+    StrBuilder text(StringLimit());
     if (auto r = AppendStr(v, text, arena_); !r) {
       return std::unexpected(r.error());
     }
@@ -2892,7 +2927,7 @@ class Renderer {
     if (!lines) {
       return lines;
     }
-    StrBuilder out;
+    StrBuilder out(StringLimit());
     const auto& items = lines->list().items;
     for (std::size_t i = 0; i < items.size(); ++i) {
       const jinja::Str& line = items[i].str();
@@ -2906,7 +2941,7 @@ class Renderer {
         out.Append(*indent);
       }
       out.Append(line);
-      if (out.size() > arena_.limits().max_string_bytes) {
+      if (TooLong(out)) {
         return Fail(Code::kLimit, "a string longer than its bound");
       }
     }
@@ -2922,6 +2957,14 @@ class Renderer {
   }
 
   std::expected<Value, Error> Filter(std::string_view name, Value v, const Args& args) {
+    // `map` applies the filter its argument names, which may be `map` again
+    // (`'a'|map('map', 'map', ...)`, a string's character iterating as
+    // itself): each level counts as evaluation depth, or a long enough list
+    // of names would recurse until the stack overflows.
+    const Depth depth(*this);
+    if (!depth.ok()) {
+      return Fail(Code::kLimit, "evaluation nests deeper than its bound");
+    }
     if (!arena_.Step() || !ChargeArgs(args)) {
       return Bound();
     }
@@ -2929,7 +2972,7 @@ class Renderer {
       if (v.is_string()) {
         return v;
       }
-      StrBuilder b;
+      StrBuilder b(StringLimit());
       if (auto r = AppendStr(v, b, arena_); !r) {
         return std::unexpected(r.error());
       }
@@ -2940,7 +2983,7 @@ class Renderer {
       if (!s) {
         return s;
       }
-      StrBuilder b;
+      StrBuilder b(StringLimit());
       b.Append(s->str());
       b.set_markup(true);
       return Take(b);
@@ -2953,7 +2996,7 @@ class Renderer {
       if (!s) {
         return s;
       }
-      StrBuilder b;
+      StrBuilder b(StringLimit());
       AppendEscaped(s->str(), b);
       b.set_markup(true);
       return Take(b);
@@ -2989,7 +3032,7 @@ class Renderer {
       if (count != nullptr && !count->is_none() && !count->is_integral()) {
         return Fail(Code::kRuntime, "a replace count that is not an integer");
       }
-      StrBuilder plain;
+      StrBuilder plain(StringLimit());
       plain.Append(s->str());
       auto unmarked = Take(plain);
       if (!unmarked) {
@@ -2999,7 +3042,7 @@ class Renderer {
       auto o = old_value->is_string() ? *old_value : Value();
       auto n = new_value->is_string() ? *new_value : Value();
       if (!o.is_string()) {
-        StrBuilder b;
+        StrBuilder b(StringLimit());
         if (auto r = AppendStr(*old_value, b, arena_); !r) {
           return std::unexpected(r.error());
         }
@@ -3010,7 +3053,7 @@ class Renderer {
         o = *t;
       }
       if (!n.is_string()) {
-        StrBuilder b;
+        StrBuilder b(StringLimit());
         if (auto r = AppendStr(*new_value, b, arena_); !r) {
           return std::unexpected(r.error());
         }
@@ -3158,6 +3201,12 @@ class Renderer {
         if (!args.positional[0].is_string() || !KnownFilter(args.positional[0].str().text)) {
           return Fail(Code::kUnsupported, "map with a filter the subset does not implement");
         }
+        // The arguments passed on are a copy, held while the filter runs: a
+        // `map` of `map` keeps one a level.
+        Held held(arena_);
+        if (!held.Add((args.positional.size() + args.keywords.size()) * sizeof(Value))) {
+          return Bound();
+        }
         Args rest;
         rest.positional.assign(args.positional.begin() + 1, args.positional.end());
         rest.keywords = args.keywords;
@@ -3273,7 +3322,7 @@ class Renderer {
         }
         if (s.trusted.empty() || s.all_trusted()) {
           // One provenance throughout: the code points copied in reverse.
-          StrBuilder b;
+          StrBuilder b(StringLimit());
           std::string& text = b.raw().text;
           text.reserve(s.text.size());
           for (std::size_t end = s.text.size(); end > 0;) {
@@ -3302,7 +3351,7 @@ class Renderer {
           chars.emplace_back(at, length);
           at += length;
         }
-        StrBuilder b;
+        StrBuilder b(StringLimit());
         for (const auto& [at, length] : std::views::reverse(chars)) {
           b.Append(s, at, length);
         }
@@ -3339,11 +3388,27 @@ class Renderer {
       if (v.is_integral()) {
         return Value::Int(v.integer(), v.trusted());
       }
-      if (v.kind() == Kind::kFloat) {
-        if (!std::isfinite(v.number()) || std::fabs(v.number()) >= 9.2e18) {
+      if (v.kind() == Kind::kBigInt) {
+        return Fail(Code::kUnsupported, "an integer beyond 64 bits");  // Python's int keeps it
+      }
+      // Python's int() of a float: NaN raises ValueError (Jinja2 gives the
+      // default), infinity OverflowError (Jinja2 lets it through); past
+      // int64 it is a big integer, which the subset refuses.
+      const auto truncated = [&](double x, bool trusted) -> std::expected<Value, Error> {
+        if (std::isnan(x)) {
           return def;
         }
-        return Value::Int(static_cast<std::int64_t>(std::trunc(v.number())), v.trusted());
+        if (std::isinf(x)) {
+          return Fail(Code::kRuntime, "int of an infinite float");
+        }
+        x = std::trunc(x);
+        if (x >= 0x1p63 || x < -0x1p63) {
+          return Fail(Code::kUnsupported, "an integer beyond 64 bits");
+        }
+        return Value::Int(static_cast<std::int64_t>(x), trusted);
+      };
+      if (v.kind() == Kind::kFloat) {
+        return truncated(v.number(), v.trusted());
       }
       if (v.is_string()) {
         const std::string_view text = PythonNumberText(v.str().text);
@@ -3352,8 +3417,8 @@ class Renderer {
           return Value::Int(i, v.str().all_trusted());
         }
         double d = 0;
-        if (ParseFloat(text, d) && std::isfinite(d) && std::fabs(d) < 9.2e18) {
-          return Value::Int(static_cast<std::int64_t>(std::trunc(d)), v.str().all_trusted());
+        if (ParseFloat(text, d)) {
+          return truncated(d, v.str().all_trusted());
         }
       }
       return def;
@@ -3366,6 +3431,18 @@ class Renderer {
       }
       if (v.is_number() && v.kind() != Kind::kBigInt) {
         return Value::Float(v.number(), v.trusted());
+      }
+      if (v.kind() == Kind::kBigInt) {
+        // Python's float() of the integer: its nearest double, or
+        // OverflowError past double's range (which Jinja2 lets through).
+        if (!arena_.Work(v.str().text.size() * 4)) {  // copied and parsed
+          return Bound();
+        }
+        double d = 0;
+        if (!ParseFloat(v.str().text, d) || std::isinf(d)) {
+          return Fail(Code::kRuntime, "float of an integer beyond a float's range");
+        }
+        return Value::Float(d, false);
       }
       if (v.is_string()) {
         double d = 0;
@@ -3566,10 +3643,50 @@ class Renderer {
       out = std::nan("");
       return true;
     }
+    if (lower.starts_with("+-")) {
+      return false;  // one sign at most; from_chars would read the second
+    }
     const char* begin = text.data() + (text[0] == '+' ? 1 : 0);
-    const auto [end, ec] = std::from_chars(begin, text.data() + text.size(), out);
-    return (ec == std::errc() || ec == std::errc::result_out_of_range) &&
-           end == text.data() + text.size();
+    const char* const stop = text.data() + text.size();
+    const auto [end, ec] = std::from_chars(begin, stop, out);
+    if (end != stop || (ec != std::errc() && ec != std::errc::result_out_of_range)) {
+      return false;
+    }
+    if (ec == std::errc::result_out_of_range) {
+      out = OutOfRange(body, negative);  // from_chars leaves it unset
+    }
+    return true;
+  }
+  // A decimal (lower case, unsigned) from_chars found out of range, as
+  // Python's float() reads it: infinity when its magnitude (the first
+  // nonzero digit's power of ten plus the exponent) is huge, else zero.
+  static double OutOfRange(std::string_view body, bool negative) {
+    std::string_view mantissa = body;
+    std::int64_t exponent = 0;
+    if (const std::size_t e = body.find('e'); e != std::string_view::npos) {
+      std::string_view digits = body.substr(e + 1);
+      mantissa = body.substr(0, e);
+      if (digits.starts_with('+')) {
+        digits.remove_prefix(1);
+      }
+      const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), exponent);
+      if (parsed.ec == std::errc::result_out_of_range) {
+        exponent = digits.starts_with('-') ? std::numeric_limits<std::int64_t>::min() / 4
+                                           : std::numeric_limits<std::int64_t>::max() / 4;
+      }
+    }
+    const std::size_t dot = std::min(mantissa.find('.'), mantissa.size());
+    const std::size_t first = mantissa.find_first_of("123456789");
+    std::int64_t magnitude = 0;
+    if (first < dot) {
+      magnitude = static_cast<std::int64_t>(dot - first - 1);
+    } else if (first != std::string_view::npos) {
+      magnitude = -static_cast<std::int64_t>(first - dot);
+    }
+    if (magnitude + exponent > 0) {
+      return negative ? -HUGE_VAL : HUGE_VAL;
+    }
+    return negative ? -0.0 : 0.0;
   }
 
   // ------------------------------------------------------------------ tests
@@ -3631,7 +3748,8 @@ class Renderer {
       return v.is_string() && v.str().markup;
     }
     if (name == "lower" || name == "upper") {
-      // Jinja2's str(value).islower() (isupper()): any value, as its text.
+      // Jinja2's str(value).islower() (isupper()): any value, as its text
+      // (read here, never kept: a repr, which stops at the string bound).
       StrBuilder b;
       if (!v.is_string()) {
         if (auto r = AppendStr(v, b, arena_); !r) {

@@ -105,7 +105,8 @@ change or guard reduction was made. The diagnostic omits aligned-weight
 virtual reservations/catalog entries and does not itself qualify a model
 run. These observations establish a cache-sensitive current-free reading;
 they do not establish whether a real CUDA allocation would automatically
-reclaim that cache, nor identify a driver defect.
+reclaim that cache, nor identify a driver defect. The benchmark, and
+with it this workaround, was removed on 2026-10-04 (`ec8af04` holds it).
 
 See the [matched 32K report](experiments/ds4-matched-32k/README.md#allocation-refusal-and-scoped-cache-control)
 and [NVIDIA handoff](upstream/cuda.md#cuda-current-free-memory-excludes-inactive-file-cache-re-041).

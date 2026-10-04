@@ -43,7 +43,7 @@ bool GatherPleRows(const std::byte* landing, const std::uint32_t* sources,
   GatherKernel<<<max_count, 128, 0, static_cast<cudaStream_t>(stream)>>>(
       reinterpret_cast<const unsigned char*>(landing), sources, count, row_bytes,
       reinterpret_cast<unsigned char*>(slots));
-  return cudaPeekAtLastError() == cudaSuccess;
+  return cudaGetLastError() == cudaSuccess;
 }
 
 }  // namespace jitllm::kernels::paging

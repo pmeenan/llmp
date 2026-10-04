@@ -12,7 +12,8 @@
 // - the Q-head's F16 rows, and the D512 MMA flash attention (plain and wide)
 //   and the ds4 HCA core reading them in place of F32 Q;
 // - output-A's coalesced weight repack;
-// - two dense Q8_0 products sharing one quantization of their activation;
+// - two dense products of one quantized type (Q8_0, Q5_K, Q6_K) sharing one
+//   quantization of their activation;
 // - the GB10 IQ2 occupancy-two pair's SwiGLU write-back, and its quantizing
 //   form with the Q2_K down product that reads it unquantized, at the
 //   measured shape;
@@ -714,8 +715,11 @@ TEST_F(Dsv4StagesTest, TheIq2PairWritesItsActivationAndTheDownProductsInputExact
   constexpr std::int64_t kMiddle = 2048;
   constexpr std::int64_t kExperts = 256;
   constexpr std::int64_t kUsed = 6;
+  // (512 tokens: a partial chunk whose F32 activation is smaller than a full
+  // chunk's quantized one, which the quantizing write-back still holds.)
   for (const auto& [kPairType, kTokens] : {std::pair{GGML_TYPE_IQ2_XXS, std::int64_t{4096}},
                                            std::pair{GGML_TYPE_IQ2_XXS, std::int64_t{2947}},
+                                           std::pair{GGML_TYPE_IQ2_XXS, std::int64_t{512}},
                                            std::pair{GGML_TYPE_IQ2_XS, std::int64_t{4096}}}) {
     SCOPED_TRACE(std::format("{}, {} tokens", ggml_type_name(kPairType), kTokens));
     const float limit = md::Dsv4Flash().swiglu_limit;

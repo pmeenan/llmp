@@ -55,14 +55,17 @@
 //   groups as regions, its experts as a slab), binding the target's token
 //   table and head (model/qwen38.h Qwen38MtpBinding). A prefill chunk with
 //   `inject` also exports its rows' streams and runs the drafter's pass over
-//   the positions whose next token it knows, in the same job. Draft runs the
-//   drafter's catch-up over the rows the last verify kept (or the prefill
-//   left) and its further passes, one job, returning the drafts. Verify runs
-//   the target over the anchor and the drafts in the verify form (every
-//   row's logits; the recurrent, convolution and n-gram state read but not
-//   written, each row's inputs saved; the KV and indexer cells it writes
-//   saved first), and Accept then owes the rejected rows' cells back and
-//   the kept rows' commit (qwen38_commit.h, the live state's commit hook),
+//   the positions whose next token it knows, in the same job; the rows the
+//   last verify kept are caught up first, each from its own streams
+//   (model/qwen38.h Qwen38Injection). Draft runs the drafter's catch-up over
+//   the rows the last verify kept (or the prefill left) and its further
+//   passes, one job, returning the drafts. Verify runs the target over the
+//   anchor and the drafts in the verify form (every row's logits; the
+//   recurrent, convolution and n-gram state read but not written, each
+//   row's inputs saved; the KV and indexer cells and the drafter's streams
+//   rows it writes saved first), and Accept then owes the rejected rows'
+//   cells back and the kept rows' commit (qwen38_commit.h, the live state's
+//   commit hook),
 //   before the next job's own work (or at once, with Rollback): the state a
 //   verify of the kept rows alone would have left. A failed verify is
 //   undone whole; any other failure after a job may have written the state
@@ -273,7 +276,8 @@ class Qwen38Runner final : public PagedModel {
   Status CopyCheckpointState(void* host, std::span<const LiveState::Range> ranges, bool to_host);
   // One chunk: history[n_past, end) after n_past (history holds every token
   // from position 0); the last row's logits in `logits`. With `inject`
-  // (speculating), the drafter's streams and its pass over the chunk too.
+  // (speculating), the drafter's streams and its pass over the chunk too,
+  // after catching up the rows still pending (pending_rows()).
   Status Chunk(std::span<const std::int32_t> history, std::uint32_t n_past,
                std::vector<float>& logits, bool inject = false);
 
@@ -733,6 +737,11 @@ class Qwen38Runner final : public PagedModel {
       std::uint32_t positions, std::uint32_t read_align) const;
   Status Chunk(RequestState& request, std::span<const std::int32_t> history, std::uint32_t n_past,
                std::vector<float>& logits, bool inject);
+  // An injected chunk's catch-up (model/qwen38.h Qwen38Injection): the
+  // drafter's pass over `rows` pending rows from `first` (streams from
+  // H[1], each with the token after it), its own job before the chunk's.
+  Status CatchUp(RequestState& request, std::span<const std::int32_t> history, std::uint32_t first,
+                 std::uint32_t rows);
   Status Draft(RequestState& request, std::span<const std::int32_t> history,
                std::vector<std::int32_t>& drafts, std::vector<float>* probabilities,
                std::uint32_t passes, Qwen38DraftHeadCapture* head_capture);

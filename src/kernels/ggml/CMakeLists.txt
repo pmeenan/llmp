@@ -24,12 +24,10 @@
 #                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, mmvq_rows.cu,
 #                        fattn_mma*.cu)
 #                        to jitllm_ggml_kernels.
-add_library(jitllm_ggml_tensors STATIC dsv4_ds4_product.cc dsv4_ds4_cache.cc dsv4_ds4_hc.cc dsv4_ds4_comp.cc dsv4_ds4_repack.cc dsv4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
+add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
                                        qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
-target_sources(jitllm_ggml_tensors PRIVATE dsv4_ds4_attention.cc dsv4_ds4_indexer.cc)
-target_sources(jitllm_ggml_tensors PRIVATE dsv4_ds4_moe.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_weighted_reduce.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_qhead.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_hc_norm.cc)
@@ -64,21 +62,18 @@ if(JITLLM_CUDA)
   endforeach()
 
   add_library(jitllm_ggml_kernels STATIC ggml_support.cu launch.cu ops.cu mul_mat_cublas.cu
-                                         fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu dsv4_ds4_cache.cu dsv4_ds4_hc.cu dsv4_ds4_comp.cu dsv4_ds4_repack.cu mmvq_rows.cu fattn_mma.cu
+                                         fattn.cu ops_ext.cu mul_mat_q.cu mul_mat_q2_d2r.cu dsv4_hca_tokentile.cu mmvq_rows.cu fattn_mma.cu
                                          fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
                                          jitllm_ops.cu jitllm_fused.cu jitllm_moe.cu dsv4_fast.cu dsv4_sparse.cu
                                          qsa_sparse.cu
                                          cublas.cc executor.cc implementations.cc)
   target_include_directories(jitllm_ggml_kernels PUBLIC "${PROJECT_SOURCE_DIR}/src")
-  target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_product.cu dsv4_ds4_product_raw.cu)
-  target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_attention.cu dsv4_ds4_indexer.cu)
-  target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_moe.cu dsv4_ds4_moe_raw.cu)
+  target_sources(jitllm_ggml_kernels PRIVATE dsv4_ds4_product_raw.cu dsv4_ds4_attention.cu)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_weighted_reduce.cu)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_qhead.cu)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_hc_norm.cu)
   target_sources(jitllm_ggml_kernels PRIVATE mul_mat_q_glu.cu)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_outa.cu)
-  target_link_libraries(jitllm_ggml_kernels PRIVATE jitllm_ds4_original_headers)
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   # CUTLASS's NVFP4 grouped GEMM for the routed experts (moe_cutlass.h) and
@@ -153,30 +148,13 @@ if(JITLLM_CUDA)
                    dsv4_hc_norm.h dsv4_hc_norm.cc dsv4_hc_norm.cu
                    mul_mat_q_glu.cuh mul_mat_q_glu.cu
                    dsv4_outa.h dsv4_outa.cc dsv4_outa.cu
-                   dsv4_ds4_moe.h dsv4_ds4_moe.cc dsv4_ds4_moe.cu
-                   dsv4_ds4_moe_raw.h dsv4_ds4_moe_raw.cu dsv4_ds4_moe_core.cuh
-                   dsv4_ds4_moe_original.cuh dsv4_ds4_moe_core.json
-                   dsv4_ds4_moe_core.json.license
-                   dsv4_ds4_attention.h dsv4_ds4_attention.cc dsv4_ds4_attention.cu
+                   dsv4_ds4_attention.h dsv4_ds4_attention.cu
                    dsv4_ds4_attention_core.cuh dsv4_ds4_attention_core.json
                    dsv4_ds4_attention_core.json.license
-                   dsv4_ds4_indexer.h dsv4_ds4_indexer.cc dsv4_ds4_indexer.cu
-                   dsv4_ds4_indexer_core.cuh dsv4_ds4_indexer_core.json
-                   dsv4_ds4_indexer_core.json.license
-                   dsv4_ds4_product.h dsv4_ds4_product.cc dsv4_ds4_product.cu
                    dsv4_ds4_product_raw.h dsv4_ds4_product_raw.cu
-                   dsv4_ds4_product_original.cuh dsv4_ds4_product_quantize.cuh
-                   dsv4_ds4_product_f16.cuh dsv4_ds4_product_q8.cuh
+                   dsv4_ds4_product_original.cuh
                    dsv4_ds4_product_source.json dsv4_ds4_product_source.json.license
-                   dsv4_graph.h dsv4_hca_tokentile.cu dsv4_ds4_cache.cc dsv4_ds4_cache.cu
-                   dsv4_ds4_cache.h dsv4_ds4_cache_core.cuh dsv4_ds4_cache_core.json
-                   dsv4_ds4_cache_core.json.license
-                   dsv4_ds4_hc.cc dsv4_ds4_hc.cu dsv4_ds4_hc.h
-                   dsv4_ds4_hc_core.cuh dsv4_ds4_hc_core.json dsv4_ds4_hc_core.json.license
-                   dsv4_ds4_comp.cc dsv4_ds4_comp.cu dsv4_ds4_comp.h
-                   dsv4_ds4_comp_core.cuh dsv4_ds4_comp_core.json dsv4_ds4_comp_core.json.license
-                   dsv4_ds4_repack.cc dsv4_ds4_repack.cu dsv4_ds4_repack.h
-                   dsv4_ds4_repack_core.cuh dsv4_ds4_repack_core.json dsv4_ds4_repack_core.json.license
+                   dsv4_graph.h dsv4_hca_tokentile.cu
                    executor.cc
                    executor.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
@@ -186,7 +164,7 @@ if(JITLLM_CUDA)
                    jitllm_ops.h launch.cu launch.h
                    mmvq_rows.cu module_digest.cmake moe_cutlass.cu moe_cutlass.h moe_layout.h
                    mxfp8_cutlass.cu mxfp8_cutlass.h mxfp8_quant.cuh
-                   mul_mat_cublas.cu mul_mat_q.cu mul_mat_q_borrowed.cuh mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
+                   mul_mat_cublas.cu mul_mat_q.cu mul_mat_q2_d2r.cu ops.cu ops.h ops_ext.cu qsa_sparse.cu
                    ops_ext.h qwen2_graph.cc qwen2_graph.h qwen38_commit.h qwen38_graph.cc
                    qwen38_graph.h tensors.cc tensors.h validate.cc validate.h validate_ext.cc validate_ext.h
                    validate_util.h)
@@ -220,17 +198,13 @@ if(JITLLM_CUDA)
   # (template-instances/fattn-vec-instance-f16-f16.cu) builds in the bridge.
   set_source_files_properties(fattn.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")
-  # The default-off complete-ds4 benchmark's cache/QAT and HC/norm cores
-  # retain the pinned original CUDA flags. The caller owns every range,
-  # including the decode table; this adds no original runtime or globals.
-  set_source_files_properties(dsv4_ds4_cache.cu dsv4_ds4_hc.cu dsv4_ds4_comp.cu dsv4_ds4_repack.cu PROPERTIES COMPILE_OPTIONS
-                              "-O3;--use_fast_math;-lineinfo")
-  set_source_files_properties(dsv4_ds4_product.cu dsv4_ds4_product_raw.cu PROPERTIES COMPILE_OPTIONS
+  # The units holding original ds4 numerical code (the output-A core and the
+  # F16-Q copy of the token-tile HCA core) keep the pinned original CUDA
+  # flags, as the locked ds4 targets do.
+  set_source_files_properties(dsv4_ds4_product_raw.cu PROPERTIES COMPILE_OPTIONS
                               "-O3;--use_fast_math;-lineinfo;-extended-lambda")
-  set_source_files_properties(dsv4_ds4_attention.cu dsv4_ds4_indexer.cu PROPERTIES COMPILE_OPTIONS
+  set_source_files_properties(dsv4_ds4_attention.cu PROPERTIES COMPILE_OPTIONS
                               "-O3;--use_fast_math;-lineinfo")
-  set_source_files_properties(dsv4_ds4_moe.cu dsv4_ds4_moe_raw.cu PROPERTIES COMPILE_OPTIONS
-                              "-O3;--use_fast_math;-lineinfo;-extended-lambda")
   # The M3 units that compile or launch GGML's kernels take GGML's device
   # flags too, as GGML's own files and instance units build
   # (third_party/patches/ggml/0002): the tensor-core flash-attention

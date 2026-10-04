@@ -437,14 +437,16 @@ class Dsv4 final : public Llm {
   }
   Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
                      std::uint32_t left, std::vector<std::int32_t>& kept,
-                     std::vector<std::vector<float>>* logits, std::uint64_t& drafted) override {
+                     std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
+                     bool* prefix_kept = nullptr) override {
     const std::uint32_t rows = VerifyRows(pos, left, runner_.max_verify());
     std::vector<std::int32_t> drafts;
     std::vector<float> verified;
     if (auto r = NativeSlot(branch).DraftVerify(pos, all.back(), rows, drafts, verified); !r) {
       return r;
     }
-    return Judge(branch, pos, rows, drafts, verified, kept, logits, drafted);
+    return Undone(branch, Judge(branch, pos, rows, drafts, verified, kept, logits, drafted),
+                  prefix_kept);
   }
   Status SettleFor(Branch& branch) override { return NativeSlot(branch).Rollback(); }
   Status ClearStateFor(Branch& branch) override { return NativeSlot(branch).Clear(); }
@@ -703,9 +705,9 @@ class Dsv4 final : public Llm {
     }
     for (const std::size_t i : alone) {
       PreparedGeneration& unit = prepared[i];
-      unit.result =
-          SpecStepFor(*unit.branch, unit.step.all, unit.step.position, unit.step.left, unit.kept,
-                      unit.step.need_logits ? &unit.logits : nullptr, unit.drafted);
+      unit.result = SpecStepFor(*unit.branch, unit.step.all, unit.step.position, unit.step.left,
+                                unit.kept, unit.step.need_logits ? &unit.logits : nullptr,
+                                unit.drafted, &unit.failed_prefix_valid);
       if (!unit.result && !runner_.cohort_usable()) {
         return std::unexpected(unit.result.error());
       }
@@ -753,6 +755,22 @@ class Dsv4 final : public Llm {
       }
     }
     return {};
+  }
+
+  // A failed judgement after the native verify completed: the verify is
+  // undone, so the step's starting prefix still holds (`prefix_kept`, as a
+  // wave's failed_prefix_valid); an undo that fails says so.
+  Status Undone(Branch& branch, Status judged, bool* prefix_kept) {
+    if (judged) {
+      return judged;
+    }
+    if (auto rolled = NativeSlot(branch).DiscardVerify(); !rolled) {
+      return Error(std::format("{}; rolling back failed: {}", judged.error(), rolled.error()));
+    }
+    if (prefix_kept != nullptr) {
+      *prefix_kept = true;
+    }
+    return judged;
   }
 
   // The verify's rows from `pos`: the anchor and its drafts, within the
@@ -1180,7 +1198,8 @@ class Qwen38 final : public Llm {
 
   Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
                      std::uint32_t left, std::vector<std::int32_t>& kept,
-                     std::vector<std::vector<float>>* logits, std::uint64_t& drafted) override {
+                     std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
+                     bool* prefix_kept = nullptr) override {
     // Sampling's position keys keep their existing fixed draft schedule.
     // Greedy chooses its depth from deterministic acceptance observations.
     const auto depth = DraftDepthFor(branch);
@@ -1210,7 +1229,9 @@ class Qwen38 final : public Llm {
     if (!sampling(branch) && rows == depth + 1 && pos < CalibrationSamples::kShortContext) {
       calibration_samples_.DraftStep(depth, Seconds(Clock::now() - started));
     }
-    return JudgeVerify(branch, drafts, pos, depth, argmax, verified, kept, logits, drafted);
+    return Undone(branch,
+                  JudgeVerify(branch, drafts, pos, depth, argmax, verified, kept, logits, drafted),
+                  prefix_kept);
   }
   bool StateRefusedFor(const Branch& branch) const override {
     return NativeSlot(branch).state_refused();
@@ -1421,6 +1442,22 @@ class Qwen38 final : public Llm {
   }
 
  private:
+  // A failed judgement after the native verify completed: the verify is
+  // undone, so the step's starting prefix still holds (`prefix_kept`, as a
+  // wave's failed_prefix_valid); an undo that fails says so.
+  Status Undone(Branch& branch, Status judged, bool* prefix_kept) {
+    if (judged) {
+      return judged;
+    }
+    if (auto rolled = NativeSlot(branch).DiscardVerify(); !rolled) {
+      return Error(std::format("{}; rolling back failed: {}", judged.error(), rolled.error()));
+    }
+    if (prefix_kept != nullptr) {
+      *prefix_kept = true;
+    }
+    return judged;
+  }
+
   std::uint32_t DraftDepthFor(const Branch& branch) const {
     return sampling(branch) || runner_.draft_rows() < 3 ? 2U : BranchDecoding(branch).Choose();
   }
@@ -2443,7 +2480,8 @@ Status Llm::RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::
 
 Status Llm::SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
                         std::uint32_t left, std::vector<std::int32_t>& kept,
-                        std::vector<std::vector<float>>* logits, std::uint64_t& drafted) {
+                        std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
+                        bool* /*prefix_kept*/) {
   CheckDefaultBranch(branch);
   return SpecStep(all, pos, left, kept, logits, drafted);
 }
@@ -3434,10 +3472,12 @@ Status Llm::GenerationSession::RunScalarStep(bool defer_capacity) {
   if (step->speculative) {
     std::vector<std::int32_t> kept;
     std::vector<std::vector<float>> logits;
-    auto ran = model_.SpecStepFor(branch_, step->all, step->position, step->left, kept,
-                                  step->need_logits ? &logits : nullptr, out_.drafted);
+    bool prefix_kept = false;
+    auto ran =
+        model_.SpecStepFor(branch_, step->all, step->position, step->left, kept,
+                           step->need_logits ? &logits : nullptr, out_.drafted, &prefix_kept);
     if (!ran) {
-      return FailStep(ran.error());
+      return FailStep(ran.error(), prefix_kept);
     }
     // Its decode speed (calibration.h: the decode floor's).
     model_.calibration_samples_.DecodeStep(step->position, static_cast<double>(kept.size()),
@@ -3462,7 +3502,8 @@ Status Llm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
   PreparedGeneration& unit = prepared.front();
   if (unit.step.speculative) {
     return SpecStepFor(*unit.branch, unit.step.all, unit.step.position, unit.step.left, unit.kept,
-                       unit.step.need_logits ? &unit.logits : nullptr, unit.drafted);
+                       unit.step.need_logits ? &unit.logits : nullptr, unit.drafted,
+                       &unit.failed_prefix_valid);
   }
   return RunChunkFor(*unit.branch, unit.step.all, unit.step.position, false, unit.row);
 }
@@ -4198,6 +4239,15 @@ Status Server::PrepareKept() {
         }
         why = verify(record->file, record->id, record->file_bytes, places, digests);
       }
+      // Every extent the record does not list reads as zeros from here on,
+      // as a fresh slot's do: a record removed before a crash can come back
+      // (its removal not yet on disk), its listed extents still matching
+      // while the file's others hold what a later conversation wrote there,
+      // which this one would read when it grows into them (D-105). Each
+      // adoption empties them again, so their emptying need not be synced.
+      if (why.empty()) {
+        why = EmptyUnlisted(*dir, *record);
+      }
       if (!why.empty()) {
         Log(std::format("model {}: slot {}'s kept conversation was refused: {}", l.name(), slot,
                         why));
@@ -4292,13 +4342,33 @@ void Server::Persist(Clock::time_point deadline, const std::function<void()>& pr
   auto told = Clock::now();
   if (resident_ != nullptr && resident_->llm()) {
     auto& l = static_cast<Llm&>(*resident_);
-    for (std::size_t i = 0; i < l.branches() && Clock::now() < deadline; ++i) {
-      auto b = l.branch(i);
-      if (!b || (*b)->history().empty() || !l.BranchIdle(**b) || l.ResidentStateBytes(**b) == 0) {
+    // The most recently used first, so those that do not fit are the least
+    // recently used.
+    std::vector<Llm::Branch*> idle;
+    for (std::size_t i = 0; i < l.branches(); ++i) {
+      if (auto b = l.branch(i);
+          b && !(*b)->history().empty() && l.BranchIdle(**b) && l.ResidentStateBytes(**b) != 0) {
+        idle.push_back(*b);
+      }
+    }
+    std::ranges::stable_sort(idle, [&l](const Llm::Branch* a, const Llm::Branch* b) {
+      return l.LastUsed(*a) > l.LastUsed(*b);
+    });
+    for (Llm::Branch* branch : idle) {
+      if (Clock::now() >= deadline) {
+        break;
+      }
+      const std::uint64_t held = l.ResidentStateBytes(*branch);
+      // Within the spill budget, as every spill, but deleting only spilled
+      // state used before it (the least recently used first): one that
+      // fits only by displacing a more recent conversation is not kept.
+      // Its whole state counts once spilled, not only what the spill
+      // writes.
+      if (held == 0 || held > spill_budget_ ||
+          !KeepWithinSpillBudget(held, {}, l.LastUsed(*branch))) {
         continue;
       }
-      const std::uint64_t held = l.ResidentStateBytes(**b);
-      if (auto r = l.SpillIdle(**b); r) {
+      if (auto r = l.SpillIdle(*branch); r) {
         ++spilled;
         bytes += held;
       }
@@ -4393,13 +4463,16 @@ Status Server::TearDown() {
   if (started_) {
     RecordCalibrations();
     // What the incremental spills and swaps left unwritten, and the
-    // reclaims that found too little to take (counts and bytes only).
+    // reclaims that found too little to take, or ended short when a victim
+    // gave back less than it counted (counts and bytes only).
     if (auto stats = node_.Stats(); stats) {
       Log(std::format(
           "write-backs released unchanged (nothing written): {} extents, {:.1f} MiB; reclaims "
-          "that took nothing (too little to take): {}",
+          "that took nothing (too little to take): {}; that ended short (a victim gave back "
+          "less): {}",
           stats->unchanged_writebacks,
-          static_cast<double>(stats->unchanged_writeback_bytes) / (1U << 20U), reclaims_short_));
+          static_cast<double>(stats->unchanged_writeback_bytes) / (1U << 20U), reclaims_short_,
+          reclaims_cut_short_));
     }
     // What each model's plans and graphs held at the end, and what bringing
     // them back would have cost (the reclaim order's measured inputs):
@@ -4576,7 +4649,7 @@ Status Server::FinishSwap(SwapParts& parts) {
   return {};
 }
 
-std::uint64_t Server::SpilledBytes() {
+std::uint64_t Server::SpilledBytes(SpillView view) {
   std::uint64_t bytes = 0;
   for (const auto& m : models_) {
     if (!m->llm()) {
@@ -4584,7 +4657,9 @@ std::uint64_t Server::SpilledBytes() {
     }
     auto& l = static_cast<Llm&>(*m);
     // A model a swap wrote back holds all its state on disk until it returns.
-    const bool written_back = std::ranges::find(spilled_, m.get()) != spilled_.end();
+    const bool written_back =
+        m.get() != view.in &&
+        (m.get() == view.out || std::ranges::find(spilled_, m.get()) != spilled_.end());
     for (std::size_t i = 0; i < l.branches(); ++i) {
       if (auto b = l.branch(i); b) {
         bytes += written_back ? l.StateBytes(**b) : l.SpilledStateBytes(**b);
@@ -4594,12 +4669,54 @@ std::uint64_t Server::SpilledBytes() {
   return bytes;
 }
 
-bool Server::KeepWithinSpillBudget(std::uint64_t extra) {
+void Server::ForEachDeletableSpill(
+    SpillView view, std::optional<Clock::time_point> older_than,
+    const std::function<void(Llm& model, Llm::Branch& branch, std::uint64_t counted)>& each) {
+  for (const auto& m : models_) {
+    if (!m->llm() || m.get() == view.in) {
+      continue;  // the incoming model's stop counting once it is resident
+    }
+    auto& l = static_cast<Llm&>(*m);
+    const bool written_back =
+        m.get() == view.out || std::ranges::find(spilled_, m.get()) != spilled_.end();
+    for (std::size_t i = 0; i < l.branches(); ++i) {
+      auto b = l.branch(i);
+      if (!b || !l.BranchIdle(**b) || (*b)->HeldByContinuation() ||
+          (older_than && l.LastUsed(**b) >= *older_than)) {
+        continue;
+      }
+      const std::uint64_t counted = written_back ? l.StateBytes(**b) : l.SpilledStateBytes(**b);
+      if (counted != 0) {
+        each(l, **b, counted);
+      }
+    }
+  }
+}
+
+bool Server::SpillBudgetFits(std::uint64_t extra, SpillView view,
+                             std::optional<Clock::time_point> older_than) {
+  const std::uint64_t held = SpilledBytes(view);
+  std::uint64_t deletable = 0;
+  ForEachDeletableSpill(view, older_than,
+                        [&](Llm&, Llm::Branch&, std::uint64_t counted) { deletable += counted; });
+  const std::uint64_t left = held - std::min(held, deletable);
+  return left <= spill_budget_ && extra <= spill_budget_ - left;
+}
+
+bool Server::KeepWithinSpillBudget(std::uint64_t extra, SpillView view,
+                                   std::optional<Clock::time_point> older_than) {
+  // Nothing deleted for a conversation (or a swap) that would not fit even
+  // with every deletable one gone.
+  return SpillBudgetFits(extra, view, older_than) && DeleteSpilledPast(extra, view, older_than);
+}
+
+bool Server::DeleteSpilledPast(std::uint64_t extra, SpillView view,
+                               std::optional<Clock::time_point> older_than) {
   std::size_t deleted = 0;
   std::uint64_t deleted_bytes = 0;
   bool fits = false;
   for (;;) {
-    const std::uint64_t held = SpilledBytes();
+    const std::uint64_t held = SpilledBytes(view);
     if (held <= spill_budget_ && extra <= spill_budget_ - held) {
       fits = true;
       break;
@@ -4607,26 +4724,14 @@ bool Server::KeepWithinSpillBudget(std::uint64_t extra) {
     // The least recently used spilled conversation no request holds.
     Llm* oldest = nullptr;
     Llm::Branch* branch = nullptr;
-    for (const auto& m : models_) {
-      if (!m->llm()) {
-        continue;
+    ForEachDeletableSpill(view, older_than, [&](Llm& l, Llm::Branch& b, std::uint64_t) {
+      if (branch == nullptr || l.LastUsed(b) < oldest->LastUsed(*branch)) {
+        oldest = &l;
+        branch = &b;
       }
-      auto& l = static_cast<Llm&>(*m);
-      const bool written_back = std::ranges::find(spilled_, m.get()) != spilled_.end();
-      for (std::size_t i = 0; i < l.branches(); ++i) {
-        auto b = l.branch(i);
-        if (!b || !l.BranchIdle(**b) || (*b)->HeldByContinuation() ||
-            (written_back ? l.StateBytes(**b) : l.SpilledStateBytes(**b)) == 0) {
-          continue;
-        }
-        if (branch == nullptr || l.LastUsed(**b) < oldest->LastUsed(*branch)) {
-          oldest = &l;
-          branch = *b;
-        }
-      }
-    }
+    });
     if (branch == nullptr) {
-      break;
+      break;  // nothing more to delete: still short
     }
     const std::uint64_t bytes = oldest->StateBytes(*branch);
     if (auto released = branch->ReleaseIdleState(); !released) {
@@ -4658,6 +4763,12 @@ void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const
     if (bytes == 0) {
       continue;
     }
+    // Spilled whole within the budget (Server::Reclaim); past all of it,
+    // dropped, which a continuation holding it refuses.
+    const bool dropped = bytes > rates.spill_budget;
+    if (dropped && (*b)->HeldByContinuation()) {
+      continue;
+    }
     // A spill writes only what changed since its last one; a restore reads
     // it all.
     const auto size = static_cast<double>(bytes);
@@ -4668,10 +4779,9 @@ void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const
          .id = slot,
          .bytes = bytes,
          .last_use = static_cast<std::uint64_t>(model.LastUsed(**b).time_since_epoch().count()),
-         .restore_seconds = rates.dropped
-                                ? static_cast<double>((*b)->history().size()) *
-                                      model.settings().recompute_ms_per_token.value / 1000.0
-                                : (writes / rates.spill_rate) + (size / rates.restore_rate),
+         .restore_seconds = dropped ? static_cast<double>((*b)->history().size()) *
+                                          model.settings().recompute_ms_per_token.value / 1000.0
+                                    : (writes / rates.spill_rate) + (size / rates.restore_rate),
          .running = running});
     memory::SetUse(out.back(), model.LastStamp(**b));
   }
@@ -4732,15 +4842,13 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
   std::array<std::uint64_t, memory::kReclaimKinds> count{};
   std::array<std::uint64_t, memory::kReclaimKinds> freed_by{};
   std::array<double, memory::kReclaimKinds> cost{};
-  std::uint64_t freed = 0;
   std::size_t dropped = 0;
   bool took = false;
-  // All of it or nothing: a selection that cannot cover what is needed
-  // reclaims nothing (the caller waits or refuses). Another round only when
-  // a victim gave back less than its count (held, or gone meanwhile).
-  for (int round = 0; round < 4 && freed < needed; ++round) {
-    std::vector<memory::ReclaimCandidate> candidates;
-    Llm* idle_owner = nullptr;
+  Llm* idle_owner = nullptr;
+  // The candidates afresh each round (memory::RunReclaim): every model's
+  // plans and graphs, and with `states` the resident model's idle state.
+  const auto gather = [&](std::vector<memory::ReclaimCandidate>& candidates, double& below) {
+    idle_owner = nullptr;
     std::uint32_t resident_index = 0;
     for (std::uint32_t i = 0; i < models_.size(); ++i) {
       models_[i]->ReclaimCandidates(i, models_[i].get() == running, candidates);
@@ -4754,11 +4862,10 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
       idle_owner = static_cast<Llm*>(resident_);
       AddIdleStateCandidates(
           *idle_owner, resident_index, resident_ == running, spare,
-          {.spill_rate = spill_rate, .restore_rate = restore_rate, .dropped = spill_budget_ == 0},
+          {.spill_rate = spill_rate, .restore_rate = restore_rate, .spill_budget = spill_budget_},
           candidates);
     }
     cost = memory::KindCosts(candidates);
-    double below = std::numeric_limits<double>::infinity();
     if (below_kind) {
       // What the charge would cost to restore a GiB: its kind's measured
       // cost, or the GB10's when none is held.
@@ -4768,52 +4875,58 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
       }
       below = memory::ReclaimInflation() + charged;
     }
-    const memory::ReclaimPlan plan = memory::SelectReclaim(candidates, needed - freed, below);
-    if (!plan.sufficient && (!partial || plan.victims.empty())) {
-      ++reclaims_short_;
-      break;
-    }
-    std::uint64_t got_round = 0;
-    for (std::size_t v = 0; v < plan.victims.size() && freed < needed; ++v) {
-      const memory::ReclaimCandidate& c = candidates[plan.victims[v]];
-      std::uint64_t got = 0;
-      if (c.kind == memory::ReclaimKind::kIdleState) {
-        if (idle_owner == nullptr) {
-          continue;  // only the resident model's idle state is a candidate
-        }
-        auto b = idle_owner->branch(c.id);
-        if (!b) {
-          continue;
-        }
-        // Spill, not clear: within the spill budget (the least recently
-        // used spilled state deleted first); past it, or with none, dropped.
-        if (spill_budget_ != 0 && KeepWithinSpillBudget(idle_owner->SpillWriteBytes(**b))) {
-          if (auto spilled = idle_owner->SpillIdle(**b); spilled) {
-            got = c.bytes;
-          } else {
-            Log(std::format("{}'s idle conversation in slot {}: {}", idle_owner->name(), c.id,
-                            spilled.error()));
-            got = idle_owner->ResidentStateBytes(**b) == 0 ? c.bytes : 0;
-          }
-        } else if (auto released = (*b)->ReleaseIdleState(); released) {
+  };
+  const auto take = [&](const memory::ReclaimCandidate& c) -> std::uint64_t {
+    std::uint64_t got = 0;
+    if (c.kind == memory::ReclaimKind::kIdleState) {
+      if (idle_owner == nullptr) {
+        return 0;  // only the resident model's idle state is a candidate
+      }
+      auto b = idle_owner->branch(c.id);
+      if (!b) {
+        return 0;
+      }
+      // Spill, not clear: within the spill budget (the least recently used
+      // spilled state deleted first; once spilled its whole state counts);
+      // past it, or with none, dropped. A state larger than the whole
+      // budget deletes nothing else first.
+      const std::uint64_t held = idle_owner->ResidentStateBytes(**b);
+      if (held == 0) {
+        return 0;  // gone meanwhile: nothing to give back
+      }
+      if (held <= spill_budget_ && KeepWithinSpillBudget(held)) {
+        if (auto spilled = idle_owner->SpillIdle(**b); spilled) {
           got = c.bytes;
-          ++dropped;
+        } else {
+          Log(std::format("{}'s idle conversation in slot {}: {}", idle_owner->name(), c.id,
+                          spilled.error()));
+          got = idle_owner->ResidentStateBytes(**b) == 0 ? c.bytes : 0;
         }
-      } else {
-        got = models_[c.owner]->Reclaim(c.kind, c.id);
+      } else if (auto released = (*b)->ReleaseIdleState(); released) {
+        got = c.bytes;
+        ++dropped;
       }
-      if (got != 0) {
-        took = true;
-        memory::RaiseReclaimInflation(plan.priorities[v]);
-        ++count[k(c.kind)];
-        freed_by[k(c.kind)] += got;
-        freed += got;
-        got_round += got;
-      }
+    } else {
+      got = models_[c.owner]->Reclaim(c.kind, c.id);
     }
-    if (got_round == 0) {
-      break;
+    if (got != 0) {
+      took = true;
+      ++count[k(c.kind)];
+      freed_by[k(c.kind)] += got;
     }
+    return got;
+  };
+  // All of it or nothing (memory::RunReclaim): a selection that cannot
+  // cover what is needed reclaims nothing (the caller waits or refuses);
+  // another round, without it, only when a victim gave back less than its
+  // count (held, or gone meanwhile), and what the rounds before took then
+  // stays taken even when the rest cannot be covered.
+  const memory::ReclaimRun run = memory::RunReclaim(needed, partial, gather, take);
+  const std::uint64_t freed = run.freed;
+  if (freed == 0 && run.short_of_need) {
+    ++reclaims_short_;
+  } else if (!partial && freed != 0 && freed < needed) {
+    ++reclaims_cut_short_;
   }
   if (freed != 0) {
     platform::ReleaseFreeHeap();
@@ -5068,7 +5181,8 @@ void Server::Maintain() {
                     expired, static_cast<double>(expired_bytes) / (1U << 20U),
                     config_.memory.retention_hours));
   }
-  (void)KeepWithinSpillBudget(0);
+  // As far as it can: what a request holds stays, the rest still goes.
+  (void)DeleteSpilledPast(0);
   RecordCalibrations();
   // Pressure from outside the runtime: other processes share the node's
   // memory (D-004). One reclaim of what would restore the target headroom,
@@ -5109,16 +5223,19 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   swap_before_ = *before;
   const bool restoring = std::ranges::find(spilled_, &m) != spilled_.end();
   // The incoming model's conversations a swap wrote back come back live:
-  // their records go first (D-105). Those the reclaim order spilled stay
+  // their records go before anything of it loads (D-105), not before a
+  // refusal that leaves them on disk. Those the reclaim order spilled stay
   // on disk, and kept, until a turn restores them.
-  if (m.llm()) {
-    auto& in = static_cast<Llm&>(m);
-    for (std::size_t i = 0; i < in.branches(); ++i) {
-      if (auto b = in.branch(i); b && !(*b)->spilled()) {
-        in.Unkeep(**b);
+  const auto unkeep_incoming = [&m]() {
+    if (m.llm()) {
+      auto& in = static_cast<Llm&>(m);
+      for (std::size_t i = 0; i < in.branches(); ++i) {
+        if (auto b = in.branch(i); b && !(*b)->spilled()) {
+          in.Unkeep(**b);
+        }
       }
     }
-  }
+  };
   parts.requested = Clock::now();
   Clock::time_point evicted = parts.requested;
   Clock::time_point loaded;
@@ -5139,12 +5256,20 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
         }
       }
     }
+    // Every model's plans and graphs stay charged inside the budget: room
+    // for the whole load is made through the reclaim order first, as a
+    // swap's is, or a load after a failed swap (or a recovery) could be
+    // refused for room again and again with nothing to free it.
+    if (auto room = MakeRoomForSwap(m, {}); !room) {
+      return room;
+    }
     std::vector<engine::LoadStats> log;
     std::vector<catalog::ExtentId> all;
     for (const auto& [extent, generation] : m.everything().extents) {
       (void)generation;
       all.push_back(extent);
     }
+    unkeep_incoming();
     // A load that fails (a read error) leaves no model resident: the next
     // activation loads one whole again.
     if (auto r = node_.Load(all, std::format("{}'s first load", m.name()), log); !r) {
@@ -5159,53 +5284,64 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     parts.with_state = out.llm() && spill_state.value_or(conversation);
     std::vector<catalog::ExtentId> extents;
     std::vector<catalog::ExtentId> unchanged;
+    const SpillView view{.out = &out, .in = &m};
     if (parts.with_state) {
       auto& l = static_cast<Llm&>(out);
-      // The spill budget holds a swap's write-back too: past it, the least
-      // recently used of its conversations are deleted, not written.
-      const auto writes = [&l]() {
-        std::uint64_t bytes = 0;
-        for (std::size_t i = 0; i < l.branches(); ++i) {
-          if (auto b = l.branch(i); b) {
-            bytes += l.SpillWriteBytes(**b);
-          }
-        }
-        return bytes;
-      };
-      std::size_t deleted = 0;
-      while (!KeepWithinSpillBudget(writes())) {
-        Llm::Branch* oldest = nullptr;
-        for (std::size_t i = 0; i < l.branches(); ++i) {
-          if (auto b = l.branch(i); b && l.BranchIdle(**b) && !(*b)->HeldByContinuation() &&
-                                    l.ResidentStateBytes(**b) != 0 &&
-                                    (oldest == nullptr || l.LastUsed(**b) < l.LastUsed(*oldest))) {
-            oldest = *b;
-          }
-        }
-        if (oldest == nullptr) {
-          return Error("the swap's retained request state exceeds the spill budget");
-        }
-        if (auto released = oldest->ReleaseIdleState(); !released) {
-          return Error("the swap could not free idle state for its spill budget: " +
-                       released.error());
-        }
-        ++deleted;
-      }
-      if (deleted != 0) {
-        Log(
-            std::format("{}: {} conversations deleted, the least recently used, for the spill "
-                        "budget of {} GiB before its swap-out",
-                        out.name(), deleted, spill_budget_ >> 30U));
+      // The spill budget holds a swap's write-back too, counted as the swap
+      // leaves it: all the outgoing model's state on disk, the incoming
+      // model's resident (its conversations, which then stop counting, are
+      // never deleted for it). Past it, the least recently used spilled
+      // conversations are deleted first, the outgoing model's among them,
+      // but only once the swap's room is made below: one a request holds
+      // is not, and a swap that would not fit even with every other one
+      // deleted is refused here, before anything moves or is deleted.
+      if (!SpillBudgetFits(0, view)) {
+        return Error("the swap's retained request state exceeds the spill budget");
       }
       // Kept across a restart (D-105): each conversation's last verify's
       // owed restore runs first (no request holds the stream during a
-      // swap), so the write-back holds it whole.
+      // swap), so the write-back holds it whole. Before the room is sized:
+      // whatever it charges is counted there.
       if (l.keeps()) {
         for (std::size_t i = 0; i < l.branches(); ++i) {
           if (auto b = l.branch(i); b && l.ResidentStateBytes(**b) != 0) {
             (void)l.SettleIdle(**b);
           }
         }
+      }
+    }
+    // Its plans and graphs stay (D-090 as amended 2026-10-02): charged
+    // inside the budget, they go only when the reclaim order needs their
+    // room, here first if the incoming model does not fit beside them. The
+    // room is checked again after each reclaim, and a swap it cannot make
+    // room for is refused before anything moves. What goes out is its
+    // weights and, with its state, all of that (how much a write-back
+    // writes, and whether the budget deletes some of it, does not change
+    // what the swap frees; the reclaim order spills no idle state here).
+    const std::vector<catalog::ExtentId> weights = out.weights();
+    const std::uint64_t graphs_before = out.graphs().kept + m.graphs().kept;
+    {
+      std::vector<catalog::ExtentId> going = weights;
+      if (parts.with_state) {
+        const std::vector<catalog::ExtentId> state = out.state();
+        going.insert(going.end(), state.begin(), state.end());
+        for (const catalog::ExtentId extent : out.unchanged_state()) {
+          if (std::ranges::find(state, extent) == state.end()) {
+            going.push_back(extent);
+          }
+        }
+      }
+      if (auto room = MakeRoomForSwap(m, going); !room) {
+        return room;
+      }
+    }
+    if (parts.with_state) {
+      auto& l = static_cast<Llm&>(out);
+      // The room is made: the budget's deletions now, which the check above
+      // found enough (nothing since spilled or restored; a deletion that
+      // fails still refuses the swap before anything moves).
+      if (!KeepWithinSpillBudget(0, view)) {
+        return Error("the swap's retained request state exceeds the spill budget");
       }
       // Its state first, so its write-backs start first; what nothing wrote
       // since its slot's spill file last held it is released without
@@ -5224,30 +5360,14 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
         }
       }
     }
-    const std::vector<catalog::ExtentId> weights = out.weights();
     extents.insert(extents.end(), weights.begin(), weights.end());
-    // Its plans and graphs stay (D-090 as amended 2026-10-02): charged
-    // inside the budget, they go only when the reclaim order needs their
-    // room, here first if the incoming model does not fit beside them. The
-    // room is checked again after each reclaim, and a swap it cannot make
-    // room for is refused before anything moves.
-    const std::uint64_t graphs_before = out.graphs().kept + m.graphs().kept;
-    {
-      std::vector<catalog::ExtentId> going = extents;
-      going.insert(going.end(), unchanged.begin(), unchanged.end());
-      if (auto room = MakeRoomForSwap(m, going); !room) {
-        parts.refused = true;
-        return room;
-      }
-    }
     const std::uint64_t graphs_after = out.graphs().kept + m.graphs().kept;
     parts.dropped_graphs = graphs_before > graphs_after ? graphs_before - graphs_after : 0;
+    unkeep_incoming();
     if (!unchanged.empty()) {
       if (auto r = node_.Evict(unchanged, {.unchanged = true}); !r) {
         out.StateWrittenBack(false);
-        if (auto undone = UndoSwap(out, m); undone) {
-          parts.refused = true;
-        } else {
+        if (auto undone = UndoSwap(out, m); !undone) {
           resident_ = nullptr;  // the next activation loads one whole
         }
         return r;
@@ -5262,7 +5382,6 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
       // again and the outgoing one comes back whole, so both stay usable and
       // only the request that needed the swap fails.
       if (auto undone = UndoSwap(out, m); undone) {
-        parts.refused = true;
         Log(std::format("swap {} -> {} failed and was undone: {}", out.name(), m.name(),
                         r.error()));
       } else {
@@ -5303,8 +5422,33 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
   parts.page_in = Seconds(loaded - restored);
   parts.read_bytes = m.weight_read_bytes() + (restoring ? m.state().size() * kExtent : 0);
   resident_ = &m;
+  // A model whose checks after its load fail is not left resident: its
+  // kernels index what those checks cover unchecked (DeepSeek's hash
+  // routing, Qwen3.8's n-gram hash) or replay graphs at its places (D-090).
+  // Evicted (its state written back), its next activation loads it whole
+  // and checks it again; only the requests that needed it fail (D-102).
+  const auto unload = [&](std::string error) -> Status {
+    if (auto evicted = EvictPaged(m); !evicted) {
+      error += std::format("; evicting it: {}", evicted.error());
+      m.StateWrittenBack(false);
+    } else if (m.llm() && m.HasRetainedState() &&
+               std::ranges::find(spilled_, &m) == spilled_.end()) {
+      // As a swap's write-back: its conversations are wholly on disk, and
+      // their records follow (D-105).
+      m.StateWrittenBack(true);
+      spilled_.push_back(&m);
+      auto& l = static_cast<Llm&>(m);
+      for (std::size_t i = 0; i < l.branches(); ++i) {
+        if (auto b = l.branch(i); b && !(*b)->spilled()) {
+          l.KeepBranch(**b);
+        }
+      }
+    }
+    resident_ = nullptr;
+    return Error(std::move(error));
+  };
   if (auto r = m.AfterLoad(); !r) {
-    return Error(std::format("{} after its load: {}", m.name(), r.error()));
+    return unload(std::format("{} after its load: {}", m.name(), r.error()));
   }
   parts.ready = Clock::now();
   parts.setup = Seconds(parts.ready - loaded);
@@ -5324,11 +5468,11 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     return r;
   }
   if (unpinned != 0) {
-    return Error(std::format("{} of {}'s {} extents are not pinned at their places", unpinned,
-                             m.name(), managed.size()));
+    return unload(std::format("{} of {}'s {} extents are not pinned at their places", unpinned,
+                              m.name(), managed.size()));
   }
   if (auto r = m.CheckPlaces(); !r) {
-    return Error(std::format("{}'s places: {}", m.name(), r.error()));
+    return unload(std::format("{}'s places: {}", m.name(), r.error()));
   }
   return {};
 }

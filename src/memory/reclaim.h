@@ -39,6 +39,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <span>
 #include <string_view>
@@ -137,6 +138,30 @@ struct ReclaimPlan {
 };
 ReclaimPlan SelectReclaim(std::span<const ReclaimCandidate> candidates, std::uint64_t needed,
                           double below = std::numeric_limits<double>::infinity());
+
+// One reclaim's rounds (the runtime's Server::Reclaim). Each round has
+// `gather` collect the candidates afresh (and set `below`, SelectReclaim's
+// bound), selects for what is still needed, and has `take` reclaim the
+// victims in order until it is covered; `take` returns what a victim gave
+// back, and each one that gave something raises the inflation to its
+// priority (RaiseReclaimInflation). A selection that cannot cover what is
+// still needed takes nothing (with `partial`, whatever it has). A victim
+// that gives back less than it counted (held, or gone meanwhile) leaves
+// the round short: the next one, at most kReclaimRounds in all, selects for
+// the rest without any victim tried before. So a reclaim takes all it was
+// asked for or nothing, but for what earlier rounds took before a victim
+// failed, which stays taken (nothing reclaimed comes back): it then ends
+// short of `needed`, and its caller, which compares what it freed with
+// what it asked for, waits or refuses as for nothing.
+inline constexpr int kReclaimRounds = 4;
+struct ReclaimRun {
+  std::uint64_t freed = 0;
+  bool short_of_need = false;  // a selection could not cover what was still needed
+};
+using GatherReclaim = std::function<void(std::vector<ReclaimCandidate>& out, double& below)>;
+using TakeReclaim = std::function<std::uint64_t(const ReclaimCandidate& victim)>;
+ReclaimRun RunReclaim(std::uint64_t needed, bool partial, const GatherReclaim& gather,
+                      const TakeReclaim& take);
 
 // Takes the running model's in-use floor out of `candidates`: its most
 // recently used plans, newest first, until their own bytes (without their

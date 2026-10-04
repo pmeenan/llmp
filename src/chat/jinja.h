@@ -58,9 +58,9 @@ struct Limits {
   std::size_t max_macro_depth = 32;                       // nested macro calls
   std::size_t max_value_depth = 64;                       // nested lists and mappings
   std::size_t max_live_bytes = std::size_t{256} << 20U;   // bytes held by values at once
-  std::size_t max_string_bytes = std::size_t{64} << 20U;  // one string
-  std::size_t max_output_bytes = std::size_t{32} << 20U;
-  std::size_t max_range = 100'000;  // Jinja2's sandbox MAX_RANGE
+  std::size_t max_string_bytes = std::size_t{64} << 20U;  // one string (TextRange)
+  std::size_t max_output_bytes = std::size_t{32} << 20U;  // the rendering (TextRange)
+  std::size_t max_range = 100'000;                        // Jinja2's sandbox MAX_RANGE
 };
 
 // How often a rendering asks its cancellation: every this many steps, and
@@ -133,11 +133,21 @@ struct CivilTime {
   int yearday = 0;  // 0..365
 };
 
+// A byte range of a text. A string's and a rendering's trusted ranges are
+// memory as their text is: one range per two bytes where the template's
+// text and a client's alternate, eight times the text. So the string and
+// output bounds count both, the text and sizeof(TextRange) a range, as
+// they grow.
+struct TextRange {
+  std::size_t offset = 0;
+  std::size_t length = 0;
+};
+
 struct Rendered {
   std::string text;
   // Byte ranges of `text` that came only from the template, in order, not
-  // overlapping or touching.
-  std::vector<std::pair<std::size_t, std::size_t>> trusted;  // (offset, length)
+  // overlapping or touching. With the text, within Limits::max_output_bytes.
+  std::vector<TextRange> trusted;
 };
 
 // Steps and work bytes renderings used.

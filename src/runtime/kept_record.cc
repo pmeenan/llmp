@@ -633,6 +633,35 @@ std::uint64_t ExtentOffset(std::span<const std::uint64_t> regions, const Extent&
   return base + (std::uint64_t{extent.index} * kExtentBytes);
 }
 
+std::vector<Place> UnlistedPlaces(const Record& record) {
+  std::vector<Place> places;
+  std::uint64_t base = 0;
+  for (std::size_t region = 0; region < record.regions.size(); ++region) {
+    const std::uint64_t bytes = record.regions[region];
+    const std::uint64_t count = (bytes + kExtentBytes - 1) / kExtentBytes;
+    std::vector<bool> listed(static_cast<std::size_t>(count), false);
+    for (const Extent& extent : record.extents) {
+      if (extent.region == region && extent.index < count) {
+        listed[extent.index] = true;
+      }
+    }
+    for (std::uint64_t i = 0; i < count; ++i) {
+      if (listed[static_cast<std::size_t>(i)]) {
+        continue;
+      }
+      const std::uint64_t offset = base + (i * kExtentBytes);
+      const std::uint64_t length = std::min(kExtentBytes, bytes - (i * kExtentBytes));
+      if (!places.empty() && places.back().offset + places.back().bytes == offset) {
+        places.back().bytes += length;
+      } else {
+        places.push_back({.offset = offset, .bytes = length});
+      }
+    }
+    base += bytes;
+  }
+  return places;
+}
+
 std::vector<Place> CheckpointPlaces(const Checkpoint& checkpoint) {
   std::vector<Place> places;
   places.reserve(checkpoint.ranges.size());
@@ -667,6 +696,10 @@ std::expected<void, std::string> CheckCheckpoint(const Checkpoint& c, const Reco
   }
   if (c.position == 0 || c.position > r.tokens.size()) {
     return Bad("a checkpoint lies past the conversation it belongs to");
+  }
+  // Its speculation cursor counts rows of the tokens it holds.
+  if (c.cursor > c.position) {
+    return Bad("a checkpoint's speculation cursor lies past its tokens");
   }
   switch (TimeOf(c.created_unix_ms, e.now_unix_ms, e.retention_ms)) {
     case When::kExpired:
@@ -743,6 +776,10 @@ std::expected<void, std::string> Check(Record& r, const Expected& e,
   }
   if (r.tokens.empty() || r.tokens.size() > e.context) {
     return Bad("its conversation does not fit the model's context");
+  }
+  // The speculation cursor counts rows of the conversation's tokens.
+  if (r.cursor > r.tokens.size()) {
+    return Bad("its speculation cursor lies past its tokens");
   }
   if (std::ranges::any_of(r.tokens, [&](std::int32_t t) {
         return t < 0 || std::cmp_greater_equal(t, e.vocabulary);

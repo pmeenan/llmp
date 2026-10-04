@@ -5,7 +5,8 @@
 
 How AI agents and the human developer collaborate on this repository.
 Complements the root `AGENTS.md` rules (especially: commits need the user's
-authorization; the main agent has standing authorization during M3).
+authorization; the main agent has standing authorization to commit
+completed plan tasks).
 
 jitLLM is a single-developer project that is meant to be consumed externally
 (D-016). The process is sized for that: heavier than a personal project,
@@ -35,8 +36,8 @@ the main agent to).
    is stated as such.
 3. **Commit.** The human commits or authorizes the main agent to commit
    (D-075), with both notes and the diff available for review at whatever
-   depth the change warrants. During M3, the owner's standing authorization
-   covers completed tasks; otherwise the main agent needs a direct request
+   depth the change warrants. The owner's standing authorization covers
+   completed plan tasks of the current milestone; otherwise the main agent needs a direct request
    for the change at hand. No other agent commits.
 
 The human may explicitly waive step 2 for a specific trivial change (a typo, a
@@ -66,9 +67,9 @@ downgrade a heavy-path change to the light loop on their own.
 
 ## Ground rules
 
-- **Commits need the user's authorization** (D-075): during M3, the main
-  agent has standing authorization to commit completed tasks (owner,
-  2026-09-29); otherwise a direct request covers the change at hand only.
+- **Commits need the user's authorization** (D-075): the main agent has
+  standing authorization to commit completed plan tasks of the current
+  milestone until the owner withdraws it (owner, 2026-10-04); otherwise a direct request covers the change at hand only.
   Only the main agent commits, and only reviewed, checked work. Subagents
   never commit, and no agent pushes, tags, amends or rewrites history.
   Without authorization the working tree is the handoff.

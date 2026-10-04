@@ -11,6 +11,7 @@
 //   jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE
 //                      --prompts FILE --out DIR
 //                      --check greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|wave
+//                              |turn
 //                      [--reference FILE] [--tokens N] [--context N]
 //                      [--graphs on|off] [--draft N] [--draft-vocab N]
 //                      [--adaptive-depth on|off] [--prompt-token-ids on|off]
@@ -80,6 +81,14 @@
 //   full-cohort verify rejected rows in every slot, each Accept's restore
 //   still owed; the first verify after return must replay a kept graph.
 //   Compare all three hash arrays against the identical no-fixture run.
+// - turn (the first chat prompt, or --only's): a turn boundary after a
+//   verify that kept several rows. The prompt's prefill with the injection
+//   and one step whose verify keeps every row (depth + 1), then the next
+//   turn's first chunk (the prompt's first --tokens tokens) with the
+//   injection: each kept position's drafter cells (K, V, indexer) must be
+//   within 5% of their largest magnitude of a draft's own catch-up over the
+//   same rows (the control, a second run of the same prefix), and the
+//   control's must differ from what the step left there.
 // - sampled-plain, sampled-spec: seeded sampling (temperature 1), plain or
 //   speculative (execution/sampling.h VerifyDraft, the greedy drafter's
 //   q = δ), for 4 prompts, --seeds seeds and the first 8 generated tokens;
@@ -108,6 +117,7 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -117,6 +127,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -130,6 +141,7 @@
 #include "execution/adaptive_depth.h"
 #include "execution/sampling.h"
 #include "fp16_runner.h"
+#include "model/qwen2.h"
 #include "model/qwen38.h"
 #include "paged_node.h"
 #include "qwen38_reference.h"
@@ -426,6 +438,7 @@ class Harness {
   Status SwapIn();
   Status Sampled(bool speculative);
   Status Wave();
+  Status Turn();
   Status Write();
 
   const Options& o_;
@@ -2085,6 +2098,174 @@ Status Harness::Forced() {
 
 // Qwen3.8 out (its state written back, its weights and the drafter's
 // evicted) for the FP16 fixture, which runs once; its logits hashed.
+Status Harness::Turn() {
+  const Prompt* chosen =
+      chat_.empty() ? (decode_.empty() ? nullptr : &decode_.front()) : &chat_.front();
+  for (const std::vector<Prompt>* set : {&chat_, &decode_}) {
+    for (const Prompt& p : *set) {
+      if (!o_.only.empty() && p.id == o_.only) {
+        chosen = &p;
+      }
+    }
+  }
+  if (chosen == nullptr || (!o_.only.empty() && chosen->id != o_.only)) {
+    return Error("the turn check needs a prompt (--only's, if given)");
+  }
+  const Prompt& prompt = *chosen;
+  const std::uint32_t depth = qwen_.draft_rows();
+  const std::uint32_t keep = depth + 1;
+  // The next turn's first tokens (any of the vocabulary's): the prompt's.
+  const std::size_t tail = std::min<std::size_t>({o_.tokens, prompt.ids.size(), o_.qwen.max_rows});
+  const md::Qwen38MtpState& m = qwen_.mtp_state();
+  const auto& p = md::Qwen38Flash();
+  const std::uint64_t kv_row = std::uint64_t{p.head_dim} * p.kv_heads * 2;
+  const std::uint64_t indexer_row = std::uint64_t{p.indexer_head_dim} * 4;
+  std::vector<std::int32_t> turn;
+  std::uint32_t n_past = 0;
+  // One run: the prompt's prefill with the injection, one step whose verify
+  // keeps every row, then `next` over the next turn's tokens. The drafter's
+  // state after the step (`before`) and after `next` (`after`).
+  const auto run = [&](const std::function<Status()>& next, std::vector<std::byte>& before,
+                       std::vector<std::byte>& after) -> Status {
+    return InRequest("the turn check", [&]() -> Status {
+      std::vector<float> last;
+      if (auto r = Prefill(prompt, true, last); !r) {
+        return r;
+      }
+      const auto pos = static_cast<std::uint32_t>(prompt.ids.size());
+      std::vector<std::int32_t> history = prompt.ids;
+      history.push_back(Argmax(last));
+      std::vector<std::int32_t> drafts;
+      if (auto r = qwen_.Draft(history, drafts, nullptr, depth); !r) {
+        return r;
+      }
+      history.insert(history.end(), drafts.begin(), drafts.end());
+      std::vector<std::int32_t> argmax;
+      if (auto r = qwen_.Verify(history, pos, argmax, nullptr); !r) {
+        return r;
+      }
+      // Every row kept (the drafts as tokens, whatever the target chose):
+      // the state a verify of these rows alone leaves.
+      if (auto r = qwen_.Accept(keep); !r) {
+        return r;
+      }
+      if (auto r = qwen_.Rollback(); !r) {
+        return r;
+      }
+      if (qwen_.pending_rows() != keep) {
+        return Error(std::format("{} rows pending after keeping {}", qwen_.pending_rows(), keep));
+      }
+      n_past = static_cast<std::uint32_t>(history.size());
+      turn = history;
+      turn.insert(turn.end(), prompt.ids.begin(),
+                  prompt.ids.begin() + static_cast<std::ptrdiff_t>(tail));
+      std::vector<std::byte> target;
+      if (auto r = qwen_.ReadState(target, before); !r) {
+        return r;
+      }
+      if (auto r = next(); !r) {
+        return r;
+      }
+      return qwen_.ReadState(target, after);
+    });
+  };
+  // The control: a draft's own catch-up over the kept rows, its anchor the
+  // next turn's first token.
+  std::vector<std::byte> before;
+  std::vector<std::byte> reference;
+  if (auto r = run(
+          [&]() -> Status {
+            std::vector<std::int32_t> drafts;
+            return qwen_.Draft(std::span(turn).first(std::size_t{n_past} + 1), drafts, nullptr, 1);
+          },
+          before, reference);
+      !r) {
+    return r;
+  }
+  // The run: the next turn's first chunk with the injection.
+  std::vector<std::byte> again;
+  std::vector<std::byte> injected;
+  if (auto r = run(
+          [&]() -> Status {
+            std::vector<float> last;
+            return qwen_.Chunk(turn, n_past, last, true);
+          },
+          again, injected);
+      !r) {
+    return r;
+  }
+  if (before != again) {
+    problems_.push_back("turn: the drafter's state after the step does not repeat");
+  }
+  // Each kept position's K, V and indexer cells: the injected chunk's within
+  // the drafter's rounding of the control's (their passes' row counts
+  // differ) and far nearer the control's than to what the step left there
+  // (a draft pass's cell, or none), and some cell moved past the rounding,
+  // so the comparison is not vacuous. A step's cell may already lie near
+  // the control's (its stream nearly the kept row's), so no single cell
+  // need move past the bound.
+  constexpr double kTolerance = 0.05;  // of the cell's largest magnitude
+  constexpr double kNearer = 4;        // moved at least this many times the difference
+  double worst = 0;
+  double least_moved = std::numeric_limits<double>::infinity();
+  double most_moved = 0;
+  const auto read = [&](const std::vector<std::byte>& state, std::uint64_t at, bool half,
+                        std::uint64_t i) -> double {
+    if (half) {
+      std::uint16_t h = 0;
+      std::memcpy(&h, state.data() + at + (i * 2), 2);
+      return md::HalfToFloat(h);
+    }
+    float f = 0;
+    std::memcpy(&f, state.data() + at + (i * 4), 4);
+    return f;
+  };
+  std::string cells;
+  for (std::uint32_t q = n_past - keep; q < n_past; ++q) {
+    for (const auto& [offset, row, half] :
+         {std::tuple{m.k, kv_row, true}, std::tuple{m.v, kv_row, true},
+          std::tuple{m.indexer, indexer_row, false}}) {
+      const std::uint64_t at = offset + (q * row);
+      const std::uint64_t values = row / (half ? 2 : 4);
+      double scale = 0;
+      double diff = 0;
+      double moved = 0;
+      for (std::uint64_t i = 0; i < values; ++i) {
+        const double want = read(reference, at, half, i);
+        scale = std::max(scale, std::abs(want));
+        diff = std::max(diff, std::abs(read(injected, at, half, i) - want));
+        moved = std::max(moved, std::abs(read(before, at, half, i) - want));
+      }
+      const double relative = scale > 0 ? diff / scale : diff;
+      const double apart = scale > 0 ? moved / scale : moved;
+      worst = std::max(worst, relative);
+      least_moved = std::min(least_moved, apart);
+      most_moved = std::max(most_moved, apart);
+      cells += std::format("{}{{\"position\":{},\"diff\":{:.6g},\"moved\":{:.6g}}}",
+                           cells.empty() ? "" : ",", q, relative, apart);
+      if (relative > kTolerance || apart <= kNearer * relative) {
+        problems_.push_back(std::format(
+            "turn: position {}'s drafter cell is {:.4g} from the catch-up's, {:.4g} from the "
+            "step's (bound {})",
+            q, relative, apart, kTolerance));
+      }
+    }
+  }
+  if (most_moved <= kTolerance) {
+    problems_.push_back(std::format(
+        "turn: no kept cell moved past the bound {} (at most {:.4g}): the check is vacuous",
+        kTolerance, most_moved));
+  }
+  results_.push_back(std::format(
+      R"({{"check":"turn","prompt":"{}","kept":{},"n_past":{},"tail":{},"tolerance":{},"worst":{:.6g},"least_moved":{:.6g},"cells":[{}]}})",
+      prompt.id, keep, n_past, tail, kTolerance, worst, least_moved, cells));
+  std::println(
+      "turn: {} kept rows caught up, worst {:.4g} of the catch-up's cells, nearest "
+      "unchanged {:.4g}",
+      keep, worst, least_moved);
+  return {};
+}
+
 Status Harness::SwapOut() {
   std::vector<jitllm::catalog::ExtentId> out = qwen_.state();
   const std::vector<jitllm::catalog::ExtentId> weights = qwen_.weights();
@@ -2816,6 +2997,8 @@ Status Harness::Run() {
     checked = Sampled(true);
   } else if (o_.check == "wave") {
     checked = Wave();
+  } else if (o_.check == "turn") {
+    checked = Turn();
   } else {
     checked = Error(std::format("no check {}", o_.check));
   }
@@ -2978,7 +3161,7 @@ std::expected<Options, std::string> Parse(std::span<char*> args) {
         "usage: jitllm_qwen38_spec --qwen38-artifact DIR --drafter DIR --tokenizer FILE "
         "--prompts FILE --out DIR --check "
         "greedy|timing|forced|swap|sampled-plain|sampled-spec|draft-head|routed-down|mxfp8-"
-        "projection|wave "
+        "projection|wave|turn "
         "[--reference FILE] [--tokens N] [--context N] [--graphs on|off] [--draft N] "
         "[--draft-vocab N] [--adaptive-depth on|off] "
         "[--runtime-prefill on|off] [--prompt-token-ids on|off] "

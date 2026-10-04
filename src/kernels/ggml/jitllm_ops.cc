@@ -1001,7 +1001,10 @@ std::expected<void, KernelFailure> CheckMoeGluQuantize(const ggml_tensor* node) 
   const ggml_tensor* d = node->src[0];
   const ggml_tensor* a = node->src[1];
   const std::int64_t f = JitllmOpInt(node, 3);
-  if (!SaneExtents(r) || !IsRoute(node->src[2], r) || f <= 0 || f % 64 != 0 || f > 16384 ||
+  // The kernel stages a row's f activations in dynamic shared memory, within
+  // the default 48 KiB beside its 32 warp maxima (no attribute is raised).
+  constexpr std::int64_t kMostF = ((48 * 1024) - (32 * 4)) / 4 / 64 * 64;
+  if (!SaneExtents(r) || !IsRoute(node->src[2], r) || f <= 0 || f % 64 != 0 || f > kMostF ||
       d->type != GGML_TYPE_BF16 || !Shaped(d, 2 * f, r.slots(), 1) || !Aligned(d, 16) ||
       JitllmOpOf(a) != JitllmOp::kMoeQuantize ||
       !IsQuantized(a, node->src[2], r, JitllmOpInt(a, 3)) || !Vector(node->src[3], r.experts) ||

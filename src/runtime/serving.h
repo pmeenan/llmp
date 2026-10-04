@@ -161,11 +161,6 @@ struct SwapParts {
   std::uint64_t handed_off = 0;
   std::uint64_t released_unused = 0;
   std::uint64_t dropped_graphs = 0;  // graphs the reclaim order took for the incoming model
-  // A failed Activate that left the node as it was (the outgoing model
-  // resident and usable, the incoming one not): the swap was refused for
-  // room, before it started or with its effects undone. Only the request
-  // that needed it fails.
-  bool refused = false;
   Clock::time_point requested;
   Clock::time_point ready;  // setup's end
 };
@@ -962,9 +957,13 @@ class Llm : public Served {
   // a family with independent native slots overrides this set together.
   virtual Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all,
                              std::uint32_t n_past, bool inject, std::vector<float>& logits);
+  // `prefix_kept`, when given, is set on a failure whose verify was undone
+  // (a host judgement failing after the native verify completed): the
+  // step's starting prefix still holds, as a wave's failed_prefix_valid.
   virtual Status SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
                              std::uint32_t left, std::vector<std::int32_t>& kept,
-                             std::vector<std::vector<float>>* logits, std::uint64_t& drafted);
+                             std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
+                             bool* prefix_kept = nullptr);
   virtual Status SettleFor(Branch& branch);
   virtual Status ClearStateFor(Branch& branch);
   virtual bool StateUsableFor(const Branch& branch) const;
@@ -1154,16 +1153,31 @@ class Image : public Served {
 // (Server::Reclaim): each idle branch (BranchIdle) with resident state,
 // but `spare` (a request's chosen branch, which admission must not spill
 // for its own room), its restore cost a spill of what changed and a
-// restore at the rates given, or its recomputation when idle state is
-// dropped (no spill budget).
+// restore at the rates given, or its recomputation when it is dropped
+// instead (larger than the whole spill budget, or any with a budget of 0).
+// One that can only be dropped while a continuation holds it is no
+// candidate: its drop is refused, so it would give nothing back.
 struct IdleStateRates {
   double spill_rate = 0;    // bytes a second
   double restore_rate = 0;  // bytes a second
-  bool dropped = false;     // no spill budget: dropped, recomputed at its next turn
+  // `[memory] spill_budget_gib`: state larger is dropped, not spilled, and
+  // recomputed at its next turn (all of it with a budget of 0).
+  std::uint64_t spill_budget = std::numeric_limits<std::uint64_t>::max();
 };
 void AddIdleStateCandidates(Llm& model, std::uint32_t owner, bool running, const Llm::Branch* spare,
                             const IdleStateRates& rates,
                             std::vector<memory::ReclaimCandidate>& out);
+
+// What Server::SpilledBytes counts as spilled, now or as a swap about to
+// run will leave it: `out` (the resident model, its conversations about to
+// be written back) counted whole, as a swap's write-back is; `in` (the
+// model coming in) counted as resident, only what the reclaim order
+// spilled of it, and none of its conversations deleted for the budget
+// (what it brings back stops counting once it is resident).
+struct SpillView {
+  const Served* out = nullptr;
+  const Served* in = nullptr;
+};
 
 // Whether `needed` bytes are free (`free`, unknown: yes), or `reclaim` of
 // the shortfall frees all of it (Server::RoomFor's rule).
@@ -1247,9 +1261,16 @@ class Server {
   // whose other plans and graphs go last within their kinds. All of it or
   // nothing: when the order cannot free `needed`, nothing is taken (the
   // caller waits or refuses), and no more than `needed` is taken
-  // (candidates are whole). With `below_kind` (an optional charge of that
-  // kind, a graph's capture), only what costs less to restore than it.
-  // `partial` (pressure from outside): whatever part of it the order has.
+  // (candidates are whole), but for one case (memory::RunReclaim): a victim
+  // that gives back less than it counted (held, or gone meanwhile) has the
+  // order select again for the rest without it, and if the rest cannot be
+  // covered, what was taken before stays taken and less than `needed` is
+  // returned (every caller compares, and waits or refuses as for nothing).
+  // No candidate is offered that its owner would refuse (an idle
+  // conversation that can only be dropped while a continuation holds it).
+  // With `below_kind` (an optional charge of that kind, a graph's capture),
+  // only what costs less to restore than it. `partial` (pressure from
+  // outside): whatever part of it the order has.
   std::uint64_t Reclaim(std::uint64_t needed, bool states, std::string_view why,
                         const Served* running = nullptr,
                         std::optional<memory::ReclaimKind> below_kind = std::nullopt,
@@ -1300,10 +1321,30 @@ class Server {
   bool NodeHealthy();
   // Spilled conversations deleted, the least recently used first, until
   // what is spilled and `extra` more fit `[memory] spill_budget_gib`; false
-  // if they still do not.
-  bool KeepWithinSpillBudget(std::uint64_t extra);
-  // What every model's spilled conversations hold on disk now.
-  std::uint64_t SpilledBytes();
+  // if they still would not with every deletable one gone, and then none is
+  // deleted. With `older_than`, only those last used before it (a
+  // conversation kept for `extra` never displaces a more recent one).
+  // SpillBudgetFits: whether it would return true, deleting nothing (a
+  // swap asks before it makes room, and deletes only once the room is
+  // made).
+  bool KeepWithinSpillBudget(std::uint64_t extra, SpillView view = {},
+                             std::optional<Clock::time_point> older_than = std::nullopt);
+  bool SpillBudgetFits(std::uint64_t extra, SpillView view = {},
+                       std::optional<Clock::time_point> older_than = std::nullopt);
+  // KeepWithinSpillBudget's deletions without its check first: as many as
+  // it takes, or all it may when even that is not enough (Maintain's trim
+  // of a budget passed, by state a request holds or a lowered budget).
+  bool DeleteSpilledPast(std::uint64_t extra, SpillView view = {},
+                         std::optional<Clock::time_point> older_than = std::nullopt);
+  // Each spilled conversation the budget may delete (idle, no request
+  // holding it, never `view.in`'s, last used before `older_than` when
+  // given) with what it counts on disk as SpilledBytes(view) does.
+  void ForEachDeletableSpill(
+      SpillView view, std::optional<Clock::time_point> older_than,
+      const std::function<void(Llm& model, Llm::Branch& branch, std::uint64_t counted)>& each);
+  // What every model's spilled conversations hold on disk now (or as
+  // `view` will leave them).
+  std::uint64_t SpilledBytes(SpillView view = {});
 
   engine::PagedNode& node() { return node_; }
   MemorySampler& memory() { return memory_; }
@@ -1412,6 +1453,9 @@ class Server {
   // The reclaim order's state (Reclaim, Maintain).
   bool reclaiming_ = false;
   std::uint64_t reclaims_short_ = 0;  // reclaims that took nothing: too little to take
+  // Reclaims that took part of what they needed: a victim gave back less
+  // than it counted and the rest could not be covered (memory::RunReclaim).
+  std::uint64_t reclaims_cut_short_ = 0;
   Clock::duration retention_;
   std::uint64_t spill_budget_ = 0;
   Clock::time_point next_maintenance_;

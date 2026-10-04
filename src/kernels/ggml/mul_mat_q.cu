@@ -23,7 +23,6 @@
 #include "base/bytes.h"
 #include "common.cuh"
 #include "kernels/ggml/cublas.h"
-#include "kernels/ggml/mul_mat_q_borrowed.cuh"
 #include "kernels/ggml/mul_mat_q_glu.cuh"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"
@@ -400,96 +399,6 @@ std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* n
   });
 }
 
-std::expected<std::uint64_t, KernelFailure> PlanMulMatQBorrowedD4(const LaunchContext& launch,
-                                                                  const ggml_tensor* node,
-                                                                  const BorrowedMmqD4& input,
-                                                                  std::uint64_t generation) {
-  if (auto checked = CheckMulMatQBorrowedD4(node, input, generation); !checked)
-    return std::unexpected(checked.error());
-  auto path = SelectMulMatQ(launch, node);
-  if (!path || *path != QuantMulMatPath::kTile)
-    return path ? Rejected("native MMQ does not select these borrowed dense operands")
-                : std::unexpected(path.error());
-  const auto* weights = node->src[0];
-  const auto* source = node->src[1];
-  const auto j = ggml_cuda_mmq_get_J_max(GGML_TYPE_Q8_0, weights->ne[1] % 128 != 0,
-                                         Device(launch).cc, source->ne[1]);
-  const auto payload = static_cast<std::uint64_t>(source->ne[0] / 128) *
-                       static_cast<std::uint64_t>(source->ne[1]) * 144;
-  if (j <= 0 || j > 128 || input.bytes - payload < static_cast<std::uint64_t>(j) * 144)
-    return Rejected("borrowed D4 does not cover the actual native MMQ guard");
-  const auto weight_bytes = detail::Extent(weights);
-  const auto source_bytes = detail::Extent(source);
-  const auto output_bytes = detail::Extent(node);
-  if (!weight_bytes || !source_bytes || !output_bytes)
-    return Rejected("borrowed MMQ has unmeasurable logical operands");
-  const std::array operands{std::pair{input.data, input.bytes},
-                            std::pair{static_cast<const void*>(weights->data), *weight_bytes},
-                            std::pair{static_cast<const void*>(source->data), *source_bytes},
-                            std::pair{static_cast<const void*>(node->data), *output_bytes}};
-  const auto disjoint = [&](LaunchContext::Workspace workspace) {
-    std::uint64_t end = 0;
-    if (__builtin_add_overflow(workspace.base, workspace.size.value(), &end)) return false;
-    if (workspace.size.value() == 0) return true;
-    return std::ranges::all_of(operands, [&](const auto& operand) {
-      const auto begin = reinterpret_cast<std::uintptr_t>(operand.first);
-      return end <= begin || begin + operand.second <= workspace.base;
-    });
-  };
-  if (!disjoint(launch.workspace()) ||
-      (launch.cublas() != nullptr && !disjoint(launch.cublas()->workspace())))
-    return Rejected("borrowed MMQ operands overlap a native workspace");
-  return TileFixup(launch, GGML_TYPE_Q8_0, weights->ne[1], weights->ne[0], node->ne[1], 1);
-}
-
-void internal::LaunchMulMatQBorrowedD4(ggml_backend_cuda_context& context, const ggml_tensor* node,
-                                       const void* quantized) {
-  const auto* weights = node->src[0];
-  const auto* source = node->src[1];
-  const auto sy = source->ne[1] * source->ne[0] *
-                  static_cast<std::int64_t>(sizeof(block_q8_1_mmq)) /
-                  (QK8_1_MMQ * static_cast<std::int64_t>(sizeof(int)));
-  const auto type_bytes = static_cast<std::int64_t>(ggml_type_size(GGML_TYPE_Q8_0));
-  const mmq_args args{static_cast<const char*>(weights->data),
-                      GGML_TYPE_Q8_0,
-                      static_cast<const int*>(quantized),
-                      nullptr,
-                      nullptr,
-                      static_cast<float*>(node->data),
-                      nullptr,
-                      weights->ne[0],
-                      weights->ne[1],
-                      node->ne[1],
-                      static_cast<std::int64_t>(weights->nb[1]) / type_bytes,
-                      source->ne[1],
-                      static_cast<std::int64_t>(node->nb[1] / sizeof(float)),
-                      1,
-                      1,
-                      static_cast<std::int64_t>(weights->nb[2]) / type_bytes,
-                      sy,
-                      static_cast<std::int64_t>(node->nb[2] / sizeof(float)),
-                      1,
-                      1,
-                      static_cast<std::int64_t>(weights->nb[3]) / type_bytes,
-                      sy,
-                      static_cast<std::int64_t>(node->nb[3] / sizeof(float)),
-                      node->ne[1],
-                      node->ne[1],
-                      false};
-  mul_mat_q_case<GGML_TYPE_Q8_0>(context, args, context.stream());
-  CUDA_CHECK(cudaGetLastError());
-}
-
-std::expected<void, KernelFailure> MulMatQBorrowedD4(LaunchContext& launch, ggml_tensor* node,
-                                                     const BorrowedMmqD4& input,
-                                                     std::uint64_t generation) {
-  auto scratch = PlanMulMatQBorrowedD4(launch, node, input, generation);
-  if (!scratch) return std::unexpected(scratch.error());
-  return launch.Run(base::Bytes(*scratch), [node, input](ggml_backend_cuda_context& context) {
-    internal::LaunchMulMatQBorrowedD4(context, node, input.data);
-  });
-}
-
 std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContext& launch,
                                                               const ggml_tensor* first,
                                                               const ggml_tensor* second,
@@ -523,129 +432,9 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContex
          (static_cast<std::uint64_t>(std::max<std::int64_t>(after - before, 0)) * sizeof(int2));
 }
 
-std::expected<ExpertMmqLayout, KernelFailure> DescribeMulMatIdQPairPrepared(
-    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second) {
-  if (auto checked = CheckMulMatIdQPair(first, second); !checked)
-    return std::unexpected(checked.error());
-  const auto* weights = first->src[0];
-  const auto* source = first->src[1];
-  const auto* ids = first->src[2];
-  constexpr std::array<std::int64_t, 4> weight_shape{4096, 2048, 256, 1};
-  constexpr std::array<std::int64_t, 4> input_shape{4096, 1, 4096, 1};
-  constexpr std::array<std::int64_t, 4> ids_shape{6, 4096, 1, 1};
-  constexpr std::array<std::int64_t, 4> output_shape{2048, 6, 4096, 1};
-  if (Device(launch).cc != 1210 || weights->type != GGML_TYPE_IQ2_XXS ||
-      ggml_type_size(GGML_TYPE_IQ2_XXS) != 66 || ggml_blck_size(GGML_TYPE_IQ2_XXS) != 256 ||
-      sizeof(block_q8_1_mmq) != 144 || QK8_1_MMQ != 128 ||
-      !std::ranges::equal(weights->ne, weight_shape) ||
-      !std::ranges::equal(source->ne, input_shape) || !std::ranges::equal(ids->ne, ids_shape) ||
-      !std::ranges::equal(first->ne, output_shape) ||
-      !std::ranges::all_of(
-          std::array<const ggml_tensor*, 6>{weights, second->src[0], source, ids, first, second},
-          [](const ggml_tensor* tensor) { return detail::Packed(tensor); }))
-    return Rejected("prepared IQ2 controls require the fixed packed GB10 capture geometry");
-  auto selected = SelectMulMatQ(launch, first);
-  if (!selected || *selected != QuantMulMatPath::kTile)
-    return selected ? Rejected("prepared IQ2 controls require the native MMQ tile path")
-                    : std::unexpected(selected.error());
-  // The same J-max call as RunExpertProducts, not a presumed128-column guard.
-  const auto j = ggml_cuda_mmq_get_J_max(GGML_TYPE_IQ2_XXS, false, Device(launch).cc, 128);
-  if (j <= 0 || j > 128)
-    return Rejected("prepared IQ2 native J guard exceeds the bounded captured tier");
-  constexpr std::uint64_t pairs = 4096ULL * 6;
-  constexpr std::uint64_t payload = (4096ULL / 128) * pairs * 144;
-  return ExpertMmqLayout{.activation_payload_bytes = payload,
-                         .activation_bytes = payload + (static_cast<std::uint64_t>(j) * 144),
-                         .source_ids_bytes = pairs * 4,
-                         .destination_ids_payload_bytes = pairs * 4,
-                         .destination_ids_bytes = (pairs + static_cast<std::uint64_t>(j)) * 4,
-                         .bounds_bytes = 257ULL * 4,
-                         .native_j_max = static_cast<std::uint64_t>(j)};
-}
-
 namespace {
-struct ExpertRange {
-  std::uint64_t begin = 0;
-  std::uint64_t end = 0;
-};
-bool ExpertExtent(const void* data, std::uint64_t bytes, ExpertRange& result) {
-  const auto begin = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(data));
-  std::uint64_t end = 0;
-  if (data == nullptr || bytes == 0 || __builtin_add_overflow(begin, bytes, &end)) return false;
-  result = {.begin = begin, .end = end};
-  return true;
-}
-bool ExpertDisjoint(ExpertRange a, ExpertRange b) { return a.end <= b.begin || b.end <= a.begin; }
-
-std::expected<ExpertMmqLayout, KernelFailure> CheckExpertPrepared(const LaunchContext& launch,
-                                                                  const ggml_tensor* first,
-                                                                  const ggml_tensor* second,
-                                                                  const ExpertMmqPrepared& input,
-                                                                  std::uint64_t generation) {
-  auto layout = DescribeMulMatIdQPairPrepared(launch, first, second);
-  if (!layout) return std::unexpected(layout.error());
-  if (generation == 0 || input.generation != generation || input.source != first->src[1]->data ||
-      input.selected != first->src[2]->data)
-    return Rejected("prepared IQ2 source, selected IDs or generation is stale");
-  const std::array buffers{input.activation, input.source_ids, input.destination_ids, input.bounds};
-  const std::array required{layout->activation_bytes, layout->source_ids_bytes,
-                            layout->destination_ids_bytes, layout->bounds_bytes};
-  std::array<ExpertRange, 4> prepared{};
-  for (std::size_t i = 0; i < buffers.size(); ++i) {
-    if (buffers[i].bytes < required[i] || buffers[i].bytes % 4 != 0 ||
-        reinterpret_cast<std::uintptr_t>(buffers[i].data) % (i == 0 ? 16 : 4) != 0 ||
-        !ExpertExtent(buffers[i].data, buffers[i].bytes, prepared[i]))
-      return Rejected("prepared IQ2 buffer capacity, alignment or address extent is invalid");
-    for (std::size_t previous = 0; previous < i; ++previous)
-      if (!ExpertDisjoint(prepared[i], prepared[previous]))
-        return Rejected("prepared IQ2 activation/map buffers overlap");
-  }
-  const std::array<const ggml_tensor*, 6> operands{first->src[0], second->src[0], first->src[1],
-                                                   first->src[2], first,          second};
-  std::array<ExpertRange, 6> logical{};
-  for (std::size_t i = 0; i < operands.size(); ++i) {
-    const auto bytes = detail::Extent(operands[i]);
-    if (!bytes || !ExpertExtent(operands[i]->data, *bytes, logical[i]))
-      return Rejected("prepared IQ2 logical operand extent is invalid");
-    for (const auto range : prepared)
-      if (!ExpertDisjoint(range, logical[i]))
-        return Rejected("prepared IQ2 buffers overlap a logical product operand");
-  }
-  for (const auto buffer : input.retained) {
-    if (buffer.data == nullptr && buffer.bytes == 0) continue;
-    ExpertRange retained{};
-    if (!ExpertExtent(buffer.data, buffer.bytes, retained))
-      return Rejected("prepared IQ2 retained extent is invalid");
-    for (const auto range : prepared)
-      if (!ExpertDisjoint(range, retained))
-        return Rejected("prepared IQ2 buffers overlap retained original controls");
-    if (!ExpertDisjoint(logical[4], retained) || !ExpertDisjoint(logical[5], retained))
-      return Rejected("prepared IQ2 outputs overlap retained original controls");
-  }
-  const auto disjoint_workspace = [&](LaunchContext::Workspace workspace) {
-    if (workspace.size.value() == 0) return true;
-    ExpertRange range{};
-    // Provider VMM addresses are checked as integers; this pointer is never host-dereferenced.
-    // NOLINTNEXTLINE(performance-no-int-to-ptr)
-    if (!ExpertExtent(reinterpret_cast<const void*>(workspace.base), workspace.size.value(), range))
-      return false;
-    if (!std::ranges::all_of(prepared, [&](ExpertRange p) { return ExpertDisjoint(p, range); }) ||
-        !std::ranges::all_of(logical, [&](ExpertRange p) { return ExpertDisjoint(p, range); }))
-      return false;
-    return std::ranges::all_of(input.retained, [&](ExpertMmqBuffer b) {
-      if (b.data == nullptr && b.bytes == 0) return true;
-      ExpertRange retained{};
-      return ExpertExtent(b.data, b.bytes, retained) && ExpertDisjoint(retained, range);
-    });
-  };
-  if (!disjoint_workspace(launch.workspace()) ||
-      (launch.cublas() != nullptr && !disjoint_workspace(launch.cublas()->workspace())))
-    return Rejected("prepared IQ2 live operands overlap a native workspace");
-  return *layout;
-}
 std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml_tensor* first,
                                                      ggml_tensor* second, bool compact_experts,
-                                                     const ExpertMmqPrepared* capture = nullptr,
                                                      ggml_tensor* glu = nullptr,
                                                      bool glu_q8 = false,
                                                      const ggml_tensor* prequantized = nullptr) {
@@ -658,8 +447,7 @@ std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml
   if (glu != nullptr && !GluPair(launch, first, second, compact_experts)) {
     return Rejected("the pair activation write-back takes the GB10 IQ2_XXS and IQ2_XS pairs only");
   }
-  return launch.Run(base::Bytes(*scratch), [first, second, compact_experts, capture, iq2_occ2, glu,
-                                            glu_q8,
+  return launch.Run(base::Bytes(*scratch), [first, second, compact_experts, iq2_occ2, glu, glu_q8,
                                             prequantized](ggml_backend_cuda_context& context) {
     // Host preparation from GGML mmq.cu: the same inverse broadcast map
     // and scatter quantization feed two ordinary MMQ launches. This is
@@ -707,22 +495,6 @@ std::expected<void, KernelFailure> RunExpertProducts(LaunchContext& launch, ggml
                              padded, rows, 1, 1, stream);
     }
     CUDA_CHECK(cudaGetLastError());
-    if (capture != nullptr) {
-      // Diagnostic copies preserve every private guard byte without
-      // modifying or assuming initialization of its source buffer.
-      CUDA_CHECK(cudaMemcpyAsync(capture->activation.data, quantized.get(), bytes,
-                                 cudaMemcpyDeviceToDevice, stream));
-      CUDA_CHECK(cudaMemcpyAsync(capture->source_ids.data, ids_src.get(),
-                                 static_cast<std::size_t>(rows) * sizeof(std::int32_t),
-                                 cudaMemcpyDeviceToDevice, stream));
-      CUDA_CHECK(cudaMemcpyAsync(capture->destination_ids.data, ids_dst.get(),
-                                 static_cast<std::size_t>(rows + j_max) * sizeof(std::int32_t),
-                                 cudaMemcpyDeviceToDevice, stream));
-      CUDA_CHECK(
-          cudaMemcpyAsync(capture->bounds.data, bounds.get(),
-                          static_cast<std::size_t>(weights->ne[2] + 1) * sizeof(std::int32_t),
-                          cudaMemcpyDeviceToDevice, stream));
-    }
     const auto sy2 = input->ne[1] * padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
                      (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
     const auto sy3 = tokens * sy2;
@@ -852,7 +624,7 @@ std::expected<void, KernelFailure> MulMatIdQPairGlu(LaunchContext& launch, ggml_
   if (auto checked = CheckMulMatIdQPairGlu(up, gate, glu); !checked) {
     return checked;
   }
-  return RunExpertProducts(launch, up, gate, /*compact_experts=*/true, nullptr, glu);
+  return RunExpertProducts(launch, up, gate, /*compact_experts=*/true, glu);
 }
 
 bool MulMatIdQPairGluSupported(const LaunchContext& launch, const ggml_tensor* up,
@@ -950,11 +722,15 @@ std::expected<void, KernelFailure> MulMatIdQPairGluQ8(LaunchContext& launch, ggm
   if (auto checked = CheckMulMatIdQPairGlu(up, gate, glu); !checked) {
     return checked;
   }
-  // 24576 columns of 16 D2S6 blocks within the F32 activation's bytes.
-  if (ggml_nbytes(glu) < (static_cast<std::size_t>(24576) * 16 + 128) * sizeof(block_q8_1_mmq)) {
+  // Each sorted column's D2S6 blocks (one per 128 values) and the down
+  // product's J guard (at most 128 columns) within the F32 activation's
+  // bytes: the chunk's own columns, not a full 4,096-token chunk's.
+  const auto columns = static_cast<std::size_t>(glu->ne[1] * glu->ne[2]);
+  const auto blocks = static_cast<std::size_t>(glu->ne[0] / QK8_1_MMQ);
+  if (ggml_nbytes(glu) < ((columns * blocks) + 128) * sizeof(block_q8_1_mmq)) {
     return Rejected("the pair activation cannot hold its quantized form");
   }
-  return RunExpertProducts(launch, up, gate, /*compact_experts=*/true, nullptr, glu, true);
+  return RunExpertProducts(launch, up, gate, /*compact_experts=*/true, glu, true);
 }
 
 std::expected<void, KernelFailure> MulMatIdQCompactPrequant(LaunchContext& launch,
@@ -965,123 +741,7 @@ std::expected<void, KernelFailure> MulMatIdQCompactPrequant(LaunchContext& launc
   if (mmq_get_q8_1_ds_layout(down->src[0]->type) != MMQ_Q8_1_DS_LAYOUT_D2S6) {
     return Rejected("the prequantized down input is D2S6");
   }
-  return RunExpertProducts(launch, down, nullptr, true, nullptr, nullptr, false, down->src[1]);
-}
-
-std::expected<void, KernelFailure> MulMatIdQPairCapture(LaunchContext& launch, ggml_tensor* first,
-                                                        ggml_tensor* second,
-                                                        const ExpertMmqPrepared& capture,
-                                                        std::uint64_t generation) {
-  if (auto checked = CheckExpertPrepared(launch, first, second, capture, generation); !checked)
-    return std::unexpected(checked.error());
-  return RunExpertProducts(launch, first, second, true, &capture);
-}
-
-std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPairBorrowed(
-    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
-    const ExpertMmqPrepared& input, std::uint64_t generation) {
-  if (auto checked = CheckExpertPrepared(launch, first, second, input, generation); !checked)
-    return std::unexpected(checked.error());
-  const auto* weights = first->src[0];
-  return TileFixup(launch, GGML_TYPE_IQ2_XXS, weights->ne[1], weights->ne[0],
-                   first->src[1]->ne[2] * first->src[2]->ne[0], weights->ne[2],
-                   first->src[1]->ne[2] * first->src[2]->ne[0], true);
-}
-
-std::expected<void, KernelFailure> MulMatIdQPairBorrowed(LaunchContext& launch, ggml_tensor* first,
-                                                         ggml_tensor* second,
-                                                         const ExpertMmqPrepared& input,
-                                                         std::uint64_t generation) {
-  auto scratch = PlanMulMatIdQPairBorrowed(launch, first, second, input, generation);
-  if (!scratch) return std::unexpected(scratch.error());
-  return launch.Run(
-      base::Bytes(*scratch), [first, second, input](ggml_backend_cuda_context& context) {
-        const auto* source = first->src[1];
-        const auto* ids = first->src[2];
-        const auto tokens = source->ne[2];
-        const auto rows = tokens * ids->ne[0];
-        const auto padded = GGML_PAD(source->ne[0], MATRIX_ROW_PADDING);
-        const auto sy2 = source->ne[1] * padded * static_cast<std::int64_t>(sizeof(block_q8_1)) /
-                         (QK8_1 * static_cast<std::int64_t>(sizeof(int)));
-        const auto sy3 = tokens * sy2;
-        for (ggml_tensor* output : {first, second}) {
-          const auto* weights = output->src[0];
-          const auto ts = static_cast<std::int64_t>(ggml_type_size(GGML_TYPE_IQ2_XXS));
-          const mmq_args args{static_cast<const char*>(weights->data),
-                              GGML_TYPE_IQ2_XXS,
-                              static_cast<const int*>(input.activation.data),
-                              static_cast<const std::int32_t*>(input.destination_ids.data),
-                              static_cast<const std::int32_t*>(input.bounds.data),
-                              static_cast<float*>(output->data),
-                              nullptr,
-                              weights->ne[0],
-                              weights->ne[1],
-                              rows,
-                              static_cast<std::int64_t>(weights->nb[1]) / ts,
-                              rows,
-                              static_cast<std::int64_t>(output->nb[1] / sizeof(float)),
-                              weights->ne[2],
-                              weights->ne[2],
-                              static_cast<std::int64_t>(weights->nb[2]) / ts,
-                              sy2,
-                              static_cast<std::int64_t>(output->nb[2] / sizeof(float)),
-                              weights->ne[3],
-                              source->ne[3],
-                              static_cast<std::int64_t>(weights->nb[3]) / ts,
-                              sy3,
-                              static_cast<std::int64_t>(output->nb[3] / sizeof(float)),
-                              tokens,
-                              tokens,
-                              true};
-          mul_mat_q_case<GGML_TYPE_IQ2_XXS>(context, args, context.stream());
-          CUDA_CHECK(cudaGetLastError());
-        }
-      });
-}
-
-std::expected<ExpertMmqDispatch, KernelFailure> DescribeMulMatIdQPairBorrowed(
-    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
-    const ExpertMmqPrepared& input, std::uint64_t generation) {
-  if (auto checked = CheckExpertPrepared(launch, first, second, input, generation); !checked)
-    return std::unexpected(checked.error());
-  const auto* weights = first->src[0];
-  const auto tokens = first->src[1]->ne[2];
-  const auto assignments = tokens * first->src[2]->ne[0];
-  const auto chosen = ChosenTile(launch, GGML_TYPE_IQ2_XXS, weights->ne[1], tokens);
-  if (!chosen) return std::unexpected(chosen.error());
-  const auto& config = *chosen;
-  // This description qualifies only the actual current captured instance;
-  // refusal never substitutes it into the unchanged dispatch below.
-  if (config.I != 128 || config.J != 128 || config.nthreads != 256 ||
-      !config.use_mma_data_layout(Device(launch).cc))
-    return Rejected("borrowed IQ2 description does not match the captured current tile");
-  const auto capacity = mmq_compact_expert_capacity(GGML_TYPE_IQ2_XXS, weights->ne[1], tokens,
-                                                    assignments, weights->ne[2], config.J);
-  const auto scratch = PlanMulMatIdQPairBorrowed(launch, first, second, input, generation);
-  if (!scratch) return std::unexpected(scratch.error());
-  if (capacity <= 0 || *scratch != static_cast<std::uint64_t>(capacity) * sizeof(int2))
-    return Rejected("borrowed IQ2 selected compact capacity differs from actual scratch");
-  int current = -1;
-  if (cudaGetDevice(&current) != cudaSuccess || current != launch.device())
-    return Rejected("borrowed IQ2 attribute device differs");
-  // mul_mat_q has static linkage in mmq.cuh. Taking its address here would
-  // instantiate another numerical kernel under this wrapper's flags.
-  // The controller instead inspects the already built IQ2 instance object.
-  return ExpertMmqDispatch{
-      .scratch_bytes = *scratch,
-      .dynamic_shared_bytes = mmq_get_nbytes_shared(config, Device(launch).cc),
-      .device_optin_shared_bytes = Device(launch).smpbo,
-      .row_tile = static_cast<std::uint32_t>(config.I),
-      .column_tile = static_cast<std::uint32_t>(config.J),
-      .threads = static_cast<std::uint32_t>(config.nthreads),
-      .capacity = static_cast<std::uint32_t>(capacity),
-      .product_grid_x = static_cast<std::uint32_t>((weights->ne[1] + config.I - 1) / config.I),
-      .product_grid_y = static_cast<std::uint32_t>(capacity),
-      .product_grid_z = 1,
-      .builder_launches = 2,
-      .product_launches = 2,
-      .compact = true,
-      .stream_k = false};
+  return RunExpertProducts(launch, down, nullptr, true, nullptr, false, down->src[1]);
 }
 
 }  // namespace jitllm::kernels::ggml

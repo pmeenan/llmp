@@ -2724,9 +2724,23 @@ std::expected<double, std::string> Dsv4Runner::TimeReplays(std::uint32_t n_past,
                                                            std::uint32_t count) {
   const PlanStep step;  // its plan stays while this runs
   default_request_.track.Wrote(n_past);
+  // The replays write the state at n_past as a step there does: usable,
+  // resident, settled and backed through it, like any step's.
+  if (auto usable = Usable(default_request_); !usable) {
+    return std::unexpected(usable.error());
+  }
+  if (auto waiting = default_request_.live.AwaitingAccept(); !waiting) {
+    return std::unexpected(waiting.error());
+  }
+  if (auto settled = Rollback(default_request_); !settled) {  // a restore owed runs first
+    return std::unexpected(settled.error());
+  }
   auto in = md::Dsv4Chunk(profile_, layout_, n_past, 1, model_.exact);
   if (!in) {
     return std::unexpected(in.error());
+  }
+  if (auto used = EnsureState(default_request_, n_past + 1); !used) {
+    return std::unexpected(used.error());
   }
   auto planned = Planned(default_request_, {.shape = kg::Dsv4ShapeOf(layout_, *in)});
   if (!planned) {
@@ -2753,6 +2767,8 @@ std::expected<double, std::string> Dsv4Runner::TimeReplays(std::uint32_t n_past,
   }
   kg::LaunchContext& launch = resources_.launch();
   std::string failed;
+  bool wrote = false;    // a replay was queued: the state at n_past written
+  bool unknown = false;  // a launch of unknown effect
   const auto start = std::chrono::steady_clock::now();
   auto posted = node_.Job(
       execution_,
@@ -2761,16 +2777,20 @@ std::expected<double, std::string> Dsv4Runner::TimeReplays(std::uint32_t n_past,
           if (auto r = launch.Launch(graph); !r) {
             failed = r.error().detail;
             if (r.error().error == kg::KernelError::kUnknown) {
+              unknown = true;
               return sc::JobResult::kUnknown;
             }
             return i == 0 ? sc::JobResult::kNotStarted : sc::JobResult::kFailed;
           }
+          wrote = true;
         }
         return sc::JobResult::kQueued;
       },
       "back-to-back replays", stream_);
   const double seconds = Seconds(std::chrono::steady_clock::now() - start);
   if (!posted || !failed.empty()) {
+    // Replays that ran wrote the state: never left half-written.
+    Settle(default_request_, false, wrote, unknown);
     return Error(failed.empty() ? posted.error() : failed);
   }
   return seconds / count;

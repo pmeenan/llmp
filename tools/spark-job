@@ -372,6 +372,8 @@ class Supervisor:
                     self.note(f"waiting for the GPU: held by {gpu_holder(root)}")
                     last_note = time.monotonic()
                 time.sleep(GPU_POLL)
+            if self.stop_reason:  # killed during the last sleep, as the GPU came free: never start
+                return {"state": "killed", "reason": f"{self.stop_reason}, waiting for the GPU"}
             if last_note is not None:
                 self.note(f"got the GPU after waiting {span(time.monotonic() - began)}")
         write_json(self.dir / "gpu.json", {"acquired": now()})

@@ -472,7 +472,16 @@ its end, about 4 s on spark, and hostile templates end by a bound or their
 cancellation). Only a `Budget` caps steps and work, as probes use it. A
 value's text or JSON stops at the
 string bound as it grows, so one string held many times over costs no
-more than that; comparisons charge every byte they compare; substring
+more than that; a string's trusted ranges (16 bytes each, eight times its
+text where the template's text and a client's alternate byte by byte)
+count toward the string bound with its text as it grows, and the output's
+toward the output bound, which so covers the whole rendering (its ranges
+pass to the caller without a copy, and the control tokens found in them,
+16 bytes a span, count toward the same bound until the ranges are
+released); a set block's or a macro's output is held as live bytes as it
+grows (they nest, each building while the next runs); a container's repr
+and `tojson`'s text are held as live bytes while they are copied into a
+string; comparisons charge every byte they compare; substring
 searches (`in`, `find`, `rfind`, `count`, `split`, `rsplit`, `replace`)
 are linear (Knuth-Morris-Pratt), with needles up to a sixteenth of the
 live-bytes bound; searches by name (a scope's variables, a macro's

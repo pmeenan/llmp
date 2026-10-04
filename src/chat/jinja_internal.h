@@ -231,11 +231,9 @@ struct Dict;
 struct Namespace;
 struct Callable;
 
-// A trusted byte range of a string.
-struct Range {
-  std::size_t offset = 0;
-  std::size_t length = 0;
-};
+// A trusted byte range of a string: the rendering's own type, so the
+// output's ranges become Rendered's without a copy.
+using Range = TextRange;
 
 // A string and its provenance. `markup` is markupsafe's Markup (the `safe`
 // filter's result), which escapes what is added to it with `+`.
@@ -599,21 +597,53 @@ inline const Loop& Value::loop() const { return static_cast<const Loop&>(*obj_);
 
 // ------------------------------------------------------------ value helpers
 
-// Builds a string with provenance.
+// Builds a string with provenance. What it holds is its text and its
+// trusted ranges (bytes()): a range per two bytes where the template's text
+// and a client's alternate, so the ranges may hold eight times the text.
+// With a limit, an append that would take bytes() past it is dropped and
+// the builder is over(): its text is no longer the string's, and Take
+// refuses it. raw() writes bypass the limit (Take still checks).
+// With `held` too (a set block's or a macro's output, built while other
+// evaluation runs, perhaps another such output), bytes() is charged to
+// that arena's live bytes as it grows, until it is taken or the builder
+// ends: past the live bound an append is dropped as past the limit.
 class StrBuilder {
  public:
+  StrBuilder() = default;
+  explicit StrBuilder(std::size_t limit) : limit_(limit) {}
+  StrBuilder(std::size_t limit, Arena* held) : limit_(limit), held_(held) {}
+  StrBuilder(const StrBuilder&) = delete;
+  StrBuilder& operator=(const StrBuilder&) = delete;
+  StrBuilder(StrBuilder&&) = delete;
+  StrBuilder& operator=(StrBuilder&&) = delete;
+  ~StrBuilder() { Unhold(); }
   void Append(std::string_view text, bool trusted);
   void Append(const Str& s);
   void Append(const Str& s, std::size_t offset, std::size_t length);
-  std::size_t size() const { return s_.text.size(); }
+  std::size_t size() const { return s_.text.size(); }  // the text's bytes
+  std::size_t bytes() const { return s_.text.size() + (s_.trusted.size() * sizeof(Range)); }
+  bool over() const { return over_; }
   const std::string& text() const { return s_.text; }
   void set_markup(bool markup) { s_.markup = markup; }
-  // The string, charged to the arena; null when a bound is reached.
+  // The string, charged to the arena (bytes() and its header); null when a
+  // bound is reached: the builder over its limit, or bytes() past the
+  // arena's string bound.
   std::shared_ptr<const Str> Take(Arena* arena);
   Str& raw() { return s_; }
 
  private:
+  void Unhold() {
+    if (held_ != nullptr) {
+      held_->Release(charged_);
+    }
+    charged_ = 0;
+  }
+
   Str s_;
+  std::size_t limit_ = std::numeric_limits<std::size_t>::max();
+  Arena* held_ = nullptr;
+  std::size_t charged_ = 0;  // to held_
+  bool over_ = false;
 };
 
 std::shared_ptr<const Str> MakeStr(Arena* arena, std::string_view text, bool trusted);

@@ -149,18 +149,20 @@ class SpecialScanner {
     return length + (starts * per_start_);
   }
 
-  // False when `cancelled` (asked every jinja::kCancelWorkBytes of Cost's
-  // measure, as the interpreter asks) said to stop.
-  bool Scan(std::string_view text, std::size_t offset, std::size_t length,
-            std::vector<tokenizer::SpecialSpan>& out, const std::function<bool()>* cancelled,
-            std::uint64_t& work) const {
+  enum class End : std::uint8_t { kDone, kCancelled, kBound };
+  // kCancelled when `cancelled` (asked every jinja::kCancelWorkBytes of
+  // Cost's measure, as the interpreter asks) said to stop; kBound before
+  // `out` would hold more than `max_specials`.
+  End Scan(std::string_view text, std::size_t offset, std::size_t length,
+           std::vector<tokenizer::SpecialSpan>& out, std::size_t max_specials,
+           const std::function<bool()>* cancelled, std::uint64_t& work) const {
     const std::size_t end = offset + length;
     std::uint64_t next_check = work + jinja::kCancelWorkBytes;
     for (std::size_t at = offset; at < end;) {
       if (cancelled != nullptr && work >= next_check) {
         next_check = work + jinja::kCancelWorkBytes;
         if (*cancelled && (*cancelled)()) {
-          return false;
+          return End::kCancelled;
         }
       }
       ++work;
@@ -175,13 +177,16 @@ class SpecialScanner {
         }
       }
       if (found != 0) {
+        if (out.size() >= max_specials) {
+          return End::kBound;
+        }
         out.push_back({at, found});
         at += found;
       } else {
         ++at;
       }
     }
-    return true;
+    return End::kDone;
   }
 
  private:
@@ -476,16 +481,35 @@ std::expected<Rendered, Error> RenderInterpreted(const jinja::Template& program,
         Error{.rule = Rule::kUnsupported,
               .reason = "the template built or scanned more bytes than its bound"});
   }
+  // The specials are held with the text and its trusted ranges until the
+  // ranges are released: all three within the output bound, as the
+  // interpreter keeps the text and ranges (a template repeating a short
+  // control token would otherwise hold several times its output in spans).
+  std::size_t bound = program.limits().max_output_bytes;
+  if (budget.max_output_bytes != 0) {
+    bound = std::min(bound, budget.max_output_bytes);
+  }
+  const std::size_t held =
+      rendered->text.size() + (rendered->trusted.size() * sizeof(jinja::TextRange));
+  const std::size_t max_specials = (bound - std::min(bound, held)) / sizeof(tokenizer::SpecialSpan);
   Rendered out;
   std::uint64_t scanned = 0;
   for (const auto& [offset, length] : rendered->trusted) {
-    if (!scanner.Scan(rendered->text, offset, length, out.specials, budget.cancelled, scanned)) {
+    const auto end = scanner.Scan(rendered->text, offset, length, out.specials, max_specials,
+                                  budget.cancelled, scanned);
+    if (end == SpecialScanner::End::kCancelled) {
       Error cancelled{.rule = Rule::kUnsupported,
                       .reason = "the rendering was cancelled: its request ended"};
       cancelled.cancelled = true;
       return std::unexpected(cancelled);
     }
+    if (end == SpecialScanner::End::kBound) {
+      return std::unexpected(FromJinja(jinja::Error{
+          .code = jinja::Code::kLimit,
+          .reason = "the rendering and its control tokens are longer than its bound"}));
+    }
   }
+  std::vector<jinja::TextRange>().swap(rendered->trusted);  // released before the next rendering
   out.text = std::move(rendered->text);
   if (conversation.add_generation_prompt) {
     // Where the generation prompt starts: the end of the rendering without

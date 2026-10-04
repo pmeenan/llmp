@@ -422,10 +422,6 @@ add_executable(dsv4_test dsv4_test.cc)
 target_link_libraries(dsv4_test PRIVATE jitllm_ggml_tensors jitllm_model)
 jitllm_gtest(dsv4_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-add_executable(dsv4_ds4_state_test dsv4_ds4_state_test.cc)
-target_link_libraries(dsv4_ds4_state_test PRIVATE jitllm_model)
-jitllm_gtest(dsv4_ds4_state_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
 if(JITLLM_CUDA)
   add_executable(dsv4_prefill_plan_test dsv4_prefill_plan_test.cc)
   target_link_libraries(dsv4_prefill_plan_test PRIVATE jitllm_engine)
@@ -455,46 +451,14 @@ if(JITLLM_CUDA)
   target_link_options(plan_cache_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   jitllm_gtest(plan_cache_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
-  add_executable(dsv4_ds4_weights_test dsv4_ds4_weights_test.cc)
-  target_link_libraries(dsv4_ds4_weights_test PRIVATE jitllm_engine)
+  # Releasing a partly created region (engine/paged_node.h ReleaseMapped)
+  # over fake device memory, host-only.
+  add_executable(release_mapped_test release_mapped_test.cc)
+  target_link_libraries(release_mapped_test PRIVATE jitllm_engine jitllm_fake_providers)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
-  target_link_options(dsv4_ds4_weights_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
-  jitllm_gtest(dsv4_ds4_weights_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+  target_link_options(release_mapped_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  jitllm_gtest(release_mapped_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 endif()
-
-# Refusals and the explicit decode table for the complete-ds4 benchmark's
-# cache stages. No device pointers are dereferenced by these CPU controls.
-add_executable(dsv4_ds4_cache_validate_test dsv4_ds4_cache_validate_test.cc)
-target_link_libraries(dsv4_ds4_cache_validate_test PRIVATE jitllm_ggml_tensors)
-jitllm_gtest(dsv4_ds4_cache_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(dsv4_ds4_hc_validate_test dsv4_ds4_hc_validate_test.cc)
-target_link_libraries(dsv4_ds4_hc_validate_test PRIVATE jitllm_ggml_tensors)
-jitllm_gtest(dsv4_ds4_hc_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(dsv4_ds4_comp_validate_test dsv4_ds4_comp_validate_test.cc)
-target_link_libraries(dsv4_ds4_comp_validate_test PRIVATE jitllm_ggml_tensors)
-jitllm_gtest(dsv4_ds4_comp_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(dsv4_ds4_product_test dsv4_ds4_product_test.cc)
-target_link_libraries(dsv4_ds4_product_test PRIVATE jitllm_ggml_tensors)
-jitllm_gtest(dsv4_ds4_product_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(dsv4_ds4_attention_validate_test dsv4_ds4_attention_validate_test.cc)
-target_link_libraries(dsv4_ds4_attention_validate_test PRIVATE jitllm_ggml_tensors)
-jitllm_gtest(dsv4_ds4_attention_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(dsv4_ds4_moe_validate_test dsv4_ds4_moe_validate_test.cc)
-target_link_libraries(dsv4_ds4_moe_validate_test PRIVATE jitllm_ggml_tensors)
-jitllm_gtest(dsv4_ds4_moe_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(ds4_complete_executor_test ds4_complete_executor_test.cc)
-target_link_libraries(ds4_complete_executor_test PRIVATE jitllm_ds4_complete_contract)
-jitllm_gtest(ds4_complete_executor_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-add_executable(dsv4_ds4_repack_validate_test dsv4_ds4_repack_validate_test.cc)
-target_link_libraries(dsv4_ds4_repack_validate_test PRIVATE jitllm_ggml_tensors)
-jitllm_gtest(dsv4_ds4_repack_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 # DeepSeek V4's DSpark drafter and speculation's parts of the adapter and
 # graph (model/dspark.h; D-092).
@@ -614,68 +578,6 @@ if(JITLLM_CUDA)
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   target_link_libraries(dsv4_stages_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
   jitllm_gpu_gtest(dsv4_stages_test)
-
-  # Original FP8/FP4 QAT layouts, rounded raw-ring stores and guarded
-  # producer/consumer byte controls. These are not model quality tests.
-  add_executable(dsv4_ds4_cache_test dsv4_ds4_cache_test.cc)
-  target_include_directories(dsv4_ds4_cache_test SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(dsv4_ds4_cache_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(dsv4_ds4_cache_test)
-
-  add_executable(dsv4_ds4_hc_test dsv4_ds4_hc_test.cc)
-  target_include_directories(dsv4_ds4_hc_test SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(dsv4_ds4_hc_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(dsv4_ds4_hc_test)
-
-  add_executable(dsv4_ds4_comp_test dsv4_ds4_comp_test.cc)
-  target_include_directories(dsv4_ds4_comp_test SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(dsv4_ds4_comp_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(dsv4_ds4_comp_test)
-
-  add_executable(dsv4_ds4_product_gpu_test dsv4_ds4_product_gpu_test.cc)
-  target_include_directories(dsv4_ds4_product_gpu_test SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(dsv4_ds4_product_gpu_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(dsv4_ds4_product_gpu_test)
-
-  add_executable(dsv4_ds4_attention_test dsv4_ds4_attention_test.cc)
-  target_include_directories(dsv4_ds4_attention_test SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(dsv4_ds4_attention_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(dsv4_ds4_attention_test)
-
-  add_executable(dsv4_ds4_moe_test dsv4_ds4_moe_test.cc)
-  target_include_directories(dsv4_ds4_moe_test SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(dsv4_ds4_moe_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(dsv4_ds4_moe_test)
-
-  add_executable(ds4_complete_binding_test ds4_complete_binding_test.cc)
-  target_link_libraries(ds4_complete_binding_test PRIVATE jitllm_ds4_complete_native)
-  target_link_options(ds4_complete_binding_test PRIVATE
-                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../../cublas")
-  jitllm_gtest(ds4_complete_binding_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-  add_executable(ds4_complete_retirement_test ds4_complete_retirement_test.cc)
-  target_link_libraries(ds4_complete_retirement_test PRIVATE jitllm_engine jitllm_fake_providers)
-  target_link_options(ds4_complete_retirement_test PRIVATE
-                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../../cublas")
-  jitllm_gtest(ds4_complete_retirement_test TEST_PREFIX unit. PROPERTIES LABELS unit)
-
-  add_executable(dsv4_ds4_repack_test dsv4_ds4_repack_test.cc)
-  target_include_directories(dsv4_ds4_repack_test SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(dsv4_ds4_repack_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
-  jitllm_gpu_gtest(dsv4_ds4_repack_test)
-
-  add_executable(dsv4_ds4_weights_gpu_test dsv4_ds4_weights_gpu_test.cc)
-  target_include_directories(dsv4_ds4_weights_gpu_test SYSTEM PRIVATE
-                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
-  target_link_libraries(dsv4_ds4_weights_gpu_test PRIVATE jitllm_engine)
-  jitllm_gpu_gtest(dsv4_ds4_weights_gpu_test)
 
   # jitLLM's Qwen-Image kernels (kernels/image) against host references.
   add_executable(image_kernels_test image_kernels_test.cc)

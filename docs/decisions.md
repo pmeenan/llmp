@@ -85,7 +85,10 @@ one Spark and on two.
   keeper thread then syncs the files, hashes them (four threads) and
   writes the record unless the slot was invalidated meanwhile (a sequence
   number a slot), off the driver's path. So a crash at any moment leaves a
-  record that describes its files exactly, or none. The hashing is
+  record that describes its files exactly, or none, or one whose unsynced
+  removal outlived the crash: its listed extents are checked at start,
+  and adopting it empties every extent of the spill file it does not
+  list (2026-10-04). The hashing is
   background work: its threads run at the lowest CPU and I/O priority,
   wait between extents while a swap or a prefill runs (and briefly after),
   and stop at the next extent once their slot is invalidated.
@@ -2850,6 +2853,13 @@ review and check gates, one commit per completed task, current branch and
 the bans on subagent commits, pushes, tags, amendments and history
 rewrites still apply. This authorization ends at M3's gate; later work
 needs a direct request for the change at hand unless the owner extends it.
+
+**Owner amendment, 2026-10-04.** The standing authorization is
+milestone-neutral: the main agent may commit completed plan tasks of
+whichever milestone is current, without a new request for each, until the
+owner withdraws it. Work outside a plan task (a review's fixes, an ad hoc
+change) still needs a direct request. Every other condition of the
+2026-09-29 amendment stands.
 
 **Reopen if.** Agents commit something the user did not ask for, or other
 contributors join and need a merge policy.

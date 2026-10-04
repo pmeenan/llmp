@@ -26,7 +26,6 @@ target_link_libraries(jitllm_sampling_bench PRIVATE jitllm_sampling jitllm_warni
 # The retained-backing comparison's deterministic replay of the swap trace
 # on the fake provider (docs/experiments/retained-backing/).
 add_subdirectory(retained_backing)
-add_subdirectory(ds4_complete)
 
 # CPU-only frozen task construction/scoring; never loads a device or model.
 add_library(jitllm_long_context_tasks STATIC long_context_tasks.cc)

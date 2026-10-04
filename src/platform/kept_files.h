@@ -60,6 +60,26 @@ std::expected<PrivateFile, int> OpenPrivateFile(int dir, const char* name, Priva
 // (0600) written and synced, renamed over it, the directory synced. A
 // crash leaves the old file or the new one, never part of either.
 std::expected<void, int> ReplacePrivateFile(int dir, const char* name, std::string_view bytes);
+// The same in its steps, for a caller that decides between them (the
+// state keeper: whether its record is still wanted, under its lock, with
+// no sync waited on there). WritePrivateReplacement: `name`.tmp beneath
+// `dir` made here (O_EXCL, 0600, never through a link; one a crash left
+// is removed first), `bytes` written and synced; removed again on
+// failure. Returns its identity, which the other steps take.
+// CommitPrivateReplacement: that file, still the one written and still a
+// private one, renamed over `name` (atomic: on failure nothing moved).
+// Refused (EPERM) when it is not: one that is not a regular file, or the
+// one written but changed, is removed; another regular file put there
+// since is left to whoever made it (a later Write removes it). The file
+// written is removed when the rename fails. SyncDirectory: the rename (or
+// a removal) reaches the device. AbandonPrivateReplacement: the temporary
+// file removed, unrenamed, if it is still the one written.
+std::expected<FileIdentity, int> WritePrivateReplacement(int dir, const char* name,
+                                                         std::string_view bytes);
+std::expected<void, int> CommitPrivateReplacement(int dir, const char* name,
+                                                  const FileIdentity& written);
+void AbandonPrivateReplacement(int dir, const char* name, const FileIdentity& written);
+std::expected<void, int> SyncDirectory(int dir);
 
 // Reads a private file (as OpenPrivateFile checks it) of at most `limit`
 // bytes whole: EFBIG past it.

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "base/bytes.h"
@@ -355,6 +356,7 @@ using jitllm::memory::ProtectFloor;
 using jitllm::memory::ReclaimCandidate;
 using jitllm::memory::ReclaimKind;
 using jitllm::memory::ReclaimOrder;
+using jitllm::memory::RunReclaim;
 using jitllm::memory::SelectReclaim;
 
 constexpr std::uint64_t kGiB = std::uint64_t{1} << 30U;
@@ -742,6 +744,87 @@ TEST(ReclaimOrder, TheRunningModelsInUseFloorIsNeverTaken) {
   c = all;
   ProtectFloor(c, 150);
   EXPECT_EQ(SelectReclaim(c, kGiB).bytes, 100U + 100U + 1000U);
+}
+
+// One reclaim's rounds: all of what is needed or nothing. A selection that
+// cannot cover it takes nothing (with `partial`, what there is). A victim
+// that gives back nothing is never offered again: the next round selects
+// for the rest without it, and when the rest cannot be covered the reclaim
+// ends short with what it took.
+TEST(ReclaimOrder, AReclaimSelectsAgainWithoutAVictimThatGaveNothing) {
+  const auto graph = [](std::uint64_t id) {
+    return ReclaimCandidate{.kind = ReclaimKind::kGraph,
+                            .owner = 0,
+                            .id = id,
+                            .bytes = 100,
+                            .last_use = id,
+                            .restore_seconds = 0.01};
+  };
+  std::vector<std::uint64_t> failing;
+  std::vector<std::uint64_t> taken;
+  std::vector<std::uint64_t> gone;
+  int rounds = 0;
+  const auto gather = [&](std::vector<ReclaimCandidate>& out, double&) {
+    ++rounds;
+    for (const std::uint64_t id : {1U, 2U, 3U}) {
+      if (std::ranges::find(gone, id) == gone.end()) {
+        out.push_back(graph(id));
+      }
+    }
+  };
+  const auto take = [&](const ReclaimCandidate& c) -> std::uint64_t {
+    taken.push_back(c.id);
+    if (std::ranges::find(failing, c.id) != failing.end()) {
+      return 0;  // held: still a candidate next round, were it offered
+    }
+    gone.push_back(c.id);
+    return c.bytes;
+  };
+  const auto reset = [&](std::vector<std::uint64_t> fail) {
+    failing = std::move(fail);
+    taken.clear();
+    gone.clear();
+    rounds = 0;
+  };
+  // Every victim gives back its count: the least recently used, once.
+  reset({});
+  auto run = RunReclaim(150, false, gather, take);
+  EXPECT_EQ(run.freed, 200U);
+  EXPECT_FALSE(run.short_of_need);
+  EXPECT_THAT(taken, ElementsAre(1U, 2U));
+  EXPECT_EQ(rounds, 1);
+  // The oldest gives nothing: the next round covers the rest without it.
+  reset({1});
+  run = RunReclaim(150, false, gather, take);
+  EXPECT_EQ(run.freed, 200U);
+  EXPECT_FALSE(run.short_of_need);
+  EXPECT_THAT(taken, ElementsAre(1U, 2U, 3U));
+  // Two give nothing: what was taken stays, and the reclaim ends short.
+  reset({1, 3});
+  run = RunReclaim(150, false, gather, take);
+  EXPECT_EQ(run.freed, 100U);
+  EXPECT_TRUE(run.short_of_need);
+  EXPECT_THAT(taken, ElementsAre(1U, 2U, 3U));
+  // More than there is: nothing taken; with `partial`, all there is.
+  reset({});
+  run = RunReclaim(400, false, gather, take);
+  EXPECT_EQ(run.freed, 0U);
+  EXPECT_TRUE(run.short_of_need);
+  EXPECT_TRUE(taken.empty());
+  reset({});
+  run = RunReclaim(400, true, gather, take);
+  EXPECT_EQ(run.freed, 300U);
+  EXPECT_TRUE(run.short_of_need);
+  EXPECT_THAT(taken, ElementsAre(1U, 2U, 3U));
+  // Nothing gives anything back: each victim tried once, then the one
+  // left cannot cover the need and is not taken.
+  reset({1, 2, 3});
+  run = RunReclaim(150, false, gather, take);
+  EXPECT_EQ(run.freed, 0U);
+  EXPECT_TRUE(run.short_of_need);
+  EXPECT_THAT(taken, ElementsAre(1U, 2U));
+  EXPECT_EQ(rounds, 2);
+  EXPECT_LE(rounds, jitllm::memory::kReclaimRounds);
 }
 
 }  // namespace

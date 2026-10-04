@@ -94,8 +94,8 @@ retaining its F16 operands and ordinary normalization. Native
 uses 16F accumulation/output for these F16 products on GB10; its existing
 `plan.f32_output` path uses 32F accumulation/output with the same F16
 operands and avoids the final output conversion. The literal
-[`dsv4_ds4_product.cu`](../../../src/kernels/ggml/dsv4_ds4_product.cu) uses
-that 32F contract. A paid factor restricted to HC weights `[16384,24]`
+`dsv4_ds4_product.cu` (removed with the complete-plan reference; commit
+`ec8af04` holds it) uses that 32F contract. A paid factor restricted to HC weights `[16384,24]`
 and inputs `[16384,4096]` would separate this arithmetic/copy difference.
 **No source kit or run for that factor has started**, and the current category
 budget does not isolate its latency or establish a gain.

@@ -126,6 +126,10 @@ std::expected<void, KernelFailure> Dsv4HcaTokentile(LaunchContext& launch, ggml_
   auto layout = LayoutOf(node);
   if (!layout) return std::unexpected(layout.error());
   if (!Supported(launch)) return detail::Rejected("ds4 HCA is measured only on GB10");
+  // The chunk's first position is read here, on the host, and becomes a
+  // launch parameter, which a replay would keep (D-090).
+  if (launch.capturing())
+    return detail::Rejected("ds4 HCA's first position is not graph-replayable");
   if (WorkspaceOverlaps(launch, node, layout->bytes))
     return detail::Rejected("ds4 HCA scratch overlaps an operand");
   return launch.Run(base::Bytes(layout->bytes), [node, layout = *layout](auto& context) {

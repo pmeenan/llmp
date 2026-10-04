@@ -2452,6 +2452,26 @@ TEST_F(GrowingServerTest, AParseWaitingForGrowthHoldsUpNoOther) {
   }
 }
 
+// Expect: 100-continue is answered once, even when the body then waits
+// part-way for the driver to grow the request memory.
+TEST_F(GrowingServerTest, AContinueIsAnsweredOnceThoughTheBodyWaits) {
+  StartGrowing(kMiB, {});
+  const std::string body = Chat(std::string(std::size_t{6} << 20U, 'w'));
+  const int fd = Connect(std::format(
+      "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+      "Expect: 100-continue\r\nContent-Length: {}\r\n\r\n",
+      body.size()));
+  std::string pending;
+  ReadUntil(fd, pending, "\r\n\r\n");
+  EXPECT_EQ(pending, "HTTP/1.1 100 Continue\r\n\r\n");
+  pending.clear();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(fd, body));
+  ReadUntil(fd, pending, "\r\n\r\n");
+  EXPECT_THAT(pending, StartsWith("HTTP/1.1 200 OK"));
+  EXPECT_GT(backend_.granted.load(), 6 * kMiB);  // the body waited for growth
+  (void)::close(fd);
+}
+
 // A prompt that cannot fit the model's context is refused before it is
 // queued: text longer than the model's render bound, or more token IDs
 // than its context.

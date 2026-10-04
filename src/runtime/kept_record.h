@@ -167,6 +167,12 @@ struct Place {
   std::uint64_t bytes = 0;
 };
 std::vector<Place> CheckpointPlaces(const Checkpoint& checkpoint);
+// What of the record's spill file its extents do not cover: each run of
+// unlisted extents, region by region, in file order (adjacent runs
+// joined). Adopting the record empties them (they read as zeros, as a
+// fresh slot's do): a removed record can outlive a crash, its listed
+// extents still matching while the others hold what the file took since.
+std::vector<Place> UnlistedPlaces(const Record& record);
 
 // What the adopting process holds a record against.
 struct Expected {

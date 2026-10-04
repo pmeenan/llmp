@@ -58,18 +58,6 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
 std::expected<void, KernelFailure> MulMatVecQ(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* node);
 
-// Current native dense Q8_0 MMQ consumer over an authenticated existing
-// D4 sidecar. Only native stream-K fixup is drawn; no quantization, route
-// map, sanitizer or producer is implicit. The caller retains and initializes
-// all guarded sidecar bytes through the same completion fence as the output.
-std::expected<std::uint64_t, KernelFailure> PlanMulMatQBorrowedD4(const LaunchContext& launch,
-                                                                  const ggml_tensor* node,
-                                                                  const BorrowedMmqD4& input,
-                                                                  std::uint64_t generation);
-std::expected<void, KernelFailure> MulMatQBorrowedD4(LaunchContext& launch, ggml_tensor* node,
-                                                     const BorrowedMmqD4& input,
-                                                     std::uint64_t generation);
-
 // The same raw MMQ inner product and preparation, with device-built
 // expert-major tiles for sufficiently large non-FP4 expert products.
 // Other supported shapes retain the ordinary MMQ launch.
@@ -126,78 +114,6 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQPairDense(const LaunchCon
                                                                  const ggml_tensor* b);
 std::expected<void, KernelFailure> MulMatQPairDense(LaunchContext& launch, ggml_tensor* a,
                                                     ggml_tensor* b);
-
-// Experimental fixed-GB10 IQ2 preparation controls. These expose the
-// current pair's private preparation without replacing its producer and
-// let the same native consumers borrow checked original/native operands.
-// No serving caller selects them. Buffers and source/ID generation remain
-// owned through the output's completion fence, including unknown enqueue.
-struct ExpertMmqBuffer {
-  void* data = nullptr;
-  std::uint64_t bytes = 0;
-};
-struct ExpertMmqPrepared {
-  ExpertMmqBuffer activation;
-  // Capture stores the native broadcast inverse (token slot -> sorted
-  // pair); original gathered inputs retain their forward (pair -> token)
-  // map. This audit buffer is not read by either borrowed MMQ consumer.
-  ExpertMmqBuffer source_ids;
-  ExpertMmqBuffer destination_ids;
-  ExpertMmqBuffer bounds;
-  const void* source = nullptr;
-  const void* selected = nullptr;
-  std::uint64_t generation = 0;
-  // Other live original controls/suffix extents to protect from capture
-  // writes or product outputs. Checked synchronously before enqueue.
-  std::span<const ExpertMmqBuffer> retained;
-};
-struct ExpertMmqLayout {
-  std::uint64_t activation_payload_bytes = 0;
-  std::uint64_t activation_bytes = 0;
-  std::uint64_t source_ids_bytes = 0;
-  std::uint64_t destination_ids_payload_bytes = 0;
-  std::uint64_t destination_ids_bytes = 0;
-  std::uint64_t bounds_bytes = 0;
-  std::uint64_t native_j_max = 0;
-};
-// Fixed F32[4096,1,4096], I32[6,4096], raw IQ2[4096,2048,256]
-// and F32[2048,6,4096] products only. Actual native J determines guards.
-std::expected<ExpertMmqLayout, KernelFailure> DescribeMulMatIdQPairPrepared(
-    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second);
-// Diagnostic-only copies inside the ordinary Run after its unchanged
-// preparation. Private guard bytes are retained, not presumed initialized;
-// valid payload/guard extents are given by Describe. Capture is not timed
-// as an ordinary complete-chain candidate.
-std::expected<void, KernelFailure> MulMatIdQPairCapture(LaunchContext& launch, ggml_tensor* first,
-                                                        ggml_tensor* second,
-                                                        const ExpertMmqPrepared& capture,
-                                                        std::uint64_t generation);
-// Caller authenticates every map/activation byte before upload, including
-// the full selected-ID bijection and initialized native-readable guards.
-// Only native compact tiles/fixup are allocated; producer work is absent
-// and must be excluded from consumer-only comparisons explicitly.
-std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPairBorrowed(
-    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
-    const ExpertMmqPrepared& input, std::uint64_t generation);
-std::expected<void, KernelFailure> MulMatIdQPairBorrowed(LaunchContext& launch, ggml_tensor* first,
-                                                         ggml_tensor* second,
-                                                         const ExpertMmqPrepared& input,
-                                                         std::uint64_t generation);
-
-// Fixed-fixture diagnostic of the actual selected compact consumer. J is
-// the selected tile, independent of ExpertMmqLayout::native_j_max guards.
-// Submits no GPU work. Compiled attributes are collected externally from
-// the authenticated actual instance object, not a new wrapper instantiation.
-struct ExpertMmqDispatch {
-  std::uint64_t scratch_bytes = 0, dynamic_shared_bytes = 0, device_optin_shared_bytes = 0;
-  std::uint32_t row_tile = 0, column_tile = 0, threads = 0, capacity = 0;
-  std::uint32_t product_grid_x = 0, product_grid_y = 0, product_grid_z = 0;
-  std::uint32_t builder_launches = 0, product_launches = 0;
-  bool compact = false, stream_k = false;
-};
-std::expected<ExpertMmqDispatch, KernelFailure> DescribeMulMatIdQPairBorrowed(
-    const LaunchContext& launch, const ggml_tensor* first, const ggml_tensor* second,
-    const ExpertMmqPrepared& input, std::uint64_t generation);
 
 // Row-invariant products for a speculative verify (D-092; mmvq_rows.cu):
 // every output column of a quantized product (up to kRowsMaxColumns

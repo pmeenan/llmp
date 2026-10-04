@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -90,6 +91,29 @@ std::vector<std::optional<kept::Digest>> HashPlaces(int fd, std::span<const kept
   return digests;
 }
 
+std::string EmptyUnlisted(int dir, const kept::Record& record) {
+  auto file = platform::OpenPrivateFile(dir, record.file.c_str(),
+                                        {.write = true, .create = false, .truncate = false});
+  if (!file) {
+    return std::format("{}: {}", record.file, Errno(file.error()));
+  }
+  const int fd = file->fd;
+  std::string why;
+  if (IdOf(file->identity) != record.id || file->bytes != record.file_bytes) {
+    why = std::format("{} is not the file its record was made for", record.file);
+  } else {
+    for (const kept::Place& place : kept::UnlistedPlaces(record)) {
+      if (auto emptied = platform::DiscardFileRange(fd, place.offset, place.bytes); !emptied) {
+        why = std::format("{}: emptying what its record does not list: {}", record.file,
+                          Errno(emptied.error()));
+        break;
+      }
+    }
+  }
+  (void)::close(fd);
+  return why;
+}
+
 StateKeeper::StateKeeper(std::size_t threads, Log log)
     : threads_(std::max<std::size_t>(threads, 1)),
       log_(std::move(log)),
@@ -128,9 +152,11 @@ void StateKeeper::Invalidate(std::size_t model, std::uint32_t slot) {
     if (auto removed = platform::RemovePrivate(models_.at(model), name.c_str()); !removed) {
       // A record that cannot be removed would describe a file about to
       // change: say so (the next start refuses it if its digests no longer
-      // match, as they then will not).
+      // match, as they then will not), and try again at the next
+      // Invalidate.
       Say(std::format("a kept conversation's record {} could not be removed: {}", name,
                       Errno(removed.error())));
+      return;
     }
     state.kept = false;
   }
@@ -209,11 +235,11 @@ std::size_t StateKeeper::pending() const {
   return queue_.size() + (busy_ ? 1 : 0);
 }
 
-bool StateKeeper::Hash(Job& job, const std::stop_token& stop, std::string& why, bool& stale) {
+bool StateKeeper::Hash(Job& job, std::uint64_t seen, const std::stop_token& stop, std::string& why,
+                       bool& stale) {
   kept::Record& r = job.record;
   const int dir = models_.at(job.model);
   const auto started = Clock::now();
-  const std::uint64_t seen = invalidations_.load(std::memory_order_acquire);
   const std::function<bool()> go_on = [&]() { return GoOn(job, seen, stop); };
   stale = false;
   {
@@ -313,6 +339,10 @@ void StateKeeper::Work(const std::stop_token& stop) {
   (void)platform::LowerThreadPriority();
   for (;;) {
     Job job;
+    // The Invalidates so far, read with the job's sequence check (both
+    // under the lock, as Invalidate changes them): one after the check is
+    // seen by the hashing, which then stops at its next place.
+    std::uint64_t seen = 0;
     {
       std::unique_lock lock(mutex_);
       if (!ready_.wait(lock, stop, [this] { return !queue_.empty(); })) {
@@ -327,11 +357,29 @@ void StateKeeper::Work(const std::stop_token& stop) {
         }
         continue;
       }
+      seen = invalidations_.load(std::memory_order_acquire);
       busy_ = true;
     }
     std::string why;
     bool stale = false;
-    const bool hashed = Hash(job, stop, why, stale);
+    const bool hashed = Hash(job, seen, stop, why, stale);
+    const int dir = models_.at(job.model);
+    const std::string name = kept::RecordFileName(job.record.slot);
+    // The record written and synced beside its name off the lock: a sync
+    // can wait long on a busy disk, and the driver's Invalidate (a turn
+    // restoring the slot) takes the lock.
+    std::optional<int> unwritten;
+    std::optional<platform::FileIdentity> prepared;  // the temporary file written
+    if (hashed && !stale) {
+      if (auto written =
+              platform::WritePrivateReplacement(dir, name.c_str(), kept::Encode(job.record));
+          written) {
+        prepared = *written;
+      } else {
+        unwritten = written.error();
+      }
+    }
+    bool committed = false;
     {
       const std::scoped_lock lock(mutex_);
       SlotState& state = slots_[{job.model, job.record.slot}];
@@ -340,27 +388,57 @@ void StateKeeper::Work(const std::stop_token& stop) {
       } else if (!hashed) {
         ++stats_.failed;
         Say(std::format("a kept conversation's record was not written: {}", why));
+      } else if (!prepared) {
+        ++stats_.failed;
+        Say(std::format("a kept conversation's record {} was not written: {}", name,
+                        Errno(unwritten.value_or(EIO))));
+      } else if (auto renamed = platform::CommitPrivateReplacement(dir, name.c_str(), *prepared);
+                 !renamed) {
+        // Nothing moved (a rename is atomic, and never of a temporary file
+        // other than the one written): whatever stood there stands.
+        ++stats_.failed;
+        Say(std::format("a kept conversation's record {} was not written: {}", name,
+                        Errno(renamed.error())));
       } else {
-        const std::string name = kept::RecordFileName(job.record.slot);
-        if (auto written = platform::ReplacePrivateFile(models_.at(job.model), name.c_str(),
-                                                        kept::Encode(job.record));
-            !written) {
-          ++stats_.failed;
-          Say(std::format("a kept conversation's record {} was not written: {}", name,
-                          Errno(written.error())));
-        } else {
-          state.kept = true;
-          ++stats_.written;
-          // The slot's checkpoints the record does not name are gone.
-          const std::string prefix = std::format("slot-{}.turn-", job.record.slot);
-          std::erase_if(checkpoint_digests_, [&](const auto& entry) {
-            return entry.first.first == job.model && entry.first.second.starts_with(prefix) &&
-                   std::ranges::none_of(job.record.checkpoints, [&](const kept::Checkpoint& c) {
-                     return c.file == entry.first.second;
-                   });
-          });
-        }
+        // Under the lock, still current: an Invalidate from here on finds
+        // it and removes it.
+        committed = true;
+        state.kept = true;
+        ++stats_.written;
+        // The slot's checkpoints the record does not name are gone.
+        const std::string prefix = std::format("slot-{}.turn-", job.record.slot);
+        std::erase_if(checkpoint_digests_, [&](const auto& entry) {
+          return entry.first.first == job.model && entry.first.second.starts_with(prefix) &&
+                 std::ranges::none_of(job.record.checkpoints, [&](const kept::Checkpoint& c) {
+                   return c.file == entry.first.second;
+                 });
+        });
       }
+    }
+    if (prepared && !committed) {
+      // Gone stale meanwhile (or the commit refused or failed, which
+      // removed it where it was the one written): no temporary file of
+      // this write stays; another's in its place is left to it.
+      platform::AbandonPrivateReplacement(dir, name.c_str(), *prepared);
+    }
+    if (committed) {
+      // The rename made durable, off the lock. An Invalidate racing it
+      // (between the rename and this sync, or during it) has already
+      // removed the record under the lock; a crash before either reaches
+      // the device can leave the record in place, describing a file a
+      // later turn may have written since. That is the case of any
+      // removal not yet on disk: the next start refuses the record if its
+      // extents no longer match, and adopting it empties every extent it
+      // does not list (D-105).
+      if (auto synced = platform::SyncDirectory(dir); !synced) {
+        Say(
+            std::format("a kept conversation's record {} may not survive a crash: syncing its "
+                        "directory: {}",
+                        name, Errno(synced.error())));
+      }
+    }
+    {
+      const std::scoped_lock lock(mutex_);
       busy_ = false;
     }
     idle_.notify_all();
