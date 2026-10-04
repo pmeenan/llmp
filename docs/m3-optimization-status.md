@@ -31,6 +31,13 @@ and 7.65% with UD-IQ3_XXS plain decode
 ([wave lanes](experiments/qwen38-four-request-waves/README.md#wave-lanes)).
 The NVFP4/Mia concurrency gap above remains open.
 
+DeepSeek's [wide IQ2_XXS gate/up pass screens](experiments/deepseek-expert-passes/README.md)
+share weight decoding across four or two tokens with the original warp-row
+arithmetic. Both pass the existing exact solo/wave, discard/retry and
+departed-slot controls, but C4 DSpark wave median latency rises 0.512% /
+1.400% versus their bookend means. Keep the current loop; routed down and
+worklist costs remain separate candidates.
+
 Reports: [literal 8K](experiments/ds4-complete-plan/README.md),
 [literal 32K](experiments/ds4-matched-32k/README.md),
 [output-A](experiments/ds4-output-prefix/README.md),

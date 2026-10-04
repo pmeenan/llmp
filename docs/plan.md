@@ -1151,6 +1151,10 @@ it appears.
       control with capture/replay, but has no measured gain: verify median
       107.399 ms versus disabled bookends 107.228 / 107.018 ms. It is not
       adopted; swap/recovery and actual serving impact remain untested.
+      DeepSeek's [wide IQ2_XXS gate/up pass screens](experiments/deepseek-expert-passes/README.md)
+      likewise preserve the existing scalar/wave and discard controls but
+      give no measured C4 DSpark gain (four-token / two-token pass median
+      latency +0.512% / +1.400% versus bookends); retain the current loop.
       All packing
       is paid. Overflow waits
       for a retired slot. Model changes now pause the group at completed
