@@ -348,6 +348,12 @@ class Llm : public Served {
     const Llm& model() const { return model_; }
     const std::vector<std::int32_t>& history() const { return history_; }
     bool HasRetainedState() const { return !history_.empty(); }
+    // A paused in-flight request keeps its exact branch through a swap.
+    // This protects logical state and its spill files, not GPU residency.
+    // The last continuation can be released by an I/O-side queue refusal.
+    void HoldContinuation() { continuations_.fetch_add(1, std::memory_order_relaxed); }
+    void ReleaseContinuation() { continuations_.fetch_sub(1, std::memory_order_relaxed); }
+    bool HeldByContinuation() const { return continuations_.load(std::memory_order_relaxed) != 0; }
     Status Clear();
     // Clears an idle branch's retained state (its finished conversation's
     // reuse cache) while it is outside the selected cohort. Families
@@ -437,6 +443,7 @@ class Llm : public Served {
     };
     UseStamp history_used_;
     bool generation_active_ = false;
+    std::atomic<std::uint32_t> continuations_{0};
     bool capacity_refused_ = false;
     const PromptSession* prompt_session_ = nullptr;
     execution::AdaptiveDepth decoding_{1};

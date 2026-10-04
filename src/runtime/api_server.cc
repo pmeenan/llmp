@@ -745,6 +745,7 @@ struct Server::Active {
   Clock::time_point started;
   Stream exchange;
   std::unique_ptr<CooperativeBackend::Work> work;
+  bool model_paused = false;
 
   Active(Server& server, Pending request, int wake_fd, const std::function<bool()>& on_wake)
       : pending(std::move(request)),
@@ -1799,7 +1800,9 @@ Clock::time_point Server::Sweep(Clock::time_point now) {
     if (const auto wait = options_.queue_wait) {
       std::erase_if(queue_, [&](const Pending& p) {
         Channel& ch = *p.channel;
-        if (ch.stream) {
+        if (ch.stream || p.started) {
+          // A model-paused or reader-yielded request is already admitted.
+          // Returning it to the FIFO cannot turn it into a new 429 refusal.
           return false;
         }
         if (now - ch.queued_at < *wait) {
@@ -2049,8 +2052,8 @@ void Server::Serve(Pending& pending, int wake_fd, const std::function<bool()>& o
 }
 
 bool Server::YieldDueLocked(const Channel& channel, Clock::time_point now) const {
-  return blocked_ && !queue_.empty() && channel.paused && !channel.gone && !channel.stalled &&
-         now - channel.paused_at >= options_.yield_after;
+  return blocked_ && (!queue_.empty() || suspended_requests_ != 0) && channel.paused &&
+         !channel.gone && !channel.stalled && now - channel.paused_at >= options_.yield_after;
 }
 
 void Server::Requeue(Pending& pending, Stream& stream, std::shared_ptr<Yielded> yielded) {
@@ -2070,7 +2073,8 @@ void Server::Requeue(Pending& pending, Stream& stream, std::shared_ptr<Yielded> 
       Log(
           std::format("request {}: its client has read nothing for {:.1f} s while {} requests "
                       "wait; it yields its place and continues once its client reads",
-                      channel.id, Seconds(Clock::now() - channel.paused_at), queue_.size()));
+                      channel.id, Seconds(Clock::now() - channel.paused_at),
+                      queue_.size() + suspended_requests_));
       if (channel.paused) {
         // Parked until its client reads (Flush, UnparkLocked): taken up
         // while it still could not send, it would only yield again (after
@@ -2199,9 +2203,14 @@ void Server::TrimIfOwed() {
 std::expected<void, std::string> Server::ServeCooperative(Pending first,
                                                           CooperativeBackend& cooperative,
                                                           int wake_fd,
-                                                          const std::function<bool()>& on_wake) {
+                                                          const std::function<bool()>& on_wake,
+                                                          bool substitute) {
   std::vector<std::unique_ptr<Active>> active;
   active.reserve(kMaxActiveRequests);
+  std::deque<Pending> suspended;
+  auto turn_since = Clock::now();
+  bool switching = false;
+  bool substitute_formed = false;
   bool drain = false;
   std::string fatal;
   // False means deferred with no effects. The caller still owns the frame
@@ -2265,6 +2274,18 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
             Refusal(500, "the model backend failed; the runtime is stopping", "backend_failed"));
       }
       if (retired.result && retired.result->yielded != nullptr) {
+        if (frame->model_paused) {
+          frame->exchange.Carry(frame->pending, true);
+          frame->pending.resume = std::move(retired.result->yielded);
+          {
+            const std::scoped_lock lock(mutex_);
+            std::erase(running_, frame->pending.channel);
+            frame->pending.channel->queued = true;
+            ++suspended_requests_;
+          }
+          suspended.push_back(std::move(frame->pending));
+          return true;
+        }
         Requeue(frame->pending, frame->exchange, std::move(retired.result->yielded));
         return true;
       }
@@ -2307,6 +2328,30 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     // as well as live works so an endless invalid FIFO cannot starve decode.
     std::size_t attempts = 0;
     bool deferred = false;  // the backend could not take the head now
+    bool other_model = false;
+    {
+      const std::scoped_lock lock(mutex_);
+      other_model =
+          !queue_.empty() && queue_.front().request.model != active.front()->pending.request.model;
+    }
+    // Look even when every slot is occupied: an incompatible head must
+    // neither refill the old cohort nor wait for every response to end.
+    drain = drain || other_model || (substitute && substitute_formed);
+    if (!substitute && other_model && Clock::now() - turn_since >= options_.model_turn) {
+      switching = true;
+    }
+    if (switching) {
+      for (const auto& frame : active) {
+        if (!frame->exchange.Yielding() && frame->work->YieldForSwitch()) {
+          frame->model_paused = true;
+          frame->exchange.SetYielding();
+        }
+      }
+      retire(false);
+      if (active.empty()) {
+        break;
+      }
+    }
     while (!drain && active.size() < kMaxActiveRequests && attempts < kMaxActiveRequests) {
       std::optional<Pending> pending;
       {
@@ -2339,6 +2384,10 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
         break;
       }
     }
+    // The substitute may batch the compatible requests already ready at
+    // its first admission pass. Later arrivals wait until the suspended
+    // cohort has resumed, so continuous refill cannot starve it.
+    substitute_formed = true;
     // Backpressure that blocks others (D-102): the queue waits on this
     // cohort (it must drain for another model, or is full) while a member
     // waits for its client. Such a member yields its place once paused for
@@ -2346,7 +2395,8 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     std::vector<Active*> yielding;
     {
       const std::scoped_lock lock(mutex_);
-      blocked_ = drain || deferred || active.size() >= kMaxActiveRequests;
+      blocked_ =
+          drain || deferred || active.size() >= kMaxActiveRequests || suspended_requests_ != 0;
       const auto now = Clock::now();
       for (const auto& frame : active) {
         if (!frame->exchange.Yielding() && YieldDueLocked(*frame->pending.channel, now)) {
@@ -2404,14 +2454,15 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
       // (it may join), one is due to yield its place, or the runtime stops;
       // the next pass then retires, admits, yields or advances.
       std::vector<const Channel*> waiting;
-      Clock::time_point yield_due = Clock::time_point::max();
+      Clock::time_point yield_due =
+          !substitute && other_model ? turn_since + options_.model_turn : Clock::time_point::max();
       {
         const std::scoped_lock lock(mutex_);
         for (const auto& frame : active) {
           const Channel& ch = *frame->pending.channel;
           if (ch.paused && !ch.gone && !ch.stalled) {
             waiting.push_back(&ch);
-            if (blocked_ && !queue_.empty()) {
+            if (blocked_ && (!queue_.empty() || suspended_requests_ != 0)) {
               yield_due = std::min(yield_due, ch.paused_at + options_.yield_after);
             }
           }
@@ -2450,6 +2501,46 @@ std::expected<void, std::string> Server::ServeCooperative(Pending first,
     Progress(Phase::kFinishing, 0);
     if (!advanced) {
       fatal = advanced.error().empty() ? "the cooperative backend unit failed" : advanced.error();
+    }
+    if (next->phase == Phase::kSwap) {
+      turn_since = Clock::now();  // residency cost is not useful work in the turn
+    }
+  }
+  if (!suspended.empty()) {
+    std::optional<Pending> replacement;
+    {
+      const std::scoped_lock lock(mutex_);
+      if (!stopping_ && fatal.empty() && !queue_.empty()) {
+        replacement.emplace(std::move(queue_.front()));
+        replacement->channel->queued = false;
+        queue_.pop_front();
+      }
+    }
+    if (replacement) {
+      if (cooperative.Supports({.options = replacement->request,
+                                .literal = replacement->literal ? &*replacement->literal : nullptr,
+                                .resume = replacement->resume.get()})) {
+        auto ran = ServeCooperative(std::move(*replacement), cooperative, wake_fd, on_wake, true);
+        if (!ran) {
+          fatal = ran.error();
+        }
+      } else {
+        Serve(*replacement, wake_fd, on_wake);
+      }
+    }
+    // Restore the whole cohort ahead of every later arrival, including
+    // when the substitute failed or shutdown arrived. Run's stop path
+    // then ends queued continuations normally. Reverse insertion retains
+    // admission order and carried output/usage for each member.
+    {
+      const std::scoped_lock lock(mutex_);
+      while (!suspended.empty()) {
+        queue_.push_front(std::move(suspended.back()));
+        suspended.pop_back();
+        --suspended_requests_;
+        ++enqueued_;
+      }
+      ready_.Signal();
     }
   }
   Progress(Phase::kIdle, 0);

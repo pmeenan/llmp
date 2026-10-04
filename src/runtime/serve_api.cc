@@ -363,19 +363,34 @@ class ChatOutput final {
 // (resident, or spilled when memory needs it), so taking it up again
 // reuses it (Llm::ReusablePrefix) and prefills only what it lost.
 struct ChatResume final : api::Yielded {
+  ChatResume(const ChatResume&) = delete;
+  ChatResume& operator=(const ChatResume&) = delete;
+  ChatResume(ChatResume&&) = delete;
+  ChatResume& operator=(ChatResume&&) = delete;
   ChatResume(ChatPrompt prompt, Generation so_far, const GenerateOptions& options,
-             ChatOutput::State out, std::uint32_t cached)
+             ChatOutput::State out, std::uint32_t cached, Llm::Branch* held = nullptr)
       : rendered(std::move(prompt)),
         generation(std::move(so_far)),
         sampling(options.sampling),
         seed(options.seed),
         output(std::move(out)),
-        reused(cached) {
+        reused(cached),
+        held_branch(held) {
+    if (held_branch != nullptr) {
+      held_branch->HoldContinuation();
+    }
     // The prompt and every generated token but the last (the anchor:
     // reported, and not yet in the state).
     history = rendered.tokens;
-    history.insert(history.end(), generation.tokens.begin(), generation.tokens.end() - 1);
+    if (!generation.tokens.empty()) {
+      history.insert(history.end(), generation.tokens.begin(), generation.tokens.end() - 1);
+    }
     generation.cancelled = false;
+  }
+  ~ChatResume() override {
+    if (held_branch != nullptr) {
+      held_branch->ReleaseContinuation();
+    }
   }
   ChatPrompt rendered;
   Generation generation;  // so far
@@ -384,6 +399,7 @@ struct ChatResume final : api::Yielded {
   std::uint64_t seed = 0;
   ChatOutput::State output;
   std::uint32_t reused = 0;  // the first turn's cached tokens, for its usage
+  Llm::Branch* held_branch = nullptr;
 };
 
 // A serial request's state-capacity policy on its model for the request's
@@ -480,6 +496,22 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       yielding = true;
       return true;
     }
+    bool YieldForSwitch() override {
+      if (terminal()) {
+        return false;
+      }
+      if (generation.tokens.empty() && prompt_session != nullptr &&
+          prompt_session->remaining_rows() == 0) {
+        // The final prefill head may already exist while its checkpoint
+        // is still owed. Complete that boundary and choose its anchor
+        // before pausing; otherwise cancelling would discard the head
+        // and an equal-history resume could recompute a different one.
+        return false;
+      }
+      yielding = true;
+      model_paused = true;
+      return true;
+    }
 
     NodeBackend& owner;
     Llm& model;
@@ -499,7 +531,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     Stage stage = Stage::kPrompt;
     std::uint32_t reused = 0;
     bool cancelled = false;
-    bool yielding = false;  // yields its place (Yield): retired with a continuation
+    bool yielding = false;      // yields its place (Yield): retired with a continuation
+    bool model_paused = false;  // prompt or generation paused for another model
     bool native_touched = false;
     bool retired = false;
     // State capacity (cohort_capacity.h): admission order, whether it
@@ -515,6 +548,8 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     CapacityWait wait = CapacityWait::kNone;
     std::string refusal;
     bool resume = false;
+    bool continued = false;       // original cached-token usage survives a prompt pause too
+    bool switch_restore = false;  // restore generating peers before resuming their wave
     std::vector<std::int32_t> resume_tokens;
   };
   static_assert(kCohortSlots == Llm::kMaxBranches);
@@ -594,6 +629,13 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       if (!branch) {
         return std::unexpected(Failure(500, "the model's conversation branch is unavailable"));
       }
+      if (resume != nullptr && resume->held_branch != nullptr && *branch != resume->held_branch) {
+        continue;  // logical identity survives the swap; prefix matching is insufficient
+      }
+      if ((*branch)->HeldByContinuation() &&
+          (resume == nullptr || resume->held_branch != *branch)) {
+        continue;
+      }
       const std::size_t reusable = model.ReusablePrefix(**branch, wanted);
       const bool empty = !(*branch)->HasRetainedState();
       const Clock::time_point used = model.LastUsed(**branch);
@@ -645,7 +687,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       // Its state rebuilt to the history it yielded at (restored, reused or
       // prefilled), then its generation continues from the anchor
       // (BeginChatGeneration's resume): nothing is chosen or sent again.
-      frame->resume = true;
+      frame->resume = !resume->generation.tokens.empty();
+      frame->continued = true;
+      frame->switch_restore = resume->held_branch != nullptr;
       frame->resume_tokens = resume->history;
       frame->generation = resume->generation;
       frame->options.sampling = resume->sampling;
@@ -693,12 +737,20 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     std::vector<ScheduledMember> members;
     std::vector<ChatWork*> frames;
     bool paused = false;
+    const bool restoring_generations = std::ranges::any_of(work, [](const auto* base) {
+      const auto& frame = static_cast<const ChatWork&>(*base);
+      return frame.switch_restore && frame.resume && frame.stage == ChatWork::Stage::kPrompt &&
+             frame.wait == CapacityWait::kNone;
+    });
     for (auto* base : work) {
       auto& frame = static_cast<ChatWork&>(*base);
       if (frame.wait != CapacityWait::kNone) {
         continue;  // waits for state capacity (cohort_capacity.h)
       }
       if (frame.stage == ChatWork::Stage::kGeneration) {
+        if (restoring_generations) {
+          continue;  // restore the old wave before any member decodes at a narrower width
+        }
         // A stream whose client is behind waits at its completed step
         // (backpressure, D-102); the others go on.
         if (frame.exchange.Paused()) {
@@ -714,6 +766,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
                            .finishing = false});
         frames.push_back(&frame);
       } else if (frame.stage == ChatWork::Stage::kPrompt) {
+        if (restoring_generations && !(frame.switch_restore && frame.resume)) {
+          continue;
+        }
         const std::uint32_t remaining = frame.prompt_session->remaining_rows();
         members.push_back(
             {.stage = ScheduledMember::Stage::kPrompt,
@@ -926,7 +981,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       if (!frame.prompt_session->done()) {
         frame.prompt_session->Cancel();
       }
-      if (!frame.resume) {
+      if (!frame.resume && !frame.continued) {
         frame.reused = frame.prompt_session->reused();  // a rebuild's reuse is not the turn's
       }
       if (auto finished = frame.prompt_session->Finish(); !finished && !frame.error) {
@@ -980,12 +1035,21 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     // it continues from its generation so far when taken up again, unless
     // the generation ended whole anyway.
     const bool yields = frame.yielding && !frame.error && !frame.generation.stopped &&
-                        !frame.generation.tokens.empty() &&
-                        frame.generation.tokens.size() < frame.options.max_tokens;
+                        ((frame.model_paused && frame.generation.tokens.empty()) ||
+                         (!frame.generation.tokens.empty() &&
+                          frame.generation.tokens.size() < frame.options.max_tokens));
     std::shared_ptr<api::Yielded> yielded;
     if (yields) {
+      if (frame.model_paused) {
+        Say(log_, std::format("{}'s request paused for a model switch: {} of {} prompt tokens "
+                              "processed, {} generated",
+                              frame.model.name(),
+                              std::min(frame.branch.history().size(), frame.rendered.tokens.size()),
+                              frame.rendered.tokens.size(), frame.generation.tokens.size()));
+      }
       yielded = std::make_shared<ChatResume>(frame.rendered, frame.generation, frame.options,
-                                             frame.output.Save(), frame.reused);
+                                             frame.output.Save(), frame.reused,
+                                             frame.model_paused ? &frame.branch : nullptr);
     } else if (!frame.error && !frame.generation.tokens.empty()) {
       frame.output.Finish();  // including a generation preempted and not yet resumed
     }
@@ -1083,7 +1147,9 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     std::vector<std::int32_t> continued;
     if (resume != nullptr) {
       continued = resume->history;
-      continued.push_back(resume->generation.tokens.back());
+      if (!resume->generation.tokens.empty()) {
+        continued.push_back(resume->generation.tokens.back());
+      }
     }
     const std::vector<std::int32_t>& tokens = resume != nullptr ? continued : rendered.tokens;
     const auto prompt = static_cast<std::uint32_t>(rendered.tokens.size());
@@ -1542,7 +1608,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
   }
 
   static Status BeginChatGeneration(ChatWork& frame) {
-    if (!frame.resume) {
+    if (!frame.resume && !frame.continued) {
       frame.reused = frame.prompt_session->reused();
     }
     const bool stopped = frame.prompt_session->run().stopped;
@@ -1565,6 +1631,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
       return {};
     }
     frame.resume = false;
+    frame.switch_restore = false;
     frame.resume_tokens = {};
     frame.generation_session = std::move(*generation);
     frame.stage = ChatWork::Stage::kGeneration;
@@ -2027,6 +2094,7 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       options.idle_timeout = std::chrono::seconds(client.idle_seconds);
       options.request_inactivity = std::chrono::seconds(client.request_inactivity_seconds);
       options.write_inactivity = seconds(client.write_inactivity_seconds);
+      options.model_turn = std::chrono::seconds(client.model_turn_seconds);
       // A genuine hang is recovered (D-102): the I/O thread feeds the ladder
       // the node's progress (any lane's completion, any wait of the
       // driver's ending) and escalates it; the node's waits cancel at its

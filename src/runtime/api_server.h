@@ -242,6 +242,11 @@ class CooperativeBackend {
     // Completion with `yielded`. False if it cannot (it has no generation
     // to continue yet): it goes on.
     virtual bool Yield() { return false; }
+    // Pause for one other model's turn, at this completed unit. Unlike
+    // reader backpressure, a prompt or a capacity waiter may continue too.
+    // True makes this work terminal; Retire must supply its continuation.
+    // False has no effects and keeps the work running until it can pause.
+    virtual bool YieldForSwitch() { return false; }
   };
   struct Unit {
     Phase phase = Phase::kStarting;
@@ -380,6 +385,11 @@ struct ServerOptions {
   // A paused stream that keeps queued requests waiting this long yields
   // its place (Exchange::Yielding).
   std::chrono::milliseconds yield_after{std::chrono::seconds(10)};
+  // A pending other model may pause a cohort after this much resident
+  // work. One substitute cohort runs to completion, then this cohort resumes
+  // ahead of later arrivals. This is a scheduling quantum, not a request
+  // deadline; no request is truncated when its turn ends.
+  std::chrono::milliseconds model_turn{std::chrono::seconds(30)};
   // Hang recovery (D-102; hang_ladder.h). The I/O thread feeds `ladder` the
   // backend's activity (`activity`: the node's progress count, read each
   // sweep) and advances it; the server's beats tell it each unit and its
@@ -505,7 +515,8 @@ class Server {
   void Serve(Pending& pending, int wake_fd, const std::function<bool()>& on_wake);
   std::expected<void, std::string> ServeCooperative(Pending first, CooperativeBackend& cooperative,
                                                     int wake_fd,
-                                                    const std::function<bool()>& on_wake);
+                                                    const std::function<bool()>& on_wake,
+                                                    bool substitute = false);
   void FinishResponse(Pending& pending, Stream& stream,
                       const std::expected<Completion, Error>& result, Clock::time_point started);
   // A request that yielded its place goes to the back of the queue, with
@@ -574,8 +585,9 @@ class Server {
   std::condition_variable drained_;  // a paused channel's output was taken, or it ended
   mutable std::mutex health_mutex_;  // on_health's calls, one at a time
   std::deque<Pending> queue_;
-  std::uint64_t enqueued_ = 0;        // requests ever queued (a waiting cohort's wake)
-  std::vector<std::uint64_t> dirty_;  // connections whose channels have new output
+  std::uint64_t enqueued_ = 0;          // requests ever queued (a waiting cohort's wake)
+  std::size_t suspended_requests_ = 0;  // waiting for a substitute, driver-owned under mutex_
+  std::vector<std::uint64_t> dirty_;    // connections whose channels have new output
   bool stopping_ = false;
   // Requests ahead of the queue that the active ones keep waiting: a
   // cohort draining for another model, or full (the driver's, read by

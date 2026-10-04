@@ -250,6 +250,10 @@ struct ModelEntry {
 //                    cancelled, the model reset, the process restarted
 //                    only when nothing less frees it); absent, the larger
 //                    of 600 s and five stall times; at least 60
+//   model_turn_seconds  resident work before a pending other model pauses
+//                    a cooperative cohort at its next completed unit: 30.
+//                    One substitute cohort ends, then this cohort resumes
+//                    ahead of later arrivals. No response length limit.
 //   request_memory_bytes  the most the request memory may hold (bodies,
 //                    parses, queued requests, renderings, stop matchers,
 //                    unread stream output, responses); absent, the floor
@@ -305,6 +309,7 @@ struct ClientConfig {
   std::uint32_t request_inactivity_seconds = kDefaultRequestInactivitySeconds;
   std::optional<std::uint32_t> write_inactivity_seconds;
   std::optional<std::uint32_t> hang_seconds;
+  std::uint32_t model_turn_seconds = 30;
   std::optional<std::uint64_t> request_memory_bytes;
   std::optional<std::uint64_t> max_body_bytes;
   std::optional<std::uint64_t> stream_buffer_bytes;

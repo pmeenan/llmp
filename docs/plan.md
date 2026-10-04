@@ -1145,9 +1145,11 @@ it appears.
       graph/recovery controls and actual serving impact are untested.
       All packing
       is paid. Overflow waits
-      for a retired slot, while model changes and literal completions drain
-      the group. Independent request failures retain completed peers; native
-      fences prove retirement before releasing a frame. Matched comparison
+      for a retired slot. Model changes now pause the group at completed
+      units and resume its exact continuations after one substitute cohort
+      ([model turns](experiments/model-turns/README.md)); same-model literal
+      completions still wait for it to drain. Independent request failures
+      retain completed peers; native fences prove retirement before releasing a frame. Matched comparison
       and final gate qualification remain open.
       Prompt preparation now uses a branch-owned resumable session: host-only
       admission, separate reuse/chunk/checkpoint units and cancellation that
@@ -1203,7 +1205,11 @@ it appears.
       running batch's members are set aside with their state spilled and
       resumed exactly after the other model's turn); and **literal
       completions join the batch** as cohort members instead of waiting
-      for it to drain. Both are open work.
+      for it to drain. Model time-slicing is now implemented with a
+      configurable 30-second resident-work turn, protected branch identity
+      through spill/restore and original cached-token usage across partial
+      prompt pauses ([controls](experiments/model-turns/README.md)). Literal
+      completions joining the cohort remain open.
 - [ ] **Model settings in three layers** (D-103, the owner, 2026-10-03):
       a table-driven `[models.NAME]` schema where every model setting can
       be overridden; one resolved settings record per model at

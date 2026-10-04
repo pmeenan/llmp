@@ -140,6 +140,13 @@ schema_version = 2
 # The port of "loopback", "tailscale" and an address written without one.
 # port = 8114
 #
+# Scheduling (D-069): resident work before a queued different model can
+# pause a cohort at a completed prompt/decode unit. Its exact state spills,
+# one substitute cohort runs, then the originals resume ahead of newcomers.
+# Initial swap time is excluded; responses keep their original token limits.
+# 1 to 2592000 seconds; default 30 (policy fallback, not a measured knee).
+# model_turn_seconds = 30
+#
 # Limits (D-102): every default is permissive, each limit follows a real
 # resource (memory, descriptors, the model's context), and no time limit
 # stops work that is making progress. Set one to be stricter, for example

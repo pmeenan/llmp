@@ -2121,7 +2121,7 @@ std::size_t Llm::ReusablePrefix(const Branch& branch, std::span<const std::int32
   CheckBranch(branch);
   const auto now = Clock::now();
   if (branch.needs_clear_ || branch.history_.empty() || !StateUsableFor(branch) ||
-      now - branch.history_used_.at >= retention_) {
+      (!branch.HeldByContinuation() && now - branch.history_used_.at >= retention_)) {
     return 0;
   }
   const std::size_t common = CommonPrefix(branch.history_, tokens);
@@ -2374,7 +2374,7 @@ Status Llm::Spill(Branch& branch, bool set_aside) {
   const std::uint64_t bytes = SpillWriteBytesFor(branch);
   const auto started = Clock::now();
   if (auto spilled = SpillFor(branch); !spilled) {
-    if (set_aside) {
+    if (set_aside || branch.HeldByContinuation()) {
       return spilled;
     }
     // Neither spilled nor known as it was: dropped, its next turn prefills.
@@ -2594,6 +2594,9 @@ Status Llm::Clear(Branch& branch, const PromptSession* prompt) {
 }
 
 Status Llm::ReleaseIdleState(Branch& branch) {
+  if (branch.HeldByContinuation()) {
+    return Error("an in-flight continuation holds this conversation's state");
+  }
   CheckIdleGeneration(branch);
   Unkeep(branch);
   branch.turn_checkpoints_.clear();
@@ -2608,7 +2611,7 @@ Status Llm::ReleaseIdleState(Branch& branch) {
 }
 
 std::size_t Llm::ExpireTurnCheckpoints(Branch& branch, Clock::time_point now) {
-  if (!BranchIdle(branch)) {
+  if (!BranchIdle(branch) || branch.HeldByContinuation()) {
     return 0;
   }
   const std::size_t expired = std::erase_if(branch.turn_checkpoints_, [&](const TurnCheckpoint& c) {
@@ -2711,7 +2714,7 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
   reused = 0;
   const auto now = Clock::now();
   if (fresh || branch.needs_clear_ || !StateUsableFor(branch) ||
-      now - branch.history_used_.at >= retention_) {
+      (!branch.HeldByContinuation() && now - branch.history_used_.at >= retention_)) {
     return Clear(branch, prompt);
   }
   std::erase_if(branch.turn_checkpoints_, [&](const TurnCheckpoint& checkpoint) {
@@ -4601,7 +4604,7 @@ bool Server::KeepWithinSpillBudget(std::uint64_t extra) {
       const bool written_back = std::ranges::find(spilled_, m.get()) != spilled_.end();
       for (std::size_t i = 0; i < l.branches(); ++i) {
         auto b = l.branch(i);
-        if (!b || !l.BranchIdle(**b) ||
+        if (!b || !l.BranchIdle(**b) || (*b)->HeldByContinuation() ||
             (written_back ? l.StateBytes(**b) : l.SpilledStateBytes(**b)) == 0) {
           continue;
         }
@@ -5038,7 +5041,7 @@ void Server::Maintain() {
       if (b) {
         (void)l.ExpireTurnCheckpoints(**b, now);
       }
-      if (!b || !l.BranchIdle(**b) || (*b)->history().empty() ||
+      if (!b || !l.BranchIdle(**b) || (*b)->HeldByContinuation() || (*b)->history().empty() ||
           now - l.LastUsed(**b) < retention_) {
         continue;
       }
@@ -5162,13 +5165,18 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
       while (!KeepWithinSpillBudget(writes())) {
         Llm::Branch* oldest = nullptr;
         for (std::size_t i = 0; i < l.branches(); ++i) {
-          if (auto b = l.branch(i); b && l.BranchIdle(**b) && l.ResidentStateBytes(**b) != 0 &&
+          if (auto b = l.branch(i); b && l.BranchIdle(**b) && !(*b)->HeldByContinuation() &&
+                                    l.ResidentStateBytes(**b) != 0 &&
                                     (oldest == nullptr || l.LastUsed(**b) < l.LastUsed(*oldest))) {
             oldest = *b;
           }
         }
-        if (oldest == nullptr || !oldest->ReleaseIdleState()) {
-          break;
+        if (oldest == nullptr) {
+          return Error("the swap's retained request state exceeds the spill budget");
+        }
+        if (auto released = oldest->ReleaseIdleState(); !released) {
+          return Error("the swap could not free idle state for its spill budget: " +
+                       released.error());
         }
         ++deleted;
       }

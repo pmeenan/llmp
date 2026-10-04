@@ -1482,6 +1482,12 @@ class FakeCooperative final : public api::CooperativeBackend {
       yielding = true;
       return true;
     }
+    bool YieldForSwitch() override {
+      if (request.options.model == "tiny") {
+        ++owner.tiny_switch_attempts;
+      }
+      return Yield();
+    }
     FakeCooperative& owner;
     const Request& request;  // borrows the descriptor itself through retirement
     api::Exchange& exchange;
@@ -1498,7 +1504,8 @@ class FakeCooperative final : public api::CooperativeBackend {
   };
 
   bool Supports(const Request& request) const override {
-    return request.options.model == "alpha" &&
+    return (request.options.model == "alpha" ||
+            (second_model.load() && request.options.model == "tiny")) &&
            (request.literal != nullptr || request.options.messages.back().content != "serial");
   }
   std::expected<std::unique_ptr<Work>, api::Error> Start(const Request& request,
@@ -1526,6 +1533,10 @@ class FakeCooperative final : public api::CooperativeBackend {
     if (request.resume != nullptr) {
       work->ticks = static_cast<const Ticked&>(*request.resume).ticks;
       ++resumed;
+      if (resumed.load() == 1 && serial_calls != nullptr) {
+        first_resume_serial_calls.store(serial_calls->load());
+        tiny_started_at_first_resume.store(tiny_started.load());
+      }
     }
     if (!exchange.Admit({.prompt_tokens = request.literal != nullptr ? 4U : 10U,
                          .max_tokens = work->limit,
@@ -1534,11 +1545,18 @@ class FakeCooperative final : public api::CooperativeBackend {
       work->Cancel();
     }
     ++started;
+    if (request.options.model == "tiny") {
+      ++tiny_started;
+    }
     return std::unique_ptr<Work>(std::move(work));
   }
   std::expected<Unit, std::string> NextUnit(std::span<Work* const> work) override {
     if (work.size() > peak.load()) {
       peak.store(static_cast<unsigned>(work.size()));
+    }
+    if (static_cast<Job&>(*work.front()).request.options.model == "tiny" &&
+        work.size() > tiny_peak.load()) {
+      tiny_peak.store(static_cast<unsigned>(work.size()));
     }
     // A member whose client is behind waits (backpressure); when all do,
     // the server waits for one to read.
@@ -1557,7 +1575,12 @@ class FakeCooperative final : public api::CooperativeBackend {
       rejections_between_units.store(since_last);
     }
     ++advances;
-    while (pause_units.load() && !release.load()) {
+    const bool second = static_cast<Job&>(*work.front()).request.options.model == "tiny";
+    if (second) {
+      substitute_entered.store(true);
+    }
+    while ((pause_units.load() && !release.load()) ||
+           (second && pause_substitute.load() && !release_substitute.load())) {
       for (Work* item : work) {
         auto& job = static_cast<Job&>(*item);
         (void)job.exchange.Continue();  // channel polling must not defeat the watchdog
@@ -1571,7 +1594,8 @@ class FakeCooperative final : public api::CooperativeBackend {
     }
     for (Work* item : work) {
       auto& job = static_cast<Job&>(*item);
-      if (job.request.options.model != "alpha" ||
+      if ((job.request.options.model != "alpha" &&
+           !(second_model.load() && job.request.options.model == "tiny")) ||
           job.request.options.max_tokens.value_or(4) != job.limit) {
         return std::unexpected("the borrowed request changed during native work");
       }
@@ -1616,6 +1640,11 @@ class FakeCooperative final : public api::CooperativeBackend {
 
   std::atomic<unsigned> started{0}, advances{0}, peak{0}, polls{0}, live{0};
   std::atomic<unsigned> paused_units{0}, paused_skips{0}, yielded{0}, resumed{0};
+  std::atomic<unsigned> first_resume_serial_calls{0};
+  std::atomic<unsigned> tiny_peak{0}, tiny_switch_attempts{0}, tiny_started{0};
+  std::atomic<unsigned> tiny_started_at_first_resume{0};
+  std::atomic<bool> second_model{false}, pause_substitute{false};
+  std::atomic<bool> substitute_entered{false}, release_substitute{false};
   // The model's request slots (Start defers past them).
   std::atomic<unsigned> capacity{4}, capacity_deferrals{0};
   std::atomic<unsigned> cancelled{0}, retired{0}, destroyed{0}, deferrals{0};
@@ -1760,6 +1789,7 @@ class ServerTest : public ::testing::Test {
       backend_.release.store(true);
       if (cooperative_) {
         cooperative_->release.store(true);
+        cooperative_->release_substitute.store(true);
         cooperative_->release_retirement.store(true);
       }
       const std::uint64_t one = 1;
@@ -3454,6 +3484,213 @@ TEST_F(ServerTest, AFullCohortsPausedReaderYieldsItsPlace) {
   EXPECT_EQ(ContentBytes(streamed), std::size_t{2000} * 8192);
   (void)::close(slow);
   EXPECT_EQ(cooperative_->cancelled.load(), 0U);
+}
+
+// A full cohort's active readers do not make another model wait for all
+// responses to finish. The substitute runs alone, then every paused
+// member continues without duplicated output or usage.
+TEST_F(ServerTest, APendingModelPausesAFullCohortAndResumesEveryMember) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  StartCooperative(options);
+  cooperative_->capacity.store(2);
+  std::array<int, 2> clients{Open(), Open()};
+  for (const int client : clients) {
+    ASSERT_TRUE(jitllm::runtime::http::WriteAll(client, Post(Chat("long", R"(,"max_tokens":80)"))));
+  }
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->started.load() == 2; }));
+  EXPECT_THAT(Exchange(Post(Chat("substitute", "", "tiny"))),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr("substitute")));
+  EXPECT_EQ(cooperative_->yielded.load(), 2U);
+  EXPECT_TRUE(WaitFor([&] { return cooperative_->resumed.load() == 2; }));
+  for (const int client : clients) {
+    std::string pending;
+    const std::string response = ReadResponse(client, pending);
+    EXPECT_THAT(response, AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":80)"),
+                                HasSubstr(R"("content":")" + std::string(80, 'x') + "\"")));
+    (void)::close(client);
+  }
+  EXPECT_EQ(cooperative_->cancelled.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, APausedCohortResumesAheadOfLaterModelArrivals) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  StartCooperative(options);
+  const int original = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int substitute = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(substitute, Post(Chat("slow", "", "tiny"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->yielded.load() == 1; }));
+  const int later = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(later, Post(Chat("later", "", "tiny"))));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(substitute, pending), StartsWith("HTTP/1.1 200 "));
+  EXPECT_TRUE(WaitFor([&] { return cooperative_->resumed.load() != 0; }));
+  EXPECT_EQ(cooperative_->first_resume_serial_calls.load(), 1U);
+  pending.clear();
+  EXPECT_THAT(ReadResponse(later, pending), StartsWith("HTTP/1.1 200 "));
+  pending.clear();
+  EXPECT_THAT(ReadResponse(original, pending), HasSubstr(R"("completion_tokens":80)"));
+  for (const int client : {original, substitute, later}) {
+    (void)::close(client);
+  }
+  EXPECT_EQ(cooperative_->cancelled.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, AnAdmittedModelPausedRequestDoesNotExpireInTheInitialQueue) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(200);
+  options.queue_wait = std::chrono::milliseconds(100);
+  StartCooperative(options);
+  const int original = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  // Wait until the running turn is eligible so this substitute itself is
+  // taken up within the initial queue-wait cap.
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() >= 20; }));
+  EXPECT_THAT(Exchange(Post(Chat("slow", "", "tiny"))), StartsWith("HTTP/1.1 200 "));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(original, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":80)")));
+  (void)::close(original);
+  EXPECT_EQ(cooperative_->yielded.load(), 1U);
+  EXPECT_EQ(cooperative_->resumed.load(), 1U);
+}
+
+TEST_F(ServerTest, ASubstituteRefusalStillResumesThePausedRequest) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  StartCooperative(options);
+  const int original = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  EXPECT_THAT(Exchange(Post(Chat("fail", "", "tiny"))), StartsWith("HTTP/1.1 400 "));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(original, pending), HasSubstr(R"("completion_tokens":80)"));
+  (void)::close(original);
+  EXPECT_EQ(cooperative_->yielded.load(), 1U);
+  EXPECT_EQ(cooperative_->resumed.load(), 1U);
+  EXPECT_EQ(cooperative_->cancelled.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, AFilledSameModelSlotDoesNotPauseTheRunningResponse) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(10);
+  StartCooperative(options);
+  cooperative_->capacity.store(1);
+  const int original = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":30)"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  EXPECT_THAT(Exchange(Post(Chat("same", R"(,"max_tokens":2)"))),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("content":"xx")")));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(original, pending), HasSubstr(R"("completion_tokens":30)"));
+  (void)::close(original);
+  EXPECT_EQ(cooperative_->yielded.load(), 0U);
+  EXPECT_EQ(cooperative_->resumed.load(), 0U);
+}
+
+TEST_F(ServerTest, AClientLeavingDuringASubstituteDropsItsContinuation) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  StartCooperative(options);
+  const int original = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+      original, Post(Chat("long", R"(,"stream":true,"max_tokens":80)"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int substitute = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(substitute, Post(Chat("slow", "", "tiny"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->yielded.load() == 1; }));
+  linger reset{.l_onoff = 1, .l_linger = 0};
+  ASSERT_EQ(::setsockopt(original, SOL_SOCKET, SO_LINGER, &reset, sizeof reset), 0);
+  (void)::close(original);
+  std::string pending;
+  EXPECT_THAT(ReadResponse(substitute, pending), StartsWith("HTTP/1.1 200 "));
+  (void)::close(substitute);
+  EXPECT_THAT(Exchange(Post(Chat("after", R"(,"max_tokens":2)"))),
+              HasSubstr(R"("completion_tokens":2)"));
+  EXPECT_EQ(cooperative_->resumed.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, ASubstituteCohortBatchesReadyPeersWithoutNestedPauseOrLaterRefill) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  options.keepalive = std::chrono::milliseconds(20);
+  StartCooperative(options);
+  cooperative_->second_model.store(true);
+  cooperative_->pause_units.store(true);
+  cooperative_->pause_substitute.store(true);
+  const int original = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->polls.load() != 0; }));
+  std::array<int, 2> substitutes{Open(), Open()};
+  std::array<std::string, 2> received;
+  for (std::size_t i = 0; i < substitutes.size(); ++i) {
+    ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+        substitutes[i], Post(Chat("substitute", R"(,"stream":true,"max_tokens":20)", "tiny"))));
+    // A queued keepalive proves each peer is ready before admission.
+    ReadUntil(substitutes[i], received[i], ": keepalive");
+    ASSERT_THAT(received[i], HasSubstr(": keepalive"));
+  }
+  cooperative_->release.store(true);
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->substitute_entered.load(); }));
+  ASSERT_EQ(cooperative_->tiny_peak.load(), 2U);
+  const int later = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+      later, Post(Chat("later", R"(,"stream":true,"max_tokens":20)", "tiny"))));
+  std::string later_received;
+  ReadUntil(later, later_received, ": keepalive");
+  ASSERT_THAT(later_received, HasSubstr(": keepalive"));
+  cooperative_->release_substitute.store(true);
+  for (std::size_t i = 0; i < substitutes.size(); ++i) {
+    ReadUntil(substitutes[i], received[i], "data: [DONE]\n\n");
+    EXPECT_EQ(ContentBytes(received[i]), 20U);
+    (void)::close(substitutes[i]);
+  }
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->resumed.load() != 0; }));
+  // Original resumes before the later tiny request can form another turn.
+  EXPECT_EQ(cooperative_->tiny_started_at_first_resume.load(), 2U);
+  EXPECT_EQ(cooperative_->tiny_switch_attempts.load(), 0U);
+  std::string pending;
+  EXPECT_THAT(ReadResponse(original, pending), HasSubstr(R"("completion_tokens":80)"));
+  ReadUntil(later, later_received, "data: [DONE]\n\n");
+  EXPECT_EQ(ContentBytes(later_received), 20U);
+  (void)::close(original);
+  (void)::close(later);
+  EXPECT_EQ(cooperative_->tiny_switch_attempts.load(), 0U);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
+}
+
+TEST_F(ServerTest, ASubstituteReaderYieldsToSuspendedMembersWhenThePublicQueueIsEmpty) {
+  api::ServerOptions options;
+  options.model_turn = std::chrono::milliseconds(50);
+  options.yield_after = std::chrono::milliseconds(50);
+  options.intake.stream_buffer = std::size_t{64} << 10U;
+  StartCooperative(options);
+  cooperative_->second_model.store(true);
+  const int original = Open();
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(original, Post(Chat("long", R"(,"max_tokens":80)"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->advances.load() != 0; }));
+  const int slow = Open(4096);
+  ASSERT_TRUE(jitllm::runtime::http::WriteAll(
+      slow, Post(Chat("pour", R"(,"stream":true,"max_tokens":2000)", "tiny"))));
+  ASSERT_TRUE(WaitFor([&] { return cooperative_->paused_units.load() != 0; }));
+  std::string pending;
+  EXPECT_THAT(ReadResponse(original, pending),
+              AllOf(StartsWith("HTTP/1.1 200 "), HasSubstr(R"("completion_tokens":80)")));
+  EXPECT_EQ(cooperative_->resumed.load(), 1U);  // only the original; tiny is parked
+  EXPECT_EQ(cooperative_->yielded.load(), 2U);  // one model pause, one reader yield
+  (void)::close(original);
+  linger reset{.l_onoff = 1, .l_linger = 0};
+  ASSERT_EQ(::setsockopt(slow, SOL_SOCKET, SO_LINGER, &reset, sizeof reset), 0);
+  (void)::close(slow);
+  EXPECT_FALSE(cooperative_->early_destruction.load());
 }
 
 // D-102's hang recovery: work under way with nothing moving at all (no

@@ -1083,13 +1083,14 @@ Each request retains its own response, deadline, cancellation
 and backpressure (a member whose client is behind is left out of decode units;
 when every runnable member is, the backend declares a paused unit and the server
 waits for a reader, a new request or the runtime stopping);
-switching models drains the active group first. Retirement must prove that no
+switching models pauses the active group at a completed unit after its
+resident-work quantum (below). Retirement must prove that no
 work still borrows a frame before it can be freed. The production Qwen chat
 backend's active requests decode in shared waves at draft depth 2 (a lone
 request keeps its adaptive depth; past two, drafts run per request). A
 request past the model's slots, or one that finds no memory for its
 state beside its peers', waits for a retirement and then refills
-the group; a different model or literal completion waits for the group to drain.
+the group; same-model literal completions currently wait for the group to drain.
 The prompt with the fewest tokens left to prefill (after what its
 conversation's reuse would actually keep: a stale history that only shares
 a few tokens counts for nothing) gets the next prompt unit, the oldest of
@@ -1237,6 +1238,41 @@ frame or admitting its replacement, an explicit native stream fence proves
 that copies and jobs have retired. Unknown completion stops shared execution
 and retains the borrowed owners. The image pipeline and `/v1/completions`, including
 likelihood scoring, retain their ordinary serial entry points.
+
+### Pending model switches
+
+When a different model reaches the queue's head, the running cohort stops
+refilling. After `[client] model_turn_seconds` of resident work (default
+30, configurable from 1 to 2,592,000 seconds), its members pause at their
+next completed unit. Initial swap time is excluded from that turn. The
+30-second fallback is a scheduling policy, not a measured throughput knee
+or a request deadline. A full set of slots is still checked for a pending
+other model; same-model newcomers wait for a slot without preempting a
+running response.
+
+Prompt and generation sessions retire through the normal native fences,
+including a verify's owed restore. Their original response buffers,
+sampling seed, decoder/stop state and usage stay with their continuations.
+A continuation holds its exact model-owned branch identity; prefix matching
+does not choose a replacement. Its initialized state and spill files cannot
+expire or be deleted while the request waits, although its GPU residency
+and leases are released for the swap. Partial prompts restore the completed
+prefix and prefill only the remaining input. That prefix does not become
+new cached-token credit for its own request. Generation resumes from the
+already reported anchor without choosing or sending it again. A final
+prefill checkpoint chooses that anchor before pausing; runnable generating
+peers restore before their resumed decode wave begins.
+
+One substitute cohort runs: compatible requests ready at its first
+admission pass may join, then it accepts no later refill and cannot itself
+be paused for another model. The original cohort resumes ahead of later
+arrivals after that turn ends. Disconnects, individual substitute errors
+and shutdown retain the ordinary completion/retirement rules. A failed
+swap that cannot fit its protected state within the spill budget refuses
+the substitute and leaves the original continuations intact. Returning
+an admitted continuation to the queue cannot impose the initial
+`queue_wait_seconds` refusal again. D-069's M3 amendment records this policy;
+no response is truncated by its turn interval.
 
 ### State capacity in a cohort
 

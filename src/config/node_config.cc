@@ -158,7 +158,7 @@ struct ClientInteger {
 constexpr std::int64_t kU32 = 0xFFFF'FFFFLL;
 constexpr std::int64_t kSeconds = kMaxClientSeconds;
 constexpr std::int64_t kBytes = std::numeric_limits<std::int64_t>::max();
-constexpr std::array<ClientInteger, 12> kClientIntegers = {{
+constexpr std::array<ClientInteger, 13> kClientIntegers = {{
     {"max_connections", 1, kU32, ""},
     {"max_queued", 1, kU32, ""},
     {"queue_wait_seconds", 1, kSeconds, " seconds"},
@@ -168,6 +168,7 @@ constexpr std::array<ClientInteger, 12> kClientIntegers = {{
     {"request_inactivity_seconds", 1, kSeconds, " seconds"},
     {"write_inactivity_seconds", 1, kSeconds, " seconds"},
     {"hang_seconds", kMinHangSeconds, kSeconds, " seconds"},
+    {"model_turn_seconds", 1, kSeconds, " seconds"},
     {"request_memory_bytes", std::int64_t{1} << 24, kBytes, " bytes"},
     {"max_body_bytes", 1024, static_cast<std::int64_t>(kMaxBodyCeiling), " bytes"},
     {"stream_buffer_bytes", 4096, kBytes, " bytes"},
@@ -215,6 +216,7 @@ const std::vector<KeySpec>& Schema() {
        .kind = Kind::kClientInteger,
        .member = false},
       {.path = {"client", "hang_seconds"}, .kind = Kind::kClientInteger, .member = false},
+      {.path = {"client", "model_turn_seconds"}, .kind = Kind::kClientInteger, .member = false},
       {.path = {"client", "request_memory_bytes"}, .kind = Kind::kClientInteger, .member = false},
       {.path = {"client", "max_body_bytes"}, .kind = Kind::kClientInteger, .member = false},
       {.path = {"client", "stream_buffer_bytes"}, .kind = Kind::kClientInteger, .member = false},
@@ -1103,6 +1105,7 @@ class Validator {
         u32("request_inactivity_seconds").value_or(kDefaultRequestInactivitySeconds);
     client.write_inactivity_seconds = u32("write_inactivity_seconds");
     client.hang_seconds = u32("hang_seconds");
+    client.model_turn_seconds = u32("model_turn_seconds").value_or(30);
     client.request_memory_bytes = get("request_memory_bytes");
     client.max_body_bytes = get("max_body_bytes");
     client.stream_buffer_bytes = get("stream_buffer_bytes");

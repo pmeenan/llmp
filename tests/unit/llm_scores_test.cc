@@ -1514,6 +1514,39 @@ TEST(LlmScores, ResumablePromptCancelsAtACompletePrefixAndCanResume) {
   EXPECT_EQ(finished.chunks, 2U);
 }
 
+TEST(LlmScores, APausedPartialPromptKeepsItsExactSpillPastIdleRetention) {
+  NativeBranchesFake model;
+  model.ConfigurePrefill(64, 8);
+  auto branch = model.branch(1);
+  ASSERT_TRUE(branch.has_value());
+  const std::vector<std::int32_t> prompt(19, 2);
+  auto opened = (*branch)->BeginPrompt(prompt);
+  ASSERT_TRUE(opened.has_value());
+  ASSERT_TRUE((*opened)->Advance().has_value());  // reuse/clear unit
+  ASSERT_TRUE((*opened)->Advance().has_value());  // first complete chunk
+  ASSERT_EQ((*branch)->history().size(), 8U);
+  (*opened)->Cancel();
+  ASSERT_TRUE((*opened)->Finish().has_value());
+  (*branch)->HoldContinuation();
+  ASSERT_TRUE(model.SpillSetAside(**branch).has_value());
+  model.set_retention(std::chrono::seconds(0));
+  EXPECT_TRUE(model.BranchIdle(**branch));  // residency can give way; logical state cannot
+  EXPECT_FALSE((*branch)->ReleaseIdleState().has_value());
+  auto continued = (*branch)->BeginPrompt(prompt);
+  ASSERT_TRUE(continued.has_value());
+  while (!(*continued)->done()) {
+    ASSERT_TRUE((*continued)->Advance().has_value());
+  }
+  ASSERT_TRUE((*continued)->Finish().has_value());
+  EXPECT_EQ((*continued)->reused(), 8U);
+  EXPECT_EQ(model.restores, 1U);
+  EXPECT_EQ(model.native_state(1).chunks, 3U);
+  EXPECT_EQ((*branch)->history(), prompt);
+  EXPECT_EQ(model.native_state(1).target, prompt);
+  (*branch)->ReleaseContinuation();
+  EXPECT_TRUE(model.BranchIdle(**branch));
+}
+
 TEST(LlmScores, ResumablePromptKeepsTheTiledTailAndTurnBoundarySeparate) {
   FakeLlm model;
   model.ConfigurePrefill(8192, 4096);
@@ -1956,8 +1989,12 @@ TEST(LlmScores, AGenerationSetAsideResumesFromItsSpilledStateWithoutPrefill) {
     ASSERT_TRUE(model.SelectBranches(selected).has_value());
     model.lease_held = true;
     EXPECT_FALSE(model.SpillIdle(**branch).has_value());  // in use: not idle
+    (*branch)->HoldContinuation();
     ASSERT_TRUE(model.SpillSetAside(**branch).has_value());
     model.lease_held = false;
+    model.set_retention(std::chrono::seconds(0));
+    EXPECT_TRUE(model.BranchIdle(**branch));
+    EXPECT_FALSE((*branch)->ReleaseIdleState().has_value());
     EXPECT_TRUE((*branch)->spilled());
     EXPECT_EQ(model.native_state(1).target, held);
     const unsigned chunks = model.native_state(1).chunks;
@@ -1983,6 +2020,8 @@ TEST(LlmScores, AGenerationSetAsideResumesFromItsSpilledStateWithoutPrefill) {
     EXPECT_EQ(visible, expected.tokens) << "sampled " << sampled;
     EXPECT_EQ((*branch)->history(), (*reference)->history());
     EXPECT_EQ((*branch)->history(), model.native_state(1).target);
+    (*branch)->ReleaseContinuation();
+    EXPECT_TRUE(model.BranchIdle(**branch));
   }
 }
 
@@ -2166,6 +2205,47 @@ TEST(LlmScores, AnIdleBranchHasNoSessionAndNoLeaseAndCountsOnlyResidentState) {
   std::vector<float> last;
   ASSERT_TRUE(serial.Prefill(std::array<std::int32_t, 2>{0, 1}, last).has_value());
   EXPECT_FALSE(serial.BranchIdle(serial.default_branch()));
+}
+
+TEST(LlmScores, AHeldUnclaimedConversationCanSpillForARestoredPeersGrowth) {
+  NativeBranchesFake model;
+  HoldIdle(model, 1, 9);
+  HoldIdle(model, 2, 3);
+  auto paused = model.branch(1);
+  auto running = model.branch(0);
+  ASSERT_TRUE(paused.has_value());
+  ASSERT_TRUE(running.has_value());
+  const auto exact = (*paused)->history();
+  (*paused)->HoldContinuation();
+  model.budget = 12;
+  unsigned reclaimed = 0;
+  model.set_capacity_reclaim([&](const rt::Llm::Branch& keep) {
+    const auto chosen = LargestIdle(model, keep);
+    if (!chosen || *chosen != 1) {
+      return false;
+    }
+    ++reclaimed;
+    return model.SpillIdle(**paused).has_value();
+  });
+  std::vector<float> last;
+  const std::array<std::int32_t, 4> growth{0, 1, 2, 3};
+  ASSERT_TRUE((*running)->Prefill(growth, last).has_value());
+  EXPECT_EQ(reclaimed, 1U);
+  EXPECT_TRUE((*paused)->spilled());
+  EXPECT_EQ((*paused)->history(), exact);
+  EXPECT_EQ(model.native_state(1).target, exact);
+  EXPECT_FALSE((*paused)->ReleaseIdleState().has_value());
+  model.budget = 32;
+  auto restored = (*paused)->BeginPrompt(exact, 0, false, true);
+  ASSERT_TRUE(restored.has_value());
+  while (!(*restored)->done()) {
+    ASSERT_TRUE((*restored)->Advance().has_value());
+  }
+  ASSERT_TRUE((*restored)->Finish().has_value());
+  EXPECT_EQ((*restored)->reused(), exact.size());
+  EXPECT_EQ((*paused)->history(), exact);
+  EXPECT_EQ(model.native_state(1).target, exact);
+  (*paused)->ReleaseContinuation();
 }
 
 TEST(LlmScores, ASerialPrefillReleasesIdleStateLargestFirstAndRetriesTheRefusedChunk) {

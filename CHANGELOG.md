@@ -13,6 +13,14 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- A pending model switch pauses a running chat cohort at completed units
+  after `[client] model_turn_seconds` of resident work (default 30), serves
+  one substitute cohort, then resumes the original requests ahead of later
+  arrivals. Paused state spills with its exact branch identity protected;
+  response text, sampling and usage continue across the switch. Filled
+  same-model slots still wait without preemption. Compatible with schema 2,
+  a minor change in the 0.x line (D-069).
+
 - Qwen3.8 waves run each request's attention and recurrence on its own
   stream from four requests, with shared products and dependencies ordered
   inside the same graph. NVFP4 and GGUF retain exact logits and state.

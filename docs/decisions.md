@@ -3657,6 +3657,33 @@ adversarial challenge of this decision found those two conditions.
   measurements report them separately, and never hide them inside
   generation time.
 
+**Owner amendment, 2026-10-03 (M3).** A pending model switch time-slices
+the running cohort instead of waiting for every response to finish. Its
+members are set aside at completed prompt/decode units, their GPU leases
+ended, their initialized state spilled, and their continuations resumed
+after the other model's turn. Filled same-model slots do not preempt
+responses: newcomers wait while the running members keep making progress.
+This supersedes the earlier same-class run-to-completion default and
+resident-only protection for these M3 runtime cohorts. In-flight state
+and its spill files stay protected from idle expiry and deletion; GPU
+residency is released. The disk budget still applies: a substitute that
+cannot fit without deleting protected state fails as a resource refusal,
+and the original cohort continues.
+
+`[client] model_turn_seconds` is the resident-work quantum before a
+pending different model can pause a cooperative cohort, with a configurable
+30-second fallback. That fallback is a policy setting, not a measured knee
+or a response deadline. Initial swap time does not consume the quantum.
+Only one substitute cohort is open: it may batch compatible requests ready
+at its first admission pass, cannot itself be model-paused, and accepts no
+later refill. All original members resume ahead of later arrivals when it
+ends, including after a failed substitute or a departing client. There is
+no arbitrary count cap on these pauses; the renewed quantum prevents
+per-token alternation. D-102 governs genuine hangs and optional deadlines;
+returning an admitted continuation to the queue cannot apply an initial
+queue-wait refusal again. Configuration schema 2 remains compatible; this
+is a minor change in the 0.x product line (D-062).
+
 **Reopen if.** M4's measurements show the default mis-serves the primary
 workload, or pausing causes reload traffic that cancels its latency benefit.
 

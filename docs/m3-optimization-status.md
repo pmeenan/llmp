@@ -134,7 +134,10 @@ replace the largest remaining chain. Full ladders are reserved for an
 unresolved context decision or qualification of a selected implementation.
 
 Growing state, turn reuse, maximum-context execution and continuing-context
-swap controls are complete. M3 remains open for the performance/quality and
+swap controls are complete. Pending model switches now pause chat cohorts
+at completed units and resume their exact continuations after one substitute
+cohort ([model turns](experiments/model-turns/README.md)); literal completions
+joining the cohort remain open. M3 remains open for the performance/quality and
 concurrency items above, the final swap/client gate and frozen record, and
 the deferred workstation/package checks. No package ships before the owed
 checks. There is no claim here that all review suggestions, native pipeline

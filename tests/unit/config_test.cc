@@ -127,6 +127,7 @@ TEST(NodeConfigTest, VersionAloneIsTheDefaults) {
   EXPECT_EQ(config.client.request_inactivity_seconds, 60U);
   EXPECT_FALSE(config.client.write_inactivity_seconds.has_value());
   EXPECT_FALSE(config.client.hang_seconds.has_value());
+  EXPECT_EQ(config.client.model_turn_seconds, 30U);
   EXPECT_FALSE(config.client.request_memory_bytes.has_value());
   EXPECT_FALSE(config.client.max_body_bytes.has_value());
   EXPECT_FALSE(config.client.stream_buffer_bytes.has_value());
@@ -148,7 +149,7 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
       "queue_wait_seconds = 1\nstall_action = \"fail\"\nidle_seconds = 5\n"
       "request_inactivity_seconds = 600\nwrite_inactivity_seconds = 30\n"
       "max_body_bytes = 4294967295\nrequest_memory_bytes = 8589934592\n"
-      "stream_buffer_bytes = 4096\nhang_seconds = 900\n");
+      "stream_buffer_bytes = 4096\nhang_seconds = 900\nmodel_turn_seconds = 120\n");
   ASSERT_EQ(list.client.bind.size(), 5U);
   EXPECT_EQ(list.client.bind[0].kind, Kind::kLoopback);
   EXPECT_EQ(list.client.bind[1].endpoint.address, "::");
@@ -172,6 +173,7 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
   EXPECT_EQ(list.client.request_memory_bytes, 8589934592U);
   EXPECT_EQ(list.client.stream_buffer_bytes, 4096U);
   EXPECT_EQ(list.client.hang_seconds, 900U);
+  EXPECT_EQ(list.client.model_turn_seconds, 120U);
   const NodeConfig six = Parsed("schema_version = 2\nclient.bind = \"[::1]:8114\"\n");
   EXPECT_EQ(six.client.bind[0].endpoint.address, "::1");
   for (const std::string_view bad :
@@ -222,6 +224,8 @@ TEST(NodeConfigTest, TheClientBindsWhereConfigured) {
                                     "client.request_memory_bytes (16777216)")));
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nhang_seconds = 59\n"),
               ElementsAre(HasSubstr("client.hang_seconds must be from 60 to 2592000 seconds")));
+  EXPECT_THAT(Failures("schema_version = 2\n[client]\nmodel_turn_seconds = 0\n"),
+              ElementsAre(HasSubstr("client.model_turn_seconds must be from 1 to 2592000")));
   // The removed keys are unknown now.
   EXPECT_THAT(Failures("schema_version = 2\n[client]\nbody_budget_bytes = 1048576\n"),
               ElementsAre(HasSubstr("unknown key client.body_budget_bytes")));
