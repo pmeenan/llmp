@@ -142,6 +142,16 @@ without a re-prefill, and each model is as correct, as fast and as lean as
 its reference. A full swap: the outgoing model leaves, and no expert is
 demand-paged. The owner's first real work after M2 (D-087).
 
+**Tuning paused, 2026-10-04:** the owner suggested pinning Qwen/DeepSeek
+optimization unless a large win was already queued; experiments are stopped
+at production main `3decb36`, with selected defaults retained. No queued
+candidate has a proven large end-to-end gain. Known performance misses,
+long-context speed and final concurrent reference-quality qualification
+remain open, as do broader same-history acceptance and the frozen record.
+The [acceptance audit](m3-optimization-status.md#acceptance-evidence-still-owed)
+separates missing evidence from retained optimization leads. No exit bound
+or quality exception changes, and this milestone remains in progress.
+
 **Entry:** M2 exit. Before a model's first native evaluation, its
 checkpoint, reference engines and their configurations are pinned and their
 licenses recorded ([licensing.md](licensing.md); a model's weight license
@@ -1048,12 +1058,13 @@ it appears.
       These different-factor screens are not added together or recorded as
       a matched final ds4 speed ratio. The [closure status](m3-optimization-status.md)
       tracks completed and missing independent-review experiments.
-      Broader quality remains open; output-A/HCA stays default-off.
-      The [fixed
-      long-context answer tests](experiments/ds4-long-context-tasks/README.md)
+      The earlier [fixed long-context answer tests](experiments/ds4-long-context-tasks/README.md)
       complete four OFF/ON pairs without a clear candidate-specific answer
-      regression, but both paths fail parts of the strict rubric. HCA stays
-      off by default; these tests do not approve a quality exception.
+      regression, while both paths fail parts of that strict rubric. They
+      supplied no quality exception. Subsequent [default-on acceptance](experiments/ds4-output-prefix/README.md#default-on-acceptance)
+      qualifies output-A/HCA together under the documented tie-aware rule;
+      both now serve eligible full and partial chunks. HCA alone remains
+      default-off; broader final reference qualification remains open.
 - [ ] **Concurrent-request comparisons** (the owner, 2026-10-01).
       The [current matched DeepSeek screen](experiments/deepseek-matched-serving/README.md)
       (2026-10-04) uses identical 7,043-token inputs with no prompt reuse,

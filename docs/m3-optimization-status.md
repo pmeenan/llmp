@@ -8,6 +8,21 @@ gap is closed.** Pipeline reproduction, a useful individual replacement,
 and a selected serving default are different outcomes. This page tracks
 closure; individual reports retain conditions and evidence.
 
+**Tuning paused, 2026-10-04.** The owner suggested pinning Qwen/DeepSeek
+optimization unless a large win was already queued. Experiments are stopped
+at production main `3decb36`; selected defaults stay in place. No queued
+candidate has a proven large end-to-end gain. This pauses investigation;
+it does not waive an exit criterion or mark M3 complete. Known speed misses,
+reference-quality qualification and broader same-history evidence remain
+open. The frozen M3 record and owed workstation/package checks remain pending.
+
+The latest [paired shared-expert MXFP8 screen](experiments/qwen38-shared-mxfp8/README.md)
+illustrates the distinction: operator latency falls 28.64%, but the paid C4
+wave is neutral, so the candidate is rejected. A private DeepSeek greedy
+ID-delivery prototype is frozen outside main after a narrow build and two
+GPU argmax checks; its final benchmark evidence changes are unbuilt. It has
+no model transcript/state qualification or measured speed result.
+
 The [matched DeepSeek serving screen](experiments/deepseek-matched-serving/README.md)
 now pays the same uncached 7,043 input IDs on both engines. Native's one-output
 wall is 9.16% longer than ds4; at 256 outputs, C1 wall is 1.71% longer and
@@ -115,7 +130,34 @@ Reports: [literal 8K](experiments/ds4-complete-plan/README.md),
 [four-request waves](experiments/qwen38-four-request-waves/README.md).
 The selected native output-A screen's actual receipt is retained externally
 under `m3-ds4-qhead-short-records/outa-native-r2`. The selected guarded native
-source passes its Spark check set; it is not a serving default.
+source passes its Spark check set. That earlier standalone screen is not
+the later default-on output-A/HCA qualification summarized below.
+
+## Acceptance evidence still owed
+
+Existing short and long oracle/PPL controls, forced rejections, sampled
+harness distributions and exact own-path restoration remain evidence for
+their pinned profiles. Qwen's owner-accepted short-prompt divergence and
+DeepSeek's tie-aware rule remain as documented; this pause adds no exception.
+Final record preparation must distinguish inherited controls from an
+unqualified profile, rather than rerun every historical ladder.
+
+| Item | Evidence and remaining requirement |
+| --- | --- |
+| Final same-reference numerical qualification | Qwen's concurrent wave comparisons and the matched DeepSeek serving timings do not judge oracle likelihood or near-tie bounds. Qualify the final claimed concurrent profiles under the existing bounds; full-row equality to a native control alone does not establish cross-engine quality. Preserve the completed solo/long-profile controls. |
+| Sampled route/cohort qualification | Harness plain/speculative histograms pass their registered bounds; runtime seed repeat is a different check. Map those controls to the frozen route/cohort sampling path before claiming that configuration's distribution gate. Run a focused missing control only where that mapping is unsupported. |
+| Qwen same-history acceptance (diagnostic investigation) | The matched all-cold collection accepts 9/12 in each engine at four adjacent 32K anchors, with a separate p3 repeat. Broader histories, contexts and steps remain unqualified. Broader parity is a retained investigation, not an additional exit criterion; this diagnostic does not replace target-quality or speed criteria. |
+| Performance and long-context speed | Qwen's fresh C4 Mia comparison remains about 15% behind; no head clears every strict long-context rung. DeepSeek's matched 7K plain cells are useful but do not isolate all prefill/decode or speculative comparisons. The existing criteria remain open, including their concurrency and memory scopes. |
+| Frozen record and shipment checks | Current swap/client and long-state controls pass on their recorded binaries. Assemble their source/profile and inherited-control mapping in the M3 record. Deferred workstation/package checks are still owed before shipment. |
+
+The next useful numerical acceptance control is a bounded current-profile
+Qwen concurrent verify check on a frozen 32K history against the registered
+oracle/near-tie rule. It must identify the actual physical draft head and
+wave shape, retain conditioned inputs, and record reference cache paths and
+repeats. This is a recommendation, not a queued job or a new tolerance.
+A broader acceptance study, oracle-noise measurement, additional stage ports,
+head certification and calibration of other profiles remain separate
+investigations; none is converted into a pass by pausing tuning.
 
 ## Independent review recommendations
 
@@ -195,12 +237,11 @@ capture/replay and 1,404 recurrence cohort launches. Verify median is
 adopted. The isolated serial-launch gain does not establish a wave gain. A separate
 sparse-attention cohort factor would retain per-request selection and caches;
 it is also unstarted and is distinct from the rejected shared-cell union.
-Use one representative bookended screen to settle each candidate. Investigate
-same-history acceptance with recorded cache paths and reference repeats before
-attributing a stable proposal deficit or doing more solo Qwen kernel ports. After the
-selected DeepSeek combination, refresh only its missing stage budget and
-replace the largest remaining chain. Full ladders are reserved for an
-unresolved context decision or qualification of a selected implementation.
+These are retained optimization leads, not queued work after the tuning
+pause. Any resumed experiment should use one representative paid screen,
+record reference variation before attributing a stable proposal deficit,
+and expand only for an unresolved decision or selected implementation's
+qualification. No isolated operator gain supplies an end-to-end gate pass.
 
 Growing state, turn reuse, maximum-context execution and continuing-context
 swap controls are complete. Pending model switches now pause chat cohorts
