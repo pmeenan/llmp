@@ -12,7 +12,10 @@
 // pre-tokenizers `qwen2`, `qwen35`, `deepseek-v3` and `joyai-llm`, as
 // llama.cpp reads them; token types normal, control, user-defined and unused.
 // Also "gemma4": raw UTF-8 BPE, optional `gemma4` pre-tokenizer, and
-// <0xNN> byte fallback tokens. Anything else is refused as unsupported.
+// <0xNN> byte fallback tokens. Also "llama": classic SentencePiece with
+// absent/default pre-tokenizer, finite F32 token scores, optional dummy
+// prefix and the pinned named-Phi special whitespace stripping override.
+// Whitespace collapse and anything else are refused as unsupported.
 
 #ifndef JITLLM_TOKENIZER_GGUF_H_
 #define JITLLM_TOKENIZER_GGUF_H_

@@ -10,12 +10,15 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <random>
 #include <span>
@@ -764,6 +767,16 @@ class GgufWriter {
     }
     return *this;
   }
+  GgufWriter& Floats(std::string_view key, const std::vector<float>& values) {
+    Str(key);
+    U(9, 4);
+    U(6, 4);
+    U(values.size(), 8);
+    for (const auto value : values) {
+      U(std::bit_cast<std::uint32_t>(value), 4);
+    }
+    return *this;
+  }
   GgufWriter& U32(std::string_view key, std::uint32_t value) {
     Str(key);
     U(4, 4);
@@ -1073,6 +1086,427 @@ TEST(Gguf, RawUtf8BpeDefaultsAndStrictRefusals) {
   const auto good = RawGguf();
   for (std::size_t n = 0; n < good.Bytes().size(); ++n) {
     EXPECT_FALSE(tok::ReadGgufTokenizer(good.Bytes().first(n)).has_value()) << n;
+  }
+}
+
+// --- classic score-ordered SentencePiece ------------------------------------------
+
+tok::TokenizerSpec SpmSpec(bool prefix = false) {
+  auto spec = RawSpec();
+  spec.pre_tokenizer = PreTokenizer::kSentencePiece;
+  spec.merges.clear();
+  spec.scores.assign(spec.tokens.size(), -10.0F);
+  spec.add_space_prefix = prefix;
+  return spec;
+}
+
+TokenId SpmAdd(tok::TokenizerSpec& spec, std::string text, float score,
+               TokenKind kind = TokenKind::kNormal) {
+  const auto id = static_cast<TokenId>(spec.tokens.size());
+  spec.tokens.push_back(std::move(text));
+  spec.kinds.push_back(kind);
+  spec.scores.push_back(score);
+  return id;
+}
+
+TEST(SentencePiece, PretokenizationKeepsWholeNonemptyFragment) {
+  std::vector<std::uint32_t> lengths;
+  tok::PreTokenize(PreTokenizer::kSentencePiece, {}, lengths);
+  EXPECT_TRUE(lengths.empty());
+  const std::u32string_view fragment = U"a b";
+  tok::PreTokenize(PreTokenizer::kSentencePiece, fragment, lengths);
+  EXPECT_EQ(lengths, (std::vector<std::uint32_t>{3}));
+}
+
+TEST(SentencePiece, GreatestScoreWinsAndEqualScoresChooseLeftmost) {
+  for (const float score : {1.0F, 2.0F}) {
+    auto spec = SpmSpec();
+    SpmAdd(spec, "b", 0);
+    SpmAdd(spec, "c", 0);
+    const auto ab = SpmAdd(spec, "ab", 1);
+    const auto bc = SpmAdd(spec, "bc", score);
+    auto t = tok::Tokenizer::Create(std::move(spec));
+    ASSERT_TRUE(t);
+    EXPECT_EQ(Encode(*t, "abc"), score == 1 ? (std::vector<TokenId>{ab, *t->Find("c")})
+                                            : (std::vector<TokenId>{*t->Find("a"), bc}));
+  }
+}
+
+TEST(SentencePiece, LinkedHeapMatchesIndependentGreedyReductionOnOverlappingPairs) {
+  auto spec = SpmSpec();
+  SpmAdd(spec, "b", 0);
+  for (const auto text :
+       {"aa", "ab", "ba", "bb", "aaa", "aab", "aba", "abb", "baa", "bab", "bba", "bbb"}) {
+    SpmAdd(spec, text, static_cast<float>(std::string_view(text).back() == 'a' ? 1 : 2));
+  }
+  auto tokenizer = tok::Tokenizer::Create(spec);
+  ASSERT_TRUE(tokenizer);
+  std::mt19937 random(3551);
+  for (unsigned trial = 0; trial < 300; ++trial) {
+    std::string text;
+    std::vector<std::string> pieces;
+    for (unsigned i = 0; i < 40; ++i) {
+      const char c = (random() % 3) == 0 ? ' ' : (random() % 2) == 0 ? 'a' : 'b';
+      text += c;
+      pieces.emplace_back(c == ' ' ? "▁" : std::string(1, c));
+    }
+    // Deliberately slow oracle: scan every adjacent concatenation afresh
+    // and reduce one maximum-score pair; no heap, links or stale entries.
+    for (;;) {
+      std::optional<std::size_t> best;
+      float best_score = 0;
+      for (std::size_t i = 0; i + 1 < pieces.size(); ++i) {
+        const auto joined = pieces[i] + pieces[i + 1];
+        const auto found = std::ranges::find(spec.tokens, joined);
+        if (found != spec.tokens.end()) {
+          const auto id = static_cast<std::size_t>(found - spec.tokens.begin());
+          if (!best || spec.scores[id] > best_score) {
+            best = i;
+            best_score = spec.scores[id];
+          }
+        }
+      }
+      if (!best) {
+        break;
+      }
+      pieces[*best] += pieces[*best + 1];
+      pieces.erase(pieces.begin() + static_cast<std::ptrdiff_t>(*best + 1));
+    }
+    std::vector<TokenId> expected;
+    for (const auto& piece : pieces) {
+      const auto found = std::ranges::find(spec.tokens, piece);
+      ASSERT_NE(found, spec.tokens.end());
+      expected.push_back(static_cast<TokenId>(found - spec.tokens.begin()));
+    }
+    EXPECT_EQ(Encode(*tokenizer, text), expected) << text;
+  }
+}
+
+TEST(SentencePiece, MissingCodePointsRemainMergeableUntilByteFallback) {
+  auto spec = SpmSpec();
+  const auto joined = SpmAdd(spec, "中😀", 5);
+  const auto longer = SpmAdd(spec, "中😀a", 6);
+  auto t = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(t);
+  EXPECT_EQ(Encode(*t, "中😀"), (std::vector<TokenId>{joined}));
+  EXPECT_EQ(Encode(*t, "中😀a"), (std::vector<TokenId>{longer}));
+  EXPECT_EQ(Encode(*t, "中"), (std::vector<TokenId>{0xE4, 0xB8, 0xAD}));
+}
+
+TEST(SentencePiece, PlainTextCannotMergeOrEmitControls) {
+  auto spec = SpmSpec();
+  const auto joined = SpmAdd(spec, "ab", 100, TokenKind::kControl);
+  const auto single = SpmAdd(spec, "中", 100, TokenKind::kControl);
+  auto t = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(t);
+  EXPECT_EQ(Encode(*t, "ab中"), (std::vector<TokenId>{256, 'b', 0xE4, 0xB8, 0xAD}));
+  EXPECT_EQ(Encode(*t, "ab中", {.special = tok::SpecialTokens::kParse}),
+            (std::vector<TokenId>{joined, single}));
+  std::vector<TokenId> marked;
+  ASSERT_TRUE(t->EncodeMarked("ab中", {}, {.special = tok::SpecialTokens::kParse}, marked));
+  EXPECT_EQ(marked, (std::vector<TokenId>{256, 'b', 0xE4, 0xB8, 0xAD}));
+  marked.clear();
+  const std::array spans = {tok::SpecialSpan{0, 2}};
+  ASSERT_TRUE(t->EncodeMarked("ab中", spans, {}, marked));
+  EXPECT_EQ(marked, (std::vector<TokenId>{joined, 0xE4, 0xB8, 0xAD}));
+}
+
+TEST(SentencePiece, LiteralByteTokenMarkupStaysText) {
+  auto spec = SpmSpec();
+  for (const auto prefix : {"<0", "<0x", "<0x6", "<0x61"}) {
+    SpmAdd(spec, prefix, 1);
+  }
+  spec.scores[0x61] = 100;
+  auto t = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(t);
+  const auto ids = Encode(*t, "<0x61>");
+  EXPECT_EQ(std::ranges::find(ids, 0x61), ids.end());
+  std::string decoded;
+  ASSERT_TRUE(t->Decode(ids, {}, decoded));
+  EXPECT_EQ(decoded, "<0x61>");
+}
+
+TEST(SentencePiece, DummyPrefixAppliesAfterControlsAndUserDefinedTokens) {
+  auto spec = SpmSpec(true);
+  const auto added = SpmAdd(spec, "<added>", 0, TokenKind::kUserDefined);
+  auto t = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(t);
+  EXPECT_EQ(Encode(*t, ""), (std::vector<TokenId>{}));
+  EXPECT_EQ(Encode(*t, "a"), (std::vector<TokenId>{258}));
+  EXPECT_EQ(Encode(*t, "a<added>a"), (std::vector<TokenId>{258, added, 258}));
+  EXPECT_EQ(Encode(*t, "a<bos>a", {.special = tok::SpecialTokens::kParse}),
+            (std::vector<TokenId>{258, 264, 258}));
+  std::vector<TokenId> marked;
+  const std::array spans = {tok::SpecialSpan{1, 5}};
+  ASSERT_TRUE(t->EncodeMarked("a<bos>a", spans, {}, marked));
+  EXPECT_EQ(marked, (std::vector<TokenId>{258, 264, 258}));
+  EXPECT_EQ(Encode(*t, "", {.add_bos_eos = true}), (std::vector<TokenId>{264}));
+}
+
+TEST(SentencePiece, CrossSpaceMergesKeepWhitespaceWithoutNfc) {
+  auto spec = SpmSpec();
+  spec.scores[258] = 1;
+  spec.scores[259] = 2;
+  auto t = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(t);
+  EXPECT_EQ(Encode(*t, "a a"), (std::vector<TokenId>{259}));
+  EXPECT_EQ(Encode(*t, "a  a"), (std::vector<TokenId>{256, 257, 258}));
+  EXPECT_EQ(Encode(*t, "é"), (std::vector<TokenId>{'e', 0xCC, 0x81}));
+  EXPECT_EQ(Encode(*t, "é"), (std::vector<TokenId>{263}));
+}
+
+TEST(SentencePiece, SpecialStrippingIsBoundedAndDoesNotTriggerFalseTokenRefusal) {
+  auto spec = SpmSpec(true);
+  spec.rstrip.assign(spec.tokens.size(), false);
+  spec.rstrip[264] = true;
+  auto t = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(t);
+  const std::string text = "<bos>" + std::string(70000, ' ') + "a";
+  EXPECT_EQ(Encode(*t, text, {.special = tok::SpecialTokens::kParse, .max_tokens = 2}),
+            (std::vector<TokenId>{264, 258}));
+  EXPECT_EQ(Encode(*t, "<bos>\t\r\na", {.special = tok::SpecialTokens::kParse}),
+            (std::vector<TokenId>{264, 258}));
+  std::vector<TokenId> marked;
+  const std::array spans = {tok::SpecialSpan{0, 5}};
+  ASSERT_TRUE(t->EncodeMarked(text, spans, {.max_tokens = 2}, marked));
+  EXPECT_EQ(marked, (std::vector<TokenId>{264, 258}));
+}
+
+TEST(SentencePiece, DecodingPiecesPreservesGeneratedLeadingSpaces) {
+  auto t = tok::Tokenizer::Create(SpmSpec(true));
+  ASSERT_TRUE(t);
+  const auto ids = Encode(*t, "a a");
+  std::string pieces;
+  ASSERT_TRUE(t->Decode(ids, {}, pieces));
+  EXPECT_EQ(pieces, " a a");
+  std::string text;
+  ASSERT_TRUE(t->Decode(ids, {.remove_space_prefix = true}, text));
+  EXPECT_EQ(text, "a a");
+  tok::StreamDecoder generated(*t, {});
+  std::string output;
+  ASSERT_TRUE(generated.Push(258, output));
+  generated.Finish(output);
+  EXPECT_EQ(output, " a");
+  tok::StreamDecoder full(*t, {.remove_space_prefix = true});
+  output.clear();
+  for (const auto id : ids) {
+    ASSERT_TRUE(full.Push(id, output));
+  }
+  full.Finish(output);
+  EXPECT_EQ(output, "a a");
+  const auto with_bos = Encode(*t, "a", {.add_bos_eos = true});
+  text.clear();
+  ASSERT_TRUE(t->Decode(with_bos, {.remove_space_prefix = true}, text));
+  EXPECT_EQ(text, " a");
+  tok::StreamDecoder bos_first(*t, {.remove_space_prefix = true});
+  output.clear();
+  for (const auto id : with_bos) {
+    ASSERT_TRUE(bos_first.Push(id, output));
+  }
+  bos_first.Finish(output);
+  EXPECT_EQ(output, " a");
+}
+
+TEST(SentencePiece, LongWholeFragmentUsesFundedBoundAndReportsProgress) {
+  auto spec = SpmSpec();
+  spec.kinds[258] = TokenKind::kUnused;
+  spec.kinds[259] = TokenKind::kUnused;
+  auto t = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(t);
+  std::string text;
+  for (std::size_t i = 0; i < tok::kEncodeWindowBytes; ++i) {
+    text += "a ";
+  }
+  EXPECT_EQ(t->WorkingBytes(text), (text.size() + 1) * tok::kEncodeBytesPerWindowByte);
+  EXPECT_GT(t->WorkingBytes(text), tok::Tokenizer::EncodeWorkingBytes(text));
+  jitllm::base::WorkPulse pulse;
+  jitllm::base::SetThreadPulse(&pulse);
+  std::vector<TokenId> ids;
+  const auto encoded = t->Encode(text, {}, ids);
+  jitllm::base::SetThreadPulse(nullptr);
+  ASSERT_TRUE(encoded);
+  EXPECT_GT(pulse.beats(), 40U);
+  EXPECT_EQ(ids.size(), text.size());
+  pulse.Cancel();
+  jitllm::base::SetThreadPulse(&pulse);
+  const auto refused = t->Encode("a", {}, ids);
+  jitllm::base::SetThreadPulse(nullptr);
+  EXPECT_EQ(Failed(refused, &tok::Error::rule), Rule::kCancelled);
+}
+
+TEST(SentencePiece, DenseEqualScoreOverlapsRespectMaximumLengthAndAppendBounds) {
+  auto spec = SpmSpec();
+  TokenId full = -1;
+  for (std::size_t length = 2; length <= tok::kMaxTokenBytes; ++length) {
+    full = SpmAdd(spec, std::string(length, 'a'), 0);
+  }
+  auto t = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(t);
+  // Equal scores repeatedly extend the leftmost piece. Seeds belonging to
+  // its absorbed symbols remain stale in the heap until they are popped.
+  const std::string text(128 * tok::kMaxTokenBytes + 1, 'a');
+  std::vector<TokenId> ids{264};
+  ASSERT_TRUE(t->Encode(text, {.max_tokens = 129}, ids));
+  ASSERT_EQ(ids.size(), 130U);
+  EXPECT_EQ(ids.front(), 264);
+  EXPECT_EQ(ids.back(), 256);
+  EXPECT_TRUE(
+      std::all_of(ids.begin() + 1, ids.end() - 1, [full](TokenId id) { return id == full; }));
+
+  // Automatic BOS uses one of the appended-token slots. The final one-byte
+  // piece then refuses, retaining both prior output and completed pieces.
+  ids.assign(1, 264);
+  const auto refused = t->Encode(text, {.add_bos_eos = true, .max_tokens = 129}, ids);
+  EXPECT_EQ(Failed(refused, &tok::Error::rule), Rule::kOutputTooLarge);
+  ASSERT_EQ(ids.size(), 130U);
+  EXPECT_EQ(ids[0], 264);
+  EXPECT_EQ(ids[1], 264);
+  EXPECT_TRUE(std::all_of(ids.begin() + 2, ids.end(), [full](TokenId id) { return id == full; }));
+}
+
+TEST(SentencePiece, ExpandedSpacesAndDummySymbolRespectMaximumTokenBytes) {
+  auto spec = SpmSpec(true);
+  std::string marker = "▁";
+  TokenId full = -1;
+  const auto symbols_per_token = tok::kMaxTokenBytes / marker.size();
+  for (std::size_t length = 2; length <= symbols_per_token; ++length) {
+    marker += "▁";
+    full = SpmAdd(spec, marker, 0);
+  }
+  auto t = tok::Tokenizer::Create(std::move(spec));
+  ASSERT_TRUE(t);
+  const std::string text(256 * symbols_per_token - 1, ' ');
+  EXPECT_EQ(t->WorkingBytes(text), 96 * (text.size() + 1));
+  const auto ids = Encode(*t, text, {.max_tokens = 256});
+  ASSERT_EQ(ids.size(), 256U);
+  EXPECT_TRUE(std::all_of(ids.begin(), ids.end(), [full](TokenId id) { return id == full; }));
+  std::string decoded;
+  ASSERT_TRUE(t->Decode(ids, {.remove_space_prefix = true}, decoded));
+  EXPECT_EQ(decoded, text);
+}
+
+TEST(SentencePiece, RejectsNonfiniteScoresAndIncompatibleOrMalformedSpecs) {
+  for (const float value :
+       {std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::quiet_NaN()}) {
+    auto spec = SpmSpec();
+    spec.scores[256] = value;
+    EXPECT_FALSE(tok::Tokenizer::Create(std::move(spec)));
+  }
+  auto spec = SpmSpec();
+  spec.scores.pop_back();
+  EXPECT_FALSE(tok::Tokenizer::Create(spec));
+  spec = SpmSpec();
+  spec.merges = {{"a", "a"}};
+  EXPECT_FALSE(tok::Tokenizer::Create(spec));
+  spec = SpmSpec();
+  spec.normalization = tok::Normalization::kNfc;
+  EXPECT_FALSE(tok::Tokenizer::Create(spec));
+  spec = SpmSpec();
+  spec.tokens[10] = "<0xgg>";
+  EXPECT_FALSE(tok::Tokenizer::Create(spec));
+  spec = SpmSpec();
+  spec.kinds[10] = TokenKind::kUnused;
+  EXPECT_FALSE(tok::Tokenizer::Create(spec));
+  spec = SpmSpec();
+  spec.rstrip.resize(1);
+  EXPECT_FALSE(tok::Tokenizer::Create(spec));
+}
+
+GgufWriter SpmGguf(std::string_view name = "Phi 3.5 Mini Instruct",
+                   std::optional<bool> prefix = std::nullopt, std::string_view special = "<s>") {
+  auto spec = SpmSpec();
+  spec.tokens[264] = special;
+  GgufWriter w;
+  w.Header(prefix ? 8 : 7);
+  w.String("general.name", name);
+  w.String("tokenizer.ggml.model", "llama");
+  w.Strings("tokenizer.ggml.tokens", spec.tokens);
+  std::vector<std::int32_t> kinds(256, 6);
+  kinds.insert(kinds.end(), 8, 1);
+  kinds.push_back(special == "</s>" ? 4 : 3);
+  w.Ints("tokenizer.ggml.token_type", kinds);
+  w.Floats("tokenizer.ggml.scores", spec.scores);
+  w.U32("tokenizer.ggml.bos_token_id", 264);
+  w.Bool("tokenizer.ggml.add_bos_token", false);
+  if (prefix) {
+    w.Bool("tokenizer.ggml.add_space_prefix", *prefix);
+  }
+  return w;
+}
+
+TEST(Gguf, SentencePieceFlagsScoresAndPhiNameOverrideAreExact) {
+  const auto g = tok::ReadGgufTokenizer(SpmGguf().Bytes());
+  ASSERT_TRUE(g);
+  EXPECT_TRUE(g->spec.add_space_prefix);
+  EXPECT_FALSE(g->spec.add_bos);
+  EXPECT_EQ(g->spec.scores.size(), g->spec.tokens.size());
+  EXPECT_TRUE(g->spec.rstrip.empty());  // approved spaced name does not trigger pinned override
+  const auto named = tok::ReadGgufTokenizer(SpmGguf("Phi-3.5").Bytes());
+  ASSERT_TRUE(named);
+  EXPECT_EQ(named->spec.rstrip.size(), named->spec.tokens.size());
+  EXPECT_FALSE(named->spec.rstrip[264]);  // <s> is explicitly exempted
+  const auto gemma = tok::ReadGgufTokenizer(SpmGguf("Gemma", false).Bytes());
+  ASSERT_TRUE(gemma);
+  EXPECT_FALSE(gemma->spec.add_space_prefix);
+}
+
+TEST(Gguf, SentencePieceSpecialOverridesAndStripExemptionsMatchThePin) {
+  for (const auto name : {"Phi 3.5 Mini Instruct", "Phi-3.5"}) {
+    auto g = tok::ReadGgufTokenizer(SpmGguf(name, std::nullopt, "</s>").Bytes());
+    ASSERT_TRUE(g);
+    EXPECT_EQ(g->spec.kinds[264], TokenKind::kControl);  // metadata originally user-defined
+    auto t = tok::Tokenizer::Create(std::move(g->spec));
+    ASSERT_TRUE(t);
+    const auto plain = Encode(*t, "</s>");
+    EXPECT_EQ(std::count(plain.begin(), plain.end(), 264), 0);
+    EXPECT_EQ(Encode(*t, "</s>  a", {.special = tok::SpecialTokens::kParse}),
+              name == std::string_view("Phi-3.5") ? (std::vector<TokenId>{264, 258})
+                                                  : (std::vector<TokenId>{264, 257, 257, 258}));
+  }
+}
+
+TEST(Gguf, SentencePieceRefusesNonfiniteWrongTypesAndScoreCounts) {
+  for (const auto bits : {0x7F800000U, 0xFF800000U, 0x7FC00000U}) {
+    auto w = SpmGguf();
+    const auto at =
+        w.raw().find("tokenizer.ggml.scores") + std::string_view("tokenizer.ggml.scores").size();
+    for (unsigned byte = 0; byte < 4; ++byte) {
+      w.raw()[at + 16 + byte] = static_cast<char>((bits >> (8U * byte)) & 255U);
+    }
+    EXPECT_EQ(Failed(tok::ReadGgufTokenizer(w.Bytes()), &tok::Error::rule), Rule::kVocabulary);
+  }
+  auto w = SpmGguf();
+  const auto at =
+      w.raw().find("tokenizer.ggml.scores") + std::string_view("tokenizer.ggml.scores").size();
+  w.raw()[at + 4] = 5;  // INT32 arrays are unsupported for this F32 score contract
+  EXPECT_EQ(Failed(tok::ReadGgufTokenizer(w.Bytes()), &tok::Error::rule), Rule::kFormat);
+  w = SpmGguf();
+  w.raw()[at + 8] = 8;
+  w.raw()[at + 9] = 1;  // 264 scores for 265 tokens; preserve following keys
+  w.raw().erase(at + 16 + 264 * 4, 4);
+  EXPECT_EQ(Failed(tok::ReadGgufTokenizer(w.Bytes()), &tok::Error::rule), Rule::kVocabulary);
+}
+
+TEST(Gguf, SentencePieceEveryTruncationFailsBeforeAllocation) {
+  const auto w = SpmGguf();
+  for (std::size_t size = 0; size < w.Bytes().size(); ++size) {
+    EXPECT_FALSE(tok::ReadGgufTokenizer(w.Bytes().first(size))) << size;
+  }
+}
+
+TEST(Gguf, SentencePieceHostileScoreCountsRefuseWithoutPayload) {
+  for (const auto count : {static_cast<std::uint64_t>(tok::kMaxGgufArray),
+                           static_cast<std::uint64_t>(tok::kMaxGgufArray) + 1,
+                           std::numeric_limits<std::uint64_t>::max()}) {
+    GgufWriter w;
+    w.Header(1);
+    w.Str("tokenizer.ggml.scores");
+    w.U(9, 4);  // array
+    w.U(6, 4);  // F32
+    w.U(count, 8);
+    EXPECT_EQ(Failed(tok::ReadGgufTokenizer(w.Bytes()), &tok::Error::rule),
+              count > tok::kMaxGgufArray ? Rule::kBounds : Rule::kFormat);
   }
 }
 

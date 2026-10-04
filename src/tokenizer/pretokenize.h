@@ -19,6 +19,8 @@
 //     | ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+
 // - kGemma4 (GGUF `gemma4`): [^\n]+|[\n]+ over raw UTF-8 with
 //   spaces replaced by ▁ before splitting.
+// - kSentencePiece (GGUF model `llama`): one whole nonempty fragment;
+//   token scores select merges, with optional dummy prefix and ▁ spaces.
 //   Text a stage does not match stays one piece between its matches (the
 //   Split's "Isolated" behavior; llama.cpp's gaps).
 //
@@ -40,7 +42,7 @@
 
 namespace jitllm::tokenizer {
 
-enum class PreTokenizer : std::uint8_t { kQwen2, kQwen35, kDeepSeekV3, kGemma4 };
+enum class PreTokenizer : std::uint8_t { kQwen2, kQwen35, kDeepSeekV3, kGemma4, kSentencePiece };
 
 std::string_view PreTokenizerName(PreTokenizer p);
 

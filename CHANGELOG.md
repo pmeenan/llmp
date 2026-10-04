@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Native classic SentencePiece GGUF tokenization for the approved Phi 3.5,
+  Gemma 2 and Gemma 3 fixtures, with score-ordered merging, byte fallback,
+  bounded working memory and pinned reference agreement.
+
 - Native prompt, generation, retained and snapshot token histories are
   charged by allocated capacity before growth. Idle histories across the
   model library can release that memory with their state; active and

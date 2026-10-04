@@ -97,3 +97,52 @@ the oracle tokenizes from the full checkpoint. The fixture contains 92
 texts in both special-token modes, 184 encodings and 10,262 token IDs.
 The checkpoint's 262,144-token vocabulary has 256 byte fallback tokens
 and 514,906 ranked merges. No inference or Gemma runner is covered here.
+
+## Classic SentencePiece (M3.5), 2026-10-04
+
+On `spark` (spark-c4e2), supervised `m35-spm-oracle-corpus` generated the
+three legacy fixtures using the same pinned llama.cpp image and corpus:
+552 encodings, 38,284 token IDs, with no automatic BOS. Native token IDs
+agree on every encoding (Phi 3.5: 17,836 IDs; Gemma 2: 10,194; Gemma 3:
+10,254). These establish tokenizer behavior, without weight execution or
+rendered-chat comparisons. Command R 7B was inspected but uses `gpt2` /
+`command-r`, rather than SentencePiece, and is outside this slice.
+
+Only complete GGUF header/key-value prefixes were fetched with bounded
+HTTP ranges. Each pinned repository tree API confirmed the full file size
+and LFS SHA-256; no multi-GB weights were downloaded or hashed. The fetched
+prefix bytes are kept under `tokenizer-reference/legacy/` and are the
+native models tests' inputs. `generate.py` verifies their exact lengths
+and SHA-256 before making a vocabulary-only oracle copy: it sets the GGUF
+tensor count to zero and pads to 32-byte alignment, preserving every
+original key/value byte. `llama-tokenize` uses `vocab_only=true`, so tensors
+are unnecessary. Fixtures record both prefix identity and the upstream
+checkpoint/LFS provenance.
+
+| Fixture | Approved repository/revision and file | Original prefix bytes | Prefix SHA-256 |
+| --- | --- | ---: | --- |
+| `phi-3.5-gguf` | `bartowski/Phi-3.5-mini-instruct-GGUF@6d70da17e749a471ccb62ade694486011a75cda3`, `Phi-3.5-mini-instruct-Q8_0.gguf` | 727,029 | `876536e399233294995425441ee13b2b5ae01a6ad88281696c8cb38dc03752fa` |
+| `gemma-2-2b-gguf` | `bartowski/gemma-2-2b-it-GGUF@855f67caed130e1befc571b52bd181be2e858883`, `gemma-2-2b-it-Q8_0.gguf` | 6,029,343 | `22684623bd76697a54af7f4ee54b02ba50955106a724eaa763ca8d917c136a88` |
+| `gemma-3-4b-gguf` | `ggml-org/gemma-3-4b-it-qat-GGUF@bbcac0d065076c47042838c0675c602411b0dd4c`, `gemma-3-4b-it-qat-Q4_0.gguf` | 6,514,895 | `3073f37db9c1977ed7d68cd64707ce32043eecd250000a929a2ceb6723b1ad4c` |
+
+All three declare `tokenizer.ggml.model = "llama"`, `pre = "default"`,
+256 byte tokens, finite F32 scores and no merge list. Phi 3.5 defaults to
+a dummy space prefix; both Gemma files explicitly disable it. Their score
+vectors have respectively 32,064, 256,000 and 262,208 entries. Gemma's
+user-defined whitespace runs match even without parsing controls. The
+approved Phi checkpoint's spaced name (`Phi 3.5 Mini Instruct`) does not
+activate the pinned `phi-3` / `phi3` special whitespace-stripping override;
+synthetic tests cover that override independently.
+
+Rerun each configuration with the original prefixes present:
+
+```sh
+python3 docs/experiments/tokenizer-reference/generate.py --repo . \
+    --models ~/.local/share/jitllm --work <scratch> --only tokens \
+    --config phi-3.5-gguf
+```
+
+Use `gemma-2-2b-gguf` or `gemma-3-4b-gguf` for the other fixtures. GGUF-only
+runs do not need the Python transformer/tokenizer dependencies. Builds and
+oracle jobs on a Spark run through the installed `spark-job --gpu`
+supervisor; native builds use the locked SDK and prepared source receipts.

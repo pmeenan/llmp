@@ -55,8 +55,40 @@ COMMUNITY_GGUF = ("models/antirez/deepseek-v4-gguf@f71f23d5/"
 GEMMA4_GGUF = "reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
 GEMMA4_HEADER = "tokenizer-reference/gemma-4-26b/header.gguf"
 
+# Approved legacy GGUF metadata prefixes; only tensor count and padding change
+# in their vocabulary-only oracle copies. Full hashes are upstream LFS identities,
+# not assertions that the multi-GB weight payload was downloaded here.
+LEGACY_GGUF = {'phi-3.5-gguf': {'name': 'phi35',
+                  'repository': 'bartowski/Phi-3.5-mini-instruct-GGUF',
+                  'revision': '6d70da17e749a471ccb62ade694486011a75cda3',
+                  'file': 'Phi-3.5-mini-instruct-Q8_0.gguf',
+                  'full_bytes': 4061222688,
+                  'full_sha256': '76fbf02f6fe92af57dbd818409bc8a0240026f1f3609bb405c3be94c973fb823',
+                  'header_bytes': 727029,
+                  'header_sha256': '876536e399233294995425441ee13b2b5ae01a6ad88281696c8cb38dc03752fa',
+                  'path': 'tokenizer-reference/legacy/phi35.gguf'},
+ 'gemma-2-2b-gguf': {'name': 'gemma2',
+                     'repository': 'bartowski/gemma-2-2b-it-GGUF',
+                     'revision': '855f67caed130e1befc571b52bd181be2e858883',
+                     'file': 'gemma-2-2b-it-Q8_0.gguf',
+                     'full_bytes': 2784495456,
+                     'full_sha256': '2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe',
+                     'header_bytes': 6029343,
+                     'header_sha256': '22684623bd76697a54af7f4ee54b02ba50955106a724eaa763ca8d917c136a88',
+                     'path': 'tokenizer-reference/legacy/gemma2.gguf'},
+ 'gemma-3-4b-gguf': {'name': 'gemma3',
+                     'repository': 'ggml-org/gemma-3-4b-it-qat-GGUF',
+                     'revision': 'bbcac0d065076c47042838c0675c602411b0dd4c',
+                     'file': 'gemma-3-4b-it-qat-Q4_0.gguf',
+                     'full_bytes': 2526080992,
+                     'full_sha256': 'ee91c3e7a4ab95d8c95672f9fcb58bf236b257e9f217966bcf53a5a6df4ab49a',
+                     'header_bytes': 6514895,
+                     'header_sha256': '3073f37db9c1977ed7d68cd64707ce32043eecd250000a929a2ceb6723b1ad4c',
+                     'path': 'tokenizer-reference/legacy/gemma3.gguf'}}
+
 # (name, kind, path relative to --models)
 CONFIGS = [
+    *((config, "gguf", pin["path"]) for config, pin in LEGACY_GGUF.items()),
     ("gemma-4-26b-gguf", "gguf", GEMMA4_HEADER),
     ("deepseek-v4-0731-gguf", "gguf", DEEPSEEK_GGUF),
     ("qwen3.8-gguf", "gguf", QWEN38_GGUF),
@@ -181,8 +213,6 @@ def write_json(path: pathlib.Path, value) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     license = path.with_name(path.name + ".license")
     license.write_text("SPDX-FileCopyrightText: 2026 jitLLM contributors\nSPDX-License-Identifier: Apache-2.0\n")
-    license = path.with_name(path.name + ".license")
-    license.write_text("SPDX-FileCopyrightText: 2026 jitLLM contributors\nSPDX-License-Identifier: Apache-2.0\n")
 
 
 def tokens(args):
@@ -198,6 +228,18 @@ def tokens(args):
             continue
         path = models / rel
         oracle_rel = rel
+        if config in LEGACY_GGUF:
+            pin = LEGACY_GGUF[config]
+            header = path.read_bytes()
+            if len(header) != pin["header_bytes"] or sha256(path) != pin["header_sha256"]:
+                raise ValueError("legacy metadata prefix differs from the approved checkpoint")
+            if header[:4] != b"GGUF":
+                raise ValueError("not a GGUF metadata prefix")
+            vocab = bytearray(header)
+            vocab[8:16] = bytes(8)  # no tensors; keep every original metadata byte
+            vocab.extend(bytes((-len(vocab)) % 32))
+            oracle_rel = rel.removesuffix(".gguf") + "-vocab.gguf"
+            (models / oracle_rel).write_bytes(vocab)
         if config == "gemma-4-26b-gguf":
             # Exact metadata prefix of the approved file; avoid loading or
             # hashing 17 GB of weights for a tokenizer-only comparison.
@@ -217,7 +259,8 @@ def tokens(args):
         results[config] = ids
         write_json(repo / f"tests/unit/data/tokenizer/{config}.json", {
             "config": config,
-            "source": {"path": rel, "sha256": sha256(path)},
+            "source": {"path": rel, "sha256": sha256(path),
+                       **({"checkpoint": LEGACY_GGUF[config]} if config in LEGACY_GGUF else {})},
             "reference": reference,
             "corpus_sha256": sha256(corpus),
             "items": [{"name": name, "well_formed": valid[name], **ids[name]} for name, _ in items],
@@ -647,7 +690,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.config and args.only != "tokens":
         parser.error("--config requires --only tokens")
-    if args.config != "gemma-4-26b-gguf":
+    if args.config not in {"gemma-4-26b-gguf", *LEGACY_GGUF}:
         global tokenizers, transformers
         import tokenizers
         import transformers

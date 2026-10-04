@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// The native byte-level and Gemma4 raw UTF-8 BPE tokenizer (D-067, D-088). It encodes text
+// Native byte-level BPE, Gemma4 raw UTF-8 BPE and classic SentencePiece
+// tokenization (D-067, D-088). It encodes text
 // to token IDs and decodes them back, from a vocabulary that a loader
 // (gguf.h, hf.h) reads from untrusted model files, validated when the
 // tokenizer is created.
 //
-// Encoding, as llama.cpp and Hugging Face tokenizers do it for these
+// Byte-level BPE encoding, as llama.cpp and Hugging Face tokenizers do it for these
 // vocabularies:
 //   1. Special tokens are matched in the raw text first, leftmost-longest.
 //      User-defined tokens (Hugging Face's non-special added tokens) always
@@ -26,10 +27,14 @@
 // explicit lossy choice), at most EncodeOptions::max_bytes long, and the
 // output at most max_tokens long. A text with more bytes than max_tokens
 // times the longest token's (four times that under NFC, which shortens text
-// at most threefold) cannot fit and is refused before any work. Gemma4
+// at most threefold) cannot fit and is refused before any work, unless
+// special whitespace stripping can shorten the input. Gemma4
 // uses raw code-point symbols with ▁ for spaces, newline-run splitting
 // and <0xNN> fallback; it encodes whole fragments (WorkingBytes), since
-// merges may cross spaces. Normal raw tokens decode ▁ to a space. Work is
+// merges may cross spaces. Classic SentencePiece likewise uses raw code
+// points, optional dummy ▁ prefixes and highest-score, leftmost merging
+// across a whole fragment. Missing symbols emit byte fallbacks; normal
+// raw tokens decode ▁ to a space. Work is
 // O(n log n), with up to 256 special-token trie steps per input byte, and
 // byte-BPE memory follows the longest window, not the text (D-102): a fragment is
 // encoded in windows of about kEncodeWindowBytes, cut only where neither
@@ -70,10 +75,14 @@ enum class Normalization : std::uint8_t { kNone, kNfc };
 
 // A vocabulary as a loader reads it; Tokenizer::Create validates it.
 struct TokenizerSpec {
-  std::vector<std::string> tokens;  // by ID; byte alphabet, or raw UTF-8 for kGemma4
+  std::vector<std::string> tokens;  // by ID; byte alphabet, or raw UTF-8 for raw modes
   std::vector<TokenKind> kinds;     // by ID
   std::vector<std::pair<std::string, std::string>> merges;  // in rank order
   PreTokenizer pre_tokenizer = PreTokenizer::kQwen2;
+  // Classic SentencePiece uses token scores, rather than a merge list.
+  std::vector<float> scores;
+  bool add_space_prefix = false;
+  std::vector<bool> rstrip;  // optional per-special ASCII whitespace stripping
   Normalization normalization = Normalization::kNone;
   bool ignore_merges = false;  // a piece that is a whole token skips BPE
   std::optional<TokenId> bos;
@@ -120,7 +129,8 @@ struct SpecialSpan {
 };
 
 struct DecodeOptions {
-  bool control_tokens = false;  // decode control tokens as their text
+  bool control_tokens = false;       // decode control tokens as their text
+  bool remove_space_prefix = false;  // remove SentencePiece dummy space at stream start
 };
 
 class Tokenizer {
@@ -145,8 +155,8 @@ class Tokenizer {
   // The token whose text is exactly `text`, of any kind.
   std::optional<TokenId> Find(std::string_view text) const;
   // The longest token's bytes: a normal token's decoded bytes (raw UTF-8
-  // bytes for Gemma4, accounting for literal ▁ in the input), a special
-  // token's text. A text of n bytes encodes to at least n / this tokens.
+  // bytes for raw modes, accounting for literal ▁ in the input), a special
+  // token's text. Without stripping, n bytes need at least n / this tokens.
   std::size_t longest_token_bytes() const;
 
   // Byte-BPE estimate (use WorkingBytes when the tokenizer is known).
@@ -155,8 +165,9 @@ class Tokenizer {
   // (kEncodeWindowBytes, or longer where the text has no cut point). A
   // caller charges this before encoding untrusted text. A scan of the text.
   static std::uint64_t EncodeWorkingBytes(std::string_view text);
-  // Mode-aware estimate: raw UTF-8 BPE can merge across spaces, so it
-  // charges the whole input rather than byte-BPE windows.
+  // Mode-aware estimate: raw modes can merge across spaces, so they
+  // charge the whole input rather than byte-BPE windows. SentencePiece
+  // adds one input byte to cover its optional dummy prefix.
   std::uint64_t WorkingBytes(std::string_view text) const;
 
   // Appends text's tokens to out.
@@ -197,6 +208,7 @@ class StreamDecoder {
   const Tokenizer* tokenizer_;
   DecodeOptions options_;
   std::string pending_;
+  bool started_ = false;
 };
 
 }  // namespace jitllm::tokenizer

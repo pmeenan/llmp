@@ -305,7 +305,9 @@ family" guide, and its long-context scaling work.
       abandoned or just not updated. Implement those worth keeping.
       [Study](m35-families.md#legacy-tier-features). *Owner, 2026-09-29:*
       implement the seven small features:
-      - classic SentencePiece;
+      - classic SentencePiece (native GGUF tokenization and pinned
+        agreement for the three approved SentencePiece fixtures are in
+        place; [tokenizer](tokenizer.md));
       - linear RoPE scaling;
       - attention logit soft-capping;
       - LongRoPE;

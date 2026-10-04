@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -124,6 +126,7 @@ struct Value {
   std::uint64_t scalar = 0;        // integers and bools
   std::string_view string;
   std::vector<std::string_view> strings;  // arrays of strings
+  std::vector<float> floats;              // arrays of f32 scores
   std::vector<std::int32_t> ints;         // arrays of i32
 };
 
@@ -225,6 +228,20 @@ std::expected<Value, Error> ReadValue(Reader& r, std::uint32_t type) {
     }
     return v;
   }
+  if (v.element_type == static_cast<std::uint32_t>(Type::kF32)) {
+    if (*count > r.remaining() / 4) {
+      return Fail(Rule::kFormat, "truncated", r.offset());
+    }
+    v.floats.reserve(static_cast<std::size_t>(*count));
+    for (std::uint64_t i = 0; i < *count; ++i) {
+      auto value = r.Unsigned(4);
+      if (!value) {
+        return std::unexpected(value.error());
+      }
+      v.floats.push_back(std::bit_cast<float>(static_cast<std::uint32_t>(*value)));
+    }
+    return v;
+  }
   if (v.element_type == static_cast<std::uint32_t>(Type::kI32)) {
     if (*count > r.remaining() / 4) {
       return Fail(Rule::kFormat, "truncated", r.offset());
@@ -257,8 +274,10 @@ std::expected<Value, Error> ReadValue(Reader& r, std::uint32_t type) {
 
 // The keys the reader uses; every other key is skipped unread.
 bool Wanted(std::string_view key) {
-  static constexpr std::array<std::string_view, 13> kKeys = {
+  static constexpr std::array<std::string_view, 15> kKeys = {
       "general.architecture",
+      "general.name",
+      "tokenizer.ggml.scores",
       "tokenizer.ggml.model",
       "tokenizer.ggml.pre",
       "tokenizer.ggml.tokens",
@@ -358,14 +377,21 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
   if (!has_template) {
     return std::unexpected(has_template.error());
   }
-  if (!*has_model || (!*has_pre && model != "gemma4")) {
+  if (!*has_model || (!*has_pre && model != "gemma4" && model != "llama")) {
     return Fail(Rule::kFormat, "tokenizer model or pre-tokenizer missing");
   }
   out.has_chat_template = *has_template;
-  if (model != "gpt2" && model != "gemma4") {
-    return Fail(Rule::kUnsupported, "tokenizer model other than gpt2 or gemma4");
+  if (model != "gpt2" && model != "gemma4" && model != "llama") {
+    return Fail(Rule::kUnsupported, "tokenizer model other than gpt2, gemma4 or llama");
   }
-  if (model == "gemma4") {
+  const bool spm = model == "llama";
+  if (spm) {
+    if (*has_pre && out.pre != "default") {
+      return Fail(Rule::kUnsupported, "SentencePiece pre-tokenizer");
+    }
+    out.pre = "default";
+    out.spec.pre_tokenizer = PreTokenizer::kSentencePiece;
+  } else if (model == "gemma4") {
     if (*has_pre && out.pre != "gemma4") {
       return Fail(Rule::kUnsupported, "Gemma4 pre-tokenizer");
     }
@@ -385,20 +411,35 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
   const Value* tokens = find("tokenizer.ggml.tokens");
   const Value* types = find("tokenizer.ggml.token_type");
   const Value* merges = find("tokenizer.ggml.merges");
-  if (tokens == nullptr || types == nullptr || merges == nullptr) {
+  const Value* scores = find("tokenizer.ggml.scores");
+  if (tokens == nullptr || types == nullptr || (spm ? scores == nullptr : merges == nullptr)) {
     return Fail(Rule::kFormat, "tokens, token types or merges missing");
   }
   const auto kString = static_cast<std::uint32_t>(Type::kString);
   const auto kArray = static_cast<std::uint32_t>(Type::kArray);
   if (tokens->type != kArray || tokens->element_type != kString || types->type != kArray ||
-      types->element_type != static_cast<std::uint32_t>(Type::kI32) || merges->type != kArray ||
-      merges->element_type != kString) {
+      types->element_type != static_cast<std::uint32_t>(Type::kI32) ||
+      (spm ? scores->type != kArray ||
+                 scores->element_type != static_cast<std::uint32_t>(Type::kF32)
+           : merges->type != kArray || merges->element_type != kString)) {
     return Fail(Rule::kFormat, "tokens, token types or merges have the wrong type");
   }
   if (types->ints.size() != tokens->strings.size()) {
     return Fail(Rule::kVocabulary, "token types and tokens differ in number", types->ints.size());
   }
   const std::size_t n = tokens->strings.size();
+  if (spm) {
+    if (scores->floats.size() != n) {
+      return Fail(Rule::kVocabulary, "token scores and tokens differ in number");
+    }
+    if (merges != nullptr) {
+      return Fail(Rule::kUnsupported, "SentencePiece uses scores rather than a merge list");
+    }
+    if (std::ranges::any_of(scores->floats, [](float score) { return !std::isfinite(score); })) {
+      return Fail(Rule::kVocabulary, "nonfinite SentencePiece token score");
+    }
+    out.spec.scores = scores->floats;
+  }
   out.spec.tokens.reserve(n);
   out.spec.kinds.reserve(n);
   for (std::size_t i = 0; i < n; ++i) {
@@ -407,6 +448,11 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
       case 1:
         out.spec.kinds.push_back(TokenKind::kNormal);
         break;
+      case 2:
+        if (!spm) {
+          return Fail(Rule::kUnsupported, "unknown token in a BPE vocabulary", i);
+        }
+        [[fallthrough]];
       case 3:
         out.spec.kinds.push_back(TokenKind::kControl);
         break;
@@ -417,7 +463,7 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
         out.spec.kinds.push_back(TokenKind::kUnused);
         break;
       case 6:
-        if (model == "gemma4") {
+        if (model == "gemma4" || spm) {
           out.spec.kinds.push_back(TokenKind::kByte);
           break;
         }
@@ -426,17 +472,19 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
         return Fail(Rule::kUnsupported, "token type", i);
     }
   }
-  out.spec.merges.reserve(merges->strings.size());
-  for (std::size_t i = 0; i < merges->strings.size(); ++i) {
-    const std::string_view m = merges->strings[i];
-    const std::size_t space = m.find(' ');
-    if (space == 0 || space == std::string_view::npos || space + 1 == m.size() ||
-        m.find(' ', space + 1) != std::string_view::npos) {
-      return Fail(Rule::kVocabulary, "a merge is not two tokens separated by one space", i);
+  if (merges != nullptr) {
+    out.spec.merges.reserve(merges->strings.size());
+    for (std::size_t i = 0; i < merges->strings.size(); ++i) {
+      const std::string_view m = merges->strings[i];
+      const std::size_t space = m.find(' ');
+      if (space == 0 || space == std::string_view::npos || space + 1 == m.size() ||
+          m.find(' ', space + 1) != std::string_view::npos) {
+        return Fail(Rule::kVocabulary, "a merge is not two tokens separated by one space", i);
+      }
+      out.spec.merges.emplace_back(std::string(m.substr(0, space)),
+                                   std::string(m.substr(space + 1)));
     }
-    out.spec.merges.emplace_back(std::string(m.substr(0, space)), std::string(m.substr(space + 1)));
   }
-
   auto id_key = [&](std::string_view key) -> std::expected<std::optional<TokenId>, Error> {
     const Value* v = find(key);
     if (v == nullptr) {
@@ -474,10 +522,61 @@ std::expected<GgufTokenizer, Error> ReadGgufTokenizer(std::span<const std::byte>
   if (!spaces) {
     return std::unexpected(spaces.error());
   }
-  out.spec.add_bos = add_bos->value_or(false);
+  out.spec.add_bos = add_bos->value_or(spm);
   out.spec.add_eos = add_eos->value_or(false);
-  if (prefix->value_or(false) || spaces->value_or(false)) {
+  out.spec.add_space_prefix = spm && prefix->value_or(true);
+  if ((!spm && prefix->value_or(false)) || spaces->value_or(false)) {
     return Fail(Rule::kUnsupported, "space prefix or whitespace removal");
+  }
+  if (spm) {
+    // Pinned llama.cpp overrides these EOG spellings to control before
+    // partitioning, even when their original GGUF token type is user-defined.
+    static constexpr std::string_view eog[] = {"<|eot_id|>",
+                                               "<|im_end|>",
+                                               "<|end|>",
+                                               "<|return|>",
+                                               "<|call|>",
+                                               "<|flush|>",
+                                               "<|calls|>",
+                                               "<end_of_turn>",
+                                               "<|endoftext|>",
+                                               "</s>",
+                                               "<|eom_id|>",
+                                               "<EOT>",
+                                               "_<EOT>",
+                                               "[EOT]",
+                                               "[EOS]",
+                                               "<|end_of_text|>",
+                                               "<end_of_utterance>",
+                                               "<eos>",
+                                               "<turn|>",
+                                               "<|tool_response>",
+                                               "<｜end▁of▁sentence｜>",
+                                               "[e~["};
+    for (std::size_t i = 0; i < n; ++i) {
+      if (std::ranges::find(eog, out.spec.tokens[i]) != std::end(eog) &&
+          out.spec.kinds[i] != TokenKind::kUnused) {
+        out.spec.kinds[i] = TokenKind::kControl;
+      }
+    }
+    std::string name;
+    if (auto present = string_key("general.name", &name); !present) {
+      return std::unexpected(present.error());
+    }
+    for (char& c : name) {
+      if (c >= 'A' && c <= 'Z') {
+        c = static_cast<char>(c + ('a' - 'A'));
+      }
+    }
+    if (name.find("phi-3") != std::string::npos || name.find("phi3") != std::string::npos) {
+      out.spec.rstrip.resize(n);
+      for (std::size_t i = 0; i < n; ++i) {
+        const auto& token = out.spec.tokens[i];
+        out.spec.rstrip[i] = (out.spec.kinds[i] == TokenKind::kControl ||
+                              out.spec.kinds[i] == TokenKind::kUserDefined) &&
+                             token != "<unk>" && token != "<s>" && token != "<|endoftext|>";
+      }
+    }
   }
   return out;
 }

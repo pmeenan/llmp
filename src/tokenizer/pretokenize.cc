@@ -223,6 +223,8 @@ std::string_view PreTokenizerName(PreTokenizer p) {
       return "deepseek-v3";
     case PreTokenizer::kGemma4:
       return "gemma4";
+    case PreTokenizer::kSentencePiece:
+      return "sentencepiece";
   }
   return "unknown";
 }
@@ -240,6 +242,11 @@ void PreTokenize(PreTokenizer p, Text text, std::vector<std::uint32_t>& lengths)
             [&](Text t, std::size_t at, std::size_t e) { return MatchQwen(t, at, e, marks); });
       return;
     }
+    case PreTokenizer::kSentencePiece:
+      if (!text.empty()) {
+        lengths.push_back(static_cast<std::uint32_t>(text.size()));
+      }
+      return;
     case PreTokenizer::kGemma4: {
       for (std::size_t at = 0; at < text.size();) {
         std::size_t end = at + 1;
