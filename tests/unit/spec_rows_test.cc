@@ -312,9 +312,12 @@ TEST_F(SpecRowsTest, TheFloatVectorKernelsColumnsAreItsOneColumnLaunches) {
     std::int64_t n;
   };
   // DeepSeek's hyper-connection mixers (F32 [16384, 24]), the indexer's
-  // weights (F32 [4096, 64]) and the router (BF16 [4096, 256]).
-  const std::array<Case, 3> cases = {
-      {{GGML_TYPE_F32, 16384, 24}, {GGML_TYPE_F32, 4096, 64}, {GGML_TYPE_BF16, 4096, 256}}};
+  // weights (F32 [4096, 64]), the router (BF16 [4096, 256]) and
+  // Qwen's selected MTP head (BF16 [2560, 16384]).
+  const std::array<Case, 4> cases = {{{GGML_TYPE_F32, 16384, 24},
+                                      {GGML_TYPE_F32, 4096, 64},
+                                      {GGML_TYPE_BF16, 4096, 256},
+                                      {GGML_TYPE_BF16, 2560, 16384}}};
   for (const Case& test : cases) {
     const std::vector<float> source = Normal(10, static_cast<std::size_t>(test.k * test.n), 0.02f);
     ggml_tensor* w = ggml_new_tensor_2d(c(), test.type, test.k, test.n);

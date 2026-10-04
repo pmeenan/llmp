@@ -45,6 +45,12 @@ bookend wall movement and peak MemAvailable drop 0.801 times Mia's. Mia
 reaches readiness in 172 seconds. This refresh includes wave lanes and the
 tighter workspace; it does not qualify cross-engine quality.
 
+Qwen's [selected MTP head sharing](experiments/qwen38-draft-head-waves/README.md)
+now gains 1.77% completed tokens/s at C2, with short/8K target rows,
+tokens and target/drafter states exact. C4's wider joined drafting remains
+unadopted: it cancels the head gain and changes drafter-state arithmetic.
+The production draft-wave limit stays two; this does not close C4 parity.
+
 DeepSeek's [wide IQ2_XXS gate/up pass screens](experiments/deepseek-expert-passes/README.md)
 share weight decoding across four or two tokens with the original warp-row
 arithmetic. Both pass the existing exact solo/wave, discard/retry and

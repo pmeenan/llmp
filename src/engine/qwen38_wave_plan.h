@@ -62,6 +62,7 @@ struct Qwen38WaveStats {
   std::uint64_t routed_pairs = 0;
   std::uint64_t packed_bytes = 0;
   std::uint64_t full_head_pairs = 0;
+  std::uint64_t draft_head_pairs = 0;
   std::uint64_t head_packed_bytes = 0;
   std::uint32_t paired_slots = 0;
 };

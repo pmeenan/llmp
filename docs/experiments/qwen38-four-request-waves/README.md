@@ -108,7 +108,9 @@ earlier cell (spark-b, 2026-10-02; records under `~/scratch/ccqw-fix/`).
 
 - **Joining plain BF16 products** (draft heads, drafter products, router).
   GGML routes some joined products to cuBLAS, which the authentication
-  refuses. A per-product selector probe is owed.
+  refuses. The later [selected MTP head transfer](../qwen38-draft-head-waves/README.md)
+  uses a per-product vector selector and gains 1.77% at C2 with exact heads
+  and state. Other plain BF16 products remain unqualified.
 - **jitLLM's own HC kernels on every column count** (a cluster split-K down
   product, batch-invariant by construction). They are neutral solo and slower
   than cuBLAS at 12–16 columns, and they change solo trajectories. Reverted.

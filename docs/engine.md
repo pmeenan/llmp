@@ -114,7 +114,11 @@ bit. Compatible two-to-four-row HC BF16 products of a target group share
 their original cuBLAS path, retaining separate preparation and nonlinear
 mixing. Eligible three- or four-row BF16 target heads join through the
 ordinary MMF selector (up to sixteen columns); unsupported heads stay
-original. Stateful operations and draft heads stay independent. A
+original. Selected BF16 MTP heads (K 2,560, N 16,384–65,536) join up to
+eight single columns through the original MMVF vector arithmetic, with
+immutable backing and per-slot views. Other draft products keep their
+selectors; stateful operations remain per request. See the
+[head-sharing controls](experiments/qwen38-draft-head-waves/README.md). A
 multi-slot wave reads attention cells aligned to 2,048, and backs each
 slot's caches through them, so its graph key repeats. Each decode step's
 own state reservation already backs through that alignment, so running out

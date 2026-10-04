@@ -293,7 +293,8 @@ Concurrent chat and literal requests follow memory up to a per-model slot cap (`
 up to 16; both LLMs' measured knee is 4 with today's 16-row joined
 products, D-104). Qwen chat decodes its requests in one wave (joined
 products of up to 16 rows, MXFP8/routed bit-exact per request; depth 2
-when shared). Against
+when shared); its selected MTP heads also share exact vector products
+([controls](docs/experiments/qwen38-draft-head-waves/README.md)). Against
 current TensorFold NVFP4 it leads at C1/C2 and is level at C4 (25.7 / 29.7 /
 32.2 vs 21.5 / 24.8 / 31.9 completed tok/s, separate sessions), trailing
 fast-start Mia 15% at C4 in the [fresh comparison](docs/experiments/qwen38-four-request-waves/README.md#fast-start-mia-refresh--2026-10-04). DeepSeek chat batches its requests in exact

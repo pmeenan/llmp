@@ -243,6 +243,61 @@ std::vector<md::Qwen38Resource> GgufLike(const md::Qwen38Profile& p) {
   return r;
 }
 
+std::vector<md::Qwen38Resource> MtpLike() {
+  std::vector<md::Qwen38Resource> r;
+  const auto ggml = [&](std::string name, std::string type, std::vector<std::uint64_t> ne) {
+    r.push_back(
+        {.roles = {std::move(name)}, .plain = false, .type = std::move(type), .ne = std::move(ne)});
+  };
+  ggml("fc_embd.weight", "BF16", {2560, 2560});
+  ggml("fc_hidden.weight", "BF16", {2560, 2560});
+  ggml("norm_embd.weight", "F32", {2560});
+  ggml("norm_hidden.weight", "F32", {10240});
+  ggml("output_hc_norm.weight", "F32", {10240});
+  ggml("output_hc_down.weight", "BF16", {10240, 320});
+  ggml("output_hc_up.weight", "BF16", {320, 10240});
+  for (const char* kind : {"attn", "ffn"}) {
+    ggml(std::format("blk.0.hc_{}_norm.weight", kind), "F32", {10240});
+    ggml(std::format("blk.0.hc_{}_down.weight", kind), "BF16", {10240, 320});
+    ggml(std::format("blk.0.hc_{}_up.weight", kind), "BF16", {320, 10240});
+    ggml(std::format("blk.0.hc_{}_inject.weight", kind), "BF16", {10240, 4});
+  }
+  ggml("blk.0.attn_q.weight", "BF16", {2560, 12288});
+  ggml("blk.0.attn_k.weight", "BF16", {2560, 512});
+  ggml("blk.0.attn_v.weight", "BF16", {2560, 512});
+  ggml("blk.0.attn_output.weight", "BF16", {6144, 2560});
+  ggml("blk.0.attn_q_norm.weight", "F32", {256});
+  ggml("blk.0.attn_k_norm.weight", "F32", {256});
+  ggml("blk.0.indexer.qk_proj.weight", "BF16", {2560, 640});
+  ggml("blk.0.indexer.q_norm.weight", "F32", {128});
+  ggml("blk.0.indexer.k_norm.weight", "F32", {128});
+  ggml("blk.0.ffn_gate_inp.weight", "BF16", {2560, 512});
+  ggml("blk.0.ffn_gate_inp_shexp.weight", "BF16", {2560});
+  ggml("blk.0.ffn_gate_shexp.weight", "BF16", {2560, 640});
+  ggml("blk.0.ffn_up_shexp.weight", "BF16", {2560, 640});
+  ggml("blk.0.ffn_down_shexp.weight", "BF16", {640, 2560});
+  for (const char* proj : {"gate", "up", "down"}) {
+    ggml(std::format("blk.0.ffn_{}_exps.weight_scale_2", proj), "F32", {512});
+  }
+  std::uint64_t group_offset = 0;
+  for (const auto& [name, ne] :
+       {std::pair{"gate_up_exps.codes", std::vector<std::uint64_t>{1280, 1280}},
+        std::pair{"gate_up_exps.scales", std::vector<std::uint64_t>{512, 400}},
+        std::pair{"down_exps.codes", std::vector<std::uint64_t>{320, 2560}},
+        std::pair{"down_exps.scales", std::vector<std::uint64_t>{512, 200}}}) {
+    r.push_back({.roles = {std::format("blk.0.ffn_{}", name)},
+                 .plain = false,
+                 .type = "I8",
+                 .ne = ne,
+                 .expert_array = true,
+                 .count = 512,
+                 .group_offset = group_offset,
+                 .readable = ne[0] * ne[1]});
+    group_offset += ne[0] * ne[1];
+  }
+  return r;
+}
+
 // Hash constants of the checkpoint's shape: 16 heads of 20,000,008 rows.
 md::Qwen38PleHash Hash() {
   const md::Qwen38Profile& p = md::Qwen38Flash();
@@ -709,6 +764,98 @@ TEST_F(Qwen38WavePlanTest, WithoutPairingEverySlotKeepsItsProducts) {
   EXPECT_EQ(Count(own.mxfp8, 4), 4 * lone.mxfp8.size());
   EXPECT_EQ(own.mxfp8.size(), 4 * lone.mxfp8.size());
   EXPECT_EQ(Count(own.routed, 4), 4 * lone.routed.size());
+}
+
+class Qwen38DraftWavePlanTest : public Qwen38WavePlanTest {
+ protected:
+  void BindDraft(bool selected) {
+    auto resources = MtpLike();
+    if (selected) {
+      resources.push_back({.roles = {"draft_output.weight"}, .type = "BF16", .ne = {2560, 47172}});
+      resources.push_back({.roles = {"draft_output.ids"}, .type = "I32", .ne = {1, 47172}});
+    }
+    auto binding = md::BindQwen38Mtp(p_, "qwen4exp-mtp", resources);
+    ASSERT_TRUE(binding.has_value()) << binding.error();
+    drafter_.emplace(std::move(*binding));
+    for (auto& model : models_) {
+      model.drafter = &*drafter_;
+      model.mtp_stride = 2764800;
+      model.places.mtp_resource = [](std::uint32_t i) {
+        return (std::uint64_t{1} << 46U) + (std::uint64_t{i} << 31U);
+      };
+      model.places.mtp_array = [](std::uint32_t i) {
+        return (std::uint64_t{1} << 47U) + (std::uint64_t{i} << 32U);
+      };
+    }
+  }
+
+  auto DraftPlan(bool paired = true, bool capture = false, std::int64_t head_rows = 65536) {
+    const kg::Qwen38MtpShape shape{.rows = 4,
+                                   .passes = 3,
+                                   .n_kv = 256,
+                                   .cells = 4096,
+                                   .head = true,
+                                   .head_rows = head_rows,
+                                   .capture_head = capture,
+                                   .hidden_rows = 513};
+    const std::array<engine::Qwen38DraftWaveInput, 2> inputs = {
+        engine::Qwen38DraftWaveInput{0, models_.data(), shape},
+        engine::Qwen38DraftWaveInput{2, &models_[2], shape}};
+    return engine::PlanQwen38DraftWave(inputs, ModelDevice(), {.paired = paired});
+  }
+
+  std::optional<md::Qwen38MtpBinding> drafter_;
+};
+
+TEST_F(Qwen38DraftWavePlanTest, PrefixAndSelectedHeadsShareEveryPassWithVectorArithmetic) {
+  for (const bool selected : {false, true}) {
+    BindDraft(selected);
+    const std::int64_t rows = selected ? 47172 : 65536;
+    auto planned = DraftPlan(true, false, rows);
+    ASSERT_TRUE(planned.has_value()) << planned.error();
+    EXPECT_EQ((*planned)->stats().draft_head_pairs, 3U);
+    EXPECT_EQ((*planned)->stats().full_head_pairs, 0U);
+    unsigned heads = 0;
+    for (const auto& step : (*planned)->plan.steps) {
+      for (const ggml_tensor* node : step.nodes) {
+        if (node->op == GGML_OP_MUL_MAT && node->ne[0] == rows) {
+          EXPECT_EQ(node->ne[1], 2);
+          EXPECT_EQ(step.implementation, kg::kMulMatVecFRows);
+          ++heads;
+        }
+      }
+    }
+    EXPECT_EQ(heads, 3U);
+  }
+}
+
+TEST_F(Qwen38DraftWavePlanTest, UnpairedAndCapturedDraftHeadsRemainSeparate) {
+  BindDraft(false);
+  for (const auto& [paired, capture] : {std::pair{false, false}, std::pair{true, true}}) {
+    auto planned = DraftPlan(paired, capture);
+    ASSERT_TRUE(planned.has_value()) << planned.error();
+    EXPECT_EQ((*planned)->stats().draft_head_pairs, 0U);
+    unsigned heads = 0;
+    for (const ggml_tensor* node : (*planned)->nodes()) {
+      heads += node->op == GGML_OP_MUL_MAT && node->ne[0] == 65536 ? 1U : 0U;
+    }
+    EXPECT_EQ(heads, 6U);
+  }
+}
+
+TEST_F(Qwen38DraftWavePlanTest, DifferentHeadBackingNeverShares) {
+  BindDraft(false);
+  if (!binding_.has_value()) {
+    ADD_FAILURE() << "target binding is absent";
+    return;
+  }
+  const auto head = binding_->output.index;
+  models_[2].places.resource = [head](std::uint32_t i) {
+    return kResources + (std::uint64_t{i} << 31U) + (i == head ? (std::uint64_t{1} << 30U) : 0);
+  };
+  auto planned = DraftPlan();
+  ASSERT_TRUE(planned.has_value()) << planned.error();
+  EXPECT_EQ((*planned)->stats().draft_head_pairs, 0U);
 }
 
 }  // namespace

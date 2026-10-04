@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Qwen MTP waves share selected BF16 heads while retaining each column's
+  ordinary vector arithmetic and independent state. A matched two-request
+  HTTP screen improves completed-token throughput by 1.77%; the existing
+  two-request joined-drafting limit remains in force.
+
 - Literal `/v1/completions` requests join Qwen and DeepSeek's native
   cohorts alongside chat requests. Prompt and generated likelihoods,
   Unicode offsets, response state and sampling survive model switches;

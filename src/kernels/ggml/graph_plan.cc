@@ -231,8 +231,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
               {node}, 1);
           break;
         }
-        if (device.vector_floats && node->src[1] != nullptr &&
-            node->src[1]->ne[1] <= kRowInvariantColumns &&
+        if ((device.vector_floats ||
+             (device.vector_float_node && device.vector_float_node(node))) &&
+            node->src[1] != nullptr && node->src[1]->ne[1] <= kRowInvariantColumns &&
             (node->src[0]->type == GGML_TYPE_F32 || node->src[0]->type == GGML_TYPE_F16 ||
              node->src[0]->type == GGML_TYPE_BF16)) {
           add(Operation::kMatMul, kMulMatVecFRows, i, {node}, 1);

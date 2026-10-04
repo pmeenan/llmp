@@ -82,6 +82,9 @@ struct DeviceChoices {
   // vector kernel (MMVF) whatever upstream would route them to (MMF past
   // one BF16 column): a verify's router and head mixes.
   bool vector_floats = false;
+  // The same vector kernel selected for individual float products, rather
+  // than all of them. Other products keep the ordinary device selector.
+  std::function<bool(const ggml_tensor*)> vector_float_node = nullptr;
   // Fast plans may share preparation across adjacent ordinary MMQ expert
   // products. The default keeps one primitive step per graph node.
   bool pair_experts = false;

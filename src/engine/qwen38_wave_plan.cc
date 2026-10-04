@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <format>
 #include <initializer_list>
@@ -147,11 +148,24 @@ bool VecQRouted(const ggml_tensor* t) {
   return t->src[2] != nullptr && t->src[2]->type == GGML_TYPE_I32;
 }
 
+// Selected MTP heads share GGML's one-column vector arithmetic. The full
+// target head and other BF16 products do not qualify.
+bool DraftHead(const ggml_tensor* t) {
+  return t != nullptr && t->op == GGML_OP_MUL_MAT && t->type == GGML_TYPE_F32 &&
+         t->src[0] != nullptr && t->src[1] != nullptr && t->src[0]->type == GGML_TYPE_BF16 &&
+         t->src[0]->ne[0] == 2560 && t->src[0]->ne[1] >= 16384 && t->src[0]->ne[1] <= 65536 &&
+         t->src[1]->type == GGML_TYPE_F32 && t->src[1]->ne[0] == 2560 && t->src[1]->ne[1] >= 1 &&
+         t->src[1]->ne[1] <= 8 && t->ne[0] == t->src[0]->ne[1] && t->ne[1] == t->src[1]->ne[1] &&
+         t->ne[2] == 1 && t->ne[3] == 1 && ggml_is_contiguous(t->src[0]) &&
+         ggml_is_contiguous(t->src[1]) && ggml_is_contiguous(t);
+}
+
 bool Eligible(const ggml_tensor* t) {
   const auto op = kg::JitllmOpOf(t);
   // Only one-row GGUF steps: the shared launch retains their reduction.
   // Multirow products and grouped products keep their original operations.
-  return op == kg::JitllmOp::kMxfp8MulMatVec || op == kg::JitllmOp::kMoeGemv ||
+  return (DraftHead(t) && t->ne[1] == 1) || op == kg::JitllmOp::kMxfp8MulMatVec ||
+         op == kg::JitllmOp::kMoeGemv ||
          (op == kg::JitllmOp::kVecQ && kg::JitllmOpInt(t, 0) == 1 &&
           (VecQRouted(t) || t->src[0]->ne[2] == 1));
 }
@@ -170,6 +184,17 @@ bool SameImmutableLeaf(const ggml_tensor* a, const ggml_tensor* b,
   }
   return std::ranges::none_of(mutable_places,
                               [&](Range r) { return Overlap(r, {address, address + bytes}); });
+}
+
+bool SameHeadWeight(const ggml_tensor* a, const ggml_tensor* b,
+                    std::span<const Range> mutable_places) {
+  if (SameImmutableLeaf(a, b, mutable_places)) return true;
+  if (a == nullptr || b == nullptr || a->op != GGML_OP_VIEW || b->op != GGML_OP_VIEW ||
+      a->type != b->type || a->view_offs != b->view_offs || !std::ranges::equal(a->ne, b->ne) ||
+      !std::ranges::equal(a->nb, b->nb) ||
+      std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) != 0)
+    return false;
+  return SameImmutableLeaf(a->view_src, b->view_src, mutable_places);
 }
 
 bool Concatenable(const ggml_tensor* a, const ggml_tensor* b, std::size_t dim, ggml_type type) {
@@ -209,6 +234,12 @@ bool OrdinaryHead(const kg::GraphPlan& plan, const ggml_tensor* node) {
 // Whether b may join a's product (each at most four rows; the group's sum
 // is checked separately against the kernels' limits).
 bool Match(const ggml_tensor* a, const ggml_tensor* b, std::span<const Range> mutable_places) {
+  if (a == nullptr || b == nullptr) return false;
+  if (DraftHead(a) || DraftHead(b)) {
+    return DraftHead(a) && DraftHead(b) && a->ne[1] == 1 && b->ne[1] == 1 && a->ne[0] == b->ne[0] &&
+           std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) == 0 &&
+           SameHeadWeight(a->src[0], b->src[0], mutable_places);
+  }
   if (!Eligible(a) || !Eligible(b) || kg::JitllmOpOf(a) != kg::JitllmOpOf(b) ||
       std::memcmp(a->op_params, b->op_params, sizeof(a->op_params)) != 0 ||
       !SameImmutableLeaf(a->src[0], b->src[0], mutable_places) || a->type != GGML_TYPE_F32 ||
@@ -260,6 +291,9 @@ std::int64_t JoinedRows(const ggml_tensor* t) {
 }
 
 std::int64_t JoinedLimit(const ggml_tensor* t) {
+  if (DraftHead(t)) {
+    return 8;
+  }
   switch (kg::JitllmOpOf(t)) {
     case kg::JitllmOp::kVecQ:
       return VecQRouted(t) ? std::min(kg::kVecQMaxTokens, 128 / t->ne[1]) : kg::kVecQMaxTokens;
@@ -648,6 +682,18 @@ struct Qwen38WaveBuilder {
             offset += static_cast<std::size_t>(m->ne[1]) * both->nb[1];
           }
           out.stats_.packed_bytes += ggml_nbytes(x);
+        } else if (DraftHead(a)) {
+          for (ggml_tensor* m : members) {
+            xs.push_back(m->src[1]);
+          }
+          ggml_tensor* x = ConcatAll(c, xs, 1, made);
+          both = ggml_mul_mat(c, a->src[0], x);
+          std::memcpy(both->op_params, a->op_params, sizeof(a->op_params));
+          for (std::size_t k = 0; k < members.size(); ++k) {
+            split.push_back(ggml_view_2d(c, both, a->ne[0], 1, both->nb[1], k * both->nb[1]));
+          }
+          out.stats_.packed_bytes += ggml_nbytes(x);
+          ++out.stats_.draft_head_pairs;
         } else if (kg::JitllmOpOf(a) == kg::JitllmOp::kVecQ) {
           const bool routed = VecQRouted(a);
           const bool per_slot = kg::JitllmOpInt(a, 1) != 0;
@@ -910,6 +956,10 @@ struct Qwen38WaveBuilder {
   static std::expected<std::unique_ptr<Qwen38WavePlanned>, std::string> Draft(
       std::span<const Qwen38DraftWaveInput> requests, const kg::DeviceChoices& choices,
       Qwen38WavePlacement placement) {
+    kg::DeviceChoices draft_choices = choices;
+    draft_choices.vector_float_node = [prior = choices.vector_float_node](const ggml_tensor* t) {
+      return DraftHead(t) || (prior && prior(t));
+    };
     auto mutable_places = MutablePlaces(requests);
     if (!mutable_places) {
       return std::unexpected(mutable_places.error());
@@ -924,7 +974,7 @@ struct Qwen38WaveBuilder {
       if (r.shape.rows < 1 || r.shape.rows > 4 || r.shape.passes < 1 || r.shape.passes > 8) {
         return Error("Qwen3.8 draft wave requires one to four rows and one to eight passes");
       }
-      auto p = PlanQwen38Mtp(*r.model, r.shape, choices, 0, 0);
+      auto p = PlanQwen38Mtp(*r.model, r.shape, draft_choices, 0, 0);
       if (!p) {
         return std::unexpected(p.error());
       }
@@ -945,8 +995,8 @@ struct Qwen38WaveBuilder {
         compatible[s] = SameDraftPhase(requests[i - 1].shape, r.shape);
       }
     }
-    if (auto made =
-            Finish(*out, lists, originals, order, compatible, *mutable_places, choices, placement);
+    if (auto made = Finish(*out, lists, originals, order, compatible, *mutable_places,
+                           draft_choices, placement);
         !made) {
       return std::unexpected(made.error());
     }
