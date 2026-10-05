@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Reproducible larger-row Gemma prefill diagnostics, with same-shape state
+  repeats and matched reference speed/quality comparisons. Numerical failures
+  keep production row caps and optimization defaults unchanged.
+
 - Explicit default-off Gemma routing and scaled ordered-reduction dispatch,
   with full-sort backing, kept-value primitive fallback and bounded state/
   numerical controls. Failed representative quality keeps selection off.

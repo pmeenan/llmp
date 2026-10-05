@@ -331,6 +331,17 @@ units take 0.691 s native versus 0.866 / 0.869 s reference. This does not
 qualify generated-text equivalence or physical peak memory; no individual
 source of the prefill gap is isolated.
 
+The [larger-row screen](experiments/gemma-prefill-large/README.md) reduces
+native prefill time without qualifying a policy. Ordinary26 at 1,024 rows takes
+3.444 s versus 2.827 / 2.835 s reference; compound26 is slower and retains
+strict token differences. Dense31's 256-row norm-chain candidate takes
+12.580 s versus 12.623 / 12.477 s reference, within bookend movement, but
+three of 32 fixed-history argmax choices differ. Same-shape initialized state
+and two retained complete heads repeat exactly; representative quality,
+context, restore and optimized serving remain separate gates. The observed
+coarse ordinary26 memory footprint passes its paired bound, without claiming
+full profile memory qualification. Production caps and policies remain unchanged.
+
 ## Bounded native serving route
 
 The existing runtime driver registers both approved 26B-A4B and dense31 artifacts

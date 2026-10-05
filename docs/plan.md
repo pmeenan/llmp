@@ -285,6 +285,11 @@ family" guide, and its long-context scaling work.
         Paid 8K prefill takes 6.931 s versus the fastest screened reference
         at 2.612 / 2.605 s, while native fixed-prefix decode is faster.
         These failures keep model qualification open; no optional policy is selected.
+      - [x] [Larger-row Gemma prefill diagnosis](experiments/gemma-prefill-large/README.md),
+        with authenticated independent state/head repeats and matched reference
+        bookends. Dense31's 256-row prefill is within reference timing movement;
+        all screened policies retain strict token differences. Production caps,
+        selected optimizations and whole-model qualification remain unchanged.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or
