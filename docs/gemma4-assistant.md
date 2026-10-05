@@ -121,6 +121,12 @@ on 386 sources and changed-source format/diff passed. These controls cover both
 closed profiles, malformed and mutated descriptors and same-shaped semantic
 metadata changes. Raw logs stay external.
 
+The [original-image assistant oracle seam](experiments/gemma-assistant-reference/README.md)
+now captures frozen target inputs and full assistant heads/recurrent features
+at C1, serial C2 and genuine batch two. Its exact own repeats and unchanged
+physical target-state witnesses establish a reference seam; native assistant
+quality, performance and speculation qualification remain open.
+
 ## Execution work still owed
 
 The next graph/runner slice must keep or copy normalized target features for

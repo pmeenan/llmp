@@ -308,6 +308,10 @@ family" guide, and its long-context scaling work.
         shared-target contracts and native canonical-vocabulary comparison.
         Assistant execution, feature/cache lifetime and speculation qualification
         remain owed.
+      - [x] [Original-image Gemma26 assistant oracle seam](experiments/gemma-assistant-reference/README.md),
+        with full-head/recurrent-feature own repeats and unchanged physical
+        target caches at C1, serial C2 and genuine batch two. Native assistant
+        quality, performance and speculation qualification remain open.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

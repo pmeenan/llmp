@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "profile": "26B-A4B target + Q8_0 assistant",
+  "condition": "stock original image, unmasked nextn, ctx_other, original fusion/graphs, F16KV/FA, separate streams",
+  "target_prefill": "serial one chunk per owner, first64(+owner)canonical IDs/BOSonce",
+  "context_per_owner": 4096,
+  "physical_ubatch": 128,
+  "local_capacity": 1280,
+  "global_capacity": 4096,
+  "read_cells": 256,
+  "feature_width": 2816,
+  "full_vocabulary": 262144,
+  "arms": [
+    {
+      "arm": "C1",
+      "owners": 1,
+      "physical_draft_batch": 1,
+      "decode_calls_including_repeats": 8,
+      "complete_head_rows_including_repeats": 8,
+      "one_step_own_repeat_byte_exact": true,
+      "three_step_own_repeat_byte_exact": true,
+      "entire_borrowed_physical_cache_unchanged": true,
+      "opaque_target_sequence_state_unchanged": true,
+      "cell_positions_membership_unchanged": true,
+      "constant_query_position": true,
+      "receipt": {
+        "bytes": 9116,
+        "sha256": "856d622bf86696698de1eaa9811dcc5c8295ed0fc1e194ad620059ca37a5acc0"
+      },
+      "head3": {
+        "bytes": 3145728,
+        "sha256": "925c3161e6536be6d4415c7a38386034a61faedc55cb136175bc8b2b65c2a8c6"
+      },
+      "postprojection3": {
+        "bytes": 33792,
+        "sha256": "8d0fd91e41176c189b6a0e9ab085918a0d804576f841f8be5df267038f1eb2a2"
+      },
+      "official_acquisition_log": {
+        "bytes": 105316,
+        "sha256": "c21ec6f5535e7fa96ffab24a714cd169565a9a78d85cb223ee9fe6f8d874e2a0"
+      },
+      "official_retirement_freeze_log": {
+        "bytes": 879,
+        "sha256": "9e4a455da4ee7f91738eb30d43c8c32a84d2f5bc46d6fe0dee9e5d9574fd7527"
+      }
+    },
+    {
+      "arm": "serialC2",
+      "owners": 2,
+      "physical_draft_batch": 1,
+      "decode_calls_including_repeats": 16,
+      "complete_head_rows_including_repeats": 16,
+      "one_step_own_repeat_byte_exact": true,
+      "three_step_own_repeat_byte_exact": true,
+      "entire_borrowed_physical_cache_unchanged": true,
+      "opaque_target_sequence_state_unchanged": true,
+      "cell_positions_membership_unchanged": true,
+      "constant_query_position": true,
+      "receipt": {
+        "bytes": 11460,
+        "sha256": "06809f6f8e4d5357e41387ff53130937f15e0b0693e187dad27b6a6294d08f97"
+      },
+      "head3": {
+        "bytes": 6291456,
+        "sha256": "7b19bc5394fc876d99adcc4d7bb28bc3a07e99cf5e78668427f0d5e102de193d"
+      },
+      "postprojection3": {
+        "bytes": 67584,
+        "sha256": "0a211f4857526da87ba1c3e6b71b8ef9ef141dd0aa27adc0b1d3f30a2340112a"
+      },
+      "official_acquisition_log": {
+        "bytes": 105108,
+        "sha256": "5ac34e322c8e1ecb2d703f32a864a99f7f05c1e27a69485dcf81275b731f0549"
+      },
+      "official_retirement_freeze_log": {
+        "bytes": 869,
+        "sha256": "e8805ae3eecc879cd3d2124499a253588806669cd9db6d030de3176f25e54312"
+      }
+    },
+    {
+      "arm": "batch2",
+      "owners": 2,
+      "physical_draft_batch": 2,
+      "decode_calls_including_repeats": 8,
+      "complete_head_rows_including_repeats": 16,
+      "one_step_own_repeat_byte_exact": true,
+      "three_step_own_repeat_byte_exact": true,
+      "entire_borrowed_physical_cache_unchanged": true,
+      "opaque_target_sequence_state_unchanged": true,
+      "cell_positions_membership_unchanged": true,
+      "constant_query_position": true,
+      "receipt": {
+        "bytes": 11459,
+        "sha256": "a54ed0dde7a47466c2a0ec046de1b9cc6150fd65c0661d284ce045da4c5973b7"
+      },
+      "head3": {
+        "bytes": 6291456,
+        "sha256": "19ae7b2bd92f66f8e0b19bb6a0601de69bc0f1f346eadcc2cfe7f83f0bbe7acc"
+      },
+      "postprojection3": {
+        "bytes": 67584,
+        "sha256": "0554351fae0e4dc2054c49a52446ad7fbd47f9391dc8aa49bb4bf8da9a21be51"
+      },
+      "official_acquisition_log": {
+        "bytes": 105333,
+        "sha256": "dfc3b211201a88ccfdbc6ffd38ba9fb937db2771c1696a67050b4903f0705830"
+      },
+      "official_retirement_freeze_log": {
+        "bytes": 866,
+        "sha256": "147f68ea853753d434fbbe891dd98c2595f4a18c339b44f93bd2e033b56a54d2"
+      }
+    }
+  ],
+  "total_completed_head_rows_including_repeats": 40,
+  "total_decode_calls": 32,
+  "cross_engine_comparison": "not performed; stock recurrent inputs and outputs withheld until native endogenous freeze",
+  "claims": {
+    "original_symbol_graph_seam_available": true,
+    "quality_qualified": false,
+    "serving_or_speculation_implemented": false,
+    "performance_qualified": false,
+    "native_target_math_qualified": false
+  },
+  "preserved_failures": [
+    {
+      "job": "acquire1",
+      "rc": 1,
+      "reason": "client incorrectly treated public trunk count as total MTP block count",
+      "log": {
+        "bytes": 101390,
+        "sha256": "1e46e1ee76e5b58aa46f0d36d523b1266155ca8ce84ac2547be3ba20d538e8ab"
+      }
+    },
+    {
+      "job": "acquire2",
+      "rc": 1,
+      "reason": "client constructed shared-cell draft after target prefill; constructor resize resets occupancy",
+      "log": {
+        "bytes": 104601,
+        "sha256": "619c5171840e6f401d1b8ec43f2fea7e184169e236a6e7d0f06b94a495f47205"
+      }
+    }
+  ]
+}

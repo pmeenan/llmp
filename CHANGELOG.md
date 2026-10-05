@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Reproducible original-image Gemma26 assistant reference controls at C1,
+  serial C2 and batch two, with exact repeats and unchanged borrowed target
+  state. Native assistant quality and performance qualification remain open.
+
 - Dense31 joined norm screening with ordinary product selection and matched
   reference bookends. Quality and performance failures keep selection open.
 
