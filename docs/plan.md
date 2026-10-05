@@ -317,12 +317,17 @@ family" guide, and its long-context scaling work.
         with exact capture/replay controls, observed original fused/separate
         launches and matched component bookends. All complete activation/down
         values match; the fusion-gap lead is rejected for this layer-zero input.
-        Other inputs/layers, C1 model quality and production selection remain open.
+        Other inputs/layers, broader C1 quality and production selection remain open.
       - [x] [Gemma26 packed-attention transfer screen](experiments/gemma26-packed-attention-c4/README.md),
         with independently frozen full heads/states and fresh matched bookends.
         The candidate retains 68/128 positive-margin mismatches and costs 9.19%
         more latency. No production transfer is selected; quality and optimized
         batching remain open.
+      - [x] [Dense31 solo checked-norm first screen](experiments/gemma-dense31-c1-norm/README.md),
+        with frozen native full-head repeats and fresh matched original bookends.
+        All 32 complete heads match byte-for-byte; short decode latency is 1.92%
+        higher. No production policy is selected; 8K/depth, state, batching and
+        competitive performance qualification remain open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

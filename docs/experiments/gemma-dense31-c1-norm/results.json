@@ -1,0 +1,143 @@
+{
+  "candidate_own_raw_movement": 0,
+  "candidate_own_repeat_byte_exact": true,
+  "comparison": {
+    "candidate_bookend_byte_exact": true,
+    "comparisons": {
+      "candidate-first": {
+        "all_head_max_raw_delta": 0,
+        "byte_exact_rows": 32,
+        "margin_noise_basis": "candidate full-head repeat byte-exact",
+        "outside_frozen_zero_candidate_margin_noise": 0,
+        "selected_likelihood_rows": [
+          {
+            "native_nll": 1.1681328219122946,
+            "owner": 0,
+            "reference_nll": 1.1681328219122946,
+            "step": 0,
+            "target_position": 68,
+            "tv": 0.0
+          },
+          {
+            "native_nll": 10.750139213149652,
+            "owner": 0,
+            "reference_nll": 10.750139213149652,
+            "step": 7,
+            "target_position": 75,
+            "tv": 0.0
+          },
+          {
+            "native_nll": 6.282394735666514,
+            "owner": 0,
+            "reference_nll": 6.282394735666514,
+            "step": 15,
+            "target_position": 83,
+            "tv": 0.0
+          },
+          {
+            "native_nll": 12.425809715015435,
+            "owner": 0,
+            "reference_nll": 12.425809715015435,
+            "step": 30,
+            "target_position": 98,
+            "tv": 0.0
+          }
+        ],
+        "strict_argmax_differences": 0,
+        "strict_differences_at_reference_tie": 0
+      },
+      "ordinary-control": {
+        "all_head_max_raw_delta": 22.627453565597534,
+        "byte_exact_rows": 0,
+        "margin_noise_basis": "control own repeat not acquired",
+        "outside_frozen_zero_candidate_margin_noise": null,
+        "selected_likelihood_rows": [
+          {
+            "native_nll": 1.91644291389985,
+            "owner": 0,
+            "reference_nll": 1.1681328219122946,
+            "step": 0,
+            "target_position": 68,
+            "tv": 0.1792727692890843
+          },
+          {
+            "native_nll": 12.309038734062458,
+            "owner": 0,
+            "reference_nll": 10.750139213149652,
+            "step": 7,
+            "target_position": 75,
+            "tv": 0.7732526927532183
+          },
+          {
+            "native_nll": 7.6904686268139475,
+            "owner": 0,
+            "reference_nll": 6.282394735666514,
+            "step": 15,
+            "target_position": 83,
+            "tv": 0.6464627420826546
+          },
+          {
+            "native_nll": 10.517902576678793,
+            "owner": 0,
+            "reference_nll": 12.425809715015435,
+            "step": 30,
+            "target_position": 98,
+            "tv": 0.6996015091081654
+          }
+        ],
+        "strict_argmax_differences": 9,
+        "strict_differences_at_reference_tie": 0
+      }
+    },
+    "complete_rows": 32,
+    "control_own_noise_measured": false,
+    "corpus_ppl_claim": false,
+    "native_freeze_sha256": "1d89d3a2ca9fb71c173f07d60467d39ac3cb08e85b8a2f09b4ae4575c1835cc9",
+    "reference_repeat_byte_exact": true,
+    "reference_sha256": "3b0df1867a30e6135b586933660b4c67c11e714285d37b8ff387c7c3666633b5",
+    "source_identity": {
+      "bytes": 6476,
+      "sha256": "2c5c47a1eab16dea4655f0a5336dee60a3a5654ddbc1e3529600517c4bb44e70"
+    }
+  },
+  "corpus_ppl_claim": false,
+  "ordinary_control_own_noise_measured": false,
+  "paid": {
+    "candidate_latency_delta_percent": 1.920155728772377,
+    "complete_published_heads_per_arm": 32,
+    "gpu_groups_per_native_arm": 32,
+    "native_paid_captures": 0,
+    "native_paid_replays": 32,
+    "order": [
+      "reference-first",
+      "native-candidate",
+      "reference-repeat"
+    ],
+    "reference_bookend_span_percent": 0.06355597334642425,
+    "reference_mean_seconds": 3.0052250000000003,
+    "seconds": [
+      3.00427,
+      3.06293,
+      3.00618
+    ],
+    "timed_excludes": [
+      "model load",
+      "prefill",
+      "eight warm units",
+      "reset and three untimed anchors",
+      "finite scan",
+      "disk writes"
+    ],
+    "timed_includes": [
+      "decode",
+      "complete head copies",
+      "lower-index argmax scans",
+      "publication"
+    ],
+    "units_per_arm": 32
+  },
+  "policy_selected_for_production": false,
+  "schema": 1,
+  "scope": "dense31 scalar C1; 64-row prefill and 32 one-row decode heads",
+  "state_or_continuation_qualification": false
+}

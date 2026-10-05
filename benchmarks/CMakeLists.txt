@@ -456,3 +456,10 @@ if(JITLLM_CUDA)
   target_link_libraries(jitllm_gemma_assistant_wave_fixture PRIVATE jitllm_engine jitllm_json jitllm_warnings)
   target_link_options(jitllm_gemma_assistant_wave_fixture PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
 endif()
+
+if(JITLLM_CUDA)
+  # Closed dense31 scalar norm screen; manual only, never CTest.
+  add_executable(jitllm_gemma_dense31_c1_norm gemma_dense31_c1_norm.cc)
+  target_link_libraries(jitllm_gemma_dense31_c1_norm PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_dense31_c1_norm PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
+endif()

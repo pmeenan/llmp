@@ -271,6 +271,15 @@ other FFN inputs, select fusion or explain the whole C1 gap. The short component
 timing differences are within reference bookend movement. Standalone binders
 must preserve the checked readable-tail marker for these padded Q4_K rows.
 
+The [solo checked-norm screen](experiments/gemma-dense31-c1-norm/README.md)
+then matches all 32 dense31 full heads to both fresh C1/u128 original bookends
+byte-for-byte, using ordinary products and both checked norm chains. Ordinary
+control has nine strict differences, with its own noise unmeasured. Candidate
+latency is 1.9202% higher, so the short math result selects no production policy
+and supplies no broader state, context or performance qualification. The
+unchanged reference uses its C-API full sliding-window cache default; this
+short prefix never wraps. Other models need independent transfer controls.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

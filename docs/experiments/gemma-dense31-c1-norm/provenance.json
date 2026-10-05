@@ -1,0 +1,444 @@
+{
+  "checksum_sync_empty_dryrun": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "comparison": {
+    "bytes": 2943,
+    "sha256": "0edde196615f9bc43cb110aedf13b9168318f72bbbcf8780e3505d3433a16f71"
+  },
+  "measured_base": "0a1a0a6b4f5791573ae71358a55c17369fc5cbf8",
+  "measured_environment": {
+    "ancestry": {
+      "base": "0a1a0a6b4f5791573ae71358a55c17369fc5cbf8",
+      "dirty_paths": [
+        "benchmarks/CMakeLists.txt",
+        "benchmarks/gemma_dense31_c1_norm.cc",
+        "docs/experiments/gemma-dense31-c1-norm/PROTOCOL.md",
+        "docs/experiments/gemma-dense31-c1-norm/compare.py",
+        "docs/experiments/gemma-dense31-c1-norm/own_freeze.py",
+        "docs/experiments/gemma-dense31-c1-norm/reference.sh"
+      ],
+      "head": "0a1a0a6b4f5791573ae71358a55c17369fc5cbf8",
+      "source_files": {
+        "benchmarks/CMakeLists.txt": {
+          "bytes": 30043,
+          "sha256": "9f6d70096d06bc75193b20762c4df8692408e1dc70b6651e93abddc82094a24e"
+        },
+        "benchmarks/gemma_dense31_c1_norm.cc": {
+          "bytes": 10366,
+          "sha256": "a1251a14ce58f2404b8fa9b1fad6f3410b281ce01c01c22328919b94551a7afe"
+        },
+        "docs/experiments/gemma-dense31-c1-norm/PROTOCOL.md": {
+          "bytes": 5548,
+          "sha256": "5a81b895a665b4d8f63bdafe519a2a0a93eeb3cc1890e21b91759edeec09eeb0"
+        },
+        "docs/experiments/gemma-dense31-c1-norm/compare.py": {
+          "bytes": 4166,
+          "sha256": "8af28fa036524667c029aafa3d84caa5f03c114e9aaeaef9b609aa1a04591d7f"
+        },
+        "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
+          "bytes": 6448,
+          "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+        },
+        "docs/experiments/gemma-dense31-c1-norm/reference.sh": {
+          "bytes": 1505,
+          "sha256": "391dce0decfc5b8af70ae7d1f1d8522f6bbeb85a4bf793a2ca307977ed009cf2"
+        },
+        "docs/experiments/gemma-joined-serving/analyze.py": {
+          "bytes": 8876,
+          "sha256": "d9c4efae191cedc2797617264bfe3ddaf71dbe04c4c8132914c38367e2011ce1"
+        },
+        "docs/experiments/gemma-joined-serving/llama_joined.cc": {
+          "bytes": 7772,
+          "sha256": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e"
+        }
+      },
+      "tracked_production_diff": []
+    },
+    "base": "0a1a0a6b4f5791573ae71358a55c17369fc5cbf8",
+    "build_receipt": {
+      "bytes": 6751,
+      "sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d"
+    },
+    "headers": {
+      "ggml-alloc.h": {
+        "bytes": 3753,
+        "sha256": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23"
+      },
+      "ggml-backend.h": {
+        "bytes": 25374,
+        "sha256": "46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2"
+      },
+      "ggml-cpu.h": {
+        "bytes": 7753,
+        "sha256": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e"
+      },
+      "ggml-cuda.h": {
+        "bytes": 1565,
+        "sha256": "9cbfcea49f6da4d07f41dc22fa8dbf870825faaa2a68e34e65fe30ea6c41e042"
+      },
+      "ggml-opt.h": {
+        "bytes": 14040,
+        "sha256": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2"
+      },
+      "ggml.h": {
+        "bytes": 115658,
+        "sha256": "9ac7ee3d3a957e5f7b21b104d3e3dc50b1b106f808f9d6735ead950450bfeec6"
+      },
+      "gguf.h": {
+        "bytes": 11355,
+        "sha256": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4"
+      },
+      "llama.h": {
+        "bytes": 84829,
+        "sha256": "fedb52ea9291c9900e637ed6ffec339919dd27c3dadc2c8cf216c552e0488dda"
+      }
+    },
+    "index": {
+      "bytes": 774295,
+      "sha256": "9ae365a17ed73528262d7befdb505bf07e6695e03f0fa36f69e69099dbd5f34c"
+    },
+    "inputs": {
+      "bytes": 4096,
+      "sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610"
+    },
+    "libraries": {
+      "/app/libggml-base.so": "ed0a6a3f65472059789159569080d08e7f1dcc8bdd7a35d127efbd1b3f4e273e",
+      "/app/libggml-cuda.so": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e",
+      "/app/libggml.so": "f09875d0593d950f0b1f4f57803235cb06209f774c524c005fb192000d5d7418",
+      "/app/libllama.so": "36f5cb5b9361fd7ce4c9c38ad7276367a39e753a2f4764d9aca952b29c5aba55"
+    },
+    "library_witness": {
+      "bytes": 339,
+      "sha256": "48fb7d7148fd58227d671e07688d771a524246bd17d635616ba9dce54d0af93f"
+    },
+    "manifest": {
+      "bytes": 1601,
+      "sha256": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+    },
+    "native_binary": {
+      "bytes": 143567672,
+      "sha256": "c9925b16ddb41e91ccbc947ce9e145451a8ba3bb9a70f0fbeea19fb5309ef55b"
+    },
+    "original_binary": {
+      "bytes": 76792,
+      "sha256": "01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61"
+    },
+    "sources": {
+      "benchmarks/CMakeLists.txt": {
+        "bytes": 30043,
+        "sha256": "9f6d70096d06bc75193b20762c4df8692408e1dc70b6651e93abddc82094a24e"
+      },
+      "benchmarks/gemma_dense31_c1_norm.cc": {
+        "bytes": 10366,
+        "sha256": "a1251a14ce58f2404b8fa9b1fad6f3410b281ce01c01c22328919b94551a7afe"
+      },
+      "docs/experiments/gemma-dense31-c1-norm/PROTOCOL.md": {
+        "bytes": 5548,
+        "sha256": "5a81b895a665b4d8f63bdafe519a2a0a93eeb3cc1890e21b91759edeec09eeb0"
+      },
+      "docs/experiments/gemma-dense31-c1-norm/compare.py": {
+        "bytes": 4166,
+        "sha256": "8af28fa036524667c029aafa3d84caa5f03c114e9aaeaef9b609aa1a04591d7f"
+      },
+      "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
+        "bytes": 6448,
+        "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+      },
+      "docs/experiments/gemma-dense31-c1-norm/reference.sh": {
+        "bytes": 1505,
+        "sha256": "391dce0decfc5b8af70ae7d1f1d8522f6bbeb85a4bf793a2ca307977ed009cf2"
+      },
+      "docs/experiments/gemma-joined-serving/analyze.py": {
+        "bytes": 8876,
+        "sha256": "d9c4efae191cedc2797617264bfe3ddaf71dbe04c4c8132914c38367e2011ce1"
+      },
+      "docs/experiments/gemma-joined-serving/llama_joined.cc": {
+        "bytes": 7772,
+        "sha256": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e"
+      }
+    }
+  },
+  "measurement_environment": {
+    "basis": "official bookend job.json, hostname and pre-reference nvidia-smi query",
+    "driver": "580.178.04",
+    "gpu": "NVIDIA GB10",
+    "host": "spark-56f5",
+    "host_alias": "spark-b",
+    "native_cuda_toolkit": "13.4.92",
+    "native_cuda_toolkit_basis": "pinned toolchains/manifest.toml and authenticated native build receipt; no successful standalone version probe in this slice",
+    "native_sdk": "aarch64-c09daba6ac31edee",
+    "optional_metadata_probe": "metadata1 could not read /usr/local/cuda/version.json, failed rc1 before the native version step; not inference or a passing check",
+    "original_container_cuda": "13.3.0",
+    "original_container_cudart": "13.3.29-1",
+    "original_cuda_basis": "historical frozen original-image trace environment recorded in ../gemma-dense-ffn/provenance.json; same immutable image and exact libraries"
+  },
+  "native": {
+    "candidate_norm_add": 120,
+    "candidate_norm_rope": 120,
+    "capacity_is_peak_memory": false,
+    "context": 256,
+    "decode_rows": 1,
+    "max_rows": 128,
+    "ordinary_norm_add": 0,
+    "ordinary_norm_rope": 0,
+    "other_optional_policy_counts": 0,
+    "policy_counts_basis": "first fresh prefill/decode selected plans, not observed CUDA launches",
+    "prefill_rows": 64,
+    "publication_host_capacity_bytes": 35651584,
+    "row_invariant": false,
+    "slots": 1
+  },
+  "native_own_freeze": {
+    "bytes": 2636,
+    "sha256": "1d89d3a2ca9fb71c173f07d60467d39ac3cb08e85b8a2f09b4ae4575c1835cc9"
+  },
+  "no_production_changes": true,
+  "official_jobs": {
+    "m35-dense31-c1-norm-analysis1": {
+      "final": {
+        "end": 1791207120.353,
+        "rc": 0,
+        "state": "done",
+        "supervisor_pid": 100229
+      },
+      "records": {
+        "final.json": {
+          "bytes": 82,
+          "sha256": "72ba021efe13be088312287ac36fe7d7eb7a5213c651101ce32102be0b0bc1c5"
+        },
+        "job.json": {
+          "bytes": 502,
+          "sha256": "e65b06dd6a570f8824c111204128aba1d8d28a398df6fa0236816eea5e8b1a85"
+        },
+        "log": {
+          "bytes": 3837,
+          "sha256": "76cc89a05538bfc5cf957548d3d9fc2860a244db6f0bee9af9b56c8518c945de"
+        },
+        "steps.json": {
+          "bytes": 810,
+          "sha256": "57f16d5824a1b58faf1728498e91636353de6c28b4604f58ce854546181a18f7"
+        }
+      }
+    },
+    "m35-dense31-c1-norm-bookend1": {
+      "final": {
+        "end": 1791207068.194,
+        "rc": 0,
+        "state": "done",
+        "supervisor_pid": 99423
+      },
+      "records": {
+        "final.json": {
+          "bytes": 81,
+          "sha256": "d972c72852396d3e5590a6f3f4e3bcc4b2ceaa7010252f5deea607d192fd2d69"
+        },
+        "job.json": {
+          "bytes": 498,
+          "sha256": "2eb6a46c7e21c5d389251a00cd78c95811aae170773209fb3e66c3568edf8c4d"
+        },
+        "log": {
+          "bytes": 264014,
+          "sha256": "c9a4e9370f86176f3c7ea0e1ace0d837ab136ded74d7a6b202669719867aaacb"
+        },
+        "steps.json": {
+          "bytes": 1318,
+          "sha256": "80bd9061e5e0b19606a25eb75c776d9640a139c1b46654a8b183c5667c180a5a"
+        }
+      }
+    },
+    "m35-dense31-c1-norm-build1": {
+      "final": {
+        "end": 1791206584.011,
+        "rc": 0,
+        "state": "done",
+        "supervisor_pid": 96463
+      },
+      "records": {
+        "final.json": {
+          "bytes": 81,
+          "sha256": "0b899d665ae4875a536454b06bd3b9e68f09c1fcd96a0afd51171c74ab7f7f00"
+        },
+        "job.json": {
+          "bytes": 492,
+          "sha256": "7feddfc3af1823b391877a26159710779fa1394efe2115df68cfc067330bd444"
+        },
+        "log": {
+          "bytes": 2434,
+          "sha256": "39b6e03045e749670b0007248350e5553d260679bf640409ba9ef1ec332b9a97"
+        },
+        "steps.json": {
+          "bytes": 1109,
+          "sha256": "fb19d5cb4847b6be1bc6e9cd5d0d18c80e301815667bc2807b1ad7351f34416a"
+        }
+      }
+    },
+    "m35-dense31-c1-norm-freeze1": {
+      "final": {
+        "end": 1791206867.312,
+        "rc": 0,
+        "state": "done",
+        "supervisor_pid": 98407
+      },
+      "records": {
+        "final.json": {
+          "bytes": 81,
+          "sha256": "020777d026eaa56f528716018671133e9527658fe18e59e7487a0de238bd745d"
+        },
+        "job.json": {
+          "bytes": 495,
+          "sha256": "aa23fe349769bfe4009895a7f71eaabc99389898c5e0df25e678059c84b506c5"
+        },
+        "log": {
+          "bytes": 3222,
+          "sha256": "46a65d59403bbef7af910626d094041bcce9b81d747cf25249fa0256fa304c22"
+        },
+        "steps.json": {
+          "bytes": 430,
+          "sha256": "ecb6f2e60c965e937f0cc0c461cf487d798b42eb4b2cfc74ab6249428c054f41"
+        }
+      }
+    },
+    "m35-dense31-c1-norm-metadata1": {
+      "final": {
+        "end": 1791207260.016,
+        "rc": 1,
+        "reason": "--stop-on-fail after step 1; steps not done: 1, 2",
+        "state": "failed",
+        "supervisor_pid": 101076
+      },
+      "records": {
+        "final.json": {
+          "bytes": 148,
+          "sha256": "9ca8ab0f85c6ccd3c8678558d921157159761ae2f108f03b0fd3c030b64639dc"
+        },
+        "job.json": {
+          "bytes": 502,
+          "sha256": "460c343b458906b32d793c1db6050450f3ddc93595cf8f632894532146492e37"
+        },
+        "log": {
+          "bytes": 431,
+          "sha256": "0a9ca940062eec04156d0492881df06926fc7f1ac65e1ad8ab6598bb3f5614c7"
+        },
+        "steps.json": {
+          "bytes": 473,
+          "sha256": "23db6cb011011b432a0a05227727d150a554d6691f0e7370862b43ec224c141d"
+        }
+      }
+    },
+    "m35-dense31-c1-norm-native1": {
+      "final": {
+        "end": 1791206858.71,
+        "rc": 0,
+        "state": "done",
+        "supervisor_pid": 98035
+      },
+      "records": {
+        "final.json": {
+          "bytes": 80,
+          "sha256": "683505285c948b57086ef032ecc70638db15b8125b3975670df4db1a87ab93d2"
+        },
+        "job.json": {
+          "bytes": 494,
+          "sha256": "f3a301693bb655dc62a6559ac4e2fe8fe515ab508e1cc17ffe17f51ad306498f"
+        },
+        "log": {
+          "bytes": 8528,
+          "sha256": "e320351797ab47af40205c4096573d223cc50765a32ce024f0e45c5dc379a57a"
+        },
+        "steps.json": {
+          "bytes": 1452,
+          "sha256": "a80b6d871871bf80608e12ac3c19f884bccad485e155ce8daef2ec85a3b17071"
+        }
+      }
+    },
+    "m35-dense31-c1-norm-source1": {
+      "final": {
+        "end": 1791206660.703,
+        "rc": 0,
+        "state": "done",
+        "supervisor_pid": 97194
+      },
+      "records": {
+        "final.json": {
+          "bytes": 81,
+          "sha256": "634173034b7f5fb4cf00e7c76a0fef6ce5b00e4909ffef28e24e289acda7fcab"
+        },
+        "job.json": {
+          "bytes": 495,
+          "sha256": "6980479a16165672debee12c337c1bc59a5f5ec37e0806e8ccc16646d95723d6"
+        },
+        "log": {
+          "bytes": 6999,
+          "sha256": "cc3c107e3cb31869296090a43207af6cd2d2c924d6dc63cb91c765ea38f58356"
+        },
+        "steps.json": {
+          "bytes": 369,
+          "sha256": "2c20fce5a52482f4a31c49f91a9e5847c2d9a39a35d7e7ecf9d048cd25e469ad"
+        }
+      }
+    }
+  },
+  "own_created_utc": "2026-10-05T13:27:46.397709+00:00",
+  "production_source_manifest": {
+    "bytes": 62588,
+    "sha256": "bd5944921a4a0adf4733f3e93dd18b761a40f64145d675b1cca34c0440751b30"
+  },
+  "raw_arrays_and_telemetry_checked_in": false,
+  "raw_root_on_spark_b": "~/.local/share/jitllm/gemma-dense31-c1-norm",
+  "reference": {
+    "batch": 128,
+    "cache_setting_basis": "unchanged public C-API defaults at the pinned source; short prefix stays below the local window",
+    "context_per_sequence": 256,
+    "fusion": true,
+    "graphs": true,
+    "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "kv_type": "F16",
+    "kv_unified": false,
+    "model_bytes": 18822970304,
+    "model_revision": "c1ac76e99d5513b141e8adde7288b85c3f9c32ec",
+    "model_sha256": "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575",
+    "pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "sequence_max": 1,
+    "swa_full": true,
+    "ubatch": 128
+  },
+  "schema": 1,
+  "source_ancestry": {
+    "bytes": 1834,
+    "sha256": "70f713c89c30a58cfbf7352e2bb0402b8a9b5a391ad83403b6ca7f123541aeee"
+  },
+  "source_created_utc": "2026-10-05T13:24:20.585623+00:00",
+  "source_freeze": {
+    "bytes": 6476,
+    "sha256": "2c5c47a1eab16dea4655f0a5336dee60a3a5654ddbc1e3529600517c4bb44e70"
+  },
+  "sync_command": "rsync -rlpc --delete --exclude=.git --exclude=/build; no timestamp preservation",
+  "tensorfold": {
+    "entry_utc": "2026-10-05T13:11:15Z",
+    "files": {
+      "README.md": {
+        "bytes": 22767,
+        "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+      },
+      "docs/recipes/gemma-4.md": {
+        "bytes": 10845,
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      },
+      "pyproject.toml": {
+        "bytes": 3178,
+        "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+      },
+      "src/tensorfold/__init__.py": {
+        "bytes": 137,
+        "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+      }
+    },
+    "gemma_recipe_scope": "26B-A4B MLX only; no dense31 CUDA comparator",
+    "primary_files_fetched_utc": "2026-10-05T13:11:38.549072+00:00",
+    "primary_repo": "https://github.com/ashhart/TensorFold",
+    "resolved_head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "version": "0.6.5"
+  }
+}

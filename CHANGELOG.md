@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Dense31 solo norm screening with all 32 complete heads byte-exact to fresh
+  llama.cpp. Short decode latency is 1.92% higher; production selection and
+  broader quality and performance qualification remain open.
+
 - Gemma26 packed-attention transfer controls with exact native head/state repeats
   and matched reference comparisons. Quality fails and latency rises 9.19%;
   the candidate remains unselected.
