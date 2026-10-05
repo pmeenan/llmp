@@ -23,6 +23,7 @@ namespace en = jitllm::engine;
 class Gemma4RunnerGpu : public ::testing::Test {
  protected:
   virtual bool Invariant() const { return false; }
+  virtual bool RetainFeatures() const { return false; }
   virtual bool NormChains() const { return false; }
   virtual bool MoeChains() const { return false; }
   virtual en::Gemma4Variant Variant() const { return en::Gemma4Variant::k26BA4B; }
@@ -40,6 +41,7 @@ class Gemma4RunnerGpu : public ::testing::Test {
                           .out = "/tmp/jitllm-gemma4-runner-control",
                           .variant = Variant(),
                           .slots = 4,
+                          .retain_features = RetainFeatures(),
                           .shared_q8 = Invariant(),
                           .fuse_norms = Invariant(),
                           .row_invariant = Invariant(),
@@ -697,4 +699,113 @@ TEST_F(Gemma4RunnerGpu, MaximumAllHeadRowsReplayWithSeparatelyFundedCallerVector
     Exact(expected, repeated);
   }
   EXPECT_GT(runner->graph_stats().replayed, 0U);
+}
+
+class Gemma4FeatureGpu : public Gemma4RunnerGpu {
+ protected:
+  bool RetainFeatures() const override { return true; }
+};
+TEST_F(Gemma4FeatureGpu, FrozenFeatureSurvivesPeerProgressPlansAndRejectsSameSlotMutation) {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
+  const auto feature_bytes = std::uint64_t{2} * runner->profile().width * sizeof(float);
+  const auto host_bytes =
+      std::uint64_t{3} * runner->profile().vocab * sizeof(float) + feature_bytes * 2;
+  ASSERT_TRUE(node.ChargeHost(host_bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, host_bytes};
+  std::vector<jitllm::catalog::ExtentId> staging;
+  auto saved = node.Pinned(feature_bytes, 0, staging);
+  ASSERT_TRUE(saved);
+  auto status = Held([&]() -> en::Status {
+    EXPECT_FALSE(runner->BorrowFrozen(0, 2));
+    std::vector<float> head, peer, sentinel{123};
+    const en::Gemma4Runner::Work first{0, 0, std::span(prompt).first(2), &head};
+    if (auto r = runner->Wave(std::span(&first, 1), false, true); !r) return r;
+    EXPECT_EQ(head.size(), 262144U);
+    if (auto r = runner->CopyFeatures(0, 0, 2, *saved); !r) return r;
+    const auto* values = static_cast<const float*>(*saved);
+    std::vector<float> expected(values, values + feature_bytes / sizeof(float));
+    EXPECT_TRUE(std::ranges::all_of(expected, [](float v) { return std::isfinite(v); }));
+    auto borrowed = runner->BorrowFrozen(0, 818);
+    if (!borrowed) return en::support::Error(borrowed.error());
+    EXPECT_EQ(borrowed->prefix(), 2U);
+    EXPECT_FALSE(runner->BorrowFrozen(0, 818));
+    EXPECT_FALSE(runner->BorrowFrozen(1, -1));
+    EXPECT_FALSE(runner->Clear(0));
+    EXPECT_FALSE(runner->ClearIdle(0));
+    EXPECT_FALSE(runner->Spill(0));
+    EXPECT_FALSE(runner->ReserveStateThrough(0, 3));
+    EXPECT_FALSE(runner->SelectSlots(std::array<std::uint32_t, 1>{1}));
+    const en::Gemma4Runner::Work forbidden{0, 2, std::span(prompt).first(1), &sentinel};
+    EXPECT_FALSE(runner->Wave(std::span(&forbidden, 1)));
+    EXPECT_EQ(sentinel, (std::vector<float>{123}));
+    if (auto r = Single(1, 0, std::span(prompt).first(2), peer); !r) return r;
+    if (auto r = runner->CheckBorrow(*borrowed); !r) return r;
+    runner->DropPlans();
+    if (auto r = runner->CopyFeatures(0, 0, 2, *saved); !r) return r;
+    EXPECT_EQ(std::memcmp(saved.value(), expected.data(), feature_bytes), 0);
+    if (auto r = runner->CheckBorrow(*borrowed); !r) return r;
+    // Release only the scoped guard; completed target bytes remain intact.
+    *borrowed = en::Gemma4Runner::FrozenBorrow{};
+    auto again = runner->BorrowFrozen(0, 818);
+    if (!again) return en::support::Error(again.error());
+    *again = en::Gemma4Runner::FrozenBorrow{};
+    if (auto r = runner->Spill(0); !r) return r;
+    if (auto r = runner->Restore(0); !r) return r;
+    EXPECT_FALSE(runner->BorrowFrozen(0, 818));  // no feature serialized with KV
+    if (auto r = Single(0, 2, std::span(prompt).subspan(2, 1), head); !r) return r;
+    auto restored = runner->BorrowFrozen(0, 818);
+    if (!restored) return en::support::Error(restored.error());
+    EXPECT_EQ(restored->prefix(), 3U);
+    *restored = en::Gemma4Runner::FrozenBorrow{};
+    const auto footprint = (*runner->request_slot(0))->state().used_ranges();
+    if (auto r = runner->PrepareRestore(0, 3, footprint, runner->CheckpointLayoutId()); !r)
+      return r;
+    EXPECT_FALSE(runner->BorrowFrozen(0, 818));  // before any restoring copy
+    EXPECT_FALSE(runner->CopyFeatures(0, 2, 1, *saved));
+    if (auto r = runner->Clear(0); !r) return r;
+    EXPECT_FALSE(runner->BorrowFrozen(0, 818));
+    EXPECT_EQ((*runner->request_slot(1))->completed_positions(), 2U);
+    return {};
+  });
+  ASSERT_TRUE(status) << (status ? "" : status.error());
+  ASSERT_TRUE(node.FreePinned(*saved));
+}
+
+TEST_F(Gemma4FeatureGpu, FailedFeatureCopyRetainsItsNodeOwnedPinnedDestination) {
+  constexpr auto host_bytes = std::uint64_t{2} << 20U;
+  ASSERT_TRUE(node.ChargeHost(host_bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    ~Grant() { node.UnchargeHost(host_bytes); }
+  } grant{node};
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 1>{0}));
+  std::vector<float> head;
+  ASSERT_TRUE(Single(0, 0, prompt, head));
+  std::vector<jitllm::catalog::ExtentId> staging;
+  auto pinned = node.Pinned(2816 * sizeof(float), 0, staging);
+  ASSERT_TRUE(pinned);
+  std::memset(*pinned, 0x5a, 2816 * sizeof(float));
+  ASSERT_TRUE(node.Evict(runner->weights()));
+  auto free = node.FreeBytes();
+  ASSERT_TRUE(free);
+  ASSERT_GT(*free, 16U << 20U);
+  const auto pressure = *free - (16U << 20U);
+  ASSERT_TRUE(node.ChargeHost(pressure, false));
+  const auto kept = node.kept_pinned();
+  auto copied = runner->CopyFeatures(0, 5, 1, *pinned);
+  node.UnchargeHost(pressure);
+  EXPECT_FALSE(copied);
+  EXPECT_EQ(node.kept_pinned(), kept + 1);
+  EXPECT_FALSE(node.FreePinned(*pinned));
+  EXPECT_TRUE(
+      std::ranges::all_of(std::span(static_cast<const std::byte*>(*pinned), 2816 * sizeof(float)),
+                          [](std::byte b) { return b == std::byte{0x5a}; }));
+  auto slot = runner->request_slot(0);
+  ASSERT_TRUE(slot);
+  EXPECT_TRUE((*slot)->state_usable());
+  EXPECT_EQ((*slot)->completed_positions(), 6U);
 }

@@ -182,6 +182,13 @@ bounded scalar serving adapter, with no qualified model support yet; its
 transfer checklist records the whole-model, optimized-batching and reference
 qualification required by the next slices.
 
+Gemma's [assistant component](gemma4-assistant.md#native-component-and-protected-target-operands)
+adds explicit post-finalnorm feature retention and scoped readonly cache
+borrows to that skeleton. It shares the target launch/cohort and uses separate
+funded recurrent storage, plans and staging. It has no serving speculation or
+accept/reject verifier; bounded C1 arithmetic and independent-slot controls do
+not qualify full model support.
+
 What a new family writes, and nothing else:
 
 - `model/<family>.h`: its profile, the binding to an artifact, its state

@@ -1,13 +1,14 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Gemma 4 assistant binding foundation
+# Gemma 4 assistant contracts and native component
 
 `model/gemma4_assistant.{h,cc}` defines closed profiles and checked semantic
 bindings for the approved Q8_0 assistants paired with Gemma 4 26B-A4B and 31B.
-This foundation does not execute assistants, enable speculation, or qualify
-target or assistant model support. The target's existing numerical and
-performance failures remain unchanged.
+The native graph/component now executes bounded Q-only chains over protected
+target operands. It does not enable serving speculation or qualify target or
+assistant model support. The target's existing numerical and performance
+failures remain unchanged.
 
 The contracts follow the [pinned llama.cpp assistant loader and graph](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/src/models/gemma4-assistant.cpp),
 its [shared-cache mapping](https://github.com/ggml-org/llama.cpp/blob/b29c606e28a01b1bc8c1351026a0fa6e616bf6c4/src/llama-model.cpp),
@@ -112,7 +113,7 @@ was `609ca419abecebdc5a059498a613680bd3aa847f`, version 0.6.5. Its pinned
 [Gemma recipe](https://github.com/ashhart/TensorFold/blob/609ca419abecebdc5a059498a613680bd3aa847f/docs/recipes/gemma-4.md)
 remained MLX-only for 26B, without a CUDA Q8_0 assistant comparison. A future
 execution task must refresh that observation and qualify its matched reference;
-this foundation ran no assistant inference or quality/speed comparison.
+the binding task ran no assistant inference or quality/speed comparison.
 
 All six CPU fixture controls and four actual paired metadata/vocabulary/artifact
 checks passed. The final integrated Spark-b locked build passed; all 1,678 tests
@@ -127,12 +128,62 @@ at C1, serial C2 and genuine batch two. Its exact own repeats and unchanged
 physical target-state witnesses establish a reference seam; native assistant
 quality, performance and speculation qualification remain open.
 
+## Native component and protected target operands
+
+`kernels/ggml/gemma4_assistant_graph` and `engine/gemma4_assistant_plan` build
+and bind one Q-only query per independent slot. All four blocks reuse the same
+slot's local/global K/V, including raw target K-as-V semantics. Query position
+P, initialized endpoint P and ring retention are separate checked values:
+attention sees positions through P−1, while each recurrent assistant query
+stays at P. Funded host masks exclude the unwritten current cell and all padded
+query columns. This is a bounded diagnostic mask path; a checked device producer
+is still needed for optimized execution.
+
+The target-owned `Gemma4Assistant` shares the target stream, request cohort,
+catalog and library handle, using its own PagedWeights, PlanCache, GraphRuns,
+staging and recurrent feature storage. `SetupAssistant` requires authenticated,
+caller-funded paired vocabulary views and runs compatibility admission itself.
+Views need remain alive through synchronous admission; the caller authenticates
+them to the exact loaded immutable artifact identities. Successful admission
+retains the artifact/profile pairing, not borrowed parser containers. Failed
+setup cannot register, bind or step and remains retained for fenced release.
+
+`retain_features` is an explicit target setup policy, false by default. It
+retains requested POST-finalnorm rows through a separate paid feature gather,
+with independent feature IDs even when head outputs are narrower. It disables
+final-layer narrowing for that immutable policy; its feature shape participates
+in plan identity and maximum envelopes. Default target graphs remain unchanged.
+This enabled-feature target policy requires its own arithmetic evidence rather
+than inheriting the old narrowed-head target proof.
+
+A move-only `FrozenBorrow` requires a completed nonzero prefix, initialized
+latest feature P−1, usable nonrestoring state and an existing held request.
+It authenticates logical epoch/address and catalog extent content/backing
+generations. Feature backing is pinned for the runner lifetime. Same-slot
+writes, clear, spill, replacement/restore and release refuse during the borrow;
+other owners can progress. The trusted caller retains the request through all
+component work. Guard release is not GPU retirement. Feature validity is
+invalidated by state replacement/spill/restore and is not serialized as a
+checkpoint; a new completed target row is required before borrowing again.
+
+Initial features remain unchanged. Later recurrence writes component-owned
+storage; complete finite heads/features publish only after successful retirement
+and whole-batch validation. Uncertain completion retains execution owners and
+faults the shared cohort. External feature copies require caller-funded,
+node-owned pinned destinations; failed copies conservatively retain that destination to process exit. The component neither samples nor verifies proposals and never
+writes target caches.
+
+The [bounded execution report](experiments/gemma-assistant-execution/README.md)
+records complete original-image C1 head/projection byte identity at one frozen
+P64 input and native-target C1/C2 own repeats with unequal histories and direct
+cache/feature witnesses. This is component evidence, not optimized C2 or
+end-to-end target/assistant quality or competitive performance qualification.
+
 ## Execution work still owed
 
-The next graph/runner slice must keep or copy normalized target features for
-every potentially accepted verify row, including narrowed final heads; borrow
-only the same slot's initialized cache with residency/generation protections;
-and fund assistant weights, scratch, features and proposals separately.
+The component supplies explicit retained-feature rows, same-slot initialized
+cache borrows and separate funding. Future verification must retain every
+potentially accepted feature row through the actual target verifier policy.
 Target verification must restore rejected overwritten local-ring bytes and
 visibility before continuation. Constant position, seed/feature alignment,
 wrap/rejection/acceptance, cancellation, switch/restart and independent joined

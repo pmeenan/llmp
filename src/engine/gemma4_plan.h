@@ -50,16 +50,16 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
 // checked before allocation, not an internally obtained memory reservation.
 struct Gemma4HostInputs {
   std::vector<std::int32_t> out_ids;
+  std::vector<std::int32_t> feature_ids;
   std::vector<std::vector<std::uint16_t>> masks;
   std::vector<std::pair<ggml_tensor*, const void*>> sources;
 };
 std::expected<std::uint64_t, std::string> Gemma4SourceBytes(
     const kernels::ggml::Gemma4Graph& graph);
-std::expected<Gemma4HostInputs, std::string> Gemma4Sources(const kernels::ggml::Gemma4Graph& graph,
-                                                           const model::Gemma4ChunkInputs& chunk,
-                                                           std::span<const std::int32_t> frontier,
-                                                           std::span<const float> hidden,
-                                                           std::uint64_t funded_bytes);
+std::expected<Gemma4HostInputs, std::string> Gemma4Sources(
+    const kernels::ggml::Gemma4Graph& graph, const model::Gemma4ChunkInputs& chunk,
+    std::span<const std::int32_t> frontier, std::span<const float> hidden,
+    std::uint64_t funded_bytes, std::span<const std::int32_t> feature_ids = {});
 
 }  // namespace jitllm::engine
 #endif  // JITLLM_ENGINE_GEMMA4_PLAN_H_

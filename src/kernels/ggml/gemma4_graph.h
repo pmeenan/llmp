@@ -34,6 +34,9 @@ struct Gemma4SegmentShape {
 struct Gemma4ChunkShape {
   std::vector<Gemma4SegmentShape> segments;
   std::uint32_t outputs = 0;
+  // Optional POST-final-norm rows, independently selected from the head.
+  // Zero preserves the existing graph. Retention disables final-layer narrowing.
+  std::uint32_t feature_outputs = 0;
   bool operator==(const Gemma4ChunkShape&) const = default;
 };
 struct Gemma4GraphOptions {
@@ -86,6 +89,8 @@ struct Gemma4Graph {
   ggml_tensor* input_hidden = nullptr;
   ggml_tensor* positions = nullptr;
   ggml_tensor* out_ids = nullptr;
+  ggml_tensor* feature_ids = nullptr;
+  ggml_tensor* normalized_features = nullptr;
   ggml_tensor* hidden = nullptr;
   ggml_tensor* logits = nullptr;
   std::vector<Gemma4WeightLeaf> weights;

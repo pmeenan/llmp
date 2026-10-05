@@ -78,6 +78,12 @@ std::expected<void, KernelFailure> Check(const md::Gemma4Profile& p, const md::G
   if ((o.head && (shape.outputs == 0 || shape.outputs > rows)) || (!o.head && shape.outputs != 0)) {
     return Rejected("invalid Gemma4 frontier output count");
   }
+  if (shape.feature_outputs > rows ||
+      (shape.feature_outputs != 0 &&
+       (!o.head || o.narrow_final ||
+        o.first_layer + (o.layer_count == 0 ? p.layers - o.first_layer : o.layer_count) !=
+            p.layers)))
+    return Rejected("Gemma4 normalized features need complete unnarrowed final rows");
   for (const auto& l : b.layers) {
     for (const auto* t : {&l.gate_up_exps, &l.gate_exps, &l.up_exps, &l.down_exps}) {
       if (!t->has_value()) continue;
@@ -148,8 +154,11 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     g.tokens = ggml_new_tensor_1d(c, GGML_TYPE_I32, rows);
   g.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, rows);
   if (o.head) g.out_ids = ggml_new_tensor_1d(c, GGML_TYPE_I32, shape.outputs);
+  if (shape.feature_outputs != 0)
+    g.feature_ids = ggml_new_tensor_1d(c, GGML_TYPE_I32, shape.feature_outputs);
   g.inputs = {o.hidden_input ? g.input_hidden : g.tokens, g.positions};
   if (g.out_ids != nullptr) g.inputs.push_back(g.out_ids);
+  if (g.feature_ids != nullptr) g.inputs.push_back(g.feature_ids);
   std::uint32_t first = 0;
   for (const auto& s : shape.segments) {
     Gemma4SegmentTensors seg;
@@ -395,6 +404,11 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
   g.hidden = input;
   if (o.head) {
     auto* normalized = named("output_normalized", Norm(c, p, input, weight(b.output_norm)));
+    if (g.feature_ids != nullptr) {
+      g.normalized_features =
+          named("normalized_features", ggml_get_rows(c, normalized, g.feature_ids));
+      expanded.push_back(g.normalized_features);
+    }
     if (!o.narrow_final) normalized = ggml_get_rows(c, normalized, g.out_ids);
     auto* logits = mm(weight(b.output), normalized);
     logits = ggml_scale(c, logits, 1.0f / p.final_softcap);

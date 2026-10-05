@@ -229,6 +229,11 @@ unfused path that exists:
   the funded host-reference-mask graph remains the primitive alternative for
   a backend without it. Descriptor planning/validation is CPU-buildable and
   the engine/provider interfaces contain no CUDA types.
+- **Gemma Q8 assistant:** ordinary quantized `mul_mat` and target embedding
+  `get_rows`, concat, RMS norm/learned mul, GeGLU-tanh, factor-aware NEOX RoPE,
+  per-slot D256/D512 masked attention and full canonical head/post-projection.
+  It has no `set_rows` cache update. Host frozen-prefix masks remain its funded
+  primitive alternative; engine/provider interfaces carry no CUDA types.
 - **EXL3:** the FP16 set without `soft_max`, plus F16 and F32
   conversion, attention at D 64, the EXL3 dequant and GEMM, and a half
   bias add.

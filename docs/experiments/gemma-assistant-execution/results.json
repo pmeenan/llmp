@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "native_own_receipt": {
+    "bytes": 7952,
+    "sha256": "fd742b1662a3ea71a04076c7acbe586cefaefe0f1670624cca4cb2af7be79d60"
+  },
+  "posthoc_manifest": {
+    "bytes": 1247,
+    "sha256": "8be990edd96ad56e4fbf5a8d480830896750cac454cbf0ad402222e043005375"
+  },
+  "binary": {
+    "bytes": 144874752,
+    "sha256": "be9ec4b750ff560423660e6b4289544e2f2425daf026eae3f4e0aff30a233b0c"
+  },
+  "constant_P": 64,
+  "owners": 1,
+  "steps": 3,
+  "endogenous_and_posthoc_complete_byte_exact_to_original": true,
+  "argmax_mismatches": 0,
+  "max_raw_head_delta": 0,
+  "max_raw_projection_delta": 0,
+  "distribution_delta": 0,
+  "own_repeat_movement": 0,
+  "cache_unchanged_sha256": "ae4cd1ef1872b506f75df1d0f5f9f542bae58b08aaff863914368bad05c8fc35",
+  "official_posthoc_retirement": {
+    "log": {
+      "bytes": 2914,
+      "sha256": "d144a5c6f5caa25aed87f2a9ec5f2d3e33e80e774b54ef6c501b012c94a964df"
+    },
+    "final.json": {
+      "bytes": 83,
+      "sha256": "5bee7d5a50b7ca11b6607e793677e83c568d3b19205dfd82e2a39dd938c9147b"
+    },
+    "steps.json": {
+      "bytes": 530,
+      "sha256": "8fe743a1dc123a0c5d4c1999a8efadeb143d2816f3378868ca99318c027e9ef8"
+    }
+  },
+  "limits": "One frozen C1 original-input fixture only; no native-target chain/reference comparison, optimized C2, performance, serving or speculation qualification.",
+  "complete_original_three_heads_sha256": "925c3161e6536be6d4415c7a38386034a61faedc55cb136175bc8b2b65c2a8c6",
+  "complete_original_three_projections_sha256": "8d0fd91e41176c189b6a0e9ab085918a0d804576f841f8be5df267038f1eb2a2",
+  "native_target_component": {
+    "owners": [
+      1,
+      2
+    ],
+    "distinct_completed_prefixes": [
+      6,
+      5
+    ],
+    "three_step_repeat_byte_exact": true,
+    "initialized_cache_and_retained_target_features_unchanged": true,
+    "original_model_comparison": false
+  },
+  "performance_qualified": false,
+  "serving_or_verify_implemented": false
+}

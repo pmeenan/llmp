@@ -136,6 +136,7 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
   if (auto bound = BindGemma4Weights(m, g); !bound) return std::unexpected(bound.error());
   std::vector<ggml_tensor*> kept;
   if (g.logits != nullptr) kept.push_back(g.logits);
+  if (g.normalized_features != nullptr) kept.push_back(g.normalized_features);
   kept.push_back(g.hidden);
   for (const auto& name : keep) {
     auto* t = g.Named(name);
@@ -157,8 +158,37 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
 }
 
 std::expected<std::uint64_t, std::string> Gemma4SourceBytes(const kg::Gemma4Graph& g) {
+  if ((g.shape.feature_outputs == 0) != (g.feature_ids == nullptr) ||
+      (g.shape.feature_outputs == 0) != (g.normalized_features == nullptr))
+    return Error("Gemma4 normalized feature source/output differs from shape");
+  if (g.shape.feature_outputs != 0) {
+    const auto* t = g.feature_ids;
+    const auto* feature = g.normalized_features;
+    const auto* normalized = g.Named("output_normalized");
+    const auto packed = [](const ggml_tensor* tensor, std::uint64_t width, std::uint64_t rows) {
+      return tensor != nullptr && tensor->type == GGML_TYPE_F32 && tensor->view_src == nullptr &&
+             tensor->ne[0] == static_cast<std::int64_t>(width) &&
+             tensor->ne[1] == static_cast<std::int64_t>(rows) && tensor->ne[2] == 1 &&
+             tensor->ne[3] == 1 && tensor->nb[0] == sizeof(float) &&
+             tensor->nb[1] == width * sizeof(float) && tensor->nb[2] == rows * tensor->nb[1] &&
+             tensor->nb[3] == tensor->nb[2];
+    };
+    if (g.positions == nullptr || g.shape.feature_outputs > g.positions->ne[0] ||
+        t->type != GGML_TYPE_I32 || t->op != GGML_OP_NONE || t->view_src != nullptr ||
+        t->ne[0] != g.shape.feature_outputs || t->ne[1] != 1 || t->ne[2] != 1 || t->ne[3] != 1 ||
+        t->nb[0] != 4 || t->nb[1] != std::uint64_t{g.shape.feature_outputs} * 4 ||
+        t->nb[2] != t->nb[1] || t->nb[3] != t->nb[2] || std::ranges::count(g.inputs, t) != 1 ||
+        g.normalized_features->type != GGML_TYPE_F32 ||
+        g.normalized_features->op != GGML_OP_GET_ROWS ||
+        g.normalized_features->src[0] != g.Named("output_normalized") ||
+        g.normalized_features->src[1] != t || g.normalized_features->ne[0] != g.profile.width ||
+        g.normalized_features->ne[1] != g.shape.feature_outputs ||
+        !packed(feature, g.profile.width, g.shape.feature_outputs) ||
+        !packed(normalized, g.profile.width, static_cast<std::uint64_t>(g.positions->ne[0])))
+      return Error("Gemma4 normalized feature source/output descriptor is malformed");
+  }
   std::uint64_t bytes =
-      std::uint64_t{g.shape.outputs} * sizeof(std::int32_t) +
+      (std::uint64_t{g.shape.outputs} + g.shape.feature_outputs) * sizeof(std::int32_t) +
       g.inputs.size() * sizeof(std::pair<ggml_tensor*, const void*>) +
       (g.options.device_masks ? 0 : g.segments.size() * 2 * sizeof(std::vector<std::uint16_t>));
   for (const auto& seg : g.segments) {
@@ -193,16 +223,16 @@ std::expected<std::uint64_t, std::string> Gemma4SourceBytes(const kg::Gemma4Grap
   return bytes;
 }
 
-std::expected<Gemma4HostInputs, std::string> Gemma4Sources(const kg::Gemma4Graph& g,
-                                                           const model::Gemma4ChunkInputs& in,
-                                                           std::span<const std::int32_t> frontier,
-                                                           std::span<const float> hidden,
-                                                           std::uint64_t funded_bytes) {
+std::expected<Gemma4HostInputs, std::string> Gemma4Sources(
+    const kg::Gemma4Graph& g, const model::Gemma4ChunkInputs& in,
+    std::span<const std::int32_t> frontier, std::span<const float> hidden,
+    std::uint64_t funded_bytes, std::span<const std::int32_t> feature_ids) {
   auto bytes = Gemma4SourceBytes(g);
   if (!bytes || *bytes > funded_bytes) return Error("Gemma4 host sources are not funded");
   const auto rows = static_cast<std::size_t>(g.positions->ne[0]);
   if (in.tokens.size() != rows || in.positions.size() != rows ||
       in.segments.size() != g.segments.size() || frontier.size() != g.shape.outputs ||
+      feature_ids.size() != g.shape.feature_outputs ||
       (g.input_hidden == nullptr
            ? !hidden.empty()
            : hidden.size() != rows * static_cast<std::size_t>(g.input_hidden->ne[0]))) {
@@ -212,6 +242,9 @@ std::expected<Gemma4HostInputs, std::string> Gemma4Sources(const kg::Gemma4Graph
     if (id < 0 || std::cmp_greater_equal(id, rows))
       return Error("Gemma4 frontier ID exceeds chunk");
   }
+  for (const auto id : feature_ids)
+    if (id < 0 || std::cmp_greater_equal(id, rows))
+      return Error("Gemma4 normalized feature ID exceeds chunk");
   for (std::size_t i = 0; i < g.segments.size(); ++i) {
     const auto& seg = g.segments[i];
     const auto& s = seg.shape;
@@ -260,6 +293,7 @@ std::expected<Gemma4HostInputs, std::string> Gemma4Sources(const kg::Gemma4Graph
   }
   Gemma4HostInputs out;
   out.out_ids.assign(frontier.begin(), frontier.end());
+  out.feature_ids.assign(feature_ids.begin(), feature_ids.end());
   if (!g.options.device_masks) out.masks.reserve(g.segments.size() * 2);
   out.sources.reserve(g.inputs.size());
   out.sources.emplace_back(g.input_hidden != nullptr ? g.input_hidden : g.tokens,
@@ -267,6 +301,7 @@ std::expected<Gemma4HostInputs, std::string> Gemma4Sources(const kg::Gemma4Graph
                                                      : static_cast<const void*>(in.tokens.data()));
   out.sources.emplace_back(g.positions, in.positions.data());
   if (g.out_ids != nullptr) out.sources.emplace_back(g.out_ids, out.out_ids.data());
+  if (g.feature_ids != nullptr) out.sources.emplace_back(g.feature_ids, out.feature_ids.data());
   for (std::size_t i = 0; i < g.segments.size(); ++i) {
     const auto& seg = g.segments[i];
     const auto& host = in.segments[i];
@@ -280,9 +315,9 @@ std::expected<Gemma4HostInputs, std::string> Gemma4Sources(const kg::Gemma4Graph
       out.sources.emplace_back(mask, padded.data());
     }
   }
-  std::uint64_t actual = out.out_ids.capacity() * sizeof(std::int32_t) +
-                         out.sources.capacity() * sizeof(out.sources[0]) +
-                         out.masks.capacity() * sizeof(out.masks[0]);
+  std::uint64_t actual =
+      (out.out_ids.capacity() + out.feature_ids.capacity()) * sizeof(std::int32_t) +
+      out.sources.capacity() * sizeof(out.sources[0]) + out.masks.capacity() * sizeof(out.masks[0]);
   for (const auto& mask : out.masks) actual += mask.capacity() * sizeof(std::uint16_t);
   if (actual > funded_bytes) return Error("Gemma4 reference-input allocation exceeds its grant");
   return out;

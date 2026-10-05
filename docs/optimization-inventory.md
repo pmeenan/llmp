@@ -140,6 +140,19 @@ they have no text-model equivalent.
 | Match a draft head's input rounding | Qwen's bounded retained-input diagnostic and external replay; serving remains F32 input | Learned draft heads with a proved rounding difference | On 12 real inputs per head, BF16 RN/widen plus the original vector product changed no choices and added 2–3 µs; the charged BF16 library product was about 40% slower. Neither arm was integrated or tested for full-model acceptance. Selected IDs/depth remain separate factors. [Draft-input experiment](experiments/qwen38-draft-input/README.md) |
 | Portable text seeds and local draft-vocabulary adaptation | No implementation; deferred by the owner to later optimization passes | Models with a selectable draft head and full target verification | Tokenize curated prose/code/output-format strings with each model's tokenizer, including boundary variants and actual output/stop delimiters; do not share token IDs or match decoded labels alone. Combine seeds with representative answer frequencies, then separately test bounded local output/verifier counts and charged between-request updates. Keep frozen held-out data independent, a broad fallback and unchanged target/distribution gates. [Study and follow-up](experiments/qwen38-own-draft-vocab/protocol.md) |
 
+Gemma's [Q8 assistant component](experiments/gemma-assistant-execution/README.md)
+reuses the target stream/cohort/catalog, stable PlanCache/GraphRuns, pinned
+staging and dedicated recurrence storage. Ordinary primitive C1 and independent
+C2 execution exist; one frozen original-input C1 chain has complete arithmetic
+byte identity. Same-slot cache/feature protection is explicit, with peer
+progress and completed payload witnesses. No optimized assistant join is
+selected. Width1,024 norm/residual fusion needs a new checked eligibility
+contract; Q8 joins/shared preparation/row-invariant products require actual
+1,024/8,192 and projection/head qualification. Device frozen-prefix masks,
+lean canonical heads, adaptive depth and verify rollback remain measured
+transfer work, not inherited target defaults. Full heads and funded host masks
+are the present diagnostic baseline.
+
 Gemma's native GELU-tanh and split GeGLU now have primitive fallbacks.
 The [floating GeGLU screen](experiments/gemma-activations/README.md) checks
 matched F32 accumulation at K2816 with F16 weights: N704 gains while N2112

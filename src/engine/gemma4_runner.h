@@ -21,8 +21,10 @@
 #include "engine/paged_weights.h"
 #include "engine/request_cohort.h"
 #include "engine/runner_resources.h"
+#include "model/gemma4_assistant.h"
 
 namespace jitllm::engine {
+class Gemma4Assistant;
 // Slab pitch preserves both 256-byte region alignment and GGML blocks.
 std::expected<std::uint64_t, std::string> Gemma4ExpertPitch(
     std::uint64_t minimum, std::span<const std::string_view> types);
@@ -38,6 +40,9 @@ struct Gemma4Options {
   Gemma4Variant variant = Gemma4Variant::k26BA4B;
   std::uint32_t context = 4096, max_rows = 128, slots = 1;
   bool graphs = true, frontier_head = true;
+  // Explicit assistant-feature arithmetic/placement policy. Full final rows
+  // remain normalized even when only frontier logits are requested.
+  bool retain_features = false;
   // Caller-funded host masks remain an explicit numerical diagnostic.
   bool reference_masks = false;
   // Unqualified experiments default off; retain ordinary numerical control.
@@ -77,20 +82,63 @@ class Gemma4Runner final : public PagedModel {
     std::vector<LiveState::Range> restore_needed;
     std::vector<std::uint64_t> restored_bytes;
     std::uint32_t positions = 0;
+    std::uint64_t feature_epoch = 1;
+    std::uint32_t feature_first = 0, feature_count = 0;
+    bool borrowed = false;
   };
+  // Move-only same-slot guard. The caller keeps its held stream request
+  // alive until this guard and any component jobs have actually completed.
+  // It dispatches no work itself; component failure quarantines uncertain
+  // shared state before the guard can be released.
+  class FrozenBorrow {
+   public:
+    FrozenBorrow() = default;
+    FrozenBorrow(const FrozenBorrow&) = delete;
+    FrozenBorrow& operator=(const FrozenBorrow&) = delete;
+    FrozenBorrow(FrozenBorrow&& other) noexcept;
+    FrozenBorrow& operator=(FrozenBorrow&& other) noexcept;
+    ~FrozenBorrow();
+    std::uint32_t slot() const { return slot_; }
+    std::uint32_t prefix() const { return prefix_; }
+    std::int32_t anchor() const { return anchor_; }
+
+   private:
+    friend class Gemma4Runner;
+    friend class Gemma4Assistant;
+    void Reset();
+    Gemma4Runner* owner_ = nullptr;
+    std::uint32_t slot_ = 0, prefix_ = 0;
+    std::int32_t anchor_ = 0;
+    std::uint64_t epoch_ = 0, feature_ = 0;
+    struct FeatureGeneration {
+      catalog::ExtentId extent;
+      std::uint64_t backing = 0, content = 0;
+    };
+    std::array<FeatureGeneration, 2> feature_generations_{};
+    std::uint32_t feature_extents_ = 0;
+    std::array<std::uint8_t, 32> cache_generations_{};
+  };
+  std::expected<FrozenBorrow, std::string> BorrowFrozen(std::uint32_t slot, std::int32_t anchor);
+  Status CheckBorrow(const FrozenBorrow& borrow) const;
+  // Completed host diagnostic copy; caller supplies node-owned, funded pinned
+  // memory. Failed submission/retirement retains that buffer to process exit.
+  Status CopyFeatures(std::uint32_t slot, std::uint32_t first_position, std::uint32_t rows,
+                      void* pinned);
   struct Work {
     std::uint32_t slot = 0, n_past = 0;
     std::span<const std::int32_t> tokens;
     // Either this segment's frontier or every row, according to all_outputs.
     std::vector<float>* logits = nullptr;
   };
-  Gemma4Runner(PagedNode& node, Gemma4Options options, int owner, std::uint32_t stream)
-      : node_(node),
-        o_(std::move(options)),
-        owner_(owner),
-        stream_(stream),
-        resources_(node, owner, stream),
-        runs_(o_.graphs) {}
+  Gemma4Runner(PagedNode& node, Gemma4Options options, int owner, std::uint32_t stream);
+  ~Gemma4Runner() override;
+  // Between Setup and node.Start/Register. The caller supplies native decoded
+  // vocabulary views authenticated to the corresponding kept artifact files,
+  // with all parser/container bytes funded before allocation.
+  std::expected<Gemma4Assistant*, std::string> SetupAssistant(
+      const std::filesystem::path& artifact,
+      const model::Gemma4AssistantVocabulary& target_vocabulary,
+      const model::Gemma4AssistantVocabulary& assistant_vocabulary);
   Gemma4Runner(const Gemma4Runner&) = delete;
   Gemma4Runner& operator=(const Gemma4Runner&) = delete;
   void SetSpillPlaces(const std::function<LiveState::SpillPlace(std::uint32_t)>& place) {
@@ -128,7 +176,7 @@ class Gemma4Runner final : public PagedModel {
   Status CompleteRestore(std::uint32_t slot, std::uint32_t positions);
   Status Adopt(std::uint32_t slot, std::uint32_t positions,
                std::span<const LiveState::Range> footprint, std::string_view source_layout);
-  std::vector<catalog::ExtentId> weights() const { return weights_.extents(); }
+  std::vector<catalog::ExtentId> weights() const;
   std::vector<catalog::ExtentId> state() const;
   std::uint32_t stream() const override { return stream_; }
   const catalog::Closure& fence_closure() const override { return fence_; }
@@ -151,7 +199,7 @@ class Gemma4Runner final : public PagedModel {
       std::uint32_t positions) const;
   Status Chunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                std::vector<float>& logits, bool all_outputs = false);
-  Status Wave(std::span<const Work> work, bool all_outputs = false);
+  Status Wave(std::span<const Work> work, bool all_outputs = false, bool all_features = false);
   void DropPlans();
   void ReclaimCandidates(std::uint32_t owner, bool running,
                          std::vector<memory::ReclaimCandidate>& out);
@@ -167,6 +215,9 @@ class Gemma4Runner final : public PagedModel {
   const PolicyCounts& last_built_policy() const { return policy_; }
 
  private:
+  friend class Gemma4Assistant;
+  void InvalidateFeatures(Slot& slot);
+  std::expected<std::array<std::uint8_t, 32>, std::string> CacheGenerations(const Slot& slot) const;
   Status RefreshClosures(SlotMask protect);
   Status RefreshClosures() { return RefreshClosures(cohort_.active()); }
   std::array<LiveState*, kMaxRequestSlots> States();
@@ -185,7 +236,10 @@ class Gemma4Runner final : public PagedModel {
   model::Gemma4StateLayout layout_;
   std::string checkpoint_layout_id_;
   RunnerResources resources_;
+  Mapped features_;
+  std::uint64_t feature_slot_bytes_ = 0;
   PagedWeights weights_;
+  std::unique_ptr<Gemma4Assistant> assistant_;
   std::array<std::unique_ptr<Slot>, kMaxRequestSlots> slots_;
   Gemma4Model model_;
   RequestCohort cohort_{"Gemma4"};

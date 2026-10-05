@@ -327,6 +327,10 @@ jitllm_gtest(gemma_profile_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 
 add_executable(gemma4_graph_test gemma4_graph_test.cc)
+add_executable(gemma4_assistant_graph_test gemma4_assistant_graph_test.cc)
+target_link_libraries(gemma4_assistant_graph_test PRIVATE jitllm_ggml_tensors jitllm_artifact jitllm_json)
+jitllm_gtest(gemma4_assistant_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 target_link_libraries(gemma4_graph_test PRIVATE jitllm_ggml_tensors jitllm_artifact jitllm_json)
 jitllm_gtest(gemma4_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
@@ -348,6 +352,9 @@ if(JITLLM_CUDA)
   target_link_libraries(gemma_joined_serving_gpu_test PRIVATE jitllm_runtime_serving)
   jitllm_gpu_gtest(gemma_joined_serving_gpu_test MODELS
                    ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+  add_executable(gemma4_assistant_gpu_test gemma4_assistant_gpu_test.cc)
+  target_link_libraries(gemma4_assistant_gpu_test PRIVATE jitllm_engine)
+  jitllm_gpu_gtest(gemma4_assistant_gpu_test MODELS)
   add_executable(gemma4_runner_gpu_test gemma4_runner_gpu_test.cc)
   target_link_libraries(gemma4_runner_gpu_test PRIVATE jitllm_engine)
   jitllm_gpu_gtest(gemma4_runner_gpu_test MODELS)
@@ -356,6 +363,10 @@ if(JITLLM_CUDA)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
   target_link_options(gemma4_runner_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   jitllm_gtest(gemma4_runner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+  add_executable(gemma4_assistant_plan_test gemma4_assistant_plan_test.cc)
+  target_link_libraries(gemma4_assistant_plan_test PRIVATE jitllm_engine jitllm_json)
+  jitllm_gtest(gemma4_assistant_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit
+               ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
   add_executable(gemma4_plan_test gemma4_plan_test.cc)
   target_link_libraries(gemma4_plan_test PRIVATE jitllm_engine jitllm_json)
   jitllm_gtest(gemma4_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit

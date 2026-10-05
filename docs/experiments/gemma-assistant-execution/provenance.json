@@ -1,0 +1,143 @@
+{
+  "schema": 1,
+  "measured_base": "4973381",
+  "final_base": "c2717bf",
+  "additive_base_source_changes": [],
+  "prepared_ggml_tree": "026f1ac94af98011933e71cee240d0a405ac4220cb208356acf61aa2bcea6207",
+  "native_source_sha256": {
+    "benchmarks/CMakeLists.txt": "dc35a4a832b2a2a4e4e1f1d3d3f7833ec4bf679c2531e344e7a7c2a82c293913",
+    "benchmarks/gemma_assistant_fixture.cc": "59fddb4df2c304406c96dd0125f70ef3cba312ca504da5f1b1f45ab3ffb981f8",
+    "src/engine/CMakeLists.txt": "4125b5ca0083ae4df10c3921cfa1f1cb9f20eb21749b9513c4385cce5c4e78d5",
+    "src/engine/gemma4_assistant.cc": "4c91e0bf2cd02135801fd55d51f8d8826ba9d9ef133e699c7f8f5989d17e306d",
+    "src/engine/gemma4_assistant.h": "adb2ca4221d449bead55e8dd4a01e0acdcdde9f0e07479fa521dbd5029d06531",
+    "src/engine/gemma4_assistant_plan.cc": "b5052ede555b16f48f9797b3f527c116da156e7f9a0511ba71dfed373be530e6",
+    "src/engine/gemma4_assistant_plan.h": "c23f52f1d14d80c443d3c6c5b792cc0c35924caa6eb798dcf329b70f6dc7d4ae",
+    "src/engine/gemma4_plan.cc": "be415cd4c580853e33e5816f48ec70f3dba69c6960b5cb1829c2f7d9422af168",
+    "src/engine/gemma4_plan.h": "756364ad86c61773016cc926b0f09a8a1319c95529a8b4e22cd1ab982a7faca6",
+    "src/engine/gemma4_runner.cc": "8228f479eabd85caf0af59f315b86a8ddb28d4e5d9f418f69c4065b9e208cced",
+    "src/engine/gemma4_runner.h": "7efb0b6056cb331c8e0ae01d46bef80a3efae0e8b1a2d3879497bf72f8e6d2e5",
+    "src/kernels/ggml/CMakeLists.txt": "2b1c34291c8a04ab34522f1f584177ac567cc6813bb7856c570d3ac1ddaaaf4e",
+    "src/kernels/ggml/gemma4_assistant_graph.cc": "55ade12c49cdba2ea0ca79a1a348a06f7a4ce1c9cf85e712b79645850c05879e",
+    "src/kernels/ggml/gemma4_assistant_graph.h": "ee03ef673ddaa489b8a48e65015228c26624b833c3e478d46ba66bf3dab61caa",
+    "src/kernels/ggml/gemma4_graph.cc": "c4003561df4986e4d0a26335889ad11ddc91c417c0cd5c01e5f087cf738a0d10",
+    "src/kernels/ggml/gemma4_graph.h": "a424a3cdfa5095e7d3f25d702f7055b81d99fca05bd9c62fb04b1884f2a2d4f4",
+    "tests/support/gemma4_assistant_fixture.h": "03fe393509ed6649af363a9d506d0e23b696f2e10df1f208bb5b9433ad7cc6a6",
+    "tests/unit/CMakeLists.txt": "85f66ac36cbd64927f8492ab5c7ba0c35629d91db67f5c57c4fa7e61b4a8267d",
+    "tests/unit/gemma4_assistant_gpu_test.cc": "1d08ebef7e5a4e60ca89013f19ac6cc5285dccb636a2107519459c6e52f2f22a",
+    "tests/unit/gemma4_assistant_graph_test.cc": "bb340ab8691898164ec91893ef01fdcebdb34e7158c719800a194b1f92c0a965",
+    "tests/unit/gemma4_assistant_plan_test.cc": "ceded0dd5612d0532410fbc4de4b2c422729c448a48f430a6e71c497f9a68017",
+    "tests/unit/gemma4_plan_test.cc": "5ae4cd51b7186ade1241d0f38f4bfe1c609785298b7b4113aa9a65f004297e85",
+    "tests/unit/gemma4_runner_gpu_test.cc": "73a70e643244a4e2ae8db0d9408c348c941f0ff1fd70f6e2d8a180fed0193cec"
+  },
+  "native_binary": {
+    "bytes": 144874752,
+    "sha256": "be9ec4b750ff560423660e6b4289544e2f2425daf026eae3f4e0aff30a233b0c"
+  },
+  "pre_acquisition_receipt": {
+    "bytes": 4470,
+    "sha256": "93d3fe2fc6a186d20f0fc918176af4555db7471c0b326c76c22d3bf4448fe540"
+  },
+  "native_endogenous_receipt": {
+    "bytes": 7952,
+    "sha256": "fd742b1662a3ea71a04076c7acbe586cefaefe0f1670624cca4cb2af7be79d60"
+  },
+  "native_official_retirement": {
+    "log": {
+      "bytes": 3187,
+      "sha256": "b2237cde6f71fd901102e4044ed98753f873c5ad43cc86f347a233aed47aef70"
+    },
+    "final.json": {
+      "bytes": 83,
+      "sha256": "7abd027f5426f86c385d2d79373e896336f02f7acbd7c515771d7a129ed83d97"
+    },
+    "steps.json": {
+      "bytes": 740,
+      "sha256": "20f198ce9e8893aeccaeb58eee57880dc2b6647e3a75ed3ff682c35ba342c466"
+    }
+  },
+  "original_input_manifest": {
+    "bytes": 1922,
+    "sha256": "bf5c5c3dba1ab22a069475d7fc3ce3ec1746cefa8ceae4e11b7d07088b803923"
+  },
+  "tensorfold_entry": {
+    "observed_utc": "2026-10-05 08:24:50 UTC",
+    "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "version": "0.6.5",
+    "coverage": "Gemma26 MLX-only recipe; no same-format CUDA26/31 assistant comparator in current primary source",
+    "files": {
+      "README.md": {
+        "bytes": 22767,
+        "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+      },
+      "docs/recipes/gemma-4.md": {
+        "bytes": 10845,
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      },
+      "src/tensorfold/__init__.py": {
+        "bytes": 137,
+        "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+      }
+    }
+  },
+  "posthoc_manifest": {
+    "bytes": 1247,
+    "sha256": "8be990edd96ad56e4fbf5a8d480830896750cac454cbf0ad402222e043005375"
+  },
+  "raw_outputs_location": "Spark ~/.local/share/jitllm/gemma-assistant-native/{endogenous3,posthoc3,posthoc-c1}; raw logs/receipts in sibling gemma-assistant-execution-raw",
+  "source_policy": "Ordinary primitive assistant policy, no target experimental norm/MoE/Q8/row policy inheritance. Original recurrent data exposed only after native-own3 official retirement/exclusive freeze.",
+  "official_logs": {
+    "component2": {
+      "bytes": 7407,
+      "sha256": "a0b750ca2edd46010d5084ebb1c8ec2370cf788c8095035294e030114a12fba4"
+    },
+    "build8": {
+      "bytes": 1731,
+      "sha256": "a7bedf57a00b69403d1030db9578cedb8856655b15c469195604da4fba5cd822"
+    },
+    "native1": {
+      "bytes": 3106,
+      "sha256": "6983420664a400555b36d2ebf64f77d710f5b27c4028056d4f0e867ea27ebdd3"
+    },
+    "native2": {
+      "bytes": 931,
+      "sha256": "374362a6b803353b578a672c133d4d3fe9bc4461598b47097f4f0a05f98225dc"
+    },
+    "freeze2": {
+      "bytes": 584,
+      "sha256": "89c897982bd14ee7094179372d5abcf4495e7272bf70c23aee8aa26ed2ddb65e"
+    },
+    "native3": {
+      "bytes": 3187,
+      "sha256": "b2237cde6f71fd901102e4044ed98753f873c5ad43cc86f347a233aed47aef70"
+    },
+    "freeze3": {
+      "bytes": 455,
+      "sha256": "64a9bd23e1279a9435cd35f70919e11f0021285983a03a0532ef4864f5e0c000"
+    },
+    "posthoc-copy": {
+      "bytes": 693,
+      "sha256": "b5a7171f130b611f3a4faa8f7eb7c3878f694a33a931f92bd52ae8f223b47630"
+    },
+    "posthoc3": {
+      "bytes": 2914,
+      "sha256": "d144a5c6f5caa25aed87f2a9ec5f2d3e33e80e774b54ef6c501b012c94a964df"
+    },
+    "posthoc-compare3": {
+      "bytes": 512,
+      "sha256": "090be8190954e2b733ae3f902e75673d9f1eedbef1f7bc8fe03ebd5ec56b70bc"
+    }
+  },
+  "measured_analysis_script": {
+    "bytes": 3219,
+    "sha256": "b4be1176b0af3a48f29e0244847b21ce0bd481a90428276980096f18c51f88ce"
+  },
+  "final_analysis_script": {
+    "bytes": 3332,
+    "sha256": "cc494253a6de15818b28e8fcf771034fc37ff5113bd94878009566c6033a2ded"
+  },
+  "analysis_difference": "Final compare.py adds SPDX/header only; executable comparison body unchanged.",
+  "light": {
+    "bytes": 1386,
+    "sha256": "afcf8cbd18665d7c4b95b098e462705eb0c823bd17bed94103221f308d3f3ee7"
+  }
+}

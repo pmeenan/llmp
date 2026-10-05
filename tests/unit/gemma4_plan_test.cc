@@ -73,6 +73,67 @@ en::Gemma4Model Places(const Case& c, const kg::Gemma4Graph& g) {
   return m;
 }
 
+TEST(Gemma4Plan, PostNormFeatureRowsAreIndependentOfTheHeadFrontier) {
+  Case c;
+  c.shape.outputs = 1;
+  c.shape.feature_outputs = 2;
+  auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 1));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape);
+  ASSERT_TRUE(graph);
+  EXPECT_EQ(graph->logits->ne[1], 1);
+  EXPECT_EQ(graph->normalized_features->ne[1], 2);
+  EXPECT_EQ(graph->normalized_features->src[0], graph->Named("output_normalized"));
+  auto model = Places(c, *graph);
+  kg::DeviceChoices choices;
+  choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
+  choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
+  auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
+  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  const auto activation = std::uint64_t{1} << 53U;
+  auto placed =
+      en::PlanGemma4Chunk(model, c.shape, choices, activation, (*measured)->placement.extent);
+  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  const auto& g = (*placed)->graph;
+  const auto head = reinterpret_cast<std::uintptr_t>(g.logits->data);
+  const auto feature = reinterpret_cast<std::uintptr_t>(g.normalized_features->data);
+  EXPECT_TRUE(feature + ggml_nbytes(g.normalized_features) <= head ||
+              head + ggml_nbytes(g.logits) <= feature);
+  EXPECT_GE(feature, activation);
+  EXPECT_LE(feature - activation + ggml_nbytes(g.normalized_features), (*placed)->placement.extent);
+  const auto bytes = en::Gemma4SourceBytes(g);
+  ASSERT_TRUE(bytes);
+  const std::array<std::int32_t, 1> frontier{1};
+  const std::array<std::int32_t, 2> feature_ids{0, 1};
+  auto source = en::Gemma4Sources(g, c.input, frontier, {}, *bytes, feature_ids);
+  ASSERT_TRUE(source) << *jitllm::test_support::Failed(source);
+  EXPECT_EQ(source->feature_ids, (std::vector<std::int32_t>{0, 1}));
+  for (const auto id : {-1, 2, INT32_MAX}) {
+    const std::array<std::int32_t, 2> invalid{0, id};
+    EXPECT_FALSE(en::Gemma4Sources(g, c.input, frontier, {}, *bytes, invalid));
+  }
+  const auto before = g.feature_ids->ne[0];
+  g.feature_ids->ne[0]++;
+  EXPECT_FALSE(en::Gemma4SourceBytes(g));
+  g.feature_ids->ne[0] = before;
+  EXPECT_FALSE(en::Gemma4Sources(g, c.input, frontier, {}, *bytes));
+  for (auto* tensor : {g.normalized_features, g.Named("output_normalized")}) {
+    const auto ne = tensor->ne[2];
+    tensor->ne[2] = 2;
+    EXPECT_FALSE(en::Gemma4SourceBytes(g));
+    tensor->ne[2] = ne;
+    for (unsigned i = 0; i < 4; ++i) {
+      const auto stride = tensor->nb[i];
+      tensor->nb[i]++;
+      EXPECT_FALSE(en::Gemma4SourceBytes(g));
+      tensor->nb[i] = stride;
+    }
+  }
+  EXPECT_TRUE(en::Gemma4SourceBytes(g));
+  model.options.narrow_final = true;
+  EXPECT_FALSE(en::PlanGemma4Chunk(model, c.shape, choices, 0, 0));
+}
+
 TEST(Gemma4Plan, StorePolicyKeepsAllRotatedStorageFundedAndWritesDiagnosticKeeps) {
   Case c(2, 1279);
   c.Set(2, 1279, false);

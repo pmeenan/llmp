@@ -24,6 +24,22 @@ Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
 then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
 sinks bound (RE-030).
 
+## Native Gemma assistant graph port
+
+- **Status:** native component foundation; no upstream kernel change or
+  assistant serving/speculation qualification.
+- **jitLLM port:** `src/kernels/ggml/gemma4_assistant_graph.cc` ports the pinned
+  `src/models/gemma4-assistant.cpp` pre/post-projection, Q-only blocks,
+  sandwich normalization, GeGLU-tanh and readonly shared-cache attention into
+  native independent-slot descriptors. Its MIT AND Apache-2.0 header retains
+  the GGML authors' copyright; the source-lock scope and existing packaged MIT
+  attribution cover the port. No backend runtime, allocator or dispatcher is
+  copied. Prepared archive bytes, source pin and CUDA flags are unchanged.
+- **Evidence:** [bounded component controls](../experiments/gemma-assistant-execution/README.md)
+  compare original-image C1 complete heads/projections at identical frozen
+  stage-zero operands, with source/output own repeats frozen before oracle
+  exposure. Native-target chain and optimized-batch qualification remain open.
+
 ## Standalone Gemma routing and scaled reduction
 
 - **Status:** native availability only; no upstream numerical change or new
