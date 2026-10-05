@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <expected>
 #include <iostream>
 #include <memory>
 #include <numeric>
@@ -189,7 +190,7 @@ class Gemma4ExecTest : public ::testing::Test {
   };
   Run Execute(std::uint32_t layer, std::span<const std::uint32_t> slots, std::uint32_t rows,
               std::uint32_t past, bool shared, bool head = false, bool fused_norms = false,
-              bool device_masks = false) {
+              bool device_masks = false, bool rope_store = false, bool keep_rope = false) {
     Run run;
     std::vector<std::vector<std::int32_t>> tokens(slots.size(), std::vector<std::int32_t>(rows, 1));
     std::vector<md::Gemma4Segment> segments;
@@ -205,7 +206,10 @@ class Gemma4ExecTest : public ::testing::Test {
         }
       if (head) frontier.push_back(static_cast<std::int32_t>((i + 1) * rows - 1));
     }
-    run.chunk = std::move(*md::Gemma4Chunk(p_, state_, segments, !device_masks));
+    auto chunk = md::Gemma4Chunk(p_, state_, segments, !device_masks);
+    EXPECT_TRUE(chunk) << (chunk ? "" : chunk.error());
+    if (!chunk) return run;
+    run.chunk = std::move(*chunk);
     for (const auto& s : run.chunk.segments)
       shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
     shape.outputs = static_cast<std::uint32_t>(frontier.size());
@@ -215,15 +219,19 @@ class Gemma4ExecTest : public ::testing::Test {
                       .hidden_input = true,
                       .head = head,
                       .shared_q8 = shared,
-                      .device_masks = device_masks};
+                      .device_masks = device_masks,
+                      .rope_store = rope_store};
     auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(p_, slots.size()));
     EXPECT_TRUE(arena);
     auto graph = kg::BuildGemma4Graph(*arena, p_, binding_, state_, shape, model_.options);
     EXPECT_TRUE(graph) << (graph ? "" : graph.error().detail);
     if (!graph) return run;
     Weights(*graph);
-    const std::array<std::string, 1> kept{std::string("blk.") + std::to_string(layer) + ".slot." +
-                                          std::to_string(slots[0]) + ".attention"};
+    std::vector<std::string> kept{std::string("blk.") + std::to_string(layer) + ".slot." +
+                                  std::to_string(slots[0]) + ".attention"};
+    if (keep_rope)
+      kept.push_back(std::string("blk.") + std::to_string(layer) + ".slot." +
+                     std::to_string(slots[0]) + ".k_rope");
     auto choices = kg::DeviceChoicesOf(*launch_);
     choices.fuse_norms = fused_norms;
     auto measured = en::PlanGemma4Chunk(model_, shape, choices, 0, 0, kept);
@@ -248,6 +256,7 @@ class Gemma4ExecTest : public ::testing::Test {
               << " slots=" << slots.size() << " shared_q8=" << shared
               << " fuse_norms=" << fused_norms << " norm_fused=" << fused
               << " norm_unfused=" << unfused << " rope_store_fused=" << rope_stores << '\n';
+    EXPECT_EQ(rope_stores, rope_store ? slots.size() - (keep_rope ? 1U : 0U) : 0U);
     const auto budget = en::Gemma4SourceBytes(run.planned->graph).value();
     auto sources = en::Gemma4Sources(run.planned->graph, run.chunk, frontier, run.input, budget);
     EXPECT_TRUE(sources) << (sources ? "" : sources.error());
@@ -625,6 +634,213 @@ TEST_F(Gemma4ExecTest, TiedQuantHeadSoftcapMatchesIndependentScalar) {
   EXPECT_LT(max, 0.03);
   Repeat(run);
 }
+TEST_F(Gemma4ExecTest, ActualRopeStoresMatchPrimitiveBytesWithRaggedSegmentsAndFreshCapture) {
+  // Each case owns only its bounded caches; no full-model or long-context
+  // inference is performed. The long case includes the last absolute position.
+  for (const auto* profile : {&md::Gemma4_26BA4B(), &md::Gemma4_31B()})
+    for (const auto layer : {0U, 5U})
+      for (const auto slots : {1U, 2U, 4U, 16U, 0U}) {
+        const auto allocation_start = allocations_.size();
+        {
+          const bool long_case = slots == 0;
+          const auto count = long_case ? 1U : slots;
+          const auto d = profile->head_dim(layer), heads = profile->kv_heads(layer);
+          const auto width = d * heads;
+          const auto capacity = profile->local(layer) ? 1280U : (long_case ? 262144U : 4096U);
+          std::vector<std::uint32_t> starts;
+          std::uint32_t rows = 0;
+          for (std::uint32_t i = 0; i < count; ++i) {
+            starts.push_back(rows);
+            rows += long_case ? 4U : i % 4 + 1;
+          }
+          auto arena = kg::TensorArena::Create(512);
+          ASSERT_TRUE(arena);
+          auto* c = arena->context();
+          const auto upload = [&](ggml_tensor* t, const auto& values) {
+            kg::TensorArena::Bind(t, Allocate(ggml_nbytes(t)));
+            EXPECT_EQ(ggml_nbytes(t), values.size() * sizeof(values[0]));
+            EXPECT_EQ(cudaMemcpy(t->data, values.data(), ggml_nbytes(t), cudaMemcpyHostToDevice),
+                      cudaSuccess);
+            return t;
+          };
+          std::vector<float> values(std::size_t{width} * rows);
+          for (std::size_t i = 0; i < values.size(); ++i)
+            values[i] =
+                static_cast<float>(static_cast<int>((i * 17 + i / width * 11) % 103) - 51) / 37.0f;
+          auto* joined = upload(ggml_new_tensor_3d(c, GGML_TYPE_F32, d, heads, rows), values);
+          std::vector<std::int32_t> positions(rows);
+          auto* position_tensor = upload(ggml_new_tensor_1d(c, GGML_TYPE_I32, rows), positions);
+          std::vector<float> factors(d / 2);
+          for (std::size_t i = 0; i < factors.size(); ++i)
+            factors[i] = i < 64 ? 1.0f + static_cast<float>(i % 13) / 16 : 1e30f;
+          auto* factor_tensor = profile->local(layer)
+                                    ? nullptr
+                                    : upload(ggml_new_tensor_1d(c, GGML_TYPE_F32, d / 2), factors);
+          constexpr std::uint16_t untouched = 0x3555;
+          std::vector<std::uint16_t> initial(std::size_t{width} * capacity, untouched);
+          std::vector<ggml_tensor*> primitive, fused;
+          std::vector<ggml_tensor*> original_caches, fused_caches, indices;
+          std::vector<std::vector<std::int64_t>> ids(count);
+          for (std::uint32_t i = 0; i < count; ++i) {
+            const auto n = long_case ? 4U : i % 4 + 1;
+            auto* part = ggml_view_3d(c, joined, d, heads, n, joined->nb[1], joined->nb[2],
+                                      std::size_t{starts[i]} * joined->nb[2]);
+            auto* pos = ggml_view_1d(c, position_tensor, n, std::size_t{starts[i]} * 4);
+            const auto rotate = [&] {
+              return ggml_rope_ext(
+                  c, part, pos, factor_tensor,
+                  static_cast<int>(profile->local(layer) ? profile->local_rope_dims
+                                                         : profile->global_rope_dims),
+                  GGML_ROPE_TYPE_NEOX, static_cast<int>(profile->context),
+                  profile->local(layer) ? profile->local_rope_base : profile->global_rope_base, 1,
+                  0, 1, 32, 1);
+            };
+            auto* original = rotate();
+            kg::TensorArena::Bind(original, Allocate(ggml_nbytes(original)));
+            auto* candidate = rotate();  // Fused writer never needs this allocation.
+            auto* a = upload(ggml_new_tensor_2d(c, GGML_TYPE_F16, width, capacity), initial);
+            auto* b = upload(ggml_new_tensor_2d(c, GGML_TYPE_F16, width, capacity), initial);
+            ids[i].resize(n);
+            auto* index = upload(ggml_new_tensor_1d(c, GGML_TYPE_I64, n), ids[i]);
+            primitive.push_back(original);
+            primitive.push_back(ggml_set_rows(
+                c, a, ggml_view_2d(c, original, width, n, original->nb[2], 0), index));
+            fused.push_back(candidate);
+            fused.push_back(ggml_set_rows(
+                c, b, ggml_view_2d(c, candidate, width, n, candidate->nb[2], 0), index));
+            original_caches.push_back(a);
+            fused_caches.push_back(b);
+            indices.push_back(index);
+            ASSERT_TRUE(kg::CheckRope(original));
+            ASSERT_TRUE(kg::CheckSetRows(primitive.back()));
+            ASSERT_TRUE(kg::CheckRopeSetRows(candidate, fused.back()));
+          }
+          ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);  // Complete default-stream setup.
+          const auto submission = execution_->Submission(stream_);
+          ASSERT_TRUE(submission);
+          const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
+          const auto stage = [&](bool fresh) {
+            for (std::uint32_t i = 0; i < count; ++i) {
+              const auto past = long_case
+                                    ? 262139U + (fresh ? 1U : 0U)
+                                    : (i % 2 == 0 ? 1279U : 0U) + i * 7 + (fresh ? 1280U : 0U);
+              for (std::size_t r = 0; r < ids[i].size(); ++r) {
+                positions[starts[i] + r] = static_cast<std::int32_t>(past + r);
+                ids[i][r] = static_cast<std::int64_t>(profile->local(layer) ? (past + r) % capacity
+                                                                            : past + r);
+              }
+              EXPECT_EQ(cudaMemcpyAsync(indices[i]->data, ids[i].data(), ggml_nbytes(indices[i]),
+                                        cudaMemcpyHostToDevice, stream),
+                        cudaSuccess);
+            }
+            EXPECT_EQ(cudaMemcpyAsync(position_tensor->data, positions.data(),
+                                      ggml_nbytes(position_tensor), cudaMemcpyHostToDevice, stream),
+                      cudaSuccess);
+          };
+          const auto run_fused =
+              [&](kg::LaunchContext& launch) -> std::expected<void, kg::KernelFailure> {
+            for (std::size_t i = 0; i < fused.size(); i += 2)
+              if (auto result = kg::RopeSetRows(launch, fused[i], fused[i + 1]); !result)
+                return result;
+            return {};
+          };
+          auto capture = launch_->Capture(run_fused);
+          ASSERT_TRUE(capture) << (capture ? "" : capture.error().detail);
+          std::vector<std::vector<std::uint16_t>> expected(count, initial);
+          for (const auto fresh : {false, true}) {
+            stage(fresh);
+            for (std::size_t i = 0; i < primitive.size(); i += 2) {
+              ASSERT_TRUE(kg::Rope(*launch_, primitive[i]));
+              ASSERT_TRUE(kg::SetRows(*launch_, primitive[i + 1]));
+            }
+            if (!fresh) {
+              ASSERT_TRUE(run_fused(*launch_));
+            } else {
+              ASSERT_TRUE(launch_->Launch(*capture));
+            }
+            ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+            for (std::uint32_t i = 0; i < count; ++i) {
+              std::vector<float> rotated(ggml_nbytes(primitive[i * 2]) / 4);
+              ASSERT_EQ(cudaMemcpy(rotated.data(), primitive[i * 2]->data,
+                                   ggml_nbytes(primitive[i * 2]), cudaMemcpyDeviceToHost),
+                        cudaSuccess);
+              for (std::size_t r = 0; r < ids[i].size(); ++r)
+                for (std::uint32_t j = 0; j < width; ++j)
+                  expected[i][static_cast<std::size_t>(ids[i][r]) * width + j] =
+                      std::bit_cast<std::uint16_t>(ggml_fp32_to_fp16(rotated[r * width + j]));
+              std::vector<std::uint16_t> actual(initial.size());
+              for (auto* cache : {original_caches[i], fused_caches[i]}) {
+                ASSERT_EQ(cudaMemcpy(actual.data(), cache->data, ggml_nbytes(cache),
+                                     cudaMemcpyDeviceToHost),
+                          cudaSuccess);
+                EXPECT_EQ(std::memcmp(actual.data(), expected[i].data(), ggml_nbytes(cache)), 0);
+              }
+            }
+          }
+        }
+        // Captures/descriptors are gone and submitted work is proven complete.
+        while (allocations_.size() > allocation_start) {
+          ASSERT_EQ(cudaFree(allocations_.back()), cudaSuccess);
+          allocations_.pop_back();
+        }
+      }
+}
+
+TEST_F(Gemma4ExecTest, KeptSegmentRotationsUseTheOrdinaryProducerAndRemainReadable) {
+  const std::array<std::uint32_t, 4> slots{0, 1, 2, 3};
+  for (const auto layer : {0U, 5U}) {
+    auto run =
+        Execute(layer, std::span(slots).first(2), 2, 1279, false, false, false, true, true, true);
+    ASSERT_NE(run.planned, nullptr);
+    auto* kept = run.planned->graph.Named("blk." + std::to_string(layer) + ".slot.0.k_rope");
+    ASSERT_NE(kept, nullptr);
+    std::vector<float> actual(ggml_nbytes(kept) / 4);
+    ASSERT_EQ(cudaMemcpy(actual.data(), kept->data, ggml_nbytes(kept), cudaMemcpyDeviceToHost),
+              cudaSuccess);
+    const auto width = p_.head_dim(layer) * p_.kv_heads(layer);
+    for (std::uint32_t r = 0; r < 2; ++r) {
+      const auto cell = run.chunk.segments[0].local_cells[r];
+      const auto global = run.chunk.segments[0].global_cells[r];
+      const auto index = static_cast<std::size_t>(p_.local(layer) ? cell : global) * width;
+      for (std::uint32_t j = 0; j < width; ++j)
+        EXPECT_EQ(ggml_fp32_to_fp16(actual[std::size_t{r} * width + j]), run.keys[index + j]);
+    }
+    Repeat(run);
+  }
+}
+
+TEST_F(Gemma4ExecTest, ExplicitRopeStoreKeepsCompleteLayersAndCapturedCachesExact) {
+  const std::array<std::uint32_t, 4> slots{0, 1, 2, 3};
+  for (const auto layer : {0U, 5U})
+    for (const auto count : {1U, 4U}) {
+      const auto selected = std::span(slots).first(count);
+      auto primitive = Execute(layer, selected, 1, 1279, false, false, false, true, false);
+      auto fused = Execute(layer, selected, 1, 1279, false, false, false, true, true);
+      ASSERT_NE(primitive.planned, nullptr);
+      ASSERT_NE(fused.planned, nullptr);
+      EXPECT_EQ(primitive.output, fused.output);
+      EXPECT_EQ(primitive.keys, fused.keys);
+      EXPECT_EQ(primitive.values, fused.values);
+      Reference(fused, layer);
+      Repeat(fused);
+      if (std::getenv("JITLLM_GEMMA_STORE_SCREEN") != nullptr) {  // NOLINT(concurrency-mt-unsafe)
+        const auto a = Time(primitive), b = Time(fused), after = Time(primitive);
+        std::uint64_t ap = 0, bp = 0;
+        const auto ca = Time(primitive, true, &ap), cb = Time(fused, true, &bp),
+                   cafter = Time(primitive, true);
+        std::cout << "GEMMA_STORE_LAYER_SCREEN layer=" << layer << " slots=" << count
+                  << " rows=1 primitive_us=" << a << " fused_us=" << b
+                  << " primitive_after_us=" << after << " capture_primitive_us=" << ca
+                  << " capture_fused_us=" << cb << " capture_primitive_after_us=" << cafter
+                  << " primitive_activation=" << primitive.planned->placement.extent
+                  << " fused_activation=" << fused.planned->placement.extent
+                  << " primitive_scratch=" << primitive.planned->scratch
+                  << " fused_scratch=" << fused.planned->scratch << " primitive_pool_peak=" << ap
+                  << " fused_pool_peak=" << bp << '\n';
+      }
+    }
+}
+
 TEST_F(Gemma4ExecTest, DeviceMasksKeepTheCompleteLayerAndCapturedStateExact) {
   const std::array<std::uint32_t, 4> slots{0, 1, 2, 3};
   for (const auto layer : {0U, 5U})

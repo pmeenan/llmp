@@ -145,6 +145,7 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
   // Caller-selected policies carry measured device choices. In particular no
   // generic GeGLU fusion, sparse attention or foreign quant writer is forced.
   auto device = choices;
+  device.fuse_rope_store = m.options.rope_store;
   if (m.options.shared_q8 && g.positions->ne[0] <= kg::kRowInvariantColumns) {
     device.vector_floats = true;
   }

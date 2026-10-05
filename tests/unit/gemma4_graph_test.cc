@@ -55,6 +55,106 @@ std::size_t Count(const kg::Gemma4Graph& g, ggml_op op) {
   return static_cast<std::size_t>(
       std::ranges::count_if(g.nodes, [op](const auto* t) { return t->op == op; }));
 }
+void BindLeaves(kg::Gemma4Graph& g);
+
+TEST(Gemma4Graph, ExplicitSegmentStoresFuseOnlyEligibleUnkeptKRotations) {
+  for (const auto size : {26U, 31U})
+    for (const auto slots : {1U, 2U, 4U, 16U}) {
+      Case c(size);
+      c.state = std::move(*md::Gemma4State(c.p, 262144, 64));
+      std::array<std::int32_t, 4> tokens{1, 2, 3, 4};
+      std::vector<md::Gemma4Segment> segments;
+      for (std::uint32_t i = 0; i < slots; ++i)
+        segments.push_back({i, 1279 + i * 7, std::span(tokens).first(i % 4 + 1)});
+      c.input = std::move(*md::Gemma4Chunk(c.p, c.state, segments, false));
+      c.shape = {};
+      for (const auto& part : c.input.segments)
+        c.shape.segments.push_back(
+            {part.slot, part.rows, part.n_past, part.global_n_kv, part.local_n_kv});
+      c.shape.outputs = slots;
+      auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, slots));
+      ASSERT_TRUE(arena);
+      kg::Gemma4GraphOptions options;
+      options.device_masks = true;
+      options.rope_store = true;
+      auto built = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+      ASSERT_TRUE(built);
+      BindLeaves(*built);
+      kg::DeviceChoices choices;
+      choices.fuse_rope_store = true;
+      choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
+      choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
+      auto plan = kg::PlanGraph(built->nodes, false, choices);
+      ASSERT_TRUE(plan) << jitllm::test_support::Failed(plan)->detail;
+      const auto stores = [](const auto& p) {
+        return std::ranges::count_if(p.steps, [](const auto& step) {
+          return step.operation == jitllm::execution::Operation::kRopeSetRows;
+        });
+      };
+      EXPECT_EQ(stores(*plan), c.p.layers * slots);
+      auto placement = kg::PlaceActivations(built->nodes, *plan, built->inputs, 256);
+      ASSERT_TRUE(placement) << jitllm::test_support::Failed(placement)->detail;
+      for (const auto& step : plan->steps)
+        if (step.operation == jitllm::execution::Operation::kRopeSetRows) {
+          EXPECT_TRUE(kg::CheckRopeSetRows(step.nodes[0], step.nodes[1]));
+          EXPECT_EQ(step.nodes[1]->src[0]->view_offs, 0U);
+          EXPECT_EQ(step.nodes[0]->ne[2], step.nodes[1]->src[1]->ne[0]);
+          // The fused launcher does not write the rotated intermediate, but
+          // current placement still funds it. No catalog exclusion is needed.
+          EXPECT_TRUE(std::ranges::find(placement->offsets, step.nodes[0],
+                                        &std::pair<ggml_tensor*, std::uint64_t>::first) !=
+                      placement->offsets.end());
+        }
+      auto* kept = built->Named("blk.0.slot.0.k_rope");
+      ASSERT_NE(kept, nullptr);
+      const std::array<ggml_tensor*, 1> keep{kept};
+      auto protected_plan = kg::PlanGraph(built->nodes, false, choices, keep);
+      ASSERT_TRUE(protected_plan);
+      EXPECT_EQ(stores(*protected_plan), c.p.layers * slots - 1);
+      auto* kept_view = ggml_view_2d(arena->context(), kept, kept->ne[0] * kept->ne[1], kept->ne[2],
+                                     kept->nb[2], 0);
+      const std::array<ggml_tensor*, 1> keep_view{kept_view};
+      protected_plan = kg::PlanGraph(built->nodes, false, choices, keep_view);
+      ASSERT_TRUE(protected_plan);
+      EXPECT_EQ(stores(*protected_plan), c.p.layers * slots - 1);
+      choices.fuse_rope_store = false;
+      auto original = kg::PlanGraph(built->nodes, false, choices);
+      ASSERT_TRUE(original);
+      EXPECT_EQ(stores(*original), 0);
+    }
+}
+
+TEST(Gemma4Graph, PartialFlatteningFallsBackToCheckedPrimitiveStores) {
+  auto arena = kg::TensorArena::Create(32);
+  ASSERT_TRUE(arena);
+  auto* c = arena->context();
+  auto* x = ggml_new_tensor_3d(c, GGML_TYPE_F32, 256, 8, 2);
+  auto* positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, 2);
+  auto* rope = ggml_rope_ext(c, x, positions, nullptr, 256, GGML_ROPE_TYPE_NEOX, 262144, 10000, 1,
+                             0, 1, 32, 1);
+  auto* partial = ggml_view_2d(c, rope, 2048, 1, rope->nb[2], 0);
+  auto* ids = ggml_new_tensor_1d(c, GGML_TYPE_I64, 1);
+  auto* cache = ggml_new_tensor_2d(c, GGML_TYPE_F16, 2048, 1280);
+  auto* store = ggml_set_rows(c, cache, partial, ids);
+  std::uint64_t address = std::uint64_t{1} << 36U;
+  for (auto* leaf : {x, positions, ids, cache}) {
+    kg::TensorArena::Bind(leaf, address);
+    address += ((ggml_nbytes(leaf) + 255) / 256 + 1) * 256;
+  }
+  const std::array<ggml_tensor*, 3> nodes{rope, partial, store};
+  kg::BindDistinct(nodes, std::uint64_t{1} << 48U);
+  ASSERT_TRUE(kg::CheckRope(rope));
+  ASSERT_TRUE(kg::CheckSetRows(store));
+  EXPECT_FALSE(kg::CheckRopeSetRows(rope, store));
+  kg::DeviceChoices choices;
+  choices.fuse_rope_store = true;
+  auto plan = kg::PlanGraph(nodes, false, choices);
+  ASSERT_TRUE(plan);
+  ASSERT_EQ(plan->steps.size(), 2U);
+  EXPECT_EQ(plan->steps[0].operation, jitllm::execution::Operation::kRope);
+  EXPECT_EQ(plan->steps[1].operation, jitllm::execution::Operation::kSetRows);
+}
+
 TEST(Gemma4Graph, BothActualContractsBuildCompleteTextGraphs) {
   for (const auto size : {26U, 31U}) {
     Case c(size);

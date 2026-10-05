@@ -250,6 +250,9 @@ family" guide, and its long-context scaling work.
         device masks and [exact state/replay controls](experiments/gemma-runner/README.md).
         Serving, assistant, representative quality, long-context and optimized
         batching/performance qualification remain owed.
+      - [x] Checked per-segment Gemma RoPE/cache-store policy with primitive
+        fallback and [complete-layer controls](experiments/gemma-rope-store/README.md).
+        Mixed paid results keep selection off by default.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

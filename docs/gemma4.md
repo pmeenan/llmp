@@ -239,10 +239,21 @@ products unfused per complete local or global layer. Explicit
 `DeviceChoices::fuse_norms` binds all nine fusions across one, two and four
 independent segments, with synthetic complete-layer and captured-state
 controls. This is a diagnostic policy, not an adopted serving default.
-RoPE/cache-store fusion binds no nodes in this graph, including solo chunks:
-the projection reshape and per-segment views do not fit the existing fusion
-pattern, and generic graph fusion is disabled here. The separately checked
-factor-aware fused primitive does not close this graph dispatch gap.
+The default graph keeps joined K rotation and primitive stores. Explicit
+`Gemma4GraphOptions::rope_store` instead rotates each segment's joined,
+learned-normalized K view with its own fresh positions and supplies a complete
+packed, zero-offset flattening view to the existing factor-aware fused store.
+`DeviceChoices::fuse_rope_store` is an independent checked planner gate;
+generic graph fusion stays disabled. An ineligible pattern falls back to
+ordinary rotation/store, and a diagnostic keep of the rotation or its view
+forces its ordinary producer. The option names rotations
+`blk.<layer>.slot.<slot>.k_rope`; the default names joined rotation
+`blk.<layer>.k_rope`. Current placement still funds rotated intermediate
+storage, including when the fused store leaves its bytes unwritten, so
+catalog coverage retains every descriptor and source check.
+[Bounded complete-layer controls](experiments/gemma-rope-store/README.md)
+show exact cache/output agreement but no decisive paid speed gain; the
+option remains default off.
 Qualified norm/RoPE-store selection and optimized batching remain owed.
 
 ## Native 26B-A4B runner controls

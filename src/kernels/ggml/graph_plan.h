@@ -81,6 +81,9 @@ struct DeviceChoices {
   // RMSNorm-mul: jitLLM's fast plans (DeepSeek V4's, the owner's policy of
   // 2026-09-28), which do not reproduce upstream's unfused arithmetic.
   bool fuse_norms = false;
+  // Explicit RoPE/direct-view/cache-store fusion without enabling upstream's
+  // other fusion gates. Full operand checks and diagnostic keep apply.
+  bool fuse_rope_store = false;
   // And float products of at most kRowInvariantColumns columns run GGML's
   // vector kernel (MMVF) whatever upstream would route them to (MMF past
   // one BF16 column): a verify's router and head mixes.

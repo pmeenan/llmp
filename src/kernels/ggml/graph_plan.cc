@@ -161,6 +161,16 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           4);
       continue;
     }
+    if (!fusion && device.fuse_rope_store && node->op == GGML_OP_ROPE) {
+      if (const auto f = RopeSetRowsFusionAt(graph, i);
+          f && CheckRopeSetRows(f->rope, f->set_rows) &&
+          std::ranges::none_of(keep, [&](const auto* kept) {
+            return kept != nullptr && Storage(kept) == f->rope;
+          })) {
+        add(Operation::kRopeSetRows, kRopeSetRowsFused, i, {f->rope, f->set_rows}, 3);
+        continue;
+      }
+    }
     if (fusion) {
       // ggml_cuda_try_fuse's order: the patterns jitLLM lacks must not
       // apply, then RoPE and its store, the gate/up products, the product

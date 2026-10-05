@@ -72,6 +72,71 @@ en::Gemma4Model Places(const Case& c, const kg::Gemma4Graph& g) {
   }
   return m;
 }
+
+TEST(Gemma4Plan, StorePolicyKeepsAllRotatedStorageFundedAndWritesDiagnosticKeeps) {
+  Case c(2, 1279);
+  c.Set(2, 1279, false);
+  kg::Gemma4GraphOptions options;
+  options.device_masks = true;
+  options.rope_store = true;
+  auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+  ASSERT_TRUE(graph);
+  auto model = Places(c, *graph);
+  kg::DeviceChoices choices;
+  choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
+  choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
+  auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
+  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  constexpr auto address = std::uint64_t{1} << 53U;
+  auto placed =
+      en::PlanGemma4Chunk(model, c.shape, choices, address, (*measured)->placement.extent);
+  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  const auto& p = **placed;
+  // Independent graph arenas have different descriptor identities; compare
+  // their dispatch. PlaceAndPlan itself checks identity before/after binding.
+  EXPECT_TRUE(
+      std::ranges::equal((*measured)->plan.steps, p.plan.steps, [](const auto& a, const auto& b) {
+        return a.operation == b.operation && a.implementation == b.implementation &&
+               a.nodes.size() == b.nodes.size();
+      }));
+  EXPECT_EQ(std::ranges::count_if(p.plan.steps,
+                                  [](const auto& step) {
+                                    return step.operation ==
+                                           jitllm::execution::Operation::kRopeSetRows;
+                                  }),
+            c.p.layers * 2);
+  // Existing CheckCoverage checks every original descriptor and its sources.
+  // Even unwritten intermediates remain placed; every fused RoPE and flattening
+  // view therefore still lies in the activation region it checks.
+  for (const auto& step : p.plan.steps)
+    if (step.operation == jitllm::execution::Operation::kRopeSetRows) {
+      for (const auto* t : {step.nodes[0], step.nodes[1]->src[0]}) {
+        const auto data = reinterpret_cast<std::uintptr_t>(t->data);
+        EXPECT_GE(data, address);
+        EXPECT_LE(data - address + ggml_nbytes(t), p.placement.extent);
+      }
+      EXPECT_TRUE(kg::CheckRopeSetRows(step.nodes[0], step.nodes[1]));
+    }
+  const std::array<std::string, 1> keep{"blk.0.slot.0.k_rope"};
+  auto protected_plan = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0, keep);
+  ASSERT_TRUE(protected_plan) << *jitllm::test_support::Failed(protected_plan);
+  auto* kept = (*protected_plan)->graph.Named(keep[0]);
+  EXPECT_EQ(std::ranges::count_if((*protected_plan)->plan.steps,
+                                  [kept](const auto& step) {
+                                    return step.operation == jitllm::execution::Operation::kRope &&
+                                           step.nodes[0] == kept;
+                                  }),
+            1);
+  EXPECT_EQ(std::ranges::count_if((*protected_plan)->plan.steps,
+                                  [](const auto& step) {
+                                    return step.operation ==
+                                           jitllm::execution::Operation::kRopeSetRows;
+                                  }),
+            c.p.layers * 2 - 1);
+}
+
 TEST(Gemma4Plan, DeviceMaskSourcesStayBoundedAndAuthenticateFreshPositionsAndProducers) {
   for (const auto slots : {1U, 2U, 4U, 16U}) {
     Case c;

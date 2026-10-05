@@ -169,6 +169,18 @@ positions and cache indices. [Bounded mask controls](experiments/gemma-device-ma
 compare complete paid layers and captured execution. This transfer closes a
 primitive/input staging gap, not whole-model serving or batching qualification.
 
+Gemma's explicit default-off per-segment RoPE/cache-store policy transfers the
+existing checked factor-aware fused launcher without enabling generic fusion.
+Joined learned K normalization, Q rotation and global raw-K-as-V remain intact.
+Complete zero-offset flattening views make each independent store eligible;
+unsupported geometry and diagnostic keeps retain the ordinary producer.
+Current activation placement still funds rotated intermediate storage, so the
+transfer saves writes/launches rather than claiming physical memory elision.
+[Actual-width complete-layer and cache controls](experiments/gemma-rope-store/README.md)
+show byte agreement and no decisive paid solo/four-segment gain. This is
+conditional primitive availability; whole-model adoption and optimized-batch
+performance qualification remain separate.
+
 ## Rejected kernels: pieces worth retaining
 
 A rejection applies to its tested shape, precision and surrounding work.

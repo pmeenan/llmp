@@ -52,6 +52,9 @@ struct Gemma4GraphOptions {
   // Graph-owned causal/ring mask producers from fresh positions. false
   // retains the fully funded diagnostic host-mask source path.
   bool device_masks = false;
+  // Per-segment K rotation/direct flattening permits the separately checked
+  // RoPE/cache-store planner policy. false keeps the original joined K RoPE.
+  bool rope_store = false;
   // Narrow after final attention, before its sandwich norm, as the pinned
   // reference's masked frontier. false retains every final hidden row.
   bool narrow_final = false;

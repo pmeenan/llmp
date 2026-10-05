@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Explicit default-off Gemma per-segment RoPE/cache-store fusion, with
+  checked primitive fallback and readable diagnostic keeps. Whole-model
+  optimization selection remains separate.
+
 - Bounded native Gemma 26B-A4B engine runner with independent request slots,
   initialized KV, device masks and exact checkpoint/spill continuations.
   Serving and full model reference qualification remain separate.

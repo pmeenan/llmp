@@ -257,19 +257,20 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     q = Norm(c, p, q, weight(l.q_norm));
     k = Norm(c, p, k, weight(l.k_norm));
     v = named(prefix + "v_norm", ggml_rms_norm(c, v, p.rms_eps));
-    const auto rope = [&](ggml_tensor* t) {
-      return ggml_rope_ext(c, t, g.positions, p.local(il) ? nullptr : weight(b.rope_freqs),
+    const auto rope = [&](ggml_tensor* t, ggml_tensor* positions) {
+      return ggml_rope_ext(c, t, positions, p.local(il) ? nullptr : weight(b.rope_freqs),
                            static_cast<int>(p.local(il) ? p.local_rope_dims : p.global_rope_dims),
                            GGML_ROPE_TYPE_NEOX, static_cast<int>(p.context),
                            p.local(il) ? p.local_rope_base : p.global_rope_base, 1.0f, 0.0f, 1.0f,
                            32.0f, 1.0f);
     };
-    q = named(prefix + "q_rope", rope(q));
-    k = named(prefix + "k_rope", rope(k));
+    q = named(prefix + "q_rope", rope(q, g.positions));
+    if (!o.rope_store) k = named(prefix + "k_rope", rope(k, g.positions));
     // Upstream expands Q, V, K before stores. This also leaves K's rotation
     // next to its store, permitting the independently checked store fusion.
-    for (auto* t : {q, v, k}) expanded.push_back(t);
-    auto* k_rows = ggml_reshape_2d(c, k, kvw, rows);
+    for (auto* t : {q, v}) expanded.push_back(t);
+    if (!o.rope_store) expanded.push_back(k);
+    auto* k_rows = o.rope_store ? nullptr : ggml_reshape_2d(c, k, kvw, rows);
     auto* v_rows = ggml_reshape_2d(c, v, kvw, rows);
     ggml_tensor* joined = nullptr;
     for (auto& seg : g.segments) {
@@ -284,7 +285,23 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
       const auto slice = [&](ggml_tensor* t) {
         return ggml_view_2d(c, t, kvw, s.rows, t->nb[1], std::size_t{seg.first_row} * t->nb[1]);
       };
-      expanded.push_back(ggml_set_rows(c, cache_k, slice(k_rows), indices));
+      if (o.rope_store) {
+        // Every independent store gets a complete packed RoPE output, with
+        // its own fresh positions and a zero-offset flattening view. The
+        // joined learned K normalization and global raw-K-as-V stay unchanged.
+        auto* part = ggml_view_3d(c, k, d, kvh, s.rows, k->nb[1], k->nb[2],
+                                  std::size_t{seg.first_row} * k->nb[2]);
+        auto* positions =
+            ggml_view_1d(c, g.positions, s.rows, std::size_t{seg.first_row} * sizeof(std::int32_t));
+        auto* rotated =
+            named(prefix + std::format("slot.{}.k_rope", s.slot), rope(part, positions));
+        auto* flattened = ggml_view_2d(c, rotated, kvw, s.rows, rotated->nb[2], 0);
+        // Inputs precede the exact consecutive RoPE->VIEW->SET_ROWS pattern.
+        expanded.push_back(indices);
+        expanded.push_back(ggml_set_rows(c, cache_k, flattened, indices));
+      } else {
+        expanded.push_back(ggml_set_rows(c, cache_k, slice(k_rows), indices));
+      }
       expanded.push_back(ggml_set_rows(c, cache_v, slice(v_rows), indices));
       const auto cache_view = [&](ggml_tensor* t) {
         return ggml_permute(
