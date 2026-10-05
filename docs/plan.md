@@ -389,7 +389,8 @@ family" guide, and its long-context scaling work.
         timing movement alongside removed planning. Full qualification stays open.
       - [x] [Plain RMSNorm/Mul first screen](experiments/gemma-normmul-screen/README.md):
         Gemma31 selects 121 additional norm fusions and preserves exact native
-        heads/state/choices, but shows no resolved speed gain. Remains unselected.
+        heads/state/choices, but that earlier full-head screen showed no resolved
+        speed gain; the subsequent state-only adoption is below.
       - [x] [Current Gemma31 prefill timeline](experiments/gemma31-current-timeline/README.md):
         32 GPU-idle gaps over 10 ms total 592 ms; extra vocabulary projections
         cost 145 ms. Product and attention duration sums are close to stock,
@@ -412,6 +413,12 @@ family" guide, and its long-context scaling work.
         Gemma26/31 prefill improves 1.55%/2.36% with exact heads/state; a qualified
         31B comparison leaves 4.94% latency excess against preceding references.
         Full quality, competitive batching and remaining overhead stay open.
+      - [x] [Checked plain norm default](experiments/gemma-state-only-norm-policy/README.md):
+        both approved profiles retain exact ordinary off/on heads, initialized
+        state and choices. Focused scalar/unequal-wave continuation and capture
+        controls pass; other arithmetic defaults stay off. Research-policy
+        prefill screens favor fusion, with noisy 31B magnitude. Corpus quality
+        and optimized batching remain open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

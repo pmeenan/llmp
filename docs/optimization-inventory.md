@@ -410,6 +410,15 @@ from the earlier runners without changing future KV ownership. Previous-family
 default prompt hooks ignore the hint; no additional Qwen/DeepSeek speed claim
 is made. Scoring, features and final prompt heads retain their full paths.
 
+The [plain norm adoption](experiments/gemma-state-only-norm-policy/README.md)
+now selects existing checked RMSNorm/Mul by default for both approved Gemmas.
+Ordinary off/on controls preserve complete heads, initialized state and choices;
+new default scalar/unequal-wave continuation and capture controls pass. Research
+state-only/lookahead comparisons favor fusion at both profiles, with noisy 31B
+effect magnitude. This supersedes the earlier unresolved full-head screen for
+default selection, while broader corpus quality and batching remain owed.
+Other arithmetic experiment defaults remain off.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

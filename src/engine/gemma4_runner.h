@@ -45,8 +45,9 @@ struct Gemma4Options {
   bool retain_features = false;
   // Caller-funded host masks remain an explicit numerical diagnostic.
   bool reference_masks = false;
-  // Unqualified experiments default off; retain ordinary numerical control.
-  bool shared_q8 = false, fuse_norms = false, row_invariant = false, rope_store = false;
+  // Checked plain RMSNorm/Mul preserves the primitive arithmetic in both
+  // approved profiles. Other unqualified experiments remain explicit opt-ins.
+  bool shared_q8 = false, fuse_norms = true, row_invariant = false, rope_store = false;
   bool fuse_norm_rope = false, fuse_norm_add = false;
   bool fuse_gemma_route = false, fuse_gemma_reduce = false;
   bool prefill_lookahead = true;

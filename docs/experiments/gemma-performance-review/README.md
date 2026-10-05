@@ -28,6 +28,11 @@ reduces same-binary prefill by 1.55%/2.36% at 26/31. The later 31B mean is
 4.94% above its preceding reference bookends; this is qualified evidence, not
 a fresh reference-bookended parity result. The initial noisy 31B screen is
 preserved in the report.
+The [plain norm retry and adoption](../gemma-state-only-norm-policy/README.md)
+favors fusion on both state-only/lookahead research recipes and preserves exact
+ordinary off/on heads and state. Plain RMSNorm/Mul is now a serving default;
+other arithmetic policies remain opt-ins. The 31B retry has noisy effect
+magnitude and no fresh reference comparison.
 M3.5 remains incomplete. The source-use optimization landed as `5ef7aac` after
 1,700 Spark tests passed without failures or skips, including 311 GPU and 57
 model tests. Both Sparks were checked idle at the pause.
@@ -97,8 +102,10 @@ found. Do not assume that pin is still latest when another task begins.
   `CanFuse` and `CanFuseSubgraph`, preserving local suffix/gather counts and
   standalone fallback. Both placement passes and SamePlan remain intact.
 - [Plain RMSNorm/Mul fusion](../gemma-normmul-screen/README.md) selected 121
-  additional Gemma31 fusions but gave no resolved speed gain. It remains off;
-  this result does not exclude a benefit at Gemma26's different shape.
+  additional Gemma31 fusions but gave no resolved speed gain in that earlier
+  full-head screen. The subsequent state-only/lookahead retry favors fusion
+  and qualified ordinary controls now support the plain norm default in both
+  profiles.
 
 The large earlier Gemma26 host cost has a measured explanation and an adopted
 fix. The current cold/retained comparison isolates material planning and state-growth

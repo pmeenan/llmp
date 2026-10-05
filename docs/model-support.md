@@ -108,6 +108,13 @@ with funding, completion and abandoned-hint controls. Exact native heads/state
 are preserved; same-binary all1024/both256 prefill improves 1.55%/2.36%. This
 changes neither the optional arithmetic policies nor model qualification.
 
+The [checked plain RMSNorm/Mul selector](experiments/gemma-state-only-norm-policy/README.md)
+is now a serving default for both approved profiles. Ordinary off/on controls
+preserve complete retained heads, initialized state and 32 choices; focused
+default continuation and captured replay controls pass. Other experimental
+arithmetic policies remain off, and model quality/batching qualification is
+unchanged.
+
 ## Chat templates
 
 A chat template renders natively when a native renderer is registered for

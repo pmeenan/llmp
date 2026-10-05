@@ -23,6 +23,7 @@ namespace en = jitllm::engine;
 class Gemma4RunnerGpu : public ::testing::Test {
  protected:
   virtual bool Invariant() const { return false; }
+  virtual bool DefaultNorms() const { return false; }
   virtual bool RetainFeatures() const { return false; }
   virtual bool NormChains() const { return false; }
   virtual bool MoeChains() const { return false; }
@@ -35,21 +36,21 @@ class Gemma4RunnerGpu : public ::testing::Test {
              ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
              : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
     ASSERT_TRUE(std::filesystem::exists(artifact));
-    runner = std::make_unique<en::Gemma4Runner>(
-        node,
-        en::Gemma4Options{.artifact = artifact,
-                          .out = "/tmp/jitllm-gemma4-runner-control",
-                          .variant = Variant(),
-                          .slots = 4,
-                          .retain_features = RetainFeatures(),
-                          .shared_q8 = Invariant(),
-                          .fuse_norms = Invariant(),
-                          .row_invariant = Invariant(),
-                          .fuse_norm_rope = NormChains(),
-                          .fuse_norm_add = NormChains(),
-                          .fuse_gemma_route = MoeChains(),
-                          .fuse_gemma_reduce = MoeChains()},
-        0, 0);
+    en::Gemma4Options options{.artifact = artifact,
+                              .out = "/tmp/jitllm-gemma4-runner-control",
+                              .variant = Variant(),
+                              .slots = 4,
+                              .retain_features = RetainFeatures(),
+                              .shared_q8 = Invariant(),
+                              .row_invariant = Invariant(),
+                              .fuse_norm_rope = NormChains(),
+                              .fuse_norm_add = NormChains(),
+                              .fuse_gemma_route = MoeChains(),
+                              .fuse_gemma_reduce = MoeChains()};
+    // Historical ordinary fixtures stay explicitly off; default fixtures use
+    // the production default without overriding the option.
+    if (!DefaultNorms()) options.fuse_norms = Invariant();
+    runner = std::make_unique<en::Gemma4Runner>(node, std::move(options), 0, 0);
     ASSERT_TRUE(node.Open());
     entered.push_back(runner.get());
     auto setup = runner->Setup();
@@ -249,6 +250,21 @@ class Gemma31NormRunnerGpu : public Gemma31RunnerGpu {
  protected:
   bool NormChains() const override { return true; }
 };
+class Gemma26DefaultNormRunnerGpu : public Gemma4RunnerGpu {
+ protected:
+  bool DefaultNorms() const override { return true; }
+};
+class Gemma31DefaultNormRunnerGpu : public Gemma31RunnerGpu {
+ protected:
+  bool DefaultNorms() const override { return true; }
+};
+TEST(Gemma4RunnerDefaults, CheckedPlainNormsDoNotEnableOtherExperiments) {
+  const en::Gemma4Options options;
+  EXPECT_TRUE(options.fuse_norms);
+  EXPECT_FALSE(options.shared_q8 || options.row_invariant || options.rope_store ||
+               options.fuse_norm_rope || options.fuse_norm_add || options.fuse_gemma_route ||
+               options.fuse_gemma_reduce);
+}
 void Gemma4RunnerGpu::StateOnlyControl() {
   ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
   auto ranges = runner->CheckpointRanges(7);
@@ -386,6 +402,14 @@ TEST_F(Gemma26MoeRunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapture
 }
 TEST_F(Gemma31NormRunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapturedReplay) {
   StateOnlyControl();
+}
+TEST_F(Gemma26DefaultNormRunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapturedReplay) {
+  StateOnlyControl();
+  EXPECT_GT(runner->last_built_policy().norm_fused, 0U);
+}
+TEST_F(Gemma31DefaultNormRunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapturedReplay) {
+  StateOnlyControl();
+  EXPECT_GT(runner->last_built_policy().norm_fused, 0U);
 }
 TEST_F(Gemma31RunnerGpu, LookaheadRefusalAndAbandonedPredictionKeepTheCompletedPrefix) {
   ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 1>{0}));

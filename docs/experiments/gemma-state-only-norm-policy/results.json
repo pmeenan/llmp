@@ -1,0 +1,693 @@
+{
+  "arms": {
+    "task53-native31-norm-off-first": {
+      "metrics": {
+        "prefill_seconds": "12.0398",
+        "prefill_rows": "8192",
+        "prefill_chunks": "32",
+        "intermediate_heads": "0",
+        "prefill_output": "state-only",
+        "lookahead": "lookahead-on",
+        "lookahead_attempted": "31",
+        "lookahead_built": "31",
+        "lookahead_cached": "31",
+        "lookahead_refused": "0",
+        "lookahead_build_seconds": "0.224459",
+        "decode_seconds": "3.18928",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "chunk": "256",
+        "masks": "device",
+        "normmul": "normmul-off",
+        "prefill_norm_fused": "0",
+        "prefill_norm_rope": "120",
+        "prefill_norm_add": "120",
+        "prefill_gemma_route": "0",
+        "prefill_gemma_reduce": "0",
+        "gemma_route": "0",
+        "gemma_reduce": "0",
+        "shared_vecq": "0",
+        "row_products": "0",
+        "norm_fused": "0",
+        "rope_store": "0",
+        "norm_rope": "120",
+        "norm_add": "120",
+        "captures": "1",
+        "replays": "33"
+      },
+      "heads": {
+        "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+    },
+    "task53-native31-norm-on-first": {
+      "metrics": {
+        "prefill_seconds": "11.3124",
+        "prefill_rows": "8192",
+        "prefill_chunks": "32",
+        "intermediate_heads": "0",
+        "prefill_output": "state-only",
+        "lookahead": "lookahead-on",
+        "lookahead_attempted": "31",
+        "lookahead_built": "31",
+        "lookahead_cached": "31",
+        "lookahead_refused": "0",
+        "lookahead_build_seconds": "0.212049",
+        "decode_seconds": "3.19155",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "chunk": "256",
+        "masks": "device",
+        "normmul": "normmul-on",
+        "prefill_norm_fused": "121",
+        "prefill_norm_rope": "120",
+        "prefill_norm_add": "120",
+        "prefill_gemma_route": "0",
+        "prefill_gemma_reduce": "0",
+        "gemma_route": "0",
+        "gemma_reduce": "0",
+        "shared_vecq": "0",
+        "row_products": "0",
+        "norm_fused": "121",
+        "rope_store": "0",
+        "norm_rope": "120",
+        "norm_add": "120",
+        "captures": "1",
+        "replays": "33"
+      },
+      "heads": {
+        "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+    },
+    "task53-native31-norm-on-repeat": {
+      "metrics": {
+        "prefill_seconds": "11.3283",
+        "prefill_rows": "8192",
+        "prefill_chunks": "32",
+        "intermediate_heads": "0",
+        "prefill_output": "state-only",
+        "lookahead": "lookahead-on",
+        "lookahead_attempted": "31",
+        "lookahead_built": "31",
+        "lookahead_cached": "31",
+        "lookahead_refused": "0",
+        "lookahead_build_seconds": "0.222289",
+        "decode_seconds": "3.19636",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "chunk": "256",
+        "masks": "device",
+        "normmul": "normmul-on",
+        "prefill_norm_fused": "121",
+        "prefill_norm_rope": "120",
+        "prefill_norm_add": "120",
+        "prefill_gemma_route": "0",
+        "prefill_gemma_reduce": "0",
+        "gemma_route": "0",
+        "gemma_reduce": "0",
+        "shared_vecq": "0",
+        "row_products": "0",
+        "norm_fused": "121",
+        "rope_store": "0",
+        "norm_rope": "120",
+        "norm_add": "120",
+        "captures": "1",
+        "replays": "33"
+      },
+      "heads": {
+        "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+    },
+    "task53-native31-norm-off-repeat": {
+      "metrics": {
+        "prefill_seconds": "11.6728",
+        "prefill_rows": "8192",
+        "prefill_chunks": "32",
+        "intermediate_heads": "0",
+        "prefill_output": "state-only",
+        "lookahead": "lookahead-on",
+        "lookahead_attempted": "31",
+        "lookahead_built": "31",
+        "lookahead_cached": "31",
+        "lookahead_refused": "0",
+        "lookahead_build_seconds": "0.212016",
+        "decode_seconds": "3.19015",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "chunk": "256",
+        "masks": "device",
+        "normmul": "normmul-off",
+        "prefill_norm_fused": "0",
+        "prefill_norm_rope": "120",
+        "prefill_norm_add": "120",
+        "prefill_gemma_route": "0",
+        "prefill_gemma_reduce": "0",
+        "gemma_route": "0",
+        "gemma_reduce": "0",
+        "shared_vecq": "0",
+        "row_products": "0",
+        "norm_fused": "0",
+        "rope_store": "0",
+        "norm_rope": "120",
+        "norm_add": "120",
+        "captures": "1",
+        "replays": "33"
+      },
+      "heads": {
+        "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+    }
+  },
+  "on_repeat_heads_state_32choices_exact": true,
+  "off_heads_state_32choices_exact_to_baseline": true,
+  "on_off_heads": {
+    "prefill.f32": {
+      "byte_exact": true,
+      "max_raw_delta": 0.0,
+      "argmax_equal": true
+    },
+    "final.f32": {
+      "byte_exact": true,
+      "max_raw_delta": 0.0,
+      "argmax_equal": true
+    }
+  },
+  "on_off_state_exact": true,
+  "finite_retained_complete_heads": 8,
+  "mean_seconds": {
+    "off": {
+      "prefill_seconds": 11.856300000000001,
+      "decode_seconds": 3.189715
+    },
+    "on": {
+      "prefill_seconds": 11.320350000000001,
+      "decode_seconds": 3.193955
+    }
+  },
+  "on_vs_off_percent": {
+    "prefill_seconds": -4.520381569292276,
+    "decode_seconds": 0.13292723644589
+  },
+  "source_base": "1ceb7d2 plus Task52 reviewed production lookahead",
+  "helper_sha256": "a5ea8065eff6b624d865184734f5816320aba15b7aeed5e1bdeb3f73cffc2e09",
+  "receipt_sha256": "995ee8194ab9d0f8c41b07eb3d3458da4f81b42f5c9ce466a0801b6531d64522",
+  "task_entry_tensorfold": {
+    "utc": "2026-10-05 23:01:41 UTC",
+    "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "applicability": "No matching Gemma31 CUDA recipe"
+  },
+  "limitations": [
+    "Same-binary norm-policy diagnostic, no fresh reference comparison.",
+    "Off arms vary3.14%; reported mean effect is not stable absolute magnitude."
+  ],
+  "26_transfer": {
+    "arms": {
+      "task53-native26-norm-off-first": {
+        "metrics": {
+          "prefill_seconds": "2.55883",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-on",
+          "lookahead_attempted": "7",
+          "lookahead_built": "7",
+          "lookahead_cached": "7",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.0468588",
+          "decode_seconds": "0.688691",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+          "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+        },
+        "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+      },
+      "task53-native26-norm-on-first": {
+        "metrics": {
+          "prefill_seconds": "2.53058",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-on",
+          "lookahead_attempted": "7",
+          "lookahead_built": "7",
+          "lookahead_cached": "7",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.046389",
+          "decode_seconds": "0.686894",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-on",
+          "prefill_norm_fused": "121",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "121",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+          "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+        },
+        "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+      },
+      "task53-native26-norm-on-repeat": {
+        "metrics": {
+          "prefill_seconds": "2.51346",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-on",
+          "lookahead_attempted": "7",
+          "lookahead_built": "7",
+          "lookahead_cached": "7",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.0461875",
+          "decode_seconds": "0.689376",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-on",
+          "prefill_norm_fused": "121",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "121",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+          "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+        },
+        "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+      },
+      "task53-native26-norm-off-repeat": {
+        "metrics": {
+          "prefill_seconds": "2.5743",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-on",
+          "lookahead_attempted": "7",
+          "lookahead_built": "7",
+          "lookahead_cached": "7",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.0500046",
+          "decode_seconds": "0.687381",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+          "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+        },
+        "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+      }
+    },
+    "on_repeat_heads_state_32choices_exact": true,
+    "off_heads_state_32choices_exact_to_baseline": true,
+    "on_off_heads": {
+      "prefill.f32": {
+        "byte_exact": true,
+        "max_raw_delta": 0.0,
+        "argmax_equal": true
+      },
+      "final.f32": {
+        "byte_exact": true,
+        "max_raw_delta": 0.0,
+        "argmax_equal": true
+      }
+    },
+    "on_off_state_exact": true,
+    "finite_retained_complete_heads": 8,
+    "mean_seconds": {
+      "off": {
+        "prefill_seconds": 2.5665649999999998,
+        "decode_seconds": 0.6880360000000001
+      },
+      "on": {
+        "prefill_seconds": 2.52202,
+        "decode_seconds": 0.6881349999999999
+      }
+    },
+    "on_vs_off_percent": {
+      "prefill_seconds": -1.735588227845386,
+      "decode_seconds": 0.014388781982321852
+    }
+  },
+  "adoption": {
+    "source_base": "756ab6e",
+    "production_change": "Gemma4Options.fuse_norms=true; other arithmetic experiments remainfalse",
+    "task_entry_tensorfold": {
+      "utc": "2026-10-05 23:10:38 UTC",
+      "head": "609ca419abecebdc5a059498a613680bd3aa847f"
+    },
+    "ordinary31": {
+      "arms": {
+        "task53-native31-ordinary-off-first": {
+          "metrics": {
+            "prefill_seconds": "11.8435",
+            "prefill_rows": "8192",
+            "prefill_chunks": "32",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "lookahead": "lookahead-on",
+            "lookahead_attempted": "31",
+            "lookahead_built": "31",
+            "lookahead_cached": "31",
+            "lookahead_refused": "0",
+            "lookahead_build_seconds": "0.174874",
+            "decode_seconds": "3.19243",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "256",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "0",
+            "prefill_norm_add": "0",
+            "prefill_gemma_route": "0",
+            "prefill_gemma_reduce": "0",
+            "gemma_route": "0",
+            "gemma_reduce": "0",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "0",
+            "norm_add": "0",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "b76c8f51c566bf025505c36a1fda4975fed356e4433376ab1bc7ab473414c58e",
+            "final.f32": "9a3fa430adc09a871fe36bf19a49dcdbc3ec589762f34048318bf95f8a3333a9"
+          },
+          "state_sha256": "81050bb534bc410d6722715535046266c8b437fe306bb29f1d0b2b883a6d0a16"
+        },
+        "task53-native31-ordinary-on-first": {
+          "metrics": {
+            "prefill_seconds": "11.5605",
+            "prefill_rows": "8192",
+            "prefill_chunks": "32",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "lookahead": "lookahead-on",
+            "lookahead_attempted": "31",
+            "lookahead_built": "31",
+            "lookahead_cached": "31",
+            "lookahead_refused": "0",
+            "lookahead_build_seconds": "0.211685",
+            "decode_seconds": "3.19752",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "256",
+            "masks": "device",
+            "normmul": "normmul-on",
+            "prefill_norm_fused": "361",
+            "prefill_norm_rope": "0",
+            "prefill_norm_add": "0",
+            "prefill_gemma_route": "0",
+            "prefill_gemma_reduce": "0",
+            "gemma_route": "0",
+            "gemma_reduce": "0",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "361",
+            "rope_store": "0",
+            "norm_rope": "0",
+            "norm_add": "0",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "b76c8f51c566bf025505c36a1fda4975fed356e4433376ab1bc7ab473414c58e",
+            "final.f32": "9a3fa430adc09a871fe36bf19a49dcdbc3ec589762f34048318bf95f8a3333a9"
+          },
+          "state_sha256": "81050bb534bc410d6722715535046266c8b437fe306bb29f1d0b2b883a6d0a16"
+        }
+      },
+      "on_off_heads": {
+        "prefill.f32": {
+          "byte_exact": true,
+          "max_raw_delta": 0.0,
+          "argmax_equal": true
+        },
+        "final.f32": {
+          "byte_exact": true,
+          "max_raw_delta": 0.0,
+          "argmax_equal": true
+        }
+      },
+      "on_off_state_exact": true,
+      "on_off_32choices_exact": true,
+      "finite_retained_complete_heads": 4,
+      "on_vs_off_percent": {
+        "prefill_seconds": -2.389496348207887,
+        "decode_seconds": 0.15943967447993312
+      },
+      "recipe": {
+        "policy": "ordinary",
+        "rows": 256,
+        "normmul": "off then on",
+        "prefill_output": "state-only",
+        "lookahead": "on",
+        "other_arithmetic_experiments": "off",
+        "input": "Inherited exact8227 IDs from Task52",
+        "context": 16384,
+        "kv": "F16",
+        "local_cells": 1280,
+        "global_cells": 16384,
+        "swa_full": false,
+        "kv_unified": false
+      }
+    },
+    "ordinary26": {
+      "arms": {
+        "task53-native26-ordinary-off-first": {
+          "metrics": {
+            "prefill_seconds": "3.27601",
+            "prefill_rows": "8192",
+            "prefill_chunks": "8",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "lookahead": "lookahead-on",
+            "lookahead_attempted": "7",
+            "lookahead_built": "7",
+            "lookahead_cached": "7",
+            "lookahead_refused": "0",
+            "lookahead_build_seconds": "0.0351605",
+            "decode_seconds": "0.704074",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "1024",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "0",
+            "prefill_norm_add": "0",
+            "prefill_gemma_route": "0",
+            "prefill_gemma_reduce": "0",
+            "gemma_route": "0",
+            "gemma_reduce": "0",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "0",
+            "norm_add": "0",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "64edc2e408821b9678190a612833519a343390804cf4538cf3b20dd7008b462a",
+            "final.f32": "79e1dc59f1077bc5da6eed6d6dd5bb6297493d6a6d081f973ac87230961eda95"
+          },
+          "state_sha256": "e8179392b776748453613ee72f89ab8414f35210a6cb95540094bbef01a033c6"
+        },
+        "task53-native26-ordinary-on-first": {
+          "metrics": {
+            "prefill_seconds": "3.15367",
+            "prefill_rows": "8192",
+            "prefill_chunks": "8",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "lookahead": "lookahead-on",
+            "lookahead_attempted": "7",
+            "lookahead_built": "7",
+            "lookahead_cached": "7",
+            "lookahead_refused": "0",
+            "lookahead_build_seconds": "0.0416152",
+            "decode_seconds": "0.703721",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "1024",
+            "masks": "device",
+            "normmul": "normmul-on",
+            "prefill_norm_fused": "271",
+            "prefill_norm_rope": "0",
+            "prefill_norm_add": "0",
+            "prefill_gemma_route": "0",
+            "prefill_gemma_reduce": "0",
+            "gemma_route": "0",
+            "gemma_reduce": "0",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "271",
+            "rope_store": "0",
+            "norm_rope": "0",
+            "norm_add": "0",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "64edc2e408821b9678190a612833519a343390804cf4538cf3b20dd7008b462a",
+            "final.f32": "79e1dc59f1077bc5da6eed6d6dd5bb6297493d6a6d081f973ac87230961eda95"
+          },
+          "state_sha256": "e8179392b776748453613ee72f89ab8414f35210a6cb95540094bbef01a033c6"
+        }
+      },
+      "on_off_heads": {
+        "prefill.f32": {
+          "byte_exact": true,
+          "max_raw_delta": 0.0,
+          "argmax_equal": true
+        },
+        "final.f32": {
+          "byte_exact": true,
+          "max_raw_delta": 0.0,
+          "argmax_equal": true
+        }
+      },
+      "on_off_state_exact": true,
+      "on_off_32choices_exact": true,
+      "finite_retained_complete_heads": 4,
+      "on_vs_off_percent": {
+        "prefill_seconds": -3.7344208351012376,
+        "decode_seconds": -0.050136775395759337
+      },
+      "recipe": {
+        "policy": "ordinary",
+        "rows": 1024,
+        "normmul": "off then on",
+        "prefill_output": "state-only",
+        "lookahead": "on",
+        "other_arithmetic_experiments": "off",
+        "input": "Inherited exact8227 IDs from Task52",
+        "context": 16384,
+        "kv": "F16",
+        "local_cells": 2048,
+        "global_cells": 16384,
+        "swa_full": false,
+        "kv_unified": false
+      }
+    },
+    "focused_controls": {
+      "total": 13,
+      "default_flags": 1,
+      "actual_model_ordinary_and_default_state_continuation_replay": 4,
+      "norm_registry_kernels": 2,
+      "norm_descriptor_bounds": 3,
+      "selected_plan_binding": 3,
+      "initial_driver_failure": "Missing JITLLM_TEST_DATA for plan-control step; SIGABRT before completion, retained record",
+      "narrow_plan_retry": "PASS, no source change",
+      "full_suite": "Deferred by owner until selected performance work settles"
+    },
+    "compiled_helper_sha256": "abb7d453d0f35f9c3c84d320271ae99f1c02874194d1a9d978386d8c77830668",
+    "receipt_sha256": "995ee8194ab9d0f8c41b07eb3d3458da4f81b42f5c9ce466a0801b6531d64522"
+  }
+}

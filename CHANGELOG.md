@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Checked plain RMSNorm/Mul is enabled by default for both approved Gemmas.
+  Ordinary off/on controls retain exact complete heads, initialized state and
+  continuations; other experimental arithmetic flags remain opt-ins.
+
 - Gemma prefill builds a bounded next-chunk CPU plan during current execution.
   Exact head/state controls pass; same-binary Gemma26/31 prefill improves
   1.55%/2.36% under the existing optional policies. Reference parity remains open.

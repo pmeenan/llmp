@@ -242,7 +242,11 @@ The diagnostic primitive baseline leaves nine learned RMSNorm/weight
 products unfused per complete local or global layer. Explicit
 `DeviceChoices::fuse_norms` binds all nine fusions across one, two and four
 independent segments, with synthetic complete-layer and captured-state
-controls. This is a diagnostic policy, not an adopted serving default.
+controls. The checked plain norm selector is now enabled by default in
+`Gemma4Options` for both approved profiles; ordinary off/on controls preserve
+complete retained heads, initialized state and 32 choices. Other norm chains
+and experimental flags remain explicit opt-ins. See the
+[default qualification](experiments/gemma-state-only-norm-policy/README.md).
 The default graph keeps joined K rotation and primitive stores. Explicit
 `Gemma4GraphOptions::rope_store` instead rotates each segment's joined,
 learned-normalized K view with its own fresh positions and supplies a complete
