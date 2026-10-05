@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Dense31 joined norm screening with ordinary product selection and matched
+  reference bookends. Quality and performance failures keep selection open.
+
 - Reproducible dense31 joined norm/row-policy screening, with exact native
   repeats and matched stock comparisons. Quality failures keep the candidate
   unselected.

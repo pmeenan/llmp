@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// ARTIFACT OUTPUT_DIR 26|31 OWNERS scalar|joined ordinary|rows|rows-norm [IDS_I32]
+// ARTIFACT OUTPUT_DIR 26|31 OWNERS scalar|joined ordinary|rows|rows-norm|norm [IDS_I32]
 // Bounded common-prefix units: every completed owner head is published/charged.
 #include <algorithm>
 #include <array>
@@ -40,9 +40,12 @@ int main(int argc, char** argv) {
   const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), count);
   if (error != std::errc{} || end != number.data() + number.size() || count == 0 || count > 12 ||
       (variant != "26" && variant != "31") || (mode != "scalar" && mode != "joined") ||
-      (policy != "ordinary" && policy != "rows" && policy != "rows-norm"))
+      (policy != "ordinary" && policy != "rows" && policy != "rows-norm" && policy != "norm"))
     return 2;
-  if (policy == "rows-norm" && (variant != "31" || count != 4 || supplied.empty())) return 2;
+  if ((policy == "rows-norm" || policy == "norm") &&
+      (variant != "31" || count != 4 || supplied.empty()))
+    return 2;
+  if (policy == "norm" && mode != "joined") return 2;
   const std::filesystem::path out = argv[2];
   std::error_code file_error;
   if (!std::filesystem::create_directory(out, file_error) || file_error) return 2;
@@ -68,9 +71,9 @@ int main(int argc, char** argv) {
           .context = 256,
           .max_rows = 128,
           .slots = count,
-          .row_invariant = policy != "ordinary",
-          .fuse_norm_rope = policy == "rows-norm",
-          .fuse_norm_add = policy == "rows-norm"},
+          .row_invariant = policy == "rows" || policy == "rows-norm",
+          .fuse_norm_rope = policy == "rows-norm" || policy == "norm",
+          .fuse_norm_add = policy == "rows-norm" || policy == "norm"},
       0, 0);
   auto& runner = *lifetime->runner;
   const auto execute = [&]() -> en::Status {

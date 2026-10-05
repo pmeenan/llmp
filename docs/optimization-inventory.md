@@ -193,6 +193,11 @@ scalar/joined heads exact. Fresh stock has 33/128 strict positive-margin
 differences; candidate latency is 1.7523% above the fresh stock bookends.
 This negative candidate remains unselected; the earlier 128-row proof does not
 transfer to this shape.
+The [ordinary-product norm C4 screen](experiments/gemma-joined-norm-ordinary/README.md)
+restores column-dependent product selection with both norm chains. Fresh
+recipe-aligned stock ubatch128 still has 15/128 strict positive-margin
+differences; candidate latency is 1.1161% higher. Own C4 repeats remain exact,
+but no C1=C4 equivalence or selected optimization follows.
 
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and

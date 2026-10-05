@@ -1,0 +1,217 @@
+{
+  "measured_source_identity": {
+    "base": "fdf6d1a09bd26e5f4031a05f1debf11b5e907d52",
+    "files": [
+      {
+        "path": "benchmarks/CMakeLists.txt",
+        "sha256": "8c7195ed1c9524a58b49d053ec6253f48f15e8e24c0c87c6a7a90c873e1817f7"
+      },
+      {
+        "path": "benchmarks/gemma_joined.cc",
+        "sha256": "40a5c51db3996a6529fd78ee2b4227d473dda14824fc083812238fe10ef5cbbb"
+      },
+      {
+        "path": "docs/experiments/gemma-joined-norm-ordinary/PROTOCOL.md",
+        "sha256": "906adb043079d6a2a6334bb3053cc3fd3e220b5ddc427c5001e2216a6a778286"
+      },
+      {
+        "path": "docs/experiments/gemma-joined-norm-ordinary/own_freeze.py",
+        "sha256": "78b643fae078631a0cba7afd9246fb6ef15a6202ec2077c5186b1882b743f44d"
+      },
+      {
+        "path": "docs/experiments/gemma-joined-norm-ordinary/reference.sh",
+        "sha256": "c2db4c2ef81a91918536a012e826e9d0b735fafd2650ba0c0671271345859c46"
+      },
+      {
+        "path": "docs/experiments/gemma-joined-serving/PROTOCOL.md",
+        "sha256": "f56fbdde28481605d70ebc5f85f0496c42ed48dcd6b27760bfc51251b3cf1912"
+      },
+      {
+        "path": "docs/experiments/gemma-joined-serving/analyze.py",
+        "sha256": "d9c4efae191cedc2797617264bfe3ddaf71dbe04c4c8132914c38367e2011ce1"
+      },
+      {
+        "path": "docs/experiments/gemma-joined-serving/llama_joined.cc",
+        "sha256": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e"
+      },
+      {
+        "path": "docs/experiments/gemma-joined-serving/reference.sh",
+        "sha256": "d193b98b43364f481a941d9de0972dfe59bed1dde6c398c82f1da014eaa444e3"
+      },
+      {
+        "path": "src/engine/gemma4_plan.cc",
+        "sha256": "48b1d126a70bc4a74785fe69f2701ad1882528ee19974b84b36a7fc9a06cbef8"
+      },
+      {
+        "path": "src/engine/gemma4_runner.cc",
+        "sha256": "3e71bc1c0cae265570c207a51469423f2f0c5675158b7ef764f5e63f6c187d5f"
+      },
+      {
+        "path": "src/engine/gemma4_runner.h",
+        "sha256": "e415141e56bd3a4bb908076a6ae1099ec94dd0b9daa44136dafe40649941b1ca"
+      },
+      {
+        "path": "src/execution/registry.cc",
+        "sha256": "118d334fb3b72b358a21d02bac98eac806047ae1620a9ab689bfa91c77818505"
+      },
+      {
+        "path": "src/execution/registry.h",
+        "sha256": "292cddfc1720be55e0f4463345951e0153514deb802f5a2ef83276e3d6bb5da3"
+      },
+      {
+        "path": "src/kernels/ggml/executor.cc",
+        "sha256": "7fa2bed30bbdadc74703038e57f356e5c9bf510078dae77d19375bb51ac9a4eb"
+      },
+      {
+        "path": "src/kernels/ggml/fusion.cc",
+        "sha256": "fb3300de855a63787c266911fbc888f8514fda2e7381e77fd54eb9517d776c0b"
+      },
+      {
+        "path": "src/kernels/ggml/gemma4_graph.cc",
+        "sha256": "700edf1b54a2d243eebc4663d2acdfadf38880df40ffcb40a05c0d4c9b7be645"
+      },
+      {
+        "path": "src/kernels/ggml/gemma_norm.cc",
+        "sha256": "70dc6f72580d7d53ded74c64db2ba866868d1a610de87196a5b7074b62591af3"
+      },
+      {
+        "path": "src/kernels/ggml/gemma_norm.cu",
+        "sha256": "47856fa84c5403a90506576ef01f977a448c646c80c5eddaa47eaa7bd7d6cb3d"
+      },
+      {
+        "path": "src/kernels/ggml/gemma_norm.h",
+        "sha256": "806e41624b83b01df0c0f47df6842e2349ca944713b2619afaef3be27d8d8c7d"
+      },
+      {
+        "path": "src/kernels/ggml/graph_plan.cc",
+        "sha256": "d9137f10eff9c0acb16d2e68e661d2a757ad216578d569f4a5bcd3dd4cd5b5c7"
+      },
+      {
+        "path": "src/kernels/ggml/graph_plan.h",
+        "sha256": "c2e4dd85e7e9d03307e9c0b2e209571bee8f54a3ba6e7b2223f638ed502a7288"
+      },
+      {
+        "path": "src/kernels/ggml/implementations.cc",
+        "sha256": "826c597406d7f53ae84be466f4c76f134c16f9523dad56d6b9a9c8f6da911c26"
+      },
+      {
+        "path": "src/kernels/ggml/mmvq_rows.cu",
+        "sha256": "3ea3549076cfc9778a96a6be45e383900112548e0611865d76a20bad0f6f60da"
+      },
+      {
+        "path": "src/kernels/ggml/mul_mat_q.cu",
+        "sha256": "c7286e2a36e7bf7afe6925fb34724f1789d011bc63e88b76910517ac50fa86bb"
+      },
+      {
+        "path": "src/model/gemma4.cc",
+        "sha256": "d0e664ab6b82959ebbc97ffc06101d1bcb22f5d65733c4c7b8d5c4052d53eb16"
+      },
+      {
+        "path": "src/runtime/commands.h",
+        "sha256": "f31f82960a5cd7767e86ff75ddf28e7d3b5f4b371b4cfcbc0e19eedb24613e3a"
+      },
+      {
+        "path": "src/runtime/gemma_wave.h",
+        "sha256": "cc34ce7d44ced90afa7594f8a3e8f621b8d24a79b6b126b7100108f000110ce7"
+      },
+      {
+        "path": "src/runtime/serving.cc",
+        "sha256": "152e2a3d7d1dc82a8ae240f88e6bb9859c0699052a3ccd02e0adb5c10a71c872"
+      },
+      {
+        "path": "tests/unit/CMakeLists.txt",
+        "sha256": "ed65e032ab1f53d193490c2550d77b29ac7bf8813b839ee7584de41ffc72b4b0"
+      },
+      {
+        "path": "tests/unit/gemma_joined_groups_test.cc",
+        "sha256": "624f2d4e05211a996af4916ce5a6e89e20f069b0801435d4c13c4559eae0710c"
+      },
+      {
+        "path": "tests/unit/gemma_joined_serving_gpu_test.cc",
+        "sha256": "906ae02be3af59c724e57277b3178340e5c02391c738d38d320be4af7f758855"
+      },
+      {
+        "path": "third_party/sources.lock.json",
+        "sha256": "7889fe441722fd9c95d39dd05bf268c86ef0d09abaf5de7efe72e83046a3fd9b"
+      }
+    ],
+    "binary_sha256": "0800b282df8a4e6a1a2e6c559b0c5fb4fcf0acd61a20b9ef17f6092520d6e697",
+    "receipt_sha256": "4ea901be73b364a981696840dd4b48608214c049d2c237d9c3313c9d4fa45087",
+    "reference_binary_sha256": "01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61"
+  },
+  "source_identity_record_sha256": "cafa3c85766bc28c2a3fd0a5fd90f317bee9be2858174bd040761b2fe6cd49a0",
+  "task_entry_tensorfold": {
+    "checked_at": "2026-10-05T08:28:50.085810+00:00",
+    "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "files": {
+      "README.md": {
+        "bytes": 22767,
+        "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+      },
+      "pyproject.toml": {
+        "bytes": 3178,
+        "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+      },
+      "src/tensorfold/__init__.py": {
+        "bytes": 137,
+        "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+      },
+      "docs/recipes/README.md": {
+        "bytes": 5211,
+        "sha256": "bef7a6cf6c8a2d728599cef1a43d422383045cd01d0e33361bc4a711c7d32439"
+      },
+      "docs/recipes/gemma-4.md": {
+        "bytes": 10845,
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      }
+    }
+  },
+  "pinned_dispatch_source_hashes": {
+    "ggml/src/ggml-cuda/mmvq.cu": "d4c70f68ab79d463fd6fd52cac66a62e915858397ba4b2b7f658a7fbf13121f3",
+    "ggml/src/ggml-cuda/mmvq.cuh": "b37f8359f519ba90ddecd9cb3ca5f8c2ae05685bfae6813d435d75763c2bb006",
+    "ggml/src/ggml-cuda/mmvf.cu": "0aca92c9d54cf4a17cf79ee082f243b99c9bf62915e523050ab57c55e30555a1",
+    "ggml/src/ggml-cuda/mmq.cu": "8acdffe7ccf49698083dfc3e32ae3ef015fb99d6a790adc860344aed401fee08",
+    "ggml/src/ggml-cuda/ggml-cuda.cu": "523470d6604755b82d0208414ce40f1378941b10bc1349763bbdf02edaab9634"
+  },
+  "dispatch_description_is_source_inference_not_actual_cuda_trace": true,
+  "retained_recipe_compatibility": {
+    "source_hashes": {
+      "docs/experiments/gemma-joined-serving/llama_joined.cc": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e",
+      "docs/experiments/gemma-joined-serving/reference.sh": "d193b98b43364f481a941d9de0972dfe59bed1dde6c398c82f1da014eaa444e3",
+      "docs/experiments/gemma-joined-serving/analyze.py": "d9c4efae191cedc2797617264bfe3ddaf71dbe04c4c8132914c38367e2011ce1"
+    },
+    "reference_binary_sha256": "01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61",
+    "input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+    "all_reference_head_hashes_equal_original_compared_files": true,
+    "owners": 4,
+    "effective_context_per_owner": 256,
+    "prefix_rows": "64+owner",
+    "first_paid_position": "67+owner",
+    "target_position": "68+owner+step",
+    "raw_checkpoint_sha256": "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575"
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma-joined-norm-ordinary-native1",
+      "rc": 0,
+      "log_sha256": "fc5b2f4b36a5d7bc5c76176dcb607785c95ee59fc9a4e04c60a7db83c8cfb977",
+      "first_stamp": "2026-10-05 04:34:43",
+      "last_stamp": "2026-10-05 04:35:28"
+    },
+    {
+      "name": "m35-gemma-joined-norm-ordinary-bookend1",
+      "rc": 0,
+      "log_sha256": "cc7af8dbeaced5f5d09c9880c6cb20ce6f427bfc7f6480ec95fefb0f83c6ca19",
+      "first_stamp": "2026-10-05 04:36:28",
+      "last_stamp": "2026-10-05 04:37:08"
+    }
+  ],
+  "local_checks": {
+    "reuse_and_headers": 1403,
+    "boundaries": 386,
+    "problems": 0,
+    "changed_format_diff_bash_python_syntax": true,
+    "signed_zero_tie_nonfinite_controls": true,
+    "log_sha256": "5b8cbe33c6ada27b86fbd56e287fbea0f3966c5efcf6c070e0e95372e99977da"
+  }
+}

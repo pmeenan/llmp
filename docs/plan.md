@@ -299,6 +299,10 @@ family" guide, and its long-context scaling work.
         with exact native scalar/joined repeats and frozen candidate heads.
         Fresh stock quality fails on 33/128 heads and latency is 1.7523% higher;
         no candidate is selected and full optimized-batching qualification remains open.
+      - [x] [Dense31 ordinary-product norm C4 first screen](experiments/gemma-joined-norm-ordinary/README.md),
+        with frozen native repeats and fresh recipe-aligned stock bookends.
+        Quality fails on 15/128 heads and latency is 1.1161% higher;
+        no candidate is selected and full optimized-batching qualification remains open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.
