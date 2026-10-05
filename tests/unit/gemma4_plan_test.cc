@@ -73,6 +73,31 @@ en::Gemma4Model Places(const Case& c, const kg::Gemma4Graph& g) {
   return m;
 }
 
+TEST(Gemma4Plan, StateOnlyPlacesWithoutHiddenOrHeadAndRetainsFreshInputs) {
+  Case c(2);
+  c.shape.outputs = 0;
+  c.shape.output_mode = kg::Gemma4OutputMode::kStateOnly;
+  auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape);
+  ASSERT_TRUE(graph);
+  auto model = Places(c, *graph);
+  kg::DeviceChoices choices;
+  choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
+  choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
+  auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
+  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
+                                    (*measured)->placement.extent);
+  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  EXPECT_EQ((*placed)->graph.hidden, nullptr);
+  EXPECT_EQ((*placed)->graph.logits, nullptr);
+  auto bytes = en::Gemma4SourceBytes((*placed)->graph);
+  ASSERT_TRUE(bytes);
+  EXPECT_TRUE(en::Gemma4Sources((*placed)->graph, c.input, {}, {}, *bytes));
+  EXPECT_FALSE(en::Gemma4Sources((*placed)->graph, c.input, c.frontier, {}, *bytes));
+}
+
 TEST(Gemma4Plan, PostNormFeatureRowsAreIndependentOfTheHeadFrontier) {
   Case c;
   c.shape.outputs = 1;

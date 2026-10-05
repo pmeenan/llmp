@@ -1086,6 +1086,12 @@ class Gemma final : public Llm {
     const engine::Gemma4Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
     return runner_.Wave(std::span(&work, 1));
   }
+  Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
+                            bool inject, bool want_head, std::vector<float>& logits) override {
+    if (inject || past >= all.size()) return Error("Gemma needs a plain nonempty prefill chunk");
+    const engine::Gemma4Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
+    return runner_.WavePrefill(std::span(&work, 1), want_head);
+  }
   Status SettleFor(Branch& branch) override {
     return NativeSlot(branch).state_usable() ? Status{} : Error("Gemma state is quarantined");
   }
@@ -2982,6 +2988,12 @@ Status Llm::RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::
   return RunChunk(all, n_past, inject, logits);
 }
 
+Status Llm::RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
+                               std::uint32_t n_past, bool inject, bool /*want_head*/,
+                               std::vector<float>& logits) {
+  return RunChunkFor(branch, all, n_past, inject, logits);
+}
+
 Status Llm::SpecStepFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t pos,
                         std::uint32_t left, std::vector<std::int32_t>& kept,
                         std::vector<std::vector<float>>* logits, std::uint64_t& drafted,
@@ -3543,7 +3555,8 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity
     const auto started = Clock::now();
     const StateKeeper::Quiet quiet(model_.kept_.keeper);  // records' hashing waits
     auto chunk =
-        model_.RunChunkFor(branch_, std::span(tokens_).first(end), at, model_.speculate_, last_);
+        model_.RunPrefillChunkFor(branch_, std::span(tokens_).first(end), at, model_.speculate_,
+                                  scoring_ || end == tokens_.size(), last_);
     if (!chunk) {
       std::string error =
           std::format("{}'s prefill: the chunk at {}: {}", model_.name_, at, chunk.error());
@@ -3655,13 +3668,15 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
       max_rows_,
       [&](std::uint32_t at, std::uint32_t n) {
         auto started = Clock::now();
-        auto chunk = RunChunkFor(branch, std::span(all).first(at + n), at, speculate_, last);
+        auto chunk = RunPrefillChunkFor(branch, std::span(all).first(at + n), at, speculate_,
+                                        at + n == all.size(), last);
         // A capacity refusal ran nothing: the same chunk again once freed.
         for (std::size_t reclaimed = 0;
              !chunk && CapacityRefused(branch) && reclaimed < kMaxBranches && ReclaimFor(branch);
              ++reclaimed) {
           started = Clock::now();
-          chunk = RunChunkFor(branch, std::span(all).first(at + n), at, speculate_, last);
+          chunk = RunPrefillChunkFor(branch, std::span(all).first(at + n), at, speculate_,
+                                     at + n == all.size(), last);
         }
         if (chunk) {
           completed = at + n;

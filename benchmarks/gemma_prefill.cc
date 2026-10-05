@@ -3,7 +3,7 @@
 
 // First paid 8K prefill and fixed-prefix decode screen. No quality claim.
 // ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both|all] [MAX_ROWS]
-// [normmul-off|normmul-on].
+// [normmul-off|normmul-on] [full|state-only].
 // Row-cap experiments do not change production defaults.
 #include <algorithm>
 #include <array>
@@ -26,13 +26,15 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc < 4 || argc > 8) return 2;
+  if (argc < 4 || argc > 9) return 2;
   const std::string_view variant = argc >= 5 ? argv[4] : "26";
   const std::string_view policy = argc >= 6 ? argv[5] : "ordinary";
   if (variant != "26" && variant != "31") return 2;
   if (policy != "ordinary" && policy != "both" && policy != "all") return 2;
-  const std::string_view normmul = argc == 8 ? argv[7] : "normmul-off";
+  const std::string_view normmul = argc >= 8 ? argv[7] : "normmul-off";
   if (normmul != "normmul-off" && normmul != "normmul-on") return 2;
+  const std::string_view prefill_output = argc == 9 ? argv[8] : "full";
+  if (prefill_output != "full" && prefill_output != "state-only") return 2;
   std::uint32_t max_rows = 128;
   if (argc >= 7) {
     const std::string_view number(argv[6]);
@@ -131,7 +133,9 @@ int main(int argc, char** argv) {
       if (auto r = runner.Clear(); !r) return r;
       const auto started = std::chrono::steady_clock::now();
       for (std::uint32_t first = 0; first < kPrefill; first += max_rows) {
-        if (auto r = runner.Chunk(first, std::span(ids).subspan(first, max_rows), logits); !r)
+        if (auto r = runner.ChunkPrefill(first, std::span(ids).subspan(first, max_rows), logits,
+                                         prefill_output == "full" || first + max_rows == kPrefill);
+            !r)
           return r;
       }
       const auto prefill_policy = runner.last_built_policy();
@@ -189,8 +193,9 @@ int main(int argc, char** argv) {
         return Error("completed positions differ from paid work");
       const auto& policy = runner.last_built_policy();
       std::cout << "PREFILL_NATIVE prefill_seconds=" << prefill << " prefill_rows=" << kPrefill
-                << " prefill_chunks=" << kPrefill / max_rows
-                << " intermediate_heads=" << kPrefill / max_rows - 1 << " decode_seconds=" << decode
+                << " prefill_chunks=" << kPrefill / max_rows << " intermediate_heads="
+                << (prefill_output == "full" ? kPrefill / max_rows - 1 : 0)
+                << " prefill_output=" << prefill_output << " decode_seconds=" << decode
                 << " decode_chunks=" << kSteps << " timed_start=" << kPrefill + kWarm
                 << " completed=" << kInput << " context=16384 chunk=" << max_rows << " masks=device"
                 << " normmul=" << normmul << " prefill_norm_fused=" << prefill_policy.norm_fused

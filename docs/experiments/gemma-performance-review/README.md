@@ -16,6 +16,11 @@ projections. Product and attention duration sums are close to stock, with
 different final-block row shapes and extra standalone MUL launches. These
 measurements guide the resumed work; the untraced comparisons below remain
 the competitive evidence.
+The [state-only intermediate prefill path](../gemma-state-only-prefill/README.md)
+now removes unused final-layer work while preserving exact KV continuations.
+The optional 26B/all1024 and 31B/both256 recipes improve 3.04%/2.42%; the 31B
+reference gap remains 8.28%, while 26B reference movement prevents a resolved
+competitive gap. Ordinary serving has separate correctness controls.
 M3.5 remains incomplete. The source-use optimization landed as `5ef7aac` after
 1,700 Spark tests passed without failures or skips, including 311 GPU and 57
 model tests. Both Sparks were checked idle at the pause.
@@ -128,9 +133,9 @@ Source-supported leads to rank by plausible contribution to the whole gap:
    paid work and product shapes. The old 26 trace attributed about 26 ms of
    extra vocabulary-projection kernels, much smaller than its original host
    gap. The current 31 trace measures 145 ms of extra vocabulary projections.
-   Suppressing heads must preserve
-   state, needed likelihoods and assistant features in the real runtime;
-   a benchmark-only omission would not establish an engine improvement.
+   The state-only runtime path now preserves KV state and keeps scoring,
+   final heads and retained-feature work full. These measurements explain
+   a contributor; planning and state growth still need optimization.
 4. Existing DeepSeek `dense_pair` input-quantization reuse is available but
    not enabled for Gemma. Dense31 Q4_K gate/up products are eligible at
    >=64 rows; Gemma26 Q8_0 attention projections can qualify, while its

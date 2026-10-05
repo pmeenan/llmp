@@ -31,12 +31,14 @@ struct Gemma4SegmentShape {
            local_n_kv == other.local_n_kv;
   }
 };
+enum class Gemma4OutputMode : std::uint8_t { kHead, kStateOnly };
 struct Gemma4ChunkShape {
   std::vector<Gemma4SegmentShape> segments;
   std::uint32_t outputs = 0;
   // Optional POST-final-norm rows, independently selected from the head.
   // Zero preserves the existing graph. Retention disables final-layer narrowing.
   std::uint32_t feature_outputs = 0;
+  Gemma4OutputMode output_mode = Gemma4OutputMode::kHead;
   bool operator==(const Gemma4ChunkShape&) const = default;
 };
 struct Gemma4GraphOptions {

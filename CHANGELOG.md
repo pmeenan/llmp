@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Gemma prompt prefill omits unused final-layer work on non-final chunks while
+  preserving all KV writes. Final heads, scoring and retained features keep the
+  full path. Existing all1024/both256 screens improve 3.04%/2.42%; reference and
+  full model qualification remain open.
+
 - Exact source-use counts reuse the graph index across fusion gates without
   changing math or policies. Fresh Gemma26/31 prefill screens improve
   2.80%/2.31%; reference gaps remain 12.38%/11.40%, with exact prior heads/state.

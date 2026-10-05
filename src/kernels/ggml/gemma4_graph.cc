@@ -50,6 +50,12 @@ std::expected<void, KernelFailure> Check(const md::Gemma4Profile& p, const md::G
   if (!o.expert_stride.empty() && o.expert_stride.size() != arrays) {
     return Rejected("invalid Gemma4 prepared expert stride domain");
   }
+  const bool state_only = shape.output_mode == Gemma4OutputMode::kStateOnly;
+  if ((shape.output_mode != Gemma4OutputMode::kHead && !state_only) ||
+      (state_only && (!o.head || o.hidden_input || o.first_layer != 0 ||
+                      (o.layer_count != 0 && o.layer_count != p.layers) || shape.outputs != 0 ||
+                      shape.feature_outputs != 0)))
+    return Rejected("Gemma4 state-only chunks require all token-input layers and no outputs");
   if (shape.segments.empty() || shape.segments.size() > md::kGemma4MaxSlots ||
       o.first_layer >= p.layers || (o.first_layer != 0 && !o.hidden_input) ||
       o.layer_count > p.layers - o.first_layer ||
@@ -75,7 +81,8 @@ std::expected<void, KernelFailure> Check(const md::Gemma4Profile& p, const md::G
       }
     }
   }
-  if ((o.head && (shape.outputs == 0 || shape.outputs > rows)) || (!o.head && shape.outputs != 0)) {
+  if (!state_only && ((o.head && (shape.outputs == 0 || shape.outputs > rows)) ||
+                      (!o.head && shape.outputs != 0))) {
     return Rejected("invalid Gemma4 frontier output count");
   }
   if (shape.feature_outputs > rows ||
@@ -153,7 +160,8 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
   else
     g.tokens = ggml_new_tensor_1d(c, GGML_TYPE_I32, rows);
   g.positions = ggml_new_tensor_1d(c, GGML_TYPE_I32, rows);
-  if (o.head) g.out_ids = ggml_new_tensor_1d(c, GGML_TYPE_I32, shape.outputs);
+  if (o.head && shape.output_mode == Gemma4OutputMode::kHead)
+    g.out_ids = ggml_new_tensor_1d(c, GGML_TYPE_I32, shape.outputs);
   if (shape.feature_outputs != 0)
     g.feature_ids = ggml_new_tensor_1d(c, GGML_TYPE_I32, shape.feature_outputs);
   g.inputs = {o.hidden_input ? g.input_hidden : g.tokens, g.positions};
@@ -258,12 +266,13 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     const auto prefix = std::format("blk.{}.", il);
     const auto d = p.head_dim(il), kvh = p.kv_heads(il), kvw = d * kvh;
     auto* attn_input = named(prefix + "attn_input", Norm(c, p, input, weight(l.attn_norm)));
-    auto* q = ggml_reshape_3d(c, mm(weight(l.q), attn_input), d, p.heads, rows);
+    const bool tail = shape.output_mode != Gemma4OutputMode::kStateOnly || il + 1 != p.layers;
+    auto* q = tail ? ggml_reshape_3d(c, mm(weight(l.q), attn_input), d, p.heads, rows) : nullptr;
     auto* k_raw = mm(weight(l.k), attn_input);
     auto* v_raw = l.tied_kv ? k_raw : mm(weight(l.v), attn_input);
     auto* k = ggml_reshape_3d(c, k_raw, d, kvh, rows);
     auto* v = ggml_reshape_3d(c, v_raw, d, kvh, rows);
-    q = Norm(c, p, q, weight(l.q_norm));
+    if (tail) q = Norm(c, p, q, weight(l.q_norm));
     k = Norm(c, p, k, weight(l.k_norm));
     v = named(prefix + "v_norm", ggml_rms_norm(c, v, p.rms_eps));
     const auto rope = [&](ggml_tensor* t, ggml_tensor* positions) {
@@ -273,11 +282,12 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
                            p.local(il) ? p.local_rope_base : p.global_rope_base, 1.0f, 0.0f, 1.0f,
                            32.0f, 1.0f);
     };
-    q = named(prefix + "q_rope", rope(q, g.positions));
+    if (tail) q = named(prefix + "q_rope", rope(q, g.positions));
     if (!o.rope_store) k = named(prefix + "k_rope", rope(k, g.positions));
     // Upstream expands Q, V, K before stores. This also leaves K's rotation
     // next to its store, permitting the independently checked store fusion.
-    for (auto* t : {q, v}) expanded.push_back(t);
+    if (tail) expanded.push_back(q);
+    expanded.push_back(v);
     if (!o.rope_store) expanded.push_back(k);
     auto* k_rows = o.rope_store ? nullptr : ggml_reshape_2d(c, k, kvw, rows);
     auto* v_rows = ggml_reshape_2d(c, v, kvw, rows);
@@ -312,6 +322,7 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
         expanded.push_back(ggml_set_rows(c, cache_k, slice(k_rows), indices));
       }
       expanded.push_back(ggml_set_rows(c, cache_v, slice(v_rows), indices));
+      if (!tail) continue;
       const auto cache_view = [&](ggml_tensor* t) {
         return ggml_permute(
             c, ggml_view_3d(c, t, d, kvh, n_kv, std::size_t{d} * 2, std::size_t{kvw} * 2, 0), 0, 2,
@@ -328,6 +339,7 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
       expanded.push_back(attn);
       joined = joined == nullptr ? attn : ggml_concat(c, joined, attn, 1);
     }
+    if (!tail) break;
     auto* projected = named(prefix + "attn_projection", mm(weight(l.out), joined));
     auto* residual = input;
     if (o.narrow_final && il + 1 == p.layers) {
@@ -401,8 +413,8 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     input = ggml_add(c, ffn, attn_out);
     input = named(prefix + "output", ggml_mul(c, input, weight(*l.output_scale)));
   }
-  g.hidden = input;
-  if (o.head) {
+  g.hidden = shape.output_mode == Gemma4OutputMode::kStateOnly ? nullptr : input;
+  if (o.head && g.hidden != nullptr) {
     auto* normalized = named("output_normalized", Norm(c, p, input, weight(b.output_norm)));
     if (g.feature_ids != nullptr) {
       g.normalized_features =
@@ -415,7 +427,7 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     logits = ggml_tanh(c, logits);
     g.logits = named("logits", ggml_scale(c, logits, p.final_softcap));
     expanded.push_back(g.logits);
-  } else
+  } else if (g.hidden != nullptr)
     expanded.push_back(g.hidden);
   g.nodes = GraphOrder(expanded);
   return g;

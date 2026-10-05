@@ -1,0 +1,659 @@
+{
+  "source_base": "59cba05",
+  "tensorfold_head": "609ca419abecebdc5a059498a613680bd3aa847f",
+  "input_bytes": 32908,
+  "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+  "measured_native_binary_sha256": "57f64bf66d0006c2de36fcf4025c77818f27fbb8ea47866868c17a8263c0b10d",
+  "dependency_receipt_sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d",
+  "current_source_sha256": {
+    "benchmarks/gemma_prefill.cc": "9bf1f535e6684c36f21317922f68ac6e281481294681673f482ca0a66983e85c",
+    "src/engine/gemma4_plan.cc": "f309bc0e694edbdd4f6830dbd8856a72b198cca760e904e1933803e6e4437608",
+    "src/engine/gemma4_runner.cc": "018eef3a6f2e83f9f235b4e1eb63785f4f9e9638425e35a657b6239f8bbeb394",
+    "src/engine/gemma4_runner.h": "8ddc0b335086278c68f3ff9dcfe0f8c9feec7b3e42f109523b9e7d74757d483b",
+    "src/kernels/ggml/gemma4_graph.cc": "02a90340c3b04a9bb804f9ef697907e3809fbd821666a5830bd7440ecc1c85b2",
+    "src/kernels/ggml/gemma4_graph.h": "b729b004256c04bdd5838d1bbb2d2d90de863d184eed3e2c5e9b1c4d7be55dd5",
+    "src/runtime/serving.cc": "f0c171479c0ad5b2dc3f908db7760f6a4c57e41cc445501a78ffc064b91f8e5f",
+    "src/runtime/serving.h": "ed04e89c16d34274e49c6bc7cbfc40ec93ec5c35d505b9e6c8694b9e7d5fbeb4",
+    "tests/unit/gemma4_graph_test.cc": "5755aa474649765c3f47c6a77a5cdebdac6656680fa8c113ca2288d521212e24",
+    "tests/unit/gemma4_plan_test.cc": "1f5539f28c560d506b21aedf022d5a1e390b0aa8c7140d47dfdc5ead72c64142",
+    "tests/unit/gemma4_runner_gpu_test.cc": "bd7f308402dcdd4a7b8d19d4cca274bfcc22eb2fb73d40635b00759250ebab28",
+    "tests/unit/llm_scores_test.cc": "defceca81d5f02e6edc0f6aed679beda4706a7af2182174c969f0fca51a703de"
+  },
+  "profiles": {
+    "26": {
+      "arms": {
+        "task47-task49-ring26-first": {
+          "metrics": {
+            "prefill_seconds": "2.42188",
+            "prefill_rows": "8192",
+            "intermediate_heads": "0",
+            "decode_seconds": "0.676127",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "batch": "8192",
+            "ubatch": "1024",
+            "fusion": "enabled",
+            "graphs": "allowed",
+            "swa_full": "false",
+            "kv_unified": "false",
+            "cache_recipe": "ring",
+            "ggml_graph_reused_delta": "32"
+          },
+          "heads": {
+            "prefill.f32": "254e6cf57dea36d5da3be3e0d53157bb886924b61e6493050daa147e82a2eaa3",
+            "final.f32": "48c4a6123708f182d28e6063f124b6b5facdbda881046be6b1f1e239d652f2a6"
+          }
+        },
+        "task49-native26-full": {
+          "metrics": {
+            "prefill_seconds": "2.72628",
+            "prefill_rows": "8192",
+            "prefill_chunks": "8",
+            "intermediate_heads": "7",
+            "prefill_output": "full",
+            "decode_seconds": "0.690286",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "1024",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "60",
+            "prefill_norm_add": "90",
+            "prefill_gemma_route": "30",
+            "prefill_gemma_reduce": "30",
+            "gemma_route": "30",
+            "gemma_reduce": "30",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "60",
+            "norm_add": "90",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+            "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+          },
+          "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+        },
+        "task49-native26-state-only-first": {
+          "metrics": {
+            "prefill_seconds": "2.64598",
+            "prefill_rows": "8192",
+            "prefill_chunks": "8",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "decode_seconds": "0.690012",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "1024",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "60",
+            "prefill_norm_add": "90",
+            "prefill_gemma_route": "30",
+            "prefill_gemma_reduce": "30",
+            "gemma_route": "30",
+            "gemma_reduce": "30",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "60",
+            "norm_add": "90",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+            "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+          },
+          "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+        },
+        "task49-native26-state-only-repeat": {
+          "metrics": {
+            "prefill_seconds": "2.64089",
+            "prefill_rows": "8192",
+            "prefill_chunks": "8",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "decode_seconds": "0.688246",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "1024",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "60",
+            "prefill_norm_add": "90",
+            "prefill_gemma_route": "30",
+            "prefill_gemma_reduce": "30",
+            "gemma_route": "30",
+            "gemma_reduce": "30",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "60",
+            "norm_add": "90",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+            "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+          },
+          "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+        },
+        "task47-task49-ring26-repeat": {
+          "metrics": {
+            "prefill_seconds": "2.65986",
+            "prefill_rows": "8192",
+            "intermediate_heads": "0",
+            "decode_seconds": "0.679626",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "batch": "8192",
+            "ubatch": "1024",
+            "fusion": "enabled",
+            "graphs": "allowed",
+            "swa_full": "false",
+            "kv_unified": "false",
+            "cache_recipe": "ring",
+            "ggml_graph_reused_delta": "32"
+          },
+          "heads": {
+            "prefill.f32": "254e6cf57dea36d5da3be3e0d53157bb886924b61e6493050daa147e82a2eaa3",
+            "final.f32": "48c4a6123708f182d28e6063f124b6b5facdbda881046be6b1f1e239d652f2a6"
+          }
+        }
+      },
+      "comparisons": {
+        "task49-native26-full vs task49-native26-state-only-first": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            }
+          }
+        },
+        "task47-task49-ring26-first vs task49-native26-full": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.8572092056274414,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.22439956665039062,
+              "head_argmax_equal": true
+            }
+          }
+        },
+        "task47-task49-ring26-first vs task49-native26-state-only-first": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.8572092056274414,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.22439956665039062,
+              "head_argmax_equal": true
+            }
+          }
+        }
+      },
+      "candidate_own_repeat_heads_state_32choices_exact": true,
+      "candidate_state_equals_off": true,
+      "mean_reference_seconds": {
+        "prefill_seconds": 2.54087,
+        "decode_seconds": 0.6778765
+      },
+      "mean_candidate_seconds": {
+        "prefill_seconds": 2.643435,
+        "decode_seconds": 0.689129
+      },
+      "candidate_vs_off_percent": {
+        "prefill_seconds": -3.0387561072230285,
+        "decode_seconds": -0.16761168559118467
+      },
+      "finite_retained_complete_heads": 10,
+      "limitation": "Two retained full vectors per arm; 32 greedy choices, not all 32 full vectors or corpus quality.",
+      "bookend_mean_ratio_only_percent": {
+        "prefill_seconds": 4.0366095077670305,
+        "decode_seconds": 1.6599631348778177
+      }
+    },
+    "31": {
+      "arms": {
+        "task47-task49-ring31-first": {
+          "metrics": {
+            "prefill_seconds": "10.8658",
+            "prefill_rows": "8192",
+            "intermediate_heads": "0",
+            "decode_seconds": "3.11349",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "batch": "8192",
+            "ubatch": "256",
+            "fusion": "enabled",
+            "graphs": "allowed",
+            "swa_full": "false",
+            "kv_unified": "false",
+            "cache_recipe": "ring",
+            "ggml_graph_reused_delta": "32"
+          },
+          "heads": {
+            "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          }
+        },
+        "task49-native31-full": {
+          "metrics": {
+            "prefill_seconds": "12.0496",
+            "prefill_rows": "8192",
+            "prefill_chunks": "32",
+            "intermediate_heads": "31",
+            "prefill_output": "full",
+            "decode_seconds": "3.1793",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "256",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "120",
+            "prefill_norm_add": "120",
+            "prefill_gemma_route": "0",
+            "prefill_gemma_reduce": "0",
+            "gemma_route": "0",
+            "gemma_reduce": "0",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "120",
+            "norm_add": "120",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          },
+          "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+        },
+        "task49-native31-state-only-first": {
+          "metrics": {
+            "prefill_seconds": "11.7857",
+            "prefill_rows": "8192",
+            "prefill_chunks": "32",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "decode_seconds": "3.18344",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "256",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "120",
+            "prefill_norm_add": "120",
+            "prefill_gemma_route": "0",
+            "prefill_gemma_reduce": "0",
+            "gemma_route": "0",
+            "gemma_reduce": "0",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "120",
+            "norm_add": "120",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          },
+          "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+        },
+        "task49-native31-state-only-repeat": {
+          "metrics": {
+            "prefill_seconds": "11.7303",
+            "prefill_rows": "8192",
+            "prefill_chunks": "32",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "decode_seconds": "3.20018",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "256",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "120",
+            "prefill_norm_add": "120",
+            "prefill_gemma_route": "0",
+            "prefill_gemma_reduce": "0",
+            "gemma_route": "0",
+            "gemma_reduce": "0",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "120",
+            "norm_add": "120",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          },
+          "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+        },
+        "task47-task49-ring31-repeat": {
+          "metrics": {
+            "prefill_seconds": "10.851",
+            "prefill_rows": "8192",
+            "intermediate_heads": "0",
+            "decode_seconds": "3.12203",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "batch": "8192",
+            "ubatch": "256",
+            "fusion": "enabled",
+            "graphs": "allowed",
+            "swa_full": "false",
+            "kv_unified": "false",
+            "cache_recipe": "ring",
+            "ggml_graph_reused_delta": "32"
+          },
+          "heads": {
+            "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          }
+        }
+      },
+      "comparisons": {
+        "task49-native31-full vs task49-native31-state-only-first": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            }
+          }
+        },
+        "task47-task49-ring31-first vs task49-native31-full": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.41361474990844727,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            }
+          }
+        },
+        "task47-task49-ring31-first vs task49-native31-state-only-first": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.41361474990844727,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            }
+          }
+        }
+      },
+      "candidate_own_repeat_heads_state_32choices_exact": true,
+      "candidate_state_equals_off": true,
+      "mean_reference_seconds": {
+        "prefill_seconds": 10.8584,
+        "decode_seconds": 3.11776
+      },
+      "mean_candidate_seconds": {
+        "prefill_seconds": 11.758,
+        "decode_seconds": 3.1918100000000003
+      },
+      "candidate_vs_reference_percent": {
+        "prefill_seconds": 8.284830177558389,
+        "decode_seconds": 2.3751026377912376
+      },
+      "candidate_vs_off_percent": {
+        "prefill_seconds": -2.4199973443101874,
+        "decode_seconds": 0.39348284213507334
+      },
+      "finite_retained_complete_heads": 10,
+      "limitation": "Two retained full vectors per arm; 32 greedy choices, not all 32 full vectors or corpus quality."
+    }
+  },
+  "reference26_movement": "Primary reference prefill 2.42188/2.65986 s moves 9.83%; its mean does not establish a resolved competitive gap. Additional unchanged reference 2.42238/full-native 2.71430 s returned to the first-reference range; all heads/choices and native state still match fixed baselines.",
+  "ordinary_policy_controls": "Both ordinary profiles also pass full-vs-state-only scalar and joined unequal-row/past KV, continuation, refusal and captured replay controls; performance percentages use only all1024/both256 policies.",
+  "checks": {
+    "narrow_build": "build2 DONE0; build1 refused one fixture signed argument",
+    "targeted": "14 graph, 10 placed-plan and 70 scoring/runtime CPU tests PASS; held feature fallback fix1 DONE0; expanded compound/norm C2check1 and ordinarycheck1 each 2/2 DONE0",
+    "full_spark": {
+      "job": "m35-gemma-state-only-full1",
+      "state": "done",
+      "rc": 0,
+      "passed": 1708,
+      "failed": 0,
+      "skipped": 0,
+      "gpu_targets": 316,
+      "model_targets": 62,
+      "ctest_seconds": 725.19
+    },
+    "local": "1595 REUSE/header files, 394 boundaries, changed format/diff/JSON PASS"
+  },
+  "environment": {
+    "26": "spark-b (spark-56f5), NVIDIA GB10, driver580.178.04; idle query after screen40C/P8/208MHz, no claim about paid-arm clocks",
+    "31": "spark (spark-c4e2), NVIDIA GB10; driver580.178.04 from contemporaneous retained-plan query",
+    "native_sdk": "aarch64-c09daba6ac31edee, NVCC 13.4.92, toolkit 13.4.2",
+    "original": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4 in image837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7, unchanged CUDA13.3 math"
+  },
+  "limits": [
+    "Two complete retained heads and 32 incoming-head choices, not all 32 decode vectors or corpus qualification.",
+    "State-only skips only the final unused tail; final heads, scoring and retained features keep full work.",
+    "Qwen/DeepSeek default virtual hook keeps full heads; state-only dependency cuts remain separate transfer work.",
+    "No same-input reference arithmetic or optimized batching qualification inferred."
+  ],
+  "reference26_followup": {
+    "arms": [
+      {
+        "name": "task47-task49-ring26-drift",
+        "metrics": {
+          "prefill_seconds": "2.42238",
+          "prefill_rows": "8192",
+          "intermediate_heads": "0",
+          "decode_seconds": "0.684947",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "batch": "8192",
+          "ubatch": "1024",
+          "fusion": "enabled",
+          "graphs": "allowed",
+          "swa_full": "false",
+          "kv_unified": "false",
+          "cache_recipe": "ring",
+          "ggml_graph_reused_delta": "32"
+        },
+        "heads": {
+          "prefill.f32": "254e6cf57dea36d5da3be3e0d53157bb886924b61e6493050daa147e82a2eaa3",
+          "final.f32": "48c4a6123708f182d28e6063f124b6b5facdbda881046be6b1f1e239d652f2a6"
+        }
+      },
+      {
+        "name": "task49-native26-full-after",
+        "metrics": {
+          "prefill_seconds": "2.7143",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "7",
+          "prefill_output": "full",
+          "decode_seconds": "0.68652",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+          "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+        },
+        "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+      }
+    ],
+    "all_heads_choices_and_native_state_exact": true
+  },
+  "official_jobs": {
+    "build1": {
+      "name": "m35-gemma-state-only-build1",
+      "state": "failed",
+      "rc": 1
+    },
+    "build2": {
+      "name": "m35-gemma-state-only-build2",
+      "state": "done",
+      "rc": 0
+    },
+    "c2check1": {
+      "name": "m35-gemma-state-only-c2check1",
+      "state": "done",
+      "rc": 0
+    },
+    "check1": {
+      "name": "m35-gemma-state-only-check1",
+      "state": "failed",
+      "rc": 1
+    },
+    "check26": {
+      "name": "m35-gemma-state-only-check26",
+      "state": "done",
+      "rc": 0
+    },
+    "check31": {
+      "name": "m35-gemma-state-only-check31",
+      "state": "done",
+      "rc": 0
+    },
+    "drift26": {
+      "name": "m35-gemma-state-only-drift26",
+      "state": "done",
+      "rc": 0
+    },
+    "driftcheck26": {
+      "name": "m35-gemma-state-only-driftcheck26",
+      "state": "done",
+      "rc": 0
+    },
+    "fix1": {
+      "name": "m35-gemma-state-only-fix1",
+      "state": "done",
+      "rc": 0
+    },
+    "ordinarycheck1": {
+      "name": "m35-gemma-state-only-ordinarycheck1",
+      "state": "done",
+      "rc": 0
+    },
+    "screen26": {
+      "name": "m35-gemma-state-only-screen26",
+      "state": "done",
+      "rc": 0
+    },
+    "screen31": {
+      "name": "m35-gemma-state-only-screen31",
+      "state": "done",
+      "rc": 0
+    },
+    "stage31": {
+      "name": "m35-gemma-state-only-stage31",
+      "state": "done",
+      "rc": 0
+    },
+    "full1": {
+      "name": "m35-gemma-state-only-full1",
+      "state": "done",
+      "rc": 0
+    }
+  },
+  "prepared_artifact_ids": {
+    "26": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+    "31": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+  },
+  "tensorfold_primary": "https://github.com/ashhart/TensorFold"
+}

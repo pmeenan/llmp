@@ -57,6 +57,67 @@ std::size_t Count(const kg::Gemma4Graph& g, ggml_op op) {
 }
 void BindLeaves(kg::Gemma4Graph& g);
 
+TEST(Gemma4Graph, StateOnlyKeepsEveryCacheStoreAndOmitsOnlyTheFinalTail) {
+  for (const auto size : {26U, 31U}) {
+    Case c(size, 2);
+    const auto full = c.shape;
+    c.shape.outputs = 0;
+    c.shape.output_mode = kg::Gemma4OutputMode::kStateOnly;
+    EXPECT_NE(c.shape, full);
+    auto same_dimensions = c.shape;
+    same_dimensions.output_mode = kg::Gemma4OutputMode::kHead;
+    EXPECT_NE(c.shape, same_dimensions);
+    auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2));
+    ASSERT_TRUE(arena);
+    kg::Gemma4GraphOptions options;
+    options.device_masks = true;
+    options.narrow_final = true;
+    auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+    ASSERT_TRUE(graph) << jitllm::test_support::Failed(graph)->detail;
+    EXPECT_EQ(graph->logits, nullptr);
+    EXPECT_EQ(graph->hidden, nullptr);
+    EXPECT_EQ(graph->out_ids, nullptr);
+    EXPECT_EQ(graph->normalized_features, nullptr);
+    EXPECT_EQ(Count(*graph, GGML_OP_SET_ROWS), 2 * c.p.layers * 2);
+    EXPECT_EQ(Count(*graph, GGML_OP_FLASH_ATTN_EXT), (c.p.layers - 1) * 2);
+    const auto prefix = "blk." + std::to_string(c.p.layers - 1) + ".";
+    EXPECT_NE(graph->Named(prefix + "attn_input"), nullptr);
+    EXPECT_NE(graph->Named(prefix + "k_rope"), nullptr);
+    EXPECT_NE(graph->Named(prefix + "v_norm"), nullptr);
+    for (const auto name : {"q_rope", "attn_projection", "output", "slot.0.attention"})
+      EXPECT_EQ(graph->Named(prefix + name), nullptr);
+    EXPECT_NE(graph->Named("blk.0.output"), nullptr);
+    for (const auto& segment : graph->segments)
+      for (const auto [k, v] : segment.caches) {
+        EXPECT_NE(k, nullptr);
+        EXPECT_NE(v, nullptr);
+      }
+    {
+      auto bad = c.shape;
+      bad.outputs = 1;
+      EXPECT_FALSE(kg::CheckGemma4Graph(c.p, c.binding, c.state, bad, options));
+      bad.outputs = 0;
+      bad.feature_outputs = 1;
+      EXPECT_FALSE(kg::CheckGemma4Graph(c.p, c.binding, c.state, bad, options));
+      bad.feature_outputs = 0;
+      bad.output_mode = static_cast<kg::Gemma4OutputMode>(255);
+      EXPECT_FALSE(kg::CheckGemma4Graph(c.p, c.binding, c.state, bad, options));
+    }
+    for (unsigned changed = 0; changed < 4; ++changed) {
+      auto bad = options;
+      bad.narrow_final = false;
+      if (changed == 0) bad.head = false;
+      if (changed == 1) bad.hidden_input = true;
+      if (changed == 2) {
+        bad.first_layer = 1;
+        bad.hidden_input = true;
+      }
+      if (changed == 3) bad.layer_count = c.p.layers - 1;
+      EXPECT_FALSE(kg::CheckGemma4Graph(c.p, c.binding, c.state, c.shape, bad));
+    }
+  }
+}
+
 TEST(Gemma4Graph, ExplicitSegmentStoresFuseOnlyEligibleUnkeptKRotations) {
   for (const auto size : {26U, 31U})
     for (const auto slots : {1U, 2U, 4U, 16U}) {

@@ -396,11 +396,18 @@ Status Gemma4Runner::Setup() {
         auto input_bytes =
             md::Gemma4HostInputBytes(profile_, layout_, segments, o_.reference_masks);
         if (!input_bytes) return Error(input_bytes.error());
-        for (const bool all : {false, true}) {
+        for (const auto output : {0U, 1U, 2U}) {
+          const bool all = output == 1;
+          const bool state_only = output == 2;
+          if (state_only && o_.retain_features) continue;
           kg::Gemma4ChunkShape shape;
           for (const auto& s : in->segments)
             shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
-          shape.outputs = all ? static_cast<std::uint32_t>(in->tokens.size()) : count;
+          shape.output_mode =
+              state_only ? kg::Gemma4OutputMode::kStateOnly : kg::Gemma4OutputMode::kHead;
+          shape.outputs = state_only ? 0U
+                          : all      ? static_cast<std::uint32_t>(in->tokens.size())
+                                     : count;
           // Fund the largest feature request independently of head narrowing.
           shape.feature_outputs =
               o_.retain_features ? static_cast<std::uint32_t>(in->tokens.size()) : 0;
@@ -958,7 +965,21 @@ Status Gemma4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> t
   const Work work{0, n_past, tokens, &logits};
   return Wave(std::span(&work, 1), all_outputs);
 }
+Status Gemma4Runner::ChunkPrefill(std::uint32_t n_past, std::span<const std::int32_t> tokens,
+                                  std::vector<float>& logits, bool want_head) {
+  const Work work{0, n_past, tokens, &logits};
+  return WavePrefill(std::span(&work, 1), want_head);
+}
+Status Gemma4Runner::WavePrefill(std::span<const Work> work, bool want_head) {
+  return WaveWithMode(work, false, false,
+                      !want_head && !o_.retain_features ? kg::Gemma4OutputMode::kStateOnly
+                                                        : kg::Gemma4OutputMode::kHead);
+}
 Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all_features) {
+  return WaveWithMode(work, all_outputs, all_features, kg::Gemma4OutputMode::kHead);
+}
+Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, bool all_features,
+                                  kg::Gemma4OutputMode mode) {
   const auto phase = [&](Phase which) -> double* {
     return account_phases_ ? &phases_.seconds[static_cast<std::size_t>(which)] : nullptr;
   };
@@ -1011,7 +1032,9 @@ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all
   if (o_.retain_features) feature_ids.reserve(rows);
   for (const auto& s : in->segments) {
     shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
-    if (all_outputs) {
+    if (mode == kg::Gemma4OutputMode::kStateOnly) {
+      // No stale frontier is published by an intermediate prompt chunk.
+    } else if (all_outputs) {
       for (std::uint32_t i = 0; i < s.rows; ++i)
         frontier.push_back(static_cast<std::int32_t>(s.first_row + i));
     } else
@@ -1025,6 +1048,7 @@ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all
     }
     if (auto r = ReserveStateThrough(s.slot, s.n_past + s.rows); !r) return r;
   }
+  shape.output_mode = mode;
   shape.outputs = static_cast<std::uint32_t>(frontier.size());
   shape.feature_outputs = static_cast<std::uint32_t>(feature_ids.size());
   timer.reset();
@@ -1048,8 +1072,10 @@ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all
   bool capture = entry.runs[0].CaptureDue(runs_.graphs());
   if (capture && !plans_.ChargeGraph(entry)) capture = false;
   const std::uint64_t output_bytes = std::uint64_t{shape.outputs} * profile_.vocab * sizeof(float);
-  const std::array<RunCopy, 1> outputs{
-      {{Address(logits_), Address(p.graph.logits->data), output_bytes}}};
+  std::array<RunCopy, 1> output_copy{};
+  if (mode == kg::Gemma4OutputMode::kHead)
+    output_copy[0] = {Address(logits_), Address(p.graph.logits->data), output_bytes};
+  const auto outputs = std::span(output_copy).first(mode == kg::Gemma4OutputMode::kHead ? 1U : 0U);
   bool wrote = false, unknown = false;
   Status queued;
   RunPath path = RunPath::kEager;
@@ -1107,7 +1133,10 @@ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all
     const auto count = all_outputs ? w.tokens.size() : 1;
     const auto n = count * profile_.vocab;
     const auto* values = static_cast<const float*>(logits_) + at;
-    w.logits->assign(values, values + n);
+    if (mode == kg::Gemma4OutputMode::kStateOnly)
+      w.logits->clear();
+    else
+      w.logits->assign(values, values + n);
     at += n;
     slots_[w.slot]->positions += static_cast<std::uint32_t>(w.tokens.size());
     InvalidateFeatures(*slots_[w.slot]);

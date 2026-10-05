@@ -987,6 +987,11 @@ class Llm : public Served {
   // a family with independent native slots overrides this set together.
   virtual Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all,
                              std::uint32_t n_past, bool inject, std::vector<float>& logits);
+  // Non-final, non-scoring prompt chunks may omit their unused head. Families
+  // without an explicit state-only graph retain their complete chunk path.
+  virtual Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
+                                    std::uint32_t n_past, bool inject, bool want_head,
+                                    std::vector<float>& logits);
   // `prefix_kept`, when given, is set on a failure whose verify was undone
   // (a host judgement failing after the native verify completed): the
   // step's starting prefix still holds, as a wave's failed_prefix_valid.

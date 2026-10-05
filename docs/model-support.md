@@ -90,9 +90,17 @@ all 32 choices remain unchanged. This planning improvement preserves the existin
 policy defaults and does not establish full model or optimized-batching qualification.
 Its [exact source-use extension](experiments/gemma-use-index/README.md) further
 reduces fresh unchanged-control prefill by 2.80% / 2.31% for those same 26/31
-policies. Current prefill gaps are 12.38% / 11.40% and decode gaps 0.55% / 2.32%,
-with prior native heads, initialized state and choices unchanged. Full qualification
+policies. That screen recorded prefill gaps of 12.38% / 11.40% and decode gaps
+of 0.55% / 2.32%, with prior native heads, initialized state and choices unchanged. Full qualification
 and policy defaults remain unchanged.
+
+Gemma's [state-only prefill](experiments/gemma-state-only-prefill/README.md)
+now omits unused final-layer work on non-final, non-scoring prompt chunks in
+both scalar serving profiles. Final heads and retained features remain full.
+Ordinary and optional-policy controls preserve complete initialized state and
+continuation. Measured all1024/both256 prefill improves 3.04%/2.42%; the 26B
+reference movement remains unresolved, and quality/batching qualification is
+unchanged.
 
 ## Chat templates
 

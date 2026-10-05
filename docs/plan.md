@@ -158,7 +158,8 @@ checks pass; whole shipment tiers remain owed before publishing a package.
 **Owner resume, 2026-10-05:** implementation and measurement continue after
 Opus/Astra review. The cold/retained-plan comparison measures material planning
 and state-growth costs; the current 31B trace identifies GPU-idle gaps and
-extra vocabulary projections. State-only intermediate chunks are next;
+extra vocabulary projections. State-only intermediate chunks now omit unused
+final-layer work while preserving all KV writes;
 [current state and review prompt](experiments/gemma-performance-review/README.md).
 Remaining milestone gates stay open.
 
@@ -394,6 +395,11 @@ family" guide, and its long-context scaling work.
         cost 145 ms. Product and attention duration sums are close to stock,
         with differing final-block row shapes and 3,872 extra standalone MUL
         kernels. This diagnostic establishes no new optimization or parity pass.
+      - [x] [State-only intermediate prefill](experiments/gemma-state-only-prefill/README.md):
+        both approved Gemmas preserve KV writes and omit unused final-layer work.
+        Ordinary and optional-policy continuation/state controls cover scalar and
+        captured unequal-row waves. Measured all1024/both256 prefill improves
+        3.04%/2.42%; 26B reference movement and full quality remain unresolved.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

@@ -133,6 +133,7 @@ class Gemma4RunnerGpu : public ::testing::Test {
     auto freed = node.FreePinned(*pinned);
     return copied ? freed : copied;
   }
+  void StateOnlyControl();
   struct Lifetime {
     en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
     std::unique_ptr<en::Gemma4Runner> runner;
@@ -248,6 +249,130 @@ class Gemma31NormRunnerGpu : public Gemma31RunnerGpu {
  protected:
   bool NormChains() const override { return true; }
 };
+void Gemma4RunnerGpu::StateOnlyControl() {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
+  auto ranges = runner->CheckpointRanges(7);
+  ASSERT_TRUE(ranges);
+  std::uint64_t state_bytes = 0;
+  for (const auto& range : *ranges) state_bytes += range.bytes;
+  const auto host_bytes = 5 * state_bytes + 4ULL * runner->profile().vocab * sizeof(float);
+  ASSERT_TRUE(node.ChargeHost(host_bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, host_bytes};
+  std::vector<float> full, selected;
+  std::vector<std::byte> full_state, selected_state, current_state;
+  std::array<std::vector<std::byte>, 2> continued_state;
+  std::array<std::vector<float>, 2> continued_heads;
+  for (unsigned repeat = 0; repeat < 3; ++repeat) {
+    auto result = Held([&]() -> en::Status {
+      if (auto r = runner->Clear(0); !r) return r;
+      if (auto r = runner->Clear(1); !r) return r;
+      for (std::uint32_t past = 0; past < prompt.size(); past += 2) {
+        const auto tokens = std::span(prompt).subspan(past, 2);
+        if (auto r = Single(0, past, tokens, full); !r) return r;
+        const en::Gemma4Runner::Work work{1, past, tokens, &selected};
+        if (auto r = runner->WavePrefill(std::span(&work, 1), past + 2 == prompt.size()); !r)
+          return r;
+        if (past + 2 == prompt.size())
+          Exact(full, selected);
+        else
+          EXPECT_TRUE(selected.empty());
+        if (auto r = StateBytes(0, past + 2, full_state); !r) return r;
+        if (auto r = StateBytes(1, past + 2, selected_state); !r) return r;
+        EXPECT_EQ(full_state, selected_state);
+        // A clean pre-dispatch refusal must keep the previously completed output
+        // and position. In particular it must not clear a caller's sentinel.
+        selected.assign(1, 123.0F);
+        const en::Gemma4Runner::Work bad{1, past, tokens, &selected};
+        EXPECT_FALSE(runner->WavePrefill(std::span(&bad, 1), false));
+        EXPECT_EQ(selected, (std::vector<float>{123.0F}));
+        EXPECT_EQ((*runner->request_slot(1))->completed_positions(), past + 2);
+      }
+      const std::int32_t next = 529;
+      if (auto r = Single(0, 6, std::span(&next, 1), full); !r) return r;
+      if (auto r = Single(1, 6, std::span(&next, 1), selected); !r) return r;
+      Exact(full, selected);
+      if (auto r = StateBytes(0, 7, full_state); !r) return r;
+      if (auto r = StateBytes(1, 7, selected_state); !r) return r;
+      EXPECT_EQ(full_state, selected_state);
+      return {};
+    });
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+  }
+  // A uniform no-head wave retains independent unequal-row owners. Compare
+  // against the same batched rows and product policy, rather than separate solos.
+  for (unsigned repeat = 0; repeat < 3; ++repeat) {
+    auto result = Held([&]() -> en::Status {
+      const std::array<en::Gemma4Runner::Work, 2> work{
+          {{0, 0, std::span(prompt).first(2), &full},
+           {1, 0, std::span(prompt).first(4), &selected}}};
+      if (auto r = runner->Clear(0); !r) return r;
+      if (auto r = runner->Clear(1); !r) return r;
+      if (auto r = runner->Wave(work); !r) return r;
+      if (auto r = StateBytes(0, 2, full_state); !r) return r;
+      if (auto r = StateBytes(1, 4, selected_state); !r) return r;
+      const std::array<std::int32_t, 2> next{529, 7001};
+      const std::array<en::Gemma4Runner::Work, 2> continuation{
+          {{0, 2, std::span(next).first(1), &full}, {1, 4, std::span(next).last(1), &selected}}};
+      if (auto r = runner->Wave(continuation); !r) return r;
+      continued_heads[0] = full;
+      continued_heads[1] = selected;
+      if (auto r = StateBytes(0, 3, continued_state[0]); !r) return r;
+      if (auto r = StateBytes(1, 5, continued_state[1]); !r) return r;
+      if (auto r = runner->Clear(0); !r) return r;
+      if (auto r = runner->Clear(1); !r) return r;
+      if (auto r = runner->WavePrefill(work, false); !r) return r;
+      EXPECT_TRUE(full.empty());
+      EXPECT_TRUE(selected.empty());
+      for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        if (auto r = StateBytes(slot, slot == 0 ? 2U : 4U, current_state); !r) return r;
+        const auto& expected = slot == 0 ? full_state : selected_state;
+        EXPECT_EQ(current_state.size(), expected.size());
+        if (current_state.size() == expected.size())
+          EXPECT_EQ(std::memcmp(current_state.data(), expected.data(), expected.size()), 0);
+      }
+      // Refuse the entire wave before its valid first owner can advance.
+      full.assign(1, 123.0F);
+      selected.assign(1, 456.0F);
+      auto bad = continuation;
+      bad[1].n_past = 3;
+      EXPECT_FALSE(runner->WavePrefill(bad, false));
+      EXPECT_EQ(full, (std::vector<float>{123.0F}));
+      EXPECT_EQ(selected, (std::vector<float>{456.0F}));
+      EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 2U);
+      EXPECT_EQ((*runner->request_slot(1))->completed_positions(), 4U);
+      if (auto r = runner->WavePrefill(continuation, true); !r) return r;
+      Exact(full, continued_heads[0]);
+      Exact(selected, continued_heads[1]);
+      for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        if (auto r = StateBytes(slot, slot == 0 ? 3U : 5U, current_state); !r) return r;
+        const auto& expected = continued_state[slot];
+        EXPECT_EQ(current_state.size(), expected.size());
+        if (current_state.size() == expected.size())
+          EXPECT_EQ(std::memcmp(current_state.data(), expected.data(), expected.size()), 0);
+      }
+      return {};
+    });
+    ASSERT_TRUE(result) << (result ? "" : result.error());
+  }
+  EXPECT_GT(runner->graph_stats().captured, 0U);
+  EXPECT_GT(runner->graph_stats().replayed, 0U);
+}
+TEST_F(Gemma4RunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapturedReplay) {
+  StateOnlyControl();
+}
+TEST_F(Gemma31RunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapturedReplay) {
+  StateOnlyControl();
+}
+TEST_F(Gemma26MoeRunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapturedReplay) {
+  StateOnlyControl();
+}
+TEST_F(Gemma31NormRunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapturedReplay) {
+  StateOnlyControl();
+}
 void Gemma31RunnerGpu::ReplayOwnState() {
   ASSERT_EQ(runner->profile().layers, 60U);
   ASSERT_EQ(runner->profile().experts, 0U);
@@ -705,6 +830,28 @@ class Gemma4FeatureGpu : public Gemma4RunnerGpu {
  protected:
   bool RetainFeatures() const override { return true; }
 };
+TEST_F(Gemma4FeatureGpu, PrefillWithoutAHeadRequestStillPublishesRequiredFeatures) {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 1>{0}));
+  const auto bytes = std::uint64_t{runner->profile().vocab} * sizeof(float);
+  ASSERT_TRUE(node.ChargeHost(bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, bytes};
+  auto status = Held([&]() -> en::Status {
+    std::vector<float> head;
+    const en::Gemma4Runner::Work work{0, 0, prompt, &head};
+    if (auto r = runner->WavePrefill(std::span(&work, 1), false); !r) return r;
+    EXPECT_EQ(head.size(), runner->profile().vocab);
+    EXPECT_TRUE(std::ranges::all_of(head, [](float x) { return std::isfinite(x); }));
+    auto borrowed = runner->BorrowFrozen(0, prompt.back());
+    if (!borrowed) return en::support::Error(borrowed.error());
+    EXPECT_EQ(borrowed->prefix(), prompt.size());
+    return {};
+  });
+  ASSERT_TRUE(status) << (status ? "" : status.error());
+}
 TEST_F(Gemma4FeatureGpu, FrozenFeatureSurvivesPeerProgressPlansAndRejectsSameSlotMutation) {
   ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
   const auto feature_bytes = std::uint64_t{2} * runner->profile().width * sizeof(float);

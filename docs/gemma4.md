@@ -414,6 +414,15 @@ Natural-prefix quality fails against real multi-sequence stock batches, and
 the C12 reference speed gap remains open. Production keeps scalar dispatch;
 no optimized-batching or model-support qualification follows.
 
+The [state-only intermediate prefill path](experiments/gemma-state-only-prefill/README.md)
+uses a distinct plan-cache output mode. Non-final, non-scoring prompt chunks
+keep complete final-layer K/V stores and omit unused final query, attention,
+output, FFN and head work. Successful chunks publish empty logits; final,
+scoring and retained-feature chunks stay full. Both approved profiles preserve
+initialized state and continuation in ordinary and optional-policy controls.
+Measured all1024/both256 recipes improve 3.04%/2.42%, without establishing new
+quality or optimized batching support.
+
 ## Required execution and optimization qualification
 
 Every family/quant must adopt applicable selected Qwen/DeepSeek techniques

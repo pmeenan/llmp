@@ -360,9 +360,9 @@ state reset. Full cold planning costs 126/526 ms; state growth costs 64/164 ms.
 Retained prefill improves 7.12%/4.77% in one pair, while execution also changes.
 Planning is material but does not explain the whole remaining gap. Existing
 plan retention helps repeated shapes; no new production reuse mechanism or
-competitive batching/quality pass is established. Intermediate chunks still
-publish unnecessary heads; a proper state-only path must preserve final KV
-writes while pruning downstream work, rather than only disabling the head.
+competitive batching/quality pass is established. Its intermediate-head lead
+was addressed by the state-only path below, which preserves final KV writes
+while pruning downstream work, rather than only disabling the head.
 
 The [plain RMSNorm/Mul screen](experiments/gemma-normmul-screen/README.md)
 selects 121 existing fusions on Gemma31 while preserving exact native heads,
@@ -379,6 +379,17 @@ an equal-work kernel-parity claim; gaps alone do not identify caller CPU work.
 This strengthens the state-only prefill lead and motivates further planning
 work. It does not override the unresolved plain-norm screen or establish a
 Gemma26 transfer result.
+
+The [state-only prefill path](experiments/gemma-state-only-prefill/README.md)
+omits unused final-layer query/attention/output/FFN/head work only from
+non-final, non-scoring Gemma prompt chunks, preserving all KV stores. Both
+approved Gemmas retain exact initialized state and continuation under ordinary
+and optional policies, including captured scalar and unequal-row waves. The
+measured all1024/both256 recipes improve 3.04%/2.42%; the 26B reference drift
+prevents a resolved competitive gap. Qwen/DeepSeek retain the default full-head
+hook: their MTP/features, hyper-connections and recurrent state need separate
+dependency-cut qualification before this transfer. No batching or quality gate
+is inferred from head omission.
 
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and

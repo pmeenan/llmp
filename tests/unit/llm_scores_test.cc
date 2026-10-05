@@ -1694,6 +1694,66 @@ TEST(LlmScores, ADiscardedScalarJudgementKeepsTheBranchsPrefix) {
   EXPECT_EQ(model.native_state(1).target, target);
 }
 
+class PrefillHeadFake : public FakeLlm {
+ public:
+  std::vector<bool> requested_heads;
+
+ protected:
+  rt::Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
+                                std::uint32_t past, bool inject, bool want_head,
+                                std::vector<float>& row) override {
+    requested_heads.push_back(want_head);
+    auto ran = FakeLlm::RunPrefillChunkFor(branch, all, past, inject, want_head, row);
+    if (ran && !want_head) row.clear();
+    return ran;
+  }
+};
+TEST(LlmScores, NonFinalPromptHeadsAreOptionalButScoringAndDefaultFamiliesStayFull) {
+  const std::vector<std::int32_t> prompt(19, 2);
+  PrefillHeadFake legacy;
+  std::vector<float> row;
+  ASSERT_TRUE(legacy.Prefill(prompt, row));
+  EXPECT_EQ(legacy.requested_heads, (std::vector<bool>{false, false, true}));
+  EXPECT_FALSE(row.empty());
+  PrefillHeadFake incremental;
+  auto opened = incremental.default_branch().BeginPrompt(prompt);
+  ASSERT_TRUE(opened);
+  ASSERT_TRUE((*opened)->Advance());
+  ASSERT_TRUE((*opened)->Advance());
+  EXPECT_TRUE((*opened)->last().empty());
+  (*opened)->Cancel();
+  ASSERT_TRUE((*opened)->Finish());
+  EXPECT_EQ(incremental.history().size(), 8U);
+  opened = incremental.default_branch().BeginPrompt(prompt);
+  ASSERT_TRUE(opened);
+  while (!(*opened)->done()) ASSERT_TRUE((*opened)->Advance());
+  ASSERT_TRUE((*opened)->Finish());
+  EXPECT_EQ(incremental.requested_heads, (std::vector<bool>{false, false, true}));
+  EXPECT_EQ((*opened)->last(), row);
+  PrefillHeadFake scoring;
+  unsigned scores = 0;
+  auto scored = scoring.default_branch().BeginScoringPrompt(
+      prompt, [&](std::int32_t, std::span<const float> head) {
+        EXPECT_FALSE(head.empty());
+        ++scores;
+        return true;
+      });
+  ASSERT_TRUE(scored);
+  while (!(*scored)->done()) ASSERT_TRUE((*scored)->Advance());
+  ASSERT_TRUE((*scored)->Finish());
+  EXPECT_EQ(scores, prompt.size() - 1);
+  EXPECT_FALSE(scoring.requested_heads.empty());
+  EXPECT_TRUE(std::ranges::all_of(scoring.requested_heads, [](bool head) { return head; }));
+  FakeLlm unchanged;
+  auto full = unchanged.default_branch().BeginPrompt(prompt);
+  ASSERT_TRUE(full);
+  ASSERT_TRUE((*full)->Advance());
+  ASSERT_TRUE((*full)->Advance());
+  EXPECT_FALSE((*full)->last().empty());
+  (*full)->Cancel();
+  ASSERT_TRUE((*full)->Finish());
+}
+
 TEST(LlmScores, ResumablePromptAdmissionIsHostOnlyAndOwnsItsPrompt) {
   FakeLlm model(true);
   std::vector<std::int32_t> prompt(19, 2);

@@ -200,6 +200,11 @@ class Gemma4Runner final : public PagedModel {
   Status Chunk(std::uint32_t n_past, std::span<const std::int32_t> tokens,
                std::vector<float>& logits, bool all_outputs = false);
   Status Wave(std::span<const Work> work, bool all_outputs = false, bool all_features = false);
+  // Intermediate prompt chunks may finish after final KV stores. Requests
+  // needing retained features keep the existing complete output path.
+  Status WavePrefill(std::span<const Work> work, bool want_head = true);
+  Status ChunkPrefill(std::uint32_t n_past, std::span<const std::int32_t> tokens,
+                      std::vector<float>& logits, bool want_head = true);
   void DropPlans();
   void ReclaimCandidates(std::uint32_t owner, bool running,
                          std::vector<memory::ReclaimCandidate>& out);
@@ -238,6 +243,8 @@ class Gemma4Runner final : public PagedModel {
 
  private:
   friend class Gemma4Assistant;
+  Status WaveWithMode(std::span<const Work> work, bool all_outputs, bool all_features,
+                      kernels::ggml::Gemma4OutputMode mode);
   void InvalidateFeatures(Slot& slot);
   std::expected<std::array<std::uint8_t, 32>, std::string> CacheGenerations(const Slot& slot) const;
   Status RefreshClosures(SlotMask protect);

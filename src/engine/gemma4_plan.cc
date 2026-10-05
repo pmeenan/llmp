@@ -137,7 +137,7 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
   std::vector<ggml_tensor*> kept;
   if (g.logits != nullptr) kept.push_back(g.logits);
   if (g.normalized_features != nullptr) kept.push_back(g.normalized_features);
-  kept.push_back(g.hidden);
+  if (g.hidden != nullptr) kept.push_back(g.hidden);
   for (const auto& name : keep) {
     auto* t = g.Named(name);
     if (t == nullptr) return Error(std::format("Gemma4 graph names no {}", name));
