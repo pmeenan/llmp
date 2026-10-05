@@ -153,6 +153,15 @@ full runtime slab strides and canonical tails, including pitches not aligned
 to 256. Standard activation/Q8 writeback remains separate; no Q4_K shared
 block decode rewrite or paired-MMQ transfer is adopted.
 
+Gemma's [standalone routing and scaled-reduction contracts](experiments/gemma-moe-primitives/README.md)
+expose the unchanged pinned GGML launchers with checked 128-expert/top-eight
+routing and width-2,816 three-input ordered reduction. The existing full
+ARGSORT-root backing remains charged; only its first eight IDs are written.
+This availability closes an operator gap without selecting a graph policy.
+Readability of kept intermediates, whole-model reference arithmetic and paid
+solo/joined execution still govern any later adoption. The DeepSeek strict
+rounded two-input reducer is a different contract and cannot substitute.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

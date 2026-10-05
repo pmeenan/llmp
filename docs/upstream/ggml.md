@@ -24,6 +24,25 @@ Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
 then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
 sinks bound (RE-030).
 
+## Standalone Gemma routing and scaled reduction
+
+- **Status:** native availability only; no upstream numerical change or new
+  Gemma graph selection.
+- **jitLLM change:** build patch 0002 adds the pinned original `topk-moe.cu`
+  and `moe-weighted-reduction.cu` to the existing CUDA target, preserving
+  its fast-math flags and MIT notices. The source lock records their compiled
+  scope and the newly prepared tree; targeted source contracts authenticate
+  the original four implementation/header files and actual compile inventory.
+- **Native contract:** checked caller-funded F32 routing for 128 experts/top
+  eight retains the existing full ARGSORT-root pitch and the exact 2^-14
+  normalization clamp. Only the first eight IDs are initialized; full-sort
+  consumers must use the primitive chain. The three-input scaled ordered
+  reducer is bounded to Gemma's width 2,816 and eight selected experts.
+- **Evidence:** the [primitive controls](../experiments/gemma-moe-primitives/README.md)
+  compare literal full outputs with the exported original pinned-image CUDA
+  operators, without rebuilding reference floating kernels. This does not
+  establish whole-model quality, speed, or production policy.
+
 ## MMVQ reads rounded output rows (RE-045)
 
 - **Status:** pinned limitation, guarded by jitLLM's launch plan; current

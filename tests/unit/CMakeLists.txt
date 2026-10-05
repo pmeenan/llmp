@@ -517,7 +517,17 @@ add_executable(ggml_ext_validate_test ggml_ext_validate_test.cc)
 target_link_libraries(ggml_ext_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(ggml_ext_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
+add_executable(gemma_moe_test gemma_moe_test.cc)
+target_link_libraries(gemma_moe_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(gemma_moe_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 if(JITLLM_CUDA)
+  add_executable(gemma_moe_gpu_test gemma_moe_gpu_test.cc)
+  target_include_directories(gemma_moe_gpu_test SYSTEM PRIVATE
+                            "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(gemma_moe_gpu_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(gemma_moe_gpu_test)
+
   add_executable(ggml_kernels_test ggml_kernels_test.cc)
   target_include_directories(ggml_kernels_test SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")

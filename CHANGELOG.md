@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Checked standalone Gemma top-eight routing and scaled ordered expert
+  reduction, retaining original pinned GGML arithmetic and primitive fallback.
+  Graph dispatch and whole-model qualification remain separate.
+
 - Bounded Gemma26 chat and literal completion route on the native driver,
   with target likelihoods and up to twelve independent scalar request owners.
   Thinking, generated tools and assistants remain unavailable.

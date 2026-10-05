@@ -44,3 +44,9 @@ if(NOT CMAKE_CROSSCOMPILING AND NOT JITLLM_CUDA AND NOT JITLLM_SANITIZE)
                    --toolchain ${CMAKE_TOOLCHAIN_FILE})
   set_tests_properties(sources.mechanism PROPERTIES LABELS sources TIMEOUT 600)
 endif()
+
+# Standalone Gemma routing/scaled reduction reuse the unchanged pinned math.
+add_test(NAME sources.gemma_moe
+         COMMAND ${JITLLM_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/gemma_moe_test.py
+                 ${PROJECT_BINARY_DIR})
+set_tests_properties(sources.gemma_moe PROPERTIES LABELS sources)

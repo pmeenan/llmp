@@ -25,7 +25,10 @@ target, compiling nothing; for ds4, add a raw-Q2 loader to the D2R unit and
 extract only the original token-tile HCA numerical helpers/core with narrow
 launchers). GGML's build compiles the operations of the
 backend proof's models and of M3's DeepSeek V4 Flash and Qwen3.8 Flash,
-not all of GGML (the lock's `license.scope` lists the files).
+plus checked standalone Gemma routing and scaled expert reduction from the
+unchanged pinned `topk-moe.cu` and `moe-weighted-reduction.cu` units. These
+units retain the original fast-math flags; no Gemma graph policy selects them
+yet. It does not compile all of GGML (the lock's `license.scope` lists the files).
 Patch 0005 adds an IQ2 compact-pair kernel specialization for the measured
 GB10 shape; ordinary MMQ configurations remain unchanged.
 [licensing.md](../docs/licensing.md) records their audits.

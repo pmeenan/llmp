@@ -357,6 +357,12 @@ retain the previous completed prefix and peer leases.
 [Serving controls](experiments/gemma-serving/README.md) record the bounded route;
 they do not establish qualified model support or optimized batching.
 
+The [standalone MoE contracts](experiments/gemma-moe-primitives/README.md)
+now expose checked original routing and scaled ordered reduction primitives.
+Their first-eight ID view retains the graph's already funded full 128-pitch
+ARGSORT root; its tail remains unwritten. Graph integration, readable keeps,
+and whole-model quality/performance selection remain separate requirements.
+
 ## Required execution and optimization qualification
 
 Every family/quant must adopt applicable selected Qwen/DeepSeek techniques
