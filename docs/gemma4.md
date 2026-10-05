@@ -284,6 +284,9 @@ outside the new zero native noise bound; the unfused diagnostic matches every
 full head byte for byte. This does not qualify either model or identify a
 shared cause with the narrower 26B routed-input diagnosis. Optional policies,
 optimized batching, assistants and 31B HTTP admission remain open.
+The [dense 31B norm control](experiments/gemma31-reference-fusions/README.md)
+reproduces every measured stock head with the two missing norm fusion families.
+Checked native implementation and full model qualification remain open.
 
 Checked device masks are the runner default after exact full-model agreement
 with caller-funded host masks. Norm fusion, shared Q8 preparation and bounded

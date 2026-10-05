@@ -1,0 +1,226 @@
+{
+  "policy": "both",
+  "input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+  "rows": 1024,
+  "calibration_sha256": "6ab1fd0bc4a39c303c112ff476b96faa0527a9fa8242cc67b3abd5873350f038",
+  "calibration_p99": 0.0,
+  "complete_file_sha256": {
+    "native": "87d2274ad1420412885cd118a33dc79e614cc743989f96eb0c953e5f8ffc3720",
+    "stock": "c4b9b73ac7d9c62c62ff1daabc09b36bc716df5a5b124076d0b888bfc42fb0c1",
+    "candidate": "c4b9b73ac7d9c62c62ff1daabc09b36bc716df5a5b124076d0b888bfc42fb0c1",
+    "repeat": "c4b9b73ac7d9c62c62ff1daabc09b36bc716df5a5b124076d0b888bfc42fb0c1"
+  },
+  "repeat_byte_exact_rows": 1024,
+  "summaries": {
+    "native": {
+      "byte_exact_rows": 0,
+      "strict_argmax_mismatches": 330,
+      "max_raw_delta": 27.125676155090332
+    },
+    "stock": {
+      "byte_exact_rows": 1024,
+      "strict_argmax_mismatches": 0,
+      "max_raw_delta": 0.0
+    }
+  },
+  "first_stock_byte_change": null,
+  "first_stock_argmax_change": null,
+  "explicitly_selected_distribution_rows": [
+    {
+      "row": 0,
+      "reason": "fixed boundary or first stock byte/argmax change",
+      "native": {
+        "full_softmax_tv": 0.008854438977610693
+      },
+      "stock": {
+        "full_softmax_tv": 0.0
+      },
+      "target": 26086,
+      "target_nll": {
+        "native": 17.291443426652723,
+        "stock": 17.19949068135918,
+        "candidate": 17.19949068135918
+      }
+    },
+    {
+      "row": 127,
+      "reason": "fixed boundary or first stock byte/argmax change",
+      "native": {
+        "full_softmax_tv": 0.34405660071974
+      },
+      "stock": {
+        "full_softmax_tv": 0.0
+      },
+      "target": 14031,
+      "target_nll": {
+        "native": 0.8354358303225027,
+        "stock": 2.411967419079332,
+        "candidate": 2.411967419079332
+      }
+    },
+    {
+      "row": 128,
+      "reason": "fixed boundary or first stock byte/argmax change",
+      "native": {
+        "full_softmax_tv": 0.19096341545886827
+      },
+      "stock": {
+        "full_softmax_tv": 0.0
+      },
+      "target": 108,
+      "target_nll": {
+        "native": 1.435059524505542,
+        "stock": 2.9914166029202534,
+        "candidate": 2.9914166029202534
+      }
+    },
+    {
+      "row": 512,
+      "reason": "fixed boundary or first stock byte/argmax change",
+      "native": {
+        "full_softmax_tv": 0.2857511123691819
+      },
+      "stock": {
+        "full_softmax_tv": 0.0
+      },
+      "target": 108,
+      "target_nll": {
+        "native": 0.8982303920904684,
+        "stock": 0.36761246085115395,
+        "candidate": 0.36761246085115395
+      }
+    },
+    {
+      "row": 1023,
+      "reason": "fixed boundary or first stock byte/argmax change",
+      "native": {
+        "full_softmax_tv": 1.1950620404907326e-05
+      },
+      "stock": {
+        "full_softmax_tv": 0.0
+      }
+    }
+  ],
+  "scope": "all heads for bytes/argmax/raw delta; selected likelihood rows only, no PPL or quality gate",
+  "schema": 1,
+  "diagnostic_base": "38ca137",
+  "native_measured_base": "c8edc0617ecc4ef666c1dbb0c968ba9d63ae2e74",
+  "native_source_test_manifest": "01f2d058b4e177b2de73c3b9e91a0add432b178f357e54cd4e16e55a5fc8aab7",
+  "context": 4096,
+  "teacher_chunk": 128,
+  "source_sha256": "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575",
+  "reference_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+  "reference_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+  "identities": {
+    "upstream_controller": "523470d6604755b82d0208414ce40f1378941b10bc1349763bbdf02edaab9634",
+    "generated_controller": "d74c89feeaed4320ea8e1351b435a23618f66fad65eccbdc17a258254b92dcd6",
+    "controller_library": "58a55e02f0e1a70f82b1bd633a6fa0e2586033ebdabfc0a28aa5ed321dfa0b98",
+    "original_cuda_math_library": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e",
+    "quality_client": "e291d8864695c1e4c80a1324fb0758ce127700584384aa3069239ee28cf593f0"
+  },
+  "selections": {
+    "stock-all": {
+      "policy": "all",
+      "banner": 0,
+      "selections": {
+        "RMS_NORM -> MUL": 968,
+        "RMS_NORM -> MUL -> ROPE": 960,
+        "RMS_NORM -> MUL -> ADD": 960,
+        "SCALE -> UNARY -> SCALE": 8
+      },
+      "shapes": {
+        "RMS_NORM:f32:[5376,128,1,1]": 1928,
+        "MUL:f32:[5376,128,1,1]": 1928,
+        "RMS_NORM:f32:[256,32,128,1]": 400,
+        "MUL:f32:[256,32,128,1]": 400,
+        "ROPE:f32:[256,32,128,1]": 400,
+        "RMS_NORM:f32:[256,16,128,1]": 400,
+        "MUL:f32:[256,16,128,1]": 400,
+        "ROPE:f32:[256,16,128,1]": 400,
+        "ADD:f32:[5376,128,1,1]": 960,
+        "RMS_NORM:f32:[512,32,128,1]": 80,
+        "MUL:f32:[512,32,128,1]": 80,
+        "ROPE:f32:[512,32,128,1]": 80,
+        "RMS_NORM:f32:[512,4,128,1]": 80,
+        "MUL:f32:[512,4,128,1]": 80,
+        "ROPE:f32:[512,4,128,1]": 80,
+        "SCALE:f32:[262144,128,1,1]": 16,
+        "UNARY:f32:[262144,128,1,1]": 8
+      },
+      "total_host_fusion_decisions": 2896
+    },
+    "stock-none": {
+      "policy": "none",
+      "banner": 3,
+      "selections": {},
+      "shapes": {},
+      "total_host_fusion_decisions": 0
+    },
+    "both-first": {
+      "policy": "both",
+      "banner": 4,
+      "selections": {
+        "RMS_NORM -> MUL -> ROPE": 960,
+        "RMS_NORM -> MUL -> ADD": 960
+      },
+      "shapes": {
+        "RMS_NORM:f32:[256,32,128,1]": 400,
+        "MUL:f32:[256,32,128,1]": 400,
+        "ROPE:f32:[256,32,128,1]": 400,
+        "RMS_NORM:f32:[256,16,128,1]": 400,
+        "MUL:f32:[256,16,128,1]": 400,
+        "ROPE:f32:[256,16,128,1]": 400,
+        "RMS_NORM:f32:[5376,128,1,1]": 960,
+        "MUL:f32:[5376,128,1,1]": 960,
+        "ADD:f32:[5376,128,1,1]": 960,
+        "RMS_NORM:f32:[512,32,128,1]": 80,
+        "MUL:f32:[512,32,128,1]": 80,
+        "ROPE:f32:[512,32,128,1]": 80,
+        "RMS_NORM:f32:[512,4,128,1]": 80,
+        "MUL:f32:[512,4,128,1]": 80,
+        "ROPE:f32:[512,4,128,1]": 80
+      },
+      "total_host_fusion_decisions": 1920
+    },
+    "both-repeat": {
+      "policy": "both",
+      "banner": 4,
+      "selections": {
+        "RMS_NORM -> MUL -> ROPE": 960,
+        "RMS_NORM -> MUL -> ADD": 960
+      },
+      "shapes": {
+        "RMS_NORM:f32:[256,32,128,1]": 400,
+        "MUL:f32:[256,32,128,1]": 400,
+        "ROPE:f32:[256,32,128,1]": 400,
+        "RMS_NORM:f32:[256,16,128,1]": 400,
+        "MUL:f32:[256,16,128,1]": 400,
+        "ROPE:f32:[256,16,128,1]": 400,
+        "RMS_NORM:f32:[5376,128,1,1]": 960,
+        "MUL:f32:[5376,128,1,1]": 960,
+        "ADD:f32:[5376,128,1,1]": 960,
+        "RMS_NORM:f32:[512,32,128,1]": 80,
+        "MUL:f32:[512,32,128,1]": 80,
+        "ROPE:f32:[512,32,128,1]": 80,
+        "RMS_NORM:f32:[512,4,128,1]": 80,
+        "MUL:f32:[512,4,128,1]": 80,
+        "ROPE:f32:[512,4,128,1]": 80
+      },
+      "total_host_fusion_decisions": 1920
+    }
+  },
+  "fidelity": {
+    "all_to_actual_stock_on": "whole 1GiB cmp exact",
+    "none_to_actual_stock_off": "whole 1GiB cmp exact",
+    "both_own_repeat": "whole 1GiB cmp exact",
+    "native_calibration": "unchanged"
+  },
+  "existing_stock_scores_inherited_by_byte_identity": {
+    "scored_targets": 1023,
+    "mean_nll": 3.5773256064214842,
+    "ppl": 35.77772905610885,
+    "new_nll_scan": false
+  },
+  "native_status": "unchanged FAIL +14.610784960847623% PPL/330 outside frozen zero allowance; no adoption or serving qualification",
+  "limits": "only representative128 teacher-forced shape; no paid performance/peak memory/native implementation qualification"
+}

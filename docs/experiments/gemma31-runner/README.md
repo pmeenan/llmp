@@ -54,6 +54,9 @@ whole-file hashing authenticates all three retained 1 GiB files at the same
 execution policies; it does not identify a defective reference kernel, prove
 one normalization family sufficient, generalize the 26B six-row routed-input
 attribution to dense 31B, or qualify the full reference/model. 31B has no MoE.
+The later [dense norm control](../gemma31-reference-fusions/README.md) reproduces
+all measured stock heads with those two norm fusion families; this is reference
+attribution, with native implementation and qualification still owed.
 
 ## State and funding
 
