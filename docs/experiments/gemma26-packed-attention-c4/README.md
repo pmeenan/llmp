@@ -100,3 +100,8 @@ and assistant transfers still need their own controls.
 
 Focused locked build, 24 descriptor controls, native own freeze, fresh bookend,
 full-row comparisons and paid head/state verification passed without skips.
+
+The subsequent [compound-policy screen](../gemma26-compound-packed-c4/README.md)
+adds checked routing/reduction to this packed norm control: 92/128 complete heads
+match stock exactly, with two positive-margin disagreements and 7.15% higher
+latency. It remains unselected; these historical attention-only results stand.

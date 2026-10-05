@@ -274,6 +274,14 @@ aliases, or adopt a layer whitelist. Future compound tests must account for
 the mixed prefill history. Routed products select MMVQ at decode and MMQ at
 prefill for the actual Q4_K/Q5_1/Q8_0 weights.
 
+The [packed Gemma26 compound screen](experiments/gemma26-compound-packed-c4/README.md)
+adds the existing checked routing and reduction to that packed norm control.
+Positive-margin disagreements fall from 68 to 2 of 128 heads, and 92 complete
+heads become byte-exact. Paid latency remains 7.15% above the reference mean.
+Native selects all 30 routing fusions during prefill, so the stock late-layer
+memory refusals remain a recipe difference. The residual misses require a
+common-input probe; neither a specific cause nor a production policy is selected.
+
 The [actual-input scalar FFN replay](experiments/gemma-dense-ffn/README.md)
 checks dense31's layer-zero Q4_K gate/up and Q6_K down products at width 5,376.
 Observed original quantized GeGLU fusion, separate original products/GeGLU

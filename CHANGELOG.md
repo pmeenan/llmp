@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Gemma26 packed C4 routing/reduction comparison reduces positive-margin
+  disagreements from 68 to 2 of 128 heads, with 92 heads byte-exact to llama.cpp.
+  The candidate remains unselected and takes 7.15% more time.
+
 - Gemma26 8K ring-cache reference transfer: all 32 decode choices agree,
   but both retained full heads differ. Native prefill/decode take 57.64%/0.49%
   more time; full quality and competitive performance remain open.

@@ -83,3 +83,9 @@ The narrow Spark build and original acquisition passed; all 11 final source/pars
 controls and the metadata-only per-call coverage check passed. No native policy
 changed and no model unit suite, timing gate, representative PPL or support
 qualification is claimed.
+
+The subsequent [packed compound screen](../gemma26-compound-packed-c4/README.md)
+tests native routing/reduction throughout prefill and decode. It reaches 92/128
+byte-exact heads but retains two positive-margin disagreements and 7.15% higher
+latency. Stock's late prefill refusals remain a difference to probe with common
+inputs; no layer whitelist or production policy is selected.

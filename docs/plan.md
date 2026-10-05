@@ -328,7 +328,13 @@ family" guide, and its long-context scaling work.
         Routing is fused in all 30 decode layers, but prefill refuses layers
         28/29 at its memory gate; scaled reductions are fused throughout.
         This identifies a recipe difference without attributing the full gap;
-        compound-policy tests, competitive batching and qualification remain open.
+        common-input diagnosis, competitive batching and qualification remain open.
+      - [x] [Gemma26 packed compound-policy screen](experiments/gemma26-compound-packed-c4/README.md),
+        with frozen same-policy complete heads/states and fresh stock bookends.
+        Routing/reduction reduces positive-margin disagreements from 68 to 2
+        of 128; 92 complete heads are byte-exact. Paid latency is 7.15% higher.
+        No production policy is selected; common-input diagnosis, competitive
+        batching and full qualification remain open.
       - [x] [Dense31 solo checked-norm first screen](experiments/gemma-dense31-c1-norm/README.md),
         with frozen native full-head repeats and fresh matched original bookends.
         All 32 complete heads match byte-for-byte; short decode latency is 1.92%
