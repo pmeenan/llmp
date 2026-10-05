@@ -187,6 +187,12 @@ final residual GET_ROWS stays paid before a deferred norm/add step. Dense31's
 measured 128-row complete heads match stock, but its paid 8K comparison against
 reference ubatch256 still differs and gives no stable speed winner. This does
 not select a default or qualify routed26, optimized batching or long context.
+The [natural C4 norm/row first screen](experiments/gemma-joined-norm/README.md)
+selects both checked norm chains during prefill and decode and keeps native
+scalar/joined heads exact. Fresh stock has 33/128 strict positive-margin
+differences; candidate latency is 1.7523% above the fresh stock bookends.
+This negative candidate remains unselected; the earlier 128-row proof does not
+transfer to this shape.
 
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and

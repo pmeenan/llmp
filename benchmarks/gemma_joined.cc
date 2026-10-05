@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// ARTIFACT OUTPUT_DIR 26|31 OWNERS scalar|joined ordinary|rows [IDS_I32]
+// ARTIFACT OUTPUT_DIR 26|31 OWNERS scalar|joined ordinary|rows|rows-norm [IDS_I32]
 // Bounded common-prefix units: every completed owner head is published/charged.
 #include <algorithm>
 #include <array>
@@ -40,8 +40,9 @@ int main(int argc, char** argv) {
   const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), count);
   if (error != std::errc{} || end != number.data() + number.size() || count == 0 || count > 12 ||
       (variant != "26" && variant != "31") || (mode != "scalar" && mode != "joined") ||
-      (policy != "ordinary" && policy != "rows"))
+      (policy != "ordinary" && policy != "rows" && policy != "rows-norm"))
     return 2;
+  if (policy == "rows-norm" && (variant != "31" || count != 4 || supplied.empty())) return 2;
   const std::filesystem::path out = argv[2];
   std::error_code file_error;
   if (!std::filesystem::create_directory(out, file_error) || file_error) return 2;
@@ -67,7 +68,9 @@ int main(int argc, char** argv) {
           .context = 256,
           .max_rows = 128,
           .slots = count,
-          .row_invariant = policy == "rows"},
+          .row_invariant = policy != "ordinary",
+          .fuse_norm_rope = policy == "rows-norm",
+          .fuse_norm_add = policy == "rows-norm"},
       0, 0);
   auto& runner = *lifetime->runner;
   const auto execute = [&]() -> en::Status {
@@ -103,7 +106,20 @@ int main(int argc, char** argv) {
         constexpr std::array<std::int32_t, 3> seeds{45518, 107, 101};
         std::vector<float> published(std::size_t{steps} * count * vocab);
         std::array<std::array<std::int32_t, 12>, steps> chosen{};
-        const auto prefill = [&]() -> en::Status {
+        const auto report_policy = [&](std::string_view phase, std::uint32_t owner,
+                                       std::uint32_t rows, std::uint32_t segments) -> en::Status {
+          const auto& p = runner.last_built_policy();
+          if (p.rows != rows || p.segments != segments)
+            return Error("fresh selected policy does not match requested shape");
+          std::cout << "JOINED_SELECTED phase=" << phase << " owner=" << owner << " rows=" << p.rows
+                    << " segments=" << p.segments << " row_products=" << p.row_products
+                    << " norm_rope=" << p.norm_rope << " norm_add=" << p.norm_add
+                    << " norm_fused=" << p.norm_fused << " rope_store=" << p.rope_store
+                    << " shared_vecq=" << p.shared_vecq << " gemma_route=" << p.gemma_route
+                    << " gemma_reduce=" << p.gemma_reduce << " lane_steps=" << p.lane_steps << '\n';
+          return {};
+        };
+        const auto prefill = [&](bool fresh) -> en::Status {
           for (std::uint32_t i = 0; i < count; ++i) {
             if (auto r = runner.Clear(i); !r) return r;
             std::vector<std::int32_t> tokens;
@@ -116,9 +132,12 @@ int main(int argc, char** argv) {
             past[i] = static_cast<std::uint32_t>(tokens.size());
             const en::Gemma4Runner::Work work{i, 0, tokens, &heads[i]};
             if (auto r = runner.Wave(std::span(&work, 1)); !r) return r;
+            if (fresh)
+              if (auto r = report_policy("prefill-first-build", i, past[i], 1); !r) return r;
           }
           return {};
         };
+        bool fresh_decode = true;
         const auto wave = [&](std::uint32_t step) -> en::Status {
           std::array<en::Gemma4Runner::Work, 12> work{};
           for (std::uint32_t i = 0; i < count; ++i) {
@@ -130,18 +149,24 @@ int main(int argc, char** argv) {
             for (std::uint32_t first = 0; first < count; first += en::kGemma4InvariantWaveRows) {
               const auto rows = std::min(en::kGemma4InvariantWaveRows, count - first);
               if (auto r = runner.Wave(std::span(work).subspan(first, rows)); !r) return r;
+              if (fresh_decode)
+                if (auto r = report_policy("decode-first-build", first, rows, rows); !r) return r;
             }
           } else {
-            for (std::uint32_t i = 0; i < count; ++i)
+            for (std::uint32_t i = 0; i < count; ++i) {
               if (auto r = runner.Wave(std::span(work).subspan(i, 1)); !r) return r;
+              if (fresh_decode)
+                if (auto r = report_policy("decode-first-build", i, 1, 1); !r) return r;
+            }
           }
+          fresh_decode = false;
           for (std::uint32_t i = 0; i < count; ++i) ++past[i];
           return {};
         };
-        if (auto r = prefill(); !r) return r;
+        if (auto r = prefill(true); !r) return r;
         for (std::uint32_t step = 0; step < 8; ++step)
           if (auto r = wave(step); !r) return r;
-        if (auto r = prefill(); !r) return r;
+        if (auto r = prefill(false); !r) return r;
         for (std::uint32_t step = 0; step < 3; ++step)
           if (auto r = wave(step); !r) return r;
         const auto before = runner.graph_stats();
@@ -176,7 +201,11 @@ int main(int argc, char** argv) {
                   << " captured_delta=" << runner.graph_stats().captured - before.captured
                   << " replayed_delta=" << runner.graph_stats().replayed - before.replayed
                   << " rows=" << p.rows << " segments=" << p.segments
-                  << " row_products=" << p.row_products << " lane_steps=" << p.lane_steps
+                  << " row_products=" << p.row_products << " norm_rope=" << p.norm_rope
+                  << " norm_add=" << p.norm_add << " norm_fused=" << p.norm_fused
+                  << " rope_store=" << p.rope_store << " shared_vecq=" << p.shared_vecq
+                  << " gemma_route=" << p.gemma_route << " gemma_reduce=" << p.gemma_reduce
+                  << " policy_basis=last-built lane_steps=" << p.lane_steps
                   << " heap_funded=" << heap << '\n';
         for (std::uint32_t step = 0; step < steps; ++step)
           for (std::uint32_t i = 0; i < count; ++i)

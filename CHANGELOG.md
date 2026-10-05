@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Reproducible dense31 joined norm/row-policy screening, with exact native
+  repeats and matched stock comparisons. Quality failures keep the candidate
+  unselected.
+
 - Explicit default-off joined Gemma decode controls, with ordered bounded
   subwaves, independent publication/refusal and owned spill/restart. Native
   solo/joined agreement and real multi-sequence reference comparisons retain
