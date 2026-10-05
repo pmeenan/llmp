@@ -162,6 +162,12 @@ Readability of kept intermediates, whole-model reference arithmetic and paid
 solo/joined execution still govern any later adoption. The DeepSeek strict
 rounded two-input reducer is a different contract and cannot substitute.
 
+The [structural matchers](gemma-moe-matchers.md) recognize the exact routing
+chain and contiguous ordered reduction, preserving all descriptors for
+placement and refusing kept or externally read elided values. The current
+26B graph matches routing but falls back for its interleaved reduction.
+Shared planner dispatch and whole-model/batched qualification remain owed.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

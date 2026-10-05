@@ -790,3 +790,8 @@ if(JITLLM_CUDA)
                    -P ${CMAKE_CURRENT_SOURCE_DIR}/ggml_module_digest_test.cmake)
   set_tests_properties(unit.Exl3ModuleDigest PROPERTIES LABELS unit)
 endif()
+
+add_executable(gemma_moe_fusion_test gemma_moe_fusion_test.cc)
+target_link_libraries(gemma_moe_fusion_test PRIVATE jitllm_ggml_tensors jitllm_artifact jitllm_json)
+jitllm_gtest(gemma_moe_fusion_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")

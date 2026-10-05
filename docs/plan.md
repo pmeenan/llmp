@@ -246,6 +246,11 @@ family" guide, and its long-context scaling work.
       - [x] Gemma graph-owned causal/ring device masks, with funded host
         reference inputs and [exact mask/replay controls](experiments/gemma-device-masks/README.md).
         Optimized serving and reference gates remain owed.
+      - [x] Checked standalone Gemma MoE routing/scaled-reduction primitives
+        and [structural matchers](gemma-moe-matchers.md), preserving selected
+        IDs, full-sort backing and ordered expert scaling. Current interleaved
+        reduction uses primitive fallback; graph integration, whole-model
+        reference qualification and optimized batching remain owed.
       - [x] Bounded native Gemma 26B-A4B runner with independent slots,
         device masks and [exact state/replay controls](experiments/gemma-runner/README.md).
         Complete serving, assistant, representative quality, long-context and optimized
