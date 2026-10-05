@@ -10,6 +10,12 @@ identical state resets with capture disabled and separate phase timing. Similar
 excess time per chunk alone does not establish a fixed host cost: reference work
 per chunk is also similar. Cold planning costs 126/526 ms at Gemma26/31; state growth costs 64/164 ms.
 Planning is material, but it does not explain the entire remaining gap.
+The [current Gemma31 timeline](../gemma31-current-timeline/README.md) now records
+592 ms in 32 internal GPU-idle gaps over 10 ms and 145 ms of extra vocabulary
+projections. Product and attention duration sums are close to stock, with
+different final-block row shapes and extra standalone MUL launches. These
+measurements guide the resumed work; the untraced comparisons below remain
+the competitive evidence.
 M3.5 remains incomplete. The source-use optimization landed as `5ef7aac` after
 1,700 Spark tests passed without failures or skips, including 311 GPU and 57
 model tests. Both Sparks were checked idle at the pause.
@@ -121,7 +127,8 @@ Source-supported leads to rank by plausible contribution to the whole gap:
 3. Extra head publication and final-layer frontier narrowing change actual
    paid work and product shapes. The old 26 trace attributed about 26 ms of
    extra vocabulary-projection kernels, much smaller than its original host
-   gap. The contribution at 31 is unmeasured. Suppressing heads must preserve
+   gap. The current 31 trace measures 145 ms of extra vocabulary projections.
+   Suppressing heads must preserve
    state, needed likelihoods and assistant features in the real runtime;
    a benchmark-only omission would not establish an engine improvement.
 4. Existing DeepSeek `dense_pair` input-quantization reuse is available but

@@ -55,13 +55,13 @@ def owned(row, global_pid):
     return None
 
 
-def extract(path, completion_record, engine):
+def extract(path, completion_record, engine, label=LABEL):
     connection = sqlite3.connect('file:'+str(path)+'?mode=ro',uri=True)
     connection.row_factory = sqlite3.Row
     tables = {r[0] for r in connection.execute("select name from sqlite_master where type='table'")}
     strings = dict(connection.execute('select id,value from StringIds'))
     ranges = [dict(r) for r in connection.execute('select * from NVTX_EVENTS')
-              if r['text'] == LABEL or strings.get(r['textId']) == LABEL]
+              if r['text'] == label or strings.get(r['textId']) == label]
     assert len(ranges) == 1 and ranges[0]['end'] > ranges[0]['start']
     left,right = ranges[0]['start'],ranges[0]['end']
     processes = [dict(r) for r in connection.execute('select * from PROCESSES')]

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // External C API harness for the pinned same-format llama.cpp comparator.
-// MODEL IDS_I32 NEW_OUTDIR; identical Gemma26 ring recipe, outer NVTX prefill range only.
+// MODEL IDS_I32 NEW_OUTDIR [26|31]; ring recipe, outer NVTX prefill range only.
 #include <nvtx3/nvToolsExt.h>
 
 #include <algorithm>
@@ -15,6 +15,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "llama.h"
@@ -22,7 +23,7 @@
 namespace {
 class PrefillRange {
  public:
-  PrefillRange() { nvtxRangePushA("jitllm.gemma26.paid_prefill"); }
+  explicit PrefillRange(const char* label) { nvtxRangePushA(label); }
   ~PrefillRange() { Finish(); }
   void Finish() {
     if (active_) {
@@ -40,8 +41,10 @@ void Require(bool good, const char* text) {
 }  // namespace
 int main(int argc, char** argv) {
   try {
-    Require(argc == 4, "usage: approved26_MODEL IDS_I32 NEW_OUTDIR");
-    constexpr int chunk = 1024;
+    Require(argc == 4 || argc == 5, "usage: approved_MODEL IDS_I32 NEW_OUTDIR [26|31]");
+    const std::string_view variant = argc == 5 ? argv[4] : "26";
+    Require(variant == "26" || variant == "31", "unsupported profile");
+    const int chunk = variant == "31" ? 256 : 1024;
     Require(!std::getenv("GGML_CUDA_DISABLE_GRAPHS") && !std::getenv("GGML_CUDA_DISABLE_FUSION"),
             "production graph/fusion policy changed");
     const std::filesystem::path out(argv[3]);
@@ -57,8 +60,9 @@ int main(int argc, char** argv) {
     Require(bool(model), "model load failed");
     const auto* vocab = llama_model_get_vocab(model.get());
     Require(llama_vocab_n_tokens(vocab) == 262144, "unexpected vocabulary");
-    Require(llama_model_n_layer(model.get()) == 30 && llama_model_n_embd(model.get()) == 2816,
-            "model is outside the closed Gemma26 profile");
+    Require(llama_model_n_layer(model.get()) == (variant == "31" ? 60 : 30) &&
+                llama_model_n_embd(model.get()) == (variant == "31" ? 5376 : 2816),
+            "model is outside the closed Gemma profile");
     Require(std::filesystem::file_size(argv[2]) == 8227 * 4, "unexpected input ID length");
     std::array<llama_token, 8227> ids{};
     std::ifstream file(argv[2], std::ios::binary);
@@ -79,7 +83,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<llama_context, decltype(&llama_free)> ctx(
         llama_init_from_model(model.get(), cp), llama_free);
     Require(bool(ctx), "context creation failed");
-    Require(llama_n_ctx(ctx.get()) == 16384 && llama_n_ubatch(ctx.get()) == 1024,
+    Require(llama_n_ctx(ctx.get()) == 16384 && llama_n_ubatch(ctx.get()) == unsigned(chunk),
             "effective context/ubatch differs from ring recipe");
     llama_batch batch = llama_batch_init(8192, 0, 1);
     std::vector<float> published(262144);
@@ -106,7 +110,8 @@ int main(int argc, char** argv) {
     // Both arms page/warm weights on these six discarded input rows.
     decode(0, 6);
     llama_memory_clear(llama_get_memory(ctx.get()), true);
-    PrefillRange prefill_range;
+    PrefillRange prefill_range(variant == "31" ? "jitllm.gemma31.paid_prefill"
+                                               : "jitllm.gemma26.paid_prefill");
     const auto before_prefill = std::chrono::steady_clock::now();
     decode(0, 8192);
     const double prefill =

@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Manual annotated Gemma26 all1024 prefill diagnosis; no performance gate.
-// ARTIFACT IDS_I32 NEW_OUTPUT_DIR 26 all 1024 only.
+// Manual annotated Gemma26 all1024 or Gemma31 both256 prefill diagnosis.
+// ARTIFACT IDS_I32 NEW_OUTPUT_DIR 26 all 1024 | 31 both 256.
 // Same paid work with one outer NVTX range; production is unchanged.
 #include <nvtx3/nvToolsExt.h>
 
@@ -29,7 +29,7 @@ using en::support::Error;
 namespace {
 class PrefillRange {
  public:
-  PrefillRange() { nvtxRangePushA("jitllm.gemma26.paid_prefill"); }
+  explicit PrefillRange(const char* label) { nvtxRangePushA(label); }
   ~PrefillRange() { Finish(); }
   void Finish() {
     if (active_) {
@@ -43,8 +43,10 @@ class PrefillRange {
 };
 }  // namespace
 int main(int argc, char** argv) {
-  if (argc != 7 || std::string_view(argv[4]) != "26" || std::string_view(argv[5]) != "all" ||
-      std::string_view(argv[6]) != "1024")
+  if (argc != 7 || !((std::string_view(argv[4]) == "26" && std::string_view(argv[5]) == "all" &&
+                      std::string_view(argv[6]) == "1024") ||
+                     (std::string_view(argv[4]) == "31" && std::string_view(argv[5]) == "both" &&
+                      std::string_view(argv[6]) == "256")))
     return 2;
   const std::string_view variant = argc >= 5 ? argv[4] : "26";
   const std::string_view policy = argc >= 6 ? argv[5] : "ordinary";
@@ -142,7 +144,8 @@ int main(int argc, char** argv) {
       // loaded comparator. These six rows are discarded on both engines.
       if (auto r = runner.Chunk(0, std::span(ids).first(6), logits); !r) return r;
       if (auto r = runner.Clear(); !r) return r;
-      PrefillRange prefill_range;
+      PrefillRange prefill_range(variant == "31" ? "jitllm.gemma31.paid_prefill"
+                                                 : "jitllm.gemma26.paid_prefill");
       const auto started = std::chrono::steady_clock::now();
       for (std::uint32_t first = 0; first < kPrefill; first += max_rows) {
         if (auto r = runner.Chunk(first, std::span(ids).subspan(first, max_rows), logits); !r)

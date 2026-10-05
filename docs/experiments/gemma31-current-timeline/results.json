@@ -1,0 +1,305 @@
+{
+  "source_base": "cf71dad5185121d4c5613a5c6238dec234af125e",
+  "task_entry_tensorfold_head": "609ca419abecebdc5a059498a613680bd3aa847f",
+  "workload": {
+    "profile": "31B UD-Q4_K_XL",
+    "context": 16384,
+    "local_cells": 1280,
+    "global_cells": 16384,
+    "chunk_or_ubatch": 256,
+    "native_policy": "both",
+    "normmul": "off",
+    "native_graphs": "default-on",
+    "original_graphs": "allowed",
+    "swa_full": false,
+    "kv_unified": false,
+    "paid_prefill_rows": 8192,
+    "discarded_warm_rows": 6,
+    "untimed_anchors": 3,
+    "decode_units": 32,
+    "completed_positions": 8227,
+    "input_bytes": 32908,
+    "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+    "artifact_identity": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+  },
+  "source_sha256": {
+    "benchmarks/gemma26_prefill_profile.cc": "aab71d1ccb49399ab5a4dad593d4441309e6a85f5c6f97cd6342d5870b7a0f1d",
+    "docs/experiments/gemma26-prefill-profile/llama_prefill_profile.cc": "2aa87ccb267a23a0cc989ed04672439dc216f69d89e31a7bb5c0a9e389099e4c",
+    "docs/experiments/gemma26-prefill-profile/trace_v2.py": "bf69781f5f4d5da6e5a999b0c9e23a623d801fb2385e0a56e75b0c584bf6bf7d"
+  },
+  "original_libraries": [
+    "36f5cb5b9361fd7ce4c9c38ad7276367a39e753a2f4764d9aca952b29c5aba55  /app/libllama.so",
+    "f09875d0593d950f0b1f4f57803235cb06209f774c524c005fb192000d5d7418  /app/libggml.so",
+    "ed0a6a3f65472059789159569080d08e7f1dcc8bdd7a35d127efbd1b3f4e273e  /app/libggml-base.so",
+    "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e  /app/libggml-cuda.so"
+  ],
+  "engines": {
+    "native": {
+      "metrics": {
+        "prefill_seconds": "12.074",
+        "prefill_rows": "8192",
+        "prefill_chunks": "32",
+        "intermediate_heads": "31",
+        "decode_seconds": "3.22221",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "chunk": "256",
+        "masks": "device",
+        "prefill_norm_rope": "120",
+        "prefill_norm_add": "120",
+        "prefill_gemma_route": "0",
+        "prefill_gemma_reduce": "0",
+        "gemma_route": "0",
+        "gemma_reduce": "0",
+        "shared_vecq": "0",
+        "row_products": "0",
+        "norm_fused": "0",
+        "rope_store": "0",
+        "norm_rope": "120",
+        "norm_add": "120",
+        "captures": "1",
+        "replays": "33"
+      },
+      "heads": {
+        "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "baseline_heads_32choices_exact": true,
+      "paid_range_wall_ns": 12074129344,
+      "gpu_activity_union_ns": 11246289322,
+      "kernel_union_ns": 11212976490,
+      "copy_union_ns": 33312832,
+      "gpu_unattributed_ns": 827840022,
+      "model_kernel_count": 64704,
+      "unknown_process_events": 0,
+      "kernel_category_duration_sums_ms": {
+        "other_kernels": {
+          "count": 4096,
+          "summed_ms": 82.810368
+        },
+        "quant_prep": {
+          "count": 13184,
+          "summed_ms": 466.01804599999997
+        },
+        "attention": {
+          "count": 3840,
+          "summed_ms": 1115.386013
+        },
+        "mul": {
+          "count": 5792,
+          "summed_ms": 197.71945599999998
+        },
+        "quant_products": {
+          "count": 22368,
+          "summed_ms": 8229.140302999998
+        },
+        "heads": {
+          "count": 32,
+          "summed_ms": 150.176352
+        },
+        "rms_norm": {
+          "count": 13472,
+          "summed_ms": 524.8550399999999
+        },
+        "gelu": {
+          "count": 1920,
+          "summed_ms": 511.111936
+        },
+        "copy": {
+          "count": 1012,
+          "summed_ms": 33.312832
+        }
+      },
+      "gpu_idle_gaps": {
+        "all_gpu_idle_gap_ns": 827840022,
+        "leading_ns": 3350112,
+        "trailing_ns": 164960,
+        "internal_gap_count": 41818,
+        "internal_max_ns": 24443776,
+        "internal_over_1ms_count": 73,
+        "internal_over_1ms_ns_sum": 684597952,
+        "internal_over_10ms_count": 32,
+        "internal_over_10ms_ns_sum": 592308192
+      },
+      "baseline_initialized_state_bytes": 1740636160,
+      "baseline_initialized_state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+    },
+    "original": {
+      "metrics": {
+        "prefill_seconds": "10.8975",
+        "prefill_rows": "8192",
+        "intermediate_heads": "0",
+        "decode_seconds": "3.13284",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "batch": "8192",
+        "ubatch": "256",
+        "fusion": "enabled",
+        "graphs": "allowed",
+        "swa_full": "false",
+        "kv_unified": "false",
+        "cache_recipe": "ring",
+        "ggml_graph_reused_delta": "32"
+      },
+      "heads": {
+        "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "baseline_heads_32choices_exact": true,
+      "paid_range_wall_ns": 10897581008,
+      "gpu_activity_union_ns": 10839234073,
+      "kernel_union_ns": 10834484281,
+      "copy_union_ns": 4749792,
+      "gpu_unattributed_ns": 58346935,
+      "model_kernel_count": 60548,
+      "unknown_process_events": 0,
+      "kernel_category_duration_sums_ms": {
+        "quant_prep": {
+          "count": 13121,
+          "summed_ms": 454.260896
+        },
+        "other_kernels": {
+          "count": 3874,
+          "summed_ms": 84.059591
+        },
+        "attention": {
+          "count": 3840,
+          "summed_ms": 1116.882715
+        },
+        "mul": {
+          "count": 1920,
+          "summed_ms": 29.02517
+        },
+        "quant_products": {
+          "count": 22400,
+          "summed_ms": 8211.251392
+        },
+        "heads": {
+          "count": 1,
+          "summed_ms": 4.683968
+        },
+        "rms_norm": {
+          "count": 13472,
+          "summed_ms": 468.28282100000007
+        },
+        "gelu": {
+          "count": 1920,
+          "summed_ms": 493.16688
+        },
+        "copy": {
+          "count": 258,
+          "summed_ms": 4.7497919999999985
+        }
+      },
+      "gpu_idle_gaps": {
+        "all_gpu_idle_gap_ns": 58346935,
+        "leading_ns": 9011312,
+        "trailing_ns": 60032,
+        "internal_gap_count": 44780,
+        "internal_max_ns": 3673760,
+        "internal_over_1ms_count": 3,
+        "internal_over_1ms_ns_sum": 9889312,
+        "internal_over_10ms_count": 0,
+        "internal_over_10ms_ns_sum": 0
+      }
+    }
+  },
+  "head_geometry": {
+    "dtype": "Q5_K (ggml_type 13)",
+    "kernel": "mul_mat_vec_q<13,1,false,false,false>",
+    "grid": [
+      262144,
+      1,
+      1
+    ],
+    "block": [
+      32,
+      4,
+      1
+    ]
+  },
+  "attention_geometry": [
+    {
+      "head_width": 256,
+      "kernel_template": "flash_attn_ext_f16<256,256,32,2,false,false,false>",
+      "grid": [
+        96,
+        1,
+        1
+      ],
+      "block": [
+        32,
+        4,
+        1
+      ],
+      "count_per_engine": 1600
+    },
+    {
+      "head_width": 512,
+      "kernel_template": "flash_attn_ext_f16<512,512,8,8,false,false,false>",
+      "grid": [
+        48,
+        1,
+        1
+      ],
+      "block": [
+        32,
+        8,
+        1
+      ],
+      "count_per_engine": 320
+    }
+  ],
+  "official_jobs": {
+    "build1": "FAILED at original client: nested header include path; native build passed, owned container retired",
+    "build2": "DONE0",
+    "trace1": "DONE0: exactly native and original once",
+    "analyze1": "DONE0",
+    "gaps1": "DONE0"
+  },
+  "limits": [
+    "Traced elapsed times are diagnostics, not competitive bookends.",
+    "Category sums classify each kernel once; durations may overlap in time and are not disjoint wall costs. GPU-idle gaps are not automatically CPU busy or planning time.",
+    "One trace per engine; two complete heads and 32 choices, not all decode vectors or corpus quality.",
+    "Head-only cost does not equal cost of all discarded final-block work."
+  ],
+  "environment": {
+    "host": "spark (spark-c4e2), NVIDIA GB10",
+    "driver": "580.178.04, from the contemporaneous Task48 Spark A platform query; not re-probed for this trace",
+    "native_sdk": "aarch64-c09daba6ac31edee, CUDA 13.4.92 / Clang 22.1.8, inherited pinned SDK build configuration",
+    "original_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "original_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "original_cuda": "13.3.0, inherited unchanged pinned-image math",
+    "profiler": "Nsight Systems 2025.3.2"
+  },
+  "binaries_sha256": {
+    "native_observer": "a5e053540f588877f96edb4955dbcd2c6c5e1c978caa9c481bfd4c6af0cdf964",
+    "original_observer": "6a462229bb17262dafa7fa2ef91996deb7db7f94b59a91aea24728f39f4b7f60",
+    "child_wait_launcher": "879c5ed4398f2d0809e8ca3a5aa3b88406badfcd86ad7a0a6b7573dacf9c20d5"
+  },
+  "final_block_workload": {
+    "native_narrow_final": true,
+    "original_embeddings_nextn_masked": false,
+    "native_gather": "Projected/residual rows before the last FFN",
+    "original_gather": "Rows after full-row output normalization",
+    "plain_norm_native_grid256_count": 3808,
+    "plain_norm_native_grid1_count": 64,
+    "plain_norm_original_grid256_count": 3872,
+    "norm_add_native_grid256_count": 3776,
+    "norm_add_native_grid1_count": 64,
+    "norm_add_original_grid256_count": 3840,
+    "head_projection_rows_each": 1,
+    "qualification": "Source and trace establish different row workloads, not a proven cause of the known prefill-head difference."
+  },
+  "baseline_report": "../gemma-use-index/README.md",
+  "measured_source_sha256": {
+    "benchmarks/gemma26_prefill_profile.cc": "d125c9a33e61d848d545b97b3fb123b1e4bcacbea9835fd451bda19fec558769",
+    "docs/experiments/gemma26-prefill-profile/llama_prefill_profile.cc": "a92c73df8e50935394c98ed1ef1c3eb9ac5095147095eb5c3a572d35e2935865",
+    "docs/experiments/gemma26-prefill-profile/trace_v2.py": "bf69781f5f4d5da6e5a999b0c9e23a623d801fb2385e0a56e75b0c584bf6bf7d"
+  },
+  "source_after_measurement": "clang-format only; measured build input identities retained separately"
+}

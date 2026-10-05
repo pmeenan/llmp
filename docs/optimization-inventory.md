@@ -370,6 +370,16 @@ state and choices. Two candidate runs show no resolved end-to-end gain against
 the fresh off control; the benchmark flag defaults off and production keeps
 the selector unselected. No Gemma26 transfer or broader ladder was run.
 
+The [current Gemma31 timeline](experiments/gemma31-current-timeline/README.md)
+measures 592 ms in 32 internal GPU-idle gaps over 10 ms and 145 ms of extra
+vocabulary projections. Product and attention duration sums are close to stock.
+Native also executes 3,872 extra standalone MUL kernels, while final-block FFN
+row shapes differ because native narrows earlier. Those differences prevent
+an equal-work kernel-parity claim; gaps alone do not identify caller CPU work.
+This strengthens the state-only prefill lead and motivates further planning
+work. It does not override the unresolved plain-norm screen or establish a
+Gemma26 transfer result.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

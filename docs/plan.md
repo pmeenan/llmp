@@ -157,7 +157,8 @@ checks pass; whole shipment tiers remain owed before publishing a package.
 
 **Owner resume, 2026-10-05:** implementation and measurement continue after
 Opus/Astra review. The cold/retained-plan comparison measures material planning
-and state-growth costs; intermediate-chunk work and execution costs are next;
+and state-growth costs; the current 31B trace identifies GPU-idle gaps and
+extra vocabulary projections. State-only intermediate chunks are next;
 [current state and review prompt](experiments/gemma-performance-review/README.md).
 Remaining milestone gates stay open.
 
@@ -388,6 +389,11 @@ family" guide, and its long-context scaling work.
       - [x] [Plain RMSNorm/Mul first screen](experiments/gemma-normmul-screen/README.md):
         Gemma31 selects 121 additional norm fusions and preserves exact native
         heads/state/choices, but shows no resolved speed gain. Remains unselected.
+      - [x] [Current Gemma31 prefill timeline](experiments/gemma31-current-timeline/README.md):
+        32 GPU-idle gaps over 10 ms total 592 ms; extra vocabulary projections
+        cost 145 ms. Product and attention duration sums are close to stock,
+        with differing final-block row shapes and 3,872 extra standalone MUL
+        kernels. This diagnostic establishes no new optimization or parity pass.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.
