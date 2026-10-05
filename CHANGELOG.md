@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Bounded arena-owned graph traversal preserves DFS order and explicit host
+  accounting across Qwen, DeepSeek and Gemma graph factories. Fresh Gemma26/31
+  state-only prefill screens improve 1.93%/0.99%; reference parity remains open.
+
 - Gemma prompt prefill omits unused final-layer work on non-final chunks while
   preserving all KV writes. Final heads, scoring and retained features keep the
   full path. Existing all1024/both256 screens improve 3.04%/2.42%; reference and

@@ -400,6 +400,11 @@ family" guide, and its long-context scaling work.
         Ordinary and optional-policy continuation/state controls cover scalar and
         captured unequal-row waves. Measured all1024/both256 prefill improves
         3.04%/2.42%; 26B reference movement and full quality remain unresolved.
+      - [x] [Bounded graph traversal](experiments/ggml-graph-order/README.md):
+        arena-funded membership preserves DFS and refusal semantics across
+        Qwen/DeepSeek/Gemma factories. Exact Gemma26/31 head/state controls pass;
+        state-only prefill improves 1.93%/0.99%, leaving 8.19%/7.54% reference
+        latency gaps. Planning-only attribution and full qualification stay open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

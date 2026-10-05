@@ -1,0 +1,589 @@
+{
+  "source_base": "27bbc24",
+  "tensorfold_task_entry": {
+    "observed_utc": "2026-10-05T21:58:33.618922+00:00",
+    "primary": "https://github.com/ashhart/TensorFold",
+    "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "files": {
+      "pyproject.toml": {
+        "bytes": 3178,
+        "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+      },
+      "src/tensorfold/__init__.py": {
+        "bytes": 137,
+        "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+      },
+      "docs/recipes/gemma-4.md": {
+        "bytes": 10845,
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      }
+    },
+    "version_source": "\"\"\"TensorFold: fast, exact LLM decoding on Apple Silicon and NVIDIA GPUs behind an OpenAI-compatible endpoint.\"\"\"\n\n__version__ = \"0.6.5\"\n",
+    "applicability": "Official Gemma 26B MLX recipe; no Gemma31 CUDA path or graph-order parity/performance result supplied."
+  },
+  "measured_source_sha256": {
+    "src/engine/planned.h": "01fa8e59b5500eebb92acce952e6b610500ba4b886a38815b9a9c7d1a7ba5dc8",
+    "src/kernels/ggml/dsv4_graph.cc": "36c3ffa4685594808733080efb9bf1aac772febdedede226541f5cab4eda1da2",
+    "src/kernels/ggml/fusion.cc": "86d5ae22d1e4a0818a66fd3c0c7d17c2db1d204820b84a44c4a1dbcb2bce3f16",
+    "src/kernels/ggml/fusion.h": "cb8379bccda935970ef6efd3703fa88f0dde8338175f1b708b31fa48b48e27f7",
+    "src/kernels/ggml/gemma4_assistant_graph.cc": "725d4f0e5bf49f38577b11ab555ce4b65cae36f2608f3dd29e77c9be1a46d703",
+    "src/kernels/ggml/gemma4_graph.cc": "c1d668c9695dea2b1961a3547e8414c2276ed95d1c18033f0422701d22d7f071",
+    "src/kernels/ggml/qwen2_graph.cc": "90e760a7defb532f91c4af0f4662b386f5981303c972fe7905beb813b21c37c4",
+    "src/kernels/ggml/qwen38_graph.cc": "3e50fe7c3ca2e6de4cd5c02f7649521c77e1094f702fd6476d29409836dd381d",
+    "src/kernels/ggml/tensors.cc": "4c30c65c481f7f354971ac011bd43047effcb3c95942c0fc4657feb031d09719",
+    "src/kernels/ggml/tensors.h": "a7578973d3f9af9ad4ed3096e8029e06ba253ebc11d0e8aa2daf2d8159f0e85c",
+    "tests/unit/gemma4_plan_test.cc": "f60b7a8ea14e238663490e6125c53a95bc4767ee88360c4cc29d7ba95d749e59",
+    "tests/unit/ggml_graph_test.cc": "c5e3754fb4dc619353b81cd5652b704c72783d3643ef57a6c0b1c262c31339e2",
+    "tests/unit/ggml_tensors_test.cc": "503ffc3780412a91ff30ccee669ba0919cc9626ec769f0bc58b90bdccb762f85"
+  },
+  "candidate_binary_sha256": "db3e85a3312fee841c8062fa19c2d98cda53298fa2cfab83702fd8e55e5755b8",
+  "before_binary_sha256": "57f64bf66d0006c2de36fcf4025c77818f27fbb8ea47866868c17a8263c0b10d",
+  "sdk_build_receipt_sha256": "995ee8194ab9d0f8c41b07eb3d3458da4f81b42f5c9ce466a0801b6531d64522",
+  "input_bytes": 32908,
+  "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+  "profiles": {
+    "31": {
+      "arms": {
+        "task47-task51-ring31-first": {
+          "metrics": {
+            "prefill_seconds": "10.8453",
+            "prefill_rows": "8192",
+            "intermediate_heads": "0",
+            "decode_seconds": "3.11656",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "batch": "8192",
+            "ubatch": "256",
+            "fusion": "enabled",
+            "graphs": "allowed",
+            "swa_full": "false",
+            "kv_unified": "false",
+            "cache_recipe": "ring",
+            "ggml_graph_reused_delta": "32"
+          },
+          "heads": {
+            "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          }
+        },
+        "task51-native31-before": {
+          "metrics": {
+            "prefill_seconds": "11.7776",
+            "prefill_rows": "8192",
+            "prefill_chunks": "32",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "decode_seconds": "3.18389",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "256",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "120",
+            "prefill_norm_add": "120",
+            "prefill_gemma_route": "0",
+            "prefill_gemma_reduce": "0",
+            "gemma_route": "0",
+            "gemma_reduce": "0",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "120",
+            "norm_add": "120",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          },
+          "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+        },
+        "task51-native31-candidate-first": {
+          "metrics": {
+            "prefill_seconds": "11.6492",
+            "prefill_rows": "8192",
+            "prefill_chunks": "32",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "decode_seconds": "3.18091",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "256",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "120",
+            "prefill_norm_add": "120",
+            "prefill_gemma_route": "0",
+            "prefill_gemma_reduce": "0",
+            "gemma_route": "0",
+            "gemma_reduce": "0",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "120",
+            "norm_add": "120",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          },
+          "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+        },
+        "task51-native31-candidate-repeat": {
+          "metrics": {
+            "prefill_seconds": "11.6724",
+            "prefill_rows": "8192",
+            "prefill_chunks": "32",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "decode_seconds": "3.19652",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "256",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "120",
+            "prefill_norm_add": "120",
+            "prefill_gemma_route": "0",
+            "prefill_gemma_reduce": "0",
+            "gemma_route": "0",
+            "gemma_reduce": "0",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "120",
+            "norm_add": "120",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          },
+          "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+        },
+        "task47-task51-ring31-repeat": {
+          "metrics": {
+            "prefill_seconds": "10.842",
+            "prefill_rows": "8192",
+            "intermediate_heads": "0",
+            "decode_seconds": "3.12204",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "batch": "8192",
+            "ubatch": "256",
+            "fusion": "enabled",
+            "graphs": "allowed",
+            "swa_full": "false",
+            "kv_unified": "false",
+            "cache_recipe": "ring",
+            "ggml_graph_reused_delta": "32"
+          },
+          "heads": {
+            "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          }
+        }
+      },
+      "comparisons": {
+        "task51-native31-before vs task51-native31-candidate-first": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            }
+          }
+        },
+        "task47-task51-ring31-first vs task51-native31-before": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.41361474990844727,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            }
+          }
+        },
+        "task47-task51-ring31-first vs task51-native31-candidate-first": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.41361474990844727,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            }
+          }
+        }
+      },
+      "candidate_own_repeat_heads_state_32choices_exact": true,
+      "candidate_state_equals_off": true,
+      "mean_reference_seconds": {
+        "prefill_seconds": 10.84365,
+        "decode_seconds": 3.1193
+      },
+      "mean_candidate_seconds": {
+        "prefill_seconds": 11.6608,
+        "decode_seconds": 3.188715
+      },
+      "candidate_vs_reference_percent": {
+        "prefill_seconds": 7.535746727347337,
+        "decode_seconds": 2.225339018369521
+      },
+      "candidate_vs_off_percent": {
+        "prefill_seconds": -0.9917130824616205,
+        "decode_seconds": 0.15154418023237692
+      },
+      "finite_retained_complete_heads": 10,
+      "limitation": "Two retained full vectors per arm; 32 greedy choices, not all32 full vectors or corpus quality."
+    },
+    "26": {
+      "arms": {
+        "task47-task51-ring26-first": {
+          "metrics": {
+            "prefill_seconds": "2.41728",
+            "prefill_rows": "8192",
+            "intermediate_heads": "0",
+            "decode_seconds": "0.68506",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "batch": "8192",
+            "ubatch": "1024",
+            "fusion": "enabled",
+            "graphs": "allowed",
+            "swa_full": "false",
+            "kv_unified": "false",
+            "cache_recipe": "ring",
+            "ggml_graph_reused_delta": "32"
+          },
+          "heads": {
+            "prefill.f32": "254e6cf57dea36d5da3be3e0d53157bb886924b61e6493050daa147e82a2eaa3",
+            "final.f32": "48c4a6123708f182d28e6063f124b6b5facdbda881046be6b1f1e239d652f2a6"
+          }
+        },
+        "task51-native26-before": {
+          "metrics": {
+            "prefill_seconds": "2.6648",
+            "prefill_rows": "8192",
+            "prefill_chunks": "8",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "decode_seconds": "0.689599",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "1024",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "60",
+            "prefill_norm_add": "90",
+            "prefill_gemma_route": "30",
+            "prefill_gemma_reduce": "30",
+            "gemma_route": "30",
+            "gemma_reduce": "30",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "60",
+            "norm_add": "90",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+            "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+          },
+          "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+        },
+        "task51-native26-candidate-first": {
+          "metrics": {
+            "prefill_seconds": "2.60794",
+            "prefill_rows": "8192",
+            "prefill_chunks": "8",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "decode_seconds": "0.688606",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "1024",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "60",
+            "prefill_norm_add": "90",
+            "prefill_gemma_route": "30",
+            "prefill_gemma_reduce": "30",
+            "gemma_route": "30",
+            "gemma_reduce": "30",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "60",
+            "norm_add": "90",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+            "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+          },
+          "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+        },
+        "task51-native26-candidate-repeat": {
+          "metrics": {
+            "prefill_seconds": "2.61897",
+            "prefill_rows": "8192",
+            "prefill_chunks": "8",
+            "intermediate_heads": "0",
+            "prefill_output": "state-only",
+            "decode_seconds": "0.688376",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "chunk": "1024",
+            "masks": "device",
+            "normmul": "normmul-off",
+            "prefill_norm_fused": "0",
+            "prefill_norm_rope": "60",
+            "prefill_norm_add": "90",
+            "prefill_gemma_route": "30",
+            "prefill_gemma_reduce": "30",
+            "gemma_route": "30",
+            "gemma_reduce": "30",
+            "shared_vecq": "0",
+            "row_products": "0",
+            "norm_fused": "0",
+            "rope_store": "0",
+            "norm_rope": "60",
+            "norm_add": "90",
+            "captures": "1",
+            "replays": "33"
+          },
+          "heads": {
+            "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+            "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+          },
+          "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+        },
+        "task47-task51-ring26-repeat": {
+          "metrics": {
+            "prefill_seconds": "2.41409",
+            "prefill_rows": "8192",
+            "intermediate_heads": "0",
+            "decode_seconds": "0.686425",
+            "decode_chunks": "32",
+            "timed_start": "8195",
+            "completed": "8227",
+            "context": "16384",
+            "batch": "8192",
+            "ubatch": "1024",
+            "fusion": "enabled",
+            "graphs": "allowed",
+            "swa_full": "false",
+            "kv_unified": "false",
+            "cache_recipe": "ring",
+            "ggml_graph_reused_delta": "32"
+          },
+          "heads": {
+            "prefill.f32": "254e6cf57dea36d5da3be3e0d53157bb886924b61e6493050daa147e82a2eaa3",
+            "final.f32": "48c4a6123708f182d28e6063f124b6b5facdbda881046be6b1f1e239d652f2a6"
+          }
+        }
+      },
+      "comparisons": {
+        "task51-native26-before vs task51-native26-candidate-first": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": true,
+              "max_raw_delta": 0.0,
+              "head_argmax_equal": true
+            }
+          }
+        },
+        "task47-task51-ring26-first vs task51-native26-before": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.8572092056274414,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.22439956665039062,
+              "head_argmax_equal": true
+            }
+          }
+        },
+        "task47-task51-ring26-first vs task51-native26-candidate-first": {
+          "argmax_mismatches_32": 0,
+          "heads": {
+            "prefill.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.8572092056274414,
+              "head_argmax_equal": true
+            },
+            "final.f32": {
+              "byte_exact": false,
+              "max_raw_delta": 0.22439956665039062,
+              "head_argmax_equal": true
+            }
+          }
+        }
+      },
+      "candidate_own_repeat_heads_state_32choices_exact": true,
+      "candidate_state_equals_off": true,
+      "mean_reference_seconds": {
+        "prefill_seconds": 2.415685,
+        "decode_seconds": 0.6857424999999999
+      },
+      "mean_candidate_seconds": {
+        "prefill_seconds": 2.613455,
+        "decode_seconds": 0.688491
+      },
+      "candidate_vs_reference_percent": {
+        "prefill_seconds": 8.186911786925876,
+        "decode_seconds": 0.40080642515230025
+      },
+      "candidate_vs_off_percent": {
+        "prefill_seconds": -1.9267862503752564,
+        "decode_seconds": -0.1606730868229267
+      },
+      "finite_retained_complete_heads": 10,
+      "limitation": "Two retained full vectors per arm; 32 greedy choices, not all32 full vectors or corpus quality."
+    }
+  },
+  "focused_controls": {
+    "host": "spark",
+    "binaries": 12,
+    "passed": 145,
+    "skips": 0
+  },
+  "environment": {
+    "hosts": {
+      "31": "spark / spark-c4e2",
+      "26": "spark-b"
+    },
+    "native_nvcc": "13.4.92",
+    "native_toolkit": "13.4.2",
+    "host_clang": "22.1.8",
+    "original_math": "pinned CUDA13.3 image",
+    "qualification": "Toolchain/image facts reuse the unchanged pinned assets; no new platform probe was run."
+  },
+  "limits": [
+    "Two retained complete heads per arm and32 choices; no all32-vector or corpus quality gate.",
+    "State-only both256/all1024 research arithmetic policies; ordinary serving has no new measured speed percentage.",
+    "No per-phase planning counter was emitted, no planning-only gain or active-GPU attribution claimed.",
+    "No standalone traversal microbenchmark, trace or previous-family whole-model speed acquisition."
+  ],
+  "artifact_manifests": {
+    "26": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+    "31": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+  },
+  "official_jobs": {
+    "build1": {
+      "name": "m35-ggml-graph-order-build1",
+      "state": "done",
+      "rc": 0
+    },
+    "screen31": {
+      "name": "m35-ggml-graph-order-screen31",
+      "state": "done",
+      "rc": 0
+    },
+    "check31": {
+      "name": "m35-ggml-graph-order-check31",
+      "state": "done",
+      "rc": 0
+    },
+    "stage26": {
+      "name": "m35-ggml-graph-order-stage26",
+      "state": "done",
+      "rc": 0
+    },
+    "screen26": {
+      "name": "m35-ggml-graph-order-screen26",
+      "state": "done",
+      "rc": 0
+    },
+    "check26": {
+      "name": "m35-ggml-graph-order-check26",
+      "state": "done",
+      "rc": 0
+    },
+    "full1": {
+      "name": "m35-ggml-graph-order-full1",
+      "state": "failed",
+      "rc": 1,
+      "step_state": "killed",
+      "classification": "owner-cancelled before completion",
+      "completed_test_count_before_stop": 1679,
+      "total_targets": 1714,
+      "full_suite_pass": false,
+      "passed_test_count_before_stop": 1678,
+      "failed_test_count_before_stop": 1,
+      "failed_test": "PlanCacheTest.APlansArenaHoldsWhatItsGraphUsesNotTheEstimate"
+    },
+    "plancheck1": {
+      "name": "m35-ggml-graph-order-plancheck1",
+      "state": "done",
+      "rc": 0,
+      "passed": 8,
+      "skips": 0
+    }
+  },
+  "post_measurement_test_correction_sha256": {
+    "tests/unit/plan_cache_test.cc": "b01dcc230ab03c98f31e3809e5056faa584c8e06102dec1545756faf1dc7c030"
+  },
+  "post_measurement_test_correction_passed": 8
+}

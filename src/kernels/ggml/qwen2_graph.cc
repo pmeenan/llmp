@@ -9,6 +9,7 @@
 #include <expected>
 #include <format>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ggml.h"
@@ -184,7 +185,9 @@ std::expected<Qwen2Graph, KernelFailure> BuildQwen2Graph(TensorArena& arena,
   ggml_tensor* cur = Norm(c, p, layer_in, g.output_norm);
   g.logits = ggml_mul_mat(c, g.output, cur);
   expanded.push_back(g.logits);
-  g.nodes = GraphOrder(expanded);
+  auto ordered = GraphOrder(expanded, arena);
+  if (!ordered) return std::unexpected(ordered.error());
+  g.nodes = std::move(*ordered);
   return g;
 }
 

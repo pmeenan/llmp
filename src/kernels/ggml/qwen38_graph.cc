@@ -917,7 +917,6 @@ void Builder::BuildFast(ggml_tensor* res, ggml_tensor* ple) {
     g_.argmax = Argmax(c_, g_.logits);
     Expand(g_.argmax);
   }
-  g_.nodes = GraphOrder(expanded_);
 }
 
 // build_conv_state_at (qwen4exp.cpp:1117-1169), one sequence, no rollback
@@ -1546,7 +1545,6 @@ void Builder::Build() {
   g_.logits = Mm(g_.output, cur);
   Name(g_.logits, "result_output", -1);
   Expand(g_.logits);
-  g_.nodes = GraphOrder(expanded_);
 }
 
 // Qwen3_8FlashNextMultiTokenPredictor.forward (mtp.py:262-329) for one
@@ -1747,7 +1745,9 @@ std::expected<Qwen38MtpGraph, KernelFailure> BuildQwen38MtpGraph(
       tokens = out.draft;
     }
   }
-  m.nodes = GraphOrder(expanded);
+  auto ordered = GraphOrder(expanded, arena);
+  if (!ordered) return std::unexpected(ordered.error());
+  m.nodes = std::move(*ordered);
   return m;
 }
 
@@ -1857,6 +1857,9 @@ std::expected<Qwen38Graph, KernelFailure> BuildQwen38Graph(TensorArena& arena,
     return std::unexpected(leaves.error());
   }
   builder.Build();
+  auto ordered = GraphOrder(builder.expanded(), arena);
+  if (!ordered) return std::unexpected(ordered.error());
+  g.nodes = std::move(*ordered);
   return g;
 }
 

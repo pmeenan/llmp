@@ -16,6 +16,7 @@
 #include "base/check.h"
 #include "expected_error.h"
 #include "gemma4_fixture.h"
+#include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
 
 namespace {
@@ -23,6 +24,29 @@ namespace en = jitllm::engine;
 namespace kg = jitllm::kernels::ggml;
 namespace md = jitllm::model;
 namespace fixture = jitllm::test_support::gemma4;
+
+TEST(Gemma4Plan, SizedTraversalScratchIsChargedAtStartupAndInRetainedPlans) {
+  constexpr std::size_t estimate = 16;
+  auto arena = en::SizedArena(estimate, [](kg::TensorArena& a) {
+    auto* left = ggml_new_tensor_1d(a.context(), GGML_TYPE_F32, 1);
+    auto* right = ggml_new_tensor_1d(a.context(), GGML_TYPE_F32, 1);
+    auto* sum = ggml_add(a.context(), left, right);
+    const std::array<ggml_tensor*, 1> outputs{sum};
+    return kg::GraphOrder(outputs, a).has_value();
+  });
+  ASSERT_TRUE(arena);
+  EXPECT_EQ(arena->graph_capacity(), estimate);
+  const auto table_bytes = arena->graph_visited().size_bytes();
+  EXPECT_GE(en::ScratchArenaBytes(), estimate * ggml_tensor_overhead() + table_bytes);
+  EXPECT_GE(arena->bytes(), arena->used() + table_bytes);
+  const auto held_bytes = arena->bytes();
+  arena->Seal();
+  EXPECT_EQ(arena->bytes(), held_bytes);
+  en::PlannedBase planned;
+  planned.arena.emplace(std::move(*arena));
+  EXPECT_EQ(en::PlannedHostBytes(planned), held_bytes);
+}
+
 struct Case {
   const md::Gemma4Profile& p = md::Gemma4_26BA4B();
   md::Gemma4Binding binding;

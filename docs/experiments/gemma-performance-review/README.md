@@ -19,8 +19,10 @@ the competitive evidence.
 The [state-only intermediate prefill path](../gemma-state-only-prefill/README.md)
 now removes unused final-layer work while preserving exact KV continuations.
 The optional 26B/all1024 and 31B/both256 recipes improve 3.04%/2.42%; the 31B
-reference gap remains 8.28%, while 26B reference movement prevents a resolved
+reference gap remained 8.28%, while 26B reference movement prevented a resolved
 competitive gap. Ordinary serving has separate correctness controls.
+The [bounded graph traversal](../ggml-graph-order/README.md) then reduces
+state-only prefill by 1.93%/0.99%; fresh reference gaps are 8.19%/7.54%.
 M3.5 remains incomplete. The source-use optimization landed as `5ef7aac` after
 1,700 Spark tests passed without failures or skips, including 311 GPU and 57
 model tests. Both Sparks were checked idle at the pause.
@@ -33,15 +35,15 @@ of those gates and does not extend M3's accepted speed exceptions to M3.5.
 
 These are untraced, same-host comparisons with the original llama.cpp engine,
 not traced durations or model-load/swap times. Each screen runs reference,
-unchanged native, candidate twice, then reference. The latest production change
-only caches exact source-edge counts during planning; kernel arithmetic and
-selected operations are unchanged. See [source-use indexing](../gemma-use-index/README.md)
-and its [aggregate and pins](../gemma-use-index/results.json).
+unchanged native, candidate twice, then reference. These latest screens use
+state-only intermediate chunks and bounded graph traversal; kernel arithmetic
+and selected policies are unchanged. See [graph traversal](../ggml-graph-order/README.md)
+and its [aggregate and pins](../ggml-graph-order/results.json).
 
 | Model / physical host | Native prefill mean | Reference prefill mean | Excess prefill time | Native / reference decode mean | Decode excess |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Gemma26 / Spark-b | 2.712695 s | 2.413895 s | 0.298800 s / 12.3783% | 0.6883155 / 0.684530 s | 0.5530% |
-| Gemma31 / Spark | 12.119850 s | 10.879900 s | 1.239950 s / 11.3967% | 3.187960 / 3.115565 s | 2.3237% |
+| Gemma26 / Spark-b | 2.613455 s | 2.415685 s | 0.197770 s / 8.1869% | 0.688491 / 0.6857425 s | 0.4008% |
+| Gemma31 / Spark | 11.660800 s | 10.843650 s | 0.817150 s / 7.5357% | 3.188715 / 3.119300 s | 2.2253% |
 
 Prefill pays 8,192 rows; decode pays 32 forced incoming rows with CPU argmax and
 full-vocabulary publication. Both discard six warm rows, clear, and append
@@ -52,9 +54,8 @@ UD-Q4_K_XL, cap/ubatch 256 and capacities 1,280/16,384. Both are single-Spark
 runs. Policies are native `all` at 26 and `both` at 31, with plain norm fusion
 off; these optional math policies have not become production defaults.
 
-Native pays 7/31 additional intermediate prefill heads; reference publishes
-only the final prefill head. This difference is disclosed, not compensated
-numerically. Dumping vectors/state and checking hashes occur outside timers.
+Both engines publish only the final prefill head. Dumping vectors/state and
+checking hashes occur outside timers.
 One old-native arm and two candidate arms are a short screen, not proof of
 sustained performance or other shapes. Native candidate state and both retained
 heads match the old native exactly, as do all 32 choices. All cross-engine
@@ -67,8 +68,8 @@ using the original pinned image and same-format artifacts. Native SDK is
 `aarch64-c09daba6ac31edee` (Clang 22.1.8, NVCC 13.4.92, toolkit 13.4.2);
 original image metadata records CUDA 13.3.0; driver is 580.178.04 on GB10.
 These environment observations are inherited from the linked run records,
-not a fresh environment query. TensorFold was refreshed at Task47 entry,
-2026-10-05 19:25:15 UTC: `609ca419abecebdc5a059498a613680bd3aa847f`, version
+not a fresh environment query. TensorFold was refreshed at Task51 entry,
+2026-10-05 21:58:33 UTC: `609ca419abecebdc5a059498a613680bd3aa847f`, version
 0.6.5. Its checked Gemma26 recipe is MLX; no applicable Gemma31 CUDA recipe was
 found. Do not assume that pin is still latest when another task begins.
 
@@ -95,9 +96,9 @@ found. Do not assume that pin is still latest when another task begins.
 The large earlier Gemma26 host cost has a measured explanation and an adopted
 fix. The current cold/retained comparison isolates material planning and state-growth
 costs, alongside a remaining execution interval. It does not identify that
-interval as kernel arithmetic or establish planning as the entire gap. Further
-work targets unnecessary intermediate-chunk computation and a current matched
-execution timeline.
+interval as kernel arithmetic or establish planning as the entire gap. The
+current timeline and state-only dependency cut are now recorded. Further work
+targets overlapping next-chunk planning with completed-unit GPU execution.
 
 ## Evidence boundaries and unresolved leads
 
@@ -108,22 +109,20 @@ not automatically CPU time. The subsequent [coarse diagnosis](../gemma26-prefill
 measured 1.0933 s of caller CPU in the ordered planning passes, with no GPU
 overlap. Its graph-build/bind exclusive 52.3 ms is an **aggregate across eight
 paid chunks**, not a per-chunk measurement. There is no equivalent current
-Gemma31 CPU/GPU attribution. Do not subtract these historical categories from
+Gemma31 caller-CPU attribution. Do not subtract these historical categories from
 the latest untraced results or transfer them to 31 as measurements.
 
 Source-supported leads to rank by plausible contribution to the whole gap:
 
-1. [`GraphOrder` / `Visit`](../../../src/kernels/ggml/fusion.cc) linearly search
-   the visited vector for every reachable descriptor: quadratic membership
-   work. [`PlanGemma4Chunk`](../../../src/engine/gemma4_plan.cc) builds twice via
+1. [`GraphOrder`](../../../src/kernels/ggml/fusion.cc) now uses the
+   [bounded arena table](../ggml-graph-order/README.md), with a small measured
+   end-to-end improvement. [`PlanGemma4Chunk`](../../../src/engine/gemma4_plan.cc) still builds twice via
    `SizedArena`; changing KV shapes cause plan misses through
    [`Gemma4Runner::Planned`](../../../src/engine/gemma4_runner.cc). Gemma31 pays
-   32 prefill chunks versus 8 at 26. This is a concrete algorithmic lead, with
-   **no measured contribution or implemented replacement**. A prepared outline
-   uses a bounded pointer table owned/funded by `TensorArena`, preserves DFS
-   source/output order and cycle/duplicate/PARAM semantics, and leaves the
-   standalone path intact. [`SizedArena` and host accounting](../../../src/engine/planned.cc)
-   must count that allocation; adding an uncharged hash set would be incomplete.
+   32 prefill chunks versus 8 at 26. Repeated planning remains material; a
+   bounded next-plan lookahead is being assessed without future state growth
+   or changes to graph arithmetic. The traversal screen did not emit separate
+   planning counters, so its gain does not establish the remaining phase cost.
 2. Compare actual graph construction, weight lookup, binding, validation and
    cache reuse with stock, rather than assuming the remaining time is GEMM.
    [`BuildGemma4Graph`](../../../src/kernels/ggml/gemma4_graph.cc) also performs
@@ -163,9 +162,9 @@ docs/experiments/gemma-performance-review/README.md, then pull only relevant
 reports and source. This is a read-only review; do not edit, build, test, run inference,
 profile or launch additional agents/jobs.
 
-Latest matched 8K prefill excess: Gemma26 0.2988 s (12.38%); Gemma31
-1.23995 s (11.40%). Earlier graph-reader scans were already fixed; exact
-source-use counting adds only ~2–3%. Focus on a dominant whole-engine or
+Latest matched 8K prefill excess: Gemma26 0.19777 s (8.19%); Gemma31
+0.81715 s (7.54%). Graph-reader/source-use scans, bounded DFS membership and
+unused intermediate final-layer work are already addressed. Focus on a whole-engine or
 graph/paid-work mismatch, not a list of tiny possible kernel wins.
 
 Rank at most three explanations by evidence and plausible magnitude. For
@@ -177,9 +176,10 @@ time, or multiply the 52.3 ms aggregate graph-build cost as a per-chunk cost.
 Do not reopen the corrected SWA reference recipe as an unresolved issue.
 Separate solo performance from the still-open C4 correctness/performance gap.
 
-Explain whether GraphOrder's quadratic visited search plausibly accounts
-for most of Gemma31's residual, whether another structural mismatch is
-stronger, and which direct before/after test would settle the leading case.
+Evaluate next-chunk planning overlap and remaining state preparation against
+the cold/retained phase measurements. Bounded GraphOrder gave only a small
+end-to-end gain; do not reopen its former quadratic search. Identify which
+direct before/after test would settle the strongest remaining case.
 If a comparable latest TensorFold path exists, identify its current pin and
 applicable model/format/backend before treating it as a performance target.
 Do not claim a cause or measured speed gain from source inspection alone.

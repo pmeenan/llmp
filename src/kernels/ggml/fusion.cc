@@ -195,6 +195,34 @@ void Visit(ggml_tensor* tensor, std::vector<ggml_tensor*>& seen, std::vector<ggm
   }
 }
 
+bool VisitBounded(ggml_tensor* tensor, std::span<ggml_tensor*> visited, std::size_t capacity,
+                  std::size_t& count, std::vector<ggml_tensor*>& nodes) {
+  if (tensor == nullptr) return false;
+  // GGML descriptors are aligned. Mix away the low address bits before
+  // selecting a slot, without changing tensor identity or traversal order.
+  std::uintptr_t hash = reinterpret_cast<std::uintptr_t>(tensor) >> 4U;
+  hash ^= hash >> 16U;
+  std::size_t slot = static_cast<std::size_t>(hash) & (visited.size() - 1);
+  bool inserted = false;
+  for (std::size_t probe = 0; probe < visited.size(); ++probe) {
+    if (visited[slot] == tensor) return true;
+    if (visited[slot] == nullptr) {
+      if (count == capacity) return false;
+      visited[slot] = tensor;  // before parents: duplicate and cyclic edges stop here
+      ++count;
+      inserted = true;
+      break;
+    }
+    slot = (slot + 1) & (visited.size() - 1);
+  }
+  if (!inserted) return false;
+  for (ggml_tensor* src : tensor->src)
+    if (src != nullptr && !VisitBounded(src, visited, capacity, count, nodes)) return false;
+  if (tensor->op != GGML_OP_NONE || (tensor->flags & GGML_TENSOR_FLAG_PARAM) != 0)
+    nodes.push_back(tensor);
+  return true;
+}
+
 }  // namespace
 
 std::vector<ggml_tensor*> GraphOrder(std::span<ggml_tensor* const> outputs) {
@@ -203,6 +231,22 @@ std::vector<ggml_tensor*> GraphOrder(std::span<ggml_tensor* const> outputs) {
   for (ggml_tensor* output : outputs) {
     Visit(output, seen, nodes);
   }
+  return nodes;
+}
+
+std::expected<std::vector<ggml_tensor*>, KernelFailure> GraphOrder(
+    std::span<ggml_tensor* const> outputs, TensorArena& arena) {
+  auto visited = arena.graph_visited();
+  const auto capacity = arena.graph_capacity();
+  if (visited.empty() || capacity == 0 || capacity > visited.size() / 2)
+    return std::unexpected(KernelFailure{.detail = "no bounded graph traversal storage"});
+  std::ranges::fill(visited, nullptr);
+  std::vector<ggml_tensor*> nodes;
+  std::size_t count = 0;
+  for (ggml_tensor* output : outputs)
+    if (!VisitBounded(output, visited, capacity, count, nodes))
+      return std::unexpected(
+          KernelFailure{.detail = "graph traversal exceeds its arena or has a null output"});
   return nodes;
 }
 

@@ -242,21 +242,31 @@ TEST(PlanCacheTest, APlansArenaHoldsWhatItsGraphUsesNotTheEstimate) {
   auto sized =
       en::SizedArena(1000, [](jitllm::kernels::ggml::TensorArena& a) { return Build(a, 10); });
   ASSERT_TRUE(sized.has_value());
-  // The estimate's 1,000 tensors are not kept: ten and one's slack.
-  EXPECT_LE(sized->bytes(), 11 * ggml_tensor_overhead());
+  // Metadata keeps ten tensors and one slack slot. Traversal storage
+  // retains its separate 1,000-descriptor bound and total host charge.
+  const auto traversal_bytes = sized->graph_visited().size_bytes();
+  EXPECT_EQ(sized->graph_capacity(), 1000U);
+  EXPECT_GE(sized->graph_visited().size(), 2000U);
+  EXPECT_EQ(sized->bytes(), 11 * ggml_tensor_overhead() + traversal_bytes);
+  const auto total_bytes = sized->bytes();
   EXPECT_EQ(sized->used(), 0U);
   // Its checks answer for the estimate the build was checked against, so
   // the same build passes them; sealed, it answers for its own room.
   EXPECT_TRUE(sized->Reserve(1000).has_value());
   EXPECT_TRUE(Build(*sized, 10));
   sized->Seal();
+  EXPECT_EQ(sized->bytes(), total_bytes);
+  EXPECT_EQ(sized->graph_visited().size_bytes(), traversal_bytes);
+  EXPECT_EQ(sized->graph_capacity(), 1000U);
   EXPECT_TRUE(sized->Reserve(1).has_value());
   EXPECT_FALSE(sized->Reserve(2).has_value());
   // A build that fails keeps the estimate, for the caller's own error.
   auto failed =
       en::SizedArena(8, [](jitllm::kernels::ggml::TensorArena& a) { return Build(a, 10); });
   ASSERT_TRUE(failed.has_value());
-  EXPECT_EQ(failed->bytes(), 8 * ggml_tensor_overhead());
+  EXPECT_EQ(failed->graph_capacity(), 8U);
+  EXPECT_EQ(failed->graph_visited().size(), 16U);
+  EXPECT_EQ(failed->bytes(), 8 * ggml_tensor_overhead() + failed->graph_visited().size_bytes());
 }
 
 }  // namespace

@@ -161,7 +161,9 @@ std::expected<Gemma4AssistantGraph, KernelFailure> BuildGemma4AssistantGraph(
   g.next_features = ggml_mul_mat(c, weight(b.post_projection), normalized);
   expanded.push_back(g.logits);
   expanded.push_back(g.next_features);
-  g.nodes = GraphOrder(expanded);
+  auto ordered = GraphOrder(expanded, arena);
+  if (!ordered) return std::unexpected(ordered.error());
+  g.nodes = std::move(*ordered);
   return g;
 }
 }  // namespace jitllm::kernels::ggml

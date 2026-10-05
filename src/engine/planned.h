@@ -73,8 +73,8 @@ struct PlannedGraph : PlannedBase {
 // arena of `estimate` tensors (one for the process, reused under a lock,
 // grown to the largest estimate seen), and the arena returned holds
 // exactly what that build used, for the caller's own build of the same
-// graph. A plan's arena then keeps no unused capacity; the estimates are
-// generous (docs/experiments/memory-pressure).
+// graph. Its metadata is trimmed; its separately counted graph traversal
+// table retains the bounded estimate (docs/experiments/memory-pressure).
 std::expected<kernels::ggml::TensorArena, std::string> SizedArena(
     std::size_t estimate, const std::function<bool(kernels::ggml::TensorArena&)>& build);
 // That scratch arena plus the maximum measured graph reader-index allowance

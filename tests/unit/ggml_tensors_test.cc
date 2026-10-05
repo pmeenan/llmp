@@ -8,13 +8,17 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <utility>
 
 #include "expected_error.h"
 #include "ggml.h"
+#include "kernels/ggml/fusion.h"
 #include "kernels/ggml/tensors.h"
 
 namespace {
@@ -84,6 +88,57 @@ TEST(GgmlTensors, AnArenaRefusesMoreThanItHolds) {
   TensorArena moved = std::move(arena);
   EXPECT_EQ(FailedCode(moved.Reserve(1)), KernelError::kRejected);
   EXPECT_NE(moved.context(), nullptr);
+}
+
+TEST(GgmlTensors, TraversalScratchIsFundedSeparatelyFromMetadataAndSurvivesSeal) {
+  const auto overhead = ggml_tensor_overhead();
+  auto arena = TensorArena::CreateBytes(2 * overhead, 16 * overhead);
+  ASSERT_TRUE(arena);
+  const auto table_bytes = arena->graph_visited().size_bytes();
+  EXPECT_EQ(arena->graph_capacity(), 16U);
+  EXPECT_GE(arena->graph_visited().size(), 32U);
+  EXPECT_EQ(arena->bytes(), 2 * overhead + table_bytes);
+  EXPECT_TRUE(arena->Reserve(16));
+  arena->Seal();
+  EXPECT_EQ(arena->bytes(), 2 * overhead + table_bytes);
+  EXPECT_EQ(arena->graph_capacity(), 16U);
+  EXPECT_TRUE(arena->Reserve(2));
+  EXPECT_FALSE(arena->Reserve(3));  // traversal bytes cannot fund GGML metadata
+  auto larger_metadata = TensorArena::CreateBytes(3 * overhead, overhead);
+  ASSERT_TRUE(larger_metadata);
+  EXPECT_EQ(larger_metadata->graph_capacity(), 3U);
+}
+
+TEST(GgmlTensors, TraversalScratchMovesResetsAndRejectsOverflow) {
+  auto arena = TensorArena::Create(3);
+  ASSERT_TRUE(arena);
+  ggml_tensor* leaf = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 1);
+  const std::array<ggml_tensor*, 1> outputs{leaf};
+  ASSERT_TRUE(jitllm::kernels::ggml::GraphOrder(outputs, *arena));
+  EXPECT_FALSE(std::ranges::all_of(arena->graph_visited(), [](auto* p) { return p == nullptr; }));
+  arena->Reset();
+  EXPECT_TRUE(std::ranges::all_of(arena->graph_visited(), [](auto* p) { return p == nullptr; }));
+  const auto bytes = arena->bytes();
+  TensorArena moved = std::move(*arena);
+  EXPECT_EQ(moved.bytes(), bytes);
+  EXPECT_EQ(moved.graph_capacity(), 3U);
+  EXPECT_EQ(arena->bytes(), 0U);
+  EXPECT_EQ(arena->graph_capacity(), 0U);
+  EXPECT_EQ(arena->context(), nullptr);
+  EXPECT_FALSE(jitllm::kernels::ggml::GraphOrder(outputs, *arena));
+  auto destination = TensorArena::Create(1);
+  ASSERT_TRUE(destination);
+  *destination = std::move(moved);
+  EXPECT_EQ(destination->bytes(), bytes);
+  EXPECT_EQ(destination->graph_capacity(), 3U);
+  EXPECT_EQ(moved.bytes(), 0U);
+  EXPECT_EQ(moved.graph_capacity(), 0U);
+  destination->Seal();
+  EXPECT_EQ(destination->bytes(), bytes);
+  EXPECT_FALSE(TensorArena::CreateBytes(std::numeric_limits<std::size_t>::max()));
+  EXPECT_FALSE(
+      TensorArena::CreateBytes(std::numeric_limits<std::size_t>::max() - ggml_tensor_overhead(),
+                               std::numeric_limits<std::size_t>::max()));
 }
 
 }  // namespace

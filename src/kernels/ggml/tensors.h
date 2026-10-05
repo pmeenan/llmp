@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <expected>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -64,8 +65,12 @@ class TensorArena {
 
   // The context GGML's graph functions build on.
   ggml_context* context() const { return context_.get(); }
-  // The host bytes it holds (its tensors' metadata), whatever it uses.
-  std::size_t bytes() const { return capacity_; }
+  // The host bytes it holds: metadata and bounded graph traversal scratch.
+  std::size_t bytes() const { return capacity_ + visited_.size() * sizeof(ggml_tensor*); }
+  // Per-arena graph traversal scratch. GraphOrder clears it before use;
+  // independent or concurrent traversals need independent arenas.
+  std::span<ggml_tensor*> graph_visited() { return visited_; }
+  std::size_t graph_capacity() const { return graph_capacity_; }
   // The bytes its tensors use of them (GGML's used memory).
   std::size_t used() const;
   // Refused unless `tensors` more fit.
@@ -80,12 +85,15 @@ class TensorArena {
   struct Free {
     void operator()(ggml_context* context) const;
   };
-  TensorArena(std::vector<std::byte> buffer, ggml_context* context, std::size_t capacity);
+  TensorArena(std::vector<std::byte> buffer, ggml_context* context, std::size_t capacity,
+              std::vector<ggml_tensor*> visited, std::size_t graph_capacity);
 
   std::vector<std::byte> buffer_;  // the metadata, before the context that uses it
   std::unique_ptr<ggml_context, Free> context_;
   std::size_t capacity_ = 0;
-  std::size_t stands_for_ = 0;  // CreateBytes
+  std::size_t stands_for_ = 0;         // CreateBytes
+  std::vector<ggml_tensor*> visited_;  // counted by bytes(), retained through Seal
+  std::size_t graph_capacity_ = 0;     // every reached tensor, including omitted leaves
 };
 
 }  // namespace jitllm::kernels::ggml

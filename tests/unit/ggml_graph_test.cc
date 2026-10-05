@@ -46,6 +46,84 @@ namespace {
 namespace kg = jitllm::kernels::ggml;
 using kg::MulMatPath;
 
+TEST(GraphOrder, BoundedMembershipPreservesDfsViewsParamsAndDuplicateOutputs) {
+  std::array<ggml_tensor, 5> t{};
+  t[1].flags = GGML_TENSOR_FLAG_PARAM;
+  t[2].op = GGML_OP_ADD;
+  t[2].src[0] = &t[0];
+  t[2].src[1] = &t[1];
+  t[2].src[2] = &t[1];
+  t[3].op = GGML_OP_VIEW;
+  t[3].view_src = &t[2];
+  t[3].src[0] = &t[2];
+  t[4].op = GGML_OP_MUL;
+  t[4].src[0] = &t[2];
+  t[4].src[1] = &t[3];
+  const std::array<ggml_tensor*, 4> outputs{&t[3], &t[4], &t[3], &t[1]};
+  auto arena = kg::TensorArena::Create(t.size());
+  ASSERT_TRUE(arena);
+  const std::vector<ggml_tensor*> expected{&t[1], &t[2], &t[3], &t[4]};
+  EXPECT_EQ(kg::GraphOrder(outputs), expected);
+  for (unsigned repeat = 0; repeat < 3; ++repeat) {
+    auto ordered = kg::GraphOrder(outputs, *arena);
+    ASSERT_TRUE(ordered);
+    EXPECT_EQ(*ordered, expected);
+  }
+  // The old walk follows src[] only, not an unrelated view_src field.
+  t[3].src[0] = nullptr;
+  t[3].view_src = &t[4];
+  const std::array<ggml_tensor*, 1> unrelated_view{&t[3]};
+  auto viewed = kg::GraphOrder(unrelated_view, *arena);
+  ASSERT_TRUE(viewed);
+  EXPECT_EQ(*viewed, kg::GraphOrder(unrelated_view));
+  EXPECT_EQ(*viewed, (std::vector<ggml_tensor*>{&t[3]}));
+  auto empty = kg::GraphOrder({}, *arena);
+  ASSERT_TRUE(empty);
+  EXPECT_TRUE(empty->empty());
+}
+
+TEST(GraphOrder, BoundedMembershipPreservesSharedDagAndCyclicEdgeOrder) {
+  std::array<ggml_tensor, 513> t{};
+  for (std::size_t i = 0; i < t.size(); ++i) {
+    t[i].op = i % 5 == 0 ? GGML_OP_NONE : GGML_OP_ADD;
+    if (i % 13 == 0) t[i].flags = GGML_TENSOR_FLAG_PARAM;
+    if (i > 0) t[i].src[0] = &t[i - 1];
+    if (i > 1) t[i].src[1] = &t[i / 2];
+    t[i].src[2] = &t[i];  // insertion precedes descent, as in the old walk
+  }
+  t[0].src[0] = &t.back();  // also an indirect cycle
+  const std::array<ggml_tensor*, 3> outputs{&t.back(), &t[300], &t.back()};
+  auto arena = kg::TensorArena::Create(t.size());
+  ASSERT_TRUE(arena);
+  const auto expected = kg::GraphOrder(outputs);
+  auto ordered = kg::GraphOrder(outputs, *arena);
+  ASSERT_TRUE(ordered);
+  EXPECT_EQ(*ordered, expected);
+}
+
+TEST(GraphOrder, AllReachedLeavesCountAndForeignDescriptorsRefuseAtTheFundedBound) {
+  std::array<ggml_tensor, 3> foreign{};
+  foreign[2].op = GGML_OP_ADD;
+  foreign[2].src[0] = &foreign[0];
+  foreign[2].src[1] = &foreign[1];
+  const std::array<ggml_tensor*, 1> output{&foreign[2]};
+  EXPECT_EQ(kg::GraphOrder(output).size(), 1U);  // both NONE leaves are omitted
+  auto short_arena = kg::TensorArena::Create(2);
+  ASSERT_TRUE(short_arena);
+  EXPECT_FALSE(kg::GraphOrder(output, *short_arena));
+  const std::array<ggml_tensor*, 1> leaf{&foreign[0]};
+  auto retry = kg::GraphOrder(leaf, *short_arena);
+  ASSERT_TRUE(retry);
+  EXPECT_TRUE(retry->empty());  // a failed walk leaves no membership behind
+  const std::array<ggml_tensor*, 1> null_output{nullptr};
+  EXPECT_FALSE(kg::GraphOrder(null_output, *short_arena));
+  auto exact_arena = kg::TensorArena::Create(3);
+  ASSERT_TRUE(exact_arena);
+  auto exact = kg::GraphOrder(output, *exact_arena);
+  ASSERT_TRUE(exact);
+  EXPECT_EQ(*exact, kg::GraphOrder(output));
+}
+
 // GB10's choices for this model, as the recorded plan shows them: MMVF for
 // one column, MMF up to 16, cuBLAS beyond.
 kg::DeviceChoices ModelDevice() {

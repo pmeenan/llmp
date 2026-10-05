@@ -429,7 +429,9 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     expanded.push_back(g.logits);
   } else if (g.hidden != nullptr)
     expanded.push_back(g.hidden);
-  g.nodes = GraphOrder(expanded);
+  auto ordered = GraphOrder(expanded, arena);
+  if (!ordered) return std::unexpected(ordered.error());
+  g.nodes = std::move(*ordered);
   return g;
 }
 }  // namespace jitllm::kernels::ggml

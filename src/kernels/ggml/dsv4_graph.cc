@@ -144,6 +144,7 @@ class Builder {
   // A target chunk's DSpark injection leaves: the drafter's weights and ring.
   std::expected<void, KernelFailure> InjectLeaves(const Dsv4Injection& inject);
   void Build();
+  const std::vector<ggml_tensor*>& expanded() const { return expanded_; }
   // A wave's concurrent lanes (Dsv4WaveGraph::lanes), tagged as Build makes
   // the tensors.
   void SetLanes(LaneTags* lanes) { lanes_ = lanes; }
@@ -1697,7 +1698,6 @@ void Builder::Build() {
       }
     }
   }
-  g_.nodes = GraphOrder(expanded_);
 }
 
 std::expected<void, KernelFailure> Builder::DraftInputs(DsparkGraph& d,
@@ -1810,7 +1810,6 @@ void Builder::BuildDraft(DsparkGraph& d) {
   Name(d.logits, "dspark_logits", -1);
   d.drafts = Argmax(c_, d.logits);
   Expand(d.drafts);
-  g_.nodes = GraphOrder(expanded_);
 }
 
 // Every slot's block: the trunk over the joined rows, then each slot's
@@ -1832,7 +1831,6 @@ void Builder::BuildDraftWave(DsparkWaveGraph& d) {
       Tag(mark, lane, region);
     }
   }
-  g_.nodes = GraphOrder(expanded_);
 }
 
 }  // namespace
@@ -2030,6 +2028,9 @@ std::expected<Dsv4Graph, KernelFailure> BuildDsv4Graph(TensorArena& arena,
     }
   }
   builder.Build();
+  auto ordered = GraphOrder(builder.expanded(), arena);
+  if (!ordered) return std::unexpected(ordered.error());
+  g.nodes = std::move(*ordered);
   return g;
 }
 
@@ -2139,6 +2140,9 @@ std::expected<Dsv4WaveGraph, KernelFailure> BuildDsv4WaveGraph(TensorArena& aren
     }
   }
   builder.Build();
+  auto ordered = GraphOrder(builder.expanded(), arena);
+  if (!ordered) return std::unexpected(ordered.error());
+  wave.joined.nodes = std::move(*ordered);
   // A wave of one-row steps: each vector product takes a one-row step's
   // launch, so every slot's row equals its step alone bit for bit (the
   // multi-token launch's reduction differs). Verify waves keep the
@@ -2179,6 +2183,9 @@ std::expected<DsparkGraph, KernelFailure> BuildDsparkGraph(TensorArena& arena,
     return std::unexpected(weights.error());
   }
   builder.BuildDraft(d);
+  auto ordered = GraphOrder(builder.expanded(), arena);
+  if (!ordered) return std::unexpected(ordered.error());
+  d.core.nodes = std::move(*ordered);
   return d;
 }
 
@@ -2224,6 +2231,9 @@ std::expected<DsparkWaveGraph, KernelFailure> BuildDsparkWaveGraph(
     return Rejected("a joined draft needs every block in the fast plan's fused form");
   }
   builder.BuildDraftWave(d);
+  auto ordered = GraphOrder(builder.expanded(), arena);
+  if (!ordered) return std::unexpected(ordered.error());
+  d.joined.nodes = std::move(*ordered);
   return d;
 }
 

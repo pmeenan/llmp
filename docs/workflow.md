@@ -97,6 +97,10 @@ downgrade a heavy-path change to the light loop on their own.
   state and context controls when the result warrants adoption or leaves a
   decision unresolved. Do not make full ladders, repeated historical archive
   verification or production check cycles prerequisites to this first screen.
+  *Owner override, 2026-10-05:* while closing the Gemma performance gaps,
+  use focused correctness, lifetime and matched performance checks for reviewed
+  optimization commits. Defer the full regression suite until the performance
+  changes are settled; do not run it for each incremental optimization.
 - **Don't hand off broken.** Checks pass before you end your turn; if they
   don't, say so plainly instead of papering over it. Skipped or disabled
   tests are called out by name.

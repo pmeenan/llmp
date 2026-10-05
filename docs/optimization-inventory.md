@@ -391,6 +391,15 @@ hook: their MTP/features, hyper-connections and recurrent state need separate
 dependency-cut qualification before this transfer. No batching or quality gate
 is inferred from head omission.
 
+The [bounded graph traversal](experiments/ggml-graph-order/README.md) replaces
+quadratic visited-vector membership in all nine Qwen/DeepSeek/Gemma graph
+factories with an arena-owned pointer table. DFS order, cycles, PARAM leaves,
+capacity refusal and explicit scratch/retained-host charges remain checked.
+Standalone callers keep the original overload. Exact Gemma26/31 head/state
+controls pass; fresh state-only prefill improves 1.93%/0.99%, leaving
+8.19%/7.54% reference latency gaps. Previous-family graph/plan controls pass;
+no previous-family model speed or planning-only gain is claimed.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

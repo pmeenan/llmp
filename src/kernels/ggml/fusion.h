@@ -38,12 +38,14 @@
 #define JITLLM_KERNELS_GGML_FUSION_H_
 
 #include <cstddef>
+#include <expected>
 #include <optional>
 #include <span>
 #include <string_view>
 #include <vector>
 
 #include "ggml.h"
+#include "kernels/ggml/tensors.h"
 
 namespace jitllm::kernels::ggml {
 
@@ -52,13 +54,18 @@ class GraphReadIndex;
 }
 
 // A graph's nodes in execution order: every tensor computed, each after its
-// inputs. Leaves (GGML_OP_NONE) are not nodes.
+// inputs. NONE leaves are emitted only when flagged as PARAM.
 using GraphNodes = std::span<ggml_tensor* const>;
 
 // The nodes ggml_build_forward_expand records for `outputs`, expanded in
 // turn, in its order (ggml_visit_parents_graph, ggml.c:7213-7279, with the
 // default left-to-right order of inputs).
 std::vector<ggml_tensor*> GraphOrder(std::span<ggml_tensor* const> outputs);
+// Identical traversal with bounded, caller-funded arena membership storage.
+// Capacity includes every reached NONE leaf, not only emitted nodes. A graph
+// exceeding that bound or containing a null output is refused before planning.
+std::expected<std::vector<ggml_tensor*>, KernelFailure> GraphOrder(
+    std::span<ggml_tensor* const> outputs, TensorArena& arena);
 
 // A gate and an up product of one input and the GLU over them, which
 // MMVF fuses into one kernel writing the GLU (ops.h MulMatVecGlu).
