@@ -1,0 +1,185 @@
+{
+  "version": 1,
+  "shape": {
+    "profile": "gemma4-26b-a4b",
+    "context_per_owner": 256,
+    "owners": 4,
+    "query_rows_per_owner": 1,
+    "read_cells": 256,
+    "waves": 32,
+    "completed_heads": 128,
+    "vocab": 262144
+  },
+  "native_own_freeze_sha256": "a5fafe3cba47982c143310b6c5148a7874839f920a330a8c1296ef0bdc8c3dcb",
+  "own_repeat_full_heads_and_initialized_states_exact": true,
+  "paid_candidate_full_heads_and_initialized_states_exact_own": true,
+  "comparisons": {
+    "control": {
+      "native_own_freeze_sha256": "a5fafe3cba47982c143310b6c5148a7874839f920a330a8c1296ef0bdc8c3dcb",
+      "policy": "control",
+      "native_sha256": "9a2476e932fcb21eb0d889ade9326cf51f552e693309b38bc1639eae354a6907",
+      "reference_sha256": "5808306e0f261896500bdf9f3b44d4b1d0f18b34ba99d976da15a916aa8ff164",
+      "input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+      "complete_rows": 128,
+      "vocab": 262144,
+      "byte_exact_rows": 0,
+      "strict_argmax_differences": 77,
+      "positive_reference_winner_margin_differences": 77,
+      "strict_at_reference_tie": 0,
+      "max_raw_delta": 33.53945350646973,
+      "own_repeat_margin_movement": 0,
+      "phase_counts": {
+        "first_wave": {
+          "rows": 4,
+          "byte_exact_rows": 0,
+          "strict_differences": 2,
+          "max_raw": 8.781249046325684
+        },
+        "first_three_waves": {
+          "rows": 12,
+          "byte_exact_rows": 0,
+          "strict_differences": 6,
+          "max_raw": 15.787454843521118
+        },
+        "later_29_waves": {
+          "rows": 116,
+          "byte_exact_rows": 0,
+          "strict_differences": 71,
+          "max_raw": 33.53945350646973
+        }
+      },
+      "scope": "selected rows are not corpus PPL or a whole-model quality gate",
+      "selected_likelihood_summary": {
+        "rows": 16,
+        "selection": "waves0/1/2/31, all4owners; targetID[68+owner+step]",
+        "max_tv": 0.9486057263749831,
+        "max_absolute_nll_delta": 7.880697424431135,
+        "mean_signed_nll_delta": 0.5751253706085959
+      }
+    },
+    "candidate": {
+      "native_own_freeze_sha256": "a5fafe3cba47982c143310b6c5148a7874839f920a330a8c1296ef0bdc8c3dcb",
+      "policy": "candidate",
+      "native_sha256": "e0007d7a23e474629bcd4f0ed09487f6f116e3ad0086e9c78026858a0a757337",
+      "reference_sha256": "5808306e0f261896500bdf9f3b44d4b1d0f18b34ba99d976da15a916aa8ff164",
+      "input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+      "complete_rows": 128,
+      "vocab": 262144,
+      "byte_exact_rows": 0,
+      "strict_argmax_differences": 68,
+      "positive_reference_winner_margin_differences": 68,
+      "strict_at_reference_tie": 0,
+      "max_raw_delta": 32.15201950073242,
+      "own_repeat_margin_movement": 0,
+      "phase_counts": {
+        "first_wave": {
+          "rows": 4,
+          "byte_exact_rows": 0,
+          "strict_differences": 3,
+          "max_raw": 8.375011444091797
+        },
+        "first_three_waves": {
+          "rows": 12,
+          "byte_exact_rows": 0,
+          "strict_differences": 8,
+          "max_raw": 17.207152843475342
+        },
+        "later_29_waves": {
+          "rows": 116,
+          "byte_exact_rows": 0,
+          "strict_differences": 60,
+          "max_raw": 32.15201950073242
+        }
+      },
+      "scope": "selected rows are not corpus PPL or a whole-model quality gate",
+      "selected_likelihood_summary": {
+        "rows": 16,
+        "selection": "waves0/1/2/31, all4owners; targetID[68+owner+step]",
+        "max_tv": 0.939187272078359,
+        "max_absolute_nll_delta": 5.667980926330827,
+        "mean_signed_nll_delta": 0.2647718307474492
+      }
+    }
+  },
+  "paid_seconds": {
+    "native_control_first": 1.00144,
+    "native_control_repeat": 1.00258,
+    "native_candidate_first": 1.09469,
+    "native_candidate_repeat": 1.09361,
+    "reference_a": 0.996769,
+    "candidate": 1.09045,
+    "reference_b": 1.00061,
+    "candidate_more_latency_percent_vs_mean_reference": 9.188090993246645
+  },
+  "selected_native_policy_counts": {
+    "norm_rope": 60,
+    "norm_add": 90,
+    "row_products": 0,
+    "norm_fused": 0,
+    "rope_store": 0,
+    "shared_vecq": 0,
+    "gemma_route": 0,
+    "gemma_reduce": 0
+  },
+  "native_paid_graph_replays": 32,
+  "native_paid_graph_captures": 0,
+  "original_ggml_graph_reused_delta": 32,
+  "initialized_state": {
+    "bytes_per_owner": 57671680,
+    "ranges_per_owner": 60,
+    "endpoints": [
+      99,
+      100,
+      101,
+      102
+    ],
+    "layout": "gemma26-f16-kv-scalar-device-v1:256:128:256:256",
+    "own_policy_records": {
+      "control": {
+        "heads.f32": {
+          "sha256": "9a2476e932fcb21eb0d889ade9326cf51f552e693309b38bc1639eae354a6907",
+          "bytes": 134217728
+        },
+        "owner-0.state": {
+          "sha256": "6e81f9cd58f39358e2868ef514d564c53a3c37dcd132f4f13714f8c34a80a72b",
+          "bytes": 57671680
+        },
+        "owner-1.state": {
+          "sha256": "54117a34fb72ae6f697d3457250f9fb873ee07b64ca13afc0d521f0fc1c73647",
+          "bytes": 57671680
+        },
+        "owner-2.state": {
+          "sha256": "f97e520218cf0231e4c444ff8e3139e07e2a595d318e28a4c770c04752f467da",
+          "bytes": 57671680
+        },
+        "owner-3.state": {
+          "sha256": "73caba853917bf796a25038739684d1d1da580c733e969e9f6436c8808f0b483",
+          "bytes": 57671680
+        }
+      },
+      "candidate": {
+        "heads.f32": {
+          "sha256": "e0007d7a23e474629bcd4f0ed09487f6f116e3ad0086e9c78026858a0a757337",
+          "bytes": 134217728
+        },
+        "owner-0.state": {
+          "sha256": "68e876d86e2893fdb21dfe2ee753759ccba911377b012e13d5a37a915d7a755c",
+          "bytes": 57671680
+        },
+        "owner-1.state": {
+          "sha256": "1ce534d8ae6098ecb8047401cb9de45456b94b7f8662929e79bb3633dca2ac35",
+          "bytes": 57671680
+        },
+        "owner-2.state": {
+          "sha256": "895f1227a13d65752fe732cd9178053072b2ab6d2339a6e33f6d4802106ee66e",
+          "bytes": 57671680
+        },
+        "owner-3.state": {
+          "sha256": "d70e65800fd72a0bd05663dc287c3840df6e9741fd83caf9423ad43e59fedd8d",
+          "bytes": 57671680
+        }
+      }
+    }
+  },
+  "conclusion": "negative bounded backward transfer; no production selection, corpus PPL, memory peak or whole-model qualification"
+}

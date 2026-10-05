@@ -318,6 +318,11 @@ family" guide, and its long-context scaling work.
         launches and matched component bookends. All complete activation/down
         values match; the fusion-gap lead is rejected for this layer-zero input.
         Other inputs/layers, C1 model quality and production selection remain open.
+      - [x] [Gemma26 packed-attention transfer screen](experiments/gemma26-packed-attention-c4/README.md),
+        with independently frozen full heads/states and fresh matched bookends.
+        The candidate retains 68/128 positive-margin mismatches and costs 9.19%
+        more latency. No production transfer is selected; quality and optimized
+        batching remain open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

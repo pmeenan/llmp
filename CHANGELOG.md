@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Gemma26 packed-attention transfer controls with exact native head/state repeats
+  and matched reference comparisons. Quality fails and latency rises 9.19%;
+  the candidate remains unselected.
+
 - Dense31 scalar FFN replay with actual captured inputs and observed reference
   fusion. Native, fused and unfused paths produce identical complete activation
   and down-projection bytes for the tested input; broader qualification remains open.

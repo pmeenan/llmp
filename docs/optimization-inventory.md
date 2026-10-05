@@ -249,9 +249,18 @@ the unchanged norm/ordinary-product control retains 15 positive-margin misses.
 This closes the tested joint dispatch/stream geometry explanation, without
 isolating local query precision from reduction geometry. Paid packing raises
 latency 12.2774% above the reference mean. Avoiding those copies is the next
-performance lead; no production policy is selected. Gemma26 needs its own
-head-count/geometry controls before transfer, and other contexts, query shapes,
-assistants and representative quality remain unqualified.
+performance lead; no production policy is selected. Gemma26's independent
+first transfer screen below fails. Other contexts, query shapes, assistants
+and representative quality remain unqualified.
+
+The [Gemma26 packed-attention transfer](experiments/gemma26-packed-attention-c4/README.md)
+uses its actual 16-head/local-KV8/global-KV2 profile and unchanged routed
+Q4_K/Q5_1/Q8_0 products. Complete heads and initialized states repeat exactly,
+but 68/128 choices retain positive reference margins and latency rises 9.1881%.
+The unchanged segmented control has 77 misses; candidate early-wave misses
+increase, so fewer total misses do not qualify the transfer. Both optional
+routing/reduction policies are off. The older layer-28 allocation eligibility
+observation does not explain this result. No production policy is selected.
 
 The [actual-input scalar FFN replay](experiments/gemma-dense-ffn/README.md)
 checks dense31's layer-zero Q4_K gate/up and Q6_K down products at width 5,376.
