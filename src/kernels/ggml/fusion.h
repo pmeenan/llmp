@@ -113,6 +113,21 @@ struct RmsNormMulNodes {
 // covers them.
 std::optional<RmsNormMulNodes> RmsNormMulFusionAt(GraphNodes graph, std::size_t index);
 
+struct RmsNormChainNodes {
+  ggml_tensor* norm = nullptr;
+  ggml_tensor* mul = nullptr;
+  ggml_tensor* out = nullptr;
+};
+// Three consecutive nodes with exactly one reader of each intermediate,
+// no output/view intermediates and checked launcher operands. Kept storage
+// readers are additionally excluded by the planner.
+std::optional<RmsNormChainNodes> GemmaNormRopeFusionAt(GraphNodes graph, std::size_t index);
+std::optional<RmsNormChainNodes> GemmaNormAddFusionAt(GraphNodes graph, std::size_t index);
+
+// Exact RMS_NORM,MUL,GET_ROWS,ADD frontier pattern. The planner defers only
+// norm/mul, executes GET_ROWS normally, then launches the checked ADD chain.
+std::optional<RmsNormChainNodes> GemmaNormAddGatherFusionAt(GraphNodes graph, std::size_t index);
+
 // Whether a fusion pattern upstream tries at `index`, other than the four
 // above, might apply there. It checks the op sequences each such pattern
 // requires (ggml_cuda_try_fuse, ggml-cuda.cu:3432-4180, and its matchers),

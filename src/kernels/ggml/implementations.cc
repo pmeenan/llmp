@@ -19,6 +19,7 @@
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
+#include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
@@ -88,7 +89,21 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 117> kKernels = {{
+constexpr std::array<Kernel::Entry, 119> kKernels = {{
+    {.name = kGemmaNormRopeName,
+     .operation = execution::Operation::kRmsNormMulRope,
+     .variant = "original ggml_cuda_op_rms_norm_mul_rope_fused; F32 full D256/D512 NEOX, "
+                "no direct cache store; default-off checked three-node chain",
+     .arity = 3,
+     .check = [](ConstNodes n) { return CheckGemmaNormRope(n[0], n[1], n[2]); },
+     .run = [](LaunchContext& l, Nodes n) { return RunGemmaNormRope(l, n[0], n[1], n[2]); }},
+    {.name = kGemmaNormAddName,
+     .operation = execution::Operation::kRmsNormMulAdd,
+     .variant = "original ggml_cuda_op_rms_norm_fused_add; F32 approved Gemma widths, "
+                "default-off checked three-node chain",
+     .arity = 3,
+     .check = [](ConstNodes n) { return CheckGemmaNormAdd(n[0], n[1], n[2]); },
+     .run = [](LaunchContext& l, Nodes n) { return RunGemmaNormAdd(l, n[0], n[1], n[2]); }},
     {.name = "ggml.rms_norm",
      .operation = execution::Operation::kRmsNorm,
      .variant = "ggml_cuda_op_rms_norm: rms_norm_f32<block, false, false>; upstream launch "

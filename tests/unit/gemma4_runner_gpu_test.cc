@@ -22,6 +22,7 @@ namespace en = jitllm::engine;
 class Gemma4RunnerGpu : public ::testing::Test {
  protected:
   virtual bool Invariant() const { return false; }
+  virtual bool NormChains() const { return false; }
   virtual en::Gemma4Variant Variant() const { return en::Gemma4Variant::k26BA4B; }
   void SetUp() override {
     // Explicit fixture path, matching other real-model engine controls.
@@ -39,7 +40,9 @@ class Gemma4RunnerGpu : public ::testing::Test {
                           .slots = 4,
                           .shared_q8 = Invariant(),
                           .fuse_norms = Invariant(),
-                          .row_invariant = Invariant()},
+                          .row_invariant = Invariant(),
+                          .fuse_norm_rope = NormChains(),
+                          .fuse_norm_add = NormChains()},
         0, 0);
     ASSERT_TRUE(node.Open());
     entered.push_back(runner.get());
@@ -134,8 +137,13 @@ class Gemma4RunnerPolicy : public Gemma4RunnerGpu, public ::testing::WithParamIn
 class Gemma31RunnerGpu : public Gemma4RunnerGpu {
  protected:
   en::Gemma4Variant Variant() const override { return en::Gemma4Variant::k31B; }
+  void ReplayOwnState();
 };
-TEST_F(Gemma31RunnerGpu, OrdinarySoloAndWavesReplayAndRestoreOwnedCheckpoints) {
+class Gemma31NormRunnerGpu : public Gemma31RunnerGpu {
+ protected:
+  bool NormChains() const override { return true; }
+};
+void Gemma31RunnerGpu::ReplayOwnState() {
   ASSERT_EQ(runner->profile().layers, 60U);
   ASSERT_EQ(runner->profile().experts, 0U);
   EXPECT_EQ(runner->slab_padding(), 0U);
@@ -184,6 +192,8 @@ TEST_F(Gemma31RunnerGpu, OrdinarySoloAndWavesReplayAndRestoreOwnedCheckpoints) {
       const auto& policy = runner->last_built_policy();
       EXPECT_FALSE(policy.norm_fused || policy.rope_store || policy.shared_vecq ||
                    policy.row_products || policy.lane_steps);
+      EXPECT_EQ(policy.norm_rope != 0, NormChains());
+      EXPECT_EQ(policy.norm_add != 0, NormChains());
       auto ranges = runner->CheckpointRanges(7);
       if (!ranges) return en::support::Error(ranges.error());
       std::uint64_t bytes = 0;
@@ -226,6 +236,8 @@ TEST_F(Gemma31RunnerGpu, OrdinarySoloAndWavesReplayAndRestoreOwnedCheckpoints) {
   EXPECT_GT(runner->graph_stats().replayed, 0U);
   EXPECT_EQ(runner->coverage().violations, 0U);
 }
+TEST_F(Gemma31RunnerGpu, OrdinarySoloAndWavesReplayAndRestoreOwnedCheckpoints) { ReplayOwnState(); }
+TEST_F(Gemma31NormRunnerGpu, NormChainsReplayAndRestoreOwnedCheckpoints) { ReplayOwnState(); }
 TEST_P(Gemma4RunnerPolicy, SoloTwoFourJoinedDecodeHasStrictGreediesAndExactSamePolicyReplay) {
   for (const auto count : {1U, 2U, 4U}) {
     std::array<std::array<std::vector<float>, 3>, 4> baseline;

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // First paid 8K prefill and fixed-prefix decode screen. No quality claim.
-// ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31]. Production options remain off.
+// ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both]. Defaults remain off.
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -21,9 +21,11 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc != 4 && argc != 5) return 2;
-  const std::string_view variant = argc == 5 ? argv[4] : "26";
+  if (argc < 4 || argc > 6) return 2;
+  const std::string_view variant = argc >= 5 ? argv[4] : "26";
+  const std::string_view policy = argc == 6 ? argv[5] : "ordinary";
   if (variant != "26" && variant != "31") return 2;
+  if (policy != "ordinary" && policy != "both") return 2;
   constexpr std::uint32_t kPrefill = 8192, kWarm = 3, kSteps = 32;
   constexpr std::uint32_t kInput = kPrefill + kWarm + kSteps, kVocab = 262144;
   std::error_code error;
@@ -42,7 +44,9 @@ int main(int argc, char** argv) {
       {.artifact = argv[1],
        .out = out,
        .variant = variant == "31" ? en::Gemma4Variant::k31B : en::Gemma4Variant::k26BA4B,
-       .context = 16384},
+       .context = 16384,
+       .fuse_norm_rope = policy == "both",
+       .fuse_norm_add = policy == "both"},
       0, 0);
   std::vector<en::PagedModel*> entered;
   const auto execute = [&]() -> en::Status {
@@ -130,6 +134,7 @@ int main(int argc, char** argv) {
                 << " completed=" << kInput << " context=16384 chunk=128 masks=device"
                 << " shared_vecq=" << policy.shared_vecq << " row_products=" << policy.row_products
                 << " norm_fused=" << policy.norm_fused << " rope_store=" << policy.rope_store
+                << " norm_rope=" << policy.norm_rope << " norm_add=" << policy.norm_add
                 << " captures=" << runner.graph_stats().captured
                 << " replays=" << runner.graph_stats().replayed << '\n';
       for (std::uint32_t i = 0; i < kSteps; ++i)

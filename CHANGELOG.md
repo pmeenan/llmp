@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Explicit default-off checked Gemma norm/rotation and norm/residual fusion
+  controls, preserving kept intermediates, raw K-as-V and paid residual gathers.
+
 - Checked standalone Gemma top-eight routing and scaled ordered expert
   reduction, retaining original pinned GGML arithmetic and primitive fallback.
   Graph dispatch and whole-model qualification remain separate.

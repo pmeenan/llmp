@@ -168,6 +168,14 @@ placement and refusing kept or externally read elided values. The current
 26B graph matches routing but falls back for its interleaved reduction.
 Shared planner dispatch and whole-model/batched qualification remain owed.
 
+Gemma's [checked norm chains](experiments/gemma-native-norm/README.md) reuse the
+original D256/D512 F32 norm/NEOX and 2816/5376 residual-add launchers through
+separate default-off policies. Kept/view-read intermediates retain primitives;
+final residual GET_ROWS stays paid before a deferred norm/add step. Dense31's
+measured 128-row complete heads match stock, but its paid 8K comparison against
+reference ubatch256 still differs and gives no stable speed winner. This does
+not select a default or qualify routed26, optimized batching or long context.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

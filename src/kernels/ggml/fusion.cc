@@ -4,6 +4,7 @@
 #include "kernels/ggml/fusion.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include "ggml.h"
+#include "kernels/ggml/gemma_norm.h"
 
 namespace jitllm::kernels::ggml {
 namespace {
@@ -286,6 +288,30 @@ std::optional<RmsNormMulNodes> RmsNormMulFusionAt(GraphNodes graph, std::size_t 
     return std::nullopt;
   }
   return RmsNormMulNodes{.norm = norm, .mul = mul};
+}
+
+std::optional<RmsNormChainNodes> GemmaNormRopeFusionAt(GraphNodes graph, std::size_t index) {
+  if (!CanFuse(graph, index, {GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ROPE}) ||
+      !CheckGemmaNormRope(graph[index], graph[index + 1], graph[index + 2]))
+    return std::nullopt;
+  return RmsNormChainNodes{graph[index], graph[index + 1], graph[index + 2]};
+}
+
+std::optional<RmsNormChainNodes> GemmaNormAddFusionAt(GraphNodes graph, std::size_t index) {
+  if (!CanFuse(graph, index, {GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD}) ||
+      !CheckGemmaNormAdd(graph[index], graph[index + 1], graph[index + 2]))
+    return std::nullopt;
+  return RmsNormChainNodes{graph[index], graph[index + 1], graph[index + 2]};
+}
+
+std::optional<RmsNormChainNodes> GemmaNormAddGatherFusionAt(GraphNodes graph, std::size_t index) {
+  if (!InGraph(graph, index, 4)) return std::nullopt;
+  std::array chain{graph[index], graph[index + 1], graph[index + 3]};
+  if (!CanFuse(chain, 0, {GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD}) ||
+      Uses(graph, chain[0]) != 1 || Uses(graph, chain[1]) != 1 ||
+      !CheckGemmaNormAddGather(chain[0], chain[1], graph[index + 2], chain[2]))
+    return std::nullopt;
+  return RmsNormChainNodes{chain[0], chain[1], chain[2]};
 }
 
 std::optional<std::string_view> UnimplementedFusionAt(GraphNodes graph, std::size_t index) {

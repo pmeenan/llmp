@@ -190,7 +190,8 @@ class Gemma4ExecTest : public ::testing::Test {
   };
   Run Execute(std::uint32_t layer, std::span<const std::uint32_t> slots, std::uint32_t rows,
               std::uint32_t past, bool shared, bool head = false, bool fused_norms = false,
-              bool device_masks = false, bool rope_store = false, bool keep_rope = false) {
+              bool device_masks = false, bool rope_store = false, bool keep_rope = false,
+              bool norm_chains = false) {
     Run run;
     std::vector<std::vector<std::int32_t>> tokens(slots.size(), std::vector<std::int32_t>(rows, 1));
     std::vector<md::Gemma4Segment> segments;
@@ -234,6 +235,8 @@ class Gemma4ExecTest : public ::testing::Test {
                      std::to_string(slots[0]) + ".k_rope");
     auto choices = kg::DeviceChoicesOf(*launch_);
     choices.fuse_norms = fused_norms;
+    choices.fuse_norm_rope = norm_chains;
+    choices.fuse_norm_add = norm_chains;
     auto measured = en::PlanGemma4Chunk(model_, shape, choices, 0, 0, kept);
     EXPECT_TRUE(measured) << (measured ? "" : measured.error());
     if (!measured) return run;
@@ -806,6 +809,23 @@ TEST_F(Gemma4ExecTest, KeptSegmentRotationsUseTheOrdinaryProducerAndRemainReadab
         EXPECT_EQ(ggml_fp32_to_fp16(actual[std::size_t{r} * width + j]), run.keys[index + j]);
     }
     Repeat(run);
+  }
+}
+
+TEST_F(Gemma4ExecTest, CheckedNormChainsCompleteLocalGlobalLayersAndCapture) {
+  const std::array<std::uint32_t, 2> slots{0, 1};
+  for (const auto layer : {0U, 5U}) {
+    auto fused = Execute(layer, slots, 2, 1279, false, false, false, false, false, false, true);
+    ASSERT_NE(fused.planned, nullptr);
+    std::size_t rope = 0, residual = 0;
+    for (const auto& step : fused.planned->plan.steps) {
+      rope += step.implementation == "ggml.rms_norm_mul_rope.fused";
+      residual += step.implementation == "ggml.rms_norm_mul_add.fused";
+    }
+    EXPECT_GT(rope, 0U);
+    EXPECT_GT(residual, 0U);
+    Reference(fused, layer);
+    Repeat(fused);
   }
 }
 

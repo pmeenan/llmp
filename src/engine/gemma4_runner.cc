@@ -69,6 +69,8 @@ Status Gemma4Runner::SelectSlots(std::span<const std::uint32_t> slots) {
 kg::DeviceChoices Gemma4Runner::Choices(kg::LaunchContext& launch, std::uint32_t rows) const {
   auto choices = kg::DeviceChoicesOf(launch);
   choices.fuse_norms = o_.fuse_norms;
+  choices.fuse_norm_rope = o_.fuse_norm_rope;
+  choices.fuse_norm_add = o_.fuse_norm_add;
   choices.fuse_rope_store = o_.rope_store;
   // The existing one-row sums contract is bounded to kRowInvariantColumns;
   // wider prefills retain the ordinary primitive product policy.
@@ -670,6 +672,8 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::Planned(
   policy_ = {.rows = rows, .segments = static_cast<std::uint32_t>(shape.segments.size())};
   for (const auto& step : (*p)->plan.steps) {
     policy_.norm_fused += step.implementation == "ggml.rms_norm_mul.fused";
+    policy_.norm_rope += step.implementation == "ggml.rms_norm_mul_rope.fused";
+    policy_.norm_add += step.implementation == "ggml.rms_norm_mul_add.fused";
     policy_.rope_store += step.implementation == "ggml.rope_set_rows.fused";
     policy_.shared_vecq += step.implementation == "jitllm.vecq";
     policy_.row_products +=

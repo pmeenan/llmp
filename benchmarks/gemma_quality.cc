@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded full-vocabulary teacher forcing on exact shared integer IDs.
-// ARTIFACT IDS_I32 OUTPUT_DIR CHUNK ordinary|norm [26|31]. No support claim.
+// ARTIFACT IDS_I32 OUTPUT_DIR CHUNK ordinary|norm|both|norm_rope|norm_add [26|31]. No support
+// claim.
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -27,7 +28,8 @@ int main(int argc, char** argv) {
   const std::string_view number(argv[4]), policy(argv[5]);
   const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), chunk);
   if (error != std::errc{} || end != number.data() + number.size() || chunk == 0 || chunk > 128 ||
-      (policy != "ordinary" && policy != "norm"))
+      (policy != "ordinary" && policy != "norm" && policy != "both" && policy != "norm_rope" &&
+       policy != "norm_add"))
     return 2;
   std::error_code file_error;
   if (std::filesystem::file_size(argv[2], file_error) != 4096 || file_error) return 2;
@@ -45,7 +47,9 @@ int main(int argc, char** argv) {
       {.artifact = argv[1],
        .out = out,
        .variant = variant == "31" ? en::Gemma4Variant::k31B : en::Gemma4Variant::k26BA4B,
-       .fuse_norms = policy == "norm"},
+       .fuse_norms = policy == "norm",
+       .fuse_norm_rope = policy == "both" || policy == "norm_rope",
+       .fuse_norm_add = policy == "both" || policy == "norm_add"},
       0, 0);
   std::vector<en::PagedModel*> entered;
   const auto execute = [&]() -> en::Status {
@@ -92,6 +96,7 @@ int main(int argc, char** argv) {
             const auto& p = runner.last_built_policy();
             std::cout << "QUALITY_CHUNK first=" << first << " rows=" << rows
                       << " completed=" << first + rows << " norm_fused=" << p.norm_fused
+                      << " norm_rope=" << p.norm_rope << " norm_add=" << p.norm_add
                       << " shared_vecq=" << p.shared_vecq << " row_products=" << p.row_products
                       << '\n';
           }

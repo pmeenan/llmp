@@ -26,6 +26,7 @@
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/fusion.h"
+#include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
@@ -47,6 +48,17 @@ std::string Where(GraphNodes graph, std::size_t i) {
 
 // A computed tensor with memory of its own.
 bool Computed(const ggml_tensor* t) { return t->op != GGML_OP_NONE && t->view_src == nullptr; }
+
+bool BoundedViewChain(const ggml_tensor* tensor) {
+  for (unsigned depth = 0; tensor != nullptr && depth < 64; ++depth) {
+    if (tensor->view_src == nullptr) return true;
+    if (tensor->view_offs > std::numeric_limits<std::uint64_t>::max() -
+                                reinterpret_cast<std::uintptr_t>(tensor->view_src->data))
+      return false;
+    tensor = tensor->view_src;
+  }
+  return tensor == nullptr;
+}
 
 // The tensor whose memory `t` is: itself, or the end of its view chain
 // (GGML points a view of a view at the first source, but that is
@@ -139,6 +151,18 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     // count: a row-invariant plan (D-092) cannot take them.
     return Rejected("a row-invariant plan is planned without fusion");
   }
+  if (device.fuse_norm_rope || device.fuse_norm_add) {
+    // OnlyReader examines every graph/keep storage root, including tensors
+    // outside a prospective chain. Bound those traversals before selection.
+    for (const auto* node : graph) {
+      if (node == nullptr || !BoundedViewChain(node))
+        return Rejected("invalid norm-policy graph view chain");
+      for (const auto* source : node->src)
+        if (!BoundedViewChain(source)) return Rejected("invalid norm-policy operand view chain");
+    }
+    for (const auto* kept : keep)
+      if (!BoundedViewChain(kept)) return Rejected("invalid norm-policy kept view chain");
+  }
   GraphPlan plan;
   std::vector<bool> taken(graph.size(), false);
   const auto add = [&](Operation operation, std::string_view name, std::size_t first,
@@ -150,6 +174,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         {.operation = operation, .implementation = name, .nodes = std::move(nodes), .lane = 0});
   };
   std::unordered_map<std::size_t, Dsv4HcPostExpertsNodes> deferred;
+  std::unordered_map<std::size_t, RmsNormChainNodes> deferred_norm_add;
   for (std::size_t i = 0; i < graph.size(); ++i) {
     ggml_tensor* node = graph[i];
     if (taken[i] || LaunchesNothing(node)) {
@@ -160,6 +185,32 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       add(Operation::kHcPost, kDsv4HcPostExpertsNormF16Name, i, {f.reduce, f.add, f.post, f.norm},
           4);
       continue;
+    }
+    if (const auto d = deferred_norm_add.find(i); d != deferred_norm_add.end()) {
+      const auto& f = d->second;
+      add(Operation::kRmsNormMulAdd, kGemmaNormAddName, i, {f.norm, f.mul, f.out}, 1);
+      continue;
+    }
+    if (!fusion && node->op == GGML_OP_RMS_NORM) {
+      if (const auto f = device.fuse_norm_rope ? GemmaNormRopeFusionAt(graph, i) : std::nullopt;
+          f && OnlyReader(graph, keep, f->norm, f->mul) &&
+          OnlyReader(graph, keep, f->mul, f->out)) {
+        add(Operation::kRmsNormMulRope, kGemmaNormRopeName, i, {f->norm, f->mul, f->out}, 3);
+        continue;
+      }
+      if (const auto f = device.fuse_norm_add ? GemmaNormAddFusionAt(graph, i) : std::nullopt;
+          f && OnlyReader(graph, keep, f->norm, f->mul) &&
+          OnlyReader(graph, keep, f->mul, f->out)) {
+        add(Operation::kRmsNormMulAdd, kGemmaNormAddName, i, {f->norm, f->mul, f->out}, 3);
+        continue;
+      }
+      if (const auto f = device.fuse_norm_add ? GemmaNormAddGatherFusionAt(graph, i) : std::nullopt;
+          f && OnlyReader(graph, keep, f->norm, f->mul) &&
+          OnlyReader(graph, keep, f->mul, f->out)) {
+        taken[i] = taken[i + 1] = true;
+        deferred_norm_add.emplace(i + 3, *f);
+        continue;
+      }
     }
     if (!fusion && device.fuse_rope_store && node->op == GGML_OP_ROPE) {
       if (const auto f = RopeSetRowsFusionAt(graph, i);
@@ -209,7 +260,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         }
       }
       if (node->op == GGML_OP_RMS_NORM) {
-        if (const auto f = RmsNormMulFusionAt(graph, i)) {
+        if (const auto f = RmsNormMulFusionAt(graph, i);
+            f && OnlyReader(graph, keep, f->norm, f->mul)) {
           add(Operation::kRmsNormMul, kRmsNormMulFused, i, {f->norm, f->mul}, 2);
           continue;
         }
@@ -219,7 +271,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       case GGML_OP_RMS_NORM: {
         ggml_tensor* next = i + 1 < graph.size() ? graph[i + 1] : nullptr;
         if (const auto f =
-                !fusion && device.fuse_norms ? RmsNormMulFusionAt(graph, i) : std::nullopt) {
+                !fusion && device.fuse_norms ? RmsNormMulFusionAt(graph, i) : std::nullopt;
+            f && OnlyReader(graph, keep, f->norm, f->mul)) {
           add(Operation::kRmsNormMul, kRmsNormMulFused, i, {f->norm, f->mul}, 2);
         } else if (!fusion && next != nullptr && next->op == GGML_OP_MUL && next->src[0] == node) {
           add(Operation::kRmsNormMul, kRmsNormMulUnfused, i, {node, next}, 2);

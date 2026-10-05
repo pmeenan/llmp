@@ -286,7 +286,11 @@ shared cause with the narrower 26B routed-input diagnosis. Optional policies,
 optimized batching, assistants and 31B HTTP admission remain open.
 The [dense 31B norm control](experiments/gemma31-reference-fusions/README.md)
 reproduces every measured stock head with the two missing norm fusion families.
-Checked native implementation and full model qualification remain open.
+The [checked native norm chains](experiments/gemma-native-norm/README.md) now
+reproduce all 1,024 stock heads at the measured dense31 128-row shape. Separate
+policies remain default off: the paid 8K/ubatch-256 reference comparison has
+head differences and no stable native speed gain. Full model qualification
+remains open.
 
 Checked device masks are the runner default after exact full-model agreement
 with caller-funded host masks. Norm fusion, shared Q8 preparation and bounded
@@ -306,7 +310,9 @@ All repeat exactly, but none resolves the representative quality gap;
 no new native policy is selected.
 The [stock routing/reduction controls](experiments/gemma-reference-stock/README.md)
 show that each specialized family also changes the representative heads.
-Checked native contracts and the complete quality gate remain owed.
+Checked norm chains are available as explicit default-off policies; routed
+contracts still require planner integration. The complete 26B quality gate
+remains owed.
 
 The [short resident diagnosis](experiments/gemma-performance/README.md)
 records a 4.33% scalar rate gap against the bookended fusion-enabled reference.

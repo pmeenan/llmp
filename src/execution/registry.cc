@@ -75,6 +75,10 @@ std::string_view OperationName(Operation operation) {
       return "rms_norm";
     case Operation::kRmsNormMul:
       return "rms_norm_mul";
+    case Operation::kRmsNormMulRope:
+      return "rms_norm_mul_rope";
+    case Operation::kRmsNormMulAdd:
+      return "rms_norm_mul_add";
     case Operation::kAdd:
       return "add";
     case Operation::kMul:

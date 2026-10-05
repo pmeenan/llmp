@@ -62,7 +62,11 @@ same native runner with ordinary 1/2/4-request replay and exact checkpoint/spill
 controls. Its [bounded representative screen](experiments/gemma31-runner/README.md)
 fails against full-fusion llama.cpp (14.61% higher PPL, 330 strict argmax
 differences); its unfused diagnostic matches all 1,024 complete heads exactly.
-No 31B serving, assistant, optimized batching or reference qualification follows.
+Its explicit default-off [checked norm chains](experiments/gemma-native-norm/README.md)
+match all 1,024 stock heads at the same 128-row shape. Paid 8K heads against
+the screened ubatch-256 reference differ, and the short speed result is
+inconclusive. No 31B serving, assistant, optimized batching or full reference
+qualification follows.
 The 26B
 [representative likelihood screen](experiments/gemma-quality/README.md) fails
 against fusion-enabled llama.cpp (10.03% higher PPL); its unfused diagnostic
@@ -70,9 +74,8 @@ control matches exactly. The [short resident screen](experiments/gemma-performan
 is 4.33% below the bookended reference rate. The [paid 8K screen](experiments/gemma-prefill/README.md)
 records slower prefill (6.931 s versus 2.612 / 2.605 s), with faster native
 fixed-prefix decode; known numerical differences keep qualification open.
-Neither model has passed the
-representative reference, long-context, selected optimization and
-optimized-batching support gates.
+The bounded dense31 norm result does not close the required full reference,
+long-context, selected optimization or optimized-batching support gates.
 
 ## Chat templates
 

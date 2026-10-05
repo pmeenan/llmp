@@ -251,6 +251,10 @@ family" guide, and its long-context scaling work.
         IDs, full-sort backing and ordered expert scaling. Current interleaved
         reduction uses primitive fallback; graph integration, whole-model
         reference qualification and optimized batching remain owed.
+      - [x] [Checked native Gemma norm/rotation and norm/residual chains](experiments/gemma-native-norm/README.md),
+        with keep/view fallback, paid final residual gather and shared state/capture
+        controls. Dense31's 128-row full heads match stock; policies remain off,
+        paid 8K differences and full reference/context/batching gates stay open.
       - [x] Bounded native Gemma 26B-A4B runner with independent slots,
         device masks and [exact state/replay controls](experiments/gemma-runner/README.md).
         Complete serving, assistant, representative quality, long-context and optimized

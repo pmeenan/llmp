@@ -3,11 +3,14 @@
 
 # Proposed checked native norm contracts
 
-This is a design, not an implemented or selected policy. Native baseline
-`5b30341` keeps ordinary arithmetic. These contracts remain proposed;
-default selection requires model evidence. Dense 31B and routed 26B require
-separate full-model
-numerical and paid-work controls against their own immutable calibrations.
+This records the design derived from the dense31 reference controls. Native
+baseline `5b30341` keeps ordinary arithmetic. The later
+[checked native implementation](../gemma-native-norm/README.md) implements a
+narrow subset with default-off policies: NEOX D256/D512 norm/rotation and
+full-width F32 norm/residual addition. Other rotation modes, residual widths
+and in-place destinations below remain design possibilities. Dense31 and
+routed26 require separate model and paid-work evidence against their own
+immutable calibrations.
 
 The pinned `norm.cu` and `rope.cu` units already expose
 `ggml_cuda_op_rms_norm_fused_add` and

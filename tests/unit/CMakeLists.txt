@@ -324,6 +324,11 @@ jitllm_gtest(gemma4_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 if(JITLLM_CUDA)
   add_executable(gemma4_exec_test gemma4_exec_test.cc)
+  add_executable(gemma_norm_gpu_test gemma_norm_gpu_test.cc)
+  target_include_directories(gemma_norm_gpu_test SYSTEM PRIVATE
+      "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(gemma_norm_gpu_test PRIVATE jitllm_ggml_kernels jitllm_cuda_device_memory)
+  jitllm_gpu_gtest(gemma_norm_gpu_test)
   target_link_libraries(gemma4_exec_test PRIVATE jitllm_engine jitllm_json jitllm_cuda_device_memory)
   target_include_directories(gemma4_exec_test SYSTEM PRIVATE
       "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
@@ -508,6 +513,9 @@ target_link_libraries(qwen38_test PRIVATE jitllm_ggml_tensors jitllm_model)
 jitllm_gtest(qwen38_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
 add_executable(ggml_validate_test ggml_validate_test.cc)
+add_executable(gemma_norm_test gemma_norm_test.cc)
+target_link_libraries(gemma_norm_test PRIVATE jitllm_ggml_tensors)
+jitllm_gtest(gemma_norm_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 target_link_libraries(ggml_validate_test PRIVATE jitllm_ggml_tensors)
 jitllm_gtest(ggml_validate_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 

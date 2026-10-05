@@ -1,0 +1,455 @@
+{
+  "build_receipt_sha256": "4ea901be73b364a981696840dd4b48608214c049d2c237d9c3313c9d4fa45087",
+  "complete_candidate": {
+    "byte_exact_rows": 1024,
+    "candidate_freeze_sha256": "57d54d8196cb2534ac4d4406780cf4d3c6d917f01e4e7f177805f29083985552",
+    "input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+    "max_raw_delta": 0.0,
+    "original_ordinary_freeze_sha256": "6ab1fd0bc4a39c303c112ff476b96faa0527a9fa8242cc67b3abd5873350f038",
+    "rows": 1024,
+    "scores_inherited_by_complete_byte_identity": true,
+    "strict_argmax_mismatches": 0,
+    "teacher_chunk": 128,
+    "vocab": 262144,
+    "whole_file_sha256": [
+      "c4b9b73ac7d9c62c62ff1daabc09b36bc716df5a5b124076d0b888bfc42fb0c1",
+      "c4b9b73ac7d9c62c62ff1daabc09b36bc716df5a5b124076d0b888bfc42fb0c1"
+    ]
+  },
+  "controls": {
+    "focused_tests": 24,
+    "host": "spark-56f5",
+    "official_jobs": [
+      "m35-gemma-norm-build7",
+      "m35-gemma-norm-native2b",
+      "m35-gemma-norm-compare2",
+      "m35-gemma-norm-paid1",
+      "m35-gemma-norm-paidcompare1"
+    ],
+    "skips": 0
+  },
+  "coverage_candidate": {
+    "byte_exact_rows": 865,
+    "candidate_freeze_sha256": "d98d106ff31d5da84bd18e8d41da4cd7e95c556196856b2ce97128ef39604b09",
+    "input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+    "max_raw_delta": 0.8426780700683594,
+    "original_ordinary_freeze_sha256": "6ab1fd0bc4a39c303c112ff476b96faa0527a9fa8242cc67b3abd5873350f038",
+    "rows": 1024,
+    "scores_inherited_by_complete_byte_identity": false,
+    "strict_argmax_mismatches": 0,
+    "teacher_chunk": 128,
+    "vocab": 262144,
+    "whole_file_sha256": [
+      "112c828e58c38ef2fc72465639de54a8832cefc790a0bef82b48e142190c8078",
+      "c4b9b73ac7d9c62c62ff1daabc09b36bc716df5a5b124076d0b888bfc42fb0c1"
+    ]
+  },
+  "inherited_stock_scores": {
+    "basis": "Complete1GiB byte identity at same128-row shape; not recomputed",
+    "mean_nll": 3.5773256064214842,
+    "ppl": 35.77772905610885,
+    "transitions": 1023
+  },
+  "integration_base": "ed274f3",
+  "measured_base": "4f9be312050fa45f8509808d5f6f708c32a13705",
+  "measured_source_files": [
+    {
+      "path": "benchmarks/gemma_prefill.cc",
+      "sha256": "e3e3b5efa20e02da1c0a4e069393d98cbfac8d3a3f9dc599acad9e9778f834c1"
+    },
+    {
+      "path": "benchmarks/gemma_quality.cc",
+      "sha256": "bd47a6f7fb2329ee78bd4f86042fb88674e123b46c71cafb2914377b5fe0fb2c"
+    },
+    {
+      "path": "src/engine/gemma4_runner.cc",
+      "sha256": "0e128874eda46da248db32160ab6c1c5898aab2406253dda3f212f2d355fcc7d"
+    },
+    {
+      "path": "src/engine/gemma4_runner.h",
+      "sha256": "b45dfb3e65c2cccde98a00c87578c07d85777c3cbd47742bfcbfbe82010d7050"
+    },
+    {
+      "path": "src/execution/registry.cc",
+      "sha256": "311a352b25af71c9c641b9dc8c61431369f90bdb3d9f95d1d319de981a203578"
+    },
+    {
+      "path": "src/execution/registry.h",
+      "sha256": "63573b95da9e79c6d5d6e2b5c8d9b1bffb3d5975838c451140a08f6b807a6e73"
+    },
+    {
+      "path": "src/kernels/ggml/CMakeLists.txt",
+      "sha256": "e58e6cda99f8caaf6ea78c8d2065c52382996dfb62412d560fbd80b11b5031ff"
+    },
+    {
+      "path": "src/kernels/ggml/fusion.cc",
+      "sha256": "fb3300de855a63787c266911fbc888f8514fda2e7381e77fd54eb9517d776c0b"
+    },
+    {
+      "path": "src/kernels/ggml/fusion.h",
+      "sha256": "2c093626e421a49c8830cb2c42a56ba89dc1626572cfd482bcb490c7aefbf0e0"
+    },
+    {
+      "path": "src/kernels/ggml/gemma_norm.cc",
+      "sha256": "70dc6f72580d7d53ded74c64db2ba866868d1a610de87196a5b7074b62591af3"
+    },
+    {
+      "path": "src/kernels/ggml/gemma_norm.cu",
+      "sha256": "47856fa84c5403a90506576ef01f977a448c646c80c5eddaa47eaa7bd7d6cb3d"
+    },
+    {
+      "path": "src/kernels/ggml/gemma_norm.h",
+      "sha256": "806e41624b83b01df0c0f47df6842e2349ca944713b2619afaef3be27d8d8c7d"
+    },
+    {
+      "path": "src/kernels/ggml/graph_plan.cc",
+      "sha256": "378e5fd6f0ed834e390cd0f3b4f6feb7c7f85da5a6d6387f4e19636389f09444"
+    },
+    {
+      "path": "src/kernels/ggml/graph_plan.h",
+      "sha256": "c0899b0f495286e9a5fb6adc953909cccedf3bf3656fb874b8e1a989f09d3121"
+    },
+    {
+      "path": "src/kernels/ggml/implementations.cc",
+      "sha256": "36a2e55ce20ca8090209bff3e8c5f733be4984c017f7211c8d62239ef91c0927"
+    },
+    {
+      "path": "tests/unit/CMakeLists.txt",
+      "sha256": "637e60ebef84931b931cf6c5bff6a691e6cc2065e11e3a8554b9c1176384c276"
+    },
+    {
+      "path": "tests/unit/gemma4_exec_test.cc",
+      "sha256": "0c4c84d8bab2accb20c9003c869eab5ed98aa52f7fd0ba61d42598be1b7c1f65"
+    },
+    {
+      "path": "tests/unit/gemma4_runner_gpu_test.cc",
+      "sha256": "88a147fc5b8d0ffb59957f0298cfeff3102c860c39798c0b9d2ab063b59d54a6"
+    },
+    {
+      "path": "tests/unit/gemma_norm_gpu_test.cc",
+      "sha256": "e43a91cc83ed821848b24229fb4aa511b60d6c5a1fb03fc9fe130d173b4cc883"
+    },
+    {
+      "path": "tests/unit/gemma_norm_test.cc",
+      "sha256": "3f48a7fd074f4b003f8caacd4e4c1ac8f89e6bc64810c2839167fd2ecb31dcbd"
+    }
+  ],
+  "measured_source_manifest_sha256": "d31bc5c4bdd00621f28a02b65de59d972ea571094430198226909c5b793b3972",
+  "native_binary_sha256": {
+    "jitllm_gemma_prefill": "09e76048cac87d86a59ff57db47f6198f8d0f1eb506d0ebfd8c4f2bf4eb5f66b",
+    "jitllm_gemma_quality": "320fa902b5db555e675bfad28ffd801e796246e1025d3177a795392520f77ab6"
+  },
+  "native_sdk": "aarch64-c09daba6ac31edee",
+  "original_math_source_sha256": {
+    "norm.cu": "8cb872a9633a7c68c5e9fa8c1f7d39afe9e66636c1299b9fc610b1b4217e7307",
+    "rope.cu": "21b424e872267180570dfbc86e6ea67d1a3ced0efd5273d0f23d36da3c621905"
+  },
+  "paid": {
+    "default_adoption": false,
+    "heads": {
+      "final.f32": {
+        "relative_to_reference_a1": {
+          "norm-reference-a1": {
+            "argmax": 715,
+            "chosen_nll_delta": 0.0,
+            "full_softmax_tv": 0.0,
+            "max_raw_delta": 0.0,
+            "reference_argmax": 715
+          },
+          "norm-reference-a2": {
+            "argmax": 715,
+            "chosen_nll_delta": 0.0,
+            "full_softmax_tv": 0.0,
+            "max_raw_delta": 0.0,
+            "reference_argmax": 715
+          },
+          "paid-both1": {
+            "argmax": 715,
+            "chosen_nll_delta": 0.00010504415466527917,
+            "full_softmax_tv": 0.00010816213230400599,
+            "max_raw_delta": 7.256939649581909,
+            "reference_argmax": 715
+          },
+          "paid-both2": {
+            "argmax": 715,
+            "chosen_nll_delta": 0.00010504415466527917,
+            "full_softmax_tv": 0.00010816213230400599,
+            "max_raw_delta": 7.256939649581909,
+            "reference_argmax": 715
+          },
+          "paid-ordinary1": {
+            "argmax": 715,
+            "chosen_nll_delta": 0.00010623151470312564,
+            "full_softmax_tv": 0.00010629039997664943,
+            "max_raw_delta": 6.342041075229645,
+            "reference_argmax": 715
+          },
+          "paid-ordinary2": {
+            "argmax": 715,
+            "chosen_nll_delta": 0.00010623151470312564,
+            "full_softmax_tv": 0.00010629039997664943,
+            "max_raw_delta": 6.342041075229645,
+            "reference_argmax": 715
+          }
+        },
+        "sha256": {
+          "norm-reference-a1": "66970b2f17e70a03c18a9eb06736fb41cfa535ae97109ca0d51312240830bab8",
+          "norm-reference-a2": "66970b2f17e70a03c18a9eb06736fb41cfa535ae97109ca0d51312240830bab8",
+          "paid-both1": "ed7b33f173045131fc36ad7f07566854f0320d0b10d8a22fef793e69a9b53b4b",
+          "paid-both2": "ed7b33f173045131fc36ad7f07566854f0320d0b10d8a22fef793e69a9b53b4b",
+          "paid-ordinary1": "8b7f1cfb866756e959d5a505580e32e52ba14a3ecdb8fd5d2876bdd60b70810d",
+          "paid-ordinary2": "8b7f1cfb866756e959d5a505580e32e52ba14a3ecdb8fd5d2876bdd60b70810d"
+        }
+      },
+      "prefill.f32": {
+        "relative_to_reference_a1": {
+          "norm-reference-a1": {
+            "argmax": 1581,
+            "chosen_nll_delta": 0.0,
+            "full_softmax_tv": 0.0,
+            "max_raw_delta": 0.0,
+            "reference_argmax": 1581
+          },
+          "norm-reference-a2": {
+            "argmax": 1581,
+            "chosen_nll_delta": 0.0,
+            "full_softmax_tv": 0.0,
+            "max_raw_delta": 0.0,
+            "reference_argmax": 1581
+          },
+          "paid-both1": {
+            "argmax": 1581,
+            "chosen_nll_delta": 0.1982121150659708,
+            "full_softmax_tv": 0.09096523994497965,
+            "max_raw_delta": 1.508955478668213,
+            "reference_argmax": 1581
+          },
+          "paid-both2": {
+            "argmax": 1581,
+            "chosen_nll_delta": 0.1982121150659708,
+            "full_softmax_tv": 0.09096523994497965,
+            "max_raw_delta": 1.508955478668213,
+            "reference_argmax": 1581
+          },
+          "paid-ordinary1": {
+            "argmax": 1581,
+            "chosen_nll_delta": 0.13269519353393022,
+            "full_softmax_tv": 0.06173169807899873,
+            "max_raw_delta": 0.9030848741531372,
+            "reference_argmax": 1581
+          },
+          "paid-ordinary2": {
+            "argmax": 1581,
+            "chosen_nll_delta": 0.13269519353393022,
+            "full_softmax_tv": 0.06173169807899873,
+            "max_raw_delta": 0.9030848741531372,
+            "reference_argmax": 1581
+          }
+        },
+        "sha256": {
+          "norm-reference-a1": "6facba179458c2c42a4bdf3f80a046a0208329c3c2d327d882f06fba7ede798f",
+          "norm-reference-a2": "6facba179458c2c42a4bdf3f80a046a0208329c3c2d327d882f06fba7ede798f",
+          "paid-both1": "cdf38dba94cfb4dfdfe4bac093e2fd1678fa6b29c8c839e23e1d763d64f1e6ee",
+          "paid-both2": "cdf38dba94cfb4dfdfe4bac093e2fd1678fa6b29c8c839e23e1d763d64f1e6ee",
+          "paid-ordinary1": "64a36ccda9d83cab717ee55215d183ef298b8a6e36a2b9b95fb751fb9d2a1c28",
+          "paid-ordinary2": "64a36ccda9d83cab717ee55215d183ef298b8a6e36a2b9b95fb751fb9d2a1c28"
+        }
+      }
+    },
+    "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+    "processes": {
+      "norm-reference-a1": {
+        "budget": null,
+        "forced_common_ids": 32,
+        "strict_argmax_mismatches_vs_reference": 0,
+        "timer": {
+          "batch": "8192",
+          "completed": "8227",
+          "context": "16384",
+          "decode_chunks": "32",
+          "decode_seconds": "4.04232",
+          "fusion": "enabled",
+          "ggml_graph_reused_delta": "32",
+          "graphs": "allowed",
+          "intermediate_heads": "0",
+          "prefill_rows": "8192",
+          "prefill_seconds": "12.4954",
+          "timed_start": "8195",
+          "ubatch": "256"
+        }
+      },
+      "norm-reference-a2": {
+        "budget": null,
+        "forced_common_ids": 32,
+        "strict_argmax_mismatches_vs_reference": 0,
+        "timer": {
+          "batch": "8192",
+          "completed": "8227",
+          "context": "16384",
+          "decode_chunks": "32",
+          "decode_seconds": "4.06692",
+          "fusion": "enabled",
+          "ggml_graph_reused_delta": "32",
+          "graphs": "allowed",
+          "intermediate_heads": "0",
+          "prefill_rows": "8192",
+          "prefill_seconds": "12.4201",
+          "timed_start": "8195",
+          "ubatch": "256"
+        }
+      },
+      "paid-both1": {
+        "budget": {
+          "call_bound": 100,
+          "fixed": 538969088,
+          "plan_floor": 2194992,
+          "plan_graph_capacity": 7243473600,
+          "publication": 1048576,
+          "state_capacity": 2390753280,
+          "total": 31460337344,
+          "weights": 18895339520
+        },
+        "forced_common_ids": 32,
+        "strict_argmax_mismatches_vs_reference": 3,
+        "timer": {
+          "captures": "33",
+          "chunk": "128",
+          "completed": "8227",
+          "context": "16384",
+          "decode_chunks": "32",
+          "decode_seconds": "3.3072",
+          "intermediate_heads": "63",
+          "masks": "device",
+          "norm_add": "120",
+          "norm_fused": "0",
+          "norm_rope": "120",
+          "prefill_chunks": "64",
+          "prefill_rows": "8192",
+          "prefill_seconds": "13.7583",
+          "replays": "33",
+          "rope_store": "0",
+          "row_products": "0",
+          "shared_vecq": "0",
+          "timed_start": "8195"
+        }
+      },
+      "paid-both2": {
+        "budget": {
+          "call_bound": 100,
+          "fixed": 538969088,
+          "plan_floor": 2194992,
+          "plan_graph_capacity": 7243473600,
+          "publication": 1048576,
+          "state_capacity": 2390753280,
+          "total": 31460337344,
+          "weights": 18895339520
+        },
+        "forced_common_ids": 32,
+        "strict_argmax_mismatches_vs_reference": 3,
+        "timer": {
+          "captures": "33",
+          "chunk": "128",
+          "completed": "8227",
+          "context": "16384",
+          "decode_chunks": "32",
+          "decode_seconds": "3.31465",
+          "intermediate_heads": "63",
+          "masks": "device",
+          "norm_add": "120",
+          "norm_fused": "0",
+          "norm_rope": "120",
+          "prefill_chunks": "64",
+          "prefill_rows": "8192",
+          "prefill_seconds": "13.8033",
+          "replays": "33",
+          "rope_store": "0",
+          "row_products": "0",
+          "shared_vecq": "0",
+          "timed_start": "8195"
+        }
+      },
+      "paid-ordinary1": {
+        "budget": {
+          "call_bound": 100,
+          "fixed": 538969088,
+          "plan_floor": 2194992,
+          "plan_graph_capacity": 7243473600,
+          "publication": 1048576,
+          "state_capacity": 2390753280,
+          "total": 31460337344,
+          "weights": 18895339520
+        },
+        "forced_common_ids": 32,
+        "strict_argmax_mismatches_vs_reference": 1,
+        "timer": {
+          "captures": "33",
+          "chunk": "128",
+          "completed": "8227",
+          "context": "16384",
+          "decode_chunks": "32",
+          "decode_seconds": "3.31425",
+          "intermediate_heads": "63",
+          "masks": "device",
+          "norm_add": "0",
+          "norm_fused": "0",
+          "norm_rope": "0",
+          "prefill_chunks": "64",
+          "prefill_rows": "8192",
+          "prefill_seconds": "13.8454",
+          "replays": "33",
+          "rope_store": "0",
+          "row_products": "0",
+          "shared_vecq": "0",
+          "timed_start": "8195"
+        }
+      },
+      "paid-ordinary2": {
+        "budget": {
+          "call_bound": 100,
+          "fixed": 538969088,
+          "plan_floor": 2194992,
+          "plan_graph_capacity": 7243473600,
+          "publication": 1048576,
+          "state_capacity": 2390753280,
+          "total": 31460337344,
+          "weights": 18895339520
+        },
+        "forced_common_ids": 32,
+        "strict_argmax_mismatches_vs_reference": 1,
+        "timer": {
+          "captures": "33",
+          "chunk": "128",
+          "completed": "8227",
+          "context": "16384",
+          "decode_chunks": "32",
+          "decode_seconds": "3.36774",
+          "intermediate_heads": "63",
+          "masks": "device",
+          "norm_add": "0",
+          "norm_fused": "0",
+          "norm_rope": "0",
+          "prefill_chunks": "64",
+          "prefill_rows": "8192",
+          "prefill_seconds": "13.8409",
+          "replays": "33",
+          "rope_store": "0",
+          "row_products": "0",
+          "shared_vecq": "0",
+          "timed_start": "8195"
+        }
+      }
+    },
+    "scope": "paid fixed-prefix work and two retained heads only",
+    "selected_likelihood": "Absolute reference-argmax NLL delta at two retained heads; no corpus PPL"
+  },
+  "reference": {
+    "commit": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "image_sha256": "837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "math_library_sha256": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e",
+    "prefill_binary_sha256": "bd2dd3aca6e1eeac227f18a3af6099c7a3a8631be7aae27206eb0bac50b28e56",
+    "screened_ubatch": 256
+  },
+  "scope": "Optional default-off checked native contracts; dense31 128-row identity and diagnostic paid8K only",
+  "source_identities_sha256": "8841defb04cf64573e902f532b64ccd98601315edb2cdf914a8f812fc857615d",
+  "source_rebase_delta": "Only two additive CMake files differ from measured20 sources; matcher files preserved"
+}
