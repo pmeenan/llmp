@@ -37,6 +37,11 @@ that the reference fusion is defective, or explain every changed operator
 in this representative input. The earlier six-row routed-chain diagnosis
 is narrower and is not silently generalized to these 1,024 rows.
 
+The later [norm-fusion controls](../gemma-reference-fusions/README.md)
+isolate both reference families and their combination with unchanged native
+calibration. None reproduces the full production reference; the quality
+gap remains open.
+
 All later input IDs are explicitly teacher-forced, so an argmax difference
 does not change the prefixes used to compare later rows. The final input
 head is retained but excluded from NLL; BOS has no target score. The

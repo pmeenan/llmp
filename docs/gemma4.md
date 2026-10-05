@@ -281,6 +281,11 @@ complete serving behavior and representative reference quality/performance.
 Route-discovered expert paging is an M7 follow-on; authoritative raw expert
 groups remain available for it.
 
+The [reference norm-fusion diagnosis](experiments/gemma-reference-fusions/README.md)
+checks the two normalization fusion families individually and together.
+All repeat exactly, but none resolves the representative quality gap;
+no new native policy is selected.
+
 The [short resident diagnosis](experiments/gemma-performance/README.md)
 records a 4.33% scalar rate gap against the bookended fusion-enabled reference.
 Shared-Q8 preparation changes full heads and initialized KV, and stays off;
