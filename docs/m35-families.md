@@ -48,7 +48,7 @@ and separate quality controls; they do not replace those oracles.
 | 3 | MiMo-V2.6-Flash-RL (Xiaomi) | MoE 309B/15B | EXL3 2.27 bpw mixed + MTP + DFlash, ExLlamaV3 ≥ 1.5.2 | 1,048,576 (the quantizer reports 262,144 on one Spark) | EXL3 MoE at scale with mixed widths, window-128 sinks on local layers only, per-type KV heads, qk 192 ≠ v 128 without MLA, 3-layer MTP |
 | 4 | Nemotron 3 Super 120B-A12B (NVIDIA) | MoE 120B/12B | NVFP4, vLLM | 262,144 | Mamba2, NoPE attention, squared ReLU, LatentMoE, 512 experts top-22, sigmoid bias-corrected router |
 | 5 | Kimi-Linear-48B-A3B (Moonshot) | MoE 48B/3B | GGUF Q8_0, llama.cpp | 1,048,576 | KDA linear attention, MLA (NoPE), tiktoken 163K, Kimi template; previews M4's KDA |
-| 6 | Mistral Small 4 119B-2603 (Mistral) | MoE 119B/6.5B | NVFP4 (llm-compressor, Mistral-native files) + EAGLE, vLLM | 262,144 (card) | MLA with q-LoRA, YaRN with Llama-4 position scaling, Tekken 131K, `[THINK]`/`[TOOL_CALLS]`, EAGLE on MLA, compressed-tensors NVFP4 |
+| 6 | Mistral Small 4 119B-2603 (Mistral) | MoE 119B/6.5B | GGUF or EXL3 + EAGLE; pack and same-format reference selected at bring-up | 262,144 (card) | MLA with q-LoRA, YaRN with Llama-4 position scaling, Tekken 131K, `[THINK]`/`[TOOL_CALLS]`, EAGLE on MLA |
 | 7 | Llama 4 Scout 17B-16E (Meta) | MoE 109B/17B | GGUF UD-Q4_K_XL, llama.cpp | 10,485,760 (config) | chunked local attention with NoPE layers and their temperature, top-1 sigmoid routing on the expert input, 16 large experts, llama3 RoPE scaling |
 | 8 | Llama 3.3 70B Instruct (Meta) | dense 70B | AWQ 4-bit (Marlin), vLLM | 131,072 | dense full-attention GQA at 70B (the KV-read floor), Llama 3 tokenizer, AWQ/Marlin |
 | 9 | Muse Glimmer 30B (Meta) | dense 29.8B | GGUF Q4_K_M + DFlash drafter, llama.cpp | 131,072 | 3:1 sliding/NoPE-global, 16:1 GQA, gained QK-norm, output multiplier plus softcap, ATEM template, 202K vocab |
@@ -59,8 +59,10 @@ and separate quality controls; they do not replace those oracles.
 
 Optional, by usage or a feature a smaller set already covers: MiniMax
 M2.7 (IQ3_XXS), Laguna S 2.1, Step 3.7 Flash, Ling 3.0 flash, Nemotron 3.5
-Lightning, Cohere North Mini Code, Mistral Medium 3.5, and a legacy tier
-([below](#optional-checkpoints)). Generative media gets its own track:
+Lightning, Cohere North Mini Code and Mistral Medium 3.5
+([below](#optional-checkpoints)). The four legacy fixtures and both Bonsai
+bitrates are approved ([legacy tier](#legacy-tier-features)).
+Generative media gets its own track:
 MiniMax H3 for video and, owner-named, Ming-Image-0.1-Design as a second
 image model ([below](#generative-media-video-and-image)).
 
@@ -185,13 +187,13 @@ jitLLM already runs these (from the repository; see
 
 | Format | Granularity, bpw | Dequantization | Reference kernels | GB10 (`sm_121`) | Publishers | jitLLM | M3.5 carrier |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| GGUF legacy Q4_0, Q4_1, Q5_0, Q8_0 | blocks of 32; 4.5, 5.0, 5.5, 8.5 | `d·(q−8)`, `d·q+m`, `d·q` | llama.cpp MMVQ, MMQ, dequant + cuBLAS ([ggml-common.h](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-common.h)) | generic CUDA | ggml-org, bartowski, unsloth; Google QAT Q4_0 | Q8_0 | 5, 13 (Q8_0); Gemma QAT Q4_0 optional |
+| GGUF legacy Q4_0, Q4_1, Q5_0, Q8_0 | blocks of 32; 4.5, 5.0, 5.5, 8.5 | `d·(q−8)`, `d·q+m`, `d·q` | llama.cpp MMVQ, MMQ, dequant + cuBLAS ([ggml-common.h](https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-common.h)) | generic CUDA | ggml-org, bartowski, unsloth; Google QAT Q4_0 | Q8_0 | 5, 13 (Q8_0); approved legacy/Bonsai fixtures below |
 | K-quants Q2_K–Q6_K | 256-weight superblocks, 16/32 sub-blocks; 2.625–6.5625 | `d·sc·q − dmin·m` | MMVQ, MMQ | generic | same | Q4_K–Q6_K | 1, 7, 9, 10 (UD mixes) |
 | I-quants IQ1–IQ4 | 256-weight superblocks (IQ4_NL 32); 1.5625–4.5 | lattice/grid codebook × signs × scale | MMVQ, MMQ | generic | unsloth, bartowski | IQ2_XS, IQ3_XXS | MiniMax M2.7 UD-IQ3_XXS (optional) |
 | Unsloth "UD" dynamic | per-tensor type mix | per type | llama.cpp | generic | unsloth | UD-Q2_K_XL | 1, 7 |
 | MXFP4 (GGUF, and gpt-oss safetensors) | 32 × E2M1 + E8M0; 4.25 | `2^(e−127)·fp4(q)` | llama.cpp native FP4 MMQ ([#17906](https://github.com/ggml-org/llama.cpp/pull/17906)); vLLM Marlin / FlashInfer | llama.cpp native; vLLM Marlin wrong first token on sm_121 ([#37030](https://github.com/vllm-project/vllm/issues/37030)) | ggml-org, openai, unsloth `MXFP4_MOE` | GGUF kernel yes | 2 (GGUF) |
 | NVFP4, ModelOpt (W4A4) | 16 × E2M1 + E4M3 scale + FP32 global; ≈4.5 | `g·s·fp4(q)` | CUTLASS SM120 block-scaled, FlashInfer, llama.cpp native NVFP4 | native (jitLLM's CUTLASS on `sm_121a`) | nvidia, Mia | yes | 4 |
-| NVFP4, compressed-tensors (llm-compressor; W4A4 or W4A16) | as above, different packing | as above | vLLM CUTLASS / FlashInfer; W4A16 via Marlin | as above | RedHatAI, mistralai, poolside | no importer | 6 |
+| NVFP4, compressed-tensors (llm-compressor; W4A4 or W4A16) | as above, different packing | as above | vLLM CUTLASS / FlashInfer; W4A16 via Marlin | as above | RedHatAI, mistralai, poolside | no importer | surveyed; no approved carrier |
 | MXFP8 (ModelOpt) | 32 × E4M3 + E8M0; 8.25 | `2^(e−127)·fp8(q)` | CUTLASS SM120, FlashInfer | native; vLLM falls back to Marlin ([#43906](https://github.com/vllm-project/vllm/issues/43906)) | Mia, nvidia | yes | |
 | FP8, 128×128 blocks | per block FP32 or UE8M0 scale, dynamic per-1×128 activations | `s_blk·fp8(q)` | CUTLASS SM120 blockwise, FlashInfer, DeepGEMM (sm90/100 only) | vLLM v0.30.0 adds "SM12x blockwise FP8 … for GB10" ([release](https://github.com/vllm-project/vllm/releases/tag/v0.30.0)) | Qwen, DeepSeek, MiniMax, RedHatAI | no | 10 (`Qwen/Qwen3.8-27B-FP8`) |
 | FP8, per tensor / per channel | static or per channel, dynamic per token | `s·fp8(q)` | CUTLASS scaled_mm sm120, cuBLASLt FP8 | works after the sm_12.1 guard fixes ([spark-vllm-docker #143](https://github.com/eugr/spark-vllm-docker/issues/143)) | mistralai, RedHatAI | no | optional (a small step after block FP8) |
@@ -546,15 +548,19 @@ Ministral 3.
     Router function not stated in the config.
   - Drafter: `mistralai/Mistral-Small-4-119B-2603-eagle@9a8ea22dca0161ff7af7879f4a0000f65314797d`,
     two MLA layers, 0.39 GB.
-  - Formats: **proposed** `mistralai/Mistral-Small-4-119B-2603-NVFP4@45331841b631f4e281df8e959ea3cc9beb84298a`,
-    74.76 GB (llm-compressor; only Mistral-native `consolidated-*` files
-    and `params.json`, so the importer reads Mistral's layout). Also
+  - Formats: **owner-approved GGUF or EXL3** (2026-09-29). Candidates include
     `unsloth/Mistral-Small-4-119B-2603-GGUF@bd93c721735aa32c035c0f19e738cb3371fd56ff`
     UD-Q4_K_XL 74.16 GB and MXFP4_MOE 71.81 GB; EXL3 2.03–4.03.
-  - Reference: vLLM `TRITON_MLA`; a GB10 report ran 33.2 → 17.7 tok/s
+    Actual pack and same-format reference still need admission evidence.
+    The owner rejected importing
+    `mistralai/Mistral-Small-4-119B-2603-NVFP4@45331841b631f4e281df8e959ea3cc9beb84298a`,
+    74.76 GB (llm-compressor; only Mistral-native `consolidated-*` files
+    and `params.json`, requiring Mistral's native layout).
+  - Reference candidate for GGUF: llama.cpp `mistral4`; the EXL3 pack's
+    comparator is checked at bring-up. Historical NVFP4 reference information:
+    vLLM `TRITON_MLA`; a GB10 report ran 33.2 → 17.7 tok/s
     decode from 2K to 60K after early builds rejected MLA head size 320 on
     `sm_121` ([forum](https://forums.developer.nvidia.com/t/running-mistral-small-4-119b-nvfp4-on-nvidia-dgx-spark-gb10/363863)).
-    llama.cpp `mistral4`.
   - Top-tier: 51.6K downloads; AA #12 of 65 medium models.
 - **Dense (optional): `mistralai/Mistral-Medium-3.5-128B@22b2b868a15677cfa6061277ed2f653d1349a9ab`**
   (Modified MIT): 88 layers, GQA 96/8, full attention, YaRN ×64, Tekken.
@@ -836,12 +842,14 @@ Notes:
     closed unmerged
     ([formats](https://docs.prismml.com/download/formats)).
 
-  **Proposed:** add Q1_0 and Q2_0 in M3.5 if the owner accepts a
-  Bonsai fixture (small cost, heavy use, a covered architecture). Defer
-  the fork-only formats until upstream takes them, or until the owner
-  accepts the fork as a reference.
+  **Owner-approved, 2026-09-29:** bring up both 1-bit Bonsai-27B Q1_0
+  (with its Q4_1 drafter) and a 2-bit Ternary Bonsai under the
+  [plan's selection rule](plan.md). Prefer upstream Q2_0 if its actual
+  checkpoint executes correctly. Otherwise pin and license-audit the
+  PrismML fork for Bonsai-2's rotated formats. The 2-bit checkpoint and
+  reference still need selection and correctness evidence.
 
-**Proposed fixtures.** Four checkpoints, about 17.9 GB together, cover
+**Approved legacy fixtures.** Four checkpoints, about 17.9 GB together, cover
 rows 1–6 and Q4_0. Each has a same-format reference in llama.cpp.
 Revisions and sizes come from each repository's API on 2026-09-29.
 
@@ -851,7 +859,7 @@ Revisions and sizes come from each repository's API on 2026-09-29.
 | `bartowski/gemma-2-2b-it-GGUF@855f67caed130e1befc571b52bd181be2e858883`, `gemma-2-2b-it-Q8_0.gguf` | 2,784,495,456 B | llama.cpp `gemma2` | attention softcap 50, SentencePiece 256K |
 | `bartowski/Phi-3.5-mini-instruct-GGUF@6d70da17e749a471ccb62ade694486011a75cda3`, `Phi-3.5-mini-instruct-Q8_0.gguf` | 4,061,222,688 B | llama.cpp `phi3` | LongRoPE with both sets non-trivial (Phi-4-mini's short set is all ones); Llama 2's 32K SentencePiece, which Mistral 7B and Mixtral 8x7B also use |
 | `bartowski/c4ai-command-r7b-12-2024-GGUF@bfc7a934c45cb839d84c8ca01d87f1cfa51aaa3f`, `c4ai-command-r7b-12-2024-Q8_0.gguf` | 8,541,100,160 B | llama.cpp `cohere2` | LayerNorm without bias, the parallel block, logit scale 0.25, Cohere's 256K BPE and template |
-| Optional: `prism-ml/Bonsai-27B-gguf@f10afb355f104535e3e3e98cf7ab7795c72bd292`, `Bonsai-27B-Q1_0.gguf` and `Bonsai-27B-dspark-Q4_1.gguf` | ≈3.8 GB + ≈1.8 GB | llama.cpp upstream | Q1_0 and Q4_1 on checkpoint 10's architecture, with a DSpark drafter |
+| Approved Bonsai: `prism-ml/Bonsai-27B-gguf@f10afb355f104535e3e3e98cf7ab7795c72bd292`, `Bonsai-27B-Q1_0.gguf` and `Bonsai-27B-dspark-Q4_1.gguf` | ≈3.8 GB + ≈1.8 GB | llama.cpp upstream | Q1_0 and Q4_1 on checkpoint 10's architecture, with a DSpark drafter |
 
 Q5_0, Q5_1 and IQ4_NL come from whichever approved file carries
 fallback tensors. Q2_0 would need a Ternary Bonsai file, not pinned
@@ -1181,8 +1189,8 @@ one before.
 5. **Nemotron 3 Super** (Lightning first if wanted): Mamba2, NoPE, squared
    ReLU, LatentMoE.
 6. **Kimi Linear:** KDA and MLA, ahead of M4's GLM-5.3 Flash.
-7. **Mistral Small 4:** MLA with q-LoRA, Tekken, EAGLE on MLA,
-   compressed-tensors NVFP4.
+7. **Mistral Small 4:** MLA with q-LoRA, Tekken and EAGLE on MLA,
+   using an admitted GGUF or EXL3 pack.
 8. **Qwen3.8-27B:** EXL3 mixed widths, FP8 blocks, DFlash2; little new
    architecture.
 9. **Ornith 1.5 and GLM-4.7-Flash:** M7's and M4's prerequisites, mostly
