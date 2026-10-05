@@ -400,6 +400,16 @@ controls pass; fresh state-only prefill improves 1.93%/0.99%, leaving
 8.19%/7.54% reference latency gaps. Previous-family graph/plan controls pass;
 no previous-family model speed or planning-only gain is claimed.
 
+The [bounded Gemma lookahead](experiments/gemma-prefill-lookahead/README.md)
+builds only the next structural CPU plan during current execution. Host funding
+precedes submission; binding, coverage and cache insertion follow proven
+completion. Optional refusal, an abandoned hint and inline execution retain
+normal behavior. Same-binary state-only prefill improves 1.55%/2.36% on
+Gemma26/31 with exact native heads/state. This transfers the overlap opportunity
+from the earlier runners without changing future KV ownership. Previous-family
+default prompt hooks ignore the hint; no additional Qwen/DeepSeek speed claim
+is made. Scoring, features and final prompt heads retain their full paths.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

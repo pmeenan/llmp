@@ -268,13 +268,18 @@ void Gemma4RunnerGpu::StateOnlyControl() {
   std::array<std::vector<float>, 2> continued_heads;
   for (unsigned repeat = 0; repeat < 3; ++repeat) {
     auto result = Held([&]() -> en::Status {
+      runner->DropPlans();
       if (auto r = runner->Clear(0); !r) return r;
       if (auto r = runner->Clear(1); !r) return r;
       for (std::uint32_t past = 0; past < prompt.size(); past += 2) {
         const auto tokens = std::span(prompt).subspan(past, 2);
         if (auto r = Single(0, past, tokens, full); !r) return r;
         const en::Gemma4Runner::Work work{1, past, tokens, &selected};
-        if (auto r = runner->WavePrefill(std::span(&work, 1), past + 2 == prompt.size()); !r)
+        const en::Gemma4Runner::PrefillNext hint{1, 2};
+        if (auto r = runner->WavePrefill(std::span(&work, 1), past + 2 == prompt.size(),
+                                         std::span(&hint, past + 2 < prompt.size() ? 1U : 0U),
+                                         past + 4 == prompt.size());
+            !r)
           return r;
         if (past + 2 == prompt.size())
           Exact(full, selected);
@@ -324,7 +329,12 @@ void Gemma4RunnerGpu::StateOnlyControl() {
       if (auto r = StateBytes(1, 5, continued_state[1]); !r) return r;
       if (auto r = runner->Clear(0); !r) return r;
       if (auto r = runner->Clear(1); !r) return r;
-      if (auto r = runner->WavePrefill(work, false); !r) return r;
+      runner->DropPlans();
+      const auto host_before = node.host_counted();
+      std::array<en::Gemma4Runner::PrefillNext, 2> hints{{{0, 1}, {1, 1}}};
+      // A bad prediction is discarded without refusing or changing this wave.
+      if (repeat == 2) hints[1].slot = en::kMaxRequestSlots;
+      if (auto r = runner->WavePrefill(work, false, hints, true); !r) return r;
       EXPECT_TRUE(full.empty());
       EXPECT_TRUE(selected.empty());
       for (std::uint32_t slot = 0; slot < 2; ++slot) {
@@ -354,12 +364,16 @@ void Gemma4RunnerGpu::StateOnlyControl() {
         if (current_state.size() == expected.size())
           EXPECT_EQ(std::memcmp(current_state.data(), expected.data(), expected.size()), 0);
       }
+      runner->DropPlans();
+      EXPECT_EQ(node.host_counted(), host_before);
       return {};
     });
     ASSERT_TRUE(result) << (result ? "" : result.error());
   }
   EXPECT_GT(runner->graph_stats().captured, 0U);
   EXPECT_GT(runner->graph_stats().replayed, 0U);
+  EXPECT_GT(runner->lookahead_stats().built, 0U);
+  EXPECT_EQ(runner->lookahead_stats().built, runner->lookahead_stats().cached);
 }
 TEST_F(Gemma4RunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapturedReplay) {
   StateOnlyControl();
@@ -373,6 +387,65 @@ TEST_F(Gemma26MoeRunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapture
 TEST_F(Gemma31NormRunnerGpu, StateOnlyChunksPreserveExactKvContinuationAndCapturedReplay) {
   StateOnlyControl();
 }
+TEST_F(Gemma31RunnerGpu, LookaheadRefusalAndAbandonedPredictionKeepTheCompletedPrefix) {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 1>{0}));
+  struct Charge {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Charge() { node.UnchargeHost(bytes); }
+  };
+  const auto output_bytes = std::uint64_t{runner->profile().vocab} * sizeof(float);
+  ASSERT_TRUE(node.ChargeHost(output_bytes, false));
+  const Charge output_charge{node, output_bytes};
+  std::vector<float> row;
+  row.reserve(runner->profile().vocab);
+  auto ran = Held([&]() -> en::Status {
+    runner->DropPlans();
+    const auto baseline_host = node.host_counted();
+    const auto overcharges = node.host_overcharges();
+    const auto refused = runner->lookahead_stats().refused;
+    const auto cached = runner->lookahead_stats().cached;
+    const en::Gemma4Runner::PrefillNext hint{0, 2};
+    en::Gemma4Runner::Work work{0, 0, std::span(prompt).first(1), &row};
+    // Seed the required plan and padded state. Pressure affects only optional
+    // capture/lookahead, with no new state backing needed by the next row.
+    if (auto r = runner->WavePrefill(std::span(&work, 1), false); !r) return r;
+    auto free = node.FreeBytes();
+    if (!free || *free <= runner->host_input_bytes())
+      return en::support::Error("lookahead control cannot fund input-only pressure");
+    const auto fill = *free - runner->host_input_bytes();
+    if (!node.ChargeHost(fill, false))
+      return en::support::Error("lookahead control cannot take its pressure charge");
+    {
+      const Charge pressure{node, fill};
+      work.n_past = 1;
+      row.assign(1, 123.0F);
+      if (auto r = runner->WavePrefill(std::span(&work, 1), false, std::span(&hint, 1)); !r)
+        return r;
+      EXPECT_TRUE(row.empty());
+      EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 2U);
+      EXPECT_EQ(runner->lookahead_stats().refused, refused + 1);
+      EXPECT_EQ(runner->lookahead_stats().cached, cached);
+      EXPECT_EQ(node.host_overcharges(), overcharges);
+    }
+    work.n_past = 2;
+    if (auto r = runner->WavePrefill(std::span(&work, 1), false, std::span(&hint, 1)); !r) return r;
+    EXPECT_EQ(runner->lookahead_stats().cached, cached + 1);
+    EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 3U);
+    // Cancel before the predicted chunk: its plan is ordinary reclaimable
+    // cache, and dropping it advances no cursor and leaves no host allowance.
+    runner->DropPlans();
+    EXPECT_EQ(node.host_counted(), baseline_host);
+    EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 3U);
+    if (auto r = runner->Clear(0); !r) return r;
+    EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 0U);
+    EXPECT_EQ((*runner->request_slot(0))->used_state_bytes(), 0U);
+    EXPECT_EQ(node.host_counted(), baseline_host);
+    return {};
+  });
+  ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+}
+
 void Gemma31RunnerGpu::ReplayOwnState() {
   ASSERT_EQ(runner->profile().layers, 60U);
   ASSERT_EQ(runner->profile().experts, 0U);

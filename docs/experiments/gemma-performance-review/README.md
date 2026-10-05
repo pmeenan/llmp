@@ -23,6 +23,11 @@ reference gap remained 8.28%, while 26B reference movement prevented a resolved
 competitive gap. Ordinary serving has separate correctness controls.
 The [bounded graph traversal](../ggml-graph-order/README.md) then reduces
 state-only prefill by 1.93%/0.99%; fresh reference gaps are 8.19%/7.54%.
+The [bounded next-plan lookahead](../gemma-prefill-lookahead/README.md) then
+reduces same-binary prefill by 1.55%/2.36% at 26/31. The later 31B mean is
+4.94% above its preceding reference bookends; this is qualified evidence, not
+a fresh reference-bookended parity result. The initial noisy 31B screen is
+preserved in the report.
 M3.5 remains incomplete. The source-use optimization landed as `5ef7aac` after
 1,700 Spark tests passed without failures or skips, including 311 GPU and 57
 model tests. Both Sparks were checked idle at the pause.
@@ -31,8 +36,10 @@ the remaining Gemma quality, batching, assistant, long-context and memory gates,
 alongside the other families, EXL3/quants and media work. The review closes none
 of those gates and does not extend M3's accepted speed exceptions to M3.5.
 
-## Current matched measurements
+## Latest reference-bookended measurements
 
+The subsequent lookahead controls above isolate overlap using the same binary;
+the table below retains the last fully reference-bookended traversal screen.
 These are untraced, same-host comparisons with the original llama.cpp engine,
 not traced durations or model-load/swap times. Each screen runs reference,
 unchanged native, candidate twice, then reference. These latest screens use
@@ -98,7 +105,8 @@ fix. The current cold/retained comparison isolates material planning and state-g
 costs, alongside a remaining execution interval. It does not identify that
 interval as kernel arithmetic or establish planning as the entire gap. The
 current timeline and state-only dependency cut are now recorded. Further work
-targets overlapping next-chunk planning with completed-unit GPU execution.
+has adopted bounded next-chunk CPU planning overlap; remaining binding, state
+growth and execution costs are still under investigation.
 
 ## Evidence boundaries and unresolved leads
 
@@ -120,7 +128,7 @@ Source-supported leads to rank by plausible contribution to the whole gap:
    `SizedArena`; changing KV shapes cause plan misses through
    [`Gemma4Runner::Planned`](../../../src/engine/gemma4_runner.cc). Gemma31 pays
    32 prefill chunks versus 8 at 26. Repeated planning remains material; a
-   bounded next-plan lookahead is being assessed without future state growth
+   bounded next-plan lookahead is now adopted without future state growth
    or changes to graph arithmetic. The traversal screen did not emit separate
    planning counters, so its gain does not establish the remaining phase cost.
 2. Compare actual graph construction, weight lookup, binding, validation and
@@ -162,9 +170,12 @@ docs/experiments/gemma-performance-review/README.md, then pull only relevant
 reports and source. This is a read-only review; do not edit, build, test, run inference,
 profile or launch additional agents/jobs.
 
-Latest matched 8K prefill excess: Gemma26 0.19777 s (8.19%); Gemma31
+Last fully reference-bookended 8K prefill excess: Gemma26 0.19777 s (8.19%); Gemma31
 0.81715 s (7.54%). Graph-reader/source-use scans, bounded DFS membership and
-unused intermediate final-layer work are already addressed. Focus on a whole-engine or
+unused intermediate final-layer work are already addressed. Next-plan CPU
+construction overlap also improves same-binary prefill by 1.55%/2.36%; the
+later 31B mean is 4.94% above preceding reference bookends, a qualified
+comparison. Focus on a whole-engine or
 graph/paid-work mismatch, not a list of tiny possible kernel wins.
 
 Rank at most three explanations by evidence and plausible magnitude. For
@@ -176,7 +187,7 @@ time, or multiply the 52.3 ms aggregate graph-build cost as a per-chunk cost.
 Do not reopen the corrected SWA reference recipe as an unresolved issue.
 Separate solo performance from the still-open C4 correctness/performance gap.
 
-Evaluate next-chunk planning overlap and remaining state preparation against
+Evaluate residual serialized binding and state preparation against
 the cold/retained phase measurements. Bounded GraphOrder gave only a small
 end-to-end gain; do not reopen its former quadratic search. Identify which
 direct before/after test would settle the strongest remaining case.

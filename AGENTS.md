@@ -257,8 +257,8 @@ the commit gate.
 The owner resumed M3.5 on 2026-10-05 after external performance review; see the
 [Gemma handoff](docs/experiments/gemma-performance-review/README.md). The
 [cold/warm comparison](docs/experiments/gemma-retained-plan/README.md) measures
-planning and state growth. State-only prefill omits unused final-layer work;
-remaining planning and execution costs are being optimized.
+planning and state growth. State-only prefill omits unused final-layer work; bounded next-plan lookahead
+overlaps CPU construction with execution. Remaining overhead is being optimized.
 The runtime serves Chat Completions and literal Completions with target
 likelihoods on loopback and the tailnet. DeepSeek V4 Flash, Qwen3.8 Flash
 Next (native NVFP4/MXFP8 and checked GGUF) and Qwen-Image-2.1 execute with

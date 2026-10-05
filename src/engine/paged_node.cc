@@ -1099,16 +1099,23 @@ std::expected<sc::SchedulerStats, std::string> PagedNode::Stats() {
 }
 
 Status PagedNode::Job(const catalog::Closure& closure, sc::DeviceJob job, std::string_view what,
-                      std::uint32_t stream) {
+                      std::uint32_t stream, const std::function<void()>& meanwhile) {
   if (const auto open = requests_.find(stream); open != requests_.end()) {
-    return Step(stream, *open->second, closure, std::move(job), what);
+    return Step(stream, *open->second, closure, std::move(job), what, meanwhile);
   }
   Done done;
   Timing timing;
   const auto called = std::chrono::steady_clock::now();
-  auto posted = Post(
-      std::make_unique<RunProgram>(done, closure, Timed(std::move(job), stream, timing), stream),
-      done, what);
+  auto program =
+      std::make_unique<RunProgram>(done, closure, Timed(std::move(job), stream, timing), stream);
+  Status posted;
+  if (meanwhile && threaded()) {
+    const auto request = Submit(std::move(program));
+    meanwhile();
+    posted = Await(done, what, request);
+  } else {
+    posted = Post(std::move(program), done, what);
+  }
   if (posted) {
     Note(stream, called, timing);
   }
@@ -1253,7 +1260,8 @@ Status PagedNode::RefreshRequest(std::uint32_t stream, const catalog::Closure& c
 }
 
 Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::Closure& closure,
-                       sc::DeviceJob job, std::string_view what) {
+                       sc::DeviceJob job, std::string_view what,
+                       const std::function<void()>& meanwhile) {
   // Within the request's lease, exactly: the same entries, or each an
   // extent it holds at the contents it recorded (a whole model's closure
   // compares equal at a fraction of the search's cost).
@@ -1269,6 +1277,7 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
   const std::uint64_t before = open.channel.steps.load(std::memory_order_acquire);
   const auto called = std::chrono::steady_clock::now();
   Signal(open.request);
+  if (meanwhile && threaded()) meanwhile();
   // The step's result is the next step's input, and a sleeping thread
   // wakes slowly on the Spark (RE-017), so the driver waits as the
   // runtime's lanes do (docs/experiments/runtime-wake/): asleep through

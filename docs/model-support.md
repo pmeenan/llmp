@@ -102,6 +102,12 @@ continuation. Measured all1024/both256 prefill improves 3.04%/2.42%; the 26B
 reference movement remains unresolved, and quality/batching qualification is
 unchanged.
 
+Gemma's [bounded prefill lookahead](experiments/gemma-prefill-lookahead/README.md)
+now overlaps next-chunk CPU graph/placement construction with current execution,
+with funding, completion and abandoned-hint controls. Exact native heads/state
+are preserved; same-binary all1024/both256 prefill improves 1.55%/2.36%. This
+changes neither the optional arithmetic policies nor model qualification.
+
 ## Chat templates
 
 A chat template renders natively when a native renderer is registered for

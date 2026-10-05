@@ -3,7 +3,7 @@
 
 // First paid 8K prefill and fixed-prefix decode screen. No quality claim.
 // ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both|all] [MAX_ROWS]
-// [normmul-off|normmul-on] [full|state-only].
+// [normmul-off|normmul-on] [full|state-only] [lookahead-on|lookahead-off].
 // Row-cap experiments do not change production defaults.
 #include <algorithm>
 #include <array>
@@ -26,15 +26,17 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc < 4 || argc > 9) return 2;
+  if (argc < 4 || argc > 10) return 2;
   const std::string_view variant = argc >= 5 ? argv[4] : "26";
   const std::string_view policy = argc >= 6 ? argv[5] : "ordinary";
   if (variant != "26" && variant != "31") return 2;
   if (policy != "ordinary" && policy != "both" && policy != "all") return 2;
   const std::string_view normmul = argc >= 8 ? argv[7] : "normmul-off";
   if (normmul != "normmul-off" && normmul != "normmul-on") return 2;
-  const std::string_view prefill_output = argc == 9 ? argv[8] : "full";
+  const std::string_view prefill_output = argc >= 9 ? argv[8] : "full";
   if (prefill_output != "full" && prefill_output != "state-only") return 2;
+  const std::string_view lookahead = argc == 10 ? argv[9] : "lookahead-on";
+  if (lookahead != "lookahead-on" && lookahead != "lookahead-off") return 2;
   std::uint32_t max_rows = 128;
   if (argc >= 7) {
     const std::string_view number(argv[6]);
@@ -76,7 +78,8 @@ int main(int argc, char** argv) {
           .fuse_norm_rope = policy == "both" || policy == "all",
           .fuse_norm_add = policy == "both" || policy == "all",
           .fuse_gemma_route = policy == "all",
-          .fuse_gemma_reduce = policy == "all"},
+          .fuse_gemma_reduce = policy == "all",
+          .prefill_lookahead = lookahead == "lookahead-on"},
       0, 0);
   auto& runner = *lifetime->runner;
   auto& entered = lifetime->entered;
@@ -133,8 +136,11 @@ int main(int argc, char** argv) {
       if (auto r = runner.Clear(); !r) return r;
       const auto started = std::chrono::steady_clock::now();
       for (std::uint32_t first = 0; first < kPrefill; first += max_rows) {
-        if (auto r = runner.ChunkPrefill(first, std::span(ids).subspan(first, max_rows), logits,
-                                         prefill_output == "full" || first + max_rows == kPrefill);
+        if (auto r =
+                runner.ChunkPrefill(first, std::span(ids).subspan(first, max_rows), logits,
+                                    prefill_output == "full" || first + max_rows == kPrefill,
+                                    first + max_rows < kPrefill ? max_rows : 0U,
+                                    prefill_output == "full" || first + 2 * max_rows == kPrefill);
             !r)
           return r;
       }
@@ -195,9 +201,15 @@ int main(int argc, char** argv) {
       std::cout << "PREFILL_NATIVE prefill_seconds=" << prefill << " prefill_rows=" << kPrefill
                 << " prefill_chunks=" << kPrefill / max_rows << " intermediate_heads="
                 << (prefill_output == "full" ? kPrefill / max_rows - 1 : 0)
-                << " prefill_output=" << prefill_output << " decode_seconds=" << decode
-                << " decode_chunks=" << kSteps << " timed_start=" << kPrefill + kWarm
-                << " completed=" << kInput << " context=16384 chunk=" << max_rows << " masks=device"
+                << " prefill_output=" << prefill_output << " lookahead=" << lookahead
+                << " lookahead_attempted=" << runner.lookahead_stats().attempted
+                << " lookahead_built=" << runner.lookahead_stats().built
+                << " lookahead_cached=" << runner.lookahead_stats().cached
+                << " lookahead_refused=" << runner.lookahead_stats().refused
+                << " lookahead_build_seconds=" << runner.lookahead_stats().build_seconds
+                << " decode_seconds=" << decode << " decode_chunks=" << kSteps
+                << " timed_start=" << kPrefill + kWarm << " completed=" << kInput
+                << " context=16384 chunk=" << max_rows << " masks=device"
                 << " normmul=" << normmul << " prefill_norm_fused=" << prefill_policy.norm_fused
                 << " prefill_norm_rope=" << prefill_policy.norm_rope
                 << " prefill_norm_add=" << prefill_policy.norm_add

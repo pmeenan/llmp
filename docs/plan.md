@@ -405,6 +405,13 @@ family" guide, and its long-context scaling work.
         Qwen/DeepSeek/Gemma factories. Exact Gemma26/31 head/state controls pass;
         state-only prefill improves 1.93%/0.99%, leaving 8.19%/7.54% reference
         latency gaps. Planning-only attribution and full qualification stay open.
+      - [x] [Bounded next-plan lookahead](experiments/gemma-prefill-lookahead/README.md):
+        funded CPU graph/placement construction overlaps current execution;
+        binding and cache publication wait for completed work. Ordinary and
+        optimized scalar/unequal-wave lifetime controls pass. Same-binary
+        Gemma26/31 prefill improves 1.55%/2.36% with exact heads/state; a qualified
+        31B comparison leaves 4.94% latency excess against preceding references.
+        Full quality, competitive batching and remaining overhead stay open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

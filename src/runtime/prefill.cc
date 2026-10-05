@@ -18,6 +18,12 @@ std::uint32_t PrefillChunkRows(std::uint32_t context, std::optional<std::uint32_
   return rows < kPrefillRowTile ? rows : rows - (rows % kPrefillRowTile);
 }
 
+std::uint32_t PrefillRows(std::uint32_t remaining, std::uint32_t maximum) {
+  std::uint32_t rows = std::min(remaining, maximum);
+  if (rows >= kPrefillTiledFrom) rows -= rows % kPrefillRowTile;
+  return rows;
+}
+
 std::expected<PrefillRun, std::string> RunPrefillChunks(std::uint32_t from, std::uint32_t end,
                                                         std::uint32_t rows,
                                                         const PrefillChunk& chunk,
@@ -28,10 +34,7 @@ std::expected<PrefillRun, std::string> RunPrefillChunks(std::uint32_t from, std:
     return std::unexpected("a prefill chunk of 0 rows");
   }
   while (run.end < end) {
-    std::uint32_t n = std::min(rows, end - run.end);
-    if (n >= kPrefillTiledFrom) {
-      n -= n % kPrefillRowTile;  // the rest is a chunk of its own
-    }
+    const std::uint32_t n = PrefillRows(end - run.end, rows);
     if (go_on && !go_on(n)) {
       run.stopped = true;
       return run;

@@ -1,0 +1,692 @@
+{
+  "source_base": "1ceb7d2",
+  "task": "M3.5 Task52 bounded Gemma prefill plan lookahead",
+  "native_helper_sha256": "a5ea8065eff6b624d865184734f5816320aba15b7aeed5e1bdeb3f73cffc2e09",
+  "before_helper_sha256": "db3e85a3312fee841c8062fa19c2d98cda53298fa2cfab83702fd8e55e5755b8",
+  "receipt_sha256": "995ee8194ab9d0f8c41b07eb3d3458da4f81b42f5c9ce466a0801b6531d64522",
+  "input": {
+    "rows": 8227,
+    "bytes": 32908,
+    "sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b"
+  },
+  "31_artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+  "tensorfold": {
+    "task_entry_utc": "2026-10-05 22:44 UTC (parent check)",
+    "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "applicability": "Gemma26 MLX recipe; no matching Gemma31 CUDA reference"
+  },
+  "recipe": {
+    "profile": 31,
+    "policy": "both",
+    "rows": 256,
+    "normmul": "off",
+    "prefill_output": "state-only",
+    "prefill_rows": 8192,
+    "warm_rows_discarded": 6,
+    "forced_decode_rows": 32,
+    "anchors": 3,
+    "kv": "F16",
+    "context": 16384,
+    "local_cells": 1280,
+    "global_cells": 16384,
+    "swa_full": false,
+    "kv_unified": false
+  },
+  "fresh_reference_five_arm": {
+    "arms": {
+      "task47-task52-ring31-first": {
+        "metrics": {
+          "prefill_seconds": "10.8302",
+          "prefill_rows": "8192",
+          "intermediate_heads": "0",
+          "decode_seconds": "3.11527",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "batch": "8192",
+          "ubatch": "256",
+          "fusion": "enabled",
+          "graphs": "allowed",
+          "swa_full": "false",
+          "kv_unified": "false",
+          "cache_recipe": "ring",
+          "ggml_graph_reused_delta": "32"
+        },
+        "heads": {
+          "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+          "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+        }
+      },
+      "task52-native31-before": {
+        "metrics": {
+          "prefill_seconds": "11.6145",
+          "prefill_rows": "8192",
+          "prefill_chunks": "32",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "decode_seconds": "3.18458",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "256",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "120",
+          "prefill_norm_add": "120",
+          "prefill_gemma_route": "0",
+          "prefill_gemma_reduce": "0",
+          "gemma_route": "0",
+          "gemma_reduce": "0",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "120",
+          "norm_add": "120",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+          "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+        },
+        "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+      },
+      "task52-native31-candidate-first": {
+        "metrics": {
+          "prefill_seconds": "11.8712",
+          "prefill_rows": "8192",
+          "prefill_chunks": "32",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-on",
+          "lookahead_attempted": "31",
+          "lookahead_built": "31",
+          "lookahead_cached": "31",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.218716",
+          "decode_seconds": "3.17947",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "256",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "120",
+          "prefill_norm_add": "120",
+          "prefill_gemma_route": "0",
+          "prefill_gemma_reduce": "0",
+          "gemma_route": "0",
+          "gemma_reduce": "0",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "120",
+          "norm_add": "120",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+          "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+        },
+        "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+      },
+      "task52-native31-candidate-repeat": {
+        "metrics": {
+          "prefill_seconds": "11.4374",
+          "prefill_rows": "8192",
+          "prefill_chunks": "32",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-on",
+          "lookahead_attempted": "31",
+          "lookahead_built": "31",
+          "lookahead_cached": "31",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.2199",
+          "decode_seconds": "3.20001",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "256",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "120",
+          "prefill_norm_add": "120",
+          "prefill_gemma_route": "0",
+          "prefill_gemma_reduce": "0",
+          "gemma_route": "0",
+          "gemma_reduce": "0",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "120",
+          "norm_add": "120",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+          "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+        },
+        "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+      },
+      "task47-task52-ring31-repeat": {
+        "metrics": {
+          "prefill_seconds": "10.874",
+          "prefill_rows": "8192",
+          "intermediate_heads": "0",
+          "decode_seconds": "3.12276",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "batch": "8192",
+          "ubatch": "256",
+          "fusion": "enabled",
+          "graphs": "allowed",
+          "swa_full": "false",
+          "kv_unified": "false",
+          "cache_recipe": "ring",
+          "ggml_graph_reused_delta": "32"
+        },
+        "heads": {
+          "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+          "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+        }
+      }
+    },
+    "comparisons": {
+      "task52-native31-before vs task52-native31-candidate-first": {
+        "argmax_mismatches_32": 0,
+        "heads": {
+          "prefill.f32": {
+            "byte_exact": true,
+            "max_raw_delta": 0.0,
+            "head_argmax_equal": true
+          },
+          "final.f32": {
+            "byte_exact": true,
+            "max_raw_delta": 0.0,
+            "head_argmax_equal": true
+          }
+        }
+      },
+      "task47-task52-ring31-first vs task52-native31-before": {
+        "argmax_mismatches_32": 0,
+        "heads": {
+          "prefill.f32": {
+            "byte_exact": false,
+            "max_raw_delta": 0.41361474990844727,
+            "head_argmax_equal": true
+          },
+          "final.f32": {
+            "byte_exact": true,
+            "max_raw_delta": 0.0,
+            "head_argmax_equal": true
+          }
+        }
+      },
+      "task47-task52-ring31-first vs task52-native31-candidate-first": {
+        "argmax_mismatches_32": 0,
+        "heads": {
+          "prefill.f32": {
+            "byte_exact": false,
+            "max_raw_delta": 0.41361474990844727,
+            "head_argmax_equal": true
+          },
+          "final.f32": {
+            "byte_exact": true,
+            "max_raw_delta": 0.0,
+            "head_argmax_equal": true
+          }
+        }
+      }
+    },
+    "candidate_own_repeat_heads_state_32choices_exact": true,
+    "candidate_state_equals_off": true,
+    "mean_reference_seconds": {
+      "prefill_seconds": 10.8521,
+      "decode_seconds": 3.119015
+    },
+    "mean_candidate_seconds": {
+      "prefill_seconds": 11.6543,
+      "decode_seconds": 3.1897399999999996
+    },
+    "candidate_vs_reference_percent": {
+      "prefill_seconds": 7.39211765464749,
+      "decode_seconds": 2.2675427979666596
+    },
+    "candidate_vs_off_percent": {
+      "prefill_seconds": 0.3426751043953624,
+      "decode_seconds": 0.16203078584930974
+    },
+    "finite_retained_complete_heads": 10,
+    "limitation": "Two retained full vectors per arm; 32 greedy choices, not all32 full vectors or corpus quality."
+  },
+  "same_binary_off_on_on_off": {
+    "arms": {
+      "task52-native31-control-off-first": {
+        "metrics": {
+          "prefill_seconds": "11.6488",
+          "prefill_rows": "8192",
+          "prefill_chunks": "32",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-off",
+          "lookahead_attempted": "0",
+          "lookahead_built": "0",
+          "lookahead_cached": "0",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0",
+          "decode_seconds": "3.18199",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "256",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "120",
+          "prefill_norm_add": "120",
+          "prefill_gemma_route": "0",
+          "prefill_gemma_reduce": "0",
+          "gemma_route": "0",
+          "gemma_reduce": "0",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "120",
+          "norm_add": "120",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+          "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+        },
+        "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+      },
+      "task52-native31-control-on-first": {
+        "metrics": {
+          "prefill_seconds": "11.366",
+          "prefill_rows": "8192",
+          "prefill_chunks": "32",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-on",
+          "lookahead_attempted": "31",
+          "lookahead_built": "31",
+          "lookahead_cached": "31",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.2142",
+          "decode_seconds": "3.19363",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "256",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "120",
+          "prefill_norm_add": "120",
+          "prefill_gemma_route": "0",
+          "prefill_gemma_reduce": "0",
+          "gemma_route": "0",
+          "gemma_reduce": "0",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "120",
+          "norm_add": "120",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+          "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+        },
+        "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+      },
+      "task52-native31-control-on-repeat": {
+        "metrics": {
+          "prefill_seconds": "11.4103",
+          "prefill_rows": "8192",
+          "prefill_chunks": "32",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-on",
+          "lookahead_attempted": "31",
+          "lookahead_built": "31",
+          "lookahead_cached": "31",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.213492",
+          "decode_seconds": "3.19311",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "256",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "120",
+          "prefill_norm_add": "120",
+          "prefill_gemma_route": "0",
+          "prefill_gemma_reduce": "0",
+          "gemma_route": "0",
+          "gemma_reduce": "0",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "120",
+          "norm_add": "120",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+          "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+        },
+        "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+      },
+      "task52-native31-control-off-repeat": {
+        "metrics": {
+          "prefill_seconds": "11.6776",
+          "prefill_rows": "8192",
+          "prefill_chunks": "32",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-off",
+          "lookahead_attempted": "0",
+          "lookahead_built": "0",
+          "lookahead_cached": "0",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0",
+          "decode_seconds": "3.19148",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "256",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "120",
+          "prefill_norm_add": "120",
+          "prefill_gemma_route": "0",
+          "prefill_gemma_reduce": "0",
+          "gemma_route": "0",
+          "gemma_reduce": "0",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "120",
+          "norm_add": "120",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+          "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+        },
+        "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+      }
+    },
+    "all_four_full_heads_state_32choices_exact_to_baseline": true,
+    "finite_retained_complete_heads": 8,
+    "mean_seconds": {
+      "off": {
+        "prefill_seconds": 11.6632,
+        "decode_seconds": 3.1867349999999997
+      },
+      "on": {
+        "prefill_seconds": 11.38815,
+        "decode_seconds": 3.19337
+      }
+    },
+    "on_vs_off_percent": {
+      "prefill_seconds": -2.3582721723026334,
+      "decode_seconds": 0.2082068323848718
+    }
+  },
+  "checks": {
+    "runtime_controls": 6,
+    "node_controls": 3,
+    "actual_model_controls": 4,
+    "optional_host_refusal_abandoned_prediction": 1,
+    "full_regression": "Deferred by owner until selected optimization work settles"
+  },
+  "limitations": [
+    "Optional both256 research policy timing; no ordinary-policy speed percentage.",
+    "Initial five-arm candidate spread retained; stable same-binary control establishes modest benefit.",
+    "Sequential later candidate/reference ratio is qualified, not freshly reference-bookended.",
+    "Two full heads and32 choices, not whole-corpus likelihood or optimized C4 qualification."
+  ],
+  "26_transfer_same_binary_off_on_on_off": {
+    "arms": {
+      "task52-native26-control-off-first": {
+        "metrics": {
+          "prefill_seconds": "2.61482",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-off",
+          "lookahead_attempted": "0",
+          "lookahead_built": "0",
+          "lookahead_cached": "0",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0",
+          "decode_seconds": "0.690199",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+          "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+        },
+        "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+      },
+      "task52-native26-control-on-first": {
+        "metrics": {
+          "prefill_seconds": "2.58653",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-on",
+          "lookahead_attempted": "7",
+          "lookahead_built": "7",
+          "lookahead_cached": "7",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.0465643",
+          "decode_seconds": "0.686776",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+          "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+        },
+        "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+      },
+      "task52-native26-control-on-repeat": {
+        "metrics": {
+          "prefill_seconds": "2.57208",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-on",
+          "lookahead_attempted": "7",
+          "lookahead_built": "7",
+          "lookahead_cached": "7",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0.0442414",
+          "decode_seconds": "0.688399",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+          "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+        },
+        "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+      },
+      "task52-native26-control-off-repeat": {
+        "metrics": {
+          "prefill_seconds": "2.62515",
+          "prefill_rows": "8192",
+          "prefill_chunks": "8",
+          "intermediate_heads": "0",
+          "prefill_output": "state-only",
+          "lookahead": "lookahead-off",
+          "lookahead_attempted": "0",
+          "lookahead_built": "0",
+          "lookahead_cached": "0",
+          "lookahead_refused": "0",
+          "lookahead_build_seconds": "0",
+          "decode_seconds": "0.689328",
+          "decode_chunks": "32",
+          "timed_start": "8195",
+          "completed": "8227",
+          "context": "16384",
+          "chunk": "1024",
+          "masks": "device",
+          "normmul": "normmul-off",
+          "prefill_norm_fused": "0",
+          "prefill_norm_rope": "60",
+          "prefill_norm_add": "90",
+          "prefill_gemma_route": "30",
+          "prefill_gemma_reduce": "30",
+          "gemma_route": "30",
+          "gemma_reduce": "30",
+          "shared_vecq": "0",
+          "row_products": "0",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "norm_rope": "60",
+          "norm_add": "90",
+          "captures": "1",
+          "replays": "33"
+        },
+        "heads": {
+          "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+          "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+        },
+        "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+      }
+    },
+    "all_four_full_heads_state_32choices_exact_to_baseline": true,
+    "finite_retained_complete_heads": 8,
+    "mean_seconds": {
+      "off": {
+        "prefill_seconds": 2.619985,
+        "decode_seconds": 0.6897635
+      },
+      "on": {
+        "prefill_seconds": 2.579305,
+        "decode_seconds": 0.6875875
+      }
+    },
+    "on_vs_off_percent": {
+      "prefill_seconds": -1.5526806451181874,
+      "decode_seconds": -0.31547044747946007
+    }
+  },
+  "26_artifact": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+  "26_transfer_recipe": {
+    "profile": 26,
+    "policy": "all",
+    "rows": 1024,
+    "normmul": "off",
+    "prefill_output": "state-only",
+    "warm_rows_discarded": 6,
+    "prefill_rows": 8192,
+    "anchors": 3,
+    "forced_decode_rows": 32,
+    "context": 16384,
+    "local_cells": 2048,
+    "global_cells": 16384,
+    "kv": "F16",
+    "swa_full": false,
+    "kv_unified": false
+  }
+}

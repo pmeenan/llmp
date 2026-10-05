@@ -1697,13 +1697,15 @@ TEST(LlmScores, ADiscardedScalarJudgementKeepsTheBranchsPrefix) {
 class PrefillHeadFake : public FakeLlm {
  public:
   std::vector<bool> requested_heads;
+  std::vector<rt::PrefillHint> requested_hints;
 
  protected:
   rt::Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
                                 std::uint32_t past, bool inject, bool want_head,
-                                std::vector<float>& row) override {
+                                std::vector<float>& row, rt::PrefillHint next) override {
     requested_heads.push_back(want_head);
-    auto ran = FakeLlm::RunPrefillChunkFor(branch, all, past, inject, want_head, row);
+    requested_hints.push_back(next);
+    auto ran = FakeLlm::RunPrefillChunkFor(branch, all, past, inject, want_head, row, next);
     if (ran && !want_head) row.clear();
     return ran;
   }
@@ -1714,6 +1716,12 @@ TEST(LlmScores, NonFinalPromptHeadsAreOptionalButScoringAndDefaultFamiliesStayFu
   std::vector<float> row;
   ASSERT_TRUE(legacy.Prefill(prompt, row));
   EXPECT_EQ(legacy.requested_heads, (std::vector<bool>{false, false, true}));
+  ASSERT_EQ(legacy.requested_hints.size(), 3U);
+  EXPECT_EQ(legacy.requested_hints[0].rows, 8U);
+  EXPECT_FALSE(legacy.requested_hints[0].want_head);
+  EXPECT_EQ(legacy.requested_hints[1].rows, 3U);
+  EXPECT_TRUE(legacy.requested_hints[1].want_head);
+  EXPECT_EQ(legacy.requested_hints[2].rows, 0U);
   EXPECT_FALSE(row.empty());
   PrefillHeadFake incremental;
   auto opened = incremental.default_branch().BeginPrompt(prompt);
@@ -1729,6 +1737,10 @@ TEST(LlmScores, NonFinalPromptHeadsAreOptionalButScoringAndDefaultFamiliesStayFu
   while (!(*opened)->done()) ASSERT_TRUE((*opened)->Advance());
   ASSERT_TRUE((*opened)->Finish());
   EXPECT_EQ(incremental.requested_heads, (std::vector<bool>{false, false, true}));
+  ASSERT_EQ(incremental.requested_hints.size(), 3U);
+  EXPECT_EQ(incremental.requested_hints[0].rows, 8U);
+  EXPECT_EQ(incremental.requested_hints[1].rows, 3U);
+  EXPECT_EQ(incremental.requested_hints[2].rows, 0U);
   EXPECT_EQ((*opened)->last(), row);
   PrefillHeadFake scoring;
   unsigned scores = 0;

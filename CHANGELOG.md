@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Gemma prefill builds a bounded next-chunk CPU plan during current execution.
+  Exact head/state controls pass; same-binary Gemma26/31 prefill improves
+  1.55%/2.36% under the existing optional policies. Reference parity remains open.
+
 - Bounded arena-owned graph traversal preserves DFS order and explicit host
   accounting across Qwen, DeepSeek and Gemma graph factories. Fresh Gemma26/31
   state-only prefill screens improve 1.93%/0.99%; reference parity remains open.

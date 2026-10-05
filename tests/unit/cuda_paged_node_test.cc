@@ -523,6 +523,51 @@ TEST(CudaPagedNodeTest, ARequestLeasesOnceAndItsStepsRunUnderIt) {
   EXPECT_TRUE(finished.has_value()) << finished.error();
 }
 
+TEST(CudaPagedNodeTest, HostLookaheadCompletesInsideHeldAndStandaloneJobsAndSkipsInline) {
+  for (const bool inline_lanes : {false, true}) {
+    ts::PagedNode node({.inline_lanes = inline_lanes});
+    ASSERT_TRUE(node.Open());
+    ASSERT_TRUE(node.MapWorkspace(kExtent, kExtent));
+    const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
+    ASSERT_TRUE(node.Start(Bytes(fixed + kExtent)));
+    node.Run();
+    for (const bool held : {false, true}) {
+      const jitllm::catalog::Closure closure;
+      if (held) ASSERT_TRUE(node.BeginRequest(0, closure, "host-only lookahead control"));
+      for (const bool reject : {false, true}) {
+        std::atomic<bool> entered{false}, release{inline_lanes}, finished{false};
+        bool called = false;
+        const auto ran = node.Job(
+            closure,
+            [&](jitllm::providers::NativeStream) {
+              entered.store(true);
+              const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+              while (!release.load() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::yield();
+              finished.store(true);
+              return reject ? sc::JobResult::kNotStarted : sc::JobResult::kQueued;
+            },
+            "host-only lookahead control", 0,
+            [&] {
+              called = true;
+              const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+              while (!entered.load() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::yield();
+              EXPECT_TRUE(entered.load());
+              EXPECT_FALSE(finished.load());
+              release.store(true);
+            });
+        EXPECT_EQ(bool(ran), !reject);
+        EXPECT_EQ(called, !inline_lanes);
+        EXPECT_TRUE(entered.load());
+        EXPECT_TRUE(finished.load());
+      }
+      if (held) ASSERT_TRUE(node.EndRequest(0));
+    }
+    EXPECT_TRUE(node.TearDown({}));
+  }
+}
+
 // RE-029 on the real device: a job whose stream fills (a wait on a host
 // flag, then more operations than the stream holds pending) blocks the
 // device lane's submission thread in a launch. With the zone's copies on a

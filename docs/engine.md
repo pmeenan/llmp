@@ -182,6 +182,14 @@ bounded scalar serving adapter, with no qualified model support yet; its
 transfer checklist records the whole-model, optimized-batching and reference
 qualification required by the next slices.
 
+Gemma's [prefill lookahead](experiments/gemma-prefill-lookahead/README.md)
+accepts token-free next-chunk shape hints from scalar and wave callers. The
+threaded node runs a host-only graph/placement callback after job submission
+and before its normal completion wait. That callback cannot access node or
+launch state, stage inputs or prepare future KV. Optional host funding covers
+the temporary plan through post-completion binding and cache transfer; a
+missing or refused prediction uses normal planning.
+
 Gemma's [assistant component](gemma4-assistant.md#native-component-and-protected-target-operands)
 adds explicit post-finalnorm feature retention and scoped readonly cache
 borrows to that skeleton. It shares the target launch/cohort and uses separate

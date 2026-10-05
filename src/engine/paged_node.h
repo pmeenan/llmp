@@ -541,8 +541,11 @@ class PagedNode {
   // leases the closure for it (RunProgram). Returns once the job's fence
   // completed. The node has one driver: a swap or eviction cannot be
   // asked for while a step is in flight.
+  // Optional host-only work runs on the driver after submission, before the
+  // normal completed-job wait. It may not call the node, inspect run state,
+  // dispatch GPU work or change the closure. Inline lanes skip it.
   Status Job(const catalog::Closure& closure, scheduler::DeviceJob job, std::string_view what,
-             std::uint32_t stream);
+             std::uint32_t stream, const std::function<void()>& meanwhile = {});
   // Opens a request on `stream` (the header's Requests): returns once its
   // task holds its lease on `closure` (copied). Refused if one is open
   // there already.
@@ -613,7 +616,8 @@ class PagedNode {
   void Note(std::uint32_t stream, std::chrono::steady_clock::time_point called,
             const Timing& timing);
   Status Step(std::uint32_t stream, OpenRequest& open, const catalog::Closure& closure,
-              scheduler::DeviceJob job, std::string_view what);
+              scheduler::DeviceJob job, std::string_view what,
+              const std::function<void()>& meanwhile);
   void Signal(std::uint64_t request);
   // Ends every open request holding any of `extents`; how many.
   std::expected<std::uint64_t, std::string> EndRequestsOver(

@@ -991,7 +991,7 @@ class Llm : public Served {
   // without an explicit state-only graph retain their complete chunk path.
   virtual Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,
                                     std::uint32_t n_past, bool inject, bool want_head,
-                                    std::vector<float>& logits);
+                                    std::vector<float>& logits, PrefillHint next = {});
   // `prefix_kept`, when given, is set on a failure whose verify was undone
   // (a host judgement failing after the native verify completed): the
   // step's starting prefix still holds, as a wave's failed_prefix_valid.
