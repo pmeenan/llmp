@@ -347,6 +347,12 @@ Qwen/DeepSeek planner regressions pass; unchanged primitive policies skip the
 index. Full quality/performance qualification remains open; no CPU stack or
 matcher-specific attribution is claimed.
 
+The [plain RMSNorm/Mul screen](experiments/gemma-normmul-screen/README.md)
+selects 121 existing fusions on Gemma31 while preserving exact native heads,
+state and choices. Two candidate runs show no resolved end-to-end gain against
+the fresh off control; the benchmark flag defaults off and production keeps
+the selector unselected. No Gemma26 transfer or broader ladder was run.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

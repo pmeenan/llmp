@@ -1,0 +1,290 @@
+{
+  "arms": {
+    "task46-ring31-first": {
+      "metrics": {
+        "prefill_seconds": "10.8794",
+        "prefill_rows": "8192",
+        "intermediate_heads": "0",
+        "decode_seconds": "3.11261",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "batch": "8192",
+        "ubatch": "256",
+        "fusion": "enabled",
+        "graphs": "allowed",
+        "swa_full": "false",
+        "kv_unified": "false",
+        "cache_recipe": "ring",
+        "ggml_graph_reused_delta": "32"
+      },
+      "heads": {
+        "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      }
+    },
+    "task46-native31-off": {
+      "metrics": {
+        "prefill_seconds": "12.3456",
+        "prefill_rows": "8192",
+        "prefill_chunks": "32",
+        "intermediate_heads": "31",
+        "decode_seconds": "3.17728",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "chunk": "256",
+        "masks": "device",
+        "normmul": "normmul-off",
+        "prefill_norm_fused": "0",
+        "prefill_norm_rope": "120",
+        "prefill_norm_add": "120",
+        "prefill_gemma_route": "0",
+        "prefill_gemma_reduce": "0",
+        "gemma_route": "0",
+        "gemma_reduce": "0",
+        "shared_vecq": "0",
+        "row_products": "0",
+        "norm_fused": "0",
+        "rope_store": "0",
+        "norm_rope": "120",
+        "norm_add": "120",
+        "captures": "1",
+        "replays": "33"
+      },
+      "heads": {
+        "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+    },
+    "task46-native31-on-first": {
+      "metrics": {
+        "prefill_seconds": "12.5842",
+        "prefill_rows": "8192",
+        "prefill_chunks": "32",
+        "intermediate_heads": "31",
+        "decode_seconds": "3.17911",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "chunk": "256",
+        "masks": "device",
+        "normmul": "normmul-on",
+        "prefill_norm_fused": "121",
+        "prefill_norm_rope": "120",
+        "prefill_norm_add": "120",
+        "prefill_gemma_route": "0",
+        "prefill_gemma_reduce": "0",
+        "gemma_route": "0",
+        "gemma_reduce": "0",
+        "shared_vecq": "0",
+        "row_products": "0",
+        "norm_fused": "121",
+        "rope_store": "0",
+        "norm_rope": "120",
+        "norm_add": "120",
+        "captures": "1",
+        "replays": "33"
+      },
+      "heads": {
+        "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+    },
+    "task46-native31-on-repeat": {
+      "metrics": {
+        "prefill_seconds": "12.3092",
+        "prefill_rows": "8192",
+        "prefill_chunks": "32",
+        "intermediate_heads": "31",
+        "decode_seconds": "3.18922",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "chunk": "256",
+        "masks": "device",
+        "normmul": "normmul-on",
+        "prefill_norm_fused": "121",
+        "prefill_norm_rope": "120",
+        "prefill_norm_add": "120",
+        "prefill_gemma_route": "0",
+        "prefill_gemma_reduce": "0",
+        "gemma_route": "0",
+        "gemma_reduce": "0",
+        "shared_vecq": "0",
+        "row_products": "0",
+        "norm_fused": "121",
+        "rope_store": "0",
+        "norm_rope": "120",
+        "norm_add": "120",
+        "captures": "1",
+        "replays": "33"
+      },
+      "heads": {
+        "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+    },
+    "task46-ring31-repeat": {
+      "metrics": {
+        "prefill_seconds": "10.8991",
+        "prefill_rows": "8192",
+        "intermediate_heads": "0",
+        "decode_seconds": "3.1156",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "batch": "8192",
+        "ubatch": "256",
+        "fusion": "enabled",
+        "graphs": "allowed",
+        "swa_full": "false",
+        "kv_unified": "false",
+        "cache_recipe": "ring",
+        "ggml_graph_reused_delta": "32"
+      },
+      "heads": {
+        "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      }
+    }
+  },
+  "comparisons": {
+    "task46-native31-off vs task46-native31-on-first": {
+      "argmax_mismatches_32": 0,
+      "heads": {
+        "prefill.f32": {
+          "byte_exact": true,
+          "max_raw_delta": 0.0,
+          "head_argmax_equal": true
+        },
+        "final.f32": {
+          "byte_exact": true,
+          "max_raw_delta": 0.0,
+          "head_argmax_equal": true
+        }
+      }
+    },
+    "task46-ring31-first vs task46-native31-off": {
+      "argmax_mismatches_32": 0,
+      "heads": {
+        "prefill.f32": {
+          "byte_exact": false,
+          "max_raw_delta": 0.41361474990844727,
+          "head_argmax_equal": true
+        },
+        "final.f32": {
+          "byte_exact": true,
+          "max_raw_delta": 0.0,
+          "head_argmax_equal": true
+        }
+      }
+    },
+    "task46-ring31-first vs task46-native31-on-first": {
+      "argmax_mismatches_32": 0,
+      "heads": {
+        "prefill.f32": {
+          "byte_exact": false,
+          "max_raw_delta": 0.41361474990844727,
+          "head_argmax_equal": true
+        },
+        "final.f32": {
+          "byte_exact": true,
+          "max_raw_delta": 0.0,
+          "head_argmax_equal": true
+        }
+      }
+    }
+  },
+  "candidate_own_repeat_heads_state_32choices_exact": true,
+  "candidate_state_equals_off": true,
+  "mean_reference_seconds": {
+    "prefill_seconds": 10.88925,
+    "decode_seconds": 3.1141050000000003
+  },
+  "mean_candidate_seconds": {
+    "prefill_seconds": 12.4467,
+    "decode_seconds": 3.184165
+  },
+  "candidate_vs_reference_percent": {
+    "prefill_seconds": 14.30263792272195,
+    "decode_seconds": 2.2497635757304124
+  },
+  "candidate_vs_off_percent": {
+    "prefill_seconds": 0.8189152410575495,
+    "decode_seconds": 0.2166947829590038
+  },
+  "finite_retained_complete_heads": 10,
+  "limitation": "Two retained full vectors per arm; 32 greedy choices, not all32 full vectors or corpus quality.",
+  "provenance": {
+    "base_commit": "03676661a31fc0f9ae8cfdf9ee7cc46db6dfd731",
+    "host": "spark (Spark A/GB10)",
+    "observed_utc": "2026-10-05T19:15:22Z/2026-10-05T19:17:05Z",
+    "raw_supervisor_timezone": "America/New_York (EDT,UTC-04:00)",
+    "native_helper_sha256": "f241f194df4949d22c92177b2ae6746e02c280d08fd0a11c6f46a230c6c7a425",
+    "native_binary_sha256": "2331f6467e3e1ae7fd55914450d67111cd699693b5918186313fdb0f5bc98e74",
+    "build_receipt_sha256": "995ee8194ab9d0f8c41b07eb3d3458da4f81b42f5c9ce466a0801b6531d64522",
+    "input_bytes": 32908,
+    "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+    "target_artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "native_state_bytes": 1740636160,
+    "original_client_sha256": "0b401e613e9295de62846646ba40c3a9a12de8af80c34ec75fb46e9283ac47b9",
+    "reference_wrapper_sha256": "5f223ebe2f701d158e3ca130867818dbcd31e8db4ca0d8d7d305f848463fa912",
+    "retirement_helper_sha256": "1fd85804983ecdf720b5c0a69353fede0e294a0da0dd70a91bd8cd8b539e75e0",
+    "reference_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "reference_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "tensorfold": {
+      "observed_utc": "2026-10-05T19:12:43.147498+00:00",
+      "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+      "primary": "https://github.com/ashhart/TensorFold",
+      "files": {
+        "pyproject.toml": {
+          "bytes": 3178,
+          "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+        },
+        "docs/recipes/gemma-4.md": {
+          "bytes": 10845,
+          "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+        },
+        "README.md": {
+          "bytes": 22767,
+          "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+        },
+        "src/tensorfold/__init__.py": {
+          "bytes": 137,
+          "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+        }
+      },
+      "version_source": "\"\"\"TensorFold: fast, exact LLM decoding on Apple Silicon and NVIDIA GPUs behind an OpenAI-compatible endpoint.\"\"\"\n\n__version__ = \"0.6.5\"\n",
+      "gemma_coverage": "Official Gemma26 recipe MLX; actual recipe contains no Gemma CUDA/31 support"
+    },
+    "official_jobs": {
+      "m35-gemma-normmul-build1": {
+        "steps": 4,
+        "exit_code": 0
+      },
+      "m35-gemma-normmul-screen31": {
+        "steps": 5,
+        "exit_code": 0
+      },
+      "m35-gemma-normmul-check31": {
+        "steps": 1,
+        "exit_code": 0
+      }
+    },
+    "raw_logs": {
+      "build1.log": "9c940189c8ac5e8ad50790f68f0fffdf36b2f826e8adddba20c8b4cf12b48c34",
+      "screen31.log": "8adee613f8b5259910d3f8182cb5f6a867bf917ba8f33dae2cedc379d417008c",
+      "check31.log": "9962ee6dabea33fd2e98c3995f716804c0f8dbdacd4e74b13b195cfe7e027cc4"
+    },
+    "scope": "Benchmark-only flag; existing source/kernel/toolchain pins and production options remain unchanged. All counts name selected plan implementations, not launches."
+  }
+}

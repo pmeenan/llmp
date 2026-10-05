@@ -370,6 +370,9 @@ family" guide, and its long-context scaling work.
         with fresh pre/post-placement checks and exact Gemma26/31 head/state
         controls. Gemma26 prefill is 27.3% faster than its retained baseline;
         current prefill gaps remain 15.10%/13.83%. Full qualification stays open.
+      - [x] [Plain RMSNorm/Mul first screen](experiments/gemma-normmul-screen/README.md):
+        Gemma31 selects 121 additional norm fusions and preserves exact native
+        heads/state/choices, but shows no resolved speed gain. Remains unselected.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

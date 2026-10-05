@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // First paid 8K prefill and fixed-prefix decode screen. No quality claim.
-// ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both|all] [MAX_ROWS].
+// ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both|all] [MAX_ROWS]
+// [normmul-off|normmul-on].
 // Row-cap experiments do not change production defaults.
 #include <algorithm>
 #include <array>
@@ -25,13 +26,15 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc < 4 || argc > 7) return 2;
+  if (argc < 4 || argc > 8) return 2;
   const std::string_view variant = argc >= 5 ? argv[4] : "26";
   const std::string_view policy = argc >= 6 ? argv[5] : "ordinary";
   if (variant != "26" && variant != "31") return 2;
   if (policy != "ordinary" && policy != "both" && policy != "all") return 2;
+  const std::string_view normmul = argc == 8 ? argv[7] : "normmul-off";
+  if (normmul != "normmul-off" && normmul != "normmul-on") return 2;
   std::uint32_t max_rows = 128;
-  if (argc == 7) {
+  if (argc >= 7) {
     const std::string_view number(argv[6]);
     const auto [end, parsed] =
         std::from_chars(number.data(), number.data() + number.size(), max_rows);
@@ -67,6 +70,7 @@ int main(int argc, char** argv) {
           .variant = variant == "31" ? en::Gemma4Variant::k31B : en::Gemma4Variant::k26BA4B,
           .context = 16384,
           .max_rows = max_rows,
+          .fuse_norms = normmul == "normmul-on",
           .fuse_norm_rope = policy == "both" || policy == "all",
           .fuse_norm_add = policy == "both" || policy == "all",
           .fuse_gemma_route = policy == "all",
@@ -189,6 +193,7 @@ int main(int argc, char** argv) {
                 << " intermediate_heads=" << kPrefill / max_rows - 1 << " decode_seconds=" << decode
                 << " decode_chunks=" << kSteps << " timed_start=" << kPrefill + kWarm
                 << " completed=" << kInput << " context=16384 chunk=" << max_rows << " masks=device"
+                << " normmul=" << normmul << " prefill_norm_fused=" << prefill_policy.norm_fused
                 << " prefill_norm_rope=" << prefill_policy.norm_rope
                 << " prefill_norm_add=" << prefill_policy.norm_add
                 << " prefill_gemma_route=" << prefill_policy.gemma_route
