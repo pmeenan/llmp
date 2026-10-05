@@ -1,0 +1,377 @@
+{
+  "build_receipt_git_version": {
+    "commit": null,
+    "debian": "0.1.0~dev+unknown-1",
+    "modified": false,
+    "origin": "none",
+    "product": "0.1.0-dev+unknown"
+  },
+  "code_changes": "Dedicated client/wrapper/authentication/analysis/protocol only; native benchmark, CMake and production bytes unchanged",
+  "comparison": {
+    "bytes": 2343,
+    "sha256": "c660e2c018c413df6e835bf272a5f90d81df04438cb487351fc65cde91205dd5"
+  },
+  "driver": "580.178.04 (contemporaneous bookend query)",
+  "gpu": "NVIDIA GB10",
+  "historical_native_equality": {
+    "bytes": 412,
+    "sha256": "39ab293ce5f7809bc8541cf750f384338a4993784fab4e60e4b0ca769493e658"
+  },
+  "host": "spark-56f5 (Spark-b)",
+  "measured_sources": {
+    "benchmarks/gemma_prefill.cc": {
+      "bytes": 11366,
+      "sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2"
+    },
+    "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
+      "bytes": 6448,
+      "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+    },
+    "docs/experiments/gemma-prefill-large/compare.py": {
+      "bytes": 9154,
+      "sha256": "c159a10aa2e775ce052c948b8e9eadbc61ee805efa563721d450382469c829a3"
+    },
+    "docs/experiments/gemma26-swa-ring-transfer/PROTOCOL.md": {
+      "bytes": 6940,
+      "sha256": "345c261cbbb15266fd2df29069bcdd49b1af1624dcba79b4c9003fbb491095e9"
+    },
+    "docs/experiments/gemma26-swa-ring-transfer/compare.py": {
+      "bytes": 4705,
+      "sha256": "f6dfdd97eeca1adcbc91ccb497649ee19f4339d59287f75733eb7ac5263df4fd"
+    },
+    "docs/experiments/gemma26-swa-ring-transfer/llama_prefill_ring.cc": {
+      "bytes": 5698,
+      "sha256": "112bfa39733efada1723c1cef5689e7236a4aca218e009cab2dbb32441f16fb6"
+    },
+    "docs/experiments/gemma26-swa-ring-transfer/own_freeze.py": {
+      "bytes": 6485,
+      "sha256": "cbb3254944ae6c15eed1d6c9193003a15fb84494b8bc9f7d84aea3942bd73d6e"
+    },
+    "docs/experiments/gemma26-swa-ring-transfer/reference.sh": {
+      "bytes": 1543,
+      "sha256": "f72e5e00492a5ce2fcac9f5d9368723f9a4834af576b3c06f67c07107b14844d"
+    }
+  },
+  "native_environment": {
+    "ancestry": {
+      "base": "437d59f3530ec8d7b560a4127745ef5fd23b1938",
+      "dirty_paths": [
+        "docs/experiments/gemma26-swa-ring-transfer/PROTOCOL.md",
+        "docs/experiments/gemma26-swa-ring-transfer/compare.py",
+        "docs/experiments/gemma26-swa-ring-transfer/llama_prefill_ring.cc",
+        "docs/experiments/gemma26-swa-ring-transfer/own_freeze.py",
+        "docs/experiments/gemma26-swa-ring-transfer/reference.sh"
+      ],
+      "head": "437d59f3530ec8d7b560a4127745ef5fd23b1938",
+      "source_files": {
+        "benchmarks/gemma_prefill.cc": {
+          "bytes": 11366,
+          "sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2"
+        },
+        "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
+          "bytes": 6448,
+          "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+        },
+        "docs/experiments/gemma-prefill-large/compare.py": {
+          "bytes": 9154,
+          "sha256": "c159a10aa2e775ce052c948b8e9eadbc61ee805efa563721d450382469c829a3"
+        },
+        "docs/experiments/gemma26-swa-ring-transfer/PROTOCOL.md": {
+          "bytes": 6940,
+          "sha256": "345c261cbbb15266fd2df29069bcdd49b1af1624dcba79b4c9003fbb491095e9"
+        },
+        "docs/experiments/gemma26-swa-ring-transfer/compare.py": {
+          "bytes": 4705,
+          "sha256": "f6dfdd97eeca1adcbc91ccb497649ee19f4339d59287f75733eb7ac5263df4fd"
+        },
+        "docs/experiments/gemma26-swa-ring-transfer/llama_prefill_ring.cc": {
+          "bytes": 5698,
+          "sha256": "112bfa39733efada1723c1cef5689e7236a4aca218e009cab2dbb32441f16fb6"
+        },
+        "docs/experiments/gemma26-swa-ring-transfer/own_freeze.py": {
+          "bytes": 6485,
+          "sha256": "cbb3254944ae6c15eed1d6c9193003a15fb84494b8bc9f7d84aea3942bd73d6e"
+        },
+        "docs/experiments/gemma26-swa-ring-transfer/reference.sh": {
+          "bytes": 1543,
+          "sha256": "f72e5e00492a5ce2fcac9f5d9368723f9a4834af576b3c06f67c07107b14844d"
+        }
+      },
+      "tracked_production_diff": []
+    },
+    "base": "437d59f3530ec8d7b560a4127745ef5fd23b1938",
+    "build_receipt": {
+      "bytes": 6751,
+      "sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d"
+    },
+    "headers": {
+      "ggml-alloc.h": {
+        "bytes": 3753,
+        "sha256": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23"
+      },
+      "ggml-backend.h": {
+        "bytes": 25374,
+        "sha256": "46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2"
+      },
+      "ggml-cpu.h": {
+        "bytes": 7753,
+        "sha256": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e"
+      },
+      "ggml-cuda.h": {
+        "bytes": 1565,
+        "sha256": "9cbfcea49f6da4d07f41dc22fa8dbf870825faaa2a68e34e65fe30ea6c41e042"
+      },
+      "ggml-opt.h": {
+        "bytes": 14040,
+        "sha256": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2"
+      },
+      "ggml.h": {
+        "bytes": 115658,
+        "sha256": "9ac7ee3d3a957e5f7b21b104d3e3dc50b1b106f808f9d6735ead950450bfeec6"
+      },
+      "gguf.h": {
+        "bytes": 11355,
+        "sha256": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4"
+      },
+      "llama.h": {
+        "bytes": 84829,
+        "sha256": "fedb52ea9291c9900e637ed6ffec339919dd27c3dadc2c8cf216c552e0488dda"
+      }
+    },
+    "ids": {
+      "bytes": 32908,
+      "sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b"
+    },
+    "index": {
+      "bytes": 1253283,
+      "sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171"
+    },
+    "libraries": {
+      "/app/libggml-base.so": "ed0a6a3f65472059789159569080d08e7f1dcc8bdd7a35d127efbd1b3f4e273e",
+      "/app/libggml-cuda.so": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e",
+      "/app/libggml.so": "f09875d0593d950f0b1f4f57803235cb06209f774c524c005fb192000d5d7418",
+      "/app/libllama.so": "36f5cb5b9361fd7ce4c9c38ad7276367a39e753a2f4764d9aca952b29c5aba55"
+    },
+    "manifest": {
+      "bytes": 6035,
+      "sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
+    },
+    "native_binary": {
+      "bytes": 143550368,
+      "sha256": "858ce306f844a54761ea8add3ee6f6c1a9ad753b1bf07100663a909048753f41"
+    },
+    "original_binary": {
+      "bytes": 75376,
+      "sha256": "f6f1683dcd74382e964238aaefc95b1f54b58a400882d889fb417065edc54ec7"
+    },
+    "production_source_manifest": {
+      "bytes": 68819,
+      "sha256": "0751117b79068116d1c4c83914916d969b31cfbf26717d4cd3cfea31afd7393a"
+    },
+    "sources": {
+      "benchmarks/gemma_prefill.cc": {
+        "bytes": 11366,
+        "sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2"
+      },
+      "docs/experiments/gemma-dense31-c1-norm/own_freeze.py": {
+        "bytes": 6448,
+        "sha256": "8f0cabff09d672c9a772d77830f1a0ae0f76068ca1718c8892a88481e12f9b14"
+      },
+      "docs/experiments/gemma-prefill-large/compare.py": {
+        "bytes": 9154,
+        "sha256": "c159a10aa2e775ce052c948b8e9eadbc61ee805efa563721d450382469c829a3"
+      },
+      "docs/experiments/gemma26-swa-ring-transfer/PROTOCOL.md": {
+        "bytes": 6940,
+        "sha256": "345c261cbbb15266fd2df29069bcdd49b1af1624dcba79b4c9003fbb491095e9"
+      },
+      "docs/experiments/gemma26-swa-ring-transfer/compare.py": {
+        "bytes": 4705,
+        "sha256": "f6dfdd97eeca1adcbc91ccb497649ee19f4339d59287f75733eb7ac5263df4fd"
+      },
+      "docs/experiments/gemma26-swa-ring-transfer/llama_prefill_ring.cc": {
+        "bytes": 5698,
+        "sha256": "112bfa39733efada1723c1cef5689e7236a4aca218e009cab2dbb32441f16fb6"
+      },
+      "docs/experiments/gemma26-swa-ring-transfer/own_freeze.py": {
+        "bytes": 6485,
+        "sha256": "cbb3254944ae6c15eed1d6c9193003a15fb84494b8bc9f7d84aea3942bd73d6e"
+      },
+      "docs/experiments/gemma26-swa-ring-transfer/reference.sh": {
+        "bytes": 1543,
+        "sha256": "f72e5e00492a5ce2fcac9f5d9368723f9a4834af576b3c06f67c07107b14844d"
+      }
+    }
+  },
+  "native_own_freeze": {
+    "bytes": 6902,
+    "sha256": "a1f7cea38f1f4db2122502382735a34af52738e84add31cd0199b166b0ff25ad"
+  },
+  "native_toolkit": "CUDA13.4.92, SDK aarch64-c09daba6ac31edee",
+  "new_physical_peak_observation": false,
+  "official_jobs": {
+    "m35-gemma26-swa-ring-analysis1": {
+      "final.json": {
+        "bytes": 82,
+        "sha256": "958870910527e0ee75799070e96996b780a056391cd7490ac7238232c2394cbc"
+      },
+      "job.json": {
+        "bytes": 508,
+        "sha256": "a53d549abbf482edce041f0a00ab3f913d95c362054e3c8cdffaa3fc3302a297"
+      },
+      "log": {
+        "bytes": 902,
+        "sha256": "61610996e61be3e793b21d742f0254f40a8cc344cca1086753fd6bdf874ef4b2"
+      },
+      "steps.json": {
+        "bytes": 816,
+        "sha256": "d849907fbee5bb86bdab7cfd44b9b66916e17cf6cce6c4a564438c1dc13bb33e"
+      }
+    },
+    "m35-gemma26-swa-ring-bookend1": {
+      "final.json": {
+        "bytes": 82,
+        "sha256": "c0bbcd0129bee016d905e48f49cdf9dfe2227995a97d5c8232c11fa90cdbf1e9"
+      },
+      "job.json": {
+        "bytes": 505,
+        "sha256": "50074cc0e46b8b9dab0a94e1d6bb1b45aa76933d8d4512a2ddc42d8981288ab1"
+      },
+      "log": {
+        "bytes": 180197,
+        "sha256": "604c5ccc2706f91c3b3368940c6c6636dd894e7922fc1cedc292ead40094affd"
+      },
+      "steps.json": {
+        "bytes": 1286,
+        "sha256": "fcf8a83d182fa5992bde7b1d651b76621a16d6eb1b57d0618f9f23b9a9ad2fa0"
+      }
+    },
+    "m35-gemma26-swa-ring-build1": {
+      "final.json": {
+        "bytes": 82,
+        "sha256": "63a396082f77e3e4225f3ea4f88834d602b61aac5141efbeb5921327cb17b0dd"
+      },
+      "job.json": {
+        "bytes": 499,
+        "sha256": "694f945d36a2f8c547c658ea4674116148a8a9861b56449540789eb76529372d"
+      },
+      "log": {
+        "bytes": 3207,
+        "sha256": "004967ce19963e4bfa019064fffe972c5da4f43a5ea9cd2a09f5c44080e53bc9"
+      },
+      "steps.json": {
+        "bytes": 1807,
+        "sha256": "8a5353c13f3241783fc5ea26f895e9e5ad6d59267bbd52e4efc3e4310a3736d5"
+      }
+    },
+    "m35-gemma26-swa-ring-freeze1": {
+      "final.json": {
+        "bytes": 82,
+        "sha256": "3cf1367c43aca299b36adb1227494e3bfdaa44c2a9634d244cd7f58e56879d0e"
+      },
+      "job.json": {
+        "bytes": 502,
+        "sha256": "5004fcb2db5f208bfc8ea4088949836313be4f40ed85c39ec2439412099f0c32"
+      },
+      "log": {
+        "bytes": 7489,
+        "sha256": "54628760cc9badb9f3cc905d5dee53cb77ca3898f32cfef53d3bbe311cd5a1a7"
+      },
+      "steps.json": {
+        "bytes": 439,
+        "sha256": "b0226e74b2a4934cc28f9a896af1f520fb00c9d9723010b260a3bc0386ec4217"
+      }
+    },
+    "m35-gemma26-swa-ring-native1": {
+      "final.json": {
+        "bytes": 82,
+        "sha256": "efa29dfdbd3983e6a7e814694412740c3e6c05a588f69fdb8a6d200586ce1af0"
+      },
+      "job.json": {
+        "bytes": 502,
+        "sha256": "d8868cb447d948c826bc6d0143c8acc34a9a21246ddc744ce6aff9f3226f5c62"
+      },
+      "log": {
+        "bytes": 5620,
+        "sha256": "9e32f5161f5b665956cfe29f23eabd3f81c807a9e1dbd95213cfbcbc85a4aded"
+      },
+      "steps.json": {
+        "bytes": 911,
+        "sha256": "e3628c4cf3fb693f87301778c69b5be6619ececb846ff5bd0c0cdd1301cacb09"
+      }
+    },
+    "m35-gemma26-swa-ring-source1": {
+      "final.json": {
+        "bytes": 82,
+        "sha256": "de364a5d5e579c1829550a79ac2c075cb876531de43a7b9966b61b8a8ec1acd1"
+      },
+      "job.json": {
+        "bytes": 502,
+        "sha256": "433d6877dd5d37811f80d5c888b32c13de89ebcb463c7827a8ca885b0b88c7f3"
+      },
+      "log": {
+        "bytes": 7108,
+        "sha256": "a61775bdb5ed5e191201895ed63402fcd0f8afba6adee3f16e6ce4002e63bfc8"
+      },
+      "steps.json": {
+        "bytes": 377,
+        "sha256": "e79a2f9b98a7afa09c4e5d17b577c64a06a069f67e796cc56c20a317109fc09a"
+      }
+    }
+  },
+  "original_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+  "original_llama_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+  "original_toolkit": "Historical environment of same immutable image: CUDA13.3.0/CUDART13.3.29-1; not freshly queried here",
+  "production_source_manifest": {
+    "content_bundle_sha256": "afc9dc193e6517378ff9c867d6017861184d01e74b1077311fc01c2f2d384d0d",
+    "file": {
+      "bytes": 68819,
+      "sha256": "0751117b79068116d1c4c83914916d969b31cfbf26717d4cd3cfea31afd7393a"
+    },
+    "src_files": 421,
+    "total_files": 457
+  },
+  "raw_location": "External ~/.local/share/jitllm/gemma26-swa-ring-transfer on Spark-b; official jobs and local scratch gemma26-swa-ring-transfer-raw",
+  "raw_target": {
+    "bytes": 16947541728,
+    "revision": "c099eb48e663fd284577b04978a94ffccb261841",
+    "sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
+  },
+  "source_ancestry": {
+    "bytes": 1890,
+    "sha256": "6ca3b6af72328236cd486926b883caa408060ea724f831c6485ca0244d6ea093"
+  },
+  "source_base": "437d59f3530ec8d7b560a4127745ef5fd23b1938",
+  "source_freeze": {
+    "bytes": 6584,
+    "sha256": "25e5e05a06cb31c22c0fce24882713ce21f2932e2383a31cf3ea673fb5443f9f"
+  },
+  "source_policy_counts_are_kernel_observations": false,
+  "tensorfold_entry": {
+    "entry_utc": "2026-10-05T14:25:19.159540+00:00",
+    "fetched_utc": "2026-10-05T14:25:19.926924+00:00",
+    "files": {
+      "README.md": {
+        "bytes": 22767,
+        "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+      },
+      "docs/recipes/gemma-4.md": {
+        "bytes": 10845,
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      },
+      "pyproject.toml": {
+        "bytes": 3178,
+        "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+      },
+      "src/tensorfold/__init__.py": {
+        "bytes": 137,
+        "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+      }
+    },
+    "primary_repo": "https://github.com/ashhart/TensorFold",
+    "recipe_scope": "26B-A4B MLX only; no same-format CUDA GB10 comparator",
+    "resolved_head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "task": "Gemma26 H1 ring-cache transfer source-only planning",
+    "version": "0.6.5"
+  }
+}

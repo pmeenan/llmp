@@ -14,7 +14,9 @@ local cache. These historical measurements retain that recipe. The later
 [dense31 ring-cache screen](../gemma-swa-ring-h1/README.md) matches the normal
 CLI/server setting `swa_full=false`: its final head is byte-exact and all 32
 decode choices agree, but native prefill/decode take 16.20%/2.05% more time.
-Gemma26 needs its own ring-cache comparison. The speed and coarse memory
+The independent [Gemma26 ring-cache comparison](../gemma26-swa-ring-transfer/README.md)
+also matches all 32 decode choices, but both retained full heads differ and
+native prefill/decode take 57.64%/0.49% more time. The speed and coarse memory
 ratios below do not establish parity for a production ring-cache recipe.
 
 One physical Spark (`spark-c4e2`, SSH `spark`) ran both engines on native base

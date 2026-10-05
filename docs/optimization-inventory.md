@@ -299,8 +299,15 @@ choices agree and the final complete head is byte-exact, while the prefill
 head still differs. Native prefill/decode take 16.1957%/2.0504% more time.
 Historical full-cache ratios do not establish representative ring-cache
 speed or memory parity. Match effective cache topology, capacity and read
-policy in other families' comparisons; Gemma26 needs independent controls
-at its actual 1,024-row chunk and 2,048-cell ring. No policy is selected.
+policy in other families' comparisons. No policy is selected.
+
+The independent [Gemma26 ring-cache transfer](experiments/gemma26-swa-ring-transfer/README.md)
+uses its actual 1,024-row compound policy and 2,048-cell local ring. All 32
+incoming-head choices agree, but both retained complete heads still differ;
+dense31's byte-exact final head did not transfer. Native prefill/decode take
+57.6433%/0.4880% more time. Native repeats and the bookend preserve exact own
+initialized state. The remaining full-head and prefill-speed gaps need their
+own diagnosis; this screen selects no policy or full quality/performance pass.
 
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and

@@ -71,9 +71,11 @@ not prove every remaining arithmetic cause or a universal kernel equivalence.
 No physical peak measurement was taken here. Catalog/host capacities are
 reported separately in [results](results.json).
 
-Gemma26 ring-cache transfer needs its own actual ubatch1,024/local2,048
-recipe and current native policy control; this dense31 result does not
-qualify it. Qwen/DeepSeek transfer likewise depends on actual cache/window
+The independent [Gemma26 transfer](../gemma26-swa-ring-transfer/README.md)
+uses actual ubatch1,024/local2,048 and its current native policy. All 32 decode
+choices agree, but both retained full heads still differ and native prefill/decode
+take 57.64%/0.49% more time. Neither screen qualifies Gemma26.
+Qwen/DeepSeek transfer likewise depends on actual cache/window
 and attention contracts. The remaining dense31 prefill speed gap is a
 measured optimization lead, with no new kernel or narrowed-head selection.
 

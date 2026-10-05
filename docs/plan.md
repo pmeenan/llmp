@@ -339,7 +339,12 @@ family" guide, and its long-context scaling work.
         All 32 decode choices agree and the final complete head is byte-exact;
         prefill quality differs and native prefill/decode take 16.20%/2.05% more time.
         Historical full-cache comparisons remain qualified by their recipe;
-        Gemma26 transfer and full quality/performance qualification remain open.
+        Full quality/performance qualification remains open.
+      - [x] [Gemma26 8K ring-cache reference transfer](experiments/gemma26-swa-ring-transfer/README.md),
+        with unchanged native full-head/state repeats and actual local2,048/global16,384
+        reference capacities. All 32 decode choices agree, but both retained full
+        heads differ. Native prefill/decode take 57.64%/0.49% more time;
+        full quality and competitive performance qualification remain open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

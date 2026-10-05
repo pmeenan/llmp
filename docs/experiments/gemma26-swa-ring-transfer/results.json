@@ -1,0 +1,115 @@
+{
+  "all_32_head_vectors_retained": false,
+  "analysis_source_identity": {
+    "bytes": 4705,
+    "sha256": "f6dfdd97eeca1adcbc91ccb497649ee19f4339d59287f75733eb7ac5263df4fd"
+  },
+  "context": 16384,
+  "default_policy_selected": false,
+  "full_quality_or_support_qualified": false,
+  "global_capacity": 16384,
+  "heads": {
+    "final.f32": {
+      "absolute_reference_argmax_nll_delta": 0.014269904004529543,
+      "byte_exact": false,
+      "full_softmax_tv": 0.013208428699062117,
+      "max_raw_delta": 0.22439956665039062,
+      "native_sha256": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853",
+      "reference_repeat_exact": true,
+      "ring_reference_sha256": "48c4a6123708f182d28e6063f124b6b5facdbda881046be6b1f1e239d652f2a6"
+    },
+    "prefill.f32": {
+      "absolute_reference_argmax_nll_delta": 0.0421144467731267,
+      "byte_exact": false,
+      "full_softmax_tv": 0.03449996817292437,
+      "max_raw_delta": 0.8572092056274414,
+      "native_sha256": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+      "reference_repeat_exact": true,
+      "ring_reference_sha256": "254e6cf57dea36d5da3be3e0d53157bb886924b61e6493050daa147e82a2eaa3"
+    }
+  },
+  "historical_native_equality": {
+    "historical_own_receipt_sha256": "c5999e5e4119fbf87929d1d139d68dd4bdd3bef08c3d38c216e8749b17ae7383",
+    "historical_source_log_sha256": "72f9733810cfce5384c24ae4c4984ab02b2b5df3b6076d2e141fc8204bb65537",
+    "new_native_own_receipt_sha256": "a1f7cea38f1f4db2122502382735a34af52738e84add31cd0199b166b0ff25ad",
+    "old_allowance_inherited": false,
+    "two_heads_initialized_state_32_incoming_choices_exact": true
+  },
+  "initialized_native_state": {
+    "bytes": 592445440,
+    "sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+  },
+  "known_native_charged_capacity_bytes": 25868105408,
+  "local_capacity": 2048,
+  "margin_noise_calibrated": false,
+  "max_rows": 1024,
+  "native_repeat_and_state_exact": true,
+  "native_selected_plans_per_prefill_and_decode": {
+    "gemma_reduce": 30,
+    "gemma_route": 30,
+    "generic_norm_fusion": 0,
+    "norm_add": 90,
+    "norm_rope": 60,
+    "rope_store": 0,
+    "row_products": 0,
+    "shared_vecq": 0
+  },
+  "native_state_layout": "gemma26-f16-kv-scalar-device-v1:16384:1024:16384:2048",
+  "official_retirement": {
+    "final.json": {
+      "bytes": 82,
+      "sha256": "c0bbcd0129bee016d905e48f49cdf9dfe2227995a97d5c8232c11fa90cdbf1e9"
+    },
+    "job.json": {
+      "bytes": 505,
+      "sha256": "50074cc0e46b8b9dab0a94e1d6bb1b45aa76933d8d4512a2ddc42d8981288ab1"
+    },
+    "log": {
+      "bytes": 180197,
+      "sha256": "604c5ccc2706f91c3b3368940c6c6636dd894e7922fc1cedc292ead40094affd"
+    }
+  },
+  "own_freeze": {
+    "bytes": 6902,
+    "sha256": "a1f7cea38f1f4db2122502382735a34af52738e84add31cd0199b166b0ff25ad"
+  },
+  "paid": {
+    "decode": {
+      "native_relative_to_reference_percent": 0.48800072999362065,
+      "seconds": [
+        0.684102,
+        0.68828,
+        0.685773
+      ]
+    },
+    "prefill": {
+      "native_relative_to_reference_percent": 57.64333057166531,
+      "seconds": [
+        2.41568,
+        3.80551,
+        2.41232
+      ]
+    }
+  },
+  "paid_counts": {
+    "completed": 8227,
+    "decode_completed_units": 32,
+    "decode_full_heads_per_engine": 32,
+    "decode_incoming_argmax_operations": 32,
+    "native_prefill_chunks": 8,
+    "native_prefill_heads": 8,
+    "prefill_rows": 8192,
+    "reference_prefill_heads": 1,
+    "timed_start": 8195
+  },
+  "physical_peak_measured": false,
+  "policy": "all",
+  "reference_recipe": "swa_full=false, kv_unified=false",
+  "scope": "two complete heads; 32 incoming-head choices; initialized native state",
+  "source_freeze": {
+    "bytes": 6584,
+    "sha256": "25e5e05a06cb31c22c0fce24882713ce21f2932e2383a31cf3ea673fb5443f9f"
+  },
+  "strict_argmax_differences_32": 0,
+  "variant": 26
+}
