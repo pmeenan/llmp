@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Exact integer-token native Gemma control. No implicit BOS/template.
-// ARTIFACT OUTPUT_DIR TOKENS_CSV STEPS [SLOTS] [ordinary|norm] [teacher|warm] [host|device]
+// ARTIFACT OUTPUT_DIR TOKENS_CSV STEPS [SLOTS] [ordinary|norm|q8|norm-q8]
+// [teacher|warm|control] [host|device] [ordinary-prefix-checkpoint]
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -29,10 +30,14 @@ std::expected<std::uint32_t, std::string> Number(std::string_view text) {
   return value;
 }
 int main(int argc, char** argv) {
-  if (argc < 5 || argc > 9) return 2;
+  if (argc < 5 || argc > 10) return 2;
   auto steps = Number(argv[4]);
   auto slots = Number(argc >= 6 ? argv[5] : "1");
   if (!steps || !slots || *steps > 256) return 2;
+  const std::string_view requested_policy = argc >= 7 ? argv[6] : "ordinary";
+  if (requested_policy != "ordinary" && requested_policy != "norm" && requested_policy != "q8" &&
+      requested_policy != "norm-q8")
+    return 2;
   std::vector<std::int32_t> tokens;
   std::string_view text(argv[3]);
   while (!text.empty()) {
@@ -48,15 +53,23 @@ int main(int argc, char** argv) {
   std::filesystem::create_directories(out, error);
   if (error) return 2;
   en::PagedNode node({.slot_bytes = en::kSlabSlotBytes});
-  en::Gemma4Runner runner(node,
-                          {.artifact = argv[1],
-                           .out = out,
-                           .slots = *slots,
-                           .reference_masks = argc >= 9 && std::string_view(argv[8]) == "host",
-                           .fuse_norms = argc >= 7 && std::string_view(argv[6]) == "norm"},
-                          0, 0);
+  en::Gemma4Runner runner(
+      node,
+      {.artifact = argv[1],
+       .out = out,
+       .slots = *slots,
+       .reference_masks = argc >= 9 && std::string_view(argv[8]) == "host",
+       .shared_q8 = requested_policy == "q8" || requested_policy == "norm-q8",
+       .fuse_norms = requested_policy == "norm" || requested_policy == "norm-q8"},
+      0, 0);
   const bool teacher = argc >= 8 && std::string_view(argv[7]) == "teacher";
   const bool warm = argc >= 8 && std::string_view(argv[7]) == "warm";
+  const bool restore_prefix = argc == 10;
+  // This diagnostic uses the already verified literal's first greedy ID.
+  // Check its exact input domain instead of guessing a head after restore.
+  if (restore_prefix &&
+      (teacher || warm || tokens != std::vector<std::int32_t>{2, 818, 5279, 529, 7001, 563}))
+    return 2;
   std::vector<en::PagedModel*> entered;
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;
@@ -79,8 +92,63 @@ int main(int argc, char** argv) {
     return node.WithRequest(
         0, runner.closure(), "Gemma4 representative control", [&]() -> en::Status {
           std::vector<float> logits;
-          if (auto r = runner.Chunk(0, tokens, logits, teacher); !r) return r;
           std::uint32_t past = static_cast<std::uint32_t>(tokens.size());
+          const auto checkpoint = [&](const std::filesystem::path& path,
+                                      bool restore) -> en::Status {
+            auto ranges = runner.CheckpointRanges(past);
+            if (!ranges) return Error(ranges.error());
+            std::uint64_t count = 0;
+            for (const auto& range : *ranges) count += range.bytes;
+            if (restore) {
+              std::error_code size_error;
+              if (std::filesystem::file_size(path, size_error) != count || size_error)
+                return Error("prefix checkpoint length differs");
+            }
+            std::vector<jitllm::catalog::ExtentId> staging;
+            auto saved = node.Pinned(count, 0, staging);
+            if (!saved) return Error(saved.error());
+            if (restore) {
+              std::ifstream file(path, std::ios::binary);
+              file.read(static_cast<char*>(*saved), static_cast<std::streamsize>(count));
+              if (!file || file.peek() != std::ifstream::traits_type::eof()) {
+                auto freed = node.FreePinned(*saved);
+                if (!freed) return freed;
+                return Error("reading prefix checkpoint failed");
+              }
+            }
+            en::LiveState::CopyRetirement retirement = en::LiveState::CopyRetirement::kProven;
+            auto copied = restore ? runner.RestoreCheckpoint(0, past, *saved, *ranges, &retirement)
+                                  : runner.CopyState(0, *saved, *ranges, true, &retirement);
+            if (retirement == en::LiveState::CopyRetirement::kUnproven) {
+              node.KeepPinned(*saved);
+              return Error("initialized-state copy completion unproven");
+            }
+            bool written = restore;
+            if (copied && !restore) {
+              std::ofstream file(path, std::ios::binary);
+              file.write(static_cast<const char*>(*saved), static_cast<std::streamsize>(count));
+              file.flush();
+              written = bool(file);
+            }
+            auto freed = node.FreePinned(*saved);
+            if (!copied) return copied;
+            if (!freed) return freed;
+            if (!written) return Error("writing initialized state failed");
+            std::cout << "GEMMA_STATE past=" << past << " bytes=" << count
+                      << " restored=" << restore << '\n';
+            return {};
+          };
+          if (restore_prefix) {
+            if (auto r = checkpoint(argv[9], true); !r) return r;
+            const std::int32_t first_gold = 45518;
+            if (auto r = runner.Chunk(past++, std::span(&first_gold, 1), logits); !r) return r;
+            std::cout << "GEMMA_RESTORED_PREFIX appended=" << first_gold << " past=" << past
+                      << '\n';
+          } else {
+            if (auto r = runner.Chunk(0, tokens, logits, teacher); !r) return r;
+            if (!teacher && !warm)
+              if (auto r = checkpoint(out / "initialized-prefix.bin", false); !r) return r;
+          }
           if (teacher) {
             std::ofstream file(out / "teacher.f32", std::ios::binary);
             file.write(reinterpret_cast<const char*>(logits.data()),
@@ -98,6 +166,15 @@ int main(int argc, char** argv) {
             if (auto r = runner.Clear(); !r) return r;
             if (auto r = runner.Chunk(0, tokens, logits); !r) return r;
             past = static_cast<std::uint32_t>(tokens.size());
+            // Reset prefill displaces the comparator's cached one-row graph.
+            // CUDA also needs a second stable call to capture. Three common
+            // untimed rows cover build, capture and replay before timing.
+            for (std::uint32_t i = 0; i < 3; ++i) {
+              const auto seed = static_cast<std::int32_t>(
+                  std::max_element(logits.begin(), logits.end()) - logits.begin());
+              if (auto r = runner.Chunk(past++, std::span(&seed, 1), logits); !r) return r;
+              std::cout << "GEMMA_TIMED_PREFIX appended=" << seed << " past=" << past << '\n';
+            }
           }
           std::array<std::int32_t, 256> chosen{};
           const auto started = std::chrono::steady_clock::now();
@@ -127,6 +204,8 @@ int main(int argc, char** argv) {
             for (std::uint32_t i = 0; i < *steps; ++i)
               std::cout << "GEMMA_WARM_TOKEN step=" << i << " id=" << chosen[i] << '\n';
           }
+          if (!warm)
+            if (auto r = checkpoint(out / "initialized-state.bin", false); !r) return r;
           const auto& policy = runner.last_built_policy();
           std::cout << "GEMMA_POLICY rows=" << policy.rows << " segments=" << policy.segments
                     << " norm_fused=" << policy.norm_fused << " rope_store=" << policy.rope_store

@@ -57,8 +57,16 @@ Both have checked import and segmented graph foundations. The approved
 26B-A4B artifact also has a native runner and a bounded scalar serving route
 for chat/literal completions, likelihoods and up to twelve independent owners.
 The route disables thinking and refuses generated tools, assistants/speculation
-and the 31B profile. Neither model has completed the representative reference,
-long-context, selected optimization and optimized-batching support gates.
+and the 31B profile. The 26B
+[representative likelihood screen](experiments/gemma-quality/README.md) fails
+against fusion-enabled llama.cpp (10.03% higher PPL); its unfused diagnostic
+control matches exactly. The [short resident screen](experiments/gemma-performance/README.md)
+is 4.33% below the bookended reference rate. The [paid 8K screen](experiments/gemma-prefill/README.md)
+records slower prefill (6.931 s versus 2.612 / 2.605 s), with faster native
+fixed-prefix decode; known numerical differences keep qualification open.
+Neither model has passed the
+representative reference, long-context, selected optimization and
+optimized-batching support gates.
 
 ## Chat templates
 

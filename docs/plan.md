@@ -257,6 +257,15 @@ family" guide, and its long-context scaling work.
         independent cohorts, target likelihoods, checked checkpoint positions
         and exact continuation/restart controls. Thinking/tools, assistants,
         selected optimized joining and full model qualification remain owed.
+      - [x] Bounded Gemma26 same-format reference diagnosis: the
+        [short resident comparison](experiments/gemma-performance/README.md)
+        [representative likelihood screen](experiments/gemma-quality/README.md)
+        and [paid 8K screen](experiments/gemma-prefill/README.md).
+        The short scalar rate is 4.33% below the bookended reference, and
+        representative PPL is 10.03% higher than fusion-enabled llama.cpp.
+        Paid 8K prefill takes 6.931 s versus the fastest screened reference
+        at 2.612 / 2.605 s, while native fixed-prefix decode is faster.
+        These failures keep model qualification open; no optional policy is selected.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

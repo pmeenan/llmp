@@ -281,6 +281,24 @@ complete serving behavior and representative reference quality/performance.
 Route-discovered expert paging is an M7 follow-on; authoritative raw expert
 groups remain available for it.
 
+The [short resident diagnosis](experiments/gemma-performance/README.md)
+records a 4.33% scalar rate gap against the bookended fusion-enabled reference.
+Shared-Q8 preparation changes full heads and initialized KV, and stays off;
+norm fusion reproduces the bounded native controls exactly without a measured
+whole-model win. The [representative teacher-forced screen](experiments/gemma-quality/README.md)
+fails against fusion-enabled llama.cpp: PPL is 10.03% higher and 476 of
+1,024 argmax choices differ outside the frozen native noise allowance.
+Native matches the unfused 128-row diagnostic control exactly, which narrows
+the investigation without qualifying the fastest reference or explaining
+every changed operator. Numerical teacher-forcing chunk sizes do not cap
+competitive reference prefill. The [paid 8K screen](experiments/gemma-prefill/README.md)
+selects reference ubatch 1,024 after testing five sizes: prefill is
+6.931 s native versus 2.612 / 2.605 s reference, including the native
+128-row envelope and 63 extra intermediate heads. Subsequent 32 fixed-prefix
+units take 0.691 s native versus 0.866 / 0.869 s reference. This does not
+qualify generated-text equivalence or physical peak memory; no individual
+source of the prefill gap is isolated.
+
 ## Bounded native serving route
 
 The existing runtime driver registers the approved 26B-A4B artifact through
