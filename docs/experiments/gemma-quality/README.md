@@ -41,6 +41,9 @@ The later [norm-fusion controls](../gemma-reference-fusions/README.md)
 isolate both reference families and their combination with unchanged native
 calibration. None reproduces the full production reference; the quality
 gap remains open.
+The later [stock-minus routing/reduction screen](../gemma-reference-stock/README.md)
+retains the other stock gates and confirms that both families affect outputs.
+Neither omission reproduces native; selected likelihood rows do not qualify PPL.
 
 All later input IDs are explicitly teacher-forced, so an argmax difference
 does not change the prefixes used to compare later rows. The final input

@@ -301,6 +301,9 @@ The [reference norm-fusion diagnosis](experiments/gemma-reference-fusions/README
 checks the two normalization fusion families individually and together.
 All repeat exactly, but none resolves the representative quality gap;
 no new native policy is selected.
+The [stock routing/reduction controls](experiments/gemma-reference-stock/README.md)
+show that each specialized family also changes the representative heads.
+Checked native contracts and the complete quality gate remain owed.
 
 The [short resident diagnosis](experiments/gemma-performance/README.md)
 records a 4.33% scalar rate gap against the bookended fusion-enabled reference.
