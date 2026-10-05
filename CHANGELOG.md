@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Dense31 8K comparisons with a matched ring-cache reference: all 32 decode
+  choices agree and the final head is byte-exact. Prefill quality still differs;
+  native prefill/decode take 16.20%/2.05% more time, leaving qualification open.
+
 - Dense31 solo norm screening with all 32 complete heads byte-exact to fresh
   llama.cpp. Short decode latency is 1.92% higher; production selection and
   broader quality and performance qualification remain open.

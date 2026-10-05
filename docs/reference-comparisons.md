@@ -38,6 +38,15 @@ gate passed.
 Record checkpoint and drafter revisions, container digest and runtime
 dependencies, device/topology, effective precision and KV format, prompt
 tokens and reasoning mode, context, memory budget, warmup and cache state.
+Record effective cache topology and capacity, sliding-window size, physical
+chunk size and attention read policy, including `swa_full` and `kv_unified`
+where applicable. Use the reference's normal production CLI/server settings
+for competitive comparisons; explicitly override differing C-API defaults or
+label the alternate recipe. Cache layout and read order can change arithmetic,
+so agreement must be measured for the actual recipe. Historical full-cache
+runs retain their measured results but do not establish representative memory
+ratios or speed parity for a ring-cache production recipe.
+
 Compare prefill and completed decode at 8K and depth, peak memory, and
 concurrency 1/2/4/8/12 where both engines support it. Report unsupported
 reference configurations explicitly. Speculation and lower-precision modes

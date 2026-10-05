@@ -328,6 +328,12 @@ family" guide, and its long-context scaling work.
         All 32 complete heads match byte-for-byte; short decode latency is 1.92%
         higher. No production policy is selected; 8K/depth, state, batching and
         competitive performance qualification remain open.
+      - [x] [Dense31 8K ring-cache reference screen](experiments/gemma-swa-ring-h1/README.md),
+        with unchanged native head/state repeats and fresh matched bookends.
+        All 32 decode choices agree and the final complete head is byte-exact;
+        prefill quality differs and native prefill/decode take 16.20%/2.05% more time.
+        Historical full-cache comparisons remain qualified by their recipe;
+        Gemma26 transfer and full quality/performance qualification remain open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

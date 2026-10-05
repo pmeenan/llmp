@@ -280,6 +280,16 @@ and supplies no broader state, context or performance qualification. The
 unchanged reference uses its C-API full sliding-window cache default; this
 short prefix never wraps. Other models need independent transfer controls.
 
+The [8K ring-cache reference screen](experiments/gemma-swa-ring-h1/README.md)
+then explicitly matches the original CLI/server sliding-window policy to
+native's bounded cache, leaving native math unchanged. All 32 incoming-head
+choices agree and the final complete head is byte-exact, while the prefill
+head still differs. Native prefill/decode take 16.1957%/2.0504% more time.
+Historical full-cache ratios do not establish representative ring-cache
+speed or memory parity. Match effective cache topology, capacity and read
+policy in other families' comparisons; Gemma26 needs independent controls
+at its actual 1,024-row chunk and 2,048-cell ring. No policy is selected.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

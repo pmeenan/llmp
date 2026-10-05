@@ -9,6 +9,14 @@ mismatches. Production row caps, optimization defaults and quality allowances
 are unchanged. The [protocol](PROTOCOL.md) describes the paid work;
 [results](results.json) retain exact counts, hashes and aggregate comparisons.
 
+The reference used the C-API default `swa_full=true`, with a full-length
+local cache. These historical measurements retain that recipe. The later
+[dense31 ring-cache screen](../gemma-swa-ring-h1/README.md) matches the normal
+CLI/server setting `swa_full=false`: its final head is byte-exact and all 32
+decode choices agree, but native prefill/decode take 16.20%/2.05% more time.
+Gemma26 needs its own ring-cache comparison. The speed and coarse memory
+ratios below do not establish parity for a production ring-cache recipe.
+
 One physical Spark (`spark-c4e2`, SSH `spark`) ran both engines on native base
 `c2d2147`. Context is 16,384, KV is F16, masks are device-built, reference
 fusion and CUDA graphs are enabled/allowed, and no drafts are used. The same

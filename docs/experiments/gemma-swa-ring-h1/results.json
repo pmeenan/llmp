@@ -1,0 +1,122 @@
+{
+  "capacity_is_peak_measurement": false,
+  "comparison": {
+    "all_32_head_vectors_retained": false,
+    "analysis_source_identity": {
+      "bytes": 4597,
+      "sha256": "01a13267e3fc994b8827bc5c9ec190e71653c566058f737d3e1e90825212bf97"
+    },
+    "heads": {
+      "final.f32": {
+        "byte_exact": true,
+        "full_softmax_tv": 0.0,
+        "max_raw_delta": 0.0,
+        "native_sha256": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29",
+        "reference_argmax_nll_delta": 0.0,
+        "reference_repeat_exact": true,
+        "ring_reference_sha256": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "prefill.f32": {
+        "byte_exact": false,
+        "full_softmax_tv": 0.027604193902878636,
+        "max_raw_delta": 0.41361474990844727,
+        "native_sha256": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+        "reference_argmax_nll_delta": 0.009189652878561105,
+        "reference_repeat_exact": true,
+        "ring_reference_sha256": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40"
+      }
+    },
+    "margin_noise_calibrated": false,
+    "native_repeat_and_state_exact": true,
+    "official_retirement": {
+      "final.json": {
+        "bytes": 82,
+        "sha256": "605ab5986a0b4b0b8cf6dff5fbfe4983e91f1b6043c019282ae6554b63776c46"
+      },
+      "job.json": {
+        "bytes": 499,
+        "sha256": "0a444cfcc8d3fd4787a3a21393eac13db8759f4194957c664beaafeed7675d8a"
+      },
+      "log": {
+        "bytes": 263095,
+        "sha256": "cb280a4855511364e65e97363cf9b89564e0ace1a6d6dff825e80fdec52263f1"
+      }
+    },
+    "own_freeze": {
+      "bytes": 6910,
+      "sha256": "409bbe84e75469258cf23802cc110fd4f91522bd278f48ae5488294675378e36"
+    },
+    "paid": {
+      "decode": {
+        "native_relative_to_reference_percent": 2.0504011654454146,
+        "seconds": [
+          3.21634,
+          3.28538,
+          3.2224
+        ]
+      },
+      "prefill": {
+        "native_relative_to_reference_percent": 16.195703323378275,
+        "seconds": [
+          10.712,
+          12.4696,
+          10.7511
+        ]
+      }
+    },
+    "reference_recipe": "swa_full=false, kv_unified=false",
+    "scope": "two complete heads; 32 incoming-head choices; initialized native state",
+    "source_freeze": {
+      "bytes": 6463,
+      "sha256": "0b4c7d0c09b6aa18ed7a26f25618bfdd9866a57adb11d4be2d575b58dbfdc2ce"
+    },
+    "strict_argmax_differences_32": 0
+  },
+  "complete_32_head_vectors_claim": false,
+  "corpus_ppl_claim": false,
+  "native_funded_capacity": {
+    "call_bound": 68,
+    "fixed": 1017119744,
+    "max_rows": 256,
+    "pinned_head_envelope": 268435456,
+    "plan_floor": 2194992,
+    "plan_graph_capacity": 4925562048,
+    "publication": 1048576,
+    "state_capacity": 2390753280,
+    "total": 29620576448,
+    "weights": 18895339520
+  },
+  "native_initialized_state": {
+    "bytes": 1740636160,
+    "sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+  },
+  "native_layout": "gemma31-f16-kv-scalar-device-v1:16384:256:16384:1280",
+  "native_matches_historical": {
+    "fresh_own_freeze": {
+      "bytes": 6910,
+      "sha256": "409bbe84e75469258cf23802cc110fd4f91522bd278f48ae5488294675378e36"
+    },
+    "full_initialized_state_byte_exact": true,
+    "historical_native_log": {
+      "bytes": 14714,
+      "sha256": "caae95306956d13451641c55d206b04a93c03457ba3cda8ccd65ecfba7f7b26d"
+    },
+    "historical_own_freeze": {
+      "bytes": 1506,
+      "sha256": "bf7f95063dfad774871404bd97d6f3fce65c9ea868a077c8fe9817f006a5cf7e"
+    },
+    "incoming_32_choices_equal": true,
+    "new_binary_independently_repeated_before_ring_stock": true,
+    "no_old_calibration_inherited": true,
+    "two_complete_heads_byte_exact": true
+  },
+  "new_production_policy_selected": false,
+  "published_decode_heads_per_arm": 32,
+  "published_prefill_heads": {
+    "native": 32,
+    "reference": 1
+  },
+  "schema": 1,
+  "scope": "dense31 C1 8K/u256 ring reference; two complete heads and 32 incoming-head choices",
+  "state_restore_or_full_support_claim": false
+}
