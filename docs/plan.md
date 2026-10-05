@@ -245,7 +245,11 @@ family" guide, and its long-context scaling work.
         serving and whole-model/reference qualification remain owed.
       - [x] Gemma graph-owned causal/ring device masks, with funded host
         reference inputs and [exact mask/replay controls](experiments/gemma-device-masks/README.md).
-        Whole-model adoption, optimized serving and reference gates remain owed.
+        Optimized serving and reference gates remain owed.
+      - [x] Bounded native Gemma 26B-A4B runner with independent slots,
+        device masks and [exact state/replay controls](experiments/gemma-runner/README.md).
+        Serving, assistant, representative quality, long-context and optimized
+        batching/performance qualification remain owed.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

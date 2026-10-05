@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Bounded native Gemma 26B-A4B engine runner with independent request slots,
+  initialized KV, device masks and exact checkpoint/spill continuations.
+  Serving and full model reference qualification remain separate.
+
 - Checked D256/F16 local attention primitives with GQA2 vector/MMA shape
   selection, independent ring masks and charged capture workspace. Gemma
   whole-model execution and batching qualification remain separate.

@@ -155,9 +155,9 @@ endfunction()
 # it to list its tests: they are read from its sources (gtest_add_tests).
 # It finds the SDK's cuBLAS in build/<preset>/cublas through a RUNPATH
 # relative to itself, which a deployed copy of the build tree keeps.
-# ENVIRONMENT sets its tests' environment.
+# ENVIRONMENT sets its tests' environment; MODELS marks model-file tests.
 function(jitllm_gpu_gtest target)
-  cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "DISCRETE;ENVIRONMENT")
+  cmake_parse_arguments(PARSE_ARGV 1 arg "MODELS" "" "DISCRETE;ENVIRONMENT")
   if(arg_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "jitllm_gpu_gtest(${target}): unexpected ${arg_UNPARSED_ARGUMENTS}")
   endif()
@@ -166,7 +166,11 @@ function(jitllm_gpu_gtest target)
   file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
   target_link_options(${target} PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
   gtest_add_tests(TARGET ${target} TEST_PREFIX unit. TEST_LIST tests)
-  set_tests_properties(${tests} PROPERTIES LABELS gpu)
+  set(labels gpu)
+  if(arg_MODELS)
+    list(APPEND labels models)
+  endif()
+  set_tests_properties(${tests} PROPERTIES LABELS "${labels}")
   if(arg_ENVIRONMENT)
     set_tests_properties(${tests} PROPERTIES ENVIRONMENT "${arg_ENVIRONMENT}")
   endif()
@@ -182,7 +186,7 @@ function(jitllm_gpu_gtest target)
     endforeach()
   endif()
   if(discrete AND JITLLM_CUDA_DISCRETE_SASS)
-    set_tests_properties(${discrete} PROPERTIES LABELS "gpu;gpu-discrete")
+    set_tests_properties(${discrete} PROPERTIES LABELS "${labels};gpu-discrete")
   endif()
 endfunction()
 

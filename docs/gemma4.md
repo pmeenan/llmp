@@ -6,8 +6,9 @@
 `src/model/gemma4.h` describes the approved 26B-A4B and 31B text models:
 fixed profiles, strict GGML artifact bindings, bounded state layouts,
 initialized read/write footprints and independent request-segment inputs.
-The segmented GGML graph and checked plan adapter described below extend
-this foundation. They supply no serving runner, assistant or inference support. Both checkpoints remain unsupported
+The segmented GGML graph, checked plan adapter and bounded native 26B-A4B
+engine runner described below extend this foundation. They supply no serving
+adapter, assistant or qualified inference support. Both checkpoints remain unsupported
 in the [support matrix](model-support.md); the family task remains open.
 
 ## Verified contracts
@@ -243,6 +244,28 @@ the projection reshape and per-segment views do not fit the existing fusion
 pattern, and generic graph fusion is disabled here. The separately checked
 factor-aware fused primitive does not close this graph dispatch gap.
 Qualified norm/RoPE-store selection and optimized batching remain owed.
+
+## Native 26B-A4B runner controls
+
+`src/engine/gemma4_runner.h` reuses `RunnerResources`, `PagedWeights`,
+`LiveState`, charged plan caches, `GraphRuns` and `RequestCohort`. It binds the
+actual prepared artifact, validates funded F32 RoPE factors before execution,
+materializes and initializes complete padded KV read ranges, and publishes
+only completed chunks. Independent slots preserve peers through clear,
+checkpoint, spill/restore and clean capacity refusal. Scalar chunks delegate
+to the wave path. Setup measures a shared workspace/input envelope across
+slot counts, maximal ragged rows and full read depth; it does not eagerly
+materialize every slot's context ceiling.
+
+Checked device masks are the runner default after exact full-model agreement
+with caller-funded host masks. Norm fusion, shared Q8 preparation and bounded
+row-preserving products remain explicit experiments, default off. The
+[first complete-model controls](experiments/gemma-runner/README.md) retain the
+short reference/noise screen, ordinary joined arithmetic differences, exact
+experimental solo/join state and short paid latency. Full weight-closure
+acquisition is the current numerical baseline; route-discovered expert paging,
+qualified lanes/optimization dispatch, long context, serving and representative
+reference quality/performance remain required before model support.
 
 ## Required execution and optimization qualification
 
