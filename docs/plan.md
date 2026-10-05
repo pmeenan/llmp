@@ -366,6 +366,10 @@ family" guide, and its long-context scaling work.
         with exact prior head/state controls and checked thread/interval rosters.
         The two graph-plan passes use about 1.093 s of charged caller CPU;
         algorithm changes and paid optimization/transfer gates remain separate.
+      - [x] [Call-local graph reader index](experiments/gemma-plan-index/README.md),
+        with fresh pre/post-placement checks and exact Gemma26/31 head/state
+        controls. Gemma26 prefill is 27.3% faster than its retained baseline;
+        current prefill gaps remain 15.10%/13.83%. Full qualification stays open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

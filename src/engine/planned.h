@@ -77,7 +77,9 @@ struct PlannedGraph : PlannedBase {
 // generous (docs/experiments/memory-pressure).
 std::expected<kernels::ggml::TensorArena, std::string> SizedArena(
     std::size_t estimate, const std::function<bool(kernels::ggml::TensorArena&)>& build);
-// What that scratch arena holds now (host memory outside the catalog, which
+// That scratch arena plus the maximum measured graph reader-index allowance
+// (one transient index, shared by sequential planning passes): host memory
+// outside the catalog, which
 // the start's guard counts beside a step's plans once the models measured
 // their largest plans).
 std::uint64_t ScratchArenaBytes();

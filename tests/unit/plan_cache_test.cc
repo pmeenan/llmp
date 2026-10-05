@@ -23,6 +23,7 @@
 #include "engine/graph_runs.h"
 #include "engine/planned.h"
 #include "ggml.h"
+#include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/tensors.h"
 #include "memory/reclaim.h"
 
@@ -259,3 +260,38 @@ TEST(PlanCacheTest, APlansArenaHoldsWhatItsGraphUsesNotTheEstimate) {
 }
 
 }  // namespace
+
+TEST(PlanCacheTest, ReaderScratchIsMeasuredOnceAndRuntimeCannotGrowIt) {
+  namespace kg = jitllm::kernels::ggml;
+  auto arena = kg::TensorArena::Create(8);
+  ASSERT_TRUE(arena);
+  auto* input = ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 4);
+  auto* output = ggml_scale(arena->context(), input, 2.0f);
+  const std::array nodes{output};
+  const std::array inputs{input};
+  const std::array keep{output};
+  kg::DeviceChoices choices;
+  choices.fuse_norms = true;
+  en::PlannedBase measured;
+  auto measure = en::PlaceAndPlan(measured, nodes, inputs, keep, choices, 0, 0);
+  ASSERT_TRUE(measure);
+  const auto envelope = en::ScratchArenaBytes();
+  const auto allowance = kg::detail::GraphReadIndex::ScratchBytes(nodes, keep);
+  ASSERT_TRUE(allowance);
+  EXPECT_GE(envelope, *allowance);
+  en::PlannedBase placed;
+  auto place =
+      en::PlaceAndPlan(placed, nodes, inputs, keep, choices, 1ULL << 40, measured.placement.extent);
+  ASSERT_TRUE(place);
+  EXPECT_TRUE(kg::SamePlan(measured.plan, placed.plan));
+  EXPECT_EQ(en::ScratchArenaBytes(), envelope);
+  // A caller cannot silently enlarge the startup envelope, even by duplicate
+  // keep entries. Refusal precedes address rebinding and index allocation.
+  std::vector<ggml_tensor*> oversized_keep(envelope / 1024 + 1, output);
+  const auto address = output->data;
+  en::PlannedBase refused;
+  EXPECT_FALSE(en::PlaceAndPlan(refused, nodes, inputs, oversized_keep, choices, 1ULL << 42,
+                                measured.placement.extent));
+  EXPECT_EQ(output->data, address);
+  EXPECT_EQ(en::ScratchArenaBytes(), envelope);
+}

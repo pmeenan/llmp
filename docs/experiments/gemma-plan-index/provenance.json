@@ -1,0 +1,69 @@
+{
+  "source_base": "dd999c634fb5311b750261122d754fa5e6751f66",
+  "tensorfold": {
+    "utc": "2026-10-05T18:28:56.665638+00:00",
+    "pin": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "files": {
+      "README.md": {
+        "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+      },
+      "pyproject.toml": {
+        "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+      },
+      "src/tensorfold/__init__.py": {
+        "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+      },
+      "docs/recipes/gemma-4.md": {
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      }
+    },
+    "version": "0.6.5",
+    "recipe_scope": "Gemma26 MLX; no dense31 CUDA recipe"
+  },
+  "measured_native_binary_sha256": "ba02e1663b2250fcb06de91bffee7d1e55aab122db1f41b6cf2efd4353c1b13e",
+  "measured_native_helper_sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2",
+  "final_funded_native_binary_sha256": "0b8a127387d642e43b20256bc8b55a81f68d39661c481f51b9ac7bae89bccab0",
+  "source_change_after_bookends": "Optional primitive index bypass and bounded startup scratch accounting; helper changes only budget/host floor. Final native26 output/state/choices control remains exact.",
+  "sdk": "aarch64-c09daba6ac31edee",
+  "final_build_receipt_sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d",
+  "reference_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+  "reference_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+  "official_jobs": [
+    "m35-gemma-plan-index-ref26-first",
+    "m35-gemma-plan-index-native26",
+    "m35-gemma-plan-index-check26",
+    "m35-gemma-plan-index-ref26-repeat",
+    "m35-gemma-plan-index-native31",
+    "m35-gemma-plan-index-check5",
+    "m35-gemma-plan-index-funded1",
+    "m35-gemma-plan-index-full2"
+  ],
+  "focused_checks": {
+    "passed": 79,
+    "failed": 0,
+    "skipped": 0
+  },
+  "final_funded_control": {
+    "two_heads_state_layout_32choices_exact": true,
+    "prefill_seconds": "2.77254",
+    "decode_seconds": "0.68771",
+    "planning_scratch_allowance_bytes": 9409024
+  },
+  "retained_failures": [
+    "build1/check1 direct tests omitted JITLLM_TEST_DATA; compilation and14 controls passed before fixture refusal",
+    "check3 long-view regression initially used unsupported GGML_DUP; replaced by SCALE without production change",
+    "full1 launch rc127: supervisor PATH omitted mise; full2 uses absolute installed mise path"
+  ],
+  "raw_evidence": "External gemma-plan-index-raw and gemma-plan-index-validation; no raw tokens/heads/KV stored in Git",
+  "final_full_suite": {
+    "job": "m35-gemma-plan-index-full2",
+    "host": "spark-b",
+    "passed": 1698,
+    "failed": 0,
+    "skipped": 0,
+    "gpu": 311,
+    "models": 57,
+    "ctest_seconds": 598.87,
+    "official_retirement": "done rc0"
+  }
+}

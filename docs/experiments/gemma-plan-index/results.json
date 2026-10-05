@@ -1,0 +1,88 @@
+{
+  "native_binary_sha256": "ba02e1663b2250fcb06de91bffee7d1e55aab122db1f41b6cf2efd4353c1b13e",
+  "native_helper_sha256": "8fc6e4b377f5fa120d1dcc82f44531c2b201eb0462905fbe9ff1c68e45b772a2",
+  "scope": "untraced, same-format physical Spark original/native-own-two-repeats/original; 8192prefill +3post-prefill untimed +32completed forced decode; two retained full heads and initialized native state; no all32fullvector claim",
+  "profiles": {
+    "26": {
+      "host": "spark-b",
+      "policy": "all",
+      "max_rows": 1024,
+      "native_two_repeats_heads_state_choices_match_fixed_baseline": true,
+      "reference_two_retained_heads_repeat_and_match_fixed_baseline": true,
+      "reference_native_32_strict_choices_identical": true,
+      "owned_reference_containers_absent": true,
+      "times": {
+        "prefill_seconds": {
+          "reference_bookends": [
+            2.42169,
+            2.39683
+          ],
+          "native_first_repeat": [
+            2.77167,
+            2.77446
+          ],
+          "native_mean_vs_reference_mean_pct": 15.100279753949364,
+          "native_first_vs_reference_mean_pct": 15.04237815760856
+        },
+        "decode_seconds": {
+          "reference_bookends": [
+            0.682226,
+            0.685499
+          ],
+          "native_first_repeat": [
+            0.68708,
+            0.688982
+          ],
+          "native_mean_vs_reference_mean_pct": 0.6095523588440788,
+          "native_first_vs_reference_mean_pct": 0.47048931620026213
+        }
+      }
+    },
+    "31": {
+      "host": "spark",
+      "policy": "both",
+      "max_rows": 256,
+      "native_two_repeats_heads_state_choices_match_fixed_baseline": true,
+      "reference_two_retained_heads_repeat_and_match_fixed_baseline": true,
+      "reference_native_32_strict_choices_identical": true,
+      "owned_reference_containers_absent": true,
+      "times": {
+        "prefill_seconds": {
+          "reference_bookends": [
+            10.8711,
+            10.9044
+          ],
+          "native_first_repeat": [
+            12.419,
+            12.3674
+          ],
+          "native_mean_vs_reference_mean_pct": 13.827007416592041,
+          "native_first_vs_reference_mean_pct": 14.063970976556227
+        },
+        "decode_seconds": {
+          "reference_bookends": [
+            3.11187,
+            3.10898
+          ],
+          "native_first_repeat": [
+            3.17308,
+            3.17192
+          ],
+          "native_mean_vs_reference_mean_pct": 1.995707982028172,
+          "native_first_vs_reference_mean_pct": 2.0143549514937575
+        }
+      }
+    }
+  },
+  "retained_26_baseline_prefill_seconds": [
+    3.82166,
+    3.80773
+  ],
+  "26_prefill_reduction_vs_retained_baseline_pct": 27.30572168941423,
+  "limits": [
+    "Two full heads retained per arm; no all32-head-vector or complete quality gate.",
+    "Initialized state is matched to retained native own controls, not crossengine state.",
+    "31 runs on SparkA; no same-host old/new31 speed comparison.",
+    "Native publishes8/32 prefill heads (26/31); original publishes1. Existing work is unchanged."
+  ]
+}

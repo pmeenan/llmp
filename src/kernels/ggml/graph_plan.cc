@@ -28,6 +28,7 @@
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
+#include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
@@ -71,39 +72,6 @@ const ggml_tensor* Storage(const ggml_tensor* t) {
   return t;
 }
 
-// Whether `reader`, reading `tensor` itself, is the only reader of
-// `tensor`'s memory: no other node reads it, directly or through a view, no
-// view of it or write into it is in the graph, and neither the graph's last
-// node nor a tensor `keep` names (read after the run) is it or views it.
-// For an implementation that leaves `tensor` unwritten or overwrites it
-// with another form. dsv4_hc_norm.cc ReadElsewhere's scan, by storage.
-bool OnlyReader(GraphNodes graph, std::span<ggml_tensor* const> keep, const ggml_tensor* tensor,
-                const ggml_tensor* reader) {
-  const ggml_tensor* storage = Storage(tensor);
-  if (graph.empty() || Storage(graph.back()) == storage) {
-    return false;
-  }
-  for (const ggml_tensor* kept : keep) {
-    if (kept != nullptr && Storage(kept) == storage) {
-      return false;
-    }
-  }
-  for (const ggml_tensor* node : graph) {
-    if (node == tensor) {
-      continue;
-    }
-    if (Storage(node) == storage) {
-      return false;
-    }
-    for (const ggml_tensor* src : node->src) {
-      if (src != nullptr && Storage(src) == storage && (node != reader || src != tensor)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 std::string_view MulMatName(MulMatPath path) {
   switch (path) {
     case MulMatPath::kVector:
@@ -144,9 +112,15 @@ bool LaunchesNothing(const ggml_tensor* node) {
          node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE;
 }
 
+bool NeedsGraphReadIndex(bool fusion, const DeviceChoices& device) {
+  return fusion || device.fuse_norms || device.fuse_norm_rope || device.fuse_norm_add ||
+         device.fuse_gemma_route || device.fuse_gemma_reduce || device.pair_glu;
+}
+
 std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                                                   const DeviceChoices& device,
-                                                  std::span<ggml_tensor* const> keep) {
+                                                  std::span<ggml_tensor* const> keep,
+                                                  std::uint64_t index_scratch_limit) {
   if (fusion && device.row_invariant) {
     // Upstream's fused vector products pick their launch by the column
     // count: a row-invariant plan (D-092) cannot take them.
@@ -165,6 +139,13 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     }
     for (const auto* kept : keep)
       if (!BoundedViewChain(kept)) return Rejected("invalid checked-fusion-policy kept view chain");
+  }
+  std::optional<detail::GraphReadIndex> reads;
+  if (NeedsGraphReadIndex(fusion, device)) {
+    const auto index_bytes = detail::GraphReadIndex::ScratchBytes(graph, keep);
+    if (!index_bytes || *index_bytes > index_scratch_limit)
+      return Rejected("graph reader index exceeds its host scratch allowance");
+    reads.emplace(graph, keep);
   }
   GraphPlan plan;
   std::vector<bool> taken(graph.size(), false);
@@ -195,14 +176,14 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       continue;
     }
     if (!fusion && device.fuse_gemma_route && node->op == GGML_OP_SOFT_MAX) {
-      if (const auto f = GemmaRoutingFusionAt(graph, i, keep)) {
+      if (const auto f = GemmaRoutingFusionAt(graph, i, keep, &*reads)) {
         add(Operation::kGemmaRoute, kGemmaRouteName, i, {f->nodes.begin(), f->nodes.end()},
             f->nodes.size());
         continue;
       }
     }
     if (!fusion && device.fuse_gemma_reduce && node->op == GGML_OP_MUL) {
-      if (const auto f = GemmaReductionFusionAt(graph, i, keep)) {
+      if (const auto f = GemmaReductionFusionAt(graph, i, keep, &*reads)) {
         add(Operation::kGemmaScaledReduce, kGemmaReduceName, i, {f->nodes.begin(), f->nodes.end()},
             f->nodes.size());
         continue;
@@ -210,20 +191,17 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     }
     if (!fusion && node->op == GGML_OP_RMS_NORM) {
       if (const auto f = device.fuse_norm_rope ? GemmaNormRopeFusionAt(graph, i) : std::nullopt;
-          f && OnlyReader(graph, keep, f->norm, f->mul) &&
-          OnlyReader(graph, keep, f->mul, f->out)) {
+          f && reads->OnlyReader(f->norm, f->mul) && reads->OnlyReader(f->mul, f->out)) {
         add(Operation::kRmsNormMulRope, kGemmaNormRopeName, i, {f->norm, f->mul, f->out}, 3);
         continue;
       }
       if (const auto f = device.fuse_norm_add ? GemmaNormAddFusionAt(graph, i) : std::nullopt;
-          f && OnlyReader(graph, keep, f->norm, f->mul) &&
-          OnlyReader(graph, keep, f->mul, f->out)) {
+          f && reads->OnlyReader(f->norm, f->mul) && reads->OnlyReader(f->mul, f->out)) {
         add(Operation::kRmsNormMulAdd, kGemmaNormAddName, i, {f->norm, f->mul, f->out}, 3);
         continue;
       }
       if (const auto f = device.fuse_norm_add ? GemmaNormAddGatherFusionAt(graph, i) : std::nullopt;
-          f && OnlyReader(graph, keep, f->norm, f->mul) &&
-          OnlyReader(graph, keep, f->mul, f->out)) {
+          f && reads->OnlyReader(f->norm, f->mul) && reads->OnlyReader(f->mul, f->out)) {
         taken[i] = taken[i + 1] = true;
         deferred_norm_add.emplace(i + 3, *f);
         continue;
@@ -260,9 +238,8 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           const auto op = ggml_get_glu_op(f->glu);
           if (op == GGML_GLU_OP_GEGLU && device.geglu_fusible && device.geglu_fusible(f->up)) {
             // The products are elided: keep/read dependencies must survive.
-            if (MulMatVecGeGluPrecisionFits(f->gate, f->up) &&
-                OnlyReader(graph, keep, f->gate, f->glu) &&
-                OnlyReader(graph, keep, f->up, f->glu)) {
+            if (MulMatVecGeGluPrecisionFits(f->gate, f->up) && reads->OnlyReader(f->gate, f->glu) &&
+                reads->OnlyReader(f->up, f->glu)) {
               add(Operation::kMulMatGeGlu, kMulMatGeGluFused, i, {f->gate, f->up, f->glu}, 3);
               continue;
             }
@@ -277,8 +254,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         }
       }
       if (node->op == GGML_OP_RMS_NORM) {
-        if (const auto f = RmsNormMulFusionAt(graph, i);
-            f && OnlyReader(graph, keep, f->norm, f->mul)) {
+        if (const auto f = RmsNormMulFusionAt(graph, i); f && reads->OnlyReader(f->norm, f->mul)) {
           add(Operation::kRmsNormMul, kRmsNormMulFused, i, {f->norm, f->mul}, 2);
           continue;
         }
@@ -289,7 +265,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
         ggml_tensor* next = i + 1 < graph.size() ? graph[i + 1] : nullptr;
         if (const auto f =
                 !fusion && device.fuse_norms ? RmsNormMulFusionAt(graph, i) : std::nullopt;
-            f && OnlyReader(graph, keep, f->norm, f->mul)) {
+            f && reads->OnlyReader(f->norm, f->mul)) {
           add(Operation::kRmsNormMul, kRmsNormMulFused, i, {f->norm, f->mul}, 2);
         } else if (!fusion && next != nullptr && next->op == GGML_OP_MUL && next->src[0] == node) {
           add(Operation::kRmsNormMul, kRmsNormMulUnfused, i, {node, next}, 2);
@@ -413,7 +389,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
               if (device.pair_glu && device.compact_experts && device.pair_glu_fits &&
                   glu != nullptr && glu->src[0] == node && glu->src[1] == second &&
                   MulMatIdQPairGluFits(second, node, glu) && device.pair_glu_fits(second, node) &&
-                  OnlyReader(graph, keep, second, glu)) {
+                  reads->OnlyReader(second, glu)) {
                 ggml_tensor* down = i + 3 < graph.size() ? graph[i + 3] : nullptr;
                 // D2R reads the F32 activation and quantizes it itself
                 // (measured faster than the quantizing write-back).
@@ -423,7 +399,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                 // activation was: only the down product may read it.
                 if (device.pair_glu_q8 && !d2r_down && down != nullptr &&
                     down->op == GGML_OP_MUL_MAT_ID && MulMatIdQCompactPrequantFits(down, glu) &&
-                    CheckMulMatIdQCompact(down) && OnlyReader(graph, keep, glu, down)) {
+                    CheckMulMatIdQCompact(down) && reads->OnlyReader(glu, down)) {
                   const auto down_path = device.quant(down);
                   if (down_path && *down_path == QuantMulMatPath::kTile) {
                     add(Operation::kMulMatId, kMulMatIdQPairGluQ8, i, {second, node, glu}, 3);

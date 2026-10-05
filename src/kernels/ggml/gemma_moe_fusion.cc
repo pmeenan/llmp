@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 
+#include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/validate_util.h"
 
 namespace jitllm::kernels::ggml {
@@ -73,7 +74,9 @@ bool Outside(const ggml_tensor* input, const std::array<ggml_tensor*, N>& nodes)
 template <std::size_t N>
 bool Private(GraphNodes graph, std::span<ggml_tensor* const> keep,
              const std::array<ggml_tensor*, N>& nodes, const ggml_tensor* output,
-             const ggml_tensor* selected_ids = nullptr) {
+             const ggml_tensor* selected_ids, const GraphReadIndex* reads) {
+  if (reads != nullptr && reads->Matches(graph, keep))
+    return reads->Private(nodes, output, selected_ids);
   const auto out = RootOf(output);
   if (!out) return false;
   const auto internal = [&](const ggml_tensor* t) {
@@ -105,7 +108,8 @@ bool Private(GraphNodes graph, std::span<ggml_tensor* const> keep,
 }  // namespace
 
 std::optional<GemmaRoutingFusionNodes> GemmaRoutingFusionAt(GraphNodes graph, std::size_t index,
-                                                            std::span<ggml_tensor* const> keep) {
+                                                            std::span<ggml_tensor* const> keep,
+                                                            const detail::GraphReadIndex* reads) {
   GemmaRoutingFusionNodes f{};
   if (!Window(graph, index, f.nodes)) return std::nullopt;
   const auto& n = f.nodes;
@@ -137,13 +141,14 @@ std::optional<GemmaRoutingFusionNodes> GemmaRoutingFusionAt(GraphNodes graph, st
                 {n[9], base::Bytes(r * 8 * 4)},
                 {n[3], base::Bytes(r * 128 * 4)}};
   if (!Outside(f.operands.logits.tensor, n) || !CheckGemmaRouting(f.operands) ||
-      !Private(graph, keep, n, n[9], n[3]))
+      !Private(graph, keep, n, n[9], n[3], reads))
     return std::nullopt;
   return f;
 }
 
 std::optional<GemmaReductionFusionNodes> GemmaReductionFusionAt(
-    GraphNodes graph, std::size_t index, std::span<ggml_tensor* const> keep) {
+    GraphNodes graph, std::size_t index, std::span<ggml_tensor* const> keep,
+    const detail::GraphReadIndex* reads) {
   GemmaReductionFusionNodes f{};
   if (!Window(graph, index, f.nodes)) return std::nullopt;
   const auto& n = f.nodes;
@@ -177,7 +182,7 @@ std::optional<GemmaReductionFusionNodes> GemmaReductionFusionAt(
                 {n[16], base::Bytes(r * 2816 * 4)}};
   if (!Outside(f.operands.experts.tensor, n) || !Outside(f.operands.scales.tensor, n) ||
       !Outside(f.operands.weights.tensor, n) || !CheckGemmaScaledReduction(f.operands) ||
-      !Private(graph, keep, n, n[16]))
+      !Private(graph, keep, n, n[16], nullptr, reads))
     return std::nullopt;
   return f;
 }

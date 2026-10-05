@@ -14,6 +14,9 @@
 #include "kernels/ggml/gemma_moe.h"
 
 namespace jitllm::kernels::ggml {
+namespace detail {
+class GraphReadIndex;
+}
 inline constexpr std::string_view kGemmaRouteName = "ggml.gemma.route.fused";
 inline constexpr std::string_view kGemmaReduceName = "ggml.gemma.scaled_reduce.fused";
 
@@ -32,10 +35,12 @@ struct GemmaReductionFusionNodes {
 // First-eight IDs and normalized weights may be read/kept independently.
 // Full sort, probabilities and other elided values require primitives.
 std::optional<GemmaRoutingFusionNodes> GemmaRoutingFusionAt(
-    GraphNodes graph, std::size_t index, std::span<ggml_tensor* const> keep = {});
+    GraphNodes graph, std::size_t index, std::span<ggml_tensor* const> keep = {},
+    const detail::GraphReadIndex* reads = nullptr);
 // Two products (expert*scale)*weight, eight selected-slot views, seven
 // ascending dependent additions. Every elided producer/view must be private.
 std::optional<GemmaReductionFusionNodes> GemmaReductionFusionAt(
-    GraphNodes graph, std::size_t index, std::span<ggml_tensor* const> keep = {});
+    GraphNodes graph, std::size_t index, std::span<ggml_tensor* const> keep = {},
+    const detail::GraphReadIndex* reads = nullptr);
 }  // namespace jitllm::kernels::ggml
 #endif  // JITLLM_KERNELS_GGML_GEMMA_MOE_FUSION_H_

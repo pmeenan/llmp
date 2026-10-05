@@ -81,6 +81,14 @@ fixed-prefix decode; known numerical differences keep qualification open.
 The bounded dense31 norm result does not close the required full reference,
 long-context, selected optimization or optimized-batching support gates.
 
+The shared [planning read index](experiments/gemma-plan-index/README.md) removes
+repeated graph scans without changing selected operations or kernel arithmetic.
+With the existing default-off 26B `all` and 31B `both` policies, matched ring-cache
+8K screens leave native prefill 15.10% / 13.83% slower and fixed-prefix decode
+0.61% / 2.00% slower, respectively. Native retained heads, initialized state and
+all 32 choices remain unchanged. This planning improvement preserves the existing
+policy defaults and does not establish full model or optimized-batching qualification.
+
 ## Chat templates
 
 A chat template renders natively when a native renderer is registered for

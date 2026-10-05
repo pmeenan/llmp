@@ -94,16 +94,19 @@ int main(int argc, char** argv) {
     const auto retention = calls * floor * (1 + kGraphRatio);
     const auto base = fixed + runner.weights().size() * en::kPagedExtent +
                       2 * node.StateCapacity() + kOutputBytes;
-    if (retention > std::numeric_limits<std::uint64_t>::max() - base)
+    const auto planning_scratch = en::ScratchArenaBytes();
+    if (planning_scratch > std::numeric_limits<std::uint64_t>::max() - base ||
+        retention > std::numeric_limits<std::uint64_t>::max() - base - planning_scratch)
       return Error("execution budget overflow");
-    const auto budget = base + retention;
+    const auto budget = base + planning_scratch + retention;
     std::cout << "PREFILL_BUDGET fixed=" << fixed
               << " weights=" << runner.weights().size() * en::kPagedExtent
               << " state_capacity=" << node.StateCapacity() << " publication=" << kOutputBytes
               << " pinned_head_envelope=" << std::uint64_t{max_rows} * kVocab * 4
               << " max_rows=" << max_rows << " call_bound=" << calls << " plan_floor=" << floor
-              << " plan_graph_capacity=" << retention << " total=" << budget << '\n';
-    node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes());
+              << " planning_scratch=" << planning_scratch << " plan_graph_capacity=" << retention
+              << " total=" << budget << '\n';
+    node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes() + planning_scratch);
     if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;

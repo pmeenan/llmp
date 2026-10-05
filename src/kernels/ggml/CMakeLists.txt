@@ -29,7 +29,7 @@ add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc gemma4_graph.cc fusion.cc g
                                        validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_weighted_reduce.cc gemma_moe.cc)
-target_sources(jitllm_ggml_tensors PRIVATE gemma_moe_fusion.cc)
+target_sources(jitllm_ggml_tensors PRIVATE gemma_moe_fusion.cc graph_read_index.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_qhead.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_hc_norm.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_outa.cc)
@@ -149,7 +149,7 @@ if(JITLLM_CUDA)
   set(module_files CMakeLists.txt cublas.cc cublas.h dsv4_fast.cu dsv4_fast.h dsv4_graph.cc dsv4_sparse.cu
                    dsv4_weighted_reduce.h dsv4_weighted_reduce.cc dsv4_weighted_reduce.cu
                    gemma_moe.h gemma_moe.cc gemma_moe.cu
-                   gemma_moe_fusion.h gemma_moe_fusion.cc
+                   graph_read_index.h graph_read_index.cc gemma_moe_fusion.h gemma_moe_fusion.cc
                    dsv4_qhead.h dsv4_qhead.cc dsv4_qhead.cu
                    dsv4_hc_norm.h dsv4_hc_norm.cc dsv4_hc_norm.cu
                    mul_mat_q_glu.cuh mul_mat_q_glu.cu

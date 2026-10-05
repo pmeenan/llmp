@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <limits>
 #include <span>
 #include <string_view>
 #include <unordered_map>
@@ -366,14 +367,19 @@ inline constexpr std::int64_t kRowInvariantColumns = 8;
 // Upstream's no-op nodes (ggml_cuda_is_view_or_noop).
 bool LaunchesNothing(const ggml_tensor* node);
 
+// Whether this invocation can query elided storage readers. Primitive plans
+// avoid constructing an unused host index.
+bool NeedsGraphReadIndex(bool fusion, const DeviceChoices& device);
+
 // The plan of `graph` (fusion.h's node order) with fusion on or off. The
 // tensors `keep` names (PlaceActivations's) are read after the run: an
 // implementation that leaves a tensor unwritten or overwrites it with
 // another form (pair_glu, pair_glu_q8) is planned only where nothing but its
 // consumer reads that tensor, in the graph or after it.
-std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
-                                                  const DeviceChoices& device,
-                                                  std::span<ggml_tensor* const> keep = {});
+std::expected<GraphPlan, KernelFailure> PlanGraph(
+    GraphNodes graph, bool fusion, const DeviceChoices& device,
+    std::span<ggml_tensor* const> keep = {},
+    std::uint64_t index_scratch_limit = std::numeric_limits<std::uint64_t>::max());
 
 // Whether two plans run the same implementations over the same nodes.
 bool SamePlan(const GraphPlan& a, const GraphPlan& b);

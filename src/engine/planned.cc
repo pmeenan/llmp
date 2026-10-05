@@ -10,6 +10,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -20,6 +21,7 @@
 #include "catalog/catalog.h"
 #include "engine/paged_node.h"
 #include "engine/support.h"
+#include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/implementations.h"
 
 namespace jitllm::engine {
@@ -39,6 +41,7 @@ struct Scratch {
   std::optional<kg::TensorArena> arena;
   std::size_t tensors = 0;
   std::atomic<std::uint64_t> bytes{0};
+  std::atomic<std::uint64_t> index_bytes{0};
 };
 Scratch& TheScratch() {
   static Scratch scratch;
@@ -47,12 +50,31 @@ Scratch& TheScratch() {
 
 }  // namespace
 
-std::uint64_t ScratchArenaBytes() { return TheScratch().bytes.load(); }
+std::uint64_t ScratchArenaBytes() {
+  return TheScratch().bytes.load() + TheScratch().index_bytes.load();
+}
 
 std::expected<void, std::string> PlaceAndPlan(
     PlannedBase& out, std::span<ggml_tensor* const> nodes, std::span<ggml_tensor* const> inputs,
     std::span<ggml_tensor* const> keep, const kg::DeviceChoices& choices, std::uint64_t activations,
     std::uint64_t activation_bytes, const kg::LaneTags* lanes) {
+  // Measurement precedes the node startup budget. Admit one bounded index
+  // envelope for all measured shapes; runtime plans cannot grow it. Both
+  // planning passes are sequential and their indices are destroyed on return.
+  const auto index_bytes = kg::NeedsGraphReadIndex(false, choices)
+                               ? kg::detail::GraphReadIndex::ScratchBytes(nodes, keep)
+                               : std::optional<std::uint64_t>{0};
+  if (!index_bytes) return Error("graph reader scratch allowance overflow or invalid node");
+  auto& scratch = TheScratch();
+  if (activations == 0) {
+    const std::scoped_lock lock(scratch.mutex);
+    if (*index_bytes > std::numeric_limits<std::uint64_t>::max() - scratch.bytes.load())
+      return Error("combined graph scratch allowance overflow");
+    scratch.index_bytes.store(std::max(scratch.index_bytes.load(), *index_bytes));
+  }
+  const auto index_limit = scratch.index_bytes.load();
+  if (*index_bytes > index_limit)
+    return Error("graph reader index exceeds the startup scratch allowance");
   constexpr std::uint64_t kDistinct = std::uint64_t{1} << 46U;
   std::uint64_t leaf = kDistinct - (std::uint64_t{1} << 40U);
   for (ggml_tensor* input : inputs) {
@@ -61,7 +83,7 @@ std::expected<void, std::string> PlaceAndPlan(
   }
   kg::BindDistinct(nodes, kDistinct);
   // What the caller keeps is read after the graph: never overwritten in place.
-  auto first = kg::PlanGraph(nodes, /*fusion=*/false, choices, keep);
+  auto first = kg::PlanGraph(nodes, /*fusion=*/false, choices, keep, index_limit);
   if (!first) {
     return Error(first.error().detail);
   }
@@ -88,7 +110,7 @@ std::expected<void, std::string> PlaceAndPlan(
     kg::TensorArena::Bind(tensor, activations + offset);
   }
   kg::BindViews(nodes);
-  auto second = kg::PlanGraph(nodes, false, choices, keep);
+  auto second = kg::PlanGraph(nodes, false, choices, keep, index_limit);
   if (!second) {
     return Error(second.error().detail);
   }
@@ -213,6 +235,8 @@ std::expected<kg::TensorArena, std::string> SizedArena(
     }
     s.arena.emplace(std::move(*made));
     s.tensors = estimate;
+    if (s.arena->bytes() > std::numeric_limits<std::uint64_t>::max() - s.index_bytes.load())
+      return Error("combined arena/index scratch allowance overflow");
     s.bytes.store(s.arena->bytes());
   }
   kg::TensorArena& scratch = *s.arena;

@@ -342,6 +342,12 @@ context, restore and optimized serving remain separate gates. The observed
 coarse ordinary26 memory footprint passes its paired bound, without claiming
 full profile memory qualification. Production caps and policies remain unchanged.
 
+The [call-local planner index](experiments/gemma-plan-index/README.md) preserves
+fresh checked selection before and after placement, reducing repeated reader
+scans. Gemma26 prefill improves 27.3% against its retained baseline; fresh 26/31
+prefill gaps remain 15.10%/13.83% with exact prior native head/state controls.
+This changes planning cost, not kernel math or model qualification.
+
 ## Bounded native serving route
 
 The existing runtime driver registers both approved 26B-A4B and dense31 artifacts
