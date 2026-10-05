@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "shape": {
+    "profile": "gemma4-31b",
+    "context_per_owner": 256,
+    "owners": 4,
+    "query_rows_per_owner": 1,
+    "read_cells": 256,
+    "waves": 32,
+    "completed_heads": 128,
+    "vocab": 262144
+  },
+  "native_own_freeze_sha256": "09e8cf2878db6f1a1194d22dabc5e6c5aca0ac70d8470459e0eabacb822f748b",
+  "own_repeat_full_heads_and_initialized_states_exact": true,
+  "paid_candidate_full_heads_and_initialized_states_exact_own": true,
+  "comparisons": {
+    "control": {
+      "native_own_freeze_sha256": "09e8cf2878db6f1a1194d22dabc5e6c5aca0ac70d8470459e0eabacb822f748b",
+      "policy": "control",
+      "native_sha256": "4e92da753659b62e186c208bd0c89bda5cff5c084ee9314cd5770fd246d3e1d8",
+      "reference_sha256": "9de4f80bf3fc9a8f37de296a10933c7ee91a15005a4a62dedbd22c353150cb7e",
+      "input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+      "complete_rows": 128,
+      "vocab": 262144,
+      "byte_exact_rows": 0,
+      "strict_argmax_differences": 15,
+      "positive_reference_winner_margin_differences": 15,
+      "strict_at_reference_tie": 0,
+      "max_raw_delta": 29.084824085235596,
+      "own_repeat_margin_movement": 0,
+      "phase_counts": {
+        "first_wave": {
+          "rows": 4,
+          "byte_exact_rows": 0,
+          "strict_differences": 1,
+          "max_raw": 2.005438804626465
+        },
+        "first_three_waves": {
+          "rows": 12,
+          "byte_exact_rows": 0,
+          "strict_differences": 2,
+          "max_raw": 5.185357093811035
+        },
+        "later_29_waves": {
+          "rows": 116,
+          "byte_exact_rows": 0,
+          "strict_differences": 13,
+          "max_raw": 29.084824085235596
+        }
+      },
+      "scope": "selected rows are not corpus PPL or a whole-model quality gate",
+      "selected_likelihood_summary": {
+        "rows": 16,
+        "positions": "steps0/1/2/31, allfourowners; targetID[68+owner+step]",
+        "max_tv": 0.6396372615743487,
+        "max_absolute_nll_delta": 1.4229460653553119,
+        "mean_signed_nll_delta": 0.17340792318129372,
+        "scope": "fixed16rows, not corpus PPL"
+      }
+    },
+    "candidate": {
+      "native_own_freeze_sha256": "09e8cf2878db6f1a1194d22dabc5e6c5aca0ac70d8470459e0eabacb822f748b",
+      "policy": "candidate",
+      "native_sha256": "9de4f80bf3fc9a8f37de296a10933c7ee91a15005a4a62dedbd22c353150cb7e",
+      "reference_sha256": "9de4f80bf3fc9a8f37de296a10933c7ee91a15005a4a62dedbd22c353150cb7e",
+      "input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+      "complete_rows": 128,
+      "vocab": 262144,
+      "byte_exact_rows": 128,
+      "strict_argmax_differences": 0,
+      "positive_reference_winner_margin_differences": 0,
+      "strict_at_reference_tie": 0,
+      "max_raw_delta": 0.0,
+      "own_repeat_margin_movement": 0,
+      "phase_counts": {
+        "first_wave": {
+          "rows": 4,
+          "byte_exact_rows": 4,
+          "strict_differences": 0,
+          "max_raw": 0.0
+        },
+        "first_three_waves": {
+          "rows": 12,
+          "byte_exact_rows": 12,
+          "strict_differences": 0,
+          "max_raw": 0.0
+        },
+        "later_29_waves": {
+          "rows": 116,
+          "byte_exact_rows": 116,
+          "strict_differences": 0,
+          "max_raw": 0.0
+        }
+      },
+      "scope": "selected rows are not corpus PPL or a whole-model quality gate",
+      "selected_likelihood_summary": {
+        "rows": 16,
+        "positions": "steps0/1/2/31, allfourowners; targetID[68+owner+step]",
+        "max_tv": 0.0,
+        "max_absolute_nll_delta": 0.0,
+        "mean_signed_nll_delta": 0.0,
+        "scope": "fixed16rows, not corpus PPL"
+      }
+    }
+  },
+  "paid": {
+    "reference_bookend_seconds": [
+      3.24939,
+      3.25803
+    ],
+    "native_candidate_seconds": 3.65318,
+    "candidate_latency_percent_above_mean_reference": 12.277369525864312,
+    "native_control_first_repeat_seconds": [
+      3.32051,
+      3.30566
+    ],
+    "candidate_first_repeat_seconds": [
+      3.65447,
+      3.65473
+    ],
+    "candidate_native_graph_replays": 32,
+    "reference_ggml_graph_reused_delta": 32,
+    "reference_cuda_graph_policy": "allowed; GGML reused_delta is not a CUDA replay counter"
+  },
+  "policy_counts": {
+    "norm_rope": 120,
+    "norm_add": 120,
+    "row_products": 0,
+    "norm_fused": 0,
+    "rope_store": 0,
+    "shared_vecq": 0,
+    "gemma_route": 0,
+    "gemma_reduce": 0,
+    "control_attention_nodes": 240,
+    "candidate_attention_nodes": 60
+  },
+  "initialized_state": {
+    "per_owner_bytes": 230686720,
+    "range_count_per_owner": 120,
+    "completed_positions": [
+      99,
+      100,
+      101,
+      102
+    ],
+    "layout": "gemma31-f16-kv-scalar-device-v1:256:128:256:256",
+    "witness_scope": "complete initialized padded footprint, outside paid timer; native policies each repeat exactly, no control=candidate state assertion"
+  },
+  "analytic_copy_bytes": {
+    "sum_final_packed_roots_across_60_layers_per_wave": 935854080,
+    "balanced_concat_read_plus_write_per_wave": 3743416320,
+    "qualification": "layout calculation, not measured traffic, physical peak or incremental workspace"
+  },
+  "checks": {
+    "locked_build2_and_metadata_modes": "passed24descriptorcases/noGPUmodelwork",
+    "native1": "4/4 rc0",
+    "freeze1": "1/1 rc0, exclusive before fresh oracle",
+    "bookend1": "4/4 rc0, includes pin/library/metadata reauthentication",
+    "analysis1": "3/3 rc0, tinycontrols +2complete comparisons",
+    "verify1": "1/1 rc0, paidheads/all4states exactown",
+    "local_light": "1458REUSE/header,392boundaries,changedformat/diff/Python/JSON/bash/analyzer-controls PASS"
+  },
+  "failures_retained": {
+    "build1": "both targets compiled; metadata assertion wrongly omitted one SizedArena tensor-overhead slack, corrected fixture only",
+    "prepare1": "thin-client missing copied ggml-cpu.h; no model load",
+    "prepare2": "thin-client missing copied gguf.h; no model load",
+    "prepare3": "complete pinned public-header closure compiled and prefreeze passed"
+  },
+  "decision": "benchmark-only mechanism diagnosis; no production selection/support/performance/memory gate; Gemma26 ownshape transfer remains next"
+}

@@ -307,12 +307,17 @@ family" guide, and its long-context scaling work.
         with exact capture controls, actual original launch observation and
         short matched bookends. Native four-stream MMA matches the original
         backend exactly; segmented vector and MMA arithmetic differ.
-        Full-model cause, production selection and Gemma26 transfer remain open.
+        Other shapes, production selection and Gemma26 transfer remain open.
+      - [x] [Dense31 packed C4 full-head diagnosis](experiments/gemma-packed-attention-c4/README.md),
+        with unchanged native repeats, initialized-state witnesses and fresh
+        original bookends. The joint attention dispatch/stream geometry change
+        makes all 128 complete heads byte-exact, but costs 12.2774% more latency.
+        Copy-cost optimization, Gemma26 transfer and broader qualification remain open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.
-        Assistant execution, feature/cache lifetime and speculation qualification
-        remain owed.
+        Bounded component execution and feature/cache lifetime controls are below;
+        serving speculation and full qualification remain owed.
       - [x] [Original-image Gemma26 assistant oracle seam](experiments/gemma-assistant-reference/README.md),
         with full-head/recurrent-feature own repeats and unchanged physical
         target caches at C1, serial C2 and genuine batch two. Native assistant

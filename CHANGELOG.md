@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Dense31 packed C4 attention diagnosis with byte-exact complete heads against
+  fresh llama.cpp. Packing costs 12.2774% more latency; production selection
+  and Gemma26 transfer remain open.
+
 - Gemma26 assistant C2 reference comparisons with exact native serial/joined
   recurrence and short matched timing controls. Original batch-two distribution
   drift remains explicit; serving speculation and qualification remain open.
@@ -42,7 +46,7 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   quality/performance gaps; optimized batching is not selected.
 
 - Checked Q8_0 Gemma assistant profiles, tensor/target bindings and paired
-  canonical-vocabulary validation. Assistant execution remains unavailable.
+  canonical-vocabulary validation. Serving speculation remains unqualified.
 
 - Reproducible larger-row Gemma prefill diagnostics, with same-shape state
   repeats and matched reference speed/quality comparisons. Numerical failures

@@ -242,6 +242,17 @@ Gemma26's D256/GQA2 local attention is the first backward-transfer candidate;
 its different head counts and stream geometry require measured controls.
 Audit other models' actual dispatch and reduction shapes before transfer.
 
+The [packed C4 full-head screen](experiments/gemma-packed-attention-c4/README.md)
+then joins local and global attention streams in a benchmark-only dense31 graph.
+All 128 complete heads match both fresh original bookends byte-for-byte;
+the unchanged norm/ordinary-product control retains 15 positive-margin misses.
+This closes the tested joint dispatch/stream geometry explanation, without
+isolating local query precision from reduction geometry. Paid packing raises
+latency 12.2774% above the reference mean. Avoiding those copies is the next
+performance lead; no production policy is selected. Gemma26 needs its own
+head-count/geometry controls before transfer, and other contexts, query shapes,
+assistants and representative quality remain unqualified.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls
