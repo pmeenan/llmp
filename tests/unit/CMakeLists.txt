@@ -20,6 +20,9 @@ jitllm_gtest(cli_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_SCRATCH=${CMAKE_CURRENT_BINARY_DIR}/scratch")
 
 add_executable(base_test base_test.cc)
+add_executable(gemma_joined_groups_test gemma_joined_groups_test.cc)
+target_link_libraries(gemma_joined_groups_test PRIVATE jitllm_base)
+jitllm_gtest(gemma_joined_groups_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 target_link_libraries(base_test PRIVATE jitllm_report jitllm_base)
 jitllm_gtest(base_test TEST_PREFIX unit. PROPERTIES LABELS unit)
 
@@ -341,6 +344,10 @@ if(JITLLM_CUDA)
   add_executable(gemma4_serving_gpu_test gemma4_serving_gpu_test.cc)
   target_link_libraries(gemma4_serving_gpu_test PRIVATE jitllm_runtime_serving)
   jitllm_gpu_gtest(gemma4_serving_gpu_test MODELS ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+  add_executable(gemma_joined_serving_gpu_test gemma_joined_serving_gpu_test.cc)
+  target_link_libraries(gemma_joined_serving_gpu_test PRIVATE jitllm_runtime_serving)
+  jitllm_gpu_gtest(gemma_joined_serving_gpu_test MODELS
+                   ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
   add_executable(gemma4_runner_gpu_test gemma4_runner_gpu_test.cc)
   target_link_libraries(gemma4_runner_gpu_test PRIVATE jitllm_engine)
   jitllm_gpu_gtest(gemma4_runner_gpu_test MODELS)

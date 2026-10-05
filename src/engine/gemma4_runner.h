@@ -30,6 +30,8 @@ std::expected<void, std::string> Gemma4CheckpointFootprint(
     const model::Gemma4Profile& profile, const model::Gemma4StateLayout& layout,
     std::uint32_t positions, std::span<const LiveState::Range> ranges);
 enum class Gemma4Variant : std::uint8_t { k26BA4B, k31B };
+// Vendor-free serving bound for the checked one-row product policy.
+inline constexpr std::uint32_t kGemma4InvariantWaveRows = 8;
 struct Gemma4Options {
   std::filesystem::path artifact = {}, out = {};
   // Only approved architecture contracts; binding still checks every tensor.

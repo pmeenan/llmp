@@ -89,6 +89,10 @@ struct ServingOptions {
   // cancelled when the lane cancels them. Otherwise, as a drive's, they
   // do not.
   bool hold_cancellable = false;
+  // Internal bounded Gemma diagnostics, absent from configuration/CLI.
+  // Matched solo controls can use row-invariant sums without joined dispatch.
+  bool gemma_joined = false;
+  bool gemma_row_invariant = false;
 };
 
 struct ChatOptions {

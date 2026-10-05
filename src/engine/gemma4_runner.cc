@@ -20,6 +20,7 @@
 
 namespace jitllm::engine {
 namespace kg = kernels::ggml;
+static_assert(kGemma4InvariantWaveRows == kg::kRowInvariantColumns);
 namespace md = model;
 namespace sc = scheduler;
 using catalog::ExtentId;

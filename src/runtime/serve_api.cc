@@ -2157,12 +2157,14 @@ std::string HostNames(const api::HostGuard& hosts) {
 
 }  // namespace
 
-int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles,
-               std::FILE* log) {
+int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles, std::FILE* log,
+               bool gemma_joined, bool gemma_row_invariant) {
   // Speculative where there is a drafter; no image prompt; conversations
   // kept across a restart (D-105).
   ServingOptions serving;
   serving.keep_conversations = true;
+  serving.gemma_joined = gemma_joined;
+  serving.gemma_row_invariant = gemma_row_invariant;
   int status = kExitOk;
   // Hang recovery (D-102; hang_ladder.h): one ladder for the chat route's
   // watch and the node's waits, outliving both (the teardown's waits are
@@ -2231,6 +2233,9 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       });
     }
     auto started = server.Start(false);
+    if (started && (gemma_joined || gemma_row_invariant))
+      for (const auto& model : server.models())
+        Say(log, std::format("Gemma diagnostic {}: {}", model->name(), model->extra()));
     // A cancellation drains only once nothing submitted before it is still
     // in flight (a read a drive holds does not end when cancelled).
     ladder.set_operations([&server] { return server.node().oldest_io(); });
@@ -2405,6 +2410,9 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       }
     }
     http.reset();
+    if (gemma_joined || gemma_row_invariant)
+      for (const auto& model : server.models())
+        Say(log, std::format("Gemma diagnostic final {}: {}", model->name(), model->extra()));
     if (auto stopped = server.TearDown(); !stopped) {
       Say(log, "stopping: " + stopped.error());
       status = kExitFailure;

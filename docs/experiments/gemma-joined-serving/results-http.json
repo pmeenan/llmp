@@ -1,0 +1,156 @@
+{
+  "actual_model_status": {
+    "gemma26": {
+      "architecture": "gemma4",
+      "coverage_tensors": 0,
+      "dispatch": "joined-diagnostic",
+      "joined_groups": 0,
+      "joined_units": 0,
+      "optional_optimizations": true,
+      "pitch_padding": 7667712,
+      "profile": "gemma-4-26B-A4B-it",
+      "row_invariant": true
+    },
+    "gemma31": {
+      "architecture": "gemma4",
+      "coverage_tensors": 0,
+      "dispatch": "joined-diagnostic",
+      "joined_groups": 0,
+      "joined_units": 0,
+      "optional_optimizations": true,
+      "pitch_padding": 0,
+      "profile": "gemma-4-31B-it",
+      "row_invariant": true
+    }
+  },
+  "artifacts": {
+    "gemma26": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+    "gemma31": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+  },
+  "cases": [
+    {
+      "detail": {
+        "owner_counts": [
+          1,
+          2,
+          4,
+          8,
+          12
+        ],
+        "tokens_per_owner": 4
+      },
+      "name": "gemma26:joined-cohorts",
+      "passed": true,
+      "seconds": 6.581224431982264
+    },
+    {
+      "detail": {
+        "SSE_exact": true,
+        "disconnect_followup_exact": true,
+        "stop_delimiter_bytes": 3,
+        "tool_refusals": 2
+      },
+      "name": "gemma26:chat-SSE-stop-refusal-cancel",
+      "passed": true,
+      "seconds": 0.7202261490747333
+    },
+    {
+      "detail": {
+        "first_null": true,
+        "interleaved_repeat_exact": true,
+        "scored_rows": 127
+      },
+      "name": "gemma26:likelihood-alignment",
+      "passed": true,
+      "seconds": 5.717681159032509
+    },
+    {
+      "detail": {
+        "owner_counts": [
+          1,
+          2,
+          4,
+          8,
+          12
+        ],
+        "tokens_per_owner": 4
+      },
+      "name": "gemma31:joined-cohorts",
+      "passed": true,
+      "seconds": 17.283003313932568
+    },
+    {
+      "detail": {
+        "SSE_exact": true,
+        "disconnect_followup_exact": true,
+        "stop_delimiter_bytes": 3,
+        "tool_refusals": 2
+      },
+      "name": "gemma31:chat-SSE-stop-refusal-cancel",
+      "passed": true,
+      "seconds": 1.910465399036184
+    },
+    {
+      "detail": {
+        "first_null": true,
+        "interleaved_repeat_exact": true,
+        "scored_rows": 127
+      },
+      "name": "gemma31:likelihood-alignment",
+      "passed": true,
+      "seconds": 26.3871719208546
+    },
+    {
+      "detail": {
+        "owned_outputs_exact": true,
+        "source_pause_messages": 1,
+        "source_tokens": 128,
+        "target_max_tokens": 8
+      },
+      "name": "gemma26->gemma31:pending-switch",
+      "passed": true,
+      "seconds": 17.29722058796324
+    },
+    {
+      "detail": {
+        "owned_outputs_exact": true,
+        "source_pause_messages": 1,
+        "source_tokens": 110,
+        "target_max_tokens": 8
+      },
+      "name": "gemma31->gemma26:pending-switch",
+      "passed": true,
+      "seconds": 32.6872151219286
+    }
+  ],
+  "final_model_status": {
+    "gemma26": {
+      "architecture": "gemma4",
+      "coverage_tensors": 280130,
+      "dispatch": "joined-diagnostic",
+      "joined_groups": 26,
+      "joined_units": 52,
+      "optional_optimizations": true,
+      "pitch_padding": 7667712,
+      "profile": "gemma-4-26B-A4B-it",
+      "row_invariant": true
+    },
+    "gemma31": {
+      "architecture": "gemma4",
+      "coverage_tensors": 285305,
+      "dispatch": "joined-diagnostic",
+      "joined_groups": 26,
+      "joined_units": 52,
+      "optional_optimizations": true,
+      "pitch_padding": 0,
+      "profile": "gemma-4-31B-it",
+      "row_invariant": true
+    }
+  },
+  "format": "jitllm-gemma-joined-http-control-v1",
+  "model_switch_pause_messages": 2,
+  "model_turn_seconds": 1,
+  "runtime_exit": 0,
+  "runtime_sha256": "9a5c71fc6fe10a92f0fb41aef4991ff35cbd0d5cdf8d4489cdb466c2189a374f",
+  "switches_only": false
+}

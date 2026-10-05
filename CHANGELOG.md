@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Explicit default-off joined Gemma decode controls, with ordered bounded
+  subwaves, independent publication/refusal and owned spill/restart. Native
+  solo/joined agreement and real multi-sequence reference comparisons retain
+  quality/performance gaps; optimized batching is not selected.
+
 - Reproducible larger-row Gemma prefill diagnostics, with same-shape state
   repeats and matched reference speed/quality comparisons. Numerical failures
   keep production row caps and optimization defaults unchanged.

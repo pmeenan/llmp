@@ -397,6 +397,14 @@ Actual HTTP solo/cohort, SSE, stop, cancellation and likelihood controls use
 each profile's own solo output; they do not qualify reference quality or
 optimized joining.
 
+The separate default-off [joined serving controls](experiments/gemma-joined-serving/README.md)
+reuse the existing runner with independent completed units and ordered groups
+of at most eight owners (C12 is8+4). Whole same-policy solo/joined heads and state
+agree; actual HTTP selects the diagnostic only through its dedicated binary.
+Natural-prefix quality fails against real multi-sequence stock batches, and
+the C12 reference speed gap remains open. Production keeps scalar dispatch;
+no optimized-batching or model-support qualification follows.
+
 ## Required execution and optimization qualification
 
 Every family/quant must adopt applicable selected Qwen/DeepSeek techniques

@@ -45,6 +45,7 @@
 #include "platform/memory_pressure.h"
 #include "platform/path_trust.h"
 #include "runtime/gemma_profile.h"
+#include "runtime/gemma_wave.h"
 #include "runtime/intake_limits.h"
 #include "runtime/memory_guard.h"
 #include "runtime/model_limits.h"
@@ -904,17 +905,19 @@ class Dsv4 final : public Llm {
 };
 
 // Approved Gemma26/31 profiles share the serving driver and native slots.
-// Cohorts currently dispatch scalar completed units; joined math remains gated.
+// Joined completed units are an explicit diagnostic; production stays scalar.
 class Gemma final : public Llm {
  public:
   Gemma(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-        const config::RuntimeRoles& roles, int index, engine::Gemma4Variant variant)
+        const config::RuntimeRoles& roles, int index, engine::Gemma4Variant variant,
+        const ServingOptions& serving)
       : entry_(entry),
         artifact_id_(entry.artifact.value_or("")),
         store_(roles.installed),
         profile_(variant == engine::Gemma4Variant::k26BA4B ? model::Gemma4_26BA4B()
                                                            : model::Gemma4_31B()),
-        options_(Options(entry, settings, roles, variant)),
+        options_(Options(entry, settings, roles, variant, serving.gemma_row_invariant)),
+        joined_(serving.gemma_joined),
         runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
     name_ = entry.name;
     settings_ = settings;
@@ -983,8 +986,10 @@ class Gemma final : public Llm {
   std::string violations() const override { return runner_.coverage().first_violation; }
   std::string extra() const override {
     return std::format(
-        R"({{"architecture":"gemma4","dispatch":"scalar-cohort","optional_optimizations":false,"profile":"{}","coverage_tensors":{},"pitch_padding":{}}})",
-        profile_.name, runner_.coverage().tensors, runner_.pitch_padding());
+        R"({{"architecture":"gemma4","dispatch":"{}","optional_optimizations":{},"row_invariant":{},"profile":"{}","coverage_tensors":{},"pitch_padding":{},"joined_groups":{},"joined_units":{}}})",
+        joined_ ? "joined-diagnostic" : "scalar-cohort", joined_ || options_.row_invariant,
+        options_.row_invariant, profile_.name, runner_.coverage().tensors, runner_.pitch_padding(),
+        joined_groups_, joined_units_);
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
   std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
@@ -1038,7 +1043,42 @@ class Gemma final : public Llm {
   void RetireSamplingScratchFor(Branch& branch) override { DropBranchSamplingScratch(branch); }
   bool GenerationCohortUsable() const override { return runner_.cohort_usable(); }
   Status RunPreparedGenerationWave(std::span<PreparedGeneration> units) override {
-    return RunScalarGenerationUnits(units);
+    if (!joined_ || units.size() == 1) return RunScalarGenerationUnits(units);
+    if (units.empty() || units.size() > options_.slots)
+      return Error("Gemma joined generation exceeds its funded owner envelope");
+    std::array<engine::Gemma4Runner::Work, engine::kMaxRequestSlots> work{};
+    std::array<bool, engine::kMaxRequestSlots> seen{};
+    for (std::size_t i = 0; i < units.size(); ++i) {
+      const auto& unit = units[i];
+      if (unit.branch == nullptr || &unit.branch->model() != this || unit.step.speculative ||
+          unit.step.all.size() != std::size_t{unit.step.position} + 1)
+        return Error("Gemma joined generation needs plain owned one-anchor units");
+      const auto id = BranchIndex(*unit.branch);
+      if (id >= options_.slots || seen[id] ||
+          NativeSlot(*unit.branch).completed_positions() != unit.step.position)
+        return Error("Gemma joined generation needs distinct current native cursors");
+      seen[id] = true;
+      work[i] = {id, unit.step.position, unit.step.all.last(1), &units[i].row};
+    }
+    // Checked one-row sums take at most eight columns. Larger cohorts keep
+    // those sums through ordered subwaves rather than a wider ordinary plan.
+    return RunGemmaGroups(
+        units.size(), engine::kGemma4InvariantWaveRows,
+        [&](std::size_t first, std::size_t count) {
+          auto ran = runner_.Wave(std::span(work).subspan(first, count));
+          if (ran) {
+            ++joined_groups_;
+            joined_units_ += count;
+          }
+          return ran;
+        },
+        [&] { return GenerationCohortUsable(); },
+        [&](std::size_t first, std::size_t count, const std::string& error) {
+          for (auto& unit : units.subspan(first, count)) {
+            unit.result = std::unexpected(error);
+            unit.failed_prefix_valid = StateUsableFor(*unit.branch);
+          }
+        });
   }
   Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
                      bool inject, std::vector<float>& logits) override {
@@ -1205,13 +1245,14 @@ class Gemma final : public Llm {
   static engine::Gemma4Options Options(const config::ModelEntry& entry,
                                        const ModelSettings& settings,
                                        const config::RuntimeRoles& roles,
-                                       engine::Gemma4Variant variant) {
+                                       engine::Gemma4Variant variant, bool row_invariant) {
     return {.artifact = roles.installed / entry.artifact.value_or(""),
             .out = roles.spill,
             .variant = variant,
             .context = settings.context.value,
             .max_rows = settings.prefill_chunk.value,
-            .slots = settings.max_slots.value};
+            .slots = settings.max_slots.value,
+            .row_invariant = row_invariant};
   }
   engine::Gemma4Runner::Slot& NativeSlot(const Branch& branch) const {
     return *slots_[BranchIndex(branch)];
@@ -1222,6 +1263,9 @@ class Gemma final : public Llm {
   fs::path store_;
   const model::Gemma4Profile& profile_;
   engine::Gemma4Options options_;
+  const bool joined_;
+  std::uint64_t joined_groups_ = 0;
+  std::uint64_t joined_units_ = 0;
   engine::Gemma4Runner runner_;
   std::array<engine::Gemma4Runner::Slot*, engine::kMaxRequestSlots> slots_{};
 };
@@ -4351,7 +4395,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
     if (!profile) return Error(profile.error());
     const auto variant = *profile == &model::Gemma4_26BA4B() ? engine::Gemma4Variant::k26BA4B
                                                              : engine::Gemma4Variant::k31B;
-    models_.push_back(std::make_unique<Gemma>(node_, entry, settings, roles_, index, variant));
+    models_.push_back(
+        std::make_unique<Gemma>(node_, entry, settings, roles_, index, variant, options_));
   } else if (settings.architecture == "qwen4exp") {
     models_.push_back(std::make_unique<Qwen38>(node_, entry, settings, roles_, index));
   } else {

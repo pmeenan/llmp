@@ -1,0 +1,326 @@
+{
+  "measured_base": "c2d2147",
+  "final_base": "9d14b40",
+  "task_entry_tensorfold": {
+    "checked_at": "2026-10-05T05:54:42.689484+00:00",
+    "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "files": {
+      "README.md": {
+        "bytes": 22767
+      },
+      "pyproject.toml": {
+        "bytes": 3178
+      },
+      "src/tensorfold/__init__.py": {
+        "bytes": 137
+      },
+      "docs/recipes/gemma4.md": {
+        "error": "HTTP Error 404: Not Found"
+      },
+      "docs/recipes/README.md": {
+        "bytes": 5211
+      },
+      "docs/recipes/gemma-4.md": {
+        "bytes": 10845,
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      }
+    }
+  },
+  "measured_manifests": [
+    {
+      "record_sha256": "defe81b54d135cbd0be93d18d1d2583c2cba16ccd4d2aad8e46584d685fae0bd",
+      "base": "c2d21475b2367ef07cfd910b50a0f895253d9140",
+      "files": [
+        {
+          "path": "benchmarks/CMakeLists.txt",
+          "bytes": 24950,
+          "sha256": "94be97db817faa3047051b1d973c27676927cd6d0363a481ab1f3e4bebdcf78a"
+        },
+        {
+          "path": "benchmarks/gemma_joined.cc",
+          "bytes": 7936,
+          "sha256": "897e76c52ef755183936591c33dc49b3a5767c8a28607657c49201976aaf4a06"
+        },
+        {
+          "path": "docs/experiments/gemma-joined-serving/PROTOCOL.md",
+          "bytes": 4509,
+          "sha256": "994855e3aeaea92cfa4bea58bc3aacd6f2d86a699ea1559a1609a37825fe0d78"
+        },
+        {
+          "path": "docs/experiments/gemma-joined-serving/analyze.py",
+          "bytes": 6091,
+          "sha256": "12a64937bad739902911d210883f4d3f89d710f8251ea56dcac08ab23bfe718a"
+        },
+        {
+          "path": "docs/experiments/gemma-joined-serving/llama_joined.cc",
+          "bytes": 6554,
+          "sha256": "9ce7e77af528e0a5b7c7d1214f4dad10f67c01c02bcf37455431e9be25de81f2"
+        },
+        {
+          "path": "docs/experiments/gemma-joined-serving/reference.sh",
+          "bytes": 1256,
+          "sha256": "b5c0f2ecaaef1652b773762c58f07876aee13613d8ac3866975dfa981ed0506d"
+        },
+        {
+          "path": "src/engine/gemma4_plan.cc",
+          "bytes": 14614,
+          "sha256": "48b1d126a70bc4a74785fe69f2701ad1882528ee19974b84b36a7fc9a06cbef8"
+        },
+        {
+          "path": "src/engine/gemma4_runner.cc",
+          "bytes": 37517,
+          "sha256": "fdd7ecfaea19248f9e9769f671441c283899454fe8d7e9e7d9ab067ffd77ae3e"
+        },
+        {
+          "path": "src/engine/gemma4_runner.h",
+          "bytes": 9898,
+          "sha256": "579c3d1eb7ba789ff403c83acb018338b28dd99cc33123b87e5ff5e2728333bc"
+        },
+        {
+          "path": "src/execution/registry.cc",
+          "bytes": 11284,
+          "sha256": "118d334fb3b72b358a21d02bac98eac806047ae1620a9ab689bfa91c77818505"
+        },
+        {
+          "path": "src/execution/registry.h",
+          "bytes": 10558,
+          "sha256": "292cddfc1720be55e0f4463345951e0153514deb802f5a2ef83276e3d6bb5da3"
+        },
+        {
+          "path": "src/kernels/ggml/gemma4_graph.cc",
+          "bytes": 20487,
+          "sha256": "700edf1b54a2d243eebc4663d2acdfadf38880df40ffcb40a05c0d4c9b7be645"
+        },
+        {
+          "path": "src/kernels/ggml/graph_plan.cc",
+          "bytes": 42085,
+          "sha256": "d9137f10eff9c0acb16d2e68e661d2a757ad216578d569f4a5bcd3dd4cd5b5c7"
+        },
+        {
+          "path": "src/kernels/ggml/graph_plan.h",
+          "bytes": 23700,
+          "sha256": "c2e4dd85e7e9d03307e9c0b2e209571bee8f54a3ba6e7b2223f638ed502a7288"
+        },
+        {
+          "path": "src/kernels/ggml/implementations.cc",
+          "bytes": 61924,
+          "sha256": "826c597406d7f53ae84be466f4c76f134c16f9523dad56d6b9a9c8f6da911c26"
+        },
+        {
+          "path": "src/model/gemma4.cc",
+          "bytes": 29127,
+          "sha256": "d0e664ab6b82959ebbc97ffc06101d1bcb22f5d65733c4c7b8d5c4052d53eb16"
+        },
+        {
+          "path": "src/runtime/commands.h",
+          "bytes": 6210,
+          "sha256": "f31f82960a5cd7767e86ff75ddf28e7d3b5f4b371b4cfcbc0e19eedb24613e3a"
+        },
+        {
+          "path": "src/runtime/serving.cc",
+          "bytes": 265469,
+          "sha256": "de017ff19dc3a4023b98a805030f570bf35c40c6ca6c0a3bdc9661b2ea361a81"
+        },
+        {
+          "path": "tests/unit/CMakeLists.txt",
+          "bytes": 47482,
+          "sha256": "8bf15c639377ff0d72eae639b2acd2b1ab3e2dea04502bf23852c9ff23c39c8b"
+        },
+        {
+          "path": "tests/unit/gemma_joined_serving_gpu_test.cc",
+          "bytes": 9443,
+          "sha256": "9c59e428fea365e603e4272a265a9551f91bc164e9d3dfc2ce85860efdbb7fca"
+        },
+        {
+          "path": "third_party/sources.lock.json",
+          "bytes": 41206,
+          "sha256": "7889fe441722fd9c95d39dd05bf268c86ef0d09abaf5de7efe72e83046a3fd9b"
+        }
+      ],
+      "binary_sha256": "7f98ec83a4dd4dc6d42eafd9b94f2ecbce8d7c8ba978d5d03efac2025e28e05b",
+      "receipt_sha256": "4ea901be73b364a981696840dd4b48608214c049d2c237d9c3313c9d4fa45087",
+      "reference_binary_sha256": "947c8430f0070c3e4a5bb6fb22c3371bdf7f2a813f94a1da484565f3afedd44e"
+    },
+    {
+      "record_sha256": "5666acda3f6888807df93aec686916686b34793a9ec0c8f132a1d6dd8a9593c8",
+      "base": "c2d2147",
+      "files": [
+        {
+          "path": "benchmarks/CMakeLists.txt",
+          "sha256": "94be97db817faa3047051b1d973c27676927cd6d0363a481ab1f3e4bebdcf78a"
+        },
+        {
+          "path": "benchmarks/gemma_joined.cc",
+          "sha256": "6c7202cd16a1a74cf2feaf9ace5002f98a2825c2225ae4c9afa620fcd3c70f11"
+        },
+        {
+          "path": "docs/experiments/gemma-joined-serving/PROTOCOL.md",
+          "sha256": "831ead287411ebe864c2aa83269ca7d7d1edb8d9607afc0adea611a8dfa58d03"
+        },
+        {
+          "path": "docs/experiments/gemma-joined-serving/analyze.py",
+          "sha256": "d9c4efae191cedc2797617264bfe3ddaf71dbe04c4c8132914c38367e2011ce1"
+        },
+        {
+          "path": "docs/experiments/gemma-joined-serving/llama_joined.cc",
+          "sha256": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e"
+        },
+        {
+          "path": "docs/experiments/gemma-joined-serving/reference.sh",
+          "sha256": "d193b98b43364f481a941d9de0972dfe59bed1dde6c398c82f1da014eaa444e3"
+        },
+        {
+          "path": "src/engine/gemma4_plan.cc",
+          "sha256": "48b1d126a70bc4a74785fe69f2701ad1882528ee19974b84b36a7fc9a06cbef8"
+        },
+        {
+          "path": "src/engine/gemma4_runner.cc",
+          "sha256": "3e71bc1c0cae265570c207a51469423f2f0c5675158b7ef764f5e63f6c187d5f"
+        },
+        {
+          "path": "src/engine/gemma4_runner.h",
+          "sha256": "e415141e56bd3a4bb908076a6ae1099ec94dd0b9daa44136dafe40649941b1ca"
+        },
+        {
+          "path": "src/execution/registry.cc",
+          "sha256": "118d334fb3b72b358a21d02bac98eac806047ae1620a9ab689bfa91c77818505"
+        },
+        {
+          "path": "src/execution/registry.h",
+          "sha256": "292cddfc1720be55e0f4463345951e0153514deb802f5a2ef83276e3d6bb5da3"
+        },
+        {
+          "path": "src/kernels/ggml/gemma4_graph.cc",
+          "sha256": "700edf1b54a2d243eebc4663d2acdfadf38880df40ffcb40a05c0d4c9b7be645"
+        },
+        {
+          "path": "src/kernels/ggml/graph_plan.cc",
+          "sha256": "d9137f10eff9c0acb16d2e68e661d2a757ad216578d569f4a5bcd3dd4cd5b5c7"
+        },
+        {
+          "path": "src/kernels/ggml/graph_plan.h",
+          "sha256": "c2e4dd85e7e9d03307e9c0b2e209571bee8f54a3ba6e7b2223f638ed502a7288"
+        },
+        {
+          "path": "src/kernels/ggml/implementations.cc",
+          "sha256": "826c597406d7f53ae84be466f4c76f134c16f9523dad56d6b9a9c8f6da911c26"
+        },
+        {
+          "path": "src/model/gemma4.cc",
+          "sha256": "d0e664ab6b82959ebbc97ffc06101d1bcb22f5d65733c4c7b8d5c4052d53eb16"
+        },
+        {
+          "path": "src/runtime/commands.h",
+          "sha256": "f31f82960a5cd7767e86ff75ddf28e7d3b5f4b371b4cfcbc0e19eedb24613e3a"
+        },
+        {
+          "path": "src/runtime/gemma_wave.h",
+          "sha256": "cc34ce7d44ced90afa7594f8a3e8f621b8d24a79b6b126b7100108f000110ce7"
+        },
+        {
+          "path": "src/runtime/serving.cc",
+          "sha256": "5be627b9d6e1c90880ef9b26c5e1faae730511a7fafa73d3e7adde75f30705de"
+        },
+        {
+          "path": "tests/unit/CMakeLists.txt",
+          "sha256": "75b44869425290aba712583b4f870dae04fcf6218005425ebd38f95500759585"
+        },
+        {
+          "path": "tests/unit/gemma_joined_groups_test.cc",
+          "sha256": "624f2d4e05211a996af4916ce5a6e89e20f069b0801435d4c13c4559eae0710c"
+        },
+        {
+          "path": "tests/unit/gemma_joined_serving_gpu_test.cc",
+          "sha256": "978515d528fc2039094f6a1b2dc63049e12874931cde6808e4a35084b87d64b0"
+        },
+        {
+          "path": "third_party/sources.lock.json",
+          "sha256": "7889fe441722fd9c95d39dd05bf268c86ef0d09abaf5de7efe72e83046a3fd9b"
+        }
+      ],
+      "binary_sha256": "a210a5c4ae9382d638f163c9e089be61fe2966796c3a48b509b03161871a0633",
+      "receipt_sha256": "4ea901be73b364a981696840dd4b48608214c049d2c237d9c3313c9d4fa45087",
+      "reference_binary_sha256": "01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61"
+    }
+  ],
+  "http_runtime_sha256": "9a5c71fc6fe10a92f0fb41aef4991ff35cbd0d5cdf8d4489cdb466c2189a374f",
+  "final_gpu_fixture_binary_sha256": "b9232a608b98da1699540d6893eb2d014095824e16ba773e91c86cd3449cd052",
+  "official_logs": {
+    "screen1": {
+      "sha256": "4d7b54df915ce1b0770dd3d20b34eda7a0433d42a9cca120a66d3d095878a000",
+      "historical_failure": true
+    },
+    "screen2": {
+      "sha256": "10a9a278222a273e0bbf417e4340b687676a70777b4830e4f75d2b401576b91b",
+      "historical_failure": false
+    },
+    "native3": {
+      "sha256": "fd1f2e2db6e74f514a0412bc07b0a0e8e5ce4a57a42b70d217c6bd03c217de9d",
+      "historical_failure": true
+    },
+    "native4": {
+      "sha256": "a5af3e2b90cc14d8144dfab6ebb565a4b24cc9a009593a57a65d1a287893938a",
+      "historical_failure": false
+    },
+    "freeze1": {
+      "sha256": "448fd0a8e801b10dd6288c52a8b7a842b60a021100a0a6ab1cf8c470a42549d3",
+      "historical_failure": false
+    },
+    "reference1": {
+      "sha256": "8265a5073fc807c6871805099f638fb63aaa3a2c6595731daa5e43d5b93cd3d2",
+      "historical_failure": false
+    },
+    "comparison1": {
+      "sha256": "ec068dd3d3283595cde5f4281e7f588eab1bd977be1d2c7d266c3e0af53c30e1",
+      "historical_failure": false
+    },
+    "controls3": {
+      "sha256": "fe328ccdeb9ab506805cfe6a0242fa5a49015941a9557a54f279ca639f28e261",
+      "historical_failure": false
+    },
+    "controls4": {
+      "sha256": "41f6c36704308bf4b15f4ba51e492773442475d6eea3e629931b3eccd4464e5e",
+      "historical_failure": false
+    },
+    "controls5": {
+      "sha256": "a78c30fdfc942fc728d7900e1bb9543c860dded318a6aa6ff905fa5ab9f24c42",
+      "historical_failure": true
+    },
+    "controls6": {
+      "sha256": "84983795d1eaad195b969418f911eb2f4296e9398519520ce5ae87b133c418bb",
+      "historical_failure": true
+    },
+    "controls7": {
+      "sha256": "b5cd960d0f24144dc0b4e64b31cd964f49f59ce424755d1255958adce693bbf0",
+      "historical_failure": true
+    },
+    "controls8": {
+      "sha256": "178f6a6d491ee4b3bc3897a7ba67c4b834759d429fbc337fdda1c9599ee71fbe",
+      "historical_failure": true
+    },
+    "controls9": {
+      "sha256": "af8537a3c232478466046e6a55782b217929b35bcd2f369549d94ce9738158f7",
+      "historical_failure": false
+    },
+    "natural-native1": {
+      "sha256": "2df00df258aed0baed9fa9cb7ba9e49dae809df763531ea985b12e1f35f2cc47",
+      "historical_failure": false
+    },
+    "natural-freeze1": {
+      "sha256": "eef91746514df670e22960ea5c39f5fd05852e5e66354254ca6025a6dbec8d95",
+      "historical_failure": false
+    },
+    "natural-reference1": {
+      "sha256": "ac6dd4b058486615b0902d3561e13ca59858db9e29d9e434649ded99cca5683b",
+      "historical_failure": false
+    },
+    "natural-compare1": {
+      "sha256": "186a5ec8d216712827a2bf171305e85be2a9bdb39195f4968602b5c0d2d0cd92",
+      "historical_failure": false
+    },
+    "http1": {
+      "sha256": "4cffb01fbce65a1d73bd1e422dc91f0e9f52dd1ce1876691064175208c1a1cc4",
+      "historical_failure": false
+    }
+  }
+}

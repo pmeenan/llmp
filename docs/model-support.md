@@ -67,6 +67,10 @@ match all 1,024 stock heads at the same 128-row shape. Paid 8K heads against
 the screened ubatch-256 reference differ, and the short speed result is
 inconclusive. These scalar route controls do not establish assistant, optimized
 batching or full reference qualification.
+The separate default-off [joined serving diagnostic](experiments/gemma-joined-serving/README.md)
+preserves same-policy solo heads/state at C1/2/4/8/12, but natural fixed-prefix
+quality fails against actual multi-sequence stock batches. HTTP controls and
+native speedups do not select optimized batching or change supported status.
 The 26B
 [representative likelihood screen](experiments/gemma-quality/README.md) fails
 against fusion-enabled llama.cpp (10.03% higher PPL); its unfused diagnostic

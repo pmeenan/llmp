@@ -172,6 +172,14 @@ backing remain funded. Compound norm/MoE has nine out-of-noise representative
 argmax differences; a 3.03% short native timer gain does not select a default.
 Whole-model/reference, optimized joining and long-context gates remain owed.
 
+Gemma's default-off [joined runtime diagnostic](experiments/gemma-joined-serving/README.md)
+reuses independent completed-unit ownership and one-row invariant products,
+bounded to eight owners per shared group. C12 uses ordered8+4 with funded full
+heads and per-group refusal isolation. Solo/joined heads and state agree, while
+natural-prefix stock quality and C12 competitive performance fail; no default
+is selected. Its [transfer audit](experiments/gemma-joined-serving/transfer-audit.md)
+records the eligible Qwen/DeepSeek mechanisms and unselected math contracts.
+
 Gemma's [checked norm chains](experiments/gemma-native-norm/README.md) reuse the
 original D256/D512 F32 norm/NEOX and 2816/5376 residual-add launchers through
 separate default-off policies. Kept/view-read intermediates retain primitives;

@@ -277,6 +277,10 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_gemma_quality PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   add_executable(jitllm_gemma_runner gemma_runner.cc)
+  add_executable(jitllm_gemma_joined gemma_joined.cc)
+  target_link_libraries(jitllm_gemma_joined PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_joined PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
   target_link_libraries(jitllm_gemma_runner PRIVATE jitllm_engine jitllm_warnings)
   target_link_options(jitllm_gemma_runner PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
@@ -365,4 +369,11 @@ if(JITLLM_CUDA)
   target_link_libraries(jitllm_wake_bench PRIVATE jitllm_paged_node jitllm_warnings)
   set_target_properties(jitllm_wake_bench PROPERTIES CUDA_ARCHITECTURES 121a-real)
   target_link_options(jitllm_wake_bench PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+endif()
+
+if(JITLLM_CUDA)
+# The existing HTTP route with internal Gemma diagnostic controls only.
+add_executable(jitllm_gemma_joined_http gemma_joined_http.cc)
+target_link_libraries(jitllm_gemma_joined_http PRIVATE jitllm_runtime_serving jitllm_platform jitllm_warnings)
+target_link_options(jitllm_gemma_joined_http PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
 endif()

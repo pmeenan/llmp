@@ -229,8 +229,8 @@ family" guide, and its long-context scaling work.
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:
         [verified profiles/bindings](gemma4.md), bounded state and independent
-        request-segment host inputs. No serving runner or inference support is
-        claimed; whole-model execution and optimized batching remain owed.
+        request-segment host inputs, used by the bounded native runner and scalar
+        serving route. Full model and optimized-batching qualification remain owed.
       - [x] Gemma GELU-tanh and split GeGLU primitive fallbacks,
         with separately gated floating MMVF fusion and a
         [bounded synthetic screen](experiments/gemma-activations/README.md).
@@ -242,7 +242,7 @@ family" guide, and its long-context scaling work.
 
       - [x] Gemma segmented GGML text graphs and checked bound plans, with
         complete-layer, independent-slot and captured-replay diagnostic controls;
-        serving and whole-model/reference qualification remain owed.
+        optimized serving and whole-model/reference qualification remain owed.
       - [x] Gemma graph-owned causal/ring device masks, with funded host
         reference inputs and [exact mask/replay controls](experiments/gemma-device-masks/README.md).
         Optimized serving and reference gates remain owed.
@@ -260,13 +260,13 @@ family" guide, and its long-context scaling work.
         paid 8K differences and full reference/context/batching gates stay open.
       - [x] Bounded native Gemma 26B-A4B runner with independent slots,
         device masks and [exact state/replay controls](experiments/gemma-runner/README.md).
-        Complete serving, assistant, representative quality, long-context and optimized
+        Full serving qualification, assistant, representative quality, long-context and optimized
         batching/performance qualification remain owed.
       - [x] Dense Gemma 31B on that shared runner, with approved-profile
         selection, cross-variant restore guards and ordinary 1/2/4-request
         [state and reference controls](experiments/gemma31-runner/README.md).
         Representative PPL is 14.61% above full-fusion llama.cpp; the unfused
-        diagnostic matches all full heads. Serving, assistants, optimized
+        diagnostic matches all full heads. Full serving qualification, assistants, optimized
         batching and full reference/context qualification remain owed.
       - [x] Checked per-segment Gemma RoPE/cache-store policy with primitive
         fallback and [complete-layer controls](experiments/gemma-rope-store/README.md).
@@ -290,6 +290,11 @@ family" guide, and its long-context scaling work.
         bookends. Dense31's 256-row prefill is within reference timing movement;
         all screened policies retain strict token differences. Production caps,
         selected optimizations and whole-model qualification remain unchanged.
+      - [x] Explicit default-off [joined serving controls](experiments/gemma-joined-serving/README.md),
+        with C1/2/4/8/12 own head/state controls, ordered8+4 C12 subwaves,
+        independent refusal/publication and actual HTTP continuation evidence.
+        Real multi-sequence reference quality fails on natural prefixes;
+        optimized-batching selection and full model qualification remain open.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or
