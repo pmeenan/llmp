@@ -335,6 +335,15 @@ Extra head-shaped kernels account for about 26 ms; VMM API bodies total about
 CPU and wait attribution must precede changes to planning, staging or residency;
 no optimization or cross-family transfer is selected from this profile.
 
+The [coarse Gemma26 diagnosis](experiments/gemma26-prefill-coarse/README.md)
+measures about 1.093 s of charged caller CPU in the ordered first/second
+graph-plan passes, with no recorded GPU overlap and exact prior head/state
+fidelity. A per-invocation descriptor/root/read-use index is a source-led
+optimization candidate, not implemented or selected by this report. Preserve
+both passes, SamePlan, primitive fallback, malformed-view and keep/readability
+guards and post-placement validation. Dense31 and prior families need measured
+transfer controls; no CPU stack or matcher-specific attribution is claimed.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

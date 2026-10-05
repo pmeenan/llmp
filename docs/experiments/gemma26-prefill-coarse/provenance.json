@@ -1,0 +1,367 @@
+{
+  "measurement_base": "d08eea75fac191bdb0e6ad6d6535ea1363d71f23",
+  "native_environment": {
+    "host": "spark-56f5",
+    "gpu": "NVIDIA GB10",
+    "driver": "580.178.04",
+    "native_sdk": "aarch64-c09daba6ac31edee",
+    "native_cuda_toolkit": "13.4.2",
+    "nsight": "2025.3.2.474-253236389321v0",
+    "environment_source": "Actual source/build/interface records and current trace SQLite; SDK/tool versions preserve Task42 validated interface.",
+    "native_nvcc": "13.4.92",
+    "kernel": "7.0.0-1019-nvidia"
+  },
+  "compiled_acquisition": {
+    "file_count": 16,
+    "manifest": {
+      "bytes": 3725,
+      "sha256": "981dcc42c4c13ed03fd1e2c209948baf463fac1e60ff62e0d90ab04754ea4571"
+    },
+    "content_bundle_sha256": "58e41ba4db3a88d6185cb8c7f6644bfc71ec2cd661a605865cde6a7e8018af6c",
+    "source_freeze": {
+      "bytes": 7349,
+      "sha256": "f7c8846dbe81bef443d198751b222f030fc6f1bdab6f920f939b725b43cb7884"
+    },
+    "source_frame": {
+      "bytes": 151391,
+      "sha256": "27c288471d149b9bb47f3a7be1ce7281b46deeab1b95fc66e2d7b71a73a48177"
+    },
+    "canonical_frame_count": 485,
+    "checked_helper_dependency_paths": 21,
+    "source_bytes": {
+      "benchmarks/CMakeLists.txt": {
+        "bytes": 34878,
+        "sha256": "0deee96a5c818b052e2029cae2bf2da38ba305baf5d336b8d39ea10b05676efd"
+      },
+      "benchmarks/gemma26_prefill_clock_probe.cc": {
+        "bytes": 228,
+        "sha256": "5d6152c05cca6d230e80f764b915957cc0ddc4b4fe7078d847ae9f15b26b1c45"
+      },
+      "benchmarks/gemma26_prefill_coarse.cc": {
+        "bytes": 12795,
+        "sha256": "79198cae93b37dc63cf56183ef67522e7a1dbe68f71f268e5e558c6055925ecd"
+      },
+      "benchmarks/gemma26_prefill_coarse.h": {
+        "bytes": 1397,
+        "sha256": "f00080fc0edfaa2ec9050abc8a9307ea1f51ed63b0ddcdc0c3315604b636ce0d"
+      },
+      "benchmarks/gemma26_prefill_coarse_scopes.cc": {
+        "bytes": 8507,
+        "sha256": "ee8df86c9559de56279cc94ff00245e0211d738e46e062ab04abd6d891bf6c22"
+      },
+      "docs/experiments/gemma26-prefill-coarse/PROTOCOL.md": {
+        "bytes": 20128,
+        "sha256": "f66e434d86a0716ed52bc76fabff534a2603749b068c3a9109b1f8749f7750f6"
+      },
+      "docs/experiments/gemma26-prefill-coarse/analyze.py": {
+        "bytes": 19012,
+        "sha256": "22dd9cdc1d826aab02d2030583c437f5bbec8ac24fa4df72579a064ba8d66a7d"
+      },
+      "docs/experiments/gemma26-prefill-coarse/apply_overlay.py": {
+        "bytes": 1317,
+        "sha256": "cd950868dc64956e1f9fac8db20848f2c08141f9593858530b42a56b913632ff"
+      },
+      "docs/experiments/gemma26-prefill-coarse/instrumentation.patch": {
+        "bytes": 12475,
+        "sha256": "55a72694f9cc2237371dd08a2819e46329300f476501004b0520f544081e110c"
+      },
+      "docs/experiments/gemma26-prefill-coarse/instrumentation.patch.license": {
+        "bytes": 85,
+        "sha256": "d8aa65e2c327bd6fbdc0b5330e3594fd0ebcd33033848ade6e9132967cb0c568"
+      },
+      "docs/experiments/gemma26-prefill-coarse/native.sh": {
+        "bytes": 1146,
+        "sha256": "fd88923c0896791b46c8a06e1d26aa4d2e8b44244f247027862a7886ee891b5f"
+      },
+      "docs/experiments/gemma26-prefill-coarse/overlay-identities.json": {
+        "bytes": 1094,
+        "sha256": "2ecc42861ef25f22056812f16da63fdc1b8c03a117867cc1f92de93b9d2cf70f"
+      },
+      "docs/experiments/gemma26-prefill-coarse/overlay-identities.json.license": {
+        "bytes": 85,
+        "sha256": "d8aa65e2c327bd6fbdc0b5330e3594fd0ebcd33033848ade6e9132967cb0c568"
+      },
+      "docs/experiments/gemma26-prefill-coarse/probe.sh": {
+        "bytes": 785,
+        "sha256": "568501f3e1a9863ff637a104b093609ffb07bcf7187ddc90ca6b3ba2706a4209"
+      },
+      "docs/experiments/gemma26-prefill-coarse/profile_child.cc": {
+        "bytes": 2123,
+        "sha256": "7888fdba751201c1712f316b502ae42325943a08cc33caab394896eac0af4e73"
+      },
+      "docs/experiments/gemma26-prefill-coarse/validate.py": {
+        "bytes": 7839,
+        "sha256": "76936215d8dca2e153ae4e3173a3e0c59a60a9f2d7ef610b1fad18bc7391912d"
+      }
+    },
+    "overlay": {
+      "base": "d08eea75fac191bdb0e6ad6d6535ea1363d71f23",
+      "instrumented": {
+        "src/engine/gemma4_runner.cc": {
+          "bytes": 52929,
+          "sha256": "93cabb872c1204551c409b0c24ae3a085968ada1ee73198eac8a4048008a6189"
+        },
+        "src/engine/live_state.cc": {
+          "bytes": 31557,
+          "sha256": "eb597de0a8a24055777e7b2ff9a9e3e346f6397bc04d61b0fa02b47e40a4c632"
+        },
+        "src/engine/planned.cc": {
+          "bytes": 9817,
+          "sha256": "01c38bd733aaf9de45e4cb9906d95241b3340af098977c4fc60f6eaf45dca770"
+        }
+      },
+      "original": {
+        "src/engine/gemma4_runner.cc": {
+          "bytes": 51055,
+          "sha256": "8228f479eabd85caf0af59f315b86a8ddb28d4e5d9f418f69c4065b9e208cced"
+        },
+        "src/engine/live_state.cc": {
+          "bytes": 30751,
+          "sha256": "f577c89f7457490a66e4516eadf50e0f1213907fe264b0bb4fb1cac13e51f856"
+        },
+        "src/engine/planned.cc": {
+          "bytes": 9455,
+          "sha256": "6fca7cbe4a614d68e574a271d9f7fd1fa376d8c01595410be268bb1fd134a9a9"
+        }
+      },
+      "patch": {
+        "bytes": 12475,
+        "sha256": "55a72694f9cc2237371dd08a2819e46329300f476501004b0520f544081e110c"
+      }
+    },
+    "binaries": {
+      "jitllm_gemma26_clock_probe": {
+        "bytes": 1868528,
+        "sha256": "2b5cb0318d6daa1eaa4faaba035515ec961ee4d1b319d3e3c467f8f0463615d1"
+      },
+      "jitllm_gemma26_prefill_coarse": {
+        "bytes": 143787304,
+        "sha256": "1e8f0991a36dce718c127cbeec9d328aa6ca20dd184f0f98198e8d20a2817bf1"
+      },
+      "profile_child": {
+        "bytes": 581480,
+        "sha256": "913e035c9eecd6f914b50199b575e01cfefc42fd17004700dc982ed179509ad9"
+      }
+    },
+    "build_receipt": {
+      "bytes": 6751,
+      "sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d"
+    },
+    "native_benchmark_semantics": "Copied unchanged Task40 native prefill semantics; only diagnostic coarse scopes/reset/report and original outer NVTX observer.",
+    "default_object_isolation": "Overlay applied only in isolated measurement tree; only dedicated manual targets and atomic child compiled. No default executable was rebuilt or diagnostic archive/object transferred to production."
+  },
+  "analysis_derivative": {
+    "acquisition_sources_unchanged": true,
+    "additional_file": "analyze_v2.py",
+    "source": {
+      "bytes": 23319,
+      "sha256": "7a0df7aa23741fee49a72c4d7af0d2b60e59267184c649d1748bfa15beddd8fc"
+    },
+    "pre_reanalysis_freeze": {
+      "bytes": 616,
+      "sha256": "e783d1092cfaa46ab2ef31955fbd79be222e5508b2f6de166d49d707f9808e46"
+    },
+    "lineage_supplement": {
+      "bytes": 1566,
+      "sha256": "c7e206e47c3fae4ec3b519d8e9a6fefb124a3960a501d568b9aa5c7eef6b7560"
+    },
+    "aggregate": {
+      "bytes": 10186,
+      "sha256": "09a3feb7ff5f290cdf3f283f32d074d3c23ecb6255643fa1138e345eff2f742d"
+    },
+    "description": "Probe-only missing-name ownership fallback; model ranges retain strict actual child PROCESSES admission. All actual464 process encoding pairs and namespace were checked, with atomic child PID and recorded gettid; source schema tests reject PID/TID/namespace/payload/pair/overlap/reversal errors.",
+    "probe_receipt": {
+      "bytes": 5685,
+      "sha256": "27a31aeb31572b34fa601d83f750662643659b5d7f57d48053180944a9147b3d"
+    },
+    "probe_child_name_row_missing": true,
+    "model_unknown_gpu_ownership_events": {
+      "CUPTI_ACTIVITY_KIND_KERNEL": 0,
+      "CUPTI_ACTIVITY_KIND_MEMCPY": 0,
+      "CUPTI_ACTIVITY_KIND_MEMSET": 0
+    }
+  },
+  "closure": {
+    "record": {
+      "bytes": 238798,
+      "sha256": "fd25af5eb3a1d84e6e27f0d9b0d4cd645e2f6252fa57a805a7eaabffa4ea7362"
+    },
+    "transitive_commands": 264,
+    "compiled_objects": 232,
+    "used_nvtx_headers": [
+      "target-linux-sbsa-armv8/nvtx/include/nvtx3/nvToolsExt.h",
+      "target-linux-sbsa-armv8/nvtx/include/nvtx3/nvtxDetail/nvtxImpl.h",
+      "target-linux-sbsa-armv8/nvtx/include/nvtx3/nvtxDetail/nvtxImplCore.h",
+      "target-linux-sbsa-armv8/nvtx/include/nvtx3/nvtxDetail/nvtxInit.h",
+      "target-linux-sbsa-armv8/nvtx/include/nvtx3/nvtxDetail/nvtxInitDecls.h",
+      "target-linux-sbsa-armv8/nvtx/include/nvtx3/nvtxDetail/nvtxInitDefs.h",
+      "target-linux-sbsa-armv8/nvtx/include/nvtx3/nvtxDetail/nvtxLinkOnce.h",
+      "target-linux-sbsa-armv8/nvtx/include/nvtx3/nvtxDetail/nvtxTypes.h"
+    ],
+    "public_interface": {
+      "bytes": 157722,
+      "sha256": "6311a17d35c6658ec4c99d5006283c7098054b5d99faa89e80ace2a6ca97c7c9"
+    },
+    "public_header_count": 33,
+    "public_nvtx_license": "Apache-2.0 WITH LLVM-exception",
+    "dependency_records": {
+      "coarse-target-commands.txt": {
+        "bytes": 365690,
+        "sha256": "7d2dd18482a32e73a05e5d8e4dda6c63f3ac99f986e8ab349911ad6a4d8e9fa3"
+      },
+      "probe-target-commands.txt": {
+        "bytes": 2322,
+        "sha256": "ceaecfcb7ce37669f5cdbc345810ae98c1703ac41d4495723c0a2aa0dc9d8f3d"
+      },
+      "manual-compile-commands.json": {
+        "bytes": 373219,
+        "sha256": "33aa1e1a2b35dd291d7d999a6f02acf3599b7e0eb04eeefc42435c8c1df8a4a4"
+      },
+      "coarse-object-deps.txt": {
+        "bytes": 7693735,
+        "sha256": "2c76cfa91030813e616a9a222ecd6f5ded4c79115c90a6609594580aa2b9f667"
+      },
+      "child-commands.json": {
+        "bytes": 1654,
+        "sha256": "a9c34dc0718ffd99a888d1e12642d94bf106bb923170b68ca495368971a838e5"
+      }
+    },
+    "limitations": [
+      "Manual targets linked diagnostic engine objects in an isolated tree; no default executable was built or copied.",
+      "Dependency inventory records current declared compile commands and Ninja retained deps; it does not claim every unchanged object was rebuilt."
+    ]
+  },
+  "inputs": {
+    "ids": {
+      "bytes": 32908,
+      "sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b"
+    },
+    "manifest": {
+      "bytes": 6035,
+      "sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
+    },
+    "index": {
+      "bytes": 1253283,
+      "sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171"
+    },
+    "task40_own": {
+      "bytes": 6902,
+      "sha256": "a1f7cea38f1f4db2122502382735a34af52738e84add31cd0199b166b0ff25ad"
+    },
+    "task40_source": {
+      "bytes": 6584,
+      "sha256": "25e5e05a06cb31c22c0fce24882713ce21f2932e2383a31cf3ea673fb5443f9f"
+    },
+    "task40_log": {
+      "bytes": 180197,
+      "sha256": "604c5ccc2706f91c3b3368940c6c6636dd894e7922fc1cedc292ead40094affd"
+    }
+  },
+  "tensorfold": {
+    "task_entry_utc": "2026-10-05T16:34:17.696059+00:00",
+    "task_entry_record": {
+      "bytes": 972,
+      "sha256": "0f3fdaa45ba8c8c0036402d647198761b2c6d715ad3c1045e6fad66445c19df6"
+    },
+    "delayed_acquisition_refresh": {
+      "bytes": 2127,
+      "sha256": "63ac72fac5106f0e04b73fc2b11a731a77f46cb71e9b320fe11781294586210a"
+    },
+    "delayed_observed_utc": "2026-10-05T17:57:56.293278+00:00",
+    "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "version": "0.6.5",
+    "primary_recipe": "https://github.com/ashhart/TensorFold/blob/609ca419abecebdc5a059498a613680bd3aa847f/docs/recipes/gemma-4.md",
+    "scope": "Gemma26 MLX recipe; no same-format CUDA comparator for this prepared GGUF."
+  },
+  "control": {
+    "validated": {
+      "bytes": 1435,
+      "sha256": "d69b51b8e188ee47b1f240702e7cfcad3449e43660026975d667d98c148509ce"
+    },
+    "aggregate_roles": {
+      "bytes": 4316,
+      "sha256": "8532edb67199364e0b68c74b2ce1304fa5bc721a7c9eb7a175af310734f4a970"
+    },
+    "completion": {
+      "bytes": 90,
+      "sha256": "7ee7e31f45b0e62418f7dbda016d0c9ef34fdde79d46e72de832bb57ca79f410"
+    },
+    "official_retirement": {
+      "final.json": {
+        "bytes": 82,
+        "sha256": "463d49948aeeb2e357952a889d38bf582d01b2496033f483daf542433aa16b21"
+      },
+      "job.json": {
+        "bytes": 514,
+        "sha256": "3458477f6feacb515538e187e5e5b2f6a4fe5e63467b62c97e0f95cb97412489"
+      },
+      "log": {
+        "bytes": 5853,
+        "sha256": "f5935b00efc267d7e93bff1ef87ad7c8bd3d8557fe7c19aa193daf0b22bc2093"
+      }
+    },
+    "analysis_metadata_alias": "native-control-validated.json is an exclusive exact byte copy of admitted native-control1-validated.json; original output/log/record identity is preserved."
+  },
+  "trace": {
+    "validated": {
+      "bytes": 1434,
+      "sha256": "516293c214b8caf74f69636a342304483c8d3e5e79298a04bd3731b4f54d2cf4"
+    },
+    "sqlite": {
+      "bytes": 47771648,
+      "sha256": "a5ca1d832aeb436ae22e987e3d27206e04ff0bbd278462c6e6b1824e819b783b"
+    },
+    "completion": {
+      "bytes": 90,
+      "sha256": "1c2549f62dffba4045d38ed89fdebd501d8017a9419c8c4c55962d1c8e5fe1a5"
+    },
+    "official_retirement": {
+      "final.json": {
+        "bytes": 82,
+        "sha256": "3ee54f26468fcbff25c080efcf657f0709f1735c6d5fadee2df46f7fed562e3d"
+      },
+      "job.json": {
+        "bytes": 508,
+        "sha256": "8ca4fb926ef13056d2148ccc6f9d7e462ee43291d27a1e25cb93aa22edc9ed20"
+      },
+      "log": {
+        "bytes": 15476,
+        "sha256": "8e6d6a8234654e4efa30b6da4a13384f43aa912da2d626f030ea2cda84437031"
+      }
+    },
+    "analysis_retirement": {
+      "final.json": {
+        "bytes": 81,
+        "sha256": "d8de7c44715f295a5d7d34eb862f29b634cd6cae4d6fbd1286299108d3fd0655"
+      },
+      "job.json": {
+        "bytes": 517,
+        "sha256": "82ad01b9a1644440bf3afb090c8a04f8752555fc3ec75a57e652750e01eea7aa"
+      },
+      "log": {
+        "bytes": 11601,
+        "sha256": "4a0858f6e4f23a3c5c88d5d2541d659488823666a3d68687b8ebc7d25415314c"
+      }
+    }
+  },
+  "failure_history": {
+    "build1": "Manual targets linked; scratch child-link command parser mistook Ninja shell sentinel colon for executable. Narrow parser-only support retry build2 passed; acquisition source16 unchanged.",
+    "probe_check1": "Single no-model probe completed; first metadata validator refused missing child PROCESSES name row. Reviewed separate analysis derivative validated retained probe without rerun.",
+    "source1": "Source metadata freeze stopped on absent scratch IDs. Exclusive verified32,908-byte Task40 ID copy and unchanged source2 freeze passed; no model had run.",
+    "sampling_stage0": "Prior CPU sampling capability gate unavailable; no security/permission changes or model sampling."
+  },
+  "raw_records_external": "/tmp/jitllm-m35-coordination/gemma-prefill-coarse-design-raw",
+  "raw_payloads_external": "No tokens, KV, per-ordinal event rows, process/thread IDs, raw logs, SQLite, public header texts or raw clock samples are in this Git aggregate.",
+  "sampling_stage0_receipt": {
+    "bytes": 2569,
+    "sha256": "870efeee2ce0f27a4bcdaae88716d19c93154c1a28f8448768614fe06d3d69a0"
+  },
+  "light_gate": {
+    "REUSE_header_files": 1558,
+    "boundary_sources": 392,
+    "changed_format_diff_AST_JSON_bash": true,
+    "roster_positive_controls": 3,
+    "roster_negative_controls": 20,
+    "probe_ownership_negative_controls": 7
+  }
+}

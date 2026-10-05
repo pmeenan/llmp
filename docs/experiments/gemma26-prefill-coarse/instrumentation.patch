@@ -1,0 +1,322 @@
+--- a/src/engine/gemma4_runner.cc
++++ b/src/engine/gemma4_runner.cc
+@@ -10,9 +10,11 @@
+ #include <format>
+ #include <limits>
+ #include <numeric>
++#include <optional>
+ #include <string_view>
+ #include <utility>
+ 
++#include "../../benchmarks/gemma26_prefill_coarse.h"
+ #include "artifact/representation.h"
+ #include "base/sha256.h"
+ #include "engine/gemma4_assistant.h"
+@@ -21,6 +23,8 @@
+ #include "providers/device_runtime.h"
+ 
+ namespace jitllm::engine {
++namespace coarse = jitllm::benchmark::coarse;
++// jitllm.prefill.coarse.patch.v1
+ namespace kg = kernels::ggml;
+ static_assert(kGemma4InvariantWaveRows == kg::kRowInvariantColumns);
+ namespace md = model;
+@@ -452,8 +456,11 @@
+   return {};
+ }
+ Status Gemma4Runner::RefreshClosures(SlotMask protect) {
++  const auto observer = coarse::Current();
++  std::optional<coarse::Scope> refresh_scope(std::in_place, coarse::Phase::kRefreshCall, observer);
+   auto refreshed = node_.Call(
+-      [&]() -> Status {
++      [&, observer]() -> Status {
++        coarse::Scope body_scope(coarse::Phase::kRefreshBody, observer);
+         std::vector<ExtentId> shared = weights();
+         for (const auto* mapped : {&node_.activations(), &node_.pool()})
+           shared.insert(shared.end(), mapped->extents.begin(), mapped->extents.end());
+@@ -476,11 +483,13 @@
+         return {};
+       },
+       "Gemma4 refresh closures");
++  refresh_scope.reset();
+   auto states = States();
+   if (!refreshed) {
+     cohort_.Fault(states);
+     return refreshed;
+   }
++  coarse::Scope hold_scope(coarse::Phase::kCohortHold, observer);
+   return cohort_.Hold(node_, stream_, execution_, states);
+ }
+ Status Gemma4Runner::Bind() {
+@@ -542,9 +551,12 @@
+   return {};
+ }
+ Status Gemma4Runner::CheckPlaces() {
++  const auto observer = coarse::Current();
++  coarse::Scope call_scope(coarse::Phase::kPlacesCall, observer);
+   PlaceCheck check;
+   auto r = node_.Call(
+-      [&]() -> Status {
++      [&, observer]() -> Status {
++        coarse::Scope body_scope(coarse::Phase::kPlacesBody, observer);
+         weights_.CheckPlaces(node_.scheduler(), check);
+         if (assistant_) assistant_->weights_.CheckPlaces(node_.scheduler(), check);
+         for (const auto& slot : slots_)
+@@ -591,6 +603,7 @@
+   return ranges;
+ }
+ Status Gemma4Runner::ReserveStateThrough(std::uint32_t index, std::uint32_t positions) {
++  coarse::Scope state_scope(coarse::Phase::kStateGrow);
+   auto request = request_slot(index);
+   if (!request) return Error(request.error());
+   auto& slot = **request;
+@@ -892,15 +905,25 @@
+ }
+ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::Planned(
+     const kg::Gemma4ChunkShape& shape) {
+-  if (auto* found = plans_.Find(shape)) return found;
++  if (auto* found = plans_.Find(shape)) {
++    coarse::Scope hit_scope(coarse::Phase::kPlanHit);
++    return found;
++  }
++  coarse::Scope miss_scope(coarse::Phase::kPlanMiss);
+   const auto started = std::chrono::steady_clock::now();
+   std::uint32_t rows = 0;
+   for (const auto& segment : shape.segments) rows += segment.rows;
+-  auto p = PlanGemma4Chunk(model_, shape, Choices(resources_.launch(), rows),
++  auto p = [&] {
++    coarse::Scope graph_scope(coarse::Phase::kGraphBuildBind);
++    return PlanGemma4Chunk(model_, shape, Choices(resources_.launch(), rows),
+                            node_.activations().base, node_.activations().bytes);
++  }();
+   if (!p) return Error(p.error());
+-  if (auto r = BindPlanned(**p, resources_.launch(), resources_.registry(), "Gemma4 chunk"); !r)
+-    return Error(r.error());
++  const auto binding = [&] {
++    coarse::Scope bind_scope(coarse::Phase::kPlanBind);
++    return BindPlanned(**p, resources_.launch(), resources_.registry(), "Gemma4 chunk");
++  }();
++  if (const auto& r = binding; !r) return Error(r.error());
+   policy_ = {.rows = rows, .segments = static_cast<std::uint32_t>(shape.segments.size())};
+   for (const auto& step : (*p)->plan.steps) {
+     policy_.norm_fused += step.implementation == "ggml.rms_norm_mul.fused";
+@@ -920,8 +943,11 @@
+       state_tensors.push_back(k);
+       state_tensors.push_back(v);
+     }
+-  CheckCoverage(node_, owner_, (*p)->graph.nodes,
+-                {.state = state_tensors, .inputs = (*p)->graph.inputs}, coverage_);
++  {
++    coarse::Scope coverage_scope(coarse::Phase::kCoverage);
++    CheckCoverage(node_, owner_, (*p)->graph.nodes,
++                  {.state = state_tensors, .inputs = (*p)->graph.inputs}, coverage_);
++  }
+   if (coverage_.violations != 0)
+     return Error(std::format("Gemma4 catalog coverage: {}", coverage_.first_violation));
+   const auto bytes = PlannedHostBytes(**p);
+@@ -935,6 +961,8 @@
+   return Wave(std::span(&work, 1), all_outputs);
+ }
+ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all_features) {
++  const auto observer = coarse::Current();
++  coarse::Scope wave_scope(coarse::Phase::kWave, observer);
+   const PlanStep step;
+   if (!bound_ || released_ || work.empty() || work.size() > o_.slots)
+     return Error("Gemma4 wave is unavailable or unbounded");
+@@ -966,8 +994,12 @@
+   struct HostGrant {
+     PagedNode& node;
+     std::uint64_t bytes;
+-    ~HostGrant() { node.UnchargeHost(bytes); }
++    ~HostGrant() {
++      coarse::Scope release_scope(coarse::Phase::kHostRelease);
++      node.UnchargeHost(bytes);
++    }
+   };
++  std::optional<coarse::Scope> input_scope(std::in_place, coarse::Phase::kInputs, observer);
+   if (!node_.ChargeHost(host_input_bytes_, false)) return Error("Gemma4 host inputs do not fit");
+   const HostGrant grant{node_, host_input_bytes_};
+   auto in = md::Gemma4Chunk(profile_, layout_, selected, o_.reference_masks);
+@@ -995,10 +1027,12 @@
+   }
+   shape.outputs = static_cast<std::uint32_t>(frontier.size());
+   shape.feature_outputs = static_cast<std::uint32_t>(feature_ids.size());
++  input_scope.reset();
+   auto entry_of = Planned(shape);
+   if (!entry_of) return Error(entry_of.error());
+   auto& entry = **entry_of;
+   auto& p = *entry.planned;
++  std::optional<coarse::Scope> stage_scope(std::in_place, coarse::Phase::kStage, observer);
+   auto source_bytes = Gemma4SourceBytes(p.graph);
+   if (!source_bytes || *bytes > host_input_bytes_ || *source_bytes > host_input_bytes_ - *bytes)
+     return Error("Gemma4 host input envelope exceeded");
+@@ -1006,6 +1040,7 @@
+   if (!host) return Error(host.error());
+   auto copies = runs_.Stage(host->sources, 0);
+   if (!copies) return Error(copies.error());
++  stage_scope.reset();
+   bool capture = entry.runs[0].CaptureDue(runs_.graphs());
+   if (capture && !plans_.ChargeGraph(entry)) capture = false;
+   const std::uint64_t output_bytes = std::uint64_t{shape.outputs} * profile_.vocab * sizeof(float);
+@@ -1014,11 +1049,16 @@
+   bool wrote = false, unknown = false;
+   Status queued;
+   RunPath path = RunPath::kEager;
++  std::optional<coarse::Scope> completed_scope(std::in_place, coarse::Phase::kJobCompleted,
++                                               observer);
+   const auto posted = node_.Job(
+       execution_,
+-      [&](providers::NativeStream native) {
+-        const auto result = runs_.Queue(entry.runs[0], *copies, {}, *p.bound, outputs, capture,
+-                                        graph_stats_, native);
++      [&, observer](providers::NativeStream native) {
++        const auto result = [&] {
++          coarse::Scope submit_scope(coarse::Phase::kJobSubmit, observer);
++          return runs_.Queue(entry.runs[0], *copies, {}, *p.bound, outputs, capture, graph_stats_,
++                             native);
++        }();
+         wrote = result.before || result.result.has_value();
+         path = result.path;
+         if (!result.result) {
+@@ -1049,6 +1089,7 @@
+         return sc::JobResult::kQueued;
+       },
+       "Gemma4 chunk/wave", stream_);
++  completed_scope.reset();
+   if (!posted || !queued || resources_.launch().faulted()) {
+     for (const auto& w : work)
+       if (wrote || unknown) slots_[w.slot]->live.Quarantine();
+@@ -1058,6 +1099,7 @@
+     if (!queued) return queued;
+     return !posted ? posted : Error("Gemma4 launch context faulted");
+   }
++  coarse::Scope publication_scope(coarse::Phase::kPublish, observer);
+   Count(graph_stats_, path);
+   std::size_t at = 0;
+   for (const auto& w : work) {
+--- a/src/engine/planned.cc
++++ b/src/engine/planned.cc
+@@ -17,12 +17,15 @@
+ #include <utility>
+ #include <vector>
+ 
++#include "../../benchmarks/gemma26_prefill_coarse.h"
+ #include "catalog/catalog.h"
+ #include "engine/paged_node.h"
+ #include "engine/support.h"
+ #include "kernels/ggml/implementations.h"
+ 
+ namespace jitllm::engine {
++namespace coarse = jitllm::benchmark::coarse;
++// jitllm.prefill.coarse.patch.v1
+ 
+ namespace {
+ 
+@@ -61,14 +64,20 @@
+   }
+   kg::BindDistinct(nodes, kDistinct);
+   // What the caller keeps is read after the graph: never overwritten in place.
+-  auto first = kg::PlanGraph(nodes, /*fusion=*/false, choices, keep);
++  auto first = [&] {
++    coarse::Scope scope(coarse::Phase::kPlanFirst);
++    return kg::PlanGraph(nodes, /*fusion=*/false, choices, keep);
++  }();
+   if (!first) {
+     return Error(first.error().detail);
+   }
+   if (lanes != nullptr) {
+     kg::AssignLanes(*first, *lanes, kg::UsesCublas);
+   }
+-  auto placement = kg::PlaceActivations(nodes, *first, inputs, 256, keep);
++  auto placement = [&] {
++    coarse::Scope scope(coarse::Phase::kPlacement);
++    return kg::PlaceActivations(nodes, *first, inputs, 256, keep);
++  }();
+   if (!placement) {
+     return Error(placement.error().detail);
+   }
+@@ -88,7 +97,10 @@
+     kg::TensorArena::Bind(tensor, activations + offset);
+   }
+   kg::BindViews(nodes);
+-  auto second = kg::PlanGraph(nodes, false, choices, keep);
++  auto second = [&] {
++    coarse::Scope scope(coarse::Phase::kPlanSecond);
++    return kg::PlanGraph(nodes, false, choices, keep);
++  }();
+   if (!second) {
+     return Error(second.error().detail);
+   }
+--- a/src/engine/live_state.cc
++++ b/src/engine/live_state.cc
+@@ -8,9 +8,11 @@
+ #include <algorithm>
+ #include <format>
+ #include <limits>
++#include <optional>
+ #include <system_error>
+ #include <utility>
+ 
++#include "../../benchmarks/gemma26_prefill_coarse.h"
+ #include "engine/runner_resources.h"
+ #include "engine/support.h"
+ #include "platform/direct_io.h"
+@@ -18,6 +20,8 @@
+ #include "scheduler/commands.h"
+ 
+ namespace jitllm::engine {
++namespace coarse = jitllm::benchmark::coarse;
++// jitllm.prefill.coarse.patch.v1
+ 
+ namespace {
+ 
+@@ -210,8 +214,12 @@
+     loading.push_back(regions_[ri].mapped.extents[i]);
+   }
+   catalog::Closure closure;
++  const auto observer = coarse::Current();
++  std::optional<coarse::Scope> described_scope(std::in_place, coarse::Phase::kStateDescribe,
++                                               observer);
+   auto described = node.Call(
+-      [&]() -> Status {
++      [&, observer]() -> Status {
++        coarse::Scope scope(coarse::Phase::kStateDescribeBody, observer);
+         auto of = node.catalog().ClosureOfExtents(loading);
+         if (!of) {
+           return Error("a growing state's closure");
+@@ -220,18 +228,24 @@
+         return {};
+       },
+       "describing growing state");
++  described_scope.reset();
+   if (!described) {
+     return std::unexpected(described.error());
+   }
+   sc::AcquireReport report;
+   bool refused_for_budget = false;
+-  auto loaded =
+-      node.Acquire(closure, report, "initializing conversation state", &refused_for_budget);
++  auto loaded = [&] {
++    coarse::Scope scope(coarse::Phase::kStateAcquire, observer);
++    return node.Acquire(closure, report, "initializing conversation state", &refused_for_budget);
++  }();
+   // A kPreserve extent with no write-back source cannot be reclaimed
+   // here: its initial load is complete, and no job has used it yet.
+   // Switch to preservation before exposing it to a model's closure.
++  std::optional<coarse::Scope> registered_scope(std::in_place, coarse::Phase::kStateRegister,
++                                                observer);
+   auto registered = node.Call(
+-      [&]() -> Status {
++      [&, observer]() -> Status {
++        coarse::Scope scope(coarse::Phase::kStateRegisterBody, observer);
+         for (const auto& [ri, i] : fresh) {
+           Region& r = regions_[ri];
+           const auto view = node.catalog().Describe(r.mapped.extents[i]);
+@@ -252,6 +266,7 @@
+         return {};
+       },
+       "registering initialized conversation state");
++  registered_scope.reset();
+   if (!registered) {
+     Quarantine();
+     return std::unexpected(registered.error());

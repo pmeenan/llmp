@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Gemma26 coarse prefill diagnosis preserves prior heads/state and measures
+  about 1.093 s of caller CPU in the two graph-planning passes.
+  Production algorithms and selected policies remain unchanged.
+
 - Gemma26 late-prefill routing and reduction controls on captured common inputs:
   native primitive/fused outputs match each original policy byte-for-byte.
   Recipe rounding differs; the remaining model disagreements stay unexplained.

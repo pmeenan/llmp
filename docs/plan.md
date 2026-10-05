@@ -362,6 +362,10 @@ family" guide, and its long-context scaling work.
         while native has 1.361 s outside recorded GPU activity versus 0.085 s
         for stock. CPU and wait attribution, optimization and competitive
         qualification remain open; trace spans do not replace untraced timing.
+      - [x] [Gemma26 coarse prefill diagnosis](experiments/gemma26-prefill-coarse/README.md),
+        with exact prior head/state controls and checked thread/interval rosters.
+        The two graph-plan passes use about 1.093 s of charged caller CPU;
+        algorithm changes and paid optimization/transfer gates remain separate.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

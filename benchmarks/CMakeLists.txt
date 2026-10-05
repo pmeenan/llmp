@@ -491,3 +491,31 @@ if(JITLLM_CUDA AND JITLLM_BENCHMARK_NVTX_INCLUDE_DIR)
   target_link_options(jitllm_gemma26_prefill_profile PRIVATE
                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 endif()
+
+# Diagnostic-only manual targets. The reversible three-unit measurement
+# overlay is deliberately absent from canonical production source/objects.
+option(JITLLM_BENCHMARK_COARSE_PREFILL "Enable isolated coarse prefill diagnostics" OFF)
+if(JITLLM_CUDA AND JITLLM_BENCHMARK_COARSE_PREFILL)
+  if(NOT EXISTS "${JITLLM_BENCHMARK_NVTX_INCLUDE_DIR}/nvtx3/nvToolsExt.h")
+    message(FATAL_ERROR "Coarse diagnostics require the authenticated external NVTX interface")
+  endif()
+  foreach(_coarse_source IN ITEMS gemma4_runner.cc planned.cc live_state.cc)
+    file(READ "${PROJECT_SOURCE_DIR}/src/engine/${_coarse_source}" _coarse_text)
+    string(FIND "${_coarse_text}" "jitllm.prefill.coarse.patch.v1" _coarse_marker)
+    if(_coarse_marker EQUAL -1)
+      message(FATAL_ERROR "Apply the authenticated diagnostic overlay only in the measurement tree")
+    endif()
+  endforeach()
+  add_executable(jitllm_gemma26_prefill_coarse EXCLUDE_FROM_ALL
+                 gemma26_prefill_coarse.cc gemma26_prefill_coarse_scopes.cc)
+  target_include_directories(jitllm_gemma26_prefill_coarse SYSTEM PRIVATE
+                             "${JITLLM_BENCHMARK_NVTX_INCLUDE_DIR}")
+  target_link_libraries(jitllm_gemma26_prefill_coarse PRIVATE jitllm_engine jitllm_warnings ${CMAKE_DL_LIBS})
+  target_link_options(jitllm_gemma26_prefill_coarse PRIVATE
+                     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+  add_executable(jitllm_gemma26_clock_probe EXCLUDE_FROM_ALL
+                 gemma26_prefill_clock_probe.cc gemma26_prefill_coarse_scopes.cc)
+  target_include_directories(jitllm_gemma26_clock_probe SYSTEM PRIVATE
+                             "${JITLLM_BENCHMARK_NVTX_INCLUDE_DIR}")
+  target_link_libraries(jitllm_gemma26_clock_probe PRIVATE jitllm_warnings ${CMAKE_DL_LIBS})
+endif()

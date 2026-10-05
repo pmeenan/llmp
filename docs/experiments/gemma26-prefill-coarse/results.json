@@ -1,0 +1,387 @@
+{
+  "measurement_kind": "Instrumented native critical-path diagnosis; no competitive timing or optimization adoption",
+  "profile": "Gemma26/all1024/C1",
+  "workload": {
+    "context": 16384,
+    "physical_rows": 1024,
+    "local_cells": 2048,
+    "global_cells": 16384,
+    "kv_type": "F16",
+    "warm_rows": 6,
+    "paid_prefill_rows": 8192,
+    "paid_prefill_chunks": 8,
+    "prefill_full_head_publications": 8,
+    "untimed_anchors": 3,
+    "completed_decode_units": 32,
+    "decode_choice_alignment": "incoming head before each forced step"
+  },
+  "fidelity": {
+    "untraced_annotated_control_matches_Task40": true,
+    "trace_matches_Task40": true,
+    "complete_head_and_initialized_state_identities": {
+      "heads": {
+        "final.f32": {
+          "bytes": 1048576,
+          "sha256": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+        },
+        "prefill.f32": {
+          "bytes": 1048576,
+          "sha256": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd"
+        }
+      },
+      "layout": "gemma26-f16-kv-scalar-device-v1:16384:1024:16384:2048",
+      "state": {
+        "bytes": 592445440,
+        "sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+      }
+    },
+    "all_32_incoming_head_choices_match": true,
+    "policy_counts": {
+      "norm_rope": 60,
+      "norm_add": 90,
+      "gemma_route": 30,
+      "gemma_reduce": 30,
+      "other_optional": 0
+    },
+    "policy_counts_are_selected_plan_counts_not_cuda_launches": true
+  },
+  "clock_probe": {
+    "busy_cpu": 149994480,
+    "busy_wall": 150000415,
+    "wait_cpu": 91840,
+    "wait_wall": 150545319
+  },
+  "trace": {
+    "phase_aggregates": [
+      {
+        "clock_inclusive_thread_cpu_ns": 942160,
+        "clock_inclusive_wall_ns": 6298404,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 6293760,
+        "nvtx_wall_union_ns": 6293760,
+        "phase": "cohort.hold",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 4334992,
+        "clock_inclusive_wall_ns": 4337646,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 4329440,
+        "nvtx_wall_union_ns": 4329440,
+        "phase": "coverage",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 1158586576,
+        "clock_inclusive_wall_ns": 1158658137,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 52295808,
+        "nvtx_wall_union_ns": 1158658352,
+        "phase": "graph.build_bind",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 45840,
+        "clock_inclusive_wall_ns": 615343,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 608912,
+        "nvtx_wall_union_ns": 608912,
+        "phase": "host.release",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 3132016,
+        "clock_inclusive_wall_ns": 68495506,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 644752,
+        "nvtx_wall_union_ns": 68491472,
+        "phase": "inputs",
+        "recorded_gpu_overlap_union_ns": 11344224,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 2526802944,
+        "clock_inclusive_wall_ns": 2527077830,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 2527061408,
+        "nvtx_wall_union_ns": 2527061408,
+        "phase": "job.completed",
+        "recorded_gpu_overlap_union_ns": 2458058627,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 13054416,
+        "clock_inclusive_wall_ns": 13056312,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 13049968,
+        "nvtx_wall_union_ns": 13049968,
+        "phase": "placement",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 149440,
+        "clock_inclusive_wall_ns": 5790837,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 5785312,
+        "nvtx_wall_union_ns": 5785312,
+        "phase": "places.call",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 40132448,
+        "clock_inclusive_wall_ns": 40134287,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 40127552,
+        "nvtx_wall_union_ns": 40127552,
+        "phase": "plan.bind",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 546745536,
+        "clock_inclusive_wall_ns": 546793363,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 546782000,
+        "nvtx_wall_union_ns": 546782000,
+        "phase": "plan.first",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 1203247328,
+        "clock_inclusive_wall_ns": 1206500775,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 3384576,
+        "nvtx_wall_union_ns": 1206499920,
+        "phase": "plan.miss",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 546525392,
+        "clock_inclusive_wall_ns": 546553189,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 546530576,
+        "nvtx_wall_union_ns": 546530576,
+        "phase": "plan.second",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 304912,
+        "clock_inclusive_wall_ns": 306879,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 301168,
+        "nvtx_wall_union_ns": 301168,
+        "phase": "publish",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 140624,
+        "clock_inclusive_wall_ns": 5705576,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 5699872,
+        "nvtx_wall_union_ns": 5699872,
+        "phase": "refresh.call",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 36112,
+        "clock_inclusive_wall_ns": 37983,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 33056,
+        "nvtx_wall_union_ns": 33056,
+        "phase": "stage",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 1444096,
+        "clock_inclusive_wall_ns": 51379615,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 51374784,
+        "nvtx_wall_union_ns": 51374784,
+        "phase": "state.acquire",
+        "recorded_gpu_overlap_union_ns": 11344224,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 89456,
+        "clock_inclusive_wall_ns": 3474176,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 3467888,
+        "nvtx_wall_union_ns": 3467888,
+        "phase": "state.describe",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 3051920,
+        "clock_inclusive_wall_ns": 67851238,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 416768,
+        "nvtx_wall_union_ns": 67846720,
+        "phase": "state.grow",
+        "recorded_gpu_overlap_union_ns": 11344224,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 36096,
+        "clock_inclusive_wall_ns": 601643,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 593648,
+        "nvtx_wall_union_ns": 593648,
+        "phase": "state.register",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 3733777984,
+        "clock_inclusive_wall_ns": 3808873569,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 103568,
+        "nvtx_wall_union_ns": 3808884816,
+        "phase": "wave",
+        "recorded_gpu_overlap_union_ns": 2469402851,
+        "role": [
+          "caller"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 5508832,
+        "clock_inclusive_wall_ns": 5525656,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 5472496,
+        "nvtx_wall_union_ns": 5472496,
+        "phase": "places.body",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "scheduler"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 5400576,
+        "clock_inclusive_wall_ns": 5402841,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 5394832,
+        "nvtx_wall_union_ns": 5394832,
+        "phase": "refresh.body",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "scheduler"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 3276528,
+        "clock_inclusive_wall_ns": 3278705,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 3270752,
+        "nvtx_wall_union_ns": 3270752,
+        "phase": "state.describe.body",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "scheduler"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 291760,
+        "clock_inclusive_wall_ns": 306174,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 262192,
+        "nvtx_wall_union_ns": 262192,
+        "phase": "state.register.body",
+        "recorded_gpu_overlap_union_ns": 0,
+        "role": [
+          "scheduler"
+        ]
+      },
+      {
+        "clock_inclusive_thread_cpu_ns": 891006800,
+        "clock_inclusive_wall_ns": 891040725,
+        "count": 8,
+        "nvtx_same_thread_exclusive_ns": 890956384,
+        "nvtx_wall_union_ns": 890956384,
+        "phase": "job.submit",
+        "recorded_gpu_overlap_union_ns": 836723017,
+        "role": [
+          "submission"
+        ]
+      }
+    ],
+    "known_counter_static_bytes": 2726,
+    "step_times": {
+      "after": "1.63376",
+      "device": "2.52",
+      "dispatch": "0.00185812",
+      "job": "0.891354",
+      "steps": "8",
+      "wall": "2.52697"
+    },
+    "all_eight_ordinals_and_worker_associations_checked": true,
+    "unknown_gpu_ownership_events": {
+      "CUPTI_ACTIVITY_KIND_KERNEL": 0,
+      "CUPTI_ACTIVITY_KIND_MEMCPY": 0,
+      "CUPTI_ACTIVITY_KIND_MEMSET": 0
+    }
+  },
+  "limits": [
+    "NVTX times and monotonic/thread CPU readouts have separate clock origins.",
+    "Inclusive parent/child and concurrent worker scopes overlap; never add them.",
+    "Same-thread exclusive NVTX elapsed excludes recorded nested scopes, not observer cost.",
+    "Charged CPU is scheduled thread work, not a sampled instruction or stack attribution.",
+    "Elapsed minus charged CPU is not proven blocked state.",
+    "GPU intersections and API bodies overlap host work; no subtraction across clock domains.",
+    "Instrumented times are diagnosis only; no competitive speed or adoption result.",
+    "Exactly one annotated model control and one model trace; no repeated performance distribution.",
+    "Counter phase ownership is actual executing thread; no sampled stack or blocked/spinning classification.",
+    "Native eight head publications and final-block narrowing differ from the original one-head recipe.",
+    "Untraced Task40 +57.6433% prefill latency remains the competitive result.",
+    "Cross-engine full-head quality, further contexts/batches and production selection remain open."
+  ]
+}

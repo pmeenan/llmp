@@ -1,0 +1,35 @@
+{
+  "base": "d08eea75fac191bdb0e6ad6d6535ea1363d71f23",
+  "instrumented": {
+    "src/engine/gemma4_runner.cc": {
+      "bytes": 52929,
+      "sha256": "93cabb872c1204551c409b0c24ae3a085968ada1ee73198eac8a4048008a6189"
+    },
+    "src/engine/live_state.cc": {
+      "bytes": 31557,
+      "sha256": "eb597de0a8a24055777e7b2ff9a9e3e346f6397bc04d61b0fa02b47e40a4c632"
+    },
+    "src/engine/planned.cc": {
+      "bytes": 9817,
+      "sha256": "01c38bd733aaf9de45e4cb9906d95241b3340af098977c4fc60f6eaf45dca770"
+    }
+  },
+  "original": {
+    "src/engine/gemma4_runner.cc": {
+      "bytes": 51055,
+      "sha256": "8228f479eabd85caf0af59f315b86a8ddb28d4e5d9f418f69c4065b9e208cced"
+    },
+    "src/engine/live_state.cc": {
+      "bytes": 30751,
+      "sha256": "f577c89f7457490a66e4516eadf50e0f1213907fe264b0bb4fb1cac13e51f856"
+    },
+    "src/engine/planned.cc": {
+      "bytes": 9455,
+      "sha256": "6fca7cbe4a614d68e574a271d9f7fd1fa376d8c01595410be268bb1fd134a9a9"
+    }
+  },
+  "patch": {
+    "bytes": 12475,
+    "sha256": "55a72694f9cc2237371dd08a2819e46329300f476501004b0520f544081e110c"
+  }
+}
