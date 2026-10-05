@@ -164,9 +164,13 @@ rounded two-input reducer is a different contract and cannot substitute.
 
 The [structural matchers](gemma-moe-matchers.md) recognize the exact routing
 chain and contiguous ordered reduction, preserving all descriptors for
-placement and refusing kept or externally read elided values. The current
-26B graph matches routing but falls back for its interleaved reduction.
-Shared planner dispatch and whole-model/batched qualification remain owed.
+placement and refusing kept or externally read elided values. The
+[native default-off dispatch](experiments/gemma-native-moe/README.md) expands
+the ordered raw routed sum before its post-norm, yielding all 30 routing and
+30 reduction matches on actual 1/2/4-segment graphs. All descriptors/full-sort
+backing remain funded. Compound norm/MoE has nine out-of-noise representative
+argmax differences; a 3.03% short native timer gain does not select a default.
+Whole-model/reference, optimized joining and long-context gates remain owed.
 
 Gemma's [checked norm chains](experiments/gemma-native-norm/README.md) reuse the
 original D256/D512 F32 norm/NEOX and 2816/5376 residual-add launchers through

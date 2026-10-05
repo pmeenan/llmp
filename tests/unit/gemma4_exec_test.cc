@@ -191,7 +191,7 @@ class Gemma4ExecTest : public ::testing::Test {
   Run Execute(std::uint32_t layer, std::span<const std::uint32_t> slots, std::uint32_t rows,
               std::uint32_t past, bool shared, bool head = false, bool fused_norms = false,
               bool device_masks = false, bool rope_store = false, bool keep_rope = false,
-              bool norm_chains = false) {
+              bool norm_chains = false, bool moe_chains = false) {
     Run run;
     std::vector<std::vector<std::int32_t>> tokens(slots.size(), std::vector<std::int32_t>(rows, 1));
     std::vector<md::Gemma4Segment> segments;
@@ -237,6 +237,8 @@ class Gemma4ExecTest : public ::testing::Test {
     choices.fuse_norms = fused_norms;
     choices.fuse_norm_rope = norm_chains;
     choices.fuse_norm_add = norm_chains;
+    choices.fuse_gemma_route = moe_chains;
+    choices.fuse_gemma_reduce = moe_chains;
     auto measured = en::PlanGemma4Chunk(model_, shape, choices, 0, 0, kept);
     EXPECT_TRUE(measured) << (measured ? "" : measured.error());
     if (!measured) return run;
@@ -810,6 +812,25 @@ TEST_F(Gemma4ExecTest, KeptSegmentRotationsUseTheOrdinaryProducerAndRemainReadab
     }
     Repeat(run);
   }
+}
+
+TEST_F(Gemma4ExecTest, CheckedMoePoliciesCompleteLocalGlobalLayersAndCapture) {
+  const std::array<std::uint32_t, 4> slots{0, 1, 2, 3};
+  for (const auto layer : {0U, 5U})
+    for (const auto count : {1U, 2U, 4U}) {
+      auto fused = Execute(layer, std::span(slots).first(count), count == 4 ? 1 : 2, 1279, false,
+                           false, false, true, false, false, true, true);
+      ASSERT_NE(fused.planned, nullptr);
+      std::size_t routing = 0, reduction = 0;
+      for (const auto& step : fused.planned->plan.steps) {
+        routing += step.implementation == "ggml.gemma.route.fused";
+        reduction += step.implementation == "ggml.gemma.scaled_reduce.fused";
+      }
+      EXPECT_EQ(routing, 1U);
+      EXPECT_EQ(reduction, 1U);
+      Reference(fused, layer);
+      Repeat(fused);
+    }
 }
 
 TEST_F(Gemma4ExecTest, CheckedNormChainsCompleteLocalGlobalLayersAndCapture) {

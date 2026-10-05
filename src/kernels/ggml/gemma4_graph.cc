@@ -382,6 +382,9 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
       }
       auto* routed = selected[0];
       for (std::uint32_t i = 1; i < p.experts_used; ++i) routed = ggml_add(c, routed, selected[i]);
+      // Keep the complete ordered sum contiguous before independent shared-FFN
+      // work. Its post-normalization remains beside the final residual chain.
+      expanded.push_back(routed);
       routed = Norm(c, p, routed, weight(*l.ffn_post_norm_2));
       ffn = ggml_add(c, shared, routed);
     }

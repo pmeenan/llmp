@@ -41,6 +41,7 @@ struct Gemma4Options {
   // Unqualified experiments default off; retain ordinary numerical control.
   bool shared_q8 = false, fuse_norms = false, row_invariant = false, rope_store = false;
   bool fuse_norm_rope = false, fuse_norm_add = false;
+  bool fuse_gemma_route = false, fuse_gemma_reduce = false;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
 };
 class Gemma4Runner final : public PagedModel {
@@ -159,6 +160,7 @@ class Gemma4Runner final : public PagedModel {
     std::uint32_t rows = 0, segments = 0, norm_fused = 0, rope_store = 0;
     std::uint32_t shared_vecq = 0, row_products = 0, lane_steps = 0;
     std::uint32_t norm_rope = 0, norm_add = 0;
+    std::uint32_t gemma_route = 0, gemma_reduce = 0;
   };
   const PolicyCounts& last_built_policy() const { return policy_; }
 

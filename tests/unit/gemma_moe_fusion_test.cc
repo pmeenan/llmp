@@ -86,6 +86,38 @@ TEST_F(GemmaMoeFusion, ExactPatternsPreserveBothRoutingOutputsAndScaledOrder) {
     EXPECT_FALSE(kg::GemmaReductionFusionAt(n, std::numeric_limits<std::size_t>::max()));
   }
 }
+TEST_F(GemmaMoeFusion, ExplicitPoliciesKeepPrimitivesAndProtectEveryUnwrittenValue) {
+  kg::DeviceChoices choices;
+  choices.fuse_gemma_route = choices.fuse_gemma_reduce = true;
+  for (bool route : {true, false}) {
+    arena->Reset();
+    auto n = route ? Route() : Reduce();
+    const auto name = route ? kg::kGemmaRouteName : kg::kGemmaReduceName;
+    auto ordinary = kg::PlanGraph(n, false, {});
+    ASSERT_TRUE(ordinary);
+    EXPECT_TRUE(std::ranges::none_of(
+        ordinary->steps, [name](const auto& step) { return step.implementation == name; }));
+    auto fused = kg::PlanGraph(n, false, choices);
+    ASSERT_TRUE(fused) << (fused ? "" : fused.error().detail);
+    ASSERT_EQ(fused->steps.size(), 1U);
+    EXPECT_EQ(fused->steps.front().implementation, name);
+    EXPECT_EQ(fused->steps.front().nodes, n);
+    for (std::size_t i = 0; i + 1 < n.size(); ++i) {
+      // Exact selected IDs are the second initialized routing output.
+      if (route && (i == 3 || i == 8)) continue;
+      std::array kept{n[i]};
+      auto fallback = kg::PlanGraph(n, false, choices, kept);
+      ASSERT_TRUE(fallback) << (fallback ? "" : fallback.error().detail);
+      EXPECT_TRUE(std::ranges::none_of(fallback->steps, [name](const auto& step) {
+        return step.implementation == name;
+      })) << i;
+    }
+    auto* bad = ggml_view_tensor(c(), n.back());
+    bad->view_src = bad;
+    std::array kept{bad};
+    EXPECT_FALSE(kg::PlanGraph(n, false, choices, kept));
+  }
+}
 TEST_F(GemmaMoeFusion, EveryUnwrittenRoutingIntermediateRequiresPrimitives) {
   auto n = Route();
   for (const auto index : {0U, 1U, 2U, 4U, 5U, 6U, 7U}) {
@@ -184,20 +216,25 @@ TEST_F(GemmaMoeFusion, PlacementFundsEveryDescriptorAndTheCompleteRoutingRoot) {
   for (bool route : {true, false}) {
     arena->Reset();
     auto n = route ? Route() : Reduce();
-    kg::GraphPlan plan;
-    // Metadata-only representative fused step: no execution selection is
-    // implemented in this slice. All computed descriptors remain charged.
-    plan.steps.push_back({.implementation = "metadata-only", .nodes = n});
+    kg::DeviceChoices choices;
+    choices.fuse_gemma_route = choices.fuse_gemma_reduce = true;
+    auto plan = kg::PlanGraph(n, false, choices);
+    ASSERT_TRUE(plan);
+    ASSERT_EQ(plan->steps.size(), 1U);
+    EXPECT_EQ(plan->steps.front().nodes, n);
     std::vector<ggml_tensor*> inputs;
     if (route)
       inputs.push_back(n[0]->src[0]);
     else
       inputs = {n[0]->src[0], n[0]->src[1], n[1]->src[1]};
-    auto placement = kg::PlaceActivations(n, plan, inputs, 256);
+    auto placement = kg::PlaceActivations(n, *plan, inputs, 256);
     ASSERT_TRUE(placement);
     for (const auto [tensor, offset] : placement->offsets)
       kg::TensorArena::Bind(tensor, (1ULL << 32) + offset);
     kg::BindViews(n);
+    auto placed_plan = kg::PlanGraph(n, false, choices);
+    ASSERT_TRUE(placed_plan);
+    EXPECT_TRUE(kg::SamePlan(*plan, *placed_plan));
     if (route) {
       auto f = kg::GemmaRoutingFusionAt(n, 0);
       ASSERT_TRUE(f);
@@ -209,7 +246,7 @@ TEST_F(GemmaMoeFusion, PlacementFundsEveryDescriptorAndTheCompleteRoutingRoot) {
       EXPECT_TRUE(kg::GemmaReductionFusionAt(n, 0));
   }
 }
-TEST(GemmaMoeActualGraph, RoutingMatchesAndInterleavedReductionRequiresContiguousScheduling) {
+TEST(GemmaMoeActualGraph, AllActualRoutingAndReductionChainsMatchAcrossIndependentSegments) {
   namespace fixture = jitllm::test_support::gemma4;
   for (const auto size : {26U, 31U})
     for (const auto slots : {1U, 2U, 4U}) {
@@ -246,11 +283,30 @@ TEST(GemmaMoeActualGraph, RoutingMatchesAndInterleavedReductionRequiresContiguou
         reduction += kg::GemmaReductionFusionAt(g->nodes, i).has_value();
       }
       EXPECT_EQ(routing, size == 26 ? 30U : 0U) << size << "/" << slots;
-      EXPECT_EQ(reduction, 0U) << size << "/" << slots;
-      // The existing expanded graph interleaves the shared FFN before the
-      // seven routed additions. No production order or dispatch changes here.
-      // Prove the actual descriptors/reader graph meet the contract once that
-      // independent work is scheduled outside the contiguous fused span.
+      EXPECT_EQ(reduction, size == 26 ? 30U : 0U) << size << "/" << slots;
+      kg::DeviceChoices choices;
+      choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
+      choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
+      choices.fuse_gemma_route = choices.fuse_gemma_reduce = true;
+      choices.fuse_norm_rope = choices.fuse_norm_add = true;
+      auto plan = kg::PlanGraph(g->nodes, false, choices);
+      ASSERT_TRUE(plan) << (plan ? "" : plan.error().detail);
+      EXPECT_EQ(std::ranges::count_if(plan->steps,
+                                      [](const auto& step) {
+                                        return step.implementation == kg::kGemmaRouteName &&
+                                               step.nodes.size() == 10;
+                                      }),
+                size == 26 ? 30 : 0);
+      EXPECT_EQ(std::ranges::count_if(plan->steps,
+                                      [](const auto& step) {
+                                        return step.implementation == kg::kGemmaReduceName &&
+                                               step.nodes.size() == 17;
+                                      }),
+                size == 26 ? 30 : 0);
+
+      // Also rebuild each exact chain from its dependency edges, retaining
+      // every original reader. This independently checks the structural
+      // contract rather than relying only on contiguous graph order.
       std::size_t contiguous_reductions = 0;
       for (std::size_t i = 0; i + 10 < g->nodes.size(); ++i) {
         auto* scaled = g->nodes[i];

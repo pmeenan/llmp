@@ -8,11 +8,15 @@
 #include <cstddef>
 #include <optional>
 #include <span>
+#include <string_view>
 
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/gemma_moe.h"
 
 namespace jitllm::kernels::ggml {
+inline constexpr std::string_view kGemmaRouteName = "ggml.gemma.route.fused";
+inline constexpr std::string_view kGemmaReduceName = "ggml.gemma.scaled_reduce.fused";
+
 // All descriptors remain in the eventual step for conservative placement.
 // These matchers allocate nothing and select no execution policy. Operands'
 // byte counts describe required logical backing, not catalog residency proof.

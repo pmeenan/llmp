@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded full-vocabulary teacher forcing on exact shared integer IDs.
-// ARTIFACT IDS_I32 OUTPUT_DIR CHUNK ordinary|norm|both|norm_rope|norm_add [26|31]. No support
-// claim.
+// ARTIFACT IDS_I32 OUTPUT_DIR CHUNK ordinary|norm|both|norm_rope|norm_add|moe|all [26|31]. No
+// support claim.
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -11,7 +11,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "base/bytes.h"
@@ -29,7 +31,7 @@ int main(int argc, char** argv) {
   const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), chunk);
   if (error != std::errc{} || end != number.data() + number.size() || chunk == 0 || chunk > 128 ||
       (policy != "ordinary" && policy != "norm" && policy != "both" && policy != "norm_rope" &&
-       policy != "norm_add"))
+       policy != "norm_add" && policy != "moe" && policy != "all"))
     return 2;
   std::error_code file_error;
   if (std::filesystem::file_size(argv[2], file_error) != 4096 || file_error) return 2;
@@ -41,17 +43,27 @@ int main(int argc, char** argv) {
     return 2;
   const std::filesystem::path out(argv[3]);
   if (!std::filesystem::create_directory(out, file_error) || file_error) return 2;
-  en::PagedNode node({.slot_bytes = en::kSlabSlotBytes});
-  en::Gemma4Runner runner(
+  struct Lifetime {
+    en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+    std::unique_ptr<en::Gemma4Runner> runner;
+    std::vector<en::PagedModel*> entered;
+  };
+  auto lifetime = std::make_unique<Lifetime>();
+  auto& node = lifetime->node;
+  lifetime->runner = std::make_unique<en::Gemma4Runner>(
       node,
-      {.artifact = argv[1],
-       .out = out,
-       .variant = variant == "31" ? en::Gemma4Variant::k31B : en::Gemma4Variant::k26BA4B,
-       .fuse_norms = policy == "norm",
-       .fuse_norm_rope = policy == "both" || policy == "norm_rope",
-       .fuse_norm_add = policy == "both" || policy == "norm_add"},
+      en::Gemma4Options{
+          .artifact = argv[1],
+          .out = out,
+          .variant = variant == "31" ? en::Gemma4Variant::k31B : en::Gemma4Variant::k26BA4B,
+          .fuse_norms = policy == "norm",
+          .fuse_norm_rope = policy == "both" || policy == "norm_rope" || policy == "all",
+          .fuse_norm_add = policy == "both" || policy == "norm_add" || policy == "all",
+          .fuse_gemma_route = policy == "moe" || policy == "all",
+          .fuse_gemma_reduce = policy == "moe" || policy == "all"},
       0, 0);
-  std::vector<en::PagedModel*> entered;
+  auto& runner = *lifetime->runner;
+  auto& entered = lifetime->entered;
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;
     entered.push_back(&runner);
@@ -97,6 +109,7 @@ int main(int argc, char** argv) {
             std::cout << "QUALITY_CHUNK first=" << first << " rows=" << rows
                       << " completed=" << first + rows << " norm_fused=" << p.norm_fused
                       << " norm_rope=" << p.norm_rope << " norm_add=" << p.norm_add
+                      << " gemma_route=" << p.gemma_route << " gemma_reduce=" << p.gemma_reduce
                       << " shared_vecq=" << p.shared_vecq << " row_products=" << p.row_products
                       << '\n';
           }
@@ -107,6 +120,10 @@ int main(int argc, char** argv) {
   const auto ran = execute();
   const auto retired = node.TearDown(entered);
   if (!ran) std::cerr << ran.error() << '\n';
-  if (!retired) std::cerr << retired.error() << '\n';
+  if (!retired) {
+    std::cerr << retired.error() << '\n';
+    // Quarantine the node, runner and graphs until process exit.
+    std::ignore = lifetime.release();
+  }
   return ran && retired ? 0 : 1;
 }

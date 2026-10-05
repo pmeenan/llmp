@@ -12,6 +12,7 @@
 #include <memory>
 #include <numeric>
 #include <span>
+#include <tuple>
 #include <vector>
 
 #include "base/bytes.h"
@@ -23,6 +24,7 @@ class Gemma4RunnerGpu : public ::testing::Test {
  protected:
   virtual bool Invariant() const { return false; }
   virtual bool NormChains() const { return false; }
+  virtual bool MoeChains() const { return false; }
   virtual en::Gemma4Variant Variant() const { return en::Gemma4Variant::k26BA4B; }
   void SetUp() override {
     // Explicit fixture path, matching other real-model engine controls.
@@ -42,7 +44,9 @@ class Gemma4RunnerGpu : public ::testing::Test {
                           .fuse_norms = Invariant(),
                           .row_invariant = Invariant(),
                           .fuse_norm_rope = NormChains(),
-                          .fuse_norm_add = NormChains()},
+                          .fuse_norm_add = NormChains(),
+                          .fuse_gemma_route = MoeChains(),
+                          .fuse_gemma_reduce = MoeChains()},
         0, 0);
     ASSERT_TRUE(node.Open());
     entered.push_back(runner.get());
@@ -60,6 +64,8 @@ class Gemma4RunnerGpu : public ::testing::Test {
   void TearDown() override {
     auto retired = node.TearDown(entered);
     EXPECT_TRUE(retired) << (retired ? "" : retired.error());
+    // Retain all execution owners when completion cannot be proved.
+    if (!retired) std::ignore = lifetime.release();
   }
   en::Status Single(std::uint32_t slot, std::uint32_t past, std::span<const std::int32_t> tokens,
                     std::vector<float>& logits) {
@@ -125,11 +131,108 @@ class Gemma4RunnerGpu : public ::testing::Test {
     auto freed = node.FreePinned(*pinned);
     return copied ? freed : copied;
   }
-  en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
-  std::unique_ptr<en::Gemma4Runner> runner;
-  std::vector<en::PagedModel*> entered;
+  struct Lifetime {
+    en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+    std::unique_ptr<en::Gemma4Runner> runner;
+    std::vector<en::PagedModel*> entered;
+  };
+  std::unique_ptr<Lifetime> lifetime = std::make_unique<Lifetime>();
+  en::PagedNode& node = lifetime->node;
+  std::unique_ptr<en::Gemma4Runner>& runner = lifetime->runner;
+  std::vector<en::PagedModel*>& entered = lifetime->entered;
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
 };
+class Gemma26MoeRunnerGpu : public Gemma4RunnerGpu {
+ protected:
+  bool NormChains() const override { return true; }
+  bool MoeChains() const override { return true; }
+};
+TEST_F(Gemma26MoeRunnerGpu, IndependentJoinedReplayCheckpointAndSpillKeepCompletedStateExact) {
+  const std::array<std::uint32_t, 4> ids{0, 1, 2, 3};
+  const std::array<std::int32_t, 3> anchors{45518, 107, 101};
+  auto maximum_ranges = runner->CheckpointRanges(10);
+  ASSERT_TRUE(maximum_ranges);
+  std::uint64_t one_state = 0;
+  for (const auto& range : *maximum_ranges) one_state += range.bytes;
+  // At most four retained snapshots plus one current copy, twelve saved
+  // heads, four working heads and two continuation heads. Pinned transfer
+  // storage remains separately catalog-backed by StateBytes/CopyState.
+  const auto host_bytes = 5 * one_state + 18ULL * 262144 * sizeof(float);
+  ASSERT_TRUE(node.ChargeHost(host_bytes, false));
+  struct Copies {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Copies() { node.UnchargeHost(bytes); }
+  } copies{node, host_bytes};
+  for (const auto count : {1U, 2U, 4U}) {
+    ASSERT_TRUE(runner->SelectSlots(std::span(ids).first(count)));
+    std::array<std::array<std::vector<float>, 3>, 4> expected;
+    std::array<std::vector<std::byte>, 4> state;
+    auto ran = Held([&]() -> en::Status {
+      for (unsigned repeat = 0; repeat < 3; ++repeat) {
+        std::array<std::vector<float>, 4> output;
+        for (std::uint32_t id = 0; id < count; ++id) {
+          if (auto r = runner->Clear(id); !r) return r;
+          if (auto r = Single(id, 0, prompt, output[id]); !r) return r;
+        }
+        for (std::uint32_t step = 0; step < 3; ++step) {
+          std::array<en::Gemma4Runner::Work, 4> work{};
+          for (std::uint32_t id = 0; id < count; ++id)
+            work[id] = {id, 6 + step, std::span(&anchors[step], 1), &output[id]};
+          if (auto r = runner->Wave(std::span(work).first(count)); !r) return r;
+          const auto& selected = runner->last_built_policy();
+          EXPECT_EQ(selected.gemma_route, 30U);
+          EXPECT_EQ(selected.gemma_reduce, 30U);
+          EXPECT_GT(selected.norm_rope, 0U);
+          EXPECT_GT(selected.norm_add, 0U);
+          for (std::uint32_t id = 0; id < count; ++id)
+            if (repeat == 0)
+              expected[id][step] = output[id];
+            else
+              Exact(expected[id][step], output[id]);
+        }
+        for (std::uint32_t id = 0; id < count; ++id) {
+          std::vector<std::byte> current;
+          if (auto r = StateBytes(id, 9, current); !r) return r;
+          if (repeat == 0)
+            state[id] = std::move(current);
+          else
+            EXPECT_EQ(current, state[id]);
+        }
+      }
+      auto ranges = runner->CheckpointRanges(9);
+      if (!ranges) return en::support::Error(ranges.error());
+      std::uint64_t bytes = 0;
+      for (const auto& range : *ranges) bytes += range.bytes;
+      std::vector<jitllm::catalog::ExtentId> staging;
+      auto saved = node.Pinned(bytes, 0, staging);
+      if (!saved) return en::support::Error(saved.error());
+      if (auto r = runner->CopyState(0, *saved, *ranges, true); !r) return r;
+      std::vector<float> baseline, resumed;
+      if (auto r = Single(0, 9, std::span(&anchors[0], 1), baseline); !r) return r;
+      if (auto r = runner->Clear(0); !r) return r;
+      if (auto r = runner->RestoreCheckpoint(0, 9, *saved, *ranges, runner->CheckpointLayoutId());
+          !r)
+        return r;
+      if (auto r = runner->Spill(0); !r) return r;
+      if (auto r = runner->Restore(0); !r) return r;
+      runner->DropPlans();
+      if (auto r = Single(0, 9, std::span(&anchors[0], 1), resumed); !r) return r;
+      Exact(baseline, resumed);
+      for (std::uint32_t peer = 1; peer < count; ++peer) {
+        std::vector<std::byte> current;
+        if (auto r = StateBytes(peer, 9, current); !r) return r;
+        EXPECT_EQ(current, state[peer]);
+      }
+      return node.FreePinned(*saved);
+    });
+    ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+  }
+  EXPECT_GT(runner->graph_stats().captured, 0U);
+  EXPECT_GT(runner->graph_stats().replayed, 0U);
+  EXPECT_EQ(runner->coverage().violations, 0U);
+}
+
 class Gemma4RunnerPolicy : public Gemma4RunnerGpu, public ::testing::WithParamInterface<bool> {
  protected:
   bool Invariant() const override { return GetParam(); }

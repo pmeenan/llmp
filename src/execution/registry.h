@@ -101,10 +101,12 @@ enum class Operation : std::uint8_t {
   kUpsample,           // nearest 2x upsampling
   kDupUpAdd,           // a shortcut's channels spread over 2x2 pixels, added
   // Gemma 4 primitives (M3.5), preserving existing operation identities.
-  kGeGlu,           // GELU-tanh(gate) * up
-  kMulMatGeGlu,     // gate and up products of one input, then GELU-tanh GLU
-  kRmsNormMulRope,  // learned RMS normalization, then rotation
-  kRmsNormMulAdd,   // learned RMS normalization, then residual addition
+  kGeGlu,              // GELU-tanh(gate) * up
+  kMulMatGeGlu,        // gate and up products of one input, then GELU-tanh GLU
+  kRmsNormMulRope,     // learned RMS normalization, then rotation
+  kRmsNormMulAdd,      // learned RMS normalization, then residual addition
+  kGemmaRoute,         // softmax, top-eight IDs and normalized routing weights
+  kGemmaScaledReduce,  // eight scaled/weighted experts summed in selected order
 };
 
 std::string_view OperationName(Operation operation);

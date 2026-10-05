@@ -248,9 +248,12 @@ family" guide, and its long-context scaling work.
         Optimized serving and reference gates remain owed.
       - [x] Checked standalone Gemma MoE routing/scaled-reduction primitives
         and [structural matchers](gemma-moe-matchers.md), preserving selected
-        IDs, full-sort backing and ordered expert scaling. Current interleaved
-        reduction uses primitive fallback; graph integration, whole-model
-        reference qualification and optimized batching remain owed.
+        IDs, full-sort backing and ordered expert scaling.
+      - [x] [Default-off native Gemma MoE dispatch](experiments/gemma-native-moe/README.md),
+        with unchanged ordinary graph-order control, complete-root placement,
+        initialized state/replay and primitive keep fallback. Compound quality
+        still has nine out-of-noise greedy differences; production selection,
+        whole-model reference qualification and optimized batching remain owed.
       - [x] [Checked native Gemma norm/rotation and norm/residual chains](experiments/gemma-native-norm/README.md),
         with keep/view fallback, paid final residual gather and shared state/capture
         controls. Dense31's 128-row full heads match stock; policies remain off,

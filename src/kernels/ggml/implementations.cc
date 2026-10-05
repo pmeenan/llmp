@@ -19,6 +19,7 @@
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
+#include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -89,7 +90,49 @@ constexpr std::array<RmsNormMulKernel::Entry, 2> kRmsNormMul = {{
 using Nodes = std::span<ggml_tensor* const>;
 using ConstNodes = std::span<const ggml_tensor* const>;
 
-constexpr std::array<Kernel::Entry, 119> kKernels = {{
+// Matching only reads descriptors. Borrow a fixed stack view for the shared
+// graph matcher; no tensor metadata or ownership is changed here.
+template <std::size_t N>
+std::array<ggml_tensor*, N> Borrow(ConstNodes nodes) {
+  std::array<ggml_tensor*, N> out{};
+  for (std::size_t i = 0; i < N; ++i) out[i] = const_cast<ggml_tensor*>(nodes[i]);
+  return out;
+}
+std::unexpected<KernelFailure> InvalidGemmaChain() {
+  return std::unexpected(
+      KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
+}
+constexpr std::array<Kernel::Entry, 121> kKernels = {{
+    {.name = kGemmaRouteName,
+     .operation = execution::Operation::kGemmaRoute,
+     .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
+                "both outputs, full sort backing retained",
+     .arity = 10,
+     .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
+       const auto nodes = Borrow<10>(n);
+       return GemmaRoutingFusionAt(nodes, 0) ? std::expected<void, KernelFailure>{}
+                                             : InvalidGemmaChain();
+     },
+     .run = [](LaunchContext& l, Nodes n) -> std::expected<void, KernelFailure> {
+       const auto f = GemmaRoutingFusionAt(n, 0);
+       if (!f) return InvalidGemmaChain();
+       return RunGemmaRouting(l, f->operands);
+     }},
+    {.name = kGemmaReduceName,
+     .operation = execution::Operation::kGemmaScaledReduce,
+     .variant = "original ggml_cuda_op_moe_weighted_reduction; "
+                "F32[2816,8,rows], (expert*scale)*weight, ascending selected slots",
+     .arity = 17,
+     .check = [](ConstNodes n) -> std::expected<void, KernelFailure> {
+       const auto nodes = Borrow<17>(n);
+       return GemmaReductionFusionAt(nodes, 0) ? std::expected<void, KernelFailure>{}
+                                               : InvalidGemmaChain();
+     },
+     .run = [](LaunchContext& l, Nodes n) -> std::expected<void, KernelFailure> {
+       const auto f = GemmaReductionFusionAt(n, 0);
+       if (!f) return InvalidGemmaChain();
+       return RunGemmaScaledReduction(l, f->operands);
+     }},
     {.name = kGemmaNormRopeName,
      .operation = execution::Operation::kRmsNormMulRope,
      .variant = "original ggml_cuda_op_rms_norm_mul_rope_fused; F32 full D256/D512 NEOX, "

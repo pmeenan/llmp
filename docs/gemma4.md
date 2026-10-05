@@ -310,9 +310,8 @@ All repeat exactly, but none resolves the representative quality gap;
 no new native policy is selected.
 The [stock routing/reduction controls](experiments/gemma-reference-stock/README.md)
 show that each specialized family also changes the representative heads.
-Checked norm chains are available as explicit default-off policies; routed
-contracts still require planner integration. The complete 26B quality gate
-remains owed.
+Checked norm chains and routed contracts have checked planner integration
+as explicit default-off policies. The complete 26B quality gate remains owed.
 
 The [short resident diagnosis](experiments/gemma-performance/README.md)
 records a 4.33% scalar rate gap against the bookended fusion-enabled reference.
@@ -369,8 +368,16 @@ they do not establish qualified model support or optimized batching.
 The [standalone MoE contracts](experiments/gemma-moe-primitives/README.md)
 now expose checked original routing and scaled ordered reduction primitives.
 Their first-eight ID view retains the graph's already funded full 128-pitch
-ARGSORT root; its tail remains unwritten. Graph integration, readable keeps,
-and whole-model quality/performance selection remain separate requirements.
+ARGSORT root; its tail remains unwritten. The default-off dispatch below
+provides checked graph integration and primitive fallback for readable keeps;
+whole-model quality/performance selection remains owed.
+
+The [default-off native MoE dispatch](experiments/gemma-native-moe/README.md)
+now uses checked routing and scaled ordered reduction with complete-root
+funding and kept-value primitive fallback. Its graph-order-only ordinary
+output remains byte exact; compound norm/MoE still has nine representative
+argmax differences outside the frozen allowance. The short native-only gain
+keeps production selection and all full-model/batching gates open.
 
 The [two-profile scalar serving controls](experiments/gemma31-serving/README.md)
 cover complete own frontier rows, likelihood alignment, refusal with peer

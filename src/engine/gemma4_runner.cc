@@ -71,6 +71,8 @@ kg::DeviceChoices Gemma4Runner::Choices(kg::LaunchContext& launch, std::uint32_t
   choices.fuse_norms = o_.fuse_norms;
   choices.fuse_norm_rope = o_.fuse_norm_rope;
   choices.fuse_norm_add = o_.fuse_norm_add;
+  choices.fuse_gemma_route = o_.fuse_gemma_route;
+  choices.fuse_gemma_reduce = o_.fuse_gemma_reduce;
   choices.fuse_rope_store = o_.rope_store;
   // The existing one-row sums contract is bounded to kRowInvariantColumns;
   // wider prefills retain the ordinary primitive product policy.
@@ -674,6 +676,8 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::Planned(
     policy_.norm_fused += step.implementation == "ggml.rms_norm_mul.fused";
     policy_.norm_rope += step.implementation == "ggml.rms_norm_mul_rope.fused";
     policy_.norm_add += step.implementation == "ggml.rms_norm_mul_add.fused";
+    policy_.gemma_route += step.implementation == "ggml.gemma.route.fused";
+    policy_.gemma_reduce += step.implementation == "ggml.gemma.scaled_reduce.fused";
     policy_.rope_store += step.implementation == "ggml.rope_set_rows.fused";
     policy_.shared_vecq += step.implementation == "jitllm.vecq";
     policy_.row_products +=

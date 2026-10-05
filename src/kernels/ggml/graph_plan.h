@@ -85,6 +85,10 @@ struct DeviceChoices {
   // Keep/view readers force the existing primitive steps.
   bool fuse_norm_rope = false;
   bool fuse_norm_add = false;
+  // Exact Gemma 128/top-eight routing and scaled ordered reduction.
+  // Explicit policies retain all descriptors/backing and primitive keep fallback.
+  bool fuse_gemma_route = false;
+  bool fuse_gemma_reduce = false;
   // Explicit RoPE/direct-view/cache-store fusion without enabling upstream's
   // other fusion gates. Full operand checks and diagnostic keep apply.
   bool fuse_rope_store = false;

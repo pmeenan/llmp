@@ -26,6 +26,7 @@
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
 #include "kernels/ggml/fusion.h"
+#include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/tensors.h"
@@ -151,17 +152,19 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     // count: a row-invariant plan (D-092) cannot take them.
     return Rejected("a row-invariant plan is planned without fusion");
   }
-  if (device.fuse_norm_rope || device.fuse_norm_add) {
+  if (device.fuse_norm_rope || device.fuse_norm_add || device.fuse_gemma_route ||
+      device.fuse_gemma_reduce) {
     // OnlyReader examines every graph/keep storage root, including tensors
     // outside a prospective chain. Bound those traversals before selection.
     for (const auto* node : graph) {
       if (node == nullptr || !BoundedViewChain(node))
-        return Rejected("invalid norm-policy graph view chain");
+        return Rejected("invalid checked-fusion-policy graph view chain");
       for (const auto* source : node->src)
-        if (!BoundedViewChain(source)) return Rejected("invalid norm-policy operand view chain");
+        if (!BoundedViewChain(source))
+          return Rejected("invalid checked-fusion-policy operand view chain");
     }
     for (const auto* kept : keep)
-      if (!BoundedViewChain(kept)) return Rejected("invalid norm-policy kept view chain");
+      if (!BoundedViewChain(kept)) return Rejected("invalid checked-fusion-policy kept view chain");
   }
   GraphPlan plan;
   std::vector<bool> taken(graph.size(), false);
@@ -190,6 +193,20 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       const auto& f = d->second;
       add(Operation::kRmsNormMulAdd, kGemmaNormAddName, i, {f.norm, f.mul, f.out}, 1);
       continue;
+    }
+    if (!fusion && device.fuse_gemma_route && node->op == GGML_OP_SOFT_MAX) {
+      if (const auto f = GemmaRoutingFusionAt(graph, i, keep)) {
+        add(Operation::kGemmaRoute, kGemmaRouteName, i, {f->nodes.begin(), f->nodes.end()},
+            f->nodes.size());
+        continue;
+      }
+    }
+    if (!fusion && device.fuse_gemma_reduce && node->op == GGML_OP_MUL) {
+      if (const auto f = GemmaReductionFusionAt(graph, i, keep)) {
+        add(Operation::kGemmaScaledReduce, kGemmaReduceName, i, {f->nodes.begin(), f->nodes.end()},
+            f->nodes.size());
+        continue;
+      }
     }
     if (!fusion && node->op == GGML_OP_RMS_NORM) {
       if (const auto f = device.fuse_norm_rope ? GemmaNormRopeFusionAt(graph, i) : std::nullopt;

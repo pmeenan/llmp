@@ -13,12 +13,15 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <thread>
 #include <vector>
 
+#include "kernels/ggml/executor.h"
 #include "kernels/ggml/gemma_moe.h"
+#include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/launch.h"
 #include "providers/cuda/cuda_device_execution.h"
 
@@ -121,6 +124,110 @@ class GemmaMoeGpu : public ::testing::Test {
   std::vector<kg::CapturedGraph> graphs;
   bool retirement_failed = false;
 };
+TEST_F(GemmaMoeGpu, RegisteredBothOutputPlanPreservesTailAndFreshCapturedOperands) {
+  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  ASSERT_TRUE(registry);
+  for (const auto rows : {1, 2, 4, 8, 128}) {
+    auto* logits = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 128, rows));
+    auto* probabilities = ggml_soft_max(c(), logits);
+    auto* reshaped = ggml_reshape_3d(c(), probabilities, 1, 128, rows);
+    auto* ids = ggml_argsort_top_k(c(), probabilities, 8);
+    auto* gathered = ggml_get_rows(c(), reshaped, ids);
+    auto* selected = ggml_reshape_2d(c(), gathered, 8, rows);
+    auto* sum = ggml_sum_rows(c(), selected);
+    auto* clamp =
+        ggml_clamp(c(), sum, kg::kGemmaRouteClamp, std::numeric_limits<float>::infinity());
+    auto* normalized = ggml_div(c(), selected, clamp);
+    auto* weights = ggml_reshape_3d(c(), normalized, 1, 8, rows);
+    std::vector<ggml_tensor*> nodes{probabilities, reshaped, ids->view_src, ids,        gathered,
+                                    selected,      sum,      clamp,         normalized, weights};
+    auto* experts = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 2816, 8, rows));
+    auto* scales = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, 1, 8, rows));
+    auto* scaled = ggml_mul(c(), experts, scales);
+    auto* weighted = ggml_mul(c(), scaled, weights);
+    nodes.push_back(scaled);
+    nodes.push_back(weighted);
+    auto* value = static_cast<ggml_tensor*>(nullptr);
+    std::array<ggml_tensor*, 8> parts{};
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+      parts[i] = ggml_view_2d(c(), weighted, 2816, rows, weighted->nb[2], i * weighted->nb[1]);
+      nodes.push_back(parts[i]);
+    }
+    value = parts[0];
+    for (std::size_t i = 1; i < parts.size(); ++i) {
+      value = ggml_add(c(), value, parts[i]);
+      nodes.push_back(value);
+    }
+    for (auto* tensor : nodes)
+      if (!tensor->view_src) Place(tensor);
+    kg::BindViews(nodes);
+    kg::DeviceChoices choices;
+    choices.fuse_gemma_route = choices.fuse_gemma_reduce = true;
+    auto planned = kg::PlanGraph(nodes, false, choices);
+    ASSERT_TRUE(planned);
+    ASSERT_EQ(planned->steps.size(), 2U);
+    EXPECT_EQ(planned->steps[0].nodes.size(), 10U);
+    EXPECT_EQ(planned->steps[1].nodes.size(), 17U);
+    auto bound = kg::BoundGraph::Bind(*registry, *planned);
+    ASSERT_TRUE(bound);
+    auto scratch = kg::PlanScratch(*launch, *planned);
+    ASSERT_TRUE(scratch);
+    EXPECT_EQ(*scratch, 0U);
+    // Uniform logits exercise deterministic ties. Every expert is dyadic,
+    // with independent row/column values and scale2, so reduction is exact.
+    std::vector<float> input(static_cast<std::size_t>(rows) * 128, 0),
+        expert_data(static_cast<std::size_t>(rows) * 8 * 2816),
+        scale_data(static_cast<std::size_t>(rows) * 8, 2.0f);
+    for (std::size_t i = 0; i < expert_data.size(); ++i) expert_data[i] = float(i % 31) / 32;
+    std::vector<std::int32_t> sentinel(static_cast<std::size_t>(rows) * 128, -777777);
+    Upload(logits, input);
+    Upload(experts, expert_data);
+    Upload(scales, scale_data);
+    Upload(ids->view_src, sentinel);
+    ASSERT_TRUE(bound->Run(*launch));
+    const auto first_ids = Read<std::int32_t>(ids->view_src);
+    const auto first_weights = Read<float>(normalized);
+    const auto first_values = Read<float>(value);
+    ASSERT_FALSE(retirement_failed);
+    ASSERT_EQ(first_ids.size(), sentinel.size());
+    ASSERT_EQ(first_weights.size(), static_cast<std::size_t>(rows) * 8);
+    ASSERT_EQ(first_values.size(), static_cast<std::size_t>(rows) * 2816);
+    for (std::size_t r = 0; r < static_cast<std::size_t>(rows); ++r) {
+      for (std::size_t j = 0; j < 128; ++j)
+        EXPECT_EQ(first_ids[r * 128 + j], j < 8 ? static_cast<std::int32_t>(j) : -777777);
+      for (std::size_t j = 0; j < 8; ++j) EXPECT_EQ(first_weights[r * 8 + j], .125f);
+      for (std::size_t col = 0; col < 2816; ++col) {
+        float expected = 0;
+        for (std::size_t j = 0; j < 8; ++j)
+          expected += expert_data[(r * 8 + j) * 2816 + col] * .25f;
+        EXPECT_EQ(first_values[r * 2816 + col], expected);
+      }
+    }
+    auto capture = launch->Capture([&](kg::LaunchContext& l) { return bound->Run(l); });
+    ASSERT_TRUE(capture);
+    EXPECT_EQ(capture->nodes(), 2U);
+    graphs.push_back(std::move(*capture));
+    for (auto& x : expert_data) x = -x;
+    Upload(experts, expert_data);
+    ASSERT_TRUE(launch->Launch(graphs.back()));
+    const auto fresh = Read<float>(value);
+    ASSERT_FALSE(retirement_failed);
+    ASSERT_EQ(fresh.size(), first_values.size());
+    for (std::size_t i = 0; i < fresh.size(); ++i) EXPECT_EQ(fresh[i], -first_values[i]);
+    EXPECT_EQ(Read<std::int32_t>(ids->view_src), first_ids);
+    const auto address = ids->data;
+    ids->data = static_cast<std::byte*>(ids->data) + 4;
+    auto rejected = bound->Run(*launch);
+    EXPECT_FALSE(rejected);
+    ASSERT_FALSE(rejected);
+    EXPECT_EQ(rejected.error().error, kg::KernelError::kRejected);
+    ids->data = address;
+    // A stale binding is refused before the first launch; restoring the
+    // checked address leaves the same bound plan usable.
+    ASSERT_TRUE(bound->Run(*launch));
+    ASSERT_TRUE(Finish());
+  }
+}
 TEST_F(GemmaMoeGpu, LiteralRoutingReductionJoinsAndFreshCaptureKeepTheTailUntouched) {
   for (const auto rows : {1, 2, 4, 8, 128}) {
     auto* x = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, 128, rows));

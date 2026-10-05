@@ -5,9 +5,9 @@
 
 `gemma_moe_fusion.h` provides allocation-free structural matching for the
 [checked standalone routing and scaled-reduction primitives](experiments/gemma-moe-primitives/README.md).
-It does not select implementations in `PlanGraph`, change a Gemma graph, or
-adopt a production policy. Whole-model quality, performance and optimized
-batching qualification remain owed.
+The later [native dispatch](experiments/gemma-native-moe/README.md) uses these
+matchers through explicit default-off policies. Whole-model quality, performance
+and optimized batching qualification remain owed.
 
 The routing matcher requires the exact ten-node native chain: unmasked,
 unbiased unit-scale softmax; probability reshape; descending full 128-entry
@@ -33,18 +33,16 @@ Computed intermediates must be nonviews, and actual operands cannot depend on
 any matched producer. Logical storage identities govern dependency checks;
 incidental activation-address reuse does not establish a dependency. Returned
 byte counts specify required logical storage, not catalog residency or leases.
-Future binding must pass actual protected spans and preserve all ten or
-seventeen descriptors in `PlanStep.nodes` for conservative placement; this
+Binding passes actual protected spans and preserves all ten or seventeen
+descriptors in `PlanStep.nodes` for conservative placement; this
 slice makes no activation-storage elision claim.
 
-The current full 26B graph matches all 30 routing chains with independent
-segments 1/2/4. Its reduction chain is interleaved with the shared FFN before
-the seven additions, so the contiguous matcher falls back. CPU controls also
-match all 30 reductions using those same dependency descriptors in contiguous
-order with all original readers retained. The later coordinated graph-order
-seam can expand the ordered routed sum as a root after the seventh ADD and
-before its post-normalization. No such production change is included here.
-The dense 31B graph matches neither operation.
+The original matcher slice observed 30 routing chains and interleaved reduction
+fallback. The later graph-order seam expands the ordered raw routed sum before
+its post-normalization, so the current 26B graph matches all 30 routing and
+30 reduction chains for segments 1/2/4. Its ordinary complete heads remain byte
+exact. Dense31 matches neither MoE operation. The dispatch report preserves
+both the failed compound quality control and its default-off selection.
 
 Controls cover row counts 1/2/4/8/128/8,192, exact clamp and sort/pitch,
 independent outputs, all unwritten keeps, external consumers, wrong arithmetic

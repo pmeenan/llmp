@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Exact integer-token native Gemma control. No implicit BOS/template.
-// ARTIFACT OUTPUT_DIR TOKENS_CSV STEPS [SLOTS] [ordinary|norm|q8|norm-q8]
+// ARTIFACT OUTPUT_DIR TOKENS_CSV STEPS [SLOTS] [ordinary|norm|q8|norm-q8|moe|all]
 // [teacher|warm|control] [host|device] [ordinary-prefix-checkpoint]
 #include <algorithm>
 #include <array>
@@ -12,9 +12,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include "base/bytes.h"
@@ -36,7 +38,7 @@ int main(int argc, char** argv) {
   if (!steps || !slots || *steps > 256) return 2;
   const std::string_view requested_policy = argc >= 7 ? argv[6] : "ordinary";
   if (requested_policy != "ordinary" && requested_policy != "norm" && requested_policy != "q8" &&
-      requested_policy != "norm-q8")
+      requested_policy != "norm-q8" && requested_policy != "moe" && requested_policy != "all")
     return 2;
   std::vector<std::int32_t> tokens;
   std::string_view text(argv[3]);
@@ -52,16 +54,28 @@ int main(int argc, char** argv) {
   std::error_code error;
   std::filesystem::create_directories(out, error);
   if (error) return 2;
-  en::PagedNode node({.slot_bytes = en::kSlabSlotBytes});
-  en::Gemma4Runner runner(
+  struct Lifetime {
+    en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+    std::unique_ptr<en::Gemma4Runner> runner;
+    std::vector<en::PagedModel*> entered;
+  };
+  auto lifetime = std::make_unique<Lifetime>();
+  auto& node = lifetime->node;
+  lifetime->runner = std::make_unique<en::Gemma4Runner>(
       node,
-      {.artifact = argv[1],
-       .out = out,
-       .slots = *slots,
-       .reference_masks = argc >= 9 && std::string_view(argv[8]) == "host",
-       .shared_q8 = requested_policy == "q8" || requested_policy == "norm-q8",
-       .fuse_norms = requested_policy == "norm" || requested_policy == "norm-q8"},
+      en::Gemma4Options{
+          .artifact = argv[1],
+          .out = out,
+          .slots = *slots,
+          .reference_masks = argc >= 9 && std::string_view(argv[8]) == "host",
+          .shared_q8 = requested_policy == "q8" || requested_policy == "norm-q8",
+          .fuse_norms = requested_policy == "norm" || requested_policy == "norm-q8",
+          .fuse_norm_rope = requested_policy == "all",
+          .fuse_norm_add = requested_policy == "all",
+          .fuse_gemma_route = requested_policy == "moe" || requested_policy == "all",
+          .fuse_gemma_reduce = requested_policy == "moe" || requested_policy == "all"},
       0, 0);
+  auto& runner = *lifetime->runner;
   const bool teacher = argc >= 8 && std::string_view(argv[7]) == "teacher";
   const bool warm = argc >= 8 && std::string_view(argv[7]) == "warm";
   const bool restore_prefix = argc == 10;
@@ -70,7 +84,7 @@ int main(int argc, char** argv) {
   if (restore_prefix &&
       (teacher || warm || tokens != std::vector<std::int32_t>{2, 818, 5279, 529, 7001, 563}))
     return 2;
-  std::vector<en::PagedModel*> entered;
+  auto& entered = lifetime->entered;
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;
     entered.push_back(&runner);
@@ -230,6 +244,9 @@ int main(int argc, char** argv) {
           const auto& policy = runner.last_built_policy();
           std::cout << "GEMMA_POLICY rows=" << policy.rows << " segments=" << policy.segments
                     << " norm_fused=" << policy.norm_fused << " rope_store=" << policy.rope_store
+                    << " norm_rope=" << policy.norm_rope << " norm_add=" << policy.norm_add
+                    << " gemma_route=" << policy.gemma_route
+                    << " gemma_reduce=" << policy.gemma_reduce
                     << " shared_vecq=" << policy.shared_vecq
                     << " row_products=" << policy.row_products
                     << " lane_steps=" << policy.lane_steps << '\n';
@@ -239,6 +256,10 @@ int main(int argc, char** argv) {
   auto ran = execute();
   const auto retired = node.TearDown(entered);
   if (!ran) std::cerr << ran.error() << '\n';
-  if (!retired) std::cerr << retired.error() << '\n';
+  if (!retired) {
+    std::cerr << retired.error() << '\n';
+    // Quarantine the node, runner and graphs until process exit.
+    std::ignore = lifetime.release();
+  }
   return ran && retired ? 0 : 1;
 }

@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Explicit default-off Gemma routing and scaled ordered-reduction dispatch,
+  with full-sort backing, kept-value primitive fallback and bounded state/
+  numerical controls. Failed representative quality keeps selection off.
+
 - Bounded dense Gemma31 chat and literal completion admission through the shared
   approved-profile adapter, with scalar cohorts, target likelihoods and owned
   cross-profile continuation/restart controls. Optimized joining and model
