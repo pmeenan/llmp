@@ -1,0 +1,83 @@
+{
+  "schema": "gemma26-late-moe-aggregate-v1",
+  "scope": "original owner0 second post-reset prefill64, layers28/29; common fixed operands",
+  "capture": {
+    "complete_heads_byte_exact": 128,
+    "head_sha256": "5808306e0f261896500bdf9f3b44d4b1d0f18b34ba99d976da15a916aa8ff164",
+    "all_phase_dispatch_unchanged": true,
+    "snapshot_groups": 14,
+    "snapshot_bytes": 13058048,
+    "selected_use_graph": false,
+    "selected_update": false,
+    "observed_D2H_stream_capture_status": "NONE only; ACTIVE branch unexercised"
+  },
+  "layers": {
+    "28": {
+      "routing": {
+        "native_primitive_vs_original_primitive_full_bytes_exact": true,
+        "native_fused_vs_original_fused_full_bytes_exact": true,
+        "captured_stock_matches_original_policy": "primitive",
+        "matching_policy_vs_captured_stock_full_bytes_exact": true,
+        "fused_vs_primitive_float_bytes_exact": false,
+        "fused_vs_primitive_max_absolute_float_delta": 1.1920928955078125e-07,
+        "float_values": 512,
+        "selected_IDs_fused_vs_primitive_mismatches": 0,
+        "selected_ID_count": 512
+      },
+      "scaled_reduction": {
+        "native_primitive_vs_original_primitive_full_bytes_exact": true,
+        "native_fused_vs_original_fused_full_bytes_exact": true,
+        "captured_stock_matches_original_policy": "fused",
+        "matching_policy_vs_captured_stock_full_bytes_exact": true,
+        "fused_vs_primitive_float_bytes_exact": false,
+        "fused_vs_primitive_max_absolute_float_delta": 2.9802322387695312e-08,
+        "float_values": 180224
+      }
+    },
+    "29": {
+      "routing": {
+        "native_primitive_vs_original_primitive_full_bytes_exact": true,
+        "native_fused_vs_original_fused_full_bytes_exact": true,
+        "captured_stock_matches_original_policy": "primitive",
+        "matching_policy_vs_captured_stock_full_bytes_exact": true,
+        "fused_vs_primitive_float_bytes_exact": false,
+        "fused_vs_primitive_max_absolute_float_delta": 5.960464477539063e-08,
+        "float_values": 512,
+        "selected_IDs_fused_vs_primitive_mismatches": 0,
+        "selected_ID_count": 512
+      },
+      "scaled_reduction": {
+        "native_primitive_vs_original_primitive_full_bytes_exact": true,
+        "native_fused_vs_original_fused_full_bytes_exact": true,
+        "captured_stock_matches_original_policy": "fused",
+        "matching_policy_vs_captured_stock_full_bytes_exact": true,
+        "fused_vs_primitive_float_bytes_exact": false,
+        "fused_vs_primitive_max_absolute_float_delta": 5.960464477539063e-08,
+        "float_values": 180224
+      }
+    }
+  },
+  "actual_native_plans": {
+    "route": {
+      "descriptors": 10,
+      "primitive_steps_and_captured_nodes": 6,
+      "fused_steps_and_captured_nodes": 1
+    },
+    "reduce": {
+      "descriptors": 17,
+      "primitive_steps_and_captured_nodes": 9,
+      "fused_steps_and_captured_nodes": 1
+    }
+  },
+  "own_controls": {
+    "native_eager_three_captured_replays_fresh_inputs_and_independent_process_outputs_exact": true,
+    "original_repeats_exact": true,
+    "all_inputs_immutable": true,
+    "all_operator_outputs_finite_and_IDs_canonical": true
+  },
+  "limits": [
+    "Not whole-model input/history equality or unique cause of the two remaining choices",
+    "Native frontier prefill final FFN has1row; original captured layer29 has64",
+    "No quality/PPL, performance, adoption, layer whitelist or support claim"
+  ]
+}

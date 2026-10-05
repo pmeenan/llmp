@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Gemma26 late-prefill routing and reduction controls on captured common inputs:
+  native primitive/fused outputs match each original policy byte-for-byte.
+  Recipe rounding differs; the remaining model disagreements stay unexplained.
+
 - Gemma26 matched prefill tracing with exact prior head/state controls. Most
   of the observed gap lies outside recorded GPU activity; CPU and wait
   attribution remains open, with no production optimization selected.

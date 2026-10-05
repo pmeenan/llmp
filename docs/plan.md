@@ -335,6 +335,11 @@ family" guide, and its long-context scaling work.
         of 128; 92 complete heads are byte-exact. Paid latency is 7.15% higher.
         No production policy is selected; common-input diagnosis, competitive
         batching and full qualification remain open.
+      - [x] [Gemma26 common-input late-prefill MoE controls](experiments/gemma26-late-moe/README.md).
+        Both native policies match the original operator bytes at layers 28/29;
+        captured stock uses primitive routing and fused reduction. Tiny recipe
+        rounding differs without changing selected IDs. The two full-model
+        disagreements, competitive performance and qualification remain open.
       - [x] [Dense31 solo checked-norm first screen](experiments/gemma-dense31-c1-norm/README.md),
         with frozen native full-head repeats and fresh matched original bookends.
         All 32 complete heads match byte-for-byte; short decode latency is 1.92%

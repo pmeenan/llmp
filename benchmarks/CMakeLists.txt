@@ -340,6 +340,11 @@ endif()
     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
     "LINKER:--wrap=_ZN6jitllm7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
     "LINKER:--wrap=_ZN6jitllm7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm")
+  # Manual common-input late-prefill MoE diagnostic; no CTest/model policy.
+  add_executable(jitllm_gemma26_late_moe gemma26_late_moe.cc)
+  target_link_libraries(jitllm_gemma26_late_moe PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma26_late_moe PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
   add_executable(jitllm_gemma26_attention_packed_metadata
     gemma26_attention_packed_metadata.cc gemma26_attention_packed_wrap.cc)
   target_include_directories(jitllm_gemma26_attention_packed_metadata PRIVATE

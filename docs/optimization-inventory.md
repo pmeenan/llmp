@@ -87,6 +87,15 @@ row-invariant kernel guards them.
 
 ## Coverage
 
+The [Gemma26 late-prefill common-input controls](experiments/gemma26-late-moe/README.md)
+match native and original primitive/fused bytes for 128-expert/top-eight routing
+and width-2,816 scaled reduction at 64 rows. Captured stock uses primitive
+routing and fused reduction; switching recipes changes weights/sums by at most
+1.19e-7/5.96e-8 without changing selected IDs. This is operator fidelity on actual
+inputs, not the cause of the remaining model misses or a production selection.
+Final-layer native prefill uses one frontier row versus the captured 64 rows;
+Qwen/DeepSeek shapes, scaling and contraction contracts require separate proof.
+
 | Implementation family | Current consumer and source | Techniques to compare |
 | --- | --- | --- |
 | GGML float primitives and structural fusions | [Registry declarations](../src/kernels/ggml/implementations.cc), [fusion gates](../src/kernels/ggml/fusion.cc), [planner](../src/kernels/ggml/graph_plan.cc); Qwen2, DeepSeek, Qwen3.8 and the EXL3 plan's non-linear operations | Vector versus tiled/cuBLAS products; RMSNorm/scale, bias/product, gate/up/SwiGLU and RoPE/cache-store fusions; activation lifetime placement |
