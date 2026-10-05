@@ -155,6 +155,11 @@ checks pass; whole shipment tiers remain owed before publishing a package.
 
 ## M3.5 — Model families  `in progress`
 
+**Owner pause, 2026-10-05:** the in-flight source-use indexing change is
+committed and checked. Implementation and measurement work is paused for
+Opus/Astra review; [current state and review prompt](experiments/gemma-performance-review/README.md).
+Remaining milestone gates stay open; await the owner's redirection.
+
 Goal (the owner, 2026-09-29): build out the core engine across the major
 open model families, MoE and dense, before the system is built around it
 (M4 onward). Each family runs natively on one Spark from a prepared
