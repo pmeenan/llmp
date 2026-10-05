@@ -1,0 +1,180 @@
+{
+  "source_base": "cf71dad5185121d4c5613a5c6238dec234af125e",
+  "helper_sha256": "ecbc54f98ad97fd7f043e037d35e8fd8684a854414349bd70c13ac6645bdee01",
+  "dependency_build_receipt_sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d",
+  "tensorfold": {
+    "observed_utc": "2026-10-05T21:17:34.008459+00:00",
+    "url": "https://github.com/ashhart/TensorFold",
+    "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "version": "0.6.5",
+    "gemma26_recipe": "MLX",
+    "gemma31_cuda_recipe": false
+  },
+  "source_sha256": {
+    "src/engine/gemma4_runner.cc": "79c4f3bf4e320432f59547c0a98bf20e0347eb26dc59462d173cfdfd497161ae",
+    "src/engine/gemma4_runner.h": "76c15b196aa9a5b8d05d0d29b18ca38e22db427074b4c5eb408421c6c716e417",
+    "benchmarks/gemma_retained_prefill.cc": "f4b8589d703b79db5670ce7628c44eac875f676af6952a079d90db54730581ef",
+    "benchmarks/CMakeLists.txt": "6b3ace84eddcce31c6fc8ce239b06be2d50bce78357d01efc58e50acf9059d26"
+  },
+  "profiles": {
+    "26": {
+      "host": "spark-56f5",
+      "policy": "all1024",
+      "both_heads_state_32choices_exact_baseline": true,
+      "retained_prefill_percent_vs_cold": -7.121198630452319,
+      "arms": {
+        "cold": {
+          "prefill_seconds": 2.71723582,
+          "decode_seconds": 0.702330202,
+          "plan_calls": 8,
+          "hits": 0,
+          "misses": 8,
+          "entries_before": 0,
+          "entries_after": 8,
+          "phase_seconds": {
+            "checks_seconds": 0.00588031,
+            "inputs_seconds": 0.000290942,
+            "state_seconds": 0.063611938,
+            "planned_seconds": 0.125852875,
+            "staging_seconds": 2.7024e-05,
+            "execution_seconds": 2.52097217,
+            "publication_cleanup_seconds": 0.000597676
+          },
+          "job_seconds": {
+            "job_wall": 2.52091757,
+            "dispatch": 0.002991728,
+            "submission": 0.895287239,
+            "after": 1.6226386,
+            "stream_elapsed": 2.51200699
+          },
+          "heads": {
+            "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+            "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+          },
+          "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+        },
+        "retained": {
+          "prefill_seconds": 2.52373606,
+          "decode_seconds": 0.704287906,
+          "plan_calls": 8,
+          "hits": 8,
+          "misses": 0,
+          "entries_before": 9,
+          "entries_after": 9,
+          "phase_seconds": {
+            "checks_seconds": 0.00570823,
+            "inputs_seconds": 0.000627116,
+            "state_seconds": 0.059527013,
+            "planned_seconds": 3.296e-06,
+            "staging_seconds": 3.5248e-05,
+            "execution_seconds": 2.45694308,
+            "publication_cleanup_seconds": 0.000889626
+          },
+          "job_seconds": {
+            "job_wall": 2.4568937,
+            "dispatch": 0.001064715,
+            "submission": 0.840009918,
+            "after": 1.61581907,
+            "stream_elapsed": 2.45033527
+          },
+          "heads": {
+            "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+            "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+          },
+          "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+        }
+      },
+      "artifact_manifest_sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+      "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+      "state_bytes": 592445440,
+      "state_layout": "gemma26-f16-kv-scalar-device-v1:16384:1024:16384:2048",
+      "input_bytes": 32908
+    },
+    "31": {
+      "host": "spark-c4e2",
+      "policy": "both256",
+      "both_heads_state_32choices_exact_baseline": true,
+      "retained_prefill_percent_vs_cold": -4.769571622385116,
+      "arms": {
+        "cold": {
+          "prefill_seconds": 12.0649745,
+          "decode_seconds": 3.20006627,
+          "plan_calls": 32,
+          "hits": 0,
+          "misses": 32,
+          "entries_before": 0,
+          "entries_after": 32,
+          "phase_seconds": {
+            "checks_seconds": 0.025612011,
+            "inputs_seconds": 0.00217527,
+            "state_seconds": 0.164280311,
+            "planned_seconds": 0.526341044,
+            "staging_seconds": 6.0608e-05,
+            "execution_seconds": 11.342839,
+            "publication_cleanup_seconds": 0.003647223
+          },
+          "job_seconds": {
+            "job_wall": 11.3425537,
+            "dispatch": 0.007618712,
+            "submission": 5.59288176,
+            "after": 5.74205324,
+            "stream_elapsed": 11.3275349
+          },
+          "heads": {
+            "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          },
+          "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+        },
+        "retained": {
+          "prefill_seconds": 11.4895269,
+          "decode_seconds": 3.20263946,
+          "plan_calls": 32,
+          "hits": 32,
+          "misses": 0,
+          "entries_before": 33,
+          "entries_after": 33,
+          "phase_seconds": {
+            "checks_seconds": 0.026065385,
+            "inputs_seconds": 0.002434738,
+            "state_seconds": 0.162257936,
+            "planned_seconds": 3.5775e-05,
+            "staging_seconds": 0.000107757,
+            "execution_seconds": 11.2948928,
+            "publication_cleanup_seconds": 0.003714986
+          },
+          "job_seconds": {
+            "job_wall": 11.2946036,
+            "dispatch": 0.002117862,
+            "submission": 5.54992864,
+            "after": 5.74255709,
+            "stream_elapsed": 11.2831581
+          },
+          "heads": {
+            "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+            "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+          },
+          "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+        }
+      },
+      "artifact_manifest_sha256": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+      "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+      "state_bytes": 1740636160,
+      "state_layout": "gemma31-f16-kv-scalar-device-v1:16384:256:16384:1280",
+      "input_bytes": 32908
+    }
+  },
+  "official_jobs": {
+    "m35-gemma-retained-plan-build1": "DONE0",
+    "m35-gemma-retained-plan-native26": "DONE0",
+    "m35-gemma-retained-stage31": "DONE0",
+    "m35-gemma-retained-screen31": "DONE0",
+    "m35-gemma-retained-check31": "DONE0"
+  },
+  "limits": "One cold then retained pass per model, graphs=false. Stream elapsed includes submission gaps; caller phase wall is not CPU busy time. No new reference acquisition or parity/quality qualification.",
+  "platform": {
+    "device": "NVIDIA GB10",
+    "driver": "580.178.04",
+    "native_sdk": "aarch64-c09daba6ac31edee"
+  }
+}

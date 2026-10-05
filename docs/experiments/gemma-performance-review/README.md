@@ -4,15 +4,18 @@
 # Gemma performance review handoff — 2026-10-05
 
 The owner requested a pause after the in-flight source-use indexing change,
-so Opus and Astra can examine the remaining gap. No graph-construction change,
-dense-pair experiment or further model run is authorized by this handoff.
-M3.5 remains incomplete; resume implementation only when the owner redirects it.
-The in-flight optimization landed as `5ef7aac` after 1,700 Spark tests passed
-without failures or skips, including 311 GPU and 57 model tests. Both Sparks
-were checked idle; no new experiments are queued.
+then resumed all M3.5 implementation and measurement on 2026-10-05 after the
+Opus/Astra reviews. The [cold/retained-plan diagnostic](../gemma-retained-plan/README.md) now compares
+identical state resets with capture disabled and separate phase timing. Similar
+excess time per chunk alone does not establish a fixed host cost: reference work
+per chunk is also similar. Cold planning costs 126/526 ms at Gemma26/31; state growth costs 64/164 ms.
+Planning is material, but it does not explain the entire remaining gap.
+M3.5 remains incomplete. The source-use optimization landed as `5ef7aac` after
+1,700 Spark tests passed without failures or skips, including 311 GPU and 57
+model tests. Both Sparks were checked idle at the pause.
 The [plan](../../plan.md) and [model support matrix](../../model-support.md) retain
 the remaining Gemma quality, batching, assistant, long-context and memory gates,
-alongside the other families, EXL3/quants and media work. This pause closes none
+alongside the other families, EXL3/quants and media work. The review closes none
 of those gates and does not extend M3's accepted speed exceptions to M3.5.
 
 ## Current matched measurements
@@ -79,9 +82,11 @@ found. Do not assume that pin is still latest when another task begins.
   this result does not exclude a benefit at Gemma26's different shape.
 
 The large earlier Gemma26 host cost has a measured explanation and an adopted
-fix. The dominant cause of the **remaining** gap, especially Gemma31's 1.24 s,
-has not been established. More small kernel changes are not a substitute for
-identifying that cost.
+fix. The current cold/retained comparison isolates material planning and state-growth
+costs, alongside a remaining execution interval. It does not identify that
+interval as kernel arithmetic or establish planning as the entire gap. Further
+work targets unnecessary intermediate-chunk computation and a current matched
+execution timeline.
 
 ## Evidence boundaries and unresolved leads
 
@@ -143,7 +148,7 @@ differences; they did not confirm a new arithmetic defect or close those misses.
 Do a read-only root-cause review of the remaining Gemma26/31 performance gap
 in /home/pmeenan/src/jitLLM. Start with AGENTS.md, docs/workflow.md and
 docs/experiments/gemma-performance-review/README.md, then pull only relevant
-reports and source. Work is paused; do not edit, build, test, run inference,
+reports and source. This is a read-only review; do not edit, build, test, run inference,
 profile or launch additional agents/jobs.
 
 Latest matched 8K prefill excess: Gemma26 0.2988 s (12.38%); Gemma31

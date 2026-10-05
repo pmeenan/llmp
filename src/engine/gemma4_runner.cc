@@ -31,6 +31,21 @@ using support::Error;
 using support::Pointer;
 using support::Round;
 using support::Seconds;
+namespace {
+class PhaseTimer {
+ public:
+  explicit PhaseTimer(double* seconds) : seconds_(seconds) {
+    if (seconds_) start_ = std::chrono::steady_clock::now();
+  }
+  ~PhaseTimer() {
+    if (seconds_) *seconds_ += Seconds(std::chrono::steady_clock::now() - start_);
+  }
+
+ private:
+  double* seconds_;
+  std::chrono::steady_clock::time_point start_{};
+};
+}  // namespace
 Gemma4Runner::Gemma4Runner(PagedNode& node, Gemma4Options options, int owner, std::uint32_t stream)
     : node_(node),
       o_(std::move(options)),
@@ -591,6 +606,8 @@ std::expected<std::vector<LiveState::Range>, std::string> Gemma4Runner::Checkpoi
   return ranges;
 }
 Status Gemma4Runner::ReserveStateThrough(std::uint32_t index, std::uint32_t positions) {
+  PhaseTimer timer(account_phases_ ? &phases_.seconds[static_cast<std::size_t>(Phase::kState)]
+                                   : nullptr);
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   auto& slot = **request;
@@ -892,7 +909,14 @@ Status Gemma4Runner::Adopt(std::uint32_t index, std::uint32_t positions,
 }
 std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::Planned(
     const kg::Gemma4ChunkShape& shape) {
-  if (auto* found = plans_.Find(shape)) return found;
+  PhaseTimer timer(account_phases_ ? &phases_.seconds[static_cast<std::size_t>(Phase::kPlanning)]
+                                   : nullptr);
+  if (account_phases_) ++phases_.planned_calls;
+  if (auto* found = plans_.Find(shape)) {
+    if (account_phases_) ++phases_.hits;
+    return found;
+  }
+  if (account_phases_) ++phases_.misses;
   const auto started = std::chrono::steady_clock::now();
   std::uint32_t rows = 0;
   for (const auto& segment : shape.segments) rows += segment.rows;
@@ -935,6 +959,11 @@ Status Gemma4Runner::Chunk(std::uint32_t n_past, std::span<const std::int32_t> t
   return Wave(std::span(&work, 1), all_outputs);
 }
 Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all_features) {
+  const auto phase = [&](Phase which) -> double* {
+    return account_phases_ ? &phases_.seconds[static_cast<std::size_t>(which)] : nullptr;
+  };
+  std::optional<PhaseTimer> timer;
+  timer.emplace(phase(Phase::kChecks));
   const PlanStep step;
   if (!bound_ || released_ || work.empty() || work.size() > o_.slots)
     return Error("Gemma4 wave is unavailable or unbounded");
@@ -961,6 +990,9 @@ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all
   if (*bytes > host_input_bytes_) return Error("Gemma4 host descriptor envelope exceeded");
   if (auto r = CheckPlaces(); !r) return r;
   if (auto r = CheckFactors(); !r) return r;
+  timer.reset();
+  timer.emplace(phase(Phase::kInputs));
+  const double state_before = phases_.seconds[static_cast<std::size_t>(Phase::kState)];
   // Fund host descriptors and masks before their allocation. The caller's
   // floor covers the measured maximum; optional charging can refuse cleanly.
   struct HostGrant {
@@ -995,8 +1027,15 @@ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all
   }
   shape.outputs = static_cast<std::uint32_t>(frontier.size());
   shape.feature_outputs = static_cast<std::uint32_t>(feature_ids.size());
+  timer.reset();
+  // ReserveStateThrough is enclosed by input construction; subtract only its
+  // same-thread elapsed intervals to keep these diagnostic phases disjoint.
+  if (account_phases_)
+    phases_.seconds[static_cast<std::size_t>(Phase::kInputs)] -=
+        phases_.seconds[static_cast<std::size_t>(Phase::kState)] - state_before;
   auto entry_of = Planned(shape);
   if (!entry_of) return Error(entry_of.error());
+  timer.emplace(phase(Phase::kStaging));
   auto& entry = **entry_of;
   auto& p = *entry.planned;
   auto source_bytes = Gemma4SourceBytes(p.graph);
@@ -1014,6 +1053,8 @@ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all
   bool wrote = false, unknown = false;
   Status queued;
   RunPath path = RunPath::kEager;
+  timer.reset();
+  timer.emplace(phase(Phase::kExecution));
   const auto posted = node_.Job(
       execution_,
       [&](providers::NativeStream native) {
@@ -1058,6 +1099,8 @@ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all
     if (!queued) return queued;
     return !posted ? posted : Error("Gemma4 launch context faulted");
   }
+  timer.reset();
+  timer.emplace(phase(Phase::kPublication));
   Count(graph_stats_, path);
   std::size_t at = 0;
   for (const auto& w : work) {

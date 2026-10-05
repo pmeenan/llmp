@@ -268,6 +268,10 @@ if(JITLLM_CUDA)
   # the paged node, greedy and sampled speculation, the forced-rejection
   # checks and speed (docs/experiments/dspark/). A harness for now; it
   # links the native tokenizer and chat renderer.
+  add_executable(jitllm_gemma_retained_prefill gemma_retained_prefill.cc)
+  target_link_libraries(jitllm_gemma_retained_prefill PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_retained_prefill PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   add_executable(jitllm_gemma_prefill gemma_prefill.cc)
   target_link_libraries(jitllm_gemma_prefill PRIVATE jitllm_engine jitllm_warnings)
   target_link_options(jitllm_gemma_prefill PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")

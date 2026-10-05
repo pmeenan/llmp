@@ -155,10 +155,11 @@ checks pass; whole shipment tiers remain owed before publishing a package.
 
 ## M3.5 — Model families  `in progress`
 
-**Owner pause, 2026-10-05:** the in-flight source-use indexing change is
-committed and checked. Implementation and measurement work is paused for
-Opus/Astra review; [current state and review prompt](experiments/gemma-performance-review/README.md).
-Remaining milestone gates stay open; await the owner's redirection.
+**Owner resume, 2026-10-05:** implementation and measurement continue after
+Opus/Astra review. The cold/retained-plan comparison measures material planning
+and state-growth costs; intermediate-chunk work and execution costs are next;
+[current state and review prompt](experiments/gemma-performance-review/README.md).
+Remaining milestone gates stay open.
 
 Goal (the owner, 2026-09-29): build out the core engine across the major
 open model families, MoE and dense, before the system is built around it
@@ -379,6 +380,11 @@ family" guide, and its long-context scaling work.
         preserving local subgraph gates and exact native heads/state while
         reducing fresh Gemma26/31 prefill time by 2.80%/2.31%. Matched reference
         gaps remain 12.38%/11.40%; math policies and qualification stay unchanged.
+      - [x] [Cold/retained prefill-plan comparison](experiments/gemma-retained-plan/README.md),
+        with capture disabled, verified cache hits and exact native heads/state/choices.
+        Full cold planning costs 126/526 ms at Gemma26/31; state growth costs
+        64/164 ms. Retained elapsed prefill improves 7.12%/4.77%, with execution
+        timing movement alongside removed planning. Full qualification stays open.
       - [x] [Plain RMSNorm/Mul first screen](experiments/gemma-normmul-screen/README.md):
         Gemma31 selects 121 additional norm fusions and preserves exact native
         heads/state/choices, but shows no resolved speed gain. Remains unselected.

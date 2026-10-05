@@ -354,6 +354,16 @@ Fresh Gemma26/31 prefill improves 2.80%/2.31% against unchanged controls; remain
 reference gaps are 12.38%/11.40%. Prior-family planner controls pass; no kernel
 math, selected policy or full qualification changes.
 
+The [cold/retained-plan diagnostic](experiments/gemma-retained-plan/README.md)
+verifies all 8/32 Gemma26/31 prefill cache hits with capture disabled and identical
+state reset. Full cold planning costs 126/526 ms; state growth costs 64/164 ms.
+Retained prefill improves 7.12%/4.77% in one pair, while execution also changes.
+Planning is material but does not explain the whole remaining gap. Existing
+plan retention helps repeated shapes; no new production reuse mechanism or
+competitive batching/quality pass is established. Intermediate chunks still
+publish unnecessary heads; a proper state-only path must preserve final KV
+writes while pruning downstream work, rather than only disabling the head.
+
 The [plain RMSNorm/Mul screen](experiments/gemma-normmul-screen/README.md)
 selects 121 existing fusions on Gemma31 while preserving exact native heads,
 state and choices. Two candidate runs show no resolved end-to-end gain against

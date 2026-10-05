@@ -206,6 +206,28 @@ class Gemma4Runner final : public PagedModel {
   std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id);
   const GraphStats& graph_stats() const { return graph_stats_; }
   const Coverage& coverage() const { return coverage_; }
+  // Manual diagnostic only; off by default, no per-call logging.
+  enum class Phase : std::uint8_t {
+    kChecks,
+    kInputs,
+    kState,
+    kPlanning,
+    kStaging,
+    kExecution,
+    kPublication,
+    kCount
+  };
+  struct PhaseAccounting {
+    std::array<double, static_cast<std::size_t>(Phase::kCount)> seconds{};
+    std::uint64_t planned_calls = 0, hits = 0, misses = 0;
+  };
+  void EnablePhaseAccounting() { account_phases_ = true; }
+  PhaseAccounting TakePhaseAccounting() {
+    auto taken = phases_;
+    phases_ = {};
+    return taken;
+  }
+  std::size_t plan_count() const { return plans_.size(); }
   struct PolicyCounts {
     std::uint32_t rows = 0, segments = 0, norm_fused = 0, rope_store = 0;
     std::uint32_t shared_vecq = 0, row_products = 0, lane_steps = 0;
@@ -250,6 +272,8 @@ class Gemma4Runner final : public PagedModel {
   GraphStats graph_stats_;
   Coverage coverage_;
   PolicyCounts policy_;
+  PhaseAccounting phases_;
+  bool account_phases_ = false;
   void* logits_ = nullptr;
   void* factors_ = nullptr;
   std::uint64_t activation_bytes_ = 0, scratch_bytes_ = 0, host_input_bytes_ = 0;

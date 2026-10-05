@@ -254,8 +254,10 @@ the commit gate.
 ## Current status
 
 **M0 through M3 are complete; M3.5 is in progress.**
-The owner paused M3.5 on 2026-10-05 for external performance review; see the
-[Gemma handoff](docs/experiments/gemma-performance-review/README.md). Await redirection.
+The owner resumed M3.5 on 2026-10-05 after external performance review; see the
+[Gemma handoff](docs/experiments/gemma-performance-review/README.md). The
+[cold/warm comparison](docs/experiments/gemma-retained-plan/README.md) measures
+planning and state growth; intermediate-chunk work and execution costs are next.
 The runtime serves Chat Completions and literal Completions with target
 likelihoods on loopback and the tailnet. DeepSeek V4 Flash, Qwen3.8 Flash
 Next (native NVFP4/MXFP8 and checked GGUF) and Qwen-Image-2.1 execute with
