@@ -277,6 +277,22 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_gemma_quality PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
   add_executable(jitllm_gemma_runner gemma_runner.cc)
+  # Manual native-origin first-local operand capture. Link wrapping adds no
+  # graph keep, planner policy or production observer.
+  add_executable(jitllm_gemma_attention_capture gemma_attention_capture.cc
+                   gemma_attention_capture_wrap.cc)
+  target_include_directories(jitllm_gemma_attention_capture SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_gemma_attention_capture PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_attention_capture PRIVATE
+      "LINKER:--wrap=_ZN6jitllm7kernels4ggml15FlashAttnVec256ERNS1_13LaunchContextEP11ggml_tensor"
+      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
+  add_executable(jitllm_gemma_attention_replay gemma_attention_replay.cc)
+  target_link_libraries(jitllm_gemma_attention_replay PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_attention_replay PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   add_executable(jitllm_gemma_joined gemma_joined.cc)
   target_link_libraries(jitllm_gemma_joined PRIVATE jitllm_engine jitllm_warnings)
   target_link_options(jitllm_gemma_joined PRIVATE

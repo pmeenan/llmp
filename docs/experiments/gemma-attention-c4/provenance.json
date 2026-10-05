@@ -1,0 +1,837 @@
+{
+  "schema": 1,
+  "measured_native_base": "c2717bf65cc66e92f39cf5cfc696734c701de102",
+  "final_additive_base": "a6dd81f",
+  "task_tensorfold": {
+    "entry_utc": "2026-10-05T10:10:37.952043+00:00",
+    "repository": "https://github.com/ashhart/TensorFold",
+    "resolved_head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "version": "0.6.5",
+    "gemma_recipe": "26B-A4B MLX only; no dense31 CUDA comparator",
+    "files": {
+      "README.md": {
+        "bytes": 22767,
+        "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+      },
+      "pyproject.toml": {
+        "bytes": 3178,
+        "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+      },
+      "src/tensorfold/__init__.py": {
+        "bytes": 137,
+        "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+      },
+      "docs/recipes/gemma-4.md": {
+        "bytes": 10845,
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      }
+    }
+  },
+  "capture_source_freeze": {
+    "created_utc": "2026-10-05T10:33:58.566939+00:00",
+    "source_base": "c2717bf65cc66e92f39cf5cfc696734c701de102",
+    "sources": {
+      "benchmarks/CMakeLists.txt": {
+        "bytes": 26072,
+        "sha256": "8a0bc46899fedd8de45449d752e71a54423c908ad3dd79052a75c3245e879434"
+      },
+      "benchmarks/gemma_attention_capture.cc": {
+        "bytes": 13030,
+        "sha256": "24d61b72bb5fb13ab3239c507f60f44c8f17f62b47a3bfa113e036737b04727d"
+      },
+      "benchmarks/gemma_attention_capture.h": {
+        "bytes": 1664,
+        "sha256": "9e08665b222c4586fa8178569cb601904fae3f8b00fe68386ae2ffb183d93715"
+      },
+      "benchmarks/gemma_attention_capture_wrap.cc": {
+        "bytes": 7649,
+        "sha256": "d0927e621a4bc80dfe2be74edf7bf3cb84bff4ccfa593c272e27bad873ac3c78"
+      }
+    },
+    "binary": {
+      "bytes": 141065992,
+      "sha256": "ddcc6234c49aa49718ba61596954731d7e8df7edb67bd95ece088b5dd54ec13d"
+    },
+    "input": {
+      "bytes": 4096,
+      "sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610"
+    },
+    "artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "policy": "dense31 natural C4 context256 max_rows128 normBOTH row_invariantOFF otherflagsOFF"
+  },
+  "capture_source_freeze_identity": {
+    "bytes": 1183,
+    "sha256": "854a49a4069965780ff6e812235ae83868b9615fd49c76d53a0d7b67a3959fec"
+  },
+  "capture_own_freeze": {
+    "schema": 1,
+    "source_freeze": {
+      "bytes": 1183,
+      "sha256": "854a49a4069965780ff6e812235ae83868b9615fd49c76d53a0d7b67a3959fec"
+    },
+    "complete_model_heads_capture_control_byte_exact": {
+      "bytes": 4194304,
+      "sha256": "7d673475cd6f849c6d99bbcec2cd6c14fafc391c4be8038be31867e5d2fda95d"
+    },
+    "native_origin_operands_own_repeat_byte_exact": true,
+    "captured_metadata": {
+      "bytes": 3458,
+      "sha256": "96b969562351f81d2b564ab39000c6e0249fc0e0684d0073415b4f358c0dbc23"
+    },
+    "packed": {
+      "q": {
+        "bytes": 131072,
+        "sha256": "73431b56c06ff8abd429ea411acf6f86b38c1e87ba972121fda2f04c0f7ba563"
+      },
+      "k": {
+        "bytes": 8388608,
+        "sha256": "4624d9ae02817cd097ce639fcf8b849a1eb5fdb5873d5b2e3fef28542410fea6"
+      },
+      "v": {
+        "bytes": 8388608,
+        "sha256": "c2a7aa769a47d3f083813159d02c45ed9da9fa2dcee079728e54595b6af84c8f"
+      },
+      "mask": {
+        "bytes": 65536,
+        "sha256": "ade31da7cd580811d43f8b0e7a67974bddba1f45bbd429bb2a2fd17d2218ce29"
+      },
+      "params": {
+        "bytes": 64,
+        "sha256": "c6d0320f7ebd871f3d1ba4f0e5ff3f036646c1022183ff530580a8eb09196541"
+      }
+    },
+    "origin": "native only; reconstructed four-stream roots, not original-model captured tensors",
+    "query_positions": [
+      67,
+      68,
+      69,
+      70
+    ],
+    "initialized_endpoints": [
+      68,
+      69,
+      70,
+      71
+    ],
+    "source_policy": "dense31 natural C4 context256 max_rows128 normBOTH row_invariantOFF otherflagsOFF"
+  },
+  "capture_own_freeze_identity": {
+    "bytes": 1461,
+    "sha256": "22172c90a76ddfd23013385e93b8f761a149cf63a55ef7b9c8979289aaef8733"
+  },
+  "replay_source_freeze": {
+    "created_utc": "2026-10-05T11:03:52.756701+00:00",
+    "source_base": "c2717bf65cc66e92f39cf5cfc696734c701de102",
+    "sources": {
+      "benchmarks/CMakeLists.txt": {
+        "bytes": 26376,
+        "sha256": "31474893a88c9df938d834655927a43b81560f992e7275d6278ee88e176b7e70"
+      },
+      "benchmarks/gemma_attention_replay.cc": {
+        "bytes": 15438,
+        "sha256": "8ac14c2edde718b2b35f344df4de65da25078f552e238b1a34acd617f4fb71f5"
+      },
+      "docs/experiments/gemma-attention-c4/replay_inputs.h": {
+        "bytes": 2642,
+        "sha256": "eea9f678e36bfbac5bcb0cd5d6e724eeff99f326eb7e718e4224cd887b22eea0"
+      },
+      "docs/experiments/gemma-attention-c4/llama_attention.cc": {
+        "bytes": 6989,
+        "sha256": "d3ea1a3f60cffb0425e115ca9a867be956bde2cadd8733ad7a027b9c7815e4d8"
+      },
+      "docs/experiments/gemma-attention-c4/reference.sh": {
+        "bytes": 2087,
+        "sha256": "7cfdf7db1d72c74c2971561656ae5e0ef22b4e0bcd696896747278984c14bf01"
+      },
+      "docs/experiments/gemma-attention-c4/prepare.py": {
+        "bytes": 4606,
+        "sha256": "a086fe5cf7bc258d590703db057fe8c2d10317a0617b0ca4b725388516866dea"
+      },
+      "docs/experiments/gemma-attention-c4/PROTOCOL.md": {
+        "bytes": 8384,
+        "sha256": "19aa091437bf3683b0c25552571dd3a2ef9520afbe16289d6e14b8e330a89567"
+      }
+    },
+    "binaries": {
+      "native": {
+        "bytes": 123929104,
+        "sha256": "2f2f898e31c3498731fed3bbefa762d978be696abd002e308b346f354d7f6fe1"
+      },
+      "original": {
+        "bytes": 77696,
+        "sha256": "16084819313b83bee38850b8f3826bb5b18877184b4e9c13caa7c3ca4b54fb7a"
+      }
+    },
+    "headers": {
+      "ggml-alloc.h": {
+        "bytes": 3753,
+        "sha256": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23"
+      },
+      "ggml-backend.h": {
+        "bytes": 25374,
+        "sha256": "46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2"
+      },
+      "ggml-cuda.h": {
+        "bytes": 1565,
+        "sha256": "9cbfcea49f6da4d07f41dc22fa8dbf870825faaa2a68e34e65fe30ea6c41e042"
+      },
+      "ggml.h": {
+        "bytes": 115658,
+        "sha256": "9ac7ee3d3a957e5f7b21b104d3e3dc50b1b106f808f9d6735ead950450bfeec6"
+      }
+    },
+    "capture_own_freeze": {
+      "bytes": 1461,
+      "sha256": "22172c90a76ddfd23013385e93b8f761a149cf63a55ef7b9c8979289aaef8733"
+    },
+    "packed": {
+      "q": {
+        "bytes": 131072,
+        "sha256": "73431b56c06ff8abd429ea411acf6f86b38c1e87ba972121fda2f04c0f7ba563"
+      },
+      "k": {
+        "bytes": 8388608,
+        "sha256": "4624d9ae02817cd097ce639fcf8b849a1eb5fdb5873d5b2e3fef28542410fea6"
+      },
+      "v": {
+        "bytes": 8388608,
+        "sha256": "c2a7aa769a47d3f083813159d02c45ed9da9fa2dcee079728e54595b6af84c8f"
+      },
+      "mask": {
+        "bytes": 65536,
+        "sha256": "ade31da7cd580811d43f8b0e7a67974bddba1f45bbd429bb2a2fd17d2218ce29"
+      },
+      "params": {
+        "bytes": 64,
+        "sha256": "c6d0320f7ebd871f3d1ba4f0e5ff3f036646c1022183ff530580a8eb09196541"
+      }
+    },
+    "native_build_receipt": {
+      "bytes": 6751,
+      "sha256": "4ea901be73b364a981696840dd4b48608214c049d2c237d9c3313c9d4fa45087"
+    },
+    "original_image": "sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "original_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "origin": "native tensors, reconstructed streams; original-model selector source inference until launch trace"
+  },
+  "replay_source_freeze_identity": {
+    "bytes": 3301,
+    "sha256": "91224ed28c2ddba1c434a00b328774a86dc0d6ac2dfec1fc4690e626c85e7fea"
+  },
+  "native_own_freeze": {
+    "created_utc": "2026-10-05T11:04:59.327040+00:00",
+    "source_freeze": {
+      "bytes": 3301,
+      "sha256": "91224ed28c2ddba1c434a00b328774a86dc0d6ac2dfec1fc4690e626c85e7fea"
+    },
+    "complete32768outputs_native_own_repeat_zero": true,
+    "gpu_inputs_witnessed_immutable_and_fresh_query_consumed": true,
+    "outputs": {
+      "B": {
+        "first": {
+          "bytes": 131072,
+          "sha256": "6c91bc00d8922171878ad086c7642baf2725145046a3ab9ef97ba51ba1992132"
+        },
+        "repeat": {
+          "bytes": 131072,
+          "sha256": "6c91bc00d8922171878ad086c7642baf2725145046a3ab9ef97ba51ba1992132"
+        },
+        "fresh": {
+          "bytes": 131072,
+          "sha256": "26c74f78ded80b98260681329aa5f458e3f4c40e56185ae3b6545d87aada7db0"
+        }
+      },
+      "C": {
+        "first": {
+          "bytes": 131072,
+          "sha256": "6064721aee803cf4fa11647bc3b28033e3ebcdb67bbc04ce1d9b0ce4698f61dc"
+        },
+        "repeat": {
+          "bytes": 131072,
+          "sha256": "6064721aee803cf4fa11647bc3b28033e3ebcdb67bbc04ce1d9b0ce4698f61dc"
+        },
+        "fresh": {
+          "bytes": 131072,
+          "sha256": "a639d03eaae34569d8b3f5f108c5774853b237e818601fecf9abe91e1646cbb5"
+        }
+      },
+      "D": {
+        "first": {
+          "bytes": 131072,
+          "sha256": "724ee828a64fe12bd796b7ac5f984ea2f365ea34c7e31bddbfdf6391955d82a5"
+        },
+        "repeat": {
+          "bytes": 131072,
+          "sha256": "724ee828a64fe12bd796b7ac5f984ea2f365ea34c7e31bddbfdf6391955d82a5"
+        },
+        "fresh": {
+          "bytes": 131072,
+          "sha256": "9dc7d4243e6fe657be605cd00fea61210f507a6e8923cffb73a5e4c6dd76308b"
+        }
+      }
+    },
+    "official_retirement": {
+      "log": {
+        "bytes": 3374,
+        "sha256": "04f2684c1fb6da9a03604975876491c0cac970f24511f8b03ae5cf11ae33c0af"
+      },
+      "final.json": {
+        "bytes": 80,
+        "sha256": "b5e086365e59c7cb2bf01ac5f21d8dbfc6c0397a99873662d90539587b4a790e"
+      },
+      "steps.json": {
+        "bytes": 1279,
+        "sha256": "909fc67b27f3792e04d0b45a95410adc60554e9dc5d565a4e7e9c7777d07ebc7"
+      }
+    }
+  },
+  "native_own_freeze_identity": {
+    "bytes": 2016,
+    "sha256": "9766275504fd5c83233a89105425509d42c6e88f0a6886788fc8f4cc65651802"
+  },
+  "final_measured_identity_verification": {
+    "binaries": {
+      "native": {
+        "bytes": 123929104,
+        "sha256": "2f2f898e31c3498731fed3bbefa762d978be696abd002e308b346f354d7f6fe1"
+      },
+      "original": {
+        "bytes": 77696,
+        "sha256": "16084819313b83bee38850b8f3826bb5b18877184b4e9c13caa7c3ca4b54fb7a"
+      }
+    },
+    "headers": {
+      "ggml-alloc.h": {
+        "bytes": 3753,
+        "sha256": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23"
+      },
+      "ggml-backend.h": {
+        "bytes": 25374,
+        "sha256": "46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2"
+      },
+      "ggml-cuda.h": {
+        "bytes": 1565,
+        "sha256": "9cbfcea49f6da4d07f41dc22fa8dbf870825faaa2a68e34e65fe30ea6c41e042"
+      },
+      "ggml.h": {
+        "bytes": 115658,
+        "sha256": "9ac7ee3d3a957e5f7b21b104d3e3dc50b1b106f808f9d6735ead950450bfeec6"
+      }
+    },
+    "original_library_sha256": {
+      "/app/libggml-cuda.so": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e",
+      "/app/libggml.so": "f09875d0593d950f0b1f4f57803235cb06209f774c524c005fb192000d5d7418",
+      "/app/libggml-base.so": "ed0a6a3f65472059789159569080d08e7f1dcc8bdd7a35d127efbd1b3f4e273e"
+    },
+    "native_build_receipt": {
+      "bytes": 6751,
+      "sha256": "4ea901be73b364a981696840dd4b48608214c049d2c237d9c3313c9d4fa45087"
+    },
+    "prepared_ggml": {
+      "archive_sha256": "03fb04316eb32a7b7347004a79a8dd60531c02f5a064d853fed3b53828951723",
+      "id": "ggml",
+      "license": "MIT",
+      "locked_tree": "026f1ac94af98011933e71cee240d0a405ac4220cb208356acf61aa2bcea6207",
+      "modified": false,
+      "options": {},
+      "override": false,
+      "patches": [
+        {
+          "path": "patches/ggml/0001-jitllm-adaptations.patch",
+          "sha256": "255bb61de5996d31eb950a1a8a8e8a14fa5faae12c965d1da58fa7e60919402d"
+        },
+        {
+          "path": "patches/ggml/0002-jitllm-build.patch",
+          "sha256": "67c5b094a83ae0871a21b350bce0b4228d0622aca191f9417ed4af5057054fcb"
+        },
+        {
+          "path": "patches/ggml/0003-jitllm-wide-sparse-attention.patch",
+          "sha256": "4aef62a8db3d09ee3e7a07621d4511d46ab42b149561e5556b9f4d7830150997"
+        },
+        {
+          "path": "patches/ggml/0004-jitllm-compact-expert-tiles.patch",
+          "sha256": "1359fa8e2b03886150b370b89d51594cea0ad87ceefe1be2a9196ac904e80741"
+        },
+        {
+          "path": "patches/ggml/0005-jitllm-iq2-compact-pair-occ2.patch",
+          "sha256": "adb7d3cb1b15146c9b9a0c588fcb8ff66ff30e705f911d48ef357c7863ad0006"
+        }
+      ],
+      "source": "/home/pmeenan/src/jitLLM-wt/m3gm31/build/sources/ggml-026f1ac94af98011",
+      "source_tree": "026f1ac94af98011933e71cee240d0a405ac4220cb208356acf61aa2bcea6207",
+      "tier": "core",
+      "use": "product",
+      "version": "b10964"
+    },
+    "attention_sources": {
+      "fattn.cu": {
+        "bytes": 28837,
+        "sha256": "fbf690a15864ad11edac131823c174b05b3432896c14bc87d2c698929860e1d7"
+      },
+      "fattn-vec.cuh": {
+        "bytes": 24960,
+        "sha256": "deb732ee1f1007814d95943ce48f3eec228087bac986c2bfcf8191a65706cfe7"
+      },
+      "fattn-mma-f16.cuh": {
+        "bytes": 108347,
+        "sha256": "b039e12e03dfc6f6edff9da37e11239d78b4e3d2d4592009ecee7d9521a64605"
+      },
+      "fattn-common.cuh": {
+        "bytes": 48912,
+        "sha256": "c3620ddda02049b1dab2f9e12dd9824d2e10a81d356a8354a90f199a83e9d9e2"
+      }
+    },
+    "trace_wrapper": {
+      "bytes": 2073,
+      "sha256": "c4eb6f328bf6d318d3a5e25de405a0bbb5f1bf7912ffff134d335a46bdb2a1ca"
+    },
+    "observer_version": "NVIDIA Nsight Systems version 2025.3.2.474-253236389321v0",
+    "observer_binary": {
+      "bytes": 70027896,
+      "sha256": "f8eabc8c88cf08b874401fba616321cbe418cc3a815cbf3140edece6339c74dd"
+    },
+    "gpu": "NVIDIA GB10, 580.178.04, 12.1"
+  },
+  "final_measured_identity_verification_receipt": {
+    "bytes": 3655,
+    "sha256": "2ea5649133159bb58806e633d8b93b32204644821c69e08c4e305a0f3383f1c2"
+  },
+  "measured_to_final_differences": {
+    "benchmarks/CMakeLists.txt": {
+      "measured": {
+        "bytes": 26376,
+        "sha256": "31474893a88c9df938d834655927a43b81560f992e7275d6278ee88e176b7e70"
+      },
+      "final": {
+        "bytes": 26776,
+        "sha256": "25b75116e3b5326cff4f86ba1ee8048d298a625594c97b863e329600e21fa3e3"
+      }
+    },
+    "docs/experiments/gemma-attention-c4/reference.sh": {
+      "measured": {
+        "bytes": 2087,
+        "sha256": "7cfdf7db1d72c74c2971561656ae5e0ef22b4e0bcd696896747278984c14bf01"
+      },
+      "final": {
+        "bytes": 2073,
+        "sha256": "c4eb6f328bf6d318d3a5e25de405a0bbb5f1bf7912ffff134d335a46bdb2a1ca"
+      }
+    },
+    "docs/experiments/gemma-attention-c4/PROTOCOL.md": {
+      "measured": {
+        "bytes": 8384,
+        "sha256": "19aa091437bf3683b0c25552571dd3a2ef9520afbe16289d6e14b8e330a89567"
+      },
+      "final": {
+        "bytes": 8699,
+        "sha256": "439461f7fed93559286e48aaa9a1a14798219b5cb79552af00282dfbe9c6518a"
+      }
+    }
+  },
+  "trace_wrapper_only_diff": "--- measured-reference.sh\n+++ trace2-reference.sh\n@@ -24,10 +24,10 @@\n     ;;\n   trace)\n     [[ $# == 1 ]]\n-    observer=/opt/nvidia/nsight-systems/2025.3.2/target-linux-sbsa-armv8\n-    [[ -x \"$observer/nsys\" ]]\n+    observer=/opt/nvidia/nsight-systems/2025.3.2\n+    [[ -x \"$observer/bin/nsys\" ]]\n     sudo -n docker \"${common[@]}\" --device nvidia.com/gpu=all --env CUDA_DISABLE_PTX_JIT=1 \\\n-      --mount \"type=bind,src=$observer,dst=/observer,readonly\" --entrypoint /observer/nsys \"$image\" \\\n+      --mount \"type=bind,src=$observer,dst=$observer,readonly\" --entrypoint \"$observer/bin/nsys\" \"$image\" \\\n       profile --trace=cuda --sample=none --cpuctxsw=none --force-overwrite=false \\\n       --output=/scratch/original-launches /scratch/llama_attention /scratch/packed /scratch/original-traced\n     [[ -f \"$scratch/original-traced/completion.json\" ]]\n",
+  "source_change_limits": "CMake adds already-committed assistant target declarations on final a6 base; final PROTOCOL/report prose updated; reference.sh changes only trace observer mount/symlink, build/replay branches unchanged. Capture/replay/client/header/prepare math bytes and measured binaries unchanged. Final trace wrapper was not pre-native-own frozen.",
+  "official_jobs": {
+    "m35-gemma-attention-c4-bookend1": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 5,
+      "steps_total": 5,
+      "records": {
+        "log": {
+          "bytes": 5063,
+          "sha256": "9d8129e114751acc0149d25acfd384413c1b55daade17fb1491516139edd8326"
+        },
+        "final.json": {
+          "bytes": 80,
+          "sha256": "490967464929be20229158c465aad7d4b74ade537e40745262d31159c566c164"
+        },
+        "steps.json": {
+          "bytes": 1542,
+          "sha256": "dc6901a64ec0422a572c1c97a4e868a94de25840a29ea65c651a97d8ec30cf44"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-build1": {
+      "state": "failed",
+      "rc": 1,
+      "steps_done": 0,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 346,
+          "sha256": "84c685cc7eb6e2de3677e0ca0569572ee01f26c07083ed02e2ac3ff9d465117d"
+        },
+        "final.json": {
+          "bytes": 146,
+          "sha256": "698d2da3fc08be92df91b8cdc0d79c426fddfd12ed7d7ea224d8cfc005e73720"
+        },
+        "steps.json": {
+          "bytes": 280,
+          "sha256": "5a22b98cbb2c7bfa43b02baea964b252cf8c18e19e5e2e3c77523f738d0fbe44"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-build2": {
+      "state": "failed",
+      "rc": 1,
+      "steps_done": 0,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 4672,
+          "sha256": "2ef15f3699d0a0b8efc39b70c2c35a8fdbde9a21813f037679795b0f4cba50ec"
+        },
+        "final.json": {
+          "bytes": 146,
+          "sha256": "6e9135722fd80f018de27f44aeb66531f284b69adf8c91138f058bbb304e6854"
+        },
+        "steps.json": {
+          "bytes": 289,
+          "sha256": "73727d015fc20254bf00c6b92895209f05a06a84894eceec07ccb1b2d70e02d6"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-build3": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 1,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 1528,
+          "sha256": "7c2c4a5e946c1a12d7a5108af2cdf488d89bc52c0209eb16002262679197b388"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "e91a0c870ac3614820e7a1ec6c2d8cfe6cd3dcd2e73ecaa46830775a7f422ae4"
+        },
+        "steps.json": {
+          "bytes": 287,
+          "sha256": "85a6547580fc78c32943b60e5abbcf940ce800e3113a5aed4a1a11e4b3cbb0b8"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-build4": {
+      "state": "failed",
+      "rc": 1,
+      "steps_done": 1,
+      "steps_total": 3,
+      "records": {
+        "log": {
+          "bytes": 4338,
+          "sha256": "4b329223d57c71b261de5cab9720947a3a16de1111de45c989b734f66e4b7c0c"
+        },
+        "final.json": {
+          "bytes": 149,
+          "sha256": "c19615a410f7173f1ec04c960661f5f295d9e94bbcdc9875dd77b5dded1f27e3"
+        },
+        "steps.json": {
+          "bytes": 734,
+          "sha256": "4d99527b1c051f4c7f0b13ffaa2d64a6b5e3333e9e8aaca5ff18925a810a377c"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-build5": {
+      "state": "failed",
+      "rc": 1,
+      "steps_done": 1,
+      "steps_total": 2,
+      "records": {
+        "log": {
+          "bytes": 2715,
+          "sha256": "b9a94179b7c00d5793ac8caa7184f972b8760a4eb24348c275efabb2bccb3cc3"
+        },
+        "final.json": {
+          "bytes": 146,
+          "sha256": "ea55dbc1d81f371e68c9bb70f11f50941606560ff55c2a35887e05c7fe10e06c"
+        },
+        "steps.json": {
+          "bytes": 508,
+          "sha256": "d9a5998b60cc2b155ea54c17fed493f9ef1a6bf68f33f0df2f5c4281a0b61081"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-build6": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 1,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 400,
+          "sha256": "eaef3440c70485b804be394badd0eed3a33fba629ffb6719fd68694516151991"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "04600966b3ebe8e70b9eaed6b04c0964ddd43312654acf81b8486823dd4eb799"
+        },
+        "steps.json": {
+          "bytes": 239,
+          "sha256": "a7bc3c32d602381834e231a0f0251ee26a12e7882e7a5ce37f62a1f11b2f8e96"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-build7": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 2,
+      "steps_total": 2,
+      "records": {
+        "log": {
+          "bytes": 1854,
+          "sha256": "1df0efe5cf646249ad52ec769993554e5a67f165157405d0df463834ed266947"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "81bbaffb807110ab1ddde2278156fbe5e4294d9136b81f4c8bb977046ef59012"
+        },
+        "steps.json": {
+          "bytes": 507,
+          "sha256": "a167a33b3bae4271ffa7b1fbdfe289c287fb9875360e1058d2db9247d7b455ee"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-build8": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 1,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 400,
+          "sha256": "920412877c9aea127bf339a80622048b00ffc51763ff9bc9960c891faa708aef"
+        },
+        "final.json": {
+          "bytes": 79,
+          "sha256": "0975b261381bc89ef85067f141dc1ca169e35ed0435df5f5175c8a3de71efcf4"
+        },
+        "steps.json": {
+          "bytes": 239,
+          "sha256": "3c150563cfeb1d31d77fb11bbb842413480a3da7688f15b0b458eefc3488f114"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-capture1": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 6,
+      "steps_total": 6,
+      "records": {
+        "log": {
+          "bytes": 10293,
+          "sha256": "7fa18b47056c849e7c4b613e0d4eefb4fd9a4e0be89ffddb6b166e33097dc57e"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "725d075060c95aab461859bd046d4e50dffa05c8d2b1b5b11a515eb1d41aa6d8"
+        },
+        "steps.json": {
+          "bytes": 2436,
+          "sha256": "a619ad8e397f9c6989e9dd0355ebaaeb53224a2514702033ed32079286a1f95c"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-final-verify1": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 1,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 393,
+          "sha256": "e853b1365c27393b9ba9b0510c4709915d70875d49a6dfea00b3949eacb20d7d"
+        },
+        "final.json": {
+          "bytes": 80,
+          "sha256": "5721c1e69901e9678d8eb24d909b0525ab703c68fdcaf8b07d18f8de422a1a5e"
+        },
+        "steps.json": {
+          "bytes": 221,
+          "sha256": "8e527313de7f36a2a5e086a2ac8da8715113d7b1280534fdee8059ce9df94079"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-freeze1": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 1,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 377,
+          "sha256": "b38df42fb9d8561b17e7b6c002bab6d2e48ae7fc1215c5386dcf8419c2505519"
+        },
+        "final.json": {
+          "bytes": 80,
+          "sha256": "3a5af548409d31ad61199420f679056ec4a38bf57b9a166a79339b8c07b702da"
+        },
+        "steps.json": {
+          "bytes": 229,
+          "sha256": "4f851c609ae9574be81cf4f299d0171ab4a8918ee145a689d38493018b585a23"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-native1": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 4,
+      "steps_total": 4,
+      "records": {
+        "log": {
+          "bytes": 3374,
+          "sha256": "04f2684c1fb6da9a03604975876491c0cac970f24511f8b03ae5cf11ae33c0af"
+        },
+        "final.json": {
+          "bytes": 80,
+          "sha256": "b5e086365e59c7cb2bf01ac5f21d8dbfc6c0397a99873662d90539587b4a790e"
+        },
+        "steps.json": {
+          "bytes": 1279,
+          "sha256": "909fc67b27f3792e04d0b45a95410adc60554e9dc5d565a4e7e9c7777d07ebc7"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-observation1": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 1,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 2809,
+          "sha256": "b951085287ebe554d43fd864f90c57071bc540cde63d03e87faf380e8f43e502"
+        },
+        "final.json": {
+          "bytes": 81,
+          "sha256": "707d3fc7c8e26dc9b53daa9d7cf431ed869298384949388d4641fee169883d1e"
+        },
+        "steps.json": {
+          "bytes": 365,
+          "sha256": "6643aacb3c963ee6ea572e394b8f7ccbbabf74e84bd9d79361eacd4174c9ffed"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-trace-export1": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 1,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 8479,
+          "sha256": "26343edd1decacb02ae3fcd43699c3c9a6e9a0663d15dfadec5c7cb802b18fa9"
+        },
+        "final.json": {
+          "bytes": 80,
+          "sha256": "7870fba33a0055c8a9209958d37531d80073dca0d1e6995481860bab695342dc"
+        },
+        "steps.json": {
+          "bytes": 352,
+          "sha256": "28a5a4a41a88530aeb7afb4ac42771fb25be934d2a1b0d21567516b4cb3bc98c"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-trace1": {
+      "state": "failed",
+      "rc": 1,
+      "steps_done": 0,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 467,
+          "sha256": "f47f5b9f4013b3e5a92d92032c065547f8cd64d19d928c2ae32420b933b0aa50"
+        },
+        "final.json": {
+          "bytes": 143,
+          "sha256": "f682cc711a7fb7e92ce718f7f47abb8c1b54c17e2282a0d1c81cb2e937551266"
+        },
+        "steps.json": {
+          "bytes": 241,
+          "sha256": "6554bae319ec41e6f1c5f5583f574e8b8444721fdbb15cce4d588af0dad89ac8"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-trace2": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 2,
+      "steps_total": 2,
+      "records": {
+        "log": {
+          "bytes": 5204,
+          "sha256": "27acb7f4bb7f349cadc4a75e72b708dc1ebf7701a699a99f794e4a97cddbd0ca"
+        },
+        "final.json": {
+          "bytes": 80,
+          "sha256": "8025180411908f481b3f500f4646be8423b70e9a9f12dc91cc5f54246e4800d7"
+        },
+        "steps.json": {
+          "bytes": 653,
+          "sha256": "49d507dae6259543c25fed0c0b3d85c0b8a7fa65f01a84a197f8fcf1bb3721fc"
+        }
+      }
+    },
+    "m35-gemma-attention-c4-compatibility1": {
+      "state": "done",
+      "rc": 0,
+      "steps_done": 1,
+      "steps_total": 1,
+      "records": {
+        "log": {
+          "bytes": 3173,
+          "sha256": "3756e0676bf74843434a00740460ed46281bff91eac89101a3523abd6e3cf157"
+        },
+        "final.json": {
+          "bytes": 81,
+          "sha256": "c1c3af231679d04b264f1da121893d4a7951bba1ba4d1f848e9270a81bde46c8"
+        },
+        "steps.json": {
+          "bytes": 293,
+          "sha256": "dfbddba1225ed2643748ee60dfa7268ecc363b52186176fe2adc77da6dd0848e"
+        }
+      }
+    }
+  },
+  "external_raw_root": "~/.local/share/jitllm/gemma-attention-c4 on spark-b; local metadata/logs /tmp/jitllm-m35-coordination/gemma-attention-c4-raw",
+  "failure_history": {
+    "build1": "mise PATH before compile",
+    "build2": "extern C expected-return warning; link wrapper changed to C++ asm linkage",
+    "build4": "missing paged_weights.h constant include",
+    "build5": "original build linker lacked CDI-provided libcuda; build branch now uses CDI",
+    "trace1": "renamed Nsight target directory failed before application; trace2 preserves installed namespace/bin symlink"
+  },
+  "funding": {
+    "native_host_allowance_bytes": 67108864,
+    "native_operand_output_mapped_bytes": 33554432,
+    "native_activation_bytes": 2097152,
+    "native_launch_pool_bytes": 16777216,
+    "native_pinned_bytes": 8519680,
+    "original_public_backend_buffer_bytes": 17104896,
+    "original_known_host_allowance_bytes": 67108864,
+    "limits": "Known capacity/cataloged occupancy only; provider/context and foreign pool/library allocations are not a measured physical peak."
+  },
+  "bounds": "No raw Q/K/V/masks, model heads, argmax vectors, samples, logs or trace events in Git; aggregate identities/metrics and kernel geometries only.",
+  "current_base_compile_only": {
+    "base": "a6dd81f",
+    "kind": "Compile-only current-base compatibility; not measured binaries or reacquisition",
+    "binaries": {
+      "capture": {
+        "bytes": 143866160,
+        "sha256": "810a266bb2f86841a49afaf2c7f0de2dbe9dd178b47ca28e16b3ef19403c6e1f"
+      },
+      "replay": {
+        "bytes": 123929104,
+        "sha256": "18b9158257c768079c9076efb411031dc3cabb9c5dde7a79d2e7674a83cdc2db"
+      }
+    },
+    "receipt": {
+      "bytes": 6751,
+      "sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d"
+    },
+    "measured_binaries_retained": "/home/pmeenan/.local/share/jitllm/gemma-attention-c4/measured-binaries"
+  },
+  "local_light": {
+    "bytes": 1319,
+    "sha256": "2ca2a57ebdfce8b58aa6ccc2fc1c85b6c3de3d490acc009a1779b047df4ee5cc"
+  }
+}

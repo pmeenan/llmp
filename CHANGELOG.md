@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Dense31 C4 attention replay that isolates vector/MMA and stream-packing
+  arithmetic. Four-stream native MMA matches the original backend exactly;
+  model qualification and production selection remain open.
+
 - Native Gemma Q8 assistant component with protected post-finalnorm features,
   readonly frozen target caches and independent-slot recurrence. Bounded C1
   original-image arithmetic passes; serving speculation and qualification remain open.

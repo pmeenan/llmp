@@ -1,0 +1,197 @@
+{
+  "schema": 1,
+  "same_input": {
+    "schema": 1,
+    "native_source_freeze": {
+      "bytes": 3301,
+      "sha256": "91224ed28c2ddba1c434a00b328774a86dc0d6ac2dfec1fc4690e626c85e7fea"
+    },
+    "native_own_freeze": {
+      "bytes": 2016,
+      "sha256": "9766275504fd5c83233a89105425509d42c6e88f0a6886788fc8f4cc65651802"
+    },
+    "origin": "Native target first-local inputs; reconstructed four-stream roots; no original-model operand capture.",
+    "reference": {
+      "bytes": 131072,
+      "sha256": "724ee828a64fe12bd796b7ac5f984ea2f365ea34c7e31bddbfdf6391955d82a5"
+    },
+    "comparisons": {
+      "B": {
+        "complete_values": 32768,
+        "whole_file_byte_exact": false,
+        "max_raw_delta": 0.008841514587402344,
+        "nmse_reference_energy": 4.999409453304993e-08,
+        "strict_attention_argmax_mismatches": 0,
+        "positive_reference_margin_mismatches": 0,
+        "exact_reference_tie_mismatches": 0,
+        "limits": "Attention-coordinate choices only, not target-vocabulary choices or model quality.",
+        "native_result": {
+          "bytes": 131072,
+          "sha256": "6c91bc00d8922171878ad086c7642baf2725145046a3ab9ef97ba51ba1992132"
+        }
+      },
+      "C": {
+        "complete_values": 32768,
+        "whole_file_byte_exact": false,
+        "max_raw_delta": 0.004547119140625,
+        "nmse_reference_energy": 1.5043523062816843e-08,
+        "strict_attention_argmax_mismatches": 0,
+        "positive_reference_margin_mismatches": 0,
+        "exact_reference_tie_mismatches": 0,
+        "limits": "Attention-coordinate choices only, not target-vocabulary choices or model quality.",
+        "native_result": {
+          "bytes": 131072,
+          "sha256": "6064721aee803cf4fa11647bc3b28033e3ebcdb67bbc04ce1d9b0ce4698f61dc"
+        }
+      },
+      "D": {
+        "complete_values": 32768,
+        "whole_file_byte_exact": true,
+        "max_raw_delta": 0.0,
+        "nmse_reference_energy": 0.0,
+        "strict_attention_argmax_mismatches": 0,
+        "positive_reference_margin_mismatches": 0,
+        "exact_reference_tie_mismatches": 0,
+        "limits": "Attention-coordinate choices only, not target-vocabulary choices or model quality.",
+        "native_result": {
+          "bytes": 131072,
+          "sha256": "724ee828a64fe12bd796b7ac5f984ea2f365ea34c7e31bddbfdf6391955d82a5"
+        }
+      }
+    },
+    "segmented_vs_fourstream_mma": {
+      "complete_values": 32768,
+      "whole_file_byte_exact": false,
+      "max_raw_delta": 0.004547119140625,
+      "nmse_reference_energy": 1.5043523062816843e-08,
+      "strict_attention_argmax_mismatches": 0,
+      "positive_reference_margin_mismatches": 0,
+      "exact_reference_tie_mismatches": 0,
+      "limits": "Attention-coordinate choices only, not target-vocabulary choices or model quality."
+    },
+    "paid_bookend": {
+      "waves_per_arm": 32,
+      "completed_owner_units_per_arm": 128,
+      "output_values_per_wave": 32768,
+      "original_seconds": [
+        0.004157245,
+        0.004149725
+      ],
+      "native_seconds": {
+        "B": 0.003609584,
+        "C": 0.003449617,
+        "D": 0.0027745
+      },
+      "native_latency_delta_percent_vs_reference_mean": {
+        "B": -13.095051504941036,
+        "C": -16.946443769509223,
+        "D": -33.200673651162816
+      },
+      "limits": "One-op host wall time includes submission/completion, full D2H and output scans; foreign/native scheduling differ; no full model gain or adoption."
+    }
+  },
+  "actual_original_launch_observation": {
+    "schema": 1,
+    "origin": "Actual original public-backend execution on constructed native-origin four-stream descriptors; not original model graph capture.",
+    "trace_report": {
+      "bytes": 53107,
+      "sha256": "ac153ec4e0dce8b59c44ece03b8d4be82e22f6a73ab5969988883623b6c9b1af"
+    },
+    "sqlite_export": {
+      "bytes": 311296,
+      "sha256": "68e17f241909e76c01ecc35a97f66f34f0af9da30004623c34b875671414aa41"
+    },
+    "application_completion": {
+      "bytes": 93,
+      "sha256": "e362db3dbac0c53d95cd541b5f36d300cf91af6cc611e3e1a327bfe5167c187c"
+    },
+    "complete_traced_first_repeat_fresh_byte_exact_to_untraced": true,
+    "kernels": {
+      "MMA_F16_256_256_tile4_GQA2": {
+        "demangled_name": "void flash_attn_ext_f16<(int)256, (int)256, (int)4, (int)2, (bool)0, (bool)0, (bool)0>(const char *, const char *, const char *, const char *, const char *, const int *, float *, float2 *, float, float, float, float, unsigned int, float, int, uint3, int, int, int, int, int, int, int, int, int, int, int, long, int, int, long, int, int, int, int, int, long)",
+        "grid": [
+          48,
+          1,
+          1
+        ],
+        "block": [
+          32,
+          4,
+          1
+        ],
+        "static_shared_bytes": 0,
+        "dynamic_shared_bytes": 66112,
+        "registers_per_thread": 254,
+        "observed_kernel_events": 1
+      },
+      "mask_prepass_tile4": {
+        "demangled_name": "void flash_attn_mask_to_KV_max<(int)4>(const __half2 *, int *, int, long, long)",
+        "grid": [
+          1,
+          4,
+          1
+        ],
+        "block": [
+          128,
+          1,
+          1
+        ],
+        "static_shared_bytes": 128,
+        "dynamic_shared_bytes": 0,
+        "registers_per_thread": 24,
+        "observed_kernel_events": 1
+      },
+      "stream_k_fixup_256_tile4_GQA2": {
+        "demangled_name": "void flash_attn_stream_k_fixup_general<(int)256, (int)4, (int)2>(float *, const float2 *, int, int, int, int, uint3, uint3, uint3, uint3)",
+        "grid": [
+          48,
+          4,
+          2
+        ],
+        "block": [
+          256,
+          1,
+          1
+        ],
+        "static_shared_bytes": 0,
+        "dynamic_shared_bytes": 0,
+        "registers_per_thread": 38,
+        "observed_kernel_events": 1
+      }
+    },
+    "observed_cuda_graph_launch_calls": 38,
+    "limits": "Default graph-level trace reports one eager kernel triad and 38 graph launch calls. Kernel event counts are not total replay kernel launches. No trace duration enters paid performance."
+  },
+  "native_selected_plans": {
+    "B": {
+      "api_descriptors": 4,
+      "family": "vector256",
+      "streams_per_descriptor": 1,
+      "scratch_bytes_per_descriptor": 0,
+      "captured_graph_nodes": 4
+    },
+    "C": {
+      "api_descriptors": 4,
+      "family": "MMA256",
+      "streams_per_descriptor": 1,
+      "tile": 4,
+      "gqa": 2,
+      "blocks": 48,
+      "mask_prepass": false,
+      "scratch_bytes_per_descriptor": 399360,
+      "captured_graph_nodes": 8
+    },
+    "D": {
+      "api_descriptors": 1,
+      "family": "MMA256",
+      "streams_per_descriptor": 4,
+      "tile": 4,
+      "gqa": 2,
+      "blocks": 48,
+      "mask_prepass": true,
+      "scratch_bytes_per_descriptor": 399616,
+      "captured_graph_nodes": 3
+    }
+  },
+  "qualification": "One native-origin first-local dense31 naturalC4 shape. No complete model quality/speed/support pass and no production selection."
+}

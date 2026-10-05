@@ -303,6 +303,11 @@ family" guide, and its long-context scaling work.
         with frozen native repeats and fresh recipe-aligned stock bookends.
         Quality fails on 15/128 heads and latency is 1.1161% higher;
         no candidate is selected and full optimized-batching qualification remains open.
+      - [x] [Dense31 identical-operand C4 attention diagnosis](experiments/gemma-attention-c4/README.md),
+        with exact capture controls, actual original launch observation and
+        short matched bookends. Native four-stream MMA matches the original
+        backend exactly; segmented vector and MMA arithmetic differ.
+        Full-model cause, production selection and Gemma26 transfer remain open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.
@@ -332,6 +337,10 @@ family" guide, and its long-context scaling work.
         correctness, speed and memory; account for shape or format limits.
         A family or quantization's supported status includes optimized
         batching, with the concurrency evidence below.
+        Before closing each model, review its learnings for the previously
+        implemented models, particularly Gemma 26B, and apply eligible
+        improvements with matched correctness and performance checks
+        (owner, 2026-10-05). Record transfer limits in the inventory.
 - [ ] **Concurrent requests with continuous batching** (the owner,
       2026-09-29). The primary workload includes an agent plus
       subagents, which is several concurrent requests on the same

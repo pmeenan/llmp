@@ -29,6 +29,13 @@ reduction order at the same quality; our own rollback, repeat and restored
 continuation remain exact. Changes that trade quality for speed need an
 explicit per-alias quality/performance mode, off by default.
 
+Before closing a model's qualification, review its learnings against the
+previously implemented models, particularly Gemma 26B (owner, 2026-10-05).
+Apply eligible improvements and verify matched correctness, performance,
+batching and memory on each recipient. Record ineligible shapes or formats
+and measured negative results; availability alone does not establish a
+transfer.
+
 The complete literal ds4 path was a temporary benchmark reference for
 matching the configured end-to-end performance and restoring native stages
 individually to isolate the causes; the mechanisms adopted from it are
@@ -211,6 +218,17 @@ restores column-dependent product selection with both norm chains. Fresh
 recipe-aligned stock ubatch128 still has 15/128 strict positive-margin
 differences; candidate latency is 1.1161% higher. Own C4 repeats remain exact,
 but no C1=C4 equivalence or selected optimization follows.
+
+The [identical-operand C4 attention replay](experiments/gemma-attention-c4/README.md)
+isolates two differences on dense31's actual first-local inputs: native
+segmented vector attention differs from MMA, and segmented MMA differs from
+four-stream MMA. Native four-stream MMA matches the unchanged original
+backend byte-for-byte across all 32,768 attention values, with its original
+launch family and geometry observed separately. This establishes kernel
+fidelity on these inputs, not the full-logit cause or a selected model policy.
+Gemma26's D256/GQA2 local attention is the first backward-transfer candidate;
+its different head counts and stream geometry require measured controls.
+Audit other models' actual dispatch and reduction shapes before transfer.
 
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
