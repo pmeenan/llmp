@@ -470,3 +470,19 @@ if(JITLLM_CUDA)
   target_link_libraries(jitllm_gemma_dense31_c1_norm PRIVATE jitllm_engine jitllm_warnings)
   target_link_options(jitllm_gemma_dense31_c1_norm PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
 endif()
+
+# Optional manual observer only: NVTX headers come from the recorded external
+# Nsight tool, never from a production dependency or a vendored source.
+set(JITLLM_BENCHMARK_NVTX_INCLUDE_DIR "" CACHE PATH "External NVTX headers for manual profiling")
+if(JITLLM_CUDA AND JITLLM_BENCHMARK_NVTX_INCLUDE_DIR)
+  if(NOT EXISTS "${JITLLM_BENCHMARK_NVTX_INCLUDE_DIR}/nvtx3/nvToolsExt.h")
+    message(FATAL_ERROR "Manual NVTX profiling requires the supplied public headers")
+  endif()
+  add_executable(jitllm_gemma26_prefill_profile EXCLUDE_FROM_ALL gemma26_prefill_profile.cc)
+  target_include_directories(jitllm_gemma26_prefill_profile SYSTEM PRIVATE
+                             "${JITLLM_BENCHMARK_NVTX_INCLUDE_DIR}")
+  target_link_libraries(jitllm_gemma26_prefill_profile PRIVATE
+                        jitllm_engine jitllm_warnings ${CMAKE_DL_LIBS})
+  target_link_options(jitllm_gemma26_prefill_profile PRIVATE
+                     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+endif()

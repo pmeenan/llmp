@@ -351,6 +351,12 @@ family" guide, and its long-context scaling work.
         reference capacities. All 32 decode choices agree, but both retained full
         heads differ. Native prefill/decode take 57.64%/0.49% more time;
         full quality and competitive performance qualification remain open.
+      - [x] [Gemma26 matched prefill profile](experiments/gemma26-prefill-profile/README.md),
+        with annotated-control and traced head/state fidelity plus successful
+        application/profiler retirement. Diagnostic GPU activity is close,
+        while native has 1.361 s outside recorded GPU activity versus 0.085 s
+        for stock. CPU and wait attribution, optimization and competitive
+        qualification remain open; trace spans do not replace untraced timing.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

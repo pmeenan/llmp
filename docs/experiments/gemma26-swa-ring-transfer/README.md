@@ -3,6 +3,11 @@
 
 # Gemma26 8K ring-cache reference screen
 
+The subsequent [matched prefill profile](../gemma26-prefill-profile/README.md)
+preserves these head/choice/native-state identities. Its diagnostic spans locate
+most of the difference outside recorded GPU activity; CPU and wait attribution
+remains open. The untraced competitive timings below remain the reference result.
+
 With the pinned original reference explicitly using `swa_full=false`, the
 unchanged native all1024 policy has zero strict differences across 32
 incoming-head greedy choices. Both complete retained heads still differ.

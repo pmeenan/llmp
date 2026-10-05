@@ -317,6 +317,15 @@ dense31's byte-exact final head did not transfer. Native prefill/decode take
 initialized state. The remaining full-head and prefill-speed gaps need their
 own diagnosis; this screen selects no policy or full quality/performance pass.
 
+The [matched Gemma26 prefill profile](experiments/gemma26-prefill-profile/README.md)
+retains the earlier complete heads/choices and initialized native state.
+Instrumented GPU activity unions are close (2.469 s native, 2.364 s stock),
+while wall time outside recorded GPU activity is 1.361 s versus 0.085 s.
+Extra head-shaped kernels account for about 26 ms; VMM API bodies total about
+49 ms. Neither establishes critical-path cost or explains the residual interval.
+CPU and wait attribution must precede changes to planning, staging or residency;
+no optimization or cross-family transfer is selected from this profile.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

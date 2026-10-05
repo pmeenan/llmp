@@ -1,0 +1,507 @@
+{
+  "analysis_identity": {
+    "bytes": 8721,
+    "sha256": "f08a925939e453f213c0337c5452b3cd15c886ec23574fa0175eda811c8318b6"
+  },
+  "analysis_records": {
+    "native": {
+      "bytes": 43353,
+      "sha256": "9e87a9961d2104584fd16faa79dbef0b38b992485e3cc0a2e0879f036aee24b9"
+    },
+    "original": {
+      "bytes": 35476,
+      "sha256": "dc874de585060f8bb36b3b92b1b35fa4a32edc9170a48d07f83f37e0cdf520b1"
+    }
+  },
+  "fidelity": {
+    "all_32_incoming_head_choices_match_task40": true,
+    "annotated_controls_and_traces_match_task40_complete_two_heads": true,
+    "native_initialized_state_bytes": 592445440,
+    "native_initialized_state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed",
+    "native_state_layout": "gemma26-f16-kv-scalar-device-v1:16384:1024:16384:2048",
+    "original_actual_global_cells": 16384,
+    "original_actual_local_cells": 2048,
+    "original_owned_container_absent": true,
+    "successful_child_profiler_supervisor_retirement": true
+  },
+  "limitations": [
+    "Wall minus GPU activity union is host/unattributed, not measured CPU/planning time.",
+    "API-body sums overlap GPU and each other; cannot subtract them from residual.",
+    "Model OSRT union includes idle worker waits and covers the range; no busy-CPU attribution.",
+    "No all32 full-head publication, likelihood/PPL gate or inherited noise claim.",
+    "No new optimization, default selection or memory-peak comparison.",
+    "Gemma31 and other-family profiling remain unmeasured."
+  ],
+  "metrics": {
+    "native": {
+      "api_bodies": [
+        {
+          "clipped_duration_ns_sum": 5671872,
+          "count": 65238,
+          "symbol": "cuCtxSetCurrent"
+        },
+        {
+          "clipped_duration_ns_sum": 18891776,
+          "count": 56414,
+          "symbol": "cuEventQuery"
+        },
+        {
+          "clipped_duration_ns_sum": 335568,
+          "count": 288,
+          "symbol": "cuEventRecord"
+        },
+        {
+          "clipped_duration_ns_sum": 248240,
+          "count": 5528,
+          "symbol": "cuKernelGetName"
+        },
+        {
+          "clipped_duration_ns_sum": 98688,
+          "count": 232,
+          "symbol": "cuKernelSetAttribute"
+        },
+        {
+          "clipped_duration_ns_sum": 772320,
+          "count": 232,
+          "symbol": "cuLaunchKernelEx"
+        },
+        {
+          "clipped_duration_ns_sum": 24800,
+          "count": 9,
+          "symbol": "cuLibraryGetKernel"
+        },
+        {
+          "clipped_duration_ns_sum": 17586208,
+          "count": 5,
+          "symbol": "cuLibraryLoadData"
+        },
+        {
+          "clipped_duration_ns_sum": 23686304,
+          "count": 280,
+          "symbol": "cuMemCreate"
+        },
+        {
+          "clipped_duration_ns_sum": 879104,
+          "count": 280,
+          "symbol": "cuMemMap"
+        },
+        {
+          "clipped_duration_ns_sum": 24200448,
+          "count": 280,
+          "symbol": "cuMemSetAccess"
+        },
+        {
+          "clipped_duration_ns_sum": 2106512,
+          "count": 280,
+          "symbol": "cuMemcpyAsync"
+        },
+        {
+          "clipped_duration_ns_sum": 22096,
+          "count": 464,
+          "symbol": "cuStreamGetGreenCtx"
+        },
+        {
+          "clipped_duration_ns_sum": 226368,
+          "count": 16,
+          "symbol": "cudaEventRecord_v3020"
+        },
+        {
+          "clipped_duration_ns_sum": 330852544,
+          "count": 6888,
+          "symbol": "cudaLaunchKernelExC_v11060"
+        },
+        {
+          "clipped_duration_ns_sum": 480483200,
+          "count": 5528,
+          "symbol": "cudaLaunchKernel_v7000"
+        },
+        {
+          "clipped_duration_ns_sum": 441392,
+          "count": 48,
+          "symbol": "cudaMemcpyAsync_v3020"
+        }
+      ],
+      "copy_groups": [
+        {
+          "bytes_each": 2097152,
+          "clipped_duration_ns_sum": 11141472,
+          "count": 280,
+          "kind": 1
+        },
+        {
+          "bytes_each": 4,
+          "clipped_duration_ns_sum": 6176,
+          "count": 8,
+          "kind": 1
+        },
+        {
+          "bytes_each": 4096,
+          "clipped_duration_ns_sum": 61280,
+          "count": 16,
+          "kind": 1
+        },
+        {
+          "bytes_each": 8192,
+          "clipped_duration_ns_sum": 16448,
+          "count": 16,
+          "kind": 1
+        },
+        {
+          "bytes_each": 1048576,
+          "clipped_duration_ns_sum": 201856,
+          "count": 8,
+          "kind": 2
+        }
+      ],
+      "copy_union_ns": 11427232,
+      "cuda_api_union_ns": 903534928,
+      "global_id_encoding_validated_against_process_rows": true,
+      "gpu_activity_union_ns": 2469429759,
+      "graph_api_records_in_paid_range": 0,
+      "head_projection": [
+        {
+          "block": [
+            32,
+            4,
+            1
+          ],
+          "clipped_duration_ns_sum": 29858208,
+          "count": 8,
+          "grid": [
+            262144,
+            1,
+            1
+          ],
+          "symbol": "void mul_mat_vec_q<(ggml_type)8, (int)1, (bool)0, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)"
+        }
+      ],
+      "host_or_unattributed_ns": 1361091553,
+      "kernel_union_ns": 2458002527,
+      "memset_union_ns": 0,
+      "osrt_union_ns": 3830521312,
+      "paid_range_model_owned": true,
+      "paid_range_wall_ns": 3830521312,
+      "selected_kernel_families": {
+        "f16_attention": {
+          "clipped_duration_ns_sum": 223034112,
+          "count": 240
+        },
+        "quantized_matrix_products": {
+          "clipped_duration_ns_sum": 1443432031,
+          "count": 2080
+        }
+      },
+      "tables": {
+        "CUPTI_ACTIVITY_KIND_DRIVER": {
+          "present": false
+        },
+        "CUPTI_ACTIVITY_KIND_KERNEL": {
+          "excluded_other_process_events": 0,
+          "model_intersecting_events": 12648,
+          "present": true,
+          "unknown_process_events": 0
+        },
+        "CUPTI_ACTIVITY_KIND_MEMCPY": {
+          "excluded_other_process_events": 0,
+          "model_intersecting_events": 328,
+          "present": true,
+          "unknown_process_events": 0
+        },
+        "CUPTI_ACTIVITY_KIND_MEMSET": {
+          "present": false
+        },
+        "CUPTI_ACTIVITY_KIND_RUNTIME": {
+          "excluded_other_process_events": 0,
+          "model_intersecting_events": 142010,
+          "present": true,
+          "unknown_process_events": 0
+        },
+        "OSRT_API": {
+          "excluded_other_process_events": 1,
+          "model_intersecting_events": 4414,
+          "present": true,
+          "unknown_process_events": 0
+        }
+      },
+      "vmm_three_api_body_ns_sum": 48765856
+    },
+    "original": {
+      "api_bodies": [
+        {
+          "clipped_duration_ns_sum": 185328,
+          "count": 882,
+          "symbol": "cuGetProcAddress_v2"
+        },
+        {
+          "clipped_duration_ns_sum": 10896,
+          "count": 4,
+          "symbol": "cuInit"
+        },
+        {
+          "clipped_duration_ns_sum": 244464,
+          "count": 5624,
+          "symbol": "cuKernelGetName"
+        },
+        {
+          "clipped_duration_ns_sum": 189184,
+          "count": 240,
+          "symbol": "cuKernelSetAttribute"
+        },
+        {
+          "clipped_duration_ns_sum": 3585056,
+          "count": 240,
+          "symbol": "cuLaunchKernelEx"
+        },
+        {
+          "clipped_duration_ns_sum": 25600,
+          "count": 11,
+          "symbol": "cuLibraryGetKernel"
+        },
+        {
+          "clipped_duration_ns_sum": 22863792,
+          "count": 7,
+          "symbol": "cuLibraryLoadData"
+        },
+        {
+          "clipped_duration_ns_sum": 962304,
+          "count": 2,
+          "symbol": "cuMemCreate"
+        },
+        {
+          "clipped_duration_ns_sum": 13600,
+          "count": 2,
+          "symbol": "cuMemMap"
+        },
+        {
+          "clipped_duration_ns_sum": 240,
+          "count": 2,
+          "symbol": "cuMemRelease"
+        },
+        {
+          "clipped_duration_ns_sum": 365776,
+          "count": 2,
+          "symbol": "cuMemSetAccess"
+        },
+        {
+          "clipped_duration_ns_sum": 192,
+          "count": 2,
+          "symbol": "cuModuleGetLoadingMode"
+        },
+        {
+          "clipped_duration_ns_sum": 27040,
+          "count": 482,
+          "symbol": "cuStreamGetGreenCtx"
+        },
+        {
+          "clipped_duration_ns_sum": 6448,
+          "count": 18,
+          "symbol": "cudaEventCreateWithFlags_v3020"
+        },
+        {
+          "clipped_duration_ns_sum": 15232,
+          "count": 1,
+          "symbol": "cudaFree_v3020"
+        },
+        {
+          "clipped_duration_ns_sum": 2288,
+          "count": 3,
+          "symbol": "cudaGetDriverEntryPointByVersion_v12050"
+        },
+        {
+          "clipped_duration_ns_sum": 321523456,
+          "count": 5796,
+          "symbol": "cudaLaunchKernelExC_v11060"
+        },
+        {
+          "clipped_duration_ns_sum": 316173680,
+          "count": 5624,
+          "symbol": "cudaLaunchKernel_v7000"
+        },
+        {
+          "clipped_duration_ns_sum": 4315360,
+          "count": 4,
+          "symbol": "cudaMalloc_v3020"
+        },
+        {
+          "clipped_duration_ns_sum": 346080,
+          "count": 66,
+          "symbol": "cudaMemcpyAsync_v3020"
+        },
+        {
+          "clipped_duration_ns_sum": 1456734688,
+          "count": 146,
+          "symbol": "cudaStreamSynchronize_v3020"
+        }
+      ],
+      "copy_groups": [
+        {
+          "bytes_each": 10485760,
+          "clipped_duration_ns_sum": 240832,
+          "count": 1,
+          "kind": 1
+        },
+        {
+          "bytes_each": 11534336,
+          "clipped_duration_ns_sum": 1610816,
+          "count": 8,
+          "kind": 1
+        },
+        {
+          "bytes_each": 12582912,
+          "clipped_duration_ns_sum": 206752,
+          "count": 1,
+          "kind": 1
+        },
+        {
+          "bytes_each": 14680064,
+          "clipped_duration_ns_sum": 239520,
+          "count": 1,
+          "kind": 1
+        },
+        {
+          "bytes_each": 16777216,
+          "clipped_duration_ns_sum": 274944,
+          "count": 1,
+          "kind": 1
+        },
+        {
+          "bytes_each": 2097152,
+          "clipped_duration_ns_sum": 77984,
+          "count": 2,
+          "kind": 1
+        },
+        {
+          "bytes_each": 4,
+          "clipped_duration_ns_sum": 1248,
+          "count": 1,
+          "kind": 1
+        },
+        {
+          "bytes_each": 4096,
+          "clipped_duration_ns_sum": 6272,
+          "count": 8,
+          "kind": 1
+        },
+        {
+          "bytes_each": 4194304,
+          "clipped_duration_ns_sum": 579872,
+          "count": 8,
+          "kind": 1
+        },
+        {
+          "bytes_each": 6291456,
+          "clipped_duration_ns_sum": 103616,
+          "count": 1,
+          "kind": 1
+        },
+        {
+          "bytes_each": 8192,
+          "clipped_duration_ns_sum": 24224,
+          "count": 32,
+          "kind": 1
+        },
+        {
+          "bytes_each": 8388608,
+          "clipped_duration_ns_sum": 137600,
+          "count": 1,
+          "kind": 1
+        },
+        {
+          "bytes_each": 1048576,
+          "clipped_duration_ns_sum": 22912,
+          "count": 1,
+          "kind": 2
+        }
+      ],
+      "copy_union_ns": 3526592,
+      "cuda_api_union_ns": 2127590704,
+      "global_id_encoding_validated_against_process_rows": true,
+      "gpu_activity_union_ns": 2364314953,
+      "graph_api_records_in_paid_range": 0,
+      "head_projection": [
+        {
+          "block": [
+            32,
+            4,
+            1
+          ],
+          "clipped_duration_ns_sum": 3780448,
+          "count": 1,
+          "grid": [
+            262144,
+            1,
+            1
+          ],
+          "symbol": "void mul_mat_vec_q<(ggml_type)8, (int)1, (bool)0, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)"
+        }
+      ],
+      "host_or_unattributed_ns": 85283175,
+      "kernel_union_ns": 2360788361,
+      "memset_union_ns": 0,
+      "osrt_union_ns": 2449598128,
+      "paid_range_model_owned": true,
+      "paid_range_wall_ns": 2449598128,
+      "selected_kernel_families": {
+        "f16_attention": {
+          "clipped_duration_ns_sum": 219845504,
+          "count": 240
+        },
+        "quantized_matrix_products": {
+          "clipped_duration_ns_sum": 1460002621,
+          "count": 2120
+        }
+      },
+      "tables": {
+        "CUPTI_ACTIVITY_KIND_DRIVER": {
+          "present": false
+        },
+        "CUPTI_ACTIVITY_KIND_KERNEL": {
+          "excluded_other_process_events": 0,
+          "model_intersecting_events": 11660,
+          "present": true,
+          "unknown_process_events": 0
+        },
+        "CUPTI_ACTIVITY_KIND_MEMCPY": {
+          "excluded_other_process_events": 0,
+          "model_intersecting_events": 66,
+          "present": true,
+          "unknown_process_events": 0
+        },
+        "CUPTI_ACTIVITY_KIND_MEMSET": {
+          "excluded_other_process_events": 0,
+          "model_intersecting_events": 0,
+          "present": true,
+          "unknown_process_events": 0
+        },
+        "CUPTI_ACTIVITY_KIND_RUNTIME": {
+          "excluded_other_process_events": 0,
+          "model_intersecting_events": 19158,
+          "present": true,
+          "unknown_process_events": 0
+        },
+        "OSRT_API": {
+          "excluded_other_process_events": 1,
+          "model_intersecting_events": 90,
+          "present": true,
+          "unknown_process_events": 0
+        }
+      },
+      "vmm_three_api_body_ns_sum": 1341680
+    }
+  },
+  "schema": 1,
+  "scope": "One Gemma26 all1024 C1 8192-row paid-prefill diagnostic per engine; instrumented times are not competitive performance.",
+  "source_role_evidence": {
+    "copy_caveat": "280 native HtoD copies of2097152 bytes record device transport; no disk/paging attribution or physical-peak proof.",
+    "head_shape_caveat": "frontier_head narrows last-block projected/residual rows before FFN; extra publications covary with final-block product work.",
+    "vocabulary_projection": "gemma4_graph.cc normalized final b.output product; unique 262144-row product. Actual Q8_0 MMVQ grid262144x1x1/block32x4x1."
+  },
+  "untraced_task40_baseline": {
+    "native_prefill_latency_delta_percent": 57.64333057166531,
+    "native_seconds": 3.80551,
+    "reference_bookends_seconds": [
+      2.41568,
+      2.41232
+    ]
+  }
+}
