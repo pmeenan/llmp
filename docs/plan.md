@@ -295,6 +295,11 @@ family" guide, and its long-context scaling work.
         independent refusal/publication and actual HTTP continuation evidence.
         Real multi-sequence reference quality fails on natural prefixes;
         optimized-batching selection and full model qualification remain open.
+      - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
+        approved target pairs, including kept architecture semantics, complete
+        shared-target contracts and native canonical-vocabulary comparison.
+        Assistant execution, feature/cache lifetime and speculation qualification
+        remain owed.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

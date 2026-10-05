@@ -422,10 +422,16 @@ For these actual GGUF files the next slices owe:
 | Join products across requests | Apply Qwen/DeepSeek joined dense/routed/head products when operand/quant contracts fit. Preserve per-segment outputs, original one-token sums, stable route pair order and separate attention/state. Qualify scalar versus joined logits/state and departed/cancelled slots. |
 | Lanes, graphs and lifetimes | Reuse request cohorts, completion-aware leases, stable-address graphs, charged per-lane scratch and hazard ordering. Shape/read-alignment choices must back padded cells and preserve exact continuation across capture/replay, spill/restore and time-slicing. |
 | Bounded state and staging | Use initialized read/write footprints, growing extents, bounded host inputs, shared maximum workspace and separately owned slot state; measure peak memory for solo and batched envelopes at context boundaries. |
-| Assistant and draft policy | The KV-sharing Q-only assistant is a later slice, not Qwen MTP or DSpark recurrence. Qualify shared target-cache ownership, centroid/head IDs, overwritten-ring rollback and greedy/sampled acceptance before transferring adaptive depth or selected-head optimizations. |
+| Assistant and draft policy | The checked Q-only assistant binding is available; execution remains a later slice, distinct from Qwen MTP or DSpark recurrence. Qualify shared target-cache ownership, canonical head IDs, overwritten-ring rollback and greedy/sampled acceptance before transferring adaptive depth or selected-head optimizations. |
 | EXL3 / other formats | Separate representation binding, packed products, codebook/rate and expert grouping qualification are owed. GGML recognition in this slice establishes no EXL3, NVFP4 or MXFP8 support. |
 
 For every adopted execution path, record actual registry/plan selection,
 precision/layout and shape limits, isolated and whole-model timing, solo and
 batched quality/exact-state controls and peak memory. No speed or optimized
 batching result is claimed here.
+
+The [Q8_0 assistant binding foundation](gemma4-assistant.md) now validates both
+closed companion profiles, shared target-layer semantics and actual paired
+canonical vocabularies. It adds no assistant execution or speculation route;
+feature lifetimes, target ring rollback and model/batching qualification remain
+open.

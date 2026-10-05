@@ -18,6 +18,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   solo/joined agreement and real multi-sequence reference comparisons retain
   quality/performance gaps; optimized batching is not selected.
 
+- Checked Q8_0 Gemma assistant profiles, tensor/target bindings and paired
+  canonical-vocabulary validation. Assistant execution remains unavailable.
+
 - Reproducible larger-row Gemma prefill diagnostics, with same-shape state
   repeats and matched reference speed/quality comparisons. Numerical failures
   keep production row caps and optimization defaults unchanged.

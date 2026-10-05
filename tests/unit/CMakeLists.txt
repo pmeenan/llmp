@@ -815,3 +815,12 @@ add_executable(gemma_moe_fusion_test gemma_moe_fusion_test.cc)
 target_link_libraries(gemma_moe_fusion_test PRIVATE jitllm_ggml_tensors jitllm_artifact jitllm_json)
 jitllm_gtest(gemma_moe_fusion_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+
+add_executable(gemma4_assistant_test gemma4_assistant_test.cc)
+target_link_libraries(gemma4_assistant_test PRIVATE jitllm_model jitllm_artifact jitllm_json)
+jitllm_gtest(gemma4_assistant_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+
+add_executable(gemma4_assistant_artifact_test gemma4_assistant_artifact_test.cc)
+target_link_libraries(gemma4_assistant_artifact_test PRIVATE jitllm_model jitllm_artifact jitllm_tokenizer)
+jitllm_gtest(gemma4_assistant_artifact_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models")
