@@ -43,13 +43,17 @@ stream, evicts every managed extent and checks every backing released.
 
 ## Configuration
 
-The approved Gemma26 artifact has a bounded native route on this same driver.
+Both approved Gemma26 and dense31 artifacts have a bounded native route on
+this same driver. Complete trusted-artifact binding selects the existing
+immutable engine profile before adapter construction and is rechecked at setup.
 It accepts chat and literal completions with target likelihoods and up to
 twelve independent owners executing scalar completed units. Its context ceiling
 is 262,144 and its prefill cap is 128; settings fallbacks are uncalibrated.
-Device masks are the native default, while optional norm, shared-Q8,
+Device masks are the native default, while optional norm, routing/reduction, shared-Q8,
 row-invariant and RoPE/store policies remain off. Plain chat disables thinking;
-generated tools, assistants/speculation and the 31B profile are refused.
+generated tools and assistants/speculation are refused.
+The [two-profile controls](experiments/gemma31-serving/README.md) exercise
+owned continuation, kept restart and pending cross-profile model switches.
 These route controls do not establish qualified model support or optimized
 joined batching; [Gemma's contract](gemma4.md) lists the remaining gates.
 

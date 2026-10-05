@@ -268,9 +268,10 @@ family" guide, and its long-context scaling work.
       - [x] Checked per-segment Gemma RoPE/cache-store policy with primitive
         fallback and [complete-layer controls](experiments/gemma-rope-store/README.md).
         Mixed paid results keep selection off by default.
-      - [x] Bounded Gemma26 adapter on the shared serving driver, with scalar
-        independent cohorts, target likelihoods, checked checkpoint positions
-        and exact continuation/restart controls. Thinking/tools, assistants,
+      - [x] Bounded approved Gemma26/31 adapter on the shared serving driver,
+        with [scalar independent cohorts](experiments/gemma31-serving/README.md),
+        target likelihoods, checked checkpoint positions, exact continuation/
+        restart and pending cross-profile switch controls. Thinking/tools, assistants,
         selected optimized joining and full model qualification remain owed.
       - [x] Bounded Gemma26 same-format reference diagnosis: the
         [short resident comparison](experiments/gemma-performance/README.md)

@@ -283,8 +283,9 @@ before publishing a package.
 
 M3.5 is in progress. Native token histories now have explicit capacity
 charges and idle reclaim; both M3 LLMs retain exact 8K continuations.
-Gemma 4 has checked profiles, bindings and bounded independent-slot state;
-its execution and optimized-batching qualification remain open.
+Gemma 4 has checked profiles, bindings, bounded independent-slot state and
+bounded scalar serving for both approved profiles; reference and optimized
+batching qualification remain open.
 Next are approved model checkpoints, legacy fixtures, Bonsai, formats with
 EXL3 in focus, the remaining batching/skeleton gaps, media file inputs,
 Clef/Clef-flash over the Jev API and media generation routes (D-101).

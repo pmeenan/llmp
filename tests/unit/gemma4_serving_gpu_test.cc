@@ -6,12 +6,14 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <tuple>
 #include <vector>
 
 #include "base/sha256.h"
@@ -22,7 +24,7 @@
 namespace rt = jitllm::runtime;
 namespace en = jitllm::engine;
 namespace cfg = jitllm::config;
-class Gemma4ServingGpu : public ::testing::Test {
+class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
  protected:
   void SetUp() override {
     std::string name = "/home/pmeenan/.cache/jitllm-gemma-serving-XXXXXX";
@@ -37,27 +39,70 @@ class Gemma4ServingGpu : public ::testing::Test {
     ASSERT_EQ(chmod(roles.state.c_str(), 0700), 0);
     cfg::ModelEntry entry;
     entry.name = "gemma";
-    entry.artifact = "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
+    entry.artifact = GetParam() == 26
+                         ? "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
+                         : "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08";
     entry.overrides["context"] = std::int64_t{4096};
     entry.overrides["prefill_chunk"] = std::int64_t{16};
     entry.overrides["max_slots"] = std::int64_t{12};
     config.models.push_back(entry);
     options.keep_conversations = true;
-    Start();
+    ASSERT_TRUE(Start());
   }
-  void Start() {
+  bool Start() {
     server = std::make_unique<rt::Server>(config, roles, options, stderr);
     auto r = server->Start(true);
-    ASSERT_TRUE(r) << (r ? "" : r.error());
+    if (!r) {
+      ADD_FAILURE() << r.error();
+      return false;
+    }
     model = dynamic_cast<rt::Llm*>(server->Find("gemma"));
-    ASSERT_NE(model, nullptr);
+    if (model == nullptr) {
+      ADD_FAILURE() << "configured Gemma model missing";
+      return false;
+    }
     rt::SwapParts parts;
-    ASSERT_TRUE(server->Activate(*model, parts));
+    r = server->Activate(*model, parts);
+    if (!r) {
+      ADD_FAILURE() << r.error();
+      return false;
+    }
+    return true;
+  }
+  rt::Status RetireServer() {
+    // Server teardown is one-shot: a repeated no-op success cannot prove
+    // completion after an earlier failed fence. Keep that failure sticky.
+    if (retirement_failed) return std::unexpected("server retirement was previously unproven");
+    if (!server) return {};
+    auto retired = server->TearDown();
+    retirement_failed = !retired;
+    return retired;
   }
   void TearDown() override {
-    if (server) EXPECT_TRUE(server->TearDown());
+    if (server) {
+      const auto retired = RetireServer();
+      EXPECT_TRUE(retired) << (retired ? "" : retired.error());
+      if (!retired) {
+        // A failed teardown is not retirement proof. Retain node/catalog,
+        // contexts, borrowed configuration and state files until process exit.
+        std::ignore = lifetime.release();
+        return;
+      }
+    }
     std::filesystem::remove_all(scratch);
   }
+  struct HostCopies {
+    HostCopies(en::PagedNode& owner, std::uint64_t capacity)
+        : node(owner), bytes(capacity), funded(owner.ChargeHost(capacity, false)) {}
+    ~HostCopies() {
+      if (funded) node.UnchargeHost(bytes);
+    }
+    HostCopies(const HostCopies&) = delete;
+    HostCopies& operator=(const HostCopies&) = delete;
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    bool funded;
+  };
   rt::Llm::Branch& Branch(std::uint32_t i) { return **model->branch(i); }
   rt::Status Select(std::uint32_t count) {
     std::array<rt::Llm::Branch*, 12> active{};
@@ -65,19 +110,31 @@ class Gemma4ServingGpu : public ::testing::Test {
     return server->SelectRequestBranches(*model, std::span(active).first(count));
   }
   std::filesystem::path scratch;
-  cfg::NodeConfig config;
-  cfg::RuntimeRoles roles;
-  rt::ServingOptions options;
-  std::unique_ptr<rt::Server> server;
+  struct Lifetime {
+    cfg::NodeConfig config;
+    cfg::RuntimeRoles roles;
+    rt::ServingOptions options;
+    std::unique_ptr<rt::Server> server;
+  };
+  // Server borrows these objects. Allocate them together before construction
+  // and retain the complete stable bundle if retirement is unproven.
+  std::unique_ptr<Lifetime> lifetime = std::make_unique<Lifetime>();
+  cfg::NodeConfig& config = lifetime->config;
+  cfg::RuntimeRoles& roles = lifetime->roles;
+  rt::ServingOptions& options = lifetime->options;
+  std::unique_ptr<rt::Server>& server = lifetime->server;
+  bool retirement_failed = false;
   rt::Llm* model = nullptr;
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
 };
-TEST_F(Gemma4ServingGpu, IndependentScalarCohortsOneTwoFourEightTwelveReplaySeededTokens) {
+TEST_P(Gemma4ServingGpu, IndependentScalarCohortsOneTwoFourEightTwelveReplaySeededTokens) {
   EXPECT_EQ(model->generation_wave_capacity(), 12U);
   EXPECT_EQ(model->branches(), 12U);
   EXPECT_GE(
       server->host_input_bytes(),
       12ULL * 262144 * (2 * sizeof(float) + 2 * sizeof(jitllm::execution::SamplingCandidate)));
+  HostCopies copies(server->node(), 13ULL * 262144 * sizeof(float));
+  ASSERT_TRUE(copies.funded);
   std::array<rt::GenerateOptions, 12> generate;
   for (std::uint32_t i = 0; i < 12; ++i) {
     generate[i].max_tokens = 4;
@@ -86,12 +143,15 @@ TEST_F(Gemma4ServingGpu, IndependentScalarCohortsOneTwoFourEightTwelveReplaySeed
     generate[i].seed = 2718 + i;
   }
   std::array<std::vector<std::int32_t>, 12> expected;
+  std::array<std::vector<float>, 12> frontiers;
   for (const auto count : {1U, 2U, 4U, 8U, 12U}) {
     ASSERT_TRUE(Select(count));
     for (std::uint32_t i = 0; i < count; ++i) {
       ASSERT_TRUE(Branch(i).Clear());
       std::vector<float> last;
       ASSERT_TRUE(Branch(i).Prefill(prompt, last));
+      ASSERT_EQ(last.size(), 262144U);
+      frontiers[i] = last;
       rt::Generation out;
       auto r = Branch(i).Generate(last, generate[i], out);
       ASSERT_TRUE(r) << (r ? "" : r.error());
@@ -105,6 +165,7 @@ TEST_F(Gemma4ServingGpu, IndependentScalarCohortsOneTwoFourEightTwelveReplaySeed
         if (auto r = Branch(i).Clear(); !r) return r;
         std::vector<float> last;
         if (auto r = Branch(i).Prefill(prompt, last); !r) return r;
+        EXPECT_EQ(last, frontiers[i]);
         auto began = Branch(i).BeginGeneration(last, generate[i], output[i]);
         if (!began) return std::unexpected(began.error());
         session[i] = std::move(*began);
@@ -130,7 +191,7 @@ TEST_F(Gemma4ServingGpu, IndependentScalarCohortsOneTwoFourEightTwelveReplaySeed
   EXPECT_GT(model->graphs().replayed, 0U);
   EXPECT_TRUE(model->violations().empty());
 }
-TEST_F(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly) {
+TEST_P(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly) {
   ASSERT_TRUE(Select(2));
   std::vector<float> first, peer;
   ASSERT_TRUE(Branch(0).Prefill(prompt, first));
@@ -169,7 +230,7 @@ TEST_F(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly
   EXPECT_TRUE(Branch(0).spilled());
   const auto history = Branch(0).history();
   server->Persist(rt::Clock::now() + std::chrono::seconds(30), {});
-  ASSERT_TRUE(server->TearDown());
+  ASSERT_TRUE(RetireServer());
   server.reset();
   const auto record_path =
       roles.spill / "conversations" / *config.models[0].artifact / rt::kept::RecordFileName(0);
@@ -193,7 +254,7 @@ TEST_F(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly
   --peer_record->cursor;
   // A plain Gemma kept conversation also has no speculative pending row.
   std::ofstream(peer_record_path) << rt::kept::Encode(*peer_record);
-  Start();
+  ASSERT_TRUE(Start());
   EXPECT_TRUE(Branch(1).history().empty());
   EXPECT_FALSE(Branch(1).spilled());
   EXPECT_EQ(Branch(0).history(), history);
@@ -211,7 +272,7 @@ TEST_F(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly
   EXPECT_FALSE(Branch(0).spilled());
   EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
 }
-TEST_F(Gemma4ServingGpu, LiteralTeacherForcingAndChatRefusalsUseTheTargetRoute) {
+TEST_P(Gemma4ServingGpu, LiteralTeacherForcingAndChatRefusalsUseTheTargetRoute) {
   auto literal = model->EncodeText("Hello, café. 世界");
   ASSERT_TRUE(literal);
   EXPECT_EQ(literal->front(), 2);
@@ -235,10 +296,15 @@ TEST_F(Gemma4ServingGpu, LiteralTeacherForcingAndChatRefusalsUseTheTargetRoute) 
   ASSERT_TRUE(model->RenderChat(c));
   c.enable_thinking = true;
   EXPECT_FALSE(model->RenderChat(c));
+  c.enable_thinking = false;
+  auto tool = jitllm::base::json::Parse(R"({"type":"function","function":{"name":"test"}})");
+  ASSERT_TRUE(tool);
+  c.tools.push_back(tool->root());
+  EXPECT_FALSE(model->RenderChat(c));
   EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
 }
 
-TEST_F(Gemma4ServingGpu, ActualPinnedTemplateNativeInterpreterAndRendererAgree) {
+TEST_P(Gemma4ServingGpu, ActualPinnedTemplateNativeInterpreterAndRendererAgree) {
   auto artifact = jitllm::artifact::Artifact::Open(roles.installed / *config.models[0].artifact);
   ASSERT_TRUE(artifact);
   auto assets = rt::ReadChatAssets(*artifact, config.models[0], geteuid());
@@ -283,7 +349,7 @@ TEST_F(Gemma4ServingGpu, ActualPinnedTemplateNativeInterpreterAndRendererAgree) 
   }
 }
 
-TEST_F(Gemma4ServingGpu, MaximumLiteralScoringRowsInterleaveAndResumeWithoutRepeatingScores) {
+TEST_P(Gemma4ServingGpu, MaximumLiteralScoringRowsInterleaveAndResumeWithoutRepeatingScores) {
   ASSERT_TRUE(Select(2));
   rt::GenerateOptions gen;
   gen.max_tokens = 4;
@@ -341,7 +407,7 @@ TEST_F(Gemma4ServingGpu, MaximumLiteralScoringRowsInterleaveAndResumeWithoutRepe
   EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
 }
 
-TEST_F(Gemma4ServingGpu, SeededStreamResumesAfterStateSpillWhilePeerContinues) {
+TEST_P(Gemma4ServingGpu, SeededStreamResumesAfterStateSpillWhilePeerContinues) {
   ASSERT_TRUE(Select(2));
   rt::GenerateOptions options;
   options.max_tokens = 6;
@@ -414,7 +480,7 @@ TEST_F(Gemma4ServingGpu, SeededStreamResumesAfterStateSpillWhilePeerContinues) {
   EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
 }
 
-TEST_F(Gemma4ServingGpu, LargeTopKSamplingCapacityIsFundedAndRetiresOnEveryClose) {
+TEST_P(Gemma4ServingGpu, LargeTopKSamplingCapacityIsFundedAndRetiresOnEveryClose) {
   ASSERT_TRUE(Select(2));
   std::vector<float> last;
   ASSERT_TRUE(Branch(0).Prefill(prompt, last));
@@ -462,3 +528,319 @@ TEST_F(Gemma4ServingGpu, LargeTopKSamplingCapacityIsFundedAndRetiresOnEveryClose
       12ULL * 262144 * (2 * sizeof(float) + 2 * sizeof(jitllm::execution::SamplingCandidate)));
   EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
 }
+
+TEST_P(Gemma4ServingGpu, CompleteLikelihoodRowsMatchOwnedOneTokenFrontiersAndStopAtPrefix) {
+  ASSERT_TRUE(Select(2));
+  HostCopies copies(server->node(), 6ULL * 262144 * sizeof(float));
+  ASSERT_TRUE(copies.funded);
+  std::array<std::vector<float>, 6> rows;
+  for (std::size_t i = 0; i < prompt.size(); ++i)
+    ASSERT_TRUE(Branch(1).Prefill(std::span(prompt).subspan(i, 1), rows[i]));
+  const auto peer_history = Branch(1).history();
+  const auto peer_bytes = model->ResidentStateBytes(Branch(1));
+  std::size_t at = 1;
+  rt::PrefillRun run;
+  std::vector<float> stopped;
+  const auto score = Branch(0).ScorePrompt(
+      prompt, stopped,
+      [&](std::int32_t id, std::span<const float> row) {
+        EXPECT_EQ(id, prompt[at]);
+        EXPECT_TRUE(std::ranges::equal(row, rows[at - 1]));
+        const auto actual = jitllm::execution::ScoreToken(row, id, 16);
+        const auto expected = jitllm::execution::ScoreToken(rows[at - 1], prompt[at], 16);
+        EXPECT_TRUE(actual);
+        EXPECT_TRUE(expected);
+        if (actual && expected) EXPECT_EQ(actual->logprob, expected->logprob);
+        return ++at < 4;
+      },
+      {}, &run);
+  ASSERT_TRUE(score);
+  EXPECT_EQ(at, 4U);
+  EXPECT_EQ(run.end, 3U);
+  EXPECT_TRUE(run.stopped);
+  EXPECT_TRUE(stopped.empty());
+  EXPECT_EQ(Branch(0).history(), (std::vector<std::int32_t>(prompt.begin(), prompt.begin() + 3)));
+  EXPECT_EQ(Branch(1).history(), peer_history);
+  EXPECT_EQ(model->ResidentStateBytes(Branch(1)), peer_bytes);
+  EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
+}
+
+TEST_P(Gemma4ServingGpu, CallbackStopPublishesCompletedPeerAndReleasesEachSampler) {
+  ASSERT_TRUE(Select(2));
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  options.seed = 883;
+  options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+  std::vector<float> baseline;
+  ASSERT_TRUE(Branch(1).Prefill(prompt, baseline));
+  rt::Generation expected;
+  ASSERT_TRUE(Branch(1).Generate(baseline, options, expected));
+  ASSERT_TRUE(Branch(1).Clear());
+  std::array<std::vector<float>, 2> last;
+  std::array<rt::Generation, 2> output;
+  std::array<std::unique_ptr<rt::Llm::GenerationSession>, 2> sessions;
+  std::vector<std::int32_t> visible;
+  auto stopping = options;
+  stopping.on_tokens = [&](std::span<const std::int32_t> ids) {
+    visible.insert(visible.end(), ids.begin(), ids.end());
+    return visible.size() < 2;
+  };
+  const auto exercised = [&]() -> rt::Status {
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+      if (auto r = Branch(slot).Prefill(prompt, last[slot]); !r) return r;
+      auto began =
+          Branch(slot).BeginGeneration(last[slot], slot == 0 ? stopping : options, output[slot]);
+      if (!began) return std::unexpected(began.error());
+      sessions[slot] = std::move(*began);
+    }
+    std::array<rt::Llm::GenerationSession*, 2> work{sessions[0].get(), sessions[1].get()};
+    if (auto r = model->RunGenerationWave(work); !r) return r;
+    EXPECT_TRUE(sessions[0]->done());
+    EXPECT_EQ(output[0].tokens.size(), 2U);
+    // History publishes only when this completed session is finished.
+    EXPECT_EQ(Branch(0).history().size(), prompt.size());
+    const std::array<rt::Llm::GenerationSession*, 1> peer{sessions[1].get()};
+    while (!sessions[1]->done())
+      if (auto r = model->RunGenerationWave(peer); !r) return r;
+    return {};
+  }();
+  for (auto& session : sessions)
+    if (session) {
+      session->Cancel();
+      EXPECT_TRUE(session->Finish());
+    }
+  EXPECT_TRUE(exercised) << (exercised ? "" : exercised.error());
+  EXPECT_EQ(Branch(0).history().size(), prompt.size() + 1);
+  EXPECT_EQ(visible, output[0].tokens);
+  EXPECT_EQ(output[1].tokens, expected.tokens);
+  EXPECT_EQ(Branch(0).sampling_scratch_bytes(), 0U);
+  EXPECT_EQ(Branch(1).sampling_scratch_bytes(), 0U);
+  EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
+}
+
+TEST_P(Gemma4ServingGpu, CrossVariantKeptTagIsRejectedBeforeAdoptionWhilePeerRestores) {
+  ASSERT_TRUE(Select(2));
+  std::vector<float> first, peer;
+  ASSERT_TRUE(Branch(0).Prefill(prompt, first));
+  ASSERT_TRUE(Branch(1).Prefill(prompt, peer));
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  rt::Generation expected;
+  ASSERT_TRUE(Branch(1).Generate(peer, options, expected));
+  ASSERT_TRUE(Branch(1).Clear());
+  ASSERT_TRUE(Branch(1).Prefill(prompt, peer));
+  const auto peer_history = Branch(1).history();
+  const auto layout = model->KeptLayout();
+  ASSERT_TRUE(layout.starts_with(GetParam() == 26 ? "gemma26-" : "gemma31-"));
+  const auto retired = server->RetireRequestBranches(*model, true);
+  ASSERT_TRUE(retired.result);
+  ASSERT_TRUE(retired.references_retired);
+  ASSERT_TRUE(model->SpillIdle(Branch(0)));
+  ASSERT_TRUE(model->SpillIdle(Branch(1)));
+  server->Persist(rt::Clock::now() + std::chrono::seconds(30), {});
+  ASSERT_TRUE(RetireServer());
+  server.reset();
+  const auto path =
+      roles.spill / "conversations" / *config.models[0].artifact / rt::kept::RecordFileName(0);
+  std::ifstream input(path);
+  auto record = rt::kept::Decode(std::string{std::istreambuf_iterator<char>(input), {}});
+  ASSERT_TRUE(record);
+  ASSERT_EQ(record->identity.layout, layout);
+  record->identity.layout.replace(0, 7, GetParam() == 26 ? "gemma31" : "gemma26");
+  std::ofstream(path) << rt::kept::Encode(*record);
+  ASSERT_TRUE(Start());
+  EXPECT_TRUE(Branch(0).history().empty());
+  EXPECT_FALSE(Branch(0).spilled());
+  EXPECT_EQ(Branch(1).history(), peer_history);
+  EXPECT_EQ(model->KeptLayout(), layout);
+  ASSERT_TRUE(Select(2));
+  auto restoring = Branch(1).BeginPrompt(peer_history, 0, false, true);
+  ASSERT_TRUE(restoring);
+  const auto restored = [&]() -> rt::Status {
+    while (!(*restoring)->done())
+      if (auto r = (*restoring)->Advance(); !r) return r;
+    return {};
+  }();
+  if (!restored) (*restoring)->Cancel();
+  const auto finished = (*restoring)->Finish();
+  EXPECT_EQ((*restoring)->reused(), peer_history.size());
+  restoring->reset();
+  ASSERT_TRUE(restored) << (restored ? "" : restored.error());
+  ASSERT_TRUE(finished) << (finished ? "" : finished.error());
+  rt::Generation actual;
+  ASSERT_TRUE(Branch(1).Generate(peer, options, actual));
+  EXPECT_EQ(actual.tokens, expected.tokens);
+  EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
+}
+
+TEST_P(Gemma4ServingGpu, CapacityRefusalPreservesCompletedPrefixAndPeerProgress) {
+  ASSERT_TRUE(Select(2));
+  // The profiles have different KV row widths: these completed boundaries
+  // each require new state extents for the next scalar decode.
+  const std::uint32_t boundary = GetParam() == 26 ? 512 : 256;
+  std::vector<std::int32_t> long_prompt(boundary);
+  ASSERT_GT(model->StateBytesThrough(boundary + 1),
+            model->StateBytesThrough(boundary) + (16U << 20U));
+  for (std::size_t i = 0; i < long_prompt.size(); ++i) long_prompt[i] = prompt[i % prompt.size()];
+  std::array<std::vector<float>, 2> last;
+  ASSERT_TRUE(Branch(0).Prefill(long_prompt, last[0]));
+  ASSERT_TRUE(Branch(1).Prefill(prompt, last[1]));
+  rt::GenerateOptions options;
+  options.max_tokens = 3;
+  options.stop = false;
+  options.seed = 909;
+  options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+  rt::Generation peer_expected;
+  ASSERT_TRUE(Branch(1).Generate(last[1], options, peer_expected));
+  ASSERT_TRUE(Branch(1).Clear());
+  ASSERT_TRUE(Branch(1).Prefill(prompt, last[1]));
+  const auto bytes = model->ResidentStateBytes(Branch(0));
+  std::array<rt::Generation, 2> output;
+  std::array<std::unique_ptr<rt::Llm::GenerationSession>, 2> sessions;
+  const auto exercised = [&]() -> rt::Status {
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+      auto began = Branch(slot).BeginGeneration(last[slot], options, output[slot]);
+      if (!began) return std::unexpected(began.error());
+      sessions[slot] = std::move(*began);
+    }
+    std::array<rt::Llm::GenerationSession*, 2> work{sessions[0].get(), sessions[1].get()};
+    const auto available = server->node().FreeBytes();
+    if (!available || *available <= (16U << 20U))
+      return std::unexpected("test capacity unavailable");
+    const auto pressure = *available - (16U << 20U);
+    if (!server->node().ChargeHost(pressure, false))
+      return std::unexpected("test pressure refused");
+    const auto pressured = model->RunGenerationWave(work, true);
+    server->node().UnchargeHost(pressure);
+    if (!pressured) return pressured;
+    EXPECT_TRUE(sessions[0]->refused());
+    EXPECT_FALSE(sessions[0]->done());
+    EXPECT_EQ(Branch(0).history(), long_prompt);
+    EXPECT_EQ(model->ResidentStateBytes(Branch(0)), bytes);
+    EXPECT_EQ(output[1].tokens.size(), 2U);
+    while (!sessions[0]->done() || !sessions[1]->done()) {
+      std::array<rt::Llm::GenerationSession*, 2> active{};
+      std::size_t count = 0;
+      for (const auto& session : sessions)
+        if (!session->done()) active[count++] = session.get();
+      if (auto r = model->RunGenerationWave(std::span(active).first(count), true); !r) return r;
+    }
+    return {};
+  }();
+  for (auto& session : sessions)
+    if (session) {
+      session->Cancel();
+      EXPECT_TRUE(session->Finish());
+    }
+  EXPECT_TRUE(exercised) << (exercised ? "" : exercised.error());
+  EXPECT_EQ(output[1].tokens, peer_expected.tokens);
+  ASSERT_TRUE(Branch(0).Clear());
+  ASSERT_TRUE(Branch(0).Prefill(long_prompt, last[0]));
+  rt::Generation target_expected;
+  ASSERT_TRUE(Branch(0).Generate(last[0], options, target_expected));
+  EXPECT_EQ(output[0].tokens, target_expected.tokens);
+  EXPECT_EQ(Branch(0).sampling_scratch_bytes(), 0U);
+  EXPECT_EQ(Branch(1).sampling_scratch_bytes(), 0U);
+  EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
+}
+
+TEST_P(Gemma4ServingGpu, PausedGenerationSurvivesOppositeProfileSwitchAndOwnedOutput) {
+  ASSERT_TRUE(RetireServer());
+  server.reset();
+  auto opposite = config.models[0];
+  opposite.name = "other";
+  opposite.artifact = GetParam() == 26
+                          ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+                          : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
+  opposite.overrides["max_slots"] = std::int64_t{2};
+  config.models.push_back(opposite);
+  ASSERT_TRUE(Start());
+  auto* other = dynamic_cast<rt::Llm*>(server->Find("other"));
+  ASSERT_NE(other, nullptr);
+  EXPECT_NE(model->KeptLayout(), other->KeptLayout());
+  ASSERT_TRUE(Select(1));
+  rt::GenerateOptions options;
+  options.max_tokens = 6;
+  options.stop = false;
+  options.seed = 1909;
+  options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 16};
+  std::vector<float> last;
+  ASSERT_TRUE(Branch(0).Prefill(prompt, last));
+  rt::Generation expected;
+  ASSERT_TRUE(Branch(0).Generate(last, options, expected));
+  ASSERT_TRUE(Branch(0).Clear());
+  ASSERT_TRUE(Branch(0).Prefill(prompt, last));
+  rt::Generation output;
+  std::vector<std::int32_t> visible;
+  auto streamed = options;
+  streamed.on_tokens = [&](std::span<const std::int32_t> tokens) {
+    visible.insert(visible.end(), tokens.begin(), tokens.end());
+    return true;
+  };
+  auto paused = Branch(0).BeginGeneration(last, streamed, output);
+  ASSERT_TRUE(paused);
+  const std::array<rt::Llm::GenerationSession*, 1> one{paused->get()};
+  const auto ran = model->RunGenerationWave(one);
+  (*paused)->Cancel();
+  const auto ended = (*paused)->Finish();
+  paused->reset();
+  ASSERT_TRUE(ran);
+  ASSERT_TRUE(ended);
+  const auto held = Branch(0).history();
+  Branch(0).HoldContinuation();
+  const auto exercised = [&]() -> rt::Status {
+    const auto retired = server->RetireRequestBranches(*model, true);
+    if (!retired.result) return retired.result;
+    if (!retired.references_retired) return std::unexpected("references remain unproven");
+    rt::SwapParts outgoing;
+    if (auto r = server->Activate(*other, outgoing); !r) return r;
+    if (auto r = server->FinishSwap(outgoing); !r) return r;
+    auto other_branch = other->branch(0);
+    if (!other_branch) return std::unexpected(other_branch.error());
+    const std::array<rt::Llm::Branch*, 1> selected{*other_branch};
+    if (auto r = server->SelectRequestBranches(*other, selected); !r) return r;
+    std::vector<float> other_last;
+    if (auto r = (*other_branch)->Prefill(prompt, other_last); !r) return r;
+    rt::Generation other_output;
+    if (auto r = (*other_branch)->Generate(other_last, options, other_output); !r) return r;
+    const auto other_retired = server->RetireRequestBranches(*other, true);
+    if (!other_retired.result) return other_retired.result;
+    if (!other_retired.references_retired) return std::unexpected("opposite references unproven");
+    rt::SwapParts incoming;
+    if (auto r = server->Activate(*model, incoming); !r) return r;
+    if (auto r = server->FinishSwap(incoming); !r) return r;
+    if (auto r = Select(1); !r) return r;
+    auto prompt_session = Branch(0).BeginPrompt(held, 0, false, true);
+    if (!prompt_session) return std::unexpected(prompt_session.error());
+    auto restored = [&]() -> rt::Status {
+      while (!(*prompt_session)->done())
+        if (auto r = (*prompt_session)->Advance({}, true); !r) return r;
+      return {};
+    }();
+    if (!restored) (*prompt_session)->Cancel();
+    const auto finished = (*prompt_session)->Finish();
+    if (!restored) return restored;
+    if (!finished) return finished;
+    auto resumed = Branch(0).ResumeGeneration((*prompt_session)->last(), streamed, output);
+    if (!resumed) return std::unexpected(resumed.error());
+    const std::array<rt::Llm::GenerationSession*, 1> active{resumed->get()};
+    auto continued = [&]() -> rt::Status {
+      while (!(*resumed)->done())
+        if (auto r = model->RunGenerationWave(active); !r) return r;
+      return {};
+    }();
+    if (!continued) (*resumed)->Cancel();
+    const auto closed = (*resumed)->Finish();
+    return continued ? closed : continued;
+  }();
+  Branch(0).ReleaseContinuation();
+  EXPECT_TRUE(exercised) << (exercised ? "" : exercised.error());
+  EXPECT_EQ(output.tokens, expected.tokens);
+  EXPECT_EQ(visible, expected.tokens);
+  EXPECT_TRUE(server->RetireRequestBranches(*model, true).references_retired);
+}
+
+INSTANTIATE_TEST_SUITE_P(ApprovedProfiles, Gemma4ServingGpu, ::testing::Values(26U, 31U),
+                         [](const auto& info) { return "Gemma" + std::to_string(info.param); });

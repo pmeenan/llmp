@@ -616,7 +616,7 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
                      std::format("the drafter ({})", facts.drafter_architecture)};
   }
   if (arch == "gemma4" && (entry.drafter || entry.Bool("speculation").value_or(false)))
-    return Error("Gemma26 serving has no qualified assistant or speculative path");
+    return Error("Gemma serving has no qualified assistant or speculative path");
   const bool speculative = s.speculation.value;
 
   // Speed trades: calibrated on the machine, else M3's measured constants.

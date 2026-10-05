@@ -7,8 +7,8 @@
 fixed profiles, strict GGML artifact bindings, bounded state layouts,
 initialized read/write footprints and independent request-segment inputs.
 The segmented GGML graph, checked plan adapter and bounded native 26B-A4B/31B
-engine runner described below extend this foundation. The 26B-A4B serving
-route remains bounded; 31B serving and assistants are unavailable. Both
+engine runner described below extend this foundation. Both approved profiles
+have bounded scalar serving routes; assistants remain unavailable. Both
 checkpoints remain unsupported
 in the [support matrix](model-support.md); the family task remains open.
 
@@ -283,7 +283,7 @@ full-fusion llama.cpp: 14.61% higher PPL and 330 strict head argmax differences
 outside the new zero native noise bound; the unfused diagnostic matches every
 full head byte for byte. This does not qualify either model or identify a
 shared cause with the narrower 26B routed-input diagnosis. Optional policies,
-optimized batching, assistants and 31B HTTP admission remain open.
+optimized batching, assistants and full serving qualification remain open.
 The [dense 31B norm control](experiments/gemma31-reference-fusions/README.md)
 reproduces every measured stock head with the two missing norm fusion families.
 The [checked native norm chains](experiments/gemma-native-norm/README.md) now
@@ -334,18 +334,21 @@ source of the prefill gap is isolated.
 
 ## Bounded native serving route
 
-The existing runtime driver registers the approved 26B-A4B artifact through
-`runtime/serving.cc`. Chat and literal completions share the native runner,
+The existing runtime driver registers both approved 26B-A4B and dense31 artifacts
+through one adapter in `runtime/serving.cc`. Its factory opens the trusted artifact
+and requires complete approved tensor binding before selecting the immutable
+engine variant; setup repeats that binding. No configuration schema is added. Chat and literal completions share the native runner,
 state skeleton, settings, continuation and restart machinery. Up to twelve
 independent owners execute scalar completed units; this is continuous cohort
 scheduling, with no selected joined model dispatch. Prefill is capped at 128
 rows, context at 262,144, and the fallback settings are explicitly uncalibrated.
-Norm, shared-Q8, row-invariant and RoPE/store policies remain off. Device masks
+Optional norm, routing/reduction, shared-Q8, row-invariant and RoPE/store
+policies remain off. Device masks
 remain the native default.
 
 Plain chat disables thinking in the actual template. Generated thought and
-tool-call parsing, assistants/speculation and the 31B serving profile are
-explicitly unavailable in this slice. Template controls deserialize historical tool-call
+tool-call parsing and assistants/speculation are explicitly unavailable in
+this slice. Template controls deserialize historical tool-call
 argument strings once before rendering and compare the
 approved `845f1ee4…` template with pinned Jinja on those normalized inputs.
 The current generic HTTP parser still refuses historical tool-call messages;
@@ -368,6 +371,13 @@ now expose checked original routing and scaled ordered reduction primitives.
 Their first-eight ID view retains the graph's already funded full 128-pitch
 ARGSORT root; its tail remains unwritten. Graph integration, readable keeps,
 and whole-model quality/performance selection remain separate requirements.
+
+The [two-profile scalar serving controls](experiments/gemma31-serving/README.md)
+cover complete own frontier rows, likelihood alignment, refusal with peer
+progress, cross-variant kept-record rejection and pending 26↔31 switches.
+Actual HTTP solo/cohort, SSE, stop, cancellation and likelihood controls use
+each profile's own solo output; they do not qualify reference quality or
+optimized joining.
 
 ## Required execution and optimization qualification
 

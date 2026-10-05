@@ -44,6 +44,7 @@
 #include "platform/kept_files.h"
 #include "platform/memory_pressure.h"
 #include "platform/path_trust.h"
+#include "runtime/gemma_profile.h"
 #include "runtime/intake_limits.h"
 #include "runtime/memory_guard.h"
 #include "runtime/model_limits.h"
@@ -902,16 +903,18 @@ class Dsv4 final : public Llm {
   WaveCostExploration wave_cost_exploration_;
 };
 
-// Gemma 26 uses the shared serving driver with independent native slots.
+// Approved Gemma26/31 profiles share the serving driver and native slots.
 // Cohorts currently dispatch scalar completed units; joined math remains gated.
-class Gemma26 final : public Llm {
+class Gemma final : public Llm {
  public:
-  Gemma26(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-          const config::RuntimeRoles& roles, int index)
+  Gemma(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
+        const config::RuntimeRoles& roles, int index, engine::Gemma4Variant variant)
       : entry_(entry),
         artifact_id_(entry.artifact.value_or("")),
         store_(roles.installed),
-        options_(Options(entry, settings, roles)),
+        profile_(variant == engine::Gemma4Variant::k26BA4B ? model::Gemma4_26BA4B()
+                                                           : model::Gemma4_31B()),
+        options_(Options(entry, settings, roles, variant)),
         runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
     name_ = entry.name;
     settings_ = settings;
@@ -924,10 +927,10 @@ class Gemma26 final : public Llm {
   engine::PagedModel& paged() override { return runner_; }
   Status Setup() override {
     if (entry_.drafter || settings_.speculation.value)
-      return Error("Gemma26 serving has no qualified assistant or speculative path");
+      return Error("Gemma serving has no qualified assistant or speculative path");
     auto artifact = OpenTrusted(store_, artifact_id_);
     if (!artifact) return Error(artifact.error());
-    auto binding = model::BindGemma4(model::Gemma4_26BA4B(), *artifact);
+    auto binding = model::BindGemma4(profile_, *artifact);
     if (!binding) return Error(binding.error());
     if (auto r = UseChatAssets(*artifact, entry_); !r) return r;
     // This first serving slice has no generated thought/tool channel parser.
@@ -951,7 +954,7 @@ class Gemma26 final : public Llm {
     // scalar output or per-owner sampling vector grows. One retained frontier
     // and one prepared result per owner, plus the sampling candidate capacity.
     // The independently catalog-backed pinned output holds max_rows rows.
-    const auto heap = std::uint64_t{options_.slots} * model::Gemma4_26BA4B().vocab *
+    const auto heap = std::uint64_t{options_.slots} * profile_.vocab *
                       (2 * sizeof(float) + 2 * sizeof(execution::SamplingCandidate));
     return runner_.host_input_bytes() + heap;
   }
@@ -980,8 +983,8 @@ class Gemma26 final : public Llm {
   std::string violations() const override { return runner_.coverage().first_violation; }
   std::string extra() const override {
     return std::format(
-        R"({{"architecture":"gemma4","dispatch":"scalar-cohort","optional_optimizations":false,"coverage_tensors":{},"pitch_padding":{}}})",
-        runner_.coverage().tensors, runner_.pitch_padding());
+        R"({{"architecture":"gemma4","dispatch":"scalar-cohort","optional_optimizations":false,"profile":"{}","coverage_tensors":{},"pitch_padding":{}}})",
+        profile_.name, runner_.coverage().tensors, runner_.pitch_padding());
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
   std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
@@ -1019,14 +1022,14 @@ class Gemma26 final : public Llm {
  protected:
   Status CheckConversation(const chat::Conversation& c) const override {
     if (c.enable_thinking.value_or(false))
-      return Error("Gemma26 thought-channel output is not qualified in this serving slice");
+      return Error("Gemma thought-channel output is not qualified in this serving slice");
     if (!c.tools.empty())
-      return Error("Gemma26 generated tool-call output is not qualified in this serving slice");
+      return Error("Gemma generated tool-call output is not qualified in this serving slice");
     return {};
   }
   Status PrepareSamplingScratchFor(Branch& branch, std::size_t logits) override {
-    const auto vocab = model::Gemma4_26BA4B().vocab;
-    if (logits != vocab) return Error("Gemma26 sampling needs its complete target vocabulary");
+    const auto vocab = profile_.vocab;
+    if (logits != vocab) return Error("Gemma sampling needs its complete target vocabulary");
     // TopK may reserve 2*k. Reserve the complete bound from empty storage
     // before the first sample, so subsequent rows never reallocate it.
     ReserveBranchSamplingScratch(branch, 2 * std::size_t{vocab});
@@ -1039,12 +1042,12 @@ class Gemma26 final : public Llm {
   }
   Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
                      bool inject, std::vector<float>& logits) override {
-    if (inject || past >= all.size()) return Error("Gemma26 needs a plain nonempty chunk");
+    if (inject || past >= all.size()) return Error("Gemma needs a plain nonempty chunk");
     const engine::Gemma4Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
     return runner_.Wave(std::span(&work, 1));
   }
   Status SettleFor(Branch& branch) override {
-    return NativeSlot(branch).state_usable() ? Status{} : Error("Gemma26 state is quarantined");
+    return NativeSlot(branch).state_usable() ? Status{} : Error("Gemma state is quarantined");
   }
   Status ClearStateFor(Branch& branch) override { return runner_.Clear(BranchIndex(branch)); }
   bool StateUsableFor(const Branch& branch) const override {
@@ -1055,7 +1058,7 @@ class Gemma26 final : public Llm {
   }
   Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t) override {
     if (pos != NativeSlot(branch).completed_positions() || pos >= context_)
-      return Error("Gemma26 decode position differs from its completed state");
+      return Error("Gemma decode position differs from its completed state");
     return runner_.ReserveStateThrough(BranchIndex(branch), pos + 1);
   }
   std::uint64_t TargetStateBaseFor(const Branch& branch) const override {
@@ -1077,21 +1080,21 @@ class Gemma26 final : public Llm {
     return runner_.CopyState(BranchIndex(branch), host, ranges, true);
   }
   Status RestoreUsedStateFor(Branch&, void*, std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma26 restore requires owned logical-position metadata");
+    return Error("Gemma restore requires owned logical-position metadata");
   }
   std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
       const Branch& branch, std::uint32_t pos) const override {
     if (pos != NativeSlot(branch).completed_positions())
-      return Error("Gemma26 checkpoint boundary differs from completed state");
+      return Error("Gemma checkpoint boundary differs from completed state");
     return runner_.CheckpointRanges(pos);
   }
   Status PrepareRestoreStateFor(Branch&, std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma26 restore requires owned logical-position metadata");
+    return Error("Gemma restore requires owned logical-position metadata");
   }
   Status CheckCheckpointMetadataFor(
       const Branch&, std::uint32_t pos, std::uint32_t cursor,
       std::span<const engine::LiveState::Range> ranges) const override {
-    if (pos != cursor) return Error("Gemma26 checkpoint cursor differs from its logical boundary");
+    if (pos != cursor) return Error("Gemma checkpoint cursor differs from its logical boundary");
     return runner_.ValidateFootprint(pos, ranges);
   }
   Status PreparePositionRestoreFor(Branch& branch, std::uint32_t pos, std::uint32_t cursor,
@@ -1135,7 +1138,7 @@ class Gemma26 final : public Llm {
   Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t pos,
                           std::span<const engine::LiveState::Range> ranges) override {
     if (pos != tokens.size() || pos == 0)
-      return Error("Gemma26 kept positions differ from its owned token history");
+      return Error("Gemma kept positions differ from its owned token history");
     return runner_.Adopt(BranchIndex(branch), pos, ranges, KeptLayout());
   }
   void SetSpillPlaces(
@@ -1162,7 +1165,7 @@ class Gemma26 final : public Llm {
   Status SpecStep(std::span<const std::int32_t>, std::uint32_t, std::uint32_t,
                   std::vector<std::int32_t>&, std::vector<std::vector<float>>*,
                   std::uint64_t&) override {
-    return Error("Gemma26 speculation is unavailable");
+    return Error("Gemma speculation is unavailable");
   }
   Status Settle() override { return SettleFor(default_branch()); }
   Status ClearState() override { return ClearStateFor(default_branch()); }
@@ -1184,14 +1187,14 @@ class Gemma26 final : public Llm {
     return SaveUsedStateFor(default_branch(), host, ranges);
   }
   Status RestoreUsedState(void*, std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma26 restore requires owned metadata");
+    return Error("Gemma restore requires owned metadata");
   }
   std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
       std::uint32_t pos) const override {
     return runner_.CheckpointRanges(pos);
   }
   Status PrepareRestoreState(std::span<const engine::LiveState::Range>) override {
-    return Error("Gemma26 restore requires owned metadata");
+    return Error("Gemma restore requires owned metadata");
   }
   Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
                              bool to_host) override {
@@ -1201,9 +1204,11 @@ class Gemma26 final : public Llm {
  private:
   static engine::Gemma4Options Options(const config::ModelEntry& entry,
                                        const ModelSettings& settings,
-                                       const config::RuntimeRoles& roles) {
+                                       const config::RuntimeRoles& roles,
+                                       engine::Gemma4Variant variant) {
     return {.artifact = roles.installed / entry.artifact.value_or(""),
             .out = roles.spill,
+            .variant = variant,
             .context = settings.context.value,
             .max_rows = settings.prefill_chunk.value,
             .slots = settings.max_slots.value};
@@ -1215,6 +1220,7 @@ class Gemma26 final : public Llm {
   config::ModelEntry entry_;
   std::string artifact_id_;
   fs::path store_;
+  const model::Gemma4Profile& profile_;
   engine::Gemma4Options options_;
   engine::Gemma4Runner runner_;
   std::array<engine::Gemma4Runner::Slot*, engine::kMaxRequestSlots> slots_{};
@@ -4339,7 +4345,13 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
   if (settings.architecture == "deepseek4") {
     models_.push_back(std::make_unique<Dsv4>(node_, entry, settings, roles_, index));
   } else if (settings.architecture == "gemma4") {
-    models_.push_back(std::make_unique<Gemma26>(node_, entry, settings, roles_, index));
+    auto artifact = OpenTrusted(roles_.installed, entry.artifact.value_or(""));
+    if (!artifact) return Error(artifact.error());
+    auto profile = ApprovedGemmaProfile(*artifact);
+    if (!profile) return Error(profile.error());
+    const auto variant = *profile == &model::Gemma4_26BA4B() ? engine::Gemma4Variant::k26BA4B
+                                                             : engine::Gemma4Variant::k31B;
+    models_.push_back(std::make_unique<Gemma>(node_, entry, settings, roles_, index, variant));
   } else if (settings.architecture == "qwen4exp") {
     models_.push_back(std::make_unique<Qwen38>(node_, entry, settings, roles_, index));
   } else {

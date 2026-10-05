@@ -18,13 +18,13 @@
 add_library(jitllm_runtime STATIC runtime.cc commands.cc http.cc api.cc api_server.cc binding.cc
                                   calibration.cc cohort_capacity.cc cohort_schedule.cc
                                   completion_tokens.cc hang_ladder.cc intake_limits.cc
-                                  kept_record.cc memory_guard.cc model_limits.cc model_settings.cc
+                                  gemma_profile.cc kept_record.cc memory_guard.cc model_limits.cc model_settings.cc
                                   prefill.cc pressure_trim.cc state_keeper.cc swap_room.cc
                                   watchdog.cc)
 target_include_directories(jitllm_runtime PUBLIC "${PROJECT_SOURCE_DIR}/src")
 target_link_libraries(jitllm_runtime PUBLIC jitllm_artifact jitllm_config jitllm_platform
                                             jitllm_tokenizer
-                      PRIVATE jitllm_base jitllm_build_info jitllm_report jitllm_device_probe
+                      PRIVATE jitllm_base jitllm_build_info jitllm_report jitllm_device_probe jitllm_model
                               jitllm_json jitllm_sampling jitllm_warnings)
 
 # The serving commands themselves (serving.h, D-096): the configured models

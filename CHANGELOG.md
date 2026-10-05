@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Bounded dense Gemma31 chat and literal completion admission through the shared
+  approved-profile adapter, with scalar cohorts, target likelihoods and owned
+  cross-profile continuation/restart controls. Optimized joining and model
+  qualification remain separate.
+
 - Explicit default-off checked Gemma norm/rotation and norm/residual fusion
   controls, preserving kept intermediates, raw K-as-V and paid residual gathers.
 

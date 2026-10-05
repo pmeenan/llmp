@@ -1,0 +1,204 @@
+{
+  "base": "622dfe52b40092e3b77e20586f841672f46b87e3",
+  "binaries": {
+    "build/spark-native/src/runtime/jitllm-runtime": "6c28538f3cefac030b380aaeaca52b3b2a7569117f656028aafd360ca316802e",
+    "build/spark-native/tests/unit/gemma4_serving_gpu_test": "95e6cac6c2c4b6d2045116558dcffebf8a4910e5cf7353525a250398d84d19f9"
+  },
+  "checks": [
+    {
+      "ctest_passed": 1,
+      "exit": 0,
+      "job": "m35-gemma31-serving-build1"
+    },
+    {
+      "ctest_passed": 7,
+      "exit": 0,
+      "job": "m35-gemma31-serving-controls1",
+      "parameterized_model_cases": 14,
+      "seconds": 164.29
+    },
+    {
+      "ctest_failed": 3,
+      "ctest_passed": 3,
+      "exit": 8,
+      "job": "m35-gemma31-serving-controls2",
+      "limit": "historical fixture assumptions: Finish publication, same-length reuse without resume, profile-specific KV boundary"
+    },
+    {
+      "exit": 1,
+      "job": "m35-gemma31-serving-controls3",
+      "limit": "historical compile-time size narrowing in new fixture assertion"
+    },
+    {
+      "ctest_passed": 4,
+      "exit": 0,
+      "job": "m35-gemma31-serving-controls4",
+      "parameterized_model_cases": 6,
+      "seconds": 65.84
+    },
+    {
+      "ctest_passed": 122,
+      "exit": 0,
+      "job": "m35-gemma31-serving-controls5",
+      "seconds": 74.43,
+      "skipped": 0
+    },
+    {
+      "ctest_passed": 3,
+      "exit": 0,
+      "job": "m35-gemma31-serving-controls6",
+      "parameterized_model_cases": 6,
+      "scope": "final sticky retirement fixture restart/switch controls",
+      "seconds": 95.98,
+      "skipped": 0
+    }
+  ],
+  "format": "jitllm-gemma31-scalar-serving-aggregate-v1",
+  "historical_integrated_full1": {
+    "job": "m35-gemma31-serving-root-final1",
+    "qualified_as_pass": false,
+    "reason": "supervisor SIGTERM after final fixture retirement review finding",
+    "status": "killed"
+  },
+  "host": "Spark-b spark-56f5",
+  "http": {
+    "completed_profile_cases": [
+      {
+        "detail": {
+          "owner_counts": [
+            1,
+            2,
+            4,
+            8,
+            12
+          ],
+          "tokens_per_owner": 4
+        },
+        "name": "gemma26:scalar-cohorts",
+        "passed": true,
+        "seconds": 6.700866305967793
+      },
+      {
+        "detail": {
+          "SSE_exact": true,
+          "disconnect_followup_exact": true,
+          "stop_delimiter_bytes": 3,
+          "tool_refusals": 2
+        },
+        "name": "gemma26:chat-SSE-stop-refusal-cancel",
+        "passed": true,
+        "seconds": 0.6375594148412347
+      },
+      {
+        "detail": {
+          "first_null": true,
+          "interleaved_repeat_exact": true,
+          "scored_rows": 127
+        },
+        "name": "gemma26:likelihood-alignment",
+        "passed": true,
+        "seconds": 6.004885002039373
+      },
+      {
+        "detail": {
+          "owner_counts": [
+            1,
+            2,
+            4,
+            8,
+            12
+          ],
+          "tokens_per_owner": 4
+        },
+        "name": "gemma31:scalar-cohorts",
+        "passed": true,
+        "seconds": 18.823108189972118
+      },
+      {
+        "detail": {
+          "SSE_exact": true,
+          "disconnect_followup_exact": true,
+          "stop_delimiter_bytes": 3,
+          "tool_refusals": 2
+        },
+        "name": "gemma31:chat-SSE-stop-refusal-cancel",
+        "passed": true,
+        "seconds": 1.7103862660005689
+      },
+      {
+        "detail": {
+          "first_null": true,
+          "interleaved_repeat_exact": true,
+          "scored_rows": 127
+        },
+        "name": "gemma31:likelihood-alignment",
+        "passed": true,
+        "seconds": 26.50477113109082
+      }
+    ],
+    "final_switch_control": {
+      "cases": [
+        {
+          "detail": {
+            "owned_outputs_exact": true,
+            "source_pause_messages": 1,
+            "source_tokens": 128,
+            "target_max_tokens": 8
+          },
+          "name": "gemma26->gemma31:pending-switch",
+          "passed": true,
+          "seconds": 15.254058002028614
+        },
+        {
+          "detail": {
+            "owned_outputs_exact": true,
+            "source_pause_messages": 1,
+            "source_tokens": 110,
+            "target_max_tokens": 8
+          },
+          "name": "gemma31->gemma26:pending-switch",
+          "passed": true,
+          "seconds": 30.972225029952824
+        }
+      ],
+      "exit": 0,
+      "job": "m35-gemma31-serving-http3",
+      "model_turn_seconds": 1,
+      "pause_messages": 2,
+      "runtime_exit": 0
+    },
+    "historical_http1": {
+      "exit": 1,
+      "failed_cases": 2,
+      "limit": "unsupported literal SSE; does not establish pending-switch evidence",
+      "passed_cases": 6,
+      "runtime_exit": 0
+    },
+    "historical_http2": {
+      "exit": 1,
+      "limit": "default30-second turn allowed32-token responses to finish; no active-pause proof",
+      "own_output_cases_passed": 8,
+      "pause_messages": 0,
+      "runtime_exit": 0
+    }
+  },
+  "limits": [
+    "scalar own-engine controls only",
+    "ordinary device-mask policy; optional math flags off",
+    "no joined batching/reference quality/latency/depth/support qualification",
+    "no physical peak claim"
+  ],
+  "prior_controls5_source_manifest_sha256": "2a40e682c62e40fdcdac7a1f15d0f86a30bf8e88a3c35a5560a1cf400469e89f",
+  "sdk": "aarch64-c09daba6ac31edee",
+  "source_files": {
+    "src/runtime/CMakeLists.txt": "0e868fa5433b649b49a02614bc1b41e3de48ef41e799273c8a7bd8a0f996c7f3",
+    "src/runtime/gemma_profile.cc": "bef4084bed670c44ff9af398539eb2c5ce0e116d13a946ad8133a16d33c4e7b2",
+    "src/runtime/gemma_profile.h": "cf543b0f76b0611d98c8c17b89c534cdcec5f16d7c35d1f46337a8ecf0724a66",
+    "src/runtime/model_settings.cc": "2697cd43f3c3b7416984a378e18c5cc9f4fbc448ec22619a1f2a8c61897f8139",
+    "src/runtime/serving.cc": "9b29bd99b6d0eb94f70480891e5ccd5d0abfecdeb063d717cdfe825c86a94283",
+    "tests/unit/CMakeLists.txt": "4cab1f9f6b7da3ae6f152cf6ae31a702d97a35b7d45ea4af20db50480ce35a41",
+    "tests/unit/gemma4_serving_gpu_test.cc": "8fbb6cb64ac017eeb57931a6400816ccc73e22b0e3c10ea9e780ef535221cf01",
+    "tests/unit/gemma_profile_test.cc": "48a2e0d288b81f94b7b2d064b357cac3a0ce9e7ce44d43ea3748d983d9b35b1a"
+  },
+  "source_manifest_sha256": "ce7157130db5191a9b1724bddaa01dde1abd43ab2860afc2acfd9cad353d8b7b"
+}
