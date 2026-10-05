@@ -323,6 +323,12 @@ family" guide, and its long-context scaling work.
         The candidate retains 68/128 positive-margin mismatches and costs 9.19%
         more latency. No production transfer is selected; quality and optimized
         batching remain open.
+      - [x] [Gemma26 stock dispatch diagnosis](experiments/gemma26-dispatch-observation/README.md),
+        with all 128 observed full heads byte-exact to untouched stock bookends.
+        Routing is fused in all 30 decode layers, but prefill refuses layers
+        28/29 at its memory gate; scaled reductions are fused throughout.
+        This identifies a recipe difference without attributing the full gap;
+        compound-policy tests, competitive batching and qualification remain open.
       - [x] [Dense31 solo checked-norm first screen](experiments/gemma-dense31-c1-norm/README.md),
         with frozen native full-head repeats and fresh matched original bookends.
         All 32 complete heads match byte-for-byte; short decode latency is 1.92%

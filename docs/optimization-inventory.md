@@ -262,6 +262,18 @@ increase, so fewer total misses do not qualify the transfer. Both optional
 routing/reduction policies are off. The older layer-28 allocation eligibility
 observation does not explain this result. No production policy is selected.
 
+The [actual Gemma26 stock dispatch observation](experiments/gemma26-dispatch-observation/README.md)
+preserves all 128 complete stock heads while logging routing/reduction gates.
+Stock selects all 30 routing and scaled-reduction fusions in four-row decode;
+each 64/65/66/67-row prefill refuses routing in layers 28 and 29 at the memory
+gate, while scaled reduction stays fused. The packed native screen above
+leaves both families off. These phase-specific observations identify another
+recipe difference, not its complete numerical cause or a production policy.
+Do not infer eligibility from the older 128-row observation, imitate incidental
+aliases, or adopt a layer whitelist. Future compound tests must account for
+the mixed prefill history. Routed products select MMVQ at decode and MMQ at
+prefill for the actual Q4_K/Q5_1/Q8_0 weights.
+
 The [actual-input scalar FFN replay](experiments/gemma-dense-ffn/README.md)
 checks dense31's layer-zero Q4_K gate/up and Q6_K down products at width 5,376.
 Observed original quantized GeGLU fusion, separate original products/GeGLU

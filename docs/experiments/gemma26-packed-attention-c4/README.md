@@ -7,6 +7,12 @@ The packed Gemma26 candidate still fails the original-reference arithmetic
 screen: 68 of 128 greedy choices differ, and paid latency is 9.19% above the
 reference bookend mean. It remains unselected.
 
+The later [stock dispatch observation](../gemma26-dispatch-observation/README.md)
+finds routing and scaled reduction selected in all 30 decode layers. Prefill
+selects every scaled reduction but refuses routing in layers 28 and 29.
+This identifies a recipe difference from the native policies below; it does
+not establish the complete cause of the remaining head gap or select a policy.
+
 This benchmark transfers the dense31 packing mechanism to the approved Gemma26
 Q4_K_M artifact at context 256, four one-row owners, 256-cell reads and four
 published heads. It changes local attention dispatch and local/global stream

@@ -1,0 +1,354 @@
+{
+  "host_graph_calls": 51,
+  "host_observation_records": 5387,
+  "host_graph_phase_counts": {
+    "64": 2,
+    "65": 2,
+    "66": 2,
+    "67": 2,
+    "4": 43
+  },
+  "host_evaluated_or_captured_calls": 12,
+  "host_graph_policy_calls": {
+    "allowed=0,update=0": 10,
+    "allowed=1,update=1": 2,
+    "allowed=1,update=0": 39
+  },
+  "complete_head_bytes": 134217728,
+  "complete_rows": 128,
+  "complete_head_sha256": {
+    "observed": "5808306e0f261896500bdf9f3b44d4b1d0f18b34ba99d976da15a916aa8ff164",
+    "old_a": "5808306e0f261896500bdf9f3b44d4b1d0f18b34ba99d976da15a916aa8ff164",
+    "old_b": "5808306e0f261896500bdf9f3b44d4b1d0f18b34ba99d976da15a916aa8ff164"
+  },
+  "actual_input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+  "claim": "host decisions only; no CUDA replay/kernel count or timing claim",
+  "per_evaluated_call_complete_layers": 30,
+  "evaluated_calls_by_phase": {
+    "decode4": 4,
+    "prefill64": 2,
+    "prefill65": 2,
+    "prefill66": 2,
+    "prefill67": 2
+  },
+  "phases": [
+    {
+      "phase": "decode4",
+      "routing_recognized": 120,
+      "routing_selected": 120,
+      "routing_memory_refusal_layers": [],
+      "routing_memory_refusals": 0,
+      "routing_structural_and_shape_passed": true,
+      "scaled_reduction_selected": 120,
+      "scaled_reduction_match_nodes": 17,
+      "product_dispatch_counts": [
+        {
+          "family": "MMF",
+          "routed": false,
+          "weight_type": "f32",
+          "host_observations": 120
+        },
+        {
+          "family": "MMVQ",
+          "routed": false,
+          "weight_type": "q8_0",
+          "host_observations": 824
+        },
+        {
+          "family": "MMVQ",
+          "routed": true,
+          "weight_type": "q4_K",
+          "host_observations": 120
+        },
+        {
+          "family": "MMVQ",
+          "routed": true,
+          "weight_type": "q5_1",
+          "host_observations": 116
+        },
+        {
+          "family": "MMVQ",
+          "routed": true,
+          "weight_type": "q8_0",
+          "host_observations": 4
+        }
+      ]
+    },
+    {
+      "phase": "prefill64",
+      "routing_recognized": 60,
+      "routing_selected": 56,
+      "routing_memory_refusal_layers": [
+        28,
+        29
+      ],
+      "routing_memory_refusals": 4,
+      "routing_structural_and_shape_passed": true,
+      "scaled_reduction_selected": 60,
+      "scaled_reduction_match_nodes": 17,
+      "product_dispatch_counts": [
+        {
+          "family": "CUBLAS",
+          "routed": false,
+          "weight_type": "f32",
+          "host_observations": 60
+        },
+        {
+          "family": "MMQ",
+          "routed": false,
+          "weight_type": "q8_0",
+          "host_observations": 410
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q4_K",
+          "host_observations": 60
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q5_1",
+          "host_observations": 58
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q8_0",
+          "host_observations": 2
+        },
+        {
+          "family": "MMVQ",
+          "routed": false,
+          "weight_type": "q8_0",
+          "host_observations": 2
+        }
+      ]
+    },
+    {
+      "phase": "prefill65",
+      "routing_recognized": 60,
+      "routing_selected": 56,
+      "routing_memory_refusal_layers": [
+        28,
+        29
+      ],
+      "routing_memory_refusals": 4,
+      "routing_structural_and_shape_passed": true,
+      "scaled_reduction_selected": 60,
+      "scaled_reduction_match_nodes": 17,
+      "product_dispatch_counts": [
+        {
+          "family": "CUBLAS",
+          "routed": false,
+          "weight_type": "f32",
+          "host_observations": 60
+        },
+        {
+          "family": "MMQ",
+          "routed": false,
+          "weight_type": "q8_0",
+          "host_observations": 410
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q4_K",
+          "host_observations": 60
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q5_1",
+          "host_observations": 58
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q8_0",
+          "host_observations": 2
+        },
+        {
+          "family": "MMVQ",
+          "routed": false,
+          "weight_type": "q8_0",
+          "host_observations": 2
+        }
+      ]
+    },
+    {
+      "phase": "prefill66",
+      "routing_recognized": 60,
+      "routing_selected": 56,
+      "routing_memory_refusal_layers": [
+        28,
+        29
+      ],
+      "routing_memory_refusals": 4,
+      "routing_structural_and_shape_passed": true,
+      "scaled_reduction_selected": 60,
+      "scaled_reduction_match_nodes": 17,
+      "product_dispatch_counts": [
+        {
+          "family": "CUBLAS",
+          "routed": false,
+          "weight_type": "f32",
+          "host_observations": 60
+        },
+        {
+          "family": "MMQ",
+          "routed": false,
+          "weight_type": "q8_0",
+          "host_observations": 410
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q4_K",
+          "host_observations": 60
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q5_1",
+          "host_observations": 58
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q8_0",
+          "host_observations": 2
+        },
+        {
+          "family": "MMVQ",
+          "routed": false,
+          "weight_type": "q8_0",
+          "host_observations": 2
+        }
+      ]
+    },
+    {
+      "phase": "prefill67",
+      "routing_recognized": 60,
+      "routing_selected": 56,
+      "routing_memory_refusal_layers": [
+        28,
+        29
+      ],
+      "routing_memory_refusals": 4,
+      "routing_structural_and_shape_passed": true,
+      "scaled_reduction_selected": 60,
+      "scaled_reduction_match_nodes": 17,
+      "product_dispatch_counts": [
+        {
+          "family": "CUBLAS",
+          "routed": false,
+          "weight_type": "f32",
+          "host_observations": 60
+        },
+        {
+          "family": "MMQ",
+          "routed": false,
+          "weight_type": "q8_0",
+          "host_observations": 410
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q4_K",
+          "host_observations": 60
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q5_1",
+          "host_observations": 58
+        },
+        {
+          "family": "MMQ",
+          "routed": true,
+          "weight_type": "q8_0",
+          "host_observations": 2
+        },
+        {
+          "family": "MMVQ",
+          "routed": false,
+          "weight_type": "q8_0",
+          "host_observations": 2
+        }
+      ]
+    }
+  ],
+  "routed_product_contracts": [
+    {
+      "weight_type": "q4_K",
+      "weight_ne": [
+        2816,
+        1408,
+        128,
+        1
+      ],
+      "input_ne": [
+        2816,
+        1,
+        "phase_rows",
+        1
+      ],
+      "output_ne": [
+        1408,
+        8,
+        "phase_rows",
+        1
+      ],
+      "decode_family": "MMVQ",
+      "prefill_family": "MMQ"
+    },
+    {
+      "weight_type": "q5_1",
+      "weight_ne": [
+        704,
+        2816,
+        128,
+        1
+      ],
+      "input_ne": [
+        704,
+        8,
+        "phase_rows",
+        1
+      ],
+      "output_ne": [
+        2816,
+        8,
+        "phase_rows",
+        1
+      ],
+      "decode_family": "MMVQ",
+      "prefill_family": "MMQ"
+    },
+    {
+      "weight_type": "q8_0",
+      "weight_ne": [
+        704,
+        2816,
+        128,
+        1
+      ],
+      "input_ne": [
+        704,
+        8,
+        "phase_rows",
+        1
+      ],
+      "output_ne": [
+        2816,
+        8,
+        "phase_rows",
+        1
+      ],
+      "decode_family": "MMVQ",
+      "prefill_family": "MMQ"
+    }
+  ],
+  "fused_product_observations": 0
+}

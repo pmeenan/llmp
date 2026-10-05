@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Gemma26 stock dispatch observations with byte-exact full-head controls:
+  routing is fused throughout four-owner decode and skips two layers during
+  prefill. Scaled reductions stay fused; model qualification remains open.
+
 - Dense31 8K comparisons with a matched ring-cache reference: all 32 decode
   choices agree and the final head is byte-exact. Prefill quality still differs;
   native prefill/decode take 16.20%/2.05% more time, leaving qualification open.

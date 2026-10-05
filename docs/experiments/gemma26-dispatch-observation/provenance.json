@@ -1,0 +1,277 @@
+{
+  "base": "2eb057476dea83d89a9bbc2453f799b0a759f609",
+  "recorded_utc": "2026-10-05T13:58:15.236395+00:00",
+  "original_source": {
+    "path": "/home/pmeenan/.local/share/jitllm/gemma26-dispatch-observation/ggml/src/ggml-cuda/ggml-cuda.cu",
+    "bytes": 236684,
+    "sha256": "523470d6604755b82d0208414ce40f1378941b10bc1349763bbdf02edaab9634"
+  },
+  "generated_source": {
+    "path": "/home/pmeenan/.local/share/jitllm/gemma26-dispatch-observation/controller.cu",
+    "bytes": 244265,
+    "sha256": "4c042fcd8a0f72c4dcb1cb4cffe018f45e309175bca073e11e86e4f732e534b2"
+  },
+  "controller_library": {
+    "path": "/home/pmeenan/.local/share/jitllm/gemma26-dispatch-observation/controller.so",
+    "bytes": 382088,
+    "sha256": "306e33c77c1293f9d99e3321ae6cf49e752631199969eb217ff9973b59990916"
+  },
+  "original_client": {
+    "path": "/home/pmeenan/.local/share/jitllm/gemma26-dispatch-observation/llama_joined",
+    "bytes": 76792,
+    "sha256": "01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61"
+  },
+  "original_client_source": {
+    "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma-joined-serving/llama_joined.cc",
+    "bytes": 7772,
+    "sha256": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e"
+  },
+  "original_client_headers": [
+    {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml-alloc.h",
+      "bytes": 3753,
+      "sha256": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23"
+    },
+    {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml-backend.h",
+      "bytes": 25374,
+      "sha256": "46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2"
+    },
+    {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml-cpp.h",
+      "bytes": 1652,
+      "sha256": "bc15ba002c68685df23faae42df0d2b3d58032011f88b649021ab92485862c72"
+    },
+    {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml-cpu.h",
+      "bytes": 7753,
+      "sha256": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e"
+    },
+    {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml-opt.h",
+      "bytes": 14040,
+      "sha256": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2"
+    },
+    {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/ggml.h",
+      "bytes": 115658,
+      "sha256": "9ac7ee3d3a957e5f7b21b104d3e3dc50b1b106f808f9d6735ead950450bfeec6"
+    },
+    {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/ggml/include/gguf.h",
+      "bytes": 11355,
+      "sha256": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4"
+    },
+    {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma26-packed-attention-c4/headers/include/llama.h",
+      "bytes": 84829,
+      "sha256": "fedb52ea9291c9900e637ed6ffec339919dd27c3dadc2c8cf216c552e0488dda"
+    }
+  ],
+  "sdk_receipt": {
+    "path": "/home/pmeenan/.local/share/jitllm/sdk/aarch64-c09daba6ac31edee/sdk.json",
+    "bytes": 4640,
+    "sha256": "fbbe4064d963188fe1f3915ee2c94d496bb1fa4432402d7fda9704f29a67150b"
+  },
+  "original_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+  "original_image_libraries": {
+    "libllama.so": "36f5cb5b9361fd7ce4c9c38ad7276367a39e753a2f4764d9aca952b29c5aba55",
+    "libggml.so": "f09875d0593d950f0b1f4f57803235cb06209f774c524c005fb192000d5d7418",
+    "libggml-base.so": "ed0a6a3f65472059789159569080d08e7f1dcc8bdd7a35d127efbd1b3f4e273e",
+    "libggml-cuda.so": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e"
+  },
+  "actual_input": {
+    "path": "/home/pmeenan/.local/share/jitllm/gemma26-dispatch-observation/ids.i32",
+    "bytes": 4096,
+    "sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610"
+  },
+  "artifact_metadata": [
+    {
+      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3/manifest.json",
+      "bytes": 6035,
+      "sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
+    },
+    {
+      "path": "/home/pmeenan/.local/share/jitllm/m3-artifacts/4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3/index.json",
+      "bytes": 1253283,
+      "sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171"
+    }
+  ],
+  "raw_size": 16947541728,
+  "approved_raw_sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
+  "payload_qualification": "payload identity inherits existing verified immutable approved assets; no rescan",
+  "pre_acquisition_receipt": {
+    "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/pre-observation.json",
+    "bytes": 336514,
+    "sha256": "0a563a31c32e3d10a58050e2bfd0e488782d914234fde5c69aa3c2c450962ada"
+  },
+  "pre_acquisition_diagnostic_sources": [
+    {
+      "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma26-dispatch-observation/PROTOCOL.md",
+      "bytes": 4062,
+      "sha256": "2354920219462fbd6da5d7ecb37558da3750e3d4ed70c42ca562bd484b6b7ed1"
+    },
+    {
+      "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma26-dispatch-observation/analyze.py",
+      "bytes": 10503,
+      "sha256": "b7a2df33d5273b80c4d22a631d1be25bf7f5806de132e3d36289d7dc176bb652"
+    },
+    {
+      "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma26-dispatch-observation/observe_controller.py",
+      "bytes": 10444,
+      "sha256": "19ba29b54535cb683113dc45aabba4a191f4327d60eb96318ac79086b5372011"
+    },
+    {
+      "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma26-dispatch-observation/prepare.py",
+      "bytes": 5407,
+      "sha256": "32215a49fbf506340a7e916aa9e9582bfccfbef8cf8ae4c8b1684270e3e67979"
+    },
+    {
+      "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma26-dispatch-observation/reference.sh",
+      "bytes": 3426,
+      "sha256": "783106673344852f255bff7eecc7206a38573124645da0d7ddc8c808d4ae2887"
+    },
+    {
+      "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma26-dispatch-observation/test_controls.py",
+      "bytes": 6704,
+      "sha256": "62034942349939d50c199fa9b902fb1cb550ceb23b663bf02388688c04325622"
+    }
+  ],
+  "source_closure_receipt": "Complete GGML header/source closure remains in the authenticated external pre-acquisition receipt.",
+  "task_tensorfold_entry": {
+    "path": "/tmp/jitllm-m35-coordination/gemma26-next-arithmetic-planning/tensorfold-entry.json",
+    "bytes": 647,
+    "sha256": "648ff86133a02a15d1ef8463c9984e2683bfb71b465f504fa454b1c5309d6b90"
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma26-observer-build1",
+      "final_state": "done",
+      "rc": 0,
+      "completed_utc": "2026-10-05T13:52:14.432000+00:00",
+      "steps": 2,
+      "steps_done": 2,
+      "log": {
+        "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/build1.log",
+        "bytes": 8843,
+        "sha256": "8c409405ebe8aae9ecf1261a6d5a88c15d1c72bb4b7e9da8556802e0b900b084"
+      }
+    },
+    {
+      "name": "m35-gemma26-observer-prepare1",
+      "final_state": "done",
+      "rc": 0,
+      "completed_utc": "2026-10-05T13:58:15.300000+00:00",
+      "steps": 2,
+      "steps_done": 2,
+      "log": {
+        "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/prepare1.log",
+        "bytes": 990,
+        "sha256": "912b5cee232990d86a8f3329db9b8d58b47b0a263cb0cf5b06f7c4d5563905c9"
+      }
+    },
+    {
+      "name": "m35-gemma26-observer-acquire1",
+      "final_state": "done",
+      "rc": 0,
+      "completed_utc": "2026-10-05T14:04:46.609000+00:00",
+      "steps": 1,
+      "steps_done": 1,
+      "log": {
+        "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/acquire1.log",
+        "bytes": 2248306,
+        "sha256": "9fa0af8629105018980b64d5a6eb0d89f31b4b679b5003b1fdcc4ac2df584b68"
+      }
+    },
+    {
+      "name": "m35-gemma26-observer-analysis1",
+      "final_state": "failed",
+      "rc": 1,
+      "completed_utc": "2026-10-05T14:05:04.239000+00:00",
+      "steps": 1,
+      "steps_done": 0,
+      "log": {
+        "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/analysis1.log",
+        "bytes": 1421,
+        "sha256": "dcad56c9af9a0f6f7504ee09aa6e80cf067ced0317e1265c09f46f9c483d6245"
+      }
+    },
+    {
+      "name": "m35-gemma26-observer-analysis2",
+      "final_state": "failed",
+      "rc": 1,
+      "completed_utc": "2026-10-05T14:06:59.349000+00:00",
+      "steps": 2,
+      "steps_done": 1,
+      "log": {
+        "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/analysis2.log",
+        "bytes": 1841,
+        "sha256": "4967514f8dfc70a486100ef273f1b25a6abf78f214dad2b7bf09f1858717b725"
+      }
+    },
+    {
+      "name": "m35-gemma26-observer-analysis3",
+      "final_state": "done",
+      "rc": 0,
+      "completed_utc": "2026-10-05T14:26:17.636000+00:00",
+      "steps": 3,
+      "steps_done": 3,
+      "log": {
+        "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/analysis3.log",
+        "bytes": 1445,
+        "sha256": "d52ff61636f4238038880dc2e5a7df79402aac896cc3549dfd8824a5eb93d1f0"
+      }
+    },
+    {
+      "name": "m35-gemma26-observer-coverage-final",
+      "final_state": "failed",
+      "rc": 1,
+      "completed_utc": "2026-10-05T14:27:50.241000+00:00",
+      "steps": 6,
+      "steps_done": 0,
+      "log": {
+        "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/coverage-final.log",
+        "bytes": 412,
+        "sha256": "3cd713933f3341d140ef76b0902bfa53c2a12e254e5abac70b52ef64b80b6489"
+      }
+    },
+    {
+      "name": "m35-gemma26-observer-coverage-final2",
+      "final_state": "done",
+      "rc": 0,
+      "completed_utc": "2026-10-05T14:28:47+00:00",
+      "steps": 4,
+      "steps_done": 4,
+      "log": {
+        "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/coverage-final2.log",
+        "bytes": 3468,
+        "sha256": "ffdf95dcd9b73fa6485536178284663964ee905141ef92d819e098fc08d5394f"
+      }
+    }
+  ],
+  "analysis_success": {
+    "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/analysis3.json",
+    "bytes": 2322070,
+    "sha256": "0da9c223056996a04a2bead929d345f7789d11fcd87766596f08104edf6777e6"
+  },
+  "final_per_call_coverage": {
+    "path": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/coverage-final.json",
+    "bytes": 313,
+    "sha256": "d203ba5a7f63195e462e8e2da2bc4d1863ca705891d895e6a8b2db4a56e92cc2"
+  },
+  "analysis_lineage": {
+    "pre_analyzer_sha256": "b7a2df33d5273b80c4d22a631d1be25bf7f5806de132e3d36289d7dc176bb652",
+    "successful_analysis3_analyzer_sha256": "6d513451d4851f19564c8697aef82a9823062bd123596f389e2f1cc5db1229b4",
+    "final_analyzer_sha256": "8f426832ecf2f4f3250ce773ed6876b86650f8cd42f086cf8aeaeb79c5878795",
+    "changes": "After acquisition: exclude equals signs in tensor-role names; then require complete layer coverage in every evaluated graph call. Metadata-only final aggregation reproduces analysis3 unchanged. Protocol subsequently clarifies integer pointer-kernel compilation."
+  },
+  "failure_lineage": {
+    "analysis1": "Tensor-role regex confused scalar scale=1 with the later scale tensor descriptor; whole-head authentication had already passed.",
+    "analysis2": "Queued before corrected checksum sync completed; remote old parser repeated the same refusal.",
+    "coverage-final": "SHA-check command contained a literal newline and was split by the step-file parser; refused before any Python analysis.",
+    "preserved_measured_sources": "/tmp/jitllm-m35-coordination/gemma26-dispatch-observation-raw/measured-six-sources",
+    "inference_repetitions": 1,
+    "controller_changes_after_acquisition": false
+  },
+  "supervisor_timestamp_timezone": "Raw supervisor timestamps are America/New_York, UTC-04:00; completion timestamps above are converted from recorded Unix epochs to UTC."
+}
