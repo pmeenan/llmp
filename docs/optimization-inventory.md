@@ -253,6 +253,15 @@ performance lead; no production policy is selected. Gemma26 needs its own
 head-count/geometry controls before transfer, and other contexts, query shapes,
 assistants and representative quality remain unqualified.
 
+The [actual-input scalar FFN replay](experiments/gemma-dense-ffn/README.md)
+checks dense31's layer-zero Q4_K gate/up and Q6_K down products at width 5,376.
+Observed original quantized GeGLU fusion, separate original products/GeGLU
+and native primitives match all 21,504 activation and 5,376 down-output values
+byte-for-byte. This input rejects that arithmetic-gap lead; it does not qualify
+other FFN inputs, select fusion or explain the whole C1 gap. The short component
+timing differences are within reference bookend movement. Standalone binders
+must preserve the checked readable-tail marker for these padded Q4_K rows.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

@@ -309,6 +309,23 @@ if(JITLLM_CUDA)
     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
     "LINKER:--wrap=_ZN6jitllm7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
     "LINKER:--wrap=_ZN6jitllm7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm")
+
+if(JITLLM_CUDA)
+  # Manual scalar layer0 FFN acquisition/replay; no production dispatch change.
+  add_executable(jitllm_gemma_dense_ffn_capture gemma_dense_ffn_capture.cc
+                 gemma_dense_ffn_capture_wrap.cc)
+  target_include_directories(jitllm_gemma_dense_ffn_capture SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_gemma_dense_ffn_capture PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_dense_ffn_capture PRIVATE
+      "LINKER:--wrap=_ZN6jitllm7kernels4ggml10MulMatVecQERNS1_13LaunchContextEP11ggml_tensor"
+      "LINKER:--wrap=_ZNK6jitllm6engine12PagedWeights16resource_addressEj"
+      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+  add_executable(jitllm_gemma_dense_ffn_replay gemma_dense_ffn_replay.cc)
+  target_link_libraries(jitllm_gemma_dense_ffn_replay PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_dense_ffn_replay PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+endif()
   add_executable(jitllm_gemma_joined gemma_joined.cc)
   target_link_libraries(jitllm_gemma_joined PRIVATE jitllm_engine jitllm_warnings)
   target_link_options(jitllm_gemma_joined PRIVATE

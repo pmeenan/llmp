@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Dense31 scalar FFN replay with actual captured inputs and observed reference
+  fusion. Native, fused and unfused paths produce identical complete activation
+  and down-projection bytes for the tested input; broader qualification remains open.
+
 - Dense31 packed C4 attention diagnosis with byte-exact complete heads against
   fresh llama.cpp. Packing costs 12.2774% more latency; production selection
   and Gemma26 transfer remain open.

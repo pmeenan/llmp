@@ -1,0 +1,335 @@
+{
+  "comparison": {
+    "authenticated_linked_receipts": {
+      "capture_freeze": {
+        "bytes": 3276,
+        "sha256": "de28c663620daf0daa9b2db8c85f6b1c4e402b0becf56d7b8124bf66a88a2dba"
+      },
+      "capture_source_freeze": {
+        "bytes": 6390,
+        "sha256": "f36ba02f1a17792757b81d0b360eed953deca6087c156dff05b768a72fd4267d"
+      },
+      "source_freeze": {
+        "bytes": 6392,
+        "sha256": "1daede94866e2f216ab3dde767650725dee278d8de10f087194644eaa37d915c"
+      }
+    },
+    "authenticated_native_own_freeze": {
+      "bytes": 1729,
+      "sha256": "c8fc23d45d69079f0a048887d32cd472897592121295f0c0fef34565e6be9b6f"
+    },
+    "comparisons_to_original_fused": {
+      "native-bookend": {
+        "activation": {
+          "byte_exact": true,
+          "coordinate_argmax_matches": true,
+          "different_f32_bit_patterns": 0,
+          "maximum_raw_delta": 0.0,
+          "reference_energy_nmse": 0.0,
+          "reference_energy_zero": false,
+          "reference_winner_over_candidate_coordinate_margin": 0.0,
+          "values": 21504
+        },
+        "down": {
+          "byte_exact": true,
+          "coordinate_argmax_matches": true,
+          "different_f32_bit_patterns": 0,
+          "maximum_raw_delta": 0.0,
+          "reference_energy_nmse": 0.0,
+          "reference_energy_zero": false,
+          "reference_winner_over_candidate_coordinate_margin": 0.0,
+          "values": 5376
+        }
+      },
+      "original-unfused": {
+        "activation": {
+          "byte_exact": true,
+          "coordinate_argmax_matches": true,
+          "different_f32_bit_patterns": 0,
+          "maximum_raw_delta": 0.0,
+          "reference_energy_nmse": 0.0,
+          "reference_energy_zero": false,
+          "reference_winner_over_candidate_coordinate_margin": 0.0,
+          "values": 21504
+        },
+        "down": {
+          "byte_exact": true,
+          "coordinate_argmax_matches": true,
+          "different_f32_bit_patterns": 0,
+          "maximum_raw_delta": 0.0,
+          "reference_energy_nmse": 0.0,
+          "reference_energy_zero": false,
+          "reference_winner_over_candidate_coordinate_margin": 0.0,
+          "values": 5376
+        }
+      }
+    },
+    "controls": {
+      "native-bookend": {
+        "first": {
+          "bytes": 107520,
+          "sha256": "d1063198d3858f31ebb4271f14d9c3e73528a310f664ce2f3be65f4a5a6f7517"
+        },
+        "fresh": {
+          "bytes": 107520,
+          "sha256": "e4c2ccdf9cf43d654f36191dd0479110b76617a244b5d84abcfb32cda77dfaeb"
+        },
+        "fresh_changed": true,
+        "repeat_byte_exact": true
+      },
+      "original-first": {
+        "first": {
+          "bytes": 107520,
+          "sha256": "d1063198d3858f31ebb4271f14d9c3e73528a310f664ce2f3be65f4a5a6f7517"
+        },
+        "fresh": {
+          "bytes": 107520,
+          "sha256": "e4c2ccdf9cf43d654f36191dd0479110b76617a244b5d84abcfb32cda77dfaeb"
+        },
+        "fresh_changed": true,
+        "repeat_byte_exact": true
+      },
+      "original-repeat": {
+        "first": {
+          "bytes": 107520,
+          "sha256": "d1063198d3858f31ebb4271f14d9c3e73528a310f664ce2f3be65f4a5a6f7517"
+        },
+        "fresh": {
+          "bytes": 107520,
+          "sha256": "e4c2ccdf9cf43d654f36191dd0479110b76617a244b5d84abcfb32cda77dfaeb"
+        },
+        "fresh_changed": true,
+        "repeat_byte_exact": true
+      },
+      "original-unfused": {
+        "first": {
+          "bytes": 107520,
+          "sha256": "d1063198d3858f31ebb4271f14d9c3e73528a310f664ce2f3be65f4a5a6f7517"
+        },
+        "fresh": {
+          "bytes": 107520,
+          "sha256": "e4c2ccdf9cf43d654f36191dd0479110b76617a244b5d84abcfb32cda77dfaeb"
+        },
+        "fresh_changed": true,
+        "repeat_byte_exact": true
+      }
+    },
+    "limits": "One isolated input/layer. Coordinate argmax is not vocabulary quality. No quality or performance adoption gate; timings are untraced and include full activation/down publication.",
+    "native_latency_delta_percent_vs_original_mean": -0.2191177614173978,
+    "origin": "Dense31 scalar layer0 native input; full 21,504-value activation and 5,376-value down output.",
+    "original_bookend_mean_seconds": 0.0392663285,
+    "original_bookend_span_percent_of_mean": 1.0503426619068748,
+    "paid_seconds_32_chains": {
+      "A0": 0.039104753,
+      "A_first": 0.039472544,
+      "A_repeat": 0.039060113,
+      "B": 0.039180289
+    },
+    "schema": 1,
+    "separate_original_latency_delta_percent_vs_original_mean": -0.41148614136410355
+  },
+  "launch_observation": {
+    "arms": {
+      "A": {
+        "complete_traced_first_repeat_fresh_byte_exact_to_untraced": true,
+        "completion": {
+          "bytes": 61,
+          "sha256": "3f05dc363c3c5ed0ec27f80b52cc7271e9cf567fd9a42cba7f110bac006ab283"
+        },
+        "kernels": [
+          {
+            "block": [
+              256,
+              1,
+              1
+            ],
+            "demangled_name": "quantize_q8_1(const float *, void *, long, long, long, long, long, unsigned int, uint3)",
+            "dynamic_shared_bytes": 0,
+            "family": "Q8_1_input_preparation",
+            "grid": [
+              22,
+              1,
+              1
+            ],
+            "observed_kernel_events": 1,
+            "registers_per_thread": 24,
+            "static_shared_bytes": 0
+          },
+          {
+            "block": [
+              256,
+              1,
+              1
+            ],
+            "demangled_name": "quantize_q8_1(const float *, void *, long, long, long, long, long, unsigned int, uint3)",
+            "dynamic_shared_bytes": 0,
+            "family": "Q8_1_input_preparation",
+            "grid": [
+              84,
+              1,
+              1
+            ],
+            "observed_kernel_events": 1,
+            "registers_per_thread": 24,
+            "static_shared_bytes": 0
+          },
+          {
+            "block": [
+              32,
+              4,
+              1
+            ],
+            "demangled_name": "void mul_mat_vec_q<(ggml_type)12, (int)1, (bool)1, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "dynamic_shared_bytes": 0,
+            "family": "Q4_K_fused_GeGLU",
+            "grid": [
+              21504,
+              1,
+              1
+            ],
+            "observed_kernel_events": 1,
+            "registers_per_thread": 48,
+            "static_shared_bytes": 768
+          },
+          {
+            "block": [
+              32,
+              8,
+              1
+            ],
+            "demangled_name": "void mul_mat_vec_q<(ggml_type)14, (int)1, (bool)0, (bool)0, (bool)1>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "dynamic_shared_bytes": 0,
+            "family": "Q6_K_down",
+            "grid": [
+              5376,
+              1,
+              1
+            ],
+            "observed_kernel_events": 1,
+            "registers_per_thread": 40,
+            "static_shared_bytes": 896
+          }
+        ],
+        "observed_cuda_graph_launch_calls": 76,
+        "sqlite_export": {
+          "bytes": 331776,
+          "sha256": "b907430ad9303e114fa269b05dad152ea60e66a3ef87931832a5cc4b4dda87b6"
+        },
+        "trace_report": {
+          "bytes": 59507,
+          "sha256": "2e020e7621f9932082fd46d945bf40f02cd5fa5de0e0666a999917252aa4b667"
+        }
+      },
+      "A0": {
+        "complete_traced_first_repeat_fresh_byte_exact_to_untraced": true,
+        "completion": {
+          "bytes": 61,
+          "sha256": "3f05dc363c3c5ed0ec27f80b52cc7271e9cf567fd9a42cba7f110bac006ab283"
+        },
+        "kernels": [
+          {
+            "block": [
+              256,
+              1,
+              1
+            ],
+            "demangled_name": "quantize_q8_1(const float *, void *, long, long, long, long, long, unsigned int, uint3)",
+            "dynamic_shared_bytes": 0,
+            "family": "Q8_1_input_preparation",
+            "grid": [
+              22,
+              1,
+              1
+            ],
+            "observed_kernel_events": 2,
+            "registers_per_thread": 24,
+            "static_shared_bytes": 0
+          },
+          {
+            "block": [
+              256,
+              1,
+              1
+            ],
+            "demangled_name": "quantize_q8_1(const float *, void *, long, long, long, long, long, unsigned int, uint3)",
+            "dynamic_shared_bytes": 0,
+            "family": "Q8_1_input_preparation",
+            "grid": [
+              84,
+              1,
+              1
+            ],
+            "observed_kernel_events": 1,
+            "registers_per_thread": 24,
+            "static_shared_bytes": 0
+          },
+          {
+            "block": [
+              32,
+              4,
+              1
+            ],
+            "demangled_name": "void mul_mat_vec_q<(ggml_type)12, (int)1, (bool)0, (bool)0, (bool)0>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "dynamic_shared_bytes": 0,
+            "family": "Q4_K_separate_product",
+            "grid": [
+              21504,
+              1,
+              1
+            ],
+            "observed_kernel_events": 2,
+            "registers_per_thread": 56,
+            "static_shared_bytes": 384
+          },
+          {
+            "block": [
+              32,
+              8,
+              1
+            ],
+            "demangled_name": "void mul_mat_vec_q<(ggml_type)14, (int)1, (bool)0, (bool)0, (bool)1>(const void *, const void *, const int *, ggml_cuda_mm_fusion_args_device, float *, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, uint3, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "dynamic_shared_bytes": 0,
+            "family": "Q6_K_down",
+            "grid": [
+              5376,
+              1,
+              1
+            ],
+            "observed_kernel_events": 1,
+            "registers_per_thread": 40,
+            "static_shared_bytes": 896
+          },
+          {
+            "block": [
+              256,
+              1,
+              1
+            ],
+            "demangled_name": "void unary_gated_op_kernel<&op_gelu, float>(const T2 *, const T2 *, T2 *, long, long, long, long)",
+            "dynamic_shared_bytes": 0,
+            "family": "separate_GeGLU",
+            "grid": [
+              84,
+              1,
+              1
+            ],
+            "observed_kernel_events": 1,
+            "registers_per_thread": 18,
+            "static_shared_bytes": 0
+          }
+        ],
+        "observed_cuda_graph_launch_calls": 152,
+        "sqlite_export": {
+          "bytes": 352256,
+          "sha256": "a09e96d02b271e1c5efcfe178dd3d587283c054ac7a10d83f44254287042f1b6"
+        },
+        "trace_report": {
+          "bytes": 65755,
+          "sha256": "a1f306e7d8102609d2c1d9fe051131e8de7c1cb3621eaf18bcc8cde66a5e0679"
+        }
+      }
+    },
+    "limits": "Default graph-level trace includes eager kernels and graph launch calls; event counts are not total replay kernel launches. No trace duration enters paid timings.",
+    "schema": 1
+  }
+}

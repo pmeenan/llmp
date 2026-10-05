@@ -313,6 +313,11 @@ family" guide, and its long-context scaling work.
         original bookends. The joint attention dispatch/stream geometry change
         makes all 128 complete heads byte-exact, but costs 12.2774% more latency.
         Copy-cost optimization, Gemma26 transfer and broader qualification remain open.
+      - [x] [Dense31 actual-input scalar FFN diagnosis](experiments/gemma-dense-ffn/README.md),
+        with exact capture/replay controls, observed original fused/separate
+        launches and matched component bookends. All complete activation/down
+        values match; the fusion-gap lead is rejected for this layer-zero input.
+        Other inputs/layers, C1 model quality and production selection remain open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.
