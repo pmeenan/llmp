@@ -427,6 +427,16 @@ are not additive with the outer phases or evidence of active GPU arithmetic.
 Attention occupancy queries and execution-plan identity construction remain
 unmeasured binding subcomponents; no new optimization is selected here.
 
+The [per-bind wrapper cache](experiments/gemma-binding-wrapper-cache/README.md)
+removes repeated declaration validation within the shared GGML executor. Keys
+are immutable resolved registry pointers, values are prior bound step indices;
+every occurrence still validates current operands, arity and lanes. Temporary
+metadata is bounded within the existing per-node binding allowance. Measured
+Gemma31/26 binding falls 73.98%/69.29%, with exact heads/state and focused
+late-failure, stale-identity and capture controls. Qwen/DeepSeek share this
+executor change; their model speed is unmeasured here. Wall timing favors the
+candidate but has material spread, and competitive/quality gates stay open.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

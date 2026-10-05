@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Shared GGML execution reuses validated kernel wrappers within each bind,
+  retaining fresh descriptor, arity and lane checks. Gemma31/26 binding falls
+  73.98%/69.29% with exact prior heads/state; reference parity remains open.
+
 - Checked plain RMSNorm/Mul is enabled by default for both approved Gemmas.
   Ordinary off/on controls retain exact complete heads, initialized state and
   continuations; other experimental arithmetic flags remain opt-ins.

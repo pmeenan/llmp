@@ -45,6 +45,7 @@
 #include <print>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -77,6 +78,111 @@ using jitllm::base::Bytes;
 using jitllm::catalog::ExtentId;
 using jitllm::catalog::MemoryClass;
 using jitllm::catalog::Recovery;
+
+// Binding checks descriptors only; these aligned, distinct addresses are never
+// dereferenced or submitted. Repeated declarations must not cache their operands.
+class GgmlBindingTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    auto created = kg::TensorArena::Create(24);
+    ASSERT_TRUE(created.has_value());
+    arena_.emplace(std::move(*created));
+  }
+  ggml_tensor* Bind(ggml_tensor* tensor) {
+    kg::TensorArena::Bind(tensor, next_);
+    next_ += 65536;
+    return tensor;
+  }
+  std::optional<kg::TensorArena> arena_;
+  std::uint64_t next_ = 0x1000000000ULL;
+};
+
+TEST_F(GgmlBindingTest, RepeatedMixedWrappersCheckEveryOccurrenceAndEveryBind) {
+  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  ASSERT_TRUE(registry.has_value());
+  auto* c = arena_->context();
+  kg::GraphPlan plan;
+  ggml_tensor *last_mul = nullptr, *last_add = nullptr;
+  for (int i = 0; i < 2; ++i) {
+    auto* x = Bind(ggml_new_tensor_2d(c, GGML_TYPE_F32, 32, 2));
+    auto* w = Bind(ggml_new_tensor_1d(c, GGML_TYPE_F32, 32));
+    auto* norm = Bind(ggml_rms_norm(c, x, 1e-6f));
+    auto* mul = Bind(ggml_mul(c, norm, w));
+    auto* add = Bind(ggml_add(c, mul, x));
+    plan.steps.push_back({.operation = jitllm::execution::Operation::kRmsNormMul,
+                          .implementation = kg::kRmsNormMulFused,
+                          .nodes = {norm, mul}});
+    plan.steps.push_back({.operation = jitllm::execution::Operation::kAdd,
+                          .implementation = kg::kAddName,
+                          .nodes = {add}});
+    last_mul = mul;
+    last_add = add;
+  }
+  ASSERT_TRUE(kg::BoundGraph::Bind(*registry, plan).has_value());
+  const auto rejected_at = [&](std::string_view step) {
+    auto bound = kg::BoundGraph::Bind(*registry, plan);
+    ASSERT_FALSE(bound.has_value());
+    EXPECT_EQ(bound.error().error, kg::KernelError::kRejected);
+    EXPECT_NE(bound.error().detail.find(step), std::string::npos);
+  };
+  last_mul->type = GGML_TYPE_I32;
+  rejected_at("step 2");
+  last_mul->type = GGML_TYPE_F32;
+  plan.steps[2].nodes.pop_back();
+  rejected_at("step 2: RMSNorm-mul takes two nodes");
+  plan.steps[2].nodes.push_back(last_mul);
+  last_add->type = GGML_TYPE_I32;
+  rejected_at("step 3");
+  last_add->type = GGML_TYPE_F32;
+  plan.steps[3].nodes.clear();
+  rejected_at("step 3");
+  plan.steps[3].nodes.push_back(last_add);
+  EXPECT_TRUE(kg::BoundGraph::Bind(*registry, plan).has_value());
+
+  for (const auto name : {kg::kRmsNormMulFused, kg::kAddName}) {
+    auto declarations = kg::Implementations();
+    for (auto& declaration : declarations) {
+      if (declaration.name == name) declaration.revision = "stale binding declaration";
+    }
+    auto stale = jitllm::execution::Registry::Create(std::move(declarations));
+    ASSERT_TRUE(stale.has_value());
+    auto rejected = kg::BoundGraph::Bind(*stale, plan);
+    ASSERT_FALSE(rejected.has_value());
+    EXPECT_EQ(rejected.error().error, kg::KernelError::kRejected);
+    EXPECT_TRUE(kg::BoundGraph::Bind(*registry, plan).has_value());
+  }
+}
+
+TEST_F(GgmlBindingTest, RepeatedCublasWrapperStillChecksTheLaterLaneAndOperands) {
+  auto registry = jitllm::execution::Registry::Create(kg::Implementations());
+  ASSERT_TRUE(registry.has_value());
+  auto* c = arena_->context();
+  kg::GraphPlan plan;
+  ggml_tensor* last = nullptr;
+  for (int i = 0; i < 2; ++i) {
+    auto* w = Bind(ggml_new_tensor_2d(c, GGML_TYPE_F32, 32, 16));
+    auto* x = Bind(ggml_new_tensor_2d(c, GGML_TYPE_F32, 32, 2));
+    last = Bind(ggml_mul_mat(c, w, x));
+    plan.steps.push_back({.operation = jitllm::execution::Operation::kMatMul,
+                          .implementation = kg::kMulMatCublas,
+                          .nodes = {last}});
+  }
+  ASSERT_TRUE(kg::BoundGraph::Bind(*registry, plan).has_value());
+  plan.steps[1].lane = 1;
+  auto lane = kg::BoundGraph::Bind(*registry, plan);
+  ASSERT_FALSE(lane.has_value());
+  EXPECT_EQ(lane.error().error, kg::KernelError::kRejected);
+  EXPECT_NE(lane.error().detail.find("step 1"), std::string::npos);
+  EXPECT_NE(lane.error().detail.find("borrows cuBLAS"), std::string::npos);
+  plan.steps[1].lane = 0;
+  last->type = GGML_TYPE_I32;
+  auto operands = kg::BoundGraph::Bind(*registry, plan);
+  ASSERT_FALSE(operands.has_value());
+  EXPECT_EQ(operands.error().error, kg::KernelError::kRejected);
+  EXPECT_NE(operands.error().detail.find("step 1"), std::string::npos);
+  last->type = GGML_TYPE_F32;
+  EXPECT_TRUE(kg::BoundGraph::Bind(*registry, plan).has_value());
+}
 
 constexpr std::uint64_t kExtent = ts::kPagedExtent;
 constexpr std::int64_t kWidth = 512;  // quantized rows are whole 512-element steps

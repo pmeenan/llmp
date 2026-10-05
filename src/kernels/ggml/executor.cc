@@ -171,12 +171,24 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
   }
   std::vector<Step> steps;
   steps.reserve(plan.steps.size());
+  // A resolved registry is immutable for this call. Validate each distinct
+  // declaration once; every occurrence still checks its fresh descriptors.
+  // The two-word entries borrow wrappers already owned by steps, and fit the
+  // runner's per-node binding allowance. Small plans reserve only their bound.
+  using CachedWrapper = std::pair<const execution::Implementation*, std::size_t>;
+  static_assert(sizeof(CachedWrapper) <= 16);
+  std::vector<CachedWrapper> wrappers;
+  wrappers.reserve(std::min(plan.steps.size(), execution::Registry::kMaxImplementations));
   for (std::size_t i = 0; i < plan.steps.size(); ++i) {
     const PlanStep& planned = plan.steps[i];
     const execution::Implementation& implementation = bound->at(i);
+    const auto cached = std::ranges::find(wrappers, &implementation, &CachedWrapper::first);
     std::vector<const ggml_tensor*> view(planned.nodes.begin(), planned.nodes.end());
     if (planned.operation == execution::Operation::kRmsNormMul) {
-      auto kernel = RmsNormMulKernel::Bind(implementation);
+      auto kernel = cached == wrappers.end()
+                        ? RmsNormMulKernel::Bind(implementation)
+                        : std::expected<RmsNormMulKernel, KernelFailure>(
+                              std::get<RmsNormMulKernel>(steps[cached->second].kernel));
       if (!kernel) {
         return std::unexpected(kernel.error());
       }
@@ -188,9 +200,13 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
                                     Describe(planned.nodes)));
       }
       steps.push_back({.kernel = *kernel, .nodes = planned.nodes, .lane = planned.lane});
+      if (cached == wrappers.end()) wrappers.emplace_back(&implementation, steps.size() - 1);
       continue;
     }
-    auto kernel = Kernel::Bind(implementation);
+    auto kernel =
+        cached == wrappers.end()
+            ? Kernel::Bind(implementation)
+            : std::expected<Kernel, KernelFailure>(std::get<Kernel>(steps[cached->second].kernel));
     if (!kernel) {
       return std::unexpected(kernel.error());
     }
@@ -205,6 +221,7 @@ std::expected<BoundGraph, KernelFailure> BoundGraph::Bind(const execution::Regis
                                   kernel->name(), planned.lane));
     }
     steps.push_back({.kernel = *kernel, .nodes = planned.nodes, .lane = planned.lane});
+    if (cached == wrappers.end()) wrappers.emplace_back(&implementation, steps.size() - 1);
   }
   return BoundGraph(std::move(*bound), std::move(steps), plan.regions);
 }

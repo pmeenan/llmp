@@ -36,8 +36,14 @@ magnitude and no fresh reference comparison.
 The [current post-lookahead phases](../gemma-current-phases/README.md) narrow
 serialized work to roughly 175 ms binding, 17 ms coverage and 5 ms insertion
 across 32 plans, plus 162–185 ms state growth. Those nested binding intervals
-already belong to planning/publication; they are not additive. The contribution
-of individual binding callees is still unmeasured.
+already belong to planning/publication; they are not additive. The subsequent
+[per-bind wrapper cache](../gemma-binding-wrapper-cache/README.md) identifies
+repeated declaration validation as a material contributor: 31B binding falls
+174.483 to 45.828 / 44.989 ms, and 26B 39.755 to 12.320 / 12.097 ms. Fresh
+per-step operand, arity and lane checks remain. Full heads, initialized state
+and continuations remain native-exact; seven focused controls pass. The wall
+screens favor the change with material spread and no fresh reference comparison.
+State growth, execution variance and broader qualification remain open.
 M3.5 remains incomplete. The source-use optimization landed as `5ef7aac` after
 1,700 Spark tests passed without failures or skips, including 311 GPU and 57
 model tests. Both Sparks were checked idle at the pause.

@@ -425,6 +425,12 @@ family" guide, and its long-context scaling work.
         nested within planning/publication. State growth costs 162–185 ms;
         execution variance remains. Individual binding callees and parity
         are not attributed or qualified by these diagnostic counters.
+      - [x] [Per-bind validated wrapper reuse](experiments/gemma-binding-wrapper-cache/README.md):
+        immutable registry wrappers are reused within each bind, with fresh
+        per-step descriptor, arity and lane checks. Gemma31/26 binding falls
+        73.98%/69.29%, with exact prior heads/state and seven focused controls.
+        Wall screens favor the change with material candidate spread; no
+        sustained speed, corpus quality or reference parity claim is made.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.
