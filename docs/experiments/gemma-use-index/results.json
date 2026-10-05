@@ -1,0 +1,266 @@
+{
+  "source_base": "c1eebb9b2ddab78a238b4df0ab9790c899f1d3b0",
+  "algorithm": "Call-local exact source-edge counts; selected policies and kernel arithmetic unchanged.",
+  "native_binary_sha256": "7bdddbcc6a64dbdb4531698fcef84902c5ca7bc900a9556a11b8f3b241f54c76",
+  "before_binary_sha256": "2331f6467e3e1ae7fd55914450d67111cd699693b5918186313fdb0f5bc98e74",
+  "native_helper_sha256": "f241f194df4949d22c92177b2ae6746e02c280d08fd0a11c6f46a230c6c7a425",
+  "build_receipt_sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d",
+  "sdk": "aarch64-c09daba6ac31edee",
+  "reference_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+  "reference_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+  "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+  "tensorfold": {
+    "utc": "2026-10-05T19:25:15.192329+00:00",
+    "pin": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "primary": "https://github.com/ashhart/TensorFold",
+    "files": {
+      "src/tensorfold/__init__.py": {
+        "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+      },
+      "docs/recipes/gemma-4.md": {
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      }
+    },
+    "version": "0.6.5",
+    "recipe_scope": "Gemma26 MLX; no dense31 CUDA recipe"
+  },
+  "focused_checks": {
+    "passed": 86,
+    "failed": 0,
+    "skipped": 0
+  },
+  "profiles": {
+    "26": {
+      "host": "spark-b",
+      "policy": "all",
+      "max_rows": 1024,
+      "prefill_seconds": {
+        "before": "2.79087",
+        "candidate_first_repeat": [
+          "2.71533",
+          "2.71006"
+        ],
+        "reference_bookends": [
+          "2.41486",
+          "2.41293"
+        ]
+      },
+      "decode_seconds": {
+        "before": "0.685577",
+        "candidate_first_repeat": [
+          "0.686596",
+          "0.690035"
+        ],
+        "reference_bookends": [
+          "0.682113",
+          "0.686947"
+        ]
+      },
+      "candidate_vs_before_percent": {
+        "prefill_seconds": -2.8010978655401364,
+        "decode_seconds": 0.3994445554620363
+      },
+      "candidate_vs_reference_percent": {
+        "prefill_seconds": 12.378334600303663,
+        "decode_seconds": 0.553007172804687
+      },
+      "old_candidate_retained_two_heads_initialized_state_32choices_exact": true,
+      "candidate_own_repeat_exact": true,
+      "native_state_bytes": 592445440,
+      "native_state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed",
+      "native_head_sha256": {
+        "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+        "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+      },
+      "reference_head_sha256": {
+        "prefill.f32": "254e6cf57dea36d5da3be3e0d53157bb886924b61e6493050daa147e82a2eaa3",
+        "final.f32": "48c4a6123708f182d28e6063f124b6b5facdbda881046be6b1f1e239d652f2a6"
+      },
+      "reference_repeat_exact": true,
+      "known_crossengine_retained_heads": {
+        "argmax_mismatches_32": 0,
+        "heads": {
+          "prefill.f32": {
+            "byte_exact": false,
+            "max_raw_delta": 0.8572092056274414,
+            "head_argmax_equal": true
+          },
+          "final.f32": {
+            "byte_exact": false,
+            "max_raw_delta": 0.22439956665039062,
+            "head_argmax_equal": true
+          }
+        }
+      },
+      "counts": {
+        "prefill_rows": "8192",
+        "prefill_chunks": "8",
+        "intermediate_heads": "7",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "chunk": "1024",
+        "masks": "device",
+        "normmul": "normmul-off",
+        "prefill_norm_fused": "0",
+        "prefill_norm_rope": "60",
+        "prefill_norm_add": "90",
+        "prefill_gemma_route": "30",
+        "prefill_gemma_reduce": "30",
+        "gemma_route": "30",
+        "gemma_reduce": "30",
+        "shared_vecq": "0",
+        "row_products": "0",
+        "norm_fused": "0",
+        "rope_store": "0",
+        "norm_rope": "60",
+        "norm_add": "90",
+        "captures": "1",
+        "replays": "33"
+      },
+      "raw_summary_sha256": "766526dd4c034a0b75b10a839f812ba74b9cf6f0ba65285a6e338d34cef19fb7"
+    },
+    "31": {
+      "host": "spark",
+      "policy": "both",
+      "max_rows": 256,
+      "prefill_seconds": {
+        "before": "12.4061",
+        "candidate_first_repeat": [
+          "12.1004",
+          "12.1393"
+        ],
+        "reference_bookends": [
+          "10.8444",
+          "10.9154"
+        ]
+      },
+      "decode_seconds": {
+        "before": "3.17487",
+        "candidate_first_repeat": [
+          "3.18287",
+          "3.19305"
+        ],
+        "reference_bookends": [
+          "3.11468",
+          "3.11645"
+        ]
+      },
+      "candidate_vs_before_percent": {
+        "prefill_seconds": -2.3073326831155705,
+        "decode_seconds": 0.4123003461559138
+      },
+      "candidate_vs_reference_percent": {
+        "prefill_seconds": 11.396704013823665,
+        "decode_seconds": 2.3236555809299286
+      },
+      "old_candidate_retained_two_heads_initialized_state_32choices_exact": true,
+      "candidate_own_repeat_exact": true,
+      "native_state_bytes": 1740636160,
+      "native_state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03",
+      "native_head_sha256": {
+        "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "reference_head_sha256": {
+        "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+        "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+      },
+      "reference_repeat_exact": true,
+      "known_crossengine_retained_heads": {
+        "argmax_mismatches_32": 0,
+        "heads": {
+          "prefill.f32": {
+            "byte_exact": false,
+            "max_raw_delta": 0.41361474990844727,
+            "head_argmax_equal": true
+          },
+          "final.f32": {
+            "byte_exact": true,
+            "max_raw_delta": 0.0,
+            "head_argmax_equal": true
+          }
+        }
+      },
+      "counts": {
+        "prefill_rows": "8192",
+        "prefill_chunks": "32",
+        "intermediate_heads": "31",
+        "decode_chunks": "32",
+        "timed_start": "8195",
+        "completed": "8227",
+        "context": "16384",
+        "chunk": "256",
+        "masks": "device",
+        "normmul": "normmul-off",
+        "prefill_norm_fused": "0",
+        "prefill_norm_rope": "120",
+        "prefill_norm_add": "120",
+        "prefill_gemma_route": "0",
+        "prefill_gemma_reduce": "0",
+        "gemma_route": "0",
+        "gemma_reduce": "0",
+        "shared_vecq": "0",
+        "row_products": "0",
+        "norm_fused": "0",
+        "rope_store": "0",
+        "norm_rope": "120",
+        "norm_add": "120",
+        "captures": "1",
+        "replays": "33"
+      },
+      "raw_summary_sha256": "070211e3c8e00903f9591fe25c9c21edf20b3ec1580a67f75d0cd229e7f2f51b"
+    }
+  },
+  "official_jobs": {
+    "m35-gemma-usecount-check26": {
+      "state": "done",
+      "rc": 0
+    },
+    "m35-gemma-usecount-check31": {
+      "state": "done",
+      "rc": 0
+    },
+    "m35-gemma-usecount-screen26": {
+      "state": "done",
+      "rc": 0
+    },
+    "m35-gemma-usecount-screen31": {
+      "state": "done",
+      "rc": 0
+    },
+    "m35-gemma-usecount-stage26": {
+      "state": "done",
+      "rc": 0
+    },
+    "m35-gemma-usecount-stage31": {
+      "state": "done",
+      "rc": 0
+    },
+    "m35-gemma-use-index-check1": {
+      "state": "done",
+      "rc": 0
+    },
+    "m35-gemma-use-index-full1": {
+      "state": "done",
+      "rc": 0
+    }
+  },
+  "limits": [
+    "Two retained heads per arm, not all32 decode vectors or full quality.",
+    "Initialized state compares native own controls, not crossengine state.",
+    "One fresh old arm and two candidate arms per profile; short screen, no decode gain or parity.",
+    "Native publishes8/32prefillheads vs reference1; paidwork and default math policies unchanged."
+  ],
+  "final_full_suite": {
+    "job": "m35-gemma-use-index-full1",
+    "passed": 1700,
+    "failed": 0,
+    "skipped": 0,
+    "gpu": 311,
+    "models": 57,
+    "ctest_seconds": 599.17,
+    "official_retirement": "done rc0"
+  }
+}

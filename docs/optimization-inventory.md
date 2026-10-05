@@ -342,10 +342,17 @@ fidelity. The [call-local root/read index](experiments/gemma-plan-index/README.m
 removes repeated whole-graph reader scans while retaining both passes, SamePlan,
 primitive fallback, malformed-view, keep/readability and post-placement guards.
 Gemma26 prefill is 27.3% faster than its retained baseline; matched Gemma26/31
-prefill gaps remain 15.10%/13.83%. Both preserve exact prior native heads/state.
+initial prefill gaps were 15.10%/13.83%. Both preserve exact prior native heads/state.
 Qwen/DeepSeek planner regressions pass; unchanged primitive policies skip the
 index. Full quality/performance qualification remains open; no CPU stack or
 matcher-specific attribution is claimed.
+
+The [exact source-use extension](experiments/gemma-use-index/README.md) also
+removes repeated full-graph edge counts from generic fusion gates. It preserves
+exact pointer, duplicate/self-edge, local-subgraph and standalone semantics.
+Fresh Gemma26/31 prefill improves 2.80%/2.31% against unchanged controls; remaining
+reference gaps are 12.38%/11.40%. Prior-family planner controls pass; no kernel
+math, selected policy or full qualification changes.
 
 The [plain RMSNorm/Mul screen](experiments/gemma-normmul-screen/README.md)
 selects 121 existing fusions on Gemma31 while preserving exact native heads,

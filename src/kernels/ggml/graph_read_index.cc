@@ -71,10 +71,10 @@ GraphReadIndex::GraphReadIndex(GraphNodes graph, std::span<ggml_tensor* const> k
   roots_.reserve(graph.size());
   readers_.reserve(graph.size());
   const auto root = [this](const ggml_tensor* t) {
-    const auto [it, inserted] = roots_.try_emplace(t, nullptr);
-    if (inserted) it->second = LogicalRoot(t);
-    bounded_ = bounded_ && it->second != nullptr;
-    return it->second;
+    const auto [it, inserted] = roots_.try_emplace(t);
+    if (inserted) it->second.root = LogicalRoot(t);
+    bounded_ = bounded_ && it->second.root != nullptr;
+    return it->second.root;
   };
   for (const auto* node : graph) {
     if (node == nullptr) {
@@ -83,7 +83,10 @@ GraphReadIndex::GraphReadIndex(GraphNodes graph, std::span<ggml_tensor* const> k
     }
     readers_[root(node)].producers.push_back(node);
     for (const auto* source : node->src)
-      if (source != nullptr) readers_[root(source)].edges.push_back({node, source});
+      if (source != nullptr) {
+        readers_[root(source)].edges.push_back({node, source});
+        ++roots_.find(source)->second.source_uses;
+      }
   }
   for (const auto* kept : keep)
     if (kept != nullptr) readers_[root(kept)].kept.push_back(kept);
@@ -92,9 +95,16 @@ bool GraphReadIndex::Matches(GraphNodes graph, std::span<ggml_tensor* const> kee
   return graph.data() == graph_.data() && graph.size() == graph_.size() &&
          keep.data() == keep_.data() && keep.size() == keep_.size();
 }
+std::optional<std::size_t> GraphReadIndex::SourceUses(GraphNodes graph,
+                                                      const ggml_tensor* tensor) const {
+  if (tensor == nullptr || graph.data() != graph_.data() || graph.size() != graph_.size())
+    return std::nullopt;
+  const auto found = roots_.find(tensor);
+  return found == roots_.end() ? 0 : found->second.source_uses;
+}
 const ggml_tensor* GraphReadIndex::Root(const ggml_tensor* t) const {
   const auto found = roots_.find(t);
-  return found == roots_.end() ? LogicalRoot(t) : found->second;
+  return found == roots_.end() ? LogicalRoot(t) : found->second.root;
 }
 std::optional<const ggml_tensor*> GraphReadIndex::StrictRoot(const ggml_tensor* t) const {
   const auto found = strict_.find(t);

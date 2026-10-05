@@ -16,6 +16,7 @@
 #include "ggml.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/tensors.h"
 
 namespace {
@@ -63,6 +64,57 @@ class GemmaNormTest : public ::testing::Test {
   }
   static std::array<ggml_tensor*, 3> Nodes(Chain t) { return {t.norm, t.mul, t.out}; }
 };
+
+TEST_F(GemmaNormTest, ExactUseCountsKeepDuplicateSelfAndViewEdgesSeparate) {
+  auto t = Add(2816);
+  auto* view = ggml_view_1d(c(), t.norm, 2816, 0);
+  auto* consumer = Bind(ggml_dup_tensor(c(), t.norm));
+  consumer->src[0] = t.norm;
+  consumer->src[1] = t.norm;
+  consumer->src[2] = view;
+  // Repeated node occurrences and producer-self edges count independently.
+  t.norm->src[1] = t.norm;
+  std::array nodes{t.norm, consumer, consumer};
+  std::array keep{t.norm, view};
+  t.norm->flags |= GGML_TENSOR_FLAG_OUTPUT;
+  const kg::detail::GraphReadIndex reads(nodes, keep);
+  EXPECT_EQ(reads.SourceUses(nodes, t.norm), 5);
+  EXPECT_EQ(reads.SourceUses(nodes, view), 2);
+  EXPECT_EQ(reads.SourceUses(nodes, consumer), 0);
+  EXPECT_FALSE(reads.SourceUses(nodes, nullptr));
+  EXPECT_FALSE(reads.SourceUses(std::span(nodes).first(1), t.norm));
+  auto copied = nodes;
+  EXPECT_FALSE(reads.SourceUses(copied, t.norm));
+  consumer->src[1] = t.x;
+  const kg::detail::GraphReadIndex fresh(nodes, keep);
+  EXPECT_EQ(fresh.SourceUses(nodes, t.norm), 3);
+}
+
+TEST_F(GemmaNormTest, IndexedNormGatesPreserveLocalGatherAndExternalUseRefusals) {
+  for (bool rope : {false, true}) {
+    const auto t = rope ? Rope(256) : Add(5376);
+    auto nodes = Nodes(t);
+    const kg::detail::GraphReadIndex reads(nodes, {});
+    EXPECT_EQ(bool(kg::RmsNormMulFusionAt(nodes, 0)),
+              bool(kg::RmsNormMulFusionAt(nodes, 0, &reads)));
+    EXPECT_EQ(bool(kg::GemmaNormRopeFusionAt(nodes, 0)),
+              bool(kg::GemmaNormRopeFusionAt(nodes, 0, &reads)));
+    EXPECT_EQ(bool(kg::GemmaNormAddFusionAt(nodes, 0)),
+              bool(kg::GemmaNormAddFusionAt(nodes, 0, &reads)));
+  }
+  auto [t, gather] = AddGather(5376);
+  std::vector nodes{t.norm, t.mul, gather, t.out};
+  const kg::detail::GraphReadIndex before(nodes, {});
+  ASSERT_TRUE(kg::GemmaNormAddGatherFusionAt(nodes, 0));
+  ASSERT_TRUE(kg::GemmaNormAddGatherFusionAt(nodes, 0, &before));
+  // A different graph must scan rather than borrow the old graph's counts.
+  auto extended = nodes;
+  extended.push_back(Bind(ggml_scale(c(), t.norm, 2.0f)));
+  EXPECT_FALSE(kg::GemmaNormAddGatherFusionAt(extended, 0));
+  EXPECT_FALSE(kg::GemmaNormAddGatherFusionAt(extended, 0, &before));
+  const kg::detail::GraphReadIndex after(extended, {});
+  EXPECT_FALSE(kg::GemmaNormAddGatherFusionAt(extended, 0, &after));
+}
 
 TEST_F(GemmaNormTest, BothApprovedResidualWidthsAndOperandOrders) {
   for (int width : {2816, 5376})

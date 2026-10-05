@@ -26,6 +26,7 @@
 #include "ggml.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/graph_plan.h"
+#include "kernels/ggml/graph_read_index.h"
 #include "kernels/ggml/tensors.h"
 #include "kernels/ggml/validate.h"
 
@@ -845,7 +846,16 @@ class GgmlFusionTest : public GgmlOpsValidateTest {
  protected:
   // The nodes GGML's graph would record for `outputs`, in its order.
   static std::vector<ggml_tensor*> Graph(std::initializer_list<ggml_tensor*> outputs) {
-    return GraphOrder(std::span<ggml_tensor* const>(outputs.begin(), outputs.size()));
+    auto nodes = GraphOrder(std::span<ggml_tensor* const>(outputs.begin(), outputs.size()));
+    const jitllm::kernels::ggml::detail::GraphReadIndex reads(nodes, {});
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+      EXPECT_EQ(bool(MulMatGluFusionAt(nodes, i)), bool(MulMatGluFusionAt(nodes, i, &reads)));
+      EXPECT_EQ(bool(MulMatAddFusionAt(nodes, i)), bool(MulMatAddFusionAt(nodes, i, &reads)));
+      EXPECT_EQ(bool(RopeSetRowsFusionAt(nodes, i)), bool(RopeSetRowsFusionAt(nodes, i, &reads)));
+      EXPECT_EQ(bool(jitllm::kernels::ggml::RmsNormMulFusionAt(nodes, i)),
+                bool(jitllm::kernels::ggml::RmsNormMulFusionAt(nodes, i, &reads)));
+    }
+    return nodes;
   }
 
   static std::size_t IndexOf(const std::vector<ggml_tensor*>& graph, const ggml_tensor* node) {

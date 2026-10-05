@@ -369,7 +369,11 @@ family" guide, and its long-context scaling work.
       - [x] [Call-local graph reader index](experiments/gemma-plan-index/README.md),
         with fresh pre/post-placement checks and exact Gemma26/31 head/state
         controls. Gemma26 prefill is 27.3% faster than its retained baseline;
-        current prefill gaps remain 15.10%/13.83%. Full qualification stays open.
+        initial prefill gaps were 15.10%/13.83%. Full qualification stays open.
+      - [x] [Exact source-use indexing](experiments/gemma-use-index/README.md),
+        preserving local subgraph gates and exact native heads/state while
+        reducing fresh Gemma26/31 prefill time by 2.80%/2.31%. Matched reference
+        gaps remain 12.38%/11.40%; math policies and qualification stay unchanged.
       - [x] [Plain RMSNorm/Mul first screen](experiments/gemma-normmul-screen/README.md):
         Gemma31 selects 121 additional norm fusions and preserves exact native
         heads/state/choices, but shows no resolved speed gain. Remains unselected.

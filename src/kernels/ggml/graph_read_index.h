@@ -3,6 +3,7 @@
 #ifndef JITLLM_KERNELS_GGML_GRAPH_READ_INDEX_H_
 #define JITLLM_KERNELS_GGML_GRAPH_READ_INDEX_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -24,12 +25,19 @@ class GraphReadIndex {
   static std::optional<std::uint64_t> ScratchBytes(GraphNodes graph,
                                                    std::span<ggml_tensor* const> keep);
   bool Matches(GraphNodes graph, std::span<ggml_tensor* const> keep) const;
+  // Exact source-pointer occurrences, including duplicate and self edges.
+  // A null query or different borrowed graph must use the original scan.
+  std::optional<std::size_t> SourceUses(GraphNodes graph, const ggml_tensor* tensor) const;
   bool OnlyReader(const ggml_tensor* tensor, const ggml_tensor* reader) const;
   bool Private(std::span<ggml_tensor* const> nodes, const ggml_tensor* output,
                const ggml_tensor* selected_ids = nullptr) const;
   std::optional<const ggml_tensor*> StrictRoot(const ggml_tensor* tensor) const;
 
  private:
+  struct Descriptor {
+    const ggml_tensor* root = nullptr;
+    std::size_t source_uses = 0;
+  };
   struct Edge {
     const ggml_tensor* node;
     const ggml_tensor* source;
@@ -43,7 +51,7 @@ class GraphReadIndex {
   bool StrictlyValid() const;
   GraphNodes graph_;
   std::span<ggml_tensor* const> keep_;
-  std::unordered_map<const ggml_tensor*, const ggml_tensor*> roots_;
+  std::unordered_map<const ggml_tensor*, Descriptor> roots_;
   std::unordered_map<const ggml_tensor*, Readers> readers_;
   mutable std::unordered_map<const ggml_tensor*, std::optional<const ggml_tensor*>> strict_;
   mutable std::optional<bool> strictly_valid_;

@@ -47,6 +47,10 @@
 
 namespace jitllm::kernels::ggml {
 
+namespace detail {
+class GraphReadIndex;
+}
+
 // A graph's nodes in execution order: every tensor computed, each after its
 // inputs. Leaves (GGML_OP_NONE) are not nodes.
 using GraphNodes = std::span<ggml_tensor* const>;
@@ -86,17 +90,20 @@ struct RopeSetRowsNodes {
 // ranges, 2971-3033) and ggml_cuda_try_fuse's use of it
 // (3937-3955), which requires the gate product first. Any GLU operation
 // upstream fuses matches; the implementation takes SwiGLU.
-std::optional<MulMatGluNodes> MulMatGluFusionAt(GraphNodes graph, std::size_t index);
+std::optional<MulMatGluNodes> MulMatGluFusionAt(GraphNodes graph, std::size_t index,
+                                                const detail::GraphReadIndex* reads = nullptr);
 
 // {MUL_MAT, ADD} at `index` (ggml_cuda_try_fuse, ggml-cuda.cu:4074-4128):
 // ggml_can_fuse's rules (ggml_can_fuse_ext, ggml-impl.h:681-709) and a
 // bias of the product's shape. No memory-range check applies here upstream.
-std::optional<MulMatAddNodes> MulMatAddFusionAt(GraphNodes graph, std::size_t index);
+std::optional<MulMatAddNodes> MulMatAddFusionAt(GraphNodes graph, std::size_t index,
+                                                const detail::GraphReadIndex* reads = nullptr);
 
 // {ROPE, VIEW, SET_ROWS} at `index` (ggml-cuda.cu:3543-3550, through
 // ggml_cuda_can_fuse at 3256-3267 and ggml_cuda_should_fuse_rope_set_rows
 // at 2666-2698, with the memory ranges). Complete: it needs no device.
-std::optional<RopeSetRowsNodes> RopeSetRowsFusionAt(GraphNodes graph, std::size_t index);
+std::optional<RopeSetRowsNodes> RopeSetRowsFusionAt(GraphNodes graph, std::size_t index,
+                                                    const detail::GraphReadIndex* reads = nullptr);
 
 // An RMSNorm and the mul that scales it, which GGML's fused launcher writes
 // in one kernel (ops.h RmsNormMul).
@@ -111,7 +118,8 @@ struct RmsNormMulNodes {
 // are contiguous. Complete: it needs no device. Upstream tries the
 // five- and three-node RMSNorm patterns first; UnimplementedFusionAt
 // covers them.
-std::optional<RmsNormMulNodes> RmsNormMulFusionAt(GraphNodes graph, std::size_t index);
+std::optional<RmsNormMulNodes> RmsNormMulFusionAt(GraphNodes graph, std::size_t index,
+                                                  const detail::GraphReadIndex* reads = nullptr);
 
 struct RmsNormChainNodes {
   ggml_tensor* norm = nullptr;
@@ -121,12 +129,15 @@ struct RmsNormChainNodes {
 // Three consecutive nodes with exactly one reader of each intermediate,
 // no output/view intermediates and checked launcher operands. Kept storage
 // readers are additionally excluded by the planner.
-std::optional<RmsNormChainNodes> GemmaNormRopeFusionAt(GraphNodes graph, std::size_t index);
-std::optional<RmsNormChainNodes> GemmaNormAddFusionAt(GraphNodes graph, std::size_t index);
+std::optional<RmsNormChainNodes> GemmaNormRopeFusionAt(
+    GraphNodes graph, std::size_t index, const detail::GraphReadIndex* reads = nullptr);
+std::optional<RmsNormChainNodes> GemmaNormAddFusionAt(
+    GraphNodes graph, std::size_t index, const detail::GraphReadIndex* reads = nullptr);
 
 // Exact RMS_NORM,MUL,GET_ROWS,ADD frontier pattern. The planner defers only
 // norm/mul, executes GET_ROWS normally, then launches the checked ADD chain.
-std::optional<RmsNormChainNodes> GemmaNormAddGatherFusionAt(GraphNodes graph, std::size_t index);
+std::optional<RmsNormChainNodes> GemmaNormAddGatherFusionAt(
+    GraphNodes graph, std::size_t index, const detail::GraphReadIndex* reads = nullptr);
 
 // Whether a fusion pattern upstream tries at `index`, other than the four
 // above, might apply there. It checks the op sequences each such pattern

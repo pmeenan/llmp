@@ -15,6 +15,7 @@
 
 #include "ggml.h"
 #include "kernels/ggml/gemma_norm.h"
+#include "kernels/ggml/graph_read_index.h"
 
 namespace jitllm::kernels::ggml {
 namespace {
@@ -53,8 +54,11 @@ bool InGraph(GraphNodes graph, std::size_t index, std::size_t count) {
 
 // How many inputs of the graph's nodes are `tensor`: GGML's use count
 // (ggml_visit_parents_graph counts one per input edge, ggml.c:7243-7255).
-int Uses(GraphNodes graph, const ggml_tensor* tensor) {
-  int uses = 0;
+std::size_t Uses(GraphNodes graph, const ggml_tensor* tensor,
+                 const detail::GraphReadIndex* reads = nullptr) {
+  if (reads != nullptr)
+    if (const auto count = reads->SourceUses(graph, tensor)) return *count;
+  std::size_t uses = 0;
   for (const ggml_tensor* node : graph) {
     for (const ggml_tensor* src : node->src) {
       uses += src == tensor ? 1 : 0;
@@ -70,7 +74,8 @@ bool Among(std::span<ggml_tensor* const> nodes, const ggml_tensor* tensor) {
 // ggml_can_fuse_ext for consecutive nodes (ggml-impl.h:653-709): every node
 // but the last has exactly one use, is no view and no output, and is an
 // input of the next, which has its shape. (Every node listed is computed.)
-bool CanFuse(GraphNodes graph, std::size_t index, std::initializer_list<ggml_op> ops) {
+bool CanFuse(GraphNodes graph, std::size_t index, std::initializer_list<ggml_op> ops,
+             const detail::GraphReadIndex* reads = nullptr) {
   if (!InGraph(graph, index, ops.size())) {
     return false;
   }
@@ -80,7 +85,7 @@ bool CanFuse(GraphNodes graph, std::size_t index, std::initializer_list<ggml_op>
     if (node->op != op) {
       return false;
     }
-    if (i + 1 < ops.size() && (Uses(graph, node) != 1 || node->view_src != nullptr ||
+    if (i + 1 < ops.size() && (Uses(graph, node, reads) != 1 || node->view_src != nullptr ||
                                (node->flags & GGML_TENSOR_FLAG_OUTPUT) != 0)) {
       return false;
     }
@@ -100,7 +105,7 @@ bool CanFuse(GraphNodes graph, std::size_t index, std::initializer_list<ggml_op>
 // later nodes of the subgraph, and any view's sources lie in it (upstream
 // also allows constant weights, which no tensor without a buffer is).
 bool CanFuseSubgraph(GraphNodes graph, std::size_t index, std::initializer_list<ggml_op> ops,
-                     std::size_t output) {
+                     std::size_t output, const detail::GraphReadIndex* reads) {
   if (!InGraph(graph, index, ops.size())) {
     return false;
   }
@@ -113,7 +118,7 @@ bool CanFuseSubgraph(GraphNodes graph, std::size_t index, std::initializer_list<
     }
     if (index + i != output) {
       if ((node->flags & GGML_TENSOR_FLAG_OUTPUT) != 0 ||
-          Uses(subgraph.subspan(i + 1), node) != Uses(graph, node)) {
+          Uses(subgraph.subspan(i + 1), node) != Uses(graph, node, reads)) {
         return false;
       }
       for (const ggml_tensor* source = node->view_src; source != nullptr;
@@ -220,9 +225,11 @@ bool FusionMemoryClear(GraphNodes graph, std::size_t index, std::size_t count, s
   return true;
 }
 
-std::optional<MulMatGluNodes> MulMatGluFusionAt(GraphNodes graph, std::size_t index) {
+std::optional<MulMatGluNodes> MulMatGluFusionAt(GraphNodes graph, std::size_t index,
+                                                const detail::GraphReadIndex* reads) {
   // ggml_cuda_can_fuse: the gate product at index, the up product next.
-  if (!CanFuseSubgraph(graph, index, {GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU}, index + 2)) {
+  if (!CanFuseSubgraph(graph, index, {GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU}, index + 2,
+                       reads)) {
     return std::nullopt;
   }
   ggml_tensor* gate = graph[index];
@@ -236,8 +243,9 @@ std::optional<MulMatGluNodes> MulMatGluFusionAt(GraphNodes graph, std::size_t in
   return MulMatGluNodes{.gate = gate, .up = up, .glu = glu};
 }
 
-std::optional<MulMatAddNodes> MulMatAddFusionAt(GraphNodes graph, std::size_t index) {
-  if (!CanFuse(graph, index, {GGML_OP_MUL_MAT, GGML_OP_ADD})) {
+std::optional<MulMatAddNodes> MulMatAddFusionAt(GraphNodes graph, std::size_t index,
+                                                const detail::GraphReadIndex* reads) {
+  if (!CanFuse(graph, index, {GGML_OP_MUL_MAT, GGML_OP_ADD}, reads)) {
     return std::nullopt;
   }
   ggml_tensor* mul_mat = graph[index];
@@ -249,8 +257,10 @@ std::optional<MulMatAddNodes> MulMatAddFusionAt(GraphNodes graph, std::size_t in
   return MulMatAddNodes{.mul_mat = mul_mat, .add = add};
 }
 
-std::optional<RopeSetRowsNodes> RopeSetRowsFusionAt(GraphNodes graph, std::size_t index) {
-  if (!CanFuseSubgraph(graph, index, {GGML_OP_ROPE, GGML_OP_VIEW, GGML_OP_SET_ROWS}, index + 2)) {
+std::optional<RopeSetRowsNodes> RopeSetRowsFusionAt(GraphNodes graph, std::size_t index,
+                                                    const detail::GraphReadIndex* reads) {
+  if (!CanFuseSubgraph(graph, index, {GGML_OP_ROPE, GGML_OP_VIEW, GGML_OP_SET_ROWS}, index + 2,
+                       reads)) {
     return std::nullopt;
   }
   ggml_tensor* rope = graph[index];
@@ -263,8 +273,9 @@ std::optional<RopeSetRowsNodes> RopeSetRowsFusionAt(GraphNodes graph, std::size_
   return RopeSetRowsNodes{.rope = rope, .view = view, .set_rows = set_rows};
 }
 
-std::optional<RmsNormMulNodes> RmsNormMulFusionAt(GraphNodes graph, std::size_t index) {
-  if (!CanFuse(graph, index, {GGML_OP_RMS_NORM, GGML_OP_MUL})) {
+std::optional<RmsNormMulNodes> RmsNormMulFusionAt(GraphNodes graph, std::size_t index,
+                                                  const detail::GraphReadIndex* reads) {
+  if (!CanFuse(graph, index, {GGML_OP_RMS_NORM, GGML_OP_MUL}, reads)) {
     return std::nullopt;
   }
   ggml_tensor* norm = graph[index];
@@ -290,25 +301,28 @@ std::optional<RmsNormMulNodes> RmsNormMulFusionAt(GraphNodes graph, std::size_t 
   return RmsNormMulNodes{.norm = norm, .mul = mul};
 }
 
-std::optional<RmsNormChainNodes> GemmaNormRopeFusionAt(GraphNodes graph, std::size_t index) {
-  if (!CanFuse(graph, index, {GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ROPE}) ||
+std::optional<RmsNormChainNodes> GemmaNormRopeFusionAt(GraphNodes graph, std::size_t index,
+                                                       const detail::GraphReadIndex* reads) {
+  if (!CanFuse(graph, index, {GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ROPE}, reads) ||
       !CheckGemmaNormRope(graph[index], graph[index + 1], graph[index + 2]))
     return std::nullopt;
   return RmsNormChainNodes{graph[index], graph[index + 1], graph[index + 2]};
 }
 
-std::optional<RmsNormChainNodes> GemmaNormAddFusionAt(GraphNodes graph, std::size_t index) {
-  if (!CanFuse(graph, index, {GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD}) ||
+std::optional<RmsNormChainNodes> GemmaNormAddFusionAt(GraphNodes graph, std::size_t index,
+                                                      const detail::GraphReadIndex* reads) {
+  if (!CanFuse(graph, index, {GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD}, reads) ||
       !CheckGemmaNormAdd(graph[index], graph[index + 1], graph[index + 2]))
     return std::nullopt;
   return RmsNormChainNodes{graph[index], graph[index + 1], graph[index + 2]};
 }
 
-std::optional<RmsNormChainNodes> GemmaNormAddGatherFusionAt(GraphNodes graph, std::size_t index) {
+std::optional<RmsNormChainNodes> GemmaNormAddGatherFusionAt(GraphNodes graph, std::size_t index,
+                                                            const detail::GraphReadIndex* reads) {
   if (!InGraph(graph, index, 4)) return std::nullopt;
   std::array chain{graph[index], graph[index + 1], graph[index + 3]};
   if (!CanFuse(chain, 0, {GGML_OP_RMS_NORM, GGML_OP_MUL, GGML_OP_ADD}) ||
-      Uses(graph, chain[0]) != 1 || Uses(graph, chain[1]) != 1 ||
+      Uses(graph, chain[0], reads) != 1 || Uses(graph, chain[1], reads) != 1 ||
       !CheckGemmaNormAddGather(chain[0], chain[1], graph[index + 2], chain[2]))
     return std::nullopt;
   return RmsNormChainNodes{chain[0], chain[1], chain[2]};

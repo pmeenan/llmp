@@ -13,9 +13,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Exact source-use counts reuse the graph index across fusion gates without
+  changing math or policies. Fresh Gemma26/31 prefill screens improve
+  2.80%/2.31%; reference gaps remain 12.38%/11.40%, with exact prior heads/state.
+
 - Call-local graph reader indexing preserves checked planning and exact Gemma
   head/state controls while reducing Gemma26 8K prefill time by about 27%.
-  Matched Gemma26/31 prefill gaps remain 15.10%/13.83%; quality remains open.
+  Initial Gemma26/31 prefill gaps were 15.10%/13.83%; quality remains open.
 
 - Gemma26 coarse prefill diagnosis preserves prior heads/state and measures
   about 1.093 s of caller CPU in the two graph-planning passes.

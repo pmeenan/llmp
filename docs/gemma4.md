@@ -344,9 +344,12 @@ full profile memory qualification. Production caps and policies remain unchanged
 
 The [call-local planner index](experiments/gemma-plan-index/README.md) preserves
 fresh checked selection before and after placement, reducing repeated reader
-scans. Gemma26 prefill improves 27.3% against its retained baseline; fresh 26/31
-prefill gaps remain 15.10%/13.83% with exact prior native head/state controls.
+scans. Gemma26 prefill improves 27.3% against its retained baseline; initial matched
+26/31 prefill gaps were 15.10%/13.83% with exact prior native head/state controls.
 This changes planning cost, not kernel math or model qualification.
+The [exact source-use extension](experiments/gemma-use-index/README.md) preserves
+those controls and reduces fresh 26/31 prefill time by a further 2.80%/2.31%.
+Current matched prefill gaps remain 12.38%/11.40%; policy defaults stay unchanged.
 
 ## Bounded native serving route
 

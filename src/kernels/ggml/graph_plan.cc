@@ -190,17 +190,23 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       }
     }
     if (!fusion && node->op == GGML_OP_RMS_NORM) {
-      if (const auto f = device.fuse_norm_rope ? GemmaNormRopeFusionAt(graph, i) : std::nullopt;
+      if (const auto f = device.fuse_norm_rope
+                             ? GemmaNormRopeFusionAt(graph, i, reads ? &*reads : nullptr)
+                             : std::nullopt;
           f && reads->OnlyReader(f->norm, f->mul) && reads->OnlyReader(f->mul, f->out)) {
         add(Operation::kRmsNormMulRope, kGemmaNormRopeName, i, {f->norm, f->mul, f->out}, 3);
         continue;
       }
-      if (const auto f = device.fuse_norm_add ? GemmaNormAddFusionAt(graph, i) : std::nullopt;
+      if (const auto f = device.fuse_norm_add
+                             ? GemmaNormAddFusionAt(graph, i, reads ? &*reads : nullptr)
+                             : std::nullopt;
           f && reads->OnlyReader(f->norm, f->mul) && reads->OnlyReader(f->mul, f->out)) {
         add(Operation::kRmsNormMulAdd, kGemmaNormAddName, i, {f->norm, f->mul, f->out}, 3);
         continue;
       }
-      if (const auto f = device.fuse_norm_add ? GemmaNormAddGatherFusionAt(graph, i) : std::nullopt;
+      if (const auto f = device.fuse_norm_add
+                             ? GemmaNormAddGatherFusionAt(graph, i, reads ? &*reads : nullptr)
+                             : std::nullopt;
           f && reads->OnlyReader(f->norm, f->mul) && reads->OnlyReader(f->mul, f->out)) {
         taken[i] = taken[i + 1] = true;
         deferred_norm_add.emplace(i + 3, *f);
@@ -208,7 +214,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
       }
     }
     if (!fusion && device.fuse_rope_store && node->op == GGML_OP_ROPE) {
-      if (const auto f = RopeSetRowsFusionAt(graph, i);
+      if (const auto f = RopeSetRowsFusionAt(graph, i, reads ? &*reads : nullptr);
           f && CheckRopeSetRows(f->rope, f->set_rows) &&
           std::ranges::none_of(keep, [&](const auto* kept) {
             return kept != nullptr && Storage(kept) == f->rope;
@@ -228,13 +234,14 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
                         Where(graph, i), *pattern));
       }
       if (node->op == GGML_OP_ROPE) {
-        if (const auto f = RopeSetRowsFusionAt(graph, i)) {
+        if (const auto f = RopeSetRowsFusionAt(graph, i, reads ? &*reads : nullptr)) {
           add(Operation::kRopeSetRows, kRopeSetRowsFused, i, {f->rope, f->set_rows}, 3);
           continue;
         }
       }
       if (node->op == GGML_OP_MUL_MAT) {
-        if (const auto f = MulMatGluFusionAt(graph, i); f && device.vector_fusible(f->up)) {
+        if (const auto f = MulMatGluFusionAt(graph, i, reads ? &*reads : nullptr);
+            f && device.vector_fusible(f->up)) {
           const auto op = ggml_get_glu_op(f->glu);
           if (op == GGML_GLU_OP_GEGLU && device.geglu_fusible && device.geglu_fusible(f->up)) {
             // The products are elided: keep/read dependencies must survive.
@@ -248,13 +255,15 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
             continue;
           }
         }
-        if (const auto f = MulMatAddFusionAt(graph, i); f && device.vector_fusible(f->mul_mat)) {
+        if (const auto f = MulMatAddFusionAt(graph, i, reads ? &*reads : nullptr);
+            f && device.vector_fusible(f->mul_mat)) {
           add(Operation::kMulMatAdd, kMulMatAddFused, i, {f->mul_mat, f->add}, 2);
           continue;
         }
       }
       if (node->op == GGML_OP_RMS_NORM) {
-        if (const auto f = RmsNormMulFusionAt(graph, i); f && reads->OnlyReader(f->norm, f->mul)) {
+        if (const auto f = RmsNormMulFusionAt(graph, i, reads ? &*reads : nullptr);
+            f && reads->OnlyReader(f->norm, f->mul)) {
           add(Operation::kRmsNormMul, kRmsNormMulFused, i, {f->norm, f->mul}, 2);
           continue;
         }
@@ -263,8 +272,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     switch (node->op) {
       case GGML_OP_RMS_NORM: {
         ggml_tensor* next = i + 1 < graph.size() ? graph[i + 1] : nullptr;
-        if (const auto f =
-                !fusion && device.fuse_norms ? RmsNormMulFusionAt(graph, i) : std::nullopt;
+        if (const auto f = !fusion && device.fuse_norms
+                               ? RmsNormMulFusionAt(graph, i, reads ? &*reads : nullptr)
+                               : std::nullopt;
             f && reads->OnlyReader(f->norm, f->mul)) {
           add(Operation::kRmsNormMul, kRmsNormMulFused, i, {f->norm, f->mul}, 2);
         } else if (!fusion && next != nullptr && next->op == GGML_OP_MUL && next->src[0] == node) {

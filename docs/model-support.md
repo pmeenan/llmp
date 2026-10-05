@@ -83,11 +83,16 @@ long-context, selected optimization or optimized-batching support gates.
 
 The shared [planning read index](experiments/gemma-plan-index/README.md) removes
 repeated graph scans without changing selected operations or kernel arithmetic.
-With the existing default-off 26B `all` and 31B `both` policies, matched ring-cache
-8K screens leave native prefill 15.10% / 13.83% slower and fixed-prefix decode
+With the existing default-off 26B `all` and 31B `both` policies, initial matched
+ring-cache 8K screens recorded native prefill 15.10% / 13.83% slower and decode
 0.61% / 2.00% slower, respectively. Native retained heads, initialized state and
 all 32 choices remain unchanged. This planning improvement preserves the existing
 policy defaults and does not establish full model or optimized-batching qualification.
+Its [exact source-use extension](experiments/gemma-use-index/README.md) further
+reduces fresh unchanged-control prefill by 2.80% / 2.31% for those same 26/31
+policies. Current prefill gaps are 12.38% / 11.40% and decode gaps 0.55% / 2.32%,
+with prior native heads, initialized state and choices unchanged. Full qualification
+and policy defaults remain unchanged.
 
 ## Chat templates
 
