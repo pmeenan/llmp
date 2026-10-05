@@ -938,8 +938,11 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::CachePlann
   const auto started = std::chrono::steady_clock::now();
   std::uint32_t rows = 0;
   for (const auto& segment : shape.segments) rows += segment.rows;
-  if (auto r = BindPlanned(*p, resources_.launch(), resources_.registry(), "Gemma4 chunk"); !r)
-    return Error(r.error());
+  {
+    PhaseTimer timer(account_phases_ ? &phases_.bind_seconds : nullptr);
+    if (auto r = BindPlanned(*p, resources_.launch(), resources_.registry(), "Gemma4 chunk"); !r)
+      return Error(r.error());
+  }
   policy_ = {.rows = rows, .segments = static_cast<std::uint32_t>(shape.segments.size())};
   for (const auto& step : p->plan.steps) {
     policy_.norm_fused += step.implementation == "ggml.rms_norm_mul.fused";
@@ -960,13 +963,17 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::CachePlann
       state_tensors.push_back(v);
     }
   Coverage checked;
-  CheckCoverage(node_, owner_, p->graph.nodes, {.state = state_tensors, .inputs = p->graph.inputs},
-                checked);
+  {
+    PhaseTimer timer(account_phases_ ? &phases_.coverage_seconds : nullptr);
+    CheckCoverage(node_, owner_, p->graph.nodes,
+                  {.state = state_tensors, .inputs = p->graph.inputs}, checked);
+  }
   if (checked.violations != 0)
     return Error(std::format("Gemma4 catalog coverage: {}", checked.first_violation));
   coverage_.tensors += checked.tensors;
   const auto bytes = PlannedHostBytes(*p);
   const auto nodes = PlannedNodes(*p);
+  PhaseTimer timer(account_phases_ ? &phases_.cache_seconds : nullptr);
   if (transfer_charge) transfer_charge();
   return &plans_.Add(shape, std::move(p), bytes, nodes,
                      seconds + Seconds(std::chrono::steady_clock::now() - started));

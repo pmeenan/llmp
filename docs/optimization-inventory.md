@@ -419,6 +419,14 @@ effect magnitude. This supersedes the earlier unresolved full-head screen for
 default selection, while broader corpus quality and batching remain owed.
 Other arithmetic experiment defaults remain off.
 
+The [current post-lookahead accounting](experiments/gemma-current-phases/README.md)
+finds 31/32 required plans cached and about 12 ms synchronous planning. Nested
+binding costs about 175 ms across 32 insertions, versus 17 ms coverage and
+5 ms insertion; state growth costs 162–185 ms. These nested elapsed spans
+are not additive with the outer phases or evidence of active GPU arithmetic.
+Attention occupancy queries and execution-plan identity construction remain
+unmeasured binding subcomponents; no new optimization is selected here.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

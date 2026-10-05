@@ -419,6 +419,12 @@ family" guide, and its long-context scaling work.
         controls pass; other arithmetic defaults stay off. Research-policy
         prefill screens favor fusion, with noisy 31B magnitude. Corpus quality
         and optimized batching remain open.
+      - [x] [Current post-lookahead phase attribution](experiments/gemma-current-phases/README.md):
+        31/32 required plans hit; synchronous planning is about 12 ms. Across
+        32 insertions, binding costs 175 ms, coverage 17 ms and insertion 5 ms,
+        nested within planning/publication. State growth costs 162–185 ms;
+        execution variance remains. Individual binding callees and parity
+        are not attributed or qualified by these diagnostic counters.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

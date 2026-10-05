@@ -239,6 +239,9 @@ class Gemma4Runner final : public PagedModel {
   struct PhaseAccounting {
     std::array<double, static_cast<std::size_t>(Phase::kCount)> seconds{};
     std::uint64_t planned_calls = 0, hits = 0, misses = 0;
+    // Nested CachePlanned elapsed intervals: not additive with the enclosing
+    // required-planning or post-completion publication phases.
+    double bind_seconds = 0, coverage_seconds = 0, cache_seconds = 0;
   };
   void EnablePhaseAccounting() { account_phases_ = true; }
   PhaseAccounting TakePhaseAccounting() {

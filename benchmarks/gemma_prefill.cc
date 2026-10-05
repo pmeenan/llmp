@@ -3,7 +3,8 @@
 
 // First paid 8K prefill and fixed-prefix decode screen. No quality claim.
 // ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both|all] [MAX_ROWS]
-// [normmul-off|normmul-on] [full|state-only] [lookahead-on|lookahead-off].
+// [normmul-off|normmul-on] [full|state-only] [lookahead-on|lookahead-off]
+// [phases-off|phases-on].
 // Row-cap experiments do not change production defaults.
 #include <algorithm>
 #include <array>
@@ -26,7 +27,7 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc < 4 || argc > 10) return 2;
+  if (argc < 4 || argc > 11) return 2;
   const std::string_view variant = argc >= 5 ? argv[4] : "26";
   const std::string_view policy = argc >= 6 ? argv[5] : "ordinary";
   if (variant != "26" && variant != "31") return 2;
@@ -35,8 +36,11 @@ int main(int argc, char** argv) {
   if (normmul != "normmul-off" && normmul != "normmul-on") return 2;
   const std::string_view prefill_output = argc >= 9 ? argv[8] : "full";
   if (prefill_output != "full" && prefill_output != "state-only") return 2;
-  const std::string_view lookahead = argc == 10 ? argv[9] : "lookahead-on";
+  const std::string_view lookahead = argc >= 10 ? argv[9] : "lookahead-on";
   if (lookahead != "lookahead-on" && lookahead != "lookahead-off") return 2;
+  const std::string_view phases_mode = argc == 11 ? argv[10] : "phases-off";
+  if (phases_mode != "phases-off" && phases_mode != "phases-on") return 2;
+  const bool account_phases = phases_mode == "phases-on";
   std::uint32_t max_rows = 128;
   if (argc >= 7) {
     const std::string_view number(argv[6]);
@@ -134,6 +138,11 @@ int main(int argc, char** argv) {
       // loaded comparator. These six rows are discarded on both engines.
       if (auto r = runner.Chunk(0, std::span(ids).first(6), logits); !r) return r;
       if (auto r = runner.Clear(); !r) return r;
+      if (account_phases) {
+        runner.EnablePhaseAccounting();
+        (void)runner.TakePhaseAccounting();
+        (void)node.TakeTimes(0);
+      }
       const auto started = std::chrono::steady_clock::now();
       for (std::uint32_t first = 0; first < kPrefill; first += max_rows) {
         if (auto r =
@@ -146,6 +155,28 @@ int main(int argc, char** argv) {
       }
       const auto prefill_policy = runner.last_built_policy();
       const auto prefill = en::support::Seconds(std::chrono::steady_clock::now() - started);
+      if (account_phases) {
+        // Completed prefill only: exclude anchors, decode, and snapshot writes.
+        const auto phases = runner.TakePhaseAccounting();
+        const auto jobs = node.TakeTimes(0);
+        std::cout << "PREFILL_PHASE planned_calls=" << phases.planned_calls
+                  << " hits=" << phases.hits << " misses=" << phases.misses;
+        constexpr std::array names{"checks",
+                                   "inputs",
+                                   "state",
+                                   "required_planning",
+                                   "staging",
+                                   "execution",
+                                   "publication_cleanup"};
+        for (std::size_t i = 0; i < names.size(); ++i)
+          std::cout << ' ' << names[i] << "_seconds=" << phases.seconds[i];
+        std::cout << " bind_seconds=" << phases.bind_seconds
+                  << " coverage_seconds=" << phases.coverage_seconds
+                  << " cache_seconds=" << phases.cache_seconds << " job_steps=" << jobs.steps
+                  << " job_wall=" << jobs.wall << " dispatch=" << jobs.dispatch
+                  << " submission=" << jobs.job << " after=" << jobs.after
+                  << " stream_elapsed=" << jobs.device << '\n';
+      }
       if (logits.size() != kVocab) return Error("missing final prefill head");
       const auto save = [&](const char* name) -> en::Status {
         std::ofstream output(out / name, std::ios::binary);

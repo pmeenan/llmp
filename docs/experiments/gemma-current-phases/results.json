@@ -1,0 +1,230 @@
+{
+  "task": "M3.5 Task54 current Gemma31 prefill phases",
+  "source_base": "756ab6e6b9e86f1ec3bc99748c7a442d0932de07",
+  "measured_source_sha256": {
+    "benchmarks/gemma_prefill.cc": "f4893bcd5b4b319b03613a2a20d07f4920d040af6f3d142b9c1e0c8f651eec1c",
+    "src/engine/gemma4_runner.cc": "5e4824a5d57c8dbb178f7bd726c7faf7cb384cd1ccb2981973a449f9ced28a2a",
+    "src/engine/gemma4_runner.h": "e9639c07a40f2b29bdc46ad0816e69b2f858e89d527a5309c9118b54604c9711"
+  },
+  "helper_sha256": {
+    "initial": "f15ab166ac65c98a3bc754306f7e2a731a32647fbe0634247f9231907631fcb7",
+    "split": "333f7650734d785cac705d2d68b91c1877275e7c3811372fb53e56c27c817bb6"
+  },
+  "initial_helper_source_sha256": "7bff6b1eb74f6e1674ca1af7716e0fecbbd4012399b58c8ed8bd19df405aa9c6",
+  "sdk_receipt_sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d",
+  "tensorfold": {
+    "observed_utc": "2026-10-05 23:11:15 UTC",
+    "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "version": "0.6.5",
+    "applicability": "Gemma26 MLX; no matching Gemma31 CUDA recipe"
+  },
+  "recipe": {
+    "profile": 31,
+    "artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "input_bytes": 32908,
+    "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+    "context": 16384,
+    "local_cells": 1280,
+    "global_cells": 16384,
+    "kv": "F16",
+    "policy": "both256, normmul-on, state-only, lookahead-on",
+    "warm_discarded": 6,
+    "prefill_rows": 8192,
+    "untimed_anchors": 3,
+    "forced_decode_units": 32,
+    "intermediate_heads": 0,
+    "norm_fused": 121,
+    "norm_rope": 120,
+    "norm_add": 120,
+    "other_arithmetic_flags": 0,
+    "planned_calls": 32,
+    "required_hits": 31,
+    "required_misses": 1,
+    "lookahead_built_cached": 31,
+    "lookahead_refusals": 0
+  },
+  "baseline": {
+    "prefill_head_sha256": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+    "final_head_sha256": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29",
+    "state_bytes": 1740636160,
+    "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+  },
+  "initial_pair": {
+    "arms": [
+      {
+        "name": "task54-native31-first",
+        "prefill_seconds": 11.3234,
+        "decode_seconds": 3.18993,
+        "lookahead_build_seconds": 0.218532,
+        "phases": {
+          "planned_calls": 32,
+          "hits": 31,
+          "misses": 1,
+          "checks_seconds": 0.0258338,
+          "inputs_seconds": 0.00224039,
+          "state_seconds": 0.193905,
+          "required_planning_seconds": 0.012383,
+          "staging_seconds": 0.00213297,
+          "execution_seconds": 10.8945,
+          "publication_cleanup_seconds": 0.192342,
+          "job_steps": 32,
+          "job_wall": 10.8942,
+          "dispatch": 0.0027401,
+          "submission": 5.02315,
+          "after": 5.86828,
+          "stream_elapsed": 10.8854
+        }
+      },
+      {
+        "name": "task54-native31-repeat",
+        "prefill_seconds": 11.737,
+        "decode_seconds": 3.19254,
+        "lookahead_build_seconds": 0.215298,
+        "phases": {
+          "planned_calls": 32,
+          "hits": 31,
+          "misses": 1,
+          "checks_seconds": 0.0276487,
+          "inputs_seconds": 0.00223434,
+          "state_seconds": 0.176054,
+          "required_planning_seconds": 0.0122118,
+          "staging_seconds": 0.00213649,
+          "execution_seconds": 11.3239,
+          "publication_cleanup_seconds": 0.19282,
+          "job_steps": 32,
+          "job_wall": 11.3236,
+          "dispatch": 0.00480869,
+          "submission": 5.26133,
+          "after": 6.05744,
+          "stream_elapsed": 11.312
+        }
+      }
+    ],
+    "all_two_heads_state_32choices_exact": true,
+    "finite_retained_complete_heads": 4
+  },
+  "split_pair": {
+    "arms": [
+      {
+        "name": "task54-native31-split-first",
+        "prefill_seconds": 11.257,
+        "decode_seconds": 3.19042,
+        "lookahead_build_seconds": 0.218027,
+        "phases": {
+          "planned_calls": 32,
+          "hits": 31,
+          "misses": 1,
+          "checks_seconds": 0.0266686,
+          "inputs_seconds": 0.0022738,
+          "state_seconds": 0.161848,
+          "required_planning_seconds": 0.0125164,
+          "staging_seconds": 0.00206569,
+          "execution_seconds": 10.8583,
+          "publication_cleanup_seconds": 0.193317,
+          "bind_seconds": 0.174949,
+          "coverage_seconds": 0.0169953,
+          "cache_seconds": 0.00492547,
+          "job_steps": 32,
+          "job_wall": 10.858,
+          "dispatch": 0.00584345,
+          "submission": 5.00486,
+          "after": 5.84728,
+          "stream_elapsed": 10.8417
+        }
+      },
+      {
+        "name": "task54-native31-split-repeat",
+        "prefill_seconds": 11.6272,
+        "decode_seconds": 3.19373,
+        "lookahead_build_seconds": 0.223331,
+        "phases": {
+          "planned_calls": 32,
+          "hits": 31,
+          "misses": 1,
+          "checks_seconds": 0.0289656,
+          "inputs_seconds": 0.00226924,
+          "state_seconds": 0.185188,
+          "required_planning_seconds": 0.0122859,
+          "staging_seconds": 0.00214975,
+          "execution_seconds": 11.2031,
+          "publication_cleanup_seconds": 0.193283,
+          "bind_seconds": 0.174757,
+          "coverage_seconds": 0.0171111,
+          "cache_seconds": 0.00502342,
+          "job_steps": 32,
+          "job_wall": 11.2027,
+          "dispatch": 0.00404161,
+          "submission": 5.16869,
+          "after": 6.02995,
+          "stream_elapsed": 11.1861
+        }
+      }
+    ],
+    "all_two_heads_state_32choices_exact": true,
+    "finite_retained_complete_heads": 4
+  },
+  "checks": {
+    "source_reviews": "Root ADV and distinct GENERAL CLEAN",
+    "full_suite": "Deferred by owner during performance optimization",
+    "trace": "None",
+    "fresh_reference": "None"
+  },
+  "limitations": [
+    "Nested BindPlanned/CheckCoverage/cache totals span first required and31 deferred CachePlanned calls; do not add to outer phases.",
+    "Lookahead CPU elapsed overlaps execution. Job wall/submission/after/stream span overlap outer phases.",
+    "Stream elapsed includes enqueue gaps, not active CUDA-kernel time.",
+    "Elapsed phase clocks identify code boundaries, not CPU busy time or individual binding callees.",
+    "Two complete heads and initialized state plus32 choices; not all decode vectors or corpus quality.",
+    "Execution and total wall vary; no competitive or stable latency claim from this diagnostic."
+  ],
+  "official_jobs": [
+    {
+      "name": "m35-gemma-current-phases-build1",
+      "host": "spark-56f5",
+      "state": "done",
+      "rc": 0
+    },
+    {
+      "name": "m35-gemma-current-phases-stage31",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0
+    },
+    {
+      "name": "m35-gemma-current-phases-screen31",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0
+    },
+    {
+      "name": "m35-gemma-current-phases-check31",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0
+    },
+    {
+      "name": "m35-gemma-current-phases-build2",
+      "host": "spark-56f5",
+      "state": "done",
+      "rc": 0
+    },
+    {
+      "name": "m35-gemma-current-phases-stage-split31",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0
+    },
+    {
+      "name": "m35-gemma-current-phases-split31",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0
+    },
+    {
+      "name": "m35-gemma-current-phases-split-check31",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0
+    }
+  ]
+}

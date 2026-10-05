@@ -33,6 +33,11 @@ favors fusion on both state-only/lookahead research recipes and preserves exact
 ordinary off/on heads and state. Plain RMSNorm/Mul is now a serving default;
 other arithmetic policies remain opt-ins. The 31B retry has noisy effect
 magnitude and no fresh reference comparison.
+The [current post-lookahead phases](../gemma-current-phases/README.md) narrow
+serialized work to roughly 175 ms binding, 17 ms coverage and 5 ms insertion
+across 32 plans, plus 162–185 ms state growth. Those nested binding intervals
+already belong to planning/publication; they are not additive. The contribution
+of individual binding callees is still unmeasured.
 M3.5 remains incomplete. The source-use optimization landed as `5ef7aac` after
 1,700 Spark tests passed without failures or skips, including 311 GPU and 57
 model tests. Both Sparks were checked idle at the pause.
