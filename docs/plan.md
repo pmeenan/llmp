@@ -321,6 +321,12 @@ family" guide, and its long-context scaling work.
         with explicit post-finalnorm features, scoped frozen-cache borrows,
         original-input C1 arithmetic and native independent-slot controls.
         Serving verification, optimized batching and quality/performance remain open.
+      - [x] [Gemma26 assistant C2 arithmetic and timing diagnosis](experiments/gemma-assistant-c2/README.md),
+        with frozen native serial/joined recurrence, identical-input original
+        comparisons and matched paid bookends. Both native policies reproduce
+        serial-reference full rows exactly; original batch-two distribution
+        differences remain. Full optimized-batching and serving qualification
+        remain open.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

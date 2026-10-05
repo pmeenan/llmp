@@ -160,6 +160,18 @@ lean canonical heads, adaptive depth and verify rollback remain measured
 transfer work, not inherited target defaults. Full heads and funded host masks
 are the present diagnostic baseline.
 
+The [Gemma26 assistant C2 screen](experiments/gemma-assistant-c2/README.md)
+checks ordinary joined products and per-segment attention on distinct frozen
+histories. Native serial and joined policies reproduce all six original
+serial-reference heads/features exactly. Both retain the measured differences
+from original physical batch two, with all six greedy IDs agreeing.
+For 32 two-owner waves, native joined takes 0.09927 s against original serial
+0.18207/0.18429 s, and 0.10118 s against original batch two
+0.12050/0.11940 s. These paid component screens include full host publication;
+they do not select a serving policy or establish full-model qualification.
+Larger batches, device recurrence/masks and other widths/formats still need
+their own transfer checks.
+
 Gemma's native GELU-tanh and split GeGLU now have primitive fallbacks.
 The [floating GeGLU screen](experiments/gemma-activations/README.md) checks
 matched F32 accumulation at K2816 with F16 weights: N704 gains while N2112

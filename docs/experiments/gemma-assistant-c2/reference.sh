@@ -1,0 +1,33 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: 2026 jitLLM contributors
+# SPDX-License-Identifier: Apache-2.0
+set -euo pipefail
+umask 077
+scratch="$HOME/.local/share/jitllm/gemma-assistant-c2"
+source_root="$HOME/src/jitLLM-wt/m3fixb"
+models="$HOME/.local/share/jitllm/reference-models"
+image=ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7
+common=(run --rm --network none --read-only --user "$(id -u):$(id -g)"
+        --tmpfs /tmp:rw,size=1g --mount "type=bind,src=$scratch,dst=/scratch"
+        --mount "type=bind,src=$source_root/docs/experiments/gemma-assistant-c2,dst=/tool,readonly"
+        --mount "type=bind,src=$models,dst=/model,readonly")
+case "${1:-}" in
+  build)
+    [[ $# == 1 ]]
+    sudo -n docker "${common[@]}" --entrypoint g++ "$image" -std=c++23 -O2 -march=armv8-a \
+      -Wall -Wextra -Werror -I/scratch/headers/include -I/scratch/headers/src \
+      -I/scratch/headers/ggml/include /tool/llama_assistant_timing.cc -L/app -Wl,-rpath,/app \
+      -lllama -lggml -lggml-base -o /scratch/llama_assistant_timing
+    sha256sum "$scratch/llama_assistant_timing"
+    ;;
+  serial|batch)
+    [[ $# == 4 && "$2" =~ ^[a-zA-Z0-9_-]+$ && "$3" =~ ^[a-zA-Z0-9_-]+$ && "$4" =~ ^[a-zA-Z0-9_-]+$ ]]
+    # Before invoking this arm, an external frozen receipt must authenticate
+    # the exact input manifests, fixed incoming files, source and executable.
+    sudo -n docker "${common[@]}" --device nvidia.com/gpu=all --env CUDA_DISABLE_PTX_JIT=1 \
+      --entrypoint /scratch/llama_assistant_timing "$image" \
+      /model/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf /model/mtp-gemma-4-26B-A4B-it.gguf \
+      /scratch/ids.i32 "/scratch/$2" 2 "$1" /scratch "/scratch/$3/$4"
+    ;;
+  *) exit 2 ;;
+esac

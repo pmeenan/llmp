@@ -400,3 +400,10 @@ if(JITLLM_CUDA)
   target_link_libraries(jitllm_gemma_assistant_fixture PRIVATE jitllm_engine jitllm_json jitllm_warnings)
   target_link_options(jitllm_gemma_assistant_fixture PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
 endif()
+
+if(JITLLM_CUDA)
+  # Two-owner original stage-zero inputs, manual diagnostic only.
+  add_executable(jitllm_gemma_assistant_wave_fixture gemma_assistant_wave_fixture.cc)
+  target_link_libraries(jitllm_gemma_assistant_wave_fixture PRIVATE jitllm_engine jitllm_json jitllm_warnings)
+  target_link_options(jitllm_gemma_assistant_wave_fixture PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
+endif()

@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Gemma26 assistant C2 reference comparisons with exact native serial/joined
+  recurrence and short matched timing controls. Original batch-two distribution
+  drift remains explicit; serving speculation and qualification remain open.
+
 - Dense31 C4 attention replay that isolates vector/MMA and stream-packing
   arithmetic. Four-stream native MMA matches the original backend exactly;
   model qualification and production selection remain open.
