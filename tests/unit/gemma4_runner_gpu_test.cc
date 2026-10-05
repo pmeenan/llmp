@@ -22,15 +22,20 @@ namespace en = jitllm::engine;
 class Gemma4RunnerGpu : public ::testing::Test {
  protected:
   virtual bool Invariant() const { return false; }
+  virtual en::Gemma4Variant Variant() const { return en::Gemma4Variant::k26BA4B; }
   void SetUp() override {
     // Explicit fixture path, matching other real-model engine controls.
-    const auto artifact = std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts") /
-                          "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
+    const auto artifact =
+        std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts") /
+        (Variant() == en::Gemma4Variant::k31B
+             ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+             : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
     ASSERT_TRUE(std::filesystem::exists(artifact));
     runner = std::make_unique<en::Gemma4Runner>(
         node,
         en::Gemma4Options{.artifact = artifact,
                           .out = "/tmp/jitllm-gemma4-runner-control",
+                          .variant = Variant(),
                           .slots = 4,
                           .shared_q8 = Invariant(),
                           .fuse_norms = Invariant(),
@@ -64,6 +69,28 @@ class Gemma4RunnerGpu : public ::testing::Test {
   void Exact(std::span<const float> a, std::span<const float> b) {
     ASSERT_EQ(a.size(), b.size());
     EXPECT_EQ(std::memcmp(a.data(), b.data(), a.size_bytes()), 0);
+  }
+  void WrongSourceLayouts(std::uint32_t positions, void* saved,
+                          std::span<const en::LiveState::Range> ranges) {
+    const auto other = Variant() == en::Gemma4Variant::k31B ? "gemma26" : "gemma31";
+    const std::string wrong = std::string(other) + "-f16-kv-scalar-device-v1:4096:128:4096:1280";
+    for (const std::string_view tag :
+         {std::string_view(wrong), std::string_view("malformed"), std::string_view("")}) {
+      const auto occupancy = node.catalog().OccupancyOf(node.domain()).Total().value();
+      const auto extents = runner->state();
+      std::array<std::uint32_t, 4> cursors{};
+      for (std::uint32_t i = 0; i < 4; ++i)
+        cursors[i] = (*runner->request_slot(i))->completed_positions();
+      EXPECT_FALSE(runner->PrepareRestore(0, positions, ranges, tag));
+      EXPECT_FALSE(runner->Adopt(0, positions, ranges, tag));
+      EXPECT_FALSE(runner->RestoreCheckpoint(0, positions, saved, ranges, tag));
+      EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), occupancy);
+      EXPECT_EQ(runner->state(), extents);
+      for (std::uint32_t i = 0; i < 4; ++i) {
+        EXPECT_EQ((*runner->request_slot(i))->completed_positions(), cursors[i]);
+        EXPECT_TRUE((*runner->request_slot(i))->state_usable());
+      }
+    }
   }
   void JoinedDifference(std::span<const float> a, std::span<const float> b, std::uint32_t count,
                         std::uint32_t slot, std::uint32_t step) {
@@ -104,6 +131,101 @@ class Gemma4RunnerPolicy : public Gemma4RunnerGpu, public ::testing::WithParamIn
  protected:
   bool Invariant() const override { return GetParam(); }
 };
+class Gemma31RunnerGpu : public Gemma4RunnerGpu {
+ protected:
+  en::Gemma4Variant Variant() const override { return en::Gemma4Variant::k31B; }
+};
+TEST_F(Gemma31RunnerGpu, OrdinarySoloAndWavesReplayAndRestoreOwnedCheckpoints) {
+  ASSERT_EQ(runner->profile().layers, 60U);
+  ASSERT_EQ(runner->profile().experts, 0U);
+  EXPECT_EQ(runner->slab_padding(), 0U);
+  EXPECT_EQ(runner->pitch_padding(), 0U);
+  const auto source_layout = runner->CheckpointLayoutId();
+  EXPECT_EQ(source_layout, "gemma31-f16-kv-scalar-device-v1:4096:128:4096:1280");
+  const std::string wrong_layout = "gemma26-f16-kv-scalar-device-v1:4096:128:4096:1280";
+  // Distinct identity rejects even when the caller supplies the correct31 ranges.
+  EXPECT_FALSE(runner->PrepareRestore(0, 0, {}, wrong_layout));
+  EXPECT_FALSE(runner->Adopt(0, 0, {}, wrong_layout));
+  EXPECT_FALSE(runner->RestoreCheckpoint(0, 0, nullptr, {}, wrong_layout));
+  for (const auto count : {1U, 2U, 4U}) {
+    const std::array<std::uint32_t, 4> slots{0, 1, 2, 3};
+    ASSERT_TRUE(runner->SelectSlots(std::span(slots).first(count)));
+    auto ran = Held([&]() -> en::Status {
+      constexpr std::uint64_t output_bytes = 8ULL * 262144 * sizeof(float);
+      if (!node.ChargeHost(output_bytes, false)) return en::support::Error("publication refused");
+      struct Charge {
+        en::PagedNode& node;
+        ~Charge() { node.UnchargeHost(output_bytes); }
+      } charge{node};
+      std::array<std::vector<float>, 4> output, baseline;
+      for (std::uint32_t slot = 0; slot < 4; ++slot) {
+        output[slot].reserve(262144);
+        baseline[slot].reserve(262144);
+        if (output[slot].capacity() != 262144 || baseline[slot].capacity() != 262144)
+          return en::support::Error("unexpected publication capacity");
+      }
+      const std::int32_t next = 563;
+      const auto prefix = [&]() -> en::Status {
+        for (std::uint32_t slot = 0; slot < count; ++slot) {
+          if (auto r = runner->Clear(slot); !r) return r;
+          if (auto r = Single(slot, 0, prompt, output[slot]); !r) return r;
+        }
+        return {};
+      };
+      if (auto r = prefix(); !r) return r;
+      const auto wave = [&]() -> en::Status {
+        std::array<en::Gemma4Runner::Work, 4> work{};
+        for (std::uint32_t slot = 0; slot < count; ++slot)
+          work[slot] = {slot, 6, std::span(&next, 1), &output[slot]};
+        return runner->Wave(std::span(work).first(count));
+      };
+      if (auto r = wave(); !r) return r;
+      for (std::uint32_t slot = 0; slot < count; ++slot) baseline[slot] = output[slot];
+      const auto& policy = runner->last_built_policy();
+      EXPECT_FALSE(policy.norm_fused || policy.rope_store || policy.shared_vecq ||
+                   policy.row_products || policy.lane_steps);
+      auto ranges = runner->CheckpointRanges(7);
+      if (!ranges) return en::support::Error(ranges.error());
+      std::uint64_t bytes = 0;
+      for (const auto& r : *ranges) bytes += r.bytes;
+      std::vector<jitllm::catalog::ExtentId> staging;
+      auto saved = node.Pinned(bytes, 0, staging);
+      if (!saved) return en::support::Error(saved.error());
+      struct Pinned {
+        en::PagedNode& node;
+        void* memory;
+        ~Pinned() { std::ignore = node.FreePinned(memory); }
+      } pinned{node, *saved};
+      if (auto r = runner->CopyState(0, *saved, *ranges, true); !r) return r;
+      WrongSourceLayouts(7, *saved, *ranges);
+      if (auto r = prefix(); !r) return r;
+      if (auto r = wave(); !r) return r;
+      for (std::uint32_t slot = 0; slot < count; ++slot) Exact(baseline[slot], output[slot]);
+      auto repeated = node.Pinned(bytes, 0, staging);
+      if (!repeated) return en::support::Error(repeated.error());
+      Pinned repeated_pinned{node, *repeated};
+      if (auto r = runner->CopyState(0, *repeated, *ranges, true); !r) return r;
+      EXPECT_EQ(std::memcmp(*saved, *repeated, bytes), 0);
+      // Save the common continuation before clear/restore/spill. Peers remain active.
+      if (auto r = Single(0, 7, std::span(&next, 1), baseline[0]); !r) return r;
+      if (auto r = runner->Clear(0); !r) return r;
+      EXPECT_FALSE(runner->RestoreCheckpoint(0, 7, *saved, *ranges, wrong_layout));
+      EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 0U);
+      if (auto r = runner->RestoreCheckpoint(0, 7, *saved, *ranges, source_layout); !r) return r;
+      if (auto r = runner->Spill(0); !r) return r;
+      if (auto r = runner->Restore(0); !r) return r;
+      if (auto r = Single(0, 7, std::span(&next, 1), output[0]); !r) return r;
+      Exact(baseline[0], output[0]);
+      std::cout << "GEMMA31_STATE count=" << count << " checkpoint_bytes=" << bytes
+                << " completed=" << (*runner->request_slot(0))->completed_positions() << '\n';
+      return {};
+    });
+    ASSERT_TRUE(ran) << (ran ? "" : ran.error());
+  }
+  EXPECT_GT(runner->graph_stats().captured, 0U);
+  EXPECT_GT(runner->graph_stats().replayed, 0U);
+  EXPECT_EQ(runner->coverage().violations, 0U);
+}
 TEST_P(Gemma4RunnerPolicy, SoloTwoFourJoinedDecodeHasStrictGreediesAndExactSamePolicyReplay) {
   for (const auto count : {1U, 2U, 4U}) {
     std::array<std::array<std::vector<float>, 3>, 4> baseline;
@@ -241,11 +363,13 @@ TEST_F(Gemma4RunnerGpu, MaximumRaggedPrefillFitsEnvelopeAndReplaysIndependentSta
   EXPECT_GT(runner->graph_stats().replayed, 0U);
 }
 TEST_F(Gemma4RunnerGpu, SpillCheckpointRestoreReplayAndPeerClearPreserveExactContinuations) {
+  EXPECT_EQ(runner->CheckpointLayoutId(), "gemma26-f16-kv-scalar-device-v1:4096:128:4096:1280");
   ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
   auto ran = Held([&]() -> en::Status {
     std::vector<float> logits, peer;
     if (auto r = Single(0, 0, prompt, logits); !r) return r;
     if (auto r = Single(1, 0, prompt, peer); !r) return r;
+    const auto source_layout = runner->CheckpointLayoutId();
     auto ranges = runner->CheckpointRanges(6);
     if (!ranges) return en::support::Error(ranges.error());
     std::uint64_t bytes = 0;
@@ -254,12 +378,13 @@ TEST_F(Gemma4RunnerGpu, SpillCheckpointRestoreReplayAndPeerClearPreserveExactCon
     auto saved = node.Pinned(bytes, 0, staging);
     if (!saved) return en::support::Error(saved.error());
     if (auto r = runner->CopyState(0, *saved, *ranges, true); !r) return r;
+    WrongSourceLayouts(6, *saved, *ranges);
     const auto next =
         static_cast<std::int32_t>(std::max_element(logits.begin(), logits.end()) - logits.begin());
     std::vector<float> baseline, restored;
     if (auto r = Single(0, 6, std::span(&next, 1), baseline); !r) return r;
     if (auto r = runner->Clear(0); !r) return r;
-    if (auto r = runner->RestoreCheckpoint(0, 6, *saved, *ranges); !r) return r;
+    if (auto r = runner->RestoreCheckpoint(0, 6, *saved, *ranges, source_layout); !r) return r;
     if (auto r = runner->Spill(0); !r) return r;
     if (auto r = runner->Restore(0); !r) return r;
     runner->DropPlans();
@@ -289,6 +414,7 @@ TEST_F(Gemma4RunnerGpu, PagedOutWeightsAdmissionRefusesWithoutLosingCompletedPre
   ASSERT_TRUE(Single(0, 0, prompt, first));
   const auto next =
       static_cast<std::int32_t>(std::max_element(first.begin(), first.end()) - first.begin());
+  const auto source_layout = runner->CheckpointLayoutId();
   auto ranges = runner->CheckpointRanges(6);
   ASSERT_TRUE(ranges);
   std::uint64_t bytes = 0;
@@ -299,7 +425,7 @@ TEST_F(Gemma4RunnerGpu, PagedOutWeightsAdmissionRefusesWithoutLosingCompletedPre
   ASSERT_TRUE(runner->CopyState(0, *checkpoint, *ranges, true));
   ASSERT_TRUE(Single(0, 6, std::span(&next, 1), baseline));
   ASSERT_TRUE(runner->Clear(0));
-  ASSERT_TRUE(runner->RestoreCheckpoint(0, 6, *checkpoint, *ranges));
+  ASSERT_TRUE(runner->RestoreCheckpoint(0, 6, *checkpoint, *ranges, source_layout));
   // A separate clean state-growth refusal under a held weight/state lease.
   auto growth = Held([&]() -> en::Status {
     auto available = node.FreeBytes();
@@ -346,6 +472,7 @@ TEST_F(Gemma4RunnerGpu, PagedOutWeightsAdmissionRefusesWithoutLosingCompletedPre
   ASSERT_TRUE(node.FreePinned(*checkpoint));
 }
 TEST_F(Gemma4RunnerGpu, ServingRestoreNeedsProvenCompleteCopiesAndProtectsThePeer) {
+  const auto source_layout = runner->CheckpointLayoutId();
   ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
   auto r = Held([&]() -> en::Status {
     std::vector<float> baseline, peer;
@@ -364,7 +491,7 @@ TEST_F(Gemma4RunnerGpu, ServingRestoreNeedsProvenCompleteCopiesAndProtectsThePee
       if (auto x = runner->CopyState(0, *pinned, footprint, true); !x) return x;
       auto invalid = footprint;
       ++invalid[0].offset;
-      EXPECT_FALSE(runner->PrepareRestore(0, 5, invalid));
+      EXPECT_FALSE(runner->PrepareRestore(0, 5, invalid, source_layout));
       EXPECT_EQ((*slot)->completed_positions(), 6U);
       // A capacity refusal before any copy preserves the completed ledger
       // and the peer's held state, even when the target needs more extents.
@@ -376,7 +503,7 @@ TEST_F(Gemma4RunnerGpu, ServingRestoreNeedsProvenCompleteCopiesAndProtectsThePee
       if (!available || *available <= (16U << 20U)) return en::support::Error("test capacity");
       const auto pressure = *available - (16U << 20U);
       if (!node.ChargeHost(pressure, false)) return en::support::Error("test pressure");
-      const auto refused_prepare = runner->PrepareRestore(0, 1025, larger);
+      const auto refused_prepare = runner->PrepareRestore(0, 1025, larger, source_layout);
       node.UnchargeHost(pressure);
       EXPECT_FALSE(refused_prepare);
       EXPECT_TRUE((*slot)->state_usable());
@@ -394,7 +521,7 @@ TEST_F(Gemma4RunnerGpu, ServingRestoreNeedsProvenCompleteCopiesAndProtectsThePee
       if (!copied) return copied;
       if (!released) return released;
       // The saved bytes are still the completed prefix, not a partial restore.
-      if (auto x = runner->PrepareRestore(0, 5, footprint); !x) return x;
+      if (auto x = runner->PrepareRestore(0, 5, footprint, source_layout); !x) return x;
       EXPECT_FALSE(runner->CompleteRestore(0, 5));
       EXPECT_FALSE(runner->CompleteRestore(0, 6));
       EXPECT_EQ((*slot)->completed_positions(), 6U);

@@ -41,13 +41,28 @@ TEST(Gemma4Runner, UninitializedRunnerCannotDispatchSelectRestoreOrCopy) {
   EXPECT_FALSE(runner.Register());
   EXPECT_FALSE(runner.Bind());
   EXPECT_FALSE(runner.CopyState(0, nullptr, {}, true));
-  EXPECT_FALSE(runner.RestoreCheckpoint(0, 1, nullptr, {}));
+  EXPECT_FALSE(runner.RestoreCheckpoint(0, 1, nullptr, {}, ""));
 }
 TEST(Gemma4Runner, UnreadableArtifactRefusesBeforeStateReservations) {
+  for (auto variant : {en::Gemma4Variant::k26BA4B, en::Gemma4Variant::k31B}) {
+    en::PagedNode node({});
+    en::Gemma4Runner runner(node, {.artifact = "/missing-gemma4-artifact", .variant = variant}, 0,
+                            0);
+    EXPECT_FALSE(runner.Setup());
+    EXPECT_EQ(runner.profile().layers, variant == en::Gemma4Variant::k31B ? 60U : 30U);
+    EXPECT_EQ(node.StateCapacity(), 0U);
+    EXPECT_FALSE(runner.request_slot(0));
+  }
+}
+TEST(Gemma4Runner, UnknownVariantRefusesBeforeOpeningArtifactsOrAllocatingState) {
   en::PagedNode node({});
-  en::Gemma4Runner runner(node, {.artifact = "/missing-gemma4-artifact"}, 0, 0);
-  EXPECT_FALSE(runner.Setup());
+  en::Gemma4Runner runner(
+      node, {.artifact = "/missing", .variant = static_cast<en::Gemma4Variant>(UINT8_MAX)}, 0, 0);
+  auto setup = runner.Setup();
+  ASSERT_FALSE(setup);
+  EXPECT_EQ(setup.error(), "Gemma4 runner variant is not approved");
   EXPECT_EQ(node.StateCapacity(), 0U);
+  EXPECT_EQ(runner.activations_needed(), 0U);
   EXPECT_FALSE(runner.request_slot(0));
 }
 TEST(Gemma4Runner, ActualLayerFourteenShardCutPreservesEveryReadableMember) {
@@ -86,37 +101,38 @@ TEST(Gemma4Runner, ActualLayerFourteenShardCutPreservesEveryReadableMember) {
   EXPECT_FALSE(en::Gemma4ExpertPitch(stored, std::array<std::string_view, 1>{"unknown"}));
 }
 TEST(Gemma4Runner, CheckpointLedgerRequiresEveryFundedExtentWithoutInferringPosition) {
-  const auto& profile = jitllm::model::Gemma4_26BA4B();
-  auto layout = jitllm::model::Gemma4State(profile, 4096, 16);
-  ASSERT_TRUE(layout);
-  auto needed = jitllm::model::Gemma4UsedState(profile, *layout, 6);
-  ASSERT_TRUE(needed);
-  std::vector<en::LiveState::Range> footprint;
-  for (const auto& r : *needed)
-    for (auto e = r.offset / en::kPagedExtent; e <= (r.offset + r.bytes - 1) / en::kPagedExtent;
-         ++e)
-      footprint.push_back({0, e * en::kPagedExtent,
-                           std::min(en::kPagedExtent, layout->bytes - e * en::kPagedExtent)});
-  EXPECT_TRUE(en::Gemma4CheckpointFootprint(profile, *layout, 6, footprint));
-  // The same initialized pages can fund several positions. Only owned
-  // logical metadata selects which one was actually computed.
-  EXPECT_TRUE(en::Gemma4CheckpointFootprint(profile, *layout, 5, footprint));
-  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 4097, footprint));
-  auto bad = footprint;
-  bad.pop_back();
-  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
-  bad = footprint;
-  ++bad[0].offset;
-  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
-  bad = footprint;
-  --bad[0].bytes;
-  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
-  bad = footprint;
-  bad[0].region = 1;
-  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
-  bad = footprint;
-  bad.push_back(bad.back());
-  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
-  EXPECT_TRUE(en::Gemma4CheckpointFootprint(profile, *layout, 0, {}));
-  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 0, footprint));
+  for (const auto& profile : {jitllm::model::Gemma4_26BA4B(), jitllm::model::Gemma4_31B()}) {
+    auto layout = jitllm::model::Gemma4State(profile, 4096, 16);
+    ASSERT_TRUE(layout);
+    auto needed = jitllm::model::Gemma4UsedState(profile, *layout, 6);
+    ASSERT_TRUE(needed);
+    std::vector<en::LiveState::Range> footprint;
+    for (const auto& r : *needed)
+      for (auto e = r.offset / en::kPagedExtent; e <= (r.offset + r.bytes - 1) / en::kPagedExtent;
+           ++e)
+        footprint.push_back({0, e * en::kPagedExtent,
+                             std::min(en::kPagedExtent, layout->bytes - e * en::kPagedExtent)});
+    EXPECT_TRUE(en::Gemma4CheckpointFootprint(profile, *layout, 6, footprint));
+    // The same initialized pages can fund several positions. Only owned
+    // logical metadata selects which one was actually computed.
+    EXPECT_TRUE(en::Gemma4CheckpointFootprint(profile, *layout, 5, footprint));
+    EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 4097, footprint));
+    auto bad = footprint;
+    bad.pop_back();
+    EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
+    bad = footprint;
+    ++bad[0].offset;
+    EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
+    bad = footprint;
+    --bad[0].bytes;
+    EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
+    bad = footprint;
+    bad[0].region = 1;
+    EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
+    bad = footprint;
+    bad.push_back(bad.back());
+    EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
+    EXPECT_TRUE(en::Gemma4CheckpointFootprint(profile, *layout, 0, {}));
+    EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 0, footprint));
+  }
 }

@@ -984,11 +984,7 @@ class Gemma26 final : public Llm {
         runner_.coverage().tensors, runner_.pitch_padding());
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
-  std::string KeptLayout() const override {
-    const auto& s = runner_.layout();
-    return std::format("gemma26-f16-kv-scalar-device-v1:{}:{}:{}:{}", s.context, s.max_rows,
-                       s.global_cells, s.local_cells);
-  }
+  std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
   std::vector<std::uint64_t> KeptRegions() const override {
     return KeptRegionsOf(NativeSlot(default_branch()).state(), true);
   }
@@ -1101,7 +1097,9 @@ class Gemma26 final : public Llm {
   Status PreparePositionRestoreFor(Branch& branch, std::uint32_t pos, std::uint32_t cursor,
                                    std::span<const engine::LiveState::Range> ranges) override {
     if (auto r = CheckCheckpointMetadataFor(branch, pos, cursor, ranges); !r) return r;
-    return runner_.PrepareRestore(BranchIndex(branch), pos, ranges);
+    // Llm checks the retained record's layout against KeptLayout before
+    // adoption; local snapshots are produced by this same runner.
+    return runner_.PrepareRestore(BranchIndex(branch), pos, ranges, KeptLayout());
   }
   Status CompletePositionRestoreFor(Branch& branch, std::uint32_t pos) override {
     return runner_.CompleteRestore(BranchIndex(branch), pos);
@@ -1138,7 +1136,7 @@ class Gemma26 final : public Llm {
                           std::span<const engine::LiveState::Range> ranges) override {
     if (pos != tokens.size() || pos == 0)
       return Error("Gemma26 kept positions differ from its owned token history");
-    return runner_.Adopt(BranchIndex(branch), pos, ranges);
+    return runner_.Adopt(BranchIndex(branch), pos, ranges, KeptLayout());
   }
   void SetSpillPlaces(
       const std::function<engine::LiveState::SpillPlace(std::uint32_t)>& place) override {

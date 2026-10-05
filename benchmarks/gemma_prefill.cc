@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // First paid 8K prefill and fixed-prefix decode screen. No quality claim.
-// ARTIFACT IDS_I32 NEW_OUTPUT_DIR. Native production options remain off.
+// ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31]. Production options remain off.
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <string_view>
 #include <vector>
 
 #include "base/bytes.h"
@@ -20,7 +21,9 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc != 4) return 2;
+  if (argc != 4 && argc != 5) return 2;
+  const std::string_view variant = argc == 5 ? argv[4] : "26";
+  if (variant != "26" && variant != "31") return 2;
   constexpr std::uint32_t kPrefill = 8192, kWarm = 3, kSteps = 32;
   constexpr std::uint32_t kInput = kPrefill + kWarm + kSteps, kVocab = 262144;
   std::error_code error;
@@ -34,7 +37,13 @@ int main(int argc, char** argv) {
   const std::filesystem::path out(argv[3]);
   if (!std::filesystem::create_directory(out, error) || error) return 2;
   en::PagedNode node({.slot_bytes = en::kSlabSlotBytes});
-  en::Gemma4Runner runner(node, {.artifact = argv[1], .out = out, .context = 16384}, 0, 0);
+  en::Gemma4Runner runner(
+      node,
+      {.artifact = argv[1],
+       .out = out,
+       .variant = variant == "31" ? en::Gemma4Variant::k31B : en::Gemma4Variant::k26BA4B,
+       .context = 16384},
+      0, 0);
   std::vector<en::PagedModel*> entered;
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;

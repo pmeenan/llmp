@@ -12,6 +12,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "engine/gemma4_plan.h"
@@ -28,8 +29,11 @@ std::expected<std::uint64_t, std::string> Gemma4ExpertPitch(
 std::expected<void, std::string> Gemma4CheckpointFootprint(
     const model::Gemma4Profile& profile, const model::Gemma4StateLayout& layout,
     std::uint32_t positions, std::span<const LiveState::Range> ranges);
+enum class Gemma4Variant : std::uint8_t { k26BA4B, k31B };
 struct Gemma4Options {
   std::filesystem::path artifact = {}, out = {};
+  // Only approved architecture contracts; binding still checks every tensor.
+  Gemma4Variant variant = Gemma4Variant::k26BA4B;
   std::uint32_t context = 4096, max_rows = 128, slots = 1;
   bool graphs = true, frontier_head = true;
   // Caller-funded host masks remain an explicit numerical diagnostic.
@@ -104,6 +108,7 @@ class Gemma4Runner final : public PagedModel {
   std::uint64_t pitch_padding() const { return pitch_padding_; }
   const model::Gemma4Profile& profile() const { return profile_; }
   const model::Gemma4StateLayout& layout() const { return layout_; }
+  const std::string& CheckpointLayoutId() const { return checkpoint_layout_id_; }
   std::expected<Slot*, std::string> request_slot(std::uint32_t slot);
   Status SelectSlots(std::span<const std::uint32_t> slots);
   const catalog::Closure& closure() const { return execution_; }
@@ -114,10 +119,11 @@ class Gemma4Runner final : public PagedModel {
   Status CheckPlaces();
   Status ValidateFootprint(std::uint32_t positions, std::span<const LiveState::Range> ranges) const;
   Status PrepareRestore(std::uint32_t slot, std::uint32_t positions,
-                        std::span<const LiveState::Range> footprint);
+                        std::span<const LiveState::Range> footprint,
+                        std::string_view source_layout);
   Status CompleteRestore(std::uint32_t slot, std::uint32_t positions);
   Status Adopt(std::uint32_t slot, std::uint32_t positions,
-               std::span<const LiveState::Range> footprint);
+               std::span<const LiveState::Range> footprint, std::string_view source_layout);
   std::vector<catalog::ExtentId> weights() const { return weights_.extents(); }
   std::vector<catalog::ExtentId> state() const;
   std::uint32_t stream() const override { return stream_; }
@@ -132,8 +138,10 @@ class Gemma4Runner final : public PagedModel {
   Status CopyState(std::uint32_t slot, void* pinned, std::span<const LiveState::Range> ranges,
                    bool to_host, LiveState::CopyRetirement* retirement = nullptr);
   // Restore into an empty slot with the exact CheckpointRanges footprint.
+  // Trusted callers retain the source identity with the saved bytes. A tag
+  // comparison prevents accidental cross-variant use, not fabricated metadata.
   Status RestoreCheckpoint(std::uint32_t slot, std::uint32_t positions, void* pinned,
-                           std::span<const LiveState::Range> ranges,
+                           std::span<const LiveState::Range> ranges, std::string_view source_layout,
                            LiveState::CopyRetirement* retirement = nullptr);
   std::expected<std::vector<LiveState::Range>, std::string> CheckpointRanges(
       std::uint32_t positions) const;
@@ -169,6 +177,7 @@ class Gemma4Runner final : public PagedModel {
   model::Gemma4Profile profile_ = model::Gemma4_26BA4B();
   model::Gemma4Binding binding_;
   model::Gemma4StateLayout layout_;
+  std::string checkpoint_layout_id_;
   RunnerResources resources_;
   PagedWeights weights_;
   std::array<std::unique_ptr<Slot>, kMaxRequestSlots> slots_;

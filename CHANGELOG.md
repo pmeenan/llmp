@@ -25,6 +25,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
   initialized KV, device masks and exact checkpoint/spill continuations.
   Serving and full model reference qualification remain separate.
 
+- Dense Gemma 31B executes through the shared native runner, with ordinary
+  replay and checkpoint/spill controls and distinct restore layout identity.
+  Its representative reference quality gate fails; serving remains unavailable.
+
 - Checked D256/F16 local attention primitives with GQA2 vector/MMA shape
   selection, independent ring masks and charged capture workspace. Gemma
   whole-model execution and batching qualification remain separate.

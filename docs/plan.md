@@ -250,6 +250,12 @@ family" guide, and its long-context scaling work.
         device masks and [exact state/replay controls](experiments/gemma-runner/README.md).
         Complete serving, assistant, representative quality, long-context and optimized
         batching/performance qualification remain owed.
+      - [x] Dense Gemma 31B on that shared runner, with approved-profile
+        selection, cross-variant restore guards and ordinary 1/2/4-request
+        [state and reference controls](experiments/gemma31-runner/README.md).
+        Representative PPL is 14.61% above full-fusion llama.cpp; the unfused
+        diagnostic matches all full heads. Serving, assistants, optimized
+        batching and full reference/context qualification remain owed.
       - [x] Checked per-segment Gemma RoPE/cache-store policy with primitive
         fallback and [complete-layer controls](experiments/gemma-rope-store/README.md).
         Mixed paid results keep selection off by default.

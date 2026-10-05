@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded full-vocabulary teacher forcing on exact shared integer IDs.
-// ARTIFACT IDS_I32 OUTPUT_DIR CHUNK ordinary|norm. No timing/support claim.
+// ARTIFACT IDS_I32 OUTPUT_DIR CHUNK ordinary|norm [26|31]. No support claim.
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -20,7 +20,9 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc != 6) return 2;
+  if (argc != 6 && argc != 7) return 2;
+  const std::string_view variant = argc == 7 ? argv[6] : "26";
+  if (variant != "26" && variant != "31") return 2;
   std::uint32_t chunk = 0;
   const std::string_view number(argv[4]), policy(argv[5]);
   const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), chunk);
@@ -38,13 +40,20 @@ int main(int argc, char** argv) {
   const std::filesystem::path out(argv[3]);
   if (!std::filesystem::create_directory(out, file_error) || file_error) return 2;
   en::PagedNode node({.slot_bytes = en::kSlabSlotBytes});
-  en::Gemma4Runner runner(node, {.artifact = argv[1], .out = out, .fuse_norms = policy == "norm"},
-                          0, 0);
+  en::Gemma4Runner runner(
+      node,
+      {.artifact = argv[1],
+       .out = out,
+       .variant = variant == "31" ? en::Gemma4Variant::k31B : en::Gemma4Variant::k26BA4B,
+       .fuse_norms = policy == "norm"},
+      0, 0);
   std::vector<en::PagedModel*> entered;
   const auto execute = [&]() -> en::Status {
     if (auto r = node.Open(); !r) return r;
     entered.push_back(&runner);
     if (auto r = runner.Setup(); !r) return r;
+    std::cout << "QUALITY_PROFILE variant=" << variant << " layers=" << runner.profile().layers
+              << " experts=" << runner.profile().experts << '\n';
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     const std::uint64_t output_bytes = static_cast<std::uint64_t>(chunk) * 262144 * 4;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();

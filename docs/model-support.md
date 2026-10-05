@@ -57,7 +57,13 @@ Both have checked import and segmented graph foundations. The approved
 26B-A4B artifact also has a native runner and a bounded scalar serving route
 for chat/literal completions, likelihoods and up to twelve independent owners.
 The route disables thinking and refuses generated tools, assistants/speculation
-and the 31B profile. The 26B
+and the 31B profile. The approved dense 31B artifact now executes through the
+same native runner with ordinary 1/2/4-request replay and exact checkpoint/spill
+controls. Its [bounded representative screen](experiments/gemma31-runner/README.md)
+fails against full-fusion llama.cpp (14.61% higher PPL, 330 strict argmax
+differences); its unfused diagnostic matches all 1,024 complete heads exactly.
+No 31B serving, assistant, optimized batching or reference qualification follows.
+The 26B
 [representative likelihood screen](experiments/gemma-quality/README.md) fails
 against fusion-enabled llama.cpp (10.03% higher PPL); its unfused diagnostic
 control matches exactly. The [short resident screen](experiments/gemma-performance/README.md)

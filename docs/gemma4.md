@@ -6,9 +6,10 @@
 `src/model/gemma4.h` describes the approved 26B-A4B and 31B text models:
 fixed profiles, strict GGML artifact bindings, bounded state layouts,
 initialized read/write footprints and independent request-segment inputs.
-The segmented GGML graph, checked plan adapter and bounded native 26B-A4B
-engine runner described below extend this foundation. They supply no serving
-adapter, assistant or qualified inference support. Both checkpoints remain unsupported
+The segmented GGML graph, checked plan adapter and bounded native 26B-A4B/31B
+engine runner described below extend this foundation. The 26B-A4B serving
+route remains bounded; 31B serving and assistants are unavailable. Both
+checkpoints remain unsupported
 in the [support matrix](model-support.md); the family task remains open.
 
 ## Verified contracts
@@ -38,8 +39,10 @@ small F32 norm/frequency-factor payloads preceding the embedding weights.
 Both have five local layers then one global, a 1,024-token sliding window,
 context and vocabulary 262,144, RMS epsilon 1e-6, and final softcap 30.
 There are no shared KV layers or per-layer input embeddings in either file.
-The 31B contract was extracted from a verified 16 MiB HTTP range response
-at its pinned revision, with no full weight download. The 26B contract was
+The original 31B contract was extracted from a verified 16 MiB HTTP range response
+at its pinned revision. Its complete source and prepared artifact are now
+fully verified for the [bounded dense runner](experiments/gemma31-runner/README.md).
+The 26B contract was
 read from the existing pinned reference file on Spark. Tests compare every
 profile field/layer pattern and bind every actual tensor descriptor.
 
@@ -257,7 +260,7 @@ show exact cache/output agreement but no decisive paid speed gain; the
 option remains default off.
 Qualified norm/RoPE-store selection and optimized batching remain owed.
 
-## Native 26B-A4B runner controls
+## Native 26B-A4B and 31B runner controls
 
 `src/engine/gemma4_runner.h` reuses `RunnerResources`, `PagedWeights`,
 `LiveState`, charged plan caches, `GraphRuns` and `RequestCohort`. It binds the
@@ -268,6 +271,19 @@ checkpoint, spill/restore and clean capacity refusal. Scalar chunks delegate
 to the wave path. Setup measures a shared workspace/input envelope across
 slot counts, maximal ragged rows and full read depth; it does not eagerly
 materialize every slot's context ceiling.
+
+An engine-only typed variant selects one of the two approved fixed profiles;
+the default remains 26B-A4B. Unknown variants refuse before opening artifacts,
+and exact artifact binding precedes state allocation. The [dense 31B controls](experiments/gemma31-runner/README.md)
+pass ordinary 1/2/4-request same-shape full-head/KV replay and checkpoint/spill
+continuations. Source layout IDs preserve the existing 26B tag and reject
+cross-variant restore/adoption before mutation. No expert slabs are created
+for the dense profile. Its representative 128-row screen fails against
+full-fusion llama.cpp: 14.61% higher PPL and 330 strict head argmax differences
+outside the new zero native noise bound; the unfused diagnostic matches every
+full head byte for byte. This does not qualify either model or identify a
+shared cause with the narrower 26B routed-input diagnosis. Optional policies,
+optimized batching, assistants and 31B HTTP admission remain open.
 
 Checked device masks are the runner default after exact full-model agreement
 with caller-funded host masks. Norm fusion, shared Q8 preparation and bounded

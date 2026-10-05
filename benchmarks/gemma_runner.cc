@@ -95,6 +95,22 @@ int main(int argc, char** argv) {
           std::uint32_t past = static_cast<std::uint32_t>(tokens.size());
           const auto checkpoint = [&](const std::filesystem::path& path,
                                       bool restore) -> en::Status {
+            const auto tag_path = std::filesystem::path(path.string() + ".layout");
+            std::string source_layout;
+            if (restore) {
+              std::error_code tag_error;
+              const auto tag_bytes = std::filesystem::file_size(tag_path, tag_error);
+              if (tag_error || tag_bytes == 0 || tag_bytes > 128)
+                return Error("prefix checkpoint source layout missing or unbounded");
+              std::ifstream tag(tag_path, std::ios::binary);
+              source_layout.resize(tag_bytes);
+              tag.read(source_layout.data(), static_cast<std::streamsize>(tag_bytes));
+              if (!tag || tag.peek() != std::ifstream::traits_type::eof() ||
+                  source_layout != runner.CheckpointLayoutId())
+                return Error("prefix checkpoint source layout differs");
+            } else {
+              source_layout = runner.CheckpointLayoutId();
+            }
             auto ranges = runner.CheckpointRanges(past);
             if (!ranges) return Error(ranges.error());
             std::uint64_t count = 0;
@@ -117,7 +133,8 @@ int main(int argc, char** argv) {
               }
             }
             en::LiveState::CopyRetirement retirement = en::LiveState::CopyRetirement::kProven;
-            auto copied = restore ? runner.RestoreCheckpoint(0, past, *saved, *ranges, &retirement)
+            auto copied = restore ? runner.RestoreCheckpoint(0, past, *saved, *ranges,
+                                                             source_layout, &retirement)
                                   : runner.CopyState(0, *saved, *ranges, true, &retirement);
             if (retirement == en::LiveState::CopyRetirement::kUnproven) {
               node.KeepPinned(*saved);
@@ -129,6 +146,10 @@ int main(int argc, char** argv) {
               file.write(static_cast<const char*>(*saved), static_cast<std::streamsize>(count));
               file.flush();
               written = bool(file);
+              std::ofstream tag(tag_path, std::ios::binary);
+              tag.write(source_layout.data(), static_cast<std::streamsize>(source_layout.size()));
+              tag.flush();
+              written = written && bool(tag);
             }
             auto freed = node.FreePinned(*saved);
             if (!copied) return copied;

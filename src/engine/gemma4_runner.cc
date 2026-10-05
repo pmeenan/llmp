@@ -115,6 +115,16 @@ Status Gemma4Runner::ReserveWeights() {
 Status Gemma4Runner::Setup() {
   if (setup_started_ || released_) return Error("Gemma4 setup is not repeatable");
   setup_started_ = true;
+  switch (o_.variant) {
+    case Gemma4Variant::k26BA4B:
+      profile_ = md::Gemma4_26BA4B();
+      break;
+    case Gemma4Variant::k31B:
+      profile_ = md::Gemma4_31B();
+      break;
+    default:
+      return Error("Gemma4 runner variant is not approved");
+  }
   if (o_.slots == 0 || o_.slots > kMaxRequestSlots || o_.slots > o_.max_rows ||
       o_.max_rows >= o_.context) {
     return Error("Gemma4 runner needs bounded slots/chunks");
@@ -122,6 +132,9 @@ Status Gemma4Runner::Setup() {
   auto layout = md::Gemma4State(profile_, o_.context, o_.max_rows);
   if (!layout) return Error(layout.error());
   layout_ = std::move(*layout);
+  checkpoint_layout_id_ = std::format("gemma{}-f16-kv-scalar-device-v1:{}:{}:{}:{}",
+                                      o_.variant == Gemma4Variant::k31B ? 31 : 26, layout_.context,
+                                      layout_.max_rows, layout_.global_cells, layout_.local_cells);
   if (auto r = weights_.Open(o_.artifact); !r) return r;
   auto binding = md::BindGemma4(profile_, weights_.artifact());
   if (!binding) return Error(binding.error());
@@ -513,8 +526,11 @@ Status Gemma4Runner::CopyState(std::uint32_t index, void* pinned,
 }
 Status Gemma4Runner::RestoreCheckpoint(std::uint32_t index, std::uint32_t positions, void* pinned,
                                        std::span<const LiveState::Range> ranges,
+                                       std::string_view source_layout,
                                        LiveState::CopyRetirement* retirement) {
   if (retirement) *retirement = LiveState::CopyRetirement::kProven;
+  if (source_layout.empty() || source_layout != checkpoint_layout_id_)
+    return Error("Gemma4 checkpoint source layout differs");
   if (positions != 0 && pinned == nullptr) return Error("Gemma4 checkpoint has no pinned buffer");
   auto request = request_slot(index);
   if (!request) return Error(request.error());
@@ -568,7 +584,10 @@ Status Gemma4Runner::ValidateFootprint(std::uint32_t positions,
   return Gemma4CheckpointFootprint(profile_, layout_, positions, ranges);
 }
 Status Gemma4Runner::PrepareRestore(std::uint32_t index, std::uint32_t positions,
-                                    std::span<const LiveState::Range> footprint) {
+                                    std::span<const LiveState::Range> footprint,
+                                    std::string_view source_layout) {
+  if (source_layout.empty() || source_layout != checkpoint_layout_id_)
+    return Error("Gemma4 checkpoint source layout differs");
   if (auto r = ValidateFootprint(positions, footprint); !r) return r;
   auto request = request_slot(index);
   if (!request) return Error(request.error());
@@ -617,7 +636,10 @@ Status Gemma4Runner::CompleteRestore(std::uint32_t index, std::uint32_t position
   return {};
 }
 Status Gemma4Runner::Adopt(std::uint32_t index, std::uint32_t positions,
-                           std::span<const LiveState::Range> footprint) {
+                           std::span<const LiveState::Range> footprint,
+                           std::string_view source_layout) {
+  if (source_layout.empty() || source_layout != checkpoint_layout_id_)
+    return Error("Gemma4 checkpoint source layout differs");
   if (auto r = ValidateFootprint(positions, footprint); !r) return r;
   auto request = request_slot(index);
   if (!request) return Error(request.error());
