@@ -129,6 +129,39 @@ TEST(ModelSettings, OwnerCanDisableConcurrentWaveLanes) {
   EXPECT_THAT(q.Summary(), HasSubstr("wave_lanes=false (override)"));
 }
 
+TEST(ModelSettings, GemmaDefaultsAreBoundedAndExplicitlyUncalibrated) {
+  auto entry = Model("gemma");
+  auto facts = Facts("gemma4");
+  facts.trained_context = 262144;
+  facts.trained_context_from = "gemma4.context_length";
+  const auto s = Resolved(entry, facts);
+  EXPECT_EQ(s.context.value, 262144U);
+  EXPECT_EQ(s.max_slots.value, 1U);
+  EXPECT_EQ(s.prefill_chunk.value, 128U);
+  EXPECT_THAT(s.max_slots.basis, HasSubstr("uncalibrated"));
+  EXPECT_THAT(s.prefill_chunk.basis, HasSubstr("uncalibrated"));
+  EXPECT_THAT(s.recompute_ms_per_token.basis, HasSubstr("uncalibrated"));
+  EXPECT_FALSE(s.speculation.value);
+  for (const auto owners : {1, 2, 4, 8, 12}) {
+    entry.overrides["max_slots"] = std::int64_t{owners};
+    const auto chosen = Resolved(entry, facts);
+    EXPECT_EQ(chosen.max_slots.value, static_cast<std::uint32_t>(owners));
+  }
+  entry.overrides["max_slots"] = std::int64_t{13};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  entry.overrides["max_slots"] = std::int64_t{12};
+  entry.overrides["prefill_chunk"] = std::int64_t{4};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  entry.overrides["prefill_chunk"] = std::int64_t{4096};
+  EXPECT_EQ(Resolved(entry, facts).prefill_chunk.value, 128U);
+  entry.overrides["context"] = std::int64_t{262145};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  EXPECT_FALSE(ResolveSettings(Model("gemma", true), facts, nullptr, false));
+  entry = Model("gemma");
+  entry.overrides["speculation"] = true;
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+}
+
 // Derived from the artifact: the trained context, the checkpoint's
 // sampling defaults, the drafter's block.
 TEST(ModelSettings, DerivesFromTheArtifact) {

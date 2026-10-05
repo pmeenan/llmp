@@ -53,8 +53,12 @@ Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in
 `model/gemma4.h`. The [foundation contract](gemma4.md) records actual pinned
 metadata, CPU/fake controls and required optimization/batching qualification.
-Neither checkpoint has an importer, graph or runner in this slice; both
-remain unsupported for inference.
+Both have checked import and segmented graph foundations. The approved
+26B-A4B artifact also has a native runner and a bounded scalar serving route
+for chat/literal completions, likelihoods and up to twelve independent owners.
+The route disables thinking and refuses generated tools, assistants/speculation
+and the 31B profile. Neither model has completed the representative reference,
+long-context, selected optimization and optimized-batching support gates.
 
 ## Chat templates
 

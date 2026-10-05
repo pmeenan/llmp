@@ -358,8 +358,8 @@ DSML parameters; chat-v2 parses string arguments with `from_json`, which
 equals rendering the client's string parsed (fixtures `string-arguments`,
 and `string-arguments-not-object`, which both refuse).
 
-**Gemma.** `chat/gemma.cc` holds both generations (template support: no
-Gemma runner exists yet), written from the formats and linear in the
+**Gemma.** `chat/gemma.cc` holds both generations, written from the formats
+and linear in the
 conversation (the templates rescan it for every message: Gemma 4's,
 interpreted, would stop near 4,400 messages, beyond the chat route's
 intake of 1,024):

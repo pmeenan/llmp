@@ -23,6 +23,7 @@
 #include "base/json.h"
 #include "base/report.h"
 #include "model/dsv4.h"
+#include "model/gemma4.h"
 #include "model/qwen38.h"
 #include "platform/path_trust.h"
 #include "runtime/calibration.h"
@@ -252,6 +253,7 @@ std::uint32_t RunnerContextCeiling(std::string_view architecture) {
   if (architecture == "qwen4exp") {
     return model::kQwen38FlashContext;
   }
+  if (architecture == "gemma4") return model::kGemma4Context;
   return 0;
 }
 
@@ -613,22 +615,37 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     s.speculation = {true, SettingSource::kDerived,
                      std::format("the drafter ({})", facts.drafter_architecture)};
   }
+  if (arch == "gemma4" && (entry.drafter || entry.Bool("speculation").value_or(false)))
+    return Error("Gemma26 serving has no qualified assistant or speculative path");
   const bool speculative = s.speculation.value;
 
   // Speed trades: calibrated on the machine, else M3's measured constants.
+  const bool gemma = arch == "gemma4";
   const bool dsv4 = arch == "deepseek4";
   const bool deep = dsv4 && context > kDsv4WidePrefillContext;
-  std::uint32_t rows = kQwen38PrefillRows;
+  std::uint32_t rows = gemma ? 128U : kQwen38PrefillRows;
   if (dsv4) {
     rows = deep ? kDsv4DeepPrefillRows : kDsv4PrefillRows;
   }
-  s.prefill_chunk = Pick<std::uint32_t>(
-      U32(entry.Integer("prefill_chunk")), basis("prefill_chunk"), cal.prefill_chunk, cal.basis, {},
-      {}, rows,
-      deep ? "measured on a GB10 (above 262,144 tokens: the mask's memory)" : "measured on a GB10");
-  s.max_slots =
-      Pick<std::uint32_t>(U32(entry.Integer("max_slots")), basis("max_slots"), cal.max_slots,
-                          cal.basis, {}, {}, kDefaultSlots, "the knee measured on a GB10 (D-104)");
+  s.prefill_chunk =
+      Pick<std::uint32_t>(U32(entry.Integer("prefill_chunk")), basis("prefill_chunk"),
+                          cal.prefill_chunk, cal.basis, {}, {}, rows,
+                          gemma  ? "bounded Gemma runner envelope; uncalibrated"
+                          : deep ? "measured on a GB10 (above 262,144 tokens: the mask's memory)"
+                                 : "measured on a GB10");
+  s.max_slots = Pick<std::uint32_t>(
+      U32(entry.Integer("max_slots")), basis("max_slots"), cal.max_slots, cal.basis, {}, {},
+      gemma ? 1U : kDefaultSlots,
+      gemma ? "bounded scalar-cohort route; uncalibrated" : "the knee measured on a GB10 (D-104)");
+  if (gemma) {
+    const auto cap = std::min(128U, context - 1);
+    if (s.prefill_chunk.value > cap) {
+      s.prefill_chunk.value = cap;
+      s.prefill_chunk.basis += ", capped by the bounded Gemma serving envelope";
+    }
+    if (s.max_slots.value > 12 || s.max_slots.value > s.prefill_chunk.value)
+      return Error("Gemma serving needs at most twelve owners, within its chunk envelope");
+  }
   if (dsv4 && speculative && s.max_slots.value > kDsv4SpeculativeMostSlots) {
     s.max_slots.basis +=
         std::format(", at most {}: a DSpark verify takes two of a wave's sixteen rows",
@@ -641,10 +658,10 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.decode_floor_tok_s = Pick<std::uint32_t>(
       U32(entry.Integer("decode_floor_tok_s")), basis("decode_floor_tok_s"), cal.decode_floor_tok_s,
       cal.basis, {}, {}, config::kDefaultDecodeFloor, "the default");
-  s.recompute_ms_per_token =
-      Pick<double>(entry.Real("recompute_ms_per_token"), basis("recompute_ms_per_token"),
-                   cal.recompute_ms_per_token, cal.basis, {}, {}, kRecomputeMsPerToken,
-                   "DeepSeek's prefill measured on a GB10");
+  s.recompute_ms_per_token = Pick<double>(
+      entry.Real("recompute_ms_per_token"), basis("recompute_ms_per_token"),
+      cal.recompute_ms_per_token, cal.basis, {}, {}, kRecomputeMsPerToken,
+      gemma ? "provisional recompute cost; uncalibrated" : "DeepSeek's prefill measured on a GB10");
 
   // Sampling defaults: the checkpoint's own, else OpenAI's.
   const std::string& sampled = facts.sampling_from;

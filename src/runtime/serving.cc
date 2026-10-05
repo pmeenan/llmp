@@ -30,6 +30,7 @@
 #include "base/report.h"
 #include "engine/dsv4_plan.h"
 #include "engine/dsv4_runner.h"
+#include "engine/gemma4_runner.h"
 #include "engine/qwen38_runner.h"
 #include "engine/qwen_image_runner.h"
 #include "execution/adaptive_depth.h"
@@ -899,6 +900,326 @@ class Dsv4 final : public Llm {
   }
   execution::AdaptiveWaveMode wave_mode_;
   WaveCostExploration wave_cost_exploration_;
+};
+
+// Gemma 26 uses the shared serving driver with independent native slots.
+// Cohorts currently dispatch scalar completed units; joined math remains gated.
+class Gemma26 final : public Llm {
+ public:
+  Gemma26(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
+          const config::RuntimeRoles& roles, int index)
+      : entry_(entry),
+        artifact_id_(entry.artifact.value_or("")),
+        store_(roles.installed),
+        options_(Options(entry, settings, roles)),
+        runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
+    name_ = entry.name;
+    settings_ = settings;
+    node_ = &node;
+    context_ = options_.context;
+    max_rows_ = options_.max_rows;
+    configured_rows_ = settings.prefill_chunk.value;
+    checkpoint_directory_ = roles.spill;
+  }
+  engine::PagedModel& paged() override { return runner_; }
+  Status Setup() override {
+    if (entry_.drafter || settings_.speculation.value)
+      return Error("Gemma26 serving has no qualified assistant or speculative path");
+    auto artifact = OpenTrusted(store_, artifact_id_);
+    if (!artifact) return Error(artifact.error());
+    auto binding = model::BindGemma4(model::Gemma4_26BA4B(), *artifact);
+    if (!binding) return Error(binding.error());
+    if (auto r = UseChatAssets(*artifact, entry_); !r) return r;
+    // This first serving slice has no generated thought/tool channel parser.
+    // Plain chat stops before a channel control can become answer text.
+    for (const auto text : {"<|channel>", "<|tool_call>"})
+      if (const auto token = tokenizer_->Find(text)) chat_stops_.push_back(*token);
+    if (auto r = runner_.Setup(); !r) return r;
+    for (std::uint32_t i = 0; i < options_.slots; ++i) {
+      auto slot = runner_.request_slot(i);
+      if (!slot) return Error(slot.error());
+      slots_[i] = *slot;
+    }
+    return PrepareBranches(options_.slots, 1);
+  }
+  Status Register() override { return runner_.Register(); }
+  Status Bind() override { return runner_.Bind(); }
+  std::uint64_t activations_needed() const override { return runner_.activations_needed(); }
+  std::uint64_t pool_needed() const override { return runner_.pool_needed(); }
+  std::uint64_t host_input_bytes() const override {
+    // The startup guard sets this bounded heap workspace apart before any
+    // scalar output or per-owner sampling vector grows. One retained frontier
+    // and one prepared result per owner, plus the sampling candidate capacity.
+    // The independently catalog-backed pinned output holds max_rows rows.
+    const auto heap = std::uint64_t{options_.slots} * model::Gemma4_26BA4B().vocab *
+                      (2 * sizeof(float) + 2 * sizeof(execution::SamplingCandidate));
+    return runner_.host_input_bytes() + heap;
+  }
+  std::uint64_t plan_floor_bytes() const override { return runner_.plan_floor_bytes(); }
+  std::uint64_t graph_measured_bytes() const override { return runner_.graph_measured_bytes(); }
+  std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
+  std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
+  void StateWrittenBack(bool whole) override { runner_.StateWrittenBack(whole); }
+  const catalog::Closure& everything() const override { return runner_.everything(); }
+  const catalog::Closure& request_closure() const override { return runner_.closure(); }
+  std::uint64_t weight_read_bytes() const override { return runner_.weight_read_bytes(); }
+  bool HasRetainedState() const override { return AnyBranchHasRetainedState(); }
+  Status CheckPlaces() override { return runner_.CheckPlaces(); }
+  void DropPlans() override { runner_.DropPlans(); }
+  void ReclaimCandidates(std::uint32_t owner, bool running,
+                         std::vector<memory::ReclaimCandidate>& out) override {
+    runner_.ReclaimCandidates(owner, running, out);
+  }
+  std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id) override {
+    return runner_.Reclaim(kind, id);
+  }
+  GraphCounts graphs() const override {
+    const auto& g = runner_.graph_stats();
+    return {g.eager, g.captured, g.replayed, g.refused, runner_.graph_count()};
+  }
+  std::string violations() const override { return runner_.coverage().first_violation; }
+  std::string extra() const override {
+    return std::format(
+        R"({{"architecture":"gemma4","dispatch":"scalar-cohort","optional_optimizations":false,"coverage_tensors":{},"pitch_padding":{}}})",
+        runner_.coverage().tensors, runner_.pitch_padding());
+  }
+  std::string slots_report() const override { return SlotsReport(settings_); }
+  std::string KeptLayout() const override {
+    const auto& s = runner_.layout();
+    return std::format("gemma26-f16-kv-scalar-device-v1:{}:{}:{}:{}", s.context, s.max_rows,
+                       s.global_cells, s.local_cells);
+  }
+  std::vector<std::uint64_t> KeptRegions() const override {
+    return KeptRegionsOf(NativeSlot(default_branch()).state(), true);
+  }
+  std::vector<std::uint64_t> KeptLayouts() const override {
+    return KeptRegionsOf(NativeSlot(default_branch()).state(), false);
+  }
+  Status PrepareDefaultRequest() override {
+    std::array<Branch*, 1> selected{&default_branch()};
+    return SelectBranches(selected);
+  }
+  Status SelectBranches(std::span<Branch* const> active) override {
+    if (active.size() > options_.slots) return Error("too many Gemma conversation owners");
+    std::array<std::uint32_t, engine::kMaxRequestSlots> ids{};
+    for (std::size_t i = 0; i < active.size(); ++i) {
+      if (!active[i] || &active[i]->model() != this) return Error("foreign Gemma conversation");
+      ids[i] = BranchIndex(*active[i]);
+    }
+    return runner_.SelectSlots(std::span(ids).first(active.size()));
+  }
+  std::span<const std::int32_t> ChatStops() const override { return chat_stops_; }
+  bool supports_generation_waves() const override { return true; }
+  std::size_t generation_wave_capacity() const override { return options_.slots; }
+  std::uint64_t StateBytesThrough(std::uint32_t positions) const override {
+    const auto ranges = runner_.CheckpointRanges(positions);
+    if (!ranges || !slots_[0]) return 0;
+    return slots_[0]->state().UsedBytesOf(*ranges).value_or(0);
+  }
+  void Defaults(chat::Conversation& c) const override {
+    if (!c.enable_thinking) c.enable_thinking = false;
+  }
+
+ protected:
+  Status CheckConversation(const chat::Conversation& c) const override {
+    if (c.enable_thinking.value_or(false))
+      return Error("Gemma26 thought-channel output is not qualified in this serving slice");
+    if (!c.tools.empty())
+      return Error("Gemma26 generated tool-call output is not qualified in this serving slice");
+    return {};
+  }
+  Status PrepareSamplingScratchFor(Branch& branch, std::size_t logits) override {
+    const auto vocab = model::Gemma4_26BA4B().vocab;
+    if (logits != vocab) return Error("Gemma26 sampling needs its complete target vocabulary");
+    // TopK may reserve 2*k. Reserve the complete bound from empty storage
+    // before the first sample, so subsequent rows never reallocate it.
+    ReserveBranchSamplingScratch(branch, 2 * std::size_t{vocab});
+    return {};
+  }
+  void RetireSamplingScratchFor(Branch& branch) override { DropBranchSamplingScratch(branch); }
+  bool GenerationCohortUsable() const override { return runner_.cohort_usable(); }
+  Status RunPreparedGenerationWave(std::span<PreparedGeneration> units) override {
+    return RunScalarGenerationUnits(units);
+  }
+  Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
+                     bool inject, std::vector<float>& logits) override {
+    if (inject || past >= all.size()) return Error("Gemma26 needs a plain nonempty chunk");
+    const engine::Gemma4Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
+    return runner_.Wave(std::span(&work, 1));
+  }
+  Status SettleFor(Branch& branch) override {
+    return NativeSlot(branch).state_usable() ? Status{} : Error("Gemma26 state is quarantined");
+  }
+  Status ClearStateFor(Branch& branch) override { return runner_.Clear(BranchIndex(branch)); }
+  bool StateUsableFor(const Branch& branch) const override {
+    return NativeSlot(branch).state_usable();
+  }
+  bool StateRefusedFor(const Branch& branch) const override {
+    return NativeSlot(branch).refused_state_growth();
+  }
+  Status PrepareDecodeStateFor(Branch& branch, std::uint32_t pos, std::uint32_t) override {
+    if (pos != NativeSlot(branch).completed_positions() || pos >= context_)
+      return Error("Gemma26 decode position differs from its completed state");
+    return runner_.ReserveStateThrough(BranchIndex(branch), pos + 1);
+  }
+  std::uint64_t TargetStateBaseFor(const Branch& branch) const override {
+    return NativeSlot(branch).state().base(0);
+  }
+  std::uint64_t TargetStateBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).state().bytes(0);
+  }
+  std::uint64_t DrafterStateBaseFor(const Branch&) const override { return 0; }
+  std::uint64_t DrafterStateBytesFor(const Branch&) const override { return 0; }
+  std::uint64_t UsedStateBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).used_state_bytes();
+  }
+  std::vector<engine::LiveState::Range> UsedStateRangesFor(const Branch& branch) const override {
+    return NativeSlot(branch).state().used_ranges();
+  }
+  Status SaveUsedStateFor(Branch& branch, void* host,
+                          std::span<const engine::LiveState::Range> ranges) override {
+    return runner_.CopyState(BranchIndex(branch), host, ranges, true);
+  }
+  Status RestoreUsedStateFor(Branch&, void*, std::span<const engine::LiveState::Range>) override {
+    return Error("Gemma26 restore requires owned logical-position metadata");
+  }
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRangesFor(
+      const Branch& branch, std::uint32_t pos) const override {
+    if (pos != NativeSlot(branch).completed_positions())
+      return Error("Gemma26 checkpoint boundary differs from completed state");
+    return runner_.CheckpointRanges(pos);
+  }
+  Status PrepareRestoreStateFor(Branch&, std::span<const engine::LiveState::Range>) override {
+    return Error("Gemma26 restore requires owned logical-position metadata");
+  }
+  Status CheckCheckpointMetadataFor(
+      const Branch&, std::uint32_t pos, std::uint32_t cursor,
+      std::span<const engine::LiveState::Range> ranges) const override {
+    if (pos != cursor) return Error("Gemma26 checkpoint cursor differs from its logical boundary");
+    return runner_.ValidateFootprint(pos, ranges);
+  }
+  Status PreparePositionRestoreFor(Branch& branch, std::uint32_t pos, std::uint32_t cursor,
+                                   std::span<const engine::LiveState::Range> ranges) override {
+    if (auto r = CheckCheckpointMetadataFor(branch, pos, cursor, ranges); !r) return r;
+    return runner_.PrepareRestore(BranchIndex(branch), pos, ranges);
+  }
+  Status CompletePositionRestoreFor(Branch& branch, std::uint32_t pos) override {
+    return runner_.CompleteRestore(BranchIndex(branch), pos);
+  }
+  Status CopyCheckpointStateFor(Branch& branch, void* host,
+                                std::span<const engine::LiveState::Range> ranges,
+                                bool to_host) override {
+    return runner_.CopyState(BranchIndex(branch), host, ranges, to_host);
+  }
+  Status RestoreSnapshotFor(Branch& branch, void* host,
+                            std::span<const engine::LiveState::Range> ranges,
+                            std::uint32_t pos) override {
+    if (auto r = PreparePositionRestoreFor(branch, pos, pos, ranges); !r) return r;
+    if (auto r = CopyCheckpointStateFor(branch, host, ranges, false); !r) return r;
+    return CompletePositionRestoreFor(branch, pos);
+  }
+  void SaveDecodingStateFor(Branch& branch) override { SaveBranchDecoding(branch); }
+  void RestoreDecodingStateFor(Branch& branch) override { RestoreBranchDecoding(branch); }
+  execution::AdaptiveDepth TurnDecodingStateFor(const Branch& branch) const override {
+    return BranchDecoding(branch);
+  }
+  void RestoreTurnDecodingStateFor(Branch& branch, const execution::AdaptiveDepth& state) override {
+    BranchDecoding(branch) = state;
+  }
+  std::uint32_t CursorFor(const Branch& branch) const override {
+    return NativeSlot(branch).completed_positions();
+  }
+  void SetCursorFor(Branch&, std::uint32_t) override {}  // checked restore/adopt publishes it
+  const engine::LiveState* KeptLiveFor(const Branch& branch) const override {
+    return &NativeSlot(branch).state();
+  }
+  bool KeptWholeFor(const Branch& branch) const override { return NativeSlot(branch).kept_whole(); }
+  Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens, std::uint32_t pos,
+                          std::span<const engine::LiveState::Range> ranges) override {
+    if (pos != tokens.size() || pos == 0)
+      return Error("Gemma26 kept positions differ from its owned token history");
+    return runner_.Adopt(BranchIndex(branch), pos, ranges);
+  }
+  void SetSpillPlaces(
+      const std::function<engine::LiveState::SpillPlace(std::uint32_t)>& place) override {
+    runner_.SetSpillPlaces(place);
+  }
+  Status ReleaseIdleStateFor(Branch& branch) override {
+    return runner_.ClearIdle(BranchIndex(branch));
+  }
+  Status SpillFor(Branch& branch) override { return runner_.Spill(BranchIndex(branch)); }
+  Status RestoreFor(Branch& branch) override { return runner_.Restore(BranchIndex(branch)); }
+  bool SpilledFor(const Branch& branch) const override { return NativeSlot(branch).is_spilled(); }
+  std::uint64_t SpilledBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).spilled_bytes();
+  }
+  bool LeasedFor(const Branch& branch) const override { return runner_.Held(BranchIndex(branch)); }
+  std::uint64_t RefusedBytesFor(const Branch& branch) const override {
+    return NativeSlot(branch).refused_bytes();
+  }
+  Status RunChunk(std::span<const std::int32_t> all, std::uint32_t past, bool inject,
+                  std::vector<float>& logits) override {
+    return RunChunkFor(default_branch(), all, past, inject, logits);
+  }
+  Status SpecStep(std::span<const std::int32_t>, std::uint32_t, std::uint32_t,
+                  std::vector<std::int32_t>&, std::vector<std::vector<float>>*,
+                  std::uint64_t&) override {
+    return Error("Gemma26 speculation is unavailable");
+  }
+  Status Settle() override { return SettleFor(default_branch()); }
+  Status ClearState() override { return ClearStateFor(default_branch()); }
+  bool StateUsable() const override { return StateUsableFor(default_branch()); }
+  Status PrepareDecodeState(std::uint32_t pos, std::uint32_t left) override {
+    return PrepareDecodeStateFor(default_branch(), pos, left);
+  }
+  std::uint64_t target_state_base() const override { return TargetStateBaseFor(default_branch()); }
+  std::uint64_t target_state_bytes() const override {
+    return TargetStateBytesFor(default_branch());
+  }
+  std::uint64_t drafter_state_base() const override { return 0; }
+  std::uint64_t drafter_state_bytes() const override { return 0; }
+  std::uint64_t used_state_bytes() const override { return UsedStateBytesFor(default_branch()); }
+  std::vector<engine::LiveState::Range> used_state_ranges() const override {
+    return UsedStateRangesFor(default_branch());
+  }
+  Status SaveUsedState(void* host, std::span<const engine::LiveState::Range> ranges) override {
+    return SaveUsedStateFor(default_branch(), host, ranges);
+  }
+  Status RestoreUsedState(void*, std::span<const engine::LiveState::Range>) override {
+    return Error("Gemma26 restore requires owned metadata");
+  }
+  std::expected<std::vector<engine::LiveState::Range>, std::string> CheckpointRanges(
+      std::uint32_t pos) const override {
+    return runner_.CheckpointRanges(pos);
+  }
+  Status PrepareRestoreState(std::span<const engine::LiveState::Range>) override {
+    return Error("Gemma26 restore requires owned metadata");
+  }
+  Status CopyCheckpointState(void* host, std::span<const engine::LiveState::Range> ranges,
+                             bool to_host) override {
+    return CopyCheckpointStateFor(default_branch(), host, ranges, to_host);
+  }
+
+ private:
+  static engine::Gemma4Options Options(const config::ModelEntry& entry,
+                                       const ModelSettings& settings,
+                                       const config::RuntimeRoles& roles) {
+    return {.artifact = roles.installed / entry.artifact.value_or(""),
+            .out = roles.spill,
+            .context = settings.context.value,
+            .max_rows = settings.prefill_chunk.value,
+            .slots = settings.max_slots.value};
+  }
+  engine::Gemma4Runner::Slot& NativeSlot(const Branch& branch) const {
+    return *slots_[BranchIndex(branch)];
+  }
+  std::vector<std::int32_t> chat_stops_;
+  config::ModelEntry entry_;
+  std::string artifact_id_;
+  fs::path store_;
+  engine::Gemma4Options options_;
+  engine::Gemma4Runner runner_;
+  std::array<engine::Gemma4Runner::Slot*, engine::kMaxRequestSlots> slots_{};
 };
 
 // Qwen3.8 Flash Next (engine/qwen38_runner.h), with its MTP block as its
@@ -1960,6 +2281,7 @@ std::expected<std::vector<std::int32_t>, std::string> Llm::RenderChat(
   if (!template_) {
     return Error(std::format("{} has no chat template (D-067)", name_));
   }
+  if (auto checked = CheckConversation(conversation); !checked) return Error(checked.error());
   auto rendered = template_->Render(conversation, LocalTime(), options.cancelled);
   if (!rendered) {
     if (failure != nullptr && rendered.error().cancelled) {
@@ -2044,6 +2366,15 @@ std::string Llm::Detokenize(std::span<const std::int32_t> tokens) const {
   return text;
 }
 
+void Llm::ReserveBranchSamplingScratch(Branch& branch, std::size_t capacity) {
+  CheckBranch(branch);
+  branch.scratch_.reserve(capacity);
+}
+void Llm::DropBranchSamplingScratch(Branch& branch) {
+  CheckBranch(branch);
+  std::vector<execution::SamplingCandidate>().swap(branch.scratch_);
+}
+
 std::expected<std::int32_t, std::string> Llm::Choose(std::span<const float> row,
                                                      std::uint64_t position) {
   return Choose(default_branch_, row, position);
@@ -2055,6 +2386,8 @@ std::expected<std::int32_t, std::string> Llm::Choose(Branch& branch, std::span<c
   if (!branch.sampling_) {
     return engine::Argmax(row);
   }
+  if (auto prepared = PrepareSamplingScratchFor(branch, row.size()); !prepared)
+    return std::unexpected(prepared.error());
   auto token =
       execution::Sample(row, *branch.sampling_,
                         {.seed = branch.seed_, .stream = 0, .position = position}, branch.scratch_);
@@ -2432,6 +2765,13 @@ Status Llm::Adopt(Branch& branch, kept::Record& record) {
                       name(), c.position));
       continue;
     }
+    if (auto checked =
+            CheckCheckpointMetadataFor(branch, c.position, c.cursor, LiveRanges(c.footprint));
+        !checked) {
+      Say(std::format("{}: a kept turn checkpoint at {} was left out: {}", name(), c.position,
+                      checked.error()));
+      continue;
+    }
     auto file = engine::CheckpointFile::Adopt(kept_.directory, c.file, LiveRanges(c.ranges));
     if (!file) {
       Say(std::format("{}: a kept turn checkpoint at {} tokens was left out: {}", name(),
@@ -2451,7 +2791,7 @@ Status Llm::Adopt(Branch& branch, kept::Record& record) {
   if (!ReserveTokens(branch, branch.history_, branch.history_charge_, record.tokens.size())) {
     return refused("native adopted history exceeds the execution budget");
   }
-  if (auto adopted = AdoptFor(branch, used); !adopted) {
+  if (auto adopted = AdoptPositionFor(branch, record.tokens, record.cursor, used); !adopted) {
     return refused(adopted.error());
   }
   branch.history_ = record.tokens;
@@ -2907,7 +3247,7 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
     return {};
   }
   TurnCheckpoint& checkpoint = branch.turn_checkpoints_[*match];
-  const auto position = checkpoint.boundary.position;
+  const auto position = static_cast<std::uint32_t>(checkpoint.boundary.position);
   const auto restored_cursor = checkpoint.cursor;
   const auto restored_decoding = checkpoint.decoding;
   if (auto settled = SettleFor(branch); !settled) {
@@ -2918,12 +3258,16 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
       go_on ? engine::CheckpointFile::Continue([&]() { return go_on(0); })
             : engine::CheckpointFile::Continue{};
   auto restored = checkpoint.file.Restore(
-      *node_, [&]() { return PrepareRestoreStateFor(branch, checkpoint.footprint); },
+      *node_,
+      [&]() {
+        return PreparePositionRestoreFor(branch, position, restored_cursor, checkpoint.footprint);
+      },
       [&](void* host, std::span<const engine::LiveState::Range> page) {
         return CopyCheckpointStateFor(branch, host, page, false);
       },
       progress);
   if (!restored) {
+    if (StateRefusedFor(branch) && StateUsableFor(branch)) return Error(restored.error().detail);
     if (restored.error().cancelled) {
       stopped = true;
       return restored.error().invalid_state ? Clear(branch, prompt) : Status{};
@@ -2936,6 +3280,10 @@ Status Llm::ReusePrompt(Branch& branch, std::span<const std::int32_t> tokens, st
     // drops the branch before any fresh prefill; an uncertain device copy
     // may make Clear fail, in which case the runtime stops normally.
     return Clear(branch, prompt);
+  }
+  if (auto completed = CompletePositionRestoreFor(branch, position); !completed) {
+    Forget(branch, prompt);
+    return completed;
   }
   branch.history_.resize(position);
   SetCursorFor(branch, restored_cursor);
@@ -3417,7 +3765,9 @@ std::expected<std::unique_ptr<Llm::GenerationSession>, std::string> Llm::BeginGe
 }
 
 bool Llm::GenerationSession::IsStop(std::int32_t token) const {
-  return options_.stop && std::ranges::find(model_.stops_, token) != model_.stops_.end();
+  return options_.stop &&
+         (std::ranges::find(model_.stops_, token) != model_.stops_.end() ||
+          std::ranges::find(options_.extra_stops, token) != options_.extra_stops.end());
 }
 
 bool Llm::GenerationSession::Report() {
@@ -3674,6 +4024,16 @@ Status Llm::RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) {
   return RunChunkFor(*unit.branch, unit.step.all, unit.step.position, false, unit.row);
 }
 
+Status Llm::RunScalarGenerationUnits(std::span<PreparedGeneration> prepared) {
+  for (auto& unit : prepared) {
+    if (unit.step.speculative) return Error("independent scalar units require plain generation");
+    unit.result = RunChunkFor(*unit.branch, unit.step.all, unit.step.position, false, unit.row);
+    if (!unit.result && !GenerationCohortUsable()) return unit.result;
+    if (!unit.result) unit.failed_prefix_valid = StateUsableFor(*unit.branch);
+  }
+  return {};
+}
+
 Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions, bool defer_capacity) {
   if (sessions.empty() || sessions.size() > kMaxBranches ||
       sessions.size() > generation_wave_capacity() ||
@@ -3786,6 +4146,7 @@ void Llm::GenerationSession::Cancel() {
 
 void Llm::GenerationSession::Close() {
   branch_.sampling_.reset();
+  model_.RetireSamplingScratchFor(branch_);
   model_.ReleaseTokens(all_, all_charge_);
   model_.ReleaseTokens(branch_.verify_tokens_, branch_.verify_tokens_charge_);
   branch_.generation_active_ = false;
@@ -3912,7 +4273,8 @@ Status Llm::RestoreState(Branch& branch, void* host) {
   if (auto r = SettleFor(branch); !r) {
     return r;
   }
-  if (auto r = RestoreUsedStateFor(branch, host, branch.saved_ranges_); !r) {
+  if (auto r = RestoreSnapshotFor(branch, host, branch.saved_ranges_, branch.saved_cursor_); !r) {
+    if (StateRefusedFor(branch) && StateUsableFor(branch)) return r;
     branch.needs_clear_ = true;
     ReleaseTokens(branch.history_, branch.history_charge_);
     return r;
@@ -3978,6 +4340,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
   }
   if (settings.architecture == "deepseek4") {
     models_.push_back(std::make_unique<Dsv4>(node_, entry, settings, roles_, index));
+  } else if (settings.architecture == "gemma4") {
+    models_.push_back(std::make_unique<Gemma26>(node_, entry, settings, roles_, index));
   } else if (settings.architecture == "qwen4exp") {
     models_.push_back(std::make_unique<Qwen38>(node_, entry, settings, roles_, index));
   } else {

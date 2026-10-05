@@ -509,6 +509,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
           literal(std::move(literal)) {
       options.max_tokens = this->rendered.max_tokens;
       options.stop = true;
+      if (this->literal == nullptr) options.extra_stops = model.ChatStops();
       options.sampling = SamplingOf(request, model);
       if (options.sampling) {
         options.seed = request.seed.value_or(RandomSeed());
@@ -1342,6 +1343,7 @@ class NodeBackend final : public api::Backend, public api::CooperativeBackend {
     }
 
     GenerateOptions options{.max_tokens = max_tokens,
+                            .extra_stops = l.ChatStops(),
                             .stop = true,
                             .keep_logits = false,
                             .sampling = std::nullopt,

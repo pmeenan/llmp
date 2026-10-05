@@ -1,0 +1,2320 @@
+{
+  "template_sha256": "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b",
+  "renderer": "Jinja2 3.1.6 immutable sandbox, Transformers-compatible framing/JSON filters",
+  "cases": [
+    {
+      "name": "single-user",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is 2+2?"
+        }
+      ],
+      "sha256": "032a1cfd8a8753ca7f2b9036965b365be8df21d09cdbc81e3f9fc4423fea0d62",
+      "bytes": 78
+    },
+    {
+      "name": "thinking-on",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is 2+2?"
+        }
+      ],
+      "options": {
+        "enable_thinking": true
+      },
+      "sha256": "2c649da603aa1018def0daecf068c4b31f5e15eb4445865ce1752dc41891483d",
+      "bytes": 82
+    },
+    {
+      "name": "thinking-off",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is 2+2?"
+        }
+      ],
+      "options": {
+        "enable_thinking": false
+      },
+      "sha256": "032a1cfd8a8753ca7f2b9036965b365be8df21d09cdbc81e3f9fc4423fea0d62",
+      "bytes": 78
+    },
+    {
+      "name": "effort-ignored",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "options": {
+        "reasoning_effort": "high"
+      },
+      "sha256": "9a55b6a4f5b2abbc348224badcfaa4a61655755f7b27aa4437941ef49beaf43c",
+      "bytes": 68
+    },
+    {
+      "name": "system-user",
+      "messages": [
+        {
+          "role": "system",
+          "content": "  You are a helpful assistant. \n"
+        },
+        {
+          "role": "user",
+          "content": "Hello!"
+        }
+      ],
+      "sha256": "392fbb9d176bcb2a19416fa5be2bb6e49fb0082abff0b3251b5b633f6ed118f1",
+      "bytes": 122
+    },
+    {
+      "name": "system-thinking",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Be brief."
+        },
+        {
+          "role": "user",
+          "content": "Hello!"
+        }
+      ],
+      "options": {
+        "enable_thinking": true
+      },
+      "sha256": "6c4b6a1e9a9e885d42c673d504df5719788f8d06f175bce0220ad2ab23bb8a18",
+      "bytes": 85
+    },
+    {
+      "name": "system-none",
+      "messages": [
+        {
+          "role": "system",
+          "content": null
+        },
+        {
+          "role": "user",
+          "content": "Hello!"
+        }
+      ],
+      "sha256": "bcd0d29bffd323cccb3e5bfa3d2468c2a48ad0da9faa63c7bbcae5eb4605eeda",
+      "bytes": 94
+    },
+    {
+      "name": "system-only",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Just a system."
+        }
+      ],
+      "sha256": "fe46587abbab283d84d7ce9a6ffc5f6d26813c2013cff51a7d3efb191aabc8ac",
+      "bytes": 82
+    },
+    {
+      "name": "no-messages",
+      "messages": [],
+      "sha256": "f84701c8f1af96118cccf935fab8f1df3bf139ebd06b7c2937cb1af957b2e9d4",
+      "bytes": 46
+    },
+    {
+      "name": "late-system",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        },
+        {
+          "role": "system",
+          "content": " Late rule. "
+        },
+        {
+          "role": "assistant",
+          "content": "Hello."
+        },
+        {
+          "role": "user",
+          "content": "Bye"
+        }
+      ],
+      "sha256": "d3c08683d33bb204d9bfd2ecf276862ee65dc0e9dfdec1e8431ce2532487290d",
+      "bytes": 150
+    },
+    {
+      "name": "multi-turn-reasoning",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        },
+        {
+          "role": "assistant",
+          "content": "Hello!",
+          "reasoning_content": "Greeting."
+        },
+        {
+          "role": "user",
+          "content": "Capital of France?"
+        }
+      ],
+      "options": {
+        "enable_thinking": true
+      },
+      "sha256": "41f2cd90f1004c073708cffc385f995118591e24d122c1368f22408064adda79",
+      "bytes": 137
+    },
+    {
+      "name": "ending-assistant",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        },
+        {
+          "role": "assistant",
+          "content": " Hello! ",
+          "reasoning_content": " Greeting.\n"
+        }
+      ],
+      "add_generation_prompt": false,
+      "sha256": "e3bc91e6a8a2f43d1ed0bb869554868d863be70bdaedafd142376dc8a824ebd7",
+      "bytes": 94
+    },
+    {
+      "name": "empty-reasoning",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hi"
+        },
+        {
+          "role": "assistant",
+          "content": "Hello!",
+          "reasoning_content": ""
+        }
+      ],
+      "add_generation_prompt": false,
+      "sha256": "0232d7f0e34a503d45760912191c22f42a6a60fcdbb1cba2a9a5e3d321f4efe3",
+      "bytes": 54
+    },
+    {
+      "name": "channels-in-content",
+      "messages": [
+        {
+          "role": "user",
+          "content": "x <|channel>kept for users<channel|> y"
+        },
+        {
+          "role": "assistant",
+          "content": " a<|channel>thought\nhidden<channel|>b<channel|>c<|channel>gone<|channel>too "
+        }
+      ],
+      "add_generation_prompt": false,
+      "sha256": "109c8b1e478b1530ef53c4288c315cde28bd551277c2dc172aabd1f2cb13afc3",
+      "bytes": 87
+    },
+    {
+      "name": "consecutive-assistants",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Count."
+        },
+        {
+          "role": "assistant",
+          "content": "One."
+        },
+        {
+          "role": "assistant",
+          "content": "Two.",
+          "reasoning_content": "Second."
+        },
+        {
+          "role": "user",
+          "content": "Go on."
+        }
+      ],
+      "sha256": "0c081aa760ec474c25bfc18a5a9d4af57f57ff39dd8a9b09993579bade857a38",
+      "bytes": 127
+    },
+    {
+      "name": "assistant-first",
+      "messages": [
+        {
+          "role": "assistant",
+          "content": "Ready.",
+          "reasoning_content": "Opening."
+        },
+        {
+          "role": "user",
+          "content": "Hi"
+        }
+      ],
+      "sha256": "6943c03ff4472eee48148fea808ea7d0e0a5230cff107962d7708f95ae8f1d7a",
+      "bytes": 95
+    },
+    {
+      "name": "none-content",
+      "messages": [
+        {
+          "role": "user",
+          "content": null
+        }
+      ],
+      "sha256": "c3571891bc6fd32a16f7b7de45439532a26e9d7a0ea4b3cfbe632a8bad07c97d",
+      "bytes": 66
+    },
+    {
+      "name": "tools",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Plan something."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the weather for a city.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City name"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "days": {
+                  "type": "integer",
+                  "description": 7
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "plan_trip",
+            "description": "Plan a trip <fast> & \"exact\".",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "Zeta": {
+                  "type": "string"
+                },
+                "alpha": {
+                  "type": "object",
+                  "properties": {
+                    "inner": {
+                      "type": "number",
+                      "nullable": true
+                    }
+                  },
+                  "required": [
+                    "inner"
+                  ]
+                },
+                "Beta": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "description": "who"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "maxItems": 3
+                  }
+                },
+                "gamma": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": [
+                    "a",
+                    1
+                  ]
+                },
+                "delta": {
+                  "type": "array",
+                  "items": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "enum": [
+                      1,
+                      2,
+                      null
+                    ]
+                  }
+                },
+                "eps": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "description": "free form"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "fast",
+                    "slow"
+                  ],
+                  "nullable": true
+                },
+                "plain": "not a schema",
+                "count": {
+                  "type": "integer",
+                  "minimum": 0.5
+                }
+              },
+              "required": [
+                "Zeta",
+                "alpha"
+              ]
+            },
+            "response": {
+              "type": "object",
+              "description": "The plan."
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "noargs",
+            "description": ""
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "odd",
+            "parameters": {
+              "type": "object",
+              "required": "ab",
+              "properties": {}
+            },
+            "response": {
+              "description": null,
+              "type": "string"
+            }
+          }
+        }
+      ],
+      "sha256": "f50a93e887554c896d06b52c3d573d62bb1e097fb5bd9783e17fa0e8d02dddf4",
+      "bytes": 1607
+    },
+    {
+      "name": "tools-thinking-system",
+      "messages": [
+        {
+          "role": "system",
+          "content": "Tools allowed."
+        },
+        {
+          "role": "user",
+          "content": "Weather?"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the weather for a city.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City name"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "days": {
+                  "type": "integer",
+                  "description": 7
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "options": {
+        "enable_thinking": true
+      },
+      "sha256": "7f8cc7a23afcf0e6f2fe35372b5f1a3024c2b2b8657c88148b0e02f3beb3964b",
+      "bytes": 444
+    },
+    {
+      "name": "tool-round",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You can call tools."
+        },
+        {
+          "role": "user",
+          "content": "Weather in Paris and Tokyo?"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Two calls.",
+          "tool_calls": [
+            {
+              "name": "get_weather",
+              "arguments": {
+                "city": "Paris",
+                "days": 3,
+                "unit": "celsius"
+              }
+            },
+            {
+              "name": "get_weather",
+              "arguments": {
+                "city": "東京",
+                "Days": 3,
+                "extra": {
+                  "nested": [
+                    1,
+                    2.5,
+                    null,
+                    true,
+                    false,
+                    "x\ny"
+                  ],
+                  "B": {
+                    "z": -0.0,
+                    "a": 1e+300,
+                    "big": 123456789012345678901234,
+                    "f": 1e-07,
+                    "one": 1.0
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"temp\": 21, \"sky\": \"sunny\"}"
+        },
+        {
+          "role": "tool",
+          "content": "  18.5 \n"
+        },
+        {
+          "role": "assistant",
+          "content": "Paris: 21°C. Tokyo: 18.5°C.",
+          "reasoning_content": "Summarize."
+        },
+        {
+          "role": "user",
+          "content": "Thanks!"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the weather for a city.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City name"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "days": {
+                  "type": "integer",
+                  "description": 7
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "sha256": "f8da83f85d98de60104c9776a422b8db8d0d36cd266a64e964be62c44a4d3915",
+      "bytes": 1019
+    },
+    {
+      "name": "tool-round-thinking",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You can call tools."
+        },
+        {
+          "role": "user",
+          "content": "Weather in Paris and Tokyo?"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Two calls.",
+          "tool_calls": [
+            {
+              "name": "get_weather",
+              "arguments": {
+                "city": "Paris",
+                "days": 3,
+                "unit": "celsius"
+              }
+            },
+            {
+              "name": "get_weather",
+              "arguments": {
+                "city": "東京",
+                "Days": 3,
+                "extra": {
+                  "nested": [
+                    1,
+                    2.5,
+                    null,
+                    true,
+                    false,
+                    "x\ny"
+                  ],
+                  "B": {
+                    "z": -0.0,
+                    "a": 1e+300,
+                    "big": 123456789012345678901234,
+                    "f": 1e-07,
+                    "one": 1.0
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"temp\": 21, \"sky\": \"sunny\"}"
+        },
+        {
+          "role": "tool",
+          "content": "  18.5 \n"
+        },
+        {
+          "role": "assistant",
+          "content": "Paris: 21°C. Tokyo: 18.5°C.",
+          "reasoning_content": "Summarize."
+        },
+        {
+          "role": "user",
+          "content": "Thanks!"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the weather for a city.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City name"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "days": {
+                  "type": "integer",
+                  "description": 7
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "options": {
+        "enable_thinking": true
+      },
+      "sha256": "4c10b9d23fcb4db190b96a18662724498aaafe23615ce7cf0927ee20fb03be78",
+      "bytes": 1001
+    },
+    {
+      "name": "tool-round-preserve",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You can call tools."
+        },
+        {
+          "role": "user",
+          "content": "Weather in Paris and Tokyo?"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "Two calls.",
+          "tool_calls": [
+            {
+              "name": "get_weather",
+              "arguments": {
+                "city": "Paris",
+                "days": 3,
+                "unit": "celsius"
+              }
+            },
+            {
+              "name": "get_weather",
+              "arguments": {
+                "city": "東京",
+                "Days": 3,
+                "extra": {
+                  "nested": [
+                    1,
+                    2.5,
+                    null,
+                    true,
+                    false,
+                    "x\ny"
+                  ],
+                  "B": {
+                    "z": -0.0,
+                    "a": 1e+300,
+                    "big": 123456789012345678901234,
+                    "f": 1e-07,
+                    "one": 1.0
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"temp\": 21, \"sky\": \"sunny\"}"
+        },
+        {
+          "role": "tool",
+          "content": "  18.5 \n"
+        },
+        {
+          "role": "assistant",
+          "content": "Paris: 21°C. Tokyo: 18.5°C.",
+          "reasoning_content": "Summarize."
+        },
+        {
+          "role": "user",
+          "content": "Thanks!"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the weather for a city.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City name"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "days": {
+                  "type": "integer",
+                  "description": 7
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "options": {
+        "enable_thinking": true,
+        "preserve_thinking": true
+      },
+      "sha256": "3e451ee73239c8141929e3ace3754dcab597a48c51fd507ace8f7da15840e9fc",
+      "bytes": 1040
+    },
+    {
+      "name": "call-awaiting-result",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Weather?"
+        },
+        {
+          "role": "assistant",
+          "content": "Checking.",
+          "tool_calls": [
+            {
+              "name": "get_weather",
+              "arguments": {
+                "city": "Oslo"
+              }
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the weather for a city.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City name"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "days": {
+                  "type": "integer",
+                  "description": 7
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "sha256": "9cb0e9f1a0f087233816627914960b3de67e9236bb92823277141d0e6b55a24a",
+      "bytes": 506
+    },
+    {
+      "name": "result-last",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Weather?"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "get_weather",
+              "arguments": {
+                "city": "Oslo"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "cold"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the weather for a city.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City name"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "days": {
+                  "type": "integer",
+                  "description": 7
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "sha256": "83c875fc8ba23bc88db25e777d4504602040228765e2d335dddd15fabb05d409",
+      "bytes": 555
+    },
+    {
+      "name": "result-last-thinking",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Weather?"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "get_weather",
+              "arguments": {
+                "city": "Oslo"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": null
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the weather for a city.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City name"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "days": {
+                  "type": "integer",
+                  "description": 7
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "options": {
+        "enable_thinking": true
+      },
+      "sha256": "ef9856747d0bec8e395daaf9032da396362bc33ed54b73f62a5e5163f0e1dec4",
+      "bytes": 573
+    },
+    {
+      "name": "result-then-assistant",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Weather?"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "get_weather",
+              "arguments": {
+                "city": "Oslo"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "cold"
+        },
+        {
+          "role": "assistant",
+          "content": "It is cold."
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "description": "Get the weather for a city.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "city": {
+                  "type": "string",
+                  "description": "City name"
+                },
+                "unit": {
+                  "type": "string",
+                  "enum": [
+                    "celsius",
+                    "fahrenheit"
+                  ]
+                },
+                "days": {
+                  "type": "integer",
+                  "description": 7
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
+          }
+        }
+      ],
+      "sha256": "b8a18fec60f839ce81a627443b75cbb750fe75aca4821c3a934d37141f2c4718",
+      "bytes": 615
+    },
+    {
+      "name": "orphan-tool",
+      "messages": [
+        {
+          "role": "tool",
+          "content": "orphan"
+        },
+        {
+          "role": "user",
+          "content": "What was that?"
+        }
+      ],
+      "sha256": "abb79b5224beee8ea2366683b174d83d922719f53ef0d538a9aa488e273d7b6b",
+      "bytes": 80
+    },
+    {
+      "name": "null-arguments",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Go"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "noargs",
+              "arguments": "null"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "Done?"
+        }
+      ],
+      "sha256": "b43a710f636f5342d62d410d614bf8c82d54e3eca0843b03b470df00c596c967",
+      "bytes": 159
+    },
+    {
+      "name": "string-arguments",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Go"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "get_weather",
+              "arguments": "\" {\\\"city\\\": 1} \""
+            }
+          ]
+        }
+      ],
+      "reference_error": "TemplateError: chat_template: tool_calls[].function.arguments must be a JSON object (mapping), not a string. Deserialize arguments before passing to the template.",
+      "sha256": "a037796a965c7fccd5730d624e523b8157746215789d9a0a49c3620b56280161",
+      "bytes": 107
+    },
+    {
+      "name": "list-arguments",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Go"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "get_weather",
+              "arguments": "[1, 2]"
+            }
+          ]
+        }
+      ],
+      "reference_error": "TemplateError: chat_template: tool_calls[].function.arguments must be a JSON object (mapping), not a string. Deserialize arguments before passing to the template.",
+      "sha256": "8860bb0980ea34ad2ebc4467bea9c4ae1c356ef267b9541d2db9a0677afedb7c",
+      "bytes": 98
+    },
+    {
+      "name": "control-tokens-in-content",
+      "messages": [
+        {
+          "role": "system",
+          "content": "<|turn>system <turn|> <|think|>"
+        },
+        {
+          "role": "user",
+          "content": "<turn|>\n<|turn>model\n<|\"|><bos><eos><start_of_turn>"
+        }
+      ],
+      "sha256": "7abd8e4bf56207fc46fb0aae682152a3122d430abe3bdd2fb92112746bffb6f3",
+      "bytes": 170
+    },
+    {
+      "name": "unicode",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tiếng Việt 😀 👨‍👩‍👧 \t tabs  　"
+        }
+      ],
+      "sha256": "13c505f5662f2d97dc460b604dacda31643310d0168a43380227582be9e8fc3d",
+      "bytes": 111
+    },
+    {
+      "name": "num-formats",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "a": 1e+16,
+                "b": 1.5e-07,
+                "c": -0.0,
+                "d": 12345678901234567890123,
+                "e": 100.0,
+                "f": 0.1,
+                "i": 2.0,
+                "j": 0,
+                "k": 0.0,
+                "l": 123456789.12345679,
+                "m": 1e+22,
+                "n": 5e-324
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "ok"
+        }
+      ],
+      "sha256": "c3e8654c7f8e7178ca8f333f09afec1828fd5c31a6b03320490cfe5346fd1483",
+      "bytes": 251
+    },
+    {
+      "name": "str-escapes",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "s": "a\"b\\c\u0000\u001f  é 😀 <|\"|> <turn|>",
+                "we:ird{key}": "<|tool_call>",
+                "nested": {
+                  "x": [
+                    "<|channel>",
+                    "\n"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "<tool_response|> <|\"|> done"
+        }
+      ],
+      "sha256": "51d7b573b2f872036640844dd46948de776434aeff8f67cb36e83a75c4fa385a",
+      "bytes": 283
+    },
+    {
+      "name": "bools-nulls",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "a": [
+                  true,
+                  false,
+                  null,
+                  [],
+                  {}
+                ],
+                "b": {
+                  "c": null
+                },
+                "c": null
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": null
+        },
+        {
+          "role": "tool",
+          "content": ""
+        }
+      ],
+      "sha256": "5dff823c39fbdf75a6adc87d432c626d88aaf95c68652becbb1998a11d6271f7",
+      "bytes": 228
+    },
+    {
+      "name": "key-case-order",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        },
+        {
+          "role": "assistant",
+          "content": "x",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "b": 1,
+                "B": 2,
+                "a": 3,
+                "A": 4,
+                "_x": 5,
+                "Z": 6,
+                "[": 7,
+                "{": 8,
+                "~": 9
+              }
+            }
+          ]
+        }
+      ],
+      "sha256": "dcf8e0e596091b06edcf6362dd46a5559da3fbe9a98d6666257769ab6afcbb45",
+      "bytes": 124
+    },
+    {
+      "name": "keys-nonascii-lower",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "città": 1,
+                "zeta": 2,
+                "город": 3,
+                "东京": 4
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "r"
+        }
+      ],
+      "sha256": "8f4b06062298e32b7e2e9bca5846334fc6fdfa19700d11bff32beab02cd14a79",
+      "bytes": 169
+    },
+    {
+      "name": "tool-props-nonascii-lower",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "t",
+            "description": "d",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "città": {
+                  "type": "string"
+                },
+                "zeta": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "sha256": "883be2dc7f2bef32834bfb96056a7bf46745592eccf10fcceed33d44e715f4c3",
+      "bytes": 249
+    },
+    {
+      "name": "schema-deep",
+      "messages": [
+        {
+          "role": "system",
+          "content": "  sys  "
+        },
+        {
+          "role": "user",
+          "content": "q"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "deep",
+            "description": "D <|\"|> <turn|>",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "n": {
+                  "type": "integer",
+                  "default": 3,
+                  "description": "with default"
+                },
+                "tl": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "up": {
+                  "type": "STRING",
+                  "enum": [
+                    "a",
+                    1,
+                    null,
+                    true,
+                    2.5
+                  ]
+                },
+                "notype": {
+                  "description": "x"
+                },
+                "obj": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "x-extra": {
+                    "type": "integer",
+                    "description": "inner"
+                  },
+                  "nullable": true,
+                  "required": [
+                    "x-extra"
+                  ]
+                },
+                "arr": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "p",
+                        "q"
+                      ]
+                    },
+                    "description": "inner array",
+                    "minItems": 1
+                  }
+                },
+                "arrobj": {
+                  "type": "array",
+                  "nullable": true,
+                  "description": "objs",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "k": {
+                        "type": "object",
+                        "properties": {
+                          "z": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "required": [
+                      "k"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "anyof": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                },
+                "desc_obj": {
+                  "type": "string",
+                  "description": {
+                    "a": "b",
+                    "c": [
+                      1,
+                      2.0
+                    ]
+                  }
+                },
+                "desc_num": {
+                  "type": "number",
+                  "description": 1.0
+                },
+                "enum_obj": {
+                  "type": "string",
+                  "enum": {
+                    "Z": 1,
+                    "a": [
+                      null
+                    ]
+                  }
+                },
+                "req_str": {
+                  "type": "object",
+                  "properties": {
+                    "a": {
+                      "type": "string"
+                    }
+                  },
+                  "required": "ab"
+                }
+              },
+              "required": [
+                "n",
+                "tl"
+              ]
+            },
+            "response": {
+              "type": "object",
+              "description": "resp"
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "typeonly",
+            "description": "",
+            "parameters": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "notype",
+            "description": "nt",
+            "parameters": {
+              "properties": {
+                "a": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "uni_名前",
+            "description": "ünï",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "q": {
+                  "type": "string",
+                  "description": "€"
+                }
+              },
+              "required": []
+            },
+            "response": {
+              "type": "string"
+            }
+          }
+        }
+      ],
+      "sha256": "70c60c0b2af1c456fa61bbf5c648f023f7a90ea71e85639bc3f8151336c51ab0",
+      "bytes": 1841
+    },
+    {
+      "name": "chain-tools",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": "pre",
+          "reasoning_content": "r1",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "x": 1
+              }
+            },
+            {
+              "name": "g",
+              "arguments": {}
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "t1"
+        },
+        {
+          "role": "tool",
+          "content": "t2"
+        },
+        {
+          "role": "assistant",
+          "content": "mid",
+          "reasoning_content": "r2"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "r3",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "y": null
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "t3"
+        },
+        {
+          "role": "user",
+          "content": "b"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "r4",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {}
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "t4"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "f",
+            "description": "d"
+          }
+        }
+      ],
+      "options": {
+        "enable_thinking": true,
+        "preserve_thinking": true
+      },
+      "sha256": "bccab5eb1cc0da9816b3697e1fe42b186c93103550f61c97ffda1681db7ce4c6",
+      "bytes": 667
+    },
+    {
+      "name": "chain-tools-nothink",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": "pre",
+          "reasoning_content": "r1",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "x": 1
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "t1"
+        },
+        {
+          "role": "assistant",
+          "content": "  ",
+          "reasoning_content": "r2",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {}
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "f",
+            "description": "d"
+          }
+        }
+      ],
+      "sha256": "aea195b8a4fea4d32424f6dd1c3b33aaab6329f55ab21c6bdbc232160d8aa78e",
+      "bytes": 323
+    },
+    {
+      "name": "call-no-result-content",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": "visible <|channel>hidden<channel|>",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {}
+            }
+          ]
+        }
+      ],
+      "add_generation_prompt": false,
+      "sha256": "a259d776550747e2c1893514370bbd8d78752368e87967396aea5b60308395b3",
+      "bytes": 94
+    },
+    {
+      "name": "result-with-content-last",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": "done",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {}
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "x"
+        }
+      ],
+      "options": {
+        "enable_thinking": true
+      },
+      "sha256": "31595c67a52e13ead84f38a259281cfb2cf8e0ccacded7f7a6d11cd97e22703f",
+      "bytes": 194
+    },
+    {
+      "name": "channels",
+      "messages": [
+        {
+          "role": "user",
+          "content": " <|channel>u<channel|> "
+        },
+        {
+          "role": "assistant",
+          "content": "<channel|>a"
+        },
+        {
+          "role": "user",
+          "content": "x"
+        },
+        {
+          "role": "assistant",
+          "content": "<|channel>never closed"
+        },
+        {
+          "role": "user",
+          "content": "y"
+        },
+        {
+          "role": "assistant",
+          "content": "x<channel|>y<channel|>z<|channel>w"
+        },
+        {
+          "role": "user",
+          "content": "z"
+        },
+        {
+          "role": "assistant",
+          "content": " 　 <|channel>t<channel|> ans  ",
+          "reasoning_content": "\n r \n"
+        }
+      ],
+      "add_generation_prompt": false,
+      "sha256": "f88c8c3d58b9c38ba62746176d7c5d0887846acc1cd870349c0259d1837eba94",
+      "bytes": 234
+    },
+    {
+      "name": "whitespace-unicode",
+      "messages": [
+        {
+          "role": "system",
+          "content": "　sys "
+        },
+        {
+          "role": "user",
+          "content": "\u001chi\u001f "
+        }
+      ],
+      "sha256": "a422302d708377912c3cf23cff9d2de7960570ed05f2211303b8b7ebd41fd606",
+      "bytes": 93
+    },
+    {
+      "name": "late-system-tools",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "system",
+          "content": " s "
+        },
+        {
+          "role": "assistant",
+          "content": "b",
+          "reasoning_content": "rr"
+        },
+        {
+          "role": "system",
+          "content": null
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "f",
+            "description": "d"
+          }
+        }
+      ],
+      "sha256": "e0d71d9e50256555772eb162bbce76519de750f404327a3f52d8a16cb2b391ab",
+      "bytes": 239
+    },
+    {
+      "name": "only-tools-gen",
+      "messages": [],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "f",
+            "description": "d"
+          }
+        }
+      ],
+      "sha256": "80923605fc914707ec4fc37c7ee158506b0ad27da15fe3d2dcbedf737ad1b619",
+      "bytes": 120
+    },
+    {
+      "name": "only-system-thinking",
+      "messages": [
+        {
+          "role": "system",
+          "content": null
+        }
+      ],
+      "options": {
+        "enable_thinking": true
+      },
+      "sha256": "b62d4bfd168dc7df3667e74420c3298de1bce815e43a6983fb609164f42b0861",
+      "bytes": 50
+    },
+    {
+      "name": "tool-first",
+      "messages": [
+        {
+          "role": "tool",
+          "content": "orphan"
+        },
+        {
+          "role": "assistant",
+          "content": "a",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "u"
+        }
+      ],
+      "sha256": "5f8bc2f75a3adafc06acd627245f2deba7d42daa77cea1b9cba3c162bcbc38d1",
+      "bytes": 129
+    },
+    {
+      "name": "assistant-calls-then-user",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {}
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "b"
+        }
+      ],
+      "sha256": "ed64fb39efff175c55d2b8fda8dffd460065c5a31865e40b569465e59407822c",
+      "bytes": 149
+    },
+    {
+      "name": "consecutive-asst-end",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": "x"
+        },
+        {
+          "role": "assistant",
+          "content": "y"
+        }
+      ],
+      "add_generation_prompt": false,
+      "sha256": "2c88e4bf1e7060cce638672939589e5f99d9c3b22cb9b39edceec9b7f4ffb635",
+      "bytes": 49
+    },
+    {
+      "name": "consecutive-asst-gen",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": "x",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {}
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "t"
+        },
+        {
+          "role": "assistant",
+          "content": "y"
+        }
+      ],
+      "sha256": "2d0234e207f9e05160518375331f107c2327cf8c0a9db2761cf9f25ab03ab673",
+      "bytes": 183
+    },
+    {
+      "name": "g3-system-ws",
+      "messages": [
+        {
+          "role": "system",
+          "content": "  keep  \n"
+        },
+        {
+          "role": "user",
+          "content": "  u  "
+        },
+        {
+          "role": "assistant",
+          "content": " a "
+        },
+        {
+          "role": "tool",
+          "content": " t "
+        },
+        {
+          "role": "system",
+          "content": "s2"
+        },
+        {
+          "role": "user",
+          "content": "u2"
+        }
+      ],
+      "sha256": "697145c024f4cd49e46af787156c1acb9853ef7958282f3e60a5cf05b7fc1644",
+      "bytes": 161
+    },
+    {
+      "name": "g3-empty-system",
+      "messages": [
+        {
+          "role": "system",
+          "content": ""
+        },
+        {
+          "role": "user",
+          "content": "u"
+        }
+      ],
+      "sha256": "f9834e06bec7f71fe1e2ed495c6e55746eee6768a0d90e2ac1a6aaf53ec5cefb",
+      "bytes": 89
+    },
+    {
+      "name": "g3-system-assistant",
+      "messages": [
+        {
+          "role": "system",
+          "content": "s"
+        },
+        {
+          "role": "assistant",
+          "content": "a"
+        }
+      ],
+      "sha256": "990af769e03a354a6796b38630cc9d47cf862794ffbdaac8bb374a02a7857f52",
+      "bytes": 91
+    },
+    {
+      "name": "g3-asst-calls",
+      "messages": [
+        {
+          "role": "user",
+          "content": "u"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "a": 1
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "v"
+        }
+      ],
+      "sha256": "70aab14cd9abfe94a2a0777293f630d1ee3939766bd64cb4bc904c1204b838d0",
+      "bytes": 152
+    },
+    {
+      "name": "param-named-type",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "t",
+            "description": "d",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string",
+                  "description": "a description"
+                },
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            }
+          }
+        }
+      ],
+      "sha256": "379aeec7516924cb525f81e84ab3445e632caeeabbe42479ec4f2042372ed2f2",
+      "bytes": 345
+    },
+    {
+      "name": "ws-content-after-results",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": "  ",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {}
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "t"
+        },
+        {
+          "role": "user",
+          "content": "b"
+        }
+      ],
+      "sha256": "21a0c80903a821b200c6a62b2c8a8d21b18a03b8273fd4eeb6c09d9e74801fcc",
+      "bytes": 202
+    },
+    {
+      "name": "g3-asst-none",
+      "messages": [
+        {
+          "role": "user",
+          "content": "u"
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "a": 1
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": "v"
+        }
+      ],
+      "sha256": "70aab14cd9abfe94a2a0777293f630d1ee3939766bd64cb4bc904c1204b838d0",
+      "bytes": 152
+    },
+    {
+      "name": "fb-upper-type",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "t",
+            "description": "d",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "строка"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "sha256": "9d845d2dc2978169a9bd0ed9f5c8944654fe091675cafa0a1c67a9f1347a28e9",
+      "bytes": 221
+    },
+    {
+      "name": "fb-dictsort-order",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "Äb": 1,
+                "ä": 2
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "r"
+        }
+      ],
+      "sha256": "f7b2681ffa967f89345166857beb31b288b0f06092cbf98f2faa3629904141c0",
+      "bytes": 142
+    },
+    {
+      "name": "fb-items-type",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "t",
+            "description": "d",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "array",
+                  "items": {
+                    "type": [
+                      "ß",
+                      "null"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "sha256": "66481f4aa0b983337afaad0e3464dd40ee4a003d13c14c9f7ee4f61a62e94059",
+      "bytes": 257
+    },
+    {
+      "name": "fb-preserve",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a"
+        },
+        {
+          "role": "assistant",
+          "content": "b",
+          "reasoning_content": "r1"
+        },
+        {
+          "role": "user",
+          "content": "c"
+        }
+      ],
+      "options": {
+        "enable_thinking": true,
+        "preserve_thinking": true
+      },
+      "sha256": "1ebb421d488c471700f8744e71aafe7a772a28bd4b0a970e556232f3a2071ff5",
+      "bytes": 114
+    },
+    {
+      "name": "fb-user-reasoning",
+      "messages": [
+        {
+          "role": "user",
+          "content": "a",
+          "reasoning_content": "ur"
+        },
+        {
+          "role": "assistant",
+          "content": "b"
+        },
+        {
+          "role": "user",
+          "content": "c"
+        }
+      ],
+      "sha256": "63faf678831b8d841e14c5cc8b8832c6efde904c0c067975de5a040bbe631058",
+      "bytes": 110
+    },
+    {
+      "name": "case-mapping",
+      "messages": [
+        {
+          "role": "user",
+          "content": "q"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {
+              "name": "f",
+              "arguments": {
+                "ΟΔΟΣ": 1,
+                "οδος": 2,
+                "Σ": 3
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "r"
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "function": {
+            "name": "t",
+            "description": "d",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "Ωmega": {
+                  "type": "ǆ"
+                },
+                "ωmega": {
+                  "type": "straße"
+                },
+                "İd": {
+                  "type": "ﬃ"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "sha256": "eb993dcf5f5ba0b3f1733723c13c82255fa48e82d92de0f811c6104ab79a41e6",
+      "bytes": 364
+    }
+  ]
+}

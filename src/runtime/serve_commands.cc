@@ -195,6 +195,7 @@ Status RunChat(Server& server, const ChatOptions& o, const ServingOptions& servi
         top = TopLogits(last);
         return l.Generate(last,
                           {.max_tokens = std::min(o.max_tokens, room),
+                           .extra_stops = l.ChatStops(),
                            .stop = !o.ignore_stop,
                            .keep_logits = false,
                            .sampling = std::nullopt,

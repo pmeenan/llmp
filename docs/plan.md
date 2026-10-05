@@ -248,11 +248,15 @@ family" guide, and its long-context scaling work.
         Optimized serving and reference gates remain owed.
       - [x] Bounded native Gemma 26B-A4B runner with independent slots,
         device masks and [exact state/replay controls](experiments/gemma-runner/README.md).
-        Serving, assistant, representative quality, long-context and optimized
+        Complete serving, assistant, representative quality, long-context and optimized
         batching/performance qualification remain owed.
       - [x] Checked per-segment Gemma RoPE/cache-store policy with primitive
         fallback and [complete-layer controls](experiments/gemma-rope-store/README.md).
         Mixed paid results keep selection off by default.
+      - [x] Bounded Gemma26 adapter on the shared serving driver, with scalar
+        independent cohorts, target likelihoods, checked checkpoint positions
+        and exact continuation/restart controls. Thinking/tools, assistants,
+        selected optimized joining and full model qualification remain owed.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

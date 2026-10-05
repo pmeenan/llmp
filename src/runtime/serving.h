@@ -277,8 +277,9 @@ struct Generation {
 
 struct GenerateOptions {
   std::uint32_t max_tokens = 256;
-  bool stop = true;          // end at the model's stop tokens
-  bool keep_logits = false;  // every token's logits in Generation::logits
+  std::span<const std::int32_t> extra_stops = {};  // route-only controls; borrowed through Finish
+  bool stop = true;                                // end at the model's stop tokens
+  bool keep_logits = false;                        // every token's logits in Generation::logits
   // Seeded sampling (execution/sampling.h), keyed by the seed and each
   // token's position in the conversation; absent, or temperature 0, is
   // greedy. Speculation then verifies drafts by speculative sampling
@@ -412,6 +413,9 @@ class Llm : public Served {
     // Generate of this branch ended on a capacity refusal (Llm::
     // set_capacity_reclaim): the state usable at its completed prefix.
     bool capacity_refused() const { return capacity_refused_; }
+    std::uint64_t sampling_scratch_bytes() const {
+      return scratch_.capacity() * sizeof(execution::SamplingCandidate);
+    }
 
    private:
     friend class Llm;
@@ -640,6 +644,7 @@ class Llm : public Served {
   std::optional<std::int32_t> think_start() const { return think_start_; }
   std::optional<std::int32_t> think_end() const { return think_end_; }
   const tokenizer::Tokenizer& tokenizer() const { return *tokenizer_; }
+  virtual std::span<const std::int32_t> ChatStops() const { return {}; }
 
   // Tokens of plain text (no template; BOS first where the vocabulary has
   // one, as the reference runs fed it). Bounded by the text itself; with
@@ -918,9 +923,21 @@ class Llm : public Served {
   // Success means the native unit completed. Each independent judgement
   // supplies its own result. A shared error supplies no result to apply.
   virtual Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared);
+  // Independent scalar native units, with per-unit completion publication.
+  Status RunScalarGenerationUnits(std::span<PreparedGeneration> prepared);
   // Execution health only: false prevents dispatch after a shared failure.
   // This is deliberately separate from native-reference retirement proof.
   virtual bool GenerationCohortUsable() const { return true; }
+  // Model-specific workspace funded by the startup guard. Defaults preserve
+  // the existing families' sampling storage policy.
+  virtual Status PrepareSamplingScratchFor(Branch& branch, std::size_t rows) {
+    (void)branch;
+    (void)rows;
+    return {};
+  }
+  virtual void RetireSamplingScratchFor(Branch& branch) { (void)branch; }
+  void ReserveBranchSamplingScratch(Branch& branch, std::size_t capacity);
+  void DropBranchSamplingScratch(Branch& branch);
   // Called once, after the native slots exist. Other model families retain
   // one default branch and their existing scalar overrides.
   Status PrepareBranches(std::uint32_t count, std::uint32_t draft_depth);
@@ -1036,6 +1053,46 @@ class Llm : public Served {
   virtual Status CopyCheckpointStateFor(Branch& branch, void* host,
                                         std::span<const engine::LiveState::Range> ranges,
                                         bool to_host);
+  // Position-aware restoration. Existing families retain their byte/cursor
+  // contracts; Gemma authenticates its explicit completed-position ledger.
+  virtual Status PreparePositionRestoreFor(Branch& branch, std::uint32_t position,
+                                           std::uint32_t cursor,
+                                           std::span<const engine::LiveState::Range> footprint) {
+    (void)position;
+    (void)cursor;
+    return PrepareRestoreStateFor(branch, footprint);
+  }
+  virtual Status CheckCheckpointMetadataFor(
+      const Branch& branch, std::uint32_t position, std::uint32_t cursor,
+      std::span<const engine::LiveState::Range> footprint) const {
+    (void)branch;
+    (void)position;
+    (void)cursor;
+    (void)footprint;
+    return {};
+  }
+  virtual Status CompletePositionRestoreFor(Branch& branch, std::uint32_t position) {
+    (void)branch;
+    (void)position;
+    return {};
+  }
+  virtual Status RestoreSnapshotFor(Branch& branch, void* host,
+                                    std::span<const engine::LiveState::Range> ranges,
+                                    std::uint32_t cursor) {
+    (void)cursor;
+    return RestoreUsedStateFor(branch, host, ranges);
+  }
+  virtual Status AdoptPositionFor(Branch& branch, std::span<const std::int32_t> tokens,
+                                  std::uint32_t cursor,
+                                  std::span<const engine::LiveState::Range> ranges) {
+    (void)tokens;
+    (void)cursor;
+    return AdoptFor(branch, ranges);
+  }
+  virtual Status CheckConversation(const chat::Conversation& conversation) const {
+    (void)conversation;
+    return {};
+  }
   virtual std::uint32_t CursorFor(const Branch& branch) const;
   virtual void SetCursorFor(Branch& branch, std::uint32_t value);
   virtual void SaveDecodingStateFor(Branch& branch);

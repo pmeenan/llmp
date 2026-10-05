@@ -85,3 +85,38 @@ TEST(Gemma4Runner, ActualLayerFourteenShardCutPreservesEveryReadableMember) {
   EXPECT_FALSE(en::Gemma4ExpertPitch(UINT64_MAX, std::array<std::string_view, 1>{"Q4_K"}));
   EXPECT_FALSE(en::Gemma4ExpertPitch(stored, std::array<std::string_view, 1>{"unknown"}));
 }
+TEST(Gemma4Runner, CheckpointLedgerRequiresEveryFundedExtentWithoutInferringPosition) {
+  const auto& profile = jitllm::model::Gemma4_26BA4B();
+  auto layout = jitllm::model::Gemma4State(profile, 4096, 16);
+  ASSERT_TRUE(layout);
+  auto needed = jitllm::model::Gemma4UsedState(profile, *layout, 6);
+  ASSERT_TRUE(needed);
+  std::vector<en::LiveState::Range> footprint;
+  for (const auto& r : *needed)
+    for (auto e = r.offset / en::kPagedExtent; e <= (r.offset + r.bytes - 1) / en::kPagedExtent;
+         ++e)
+      footprint.push_back({0, e * en::kPagedExtent,
+                           std::min(en::kPagedExtent, layout->bytes - e * en::kPagedExtent)});
+  EXPECT_TRUE(en::Gemma4CheckpointFootprint(profile, *layout, 6, footprint));
+  // The same initialized pages can fund several positions. Only owned
+  // logical metadata selects which one was actually computed.
+  EXPECT_TRUE(en::Gemma4CheckpointFootprint(profile, *layout, 5, footprint));
+  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 4097, footprint));
+  auto bad = footprint;
+  bad.pop_back();
+  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
+  bad = footprint;
+  ++bad[0].offset;
+  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
+  bad = footprint;
+  --bad[0].bytes;
+  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
+  bad = footprint;
+  bad[0].region = 1;
+  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
+  bad = footprint;
+  bad.push_back(bad.back());
+  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 6, bad));
+  EXPECT_TRUE(en::Gemma4CheckpointFootprint(profile, *layout, 0, {}));
+  EXPECT_FALSE(en::Gemma4CheckpointFootprint(profile, *layout, 0, footprint));
+}

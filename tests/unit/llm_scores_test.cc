@@ -300,6 +300,8 @@ class NativeBranchesFake final : public FakeLlm {
   std::optional<std::uint32_t> nonfinite_wave_row;
   std::optional<std::uint32_t> failed_wave_judgement;
   std::optional<std::uint32_t> failed_scalar_judgement;
+  bool scalar_units = false;
+  std::optional<std::uint32_t> refuse_scalar_dispatch;
   // The execution budget in state tokens, shared by every branch: growth
   // past it is refused for capacity before dispatch (StateRefusedFor).
   std::optional<std::size_t> budget;
@@ -340,6 +342,10 @@ class NativeBranchesFake final : public FakeLlm {
 
  protected:
   rt::Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared) override {
+    if (scalar_units) {
+      if (refuse_scalar_dispatch) native_state(*refuse_scalar_dispatch).refuse_capacity = true;
+      return RunScalarGenerationUnits(prepared);
+    }
     for (PreparedGeneration& unit : prepared) {
       const auto slot = BranchIndex(*unit.branch);
       if (failed_wave_judgement == slot) {
@@ -2923,4 +2929,80 @@ TEST(TokenHistory, NearBudgetGrowthRefusesInsteadOfCopyingEachGeneratedToken) {
   (*session)->Cancel();
   ASSERT_TRUE((*session)->Finish());
   EXPECT_EQ(model.history(), prompt);
+}
+
+TEST(LlmScores, ScalarUnitPublicationKeepsEarlierSuccessOnLaterCleanDispatchRefusal) {
+  NativeBranchesFake model;
+  model.scalar_units = true;
+  const auto a = *model.branch(1), b = *model.branch(2), reference = *model.branch(3);
+  rt::GenerateOptions options;
+  options.max_tokens = 4;
+  options.stop = false;
+  options.seed = 73;
+  options.sampling = jitllm::execution::SamplingParams{.temperature = 0.7F, .top_k = 4};
+  std::vector<float> last;
+  ASSERT_TRUE(reference->Prefill(std::array<std::int32_t, 1>{0}, last));
+  rt::Generation expected;
+  ASSERT_TRUE(reference->Generate(last, options, expected));
+  ASSERT_TRUE(a->Prefill(std::array<std::int32_t, 1>{0}, last));
+  rt::Generation out_a, out_b;
+  std::vector<std::int32_t> visible;
+  auto streamed = options;
+  streamed.on_tokens = [&](std::span<const std::int32_t> ids) {
+    visible.insert(visible.end(), ids.begin(), ids.end());
+    return true;
+  };
+  auto sa = a->BeginGeneration(last, options, out_a);
+  ASSERT_TRUE(sa);
+  ASSERT_TRUE(b->Prefill(std::array<std::int32_t, 1>{0}, last));
+  auto sb = b->BeginGeneration(last, streamed, out_b);
+  ASSERT_TRUE(sb);
+  model.refuse_scalar_dispatch = 2;
+  const std::array<rt::Llm::GenerationSession*, 2> both{sa->get(), sb->get()};
+  const auto ran = model.RunGenerationWave(both);
+  EXPECT_TRUE(ran);
+  EXPECT_EQ(out_a.tokens.size(), 2U);
+  EXPECT_EQ(out_b.tokens.size(), 1U);
+  EXPECT_EQ(model.native_state(1).chunks, 2U);
+  EXPECT_EQ(model.native_state(2).chunks, 1U);
+  EXPECT_TRUE((*sb)->done());
+  EXPECT_FALSE((*sb)->Finish());
+  sb->reset();
+  EXPECT_EQ(b->history(), model.native_state(2).target);
+  model.refuse_scalar_dispatch.reset();
+  model.native_state(2).refuse_capacity = false;
+  auto resumed = b->ResumeGeneration({}, streamed, out_b);
+  ASSERT_TRUE(resumed);
+  const std::array<rt::Llm::GenerationSession*, 2> again{sa->get(), resumed->get()};
+  while (!(*sa)->done() && !(*resumed)->done()) EXPECT_TRUE(model.RunGenerationWave(again));
+  const std::array<rt::Llm::GenerationSession*, 1> remaining{resumed->get()};
+  while (!(*resumed)->done()) EXPECT_TRUE(model.RunGenerationWave(remaining));
+  EXPECT_TRUE((*sa)->Finish());
+  EXPECT_TRUE((*resumed)->Finish());
+  EXPECT_EQ(out_a.tokens, expected.tokens);
+  EXPECT_EQ(out_b.tokens, expected.tokens);
+  EXPECT_EQ(visible, expected.tokens);
+  EXPECT_EQ(a->history(), b->history());
+}
+
+TEST(LlmScores, PerRequestChatStopsDoNotChangeLiteralStops) {
+  FakeLlm model;
+  std::vector<float> last;
+  const std::array<std::int32_t, 1> channel{1};
+  rt::GenerateOptions chat;
+  chat.max_tokens = 3;
+  chat.extra_stops = channel;
+  ASSERT_TRUE(model.Prefill(std::array<std::int32_t, 1>{0}, last));
+  rt::Generation stopped;
+  ASSERT_TRUE(model.Generate(last, chat, stopped));
+  EXPECT_TRUE(stopped.stopped);
+  EXPECT_EQ(stopped.steps, 0U);
+  ASSERT_TRUE((*model.branch(0))->Clear());
+  ASSERT_TRUE(model.Prefill(std::array<std::int32_t, 1>{0}, last));
+  rt::GenerateOptions literal;
+  literal.max_tokens = 3;
+  rt::Generation ordinary;
+  ASSERT_TRUE(model.Generate(last, literal, ordinary));
+  EXPECT_FALSE(ordinary.stopped);
+  EXPECT_THAT(ordinary.tokens, ElementsAre(1, 2, 3));
 }

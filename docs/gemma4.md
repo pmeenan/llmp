@@ -208,8 +208,9 @@ position, cache-cell and funding checks remain in both modes. Device mode
 rejects supplied host mask arrays; diagnostic mode validates every supplied
 causal/window bit and constructs funded padded reference masks. The device
 mode's host descriptors remain O(rows + slots), with mask outputs charged to
-activation storage. The option remains explicit; runner adoption and
-whole-model qualification are separate. [Device-mask controls](experiments/gemma-device-masks/README.md)
+activation storage. The graph option remains explicit and defaults off for
+diagnostic callers; the checked native runner chooses device masks by default.
+Whole-model qualification remains separate. [Device-mask controls](experiments/gemma-device-masks/README.md)
 record exact bytes, fresh captured positions and paid complete-layer comparisons.
 
 Explicit diagnostic options may start from hidden inputs and execute a checked
@@ -274,9 +275,42 @@ row-preserving products remain explicit experiments, default off. The
 [first complete-model controls](experiments/gemma-runner/README.md) retain the
 short reference/noise screen, ordinary joined arithmetic differences, exact
 experimental solo/join state and short paid latency. Full weight-closure
-acquisition is the current numerical baseline; route-discovered expert paging,
-qualified lanes/optimization dispatch, long context, serving and representative
-reference quality/performance remain required before model support.
+acquisition is the current numerical baseline. Resident qualification still
+requires selected lanes/optimization dispatch, optimized batching, long context,
+complete serving behavior and representative reference quality/performance.
+Route-discovered expert paging is an M7 follow-on; authoritative raw expert
+groups remain available for it.
+
+## Bounded native serving route
+
+The existing runtime driver registers the approved 26B-A4B artifact through
+`runtime/serving.cc`. Chat and literal completions share the native runner,
+state skeleton, settings, continuation and restart machinery. Up to twelve
+independent owners execute scalar completed units; this is continuous cohort
+scheduling, with no selected joined model dispatch. Prefill is capped at 128
+rows, context at 262,144, and the fallback settings are explicitly uncalibrated.
+Norm, shared-Q8, row-invariant and RoPE/store policies remain off. Device masks
+remain the native default.
+
+Plain chat disables thinking in the actual template. Generated thought and
+tool-call parsing, assistants/speculation and the 31B serving profile are
+explicitly unavailable in this slice. Template controls deserialize historical tool-call
+argument strings once before rendering and compare the
+approved `845f1ee4…` template with pinned Jinja on those normalized inputs.
+The current generic HTTP parser still refuses historical tool-call messages;
+these broader template controls do not establish an HTTP tool-history route.
+Additional plain-chat channel stops do not affect literal completion stops or
+target likelihoods. Literal scoring uses completed one-row full-vocabulary
+units, so peers can progress and a resumed scorer does not repeat reported rows.
+
+Saved boundaries require the native completed position. Restores authenticate
+owned cursor/boundary metadata and initialized extent footprints; padded bytes
+cannot establish a logical position. A prepared restore blocks execution until
+every logical range has a proven completed copy. Contradictory kept turn
+checkpoints are omitted before file adoption. Clean pre-copy capacity refusals
+retain the previous completed prefix and peer leases.
+[Serving controls](experiments/gemma-serving/README.md) record the bounded route;
+they do not establish qualified model support or optimized batching.
 
 ## Required execution and optimization qualification
 

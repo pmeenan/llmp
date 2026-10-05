@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Bounded Gemma26 chat and literal completion route on the native driver,
+  with target likelihoods and up to twelve independent scalar request owners.
+  Thinking, generated tools and assistants remain unavailable.
+
 - Explicit default-off Gemma per-segment RoPE/cache-store fusion, with
   checked primitive fallback and readable diagnostic keeps. Whole-model
   optimization selection remains separate.

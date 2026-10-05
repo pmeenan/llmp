@@ -345,3 +345,114 @@ TEST_F(Gemma4RunnerGpu, PagedOutWeightsAdmissionRefusesWithoutLosingCompletedPre
   Exact(baseline, resumed);
   ASSERT_TRUE(node.FreePinned(*checkpoint));
 }
+TEST_F(Gemma4RunnerGpu, ServingRestoreNeedsProvenCompleteCopiesAndProtectsThePeer) {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
+  auto r = Held([&]() -> en::Status {
+    std::vector<float> baseline, peer;
+    if (auto x = Single(0, 0, std::span(prompt).first(5), baseline); !x) return x;
+    if (auto x = Single(0, 5, std::span(prompt).last(1), baseline); !x) return x;
+    if (auto x = Single(1, 0, std::span(prompt).first(5), peer); !x) return x;
+    if (auto x = Single(1, 5, std::span(prompt).last(1), peer); !x) return x;
+    auto slot = runner->request_slot(0);
+    if (!slot) return en::support::Error(slot.error());
+    const auto footprint = (*slot)->state().used_ranges();
+    const auto saved_bytes = (*slot)->used_state_bytes();
+    std::vector<jitllm::catalog::ExtentId> staging;
+    auto pinned = node.Pinned(saved_bytes, 0, staging);
+    if (!pinned) return en::support::Error(pinned.error());
+    auto exercised = [&]() -> en::Status {
+      if (auto x = runner->CopyState(0, *pinned, footprint, true); !x) return x;
+      auto invalid = footprint;
+      ++invalid[0].offset;
+      EXPECT_FALSE(runner->PrepareRestore(0, 5, invalid));
+      EXPECT_EQ((*slot)->completed_positions(), 6U);
+      // A capacity refusal before any copy preserves the completed ledger
+      // and the peer's held state, even when the target needs more extents.
+      std::vector<en::LiveState::Range> larger;
+      for (std::uint64_t offset = 0; offset < (*slot)->state().bytes(0); offset += en::kPagedExtent)
+        larger.push_back(
+            {0, offset, std::min(en::kPagedExtent, (*slot)->state().bytes(0) - offset)});
+      const auto available = node.FreeBytes();
+      if (!available || *available <= (16U << 20U)) return en::support::Error("test capacity");
+      const auto pressure = *available - (16U << 20U);
+      if (!node.ChargeHost(pressure, false)) return en::support::Error("test pressure");
+      const auto refused_prepare = runner->PrepareRestore(0, 1025, larger);
+      node.UnchargeHost(pressure);
+      EXPECT_FALSE(refused_prepare);
+      EXPECT_TRUE((*slot)->state_usable());
+      EXPECT_TRUE((*slot)->refused_state_growth());
+      EXPECT_EQ((*slot)->completed_positions(), 6U);
+      EXPECT_EQ((*runner->request_slot(1))->completed_positions(), 6U);
+      // Compare the identical whole-extent packing, including its padding.
+      // Logical CheckpointRanges use a different packing and cannot be
+      // compared directly with this snapshot's complete extent footprint.
+      auto preserved = node.Pinned(saved_bytes, 0, staging);
+      if (!preserved) return en::support::Error(preserved.error());
+      const auto copied = runner->CopyState(0, *preserved, footprint, true);
+      if (copied) EXPECT_EQ(std::memcmp(*pinned, *preserved, saved_bytes), 0);
+      const auto released = node.FreePinned(*preserved);
+      if (!copied) return copied;
+      if (!released) return released;
+      // The saved bytes are still the completed prefix, not a partial restore.
+      if (auto x = runner->PrepareRestore(0, 5, footprint); !x) return x;
+      EXPECT_FALSE(runner->CompleteRestore(0, 5));
+      EXPECT_FALSE(runner->CompleteRestore(0, 6));
+      EXPECT_EQ((*slot)->completed_positions(), 6U);
+      EXPECT_FALSE((*slot)->state_usable());
+      std::vector<float> refused{17};
+      EXPECT_FALSE(Single(0, 6, std::span(prompt).first(1), refused));
+      EXPECT_EQ(refused, std::vector<float>{17});
+      if (auto x = runner->CopyState(0, *pinned, std::span(footprint).first(1), false); !x)
+        return x;
+      EXPECT_FALSE(runner->CompleteRestore(0, 5));
+      // A full, independently retired snapshot copy funds all logical rows.
+      if (auto x = runner->CopyState(0, *pinned, footprint, false); !x) return x;
+      if (auto x = runner->CompleteRestore(0, 5); !x) return x;
+      EXPECT_EQ((*slot)->completed_positions(), 5U);
+      EXPECT_TRUE((*slot)->state_usable());
+      std::vector<float> restored;
+      if (auto x = Single(0, 5, std::span(prompt).last(1), restored); !x) return x;
+      Exact(baseline, restored);
+      EXPECT_EQ((*runner->request_slot(1))->completed_positions(), 6U);
+      const std::array<std::int32_t, 1> anchor{563};
+      std::vector<float> a, b;
+      if (auto x = Single(0, 6, anchor, a); !x) return x;
+      if (auto x = Single(1, 6, anchor, b); !x) return x;
+      Exact(a, b);
+      return {};
+    }();
+    if (!exercised) {
+      auto freed = node.FreePinned(*pinned);
+      return freed ? exercised : freed;
+    }
+    return node.FreePinned(*pinned);
+  });
+  ASSERT_TRUE(r) << (r ? "" : r.error());
+}
+
+TEST_F(Gemma4RunnerGpu, MaximumAllHeadRowsReplayWithSeparatelyFundedCallerVectors) {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 1>{0}));
+  const auto bytes = 128ULL * 262144 * sizeof(float);
+  // Pinned native outputs were funded during Setup. These two caller-owned
+  // copies have their own host grant before either output vector can grow.
+  ASSERT_TRUE(node.ChargeHost(2 * bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, 2 * bytes};
+  std::vector<float> expected, repeated;
+  std::vector<std::int32_t> tokens(128);
+  for (std::size_t i = 0; i < tokens.size(); ++i) tokens[i] = prompt[i % prompt.size()];
+  const en::Gemma4Runner::Work first{0, 0, tokens, &expected};
+  ASSERT_TRUE(runner->Wave(std::span(&first, 1), true));
+  EXPECT_EQ(expected.size(), 128U * 262144);
+  EXPECT_TRUE(std::ranges::all_of(expected, [](float x) { return std::isfinite(x); }));
+  for (unsigned run = 0; run < 3; ++run) {
+    ASSERT_TRUE(runner->Clear(0));
+    const en::Gemma4Runner::Work again{0, 0, tokens, &repeated};
+    ASSERT_TRUE(runner->Wave(std::span(&again, 1), true));
+    Exact(expected, repeated);
+  }
+  EXPECT_GT(runner->graph_stats().replayed, 0U);
+}

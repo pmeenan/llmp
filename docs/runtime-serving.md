@@ -43,6 +43,16 @@ stream, evicts every managed extent and checks every backing released.
 
 ## Configuration
 
+The approved Gemma26 artifact has a bounded native route on this same driver.
+It accepts chat and literal completions with target likelihoods and up to
+twelve independent owners executing scalar completed units. Its context ceiling
+is 262,144 and its prefill cap is 128; settings fallbacks are uncalibrated.
+Device masks are the native default, while optional norm, shared-Q8,
+row-invariant and RoPE/store policies remain off. Plain chat disables thinking;
+generated tools, assistants/speculation and the 31B profile are refused.
+These route controls do not establish qualified model support or optimized
+joined batching; [Gemma's contract](gemma4.md) lists the remaining gates.
+
 A node names the models it serves in its configuration (D-073's document,
 `schema_version = 2`; the keys are new and compatible):
 

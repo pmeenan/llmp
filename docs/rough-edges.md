@@ -28,6 +28,22 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-047: Parallel full-model GPU tests exhaust Spark memory  (2026-10-04, status: worked-around)
+
+Environment: `spark-b`, GB10, driver 580.178.04, the locked native Spark
+suite with CTest parallelism set to the host CPU count. Each Gemma model
+test process loads its own roughly 17 GB weight backing. Running the new
+serving and runner controls together exhausted physical memory: the kernel
+recorded global OOM kills of four model tests, NVIDIA allocation failures,
+and transient SSH unresponsiveness. Ordinary process RSS does not explain
+the device backing in this unified memory domain.
+
+GPU tests marked `MODELS` now share the CTest `jitllm_gpu_model` resource
+lock. They run one at a time within a suite; CPU and primitive GPU checks
+retain their parallel scheduling. The installed Spark supervisor still
+serializes separate jobs. A passing focused model run does not prove that
+several independent copies can fit concurrently.
+
 ## RE-046: GGML flash-attention total iterations use signed integers  (2026-10-04, status: worked-around)
 
 Environment: pinned llama.cpp b10964, GB10, NVCC 13.4.92. Independent review

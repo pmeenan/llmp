@@ -69,6 +69,7 @@ Status Gemma4Runner::SelectSlots(std::span<const std::uint32_t> slots) {
 kg::DeviceChoices Gemma4Runner::Choices(kg::LaunchContext& launch, std::uint32_t rows) const {
   auto choices = kg::DeviceChoicesOf(launch);
   choices.fuse_norms = o_.fuse_norms;
+  choices.fuse_rope_store = o_.rope_store;
   // The existing one-row sums contract is bounded to kRowInvariantColumns;
   // wider prefills retain the ordinary primitive product policy.
   choices.row_invariant = o_.row_invariant && rows <= kg::kRowInvariantColumns;
@@ -138,6 +139,7 @@ Status Gemma4Runner::Setup() {
   model_.binding = &binding_;
   model_.state = &layout_;
   model_.options.shared_q8 = o_.shared_q8;
+  model_.options.rope_store = o_.rope_store;
   model_.options.narrow_final = o_.frontier_head;
   model_.options.device_masks = !o_.reference_masks;
   if (auto r = ReserveWeights(); !r) return r;
@@ -217,7 +219,13 @@ Status Gemma4Runner::Register() {
   std::vector<ExtentId> pinned = weights();
   for (auto& slot : slots_) {
     if (!slot) continue;
-    if (auto r = slot->live.RegisterSpill(node_, o_.out); !r) return r;
+    if (auto r = slot->live.RegisterSpill(
+            node_,
+            o_.spill_place
+                ? o_.spill_place(slot->index)
+                : LiveState::SpillPlace{.directory = o_.out, .dir = -1, .name = {}, .keep = false});
+        !r)
+      return r;
     const auto reserved = slot->live.reserved_extents();
     pinned.insert(pinned.end(), reserved.begin(), reserved.end());
   }
@@ -360,6 +368,7 @@ Status Gemma4Runner::ReserveStateThrough(std::uint32_t index, std::uint32_t posi
   if (!ranges) return Error(ranges.error());
   bool over_budget = false;
   auto used = slot.live.Use(node_, *ranges, &execution_, &over_budget);
+  if (used && *used) slot.on_disk = false;
   // Even a partial clean refusal can have initialized pages: protect them.
   if ((!used || *used)) {
     if (auto r = RefreshClosures(); !r) return r;
@@ -382,6 +391,12 @@ Status Gemma4Runner::Clear(std::uint32_t index) {
     slot.spilled = false;
     slot.positions = 0;
     slot.state_refused = false;
+    slot.on_disk = false;
+    slot.adopted.clear();
+    slot.adopted_bytes = 0;
+    slot.restoring.reset();
+    slot.restore_needed.clear();
+    slot.restored_bytes.clear();
   }
   if (auto r = RefreshClosures(); !r) return r;
   return cleared;
@@ -397,6 +412,12 @@ Status Gemma4Runner::ClearIdle(std::uint32_t index) {
     slot.spilled = false;
     slot.positions = 0;
     slot.state_refused = false;
+    slot.on_disk = false;
+    slot.adopted.clear();
+    slot.adopted_bytes = 0;
+    slot.restoring.reset();
+    slot.restore_needed.clear();
+    slot.restored_bytes.clear();
   }
   if (auto r = RefreshClosures(); !r) return r;
   return cleared;
@@ -415,7 +436,9 @@ Status Gemma4Runner::Spill(std::uint32_t index) {
     slot.spilled = false;
     return r;
   }
-  return node_.Evict(extents);
+  auto evicted = node_.Evict(extents);
+  slot.on_disk = evicted.has_value();
+  return evicted;
 }
 Status Gemma4Runner::Restore(std::uint32_t index) {
   auto request = request_slot(index);
@@ -424,6 +447,19 @@ Status Gemma4Runner::Restore(std::uint32_t index) {
   slot.state_refused = false;
   if (!bound_ || cohort_.faulted()) return Error("Gemma4 retirement required");
   if (!slot.spilled) return {};
+  if (!slot.adopted.empty()) {
+    bool over_budget = false;
+    auto used = slot.live.Use(node_, slot.adopted, &execution_, &over_budget);
+    if (!used) {
+      slot.state_refused = over_budget && !cohort_.faulted() && slot.state_usable();
+      return Error(used.error());
+    }
+    slot.adopted.clear();
+    slot.adopted_bytes = 0;
+    slot.spilled = false;
+    slot.on_disk = true;
+    return RefreshClosures();
+  }
   catalog::Closure restore;
   const auto extents = slot.live.extents();
   if (auto r = node_.Call(
@@ -443,6 +479,7 @@ Status Gemma4Runner::Restore(std::uint32_t index) {
     return r;
   }
   slot.spilled = false;
+  slot.on_disk = true;
   return RefreshClosures();
 }
 Status Gemma4Runner::CopyState(std::uint32_t index, void* pinned,
@@ -451,6 +488,7 @@ Status Gemma4Runner::CopyState(std::uint32_t index, void* pinned,
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   if (auto active = CheckActive(**request); !active) return active;
+  if (!to_host) (*request)->on_disk = false;
   LiveState::CopyRetirement completed;
   auto copied =
       (*request)->live.Copy(node_, (*request)->fence, stream_, pinned, ranges, to_host, &completed);
@@ -459,6 +497,17 @@ Status Gemma4Runner::CopyState(std::uint32_t index, void* pinned,
     auto states = States();
     cohort_.CheckFailedJob(node_, stream_, execution_, states);
     if (completed == LiveState::CopyRetirement::kUnproven) cohort_.Fault(states);
+  }
+  if (copied && !to_host && (*request)->restoring) {
+    auto& slot = **request;
+    for (std::size_t i = 0; i < slot.restore_needed.size(); ++i) {
+      const auto& needed = slot.restore_needed[i];
+      for (const auto& r : ranges) {
+        const auto at = needed.offset + slot.restored_bytes[i];
+        if (r.region == needed.region && r.offset <= at && r.bytes > at - r.offset)
+          slot.restored_bytes[i] = std::min(needed.bytes, r.offset + r.bytes - needed.offset);
+      }
+    }
   }
   return copied;
 }
@@ -486,6 +535,104 @@ Status Gemma4Runner::RestoreCheckpoint(std::uint32_t index, std::uint32_t positi
   }
   (*request)->positions = positions;
   return {};
+}
+void Gemma4Runner::StateWrittenBack(bool whole) {
+  for (auto& slot : slots_)
+    if (slot && !slot->spilled) slot->on_disk = whole && slot->state_usable();
+}
+std::expected<void, std::string> Gemma4CheckpointFootprint(
+    const model::Gemma4Profile& profile, const model::Gemma4StateLayout& layout,
+    std::uint32_t positions, std::span<const LiveState::Range> ranges) {
+  auto needed = md::Gemma4UsedState(profile, layout, positions);
+  if (!needed) return Error(needed.error());
+  std::uint64_t previous = 0;
+  for (const auto& r : ranges) {
+    if (r.region != 0 || r.offset >= layout.bytes || r.offset % kPagedExtent != 0 ||
+        r.bytes != std::min(kPagedExtent, layout.bytes - r.offset) || r.offset < previous)
+      return Error("Gemma4 restored footprint is not an ordered initialized extent set");
+    previous = r.offset + r.bytes;
+  }
+  for (const auto& r : *needed) {
+    const auto first = r.offset / kPagedExtent;
+    const auto last = (r.offset + r.bytes - 1) / kPagedExtent;
+    for (auto extent = first; extent <= last; ++extent)
+      if (std::ranges::none_of(
+              ranges, [extent](const auto& got) { return got.offset / kPagedExtent == extent; }))
+        return Error("Gemma4 restored footprint does not fund its completed positions");
+  }
+  if (positions == 0 && !ranges.empty()) return Error("Gemma4 empty restore has backing");
+  return {};
+}
+Status Gemma4Runner::ValidateFootprint(std::uint32_t positions,
+                                       std::span<const LiveState::Range> ranges) const {
+  return Gemma4CheckpointFootprint(profile_, layout_, positions, ranges);
+}
+Status Gemma4Runner::PrepareRestore(std::uint32_t index, std::uint32_t positions,
+                                    std::span<const LiveState::Range> footprint) {
+  if (auto r = ValidateFootprint(positions, footprint); !r) return r;
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  auto& slot = **request;
+  if (auto r = CheckActive(slot); !r) return r;
+  if (slot.restoring) return Error("Gemma4 restore is already pending");
+  // Retain needs this destination unleased; every selected peer stays held.
+  if (auto r = RefreshClosures(cohort_.active() & ~(SlotMask{1} << index)); !r) return r;
+  slot.state_refused = false;
+  bool over_budget = false;
+  auto used = slot.live.Use(node_, footprint, &execution_, &over_budget);
+  if (!used || *used) slot.on_disk = false;
+  Status prepared;
+  if (!used) {
+    slot.state_refused = over_budget && !cohort_.faulted() && slot.state_usable();
+    prepared = Error(used.error());
+    if (!slot.state_refused) slot.live.Quarantine();
+  } else {
+    prepared = slot.live.Retain(node_, footprint);
+    if (!prepared) slot.live.Quarantine();
+  }
+  if (auto r = RefreshClosures(); !r) return r;
+  if (!prepared) return prepared;
+  slot.on_disk = false;
+  auto needed = CheckpointRanges(positions);
+  if (!needed) return Error(needed.error());
+  slot.restore_needed = std::move(*needed);
+  slot.restored_bytes.assign(slot.restore_needed.size(), 0);
+  slot.restoring = positions;
+  return {};
+}
+Status Gemma4Runner::CompleteRestore(std::uint32_t index, std::uint32_t positions) {
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  auto& slot = **request;
+  if (auto r = CheckActive(slot); !r) return r;
+  if (!slot.restoring || *slot.restoring != positions)
+    return Error("Gemma4 restore completion differs from its checked metadata");
+  for (std::size_t i = 0; i < slot.restore_needed.size(); ++i)
+    if (slot.restored_bytes[i] != slot.restore_needed[i].bytes)
+      return Error("Gemma4 restore has not completed every logical checkpoint range");
+  slot.positions = positions;
+  slot.restoring.reset();
+  slot.restore_needed.clear();
+  slot.restored_bytes.clear();
+  return {};
+}
+Status Gemma4Runner::Adopt(std::uint32_t index, std::uint32_t positions,
+                           std::span<const LiveState::Range> footprint) {
+  if (auto r = ValidateFootprint(positions, footprint); !r) return r;
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  auto& slot = **request;
+  if (!bound_ || cohort_.faulted() || positions == 0 || slot.positions != 0 || slot.spilled ||
+      slot.live.used_bytes() != 0 || Held(index))
+    return Error("Gemma4 adopts kept state only into an empty idle healthy slot");
+  auto bytes = slot.live.UsedBytesOf(footprint);
+  if (!bytes) return Error(bytes.error());
+  slot.adopted.assign(footprint.begin(), footprint.end());
+  slot.adopted_bytes = *bytes;
+  slot.spilled = true;
+  slot.positions = positions;
+  slot.on_disk = true;
+  return RefreshClosures();
 }
 std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::Planned(
     const kg::Gemma4ChunkShape& shape) {
@@ -537,7 +684,8 @@ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs) {
   for (std::size_t i = 0; i < work.size(); ++i) {
     const auto& w = work[i];
     if (w.slot >= o_.slots || seen[w.slot] || w.logits == nullptr || w.tokens.empty() ||
-        w.tokens.size() > o_.max_rows - rows || w.n_past != slots_[w.slot]->positions)
+        w.tokens.size() > o_.max_rows - rows || w.n_past != slots_[w.slot]->positions ||
+        slots_[w.slot]->restoring)
       return Error("Gemma4 wave needs distinct slots, bounded rows and exact continuations");
     if (auto r = CheckActive(*slots_[w.slot]); !r) return r;
     for (std::size_t j = 0; j < i; ++j)
@@ -630,6 +778,7 @@ Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs) {
     w.logits->assign(values, values + n);
     at += n;
     slots_[w.slot]->positions += static_cast<std::uint32_t>(w.tokens.size());
+    slots_[w.slot]->on_disk = false;
   }
   return {};
 }

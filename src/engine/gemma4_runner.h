@@ -25,6 +25,9 @@ namespace jitllm::engine {
 // Slab pitch preserves both 256-byte region alignment and GGML blocks.
 std::expected<std::uint64_t, std::string> Gemma4ExpertPitch(
     std::uint64_t minimum, std::span<const std::string_view> types);
+std::expected<void, std::string> Gemma4CheckpointFootprint(
+    const model::Gemma4Profile& profile, const model::Gemma4StateLayout& layout,
+    std::uint32_t positions, std::span<const LiveState::Range> ranges);
 struct Gemma4Options {
   std::filesystem::path artifact = {}, out = {};
   std::uint32_t context = 4096, max_rows = 128, slots = 1;
@@ -32,7 +35,8 @@ struct Gemma4Options {
   // Caller-funded host masks remain an explicit numerical diagnostic.
   bool reference_masks = false;
   // Unqualified experiments default off; retain ordinary numerical control.
-  bool shared_q8 = false, fuse_norms = false, row_invariant = false;
+  bool shared_q8 = false, fuse_norms = false, row_invariant = false, rope_store = false;
+  std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
 };
 class Gemma4Runner final : public PagedModel {
  public:
@@ -45,13 +49,25 @@ class Gemma4Runner final : public PagedModel {
     std::uint32_t completed_positions() const { return positions; }
     bool refused_state_growth() const { return state_refused; }
     std::uint64_t used_state_bytes() const { return live.used_bytes(); }
-    bool state_usable() const { return !live.quarantined(); }
+    bool state_usable() const { return !live.quarantined() && !restoring; }
+    const LiveState& state() const { return live; }
+    bool is_spilled() const { return spilled; }
+    bool kept_whole() const {
+      return on_disk && adopted.empty() && state_usable() && positions != 0;
+    }
+    std::uint64_t spilled_bytes() const { return spilled ? adopted_bytes + live.used_bytes() : 0; }
+    std::uint64_t refused_bytes() const { return live.refused_bytes(); }
 
    private:
     friend class Gemma4Runner;
     LiveState live{"Gemma4"};
     catalog::Closure fence;
-    bool provisioned = false, spilled = false, state_refused = false;
+    bool provisioned = false, spilled = false, state_refused = false, on_disk = false;
+    std::vector<LiveState::Range> adopted;
+    std::uint64_t adopted_bytes = 0;
+    std::optional<std::uint32_t> restoring;
+    std::vector<LiveState::Range> restore_needed;
+    std::vector<std::uint64_t> restored_bytes;
     std::uint32_t positions = 0;
   };
   struct Work {
@@ -69,6 +85,9 @@ class Gemma4Runner final : public PagedModel {
         runs_(o_.graphs) {}
   Gemma4Runner(const Gemma4Runner&) = delete;
   Gemma4Runner& operator=(const Gemma4Runner&) = delete;
+  void SetSpillPlaces(const std::function<LiveState::SpillPlace(std::uint32_t)>& place) {
+    o_.spill_place = place;
+  }
   Status Setup();
   Status Register();
   Status Bind();
@@ -78,6 +97,9 @@ class Gemma4Runner final : public PagedModel {
   std::uint64_t plan_floor_bytes() const { return plan_floor_bytes_; }
   std::uint64_t plans_bytes() const { return account_.bytes(); }
   std::uint64_t weight_bytes() const { return weights_.bytes(); }
+  std::uint64_t weight_read_bytes() const { return weights_.read_bytes(); }
+  std::uint64_t graph_measured_bytes() const { return plans_.graph_measured_bytes(); }
+  std::uint64_t graph_count() const { return plans_.graphs(); }
   std::uint64_t slab_padding() const { return weights_.slab_padding(); }
   std::uint64_t pitch_padding() const { return pitch_padding_; }
   const model::Gemma4Profile& profile() const { return profile_; }
@@ -85,6 +107,17 @@ class Gemma4Runner final : public PagedModel {
   std::expected<Slot*, std::string> request_slot(std::uint32_t slot);
   Status SelectSlots(std::span<const std::uint32_t> slots);
   const catalog::Closure& closure() const { return execution_; }
+  const catalog::Closure& everything() const { return everything_; }
+  bool cohort_usable() const { return !cohort_.faulted(); }
+  bool Held(std::uint32_t slot) const { return cohort_.IsActive(slot) && node_.InRequest(stream_); }
+  void StateWrittenBack(bool whole);
+  Status CheckPlaces();
+  Status ValidateFootprint(std::uint32_t positions, std::span<const LiveState::Range> ranges) const;
+  Status PrepareRestore(std::uint32_t slot, std::uint32_t positions,
+                        std::span<const LiveState::Range> footprint);
+  Status CompleteRestore(std::uint32_t slot, std::uint32_t positions);
+  Status Adopt(std::uint32_t slot, std::uint32_t positions,
+               std::span<const LiveState::Range> footprint);
   std::vector<catalog::ExtentId> weights() const { return weights_.extents(); }
   std::vector<catalog::ExtentId> state() const;
   std::uint32_t stream() const override { return stream_; }
@@ -125,7 +158,6 @@ class Gemma4Runner final : public PagedModel {
   std::array<LiveState*, kMaxRequestSlots> States();
   Status CheckActive(const Slot& slot) const;
   Status CheckFactors();
-  Status CheckPlaces();
   Status ReserveWeights();
   kernels::ggml::DeviceChoices Choices(kernels::ggml::LaunchContext& launch,
                                        std::uint32_t rows) const;

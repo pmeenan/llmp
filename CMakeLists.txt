@@ -169,6 +169,9 @@ function(jitllm_gpu_gtest target)
   set(labels gpu)
   if(arg_MODELS)
     list(APPEND labels models)
+    # Each process loads its own weights into the Spark's physical budget.
+    # Serialize full-model GPU tests while other checks remain parallel.
+    set_tests_properties(${tests} PROPERTIES RESOURCE_LOCK jitllm_gpu_model)
   endif()
   set_tests_properties(${tests} PROPERTIES LABELS "${labels}")
   if(arg_ENVIRONMENT)

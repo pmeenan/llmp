@@ -99,6 +99,7 @@ std::expected<void, std::string> CheckGemma4Binding(const Gemma4Profile& profile
 std::expected<void, std::string> CheckGemma4RopeFactors(const Gemma4Profile& profile,
                                                         std::span<const float> factors);
 
+inline constexpr std::uint32_t kGemma4Context = 262144;
 inline constexpr std::uint32_t kGemma4MaxRows = 8192;
 inline constexpr std::uint32_t kGemma4MaxSlots = 16;
 struct Gemma4StateTensor {
