@@ -455,6 +455,11 @@ family" guide, and its long-context scaling work.
         prefill is stable, but stock varies 1.3355 s; the closing-arm comparison
         remains 2.08% slower, with decode 2.13% slower. Exact prior native
         heads/state/choices remain; no parity, corpus or batching pass follows.
+      - [x] [Actual current Gemma26 corpus dispatch](experiments/gemma-current-dispatch/README.md):
+        observed stock output matches all 1,024 frozen reference heads exactly.
+        Stock selects 29 routing fusions, with no layer-28 selection; native
+        all1024 selects 30. Norm/reduction counts agree. Refusal reason and
+        causality for the nine quality failures remain unproved; no policy changes.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

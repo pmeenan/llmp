@@ -181,6 +181,12 @@ time deficit. [Common-input late MoE controls](../gemma26-late-moe/README.md)
 match stock within each primitive/fused policy, with small policy-rounding
 differences; they did not confirm a new arithmetic defect or close those misses.
 
+The [current Gemma26 1,024-row stock dispatch](../gemma-current-dispatch/README.md)
+now selects routing in 29 layers, with no layer-28 selection, while native
+selects 30. All norm/reduction counts match and the observed complete stock
+output is unchanged. This identifies a quality lead; the selected-chain logger
+does not report refusal reasons or prove the cause of the nine disagreements.
+
 ## Prompt for Opus or Astra
 
 ```text

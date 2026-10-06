@@ -466,6 +466,14 @@ waive that gate. Each model freezes complete same-policy own repeats before
 stock. These new shapes use no inherited 128-row allowance and do not qualify
 frontier-only 8K work, whole contexts or optimized batching.
 
+The [current 1,024-row Gemma26 dispatch observation](experiments/gemma-current-dispatch/README.md)
+reuses an existing stock-policy controller without changing floating math.
+All 1,024 complete heads match the frozen reference. Actual stock routing is
+selected in layers 0–27 and 29, versus native's 30 layers; norm and reduction
+counts match. The logger gives no layer-28 refusal reason. This is a concrete
+recipe difference to isolate, without attributing the nine failed quality choices
+or selecting a production layer policy.
+
 The [fresh current reference bookends](experiments/gemma-current-reference/README.md)
 measure the accumulated solo recipe: stable 26B latency gaps are 2.43% prefill
 and 0.92% decode. Native 31B prefill is stable while stock moves 1.3355 s;
