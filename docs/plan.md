@@ -276,6 +276,12 @@ family" guide, and its long-context scaling work.
       zero strict choices/ties and 64-target conditional-loss PASS with the
       actual all30 routing recipe. Short native elapsed is 2.153583% slower;
       scalar, other cohorts, context and sustained production parity remain open.
+- [x] **Private ordinary MMVQ preparation-sharing operator screen**:
+      [dense31 C2 Q4_K gate/up and Q6_K down](experiments/gemma31-mmvq-shared-prep/README.md)
+      retain complete synthetic chain bytes under eager/changed-input capture
+      and atomic refusal controls. One original input preparation is removed;
+      the short mean improves 1.0361% with overlapping timing ranges. No model
+      benefit, production path or Gemma26 transfer is selected.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:

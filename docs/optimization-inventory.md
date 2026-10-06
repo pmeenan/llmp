@@ -395,6 +395,16 @@ other FFN inputs, select fusion or explain the whole C1 gap. The short component
 timing differences are within reference bookend movement. Standalone binders
 must preserve the checked readable-tail marker for these padded Q4_K rows.
 
+The private [ordinary C2 MMVQ preparation screen](experiments/gemma31-mmvq-shared-prep/README.md)
+shares only original Q8_1 input preparation while preserving both original
+TWO-column gate/up consumers and separate GeGLU/Q6_K down. Complete synthetic
+chain bytes, changed-input poisoned capture and refusal controls pass; graph
+nodes fall from 7 to 6. The short mean improves 1.0361% with overlapping arm ranges,
+so no model benefit or production path is selected. The tested Q4_K gate/up
+geometry occurs in 54 dense31 layers; the whole-chain down control is Q6_K only.
+Gemma26's separate shared Q8_0 pair may transfer only
+under independent proof; its routed merged gate/up already uses one product.
+
 The [solo checked-norm screen](experiments/gemma-dense31-c1-norm/README.md)
 then matches all 32 dense31 full heads to both fresh C1/u128 original bookends
 byte-for-byte, using ordinary products and both checked norm chains. Ordinary

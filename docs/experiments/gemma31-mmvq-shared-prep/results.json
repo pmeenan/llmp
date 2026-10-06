@@ -1,0 +1,194 @@
+{
+  "scope": "Private synthetic dense31 C2 ordinary-MMVQ preparation sharing operator screen; no model/production/default adoption",
+  "source": {
+    "base": "87858b503d52f3e860474349d7ec6954fb9e9530",
+    "ggml_release": "v0.6.0",
+    "ggml_commit": "d81235049384534c167caea52b85a694f6103d14",
+    "patched_ggml_tree": "d50cb7f97867b4c5903a5b6c902474e9d716b7bf7afdb98dc360af82be4e0257",
+    "source_bundle_sha256": "9c2b71dd0e4fbaa9b1ed29a2b06791ebf3bcac0b73fd36367e7d002f0ed7b3bb",
+    "source_bundle_encoding": "sorted owned relative path + NUL + raw file bytes + NUL",
+    "owned_source": {
+      "benchmarks/CMakeLists.txt": {
+        "bytes": 41386,
+        "sha256": "8d1a329c37ce3e0160388fbaa97eb45aec31e13d905577455012de944778844e"
+      },
+      "benchmarks/gemma31_mmvq_pair.h": {
+        "bytes": 791,
+        "sha256": "a067238e5e06a23e7542708f2c42cc502d3855ebdb540f4080a64963050ced19"
+      },
+      "benchmarks/gemma31_mmvq_pair.cu": {
+        "bytes": 5596,
+        "sha256": "60bac41c1da27e7b36653c823d42cb01ec4037370166b4df9b73dc6257734a1c"
+      },
+      "benchmarks/gemma31_mmvq_pair_bench.cc": {
+        "bytes": 16751,
+        "sha256": "59005a0953fa94c47b32f58e02641f18465ca74624bf9dbbdd08fa753cdf8954"
+      }
+    },
+    "native_binary": {
+      "bytes": 86888408,
+      "sha256": "84767ec035a80ec3d7d1e0218d746511310ee26a5953d1d3a3f811340addae12"
+    },
+    "native_build_receipt": {
+      "bytes": 6751,
+      "sha256": "cf6bce22c79008fc49245a74206f778b036a4efb6b69ae4f7aa1f572fb6469f5"
+    },
+    "installation_sdk_receipt": {
+      "bytes": 4640,
+      "sha256": "fbbe4064d963188fe1f3915ee2c94d496bb1fa4432402d7fda9704f29a67150b"
+    },
+    "source_lock_sha256": "1cb9a0d1e61814118a397d94e769e5cfa4075f6f122ab1629a12f296d1d363f1",
+    "fixture_metadata": {
+      "bytes": 4420,
+      "sha256": "870324da073416adb8d3ecab02ed483146dc76bbab26ca4d9586ebc07213c5de"
+    }
+  },
+  "host": "spark-c4e2 / GB10 (closed runtime CC1210)",
+  "workload": {
+    "columns": 2,
+    "input_width": 5376,
+    "gate_up_rows": 21504,
+    "gate_up_type": "Q4_K",
+    "down_shape": [
+      21504,
+      5376
+    ],
+    "down_type": "Q6_K",
+    "weights": "synthetic valid GGML quantization of64 distinct deterministic rows per bank, repeated at actual geometry",
+    "output_bytes_per_chain": 559104,
+    "pair_readable_weight_tail_bytes": 144,
+    "original_operations": "two original Q8_1 preparations and TWO-column MMVQ products, separate GeGLU, separate original Q6_K down preparation/product",
+    "candidate_change": "one original Q8_1 prep feeds both original TWO-column MMVQ consumers; separate GeGLU/down unchanged"
+  },
+  "numerical_proof": {
+    "complete_gate_up_geglu_down_bytes_exact": true,
+    "finite": true,
+    "eager": true,
+    "changed_and_restored_inputs": true,
+    "poisoned_capture_replays": 8,
+    "atomic_refusals": 9,
+    "ordinary_graph_nodes": 7,
+    "shared_graph_nodes": 6,
+    "input_weight_tail_and_output_guard_postchecks": true
+  },
+  "funding": {
+    "pair_workspace_bytes": 12672,
+    "whole_chain_workspace_bytes": 48384,
+    "device_payload_allocated_bytes": 225541604,
+    "device_payload_ceiling_bytes": 268435456,
+    "known_host_payload_allowance_bytes": 402653184,
+    "physical_peak_measured": false
+  },
+  "paid": {
+    "workload": "captured complete Q8 prep+gate+up+GeGLU+down Q8 prep+down product chain",
+    "arm_order": [
+      "ordinary",
+      "shared",
+      "shared",
+      "ordinary"
+    ],
+    "chains_per_arm": 128,
+    "elapsed_ms": [
+      146.543746948,
+      143.083450317,
+      144.399230957,
+      143.948699951
+    ],
+    "ordinary_mean_ms": 145.2462234495,
+    "shared_mean_ms": 143.741340637,
+    "ordinary_spread_ms": 2.595046996999997,
+    "shared_spread_ms": 1.3157806399999856,
+    "shared_relative_percent": -1.0360908371729427,
+    "ordinary_ms_per_chain": 1.1347361206992188,
+    "shared_ms_per_chain": 1.1229792237265626,
+    "short_synthetic_scope": true,
+    "arm_ranges_overlap": true
+  },
+  "applicability": {
+    "dense31": {
+      "gate_up_Q4_K_pairs": 54,
+      "gate_up_Q5_K_pairs": 6,
+      "down_Q6_K_layers": 26,
+      "down_Q5_K_layers": 6,
+      "down_Q4_K_layers": 28,
+      "first_screen": "Q4_K pair/Q6_K down only"
+    },
+    "gemma26": {
+      "shared_gate_up": "30 separate Q8_0 pairs [2816,2112]",
+      "shared_down": "Q8_0 [2112,2816]",
+      "transfer_status": "technique may apply to shared pair under independent exact/paid proof after a justified31 decision; no26 run",
+      "routed_gate_up": "Q4_K merged [2816,1408,128], already one product; duplicate-prep technique does not apply"
+    }
+  },
+  "tensorfold_entry": {
+    "time_utc": "2026-10-06T19:17:44.666491Z",
+    "head": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "version": "0.6.6",
+    "applicability": "observed Gemma26 recipe MLX/DFlash; no matching dense31 CUDA/GGUF target",
+    "receipt": {
+      "bytes": 1741,
+      "sha256": "9691f3083389daae213314bbf73063752938b2c040bbf2a533b176d023cb2cf0"
+    }
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma31-mmvq-pair-build1",
+      "state": "DONE0",
+      "queued_steps": 6,
+      "successful_steps": 6,
+      "elapsed_seconds": 269.2920000553131,
+      "records": {
+        "job.json": {
+          "bytes": 522,
+          "sha256": "c18d6d9f86378031b227338439ea2bbd5b9ef81a5716713b1fe22a25bb837e2b"
+        },
+        "steps.json": {
+          "bytes": 4708,
+          "sha256": "b212640c97b9519607e276eca10b3d6bc7e727b8d5911fc882038efcbd421bb2"
+        },
+        "final.json": {
+          "bytes": 82,
+          "sha256": "1d41411a6c66f08db04ec9ed918f4b6cdf77cfb58d93cf06a6a8724912c96e0b"
+        },
+        "log": {
+          "bytes": 576097,
+          "sha256": "dcaf491c51d8081a0186e4d7f3ff7e74670cfa7f95955bb972408a82fba03a60"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma31-mmvq-pair-operator1",
+      "state": "DONE0",
+      "queued_steps": 3,
+      "successful_steps": 3,
+      "elapsed_seconds": 1.8370001316070557,
+      "records": {
+        "job.json": {
+          "bytes": 531,
+          "sha256": "bf7ab2305b93538eec1ad03f55162311414051e7f22126ea4fbe4621791ee83f"
+        },
+        "steps.json": {
+          "bytes": 2367,
+          "sha256": "d748d91f35c97c318326e70067ba59082d1368c36de0658e9f79f37db03f17d1"
+        },
+        "final.json": {
+          "bytes": 82,
+          "sha256": "08bd8f816d93aef377c443b9288f0320ad0cbd165232df184e238f9cf47d70f2"
+        },
+        "log": {
+          "bytes": 5110,
+          "sha256": "b9dc832d1029b29ac3310210418f70dbe5b4d85d46973528c08b5797ddab8806"
+        }
+      }
+    }
+  ],
+  "raw_aggregate": {
+    "bytes": 3530,
+    "sha256": "aeaed9db1714f83671dad00df640a6c281561e5e11fcc7b3318efcfc631dc8b3"
+  },
+  "raw_operator_log": {
+    "bytes": 748,
+    "sha256": "4f6c26762a65a7fe6af19cb2c7afa1e932d2b26e5e6fe47c8257bac388b33320"
+  },
+  "decision": "One short operator mean improves1.0361%, with overlapping arm ranges. No sustained/full-model benefit established, no model/26 job automatically justified or run. Production/default selection unchanged."
+}

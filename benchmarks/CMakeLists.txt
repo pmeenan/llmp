@@ -125,6 +125,17 @@ if(JITLLM_CUDA)
                                                   jitllm_warnings)
   target_link_options(jitllm_vecq_bench PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # Closed C2 ordinary-MMVQ preparation factor, operator-only/default-unmodified.
+  add_executable(jitllm_gemma31_mmvq_pair_bench EXCLUDE_FROM_ALL
+                 gemma31_mmvq_pair_bench.cc gemma31_mmvq_pair.cu)
+  target_include_directories(jitllm_gemma31_mmvq_pair_bench SYSTEM PRIVATE
+                             "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_gemma31_mmvq_pair_bench PRIVATE jitllm_ggml_kernels
+                          jitllm_cuda_device_memory jitllm_warnings)
+  set_target_properties(jitllm_gemma31_mmvq_pair_bench PROPERTIES CUDA_ARCHITECTURES 121a-real)
+  target_link_options(jitllm_gemma31_mmvq_pair_bench PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   add_executable(jitllm_gemma_quant_bench gemma_quant.cc)
   target_include_directories(jitllm_gemma_quant_bench SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
