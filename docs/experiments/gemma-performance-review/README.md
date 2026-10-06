@@ -194,8 +194,10 @@ does not report refusal reasons or prove the cause of the nine disagreements.
 The [single routing keep factor](../gemma-keep28-routing/README.md) now resolves
 that fixed-corpus difference: retaining only layer 28's routing probabilities
 matches all 1,024 stock heads byte for byte. The routing-policy difference
-caused the nine disagreements for this recipe. A general selection rule and
-stock's refusal reason remain open; no production whitelist or timing result follows.
+caused the nine disagreements for this recipe. A general selection rule remains open;
+the [actual refusal observation](../gemma26-routing-gate/README.md) now confirms
+32,768 bytes of weights/logits overlap under the original >8-row memory gate.
+This placement-dependent result supplies no production whitelist or timing gain.
 
 ## Prompt for Opus or Astra
 

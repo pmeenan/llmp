@@ -91,6 +91,9 @@ A [single routing keep diagnostic](experiments/gemma-keep28-routing/README.md)
 then resolves the fixed 26B corpus: keeping layer 28's routing probabilities
 matches all 1,024 stock heads exactly. This explains the earlier nine misses
 for that recipe; the general selection rule and production qualification remain open.
+The [actual refusal observation](experiments/gemma26-routing-gate/README.md)
+confirms a weights/logits allocation overlap at 1,024 rows; it supplies no
+universal layer or token-count rule.
 
 The [fresh current solo comparison](experiments/gemma-current-reference/README.md)
 records stable 26B prefill/decode latency gaps of 2.43%/0.92%. Native 31B prefill

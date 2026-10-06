@@ -353,7 +353,19 @@ scans. Gemma26 prefill improves 27.3% against its retained baseline; initial mat
 This changes planning cost, not kernel math or model qualification.
 The [exact source-use extension](experiments/gemma-use-index/README.md) preserves
 those controls and reduces fresh 26/31 prefill time by a further 2.80%/2.31%.
-Current matched prefill gaps remain 12.38%/11.40%; policy defaults stay unchanged.
+That extension recorded prefill gaps of 12.38%/11.40%; policy defaults stayed unchanged.
+The [current accumulated solo comparison](experiments/gemma-current-reference/README.md)
+now records stable 26B prefill/decode gaps of 2.43%/0.92%. Native 31B is stable,
+but stock prefill bookends vary; the closing comparison is 2.08% slower, with
+decode 2.13% slower. Neither result qualifies production policies or batching.
+The current 31B corpus matches all 1,024 stock heads exactly. On 26B, the
+[routing keep diagnostic](experiments/gemma-keep28-routing/README.md) resolves
+all nine fixed-corpus choice differences. The [actual refusal](experiments/gemma26-routing-gate/README.md)
+is weights/logits allocation overlap, not a universal layer rule.
+The [independent-cache C4 consumer](experiments/gemma-owner-root-c4/README.md)
+removes K/V packing for 8.93% lower paid latency; plain-norm-on remains 2.10%
+slower than fresh stock, with all 128 heads exact at context 256. Wider contexts,
+Gemma26 transfer and production batching remain separate gates.
 
 ## Bounded native serving route
 

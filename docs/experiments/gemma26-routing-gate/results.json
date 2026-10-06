@@ -1,0 +1,229 @@
+{
+  "base": "f66d9cf92f911fcac863dbb2235f22efe22ec6e8",
+  "purpose": "Identify actual original routing refusal, no production policy change",
+  "actual_routing_gates": {
+    "count": 30,
+    "rows": 1024,
+    "experts": 128,
+    "selected_layers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      29
+    ],
+    "structural_refused_layers": [],
+    "shape_refused_layers": [],
+    "memory_refused_layers": [
+      28
+    ],
+    "ten_node_chain": true,
+    "weights_logits_overlap_layers": [
+      28
+    ]
+  },
+  "layer28": {
+    "structural": true,
+    "shape": true,
+    "memory": false,
+    "descriptors_relative_to_logits": {
+      "node": {
+        "name": "ffn_moe_probs-28",
+        "op": "SOFT_MAX",
+        "dtype": "f32",
+        "shape": [
+          128,
+          1024,
+          1,
+          1
+        ],
+        "strides": [
+          4,
+          512,
+          524288,
+          524288
+        ],
+        "relative_offset_bytes": 0,
+        "span_bytes": 524288,
+        "ggml_nbytes": 524288
+      },
+      "logits": {
+        "name": "ffn_moe_logits-28",
+        "op": "MUL_MAT",
+        "dtype": "f32",
+        "shape": [
+          128,
+          1024,
+          1,
+          1
+        ],
+        "strides": [
+          4,
+          512,
+          524288,
+          524288
+        ],
+        "relative_offset_bytes": 0,
+        "span_bytes": 524288,
+        "ggml_nbytes": 524288
+      },
+      "weights": {
+        "name": "ffn_moe_weights_norm-28 (reshaped)",
+        "op": "RESHAPE",
+        "dtype": "f32",
+        "shape": [
+          1,
+          8,
+          1024,
+          1
+        ],
+        "strides": [
+          4,
+          4,
+          32,
+          32768
+        ],
+        "relative_offset_bytes": 4096,
+        "span_bytes": 32768,
+        "ggml_nbytes": 32768
+      },
+      "ids": {
+        "name": "ffn_moe_topk-28",
+        "op": "VIEW",
+        "dtype": "i32",
+        "shape": [
+          8,
+          1024,
+          1,
+          1
+        ],
+        "strides": [
+          4,
+          512,
+          524288,
+          524288
+        ],
+        "relative_offset_bytes": 524288,
+        "span_bytes": 523808,
+        "ggml_nbytes": 523808
+      }
+    },
+    "weights_logits_overlap_bytes": 32768,
+    "ids_logits_overlap_bytes": 0,
+    "ggml_nbytes_equals_public_allocated_span": true,
+    "interpretation": "Computed external router logits overlap retained fused weights output. The original >8-row alias rule rejects this placement."
+  },
+  "fidelity": {
+    "complete_heads": 1024,
+    "head_bytes": 1073741824,
+    "complete_head_sha256": "ce5fd2ecd80d64f2e53252a8fe2be39f814881ea6e4e2d20a1f39aeed5b7be9f",
+    "matches_frozen_task57_reference": true,
+    "native_calibration_unchanged": true,
+    "all_outputs": true,
+    "context": 4096,
+    "batch": 1024,
+    "ubatch": 1024,
+    "swa_full": false,
+    "kv_unified": false,
+    "local_capacity": 2048,
+    "global_capacity": 4096,
+    "kv_dtype": "F16",
+    "scorer_explicit_backend_teardown_checked": true,
+    "owned_container_absent": true
+  },
+  "provenance": {
+    "task39_original_source_sha256": "523470d6604755b82d0208414ce40f1378941b10bc1349763bbdf02edaab9634",
+    "task39_observed_source_sha256": "4c042fcd8a0f72c4dcb1cb4cffe018f45e309175bca073e11e86e4f732e534b2",
+    "marked_insertions_reconstruct_original_bytes": true,
+    "reused_controller_sha256": "306e33c77c1293f9d99e3321ae6cf49e752631199969eb217ff9973b59990916",
+    "reused_controller_bytes": 382088,
+    "reference_scorer_sha256": "225c40affb625e02e7e381d75c306180b444a63b520a7ca84bfa8e3dd023973b",
+    "input_bytes": 4096,
+    "input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+    "source_native_json_sha256": "53712b0a71deb0cc84f358b61fe43c4dc3c1633fd20f2a5ad8ce475e877c9d8f",
+    "native_repeat_frozen_sha256": "f2885242653585f048829affbe7ac8534c72424cdc640156f7fbe6848c1a1d96",
+    "original_pin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "reference_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "original_cuda_library_sha256": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e",
+    "original_cuda": "13.3",
+    "observer_native_nvcc": "13.4.92",
+    "driver": "580.178.04 (Task57 environment record, not freshly queried)",
+    "tensorfold": {
+      "observed_utc": "2026-10-06T01:16:03.653837+00:00",
+      "primary": "https://github.com/ashhart/TensorFold",
+      "main": "609ca419abecebdc5a059498a613680bd3aa847f",
+      "version": "0.6.5",
+      "run": false,
+      "reason": "No CUDA Gemma comparator in current primary recipe",
+      "primary_snapshots": {
+        "tensorfold-README.md": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2",
+        "tensorfold-gemma4.md": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      }
+    },
+    "gate_analysis_sha256": "ad78740b65c2ab5c3c318085d771a27af8dd0e33340b39b694523059bc0c94e0",
+    "source_check_sha256": "3c9558f7bb47d38a4bcc615d7afc4a6c4b0a273cd729d219bb7fc1a64d7e298b",
+    "reviewed_queue_sha256": {
+      "reference.sh.draft": "8de6dce59f659e3dc14f85e6c6eb1b759e99f225f5319a3646db4793f50a0352",
+      "stage-auth.py.draft": "8fdedc5fe622adb10835a82d611466b800ebbe762a708ec10758bdb6396150de",
+      "headcheck.py.draft": "653a91e16233f7ae0bd542a6f742f4c22a2b44d9afcca1e132ac34748cdac9f0",
+      "stage1.steps.draft": "69e6545f326ae203e522f21b7823c02159692cfb482e0413288d452a703110da",
+      "observe1.steps.draft": "458070fb679874ff966069d462fc31439fd98514602d134699a7b71d946b3925"
+    },
+    "raw_directory": "/tmp/jitllm-m35-coordination/gemma26-routing-gate-raw"
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma26-routing-gate-stage1",
+      "host": "spark-56f5",
+      "state": "done",
+      "rc": 0,
+      "record_sha256": {
+        "job.json": "7844f9f5c6b6fd137a299e6e535a44d3a9ef02fa1f1eb2ca04fa8b29bf37487b",
+        "final.json": "847ed9877f5108de63d6ab8dc6cf4c7ebb987e1e4cac09cd1c7a82741647d724",
+        "steps.json": "943670af6fcd45cc8e35a09af2c4410b1c0d55589515367183d108b4a7ee163f",
+        "log": "1fed3323fcae313882ce344302266d54c0781278b55622f98e1e487997ddf3b7"
+      }
+    },
+    {
+      "name": "m35-gemma26-routing-gate-observe1",
+      "host": "spark-56f5",
+      "state": "done",
+      "rc": 0,
+      "record_sha256": {
+        "job.json": "d9e4cfd8c1f399c45522b1c28318459d8bfb51bf072d0fb319da085f8f6850be",
+        "final.json": "9e8806d4e1ae235d99294ca56ceda92e45a4122b269d788f4564375d8c787de5",
+        "steps.json": "0a312092424d1e9d2f678af23fb921003719f671c72bb8c536661ddbaae87e62",
+        "log": "18725e59e7257aa440f9a13549a15a6793f92406051fcf672ae13ae2cb2563d0"
+      }
+    }
+  ],
+  "limits": [
+    "One fixed corpus/recipe and original allocation; no universal layer28 or token-count rule.",
+    "No new compiler, numerical oracle, PPL scan, timing comparison, native run or full regression suite.",
+    "No production layer whitelist or policy adoption; native and reference allocation layouts differ."
+  ]
+}

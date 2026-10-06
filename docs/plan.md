@@ -463,14 +463,19 @@ family" guide, and its long-context scaling work.
       - [x] [Actual current Gemma26 corpus dispatch](experiments/gemma-current-dispatch/README.md):
         observed stock output matches all 1,024 frozen reference heads exactly.
         Stock selects 29 routing fusions, with no layer-28 selection; native
-        all1024 selects 30. Norm/reduction counts agree. Refusal reason and
-        causality for the nine quality failures remain unproved; no policy changes.
+        all1024 selects 30. Norm/reduction counts agree. This selected-chain
+        observation did not establish refusal reason or causality; no policy changes.
       - [x] [Gemma26 routing keep factor](experiments/gemma-keep28-routing/README.md):
         keeping only layer 28's routing probabilities changes native routing
         from 30 to 29 fusions and matches all 1,024 stock heads exactly, with
         independently frozen finite own repeats. This resolves the nine
-        fixed-corpus disagreements; the stock refusal reason, general selection
-        rule, other shapes and production policy remain open.
+        fixed-corpus disagreements; general selection, other shapes and production
+        policy remain open.
+      - [x] [Actual Gemma26 routing refusal](experiments/gemma26-routing-gate/README.md):
+        all 30 candidates pass structure/shape, but layer 28's weights overlap
+        external router logits by 32,768 bytes. The original >8-row memory gate
+        declines fusion. Complete stock heads remain exact; this allocation-
+        dependent result supplies no production layer or token-count rule.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

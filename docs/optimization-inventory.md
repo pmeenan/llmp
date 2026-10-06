@@ -486,7 +486,10 @@ resolves the fixed 1,024-row corpus difference: retaining only layer 28's
 routing probabilities makes all complete heads byte-identical to stock.
 This establishes the routing-policy cause of the earlier nine disagreements
 for that recipe. The diagnostic does not select a production layer whitelist;
-stock's refusal reason and a general selection rule remain to be determined.
+the [actual refusal observation](experiments/gemma26-routing-gate/README.md)
+identifies 32,768 bytes of weights/logits overlap at 1,024 rows. The original
+memory gate refuses that allocation, while all structure/shape gates pass.
+A general native policy still requires qualification; no static layer rule follows.
 
 The [fresh current reference bookends](experiments/gemma-current-reference/README.md)
 measure the accumulated solo recipe: stable 26B latency gaps are 2.43% prefill
