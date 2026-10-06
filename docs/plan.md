@@ -193,13 +193,13 @@ checks pass; whole shipment tiers remain owed before publishing a package.
 
 ## M3.5 — Model families  `in progress`
 
-**Owner resume, 2026-10-05:** implementation and measurement continue after
-Opus/Astra review. The cold/retained-plan comparison measures material planning
-and state-growth costs; the current 31B trace identifies GPU-idle gaps and
-extra vocabulary projections. State-only intermediate chunks now omit unused
-final-layer work while preserving all KV writes;
-[current state and review prompt](experiments/gemma-performance-review/README.md).
-Remaining milestone gates stay open.
+**Owner handoff pause, 2026-10-06:** the checked bounded Gemma31 serving recipe
+is committed. Current whole-serving C1/C4 comparisons remain 3.15%/3.51% slower
+than stock. Paid phase controls have no plan misses and measure Clear/state
+growth; the third-cycle control confirms prefill capture acquisition in the
+second paid cycle. The proposed capture-policy comparison has not started.
+Both Sparks are free; [current state and implementation handoff for Opus](experiments/gemma-performance-review/README.md).
+Remaining milestone gates stay open, including Gemma26 backward qualification.
 
 Goal (the owner, 2026-09-29): build out the core engine across the major
 open model families, MoE and dense, before the system is built around it

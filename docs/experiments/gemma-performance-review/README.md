@@ -1,257 +1,188 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Gemma performance review handoff — 2026-10-05
+# Gemma implementation handoff — 2026-10-06
 
-The owner requested a pause after the in-flight source-use indexing change,
-then resumed all M3.5 implementation and measurement on 2026-10-05 after the
-Opus/Astra reviews. The [cold/retained-plan diagnostic](../gemma-retained-plan/README.md) now compares
-identical state resets with capture disabled and separate phase timing. Similar
-excess time per chunk alone does not establish a fixed host cost: reference work
-per chunk is also similar. Cold planning costs 126/526 ms at Gemma26/31; state growth costs 64/164 ms.
-Planning is material, but it does not explain the entire remaining gap.
-The [current Gemma31 timeline](../gemma31-current-timeline/README.md) now records
-592 ms in 32 internal GPU-idle gaps over 10 ms and 145 ms of extra vocabulary
-projections. Product and attention duration sums are close to stock, with
-different final-block row shapes and extra standalone MUL launches. These
-measurements guide the resumed work; the untraced comparisons below remain
-the competitive evidence.
-The [state-only intermediate prefill path](../gemma-state-only-prefill/README.md)
-now removes unused final-layer work while preserving exact KV continuations.
-The optional 26B/all1024 and 31B/both256 recipes improve 3.04%/2.42%; the 31B
-reference gap remained 8.28%, while 26B reference movement prevented a resolved
-competitive gap. Ordinary serving has separate correctness controls.
-The [bounded graph traversal](../ggml-graph-order/README.md) then reduces
-state-only prefill by 1.93%/0.99%; fresh reference gaps are 8.19%/7.54%.
-The [bounded next-plan lookahead](../gemma-prefill-lookahead/README.md) then
-reduces same-binary prefill by 1.55%/2.36% at 26/31. The later 31B mean is
-4.94% above its preceding reference bookends; this is qualified evidence, not
-a fresh reference-bookended parity result. The initial noisy 31B screen is
-preserved in the report.
-The [plain norm retry and adoption](../gemma-state-only-norm-policy/README.md)
-favors fusion on both state-only/lookahead research recipes and preserves exact
-ordinary off/on heads and state. Plain RMSNorm/Mul is now a serving default;
-other arithmetic policies remain opt-ins. The 31B retry has noisy effect
-magnitude and no fresh reference comparison.
-The [current post-lookahead phases](../gemma-current-phases/README.md) narrow
-serialized work to roughly 175 ms binding, 17 ms coverage and 5 ms insertion
-across 32 plans, plus 162–185 ms state growth. Those nested binding intervals
-already belong to planning/publication; they are not additive. The subsequent
-[per-bind wrapper cache](../gemma-binding-wrapper-cache/README.md) identifies
-repeated declaration validation as a material contributor: 31B binding falls
-174.483 to 45.828 / 44.989 ms, and 26B 39.755 to 12.320 / 12.097 ms. Fresh
-per-step operand, arity and lane checks remain. Full heads, initialized state
-and continuations remain native-exact; seven focused controls pass. The wall
-screens favor the change with material spread and no fresh reference comparison.
-The [fresh current solo bookends](../gemma-current-reference/README.md) now
-record a stable 2.43% prefill gap at 26B. Native 31B timing is stable, but stock
-varies 1.3355 s; comparison to its closing arm leaves a 2.08% gap. The separate
-[current corpus screen](../gemma-current-quality/README.md) matches all 1,024
-31B heads exactly at 256 rows; 26B at 1,024 rows retains nine positive-margin
-choice failures. State growth, execution variance and broader qualification
-remain open.
-M3.5 remains incomplete. The source-use optimization landed as `5ef7aac` after
-1,700 Spark tests passed without failures or skips, including 311 GPU and 57
-model tests. Both Sparks were checked idle at the pause.
-The [plan](../../plan.md) and [model support matrix](../../model-support.md) retain
-the remaining Gemma quality, batching, assistant, long-context and memory gates,
-alongside the other families, EXL3/quants and media work. The review closes none
-of those gates and does not extend M3's accepted speed exceptions to M3.5.
+The owner requested a stopping point for Opus to close the remaining gaps.
+The tested bounded Gemma31 serving recipe is committed as `ee6beb1`; M3.5
+implementation and measurement are paused at this handoff. Both `spark` and
+`spark-b` were checked free with the installed `spark-job busy`: no running or
+waiting GPU jobs and no GPU compute processes. No new capture-policy build or
+inference started. The partial experiment described below remains external.
 
-## Latest reference-bookended measurements
+## Current competitive evidence
 
-The [current solo screen](../gemma-current-reference/README.md) measures the
-accumulated state-only, lookahead and wrapper-cache recipe with plain norm
-fusion enabled. Each host runs reference, native twice, then reference;
-all four arms and the existing exact checker retire successfully.
+Use the [current serving bridge](../gemma31-serving-bridge/README.md) and its
+[aggregate](../gemma31-serving-bridge/results.json) as the latest whole-serving
+Gemma31 comparison. The reference is official llama.cpp v0.6.0/d81235049384534c167caea52b85a694f6103d14,
+with its authenticated ARM64 CUDA image and actual initialized-driver proof.
+Older b29c606/b10964 results remain historical controls, not the current target.
 
-| Model / physical host | Native prefill first / repeat | Reference prefill first / repeat | Prefill comparison | Native / reference decode mean | Decode excess |
-| --- | ---: | ---: | --- | ---: | ---: |
-| Gemma26 / Spark-b | 2.47975 / 2.47556 s | 2.41652 / 2.42106 s | +2.43365%, stable bookends | 0.689154 / 0.682870 s | 0.92023% |
-| Gemma31 / Spark | 11.1940 / 11.2168 s | 12.3124 / 10.9769 s | +2.08164% versus closing reference; variable bookends | 3.188465 / 3.121955 s | 2.13040% |
+| Approved model / workload | Native mean | Reference mean | Native elapsed excess |
+| --- | ---: | ---: | ---: |
+| Gemma31 C1, 8K continuation / 128 completed decode waves | 23.927816 s | 23.197650 s | 3.147588% / 730.166 ms |
+| Gemma31 C4, four independent 8K continuations / 128 completed joined waves | 61.316722 s | 59.234650 s | 3.514957% / 2.082072 s |
+| Gemma26 current-release C2 representative short screen | 0.778420 s | 0.762009 s | 2.153583% |
 
-No arm is excluded. The 31B reference spread prevents parity or gain attribution;
-comparison to its slower mean is unsuitable evidence of improvement. These are
-short untraced solo measurements, with load/swap times outside their scope.
-Prefill pays 8,192 rows; decode pays 32 forced incoming rows with CPU argmax and
-full-vocabulary publication. Both discard six warm rows, clear, and append
-three untimed anchors. Context is 16,384 with F16 KV, explicit ring-cache
-`swa_full=false` and `kv_unified=false`. Gemma26 uses UD-Q4_K_M, row cap/ubatch
-1,024 and local/global cells 2,048/16,384; Gemma31 uses UD-Q4_K_XL, cap/ubatch
-256 and cells 1,280/16,384. Native research policies are `all` at 26 and `both`
-at 31, with plain norm on; other norm/MoE arithmetic policies remain opt-ins.
+The Gemma31 cycles include Clear, prefill, frontend selection/sampling,
+publication, completion and request retirement. Order is reference/native/
+native/reference in fresh processes, with preceding warm cycles. C1 prefill
+means are 11.218646/10.763300 s and decode/finish 12.709170/12.434350 s;
+C4 means are 44.903326/43.275300 s and 16.413396/15.959400 s. These are short
+matched observations, not sustained parity or kernel-only timing.
 
-Both engines retain one prefill and one final complete head. Native heads,
-initialized states and 32 choices stay exact to prior native controls; stock
-heads stay exact to prior stock and own repeats. All cross-engine choices agree
-in this fixture. Both 26B reference heads still differ; 31B's final head is
-exact but its prefill head has maximum raw delta 0.41361475. These two-head
-controls do not replace the current corpus quality or C4 batching gates.
+Gemma31 C1/C4 have zero predicted-ID differences and zero positive-margin or
+tied-choice differences; 128/129 and 512/516 complete heads are byte-exact.
+The aggregate does not assign the nonexact vectors to a phase. Independent
+128/512-target generated-history conditional-loss gates pass. The current
+scalar corpus matches all 1,024 full heads exactly over 1,023 authentic
+next-token targets. Its high absolute perplexity is diagnostic; parity is not
+broad semantic-quality qualification. Complete native own repeats include
+initialized state, final head, layout, history and generated IDs.
 
-Reference remains original llama.cpp `b29c606` / b10964, at the pinned CUDA 13.3
-image and same-format artifacts. Native retained helper `68368ed6` uses source
-`845617f` plus the state-preparation benchmark argument; selected arithmetic and
-executor match later main, without claiming a latest-main binary. SDK is
-`aarch64-c09daba6ac31edee`, native NVCC 13.4.92 / toolkit 13.4.2, GB10 driver
-580.178.04. Full recipes, identities, phase spans and official summaries are in
-[current results](../gemma-current-reference/results.json). Task-entry
-TensorFold refresh at 2026-10-06 00:07:53 UTC remains `609ca419` / 0.6.5, MLX26
-without a comparable Gemma26/31 CUDA recipe. Recheck it at each future task.
+The natural HTTP controls pass literal continuation, chat/SSE agreement,
+stop suppression, disconnect/recovery and client-observed peer progress after
+one client departs. They do not prove precise backend cancellation chronology
+or a four-owner GPU shape for every wave. Four settings and three calibration
+controls pass without skips; the ordinary default smoke naturally stops after
+three tokens, with no candidate forcing or prefill override.
 
-## What has actually been resolved
+The production selection is deliberately bounded: approved dense31, resolved
+context<=8192, max_slots<=4, prefill fallback/cap256, both checked norm chains
+and eligible owner attention. Smaller explicit prefill overrides survive.
+Gemma26, larger configurations and explicit arithmetic diagnostics retain
+their prior recipe and calibration identities. Default context 262144 is not
+silently reduced. Thinking/tools, assistants, broader contexts/cohorts,
+sustained performance, memory and full shipment gates remain open.
 
-- The older thin reference clients silently used full-length SWA caches.
-  Matched ring-cache clients corrected this recipe. Earlier full-cache rates
-  and memory comparisons are historical, not representative parity results.
-  See [26 ring transfer](../gemma26-swa-ring-transfer/README.md) and
-  [31 ring recipe](../gemma-swa-ring-h1/README.md).
-- Repeated full-graph reader/private-output scans were a major Gemma26 CPU
-  planning cost. The committed [root/read index](../gemma-plan-index/README.md)
-  reduced prefill from a retained roughly 3.81 s baseline to roughly 2.77 s,
-  about 27.3% less time. This was not a fresh old/new bookended comparison;
-  fresh reference controls and exact native head/state checks accompany it.
-- The [source-use extension](../gemma-use-index/README.md) gives direct fresh
-  old/new reductions of 2.8011% at 26 and 2.3073% at 31. It reuses the index in
-  `CanFuse` and `CanFuseSubgraph`, preserving local suffix/gather counts and
-  standalone fallback. Both placement passes and SamePlan remain intact.
-- [Plain RMSNorm/Mul fusion](../gemma-normmul-screen/README.md) selected 121
-  additional Gemma31 fusions but gave no resolved speed gain in that earlier
-  full-head screen. The subsequent state-only/lookahead retry favors fusion
-  and qualified ordinary controls now support the plain norm default in both
-  profiles.
+Gemma26's [current-release C2 transfer](../gemma-release-c2-26/README.md)
+passes strict choices, its separate conditional-loss gate and complete own
+repeats, with 64/66 complete heads byte-exact. It uses matched 992-column
+prefill, all30 routing/reduction and F16 rings. It is not a current whole-serving
+C1/C4/corpus or default-adoption gate. Historical scalar/corpus and C5 failures
+must not be declared resolved by this short C2 result.
 
-The large earlier Gemma26 host cost has a measured explanation and an adopted
-fix. The current cold/retained comparison isolates material planning and state-growth
-costs, alongside a remaining execution interval. It does not identify that
-interval as kernel arithmetic or establish planning as the entire gap. The
-current timeline and state-only dependency cut are now recorded. Further work
-has adopted bounded next-chunk CPU planning overlap; remaining binding, state
-growth and execution costs are still under investigation.
+## What the current timing diagnosis actually shows
 
-## Evidence boundaries and unresolved leads
+The [Clear/state-growth attribution and third-cycle control](../gemma-state-phase-attribution/README.md)
+are committed as `3a0be49` and `302e0c2`. They measure the same private C1
+serving recipe, retain complete fixed-own outputs, and keep the original paid
+cycle boundaries. They are native diagnostics, not fresh reference bookends.
 
-The [historical Gemma26 GPU profile](../gemma26-prefill-profile/README.md), before
-the indexing changes, recorded wall spans 3.8305/2.4496 s and GPU activity unions
-2.4694/2.3643 s, native/reference. The 1.3611/0.0853 s outside GPU activity was
-not automatically CPU time. The subsequent [coarse diagnosis](../gemma26-prefill-coarse/README.md)
-measured 1.0933 s of caller CPU in the ordered planning passes, with no GPU
-overlap. Its graph-build/bind exclusive 52.3 ms is an **aggregate across eight
-paid chunks**, not a per-chunk measurement. There is no equivalent current
-Gemma31 caller-CPU attribution. Do not subtract these historical categories from
-the latest untraced results or transfer them to 31 as measurements.
+- The paid phase control has Clear 57.452 ms, state growth 162.182 ms and required
+  planning 0.286 ms, with 160 plan hits and zero misses. Repeated planning is not
+  the dominant paid cost in this workload. Cold planning remains a separate
+  concern for genuinely new shapes.
+- The three-cycle control observes warm 33 eager / 1 captured / 126 replayed,
+  second 0 eager / 32 captured / 128 replayed, third 0 eager / 0 captured / 160 replayed.
+  Retained graphs rise from 1 to 33. The second cycle captures 32 prefill plans,
+  paying 86.959 ms capture and 178.513 ms instantiate/upload inside its timer.
+- Second/third whole cycles are 23.922937/23.657850 s; prefills
+  11.210460/10.932725 s. Both complete paid outputs match the fixed own proof.
+  This establishes capture acquisition in the paid second cycle. It does not
+  establish that suppressing capture improves acquisition-plus-later-reuse
+  cost, or replace the original matched comparison.
 
-Source-supported leads to rank by plausible contribution to the whole gap:
+Nested counters and device-stream elapsed spans include overlapping work and
+host submission gaps. Do not subtract them to invent a residual kernel cost.
+Stock's selector waits for consecutive stable graph properties, but its actual
+prefill capture counts have not been measured here. Do not assert that stock
+never captures prefill.
 
-1. [`GraphOrder`](../../../src/kernels/ggml/fusion.cc) now uses the
-   [bounded arena table](../ggml-graph-order/README.md), with a small measured
-   end-to-end improvement. [`PlanGemma4Chunk`](../../../src/engine/gemma4_plan.cc) still builds twice via
-   `SizedArena`; changing KV shapes cause plan misses through
-   [`Gemma4Runner::Planned`](../../../src/engine/gemma4_runner.cc). Gemma31 pays
-   32 prefill chunks versus 8 at 26. Repeated planning remains material; a
-   bounded next-plan lookahead is now adopted without future state growth
-   or changes to graph arithmetic. The traversal screen did not emit separate
-   planning counters, so its gain does not establish the remaining phase cost.
-2. Compare actual graph construction, weight lookup, binding, validation and
-   cache reuse with stock, rather than assuming the remaining time is GEMM.
-   [`BuildGemma4Graph`](../../../src/kernels/ggml/gemma4_graph.cc) also performs
-   linear weight-leaf lookups. Determine whether a structural difference
-   repeats expensive work at every chunk.
-3. Extra head publication and final-layer frontier narrowing change actual
-   paid work and product shapes. The old 26 trace attributed about 26 ms of
-   extra vocabulary-projection kernels, much smaller than its original host
-   gap. The current 31 trace measures 145 ms of extra vocabulary projections.
-   The state-only runtime path now preserves KV state and keeps scoring,
-   final heads and retained-feature work full. These measurements explain
-   a contributor; planning and state growth still need optimization.
-4. Existing DeepSeek `dense_pair` input-quantization reuse is available but
-   not enabled for Gemma. Dense31 Q4_K gate/up products are eligible at
-   >=64 rows; Gemma26 Q8_0 attention projections can qualify, while its
-   2,112-wide shared FFN fails the 128-output alignment. See
-   [`MulMatQPairDenseFits`](../../../src/kernels/ggml/validate_ext.cc) and
-   [`PlanGraph`](../../../src/kernels/ggml/graph_plan.cc). No Gemma speed result
-   exists for this transfer; it is a secondary lead, not the known dominant cause.
+## First experiment for Opus
 
-Batch correctness/performance remains separate: [packed Gemma31 C4 attention](../gemma-packed-attention-c4/README.md)
-matched all 128 stock heads but took about 12.3% more time. It jointly changes
-local dispatch and local/global stream geometry; it does not establish a
-precision-only cause or competitive batching.
-The subsequent [independent-cache C4 consumer](../gemma-owner-root-c4/README.md)
-removes K/V packing alone for 8.93% lower paid latency. Plain-norm-on is now
-2.10% slower than fresh original bookends, with all 128 heads byte-exact.
-This context-256 diagnostic leaves wider contexts and production selection open.
-The [current C4 phase split](../gemma-owner-c4-phases/README.md) records 32 plan
-hits and 24.74 ms in checks. Paid time outside execution averages 78.73 ms,
-including 43.57 ms outside all runner phases; these spans do not establish
-active GPU cost or a fresh-reference gap.
-The [immutable-weight placement cache](../weights-placement-memo/README.md)
-then reduces checks by 20.580 ms and paid C4 latency by 25.615 ms / 0.77%,
-with all heads, initialized states and choices exact. Mutable state still gets
-fresh checks; this isolated comparison supplies no new reference timing.
-[Gemma26 packed compound C4](../gemma26-compound-packed-c4/README.md)
-recorded 2/128 positive-margin disagreements, 92/128 exact heads, and a 7.15%
-time deficit. Its [owner-root transfer](../gemma26-owner-root-c4/README.md)
-removes K/V copies for a 7.13% gain and leaves 0.265% latency excess against
-fresh stock. Exact native heads/state and both strict quality failures remain.
-[Common-input late MoE controls](../gemma26-late-moe/README.md)
-match stock within each primitive/fused policy, with small policy-rounding
-differences; they did not confirm a new arithmetic defect or close those misses.
+Compare fresh capture-ON and capture-OFF native processes using the same
+helper and exact C1 recipe. Each arm runs warm → second paid → third paid.
+Retain all six cycle times and graph counters; compare the sum of second and
+third paid cycles as well as each cycle. Charge all acquisition inside the
+existing clocks. Check warm IDs/history and both paid complete initialized
+state, head, layout, tokens and history against the fixed own proof in each
+arm. This tests both avoided acquisition and lost prefill replay benefit.
+A useful native result then warrants a fresh matched reference/native/native/
+reference comparison before adopting a policy or claiming gap closure.
 
-The [current Gemma26 1,024-row stock dispatch](../gemma-current-dispatch/README.md)
-now selects routing in 29 layers, with no layer-28 selection, while native
-selects 30. All norm/reduction counts match and the observed complete stock
-output is unchanged. This identifies a quality lead; the selected-chain logger
-does not report refusal reasons or prove the cause of the nine disagreements.
+The unrun draft is preserved at
+`/tmp/jitllm-m35-coordination/gemma-prefill-capture-policy`, branch
+`m35/gemma-prefill-capture-policy`, base `302e0c2`; external caller/diff are in
+its sibling `gemma-prefill-capture-policy-raw`. Nothing in this experiment is
+committed, compiled or qualified. Its two prospective native files add a
+capture option defaulting to current behavior, a pre-bind setter that refuses
+bound/released runners, and an explicit prefill marker. Suppression requires
+an actual multirow segment. Total rows>1 is insufficient: four-owner decode
+also has multiple total rows and must retain graph capture/replay. Verify and
+existing graph replay remain on their established paths.
 
-The [single routing keep factor](../gemma-keep28-routing/README.md) now resolves
-that fixed-corpus difference: retaining only layer 28's routing probabilities
-matches all 1,024 stock heads byte for byte. The routing-policy difference
-caused the nine disagreements for this recipe. A general selection rule remains open;
-the [actual refusal observation](../gemma26-routing-gate/README.md) now confirms
-32,768 bytes of weights/logits overlap under the original >8-row memory gate.
-This placement-dependent result supplies no production whitelist or timing gain.
+Seven runtime files in that scratch tree are borrowed private serving-recipe
+bytes, not owned experiment changes. Do not copy its full diff onto main:
+main now contains the reviewed bounded default and newer documentation.
+Transplant only the intended native delta onto current main and preserve its
+ordinary recipe. The external `gemma31_capture_policy.cc` is authoritative;
+`benchmark1.diff` predates formatting. Known unfinished work: include
+capture-off in the C1-only admission guard, regenerate the caller diff, finish
+the arm-aware checker/aggregate and supervised queues, then obtain fresh
+source/method review. No queue or source-ready packet is frozen yet.
 
-## Prompt for Opus or Astra
+## Next material lead and backward transfer
 
-```text
-Do a read-only root-cause review of the remaining Gemma26/31 performance gap
-in /home/pmeenan/src/jitLLM. Start with AGENTS.md, docs/workflow.md and
-docs/experiments/gemma-performance-review/README.md, then pull only relevant
-reports and source. This is a read-only review; do not edit, build, test, run inference,
-profile or launch additional agents/jobs.
+Clear currently discards growing state backing. The following growth acquires
+fresh extents from a registered sparse-zero source. Its measured Clear/growth
+cost makes completion-aware state reuse a concrete next lead if capture policy
+leaves a material gap. Simply skipping eviction is unsafe: content generations,
+write-back sources, reclaim eligibility and padded initialized bytes must
+remain correct. A retained-state design must preserve node-wide charges,
+lease/registration retirement, zero reconstruction after reclaim, stale-closure
+rejection and quarantine on an unproven reset. Measure its complete reset/growth
+cycle; moving allocation out of the benchmark clock is not an optimization.
+No retention implementation or provider/IO attribution has been performed.
 
-Latest fresh solo bookends: Gemma26 native prefill2.47975/2.47556s versus
-reference2.41652/2.42106s (+2.43%); decode+.92%. Gemma31 native11.1940/11.2168s
-versus reference12.3124/10.9769s: native stable, reference variable; +2.08%
-versus closing reference, decode+2.13%. Do not infer parity from the slow stock
-mean. Graph-reader/source-use scans, bounded DFS membership, unused
-intermediate final-layer work, next-plan CPU overlap, plain norm selection and
-repeated wrapper declaration validation are already addressed. Focus on a
-whole-engine or graph/paid-work mismatch supported by current evidence.
+Apply eligible changes to Gemma26 as requested by the owner. State-only prefill,
+lookahead, graph/source indexing, wrapper caching, weight/state placement
+memoization, plain norm fusion and slot-sized publication are already shared.
+The checked norm chains and owner attention are available, but current whole
+serving qualification/default selection remain owed. Gemma26 also uses the
+MoE route/reduce policies; dense31 does not. Preserve Gemma26's matched 1024-row
+cache geometry when parameterizing the current native/public serving callers;
+do not inherit dense31's 256-row recipe silently. Start with representative C1
+quality and a PASS-only short whole-serving comparison, then broaden to C4,
+corpus and HTTP if warranted. Old C5/scalar failures remain independent.
 
-Rank at most three explanations by evidence and plausible magnitude. For
-each, give exact source locations, what is confirmed versus hypothetical,
-what existing evidence rules out, and the smallest decisive comparison.
-Reconcile graph construction/reuse and CPU costs with actual model work.
-Do not treat historical Gemma26 GPU-unattributed time as current Gemma31 CPU
-time, or multiply the 52.3 ms aggregate graph-build cost as a per-chunk cost.
-Do not reopen the corrected SWA reference recipe as an unresolved issue.
-Separate solo performance from the still-open C4 correctness/performance gap.
+The [exact MMVQ preparation screen](../gemma31-mmvq-shared-prep/README.md)
+reported only about 1% chain improvement with overlapping ranges, not a model
+gain. Broad shared-Q8 changes to vector arithmetic were rejected. Do not
+revive those changes as if already qualified or prioritize another small
+operator screen over a measured whole-engine cost.
 
-Current phase spans:31B binding45ms/state161–175ms;26B binding12ms/state59–67ms.
-Native completed execution fits within stock whole prefill time on both
-profiles. Those intervals do not isolate GPU arithmetic or a state allocation
-subcallee. Grouped upfront state preparation reduced31B state time61ms but
-showed no wall win amid execution spread. The closed C4 owner-root consumer removes K/V packing for an 8.93% gain;
-plain-norm-on remains 2.10% slower than fresh original bookends with exact heads.
-The bounded Gemma26 transfer records a 7.13% gain and 0.265% fresh-reference
-latency excess; its two positive-margin failures remain. Wider contexts and
-production quality/batching qualification remain open.
-The current teacher-forcing screen matches all1024 full31B heads at256 rows;
-26B all1024's nine positive-margin failures are resolved by the bounded keep28
-routing diagnostic; general policy selection remains open. Keep quality diagnosis
-separate from performance and do not widen either gate. Identify the smallest
-decisive test for the strongest remaining case.
-If a comparable latest TensorFold path exists, identify its current pin and
-applicable model/format/backend before treating it as a performance target.
-Do not claim a cause or measured speed gain from source inspection alone.
-```
+## Operating instructions and scope still owed
+
+Start from main at `ee6beb1` plus this handoff commit. Current source/reference
+pins are documented above and in the bridge aggregate; recheck latest
+TensorFold at each new task entry. The previous task-entry snapshot was
+0.6.6/cb2ebf0540f42604e2759b2ddef497861e928248, with no matching dense31
+CUDA GB10/GGUF comparator found. This is recipe eligibility, not a claim about
+all TensorFold model support. Prefer it where a model/format/platform matches.
+The owner also requested a latest llama.cpp/docs refresh after the in-flight
+Gemma work is finished, including checking Clef support and performance updates.
+
+Use hostlock shared for workstation builds/tests/inference. Spark heavy work
+uses the installed `~/.local/bin/spark-job start --gpu` and official wait,
+bounded to 600 seconds by default with stop-on-fail. Recheck busy before handover.
+Never touch the owner's TensorFold work. Synchronize owned sources with
+`rsync -rlpc --exclude=.git --exclude=/build`; unanchored `--exclude=build`
+once omitted `tools/build` before compilation. Failed official records and
+raw payloads remain external; the bridge retains 40 successful and 6 failed
+records without waiving a numerical failure.
+
+The original serving evidence/raw receipts are at
+`/tmp/jitllm-m35-coordination/gemma31-production-bridge-raw`; phase diagnostic
+support is at `gemma-state-phase-attribution-raw` in the same parent. Reusable
+native/public callers, analysis and HTTP method are committed in the bridge.
+Inspect the relevant current receipts rather than revalidating every historical
+archive. No full regression suite should run until the gap-closing changes
+are settled; use focused correctness, lifetime and matched performance checks.
+The final suite/shipment checks remain owed.
+
+M3.5 is incomplete. Its other models/quants, EXL3, media inputs/generation,
+Jev/Clef, prefix reuse and final quality/performance/memory/swap gates remain
+in [the plan](../../plan.md). DeepSeek 4.1 Flash is on the dual-Spark list.
+EmbeddingGemma 2 is recorded as a research/API-assessment candidate (`9970314`),
+not executed model support. No M3 speed exception is extended to new models.
