@@ -504,6 +504,11 @@ family" guide, and its long-context scaling work.
         full model qualification remain open. The same measured 31B C8 candidate
         remains 3.57% slower than fresh stock (155.385 ms) in a short matched
         bookend with unchanged complete heads/state; this is not sustained parity.
+      - [x] [Grouped independent cache-write screen](experiments/gemma-grouped-cache-writes/README.md):
+        rejected report-only candidate. Original and fast-divider 31B C12 screens
+        increased mean paid time 7.18%/3.22%; timing movement limits attribution.
+        Complete native heads/state/choices remain exact; both six-control proofs
+        pass. No prototype source/default adopted, 26B transfer or new oracle.
       - [x] [Ordinary whole-C12 factor](experiments/gemma-c12-single-wave/README.md):
         twelve shared product columns and three funded real-root attention quads;
         D-092 invariant waves keep eight and serving owner/joined defaults stay off.

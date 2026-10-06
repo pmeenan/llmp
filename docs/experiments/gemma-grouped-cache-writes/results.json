@@ -1,0 +1,522 @@
+{
+  "status": "Rejected report-only experiment; neither variant demonstrated a paid decode benefit. No prototype source/tests, option, registry entry or default change adopted.",
+  "base": "774515ed1df47055948106389f3880ca47089d82",
+  "adopted_source_paths": [],
+  "default_changes": false,
+  "recipe": {
+    "context": 4096,
+    "effective_owner": "actualdevicearchitecture1210-only; fixed during Setup before sizing",
+    "forced_steps": 32,
+    "fusion": true,
+    "graphs": true,
+    "history_rows": 1024,
+    "max_head_rows": 12,
+    "max_rows": 256,
+    "moe_route_reduce": false,
+    "native_joined_groups": [
+      12
+    ],
+    "native_policy": "norm",
+    "norm_add": true,
+    "norm_rope": true,
+    "owner_requested": true,
+    "owners": 12,
+    "plain_norm": true,
+    "prefill_rows": 992,
+    "profile": 31,
+    "rope_store": false,
+    "row_products": false,
+    "serving_joined_default": false,
+    "serving_owner_default": false,
+    "shared_q8": false
+  },
+  "artifact_manifest": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+  "input_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
+  "carrier_manifest_sha256": "f6cf32b29dd980c997915519339cdc1cd2c244e219c473a0331303bbc6e5708c",
+  "baseline_helper_sha256": "a130902c9ee555a8926f83a6ce93bfe3bcf2603eb58fa5803d5aa01b9f710f75",
+  "baseline_own_proof_sha256": "976a05598a95c1b62161a9d331d670844d2e7b33bef9a0bad8e9271196c9afab",
+  "sdk_receipt_sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09",
+  "variants": [
+    {
+      "variant": "original_uint64_division",
+      "helper_sha256": "aca3a70d26ce82ad8d57ce14c72356e46b01e7ac421b3260fe7f08f5845ff2aa",
+      "source_receipt_sha256": "6306abbdf27b16c53028a8df34065421ce50026a1f89c4ca03b45980c03cb88a",
+      "source_bundle_sha256": "a06dc2d944bad127300de90d759be54f879db06174495e9a3307b5fbaa441a82",
+      "source_frame_sha256": "8c0276ab4df18d9dbf245160dd8af811d92b103da4c0290a191ce80523845cc8",
+      "cuda_by_value_argument_bytes": 192,
+      "focused_passed": 6,
+      "focused_skipped": 0,
+      "summary_sha256": "55b06a9beebd39556fb7f74ee2d22fc50a2e1752f4323e668d556c64205499f7",
+      "complete_head_rows": 396,
+      "complete_initialized_state_files": 24,
+      "exact_retained_baseline": true,
+      "forced_choices": 384,
+      "off_mean_seconds": 5.70474,
+      "off_spread_seconds": 0.05767999999999951,
+      "on_change_percent": 7.175787152438162,
+      "on_mean_seconds": 6.1141000000000005,
+      "on_spread_seconds": 0.35746000000000056,
+      "scope": "Same-helper opt-in ABBA; no new reference/noise/NLL or parity claim.",
+      "on_change_milliseconds": 409.3600000000004,
+      "ordered_arms": [
+        {
+          "name": "off-before",
+          "grouped_cache_write_steps": 0,
+          "log_sha256": "8be4a6f269836ba623a5a0bacc4f98152b3d0a38e7fa35ef1d54652bd1d323f6",
+          "seconds": 5.6759
+        },
+        {
+          "name": "on-first",
+          "grouped_cache_write_steps": 360,
+          "log_sha256": "d9d051ea2f170666f68be774b030aa64416aed98cc79bc1a1121d8ce987a0079",
+          "seconds": 5.93537
+        },
+        {
+          "name": "on-repeat",
+          "grouped_cache_write_steps": 360,
+          "log_sha256": "b757f7ed9ec8d67dcc1e77e5d32b801eea53e54a5e68f819e55f0db7d8437fb5",
+          "seconds": 6.29283
+        },
+        {
+          "name": "off-after",
+          "grouped_cache_write_steps": 0,
+          "log_sha256": "94789f1046c7c64a9c4ed2e95224cb1e5c3b45d629663141d7b6499b8b115c83",
+          "seconds": 5.73358
+        }
+      ],
+      "decision": "Rejected; no demonstrated benefit and no26 model transfer."
+    },
+    {
+      "variant": "original_fastdiv",
+      "helper_sha256": "76a89f206e5309b398b7c29a53be5134c1a78a12e766cc4a5c69d22d64adf589",
+      "source_receipt_sha256": "8203315599597087009aa196cfc3ba5480c7ab0fae5a26546215360b924c0c6a",
+      "source_bundle_sha256": "985372a2ebb9945aa6129d593e2af13d5799261304b0e357a9b55aa9954253d3",
+      "source_frame_sha256": "a05c88b0cc1b0a2dbcebc2ccadaaf42fdfec70ee9c310032a18abb116d9f2a50",
+      "cuda_by_value_argument_bytes": 224,
+      "focused_passed": 6,
+      "focused_skipped": 0,
+      "summary_sha256": "b88855e6cc292046f7bff41a4d652a52bc8a1ae1ee2a21a62d9fd05690231ec0",
+      "complete_head_rows": 396,
+      "complete_initialized_state_files": 24,
+      "exact_retained_baseline": true,
+      "forced_choices": 384,
+      "off_mean_seconds": 6.01102,
+      "off_spread_seconds": 0.45162000000000013,
+      "on_change_percent": 3.221167123050672,
+      "on_mean_seconds": 6.204645,
+      "on_spread_seconds": 0.3192699999999995,
+      "scope": "Same-helper opt-in ABBA; no new reference/noise/NLL or parity claim.",
+      "on_change_milliseconds": 193.62499999999994,
+      "ordered_arms": [
+        {
+          "name": "off-before",
+          "grouped_cache_write_steps": 0,
+          "log_sha256": "ae657818dd869f60ec6e54ae096280e7865bf88cb0de7a6e3d35c21c9afd9f88",
+          "seconds": 5.78521
+        },
+        {
+          "name": "on-first",
+          "grouped_cache_write_steps": 360,
+          "log_sha256": "09ad70016d3709c973edb4887916b67ada53bcad7cab55155d71e8ec137efb83",
+          "seconds": 6.04501
+        },
+        {
+          "name": "on-repeat",
+          "grouped_cache_write_steps": 360,
+          "log_sha256": "cfae2477d14a41f5133e99342ada325dbd6b074651b876eff1117e41ac737792",
+          "seconds": 6.36428
+        },
+        {
+          "name": "off-after",
+          "grouped_cache_write_steps": 0,
+          "log_sha256": "386b8f38b743299493b311e5f34defa0ca259ca9fd9c6e24dd33c3d90e6c4320",
+          "seconds": 6.23683
+        }
+      ],
+      "decision": "Rejected; no demonstrated benefit and no26 model transfer."
+    }
+  ],
+  "focused": {
+    "passed": 6,
+    "skipped": 0,
+    "measured_plan_counts": [
+      {
+        "profile": 26,
+        "owners": 4,
+        "placed": 0,
+        "groups": 60,
+        "original_writers": 240
+      },
+      {
+        "profile": 26,
+        "owners": 4,
+        "placed": 1,
+        "groups": 60,
+        "original_writers": 240
+      },
+      {
+        "profile": 26,
+        "owners": 8,
+        "placed": 0,
+        "groups": 120,
+        "original_writers": 480
+      },
+      {
+        "profile": 26,
+        "owners": 8,
+        "placed": 1,
+        "groups": 120,
+        "original_writers": 480
+      },
+      {
+        "profile": 26,
+        "owners": 12,
+        "placed": 0,
+        "groups": 180,
+        "original_writers": 720
+      },
+      {
+        "profile": 26,
+        "owners": 12,
+        "placed": 1,
+        "groups": 180,
+        "original_writers": 720
+      },
+      {
+        "profile": 31,
+        "owners": 4,
+        "placed": 0,
+        "groups": 120,
+        "original_writers": 480
+      },
+      {
+        "profile": 31,
+        "owners": 4,
+        "placed": 1,
+        "groups": 120,
+        "original_writers": 480
+      },
+      {
+        "profile": 31,
+        "owners": 8,
+        "placed": 0,
+        "groups": 240,
+        "original_writers": 960
+      },
+      {
+        "profile": 31,
+        "owners": 8,
+        "placed": 1,
+        "groups": 240,
+        "original_writers": 960
+      },
+      {
+        "profile": 31,
+        "owners": 12,
+        "placed": 0,
+        "groups": 360,
+        "original_writers": 1440
+      },
+      {
+        "profile": 31,
+        "owners": 12,
+        "placed": 1,
+        "groups": 360,
+        "original_writers": 1440
+      }
+    ],
+    "cuda": "entire four padded destination allocations/guards byte-exact primitive versus group4; eager plus two poisoned captured replays with fresh valid I64 ring indices",
+    "workspace_bytes": 0,
+    "test_filters": [
+      "SetRowsGroupPlan.SelectsExactNoncontiguousWritersAndRetainsInterveningWork",
+      "GgmlExtValidateTest.GroupedCacheWritesRefuseCrossAliasesStaleParentsAndUnsupportedTypes",
+      "Gemma4Plan.GroupedOriginalCacheWritesSelectAndStayFundedInBothPasses",
+      "GgmlExtOpsTest.FourOriginalCacheWritesMatchPrimitivesIncludingPaddingAndCapture",
+      "GgmlExtOpsTest.GetRowsDequantizesAndSetRowsWritesExactly",
+      "GgmlExtOpsTest.TheRegistryDeclaresAndBindsEveryNewImplementation"
+    ]
+  },
+  "official": [
+    {
+      "name": "m35-gemma-grouped-cache-writes-build1",
+      "host": "spark (A)",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 10,
+      "successful_steps": 3,
+      "records": {
+        "final.json": "d53f75f6fc32af78b1f6db8f6f6e06957b35aaa181534a5bc02d92b6fffa4830",
+        "steps.json": "793cf20dc481743490ad96c68508e7653b8a94e415888c95ef1cf711726e7b4b",
+        "job.json": "6551abe49346ea35a24cc3881352f62fcd1c17a16b17d74e9d28736e063a5c45",
+        "log": "0a1ada8db6e3341d88912360111efe9f2cfeb1a7635e13bf8f01a1d889a17d39"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-build2",
+      "host": "spark (A)",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 10,
+      "successful_steps": 3,
+      "records": {
+        "final.json": "b96e19ff1a13623be715a2c73d1f52cf3ebd9f20152a0e7432db0d3f69f5b63b",
+        "steps.json": "4c36d69c4f73d234d1e15e6c349a27894a49c7204fe0a30b7be71337257e48a0",
+        "job.json": "eddafdfec934cc8c59db53ac28a004d9ed91dca7554c13373f644bb3cdc69baf",
+        "log": "d174a9f14b55944952d10669445891f30178ffbba1bdee044f9b043ce05fe478"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-build3",
+      "host": "spark (A)",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 10,
+      "successful_steps": 3,
+      "records": {
+        "final.json": "0684a9ba31ed41c83569f25a69df00d42dfc3214611da54efba64de234a1f36a",
+        "steps.json": "d117a04bcff82baf12c64200af3ff9494a7dc6756d001e23b719882ab8e667de",
+        "job.json": "c78a68823f4148189ccfd1f9bbc2642339ea6db077766e6d167de10f3bd2f225",
+        "log": "a3b913d9e5b37c05b1e189030483fd30e8e4390d6b448f2c3847b0803debd4b6"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-build4",
+      "host": "spark (A)",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 10,
+      "successful_steps": 10,
+      "records": {
+        "final.json": "1bb2e019523bc927a655d87bcfd360c0729747280758394f9a9120ff88b1c1f2",
+        "steps.json": "ea57146a5114293b5f7946562e843797c0a1d410651f63cbfc9b41f8deac8bd0",
+        "job.json": "17175040e764de8298f1d779b7e7a8da47f7e5c51c3cd66a9be7024e402b7c74",
+        "log": "a1a04100e7f498f5174ed1c2bf46d160b9f57e9c7c8d9b97d86f18bea759f867"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-build5",
+      "host": "spark (A)",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 10,
+      "successful_steps": 10,
+      "records": {
+        "final.json": "de9adc2efc9393e1a3b1c304a102d920362fae05ae50f04f4d68a318bdb71387",
+        "steps.json": "0520654268e3e6888da9c94ea5c2b3d7816309cd4efe9303806dc0d9919f6fd3",
+        "job.json": "944826a718b0af0c96d8101f9dcd835cea7243092b61141a98e9dfc52699d574",
+        "log": "5ddd5a41b63342e90f1972ab5d3442d1776dc7a5378db2bf340e05a8f2e7fc8c"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-stage31",
+      "host": "spark-b (B)",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records": {
+        "final.json": "f1e452d7440d95d58d7d5933d06a12bff04a5ef7183c67acf3797cbb2c7c340b",
+        "steps.json": "99a360db3b07f2153086f418e053a032fcb126ec1e5ad49b7b3abd4ad0b71dbd",
+        "job.json": "d9a32b96cc5eea554e0cbd40cd04176876e338505683ea7650803cf0aed483f2",
+        "log": "7f1571c31ee13d4316a03556787283e353be76ae82574991557df4864069ef4a"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-screen31",
+      "host": "spark-b (B)",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 6,
+      "successful_steps": 6,
+      "records": {
+        "final.json": "d025f451877e32bcb8310aa787d740e6161e466a7d2d259eb527281964896472",
+        "steps.json": "af9f9ef87a14a99f7e745fad221b25f2fd2fd2aa5fc114c055c5d2a69d5ebfeb",
+        "job.json": "5c38a3052a6f6a568032f13fd8804740f7d2e745b0d5fcee7231e95f431a556b",
+        "log": "bf51745a1b49c8cb1c264cafba2e9d9c0b87f12bf2b0480acda9bfb83328d8d2"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-check31",
+      "host": "spark-b (B)",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 3,
+      "successful_steps": 3,
+      "records": {
+        "final.json": "7b1e24c250bec48da30f446b0479b4940084cdaa034fe61ba827191e16db99b2",
+        "steps.json": "9cdd3d1dc29f3f09d29f039a5cda3addc5ca682a7ebfb58e21e1fe69bc682378",
+        "job.json": "abf08e3efd9581cd7189a0691a6b331ca9ded21c032442102b98c5dfe54fd15c",
+        "log": "f0ae38b65bfa3a9fadd189ac14dd0e14c21ab0b3e7672df1176e1d2f8ec7c3e7"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-fastdiv-stage31",
+      "host": "spark-b (B)",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records": {
+        "final.json": "dadd74df39eee2dc6bf9b4ed14d4f7a0c8c5218b54e2415527f6bcc4c7ed6a95",
+        "steps.json": "d6b9a923a0e0c7f238d83077ed3f1f2fccbf8d9904c8e79bf4c6a0341edaf03a",
+        "job.json": "9571ef53b2f1f8f22cf22a8af32d2866fc97caf90ef689367df1acd8c547efca",
+        "log": "5ba207d76311e198b21cc47f84aa6d8adae934259a40e2af03cf14a46aa304d7"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-fastdiv-screen31",
+      "host": "spark-b (B)",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 6,
+      "successful_steps": 6,
+      "records": {
+        "final.json": "dc4750760d7129e036c32161efa051ad3f9ced80c7f8e5f4bec038f603e45714",
+        "steps.json": "a09c24529ecb81607c978775c6f5406a1360ab4f640e9153a75ca1050ecd20ed",
+        "job.json": "94cc6953dfc8c921f2520426eb14477687bf25fcf4d71dfd3ccbd92055d611fe",
+        "log": "aa7fe09c31bbc6e1eae05911acc2994d81b4574e27b1d0efedc99141c6daaaa2"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-fastdiv-check31",
+      "host": "spark-b (B)",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 3,
+      "successful_steps": 3,
+      "records": {
+        "final.json": "11cd84aa2af532380b523cabab7704e0e6bec5cc9a14539158e9d062df24dce0",
+        "steps.json": "c4e7aafae0f80300c43d1c2551c1d1046aec8364d2034854e009ace1b44bf06b",
+        "job.json": "e0852247b21dfe334c68d8b498419f28f1ec43efc512943837691f30e5b2b1eb",
+        "log": "19c2ec3c862fe5f9a0849969621220c983dd8898aefc25d9a3292782b5f46ef6"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-kernel-inspection1",
+      "host": "spark (A)",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 1,
+      "successful_steps": 0,
+      "records": {
+        "final.json": "b84f35554c9a70f110f77e88df74ac64f1b24ea007b087f8b123e4ac68a3b0df",
+        "steps.json": "0bec37db3d58684a1416656586d50005a110ca12cb3dbab86ac878f7b2ec6fd0",
+        "job.json": "0a5fa84d161a8d66fd632315599e4b640ddcbb0718de64dc414fd2f20b8b6e13",
+        "log": "eb2cd072c242d3a37a1d50d948d2f66a0cd99e7b891f4db1925301cf5e4ec164"
+      }
+    },
+    {
+      "name": "m35-gemma-grouped-cache-writes-kernel-inspection2",
+      "host": "spark (A)",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records": {
+        "final.json": "222f12c62bb1db67a385c0246cbb9542427d358008046aedbc36696bc27011bf",
+        "steps.json": "b4b979ed79df555f557adb4ec90aa89c164dca5f7b5f26f889887b7e285079c1",
+        "job.json": "e607c05f2374d0089df5af1d0ce84aa356dc30b1d3ff5c5fd785a72565d4ea1e",
+        "log": "a760fe5374251a87dbae84b990409aca64035311cbd14e0d5c030c5adb67954a"
+      }
+    }
+  ],
+  "failed_attempts_preserved": [
+    "build1 missing detail::Extent qualifications and explicit signedness conversion",
+    "build2 missing original cast helper cpy-utils.cuh include",
+    "build3 fixture iterator signedness conversions",
+    "inspection1 invalid cuobjdump CLI; no usable resource result; corrected inspection2 succeeded"
+  ],
+  "funding": {
+    "original_output_descriptors_per_group": 4,
+    "retained_host_allowance_bytes_per_node": 512,
+    "cuda_by_value_argument_bytes": [
+      192,
+      224
+    ],
+    "additional_device_workspace_bytes": 0,
+    "additional_gpu_operand_table_bytes": 0,
+    "matcher_window_nodes": 64,
+    "peak_memory": "Not established unchanged: delaying writers can extend activation lifetimes; normal startup sizing and placement fund them.",
+    "prefill_scope": "Option also active in untimed solo prefill; quartet attempts and producer-prefix walks can add planning cost. Paid shared-decode timing does not establish whole-engine/prefill benefit."
+  },
+  "compiled_inspection": {
+    "architecture": "sm_121a",
+    "compiler": {
+      "sdk": "aarch64-c09daba6ac31edee",
+      "nvcc_release": "13.4",
+      "nvcc_version": "13.4.92",
+      "nvcc_build": "cuda_13.4.r13.4/compiler.38855100_0",
+      "version_scope": "Actual SDK nvcc --version; cuBLAS library version13.8 is not compiler version."
+    },
+    "disassembler": {
+      "path": "/usr/local/cuda-13.0/bin/cuobjdump",
+      "version": "13.0.85",
+      "build": "cuda_13.0.r13.0/compiler.36400806_0",
+      "sha256": "b73eed3404e7a2f73f4c5dc30b895876ca42d26be58011b7a1029a4542f011c2",
+      "scope": "Existing tool; pinned SDK contained no cuobjdump. Exact target function decoded successfully."
+    },
+    "kernels": [
+      {
+        "variant": "original",
+        "function": "_ZN6jitllm7kernels4ggml43_GLOBAL__N__40586ec7_10_ops_ext_cu_68c019e019SetRowsGroup4KernelENS2_15GroupedRowsArgsE",
+        "registers": 16,
+        "stack_bytes": 0,
+        "shared_bytes": 0,
+        "local_bytes": 0,
+        "constant_bank0_bytes": 1088,
+        "local_load_instructions": 0,
+        "local_store_instructions": 0,
+        "argument_access": "Direct dynamic constant-bank LDCU.64 loads",
+        "resources_sha256": "73b37c2ae77aab9d189ea0f460c3c84ad8c399c30bcc792898df99acdf6d918c",
+        "sass_sha256": "573fac3accae7df283955db0e1c02d5d89514f8f7638583011a96a4101a3781f"
+      },
+      {
+        "variant": "fastdiv",
+        "function": "_ZN6jitllm7kernels4ggml43_GLOBAL__N__40586ec7_10_ops_ext_cu_68c019e019SetRowsGroup4KernelENS2_15GroupedRowsArgsE",
+        "registers": 16,
+        "stack_bytes": 0,
+        "shared_bytes": 0,
+        "local_bytes": 0,
+        "constant_bank0_bytes": 1120,
+        "local_load_instructions": 0,
+        "local_store_instructions": 0,
+        "argument_access": "Direct dynamic constant-bank LDC/LDC.64 loads",
+        "resources_sha256": "a3823074615cc8df1f040a97b8aa941439ec35658f3cc0f220520ca6fcb6a25b",
+        "sass_sha256": "b7da22a5e1b952c11bbf5c98c0468c94545e3c92ff64f3d03509fd65c02a7ac1"
+      }
+    ],
+    "conclusion": "Per-thread argument-copy hypothesis rejected for both actual binaries: zero local/stack, no local load/store instructions, direct parameter constant loads. No grid_constant variant implemented."
+  },
+  "tensorfold": {
+    "query_utc": "2026-10-06T08:28:31Z",
+    "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "version": "0.6.5",
+    "recipe": "Gemma26 MLX only; no comparable GB10 CUDA recipe; no TensorFold model jobs",
+    "README.md": {
+      "url": "https://raw.githubusercontent.com/ashhart/TensorFold/609ca419abecebdc5a059498a613680bd3aa847f/README.md",
+      "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+    },
+    "pyproject.toml": {
+      "url": "https://raw.githubusercontent.com/ashhart/TensorFold/609ca419abecebdc5a059498a613680bd3aa847f/pyproject.toml",
+      "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+    }
+  },
+  "limitations": [
+    "Short same-helper ABBA on spark-b, no new stock/reference/noise/NLL or parity claim.",
+    "Original on spread357.46ms; fastdiv off451.62ms and on319.27ms exceed its193.625ms mean difference. Cross-screen drift prevents causal attribution to uint64 division.",
+    "Primitive writer has PDL helpers; grouped launch uses ordinary stream ordering. Launch-count effect was not isolated from launch protocol.",
+    "No26 model transfer, broader contexts, serving adoption, numerical allowance, or cross-family measurement.",
+    "Whole regression suite owner-deferred; six focused controls passed separately for each variant."
+  ],
+  "backward_eligibility": {
+    "Qwen2": "V destination is a reshaped cache view, excluded by complete NONE-root contract.",
+    "Qwen3.8": "Individual F16 K/V roots may fit; tagged per-slot lanes and intervening attention consumers prevent claimed quartet selection; indexer/recurrent state F32.",
+    "DeepSeek": "Persisted CSA/LID/HCA state F32 with I32 indices; compressed cache destinations are views and normal waves tagged. Individual raw F16 writer may fit, no selectable quartet proved."
+  },
+  "raw_location": "External sibling gemma-grouped-cache-writes-raw and gemma-grouped-cache-writes-screen-raw; raw logs, tensors, instructions and queues are not Git report content.",
+  "official_totals": {
+    "successful_jobs": 9,
+    "failed_compile_jobs": 3,
+    "failed_inspection_cli_jobs": 1
+  }
+}

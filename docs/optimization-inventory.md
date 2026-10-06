@@ -621,6 +621,18 @@ performance qualification remain separate.
 
 ## Rejected kernels: pieces worth retaining
 
+Gemma's [grouped independent cache-write experiment](experiments/gemma-grouped-cache-writes/README.md)
+was rejected without adopting its source or defaults. Both six-control proofs
+retain four original outputs/dependencies and exact full padded destinations;
+31B C12 original/fast-divider means increased 7.18%/3.22% with complete native
+heads/state/choices exact. Timing movement prevents a divider-cause claim.
+Compiled kernels have zero local/stack memory and direct parameter loads,
+rejecting the per-thread argument-copy hypothesis. Zero extra scratch does not
+establish unchanged peak; delayed activation lifetimes and untimed prefill
+matching cost remain caveats. Qwen/DeepSeek views, formats, consumer ordering
+and lane tags exclude a claimed current quartet transfer. No 26B model transfer
+or new reference/quality allowance was introduced.
+
 A rejection applies to its tested shape, precision and surrounding work.
 An isolated component remains a candidate until measured with a compatible
 consumer. Raw prototypes and traces stay in external scratch; durable
