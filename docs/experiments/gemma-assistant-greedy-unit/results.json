@@ -1,0 +1,156 @@
+{
+  "scope": "Default-off engine-only C1 greedy transaction; no serving/settings/runner/kernel numerical/default changes",
+  "source": {
+    "base": "3140a9a78554afd547d02ee6921f5ac901ae54f7",
+    "parent_doc_base": "abe31dbb483fbffb6045e41b993fce5ef15f859d",
+    "source_ready_sha256": "41d62362fe0354e0056de6b4179b9c656b922e8126f119a3fdf8d7464e3eba5b",
+    "bundle_sha256": "9488552053e67325c53dab7a089386285623f2c9971f10a272fa12b4ffee4152",
+    "source_frame_sha256": "f4198bf374aed5d044c291fcbbd8a163b7db0517aa6d91ae75eeec2fd9e1a8a3",
+    "files": [
+      {
+        "path": "src/engine/CMakeLists.txt",
+        "bytes": 2374,
+        "sha256": "19026324b652b4f26d0e5c6382bbc20a8114f282e6893c86d9a3e8d52450743c"
+      },
+      {
+        "path": "src/engine/gemma4_assistant.cc",
+        "bytes": 20357,
+        "sha256": "18ff32cb35e34b99e0803409c7b96339bd51529e5adf158f65e0b3589d51c499"
+      },
+      {
+        "path": "src/engine/gemma4_assistant.h",
+        "bytes": 4046,
+        "sha256": "8552c47d0b52267c4ea3837a9a49a58b9473ffd8a16c29b4d6123b7dd8eb1dd0"
+      },
+      {
+        "path": "src/engine/gemma4_greedy.cc",
+        "bytes": 1373,
+        "sha256": "a98963574785583066d52dd28f24a7827e36724480e42c3d130f6e169b19487d"
+      },
+      {
+        "path": "src/engine/gemma4_greedy.h",
+        "bytes": 1332,
+        "sha256": "8eb6e4e4900b083f4713ccec24d491e18a6d43b76ceea70ff73d71ac3b5616eb"
+      },
+      {
+        "path": "tests/unit/CMakeLists.txt",
+        "bytes": 49695,
+        "sha256": "740b8b4fa6abca605cbcebdfe90465cfc8c175927a35b382e652c3501df0f58e"
+      },
+      {
+        "path": "tests/unit/gemma4_greedy_gpu_test.cc",
+        "bytes": 21924,
+        "sha256": "3ecd23f0c223758ee7db7434fbe8c771fd98a145ad6fbad6aca7fbece0bfaa36"
+      },
+      {
+        "path": "tests/unit/gemma4_greedy_test.cc",
+        "bytes": 2339,
+        "sha256": "347939ef0b11cda7d107bcefea18dd3523a7d300291c1d141404e3ad59d72d5b"
+      }
+    ],
+    "preparation_ready_sha256": "16239a06c991125cee47748d5485c31d6454e6ed85fe6e4f57762dbb28288b22",
+    "checkout_sha256": "c111f480e5e5f73b9532ab492108811d84143369c77429e813756d26f6971736"
+  },
+  "profiles": {
+    "26": {
+      "target": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+      "assistant": "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42",
+      "feature_width": 2816,
+      "unit_payload_bound_bytes": 6347776
+    },
+    "31": {
+      "target": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+      "assistant": "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120",
+      "feature_width": 5376,
+      "unit_payload_bound_bytes": 6398976
+    }
+  },
+  "recipe": {
+    "assistant_owners_per_call": 1,
+    "independent_target_slots": 2,
+    "context": 1536,
+    "max_rows": 16,
+    "max_head_rows": 4,
+    "max_verify_rows": 4,
+    "prefix_rows": 6,
+    "maximum_draft_depth": 3,
+    "vocab": 262144,
+    "caller_host_grant_bytes": 67108864,
+    "vocabulary_admission_grant_bytes": 536870912,
+    "ordinary_target_policy": true,
+    "scalar_byte_parity_expected": false,
+    "new_fault_injection": false
+  },
+  "checks": {
+    "cpu_passed": 5,
+    "gpu_passed": 6,
+    "skipped": 0,
+    "complete_four_row_heads_features": "byte-exact independent same-width target Wave",
+    "semantic_accepted_kv": "exact range digests against independent four-row peer",
+    "rejected_tail": "exact pre/post range digests",
+    "projected_continuation": "full-head and feature byte-exact",
+    "whole_discard": "reserved initialized state ranges and old feature exact",
+    "assistant_recurrence": "actual subsequent unit starts from newly completed feature",
+    "clean_refusal": "result/state/peers unchanged; no assistant step",
+    "eager_capture_replay": "assistant and target actual replay assertions pass",
+    "all_keep_lengths": "CPU synthetic1..4; real proposals need not cover all lengths; existing independent verifier evidence separate"
+  },
+  "failure_preserved": {
+    "official": "m35-gemma-assistant-greedy-check1",
+    "cpu_passed": 5,
+    "gpu_passed": 4,
+    "gpu_failed": 2,
+    "cause": "Only target replay>0 expectations after two chronology rounds; all strict numerical/state/feature/continuation assertions passed",
+    "correction": "First test repeat2\u21923 only; all assertions retained; seven other source paths unchanged"
+  },
+  "private_artifact_sha256": {
+    "greedy-cpu1": "4412b4f305a05882d5409d5f07dd6f6347e335ec65abd41ef1bcbd29651a748e",
+    "greedy-gpu1": "9240088e7668f81333f3654679d4bb134de1f7677f05b5010c5041b39430bcba",
+    "jitllm-receipt1.json": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09"
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma-assistant-greedy-check1",
+      "host": "spark-c4e2",
+      "state": "failed",
+      "rc": 1,
+      "elapsed_seconds": 38.15300011634827,
+      "queued_steps": 9,
+      "successful_steps": 6,
+      "record_sha256": {
+        "job.json": "4e94baab181ed6730cf937397b09cf6f12c7dd88e6284d66dca9b2013053ccd6",
+        "steps.json": "ae0bdf6e3c5824881d78241bd0f123d7a0f6028dfeae6e383f07cab71ec8b97e",
+        "final.json": "0b77067c2c565726622a9f2634b67771de4c7c7431409b777980b9c303ea96b4",
+        "log": "5f32761b7a66069b4975a538d6c051645461d77be25bf1f5bc9778da75e8e647"
+      }
+    },
+    {
+      "name": "m35-gemma-assistant-greedy-check2",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "elapsed_seconds": 38.18400001525879,
+      "queued_steps": 9,
+      "successful_steps": 9,
+      "record_sha256": {
+        "job.json": "c5c4072b79e2d855fdb64900896cce9aad12d76f54826cf382b2099087c57995",
+        "steps.json": "3363b9e587e8deebcf7c385858bd6b37840f6380f73d8c381f478e526d4d6148",
+        "final.json": "b5e0c68b340410b56eebc81d04d15eb5ae11b1423e2b358529adc40cd1238271",
+        "log": "a84083f775feebbbf733579c91d4db1591f7e2d5e267669e3dcc010b43ebed26"
+      }
+    }
+  ],
+  "limits": [
+    "No public-engine or scalar-width quality comparison, sampling, joined speculation, serving assistant admission/integration or performance measurement.",
+    "No ring-wrap or context-tail extension in this slice; existing verifier evidence is separately scoped.",
+    "Unknown completion handling inherited from existing component/verifier; no new injected post-write failure.",
+    "Full regression suite deferred; defaults remain off."
+  ],
+  "tensorfold": {
+    "head": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "version": "0.6.6",
+    "entry_sha256": "2072eb6a86fdea6084109eadbd5263f587560f230970b5d53dbb1e28eeec6f9f",
+    "comparable_cuda_assistant": false
+  },
+  "raw_evidence": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-unit-raw"
+}

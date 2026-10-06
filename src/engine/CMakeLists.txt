@@ -15,6 +15,10 @@
 # given CUDA's headers (docs/portability.md); it builds where its kernels
 # do, CUDA builds only. jitllm-runtime links it, and so do the paged
 # harnesses and their tests.
+add_library(jitllm_gemma4_greedy STATIC gemma4_greedy.cc)
+target_include_directories(jitllm_gemma4_greedy PUBLIC "${PROJECT_SOURCE_DIR}/src")
+target_link_libraries(jitllm_gemma4_greedy PRIVATE jitllm_sampling jitllm_warnings)
+
 if(JITLLM_CUDA)
   add_library(jitllm_engine STATIC paged_node.cc paged_weights.cc live_state.cc checkpoint_file.cc planned.cc
                                    graph_runs.cc runner_resources.cc ple_rows.cc request_cohort.cc
@@ -27,5 +31,5 @@ if(JITLLM_CUDA)
                                              jitllm_image_kernels jitllm_paging_kernels
                                              jitllm_artifact jitllm_model jitllm_tokenizer
                                              jitllm_chat
-                                      PRIVATE jitllm_base jitllm_platform jitllm_warnings)
+                                      PRIVATE jitllm_base jitllm_platform jitllm_gemma4_greedy jitllm_warnings)
 endif()

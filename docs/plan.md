@@ -593,6 +593,12 @@ family" guide, and its long-context scaling work.
         for one/three-step chains and both own repeats; protected complete
         original state and native borrowed caches remain unchanged. No C2,
         native-target chain, serving/speculation or performance qualification.
+      - [x] [Bounded engine-only Gemma C1 greedy transaction](experiments/gemma-assistant-greedy-unit/README.md),
+        with borrow release before anchor-plus-draft verification, retired-prefix
+        commit, selected target head/feature and explicitly uncommitted next anchor.
+        Both real target/Q8 assistant pairs pass 11 focused controls against an
+        independent same-four-query target, rejected bytes and projected continuation.
+        Default-off; serving, scalar-width quality, sampling and performance remain open.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

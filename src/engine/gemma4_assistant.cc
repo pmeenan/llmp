@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "engine/support.h"
+#include "execution/sampling.h"
 #include "providers/device_runtime.h"
 
 namespace jitllm::engine {
@@ -29,6 +30,65 @@ Status CheckGemma4AssistantOutputs(std::uint32_t owners, std::uint32_t target_wi
   if (!std::ranges::all_of(heads, [](float v) { return std::isfinite(v); }) ||
       !std::ranges::all_of(features, [](float v) { return std::isfinite(v); }))
     return Error("Gemma assistant completed output is nonfinite");
+  return {};
+}
+Status Gemma4Assistant::GreedyUnit(std::uint32_t slot, std::uint32_t past, std::uint32_t depth,
+                                   std::span<const float> completed_target_head,
+                                   Gemma4GreedyWorkspace& workspace, Gemma4GreedyResult& result) {
+  auto request = target_.request_slot(slot);
+  const auto vocab = target_.profile_.vocab, width = target_.profile_.width;
+  if (!setup_success_ || !bound_ || released_ || !request || !target_.Held(slot) ||
+      !(*request)->state_usable() || (*request)->completed_positions() != past || past == 0 ||
+      depth == 0 || depth > 3 || target_.o_.max_verify_rows < depth + 1 ||
+      past >= target_.layout_.context || depth + 1 > target_.layout_.context - past ||
+      completed_target_head.size() != vocab ||
+      std::ranges::any_of(completed_target_head,
+                          [](float value) { return !std::isfinite(value); }) ||
+      workspace.draft_head.capacity() < vocab ||
+      workspace.verify_heads.capacity() < std::uint64_t{depth + 1} * vocab ||
+      workspace.verify_features.capacity() < std::uint64_t{depth + 1} * width ||
+      result.head.capacity() < vocab || result.feature.capacity() < width)
+    return Error("Gemma greedy unit needs a held completed frontier and funded verify envelope");
+  auto anchor = execution::Greedy(completed_target_head);
+  if (!anchor) return Error("Gemma greedy completed frontier refused");
+  std::array<std::int32_t, 4> proposal{};
+  proposal[0] = *anchor;
+  {
+    auto borrow = target_.BorrowFrozen(slot, *anchor);
+    if (!borrow) return Error(borrow.error());
+    const std::array<const Gemma4Runner::FrozenBorrow*, 1> owners{&*borrow};
+    const std::array<std::vector<float>*, 1> outputs{&workspace.draft_head};
+    for (std::uint32_t i = 0; i < depth; ++i) {
+      const std::array<std::int32_t, 1> token{proposal[i]};
+      if (auto r = Step(owners, token, i == 0, outputs); !r) return r;
+      auto next = execution::Greedy(workspace.draft_head);
+      if (!next) return Error("Gemma greedy assistant proposal refused");
+      proposal[i + 1] = *next;
+    }
+  }  // Frozen cache/feature borrow is released before any target writes.
+  if (auto r = target_.Verify(slot, past, std::span(proposal).first(depth + 1),
+                              workspace.verify_heads, workspace.verify_features);
+      !r)
+    return r;
+  auto decision =
+      JudgeGemma4Greedy(std::span(proposal).subspan(1, depth), workspace.verify_heads, vocab);
+  if (!decision) {
+    auto discarded = target_.DiscardVerify(slot);
+    return discarded ? Error(decision.error()) : discarded;
+  }
+  if (auto r = target_.AcceptVerify(slot, decision->keep); !r) return r;
+  const auto head =
+      std::span(workspace.verify_heads).subspan(std::size_t{decision->keep - 1} * vocab, vocab);
+  const auto feature =
+      std::span(workspace.verify_features).subspan(std::size_t{decision->keep - 1} * width, width);
+  result.head.assign(head.begin(), head.end());
+  result.feature.assign(feature.begin(), feature.end());
+  result.committed = proposal;
+  std::fill(result.committed.begin() + static_cast<std::ptrdiff_t>(decision->keep),
+            result.committed.end(), 0);
+  result.count = decision->keep;
+  result.past = past + decision->keep;
+  result.next_anchor = decision->next_anchor;
   return {};
 }
 Gemma4Assistant::Gemma4Assistant(Gemma4Runner& target)

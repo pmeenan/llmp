@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "engine/gemma4_assistant_plan.h"
+#include "engine/gemma4_greedy.h"
 #include "engine/gemma4_runner.h"
 
 namespace jitllm::engine {
@@ -32,6 +33,14 @@ class Gemma4Assistant {
               std::span<const std::int32_t> anchors, bool first,
               std::span<std::vector<float>* const> logits,
               std::span<std::vector<float>* const> features = {});
+  // Optional C1 transaction, enabled only by the target's explicit verify
+  // envelope. A completed target frontier at past supplies the anchor. The
+  // held request owns every draft/verify/accept retirement; all borrows end
+  // before Verify. Result publication follows successful acceptance only.
+  // Caller must fund/reserve workspace and result capacities before entry.
+  Status GreedyUnit(std::uint32_t slot, std::uint32_t past, std::uint32_t depth,
+                    std::span<const float> completed_target_head, Gemma4GreedyWorkspace& workspace,
+                    Gemma4GreedyResult& result);
   std::uint64_t activations_needed() const { return activation_bytes_; }
   std::uint64_t pool_needed() const { return scratch_bytes_; }
   std::uint64_t host_input_bytes() const { return host_bytes_; }

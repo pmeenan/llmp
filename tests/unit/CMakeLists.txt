@@ -327,6 +327,10 @@ jitllm_gtest(gemma_profile_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 
 add_executable(gemma4_graph_test gemma4_graph_test.cc)
+add_executable(gemma4_greedy_test gemma4_greedy_test.cc)
+target_link_libraries(gemma4_greedy_test PRIVATE jitllm_gemma4_greedy)
+jitllm_gtest(gemma4_greedy_test TEST_PREFIX unit. PROPERTIES LABELS unit)
+
 add_executable(gemma4_assistant_graph_test gemma4_assistant_graph_test.cc)
 target_link_libraries(gemma4_assistant_graph_test PRIVATE jitllm_ggml_tensors jitllm_artifact jitllm_json)
 jitllm_gtest(gemma4_assistant_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
@@ -355,6 +359,9 @@ if(JITLLM_CUDA)
   add_executable(gemma4_assistant_gpu_test gemma4_assistant_gpu_test.cc)
   target_link_libraries(gemma4_assistant_gpu_test PRIVATE jitllm_engine)
   jitllm_gpu_gtest(gemma4_assistant_gpu_test MODELS)
+  add_executable(gemma4_greedy_gpu_test gemma4_greedy_gpu_test.cc)
+  target_link_libraries(gemma4_greedy_gpu_test PRIVATE jitllm_engine)
+  jitllm_gpu_gtest(gemma4_greedy_gpu_test MODELS)
   add_executable(gemma4_verify_gpu_test gemma4_verify_gpu_test.cc)
   target_link_libraries(gemma4_verify_gpu_test PRIVATE jitllm_engine)
   jitllm_gpu_gtest(gemma4_verify_gpu_test MODELS)

@@ -184,9 +184,13 @@ inherited target defaults. The default-off
 [engine-only target verifier](experiments/gemma-target-verify/README.md) now
 shares LiveState row snapshots/accept/rollback, explicit host metadata funding
 and separate retained-feature storage. Both profiles pass focused C1
-transaction controls, including ring wrap and rejected bytes; assistant
-acceptance/serving and scalar-prefix parity remain unqualified. Full heads and
-funded host masks are the present diagnostic baseline.
+transaction controls, including ring wrap and rejected bytes. The optional
+[engine C1 greedy unit](experiments/gemma-assistant-greedy-unit/README.md) now
+composes actual assistant drafts with retired target-prefix acceptance on both
+profiles, preserving selected full head/feature and an uncommitted next anchor.
+Its 11 focused controls use same-four-query target arithmetic; scalar-prefix
+parity, whole-chain quality, serving, sampling and performance remain unqualified.
+Full heads and funded host masks remain the diagnostic baseline.
 
 The [Gemma26 assistant C2 screen](experiments/gemma-assistant-c2/README.md)
 checks ordinary joined products and per-segment attention on distinct frozen

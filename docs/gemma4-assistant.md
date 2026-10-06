@@ -183,8 +183,17 @@ The [Gemma31 frozen C1 extension](experiments/gemma31-assistant-reference/README
 now also matches all complete original-image heads and 5,376-value recurrent
 features for one/three-step P64 chains in both exact own repeats. Original
 complete target state/caches/cells and native 52 MiB borrowed tensors remain
-unchanged. This is a frozen-input component prerequisite; native-target chain,
-C2, serving/speculation and performance qualification remain open.
+unchanged. This is a frozen-input component prerequisite; full native-target
+chain quality, C2, serving/speculation and performance qualification remain open.
+
+The default-off [bounded engine C1 greedy unit](experiments/gemma-assistant-greedy-unit/README.md)
+now releases its frozen borrow before verifying the authoritative anchor plus
+up to three drafts, commits only the accepted prefix after retirement, and
+carries its selected target head/feature plus an uncommitted next anchor.
+Both approved real target/assistant pairs pass 11 focused controls, using an
+independent same-four-query target wave, semantic accepted KV, rejected-tail
+restoration, projected continuation and whole-discard/refusal evidence.
+This is transaction semantics, not scalar-width quality or serving qualification.
 
 ## Execution work still owed
 
@@ -196,10 +205,10 @@ and publishes the accepted feature/cursor only after retirement. Both profiles
 pass focused transaction controls; scalar-prefix byte parity and deterministic
 verify budget-pressure refusal remain unestablished. Assistant serving must
 release its frozen cache borrow before verification and separately fund an
-explicit verify/head envelope; neither admission nor acceptance is integrated.
+explicit verify/head envelope; neither is integrated into serving.
 Constant position, seed/feature alignment,
 wrap/rejection/acceptance, cancellation, switch/restart and independent joined
-chains require real controls. Greedy and sampled target acceptance remain the
+chains need their wider serving controls beyond the bounded engine evidence above. Greedy and sampled target acceptance remain the
 authoritative policies; applicable Qwen/DeepSeek graph, staging, adaptive-draft
 and batching optimizations need actual family/format qualification. Existing
 norm/RoPE contracts can be assessed at D256/D512, but the norm/residual fused

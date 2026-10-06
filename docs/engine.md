@@ -204,7 +204,13 @@ funded recurrent storage, plans and staging. A separate default-off
 one to four C1 rows, retains explicit heads/features and settles accepted or
 rejected KV writes before publishing a cursor. Its focused transaction proof
 does not establish scalar-prefix arithmetic parity, assistant serving
-speculation or full model support.
+speculation or full model support. The optional
+[Gemma C1 greedy transaction](experiments/gemma-assistant-greedy-unit/README.md)
+composes the component and verifier under one held request: release the borrow,
+verify anchor plus drafts, accept after retirement, then publish only committed
+tokens and selected full head/feature. Its next anchor remains uncommitted.
+Both-profile focused exact controls use a same-four-query independent target;
+serving and scalar-width quality remain separate.
 
 What a new family writes, and nothing else:
 
