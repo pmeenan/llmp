@@ -1,0 +1,251 @@
+{
+  "schema": 1,
+  "status": "Completed bounded C1 control; no default or runtime admission",
+  "source": {
+    "base": "c3300ab",
+    "candidate15_status": "Uncommitted independent runtime candidate; identified, not adopted here",
+    "candidate15_manifest_sha256": "c40ce2bff58085a6ed542f94fb35736d108ed2c88d7123af1182a968ef268a3a",
+    "source23_bundle_sha256": "1fb510fa713e282d07bd810d199d13fb5d774ae6e525729a0cc6d88c8386f967",
+    "checkout_sha256": "32f3c0aadbdbcb6f7527bd0ab19579bb54bf39eb3171817a38f25f812972a0b5",
+    "helper_source_sha256": "1f16f4f40daba82f08b8c4f6bf522462c18f4e3c2c9db7df85e556ae17d54a5d",
+    "native_binary_sha256": "059484b8039775ab272fa09d1406a7f273e40d3617ff084c6d94b25bd6817e5d",
+    "sdk_receipt_sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09",
+    "public_client_sha256": "0a7cfdbcd01fb733ebefc2b81934b0e212e2c08f26909767d876dea3a1175cdf",
+    "public_client_source_sha256": "78a0d497820e323e370225687c735ceecaa90d1680f98ac628c73e40bd46fe3f",
+    "public_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "artifact_manifest_sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+    "artifact_index_sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171",
+    "raw_gguf": {
+      "name": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+      "bytes": 16947541728,
+      "sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
+      "qualification": "inherited approved immutable raw SHA; current A filename/regular-file length checked, no full payload rescan"
+    },
+    "native_environment": {
+      "LD_LIBRARY_PATH": "/home/pmeenan/src/jitLLM-wt/m3fixb/build/spark-native/cublas",
+      "expected_cublas_api": 130800,
+      "expected_cublaslt_api": 130800,
+      "sdk_identity": "aarch64-c09daba6ac31edee",
+      "sdk_json_sha256": "fbbe4064d963188fe1f3915ee2c94d496bb1fa4432402d7fda9704f29a67150b",
+      "sdk_tree_sha256": "4b20a283e5e787ac802c29eadec2f83a44d94eb783b4c5b7c04ab69c4c57ad8c",
+      "cublas_package_sha256": "2b34839f177e66be1298783f55455680383ce08cc73d547b7b08ee9d36c8e525",
+      "package_version": "13.8.0.4-1",
+      "qualification": "inherited qualified SDK package/tree identities; current build files are same-inode SDK hardlinks, no new full payload scan",
+      "libraries": {
+        "libcublas.so.13": 71959256,
+        "libcublasLt.so.13": 648206104
+      }
+    }
+  },
+  "environment": {
+    "host": "spark / spark-c4e2",
+    "device": "GB10",
+    "driver": "580.178.04",
+    "driver_qualification": "Inherited qualified Spark environment; no new driver probe"
+  },
+  "recipe": {
+    "production": {
+      "context": 4096,
+      "teacher_chunk": 1024,
+      "max_rows": 1024,
+      "variant": "26",
+      "policy": "all",
+      "normmul": "normmul-on",
+      "all_outputs": true,
+      "max_head_rows": 0,
+      "slots": 1,
+      "local_cells": 2048,
+      "global_cells": 4096
+    },
+    "supported": {
+      "context": 4096,
+      "teacher_chunk": 128,
+      "max_rows": 1024,
+      "variant": "26",
+      "policy": "all",
+      "normmul": "normmul-on",
+      "all_outputs": true,
+      "max_head_rows": 0,
+      "slots": 1,
+      "local_cells": 2048,
+      "global_cells": 4096
+    },
+    "fusions": {
+      "plain_norm": 121,
+      "norm_rope": 60,
+      "norm_add": 90,
+      "routing": 30,
+      "reduction": 30,
+      "shared_products": 0,
+      "row_products": 0
+    },
+    "publication_capacity_bytes": 1073741824,
+    "reference": "C1/context4096/batch=ubatch1024/F16 local2048/global4096/swa_full=false/kv_unified=false/full1024 heads/ordinary fusion+graphs",
+    "lookahead": "Enabled but unused: direct Chunk has no forecast",
+    "owner_attention": false
+  },
+  "inputs": {
+    "corpus_sha256": "c7156148ecaa12b6416cf816540d8dede2014982554a835e61076f0dd8bf0c2d",
+    "prior_text_manifest_sha256": "a3acf488addde9863c470de15f407074c4b8afa32bf4193855943c2e309f2ef9",
+    "text_selection": "First complete paragraph after 65536 * history, first paragraph endpoint after 32 KiB, <=64 KiB; frozen before tokenization",
+    "histories": [
+      {
+        "index": 13,
+        "input_sha256": "00ea52e42cf968f014625983fd7fbf063a80b37833f164daffe09093879a3c1c",
+        "input_manifest_sha256": "c5da98bd01cc892192863add42caee01c55768db9936a80a7e6a11c35eda1b53",
+        "text_sha256": "c4bd3ec522f377a92895321fba44abed0c3b47bb1e0928a37ff0ef7ca2aef952"
+      },
+      {
+        "index": 14,
+        "input_sha256": "57f9bdd97334952fa07b349f65c00d0dfe06132db633b25dee51ac87c8919d89",
+        "input_manifest_sha256": "e363ddbcd48353c8aa2420109563fe71e4a1dc16aff296ae0dedb446fc27fcb7",
+        "text_sha256": "397bf903b267789160eff2617b813bacec0e17a328feae041f1592c2f7fa6a4b"
+      }
+    ],
+    "rows_per_history": 1024,
+    "scored_targets": 1023,
+    "native_public_prefix_agreement": true,
+    "one_bos": true,
+    "checkpoint_metadata_sha256": "5d15e0c84e29af2ed9b4525dacdd31ccd7bae061eb28dde2dad984a9b1e45a59",
+    "native_tokenizer_binary_sha256": "182150f40e5b75a88472eefc0d7dbd5ee226ea25745b111582267a876478d0c6"
+  },
+  "calibration": {
+    "method": "abs((A[top1]-A[top2])-(B[top1]-B[top2])); A=1024, B=128; lower-index A top2 ties; nearest-rank p99 over1024",
+    "calibration_history": 13,
+    "heldout_history": 14,
+    "rows": 1024,
+    "byte_exact_rows": 0,
+    "native_schedule_choice_differences": 209,
+    "p99_top2_margin_movement": 9.502556443214417,
+    "max_top2_margin_movement": 18.577688694000244,
+    "oracle_read": false,
+    "own_repeat_allowance": 0,
+    "whole_file_sha256": [
+      "990e6a2da35efc318d2ddd75b07132e8318f2d864374f1f6c6d524931e29173e",
+      "6dae4e66b15f9e7dcf7bbe4e6b992984de58977d93963c42c9c26c0c50635c1c"
+    ],
+    "production_own_sha256": "8b653b643dce915bbe72b16cfde17106af496473953c08463189e48eb1b7101e",
+    "supported_own_sha256": "474dbe31186e01c375fbb7f78d5a5c9883193adbbd25c4ce2e9bc886b776f59d"
+  },
+  "heldout": {
+    "rows": 1024,
+    "scored_targets": 1023,
+    "byte_exact_rows": 3,
+    "reference_repeat_byte_exact_rows": 1024,
+    "strict_argmax_mismatches": 17,
+    "positive_reference_margin_mismatches": 17,
+    "exact_reference_tie_mismatches": 0,
+    "outside_frozen_bound": 0,
+    "operational_margin_gate_pass": true,
+    "ppl_gate_pass": true,
+    "strict_zero_margin_gate_pass": false,
+    "native_mean_nll": 11.504650770789286,
+    "reference_mean_nll": 11.502682664231639,
+    "native_ppl": 99175.94468671424,
+    "reference_ppl": 98980.94780987386,
+    "ppl_relative_percent": 0.19700445505425423,
+    "max_raw_delta": 6.676977157592773,
+    "max_full_softmax_tv": 0.23090537622081891,
+    "mean_full_softmax_tv": 0.01187888578538491,
+    "max_reference_chosen_nll_delta": 0.34309064841840486,
+    "whole_file_sha256": [
+      "03c4ec1081a438c42bc9446de6d898594315a97bde6ee92a398e5665826c59d0",
+      "87022cb27e918d8058a40b59fc70fc5df94436f850653642389033e52a743f45",
+      "87022cb27e918d8058a40b59fc70fc5df94436f850653642389033e52a743f45"
+    ],
+    "max_strict_reference_margin": 0.22209596633911133,
+    "combined_predeclared_gates_pass": true
+  },
+  "identities": {
+    "bound_sha256": "6e622b1cf51b48bdf26ac8c4b4542d6eb0c82b1d4ad5047cb677ef0abf46235c",
+    "heldout_own_sha256": "3522d584801d148aa966a892ce23b5f15d5ce9989e39d81d8a408d334848c26d",
+    "comparison_sha256": "d33bb940c50900c1dbdc279400ffe9f93ea198594c0cc39d9f145b18087df455"
+  },
+  "limits": [
+    "All17 strict heldout differences remain strict zero-bound failures; prior failures unchanged.",
+    "The predeclared large history13 schedule bound is genuine operational variation, not repeat noise; heldout14 never recalibrates it.",
+    "Only one calibration history and one independent heldout history; no C4/C8, corpus-wide, performance, depth, assistant or default-admission claim.",
+    "High absolute PPL is observed in both engines; no cause inferred.",
+    "Raw texts, IDs, full heads, row records, receipts and logs remain external."
+  ],
+  "official_jobs": {
+    "build1": {
+      "state": "done",
+      "rc": 0,
+      "final_sha256": "39db6f6ed3b759c27ec524ed050020a0fb796656e23056e8dbe7560651f7e1bb",
+      "steps_sha256": "5218a194bfae5e3bfe9c93e4fb819bce65b802f0869634316a59a418b57ef768"
+    },
+    "calibrate13-1": {
+      "state": "done",
+      "rc": 0,
+      "final_sha256": "242473aed640128c9232c7e3fc81129cf65d3a8d2aa3dc81729f1f2086992ec4",
+      "steps_sha256": "1f836b4fdf81d2def6e1f35fc97ba5b9256830a729f00ac45f44e63d97309f0a"
+    },
+    "extract1": {
+      "state": "done",
+      "rc": 0,
+      "final_sha256": "d30fea4d5079c83429cb3db73d5ff3254fa76129fbc18c41264bc387b708bc56",
+      "steps_sha256": "d317eeb92067a9c658344918ebcd21aedb5f937f5daa3ce8e74aeaa3fb270480"
+    },
+    "freeze13-2": {
+      "state": "done",
+      "rc": 0,
+      "final_sha256": "ab797dc00853f4874cade00452887d6a9bd2d36a93f90fdb8858b2f7372ff567",
+      "steps_sha256": "2da9faefdd740e5ce22addb1e4a4511ceadce1a3b6bf575fc77171aed06fca3f"
+    },
+    "freeze14-1": {
+      "state": "done",
+      "rc": 0,
+      "final_sha256": "fb5b1dfcc38d52bede83b19988ea18b38776a7a2aef072aa0a2e8098b3f0d273",
+      "steps_sha256": "ebe40535cf58aff1391f32fe35754633ddf7f2fc7b6c915386669b0c2841ec3f"
+    },
+    "native13-1": {
+      "state": "failed",
+      "rc": 1,
+      "final_sha256": "da9a249ac8be993b1e7b414016b9e3c63023b150ca01dcc41106e27b0baad749",
+      "steps_sha256": "62da4c4ac2af6746385d51c41082a135c1ffb5c3473825f83339b7e979fe3352"
+    },
+    "native13-2": {
+      "state": "done",
+      "rc": 0,
+      "final_sha256": "1cfb5daed68e3ee069a1226d3da235ea77bbe2aac26dc2024732c84da153c156",
+      "steps_sha256": "76cce5e61bd1d3dcc6a4e44476cc442ad73a7276719b1325e6a7d5a8a0fa0d30"
+    },
+    "native14-1": {
+      "state": "done",
+      "rc": 0,
+      "final_sha256": "654b197c4de51f00756f1b0ff0f7cebcaa53f2d5a1bf82fbc87e9c3404a43104",
+      "steps_sha256": "9e11cefc90c1dd323c3b5a506c12a68d6016e013732c06b27f2f5b8f45aea8c3"
+    },
+    "oracle14-1": {
+      "state": "done",
+      "rc": 0,
+      "final_sha256": "22c61dbf11777184fd1158bc937e69efe6d9097415a30f37284d22b1d265394f",
+      "steps_sha256": "24c3ae4422077e283d53668f15d32a58a2cac4fb1b7cc52f4da54b921e730fde"
+    },
+    "reference14-1": {
+      "state": "done",
+      "rc": 0,
+      "final_sha256": "94f474c19eea331ec5aabb9c2fb256ab6d9bd0fbcf0dd41e92a48f7bd686b7cf",
+      "steps_sha256": "53243226887f01dfddc82181e96b777818493498b9914508d2fed5feef774d97"
+    },
+    "tokenize1": {
+      "state": "done",
+      "rc": 0,
+      "final_sha256": "367422bbb33ca087bf76216d7955b4639114798e7dc75d57fc1e24703b56af8d",
+      "steps_sha256": "f0f41978e164ffa3c81995fbb139395d35874a3ef757ea8dbb2e496ce9bb255c"
+    }
+  },
+  "checks": {
+    "fixed_capacity_mask_test": "PASS",
+    "native_own_finite_byte_exact_rows": [
+      1024,
+      1024,
+      1024
+    ],
+    "public_own_finite_byte_exact_rows": 1024,
+    "checked_owned_container_absences": 4,
+    "full_suite": "Not run under owner experimental override",
+    "synthetic_metadata_controls": 3
+  }
+}

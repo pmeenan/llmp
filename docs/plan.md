@@ -487,6 +487,12 @@ family" guide, and its long-context scaling work.
         retaining the predeclared exact `45` format failure. 26B matches all
         exact targets; both explanations pass semantic review. This does not
         replace corpus, batching or retrieval-at-depth gates.
+      - [x] [Fresh Gemma26 scheduling and heldout control](experiments/gemma-fresh-quality-validation/README.md):
+        fixed-capacity native 128/1,024 schedules freeze a genuine operational
+        bound on untouched history 13 before independent history 14. All 17
+        heldout disagreements fit that unchanged bound and PPL increases 0.1970%,
+        passing the declared gates. Strict zero-difference still fails; the
+        uncommitted candidate recipe, prior failures and broader gates remain separate.
       - [x] [Current full-head corpus screen](experiments/gemma-current-quality/README.md):
         31B both256/plain-norm-on matches all 1,024 fresh ring-reference heads
         and 1,023 likelihoods exactly. The 26B all1024 transfer has nine positive-

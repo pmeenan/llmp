@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Input-only preparation. extract PPL NATURAL NEW_OUT;
 render TEMPLATE NATURAL NEW_OUT; pack TEXTS TEXT_SHA NATIVE PUBLIC PROFILE NEW_OUT.
+extract-validation PPL NEW_OUT;
+pack-validation TEXTS TEXT_SHA NATIVE PUBLIC NEW_OUT (closed26 histories13/14).
 No model outputs are read. Tokenization is performed by separately reviewed clients.
 """
 import hashlib
@@ -42,16 +44,11 @@ def save(path, value):
         file.write('\n')
 
 
-def extract(corpus_path, natural_path, out):
-    corpus = read(corpus_path, 4 << 20, CORPUS_SHA)
-    assert len(corpus) == 3274124
-    natural = json.loads(read(natural_path, 65536, NATURAL_SHA))
-    assert [item['name'] for item in natural['cases']] == [
-        'explanation', 'arithmetic', 'instruction', 'retrieval']
+def paragraphs(corpus, indices):
     slices = []
     # Paragraph starts strictly after each fixed byte offset. End at the first
     # complete paragraph boundary after 32 KiB, fixed before any tokenization.
-    for index in range(1, 13):
+    for index in indices:
         offset = 65536 * index
         boundary = corpus.find(b'\n\n', offset)
         assert boundary >= 0
@@ -65,6 +62,16 @@ def extract(corpus_path, natural_path, out):
         text.decode('utf-8')
         assert len(text) <= 65536
         slices.append((f'paragraph-{index:02}', text, offset, start, end))
+    return slices
+
+
+def extract(corpus_path, natural_path, out):
+    corpus = read(corpus_path, 4 << 20, CORPUS_SHA)
+    assert len(corpus) == 3274124
+    natural = json.loads(read(natural_path, 65536, NATURAL_SHA))
+    assert [item['name'] for item in natural['cases']] == [
+        'explanation', 'arithmetic', 'instruction', 'retrieval']
+    slices = paragraphs(corpus, range(1, 13))
     fresh(out)
     histories = []
     for name, text, offset, start, end in slices:
@@ -76,6 +83,21 @@ def extract(corpus_path, natural_path, out):
     save(out / 'text-manifest.json', dict(schema=1, corpus_sha256=CORPUS_SHA,
          corpus_bytes=len(corpus), natural_sha256=NATURAL_SHA, histories=histories,
          natural_cases=natural['cases'], tokenization_done=False))
+
+
+def extract_validation(corpus_path, out):
+    corpus = read(corpus_path, 4 << 20, CORPUS_SHA)
+    assert len(corpus) == 3274124
+    slices = paragraphs(corpus, (13, 14))
+    fresh(out)
+    histories = []
+    for name, text, offset, start, end in slices:
+        (out / (name + '.txt')).write_bytes(text)
+        histories.append(dict(name=name, requested_offset=offset, start=start, end=end,
+                              text_bytes=len(text), text_sha256=digest(text)))
+    save(out / 'text-manifest.json', dict(schema=1, corpus_sha256=CORPUS_SHA,
+         corpus_bytes=len(corpus), histories=histories, tokenization_done=False,
+         purpose='history13 native schedule calibration; history14 heldout'))
 
 
 def render(template_path, natural_path, out):
@@ -117,18 +139,25 @@ def ids(raw):
     return values
 
 
-def pack(texts, expected_text_sha, native, public, profile, out):
+def pack(texts, expected_text_sha, native, public, profile, out, validation=False):
     assert profile in METADATA_SHA
     text_manifest = json.loads(read(texts / 'text-manifest.json', 65536, expected_text_sha))
     assert text_manifest['schema'] == 1 and text_manifest['corpus_sha256'] == CORPUS_SHA
-    assert text_manifest['natural_sha256'] == NATURAL_SHA
+    indices = (13, 14) if validation else range(1, 13)
+    assert text_manifest['tokenization_done'] is False
     assert [x['name'] for x in text_manifest['histories']] == [
-        f'paragraph-{i:02}' for i in range(1, 13)]
+        f'paragraph-{i:02}' for i in indices]
+    if validation:
+        assert profile == '26' and 'natural_cases' not in text_manifest
+    else:
+        assert text_manifest['natural_sha256'] == NATURAL_SHA
     prepared, receipts = [], []
     cases = [(x['name'], x['text_sha256'], 'literal') for x in text_manifest['histories']]
-    cases += [(x['name'], digest(x['user'].encode()), 'chat')
-              for x in text_manifest['natural_cases']]
+    if not validation:
+        cases += [(x['name'], digest(x['user'].encode()), 'chat')
+                  for x in text_manifest['natural_cases']]
     for name, text_sha, mode in cases:
+        read(texts / (name + '.txt'), 65536, text_sha)
         receipt = json.loads(read(native / name / 'receipt.json', 65536))
         assert receipt['schema'] == 1 and receipt['mode'] == mode
         assert receipt['metadata_sha256'] == METADATA_SHA[profile]
@@ -163,8 +192,16 @@ def pack(texts, expected_text_sha, native, public, profile, out):
                         tokenizer_agreement='complete supplied IDs byte exact')
         if mode == 'literal':
             manifest['scored_targets'] = 1023
+            if validation:
+                manifest['history_index'] = int(name.removeprefix('paragraph-'))
         save(directory / 'input-manifest.json', manifest)
         histories.append(manifest)
+    if validation:
+        save(out / 'validation-manifest.json', dict(schema=1, profile=profile,
+             text_manifest_sha256=expected_text_sha, histories=histories,
+             calibration_history=13, heldout_history=14,
+             scored_transitions_per_history=1023, final_row_target=None))
+        return
     carrier = b''.join(raw for _, raw, mode in prepared if mode == 'literal')
     assert len(carrier) == 12 * 1024 * 4
     (out / 'cohort12.i32').write_bytes(carrier)
@@ -179,6 +216,11 @@ def main():
     args = sys.argv[1:]
     if len(args) == 4 and args[0] in ('extract', 'render'):
         (extract if args[0] == 'extract' else render)(*[pathlib.Path(x) for x in args[1:]])
+    elif len(args) == 3 and args[0] == 'extract-validation':
+        extract_validation(pathlib.Path(args[1]), pathlib.Path(args[2]))
+    elif len(args) == 6 and args[0] == 'pack-validation':
+        pack(pathlib.Path(args[1]), args[2], pathlib.Path(args[3]), pathlib.Path(args[4]),
+             '26', pathlib.Path(args[5]), validation=True)
     elif len(args) == 7 and args[0] == 'pack':
         pack(pathlib.Path(args[1]), args[2], pathlib.Path(args[3]), pathlib.Path(args[4]),
              args[5], pathlib.Path(args[6]))

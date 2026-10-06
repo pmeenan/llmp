@@ -95,6 +95,14 @@ The [actual refusal observation](experiments/gemma26-routing-gate/README.md)
 confirms a weights/logits allocation overlap at 1,024 rows; it supplies no
 universal layer or token-count rule.
 
+The [fresh fixed-capacity Gemma26 control](experiments/gemma-fresh-quality-validation/README.md)
+freezes native scheduling variation on untouched history 13 and transfers its
+unchanged p99 bound to independent history 14. All 17 heldout disagreements fit
+the bound and PPL increases 0.1970%, passing the predeclared operational gates.
+Strict zero-difference still fails. The measured runtime candidate remains
+uncommitted; this bounded C1 result changes no default, admission, previous
+failure or broader model-support gate.
+
 The [fresh current solo comparison](experiments/gemma-current-reference/README.md)
 records stable 26B prefill/decode latency gaps of 2.43%/0.92%. Native 31B prefill
 is stable, but reference bookends vary from 12.3124 to 10.9769 s; native is 2.08%

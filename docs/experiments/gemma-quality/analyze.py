@@ -152,7 +152,8 @@ def current_freeze(root, recipe, source_path, expected_source_sha,
     print('freeze_sha256=' + hashlib.sha256(frozen.read_bytes()).hexdigest())
 
 
-def current_oracle(root, expected_freeze_sha, manifest_path=None, expected_manifest_sha=None):
+def current_oracle(root, expected_freeze_sha, manifest_path=None, expected_manifest_sha=None,
+                   operational_calibration=None):
     frozen_bytes = (root / 'current-native-repeat-frozen.json').read_bytes()
     assert hashlib.sha256(frozen_bytes).hexdigest() == expected_freeze_sha
     frozen = json.loads(frozen_bytes)
@@ -169,6 +170,10 @@ def current_oracle(root, expected_freeze_sha, manifest_path=None, expected_manif
     native_nll, reference_nll, tvs = [], [], []
     whole = [hashlib.sha256() for _ in paths]
     exact = strict = positive = tied = 0
+    bounded_misses = []
+    margin_bound = 0.0 if operational_calibration is None else operational_calibration[
+        'p99_top2_margin_movement']
+    assert math.isfinite(margin_bound) and margin_bound >= 0
     max_raw = max_chosen = 0.0
     with paths[0].open('rb') as a, paths[1].open('rb') as b, paths[2].open('rb') as c:
         for index in range(ROWS):
@@ -192,6 +197,10 @@ def current_oracle(root, expected_freeze_sha, manifest_path=None, expected_manif
                 strict += 1
                 positive += margin > 0
                 tied += margin == 0
+                if operational_calibration is not None:
+                    bounded_misses.append(dict(row=index, native=ni, reference=ri,
+                                              reference_margin=margin,
+                                              within_frozen_bound=margin <= margin_bound))
             aw, at, al = distribution(av)
             bw, bt, bl = distribution(bv)
             max_raw = max(max_raw, max(abs(x-y) for x, y in zip(av, bv)))
@@ -220,6 +229,14 @@ def current_oracle(root, expected_freeze_sha, manifest_path=None, expected_manif
                   native_ppl=math.exp(nm), reference_ppl=math.exp(rm),
                   ppl_relative_percent=100*math.expm1(nm-rm),
                   scope='current fixed teacher-forced recipe only; no inherited128 allowance, performance or model qualification')
+    if operational_calibration is not None:
+        outside = sum(not item['within_frozen_bound'] for item in bounded_misses)
+        result.update(operational_calibration=operational_calibration,
+                      strict_miss_rows=bounded_misses, outside_frozen_bound=outside,
+                      operational_margin_gate_pass=outside == 0,
+                      ppl_gate_pass=result['ppl_relative_percent'] <= 3,
+                      strict_zero_margin_gate_pass=positive == 0,
+                      scope='fresh fixed-capacity heldout history; unchanged history13 native schedule bound; old zero-bound failures remain failures')
     if manifest_sha is not None:
         result['input_manifest_sha256'] = manifest_sha
     with (root / 'current-comparison.json').open('x') as file:

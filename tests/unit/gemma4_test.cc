@@ -329,6 +329,46 @@ TEST(Gemma4, LayoutAndFootprintRefuseInvalidOrMutatedBounds) {
   --state.bytes;
   EXPECT_FALSE(md::Gemma4ChunkWrites(p, state, 0, 1));
 }
+TEST(Gemma4, FixedCapacityTeacherSchedulesKeepTheSameCausalHistory) {
+  const auto& p = md::Gemma4_26BA4B();
+  const auto state = md::Gemma4State(p, 4096, 1024);
+  ASSERT_TRUE(state);
+  ASSERT_EQ(state->local_cells, 2048U);
+  ASSERT_EQ(state->global_cells, 4096U);
+  std::array<std::int32_t, 1024> tokens{};
+  tokens.fill(100);
+  tokens[0] = 2;
+  const std::array<md::Gemma4Segment, 1> full_segment{{{.n_past = 0, .tokens = tokens}}};
+  const auto full = md::Gemma4Chunk(p, *state, full_segment, true);
+  ASSERT_TRUE(full);
+  ASSERT_EQ(full->segments.size(), 1U);
+  const auto& a = full->segments[0];
+  for (std::uint32_t first = 0; first < tokens.size(); first += 128) {
+    const std::array<md::Gemma4Segment, 1> segment{
+        {{.n_past = first, .tokens = std::span(tokens).subspan(first, 128)}}};
+    const auto chunk = md::Gemma4Chunk(p, *state, segment, true);
+    ASSERT_TRUE(chunk);
+    ASSERT_EQ(chunk->segments.size(), 1U);
+    const auto& b = chunk->segments[0];
+    ASSERT_EQ(b.local_n_kv, b.global_n_kv);
+    for (std::uint32_t row = 0; row < 128; ++row) {
+      const auto position = first + row;
+      EXPECT_EQ(b.global_cells[row], a.global_cells[position]);
+      EXPECT_EQ(b.local_cells[row], a.local_cells[position]);
+      for (std::uint32_t cell = 0; cell < a.global_n_kv; ++cell) {
+        // Absent future cells are never read by the shorter schedule. Both
+        // masks describe exactly the same causal prefix at each query.
+        const auto global =
+            cell < b.global_n_kv ? b.global_mask[std::size_t{row} * b.global_n_kv + cell] : 0xFC00U;
+        const auto local =
+            cell < b.local_n_kv ? b.local_mask[std::size_t{row} * b.local_n_kv + cell] : 0xFC00U;
+        EXPECT_EQ(global, a.global_mask[std::size_t{position} * a.global_n_kv + cell]);
+        EXPECT_EQ(local, a.local_mask[std::size_t{position} * a.local_n_kv + cell]);
+      }
+    }
+  }
+}
+
 TEST(Gemma4, BatchSegmentsRetainIndependentPositionsCellsMasksAndOutputRows) {
   const auto& p = md::Gemma4_26BA4B();
   const auto state = *md::Gemma4State(p, 8192, 4);

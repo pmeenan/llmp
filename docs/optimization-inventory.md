@@ -539,6 +539,16 @@ identifies 32,768 bytes of weights/logits overlap at 1,024 rows. The original
 memory gate refuses that allocation, while all structure/shape gates pass.
 A general native policy still requires qualification; no static layer rule follows.
 
+The [fresh fixed-capacity schedule control](experiments/gemma-fresh-quality-validation/README.md)
+keeps Gemma26 maximum rows 1,024 and F16 capacities 2,048/4,096 identical while
+changing only supported host chunk schedules. History 13 freezes genuine
+operational p99 margin movement 9.5026, with 209 differing native choices;
+exact own repeats remain a separate zero requirement. Independent history 14
+has 17 strict disagreements, none outside that unchanged bound, and +0.1970%
+PPL. The declared gates pass while strict zero-difference fails. This manual
+control adopts no arithmetic policy, layer whitelist or runtime default and
+supplies no allowance for batching or other histories.
+
 The [fresh current reference bookends](experiments/gemma-current-reference/README.md)
 measure the accumulated solo recipe: stable 26B latency gaps are 2.43% prefill
 and 0.92% decode. Native 31B prefill is stable while stock moves 1.3355 s;
