@@ -35,6 +35,11 @@ add_executable(jitllm_long_context_task_prepare long_context_tasks_main.cc)
 target_link_libraries(jitllm_long_context_task_prepare PRIVATE jitllm_long_context_tasks
                       jitllm_artifact jitllm_tokenizer jitllm_chat jitllm_base jitllm_warnings)
 
+# CPU-only arbitrary Gemma text/actual-template ID export; no device/model loading.
+add_executable(jitllm_gemma_tokenize gemma_tokenize.cc)
+target_link_libraries(jitllm_gemma_tokenize PRIVATE jitllm_tokenizer jitllm_chat
+                                                jitllm_base jitllm_warnings)
+
 # Storage queue depth and request size, direct into host VMM through the
 # providers (docs/experiments/storage-queue/). Needs a CUDA device.
 if(JITLLM_CUDA)

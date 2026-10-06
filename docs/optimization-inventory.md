@@ -502,6 +502,16 @@ already bound ordinary solo head storage and retain their existing output
 envelopes; any further reduction needs separate feature, scoring and MTP
 publication accounting rather than automatic transfer.
 
+The [fresh input qualification](experiments/gemma-input-preparation/README.md)
+independently checks both checkpoint tokenizers on twelve fixed prose slices
+and four natural prompts. All supplied 1,024-token prefixes and complete chat
+IDs agree with the public tokenizer; actual native/Jinja renders agree, with
+one BOS each. The checkpoint-specific manifests bind the inputs even though
+their carrier bytes match. Corpus scoring and cohort frontier targets remain
+separate: 1,023 within-history transitions, no target beyond position 1,023.
+This reusable input harness changes no arithmetic policy or quality allowance
+and establishes no model quality, assistant or batching gate.
+
 The [current corpus screen](experiments/gemma-current-quality/README.md)
 checks the actually measured solo research policies with plain norm fusion:
 31B both256 matches all 1,024 complete fresh ring-reference heads byte for byte;

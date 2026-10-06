@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // External C API harness for the pinned same-format llama.cpp comparator.
-// MODEL INPUT OUTDIR prepare|score|score-unfused|score-ring CHUNK. Explicit IDs.
+// MODEL INPUT OUTDIR prepare|prepare-rendered|score|score-unfused|score-ring CHUNK. Explicit IDs.
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -24,11 +24,15 @@ void Require(bool good, const char* text) {
 }  // namespace
 int main(int argc, char** argv) {
   try {
-    Require(argc == 6, "usage: MODEL INPUT OUTDIR prepare|score|score-unfused|score-ring CHUNK");
+    Require(
+        argc == 6,
+        "usage: MODEL INPUT OUTDIR prepare|prepare-rendered|score|score-unfused|score-ring CHUNK");
     const bool prepare = std::string(argv[4]) == "prepare";
+    const bool rendered = std::string(argv[4]) == "prepare-rendered";
     const bool unfused = std::string(argv[4]) == "score-unfused";
     const bool ring = std::string(argv[4]) == "score-ring";
-    Require(prepare || unfused || ring || std::string(argv[4]) == "score", "unknown quality mode");
+    Require(prepare || rendered || unfused || ring || std::string(argv[4]) == "score",
+            "unknown quality mode");
     const int chunk = std::stoi(argv[5]);
     Require(chunk >= 1 && chunk <= 1024, "quality chunk out of bounds");
     const auto* disable_fusion = std::getenv("GGML_CUDA_DISABLE_FUSION");
@@ -42,13 +46,13 @@ int main(int argc, char** argv) {
     mp.n_gpu_layers = 999;
     mp.load_mode = LLAMA_LOAD_MODE_NONE;
     mp.lazy_mode = LLAMA_LAZY_MODE_OFF;
-    mp.vocab_only = prepare;
+    mp.vocab_only = prepare || rendered;
     std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
         llama_model_load_from_file(argv[1], mp), llama_model_free);
     Require(bool(model), "model load failed");
     const auto* vocab = llama_model_get_vocab(model.get());
     Require(llama_vocab_n_tokens(vocab) == 262144, "unexpected vocabulary");
-    if (prepare) {
+    if (prepare || rendered) {
       const auto length = std::filesystem::file_size(argv[2]);
       Require(length <= 4194304, "corpus exceeds bounded preparation input");
       std::string text(length, '\0');
@@ -56,21 +60,28 @@ int main(int argc, char** argv) {
       file.read(text.data(), static_cast<std::streamsize>(length));
       Require(bool(file), "reading corpus failed");
       const int needed = -llama_tokenize(vocab, text.data(), static_cast<int>(text.size()), nullptr,
-                                         0, true, false);
-      Require(needed >= 1024 && needed <= 2097152, "unexpected corpus token count");
+                                         0, !rendered, rendered);
+      Require(needed >= (rendered ? 1 : 1024) && needed <= 2097152,
+              "unexpected corpus token count");
       std::vector<llama_token> ids(needed);
       Require(llama_tokenize(vocab, text.data(), static_cast<int>(text.size()), ids.data(), needed,
-                             true, false) == needed,
+                             !rendered, rendered) == needed,
               "tokenization failed");
       Require(ids.front() == 2, "missing explicit BOS");
+      if (rendered) Require(std::count(ids.begin(), ids.end(), 2) == 1, "repeated rendered BOS");
+      for (auto id : ids) Require(id >= 0 && id < 262144, "prepared ID outside vocabulary");
       std::ofstream tokens(out / "ids.i32", std::ios::binary);
-      tokens.write(reinterpret_cast<const char*>(ids.data()), 1024 * 4);
-      tokens.flush();
+      const int supplied = rendered ? needed : 1024;
+      tokens.write(reinterpret_cast<const char*>(ids.data()), supplied * 4);
+      tokens.close();
       Require(bool(tokens), "writing IDs failed");
       // Include corpus provenance separately; the exact supplied prefix is
       // the checked integer-token file, not a guessed UTF-8 truncation.
-      std::cout << "QUALITY_PREPARE corpus_bytes=" << length << " total_tokens=" << needed
-                << " supplied_tokens=1024 scored_targets=1023 bos=2\n";
+      std::cout << "QUALITY_PREPARE corpus_bytes=" << length << " total_tokens=" << needed;
+      if (rendered)
+        std::cout << " supplied_tokens=" << supplied << " bos=2 rendered=1\n";
+      else
+        std::cout << " supplied_tokens=1024 scored_targets=1023 bos=2\n";
       model.reset();
       llama_backend_free();
       return 0;

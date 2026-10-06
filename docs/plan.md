@@ -474,6 +474,13 @@ family" guide, and its long-context scaling work.
         refusal pass 18 focused controls across both profiles. Actual catalog
         bounds confirm reduced pinned backing; row defaults/arithmetic policies
         and all quality/batching gates remain unchanged.
+      - [x] [Fresh Gemma input qualification](experiments/gemma-input-preparation/README.md):
+        both checkpoints independently match twelve supplied 1,024-token prose
+        histories and four natural chat prompts against the public tokenizer;
+        actual native/Jinja renders agree and each input has one BOS. Texts
+        were frozen before tokenization. Corpus scoring has 1,023 transitions;
+        the final cohort frontier has no neighboring-owner target. This is
+        input-only evidence, with no model quality or batching qualification.
       - [x] [Current full-head corpus screen](experiments/gemma-current-quality/README.md):
         31B both256/plain-norm-on matches all 1,024 fresh ring-reference heads
         and 1,023 likelihoods exactly. The 26B all1024 transfer has nine positive-

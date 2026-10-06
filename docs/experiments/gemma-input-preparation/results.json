@@ -1,0 +1,267 @@
+{
+  "schema": 1,
+  "status": "input-only PASS; model quality not assessed",
+  "workload": {
+    "literal_histories_per_checkpoint": 12,
+    "supplied_tokens_per_history": 1024,
+    "corpus_scored_transitions_per_history": 1023,
+    "natural_prompts_per_checkpoint": 4,
+    "natural_token_counts": [
+      29,
+      30,
+      28,
+      73
+    ],
+    "frontier_completed_positions": [
+      992,
+      993,
+      994,
+      995,
+      996,
+      997,
+      998,
+      999,
+      1000,
+      1001,
+      1002,
+      1003,
+      1004,
+      1005,
+      1006,
+      1007,
+      1008,
+      1009,
+      1010,
+      1011,
+      1012,
+      1013,
+      1014,
+      1015,
+      1016,
+      1017,
+      1018,
+      1019,
+      1020,
+      1021,
+      1022,
+      1023,
+      1024
+    ],
+    "final_frontier_target": null,
+    "text_manifest_sha256": "c30dfd97a19615fcc4eb1831a7cc053f39336e1466fa0744f9c78a1b218153d8",
+    "corpus_sha256": "c7156148ecaa12b6416cf816540d8dede2014982554a835e61076f0dd8bf0c2d",
+    "natural_text_sha256": "116f5d709cfb18fc5681fabc6045d5b4d47d774ab9deba45c6a9d50dd5721b1c"
+  },
+  "checks": {
+    "literal_supplied_native_public_ids_byte_exact": true,
+    "natural_complete_native_public_ids_byte_exact": true,
+    "native_jinja_complete_rendered_bytes_exact": true,
+    "one_leading_bos_per_input": true,
+    "independently_checked_checkpoint_carriers_equal": true,
+    "owned_container_retirements": 32,
+    "renderer": "gemma-4-unsloth",
+    "selection": "native-by-probe",
+    "template_sha256": "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b",
+    "jinja2": "3.1.6",
+    "markupsafe": "3.0.3"
+  },
+  "profiles": [
+    {
+      "profile": "31",
+      "carrier_bytes": 49152,
+      "carrier_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
+      "carrier_manifest_sha256": "f6cf32b29dd980c997915519339cdc1cd2c244e219c473a0331303bbc6e5708c",
+      "literal_full_native_token_counts": [
+        7916,
+        7911,
+        7613,
+        7922,
+        8434,
+        7893,
+        8000,
+        7744,
+        8392,
+        7942,
+        7636,
+        8201
+      ],
+      "natural": [
+        {
+          "name": "explanation",
+          "tokens": 29,
+          "input_sha256": "e1d7b5daf6a01c86eba718360b04a9e47301393cefc8259d328a3f6de82c76d4",
+          "manifest_sha256": "eb67865bf5adb6eff55a0484cbba66672c64646c39a67a8411f04372ec112bfe"
+        },
+        {
+          "name": "arithmetic",
+          "tokens": 30,
+          "input_sha256": "cc34ac3bd42339477019ae2e4e497103ceb7e4ca3688d534061788e10ba6b3c7",
+          "manifest_sha256": "9a6f3373f0398a24c3bbc42ae01bc112e83554a8bcaeb317b9e520d83bedea7f"
+        },
+        {
+          "name": "instruction",
+          "tokens": 28,
+          "input_sha256": "8b31ebe74a61f284a40a7ead046610b61157a96567078e8ab86a023f114aa13d",
+          "manifest_sha256": "9c8bd964cbe58b8ce529ebb59ad425df36279162c76d5226b498d5ae98210077"
+        },
+        {
+          "name": "retrieval",
+          "tokens": 73,
+          "input_sha256": "f97379114f18410a3ce44da89c3e261124057c9e610b7f9b86a282d6a3573451",
+          "manifest_sha256": "dcc0c5d82528a4f70a0e726277677dc7bc51f0841c3a467ba8247b6186f92500"
+        }
+      ],
+      "owned_container_retirements": 16,
+      "official_job": "m35-gemma-input-preparation-tokenize31-v2",
+      "official_rc": 0
+    },
+    {
+      "profile": "26",
+      "carrier_bytes": 49152,
+      "carrier_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
+      "carrier_manifest_sha256": "b91eecf9d54fc55392d15ea04ba18c5a4cc5ab8e8ac2294501094d5959b578e1",
+      "literal_full_native_token_counts": [
+        7916,
+        7911,
+        7613,
+        7922,
+        8434,
+        7893,
+        8000,
+        7744,
+        8392,
+        7942,
+        7636,
+        8201
+      ],
+      "natural": [
+        {
+          "name": "explanation",
+          "tokens": 29,
+          "input_sha256": "e1d7b5daf6a01c86eba718360b04a9e47301393cefc8259d328a3f6de82c76d4",
+          "manifest_sha256": "2e35757c538614f0bec92eb42fc5cc02dbdfe862906464130e5caa7dcc2dc940"
+        },
+        {
+          "name": "arithmetic",
+          "tokens": 30,
+          "input_sha256": "cc34ac3bd42339477019ae2e4e497103ceb7e4ca3688d534061788e10ba6b3c7",
+          "manifest_sha256": "9740f64c1a95c800c404823f35e3fcc666bb2eb525fe860a0ab49e6cb2b1d75f"
+        },
+        {
+          "name": "instruction",
+          "tokens": 28,
+          "input_sha256": "8b31ebe74a61f284a40a7ead046610b61157a96567078e8ab86a023f114aa13d",
+          "manifest_sha256": "9aa656db19cae9632aec7c85871077dda76a338e667d1639172acf14702d9193"
+        },
+        {
+          "name": "retrieval",
+          "tokens": 73,
+          "input_sha256": "f97379114f18410a3ce44da89c3e261124057c9e610b7f9b86a282d6a3573451",
+          "manifest_sha256": "00ca5e3c527af80f558192fe9edadeb25dd885e4b47cb7c6c2a1873e35cd532c"
+        }
+      ],
+      "owned_container_retirements": 16,
+      "official_job": "m35-gemma-input-preparation-tokenize26-v2",
+      "official_rc": 0
+    }
+  ],
+  "provenance": {
+    "base": "af7b95a",
+    "host": "spark / spark-c4e2",
+    "measured_source_bundle": "d8e107e2149249007733dbe3f961e90bfa5fa22e773b377f3d0527f338d4af5a",
+    "native_exporter_sha256": "182150f40e5b75a88472eefc0d7dbd5ee226ea25745b111582267a876478d0c6",
+    "native_build_receipt_sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09",
+    "native_sdk": "aarch64-c09daba6ac31edee",
+    "public_vocab_client_sha256": "0a7cfdbcd01fb733ebefc2b81934b0e212e2c08f26909767d876dea3a1175cdf",
+    "reference_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "metadata_sha256": {
+      "31": "79c54f13f654d98e93ba1496062c017baea53ddaed59de086fe3fa7cf09d8461",
+      "26": "5d15e0c84e29af2ed9b4525dacdd31ccd7bae061eb28dde2dad984a9b1e45a59"
+    },
+    "measured_source_files": [
+      {
+        "path": "benchmarks/CMakeLists.txt",
+        "bytes": 39030,
+        "sha256": "d7ee4c762096c5b625f07917f433d4d26a10318a49d4e5080843cfc22093cab0"
+      },
+      {
+        "path": "benchmarks/gemma_tokenize.cc",
+        "bytes": 6990,
+        "sha256": "faad7f9eece8fd519fba91f4b983b0921c19505a84619224803a00897b057cd0"
+      },
+      {
+        "path": "docs/experiments/gemma-quality/analyze.py",
+        "bytes": 19880,
+        "sha256": "7f84fa32bd953800e5c9cc9292e4240ef2c45409174f46e8c9e51964a8584ed3"
+      },
+      {
+        "path": "docs/experiments/gemma-quality/llama_quality.cc",
+        "bytes": 6871,
+        "sha256": "78a0d497820e323e370225687c735ceecaa90d1680f98ac628c73e40bd46fe3f"
+      },
+      {
+        "path": "docs/experiments/gemma-input-preparation/prepare.py",
+        "bytes": 8627,
+        "sha256": "7a99f989d09cd5ce2a40b3d690e138416ed728cc0924b76ea7286c66a1c2cfd7"
+      },
+      {
+        "path": "docs/experiments/gemma-input-preparation/test_controls.py",
+        "bytes": 3600,
+        "sha256": "9e3b35a57eecc757213501141ec0cf4d889f578431a6a110825b780479d1b57d"
+      },
+      {
+        "path": "docs/experiments/gemma-input-preparation/README.md",
+        "bytes": 5066,
+        "sha256": "31e6cd940bd6686f770fd5674de8152d5d180f2e9365af0980bb5813b99af77c"
+      }
+    ],
+    "official_jobs": [
+      {
+        "name": "m35-gemma-input-preparation-build1",
+        "steps": 9,
+        "rc": 0,
+        "final_sha256": "9b06819c83c9f8c15f9bca3542c0db3a0d8d1f542d6a7aeb8bedd4076af6c8aa",
+        "steps_sha256": "f4554f4e61f1e58c54ccb4b01814bb46166575fb7dcfda6391abef8e918f6a64",
+        "log_sha256": "38518428197ba0b1aed7c35889b48523d8e886fdd6ad24902f5edc2b57df3cda"
+      },
+      {
+        "name": "m35-gemma-input-preparation-extract1",
+        "steps": 8,
+        "rc": 0,
+        "final_sha256": "40eff82b7985ab12922a55495abae922582c4f5076be3c9328ed34d4e749973f",
+        "steps_sha256": "8e760ad0d9910d3d34417d50bc486ee9bae069dc9642624c35e8698575b63c6c",
+        "log_sha256": "46dff3c604a07306948b18af9e2d0ea24f43b72a98ff4e46a0086d3702789edb"
+      },
+      {
+        "name": "m35-gemma-input-preparation-build2",
+        "steps": 7,
+        "rc": 0,
+        "final_sha256": "4feefd48e566a3684b39053fd789ee2a78ba8a6e5f925df57c236f627c843f0c",
+        "steps_sha256": "8d864b86a36edeb1164c79597864f59d2027d0aadd45372a8cc7000213d166e4",
+        "log_sha256": "d81d89359630162d9db0879f557aefdb93f47015b0834625af09bd9a25a189fa"
+      },
+      {
+        "name": "m35-gemma-input-preparation-tokenize31-v2",
+        "steps": 1,
+        "rc": 0,
+        "final_sha256": "babf1ad24f5db8ae836a08fa424d5a547e67e201c00a656487100bc444865cf3",
+        "steps_sha256": "ea43e28dc80275c5241ce86cd1ef97c774be26ed22a10dd0ada33985782333f7",
+        "log_sha256": "6a392c55ab0acd78b4f5b562d7445363c4ac48acfb4252da80ab19a369c38343"
+      },
+      {
+        "name": "m35-gemma-input-preparation-tokenize26-v2",
+        "steps": 1,
+        "rc": 0,
+        "final_sha256": "1dbb9193b80680ab6dd381bd7e7196f079e1f083fb2b362612c2670bfcd25e88",
+        "steps_sha256": "7b01acf19e9bc7f6a6ea89618acc0a2bf6d5c7ccdc1bb70e5426836f914a40ca",
+        "log_sha256": "a3e53543db4a14f93f0252dced43cd3149767a5723338fb4fdae6f1a68cf3843"
+      }
+    ]
+  },
+  "limits": [
+    "No model context, calibration, logits, generation, PPL or model-quality outputs.",
+    "Literal agreement covers the complete supplied 1024-ID prefix; natural agreement covers all prompt IDs.",
+    "Short retrieval is not retrieval-at-depth qualification.",
+    "Actual 31B agreement is independent of the older 26B tokenizer fixture."
+  ]
+}

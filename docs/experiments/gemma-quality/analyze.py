@@ -9,6 +9,8 @@ Historical ROOT modes retain their 128-row ordinary-versus-norm semantics.
 current-freeze ROOT CHUNK VARIANT POLICY NORMMUL SOURCE_JSON SOURCE_SHA;
 current-oracle ROOT FREEZE_SHA uses native-first/native-repeat and
 reference-first/reference-repeat. SOURCE_JSON has a matching native_recipe.
+Both current modes optionally append INPUT_MANIFEST MANIFEST_SHA for fresh inputs.
+The legacy/default input remains pinned to b2d7; the final row has no target.
 current-selftest runs only tiny metadata/tie controls, without logit files.
 """
 import array
@@ -50,11 +52,36 @@ def current_recipe(chunk, variant, policy, normmul):
                 policy=policy, normmul=normmul, all_outputs=True)
 
 
-def current_ids(root):
-    raw = (root / 'input1/ids.i32').read_bytes()
-    assert len(raw) == ROWS * 4 and hashlib.sha256(raw).hexdigest() == ID_SHA
+def current_input(manifest_path=None, expected_manifest_sha=None, expected_profile=None):
+    if manifest_path is None:
+        assert expected_manifest_sha is None
+        return ID_SHA, None
+    assert manifest_path.stat().st_size <= 65536
+    raw = manifest_path.read_bytes()
+    assert len(raw) <= 65536
+    assert hashlib.sha256(raw).hexdigest() == expected_manifest_sha, 'input manifest changed'
+    manifest = json.loads(raw)
+    assert manifest['schema'] == 1 and manifest['rows'] == ROWS
+    assert manifest['profile'] in ('26', '31')
+    if expected_profile is not None:
+        assert manifest['profile'] == expected_profile, 'input checkpoint differs from recipe'
+    assert manifest['input_bytes'] == ROWS * 4 and manifest['vocab'] == VOCAB
+    assert manifest['bos'] == 2 and manifest['bos_count'] == 1
+    assert manifest['scored_targets'] == ROWS - 1, 'final row must remain unscored'
+    digest = manifest['input_sha256']
+    assert len(digest) == 64 and all(c in '0123456789abcdef' for c in digest)
+    return digest, expected_manifest_sha
+
+
+def current_ids(root, expected_input_sha=ID_SHA, fresh=False):
+    path = root / 'input1/ids.i32'
+    assert path.stat().st_size == ROWS * 4
+    raw = path.read_bytes()
+    assert len(raw) == ROWS * 4 and hashlib.sha256(raw).hexdigest() == expected_input_sha
     ids = struct.unpack('<1024i', raw)
     assert ids[0] == 2 and all(0 <= value < VOCAB for value in ids)
+    if fresh:
+        assert ids.count(2) == 1, 'fresh history must contain exactly one BOS'
     return ids
 
 
@@ -82,8 +109,10 @@ def current_selftest():
     print('current recipe bounds, exact tie, positive margin and signed zero: PASS')
 
 
-def current_freeze(root, recipe, source_path, expected_source_sha):
-    current_ids(root)
+def current_freeze(root, recipe, source_path, expected_source_sha,
+                   manifest_path=None, expected_manifest_sha=None):
+    input_sha, manifest_sha = current_input(manifest_path, expected_manifest_sha, recipe['variant'])
+    current_ids(root, input_sha, manifest_sha is not None)
     source_path = source_path.resolve()
     source_bytes = source_path.read_bytes()
     assert hashlib.sha256(source_bytes).hexdigest() == expected_source_sha
@@ -108,12 +137,14 @@ def current_freeze(root, recipe, source_path, expected_source_sha):
             if index % 128 == 0:
                 print(f'CURRENT_SELF_REPEAT completed_rows={index+1}', flush=True)
         assert not first.read(1) and not repeat.read(1)
-    result = dict(input_sha256=ID_SHA, rows=ROWS, vocab=VOCAB, native_recipe=recipe,
+    result = dict(input_sha256=input_sha, rows=ROWS, vocab=VOCAB, native_recipe=recipe,
                   calibration='same-policy full-byte own repeat only; no inherited allowance',
                   byte_exact_rows=ROWS, max_raw_delta=0, p99_top2_margin_movement=0,
                   source_identities_path=str(source_path), source_identities_sha256=expected_source_sha,
                   source=source, whole_file_sha256=[item.hexdigest() for item in whole],
                   row_sha256=hashes, argmax_ids=winners)
+    if manifest_sha is not None:
+        result['input_manifest_sha256'] = manifest_sha
     frozen = root / 'current-native-repeat-frozen.json'
     with frozen.open('x') as file:
         json.dump(result, file, indent=2)
@@ -121,14 +152,17 @@ def current_freeze(root, recipe, source_path, expected_source_sha):
     print('freeze_sha256=' + hashlib.sha256(frozen.read_bytes()).hexdigest())
 
 
-def current_oracle(root, expected_freeze_sha):
+def current_oracle(root, expected_freeze_sha, manifest_path=None, expected_manifest_sha=None):
     frozen_bytes = (root / 'current-native-repeat-frozen.json').read_bytes()
     assert hashlib.sha256(frozen_bytes).hexdigest() == expected_freeze_sha
     frozen = json.loads(frozen_bytes)
-    assert frozen['rows'] == ROWS and frozen['vocab'] == VOCAB and frozen['input_sha256'] == ID_SHA
+    input_sha, manifest_sha = current_input(manifest_path, expected_manifest_sha,
+                                            frozen['native_recipe']['variant'])
+    assert frozen['rows'] == ROWS and frozen['vocab'] == VOCAB and frozen['input_sha256'] == input_sha
+    assert frozen.get('input_manifest_sha256') == manifest_sha
     assert frozen['byte_exact_rows'] == ROWS and frozen['p99_top2_margin_movement'] == 0
     assert hashlib.sha256(pathlib.Path(frozen['source_identities_path']).read_bytes()).hexdigest() == frozen['source_identities_sha256']
-    ids = current_ids(root)
+    ids = current_ids(root, input_sha, manifest_sha is not None)
     paths = [root / arm / 'logits.f32' for arm in
              ('native-first', 'reference-first', 'reference-repeat')]
     assert all(path.stat().st_size == ROWS * VOCAB * 4 for path in paths)
@@ -172,7 +206,7 @@ def current_oracle(root, expected_freeze_sha):
     digests = [item.hexdigest() for item in whole]
     assert digests[0] == frozen['whole_file_sha256'][0] and digests[1] == digests[2]
     nm, rm = math.fsum(native_nll)/(ROWS-1), math.fsum(reference_nll)/(ROWS-1)
-    result = dict(input_sha256=ID_SHA, rows=ROWS, scored_targets=ROWS-1,
+    result = dict(input_sha256=input_sha, rows=ROWS, scored_targets=ROWS-1,
                   native_recipe=frozen['native_recipe'], frozen_sha256=expected_freeze_sha,
                   source_identities_sha256=frozen['source_identities_sha256'],
                   expected_reference_recipe='score-ring: C1/context4096/F16/full heads, batch=ubatch=teacher_chunk, swa_full=false/kv_unified=false, fusion+graphs enabled; caller authenticates actual invocation',
@@ -186,6 +220,8 @@ def current_oracle(root, expected_freeze_sha):
                   native_ppl=math.exp(nm), reference_ppl=math.exp(rm),
                   ppl_relative_percent=100*math.expm1(nm-rm),
                   scope='current fixed teacher-forced recipe only; no inherited128 allowance, performance or model qualification')
+    if manifest_sha is not None:
+        result['input_manifest_sha256'] = manifest_sha
     with (root / 'current-comparison.json').open('x') as file:
         json.dump(result, file, indent=2)
         file.write('\n')
@@ -196,12 +232,14 @@ def main():
     if len(sys.argv) == 2 and sys.argv[1] == 'current-selftest':
         current_selftest()
         return 0
-    if len(sys.argv) == 9 and sys.argv[1] == 'current-freeze':
+    if len(sys.argv) in (9, 11) and sys.argv[1] == 'current-freeze':
         recipe = current_recipe(int(sys.argv[3]), *sys.argv[4:7])
-        current_freeze(pathlib.Path(sys.argv[2]), recipe, pathlib.Path(sys.argv[7]), sys.argv[8])
+        current_freeze(pathlib.Path(sys.argv[2]), recipe, pathlib.Path(sys.argv[7]), sys.argv[8],
+                       *((pathlib.Path(sys.argv[9]), sys.argv[10]) if len(sys.argv) == 11 else ()))
         return 0
-    if len(sys.argv) == 4 and sys.argv[1] == 'current-oracle':
-        current_oracle(pathlib.Path(sys.argv[2]), sys.argv[3])
+    if len(sys.argv) in (4, 6) and sys.argv[1] == 'current-oracle':
+        current_oracle(pathlib.Path(sys.argv[2]), sys.argv[3],
+                       *((pathlib.Path(sys.argv[4]), sys.argv[5]) if len(sys.argv) == 6 else ()))
         return 0
     assert len(sys.argv) == 3
     root, action = pathlib.Path(sys.argv[1]), sys.argv[2]
