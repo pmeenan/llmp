@@ -1,0 +1,425 @@
+{
+  "schema": 1,
+  "scope": "Approved Gemma31 Q8_0 assistant C1/P64 frozen-input component extension only. Existing Gemma26 invocations and runtime/serving/kernel/defaults unchanged.",
+  "profile": {
+    "target_width": 5376,
+    "target_layers": 60,
+    "local_layer": 58,
+    "global_layer": 59,
+    "local_D": 256,
+    "local_kv_heads": 16,
+    "global_D": 512,
+    "global_kv_heads": 4,
+    "owners": 1,
+    "completed_prefix": 64,
+    "query_position": 64,
+    "initial_feature_position": 63,
+    "read_cells": 256,
+    "local_capacity": 1280,
+    "global_capacity": 4096,
+    "vocabulary": 262144,
+    "chains": [
+      1,
+      3
+    ],
+    "own_repeats_per_chain": 2
+  },
+  "result": {
+    "complete_heads_and_features_byte_exact_to_original": true,
+    "head_rows_compared_per_repeat": 4,
+    "feature_rows_compared_per_repeat": 4,
+    "own_repeat_byte_exact_both_engines": true,
+    "all_outputs_finite": true,
+    "argmax_mismatches": 0,
+    "max_raw_head_delta": 0,
+    "max_raw_projection_delta": 0,
+    "numerical_allowance": null,
+    "original_complete_target_state_caches_and_cell_metadata_unchanged": true,
+    "original_serialized_target_state_bytes": 57674696,
+    "native_complete_borrowed_cache_bytes": 54525952,
+    "native_complete_cache_witness_count": 13,
+    "native_complete_cache_witness_sha256": "6c145aad2e8b0e99b351c30f412f9e76ee372113ffc62469c18dd1d43bea718d",
+    "native_captured": 1,
+    "native_replayed": 6,
+    "native_eager": 1
+  },
+  "funding": {
+    "original_opaque_state_bound_bytes": 67108864,
+    "original_known_vector_bound_bytes": 402653184,
+    "original_26_bounds_preserved_bytes": {
+      "opaque": 33554432,
+      "known_vectors": 268435456
+    },
+    "native_caller_host_envelope_bytes": 134217728,
+    "native_separate_catalog_funded_pinned_witness_bytes": 16777216,
+    "boundary": "Bounds and explicit grants, not measured whole-process peak. Native protection covers four initialized borrowed tensors including zero tails, not a serialized native target checkpoint. Each copy retires before pinned witness reuse; uncertain owners remain retained."
+  },
+  "chronology": [
+    "Original acquisition retired successfully with checked owned-container absence.",
+    "Original exact own-freeze fixed before eleven stage-zero inputs were released.",
+    "Native endogenous outputs/caches repeated and froze before original later recurrence or full heads/features were read.",
+    "Separate comparison authenticated both freezes and complete payload identities; no posthoc replay or calibration."
+  ],
+  "provenance": {
+    "source_base": "57f5463",
+    "source_ready": {
+      "bytes": 1624,
+      "sha256": "c5594f71e5c29be3e9eff0fcc47bae57edca4664f738b72413da343c05c548b3"
+    },
+    "source_frame": {
+      "bytes": 929,
+      "sha256": "fbdbe420bcfad780584f85f93d66bbff888148196f5cd928af34401bb68a77c7"
+    },
+    "full_checkout_frame": {
+      "bytes": 338114,
+      "sha256": "4815b2877badcaa006a11e999d8cb9b08a263804aec22f651d5dd1d97a699c67"
+    },
+    "source_files": [
+      {
+        "path": "benchmarks/gemma_assistant_fixture.cc",
+        "bytes": 28720,
+        "sha256": "7ee8ef15a72f17adc3b841a5d6b88a21dc461dbdff0902ddbc56db7705001753"
+      },
+      {
+        "path": "docs/experiments/gemma-assistant-execution/PROTOCOL.md",
+        "bytes": 8093,
+        "sha256": "8cbb404ad300fc7ce38b11c04e67dac620646843114416f46e9a22c3ff431058"
+      },
+      {
+        "path": "docs/experiments/gemma-assistant-reference/PROTOCOL.md",
+        "bytes": 8589,
+        "sha256": "c290552a5721cc024093fe1ac85f00d55b66ae207e041097b316843cf003f3de"
+      },
+      {
+        "path": "docs/experiments/gemma-assistant-reference/llama_assistant.cc",
+        "bytes": 21952,
+        "sha256": "76578ba6b195d82174884fef630f06c4163773a00f4c3abf6e4318e0620b856c"
+      },
+      {
+        "path": "docs/experiments/gemma-assistant-reference/own_freeze.py",
+        "bytes": 9687,
+        "sha256": "93b5b1d82a462b7b02ce422696bf4991f98f0657c24fc50248ae1f26b4a0a0b8"
+      },
+      {
+        "path": "docs/experiments/gemma-assistant-reference/reference.sh",
+        "bytes": 4348,
+        "sha256": "c5c4648c9c40ad3eac39b87e651764f65039baedfa8c20e1e1f48f4b932938e3"
+      }
+    ],
+    "native_binary": {
+      "bytes": 146935416,
+      "sha256": "2108a6259684fe87d843943d3495a78695dc6e8f15cd115cb368caa48f53fd52"
+    },
+    "native_sdk_receipt": {
+      "bytes": 6751,
+      "sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09"
+    },
+    "native_build_receipt_version": "0.1.0-dev+unknown; explicit source frame identifies this build",
+    "public_client": {
+      "bytes": 148880,
+      "sha256": "4226dc8c111fdfb8c92d59994b5db1bec0d81a2dcf557f4fc6641253277cbac3"
+    },
+    "original_source": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "original_image": "sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "original_header_count": 19,
+    "original_header_bytes": 410815,
+    "prepared_target_manifest": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "prepared_assistant_manifest": "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120",
+    "approved_assistant_raw_sha256": "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de",
+    "canonical_input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+    "input_stage": {
+      "bytes": 3701,
+      "sha256": "106f5b3e0d20665a068c1c91fb3c7ab838534f4dd1e359a76a6c3407fadac4e2"
+    },
+    "reference_own": {
+      "bytes": 9143,
+      "sha256": "30c6f7b3296dcd808ad42bc90ef028a13174617966f39db65ad3a1cc026e3965"
+    },
+    "stage0_manifest": {
+      "bytes": 1760,
+      "sha256": "85bda59c6e0c01c01e4d0a5300f89a25d5bdf5884b937c35a8ea05c4cd63124d"
+    },
+    "native_own": {
+      "bytes": 5257,
+      "sha256": "232656d1896a55689ca4524e08195473c5495e0f44b9251f1bfd84c474c6d7be"
+    },
+    "comparison": {
+      "bytes": 4119,
+      "sha256": "249c57f4f771aa1ab2865b63ede45055703aa3473b061222a79d562d6f6fb776"
+    },
+    "tensorfold_entry": {
+      "bytes": 1338,
+      "sha256": "db162605e853792332408e42b7d4f54883b4938e3f158c8fbc024e68923c88a7"
+    },
+    "tensorfold_observation": {
+      "query_utc": "2026-10-06T10:57:00.646610+00:00",
+      "head": "cb2ebf0540f42604e2759b2ddef497861e928248",
+      "version": "0.6.6",
+      "observation": "Read-only primary source observation; no inference. Prior verification task-entry observation preserved separately.",
+      "primary_files": {
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/README.md",
+          "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+        },
+        "pyproject.toml": {
+          "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/pyproject.toml",
+          "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+        },
+        "docs/recipes/gemma-4.md": {
+          "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/docs/recipes/gemma-4.md",
+          "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+        },
+        "src/tensorfold/__init__.py": {
+          "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/src/tensorfold/__init__.py",
+          "sha256": "fdc3b9c9e54fd20a7aca02113787d82cd8ac28cb10e5142225c718c2d4e6288e"
+        }
+      }
+    }
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma31-assistant-stage1",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 3,
+      "successful_steps": 3,
+      "records": {
+        "job.json": {
+          "bytes": 531,
+          "sha256": "60879c5f4625d83b6454e36482d398686f6f163f422fa5c6fec57d3bcd18d9f7"
+        },
+        "steps.json": {
+          "bytes": 1446,
+          "sha256": "0dae7b9c07624609ef6bc489d417bff897f4eb44ad8f339c27a62e8b4555f5e1"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "d832a10f9fd5f3c75a4e60f8bb75055a039979af38daf58812610c8178e802b8"
+        },
+        "log": {
+          "bytes": 1987,
+          "sha256": "0578b986b4fd993a8a3271e8f097a33a6ceebdd80a6693faa8a68546167ae400"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma31-assistant-build1",
+      "host": "spark-c4e2",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 9,
+      "successful_steps": 6,
+      "records": {
+        "job.json": {
+          "bytes": 531,
+          "sha256": "456309349a79a584d5375cd23b8f30e117621319bbaa279f84d44efd54c21328"
+        },
+        "steps.json": {
+          "bytes": 4220,
+          "sha256": "def076b775dc86e293c4cdd1dee370fa8d226497ac30810c07866d24ab07eae4"
+        },
+        "final.json": {
+          "bytes": 152,
+          "sha256": "9ab8018eaf209da6d79bb1d18c3e36964b6e61c338d694fb1327a79d89eb9a45"
+        },
+        "log": {
+          "bytes": 223767,
+          "sha256": "61f9b856f4d44a282ad99b31c5745c3691476c784a99e2ce48c70e17298400ad"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma31-assistant-build2",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 4,
+      "successful_steps": 4,
+      "records": {
+        "job.json": {
+          "bytes": 531,
+          "sha256": "297a838574fcc4e14d3118351f8afda269b83345cbe3db0be85db5ddf48bdaa5"
+        },
+        "steps.json": {
+          "bytes": 4576,
+          "sha256": "c6ac6837eb4a8261065dc80551324d2d8befd2a921613eedb5b687976b13ee93"
+        },
+        "final.json": {
+          "bytes": 82,
+          "sha256": "daf2fac27f84ba932a14ee1d63cdb950a724df45b0e5b1cd9046346bdc99c66c"
+        },
+        "log": {
+          "bytes": 445406,
+          "sha256": "8775edd7180d11fcd6ce5fdc332a57b191307d7404ab61ef10c1a736923c52d6"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma31-assistant-reference1",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records": {
+        "job.json": {
+          "bytes": 543,
+          "sha256": "15687e8618efb164add8ec79563e26fd0cd85ab79173ff5b9f9808749a73fda4"
+        },
+        "steps.json": {
+          "bytes": 1484,
+          "sha256": "f829228b672cb01211bac5e6bb6d330cac9591ef1eea6fc5b7904fe3a7ea29fd"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "83738c26775a704c6add3de6a0df36755c8dd6ebfebe5fec780ad4a8f42f361f"
+        },
+        "log": {
+          "bytes": 157075,
+          "sha256": "4bb9d36ff638ae13ace879a01bcb8e95cb12881af1fcb27c54a59f496aa67c6c"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma31-assistant-reference-own1",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records": {
+        "job.json": {
+          "bytes": 555,
+          "sha256": "24b5d8f0152ccdf57189df080970fbecfa96efa3779b4c6dbc0917f456b3b6c5"
+        },
+        "steps.json": {
+          "bytes": 1786,
+          "sha256": "ef7f6a1da3170a2b78bace50b0a8825a011c5953cbf2de3c5f7cf5ad9a8c2191"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "0bc34c27e087e3375d1603cfcda9f49e6a67bcad1bb667ca7a7acb5c0cc48cc0"
+        },
+        "log": {
+          "bytes": 10691,
+          "sha256": "4ed92fd04af3d5d6f1c2606ff7478c4bbfe2d4a5e087ea12f0994c0fb0a9f766"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma31-assistant-release-stage0-1",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records": {
+        "job.json": {
+          "bytes": 560,
+          "sha256": "2a309658507ee3d21dbdd92e9958c045bbd4125f3fd8769c116b8f99b84d8122"
+        },
+        "steps.json": {
+          "bytes": 1320,
+          "sha256": "b3a882285e5efe3aff0f753a5693708a8253a539cc59129fc460a0e7819fcd55"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "570f9cf637c38c91526192eac3c2de8b77734884ef547f8affd2abc2707a1fb2"
+        },
+        "log": {
+          "bytes": 8666,
+          "sha256": "7028aa15684d197f438ebbd68bd17a1f6e554919f62daf18d240464dbd2260e0"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma31-assistant-native1",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records": {
+        "job.json": {
+          "bytes": 534,
+          "sha256": "cafbd417775995c32731d86d4ae7214126f18d736dc162b9b234bc83ce55f8be"
+        },
+        "steps.json": {
+          "bytes": 1502,
+          "sha256": "17d3ec00e3a31c602b4335cb65b2b4277e42927913c6b0072b682039d743f290"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "63c67d261408280a6e8bbb71df37a30bd7fa3587c891c08f0c03e493b593c7e2"
+        },
+        "log": {
+          "bytes": 13198,
+          "sha256": "a047f98bc74836206ec20b17560dfaff81f572539c08f965ab3e48f725d77965"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma31-assistant-native-own1",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records": {
+        "job.json": {
+          "bytes": 546,
+          "sha256": "a71349b2b01d4af33f3787bbd96754a3a5af0af5f9de7fdc105169999aecee84"
+        },
+        "steps.json": {
+          "bytes": 1057,
+          "sha256": "125041d39fe191ed779029c8d546fcd21374d9417ce44b94d580dffafd8414c6"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "4149915aaeac84cb88d51f2d40a9236c0020b2e7eec31583d6f05259c92056a2"
+        },
+        "log": {
+          "bytes": 9628,
+          "sha256": "599642dfb0ca7c4f67a2e5503648d85895dbca53d17c4d0bb29ed4330d3028ec"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma31-assistant-compare1",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records": {
+        "job.json": {
+          "bytes": 537,
+          "sha256": "0d7317ceb1200a522463e3a0906688de3b865ad391399fbd51cba8f138bcc58d"
+        },
+        "steps.json": {
+          "bytes": 1618,
+          "sha256": "eb823a9eeb950856228fa3d5918b026e8fab2f33952e3b17c7445b967c544c1c"
+        },
+        "final.json": {
+          "bytes": 82,
+          "sha256": "7aec9c607d80392b41688be74889cea41eb9abccd358856e8a7843b7fa14ba12"
+        },
+        "log": {
+          "bytes": 17699,
+          "sha256": "a77136fe193f4135f2be7af4655f6962abce6b510a622b2b8f27773945e9307e"
+        }
+      }
+    }
+  ],
+  "successful_job_count": 8,
+  "failed_job_count": 1,
+  "failure_preserved": "First build: 6 of 9 steps succeeded, step7 refused because the retirement helper had not been copied; that failed step launched no container or model context. Public-only four-step recovery copied authenticated existing helper, built original client and exclusively published the already compiled native fixture/SDK. Source6 unchanged.",
+  "limits": [
+    "One frozen canonical C1/P64 input and one/three-step endogenous recurrence only; no native-target chain or representative assistant quality.",
+    "No Gemma31 C2/joined assistant, serving admission, verify/rollback integration, speculation, calibrated bound or performance qualification.",
+    "No production source/math/default change and no full regression suite.",
+    "TensorFold refresh is a primary-source MLX observation; it supplies no CUDA Q8_0 assistant comparator.",
+    "Raw vectors, target state, token IDs, complete logs and supervisor records stay external."
+  ]
+}

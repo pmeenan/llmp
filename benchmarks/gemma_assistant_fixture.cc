@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -86,7 +87,13 @@ en::Status Descriptor(js::Value metadata, std::string_view key, std::uint32_t d,
 }
 class Replay final : public en::PagedModel {
  public:
-  explicit Replay(en::PagedNode& node) : node_(node), resources_(node, 0, 0), runs_(true) {}
+  explicit Replay(en::PagedNode& node, bool profile31)
+      : node_(node),
+        resources_(node, 0, 0),
+        profile_(profile31 ? md::Gemma4_31B() : md::Gemma4_26BA4B()),
+        assistant_profile_(profile31 ? md::Gemma4Assistant31() : md::Gemma4Assistant26()),
+        runs_(true),
+        profile31_(profile31) {}
   en::Status Setup(const std::filesystem::path& input, const std::filesystem::path& manifest) {
     if (!node_.ChargeHost(kHostBytes, false)) return Error("fixture caller host budget");
     charged_ = true;
@@ -103,12 +110,24 @@ class Replay final : public en::PagedModel {
     auto files = doc->root().find("files");
     if (!files || !files->is_object() || files->size() != kFiles.size())
       return Error("fixture input allowlist differs");
+    auto sizes = kSizes;
+    if (profile31_) {
+      sizes[1] = profile_.width * sizeof(float);
+      sizes[3] = sizes[4] = 256U * profile_.local_kv_heads * 256U * 2U;
+      sizes[5] = sizes[6] = 512U * profile_.global_kv_heads * 256U * 2U;
+      auto metadata_file = files->find(kFiles[0]);
+      auto metadata_bytes = metadata_file ? metadata_file->find("bytes") : std::nullopt;
+      if (!metadata_bytes || !metadata_bytes->int64() || *metadata_bytes->int64() <= 0 ||
+          *metadata_bytes->int64() > 2048)
+        return Error("fixture metadata size bound");
+      sizes[0] = static_cast<std::uint64_t>(*metadata_bytes->int64());
+    }
     for (std::size_t i = 0; i < kFiles.size(); ++i) {
       auto declared = files->find(kFiles[i]);
-      if (!declared || !Integer(*declared, "bytes", static_cast<std::int64_t>(kSizes[i])))
+      if (!declared || !Integer(*declared, "bytes", static_cast<std::int64_t>(sizes[i])))
         return Error("fixture input manifest bytes differ");
       auto hash = declared->find("sha256");
-      auto bytes = Read(input / kFiles[i], kSizes[i]);
+      auto bytes = Read(input / kFiles[i], sizes[i]);
       if (!hash || !hash->is_string() || !bytes || Hash(*bytes) != hash->string())
         return Error("fixture input hash differs");
       data_[i] = std::move(*bytes);
@@ -126,22 +145,25 @@ class Replay final : public en::PagedModel {
              {"completed_endpoint", 64},
              {"query_position", 64},
              {"feature_position", 63},
-             {"feature_width", 2816},
+             {"feature_width", profile_.width},
              {"vocabulary", 262144},
              {"local_window", 1024},
              {"local_capacity", 1280},
              {"global_capacity", 4096},
              {"read_cells", 256},
-             {"local_layer", 28},
-             {"global_layer", 29}})
+             {"local_layer", LocalLayer()},
+             {"global_layer", GlobalLayer()}})
       if (!Integer(m, key, value)) return Error("fixture stage-zero semantic differs");
     auto name = m.find("profile");
-    if (!name || name->string() != "26B-A4B") return Error("fixture profile differs");
-    if (auto r = Descriptor(m, "local_descriptors", 256, 8, 1280); !r) return r;
-    if (auto r = Descriptor(m, "global_descriptors", 512, 2, 4096); !r) return r;
+    if (!name || name->string() != (profile31_ ? "31B" : "26B-A4B"))
+      return Error("fixture profile differs");
+    if (auto r = Descriptor(m, "local_descriptors", 256, profile_.local_kv_heads, 1280); !r)
+      return r;
+    if (auto r = Descriptor(m, "global_descriptors", 512, profile_.global_kv_heads, 4096); !r)
+      return r;
     std::memcpy(&anchor_, data_[2].data(), sizeof(anchor_));
     if (anchor_ < 0 || anchor_ >= 262144) return Error("fixture anchor is not canonical");
-    initial_.resize(2816);
+    initial_.resize(profile_.width);
     std::memcpy(initial_.data(), data_[1].data(), data_[1].size());
     if (!std::ranges::all_of(initial_, [](float f) { return std::isfinite(f); }))
       return Error("fixture feature nonfinite");
@@ -150,7 +172,9 @@ class Replay final : public en::PagedModel {
         ggml_fp16_t value;
         std::memcpy(&value, data_[i].data() + at, 2);
         if (!std::isfinite(ggml_fp16_to_fp32(value))) return Error("fixture padded KV nonfinite");
-        const auto cell = at / ((i < 5 ? 2048U : 1024U) * sizeof(ggml_fp16_t));
+        const auto cell =
+            at / ((i < 5 ? 256U * profile_.local_kv_heads : 512U * profile_.global_kv_heads) *
+                  sizeof(ggml_fp16_t));
         if (cell >= 64 && value != 0)
           return Error("fixture unused padded KV is not initialized zero");
       }
@@ -164,12 +188,16 @@ class Replay final : public en::PagedModel {
           return Error("fixture physical occupancy differs from frozen prefix");
       }
     const auto store = std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts");
-    if (auto r = target_.Open(store /
-                              "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3");
+    if (auto r = target_.Open(
+            store / (profile31_
+                         ? "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+                         : "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"));
         !r)
       return r;
     if (auto r = assistant_.Open(
-            store / "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42");
+            store / (profile31_
+                         ? "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120"
+                         : "1040a0299a459e00ad0a77efd77bd319ac593986ba2c9ef29eb03d07ce97db42"));
         !r)
       return r;
     auto tb = md::BindGemma4(profile_, target_.artifact());
@@ -223,7 +251,9 @@ class Replay final : public en::PagedModel {
       return r;
     auto staging = resources_.Pinned(Round((*measured)->inputs_bytes, en::kPagedExtent));
     auto heads = resources_.Pinned(262144 * sizeof(float)),
-         features = resources_.Pinned(2816 * sizeof(float)), witness = resources_.Pinned(1048576);
+         features = resources_.Pinned(profile_.width * sizeof(float)),
+         witness =
+             resources_.Pinned(profile31_ ? state_.tensors[GlobalLayer() * 2].bytes : 1048576);
     if (!staging || !heads || !features || !witness) return Error("fixture pinned sources/outputs");
     runs_.SetStaging(*staging, Round((*measured)->inputs_bytes, en::kPagedExtent));
     head_ = *heads;
@@ -265,15 +295,16 @@ class Replay final : public en::PagedModel {
     std::vector<float> stock_feature;
     std::array<std::int32_t, 3> stock_anchor{};
     if (!stock_incoming.empty()) {
-      auto feature = Read(stock_incoming / "incoming-feature.f32", 3 * 2816 * sizeof(float));
+      auto feature =
+          Read(stock_incoming / "incoming-feature.f32", 3 * profile_.width * sizeof(float));
       auto anchors = Read(stock_incoming / "incoming-anchor.i32", 3 * sizeof(std::int32_t));
       if (!feature || !anchors) return Error("posthoc input shape differs");
-      stock_feature.resize(3 * 2816);
+      stock_feature.resize(3 * profile_.width);
       std::memcpy(stock_feature.data(), feature->data(), feature->size());
       std::memcpy(stock_anchor.data(), anchors->data(), anchors->size());
       if (!std::ranges::all_of(stock_feature, [](float v) { return std::isfinite(v); }) ||
           !std::ranges::all_of(stock_anchor, [](std::int32_t t) { return t >= 0 && t < 262144; }) ||
-          std::memcmp(stock_feature.data(), initial_.data(), 2816 * sizeof(float)) != 0 ||
+          std::memcmp(stock_feature.data(), initial_.data(), profile_.width * sizeof(float)) != 0 ||
           stock_anchor[0] != anchor_)
         return Error("posthoc first input differs from authenticated stage zero");
     }
@@ -297,7 +328,10 @@ class Replay final : public en::PagedModel {
           // Provider async-copy sources are node-owned pinned buffers. Retire
           // each upload before reusing this single, fully funded staging span.
           for (std::size_t i = 0; i < 4; ++i) {
-            const auto layer = i < 2 ? 28U : 29U;
+            const auto layer = i < 2 ? LocalLayer() : GlobalLayer();
+            const auto bytes =
+                profile31_ ? state_.tensors[layer * 2 + i % 2].bytes : data_[i + 3].size();
+            if (profile31_) std::memset(witness_, 0, bytes);
             std::memcpy(witness_, data_[i + 3].data(), data_[i + 3].size());
             auto uploaded = node_.Job(
                 closure_,
@@ -305,8 +339,7 @@ class Replay final : public en::PagedModel {
                   return jitllm::providers::CopyAsync(
                              stream,
                              Pointer(cache_.base + state_.tensors[layer * 2 + i % 2].offset),
-                             witness_, data_[i + 3].size(),
-                             jitllm::providers::CopyKind::kHostToDevice)
+                             witness_, bytes, jitllm::providers::CopyKind::kHostToDevice)
                                  .ok()
                              ? sc::JobResult::kQueued
                              : sc::JobResult::kUnknown;
@@ -342,8 +375,8 @@ class Replay final : public en::PagedModel {
               auto anchor = anchor_;
               for (unsigned step = 0; step < steps; ++step) {
                 if (!stock_incoming.empty()) {
-                  incoming.assign(stock_feature.begin() + step * 2816,
-                                  stock_feature.begin() + (step + 1) * 2816);
+                  incoming.assign(stock_feature.begin() + step * profile_.width,
+                                  stock_feature.begin() + (step + 1) * profile_.width);
                   anchor = stock_anchor[step];
                 }
                 const std::array<en::Gemma4AssistantInput, 1> input{{{0, 64, anchor}}};
@@ -356,7 +389,7 @@ class Replay final : public en::PagedModel {
                     {{Address(head_), Address(planned_->graph.logits->data),
                       262144 * sizeof(float)},
                      {Address(feature_), Address(planned_->graph.next_features->data),
-                      2816 * sizeof(float)}}};
+                      profile_.width * sizeof(float)}}};
                 auto posted = node_.Job(
                     closure_,
                     [&](jitllm::providers::NativeStream stream) {
@@ -369,8 +402,9 @@ class Replay final : public en::PagedModel {
                     "assistant stage-zero endogenous query", 0);
                 if (!posted) return posted;
                 const auto head = std::span(static_cast<const float*>(head_), 262144),
-                           feature = std::span(static_cast<const float*>(feature_), 2816);
-                if (auto r = en::CheckGemma4AssistantOutputs(1, 2816, head, feature); !r) return r;
+                           feature = std::span(static_cast<const float*>(feature_), profile_.width);
+                if (auto r = en::CheckGemma4AssistantOutputs(1, profile_.width, head, feature); !r)
+                  return r;
                 const std::array<std::string, 2> hashes{Hash(std::as_bytes(head)),
                                                         Hash(std::as_bytes(feature))};
                 if (repeat == 0)
@@ -396,6 +430,12 @@ class Replay final : public en::PagedModel {
                           << " P=64 input_anchor=" << anchor << " next_anchor=" << next
                           << " head_sha256=" << hashes[0] << " projection_sha256=" << hashes[1]
                           << '\n';
+                if (profile31_) {
+                  auto after = Witness();
+                  if (!after) return Error(after.error());
+                  if (*after != *before) return Error("fixture frozen KV bytes changed after step");
+                  std::cout << "step=" << step << " immutable_cache_after=" << *after << '\n';
+                }
                 incoming.assign(feature.begin(), feature.end());
                 anchor = next;
               }
@@ -434,11 +474,13 @@ class Replay final : public en::PagedModel {
   }
 
  private:
+  std::uint32_t LocalLayer() const { return profile31_ ? 58U : 28U; }
+  std::uint32_t GlobalLayer() const { return profile31_ ? 59U : 29U; }
   std::expected<std::string, std::string> Witness() {
     jitllm::base::Sha256 hash;
     for (std::size_t i = 0; i < 4; ++i) {
-      const auto layer = i < 2 ? 28U : 29U;
-      const auto bytes = data_[i + 3].size();
+      const auto layer = i < 2 ? LocalLayer() : GlobalLayer();
+      const auto bytes = profile31_ ? state_.tensors[layer * 2 + i % 2].bytes : data_[i + 3].size();
       auto copied = node_.Job(
           closure_,
           [&](jitllm::providers::NativeStream stream) {
@@ -452,8 +494,12 @@ class Replay final : public en::PagedModel {
           },
           "fixture frozen KV witness", 0);
       if (!copied) return Error(copied.error());
-      if (Hash(std::span(static_cast<const std::byte*>(witness_), bytes)) != Hash(data_[i + 3]))
-        return Error("fixture uploaded KV differs");
+      const auto observed = std::span(static_cast<const std::byte*>(witness_), bytes);
+      if (Hash(observed.first(data_[i + 3].size())) != Hash(data_[i + 3]) ||
+          (profile31_ &&
+           !std::ranges::all_of(observed.subspan(data_[i + 3].size()),
+                                [](std::byte value) { return value == std::byte{0}; })))
+        return Error("fixture uploaded KV or physical padding differs");
       hash.Update(std::span(static_cast<const std::byte*>(witness_), bytes));
     }
     return jitllm::base::ToHex(hash.Finish());
@@ -461,8 +507,8 @@ class Replay final : public en::PagedModel {
   en::PagedNode& node_;
   en::RunnerResources resources_;
   en::PagedWeights target_, assistant_;
-  md::Gemma4Profile profile_ = md::Gemma4_26BA4B();
-  md::Gemma4AssistantProfile assistant_profile_ = md::Gemma4Assistant26();
+  md::Gemma4Profile profile_;
+  md::Gemma4AssistantProfile assistant_profile_;
   md::Gemma4Binding target_binding_;
   md::Gemma4AssistantBinding assistant_binding_;
   md::Gemma4StateLayout state_;
@@ -481,21 +527,28 @@ class Replay final : public en::PagedModel {
   std::uint64_t scratch_ = 0;
   void *head_ = nullptr, *feature_ = nullptr, *witness_ = nullptr;
   bool charged_ = false;
+  const bool profile31_;
 };
 struct Lifetime {
   en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
-  Replay replay{node};
+  explicit Lifetime(bool profile31) : replay(node, profile31) {}
+  Replay replay;
   std::array<en::PagedModel*, 1> entered{&replay};
 };
 }  // namespace
 int main(int argc, char** argv) {
   umask(0077);
+  const bool profile31 = argc > 1 && std::string_view(argv[1]) == "--profile31";
+  if (profile31) {
+    --argc;
+    ++argv;
+  }
   if (argc != 4 && argc != 5) {
-    std::cerr << "usage: jitllm_gemma_assistant_fixture STAGE0 MANIFEST NEW_OUTPUT "
+    std::cerr << "usage: jitllm_gemma_assistant_fixture [--profile31] STAGE0 MANIFEST NEW_OUTPUT "
                  "[POSTHOC_INCOMING_DIR]\n";
     return 2;
   }
-  auto owner = std::make_unique<Lifetime>();
+  auto owner = std::make_unique<Lifetime>(profile31);
   auto result = owner->node.Open();
   if (result) result = owner->replay.Setup(argv[1], argv[2]);
   if (result) result = owner->replay.Execute(argv[3], argc == 5 ? argv[4] : "");
@@ -505,5 +558,8 @@ int main(int argc, char** argv) {
     std::cerr << retired.error() << '\n';
     std::ignore = owner.release();
   }
+  if (result && retired)
+    std::cout << "ASSISTANT_FIXTURE_COMPLETE profile=" << (profile31 ? "31B" : "26B-A4B")
+              << " P=64 steps=1,3 own_repeat_byte_exact=1 cache_unchanged=1\n";
   return result && retired ? 0 : 1;
 }

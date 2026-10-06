@@ -179,6 +179,13 @@ P64 input and native-target C1/C2 own repeats with unequal histories and direct
 cache/feature witnesses. This is component evidence, not optimized C2 or
 end-to-end target/assistant quality or competitive performance qualification.
 
+The [Gemma31 frozen C1 extension](experiments/gemma31-assistant-reference/README.md)
+now also matches all complete original-image heads and 5,376-value recurrent
+features for one/three-step P64 chains in both exact own repeats. Original
+complete target state/caches/cells and native 52 MiB borrowed tensors remain
+unchanged. This is a frozen-input component prerequisite; native-target chain,
+C2, serving/speculation and performance qualification remain open.
+
 ## Execution work still owed
 
 The component supplies explicit retained-feature rows, same-slot initialized

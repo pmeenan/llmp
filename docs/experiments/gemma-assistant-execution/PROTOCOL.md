@@ -104,3 +104,46 @@ frozen native allowance. No native-target feature or checkpoint is modified.
 This protocol contains no competitive latency measurement, accept/reject
 verification, sampler, speculative serving, optimized joined assistant policy
 or original C2 cross-engine comparison. Those are separate qualifications.
+
+## Closed 31B stage-zero replay
+
+The explicit leading `--profile31` option selects prepared target
+`32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08`
+and assistant
+`447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120`.
+Legacy invocations keep the original 26B input sizes and behavior. Admit only
+C1/P64 stage-zero inputs after the original 31B own-freeze: feature width 5376,
+local58/global59, D/head pairs256/16 and512/4, canonical read256, physical
+capacities1280/4096, absolute positions0..63, query64 and feature63. The
+externally fixed metadata length is positive and at most 2 KiB; all eleven
+file lengths and hashes plus profile/descriptor semantics are checked before
+prepared-model allocations. The first anchor is the actual original full-head
+argmax, not the historical 26B anchor108.
+
+The existing 128 MiB caller host grant precedes manifest parsing and vector
+construction. Input payloads total less than 7 MiB, retained incoming/output
+metadata is bounded by the fixed C1/one-or-three-step shape, and the single
+16 MiB pinned upload/witness buffer is separately charged by RunnerResources.
+The four borrowed physical tensors total 52 MiB (two 10 MiB local tensors and
+two 16 MiB global tensors). Upload each entire tensor from the pinned span:
+canonical read inputs occupy the first 256 cells and all remaining cells are
+explicitly zero. Each upload retires before span reuse. After every assistant
+step and chain, copy all four complete tensors back through that same buffer,
+compare canonical input bytes and zero tails, and hash the complete witness.
+Only these four immutable operands are initialized or claimed as protected;
+they are not a serialized native target checkpoint. Global V uses its separately
+authenticated raw source. Complete heads/features are published only after
+Job retirement; feature recurrence is separate from constant target P64.
+
+Run the unchanged one-step and three-step repeat controls using:
+
+```sh
+jitllm_gemma_assistant_fixture --profile31 STAGE0_DIR STAGE0_MANIFEST NEW_OUTPUT
+```
+
+Freeze complete native heads/projections, cache witnesses and official successful
+teardown before viewing the original recurrence. All full-row differences are
+reported without borrowing a quality bound or widening tolerance. Any later
+same-input posthoc replay uses the already compiled optional input branch and
+requires a separate frozen-input release. No runner/serving defaults or math
+policy change accompanies this manual component extension.

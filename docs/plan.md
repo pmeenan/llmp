@@ -587,6 +587,11 @@ family" guide, and its long-context scaling work.
         serial-reference full rows exactly; original batch-two distribution
         differences remain. Full optimized-batching and serving qualification
         remain open.
+      - [x] [Gemma31 Q8 assistant frozen C1/P64 extension](experiments/gemma31-assistant-reference/README.md),
+        with complete original-image heads/5,376-value recurrent features exact
+        for one/three-step chains and both own repeats; protected complete
+        original state and native borrowed caches remain unchanged. No C2,
+        native-target chain, serving/speculation or performance qualification.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

@@ -26,7 +26,7 @@
 #include "llama.h"
 
 namespace {
-constexpr int kWidth = 2816, kVocab = 262144;
+constexpr int kVocab = 262144;
 void Require(bool value, const char* message) {
   if (!value) {
     std::cerr << "REFUSAL " << message << '\n';
@@ -62,20 +62,21 @@ void Decode(llama_context* ctx, llama_batch batch) {
   llama_synchronize(ctx);
   Require(result == 0, "decode did not complete successfully");
 }
-void Architecture(llama_model* model, const char* expected, int layers) {
+void Architecture(llama_model* model, const char* expected, int layers, int width) {
   std::array<char, 64> arch{};
   const int length =
       llama_model_meta_val_str(model, "general.architecture", arch.data(), arch.size());
   Require(length > 0 && length < static_cast<int>(arch.size()) &&
               std::string(arch.data()) == expected && llama_model_n_layer(model) == layers &&
-              llama_model_n_embd_out(model) == kWidth &&
+              llama_model_n_embd_out(model) == width &&
               llama_vocab_n_tokens(llama_model_get_vocab(model)) == kVocab,
-          "model does not match the closed 26B target/assistant shape");
+          "model does not match the closed target/assistant shape");
 }
-std::vector<std::uint8_t> SequenceState(llama_context* ctx, int owner) {
+std::vector<std::uint8_t> SequenceState(llama_context* ctx, int owner, bool profile31) {
   llama_synchronize(ctx);
   const auto size = llama_state_seq_get_size(ctx, owner);
-  Require(size > 0 && size <= 32 * 1024 * 1024, "unbounded opaque sequence state");
+  Require(size > 0 && size <= (profile31 ? 64U : 32U) * 1024 * 1024,
+          "unbounded opaque sequence state");
   std::vector<std::uint8_t> data(size);
   Require(llama_state_seq_get_data(ctx, data.data(), data.size(), owner) == data.size(),
           "opaque sequence state capture failed");
@@ -231,11 +232,18 @@ int main(int argc, char** argv) {
   static_assert(std::endian::native == std::endian::little);
   static_assert(sizeof(float) == 4 && sizeof(llama_token) == 4);
   umask(0077);
-  Require(argc == 7, "TARGET ASSISTANT IDS_I32 NEW_OUTPUT OWNERS(1|2) MODE(serial|batch)");
+  Require(argc == 7 || (argc == 8 && std::string(argv[7]) == "31"),
+          "TARGET ASSISTANT IDS_I32 NEW_OUTPUT OWNERS(1|2) MODE(serial|batch) [31]");
+  const bool profile31 = argc == 8;
+  const int width = profile31 ? 5376 : 2816;
+  const int layers = profile31 ? 60 : 30;
+  const int local_layer = profile31 ? 58 : 28, global_layer = profile31 ? 59 : 29;
+  const int local_heads = profile31 ? 16 : 8, global_heads = profile31 ? 4 : 2;
   const int count = std::string(argv[5]) == "1" ? 1 : (std::string(argv[5]) == "2" ? 2 : 0);
   const bool joined = std::string(argv[6]) == "batch";
   Require(count > 0 && (joined || std::string(argv[6]) == "serial") && (!joined || count == 2),
           "closed owner/shape mode refused");
+  Require(!profile31 || (count == 1 && !joined), "31B extension is C1 serial only");
   Require(!std::getenv("GGML_CUDA_DISABLE_GRAPHS") && !std::getenv("GGML_CUDA_DISABLE_FUSION"),
           "original graph/fusion defaults required");
   std::vector<std::int32_t> ids(1024);
@@ -254,7 +262,7 @@ int main(int argc, char** argv) {
   mp.lazy_mode = LLAMA_LAZY_MODE_OFF;
   auto* target_model = llama_model_load_from_file(argv[1], mp);
   Require(target_model != nullptr, "target load failed");
-  Architecture(target_model, "gemma4", 30);
+  Architecture(target_model, "gemma4", layers, width);
   auto cp = llama_context_default_params();
   cp.n_ctx = static_cast<std::uint32_t>(count * 4096);
   cp.n_batch = cp.n_ubatch = 128;
@@ -278,7 +286,7 @@ int main(int argc, char** argv) {
   auto* draft_model = llama_model_load_from_file(argv[2], mp);
   Require(draft_model != nullptr, "Q8 assistant load failed");
   // Original public n_layer is the trunk count, excluding nextn blocks.
-  Architecture(draft_model, "gemma4-assistant", 0);
+  Architecture(draft_model, "gemma4-assistant", 0, width);
   std::array<char, 16> blocks{};
   const int block_length = llama_model_meta_val_str(draft_model, "gemma4-assistant.block_count",
                                                     blocks.data(), blocks.size());
@@ -293,7 +301,7 @@ int main(int argc, char** argv) {
               llama_n_seq_max(draft) == unsigned(count),
           "borrowed assistant context differs");
   llama_set_embeddings_nextn(draft, true, false);
-  auto batch = llama_batch_init(128, kWidth, 1);
+  auto batch = llama_batch_init(128, width, 1);
   batch.token = static_cast<llama_token*>(std::malloc(128 * sizeof(llama_token)));
   Require(batch.token && batch.embd, "assistant token/feature batch allocation failed");
   auto target_batch = llama_batch_init(128, 0, 1);
@@ -310,19 +318,19 @@ int main(int argc, char** argv) {
     }
     Decode(target, target_batch);
     owners[owner].past = past;
-    owners[owner].feature = Row(llama_get_embeddings_nextn_ith(target, past - 1), kWidth);
+    owners[owner].feature = Row(llama_get_embeddings_nextn_ith(target, past - 1), width);
     owners[owner].anchor = Winner(Row(llama_get_logits_ith(target, past - 1), kVocab));
   }
   const auto capture = [&](int owner, bool local) {
     return Capture(local ? split->get_swa() : split->get_base(), descriptors, owner, count,
-                   owners[owner].past, local ? 28 : 29, local ? 256 : 512, local ? 8 : 2,
-                   local ? 1280 : 4096);
+                   owners[owner].past, local ? local_layer : global_layer, local ? 256 : 512,
+                   local ? local_heads : global_heads, local ? 1280 : 4096);
   };
   for (int owner = 0; owner < count; ++owner) {
     auto& state = owners[owner];
     state.local = capture(owner, true);
     state.global = capture(owner, false);
-    state.state = SequenceState(target, owner);
+    state.state = SequenceState(target, owner, profile31);
     const auto dir = out / ("owner-" + std::to_string(owner));
     Directory(dir);
     Write<float>(dir / "feature.f32", state.feature);
@@ -331,32 +339,33 @@ int main(int argc, char** argv) {
     SaveCache(dir, state.local, "local");
     SaveCache(dir, state.global, "global");
     std::ostringstream metadata;
-    metadata << "{\"version\":1,\"profile\":\"26B-A4B\",\"owner\":" << owner
-             << ",\"stream\":" << owner << ",\"sequence\":" << owner
+    metadata << "{\"version\":1,\"profile\":\"" << (profile31 ? "31B" : "26B-A4B")
+             << "\",\"owner\":" << owner << ",\"stream\":" << owner << ",\"sequence\":" << owner
              << ",\"completed_endpoint\":" << state.past << ",\"query_position\":" << state.past
-             << ",\"feature_position\":" << state.past - 1
-             << ",\"feature_width\":2816,\"vocabulary\":262144,\"local_window\":1024,"
+             << ",\"feature_position\":" << state.past - 1 << ",\"feature_width\":" << width
+             << ",\"vocabulary\":262144,\"local_window\":1024,"
                 "\"local_capacity\":1280,\"global_capacity\":4096,\"read_cells\":256,"
-                "\"local_layer\":28,\"global_layer\":29,\"local_descriptors\":"
-             << state.local.descriptors << ",\"global_descriptors\":" << state.global.descriptors
-             << "}\n";
+                "\"local_layer\":"
+             << local_layer << ",\"global_layer\":" << global_layer
+             << ",\"local_descriptors\":" << state.local.descriptors
+             << ",\"global_descriptors\":" << state.global.descriptors << "}\n";
     Text(dir / "metadata.json", metadata.str());
   }
   const auto unchanged = [&]() {
     llama_synchronize(draft);
     llama_synchronize(target);
     for (int owner = 0; owner < count; ++owner)
-      Require(owners[owner].state == SequenceState(target, owner) &&
+      Require(owners[owner].state == SequenceState(target, owner, profile31) &&
                   owners[owner].local == capture(owner, true) &&
                   owners[owner].global == capture(owner, false),
               "assistant mutated original target state, caches or cell metadata");
   };
   const auto chain = [&](int steps) {
     Chain result;
-    result.incoming.reserve(static_cast<std::size_t>(steps) * count * kWidth);
+    result.incoming.reserve(static_cast<std::size_t>(steps) * count * width);
     result.anchors.reserve(static_cast<std::size_t>(steps) * count);
     result.heads.reserve(static_cast<std::size_t>(steps) * count * kVocab);
-    result.projected.reserve(static_cast<std::size_t>(steps) * count * kWidth);
+    result.projected.reserve(static_cast<std::size_t>(steps) * count * width);
     std::vector<std::vector<float>> feature;
     std::vector<llama_token> anchor;
     for (const auto& owner : owners) {
@@ -371,7 +380,7 @@ int main(int argc, char** argv) {
         for (int row = 0; row < batch.n_tokens; ++row) {
           const int owner = joined ? row : group;
           batch.token[row] = anchor[owner];
-          std::copy(feature[owner].begin(), feature[owner].end(), batch.embd + row * kWidth);
+          std::copy(feature[owner].begin(), feature[owner].end(), batch.embd + row * width);
           batch.pos[row] = owners[owner].past;
           batch.n_seq_id[row] = 1;
           batch.seq_id[row][0] = owner;
@@ -381,7 +390,7 @@ int main(int argc, char** argv) {
         for (int row = 0; row < batch.n_tokens; ++row) {
           const int owner = joined ? row : group;
           heads[owner] = Row(llama_get_logits_ith(draft, row), kVocab);
-          projected[owner] = Row(llama_get_embeddings_nextn_ith(draft, row), kWidth);
+          projected[owner] = Row(llama_get_embeddings_nextn_ith(draft, row), width);
         }
       }
       for (int owner = 0; owner < count; ++owner) {
@@ -427,6 +436,7 @@ int main(int argc, char** argv) {
   llama_model_free(target_model);
   llama_backend_free();
   std::cout << "ASSISTANT_REFERENCE_COMPLETE owners=" << count << " mode=" << argv[6]
+            << " profile=" << (profile31 ? "31B" : "26B-A4B")
             << " context_per_owner=4096 ubatch=128 local=1280 global=4096 steps=1,3"
                " repeat_byte_exact=1 target_state_unchanged=1\n";
 }

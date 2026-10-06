@@ -42,6 +42,7 @@ def exact(path, size, kind=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
+    parser.add_argument("--profile", choices=("26", "31"), default="26")
     parser.add_argument("receipt", type=Path)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True)
@@ -49,9 +50,14 @@ def main():
     parser.add_argument("--job", type=Path, required=True)
     args = parser.parse_args()
     root = args.directory
+    profile31 = args.profile == "31"
+    width, local_width, global_width = (5376, 4096, 2048) if profile31 else (2816, 2048, 1024)
+    local_layer, global_layer = (58, 59) if profile31 else (28, 29)
+    profile = "31B" if profile31 else "26B-A4B"
     completion = json.loads((root / "completion.json").read_text())
     count = completion["owners"]
     assert count in (1, 2) and completion["version"] == 1
+    assert not profile31 or (count == 1 and completion["mode"] == "serial")
     assert completion["mode"] in ("serial", "batch")
     assert completion["physical_draft_batch"] == (count if completion["mode"] == "batch" else 1)
     assert count == 2 or completion["mode"] == "serial"
@@ -64,25 +70,25 @@ def main():
         prefix = f"owner-{owner}/"
         directory = root / prefix
         metadata = json.loads((directory / "metadata.json").read_text())
-        assert metadata["version"] == 1 and metadata["profile"] == "26B-A4B"
+        assert metadata["version"] == 1 and metadata["profile"] == profile
         assert metadata["owner"] == metadata["stream"] == metadata["sequence"] == owner
         assert metadata["completed_endpoint"] == metadata["query_position"] == 64 + owner
         assert metadata["feature_position"] == 63 + owner
-        assert metadata["feature_width"] == 2816 and metadata["vocabulary"] == 262144
+        assert metadata["feature_width"] == width and metadata["vocabulary"] == 262144
         assert metadata["local_window"] == 1024 and metadata["read_cells"] == 256
         assert metadata["local_capacity"] == 1280 and metadata["global_capacity"] == 4096
-        assert metadata["local_layer"] == 28 and metadata["global_layer"] == 29
-        exact(directory / "feature.f32", 2816 * 4, "f")
+        assert metadata["local_layer"] == local_layer and metadata["global_layer"] == global_layer
+        exact(directory / "feature.f32", width * 4, "f")
         exact(directory / "anchor.i32", 4, "i")
-        assert 0 < (directory / "target-state.bin").stat().st_size <= 32 << 20
+        assert 0 < (directory / "target-state.bin").stat().st_size <= (64 if profile31 else 32) << 20
         expected |= {prefix + name for name in (
             "metadata.json", "feature.f32", "anchor.i32", "target-state.bin")}
-        for name, width, capacity in (("local", 2048, 1280), ("global", 1024, 4096)):
+        for name, cache_width, capacity in (("local", local_width, 1280), ("global", global_width, 4096)):
             for role in ("k", "v"):
-                exact(directory / f"{name}-{role}.f16", width * 256 * 2)
-                physical = exact(directory / f"{name}-physical-{role}.f16", width * capacity * 2)
-                assert physical[:width * 256 * 2] == (directory / f"{name}-{role}.f16").read_bytes()
-                assert not any(physical[width * (64 + owner) * 2:])
+                exact(directory / f"{name}-{role}.f16", cache_width * 256 * 2)
+                physical = exact(directory / f"{name}-physical-{role}.f16", cache_width * capacity * 2)
+                assert physical[:cache_width * 256 * 2] == (directory / f"{name}-{role}.f16").read_bytes()
+                assert not any(physical[cache_width * (64 + owner) * 2:])
                 expected |= {prefix + f"{name}-{role}.f16", prefix + f"{name}-physical-{role}.f16"}
             positions = array.array("i")
             positions.frombytes(exact(directory / f"{name}-positions.i32", capacity * 4))
@@ -94,22 +100,22 @@ def main():
     for steps in (1, 3):
         prefix = f"steps-{steps}/"
         directory = root / prefix
-        incoming = exact(directory / "incoming-feature.f32", steps * count * 2816 * 4, "f")
+        incoming = exact(directory / "incoming-feature.f32", steps * count * width * 4, "f")
         anchors = exact(directory / "incoming-anchor.i32", steps * count * 4, "i")
         heads = exact(directory / "heads.f32", steps * count * 262144 * 4, "f")
-        projected = exact(directory / "postprojection.f32", steps * count * 2816 * 4, "f")
+        projected = exact(directory / "postprojection.f32", steps * count * width * 4, "f")
         assert heads == exact(directory / "repeat-heads.f32", len(heads), "f")
         assert projected == exact(directory / "repeat-postprojection.f32", len(projected), "f")
         for owner in range(count):
-            assert incoming[owner * 2816 * 4:(owner + 1) * 2816 * 4] == (
+            assert incoming[owner * width * 4:(owner + 1) * width * 4] == (
                 root / f"owner-{owner}/feature.f32").read_bytes()
             assert anchors[owner * 4:(owner + 1) * 4] == (root / f"owner-{owner}/anchor.i32").read_bytes()
         for step in range(1, steps):
             for owner in range(count):
                 row = step * count + owner
                 previous = row - count
-                assert incoming[row * 2816 * 4:(row + 1) * 2816 * 4] == (
-                    projected[previous * 2816 * 4:(previous + 1) * 2816 * 4])
+                assert incoming[row * width * 4:(row + 1) * width * 4] == (
+                    projected[previous * width * 4:(previous + 1) * width * 4])
                 values = array.array("f")
                 values.frombytes(heads[previous * 262144 * 4:(previous + 1) * 262144 * 4])
                 winner = max(range(262144), key=values.__getitem__)
@@ -133,6 +139,12 @@ def main():
     assert headers == before["headers"]
     assert identity(args.work / "llama_assistant")["sha256"] == before["client_sha256"]
     assert before["input"] == identity(root / "inputs.i32")
+    if profile31:
+        assert before["profile"] == "31B"
+        assert before["opaque_state_bound_bytes"] == 64 << 20
+        assert before["known_vector_bound_bytes"] == 384 << 20
+        retired = json.loads((args.work / (before["owned_name"] + "-container-retired.json")).read_text())
+        assert retired["container_absent_after_checked_docker_query"] is True
     final = json.loads((args.job / "final.json").read_text())
     assert final["rc"] == 0 and final["state"] == "done", final
     steps_record = json.loads((args.job / "steps.json").read_text())
@@ -140,7 +152,7 @@ def main():
     assert steps_record["steps"][0]["state"] == "done" and steps_record["steps"][0]["rc"] == 0
     receipt = {
         "schema": 1, "source_pin": PIN, "image": IMAGE,
-        "completion": completion, "canonical_input_sha256": INPUT_SHA,
+        "completion": completion, "profile": profile, "canonical_input_sha256": INPUT_SHA,
         "client": identity(args.work / "llama_assistant"), "sources": source,
         "pre_acquisition_source_freeze": identity(args.pre),
         "supervised_retirement": {"final": identity(args.job / "final.json"),

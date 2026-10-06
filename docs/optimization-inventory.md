@@ -199,6 +199,13 @@ they do not select a serving policy or establish full-model qualification.
 Larger batches, device recurrence/masks and other widths/formats still need
 their own transfer checks.
 
+The [Gemma31 frozen assistant C1 transfer](experiments/gemma31-assistant-reference/README.md)
+adds full original-image head/5,376-feature byte identity for one/three-step
+P64 recurrence and exact protected original/native caches. It preserves 26
+default invocations and adds no optimized join, serving/speculation policy or
+performance claim. Different histories/endpoints and assistant batching require
+separate controls.
+
 Gemma's native GELU-tanh and split GeGLU now have primitive fallbacks.
 The [floating GeGLU screen](experiments/gemma-activations/README.md) checks
 matched F32 accumulation at K2816 with F16 weights: N704 gains while N2112

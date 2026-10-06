@@ -102,3 +102,36 @@ Raw inputs, tokens, heads, projections, state and logs remain external.
 Git retains the reusable harness, aggregate availability/numerical findings
 and authenticated reproduction identities. This is no target-quality pass,
 assistant verification/rollback, serving, speculation, or model qualification.
+
+## Closed 31B C1 extension
+
+The optional trailing `31` argument selects only the approved 31B target and
+Q8_0 companion, one owner in serial mode. Existing invocations retain the 26B
+contract. The target has 60 layers and its post-finalnorm feature and recurrent
+postprojection have 5,376 F32 values. Borrow local layer 58 (`D=256`, 16 KV
+heads) and global layer 59 (`D=512`, 4 KV heads). Global V remains the separately
+captured raw K-as-V source. P64/query64/feature63, read256, capacities1280/4096,
+absolute positions, stream zero and normal graph/fusion policies are unchanged.
+Complete original cache payloads, physical cell metadata and opaque target
+sequence state must remain byte-exact after each draft step and repeated chain.
+
+The closed C1 opaque-state allocation is refused above 64 MiB before vector
+construction. Known retained and transient client vectors have a conservative
+384 MiB envelope, including simultaneous immutable and comparison witnesses;
+this is separate from reference-owned model/backend memory and is not a peak
+measurement. The 26B bounds remain 32 MiB opaque state and 256 MiB known vectors.
+Record the actual serialized state length in the exclusive own-freeze receipt.
+No 31B C2 mode is admitted by this extension.
+
+`reference.sh build31 assistant31-NEW_BUILD` and
+`reference.sh acquire31 assistant31-NEW_ACQUISITION` use a separate private
+work directory, exact original libraries/19-header closure and the existing
+CID-scoped retirement helper. Before acquisition, externally freeze source,
+client, input, approved raw-model supply and bounds; pass the client and
+pre-acquisition receipt SHAs through the wrapper's required environment.
+Only after official success and checked container absence, run `own_freeze.py
+--profile 31` with that receipt. Its complete output allowlist remains separate
+from the eleven stage-zero inputs released to native code. Later original
+recurrence inputs and outputs remain withheld until native own-repeat freeze.
+The first 31B acquisition is a numerical prerequisite, not assistant serving,
+verification, speculation, calibration, performance or profile qualification.
