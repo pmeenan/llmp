@@ -31,6 +31,13 @@ an accepted milestone speed exception does not establish measured parity.
 The [M3 record](m3-record.md) keeps the remaining Qwen/DeepSeek gaps and
 the owner's M9 deferral beside the qualification evidence.
 
+The native GGML dependency now uses llama.cpp v0.6.0 (`d8123504`, GGML
+0.26.0); its [integration checks](experiments/ggml-release-refresh/README.md)
+cover the source update. Model-quality and performance results below retain
+the source/image identities of their linked experiments. Those historical
+results do not qualify the new pin; matched new-release model comparisons
+are recorded separately as they complete.
+
 ## Summary
 
 | Model | Role | Status | Level |

@@ -1081,9 +1081,14 @@ llama.cpp, vLLM, SGLang and transformers run it. Alternatives:
 - **Other engines.**
   - vLLM would load only the backbone as a chat model; its `/v1/systemone`
     work is generic ([PR #59299](https://github.com/vllm-project/vllm/pull/59299)).
-  - llama.cpp's text-only Clef support is open
-    ([PR #29831](https://github.com/ggml-org/llama.cpp/pull/29831)), with
-    GGUFs at `ggml-org/Clef-GGUF` and `ggml-org/Clef-Flash-GGUF`.
+  - llama.cpp [v0.6.0](https://github.com/ggml-org/llama.cpp/releases/tag/v0.6.0)
+    (`d81235049384534c167caea52b85a694f6103d14`, checked 2026-10-06)
+    releases Clef text support ([#29831](https://github.com/ggml-org/llama.cpp/pull/29831)),
+    vision input ([#29969](https://github.com/ggml-org/llama.cpp/pull/29969))
+    and the `/v1/systemone` decision API. GGUFs are available at
+    `ggml-org/Clef-GGUF` and `ggml-org/Clef-Flash-GGUF`. This is an upstream
+    reference capability; native Jev execution, media inputs and measured GB10
+    quality/performance remain M3.5 work.
 
 ### Text-to-speech testbeds
 

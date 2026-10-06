@@ -2488,6 +2488,28 @@ TEST_F(GgmlExtOpsTest, TwelveStreamMmaMatchesThreeFourRootCohortPartitionsExactl
       }
 }
 
+TEST(FlashAttnOwnersPartitionTest, WholeTilePreferenceMatchesTheReleaseEfficiencyBoundary) {
+  for (const std::uint32_t cohort : {2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U}) {
+    const int tiles = 4 * static_cast<int>(cohort);
+    const auto whole = kg::detail::PlanOwnerPartition(tiles, 16, 4, cohort, true);
+    ASSERT_TRUE(whole) << whole.error().detail;
+    EXPECT_EQ(whole->cohort_blocks, tiles);
+    EXPECT_EQ(whole->effective_cohort, cohort);
+    const auto under = kg::detail::PlanOwnerPartition(tiles * 2, 16, 4, cohort, true);
+    const auto ordinary = kg::detail::PlanOwnerPartition(tiles * 2, 16, 4, cohort, false);
+    ASSERT_TRUE(under) << under.error().detail;
+    ASSERT_TRUE(ordinary) << ordinary.error().detail;
+    EXPECT_EQ(under->cohort_blocks, ordinary->cohort_blocks);
+    EXPECT_EQ(under->quad_blocks, ordinary->quad_blocks);
+  }
+  const auto boundary = kg::detail::PlanOwnerPartition(64, 16, 4, 12, true);
+  const auto below = kg::detail::PlanOwnerPartition(65, 16, 4, 12, true);
+  ASSERT_TRUE(boundary) << boundary.error().detail;
+  ASSERT_TRUE(below) << below.error().detail;
+  EXPECT_EQ(boundary->cohort_blocks, 48);  // 75 percent, no split-K metadata
+  EXPECT_NE(below->cohort_blocks, 48);     // 73 percent, stream-K (four-root fallback)
+}
+
 TEST(FlashAttnOwnersPartitionTest, NonDivisibleTwelveStreamGridPreservesFourRootGeometry) {
   // A real provider with this occupancy limit cannot split the original
   // twelve-stream grid into three integral block ranges. Preserve the
@@ -3793,14 +3815,11 @@ TEST_F(GgmlExtOpsTest, PartialPhysicalStreamsMatchOffsetFilteredRealRootGroupsEx
           EXPECT_EQ(plan->original.blocks, full_plan->blocks);
           const auto quad_tiles = static_cast<int>(kvh * owners);
           EXPECT_EQ(plan->original.blocks % quad_tiles == 0, full_plan->blocks % quad_tiles == 0);
-          // Use the actual planned whole grid, matching QueuePartial's dispatch;
-          // the six-stream cases cover its metadata-free and uniform branches.
+          // Use the actual release's planned whole grid, matching QueuePartial.
+          // Occupancy, KV batch and whole-tile preference can change across pins.
           const auto fixup = quad_tiles % plan->original.blocks == 0   ? "none"
                              : plan->original.blocks % quad_tiles == 0 ? "uniform"
                                                                        : "general";
-          if (owners == 6) EXPECT_STREQ(fixup, d == 256 ? "none" : "uniform");
-          if (owners == 7) EXPECT_STREQ(fixup, "general");
-          if (owners == 9) EXPECT_STREQ(fixup, d == 256 && heads == 32 ? "none" : "general");
           std::cout << "OWNER_PARTIAL_PLAN owners=" << owners << " active=" << active
                     << " offset=" << first << " heads=" << heads << " D=" << d << " cells=" << cells
                     << " sms=" << sms << " original_blocks_per_sm=" << plan->original_blocks_per_sm

@@ -3,9 +3,9 @@
 """Checks a build's actual compile and link inventory against its receipt (D-017, D-057, D-066, D-083).
 
     python3 check_closure.py --build-dir DIR --source-dir REPO --sdk SDK --ninja NINJA [--cross]
-                             [--libstdcxx-assertions]
+                             [--libstdcxx-assertions] [--target OUTPUT ...]
 
-Reads every input Ninja recorded for the current outputs (each compile's
+Without --target, reads every input Ninja recorded for the current outputs (each compile's
 headers and, where supported, each link's objects and libraries, from the
 compiler's and linker's dependency files) and every link edge's inputs and
 flags in build.ninja (CUDA and Spark GNU links may record no dependency file),
@@ -204,8 +204,22 @@ def link_input_kind(path: str) -> str:
     return "a linker script or unknown file" if head[:1].isascii() else "an unknown binary file"
 
 
+def focused_outputs(ninja: str, build_dir: pathlib.Path, targets: list[str],
+                    problems: list[str]) -> set[str]:
+    """Actual recursive inputs of named Ninja outputs; no inferred source or object list."""
+    text = subprocess.run([ninja, "-C", str(build_dir), "-t", "targets", "all"],
+                          capture_output=True, text=True, check=True).stdout
+    known = {line.rsplit(": ", 1)[0] for line in text.splitlines() if ": " in line}
+    if any(target not in known for target in targets):
+        problems.append("unknown focused target: " + ", ".join(t for t in targets if t not in known))
+        return set()
+    text = subprocess.run([ninja, "-C", str(build_dir), "-t", "inputs", "-0", "-E", *targets],
+                          capture_output=True, text=True, check=True).stdout
+    return set(targets) | {path for path in text.split("\0") if path}
+
+
 def recorded_inputs(ninja: str, build_dir: pathlib.Path,
-                    problems: list[str]) -> tuple[dict[str, list[str]], dict[str, str]]:
+                    problems: list[str], scope: set[str] | None = None) -> tuple[dict[str, list[str]], dict[str, str]]:
     """Each current output's recorded inputs (outputs no longer in build.ninja are skipped),
     and the rule of every current output."""
     targets = subprocess.run([ninja, "-C", str(build_dir), "-t", "targets", "all"], capture_output=True,
@@ -218,10 +232,10 @@ def recorded_inputs(ninja: str, build_dir: pathlib.Path,
             current_rule = line[len("rule "):].strip()
         elif current_rule and line.strip().startswith("deps = "):
             recording_rules.add(current_rule)
-    outputs = list(rules)
-    default_inputs = subprocess.run([ninja, "-C", str(build_dir), "-t", "inputs", "-0", "-E", "all"],
-                                    capture_output=True, text=True, check=True).stdout.split("\0")
-    required = set(default_inputs)
+    outputs = [output for output in rules if scope is None or output in scope]
+    required = scope if scope is not None else set(subprocess.run(
+        [ninja, "-C", str(build_dir), "-t", "inputs", "-0", "-E", "all"],
+        capture_output=True, text=True, check=True).stdout.split("\0"))
     inputs: dict[str, list[str]] = {}
     for start in range(0, len(outputs), 200):
         text = subprocess.run([ninja, "-C", str(build_dir), "-t", "deps", *outputs[start:start + 200]],
@@ -239,6 +253,11 @@ def recorded_inputs(ninja: str, build_dir: pathlib.Path,
             elif current is not None:
                 inputs[current].append(line.strip())
     for output, rule in rules.items():
+        if scope is not None:
+            if output not in scope:
+                continue
+            if ("_COMPILER__" in rule or "_LINKER__" in rule) and not (build_dir / output).is_file():
+                problems.append(f"focused output {output} is absent; build it before running this check")
         # Configured EXCLUDE_FROM_ALL targets need not have been built. But
         # each compile/link rule configured to record dependencies must have
         # current evidence in the default build (or when built explicitly).
@@ -250,7 +269,7 @@ def recorded_inputs(ninja: str, build_dir: pathlib.Path,
     return inputs, rules
 
 
-def link_arguments(build_dir: pathlib.Path) -> dict[str, list[str]]:
+def link_arguments(build_dir: pathlib.Path, file_inputs: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
     """Each link edge's file inputs, LINK_FLAGS, LINK_PATH and LINK_LIBRARIES."""
     def unescape(text: str) -> str:
         return re.sub(r"\$([ $:])", r"\1", text)
@@ -270,11 +289,15 @@ def link_arguments(build_dir: pathlib.Path) -> dict[str, list[str]]:
             current = paths(outputs)[0] if fields and "_LINKER__" in fields[0] else None
             if current:
                 links[current] = []
+                if file_inputs is not None:
+                    file_inputs[current] = []
                 for path in fields[1:]:
                     if path in ("||", "|@"):
                         break  # order-only and validation dependencies are not link inputs
                     if path != "|":
                         links[current].append(path)
+                        if file_inputs is not None:
+                            file_inputs[current].append(path)
         elif current and line.startswith(("  LINK_LIBRARIES = ", "  LINK_PATH = ", "  LINK_FLAGS = ")):
             links[current] += shlex.split(unescape(line.split(" = ", 1)[1]))
         elif not line.startswith(" "):
@@ -308,6 +331,8 @@ def main() -> int:
     parser.add_argument("--cross", action="store_true", help="a cross build: nothing from the host")
     parser.add_argument("--libstdcxx-assertions", action="store_true",
                         help="every C++ and CUDA compile defines _GLIBCXX_ASSERTIONS (otherwise none does)")
+    parser.add_argument("--target", action="append", default=[],
+                        help="audit only this built Ninja output and its recursive inputs; repeatable")
     args = parser.parse_args()
     build = os.path.realpath(args.build_dir)
     source = os.path.realpath(args.source_dir)
@@ -367,7 +392,8 @@ def main() -> int:
             problems.append(f"{what} uses {path}, outside the source tree, build tree, SDK"
                             + ("" if args.cross else " and declared host platform packages"))
 
-    inputs, found_rules = recorded_inputs(args.ninja, args.build_dir, problems)
+    scope = focused_outputs(args.ninja, args.build_dir, args.target, problems) if args.target else None
+    inputs, found_rules = recorded_inputs(args.ninja, args.build_dir, problems, scope)
     rules.update({os.path.normpath(o): r for o, r in found_rules.items()})
     if not inputs:
         problems.append("Ninja recorded no dependencies; build before running this check")
@@ -380,7 +406,15 @@ def main() -> int:
     # shipped executable's recursive inputs (sources, objects, archives,
     # component stamps) and the headers its objects were compiled from.
     test_only = {cid for cid, c in components.items() if c.get("use") == "test"}
-    link_edges = link_arguments(args.build_dir)
+    material_link_inputs: dict[str, list[str]] = {}
+    link_edges = link_arguments(args.build_dir, material_link_inputs)
+    if scope is not None:
+        link_edges = {output: arguments for output, arguments in link_edges.items() if output in scope}
+        for output, paths in material_link_inputs.items():
+            if output in scope:
+                for path in paths:
+                    if not (args.build_dir / path).is_file():
+                        problems.append(f"focused link {output} input {path} is absent; rebuild before running this check")
 
     def component_of(path: str) -> str | None:
         full = os.path.normpath(path if os.path.isabs(path) else os.path.join(build, path))
@@ -395,7 +429,7 @@ def main() -> int:
         return None
 
     for shipped in SHIPPED_EXECUTABLES:
-        if shipped not in rules:
+        if shipped not in rules or (scope is not None and shipped not in scope):
             continue
         closure = [p for p in subprocess.run([args.ninja, "-C", str(args.build_dir), "-t", "inputs", "-0", "-E",
                                               shipped], capture_output=True, text=True,
@@ -458,6 +492,14 @@ def main() -> int:
     commands = json.loads((args.build_dir / "compile_commands.json").read_text())
     objects = []
     for entry in commands:
+        if scope is not None:
+            output = entry.get("output")
+            if not output:
+                problems.append("focused audit requires compile_commands output identities")
+                continue
+            full = os.path.normpath(os.path.join(entry.get("directory", build), output))
+            if os.path.relpath(full, build) not in scope:
+                continue
         # A compile database includes EXCLUDE_FROM_ALL targets. Only actual
         # dependencies above establish that a receipt component was used.
         classify(entry["file"], entry.get("output", entry["file"]), count_used=False)
@@ -515,7 +557,7 @@ def main() -> int:
             problems.append(f"{obj} was compiled with exceptions: it has {', '.join(sorted(set(what)))} (D-066)")
 
     unused = sorted(set(components) - used)
-    if unused:
+    if unused and scope is None:
         problems.append(f"the receipt lists {', '.join(unused)}, which nothing compiles or links")
     if problems:
         print(f"{args.build_dir}: the build's inventory does not match its receipt:", file=sys.stderr)
@@ -524,6 +566,10 @@ def main() -> int:
         return 1
     print(f"{args.build_dir}: {sum(map(len, inputs.values()))} recorded inputs of {len(inputs)} outputs; "
           f"components used: {', '.join(sorted(used)) or 'none'}")
+    if scope is not None:
+        print("Focused closure only: " + ", ".join(args.target) + "; whole build/package audit deferred")
+        if unused:
+            print("Receipt components outside focused inputs: " + ", ".join(unused))
     return 0
 
 

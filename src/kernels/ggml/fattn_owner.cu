@@ -36,8 +36,9 @@ std::expected<void, KernelFailure> Resources(int device, FlashAttnOwnersPlan& pl
   const int warp = ggml_cuda_info().devices[device].warp_size;
   if (warp != 32 || threads % warp != 0) return Rejected("owner MMA requires the GB10 warp");
   const int warps = threads / warp;
-  const int tile_k = ggml_cuda_fattn_smem_swizzle::tile_stride(k2, cc);
-  const int tile_v = ggml_cuda_fattn_smem_swizzle::tile_stride(v2, cc);
+  const bool swizzled = ggml_cuda_fattn_mma_get_swizzled(D, D, cols, cc);
+  const int tile_k = swizzled ? k2 : k2 + 4;
+  const int tile_v = swizzled ? v2 : v2 + 4;
   const auto size = [](int value) { return static_cast<std::size_t>(value); };
   const std::size_t kv1 = size(batch) * size(std::max(tile_k, tile_v)) * sizeof(half2);
   const std::size_t kv2 = size(batch) * size(tile_k + tile_v) * sizeof(half2);
@@ -75,8 +76,9 @@ std::expected<void, KernelFailure> ResourcesPartial(int device, FlashAttnOwnersP
   const int warp = ggml_cuda_info().devices[device].warp_size;
   if (warp != 32 || threads % warp != 0) return Rejected("owner MMA requires the GB10 warp");
   const int warps = threads / warp;
-  const int tile_k = ggml_cuda_fattn_smem_swizzle::tile_stride(k2, cc);
-  const int tile_v = ggml_cuda_fattn_smem_swizzle::tile_stride(v2, cc);
+  const bool swizzled = ggml_cuda_fattn_mma_get_swizzled(D, D, cols, cc);
+  const int tile_k = swizzled ? k2 : k2 + 4;
+  const int tile_v = swizzled ? v2 : v2 + 4;
   const auto size = [](int value) { return static_cast<std::size_t>(value); };
   const std::size_t kv1 = size(batch) * size(std::max(tile_k, tile_v)) * sizeof(half2);
   const std::size_t kv2 = size(batch) * size(tile_k + tile_v) * sizeof(half2);
@@ -275,7 +277,8 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
   if (device.nsm > INT_MAX / original->blocks_per_sm)
     return Rejected("owner MMA occupancy grid exceeds the launcher bounds");
   auto partition = detail::PlanOwnerPartition(original->blocks_per_sm * device.nsm, kvtiles,
-                                              static_cast<int>(in.k[0]->ne[2]), in.logical_cohort);
+                                              static_cast<int>(in.k[0]->ne[2]), in.logical_cohort,
+                                              original->async_kv_preload);
   if (!partition) return std::unexpected(partition.error());
   plan.cohort_blocks = partition->cohort_blocks;
   plan.effective_cohort = partition->effective_cohort;

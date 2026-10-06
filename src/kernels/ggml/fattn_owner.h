@@ -69,7 +69,8 @@ struct OwnerPartition {
 // actual SMs. Indivisible whole-cohort grids preserve the supported four-root path.
 std::expected<OwnerPartition, KernelFailure> PlanOwnerPartition(int max_blocks, int kv_tiles,
                                                                 int kv_heads,
-                                                                std::uint32_t logical_cohort);
+                                                                std::uint32_t logical_cohort,
+                                                                bool prefer_whole_tiles = false);
 }  // namespace detail
 
 // Geometry comes from the original compiled packed MMA kernel. The owner's

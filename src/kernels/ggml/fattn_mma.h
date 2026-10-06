@@ -25,8 +25,9 @@ namespace jitllm::kernels::ggml::detail {
 // fit a multiprocessor, after raising its dynamic shared memory limit as
 // the case function does before launching it.
 struct MmaKernelShape {
-  int kv_batch = 0;       // nbatch_fa
-  int blocks_per_sm = 0;  // occupancy at the case's threads and shared memory
+  int kv_batch = 0;               // nbatch_fa
+  int blocks_per_sm = 0;          // occupancy at the case's threads and shared memory
+  bool async_kv_preload = false;  // the upstream two-stage, nonsparse kernel
 };
 
 // For columns 1, 2, 4 or 8; sparse cases have one or eight columns.

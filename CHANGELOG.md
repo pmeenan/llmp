@@ -11,6 +11,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ## [Unreleased]
 
+### Changed
+
+- Update the native GGML kernel dependency to llama.cpp v0.6.0 / GGML
+  0.26.0, preserving bounded native dispatch and carried compact/paired
+  optimizations. Historical comparisons retain their original pins; new
+  quality and performance qualification uses the new release separately.
+
 ### Added
 
 - Opt-in Gemma equal-width partial owner cohorts retain whole-stream attention

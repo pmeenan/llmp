@@ -4,7 +4,6 @@ project. It compiles only the files it names, with GGML_JITLLM defined.
 
 diff --git a/jitllm/CMakeLists.txt b/jitllm/CMakeLists.txt
 new file mode 100644
-index 0000000..38f64d9
 --- /dev/null
 +++ b/jitllm/CMakeLists.txt
 @@ -0,0 +1,119 @@
@@ -54,8 +53,8 @@ index 0000000..38f64d9
 +  "${ggml}/src/ggml-threading.cpp")
 +# ggml.c's version header, which GGML's CMake would generate: its version
 +# (ggml/CMakeLists.txt) and the pinned commit.
-+set(GGML_VERSION 0.24.0)
-+set(GGML_BUILD_COMMIT b29c606e28a01b1bc8c1351026a0fa6e616bf6c4)
++set(GGML_VERSION 0.26.0)
++set(GGML_BUILD_COMMIT d81235049384534c167caea52b85a694f6103d14)
 +configure_file("${ggml}/src/ggml-version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/ggml-version.h" @ONLY)
 +target_include_directories(jitllm_ggml_base PUBLIC "${ggml}/include" "${ggml}/src"
 +                           PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")

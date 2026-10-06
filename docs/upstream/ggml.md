@@ -6,14 +6,16 @@
 - **Repository:** [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp).
   GGML is developed there and synced with
   [ggml-org/ggml](https://github.com/ggml-org/ggml). MIT.
-- **jitLLM's pin:** tag `b10964`, commit
-  `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4` (2026-09-14)
+- **jitLLM's pin:** release `v0.6.0` (build `11429`), commit
+  `d81235049384534c167caea52b85a694f6103d14` (2026-10-05)
   ([sources.lock.json](../../third_party/sources.lock.json)). jitLLM compiles
   only GGML's tensor code and the CUDA kernels it launches, with its own
   dispatch (D-053, D-077). Its changes are in
   [third_party/patches/ggml/](../../third_party/patches/ggml/).
-- **Last upstream check:** 2026-09-29, master `8019dc563` (tag `b11254`),
-  290 commits and 15 days ahead of the pin.
+- **Last upstream check:** 2026-10-06, official release `v0.6.0` at the
+  exact peeled tag commit above. GGML is `0.26.0`; the release includes Clef
+  text/vision and `/v1/systemone`. Upstream capability and reported speedups
+  do not establish native model support or local performance parity.
 - **Before sending anything, read the contribution rules** in
   [README.md](README.md#contributing-to-llamacpp). In short: the owner
   writes issue and PR text himself (no AI-written descriptions), AI-written
@@ -29,7 +31,7 @@ sinks bound (RE-030).
 - **Status:** jitLLM opt-in derivative, not an upstream submission. C5 model
   recovery and N5/N6 operator evidence are bounded; unequal-width support is open.
 - **Source:** `src/kernels/ggml/fattn_owner_partial_kernel.cuh` derives the MMA
-  outer work loop and uniform/general fixups from locked b10964,
+  outer work loop and uniform/general fixups from the b10964 source,
   `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`, under MIT. The file retains GGML
   copyright and adds Apache-2.0 for jitLLM's ownership/address adaptation.
 - **Preserved arithmetic:** original `process_tile` helper, global block grid,
@@ -425,8 +427,10 @@ and current upstream master has not been checked.
 
 ## Shared sparse gathers across query tiles
 
-- **Status:** narrow backport carried in
-  `0003-jitllm-wide-sparse-attention.patch`; no new upstream fix.
+- **Status:** query-tile unions/live counts and D256 support are upstream
+  in `v0.6.0`. `0003-jitllm-wide-sparse-attention.patch` retains only the
+  D512 eight-query eligibility needed by native sparse launchers; no new
+  upstream submission.
 - **Source:** [#28770](https://github.com/ggml-org/llama.cpp/pull/28770),
   merge `3cf03257f219afbe7334045ff7c6a06ac68c627d`, and
   [#29298](https://github.com/ggml-org/llama.cpp/pull/29298), merge
@@ -434,11 +438,12 @@ and current upstream master has not been checked.
   implementation is in `src/kernels/ggml/fattn_mma.cu` with GGML credit.
 - **Adaptation:** one bounded ascending union and live count per query
   tile, with each query's original mask still applied to gathered cells.
-  The pinned MMA configuration, swizzle and KV precision remain. Enable
-  its existing D512 eight-query case as well as upstream's D256 case;
+  The updated pin supplies its MMA configuration and shared-memory layout.
+  Keep the native D512 eight-query case alongside upstream's D256 case;
   jitLLM's explicit sparse marker permits smaller caches. Partial query
-  tiles are bounded. The header backport is used by jitLLM's own
-  launchers; GGML's original `fattn.cu` is not compiled.
+  tiles are bounded. Native launchers consume the updated headers; GGML's
+  original `fattn.cu` is not compiled. Earlier numerical and timing evidence
+  below belongs to the b10964 backport, not a new-release qualification.
 - **Evidence:** [ds4 study](../experiments/ds4-study/README.md): native
   8K prefill 16.375 to 13.204 seconds, own forced repeats exact, 32K
   perplexity -0.215%. Random overlapping and disjoint lists, partial
@@ -624,9 +629,11 @@ and current upstream master has not been checked.
   jitLLM wrapper units. No upstream source patch or pin change; the lock's
   license inventory records the additional wrapper.
 
-## Upstream changes to adopt
+## Earlier upstream adoption assessment
 
-Checked 2026-09-29 at master `8019dc563`.
+Checked 2026-09-29 at master `8019dc563`; retained as historical provenance.
+The owner requested the whole-pin update during M3.5 on 2026-10-06. The
+current pin above supersedes this section's earlier scheduling recommendation.
 
 - **Sparse flash attention for DeepSeek V4 prefill**
   ([#29298](https://github.com/ggml-org/llama.cpp/pull/29298)): pp2048 on a
@@ -659,5 +666,7 @@ entry above has jitLLM's measurements.
 which jitLLM's plans record, needs a re-audit; and the D 512 retune changes
 attention numerics, so the DeepSeek llama.cpp baselines must be re-run.
 
-**Recommendation:** keep the narrow sparse prefill backport. Bump the
-whole pin at the M3→M4 boundary.
+**Earlier recommendation:** keep the narrow sparse prefill backport and bump
+the whole pin at the M3→M4 boundary. Superseded by the owner's M3.5 update
+request; new-release quality/performance comparisons use new reference pins,
+while historical comparisons retain their original source and image.

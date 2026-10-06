@@ -257,6 +257,15 @@ family" guide, and its long-context scaling work.
         vector capacity against charges, clean refusal and release after
         retirement, including CPU/fake coverage of the accounting and
         Spark checks of exact continuations on both M3 LLMs.
+- [x] **llama.cpp v0.6.0 reference and native GGML refresh** (owner,
+      2026-10-05): exact release `d812350` and ARM64 image, with
+      [reference inspection/helper prerequisites](experiments/llama-reference-refresh/README.md)
+      and [native GGML 0.26.0 integration](experiments/ggml-release-refresh/README.md).
+      Owned dispatch, compact expert worklists and IQ2 occupancy bridge remain;
+      attention launch and FP4 precision interfaces follow the new source.
+      Focused operators and selected build/source closure pass on a GB10.
+      Historical model results retain their original pins; fresh whole-model
+      quality/performance qualification and native Clef support remain open.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:

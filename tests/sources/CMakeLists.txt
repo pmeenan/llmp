@@ -50,3 +50,8 @@ add_test(NAME sources.gemma_moe
          COMMAND ${JITLLM_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/gemma_moe_test.py
                  ${PROJECT_BINARY_DIR})
 set_tests_properties(sources.gemma_moe PROPERTIES LABELS sources)
+
+# Focused auditing is opt-in; its no-compile controls preserve the full default audit.
+add_test(NAME sources.focused_closure
+         COMMAND ${JITLLM_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/focused_closure_test.py)
+set_tests_properties(sources.focused_closure PROPERTIES LABELS sources)

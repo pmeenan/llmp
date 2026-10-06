@@ -163,6 +163,12 @@ std::expected<void, KernelFailure> CheckNode(const ggml_tensor* node) {
   return CheckMulMatQ(node);
 }
 
+ggml_prec PackingPrecision(ggml_type type, int cc) {
+  return blackwell_mma_available(cc) && (type == GGML_TYPE_MXFP4 || type == GGML_TYPE_NVFP4)
+             ? GGML_PREC_Q4
+             : GGML_PREC_Q8;
+}
+
 // Same tile selection as mul_mat_q_switch_J. Shared with the fixed-fixture
 // description so diagnostics cannot invent a different selection heuristic.
 std::expected<ggml_cuda_mmq_config, KernelFailure> ChosenTile(const LaunchContext& launch,
@@ -174,7 +180,8 @@ std::expected<ggml_cuda_mmq_config, KernelFailure> ChosenTile(const LaunchContex
   int best_j = 0;
   std::int64_t best_tiles = INT_MAX;
   for (int j = 8; j <= 128 && best_tiles > 1; j += 8) {
-    const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, j, fallback, cc);
+    const ggml_cuda_mmq_config config =
+        ggml_cuda_mmq_get_config(type, j, fallback, cc, PackingPrecision(type, cc));
     if (config.type == GGML_TYPE_COUNT || mmq_get_nbytes_shared(config, cc) > device.smpbo) {
       continue;
     }
@@ -187,7 +194,7 @@ std::expected<ggml_cuda_mmq_config, KernelFailure> ChosenTile(const LaunchContex
   if (best_j == 0) {
     return Rejected("no MMQ tile size fits the device's shared memory");
   }
-  return ggml_cuda_mmq_get_config(type, best_j, fallback, cc);
+  return ggml_cuda_mmq_get_config(type, best_j, fallback, cc, PackingPrecision(type, cc));
 }
 // What launch_mul_mat_q draws for the tile size mul_mat_q_switch_J picks,
 // and the grid limits of its non-stream-k launch.
@@ -327,8 +334,8 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQPrepared(const LaunchCont
   // A routed activation's slot axis (usually 1 or 6) does not bound J:
   // the tile spans sorted token assignments and loads all its columns.
   const auto pad_columns = node->op == GGML_OP_MUL_MAT_ID ? 128 : input->ne[1];
-  const auto j_max =
-      static_cast<std::uint64_t>(ggml_cuda_mmq_get_J_max(weights->type, fallback, cc, pad_columns));
+  const auto j_max = static_cast<std::uint64_t>(ggml_cuda_mmq_get_J_max(
+      weights->type, fallback, cc, pad_columns, PackingPrecision(weights->type, cc)));
   Draws draws;
   if (node->op == GGML_OP_MUL_MAT) {
     const auto columns = static_cast<std::uint64_t>(input->ne[3] * input->ne[2] * input->ne[1]);

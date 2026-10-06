@@ -15,6 +15,14 @@ The [current M3 closure status](m3-optimization-status.md) separates completed
 review experiments, rejected candidates, selected native changes and open
 engine gaps. Individual positive factors do not establish pipeline parity.
 
+The [GGML 0.26.0 release integration](experiments/ggml-release-refresh/README.md)
+retains the compact routed worklists, padded preparation, IQ2 occupancy bridge
+and independent-owner attention adapters. Native FP4 packing and attention
+launch geometry follow the refreshed source interfaces. Its focused operand
+controls qualify this integration; prior model quality and speed measurements
+retain their historical pins. Recheck each affected model against the new
+reference before admitting its current recipe.
+
 The [2026-10-01 implementation snapshot](experiments/optimization-inventory/README.md)
 adds the independent native request slots, positive private BF16 head-sharing
 factor, rejected shared-worklist/exact16 controls and cross-family boundaries

@@ -73,13 +73,17 @@ bool Overlap(const ggml_tensor* a, const ggml_tensor* b) {
 }  // namespace
 
 std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
-    int max_blocks, int kv_tiles, int kv_heads, std::uint32_t logical_cohort) {
+    int max_blocks, int kv_tiles, int kv_heads, std::uint32_t logical_cohort,
+    bool prefer_whole_tiles) {
   if (max_blocks <= 0 || kv_tiles <= 0 || kv_tiles > 512 || kv_heads <= 0 || kv_heads > 16 ||
       (logical_cohort != 2 && logical_cohort != 3 && logical_cohort != 4 && logical_cohort != 8 &&
        logical_cohort != 12 && !PartialOwnerCohort(logical_cohort)))
     return Rejected("owner MMA partition inputs are outside the closed grid bounds");
   const auto grid = [&](std::uint32_t cohort) {
     const auto tiles = static_cast<std::int64_t>(kv_heads) * cohort;
+    const auto waves = (tiles + max_blocks - 1) / max_blocks;
+    if (prefer_whole_tiles && 100 * tiles / (max_blocks * waves) >= 75)
+      return static_cast<int>(tiles);
     const auto raw = std::min(static_cast<std::int64_t>(max_blocks), kv_tiles * tiles);
     const auto rounded = raw / tiles * tiles;
     const auto loss = rounded > 0 ? 100 * (raw - rounded) / raw : 100;

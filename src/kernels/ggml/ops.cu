@@ -91,8 +91,8 @@ std::expected<void, KernelFailure> MulMatVecF(LaunchContext& launch, ggml_tensor
     return checked;
   }
   const ggml_tensor* weights = node->src[0];
-  if (!ggml_cuda_should_use_mmvf(weights->type, Device(launch).cc, weights->ne, weights->nb,
-                                 node->src[1]->ne[1])) {
+  if (!ggml_cuda_should_use_mmvf(weights->type, Device(launch).cc, Device(launch).warp_size,
+                                 weights->ne, weights->nb, node->src[1]->ne[1])) {
     return Rejected("upstream does not select MMVF for these operands");
   }
   // The launcher's even column-stride assertion holds: CheckMulMat requires
@@ -137,13 +137,15 @@ std::expected<MulMatPath, KernelFailure> SelectMulMat(const LaunchContext& launc
   }
   const auto& device = Device(launch);
   const std::int64_t ne11 = src1->ne[1];
-  if (ggml_cuda_should_use_mmvf(src0->type, device.cc, src0->ne, src0->nb, ne11)) {
+  if (ggml_cuda_should_use_mmvf(src0->type, device.cc, device.warp_size, src0->ne, src0->nb,
+                                ne11)) {
     return MulMatPath::kVector;
   }
   if (src0->ne[1] == 1 && ne11 > MMVF_MAX_BATCH_SIZE && node->ne[2] == 1 && node->ne[3] == 1 &&
       src0->type == GGML_TYPE_F32 && ggml_is_contiguous(src0) && ggml_is_contiguous(src1) &&
       ggml_is_contiguous(node) &&
-      ggml_cuda_should_use_mmvf(src1->type, device.cc, src1->ne, src1->nb, /*ne11=*/1)) {
+      ggml_cuda_should_use_mmvf(src1->type, device.cc, device.warp_size, src1->ne, src1->nb,
+                                /*ne11=*/1)) {
     return Rejected("upstream takes the transposed vector product, which is not implemented");
   }
   if (ggml_cuda_should_use_mmf(src0->type, device.cc, device.warp_size, src0->ne, src0->nb,
@@ -163,8 +165,8 @@ bool MulMatVecFusible(const LaunchContext& launch, const ggml_tensor* mul_mat) {
                       weights->type == GGML_TYPE_BF16) &&
                      mul_mat->src[1]->type == GGML_TYPE_F32 && mul_mat->type == GGML_TYPE_F32;
   return types && mul_mat->ne[1] == 1 &&
-         ggml_cuda_should_use_mmvf(weights->type, Device(launch).cc, weights->ne, weights->nb,
-                                   mul_mat->src[1]->ne[1]);
+         ggml_cuda_should_use_mmvf(weights->type, Device(launch).cc, Device(launch).warp_size,
+                                   weights->ne, weights->nb, mul_mat->src[1]->ne[1]);
 }
 
 std::expected<void, KernelFailure> GetRows(LaunchContext& launch, ggml_tensor* node) {

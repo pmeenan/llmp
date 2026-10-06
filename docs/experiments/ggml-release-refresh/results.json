@@ -1,0 +1,188 @@
+{
+  "schema": 1,
+  "date": "2026-10-06",
+  "scope": "native GGML release integration, focused operators and state lifetime; model reference quality/performance unqualified",
+  "source": {
+    "release": "v0.6.0",
+    "commit": "d81235049384534c167caea52b85a694f6103d14",
+    "annotated_tag": "69ecae922d2b60c1fa8c590279f4e2099af75111",
+    "ggml_version": "0.26.0",
+    "archive_sha256": "6b58785f0a82898f4c3442417ff962e2d4b231b1bee5d033902ad90b27901e14",
+    "archive_bytes": 37887730,
+    "kept_patched_tree_sha256": "d50cb7f97867b4c5903a5b6c902474e9d716b7bf7afdb98dc360af82be4e0257",
+    "patches": [
+      {
+        "path": "patches/ggml/0001-jitllm-adaptations.patch",
+        "sha256": "ec551709a77d7d5895be0537cf4d54daa547e7d1882991ce80973e11dea7d5a7"
+      },
+      {
+        "path": "patches/ggml/0002-jitllm-build.patch",
+        "sha256": "0eca39345dfbb4097518e0cf026ccb3e49b063d6eda05507da37460e300c4603"
+      },
+      {
+        "path": "patches/ggml/0003-jitllm-wide-sparse-attention.patch",
+        "sha256": "1c5ecb074c0eaf190b8d04c74d333e8a9a9fe5ceb4cd6ef5bc9ff7266bc9844c"
+      },
+      {
+        "path": "patches/ggml/0004-jitllm-compact-expert-tiles.patch",
+        "sha256": "b758f07db2e0f9393f9f22a1bfcd4c5a743dbe68b6901223484d5fe5b2904aaf"
+      },
+      {
+        "path": "patches/ggml/0005-jitllm-iq2-compact-pair-occ2.patch",
+        "sha256": "b3552877ffd0f9a4da0c10c9ed6ed862265bebac07c9266fa708db1f5168b07c"
+      }
+    ],
+    "measured_source_base": "95b8c78d2ed5e5012696639eab4c23a86e4762e4",
+    "final_parent_seed": "ee4c983",
+    "measured_source_manifest_sha256": "0f940be6692224b8c228cc74d32a8a0fd49cc3898f96b3ba5f9a929e4fc951e8",
+    "final_source_lock_sha256": "5d33f395b2699cb5e929dd3003e4aed4e44f513d7b83cf5dea906e42dbe19ff2",
+    "license_audit_sha256": "1bd2cab5fd5b1bc77df65a6e6a92fd4ea8290e8fa936baa8873b4e079aae92aa",
+    "exact_replay_sha256": "dafbaa9ca71601e1e5063fb874402e50a5030ba49faef6ccde3d84a38e2c901f",
+    "native_gemma_graph_port_origin": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "q16_derivative_origin": "d81235049384534c167caea52b85a694f6103d14"
+  },
+  "changes": {
+    "patch0003": "upstream sparse query unions/live counts and D256 support supersede old backport; only D512 eight-query sparse eligibility remains",
+    "source_precision": "Explicit checked Q4 packing for FP4 on Blackwell/GB10; Q8 on other architectures and for other admitted formats. Validator allows undefined/Q4 requests for FP4 and undefined/Q4/Q8 for other quantized formats; explicit FP4 Q8/higher minimum ranks are refused. Upstream environment override disabled under GGML_JITLLM.",
+    "attention": "new swizzle/configuration and GB10 asynchronous whole-tile preference used consistently by ordinary/owner planners; Q16 derivative refreshed with F16-query-only adaptation",
+    "float_dispatch": "all six MMVF selector calls pass physical device warp size",
+    "scoped_audit": "optional built-target dependency audit; strict full audit unchanged, components outside scope explicitly deferred; material linked inputs must exist"
+  },
+  "checks": {
+    "focused_gtests_pass": 43,
+    "focused_gtests_skipped": 0,
+    "source_ctests_pass_before_finalize": 3,
+    "synthetic_focused_controls_pass": 5,
+    "default_source_mechanism": "PASS through same new checker",
+    "focused_inventory": {
+      "recorded_inputs": 84909,
+      "outputs": 251,
+      "targets": 9,
+      "components_used": [
+        "cutlass",
+        "ds4",
+        "ggml",
+        "googletest"
+      ],
+      "components_outside_scope": [
+        "exllamav3",
+        "tomlplusplus"
+      ],
+      "whole_build_package_audit": "deferred"
+    },
+    "partial_operator": {
+      "plan_records": 36,
+      "fixup_counts": {
+        "none": 16,
+        "general": 16,
+        "uniform": 4
+      },
+      "logical_cohorts": [
+        5,
+        6,
+        7,
+        9
+      ],
+      "heads": [
+        16,
+        32
+      ],
+      "full_grid_shared_per_group": true,
+      "eager_capture_poisoned_replays": "exact operator assertions PASS"
+    },
+    "final_configuration_registration": "PASS",
+    "final_source_ctests_pass": 4
+  },
+  "provenance": {
+    "installation_sdk_identity": "aarch64-c09daba6ac31edee",
+    "installation_sdk_receipt_sha256": "7b8167cdbe7455b25cb41c681f321562f34683bed26dac2b64e47650b987e02d",
+    "native_helper_sha256": "0d6d09520a9c0a68f0eda4501a13f47c8c5a926a7a9b5bb1c903bf8d114a986f",
+    "measured_native_build_receipt_sha256": "7d8f18471d978ffe038341acc7deca9a0105166bc3d0e44dc79357f661e83204",
+    "metadata_only_final_receipt_sha256": "5ab70ad50b7146dbe5fc025fee9ba761e8de670331e956a50f658c4cc93a8bed",
+    "measured_receipt_preserved": true,
+    "final_receipt_diff": "source_lock.sha256 only; version, SDK, components, configuration and helper identical"
+  },
+  "official_jobs": [
+    {
+      "name": "m35-ggml-release-native-build2",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 6,
+      "successful_steps": 4,
+      "failed_step": 5,
+      "records": {
+        "final.json": "206a4b041b337fdb593f90b97690f2fa142a7ea57aaf81df6c9fc2f318963a15",
+        "job.json": "32db6e4fc425f89ab99effacb519126584132fccbb5d31cdde6dca9a26ec22b3",
+        "log": "eed0885599ac2921dee7ea9399414ac9cbbaff8a3c062eecf8fbf02247de23e6",
+        "steps.json": "034a741a3de739303c5036762d6e57b999d627f93d26994acd73a78ae1cd234f"
+      }
+    },
+    {
+      "name": "m35-ggml-release-native-build3",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 7,
+      "successful_steps": 7,
+      "failed_step": null,
+      "records": {
+        "final.json": "d8c8c944771dea1da8e7a616fbd0afb67c5c1787e89ebe032bd7c986a125b47e",
+        "job.json": "7c7935f6ec03c9b9ab7e64e2d401bde3a176539fe5a7946d563c7b6b653d12ab",
+        "log": "93f857e9fbaab7bfc34f65c941278aaff07e614ab23eda17982caee097a2045a",
+        "steps.json": "a706837de3fdb382aea33492195870544b3000e2b3c3068658811490a717f4f4"
+      }
+    },
+    {
+      "name": "m35-ggml-release-native-check4",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 15,
+      "successful_steps": 10,
+      "failed_step": 11,
+      "records": {
+        "final.json": "2130a5883a2265b3b34d7984cafc07733168536f7df38e9e801826f7b84a6d9b",
+        "job.json": "b9aa561d4ac78dbd15d145da6c774a19c0e5d54ce13a6c99b145b40450580706",
+        "log": "fb13b3002f30dfafb585a1535587a8ebae2f2e37a549bcc95e2d624561953ef6",
+        "steps.json": "1e5fcbbbd5f6e1d70db6c9e32f20ec07aeb95652182c6563cba63fc6ffe6468e"
+      }
+    },
+    {
+      "name": "m35-ggml-release-native-audit7",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 7,
+      "successful_steps": 7,
+      "failed_step": null,
+      "records": {
+        "final.json": "3491a72689b1f2fcb935837f7945482c89c716cddf4aecbdbfb90c8cc7ca0c4d",
+        "job.json": "0237aa96f07fd89cb23277c32f8f30fe0c49f274b4c04c76ba0900db947f2533",
+        "log": "d552065e44d9ff895e5144468666dd6c604eb2193eff928cdeebdb36a233fa7a",
+        "steps.json": "bf8298cdf584d41536ad97ea2a4fb54151c44bba511c700928a5c8f95d176167"
+      }
+    },
+    {
+      "name": "m35-ggml-release-native-finalize5",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 7,
+      "successful_steps": 7,
+      "failed_step": null,
+      "records": {
+        "final.json": "b6348d0bd494ebd63d0b5752ba38376fe631a7bbe3eb31ce5389da1a200c5194",
+        "job.json": "7511ceff1c903dd3b1642471dc2e1891e2b51a91d3723be65eea430f6f662662",
+        "log": "b0c4f41ccc4e23ae63d102e23153c7e3afed06f7bf22ab8fa1d8964980cdd9ce",
+        "steps.json": "bd9dbc797a8c3d49d4943179a502bc51fc2810c2390bfd32639b3cf46622b63e"
+      }
+    }
+  ],
+  "failed_attempts_preserved": [
+    "build2: four compiled MMVF call sites lacked new warp argument; two unbuilt cuBLAS sites corrected too",
+    "check4: focused auditor mistook virtual verification tasks for missing files and required out-of-scope components; all 43 operators/lifetime controls and three source checks had passed"
+  ],
+  "limits": [
+    "No latest-pin end-to-end reference quality, perplexity, sustained performance or peak-memory qualification",
+    "No full regression suite or whole build/package closure claim",
+    "No runtime default adoption, new checkpoint or public model-support claim",
+    "Earlier model/performance evidence remains bound to its historical source and reference pins",
+    "Spark A remained owner-held and untouched; heavy work serialized on Spark B"
+  ]
+}

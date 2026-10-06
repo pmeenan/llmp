@@ -5,8 +5,8 @@
 // Internal to the GGML module, for the tensor-core flash-attention instance
 // units only (fattn_mma.h): the shape of one MMA kernel on a device, by a
 // recorded copy of the host arithmetic of ggml_cuda_flash_attn_ext_mma_f16_case
-// (fattn-mma-f16.cuh:1966-2067 at llama.cpp b29c606e2) and of launch_fattn's
-// occupancy query (fattn-common.cuh:1102-1105), for the kernel the case
+// at llama.cpp d81235049384534c167caea52b85a694f6103d14 and of
+// launch_fattn's occupancy query, for the kernel the case
 // launches without logit soft-capping.
 
 #ifndef JITLLM_KERNELS_GGML_FATTN_MMA_SHAPE_CUH_
@@ -42,8 +42,9 @@ std::expected<MmaKernelShape, std::string> MmaShape(int device) {
     return std::unexpected(std::string("no MMA configuration for this device"));
   }
   const int nwarps = nthreads / warp_size;
-  const int stride_tile_k = ggml_cuda_fattn_smem_swizzle::tile_stride(nbatch_k2, cc);
-  const int stride_tile_v = ggml_cuda_fattn_smem_swizzle::tile_stride(nbatch_v2, cc);
+  const bool swizzled = ggml_cuda_fattn_mma_get_swizzled(D, D, ncols, cc);
+  const int stride_tile_k = swizzled ? nbatch_k2 : nbatch_k2 + 4;
+  const int stride_tile_v = swizzled ? nbatch_v2 : nbatch_v2 + 4;
   const auto size = [](int value) { return static_cast<std::size_t>(value); };
   const std::size_t half2_size = sizeof(half2);
   const std::size_t kv_1stage =
@@ -72,7 +73,8 @@ std::expected<MmaKernelShape, std::string> MmaShape(int device) {
     return std::unexpected(std::string("the MMA kernel's occupancy query failed: ") +
                            cudaGetErrorString(error));
   }
-  return MmaKernelShape{.kv_batch = nbatch_fa, .blocks_per_sm = per_sm};
+  return MmaKernelShape{
+      .kv_batch = nbatch_fa, .blocks_per_sm = per_sm, .async_kv_preload = nstages == 2 && !kSparse};
 }
 
 }  // namespace jitllm::kernels::ggml::detail

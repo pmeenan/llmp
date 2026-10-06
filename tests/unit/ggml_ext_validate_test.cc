@@ -319,6 +319,34 @@ TEST_F(GgmlExtValidateTest, VectorMaskRowStartsFitSignedBytesAtThePaddedCellBoun
   }
 }
 
+TEST_F(GgmlExtValidateTest, SourcePrecisionRequestsAreRefusedBeforeQuantizedPlanning) {
+  for (const ggml_type type : {GGML_TYPE_Q8_0, GGML_TYPE_MXFP4, GGML_TYPE_NVFP4}) {
+    auto* dense = Bound(ggml_mul_mat(c(), New(type, 512, 128), New(GGML_TYPE_F32, 512, 8)));
+    auto* routed = Bound(ggml_mul_mat_id(c(), New(type, 512, 128, 8), New(GGML_TYPE_F32, 512, 1, 8),
+                                         New(GGML_TYPE_I32, 2, 8)));
+    for (auto* node : {dense, routed}) {
+      const auto check = [&] {
+        return node == dense ? kg::CheckMulMatQ(node) : kg::CheckMulMatIdQ(node);
+      };
+      for (const auto precision : {GGML_PREC_UNDEFINED, GGML_PREC_Q4, GGML_PREC_Q8}) {
+        ASSERT_TRUE(ggml_prec_set_src(node, precision, 1));
+        if (type != GGML_TYPE_Q8_0 && precision == GGML_PREC_Q8)
+          Refused(check());
+        else
+          Accepted(check());
+      }
+      for (const auto precision : {GGML_PREC_F32, GGML_PREC_BF16, GGML_PREC_F16}) {
+        ASSERT_TRUE(ggml_prec_set_src(node, precision, 1));
+        Refused(check());
+      }
+      node->op_params[3] = 31;  // unrecognized metadata, without calling upstream assertions
+      Refused(check());
+      ASSERT_TRUE(ggml_prec_set_src(node, GGML_PREC_UNDEFINED, 1));
+      Accepted(check());
+    }
+  }
+}
+
 TEST_F(GgmlExtValidateTest, QuantizedProductsTakeTheCompiledTypesAtWholeRowSteps) {
   EXPECT_EQ(kg::QuantizedWeightTypes().size(), 21U);
   for (const ggml_type type : kg::QuantizedWeightTypes()) {

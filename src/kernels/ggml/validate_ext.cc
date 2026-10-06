@@ -85,6 +85,14 @@ std::expected<void, KernelFailure> CheckQuantizedOperands(const ggml_tensor* wei
   if (!IsQuantizedWeightType(weights->type) || !IsF32(input) || !IsF32(out)) {
     return Rejected("a quantized product needs weights of a compiled type and F32 activations");
   }
+  // The owned quant packers provide Q8, or native Q4 for FP4 weights.
+  // New upstream precision requests must not silently select an unfunded path.
+  const auto precision = out->op_params[3];
+  const bool fp4 = weights->type == GGML_TYPE_MXFP4 || weights->type == GGML_TYPE_NVFP4;
+  if (precision != GGML_PREC_UNDEFINED && precision != GGML_PREC_Q4 &&
+      (precision != GGML_PREC_Q8 || fp4)) {
+    return Rejected("unsupported source precision for the owned quantized activation packer");
+  }
   if (AnyEmpty({weights, input, out}) || !AllSane({weights, input, out})) {
     return Rejected("a quantized product on an empty or unmeasurable tensor");
   }

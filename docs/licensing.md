@@ -96,9 +96,9 @@ a test fails when any of them lacks a record. Third-party source code is
 recorded in the [source lock](../third_party/README.md) instead: GoogleTest
 links into tests alone, and toml++ (MIT, D-073) into the shipped binaries,
 whose notices then carry its MIT text and Bjoern Hoehrmann's copyright line
-from its UTF-8 decoder. GGML (MIT, D-077) links so far into the backend
-proof's tests only; a shipped binary that links it carries its MIT text
-and the YaRN attribution from its RoPE kernel, and jitLLM's
+from its UTF-8 decoder. GGML (MIT, D-077) links into the runtime's engine
+as well as tests and benchmarks (D-096); the package carries its MIT text
+and the YaRN attribution from its RoPE kernel. jitLLM's
 `src/kernels/ggml/ggml_support.cu`, adapted from GGML, and
 `src/kernels/ggml/fattn.cu`, which instantiates GGML's vector
 flash-attention case and copies `launch_fattn`'s host arithmetic, keep
@@ -334,6 +334,28 @@ admit Unicode-3.0 for data derived from Unicode's data files, not code
 permissive license, which subsumes it.
 No whole-vendor-tree, complete-image or redistribution clearance follows from
 root MIT.
+
+## GGML release refresh (M3.5)
+
+Checked 2026-10-06: the native source lock advances from llama.cpp b10964
+(`b29c606e`) to official [v0.6.0](https://github.com/ggml-org/llama.cpp/releases/tag/v0.6.0),
+peeled commit `d81235049384534c167caea52b85a694f6103d14`, GGML 0.26.0.
+The commit archive is 37,887,730 bytes, SHA-256
+`6b58785f0a82898f4c3442417ff962e2d4b231b1bee5d033902ad90b27901e14`.
+The shared source validator checks the whole archive before narrowing it;
+its 3,687 regular files retain root MIT, local MIT/BSD/public-domain material
+and permissive Apache/LLVM declarations in unused backends. UI dependency
+metadata does not incorporate those packages. Only the locked native build
+script executes, with the selected GGML tensor/CUDA closure and existing
+notice obligations. The root MIT text and YaRN notice are unchanged.
+
+The [integration report](experiments/ggml-release-refresh/README.md) records
+patch migration, the updated F16-query derivative and focused checks. Native
+graph ports and independent-owner outer loops retain their recorded b10964
+origins; consuming updated helper headers does not change that provenance.
+Historical reference images, scripts and numerical results retain their own
+pins. New-release reference setup and model comparisons have separate
+receipts; no whole-container redistribution clearance follows from this audit.
 
 ## Tokenizer Unicode tables (M3)
 

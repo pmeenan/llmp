@@ -173,13 +173,13 @@ bool UpstreamSelectsCublas(const ggml_tensor* node, int cc, int warp_size) {
   const ggml_tensor* src0 = node->src[0];
   const ggml_tensor* src1 = node->src[1];
   const std::int64_t ne11 = src1->ne[1];
-  if (ggml_cuda_should_use_mmvf(src0->type, cc, src0->ne, src0->nb, ne11)) {
+  if (ggml_cuda_should_use_mmvf(src0->type, cc, warp_size, src0->ne, src0->nb, ne11)) {
     return false;
   }
   if (src0->ne[1] == 1 && ne11 > MMVF_MAX_BATCH_SIZE && node->ne[2] == 1 && node->ne[3] == 1 &&
       src0->type == GGML_TYPE_F32 && ggml_is_contiguous(src0) && ggml_is_contiguous(src1) &&
       ggml_is_contiguous(node) &&
-      ggml_cuda_should_use_mmvf(src1->type, cc, src1->ne, src1->nb, /*ne11=*/1)) {
+      ggml_cuda_should_use_mmvf(src1->type, cc, warp_size, src1->ne, src1->nb, /*ne11=*/1)) {
     return false;
   }
   return !ggml_cuda_should_use_mmf(src0->type, cc, warp_size, src0->ne, src0->nb,

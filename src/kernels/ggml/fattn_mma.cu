@@ -300,14 +300,16 @@ static std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMmaGroup(
     return Rejected(
         "flash attention beyond the pinned 32-bit iteration/advance/efficiency arithmetic");
   }
-  // should_use_stream_k: always on NVIDIA from Ada Lovelace on, else below
-  // 75% tile efficiency.
+  // Match the pinned launch_fattn whole-tile preference on GB10, including
+  // its actual two-stage nonsparse kernel and mask scan.
   const std::int64_t max_blocks = static_cast<std::int64_t>(shape->blocks_per_sm) * device.nsm;
-  bool stream_k = GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_ADA_LOVELACE;
-  if (!stream_k) {
-    const std::int64_t waves = (ntiles_dst + max_blocks - 1) / max_blocks;
-    stream_k = 100 * ntiles_dst / (max_blocks * waves) < 75;
-  }
+  const std::int64_t waves = (ntiles_dst + max_blocks - 1) / max_blocks;
+  const auto efficiency = 100 * ntiles_dst / (max_blocks * waves);
+  const bool prefer_whole_tiles =
+      cc == GGML_CUDA_CC_DGX_SPARK && shape->async_kv_preload && plan.mask_prepass;
+  const bool stream_k =
+      !(prefer_whole_tiles && efficiency >= 75) &&
+      ((GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_ADA_LOVELACE) || efficiency < 75);
   std::int64_t blocks = ntiles_dst;
   if (stream_k) {
     const std::int64_t raw = std::min(max_blocks, ntiles_kv * ntiles_dst);
@@ -397,11 +399,13 @@ std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMma128(const LaunchC
         "flash attention beyond the pinned 32-bit iteration/advance/efficiency arithmetic");
   }
   const std::int64_t max_blocks = static_cast<std::int64_t>(shape->blocks_per_sm) * device.nsm;
-  bool stream_k = GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_ADA_LOVELACE;
-  if (!stream_k) {
-    const std::int64_t waves = (ntiles_dst + max_blocks - 1) / max_blocks;
-    stream_k = 100 * ntiles_dst / (max_blocks * waves) < 75;
-  }
+  const std::int64_t waves = (ntiles_dst + max_blocks - 1) / max_blocks;
+  const auto efficiency = 100 * ntiles_dst / (max_blocks * waves);
+  const bool prefer_whole_tiles =
+      cc == GGML_CUDA_CC_DGX_SPARK && shape->async_kv_preload && plan.mask_prepass;
+  const bool stream_k =
+      !(prefer_whole_tiles && efficiency >= 75) &&
+      ((GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_ADA_LOVELACE) || efficiency < 75);
   std::int64_t blocks = ntiles_dst;
   if (stream_k) {
     const std::int64_t raw = std::min(max_blocks, ntiles_kv * ntiles_dst);
