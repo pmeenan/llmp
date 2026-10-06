@@ -47,6 +47,17 @@ sinks bound (RE-030).
   original tile helper preloads and executes a final iteration; common padded
   read widths are therefore required. No request to upstream has been sent.
 
+## Native Gemma3 text descriptor graph port
+
+- **Status:** checked state/graph/plan foundation; 13 focused CPU/no-launch
+  controls pass. Actual model execution/reference qualification remains pending.
+- **Port:** `src/kernels/ggml/gemma3_graph.cc` derives the text graph and GeGLU
+  build-FFN arithmetic from exact v0.6.0/d81235049384534c167caea52b85a694f6103d14
+  `src/models/gemma3.cpp` and `src/llama-graph.cpp`. MIT AND Apache-2.0 and GGML
+  authors' copyright are retained; independent slot/state/placement mechanics
+  are native. No upstream backend runtime, allocator, dispatcher or kernel
+  change is incorporated. [Contract and scope](../gemma3.md).
+
 ## Native Gemma assistant graph port
 
 - **Status:** native component foundation; no upstream kernel change or

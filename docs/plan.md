@@ -760,8 +760,9 @@ family" guide, and its long-context scaling work.
       Gemma 3 [profile and tensor foundation](gemma3.md) is checked:
       actual approved metadata and all 444 tensor descriptors, separate
       profile/binding and refusal controls; three focused CPU controls pass.
-      Graph/state/import/serving, linear RoPE execution and model qualification
-      remain open. The deferred and dropped
+      Separate state/input and primitive descriptor graph/plan foundations are
+      checked by 13 focused CPU/no-launch controls. Import/runner/serving, actual
+      linear RoPE execution and model qualification remain open. The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);

@@ -21,70 +21,15 @@
 #include "base/check.h"
 #include "base/json.h"
 #include "expected_error.h"
+#include "gemma3_fixture.h"
 
 namespace {
 namespace md = jitllm::model;
 namespace json = jitllm::base::json;
-json::Value Get(json::Value value, std::string_view key) {
-  const auto found = value.find(key);
-  jitllm::base::Check(found.has_value(), "Gemma3 fixture key is missing");
-  return *found;
-}
-json::Document Fixture() {
-  const auto* dir = std::getenv("JITLLM_TEST_DATA");  // NOLINT(concurrency-mt-unsafe)
-  jitllm::base::Check(dir != nullptr, "Gemma3 test data directory is missing");
-  std::ifstream file(std::string(dir) + "/gemma3/gemma3_4b_qat.json");
-  jitllm::base::Check(file.good(), "Gemma3 fixture is missing");
-  const std::string text(std::istreambuf_iterator<char>{file}, {});
-  auto doc = json::Parse(text);
-  jitllm::base::Check(doc.has_value(), "Gemma3 fixture is invalid JSON");
-  return std::move(*doc);
-}
-std::vector<md::Gemma3Resource> Resources() {
-  const auto fixture = Fixture();
-  const auto tensors = Get(fixture.root(), "tensors");
-  std::vector<md::Gemma3Resource> resources;
-  for (std::size_t i = 0; i < tensors.size(); ++i) {
-    const auto tensor = tensors.at(i);
-    md::Gemma3Resource resource;
-    resource.roles = {std::string(Get(tensor, "name").string())};
-    resource.type = Get(tensor, "type").string();
-    const auto ne = Get(tensor, "ne");
-    for (std::size_t dim = 0; dim < ne.size(); ++dim) {
-      resource.ne.push_back(static_cast<std::uint64_t>(*ne.at(dim).int64()));
-    }
-    std::string representation = "{\"family\":\"ggml\",\"type\":\"" + resource.type + "\",\"ne\":[";
-    for (const auto dim : resource.ne) {
-      if (representation.back() != '[') {
-        representation += ',';
-      }
-      representation += std::to_string(dim);
-    }
-    representation += "]}";
-    const auto doc = jitllm::artifact::json::Parse(representation);
-    jitllm::base::Check(doc.has_value(), "Gemma3 representation is invalid JSON");
-    const auto parsed = jitllm::artifact::ParseRepresentation(doc->root());
-    jitllm::base::Check(parsed.has_value(), "Gemma3 representation is invalid");
-    jitllm::base::Check(parsed->bytes == static_cast<std::uint64_t>(*Get(tensor, "bytes").int64()),
-                        "Gemma3 recorded bytes differ from native type helpers");
-    jitllm::base::Check(parsed->bytes == parsed->readable,
-                        "approved Gemma3 rows unexpectedly require padding");
-    const auto* traits = jitllm::artifact::FindGgmlType(resource.type);
-    jitllm::base::Check(traits != nullptr && static_cast<std::int64_t>(traits->id) ==
-                                                 *Get(tensor, "ggml_type").int64(),
-                        "Gemma3 recorded type ID differs from native helpers");
-    resource.readable = parsed->readable;
-    resources.push_back(std::move(resource));
-  }
-  return resources;
-}
-md::Gemma3Resource& Role(std::vector<md::Gemma3Resource>& resources, std::string_view role) {
-  const auto found = std::ranges::find_if(resources, [role](const auto& resource) {
-    return std::ranges::contains(resource.roles, role);
-  });
-  jitllm::base::Check(found != resources.end(), "Gemma3 role is missing");
-  return *found;
-}
+using jitllm::test_support::gemma3::Fixture;
+using jitllm::test_support::gemma3::Get;
+using jitllm::test_support::gemma3::Resources;
+using jitllm::test_support::gemma3::Role;
 
 TEST(Gemma3FoundationTest, ApprovedProfileMatchesActualMetadataAndAllTensorStorage) {
   const auto& p = md::Gemma3_4BQat();
@@ -174,5 +119,129 @@ TEST(Gemma3FoundationTest, RejectsWrongTypesDimensionsShortStorageAndUnapprovedP
   edited.rope_scale = 1;
   EXPECT_FALSE(md::BindGemma3(edited, "gemma3", resources));
   EXPECT_FALSE(md::BindGemma3(p, "gemma4", resources));
+}
+
+TEST(Gemma3StateTest, ScheduleRepresentationsAndInitializedFootprintsAreChecked) {
+  const auto& p = md::Gemma3_4BQat();
+  const std::vector<std::uint32_t> globals{5, 11, 17, 23, 29};
+  auto state = md::Gemma3State(p, 4096, 16);
+  ASSERT_TRUE(state) << *jitllm::test_support::Failed(state);
+  EXPECT_EQ(state->global_cells, 4096);
+  EXPECT_EQ(state->local_cells, 1280);
+  ASSERT_EQ(state->tensors.size(), 68);
+  auto representations = state->Representations(p);
+  ASSERT_TRUE(representations);
+  std::uint64_t allowance = 0;
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    EXPECT_EQ(!p.local(il), std::ranges::contains(globals, il));
+    for (std::uint32_t value = 0; value < 2; ++value) {
+      const auto index = std::size_t{il} * 2 + value;
+      const auto& tensor = state->tensors[index];
+      const auto& representation = (*representations)[index];
+      EXPECT_EQ(tensor.width, 1024);
+      EXPECT_EQ(tensor.local, p.local(il));
+      EXPECT_EQ(tensor.offset % (2U << 20U), 0);
+      EXPECT_TRUE(md::IsValid(representation));
+      EXPECT_TRUE(representation.Can(md::StateCapability::kAppend));
+      EXPECT_EQ(representation.CanTruncate(), !p.local(il));
+      EXPECT_EQ(representation.max_snapshots, 0);
+      allowance += representation.block_bytes.value();
+    }
+  }
+  EXPECT_EQ(allowance, state->bytes);
+  EXPECT_TRUE(p.local(33));
+  auto empty = md::Gemma3UsedState(p, *state, 0);
+  ASSERT_TRUE(empty);
+  EXPECT_TRUE(empty->empty());
+  auto initialized = md::Gemma3UsedState(p, *state, 1281);
+  ASSERT_TRUE(initialized);
+  ASSERT_EQ(initialized->size(), 68);
+  for (std::size_t i = 0; i < initialized->size(); ++i) {
+    EXPECT_EQ((*initialized)[i].offset, state->tensors[i].offset);
+    EXPECT_EQ((*initialized)[i].bytes,
+              std::uint64_t{p.local(static_cast<std::uint32_t>(i / 2)) ? 1280U : 1536U} * 2048);
+    EXPECT_LE((*initialized)[i].bytes, state->tensors[i].bytes);
+  }
+  auto malformed = *state;
+  ++malformed.tensors[0].offset;
+  EXPECT_FALSE(malformed.Representations(p));
+  EXPECT_FALSE(md::Gemma3UsedState(p, malformed, 1));
+  EXPECT_FALSE(md::Gemma3State(p, 0, 1));
+  EXPECT_FALSE(md::Gemma3State(p, p.context + 1, 1));
+  EXPECT_FALSE(md::Gemma3State(p, 16, 17));
+  EXPECT_FALSE(md::Gemma3UsedState(p, *state, 4097));
+  EXPECT_FALSE(md::Gemma3UsedState(p, *state, 1, 255));
+}
+
+TEST(Gemma3StateTest, RaggedInputsKeepIndependentCausalityAndSplitRingWrites) {
+  const auto& p = md::Gemma3_4BQat();
+  auto state = md::Gemma3State(p, 4096, 16);
+  ASSERT_TRUE(state);
+  const std::vector<std::int32_t> a{1, 2, 3}, b{4};
+  const std::vector<md::Gemma3Segment> segments{{3, 1279, a}, {1, 7, b}};
+  auto envelope = md::Gemma3HostInputBytes(p, *state, segments, true);
+  auto input = md::Gemma3Chunk(p, *state, segments, true);
+  ASSERT_TRUE(envelope);
+  ASSERT_TRUE(input) << *jitllm::test_support::Failed(input);
+  EXPECT_EQ(input->positions, (std::vector<std::int32_t>{1279, 1280, 1281, 7}));
+  EXPECT_EQ(input->out_ids, (std::vector<std::int32_t>{0, 1, 2, 3}));
+  ASSERT_EQ(input->segments.size(), 2);
+  const auto& first = input->segments[0];
+  EXPECT_EQ(first.local_cells, (std::vector<std::int64_t>{1279, 0, 1}));
+  EXPECT_EQ(first.global_cells, (std::vector<std::int64_t>{1279, 1280, 1281}));
+  EXPECT_EQ(input->segments[1].first_row, 3);
+  // Writing all rows first must not expose future wrapped rows to query0.
+  EXPECT_EQ(first.local_mask[0], 0xFC00);
+  EXPECT_EQ(first.local_mask[1279], 0);
+  EXPECT_EQ(first.local_mask[255], 0xFC00);
+  EXPECT_EQ(first.local_mask[256], 0);
+  EXPECT_EQ(first.local_mask[1280], 0);
+  EXPECT_EQ(first.global_mask[1280], 0xFC00);
+  EXPECT_EQ(input->segments[1].global_mask[7], 0);
+  EXPECT_EQ(input->segments[1].global_mask[8], 0xFC00);
+  auto writes = md::Gemma3ChunkWrites(p, *state, 1279, 3);
+  ASSERT_TRUE(writes);
+  EXPECT_EQ(writes->size(), 126);  // 58 local planes split; ten globals append.
+  EXPECT_EQ((*writes)[0].offset, state->tensors[0].offset + 1279 * 2048);
+  EXPECT_EQ((*writes)[0].bytes, 2048);
+  EXPECT_EQ((*writes)[1].offset, state->tensors[0].offset);
+  EXPECT_EQ((*writes)[1].bytes, 4096);
+  for (const auto& range : *writes) EXPECT_LE(range.offset + range.bytes, state->bytes);
+  auto duplicate = segments;
+  duplicate[1].slot = duplicate[0].slot;
+  EXPECT_FALSE(md::Gemma3Chunk(p, *state, duplicate));
+  auto edited = segments;
+  edited[0].n_past = 4095;
+  EXPECT_FALSE(md::Gemma3HostInputBytes(p, *state, edited));
+  const std::vector<std::int32_t> invalid{-1};
+  edited[0] = {0, 0, invalid};
+  EXPECT_FALSE(md::Gemma3Chunk(p, *state, edited));
+  EXPECT_FALSE(md::Gemma3ChunkWrites(p, *state, 4095, 2));
+  EXPECT_FALSE(md::Gemma3ChunkWrites(p, *state, 0, 0));
+}
+
+TEST(Gemma3StateTest, PublicBindingIdentityIsRecheckedBeforeGraphUse) {
+  const auto& p = md::Gemma3_4BQat();
+  auto binding = md::BindGemma3(p, "gemma3", Resources());
+  ASSERT_TRUE(binding);
+  EXPECT_TRUE(md::CheckGemma3Binding(p, *binding));
+  auto changed = *binding;
+  changed.layers[0].k.index = changed.layers[0].v.index;
+  EXPECT_FALSE(md::CheckGemma3Binding(p, changed));
+  changed = *binding;
+  changed.layers[0].q.index = std::numeric_limits<std::uint32_t>::max();
+  EXPECT_FALSE(md::CheckGemma3Binding(p, changed));
+  changed = *binding;
+  changed.layers[33].ffn_post_norm.ne[0] = std::numeric_limits<std::uint64_t>::max();
+  EXPECT_FALSE(md::CheckGemma3Binding(p, changed));
+  changed = *binding;
+  --changed.layers[0].q.readable;
+  EXPECT_FALSE(md::CheckGemma3Binding(p, changed));
+  changed = *binding;
+  changed.output.index = changed.output_norm.index;
+  EXPECT_FALSE(md::CheckGemma3Binding(p, changed));
+  changed = *binding;
+  changed.layers.pop_back();
+  EXPECT_FALSE(md::CheckGemma3Binding(p, changed));
 }
 }  // namespace

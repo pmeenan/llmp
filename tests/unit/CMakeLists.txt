@@ -314,7 +314,7 @@ foreach(file IN LISTS tokenizer_data_files)
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/data/${file}" "${tokenizer_data}/${file}" COPYONLY)
 endforeach()
 
-# Approved Gemma3 legacy profile and actual tensor storage; no execution.
+# Approved Gemma3 profile, tensor storage, state/input and descriptor foundations.
 add_executable(gemma3_test gemma3_test.cc)
 target_link_libraries(gemma3_test PRIVATE jitllm_model jitllm_artifact jitllm_json)
 jitllm_gtest(gemma3_test TEST_PREFIX unit. PROPERTIES LABELS unit
@@ -331,6 +331,17 @@ add_executable(gemma_profile_test gemma_profile_test.cc)
 target_link_libraries(gemma_profile_test PRIVATE jitllm_runtime jitllm_model jitllm_json)
 jitllm_gtest(gemma_profile_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+
+add_executable(gemma3_graph_test gemma3_graph_test.cc)
+target_link_libraries(gemma3_graph_test PRIVATE jitllm_ggml_tensors jitllm_artifact jitllm_json)
+jitllm_gtest(gemma3_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+if(JITLLM_CUDA)
+  add_executable(gemma3_plan_test gemma3_plan_test.cc)
+  target_link_libraries(gemma3_plan_test PRIVATE jitllm_engine jitllm_json)
+  jitllm_gtest(gemma3_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit
+               ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+endif()
 
 add_executable(gemma4_graph_test gemma4_graph_test.cc)
 add_executable(gemma4_greedy_test gemma4_greedy_test.cc)

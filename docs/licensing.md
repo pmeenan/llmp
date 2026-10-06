@@ -114,6 +114,14 @@ graph and compressor plan (`src/kernels/ggml/dsv4_graph.cc`,
 `src/model/dsv4.cc`; llama.cpp is MIT like GGML, under the same
 copyright) and of its Qwen3.8 graph (`qwen4exp.cpp`), QSA block tables and
 n-gram hash (`src/kernels/ggml/qwen38_graph.cc`, `src/model/qwen38.cc`).
+The Gemma3 descriptor graph (`src/kernels/ggml/gemma3_graph.cc`) ports
+llama.cpp v0.6.0/d81235049384534c167caea52b85a694f6103d14's Gemma3 text and
+GeGLU build-FFN graph arithmetic, retaining MIT AND Apache-2.0 and the GGML
+authors' copyright. Its native state, binding and plan adapter are
+jitLLM-authored Apache-2.0. The source-lock scope records the derivative;
+existing packaged MIT attribution covers it. This incorporates no upstream
+backend runtime or new archive members.
+
 jitLLM's own kernels for Qwen3.8's formats (`src/kernels/ggml/jitllm_ops.*`)
 and its fusions of Qwen3.8's GGML nodes (`jitllm_fused.cu`, which repeats
 their arithmetic without their code) and its importer (`docs/experiments/artifact-layout/modelopt_qwen38.py`,

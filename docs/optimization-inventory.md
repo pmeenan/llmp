@@ -28,6 +28,12 @@ adds the independent native request slots, positive private BF16 head-sharing
 factor, rejected shared-worklist/exact16 controls and cross-family boundaries
 on batching and weight reuse. Its priority order follows the current M3 gaps.
 
+The [Gemma3 foundation](gemma3.md) has a separate checked primitive graph
+and independent-slot plan adapter. Existing H16/32 owner attention and
+width2816/5376 norm-ADD gates exclude its H8/width2560 shapes. Generic
+norm/RoPE/quantized-product reuse is a qualification lead; no optimization,
+model execution or batching evidence transfers automatically.
+
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand
 types and strides, shapes, arithmetic, scratch accounting and lifetime.

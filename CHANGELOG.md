@@ -20,6 +20,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Gemma3 QAT text state/input and descriptor planning foundations with checked
+  independent slots and primitive operation plans. Runner, model execution,
+  serving and numerical/performance qualification remain open.
+
 - Opt-in Gemma equal-width partial owner cohorts retain whole-stream attention
   partitions with bounded independent cache roots. The 31B C5 recovery passes
   unchanged strict choices and conditional loss against retained stock; defaults
