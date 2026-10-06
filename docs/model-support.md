@@ -54,6 +54,15 @@ are recorded separately as they complete.
 
 Nothing is distributed-correct: two-node execution is M4's.
 
+## Research candidates
+
+**EmbeddingGemma 2** (`google/embeddinggemma-2`) was added to the
+[model-family research list](m35-families.md#owner-requested-research-addition-embeddinggemma-2)
+at the owner's request on 2026-10-06. Google's release describes multimodal
+embeddings; no jitLLM checkpoint/format, importer, execution, media, batching,
+quality/performance or embedding API is qualified for this candidate. This
+listing is separate from the supported summary above.
+
 ## Architecture foundations
 
 Gemma 3 4B QAT Q4_0 has a separate checked profile and strict

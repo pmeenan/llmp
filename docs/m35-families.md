@@ -71,6 +71,38 @@ Kimi K2/K3, MiniMax M3, GLM-5.x, Mistral Large 3, Llama 4 Maverick,
 Nemotron Ultra, DeepSeek V4.1 (too big for one Spark; M4 holds the
 two-Spark models). Details [at the end](#considered-and-excluded).
 
+## Owner-requested research addition: EmbeddingGemma 2
+
+**Listed at the owner's request, 2026-10-06; research candidate, not qualified
+execution or an added API commitment.** Google's [October 6 release](https://developers.googleblog.com/en/embeddinggemma-2-the-developer-guide/)
+names **EmbeddingGemma 2**, with the published checkpoint
+[`google/embeddinggemma-2`](https://huggingface.co/google/embeddinggemma-2).
+The [official overview](https://ai.google.dev/gemma/docs/embeddinggemma)
+declares Apache-2.0 weights, 740M parameters with all encoders and a 270M
+text/code configuration. Text/code, images, video and audio map into one
+768-dimensional embedding space; the documented shared input budget is
+8,192 tokens. Vision and audio encoders can be omitted independently.
+
+Google's [multimodal code guide](https://ai.google.dev/gemma/docs/embeddinggemma/multimodal-embeddinggemma-with-sentence-transformers)
+uses SentenceTransformers for embedding and similarity, including mixed-media
+inputs. The published [module pipeline](https://huggingface.co/google/embeddinggemma-2/blob/main/modules.json)
+and [pooling configuration](https://huggingface.co/google/embeddinggemma-2/blob/main/1_Pooling/config.json)
+name mean pooling followed by normalization. The developer guide specifies
+128/256/512-dimensional truncation with re-normalization and task-specific
+text prefixes. These are reference output/preprocessing contracts to qualify,
+not evidence that jitLLM already implements them.
+
+Next research must select an immutable checkpoint/format and same-format
+reference, audit the actual import/code licenses, and qualify tokenizer/task
+prefixes, pooling/projection/normalization, media preprocessing, independent
+encoder residency, batching and retrieval quality. The model card and published
+configuration also disagree on the sliding-window size; resolve that against
+reference code before defining a native profile. Native execution, performance
+and public request/response/client contracts remain unverified. The listing
+supplies a concrete embedding/media workload for API assessment; D-042's
+embedding API schedule and D-044's workload-driven generic-pooling deferral
+remain unchanged until separately decided.
+
 ## Capability matrix
 
 What jitLLM runs today comes from M3's models (DeepSeek V4 Flash,

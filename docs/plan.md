@@ -744,6 +744,13 @@ family" guide, and its long-context scaling work.
       group size, 32 or 64), starting with Qwen3.8 Flash Next's, so
       TensorFold is a same-format oracle and gated comparator (D-085)
       instead of cross-quantization information.
+- [ ] **EmbeddingGemma 2 research addition** (owner, 2026-10-06): add
+      Google's newly released multimodal embedding checkpoint to the
+      [candidate list](m35-families.md#owner-requested-research-addition-embeddinggemma-2).
+      Select the actual checkpoint/format and reference, resolve source metadata,
+      and assess native embedding outputs, media, batching and API qualification.
+      Listing does not adopt a runtime path or change D-042's M10 embedding API
+      schedule or D-044's generic-pooling deferral.
 - [ ] **Legacy-tier features** (the owner, 2026-09-29): list the older
       generations' features that are not subsets of the covered ones
       (Gemma 2, Phi-3.5, Mistral 7B, Command R7B, Llama 3.2 and others),
