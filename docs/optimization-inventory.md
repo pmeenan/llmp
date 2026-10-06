@@ -539,6 +539,15 @@ identifies 32,768 bytes of weights/logits overlap at 1,024 rows. The original
 memory gate refuses that allocation, while all structure/shape gates pass.
 A general native policy still requires qualification; no static layer rule follows.
 
+The [opt-in owner cohorts](experiments/gemma-owner-cohorts/README.md) preserve
+real cache roots while matching the whole-eight stream-K partition for eligible
+C8 waves. Dense31's 256 paid heads become byte-exact; 26B passes its unchanged
+prior margin/conditional-score gates. The checked parent-storage bound is now
+1 GiB while executed operands remain 64 MiB and reads at most 16K, admitting
+short reads with configured 262K backing. Packed attention keeps its previous
+limits. General serving selection, C12, depth and other family transfers remain
+unqualified; no shader arithmetic or model default changes follow.
+
 The [fresh fixed-capacity schedule control](experiments/gemma-fresh-quality-validation/README.md)
 keeps Gemma26 maximum rows 1,024 and F16 capacities 2,048/4,096 identical while
 changing only supported host chunk schedules. History 13 freezes genuine

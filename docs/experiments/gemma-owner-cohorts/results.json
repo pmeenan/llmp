@@ -1,0 +1,148 @@
+{
+  "schema": 1,
+  "scope": "Opt-in owner/cohort engine API; serving defaults and model admission unchanged",
+  "source": {
+    "base": "267c5fe",
+    "scope": "Opt-in engine/cohort support plus bounded full-parent validation; runtime settings/default adoption excluded",
+    "borrowed_source22_manifest_sha256": "47bf08f766949e52faf80adfb9330a0d6428a7fb05fe71b22bcddfdef492f32a",
+    "owned_parent_delta_paths": [
+      "src/kernels/ggml/fattn_owner.cc",
+      "src/kernels/ggml/fattn_owner.h",
+      "src/kernels/ggml/gemma4_attention.cc",
+      "tests/unit/gemma4_graph_test.cc"
+    ],
+    "files": {
+      "benchmarks/gemma_joined.cc": {
+        "sha256": "75549fafe83a1844da78d65b5257dd906abe8786a12c0a8e4b8940281ea720b9",
+        "bytes": 19861
+      },
+      "src/engine/gemma4_runner.cc": {
+        "sha256": "99b5aed8010bd91d1045a36fe67df4834f9aa3a3cb565060af990a4f77fdbc6e",
+        "bytes": 62617
+      },
+      "src/engine/gemma4_runner.h": {
+        "sha256": "f166d0887f1104254c449f90588d251d2356d19649d62d4bb15c4ab64b9bee64",
+        "bytes": 15674
+      },
+      "src/kernels/ggml/fattn_owner.cc": {
+        "sha256": "32b9ee54453a30924be0b4a5a93bdea192de860ee257353ac25bea2ebc605b82",
+        "bytes": 7798
+      },
+      "src/kernels/ggml/fattn_owner.cu": {
+        "sha256": "769b12d580da2473e76ea87ab8b9e7d6b8090b051151a28ef0b60d1c4e9f8e44",
+        "bytes": 10512
+      },
+      "src/kernels/ggml/fattn_owner.h": {
+        "sha256": "ddd7d8c176511013002592218e9bc9746e1618a5a84858160dbe575aeda7db90",
+        "bytes": 3345
+      },
+      "src/kernels/ggml/gemma4_attention.cc": {
+        "sha256": "2a13f7b32f19ca7470b3c62fb2c404d98c7cf20432a5bf8190bda48761361b9c",
+        "bytes": 13970
+      },
+      "src/kernels/ggml/implementations.cc": {
+        "sha256": "87a02d43ce9196092f91038b90f55d1f24bd5fa7eef059e8510bbb335e984267",
+        "bytes": 62494
+      },
+      "src/kernels/ggml/jitllm_ops.cc": {
+        "sha256": "a6e66bff724c68c052e5cf40f16559e2775d3a5c0e52e61ceaae8dfab72817e2",
+        "bytes": 116688
+      },
+      "src/kernels/ggml/jitllm_ops.h": {
+        "sha256": "24c7ba49ec4340a981a78fc7cc4c8e937568f568384863d54cd7cc29bf7054fb",
+        "bytes": 60108
+      },
+      "tests/unit/gemma4_graph_test.cc": {
+        "sha256": "5b28faecc0acefac56a21c1858cda9be5486b470fd1f839c3550eee9ab223a53",
+        "bytes": 48071
+      },
+      "tests/unit/gemma4_plan_test.cc": {
+        "sha256": "12174efde763139d7cbde2d5f06711713833b1f0c9b2cb2fc90b6b0d5355d061",
+        "bytes": 28094
+      },
+      "tests/unit/ggml_ext_ops_test.cc": {
+        "sha256": "88e0dd70dcaea84dbb675b04ee0fd6b5d55532df049f73a5a950c5abc0a26dc0",
+        "bytes": 168897
+      },
+      "docs/experiments/gemma-joined-serving/llama_joined.cc": {
+        "sha256": "4786817b72be01ecd268234666c871d09dc01f6fcced621baf4cd2323cf732db",
+        "bytes": 13433
+      },
+      "src/kernels/ggml/gemma4_graph.cc": {
+        "sha256": "878cb233bfd8de54bab34c3f0af1f363b978e1efb954d5058960aa73365786ce",
+        "bytes": 22925
+      },
+      "src/kernels/ggml/gemma4_graph.h": {
+        "sha256": "cc5116b21417796b761206ed314b50e9aeb81abd1f7cfe74408cac5028cf3824",
+        "bytes": 7132
+      }
+    },
+    "excluded_pending_default_paths": [
+      "src/runtime/model_settings.cc",
+      "src/runtime/model_settings.h",
+      "src/runtime/serving.cc",
+      "tests/unit/gemma4_runner_gpu_test.cc",
+      "tests/unit/gemma4_serving_gpu_test.cc",
+      "tests/unit/model_settings_test.cc"
+    ],
+    "model_support_admitted": false,
+    "serving_defaults_unchanged": true
+  },
+  "core_source_manifest_sha256": "e567a22934dbc485d712fae0439a367f40e93cd47be728ee407792f625d23e87",
+  "environment": {
+    "host": "spark / spark-c4e2",
+    "device": "GB10",
+    "native_sdk_receipt_sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09"
+  },
+  "built_binary_sha256": {
+    "jitllm_gemma_joined": "5506a3bca450d6dda473d52d2577bac2ee394e151133ccba0d6ae10b121d3553",
+    "gemma4_graph_test": "9ae25b72ddf2031da256ae46ed89986cdf1298cab3e597851027a7bca7bafdae",
+    "gemma4_plan_test": "af085d4945187206d9b9d97a3c14b52be43c0c4c2edb8dd268ef9119b3b7e242",
+    "ggml_ext_ops_test": "d5738a9a161a6f1cd908e0d9cae4a319a41da8f0fae1a3440e918db8856f30dd"
+  },
+  "bounds": {
+    "actual_read_cells_max": 16384,
+    "executed_operand_span_bytes_max": 67108864,
+    "owner_parent_storage_span_bytes_max": 1073741824,
+    "packed_context_max": 16384,
+    "packed_parent_span_bytes_max": 67108864
+  },
+  "checks": {
+    "focused_graph_cases": 11,
+    "focused_plan_cases": 3,
+    "focused_operator_cases": 1,
+    "skipped": 0,
+    "eager_and_capture_replay_byte_exact": true,
+    "symbolic_262k_parent_eligibility": true,
+    "full_context_model_run": false,
+    "full_regression": "Deferred by owner until optimization work settles",
+    "initial_failure": "Missing JITLLM_TEST_DATA launcher environment; compiled target and first2 operand tests succeeded, graph fixture aborted; source unchanged for corrected retry"
+  },
+  "official_jobs": {
+    "official-build1": {
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 4,
+      "final_sha256": "f9639fb3a6bed77a7beba6d905a1643bf7c689e03b7cae54f8272bcb3ff8af75",
+      "steps_sha256": "f7e00fd10003b2e2281b81a1a8ec5b66612c6f38b8fb049e4e86c081d9e2f302",
+      "log_sha256": "9fdd9f59f08d1227f12bf6550dc4f06905a35f6757f830999b2d495a93b9599d"
+    },
+    "official-build2": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 4,
+      "final_sha256": "c3058cf653e5dd0130b82cce739de4008e2da3692492f95fc24cf7897749bd19",
+      "steps_sha256": "ae0ae080bbe9e646615bf12375d54e5ca7e5535dde3886113c09d96da2748c88",
+      "log_sha256": "ae0ce7ffb4ea3c1ff4d91824593b6b55908151e7ba6b2d7a0797e4e4309248e1"
+    },
+    "official-core-check1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 6,
+      "final_sha256": "ddff1afda847b6db9c99a604e9600e21af44ba027ad5c4473a6f8d2ad4979f1d",
+      "steps_sha256": "12124152eb53f5bfca26a2f75750fb19277223d17e975ea13820c21515df603c",
+      "log_sha256": "b0f455c7ae52cb197ead7550f2ee42c94e632e9f21a5c64e96d4844d63a383d8"
+    }
+  },
+  "measured_model_recipe": "C8 reports use the separately measured source22/helper4514/SDKeb7. This opt-in16 parent-validation binary5506 has no full-model timing or qualification claim."
+}

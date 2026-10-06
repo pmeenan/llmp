@@ -369,6 +369,15 @@ reduces latency 7.13% with exact native heads/state; native remains 0.265%
 slower than fresh stock, with two positive-margin disagreements.
 Wider contexts, quality qualification and production batching remain separate gates.
 
+The [opt-in owner-cohort engine](experiments/gemma-owner-cohorts/README.md)
+now handles complete C4/C8 attention quads with independent cache roots and
+funded metadata. Matching-width C8 uses whole-eight reduction geometry, resolving
+all 256 paid dense31 heads; the 26B transfer passes its unchanged prior bound and
+conditional-score gate. Actual reads stay within 16K/64 MiB, while checked full
+backing parents up to 1 GiB allow short reads at configured 262K. Larger reads
+fall back. These bounded controls do not select serving defaults or establish
+C12, default-context performance, long-context or full model qualification.
+
 ## Bounded native serving route
 
 The existing runtime driver registers both approved 26B-A4B and dense31 artifacts

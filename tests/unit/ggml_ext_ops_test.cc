@@ -56,6 +56,7 @@
 #include "ggml.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/fattn_mma.h"
+#include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/launch.h"
@@ -2187,6 +2188,127 @@ TEST_F(GgmlExtOpsTest, GemmaLocalPrefillRefusesUnfundedQueryTilesBeforeSubmissio
   EXPECT_EQ(std::memcmp(got.data(), reference.data(), got.size() * sizeof(float)), 0);
   ExpectNmse(reference, want, kMulMatNmse, "pinned prefill single-visible-cell V reference");
   ExpectNmse(got, want, kMulMatNmse, "registered prefill single-visible-cell V reference");
+}
+
+TEST_F(GgmlExtOpsTest, EightStreamMmaMatchesTwoFourRootCohortPartitionsExactly) {
+  if (ComputeCapability() != 1210) GTEST_SKIP() << "Owner implementation is GB10 only";
+  for (const std::int64_t d : {256, 512})
+    for (const std::int64_t cells : {256, 1024}) {
+      SCOPED_TRACE(std::to_string(d) + "/" + std::to_string(cells));
+      constexpr std::int64_t heads = 32, owners = 8;
+      const auto kvh = heads / (d == 256 ? 2 : 8);
+      const auto n = [](std::int64_t value) { return static_cast<std::size_t>(value); };
+      auto arena = TensorArena::Create(128).value();
+      auto* ctx = arena.context();
+      auto* packed_q = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, owners),
+                             Normal(8101, n(d * heads * owners), 0.25F));
+      auto* q = ggml_permute(ctx, packed_q, 0, 2, 1, 3);
+      TensorArena::Bind(q, reinterpret_cast<std::uintptr_t>(packed_q->data));
+      const auto kdata = Halves(Normal(8102, n(d * kvh * cells * owners), 0.25F));
+      const auto vdata = Halves(Normal(8103, n(d * kvh * cells * owners), 0.25F));
+      auto* packed_k = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, owners), kdata);
+      auto* packed_v = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, owners), vdata);
+      auto* k = ggml_permute(ctx, packed_k, 0, 2, 1, 3);
+      auto* v = ggml_permute(ctx, packed_v, 0, 2, 1, 3);
+      TensorArena::Bind(k, reinterpret_cast<std::uintptr_t>(packed_k->data));
+      TensorArena::Bind(v, reinterpret_cast<std::uintptr_t>(packed_v->data));
+      std::vector<float> masks(n(cells * 32 * owners), -std::numeric_limits<float>::infinity());
+      for (std::int64_t owner = 0; owner < owners; ++owner)
+        for (std::int64_t cell = 0; cell < cells - 37 - owner * 3; ++cell)
+          masks[n(owner * cells * 32 + cell)] = 0;
+      auto* mask =
+          Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, cells, 32, 1, owners), Halves(masks));
+      auto* whole = Place(ggml_flash_attn_ext(ctx, q, k, v, mask, 1, 0, 0));
+      ggml_prec_set_acc(whole, GGML_PREC_F32);
+      const auto full_plan = d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
+                                      : kg::PlanFlashAttnMma(launch(), whole);
+      ASSERT_TRUE(full_plan) << jitllm::test_support::Failed(full_plan)->detail;
+      ASSERT_EQ(full_plan->blocks % 2, 0);
+      EXPECT_EQ(full_plan->columns, d == 256 ? 4 : 1);
+      EXPECT_EQ(full_plan->group, d == 256 ? 2 : 8);
+      EXPECT_FALSE(full_plan->sparse);
+      const auto run_whole = [&](LaunchContext& l) {
+        return d == 256 ? kg::FlashAttnMmaGqa2(l, whole) : kg::FlashAttnMma(l, whole);
+      };
+      std::array<kg::FlashAttnOwners, 2> quads;
+      for (std::size_t quad = 0; quad < quads.size(); ++quad) {
+        const auto first = quad * 4;
+        const auto view = [&](ggml_tensor* tensor, std::array<std::int64_t, 4> ne) {
+          const auto offset = first * tensor->nb[3];
+          auto* slice = ggml_view_4d(ctx, tensor, ne[0], ne[1], ne[2], ne[3], tensor->nb[1],
+                                     tensor->nb[2], tensor->nb[3], offset);
+          TensorArena::Bind(slice, reinterpret_cast<std::uintptr_t>(tensor->data) + offset);
+          return slice;
+        };
+        auto& in = quads[quad];
+        in.q = view(q, {d, 1, heads, 4});
+        in.mask = view(mask, {cells, 32, 1, 4});
+        in.output = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, 4));
+        in.logical_cohort = 8;
+        for (std::size_t owner = 0; owner < 4; ++owner) {
+          const auto part = n(d * kvh * cells);
+          const auto begin = static_cast<std::ptrdiff_t>((first + owner) * part);
+          const auto end = begin + static_cast<std::ptrdiff_t>(part);
+          // Separate allocations authenticate actual roots; their bytes match
+          // the corresponding planes of the contiguous eight-stream control.
+          auto* raw_k = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, 1),
+                              std::vector<ggml_fp16_t>(kdata.begin() + begin, kdata.begin() + end));
+          auto* raw_v = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, 1),
+                              std::vector<ggml_fp16_t>(vdata.begin() + begin, vdata.begin() + end));
+          in.k[owner] = ggml_permute(ctx, raw_k, 0, 2, 1, 3);
+          in.v[owner] = ggml_permute(ctx, raw_v, 0, 2, 1, 3);
+          TensorArena::Bind(const_cast<ggml_tensor*>(in.k[owner]),
+                            reinterpret_cast<std::uintptr_t>(raw_k->data));
+          TensorArena::Bind(const_cast<ggml_tensor*>(in.v[owner]),
+                            reinterpret_cast<std::uintptr_t>(raw_v->data));
+        }
+        const auto plan = kg::PlanFlashAttnOwners(launch(), in);
+        ASSERT_TRUE(plan) << jitllm::test_support::Failed(plan)->detail;
+        EXPECT_EQ(plan->effective_cohort, 8U);
+        EXPECT_EQ(plan->cohort_blocks, full_plan->blocks);
+        EXPECT_EQ(plan->original.blocks * 2, full_plan->blocks);
+        const auto quad_tiles = static_cast<int>(kvh) * 4;
+        EXPECT_EQ(plan->original.blocks % quad_tiles == 0,
+                  full_plan->blocks % (quad_tiles * 2) == 0);
+        std::cout << "OWNER_C8_PLAN D=" << d << " cells=" << cells
+                  << " full_blocks=" << full_plan->blocks
+                  << " quad_blocks=" << plan->original.blocks
+                  << " effective_cohort=" << plan->effective_cohort
+                  << " scratch=" << plan->original.scratch << '\n';
+        auto legacy = in;
+        legacy.logical_cohort = 4;
+        const auto legacy_plan = kg::PlanFlashAttnOwners(launch(), legacy);
+        ASSERT_TRUE(legacy_plan);
+        EXPECT_EQ(legacy_plan->effective_cohort, 4U);
+        EXPECT_LE(plan->original.scratch, legacy_plan->original.scratch);
+        launch().ResetScratchPeak();
+        ASSERT_TRUE(kg::FlashAttnOwnerRoots(launch(), in));
+        EXPECT_LE(launch().scratch_peak().value(), plan->original.scratch);
+      }
+      ASSERT_TRUE(run_whole(launch()));
+      const auto expected = Download(whole);
+      EXPECT_TRUE(std::ranges::all_of(expected, [](float x) { return std::isfinite(x); }));
+      const auto compare = [&] {
+        for (std::size_t quad = 0; quad < quads.size(); ++quad) {
+          const auto actual = Download(quads[quad].output);
+          const auto offset = quad * actual.size();
+          EXPECT_EQ(
+              std::memcmp(actual.data(), expected.data() + offset, actual.size() * sizeof(float)),
+              0);
+        }
+      };
+      compare();
+      auto graph = launch().Capture([&](LaunchContext& l) -> std::expected<void, KernelFailure> {
+        if (auto r = run_whole(l); !r) return r;
+        for (const auto& quad : quads)
+          if (auto r = kg::FlashAttnOwnerRoots(l, quad); !r) return r;
+        return {};
+      });
+      ASSERT_TRUE(graph);
+      ASSERT_TRUE(launch().Launch(*graph));
+      EXPECT_EQ(std::memcmp(Download(whole).data(), expected.data(), expected.size() * 4), 0);
+      compare();
+    }
 }
 
 TEST_F(GgmlExtOpsTest, GemmaLocalAttentionPreservesIndependentRingMasksAndPlansScratch) {

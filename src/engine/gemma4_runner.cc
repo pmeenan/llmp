@@ -18,6 +18,7 @@
 #include "engine/gemma4_assistant.h"
 #include "engine/support.h"
 #include "kernels/ggml/executor.h"
+#include "kernels/ggml/jitllm_ops.h"
 #include "providers/device_runtime.h"
 
 namespace jitllm::engine {
@@ -364,8 +365,6 @@ Status Gemma4Runner::Setup() {
   model_.options.rope_store = o_.rope_store;
   model_.options.narrow_final = o_.frontier_head && !o_.retain_features;
   model_.options.device_masks = !o_.reference_masks;
-  model_.options.attention_mode =
-      o_.owner_attention ? kg::Gemma4AttentionMode::kOwners : kg::Gemma4AttentionMode::kIndependent;
   if (auto r = ReserveWeights(); !r) return r;
   model_.resources.resize(weights_.artifact().resources().size());
   for (std::uint32_t i = 0; i < model_.resources.size(); ++i)
@@ -383,6 +382,16 @@ Status Gemma4Runner::Setup() {
   if (auto r = resources_.OpenCublas("Gemma4 cuBLAS workspace"); !r) return r;
   auto measuring = resources_.MeasuringContext();
   if (!measuring) return Error(measuring.error());
+  // One immutable choice before any sizing/graph transformation, on the
+  // launch context's actual ordinal. Other devices keep independent attention.
+  if (o_.owner_attention) {
+    auto facts = providers::QueryDeviceFacts((*measuring)->device());
+    if (!facts)
+      return Error(std::format("Gemma4 attention device facts: {}", facts.error().text()));
+    model_.options.attention_mode = facts->architecture == 1210
+                                        ? kg::Gemma4AttentionMode::kOwners
+                                        : kg::Gemma4AttentionMode::kIndependent;
+  }
   std::uint64_t activation = 0, scratch = 0, staging = 0, host = 0;
   // All slot counts: padding each segment's query tile can exceed a scalar
   // prefill's mask storage. Measure one shared maximum, not one per slot.
@@ -957,6 +966,10 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::CachePlann
   }
   policy_ = {.rows = rows, .segments = static_cast<std::uint32_t>(shape.segments.size())};
   for (const auto& step : p->plan.steps) {
+    if (step.implementation == kg::kFlashAttnOwnersName) {
+      ++policy_.owner_attention_steps;
+      policy_.requested_cohort8_steps += kg::JitllmOpInt(step.nodes.front(), 0) == 8;
+    }
     policy_.norm_fused += step.implementation == "ggml.rms_norm_mul.fused";
     policy_.norm_rope += step.implementation == "ggml.rms_norm_mul_rope.fused";
     policy_.norm_add += step.implementation == "ggml.rms_norm_mul_add.fused";

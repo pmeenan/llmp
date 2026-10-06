@@ -91,8 +91,11 @@ struct Gemma4Graph {
   std::uint64_t state_bytes = 0;
   Gemma4ChunkShape shape;
   Gemma4GraphOptions options;
-  // Actual graph mode: unequal widths/unsupported shapes report independent.
+  // Mode of actually transformed quads; all other owners remain independent.
   Gemma4AttentionMode attention_mode = Gemma4AttentionMode::kIndependent;
+  // Bits0/1 name consecutive transformed quads. Popcount gives their count;
+  // segments.size() - 4*popcount gives the remaining independent owners.
+  std::uint32_t attention_quad_mask = 0;
   ggml_tensor* tokens = nullptr;
   ggml_tensor* input_hidden = nullptr;
   ggml_tensor* positions = nullptr;
@@ -113,7 +116,8 @@ std::size_t Gemma4GraphTensors(const model::Gemma4Profile& profile, std::size_t 
                                const Gemma4GraphOptions& options);
 // Shared by the opt-in builder and manual packed/owner causal comparison.
 // Requires the complete original graph; malformed writer edges refuse before
-// transformation. Unsupported shapes return it unchanged.
+// transformation. Unsupported waves return unchanged; unsupported complete
+// quads and trailing owners remain independent, recorded by attention_quad_mask.
 std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, Gemma4Graph& graph,
                                                             Gemma4AttentionMode mode);
 std::expected<void, KernelFailure> CheckGemma4Graph(const model::Gemma4Profile& profile,

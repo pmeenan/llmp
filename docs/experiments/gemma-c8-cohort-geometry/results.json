@@ -1,0 +1,370 @@
+{
+  "defaults": "Serving owner attention and joined decoding remain off; row caps/policies are the uncommitted candidate.",
+  "device": {
+    "actual": "0, NVIDIA GB10, 580.178.04, 12.1",
+    "engine_architecture_code": 1210,
+    "host": "spark-b",
+    "query": "nvidia-smi --query-gpu=index,name,driver_version,compute_cap --format=csv,noheader",
+    "source_gate": "Setup queries actual MeasuringContext ordinal before sizing; actual selected counts for every first decode group checked after acquisition"
+  },
+  "factor_result": {
+    "all_head_max_raw_delta": 0.7876424789428711,
+    "base_analysis_sha256": "abbbe9b6a6c0ba19cc45708732ef9642a718e6ad222e9ac064c64df19f0e2ccb",
+    "byte_exact_rows": 256,
+    "complete_rows": 264,
+    "conditional_loss_within_3_percent": true,
+    "corpus_ppl_claim": false,
+    "factor_analysis_sha256": "27dbcfbc729a239c019f4db478093c537fe0d83a540046832d7697d42f625ab0",
+    "factor_gate_passed": true,
+    "forced_nll_rows": 256,
+    "frontier_byte_exact_rows": 0,
+    "frontier_outside_p99": 0,
+    "native_mean_nll": 11.30024893716377,
+    "old_baseline_quality_passed": false,
+    "old_failed_comparison_sha256": "3f9806d79e722debe6c7c82477475143b66c28c6c07943e76ee395fd69aae8ac",
+    "old_native_freeze_sha256": "9d64bd755c8a46615407218ef9f68dac39d90522e3d8a4ad4685ff69d38416ca",
+    "old_p99_bound": 2.291207938194275,
+    "outside_p99": 0,
+    "paid_byte_exact_rows": 256,
+    "paid_completed_rows": 256,
+    "paid_outside_p99": 0,
+    "prefill_frontier_rows": 8,
+    "reference_mean_nll": 11.302061940958914,
+    "relative_conditional_loss": -0.0018113612965321275,
+    "scope": "Fixed-source joined geometry factor; no recalibration, no old failure waiver or general default adoption.",
+    "source_sha256": "e2a14d2f89c62f043c206661e7ed676c7cd5a6a41c6da9d66a95d4262f03db8d"
+  },
+  "failures_preserved": [
+    "build1: test used unavailable internal GGML setter; five bounded public op_params writes fixed compile only.",
+    "build2: test tried to stream KernelFailure; two guarded detail messages fixed compile only.",
+    "build2 parser attempt: --timeout600 rejected before any official job.",
+    "Original31C8 primary quality failure remains failed."
+  ],
+  "focused_controls": {
+    "graph": 9,
+    "operator": 1,
+    "operator_outputs": "Whole8 vs two independent4-root calls byte-exact for D256/D512 at cells256/1024, eager and capture/replay.",
+    "passed": 13,
+    "plan": 3,
+    "skipped": 0
+  },
+  "full_suite": "Deferred by owner; not run.",
+  "identities": {
+    "analysis_sha256": "abbbe9b6a6c0ba19cc45708732ef9642a718e6ad222e9ac064c64df19f0e2ccb",
+    "artifact_index_sha256": "9ae365a17ed73528262d7befdb505bf07e6695e03f0fa36f69e69099dbd5f34c",
+    "artifact_manifest_sha256": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "carrier_manifest_sha256": "f6cf32b29dd980c997915519339cdc1cd2c244e219c473a0331303bbc6e5708c",
+    "factor_analysis_sha256": "27dbcfbc729a239c019f4db478093c537fe0d83a540046832d7697d42f625ab0",
+    "input_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
+    "input_text_manifest_sha256": "c30dfd97a19615fcc4eb1831a7cc053f39336e1466fa0744f9c78a1b218153d8",
+    "judge_sha256": "702251d1afc20d75dc7c27b5a7724c4ce2a8a0ce60222b52aab52549264dab71",
+    "native_sdk_receipt_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",
+    "reference_client_sha256": "17424b81dbeda3a882ae516131cc1fe77c99948b9fec6d4aecab14f8e16345bf",
+    "selected_history_manifest_sha256": [
+      "2a13ffd89ebe8da2845dad7016de4ae2830a4a591e7b38dbe7d8ec2dd3f1bfec",
+      "e36d5bdda9c27d8107aa7d4f3079b2a50c1fb70ee4b5f28ff5f90d81d85fd8b7",
+      "3204f4c6cb7758126247b177c026e0830924cb7f97160d8501cce0f9590932d3",
+      "b3b499c552a8916c0cce54eb235d1f67fba556846fdcaa51a838dc0573a14c85",
+      "34b651fcf75573bee7ff0c1491b1970caa22462d120203d242f43928060a578b",
+      "65691417327f85d86607eefc1f2872c9ac85208795f8496fb526e0bb9e8c5949",
+      "27a8cbceb85b96b460cddb9c3eb3b2f8e2b806aa782ec55ec543a644c718738d",
+      "dd9379fe26c7cdd4ffbab0725d9a97ea2251a98704bc4c89d3f5cff3b6f5a439"
+    ],
+    "template_sha256": "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b",
+    "tensorfold_comparison_entry_sha256": "22adc6ee8f7d58fe8ede4d0a63545e211a5d8661dc2301f8eb4210bfba2853db",
+    "tokenizer_metadata_sha256": "79c54f13f654d98e93ba1496062c017baea53ddaed59de086fe3fa7cf09d8461"
+  },
+  "native_binary_sha256": "4514f149c06f94aaf7d18049bec5a46a2401a6389baf777152ffee1c5cfa8e18",
+  "official_jobs": [
+    {
+      "elapsed_seconds": 15.08,
+      "host": "spark-56f5",
+      "name": "m35-gemma-c8-geometry-build1",
+      "queued_steps": 9,
+      "rc": 1,
+      "record_sha256": {
+        "final.json": "a24eec05fdc605bf7f00ea5540ea569a14db91c94aef049bd97a8f49cf2829ec",
+        "job.json": "7776f3453eeaf305cdb166d66c731279e3d6bdf05174cea5c12b108f7b39e883",
+        "steps.json": "2d50f80ce62b759501533f4dc0da2e6a1f24d5ae7e90be2b9db30746f5904a4c"
+      },
+      "state": "failed",
+      "successful_steps": 3
+    },
+    {
+      "elapsed_seconds": 58.343,
+      "host": "spark-56f5",
+      "name": "m35-gemma-c8-geometry-build2",
+      "queued_steps": 9,
+      "rc": 1,
+      "record_sha256": {
+        "final.json": "c699051a7279b3fcd1ba7f846439d722cb3a3a2d8dcd7efa05849d92c6bbea9a",
+        "job.json": "8b601261a7b4a245db7f73dedd26b0ce0595893ec4958a26bb63c4e3ef7c9c3c",
+        "steps.json": "bbc9ed3e6276db4d309993ffd1fa23299c5b9ad11a27cfa8cc885ef4ebda6758"
+      },
+      "state": "failed",
+      "successful_steps": 3
+    },
+    {
+      "elapsed_seconds": 14.543,
+      "host": "spark-56f5",
+      "name": "m35-gemma-c8-geometry-build3",
+      "queued_steps": 9,
+      "rc": 0,
+      "record_sha256": {
+        "final.json": "f65329acdc4084b8728459b54359816fe00b1d822dab856e791fc7755bf69611",
+        "job.json": "774354f02afa8a0f1fef538227ed008185581789b76aa796e3889e69c1d399fb",
+        "steps.json": "334a8c4a2af9ab688906592190331c5029d597528e7fc70f6871a9e5e88eaef3"
+      },
+      "state": "done",
+      "successful_steps": 9
+    },
+    {
+      "elapsed_seconds": 95.196,
+      "host": "spark-56f5",
+      "name": "m35-gemma-c8-geometry-native31-1",
+      "queued_steps": 6,
+      "rc": 0,
+      "record_sha256": {
+        "final.json": "d785476bde6efc267a1e0196e39e53421453d2ecb28b14c73894df3fe3e252a3",
+        "job.json": "48c84add854fda4a53cb11765e0b34fe3588d5d764519d1b3b4d5cc833347df0",
+        "steps.json": "d3a3ac2efe633407703916708656aa29750a5e49e6ae7e8cc32efab62130ee74"
+      },
+      "state": "done",
+      "successful_steps": 6
+    },
+    {
+      "elapsed_seconds": 19.487,
+      "host": "spark-56f5",
+      "name": "m35-gemma-c8-geometry-assess31-1",
+      "queued_steps": 3,
+      "rc": 0,
+      "record_sha256": {
+        "final.json": "df6ab95e42ba887a439910e16ed8765fa51576131579cf434b04afbbe51214e8",
+        "job.json": "f75f17eb3344109302a142d194a8d1b837aa4af5a62f07dafbae6e4d70dbb02c",
+        "steps.json": "6e6cc747c83dc92b5af8a945b1d464bdaa7319f0b1c82b2710494df2f16fa0f2"
+      },
+      "state": "done",
+      "successful_steps": 3
+    }
+  ],
+  "old_failure": {
+    "byte_exact_rows": 0,
+    "comparison_sha256": "3f9806d79e722debe6c7c82477475143b66c28c6c07943e76ee395fd69aae8ac",
+    "freeze_sha256": "9d64bd755c8a46615407218ef9f68dac39d90522e3d8a4ad4685ff69d38416ca",
+    "max_raw_delta": 14.622390031814575,
+    "outside_p99": 3,
+    "p99_bound": 2.291207938194275,
+    "quality_passed": false,
+    "strict_positive_differences": 12
+  },
+  "operator_proof": {
+    "D256": {
+      "effective_cohort": 8,
+      "quad_grid": 24,
+      "scratch": 199936,
+      "whole_grid": 48
+    },
+    "D512": {
+      "effective_cohort": 8,
+      "quad_grid": 48,
+      "scratch": 792832,
+      "whole_grid": 96
+    },
+    "cells": [
+      256,
+      1024
+    ],
+    "scope": "Actual same-binary synthetic operator plans; no whole-model stock descriptor witness claim."
+  },
+  "own_repeat": {
+    "cohort_head_bytes": 276824064,
+    "cohort_head_sha256": "4302fa77eaf7dd17fdf61586f19f04d220a5b85b832de01f9248fc1628a051e2",
+    "complete_heads_frontier_and_final_states_layout_and_inputs_exact": true,
+    "finite_complete_head_rows": 264,
+    "frontier_states_match_original_native_freeze": true,
+    "initialized_state_bytes_per_owner_snapshot": 922746880
+  },
+  "owned_assessment_retirement_sha256": "b8cd91b56fb3e1ea3d7d600eaa32866c7c0eeada122ac5464c8fb880e1928404",
+  "raw_assessment_sha256": "ca9c55d334812413a552c593ea8b89b7755abc918c3c95dbdc409dc320ca5032",
+  "raw_location": "/tmp/jitllm-m35-coordination/gemma-c8-cohort-geometry-raw",
+  "recipe": {
+    "context": 4096,
+    "effective_owner": "actualdevicearchitecture1210-only; fixed during Setup before sizing",
+    "forced_steps": 32,
+    "fusion": true,
+    "graphs": true,
+    "history_rows": 1024,
+    "max_head_rows": 8,
+    "max_rows": 256,
+    "moe_route_reduce": false,
+    "native_joined_groups": [
+      8
+    ],
+    "native_policy": "norm",
+    "norm_add": true,
+    "norm_rope": true,
+    "owner_requested": true,
+    "owners": 8,
+    "plain_norm": true,
+    "prefill_rows": 992,
+    "profile": 31,
+    "rope_store": false,
+    "row_products": false,
+    "serving_joined_default": false,
+    "serving_owner_default": false,
+    "shared_q8": false
+  },
+  "retained_reference": {
+    "cohort.logits.f32": {
+      "bytes": 276824064,
+      "sha256": "690d3647fa16ca28e9cf8db8352bfeb428c884482d4e28d22ff9111c8693a8f8"
+    },
+    "inputs.i32": {
+      "bytes": 49152,
+      "sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3"
+    }
+  },
+  "schema": 1,
+  "scope": "Fixed31B C8 geometry factor; retained original heads and pre-oracle bound; no recalibration or general adoption.",
+  "selected_plan_metadata": {
+    "capture": 0,
+    "norm_add": 120,
+    "norm_rope": 120,
+    "owner_steps": 120,
+    "plain_norm": 121,
+    "replay": 32,
+    "requested_cohort8_steps": 120,
+    "scope": "Planned implementations/immutable requested geometry, not effective geometry telemetry or per-replay launch count."
+  },
+  "source": {
+    "base": "c3300ab00d3ac577b240aae8565b6b72555c133b",
+    "compiled_source22_bundle_sha256": "4b7b7e5179f303529a12ffc70154bd59122a868e07ec844a2865b7393fe49b34",
+    "compiled_source22_frame_sha256": "6472444fd2c7785bb8aa0ad4c12d7ebe846f6dba332c341b7caabd31b032e25a",
+    "compiled_source22_manifest_sha256": "47bf08f766949e52faf80adfb9330a0d6428a7fb05fe71b22bcddfdef492f32a",
+    "files": [
+      {
+        "bytes": 19861,
+        "path": "benchmarks/gemma_joined.cc",
+        "sha256": "75549fafe83a1844da78d65b5257dd906abe8786a12c0a8e4b8940281ea720b9"
+      },
+      {
+        "bytes": 62617,
+        "path": "src/engine/gemma4_runner.cc",
+        "sha256": "99b5aed8010bd91d1045a36fe67df4834f9aa3a3cb565060af990a4f77fdbc6e"
+      },
+      {
+        "bytes": 15674,
+        "path": "src/engine/gemma4_runner.h",
+        "sha256": "f166d0887f1104254c449f90588d251d2356d19649d62d4bb15c4ab64b9bee64"
+      },
+      {
+        "bytes": 7510,
+        "path": "src/kernels/ggml/fattn_owner.cc",
+        "sha256": "2327fc1479e7fb1382477316c2c25a88ac8df5a1945a6fa3c1fc9631b81b25a8"
+      },
+      {
+        "bytes": 10512,
+        "path": "src/kernels/ggml/fattn_owner.cu",
+        "sha256": "769b12d580da2473e76ea87ab8b9e7d6b8090b051151a28ef0b60d1c4e9f8e44"
+      },
+      {
+        "bytes": 3197,
+        "path": "src/kernels/ggml/fattn_owner.h",
+        "sha256": "a2fb5fca8231fc1bbf73522619c566d6288333c946a4df471f51b2cdde2207d2"
+      },
+      {
+        "bytes": 13271,
+        "path": "src/kernels/ggml/gemma4_attention.cc",
+        "sha256": "a04eecead333230db26abfa9fd0b2e1428486858804d50a03b2422925fdbc1c9"
+      },
+      {
+        "bytes": 62494,
+        "path": "src/kernels/ggml/implementations.cc",
+        "sha256": "87a02d43ce9196092f91038b90f55d1f24bd5fa7eef059e8510bbb335e984267"
+      },
+      {
+        "bytes": 116688,
+        "path": "src/kernels/ggml/jitllm_ops.cc",
+        "sha256": "a6e66bff724c68c052e5cf40f16559e2775d3a5c0e52e61ceaae8dfab72817e2"
+      },
+      {
+        "bytes": 60108,
+        "path": "src/kernels/ggml/jitllm_ops.h",
+        "sha256": "24c7ba49ec4340a981a78fc7cc4c8e937568f568384863d54cd7cc29bf7054fb"
+      },
+      {
+        "bytes": 44587,
+        "path": "tests/unit/gemma4_graph_test.cc",
+        "sha256": "3c06eb8380ea607815acc577e1f6f5130d6a6463427195d36c72b944f9749524"
+      },
+      {
+        "bytes": 28094,
+        "path": "tests/unit/gemma4_plan_test.cc",
+        "sha256": "12174efde763139d7cbde2d5f06711713833b1f0c9b2cb2fc90b6b0d5355d061"
+      },
+      {
+        "bytes": 168897,
+        "path": "tests/unit/ggml_ext_ops_test.cc",
+        "sha256": "88e0dd70dcaea84dbb675b04ee0fd6b5d55532df049f73a5a950c5abc0a26dc0"
+      },
+      {
+        "bytes": 13433,
+        "path": "docs/experiments/gemma-joined-serving/llama_joined.cc",
+        "sha256": "4786817b72be01ecd268234666c871d09dc01f6fcced621baf4cd2323cf732db"
+      },
+      {
+        "bytes": 22925,
+        "path": "src/kernels/ggml/gemma4_graph.cc",
+        "sha256": "878cb233bfd8de54bab34c3f0af1f363b978e1efb954d5058960aa73365786ce"
+      },
+      {
+        "bytes": 7132,
+        "path": "src/kernels/ggml/gemma4_graph.h",
+        "sha256": "cc5116b21417796b761206ed314b50e9aeb81abd1f7cfe74408cac5028cf3824"
+      },
+      {
+        "bytes": 43488,
+        "path": "src/runtime/model_settings.cc",
+        "sha256": "e22ec37508414fcdb541b3762b20b0223916a05f5ad91f61fb1b6bbf495ef64f"
+      },
+      {
+        "bytes": 16341,
+        "path": "src/runtime/model_settings.h",
+        "sha256": "28721a7ada4845339a8f9e97ba9535fb25791db12aed575184fd9de44ae9e348"
+      },
+      {
+        "bytes": 268215,
+        "path": "src/runtime/serving.cc",
+        "sha256": "1040aff84759f0d4bdf7359594e912c8081362b1419f823a2389640efa424a97"
+      },
+      {
+        "bytes": 83236,
+        "path": "tests/unit/gemma4_runner_gpu_test.cc",
+        "sha256": "afa3b5084310d676bbc341734779540490801df9eae2e52dca8fa370d6a0e7da"
+      },
+      {
+        "bytes": 43842,
+        "path": "tests/unit/gemma4_serving_gpu_test.cc",
+        "sha256": "c3bd537767f4a07fefd42fd6bbed9a21e3eb4fdf46ac2e5d6664555eefdc235c"
+      },
+      {
+        "bytes": 28980,
+        "path": "tests/unit/model_settings_test.cc",
+        "sha256": "2dabd729c44196a3a29c247c803ebb3ba5c77442d96e3786bf3fc4260c7efe73"
+      }
+    ],
+    "parent_candidate15_manifest_sha256": "c40ce2bff58085a6ed542f94fb35736d108ed2c88d7123af1182a968ef268a3a",
+    "unchanged_resources_and_queue_sha256": "4fecc782295f2de2796a1d97b95c6af2aa5435ae555daaeb2100a56bf81bada5",
+    "unchanged_shader_sha256": "8122c0006e5b981ae415ab50df8121fed410a6b27d6330139aa971c43e598fea"
+  },
+  "source_json_sha256": "e2a14d2f89c62f043c206661e7ed676c7cd5a6a41c6da9d66a95d4262f03db8d",
+  "strict_argmax_differences": [],
+  "timings": {
+    "paid_seconds": [
+      4.63433,
+      4.40857
+    ],
+    "performance_claim": false,
+    "reason": "Candidate spread and no fresh reference acquisition in this arithmetic factor."
+  }
+}

@@ -487,6 +487,14 @@ family" guide, and its long-context scaling work.
         retaining the predeclared exact `45` format failure. 26B matches all
         exact targets; both explanations pass semantic review. This does not
         replace corpus, batching or retrieval-at-depth gates.
+      - [x] [Bounded owner cohorts](experiments/gemma-owner-cohorts/README.md):
+        opt-in complete C4/C8 attention quads preserve independent real cache roots,
+        fund both planning passes and match whole-eight reduction partitions.
+        The 31B C8 factor resolves every paid decode head; 26B passes its unchanged
+        prior margin and conditional-score gates. Full backing-parent validation
+        admits short reads at configured 262K while preserving 16K/64 MiB read
+        limits. Fifteen focused controls pass; serving defaults, C12, depth and
+        full model qualification remain open.
       - [x] [Fresh Gemma26 scheduling and heldout control](experiments/gemma-fresh-quality-validation/README.md):
         fixed-capacity native 128/1,024 schedules freeze a genuine operational
         bound on untouched history 13 before independent history 14. All 17

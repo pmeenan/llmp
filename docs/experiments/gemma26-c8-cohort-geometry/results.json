@@ -1,0 +1,256 @@
+{
+  "adoption": "Serving defaults and admission unchanged; remaining Task71 production gates remain open.",
+  "compiled_source": {
+    "base": "c3300ab00d3ac577b240aae8565b6b72555c133b",
+    "binary_sha256": "4514f149c06f94aaf7d18049bec5a46a2401a6389baf777152ffee1c5cfa8e18",
+    "parent_candidate15_manifest_sha256": "c40ce2bff58085a6ed542f94fb35736d108ed2c88d7123af1182a968ef268a3a",
+    "scope": "Measured immutable22-source4514/eb7; does not claim later integrated opt-in parent-validation helper5506/e57 was run.",
+    "sdk_receipt_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",
+    "source22_frame_sha256": "6472444fd2c7785bb8aa0ad4c12d7ebe846f6dba332c341b7caabd31b032e25a",
+    "source22_full_inventory": "../gemma-c8-cohort-geometry/results.json",
+    "source22_manifest_sha256": "47bf08f766949e52faf80adfb9330a0d6428a7fb05fe71b22bcddfdef492f32a",
+    "source_json_sha256": "30f2a8a3f6c1a7ff048103dcaa617dec39e172177c23c1c43ffe9d6100e80caf"
+  },
+  "full_suite": "Owner-deferred; no full regression run.",
+  "identities": {
+    "analysis_sha256": "abbbe9b6a6c0ba19cc45708732ef9642a718e6ad222e9ac064c64df19f0e2ccb",
+    "artifact_index_sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171",
+    "artifact_manifest_sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+    "carrier_manifest_sha256": "b91eecf9d54fc55392d15ea04ba18c5a4cc5ab8e8ac2294501094d5959b578e1",
+    "factor_analysis_sha256": "18fd1fb761ac66c7d05ebaf0fd9423852ce73f74fa44df7b7849bd643cea86b9",
+    "input_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
+    "judge_sha256": "702251d1afc20d75dc7c27b5a7724c4ce2a8a0ce60222b52aab52549264dab71",
+    "reference_client_sha256": "17424b81dbeda3a882ae516131cc1fe77c99948b9fec6d4aecab14f8e16345bf",
+    "selected_history_manifest_sha256": [
+      "806f26f6e4bf6f084fad0e98b9a090de91ae3016525f3d87c40e386cbb46fcbe",
+      "441fd698ca9d7b92afa6e7ee0c5c54efd7ddad12137717f5b893c8a1f8f179a9",
+      "26e28fc1fbd90c4f41ad755089449023818ed3581c8ef98d91a9a61b527a89c6",
+      "3a51f497e9ad4dde23252709948c1f8b62a24ff24e9e6b272b2c26289aea223b",
+      "4332efd1ca8cbc39694f617273dacfc534030306a8d8bbddbd1cd0c434d97c07",
+      "dd4eafccb850f3e42184cb8607cd58c6dfb5a9e932124ff784a4f43537360da9",
+      "cd9af16803ee34c1f010f4f93d3b69bc933418d4b12b15eb648fb267abce84da",
+      "d0addb6d1e43d965f987d5fa3f3a85d77d573e772b3628cb2508d9f3ef3d806b"
+    ],
+    "template_sha256": "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b",
+    "tokenizer_metadata_sha256": "5d15e0c84e29af2ed9b4525dacdd31ccd7bae061eb28dde2dad984a9b1e45a59"
+  },
+  "official_jobs": [
+    {
+      "elapsed_seconds": 31.1,
+      "host": "spark-56f5",
+      "name": "m35-gemma-c8-geometry-native26-1",
+      "queued_steps": 6,
+      "rc": 0,
+      "record_sha256": {
+        "final.json": "51f4cc9411d2a6ab4150e3edcf029de76b332f3a15fa2aeb414749fdceef7cb7",
+        "job.json": "9d58ccb6f6afa2fcfa251ec759fd8a8fb9bf35d2c15e8861ceb75c098141085f",
+        "steps.json": "05dcd6aab7aeaca2c00ac0748a6bf5f923becff6b844ad74bbc5ff13e84af72e"
+      },
+      "state": "done",
+      "successful_steps": 6
+    },
+    {
+      "elapsed_seconds": 4.849,
+      "host": "spark-56f5",
+      "name": "m35-gemma-c8-geometry-own26-1",
+      "queued_steps": 3,
+      "rc": 0,
+      "record_sha256": {
+        "final.json": "ee3091ca240d0c8612c518184d6aae0ccc6627fd703aadb9954fc4b45f0d5f08",
+        "job.json": "934566619b0ecd818aeb3534a505328e2e69f76fc74192695caec1e145aec189",
+        "steps.json": "17eea4c4d0759796ea191b610d9de5240b7dad5f449fd11e817f3fd4531fd190"
+      },
+      "state": "done",
+      "successful_steps": 3
+    },
+    {
+      "elapsed_seconds": 28.336,
+      "host": "spark-56f5",
+      "name": "m35-gemma-c8-geometry-reference26-1",
+      "queued_steps": 6,
+      "rc": 0,
+      "record_sha256": {
+        "final.json": "13c9c88e36a04db871f4cb1b0ea3a90032c7fac63582d73366ca7f63c906fd0f",
+        "job.json": "31895f265ccb379788ef85271e157798312edb6ef22bef20ffdbfca14cac3c8b",
+        "steps.json": "5e71a6d4d15466ed69d9b156a304432d1fcca92e26e92e26dde73301d347c55a"
+      },
+      "state": "done",
+      "successful_steps": 6
+    },
+    {
+      "elapsed_seconds": 6.467,
+      "host": "spark-56f5",
+      "name": "m35-gemma-c8-geometry-assess26-1",
+      "queued_steps": 3,
+      "rc": 0,
+      "record_sha256": {
+        "final.json": "65f73c94248f604e30e3216a3855c3ad320e4b17e12ac26aab5811a509e09d03",
+        "job.json": "e5755dd38dbb54b5923739b2984964d55813c85192a5033a1b20da47e7710342",
+        "steps.json": "394637175c9a7a6291297b5de2452ca87a690544d495e2ea7a6710b3228ffbaa"
+      },
+      "state": "done",
+      "successful_steps": 3
+    }
+  ],
+  "oracle_packet_sha256": "6091a7c93df82e45e8cc32211ab6cb26bf6a9c0e7e22902719202fb7fb3de06e",
+  "owned_retirement_sha256": {
+    "task71-c8-factor-26-admit-joined-first-container-retired.json": "dc789c5b204aff6289d602c2a09488725ba02e4b5c80397927eb9dcecce792e0",
+    "task71-c8-factor-26-admit-joined-repeat-container-retired.json": "67dff7a0da0fbe9370206da02afb6754dfd41f7fd61de050c1e5eff8e5f85821",
+    "task71-c8-factor-26-assess1-container-retired.json": "959df92fee46f6551646572027f11f02636a416c67386e750b472c3b054fd983",
+    "task71-c8-factor-26-own1-container-retired.json": "d033b0d6a7b366c165d6f97d962d8ffa4b0a4c0b3c048abfdd235a8fa334840b",
+    "task71-ref26-c8-first-container-retired.json": "00fed7ad6c0ce361a639fd7bae6350167f0d10f4fe28b98e2fce2ca9cec4c6bb",
+    "task71-ref26-c8-repeat-container-retired.json": "88ea654f889e836825ef881804342343df3055864633502bcefd60f66071571a"
+  },
+  "ownrepeat": {
+    "candidate_heads": {
+      "bytes": 276824064,
+      "sha256": "ebc6ddc6c568718a2d577240d4817f457bf13cfa23150c2734a5a896e6932bdb"
+    },
+    "complete_head_frontier_and_final_states_layout_and_inputs_exact": true,
+    "finite_rows": 264,
+    "frontier_state_matches_original_native_freeze": true,
+    "initialized_state_bytes_per_owner_snapshot": 230686720,
+    "ownproof_sha256": "9484b0a627e7822349f74059876d9658ca937367857d2860eeb7e9171a6ed73f"
+  },
+  "quality": {
+    "all_head_max_raw_delta": 2.0424611568450928,
+    "base_analysis_sha256": "abbbe9b6a6c0ba19cc45708732ef9642a718e6ad222e9ac064c64df19f0e2ccb",
+    "byte_exact_rows": 118,
+    "complete_rows": 264,
+    "conditional_loss_within_3_percent": true,
+    "corpus_ppl_claim": false,
+    "factor_analysis_sha256": "18fd1fb761ac66c7d05ebaf0fd9423852ce73f74fa44df7b7849bd643cea86b9",
+    "factor_gate_passed": true,
+    "forced_nll_rows": 256,
+    "frontier_byte_exact_rows": 0,
+    "frontier_outside_p99": 0,
+    "native_mean_nll": 10.953604858686354,
+    "old_baseline_quality_passed": null,
+    "old_failed_comparison_sha256": null,
+    "old_native_freeze_sha256": "5e8c56d5f17e388ddb24747fea27559ef3489f17315dd5eb703ea12efe7606bb",
+    "old_p99_bound": 8.085711284875883,
+    "outside_p99": 0,
+    "paid_byte_exact_rows": 118,
+    "paid_completed_rows": 256,
+    "paid_outside_p99": 0,
+    "prefill_frontier_rows": 8,
+    "reference_mean_nll": 10.949650248640475,
+    "relative_conditional_loss": 0.003962439834037115,
+    "scope": "Fixed-source joined geometry factor; no recalibration, no old failure waiver or general default adoption.",
+    "source_sha256": "30f2a8a3f6c1a7ff048103dcaa617dec39e172177c23c1c43ffe9d6100e80caf"
+  },
+  "raw_comparison_sha256": "957171668e32c1751c761101c2ae84543fd364f78cda1c6ea25406e72fbee6ae",
+  "raw_location": "/tmp/jitllm-m35-coordination/gemma-c8-cohort-geometry-raw",
+  "recipe": {
+    "context": 4096,
+    "effective_owner": "actualdevicearchitecture1210-only; fixed during Setup before sizing",
+    "forced_steps": 32,
+    "fusion": true,
+    "graphs": true,
+    "history_rows": 1024,
+    "max_head_rows": 8,
+    "max_rows": 1024,
+    "moe_route_reduce": true,
+    "native_joined_groups": [
+      8
+    ],
+    "native_policy": "all",
+    "norm_add": true,
+    "norm_rope": true,
+    "owner_requested": true,
+    "owners": 8,
+    "plain_norm": true,
+    "prefill_rows": 992,
+    "profile": 26,
+    "rope_store": false,
+    "row_products": false,
+    "serving_joined_default": false,
+    "serving_owner_default": false,
+    "shared_q8": false
+  },
+  "reference": {
+    "cohort.logits.f32": {
+      "bytes": 276824064,
+      "sha256": "5d9733abfe315db5b0b2266b31bbf0829f35585ed27e9ff0294f3828983a7867"
+    },
+    "inputs.i32": {
+      "bytes": 49152,
+      "sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3"
+    }
+  },
+  "schema": 1,
+  "scope": "First26 C8 oracle for the existing geometry factor, under unchanged pre-oracle26 C8 bound; no strict-zero or general-default claim.",
+  "selected_plan_metadata": {
+    "capture": 0,
+    "norm_add": 90,
+    "norm_rope": 60,
+    "owner_steps": 60,
+    "plain_norm": 121,
+    "reduce": 30,
+    "replay": 32,
+    "requested_cohort8_steps": 60,
+    "route": 30,
+    "scope": "Actual planned implementation/requestedgeometry metadata, not per-replay launches."
+  },
+  "source_packet_sha256": "49615fc371a04120ee5b5a9c57a7c280ec333c526fe91662f9826eb01246a198",
+  "strict_argmax_differences": [
+    {
+      "frontier_row": 6,
+      "native": 841,
+      "outside_p99": false,
+      "owner": 5,
+      "reference": 101,
+      "reference_margin": 0.14178228378295898,
+      "reference_tie": false,
+      "row": 53
+    },
+    {
+      "frontier_row": 25,
+      "native": 2411,
+      "outside_p99": false,
+      "owner": 7,
+      "reference": 728,
+      "reference_margin": 0.019127845764160156,
+      "reference_tie": false,
+      "row": 207
+    },
+    {
+      "frontier_row": 26,
+      "native": 1852,
+      "outside_p99": false,
+      "owner": 0,
+      "reference": 1346,
+      "reference_margin": 0.026866436004638672,
+      "reference_tie": false,
+      "row": 208
+    }
+  ],
+  "strict_zero_passed": false,
+  "tensorfold_entry": {
+    "applicability": "Primary modeltable Gemma26 MLX only; no comparable GB10CUDA Gemma recipe; no TensorFold inference.",
+    "checked_at_utc": "2026-10-06T06:35:39.606472+00:00",
+    "main": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "primary": "https://github.com/ashhart/TensorFold",
+    "primary_file_sha256": {
+      "README.md": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2",
+      "pyproject.toml": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+    },
+    "task": "26C8 samecompiled geometry transfer",
+    "version": "0.6.5"
+  },
+  "tensorfold_entry_sha256": "b532a3e54e4910c406ced9f0f51a44a7eafd38dfc7e28cdb8f2f6bad261a85b1",
+  "timings": {
+    "native_mean": 1.63712,
+    "native_paid_seconds": [
+      1.63509,
+      1.63915
+    ],
+    "reference_mean": 1.6762,
+    "reference_paid_seconds": [
+      1.67582,
+      1.67658
+    ],
+    "relative_native_elapsed": -0.023314640257725894,
+    "scope": "Short two-own-repeat screen, not sustained/parity/depth/serving qualification."
+  }
+}

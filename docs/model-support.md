@@ -103,6 +103,12 @@ Strict zero-difference still fails. The measured runtime candidate remains
 uncommitted; this bounded C1 result changes no default, admission, previous
 failure or broader model-support gate.
 
+The [opt-in owner-cohort engine](experiments/gemma-owner-cohorts/README.md)
+adds funded complete C4/C8 attention quads and safe short-read eligibility with
+full configured backing. Its 31B C8 factor matches every paid decode head;
+Gemma26 passes its unchanged prior margin and conditional-score gates. These
+bounded results leave serving defaults, C12, depth and full model support open.
+
 The [fresh current solo comparison](experiments/gemma-current-reference/README.md)
 records stable 26B prefill/decode latency gaps of 2.43%/0.92%. Native 31B prefill
 is stable, but reference bookends vary from 12.3124 to 10.9769 s; native is 2.08%

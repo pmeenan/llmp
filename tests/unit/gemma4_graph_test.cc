@@ -58,6 +58,54 @@ std::size_t Count(const kg::Gemma4Graph& g, ggml_op op) {
 }
 void BindLeaves(kg::Gemma4Graph& g);
 
+TEST(Gemma4Graph, CohortGridUsesWholeEightRoundingAndFallsBackForOddSplits) {
+  for (const auto max_blocks : {47, 48, 96, 100, 256})
+    for (const auto kv_heads : {2, 4, 8, 16})
+      for (const auto kv_tiles : {4, 16, 32, 512}) {
+        const auto original = [&](int owners) {
+          const int tiles = kv_heads * owners;
+          const int raw = std::min(max_blocks, kv_tiles * tiles);
+          const int rounded = raw / tiles * tiles;
+          const int loss = rounded > 0 ? 100 * (raw - rounded) / raw : 100;
+          return loss <= 5 ? rounded : raw;
+        };
+        const auto four = kg::detail::PlanOwnerPartition(max_blocks, kv_tiles, kv_heads, 4);
+        const auto eight = kg::detail::PlanOwnerPartition(max_blocks, kv_tiles, kv_heads, 8);
+        ASSERT_TRUE(four);
+        ASSERT_TRUE(eight);
+        EXPECT_EQ(four->quad_blocks, original(4));
+        EXPECT_EQ(four->effective_cohort, 4U);
+        const auto whole = original(8);
+        if (whole % 2 != 0) {
+          EXPECT_EQ(eight->effective_cohort, 4U);
+          EXPECT_EQ(eight->quad_blocks, four->quad_blocks);
+        } else {
+          EXPECT_EQ(eight->effective_cohort, 8U);
+          EXPECT_EQ(eight->cohort_blocks, whole);
+          EXPECT_EQ(eight->quad_blocks * 2, whole);
+          const auto quad_work = std::int64_t{kv_tiles} * kv_heads * 4;
+          // Both endpoints of every block, including the second half's
+          // translation, match the original full-eight partition exactly.
+          for (int b = 0; b <= eight->quad_blocks; ++b) {
+            const auto local = b * quad_work / eight->quad_blocks;
+            EXPECT_EQ(local, b * (quad_work * 2) / whole);
+            EXPECT_EQ(local + quad_work, (b + eight->quad_blocks) * (quad_work * 2) / whole);
+          }
+        }
+      }
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(0, 16, 16, 8));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 0, 16, 8));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 513, 16, 8));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 16, 17, 8));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 16, 16, 12));
+  const auto local = kg::detail::PlanOwnerPartition(48, 16, 16, 8);
+  const auto global = kg::detail::PlanOwnerPartition(96, 32, 4, 8);
+  ASSERT_TRUE(local);
+  ASSERT_TRUE(global);
+  EXPECT_EQ(local->quad_blocks, 24);
+  EXPECT_EQ(global->quad_blocks, 48);
+}
+
 TEST(Gemma4Graph, OwnerOperandsUseActualVariableSpansAndWidths) {
   for (const std::int64_t heads : {16, 32})
     for (const std::int64_t d : {256, 512})
@@ -85,6 +133,21 @@ TEST(Gemma4Graph, OwnerOperandsUseActualVariableSpansAndWidths) {
         EXPECT_EQ(kg::CheckFlashAttnOwnersNode(out).has_value(), fits)
             << heads << '/' << d << '/' << cells;
         if (!fits) continue;
+        EXPECT_EQ(kg::JitllmOpInt(out, 0), 4);
+        // Custom integer payload begins at byte32 after the operation tag.
+        for (const auto cohort : {0, 1, 5, 12, -1}) {
+          out->op_params[8] = cohort;
+          EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(out));
+        }
+        out->op_params[8] = 8;
+        EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(out));
+        auto eight = kg::FlashAttnOwnersFromNode(out);
+        ASSERT_TRUE(eight);
+        EXPECT_EQ(eight->logical_cohort, 8U);
+        out->op_params[9] = 8;
+        EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(out));
+        out->op_params[9] = 0;
+        out->op_params[8] = 4;
         const auto old_width = k[3]->ne[1];
         k[3]->ne[1] -= 256;
         EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(out));
@@ -103,11 +166,86 @@ TEST(Gemma4Graph, OwnerOperandsUseActualVariableSpansAndWidths) {
       }
 }
 
+TEST(Gemma4Graph, OwnerReadViewsKeepBoundsWithFullContextBackingParents) {
+  auto arena = kg::TensorArena::Create(64);
+  ASSERT_TRUE(arena);
+  auto* c = arena->context();
+  constexpr std::int64_t d = 512, heads = 32, kvh = 4, cells = 1024, capacity = 262144;
+  auto* q = ggml_new_tensor_4d(c, GGML_TYPE_F32, d, 1, heads, 4);
+  q->nb[1] = d * heads * 4;
+  kg::TensorArena::Bind(q, 0x10000000ULL);
+  auto* mask = ggml_new_tensor_4d(c, GGML_TYPE_F16, cells, 32, 1, 4);
+  kg::TensorArena::Bind(mask, 0x20000000ULL);
+  std::array<ggml_tensor*, 4> k{}, v{};
+  ggml_tensor* first_parent = nullptr;
+  for (std::size_t i = 0; i < 4; ++i)
+    for (std::size_t which = 0; which < 2; ++which) {
+      auto* raw = ggml_new_tensor_4d(c, GGML_TYPE_F16, d, kvh, capacity, 1);
+      kg::TensorArena::Bind(raw, 0x100000000ULL + (i * 2 + which) * 0x80000000ULL);
+      if (i == 0 && which == 0) first_parent = raw;
+      auto* view =
+          ggml_view_4d(c, raw, d, kvh, cells, 1, d * 2, d * kvh * 2, d * kvh * cells * 2, 0);
+      (which == 0 ? k[i] : v[i]) = ggml_permute(c, view, 0, 2, 1, 3);
+    }
+  auto* out = kg::FlashAttnOwnersNode(c, q, mask, k, v, 8);
+  kg::TensorArena::Bind(out, 0x2000000000ULL);
+  ASSERT_TRUE(kg::CheckFlashAttnOwnersNode(out));
+  // Storage growth does not widen the read operand or admit overflowed,
+  // inconsistent or cyclic parent chains.
+  first_parent->ne[2] += 256;
+  EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(out));
+  first_parent->ne[2] = capacity;
+  const auto address = first_parent->data;
+  first_parent->data = reinterpret_cast<void*>(std::numeric_limits<std::uintptr_t>::max() - 15);
+  EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(out));
+  first_parent->data = address;
+  auto* leaf = k[0];
+  ASSERT_NE(leaf, nullptr);
+  leaf->view_offs += 16;
+  EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(out));
+  leaf->view_offs -= 16;
+  first_parent->view_src = first_parent;
+  EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(out));
+  first_parent->view_src = nullptr;
+  EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(out));
+}
+
+TEST(Gemma4Graph, FullConfiguredContextKeepsBoundedOwnerReadsAndDepthFallback) {
+  for (const auto size : {26U, 31U})
+    for (const auto owners : {4U, 8U})
+      for (const auto read : {1024U, 16384U, 16640U}) {
+        Case c(size, 4);
+        c.state = *md::Gemma4State(c.p, 262144, 256);
+        c.shape = {};
+        for (std::uint32_t i = 0; i < owners; ++i)
+          c.shape.segments.push_back({i, 1, read - 1, read, c.state.local_cells});
+        c.shape.outputs = owners;
+        kg::Gemma4GraphOptions options;
+        options.device_masks = true;
+        options.attention_mode = kg::Gemma4AttentionMode::kOwners;
+        auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, owners, options));
+        ASSERT_TRUE(arena);
+        auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+        ASSERT_TRUE(g);
+        EXPECT_EQ(g->attention_mode, read <= 16384 ? kg::Gemma4AttentionMode::kOwners
+                                                   : kg::Gemma4AttentionMode::kIndependent);
+        if (read <= 16384) {
+          EXPECT_EQ(g->attention_quad_mask, owners == 8 ? 3U : 1U);
+          BindLeaves(*g);
+          for (const auto* node : g->nodes)
+            if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners) {
+              const auto valid = kg::CheckFlashAttnOwnersNode(node);
+              EXPECT_TRUE(valid) << (valid ? "" : valid.error().detail);
+            }
+        }
+      }
+}
+
 TEST(Gemma4Graph, OwnerOptInPreservesUnsupportedGraphsAndRejectsBrokenWriterEdges) {
   for (const auto size : {26U, 31U})
     for (const auto count : {1U, 2U, 4U, 8U})
       for (const auto rows : {1U, 2U}) {
-        if (count == 4 && rows == 1) continue;
+        if (count >= 4 && rows == 1) continue;
         Case c(size, 4);
         c.state = *md::Gemma4State(c.p, 16384, 128);
         c.shape = {};
@@ -255,6 +393,158 @@ TEST(Gemma4Graph, VariableOwnerAttentionKeepsSlotOrderWritersAndFundedMetadata) 
         independent.attention_mode = kg::Gemma4AttentionMode::kIndependent;
         EXPECT_NE(independent, options);
       }
+}
+
+TEST(Gemma4Graph, CompleteQuadsKeepProductsAndIndependentTailsInOriginalOwnerOrder) {
+  for (const auto size : {26U, 31U})
+    for (const auto owners : {4U, 5U, 6U, 7U, 8U})
+      for (const auto mode : {kg::Gemma4AttentionMode::kPacked, kg::Gemma4AttentionMode::kOwners}) {
+        Case c(size);
+        c.state = *md::Gemma4State(c.p, 4096, size == 26 ? 1024 : 256);
+        c.shape = {};
+        constexpr std::array<std::uint32_t, 8> slots{7, 2, 15, 5, 1, 12, 9, 4};
+        for (std::uint32_t i = 0; i < owners; ++i) {
+          const auto read = i < 4 ? 512U : 1024U;
+          c.shape.segments.push_back({slots[i], 1, read - 128 + i, read, read});
+        }
+        c.shape.outputs = owners;
+        kg::Gemma4GraphOptions options;
+        options.device_masks = true;
+        options.narrow_final = true;
+        auto estimate = options;
+        estimate.attention_mode = mode;
+        const auto tensors = kg::Gemma4GraphTensors(c.p, owners, estimate);
+        EXPECT_EQ(tensors, kg::Gemma4GraphTensors(c.p, owners) + c.p.layers * 64 * (owners / 4));
+        auto arena = kg::TensorArena::Create(tensors);
+        ASSERT_TRUE(arena);
+        auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+        ASSERT_TRUE(graph);
+        auto* projection = graph->Named("blk.0.attn_projection");
+        ASSERT_NE(projection, nullptr);
+        ASSERT_EQ(projection->src[1]->ne[1], owners);
+        const auto products = Count(*graph, GGML_OP_MUL_MAT);
+        ASSERT_TRUE(kg::TransformGemma4Attention(*arena, *graph, mode));
+        EXPECT_EQ(graph->attention_mode, mode);
+        EXPECT_EQ(graph->attention_quad_mask, (1U << (owners / 4)) - 1);
+        EXPECT_EQ(graph->Named("blk.0.attn_projection"), projection);
+        EXPECT_EQ(projection->src[1]->ne[1], owners);
+        EXPECT_EQ(Count(*graph, GGML_OP_MUL_MAT), products);
+        EXPECT_EQ(Count(*graph, GGML_OP_SET_ROWS), c.p.layers * owners * 2);
+        const auto independent = owners % 4;
+        EXPECT_EQ(Count(*graph, GGML_OP_FLASH_ATTN_EXT),
+                  c.p.layers *
+                      (independent + (mode == kg::Gemma4AttentionMode::kPacked ? owners / 4 : 0)));
+        std::size_t owner_nodes = 0;
+        for (auto* node : graph->nodes) {
+          if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+          ++owner_nodes;
+          EXPECT_EQ(node->ne[3], 4);
+          EXPECT_EQ(kg::JitllmOpInt(node, 0), 4);  // Widths differ between the quads.
+          for (std::size_t i = 0; i < 8; ++i) {
+            auto* raw = node->src[2 + i]->src[0];
+            ASSERT_NE(raw, nullptr);
+            ASSERT_NE(raw->src[0], nullptr);
+            EXPECT_EQ(raw->src[0]->op, GGML_OP_SET_ROWS);
+            EXPECT_LT(std::ranges::find(graph->nodes, raw->src[0]),
+                      std::ranges::find(graph->nodes, node));
+          }
+        }
+        EXPECT_EQ(owner_nodes,
+                  mode == kg::Gemma4AttentionMode::kOwners ? c.p.layers * (owners / 4) : 0);
+        for (std::uint32_t i = 0; i < owners; ++i) {
+          auto* flat = graph->Named("blk.0.slot." + std::to_string(slots[i]) + ".attention");
+          ASSERT_NE(flat, nullptr);
+          auto* attention = flat->src[0];
+          ASSERT_NE(attention, nullptr);
+          if (i < owners - independent) {
+            ASSERT_EQ(attention->op, GGML_OP_VIEW);
+            ASSERT_NE(attention->src[0], nullptr);
+            EXPECT_EQ(attention->view_offs, (i % 4) * attention->src[0]->nb[3]);
+            const auto mask_index = mode == kg::Gemma4AttentionMode::kOwners ? 1 : 3;
+            EXPECT_EQ(attention->src[0]->src[mask_index]->ne[0], i < 4 ? 512 : 1024);
+          } else {
+            EXPECT_EQ(attention->op, GGML_OP_FLASH_ATTN_EXT);
+            EXPECT_EQ(attention->ne[3], 1);
+          }
+        }
+        EXPECT_LE(arena->used(), arena->bytes());
+        EXPECT_TRUE(arena->Reserve(0));
+      }
+}
+TEST(Gemma4Graph, UnsupportedQuadWidthsPreserveOnlyThatQuadAndBrokenSecondWriterRefusesAll) {
+  for (const auto size : {26U, 31U})
+    for (const auto unsupported_quad : {0U, 1U, 2U}) {
+      Case c(size);
+      c.state = *md::Gemma4State(c.p, 4096, size == 26 ? 1024 : 256);
+      c.shape = {};
+      for (std::uint32_t i = 0; i < 8; ++i) {
+        const auto read = i / 4 == unsupported_quad && i % 4 == 0 ? 256U : 512U;
+        c.shape.segments.push_back({i, 1, read - 128, read, read});
+      }
+      c.shape.outputs = 8;
+      kg::Gemma4GraphOptions options;
+      options.device_masks = true;
+      auto estimate = options;
+      estimate.attention_mode = kg::Gemma4AttentionMode::kOwners;
+      auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 8, estimate));
+      ASSERT_TRUE(arena);
+      auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+      ASSERT_TRUE(graph);
+      if (unsupported_quad == 2) {
+        ggml_tensor* writer = nullptr;
+        for (auto* node : graph->nodes)
+          if (node->op == GGML_OP_SET_ROWS && node->src[2] == graph->segments[7].caches[0].first)
+            writer = node;
+        ASSERT_NE(writer, nullptr);
+        auto* cells = writer->src[1];
+        writer->src[1] = graph->segments[6].local_cells;
+        const auto used = arena->used();
+        const auto nodes = graph->nodes;
+        const auto names = graph->named;
+        auto* first_attention = graph->Named("blk.0.slot.0.attention")->src[0];
+        EXPECT_FALSE(
+            kg::TransformGemma4Attention(*arena, *graph, kg::Gemma4AttentionMode::kOwners));
+        EXPECT_EQ(arena->used(), used);
+        EXPECT_EQ(graph->nodes, nodes);
+        EXPECT_EQ(graph->named, names);
+        EXPECT_EQ(graph->Named("blk.0.slot.0.attention")->src[0], first_attention);
+        EXPECT_EQ(first_attention->op, GGML_OP_FLASH_ATTN_EXT);
+        EXPECT_EQ(graph->attention_mode, kg::Gemma4AttentionMode::kIndependent);
+        EXPECT_EQ(graph->attention_quad_mask, 0U);
+        writer->src[1] = cells;
+      }
+      ASSERT_TRUE(kg::TransformGemma4Attention(*arena, *graph, kg::Gemma4AttentionMode::kOwners));
+      EXPECT_EQ(graph->attention_quad_mask,
+                unsupported_quad == 2 ? 3U : (3U ^ (1U << unsupported_quad)));
+      EXPECT_EQ(Count(*graph, GGML_OP_FLASH_ATTN_EXT), unsupported_quad == 2 ? 0U : c.p.layers * 4);
+    }
+}
+
+TEST(Gemma4Graph, QuadMetadataRefusalLeavesOriginalEdgesAndModesUntouched) {
+  Case c(31);
+  c.state = *md::Gemma4State(c.p, 4096, 256);
+  c.shape = {};
+  for (std::uint32_t i = 0; i < 8; ++i) c.shape.segments.push_back({i, 1, 300 + i, 512, 512});
+  c.shape.outputs = 8;
+  kg::Gemma4GraphOptions options;
+  options.device_masks = true;
+  auto estimate = options;
+  estimate.attention_mode = kg::Gemma4AttentionMode::kOwners;
+  auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 8, estimate));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+  ASSERT_TRUE(graph);
+  // Consume only pre-funded CPU descriptor room; there are no payload allocations.
+  while (arena->Reserve(1)) ggml_new_tensor_1d(arena->context(), GGML_TYPE_F32, 1);
+  const auto used = arena->used();
+  const auto nodes = graph->nodes;
+  auto* original = graph->Named("blk.0.slot.0.attention")->src[0];
+  EXPECT_FALSE(kg::TransformGemma4Attention(*arena, *graph, kg::Gemma4AttentionMode::kOwners));
+  EXPECT_EQ(arena->used(), used);
+  EXPECT_EQ(graph->nodes, nodes);
+  EXPECT_EQ(graph->Named("blk.0.slot.0.attention")->src[0], original);
+  EXPECT_EQ(graph->attention_mode, kg::Gemma4AttentionMode::kIndependent);
+  EXPECT_EQ(graph->attention_quad_mask, 0U);
 }
 
 TEST(Gemma4Graph, StateOnlyKeepsEveryCacheStoreAndOmitsOnlyTheFinalTail) {

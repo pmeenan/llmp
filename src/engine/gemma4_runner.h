@@ -260,6 +260,10 @@ class Gemma4Runner final : public PagedModel {
     std::uint32_t shared_vecq = 0, row_products = 0, lane_steps = 0;
     std::uint32_t norm_rope = 0, norm_add = 0;
     std::uint32_t gemma_route = 0, gemma_reduce = 0;
+    // Selected plan implementations, not executions or per-replay launches.
+    std::uint32_t owner_attention_steps = 0;
+    // Requested immutable node geometry; a device plan can fall back to four.
+    std::uint32_t requested_cohort8_steps = 0;
   };
   const PolicyCounts& last_built_policy() const { return policy_; }
 

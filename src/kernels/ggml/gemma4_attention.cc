@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// C4 attention-only transform: shared products retain their existing row group.
+// Complete attention quads: shared products retain their existing row group.
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -22,35 +22,52 @@ constexpr std::size_t kExtraPerLayer = 64;
 std::unexpected<KernelFailure> Reject(std::string_view why) {
   return std::unexpected(KernelFailure{.detail = std::string(why)});
 }
-bool Shape(const Gemma4Graph& g) {
-  if ((g.profile != md::Gemma4_31B() && g.profile != md::Gemma4_26BA4B()) || g.context > 16384 ||
-      (g.max_rows == 0 || g.max_rows > md::kGemma4MaxRows) || g.shape.outputs != 4 ||
-      g.shape.feature_outputs != 0 || g.segments.size() != 4 || g.shape.segments.size() != 4 ||
-      g.options.first_layer != 0 || g.options.layer_count != 0 || g.options.hidden_input ||
-      !g.options.head || g.options.shared_q8 || g.options.rope_store ||
-      g.normalized_features != nullptr)
+bool Shape(const Gemma4Graph& g, Gemma4AttentionMode mode) {
+  if ((g.profile != md::Gemma4_31B() && g.profile != md::Gemma4_26BA4B()) ||
+      (mode == Gemma4AttentionMode::kPacked && g.context > 16384) ||
+      (g.max_rows == 0 || g.max_rows > md::kGemma4MaxRows) ||
+      g.shape.outputs != g.segments.size() || g.shape.feature_outputs != 0 ||
+      g.segments.size() < 4 || g.segments.size() > 8 ||
+      g.shape.segments.size() != g.segments.size() || g.options.first_layer != 0 ||
+      g.options.layer_count != 0 || g.options.hidden_input || !g.options.head ||
+      g.options.shared_q8 || g.options.rope_store || g.normalized_features != nullptr)
     return false;
-  for (const auto [read, capacity] :
-       {std::pair{g.segments[0].shape.local_n_kv, g.local_capacity},
-        std::pair{g.segments[0].shape.global_n_kv, g.global_capacity}})
-    if (read < 256 || read > 16384 || read % 256 != 0 || read > capacity) return false;
-  // Current() checks the full parent chain, not merely the masked read view.
-  // Refuse eligibility before any mutation if a real cache parent exceeds the
-  // operation's bounded span, even when this step reads only a small prefix.
+  // Current() checks full backing containment separately from the executed
+  // <=16K read view. Owner attention can use an approved 262K backing while
+  // keeping the same bounded shader domain; packed attention keeps its limit.
+  const auto parent_limit = mode == Gemma4AttentionMode::kOwners ? (1ULL << 30U) : (64ULL << 20U);
   for (std::uint32_t layer = 0; layer < g.profile.layers; ++layer) {
     const auto capacity = g.profile.local(layer) ? g.local_capacity : g.global_capacity;
     const auto bytes =
         std::uint64_t{capacity} * g.profile.head_dim(layer) * g.profile.kv_heads(layer) * 2;
-    if (bytes > (64ULL << 20U)) return false;
+    if (bytes > parent_limit) return false;
   }
-  for (std::size_t i = 0; i < 4; ++i) {
+  for (std::size_t i = 0; i < g.segments.size(); ++i) {
     const auto& s = g.segments[i];
     if (s.shape != g.shape.segments[i] || s.shape.rows != 1 || s.first_row != i ||
-        s.shape.local_n_kv != g.segments[0].shape.local_n_kv ||
-        s.shape.global_n_kv != g.segments[0].shape.global_n_kv ||
         s.caches.size() != g.profile.layers)
       return false;
   }
+  return true;
+}
+bool QuadShape(const Gemma4Graph& g, std::size_t first) {
+  for (const auto [read, capacity] :
+       {std::pair{g.segments[first].shape.local_n_kv, g.local_capacity},
+        std::pair{g.segments[first].shape.global_n_kv, g.global_capacity}})
+    if (read < 256 || read > 16384 || read % 256 != 0 || read > capacity) return false;
+  // Full parents may be larger, but every actual K/V operand still fits the
+  // original 64 MiB launch bound. Refuse before graph mutation otherwise.
+  for (std::uint32_t layer = 0; layer < g.profile.layers; ++layer) {
+    const auto read = g.profile.local(layer) ? g.segments[first].shape.local_n_kv
+                                             : g.segments[first].shape.global_n_kv;
+    if (std::uint64_t{read} * g.profile.head_dim(layer) * g.profile.kv_heads(layer) * 2 >
+        (64ULL << 20U))
+      return false;
+  }
+  for (std::size_t i = first + 1; i < first + 4; ++i)
+    if (g.segments[i].shape.local_n_kv != g.segments[first].shape.local_n_kv ||
+        g.segments[i].shape.global_n_kv != g.segments[first].shape.global_n_kv)
+      return false;
   return true;
 }
 bool Dims(const ggml_tensor* t, ggml_type type, std::array<std::int64_t, 4> ne) {
@@ -61,15 +78,15 @@ struct Layer {
   std::array<ggml_tensor*, 8> writes{};
 };
 // Inspect only exact direct builder edges, never follow arbitrary root chains.
-bool Inspect(const Gemma4Graph& g, std::uint32_t layer, Layer& out) {
+bool Inspect(const Gemma4Graph& g, std::uint32_t layer, std::size_t first, Layer& out) {
   const auto d = g.profile.head_dim(layer), kvh = g.profile.kv_heads(layer);
   const auto kvw = std::size_t{d} * kvh;
   const auto cells = g.profile.local(layer) ? g.local_capacity : g.global_capacity;
-  const auto read =
-      g.profile.local(layer) ? g.segments[0].shape.local_n_kv : g.segments[0].shape.global_n_kv;
+  const auto read = g.profile.local(layer) ? g.segments[first].shape.local_n_kv
+                                           : g.segments[first].shape.global_n_kv;
   for (std::size_t owner = 0; owner < 4; ++owner) {
-    auto* flat =
-        g.Named(std::format("blk.{}.slot.{}.attention", layer, g.segments[owner].shape.slot));
+    auto* flat = g.Named(
+        std::format("blk.{}.slot.{}.attention", layer, g.segments[first + owner].shape.slot));
     if (!Dims(flat, GGML_TYPE_F32, {std::int64_t{d} * g.profile.heads, 1, 1, 1}) ||
         flat->op != GGML_OP_RESHAPE || flat->src[0] == nullptr || flat->view_src != flat->src[0] ||
         flat->view_offs != 0)
@@ -82,14 +99,14 @@ bool Inspect(const Gemma4Graph& g, std::uint32_t layer, Layer& out) {
       return false;
     out.flash[owner] = f;
     out.q[owner] = f->src[0]->src[0];
-    out.mask[owner] =
-        g.profile.local(layer) ? g.segments[owner].local_mask : g.segments[owner].global_mask;
+    out.mask[owner] = g.profile.local(layer) ? g.segments[first + owner].local_mask
+                                             : g.segments[first + owner].global_mask;
     if (f->src[3] != out.mask[owner] || !Dims(out.mask[owner], GGML_TYPE_F16, {read, 32, 1, 1}) ||
         !ggml_is_contiguous(out.mask[owner]))
       return false;
     for (std::size_t which = 0; which < 2; ++which) {
-      auto* leaf = which == 0 ? g.segments[owner].caches[layer].first
-                              : g.segments[owner].caches[layer].second;
+      auto* leaf = which == 0 ? g.segments[first + owner].caches[layer].first
+                              : g.segments[first + owner].caches[layer].second;
       auto* cache = f->src[which + 1];
       if (!Dims(leaf, GGML_TYPE_F16, {static_cast<std::int64_t>(kvw), cells, 1, 1}) ||
           leaf->op != GGML_OP_NONE || leaf->view_src != nullptr || !ggml_is_contiguous(leaf) ||
@@ -105,8 +122,8 @@ bool Inspect(const Gemma4Graph& g, std::uint32_t layer, Layer& out) {
         if (write != nullptr || node->view_src != leaf || node->view_offs != 0 ||
             node->type != GGML_TYPE_F16 || !ggml_is_contiguous(node) ||
             !Dims(node->src[0], GGML_TYPE_F32, {static_cast<std::int64_t>(kvw), 1, 1, 1}) ||
-            node->src[1] != (g.profile.local(layer) ? g.segments[owner].local_cells
-                                                    : g.segments[owner].global_cells))
+            node->src[1] != (g.profile.local(layer) ? g.segments[first + owner].local_cells
+                                                    : g.segments[first + owner].global_cells))
           return false;
         write = node;
       }
@@ -127,62 +144,86 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
   if (mode == Gemma4AttentionMode::kIndependent) return {};
   if (mode != Gemma4AttentionMode::kPacked && mode != Gemma4AttentionMode::kOwners)
     return Reject("invalid Gemma4 attention mode");
-  if (!Shape(g)) return {};
-  if (g.attention_mode != Gemma4AttentionMode::kIndependent)
+  if (!Shape(g, mode)) return {};
+  if (g.attention_mode != Gemma4AttentionMode::kIndependent || g.attention_quad_mask != 0)
     return Reject("Gemma4 attention graph was already transformed");
   const auto& p = g.profile;
-  std::array<Layer, 60> layers{};
+  std::array<std::array<Layer, 60>, 2> layers{};
+  std::array<bool, 2> eligible{};
+  std::size_t quad_count = 0;
   if (g.nodes.size() > 50000 || g.named.size() > 10000) return Reject("packed graph domain");
-  for (std::uint32_t il = 0; il < p.layers; ++il)
-    if (!Inspect(g, il, layers[il])) return Reject("packed original attention/writer contract");
-  if (auto room = arena.Reserve(p.layers * kExtraPerLayer); !room)
+  // Validate every eligible quad before mutation. Unsupported widths leave
+  // their quad independent; malformed original writer edges refuse the wave.
+  for (std::size_t quad = 0; quad < g.segments.size() / 4; ++quad) {
+    eligible[quad] = QuadShape(g, quad * 4);
+    if (!eligible[quad]) continue;
+    ++quad_count;
+    for (std::uint32_t il = 0; il < p.layers; ++il)
+      if (!Inspect(g, il, quad * 4, layers[quad][il]))
+        return Reject("packed original attention/writer contract");
+  }
+  if (quad_count == 0) return {};
+  // Only a real complete eight-owner wave with identical padded widths can
+  // share the original whole-eight stream-K partition. Tails and unequal
+  // widths keep each quad's original four-owner geometry.
+  const bool cohort_eight = g.segments.size() == 8 && quad_count == 2 &&
+                            g.segments[0].shape.local_n_kv == g.segments[4].shape.local_n_kv &&
+                            g.segments[0].shape.global_n_kv == g.segments[4].shape.global_n_kv;
+  if (auto room = arena.Reserve(p.layers * kExtraPerLayer * quad_count); !room)
     return std::unexpected(room.error());
   auto* c = arena.context();
   std::vector<ggml_tensor*> removed;
-  std::array<ggml_tensor*, 60> packed{};
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    auto& l = layers[il];
-    const auto d = p.head_dim(il), kvh = p.kv_heads(il);
-    const auto kvw = std::size_t{d} * kvh;
-    const auto read =
-        p.local(il) ? g.segments[0].shape.local_n_kv : g.segments[0].shape.global_n_kv;
-    for (std::size_t owner = 0; owner < 4; ++owner) {
-      // The write descriptor follows the SAME owned cache leaf. Reading it,
-      // instead of its leaf, adds an explicit dependency on every current write.
-      l.k[owner] =
-          ggml_view_4d(c, l.writes[owner * 2], d, kvh, read, 1, d * 2, kvw * 2, kvw * read * 2, 0);
-      l.v[owner] = ggml_view_4d(c, l.writes[owner * 2 + 1], d, kvh, read, 1, d * 2, kvw * 2,
-                                kvw * read * 2, 0);
-    }
-    auto* q = ggml_permute(c, Join(c, l.q), 0, 2, 1, 3);
-    auto* mask = Join(c, l.mask);
-    ggml_tensor* flash = nullptr;
-    if (mode == Gemma4AttentionMode::kOwners) {
+  std::array<std::array<ggml_tensor*, 60>, 2> packed{};
+  for (std::size_t quad = 0; quad < eligible.size(); ++quad) {
+    if (!eligible[quad]) continue;
+    const auto first = quad * 4;
+    for (std::uint32_t il = 0; il < p.layers; ++il) {
+      auto& l = layers[quad][il];
+      const auto d = p.head_dim(il), kvh = p.kv_heads(il);
+      const auto kvw = std::size_t{d} * kvh;
+      const auto read =
+          p.local(il) ? g.segments[first].shape.local_n_kv : g.segments[first].shape.global_n_kv;
       for (std::size_t owner = 0; owner < 4; ++owner) {
-        l.k[owner] = ggml_permute(c, l.k[owner], 0, 2, 1, 3);
-        l.v[owner] = ggml_permute(c, l.v[owner], 0, 2, 1, 3);
+        // The write descriptor follows the SAME owned cache leaf. Reading it,
+        // instead of its leaf, adds an explicit dependency on every current
+        // write.
+        l.k[owner] = ggml_view_4d(c, l.writes[owner * 2], d, kvh, read, 1, d * 2, kvw * 2,
+                                  kvw * read * 2, 0);
+        l.v[owner] = ggml_view_4d(c, l.writes[owner * 2 + 1], d, kvh, read, 1, d * 2, kvw * 2,
+                                  kvw * read * 2, 0);
       }
-      flash = FlashAttnOwnersNode(c, q, mask, l.k, l.v);
-    } else {
-      auto* k = ggml_permute(c, Join(c, l.k), 0, 2, 1, 3);
-      auto* v = ggml_permute(c, Join(c, l.v), 0, 2, 1, 3);
-      flash = ggml_flash_attn_ext(c, q, k, v, mask, 1.0f, 0.0f, 0.0f);
-      ggml_prec_set_acc(flash, GGML_PREC_F32);
-    }
-    packed[il] = flash;
-    ggml_set_name(flash, std::format("packed.blk.{}.attention", il).c_str());
-    for (std::size_t owner = 0; owner < 4; ++owner) {
-      auto* view = ggml_view_4d(c, flash, d, p.heads, 1, 1, flash->nb[1], flash->nb[2],
-                                flash->nb[3], owner * flash->nb[3]);
-      auto* old = l.flash[owner];
-      for (auto* node : g.nodes) {
-        for (auto*& src : node->src)
-          if (src == old) src = view;
-        if (node->view_src == old) node->view_src = view;
+      auto* q = ggml_permute(c, Join(c, l.q), 0, 2, 1, 3);
+      auto* mask = Join(c, l.mask);
+      ggml_tensor* flash = nullptr;
+      if (mode == Gemma4AttentionMode::kOwners) {
+        for (std::size_t owner = 0; owner < 4; ++owner) {
+          l.k[owner] = ggml_permute(c, l.k[owner], 0, 2, 1, 3);
+          l.v[owner] = ggml_permute(c, l.v[owner], 0, 2, 1, 3);
+        }
+        flash = FlashAttnOwnersNode(c, q, mask, l.k, l.v, cohort_eight ? 8U : 4U);
+      } else {
+        auto* k = ggml_permute(c, Join(c, l.k), 0, 2, 1, 3);
+        auto* v = ggml_permute(c, Join(c, l.v), 0, 2, 1, 3);
+        flash = ggml_flash_attn_ext(c, q, k, v, mask, 1.0f, 0.0f, 0.0f);
+        ggml_prec_set_acc(flash, GGML_PREC_F32);
       }
-      for (auto& [name, tensor] : g.named)
-        if (tensor == old) tensor = view;
-      removed.push_back(old);
+      packed[quad][il] = flash;
+      ggml_set_name(flash, (quad == 0 ? std::format("packed.blk.{}.attention", il)
+                                      : std::format("packed.quad.{}.blk.{}.attention", quad, il))
+                               .c_str());
+      for (std::size_t owner = 0; owner < 4; ++owner) {
+        auto* view = ggml_view_4d(c, flash, d, p.heads, 1, 1, flash->nb[1], flash->nb[2],
+                                  flash->nb[3], owner * flash->nb[3]);
+        auto* old = l.flash[owner];
+        for (auto* node : g.nodes) {
+          for (auto*& src : node->src)
+            if (src == old) src = view;
+          if (node->view_src == old) node->view_src = view;
+        }
+        for (auto& [name, tensor] : g.named)
+          if (tensor == old) tensor = view;
+        removed.push_back(old);
+      }
     }
   }
   std::vector<ggml_tensor*> roots;
@@ -199,26 +240,33 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
     if (node->op == GGML_OP_FLASH_ATTN_EXT || JitllmOpOf(node) == JitllmOp::kFlashAttnOwners)
       ++attention;
   }
-  if (attention != p.layers) return Reject("packed attention count");
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    const auto at = std::ranges::find(g.nodes, packed[il]);
-    if (mode == Gemma4AttentionMode::kOwners) {
-      if (JitllmOpOf(packed[il]) != JitllmOp::kFlashAttnOwners)
-        return Reject("missing owner attention operation");
-      for (std::size_t owner = 0; owner < 4; ++owner) {
-        for (std::size_t which = 0; which < 2; ++which) {
-          const auto* cache = packed[il]->src[2 + owner + which * 4];
-          if (!cache || cache->op != GGML_OP_PERMUTE || !cache->src[0] ||
-              cache->src[0]->src[0] != layers[il].writes[2 * owner + which] ||
-              cache->src[0]->view_src != layers[il].writes[2 * owner + which]->view_src)
-            return Reject("owner input lost exact cache writer dependency");
+  if (attention != p.layers * (g.segments.size() - 3 * quad_count))
+    return Reject("packed attention count");
+  for (std::size_t quad = 0; quad < eligible.size(); ++quad) {
+    if (!eligible[quad]) continue;
+    for (std::uint32_t il = 0; il < p.layers; ++il) {
+      const auto at = std::ranges::find(g.nodes, packed[quad][il]);
+      if (mode == Gemma4AttentionMode::kOwners) {
+        if (JitllmOpOf(packed[quad][il]) != JitllmOp::kFlashAttnOwners)
+          return Reject("missing owner attention operation");
+        for (std::size_t owner = 0; owner < 4; ++owner) {
+          for (std::size_t which = 0; which < 2; ++which) {
+            const auto* cache = packed[quad][il]->src[2 + owner + which * 4];
+            if (!cache || cache->op != GGML_OP_PERMUTE || !cache->src[0] ||
+                cache->src[0]->src[0] != layers[quad][il].writes[2 * owner + which] ||
+                cache->src[0]->view_src != layers[quad][il].writes[2 * owner + which]->view_src)
+              return Reject("owner input lost exact cache writer dependency");
+          }
         }
       }
+      if (at == g.nodes.end() || packed[quad][il]->ne[3] != 4)
+        return Reject("packed output owner order");
+      for (auto* writer : layers[quad][il].writes)
+        if (std::ranges::find(g.nodes, writer) >= at) return Reject("packed cache write order");
     }
-    if (at == g.nodes.end() || packed[il]->ne[3] != 4) return Reject("packed output owner order");
-    for (auto* writer : layers[il].writes)
-      if (std::ranges::find(g.nodes, writer) >= at) return Reject("packed cache write order");
   }
+  for (std::size_t quad = 0; quad < eligible.size(); ++quad)
+    if (eligible[quad]) g.attention_quad_mask |= std::uint32_t{1} << quad;
   g.attention_mode = mode;
   return {};
 }

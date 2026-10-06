@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 
 #include "fattn-mma-f16.cuh"
@@ -150,11 +151,14 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
   const int tiles = static_cast<int>(in.k[0]->ne[2]) * 4;
   const int cells = static_cast<int>(in.mask->ne[0]);
   const int kvtiles = (cells + original->kv_batch - 1) / original->kv_batch;
-  const int raw = std::min(original->blocks_per_sm * device.nsm, kvtiles * tiles);
-  const int rounded = raw / tiles * tiles;
-  const int loss = rounded > 0 ? 100 * (raw - rounded) / raw : 100;
-  geometry.blocks = loss <= 5 ? rounded : raw;
-  if (geometry.blocks <= 0) return Rejected("owner MMA original grid is empty");
+  if (device.nsm > INT_MAX / original->blocks_per_sm)
+    return Rejected("owner MMA occupancy grid exceeds the launcher bounds");
+  auto partition = detail::PlanOwnerPartition(original->blocks_per_sm * device.nsm, kvtiles,
+                                              static_cast<int>(in.k[0]->ne[2]), in.logical_cohort);
+  if (!partition) return std::unexpected(partition.error());
+  plan.cohort_blocks = partition->cohort_blocks;
+  plan.effective_cohort = partition->effective_cohort;
+  geometry.blocks = partition->quad_blocks;
   geometry.scratch = 4 * sizeof(int);
   if (tiles % geometry.blocks != 0)
     geometry.scratch = 256 + std::uint64_t(geometry.blocks) * std::uint64_t(geometry.columns) *
