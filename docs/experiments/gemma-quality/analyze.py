@@ -5,6 +5,11 @@
 
 Run under installed spark-job on Spark, or hostlock shared locally.
 Native calibration is frozen exclusively before oracle data are inspected.
+Historical ROOT modes retain their 128-row ordinary-versus-norm semantics.
+current-freeze ROOT CHUNK VARIANT POLICY NORMMUL SOURCE_JSON SOURCE_SHA;
+current-oracle ROOT FREEZE_SHA uses native-first/native-repeat and
+reference-first/reference-repeat. SOURCE_JSON has a matching native_recipe.
+current-selftest runs only tiny metadata/tie controls, without logit files.
 """
 import array
 import hashlib
@@ -37,7 +42,167 @@ def distribution(values):
     return weights, total, maximum + math.log(total)
 
 
+def current_recipe(chunk, variant, policy, normmul):
+    assert 1 <= chunk <= 1024 and variant in ('26', '31')
+    assert policy in ('ordinary', 'norm', 'both', 'norm_rope', 'norm_add', 'moe', 'all')
+    assert normmul in ('normmul-off', 'normmul-on')
+    return dict(context=4096, teacher_chunk=chunk, max_rows=chunk, variant=variant,
+                policy=policy, normmul=normmul, all_outputs=True)
+
+
+def current_ids(root):
+    raw = (root / 'input1/ids.i32').read_bytes()
+    assert len(raw) == ROWS * 4 and hashlib.sha256(raw).hexdigest() == ID_SHA
+    ids = struct.unpack('<1024i', raw)
+    assert ids[0] == 2 and all(0 <= value < VOCAB for value in ids)
+    return ids
+
+
+def current_choices(native, reference):
+    ni = max(range(len(native)), key=native.__getitem__)
+    ri = max(range(len(reference)), key=reference.__getitem__)
+    return ni, ri, reference[ri] - reference[ni]
+
+
+def current_selftest():
+    assert current_choices([0, 1], [1, 1]) == (1, 0, 0), 'exact reference tie'
+    assert current_choices([0, 1], [2, 1]) == (1, 0, 1), 'positive reference margin'
+    assert current_choices([-0.0, 1], [0.0, 1]) == (1, 1, 0), 'signed zero winner'
+    assert current_recipe(256, '31', 'both', 'normmul-on')['max_rows'] == 256
+    assert current_recipe(1024, '26', 'all', 'normmul-on')['teacher_chunk'] == 1024
+    for args in ((0, '31', 'both', 'normmul-on'), (1025, '26', 'all', 'normmul-on'),
+                 (256, '32', 'both', 'normmul-on'), (256, '31', 'invalid', 'normmul-on'),
+                 (256, '31', 'both', 'invalid')):
+        try:
+            current_recipe(*args)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError('invalid current recipe accepted')
+    print('current recipe bounds, exact tie, positive margin and signed zero: PASS')
+
+
+def current_freeze(root, recipe, source_path, expected_source_sha):
+    current_ids(root)
+    source_path = source_path.resolve()
+    source_bytes = source_path.read_bytes()
+    assert hashlib.sha256(source_bytes).hexdigest() == expected_source_sha
+    source = json.loads(source_bytes)
+    assert source['native_recipe'] == recipe, 'source recipe differs from requested calibration'
+    paths = [root / arm / 'logits.f32' for arm in ('native-first', 'native-repeat')]
+    assert all(path.stat().st_size == ROWS * VOCAB * 4 for path in paths)
+    hashes, winners, whole = [], [], [hashlib.sha256(), hashlib.sha256()]
+    with paths[0].open('rb') as first, paths[1].open('rb') as repeat:
+        for index in range(ROWS):
+            a, b = first.read(VOCAB * 4), repeat.read(VOCAB * 4)
+            assert len(a) == len(b) == VOCAB * 4 and a == b, 'native own repeat changed'
+            values = array.array('f')
+            values.frombytes(a)
+            if sys.byteorder != 'little':
+                values.byteswap()
+            assert all(map(math.isfinite, values)), 'nonfinite native likelihood row'
+            hashes.append(hashlib.sha256(a).hexdigest())
+            winners.append(max(range(VOCAB), key=values.__getitem__))
+            whole[0].update(a)
+            whole[1].update(b)
+            if index % 128 == 0:
+                print(f'CURRENT_SELF_REPEAT completed_rows={index+1}', flush=True)
+        assert not first.read(1) and not repeat.read(1)
+    result = dict(input_sha256=ID_SHA, rows=ROWS, vocab=VOCAB, native_recipe=recipe,
+                  calibration='same-policy full-byte own repeat only; no inherited allowance',
+                  byte_exact_rows=ROWS, max_raw_delta=0, p99_top2_margin_movement=0,
+                  source_identities_path=str(source_path), source_identities_sha256=expected_source_sha,
+                  source=source, whole_file_sha256=[item.hexdigest() for item in whole],
+                  row_sha256=hashes, argmax_ids=winners)
+    frozen = root / 'current-native-repeat-frozen.json'
+    with frozen.open('x') as file:
+        json.dump(result, file, indent=2)
+        file.write('\n')
+    print('freeze_sha256=' + hashlib.sha256(frozen.read_bytes()).hexdigest())
+
+
+def current_oracle(root, expected_freeze_sha):
+    frozen_bytes = (root / 'current-native-repeat-frozen.json').read_bytes()
+    assert hashlib.sha256(frozen_bytes).hexdigest() == expected_freeze_sha
+    frozen = json.loads(frozen_bytes)
+    assert frozen['rows'] == ROWS and frozen['vocab'] == VOCAB and frozen['input_sha256'] == ID_SHA
+    assert frozen['byte_exact_rows'] == ROWS and frozen['p99_top2_margin_movement'] == 0
+    assert hashlib.sha256(pathlib.Path(frozen['source_identities_path']).read_bytes()).hexdigest() == frozen['source_identities_sha256']
+    ids = current_ids(root)
+    paths = [root / arm / 'logits.f32' for arm in
+             ('native-first', 'reference-first', 'reference-repeat')]
+    assert all(path.stat().st_size == ROWS * VOCAB * 4 for path in paths)
+    native_nll, reference_nll, tvs = [], [], []
+    whole = [hashlib.sha256() for _ in paths]
+    exact = strict = positive = tied = 0
+    max_raw = max_chosen = 0.0
+    with paths[0].open('rb') as a, paths[1].open('rb') as b, paths[2].open('rb') as c:
+        for index in range(ROWS):
+            av, ah = read_row(a)
+            br, cr = b.read(VOCAB * 4), c.read(VOCAB * 4)
+            assert len(br) == len(cr) == VOCAB * 4 and br == cr, 'reference own repeat changed'
+            bv = array.array('f')
+            bv.frombytes(br)
+            if sys.byteorder != 'little':
+                bv.byteswap()
+            assert all(map(math.isfinite, bv)), 'nonfinite reference likelihood row'
+            assert ah == frozen['row_sha256'][index], 'native changed after own freeze'
+            # Hash the original little-endian bytes, including signed zero.
+            native_raw = av.tobytes() if sys.byteorder == 'little' else struct.pack('<%df' % VOCAB, *av)
+            for digest, raw in zip(whole, (native_raw, br, cr)):
+                digest.update(raw)
+            ni, ri, margin = current_choices(av, bv)
+            assert ni == frozen['argmax_ids'][index]
+            exact += ah == hashlib.sha256(br).hexdigest()
+            if ni != ri:
+                strict += 1
+                positive += margin > 0
+                tied += margin == 0
+            aw, at, al = distribution(av)
+            bw, bt, bl = distribution(bv)
+            max_raw = max(max_raw, max(abs(x-y) for x, y in zip(av, bv)))
+            tvs.append(.5 * math.fsum(abs(x/at-y/bt) for x, y in zip(aw, bw)))
+            max_chosen = max(max_chosen, abs((al-av[ri])-(bl-bv[ri])))
+            if index + 1 < ROWS:
+                native_nll.append(al-av[ids[index+1]])
+                reference_nll.append(bl-bv[ids[index+1]])
+            if index % 128 == 0:
+                print(f'CURRENT_ORACLE completed_rows={index+1}', flush=True)
+        assert not a.read(1) and not b.read(1) and not c.read(1)
+    digests = [item.hexdigest() for item in whole]
+    assert digests[0] == frozen['whole_file_sha256'][0] and digests[1] == digests[2]
+    nm, rm = math.fsum(native_nll)/(ROWS-1), math.fsum(reference_nll)/(ROWS-1)
+    result = dict(input_sha256=ID_SHA, rows=ROWS, scored_targets=ROWS-1,
+                  native_recipe=frozen['native_recipe'], frozen_sha256=expected_freeze_sha,
+                  source_identities_sha256=frozen['source_identities_sha256'],
+                  expected_reference_recipe='score-ring: C1/context4096/F16/full heads, batch=ubatch=teacher_chunk, swa_full=false/kv_unified=false, fusion+graphs enabled; caller authenticates actual invocation',
+                  whole_file_sha256=digests, byte_exact_rows=exact,
+                  reference_repeat_byte_exact_rows=ROWS, strict_argmax_mismatches=strict,
+                  positive_reference_margin_mismatches=positive, exact_reference_tie_mismatches=tied,
+                  outside_frozen_zero_margin_movement=positive, max_raw_delta=max_raw,
+                  max_full_softmax_tv=max(tvs), mean_full_softmax_tv=math.fsum(tvs)/ROWS,
+                  max_reference_chosen_nll_delta=max_chosen,
+                  native_mean_nll=nm, reference_mean_nll=rm,
+                  native_ppl=math.exp(nm), reference_ppl=math.exp(rm),
+                  ppl_relative_percent=100*math.expm1(nm-rm),
+                  scope='current fixed teacher-forced recipe only; no inherited128 allowance, performance or model qualification')
+    with (root / 'current-comparison.json').open('x') as file:
+        json.dump(result, file, indent=2)
+        file.write('\n')
+    print(json.dumps(result, indent=2))
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == 'current-selftest':
+        current_selftest()
+        return 0
+    if len(sys.argv) == 9 and sys.argv[1] == 'current-freeze':
+        recipe = current_recipe(int(sys.argv[3]), *sys.argv[4:7])
+        current_freeze(pathlib.Path(sys.argv[2]), recipe, pathlib.Path(sys.argv[7]), sys.argv[8])
+        return 0
+    if len(sys.argv) == 4 and sys.argv[1] == 'current-oracle':
+        current_oracle(pathlib.Path(sys.argv[2]), sys.argv[3])
+        return 0
     assert len(sys.argv) == 3
     root, action = pathlib.Path(sys.argv[1]), sys.argv[2]
     raw_ids = (root / 'input1' / 'ids.i32').read_bytes()

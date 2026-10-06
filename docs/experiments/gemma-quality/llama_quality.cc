@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // External C API harness for the pinned same-format llama.cpp comparator.
-// MODEL INPUT OUTDIR prepare|score|score-unfused CHUNK. Explicit IDs.
+// MODEL INPUT OUTDIR prepare|score|score-unfused|score-ring CHUNK. Explicit IDs.
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -24,10 +24,11 @@ void Require(bool good, const char* text) {
 }  // namespace
 int main(int argc, char** argv) {
   try {
-    Require(argc == 6, "usage: MODEL INPUT OUTDIR prepare|score|score-unfused CHUNK");
+    Require(argc == 6, "usage: MODEL INPUT OUTDIR prepare|score|score-unfused|score-ring CHUNK");
     const bool prepare = std::string(argv[4]) == "prepare";
     const bool unfused = std::string(argv[4]) == "score-unfused";
-    Require(prepare || unfused || std::string(argv[4]) == "score", "unknown quality mode");
+    const bool ring = std::string(argv[4]) == "score-ring";
+    Require(prepare || unfused || ring || std::string(argv[4]) == "score", "unknown quality mode");
     const int chunk = std::stoi(argv[5]);
     Require(chunk >= 1 && chunk <= 1024, "quality chunk out of bounds");
     const auto* disable_fusion = std::getenv("GGML_CUDA_DISABLE_FUSION");
@@ -89,6 +90,13 @@ int main(int argc, char** argv) {
     cp.type_k = GGML_TYPE_F16;
     cp.type_v = GGML_TYPE_F16;
     cp.no_perf = false;
+    if (ring) {
+      cp.swa_full = false;
+      cp.kv_unified = false;
+    }
+    std::cout << "QUALITY_PROFILE context=" << cp.n_ctx << " batch=" << cp.n_batch
+              << " ubatch=" << cp.n_ubatch << " swa_full=" << cp.swa_full
+              << " kv_unified=" << cp.kv_unified << " all_outputs=1\n";
     std::unique_ptr<llama_context, decltype(&llama_free)> ctx(
         llama_init_from_model(model.get(), cp), llama_free);
     Require(bool(ctx), "context creation failed");

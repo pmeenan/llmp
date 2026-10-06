@@ -455,6 +455,15 @@ The operator timer excludes packing, so it establishes no copy-removal gain.
 D512, other read widths, whole-model C4 and Gemma26/assistant transfer need actual
 controls; production selection remains unchanged.
 
+The [current corpus screen](experiments/gemma-current-quality/README.md)
+checks the actually measured solo research policies with plain norm fusion:
+31B both256 matches all 1,024 complete fresh ring-reference heads byte for byte;
+26B all1024 has nine positive reference-margin choice differences and only
+15 exact heads, failing strict quality. Its +0.0528% relative PPL change does not
+waive that gate. Each model freezes complete same-policy own repeats before
+stock. These new shapes use no inherited 128-row allowance and do not qualify
+frontier-only 8K work, whole contexts or optimized batching.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

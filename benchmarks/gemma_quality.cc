@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Bounded full-vocabulary teacher forcing on exact shared integer IDs.
-// ARTIFACT IDS_I32 OUTPUT_DIR CHUNK ordinary|norm|both|norm_rope|norm_add|moe|all [26|31]. No
-// support claim.
+// ARTIFACT IDS_I32 OUTPUT_DIR CHUNK ordinary|norm|both|norm_rope|norm_add|moe|all
+// [26|31] [normmul-off|normmul-on]. Without the final override, only the
+// historical norm policy selects plain norm fusion. No support claim.
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -23,16 +24,19 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc != 6 && argc != 7) return 2;
-  const std::string_view variant = argc == 7 ? argv[6] : "26";
+  if (argc < 6 || argc > 8) return 2;
+  const std::string_view variant = argc >= 7 ? argv[6] : "26";
   if (variant != "26" && variant != "31") return 2;
   std::uint32_t chunk = 0;
   const std::string_view number(argv[4]), policy(argv[5]);
   const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), chunk);
-  if (error != std::errc{} || end != number.data() + number.size() || chunk == 0 || chunk > 128 ||
+  if (error != std::errc{} || end != number.data() + number.size() || chunk == 0 || chunk > 1024 ||
       (policy != "ordinary" && policy != "norm" && policy != "both" && policy != "norm_rope" &&
        policy != "norm_add" && policy != "moe" && policy != "all"))
     return 2;
+  const std::string_view normmul =
+      argc == 8 ? argv[7] : (policy == "norm" ? "normmul-on" : "normmul-off");
+  if (normmul != "normmul-off" && normmul != "normmul-on") return 2;
   std::error_code file_error;
   if (std::filesystem::file_size(argv[2], file_error) != 4096 || file_error) return 2;
   std::array<std::int32_t, 1024> ids{};
@@ -56,7 +60,8 @@ int main(int argc, char** argv) {
           .artifact = argv[1],
           .out = out,
           .variant = variant == "31" ? en::Gemma4Variant::k31B : en::Gemma4Variant::k26BA4B,
-          .fuse_norms = policy == "norm",
+          .max_rows = chunk,
+          .fuse_norms = normmul == "normmul-on",
           .fuse_norm_rope = policy == "both" || policy == "norm_rope" || policy == "all",
           .fuse_norm_add = policy == "both" || policy == "norm_add" || policy == "all",
           .fuse_gemma_route = policy == "moe" || policy == "all",
@@ -69,7 +74,10 @@ int main(int argc, char** argv) {
     entered.push_back(&runner);
     if (auto r = runner.Setup(); !r) return r;
     std::cout << "QUALITY_PROFILE variant=" << variant << " layers=" << runner.profile().layers
-              << " experts=" << runner.profile().experts << '\n';
+              << " experts=" << runner.profile().experts << " policy=" << policy
+              << " normmul=" << normmul << " context=4096 max_rows=" << chunk
+              << " input_rows=" << ids.size() << " scored_targets=" << ids.size() - 1
+              << " all_outputs=1\n";
     if (auto r = node.MapWorkspace(runner.activations_needed(), runner.pool_needed()); !r) return r;
     const std::uint64_t output_bytes = static_cast<std::uint64_t>(chunk) * 262144 * 4;
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
@@ -95,6 +103,9 @@ int main(int argc, char** argv) {
           logits.reserve(static_cast<std::size_t>(output_bytes / 4));
           if (logits.capacity() * 4 != output_bytes)
             return Error("unexpected publication vector capacity");
+          std::cout << "QUALITY_PUBLICATION charged_capacity_bytes=" << output_bytes
+                    << " capacity_rows=" << chunk << " vocab=" << runner.profile().vocab
+                    << " total_head_bytes=" << std::uint64_t{ids.size()} * 262144 * 4 << '\n';
           std::ofstream heads(out / "logits.f32", std::ios::binary);
           for (std::uint32_t first = 0; first < ids.size(); first += chunk) {
             const auto rows = std::min(chunk, static_cast<std::uint32_t>(ids.size()) - first);

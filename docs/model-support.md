@@ -81,6 +81,13 @@ fixed-prefix decode; known numerical differences keep qualification open.
 The bounded dense31 norm result does not close the required full reference,
 long-context, selected optimization or optimized-batching support gates.
 
+The [current representative teacher-forcing screen](experiments/gemma-current-quality/README.md)
+checks 31B both256 and 26B all1024 with plain norm fusion. All 1,024 complete
+31B heads and 1,023 target likelihoods match fresh normal ring-cache stock
+exactly. The 26B transfer fails strict quality with nine positive-margin choices,
+15 exact heads and +0.0528% PPL. Each policy's own repeat is independently frozen;
+these samples add no full-model, frontier-state or optimized-batching support.
+
 The shared [planning read index](experiments/gemma-plan-index/README.md) removes
 repeated graph scans without changing selected operations or kernel arithmetic.
 With the existing default-off 26B `all` and 31B `both` policies, initial matched

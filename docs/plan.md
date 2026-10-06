@@ -442,6 +442,12 @@ family" guide, and its long-context scaling work.
         preserving original grid/reduction partitions and checked independent spans.
         D512 arithmetic, whole-model copy removal and paid C4 qualification stay open;
         no production selector or default changes.
+      - [x] [Current full-head corpus screen](experiments/gemma-current-quality/README.md):
+        31B both256/plain-norm-on matches all 1,024 fresh ring-reference heads
+        and 1,023 likelihoods exactly. The 26B all1024 transfer has nine positive-
+        margin choices and fails strict quality despite only +0.0528% PPL.
+        Both own repeats are independently frozen before stock; no inherited
+        128-row allowance or full-model/batching qualification is claimed.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.
