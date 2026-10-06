@@ -599,6 +599,12 @@ family" guide, and its long-context scaling work.
         Both real target/Q8 assistant pairs pass 11 focused controls against an
         independent same-four-query target, rejected bytes and projected continuation.
         Default-off; serving, scalar-width quality, sampling and performance remain open.
+      - [x] [Matched Gemma31 target-plus-assistant C1/P64 transaction](experiments/gemma-assistant-greedy-reference/README.md),
+        with query64 prefill/query4 verify, complete target/assistant heads and
+        retained features byte-exact under existing target norm chains, matching
+        retired acceptance/pending carry and zero conditional loss increase.
+        Plain-norm baseline strict3/acceptance/conditional-loss FAIL remains;
+        26B, scalar-width, serving and all-cost repeated-unit performance remain open.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

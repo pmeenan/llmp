@@ -513,6 +513,10 @@ target_link_options(jitllm_gemma_joined_http PRIVATE "LINKER:--enable-new-dtags,
 endif()
 
 if(JITLLM_CUDA)
+  # Explicit C1 draft/verify diagnostic; no serving policy or CTest registration.
+  add_executable(jitllm_gemma_greedy_reference gemma_greedy_reference.cc)
+  target_link_libraries(jitllm_gemma_greedy_reference PRIVATE jitllm_engine jitllm_json jitllm_warnings)
+  target_link_options(jitllm_gemma_greedy_reference PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
   # Original stage-zero immutable inputs; manual diagnostic, never CTest.
   add_executable(jitllm_gemma_assistant_fixture gemma_assistant_fixture.cc)
   target_link_libraries(jitllm_gemma_assistant_fixture PRIVATE jitllm_engine jitllm_json jitllm_warnings)

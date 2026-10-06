@@ -1,0 +1,415 @@
+{
+  "schema": 1,
+  "scope": "One approved Gemma31 C1/P64/depth3 target-plus-Q8-assistant transaction; no performance, serving, 26B, scalar-width or corpus qualification.",
+  "base_commit": "b35cb0be4e77f4cc76b796ac5a74232da2d0a292",
+  "final_measured_source_files": [
+    {
+      "path": "benchmarks/CMakeLists.txt",
+      "bytes": 39770,
+      "sha256": "f1bac81b7c2798ade6337d40626576cb116e15afd33d477939dcfb994b18d6d1"
+    },
+    {
+      "path": "benchmarks/gemma_greedy_reference.cc",
+      "bytes": 21846,
+      "sha256": "bc83a7625c440a7deaed919201abd0f1abfa8e00e69628d802400cb7093370c9"
+    },
+    {
+      "path": "docs/experiments/gemma-assistant-greedy-reference/PROTOCOL.md",
+      "bytes": 7120,
+      "sha256": "f068e130bebe8c792c4d76d4b77fed281098d17fbc8ca9036eb79cf07cdbaac7"
+    },
+    {
+      "path": "docs/experiments/gemma-assistant-greedy-reference/analyze.py",
+      "bytes": 13155,
+      "sha256": "b2d6c4fae2d9f632a03232978c52d4291c4e47dc27254ba4d78fe2a50e1f35e0"
+    },
+    {
+      "path": "docs/experiments/gemma-assistant-greedy-reference/llama_greedy.cc",
+      "bytes": 22270,
+      "sha256": "a442f8e7a52e049b44ded61067f4abb903eb4d02dc63bf15a79bd1f2e7edd4d6"
+    },
+    {
+      "path": "docs/experiments/gemma-assistant-greedy-reference/reference.sh",
+      "bytes": 3059,
+      "sha256": "28a4cadb602e683356116029b3efaf52bea25daec900eb682ba5737f1cece563"
+    },
+    {
+      "path": "docs/experiments/gemma-assistant-greedy-reference/test_analyze.py",
+      "bytes": 1386,
+      "sha256": "7faee1b6069d36741b55c411056d94da0eea8ae0849314141fd054ca71115e27"
+    }
+  ],
+  "source_ready1_sha256": "ab8ac3f4b919cd253f35659644c118e70bf4d1873b524216429925c31bd5cb15",
+  "source_ready2_sha256": "164466561f123c759b8be21370b44e30abc681ccf51993a8f299c57ad6f3e566",
+  "recipes": {
+    "common": {
+      "prefix_rows": 64,
+      "prefill_queries": 64,
+      "max_rows": 128,
+      "verify_queries": 4,
+      "context": 4096,
+      "slots": 1,
+      "head_cap": 4,
+      "max_verify_rows": 4,
+      "retained_postnorm_features": true,
+      "draft_depth": 3,
+      "draft_query_position": 64,
+      "ordinary_math": true,
+      "paid_timing": false
+    },
+    "baseline31": {
+      "fuse_norms": true,
+      "fuse_norm_rope": false,
+      "fuse_norm_add": false
+    },
+    "candidate31": {
+      "fuse_norms": true,
+      "fuse_norm_rope": true,
+      "fuse_norm_add": true,
+      "selected_first_plans": [
+        {
+          "phase": "prefill",
+          "rows": 64,
+          "norm_rope": 120,
+          "norm_add": 120
+        },
+        {
+          "phase": "normal4",
+          "rows": 4,
+          "norm_rope": 120,
+          "norm_add": 120
+        }
+      ],
+      "witness_semantics": "last-built selected plan, not per-call launches"
+    },
+    "profile26": "Operand support retained; both chains false; no transaction comparison acquired."
+  },
+  "baseline": {
+    "proposal_gate_pass": true,
+    "native_keep": 1,
+    "reference_keep": 2,
+    "strict_positive_differences": 3,
+    "exact_tie_differences": 0,
+    "conditional_targets": 4,
+    "native_conditional_nll": 3.0094545088232607,
+    "reference_conditional_nll": 2.1594623542708957,
+    "conditional_loss_ratio_delta": 1.3396284964211334,
+    "final_verify_row_scored": false,
+    "cross_engine_kv_byte_claim": false,
+    "target_byte_exact_rows": 0,
+    "strict_choice_gate_pass": false,
+    "conditional_loss_gate_pass": false,
+    "acceptance_carry_gate_pass": false,
+    "features": {
+      "initial-feature.f32": {
+        "byte_exact": false,
+        "max_raw_delta": 10.587345123291016
+      },
+      "draft-features.f32": {
+        "byte_exact": false,
+        "max_raw_delta": 5.630995035171509
+      },
+      "verify-features.f32": {
+        "byte_exact": false,
+        "max_raw_delta": 72.25615119934082
+      },
+      "selected-feature.f32": {
+        "byte_exact": false,
+        "max_raw_delta": 42.02204179763794
+      }
+    },
+    "target_max_raw_delta": 26.32129216194153,
+    "assistant_max_raw_delta": 5.3345794677734375,
+    "result_sha256": "04f7dc1c1033f1bd6d7f02a680e25d21d2cd53dee51351d3ed9afc426049c497",
+    "status": "FAIL; preserved"
+  },
+  "candidate": {
+    "proposal_gate_pass": true,
+    "native_keep": 2,
+    "reference_keep": 2,
+    "strict_positive_differences": 0,
+    "exact_tie_differences": 0,
+    "conditional_targets": 4,
+    "native_conditional_nll": 2.1594623542708957,
+    "reference_conditional_nll": 2.1594623542708957,
+    "conditional_loss_ratio_delta": 0.0,
+    "final_verify_row_scored": false,
+    "cross_engine_kv_byte_claim": false,
+    "target_byte_exact_rows": 5,
+    "strict_choice_gate_pass": true,
+    "conditional_loss_gate_pass": true,
+    "acceptance_carry_gate_pass": true,
+    "features": {
+      "initial-feature.f32": {
+        "byte_exact": true,
+        "max_raw_delta": 0.0
+      },
+      "draft-features.f32": {
+        "byte_exact": true,
+        "max_raw_delta": 0.0
+      },
+      "verify-features.f32": {
+        "byte_exact": true,
+        "max_raw_delta": 0.0
+      },
+      "selected-feature.f32": {
+        "byte_exact": true,
+        "max_raw_delta": 0.0
+      }
+    },
+    "target_max_raw_delta": 0.0,
+    "assistant_max_raw_delta": 0.0,
+    "result_sha256": "088cf5ef3bc7b67cd08b2c5616f50d9d7201bbf2d44dd76d43c7efcc51f807d9",
+    "status": "PASS",
+    "all_three_assistant_heads_byte_exact": true,
+    "same_first_original_used": true
+  },
+  "own_proofs": {
+    "native31-own1.json": {
+      "sha256": "7db88b0400ab307460d5df5e108b893f592acbad750ef40ef6f563109c08647d",
+      "files": 11,
+      "full_repeat_exact": true,
+      "all_finite": true
+    },
+    "native31-own2.json": {
+      "sha256": "bdf553ac5e32da2a6ee164c86464b17c38c76b1fbdec1e7d70bab727614da724",
+      "files": 11,
+      "full_repeat_exact": true,
+      "all_finite": true
+    },
+    "reference31-own1.json": {
+      "sha256": "893dc4c423a31be6867299ddb5c0ccc754640051e9b624dca3d0abea73d22f75",
+      "files": 17,
+      "full_repeat_exact": true,
+      "all_finite": true
+    }
+  },
+  "binary_sha256": {
+    "native_baseline": "661953daa411dd6d47f81c05d621bbf1480231ac6b69588ed82f3151ee9684aa",
+    "native_candidate": "cfeef648111690a9f4f15e09f15d8fde33aab558a63126110b6d682c627f68fb",
+    "public_client": "7cf97acd91a61747a759af53d4d383fbd8f7c7e979f3c164b1ca0c611acabe5b",
+    "sdk_receipt": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09"
+  },
+  "reference": {
+    "source_commit": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "image_digest": "sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "own_proof_sha256": "893dc4c423a31be6867299ddb5c0ccc754640051e9b624dca3d0abea73d22f75",
+    "owned_build_and_acquisition_containers_absent": true
+  },
+  "funding": {
+    "native_temporary_vocab_admission_bytes": 536870912,
+    "native_retained_caller_envelope_bytes": 67108864,
+    "native_float_capacity_limit_bytes": 66060288,
+    "native_metadata_bound_bytes": 1048576,
+    "public_known_vector_bound_bytes": 402653184,
+    "public_each_opaque_snapshot_bound_bytes": 67108864,
+    "full_state_witnesses": "catalog-funded pinned buffers; uncertain copies retained",
+    "unchanged_peak_claim": false
+  },
+  "verification": {
+    "synthetic_analyzer_controls_per_build": 3,
+    "both_narrow_builds_pass": true,
+    "pre_context_invalid_profile_refusal": true,
+    "full_suite_run": false,
+    "new_completion_fault_injection": false,
+    "native_independent_normal_wave4_and_reset_protection": true,
+    "stock_logical_rejection_only": true
+  },
+  "failure_history": [
+    "native31-1 refused before inference/output on missing reviewed manifest; exact same queue retry after copying it succeeds.",
+    "baseline strict comparison rc1 remains FAIL; separate postauth DONE0."
+  ],
+  "official_jobs": [
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-build1",
+      "job_name": "m35-gemma-assistant-greedy-reference-build1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 8,
+      "successful_steps": 8,
+      "files_sha256": {
+        "job.json": "623a268dcd1a1e0c0ef2776358766952ef799904b24129496385134106c18fa6",
+        "steps.json": "202a016a1f1556f4ab30c591731769366883e0ad7aee393bde634f5af74001b9",
+        "final.json": "9b6b11323e78f057fa45cbe5ca49e969398bbed8f0446c2dbb8a6e31b993d19d",
+        "log": "d6dd3dccc772ad9262ea0b45e114ded7a73d6d936ea974da694f563ca7c3e010"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-compare31-1",
+      "job_name": "m35-gemma-assistant-greedy-reference-compare31-1",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 1,
+      "successful_steps": 0,
+      "files_sha256": {
+        "job.json": "5e1944cc89283791a5ed35c76b305908205dc165c2068ac164ec99c0864a3edf",
+        "steps.json": "9952e1aab6052e913dc207f14dec680fc84014ce3d26cd4552f7929ab0a63e32",
+        "final.json": "da907ba5c3bcac0e1ef46202cdb658e94372873ebb7f1c37e36ef36fb972d82c",
+        "log": "eb59292a56b4b5d6160fd16c218c6a8936f361509bcd29d81d7e00bfbb8c6e5b"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-compare31-postauth1",
+      "job_name": "m35-gemma-assistant-greedy-reference-compare31-postauth1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "files_sha256": {
+        "job.json": "ff32ef73402b3f3dd3fa0feb4c955cb8c5bc4cdd4307dffa58bb0c5e06c8cb66",
+        "steps.json": "341e1f9e2d1e28aca0ee6d8ba722ab2562a1bef427a35771ec6703c66cfff4cc",
+        "final.json": "6b9092654ed5b25b3e21747a2f0e245935e728d692676aa36b0641992c8167c4",
+        "log": "507f8e17487b5dd8114311e0ac3d256e0dcf9024a2939bb097fe3efd6b568121"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-native31-1",
+      "job_name": "m35-gemma-assistant-greedy-reference-native31-1",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 1,
+      "successful_steps": 0,
+      "files_sha256": {
+        "job.json": "a068ff396bb6d389648b5d1bd26b5c4213807399176ff2f2430451599dd4e87c",
+        "steps.json": "d1e02b3a0f2b7ed8a455341f8ba6c4ea490725f088aa1be05f76330b94ba1adc",
+        "final.json": "6a77d18781096bbce11eed66fde58dd714e9ea0fe75923c1f2b3a6801acb85dc",
+        "log": "1f41f56db5f01c7a0ec2e672dedf3ebcc0aa436d7b1f8521135acc5443ddb51b"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-native31-2",
+      "job_name": "m35-gemma-assistant-greedy-reference-native31-2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "files_sha256": {
+        "job.json": "87d5c9849dfdb9a1d868e21d53c30408228b2dad24babafc5a1c63a1277f8dbf",
+        "steps.json": "b541b68b17e7191372672d74c935240637cf889d1e8338cdf08d99590be6178d",
+        "final.json": "12f44d02d0489af9ab1b8d526f28d0f0930e656d122904b60e413a3fee1c8635",
+        "log": "7b7420efd0cf025eb9a3eb2196a91241b8f6e514a937cf62a052b9441b946037"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-native31-own1",
+      "job_name": "m35-gemma-assistant-greedy-reference-native31-own1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "files_sha256": {
+        "job.json": "a41984cabf1535e5c5b1e4b7c6b4c2698325bcaae7a98c0d75e21a1095ef8eea",
+        "steps.json": "927fa1f3529d52ac0f32f42e6f62bc3f15a3421d0d14bf8cb551de0e1f7c8258",
+        "final.json": "a5443422dcaf3bd7bb52e010d5669e809d771f1a1d5e5f3c18cd0ece10e2aa35",
+        "log": "5cce35d7a563a88848b375bcaeba2d4bd7c4604e79ad46a92552714e728c23ce"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-build2",
+      "job_name": "m35-gemma-assistant-greedy-reference-norm31-build2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 6,
+      "successful_steps": 6,
+      "files_sha256": {
+        "job.json": "883524306d025a98e9527c72f5cf7e113e8952e48c248a39541c0320ee3669fa",
+        "steps.json": "362b1d5b5d6c8aefcade9b7e6905ce451805c3543e000ac64af33b8afbebd43c",
+        "final.json": "0d9530bb89ceffab3c14a354fe04433365f3b3fe4961fcde83ac81ac3cb22199",
+        "log": "3eff1bd229d9eff6e6489cb62a32e6ba65999da2cec6cd1f07fcc5f7bfccbe0e"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-compare2",
+      "job_name": "m35-gemma-assistant-greedy-reference-norm31-compare2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "files_sha256": {
+        "job.json": "80a353a62a2b89b162337d920371a601ae6222ae4f720f397d4f81eee5104349",
+        "steps.json": "eec22d5178dd4a8e4deac3ce8fea9ec7a43b6178b30bee47e12c19363b82174f",
+        "final.json": "cd393c32511f88085cf3d7325cba45680a00b8944533bb766678c564f6a000d3",
+        "log": "1f8cb9ff52eceec2bbcaccc98b625c2b04ef6ff7987d3f6e062b76a78600e0c7"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-native2",
+      "job_name": "m35-gemma-assistant-greedy-reference-norm31-native2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "files_sha256": {
+        "job.json": "e689e3df94b1545f6c7168f5ba0c432dc4703e5afce5979c2f7fe3d4631aa6c8",
+        "steps.json": "fd9017cca42e7ab8e0232acc2e495f6b2d4f73da35146a0963f94276437eb633",
+        "final.json": "047735421ce33bd99aa7566288ee578dea4cf7fa511159c8db4689d522988ca4",
+        "log": "e540f9d51ef7743ce04790e06511c9e9ae65d10775c915810b152b31db497d48"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-norm31-own2",
+      "job_name": "m35-gemma-assistant-greedy-reference-norm31-own2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "files_sha256": {
+        "job.json": "7493279f00f8c32d1b917cc9a1a0581884337ca88a6702f24f9392d7da06a8b9",
+        "steps.json": "7ab895c1b3a17fc278b85696bbee94f92969205f698b613f4e9afc8add1d8704",
+        "final.json": "cedbfbb219126530ffef61ca4ee7fd9877a2ffcc565a13c20ebf5fbf3b31db38",
+        "log": "af58874c2a93b454bacd726e08cbeb3e7834af9f0113bb001c3207e7aac13929"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-reference31-1",
+      "job_name": "m35-gemma-assistant-greedy-reference-reference31-1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "files_sha256": {
+        "job.json": "fc03db607fd58886ce9455369fe0bf05d451e44e48fbacf1026ac87a0504d9e9",
+        "steps.json": "0ba05b11a3ba429aa33e5e22b673914817773698c559263dc137f662ec737950",
+        "final.json": "b9580e1fce3aeebebbc11b01a6ffa43b5be73461d51e0e5da6847b55e738aa77",
+        "log": "74325829593bbc9689a583020d40fe24a8811a13df556844293bd1d05ec4a0b1"
+      }
+    },
+    {
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/official-reference31-own1",
+      "job_name": "m35-gemma-assistant-greedy-reference-reference31-own1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "files_sha256": {
+        "job.json": "708dd2089e7afafe4b255b3d89af71e63dc4ebeffaefc932be57a9891f9fb03b",
+        "steps.json": "9cd22c5ae82e6450806172daa5cf1e28976833457a2ba7fbdfded99e632dd4f9",
+        "final.json": "787ae57a5ed8eb561d83429c4ecdc881c05484a7bbe0fb1d8f2833284580c0ed",
+        "log": "f1259897fd9e40bc0f00e7107a40e76dffc7b452d7376e225d902cce7866798b"
+      }
+    }
+  ],
+  "tensorfold_entry": {
+    "query_utc": "2026-10-06T12:42:18.142268+00:00",
+    "head": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "observation": "Fresh primary git ls-remote at this task entry remains cb2ebf; same-HEAD authenticated source snapshots retained from the greedy-unit observation. No inference or comparable CUDA Q8 assistant result.",
+    "previous_receipt": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-unit-raw/tensorfold-entry1.json",
+    "README.md": {
+      "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/README.md",
+      "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+    },
+    "pyproject.toml": {
+      "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/pyproject.toml",
+      "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+    },
+    "docs/recipes/gemma-4.md": {
+      "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/docs/recipes/gemma-4.md",
+      "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+    },
+    "src/tensorfold/__init__.py": {
+      "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/src/tensorfold/__init__.py",
+      "sha256": "fdc3b9c9e54fd20a7aca02113787d82cd8ac28cb10e5142225c718c2d4e6288e"
+    },
+    "version": "0.6.6"
+  }
+}

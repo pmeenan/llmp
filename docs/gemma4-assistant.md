@@ -195,6 +195,14 @@ independent same-four-query target wave, semantic accepted KV, rejected-tail
 restoration, projected continuation and whole-discard/refusal evidence.
 This is transaction semantics, not scalar-width quality or serving qualification.
 
+The [matched Gemma31 greedy transaction](experiments/gemma-assistant-greedy-reference/README.md)
+also matches the pinned original for one C1/P64/depth-three unit with query64
+prefill and query4 verification, using the target's existing norm/RoPE and norm/add
+chains. All complete target/assistant heads and retained features are byte-exact;
+accepted count and pending carry agree. The plain-norm baseline failure remains
+recorded. This adds one original transaction control, without 26B, scalar-width,
+serving or competitive whole-chain performance qualification.
+
 ## Execution work still owed
 
 The component supplies explicit retained-feature rows, same-slot initialized

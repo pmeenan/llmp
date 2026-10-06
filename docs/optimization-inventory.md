@@ -191,6 +191,14 @@ profiles, preserving selected full head/feature and an uncommitted next anchor.
 Its 11 focused controls use same-four-query target arithmetic; scalar-prefix
 parity, whole-chain quality, serving, sampling and performance remain unqualified.
 Full heads and funded host masks remain the diagnostic baseline.
+The [Gemma31 matched greedy transaction](experiments/gemma-assistant-greedy-reference/README.md)
+shows the existing target norm/RoPE and norm/add flags remain compatible with
+retained postnorm features at query64/query4: full heads/features and retired
+acceptance match the same first original byte-for-byte. Plain fused norms alone
+fail strict3, acceptance and conditional loss on that unit. This is a bounded
+recipe transfer; assistant arithmetic is unchanged, and no serving, 26B or
+competitive repeated-unit performance claim follows.
+
 
 The [Gemma26 assistant C2 screen](experiments/gemma-assistant-c2/README.md)
 checks ordinary joined products and per-segment attention on distinct frozen

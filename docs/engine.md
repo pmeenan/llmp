@@ -212,6 +212,12 @@ tokens and selected full head/feature. Its next anchor remains uncommitted.
 Both-profile focused exact controls use a same-four-query independent target;
 serving and scalar-width quality remain separate.
 
+One [matched Gemma31 target-plus-assistant transaction](experiments/gemma-assistant-greedy-reference/README.md)
+now also matches full original heads/features and acceptance at C1/P64/depth3
+under the explicit native target norm chains. Its independent normal Wave4/reset
+checks preserve the engine's semantic-prefix oracle; this adds no engine defaults,
+serving admission, scalar-width quality or performance qualification.
+
 What a new family writes, and nothing else:
 
 - `model/<family>.h`: its profile, the binding to an artifact, its state
