@@ -187,6 +187,12 @@ selects 30. All norm/reduction counts match and the observed complete stock
 output is unchanged. This identifies a quality lead; the selected-chain logger
 does not report refusal reasons or prove the cause of the nine disagreements.
 
+The [single routing keep factor](../gemma-keep28-routing/README.md) now resolves
+that fixed-corpus difference: retaining only layer 28's routing probabilities
+matches all 1,024 stock heads byte for byte. The routing-policy difference
+caused the nine disagreements for this recipe. A general selection rule and
+stock's refusal reason remain open; no production whitelist or timing result follows.
+
 ## Prompt for Opus or Astra
 
 ```text

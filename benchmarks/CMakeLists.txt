@@ -276,6 +276,14 @@ if(JITLLM_CUDA)
   target_link_libraries(jitllm_gemma_prefill PRIVATE jitllm_engine jitllm_warnings)
   target_link_options(jitllm_gemma_prefill PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # Manual closed 26B routing keep diagnostic; production planner stays intact.
+  add_executable(jitllm_gemma_quality_keep28 gemma_quality_keep28.cc
+                   gemma_quality_keep28_wrap.cc)
+  target_link_libraries(jitllm_gemma_quality_keep28 PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_quality_keep28 PRIVATE
+      "LINKER:--wrap=_ZN6jitllm6engine15PlanGemma4ChunkERKNS0_11Gemma4ModelERKNS_7kernels4ggml16Gemma4ChunkShapeERKNS5_13DeviceChoicesEmmSt4spanIKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEELm18446744073709551615EE"
+      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   add_executable(jitllm_gemma_quality gemma_quality.cc)
   target_link_libraries(jitllm_gemma_quality PRIVATE jitllm_engine jitllm_warnings)
   target_link_options(jitllm_gemma_quality PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")

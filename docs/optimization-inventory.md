@@ -474,6 +474,13 @@ counts match. The logger gives no layer-28 refusal reason. This is a concrete
 recipe difference to isolate, without attributing the nine failed quality choices
 or selecting a production layer policy.
 
+The [Gemma26 routing keep factor](experiments/gemma-keep28-routing/README.md)
+resolves the fixed 1,024-row corpus difference: retaining only layer 28's
+routing probabilities makes all complete heads byte-identical to stock.
+This establishes the routing-policy cause of the earlier nine disagreements
+for that recipe. The diagnostic does not select a production layer whitelist;
+stock's refusal reason and a general selection rule remain to be determined.
+
 The [fresh current reference bookends](experiments/gemma-current-reference/README.md)
 measure the accumulated solo recipe: stable 26B latency gaps are 2.43% prefill
 and 0.92% decode. Native 31B prefill is stable while stock moves 1.3355 s;

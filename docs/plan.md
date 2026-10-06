@@ -460,6 +460,12 @@ family" guide, and its long-context scaling work.
         Stock selects 29 routing fusions, with no layer-28 selection; native
         all1024 selects 30. Norm/reduction counts agree. Refusal reason and
         causality for the nine quality failures remain unproved; no policy changes.
+      - [x] [Gemma26 routing keep factor](experiments/gemma-keep28-routing/README.md):
+        keeping only layer 28's routing probabilities changes native routing
+        from 30 to 29 fusions and matches all 1,024 stock heads exactly, with
+        independently frozen finite own repeats. This resolves the nine
+        fixed-corpus disagreements; the stock refusal reason, general selection
+        rule, other shapes and production policy remain open.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

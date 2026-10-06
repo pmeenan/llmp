@@ -87,6 +87,10 @@ checks 31B both256 and 26B all1024 with plain norm fusion. All 1,024 complete
 exactly. The 26B transfer fails strict quality with nine positive-margin choices,
 15 exact heads and +0.0528% PPL. Each policy's own repeat is independently frozen;
 these samples add no full-model, frontier-state or optimized-batching support.
+A [single routing keep diagnostic](experiments/gemma-keep28-routing/README.md)
+then resolves the fixed 26B corpus: keeping layer 28's routing probabilities
+matches all 1,024 stock heads exactly. This explains the earlier nine misses
+for that recipe; the general selection rule and production qualification remain open.
 
 The [fresh current solo comparison](experiments/gemma-current-reference/README.md)
 records stable 26B prefill/decode latency gaps of 2.43%/0.92%. Native 31B prefill
