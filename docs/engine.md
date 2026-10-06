@@ -199,9 +199,12 @@ missing or refused prediction uses normal planning.
 Gemma's [assistant component](gemma4-assistant.md#native-component-and-protected-target-operands)
 adds explicit post-finalnorm feature retention and scoped readonly cache
 borrows to that skeleton. It shares the target launch/cohort and uses separate
-funded recurrent storage, plans and staging. It has no serving speculation or
-accept/reject verifier; bounded C1 arithmetic and independent-slot controls do
-not qualify full model support.
+funded recurrent storage, plans and staging. A separate default-off
+[Gemma target verifier](experiments/gemma-target-verify/README.md) completes
+one to four C1 rows, retains explicit heads/features and settles accepted or
+rejected KV writes before publishing a cursor. Its focused transaction proof
+does not establish scalar-prefix arithmetic parity, assistant serving
+speculation or full model support.
 
 What a new family writes, and nothing else:
 

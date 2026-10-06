@@ -165,9 +165,14 @@ progress and completed payload witnesses. No optimized assistant join is
 selected. Width1,024 norm/residual fusion needs a new checked eligibility
 contract; Q8 joins/shared preparation/row-invariant products require actual
 1,024/8,192 and projection/head qualification. Device frozen-prefix masks,
-lean canonical heads, adaptive depth and verify rollback remain measured
-transfer work, not inherited target defaults. Full heads and funded host masks
-are the present diagnostic baseline.
+lean canonical heads and adaptive depth remain measured transfer work, not
+inherited target defaults. The default-off
+[engine-only target verifier](experiments/gemma-target-verify/README.md) now
+shares LiveState row snapshots/accept/rollback, explicit host metadata funding
+and separate retained-feature storage. Both profiles pass focused C1
+transaction controls, including ring wrap and rejected bytes; assistant
+acceptance/serving and scalar-prefix parity remain unqualified. Full heads and
+funded host masks are the present diagnostic baseline.
 
 The [Gemma26 assistant C2 screen](experiments/gemma-assistant-c2/README.md)
 checks ordinary joined products and per-segment attention on distinct frozen

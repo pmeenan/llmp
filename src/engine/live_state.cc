@@ -761,7 +761,12 @@ LiveState::Status LiveState::Usable() const {
 
 // ------------------------------------------------------------------ speculation
 
-LiveState::Status LiveState::AllocateSnapshot(RunnerResources& resources, std::uint32_t capacity) {
+LiveState::Status LiveState::AllocateSnapshot(RunnerResources& resources, std::uint32_t capacity,
+                                              bool reserve_saves) {
+  if (reserve_saves) {
+    saved_.reserve(capacity);
+    if (saved_.capacity() > capacity) return Error("verify saved metadata exceeds funded capacity");
+  }
   auto save = resources.Pinned(capacity * sizeof(kg::RangeCopy));
   auto restore = resources.Pinned(capacity * sizeof(kg::RangeCopy));
   if (!save || !restore) {

@@ -563,6 +563,12 @@ family" guide, and its long-context scaling work.
         with explicit post-finalnorm features, scoped frozen-cache borrows,
         original-input C1 arithmetic and native independent-slot controls.
         Serving verification, optimized batching and quality/performance remain open.
+      - [x] [Bounded engine-only Gemma target verification](experiments/gemma-target-verify/README.md),
+        default-off one to four C1 rows with explicit head/feature funding,
+        exact independent four-row acceptance, rejected KV restoration and
+        projected continuations on both profiles; 11 focused controls pass.
+        Scalar-prefix parity, deterministic verify budget-pressure refusal,
+        assistant serving and whole-chain quality/performance remain open.
       - [x] [Gemma26 assistant C2 arithmetic and timing diagnosis](experiments/gemma-assistant-c2/README.md),
         with frozen native serial/joined recurrence, identical-input original
         comparisons and matched paid bookends. Both native policies reproduce

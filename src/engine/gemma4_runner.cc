@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <format>
 #include <limits>
@@ -127,9 +128,9 @@ std::expected<Gemma4Runner::FrozenBorrow, std::string> Gemma4Runner::BorrowFroze
   if (!request) return Error(request.error());
   auto& slot = **request;
   if (auto r = CheckActive(slot); !r) return Error(r.error());
-  if (!o_.retain_features || !Held(index) || slot.borrowed || !slot.state_usable() ||
-      slot.positions == 0 || slot.positions >= layout_.context || anchor < 0 ||
-      std::cmp_greater_equal(anchor, profile_.vocab) || slot.feature_count == 0 ||
+  if (!o_.retain_features || !Held(index) || slot.verify_pending || slot.borrowed ||
+      !slot.state_usable() || slot.positions == 0 || slot.positions >= layout_.context ||
+      anchor < 0 || std::cmp_greater_equal(anchor, profile_.vocab) || slot.feature_count == 0 ||
       slot.feature_first + slot.feature_count != slot.positions)
     return Error(
         "Gemma4 frozen borrow needs a held initialized prefix and its latest final feature");
@@ -202,8 +203,8 @@ Status Gemma4Runner::CopyFeatures(std::uint32_t index, std::uint32_t first, std:
   if (!request) return Error(request.error());
   auto& slot = **request;
   if (auto r = CheckActive(slot); !r) return r;
-  if (!o_.retain_features || !slot.state_usable() || pinned == nullptr || rows == 0 ||
-      first < slot.feature_first || first - slot.feature_first >= slot.feature_count ||
+  if (!o_.retain_features || (slot.live.quarantined() || slot.restoring) || pinned == nullptr ||
+      rows == 0 || first < slot.feature_first || first - slot.feature_first >= slot.feature_count ||
       rows > slot.feature_count - (first - slot.feature_first))
     return Error("Gemma4 final feature copy exceeds its completed retained rows");
   bool unknown = false;
@@ -264,7 +265,8 @@ Status Gemma4Runner::SelectSlots(std::span<const std::uint32_t> slots) {
   auto mask = cohort_.MaskOf(slots);
   if (!mask) return Error(mask.error());
   for (const auto& slot : slots_)
-    if (slot && slot->borrowed && (*mask & (SlotMask{1} << slot->index)) == 0)
+    if (slot && (slot->borrowed || slot->verify_pending) &&
+        (*mask & (SlotMask{1} << slot->index)) == 0)
       return Error("Gemma4 selection cannot remove a frozen borrowed peer");
   cohort_.Select(*mask);
   return RefreshClosures();
@@ -339,6 +341,10 @@ Status Gemma4Runner::Setup() {
   const auto head_rows = o_.max_head_rows == 0 ? o_.max_rows : o_.max_head_rows;
   if (head_rows < o_.slots || head_rows > o_.max_rows)
     return Error("Gemma4 head capacity must cover slots within max_rows");
+  if (o_.max_verify_rows > 4 ||
+      (o_.max_verify_rows != 0 &&
+       (!o_.retain_features || o_.max_head_rows == 0 || o_.max_verify_rows > o_.max_head_rows)))
+    return Error("Gemma4 verify needs 1..4 rows, explicit features and head capacity");
   auto layout = md::Gemma4State(profile_, o_.context, o_.max_rows);
   if (!layout) return Error(layout.error());
   layout_ = std::move(*layout);
@@ -466,6 +472,52 @@ Status Gemma4Runner::Setup() {
                                 feature_slot_bytes_ * o_.slots, catalog::MemoryClass::kLiveState);
         !r)
       return r;
+  }
+  if (o_.max_verify_rows != 0) {
+    const auto capacity = o_.max_verify_rows * static_cast<std::uint32_t>(layout_.tensors.size());
+    // Fund the saved-vector reserve and small commit callback before allocation.
+    // Copy tables and feature validation staging are separately pinned/cataloged.
+    verify_host_charge_ =
+        std::uint64_t{o_.slots} * (capacity * sizeof(LiveState::Saved) + 256) + 8192;
+    if (!node_.ChargeHost(verify_host_charge_, false)) {
+      verify_host_charge_ = 0;
+      return Error("Gemma4 verify host metadata does not fit");
+    }
+    std::uint64_t snapshot_bytes = 0;
+    for (const auto& tensor : layout_.tensors)
+      snapshot_bytes += std::uint64_t{o_.max_verify_rows} * Round(tensor.width * 2, 256);
+    verify_feature_slot_bytes_ = Round(std::uint64_t{o_.max_verify_rows} * profile_.width * 4, 256);
+    if (auto r =
+            resources_.Map(verify_features_, "Gemma4 pending verify features",
+                           verify_feature_slot_bytes_ * o_.slots, catalog::MemoryClass::kRuntime);
+        !r)
+      return r;
+    auto verify_host = resources_.Pinned(verify_feature_slot_bytes_);
+    if (!verify_host) return Error(verify_host.error());
+    verify_feature_host_ = *verify_host;
+    for (auto& request : slots_) {
+      if (!request) continue;
+      auto& slot = *request;
+      if (auto r = resources_.Map(slot.snapshot, "Gemma4 verify saves", snapshot_bytes,
+                                  catalog::MemoryClass::kRuntime);
+          !r)
+        return r;
+      slot.live.SnapshotAt(slot.snapshot.base, snapshot_bytes);
+      if (auto r = slot.live.AllocateSnapshot(resources_, capacity, true); !r) return r;
+      if (slot.live.saved().capacity() > capacity)
+        return Error("Gemma4 verify saved metadata exceeds its funded capacity");
+      auto commit = resources_.Pinned(sizeof(kg::RangeCopy));
+      if (!commit) return Error(commit.error());
+      slot.feature_commit = static_cast<kg::RangeCopy*>(*commit);
+      slot.live.SetCommit([this, &slot](kg::LaunchContext& launch, std::uint32_t keep) {
+        *slot.feature_commit = {.from = verify_features_.base +
+                                        slot.index * verify_feature_slot_bytes_ +
+                                        std::uint64_t{keep - 1} * profile_.width * sizeof(float),
+                                .to = features_.base + slot.index * feature_slot_bytes_,
+                                .bytes = std::uint64_t{profile_.width} * sizeof(float)};
+        return kg::CopyRanges(launch, slot.feature_commit, 1);
+      });
+    }
   }
   setup_ = true;
   return {};
@@ -639,6 +691,7 @@ Status Gemma4Runner::ReserveStateThrough(std::uint32_t index, std::uint32_t posi
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   auto& slot = **request;
+  if (slot.verify_pending) return Error("Gemma4 verify must retire before state mutation");
   if (slot.borrowed) return Error("Gemma4 frozen borrowed state cannot grow");
   slot.state_refused = false;
   if (auto active = CheckActive(slot); !active) return active;
@@ -661,6 +714,7 @@ Status Gemma4Runner::Clear(std::uint32_t index) {
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   auto& slot = **request;
+  if (slot.verify_pending) return Error("Gemma4 verify must retire before state mutation");
   if (slot.borrowed) return Error("Gemma4 frozen borrowed state cannot clear");
   if (!bound_ || cohort_.faulted()) return Error("Gemma4 retirement required");
   if (auto r = cohort_.Check(node_, stream_, index); !r) return r;
@@ -687,6 +741,7 @@ Status Gemma4Runner::ClearIdle(std::uint32_t index) {
   if (!bound_ || cohort_.faulted() || (cohort_.IsActive(index) && node_.InRequest(stream_)))
     return Error("Gemma4 idle clear requires an idle healthy slot");
   auto& slot = **request;
+  if (slot.verify_pending) return Error("Gemma4 verify must retire before state mutation");
   if (slot.borrowed) return Error("Gemma4 frozen borrowed state cannot clear");
   InvalidateFeatures(slot);
   const auto cleared = slot.live.DiscardGrowingState(node_);
@@ -708,6 +763,7 @@ Status Gemma4Runner::Spill(std::uint32_t index) {
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   auto& slot = **request;
+  if (slot.verify_pending) return Error("Gemma4 verify must retire before state mutation");
   if (slot.borrowed) return Error("Gemma4 frozen borrowed state cannot spill");
   if (!bound_ || cohort_.faulted()) return Error("Gemma4 retirement required");
   if (slot.spilled) return {};
@@ -728,6 +784,7 @@ Status Gemma4Runner::Restore(std::uint32_t index) {
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   auto& slot = **request;
+  if (slot.verify_pending) return Error("Gemma4 verify must retire before state mutation");
   slot.state_refused = false;
   if (!bound_ || cohort_.faulted()) return Error("Gemma4 retirement required");
   if (!slot.spilled) return {};
@@ -771,6 +828,7 @@ Status Gemma4Runner::CopyState(std::uint32_t index, void* pinned,
                                LiveState::CopyRetirement* retirement) {
   auto request = request_slot(index);
   if (!request) return Error(request.error());
+  if ((*request)->verify_pending) return Error("Gemma4 verify must retire before checkpoint copy");
   if (!to_host && (*request)->borrowed)
     return Error("Gemma4 frozen borrowed state cannot overwrite");
   if (auto active = CheckActive(**request); !active) return active;
@@ -808,6 +866,7 @@ Status Gemma4Runner::RestoreCheckpoint(std::uint32_t index, std::uint32_t positi
   if (positions != 0 && pinned == nullptr) return Error("Gemma4 checkpoint has no pinned buffer");
   auto request = request_slot(index);
   if (!request) return Error(request.error());
+  if ((*request)->verify_pending) return Error("Gemma4 verify must retire before checkpoint copy");
   if (auto r = CheckActive(**request); !r) return r;
   if ((*request)->positions != 0 || (*request)->live.used_bytes() != 0)
     return Error("Gemma4 checkpoint restore requires an empty slot");
@@ -866,6 +925,7 @@ Status Gemma4Runner::PrepareRestore(std::uint32_t index, std::uint32_t positions
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   auto& slot = **request;
+  if (slot.verify_pending) return Error("Gemma4 verify must retire before state mutation");
   if (slot.borrowed) return Error("Gemma4 frozen borrowed state cannot restore");
   if (auto r = CheckActive(slot); !r) return r;
   if (slot.restoring) return Error("Gemma4 restore is already pending");
@@ -900,6 +960,7 @@ Status Gemma4Runner::CompleteRestore(std::uint32_t index, std::uint32_t position
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   auto& slot = **request;
+  if (slot.verify_pending) return Error("Gemma4 verify must retire before state mutation");
   if (auto r = CheckActive(slot); !r) return r;
   if (!slot.restoring || *slot.restoring != positions)
     return Error("Gemma4 restore completion differs from its checked metadata");
@@ -922,6 +983,7 @@ Status Gemma4Runner::Adopt(std::uint32_t index, std::uint32_t positions,
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   auto& slot = **request;
+  if (slot.verify_pending) return Error("Gemma4 verify must retire before state mutation");
   if (!bound_ || cohort_.faulted() || positions == 0 || slot.positions != 0 || slot.spilled ||
       slot.live.used_bytes() != 0 || Held(index))
     return Error("Gemma4 adopts kept state only into an empty idle healthy slot");
@@ -1027,9 +1089,86 @@ Status Gemma4Runner::WavePrefill(std::span<const Work> work, bool want_head,
 Status Gemma4Runner::Wave(std::span<const Work> work, bool all_outputs, bool all_features) {
   return WaveWithMode(work, all_outputs, all_features, kg::Gemma4OutputMode::kHead);
 }
+Status Gemma4Runner::Verify(std::uint32_t index, std::uint32_t past,
+                            std::span<const std::int32_t> tokens, std::vector<float>& heads,
+                            std::vector<float>& features) {
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  auto& slot = **request;
+  if (o_.max_verify_rows == 0 || tokens.empty() || tokens.size() > o_.max_verify_rows ||
+      &heads == &features || !Held(index) || past != slot.positions || slot.borrowed ||
+      slot.verify_pending || slot.live.owed() || slot.restoring)
+    return Error("Gemma4 verify needs a held, bounded, unborrowed completed prefix");
+  const Work work{index, past, tokens, &heads};
+  if (auto r = WaveWithMode(std::span(&work, 1), true, true, kg::Gemma4OutputMode::kHead, {}, true,
+                            true);
+      !r)
+    return r;
+  slot.verify_pending = true;
+  slot.verified_rows = static_cast<std::uint32_t>(tokens.size());
+  slot.live.Verified(slot.verified_rows);
+  slot.on_disk = false;
+  const auto values =
+      std::span(static_cast<const float*>(verify_feature_host_), tokens.size() * profile_.width);
+  if (std::ranges::any_of(heads, [](float x) { return !std::isfinite(x); }) ||
+      std::ranges::any_of(values, [](float x) { return !std::isfinite(x); })) {
+    heads.clear();
+    features.clear();
+    auto discarded = DiscardVerify(index);
+    return discarded ? Error("Gemma4 verify produced nonfinite judge rows") : discarded;
+  }
+  features.assign(values.begin(), values.end());
+  return {};
+}
+Status Gemma4Runner::AcceptVerify(std::uint32_t index, std::uint32_t keep) {
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  auto& slot = **request;
+  if (!slot.verify_pending || !Held(index) || keep == 0 || keep > slot.verified_rows)
+    return Error("Gemma4 accept needs pending verified rows and the held request");
+  if (auto active = CheckActive(slot); !active) return active;
+  if (auto r = slot.live.Accept(keep); !r) return r;
+  if (auto r = slot.live.Rollback(node_, execution_, stream_, resources_.launch(),
+                                  "Gemma4 accept restore and feature commit");
+      !r) {
+    auto states = States();
+    cohort_.CheckFailedJob(node_, stream_, execution_, states);
+    slot.live.Quarantine();
+    return r;
+  }
+  // No prefix or feature becomes visible until restore and commit retired.
+  slot.positions += keep;
+  InvalidateFeatures(slot);
+  slot.feature_first = slot.positions - 1;
+  slot.feature_count = 1;
+  slot.verify_pending = false;
+  slot.verified_rows = 0;
+  return {};
+}
+Status Gemma4Runner::DiscardVerify(std::uint32_t index) {
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  auto& slot = **request;
+  if (!slot.verify_pending || !Held(index))
+    return Error("Gemma4 discard needs pending verified rows and the held request");
+  if (auto active = CheckActive(slot); !active) return active;
+  (void)slot.live.Settle(true, true, false);
+  if (auto r = slot.live.Rollback(node_, execution_, stream_, resources_.launch(),
+                                  "Gemma4 discard whole verify");
+      !r) {
+    auto states = States();
+    cohort_.CheckFailedJob(node_, stream_, execution_, states);
+    slot.live.Quarantine();
+    return r;
+  }
+  slot.verify_pending = false;
+  slot.verified_rows = 0;
+  // Published feature, its epoch and cursor were never overwritten.
+  return {};
+}
 Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, bool all_features,
                                   kg::Gemma4OutputMode mode, std::span<const PrefillNext> next,
-                                  bool next_want_head) {
+                                  bool next_want_head, bool verify) {
   const auto phase = [&](Phase which) -> double* {
     return account_phases_ ? &phases_.seconds[static_cast<std::size_t>(which)] : nullptr;
   };
@@ -1045,7 +1184,7 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
     const auto& w = work[i];
     if (w.slot >= o_.slots || seen[w.slot] || w.logits == nullptr || w.tokens.empty() ||
         w.tokens.size() > o_.max_rows - rows || w.n_past != slots_[w.slot]->positions ||
-        slots_[w.slot]->restoring || slots_[w.slot]->borrowed ||
+        slots_[w.slot]->restoring || slots_[w.slot]->borrowed || slots_[w.slot]->verify_pending ||
         (all_features && !o_.retain_features))
       return Error("Gemma4 wave needs distinct slots, bounded rows and exact continuations");
     if (auto r = CheckActive(*slots_[w.slot]); !r) return r;
@@ -1214,7 +1353,26 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
     }
   })
                                                   : std::function<void()>{};
-  bool wrote = false, unknown = false;
+  Slot* verifying = verify ? slots_[work.front().slot].get() : nullptr;
+  if (verifying) {
+    verifying->live.BeginSaves();
+    for (std::uint32_t row = 0; row < rows; ++row) {
+      auto writes = md::Gemma4ChunkWrites(profile_, layout_, work.front().n_past + row, 1);
+      if (!writes) {
+        verifying->live.BeginSaves();
+        return Error(writes.error());
+      }
+      for (const auto& range : *writes) {
+        if (auto saved =
+                verifying->live.Save(verifying->live.base(0) + range.offset, range.bytes, row);
+            !saved) {
+          verifying->live.BeginSaves();
+          return saved;
+        }
+      }
+    }
+  }
+  bool wrote = false, unknown = false, saves_queued = false;
   Status queued;
   RunPath path = RunPath::kEager;
   timer.reset();
@@ -1222,6 +1380,15 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   const auto posted = node_.Job(
       execution_,
       [&](providers::NativeStream native) {
+        // Fresh copy descriptors are never captured with the target graph.
+        if (verifying) {
+          if (auto saved = verifying->live.QueueSaves(resources_.launch()); !saved) {
+            queued = Error(saved.error().detail);
+            unknown = true;
+            return sc::JobResult::kUnknown;
+          }
+          saves_queued = true;
+        }
         const auto result = runs_.Queue(entry.runs[0], *copies, {}, *p.bound, outputs, capture,
                                         graph_stats_, native);
         wrote = result.before || result.result.has_value();
@@ -1229,23 +1396,35 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
         if (!result.result) {
           queued = Error(result.result.error().detail);
           unknown = result.result.error().error == kg::KernelError::kUnknown;
-          return unknown         ? sc::JobResult::kUnknown
-                 : result.before ? sc::JobResult::kFailed
-                                 : sc::JobResult::kNotStarted;
+          return unknown                           ? sc::JobResult::kUnknown
+                 : (result.before || saves_queued) ? sc::JobResult::kFailed
+                                                   : sc::JobResult::kNotStarted;
         }
         if (o_.retain_features) {
           std::uint64_t first = 0;
           for (const auto& w : work) {
             const auto count = all_features ? static_cast<std::uint32_t>(w.tokens.size()) : 1U;
-            if (!providers::CopyAsync(native,
-                                      Pointer(features_.base + w.slot * feature_slot_bytes_),
-                                      Pointer(Address(p.graph.normalized_features->data) +
-                                              first * profile_.width * sizeof(float)),
-                                      std::uint64_t{count} * profile_.width * sizeof(float),
-                                      providers::CopyKind::kDeviceToDevice)
+            if (!providers::CopyAsync(
+                     native,
+                     Pointer(verify ? verify_features_.base + w.slot * verify_feature_slot_bytes_
+                                    : features_.base + w.slot * feature_slot_bytes_),
+                     Pointer(Address(p.graph.normalized_features->data) +
+                             first * profile_.width * sizeof(float)),
+                     std::uint64_t{count} * profile_.width * sizeof(float),
+                     providers::CopyKind::kDeviceToDevice)
                      .ok()) {
               unknown = true;
               queued = Error("Gemma4 final feature copy completion is uncertain");
+              return sc::JobResult::kUnknown;
+            }
+            if (verify && !providers::CopyAsync(
+                               native, verify_feature_host_,
+                               Pointer(verify_features_.base + w.slot * verify_feature_slot_bytes_),
+                               std::uint64_t{count} * profile_.width * sizeof(float),
+                               providers::CopyKind::kDeviceToHost)
+                               .ok()) {
+              unknown = true;
+              queued = Error("Gemma4 verify feature validation copy completion is uncertain");
               return sc::JobResult::kUnknown;
             }
             first += count;
@@ -1255,10 +1434,22 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
       },
       "Gemma4 chunk/wave", stream_, meanwhile);
   if (!posted || !queued || resources_.launch().faulted()) {
-    for (const auto& w : work)
-      if (wrote || unknown) slots_[w.slot]->live.Quarantine();
     auto states = States();
     cohort_.CheckFailedJob(node_, stream_, execution_, states);
+    if (verifying) {
+      const bool uncertain = unknown || resources_.launch().faulted() || cohort_.faulted();
+      if (verifying->live.Settle(saves_queued, wrote, uncertain)) {
+        if (auto undone = verifying->live.Rollback(node_, execution_, stream_, resources_.launch(),
+                                                   "Gemma4 failed verify restore");
+            !undone) {
+          cohort_.CheckFailedJob(node_, stream_, execution_, states);
+          verifying->live.Quarantine();
+        }
+      }
+    } else {
+      for (const auto& w : work)
+        if (wrote || unknown) slots_[w.slot]->live.Quarantine();
+    }
     if (resources_.launch().faulted()) cohort_.Fault(states);
     if (!queued) return queued;
     return !posted ? posted : Error("Gemma4 launch context faulted");
@@ -1287,6 +1478,7 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
     else
       w.logits->assign(values, values + n);
     at += n;
+    if (verify) continue;
     slots_[w.slot]->positions += static_cast<std::uint32_t>(w.tokens.size());
     InvalidateFeatures(*slots_[w.slot]);
     if (o_.retain_features) {
@@ -1326,6 +1518,11 @@ Status Gemma4Runner::Release() {
   for (auto& slot : slots_)
     if (slot) slot->live.Release(node_.memory(), problems);
   if (auto r = weights_.Release(node_.memory()); !r) problems.push_back(r.error());
+  if (verify_host_charge_ != 0 && problems.empty()) {
+    // Only after retirement and after the charged saved vectors/callbacks die.
+    for (auto& slot : slots_) slot.reset();
+    node_.UnchargeHost(std::exchange(verify_host_charge_, 0));
+  }
   return support::Joined(problems);
 }
 }  // namespace jitllm::engine

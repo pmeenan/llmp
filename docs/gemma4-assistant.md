@@ -182,10 +182,15 @@ end-to-end target/assistant quality or competitive performance qualification.
 ## Execution work still owed
 
 The component supplies explicit retained-feature rows, same-slot initialized
-cache borrows and separate funding. Future verification must retain every
-potentially accepted feature row through the actual target verifier policy.
-Target verification must restore rejected overwritten local-ring bytes and
-visibility before continuation. Constant position, seed/feature alignment,
+cache borrows and separate funding. The default-off
+[engine-only target verifier](experiments/gemma-target-verify/README.md) now
+retains all heads/features for one to four C1 rows, restores rejected KV writes,
+and publishes the accepted feature/cursor only after retirement. Both profiles
+pass focused transaction controls; scalar-prefix byte parity and deterministic
+verify budget-pressure refusal remain unestablished. Assistant serving must
+release its frozen cache borrow before verification and separately fund an
+explicit verify/head envelope; neither admission nor acceptance is integrated.
+Constant position, seed/feature alignment,
 wrap/rejection/acceptance, cancellation, switch/restart and independent joined
 chains require real controls. Greedy and sampled target acceptance remain the
 authoritative policies; applicable Qwen/DeepSeek graph, staging, adaptive-draft

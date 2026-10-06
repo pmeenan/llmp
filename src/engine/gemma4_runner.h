@@ -40,6 +40,9 @@ struct Gemma4Options {
   std::uint32_t context = 4096, max_rows = 128, slots = 1;
   // Immutable publication capacity; zero retains the manual all-row envelope.
   std::uint32_t max_head_rows = 0;
+  // Engine-only, ordinary target verification. Explicit features and a funded
+  // head envelope are required; zero keeps verification unavailable.
+  std::uint32_t max_verify_rows = 0;
   bool graphs = true, frontier_head = true;
   // Explicit assistant-feature arithmetic/placement policy. Full final rows
   // remain normalized even when only frontier logits are requested.
@@ -69,7 +72,7 @@ class Gemma4Runner final : public PagedModel {
     std::uint32_t completed_positions() const { return positions; }
     bool refused_state_growth() const { return state_refused; }
     std::uint64_t used_state_bytes() const { return live.used_bytes(); }
-    bool state_usable() const { return !live.quarantined() && !restoring; }
+    bool state_usable() const { return !live.quarantined() && !restoring && !verify_pending; }
     const LiveState& state() const { return live; }
     bool is_spilled() const { return spilled; }
     bool kept_whole() const {
@@ -91,7 +94,10 @@ class Gemma4Runner final : public PagedModel {
     std::uint32_t positions = 0;
     std::uint64_t feature_epoch = 1;
     std::uint32_t feature_first = 0, feature_count = 0;
-    bool borrowed = false;
+    bool borrowed = false, verify_pending = false;
+    std::uint32_t verified_rows = 0;
+    Mapped snapshot;
+    kernels::ggml::RangeCopy* feature_commit = nullptr;
   };
   // Move-only same-slot guard. The caller keeps its held stream request
   // alive until this guard and any component jobs have actually completed.
@@ -137,6 +143,13 @@ class Gemma4Runner final : public PagedModel {
     // Either this segment's frontier or every row, according to all_outputs.
     std::vector<float>* logits = nullptr;
   };
+  // Caller keeps this slot's request held until synchronous Accept/Discard
+  // retires. These completed rows are judge inputs, not a published prefix.
+  // The caller funds both output vectors before calling Verify.
+  Status Verify(std::uint32_t slot, std::uint32_t past, std::span<const std::int32_t> tokens,
+                std::vector<float>& all_heads, std::vector<float>& all_features);
+  Status AcceptVerify(std::uint32_t slot, std::uint32_t keep);
+  Status DiscardVerify(std::uint32_t slot);
   Gemma4Runner(PagedNode& node, Gemma4Options options, int owner, std::uint32_t stream);
   ~Gemma4Runner() override;
   // Between Setup and node.Start/Register. The caller supplies native decoded
@@ -271,7 +284,7 @@ class Gemma4Runner final : public PagedModel {
   friend class Gemma4Assistant;
   Status WaveWithMode(std::span<const Work> work, bool all_outputs, bool all_features,
                       kernels::ggml::Gemma4OutputMode mode, std::span<const PrefillNext> next = {},
-                      bool next_want_head = true);
+                      bool next_want_head = true, bool verify = false);
   void InvalidateFeatures(Slot& slot);
   std::expected<std::array<std::uint8_t, 32>, std::string> CacheGenerations(const Slot& slot) const;
   Status RefreshClosures(SlotMask protect);
@@ -295,7 +308,9 @@ class Gemma4Runner final : public PagedModel {
   model::Gemma4StateLayout layout_;
   std::string checkpoint_layout_id_;
   RunnerResources resources_;
-  Mapped features_;
+  Mapped features_, verify_features_;
+  void* verify_feature_host_ = nullptr;
+  std::uint64_t verify_feature_slot_bytes_ = 0, verify_host_charge_ = 0;
   std::uint64_t feature_slot_bytes_ = 0;
   PagedWeights weights_;
   std::unique_ptr<Gemma4Assistant> assistant_;

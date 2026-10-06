@@ -1,0 +1,246 @@
+{
+  "scope": "Default-off engine-only Gemma C1 verification transaction; no assistant serving, external quality or performance qualification",
+  "source_base": "8cda4be57d58b2dccce89dab49343ad4bba6bddb",
+  "source6_manifest_sha256": "9198b6259dd1ab69491fb72c51a2274019c0e989a06e783f35a364f94872ecf9",
+  "source_bundle_sha256": "a54293c637cc1dec95db1576da3bb6de62af6348a5cd4e92f4d7d059b5f4dbf3",
+  "source_files": [
+    {
+      "path": "src/engine/gemma4_runner.cc",
+      "sha256": "2fcbde7e1c5226df1f104f953964480ec3bff3fc76aead1efcf9ebc64b9ac16f",
+      "bytes": 72594
+    },
+    {
+      "path": "src/engine/gemma4_runner.h",
+      "sha256": "addee4e4701883e2845eb7fd494739c6e85ec885b751cc08025db71c41edbba3",
+      "bytes": 16632
+    },
+    {
+      "path": "src/engine/live_state.cc",
+      "sha256": "55436d704982027c1b713ffd79cae6bcc6cfd21b45e063ef840c90f1faeca2ca",
+      "bytes": 31622
+    },
+    {
+      "path": "src/engine/live_state.h",
+      "sha256": "8fc804a7e3afc07b12ee7b6d064c3b928fc6717fe6903db4ba4f7e7d08ee6ad5",
+      "bytes": 16780
+    },
+    {
+      "path": "tests/unit/CMakeLists.txt",
+      "sha256": "09cc39b51634452f5b99626c83d1a47f80273957bc429902d189240e88b5c0dc",
+      "bytes": 49305
+    },
+    {
+      "path": "tests/unit/gemma4_verify_gpu_test.cc",
+      "sha256": "4e313d9667a45a4f9540e2bf4ebab8de817630b97e0da20878565b619e3c4468",
+      "bytes": 17075
+    }
+  ],
+  "funding_sha256": "34ae30e000c3a4c9172d400ec6c4da48104bd0dce2821604210bbdff69fbb74a",
+  "build_queue_sha256": "0b2e63d0bb86e998ec97c1eeaa1a45339109b2812a9876ed727fd33aeba89f84",
+  "build_receipt_sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09",
+  "sdk": {
+    "id": "aarch64-c09daba6ac31edee",
+    "metadata_sha256": "fbbe4064d963188fe1f3915ee2c94d496bb1fa4432402d7fda9704f29a67150b"
+  },
+  "test_binary_sha256": {
+    "gemma4_verify_gpu_test": "07ac1c1aff4a9fac796872032cc8d4132cbe9b998a58d324c263d2c054c6cc70",
+    "gemma4_runner_gpu_test": "9f1d64501e415f80d2e4b06cfe1c93e66d3cb8e6590c4c3549e48c8abad08bde",
+    "live_state_test": "6b484a7768df3dfe346abdfc007a6780c2f73bb8995cea67b0821a72595ace89"
+  },
+  "fixture": {
+    "approved_profiles": [
+      "26B-A4B",
+      "31B"
+    ],
+    "artifact_manifests": [
+      "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+      "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+    ],
+    "context": 1536,
+    "max_rows": 16,
+    "slots": 2,
+    "max_head_rows": 4,
+    "max_verify_rows": 4,
+    "local_cells": 1280,
+    "caller_host_charge_bytes": 67108864,
+    "verify_owner_count": 1,
+    "accept_lengths": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "verified_rows_tested": [
+      4
+    ],
+    "ordinary_policy": {
+      "shared_q8": false,
+      "fuse_norms": false,
+      "row_invariant": false
+    },
+    "independent_wave_policy": {
+      "shared_q8": true,
+      "fuse_norms": true,
+      "row_invariant": true
+    }
+  },
+  "final_checks": {
+    "passed": 11,
+    "skipped": 0,
+    "new_verify_passed": 7,
+    "existing_gemma_passed": 2,
+    "existing_live_state_passed": 2,
+    "new_verify_ms": 72392,
+    "existing_gemma_ms": 5315,
+    "existing_live_state_ms": 268,
+    "ordinary_repeated_heads_features": "byte exact, eager/capture/replay",
+    "whole_discard_initialized_state_features": "byte exact, including ring-wrap",
+    "accepted_prefix_vs_independent_wave4": "semantic KV rows/head rows/selected feature exact; rejected write bytes restored; checkpoint-projected continuations exact",
+    "descriptor_refusals": "five rows over max4, wrong continuation, foreign slot and context-tail; pending mutation/borrow guard controls",
+    "saved_vector_capacity": "actual capacity equals explicit funded descriptor bound for both profiles"
+  },
+  "prior_attempts": [
+    {
+      "check": 1,
+      "kind": "compile failure",
+      "tests_run": 0,
+      "reason": "Setup local host shadowed existing host sizing variable; declaration/references renamed verify_host only"
+    },
+    {
+      "check": 2,
+      "kind": "compile failure",
+      "tests_run": 0,
+      "reason": "fixture initializer-list range loop required const auto&"
+    },
+    {
+      "check": 3,
+      "kind": "real test failure",
+      "passed": 3,
+      "failed": 4,
+      "reason": "16MiB pressure did not force refusal; matched product policy did not make scalar and four-query state/features/nextheads identical"
+    },
+    {
+      "check": 4,
+      "kind": "real test failure",
+      "passed": 3,
+      "failed": 4,
+      "reason": "DropPlans/free-minus-one pressure still allowed verification; partial-prefix state hash included aligned manual future rows"
+    }
+  ],
+  "funding": {
+    "verify_default": 0,
+    "enabled_rows_min": 1,
+    "enabled_rows_max": 4,
+    "explicit_head_cap_required": true,
+    "raw_snapshot_bytes_per_slot": {
+      "26B": 901120,
+      "31B": 3866624
+    },
+    "saved_descriptor_count_per_slot": {
+      "26B": 240,
+      "31B": 480
+    },
+    "saved_descriptor_bytes": 32,
+    "host_metadata_formula": "slots*(R*tensor_count*sizeof(Saved)+256)+8192",
+    "allocation_domains": "cataloged fixed device snapshot/private features; pinned copy tables/validation staging; explicit host vector/callback grant; normal provider rounding",
+    "unknown_completion": "Unknown-effect writes quarantine the affected slot; unproven shared completion faults/quarantines the cohort and retains uncertain owners; no cursor or feature publication"
+  },
+  "limits": [
+    "No scalar-prefix byte-parity claim",
+    "Deterministic verify budget-pressure refusal not established",
+    "No newly injected post-write CUDA fault or cancellation scenario",
+    "No assistant sampling/greedy acceptance integration, batch verification, serving default, cross-engine quality, reference acquisition, performance or peak-memory comparison",
+    "Full regression suite deferred"
+  ],
+  "tensorfold": {
+    "head": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "version": "0.6.6",
+    "observation": "Primary task-entry Gemma26 MLX recipe; no comparable approved Q8 CUDA assistant or31 reference inferred"
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma-target-verify-check1",
+      "host": "spark-c4e2",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 9,
+      "successful_steps": 4,
+      "elapsed_seconds": 41.706,
+      "records_sha256": {
+        "job.json": "a0989a1108c63e8297ce2c170b6bfd0dbc1ee87ad51901fa630dc22148f95bb8",
+        "steps.json": "729edf4ef3a9abda3351cbea121eea03a193b2c28af26a8b3384907cb388fdf2",
+        "final.json": "d0eb0bc070ef7caaac82f4cfd04005448283422580f22973fd355b92bf354ea8",
+        "log": "2a3ab2e32bb6c4888bbfeb2e67d259d48e7d6cc6618837026206bb7c9f60988a"
+      }
+    },
+    {
+      "name": "m35-gemma-target-verify-check2",
+      "host": "spark-c4e2",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 9,
+      "successful_steps": 4,
+      "elapsed_seconds": 13.891,
+      "records_sha256": {
+        "job.json": "69530eaeb10eb5d85801798602b1a430dd3136ffef3361d29aa86e789a2eaa5d",
+        "steps.json": "344777c0861969b600c03b591aa2e2f838540fc73b9a6bc2a8cd919eb955d11c",
+        "final.json": "50055a232a62227dbf147a58f69ab2ef3dc5bd1f54f695070583cac4f4e88bda",
+        "log": "2cefcaf69aa0fe498d310795c7fcf218b7a19eafba39a7dc31128f8e642df4b3"
+      }
+    },
+    {
+      "name": "m35-gemma-target-verify-check3",
+      "host": "spark-c4e2",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 9,
+      "successful_steps": 5,
+      "elapsed_seconds": 81.982,
+      "records_sha256": {
+        "job.json": "8a9d4cd25b4c0ded14c7af1d350a3ccb4e69409decdca7170bfa91e7dd25097a",
+        "steps.json": "08b5b432f3066f81cbac02ded6fa98e09e942535d53d920da5a449ee08c5687a",
+        "final.json": "d2d8efe992f46c9cb00226258a0202a426b537ac4189fec6cc1353f79e0754e6",
+        "log": "afe015e6b1bce206c8294430a6745f7dd0b86848e19105b18bbe947e04b19888"
+      }
+    },
+    {
+      "name": "m35-gemma-target-verify-check4",
+      "host": "spark-c4e2",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 9,
+      "successful_steps": 5,
+      "elapsed_seconds": 81.478,
+      "records_sha256": {
+        "job.json": "d66d6117042e394139dc909ba616204ed0661b813017895b18d81b13b570d657",
+        "steps.json": "4634120670a7cc2ece3d4bd431343fd50822c05a9ac41cfc5c2431d5dc21b368",
+        "final.json": "cc51e6eaaaa93ee6a52e23dd62c949f37e54b2590cbcd505fe8b20cf32254571",
+        "log": "ee2a38e257c06595286b64f2f3a95eba880b59335b0e5419581834fab15ddbf2"
+      }
+    },
+    {
+      "name": "m35-gemma-target-verify-check5",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 9,
+      "successful_steps": 9,
+      "elapsed_seconds": 87.099,
+      "records_sha256": {
+        "job.json": "e44b10e63673a50f54765960dc8fc0d37933d460c690c7a6faf3f5d994312c47",
+        "steps.json": "4bc65248389304dc5823d6e82c8003813405ca1ecadfafd8555e3738cc9c3a64",
+        "final.json": "6c73746a19dc5ba13250ece7f44a5d9b35004e6732e15828dedf848512689e59",
+        "log": "e0268f324174dbee9f14ec0781d9a5e9d4788de252ad5f313ee9eb6e4f5cdbda"
+      }
+    }
+  ],
+  "raw_external": "/tmp/jitllm-m35-coordination/gemma-target-verify-raw",
+  "local_light": {
+    "reuse": "PASS 1693 files",
+    "headers": "PASS 1693 files",
+    "boundaries": "PASS 400 files",
+    "changed_cpp_format": "PASS",
+    "diff_check": "PASS",
+    "json_parse": "PASS"
+  }
+}

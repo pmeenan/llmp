@@ -209,7 +209,10 @@ class LiveState {
   // A verify's snapshot: `capacity` save and restore descriptors (pinned
   // staging), the saved bytes in [base, base + bytes) of the model's own
   // device memory (SnapshotAt), and `commit` if the model commits kept rows.
-  Status AllocateSnapshot(RunnerResources& resources, std::uint32_t capacity);
+  // Optional saved-vector reserve is caller-funded before this call. Existing
+  // callers retain lazy allocation unless they explicitly request it.
+  Status AllocateSnapshot(RunnerResources& resources, std::uint32_t capacity,
+                          bool reserve_saves = false);
   void SnapshotAt(std::uint64_t base, std::uint64_t bytes) {
     snapshot_base_ = base;
     snapshot_bytes_ = bytes;
