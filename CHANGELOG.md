@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Gemma serving pins head publication storage for configured owner slots rather
+  than every input row, with early capacity refusal and preserved manual all-head
+  defaults. Both approved profiles retain exact continuation/scoring controls.
+
 - Immutable weight placement checks reuse successful results until the scheduler's
   sources or pins change. Gemma31 C4 saves 25.615 ms / 0.77% with exact heads,
   state and choices; shared Qwen/DeepSeek speed benefits remain unmeasured.

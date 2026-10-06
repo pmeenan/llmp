@@ -22,6 +22,8 @@
 namespace en = jitllm::engine;
 class Gemma4RunnerGpu : public ::testing::Test {
  protected:
+  virtual std::uint32_t Slots() const { return 4; }
+  virtual std::uint32_t HeadRows() const { return 0; }
   virtual bool Invariant() const { return false; }
   virtual bool DefaultNorms() const { return false; }
   virtual bool RetainFeatures() const { return false; }
@@ -39,7 +41,8 @@ class Gemma4RunnerGpu : public ::testing::Test {
     en::Gemma4Options options{.artifact = artifact,
                               .out = "/tmp/jitllm-gemma4-runner-control",
                               .variant = Variant(),
-                              .slots = 4,
+                              .slots = Slots(),
+                              .max_head_rows = HeadRows(),
                               .retain_features = RetainFeatures(),
                               .shared_q8 = Invariant(),
                               .row_invariant = Invariant(),
@@ -135,6 +138,7 @@ class Gemma4RunnerGpu : public ::testing::Test {
     return copied ? freed : copied;
   }
   void StateOnlyControl();
+  void HeadCapacityControl();
   struct Lifetime {
     en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
     std::unique_ptr<en::Gemma4Runner> runner;
@@ -923,10 +927,280 @@ TEST_F(Gemma4RunnerGpu, MaximumAllHeadRowsReplayWithSeparatelyFundedCallerVector
   EXPECT_GT(runner->graph_stats().replayed, 0U);
 }
 
+class Gemma4HeadCapGpu : public Gemma4RunnerGpu {
+ protected:
+  std::uint32_t HeadRows() const override { return 4; }
+};
+class Gemma31HeadCapGpu : public Gemma4HeadCapGpu {
+ protected:
+  en::Gemma4Variant Variant() const override { return en::Gemma4Variant::k31B; }
+};
+void Gemma4RunnerGpu::HeadCapacityControl() {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 4>{0, 1, 2, 3}));
+  auto maximum = runner->CheckpointRanges(4);
+  ASSERT_TRUE(maximum);
+  std::uint64_t state_bytes = 0;
+  for (const auto& range : *maximum) state_bytes += range.bytes;
+  const auto head_bytes = std::uint64_t{runner->profile().vocab} * sizeof(float);
+  const auto host_bytes = 3 * state_bytes + 14 * head_bytes;
+  ASSERT_TRUE(node.ChargeHost(host_bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, host_bytes};
+  std::array<std::vector<float>, 2> output, expected_heads, expected_continued;
+  std::array<std::vector<std::byte>, 2> saved;
+  std::vector<std::byte> current;
+  const std::array<en::Gemma4Runner::Work, 2> boundary{
+      {{0, 0, std::span(prompt).first(3), &output[0]},
+       {1, 0, std::span(prompt).first(1), &output[1]}}};
+  const std::array<en::Gemma4Runner::Work, 2> continuation{
+      {{0, 3, std::span(prompt).subspan(3, 1), &output[0]},
+       {1, 1, std::span(prompt).subspan(1, 1), &output[1]}}};
+  auto result = Held([&]() -> en::Status {
+    for (unsigned repeat = 0; repeat < 3; ++repeat) {
+      for (std::uint32_t slot = 0; slot < 4; ++slot)
+        if (auto r = runner->Clear(slot); !r) return r;
+      if (auto r = runner->Wave(boundary, true); !r) return r;
+      EXPECT_EQ(output[0].size(), 3U * runner->profile().vocab);
+      EXPECT_EQ(output[1].size(), runner->profile().vocab);
+      for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        if (repeat == 0)
+          expected_heads[slot] = output[slot];
+        else
+          Exact(expected_heads[slot], output[slot]);
+        EXPECT_TRUE(std::ranges::all_of(output[slot], [](float v) { return std::isfinite(v); }));
+        if (auto r = StateBytes(slot, slot == 0 ? 3U : 1U, saved[slot]); !r) return r;
+      }
+      // Five heads exceed cap4 although both segments fit max_rows128. The
+      // second owner must not cause partial progress in the first or any peer.
+      const std::array<en::Gemma4Runner::Work, 2> over{
+          {{0, 3, std::span(prompt).first(2), &output[0]},
+           {1, 1, std::span(prompt).first(3), &output[1]}}};
+      const auto occupancy = node.catalog().OccupancyOf(node.domain()).Total().value();
+      const auto counted = node.host_counted();
+      const auto charged = node.host_charged();
+      const auto plans = runner->plan_count();
+      const auto plan_bytes = runner->plans_bytes();
+      const auto graphs = runner->graph_count();
+      const auto stats = runner->graph_stats();
+      const auto extents = runner->state();
+      std::array<std::uint64_t, 4> used{};
+      for (std::uint32_t slot = 0; slot < 4; ++slot)
+        used[slot] = (*runner->request_slot(slot))->used_state_bytes();
+      auto refused = runner->Wave(over, true);
+      EXPECT_FALSE(refused);
+      if (!refused) EXPECT_EQ(refused.error(), "Gemma4 wave exceeds head publication capacity");
+      EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), occupancy);
+      EXPECT_EQ(node.host_counted(), counted);
+      EXPECT_EQ(node.host_charged(), charged);
+      EXPECT_EQ(runner->plan_count(), plans);
+      EXPECT_EQ(runner->plans_bytes(), plan_bytes);
+      EXPECT_EQ(runner->graph_count(), graphs);
+      EXPECT_EQ(runner->graph_stats().eager, stats.eager);
+      EXPECT_EQ(runner->graph_stats().captured, stats.captured);
+      EXPECT_EQ(runner->graph_stats().replayed, stats.replayed);
+      EXPECT_EQ(runner->graph_stats().refused, stats.refused);
+      EXPECT_EQ(runner->state(), extents);
+      for (std::uint32_t slot = 0; slot < 4; ++slot) {
+        EXPECT_EQ((*runner->request_slot(slot))->completed_positions(), slot == 0   ? 3U
+                                                                        : slot == 1 ? 1U
+                                                                                    : 0U);
+        EXPECT_EQ((*runner->request_slot(slot))->used_state_bytes(), used[slot]);
+      }
+      for (std::uint32_t slot = 0; slot < 2; ++slot) {
+        Exact(expected_heads[slot], output[slot]);
+        if (auto r = StateBytes(slot, slot == 0 ? 3U : 1U, current); !r) return r;
+        EXPECT_EQ(current, saved[slot]);
+      }
+      if (auto r = runner->Wave(continuation); !r) return r;
+      for (std::uint32_t slot = 0; slot < 2; ++slot)
+        if (repeat == 0)
+          expected_continued[slot] = output[slot];
+        else
+          Exact(expected_continued[slot], output[slot]);
+    }
+    // Restore the cap-boundary prefixes at the same stable state addresses,
+    // then reuse the same joined continuation and captured publication buffer.
+    for (std::uint32_t slot = 0; slot < 2; ++slot) {
+      if (auto r = runner->Clear(slot); !r) return r;
+      auto ranges = runner->CheckpointRanges(slot == 0 ? 3U : 1U);
+      if (!ranges) return en::support::Error(ranges.error());
+      std::vector<jitllm::catalog::ExtentId> staging;
+      auto pinned = node.Pinned(saved[slot].size(), 0, staging);
+      if (!pinned) return en::support::Error(pinned.error());
+      std::memcpy(*pinned, saved[slot].data(), saved[slot].size());
+      en::LiveState::CopyRetirement retirement;
+      auto restored = runner->RestoreCheckpoint(slot, slot == 0 ? 3U : 1U, *pinned, *ranges,
+                                                runner->CheckpointLayoutId(), &retirement);
+      if (retirement == en::LiveState::CopyRetirement::kUnproven) {
+        node.KeepPinned(*pinned);
+        return restored;
+      }
+      auto freed = node.FreePinned(*pinned);
+      if (!restored) return restored;
+      if (!freed) return freed;
+    }
+    if (auto r = runner->Wave(continuation); !r) return r;
+    for (std::uint32_t slot = 0; slot < 2; ++slot) Exact(expected_continued[slot], output[slot]);
+    // Full input capacity remains available with only four frontier heads,
+    // including ragged owners; the same shape can also omit all heads.
+    std::array<std::int32_t, 128> tokens{};
+    for (std::size_t i = 0; i < tokens.size(); ++i) tokens[i] = prompt[i % prompt.size()];
+    std::array<std::vector<float>, 4> frontier;
+    std::array<en::Gemma4Runner::Work, 4> wide{};
+    for (std::uint32_t slot = 0; slot < 4; ++slot) {
+      if (auto r = runner->Clear(slot); !r) return r;
+      wide[slot] = {slot, 0, std::span(tokens).first(slot == 0 ? 125U : 1U), &frontier[slot]};
+    }
+    if (auto r = runner->Wave(wide); !r) return r;
+    for (const auto& head : frontier) EXPECT_EQ(head.size(), runner->profile().vocab);
+    for (std::uint32_t slot = 0; slot < 4; ++slot)
+      if (auto r = runner->Clear(slot); !r) return r;
+    if (auto r = runner->WavePrefill(wide, false); !r) return r;
+    for (const auto& head : frontier) EXPECT_TRUE(head.empty());
+    return {};
+  });
+  ASSERT_TRUE(result) << (result ? "" : result.error());
+  EXPECT_GT(runner->graph_stats().captured, 0U);
+  EXPECT_GT(runner->graph_stats().replayed, 0U);
+}
+TEST_F(Gemma4HeadCapGpu, RaggedCapBoundaryRefusalReplayRestoreAndMaximumFrontiers) {
+  HeadCapacityControl();
+}
+TEST_F(Gemma31HeadCapGpu, RaggedCapBoundaryRefusalReplayRestoreAndMaximumFrontiers) {
+  HeadCapacityControl();
+}
+TEST_F(Gemma4HeadCapGpu, StateOnlyChunksKeepExactKvAndContinuationUnderReducedHeadCapacity) {
+  StateOnlyControl();
+}
+TEST(Gemma4HeadCapacityGpu, CatalogCountsBothLegacyAndCappedPinnedOutputAllocations) {
+  struct Lifetime {
+    en::PagedNode node{{.slot_bytes = en::kSlabSlotBytes}};
+    std::array<std::unique_ptr<en::Gemma4Runner>, 2> runners;
+    std::vector<en::PagedModel*> entered;
+  };
+  auto owner = std::make_unique<Lifetime>();
+  auto& node = owner->node;
+  ASSERT_TRUE(node.Open());
+  const auto artifact = std::filesystem::path("/home/pmeenan/.local/share/jitllm/m3-artifacts") /
+                        "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3";
+  std::array<std::uint64_t, 2> charged{};
+  const auto staging_class = static_cast<std::size_t>(jitllm::catalog::MemoryClass::kStaging);
+  bool ready = true;
+  for (std::size_t i = 0; i < owner->runners.size(); ++i) {
+    auto& runner = owner->runners[i];
+    runner = std::make_unique<en::Gemma4Runner>(
+        node,
+        en::Gemma4Options{.artifact = artifact, .slots = 4, .max_head_rows = i == 0 ? 0U : 4U}, 0,
+        0);
+    owner->entered.push_back(runner.get());
+    const auto before = node.catalog().OccupancyOf(node.domain()).by_class[staging_class].value();
+    const auto setup = runner->Setup();
+    EXPECT_TRUE(setup) << (setup ? "" : setup.error());
+    if (!setup) {
+      ready = false;
+      break;
+    }
+    charged[i] = node.catalog().OccupancyOf(node.domain()).by_class[staging_class].value() - before;
+  }
+  if (ready) {
+    const auto row_bytes = std::uint64_t{owner->runners[0]->profile().vocab} * sizeof(float);
+    EXPECT_GE(charged[0], 128 * row_bytes);
+    EXPECT_GE(charged[1], 4 * row_bytes);
+    EXPECT_LT(charged[1], 128 * row_bytes);
+    // All other pinned staging is no larger under the cap. This compares
+    // actual catalog backing, not an estimate of resident GPU activation peak.
+    EXPECT_GE(charged[0] - charged[1], 124 * row_bytes);
+  }
+  const auto retired = node.TearDown(owner->entered);
+  EXPECT_TRUE(retired) << (retired ? "" : retired.error());
+  if (!retired) std::ignore = owner.release();
+}
+class Gemma4SoloHeadCapGpu : public Gemma4RunnerGpu {
+ protected:
+  std::uint32_t Slots() const override { return 1; }
+  std::uint32_t HeadRows() const override { return 1; }
+};
+TEST_F(Gemma4SoloHeadCapGpu, SoloFrontierAcceptsMaximumInputsAndRefusesTwoAllHeadRows) {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 1>{0}));
+  const auto host_bytes = std::uint64_t{runner->profile().vocab} * sizeof(float);
+  ASSERT_TRUE(node.ChargeHost(host_bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, host_bytes};
+  auto result = Held([&]() -> en::Status {
+    std::vector<float> head{123};
+    const en::Gemma4Runner::Work two{0, 0, std::span(prompt).first(2), &head};
+    EXPECT_FALSE(runner->Wave(std::span(&two, 1), true));
+    EXPECT_EQ(head, (std::vector<float>{123}));
+    EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 0U);
+    const en::Gemma4Runner::Work one{0, 0, std::span(prompt).first(1), &head};
+    if (auto r = runner->Wave(std::span(&one, 1), true); !r) return r;
+    EXPECT_EQ(head.size(), runner->profile().vocab);
+    if (auto r = runner->Clear(0); !r) return r;
+    std::array<std::int32_t, 128> tokens{};
+    for (std::size_t i = 0; i < tokens.size(); ++i) tokens[i] = prompt[i % prompt.size()];
+    const en::Gemma4Runner::Work maximum{0, 0, tokens, &head};
+    if (auto r = runner->Wave(std::span(&maximum, 1)); !r) return r;
+    EXPECT_EQ(head.size(), runner->profile().vocab);
+    return {};
+  });
+  ASSERT_TRUE(result) << (result ? "" : result.error());
+}
+
 class Gemma4FeatureGpu : public Gemma4RunnerGpu {
  protected:
   bool RetainFeatures() const override { return true; }
 };
+class Gemma4FeatureHeadCapGpu : public Gemma4FeatureGpu {
+ protected:
+  std::uint32_t HeadRows() const override { return 4; }
+};
+TEST_F(Gemma4FeatureHeadCapGpu, FullFeatureRowsRemainFundedAndNoHeadHintUsesFrontierCapacity) {
+  ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 4>{0, 1, 2, 3}));
+  const auto feature_bytes = std::uint64_t{125} * runner->profile().width * sizeof(float);
+  const auto host_bytes = std::uint64_t{4} * runner->profile().vocab * sizeof(float);
+  ASSERT_TRUE(node.ChargeHost(host_bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, host_bytes};
+  std::vector<jitllm::catalog::ExtentId> staging;
+  auto pinned = node.Pinned(feature_bytes, 0, staging);
+  ASSERT_TRUE(pinned);
+  auto result = Held([&]() -> en::Status {
+    std::array<std::int32_t, 128> tokens{};
+    for (std::size_t i = 0; i < tokens.size(); ++i) tokens[i] = prompt[i % prompt.size()];
+    std::array<std::vector<float>, 4> heads;
+    std::array<en::Gemma4Runner::Work, 4> work{};
+    for (std::uint32_t slot = 0; slot < 4; ++slot)
+      work[slot] = {slot, 0, std::span(tokens).first(slot == 0 ? 125U : 1U), &heads[slot]};
+    if (auto r = runner->Wave(work, false, true); !r) return r;
+    auto copied = runner->CopyFeatures(0, 0, 125, *pinned);
+    if (!copied) return copied;
+    const auto* values = static_cast<const float*>(*pinned);
+    EXPECT_TRUE(std::all_of(values, values + feature_bytes / sizeof(float),
+                            [](float v) { return std::isfinite(v); }));
+    for (std::uint32_t slot = 0; slot < 4; ++slot) {
+      if (auto r = runner->Clear(slot); !r) return r;
+    }
+    if (auto r = runner->WavePrefill(work, false); !r) return r;
+    for (std::uint32_t slot = 0; slot < 4; ++slot) {
+      EXPECT_EQ(heads[slot].size(), runner->profile().vocab);
+      auto borrowed = runner->BorrowFrozen(slot, tokens[(slot == 0 ? 125U : 1U) - 1]);
+      if (!borrowed) return en::support::Error(borrowed.error());
+      EXPECT_EQ(borrowed->prefix(), slot == 0 ? 125U : 1U);
+    }
+    return {};
+  });
+  ASSERT_TRUE(result) << (result ? "" : result.error());
+  ASSERT_TRUE(node.FreePinned(*pinned));
+}
 TEST_F(Gemma4FeatureGpu, PrefillWithoutAHeadRequestStillPublishesRequiredFeatures) {
   ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 1>{0}));
   const auto bytes = std::uint64_t{runner->profile().vocab} * sizeof(float);

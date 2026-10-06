@@ -956,7 +956,7 @@ class Gemma final : public Llm {
     // The startup guard sets this bounded heap workspace apart before any
     // scalar output or per-owner sampling vector grows. One retained frontier
     // and one prepared result per owner, plus the sampling candidate capacity.
-    // The independently catalog-backed pinned output holds max_rows rows.
+    // The independently catalog-backed pinned output holds one row per slot.
     const auto heap = std::uint64_t{options_.slots} * profile_.vocab *
                       (2 * sizeof(float) + 2 * sizeof(execution::SamplingCandidate));
     return runner_.host_input_bytes() + heap;
@@ -1261,6 +1261,7 @@ class Gemma final : public Llm {
             .context = settings.context.value,
             .max_rows = settings.prefill_chunk.value,
             .slots = settings.max_slots.value,
+            .max_head_rows = settings.max_slots.value,
             .row_invariant = row_invariant};
   }
   engine::Gemma4Runner::Slot& NativeSlot(const Branch& branch) const {

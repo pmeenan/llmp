@@ -403,6 +403,14 @@ retain the previous completed prefix and peer leases.
 [Serving controls](experiments/gemma-serving/README.md) record the bounded route;
 they do not establish qualified model support or optimized batching.
 
+The [head publication capacity](experiments/gemma-head-capacity/README.md)
+now bounds pinned serving outputs by owner slots, independently of input rows.
+Manual all-head callers retain the default full-row envelope. Cap refusals leave
+completed prefixes and peers intact. Both profiles pass cap-boundary, frontier,
+replay/restore and literal scoring controls; 26B also passes full-feature and
+state-only KV-equivalence controls under the reduced cap. Input-row defaults,
+arithmetic policies and quality/batching qualification do not change.
+
 The [standalone MoE contracts](experiments/gemma-moe-primitives/README.md)
 now expose checked original routing and scaled ordered reduction primitives.
 Their first-eight ID view retains the graph's already funded full 128-pitch

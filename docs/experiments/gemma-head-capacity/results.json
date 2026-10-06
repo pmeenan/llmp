@@ -1,0 +1,86 @@
+{
+  "kind": "production-capacity-control",
+  "source_base": "f5d946e763ec1809e37c8f8039164c86d5ba3be0",
+  "source_bundle_sha256": "a614f5c10666e243fc0bc1a411def9cd0d412094288da00a9450a37b25018ae7",
+  "source_receipt_sha256": "53a62645d9227001f86cb438f40b774d84e501bf1b974c11ca298d560b94a7bc",
+  "initial_source_receipt_sha256": "35f8097c8f96871b3cfb625ff418f88615cc6814a1fb23eb4a755e9bc1796c26",
+  "source_sha256": {
+    "src/engine/gemma4_runner.cc": "c17c8d09838202e1835036e60128ae0414e3a984fa7cee5156d51ee49f37ad5b",
+    "src/engine/gemma4_runner.h": "a0cae2b88d7a58d36b273c7cf81f48af6769fde52d0e946763d8d37ac36bf64c",
+    "src/runtime/serving.cc": "435d597fe943687c40c4bbf42ad311deb4763610647a367c4cec20ceb7106136",
+    "tests/unit/gemma4_runner_gpu_test.cc": "623e7251e5491f6769368051f1e7359db1e26c833ef30bab8975880299652194",
+    "tests/unit/gemma4_runner_test.cc": "a98f25bc74f419e41fa9522ad2831b4b6d22c788c962cfe35c90474b81eda7c8",
+    "tests/unit/gemma4_serving_gpu_test.cc": "0371e889aec5900651f1369bf4aeb126721b3d423be41d1e4e9778e5e6c38931"
+  },
+  "tensorfold_primary": "609ca419abecebdc5a059498a613680bd3aa847f",
+  "sdk": "aarch64-c09daba6ac31edee",
+  "compiled_sdk_receipt_sha256": "3474b122a0e87aa64535a03dde7e87da8832ab332a1fd52dbe163561cd47e9f1",
+  "artifacts": {
+    "26": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+    "31": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+  },
+  "checks": {
+    "cpu": 3,
+    "runner_gpu": 7,
+    "serving_gpu": 8,
+    "total": 18,
+    "failed": 0,
+    "skipped": 0,
+    "official_steps_completed": 8
+  },
+  "validated_pinned_bounds": {
+    "vocab": 262144,
+    "f32_row_bytes": 1048576,
+    "runner_legacy_head_rows": 128,
+    "runner_cap_head_rows": 4,
+    "actual_runner_staging_reduction_at_least_bytes": 130023424,
+    "serving_slots": 12,
+    "serving_input_chunk_rows": 16,
+    "serving_output_extent_bytes": 12582912,
+    "actual_serving_own_pinned_staging_less_than_bytes": 16777216,
+    "precise_total_staging_bytes_logged": false
+  },
+  "failures_preserved": [
+    "check1: host CMake could not read preset version10; no compilation or tests",
+    "check2: extra parenthesis in output guard stopped compilation; no tests"
+  ],
+  "official_jobs": [
+    {
+      "name": "m35-gemma-head-capacity-check1",
+      "host": "spark-56f5",
+      "state": "failed",
+      "rc": 1,
+      "identities": {
+        "job.json": "352582dd2a63cb2e260313008df45d176752a4ce444b00b6c67de850dadc62b5",
+        "final.json": "55b2c0c8aba5438dcaf63aae6c1de325d8192ea5348f91e9b408e3324203e851",
+        "steps.json": "e7e9438c9f4547f4c31a1a32f7b945bc4c48a679b2bb4fb949d6564cce644668",
+        "log": "88671b2c838c213e1f246a65b7265fee4037c1b9c5e7c109997c062b74ac24ac"
+      }
+    },
+    {
+      "name": "m35-gemma-head-capacity-check2",
+      "host": "spark-56f5",
+      "state": "failed",
+      "rc": 1,
+      "identities": {
+        "job.json": "d506f8213214e8e44ee04e578532abb24985195001c7f6d11501b0ca5679e109",
+        "final.json": "c333d9fae32eea5d0754648d06c41060053ca9ba0f3c4c716bbabe19a01526c4",
+        "steps.json": "d0121292997a4ae78e2b1d6cf97435b808f3cff28cc7290dac05994f0f84fb27",
+        "log": "f2bc673e17e1ec00f47bf304022b8c043307b9abf7307b5ee5854094847260df"
+      }
+    },
+    {
+      "name": "m35-gemma-head-capacity-check3",
+      "host": "spark-56f5",
+      "state": "done",
+      "rc": 0,
+      "identities": {
+        "job.json": "27fa5c8bf3e2833f56e0f849781795d2c13996fa44dc237d773e3add3d306b0d",
+        "final.json": "3efd475202d310e33f75652ba9383a8872206618fd895886e43934304561ec21",
+        "steps.json": "e84a2bca0e1e595b4fe97175e365ce1ef8beff26f755c96ae1c914afa93907a1",
+        "log": "44ad07f1ec8b0abe847d58599b1b72bffb07538f632bbc4b3fb66ca692c0f63f"
+      }
+    }
+  ],
+  "scope": "Capacity and same-runner correctness controls only; no timing/reference/corpus qualification and no full regression suite."
+}

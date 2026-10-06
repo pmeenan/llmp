@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <tuple>
 #include <vector>
 
 namespace en = jitllm::engine;
@@ -26,6 +27,40 @@ TEST(Gemma4Runner, InvalidEnvelopesRefuseBeforeOpeningProvidersOrArtifacts) {
     EXPECT_FALSE(runner.Setup());
     EXPECT_EQ(node.StateCapacity(), 0U);
     EXPECT_EQ(runner.activations_needed(), 0U);
+  }
+}
+TEST(Gemma4Runner, InvalidHeadCapacityRefusesBeforeArtifactsProvidersAndReservations) {
+  for (const auto variant : {en::Gemma4Variant::k26BA4B, en::Gemma4Variant::k31B}) {
+    for (const auto [slots, cap] :
+         {std::pair{4U, 3U}, std::pair{1U, 129U}, std::pair{4U, 1U}, std::pair{1U, UINT32_MAX}}) {
+      en::PagedNode node({});
+      en::Gemma4Runner runner(
+          node, {.artifact = "/missing", .variant = variant, .slots = slots, .max_head_rows = cap},
+          0, 0);
+      const auto setup = runner.Setup();
+      ASSERT_FALSE(setup);
+      EXPECT_EQ(setup.error(), "Gemma4 head capacity must cover slots within max_rows");
+      EXPECT_EQ(node.StateCapacity(), 0U);
+      EXPECT_EQ(node.host_counted(), 0U);
+      EXPECT_EQ(runner.activations_needed(), 0U);
+      EXPECT_EQ(runner.pool_needed(), 0U);
+      EXPECT_FALSE(runner.request_slot(0));
+    }
+  }
+}
+TEST(Gemma4Runner, HeadCapacityDefaultsToLegacyInputRows) {
+  EXPECT_EQ(en::Gemma4Options{}.max_head_rows, 0U);
+  // Valid caps reach the artifact check without opening native providers.
+  for (const auto [slots, cap] :
+       {std::pair{4U, 0U}, std::pair{4U, 4U}, std::pair{1U, 1U}, std::pair{4U, 128U}}) {
+    en::PagedNode node({});
+    en::Gemma4Runner runner(node, {.artifact = "/missing", .slots = slots, .max_head_rows = cap}, 0,
+                            0);
+    auto setup = runner.Setup();
+    ASSERT_FALSE(setup);
+    EXPECT_NE(setup.error(), "Gemma4 head capacity must cover slots within max_rows");
+    EXPECT_EQ(node.StateCapacity(), 0U);
+    EXPECT_FALSE(runner.request_slot(0));
   }
 }
 TEST(Gemma4Runner, UninitializedRunnerCannotDispatchSelectRestoreOrCopy) {

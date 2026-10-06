@@ -182,6 +182,12 @@ bounded scalar serving adapter, with no qualified model support yet; its
 transfer checklist records the whole-model, optimized-batching and reference
 qualification required by the next slices.
 
+Gemma's [immutable head capacity](experiments/gemma-head-capacity/README.md)
+separates maximum input rows from pinned publication rows. Manual callers keep
+`max_head_rows=0` (the existing all-row envelope); serving funds one head per
+configured slot. Over-cap all-head waves refuse before inputs, state growth or
+planning. Frontier, state-only and retained-feature input envelopes remain full.
+
 Gemma's [prefill lookahead](experiments/gemma-prefill-lookahead/README.md)
 accepts token-free next-chunk shape hints from scalar and wave callers. The
 threaded node runs a host-only graph/placement callback after job submission

@@ -463,6 +463,12 @@ family" guide, and its long-context scaling work.
         31B C4 checks fall 23.50→2.92 ms and paid elapsed falls 0.77%, with exact
         heads/states/choices and 17 focused controls; no fresh competitive or
         other-family speed claim. Full regression remains owner-deferred.
+      - [x] [Immutable Gemma head capacity](experiments/gemma-head-capacity/README.md):
+        serving pins one head per configured slot while manual callers retain
+        their all-row default. Full input/feature envelopes and early over-cap
+        refusal pass 18 focused controls across both profiles. Actual catalog
+        bounds confirm reduced pinned backing; row defaults/arithmetic policies
+        and all quality/batching gates remain unchanged.
       - [x] [Current full-head corpus screen](experiments/gemma-current-quality/README.md):
         31B both256/plain-norm-on matches all 1,024 fresh ring-reference heads
         and 1,023 likelihoods exactly. The 26B all1024 transfer has nine positive-

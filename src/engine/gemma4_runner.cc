@@ -335,6 +335,9 @@ Status Gemma4Runner::Setup() {
       o_.max_rows >= o_.context) {
     return Error("Gemma4 runner needs bounded slots/chunks");
   }
+  const auto head_rows = o_.max_head_rows == 0 ? o_.max_rows : o_.max_head_rows;
+  if (head_rows < o_.slots || head_rows > o_.max_rows)
+    return Error("Gemma4 head capacity must cover slots within max_rows");
   auto layout = md::Gemma4State(profile_, o_.context, o_.max_rows);
   if (!layout) return Error(layout.error());
   layout_ = std::move(*layout);
@@ -382,58 +385,65 @@ Status Gemma4Runner::Setup() {
   // All slot counts: padding each segment's query tile can exceed a scalar
   // prefill's mask storage. Measure one shared maximum, not one per slot.
   std::vector<std::int32_t> tokens(o_.max_rows, 1);
-  for (std::uint32_t count = 1; count <= o_.slots; ++count) {
-    for (const auto rows : {1U, o_.max_rows / count, o_.max_rows - count + 1}) {
-      for (const auto past : {0U, o_.context - rows}) {
-        std::vector<md::Gemma4Segment> segments;
-        for (std::uint32_t i = 0; i < count; ++i) {
-          const auto segment_rows = rows == o_.max_rows - count + 1 && i != 0 ? 1U : rows;
-          const auto segment_past = past == 0 ? 0U : o_.context - segment_rows;
-          segments.push_back({i, segment_past, std::span(tokens).first(segment_rows)});
-        }
-        auto in = md::Gemma4Chunk(profile_, layout_, segments, false);
-        if (!in) return Error(in.error());
-        auto input_bytes =
-            md::Gemma4HostInputBytes(profile_, layout_, segments, o_.reference_masks);
-        if (!input_bytes) return Error(input_bytes.error());
-        for (const auto output : {0U, 1U, 2U}) {
-          const bool all = output == 1;
-          const bool state_only = output == 2;
-          if (state_only && o_.retain_features) continue;
-          kg::Gemma4ChunkShape shape;
-          for (const auto& s : in->segments)
-            shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
-          shape.output_mode =
-              state_only ? kg::Gemma4OutputMode::kStateOnly : kg::Gemma4OutputMode::kHead;
-          shape.outputs = state_only ? 0U
-                          : all      ? static_cast<std::uint32_t>(in->tokens.size())
-                                     : count;
-          // Fund the largest feature request independently of head narrowing.
-          shape.feature_outputs =
-              o_.retain_features ? static_cast<std::uint32_t>(in->tokens.size()) : 0;
-          auto p = PlanGemma4Chunk(
-              model_, shape, Choices(**measuring, static_cast<std::uint32_t>(in->tokens.size())), 0,
-              0);
-          if (!p) return Error(std::format("measuring Gemma4: {}", p.error()));
-          auto needed = kg::PlanScratch(**measuring, (*p)->plan);
-          if (!needed) return Error(needed.error().detail);
-          activation = std::max(activation, (*p)->placement.extent);
-          scratch = std::max(scratch, *needed);
-          staging = std::max(staging, (*p)->inputs_bytes);
-          auto source_bytes = Gemma4SourceBytes((*p)->graph);
-          if (!source_bytes) return Error(source_bytes.error());
-          host = std::max(host, *input_bytes + *source_bytes);
-          plan_floor_bytes_ = std::max(plan_floor_bytes_, PlannedHostBytes(**p));
+  // Frontier, state-only and full-feature inputs retain max_rows. All-head
+  // requests use the separate publication row budget, including equal and
+  // ragged endpoints at every slot count and both context endpoints.
+  for (const auto row_budget : {o_.max_rows, head_rows}) {
+    for (std::uint32_t count = 1; count <= o_.slots; ++count) {
+      for (const auto rows : {1U, row_budget / count, row_budget - count + 1}) {
+        for (const auto past : {0U, o_.context - rows}) {
+          std::vector<md::Gemma4Segment> segments;
+          for (std::uint32_t i = 0; i < count; ++i) {
+            const auto segment_rows = rows == row_budget - count + 1 && i != 0 ? 1U : rows;
+            const auto segment_past = past == 0 ? 0U : o_.context - segment_rows;
+            segments.push_back({i, segment_past, std::span(tokens).first(segment_rows)});
+          }
+          auto in = md::Gemma4Chunk(profile_, layout_, segments, false);
+          if (!in) return Error(in.error());
+          auto input_bytes =
+              md::Gemma4HostInputBytes(profile_, layout_, segments, o_.reference_masks);
+          if (!input_bytes) return Error(input_bytes.error());
+          for (const auto output : {0U, 1U, 2U}) {
+            const bool all = output == 1;
+            const bool state_only = output == 2;
+            if (all ? row_budget != head_rows : row_budget != o_.max_rows) continue;
+            if (state_only && o_.retain_features) continue;
+            kg::Gemma4ChunkShape shape;
+            for (const auto& s : in->segments)
+              shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
+            shape.output_mode =
+                state_only ? kg::Gemma4OutputMode::kStateOnly : kg::Gemma4OutputMode::kHead;
+            shape.outputs = state_only ? 0U
+                            : all      ? static_cast<std::uint32_t>(in->tokens.size())
+                                       : count;
+            // Fund the largest feature request independently of head narrowing.
+            shape.feature_outputs =
+                o_.retain_features ? static_cast<std::uint32_t>(in->tokens.size()) : 0;
+            auto p = PlanGemma4Chunk(
+                model_, shape, Choices(**measuring, static_cast<std::uint32_t>(in->tokens.size())),
+                0, 0);
+            if (!p) return Error(std::format("measuring Gemma4: {}", p.error()));
+            auto needed = kg::PlanScratch(**measuring, (*p)->plan);
+            if (!needed) return Error(needed.error().detail);
+            activation = std::max(activation, (*p)->placement.extent);
+            scratch = std::max(scratch, *needed);
+            staging = std::max(staging, (*p)->inputs_bytes);
+            auto source_bytes = Gemma4SourceBytes((*p)->graph);
+            if (!source_bytes) return Error(source_bytes.error());
+            host = std::max(host, *input_bytes + *source_bytes);
+            plan_floor_bytes_ = std::max(plan_floor_bytes_, PlannedHostBytes(**p));
+          }
         }
       }
     }
+    if (head_rows == o_.max_rows) break;
   }
   activation_bytes_ = Round(activation + activation / 4, kPagedExtent);
   scratch_bytes_ = Round(scratch + scratch / 4 + (1U << 20U), kPagedExtent);
   host_input_bytes_ = Round(host + (1U << 20U), kPagedExtent);
   const auto staging_bytes = Round(staging + staging / 4 + (1U << 20U), kPagedExtent);
   auto staging_host = resources_.Pinned(staging_bytes);
-  auto logits = resources_.Pinned(std::uint64_t{o_.max_rows} * profile_.vocab * sizeof(float));
+  auto logits = resources_.Pinned(std::uint64_t{head_rows} * profile_.vocab * sizeof(float));
   auto factors = resources_.Pinned(profile_.global_rope_dims / 2 * sizeof(float));
   if (!staging_host || !logits || !factors) return Error("Gemma4 pinned inputs/outputs/factors");
   runs_.SetStaging(*staging_host, staging_bytes);
@@ -1029,6 +1039,11 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
     seen[w.slot] = true;
     segments[i] = {w.slot, w.n_past, w.tokens};
   }
+  const auto head_rows = o_.max_head_rows == 0 ? o_.max_rows : o_.max_head_rows;
+  const auto requested_heads = mode == kg::Gemma4OutputMode::kStateOnly ? 0U
+                               : all_outputs ? rows
+                                             : static_cast<std::uint32_t>(work.size());
+  if (requested_heads > head_rows) return Error("Gemma4 wave exceeds head publication capacity");
   const auto selected = std::span(segments).first(work.size());
   auto bytes = md::Gemma4HostInputBytes(profile_, layout_, selected, o_.reference_masks);
   if (!bytes) return Error(bytes.error());
@@ -1052,7 +1067,7 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   kg::Gemma4ChunkShape shape;
   std::vector<std::int32_t> frontier;
   std::vector<std::int32_t> feature_ids;
-  frontier.reserve(rows);
+  frontier.reserve(requested_heads);
   if (o_.retain_features) feature_ids.reserve(rows);
   for (const auto& s : in->segments) {
     shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
@@ -1086,6 +1101,15 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   timer.emplace(phase(Phase::kStaging));
   auto& entry = **entry_of;
   auto& p = *entry.planned;
+  const std::uint64_t output_bytes = std::uint64_t{shape.outputs} * profile_.vocab * sizeof(float);
+  if (shape.outputs != requested_heads || shape.outputs > head_rows ||
+      (mode == kg::Gemma4OutputMode::kHead &&
+       (p.graph.logits == nullptr || p.graph.logits->type != GGML_TYPE_F32 ||
+        p.graph.logits->ne[0] != profile_.vocab || p.graph.logits->ne[1] != shape.outputs ||
+        p.graph.logits->ne[2] != 1 || p.graph.logits->ne[3] != 1 ||
+        !ggml_is_contiguous(p.graph.logits) || ggml_nbytes(p.graph.logits) != output_bytes)) ||
+      (mode == kg::Gemma4OutputMode::kStateOnly && p.graph.logits != nullptr))
+    return Error("Gemma4 planned head publication exceeds its envelope");
   auto source_bytes = Gemma4SourceBytes(p.graph);
   if (!source_bytes || *bytes > host_input_bytes_ || *source_bytes > host_input_bytes_ - *bytes)
     return Error("Gemma4 host input envelope exceeded");
@@ -1095,7 +1119,6 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   if (!copies) return Error(copies.error());
   bool capture = entry.runs[0].CaptureDue(runs_.graphs());
   if (capture && !plans_.ChargeGraph(entry)) capture = false;
-  const std::uint64_t output_bytes = std::uint64_t{shape.outputs} * profile_.vocab * sizeof(float);
   std::array<RunCopy, 1> output_copy{};
   if (mode == kg::Gemma4OutputMode::kHead)
     output_copy[0] = {Address(logits_), Address(p.graph.logits->data), output_bytes};
@@ -1238,7 +1261,9 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   Count(graph_stats_, path);
   std::size_t at = 0;
   for (const auto& w : work) {
-    const auto count = all_outputs ? w.tokens.size() : 1;
+    const auto count = mode == kg::Gemma4OutputMode::kStateOnly ? 0U
+                       : all_outputs                            ? w.tokens.size()
+                                                                : 1U;
     const auto n = count * profile_.vocab;
     const auto* values = static_cast<const float*>(logits_) + at;
     if (mode == kg::Gemma4OutputMode::kStateOnly)

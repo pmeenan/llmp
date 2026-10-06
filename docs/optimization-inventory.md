@@ -485,6 +485,15 @@ optimization applies to earlier runners, but their speed is not measured here.
 Token/epoch saturation refuses caching; no persistent per-extent cache or math
 policy changes. The full suite remains owner-deferred.
 
+The [immutable Gemma head capacity](experiments/gemma-head-capacity/README.md)
+separates pinned publication from input capacity: serving uses owner slots,
+manual teacher-forcing keeps its full-row default. Eighteen focused controls
+cover both profiles and validate at least 124 MiB less pinned staging for cap4
+versus max128. Input-row policy stays unchanged. Earlier Qwen/DeepSeek runners
+already bound ordinary solo head storage and retain their existing output
+envelopes; any further reduction needs separate feature, scoring and MTP
+publication accounting rather than automatic transfer.
+
 The [current corpus screen](experiments/gemma-current-quality/README.md)
 checks the actually measured solo research policies with plain norm fusion:
 31B both256 matches all 1,024 complete fresh ring-reference heads byte for byte;

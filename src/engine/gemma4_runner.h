@@ -39,6 +39,8 @@ struct Gemma4Options {
   // Only approved architecture contracts; binding still checks every tensor.
   Gemma4Variant variant = Gemma4Variant::k26BA4B;
   std::uint32_t context = 4096, max_rows = 128, slots = 1;
+  // Immutable publication capacity; zero retains the manual all-row envelope.
+  std::uint32_t max_head_rows = 0;
   bool graphs = true, frontier_head = true;
   // Explicit assistant-feature arithmetic/placement policy. Full final rows
   // remain normalized even when only frontier logits are requested.

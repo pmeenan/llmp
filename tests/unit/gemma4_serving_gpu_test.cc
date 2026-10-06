@@ -127,6 +127,26 @@ class Gemma4ServingGpu : public ::testing::TestWithParam<std::uint32_t> {
   rt::Llm* model = nullptr;
   const std::array<std::int32_t, 6> prompt{2, 818, 5279, 529, 7001, 563};
 };
+TEST_P(Gemma4ServingGpu, PinnedPublicationCapacityMatchesServingSlotsNotInputChunkRows) {
+  const auto row_bytes = std::uint64_t{262144} * sizeof(float);
+  std::uint64_t staging = 0;
+  bool output = false;
+  for (const auto& [extent, generation] : model->everything().extents) {
+    (void)generation;
+    auto view = server->node().catalog().Describe(extent);
+    ASSERT_TRUE(view);
+    if (view->descriptor.memory_class != jitllm::catalog::MemoryClass::kStaging) continue;
+    EXPECT_EQ(view->state, jitllm::catalog::ExtentState::kResident);
+    EXPECT_EQ(view->descriptor.recovery, jitllm::catalog::Recovery::kPinned);
+    staging += view->descriptor.size.value();
+    output |= view->descriptor.size.value() == 12 * row_bytes;
+  }
+  EXPECT_TRUE(output);
+  EXPECT_GE(staging, 12 * row_bytes);
+  // This includes the runner's other pinned sources/factors and still uses
+  // less actual backing than the old sixteen-row publication buffer alone.
+  EXPECT_LT(staging, 16 * row_bytes);
+}
 TEST_P(Gemma4ServingGpu, IndependentScalarCohortsOneTwoFourEightTwelveReplaySeededTokens) {
   EXPECT_EQ(model->generation_wave_capacity(), 12U);
   EXPECT_EQ(model->branches(), 12U);
