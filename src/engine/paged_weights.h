@@ -43,6 +43,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -143,7 +144,8 @@ class PagedWeights {
   // coverage check.
   Status Register(PagedNode& node, int owner);
   // Adds every extent that is not where it was registered, or not pinned
-  // there (D-090), to `check`. On the scheduler's thread.
+  // there (D-090), to `check`. On the scheduler's thread. A successful
+  // weight-only scan is reused while that scheduler's placement stamp matches.
   void CheckPlaces(const scheduler::Scheduler& scheduler, PlaceCheck& check) const;
   // Frees the reservations (their extents must have been evicted).
   Status Release(providers::VmmProvider& memory);
@@ -176,6 +178,9 @@ class PagedWeights {
   std::uint64_t host_bytes() const { return host_bytes_; }  // the host reservation
 
  private:
+  friend struct PagedWeightsTestAccess;
+  bool CheckPlacesImpl(const scheduler::Scheduler& scheduler, PlaceCheck& check) const;
+  mutable std::optional<scheduler::PlacementStamp> checked_places_;
   struct Source {
     std::uint64_t address = 0;
     std::uint32_t group = 0;

@@ -471,6 +471,15 @@ all runner phases. Repeated immutable-weight placement scans are a lead;
 this diagnostic establishes neither their share of the checks phase nor
 active GPU time or a fresh competitive gap.
 
+The [successful weight placement memo](experiments/weights-placement-memo/README.md)
+now reuses only an immutable-weight check under the same scheduler lifetime and
+source/pin epoch; mutable-state checks and each scheduler Call remain fresh.
+Current 31B C4 checks fall 23.50→2.92 ms and paid elapsed falls 0.77%, with exact
+heads/state/choices and 17 focused lifetime/mutation controls. The shared caller
+optimization applies to earlier runners, but their speed is not measured here.
+Token/epoch saturation refuses caching; no persistent per-extent cache or math
+policy changes. The full suite remains owner-deferred.
+
 The [current corpus screen](experiments/gemma-current-quality/README.md)
 checks the actually measured solo research policies with plain norm fusion:
 31B both256 matches all 1,024 complete fresh ring-reference heads byte for byte;

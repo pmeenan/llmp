@@ -1,0 +1,226 @@
+{
+  "scope": "Gemma31 C4 owner-root/plain-norm-on; two-binary host-only memo factor, no new reference run.",
+  "base": "017c25e1010ff5cd561c19f31f473e9ba70ca5d1",
+  "recipe": {
+    "variant": "31",
+    "context": 256,
+    "max_rows": 128,
+    "owners": 4,
+    "prefix_rows": [
+      64,
+      65,
+      66,
+      67
+    ],
+    "warm_waves": 8,
+    "reset_waves": 3,
+    "paid_waves": 32,
+    "full_head_rows": 128,
+    "norm_rope": 120,
+    "norm_add": 120,
+    "norm_fused": 121,
+    "other_optional_policies": 0,
+    "input": {
+      "bytes": 4096,
+      "sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610"
+    },
+    "artifact_manifest_sha256": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+  },
+  "arms_in_acquisition_order": [
+    {
+      "arm": "before-first",
+      "elapsed_seconds": 3.31166,
+      "phase_seconds": {
+        "checks_seconds": 0.0234564,
+        "execution_seconds": 3.23416,
+        "outside_execution_seconds": 0.07749999999999968,
+        "outside_runner_seconds": 0.04404271299999962
+      },
+      "planned_calls": 32,
+      "plan_hits": 32,
+      "plan_misses": 0,
+      "job_stream_elapsed_seconds": 3.23275
+    },
+    {
+      "arm": "candidate-first",
+      "elapsed_seconds": 3.29267,
+      "phase_seconds": {
+        "checks_seconds": 0.00278283,
+        "execution_seconds": 3.23455,
+        "outside_execution_seconds": 0.05812000000000017,
+        "outside_runner_seconds": 0.04381122699999995
+      },
+      "planned_calls": 32,
+      "plan_hits": 32,
+      "plan_misses": 0,
+      "job_stream_elapsed_seconds": 3.23149
+    },
+    {
+      "arm": "candidate-repeat",
+      "elapsed_seconds": 3.28794,
+      "phase_seconds": {
+        "checks_seconds": 0.00305061,
+        "execution_seconds": 3.23046,
+        "outside_execution_seconds": 0.057479999999999976,
+        "outside_runner_seconds": 0.04393757300000001
+      },
+      "planned_calls": 32,
+      "plan_hits": 32,
+      "plan_misses": 0,
+      "job_stream_elapsed_seconds": 3.22769
+    },
+    {
+      "arm": "before-repeat",
+      "elapsed_seconds": 3.32018,
+      "phase_seconds": {
+        "checks_seconds": 0.0235371,
+        "execution_seconds": 3.24376,
+        "outside_execution_seconds": 0.07642000000000015,
+        "outside_runner_seconds": 0.04309647800000027
+      },
+      "planned_calls": 32,
+      "plan_hits": 32,
+      "plan_misses": 0,
+      "job_stream_elapsed_seconds": 3.24218
+    }
+  ],
+  "comparison": {
+    "before_mean_seconds": 3.31592,
+    "candidate_mean_seconds": 3.290305,
+    "candidate_elapsed_delta_percent": -0.7724854640642764,
+    "checks_mean_before_seconds": 0.02349675,
+    "checks_mean_candidate_seconds": 0.00291672,
+    "checks_mean_reduction_seconds": 0.02058003,
+    "outside_execution_mean_before_seconds": 0.07696,
+    "outside_execution_mean_candidate_seconds": 0.0578
+  },
+  "exact_control": {
+    "all_four_arms_byte_exact_to_existing_baseline": true,
+    "all_128_head_rows_finite_each_arm": true,
+    "files": {
+      "heads.f32": {
+        "bytes": 134217728,
+        "sha256": "9de4f80bf3fc9a8f37de296a10933c7ee91a15005a4a62dedbd22c353150cb7e"
+      },
+      "owner-0.state": {
+        "bytes": 230686720,
+        "sha256": "2ab1fd7758f5b865ab341adf34b43d58b6fc64fc303c28c3aa9b9a7bf80cea06"
+      },
+      "owner-1.state": {
+        "bytes": 230686720,
+        "sha256": "c89213f022f13c979d8083c03735fe92c577b7983ca27023162b8b4d72167d96"
+      },
+      "owner-2.state": {
+        "bytes": 230686720,
+        "sha256": "11347d21268aa5aea01aa2a6722e2b1c133cbe488993718acfd93c7312cd26b0"
+      },
+      "owner-3.state": {
+        "bytes": 230686720,
+        "sha256": "9e78173dc18504956420c493bb13cc42295371617b3b20ff1d658751689e3375"
+      }
+    },
+    "token_rows": 128,
+    "token_sha256": "03d0215d7dd6ecf98aeabf75e9903cd7773b4b34bcf3bb0ac26b088e6d6134ca"
+  },
+  "provenance": {
+    "source_receipt": {
+      "bytes": 1402,
+      "sha256": "7a8a1cd0109918e5265dba994b73d9dac69b57eb139faffba5f48f873d64311d"
+    },
+    "source_sha256": {
+      "src/engine/paged_weights.cc": "9b357ecad6babe2294be2ba05283b974645be436d287c5ee8c691adfa0cf604e",
+      "src/engine/paged_weights.h": "c24dcca4dff7212555165f6b89b3f1e733ccf9021f82f6145e3f015b15f85fea",
+      "src/scheduler/pagein.cc": "9eb8efa09980063874746443703a725413620f367e5a32fbe3e794330d304c89",
+      "src/scheduler/scheduler.cc": "624633a63d8e5aba9ba5f95d8b06866af68c8fd899e0e8387a66febcdcdbcc22",
+      "src/scheduler/scheduler.h": "45964ce2ee82316ba32cf7b1759b6ef0b1fdf93d2eff777075d6a6699407f68f",
+      "tests/unit/release_mapped_test.cc": "f0f7dc23b440561b57cf501d5248d04488831d9a0883c60305529fe424b13654"
+    },
+    "unchanged_benchmark": {
+      "path": "benchmarks/gemma_owner_c4.cc",
+      "sha256": "0e9bba8b764c6bd29636c6dce2d0027f32489a1a09c2c1906e870d54f3cd0f02"
+    },
+    "before_binary_sha256": "58433a0d28650eaef30ef2da75300f89f099220fab242589a710168e0ec148ea",
+    "candidate_binary_sha256": "a2605eaf2c29028a4baff6b5aee5f35210f6979148cf53d7f7068f7cb1d643e0",
+    "before_sdk_receipt_sha256": "fbf84c74d44bbefce71c6499d43b9fc9b6844e994d25decce23df3f06c1031c2",
+    "candidate_sdk_receipt_sha256": "3474b122a0e87aa64535a03dde7e87da8832ab332a1fd52dbe163561cd47e9f1",
+    "sdk": "aarch64-c09daba6ac31edee",
+    "native_nvcc": "13.4.92",
+    "toolkit": "13.4.2",
+    "stage_auth": {
+      "bytes": 2218,
+      "sha256": "9237c9a4ff3cc4a766b129d3825c76628a23cde19e2af0450796ca1f11a8e4f1"
+    },
+    "raw_summary": {
+      "bytes": 7568,
+      "sha256": "25957cb6a8f1625cefad3d5f2cd5ae212a45132d3ff48b183bdced247f311ab0"
+    },
+    "tensorfold_primary": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "tensorfold_compared": false
+  },
+  "checks": {
+    "focused_build": "m35-weights-placement-memo-build2 DONE0; eight host descriptor/release tests PASS",
+    "adoption_lifetime_tests": "m35-weights-placement-memo-adoption1 DONE0; nine controls PASS, zero skipped",
+    "full_suite": "deferred by owner while closing performance gaps",
+    "initial_attempt": "build1 failed on two test fixture constructor calls; test-only correction, five production files unchanged",
+    "focused_passed": 17,
+    "focused_skipped": 0,
+    "author_light": "PASS: REUSE/header1652, boundary398, changed format/diff/JSON"
+  },
+  "official_jobs": [
+    {
+      "name": "m35-weights-placement-memo-build1",
+      "record_sha256": {
+        "final.json": "967a5f8bfba01da03bccc6fa90ec4f0b8810ecc2e31ba52d4dedf64dc649326e",
+        "steps.json": "7b61e7311dad454578b716aa36061979a60a3067994898c25fe727feadc56a8c",
+        "job.json": "dd3cc2544760ec104ea966a1296ece1e58edcf41e408f406d7c71a42c4599fcc"
+      },
+      "final_state": "failed",
+      "exit_code": 1,
+      "host": "spark-56f5"
+    },
+    {
+      "name": "m35-weights-placement-memo-build2",
+      "record_sha256": {
+        "final.json": "d3ca27363fa72191c438013ca9a117773e8a95777e9798599959668fa9320c95",
+        "steps.json": "50459e097f03156be478649f435ec4945a65b4dc3eaff99a41a7557beeee9010",
+        "job.json": "baf044cdc61136c931961132a3987666c8ea3670affda1dce2fd4e49186cb0e8"
+      },
+      "final_state": "done",
+      "exit_code": 0,
+      "host": "spark-56f5"
+    },
+    {
+      "name": "m35-weights-placement-memo-stage1",
+      "record_sha256": {
+        "final.json": "d76fd447d1b2e2ae83f531831e741f62779c34ef5a5247974b3736b27407fb52",
+        "steps.json": "d3e54823c5b66868a3f42b5439b3dbae9d6570a274a724ea90b1e71d843a0511",
+        "job.json": "3819c10fd3815ec997b6bbf505ccc9e6d691234e2bdbaa6a9d911538666a123e"
+      },
+      "final_state": "done",
+      "exit_code": 0,
+      "host": "spark-c4e2"
+    },
+    {
+      "name": "m35-weights-placement-memo-screen1",
+      "record_sha256": {
+        "final.json": "6a2fd3edea240cf311a2b427e577bd7fd675a30349e0811b0546fd37e030d038",
+        "steps.json": "e5ab702239125da6b2c4f26b95f5a83ed804d53af8e89e7215b4ba837a489763",
+        "job.json": "af261847c8057eb63eca5cf25375de8db5b45489dcf0775229752dfc2f709e85"
+      },
+      "final_state": "done",
+      "exit_code": 0,
+      "host": "spark-c4e2"
+    },
+    {
+      "name": "m35-weights-placement-memo-adoption1",
+      "host": "spark-56f5",
+      "final_state": "done",
+      "exit_code": 0,
+      "record_sha256": {
+        "final.json": "bc778df028b92230f16d55f86c541a12ad861211653c8b2288d46cefa84b0be2",
+        "steps.json": "8bf417d077854a07c0eff0335e7f480db9d540ad325f7d9da1afcfeb3169f925",
+        "job.json": "64e999ae920a0f4a786fce2680985556a2b367ba488cdbabc761e3ee4e83fa62"
+      }
+    }
+  ]
+}

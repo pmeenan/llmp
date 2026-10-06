@@ -241,6 +241,15 @@ enum class Fault : std::uint8_t {
 
 std::string ToString(Fault fault);
 
+// A scheduler lifetime and its source/pin mutations, read on its thread.
+// Exhausted identities never authorize a cached placement check.
+struct PlacementStamp {
+  std::uint64_t instance = 0;
+  std::uint64_t epoch = 0;
+  bool cacheable() const { return instance != 0 && instance != UINT64_MAX && epoch != UINT64_MAX; }
+  bool operator==(const PlacementStamp&) const = default;
+};
+
 class TaskContext;
 
 // A task's continuation, stepped only on the scheduler thread. It owns its
@@ -532,6 +541,7 @@ class Scheduler {
   // extents is destroyed, never before; the scheduler cannot see graphs.
   void UnpinPlaces(std::span<const catalog::ExtentId> extents);
   bool PlacePinned(catalog::ExtentId extent) const { return pinned_.contains(extent); }
+  PlacementStamp placement_stamp() const { return placement_stamp_; }
   // Requests' leases held now (HoldLease), including ones ending once
   // their operations drain, and the operations under `lease` in flight.
   std::size_t held() const { return held_.size(); }
@@ -837,6 +847,12 @@ class Scheduler {
   bool pumping_releases_ = false;
   std::map<catalog::ExtentId, PageSource> sources_;
   std::map<catalog::ExtentId, std::uint32_t> pinned_;  // D-090: pins per extent
+  friend struct SchedulerPlacementTestAccess;
+  static std::uint64_t TakePlacementInstance(std::atomic<std::uint64_t>& next);
+  void PlacementChanged() {
+    if (placement_stamp_.epoch != UINT64_MAX) ++placement_stamp_.epoch;
+  }
+  PlacementStamp placement_stamp_;
   // Requests' leases, at most `tasks` at once.
   std::map<catalog::LeaseId, Held> held_;
   // The landing zone's slots, and the loads waiting: to start (kQueued),

@@ -183,6 +183,10 @@ The [current C4 phase split](../gemma-owner-c4-phases/README.md) records 32 plan
 hits and 24.74 ms in checks. Paid time outside execution averages 78.73 ms,
 including 43.57 ms outside all runner phases; these spans do not establish
 active GPU cost or a fresh-reference gap.
+The [immutable-weight placement cache](../weights-placement-memo/README.md)
+then reduces checks by 20.580 ms and paid C4 latency by 25.615 ms / 0.77%,
+with all heads, initialized states and choices exact. Mutable state still gets
+fresh checks; this isolated comparison supplies no new reference timing.
 [Gemma26 packed compound C4](../gemma26-compound-packed-c4/README.md)
 still has 2/128 positive-margin disagreements, 92/128 exact heads, and a 7.15%
 time deficit. [Common-input late MoE controls](../gemma26-late-moe/README.md)

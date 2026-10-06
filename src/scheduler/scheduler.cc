@@ -29,6 +29,18 @@
 #include "scheduler/tasks.h"
 
 namespace jitllm::scheduler {
+namespace {
+std::atomic<std::uint64_t> next_placement_instance{1};
+}  // namespace
+
+std::uint64_t Scheduler::TakePlacementInstance(std::atomic<std::uint64_t>& next) {
+  auto token = next.load(std::memory_order_relaxed);
+  while (token != UINT64_MAX) {
+    if (next.compare_exchange_weak(token, token + 1, std::memory_order_relaxed)) return token;
+  }
+  return UINT64_MAX;
+}
+
 WorkError Scheduler::ErrorOf(catalog::CatalogError error) {
   switch (error) {
     case catalog::CatalogError::kNotResident:
@@ -91,6 +103,7 @@ Scheduler::Scheduler(catalog::Catalog& catalog, CompletionBoard& board, base::Wa
       tasks_(settings.tasks, settings.priorities, settings.aging_limit),
       records_(settings.tasks),
       operations_(board.capacity()) {
+  placement_stamp_.instance = TakePlacementInstance(next_placement_instance);
   base::Check(settings_.controls_per_turn > 0 && settings_.observations_per_turn > 0 &&
                   settings_.steps_per_turn > 0 && settings_.waiters > 0,
               "a scheduler turn needs non-zero batches and waiter lists");

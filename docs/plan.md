@@ -454,6 +454,12 @@ family" guide, and its long-context scaling work.
         averages 78.73 ms. Exact heads/state/choices remain. This diagnostic
         supplies no fresh-reference or active-GPU attribution; immutable-weight
         placement checks are a bounded lead, not the whole remaining gap.
+      - [x] [Successful weight placement memo](experiments/weights-placement-memo/README.md):
+        scheduler lifetime/mutation stamps remove repeated immutable-weight scans
+        while keeping mutable-state validation and every scheduler Call. Current
+        31B C4 checks fall 23.50→2.92 ms and paid elapsed falls 0.77%, with exact
+        heads/states/choices and 17 focused controls; no fresh competitive or
+        other-family speed claim. Full regression remains owner-deferred.
       - [x] [Current full-head corpus screen](experiments/gemma-current-quality/README.md):
         31B both256/plain-norm-on matches all 1,024 fresh ring-reference heads
         and 1,023 likelihoods exactly. The 26B all1024 transfer has nine positive-

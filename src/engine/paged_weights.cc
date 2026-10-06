@@ -167,6 +167,7 @@ std::array<std::uint8_t, 32> ArtifactKey(const artifact::Artifact& artifact) {
 
 PagedWeights::Status PagedWeights::Open(const std::filesystem::path& path,
                                         const artifact::OpenOptions& options) {
+  checked_places_.reset();
   auto opened = artifact::Artifact::Open(path, options);
   if (!opened) {
     return Error(
@@ -188,6 +189,7 @@ PagedWeights::Status PagedWeights::Open(const std::filesystem::path& path,
 
 PagedWeights::Status PagedWeights::Reserve(PagedNode& node, std::span<const GroupPlace> place,
                                            std::span<const SlabSpec> slabs) {
+  checked_places_.reset();
   if (!opened()) {
     return Error("the weights' artifact is not open");
   }
@@ -382,6 +384,7 @@ PagedWeights::Status PagedWeights::Reserve(PagedNode& node, std::span<const Grou
 }
 
 PagedWeights::Status PagedWeights::Register(PagedNode& node, int owner) {
+  checked_places_.reset();
   for (std::size_t i = 0; i < extents_.size(); ++i) {
     auto set = node.scheduler().SetSource(extents_[i], sources_[i].source);
     if (!set) {
@@ -398,9 +401,21 @@ PagedWeights::Status PagedWeights::Register(PagedNode& node, int owner) {
 }
 
 void PagedWeights::CheckPlaces(const sc::Scheduler& scheduler, PlaceCheck& check) const {
+  (void)CheckPlacesImpl(scheduler, check);
+}
+
+bool PagedWeights::CheckPlacesImpl(const sc::Scheduler& scheduler, PlaceCheck& check) const {
+  const auto stamp = scheduler.placement_stamp();
+  if (stamp.cacheable() && checked_places_ == stamp) return true;
+  checked_places_.reset();
+  const auto before = check.moved;
   for (std::size_t i = 0; i < extents_.size() && i < sources_.size(); ++i) {
     check.Check(scheduler, extents_[i], sources_[i].source);
   }
+  if (stamp.cacheable() && extents_.size() == sources_.size() && check.moved == before) {
+    checked_places_ = stamp;
+  }
+  return false;
 }
 
 std::uint64_t PagedWeights::resource_address(std::uint32_t resource) const {
@@ -456,6 +471,7 @@ std::vector<PagedWeights::Range> PagedWeights::Unwritten() const {
 }
 
 PagedWeights::Status PagedWeights::Release(providers::VmmProvider& memory) {
+  checked_places_.reset();
   std::vector<std::string> problems;
   for (providers::ReservationId* reservation : {&reservation_, &host_reservation_}) {
     if (reservation->valid() && !memory.Free(*reservation)) {

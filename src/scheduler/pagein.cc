@@ -131,6 +131,7 @@ std::expected<void, WorkError> Scheduler::SetSource(catalog::ExtentId extent,
     }
   }
   sources_[extent] = source;
+  PlacementChanged();
   return {};
 }
 
@@ -162,16 +163,20 @@ std::expected<void, WorkError> Scheduler::PinPlaces(std::span<const catalog::Ext
   for (const catalog::ExtentId extent : extents) {
     ++pinned_[extent];
   }
+  if (!extents.empty()) PlacementChanged();
   return {};
 }
 
 void Scheduler::UnpinPlaces(std::span<const catalog::ExtentId> extents) {
+  bool changed = false;
   for (const catalog::ExtentId extent : extents) {
     const auto found = pinned_.find(extent);
-    if (found != pinned_.end() && --found->second == 0) {
-      pinned_.erase(found);
+    if (found != pinned_.end()) {
+      changed = true;
+      if (--found->second == 0) pinned_.erase(found);
     }
   }
+  if (changed) PlacementChanged();
 }
 
 // Materialization -------------------------------------------------------------------
