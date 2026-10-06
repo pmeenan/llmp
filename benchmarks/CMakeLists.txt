@@ -297,6 +297,18 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_gemma_attention_replay PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # Separate first-global D512 carrier/replay; measured local helpers remain fixed.
+  add_executable(jitllm_gemma_attention_global_capture gemma_attention_global_capture.cc
+                 gemma_attention_global_capture_wrap.cc)
+  target_include_directories(jitllm_gemma_attention_global_capture SYSTEM PRIVATE
+      "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
+  target_link_libraries(jitllm_gemma_attention_global_capture PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_attention_global_capture PRIVATE
+    "LINKER:--wrap=_ZN6jitllm7kernels4ggml12FlashAttnMmaERNS1_13LaunchContextEP11ggml_tensorb"
+    "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+  add_executable(jitllm_gemma_attention_global_owner_replay gemma_attention_global_owner_replay.cc)
+  target_link_libraries(jitllm_gemma_attention_global_owner_replay PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_attention_global_owner_replay PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
   # Explicit owner-root MMA operand proof only; no production selector.
   add_executable(jitllm_gemma_attention_owner_replay gemma_attention_owner_replay.cc)
   target_link_libraries(jitllm_gemma_attention_owner_replay PRIVATE jitllm_engine jitllm_warnings)

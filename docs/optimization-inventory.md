@@ -452,8 +452,10 @@ reuses the pinned MMA tile/fixup arithmetic with eight checked K/V addresses,
 keeping the packed kernel's grid and reduction partitions. All 32,768 real
 D25631 outputs, fresh/restored controls and captured repeats match byte for byte.
 The operator timer excludes packing, so it establishes no copy-removal gain.
-D512, other read widths, whole-model C4 and Gemma26/assistant transfer need actual
-controls; production selection remains unchanged.
+The [first-global D512 proof](experiments/gemma-owner-root-global/README.md)
+adds all 65,536 native-origin output values, fresh/restored controls and captured
+repeats, preserving the original 96-block grid. Other read widths, whole-model C4
+and Gemma26/assistant transfer need actual controls; production selection remains unchanged.
 
 The [current corpus screen](experiments/gemma-current-quality/README.md)
 checks the actually measured solo research policies with plain norm fusion:

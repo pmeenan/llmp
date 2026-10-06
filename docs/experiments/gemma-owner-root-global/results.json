@@ -1,0 +1,331 @@
+{
+  "schema": 1,
+  "status": "Unselected operator-only D512 proof; no whole-model copy-removal or production selection.",
+  "workload": {
+    "source_base": "ab88b9d",
+    "platform": "Spark A (spark / spark-c4e2), GB10",
+    "artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "layer": 5,
+    "input_origin": "New native dense31 first-global C4 capture; no original-engine operand or output acquisition.",
+    "capture_policy": "context256/maxrows128; ordinary products, normRoPE/normADD on, explicit normmul off; other experimental policies off.",
+    "D": 512,
+    "query_heads": 32,
+    "kv_heads": 4,
+    "owners": 4,
+    "rows_per_owner": 1,
+    "read_cells": 256,
+    "q_type": "F32",
+    "kv_mask_type": "F16",
+    "carrier": {
+      "schema": 1,
+      "layer": 5,
+      "canonical_input": {
+        "bytes": 4096,
+        "sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610"
+      },
+      "complete_model_heads_capture_control_byte_exact": {
+        "bytes": 4194304,
+        "sha256": "7d673475cd6f849c6d99bbcec2cd6c14fafc391c4be8038be31867e5d2fda95d"
+      },
+      "native_origin_operands_own_repeat_byte_exact": true,
+      "captured_metadata": {
+        "bytes": 3471,
+        "sha256": "75bfbf7159266a93232f3924e71d9d5c2ff1fd880e8746a6a9c882201ba49609"
+      },
+      "packed": {
+        "q": {
+          "bytes": 262144,
+          "sha256": "1c282dd224f7e2ba3c1a04cae726ede8cc25de86b7794d88d9690a8dd0410589"
+        },
+        "k": {
+          "bytes": 4194304,
+          "sha256": "ad93c221736110eee6c79e0c1817dae70bc3a175a6de69ac7ea2912ca2036826"
+        },
+        "v": {
+          "bytes": 4194304,
+          "sha256": "efdaf0d44f71aeda9c4cc11769a5af9b1dad27b935c100b6391b13e26c6c3ea6"
+        },
+        "mask": {
+          "bytes": 65536,
+          "sha256": "ade31da7cd580811d43f8b0e7a67974bddba1f45bbd429bb2a2fd17d2218ce29"
+        },
+        "params": {
+          "bytes": 64,
+          "sha256": "c6d0320f7ebd871f3d1ba4f0e5ff3f036646c1022183ff530580a8eb09196541"
+        }
+      },
+      "origin": "native-origin reconstructed four-stream D512 roots",
+      "query_positions": [
+        67,
+        68,
+        69,
+        70
+      ],
+      "initialized_endpoints": [
+        68,
+        69,
+        70,
+        71
+      ]
+    },
+    "carrier_receipt": {
+      "bytes": 1342,
+      "sha256": "4993ee1b85066e7b960a86869006d469518f9b980cabccb49662e9ad2abb343b"
+    }
+  },
+  "proof": {
+    "output_values": 65536,
+    "output_bytes": 262144,
+    "first_restored_last_paid_sha256": "373cc3d7be9afba6822b020af6eb1b8ada3c281f38346678bb6f1d5cd3856267",
+    "fresh_query_factor": -0.5,
+    "fresh_sha256": "04c7c2adc8f2f1c38121281abb10a36a7b1204b3cabd49ddfdfd59caf854cf30",
+    "all_nine_fullfile_comparisons_pass": true,
+    "complete_outputs_finite": true,
+    "eager_capture_fresh_restore_checks_pass": true,
+    "complete_gpu_input_witnesses": "Packed Q/K/V/mask and eight independent uneven-pitch K/V roots exact before, fresh, restored, after paid work in each process.",
+    "original_grid_blocks": 96,
+    "original_blocks_per_sm": 2,
+    "owner_blocks_per_sm": 2,
+    "scratch_bytes": 1585408,
+    "captured_nodes": 3,
+    "device_mapped_bytes": 67108864,
+    "pinned_bytes": 4456448,
+    "known_host_allowance_bytes": 67108864,
+    "retirement": "All four replay processes return after successful explicit node teardown; official proof1 17/17 DONE0."
+  },
+  "operator_timing": {
+    "mode_order": [
+      "owners-first",
+      "owners-repeat",
+      "packed-first",
+      "packed-repeat"
+    ],
+    "seconds": [
+      0.004805109,
+      0.004748838,
+      0.004917349,
+      0.004818166
+    ],
+    "waves_per_process": 32,
+    "completed_owner_units": 128,
+    "paid_work": "Graph replay, submission/completion, full output D2H publication, finite scan and four attention-coordinate argmax scans.",
+    "outside_timer": "Input upload/packing and complete input witnesses; output file writes.",
+    "retained_outputs": "First, fresh and last paid full outputs; intermediate paid outputs finite-scanned.",
+    "conclusion": "No whole-model speed or copy-removal claim: both modes have preuploaded operands."
+  },
+  "source": {
+    "measured_frame": {
+      "bytes": 2195,
+      "sha256": "cd7c09b303d67e687095a5ab98a888d3f82a85ec1a7f223217b5970a66b12f99"
+    },
+    "files": [
+      {
+        "path": "benchmarks/CMakeLists.txt",
+        "bytes": 36952,
+        "sha256": "9ce3e9d1ac327ee5c3c4ee58ebc69c07e1c8702197e23572392c3beb091af31a"
+      },
+      {
+        "path": "benchmarks/gemma_attention_global_capture.cc",
+        "bytes": 13527,
+        "sha256": "0871ae66d7cb271de48338e5fcbfc65a41f06391fd62f85f033abef55b564692"
+      },
+      {
+        "path": "benchmarks/gemma_attention_global_capture.h",
+        "bytes": 1691,
+        "sha256": "d808a75abb76235d67de93495b033d9bbeb858fd491adcffe4ab28fe9d794750"
+      },
+      {
+        "path": "benchmarks/gemma_attention_global_capture_wrap.cc",
+        "bytes": 8907,
+        "sha256": "f91fb84551b13a9f5b40d0f8dc7fc36bbc7a00668304ff4946b706b18bf4a28b"
+      },
+      {
+        "path": "benchmarks/gemma_attention_global_inputs.h",
+        "bytes": 3420,
+        "sha256": "d42ad67dfd83190e5dd8b257be74ab9f500501d7a8c85fa97e4f15c1a340f3cd"
+      },
+      {
+        "path": "benchmarks/gemma_attention_global_owner_replay.cc",
+        "bytes": 17836,
+        "sha256": "7e2a903ea9c33c00a71de0e3786d93acc18c48659fb4bb06bb294c9d35865b38"
+      },
+      {
+        "path": "docs/experiments/gemma-owner-root-global/pack_inputs.py",
+        "bytes": 5057,
+        "sha256": "f98bf8435c0fe4cf8716b8b1fdc252f52c4176dc3f9e6424e4f94a119adf7568"
+      },
+      {
+        "path": "docs/experiments/gemma-owner-root-global/PROTOCOL.md",
+        "bytes": 3770,
+        "sha256": "27adbc621c74746a37964c065ce1b86969097a69ac1dd6b90b6deafa87664cc3"
+      }
+    ],
+    "capture_binary_sha256": "b6dd39400122afcba26694cc82b54c8d0e326da114290c7073c77707a049bc15",
+    "replay_binary_sha256": "437c7542f6196b5d26ef2940585670ef15ecf9e03d08d0dee9ef9839ba911a42",
+    "build_receipt": {
+      "bytes": 6751,
+      "sha256": "fbf84c74d44bbefce71c6499d43b9fc9b6844e994d25decce23df3f06c1031c2"
+    },
+    "sdk": "aarch64-c09daba6ac31edee",
+    "toolchain": "Declared NVCC13.4.92 / CUDA toolkit13.4.2 / Clang22.1.8; inherited locked build policy, no fresh version probe.",
+    "prepared_ggml_tree": "026f1ac94af98011933e71cee240d0a405ac4220cb208356acf61aa2bcea6207",
+    "checkout_qualification": "Checksum sync omits .git; receipt commit null/origin none. Explicit isolated base/eight source hashes identify this diagnostic, not latest production.",
+    "native_runtime_libraries": "Private binaries use explicit canonical build/spark-native/cublas LD_LIBRARY_PATH; checked ldd resolves its native SDK libraries.",
+    "abi": "Actual real and wrapped FlashAttnMma symbols include the third bool (trailing b). Wrapper forwards bool unchanged.",
+    "license": "New capture/replay/adapter are Apache-2.0 derivatives of project diagnostics. Existing Task55 MIT AND Apache-2.0 owner launcher and pinned GGML tile/fixup remain unchanged; no source-lock or license-policy changes.",
+    "historical_helpers_kernel_unchanged": true
+  },
+  "task_entry": {
+    "observation": {
+      "bytes": 1191,
+      "sha256": "34807c971d95b6de7603ad7f9e294c982ccb0d26244152e775c193ff8cab15e5"
+    },
+    "observed_utc": "2026-10-06T00:08:29.311370+00:00",
+    "tensorfold_head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "version": "0.6.5",
+    "recipe": "Actual primary Gemma4 recipe MLX26 only; no matching Gemma31 CUDA recipe."
+  },
+  "checks": {
+    "metadata_cases": 27,
+    "metadata_device_open": 0,
+    "metadata_launches": 0,
+    "official_records": {
+      "build1": {
+        "job": "m35-gemma-owner-global-build1",
+        "state": "failed",
+        "rc": 1,
+        "end_utc": "2026-10-06T00:23:05.858000+00:00",
+        "records": {
+          "log": {
+            "bytes": 7026,
+            "sha256": "6e37028b8560131244e3a324306bb1f70bf8b01a5e8d7b8772ffdd3318c41f0e"
+          },
+          "final.json": {
+            "bytes": 158,
+            "sha256": "eae33c582c27f63c33a93a05e6dca8880a10a9f09a45733a0370689a65d986a5"
+          },
+          "steps.json": {
+            "bytes": 2146,
+            "sha256": "a3ab450bfe17bfdf99b76f1b4648da94582844167530634cf6ae2894aa5519ba"
+          },
+          "job.json": {
+            "bytes": 500,
+            "sha256": "983e7b95d4b4315a6a7412235da503643a1cc2dd0b0f5df8f3f469aa4362f9f6"
+          }
+        }
+      },
+      "build2": {
+        "job": "m35-gemma-owner-global-build2",
+        "state": "failed",
+        "rc": 1,
+        "end_utc": "2026-10-06T00:27:23.529000+00:00",
+        "records": {
+          "log": {
+            "bytes": 4124,
+            "sha256": "0dd0a9e37072e4c067c6bb6fe65ba66ca83b78a03884fb43bc99e4e82ef3187d"
+          },
+          "final.json": {
+            "bytes": 152,
+            "sha256": "7c0c9d6dcc88ac3a89f73dbca608c0bcf1426ba1dd05bc7769f83696637d51f7"
+          },
+          "steps.json": {
+            "bytes": 2313,
+            "sha256": "b56c33f74a8850e9cc7e15baa594580ca53651081de5f4faf2ee6d1e455df832"
+          },
+          "job.json": {
+            "bytes": 502,
+            "sha256": "90a80a57a0eb0d4be2cef410db566e850f447c81cd62da9775e10086eb28d2ad"
+          }
+        }
+      },
+      "compiled1": {
+        "job": "m35-gemma-owner-global-compiled1",
+        "state": "done",
+        "rc": 0,
+        "end_utc": "2026-10-06T00:27:56.199000+00:00",
+        "records": {
+          "log": {
+            "bytes": 2192,
+            "sha256": "2b9522426e00e0e8865a4c35e27715cab92a1e6e24a47179306a796b525bfc8a"
+          },
+          "final.json": {
+            "bytes": 83,
+            "sha256": "986c15d27f6b46d54b0362b9e61e0b9f0a7590a81ae39aa0e6d0165c74ce5f20"
+          },
+          "steps.json": {
+            "bytes": 944,
+            "sha256": "74c5905a5e2b0202c886dcc848abac5a008f2dd0f2598e80e99b1ae52ac527b6"
+          },
+          "job.json": {
+            "bytes": 511,
+            "sha256": "f9a5232fa213de4560250e8e770335806d7c1c9538b2d6be0517268642c3b336"
+          }
+        }
+      },
+      "capture1": {
+        "job": "m35-gemma-owner-global-capture1",
+        "state": "done",
+        "rc": 0,
+        "end_utc": "2026-10-06T00:29:18.007000+00:00",
+        "records": {
+          "log": {
+            "bytes": 10825,
+            "sha256": "17b6e37b2731f46a13b88e3f01988fe4ae025f3701cb0effb21808be0ed0ef26"
+          },
+          "final.json": {
+            "bytes": 83,
+            "sha256": "ba76981997bf63dc1dc758ad00dde777ea27170cad4096c2fdfbd3d713382c3a"
+          },
+          "steps.json": {
+            "bytes": 3430,
+            "sha256": "2b7f385894a123780c602de3a1ae0d95d5d8a17788cfd15d1220f76285568361"
+          },
+          "job.json": {
+            "bytes": 508,
+            "sha256": "ddf72de995309aa7fc7dde1ddb63d046f09b4f6d2d315094f65d9e5368240f3f"
+          }
+        }
+      },
+      "proof1": {
+        "job": "m35-gemma-owner-global-proof1",
+        "state": "done",
+        "rc": 0,
+        "end_utc": "2026-10-06T00:29:41.153000+00:00",
+        "records": {
+          "log": {
+            "bytes": 9079,
+            "sha256": "27993905f533e65391f3614fbd6d04fead6a8c0533e65c966fc64998224039b8"
+          },
+          "final.json": {
+            "bytes": 83,
+            "sha256": "8f29fc8a94fb5119439a306521d3be6e6bf8921089c8c8e0dd1e243c9309868e"
+          },
+          "steps.json": {
+            "bytes": 5809,
+            "sha256": "0f5e1ead525cc53100364e7025a2efa8129811f03622a97385d5cc2b6e1bae54"
+          },
+          "job.json": {
+            "bytes": 502,
+            "sha256": "2e3ca884a2500d5852d91ca2e07d30d8d42773be932e2f1bae0dab5c1af5ca07"
+          }
+        }
+      }
+    },
+    "failed_history": "Build1 rejected missing validate_ext.h declaration. Build2 compiled both targets and passed27 metadata but stopped at missing rg in nm filter. Separate compiled1 uses grep-E and completes ABI/source-post/binary receipt checks. No model ran before these checks.",
+    "successful_capture_steps": 8,
+    "successful_proof_steps": 17,
+    "full_suite": "Not run: bounded unselected diagnostic under owner override.",
+    "author_light": {
+      "reuse_headers_files": 1624,
+      "boundary_files": 398,
+      "problems": 0,
+      "changed_format_diff_ast_json": "pass"
+    }
+  },
+  "limits": [
+    "Only native-origin layer5 D512/GQA8/read256 arithmetic proved; D256 is the separate earlier proof.",
+    "No new original D512 counterpart run; equality is against unchanged native packed four-stream MMA.",
+    "No selected production implementation, full-model owner-root heads/state/quality or paid copy-removal result.",
+    "Other widths, Gemma26 and assistant transfers require actual operands and model controls."
+  ]
+}

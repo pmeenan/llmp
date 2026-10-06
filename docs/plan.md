@@ -440,7 +440,9 @@ family" guide, and its long-context scaling work.
       - [x] [Independent C4 attention owner roots](experiments/gemma-owner-root-attention/README.md):
         all 32,768 real D25631 outputs match packed four-stream MMA byte for byte,
         preserving original grid/reduction partitions and checked independent spans.
-        D512 arithmetic, whole-model copy removal and paid C4 qualification stay open;
+        [Real first-global D512 inputs](experiments/gemma-owner-root-global/README.md)
+        also pass all 65,536 output values, fresh/restored and captured controls,
+        preserving the 96-block grid. Whole-model copy removal and paid C4 qualification stay open;
         no production selector or default changes.
       - [x] [Current full-head corpus screen](experiments/gemma-current-quality/README.md):
         31B both256/plain-norm-on matches all 1,024 fresh ring-reference heads
