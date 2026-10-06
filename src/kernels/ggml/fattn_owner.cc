@@ -76,7 +76,7 @@ std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
     int max_blocks, int kv_tiles, int kv_heads, std::uint32_t logical_cohort) {
   if (max_blocks <= 0 || kv_tiles <= 0 || kv_tiles > 512 || kv_heads <= 0 || kv_heads > 16 ||
       (logical_cohort != 2 && logical_cohort != 3 && logical_cohort != 4 && logical_cohort != 8 &&
-       logical_cohort != 12))
+       logical_cohort != 12 && !PartialOwnerCohort(logical_cohort)))
     return Rejected("owner MMA partition inputs are outside the closed grid bounds");
   const auto grid = [&](std::uint32_t cohort) {
     const auto tiles = static_cast<std::int64_t>(kv_heads) * cohort;
@@ -85,7 +85,7 @@ std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
     const auto loss = rounded > 0 ? 100 * (raw - rounded) / raw : 100;
     return static_cast<int>(loss <= 5 ? rounded : raw);
   };
-  if (logical_cohort == 2 || logical_cohort == 3) {
+  if (logical_cohort == 2 || logical_cohort == 3 || PartialOwnerCohort(logical_cohort)) {
     const auto blocks = grid(logical_cohort);
     return OwnerPartition{
         .cohort_blocks = blocks, .quad_blocks = blocks, .effective_cohort = logical_cohort};
@@ -102,11 +102,17 @@ std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
 }
 
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& in) {
-  if (in.owner_count < 2 || in.owner_count > 4 ||
-      (in.owner_count < 4
-           ? in.logical_cohort != in.owner_count
-           : (in.logical_cohort != 4 && in.logical_cohort != 8 && in.logical_cohort != 12)))
+  const bool partial = detail::PartialOwnerCohort(in.logical_cohort);
+  if (partial) {
+    if (in.owner_offset >= in.logical_cohort || in.owner_offset % 4 != 0 ||
+        in.owner_count != std::min(4U, in.logical_cohort - in.owner_offset))
+      return Rejected("partial owner MMA requires a canonical real root group");
+  } else if (in.owner_offset != 0 || in.owner_count < 2 || in.owner_count > 4 ||
+             (in.owner_count < 4 ? in.logical_cohort != in.owner_count
+                                 : (in.logical_cohort != 4 && in.logical_cohort != 8 &&
+                                    in.logical_cohort != 12))) {
     return Rejected("owner MMA requires actual roots2/3 or four-root cohort4/8/12");
+  }
   if (!in.q || !in.mask || !in.output || (in.q->ne[0] != 256 && in.q->ne[0] != 512) ||
       (in.q->ne[2] != 16 && in.q->ne[2] != 32))
     return Rejected("owner MMA requires the closed Gemma head dimensions");
@@ -153,19 +159,23 @@ std::expected<FlashAttnOwners, KernelFailure> FlashAttnOwnersFromNode(ggml_tenso
   if (!node || JitllmOpOf(node) != JitllmOp::kFlashAttnOwners || node->view_src)
     return Rejected("not a ten-source owner attention custom node");
   const auto cohort = JitllmOpInt(node, 0);
-  if (cohort != 2 && cohort != 3 && cohort != 4 && cohort != 8 && cohort != 12)
+  if (cohort != 2 && cohort != 3 && cohort != 4 && cohort != 8 && cohort != 12 &&
+      !detail::PartialOwnerCohort(static_cast<std::uint32_t>(cohort)))
     return Rejected("owner attention has an unsupported logical cohort");
   const auto encoded_count = JitllmOpInt(node, 1);
-  if (encoded_count != 0 && encoded_count != 2 && encoded_count != 3)
+  if (encoded_count != 0 && encoded_count != 1 && encoded_count != 2 && encoded_count != 3)
     return Rejected("owner attention has an unsupported active root count");
-  for (int i = 2; i < 8; ++i)
+  const auto offset = JitllmOpInt(node, 2);
+  if (offset < 0) return Rejected("owner attention has a negative group offset");
+  for (int i = 3; i < 8; ++i)
     if (JitllmOpInt(node, i) != 0) return Rejected("owner attention has unsupported parameters");
   FlashAttnOwners in{
       .q = node->src[0],
       .mask = node->src[1],
       .output = node,
       .logical_cohort = static_cast<std::uint32_t>(cohort),
-      .owner_count = encoded_count == 0 ? 4U : static_cast<std::uint32_t>(encoded_count)};
+      .owner_count = encoded_count == 0 ? 4U : static_cast<std::uint32_t>(encoded_count),
+      .owner_offset = static_cast<std::uint32_t>(offset)};
   for (std::size_t owner = 0; owner < 4; ++owner) {
     in.k[owner] = node->src[2 + owner];
     in.v[owner] = node->src[6 + owner];

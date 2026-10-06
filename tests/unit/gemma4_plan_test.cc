@@ -263,7 +263,9 @@ TEST(Gemma4Plan, SelectedOwnerStepsCountQuadsAndKeepIndependentTailsAndFallback)
         auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
                                           (*measured)->placement.extent);
         ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
-        const auto quads = owners / 4 - (fallback && owners % 4 == 0 ? 1U : 0U);
+        const bool partial = !fallback && kg::detail::PartialOwnerCohort(owners);
+        const auto quads =
+            partial ? (owners + 3) / 4 : owners / 4 - (fallback && owners % 4 == 0 ? 1U : 0U);
         EXPECT_EQ(std::ranges::count_if((*placed)->plan.steps,
                                         [](const auto& step) {
                                           return step.implementation == kg::kFlashAttnOwnersName;
@@ -274,7 +276,7 @@ TEST(Gemma4Plan, SelectedOwnerStepsCountQuadsAndKeepIndependentTailsAndFallback)
                                           return step.operation ==
                                                  jitllm::execution::Operation::kFlashAttn;
                                         }),
-                  (owners - 3 * quads) * c.p.layers);
+                  (partial ? quads : owners - 3 * quads) * c.p.layers);
       }
 }
 
@@ -667,5 +669,71 @@ TEST(Gemma4Plan, SmallRealOwnerGroupsAreFundedAcrossSizedArenaAndBothPlacementPa
                                           return step.implementation == kg::kFlashAttnOwnersName;
                                         }),
                   c.p.layers);
+      }
+}
+
+TEST(Gemma4Plan, PartialOwnerGroupsAreFundedAcrossSizedArenaAndBothPlacementPasses) {
+  for (const auto size : {26U, 31U})
+    for (const auto owners : {5U})
+      for (const bool equal_width : {true}) {
+        Case c(1, 0, size);
+        c.state = *md::Gemma4State(c.p, 4096, size == 26 ? 1024 : 256);
+        c.shape = {};
+        for (std::uint32_t i = 0; i < owners; ++i) {
+          const auto read = !equal_width && i < 4 ? 512U : 1024U;
+          c.shape.segments.push_back({i, 1, read - 128 + i, read, read});
+        }
+        c.shape.outputs = owners;
+        kg::Gemma4GraphOptions options;
+        options.device_masks = true;
+        options.narrow_final = true;
+        options.attention_mode = kg::Gemma4AttentionMode::kOwners;
+        const auto estimate = kg::Gemma4GraphTensors(c.p, owners, options);
+        EXPECT_EQ(estimate, kg::Gemma4GraphTensors(c.p, owners) + c.p.layers * 128);
+        auto arena = kg::TensorArena::Create(estimate);
+        ASSERT_TRUE(arena);
+        auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+        ASSERT_TRUE(graph);
+        auto model = Places(c, *graph);
+        kg::DeviceChoices choices;
+        choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
+        choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
+        auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
+        ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+        EXPECT_EQ((*measured)->graph.attention_quad_mask, 3U);
+        for (const auto* node : (*measured)->graph.nodes)
+          if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners)
+            EXPECT_EQ(kg::JitllmOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
+        EXPECT_GE((*measured)->arena->graph_capacity(), estimate);
+        EXPECT_GE(en::ScratchArenaBytes(), (*measured)->arena->bytes());
+        EXPECT_GE(en::PlannedHostBytes(**measured), (*measured)->arena->bytes());
+        auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
+                                          (*measured)->placement.extent);
+        ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+        EXPECT_EQ((*placed)->graph.attention_quad_mask, 3U);
+        EXPECT_EQ((*placed)->placement.extent, (*measured)->placement.extent);
+        std::size_t owner_nodes = 0;
+        for (const auto* node : (*placed)->graph.nodes) {
+          if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+          ++owner_nodes;
+          EXPECT_EQ(kg::JitllmOpInt(node, 0), equal_width ? static_cast<int>(owners) : 4);
+          EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
+          for (std::size_t i = 0; i < static_cast<std::size_t>(node->ne[3]) * 2; ++i) {
+            const auto active = static_cast<std::size_t>(node->ne[3]);
+            const auto source = 2 + i % active + (i / active) * 4;
+            auto* raw = node->src[source]->src[0];
+            ASSERT_NE(raw, nullptr);
+            ASSERT_NE(raw->view_src, nullptr);
+            EXPECT_EQ(raw->src[0]->op, GGML_OP_SET_ROWS);
+            EXPECT_EQ(raw->view_src->op, GGML_OP_NONE);
+            EXPECT_EQ(raw->view_offs, 0U);
+          }
+        }
+        EXPECT_EQ(owner_nodes, 2 * c.p.layers);
+        EXPECT_EQ(std::ranges::count_if((*placed)->plan.steps,
+                                        [](const auto& step) {
+                                          return step.implementation == kg::kFlashAttnOwnersName;
+                                        }),
+                  2 * c.p.layers);
       }
 }

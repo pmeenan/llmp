@@ -24,7 +24,11 @@ retains nine. The opt-in [actual two-owner factor](experiments/gemma-small-owner
 now passes strict zero-margin choices and separate 64-target conditional-loss
 bounds for both approved C2 profiles. All 64 paid 31B heads match retained stock;
 26B has 34/66 exact heads with zero choice differences. Whole2/3 primitive proof
-passes heads16/32; C3 model and partial-cohort quality remain unqualified. Fresh
+passes heads16/32. The 31B C3 short screen passes strict choices; the
+[equal-width partial adapter](experiments/gemma-partial-owner-attention/README.md)
+recovers the preserved C5 failure (eight strict differences and +3.8918% conditional
+loss) to zero differences, 160 paid exact heads and −0.20935% conditional loss.
+C3 transfer, other partial counts and unequal widths remain unqualified. Fresh
 31B timing is +1.47% with a stock spread larger than its mean gap; 26B is −1.064%
 in its short matched bookends. Core opt-in support does not adopt SOURCE14 serving
 recipes/defaults. Actual ordinary HTTP/cancellation/continuation, full corpus,
@@ -517,6 +521,14 @@ family" guide, and its long-context scaling work.
         full model qualification remain open. The same measured 31B C8 candidate
         remains 3.57% slower than fresh stock (155.385 ms) in a short matched
         bookend with unchanged complete heads/state; this is not sustained parity.
+      - [x] [Equal-width partial owner adapter](experiments/gemma-partial-owner-attention/README.md):
+        whole logical5/6/7/9/10/11 keeps the original full grid with active real-root
+        groups and sequence-offset fixups. N5/N6 exact operators cover general,
+        uniform and metadata-free branches; startup/both-pass funding passes.
+        Gemma31 C5 recovers its retained FIRST-stock strict and 160-target loss gates,
+        with all 160 paid heads exact; the original failure stays recorded.
+        Runtime/default changes, unequal widths, remaining cohort/profile model
+        controls and sustained/depth performance remain open.
       - [x] [Grouped independent cache-write screen](experiments/gemma-grouped-cache-writes/README.md):
         rejected report-only candidate. Original and fast-divider 31B C12 screens
         increased mean paid time 7.18%/3.22%; timing movement limits attribution.

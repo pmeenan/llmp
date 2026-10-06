@@ -24,6 +24,27 @@ Suggested order for PRs, one at a time: the mask pre-pass bound (RE-036),
 then ssm_conv's load bound (RE-032), then the null-buffer guard, then the
 sinks bound (RE-030).
 
+## Equal-width partial native owner attention
+
+- **Status:** jitLLM opt-in derivative, not an upstream submission. C5 model
+  recovery and N5/N6 operator evidence are bounded; unequal-width support is open.
+- **Source:** `src/kernels/ggml/fattn_owner_partial_kernel.cuh` derives the MMA
+  outer work loop and uniform/general fixups from locked b10964,
+  `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4`, under MIT. The file retains GGML
+  copyright and adds Apache-2.0 for jitLLM's ownership/address adaptation.
+- **Preserved arithmetic:** original `process_tile` helper, global block grid,
+  metadata slots and descending combination order. Work is clipped to an active
+  sequence range; fixups decode the original block-start owner and subtract the
+  owner offset only for local destination addressing. No softmax/MMA alteration.
+- **Range identity:** normalization of the copied uniform/general fixup range
+  reconstructs SHA256 `d5583c5358e46bbc137347a80c44bcdc3994f246fb78bbc3b18085de6bdc9be8`
+  from pinned `ggml/src/ggml-cuda/fattn-common.cuh`. Upstream main source range is
+  in `fattn-mma-f16.cuh`; the independent-root predecessor remains unchanged.
+- **Evidence and limit:** [partial owner report](../experiments/gemma-partial-owner-attention/README.md).
+  Short root views cannot be made safe solely by KV_max/masking because the
+  original tile helper preloads and executes a final iteration; common padded
+  read widths are therefore required. No request to upstream has been sent.
+
 ## Native Gemma assistant graph port
 
 - **Status:** native component foundation; no upstream kernel change or

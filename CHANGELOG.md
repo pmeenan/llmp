@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Opt-in Gemma equal-width partial owner cohorts retain whole-stream attention
+  partitions with bounded independent cache roots. The 31B C5 recovery passes
+  unchanged strict choices and conditional loss against retained stock; defaults
+  stay off and wider model/unequal-width qualification remains open.
+
 - Opt-in Gemma attention carries two or three actual cache owners with whole-stream
   geometry, retaining existing C1 and quad/tail fallbacks. Both approved C2 screens
   pass strict choices and bounded conditional loss; serving defaults remain off.

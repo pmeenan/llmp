@@ -122,10 +122,21 @@ adds opt-in wholeC2/C3 attention with checked active cache roots and original
 whole-stream geometry, preserving C1 and larger quad/tail fallback behavior.
 Heads16/32 primitive controls pass, and both approved C2 model screens pass strict
 zero-margin choices and independent 64-target conditional-loss bounds. All 64
-paid 31B heads match FIRST stock; 26B has 34/66 exact full heads. C3 model/partial
-quality and SOURCE14 serving defaults remain unqualified. Short matched timings
+paid 31B heads match FIRST stock; 26B has 34/66 exact full heads. The 31B C3 short
+screen passes strict choices, while C3 transfer and SOURCE14 serving defaults
+remain unqualified. Short matched timings
 are +1.47%31B with stock spread larger than the mean gap and −1.064%26B; no sustained
 parity or full model-support claim follows.
+
+The [equal-width partial adapter](experiments/gemma-partial-owner-attention/README.md)
+adds opt-in whole5/6/7/9/10/11 geometry with bounded active roots and original
+whole-grid fixups. N5/N6 primitive controls pass heads16/32 across all three
+fixup cases. Gemma31 C5 recovers its original strict/loss failure: zero strict
+choices, 160 paid byte-exact heads and −0.20935% 160-target conditional loss against
+retained FIRST stock. Serving defaults remain off; unequal widths, other model
+partial counts, Gemma26 transfer, full corpus, depth and sustained qualification
+remain open.
+
 
 The [fresh current solo comparison](experiments/gemma-current-reference/README.md)
 records stable 26B prefill/decode latency gaps of 2.43%/0.92%. Native 31B prefill

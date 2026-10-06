@@ -1032,6 +1032,9 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::CachePlann
       ++policy_.owner_attention_steps;
       policy_.requested_cohort8_steps += kg::JitllmOpInt(step.nodes.front(), 0) == 8;
       policy_.requested_cohort12_steps += kg::JitllmOpInt(step.nodes.front(), 0) == 12;
+      const auto cohort = kg::JitllmOpInt(step.nodes.front(), 0);
+      policy_.requested_partial_cohort_steps +=
+          cohort == 5 || cohort == 6 || cohort == 7 || cohort == 9 || cohort == 10 || cohort == 11;
     }
     policy_.norm_fused += step.implementation == "ggml.rms_norm_mul.fused";
     policy_.norm_rope += step.implementation == "ggml.rms_norm_mul_rope.fused";

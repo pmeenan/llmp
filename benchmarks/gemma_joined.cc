@@ -55,9 +55,7 @@ int main(int argc, char** argv) {
       (!production && policy != "ordinary" && policy != "rows" && policy != "rows-norm" &&
        policy != "norm"))
     return 2;
-  if (production &&
-      ((count != 4 && count != 8 && count != 12) || policy != (variant == "26" ? "all" : "norm")))
-    return 2;
+  if (production && policy != (variant == "26" ? "all" : "norm")) return 2;
   if (!production && (policy == "rows-norm" || policy == "norm") &&
       (variant != "31" || count != 4 || supplied.empty()))
     return 2;
@@ -151,6 +149,7 @@ int main(int argc, char** argv) {
                     << " owner_attention_steps=" << p.owner_attention_steps
                     << " requested_cohort8_steps=" << p.requested_cohort8_steps
                     << " requested_cohort12_steps=" << p.requested_cohort12_steps
+                    << " requested_partial_cohort_steps=" << p.requested_partial_cohort_steps
                     << " shared_vecq=" << p.shared_vecq << " gemma_route=" << p.gemma_route
                     << " gemma_reduce=" << p.gemma_reduce << " lane_steps=" << p.lane_steps << '\n';
           return {};
@@ -334,6 +333,7 @@ int main(int argc, char** argv) {
                   << " owner_attention_steps=" << p.owner_attention_steps
                   << " requested_cohort8_steps=" << p.requested_cohort8_steps
                   << " requested_cohort12_steps=" << p.requested_cohort12_steps
+                  << " requested_partial_cohort_steps=" << p.requested_partial_cohort_steps
                   << " policy_basis=last-built lane_steps=" << p.lane_steps
                   << " heap_funded=" << heap << '\n';
         for (std::uint32_t step = 0; step < steps; ++step)

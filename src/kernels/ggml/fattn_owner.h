@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Explicit independent cache roots for the checked Gemma C4 opt-in.
+// Explicit independent cache roots for checked one-query Gemma owner cohorts.
 // No selector uses this operation automatically. The caller holds every real
 // operand span, output and workspace through completion/captured graph lifetime.
 #ifndef JITLLM_KERNELS_GGML_FATTN_OWNER_H_
@@ -22,14 +22,18 @@ struct FlashAttnOwners {
   ggml_tensor* output = nullptr;
   // Two/three roots use their whole physical-stream grid directly. Four roots
   // per call in an eligible whole-eight or whole-twelve wave split
-  // its original stream-K grid equally between two or three calls. Never a root count.
+  // its original stream-K grid equally between two or three calls. Partial cohorts
+  // keep that whole grid in each offset-filtered group. Never a root count.
   std::uint32_t logical_cohort = 4;
   // Actual independent roots. Unused fixed-carrier slots must be null.
   std::uint32_t owner_count = 4;
+  // Global sequence origin for an equal-width partial cohort. Legacy paths use zero.
+  std::uint32_t owner_offset = 0;
 };
 
 // F32 Q [D,1,heads,N], F16 mask [cells,32,1,N], N actual F16 K/V
-// views [D,cells,KVheads,1], packed F32 result [D,heads,1,N], N=2/3/4. Cells are
+// views [D,cells,KVheads,1], packed F32 result [D,heads,1,N], N=1..4. A single
+// root is allowed only as a canonical partial-cohort tail. Cells are
 // multiples of 256 through 16384; executed operand views fit 64 MiB.
 // Full backing parents may fit 1 GiB, with checked address/view containment;
 // this does not broaden the readable prefix or the shader index domain.
@@ -54,6 +58,9 @@ struct FlashAttnOwnersPlan {
 };
 
 namespace detail {
+constexpr bool PartialOwnerCohort(std::uint32_t count) {
+  return count == 5 || count == 6 || count == 7 || count == 9 || count == 10 || count == 11;
+}
 struct OwnerPartition {
   int cohort_blocks = 0, quad_blocks = 0;
   std::uint32_t effective_cohort = 4;
@@ -68,7 +75,8 @@ std::expected<OwnerPartition, KernelFailure> PlanOwnerPartition(int max_blocks, 
 // Geometry comes from the original compiled packed MMA kernel. The owner's
 // resource check may refuse, but never changes the grid/reduction partitions.
 // Cohorts eight/twelve derive the whole-cohort grid before rounding, then
-// divide it by two/three. The shader still receives only four actual roots, with no offset.
+// divide it by two/three. Partial cohorts retain the whole original grid and
+// filter global sequence ownership before addressing one to four actual roots.
 std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(
     const LaunchContext& launch, const FlashAttnOwners& inputs);
 std::expected<void, KernelFailure> FlashAttnOwnerRoots(LaunchContext& launch,

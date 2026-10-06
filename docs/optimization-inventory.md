@@ -94,10 +94,20 @@ actual whole-stream reduction geometry: all 64 paid 31B heads match FIRST stock,
 and both approved C2 profiles pass strict zero-margin choices and independent
 64-target conditional-loss bounds. Gemma26 has 34/66 exact full heads. The bounded
 adapter supports whole2/3 with checked active roots and funded scratch while
-preserving C1 and existing quad/tail fallbacks; C3 model and partial-cohort quality
-remain unqualified. Short matched walls are +1.47% for31B (stock spread exceeds
+preserving C1 and existing quad/tail fallbacks. The 31B C3 short screen passes
+strict choices; C3 transfer and broader cohort qualification remain open. Short matched walls are +1.47% for31B (stock spread exceeds
 the mean gap) and −1.064% for26B. SOURCE14 runtime/default changes remain separate.
 Whole-C8/C12 geometry evidence and grouped-store rejection retain their scopes.
+
+The [equal-width partial owner adapter](experiments/gemma-partial-owner-attention/README.md)
+retains the full original logical5/6/7/9/10/11 grid in each real-root group and
+filters unowned sequences without changing tile or fixup arithmetic. N5/N6
+heads16/32 proofs cover general, uniform and metadata-free branches with exact
+eager/captured output. Gemma31 C5 now has zero strict differences,160 paid exact
+heads and −0.20935% conditional loss against retained FIRST stock; its old eight
+strict differences/ +3.8918% loss remain failed evidence. Unequal widths retain
+unqualified fallback; other model counts, Gemma26 transfer and sustained timing
+remain open. The unadopted default recipe is excluded from this opt-in unit.
 
 ## Coverage
 
