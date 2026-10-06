@@ -58,8 +58,8 @@ std::size_t Count(const kg::Gemma4Graph& g, ggml_op op) {
 }
 void BindLeaves(kg::Gemma4Graph& g);
 
-TEST(Gemma4Graph, CohortGridUsesWholeEightRoundingAndFallsBackForOddSplits) {
-  for (const auto max_blocks : {47, 48, 96, 100, 256})
+TEST(Gemma4Graph, CohortGridUsesWholeEightAndTwelveRoundingAndSafeFallback) {
+  for (const auto max_blocks : {1, 47, 48, 96, 100, 256, 2147483647})
     for (const auto kv_heads : {2, 4, 8, 16})
       for (const auto kv_tiles : {4, 16, 32, 512}) {
         const auto original = [&](int owners) {
@@ -70,40 +70,42 @@ TEST(Gemma4Graph, CohortGridUsesWholeEightRoundingAndFallsBackForOddSplits) {
           return loss <= 5 ? rounded : raw;
         };
         const auto four = kg::detail::PlanOwnerPartition(max_blocks, kv_tiles, kv_heads, 4);
-        const auto eight = kg::detail::PlanOwnerPartition(max_blocks, kv_tiles, kv_heads, 8);
         ASSERT_TRUE(four);
-        ASSERT_TRUE(eight);
         EXPECT_EQ(four->quad_blocks, original(4));
         EXPECT_EQ(four->effective_cohort, 4U);
-        const auto whole = original(8);
-        if (whole % 2 != 0) {
-          EXPECT_EQ(eight->effective_cohort, 4U);
-          EXPECT_EQ(eight->quad_blocks, four->quad_blocks);
-        } else {
-          EXPECT_EQ(eight->effective_cohort, 8U);
-          EXPECT_EQ(eight->cohort_blocks, whole);
-          EXPECT_EQ(eight->quad_blocks * 2, whole);
-          const auto quad_work = std::int64_t{kv_tiles} * kv_heads * 4;
-          // Both endpoints of every block, including the second half's
-          // translation, match the original full-eight partition exactly.
-          for (int b = 0; b <= eight->quad_blocks; ++b) {
-            const auto local = b * quad_work / eight->quad_blocks;
-            EXPECT_EQ(local, b * (quad_work * 2) / whole);
-            EXPECT_EQ(local + quad_work, (b + eight->quad_blocks) * (quad_work * 2) / whole);
+        for (const auto cohort : {8U, 12U}) {
+          const auto split = kg::detail::PlanOwnerPartition(max_blocks, kv_tiles, kv_heads, cohort);
+          ASSERT_TRUE(split);
+          const auto quads = static_cast<int>(cohort / 4);
+          const auto whole = original(static_cast<int>(cohort));
+          if (whole % quads != 0) {
+            EXPECT_EQ(split->effective_cohort, 4U);
+            EXPECT_EQ(split->quad_blocks, four->quad_blocks);
+          } else {
+            EXPECT_EQ(split->effective_cohort, cohort);
+            EXPECT_EQ(split->cohort_blocks, whole);
+            EXPECT_EQ(split->quad_blocks * quads, whole);
+            const auto quad_work = std::int64_t{kv_tiles} * kv_heads * 4;
+            // Every quad translation matches each original whole-cohort
+            // block boundary, including the final endpoint.
+            for (int q = 0; q < quads; ++q)
+              for (int b = 0; b <= split->quad_blocks; ++b)
+                EXPECT_EQ(b * quad_work / split->quad_blocks + q * quad_work,
+                          (b + q * split->quad_blocks) * (quad_work * quads) / whole);
           }
         }
       }
-  EXPECT_FALSE(kg::detail::PlanOwnerPartition(0, 16, 16, 8));
-  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 0, 16, 8));
-  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 513, 16, 8));
-  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 16, 17, 8));
-  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 16, 16, 12));
-  const auto local = kg::detail::PlanOwnerPartition(48, 16, 16, 8);
-  const auto global = kg::detail::PlanOwnerPartition(96, 32, 4, 8);
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(0, 16, 16, 12));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 0, 16, 12));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 513, 16, 12));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 16, 17, 12));
+  EXPECT_FALSE(kg::detail::PlanOwnerPartition(48, 16, 16, 16));
+  const auto local = kg::detail::PlanOwnerPartition(48, 16, 16, 12);
+  const auto global = kg::detail::PlanOwnerPartition(96, 32, 4, 12);
   ASSERT_TRUE(local);
   ASSERT_TRUE(global);
-  EXPECT_EQ(local->quad_blocks, 24);
-  EXPECT_EQ(global->quad_blocks, 48);
+  EXPECT_EQ(local->quad_blocks, 16);
+  EXPECT_EQ(global->quad_blocks, 32);
 }
 
 TEST(Gemma4Graph, OwnerOperandsUseActualVariableSpansAndWidths) {
@@ -135,7 +137,7 @@ TEST(Gemma4Graph, OwnerOperandsUseActualVariableSpansAndWidths) {
         if (!fits) continue;
         EXPECT_EQ(kg::JitllmOpInt(out, 0), 4);
         // Custom integer payload begins at byte32 after the operation tag.
-        for (const auto cohort : {0, 1, 5, 12, -1}) {
+        for (const auto cohort : {0, 1, 5, 16, -1}) {
           out->op_params[8] = cohort;
           EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(out));
         }
@@ -144,6 +146,13 @@ TEST(Gemma4Graph, OwnerOperandsUseActualVariableSpansAndWidths) {
         auto eight = kg::FlashAttnOwnersFromNode(out);
         ASSERT_TRUE(eight);
         EXPECT_EQ(eight->logical_cohort, 8U);
+        out->op_params[8] = 12;
+        auto twelve = kg::FlashAttnOwnersFromNode(out);
+        ASSERT_TRUE(twelve);
+        EXPECT_EQ(twelve->logical_cohort, 12U);
+        out->op_params[8] = 16;
+        EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(out));
+        out->op_params[8] = 12;
         out->op_params[9] = 8;
         EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(out));
         out->op_params[9] = 0;
@@ -397,12 +406,12 @@ TEST(Gemma4Graph, VariableOwnerAttentionKeepsSlotOrderWritersAndFundedMetadata) 
 
 TEST(Gemma4Graph, CompleteQuadsKeepProductsAndIndependentTailsInOriginalOwnerOrder) {
   for (const auto size : {26U, 31U})
-    for (const auto owners : {4U, 5U, 6U, 7U, 8U})
+    for (const auto owners : {4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U})
       for (const auto mode : {kg::Gemma4AttentionMode::kPacked, kg::Gemma4AttentionMode::kOwners}) {
         Case c(size);
         c.state = *md::Gemma4State(c.p, 4096, size == 26 ? 1024 : 256);
         c.shape = {};
-        constexpr std::array<std::uint32_t, 8> slots{7, 2, 15, 5, 1, 12, 9, 4};
+        constexpr std::array<std::uint32_t, 12> slots{7, 2, 15, 5, 1, 12, 9, 4, 11, 3, 14, 6};
         for (std::uint32_t i = 0; i < owners; ++i) {
           const auto read = i < 4 ? 512U : 1024U;
           c.shape.segments.push_back({slots[i], 1, read - 128 + i, read, read});
@@ -471,33 +480,33 @@ TEST(Gemma4Graph, CompleteQuadsKeepProductsAndIndependentTailsInOriginalOwnerOrd
         EXPECT_TRUE(arena->Reserve(0));
       }
 }
-TEST(Gemma4Graph, UnsupportedQuadWidthsPreserveOnlyThatQuadAndBrokenSecondWriterRefusesAll) {
+TEST(Gemma4Graph, UnsupportedQuadWidthsPreserveOnlyThatQuadAndBrokenLastWriterRefusesAll) {
   for (const auto size : {26U, 31U})
-    for (const auto unsupported_quad : {0U, 1U, 2U}) {
+    for (const auto unsupported_quad : {0U, 1U, 2U, 3U}) {
       Case c(size);
       c.state = *md::Gemma4State(c.p, 4096, size == 26 ? 1024 : 256);
       c.shape = {};
-      for (std::uint32_t i = 0; i < 8; ++i) {
+      for (std::uint32_t i = 0; i < 12; ++i) {
         const auto read = i / 4 == unsupported_quad && i % 4 == 0 ? 256U : 512U;
         c.shape.segments.push_back({i, 1, read - 128, read, read});
       }
-      c.shape.outputs = 8;
+      c.shape.outputs = 12;
       kg::Gemma4GraphOptions options;
       options.device_masks = true;
       auto estimate = options;
       estimate.attention_mode = kg::Gemma4AttentionMode::kOwners;
-      auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 8, estimate));
+      auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 12, estimate));
       ASSERT_TRUE(arena);
       auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
       ASSERT_TRUE(graph);
-      if (unsupported_quad == 2) {
+      if (unsupported_quad == 3) {
         ggml_tensor* writer = nullptr;
         for (auto* node : graph->nodes)
-          if (node->op == GGML_OP_SET_ROWS && node->src[2] == graph->segments[7].caches[0].first)
+          if (node->op == GGML_OP_SET_ROWS && node->src[2] == graph->segments[11].caches[0].first)
             writer = node;
         ASSERT_NE(writer, nullptr);
         auto* cells = writer->src[1];
-        writer->src[1] = graph->segments[6].local_cells;
+        writer->src[1] = graph->segments[10].local_cells;
         const auto used = arena->used();
         const auto nodes = graph->nodes;
         const auto names = graph->named;
@@ -515,8 +524,8 @@ TEST(Gemma4Graph, UnsupportedQuadWidthsPreserveOnlyThatQuadAndBrokenSecondWriter
       }
       ASSERT_TRUE(kg::TransformGemma4Attention(*arena, *graph, kg::Gemma4AttentionMode::kOwners));
       EXPECT_EQ(graph->attention_quad_mask,
-                unsupported_quad == 2 ? 3U : (3U ^ (1U << unsupported_quad)));
-      EXPECT_EQ(Count(*graph, GGML_OP_FLASH_ATTN_EXT), unsupported_quad == 2 ? 0U : c.p.layers * 4);
+                unsupported_quad == 3 ? 7U : (7U ^ (1U << unsupported_quad)));
+      EXPECT_EQ(Count(*graph, GGML_OP_FLASH_ATTN_EXT), unsupported_quad == 3 ? 0U : c.p.layers * 4);
     }
 }
 

@@ -75,7 +75,7 @@ bool Overlap(const ggml_tensor* a, const ggml_tensor* b) {
 std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
     int max_blocks, int kv_tiles, int kv_heads, std::uint32_t logical_cohort) {
   if (max_blocks <= 0 || kv_tiles <= 0 || kv_tiles > 512 || kv_heads <= 0 || kv_heads > 16 ||
-      (logical_cohort != 4 && logical_cohort != 8))
+      (logical_cohort != 4 && logical_cohort != 8 && logical_cohort != 12))
     return Rejected("owner MMA partition inputs are outside the closed grid bounds");
   const auto grid = [&](std::uint32_t cohort) {
     const auto tiles = static_cast<std::int64_t>(kv_heads) * cohort;
@@ -86,7 +86,7 @@ std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
   };
   auto cohort = logical_cohort;
   auto blocks = grid(cohort);
-  if (cohort == 8 && blocks % 2 != 0) {
+  if (blocks % static_cast<int>(cohort / 4) != 0) {
     cohort = 4;
     blocks = grid(cohort);
   }
@@ -96,8 +96,8 @@ std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
 }
 
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& in) {
-  if (in.logical_cohort != 4 && in.logical_cohort != 8)
-    return Rejected("owner MMA requires a logical cohort of four or eight");
+  if (in.logical_cohort != 4 && in.logical_cohort != 8 && in.logical_cohort != 12)
+    return Rejected("owner MMA requires a logical cohort of four, eight or twelve");
   if (!in.q || !in.mask || !in.output || (in.q->ne[0] != 256 && in.q->ne[0] != 512) ||
       (in.q->ne[2] != 16 && in.q->ne[2] != 32))
     return Rejected("owner MMA requires the closed Gemma head dimensions");
@@ -141,7 +141,7 @@ std::expected<FlashAttnOwners, KernelFailure> FlashAttnOwnersFromNode(ggml_tenso
   if (!node || JitllmOpOf(node) != JitllmOp::kFlashAttnOwners || node->view_src)
     return Rejected("not a ten-source owner attention custom node");
   const auto cohort = JitllmOpInt(node, 0);
-  if (cohort != 4 && cohort != 8)
+  if (cohort != 4 && cohort != 8 && cohort != 12)
     return Rejected("owner attention has an unsupported logical cohort");
   for (int i = 1; i < 8; ++i)
     if (JitllmOpInt(node, i) != 0) return Rejected("owner attention has unsupported parameters");

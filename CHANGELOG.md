@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Opt-in ordinary Gemma waves share twelve owners' products with three funded
+  independent-cache attention quads; row-invariant waves retain eight. Both
+  C12 fixed-bound/conditional-score screens pass, with three strict 26B choice
+  differences retained. Serving owner/joined defaults remain off.
+
 - Live-state source/pin checks reuse successful scans until relevant mutations,
   retaining every scheduler call and independent residency/lease checks. Both
   Gemmas retain exact C8 heads/state/choices; the short 26B factor improves

@@ -139,7 +139,7 @@ std::size_t Gemma4GraphTensors(const md::Gemma4Profile& p, std::size_t segments,
                                const Gemma4GraphOptions& options) {
   return Gemma4GraphTensors(p, segments) +
          (options.attention_mode != Gemma4AttentionMode::kIndependent && segments >= 4 &&
-                  segments <= 8
+                  segments <= 12
               ? std::size_t{p.layers} * 64 * (segments / 4)
               : 0);
 }

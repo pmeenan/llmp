@@ -93,7 +93,7 @@ struct Gemma4Graph {
   Gemma4GraphOptions options;
   // Mode of actually transformed quads; all other owners remain independent.
   Gemma4AttentionMode attention_mode = Gemma4AttentionMode::kIndependent;
-  // Bits0/1 name consecutive transformed quads. Popcount gives their count;
+  // Bits0/1/2 name consecutive transformed quads. Popcount gives their count;
   // segments.size() - 4*popcount gives the remaining independent owners.
   std::uint32_t attention_quad_mask = 0;
   ggml_tensor* tokens = nullptr;

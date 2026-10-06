@@ -441,13 +441,22 @@ Actual HTTP solo/cohort, SSE, stop, cancellation and likelihood controls use
 each profile's own solo output; they do not qualify reference quality or
 optimized joining.
 
-The separate default-off [joined serving controls](experiments/gemma-joined-serving/README.md)
+The historical separate default-off [joined serving controls](experiments/gemma-joined-serving/README.md)
 reuse the existing runner with independent completed units and ordered groups
-of at most eight owners (C12 is8+4). Whole same-policy solo/joined heads and state
+of at most eight owners (its C12 is8+4). Whole same-policy solo/joined heads and state
 agree; actual HTTP selects the diagnostic only through its dedicated binary.
 Natural-prefix quality fails against real multi-sequence stock batches, and
 the C12 reference speed gap remains open. Production keeps scalar dispatch;
 no optimized-batching or model-support qualification follows.
+
+The [ordinary whole-C12 factor](experiments/gemma-c12-single-wave/README.md)
+now supports twelve shared product columns and three funded real-root attention
+quads. D-092 row-invariant products keep eight. All 384 paid 31B heads match
+retained stock exactly; 26B retains three strict differences inside its unchanged
+prior bound. Both 384-target conditional-loss gates pass. Twelve prefill frontier
+heads remain nonexact on each profile, and the original 8+4 failures stay recorded.
+Serving owner attention/joining remain off; no full batching or model-support
+qualification follows from this short fixed-history factor.
 
 The [state-only intermediate prefill path](experiments/gemma-state-only-prefill/README.md)
 uses a distinct plan-cache output mode. Non-final, non-scoring prompt chunks

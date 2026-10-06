@@ -213,9 +213,9 @@ backing remain funded. Compound norm/MoE has nine out-of-noise representative
 argmax differences; a 3.03% short native timer gain does not select a default.
 Whole-model/reference, optimized joining and long-context gates remain owed.
 
-Gemma's default-off [joined runtime diagnostic](experiments/gemma-joined-serving/README.md)
+Gemma's historical default-off [joined runtime diagnostic](experiments/gemma-joined-serving/README.md)
 reuses independent completed-unit ownership and one-row invariant products,
-bounded to eight owners per shared group. C12 uses ordered8+4 with funded full
+bounded to eight owners per shared group. Its C12 uses ordered8+4 with funded full
 heads and per-group refusal isolation. Solo/joined heads and state agree, while
 natural-prefix stock quality and C12 competitive performance fail; no default
 is selected. Its [transfer audit](experiments/gemma-joined-serving/transfer-audit.md)
@@ -560,6 +560,17 @@ prior margin/conditional-score gates. The checked parent-storage bound is now
 short reads with configured 262K backing. Packed attention keeps its previous
 limits. General serving selection, C12, depth and other family transfers remain
 unqualified; no shader arithmetic or model default changes follow.
+
+The [ordinary whole-C12 factor](experiments/gemma-c12-single-wave/README.md)
+uses one twelve-column product group and three real-root attention quads,
+matching whole-twelve stream-K partitions when divisible and otherwise retaining
+four-owner geometry. Invariant product waves retain their eight-row limit.
+Dense31 matches all 384 paid stock heads; 26B passes its unchanged prior bound
+and conditional-score gates with three strict differences. Both own repeats
+retain full initialized states and finite heads. Short before/after means fall
+30.98%/28.03%, with landed memo/parent-validation source changes and timing
+spread disclosed. Original 8+4 failures and broader gates remain open; owner and
+joining defaults stay off. Other families need their own product/attention rules.
 
 The [fresh fixed-capacity schedule control](experiments/gemma-fresh-quality-validation/README.md)
 keeps Gemma26 maximum rows 1,024 and F16 capacities 2,048/4,096 identical while

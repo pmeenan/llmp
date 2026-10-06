@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "engine/gemma4_plan.h"
+#include "engine/gemma4_wave.h"
 #include "engine/graph_runs.h"
 #include "engine/live_state.h"
 #include "engine/paged_weights.h"
@@ -32,8 +33,6 @@ std::expected<void, std::string> Gemma4CheckpointFootprint(
     const model::Gemma4Profile& profile, const model::Gemma4StateLayout& layout,
     std::uint32_t positions, std::span<const LiveState::Range> ranges);
 enum class Gemma4Variant : std::uint8_t { k26BA4B, k31B };
-// Vendor-free serving bound for the checked one-row product policy.
-inline constexpr std::uint32_t kGemma4InvariantWaveRows = 8;
 struct Gemma4Options {
   std::filesystem::path artifact = {}, out = {};
   // Only approved architecture contracts; binding still checks every tensor.
@@ -53,8 +52,9 @@ struct Gemma4Options {
   bool fuse_norm_rope = false, fuse_norm_add = false;
   bool fuse_gemma_route = false, fuse_gemma_reduce = false;
   bool prefill_lookahead = true;
-  // Explicit C4 attention opt-in; C1/C2/multirow/features and unequal widths
-  // retain independent attention. Immutable for this runner's plan cache.
+  // Explicit complete-quad attention opt-in; C1/C2/multirow/features
+  // and unequal widths within a quad retain independent attention. Immutable for this runner's plan
+  // cache.
   bool owner_attention = false;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
 };
@@ -263,7 +263,7 @@ class Gemma4Runner final : public PagedModel {
     // Selected plan implementations, not executions or per-replay launches.
     std::uint32_t owner_attention_steps = 0;
     // Requested immutable node geometry; a device plan can fall back to four.
-    std::uint32_t requested_cohort8_steps = 0;
+    std::uint32_t requested_cohort8_steps = 0, requested_cohort12_steps = 0;
   };
   const PolicyCounts& last_built_policy() const { return policy_; }
 

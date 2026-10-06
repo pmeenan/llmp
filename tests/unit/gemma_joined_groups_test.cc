@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "engine/gemma4_wave.h"
 #include "runtime/gemma_wave.h"
 
 namespace rt = jitllm::runtime;
@@ -84,4 +85,33 @@ TEST(GemmaJoinedGroups, InvalidEnvelopeNeverDispatches) {
     EXPECT_FALSE(ran);
     EXPECT_FALSE(dispatched);
   }
+}
+
+TEST(GemmaJoinedGroups, OrdinaryWholeTwelveAndInvariantEightKeepDistinctCallerBounds) {
+  namespace en = jitllm::engine;
+  static_assert(en::kGemma4InvariantWaveRows == 8);
+  for (const bool invariant : {false, true}) {
+    std::vector<std::pair<std::size_t, std::size_t>> calls;
+    auto ran = rt::RunGemmaGroups(
+        12, en::Gemma4WaveRows(invariant),
+        [&](std::size_t first, std::size_t count) -> Status {
+          calls.emplace_back(first, count);
+          return {};
+        },
+        [] { return true; }, [](std::size_t, std::size_t, const std::string&) {});
+    ASSERT_TRUE(ran);
+    EXPECT_EQ(calls, invariant ? (std::vector<std::pair<std::size_t, std::size_t>>{{0, 8}, {8, 4}})
+                               : (std::vector<std::pair<std::size_t, std::size_t>>{{0, 12}}));
+  }
+  unsigned refused = 0;
+  auto ran = rt::RunGemmaGroups(
+      12, en::Gemma4WaveRows(false),
+      [](std::size_t, std::size_t) -> Status { return std::unexpected("state capacity"); },
+      [] { return true; },
+      [&](std::size_t first, std::size_t count, const std::string&) {
+        EXPECT_EQ(first, 0U);
+        refused += static_cast<unsigned>(count);
+      });
+  EXPECT_TRUE(ran);
+  EXPECT_EQ(refused, 12U);
 }

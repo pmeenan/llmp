@@ -20,8 +20,8 @@ struct FlashAttnOwners {
   const ggml_tensor* mask = nullptr;
   std::array<const ggml_tensor*, 4> k{}, v{};
   ggml_tensor* output = nullptr;
-  // Four real roots per call; an eligible whole-eight wave splits its
-  // original stream-K grid equally between two calls. Never a root count.
+  // Four real roots per call; an eligible whole-eight or whole-twelve wave splits
+  // its original stream-K grid equally between two or three calls. Never a root count.
   std::uint32_t logical_cohort = 4;
 };
 
@@ -56,7 +56,7 @@ struct OwnerPartition {
   std::uint32_t effective_cohort = 4;
 };
 // Host-only original grid arithmetic; max_blocks is actual occupancy times
-// actual SMs. Odd whole-eight grids preserve the supported four-root path.
+// actual SMs. Indivisible whole-cohort grids preserve the supported four-root path.
 std::expected<OwnerPartition, KernelFailure> PlanOwnerPartition(int max_blocks, int kv_tiles,
                                                                 int kv_heads,
                                                                 std::uint32_t logical_cohort);
@@ -64,8 +64,8 @@ std::expected<OwnerPartition, KernelFailure> PlanOwnerPartition(int max_blocks, 
 
 // Geometry comes from the original compiled packed MMA kernel. The owner's
 // resource check may refuse, but never changes the grid/reduction partitions.
-// Cohort eight derives the whole-eight grid before rounding, then divides it
-// by two. The shader still receives only four actual roots, with no offset.
+// Cohorts eight/twelve derive the whole-cohort grid before rounding, then
+// divide it by two/three. The shader still receives only four actual roots, with no offset.
 std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(
     const LaunchContext& launch, const FlashAttnOwners& inputs);
 std::expected<void, KernelFailure> FlashAttnOwnerRoots(LaunchContext& launch,

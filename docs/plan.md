@@ -299,7 +299,7 @@ family" guide, and its long-context scaling work.
         all screened policies retain strict token differences. Production caps,
         selected optimizations and whole-model qualification remain unchanged.
       - [x] Explicit default-off [joined serving controls](experiments/gemma-joined-serving/README.md),
-        with C1/2/4/8/12 own head/state controls, ordered8+4 C12 subwaves,
+        with C1/2/4/8/12 own head/state controls and historical ordered8+4 C12 subwaves,
         independent refusal/publication and actual HTTP continuation evidence.
         Real multi-sequence reference quality fails on natural prefixes;
         optimized-batching selection and full model qualification remain open.
@@ -504,6 +504,14 @@ family" guide, and its long-context scaling work.
         full model qualification remain open. The same measured 31B C8 candidate
         remains 3.57% slower than fresh stock (155.385 ms) in a short matched
         bookend with unchanged complete heads/state; this is not sustained parity.
+      - [x] [Ordinary whole-C12 factor](experiments/gemma-c12-single-wave/README.md):
+        twelve shared product columns and three funded real-root attention quads;
+        D-092 invariant waves keep eight and serving owner/joined defaults stay off.
+        All 384 paid 31B heads match retained stock exactly; 26B has three strict
+        differences, none outside its unchanged prior bound. Both 384-target
+        conditional-loss gates pass. The original 8+4 failures remain recorded;
+        short before/after timing includes source-vintage confounds and does not
+        qualify sustained speed, corpus/depth quality or production batching.
       - [x] [Fresh Gemma26 scheduling and heldout control](experiments/gemma-fresh-quality-validation/README.md):
         fixed-capacity native 128/1,024 schedules freeze a genuine operational
         bound on untouched history 13 before independent history 14. All 17

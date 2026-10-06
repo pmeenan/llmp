@@ -1060,10 +1060,10 @@ class Gemma final : public Llm {
       seen[id] = true;
       work[i] = {id, unit.step.position, unit.step.all.last(1), &units[i].row};
     }
-    // Checked one-row sums take at most eight columns. Larger cohorts keep
-    // those sums through ordered subwaves rather than a wider ordinary plan.
+    // Checked one-row sums keep their eight-column limit. Ordinary products
+    // execute the complete admitted cohort without duplicate model passes.
     return RunGemmaGroups(
-        units.size(), engine::kGemma4InvariantWaveRows,
+        units.size(), engine::Gemma4WaveRows(options_.row_invariant),
         [&](std::size_t first, std::size_t count) {
           auto ran = runner_.Wave(std::span(work).subspan(first, count));
           if (ran) {

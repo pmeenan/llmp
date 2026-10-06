@@ -63,6 +63,7 @@ int main(int argc, char** argv) {
     return 2;
   if (!production && policy == "norm" && mode != "joined") return 2;
   const std::uint32_t max_rows = production ? (variant == "26" ? 1024 : 256) : 128;
+  const auto shared_rows = production ? en::Gemma4WaveRows(false) : en::kGemma4InvariantWaveRows;
   const std::filesystem::path out = argv[2];
   std::error_code file_error;
   if (!std::filesystem::create_directory(out, file_error) || file_error) return 2;
@@ -149,6 +150,7 @@ int main(int argc, char** argv) {
                     << " norm_fused=" << p.norm_fused << " rope_store=" << p.rope_store
                     << " owner_attention_steps=" << p.owner_attention_steps
                     << " requested_cohort8_steps=" << p.requested_cohort8_steps
+                    << " requested_cohort12_steps=" << p.requested_cohort12_steps
                     << " shared_vecq=" << p.shared_vecq << " gemma_route=" << p.gemma_route
                     << " gemma_reduce=" << p.gemma_reduce << " lane_steps=" << p.lane_steps << '\n';
           return {};
@@ -201,8 +203,8 @@ int main(int argc, char** argv) {
             work[i] = {i, past[i], std::span(&anchors[i], 1), &heads[i]};
           }
           if (mode == "joined") {
-            for (std::uint32_t first = 0; first < count; first += en::kGemma4InvariantWaveRows) {
-              const auto rows = std::min(en::kGemma4InvariantWaveRows, count - first);
+            for (std::uint32_t first = 0; first < count; first += shared_rows) {
+              const auto rows = std::min(shared_rows, count - first);
               if (auto r = runner.Wave(std::span(work).subspan(first, rows)); !r) return r;
               if (fresh_decode)
                 if (auto r = report_policy("decode-first-build", first, rows, rows); !r) return r;
@@ -308,10 +310,8 @@ int main(int argc, char** argv) {
         std::cout << "JOINED_NATIVE variant=" << variant << " owners=" << count << " mode=" << mode
                   << " policy=" << policy << " seconds=" << elapsed << " completed_waves=" << steps
                   << " completed_units=" << steps * count << " paid_gpu_groups="
-                  << steps * (mode == "scalar" ? count
-                                               : (count + en::kGemma4InvariantWaveRows - 1) /
-                                                     en::kGemma4InvariantWaveRows)
-                  << " max_shared_rows=" << en::kGemma4InvariantWaveRows
+                  << steps * (mode == "scalar" ? count : (count + shared_rows - 1) / shared_rows)
+                  << " max_shared_rows=" << shared_rows
                   << " first_past=" << prompt_rows + (production ? 0U : 3U)
                   << " input_mode=" << (supplied.empty() ? "synthetic" : "supplied")
                   << " unequal_past=" << (!production && count > 1)
@@ -333,6 +333,7 @@ int main(int argc, char** argv) {
                   << " gemma_route=" << p.gemma_route << " gemma_reduce=" << p.gemma_reduce
                   << " owner_attention_steps=" << p.owner_attention_steps
                   << " requested_cohort8_steps=" << p.requested_cohort8_steps
+                  << " requested_cohort12_steps=" << p.requested_cohort12_steps
                   << " policy_basis=last-built lane_steps=" << p.lane_steps
                   << " heap_funded=" << heap << '\n';
         for (std::uint32_t step = 0; step < steps; ++step)

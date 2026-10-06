@@ -969,6 +969,7 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::CachePlann
     if (step.implementation == kg::kFlashAttnOwnersName) {
       ++policy_.owner_attention_steps;
       policy_.requested_cohort8_steps += kg::JitllmOpInt(step.nodes.front(), 0) == 8;
+      policy_.requested_cohort12_steps += kg::JitllmOpInt(step.nodes.front(), 0) == 12;
     }
     policy_.norm_fused += step.implementation == "ggml.rms_norm_mul.fused";
     policy_.norm_rope += step.implementation == "ggml.rms_norm_mul_rope.fused";

@@ -27,7 +27,7 @@ bool Shape(const Gemma4Graph& g, Gemma4AttentionMode mode) {
       (mode == Gemma4AttentionMode::kPacked && g.context > 16384) ||
       (g.max_rows == 0 || g.max_rows > md::kGemma4MaxRows) ||
       g.shape.outputs != g.segments.size() || g.shape.feature_outputs != 0 ||
-      g.segments.size() < 4 || g.segments.size() > 8 ||
+      g.segments.size() < 4 || g.segments.size() > 12 ||
       g.shape.segments.size() != g.segments.size() || g.options.first_layer != 0 ||
       g.options.layer_count != 0 || g.options.hidden_input || !g.options.head ||
       g.options.shared_q8 || g.options.rope_store || g.normalized_features != nullptr)
@@ -148,8 +148,8 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
   if (g.attention_mode != Gemma4AttentionMode::kIndependent || g.attention_quad_mask != 0)
     return Reject("Gemma4 attention graph was already transformed");
   const auto& p = g.profile;
-  std::array<std::array<Layer, 60>, 2> layers{};
-  std::array<bool, 2> eligible{};
+  std::array<std::array<Layer, 60>, 3> layers{};
+  std::array<bool, 3> eligible{};
   std::size_t quad_count = 0;
   if (g.nodes.size() > 50000 || g.named.size() > 10000) return Reject("packed graph domain");
   // Validate every eligible quad before mutation. Unsupported widths leave
@@ -163,17 +163,22 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
         return Reject("packed original attention/writer contract");
   }
   if (quad_count == 0) return {};
-  // Only a real complete eight-owner wave with identical padded widths can
-  // share the original whole-eight stream-K partition. Tails and unequal
-  // widths keep each quad's original four-owner geometry.
-  const bool cohort_eight = g.segments.size() == 8 && quad_count == 2 &&
-                            g.segments[0].shape.local_n_kv == g.segments[4].shape.local_n_kv &&
-                            g.segments[0].shape.global_n_kv == g.segments[4].shape.global_n_kv;
+  // Only a complete eight/twelve-owner wave with every quad eligible and
+  // identical padded widths shares its whole-cohort stream-K partition.
+  // Tails, missing quads and unequal widths keep four-owner geometry.
+  std::uint32_t logical_cohort = 4;
+  if ((g.segments.size() == 8 || g.segments.size() == 12) && quad_count * 4 == g.segments.size()) {
+    bool equal = true;
+    for (std::size_t first = 4; first < g.segments.size(); first += 4)
+      equal &= g.segments[0].shape.local_n_kv == g.segments[first].shape.local_n_kv &&
+               g.segments[0].shape.global_n_kv == g.segments[first].shape.global_n_kv;
+    if (equal) logical_cohort = static_cast<std::uint32_t>(g.segments.size());
+  }
   if (auto room = arena.Reserve(p.layers * kExtraPerLayer * quad_count); !room)
     return std::unexpected(room.error());
   auto* c = arena.context();
   std::vector<ggml_tensor*> removed;
-  std::array<std::array<ggml_tensor*, 60>, 2> packed{};
+  std::array<std::array<ggml_tensor*, 60>, 3> packed{};
   for (std::size_t quad = 0; quad < eligible.size(); ++quad) {
     if (!eligible[quad]) continue;
     const auto first = quad * 4;
@@ -200,7 +205,7 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
           l.k[owner] = ggml_permute(c, l.k[owner], 0, 2, 1, 3);
           l.v[owner] = ggml_permute(c, l.v[owner], 0, 2, 1, 3);
         }
-        flash = FlashAttnOwnersNode(c, q, mask, l.k, l.v, cohort_eight ? 8U : 4U);
+        flash = FlashAttnOwnersNode(c, q, mask, l.k, l.v, logical_cohort);
       } else {
         auto* k = ggml_permute(c, Join(c, l.k), 0, 2, 1, 3);
         auto* v = ggml_permute(c, Join(c, l.v), 0, 2, 1, 3);

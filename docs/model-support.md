@@ -109,6 +109,14 @@ full configured backing. Its 31B C8 factor matches every paid decode head;
 Gemma26 passes its unchanged prior margin and conditional-score gates. These
 bounded results leave serving defaults, C12, depth and full model support open. A fresh 31B C8 bookend on the same measured candidate is 3.57% slower than stock (155.385 ms), with complete outputs unchanged; this is a short recipe-qualified elapsed comparison.
 
+The [ordinary whole-C12 factor](experiments/gemma-c12-single-wave/README.md)
+shares twelve product columns and uses three funded four-root attention quads;
+row-invariant waves keep eight. All 384 paid 31B heads match retained stock;
+26B retains three positive-margin choice differences, all inside its unchanged
+pre-oracle bound. Both 384-target conditional-loss gates pass. The original 8+4
+quality failures remain recorded, and serving owner/joined defaults stay off.
+These short controls do not close corpus, depth, live-serving or full model support.
+
 The [fresh current solo comparison](experiments/gemma-current-reference/README.md)
 records stable 26B prefill/decode latency gaps of 2.43%/0.92%. Native 31B prefill
 is stable, but reference bookends vary from 12.3124 to 10.9769 s; native is 2.08%
