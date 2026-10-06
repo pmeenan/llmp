@@ -110,6 +110,7 @@ constinit std::array kTagGdnStep = std::to_array("jitllm.gdn.step");
 constinit std::array kTagGdnGates = std::to_array("jitllm.gdn.gates");
 constinit std::array kTagDsv4LidTopK = std::to_array("jitllm.dsv4.lid_topk");
 constinit std::array kTagGemma4Mask = std::to_array("jitllm.gemma4.mask");
+constinit std::array kTagFlashAttnOwners = std::to_array("jitllm.flash_attn.owner_roots");
 constinit std::array kTagDsv4SparseMask = std::to_array("jitllm.dsv4.sparse_mask");
 
 // Where a norm's epsilon sits in op_params: after GGML's custom parameters.
@@ -200,7 +201,7 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
   if (params.userdata == kTagArgmax.data()) {
     return JitllmOp::kArgmax;
   }
-  const std::array<std::pair<const char*, JitllmOp>, 45> fused = {{
+  const std::array<std::pair<const char*, JitllmOp>, 46> fused = {{
       {kTagDsv4F16Copy.data(), JitllmOp::kDsv4F16Copy},
       {kTagDsv4HcNormF16.data(), JitllmOp::kDsv4HcNormF16},
       {kTagDsv4WeightedReduce.data(), JitllmOp::kDsv4WeightedReduce},
@@ -211,6 +212,7 @@ JitllmOp JitllmOpOf(const ggml_tensor* node) {
       {kTagDsv4LidTopK.data(), JitllmOp::kDsv4LidTopK},
       {kTagDsv4SparseMask.data(), JitllmOp::kDsv4SparseMask},
       {kTagGemma4Mask.data(), JitllmOp::kGemma4Mask},
+      {kTagFlashAttnOwners.data(), JitllmOp::kFlashAttnOwners},
       {kTagQsaPool.data(), JitllmOp::kQsaPool},
       {kTagQsaTopK.data(), JitllmOp::kQsaTopK},
       {kTagQsaAttn.data(), JitllmOp::kQsaAttn},
@@ -2320,6 +2322,20 @@ std::expected<void, KernelFailure> CheckDsv4HcPre(const ggml_tensor* node) {
 }
 
 // ---------------------------------------------------------------- Gemma 4 attention masks
+
+ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_tensor* mask,
+                                 const std::array<ggml_tensor*, 4>& k,
+                                 const std::array<ggml_tensor*, 4>& v) {
+  static_assert(GGML_MAX_SRC == 10);
+  // The pinned factory requires fewer than GGML_MAX_SRC arguments, although
+  // descriptors and traversal support all ten slots. Preserve its custom tag
+  // parameters, then install the final real dependency in the remaining slot.
+  auto* node =
+      Custom(context, GGML_TYPE_F32, {q->ne[0], q->ne[2], 1, 4},
+             {q, mask, k[0], k[1], k[2], k[3], v[0], v[1], v[2]}, kTagFlashAttnOwners.data());
+  node->src[9] = v[3];
+  return node;
+}
 
 ggml_tensor* Gemma4Mask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,
                         std::int32_t first_row, std::int32_t rows, std::int32_t capacity,

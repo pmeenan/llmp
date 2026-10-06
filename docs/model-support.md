@@ -99,6 +99,12 @@ slower than the closing reference and decode is 2.13% slower. These explicit
 all1024/both256 research recipes preserve prior native heads/state; known
 cross-engine head differences and the separate quality/batching gates remain.
 
+The [independent-cache C4 diagnostic](experiments/gemma-owner-root-c4/README.md)
+removes packed K/V copies for the closed 31B context-256 recipe. Paid latency
+falls 8.93%; with plain norm fusion the fresh-reference gap is 2.10%, and all
+128 complete heads match exactly. Wider contexts, Gemma26 transfer and
+production batching remain unqualified.
+
 The shared [planning read index](experiments/gemma-plan-index/README.md) removes
 repeated graph scans without changing selected operations or kernel arithmetic.
 With the existing default-off 26B `all` and 31B `both` policies, initial matched

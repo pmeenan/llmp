@@ -1,0 +1,599 @@
+{
+  "scope": "Unselected manual Gemma31 C4, one query per owner, read256/context256/max128; no wider context or26 qualification",
+  "workload": {
+    "artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "input_bytes": 4096,
+    "input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+    "prefixes": [
+      64,
+      65,
+      66,
+      67
+    ],
+    "forced_anchors": 3,
+    "paid_waves": 32,
+    "full_head_rows": 128,
+    "vocabulary": 262144,
+    "completed_positions": [
+      99,
+      100,
+      101,
+      102
+    ],
+    "ordinary_products": true,
+    "norm_rope": 120,
+    "norm_add": 120,
+    "other_optional_policies": 0,
+    "graph_captures_paid": 0,
+    "graph_replays_paid": 32
+  },
+  "copy_removal_factor": {
+    "policies": {
+      "packed": {
+        "files": {
+          "heads.f32": {
+            "bytes": 134217728,
+            "sha256": "9de4f80bf3fc9a8f37de296a10933c7ee91a15005a4a62dedbd22c353150cb7e"
+          },
+          "owner-0.state": {
+            "bytes": 230686720,
+            "sha256": "2ab1fd7758f5b865ab341adf34b43d58b6fc64fc303c28c3aa9b9a7bf80cea06"
+          },
+          "owner-1.state": {
+            "bytes": 230686720,
+            "sha256": "c89213f022f13c979d8083c03735fe92c577b7983ca27023162b8b4d72167d96"
+          },
+          "owner-2.state": {
+            "bytes": 230686720,
+            "sha256": "11347d21268aa5aea01aa2a6722e2b1c133cbe488993718acfd93c7312cd26b0"
+          },
+          "owner-3.state": {
+            "bytes": 230686720,
+            "sha256": "9e78173dc18504956420c493bb13cc42295371617b3b20ff1d658751689e3375"
+          }
+        },
+        "seconds": [
+          3.65871,
+          3.7465
+        ],
+        "metrics": {
+          "variant": "31",
+          "owners": "4",
+          "mode": "joined",
+          "policy": "norm",
+          "seconds": "3.65871",
+          "completed_waves": "32",
+          "completed_units": "128",
+          "paid_gpu_groups": "32",
+          "max_shared_rows": "8",
+          "first_past": "67",
+          "input_mode": "supplied",
+          "unequal_past": "1",
+          "context": "256",
+          "max_rows": "128",
+          "captured_delta": "0",
+          "replayed_delta": "32",
+          "rows": "4",
+          "segments": "4",
+          "row_products": "0",
+          "norm_rope": "120",
+          "norm_add": "120",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "shared_vecq": "0",
+          "gemma_route": "0",
+          "gemma_reduce": "0",
+          "policy_basis": "last-built",
+          "lane_steps": "0",
+          "heap_funded": "142606336"
+        },
+        "token_sha256": "03d0215d7dd6ecf98aeabf75e9903cd7773b4b34bcf3bb0ac26b088e6d6134ca",
+        "tokens_count": 128
+      },
+      "owners": {
+        "files": {
+          "heads.f32": {
+            "bytes": 134217728,
+            "sha256": "9de4f80bf3fc9a8f37de296a10933c7ee91a15005a4a62dedbd22c353150cb7e"
+          },
+          "owner-0.state": {
+            "bytes": 230686720,
+            "sha256": "2ab1fd7758f5b865ab341adf34b43d58b6fc64fc303c28c3aa9b9a7bf80cea06"
+          },
+          "owner-1.state": {
+            "bytes": 230686720,
+            "sha256": "c89213f022f13c979d8083c03735fe92c577b7983ca27023162b8b4d72167d96"
+          },
+          "owner-2.state": {
+            "bytes": 230686720,
+            "sha256": "11347d21268aa5aea01aa2a6722e2b1c133cbe488993718acfd93c7312cd26b0"
+          },
+          "owner-3.state": {
+            "bytes": 230686720,
+            "sha256": "9e78173dc18504956420c493bb13cc42295371617b3b20ff1d658751689e3375"
+          }
+        },
+        "seconds": [
+          3.39031,
+          3.35341
+        ],
+        "metrics": {
+          "variant": "31",
+          "owners": "4",
+          "mode": "joined",
+          "policy": "norm",
+          "seconds": "3.39031",
+          "completed_waves": "32",
+          "completed_units": "128",
+          "paid_gpu_groups": "32",
+          "max_shared_rows": "8",
+          "first_past": "67",
+          "input_mode": "supplied",
+          "unequal_past": "1",
+          "context": "256",
+          "max_rows": "128",
+          "captured_delta": "0",
+          "replayed_delta": "32",
+          "rows": "4",
+          "segments": "4",
+          "row_products": "0",
+          "norm_rope": "120",
+          "norm_add": "120",
+          "norm_fused": "0",
+          "rope_store": "0",
+          "shared_vecq": "0",
+          "gemma_route": "0",
+          "gemma_reduce": "0",
+          "policy_basis": "last-built",
+          "lane_steps": "0",
+          "heap_funded": "142606336"
+        },
+        "token_sha256": "03d0215d7dd6ecf98aeabf75e9903cd7773b4b34bcf3bb0ac26b088e6d6134ca",
+        "tokens_count": 128
+      }
+    },
+    "historical_packed_equal": {
+      "packed": true,
+      "owners": true
+    },
+    "cross_policy_equal": {
+      "heads.f32": true,
+      "owner-0.state": true,
+      "owner-1.state": true,
+      "owner-2.state": true,
+      "owner-3.state": true
+    },
+    "finite_head_rows_per_arm": 128,
+    "mean_owner_change_pct": -8.93276490470899
+  },
+  "plain_norm_transfer_bookend": {
+    "policies": {
+      "owners-norm-on": {
+        "files": {
+          "heads.f32": {
+            "bytes": 134217728,
+            "sha256": "9de4f80bf3fc9a8f37de296a10933c7ee91a15005a4a62dedbd22c353150cb7e"
+          },
+          "owner-0.state": {
+            "bytes": 230686720,
+            "sha256": "2ab1fd7758f5b865ab341adf34b43d58b6fc64fc303c28c3aa9b9a7bf80cea06"
+          },
+          "owner-1.state": {
+            "bytes": 230686720,
+            "sha256": "c89213f022f13c979d8083c03735fe92c577b7983ca27023162b8b4d72167d96"
+          },
+          "owner-2.state": {
+            "bytes": 230686720,
+            "sha256": "11347d21268aa5aea01aa2a6722e2b1c133cbe488993718acfd93c7312cd26b0"
+          },
+          "owner-3.state": {
+            "bytes": 230686720,
+            "sha256": "9e78173dc18504956420c493bb13cc42295371617b3b20ff1d658751689e3375"
+          }
+        },
+        "seconds": [
+          3.32711,
+          3.32084
+        ],
+        "metrics": {
+          "variant": "31",
+          "owners": "4",
+          "mode": "joined",
+          "policy": "norm",
+          "normmul": "on",
+          "seconds": "3.32711",
+          "completed_waves": "32",
+          "completed_units": "128",
+          "paid_gpu_groups": "32",
+          "max_shared_rows": "8",
+          "first_past": "67",
+          "input_mode": "supplied",
+          "unequal_past": "1",
+          "context": "256",
+          "max_rows": "128",
+          "captured_delta": "0",
+          "replayed_delta": "32",
+          "rows": "4",
+          "segments": "4",
+          "row_products": "0",
+          "norm_rope": "120",
+          "norm_add": "120",
+          "norm_fused": "121",
+          "rope_store": "0",
+          "shared_vecq": "0",
+          "gemma_route": "0",
+          "gemma_reduce": "0",
+          "policy_basis": "last-built",
+          "lane_steps": "0",
+          "heap_funded": "142606336"
+        },
+        "token_sha256": "03d0215d7dd6ecf98aeabf75e9903cd7773b4b34bcf3bb0ac26b088e6d6134ca",
+        "tokens_count": 128
+      }
+    },
+    "historical_packed_equal": {
+      "owners-norm-on": true
+    },
+    "cross_policy_equal": {},
+    "finite_head_rows_per_arm": 128,
+    "reference_repeat_equal": true,
+    "reference_heads": {
+      "bytes": 134217728,
+      "sha256": "9de4f80bf3fc9a8f37de296a10933c7ee91a15005a4a62dedbd22c353150cb7e"
+    },
+    "native_original_full_head_byte_equal": true,
+    "reference_seconds": [
+      3.2579,
+      3.25319
+    ],
+    "mean_native_vs_reference_pct": 2.1019522076948682,
+    "norm_on_vs_initial_norm_off_pct": -1.4201360673337549
+  },
+  "analytic_kv_concat_read_plus_write_gib_per_wave_removed": 3.4375,
+  "traffic_is_estimated_not_measured": true,
+  "provenance": {
+    "host": "spark / spark-c4e2",
+    "device": "GB10",
+    "driver": "580.178.04 (inherited previously checked environment; no new probe)",
+    "measured_base": "fbac6dc",
+    "initial_entry_base": "5cf8f5b",
+    "sdk": "aarch64-c09daba6ac31edee",
+    "nvcc": "13.4.92",
+    "cuda_toolkit": "13.4.2",
+    "host_clang": "22.1.8",
+    "build_receipt": {
+      "bytes": 6751,
+      "sha256": "fbf84c74d44bbefce71c6499d43b9fc9b6844e994d25decce23df3f06c1031c2"
+    },
+    "receipt_git_commit": null,
+    "receipt_git_origin": "none",
+    "checksum_sync_excludes_git": true,
+    "native_norm_off_sha256": "29128fff7e95d6f226cfa2486fde9ff8fcaf4cac14647c5e1cb982300a3313fd",
+    "native_norm_on_sha256": "e22a9695934e90a81237674cdecd76f6a0177c2a20f5775fff396a134db930f3",
+    "source_frames": {
+      "v4": {
+        "bytes": 2432,
+        "sha256": "ef1dbb6a0534ae2d8b1b0ddce24a5e4386df4e956b8e8e236b43621bafcdaa59"
+      },
+      "v5": {
+        "bytes": 2409,
+        "sha256": "95dca32918c177a64256274afac040f513dd238e5af537e284a8a54d50a692d6"
+      }
+    },
+    "measured_source_v5": [
+      {
+        "path": "benchmarks/CMakeLists.txt",
+        "bytes": 37985,
+        "sha256": "a8a54b026a9ed93c9d8121072486c79b083eb6e277e559ba398d42788cd9c154"
+      },
+      {
+        "path": "benchmarks/gemma_owner_c4.cc",
+        "bytes": 15683,
+        "sha256": "01397476815ead7d6e701bae6371a1b4586b7e9e55da68d44432a1f84d4a71e9"
+      },
+      {
+        "path": "benchmarks/gemma_owner_c4_metadata.cc",
+        "bytes": 6448,
+        "sha256": "60e69d12e29cfee94ec0cfb309cda095dce4992e983b9d0d9ae093dab9ae4f14"
+      },
+      {
+        "path": "benchmarks/gemma_owner_c4_wrap.cc",
+        "bytes": 12192,
+        "sha256": "a2473e1e90070de69ebcbe823660c06f88afd1734dc82c4b732dcf870b214abd"
+      },
+      {
+        "path": "docs/experiments/gemma-owner-root-c4/PROTOCOL.md",
+        "bytes": 4821,
+        "sha256": "a30f242d492c3e6abd4ab54fa96f4eb33b00519ce9a352fb09b5e19654b224ac"
+      },
+      {
+        "path": "src/kernels/ggml/executor.cc",
+        "bytes": 15499,
+        "sha256": "fa1def71f9f5b1fa2284d6b5a4ccecf55d6ace7f6375e3e594d7879b1620d747"
+      },
+      {
+        "path": "src/kernels/ggml/fattn_owner.cc",
+        "bytes": 5697,
+        "sha256": "42e27c9fc832bd7333a14c0ce38881845c1cc4485cd926dd0d69ff4cbe13969f"
+      },
+      {
+        "path": "src/kernels/ggml/fattn_owner.h",
+        "bytes": 2142,
+        "sha256": "0e0e883d46bec6b13b6394b2beb9c993224aa3e53a2642610a135f9530cf8416"
+      },
+      {
+        "path": "src/kernels/ggml/graph_plan.cc",
+        "bytes": 42141,
+        "sha256": "b38d048d16e233e7cf390d8de6673fee3ddf684ee9c6bdd7374dbf13cccb82a8"
+      },
+      {
+        "path": "src/kernels/ggml/implementations.cc",
+        "bytes": 62497,
+        "sha256": "ca7066469c05468cca252b1757bb48737c8def76684514b0c1d96365ac607e8a"
+      },
+      {
+        "path": "src/kernels/ggml/jitllm_ops.cc",
+        "bytes": 116570,
+        "sha256": "79962fdc7ca2ae22b55934323daaf1172346c167264e031fad62303ba16b6237"
+      },
+      {
+        "path": "src/kernels/ggml/jitllm_ops.h",
+        "bytes": 60003,
+        "sha256": "c43404afc888c60936578e04f7253d209c405570d72574d21d39a505ee61b317"
+      }
+    ],
+    "original_binary": {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma-packed-attention-c4/llama_joined",
+      "bytes": 76792,
+      "sha256": "01889d8c4a281110f611cedcab43235a9ac80bcc21abf094d982f14dd2112f61"
+    },
+    "original_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "original_libraries_inherited_from_pinned_image": {
+      "libllama.so": "36f5cb5b9361fd7ce4c9c38ad7276367a39e753a2f4764d9aca952b29c5aba55",
+      "libggml.so": "f09875d0593d950f0b1f4f57803235cb06209f774c524c005fb192000d5d7418",
+      "libggml-base.so": "ed0a6a3f65472059789159569080d08e7f1dcc8bdd7a35d127efbd1b3f4e273e",
+      "libggml-cuda.so": "5a13585ed1dc0263639e47f5154b0ea51c542df555e391a7b753daa73a56934e"
+    },
+    "original_source": {
+      "path": "/home/pmeenan/src/jitLLM-wt/m3fixb/docs/experiments/gemma-joined-serving/llama_joined.cc",
+      "bytes": 7772,
+      "sha256": "c80b73c85453ece170eda57bc0725cdef5b4e0af3d7cacf3d1a8bee0d1cfa19e"
+    },
+    "owned_reference_wrapper": {
+      "bytes": 1672,
+      "sha256": "3fda4b7d5ab61aa5ea1e0b93ab922722669f8291fb8eb632043091d272195aef"
+    },
+    "owned_retirement_helper": {
+      "bytes": 2296,
+      "sha256": "1fd85804983ecdf720b5c0a69353fede0e294a0da0dd70a91bd8cd8b539e75e0"
+    },
+    "tensorfold_task_entry": {
+      "task": "Gemma31 full C4 independent-owner consumer source entry",
+      "base": "5cf8f5b",
+      "observed_utc": "2026-10-06T00:34:25.467312+00:00",
+      "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+      "version": "0.6.5",
+      "recipe": "Primary actual Gemma recipe remains MLX26 only; no matching31 CUDA recipe.",
+      "records": [
+        {
+          "path": "src/tensorfold/__init__.py",
+          "url": "https://raw.githubusercontent.com/ashhart/TensorFold/609ca419abecebdc5a059498a613680bd3aa847f/src/tensorfold/__init__.py",
+          "bytes": 137,
+          "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+        },
+        {
+          "path": "docs/recipes/gemma-4.md",
+          "url": "https://raw.githubusercontent.com/ashhart/TensorFold/609ca419abecebdc5a059498a613680bd3aa847f/docs/recipes/gemma-4.md",
+          "bytes": 10845,
+          "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+        }
+      ]
+    }
+  },
+  "checks": {
+    "metadata": "0, packed and owners:12 profile/owner/query-row cases each; D256/D512 custom-node missing-source/tag/params/shape/alias refusal bundles",
+    "cpu_descriptor_object": "required checker symbols present; no undefined owner-launcher or CUDA runtime symbols",
+    "same_policy_full_heads_states_and_choices": "exact for both norm-off arms and norm-on repeats",
+    "cross_policy_and_historical": "all128full heads and four initialized states exact; all128 choices exact",
+    "fresh_original_full_heads": "both references exact native9de4 full128head bytes",
+    "finite": "all128complete heads scanned per arm after paid interval",
+    "whole_suite": "not run, owner optimization override",
+    "failures_preserved": [
+      "build1 custom factory n_args<GGML_MAX_SRC assertion at metadata after successful compilation",
+      "build2 fixture environment omitted at metadata after successful compilation; unchanged source retry passed"
+    ]
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma-owner-c4-build1",
+      "state": "failed",
+      "rc": 1,
+      "records": {
+        "final.json": {
+          "bytes": 166,
+          "sha256": "5b5af56260f10191505a1e3cf76af7f4d2c5bb2f245914a7f0614ffd81cc6a60"
+        },
+        "steps.json": {
+          "bytes": 2738,
+          "sha256": "60a7be745099a9128afb1dd731560a95c96b5617ef4b2925e10e0370e0d049cc"
+        },
+        "job.json": {
+          "bytes": 493,
+          "sha256": "7ccbf1d9c8afe51f5e97a23153ade292c107672b383e9e1f1f1a44a80b5e4712"
+        },
+        "log": {
+          "bytes": 7643,
+          "sha256": "3db9fce7cbf9399f3d1b33ba0c972b5e872abbdfa7d8493ae01bc1b0941c8e6b"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma-owner-c4-build2",
+      "state": "failed",
+      "rc": 1,
+      "records": {
+        "final.json": {
+          "bytes": 166,
+          "sha256": "5b4b399062098c02c9114405f3a421c587069fd8f0d3f3d428b7bb2d33c309a3"
+        },
+        "steps.json": {
+          "bytes": 2741,
+          "sha256": "29f483d3d84b1aec6860a63152a8dc016ebb269226342926d6c7960b9fa9a3c6"
+        },
+        "job.json": {
+          "bytes": 490,
+          "sha256": "0cea611c56f999205c5a2ace12714dbcd606b92f990ca0408b5f5c238bf23f0d"
+        },
+        "log": {
+          "bytes": 4148,
+          "sha256": "863b16bd33a3f0071da8179bd1d5ccf62e9a86fca0debf9cb2c97557e67e8285"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma-owner-c4-compiled1",
+      "state": "done",
+      "rc": 0,
+      "records": {
+        "final.json": {
+          "bytes": 83,
+          "sha256": "8abe3ba1850d5ce188cc1526049ef070c3c8ba72c6a48941a0784d65c2de2439"
+        },
+        "steps.json": {
+          "bytes": 3288,
+          "sha256": "2a72f4bab3219ee1118924d80810cc0b49d40f1a1a29a1edb3289edca14ecf8f"
+        },
+        "job.json": {
+          "bytes": 499,
+          "sha256": "d692d434e2316533bf4bcc07f17bf9e397e3d795085398bf3917b3c406fa1d9a"
+        },
+        "log": {
+          "bytes": 10569,
+          "sha256": "340000447af39ef3e038de5fd4f691d5c98540b0b0c3e9ebeeaba57dc8d4c3e7"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma-owner-c4-native1",
+      "state": "done",
+      "rc": 0,
+      "records": {
+        "final.json": {
+          "bytes": 83,
+          "sha256": "af18f30a01bdfd3f18a088c9b47c4de69de9c9784f0093fda1d35bc5b06fe5be"
+        },
+        "steps.json": {
+          "bytes": 2590,
+          "sha256": "809c199cf873d359e23a20e877d492e50e5316e520544a16a24685377850f90f"
+        },
+        "job.json": {
+          "bytes": 493,
+          "sha256": "3f99648f2b5040749e1f9d2d5c67a818e7f013c7cea5d950e9c3733beb871e49"
+        },
+        "log": {
+          "bytes": 2556,
+          "sha256": "ce9aa8e7e93ef38d73cab6e9492fea2d0525dedc638bda5db86db42491ed2dc0"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma-owner-c4-check1",
+      "state": "done",
+      "rc": 0,
+      "records": {
+        "final.json": {
+          "bytes": 83,
+          "sha256": "1e7d0d32633698d9470ba6066d961600c87fea913f9baf5270d410f166299b9f"
+        },
+        "steps.json": {
+          "bytes": 756,
+          "sha256": "0f54c77a81c2743a29bdb609ae8a7638a2480420a73da33fd372905c99a952c9"
+        },
+        "job.json": {
+          "bytes": 490,
+          "sha256": "e18f1c052d3ed3d685c9ede1078b07c8c2b7ad74ebb27583010328d170263815"
+        },
+        "log": {
+          "bytes": 5522,
+          "sha256": "eb9b2c28a326d140cada93192b5f50e826c439b39dc371317693bacaacafbc69"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma-owner-c4-build3",
+      "state": "done",
+      "rc": 0,
+      "records": {
+        "final.json": {
+          "bytes": 83,
+          "sha256": "bb434950c6f50fba18d52d5f27663ccdc88c0c60060ac513122d2da0f4bd5e5b"
+        },
+        "steps.json": {
+          "bytes": 1397,
+          "sha256": "5c5bbe6dcfca4719b3fbf68ffa24b06723ef2f5840adf3294dbdc29263d6af28"
+        },
+        "job.json": {
+          "bytes": 490,
+          "sha256": "3c7e8bb7e79348de9cef4b7afcfff9b43f0f888df95237dd2701f87a839e599a"
+        },
+        "log": {
+          "bytes": 2873,
+          "sha256": "f78e1cc092ba24fb48e66ed7e7b5f32eae0aa290e4890f5754d6cfddc8e863eb"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma-owner-c4-bookend1",
+      "state": "done",
+      "rc": 0,
+      "records": {
+        "final.json": {
+          "bytes": 83,
+          "sha256": "7c8d643f3e9c61631f2189921c8e602632af9174ee446b3781745c4d79c10859"
+        },
+        "steps.json": {
+          "bytes": 2030,
+          "sha256": "2f8ad9b26f962f1f9d8229a8dd3d3b4cf85dcc99157e2a2655db4a6ff1ffd2d0"
+        },
+        "job.json": {
+          "bytes": 496,
+          "sha256": "d6cd8bd2a3bcbfe849377c3f45bd290ba2df3ff746e8a394bb3e14733573c5bc"
+        },
+        "log": {
+          "bytes": 275020,
+          "sha256": "21be4347eaa3e8b2aee92abda2b8cba31d1dfda63a2769df4fd3de9d1d41a4de"
+        }
+      }
+    },
+    {
+      "name": "m35-gemma-owner-c4-check2",
+      "state": "done",
+      "rc": 0,
+      "records": {
+        "final.json": {
+          "bytes": 83,
+          "sha256": "40df1c73668d3a3bc80b1f9d1329405c54e23379a60b92c19940c3a103bac953"
+        },
+        "steps.json": {
+          "bytes": 753,
+          "sha256": "9fa6cbf8b0b34d61d3a3af593f300a1e2e64dea717b9dab61b3980144b806280"
+        },
+        "job.json": {
+          "bytes": 490,
+          "sha256": "793d78535e9d2ede464e414c513c8908bf7adbd52b852bad39433d791891ec8d"
+        },
+        "log": {
+          "bytes": 3880,
+          "sha256": "1add94fd00f35d7c1bd6a0f82fa9e8563f1504dc39e01c118480c9f7127a5384"
+        }
+      }
+    }
+  ],
+  "limits": [
+    "Short closed-shape latency only, no sustained throughput or memory peak",
+    "Native initialized-state equality; no original-native state serialization comparison",
+    "Plain-norm-on transfer follows norm-off factor sequentially, so -1.4201% is not an interleaved isolated speed claim",
+    "2.10195% remaining native latency; no parity/default/production optimized-batching claim",
+    "Other read widths/global8K/local-ring crossings and Gemma26/assistant need independent controls"
+  ]
+}

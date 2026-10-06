@@ -714,6 +714,9 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           case JitllmOp::kDsv4LidTopK:
             add(Operation::kLightningIndexer, kDsv4LidTopKName, i, {node}, 1);
             break;
+          case JitllmOp::kFlashAttnOwners:
+            add(Operation::kFlashAttn, kFlashAttnOwnersName, i, {node}, 1);
+            break;
           case JitllmOp::kGemma4Mask:
             add(Operation::kFill, kGemma4MaskName, i, {node}, 1);
             break;

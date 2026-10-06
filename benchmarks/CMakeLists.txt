@@ -323,6 +323,22 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_gemma_attention_owner_replay PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # Explicit manual packed versus independent-owner C4 factor. No default emits the op.
+  foreach(_owner_target IN ITEMS jitllm_gemma_owner_c4 jitllm_gemma_owner_c4_metadata)
+    if(_owner_target STREQUAL "jitllm_gemma_owner_c4")
+      set(_owner_source gemma_owner_c4.cc)
+    else()
+      set(_owner_source gemma_owner_c4_metadata.cc)
+    endif()
+    add_executable(${_owner_target} ${_owner_source} gemma_owner_c4_wrap.cc)
+    target_include_directories(${_owner_target} PRIVATE "${PROJECT_SOURCE_DIR}/tests/support")
+    target_link_libraries(${_owner_target} PRIVATE jitllm_engine jitllm_warnings)
+    target_link_options(${_owner_target} PRIVATE
+      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
+      "LINKER:--wrap=_ZN6jitllm7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
+      "LINKER:--wrap=_ZN6jitllm7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm")
+  endforeach()
+
   add_executable(jitllm_gemma_attention_packed
     gemma_attention_packed.cc gemma_attention_packed_wrap.cc)
   target_link_libraries(jitllm_gemma_attention_packed PRIVATE jitllm_engine jitllm_warnings)

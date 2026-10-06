@@ -175,6 +175,10 @@ Batch correctness/performance remains separate: [packed Gemma31 C4 attention](..
 matched all 128 stock heads but took about 12.3% more time. It jointly changes
 local dispatch and local/global stream geometry; it does not establish a
 precision-only cause or competitive batching.
+The subsequent [independent-cache C4 consumer](../gemma-owner-root-c4/README.md)
+removes K/V packing alone for 8.93% lower paid latency. Plain-norm-on is now
+2.10% slower than fresh original bookends, with all 128 heads byte-exact.
+This context-256 diagnostic leaves wider contexts and production selection open.
 [Gemma26 packed compound C4](../gemma26-compound-packed-c4/README.md)
 still has 2/128 positive-margin disagreements, 92/128 exact heads, and a 7.15%
 time deficit. [Common-input late MoE controls](../gemma26-late-moe/README.md)
@@ -224,10 +228,12 @@ Current phase spans:31B binding45ms/state161–175ms;26B binding12ms/state59–6
 Native completed execution fits within stock whole prefill time on both
 profiles. Those intervals do not isolate GPU arithmetic or a state allocation
 subcallee. Grouped upfront state preparation reduced31B state time61ms but
-showed no wall win amid execution spread. C4 attention owner-root D256 operator
-math matches packed math; no whole-model copy-removal result follows yet.
+showed no wall win amid execution spread. The closed C4 owner-root consumer removes K/V packing for an 8.93% gain;
+plain-norm-on remains 2.10% slower than fresh original bookends with exact heads.
+Wider-context and Gemma26 transfer remain open.
 The current teacher-forcing screen matches all1024 full31B heads at256 rows;
-26B all1024 retains nine positive-margin choice failures. Keep quality diagnosis
+26B all1024's nine positive-margin failures are resolved by the bounded keep28
+routing diagnostic; general policy selection remains open. Keep quality diagnosis
 separate from performance and do not widen either gate. Identify the smallest
 decisive test for the strongest remaining case.
 If a comparable latest TensorFold path exists, identify its current pin and

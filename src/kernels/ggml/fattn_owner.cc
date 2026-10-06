@@ -9,6 +9,7 @@
 #include <limits>
 #include <optional>
 
+#include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/validate_util.h"
 
 namespace jitllm::kernels::ggml {
@@ -100,6 +101,25 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
       for (const auto* first : {in.k[a], in.v[a]})
         for (const auto* second : {in.k[b], in.v[b]})
           if (Overlap(first, second)) return Rejected("owner MMA cache owners overlap");
+  return {};
+}
+std::expected<FlashAttnOwners, KernelFailure> FlashAttnOwnersFromNode(ggml_tensor* node) {
+  static_assert(GGML_MAX_SRC == 10);
+  if (!node || JitllmOpOf(node) != JitllmOp::kFlashAttnOwners || node->view_src)
+    return Rejected("not a ten-source owner attention custom node");
+  for (int i = 0; i < 8; ++i)
+    if (JitllmOpInt(node, i) != 0) return Rejected("owner attention has unsupported parameters");
+  FlashAttnOwners in{.q = node->src[0], .mask = node->src[1], .output = node};
+  for (std::size_t owner = 0; owner < 4; ++owner) {
+    in.k[owner] = node->src[2 + owner];
+    in.v[owner] = node->src[6 + owner];
+  }
+  if (auto checked = CheckFlashAttnOwners(in); !checked) return std::unexpected(checked.error());
+  return in;
+}
+std::expected<void, KernelFailure> CheckFlashAttnOwnersNode(const ggml_tensor* node) {
+  auto in = FlashAttnOwnersFromNode(const_cast<ggml_tensor*>(node));
+  if (!in) return std::unexpected(in.error());
   return {};
 }
 }  // namespace jitllm::kernels::ggml

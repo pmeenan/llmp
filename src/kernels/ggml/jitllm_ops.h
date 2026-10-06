@@ -81,6 +81,7 @@
 #ifndef JITLLM_KERNELS_GGML_JITLLM_OPS_H_
 #define JITLLM_KERNELS_GGML_JITLLM_OPS_H_
 
+#include <array>
 #include <cstdint>
 #include <expected>
 
@@ -141,9 +142,17 @@ enum class JitllmOp : std::uint8_t {
   kDsv4F16Copy,
   kQRows,
   kGemma4Mask,
+  kFlashAttnOwners,
 };
 
 class LaunchContext;
+
+// Explicit manual C4 attention only. Ten real source edges: Q, mask,
+// four K writers/views, four V writers/views. No default graph emits it.
+inline constexpr const char* kFlashAttnOwnersName = "jitllm.flash_attn.owner_roots";
+ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_tensor* mask,
+                                 const std::array<ggml_tensor*, 4>& k,
+                                 const std::array<ggml_tensor*, 4>& v);
 
 // F16 [cells, Pad(rows,32)] causal or local-ring mask. Positions is a
 // packed I32 vector; first_row selects the independent segment. window=0

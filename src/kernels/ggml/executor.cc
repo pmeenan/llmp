@@ -17,6 +17,7 @@
 #include "execution/registry.h"
 #include "ggml.h"
 #include "kernels/ggml/dsv4_outa.h"
+#include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/graph_plan.h"
 #include "kernels/ggml/implementations.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -131,6 +132,12 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
     } else if (step.implementation == kDsv4OutAName ||
                step.implementation == kDsv4OutAFastPackName) {
       planned = PlanDsv4OutA(launch, step.nodes.front());
+    } else if (step.implementation == kFlashAttnOwnersName) {
+      auto in = FlashAttnOwnersFromNode(step.nodes.front());
+      if (!in) return std::unexpected(in.error());
+      auto attention = PlanFlashAttnOwners(launch, *in);
+      if (!attention) return std::unexpected(attention.error());
+      planned = attention->original.scratch;
     } else if (step.implementation == kFlashAttnVec256Name) {
       auto attention = PlanFlashAttnVec256(launch, step.nodes.front());
       if (!attention) return std::unexpected(attention.error());

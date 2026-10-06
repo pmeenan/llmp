@@ -28,6 +28,11 @@ struct FlashAttnOwners {
 // normalized/scaled by the caller). No sinks, softcap or sparse gather.
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& inputs);
 
+// Graph adapter for the distinct ten-source custom node. These never reinterpret
+// a legacy FLASH descriptor or invent a contiguous K/V source allocation.
+std::expected<FlashAttnOwners, KernelFailure> FlashAttnOwnersFromNode(ggml_tensor* node);
+std::expected<void, KernelFailure> CheckFlashAttnOwnersNode(const ggml_tensor* node);
+
 struct FlashAttnOwnersPlan {
   FlashAttnMmaPlan original;
   std::uint64_t shared_bytes = 0;

@@ -442,8 +442,11 @@ family" guide, and its long-context scaling work.
         preserving original grid/reduction partitions and checked independent spans.
         [Real first-global D512 inputs](experiments/gemma-owner-root-global/README.md)
         also pass all 65,536 output values, fresh/restored and captured controls,
-        preserving the 96-block grid. Whole-model copy removal and paid C4 qualification stay open;
-        no production selector or default changes.
+        preserving the 96-block grid. The [closed C4 consumer](experiments/gemma-owner-root-c4/README.md)
+        removes K/V packing with 8.93% lower paid latency and exact 128 heads/four
+        initialized states; plain-norm-on remains 2.10% slower than fresh stock,
+        with all 128 heads exact. Wider reads/window crossings and Gemma26 transfer
+        precede production selection; no selector or default changes.
       - [x] [Current full-head corpus screen](experiments/gemma-current-quality/README.md):
         31B both256/plain-norm-on matches all 1,024 fresh ring-reference heads
         and 1,023 likelihoods exactly. The 26B all1024 transfer has nine positive-

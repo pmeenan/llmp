@@ -454,8 +454,13 @@ D25631 outputs, fresh/restored controls and captured repeats match byte for byte
 The operator timer excludes packing, so it establishes no copy-removal gain.
 The [first-global D512 proof](experiments/gemma-owner-root-global/README.md)
 adds all 65,536 native-origin output values, fresh/restored controls and captured
-repeats, preserving the original 96-block grid. Other read widths, whole-model C4
-and Gemma26/assistant transfer need actual controls; production selection remains unchanged.
+repeats, preserving the original 96-block grid. The [closed C4 consumer](experiments/gemma-owner-root-c4/README.md)
+uses a checked ten-source operation over the exact cache writers, removing only
+K/V CONCAT while retaining Q/mask packing and original grid/partitions. Paid
+latency falls 8.93%; all 128 heads/four initialized states match packed repeats.
+Plain-norm-on remains 2.10% slower than fresh original bookends with all 128 heads
+byte-exact. Other read widths/window crossings and Gemma26/assistant transfer
+need actual controls; production selection remains unchanged.
 
 The [current corpus screen](experiments/gemma-current-quality/README.md)
 checks the actually measured solo research policies with plain norm fusion:

@@ -19,6 +19,7 @@
 #include "kernels/ggml/dsv4_outa.h"
 #include "kernels/ggml/dsv4_qhead.h"
 #include "kernels/ggml/dsv4_weighted_reduce.h"
+#include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/gemma_moe_fusion.h"
 #include "kernels/ggml/gemma_norm.h"
 #include "kernels/ggml/graph_plan.h"
@@ -102,7 +103,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
   return std::unexpected(
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
-constexpr std::array<Kernel::Entry, 121> kKernels = {{
+constexpr std::array<Kernel::Entry, 122> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -981,6 +982,16 @@ constexpr std::array<Kernel::Entry, 121> kKernels = {{
      .arity = 1,
      .check = [](ConstNodes n) { return CheckDsv4LidTopK(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4LidTopK(launch, n[0]); }},
+    {.name = kFlashAttnOwnersName,
+     .operation = execution::Operation::kFlashAttn,
+     .variant = "closed C4 F16 independent K/V roots; original packed MMA grid and partitions",
+     .arity = 1,
+     .check = [](ConstNodes n) { return CheckFlashAttnOwnersNode(n[0]); },
+     .run = [](LaunchContext& launch, Nodes n) -> std::expected<void, KernelFailure> {
+       auto inputs = FlashAttnOwnersFromNode(n[0]);
+       if (!inputs) return std::unexpected(inputs.error());
+       return FlashAttnOwnerRoots(launch, *inputs);
+     }},
     {.name = kGemma4MaskName,
      .operation = execution::Operation::kFill,
      .variant = "packed F16 global causal/local ring mask from fresh segment I32 positions",
