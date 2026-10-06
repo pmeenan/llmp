@@ -120,8 +120,12 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
     }
   }
   auto out = std::make_unique<Gemma4Planned>();
+  // Retain the two-argument estimate seam used by existing manual link
+  // derivatives. The native opt-in adds only its explicit extra descriptors.
+  const auto extra = kg::Gemma4GraphTensors(*m.profile, shape.segments.size(), m.options) -
+                     kg::Gemma4GraphTensors(*m.profile, shape.segments.size(), {});
   auto arena = SizedArena(
-      kg::Gemma4GraphTensors(*m.profile, shape.segments.size()), [&](kg::TensorArena& a) {
+      kg::Gemma4GraphTensors(*m.profile, shape.segments.size()) + extra, [&](kg::TensorArena& a) {
         return kg::BuildGemma4Graph(a, *m.profile, *m.binding, *m.state, shape, m.options)
             .has_value();
       });

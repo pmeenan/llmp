@@ -38,6 +38,10 @@ std::expected<void, KernelFailure> Check(const md::Gemma4Profile& p, const md::G
                                          const md::Gemma4StateLayout& state,
                                          const Gemma4ChunkShape& shape,
                                          const Gemma4GraphOptions& o) {
+  if (o.attention_mode != Gemma4AttentionMode::kIndependent &&
+      o.attention_mode != Gemma4AttentionMode::kPacked &&
+      o.attention_mode != Gemma4AttentionMode::kOwners)
+    return Rejected("invalid Gemma4 attention mode");
   auto checked = md::CheckGemma4Binding(p, b);
   if (!checked) return Rejected(checked.error());
   if (!state.Representations(p)) return Rejected("invalid Gemma4 state layout");
@@ -131,6 +135,14 @@ std::size_t Gemma4GraphTensors(const md::Gemma4Profile& p, std::size_t segments)
   return 128 + std::size_t{p.layers} * (160 + segments * 48);
 }
 
+std::size_t Gemma4GraphTensors(const md::Gemma4Profile& p, std::size_t segments,
+                               const Gemma4GraphOptions& options) {
+  return Gemma4GraphTensors(p, segments) +
+         (options.attention_mode != Gemma4AttentionMode::kIndependent && segments == 4
+              ? std::size_t{p.layers} * 64
+              : 0);
+}
+
 std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
                                                            const md::Gemma4Profile& p,
                                                            const md::Gemma4Binding& b,
@@ -139,7 +151,7 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
                                                            const Gemma4GraphOptions& o) {
   if (auto checked = Check(p, b, state, shape, o); !checked)
     return std::unexpected(checked.error());
-  if (auto room = arena.Reserve(Gemma4GraphTensors(p, shape.segments.size())); !room) {
+  if (auto room = arena.Reserve(Gemma4GraphTensors(p, shape.segments.size(), o)); !room) {
     return std::unexpected(room.error());
   }
   auto* c = arena.context();
@@ -432,6 +444,8 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
   auto ordered = GraphOrder(expanded, arena);
   if (!ordered) return std::unexpected(ordered.error());
   g.nodes = std::move(*ordered);
+  if (auto transformed = TransformGemma4Attention(arena, g, o.attention_mode); !transformed)
+    return std::unexpected(transformed.error());
   return g;
 }
 }  // namespace jitllm::kernels::ggml

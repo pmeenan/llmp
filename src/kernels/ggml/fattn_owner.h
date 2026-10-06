@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Explicit independent cache roots for the bounded Gemma C4 diagnostic.
+// Explicit independent cache roots for the checked Gemma C4 opt-in.
 // No selector uses this operation automatically. The caller holds every real
 // operand span, output and workspace through completion/captured graph lifetime.
 #ifndef JITLLM_KERNELS_GGML_FATTN_OWNER_H_
@@ -22,8 +22,10 @@ struct FlashAttnOwners {
   ggml_tensor* output = nullptr;
 };
 
-// F32 Q [D,1,heads,4], F16 mask [256,32,1,4], four actual F16 K/V
-// views [D,256,KVheads,1], packed F32 result [D,heads,1,4]. D256/GQA2
+// F32 Q [D,1,heads,4], F16 mask [cells,32,1,4], four actual F16 K/V
+// views [D,cells,KVheads,1], packed F32 result [D,heads,1,4]. Cells are
+// multiples of 256 through 16384; every real root/view must fit 64 MiB.
+// D256/GQA2
 // or D512/GQA8 only; heads 16 or 32. Scale is fixed at 1 (Q already
 // normalized/scaled by the caller). No sinks, softcap or sparse gather.
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& inputs);

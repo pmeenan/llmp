@@ -16,6 +16,7 @@
 #include "base/check.h"
 #include "expected_error.h"
 #include "gemma4_fixture.h"
+#include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
 
@@ -120,6 +121,50 @@ TEST(Gemma4Plan, StateOnlyPlacesWithoutHiddenOrHeadAndRetainsFreshInputs) {
   ASSERT_TRUE(bytes);
   EXPECT_TRUE(en::Gemma4Sources((*placed)->graph, c.input, {}, {}, *bytes));
   EXPECT_FALSE(en::Gemma4Sources((*placed)->graph, c.input, c.frontier, {}, *bytes));
+}
+
+TEST(Gemma4Plan, OwnerOptInPlacesAllRealRootsAndChargesSizedMetadata) {
+  Case c(4);
+  c.state = *md::Gemma4State(c.p, 16384, 128);
+  c.shape = {};
+  for (std::uint32_t i = 0; i < 4; ++i)
+    c.shape.segments.push_back({i, 1, 8192 + i, 8448, c.state.local_cells});
+  c.shape.outputs = 4;
+  kg::Gemma4GraphOptions options;
+  options.device_masks = true;
+  options.attention_mode = kg::Gemma4AttentionMode::kOwners;
+  const auto estimate = kg::Gemma4GraphTensors(c.p, 4, options);
+  auto arena = kg::TensorArena::Create(estimate);
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+  ASSERT_TRUE(graph);
+  auto model = Places(c, *graph);
+  kg::DeviceChoices choices;
+  choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
+  choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
+  auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
+  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  EXPECT_EQ((*measured)->graph.attention_mode, kg::Gemma4AttentionMode::kOwners);
+  EXPECT_GE((*measured)->arena->graph_capacity(), estimate);
+  EXPECT_GE(en::PlannedHostBytes(**measured), (*measured)->arena->bytes());
+  auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
+                                    (*measured)->placement.extent);
+  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  std::size_t count = 0;
+  for (const auto* node : (*placed)->graph.nodes) {
+    if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+    ++count;
+    EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
+    for (const auto index : {2, 3, 4, 5, 6, 7, 8, 9}) {
+      auto* raw = node->src[index]->src[0];
+      ASSERT_NE(raw, nullptr);
+      ASSERT_NE(raw->view_src, nullptr);
+      EXPECT_EQ(raw->src[0]->op, GGML_OP_SET_ROWS);
+      EXPECT_EQ(raw->view_src->op, GGML_OP_NONE);
+      EXPECT_EQ(raw->view_offs, 0U);
+    }
+  }
+  EXPECT_EQ(count, c.p.layers);
 }
 
 TEST(Gemma4Plan, PostNormFeatureRowsAreIndependentOfTheHeadFrontier) {

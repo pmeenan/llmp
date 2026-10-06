@@ -364,6 +364,8 @@ Status Gemma4Runner::Setup() {
   model_.options.rope_store = o_.rope_store;
   model_.options.narrow_final = o_.frontier_head && !o_.retain_features;
   model_.options.device_masks = !o_.reference_masks;
+  model_.options.attention_mode =
+      o_.owner_attention ? kg::Gemma4AttentionMode::kOwners : kg::Gemma4AttentionMode::kIndependent;
   if (auto r = ReserveWeights(); !r) return r;
   model_.resources.resize(weights_.artifact().resources().size());
   for (std::uint32_t i = 0; i < model_.resources.size(); ++i)

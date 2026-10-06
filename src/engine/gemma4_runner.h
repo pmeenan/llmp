@@ -53,6 +53,9 @@ struct Gemma4Options {
   bool fuse_norm_rope = false, fuse_norm_add = false;
   bool fuse_gemma_route = false, fuse_gemma_reduce = false;
   bool prefill_lookahead = true;
+  // Explicit C4 attention opt-in; C1/C2/multirow/features and unequal widths
+  // retain independent attention. Immutable for this runner's plan cache.
+  bool owner_attention = false;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
 };
 class Gemma4Runner final : public PagedModel {

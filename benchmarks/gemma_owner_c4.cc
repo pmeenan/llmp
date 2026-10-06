@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Separate fixed-policy C4 owner-root factor; historical packed helper is unchanged.
-// ARTIFACT OUTPUT_DIR 26|31 OWNERS scalar|joined ordinary|rows|rows-norm|norm [IDS_I32]
+// ARTIFACT OUTPUT_DIR 26|31 4 joined norm|compound IDS_I32 [8k]
 // Bounded common-prefix units: every completed owner head is published/charged.
 #include <sys/stat.h>
 
@@ -16,6 +16,7 @@
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string_view>
@@ -30,10 +31,15 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc != 8 || std::string_view(argv[4]) != "4" || std::string_view(argv[5]) != "joined" ||
+  if ((argc != 8 && argc != 9) || std::string_view(argv[4]) != "4" ||
+      std::string_view(argv[5]) != "joined" ||
       !((std::string_view(argv[3]) == "31" && std::string_view(argv[6]) == "norm") ||
         (std::string_view(argv[3]) == "26" && std::string_view(argv[6]) == "compound")))
     return 2;
+  if (argc == 9 && std::string_view(argv[8]) != "8k") return 2;
+  const bool long_context = argc == 9;
+  const std::uint32_t context = long_context ? 16384 : 256;
+  const std::size_t input_rows = long_context ? 8227 : 1024;
   const char* factor = std::getenv("JITLLM_GEMMA_OWNER_C4");
   if (!factor || (std::string_view(factor) != "packed" && std::string_view(factor) != "owners"))
     return 2;
@@ -50,10 +56,11 @@ int main(int argc, char** argv) {
     return 2;
   const bool account_phases = phases_option && std::string_view(phases_option) == "1";
   std::vector<std::int32_t> supplied;
-  if (argc == 8) {
-    supplied.resize(1024);
+  {
+    supplied.resize(input_rows);
     std::ifstream file(argv[7], std::ios::binary);
-    file.read(reinterpret_cast<char*>(supplied.data()), 1024 * sizeof(std::int32_t));
+    file.read(reinterpret_cast<char*>(supplied.data()),
+              static_cast<std::streamsize>(input_rows * sizeof(std::int32_t)));
     if (!file || file.peek() != std::char_traits<char>::eof() || supplied[0] != 2 ||
         !std::ranges::all_of(supplied, [](auto id) { return id >= 0 && id < 262144; }))
       return 2;
@@ -61,9 +68,10 @@ int main(int argc, char** argv) {
   jitllm::base::Sha256 input_hash;
   input_hash.Update(std::as_bytes(std::span(supplied)));
   if (jitllm::base::ToHex(input_hash.Finish()) !=
-      "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610")
+      (long_context ? "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b"
+                    : "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610"))
     return 2;
-  const std::uint32_t prompt_rows = supplied.empty() ? 6 : 64;
+  const std::uint32_t prompt_rows = long_context ? 8188 : 64;
   const std::string_view variant = argv[3], mode = argv[5], policy = argv[6];
   std::uint32_t count = 0;
   const std::string_view number = argv[4];
@@ -81,7 +89,8 @@ int main(int argc, char** argv) {
   if (!std::filesystem::create_directory(out, file_error) || file_error) return 2;
   if (!supplied.empty()) {
     std::ofstream file(out / "inputs.i32", std::ios::binary);
-    file.write(reinterpret_cast<const char*>(supplied.data()), 1024 * sizeof(std::int32_t));
+    file.write(reinterpret_cast<const char*>(supplied.data()),
+               static_cast<std::streamsize>(input_rows * sizeof(std::int32_t)));
     file.flush();
     if (!file) return 2;
   }
@@ -98,7 +107,7 @@ int main(int argc, char** argv) {
           .artifact = argv[1],
           .out = out,
           .variant = variant == "26" ? en::Gemma4Variant::k26BA4B : en::Gemma4Variant::k31B,
-          .context = 256,
+          .context = context,
           .max_rows = 128,
           .slots = count,
           .fuse_norms = normmul,
@@ -106,7 +115,8 @@ int main(int argc, char** argv) {
           .fuse_norm_rope = true,
           .fuse_norm_add = true,
           .fuse_gemma_route = compound,
-          .fuse_gemma_reduce = compound},
+          .fuse_gemma_reduce = compound,
+          .owner_attention = std::string_view(factor) == "owners"},
       0, 0);
   auto& runner = *lifetime->runner;
   const auto execute = [&]() -> en::Status {
@@ -127,9 +137,46 @@ int main(int argc, char** argv) {
     if (!witness) return Error(witness.error());
     const auto heap = std::uint64_t{count} * (steps + 2) * vocab * sizeof(float);
     const auto fixed = node.catalog().OccupancyOf(node.domain()).Total().value();
-    const auto budget =
-        fixed + runner.weights().size() * en::kPagedExtent + 2 * node.StateCapacity() + heap;
-    node.SetHostFloor(runner.plan_floor_bytes() + runner.host_input_bytes() + heap);
+    const auto weight_count = runner.weights().size();
+    auto budget = fixed + weight_count * en::kPagedExtent + 2 * node.StateCapacity() + heap;
+    auto host_floor = runner.plan_floor_bytes() + runner.host_input_bytes() + heap;
+    if (long_context && compound) {
+      // Cache identity excludes n_past: two 128-row chunks share each 256-cell
+      // bucket. Four slots each have 32 state-only buckets and one final tail;
+      // the C4 decode has five width vectors across the 8192/8448 boundary.
+      // Startup probes are temporary. This grants capacity, not occupancy.
+      const std::uint64_t scalar_buckets = (prompt_rows + count - 1 + 255) / 256;
+      const std::uint64_t unique_keys = count * (scalar_buckets + 1) + count + 1;
+      constexpr auto ratio = en::kGraphNodeHostBytes / en::kPlanNodeHostBytes;
+      constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+      const auto floor = runner.plan_floor_bytes();
+      if (unique_keys != 137 || floor > maximum / unique_keys / (1 + ratio) ||
+          weight_count > maximum / en::kPagedExtent || node.StateCapacity() > maximum / 2)
+        return Error("long26 plan/graph budget overflow");
+      const auto retention = unique_keys * floor * (1 + ratio);
+      const auto scratch = en::ScratchArenaBytes();
+      budget = 0;
+      for (const auto bytes : {fixed, weight_count * en::kPagedExtent, 2 * node.StateCapacity(),
+                               heap, scratch, retention}) {
+        if (bytes > maximum - budget) return Error("long26 execution budget overflow");
+        budget += bytes;
+      }
+      host_floor = 0;
+      for (const auto bytes : {floor, runner.host_input_bytes(), heap, scratch}) {
+        if (bytes > maximum - host_floor) return Error("long26 host floor overflow");
+        host_floor += bytes;
+      }
+      std::cout << "OWNER_C4_BUDGET fixed=" << fixed
+                << " weights=" << weight_count * en::kPagedExtent
+                << " state_capacity=" << node.StateCapacity() << " publication=" << heap
+                << " unique_key_bound=" << unique_keys << " plan_floor=" << floor
+                << " planning_scratch=" << scratch << " plan_graph_capacity=" << retention
+                << " host_floor=" << host_floor << " total=" << budget << '\n';
+      // Reject an oversized capacity envelope for this 128 GB manual target.
+      if (budget > 128'000'000'000ULL)
+        return Error("long26 capacity grant exceeds the Spark physical budget");
+    }
+    node.SetHostFloor(host_floor);
     if (auto r = node.Start(jitllm::base::Bytes(budget)); !r) return r;
     if (auto r = runner.Register(); !r) return r;
     if (auto r = runner.Bind(); !r) return r;
@@ -184,10 +231,21 @@ int main(int argc, char** argv) {
               tokens.assign(supplied.begin(), supplied.begin() + prompt_rows + i);
             }
             past[i] = static_cast<std::uint32_t>(tokens.size());
-            const en::Gemma4Runner::Work work{i, 0, tokens, &heads[i]};
-            if (auto r = runner.Wave(std::span(&work, 1)); !r) return r;
-            if (fresh)
-              if (auto r = report_policy("prefill-first-build", i, past[i], 1); !r) return r;
+            std::uint32_t at = 0;
+            while (at < tokens.size()) {
+              const auto rows =
+                  std::min<std::uint32_t>(128, static_cast<std::uint32_t>(tokens.size()) - at);
+              const bool final = at + rows == tokens.size();
+              const en::Gemma4Runner::Work work{i, at, std::span(tokens).subspan(at, rows),
+                                                &heads[i]};
+              if (long_context) {
+                if (auto r = runner.WavePrefill(std::span(&work, 1), final); !r) return r;
+              } else if (auto r = runner.Wave(std::span(&work, 1)); !r)
+                return r;
+              if (fresh && final)
+                if (auto r = report_policy("prefill-first-build", i, rows, 1); !r) return r;
+              at += rows;
+            }
           }
           return {};
         };
@@ -295,16 +353,18 @@ int main(int argc, char** argv) {
         if (!file) return Error("writing completed owner heads failed");
         const auto& p = runner.last_built_policy();
         std::cout << "JOINED_NATIVE variant=" << variant << " owners=" << count << " mode=" << mode
-                  << " policy=" << policy << " normmul=" << (normmul ? "on" : "off")
-                  << " seconds=" << elapsed << " completed_waves=" << steps
-                  << " completed_units=" << steps * count << " paid_gpu_groups="
+                  << " policy=" << policy
+                  << " native_owner_optin=" << (std::string_view(factor) == "owners")
+                  << " normmul=" << (normmul ? "on" : "off") << " seconds=" << elapsed
+                  << " completed_waves=" << steps << " completed_units=" << steps * count
+                  << " paid_gpu_groups="
                   << steps * (mode == "scalar" ? count
                                                : (count + en::kGemma4InvariantWaveRows - 1) /
                                                      en::kGemma4InvariantWaveRows)
                   << " max_shared_rows=" << en::kGemma4InvariantWaveRows
                   << " first_past=" << prompt_rows + 3
                   << " input_mode=" << (supplied.empty() ? "synthetic" : "supplied")
-                  << " unequal_past=" << (count > 1) << " context=256 max_rows=128"
+                  << " unequal_past=" << (count > 1) << " context=" << context << " max_rows=128"
                   << " captured_delta=" << runner.graph_stats().captured - before.captured
                   << " replayed_delta=" << runner.graph_stats().replayed - before.replayed
                   << " rows=" << p.rows << " segments=" << p.segments

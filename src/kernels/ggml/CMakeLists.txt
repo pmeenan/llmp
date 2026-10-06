@@ -34,7 +34,7 @@ target_sources(jitllm_ggml_tensors PRIVATE dsv4_qhead.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_hc_norm.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_outa.cc)
 target_sources(jitllm_ggml_tensors PRIVATE gemma_norm.cc)
-target_sources(jitllm_ggml_tensors PRIVATE gemma4_assistant_graph.cc fattn_owner.cc)
+target_sources(jitllm_ggml_tensors PRIVATE gemma4_assistant_graph.cc gemma4_attention.cc fattn_owner.cc)
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
                                                  jitllm_model
                                           # cutlass/version.h only (jitllm_ops.cc pins the
@@ -164,7 +164,7 @@ if(JITLLM_CUDA)
                    dsv4_ds4_product_source.json dsv4_ds4_product_source.json.license
                    dsv4_graph.h dsv4_hca_tokentile.cu
                    executor.cc
-                   executor.h gemma4_graph.cc gemma4_graph.h fattn.cu fattn_mma.cu
+                   executor.h gemma4_graph.cc gemma4_graph.h gemma4_attention.cc fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
                    fattn_mma_shape.cuh fattn_owner.h fattn_owner.cc fattn_owner.cu fattn_owner_kernel.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc

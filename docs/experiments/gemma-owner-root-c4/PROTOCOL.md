@@ -134,3 +134,56 @@ remain known evidence, not an expected correctness pass or an assumed cause.
 Mixed original prefill routing eligibility at layers 28/29 does not authorize
 keeping layers, imitating physical aliases or changing a production rule.
 No wider-context, assistant, production batching or full-suite claim.
+
+
+## Variable-width native opt-in (Task70, prospective)
+
+The next source slice begins at `f5d946e`. The checked operation derives
+`cells` from the real mask and requires equal actual F16 K/V read views for
+all four owners. Cells are multiples of 256 through 16384; every view and its
+complete parent chain still fits the 64 MiB bound. D256/32-head views therefore
+cannot admit 16384 cells. Only Queue.cells and Plan.kvtiles change in the CUDA
+controller; original compiled occupancy, grid rounding, scratch and tile/fixup
+arithmetic remain unchanged.
+
+`Gemma4Options.owner_attention` defaults off and is immutable for the runner's
+plan cache. The shared graph helper retains the exact four one-query/head-row
+contract, with arbitrary real slot IDs in segment order. C1/C2, more owners,
+multirow, features, partial layers and unsupported policies stay independent.
+Unequal local OR global widths, unsupported context and any profile-derived
+cache parent exceeding 64 MiB fall back before mutation. Existing validated
+max-row caps remain eligible when their actual cache parents fit, including
+31B/256 and 26B/1024; 31B/8192 falls back because its local parent is too large.
+The transform retains eight exact SET_ROWS dependencies and real root spans,
+never imaginary contiguous K/V or a peer's unreadable padded cells. Products
+retain their existing groups; this slice handles exactly C4 attention.
+
+The additional 64 descriptors per layer flow through GraphTensors(options),
+SizedArena/Reserve and startup/retained-plan accounting. Native startup measures
+four one-query owners at the widest real read width; the normal engine owns
+mapping, staging, closure coverage, capture and unknown-completion retention.
+The manual comparison reuses the shared helper: packed stays a wrapper factor,
+whereas owners sets the actual native option. Its existing wrapper estimate may
+conservatively fund the extra descriptors twice; actual arena/table bytes stay
+charged. This is not allocation-free or a warm-timer claim.
+
+The optional final CLI argument `8k` selects context 16384 / max rows 128 and
+the existing canonical 8227 IDs (`6b6567ca…`, 32908 bytes). Four prefixes have
+8188–8191 rows, followed by three anchors and 32 paid waves; endpoints are
+8223–8226 and every next forced ID is within the input file. Scalar prefill
+uses 128-row chunks, with state-only intermediate chunks and an ordinary final
+head. Local backing is 1280 cells at this cap, with global backing 16384; other
+validated caps produce their actual 2048-cell ring rather than a fabricated
+pitch. The first paid wave crosses global 8192/8448 unevenly and deliberately
+falls back as a whole; later waves use equal 8448-cell read views. Record actual
+runtime original geometry for both dimensions and widths, not prior 48/64/96
+grids. Plain norms are explicitly on in both factor arms; 31B keeps normBOTH
+and 26B keeps existing compound routing/reduction, with no layer keep.
+
+After whole source review, only a narrow build/descriptor/plan gate is proposed.
+The first model factor is same-binary packed/owners/owners/packed on 31B, with
+full 128 finite heads, all four initialized states and all choices frozen before
+fresh stock exposure. Then use a matched ring-reference comparison; qualify
+any width-boundary fallback differences honestly. Mandatory 26B transfer follows
+only the first reviewed 31B result. No full suite, broader owner grouping or
+default production selection is part of this first screen.

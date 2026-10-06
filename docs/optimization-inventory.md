@@ -466,8 +466,16 @@ uses 30 layers / 16 query heads at context/read 256, preserving measured local
 48-block and global 64-block geometry. K/V copy removal lowers paid latency
 7.13%, with all 128 native heads/four states unchanged; the fresh stock gap is
 0.265%, but two positive-margin choices still fail strict quality. Other read
-widths/window crossings and assistant transfer need actual controls;
-production selection remains unchanged.
+widths/window crossings and assistant transfer need actual controls. The
+[variable-width native owner option](experiments/gemma-owner-variable/README.md)
+now defaults off and supports checked C4/query1/real-parent spans through 16384
+read cells, retaining original compiled grid/partitions and whole-graph fallback
+for unequal widths or unsupported shapes. At 8K, eliminating K/V CONCAT lowers
+paid C4 latency 53.95%/43.71% for 31B/26B with exact native heads/four states/choices.
+Fresh reference timing is +2.31%/−5.59%, but strict quality fails 4/128 and 25/128
+positive-margin choices. Native 128-row untimed prefill differs from stock 256/1024;
+26B ring capacities also differ 1280/2048. This evidence does not qualify defaults,
+wider cohorts, assistants or corpus quality.
 
 The [current C4 phase split](experiments/gemma-owner-c4-phases/README.md)
 records 32 plan hits, 24.74 ms of checks and 78.73 ms outside execution,

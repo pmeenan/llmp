@@ -64,7 +64,8 @@ void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
   ggml_cuda_pool_alloc<float2> metadata(ctx.pool());
   const int heads = static_cast<int>(in.q->ne[2]);
   const int kvheads = heads / Group;
-  constexpr int owners = 4, cells = 256, query_rows = 1;
+  constexpr int owners = 4, query_rows = 1;
+  const int cells = static_cast<int>(in.mask->ne[0]);
   const int tiles = kvheads * owners;
   const int batch = ggml_cuda_fattn_mma_get_nbatch_fa(D, D, Columns * Group,
                                                       ggml_cuda_info().devices[ctx.device].cc);
@@ -147,7 +148,8 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
   geometry.group = d == 256 ? 2 : 8;
   geometry.mask_prepass = true;
   const int tiles = static_cast<int>(in.k[0]->ne[2]) * 4;
-  const int kvtiles = (256 + original->kv_batch - 1) / original->kv_batch;
+  const int cells = static_cast<int>(in.mask->ne[0]);
+  const int kvtiles = (cells + original->kv_batch - 1) / original->kv_batch;
   const int raw = std::min(original->blocks_per_sm * device.nsm, kvtiles * tiles);
   const int rounded = raw / tiles * tiles;
   const int loss = rounded > 0 ? 100 * (raw - rounded) / raw : 100;

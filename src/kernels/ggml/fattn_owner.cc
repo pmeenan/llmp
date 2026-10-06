@@ -70,15 +70,19 @@ bool Overlap(const ggml_tensor* a, const ggml_tensor* b) {
 }  // namespace
 
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& in) {
-  if (!in.q || !in.output || (in.q->ne[0] != 256 && in.q->ne[0] != 512) ||
+  if (!in.q || !in.mask || !in.output || (in.q->ne[0] != 256 && in.q->ne[0] != 512) ||
       (in.q->ne[2] != 16 && in.q->ne[2] != 32))
     return Rejected("owner MMA requires the closed Gemma head dimensions");
+  if (in.mask->ne[0] < 256 || in.mask->ne[0] > 16384 || in.mask->ne[0] % 256 != 0)
+    return Rejected("owner MMA requires bounded actual padded cache widths");
+  const auto cells = std::size_t(in.mask->ne[0]);
   const auto d = std::size_t(in.q->ne[0]), heads = std::size_t(in.q->ne[2]);
   const auto kvh = heads / (d == 256 ? 2 : 8);
   const auto qrow = d * heads * sizeof(float), kvrow = d * kvh * 2;
   if (!Shape(in.q, GGML_TYPE_F32, {std::int64_t(d), 1, std::int64_t(heads), 4},
              {4, qrow, d * 4, qrow}) ||
-      !Shape(in.mask, GGML_TYPE_F16, {256, 32, 1, 4}, {2, 512, 16384, 16384}) ||
+      !Shape(in.mask, GGML_TYPE_F16, {std::int64_t(cells), 32, 1, 4},
+             {2, cells * 2, cells * 64, cells * 64}) ||
       !Shape(in.output, GGML_TYPE_F32, {std::int64_t(d), std::int64_t(heads), 1, 4},
              {4, d * 4, qrow, qrow}) ||
       in.output->view_src)
@@ -86,8 +90,9 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
   std::array<const ggml_tensor*, 10> reads{in.q, in.mask};
   for (std::size_t owner = 0; owner < 4; ++owner) {
     for (const auto* tensor : {in.k[owner], in.v[owner]})
-      if (!Shape(tensor, GGML_TYPE_F16, {std::int64_t(d), 256, std::int64_t(kvh), 1},
-                 {2, kvrow, d * 2, kvrow * 256}))
+      if (!Shape(tensor, GGML_TYPE_F16,
+                 {std::int64_t(d), std::int64_t(cells), std::int64_t(kvh), 1},
+                 {2, kvrow, d * 2, kvrow * cells}))
         return Rejected("owner MMA requires actual current cell-major F16 cache views");
     reads[2 + owner] = in.k[owner];
     reads[6 + owner] = in.v[owner];

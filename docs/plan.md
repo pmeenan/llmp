@@ -450,8 +450,13 @@ family" guide, and its long-context scaling work.
         with all 128 heads exact. The [Gemma26 backward transfer](experiments/gemma26-owner-root-c4/README.md)
         lowers paid latency 7.13% with exact own heads/state; native is 0.265%
         slower than fresh stock, and two positive-margin choices still fail strict quality.
-        Wider reads/window crossings and quality qualification precede
-        production selection; no selector or default changes.
+        The [variable-width native opt-in](experiments/gemma-owner-variable/README.md)
+        removes K/V packing at 8K with exact native heads/four states/choices:
+        paid C4 falls 53.95% for 31B and 43.71% for 26B. Fresh stock leaves 31B
+        2.31% slower and 26B 5.59% faster, but strict quality fails 4/128 and 25/128
+        positive-margin choices. Different untimed prefill and 26B ring capacities
+        remain explicit. The owner option defaults off; wider cohorts, serving
+        recipes and genuine quality qualification remain open.
       - [x] [Current C4 phase accounting](experiments/gemma-owner-c4-phases/README.md):
         all 32 plans hit; checks cost 24.74 ms and paid time outside execution
         averages 78.73 ms. Exact heads/state/choices remain. This diagnostic

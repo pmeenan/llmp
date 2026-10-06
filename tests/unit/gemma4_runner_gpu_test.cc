@@ -267,7 +267,7 @@ TEST(Gemma4RunnerDefaults, CheckedPlainNormsDoNotEnableOtherExperiments) {
   EXPECT_TRUE(options.fuse_norms);
   EXPECT_FALSE(options.shared_q8 || options.row_invariant || options.rope_store ||
                options.fuse_norm_rope || options.fuse_norm_add || options.fuse_gemma_route ||
-               options.fuse_gemma_reduce);
+               options.fuse_gemma_reduce || options.owner_attention);
 }
 void Gemma4RunnerGpu::StateOnlyControl() {
   ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));

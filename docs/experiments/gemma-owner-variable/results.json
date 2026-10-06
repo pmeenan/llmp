@@ -1,0 +1,918 @@
+{
+  "schema": 1,
+  "experiment": "Gemma C4 variable-width owner-root attention",
+  "status": "checked native opt-in defaults OFF; batching quality remains unqualified",
+  "workload": {
+    "owners": 4,
+    "prefix_tokens": [
+      8188,
+      8189,
+      8190,
+      8191
+    ],
+    "anchors": 3,
+    "paid_waves": 32,
+    "paid_full_head_rows": 128,
+    "vocabulary": 262144,
+    "context_per_owner": 16384,
+    "native_prefill_rows": 128,
+    "native_local_ring_capacity": 1280,
+    "first_paid_global_read_cells": [
+      8192,
+      8448,
+      8448,
+      8448
+    ],
+    "first_paid_whole_graph_fallback": true,
+    "later_global_cells": 8448,
+    "input_bytes": 32908,
+    "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+    "paid": "32 complete joined decode waves including capture/replay, full head publication and argmax; full finite scans and state copies after timer",
+    "untimed": "setup, two prefills separated by reset, eight warm C4 waves and three forced anchors"
+  },
+  "profiles": {
+    "31": {
+      "factor": {
+        "packed_seconds": [
+          8.92466,
+          9.05816
+        ],
+        "owner_seconds": [
+          4.13991,
+          4.1403
+        ],
+        "packed_mean_seconds": 8.99141,
+        "owner_mean_seconds": 4.140105,
+        "owner_vs_packed_percent": -53.954885829919895,
+        "exact_complete_heads_four_states_and_128_choices": true,
+        "heads_and_initialized_states": {
+          "heads.f32": {
+            "sha256": "9f12a6e3362c3ac29b46b19afa014854cf6de31749a3dde4662b69c03f1c9622",
+            "bytes": 134217728
+          },
+          "owner-0.state": {
+            "sha256": "0bbd5bbd3b102e62bb49dce767039d03f2eb7da2700fa098c618d48a5566d9f0",
+            "bytes": 1740636160
+          },
+          "owner-1.state": {
+            "sha256": "c52d0703cf7f9880576dc15c11a73c1c63f99f7fcf83cadae97abf118e8ee176",
+            "bytes": 1740636160
+          },
+          "owner-2.state": {
+            "sha256": "3907c451309b12b7b9763347cfd749f3a13859e0b8a60ee9ca40c9b688f47b7f",
+            "bytes": 1740636160
+          },
+          "owner-3.state": {
+            "sha256": "0bf28d3513549c7557529afaafe324a2d7cadd21a81d6ccab159a83c7e406766",
+            "bytes": 1740636160
+          }
+        },
+        "finite_rows_per_arm": 128,
+        "captured_waves_per_arm": 1,
+        "replayed_waves_per_arm": 31,
+        "compiled_geometry": [
+          {
+            "heads": "32",
+            "head": "256",
+            "cells": "256",
+            "kvheads": "16",
+            "original_blocks": "48",
+            "original_blocks_per_sm": "1",
+            "owner_blocks_per_sm": "1",
+            "columns": "4",
+            "group": "2",
+            "scratch": "399616",
+            "threads": "128",
+            "shared_bytes": "66112",
+            "basis": "compiled-original-planner"
+          },
+          {
+            "heads": "32",
+            "head": "512",
+            "cells": "256",
+            "kvheads": "4",
+            "original_blocks": "96",
+            "original_blocks_per_sm": "2",
+            "owner_blocks_per_sm": "2",
+            "columns": "1",
+            "group": "8",
+            "scratch": "1585408",
+            "threads": "64",
+            "shared_bytes": "41168",
+            "basis": "compiled-original-planner"
+          },
+          {
+            "heads": "32",
+            "head": "256",
+            "cells": "1280",
+            "kvheads": "16",
+            "original_blocks": "48",
+            "original_blocks_per_sm": "1",
+            "owner_blocks_per_sm": "1",
+            "columns": "4",
+            "group": "2",
+            "scratch": "399616",
+            "threads": "128",
+            "shared_bytes": "66112",
+            "basis": "compiled-original-planner"
+          },
+          {
+            "heads": "32",
+            "head": "512",
+            "cells": "16384",
+            "kvheads": "4",
+            "original_blocks": "96",
+            "original_blocks_per_sm": "2",
+            "owner_blocks_per_sm": "2",
+            "columns": "1",
+            "group": "8",
+            "scratch": "1585408",
+            "threads": "64",
+            "shared_bytes": "41168",
+            "basis": "compiled-original-planner"
+          },
+          {
+            "heads": "32",
+            "head": "512",
+            "cells": "8192",
+            "kvheads": "4",
+            "original_blocks": "96",
+            "original_blocks_per_sm": "2",
+            "owner_blocks_per_sm": "2",
+            "columns": "1",
+            "group": "8",
+            "scratch": "1585408",
+            "threads": "64",
+            "shared_bytes": "41168",
+            "basis": "compiled-original-planner"
+          },
+          {
+            "heads": "32",
+            "head": "512",
+            "cells": "8448",
+            "kvheads": "4",
+            "original_blocks": "96",
+            "original_blocks_per_sm": "2",
+            "owner_blocks_per_sm": "2",
+            "columns": "1",
+            "group": "8",
+            "scratch": "1585408",
+            "threads": "64",
+            "shared_bytes": "41168",
+            "basis": "compiled-original-planner"
+          }
+        ],
+        "selected_plan_counts": {
+          "norm_rope": 120,
+          "norm_add": 120,
+          "norm_fused": 121,
+          "gemma_route": 0,
+          "gemma_reduce": 0
+        },
+        "raw_summary_sha256": "3b332cd8b366a6b95d163ef19e244756ccae7c9002bc16fd55394667e2f2e19f"
+      },
+      "fresh_reference": {
+        "native_seconds": [
+          4.13533,
+          4.14498
+        ],
+        "reference_seconds": [
+          4.04441,
+          4.04922
+        ],
+        "native_mean_seconds": 4.140155,
+        "reference_mean_seconds": 4.0468150000000005,
+        "native_vs_reference_percent": 2.3065052393054675,
+        "reference_heads_sha256": "abb63ebd1f2c33701902456cea8ff9de712cb2085756155e7829a55206e873c0",
+        "native_heads_sha256": "9f12a6e3362c3ac29b46b19afa014854cf6de31749a3dde4662b69c03f1c9622",
+        "reference_repeat_exact": true,
+        "complete_rows": 128,
+        "byte_exact_rows": 0,
+        "strict_argmax_differences": 4,
+        "positive_reference_winner_margin_differences": 4,
+        "strict_at_reference_tie": 0,
+        "max_raw_delta": 22.060398817062378,
+        "phase_counts": {
+          "first_wave": {
+            "rows": 4,
+            "byte_exact_rows": 0,
+            "strict_differences": 0,
+            "max_raw": 2.5170294046401978
+          },
+          "first_three_waves": {
+            "rows": 12,
+            "byte_exact_rows": 0,
+            "strict_differences": 0,
+            "max_raw": 2.987546682357788
+          },
+          "later_29_waves": {
+            "rows": 116,
+            "byte_exact_rows": 0,
+            "strict_differences": 4,
+            "max_raw": 22.060398817062378
+          }
+        }
+      },
+      "selected_16": {
+        "rows": 16,
+        "max_tv": 0.2136232303275314,
+        "max_absolute_forced_token_nll_delta": 1.8976619967249064,
+        "mean_signed_forced_token_nll_delta": -0.3558179615364645
+      },
+      "quality_gate": "FAIL: positive-reference-margin choices differ; no allowance",
+      "strict_misses": [
+        {
+          "step": 12,
+          "owner": 3,
+          "input_position": 8206,
+          "completed_positions": 8207,
+          "native_choice": 7002,
+          "reference_choice": 1638,
+          "reference_winner_over_native_choice": 0.7310400009155273
+        },
+        {
+          "step": 13,
+          "owner": 2,
+          "input_position": 8206,
+          "completed_positions": 8207,
+          "native_choice": 7002,
+          "reference_choice": 1638,
+          "reference_winner_over_native_choice": 0.8461613655090332
+        },
+        {
+          "step": 14,
+          "owner": 1,
+          "input_position": 8206,
+          "completed_positions": 8207,
+          "native_choice": 7002,
+          "reference_choice": 1638,
+          "reference_winner_over_native_choice": 1.5444221496582031
+        },
+        {
+          "step": 30,
+          "owner": 3,
+          "input_position": 8224,
+          "completed_positions": 8225,
+          "native_choice": 1581,
+          "reference_choice": 506,
+          "reference_winner_over_native_choice": 15.721683025360107
+        }
+      ],
+      "reference_parameters": {
+        "owners": "4",
+        "seconds": "4.04441",
+        "completed_waves": "32",
+        "completed_units": "128",
+        "first_past": "8191",
+        "input_mode": "supplied",
+        "unequal_past": "1",
+        "context": "65536",
+        "per_sequence_context": "16384",
+        "batch": "256",
+        "ubatch": "256",
+        "swa_full": "0",
+        "kv_unified": "0",
+        "intermediate_heads": "0",
+        "seq_max": "4",
+        "fusion": "enabled",
+        "graphs": "allowed",
+        "reused_delta": "32"
+      },
+      "reference_summary_sha256": "bdcba4a6f8db7b4f5fe7f433cb44712129953eeffbdb1ea0d10dbb68cecdcd49"
+    },
+    "26": {
+      "factor": {
+        "packed_seconds": [
+          2.09161,
+          2.10545
+        ],
+        "owner_seconds": [
+          1.1865,
+          1.17605
+        ],
+        "packed_mean_seconds": 2.0985300000000002,
+        "owner_mean_seconds": 1.181275,
+        "owner_vs_packed_percent": -43.70940610808519,
+        "exact_complete_heads_four_states_and_128_choices": true,
+        "heads_and_initialized_states": {
+          "heads.f32": {
+            "sha256": "cd2b7be25fbc7e0e675482fb75568eba1751db0b237fef35e068e305f021ef9e",
+            "bytes": 134217728
+          },
+          "owner-0.state": {
+            "sha256": "ccb562fb9dc039ba1eae8f394df6d8707366c02ef86f95e4c34ff54d9453a2a8",
+            "bytes": 435159040
+          },
+          "owner-1.state": {
+            "sha256": "042d5911b5f640277efc97f098122fc1c3875a0a34f71691c5c8c547cf0784e3",
+            "bytes": 435159040
+          },
+          "owner-2.state": {
+            "sha256": "6a25c1b31adb13a2831c32c6180dcc31744bf98cede759b46049351143bc6830",
+            "bytes": 435159040
+          },
+          "owner-3.state": {
+            "sha256": "606fc94edffccbb957829427a8abbf4fd6cb2a2e0150b4c3c3a4a0a2c6949ceb",
+            "bytes": 435159040
+          }
+        },
+        "finite_rows_per_arm": 128,
+        "captured_waves_per_arm": 1,
+        "replayed_waves_per_arm": 31,
+        "compiled_geometry": [
+          {
+            "heads": "16",
+            "head": "256",
+            "cells": "256",
+            "kvheads": "8",
+            "original_blocks": "48",
+            "original_blocks_per_sm": "1",
+            "owner_blocks_per_sm": "1",
+            "columns": "4",
+            "group": "2",
+            "scratch": "399616",
+            "threads": "128",
+            "shared_bytes": "66112",
+            "basis": "compiled-original-planner"
+          },
+          {
+            "heads": "16",
+            "head": "512",
+            "cells": "256",
+            "kvheads": "2",
+            "original_blocks": "64",
+            "original_blocks_per_sm": "2",
+            "owner_blocks_per_sm": "2",
+            "columns": "1",
+            "group": "8",
+            "scratch": "1057024",
+            "threads": "64",
+            "shared_bytes": "41168",
+            "basis": "compiled-original-planner"
+          },
+          {
+            "heads": "16",
+            "head": "256",
+            "cells": "1280",
+            "kvheads": "8",
+            "original_blocks": "48",
+            "original_blocks_per_sm": "1",
+            "owner_blocks_per_sm": "1",
+            "columns": "4",
+            "group": "2",
+            "scratch": "399616",
+            "threads": "128",
+            "shared_bytes": "66112",
+            "basis": "compiled-original-planner"
+          },
+          {
+            "heads": "16",
+            "head": "512",
+            "cells": "16384",
+            "kvheads": "2",
+            "original_blocks": "96",
+            "original_blocks_per_sm": "2",
+            "owner_blocks_per_sm": "2",
+            "columns": "1",
+            "group": "8",
+            "scratch": "1585408",
+            "threads": "64",
+            "shared_bytes": "41168",
+            "basis": "compiled-original-planner"
+          },
+          {
+            "heads": "16",
+            "head": "512",
+            "cells": "8192",
+            "kvheads": "2",
+            "original_blocks": "96",
+            "original_blocks_per_sm": "2",
+            "owner_blocks_per_sm": "2",
+            "columns": "1",
+            "group": "8",
+            "scratch": "1585408",
+            "threads": "64",
+            "shared_bytes": "41168",
+            "basis": "compiled-original-planner"
+          },
+          {
+            "heads": "16",
+            "head": "512",
+            "cells": "8448",
+            "kvheads": "2",
+            "original_blocks": "96",
+            "original_blocks_per_sm": "2",
+            "owner_blocks_per_sm": "2",
+            "columns": "1",
+            "group": "8",
+            "scratch": "1585408",
+            "threads": "64",
+            "shared_bytes": "41168",
+            "basis": "compiled-original-planner"
+          }
+        ],
+        "selected_plan_counts": {
+          "norm_rope": 60,
+          "norm_add": 90,
+          "norm_fused": 121,
+          "gemma_route": 30,
+          "gemma_reduce": 30
+        },
+        "raw_summary_sha256": "bb7317023f6bc58e79666982cb0d82c2a91b7f7fd1403f8d49d53ceb834ca049"
+      },
+      "fresh_reference": {
+        "native_seconds": [
+          1.17114,
+          1.18745
+        ],
+        "reference_seconds": [
+          1.24793,
+          1.25027
+        ],
+        "native_mean_seconds": 1.179295,
+        "reference_mean_seconds": 1.2490999999999999,
+        "native_vs_reference_percent": -5.588423665038822,
+        "reference_heads_sha256": "74e2f8cfc49364de7d5b6436bc1a23e33a5d767f1d4403d3a3c458413ee5628c",
+        "native_heads_sha256": "cd2b7be25fbc7e0e675482fb75568eba1751db0b237fef35e068e305f021ef9e",
+        "reference_repeat_exact": true,
+        "complete_rows": 128,
+        "byte_exact_rows": 0,
+        "strict_argmax_differences": 25,
+        "positive_reference_winner_margin_differences": 25,
+        "strict_at_reference_tie": 0,
+        "max_raw_delta": 12.566153049468994,
+        "phase_counts": {
+          "first_wave": {
+            "rows": 4,
+            "byte_exact_rows": 0,
+            "strict_differences": 0,
+            "max_raw": 9.268728256225586
+          },
+          "first_three_waves": {
+            "rows": 12,
+            "byte_exact_rows": 0,
+            "strict_differences": 3,
+            "max_raw": 9.268728256225586
+          },
+          "later_29_waves": {
+            "rows": 116,
+            "byte_exact_rows": 0,
+            "strict_differences": 22,
+            "max_raw": 12.566153049468994
+          }
+        }
+      },
+      "selected_16": {
+        "rows": 16,
+        "max_tv": 0.4839890216515457,
+        "max_absolute_forced_token_nll_delta": 2.379197230922273,
+        "mean_signed_forced_token_nll_delta": -0.3850877686514635
+      },
+      "quality_gate": "FAIL: positive-reference-margin choices differ; no allowance",
+      "strict_misses": [
+        {
+          "step": 1,
+          "owner": 0,
+          "input_position": 8192,
+          "completed_positions": 8193,
+          "native_choice": 1852,
+          "reference_choice": 108,
+          "reference_winner_over_native_choice": 0.3165903091430664
+        },
+        {
+          "step": 1,
+          "owner": 3,
+          "input_position": 8195,
+          "completed_positions": 8196,
+          "native_choice": 22142,
+          "reference_choice": 7002,
+          "reference_winner_over_native_choice": 0.20480728149414062
+        },
+        {
+          "step": 2,
+          "owner": 2,
+          "input_position": 8195,
+          "completed_positions": 8196,
+          "native_choice": 22142,
+          "reference_choice": 7002,
+          "reference_winner_over_native_choice": 0.532465934753418
+        },
+        {
+          "step": 6,
+          "owner": 1,
+          "input_position": 8198,
+          "completed_positions": 8199,
+          "native_choice": 5572,
+          "reference_choice": 1388,
+          "reference_winner_over_native_choice": 0.2638254165649414
+        },
+        {
+          "step": 7,
+          "owner": 0,
+          "input_position": 8198,
+          "completed_positions": 8199,
+          "native_choice": 1388,
+          "reference_choice": 5572,
+          "reference_winner_over_native_choice": 0.5465860366821289
+        },
+        {
+          "step": 12,
+          "owner": 3,
+          "input_position": 8206,
+          "completed_positions": 8207,
+          "native_choice": 1346,
+          "reference_choice": 4148,
+          "reference_winner_over_native_choice": 0.1451835334300995
+        },
+        {
+          "step": 13,
+          "owner": 2,
+          "input_position": 8206,
+          "completed_positions": 8207,
+          "native_choice": 1346,
+          "reference_choice": 2268,
+          "reference_winner_over_native_choice": 0.4250985383987427
+        },
+        {
+          "step": 13,
+          "owner": 3,
+          "input_position": 8207,
+          "completed_positions": 8208,
+          "native_choice": 236772,
+          "reference_choice": 529,
+          "reference_winner_over_native_choice": 0.2682514190673828
+        },
+        {
+          "step": 14,
+          "owner": 2,
+          "input_position": 8207,
+          "completed_positions": 8208,
+          "native_choice": 236772,
+          "reference_choice": 529,
+          "reference_winner_over_native_choice": 0.10887336730957031
+        },
+        {
+          "step": 15,
+          "owner": 1,
+          "input_position": 8207,
+          "completed_positions": 8208,
+          "native_choice": 236772,
+          "reference_choice": 529,
+          "reference_winner_over_native_choice": 0.20679473876953125
+        },
+        {
+          "step": 15,
+          "owner": 3,
+          "input_position": 8209,
+          "completed_positions": 8210,
+          "native_choice": 101,
+          "reference_choice": 45518,
+          "reference_winner_over_native_choice": 2.9822301864624023
+        },
+        {
+          "step": 16,
+          "owner": 3,
+          "input_position": 8210,
+          "completed_positions": 8211,
+          "native_choice": 569,
+          "reference_choice": 674,
+          "reference_winner_over_native_choice": 1.965712070465088
+        },
+        {
+          "step": 17,
+          "owner": 1,
+          "input_position": 8209,
+          "completed_positions": 8210,
+          "native_choice": 101,
+          "reference_choice": 45518,
+          "reference_winner_over_native_choice": 1.7499598264694214
+        },
+        {
+          "step": 18,
+          "owner": 1,
+          "input_position": 8210,
+          "completed_positions": 8211,
+          "native_choice": 569,
+          "reference_choice": 674,
+          "reference_winner_over_native_choice": 1.6906156539916992
+        },
+        {
+          "step": 19,
+          "owner": 1,
+          "input_position": 8211,
+          "completed_positions": 8212,
+          "native_choice": 569,
+          "reference_choice": 529,
+          "reference_winner_over_native_choice": 0.19321727752685547
+        },
+        {
+          "step": 19,
+          "owner": 3,
+          "input_position": 8213,
+          "completed_positions": 8214,
+          "native_choice": 22142,
+          "reference_choice": 569,
+          "reference_winner_over_native_choice": 9.23171854019165
+        },
+        {
+          "step": 20,
+          "owner": 0,
+          "input_position": 8211,
+          "completed_positions": 8212,
+          "native_choice": 569,
+          "reference_choice": 529,
+          "reference_winner_over_native_choice": 5.25718879699707
+        },
+        {
+          "step": 20,
+          "owner": 3,
+          "input_position": 8214,
+          "completed_positions": 8215,
+          "native_choice": 236859,
+          "reference_choice": 1346,
+          "reference_winner_over_native_choice": 1.2096986770629883
+        },
+        {
+          "step": 21,
+          "owner": 1,
+          "input_position": 8213,
+          "completed_positions": 8214,
+          "native_choice": 569,
+          "reference_choice": 2820,
+          "reference_winner_over_native_choice": 1.3391389846801758
+        },
+        {
+          "step": 22,
+          "owner": 0,
+          "input_position": 8213,
+          "completed_positions": 8214,
+          "native_choice": 569,
+          "reference_choice": 1595,
+          "reference_winner_over_native_choice": 0.9574804306030273
+        },
+        {
+          "step": 22,
+          "owner": 3,
+          "input_position": 8216,
+          "completed_positions": 8217,
+          "native_choice": 6420,
+          "reference_choice": 26804,
+          "reference_winner_over_native_choice": 0.5524082183837891
+        },
+        {
+          "step": 28,
+          "owner": 3,
+          "input_position": 8222,
+          "completed_positions": 8223,
+          "native_choice": 496,
+          "reference_choice": 834,
+          "reference_winner_over_native_choice": 0.011732101440429688
+        },
+        {
+          "step": 29,
+          "owner": 2,
+          "input_position": 8222,
+          "completed_positions": 8223,
+          "native_choice": 496,
+          "reference_choice": 834,
+          "reference_winner_over_native_choice": 0.16464614868164062
+        },
+        {
+          "step": 31,
+          "owner": 0,
+          "input_position": 8222,
+          "completed_positions": 8223,
+          "native_choice": 834,
+          "reference_choice": 496,
+          "reference_winner_over_native_choice": 0.20894622802734375
+        },
+        {
+          "step": 31,
+          "owner": 2,
+          "input_position": 8224,
+          "completed_positions": 8225,
+          "native_choice": 496,
+          "reference_choice": 506,
+          "reference_winner_over_native_choice": 2.6299829483032227
+        }
+      ],
+      "reference_parameters": {
+        "owners": "4",
+        "seconds": "1.24793",
+        "completed_waves": "32",
+        "completed_units": "128",
+        "first_past": "8191",
+        "input_mode": "supplied",
+        "unequal_past": "1",
+        "context": "65536",
+        "per_sequence_context": "16384",
+        "batch": "1024",
+        "ubatch": "1024",
+        "swa_full": "0",
+        "kv_unified": "0",
+        "intermediate_heads": "0",
+        "seq_max": "4",
+        "fusion": "enabled",
+        "graphs": "allowed",
+        "reused_delta": "32"
+      },
+      "reference_summary_sha256": "ac1f05742e7600f8a152f0fc48696eb463f4e862478c20031c0ab1e6b88e46fe",
+      "manual_budget_capacity": {
+        "fixed": 1143997440,
+        "weights": 17047748608,
+        "state_capacity": 2600468480,
+        "publication": 142606336,
+        "unique_key_bound": 137,
+        "plan_floor": 3770224,
+        "planning_scratch": 16679936,
+        "plan_graph_capacity": 17045182704,
+        "host_floor": 165153648,
+        "total": 40597151984
+      }
+    }
+  },
+  "provenance": {
+    "host": "spark / spark-c4e2, NVIDIA GB10",
+    "driver": "580.178.04 inherited checked environment; no new driver probe",
+    "native_sdk": "aarch64-c09daba6ac31edee: NVCC13.4.92, CUDA toolkit13.4.2, Clang22.1.8",
+    "native_sdk_receipt_sha256": "fbf84c74d44bbefce71c6499d43b9fc9b6844e994d25decce23df3f06c1031c2",
+    "original_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "original_toolchain": "CUDA13.3.0 / CUDART13.3.29-1, inherited pinned image",
+    "original_client_sha256": "4ee486724a126a7a1eaa83884b030690499dde06224b02c81e5a152f62613710",
+    "native_v1_sha256": "3cb15371d7d0ea8ad1a5462ebeac606419e148a8a7fc35c166cb0642f4911da0",
+    "native_v2_sha256": "57b4ad44620695368c1003c6b4e939c999f1a1a8806cd33a91a84fefd71a2c76",
+    "measured_v1_bundle_sha256": "4e461ba0c5088aae29949904b7e25ee11c0b3a7f2017c54c1a4e08b2f08f454f",
+    "measured_v2_bundle_sha256": "3545d847fb7ad9dc2a6bf6af6d37453a7f143455a0dbc1d2f32edffc9d52ec09",
+    "final_code19_bundle_sha256": "9f791840be5c0c1aab96f7107761b6b0de952b9cf542dd105980e8144241ce21",
+    "measured_base": "f5d946e",
+    "final_head_capacity_reconciliation_base": "9761bb0",
+    "artifact_manifests": {
+      "31": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+      "26": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
+    },
+    "tensorfold_entry": {
+      "task": "Task70 variable-width checked owner-root integration, source only",
+      "base": "f5d946e",
+      "observed_utc": "2026-10-06T02:07:45.028750+00:00",
+      "head": "609ca419abecebdc5a059498a613680bd3aa847f",
+      "version": "0.6.5",
+      "recipe": "Primary MLX26 recipe only; no matching CUDA recipe",
+      "records": [
+        {
+          "path": "src/tensorfold/__init__.py",
+          "url": "https://raw.githubusercontent.com/ashhart/TensorFold/609ca419abecebdc5a059498a613680bd3aa847f/src/tensorfold/__init__.py",
+          "bytes": 137,
+          "sha256": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+        },
+        {
+          "path": "docs/recipes/gemma-4.md",
+          "url": "https://raw.githubusercontent.com/ashhart/TensorFold/609ca419abecebdc5a059498a613680bd3aa847f/docs/recipes/gemma-4.md",
+          "bytes": 10845,
+          "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+        }
+      ]
+    }
+  },
+  "limits": [
+    "Native own/cross equality is separate from stock quality. No original/native state comparison.",
+    "Stock fast untimed prefill is256 rows31 and1024 rows26 versus native128; stock26 ring2048 versus native1280.",
+    "Single same-host bookend; no sustained competitive timing or corpus PPL claim.",
+    "Selected16 likelihoods do not qualify corpus quality. No unique cause attributed to remaining differences.",
+    "C1/C2/C8/multirow/features/unequal-width/oversized-parent paths retain original graph; groups of four within larger cohorts not implemented.",
+    "Owner path defaults OFF. Current cap4 ownerON production integration remains a separate Task71 control.",
+    "Full suite deferred under owner optimization override. Raw rows, state, logs and telemetry remain external."
+  ],
+  "checks": {
+    "final_host": "spark-b / spark-56f5",
+    "metadata_modes": 3,
+    "cases_per_mode": 12,
+    "graph_tests": 17,
+    "plan_tests": 12,
+    "default_headcap_tests": 4,
+    "cpu_descriptor_object_no_cuda_relocations": true,
+    "source_contract_tests": 4,
+    "full_suite": "owner-deferred; not run",
+    "actual_cap4_owner_on_fixture": "not in this task; Task71 integration pending",
+    "sdk_final_receipt_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",
+    "final_check2": "steps1\u201311 passed, sources.closure refused four stale existing diagnostic object dependency records; job rc1",
+    "final_check3": "three manual diagnostic target refreshes +sources4/4+sourcepost+receipt; five steps DONE0"
+  },
+  "official_gates": {
+    "build1": {
+      "final_sha256": "2746755760412a66d5c9ab19d71af06e1e53f3ed4be91ad4bebf4ee74287f437",
+      "steps_sha256": "70f6716eb8432facb01fcc91921edc84dcf1e474ef3c57f43e97744d6707da63",
+      "status": "done",
+      "rc": 0
+    },
+    "build2": {
+      "final_sha256": "17ac962464ada8fcedb17d82e1d2170bfe0a850c1c8cbe70415e9dc4da306745",
+      "steps_sha256": "2b71ae34f61c80bee0899668fb78d473db8f564ab210eabd6cb8de4ef7d3ceda",
+      "status": "done",
+      "rc": 0
+    },
+    "factor1": {
+      "final_sha256": "145cb71d176f6d8394744d5b9a99d0d9495ddc1a7fb5f8efb7d1194bc793619d",
+      "steps_sha256": "fae432b2c525b2bce61aa746e8b618c5eb20a46878ef4b4be3baea54a1179d70",
+      "status": "done",
+      "rc": 0
+    },
+    "factor2": {
+      "final_sha256": "334bfd8e4104672d78e7e5adebcdfd90bf9a5f56f1fef3f8dcd20f44ce949bbc",
+      "steps_sha256": "fdfe9d56460a9af9ed910084d6d369a1abab17ae1ed7fc167503dd471b6fd4f4",
+      "status": "done",
+      "rc": 0
+    },
+    "check1": {
+      "final_sha256": "7853ff534fabccacd5a9e520e2146c4cad51218561ef81b8e89865d769a141f8",
+      "steps_sha256": "ed1a874b093b3f01077aa1f73526171d8209302726e0659c984ef395a03011c2",
+      "status": "done",
+      "rc": 0
+    },
+    "factor26-v2-1": {
+      "final_sha256": "49785cfc1109ece0d78c7a31e1be991dec588fab7222474f37e62623de085066",
+      "steps_sha256": "7ef2ab1bfe5ddd9227ab17f55ae7951ba71d3ac95e36c8ef2c8f21d4989e71b7",
+      "status": "done",
+      "rc": 0
+    },
+    "factor26-v2-2": {
+      "final_sha256": "86b818ec65336b631523de35c0ea91752e4f6ffeca59e93b706e5444560ffc19",
+      "steps_sha256": "7f8aa909d7ad489bb8e9bc6c8219a114bf6fef084edd2fca088a059a45120892",
+      "status": "done",
+      "rc": 0
+    },
+    "factor26-v2-check1": {
+      "final_sha256": "85ab042f5ee1f0f931289cb82e85eb582ba3d7d72c4be516fc2ae2dc1213d938",
+      "steps_sha256": "1b94b4d87ba978ef5c4b5bce87d550d6001a158145d59c226b91a608b76582fa",
+      "status": "done",
+      "rc": 0
+    },
+    "reference-build2": {
+      "final_sha256": "b3c0c9b5909ab12e8156513f6469ccc1d73508a3c0afc205694e71478b6414d0",
+      "steps_sha256": "8161a97dc8f2b4f33cb21d95f89cd589e207a88c97e813e713c67826b794529f",
+      "status": "done",
+      "rc": 0
+    },
+    "reference31-retry1": {
+      "final_sha256": "8f24c73f18599d9fbfd2f7abfd1f1c4cc5f4b746a957c7750ae94c6cca581364",
+      "steps_sha256": "35a13a6d432d49a701a3ce35b04d5a5cfac2b885127cd0ba705a88dea26af2b2",
+      "status": "done",
+      "rc": 0
+    },
+    "reference31-2": {
+      "final_sha256": "5ec3c6d9f55f4aa4e5a1a225b4e95ca0a3b3561856866e83bf499cbdea3a2bdd",
+      "steps_sha256": "bfff5af797792efb3088f3e2eac70227b8eb6993d0111986c79f849ca18c02a2",
+      "status": "done",
+      "rc": 0
+    },
+    "reference31-check2": {
+      "final_sha256": "28a0ff7b8876d197f4c9ce7f6ce105e19dd248b536ee483b5e18690c465d542b",
+      "steps_sha256": "0b59488f05c3d6f3ca1c37fc4a3a743752c54dba73283b7381773b68c025d7e4",
+      "status": "done",
+      "rc": 0
+    },
+    "reference26-1": {
+      "final_sha256": "981ef11f2c9dd34c106b161f66cae5ef620cb9ce6d05487ddb61972b7bacd88c",
+      "steps_sha256": "91fb73eb35ee2f2afaad86f88f5492e684971308821ba0caa15e13e9e5a01cd2",
+      "status": "done",
+      "rc": 0
+    },
+    "reference26-2": {
+      "final_sha256": "4d179af721ca0f2f6ee68f5b2613ce47dcb36657185d9ca4ab5ebd254c39f806",
+      "steps_sha256": "36fdb785bc7c21ed2d2c5625a8f3cf8d22b6244cd0d01a106eef84d22bcdd86f",
+      "status": "done",
+      "rc": 0
+    },
+    "reference26-check1": {
+      "final_sha256": "5b28dd0d382e945a780fc3e317ae43767a5ea43db0c9a9aa3365cb773dbaf803",
+      "steps_sha256": "56d9272e97bc3ee8edd8d17c3d54efbe5ef10a4fdb8c4f6ed64f92d7a80732f9",
+      "status": "done",
+      "rc": 0
+    },
+    "final-check1": {
+      "final_sha256": "208d981326ade92b691b60f29a21c37f153abb35bbfb9c34a37b0b4e25912eba",
+      "steps_sha256": "b26da931c042b2004c68ca03a1be5fa03fbba5bfa15414448c8cb634d00e09ea",
+      "status": "failed",
+      "rc": 1
+    },
+    "final-check2": {
+      "final_sha256": "2e5be43a4409a11ea6706a120bcd04b58b493a66d23f46825aaad3746e0ea6e4",
+      "steps_sha256": "91e11285ea58711ff09658abe649c7c98528efcaa1dc715886aa1a728c8e0fc8",
+      "status": "failed",
+      "rc": 1
+    },
+    "final-check3": {
+      "final_sha256": "cec0cce4c358008a08cca76bf35fa98344320407ea4cdae8746066dd6023151c",
+      "steps_sha256": "7f2643a766acc7016826ba53c9704f7aed7265c7e1ca03725747270372c589ef",
+      "status": "done",
+      "rc": 0
+    }
+  },
+  "preserved_failures": [
+    "initial26 execution-budget refusal before any paid wave",
+    "reference build1 missing retained headers/include path",
+    "reference31 first wrapper rc126 before model launch",
+    "reference31 initial parser rejected interleaved destructor diagnostics; analysis-only correction, no inference rerun",
+    "final-check1 missing mise PATH before compilation",
+    "final-check2 stale existing diagnostic dependency records; narrowly repaired"
+  ]
+}

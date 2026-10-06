@@ -41,6 +41,9 @@ struct Gemma4ChunkShape {
   Gemma4OutputMode output_mode = Gemma4OutputMode::kHead;
   bool operator==(const Gemma4ChunkShape&) const = default;
 };
+// Packed is an explicit comparison mode; owners is a separately enabled
+// four-stream path. Unsupported shapes retain independent attention unchanged.
+enum class Gemma4AttentionMode : std::uint8_t { kIndependent, kPacked, kOwners };
 struct Gemma4GraphOptions {
   // Prepared array strides, indexed by the binding's expert-array index.
   // Empty selects readable slices aligned to lcm(16, GGML block bytes),
@@ -63,6 +66,7 @@ struct Gemma4GraphOptions {
   // Narrow after final attention, before its sandwich norm, as the pinned
   // reference's masked frontier. false retains every final hidden row.
   bool narrow_final = false;
+  Gemma4AttentionMode attention_mode = Gemma4AttentionMode::kIndependent;
   bool operator==(const Gemma4GraphOptions&) const = default;
 };
 struct Gemma4WeightLeaf {
@@ -87,6 +91,8 @@ struct Gemma4Graph {
   std::uint64_t state_bytes = 0;
   Gemma4ChunkShape shape;
   Gemma4GraphOptions options;
+  // Actual graph mode: unequal widths/unsupported shapes report independent.
+  Gemma4AttentionMode attention_mode = Gemma4AttentionMode::kIndependent;
   ggml_tensor* tokens = nullptr;
   ggml_tensor* input_hidden = nullptr;
   ggml_tensor* positions = nullptr;
@@ -103,6 +109,13 @@ struct Gemma4Graph {
 };
 
 std::size_t Gemma4GraphTensors(const model::Gemma4Profile& profile, std::size_t segments);
+std::size_t Gemma4GraphTensors(const model::Gemma4Profile& profile, std::size_t segments,
+                               const Gemma4GraphOptions& options);
+// Shared by the opt-in builder and manual packed/owner causal comparison.
+// Requires the complete original graph; malformed writer edges refuse before
+// transformation. Unsupported shapes return it unchanged.
+std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, Gemma4Graph& graph,
+                                                            Gemma4AttentionMode mode);
 std::expected<void, KernelFailure> CheckGemma4Graph(const model::Gemma4Profile& profile,
                                                     const model::Gemma4Binding& binding,
                                                     const model::Gemma4StateLayout& state,
