@@ -449,6 +449,11 @@ family" guide, and its long-context scaling work.
         initialized states; plain-norm-on remains 2.10% slower than fresh stock,
         with all 128 heads exact. Wider reads/window crossings and Gemma26 transfer
         precede production selection; no selector or default changes.
+      - [x] [Current C4 phase accounting](experiments/gemma-owner-c4-phases/README.md):
+        all 32 plans hit; checks cost 24.74 ms and paid time outside execution
+        averages 78.73 ms. Exact heads/state/choices remain. This diagnostic
+        supplies no fresh-reference or active-GPU attribution; immutable-weight
+        placement checks are a bounded lead, not the whole remaining gap.
       - [x] [Current full-head corpus screen](experiments/gemma-current-quality/README.md):
         31B both256/plain-norm-on matches all 1,024 fresh ring-reference heads
         and 1,023 likelihoods exactly. The 26B all1024 transfer has nine positive-

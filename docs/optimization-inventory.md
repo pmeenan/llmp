@@ -464,6 +464,13 @@ Plain-norm-on remains 2.10% slower than fresh original bookends with all 128 hea
 byte-exact. Other read widths/window crossings and Gemma26/assistant transfer
 need actual controls; production selection remains unchanged.
 
+The [current C4 phase split](experiments/gemma-owner-c4-phases/README.md)
+records 32 plan hits, 24.74 ms of checks and 78.73 ms outside execution,
+with exact native heads/state/choices. The latter includes 43.57 ms outside
+all runner phases. Repeated immutable-weight placement scans are a lead;
+this diagnostic establishes neither their share of the checks phase nor
+active GPU time or a fresh competitive gap.
+
 The [current corpus screen](experiments/gemma-current-quality/README.md)
 checks the actually measured solo research policies with plain norm fusion:
 31B both256 matches all 1,024 complete fresh ring-reference heads byte for byte;

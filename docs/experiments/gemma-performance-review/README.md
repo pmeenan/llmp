@@ -179,6 +179,10 @@ The subsequent [independent-cache C4 consumer](../gemma-owner-root-c4/README.md)
 removes K/V packing alone for 8.93% lower paid latency. Plain-norm-on is now
 2.10% slower than fresh original bookends, with all 128 heads byte-exact.
 This context-256 diagnostic leaves wider contexts and production selection open.
+The [current C4 phase split](../gemma-owner-c4-phases/README.md) records 32 plan
+hits and 24.74 ms in checks. Paid time outside execution averages 78.73 ms,
+including 43.57 ms outside all runner phases; these spans do not establish
+active GPU cost or a fresh-reference gap.
 [Gemma26 packed compound C4](../gemma26-compound-packed-c4/README.md)
 still has 2/128 positive-margin disagreements, 92/128 exact heads, and a 7.15%
 time deficit. [Common-input late MoE controls](../gemma26-late-moe/README.md)

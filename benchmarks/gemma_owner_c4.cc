@@ -41,6 +41,11 @@ int main(int argc, char** argv) {
       std::string_view(normmul_option) != "1")
     return 2;
   const bool normmul = normmul_option && std::string_view(normmul_option) == "1";
+  const char* phases_option = std::getenv("JITLLM_GEMMA_C4_PHASES");
+  if (phases_option && std::string_view(phases_option) != "0" &&
+      std::string_view(phases_option) != "1")
+    return 2;
+  const bool account_phases = phases_option && std::string_view(phases_option) == "1";
   std::vector<std::int32_t> supplied;
   if (argc == 8) {
     supplied.resize(1024);
@@ -213,6 +218,11 @@ int main(int argc, char** argv) {
         for (std::uint32_t step = 0; step < 3; ++step)
           if (auto r = wave(step); !r) return r;
         const auto before = runner.graph_stats();
+        if (account_phases) {
+          runner.EnablePhaseAccounting();
+          (void)runner.TakePhaseAccounting();
+          (void)node.TakeTimes(0);
+        }
         const auto started = std::chrono::steady_clock::now();
         for (std::uint32_t step = 0; step < steps; ++step) {
           if (auto r = wave(step + 3); !r) return r;
@@ -225,6 +235,29 @@ int main(int argc, char** argv) {
           }
         }
         const auto elapsed = en::support::Seconds(std::chrono::steady_clock::now() - started);
+        if (account_phases) {
+          // Only the paid waves: exclude warm-up, finite scans and state copies.
+          // Bind/coverage/cache are nested; stream time includes submission gaps.
+          const auto phases = runner.TakePhaseAccounting();
+          const auto jobs = node.TakeTimes(0);
+          std::cout << "C4_PHASE planned_calls=" << phases.planned_calls << " hits=" << phases.hits
+                    << " misses=" << phases.misses;
+          constexpr std::array names{"checks",
+                                     "inputs",
+                                     "state",
+                                     "required_planning",
+                                     "staging",
+                                     "execution",
+                                     "publication_cleanup"};
+          for (std::size_t i = 0; i < names.size(); ++i)
+            std::cout << ' ' << names[i] << "_seconds=" << phases.seconds[i];
+          std::cout << " bind_seconds=" << phases.bind_seconds
+                    << " coverage_seconds=" << phases.coverage_seconds
+                    << " cache_seconds=" << phases.cache_seconds << " job_steps=" << jobs.steps
+                    << " job_wall=" << jobs.wall << " dispatch=" << jobs.dispatch
+                    << " submission=" << jobs.job << " after=" << jobs.after
+                    << " stream_elapsed=" << jobs.device << '\n';
+        }
         // Whole-array finite admission is deliberately OUTSIDE the paid interval,
         // matching the unchanged original client. Publication/argmax were paid.
         if (!std::ranges::all_of(published, [](float x) { return std::isfinite(x); }))

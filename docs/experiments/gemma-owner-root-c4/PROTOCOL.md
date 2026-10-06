@@ -69,3 +69,7 @@ bookend requires separate root release. It pays all remaining packing, full
 head publication and argmax in the same format. No full suite, context ladder,
 production default or assistant inference claim. Actual Gemma26 backward
 transfer follows a useful Gemma31 result and requires its own controls.
+
+The subsequent [phase diagnostic](../gemma-owner-c4-phases/README.md) adds
+`JITLLM_GEMMA_C4_PHASES=0|1`, default off, to the same helper. It resets counters
+before paid waves and reads them after the timer; it changes no graph policy.
