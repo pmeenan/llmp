@@ -106,8 +106,10 @@ heads16/32 proofs cover general, uniform and metadata-free branches with exact
 eager/captured output. Gemma31 C5 now has zero strict differences,160 paid exact
 heads and −0.20935% conditional loss against retained FIRST stock; its old eight
 strict differences/ +3.8918% loss remain failed evidence. Unequal widths retain
-unqualified fallback; other model counts, Gemma26 transfer and sustained timing
-remain open. The unadopted default recipe is excluded from this opt-in unit.
+unqualified fallback. The [expanded primitive/26B transfer](experiments/gemma-partial-owner-transfer/README.md)
+passes N7 tail3/N9 third-group operators, but Gemma26 C5 retains two strict
+differences /165 heads with an independent 160-target loss PASS. Other model
+counts and sustained timing remain open. The unadopted default recipe is excluded from this opt-in unit.
 
 ## Coverage
 

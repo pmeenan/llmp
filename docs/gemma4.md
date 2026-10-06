@@ -394,9 +394,11 @@ adds opt-in whole5/6/7/9/10/11 geometry with bounded active roots and original
 whole-grid fixups. N5/N6 primitive controls pass heads16/32 across all three
 fixup cases. Gemma31 C5 recovers its original strict/loss failure: zero strict
 choices, 160 paid byte-exact heads and −0.20935% 160-target conditional loss against
-retained FIRST stock. Serving defaults remain off; unequal widths, other model
-partial counts, Gemma26 transfer, full corpus, depth and sustained qualification
-remain open.
+retained FIRST stock. The [later N7/N9 primitive controls](experiments/gemma-partial-owner-transfer/README.md)
+pass, while FIRST Gemma26 C5 retains two strict differences despite an independent
+160-target loss PASS. Serving defaults remain off; unequal widths, other model
+partial counts, strict 26 C5 qualification, full corpus, depth and sustained
+qualification remain open.
 
 
 ## Bounded native serving route

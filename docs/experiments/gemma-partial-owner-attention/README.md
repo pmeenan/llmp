@@ -97,3 +97,9 @@ d5583c5358e46bbc137347a80c44bcdc3994f246fb78bbc3b18085de6bdc9be8.
 The file retains both copyrights and SPDX terms; [GGML provenance](../../upstream/ggml.md)
 records the port. [Aggregate receipts](results.json) bind source, proof, model,
 comparison, failed attempts and owned analysis retirement.
+
+The subsequent [primitive and Gemma26 transfer](../gemma-partial-owner-transfer/README.md)
+adds exact N7 tail3/N9 third-group controls. Gemma26 C5 retains two strict
+positive-margin differences despite a passing independent 160-target loss gate;
+its strict qualification remains open. These later results do not change the
+Gemma31 recovery or adopt serving defaults.

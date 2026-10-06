@@ -1,0 +1,201 @@
+{
+  "initialized_state": {
+    "bytes_per_snapshot": 230686720,
+    "complete_finite_heads_per_arm": 165,
+    "full_native_own_repeat_exact": true,
+    "head_bytes_per_arm": 173015040,
+    "layout_and_carrier_repeat_exact": true,
+    "snapshots_per_native_arm": 10
+  },
+  "limitations": [
+    "No production/kernel/default change; operator test expansion only",
+    "No current stock router selection observer; prefix-routing explanation is an untested hypothesis",
+    "Gemma26 C5 strict failure remains open; conditional PASS does not waive it",
+    "Sequential short native and reference pairs are not bookended or sustained timing evidence",
+    "Equal padded reads only; unequal fallback and model N7/N9/other partial counts remain unqualified",
+    "No full 1023-transition corpus, depth or serving-default qualification"
+  ],
+  "official_jobs": [
+    {
+      "name": "compare26-1",
+      "queued_steps": 3,
+      "rc": 1,
+      "sha256": {
+        "final.json": "66cba285e8a5811412b685a6763087f4e295fbd74a642f44acaa5ae3c7c4305f",
+        "job.json": "9636bfd72dda54419804dc26ba367ac125afb9c6f4fa385cda8ec9dc985acf33",
+        "log": "e1a4ff565955a0862e3c00cf80b6a0a3bd8dded7260d439ce9aa3903ee633ec0",
+        "steps.json": "7a0c02176d74c25fdeed2173e8dc87128875507a18d8033492ae425a5718bb49"
+      },
+      "state": "failed",
+      "successful_steps": 1
+    },
+    {
+      "name": "native26-1",
+      "queued_steps": 6,
+      "rc": 0,
+      "sha256": {
+        "final.json": "f5ee8c7c4a02af6ea9c6dbf72fef0306efb9031ff1a342fe7305870c8eb65269",
+        "job.json": "303d777afae61b651dac03733bb80eb6a6edae061808d221d8f825d6d77507b5",
+        "log": "9e06da12d6d071681d0ec212057a4762c1a5b72e2e15c575556bd66d94310bbc",
+        "steps.json": "8ea65f59f51a8b240a565a3d9d6b2d3189f0ebac46e44c2c057d5313cc811661"
+      },
+      "state": "done",
+      "successful_steps": 6
+    },
+    {
+      "name": "operator1",
+      "queued_steps": 5,
+      "rc": 0,
+      "sha256": {
+        "final.json": "d9e93e9342dccfff7596f5c9ef81b382fcf2a3749ec4402d8af0bb0def74707b",
+        "job.json": "4054f2136f54d96679185d63e2481761434274a6299b34603c9efad084af9aae",
+        "log": "a3d8def8d31d4c2d6b2f789d029a8946b1ab04e8ea98305842fea2fe5c63e50a",
+        "steps.json": "1bc72f7274fcd993ff4c290e1051b038c16397d8b2e23aca30874fa7edc2a7f9"
+      },
+      "state": "done",
+      "successful_steps": 5
+    },
+    {
+      "name": "own26-1",
+      "queued_steps": 3,
+      "rc": 0,
+      "sha256": {
+        "final.json": "1362dd7aaafe3510cbcdda86020dd7dd9eb0dfeaa089d73103aa3216af21a821",
+        "job.json": "23d0cfbe7e7953f550fb5549ee8395ab209a738af6cfcb37877dc8ee3f2b12b5",
+        "log": "88408bba5f27817848e3e3c9e4783d9241709b416b3ecdcca3590f8253c2b7a0",
+        "steps.json": "37e5f298b4182520eceda2e50b53868e67210663a373c170b93ced7672458d65"
+      },
+      "state": "done",
+      "successful_steps": 3
+    },
+    {
+      "name": "postauth26-1",
+      "queued_steps": 1,
+      "rc": 0,
+      "sha256": {
+        "final.json": "eaa24c2ab998e447c3bcb3a0347fcd10a93f88d3d5bac65dfd0a2197a85eca42",
+        "job.json": "cb110eb9c3cb8ce3b65ceab28dc6cbdc57bda9b53f4eede8224a1cdbc8ca485b",
+        "log": "9da96412be64dc1c4f5aac389e92e7c97666f248075182676eac262f775af98c",
+        "steps.json": "daa5c03f405283c082d138e14e68c138d1d7d48c8477e66b2b5b9e3e05455a75"
+      },
+      "state": "done",
+      "successful_steps": 1
+    },
+    {
+      "name": "reference26-1",
+      "queued_steps": 6,
+      "rc": 0,
+      "sha256": {
+        "final.json": "01c2e1f3bfba4d49d3544af747d77442371f3f837f6f9b5750f0784d50ecb425",
+        "job.json": "fbebb36c9889d772f68c163383a2999d7ce1c0484d4d0556d19a159ef2832d50",
+        "log": "cc7cf9a4ebfbd5dff3bcc6b201725d8b70dfae030f55920250e3a0a424cbfdc3",
+        "steps.json": "9e03238ca1b591fd6f3cb2066ddfe2571d3da62f003c5ec9145673a13aa5f89e"
+      },
+      "state": "done",
+      "successful_steps": 6
+    }
+  ],
+  "operator": {
+    "case_counts": {
+      "5": 8,
+      "6": 8,
+      "7": 8,
+      "9": 12
+    },
+    "controls": 1,
+    "fixup_counts": {
+      "general": 25,
+      "none": 7,
+      "uniform": 4
+    },
+    "group_records": 36,
+    "helper_sha256": "a921f20af6e3bb332b243d1c11f218ab21519f24306d5c73296368c9c57307db",
+    "proof": "Complete eager and two poisoned-capture replay output bytes match original contiguous whole cohort on every case",
+    "queue_sha256": "9f2ebf12df4a9a5aac09b0028c5994b7b4c18c64404ce34eff95fabbf5a6ec8e",
+    "sdk_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",
+    "shapes": 16,
+    "skips": 0,
+    "source_ready_sha256": "ad04f9bd76d309d1298f640598a6f2a32dc428c83f05607c33fc6db7fc097923",
+    "status": "DONE0"
+  },
+  "operator_official_sha256": {
+    "final.json": "d9e93e9342dccfff7596f5c9ef81b382fcf2a3749ec4402d8af0bb0def74707b",
+    "job.json": "4054f2136f54d96679185d63e2481761434274a6299b34603c9efad084af9aae",
+    "log": "a3d8def8d31d4c2d6b2f789d029a8946b1ab04e8ea98305842fea2fe5c63e50a",
+    "steps.json": "1bc72f7274fcd993ff4c290e1051b038c16397d8b2e23aca30874fa7edc2a7f9"
+  },
+  "provenance": {
+    "measured_helper_sha256": "a921f20af6e3bb332b243d1c11f218ab21519f24306d5c73296368c9c57307db",
+    "measured_sdk_receipt_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",
+    "native_own_freeze_sha256": "2f4c1517657d78ea2ab8262e1a8a0d7566ab49cfdc4cf0f6509be7ed555e0d0f",
+    "native_source_json_sha256": "39c4470dff182a1c3eb64cc59ccc0474da4dc71e759dc252825b4f21f9d9d9a4",
+    "native_source_vintage": "Existing a921 helper built from source32 at b35cb0b plus unadopted private serving recipe; no model helper rebuilt in this task",
+    "operator_source_receipt_sha256": "ad04f9bd76d309d1298f640598a6f2a32dc428c83f05607c33fc6db7fc097923",
+    "protocol_sha256": "2926e35b6c9860eb091882a8f03950c9c014121c87474d912cf07076f12cd15d",
+    "raw_comparison_sha256": "6f455fed50d6d5ac98cd2ee9cbab80b4a380a498239e6cf957ac12259f3fd165",
+    "reference_identity": {
+      "cohort.logits.f32": {
+        "bytes": 173015040,
+        "sha256": "044b989f96405285768e9cd8cedb31ce921a3eb0e32aa82b8297e656e4479343"
+      },
+      "inputs.i32": {
+        "bytes": 49152,
+        "sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3"
+      }
+    },
+    "source_base": "89e087f",
+    "tensorfold_entry_sha256": "b16d88d94079a049ef4963cdee30234622a4842932413686b68dc2b1bd7a1291"
+  },
+  "quality": {
+    "all_head_max_raw_delta": 0.7142274379730225,
+    "analysis_sha256": "52cbb4ec95ed76ba34eca9edaa9418198b875f9a16eeafa593a782702d5b7ad6",
+    "byte_exact_rows": 64,
+    "complete_rows": 165,
+    "conditional_gate_passed": true,
+    "corpus_ppl_claim": false,
+    "first_baseline_gate_passed": false,
+    "forced_nll_rows": 160,
+    "mean_native_conditional_nll": 10.661503200029497,
+    "mean_reference_conditional_nll": 10.661507532322366,
+    "method": "Strict zero-margin FIRST-stock comparison; no empirical calibration",
+    "native_freeze_sha256": "2f4c1517657d78ea2ab8262e1a8a0d7566ab49cfdc4cf0f6509be7ed555e0d0f",
+    "native_margin_change_max": null,
+    "native_paid_seconds": [
+      1.21519,
+      1.22123
+    ],
+    "outside_p99": 2,
+    "owners": 5,
+    "p99_bound": 0.0,
+    "positive_margin_differences": 2,
+    "quality_gate_passed": false,
+    "reference_paid_seconds": [
+      1.2346,
+      1.2309
+    ],
+    "reference_tie_differences": 0,
+    "relative_conditional_loss": -4.3322834849684736e-06,
+    "source_sha256": "39c4470dff182a1c3eb64cc59ccc0474da4dc71e759dc252825b4f21f9d9d9a4",
+    "strict_difference_aggregates": {
+      "count": 2,
+      "frontier_count": 0,
+      "margin_max": 0.2606546878814697,
+      "margin_min": 0.13109290599822998,
+      "paid_count": 2
+    },
+    "timing_limitation": "Native pair followed by stock pair; not bookended/sustained evidence."
+  },
+  "retirement": {
+    "owned_container_absence_count": 6,
+    "receipt_sha256": {
+      "task71-analysis-partial26-compare1-container-retired.json": "8faf9f7b3a4c4c28dcbc9c9e60066c89f80271adab6b1a2787768814d7ac2ea8",
+      "task71-analysis-partial26-joined-first-admit-container-retired.json": "2e4a34b38e8437e53b1fcbfec1def1e5771194102df476f65a590534b2578390",
+      "task71-analysis-partial26-joined-repeat-admit-container-retired.json": "f9770f184a5afbb24b246aa40b90079a373d7615b257d96854121292d02143f6",
+      "task71-analysis-partial26-own1-container-retired.json": "fff2534d378f06b1a7919aab13411b5fb028a6ddba653b45dcec9a0c1b94caf5",
+      "task71-ref26-c5-first-container-retired.json": "9a57d3abcaf14661bd6d683e2b11e896950749830161bc919de6e2cb0adbc121",
+      "task71-ref26-c5-repeat-container-retired.json": "914cffa23e9d946a15d55209eabaa332c947afd4f953f8ef4dd6cf90a82ea602"
+    }
+  },
+  "schema": 1,
+  "status": "Operator proof PASS; Gemma26 C5 strict quality FAIL; conditional score PASS; defaults unadopted"
+}

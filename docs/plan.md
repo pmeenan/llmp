@@ -28,7 +28,10 @@ passes heads16/32. The 31B C3 short screen passes strict choices; the
 [equal-width partial adapter](experiments/gemma-partial-owner-attention/README.md)
 recovers the preserved C5 failure (eight strict differences and +3.8918% conditional
 loss) to zero differences, 160 paid exact heads and −0.20935% conditional loss.
-C3 transfer, other partial counts and unequal widths remain unqualified. Fresh
+The [Gemma26 C5 transfer](experiments/gemma-partial-owner-transfer/README.md)
+retains two strict differences despite a passing 160-target loss gate; N7/N9
+operator controls pass. C3 transfer, other partial model counts and unequal
+widths remain unqualified. Fresh
 31B timing is +1.47% with a stock spread larger than its mean gap; 26B is −1.064%
 in its short matched bookends. Core opt-in support does not adopt SOURCE14 serving
 recipes/defaults. Actual ordinary HTTP/cancellation/continuation, full corpus,
@@ -529,6 +532,11 @@ family" guide, and its long-context scaling work.
         with all 160 paid heads exact; the original failure stays recorded.
         Runtime/default changes, unequal widths, remaining cohort/profile model
         controls and sustained/depth performance remain open.
+      - [x] [Partial-owner primitive and Gemma26 transfer controls](experiments/gemma-partial-owner-transfer/README.md):
+        N5/N6/N7/N9 operator 16-shape/36-group proof passes eager and captured
+        complete output with heads16/32. FIRST Gemma26 C5 has two strict
+        differences /165 heads; its 160-target conditional loss passes independently.
+        Primary failure is preserved; no defaults or wider quality admission.
       - [x] [Grouped independent cache-write screen](experiments/gemma-grouped-cache-writes/README.md):
         rejected report-only candidate. Original and fast-divider 31B C12 screens
         increased mean paid time 7.18%/3.22%; timing movement limits attribution.

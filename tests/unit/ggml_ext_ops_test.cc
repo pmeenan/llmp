@@ -3689,13 +3689,13 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
       }
 }
 
-TEST_F(GgmlExtOpsTest, FiveAndSixPhysicalStreamsMatchOffsetFilteredRealRootGroupsExactly) {
+TEST_F(GgmlExtOpsTest, PartialPhysicalStreamsMatchOffsetFilteredRealRootGroupsExactly) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "Owner implementation is GB10 only";
   int sms = 0;
   ASSERT_EQ(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, launch().device()),
             cudaSuccess);
   ASSERT_GT(sms, 0);
-  for (const std::int64_t owners : {5, 6})
+  for (const std::int64_t owners : {5, 6, 7, 9})
     for (const std::int64_t heads : {16, 32})
       for (const std::int64_t d : {256, 512}) {
         constexpr std::int64_t cells = 1024;
@@ -3738,10 +3738,11 @@ TEST_F(GgmlExtOpsTest, FiveAndSixPhysicalStreamsMatchOffsetFilteredRealRootGroup
         const auto run_whole = [&](LaunchContext& l) {
           return d == 256 ? kg::FlashAttnMmaGqa2(l, whole) : kg::FlashAttnMma(l, whole);
         };
-        std::array<kg::FlashAttnOwners, 2> quads;
-        std::array<kg::FlashAttnOwnersPlan, 2> plans;
+        std::array<kg::FlashAttnOwners, 3> quads;
+        const auto groups = n((owners + 3) / 4);
+        std::array<kg::FlashAttnOwnersPlan, 3> plans;
         auto scratch = full_plan->scratch;
-        for (std::size_t quad = 0; quad < quads.size(); ++quad) {
+        for (std::size_t quad = 0; quad < groups; ++quad) {
           const auto first = quad * 4;
           const auto active = std::min(std::size_t{4}, n(owners) - first);
           const auto view = [&](ggml_tensor* tensor, std::array<std::int64_t, 4> ne) {
@@ -3798,6 +3799,8 @@ TEST_F(GgmlExtOpsTest, FiveAndSixPhysicalStreamsMatchOffsetFilteredRealRootGroup
                              : plan->original.blocks % quad_tiles == 0 ? "uniform"
                                                                        : "general";
           if (owners == 6) EXPECT_STREQ(fixup, d == 256 ? "none" : "uniform");
+          if (owners == 7) EXPECT_STREQ(fixup, "general");
+          if (owners == 9) EXPECT_STREQ(fixup, d == 256 && heads == 32 ? "none" : "general");
           std::cout << "OWNER_PARTIAL_PLAN owners=" << owners << " active=" << active
                     << " offset=" << first << " heads=" << heads << " D=" << d << " cells=" << cells
                     << " sms=" << sms << " original_blocks_per_sm=" << plan->original_blocks_per_sm
@@ -3843,7 +3846,7 @@ TEST_F(GgmlExtOpsTest, FiveAndSixPhysicalStreamsMatchOffsetFilteredRealRootGroup
         ASSERT_TRUE(submission);
         const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
         ASSERT_EQ(cudaMemsetAsync(whole->data, 0xFF, ggml_nbytes(whole), stream), cudaSuccess);
-        for (std::size_t quad = 0; quad < quads.size(); ++quad) {
+        for (std::size_t quad = 0; quad < groups; ++quad) {
           ASSERT_EQ(cudaMemsetAsync(quads[quad].output->data, 0xFF, ggml_nbytes(quads[quad].output),
                                     stream),
                     cudaSuccess);
@@ -3857,7 +3860,7 @@ TEST_F(GgmlExtOpsTest, FiveAndSixPhysicalStreamsMatchOffsetFilteredRealRootGroup
         const auto expected = Download(whole);
         EXPECT_TRUE(std::ranges::all_of(expected, [](float x) { return std::isfinite(x); }));
         const auto compare = [&] {
-          for (std::size_t quad = 0; quad < quads.size(); ++quad) {
+          for (std::size_t quad = 0; quad < groups; ++quad) {
             const auto actual = Download(quads[quad].output);
             const auto offset = quad * 4 * n(d * heads);
             EXPECT_EQ(
@@ -3869,7 +3872,7 @@ TEST_F(GgmlExtOpsTest, FiveAndSixPhysicalStreamsMatchOffsetFilteredRealRootGroup
         bounded.ResetScratchPeak();
         auto graph = bounded.Capture([&](LaunchContext& l) -> std::expected<void, KernelFailure> {
           if (auto r = run_whole(l); !r) return r;
-          for (const auto& quad : quads)
+          for (const auto& quad : std::span(quads).first(groups))
             if (auto r = kg::FlashAttnOwnerRoots(l, quad); !r) return r;
           return {};
         });
@@ -3878,7 +3881,7 @@ TEST_F(GgmlExtOpsTest, FiveAndSixPhysicalStreamsMatchOffsetFilteredRealRootGroup
         for (int replay = 0; replay < 2; ++replay) {
           SCOPED_TRACE("capture replay " + std::to_string(replay));
           ASSERT_EQ(cudaMemsetAsync(whole->data, 0xFF, ggml_nbytes(whole), stream), cudaSuccess);
-          for (const auto& quad : quads)
+          for (const auto& quad : std::span(quads).first(groups))
             ASSERT_EQ(cudaMemsetAsync(quad.output->data, 0xFF, ggml_nbytes(quad.output), stream),
                       cudaSuccess);
           ASSERT_TRUE(bounded.Launch(*graph));
