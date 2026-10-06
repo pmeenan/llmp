@@ -197,5 +197,208 @@
     "Execution and stream wall include host gaps; no kernel-only attribution",
     "Nested bind/coverage/cache phases are not added or subtracted",
     "No broader cohort/profile qualification or production recipe adoption"
-  ]
+  ],
+  "third_cycle_control": {
+    "status": "Completed existing graph-counter diagnostic; no engine policy change",
+    "source": "External benchmark-only delta: pre-start existing GraphStats snapshot, after-end report, one third cycle",
+    "source_ready_sha256": "897ea83b22a794af6d83a28b287451330832d24e1338b35f218d6532c954490d",
+    "source_benchmark_sha256": "7e6b768e57e0d503ce4e65200d4424a2fc1dc84587b53163078e3e66f6df0b6f",
+    "benchmark_diff_sha256": "477f88c4c6653edfd96999dd9c84add34582ad90a25cc4ad6dff0a01bbb8b489",
+    "checker_sha256": "cd6f135c6d709766484a2828d4e2df726087bd89ccd233ad1d470cde9ea62f39",
+    "binary_sha256": "53298832fe2753ac1e0ba9555a6ca9e043c5b9e187627c2b58bd5827260db2d7",
+    "binary_bytes": 211147216,
+    "build_receipt_sha256": "cf6bce22c79008fc49245a74206f778b036a4efb6b69ae4f7aa1f572fb6469f5",
+    "build_receipt_byte_exact_to_first": true,
+    "raw_result_sha256": "afd164c647295e155567e56ef91b247b15c155b6994dfd22b9372cd363a30776",
+    "runtime_log_sha256": "e470714651ebc94d776e1e83af2f0343d153e5609873d2bca81478cd378d7141",
+    "diagnostics": {
+      "warm": {
+        "phase": "warm",
+        "clear_calls": 1,
+        "clear_seconds": 0.000803564,
+        "planned_calls": 160,
+        "hits": 158,
+        "misses": 2,
+        "checks_seconds": 0.026996484,
+        "inputs_seconds": 0.012120178,
+        "state_seconds": 0.164476842,
+        "required_planning_seconds": 0.0172614,
+        "staging_seconds": 0.002762724,
+        "execution_seconds": 23.3945688,
+        "publication_cleanup_seconds": 0.083770964,
+        "bind_seconds": 0.045408259,
+        "coverage_seconds": 0.017177608,
+        "cache_seconds": 0.006700179,
+        "job_steps": 162,
+        "job_wall": 23.393307208,
+        "dispatch": 0.004453534,
+        "submission": 5.094990588,
+        "after": 18.293863086,
+        "stream_elapsed": 23.372311425,
+        "cycle": {
+          "cycle_seconds": 23.745653034,
+          "prefill_seconds": 11.026313416,
+          "decode_seconds": 12.719339618
+        },
+        "graph": {
+          "phase": "warm",
+          "eager": 33,
+          "captured": 1,
+          "replayed": 126,
+          "refused": 0,
+          "dropped": 0,
+          "capture_seconds": 0.001900344,
+          "instantiate_seconds": 0.004062767,
+          "nodes": 1618,
+          "retained_graphs": 1
+        }
+      },
+      "paid": {
+        "phase": "paid",
+        "clear_calls": 1,
+        "clear_seconds": 0.059612677,
+        "planned_calls": 160,
+        "hits": 160,
+        "misses": 0,
+        "checks_seconds": 0.026824383,
+        "inputs_seconds": 0.012050394,
+        "state_seconds": 0.169018426,
+        "required_planning_seconds": 0.000318527,
+        "staging_seconds": 0.007458162,
+        "execution_seconds": 23.584902019,
+        "publication_cleanup_seconds": 0.018954388,
+        "bind_seconds": 0.0,
+        "coverage_seconds": 0.0,
+        "cache_seconds": 0.0,
+        "job_steps": 161,
+        "job_wall": 23.582413694,
+        "dispatch": 0.003258693,
+        "submission": 0.277926761,
+        "after": 23.30122824,
+        "stream_elapsed": 23.563124662,
+        "cycle": {
+          "cycle_seconds": 23.922936662,
+          "prefill_seconds": 11.210459795,
+          "decode_seconds": 12.712476867
+        },
+        "graph": {
+          "phase": "paid",
+          "eager": 0,
+          "captured": 32,
+          "replayed": 128,
+          "refused": 0,
+          "dropped": 0,
+          "capture_seconds": 0.086958835,
+          "instantiate_seconds": 0.178512685,
+          "nodes": 60212,
+          "retained_graphs": 33
+        }
+      },
+      "third": {
+        "phase": "third",
+        "clear_calls": 1,
+        "clear_seconds": 0.057790348,
+        "planned_calls": 160,
+        "hits": 160,
+        "misses": 0,
+        "checks_seconds": 0.027493198,
+        "inputs_seconds": 0.011838488,
+        "state_seconds": 0.165590043,
+        "required_planning_seconds": 0.000330255,
+        "staging_seconds": 0.005109946,
+        "execution_seconds": 23.326764002,
+        "publication_cleanup_seconds": 0.019717778,
+        "bind_seconds": 0.0,
+        "coverage_seconds": 0.0,
+        "cache_seconds": 0.0,
+        "job_steps": 161,
+        "job_wall": 23.324505502,
+        "dispatch": 0.002659692,
+        "submission": 0.009635606,
+        "after": 23.312210204,
+        "stream_elapsed": 23.30137415,
+        "cycle": {
+          "cycle_seconds": 23.657850203,
+          "prefill_seconds": 10.932725048,
+          "decode_seconds": 12.725125155
+        },
+        "graph": {
+          "phase": "third",
+          "eager": 0,
+          "captured": 0,
+          "replayed": 160,
+          "refused": 0,
+          "dropped": 0,
+          "capture_seconds": 0.0,
+          "instantiate_seconds": 0.0,
+          "nodes": 0,
+          "retained_graphs": 33
+        }
+      }
+    },
+    "identity": {
+      "second_complete_outputs_match_fixed_own": true,
+      "third_complete_outputs_match_fixed_own": true,
+      "warm_tokens_history_match_fixed_own": true,
+      "own_sha256": "21616218d83fc646f11b4c7dc77ef6e5315caa116947ee1e1986fef9ae4b6f1a",
+      "input_sha256": "90bf82fd26b7040c513e7370eca2cd283ac8fd15ce89a2e8d05d6f7e670b5ba2",
+      "initialized_state_bytes": 1719664640,
+      "finite_final_head_values": 262144
+    },
+    "official_jobs": [
+      {
+        "name": "m35-gemma-state-phase-third-build1",
+        "queued_steps": 4,
+        "successful_steps": 4,
+        "state": "done",
+        "rc": 0,
+        "elapsed_seconds": 5.440999984741211,
+        "records": {
+          "job.json": "dc9178d24ef0a668a8677e52aa0959da0ce8df54a47aae4d4781a472aa5253ed",
+          "steps.json": "0471b4bb34ed88bde3f1c6d3beff92231fef2f7898df9e95972b96f267532d66",
+          "final.json": "92a3823f7b42332841568aa112f07e4d010c22334ebea29d8b048dae2d9ebfc5",
+          "log": "79d4829b1b86644a8e1cc3d87635895d54b57344b93f329685216700524f283b"
+        },
+        "queue_sha256": "062fe9a41f2e04441442af20827589c558aac1767ea10441e90e22060fae304a"
+      },
+      {
+        "name": "m35-gemma-state-phase-third-native1",
+        "queued_steps": 3,
+        "successful_steps": 3,
+        "state": "done",
+        "rc": 0,
+        "elapsed_seconds": 77.16499996185303,
+        "records": {
+          "job.json": "fa333cefb6186af91a347cda40ff245c6211f969a2449ba72df8ef3e0b34bf80",
+          "steps.json": "be52319f44d679c81380133daad25d1dd652eb00743a7983510a9ed517cb25af",
+          "final.json": "54cdc63e93b750d90a7e94931286655ca626920caf4a8e8577e0e33c48bee619",
+          "log": "86481cd5c8f23041aa13833a7cd90b89fc5ec83dbb8936a3120735dc0ba5075a"
+        },
+        "queue_sha256": "45ec3ecd755974707f1afea7b55c8792a9191cc9a51e122b7ea9de2de05fb155"
+      },
+      {
+        "name": "m35-gemma-state-phase-third-check1",
+        "queued_steps": 3,
+        "successful_steps": 3,
+        "state": "done",
+        "rc": 0,
+        "elapsed_seconds": 2.828000068664551,
+        "records": {
+          "job.json": "b2839df93b95b7e9ab94e874c9c910c082818c05c10d5bba8456b7f945ea5d84",
+          "steps.json": "756628b60f3b86406602436a4332e2e096fcc942c4f144213fcf263009b86f64",
+          "final.json": "4038f33aa93c2236a50fd708e5a676594496db93c9bde5d20bea6e966923c50b",
+          "log": "4a15f2186cca39089e379713134f25b857f576ddca4e0326e609a0694ee8242f"
+        },
+        "queue_sha256": "5a3d9bc76bcab9529fbf117413b6254ffb9ffa19cc6c86b47f2d1b16657c622a"
+      }
+    ],
+    "interpretation": "Second-use prefill acquisition observed in paid cycle:32 captures; third all160 replay, no capture. This does not select a different policy or replace original matched speed.",
+    "limits": [
+      "One process/three cycles, no reference rerun",
+      "All original cycle boundaries unchanged; second-use acquisition charged inside paid time",
+      "Capture/instantiate observations overlap execution wall; no subtraction from cycle time",
+      "First diagnostic retained unchanged",
+      "No provider/residency/policy/model-default changes or full suite"
+    ]
+  }
 }
