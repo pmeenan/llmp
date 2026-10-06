@@ -48,6 +48,87 @@
     "plan": 3,
     "skipped": 0
   },
+  "fresh_matched_timing": {
+    "acquisition_queue_sha256": "a182ff4df46b443fa345992a3db66f895b169c3fa73a60f1c39d2216329f3014",
+    "analysis_wrapper_sha256": "0e5a3bf2d260a1f7bd413a17ada9bc68a3095ef0bbeb134966e8f3bc839d1bfd",
+    "check_queue_sha256": "bd823bffbb91f818ddf9e1cd75312e11405ec6d01c1002977ab94de8e90b949a",
+    "checker_sha256": "a988224aed13ff63fc5765f031fc85345610294a219a422851ddd16b6344cb2b",
+    "later_optin_core_commit": "bc8fca6825cecc2f9cdee84c7cbe4f1fbdc493ee",
+    "later_optin_model_run_claim": false,
+    "measured_source22_unchanged": true,
+    "native_complete_heads_sha256": "4302fa77eaf7dd17fdf61586f19f04d220a5b85b832de01f9248fc1628a051e2",
+    "native_wrapper_sha256": "9cf16f6ff9fd5acca857a0682b8d46649f687a5318289074abd4323499065883",
+    "noise_or_nll_rescoring": false,
+    "official_jobs": [
+      {
+        "elapsed_seconds": 157.548,
+        "final_sha256": "28e14d678cb7b8a1e1b10fd10a286acb9a7ec68fb808d60683248f2e2fc09b31",
+        "host": "spark-56f5",
+        "job_sha256": "a0f05ac1297e83ff9972d2ccfa5fea0002d35cc90f4d2f184a81ccc6f7fb93ab",
+        "log_sha256": "e7732b57064524a6c86ce67243fe1c31ae04f4eae8e8376f9093b2984647acdb",
+        "name": "m35-gemma-c8-geometry-timing31-1",
+        "queued_steps": 6,
+        "state": "DONE0",
+        "steps_sha256": "036d73cf4e8c98f45090be631a5cccd64c41378f6c4a784ca055f59dda664d1b",
+        "successful_steps": 6
+      },
+      {
+        "elapsed_seconds": 15.287,
+        "final_sha256": "f45a1ea0f7fa8ae38d5e3b8cf2c5fe4ec14ff8cc258e8bd24fbaf72d53fa6400",
+        "host": "spark-56f5",
+        "job_sha256": "92499e9906c815e8987afd58c2db757981dd5276dad67a14f73b50e43263e5f6",
+        "log_sha256": "f09410520f24b884a360c1021f486ab8333f07d42218b66100be1b7a509fd0a0",
+        "name": "m35-gemma-c8-geometry-timing31-check1",
+        "queued_steps": 3,
+        "state": "DONE0",
+        "steps_sha256": "2de9a0c041faa81bc3c670fbc0f01f66a1b697dad2677081cadb140a581dd3cf",
+        "successful_steps": 3
+      }
+    ],
+    "owned_analysis_retirement_sha256": "d9c8a0752c3cc7227841c1f9d126131d6196bfdf70b75bb5af3a011301efae32",
+    "raw_comparison_sha256": "7af80f2fe3e156144bba5a88864d1da8f4d2f19e2503ee403db87670161fbc86",
+    "reference_client_sha256": "17424b81dbeda3a882ae516131cc1fe77c99948b9fec6d4aecab14f8e16345bf",
+    "reference_complete_heads_sha256": "690d3647fa16ca28e9cf8db8352bfeb428c884482d4e28d22ff9111c8693a8f8",
+    "reference_wrapper_sha256": "ec585fc0f6c0bc9b86927c89b7a8a9d39774139c37a76fbc7c75b056e23794f2",
+    "result": {
+      "native": [
+        {
+          "arm": "joined-first",
+          "log_sha256": "fdba7755a31f45338bc8ec0cd758d56202397813526758d64b0b2b30ec18b632",
+          "seconds": 4.50721
+        },
+        {
+          "arm": "joined-repeat",
+          "log_sha256": "0fe34355ef432a728939040f13c72bb9cecf8e7988fc3d122efbbe3f3d183d35",
+          "seconds": 4.50528
+        }
+      ],
+      "native_mean_seconds": 4.506245,
+      "native_relative_elapsed_percent": 3.5713629029662908,
+      "native_spread_seconds": 0.0019299999999997652,
+      "reference": [
+        {
+          "arm": "first",
+          "log_sha256": "62f0c3e241957e5559d08be3093634931d9f9e1595dd0f81b79a8e273bb5513b",
+          "retirement_sha256": "11d95dbe11e9ff87ad9b5a9d53e3affe243ba7ddd5340ec6ceb201f533c2f30c",
+          "seconds": 4.34177
+        },
+        {
+          "arm": "repeat",
+          "log_sha256": "e32c2c18a8d99fe7866bf958f0db072efd9ff8ece8bbcbe206a61e1c6ff1b541",
+          "retirement_sha256": "d0e9647c3921521c0bede88fb6521cdb48de0c36ab9d022022663b7b58280bc1",
+          "seconds": 4.35995
+        }
+      ],
+      "reference_mean_seconds": 4.350860000000001,
+      "reference_spread_seconds": 0.018180000000000085,
+      "scope": "Two fresh stock bookends and two unchanged candidate C8 paid32-wave arms; exact retained output controls, no new noise/scoring or sustained claim"
+    },
+    "retained_factor_output_proof_sha256": "ca9c55d334812413a552c593ea8b89b7755abc918c3c95dbdc409dc320ca5032",
+    "scope": "Short completed eight-owner paid32-wave bookend, not sustained/longcontext parity or default adoption",
+    "source_packet_sha256": "d199fc6fa06fe56d05c202b98000f0b767b1393897ce12f0a657b91eff9c5c93",
+    "tensorfold_entry_sha256": "efc569a7c7ed8ea710ac9163a8eee6dd6227fa35902e030f5ccf1581c3be3d46"
+  },
   "full_suite": "Deferred by owner; not run.",
   "identities": {
     "analysis_sha256": "abbbe9b6a6c0ba19cc45708732ef9642a718e6ad222e9ac064c64df19f0e2ccb",

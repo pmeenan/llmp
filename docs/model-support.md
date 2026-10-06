@@ -107,7 +107,7 @@ The [opt-in owner-cohort engine](experiments/gemma-owner-cohorts/README.md)
 adds funded complete C4/C8 attention quads and safe short-read eligibility with
 full configured backing. Its 31B C8 factor matches every paid decode head;
 Gemma26 passes its unchanged prior margin and conditional-score gates. These
-bounded results leave serving defaults, C12, depth and full model support open.
+bounded results leave serving defaults, C12, depth and full model support open. A fresh 31B C8 bookend on the same measured candidate is 3.57% slower than stock (155.385 ms), with complete outputs unchanged; this is a short recipe-qualified elapsed comparison.
 
 The [fresh current solo comparison](experiments/gemma-current-reference/README.md)
 records stable 26B prefill/decode latency gaps of 2.43%/0.92%. Native 31B prefill

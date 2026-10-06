@@ -494,7 +494,9 @@ family" guide, and its long-context scaling work.
         prior margin and conditional-score gates. Full backing-parent validation
         admits short reads at configured 262K while preserving 16K/64 MiB read
         limits. Fifteen focused controls pass; serving defaults, C12, depth and
-        full model qualification remain open.
+        full model qualification remain open. The same measured 31B C8 candidate
+        remains 3.57% slower than fresh stock (155.385 ms) in a short matched
+        bookend with unchanged complete heads/state; this is not sustained parity.
       - [x] [Fresh Gemma26 scheduling and heldout control](experiments/gemma-fresh-quality-validation/README.md):
         fixed-capacity native 128/1,024 schedules freeze a genuine operational
         bound on untouched history 13 before independent history 14. All 17
