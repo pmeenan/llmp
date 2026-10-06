@@ -1,0 +1,195 @@
+{
+  "actual_selected_counts": {
+    "completed_decode_units": 160,
+    "completed_decode_waves": 32,
+    "decode_owner_steps": 60,
+    "decode_partial_steps": 60,
+    "decode_route": 30,
+    "graph_replays": 32,
+    "norm_add": 90,
+    "norm_rope": 60,
+    "plain_norm": 121,
+    "prefix_route": 29,
+    "prefix_rows": 992,
+    "prefix_segment_count": 1,
+    "prefixes_per_arm": 5,
+    "reduce": 30
+  },
+  "comparison": {
+    "all_head_max_raw_delta": 0.5586185455322266,
+    "byte_exact_rows": 160,
+    "complete_rows": 165,
+    "conditional_gate_passed": true,
+    "first_baseline_gate_passed": false,
+    "forced_nll_rows": 160,
+    "mean_native_conditional_nll": 10.662319118287739,
+    "mean_reference_conditional_nll": 10.661507532322366,
+    "positive_margin_differences": 1,
+    "quality_gate_passed": false,
+    "reference_tie_differences": 0,
+    "relative_conditional_loss": 0.0008119153903752555
+  },
+  "controls": {
+    "assertions_per_mode": 10,
+    "no_launch_modes": 4,
+    "skipped": 0
+  },
+  "limitations": [
+    "Current stock992 routing selection was not observed; keep factor is not proof of a stock layer28 selector.",
+    "Remaining strict frontier failure is not waived by exact paid heads or conditional PASS.",
+    "No production routing whitelist, serving defaults, new tolerance, scalar calibration, oracle reacquisition, full-corpus or sustained performance qualification."
+  ],
+  "native_own_repeat": {
+    "bytes_per_state": 230686720,
+    "exact": true,
+    "exact_complete_file_maps_per_arm": 14,
+    "final_states_changed_from_prior": 5,
+    "finite_head_rows": 165,
+    "frontier_states_changed_from_prior": 5,
+    "head_bytes_per_arm": 173015040,
+    "layouts_unchanged_from_prior": true,
+    "state_snapshots_per_arm": 10
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma26-c5-prefix-keep-build1",
+      "queued_steps": 7,
+      "sha256": {
+        "final.json": "2100d7f8adf1b4ec93f0555d8cf841016f43b76a52e10e944c4b86faeaeaac67",
+        "job.json": "132f01bcfdec2f0320b81c0baf5582b8c4aa619c0dc43543aebe9f102afe6fee",
+        "log": "a72dd1774caaded7b061da876fe76e297ac9e14ec1f2fef8f7b5e0ea8e7ed022",
+        "steps.json": "bd885902916109ec98a79215d2f949509e080861b07c3cd30cbe119371d47943"
+      },
+      "state": "done",
+      "successful_steps": 7,
+      "supervisor_rc": 0
+    },
+    {
+      "name": "m35-gemma26-c5-prefix-keep-native1",
+      "queued_steps": 6,
+      "sha256": {
+        "final.json": "33ce48e4d657cf55c1ba20c5fcf8386a4a0fbfaece58999cad5dbb50a58d70e5",
+        "job.json": "2d4d18aa321e361d30a8fd958e74b3294c4e7134cfed90ef4d64f9249c8fbbfb",
+        "log": "e0464319ecd2d2dbbe85da5922929e2ac4d0e3919ecb660b9ddde28b74bc0794",
+        "steps.json": "a58b631ff0aa0d868234dea2663b731a7b0c1260be2133a2d7c1aa79b31aebf0"
+      },
+      "state": "done",
+      "successful_steps": 6,
+      "supervisor_rc": 0
+    },
+    {
+      "name": "m35-gemma26-c5-prefix-keep-own1",
+      "queued_steps": 3,
+      "sha256": {
+        "final.json": "e49184c1fe49b8198fe1b31755995059cb2dbc1bdc30ac7be4555662d42e3914",
+        "job.json": "1396848ea9209c843ad8560c044383403cede8dd12fa9582517e91e37e76842c",
+        "log": "473087ba46a0272fe7ac880e615d367d24fadccf0bb9c700017b823d33d0363f",
+        "steps.json": "678272e31a060c403540a579eb58f43575a88d8f279b8dd1199d8aa9c16ab732"
+      },
+      "state": "done",
+      "successful_steps": 3,
+      "supervisor_rc": 0
+    },
+    {
+      "name": "m35-gemma26-c5-prefix-keep-compare1",
+      "queued_steps": 3,
+      "sha256": {
+        "final.json": "f7035f1297cf2472c2fcbbc96ac7191f6fe76ec1b76f0699ed68f91ab0f28315",
+        "job.json": "28a36a58be28049da36dde4e77500664886e70b621dee8e61f45816269f90e83",
+        "log": "26b6d7dbe810b564b4e90abcd6070a2d16a12a56ac3f7c2ebca9ff794f5a0f20",
+        "steps.json": "afc43ac1501855e5f8800b3130031dc1cc8ba5a01d3e5f32e4b88fda75c1302b"
+      },
+      "state": "failed",
+      "successful_steps": 1,
+      "supervisor_rc": 1
+    },
+    {
+      "name": "m35-gemma26-c5-prefix-keep-postauth1",
+      "queued_steps": 1,
+      "sha256": {
+        "final.json": "4885a062e90d493f807c6a7d658ef9951f5d91d4788adc9f425494f45438fca8",
+        "job.json": "62eaf6f663ee271571b02b0125afc4c84d47e901e69c55aafd4400978ea624f0",
+        "log": "99c1729d2f1fb5e31fd80665d75e17f8ced055b94deb329c300578e04c843221",
+        "steps.json": "7d5354fc32e84f84d866b5313cdadb1328ce56ea7d908f94097b03016e6e65c6"
+      },
+      "state": "done",
+      "successful_steps": 1,
+      "supervisor_rc": 0
+    }
+  ],
+  "owned_retirements": {
+    "task71-analysis-prefix26-compare1-container-retired.json": "c302bffcd75625fa502b4fc29fed4f9352f36e465656f411c8dfb88d58ec5cbe",
+    "task71-analysis-prefix26-joined-first-admit-container-retired.json": "43e5d6228338e543fb1f1e30b484a8745582f3b77f9195d775d9a14c0fe4b6d3",
+    "task71-analysis-prefix26-joined-repeat-admit-container-retired.json": "63a9b40e4fd63cb42f5d3f09d9b2937c18c6058709d74d37a635e8710d75fb1d",
+    "task71-analysis-prefix26-own1-container-retired.json": "df964624d5a3d9feaa8f05235bef4361dccdc6c4770db32c547d620d211cdc70"
+  },
+  "paid_times": {
+    "limitation": "Sequential native repeats against retained stock, no contemporaneous performance/parity claim",
+    "native_seconds": [
+      1.21322,
+      1.28231
+    ],
+    "native_spread_ms": 69.09
+  },
+  "phase_scope": {
+    "frontier_exact_rows": 0,
+    "frontier_positive_margin_differences": 1,
+    "frontier_rows": 5,
+    "paid_exact_rows": 160,
+    "paid_positive_margin_differences": 0,
+    "paid_rows": 160,
+    "split_evidence": "Overall160 exact of165 and all five frontier forced-NLL records differ; thus all160 paid full heads are exact. Individual records remain external."
+  },
+  "provenance": {
+    "analysis_sha256": "52c0e327e295d203451d78ef9a851877148bf2886194a7857159881bbcccfb16",
+    "binary_sha256": "6ebbfa0df38ad9e87b861235cd60e160160522f811cb0cf798f146c71def1a5a",
+    "comparison_sha256": "c03ef002eb9ec9ed47cad2a62b206d9b5eb658f1c395dd27040ecb04360e6362",
+    "method_sha256": "aae54a62cc71c762fdbd604059f0157ec655eeafb7ef49b8ddfd02a6b2c9eb87",
+    "native_own_sha256": "e7f91e20cdf5c8905d6aa90e41d6bb99a9518ec83fd466d34b58f521a2e50e02",
+    "parent_docs_base": "358d6229d162cf8f8c15668e1f0701e3c17ea15e",
+    "prior_failed_comparison_sha256": "6f455fed50d6d5ac98cd2ee9cbab80b4a380a498239e6cf957ac12259f3fd165",
+    "retained_first_reference": {
+      "cohort.logits.f32": {
+        "bytes": 173015040,
+        "sha256": "044b989f96405285768e9cd8cedb31ce921a3eb0e32aa82b8297e656e4479343"
+      },
+      "inputs.i32": {
+        "bytes": 49152,
+        "sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3"
+      }
+    },
+    "run_source_sha256": "adc453935930a68dff9333d43bd07774dbc69cb843f9c86fb3fb454b00e8d90d",
+    "sdk_receipt_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",
+    "source_base": "3165b87",
+    "source_frame_sha256": "7acad8fa8f28990f1111daaaeec31805ffab840465b0466bf30ceb6efb1a9708",
+    "source_receipt_sha256": "4507ef62538abfad5aaffd0ae92ec69e3ec2e5c414db8c1f882eea1b19303446",
+    "tensorfold_entry_sha256": "306f170acca58141f2365c957df9ef2f1d2976870688c194a48ab0fb1fc7c0c0"
+  },
+  "publication_allowance_bytes": 183615488,
+  "recipe": {
+    "context": 4096,
+    "forced_steps": 32,
+    "fusion": true,
+    "graphs": true,
+    "history_rows": 1024,
+    "max_head_rows": 5,
+    "max_rows": 1024,
+    "moe_route_reduce": true,
+    "native_joined_groups": [
+      5
+    ],
+    "native_policy": "all",
+    "norm_add": true,
+    "norm_rope": true,
+    "owner_requested": true,
+    "owners": 5,
+    "plain_norm": true,
+    "prefill_rows": 992,
+    "profile": 26,
+    "rope_store": false,
+    "row_products": false,
+    "shared_q8": false
+  },
+  "schema": 1,
+  "status": "strict FAIL; conditional PASS; diagnostic only"
+}

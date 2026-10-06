@@ -109,7 +109,12 @@ strict differences/ +3.8918% loss remain failed evidence. Unequal widths retain
 unqualified fallback. The [expanded primitive/26B transfer](experiments/gemma-partial-owner-transfer/README.md)
 passes N7 tail3/N9 third-group operators, but Gemma26 C5 retains two strict
 differences /165 heads with an independent 160-target loss PASS. Other model
-counts and sustained timing remain open. The unadopted default recipe is excluded from this opt-in unit.
+counts and sustained timing remain open. The [private prefix-only keep diagnostic](experiments/gemma26-c5-prefix-keep/README.md)
+changes only eligible26B multi-row prefix planning: all160 paid heads now match
+retained FIRST stock, while one strict frontier difference remains. Conditional
+loss is +0.08119% and passes independently. Native prefix route29/decode route30
+is observed; actual stock992 selection is not. This does not select a production
+layer whitelist or adopt defaults. The unadopted default recipe remains excluded.
 
 ## Coverage
 

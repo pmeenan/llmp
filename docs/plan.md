@@ -30,7 +30,11 @@ recovers the preserved C5 failure (eight strict differences and +3.8918% conditi
 loss) to zero differences, 160 paid exact heads and −0.20935% conditional loss.
 The [Gemma26 C5 transfer](experiments/gemma-partial-owner-transfer/README.md)
 retains two strict differences despite a passing 160-target loss gate; N7/N9
-operator controls pass. C3 transfer, other partial model counts and unequal
+operator controls pass. The [private prefix-only keep factor](experiments/gemma26-c5-prefix-keep/README.md)
+removes both paid differences and matches all160 paid full heads, but retains one
+strict frontier difference; conditional loss passes at +0.08119%. This is diagnostic
+evidence, without a production layer policy or observed stock992 routing selector.
+C3 transfer, other partial model counts and unequal
 widths remain unqualified. Fresh
 31B timing is +1.47% with a stock spread larger than its mean gap; 26B is −1.064%
 in its short matched bookends. Core opt-in support does not adopt SOURCE14 serving
@@ -537,6 +541,11 @@ family" guide, and its long-context scaling work.
         complete output with heads16/32. FIRST Gemma26 C5 has two strict
         differences /165 heads; its 160-target conditional loss passes independently.
         Primary failure is preserved; no defaults or wider quality admission.
+      - [x] [Gemma26 C5 prefix-only keep diagnostic](experiments/gemma26-c5-prefix-keep/README.md):
+        benchmark-only retained-output wrapper; four no-launch modes/40 assertions
+        pass. All160 paid heads match retained FIRST stock, but one frontier choice
+        remains strict FAIL. The independent160-target loss gate passes at +0.08119%;
+        original two-paid-miss failure remains preserved. No routing whitelist/defaults.
       - [x] [Grouped independent cache-write screen](experiments/gemma-grouped-cache-writes/README.md):
         rejected report-only candidate. Original and fast-divider 31B C12 screens
         increased mean paid time 7.18%/3.22%; timing movement limits attribution.

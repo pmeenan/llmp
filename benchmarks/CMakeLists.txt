@@ -411,6 +411,15 @@ endif()
     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
     "LINKER:--wrap=_ZN6jitllm7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
     "LINKER:--wrap=_ZN6jitllm7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm")
+  # Private prefix-only routing diagnostic; original joined target stays intact.
+  add_executable(jitllm_gemma_joined_prefix_keep gemma_joined.cc gemma_joined_prefix_keep.cc)
+  target_link_libraries(jitllm_gemma_joined_prefix_keep PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_joined_prefix_keep PRIVATE
+      "LINKER:--wrap=_ZN6jitllm6engine15PlanGemma4ChunkERKNS0_11Gemma4ModelERKNS_7kernels4ggml16Gemma4ChunkShapeERKNS5_13DeviceChoicesEmmSt4spanIKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEELm18446744073709551615EE"
+      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+  add_executable(jitllm_gemma_prefix_keep_contract gemma_joined_prefix_keep_contract.cc
+                   gemma_joined_prefix_keep.cc)
+  target_link_libraries(jitllm_gemma_prefix_keep_contract PRIVATE jitllm_engine jitllm_warnings)
   add_executable(jitllm_gemma_joined gemma_joined.cc)
   target_link_libraries(jitllm_gemma_joined PRIVATE jitllm_engine jitllm_warnings)
   target_link_options(jitllm_gemma_joined PRIVATE
