@@ -105,8 +105,10 @@ cross-engine head differences and the separate quality/batching gates remain.
 The [independent-cache C4 diagnostic](experiments/gemma-owner-root-c4/README.md)
 removes packed K/V copies for the closed 31B context-256 recipe. Paid latency
 falls 8.93%; with plain norm fusion the fresh-reference gap is 2.10%, and all
-128 complete heads match exactly. Wider contexts, Gemma26 transfer and
-production batching remain unqualified.
+128 complete heads match exactly. The [26B transfer](experiments/gemma26-owner-root-c4/README.md)
+reduces latency 7.13% with exact native heads/state, leaving 0.265% latency
+excess against fresh stock and the unchanged two positive-margin disagreements.
+Wider contexts, quality qualification and production batching remain open.
 
 The shared [planning read index](experiments/gemma-plan-index/README.md) removes
 repeated graph scans without changing selected operations or kernel arithmetic.

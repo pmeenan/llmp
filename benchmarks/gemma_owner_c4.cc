@@ -30,8 +30,9 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc != 8 || std::string_view(argv[3]) != "31" || std::string_view(argv[4]) != "4" ||
-      std::string_view(argv[5]) != "joined" || std::string_view(argv[6]) != "norm")
+  if (argc != 8 || std::string_view(argv[4]) != "4" || std::string_view(argv[5]) != "joined" ||
+      !((std::string_view(argv[3]) == "31" && std::string_view(argv[6]) == "norm") ||
+        (std::string_view(argv[3]) == "26" && std::string_view(argv[6]) == "compound")))
     return 2;
   const char* factor = std::getenv("JITLLM_GEMMA_OWNER_C4");
   if (!factor || (std::string_view(factor) != "packed" && std::string_view(factor) != "owners"))
@@ -40,7 +41,9 @@ int main(int argc, char** argv) {
   if (normmul_option && std::string_view(normmul_option) != "0" &&
       std::string_view(normmul_option) != "1")
     return 2;
-  const bool normmul = normmul_option && std::string_view(normmul_option) == "1";
+  // Preserve the dense31 default; the closed26 compound transfer defaults on.
+  const bool compound = std::string_view(argv[3]) == "26";
+  const bool normmul = normmul_option ? std::string_view(normmul_option) == "1" : compound;
   const char* phases_option = std::getenv("JITLLM_GEMMA_C4_PHASES");
   if (phases_option && std::string_view(phases_option) != "0" &&
       std::string_view(phases_option) != "1")
@@ -67,12 +70,10 @@ int main(int argc, char** argv) {
   const auto [end, error] = std::from_chars(number.data(), number.data() + number.size(), count);
   if (error != std::errc{} || end != number.data() + number.size() || count == 0 || count > 12 ||
       (variant != "26" && variant != "31") || (mode != "scalar" && mode != "joined") ||
-      (policy != "ordinary" && policy != "rows" && policy != "rows-norm" && policy != "norm"))
+      (policy != "norm" && policy != "compound"))
     return 2;
-  if ((policy == "rows-norm" || policy == "norm") &&
-      (variant != "31" || count != 4 || supplied.empty()))
-    return 2;
-  if (variant != "31" || count != 4 || policy != "norm" || mode != "joined" || supplied.empty())
+  if (count != 4 || mode != "joined" || supplied.empty() ||
+      (compound ? policy != "compound" : policy != "norm"))
     return 2;
   umask(0077);
   const std::filesystem::path out = argv[2];
@@ -102,8 +103,10 @@ int main(int argc, char** argv) {
           .slots = count,
           .fuse_norms = normmul,
           .row_invariant = policy == "rows" || policy == "rows-norm",
-          .fuse_norm_rope = policy == "rows-norm" || policy == "norm",
-          .fuse_norm_add = policy == "rows-norm" || policy == "norm"},
+          .fuse_norm_rope = true,
+          .fuse_norm_add = true,
+          .fuse_gemma_route = compound,
+          .fuse_gemma_reduce = compound},
       0, 0);
   auto& runner = *lifetime->runner;
   const auto execute = [&]() -> en::Status {
@@ -152,11 +155,14 @@ int main(int argc, char** argv) {
         const auto report_policy = [&](std::string_view phase, std::uint32_t owner,
                                        std::uint32_t rows, std::uint32_t segments) -> en::Status {
           const auto& p = runner.last_built_policy();
-          if (rows == 4 && segments == 4 &&
-              (p.norm_rope != 120 || p.norm_add != 120 || p.row_products != 0 ||
-               p.norm_fused != (normmul ? 121 : 0) || p.rope_store != 0 || p.shared_vecq != 0 ||
-               p.gemma_route != 0 || p.gemma_reduce != 0))
-            return Error("packed screen normative policy counts differ");
+          // Compound26 must hold in scalar prefill as well as C4 decode;
+          // retain the existing31 check at its C4 first-built plan.
+          if ((compound || (rows == 4 && segments == 4)) &&
+              (p.norm_rope != (compound ? 60U : 120U) || p.norm_add != (compound ? 90U : 120U) ||
+               p.row_products != 0 || p.norm_fused != (normmul ? 121 : 0) || p.rope_store != 0 ||
+               p.shared_vecq != 0 || p.gemma_route != (compound ? 30U : 0U) ||
+               p.gemma_reduce != (compound ? 30U : 0U)))
+            return Error("owner screen prefill/decode policy counts differ");
           if (p.rows != rows || p.segments != segments)
             return Error("fresh selected policy does not match requested shape");
           std::cout << "JOINED_SELECTED phase=" << phase << " owner=" << owner << " rows=" << p.rows

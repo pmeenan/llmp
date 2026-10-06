@@ -447,8 +447,11 @@ family" guide, and its long-context scaling work.
         preserving the 96-block grid. The [closed C4 consumer](experiments/gemma-owner-root-c4/README.md)
         removes K/V packing with 8.93% lower paid latency and exact 128 heads/four
         initialized states; plain-norm-on remains 2.10% slower than fresh stock,
-        with all 128 heads exact. Wider reads/window crossings and Gemma26 transfer
-        precede production selection; no selector or default changes.
+        with all 128 heads exact. The [Gemma26 backward transfer](experiments/gemma26-owner-root-c4/README.md)
+        lowers paid latency 7.13% with exact own heads/state; native is 0.265%
+        slower than fresh stock, and two positive-margin choices still fail strict quality.
+        Wider reads/window crossings and quality qualification precede
+        production selection; no selector or default changes.
       - [x] [Current C4 phase accounting](experiments/gemma-owner-c4-phases/README.md):
         all 32 plans hit; checks cost 24.74 ms and paid time outside execution
         averages 78.73 ms. Exact heads/state/choices remain. This diagnostic

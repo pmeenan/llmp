@@ -82,4 +82,6 @@ SHA `b2d7aaf6…`, installed Spark supervision, private outputs and owned refere
 retirement as described in [the protocol](PROTOCOL.md). TensorFold at entry is
 `609ca419…` / 0.6.5: its primary Gemma recipe is MLX26 only, without a matching
 Gemma31 CUDA recipe. Global8K/local-window crossings, wider read widths and
-mandatory Gemma26 backward transfer remain separate gates before selection.
+production selection remain separate gates. The later [bounded Gemma26 transfer](../gemma26-owner-root-c4/README.md)
+records a 7.13% gain and 0.265% fresh-reference latency excess with exact native
+heads/state; its two strict quality failures remain unresolved.

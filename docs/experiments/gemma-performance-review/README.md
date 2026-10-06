@@ -188,8 +188,11 @@ then reduces checks by 20.580 ms and paid C4 latency by 25.615 ms / 0.77%,
 with all heads, initialized states and choices exact. Mutable state still gets
 fresh checks; this isolated comparison supplies no new reference timing.
 [Gemma26 packed compound C4](../gemma26-compound-packed-c4/README.md)
-still has 2/128 positive-margin disagreements, 92/128 exact heads, and a 7.15%
-time deficit. [Common-input late MoE controls](../gemma26-late-moe/README.md)
+recorded 2/128 positive-margin disagreements, 92/128 exact heads, and a 7.15%
+time deficit. Its [owner-root transfer](../gemma26-owner-root-c4/README.md)
+removes K/V copies for a 7.13% gain and leaves 0.265% latency excess against
+fresh stock. Exact native heads/state and both strict quality failures remain.
+[Common-input late MoE controls](../gemma26-late-moe/README.md)
 match stock within each primitive/fused policy, with small policy-rounding
 differences; they did not confirm a new arithmetic defect or close those misses.
 
@@ -240,7 +243,9 @@ profiles. Those intervals do not isolate GPU arithmetic or a state allocation
 subcallee. Grouped upfront state preparation reduced31B state time61ms but
 showed no wall win amid execution spread. The closed C4 owner-root consumer removes K/V packing for an 8.93% gain;
 plain-norm-on remains 2.10% slower than fresh original bookends with exact heads.
-Wider-context and Gemma26 transfer remain open.
+The bounded Gemma26 transfer records a 7.13% gain and 0.265% fresh-reference
+latency excess; its two positive-margin failures remain. Wider contexts and
+production quality/batching qualification remain open.
 The current teacher-forcing screen matches all1024 full31B heads at256 rows;
 26B all1024's nine positive-margin failures are resolved by the bounded keep28
 routing diagnostic; general policy selection remains open. Keep quality diagnosis

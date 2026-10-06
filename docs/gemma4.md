@@ -364,8 +364,10 @@ all nine fixed-corpus choice differences. The [actual refusal](experiments/gemma
 is weights/logits allocation overlap, not a universal layer rule.
 The [independent-cache C4 consumer](experiments/gemma-owner-root-c4/README.md)
 removes K/V packing for 8.93% lower paid latency; plain-norm-on remains 2.10%
-slower than fresh stock, with all 128 heads exact at context 256. Wider contexts,
-Gemma26 transfer and production batching remain separate gates.
+slower than fresh stock, with all 128 heads exact at context 256. The [26B transfer](experiments/gemma26-owner-root-c4/README.md)
+reduces latency 7.13% with exact native heads/state; native remains 0.265%
+slower than fresh stock, with two positive-margin disagreements.
+Wider contexts, quality qualification and production batching remain separate gates.
 
 ## Bounded native serving route
 

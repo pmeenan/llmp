@@ -73,3 +73,64 @@ transfer follows a useful Gemma31 result and requires its own controls.
 The subsequent [phase diagnostic](../gemma-owner-c4-phases/README.md) adds
 `JITLLM_GEMMA_C4_PHASES=0|1`, default off, to the same helper. It resets counters
 before paid waves and reads them after the timer; it changes no graph policy.
+
+## Closed Gemma26 backward transfer (Task68)
+
+This derivative starts at `017c25e`, preserving the completed 31 sources and
+receipts in history. Fresh primary TensorFold task entry resolves `609ca419` /
+0.6.5: the actual recipe remains MLX26 only, with no matching CUDA recipe.
+The transfer changes only these manual benchmark sources and their linker
+observer. No core, CUDA launcher, operation API, default production selector,
+cache ownership, read-width or context change is proposed.
+
+Add the exact approved26 profile (width 2816, 30 layers, 16 query heads; local
+D256 / KV8 and global D512 / KV2) to the existing wrapper. It still requires
+four independent one-query owners, context 256 / max rows 128, readable KV256,
+four canonical head rows and no features. Unsupported shapes return the exact
+original builder. Thirty attention operations replace 120 owner attention
+nodes, with all eight SET_ROWS dependencies checked per layer. Metadata
+controls now admit both head counts 16 and 32 at D256/D512, retain all ten
+source/tag/parameter/alias refusals, and exercise both eligible profiles and
+owner/query-row fallbacks. The fixed arrays remain bounded by 60 layers and
+extra descriptors remain arena-funded.
+
+The new CLI is `ARTIFACT NEW_DIR 26 4 joined compound IDS_I32`. Both packed and
+owner arms enable the existing routing and reduction fusions throughout scalar
+prefill 64–67 and C4 decode, with actual first-built counters required at every
+shape: 60 normRoPE, 90 normADD, 30 routing, 30 reduction and 121 plain norms.
+All other optional policies stay zero. Plain norm defaults on for 26; explicit
+`JITLLM_GEMMA_C4_NORMMUL=0|1` remains available for diagnosis. The 31 CLI and its
+plain-norm-off default remain unchanged. Phases remain default off.
+
+A benchmark-only link wrapper forwards the exact existing
+`PlanFlashAttnOwners(const LaunchContext&, const FlashAttnOwners&)` call and
+prints only the first successful head 16 D256/D512 plan. It records original
+blocks/occupancy/columns/group/scratch and owner resource fit, changing none.
+Planning derives geometry from the actual compiled original packed kernel and
+real KV-head count; do not inherit 31 grids or label analytic estimates as
+measurements. These bounded logs occur while constructing the first owner
+plans, before the paid captured replay interval. No-launch metadata controls
+cannot establish runtime geometry.
+
+After source review and separately released narrow build, the **first native
+arm is packed/plain-on**. Its full 128 finite heads must match the historical
+compound hash `983388cd…`, and each of four initialized state witnesses must
+match the historical 57,671,680-byte / 60-range identity. The inputs remain the
+complete canonical 4096-byte `b2d7aaf6…` sequence; endpoints are 99–102. If enabling
+plain norms changes this identity, stop the owner factor and report a separate
+norm transfer rather than silently selecting a different recipe.
+
+Only after that identity gate may the separately released paired
+packed / owners / owners / packed same-binary runs measure K/V-copy removal.
+Full 128 heads, all four states and 128 choices must repeat and agree across the
+factor. Publication/argmax and all remaining packing stay paid; finite scans
+and state/file witnesses stay outside the clock. The installed supervisor and
+existing completion-aware ownership bundle govern every read. A fresh
+physical C4/u128 original/current/current/original bookend requires its own
+release after native evidence. Report all 128 strict choices, first byte
+variation and only the existing selected 16 likelihood/TV screen; no PPL or
+whole quality claim. The previous compound screen's two positive-margin misses
+remain known evidence, not an expected correctness pass or an assumed cause.
+Mixed original prefill routing eligibility at layers 28/29 does not authorize
+keeping layers, imitating physical aliases or changing a production rule.
+No wider-context, assistant, production batching or full-suite claim.

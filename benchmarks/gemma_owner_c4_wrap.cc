@@ -4,12 +4,14 @@
 // Benchmark-only graph derivative. No production selector or builder changes.
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <format>
 #include <iostream>
 #include <string_view>
 #include <vector>
 
+#include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/gemma4_graph.h"
 #include "kernels/ggml/jitllm_ops.h"
@@ -48,11 +50,11 @@ Result Reject(std::string_view why) {
   return std::unexpected(kg::KernelFailure{.detail = std::string(why)});
 }
 bool Shape(const kg::Gemma4Graph& g) {
-  if (g.profile != md::Gemma4_31B() || g.context != 256 || g.max_rows != 128 ||
-      g.shape.outputs != 4 || g.shape.feature_outputs != 0 || g.segments.size() != 4 ||
-      g.shape.segments.size() != 4 || g.options.first_layer != 0 || g.options.layer_count != 0 ||
-      g.options.hidden_input || !g.options.head || g.options.shared_q8 || g.options.rope_store ||
-      g.normalized_features != nullptr)
+  if ((g.profile != md::Gemma4_31B() && g.profile != md::Gemma4_26BA4B()) || g.context != 256 ||
+      g.max_rows != 128 || g.shape.outputs != 4 || g.shape.feature_outputs != 0 ||
+      g.segments.size() != 4 || g.shape.segments.size() != 4 || g.options.first_layer != 0 ||
+      g.options.layer_count != 0 || g.options.hidden_input || !g.options.head ||
+      g.options.shared_q8 || g.options.rope_store || g.normalized_features != nullptr)
     return false;
   for (std::size_t i = 0; i < 4; ++i) {
     const auto& s = g.segments[i];
@@ -133,7 +135,9 @@ std::size_t WrappedTensors(const md::Gemma4Profile&, std::size_t) asm(
 std::size_t WrappedTensors(const md::Gemma4Profile& p, std::size_t segments) {
   const auto original = RealTensors(p, segments);
   return original +
-         (Transform() && p == md::Gemma4_31B() && segments == 4 ? p.layers * kExtraPerLayer : 0);
+         (Transform() && (p == md::Gemma4_31B() || p == md::Gemma4_26BA4B()) && segments == 4
+              ? p.layers * kExtraPerLayer
+              : 0);
 }
 Result
 WrappedBuild(kg::TensorArena&, const md::Gemma4Profile&, const md::Gemma4Binding&, const md::Gemma4StateLayout&, const kg::Gemma4ChunkShape&, const kg::Gemma4GraphOptions&) asm(
@@ -221,7 +225,7 @@ Result WrappedBuild(kg::TensorArena& arena, const md::Gemma4Profile& p,
         kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners)
       ++attention;
   }
-  if (attention != 60) return Reject("packed attention count");
+  if (attention != p.layers) return Reject("packed attention count");
   for (std::uint32_t il = 0; il < p.layers; ++il) {
     const auto at = std::ranges::find(g.nodes, packed[il]);
     if (Owners()) {
@@ -243,7 +247,34 @@ Result WrappedBuild(kg::TensorArena& arena, const md::Gemma4Profile& p,
   }
   std::cout << "OWNER_C4_GRAPH attention=" << attention << " removed=" << removed.size()
             << " funded_extra=" << p.layers * kExtraPerLayer << " arena_used=" << arena.used()
-            << " nodes=" << g.nodes.size() << " scope=31-C4-rows1-read256 owners=" << Owners()
-            << "\n";
+            << " nodes=" << g.nodes.size() << " heads=" << p.heads
+            << " scope=" << (p == md::Gemma4_31B() ? "31" : "26")
+            << "-C4-rows1-read256 owners=" << Owners() << "\n";
   return built;
+}
+
+// Observe the existing external scratch planner, never alter its decisions.
+// The kernel's same-TU internal calls need not interpose: planning is enough.
+using OwnerPlan = std::expected<kg::FlashAttnOwnersPlan, kg::KernelFailure>;
+OwnerPlan RealOwnerPlan(const kg::LaunchContext&, const kg::FlashAttnOwners&) asm(
+    "__real__ZN6jitllm7kernels4ggml19PlanFlashAttnOwnersERKNS1_13LaunchContextERKNS1_"
+    "15FlashAttnOwnersE");
+OwnerPlan WrappedOwnerPlan(const kg::LaunchContext&, const kg::FlashAttnOwners&) asm(
+    "__wrap__ZN6jitllm7kernels4ggml19PlanFlashAttnOwnersERKNS1_13LaunchContextERKNS1_"
+    "15FlashAttnOwnersE");
+OwnerPlan WrappedOwnerPlan(const kg::LaunchContext& launch, const kg::FlashAttnOwners& inputs) {
+  auto plan = RealOwnerPlan(launch, inputs);
+  if (plan && inputs.q->ne[2] == 16) {
+    static std::array<std::atomic_bool, 2> seen{};
+    const auto index = plan->original.head == 256 ? 0U : 1U;
+    if (!seen[index].exchange(true, std::memory_order_relaxed))
+      std::cout << "OWNER_C4_GEOMETRY heads=16 head=" << plan->original.head
+                << " kvheads=" << inputs.k[0]->ne[2] << " original_blocks=" << plan->original.blocks
+                << " original_blocks_per_sm=" << plan->original_blocks_per_sm
+                << " owner_blocks_per_sm=" << plan->owner_blocks_per_sm
+                << " columns=" << plan->original.columns << " group=" << plan->original.group
+                << " scratch=" << plan->original.scratch << " threads=" << plan->threads
+                << " shared_bytes=" << plan->shared_bytes << " basis=compiled-original-planner\n";
+  }
+  return plan;
 }

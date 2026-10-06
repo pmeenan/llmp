@@ -18,55 +18,57 @@ namespace kg = jitllm::kernels::ggml;
 namespace md = jitllm::model;
 // Addresses are descriptor-only sentinels; this checker never reads payloads.
 bool OwnerNodeControls() {
-  for (const std::int64_t d : {256, 512}) {
-    auto arena = kg::TensorArena::Create(32);
-    if (!arena) return false;
-    auto* c = arena->context();
-    const auto kvh = 32 / (d == 256 ? 2 : 8);
-    auto* q = ggml_new_tensor_4d(c, GGML_TYPE_F32, d, 1, 32, 4);
-    q->nb[1] = static_cast<std::size_t>(d) * 32 * 4;
-    q->data = reinterpret_cast<void*>(0x10000000ULL);
-    auto* mask = ggml_new_tensor_4d(c, GGML_TYPE_F16, 256, 32, 1, 4);
-    mask->data = reinterpret_cast<void*>(0x20000000ULL);
-    std::array<ggml_tensor*, 4> k{}, v{};
-    for (std::size_t i = 0; i < 4; ++i) {
-      for (std::size_t which = 0; which < 2; ++which) {
-        auto* raw = ggml_new_tensor_4d(c, GGML_TYPE_F16, d, kvh, 256, 1);
-        raw->data =
-            reinterpret_cast<void*>(0x30000000ULL + which * 0x10000000ULL + i * 0x1000000ULL);
-        auto* view = ggml_permute(c, raw, 0, 2, 1, 3);
-        if (which == 0)
-          k[i] = view;
-        else
-          v[i] = view;
+  for (const std::int64_t heads : {16, 32})
+    for (const std::int64_t d : {256, 512}) {
+      auto arena = kg::TensorArena::Create(32);
+      if (!arena) return false;
+      auto* c = arena->context();
+      const auto kvh = heads / (d == 256 ? 2 : 8);
+      auto* q = ggml_new_tensor_4d(c, GGML_TYPE_F32, d, 1, heads, 4);
+      q->nb[1] = static_cast<std::size_t>(d * heads) * 4;
+      q->data = reinterpret_cast<void*>(0x10000000ULL);
+      auto* mask = ggml_new_tensor_4d(c, GGML_TYPE_F16, 256, 32, 1, 4);
+      mask->data = reinterpret_cast<void*>(0x20000000ULL);
+      std::array<ggml_tensor*, 4> k{}, v{};
+      for (std::size_t i = 0; i < 4; ++i) {
+        for (std::size_t which = 0; which < 2; ++which) {
+          auto* raw = ggml_new_tensor_4d(c, GGML_TYPE_F16, d, kvh, 256, 1);
+          raw->data =
+              reinterpret_cast<void*>(0x30000000ULL + which * 0x10000000ULL + i * 0x1000000ULL);
+          auto* view = ggml_permute(c, raw, 0, 2, 1, 3);
+          if (which == 0)
+            k[i] = view;
+          else
+            v[i] = view;
+        }
       }
+      auto* out = kg::FlashAttnOwnersNode(c, q, mask, k, v);
+      out->data = reinterpret_cast<void*>(0x60000000ULL);
+      const auto valid = [&] { return kg::CheckFlashAttnOwnersNode(out).has_value(); };
+      if (!valid()) return false;
+      auto* last = out->src[9];
+      out->src[9] = nullptr;
+      if (valid()) return false;
+      out->src[9] = last;
+      out->op_params[8] = 1;
+      if (valid()) return false;
+      out->op_params[8] = 0;
+      out->ne[3] = 3;
+      if (valid()) return false;
+      out->ne[3] = 4;
+      out->data = q->data;
+      if (valid()) return false;
+      out->data = reinterpret_cast<void*>(0x60000000ULL);
+      out->src[3] = out->src[2];
+      if (valid()) return false;
+      out->src[3] = k[1];
+      out->op = GGML_OP_FLASH_ATTN_EXT;
+      if (valid()) return false;
+      out->op = GGML_OP_CUSTOM;
+      if (!valid()) return false;
     }
-    auto* out = kg::FlashAttnOwnersNode(c, q, mask, k, v);
-    out->data = reinterpret_cast<void*>(0x60000000ULL);
-    const auto valid = [&] { return kg::CheckFlashAttnOwnersNode(out).has_value(); };
-    if (!valid()) return false;
-    auto* last = out->src[9];
-    out->src[9] = nullptr;
-    if (valid()) return false;
-    out->src[9] = last;
-    out->op_params[8] = 1;
-    if (valid()) return false;
-    out->op_params[8] = 0;
-    out->ne[3] = 3;
-    if (valid()) return false;
-    out->ne[3] = 4;
-    out->data = q->data;
-    if (valid()) return false;
-    out->data = reinterpret_cast<void*>(0x60000000ULL);
-    out->src[3] = out->src[2];
-    if (valid()) return false;
-    out->src[3] = k[1];
-    out->op = GGML_OP_FLASH_ATTN_EXT;
-    if (valid()) return false;
-    out->op = GGML_OP_CUSTOM;
-    if (!valid()) return false;
-  }
-  std::cout << "OWNER_NODE_METADATA two_dimensions tag/all10/params/shape/alias refusals PASS "
+  std::cout << "OWNER_NODE_METADATA two_dimensions two_head_counts tag/all10/params/shape/alias "
+               "refusals PASS "
                "launches=0\n";
   return true;
 }
@@ -108,7 +110,7 @@ int main() {
         if (arena->bytes() !=
             arena->used() + ggml_tensor_overhead() + arena->graph_visited().size_bytes())
           return 1;
-        const bool selected = packed && variant == 31 && owners == 4 && rows == 1;
+        const bool selected = packed && owners == 4 && rows == 1;
         const auto expected = p.layers * (selected ? 1 : owners);
         const auto actual = std::ranges::count_if(graph->nodes, [](auto* n) {
           return n->op == GGML_OP_FLASH_ATTN_EXT ||

@@ -336,7 +336,8 @@ if(JITLLM_CUDA)
     target_link_options(${_owner_target} PRIVATE
       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas"
       "LINKER:--wrap=_ZN6jitllm7kernels4ggml16BuildGemma4GraphERNS1_11TensorArenaERKNS_5model13Gemma4ProfileERKNS4_13Gemma4BindingERKNS4_17Gemma4StateLayoutERKNS1_16Gemma4ChunkShapeERKNS1_18Gemma4GraphOptionsE"
-      "LINKER:--wrap=_ZN6jitllm7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm")
+      "LINKER:--wrap=_ZN6jitllm7kernels4ggml18Gemma4GraphTensorsERKNS_5model13Gemma4ProfileEm"
+      "LINKER:--wrap=_ZN6jitllm7kernels4ggml19PlanFlashAttnOwnersERKNS1_13LaunchContextERKNS1_15FlashAttnOwnersE")
   endforeach()
 
   add_executable(jitllm_gemma_attention_packed

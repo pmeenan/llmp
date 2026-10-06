@@ -461,8 +461,13 @@ uses a checked ten-source operation over the exact cache writers, removing only
 K/V CONCAT while retaining Q/mask packing and original grid/partitions. Paid
 latency falls 8.93%; all 128 heads/four initialized states match packed repeats.
 Plain-norm-on remains 2.10% slower than fresh original bookends with all 128 heads
-byte-exact. Other read widths/window crossings and Gemma26/assistant transfer
-need actual controls; production selection remains unchanged.
+byte-exact. The [Gemma26 backward transfer](experiments/gemma26-owner-root-c4/README.md)
+uses 30 layers / 16 query heads at context/read 256, preserving measured local
+48-block and global 64-block geometry. K/V copy removal lowers paid latency
+7.13%, with all 128 native heads/four states unchanged; the fresh stock gap is
+0.265%, but two positive-margin choices still fail strict quality. Other read
+widths/window crossings and assistant transfer need actual controls;
+production selection remains unchanged.
 
 The [current C4 phase split](experiments/gemma-owner-c4-phases/README.md)
 records 32 plan hits, 24.74 ms of checks and 78.73 ms outside execution,
