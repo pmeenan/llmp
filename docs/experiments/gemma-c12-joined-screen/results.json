@@ -1,0 +1,447 @@
+{
+  "scope": "First C12 screen: immutable source22, ordinary native8+4 versus normal physical12 reference. Both quality gates fail; no default adoption.",
+  "native_helper_sha256": "4514f149c06f94aaf7d18049bec5a46a2401a6389baf777152ffee1c5cfa8e18",
+  "sdk_receipt_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",
+  "source_manifest_sha256": "47bf08f766949e52faf80adfb9330a0d6428a7fb05fe71b22bcddfdef492f32a",
+  "analysis_sha256": "abbbe9b6a6c0ba19cc45708732ef9642a718e6ad222e9ac064c64df19f0e2ccb",
+  "carrier_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
+  "reference_client_sha256": "17424b81dbeda3a882ae516131cc1fe77c99948b9fec6d4aecab14f8e16345bf",
+  "reference_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+  "conditional_limit": 0.03,
+  "complete_rows": 396,
+  "within_history_conditional_targets": 384,
+  "profiles": {
+    "31": {
+      "paid_seconds": {
+        "native_scalar": [
+          37.3483,
+          38.2185
+        ],
+        "native_joined": [
+          8.27676,
+          8.276
+        ],
+        "stock": [
+          6.08929,
+          5.54673
+        ]
+      },
+      "native_mean_joined_seconds": 8.27638,
+      "stock_mean_seconds": 5.81801,
+      "elapsed_gap_percent": 42.254482202677536,
+      "freeze_sha256": "78f0e403de170d4acc1e01ecf2ad668aa96d78ba36537e99786e16a335ed153f",
+      "comparison_sha256": "a01018428838c4c633c60854f8ae3b815372f01ff14b4d82ca6a0923c3c3c256",
+      "conditional_sha256": "c18115e3327c5a633d9564418769f4555259b96d087254fc5f7e62db37bd12b7",
+      "p99": 2.202470970153809,
+      "own_repeat": "Complete finite heads and all frontier/final initialized states/layouts exact within each scalar or joined pair.",
+      "cross_scalar_joined": "All12 frontier initialized-state identities exact; all12 final-state identities differ.",
+      "strict_differences": 34,
+      "exact_rows": 0,
+      "max_raw_delta": 21.58823299407959,
+      "outside_rows": [
+        {
+          "frontier_row": 1,
+          "native": 715,
+          "outside_p99": true,
+          "owner": 7,
+          "reference": 885,
+          "reference_margin": 4.365390211343765,
+          "reference_tie": false,
+          "row": 19
+        },
+        {
+          "frontier_row": 3,
+          "native": 236858,
+          "outside_p99": true,
+          "owner": 5,
+          "reference": 715,
+          "reference_margin": 2.814718723297119,
+          "reference_tie": false,
+          "row": 41
+        },
+        {
+          "frontier_row": 9,
+          "native": 1900,
+          "outside_p99": true,
+          "owner": 2,
+          "reference": 2712,
+          "reference_margin": 3.632984161376953,
+          "reference_tie": false,
+          "row": 110
+        },
+        {
+          "frontier_row": 14,
+          "native": 715,
+          "outside_p99": true,
+          "owner": 0,
+          "reference": 3352,
+          "reference_margin": 3.16190242767334,
+          "reference_tie": false,
+          "row": 168
+        },
+        {
+          "frontier_row": 19,
+          "native": 2321,
+          "outside_p99": true,
+          "owner": 1,
+          "reference": 711,
+          "reference_margin": 9.064326763153076,
+          "reference_tie": false,
+          "row": 229
+        },
+        {
+          "frontier_row": 26,
+          "native": 236770,
+          "outside_p99": true,
+          "owner": 0,
+          "reference": 715,
+          "reference_margin": 9.852807939052582,
+          "reference_tie": false,
+          "row": 312
+        },
+        {
+          "frontier_row": 29,
+          "native": 197447,
+          "outside_p99": true,
+          "owner": 9,
+          "reference": 100,
+          "reference_margin": 2.3842010498046875,
+          "reference_tie": false,
+          "row": 357
+        },
+        {
+          "frontier_row": 32,
+          "native": 100,
+          "outside_p99": true,
+          "owner": 7,
+          "reference": 39258,
+          "reference_margin": 4.165807247161865,
+          "reference_tie": false,
+          "row": 391
+        }
+      ],
+      "conditional": {
+        "combined_first_baseline_gate_passed": false,
+        "comparison_sha256": "a01018428838c4c633c60854f8ae3b815372f01ff14b4d82ca6a0923c3c3c256",
+        "complete1023_corpus_ppl_claim": false,
+        "conditional_score_gate_passed": false,
+        "conditional_target_rows": 384,
+        "limit": 0.03,
+        "mean_nll_delta": 0.03250667183825229,
+        "native_mean_nll": 11.623980941961024,
+        "owners": 12,
+        "profile": 31,
+        "prospective_note_sha256": "fc1729276ff2d33f49d64c3ece9f94c4f8b015139b1dd16df9eb33c59b5f5559",
+        "reference_mean_nll": 11.591474270122772,
+        "relative_conditional_loss_degradation": 0.03304078540200879,
+        "zero_outside_p99": false
+      },
+      "first_baseline_gate_passed": false,
+      "reference_own_repeat_files": {
+        "cohort.logits.f32": {
+          "bytes": 415236096,
+          "sha256": "b70c67936d070d98f78982a7fb461c0432f5d9aff949c4b653bbfdc55339d5a3"
+        },
+        "inputs.i32": {
+          "bytes": 49152,
+          "sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3"
+        }
+      },
+      "native_source_sha256": "00be5ae434d4e30574990602b52f1ec842e3cc7c95545f0665d403a7e86b5cee",
+      "checkpoint_input_manifest_sha256": "f6cf32b29dd980c997915519339cdc1cd2c244e219c473a0331303bbc6e5708c"
+    },
+    "26": {
+      "paid_seconds": {
+        "native_scalar": [
+          7.45295,
+          7.50061
+        ],
+        "native_joined": [
+          2.75774,
+          2.76887
+        ],
+        "stock": [
+          1.99187,
+          1.97779
+        ]
+      },
+      "native_mean_joined_seconds": 2.763305,
+      "stock_mean_seconds": 1.98483,
+      "elapsed_gap_percent": 39.221243129134464,
+      "freeze_sha256": "fc08e31d725e63206af6b72ec06aabc273646e88e37ac57d6597e8ad6866c560",
+      "comparison_sha256": "2d2b44966d34b5035e1ae8b6814bcf1f36d56e7b9ee653c4580b64e18dd90a6e",
+      "conditional_sha256": "42dbdc69543438776943914ddac403afdff5bae9ade7f160fd570e0f54e1716d",
+      "p99": 7.542554473876955,
+      "own_repeat": "Complete finite heads and all frontier/final initialized states/layouts exact within each scalar or joined pair.",
+      "cross_scalar_joined": "All12 frontier initialized-state identities exact; all12 final-state identities differ.",
+      "strict_differences": 74,
+      "exact_rows": 0,
+      "max_raw_delta": 24.41162657737732,
+      "outside_rows": [
+        {
+          "frontier_row": 2,
+          "native": 236785,
+          "outside_p99": true,
+          "owner": 11,
+          "reference": 236909,
+          "reference_margin": 11.992425084114075,
+          "reference_tie": false,
+          "row": 35
+        },
+        {
+          "frontier_row": 5,
+          "native": 1852,
+          "outside_p99": true,
+          "owner": 10,
+          "reference": 715,
+          "reference_margin": 16.397502899169922,
+          "reference_tie": false,
+          "row": 70
+        },
+        {
+          "frontier_row": 5,
+          "native": 2256,
+          "outside_p99": true,
+          "owner": 11,
+          "reference": 2268,
+          "reference_margin": 11.721465826034546,
+          "reference_tie": false,
+          "row": 71
+        },
+        {
+          "frontier_row": 7,
+          "native": 506,
+          "outside_p99": true,
+          "owner": 1,
+          "reference": 1186,
+          "reference_margin": 10.681374073028564,
+          "reference_tie": false,
+          "row": 85
+        },
+        {
+          "frontier_row": 23,
+          "native": 236772,
+          "outside_p99": true,
+          "owner": 5,
+          "reference": 522,
+          "reference_margin": 8.017680168151855,
+          "reference_tie": false,
+          "row": 281
+        }
+      ],
+      "conditional": {
+        "combined_first_baseline_gate_passed": false,
+        "comparison_sha256": "2d2b44966d34b5035e1ae8b6814bcf1f36d56e7b9ee653c4580b64e18dd90a6e",
+        "complete1023_corpus_ppl_claim": false,
+        "conditional_score_gate_passed": false,
+        "conditional_target_rows": 384,
+        "limit": 0.03,
+        "mean_nll_delta": 0.09943670238680724,
+        "native_mean_nll": 11.079180387835054,
+        "owners": 12,
+        "profile": 26,
+        "prospective_note_sha256": "fc1729276ff2d33f49d64c3ece9f94c4f8b015139b1dd16df9eb33c59b5f5559",
+        "reference_mean_nll": 10.979743685448247,
+        "relative_conditional_loss_degradation": 0.10454855324009535,
+        "zero_outside_p99": false
+      },
+      "first_baseline_gate_passed": false,
+      "reference_own_repeat_files": {
+        "cohort.logits.f32": {
+          "bytes": 415236096,
+          "sha256": "b5caffaf66f9eaa9c4bc94d45a6e41d872681dab9fb398486bc39e37aad95686"
+        },
+        "inputs.i32": {
+          "bytes": 49152,
+          "sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3"
+        }
+      },
+      "native_source_sha256": "d88c69fe55ade3de32f5640dd168b4044cc45696135ea8756c2d852fc709b656",
+      "checkpoint_input_manifest_sha256": "b91eecf9d54fc55392d15ea04ba18c5a4cc5ab8e8ac2294501094d5959b578e1"
+    }
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma-c12-geometry-native31-1",
+      "queued_steps": 11,
+      "successful_steps": 11,
+      "records_sha256": {
+        "final.json": "5057d6d1b9204f4b459be748bf200cc5c1fb5c6534c1a837cf4d490bf2e0873d",
+        "steps.json": "7d8087be4b59c16c93e7efca701556a0fcf793d5dc405b94c2d3c125f70c2a8d",
+        "job.json": "174942b61a04e7ef3c3c1925c01c1f69aee58e04518ca622b34ecc9ea42954a1",
+        "log": "5d17ad28988ee92033990bf72701323b23c7c3678b4b92481a2e428941275f98"
+      },
+      "status": "done",
+      "exit_code": 0
+    },
+    {
+      "name": "m35-gemma-c12-geometry-freeze31-1",
+      "queued_steps": 3,
+      "successful_steps": 3,
+      "records_sha256": {
+        "final.json": "f292ad2c2d848070cf751eff9dc13f1ef5d2ba008d833deb7537e0e037220831",
+        "steps.json": "8ac1d9c8d26182cb400f43e15d82570ec81c3e4b668bcf279f4bb9c7d4bf132e",
+        "job.json": "89f3ed80513b141ed25a9499a80948f89c2dca041a70d314026ece1f7dd90863",
+        "log": "095d0ce59afadf2c1a9755097d549ef3cd43379e10d44a90e51b14ea20d12a56"
+      },
+      "status": "done",
+      "exit_code": 0
+    },
+    {
+      "name": "m35-gemma-c12-geometry-reference31-1",
+      "queued_steps": 6,
+      "successful_steps": 6,
+      "records_sha256": {
+        "final.json": "50bb68a1f72cebdf029cd349bae44a3506a3cae0274b1609373545d391bd839e",
+        "steps.json": "9c57cd02426ba8398992a446889bc3186a929e25af88864970c562f3bf648740",
+        "job.json": "e6cfd5ee36a2315b9feb7ecf844ceec54eef485d35bb8e1e90d57eff6cb79280",
+        "log": "805ff2e1e286f43395813c3f7970e16f67b9ae57e5662ecec27f97107f8da69e"
+      },
+      "status": "done",
+      "exit_code": 0
+    },
+    {
+      "name": "m35-gemma-c12-geometry-compare31-1",
+      "queued_steps": 3,
+      "successful_steps": 1,
+      "records_sha256": {
+        "final.json": "17b187a28b0b6604a5c83a4fd1788bcddd0db3090fc319a6da314ff498b7c45b",
+        "steps.json": "7c6853d42450568189917ab5067bfe3e1c6e3a64f02a10740dddcf668f33de56",
+        "job.json": "12c5b80af6a07f7f6eb025baddb9c6466ab54678176257c79cef23141ffa1f3c",
+        "log": "f43dae0f920440f3b4f3b9c510458684efc067a828e4236424661451b699f67e"
+      },
+      "status": "failed",
+      "exit_code": 1
+    },
+    {
+      "name": "m35-gemma-c12-geometry-conditional31-1",
+      "queued_steps": 3,
+      "successful_steps": 1,
+      "records_sha256": {
+        "final.json": "417b663d5cc51c8c042f00795045f51831c072e9bf1088706637b5e7fe2b8287",
+        "steps.json": "75567cb3c2d0ecee8396f90303cea91e5e9f71731f2bff8638a70b86dafc6baa",
+        "job.json": "259fb60233865ad9e5084a36b4f1f91bc54040fd33302ee604a04716612d9560",
+        "log": "b984673e3fbdda6d9b70e51e94edb2127fa2513a3a5e3d83bd3205098009caad"
+      },
+      "status": "failed",
+      "exit_code": 1
+    },
+    {
+      "name": "m35-gemma-c12-geometry-postauth31-1",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records_sha256": {
+        "final.json": "bb5f9cab4dbcdc9739a1587a80e3d42860ca4b13f3f8564f6e39416f4a0ed020",
+        "steps.json": "7e924779928ef54ea90de853cf59767294dc519bb04473789e89c3f1a28535c0",
+        "job.json": "045bf864974d8643ebf48287963ebcdca7235e452ba4d8f6b9cd9f5ab2668c1a",
+        "log": "1ceb6e6035929e4ef4b46ad9c92783938bd542e05ebc5a7ccdd808998aaf2643"
+      },
+      "status": "done",
+      "exit_code": 0
+    },
+    {
+      "name": "m35-gemma-c12-geometry-postauth31-2",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records_sha256": {
+        "final.json": "8de796b4e5f58a9541a4743b0e61ddd3dfe070b33c1f7ea62b03aee5d8200f03",
+        "steps.json": "d27e798192f8fb60bf2b3cab63152f427ee81f4ff84c0aadd645140efa4d7dbf",
+        "job.json": "65bcd9998dac371bd50bd0eb5261957f963a35193897c6943d6a3ccf1ee4bcf9",
+        "log": "509a06e091a0c8adef9380a3f97b410ace9179350af8fe3bcd3ca9ee9a98a864"
+      },
+      "status": "done",
+      "exit_code": 0
+    },
+    {
+      "name": "m35-gemma-c12-geometry-native26-1",
+      "queued_steps": 11,
+      "successful_steps": 11,
+      "records_sha256": {
+        "final.json": "3f2433083e2fdc9b2503e9bb16beb776317b51357fa667d8dc5329df3c410fe8",
+        "steps.json": "1006d4e8f1d614cf739db92e677b04cc74e436f0a1684c737e936cf16b5d35ac",
+        "job.json": "03cc7899221c2357bbec40324ed026adcab7f3901ed06218f7417e45f9ee38b9",
+        "log": "afa18429a99a4cf507e156698fd3677a5b70186b59644ab47f4be246f1ab0bf2"
+      },
+      "status": "done",
+      "exit_code": 0
+    },
+    {
+      "name": "m35-gemma-c12-geometry-freeze26-1",
+      "queued_steps": 3,
+      "successful_steps": 3,
+      "records_sha256": {
+        "final.json": "35d53d015eda56e94fef43d71933fb9dfa340a3af655bb17e053c6fd305c3c8a",
+        "steps.json": "dc505625e9d1f22cb815d2e06135b6c8f0c588687dd66e7b9fb3f23b11cadecf",
+        "job.json": "4ddd21e443231a21a808fa5ce7bf57435e63fe0258d7238fe8d0f2333a78c576",
+        "log": "bcc10c5e93aa640d84afd00232b5b7e3af3d9c13af67194d8a804dd8cb2accc6"
+      },
+      "status": "done",
+      "exit_code": 0
+    },
+    {
+      "name": "m35-gemma-c12-geometry-reference26-1",
+      "queued_steps": 6,
+      "successful_steps": 6,
+      "records_sha256": {
+        "final.json": "3fd8550c70967869ae47dbf400dbeec63c4b8533c170aaf48742912ced63b993",
+        "steps.json": "8f855c7450406abaf7edd25ec7213ba58da04b0d9b1799ddad519bc173327799",
+        "job.json": "40f48436a277b43d6179dbc22ce9b4d250ee85e6dfcdf7d78fbd7e13c1979ac4",
+        "log": "1f27560c992a9a9e035c8f9d8bc2c9184a7c509c5990aec1848f1208c632c5bf"
+      },
+      "status": "done",
+      "exit_code": 0
+    },
+    {
+      "name": "m35-gemma-c12-geometry-compare26-1",
+      "queued_steps": 3,
+      "successful_steps": 1,
+      "records_sha256": {
+        "final.json": "fdf05b121f93ca23c08740d2cd14721f244e62ee7de11afd40ce023f2d1d2e56",
+        "steps.json": "59140ac7bfaf2e09b47722ff17b46c3c1d42b1908413d0686fa1cb9ecbeb7893",
+        "job.json": "c767b02ce7b9bcb14e7048c771371e1c3cf67b84fa640a20660e613920317146",
+        "log": "5bd90a0e5832f8ab352c31da0047b153f9d544e49585135821dbb4c6c443b321"
+      },
+      "status": "failed",
+      "exit_code": 1
+    },
+    {
+      "name": "m35-gemma-c12-geometry-conditional26-1",
+      "queued_steps": 3,
+      "successful_steps": 1,
+      "records_sha256": {
+        "final.json": "b8732b44784ff994f558d4c9daf027536b95f03baf3aef87cbd8e8bf1a89e302",
+        "steps.json": "eb227f8daff8d2d64a419f69cd08e5a89f9500304971a6cd3c832d708f6ffe39",
+        "job.json": "d643c8f7d90e05266e51d088902d10e187022442cf20f3414d801ca8dcb0db04",
+        "log": "d0eb8e7072d7fcbecf33bc711b535ae8616141f2b01a05c4170793a6330271d8"
+      },
+      "status": "failed",
+      "exit_code": 1
+    },
+    {
+      "name": "m35-gemma-c12-geometry-postauth26-1",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records_sha256": {
+        "final.json": "3265405f55b36668d8432ed901425d95bf315adb50e2bdd62b7a7994448bca33",
+        "steps.json": "7d70d54265e3b0507f1c880235c7abf6644af533fd5c3261f6ea1cf43af4e17f",
+        "job.json": "832ad9adbaca0629ceceafd360363b3625563ca8343ceadd1e577ed9308fbccf",
+        "log": "dbab42ce2764aa731e5a36a3f39f823c4772977a0662709f9414becd22f42ad0"
+      },
+      "status": "done",
+      "exit_code": 0
+    },
+    {
+      "name": "m35-gemma-c12-geometry-postauth26-2",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "records_sha256": {
+        "final.json": "979965d803e551a6248169f1b0476ca268e775f1b03556422f420ab06f187518",
+        "steps.json": "620a35e6a2eb3f2244b8e84131e69052e5942eeeb75197743bb0a7162c5bd1a7",
+        "job.json": "cdd319bb6ce1d4b182b9765982df972e73b9e961a544265417afb30a9f443450",
+        "log": "d75ffcf509d1340899542ffd437b3113830d2a9113291ee40a96fc04bf4b0e82"
+      },
+      "status": "done",
+      "exit_code": 0
+    }
+  ]
+}
