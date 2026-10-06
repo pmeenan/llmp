@@ -1,0 +1,224 @@
+{
+  "base": "e2471a53e03e6036e2932f76f4bea25228be17ab",
+  "purpose": "Same-binary paid grouped-state-preparation factor, no production adoption",
+  "arms": [
+    {
+      "name": "task64-native26-chunked-first",
+      "mode": "state-chunked",
+      "prefill_seconds": 2.48265,
+      "decode_seconds": 0.690158,
+      "phase_seconds": {
+        "checks_seconds": 0.00664918,
+        "inputs_seconds": 0.000436366,
+        "state_seconds": 0.06274,
+        "required_planning_seconds": 0.0079314,
+        "staging_seconds": 0.000411598,
+        "execution_seconds": 2.38874,
+        "publication_cleanup_seconds": 0.0157386,
+        "bind_seconds": 0.0122004,
+        "coverage_seconds": 0.00434275,
+        "cache_seconds": 0.000766716
+      },
+      "stream_elapsed_seconds": 2.38141,
+      "planned_calls": 8,
+      "hits": 7,
+      "misses": 1
+    },
+    {
+      "name": "task64-native26-upfront-first",
+      "mode": "state-upfront",
+      "prefill_seconds": 2.45789,
+      "decode_seconds": 0.690714,
+      "phase_seconds": {
+        "checks_seconds": 0.00570959,
+        "inputs_seconds": 0.000440718,
+        "state_seconds": 0.043254,
+        "required_planning_seconds": 0.00782977,
+        "staging_seconds": 0.00040779,
+        "execution_seconds": 2.38349,
+        "publication_cleanup_seconds": 0.0167555,
+        "bind_seconds": 0.0130348,
+        "coverage_seconds": 0.00441641,
+        "cache_seconds": 0.000779902
+      },
+      "stream_elapsed_seconds": 2.3763,
+      "planned_calls": 8,
+      "hits": 7,
+      "misses": 1
+    },
+    {
+      "name": "task64-native26-upfront-repeat",
+      "mode": "state-upfront",
+      "prefill_seconds": 2.45717,
+      "decode_seconds": 0.687932,
+      "phase_seconds": {
+        "checks_seconds": 0.00564715,
+        "inputs_seconds": 0.000442606,
+        "state_seconds": 0.0422985,
+        "required_planning_seconds": 0.0081049,
+        "staging_seconds": 0.000403455,
+        "execution_seconds": 2.38362,
+        "publication_cleanup_seconds": 0.0166499,
+        "bind_seconds": 0.0129252,
+        "coverage_seconds": 0.00449735,
+        "cache_seconds": 0.000787355
+      },
+      "stream_elapsed_seconds": 2.37484,
+      "planned_calls": 8,
+      "hits": 7,
+      "misses": 1
+    },
+    {
+      "name": "task64-native26-chunked-repeat",
+      "mode": "state-chunked",
+      "prefill_seconds": 2.47316,
+      "decode_seconds": 0.691743,
+      "phase_seconds": {
+        "checks_seconds": 0.00657635,
+        "inputs_seconds": 0.000449133,
+        "state_seconds": 0.0595016,
+        "required_planning_seconds": 0.00803668,
+        "staging_seconds": 0.000401677,
+        "execution_seconds": 2.38248,
+        "publication_cleanup_seconds": 0.0157049,
+        "bind_seconds": 0.0120902,
+        "coverage_seconds": 0.00440943,
+        "cache_seconds": 0.000768573
+      },
+      "stream_elapsed_seconds": 2.37418,
+      "planned_calls": 8,
+      "hits": 7,
+      "misses": 1
+    }
+  ],
+  "aggregate": {
+    "chunked_mean_prefill_seconds": 2.477905,
+    "upfront_mean_prefill_seconds": 2.45753,
+    "upfront_vs_chunked_prefill_percent": -0.8222671974914109,
+    "prefill_saving_ms": 20.374999999999588,
+    "chunked_prefill_spread_ms": 9.489999999999998,
+    "upfront_prefill_spread_ms": 0.7199999999998319,
+    "chunked_mean_state_seconds": 0.0611208,
+    "upfront_mean_state_seconds": 0.04277625,
+    "chunked_mean_execution_seconds": 2.38561,
+    "upfront_mean_execution_seconds": 2.3835550000000003
+  },
+  "quality": {
+    "all_heads_state_32choices_exact_to_baseline": true,
+    "finite_complete_retained_heads": 8,
+    "heads_sha256": {
+      "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+      "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+    },
+    "state_bytes": 592445440,
+    "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed",
+    "layout": "gemma26-f16-kv-scalar-device-v1:16384:1024:16384:2048",
+    "scope": "Two retained head vectors and 32 greedy choices per arm; no corpus-quality or all32-vector claim."
+  },
+  "budget": {
+    "fixed": "3865052160",
+    "weights": "17047748608",
+    "state_capacity": "754974720",
+    "publication": "1048576",
+    "pinned_head_envelope": "1073741824",
+    "max_rows": "1024",
+    "call_bound": "44",
+    "plan_floor": "2503184",
+    "planning_scratch": "9540096",
+    "plan_graph_capacity": "3634623168",
+    "total": "26067962048"
+  },
+  "recipe": {
+    "model": "Gemma4-26B-A4B",
+    "context": 16384,
+    "local_capacity": 2048,
+    "global_capacity": 16384,
+    "kv_type": "F16",
+    "prefill_rows": 8192,
+    "chunk_rows": 1024,
+    "warm_discarded_rows": 6,
+    "anchors": 3,
+    "decode_incoming_heads": 32,
+    "policy": "all",
+    "normmul": "on",
+    "prefill_output": "state-only",
+    "lookahead": "on",
+    "phases": "on",
+    "routing_keep28": false,
+    "policy_counts": {
+      "plain_norm": 121,
+      "norm_rope": 60,
+      "norm_add": 90,
+      "route": 30,
+      "reduce": 30,
+      "row_products": 0,
+      "shared_vecq": 0,
+      "rope_store": 0
+    },
+    "prefill_plans": {
+      "calls": 8,
+      "hits": 7,
+      "misses": 1
+    }
+  },
+  "provenance": {
+    "helper_sha256": "68368ed64a299d02765dffb35aff126c576ba5e6699cffa6e83cdc8a6409d794",
+    "helper_bytes": 144349936,
+    "sdk_receipt_sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d",
+    "helper_source_sha256": "5be882152fa8b136602fab17f4a1c8fceba581c5e12d05235498c0dcf9971838",
+    "helper_source_base": "845617f",
+    "native_nvcc": "13.4.92",
+    "native_toolkit": "13.4.2",
+    "input_bytes": 32908,
+    "input_sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b",
+    "artifact_sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+    "index_sha256": "e748198836025cc2d1bc8b0b61a1d39dc1eefdc2d34feb158a425f6f913f1171",
+    "tensorfold": {
+      "observed_utc": "2026-10-06T01:02:42.495572+00:00",
+      "primary": "https://github.com/ashhart/TensorFold",
+      "main": "609ca419abecebdc5a059498a613680bd3aa847f",
+      "version": "0.6.5",
+      "run": false,
+      "reason": "No CUDA Gemma comparator in primary recipe",
+      "primary_snapshots": {
+        "tensorfold-README.md": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2",
+        "tensorfold-gemma4.md": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11",
+        "tensorfold-version.py": "9f6ce7ca61c89543d6aebe2a2cae0826968fffbf9e3a830e7119bad5903e3129"
+      }
+    },
+    "summary_sha256": "b5aac0402312afe8e7df019a81aeb9348482f51d8034f0bb7bcd2e97f1ec6578",
+    "raw_directory": "/tmp/jitllm-m35-coordination/gemma26-state-preparation-raw"
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma26-state-preparation-screen1",
+      "host": "spark-56f5",
+      "state": "done",
+      "rc": 0,
+      "official_record_sha256": {
+        "job.json": "53418656db2f5f864cc9bee07a64f25fe460886dbf827988efa036bcd0e15dfb",
+        "final.json": "10ed863b9e5b6b29e6f1653040a4bf08a84a5fac2c4a018ada0f647be97dabd3",
+        "steps.json": "f02b39b76946a73c7ff749a32e49661354b378bec4123915b99bfb31fabf41d0",
+        "log": "6bcbae666c963caf5e7ef23e6dae7fd1c780ea4285d3a1c9f17e2a174d6227c8"
+      }
+    },
+    {
+      "name": "m35-gemma26-state-preparation-check1",
+      "host": "spark-56f5",
+      "state": "done",
+      "rc": 0,
+      "official_record_sha256": {
+        "job.json": "65ae70d486e78ca755f88b054909b9e04bb9106fb97580d8075b743c54ec129c",
+        "final.json": "42f8f6d8ace8f25d4761d8047339a5d8f002efdca8ed6a19e370dc14b2feca8b",
+        "steps.json": "12b1f67feccb60dd8021f8d3e3efb8464eb764b3dc51543737f9819663bd34fc",
+        "log": "76564119487754e9693ff299156988e7cad53983cfa2cd0237f79075b5f1c436"
+      }
+    }
+  ],
+  "limits": [
+    "Existing historical helper, not latest-main binary; selected arithmetic was checked in Task59.",
+    "No fresh reference run or competitive parity claim.",
+    "Clock subintervals overlap enclosing phases; stream elapsed includes submission gaps and is not active GPU time.",
+    "Full regression suite deferred by owner; no source/build change."
+  ]
+}

@@ -444,8 +444,10 @@ Gemma31 state time falls 61.1245 ms / 33.45%, combining closure/acquire and
 materialization grouping; execution spread prevents a wall-speed conclusion.
 Exact heads/state/choices remain. This is a transferable state-path lead, not
 an adopted policy: pressure, partial refusal and continuation lifetime need
-qualification before earlier full-prompt backing is selected. No 26B extension
-or previous-family performance claim follows.
+qualification before earlier full-prompt backing is selected. The [26B transfer](experiments/gemma26-state-preparation/README.md)
+reduces paid prefill by 20.375 ms / 0.822% and state preparation by 18.345 ms,
+with exact heads/state/choices. Neither diagnostic establishes a fresh
+competitive comparison or production adoption.
 
 The [independent C4 attention owner-root proof](experiments/gemma-owner-root-attention/README.md)
 reuses the pinned MMA tile/fixup arithmetic with eight checked K/V addresses,

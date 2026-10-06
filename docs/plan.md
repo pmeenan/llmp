@@ -435,8 +435,10 @@ family" guide, and its long-context scaling work.
         one existing bulk preparation call stays inside paid prefill; later
         chunk checks use initialized state. Gemma31 state time falls 61.1245 ms
         / 33.45%, with exact heads/state, but wall spread prevents a speed claim.
-        Production and 26B remain unchanged; pressure/lifetime qualification
-        and a fresh reference comparison precede selection.
+        The [26B transfer](experiments/gemma26-state-preparation/README.md)
+        reduces paid prefill by 20.375 ms / 0.822% with exact heads/state/choices.
+        Pressure/lifetime qualification and a fresh reference comparison
+        precede production selection.
       - [x] [Independent C4 attention owner roots](experiments/gemma-owner-root-attention/README.md):
         all 32,768 real D25631 outputs match packed four-stream MMA byte for byte,
         preserving original grid/reduction partitions and checked independent spans.

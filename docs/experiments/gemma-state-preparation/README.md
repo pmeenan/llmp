@@ -65,7 +65,9 @@ supervisor build, private stage, four-arm screen and exact checker retire DONE0.
 Raw logs and vectors remain outside Git under `gemma-state-preparation-raw`.
 
 The result warrants retaining the grouped-state preparation lead, without
-production adoption or a 26B extension. Early full-prompt materialization would
+production adoption. The subsequent [26B transfer](../gemma26-state-preparation/README.md)
+reduces paid prefill by 20.375 ms / 0.822% with exact heads and state.
+Early full-prompt materialization would
 need pressure, partial refusal and continuation-lifetime qualification before
 selection. A fresh current/reference comparison should establish the remaining
 solo gap before another small optimization. Corpus quality, C4 batching and
