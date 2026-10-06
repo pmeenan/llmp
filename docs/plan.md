@@ -41,6 +41,13 @@ in its short matched bookends. Core opt-in support does not adopt SOURCE14 servi
 recipes/defaults. Actual ordinary HTTP/cancellation/continuation, full corpus,
 depth and sustained qualification remain separate gates.
 
+The [C1 phase attribution](experiments/gemma-state-phase-attribution/README.md)
+measures paid Clear 57.45 ms, state growth 162.18 ms and required planning 0.286 ms
+with 160 plan hits/no misses, while complete outputs/state match the fixed own
+proof. It changes only optional runner diagnostics; private serving recipes
+remain unadopted. Nested counters and stream wall do not establish a residual
+kernel cause or a new reference speed gate.
+
 ## M0 — Plan the plan  `done`
 
 Ran 2026-09-20 to 2026-09-23 and exited on the owner's approval of the plan.

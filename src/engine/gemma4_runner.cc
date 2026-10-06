@@ -711,6 +711,8 @@ Status Gemma4Runner::ReserveStateThrough(std::uint32_t index, std::uint32_t posi
   return {};
 }
 Status Gemma4Runner::Clear(std::uint32_t index) {
+  PhaseTimer timer(account_phases_ ? &phases_.clear_seconds : nullptr);
+  if (account_phases_) ++phases_.clear_calls;
   auto request = request_slot(index);
   if (!request) return Error(request.error());
   auto& slot = **request;

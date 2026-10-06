@@ -257,6 +257,10 @@ class Gemma4Runner final : public PagedModel {
   struct PhaseAccounting {
     std::array<double, static_cast<std::size_t>(Phase::kCount)> seconds{};
     std::uint64_t planned_calls = 0, hits = 0, misses = 0;
+    // Actual Clear calls, including refused calls. Separate from the seven
+    // wave phases; captures reset/eviction and closure refresh, not just fill.
+    double clear_seconds = 0;
+    std::uint64_t clear_calls = 0;
     // Nested CachePlanned elapsed intervals: not additive with the enclosing
     // required-planning or post-completion publication phases.
     double bind_seconds = 0, coverage_seconds = 0, cache_seconds = 0;

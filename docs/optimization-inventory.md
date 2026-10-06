@@ -405,6 +405,14 @@ geometry occurs in 54 dense31 layers; the whole-chain down control is Q6_K only.
 Gemma26's separate shared Q8_0 pair may transfer only
 under independent proof; its routed merged gate/up already uses one product.
 
+The [C1 state/phase diagnostic](experiments/gemma-state-phase-attribution/README.md)
+records paid Clear 57.45 ms, state growth 162.18 ms and required planning 0.286 ms
+with 160 plan hits/no misses; complete paid outputs/state match the fixed own
+proof. Existing execution wall dominates this cycle but includes host gaps.
+Nested counters are not summed or subtracted to identify a cause. This adds
+only optional Clear accounting; it selects no residency policy, provider
+instrumentation or production recipe.
+
 The [solo checked-norm screen](experiments/gemma-dense31-c1-norm/README.md)
 then matches all 32 dense31 full heads to both fresh C1/u128 original bookends
 byte-for-byte, using ordinary products and both checked norm chains. Ordinary

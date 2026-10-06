@@ -1,0 +1,201 @@
+{
+  "status": "Completed native phase diagnostic; no production recipe or residency change",
+  "base": "9970314e0451cc4036c0cd78f1c9fcc6f3ace254",
+  "hosts": {
+    "build": "spark-c4e2",
+    "run": "spark-56f5"
+  },
+  "recipe": {
+    "profile": "gemma-4-31B-it",
+    "owners": 1,
+    "context": 8192,
+    "prefill_chunk": 256,
+    "generated_outputs": 129,
+    "decode_waves": 128,
+    "assistant": false,
+    "row_invariant": false,
+    "norm_rope": true,
+    "norm_add": true,
+    "owner_attention_requested": true,
+    "owner_attention_selected_on_last_decode": 0
+  },
+  "scope": {
+    "native_owned_paths": 2,
+    "borrowed_private_runtime_paths": 7,
+    "borrowed_recipe_not_adopted": true,
+    "reference_rerun": false,
+    "provider_counters": false,
+    "cycle_boundaries_unchanged": true,
+    "reporting_after_completed_end": true,
+    "nested_phase_counters_not_additive": true,
+    "stream_elapsed_includes_host_gaps": true,
+    "full_suite": false
+  },
+  "provenance": {
+    "source_ready_sha256": "34557b62f698c27553e3bac52c6785bb07bd871e70fb56272b7cd2fa8fee7401",
+    "native_sha256": "ee358990d0155c8fece3a91695cfb96962508e588761410d44364f428bab2ad3",
+    "native_bytes": 211117080,
+    "build_receipt_sha256": "cf6bce22c79008fc49245a74206f778b036a4efb6b69ae4f7aa1f572fb6469f5",
+    "installation_sdk_sha256": "fbbe4064d963188fe1f3915ee2c94d496bb1fa4432402d7fda9704f29a67150b",
+    "sdk": "aarch64-c09daba6ac31edee",
+    "ggml_commit": "d81235049384534c167caea52b85a694f6103d14",
+    "ggml_tree": "d50cb7f97867b4c5903a5b6c902474e9d716b7bf7afdb98dc360af82be4e0257",
+    "native_diff_sha256": "2372100738ea0088fe37305bdd4ff61031ac3f8d2a873a64c28143f5a6152b70",
+    "benchmark_sha256": "e049feed733f5660e349273c5e8b56c88c81b5298d1645464be3db740a12f3bf",
+    "benchmark_diff_sha256": "ec62917b9778c42304a3204b4cb52fd9d7b3d42a6d26aaea91cc2102920d09b7",
+    "checker_sha256": "33d46708961d91cd0257400f40ee9a827d2ae7caa8cb9ed02d1870f367eb990d",
+    "raw_result_sha256": "6fe94c7272caa253a2e783cf6c4449de9d3aa56ad0ea16364078fc487e025abe",
+    "runtime_log_sha256": "81d41a57bf99258ea696bc7510814bd2a37ff1792d4327113a2a0a36dd9d9b07"
+  },
+  "diagnostics": {
+    "warm": {
+      "phase": "warm",
+      "clear_calls": 1,
+      "clear_seconds": 0.000749549,
+      "planned_calls": 160,
+      "hits": 158,
+      "misses": 2,
+      "checks_seconds": 0.027834047,
+      "inputs_seconds": 0.012147737,
+      "state_seconds": 0.162931112,
+      "required_planning_seconds": 0.01856957,
+      "staging_seconds": 0.002834025,
+      "execution_seconds": 23.336828689,
+      "publication_cleanup_seconds": 0.085421704,
+      "bind_seconds": 0.046320411,
+      "coverage_seconds": 0.017516466,
+      "cache_seconds": 0.007278612,
+      "job_steps": 162,
+      "job_wall": 23.335948947,
+      "dispatch": 0.004266094,
+      "submission": 5.088916147,
+      "after": 18.242766706,
+      "stream_elapsed": 23.31415893,
+      "cycle": {
+        "cycle_seconds": 23.690795073,
+        "prefill_seconds": 10.995703188,
+        "decode_seconds": 12.695091885
+      }
+    },
+    "paid": {
+      "phase": "paid",
+      "clear_calls": 1,
+      "clear_seconds": 0.057452285,
+      "planned_calls": 160,
+      "hits": 160,
+      "misses": 0,
+      "checks_seconds": 0.027359748,
+      "inputs_seconds": 0.012106966,
+      "state_seconds": 0.162181846,
+      "required_planning_seconds": 0.000285598,
+      "staging_seconds": 0.007433389,
+      "execution_seconds": 23.543661289,
+      "publication_cleanup_seconds": 0.018386883,
+      "bind_seconds": 0.0,
+      "coverage_seconds": 0.0,
+      "cache_seconds": 0.0,
+      "job_steps": 161,
+      "job_wall": 23.541993714,
+      "dispatch": 0.004138653,
+      "submission": 0.266916794,
+      "after": 23.270938267,
+      "stream_elapsed": 23.516193855,
+      "cycle": {
+        "cycle_seconds": 23.872443817,
+        "prefill_seconds": 11.183689701,
+        "decode_seconds": 12.688754116
+      }
+    }
+  },
+  "identity": {
+    "complete_paid_outputs_match_fixed_own": true,
+    "warm_tokens_and_history_match_fixed_own": true,
+    "finite_final_head_values": 262144,
+    "initialized_state_bytes": 1719664640,
+    "own_sha256": "21616218d83fc646f11b4c7dc77ef6e5315caa116947ee1e1986fef9ae4b6f1a",
+    "input_sha256": "90bf82fd26b7040c513e7370eca2cd283ac8fd15ce89a2e8d05d6f7e670b5ba2",
+    "paid_files": {
+      "layout.txt": {
+        "bytes": 50,
+        "sha256": "fda206ceba803a7f71d81416a204dfd5e552a1c899897ec4b14ac08542b664ba"
+      },
+      "state-0.bin": {
+        "bytes": 1719664640,
+        "sha256": "7ec7ef530a853fd892bcfe70f3b9c2c9817bc38f1183f551a7e62ce52127a1d1"
+      },
+      "tokens-0.i32": {
+        "bytes": 516,
+        "sha256": "b9a284804cfd9d0dd51767976856368137db6c887664c15187382a6306e60a99"
+      },
+      "history-0.i32": {
+        "bytes": 32764,
+        "sha256": "43fa7e51e6fdcc0d799d99b9afdc08554f7cda63ebece0a4561bba37d7b6600c"
+      },
+      "final-head-0.f32": {
+        "bytes": 1048576,
+        "sha256": "33e76d893fa83ef2a68c6b9858b3876b9e58991c28fc6dca0f0f0c03c7531618"
+      }
+    }
+  },
+  "official_jobs": [
+    {
+      "name": "m35-gemma-state-phase-build1",
+      "queued_steps": 6,
+      "successful_steps": 6,
+      "state": "done",
+      "rc": 0,
+      "elapsed_seconds": 206.04299998283386,
+      "records": {
+        "job.json": "9f0fcdc3c0dffe93989f6004a79e6f8ae3db693c977134c6eb680a4e21520ab6",
+        "steps.json": "509560398be67e52b157ebc6d9ad070d5b5e68242c4fa488cfbd0cde79da1145",
+        "final.json": "03b12a90971c77b6d154307f63e64c4224eb6b0d0e8f41db87e51d74b38d9b98",
+        "log": "d7e5006ce12099bad2f606c885aa786df5ac013d46a091893dd02ab79b86be21"
+      },
+      "queue_sha256": "adb1b18f6de61e7c42f693bb9d8943194b39bc6859e8e1ea508499578d6bf2c0"
+    },
+    {
+      "name": "m35-gemma-state-phase-native1",
+      "queued_steps": 3,
+      "successful_steps": 3,
+      "state": "done",
+      "rc": 0,
+      "elapsed_seconds": 52.879000186920166,
+      "records": {
+        "job.json": "afdefbc87a958bd6b29bab76145c52a9617427cdb4c44637fc46b6c32bc0376a",
+        "steps.json": "49242b79bc14fe32e920bdf23c2eba79b71dfbd1de20b0ca60729d69849d6210",
+        "final.json": "c0a024fb46790dee9125244afe71e2f827da0cad2427d970af7e4925e028b063",
+        "log": "3d598d6c954fa356434efa7e8a137c4dbd091d210cd2a20cb6c7a38968f9c265"
+      },
+      "queue_sha256": "8afb9b0ead43d2f47604f48cec07d8836f109f9a1c3127bab092d9bf1814d5c8"
+    },
+    {
+      "name": "m35-gemma-state-phase-check1",
+      "queued_steps": 3,
+      "successful_steps": 3,
+      "state": "done",
+      "rc": 0,
+      "elapsed_seconds": 2.0259997844696045,
+      "records": {
+        "job.json": "67f7cec09b9c022992af293e98e57a9d67064219002e6320cc141a9ef60fe228",
+        "steps.json": "c3b356ac660c62c971a814902e5aacc82a10ea1641e5ec3ede7e6780b6409ec3",
+        "final.json": "f6c7384a955c96bdb3b2c92cf9518fa7468e00b70e4f91c7a9ba73e0e7bc57bd",
+        "log": "97925bd9c957c2901a53c48ba72ba7b6fb53d6c173f491cb9f1bed67e98e97bb"
+      },
+      "queue_sha256": "dca41e145de33a6e1624095d33bd0b237f7dc168746723102afb2f6fef81b1a0"
+    }
+  ],
+  "checks": [
+    "C4 attribution admission refuses before context creation with rc2",
+    "All source/binary/receipt/library pre/post guards pass",
+    "One warm and one paid Clear observed",
+    "Complete initialized state, final head, tokens, history and layout match fixed C1 own proof",
+    "Both Sparks free after retirement"
+  ],
+  "limits": [
+    "One native process; no new matched reference or speed gate",
+    "State phase and Clear are wall measurements, not VMM-operation counts",
+    "Execution and stream wall include host gaps; no kernel-only attribution",
+    "Nested bind/coverage/cache phases are not added or subtracted",
+    "No broader cohort/profile qualification or production recipe adoption"
+  ]
+}
