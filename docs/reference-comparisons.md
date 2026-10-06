@@ -8,6 +8,14 @@ comparison after integration, including its production solo and optimized
 batched paths. The milestone's numerical, speed, memory, context and state
 criteria still apply; primitive tests do not qualify a model.
 
+## Current llama.cpp reference
+
+For new comparisons, use the [official release reference](experiments/llama-reference-refresh/README.md)
+and its frozen source/image pair. This refresh preserves every historical
+experiment pin and result; existing comparisons are not requalified by a
+dependency update. Runtime/API checks and model qualification have separate
+completion records.
+
 ## TensorFold refreshes at each task
 
 Use the latest [TensorFold](https://github.com/ashhart/TensorFold) as a

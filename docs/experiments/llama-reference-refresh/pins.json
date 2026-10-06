@@ -1,0 +1,422 @@
+{
+  "schema_version": 1,
+  "observed_utc": "2026-10-06T16:17:40.419217+00:00",
+  "release": "v0.6.0",
+  "release_published_utc": "2026-10-05T16:56:22Z",
+  "release_url": "https://github.com/ggml-org/llama.cpp/releases/tag/v0.6.0",
+  "tag_object": "69ecae922d2b60c1fa8c590279f4e2099af75111",
+  "source_commit": "d81235049384534c167caea52b85a694f6103d14",
+  "source_archive": {
+    "url": "https://codeload.github.com/ggml-org/llama.cpp/tar.gz/d81235049384534c167caea52b85a694f6103d14",
+    "commit": "d81235049384534c167caea52b85a694f6103d14",
+    "bytes": 37887730,
+    "sha256": "6b58785f0a82898f4c3442417ff962e2d4b231b1bee5d033902ad90b27901e14"
+  },
+  "image_tag": "full-cuda13-b11429",
+  "image_index_digest": "sha256:47e6fa17d5ac02eaf367933214e59889c37e0a12e3bbf331b92204cfec4c4289",
+  "image": "ghcr.io/ggml-org/llama.cpp@sha256:c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db",
+  "image_config_digest": "sha256:c45165320931c3c957baef9edf518d731870f9c4f9eb98f749170d5009afe2bd",
+  "image_architecture": "arm64",
+  "registry_source_label": "https://github.com/ggml-org/llama.cpp",
+  "registry_revision_label": "d81235049384534c167caea52b85a694f6103d14",
+  "registry_version_label": "b11429",
+  "compressed_layer_bytes": 3405133970,
+  "runtime_verification": "PASS: exact image/version/resolved dependencies/native SM121 ELF presence; three helper links and pre-context argument refusals",
+  "model_quality_or_performance": "not_run; compile/link/entry checks do not establish numerical or performance equivalence",
+  "tensorfold": {
+    "commit": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "version": "0.6.6",
+    "gemma_backend": "MLX; no matching CUDA GB10/Q8-assistant recipe at this pin",
+    "files": {
+      "README.md": {
+        "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2",
+        "bytes": 22767
+      },
+      "pyproject.toml": {
+        "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441",
+        "bytes": 3178
+      },
+      "docs/recipes/gemma-4.md": {
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11",
+        "bytes": 10845
+      },
+      "src/tensorfold/__init__.py": {
+        "sha256": "fdc3b9c9e54fd20a7aca02113787d82cd8ac28cb10e5142225c718c2d4e6288e",
+        "bytes": 137
+      }
+    }
+  },
+  "compile_probe_inputs": {
+    "source_commit": "d81235049384534c167caea52b85a694f6103d14",
+    "headers": 19,
+    "files": {
+      "headers/ggml/include/ggml-alloc.h": "d114067f9099c4a0e2bbc0625c676d4894d9cf0ea27168ee072c7de0e71bb51d",
+      "headers/ggml/include/ggml-backend.h": "5791edae1fb7622027621d15bc7a160198bd3b75ed8f96d06cb7b85e2b873756",
+      "headers/ggml/include/ggml-cpp.h": "bc15ba002c68685df23faae42df0d2b3d58032011f88b649021ab92485862c72",
+      "headers/ggml/include/ggml-cpu.h": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e",
+      "headers/ggml/include/ggml-opt.h": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2",
+      "headers/ggml/include/ggml.h": "12ee71f99db7db9b353bc02b1fbb57c344ee17c01ac5fb7952b41a637a747ea9",
+      "headers/ggml/include/gguf.h": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4",
+      "headers/include/llama.h": "c9a5f025ad7dbf07eda6660c8ff2c32cd80c07ba440d80728707a9c9d13c1bc3",
+      "headers/src/llama-adapter.h": "b63d8654358d6141fac1f45b1b56247d7c8360e609a55323d30e7dcb6a6ffc00",
+      "headers/src/llama-arch.h": "9ff3fa6a15db92591ca69af23b73313634c09fa0d9238918211b36a02a8fb3e0",
+      "headers/src/llama-batch.h": "3531def3f768593c3e5d2cf13d12909360370cc9bf39327f90794f67504afbe4",
+      "headers/src/llama-cparams.h": "4a20668ed0c8fd8f0086e644dc86d9bcf5de7effcc732d7651762f1f37787e79",
+      "headers/src/llama-ext.h": "4d3968c50226e5b0d71f83fdfa78b9d3d596121b4cbe9fd11127ce4f13683410",
+      "headers/src/llama-graph.h": "08190f643a606e1ec933133da6a348fe7d8c84e6cb66fd437abb904d427ed7c0",
+      "headers/src/llama-hparams.h": "eec70eea52fefed2b5ad49c32406bbc11dd5ea9ff25ac0f7ad7a2715d7d731b1",
+      "headers/src/llama-kv-cache-iswa.h": "b42f1b166b92f1a7eadde2995ac7457c2e6ec845e1a9c72258df1e880c1f2c90",
+      "headers/src/llama-kv-cache.h": "94650dcfff9f37ec0ae60b0f2e744e35fc360377bb74f341fca6657c625ae1e1",
+      "headers/src/llama-kv-cells.h": "8611143cace09f163ce7b3c2493b80cfccd606c5be2745949309cbc823567958",
+      "headers/src/llama-memory.h": "c9ed12cafb89336408a700739a0d985daca1de599c7baa9db8ba62ecbedb1bd3",
+      "helpers/joined.cc": "4786817b72be01ecd268234666c871d09dc01f6fcced621baf4cd2323cf732db",
+      "helpers/quality.cc": "78a0d497820e323e370225687c735ceecaa90d1680f98ac628c73e40bd46fe3f",
+      "helpers/assistant.cc": "fc06fa359225d8b5af1b76dafef06b0c5c7504b7c7bec147b392c3a5cdd805b9",
+      "container_retire.py": "1fd85804983ecdf720b5c0a69353fede0e294a0da0dd70a91bd8cd8b539e75e0"
+    }
+  },
+  "execution": {
+    "host": "spark-b (spark-56f5)",
+    "inspection_completed_utc": "2026-10-06T16:46:13.216000+00:00",
+    "executable_versions": {
+      "llama-cli": "version: 0.6.0-dev (build 11429, commit d81235049)\nbuilt with GNU 14.2.0 for Linux aarch64\n",
+      "llama-server": "version: 0.6.0-dev (build 11429, commit d81235049)\nbuilt with GNU 14.2.0 for Linux aarch64\n"
+    },
+    "native_sm121_elf_entries": 144,
+    "disassembler_version": "13.0.85",
+    "model_contexts_created": false,
+    "owned_containers_retired": 2,
+    "helper_compiler": "Clang 22.1.8; --target=aarch64-linux-gnu -march=armv8-a; static GCC 16.2 C++/gcc runtime",
+    "sdk_installation_receipt_sha256": "7b8167cdbe7455b25cb41c681f321562f34683bed26dac2b64e47650b987e02d",
+    "sdk_installation_identity": "aarch64-c09daba6ac31edee",
+    "sdk_installation_tree_sha256": "4b20a283e5e787ac802c29eadec2f83a44d94eb783b4c5b7c04ab69c4c57ad8c",
+    "receipt_kinds": "Historical eb7a4ebc names a native build receipt, not this SDK installation receipt; no SDK change established.",
+    "helper_controls": {
+      "joined": {
+        "sha256": "ee2e2612499fefb2969c67297f98d8906d2c40def8bed9a2354aea7c3bdd82e2",
+        "pre_context_refusal_returncode": 1
+      },
+      "quality": {
+        "sha256": "f2fdbb0a5941a014f689e9bc2530afc64b9023590f5d3d0caa9e87b36e9114fb",
+        "pre_context_refusal_returncode": 1
+      },
+      "assistant": {
+        "sha256": "f4be84a07120f852dd3cdcdc4b1aac4716d0271185d85e97f10a64611bd186ed",
+        "pre_context_refusal_returncode": 1
+      }
+    },
+    "app_files": {
+      "libggml-base.so": {
+        "bytes": 868024,
+        "sha256": "887eb8125aea0ad19bc07d4c1dc77d6d44aef4c6237b30924ca44d6fe4dcd529",
+        "symlink_target": null
+      },
+      "libggml-base.so.0": {
+        "bytes": 868024,
+        "sha256": "887eb8125aea0ad19bc07d4c1dc77d6d44aef4c6237b30924ca44d6fe4dcd529",
+        "symlink_target": null
+      },
+      "libggml-base.so.0.26.0": {
+        "bytes": 868024,
+        "sha256": "887eb8125aea0ad19bc07d4c1dc77d6d44aef4c6237b30924ca44d6fe4dcd529",
+        "symlink_target": null
+      },
+      "libggml-cpu-armv8.0_1.so": {
+        "bytes": 1002088,
+        "sha256": "e0a5117b890d6f4d4b0aebb024144415a84033d1aa3cbf2cfea426ab59eafaa3",
+        "symlink_target": null
+      },
+      "libggml-cpu-armv8.2_1.so": {
+        "bytes": 1069016,
+        "sha256": "517e0e54c44cdb8466477b0d8b5e775597e8fec2a411e21f7eecbee3302ca3e2",
+        "symlink_target": null
+      },
+      "libggml-cpu-armv8.2_2.so": {
+        "bytes": 1068992,
+        "sha256": "447c60544005ac7b29e6d32fecf5b18417105416ef5b86770dbef8f182da0c23",
+        "symlink_target": null
+      },
+      "libggml-cpu-armv8.2_3.so": {
+        "bytes": 1003912,
+        "sha256": "ac2421053076ca53f6d0c1bdb79043307cb87e50876edc5d446bd9dff7d0e179",
+        "symlink_target": null
+      },
+      "libggml-cpu-armv8.6_1.so": {
+        "bytes": 1069744,
+        "sha256": "5ac0c63da69e588f60a8583485760b9421852bd2d2b954ec60ebc0c390126135",
+        "symlink_target": null
+      },
+      "libggml-cpu-armv8.6_2.so": {
+        "bytes": 1069720,
+        "sha256": "24b1577ee63f9bccde990005d9f082e270a11edd40a1477c37b3a507f84f9d91",
+        "symlink_target": null
+      },
+      "libggml-cpu-armv9.2_1.so": {
+        "bytes": 1069816,
+        "sha256": "f6ab63cd4f4e3740902f0b370a214d7f8650376a938613ed242c594b6f5468b1",
+        "symlink_target": null
+      },
+      "libggml-cpu-armv9.2_2.so": {
+        "bytes": 1069816,
+        "sha256": "78898c60cca3c810063bb9ac03f38860798ea32bb7b910cee41ce58dabc3a59f",
+        "symlink_target": null
+      },
+      "libggml-cuda.so": {
+        "bytes": 160574080,
+        "sha256": "a383d905ed3be8195d3b94795342ed751c88a9bad228ad1705cdc8fe4f963350",
+        "symlink_target": null
+      },
+      "libggml.so": {
+        "bytes": 77576,
+        "sha256": "d30982dded96f1d8a208cd29aa39a61f4d51fbb48b9b15d726a43262e6d4b3e1",
+        "symlink_target": null
+      },
+      "libggml.so.0": {
+        "bytes": 77576,
+        "sha256": "d30982dded96f1d8a208cd29aa39a61f4d51fbb48b9b15d726a43262e6d4b3e1",
+        "symlink_target": null
+      },
+      "libggml.so.0.26.0": {
+        "bytes": 77576,
+        "sha256": "d30982dded96f1d8a208cd29aa39a61f4d51fbb48b9b15d726a43262e6d4b3e1",
+        "symlink_target": null
+      },
+      "libllama-batched-bench-impl.so": {
+        "bytes": 74160,
+        "sha256": "dd87f86817ecb992e1b4222bc13c55d0b8c37e238bfdb380c18d5818b9614a01",
+        "symlink_target": null
+      },
+      "libllama-bench-impl.so": {
+        "bytes": 469760,
+        "sha256": "a85de51fb3e4e0dba0e03e831bb0171dfd65fe0f04ba04449aa032c473abc990",
+        "symlink_target": null
+      },
+      "libllama-cli-impl.so": {
+        "bytes": 234632,
+        "sha256": "34db9b4aa283c195440aacef1766a03d68013b0da051de12edd1ca6383af7525",
+        "symlink_target": null
+      },
+      "libllama-common.so": {
+        "bytes": 5638016,
+        "sha256": "91ae6ac094d71b5eb5d91663581b4a31ab25d2e1f2ba7f68a6f342616f43b7a9",
+        "symlink_target": null
+      },
+      "libllama-common.so.0": {
+        "bytes": 5638016,
+        "sha256": "91ae6ac094d71b5eb5d91663581b4a31ab25d2e1f2ba7f68a6f342616f43b7a9",
+        "symlink_target": null
+      },
+      "libllama-common.so.0.6.0": {
+        "bytes": 5638016,
+        "sha256": "91ae6ac094d71b5eb5d91663581b4a31ab25d2e1f2ba7f68a6f342616f43b7a9",
+        "symlink_target": null
+      },
+      "libllama-completion-impl.so": {
+        "bytes": 148952,
+        "sha256": "53e8420dc31aafb9e28cb9da22f8a6437b582e517b9dd8e57d7bbb41ddbb4438",
+        "symlink_target": null
+      },
+      "libllama-fit-params-impl.so": {
+        "bytes": 73000,
+        "sha256": "4309b1196849d1f71bea65fd42ef7fd61f53b258fb1f7056d917cacaedd57f95",
+        "symlink_target": null
+      },
+      "libllama-perplexity-impl.so": {
+        "bytes": 157440,
+        "sha256": "47d2fd3ee977572224a40f9491704d12987b06e3793cde5a26fd2bc92c1505ee",
+        "symlink_target": null
+      },
+      "libllama-quantize-impl.so": {
+        "bytes": 81160,
+        "sha256": "a47023e09162e007d4692bf1fc369a5ae0c1cea80f2706396c23a8e17b1e08c3",
+        "symlink_target": null
+      },
+      "libllama-server-impl.so": {
+        "bytes": 6906800,
+        "sha256": "366775fc567464656a0957b246ff2b8d7b6585782c931ad9d6f6904f3ab53b69",
+        "symlink_target": null
+      },
+      "libllama.so": {
+        "bytes": 4577648,
+        "sha256": "ead45f0f8ee3bb0aebb3db3d20add5bd6c61dee8ba6a892a8c6435dc07321deb",
+        "symlink_target": null
+      },
+      "libllama.so.0": {
+        "bytes": 4577648,
+        "sha256": "ead45f0f8ee3bb0aebb3db3d20add5bd6c61dee8ba6a892a8c6435dc07321deb",
+        "symlink_target": null
+      },
+      "libllama.so.0.6.0": {
+        "bytes": 4577648,
+        "sha256": "ead45f0f8ee3bb0aebb3db3d20add5bd6c61dee8ba6a892a8c6435dc07321deb",
+        "symlink_target": null
+      },
+      "libmtmd.so": {
+        "bytes": 1823576,
+        "sha256": "91328c5a1d143d59534533ad1b00dd21a902e0ebae451e997c35e1db44085cb1",
+        "symlink_target": null
+      },
+      "libmtmd.so.0": {
+        "bytes": 1823576,
+        "sha256": "91328c5a1d143d59534533ad1b00dd21a902e0ebae451e997c35e1db44085cb1",
+        "symlink_target": null
+      },
+      "libmtmd.so.0.6.0": {
+        "bytes": 1823576,
+        "sha256": "91328c5a1d143d59534533ad1b00dd21a902e0ebae451e997c35e1db44085cb1",
+        "symlink_target": null
+      },
+      "llama-cli": {
+        "bytes": 1104408,
+        "sha256": "7f884e836a87ab80de607024db602ef890717d821ba300c4e43340de1d83506e",
+        "symlink_target": null
+      },
+      "llama-server": {
+        "bytes": 72448,
+        "sha256": "ba6df68c9a9bf6926b7156e9320cf29f5385499d0342dd2e1f6ee9fa9900b5af",
+        "symlink_target": null
+      }
+    },
+    "resolved_runtime_dependencies": {
+      "/lib/aarch64-linux-gnu/libssl.so.3": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/libssl.so.3",
+        "bytes": 737192,
+        "sha256": "4ba43e4182c8fe8813fef851e43b3cc09cd90d418760c0a94b13d1bf5d91cc09"
+      },
+      "/lib/aarch64-linux-gnu/libcrypto.so.3": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/libcrypto.so.3",
+        "bytes": 4663464,
+        "sha256": "60076983c2ea0d6b73cc64fb39cafa0a0f90f220ef000f6effb4aaac47500949"
+      },
+      "/lib/aarch64-linux-gnu/libstdc++.so.6": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/libstdc++.so.6.0.33",
+        "bytes": 2633224,
+        "sha256": "6e3112d35cfc86db7ee85b27e1746f67408e2837ff8628b46386c3eabd5682a4"
+      },
+      "/lib/aarch64-linux-gnu/libgcc_s.so.1": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/libgcc_s.so.1",
+        "bytes": 133696,
+        "sha256": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20"
+      },
+      "/lib/aarch64-linux-gnu/libc.so.6": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/libc.so.6",
+        "bytes": 1722920,
+        "sha256": "0f1905dc27dbc6715875c70527bc8da846a10084c9c483e9d8ff76dce8d69d0e"
+      },
+      "/lib/ld-linux-aarch64.so.1": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
+        "bytes": 203968,
+        "sha256": "390027e5f45f236bd1838bc54bf464c5ff01d260ab9f8b415ea8276641bce505"
+      },
+      "/lib/aarch64-linux-gnu/libm.so.6": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/libm.so.6",
+        "bytes": 591800,
+        "sha256": "5e0391562de36de323fb9cb0f2c1b6bd6d034c840b1dac018499f5fe4ded1b4a"
+      },
+      "/lib/aarch64-linux-gnu/libgomp.so.1": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/libgomp.so.1.0.0",
+        "bytes": 397088,
+        "sha256": "33c8bcb7d33228fe5101bfeb201bcaff4563d4ecf09497229b9deba522ebaf3d"
+      },
+      "/usr/local/cuda/lib64/libcudart.so.13": {
+        "resolved": "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcudart.so.13.4.49",
+        "bytes": 793872,
+        "sha256": "7d65c7bf558e433024a8cad1e3b84330b6bb660e2d737d0c69dd6e580b9d8dec"
+      },
+      "/usr/local/cuda/lib64/libcublas.so.13": {
+        "resolved": "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublas.so.13.7.0.27",
+        "bytes": 71958056,
+        "sha256": "b980ad831a0af1a5700f3c1a9318de218594c08e41ab18e87b6922d53eedee18"
+      },
+      "/usr/local/cuda-13.4/compat/libcuda.so.1": {
+        "resolved": "/usr/local/cuda-13.4/compat/libcuda.so.615.71.09",
+        "bytes": 111655440,
+        "sha256": "1f573d54d6a49c9b9003653db564322e8d24bc8bed161774b343f848abac22e0"
+      },
+      "/lib/aarch64-linux-gnu/libnccl.so.2": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/libnccl.so.2.31.2",
+        "bytes": 300921624,
+        "sha256": "af11beb56b28cd50a503c1e70a72fbcb90150248014d1a5e3f9ee3ee0a5a3431"
+      },
+      "/lib/aarch64-linux-gnu/libdl.so.2": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/libdl.so.2",
+        "bytes": 67440,
+        "sha256": "1c16b2692a155191c97d7fdc5ce937d37c242435f05745046a794a9832b16af4"
+      },
+      "/lib/aarch64-linux-gnu/libpthread.so.0": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/libpthread.so.0",
+        "bytes": 67440,
+        "sha256": "6f1ab9e7d7de142dc5e2feaf6d19faceff0a0f40d5e225c922899f5362b8c353"
+      },
+      "/lib/aarch64-linux-gnu/librt.so.1": {
+        "resolved": "/usr/lib/aarch64-linux-gnu/librt.so.1",
+        "bytes": 67512,
+        "sha256": "93d0d5ab643b50ac1a61c2c7baf670e8aa94973fa5a2584d13db05295d5b5a0e"
+      },
+      "/usr/local/cuda/lib64/libcublasLt.so.13": {
+        "resolved": "/usr/local/cuda-13.4/targets/sbsa-linux/lib/libcublasLt.so.13.7.0.27",
+        "bytes": 646050008,
+        "sha256": "cf7b68ed38f66f068f3155a624a1ba3c01ddfb7a67b71ba918aa9f0e41e85648"
+      }
+    },
+    "compile_completed_utc": "2026-10-06T16:54:39.607000+00:00"
+  },
+  "official_jobs": {
+    "inspection1": {
+      "official_name": "m35-llama-release-inspect1",
+      "outcome": "FAILED",
+      "queued_steps": 5,
+      "successful_steps": 1,
+      "official_files_sha256": {
+        "job.json": "fb5e06778bfcb2820d1740d08f0e04db876cf189f31c5f652fd93bd808dc2710",
+        "final.json": "f7bf1c01998e984780a1e21a46325320312ed16aa8ea9c6f9820b87b1d09ca68",
+        "steps.json": "7a009c40da2735ddccddc164b7d4338574360d70757aba58bd61820bade61c67",
+        "log": "9e0e9651cf1280d6e6c52a1e9eff5099df2bb09d9b6d49c2219134bcc8958361"
+      },
+      "ended_utc": "2026-10-06T16:38:18.706000+00:00"
+    },
+    "inspection2": {
+      "official_name": "m35-llama-release-inspect2",
+      "outcome": "DONE0",
+      "queued_steps": 5,
+      "successful_steps": 5,
+      "official_files_sha256": {
+        "job.json": "6a151833d927bc55271e26409054858d79f7df169f5261326fd213767ad2619d",
+        "final.json": "9776c0c12378da74d052d7053b91e7c2051212b8f3db47be18fad62492b1b5a1",
+        "steps.json": "4cac5108e3a3a83df6adcf2732bae8d7f4868349c729606c6932a06530591304",
+        "log": "77e571d07d75a5d1d26b99b0e84a394474528809d55e236fafa466876c7b8d00"
+      },
+      "ended_utc": "2026-10-06T16:46:13.216000+00:00"
+    },
+    "compile1": {
+      "official_name": "m35-llama-release-compile1",
+      "outcome": "DONE0",
+      "queued_steps": 4,
+      "successful_steps": 4,
+      "official_files_sha256": {
+        "job.json": "e826f2af7d0bb8962390e10a553d06e379574bd202731710858073ff23a787de",
+        "final.json": "f40f8f7baa016313979d294f64aadd5be234013d7808e54f450858c310fdbe5a",
+        "steps.json": "0c62f73da21d0adf23a6201196bdac4bf376e78f514ba40877fb3ed5cd196af5",
+        "log": "604b189df4b16213af3958d7ae177ce515186ab943937d4b2277b8ee651455c7"
+      },
+      "ended_utc": "2026-10-06T16:54:39.607000+00:00"
+    }
+  },
+  "preserved_failure": {
+    "inspection1": "Exact manifest pull succeeded; guard incorrectly assumed Docker image inspect Id was always the registry config digest. Observed Id was the ARM64 manifest digest. Steps3\u20135 skipped; no container/model created.",
+    "correction": "Accept only the two frozen Id representations, additionally require exact RepoDigest/Linux/arm64/full Config/rootfs layer identities. First metadata/output and failed official record preserved; no image/source pin changed."
+  },
+  "external_evidence_sha256": {
+    "source-ready3.json": "6b4b2f49c99f0d969cd7b2c6bf7a1bea2e9cc33fe90850ec0be1b8112098688d",
+    "inspect-ready3.json": "f31629437f0585bdbbb70398f6991b04abf5b4ec7c2dddc4c5374c24d2d1d4f6",
+    "compile-ready1.json": "09c6151ce23f59c0eb8010a07db6d32a4aa0d553acaa10ffb9af6bbb07dcf74a",
+    "actual-inspect2/closure.json": "63ccae40a696fb574bedf1145a75f9576a0f7914efbd8081fc6b085babe3cf64",
+    "actual-inspect2/image-inspect2.json": "eeb9d9a609e0de34ca8b7444a794cb95768c2d234f86ea3e9ce3876dece79bac",
+    "actual-inspect2/sm121-proof1.txt": "eead264c4b0f7e62fcea675b395289b00bc18b2dd0ab816c9fc59ce08a8a2477",
+    "actual-inspect2/llama-refresh-inspect2-container-retired.json": "3a78a82b002444f258f823d72fca22d3fc86f48449ed80848dc9dd7c0d584b93",
+    "actual-compile1/usage.json": "51dba236f9e2e50886b9741424af419c36714b8ae1c4f6e2e3c036e6297036b4",
+    "actual-compile1/compiler.txt": "b71bf2cfa4c2a7c5a5b4ed2735df6762534861592f671ee9976011495ea1e7b3",
+    "actual-compile1/binaries.sha256": "ab30818b86d1e2e708d7676692fba2fa2a037fb21b3b108a2eea64baa53ea8b5",
+    "actual-compile1/llama-refresh-usage1-container-retired.json": "d92eb2ae7093b653ece8d00d08c012204f1aa22b1b3acc02845020e7168b6757"
+  }
+}
