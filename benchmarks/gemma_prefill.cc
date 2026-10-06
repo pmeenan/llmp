@@ -4,7 +4,7 @@
 // First paid 8K prefill and fixed-prefix decode screen. No quality claim.
 // ARTIFACT IDS_I32 NEW_OUTPUT_DIR [26|31] [ordinary|both|all] [MAX_ROWS]
 // [normmul-off|normmul-on] [full|state-only] [lookahead-on|lookahead-off]
-// [phases-off|phases-on].
+// [phases-off|phases-on] [state-chunked|state-upfront].
 // Row-cap experiments do not change production defaults.
 #include <algorithm>
 #include <array>
@@ -27,7 +27,7 @@
 namespace en = jitllm::engine;
 using en::support::Error;
 int main(int argc, char** argv) {
-  if (argc < 4 || argc > 11) return 2;
+  if (argc < 4 || argc > 12) return 2;
   const std::string_view variant = argc >= 5 ? argv[4] : "26";
   const std::string_view policy = argc >= 6 ? argv[5] : "ordinary";
   if (variant != "26" && variant != "31") return 2;
@@ -38,9 +38,11 @@ int main(int argc, char** argv) {
   if (prefill_output != "full" && prefill_output != "state-only") return 2;
   const std::string_view lookahead = argc >= 10 ? argv[9] : "lookahead-on";
   if (lookahead != "lookahead-on" && lookahead != "lookahead-off") return 2;
-  const std::string_view phases_mode = argc == 11 ? argv[10] : "phases-off";
+  const std::string_view phases_mode = argc >= 11 ? argv[10] : "phases-off";
   if (phases_mode != "phases-off" && phases_mode != "phases-on") return 2;
   const bool account_phases = phases_mode == "phases-on";
+  const std::string_view state_prepare = argc == 12 ? argv[11] : "state-chunked";
+  if (state_prepare != "state-chunked" && state_prepare != "state-upfront") return 2;
   std::uint32_t max_rows = 128;
   if (argc >= 7) {
     const std::string_view number(argv[6]);
@@ -144,6 +146,12 @@ int main(int argc, char** argv) {
         (void)node.TakeTimes(0);
       }
       const auto started = std::chrono::steady_clock::now();
+      // Keep all preparation inside paid prefill. The existing budget funds
+      // this same initialized footprint; completed positions stay unchanged.
+      // Partial failure follows normal teardown, with no second preparation.
+      if (state_prepare == "state-upfront") {
+        if (auto r = runner.ReserveStateThrough(0, kPrefill); !r) return r;
+      }
       for (std::uint32_t first = 0; first < kPrefill; first += max_rows) {
         if (auto r =
                 runner.ChunkPrefill(first, std::span(ids).subspan(first, max_rows), logits,
@@ -232,7 +240,8 @@ int main(int argc, char** argv) {
       std::cout << "PREFILL_NATIVE prefill_seconds=" << prefill << " prefill_rows=" << kPrefill
                 << " prefill_chunks=" << kPrefill / max_rows << " intermediate_heads="
                 << (prefill_output == "full" ? kPrefill / max_rows - 1 : 0)
-                << " prefill_output=" << prefill_output << " lookahead=" << lookahead
+                << " prefill_output=" << prefill_output << " state_prepare=" << state_prepare
+                << " lookahead=" << lookahead
                 << " lookahead_attempted=" << runner.lookahead_stats().attempted
                 << " lookahead_built=" << runner.lookahead_stats().built
                 << " lookahead_cached=" << runner.lookahead_stats().cached

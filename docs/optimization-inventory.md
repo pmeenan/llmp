@@ -437,6 +437,16 @@ late-failure, stale-identity and capture controls. Qwen/DeepSeek share this
 executor change; their model speed is unmeasured here. Wall timing favors the
 candidate but has material spread, and competitive/quality gates stay open.
 
+The [grouped state diagnostic](experiments/gemma-state-preparation/README.md)
+uses the existing LiveState-backed preparation API once for the known 8K prompt,
+inside the paid timer. Later chunk calls still occur and find initialized cells.
+Gemma31 state time falls 61.1245 ms / 33.45%, combining closure/acquire and
+materialization grouping; execution spread prevents a wall-speed conclusion.
+Exact heads/state/choices remain. This is a transferable state-path lead, not
+an adopted policy: pressure, partial refusal and continuation lifetime need
+qualification before earlier full-prompt backing is selected. No 26B extension
+or previous-family performance claim follows.
+
 The [independent C4 attention owner-root proof](experiments/gemma-owner-root-attention/README.md)
 reuses the pinned MMA tile/fixup arithmetic with eight checked K/V addresses,
 keeping the packed kernel's grid and reduction partitions. All 32,768 real

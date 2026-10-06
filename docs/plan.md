@@ -431,6 +431,12 @@ family" guide, and its long-context scaling work.
         73.98%/69.29%, with exact prior heads/state and seven focused controls.
         Wall screens favor the change with material candidate spread; no
         sustained speed, corpus quality or reference parity claim is made.
+      - [x] [Paid grouped state preparation diagnostic](experiments/gemma-state-preparation/README.md):
+        one existing bulk preparation call stays inside paid prefill; later
+        chunk checks use initialized state. Gemma31 state time falls 61.1245 ms
+        / 33.45%, with exact heads/state, but wall spread prevents a speed claim.
+        Production and 26B remain unchanged; pressure/lifetime qualification
+        and a fresh reference comparison precede selection.
       - [x] [Independent C4 attention owner roots](experiments/gemma-owner-root-attention/README.md):
         all 32,768 real D25631 outputs match packed four-stream MMA byte for byte,
         preserving original grid/reduction partitions and checked independent spans.
