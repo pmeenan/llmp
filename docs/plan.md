@@ -746,7 +746,12 @@ family" guide, and its long-context scaling work.
 
       Their four GGUF fixtures (Gemma 3 4B QAT Q4_0, Gemma 2 2B, Phi-3.5
       mini, Command R7B; about 17.9 GB, llama.cpp as reference) join
-      M3.5's set under the same exit criteria. The deferred and dropped
+      M3.5's set under the same exit criteria.
+      Gemma 3 [profile and tensor foundation](gemma3.md) is checked:
+      actual approved metadata and all 444 tensor descriptors, separate
+      profile/binding and refusal controls; three focused CPU controls pass.
+      Graph/state/import/serving, linear RoPE execution and model qualification
+      remain open. The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);

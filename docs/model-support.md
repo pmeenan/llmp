@@ -56,6 +56,12 @@ Nothing is distributed-correct: two-node execution is M4's.
 
 ## Architecture foundations
 
+Gemma 3 4B QAT Q4_0 has a separate checked profile and strict
+GGML tensor binding in `model/gemma3.h`; the [foundation contract](gemma3.md)
+records the approved checkpoint's complete actual descriptor table and
+three passing focused CPU controls. It has no graph, state layout, importer or
+serving adapter and is not an execution support entry.
+
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in
 `model/gemma4.h`. The [foundation contract](gemma4.md) records actual pinned
