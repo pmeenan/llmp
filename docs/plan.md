@@ -481,6 +481,12 @@ family" guide, and its long-context scaling work.
         were frozen before tokenization. Corpus scoring has 1,023 transitions;
         the final cohort frontier has no neighboring-owner target. This is
         input-only evidence, with no model quality or batching qualification.
+      - [x] [Candidate natural answers](experiments/gemma-natural-answer/README.md):
+        four short C1 prompts complete normally on both checkpoints. 31B
+        matches every reference answer and generated ID; both return `45.0`,
+        retaining the predeclared exact `45` format failure. 26B matches all
+        exact targets; both explanations pass semantic review. This does not
+        replace corpus, batching or retrieval-at-depth gates.
       - [x] [Current full-head corpus screen](experiments/gemma-current-quality/README.md):
         31B both256/plain-norm-on matches all 1,024 fresh ring-reference heads
         and 1,023 likelihoods exactly. The 26B all1024 transfer has nine positive-

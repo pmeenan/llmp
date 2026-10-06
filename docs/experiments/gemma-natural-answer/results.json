@@ -1,0 +1,406 @@
+{
+  "scope": "Four fixed short C1 natural prompts per checkpoint; candidate arithmetic/settings; no batching, corpus, depth, performance or default adoption qualification.",
+  "host": "spark/spark-c4e2",
+  "source": {
+    "base": "86d7c55",
+    "candidate15_manifest_sha256": "c40ce2bff58085a6ed542f94fb35736d108ed2c88d7123af1182a968ef268a3a",
+    "native_binary_sha256": "fe15cdb9abda6b11aad468f4c264aec500fe40538141ed5b3ab2ee8f4598dd2a",
+    "sdk_receipt_sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09",
+    "caller_sha256": "058942f68c2da7def61a2385fd58464732152f94949a4bfa85867b69e6ba9ae6",
+    "source_packet_sha256": "842ccaa40f813deee0291f55149e82329b91248082309242b61c1d5fa041871c",
+    "assessment_packet_sha256": "02a1f224685408b21ca71209645b498831cb66cd2c4c03d9d6bd4e724857f946",
+    "natural_prompts_sha256": "116f5d709cfb18fc5681fabc6045d5b4d47d774ab9deba45c6a9d50dd5721b1c",
+    "stop_facts_sha256": "757d0d7bc4943b07da183290ac6d76478fb87c2cdebba8db36c5144f24cfd22b",
+    "reference_image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7"
+  },
+  "recipe": {
+    "context": 4096,
+    "slots": 1,
+    "head_rows": 1,
+    "max_tokens": 128,
+    "fresh_native_turns": true,
+    "greedy": true,
+    "reference_f16_kv": true,
+    "reference_graphs_fusion": "normal enabled",
+    "reference_special": true,
+    "reference_stop_strings": [
+      "<turn|>",
+      "<|tool_response>",
+      "<|channel>",
+      "<|tool_call>"
+    ],
+    "native_stop_ids": [
+      106,
+      50,
+      100,
+      48
+    ]
+  },
+  "profiles": {
+    "31": {
+      "max_rows": 256,
+      "artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+      "metadata_sha256": "79c54f13f654d98e93ba1496062c017baea53ddaed59de086fe3fa7cf09d8461",
+      "raw_gguf": {
+        "name": "gemma-4-31B-it-UD-Q4_K_XL.gguf",
+        "bytes": 18822970304,
+        "inherited_sha256": "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575"
+      },
+      "input_cases": [
+        {
+          "name": "explanation",
+          "tokens": 29,
+          "input_sha256": "e1d7b5daf6a01c86eba718360b04a9e47301393cefc8259d328a3f6de82c76d4",
+          "manifest_sha256": "eb67865bf5adb6eff55a0484cbba66672c64646c39a67a8411f04372ec112bfe",
+          "rows": 29
+        },
+        {
+          "name": "arithmetic",
+          "tokens": 30,
+          "input_sha256": "cc34ac3bd42339477019ae2e4e497103ceb7e4ca3688d534061788e10ba6b3c7",
+          "manifest_sha256": "9a6f3373f0398a24c3bbc42ae01bc112e83554a8bcaeb317b9e520d83bedea7f",
+          "rows": 30
+        },
+        {
+          "name": "instruction",
+          "tokens": 28,
+          "input_sha256": "8b31ebe74a61f284a40a7ead046610b61157a96567078e8ab86a023f114aa13d",
+          "manifest_sha256": "9c8bd964cbe58b8ce529ebb59ad425df36279162c76d5226b498d5ae98210077",
+          "rows": 28
+        },
+        {
+          "name": "retrieval",
+          "tokens": 73,
+          "input_sha256": "f97379114f18410a3ce44da89c3e261124057c9e610b7f9b86a282d6a3573451",
+          "manifest_sha256": "dcc0c5d82528a4f70a0e726277677dc7bc51f0841c3a467ba8247b6186f92500",
+          "rows": 73
+        }
+      ],
+      "config_sha256": "bb65da5be4ea086b653bd166d7cdaf3ec1dc7255834f07b1b7e8fac037b086c0",
+      "assessment_sha256": "5f591e1789b6ca069e462b769cca4f0949342a72ae7f0c16e3ae86ceea3dd6db",
+      "all_prompt_ids_exact": true,
+      "all_completed_eos106": true,
+      "limits_or_truncations": 0,
+      "case_results": [
+        {
+          "name": "explanation",
+          "complete_native": true,
+          "complete_public": true,
+          "native_terminal_stop_id": 106,
+          "public_terminal_stop_id": 106,
+          "public_stop_type": "eos",
+          "text_byte_equal": true,
+          "token_ids_equal": true,
+          "native_generated": 34,
+          "reference_generated": 34,
+          "supplied_prompt_rows": 29,
+          "native_answer_sha256": "c66ab82fd64a7154e6442c375f5d7cfe5244b87cea6fa09dee6315e367f7c1bf",
+          "reference_answer_sha256": "c66ab82fd64a7154e6442c375f5d7cfe5244b87cea6fa09dee6315e367f7c1bf",
+          "native_report_sha256": "13c179d3f142ccb06a0159ef5be99b553d899c61f57ca0ee71aa98c4a33eb99e",
+          "reference_response_sha256": "86ea3965cd33d84d4f07f0fe315e17a8e0f96ee6ac4cf417169c9e70a8ab67e2",
+          "manual_full_answer_review": {
+            "reviewers": [
+              "root",
+              "gemma_prefill_overlap"
+            ],
+            "native_semantic_two_sentence_pass": true,
+            "reference_semantic_two_sentence_pass": true,
+            "basis": "Each actual full answer is exactly two sentences connecting lack of light with photosynthesis, glucose/energy and depletion of stored nutrients followed by weakening/death."
+          }
+        },
+        {
+          "name": "arithmetic",
+          "complete_native": true,
+          "complete_public": true,
+          "native_terminal_stop_id": 106,
+          "public_terminal_stop_id": 106,
+          "public_stop_type": "eos",
+          "text_byte_equal": true,
+          "token_ids_equal": true,
+          "native_generated": 5,
+          "reference_generated": 5,
+          "supplied_prompt_rows": 30,
+          "native_answer_sha256": "94e634ac63620eab982ebd55f5f8862038782070d9f2e7f3c252b2f4c48d3193",
+          "reference_answer_sha256": "94e634ac63620eab982ebd55f5f8862038782070d9f2e7f3c252b2f4c48d3193",
+          "native_report_sha256": "13c179d3f142ccb06a0159ef5be99b553d899c61f57ca0ee71aa98c4a33eb99e",
+          "reference_response_sha256": "f82dad75aaddd52aef9580431509f45318cb6fce33817826b171b576340149f5",
+          "expected": "45",
+          "native_exact_outer_whitespace_only": false,
+          "reference_exact_outer_whitespace_only": false,
+          "manual_numeric_value_correct_both": true,
+          "actual_native": "45.0",
+          "actual_reference": "45.0"
+        },
+        {
+          "name": "instruction",
+          "complete_native": true,
+          "complete_public": true,
+          "native_terminal_stop_id": 106,
+          "public_terminal_stop_id": 106,
+          "public_stop_type": "eos",
+          "text_byte_equal": true,
+          "token_ids_equal": true,
+          "native_generated": 4,
+          "reference_generated": 4,
+          "supplied_prompt_rows": 28,
+          "native_answer_sha256": "5e167b3e7da10fbc9bef328f637df35928683ba549d2baa7037f525462d0c83b",
+          "reference_answer_sha256": "5e167b3e7da10fbc9bef328f637df35928683ba549d2baa7037f525462d0c83b",
+          "native_report_sha256": "13c179d3f142ccb06a0159ef5be99b553d899c61f57ca0ee71aa98c4a33eb99e",
+          "reference_response_sha256": "56c247a04ce6f119a7b252817dfe2923535869efaeb2e60d20bbc6348489a60d",
+          "expected": "apple pear plum",
+          "native_exact_outer_whitespace_only": true,
+          "reference_exact_outer_whitespace_only": true
+        },
+        {
+          "name": "retrieval",
+          "complete_native": true,
+          "complete_public": true,
+          "native_terminal_stop_id": 106,
+          "public_terminal_stop_id": 106,
+          "public_stop_type": "eos",
+          "text_byte_equal": true,
+          "token_ids_equal": true,
+          "native_generated": 11,
+          "reference_generated": 11,
+          "supplied_prompt_rows": 73,
+          "native_answer_sha256": "55fd07388e7affbcfaf9354bf5af831d9526b2af916377860fb522be6ad48065",
+          "reference_answer_sha256": "55fd07388e7affbcfaf9354bf5af831d9526b2af916377860fb522be6ad48065",
+          "native_report_sha256": "13c179d3f142ccb06a0159ef5be99b553d899c61f57ca0ee71aa98c4a33eb99e",
+          "reference_response_sha256": "c0c89b23c2cf85b544e5576b931c1e3926dabc70baa1f501eeec2ab19339feb4",
+          "expected": "ORBIT-COPPER-7392",
+          "native_exact_outer_whitespace_only": true,
+          "reference_exact_outer_whitespace_only": true
+        }
+      ],
+      "all_exact_content_cases_pass_both": false,
+      "all_four_answers_ids_and_bytes_equal": true,
+      "semantic_assessments_pass_both": true
+    },
+    "26": {
+      "max_rows": 1024,
+      "artifact": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3",
+      "metadata_sha256": "5d15e0c84e29af2ed9b4525dacdd31ccd7bae061eb28dde2dad984a9b1e45a59",
+      "raw_gguf": {
+        "name": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+        "bytes": 16947541728,
+        "inherited_sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
+      },
+      "input_cases": [
+        {
+          "name": "explanation",
+          "tokens": 29,
+          "input_sha256": "e1d7b5daf6a01c86eba718360b04a9e47301393cefc8259d328a3f6de82c76d4",
+          "manifest_sha256": "2e35757c538614f0bec92eb42fc5cc02dbdfe862906464130e5caa7dcc2dc940",
+          "rows": 29
+        },
+        {
+          "name": "arithmetic",
+          "tokens": 30,
+          "input_sha256": "cc34ac3bd42339477019ae2e4e497103ceb7e4ca3688d534061788e10ba6b3c7",
+          "manifest_sha256": "9740f64c1a95c800c404823f35e3fcc666bb2eb525fe860a0ab49e6cb2b1d75f",
+          "rows": 30
+        },
+        {
+          "name": "instruction",
+          "tokens": 28,
+          "input_sha256": "8b31ebe74a61f284a40a7ead046610b61157a96567078e8ab86a023f114aa13d",
+          "manifest_sha256": "9aa656db19cae9632aec7c85871077dda76a338e667d1639172acf14702d9193",
+          "rows": 28
+        },
+        {
+          "name": "retrieval",
+          "tokens": 73,
+          "input_sha256": "f97379114f18410a3ce44da89c3e261124057c9e610b7f9b86a282d6a3573451",
+          "manifest_sha256": "00ca5e3c527af80f558192fe9edadeb25dd885e4b47cb7c6c2a1873e35cd532c",
+          "rows": 73
+        }
+      ],
+      "config_sha256": "a8ae28c64cd2dba736995c140f2b5727fbfa1920d9659f3dad4f357b196d8c9a",
+      "assessment_sha256": "b418810a7e6c12f5b19ab34272f51f1019e76cc52fe4610907638aa03a5bb0a1",
+      "all_prompt_ids_exact": true,
+      "all_completed_eos106": true,
+      "limits_or_truncations": 0,
+      "case_results": [
+        {
+          "name": "explanation",
+          "complete_native": true,
+          "complete_public": true,
+          "native_terminal_stop_id": 106,
+          "public_terminal_stop_id": 106,
+          "public_stop_type": "eos",
+          "text_byte_equal": false,
+          "token_ids_equal": false,
+          "native_generated": 38,
+          "reference_generated": 38,
+          "supplied_prompt_rows": 29,
+          "native_answer_sha256": "32bbdaa7328d0432802d7a2fd14fa5f7aa6bd91e81c6b78629d7d9c3e8b71e8f",
+          "reference_answer_sha256": "e174e2786c6b178dec1e81dc1e604dc54fe4f35df801f6cf9e9a91053f386bf9",
+          "native_report_sha256": "9651e4531807838578b4b5124a67e4f5b722c1a5c7da14f17457af927e7fabb8",
+          "reference_response_sha256": "c914f6ed685a668ac7a271dcfe96a453813961036c6b73cc148c35eef011b35c",
+          "manual_full_answer_review": {
+            "reviewers": [
+              "root",
+              "gemma_prefill_overlap"
+            ],
+            "native_semantic_two_sentence_pass": true,
+            "reference_semantic_two_sentence_pass": true,
+            "basis": "Each actual full answer is exactly two sentences connecting lack of light with photosynthesis, glucose/energy and depletion of stored nutrients followed by weakening/death."
+          }
+        },
+        {
+          "name": "arithmetic",
+          "complete_native": true,
+          "complete_public": true,
+          "native_terminal_stop_id": 106,
+          "public_terminal_stop_id": 106,
+          "public_stop_type": "eos",
+          "text_byte_equal": true,
+          "token_ids_equal": true,
+          "native_generated": 3,
+          "reference_generated": 3,
+          "supplied_prompt_rows": 30,
+          "native_answer_sha256": "811786ad1ae74adfdd20dd0372abaaebc6246e343aebd01da0bfc4c02bf0106c",
+          "reference_answer_sha256": "811786ad1ae74adfdd20dd0372abaaebc6246e343aebd01da0bfc4c02bf0106c",
+          "native_report_sha256": "9651e4531807838578b4b5124a67e4f5b722c1a5c7da14f17457af927e7fabb8",
+          "reference_response_sha256": "ff7a63afeb71b4d1bf7c8eba1fa23e006195fac3ce129e0676015423f6a888fe",
+          "expected": "45",
+          "native_exact_outer_whitespace_only": true,
+          "reference_exact_outer_whitespace_only": true,
+          "manual_numeric_value_correct_both": true,
+          "actual_native": "45",
+          "actual_reference": "45"
+        },
+        {
+          "name": "instruction",
+          "complete_native": true,
+          "complete_public": true,
+          "native_terminal_stop_id": 106,
+          "public_terminal_stop_id": 106,
+          "public_stop_type": "eos",
+          "text_byte_equal": true,
+          "token_ids_equal": true,
+          "native_generated": 4,
+          "reference_generated": 4,
+          "supplied_prompt_rows": 28,
+          "native_answer_sha256": "5e167b3e7da10fbc9bef328f637df35928683ba549d2baa7037f525462d0c83b",
+          "reference_answer_sha256": "5e167b3e7da10fbc9bef328f637df35928683ba549d2baa7037f525462d0c83b",
+          "native_report_sha256": "9651e4531807838578b4b5124a67e4f5b722c1a5c7da14f17457af927e7fabb8",
+          "reference_response_sha256": "4c3babee2f9c77ff900151815b12ce1f726b6e523b862b4ef3514fb4ac05326f",
+          "expected": "apple pear plum",
+          "native_exact_outer_whitespace_only": true,
+          "reference_exact_outer_whitespace_only": true
+        },
+        {
+          "name": "retrieval",
+          "complete_native": true,
+          "complete_public": true,
+          "native_terminal_stop_id": 106,
+          "public_terminal_stop_id": 106,
+          "public_stop_type": "eos",
+          "text_byte_equal": true,
+          "token_ids_equal": true,
+          "native_generated": 11,
+          "reference_generated": 11,
+          "supplied_prompt_rows": 73,
+          "native_answer_sha256": "55fd07388e7affbcfaf9354bf5af831d9526b2af916377860fb522be6ad48065",
+          "reference_answer_sha256": "55fd07388e7affbcfaf9354bf5af831d9526b2af916377860fb522be6ad48065",
+          "native_report_sha256": "9651e4531807838578b4b5124a67e4f5b722c1a5c7da14f17457af927e7fabb8",
+          "reference_response_sha256": "454e2ca368c71de8dd569c536fd9ab96362940cc3509fab5d2dd1b5306aa0b38",
+          "expected": "ORBIT-COPPER-7392",
+          "native_exact_outer_whitespace_only": true,
+          "reference_exact_outer_whitespace_only": true
+        }
+      ],
+      "all_exact_content_cases_pass_both": true,
+      "all_four_answers_ids_and_bytes_equal": false,
+      "semantic_assessments_pass_both": true
+    }
+  },
+  "official": [
+    {
+      "name": "m35-gemma-natural-native31-1",
+      "host": "spark-c4e2",
+      "rc": 0,
+      "steps": 1,
+      "elapsed_seconds": 10.413999795913696,
+      "record_sha256": {
+        "final.json": "14283bba2ddcf80f34f75baf34955b07e608218848b995bee8a3d8e1b4d97393",
+        "steps.json": "6956a7b01d5ba6a59e364615c1915930d816d69b1c10ee456ee32eed4c4c0bc6",
+        "job.json": "8fd2180e022d69ea14febdbd486a7df8e0fedc7b2b51f6f17d99985722723a43",
+        "log": "d2dd00c3bda4afa28d020aff0afdffb7b8c7148588d17bce6f954ea6d12fecfa"
+      }
+    },
+    {
+      "name": "m35-gemma-natural-public31-1",
+      "host": "spark-c4e2",
+      "rc": 0,
+      "steps": 1,
+      "elapsed_seconds": 12.024999856948853,
+      "record_sha256": {
+        "final.json": "15dff1ae98b3df5b8ba67d8c0adc26c769bf2968e28e59f18de9f2427ce77f0c",
+        "steps.json": "1dcc0df2c4e63889fb6b9026b8674cf4a48dc30e5aaf77b5ef80cf078d329551",
+        "job.json": "e5afb5aaaf0def26feab36405eddf1b7aee2ed4623733d984d7e964e5153ded7",
+        "log": "9e01a7288e23b98ecdb3908074795c4008989480791e7146ac09393278373049"
+      }
+    },
+    {
+      "name": "m35-gemma-natural-assessment31-1",
+      "host": "spark-c4e2",
+      "rc": 0,
+      "steps": 3,
+      "elapsed_seconds": 1.4240000247955322,
+      "record_sha256": {
+        "final.json": "6d27fe1cafaf89ed89067b1ef51da21bd05310f1a324db6c39f58e66695bf52f",
+        "steps.json": "242d1165c2925336af106da78b4bba5b21884984239afb6f37619e7ff4de34b7",
+        "job.json": "9c278171766c2ac5cf0237dbd0da91bf3d9b3c449d73885d90ff1d031533de06",
+        "log": "9ed0a60919103d2a15f56c24af2aae5f028f31ec75f376d973f5a914d8c4b65a"
+      }
+    },
+    {
+      "name": "m35-gemma-natural-native26-1",
+      "host": "spark-c4e2",
+      "rc": 0,
+      "steps": 1,
+      "elapsed_seconds": 5.808000087738037,
+      "record_sha256": {
+        "final.json": "c07436971e374e47b50ae0051876834cf5439452811fa83834239f7579ebdfa7",
+        "steps.json": "bff57faedfd8717c22c7cdd43ed1bd74f7e30ba5412651ba8cb1665ebe66c8a9",
+        "job.json": "fc4adae269475fff62e531a47776e7a30f513fb472cb2d2b9a8364a049121abf",
+        "log": "ed0263f1a5707deafbf8f25fc034137b0960356b0af79389947b914a44e9e35f"
+      }
+    },
+    {
+      "name": "m35-gemma-natural-public26-1",
+      "host": "spark-c4e2",
+      "rc": 0,
+      "steps": 1,
+      "elapsed_seconds": 7.817999839782715,
+      "record_sha256": {
+        "final.json": "90ba2253622e3ebf9d6ff651a2a2a2608a33b4d3524b33afec6b2502bd39daea",
+        "steps.json": "a1d050e55c1f2e5eabf7d66f1ac488045518816e26cf69a8bdef26cf6c7b25f8",
+        "job.json": "da0a41c8d403c9b421aeabcaa27a707cccdcabbb35bdafe77020e4dd5a21d920",
+        "log": "8e9b061b00e7fef7ddb928b4ad726015efc8f1aa8f76d9820502d56c1d3a2a2c"
+      }
+    },
+    {
+      "name": "m35-gemma-natural-assessment26-1",
+      "host": "spark-c4e2",
+      "rc": 0,
+      "steps": 3,
+      "elapsed_seconds": 1.4249999523162842,
+      "record_sha256": {
+        "final.json": "1100602788920065e8bd00c37a6c3ec3f2dbd4ffa10d8bbf31b36b38989d553f",
+        "steps.json": "210df0d3651a188c39e88f4bd7fb4ffed7be4b162473c6940c1d3174a6eb63d7",
+        "job.json": "0a662928c4f259bc0a889e9eed6272773ef2101839e319fec4cf936f5bea1bc1",
+        "log": "10730236903e0cdc5df9d537559ec4cba953613e08e4f089182c53a70ff4ee16"
+      }
+    }
+  ],
+  "limits": [
+    "No all-prompts or general capability claim.",
+    "Exact string failures are retained separately from semantic judgments.",
+    "Short retrieval is not retrieval at depth.",
+    "This does not replace independent full-corpus or cohort qualification; historical failures remain failures.",
+    "No full regression suite was run for this diagnostic."
+  ]
+}
