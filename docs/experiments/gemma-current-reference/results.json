@@ -1,0 +1,752 @@
+{
+  "task": "M3.5 Task59 fresh current/reference bookends",
+  "entry": {
+    "task": "M3.5 Task59 fresh current/reference bookends",
+    "observed_utc": "2026-10-06 00:07:53 UTC",
+    "tensorfold_head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "tensorfold_version": "0.6.5",
+    "tensorfold_applicability": "Same primary pinned README model table: Gemma26 MLX only, no matching CUDA Gemma26/31 target",
+    "measured_native_source_base": "845617f",
+    "main_at_entry": "ab88b9ddb8571101d02d9732683320d9ecc69c3d",
+    "native_helper_sha256": "68368ed64a299d02765dffb35aff126c576ba5e6699cffa6e83cdc8a6409d794",
+    "sdk_receipt_sha256": "b21741220d01c6284bb38266a50b518e6abce39d1ba5aa96b95da78150aa083d",
+    "source_qualifier": "Retained845 helper selected arithmetic/executor matches current main; later Task55 experimental module availability unselected. No identical-current-binary claim."
+  },
+  "source_qualification": "Retained native helper source845617f plus Task58 benchmark state-mode argument; selected kernel/executor arithmetic matches ab88b9d. Task55 module additions remain unselected. This is not a build of the latest main commit.",
+  "native_source_sha256": {
+    "benchmarks/gemma_prefill.cc": "5be882152fa8b136602fab17f4a1c8fceba581c5e12d05235498c0dcf9971838"
+  },
+  "reference": {
+    "image": "ghcr.io/ggml-org/llama.cpp@sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "launcher_sha256": "f183f9eaa1eb83f3be8c12ca4f8b23bec638d44d5a265fd224fc8e2a6516fa42",
+    "container_retire_sha256": "1fd85804983ecdf720b5c0a69353fede0e294a0da0dd70a91bd8cd8b539e75e0",
+    "cpu_threads": "Unchanged llama_context_default_params; no new thread override or affinity policy",
+    "native_toolchain": "Clang22.1.8/NVCC13.4.92/toolkit13.4.2/driver580.178.04",
+    "original_image_cuda": "13.3"
+  },
+  "recipe": {
+    "order": [
+      "reference-first",
+      "native-first",
+      "native-repeat",
+      "reference-repeat"
+    ],
+    "context": 16384,
+    "batch": 8192,
+    "kv": "F16 K and V",
+    "swa_full": false,
+    "kv_unified": false,
+    "discarded_warm_rows": 6,
+    "paid_prefill_rows": 8192,
+    "untimed_anchors": 3,
+    "forced_decode_units": 32,
+    "native_modes": "normmul-on/state-only/lookahead-on/phases-on/state-chunked",
+    "publication": "One complete paid prefill head and one complete final head retained per arm;32 greedy choices"
+  },
+  "profiles": {
+    "31": {
+      "host": "spark (spark-c4e2)",
+      "artifact": {
+        "bytes": 1601,
+        "sha256": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08"
+      },
+      "chunk": 256,
+      "local_cells": 1280,
+      "global_cells": 16384,
+      "input": {
+        "bytes": 32908,
+        "sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b"
+      },
+      "reference_source": {
+        "bytes": 5695,
+        "sha256": "00fb782b5af4f5b0aeb903957ac26100c099422eeeb5e873bdc99890c77e11d2"
+      },
+      "reference_binary": {
+        "bytes": 75376,
+        "sha256": "0b401e613e9295de62846646ba40c3a9a12de8af80c34ec75fb46e9283ac47b9"
+      },
+      "budget": {
+        "fixed": "1017119744",
+        "weights": "18895339520",
+        "state_capacity": "2390753280",
+        "publication": "1048576",
+        "pinned_head_envelope": "268435456",
+        "max_rows": "256",
+        "call_bound": "68",
+        "plan_floor": "2457136",
+        "planning_scratch": "11808768",
+        "plan_graph_capacity": "5513813184",
+        "total": "30220636352"
+      },
+      "initialized_state_bytes": 1740636160,
+      "prefill_spread_seconds": {
+        "reference": 1.3354999999999997,
+        "native": 0.022799999999998377
+      },
+      "summary": {
+        "arms": {
+          "task47-task59-ring31-first": {
+            "metrics": {
+              "prefill_seconds": "12.3124",
+              "prefill_rows": "8192",
+              "intermediate_heads": "0",
+              "decode_seconds": "3.12017",
+              "decode_chunks": "32",
+              "timed_start": "8195",
+              "completed": "8227",
+              "context": "16384",
+              "batch": "8192",
+              "ubatch": "256",
+              "fusion": "enabled",
+              "graphs": "allowed",
+              "swa_full": "false",
+              "kv_unified": "false",
+              "cache_recipe": "ring",
+              "ggml_graph_reused_delta": "32"
+            },
+            "heads": {
+              "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+              "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+            }
+          },
+          "task59-native31-first": {
+            "metrics": {
+              "prefill_seconds": "11.194",
+              "prefill_rows": "8192",
+              "prefill_chunks": "32",
+              "intermediate_heads": "0",
+              "prefill_output": "state-only",
+              "state_prepare": "state-chunked",
+              "lookahead": "lookahead-on",
+              "lookahead_attempted": "31",
+              "lookahead_built": "31",
+              "lookahead_cached": "31",
+              "lookahead_refused": "0",
+              "lookahead_build_seconds": "0.216006",
+              "decode_seconds": "3.18827",
+              "decode_chunks": "32",
+              "timed_start": "8195",
+              "completed": "8227",
+              "context": "16384",
+              "chunk": "256",
+              "masks": "device",
+              "normmul": "normmul-on",
+              "prefill_norm_fused": "121",
+              "prefill_norm_rope": "120",
+              "prefill_norm_add": "120",
+              "prefill_gemma_route": "0",
+              "prefill_gemma_reduce": "0",
+              "gemma_route": "0",
+              "gemma_reduce": "0",
+              "shared_vecq": "0",
+              "row_products": "0",
+              "norm_fused": "121",
+              "rope_store": "0",
+              "norm_rope": "120",
+              "norm_add": "120",
+              "captures": "1",
+              "replays": "33"
+            },
+            "heads": {
+              "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+              "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+            },
+            "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+          },
+          "task59-native31-repeat": {
+            "metrics": {
+              "prefill_seconds": "11.2168",
+              "prefill_rows": "8192",
+              "prefill_chunks": "32",
+              "intermediate_heads": "0",
+              "prefill_output": "state-only",
+              "state_prepare": "state-chunked",
+              "lookahead": "lookahead-on",
+              "lookahead_attempted": "31",
+              "lookahead_built": "31",
+              "lookahead_cached": "31",
+              "lookahead_refused": "0",
+              "lookahead_build_seconds": "0.217942",
+              "decode_seconds": "3.18866",
+              "decode_chunks": "32",
+              "timed_start": "8195",
+              "completed": "8227",
+              "context": "16384",
+              "chunk": "256",
+              "masks": "device",
+              "normmul": "normmul-on",
+              "prefill_norm_fused": "121",
+              "prefill_norm_rope": "120",
+              "prefill_norm_add": "120",
+              "prefill_gemma_route": "0",
+              "prefill_gemma_reduce": "0",
+              "gemma_route": "0",
+              "gemma_reduce": "0",
+              "shared_vecq": "0",
+              "row_products": "0",
+              "norm_fused": "121",
+              "rope_store": "0",
+              "norm_rope": "120",
+              "norm_add": "120",
+              "captures": "1",
+              "replays": "33"
+            },
+            "heads": {
+              "prefill.f32": "19a3b459c0775245fbfd9661a91c7a83021ed47dc1ace71a7786e1e2e704d94f",
+              "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+            },
+            "state_sha256": "57043b210a91dc9a1e450ca18abb76ca4fd3718b37ffe24c2e7263a46d0e9b03"
+          },
+          "task47-task59-ring31-repeat": {
+            "metrics": {
+              "prefill_seconds": "10.9769",
+              "prefill_rows": "8192",
+              "intermediate_heads": "0",
+              "decode_seconds": "3.12374",
+              "decode_chunks": "32",
+              "timed_start": "8195",
+              "completed": "8227",
+              "context": "16384",
+              "batch": "8192",
+              "ubatch": "256",
+              "fusion": "enabled",
+              "graphs": "allowed",
+              "swa_full": "false",
+              "kv_unified": "false",
+              "cache_recipe": "ring",
+              "ggml_graph_reused_delta": "32"
+            },
+            "heads": {
+              "prefill.f32": "b235725acb4e0ed646363bc46fdae514502fecadc30f94ad6467abdfbbb89f40",
+              "final.f32": "33ed447e371ed91df91c5d0d9f6ce0bbc3bf78d4f13483bfa56bf8a5ad8a8e29"
+            }
+          }
+        },
+        "phases": [
+          {
+            "planned_calls": "32",
+            "hits": "31",
+            "misses": "1",
+            "checks_seconds": "0.0270526",
+            "inputs_seconds": "0.00225734",
+            "state_seconds": "0.160741",
+            "required_planning_seconds": "0.00832213",
+            "staging_seconds": "0.00212489",
+            "execution_seconds": "10.9265",
+            "publication_cleanup_seconds": "0.066967",
+            "bind_seconds": "0.0454912",
+            "coverage_seconds": "0.0167755",
+            "cache_seconds": "0.0042903",
+            "job_steps": "32",
+            "job_wall": "10.9262",
+            "dispatch": "0.00403171",
+            "submission": "5.02223",
+            "after": "5.8999",
+            "stream_elapsed": "10.9128"
+          },
+          {
+            "planned_calls": "32",
+            "hits": "31",
+            "misses": "1",
+            "checks_seconds": "0.025975",
+            "inputs_seconds": "0.00231236",
+            "state_seconds": "0.174924",
+            "required_planning_seconds": "0.00830005",
+            "staging_seconds": "0.00213483",
+            "execution_seconds": "10.9347",
+            "publication_cleanup_seconds": "0.0684884",
+            "bind_seconds": "0.0456838",
+            "coverage_seconds": "0.0174153",
+            "cache_seconds": "0.00492035",
+            "job_steps": "32",
+            "job_wall": "10.9344",
+            "dispatch": "0.00280122",
+            "submission": "5.02937",
+            "after": "5.9022",
+            "stream_elapsed": "10.9238"
+          }
+        ],
+        "comparisons": {
+          "task59-native31-first vs task59-native31-repeat": {
+            "argmax_mismatches_32": 0,
+            "heads": {
+              "prefill.f32": {
+                "byte_exact": true,
+                "max_raw_delta": 0.0,
+                "head_argmax_equal": true
+              },
+              "final.f32": {
+                "byte_exact": true,
+                "max_raw_delta": 0.0,
+                "head_argmax_equal": true
+              }
+            }
+          },
+          "task47-task59-ring31-first vs task59-native31-first": {
+            "argmax_mismatches_32": 0,
+            "heads": {
+              "prefill.f32": {
+                "byte_exact": false,
+                "max_raw_delta": 0.41361474990844727,
+                "head_argmax_equal": true
+              },
+              "final.f32": {
+                "byte_exact": true,
+                "max_raw_delta": 0.0,
+                "head_argmax_equal": true
+              }
+            }
+          },
+          "task47-task59-ring31-repeat vs task59-native31-repeat": {
+            "argmax_mismatches_32": 0,
+            "heads": {
+              "prefill.f32": {
+                "byte_exact": false,
+                "max_raw_delta": 0.41361474990844727,
+                "head_argmax_equal": true
+              },
+              "final.f32": {
+                "byte_exact": true,
+                "max_raw_delta": 0.0,
+                "head_argmax_equal": true
+              }
+            }
+          }
+        },
+        "native_own_repeat_heads_state_32choices_exact": true,
+        "reference_own_repeat_heads_32choices_exact": true,
+        "reference_effective_context_ubatch_f16_kv_cells_confirmed": true,
+        "mean_reference_seconds": {
+          "prefill_seconds": 11.64465,
+          "decode_seconds": 3.121955
+        },
+        "mean_native_seconds": {
+          "prefill_seconds": 11.205400000000001,
+          "decode_seconds": 3.188465
+        },
+        "native_vs_reference_percent": {
+          "prefill_seconds": -3.772118526533641,
+          "decode_seconds": 2.130395857723766
+        },
+        "native_vs_each_reference_percent": {
+          "task47-task59-ring31-first": {
+            "prefill_seconds": -8.99093596699262,
+            "decode_seconds": 2.1888230448982027
+          },
+          "task47-task59-ring31-repeat": {
+            "prefill_seconds": 2.0816441800508345,
+            "decode_seconds": 2.0720354446913003
+          }
+        },
+        "finite_retained_complete_heads": 8,
+        "limitation": "Two retained full vectors per arm;32greedychoices, not all32 fullvectors/corpus quality. Ref spread retained; selected research policies, retained845helper not identical latest main binary."
+      }
+    },
+    "26": {
+      "host": "spark-b (spark-56f5)",
+      "artifact": {
+        "bytes": 6035,
+        "sha256": "4ddb360c9ce08f1e984ab304b6af918be44246d52346734066b06443f7c249d3"
+      },
+      "chunk": 1024,
+      "local_cells": 2048,
+      "global_cells": 16384,
+      "input": {
+        "bytes": 32908,
+        "sha256": "6b6567ca51a3fbe5000521cb71fcf168ef485623bdbfea2abab30d57f414d96b"
+      },
+      "reference_source": {
+        "bytes": 5698,
+        "sha256": "112bfa39733efada1723c1cef5689e7236a4aca218e009cab2dbb32441f16fb6"
+      },
+      "reference_binary": {
+        "bytes": 75376,
+        "sha256": "f6f1683dcd74382e964238aaefc95b1f54b58a400882d889fb417065edc54ec7"
+      },
+      "budget": {
+        "fixed": "3865052160",
+        "weights": "17047748608",
+        "state_capacity": "754974720",
+        "publication": "1048576",
+        "pinned_head_envelope": "1073741824",
+        "max_rows": "1024",
+        "call_bound": "44",
+        "plan_floor": "2503184",
+        "planning_scratch": "9540096",
+        "plan_graph_capacity": "3634623168",
+        "total": "26067962048"
+      },
+      "initialized_state_bytes": 592445440,
+      "prefill_spread_seconds": {
+        "reference": 0.004540000000000433,
+        "native": 0.004189999999999916
+      },
+      "summary": {
+        "arms": {
+          "task47-task59-ring26-first": {
+            "metrics": {
+              "prefill_seconds": "2.41652",
+              "prefill_rows": "8192",
+              "intermediate_heads": "0",
+              "decode_seconds": "0.680048",
+              "decode_chunks": "32",
+              "timed_start": "8195",
+              "completed": "8227",
+              "context": "16384",
+              "batch": "8192",
+              "ubatch": "1024",
+              "fusion": "enabled",
+              "graphs": "allowed",
+              "swa_full": "false",
+              "kv_unified": "false",
+              "cache_recipe": "ring",
+              "ggml_graph_reused_delta": "32"
+            },
+            "heads": {
+              "prefill.f32": "254e6cf57dea36d5da3be3e0d53157bb886924b61e6493050daa147e82a2eaa3",
+              "final.f32": "48c4a6123708f182d28e6063f124b6b5facdbda881046be6b1f1e239d652f2a6"
+            }
+          },
+          "task59-native26-first": {
+            "metrics": {
+              "prefill_seconds": "2.47975",
+              "prefill_rows": "8192",
+              "prefill_chunks": "8",
+              "intermediate_heads": "0",
+              "prefill_output": "state-only",
+              "state_prepare": "state-chunked",
+              "lookahead": "lookahead-on",
+              "lookahead_attempted": "7",
+              "lookahead_built": "7",
+              "lookahead_cached": "7",
+              "lookahead_refused": "0",
+              "lookahead_build_seconds": "0.0472568",
+              "decode_seconds": "0.689799",
+              "decode_chunks": "32",
+              "timed_start": "8195",
+              "completed": "8227",
+              "context": "16384",
+              "chunk": "1024",
+              "masks": "device",
+              "normmul": "normmul-on",
+              "prefill_norm_fused": "121",
+              "prefill_norm_rope": "60",
+              "prefill_norm_add": "90",
+              "prefill_gemma_route": "30",
+              "prefill_gemma_reduce": "30",
+              "gemma_route": "30",
+              "gemma_reduce": "30",
+              "shared_vecq": "0",
+              "row_products": "0",
+              "norm_fused": "121",
+              "rope_store": "0",
+              "norm_rope": "60",
+              "norm_add": "90",
+              "captures": "1",
+              "replays": "33"
+            },
+            "heads": {
+              "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+              "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+            },
+            "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+          },
+          "task59-native26-repeat": {
+            "metrics": {
+              "prefill_seconds": "2.47556",
+              "prefill_rows": "8192",
+              "prefill_chunks": "8",
+              "intermediate_heads": "0",
+              "prefill_output": "state-only",
+              "state_prepare": "state-chunked",
+              "lookahead": "lookahead-on",
+              "lookahead_attempted": "7",
+              "lookahead_built": "7",
+              "lookahead_cached": "7",
+              "lookahead_refused": "0",
+              "lookahead_build_seconds": "0.0441053",
+              "decode_seconds": "0.688509",
+              "decode_chunks": "32",
+              "timed_start": "8195",
+              "completed": "8227",
+              "context": "16384",
+              "chunk": "1024",
+              "masks": "device",
+              "normmul": "normmul-on",
+              "prefill_norm_fused": "121",
+              "prefill_norm_rope": "60",
+              "prefill_norm_add": "90",
+              "prefill_gemma_route": "30",
+              "prefill_gemma_reduce": "30",
+              "gemma_route": "30",
+              "gemma_reduce": "30",
+              "shared_vecq": "0",
+              "row_products": "0",
+              "norm_fused": "121",
+              "rope_store": "0",
+              "norm_rope": "60",
+              "norm_add": "90",
+              "captures": "1",
+              "replays": "33"
+            },
+            "heads": {
+              "prefill.f32": "1dc3ba34b12692c5c416740a869eb43e68a586e7b5b1fb4bb60f8105799880fd",
+              "final.f32": "e07cbe2d33e5234fb1e7f90dbc3642a6775e59e8cadbd6fe4b13db646fc5e853"
+            },
+            "state_sha256": "2826cc47728ac2bcc2234a41c7a0d4f8159a7d5a6bf09012ccfaade9eb9edeed"
+          },
+          "task47-task59-ring26-repeat": {
+            "metrics": {
+              "prefill_seconds": "2.42106",
+              "prefill_rows": "8192",
+              "intermediate_heads": "0",
+              "decode_seconds": "0.685692",
+              "decode_chunks": "32",
+              "timed_start": "8195",
+              "completed": "8227",
+              "context": "16384",
+              "batch": "8192",
+              "ubatch": "1024",
+              "fusion": "enabled",
+              "graphs": "allowed",
+              "swa_full": "false",
+              "kv_unified": "false",
+              "cache_recipe": "ring",
+              "ggml_graph_reused_delta": "32"
+            },
+            "heads": {
+              "prefill.f32": "254e6cf57dea36d5da3be3e0d53157bb886924b61e6493050daa147e82a2eaa3",
+              "final.f32": "48c4a6123708f182d28e6063f124b6b5facdbda881046be6b1f1e239d652f2a6"
+            }
+          }
+        },
+        "phases": [
+          {
+            "planned_calls": "8",
+            "hits": "7",
+            "misses": "1",
+            "checks_seconds": "0.00556554",
+            "inputs_seconds": "0.000437262",
+            "state_seconds": "0.0665843",
+            "required_planning_seconds": "0.00808067",
+            "staging_seconds": "0.000406349",
+            "execution_seconds": "2.38291",
+            "publication_cleanup_seconds": "0.015753",
+            "bind_seconds": "0.0121718",
+            "coverage_seconds": "0.00438367",
+            "cache_seconds": "0.0007503",
+            "job_steps": "8",
+            "job_wall": "2.38285",
+            "dispatch": "0.000570509",
+            "submission": "0.701911",
+            "after": "1.68036",
+            "stream_elapsed": "2.37856"
+          },
+          {
+            "planned_calls": "8",
+            "hits": "7",
+            "misses": "1",
+            "checks_seconds": "0.00556552",
+            "inputs_seconds": "0.000438701",
+            "state_seconds": "0.059333",
+            "required_planning_seconds": "0.00798033",
+            "staging_seconds": "0.000408143",
+            "execution_seconds": "2.3864",
+            "publication_cleanup_seconds": "0.0154255",
+            "bind_seconds": "0.0119377",
+            "coverage_seconds": "0.00426629",
+            "cache_seconds": "0.00075302",
+            "job_steps": "8",
+            "job_wall": "2.38635",
+            "dispatch": "0.000692334",
+            "submission": "0.69932",
+            "after": "1.68633",
+            "stream_elapsed": "2.38134"
+          }
+        ],
+        "comparisons": {
+          "task59-native26-first vs task59-native26-repeat": {
+            "argmax_mismatches_32": 0,
+            "heads": {
+              "prefill.f32": {
+                "byte_exact": true,
+                "max_raw_delta": 0.0,
+                "head_argmax_equal": true
+              },
+              "final.f32": {
+                "byte_exact": true,
+                "max_raw_delta": 0.0,
+                "head_argmax_equal": true
+              }
+            }
+          },
+          "task47-task59-ring26-first vs task59-native26-first": {
+            "argmax_mismatches_32": 0,
+            "heads": {
+              "prefill.f32": {
+                "byte_exact": false,
+                "max_raw_delta": 0.8572092056274414,
+                "head_argmax_equal": true
+              },
+              "final.f32": {
+                "byte_exact": false,
+                "max_raw_delta": 0.22439956665039062,
+                "head_argmax_equal": true
+              }
+            }
+          },
+          "task47-task59-ring26-repeat vs task59-native26-repeat": {
+            "argmax_mismatches_32": 0,
+            "heads": {
+              "prefill.f32": {
+                "byte_exact": false,
+                "max_raw_delta": 0.8572092056274414,
+                "head_argmax_equal": true
+              },
+              "final.f32": {
+                "byte_exact": false,
+                "max_raw_delta": 0.22439956665039062,
+                "head_argmax_equal": true
+              }
+            }
+          }
+        },
+        "native_own_repeat_heads_state_32choices_exact": true,
+        "reference_own_repeat_heads_32choices_exact": true,
+        "reference_effective_context_ubatch_f16_kv_cells_confirmed": true,
+        "mean_reference_seconds": {
+          "prefill_seconds": 2.41879,
+          "decode_seconds": 0.68287
+        },
+        "mean_native_seconds": {
+          "prefill_seconds": 2.4776550000000004,
+          "decode_seconds": 0.689154
+        },
+        "native_vs_reference_percent": {
+          "prefill_seconds": 2.4336548439509276,
+          "decode_seconds": 0.9202337194488042
+        },
+        "native_vs_each_reference_percent": {
+          "task47-task59-ring26-first": {
+            "prefill_seconds": 2.529877675334813,
+            "decode_seconds": 1.3390231277792264
+          },
+          "task47-task59-ring26-repeat": {
+            "prefill_seconds": 2.3376124507447305,
+            "decode_seconds": 0.504891408970809
+          }
+        },
+        "finite_retained_complete_heads": 8,
+        "limitation": "Two retained full vectors per arm;32greedychoices, not all32 fullvectors/corpus quality. Ref spread retained; selected research policies, retained845helper not identical latest main binary."
+      }
+    }
+  },
+  "decision": "26 stable residual +2.43365% prefill/+.92023%decode.31 reference spread prevents parity/gain inference; current mean native+2.08164% vs closing reference, +2.13040% vs reference mean decode. No extra diagnostic/model runs or production changes.",
+  "quality_limit": "Native complete retained heads/initialized states/32 choices exact baseline and own repeat; references exact previous reference/own repeat. Cross-engine head deltas persist. Separate current representative corpus and C4 quality/batching gates are not passed by this performance fixture.",
+  "official": {
+    "official-screen31": {
+      "name": "m35-gemma-current-reference31",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "step_count": 4,
+      "elapsed_seconds": 85.24699997901917,
+      "records": {
+        "job.json": {
+          "bytes": 504,
+          "sha256": "d8ad73a46bfc657c5bae4f39d6969e2f1af41df5d64c370413dbad68d17d1121"
+        },
+        "steps.json": {
+          "bytes": 1740,
+          "sha256": "113ec8b7d1ca2d23b81fb978596b6d09b7224af7a9e47abb112130d55abc4693"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "9f2fd89b60410a405f950645cf32d21448354974b8a820ce5b273392675de33a"
+        },
+        "gpu.json": {
+          "bytes": 32,
+          "sha256": "cb0ffbdbae647add7be188aeb603aa274030c83440a7046adc86ef8a30be6c48"
+        }
+      }
+    },
+    "official-check31": {
+      "name": "m35-gemma-current-reference-check31",
+      "host": "spark-c4e2",
+      "state": "done",
+      "rc": 0,
+      "step_count": 1,
+      "elapsed_seconds": 2.0339999198913574,
+      "records": {
+        "job.json": {
+          "bytes": 515,
+          "sha256": "0fc796a42ad873343ad2a4649b8b30a50c15f566f264c4a3cf8d1d45687616c9"
+        },
+        "steps.json": {
+          "bytes": 222,
+          "sha256": "9703f8c44bc2a3e9df7b0ee811db68d96316277acfed38144d23a959652f85c1"
+        },
+        "final.json": {
+          "bytes": 83,
+          "sha256": "1baac103a8088f3302ff57706fbfb041f436161ca02618ccbb0f242dc42ff968"
+        },
+        "gpu.json": {
+          "bytes": 32,
+          "sha256": "d4f2adc16fee184d31fdc6576687b1e016c3651fb33fe4a6a67f205be92ffa81"
+        }
+      }
+    },
+    "official-screen26": {
+      "name": "m35-gemma-current-reference26",
+      "host": "spark-56f5",
+      "state": "done",
+      "rc": 0,
+      "step_count": 4,
+      "elapsed_seconds": 29.33999991416931,
+      "records": {
+        "job.json": {
+          "bytes": 503,
+          "sha256": "36caf6ef4751adab1ca323a18b712ee0d8dd0ccf553fee13c60ae1adcc9e117e"
+        },
+        "steps.json": {
+          "bytes": 1739,
+          "sha256": "df7dffe775318a8ddb5c948f16e1d0d2d8d4ca2199a8522acd56672fb0acd853"
+        },
+        "final.json": {
+          "bytes": 82,
+          "sha256": "9c56fb0f3a40b5c79e69fc388146e3699e8f2bbaed327409b2e30d07b74a5f44"
+        },
+        "gpu.json": {
+          "bytes": 32,
+          "sha256": "8d7ed645fb14b8387b5f91486b9232e375ee6b810839c1b23e0e2da0a540ddc5"
+        }
+      }
+    },
+    "official-check26": {
+      "name": "m35-gemma-current-reference-check26",
+      "host": "spark-56f5",
+      "state": "done",
+      "rc": 0,
+      "step_count": 1,
+      "elapsed_seconds": 0.8450000286102295,
+      "records": {
+        "job.json": {
+          "bytes": 512,
+          "sha256": "213dad1282fb77b889f0de61d3a58f527989239d5c465517fce11edc86557cd0"
+        },
+        "steps.json": {
+          "bytes": 222,
+          "sha256": "77f1e62dac0e4eb32804e4e967623dd2c82ca116f44822426717bc899b7701ad"
+        },
+        "final.json": {
+          "bytes": 82,
+          "sha256": "35328ed49377d9e4d3085fa82dff493b9794f76aae9cba7cfa24b676637db9c5"
+        },
+        "gpu.json": {
+          "bytes": 32,
+          "sha256": "25912124f9541bd355b060e13d372c6d7ffaff3fcbd169a0f798e98c62f09d6c"
+        }
+      }
+    }
+  }
+}

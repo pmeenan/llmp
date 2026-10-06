@@ -448,6 +448,11 @@ family" guide, and its long-context scaling work.
         margin choices and fails strict quality despite only +0.0528% PPL.
         Both own repeats are independently frozen before stock; no inherited
         128-row allowance or full-model/batching qualification is claimed.
+      - [x] [Fresh current solo reference bookends](experiments/gemma-current-reference/README.md):
+        26B retains stable 2.43% prefill / 0.92% decode latency gaps. Native 31B
+        prefill is stable, but stock varies 1.3355 s; the closing-arm comparison
+        remains 2.08% slower, with decode 2.13% slower. Exact prior native
+        heads/state/choices remain; no parity, corpus or batching pass follows.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

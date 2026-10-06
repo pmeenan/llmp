@@ -88,6 +88,13 @@ exactly. The 26B transfer fails strict quality with nine positive-margin choices
 15 exact heads and +0.0528% PPL. Each policy's own repeat is independently frozen;
 these samples add no full-model, frontier-state or optimized-batching support.
 
+The [fresh current solo comparison](experiments/gemma-current-reference/README.md)
+records stable 26B prefill/decode latency gaps of 2.43%/0.92%. Native 31B prefill
+is stable, but reference bookends vary from 12.3124 to 10.9769 s; native is 2.08%
+slower than the closing reference and decode is 2.13% slower. These explicit
+all1024/both256 research recipes preserve prior native heads/state; known
+cross-engine head differences and the separate quality/batching gates remain.
+
 The shared [planning read index](experiments/gemma-plan-index/README.md) removes
 repeated graph scans without changing selected operations or kernel arithmetic.
 With the existing default-off 26B `all` and 31B `both` policies, initial matched

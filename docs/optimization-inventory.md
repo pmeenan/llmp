@@ -464,6 +464,15 @@ waive that gate. Each model freezes complete same-policy own repeats before
 stock. These new shapes use no inherited 128-row allowance and do not qualify
 frontier-only 8K work, whole contexts or optimized batching.
 
+The [fresh current reference bookends](experiments/gemma-current-reference/README.md)
+measure the accumulated solo recipe: stable 26B latency gaps are 2.43% prefill
+and 0.92% decode. Native 31B prefill is stable while stock moves 1.3355 s;
+native is 2.08% slower than the closing stock arm, so no parity or gain follows
+from the reference mean. Native execution spans fit within reference whole
+prefill times; remaining state/host spans are a lead, not proof of a particular
+allocation subcallee or GPU arithmetic cost. Complete retained native
+heads/state/choices stay exact. Corpus and C4 gates remain independent.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls

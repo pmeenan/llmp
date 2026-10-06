@@ -43,7 +43,13 @@ repeated declaration validation as a material contributor: 31B binding falls
 per-step operand, arity and lane checks remain. Full heads, initialized state
 and continuations remain native-exact; seven focused controls pass. The wall
 screens favor the change with material spread and no fresh reference comparison.
-State growth, execution variance and broader qualification remain open.
+The [fresh current solo bookends](../gemma-current-reference/README.md) now
+record a stable 2.43% prefill gap at 26B. Native 31B timing is stable, but stock
+varies 1.3355 s; comparison to its closing arm leaves a 2.08% gap. The separate
+[current corpus screen](../gemma-current-quality/README.md) matches all 1,024
+31B heads exactly at 256 rows; 26B at 1,024 rows retains nine positive-margin
+choice failures. State growth, execution variance and broader qualification
+remain open.
 M3.5 remains incomplete. The source-use optimization landed as `5ef7aac` after
 1,700 Spark tests passed without failures or skips, including 311 GPU and 57
 model tests. Both Sparks were checked idle at the pause.
@@ -54,47 +60,43 @@ of those gates and does not extend M3's accepted speed exceptions to M3.5.
 
 ## Latest reference-bookended measurements
 
-The subsequent lookahead controls above isolate overlap using the same binary;
-the table below retains the last fully reference-bookended traversal screen.
-These are untraced, same-host comparisons with the original llama.cpp engine,
-not traced durations or model-load/swap times. Each screen runs reference,
-unchanged native, candidate twice, then reference. These latest screens use
-state-only intermediate chunks and bounded graph traversal; kernel arithmetic
-and selected policies are unchanged. See [graph traversal](../ggml-graph-order/README.md)
-and its [aggregate and pins](../ggml-graph-order/results.json).
+The [current solo screen](../gemma-current-reference/README.md) measures the
+accumulated state-only, lookahead and wrapper-cache recipe with plain norm
+fusion enabled. Each host runs reference, native twice, then reference;
+all four arms and the existing exact checker retire successfully.
 
-| Model / physical host | Native prefill mean | Reference prefill mean | Excess prefill time | Native / reference decode mean | Decode excess |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Gemma26 / Spark-b | 2.613455 s | 2.415685 s | 0.197770 s / 8.1869% | 0.688491 / 0.6857425 s | 0.4008% |
-| Gemma31 / Spark | 11.660800 s | 10.843650 s | 0.817150 s / 7.5357% | 3.188715 / 3.119300 s | 2.2253% |
+| Model / physical host | Native prefill first / repeat | Reference prefill first / repeat | Prefill comparison | Native / reference decode mean | Decode excess |
+| --- | ---: | ---: | --- | ---: | ---: |
+| Gemma26 / Spark-b | 2.47975 / 2.47556 s | 2.41652 / 2.42106 s | +2.43365%, stable bookends | 0.689154 / 0.682870 s | 0.92023% |
+| Gemma31 / Spark | 11.1940 / 11.2168 s | 12.3124 / 10.9769 s | +2.08164% versus closing reference; variable bookends | 3.188465 / 3.121955 s | 2.13040% |
 
+No arm is excluded. The 31B reference spread prevents parity or gain attribution;
+comparison to its slower mean is unsuitable evidence of improvement. These are
+short untraced solo measurements, with load/swap times outside their scope.
 Prefill pays 8,192 rows; decode pays 32 forced incoming rows with CPU argmax and
 full-vocabulary publication. Both discard six warm rows, clear, and append
-three untimed anchors before decode. Context is 16,384 with F16 KV, explicit
-ring-cache `swa_full=false` and `kv_unified=false`. Gemma26 uses UD-Q4_K_M,
-row cap/ubatch 1,024 and local/global capacities 2,048/16,384; Gemma31 uses
-UD-Q4_K_XL, cap/ubatch 256 and capacities 1,280/16,384. Both are single-Spark
-runs. Policies are native `all` at 26 and `both` at 31, with plain norm fusion
-off; these optional math policies have not become production defaults.
+three untimed anchors. Context is 16,384 with F16 KV, explicit ring-cache
+`swa_full=false` and `kv_unified=false`. Gemma26 uses UD-Q4_K_M, row cap/ubatch
+1,024 and local/global cells 2,048/16,384; Gemma31 uses UD-Q4_K_XL, cap/ubatch
+256 and cells 1,280/16,384. Native research policies are `all` at 26 and `both`
+at 31, with plain norm on; other norm/MoE arithmetic policies remain opt-ins.
 
-Both engines publish only the final prefill head. Dumping vectors/state and
-checking hashes occur outside timers.
-One old-native arm and two candidate arms are a short screen, not proof of
-sustained performance or other shapes. Native candidate state and both retained
-heads match the old native exactly, as do all 32 choices. All cross-engine
-choices agree. Both Gemma26 reference heads still differ; Gemma31's final head
-is exact but its prefill head has maximum raw delta 0.41361475. These controls
-do not establish all-32-vector, corpus quality or optimized-batching support.
+Both engines retain one prefill and one final complete head. Native heads,
+initialized states and 32 choices stay exact to prior native controls; stock
+heads stay exact to prior stock and own repeats. All cross-engine choices agree
+in this fixture. Both 26B reference heads still differ; 31B's final head is
+exact but its prefill head has maximum raw delta 0.41361475. These two-head
+controls do not replace the current corpus quality or C4 batching gates.
 
-Reference pin: llama.cpp `b29c606e28a01b1bc8c1351026a0fa6e616bf6c4` / b10964,
-using the original pinned image and same-format artifacts. Native SDK is
-`aarch64-c09daba6ac31edee` (Clang 22.1.8, NVCC 13.4.92, toolkit 13.4.2);
-original image metadata records CUDA 13.3.0; driver is 580.178.04 on GB10.
-These environment observations are inherited from the linked run records,
-not a fresh environment query. TensorFold was refreshed at Task51 entry,
-2026-10-05 21:58:33 UTC: `609ca419abecebdc5a059498a613680bd3aa847f`, version
-0.6.5. Its checked Gemma26 recipe is MLX; no applicable Gemma31 CUDA recipe was
-found. Do not assume that pin is still latest when another task begins.
+Reference remains original llama.cpp `b29c606` / b10964, at the pinned CUDA 13.3
+image and same-format artifacts. Native retained helper `68368ed6` uses source
+`845617f` plus the state-preparation benchmark argument; selected arithmetic and
+executor match later main, without claiming a latest-main binary. SDK is
+`aarch64-c09daba6ac31edee`, native NVCC 13.4.92 / toolkit 13.4.2, GB10 driver
+580.178.04. Full recipes, identities, phase spans and official summaries are in
+[current results](../gemma-current-reference/results.json). Task-entry
+TensorFold refresh at 2026-10-06 00:07:53 UTC remains `609ca419` / 0.6.5, MLX26
+without a comparable Gemma26/31 CUDA recipe. Recheck it at each future task.
 
 ## What has actually been resolved
 
@@ -188,13 +190,14 @@ docs/experiments/gemma-performance-review/README.md, then pull only relevant
 reports and source. This is a read-only review; do not edit, build, test, run inference,
 profile or launch additional agents/jobs.
 
-Last fully reference-bookended 8K prefill excess: Gemma26 0.19777 s (8.19%); Gemma31
-0.81715 s (7.54%). Graph-reader/source-use scans, bounded DFS membership and
-unused intermediate final-layer work are already addressed. Next-plan CPU
-construction overlap also improves same-binary prefill by 1.55%/2.36%; the
-later 31B mean is 4.94% above preceding reference bookends, a qualified
-comparison. Focus on a whole-engine or
-graph/paid-work mismatch, not a list of tiny possible kernel wins.
+Latest fresh solo bookends: Gemma26 native prefill2.47975/2.47556s versus
+reference2.41652/2.42106s (+2.43%); decode+.92%. Gemma31 native11.1940/11.2168s
+versus reference12.3124/10.9769s: native stable, reference variable; +2.08%
+versus closing reference, decode+2.13%. Do not infer parity from the slow stock
+mean. Graph-reader/source-use scans, bounded DFS membership, unused
+intermediate final-layer work, next-plan CPU overlap, plain norm selection and
+repeated wrapper declaration validation are already addressed. Focus on a
+whole-engine or graph/paid-work mismatch supported by current evidence.
 
 Rank at most three explanations by evidence and plausible magnitude. For
 each, give exact source locations, what is confirmed versus hypothetical,
@@ -205,10 +208,16 @@ time, or multiply the 52.3 ms aggregate graph-build cost as a per-chunk cost.
 Do not reopen the corrected SWA reference recipe as an unresolved issue.
 Separate solo performance from the still-open C4 correctness/performance gap.
 
-Evaluate residual serialized binding and state preparation against
-the cold/retained phase measurements. Bounded GraphOrder gave only a small
-end-to-end gain; do not reopen its former quadratic search. Identify which
-direct before/after test would settle the strongest remaining case.
+Current phase spans:31B binding45ms/state161–175ms;26B binding12ms/state59–67ms.
+Native completed execution fits within stock whole prefill time on both
+profiles. Those intervals do not isolate GPU arithmetic or a state allocation
+subcallee. Grouped upfront state preparation reduced31B state time61ms but
+showed no wall win amid execution spread. C4 attention owner-root D256 operator
+math matches packed math; no whole-model copy-removal result follows yet.
+The current teacher-forcing screen matches all1024 full31B heads at256 rows;
+26B all1024 retains nine positive-margin choice failures. Keep quality diagnosis
+separate from performance and do not widen either gate. Identify the smallest
+decisive test for the strongest remaining case.
 If a comparable latest TensorFold path exists, identify its current pin and
 applicable model/format/backend before treating it as a performance target.
 Do not claim a cause or measured speed gain from source inspection alone.
