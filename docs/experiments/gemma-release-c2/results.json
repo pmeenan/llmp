@@ -1,0 +1,440 @@
+{
+  "schema": "gemma-release-c2-results-v1",
+  "scope": "Gemma31 representative C2 fixed32 forced-wave screen on llama.cpp v0.6.0; no production changes",
+  "source": {
+    "base": "9ff4e98",
+    "owned_source5": {
+      "docs/experiments/gemma-release-c2/PROTOCOL.md": {
+        "bytes": 10687,
+        "sha256": "0cea414815112a1a24204fefe8f78288710000890b0b0ad12aa062a54aadd203"
+      },
+      "docs/experiments/gemma-release-c2/analyze.py": {
+        "bytes": 20318,
+        "sha256": "df76a8dccb6ec7c3cbd27c3a577a37ada9e5aba19b8a4153ed576316d3016eff"
+      },
+      "docs/experiments/gemma-release-c2/build.sh": {
+        "bytes": 2601,
+        "sha256": "9a4f00ce712a7b5231c41aab0caad68b4d0c8acd44e57f21fd072f9d86006e81"
+      },
+      "docs/experiments/gemma-release-c2/llama_c2.cc": {
+        "bytes": 16983,
+        "sha256": "15c8f2f0b3480a0acb323195422091e2a8601f5bead6f2bed78bd04adae8c042"
+      },
+      "docs/experiments/gemma-release-c2/run.sh": {
+        "bytes": 3086,
+        "sha256": "51b8653bebff56c2bf92caa28dea379622d8178d4a52cc1ebef0f6c54d7f2e04"
+      }
+    },
+    "source_receipt_sha256": "435b204b37833cae8fcdca8b9c1009899ec2d48c2dabd89c0af20fb86fc7b22d",
+    "measured_source_bundle_sha256": "2e12508950ad1ae268f0dfcdb1fd607e7e2cfa488c86f9ac0126bc13a968acbe",
+    "runtime_source_sha256": "4284ab5ad73ce81d46f9afeed6dbe5872ad53933566458176f28f05f9e34ea7c",
+    "pipeline_ready_sha256": "b32eb5ba3edccc94dfef7358dce77a994a4e2c89a5dfa0240117273f39b99441",
+    "native_helper": {
+      "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/native1",
+      "bytes": 149501192,
+      "sha256": "0d6d09520a9c0a68f0eda4501a13f47c8c5a926a7a9b5bb1c903bf8d114a986f"
+    },
+    "native_receipts": {
+      "measured": {
+        "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/jitllm-receipt1.json",
+        "sha256": "7d8f18471d978ffe038341acc7deca9a0105166bc3d0e44dc79357f661e83204"
+      },
+      "canonical": {
+        "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/jitllm-receipt-final5.json",
+        "sha256": "5ab70ad50b7146dbe5fc025fee9ba761e8de670331e956a50f658c4cc93a8bed"
+      },
+      "measured_source_lock_sha256": "80d92ad1b38e6e4b1c021297a20acad91abca12d5a80c9248e9dc986df6c3d46",
+      "canonical_source_lock_sha256": "5d33f395b2699cb5e929dd3003e4aed4e44f513d7b83cf5dea906e42dbe19ff2"
+    },
+    "native_build_version": "0.1.0-dev+unknown (receipt origin none; exact source/operands pinned separately)",
+    "sdk_installation_sha256": "7b8167cdbe7455b25cb41c681f321562f34683bed26dac2b64e47650b987e02d",
+    "public_helper": {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma-release-c2/llama-c2",
+      "bytes": 1871120,
+      "sha256": "a3122de5245d4008966e87130a98d48cd475c68387a2c40b1b3107e63d4744c5"
+    },
+    "compile_source_receipt_sha256": "c401a6a59f91ed8b5df6793c435d99e5ca228ca9b3f6c3e70897313f5692f283",
+    "compile_result_sha256": "fd4c891106756ada867c5c149c0e23c5be38b026e4bcb92c42cfb92b4629e15f",
+    "image_manifest": "c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db",
+    "llama_release": "v0.6.0",
+    "llama_commit": "d81235049384534c167caea52b85a694f6103d14",
+    "llama_build": "b11429",
+    "image_closure_sha256": "63ccae40a696fb574bedf1145a75f9576a0f7914efbd8081fc6b085babe3cf64",
+    "historical_helper478_unchanged": true
+  },
+  "inputs": {
+    "carrier_bytes": 49152,
+    "carrier_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
+    "manifest_sha256": "f6cf32b29dd980c997915519339cdc1cd2c244e219c473a0331303bbc6e5708c",
+    "owners_used": 2,
+    "history_rows_per_owner": 1024,
+    "prefill_rows_per_owner": 992,
+    "forced_rows_per_owner": 32,
+    "one_leading_BOS_per_history": true,
+    "raw_checkpoint": {
+      "path": "/home/pmeenan/.local/share/jitllm/reference-models/gemma-4-31B-it-UD-Q4_K_XL.gguf",
+      "bytes": 18822970304,
+      "sha256": "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575",
+      "scope": "Inherited approved checkpoint SHA, current regular-file filename/size checked; no whole payload rescan"
+    }
+  },
+  "recipe": {
+    "profile": 31,
+    "owners": 2,
+    "context": 4096,
+    "max_rows": 256,
+    "headcap": 2,
+    "prefill": 992,
+    "steps": 32,
+    "margin_allowance": 0,
+    "conditional_limit": 0.03,
+    "native_mode": "joined norm production",
+    "native_owner_option_requested": true,
+    "native_warm_decode_witness": {
+      "rows": 2,
+      "segments": 2,
+      "owner_attention_steps": 60,
+      "norm_fused": 121,
+      "norm_rope": 120,
+      "norm_add": 120,
+      "row_products": 0,
+      "phase": "first warm decode before reset; not first paid dispatch"
+    },
+    "reference_total_context": 8192,
+    "reference_per_sequence_context": 4096,
+    "reference_batch": 256,
+    "reference_ubatch": 256,
+    "reference_KV": "F16/F16",
+    "reference_kv_unified": false,
+    "reference_swa_full": false,
+    "reference_cache_streams": 2,
+    "reference_local": {
+      "layers": 50,
+      "cells": 1280
+    },
+    "reference_global": {
+      "layers": 10,
+      "cells": 4096
+    },
+    "graphs": "native cached captures/replays; stock defaults allowed",
+    "reference_fusion": "enabled",
+    "native_paid_groups": 32,
+    "full_heads": 66,
+    "head_bytes": 69206016,
+    "native_caller_host_grant_bytes": 73515008,
+    "native_initialized_state_bytes_per_witness": 922746880,
+    "native_state_witnesses_per_arm": 4,
+    "features_retained": false
+  },
+  "runtime": {
+    "device": "NVIDIA GB10",
+    "compute_capability": "12.1",
+    "sm_count": 48,
+    "stock_driver_initialized": true,
+    "stock_current_context": true,
+    "stock_visible_devices": 1,
+    "stock_ordinal": 0,
+    "stock_driver_api_version": 13040,
+    "stock_loaded_driver": {
+      "resolved": "/usr/local/cuda-13.4/compat/libcuda.so.615.71.09",
+      "bytes": 111655440,
+      "sha256": "1f573d54d6a49c9b9003653db564322e8d24bc8bed161774b343f848abac22e0"
+    },
+    "cuda_compiler": "NVCC 13.4.92 native SDK",
+    "image_cuda_runtime": "13.4.49",
+    "image_cublas": "13.7.0.27",
+    "native_cublas": "13.8.0.4 (qualified library identity; not compiler version)"
+  },
+  "own_proofs": {
+    "native": {
+      "sha256": "38f257255f173a3adf5245c2fa703ef98b0c23267af76ff2287908be7028ea73",
+      "finite_heads": 66,
+      "exact_first_repeat": true,
+      "complete_files": 8,
+      "full_initialized_state_and_layouts": true
+    },
+    "reference": {
+      "sha256": "1ee208272b3247463733fd4aaabe2c9b2daf3006fcddc2af1899c213c14370f5",
+      "finite_heads": 66,
+      "exact_first_repeat": true,
+      "complete_files": 2,
+      "acquired_after_native_own": true
+    }
+  },
+  "comparison": {
+    "native_own_sha256": "38f257255f173a3adf5245c2fa703ef98b0c23267af76ff2287908be7028ea73",
+    "reference_own_sha256": "1ee208272b3247463733fd4aaabe2c9b2daf3006fcddc2af1899c213c14370f5",
+    "source_sha256": "4284ab5ad73ce81d46f9afeed6dbe5872ad53933566458176f28f05f9e34ea7c",
+    "complete_rows": 66,
+    "byte_exact_rows": 64,
+    "max_raw_delta": 0.7876424789428711,
+    "strict_positive_margin_differences": 0,
+    "tie_differences": 0,
+    "differences": [],
+    "conditional_target_count": 64,
+    "native_mean_conditional_nll": 10.529337231518609,
+    "reference_mean_conditional_nll": 10.530823955330126,
+    "relative_conditional_loss": -0.0014856191851639823,
+    "conditional_log_ratio": -0.0014867238115172654,
+    "conditional_ratio_overflow": false,
+    "strict_gate_passed": true,
+    "conditional_gate_passed": true,
+    "quality_gate_passed": true,
+    "full_corpus_claim": false
+  },
+  "comparison_sha256": "829ba880ca7be1814dbd45336554ca352b58d593089ba2991a523803dc91a195",
+  "timing": {
+    "source_sha256": "4284ab5ad73ce81d46f9afeed6dbe5872ad53933566458176f28f05f9e34ea7c",
+    "native_own_sha256": "38f257255f173a3adf5245c2fa703ef98b0c23267af76ff2287908be7028ea73",
+    "reference_own_sha256": "1ee208272b3247463733fd4aaabe2c9b2daf3006fcddc2af1899c213c14370f5",
+    "comparison_sha256": "829ba880ca7be1814dbd45336554ca352b58d593089ba2991a523803dc91a195",
+    "full_output_identities_match_own": true,
+    "walls": {
+      "native": [
+        3.33447,
+        3.3373
+      ],
+      "reference": [
+        3.28255,
+        3.27672
+      ]
+    },
+    "means": {
+      "native": 3.335885,
+      "reference": 3.279635
+    },
+    "spreads": {
+      "native": 0.002829999999999888,
+      "reference": 0.005830000000000002
+    },
+    "native_relative_elapsed": 0.017151298848804952,
+    "scope": "Short matched32 forced physicalC2 waves, no sustained/default qualification"
+  },
+  "timing_sha256": "99f9b7ba0a734aa78955a63c7bfda12d3e732c45babb564908096c4abd1c4462",
+  "native_relative_elapsed_percent": 1.7151298848804952,
+  "mean_gap_seconds": 0.056250000000000355,
+  "timing_output_identity_gate_passed": true,
+  "checked_reference_container_absence_sha256": {
+    "first": "5605755aee409f2d8355c8f67eb4e7535afcfc31b8cdf65eea195c27c6f5f05a",
+    "repeat": "6f085a35d4d0f80626b1ab268be2abd3aa5e270c55a15a8c3b1a4b69bb3ddc45",
+    "timing-first": "a5d909b669f331339570fac7d2efd88f288176ff28043b097dcd5680b9abcfc3",
+    "timing-repeat": "f769d99e5c7de8ffd73d7cfe99d0f743b10bea5176bc2aba951df3281bd2bd13"
+  },
+  "official_jobs": {
+    "check-timing1": {
+      "name": "m35-gemma-release-c2-check-timing1",
+      "host": "spark-b",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T18:10:36.989000+00:00",
+      "records_sha256": {
+        "job.json": "fd7d50de9c6c36e7d1dc97d45ac8dc483391fcbb0898b4cd685d00f8d90c34e6",
+        "final.json": "97b500f4c08fe8291707904d7dcdae6827785868ae972d2d4ee77a7c96b00447",
+        "steps.json": "41d4d922d33bb607ba9a3fd39944aa440e4ff125ec3f0970fefe5dd29eb4dc9c",
+        "log": "2ed7ce88a8d43e2bdbcb612cf9f0f2eadba5a0370f414c3a916ef8c9fa18baad"
+      }
+    },
+    "compare1": {
+      "name": "m35-gemma-release-c2-compare1",
+      "host": "spark-b",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T18:03:06.676000+00:00",
+      "records_sha256": {
+        "job.json": "72a3852526e44a7c3261aceb3e4a915e20651ab52cebfb8ab8e5e8eeae5dd394",
+        "final.json": "9a08b0f28ae08564a7ed6b476efe919287ff76ae4adee992ac30d04638066b6b",
+        "steps.json": "a2a327b092eb99bf43c6aefec418af986114b3af7854c350ad9ad90395281317",
+        "log": "6a5bd216694c48a9d49c79b5516e73403c0fa2df35971ab918412dce6cf46de1"
+      }
+    },
+    "compile1": {
+      "name": "m35-gemma-release-c2-compile1",
+      "host": "spark-b",
+      "queued_steps": 4,
+      "successful_steps": 4,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T17:31:50.041000+00:00",
+      "records_sha256": {
+        "job.json": "a064eebdca7add9bf3e34f2192f2dce2d93e1cfe7d3d84c0c66a808040f444cf",
+        "final.json": "bd4999f5ef7cf5458e606a051397b8d3fc06646125e91b838088f757dfa11d97",
+        "steps.json": "429216f5fd09871bfd65017b9a35cd3c94191554e6e6a4cb54ca983788b0ed6d",
+        "log": "37069aa879d8de118e62fa3ef75f336e14cccb321939f0e80c7f280d1f8e9c85"
+      }
+    },
+    "native-first1": {
+      "name": "m35-gemma-release-c2-native-first1",
+      "host": "spark-b",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T17:48:34.060000+00:00",
+      "records_sha256": {
+        "job.json": "02efaeef57dc4dda88b03d92dec6b225e90f84b51779c97582024d73faeaef4a",
+        "final.json": "eafefafca03410639ac3d6644d4ac21248d9bd85a632af8377388f47a1547c38",
+        "steps.json": "1dd80b308b2645bbc74e0af7e2b44de549cf434d7f03aa9a3f13d165faa466bf",
+        "log": "56bc63b723e2a110c24602cfe3fe87cff8b6245fa1a92523db289e35edb6f0e1"
+      }
+    },
+    "native-own1": {
+      "name": "m35-gemma-release-c2-native-own1",
+      "host": "spark-b",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T17:52:28.576000+00:00",
+      "records_sha256": {
+        "job.json": "5f6d450ae2da22567be82e71aecdd9f8a7cb8416d1f8cdd26a8fcaa1187ec568",
+        "final.json": "db6b9c0cd0dc163bebdb0f63ad4130a37df7993e39426a2e69ed7b35e64af938",
+        "steps.json": "8a606871e4298cdedce786b0f511c32edaa1e5de097b504cdf96ed1e224ececf",
+        "log": "404afd6981fd6d61fcb5e4b2b988a6cfe85021f0112f00f437cea16d729568e5"
+      }
+    },
+    "native-repeat1": {
+      "name": "m35-gemma-release-c2-native-repeat1",
+      "host": "spark-b",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T17:49:37.208000+00:00",
+      "records_sha256": {
+        "job.json": "b42f24db36424070997011852e89c18faa04bd40bf1c248031d910e11eee778b",
+        "final.json": "09c6165f5b36232372d542ca7caeda4985a7be0b0012f6e1e6536b14630f075e",
+        "steps.json": "ccbbf66df5e12b16bebccb3a5ca3f50e16987b57a67a67a2bc41e9ee807036b7",
+        "log": "cd30fae8a35f038365a85e31f19b1a5ab0422eeee2f6725f1317dd41fa92488a"
+      }
+    },
+    "postauth1": {
+      "name": "m35-gemma-release-c2-postauth1",
+      "host": "spark-b",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T18:05:12.186000+00:00",
+      "records_sha256": {
+        "job.json": "a3e7aa022140071fbdd381d86bfc5ba77dd18db16d284d52268bca24063b9fe7",
+        "final.json": "c1e28542f6b376f2f4f254cd490d7ba517106df1164c99cd772fd331b121ebba",
+        "steps.json": "e725e30c4a7d261a674926d0dc3ddafb51a3b2e76a9ee45e35d3fb6c0335e2b3",
+        "log": "584e35bf1ea0bc45204434d6c196c0a75c8f48d85e042f3a8fd8d39acfcafb40"
+      }
+    },
+    "reference-first1": {
+      "name": "m35-gemma-release-c2-reference-first1",
+      "host": "spark-b",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T17:55:30.603000+00:00",
+      "records_sha256": {
+        "job.json": "da18eae15bd4b64d4b7daa6e95c9b49da88d7de44486a5af36bfae3aaff21d8f",
+        "final.json": "4d41464846adbb2deef52b4c519c38f6aa4917ffe40189634279df9eaeb726fe",
+        "steps.json": "4116a76a4539f9f80274d782a492a5b086f0aa2329d901377dd429ac34f18beb",
+        "log": "c1ac8cbbb924c1104ce70145668ea0371c97dc7bda0710703c926314d9a2fb9d"
+      }
+    },
+    "reference-own1": {
+      "name": "m35-gemma-release-c2-reference-own1",
+      "host": "spark-b",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T18:01:28.927000+00:00",
+      "records_sha256": {
+        "job.json": "380e304562ce750fa7d3f42421aedd78be6d5ba3bac8b2684eaf9f905fd5585b",
+        "final.json": "f4c87236334a1df4e3ede28065e3a3ea553a597e0c636ed4a57f0e4f7b38c5a2",
+        "steps.json": "a671ae33161c0ca26e91aa82d0d42fb6dfbbda33d818f111bd155ed8aca9d11d",
+        "log": "faa02976a935b228e3540631027e5db42175ed5aa4900e13af42400189121098"
+      }
+    },
+    "reference-repeat1": {
+      "name": "m35-gemma-release-c2-reference-repeat1",
+      "host": "spark-b",
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T17:56:36.501000+00:00",
+      "records_sha256": {
+        "job.json": "01030e13f431737f147ecda462226ed0d7386a761c146af08701030c713b4f45",
+        "final.json": "10a90686533507cdeb120c10e46cb1ae25dc47b7ac50f8ad02877c1a677f0ae1",
+        "steps.json": "4278aba15ec0c33397aa4b06685b24d8a8ff964eb7b73f8cf0018a2681ca753e",
+        "log": "6b3858af277807a2b71ea15e601f9a9a83996ecd4534d76079284181f2dc3522"
+      }
+    },
+    "timing1": {
+      "name": "m35-gemma-release-c2-timing1",
+      "host": "spark-b",
+      "queued_steps": 4,
+      "successful_steps": 4,
+      "state": "done",
+      "rc": 0,
+      "ended_utc": "2026-10-06T18:07:00.384000+00:00",
+      "records_sha256": {
+        "job.json": "4fb019571d49362b8e227b462bec9b5a8c3c77cc502df8575ecbd7cd70786f00",
+        "final.json": "16b4fff00279ac2bfe3bbe61c20c0c50833e291546788da2ff67a28c74e40e56",
+        "steps.json": "a4a5e86cc29d729c72de12914bad3ad06fb723d7835eaad44727a45b910baf60",
+        "log": "f9f860fcfc17af29aa7cc2ab7c8bd20c75f946db008f6fc72ff10f82c60fec18"
+      }
+    }
+  },
+  "successful_jobs": 11,
+  "successful_steps": 17,
+  "failed_jobs": 0,
+  "local_controls": [
+    "analyzer selftest: chronology/stable NLL/overflow and warm-witness refusal PASS",
+    "shell syntax PASS",
+    "changed C++ format PASS",
+    "AST/JSON parse PASS",
+    "git diff check PASS",
+    "REUSE1751/header1751/boundary405 PASS on final c1b47b1 parent tree"
+  ],
+  "tensorfold_entry": {
+    "entry_utc": "2026-10-06T17:07:44.779278+00:00",
+    "commit": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "head_api_sha256": "68ada3bc66f8298680a9be5a58c922abe2bfc97ded43d030c9d6b90846477bc4",
+    "files": {
+      "README.md": {
+        "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/README.md",
+        "bytes": 22767,
+        "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+      },
+      "pyproject.toml": {
+        "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/pyproject.toml",
+        "bytes": 3178,
+        "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+      },
+      "docs/recipes/gemma-4.md": {
+        "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/docs/recipes/gemma-4.md",
+        "bytes": 10845,
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      },
+      "src/tensorfold/__init__.py": {
+        "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/src/tensorfold/__init__.py",
+        "bytes": 137,
+        "sha256": "fdc3b9c9e54fd20a7aca02113787d82cd8ac28cb10e5142225c718c2d4e6288e"
+      }
+    }
+  },
+  "limits": [
+    "64/66 heads byte-exact; exact phases not separately counted, so no all-paid byte claim",
+    "Zero empirical allowance; no p99/calibration/inherited old-pin bound",
+    "64 conditional targets, final completed1024 row unscored; no full-corpus/PPL or natural-answer qualification",
+    "Short two-per-engine decode/publication walls only; native is 1.71513% slower, no sustained/parity/speed-win claim",
+    "Untimed prefill/warm/reset/state export/finite and SHA scans excluded from paid interval; no whole-engine/prefill or peak-memory claim",
+    "Existing native grants and independent initialized-state witnesses, not cross-engine KV bytes",
+    "Source5/runtime/native binary/defaults unchanged after registration; no C1/C3/larger cohort/context-depth/serving/speculation/swap or Gemma26 qualification",
+    "Historical b29/image837 evidence and original helper remain immutable; dependency refresh does not requalify old results",
+    "No full regression suite; compile/usage plus bounded model/own/comparison/timing proofs only"
+  ],
+  "final_parent_base": "c1b47b1"
+}

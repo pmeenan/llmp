@@ -14,7 +14,10 @@ For new comparisons, use the [official release reference](experiments/llama-refe
 and its frozen source/image pair. This refresh preserves every historical
 experiment pin and result; existing comparisons are not requalified by a
 dependency update. Runtime/API checks and model qualification have separate
-completion records.
+completion records. The first [fresh Gemma31 C2 screen](experiments/gemma-release-c2/README.md)
+passes independent own repeats, strict choices and 64-target conditional loss;
+short native elapsed is 1.71513% slower. This does not qualify other profiles,
+cohorts, context depth or sustained parity.
 
 ## TensorFold refreshes at each task
 

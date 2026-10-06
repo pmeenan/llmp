@@ -124,6 +124,15 @@ loss is +0.08119% and passes independently. Native prefix route29/decode route30
 is observed; actual stock992 selection is not. This does not select a production
 layer whitelist or adopt defaults. The unadopted default recipe remains excluded.
 
+The [new-release Gemma31 C2 screen](experiments/gemma-release-c2/README.md)
+independently freezes native before FIRST v0.6.0/d812 stock: zero strict
+choices/ties, 64/66 byte-exact heads and −0.148562% conditional loss over 64
+targets. Complete timing outputs match their own proofs; short native walls
+are 1.71513% slower. The actual model process proves initialized sm_121/48 SM
+and its loaded driver closure. This is a current-pin representative result,
+not sustained parity, scalar/other-cohort/26B qualification or default adoption.
+Historical pins/results remain separate.
+
 ## Coverage
 
 The [Gemma26 late-prefill common-input controls](experiments/gemma26-late-moe/README.md)
