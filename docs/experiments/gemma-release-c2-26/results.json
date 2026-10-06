@@ -1,0 +1,396 @@
+{
+  "schema": "gemma-release-c2-26-results-v1",
+  "scope": "Approved Gemma26 C2 fixed32 forced-wave transfer on v0.6.0; no production changes",
+  "source": {
+    "base": "80f4cb0",
+    "owned_source3": {
+      "docs/experiments/gemma-release-c2-26/PROTOCOL.md": {
+        "bytes": 9530,
+        "sha256": "90bc9de1ee1cb8f457f2324c8ef1e05ff57be8925fcd06d35da15d2f87f3c286"
+      },
+      "docs/experiments/gemma-release-c2-26/analyze.py": {
+        "bytes": 21013,
+        "sha256": "9c2b66c1f9b7e2f43f7c9daa294ca4e566b641c2c38438e859db477e8ae6b164"
+      },
+      "docs/experiments/gemma-release-c2-26/run.sh": {
+        "bytes": 3279,
+        "sha256": "7864e48cb77b570781bcea5cd5080cdda9249fd59180ac2b30929ee23036deb6"
+      }
+    },
+    "source_ready_sha256": "3f3a5ae469b495c5095927ce66ae295f35702fda17e0f88508477c40d7634506",
+    "source_bundle_sha256": "cfbb52d4a1906c7e35d8113e87fb83a5d6ef2eaac569b88d64cc6dcc9cf1f517",
+    "runtime_source_sha256": "dc8572fe4099b6b4ce44ec2ed88da18bf6a15cada42d1c7be0dbccdc159af807",
+    "preparation_sha256": "66f32533f92086c541087d27d9b9c7a72f0d7c5242d6045c5c12396d37e92ac1",
+    "native_helper": {
+      "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/native1",
+      "bytes": 149501192,
+      "sha256": "0d6d09520a9c0a68f0eda4501a13f47c8c5a926a7a9b5bb1c903bf8d114a986f"
+    },
+    "native_receipts": {
+      "measured": {
+        "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/jitllm-receipt1.json",
+        "sha256": "7d8f18471d978ffe038341acc7deca9a0105166bc3d0e44dc79357f661e83204"
+      },
+      "canonical": {
+        "path": "/home/pmeenan/.local/share/jitllm/ggml-release-refresh/jitllm-receipt-final5.json",
+        "sha256": "5ab70ad50b7146dbe5fc025fee9ba761e8de670331e956a50f658c4cc93a8bed"
+      },
+      "measured_source_lock_sha256": "80d92ad1b38e6e4b1c021297a20acad91abca12d5a80c9248e9dc986df6c3d46",
+      "canonical_source_lock_sha256": "5d33f395b2699cb5e929dd3003e4aed4e44f513d7b83cf5dea906e42dbe19ff2"
+    },
+    "public_helper": {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma-release-c2-26/llama-c2",
+      "bytes": 1871120,
+      "sha256": "a3122de5245d4008966e87130a98d48cd475c68387a2c40b1b3107e63d4744c5"
+    },
+    "compiled_public_prerequisite": {
+      "source_receipt_sha256": "c401a6a59f91ed8b5df6793c435d99e5ca228ca9b3f6c3e70897313f5692f283",
+      "compile_result_sha256": "fd4c891106756ada867c5c149c0e23c5be38b026e4bcb92c42cfb92b4629e15f",
+      "scope": "Four completed compile/argument-refusal steps; no initialized CUDA/model proof"
+    },
+    "llama_release": "v0.6.0",
+    "llama_commit": "d81235049384534c167caea52b85a694f6103d14",
+    "llama_build": "b11429",
+    "image_manifest": "c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db",
+    "closure": {
+      "path": "/home/pmeenan/.local/share/jitllm/llama-reference-v060/image-closure1/receipt.json",
+      "sha256": "63ccae40a696fb574bedf1145a75f9576a0f7914efbd8081fc6b085babe3cf64"
+    },
+    "native_build_version": "0.1.0-dev+unknown; exact source/operands independently authenticated",
+    "no_rebuild": true
+  },
+  "input": {
+    "carrier_bytes": 49152,
+    "carrier_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
+    "manifest_sha256": "b91eecf9d54fc55392d15ea04ba18c5a4cc5ab8e8ac2294501094d5959b578e1",
+    "owners": 2,
+    "history_rows": 1024,
+    "prefill_rows": 992,
+    "forced_rows": 32,
+    "raw_model": {
+      "path": "/home/pmeenan/.local/share/jitllm/reference-models/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+      "bytes": 16947541728,
+      "sha256": "f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f",
+      "scope": "Inherited approved checkpoint SHA, current regular-file filename/size checked; no whole payload rescan"
+    }
+  },
+  "recipe": {
+    "profile": 26,
+    "owners": 2,
+    "context": 4096,
+    "max_rows": 1024,
+    "headcap": 2,
+    "prefill": 992,
+    "steps": 32,
+    "margin_allowance": 0,
+    "conditional_limit": 0.03,
+    "native_policy": "all",
+    "native_owner_requested": true,
+    "native_warm_decode_counts": {
+      "rows": 2,
+      "segments": 2,
+      "norm_fused": 121,
+      "norm_rope": 60,
+      "norm_add": 90,
+      "owner_attention_steps": 30,
+      "gemma_route": 30,
+      "gemma_reduce": 30,
+      "row_products": 0
+    },
+    "native_paid_gpu_groups": 32,
+    "reference_total_context": 8192,
+    "reference_per_sequence_context": 4096,
+    "reference_batch": 1024,
+    "reference_ubatch": 1024,
+    "reference_KV": "F16/F16",
+    "reference_local_layers": 25,
+    "reference_local_cells": 2048,
+    "reference_global_layers": 5,
+    "reference_global_cells": 4096,
+    "reference_streams": 2,
+    "reference_unified": false,
+    "reference_swa_full": false,
+    "full_heads": 66,
+    "head_bytes": 69206016,
+    "conditional_targets": 64,
+    "native_caller_publication_grant_bytes": 73515008,
+    "native_initialized_state_witness_bytes": 230686720,
+    "native_state_witnesses_per_arm": 4,
+    "features_retained": false
+  },
+  "runtime": {
+    "reference_device": "NVIDIA GB10",
+    "sm_count": 48,
+    "driver_api": 13040,
+    "driver_initialized": true,
+    "current_context": true,
+    "ordinal": 0,
+    "visible_devices": 1,
+    "actual_loaded_driver": {
+      "resolved": "/usr/local/cuda-13.4/compat/libcuda.so.615.71.09",
+      "bytes": 111655440,
+      "sha256": "1f573d54d6a49c9b9003653db564322e8d24bc8bed161774b343f848abac22e0"
+    },
+    "native_NVCC": "13.4.92",
+    "native_cuBLAS": "13.8.0.4",
+    "reference_CUDA_runtime": "13.4.49",
+    "reference_cuBLAS": "13.7.0.27",
+    "SDK_installation_sha256": "7b8167cdbe7455b25cb41c681f321562f34683bed26dac2b64e47650b987e02d"
+  },
+  "own_proofs": {
+    "native": {
+      "sha256": "16a13eac377934be58ce198f7c13662aea29b5274f7b7d6ab1f9eba2762e5c88",
+      "complete_finite_repeat_exact": true,
+      "files": 8,
+      "acquired_before_FIRST_stock": true
+    },
+    "reference": {
+      "sha256": "726dc599ca9da75d5afd695b3522bc4df703e29d9280f6ca7870dba9d0575470",
+      "complete_finite_repeat_exact": true,
+      "files": 2
+    }
+  },
+  "comparison": {
+    "native_own_sha256": "16a13eac377934be58ce198f7c13662aea29b5274f7b7d6ab1f9eba2762e5c88",
+    "reference_own_sha256": "726dc599ca9da75d5afd695b3522bc4df703e29d9280f6ca7870dba9d0575470",
+    "source_sha256": "dc8572fe4099b6b4ce44ec2ed88da18bf6a15cada42d1c7be0dbccdc159af807",
+    "complete_rows": 66,
+    "byte_exact_rows": 64,
+    "max_raw_delta": 0.5586185455322266,
+    "strict_positive_margin_differences": 0,
+    "tie_differences": 0,
+    "differences": [],
+    "conditional_target_count": 64,
+    "native_mean_conditional_nll": 9.865990837965814,
+    "reference_mean_conditional_nll": 9.86558520005774,
+    "relative_conditional_loss": 0.0004057201902551338,
+    "conditional_log_ratio": 0.00040563790807368605,
+    "conditional_ratio_overflow": false,
+    "strict_gate_passed": true,
+    "conditional_gate_passed": true,
+    "quality_gate_passed": true,
+    "full_corpus_claim": false
+  },
+  "comparison_sha256": "22542742d5a32853e5bdab98276bedbae926d1f89ae007ea268a16f29c5d0630",
+  "timing": {
+    "source_sha256": "dc8572fe4099b6b4ce44ec2ed88da18bf6a15cada42d1c7be0dbccdc159af807",
+    "native_own_sha256": "16a13eac377934be58ce198f7c13662aea29b5274f7b7d6ab1f9eba2762e5c88",
+    "reference_own_sha256": "726dc599ca9da75d5afd695b3522bc4df703e29d9280f6ca7870dba9d0575470",
+    "comparison_sha256": "22542742d5a32853e5bdab98276bedbae926d1f89ae007ea268a16f29c5d0630",
+    "full_output_identities_match_own": true,
+    "walls": {
+      "native": [
+        0.778753,
+        0.778086
+      ],
+      "reference": [
+        0.761823,
+        0.762195
+      ]
+    },
+    "means": {
+      "native": 0.7784195,
+      "reference": 0.7620089999999999
+    },
+    "spreads": {
+      "native": 0.0006669999999999732,
+      "reference": 0.00037199999999992794
+    },
+    "native_relative_elapsed": 0.021535834878590787,
+    "scope": "Short matched32 forced physicalC2 waves, no sustained/default qualification"
+  },
+  "timing_sha256": "0a2f3a8d55dbbb79aec30e0d231c83a1c6b322e1fe60f1832f97b918e3a11955",
+  "native_relative_elapsed_percent": 2.1535834878590787,
+  "mean_gap_seconds": 0.016410500000000106,
+  "checked_CID_absence_sha256": {
+    "first": "fd3019f591bc6b9b43fd0d3e92e69ff808bdc71d650de4c749aa80ddd7220938",
+    "repeat": "c7d4cfd3f166561db9d86acbac94f7e615bba6523631613a8d1a2f837272eb97",
+    "timing-first": "6ea04749b0970679acf0c733ed1d9568a704ece19a9cd7a6d478317d29ee4dca",
+    "timing-repeat": "e340aeae8905a48e9540ec944520238a8a2e2679027083e3edbd19032d8861ee"
+  },
+  "official_jobs": {
+    "check-timing1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "ended_utc": "2026-10-06T18:45:37.614000+00:00",
+      "records_sha256": {
+        "job.json": "78244114f44f5e2af084d83e67eeb307f94ddba45b561da724d1807efc9a48cb",
+        "final.json": "1d80cb6fbe94c798b70e7ee9f2fec1bef1612559fd1a489d6d679899c880c436",
+        "steps.json": "f5acaeadbf8ce5f9dea33e272a9b83074b1c2b884d7038406b43327c23737aa4",
+        "log": "d45f0de8f6ba5da0397a342b3be66276f78156f291e160cf2952b3ae8c3da558"
+      }
+    },
+    "compare1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "ended_utc": "2026-10-06T18:42:38.171000+00:00",
+      "records_sha256": {
+        "job.json": "bff4dcba2423a0fc623e3ff45b47077143a61ed307061da5789f789c41f8e929",
+        "final.json": "3eea7f557b54df8cb1bede5bd3304aaf4c070299a93337dd9819d2c5f9739293",
+        "steps.json": "98eddbe4b014aa3bc29a37ec5b1228a6d1a13aea62c2bc379896c8db87e83201",
+        "log": "a86a8e72a862f7d2ea6f5d2916711a69e4cbe14a5456f061cfb4c9de02300ed9"
+      }
+    },
+    "native-first1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "ended_utc": "2026-10-06T18:39:05.370000+00:00",
+      "records_sha256": {
+        "job.json": "a4cd29a8599118333df830aadaa8645c683991b97c932c9865d4b7203edbab57",
+        "final.json": "90e89d173f5899b49f8a0dd6503c3c9ca091ae4a517be1e414e8afa0b961e86d",
+        "steps.json": "873347488122e73885e43f517b1040b5f308db1ab491a935d5a268a0f00ad551",
+        "log": "b955b090420b0770a122ccce0cc84ba233d2ff2a34417ca054f0a48eb1391d0c"
+      }
+    },
+    "native-own1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "ended_utc": "2026-10-06T18:40:19.069000+00:00",
+      "records_sha256": {
+        "job.json": "daffd12c768863b4a324462e0dd7d84abdf1e0dad677a38a016ee28a8cb7316c",
+        "final.json": "91692ac970962f6e6f868a444755eb8985658184be8bf25b820eeb50a1008750",
+        "steps.json": "b265f830a3f188080ff81639c5b48318e311e341e755146dd06d2923b7abca08",
+        "log": "3aa5eca037b5771aa6fa9e9f069d8fcf52380a4ae8ee720aa740ebd780b1ee17"
+      }
+    },
+    "native-repeat1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "ended_utc": "2026-10-06T18:39:46.028000+00:00",
+      "records_sha256": {
+        "job.json": "918085d4493148aa5e615ba7281d8cc37377b0737b0cca3bd9eeafc2030c5412",
+        "final.json": "9a50c6bd2a451cad4401b1987b1be3de9a1dabad08ad5c7a371a7b3be4001c66",
+        "steps.json": "96879d9859ce535b83aedf1d12a7301306ab9654fb32991d769136c7c5844cf1",
+        "log": "e3ca73d92214ae7e4415fc958a86c6df9cdf7cfae98674b645787a8a3521f290"
+      }
+    },
+    "postauth1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "ended_utc": "2026-10-06T18:42:59.229000+00:00",
+      "records_sha256": {
+        "job.json": "ed3d0966637d1388a7e560156cd351ae3414fd770a7f1af1f23f18e627b59801",
+        "final.json": "00545428ae6a83de1846a5635a4bfa66ab9f18faa84b893222412e265368cc73",
+        "steps.json": "0477a3ab45290f40350ef4ef3c7b056f009e5600ff05681cd74dcd6abca25c1a",
+        "log": "7e9b6958ff347d733356c08931c853e342bdbfeaee35c9395de572c60ff7808b"
+      }
+    },
+    "reference-first1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "ended_utc": "2026-10-06T18:40:57.980000+00:00",
+      "records_sha256": {
+        "job.json": "b53b1424f564a5d8904048dc8d3a17dee3641e1365c08f22c64576d957851c78",
+        "final.json": "c60efd1f7c4191effaab8e9742a221c1a9a413a4d10592f7fc561b2412ed6744",
+        "steps.json": "3bc3f69107f0fc07942bbd9085db6c5863e2e806f29f33633163b8b965bc615f",
+        "log": "f7433307926072f584e9cf03e92c8139b151c1cae5ca4f93d9abccaa222cd511"
+      }
+    },
+    "reference-own1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "ended_utc": "2026-10-06T18:42:16.150000+00:00",
+      "records_sha256": {
+        "job.json": "9f49cf0c7aed177247fbaf65ba84fe1b6f6ba602bc91ca9f93cd7e45fb9bac0d",
+        "final.json": "870e9d492ce59b06822c5d784547c92dbe476d52372007365109b204ebc6ad6f",
+        "steps.json": "d5d4bbc167814807aa17ea9786bb75a68f967a1340a8407cd3626e6964f65c26",
+        "log": "bd27b782659384e0395bd2d5c5ce634138affb9d3c2e3ba67b3c91b9e1b6b55d"
+      }
+    },
+    "reference-repeat1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "ended_utc": "2026-10-06T18:41:22.559000+00:00",
+      "records_sha256": {
+        "job.json": "3b50ff5145f5ed638b66078f044eedef5aea611e73c74b582916ad8f28f70605",
+        "final.json": "35049d37f50d2421482eee7faae320c5ddc786009774783539c4b7131d7b5cc7",
+        "steps.json": "4c6d0d6fba609b5d03ba0a8f55054a7a0288dacc6079de61e7965d7d43b1dd96",
+        "log": "f0e757a65227785fef0a03adca99853ecb3b60baad021aa0f0ccd3576e07ebef"
+      }
+    },
+    "timing1": {
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 4,
+      "successful_steps": 4,
+      "ended_utc": "2026-10-06T18:43:59.472000+00:00",
+      "records_sha256": {
+        "job.json": "e90257caf137b4bfe1da25945da39aa1cf8bbcac6469944a5245214be4dcc7cb",
+        "final.json": "460099800e3653dee44b5f72205d8d12b6a9d00d5329ea70c3b2df10888319d2",
+        "steps.json": "dc51182e7e7abaf1d8e467a18a9ccc4ef72a31b10823ac2c7dd8d46846d6c222",
+        "log": "e50cf1af4c86ac5d387f3b495dcdbfecca30380b8dc566690e0bc8eab3bb0b79"
+      }
+    }
+  },
+  "successful_jobs": 10,
+  "successful_steps": 13,
+  "failed_jobs": 0,
+  "tensorfold_entry": {
+    "entry_utc": "2026-10-06T18:22:59.558793+00:00",
+    "commit": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "head_api_sha256": "68ada3bc66f8298680a9be5a58c922abe2bfc97ded43d030c9d6b90846477bc4",
+    "files": {
+      "README.md": {
+        "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/README.md",
+        "bytes": 22767,
+        "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+      },
+      "pyproject.toml": {
+        "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/pyproject.toml",
+        "bytes": 3178,
+        "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+      },
+      "docs/recipes/gemma-4.md": {
+        "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/docs/recipes/gemma-4.md",
+        "bytes": 10845,
+        "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+      },
+      "src/tensorfold/__init__.py": {
+        "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/src/tensorfold/__init__.py",
+        "bytes": 137,
+        "sha256": "fdc3b9c9e54fd20a7aca02113787d82cd8ac28cb10e5142225c718c2d4e6288e"
+      },
+      "docs/recipes/cuda.md": {
+        "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/docs/recipes/cuda.md",
+        "bytes": 16881,
+        "sha256": "cf0f8f612500ae7d917099b326ecd1f7eff4d00f44948965099d4fe95d79a9e3"
+      }
+    },
+    "version": "0.6.6",
+    "applicability": "README lists Gemma4 26B-A4B only on MLX; Gemma recipe uses MLX affine4/group64 and optional DFlash. The actual CUDA recipe states no GGUF support and supplies no matching CUDA GB10/GGUF comparator."
+  },
+  "local_controls": [
+    "Numerical own/cross/timing function AST preservation versus committed31 PASS",
+    "Analyzer selftest including26 policy-refusal controls PASS",
+    "Shell syntax/AST/JSON/diff checks PASS",
+    "REUSE1756/header1756/boundary405 PASS; no Spark suite"
+  ],
+  "limits": [
+    "64/66 byte-exact heads; exact phases not separately counted, no all-paid exactness claim",
+    "Strict0 gate without empirical allowance, no inherited bound/calibration/Keep28",
+    "64 conditional targets, completed1024 finalrow unscored; no full-corpus/PPL/natural-generation qualification",
+    "Short paired decode/publication walls only; no sustained/parity/default/causal claim",
+    "Untimed prefill/warm/reset/state export/finite and SHA scans excluded, no end-to-end prefill or unchanged peak claim",
+    "Full native own initialized-state exactness, no cross-engine KV-byte comparison",
+    "Current representative C2 only: no scalar/other-cohort/depth/features/serving/speculation/swap/general support qualification",
+    "No helper/core/default change or rebuild; historicalpins/results preserved; no fullsuite"
+  ]
+}

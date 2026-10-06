@@ -17,7 +17,10 @@ dependency update. Runtime/API checks and model qualification have separate
 completion records. The first [fresh Gemma31 C2 screen](experiments/gemma-release-c2/README.md)
 passes independent own repeats, strict choices and 64-target conditional loss;
 short native elapsed is 1.71513% slower. This does not qualify other profiles,
-cohorts, context depth or sustained parity.
+cohorts, context depth or sustained parity. The separately frozen
+[Gemma26 C2 transfer](experiments/gemma-release-c2-26/README.md) passes the same
+strict/conditional gates, with native elapsed 2.153583% slower in short
+bookends; broader production qualification remains open.
 
 ## TensorFold refreshes at each task
 

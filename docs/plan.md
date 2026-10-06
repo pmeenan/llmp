@@ -271,6 +271,11 @@ family" guide, and its long-context scaling work.
       actual initialized CUDA/driver/cache admission, zero strict choices/ties
       and 64-target conditional-loss PASS. Short native elapsed is 1.71513% slower;
       scalar, other cohorts, 26B transfer, context and sustained parity remain open.
+- [x] **Fresh v0.6.0 Gemma26 C2 representative transfer**:
+      [native-own before FIRST stock and full bookend identity controls](experiments/gemma-release-c2-26/README.md),
+      zero strict choices/ties and 64-target conditional-loss PASS with the
+      actual all30 routing recipe. Short native elapsed is 2.153583% slower;
+      scalar, other cohorts, context and sustained production parity remain open.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:

@@ -133,6 +133,15 @@ and its loaded driver closure. This is a current-pin representative result,
 not sustained parity, scalar/other-cohort/26B qualification or default adoption.
 Historical pins/results remain separate.
 
+The [current-pin Gemma26 C2 transfer](experiments/gemma-release-c2-26/README.md)
+also passes independent own repeats and the unchanged strict0/64-target
+conditional gates: 64/66 complete heads exact and +0.040572% relative loss.
+Matched 992-column prefill, actual all30 routing/reduction and F16 normal
+rings are admitted; no Keep28 or inherited bound applies. Short native
+elapsed is 2.153583% slower, with complete bookend outputs exact to own.
+This does not qualify scalar/other cohorts, depth, serving defaults or
+sustained parity; stock's internal prefix routing selection is not measured.
+
 ## Coverage
 
 The [Gemma26 late-prefill common-input controls](experiments/gemma26-late-moe/README.md)
