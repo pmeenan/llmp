@@ -23,8 +23,11 @@ controls pass, but the zero-margin gate fails on eight positive-margin winners
 over 66 heads. The separate 64-target conditional loss increases0.791% and passes
 its3% bound. Native/reference own complete heads repeat exactly. This does not
 transfer C4/C8/C12 allowances or qualify partial cohorts; the strict failure is
-retained while a private existing-local-MMA family factor is evaluated. No new
-HTTP/default, full-corpus or sustained qualification is claimed.
+retained. The [private local-MMA factor](experiments/gemma31-c2-local-mma/README.md)
+also fails strictly (9/66 differences), despite passing conditional loss at
+−8.192%. Actual two/three-stream partition geometry is the next source hypothesis,
+without a causal claim. No new HTTP/default, full-corpus or sustained qualification
+is claimed.
 
 ## M0 — Plan the plan  `done`
 

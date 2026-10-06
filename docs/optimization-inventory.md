@@ -89,11 +89,14 @@ The proposed ordinary Gemma row/attention recipe is still gated by actual cohort
 quality. Its [first31 C2 comparison](experiments/gemma31-production-c2/README.md)
 retains eight positive-margin strict differences, zero exact full-head rows and
 a passing+0.791% conditional-loss result over64 within-history targets. Actual
-C2 selects independent attention with zero owner steps. The source-backed next
-factor uses the existing D256 MMA fallback instead of the local vector family
-in a private build; no causal result, production policy or borrowed allowance
-is implied. Existing whole-C8/C12 geometry evidence and grouped-store rejection
-retain their separate scopes.
+C2 selects independent attention with zero owner steps. The
+[private local-MMA factor](experiments/gemma31-c2-local-mma/README.md) retains
+nine positive-margin strict differences and zero exact heads, despite a passing
+−8.192% conditional-loss result. Changing the local family alone does not close
+quality. Actual two/three-stream grid/reduction geometry remains a source
+hypothesis, not a demonstrated cause or production policy. No borrowed allowance
+or default adoption is implied. Existing whole-C8/C12 geometry evidence and
+grouped-store rejection retain their separate scopes.
 
 ## Coverage
 
