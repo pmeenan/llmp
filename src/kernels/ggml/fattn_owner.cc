@@ -75,7 +75,8 @@ bool Overlap(const ggml_tensor* a, const ggml_tensor* b) {
 std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
     int max_blocks, int kv_tiles, int kv_heads, std::uint32_t logical_cohort) {
   if (max_blocks <= 0 || kv_tiles <= 0 || kv_tiles > 512 || kv_heads <= 0 || kv_heads > 16 ||
-      (logical_cohort != 4 && logical_cohort != 8 && logical_cohort != 12))
+      (logical_cohort != 2 && logical_cohort != 3 && logical_cohort != 4 && logical_cohort != 8 &&
+       logical_cohort != 12))
     return Rejected("owner MMA partition inputs are outside the closed grid bounds");
   const auto grid = [&](std::uint32_t cohort) {
     const auto tiles = static_cast<std::int64_t>(kv_heads) * cohort;
@@ -84,6 +85,11 @@ std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
     const auto loss = rounded > 0 ? 100 * (raw - rounded) / raw : 100;
     return static_cast<int>(loss <= 5 ? rounded : raw);
   };
+  if (logical_cohort == 2 || logical_cohort == 3) {
+    const auto blocks = grid(logical_cohort);
+    return OwnerPartition{
+        .cohort_blocks = blocks, .quad_blocks = blocks, .effective_cohort = logical_cohort};
+  }
   auto cohort = logical_cohort;
   auto blocks = grid(cohort);
   if (blocks % static_cast<int>(cohort / 4) != 0) {
@@ -96,8 +102,11 @@ std::expected<detail::OwnerPartition, KernelFailure> detail::PlanOwnerPartition(
 }
 
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& in) {
-  if (in.logical_cohort != 4 && in.logical_cohort != 8 && in.logical_cohort != 12)
-    return Rejected("owner MMA requires a logical cohort of four, eight or twelve");
+  if (in.owner_count < 2 || in.owner_count > 4 ||
+      (in.owner_count < 4
+           ? in.logical_cohort != in.owner_count
+           : (in.logical_cohort != 4 && in.logical_cohort != 8 && in.logical_cohort != 12)))
+    return Rejected("owner MMA requires actual roots2/3 or four-root cohort4/8/12");
   if (!in.q || !in.mask || !in.output || (in.q->ne[0] != 256 && in.q->ne[0] != 512) ||
       (in.q->ne[2] != 16 && in.q->ne[2] != 32))
     return Rejected("owner MMA requires the closed Gemma head dimensions");
@@ -107,16 +116,18 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
   const auto d = std::size_t(in.q->ne[0]), heads = std::size_t(in.q->ne[2]);
   const auto kvh = heads / (d == 256 ? 2 : 8);
   const auto qrow = d * heads * sizeof(float), kvrow = d * kvh * 2;
-  if (!Shape(in.q, GGML_TYPE_F32, {std::int64_t(d), 1, std::int64_t(heads), 4},
+  if (!Shape(in.q, GGML_TYPE_F32, {std::int64_t(d), 1, std::int64_t(heads), in.owner_count},
              {4, qrow, d * 4, qrow}) ||
-      !Shape(in.mask, GGML_TYPE_F16, {std::int64_t(cells), 32, 1, 4},
+      !Shape(in.mask, GGML_TYPE_F16, {std::int64_t(cells), 32, 1, in.owner_count},
              {2, cells * 2, cells * 64, cells * 64}) ||
-      !Shape(in.output, GGML_TYPE_F32, {std::int64_t(d), std::int64_t(heads), 1, 4},
+      !Shape(in.output, GGML_TYPE_F32, {std::int64_t(d), std::int64_t(heads), 1, in.owner_count},
              {4, d * 4, qrow, qrow}) ||
       in.output->view_src)
     return Rejected("owner MMA requires current packed Q/mask/output stream layouts");
   std::array<const ggml_tensor*, 10> reads{in.q, in.mask};
-  for (std::size_t owner = 0; owner < 4; ++owner) {
+  for (std::size_t owner = in.owner_count; owner < 4; ++owner)
+    if (in.k[owner] || in.v[owner]) return Rejected("owner MMA has extra inactive cache roots");
+  for (std::size_t owner = 0; owner < in.owner_count; ++owner) {
     for (const auto* tensor : {in.k[owner], in.v[owner]})
       if (!Shape(tensor, GGML_TYPE_F16,
                  {std::int64_t(d), std::int64_t(cells), std::int64_t(kvh), 1},
@@ -126,11 +137,12 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
     reads[6 + owner] = in.v[owner];
   }
   for (const auto* input : reads)
-    if (Overlap(in.output, input)) return Rejected("owner MMA output overlaps a real operand");
+    if (input && Overlap(in.output, input))
+      return Rejected("owner MMA output overlaps a real operand");
   // Independent owner storage: aliases within an owner are read-only, but one
   // owner's K/V must not be another owner's payload.
-  for (std::size_t a = 0; a < 4; ++a)
-    for (std::size_t b = a + 1; b < 4; ++b)
+  for (std::size_t a = 0; a < in.owner_count; ++a)
+    for (std::size_t b = a + 1; b < in.owner_count; ++b)
       for (const auto* first : {in.k[a], in.v[a]})
         for (const auto* second : {in.k[b], in.v[b]})
           if (Overlap(first, second)) return Rejected("owner MMA cache owners overlap");
@@ -141,14 +153,19 @@ std::expected<FlashAttnOwners, KernelFailure> FlashAttnOwnersFromNode(ggml_tenso
   if (!node || JitllmOpOf(node) != JitllmOp::kFlashAttnOwners || node->view_src)
     return Rejected("not a ten-source owner attention custom node");
   const auto cohort = JitllmOpInt(node, 0);
-  if (cohort != 4 && cohort != 8 && cohort != 12)
+  if (cohort != 2 && cohort != 3 && cohort != 4 && cohort != 8 && cohort != 12)
     return Rejected("owner attention has an unsupported logical cohort");
-  for (int i = 1; i < 8; ++i)
+  const auto encoded_count = JitllmOpInt(node, 1);
+  if (encoded_count != 0 && encoded_count != 2 && encoded_count != 3)
+    return Rejected("owner attention has an unsupported active root count");
+  for (int i = 2; i < 8; ++i)
     if (JitllmOpInt(node, i) != 0) return Rejected("owner attention has unsupported parameters");
-  FlashAttnOwners in{.q = node->src[0],
-                     .mask = node->src[1],
-                     .output = node,
-                     .logical_cohort = static_cast<std::uint32_t>(cohort)};
+  FlashAttnOwners in{
+      .q = node->src[0],
+      .mask = node->src[1],
+      .output = node,
+      .logical_cohort = static_cast<std::uint32_t>(cohort),
+      .owner_count = encoded_count == 0 ? 4U : static_cast<std::uint32_t>(encoded_count)};
   for (std::size_t owner = 0; owner < 4; ++owner) {
     in.k[owner] = node->src[2 + owner];
     in.v[owner] = node->src[6 + owner];

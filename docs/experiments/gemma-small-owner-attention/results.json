@@ -1,0 +1,432 @@
+{
+  "candidate": {
+    "actual_selected_owner_steps": 60,
+    "base": "aeddf3fdbb17b660f7a30a5cc2e775d1b803b76f",
+    "borrowed_source14_unadopted": true,
+    "compiled_helper_source4_unchanged": true,
+    "helper_sha256": "d13c461de1e08ef9ff3368679ff8e4b56b357d566228b025094cc7f5b8eafce3",
+    "representative_test_source5_receipt_sha256": "76d20ce90943192d6778dfcbd207c8b62f4cfed5ff530e3f90dd9c1050c7771a",
+    "sdk_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",
+    "shader_and_executor_unchanged": true,
+    "source26_frame_sha256": "19a6c9c06b3338d73e218d037e88cbeba38b4de2ec5e4aec283605a069cb7d63",
+    "source26_receipt_sha256": "576b345060a6705f3262b508e0adbb1f2e2d7058f927ddb6315f1fbd90c4b070",
+    "source_json_sha256": "176e5b75fe84111c0d5990b505650c4f8f36831092b35aef1584547018fcdce8",
+    "tensorfold_entry_sha256": "4b29d309b296b1e60df6e80ddbe1db91cb63dd9ec8769995595f23a1b1743907"
+  },
+  "limits": [
+    "Whole2/3 primitive controls pass at heads16/32 and D256/D512; model oracle controls cover C2 only",
+    "C3 model and larger partial cohorts remain unqualified; existing quad/tail fallback is preserved",
+    "Original vector8 and privateMMA9 strict failures retained; unadopted SOURCE14 recipe excluded from core integration",
+    "31 FIRSTstock quality remains immutable; new31 stock is timing/output confirmation only",
+    "No scalar calibration, margin widening, full suite, serving defaults, full corpus, depth or sustained performance qualification"
+  ],
+  "matched_fresh_timing31": {
+    "native": [
+      {
+        "arm": "joined-first",
+        "log_sha256": "860da0036f03bbd03beaa9b2692ae4e4d50136a19b8cd47f7fd298fd115d968c",
+        "seconds": 3.37414
+      },
+      {
+        "arm": "joined-repeat",
+        "log_sha256": "e068c4f38bc7d1c6e5947d609240bd2261f23f723d16e38c2c89b28ed8e8d7d1",
+        "seconds": 3.37341
+      }
+    ],
+    "native_mean_seconds": 3.373775,
+    "native_relative_elapsed_percent": 1.4667647116320293,
+    "native_spread_seconds": 0.0007300000000003415,
+    "reference": [
+      {
+        "arm": "first",
+        "log_sha256": "e8693c2c62f9cfd65898da27297c7cca3b9b270abc2f0e438a9849cf5c39e4ed",
+        "retirement_sha256": "455cb6cd5c22f057910d96133478c7d6f08a3ba21244f0a168606dafcd098ff3",
+        "seconds": 3.35801
+      },
+      {
+        "arm": "repeat",
+        "log_sha256": "1a69c22de643e5929dd16b9ad86331afd7c0bc640f0bcdd2bb70e6e1715c9710",
+        "retirement_sha256": "2622d88ea351bb31465515cc8d8e4b7901e2ed386da28ced3992e91a68a93546",
+        "seconds": 3.292
+      }
+    ],
+    "reference_mean_seconds": 3.325005,
+    "reference_spread_seconds": 0.06601000000000035,
+    "scope": "Two fresh stock bookends and two unchanged candidate C2 paid32-wave arms; exact retained output controls, no new noise/scoring or sustained claim"
+  },
+  "matched_fresh_timing31_sha256": "e68309ffcce6cd7267bbed0f257989e04d7a7eaacce180b22f883bfec357324a",
+  "official_jobs": {
+    "bookend26-1": {
+      "final_sha256": "f7d580781f5b56ae3101872d24efe9919b60aa9a49ae82b06733b5a127e68bd7",
+      "host": "spark-b",
+      "job_sha256": "b4f33ea45d677b465b93e1d2c7b6e5414f94be5f5b51582fddf5279b7d9e86ad",
+      "log_sha256": "857c002a5777ad7fab5fb39cc0c31fce132df27d48068d287aabb8aef9f3d874",
+      "name": "m35-gemma-small-owner-bookend26-1",
+      "queued_steps": 6,
+      "state": "done",
+      "steps_sha256": "d6fb512c143f35a51b6c6b6af7ff95e9ad41723f74525251133104c04480340a",
+      "successful_steps": 6,
+      "supervisor_rc": 0
+    },
+    "build1": {
+      "failed_step_rc": 1,
+      "final_sha256": "12f4e18d64b79137d231476927a00cd9e122f8bda2fce052fe2f59be639ab5fa",
+      "host": "spark-b",
+      "job_sha256": "45b8bb1060c3c1452a7a333df91069be322dc199047d7a8be64c73b411642653",
+      "log_sha256": "e06df6b23f50b88613bd411d3071aacf74a8e3b6975a9faf03e0b16c5a9e5d37",
+      "name": "m35-gemma-small-owner-build1",
+      "queued_steps": 9,
+      "state": "failed",
+      "steps_sha256": "ef428377276760336c324c43f33dfc6d9da19ea76d33264c3298b196f97d765b",
+      "successful_steps": 3,
+      "supervisor_rc": 1
+    },
+    "build2": {
+      "failed_step_rc": 250,
+      "final_sha256": "c3bbc17ac394c49309e488b4dbe309d1ac2129cfe12f61062fc9d43525ac756a",
+      "host": "spark-b",
+      "job_sha256": "87e06e8e392c784ee165ba3774fdc07c7df82025801171ce88ac64accd28b4f3",
+      "log_sha256": "b5e749df6267eb4acfd8ad1ba74a72c0ad6e482b5468f0ca244b48efc3d15ceb",
+      "name": "m35-gemma-small-owner-build2",
+      "queued_steps": 9,
+      "state": "failed",
+      "steps_sha256": "6b96622d1d98ecee0eb4576d5ce45173d1328a062931d44d28b630368c31da39",
+      "successful_steps": 4,
+      "supervisor_rc": 1
+    },
+    "build3": {
+      "final_sha256": "17a3b9e6893b760dfec51e6e8e9e5d396ced3cf942a65f65dffcf4419abd797b",
+      "host": "spark-b",
+      "job_sha256": "5085b4e3fc77c3976a84bf679db5bad62705cf6304aed52043be643d9acd733b",
+      "log_sha256": "cb7757fc0a9fc9f2b2ec5270f18791e71f6c1155bf14d0b2210502ffe8b95879",
+      "name": "m35-gemma-small-owner-build3",
+      "queued_steps": 9,
+      "state": "done",
+      "steps_sha256": "638568764a4857adc8b2b5c29876d73d79417fb9cae6ad100a70d707d770f522",
+      "successful_steps": 9,
+      "supervisor_rc": 0
+    },
+    "check26-1": {
+      "final_sha256": "0f333b20e8dad1dfc2ff64f0419421ecc0f866ca6c2a19dfd1c2f3c511f9ff0c",
+      "host": "spark-b",
+      "job_sha256": "86f2dc8338d130e62560d5fa17a1162d8a6859445861213124968e250ff35d69",
+      "log_sha256": "c12351c6f83574d305bc3389ea30ef7457e4b5b588b7183cf6179cc5c93af5fc",
+      "name": "m35-gemma-small-owner-check26-1",
+      "queued_steps": 3,
+      "state": "done",
+      "steps_sha256": "de86fb8fd3b5a2ef693c2b8c293d34cd77cbd2d4f86e4fb9a34c155865a8a60c",
+      "successful_steps": 3,
+      "supervisor_rc": 0
+    },
+    "compare26-1": {
+      "final_sha256": "9eb00d2c4ee28c4589a0fa9db63df732f6c83e8d71faa7101d5bff75ab1c18c4",
+      "host": "spark-b",
+      "job_sha256": "8f359054a17d7944ad8eb094962d71d9e511508ab4bae4fce2b74de7b7f28a7a",
+      "log_sha256": "2695aad63c2e043fe614c442de1667eaf13988eb059fd8afc11cc9e4b958711f",
+      "name": "m35-gemma-small-owner-compare26-1",
+      "queued_steps": 3,
+      "state": "done",
+      "steps_sha256": "04a7dea6893a6032edb81fd440d9bcfb0ec3e28b9e982ce8e69eac58a93faed5",
+      "successful_steps": 3,
+      "supervisor_rc": 0
+    },
+    "compare31-1": {
+      "final_sha256": "ea33abbe6596e87dbddc4a79d83599a7b28924c816d0d94d34506e02007d1d4d",
+      "host": "spark-b",
+      "job_sha256": "6f919b5ae08e611c06130605077dab17911c53e42ff7b482f8f8e3fbbaa8d957",
+      "log_sha256": "725e065c4fa8c3fee5e1b9f82e1aa7dd5226684a4757b459fa1bb5e934adca46",
+      "name": "m35-gemma-small-owner-compare31-1",
+      "queued_steps": 3,
+      "state": "done",
+      "steps_sha256": "d7ccbdc157734dc11fb4d96d70c10431dc090113d8a4eb005b7522f037235615",
+      "successful_steps": 3,
+      "supervisor_rc": 0
+    },
+    "heads16-1": {
+      "final_sha256": "e27b5df5eee3f3049159f6d987cbfc5a66e32949dd9de15a55f964accddef980",
+      "host": "spark-b",
+      "job_sha256": "34d51495d026cc5d0542a6497ad5467f9e3b36f8fd7489c7cb518bf732e1f3af",
+      "log_sha256": "2c91c3baa173e3b16a325bc3c28549b0e2062f80b2bd737c2b1503b1e1eb89cd",
+      "name": "m35-gemma-small-owner-heads16-1",
+      "queued_steps": 5,
+      "state": "done",
+      "steps_sha256": "544d8d9eae2432b612dfd229a1a743762cb347ed9f301c60b6ce64acaf3dae0e",
+      "successful_steps": 5,
+      "supervisor_rc": 0
+    },
+    "native26-1": {
+      "final_sha256": "e5d44b1120431bda8c2d43bc0d558ef785c880977c7777e8992d654fbcc67e54",
+      "host": "spark-b",
+      "job_sha256": "5ee5d44456ed1d3ca4b8bcd3d6fc3c684e494a501234142bb8a0bef8c3aa06c2",
+      "log_sha256": "446d01faca71a356a5e1ac4d3c47f5f3038f039d6fde348474c65ed8139b68ac",
+      "name": "m35-gemma-small-owner-native26-1",
+      "queued_steps": 6,
+      "state": "done",
+      "steps_sha256": "3e971e95d7f768389a1a71ccf0ec97d1932aba71bdea06bd767baadca87970f8",
+      "successful_steps": 6,
+      "supervisor_rc": 0
+    },
+    "native31-1": {
+      "final_sha256": "0cba2ce4e9d812a45098d7fe85f6542f4fad006462adb6093db607d6952e216d",
+      "host": "spark-b",
+      "job_sha256": "10c0188f8c88009b42bff0019088ff83a408da26112aa7a18c90a94371f95287",
+      "log_sha256": "673fdcc1ea9749b360af3e40057a87d922d99a138c5365a3492ccadec7d7a287",
+      "name": "m35-gemma-small-owner-native31-1",
+      "queued_steps": 6,
+      "state": "done",
+      "steps_sha256": "5a35eadfbfa87627306b1cfa8ef68618ddb27136ddbc7919748598f461eed552",
+      "successful_steps": 6,
+      "supervisor_rc": 0
+    },
+    "own26-1": {
+      "final_sha256": "cdb560ca25ff3daac34172bc15a11d35af97d71517062e2e2c639de9e089a174",
+      "host": "spark-b",
+      "job_sha256": "b05ac2e1ed3ed5503a90ea8fc3c20ab5f1fb8299b701ea3c96a207d55a73863d",
+      "log_sha256": "93efbb10a5bc9ba0f3681c766a3304b6beb5c84267fff5734162a05bc74180ca",
+      "name": "m35-gemma-small-owner-own26-1",
+      "queued_steps": 3,
+      "state": "done",
+      "steps_sha256": "f0905224af76e43615ac229db3367c72d0e23e4cf59ac765c8f6887a7f445efc",
+      "successful_steps": 3,
+      "supervisor_rc": 0
+    },
+    "own31-1": {
+      "final_sha256": "a8376f55400aed8a9f30de1a3fb70c3d9823ad15cf1ec1763c0a07663f8e6fb0",
+      "host": "spark-b",
+      "job_sha256": "c1b4386f47d96d381562eb5d8d095bbaed035e73d5f218d9ae05a7266ce49543",
+      "log_sha256": "3485a52ecaaeb756173e6cd6f585d7bbbe0770c13a62c50c571cd31e21a5f05d",
+      "name": "m35-gemma-small-owner-own31-1",
+      "queued_steps": 3,
+      "state": "done",
+      "steps_sha256": "6f8f6d8fbe807ae24d67a9321e5f93865a7a643cdf3ff525e22e9a4e8fa4e168",
+      "successful_steps": 3,
+      "supervisor_rc": 0
+    },
+    "timing31-1": {
+      "final_sha256": "af6924bbdadbb14e4b2d9cdd0bbba8e61e15deb1d7f1801d35f185ba6008832a",
+      "host": "spark-b",
+      "job_sha256": "c752d032f827bfa6fc6d35a001799cf93180c142363e0115733dde13e038e894",
+      "log_sha256": "f7db03f0443cb5f7ccd6f00b68c2c0ec5eaf72378f3351ef996d9b8e0448278b",
+      "name": "m35-gemma-small-owner-timing31-1",
+      "queued_steps": 6,
+      "state": "done",
+      "steps_sha256": "5b91ea8a1e98b76dee1d701ba1be339dfe3b4a3aeb79a6b7fb5f6a2a1ff49e64",
+      "successful_steps": 6,
+      "supervisor_rc": 0
+    },
+    "timing31-check1": {
+      "final_sha256": "cd4ad031f9725550e974b04175114afd85b1ed57f4d7955237385688b8931790",
+      "host": "spark-b",
+      "job_sha256": "47dc7632b5bf7fd8bd306609e8c2cae2afe58d1ec9117164cf46777e14291086",
+      "log_sha256": "6ab39576f17be993b4aa7b0315ae8331853f2b3da4e57d4c96b1fbce462c99dd",
+      "name": "m35-gemma-small-owner-timing31-check1",
+      "queued_steps": 3,
+      "state": "done",
+      "steps_sha256": "aeeae40dccb6531eb709463ef63f53d33a746c522fb9ae9d35017e8c4960773d",
+      "successful_steps": 3,
+      "supervisor_rc": 0
+    }
+  },
+  "own_repeat": {
+    "complete_heads_bytes": 69206016,
+    "complete_heads_sha256": "0eb64bf9e48d34ceb120f8981fe1c2b1dda0f0e4baee366ed588748ae955478f",
+    "complete_heads_states_layout_input_exact": true,
+    "completed_original_prefix_metadata_exact": true,
+    "each_state_bytes": 922746880,
+    "state_files": 4
+  },
+  "owned_analysis_retirements": {
+    "task71-analysis-c2-small-compare1-container-retired.json": "e856d2054a471a75fb7671a398a666a23f73a6b6457b0e42960cb30876010238",
+    "task71-analysis-c2-small-freeze1-container-retired.json": "71ccee611ec61034c8441907a27c9695787bcc2ade8d71dc21f09ff1fd202704",
+    "task71-analysis-c2-small-joined-first-admit-container-retired.json": "0d2ef1b48ea8e17c6cfb8c5460e06e40fb8a2390b09bb509912744a24560282d",
+    "task71-analysis-c2-small-joined-repeat-admit-container-retired.json": "5b0f5bc37d5ee72fb68ac6ba43525db328ad8f3a2417c8c2fe00ea05330798a3",
+    "task71-analysis-c2-small26-compare1-container-retired.json": "746ecb7418cd5800e96518ee732da9eec5f2ed2aaabcbe8cd9a70e8c328dd1c5",
+    "task71-analysis-c2-small26-freeze1-container-retired.json": "180ac4026918b006d29d38af88ce155cde8ab3fe233610cc4643dee7e20a64f7",
+    "task71-analysis-c2-small26-joined-first-admit-container-retired.json": "c421c94f36f617f7eab8c7c5e025bba37fdd22afe76758dbc1868c1b2d830919",
+    "task71-analysis-c2-small26-joined-repeat-admit-container-retired.json": "cb320be97c7c8ebcdfdacd63944c53e6c5e245313d68fcc7b1a4ac1c76b6bfc0",
+    "task71-ref26-c2-first-container-retired.json": "ecc990839dae6562e22e336dbbc5fa7a40f7fee10e833edcfa690bfb0b9729e6",
+    "task71-ref26-c2-repeat-container-retired.json": "8ce3fdc5704c031b60b8d55e03ebae83d05693058007290bf6b923bf9df84ab9",
+    "task71-small-owner-timing-check1-container-retired.json": "acb011c40aa7269524e02e705e95a63ca867b8b7da70d0fadba8ab4661565aba",
+    "task71-small-owner-timing-check26-1-container-retired.json": "c013a946855a904f1bcdcfdd02b2d3f511651e7981bac63dda55bc226c4963fd",
+    "task71-small-owner-timing31-first-container-retired.json": "455cb6cd5c22f057910d96133478c7d6f08a3ba21244f0a168606dafcd098ff3",
+    "task71-small-owner-timing31-repeat-container-retired.json": "2622d88ea351bb31465515cc8d8e4b7901e2ed386da28ced3992e91a68a93546"
+  },
+  "quality": {
+    "all_head_max_raw_delta": 0.7876424789428711,
+    "byte_exact_rows": 64,
+    "complete_rows": 66,
+    "conditional_gate_passed": true,
+    "corpus_ppl_claim": false,
+    "first_baseline_gate_passed": true,
+    "forced_nll_rows": 64,
+    "mean_native_conditional_nll": 10.53963572267125,
+    "mean_reference_conditional_nll": 10.541122446482767,
+    "outside_p99": 0,
+    "p99_bound": 0.0,
+    "positive_margin_differences": 0,
+    "quality_gate_passed": true,
+    "reference_tie_differences": 0,
+    "relative_conditional_loss": -0.0014856191851639823
+  },
+  "raw": {
+    "aggregate_summary_sha256": "9fe5f38fc0665fe3ff57fbbf1f26d693cb8da81535317ca2168d8421757668b2",
+    "comparison_sha256": "a1e7af7373454a9d5481945cb77a8a39a69cadfb2295b930d4a4e1d00ba8fabb",
+    "native_freeze_sha256": "4877e06dd4fbedc9355a13dede5621a096b1985966b955740efa3ea926622fed"
+  },
+  "recipe": {
+    "context": 4096,
+    "forced_steps": 32,
+    "fusion": true,
+    "graphs": true,
+    "history_rows": 1024,
+    "max_head_rows": 2,
+    "max_rows": 256,
+    "moe_route_reduce": false,
+    "native_joined_groups": [
+      2
+    ],
+    "native_policy": "norm",
+    "norm_add": true,
+    "norm_rope": true,
+    "owner_requested": true,
+    "owners": 2,
+    "plain_norm": true,
+    "prefill_rows": 992,
+    "profile": 31,
+    "rope_store": false,
+    "row_products": false,
+    "shared_q8": false
+  },
+  "retained_first_reference": {
+    "cohort.logits.f32": {
+      "bytes": 69206016,
+      "sha256": "b04e891364a5a5d35f9f134a2abc8976611c07939eb59102f061937a34dea4e2"
+    },
+    "inputs.i32": {
+      "bytes": 49152,
+      "sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3"
+    }
+  },
+  "schema": 1,
+  "status": "Bounded whole-C2 strict quality PASS on both approved profiles; opt-in whole2/3 adapter, serving recipe/defaults unadopted",
+  "timing": {
+    "limitation": "Short noncontemporaneous retained-stock comparison; no speed or sustained parity claim",
+    "native_mean_seconds": 3.474195,
+    "native_seconds": [
+      3.46276,
+      3.48563
+    ],
+    "native_spread_ms": 22.870000000000168,
+    "relative_mean_elapsed_percent": 5.4532733754536045,
+    "retained_stock_mean_seconds": 3.2945349999999998,
+    "retained_stock_seconds": [
+      3.29867,
+      3.2904
+    ],
+    "retained_stock_spread_ms": 8.27
+  },
+  "transfer26": {
+    "carrier_manifest_sha256": "b91eecf9d54fc55392d15ea04ba18c5a4cc5ab8e8ac2294501094d5959b578e1",
+    "complete_heads_bytes": 69206016,
+    "complete_heads_sha256": "271641c30e02f174d2ce6dcb3b18a6512aa041ec3f4f0f0d4fd3fcbcda893dee",
+    "each_state_bytes": 230686720,
+    "first_reference": {
+      "cohort.logits.f32": {
+        "bytes": 69206016,
+        "sha256": "93906b57be5f59c9b3d18e3199c90a15c70a1dcbfb6a0f215f50f451a9484156"
+      },
+      "inputs.i32": {
+        "bytes": 49152,
+        "sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3"
+      }
+    },
+    "matched_timing": {
+      "native": [
+        {
+          "arm": "joined-first",
+          "log_sha256": "0a3729b85ce0d1a1ff2ec02038450a3400e5e182137c4541eefc72614f12f6ea",
+          "seconds": 0.775437
+        },
+        {
+          "arm": "joined-repeat",
+          "log_sha256": "9e54f4d48294e786dc56b53f5665b7f4e8991195e684d8ae149e7b87e99a5237",
+          "seconds": 0.776954
+        }
+      ],
+      "native_mean_seconds": 0.7761955,
+      "native_relative_elapsed_percent": -1.0638060574233443,
+      "native_spread_seconds": 0.0015169999999999906,
+      "reference": [
+        {
+          "arm": "first",
+          "log_sha256": "afa1a56616709ebed1c84f4b7dc68267621816bf44207cc79530c1260adf3f88",
+          "retirement_sha256": "ecc990839dae6562e22e336dbbc5fa7a40f7fee10e833edcfa690bfb0b9729e6",
+          "seconds": 0.782866
+        },
+        {
+          "arm": "repeat",
+          "log_sha256": "359bff8cf25215967e8408a613b0fb89399a1320cb03298bdd4ff1e05eaf7a8f",
+          "retirement_sha256": "8ce3fdc5704c031b60b8d55e03ebae83d05693058007290bf6b923bf9df84ab9",
+          "seconds": 0.786217
+        }
+      ],
+      "reference_mean_seconds": 0.7845415,
+      "reference_spread_seconds": 0.003351000000000104,
+      "scope": "First Gemma26 stock bookends and two unchanged candidate C2 paid32-wave arms; exact frozen native controls and stock own-repeat, separate strict scoring, no calibration/sustained claim"
+    },
+    "matched_timing_sha256": "99ba1f38313c4c136a57f089102379f3e0edb7676029dc585092fa2d24ddefe3",
+    "own_freeze_sha256": "85a298df32de50ece00551ddd282e7b4acb7c85041e791d4ae6429d0d6088b0f",
+    "own_heads_states_layout_input_byte_exact": true,
+    "quality": {
+      "all_head_max_raw_delta": 0.5586185455322266,
+      "analysis_sha256": "6d3e018e79330659661f97f41f942d52b35a27ff5a31456b374b53d2574254d0",
+      "byte_exact_rows": 34,
+      "complete_rows": 66,
+      "conditional_gate_passed": true,
+      "corpus_ppl_claim": false,
+      "first_baseline_gate_passed": true,
+      "forced_nll_rows": 64,
+      "mean_native_conditional_nll": 9.631099860188398,
+      "mean_reference_conditional_nll": 9.630919101585173,
+      "method": "C2 strict zero margin allowance; no empirical calibration",
+      "native_freeze_sha256": "85a298df32de50ece00551ddd282e7b4acb7c85041e791d4ae6429d0d6088b0f",
+      "native_margin_change_max": null,
+      "outside_p99": 0,
+      "owners": 2,
+      "p99_bound": 0.0,
+      "positive_margin_differences": 0,
+      "quality_gate_passed": true,
+      "reference_tie_differences": 0,
+      "relative_conditional_loss": 0.0001807749410456787,
+      "source_sha256": "580e42310d587c5d00e8e27a2bcbe2b8a27a17ee62f635529a9ed45dc39991dd"
+    },
+    "raw_comparison_sha256": "9b4b38a0b01bad8d0ddec6516a4e1b00f943cfeb071857899e79752cf6d6d648",
+    "recipe": {
+      "context": 4096,
+      "forced_steps": 32,
+      "fusion": true,
+      "graphs": true,
+      "history_rows": 1024,
+      "max_head_rows": 2,
+      "max_rows": 1024,
+      "moe_route_reduce": true,
+      "native_joined_groups": [
+        2
+      ],
+      "native_policy": "all",
+      "norm_add": true,
+      "norm_rope": true,
+      "owner_requested": true,
+      "owners": 2,
+      "plain_norm": true,
+      "prefill_rows": 992,
+      "profile": 26,
+      "rope_store": false,
+      "row_products": false,
+      "shared_q8": false
+    },
+    "selected_owner_steps": 30,
+    "source_json_sha256": "580e42310d587c5d00e8e27a2bcbe2b8a27a17ee62f635529a9ed45dc39991dd",
+    "state_files": 4
+  }
+}

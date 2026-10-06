@@ -117,6 +117,16 @@ pre-oracle bound. Both 384-target conditional-loss gates pass. The original 8+4
 quality failures remain recorded, and serving owner/joined defaults stay off.
 These short controls do not close corpus, depth, live-serving or full model support.
 
+The [small real-owner adapter](experiments/gemma-small-owner-attention/README.md)
+adds opt-in wholeC2/C3 attention with checked active cache roots and original
+whole-stream geometry, preserving C1 and larger quad/tail fallback behavior.
+Heads16/32 primitive controls pass, and both approved C2 model screens pass strict
+zero-margin choices and independent 64-target conditional-loss bounds. All 64
+paid 31B heads match FIRST stock; 26B has 34/66 exact full heads. C3 model/partial
+quality and SOURCE14 serving defaults remain unqualified. Short matched timings
+are +1.47%31B with stock spread larger than the mean gap and −1.064%26B; no sustained
+parity or full model-support claim follows.
+
 The [fresh current solo comparison](experiments/gemma-current-reference/README.md)
 records stable 26B prefill/decode latency gaps of 2.43%/0.92%. Native 31B prefill
 is stable, but reference bookends vary from 12.3124 to 10.9769 s; native is 2.08%

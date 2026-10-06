@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <string>
@@ -254,7 +256,7 @@ TEST(Gemma4Graph, OwnerOptInPreservesUnsupportedGraphsAndRejectsBrokenWriterEdge
   for (const auto size : {26U, 31U})
     for (const auto count : {1U, 2U, 4U, 8U})
       for (const auto rows : {1U, 2U}) {
-        if (count >= 4 && rows == 1) continue;
+        if (count >= 2 && rows == 1) continue;
         Case c(size, 4);
         c.state = *md::Gemma4State(c.p, 16384, 128);
         c.shape = {};
@@ -1053,3 +1055,110 @@ TEST(Gemma4Graph, FrequencyFactorsRefuseMalformedBoundsAliasesAndStaleViews) {
   EXPECT_FALSE(kg::CheckRopeSetRows(rope, write));
 }
 }  // namespace
+
+TEST(Gemma4Graph, SmallRealOwnerGroupsPreserveProductsAndPreflightEveryWriter) {
+  for (const auto size : {26U, 31U})
+    for (const auto owners : {2U, 3U}) {
+      Case c(size);
+      c.state = *md::Gemma4State(c.p, 4096, size == 26 ? 1024 : 256);
+      c.shape = {};
+      for (std::uint32_t i = 0; i < owners; ++i)
+        c.shape.segments.push_back({i + 3, 1, 384 + i, 512, 512});
+      c.shape.outputs = owners;
+      kg::Gemma4GraphOptions options;
+      options.device_masks = true;
+      options.narrow_final = true;
+      auto estimate = options;
+      estimate.attention_mode = kg::Gemma4AttentionMode::kOwners;
+      const auto tensors = kg::Gemma4GraphTensors(c.p, owners, estimate);
+      EXPECT_EQ(tensors, kg::Gemma4GraphTensors(c.p, owners) + c.p.layers * 64);
+      auto arena = kg::TensorArena::Create(tensors);
+      ASSERT_TRUE(arena);
+      auto graph = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+      ASSERT_TRUE(graph);
+      const auto products = Count(*graph, GGML_OP_MUL_MAT);
+      auto* projection = graph->Named("blk.0.attn_projection");
+      const auto before = graph->nodes;
+      ggml_tensor* last = nullptr;
+      for (auto* node : graph->nodes)
+        if (node->op == GGML_OP_SET_ROWS &&
+            node->src[2] == graph->segments.back().caches.back().second)
+          last = node;
+      ASSERT_NE(last, nullptr);
+      auto* ids = last->src[1];
+      last->src[1] = graph->segments.front().global_cells;
+      const auto used = arena->used();
+      EXPECT_FALSE(kg::TransformGemma4Attention(*arena, *graph, kg::Gemma4AttentionMode::kOwners));
+      EXPECT_EQ(arena->used(), used);
+      EXPECT_EQ(graph->nodes, before);
+      EXPECT_EQ(graph->attention_mode, kg::Gemma4AttentionMode::kIndependent);
+      last->src[1] = ids;
+      ASSERT_TRUE(kg::TransformGemma4Attention(*arena, *graph, kg::Gemma4AttentionMode::kOwners));
+      EXPECT_EQ(graph->attention_quad_mask, 1U);
+      EXPECT_EQ(Count(*graph, GGML_OP_MUL_MAT), products);
+      EXPECT_EQ(graph->Named("blk.0.attn_projection"), projection);
+      EXPECT_EQ(Count(*graph, GGML_OP_FLASH_ATTN_EXT), 0U);
+      EXPECT_EQ(Count(*graph, GGML_OP_SET_ROWS), c.p.layers * owners * 2);
+      std::size_t owner_nodes = 0;
+      for (auto* node : graph->nodes) {
+        if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+        ++owner_nodes;
+        EXPECT_EQ(node->ne[3], owners);
+        EXPECT_EQ(kg::JitllmOpInt(node, 0), static_cast<std::int32_t>(owners));
+        EXPECT_EQ(kg::JitllmOpInt(node, 1), static_cast<std::int32_t>(owners));
+        for (std::size_t i = owners; i < 4; ++i) {
+          EXPECT_EQ(node->src[2 + i], nullptr);
+          EXPECT_EQ(node->src[6 + i], nullptr);
+        }
+      }
+      EXPECT_EQ(owner_nodes, c.p.layers);
+      BindLeaves(*graph);
+      for (auto* node : graph->nodes)
+        if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners) {
+          EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
+          node->src[2 + owners] = node->src[2];
+          EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(node));
+          node->src[2 + owners] = nullptr;
+          const std::int32_t invalid = 1;
+          std::memcpy(static_cast<void*>(reinterpret_cast<std::byte*>(node->op_params) + 36),
+                      &invalid, sizeof(invalid));
+          EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(node));
+          const auto valid = static_cast<std::int32_t>(owners);
+          std::memcpy(static_cast<void*>(reinterpret_cast<std::byte*>(node->op_params) + 36),
+                      &valid, sizeof(valid));
+          EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
+          std::memcpy(static_cast<void*>(reinterpret_cast<std::byte*>(node->op_params) + 40),
+                      &invalid, sizeof(invalid));
+          EXPECT_FALSE(kg::CheckFlashAttnOwnersNode(node));
+          const std::int32_t zero = 0;
+          std::memcpy(static_cast<void*>(reinterpret_cast<std::byte*>(node->op_params) + 40), &zero,
+                      sizeof(zero));
+          EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(node));
+        }
+      c.shape.segments.back().global_n_kv = 768;
+      auto fallback_arena = kg::TensorArena::Create(tensors);
+      ASSERT_TRUE(fallback_arena);
+      auto fallback =
+          kg::BuildGemma4Graph(*fallback_arena, c.p, c.binding, c.state, c.shape, estimate);
+      ASSERT_TRUE(fallback);
+      EXPECT_EQ(fallback->attention_mode, kg::Gemma4AttentionMode::kIndependent);
+      EXPECT_EQ(Count(*fallback, GGML_OP_FLASH_ATTN_EXT), c.p.layers * owners);
+    }
+}
+
+TEST(Gemma4Graph, SmallPhysicalStreamPartitionUsesWholeOriginalGridWithoutSplitting) {
+  for (const auto owners : {2U, 3U})
+    for (const auto maximum : {1, 47, 48, 96, 100})
+      for (const auto kvheads : {2, 4, 8, 16}) {
+        constexpr int kvtiles = 16;
+        const auto tiles = kvheads * static_cast<int>(owners);
+        const auto raw = std::min(maximum, kvtiles * tiles);
+        const auto rounded = raw / tiles * tiles;
+        const auto loss = rounded > 0 ? 100 * (raw - rounded) / raw : 100;
+        auto plan = kg::detail::PlanOwnerPartition(maximum, kvtiles, kvheads, owners);
+        ASSERT_TRUE(plan);
+        EXPECT_EQ(plan->effective_cohort, owners);
+        EXPECT_EQ(plan->cohort_blocks, loss <= 5 ? rounded : raw);
+        EXPECT_EQ(plan->quad_blocks, plan->cohort_blocks);
+      }
+}

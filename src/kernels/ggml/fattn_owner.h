@@ -20,13 +20,16 @@ struct FlashAttnOwners {
   const ggml_tensor* mask = nullptr;
   std::array<const ggml_tensor*, 4> k{}, v{};
   ggml_tensor* output = nullptr;
-  // Four real roots per call; an eligible whole-eight or whole-twelve wave splits
+  // Two/three roots use their whole physical-stream grid directly. Four roots
+  // per call in an eligible whole-eight or whole-twelve wave split
   // its original stream-K grid equally between two or three calls. Never a root count.
   std::uint32_t logical_cohort = 4;
+  // Actual independent roots. Unused fixed-carrier slots must be null.
+  std::uint32_t owner_count = 4;
 };
 
-// F32 Q [D,1,heads,4], F16 mask [cells,32,1,4], four actual F16 K/V
-// views [D,cells,KVheads,1], packed F32 result [D,heads,1,4]. Cells are
+// F32 Q [D,1,heads,N], F16 mask [cells,32,1,N], N actual F16 K/V
+// views [D,cells,KVheads,1], packed F32 result [D,heads,1,N], N=2/3/4. Cells are
 // multiples of 256 through 16384; executed operand views fit 64 MiB.
 // Full backing parents may fit 1 GiB, with checked address/view containment;
 // this does not broaden the readable prefix or the shader index domain.

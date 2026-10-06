@@ -65,15 +65,16 @@ void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
   ggml_cuda_pool_alloc<float2> metadata(ctx.pool());
   const int heads = static_cast<int>(in.q->ne[2]);
   const int kvheads = heads / Group;
-  constexpr int owners = 4, query_rows = 1;
+  const int owners = static_cast<int>(in.owner_count);
+  constexpr int query_rows = 1;
   const int cells = static_cast<int>(in.mask->ne[0]);
   const int tiles = kvheads * owners;
   const int batch = ggml_cuda_fattn_mma_get_nbatch_fa(D, D, Columns * Group,
                                                       ggml_cuda_info().devices[ctx.device].cc);
   const int kvtiles = (cells + batch - 1) / batch;
   const auto blocks = static_cast<unsigned>(plan.original.blocks);
-  maximum.alloc(owners);
-  const ggml_cuda_kernel_launch_params mask_launch(dim3(1, owners, 1),
+  maximum.alloc(static_cast<std::size_t>(owners));
+  const ggml_cuda_kernel_launch_params mask_launch(dim3(1, static_cast<unsigned>(owners), 1),
                                                    dim3(FATTN_KQ_STRIDE / 2, 1, 1), 0, stream);
   ggml_cuda_kernel_launch(flash_attn_mask_to_KV_max<Columns>, mask_launch,
                           static_cast<const half2*>(in.mask->data), maximum.ptr,
@@ -83,7 +84,7 @@ void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
   if (tiles % plan.original.blocks != 0)
     metadata.alloc(std::size_t(blocks) * Columns * Group * (2 + D / 2));
   OwnerBases bases{};
-  for (std::size_t owner = 0; owner < 4; ++owner) {
+  for (std::size_t owner = 0; owner < in.owner_count; ++owner) {
     bases.k[owner] = static_cast<const char*>(in.k[owner]->data);
     bases.v[owner] = static_cast<const char*>(in.v[owner]->data);
   }
@@ -148,7 +149,7 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
   geometry.columns = d == 256 ? 4 : 1;
   geometry.group = d == 256 ? 2 : 8;
   geometry.mask_prepass = true;
-  const int tiles = static_cast<int>(in.k[0]->ne[2]) * 4;
+  const int tiles = static_cast<int>(in.k[0]->ne[2]) * static_cast<int>(in.owner_count);
   const int cells = static_cast<int>(in.mask->ne[0]);
   const int kvtiles = (cells + original->kv_batch - 1) / original->kv_batch;
   if (device.nsm > INT_MAX / original->blocks_per_sm)
@@ -159,7 +160,7 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
   plan.cohort_blocks = partition->cohort_blocks;
   plan.effective_cohort = partition->effective_cohort;
   geometry.blocks = partition->quad_blocks;
-  geometry.scratch = 4 * sizeof(int);
+  geometry.scratch = in.owner_count * sizeof(int);
   if (tiles % geometry.blocks != 0)
     geometry.scratch = 256 + std::uint64_t(geometry.blocks) * std::uint64_t(geometry.columns) *
                                  std::uint64_t(geometry.group) * std::uint64_t(2 + d / 2) *

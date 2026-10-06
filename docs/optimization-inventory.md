@@ -85,18 +85,19 @@ model supported status follows. Ordinary partial output-row blocks are
 explicitly refused where pinned MMVQ would over-read (RE-045); the own
 row-invariant kernel guards them.
 
-The proposed ordinary Gemma row/attention recipe is still gated by actual cohort
-quality. Its [first31 C2 comparison](experiments/gemma31-production-c2/README.md)
-retains eight positive-margin strict differences, zero exact full-head rows and
-a passing+0.791% conditional-loss result over64 within-history targets. Actual
-C2 selects independent attention with zero owner steps. The
-[private local-MMA factor](experiments/gemma31-c2-local-mma/README.md) retains
-nine positive-margin strict differences and zero exact heads, despite a passing
-−8.192% conditional-loss result. Changing the local family alone does not close
-quality. Actual two/three-stream grid/reduction geometry remains a source
-hypothesis, not a demonstrated cause or production policy. No borrowed allowance
-or default adoption is implied. Existing whole-C8/C12 geometry evidence and
-grouped-store rejection retain their separate scopes.
+The proposed ordinary Gemma row/attention recipe remains unadopted. Its
+[first31 C2 comparison](experiments/gemma31-production-c2/README.md) retains eight
+strict differences, and the [private local-MMA factor](experiments/gemma31-c2-local-mma/README.md)
+retains nine despite passing separate conditional-loss bounds. The
+[real two-owner adapter](experiments/gemma-small-owner-attention/README.md) now uses
+actual whole-stream reduction geometry: all 64 paid 31B heads match FIRST stock,
+and both approved C2 profiles pass strict zero-margin choices and independent
+64-target conditional-loss bounds. Gemma26 has 34/66 exact full heads. The bounded
+adapter supports whole2/3 with checked active roots and funded scratch while
+preserving C1 and existing quad/tail fallbacks; C3 model and partial-cohort quality
+remain unqualified. Short matched walls are +1.47% for31B (stock spread exceeds
+the mean gap) and −1.064% for26B. SOURCE14 runtime/default changes remain separate.
+Whole-C8/C12 geometry evidence and grouped-store rejection retain their scopes.
 
 ## Coverage
 

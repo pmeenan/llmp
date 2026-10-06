@@ -2325,17 +2325,19 @@ std::expected<void, KernelFailure> CheckDsv4HcPre(const ggml_tensor* node) {
 
 ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_tensor* mask,
                                  const std::array<ggml_tensor*, 4>& k,
-                                 const std::array<ggml_tensor*, 4>& v,
-                                 std::uint32_t logical_cohort) {
+                                 const std::array<ggml_tensor*, 4>& v, std::uint32_t logical_cohort,
+                                 std::uint32_t owner_count) {
   static_assert(GGML_MAX_SRC == 10);
   // The pinned factory requires fewer than GGML_MAX_SRC arguments, although
   // descriptors and traversal support all ten slots. Preserve its custom tag
   // parameters, then install the final real dependency in the remaining slot.
   auto* node =
-      Custom(context, GGML_TYPE_F32, {q->ne[0], q->ne[2], 1, 4},
+      Custom(context, GGML_TYPE_F32, {q->ne[0], q->ne[2], 1, owner_count},
              {q, mask, k[0], k[1], k[2], k[3], v[0], v[1], v[2]}, kTagFlashAttnOwners.data());
   node->src[9] = v[3];
-  return WithInts(node, {static_cast<std::int32_t>(logical_cohort)});
+  // Zero keeps the historical four-owner descriptor byte-identical.
+  return WithInts(node, {static_cast<std::int32_t>(logical_cohort),
+                         owner_count == 4 ? 0 : static_cast<std::int32_t>(owner_count)});
 }
 
 ggml_tensor* Gemma4Mask(ggml_context* context, ggml_tensor* positions, std::int64_t cells,

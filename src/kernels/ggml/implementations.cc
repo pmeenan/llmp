@@ -984,7 +984,8 @@ constexpr std::array<Kernel::Entry, 122> kKernels = {{
      .run = [](LaunchContext& launch, Nodes n) { return RunDsv4LidTopK(launch, n[0]); }},
     {.name = kFlashAttnOwnersName,
      .operation = execution::Operation::kFlashAttn,
-     .variant = "four F16 independent K/V roots; original cohort-four/eight MMA partitions",
+     .variant = "two/three/four active F16 independent K/V roots; whole-two/three or "
+                "split-four/eight/twelve MMA partitions",
      .arity = 1,
      .check = [](ConstNodes n) { return CheckFlashAttnOwnersNode(n[0]); },
      .run = [](LaunchContext& launch, Nodes n) -> std::expected<void, KernelFailure> {

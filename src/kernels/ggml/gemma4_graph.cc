@@ -138,10 +138,12 @@ std::size_t Gemma4GraphTensors(const md::Gemma4Profile& p, std::size_t segments)
 std::size_t Gemma4GraphTensors(const md::Gemma4Profile& p, std::size_t segments,
                                const Gemma4GraphOptions& options) {
   return Gemma4GraphTensors(p, segments) +
-         (options.attention_mode != Gemma4AttentionMode::kIndependent && segments >= 4 &&
-                  segments <= 12
-              ? std::size_t{p.layers} * 64 * (segments / 4)
-              : 0);
+         (options.attention_mode == Gemma4AttentionMode::kOwners && (segments == 2 || segments == 3)
+              ? std::size_t{p.layers} * 64
+              : (options.attention_mode != Gemma4AttentionMode::kIndependent && segments >= 4 &&
+                         segments <= 12
+                     ? std::size_t{p.layers} * 64 * (segments / 4)
+                     : 0));
 }
 
 std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,

@@ -17,17 +17,18 @@ file ([M0](m0-record.md), [M1](m1-record.md), [M2](m2-record.md), [M3](m3-record
 
 **Status legend:** `pending` · `in progress` · `done` · `parked`
 
-The ordinary Gemma serving-default candidate remains unadopted after the
-[Gemma31 C2 first screen](experiments/gemma31-production-c2/README.md): 34 focused
-controls pass, but the zero-margin gate fails on eight positive-margin winners
-over 66 heads. The separate 64-target conditional loss increases0.791% and passes
-its3% bound. Native/reference own complete heads repeat exactly. This does not
-transfer C4/C8/C12 allowances or qualify partial cohorts; the strict failure is
-retained. The [private local-MMA factor](experiments/gemma31-c2-local-mma/README.md)
-also fails strictly (9/66 differences), despite passing conditional loss at
-−8.192%. Actual two/three-stream partition geometry is the next source hypothesis,
-without a causal claim. No new HTTP/default, full-corpus or sustained qualification
-is claimed.
+The ordinary Gemma serving-default candidate remains unadopted. Its original
+[Gemma31 C2 first screen](experiments/gemma31-production-c2/README.md) retains eight
+positive-margin strict differences; the [private local-MMA factor](experiments/gemma31-c2-local-mma/README.md)
+retains nine. The opt-in [actual two-owner factor](experiments/gemma-small-owner-attention/README.md)
+now passes strict zero-margin choices and separate 64-target conditional-loss
+bounds for both approved C2 profiles. All 64 paid 31B heads match retained stock;
+26B has 34/66 exact heads with zero choice differences. Whole2/3 primitive proof
+passes heads16/32; C3 model and partial-cohort quality remain unqualified. Fresh
+31B timing is +1.47% with a stock spread larger than its mean gap; 26B is −1.064%
+in its short matched bookends. Core opt-in support does not adopt SOURCE14 serving
+recipes/defaults. Actual ordinary HTTP/cancellation/continuation, full corpus,
+depth and sustained qualification remain separate gates.
 
 ## M0 — Plan the plan  `done`
 

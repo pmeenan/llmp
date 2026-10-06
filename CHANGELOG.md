@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Opt-in Gemma attention carries two or three actual cache owners with whole-stream
+  geometry, retaining existing C1 and quad/tail fallbacks. Both approved C2 screens
+  pass strict choices and bounded conditional loss; serving defaults remain off.
+
 - Opt-in ordinary Gemma waves share twelve owners' products with three funded
   independent-cache attention quads; row-invariant waves retain eight. Both
   C12 fixed-bound/conditional-score screens pass, with three strict 26B choice

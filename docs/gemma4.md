@@ -378,6 +378,16 @@ backing parents up to 1 GiB allow short reads at configured 262K. Larger reads
 fall back. These bounded controls do not select serving defaults or establish
 C12, default-context performance, long-context or full model qualification.
 
+The [small real-owner adapter](experiments/gemma-small-owner-attention/README.md)
+adds opt-in wholeC2/C3 attention with checked active cache roots and original
+whole-stream geometry, preserving C1 and larger quad/tail fallback behavior.
+Heads16/32 primitive controls pass, and both approved C2 model screens pass strict
+zero-margin choices and independent 64-target conditional-loss bounds. All 64
+paid 31B heads match FIRST stock; 26B has 34/66 exact full heads. C3 model/partial
+quality and SOURCE14 serving defaults remain unqualified. Short matched timings
+are +1.47%31B with stock spread larger than the mean gap and −1.064%26B; no sustained
+parity or full model-support claim follows.
+
 ## Bounded native serving route
 
 The existing runtime driver registers both approved 26B-A4B and dense31 artifacts
