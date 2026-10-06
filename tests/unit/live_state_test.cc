@@ -29,6 +29,14 @@
 #include "runtime/intake_limits.h"
 #include "scheduler/commands.h"
 
+namespace jitllm::engine {
+struct LiveStatePlacementTestAccess {
+  static bool Check(LiveState& state, const scheduler::Scheduler& scheduler, PlaceCheck& check) {
+    return state.CheckPlacesImpl(scheduler, check);
+  }
+};
+}  // namespace jitllm::engine
+
 namespace {
 
 namespace en = jitllm::engine;
@@ -105,6 +113,20 @@ class LiveStateTest : public ::testing::Test {
     EXPECT_TRUE(closed) << jitllm::test_support::Failed(closed).value_or("");
   }
 
+  bool PlacementMemoHit() {
+    bool hit = false;
+    en::PlaceCheck check;
+    auto checked = node_.Call(
+        [&]() -> en::Status {
+          hit = en::LiveStatePlacementTestAccess::Check(model_.live, node_.scheduler(), check);
+          return {};
+        },
+        "test state placement check");
+    EXPECT_TRUE(checked) << jitllm::test_support::Failed(checked).value_or("");
+    EXPECT_EQ(check.moved, 0U) << check.first;
+    return hit;
+  }
+
   std::uint64_t Occupancy() {
     std::uint64_t bytes = 0;
     auto read = node_.Call(
@@ -117,6 +139,74 @@ class LiveStateTest : public ::testing::Test {
     return bytes;
   }
 };
+
+TEST_F(LiveStateTest, PlacementMemoRechecksGrowthTrimClearAndRestoreWithoutCachingResidency) {
+  // Runners pin registered source places during Setup. This does not make the
+  // pages resident or acquire a request lease.
+  ASSERT_TRUE(node_.Call(
+      [&]() -> en::Status {
+        if (auto r = node_.scheduler().PinPlaces(model_.live.reserved_extents()); !r)
+          return std::unexpected("test pin state places");
+        return {};
+      },
+      "test pin state places"));
+  EXPECT_FALSE(PlacementMemoHit());
+  EXPECT_TRUE(PlacementMemoHit());
+  const std::array<en::LiveState::Range, 2> ranges = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 16},
+      en::LiveState::Range{.region = 0, .offset = 4 * kExtent, .bytes = 16}};
+  ASSERT_TRUE(model_.live.Use(node_, ranges));
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_FALSE(PlacementMemoHit());
+  EXPECT_TRUE(PlacementMemoHit());
+  auto again = model_.live.Use(node_, ranges);
+  ASSERT_TRUE(again);
+  EXPECT_FALSE(*again);
+  EXPECT_TRUE(PlacementMemoHit());  // Already initialized: no local mutation.
+
+  ASSERT_TRUE(node_.Evict(model_.live.extents()));
+  EXPECT_EQ(Occupancy(), fixed_);
+  EXPECT_TRUE(PlacementMemoHit());  // Sources/pins still match; pages are absent.
+  ASSERT_TRUE(model_.Refresh());
+  void* pinned = model_.live.HostCopy(node_, 16);
+  ASSERT_NE(pinned, nullptr);
+  ASSERT_TRUE(
+      model_.live.Copy(node_, model_.fence_closure(), 0, pinned, std::span(ranges).first(1), true));
+  EXPECT_TRUE(PlacementMemoHit());  // Actual page-in still does not relocate.
+  std::memset(pinned, 0x5A, 16);
+  ASSERT_TRUE(model_.live.Copy(node_, model_.fence_closure(), 0, pinned, std::span(ranges).first(1),
+                               false));
+  EXPECT_FALSE(PlacementMemoHit());
+  EXPECT_TRUE(PlacementMemoHit());
+  std::memset(pinned, 0, 16);
+  ASSERT_TRUE(
+      model_.live.Copy(node_, model_.fence_closure(), 0, pinned, std::span(ranges).first(1), true));
+  EXPECT_TRUE(std::all_of(static_cast<std::byte*>(pinned), static_cast<std::byte*>(pinned) + 16,
+                          [](std::byte b) { return b == std::byte{0x5A}; }));
+
+  ASSERT_TRUE(model_.live.Retain(node_, std::span(ranges).first(1)));
+  EXPECT_FALSE(PlacementMemoHit());
+  EXPECT_TRUE(PlacementMemoHit());
+  EXPECT_EQ(model_.live.extents().size(), 1U);
+  ASSERT_TRUE(model_.live.Clear(node_, model_.fence_closure(), 0, "clear memo test"));
+  EXPECT_FALSE(PlacementMemoHit());
+  EXPECT_TRUE(PlacementMemoHit());
+  EXPECT_TRUE(model_.live.extents().empty());
+  ASSERT_TRUE(model_.live.Use(node_, std::span(ranges).first(1)));
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_FALSE(PlacementMemoHit());
+  EXPECT_TRUE(PlacementMemoHit());
+  ASSERT_TRUE(
+      model_.live.Copy(node_, model_.fence_closure(), 0, pinned, std::span(ranges).first(1), true));
+  EXPECT_TRUE(std::all_of(static_cast<std::byte*>(pinned), static_cast<std::byte*>(pinned) + 16,
+                          [](std::byte b) { return b == std::byte{0}; }));
+  ASSERT_TRUE(node_.Call(
+      [&]() -> en::Status {
+        node_.scheduler().UnpinPlaces(model_.live.reserved_extents());
+        return {};
+      },
+      "test unpin state places"));
+}
 
 TEST_F(LiveStateTest, OnlyUsedExtentsAreMappedAndTheirFirstContentsAreZero) {
   EXPECT_TRUE(model_.live.extents().empty());

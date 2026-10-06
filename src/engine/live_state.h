@@ -157,7 +157,9 @@ class LiveState {
   std::uint64_t mapped_bytes(std::size_t region) const;
   std::string_view region_name(std::size_t region) const;
   // Adds every extent not where it was registered, or not pinned there
-  // (D-090), to `check`. On the scheduler's thread.
+  // (D-090), to `check`. On the scheduler's thread. A successful source/pin
+  // scan is reused only under that scheduler lifetime and placement epoch;
+  // residency, leases, contents and quarantine are never memoized.
   void CheckPlaces(const scheduler::Scheduler& scheduler, PlaceCheck& check) const;
 
   // Every region zeroed (a job over `fence` on `stream`); any snapshot,
@@ -257,6 +259,14 @@ class LiveState {
   void Release(providers::VmmProvider& memory, std::vector<std::string>& problems);
 
  private:
+  friend struct LiveStatePlacementTestAccess;
+  bool CheckPlacesImpl(const scheduler::Scheduler& scheduler, PlaceCheck& check) const;
+  // Sixteen inline bytes in the already constructed state object; no
+  // per-extent allocation or shared cache.
+  static_assert(sizeof(scheduler::PlacementStamp) == 16);
+  mutable scheduler::PlacementStamp checked_places_;
+  void InvalidatePlaces() const { checked_places_ = {}; }
+
   struct Region {
     Mapped mapped;
     bool growing = false;

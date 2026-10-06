@@ -485,13 +485,26 @@ this diagnostic establishes neither their share of the checks phase nor
 active GPU time or a fresh competitive gap.
 
 The [successful weight placement memo](experiments/weights-placement-memo/README.md)
-now reuses only an immutable-weight check under the same scheduler lifetime and
-source/pin epoch; mutable-state checks and each scheduler Call remain fresh.
+reuses an immutable-weight check under the same scheduler lifetime and
+source/pin epoch. Its original control kept mutable-state checks fresh; every
+scheduler Call remains.
 Current 31B C4 checks fall 23.50→2.92 ms and paid elapsed falls 0.77%, with exact
 heads/state/choices and 17 focused lifetime/mutation controls. The shared caller
 optimization applies to earlier runners, but their speed is not measured here.
 Token/epoch saturation refuses caching; no persistent per-extent cache or math
 policy changes. The full suite remains owner-deferred.
+
+The [successful live-state memo](experiments/gemma-state-placement-memo/README.md)
+extends that stamp to the existing Gemma/Qwen3.8/DeepSeek state checks, with
+invalidation before mutable source/binding/growth/restore/clear/release changes,
+including refusals. Only successful local source/pin validation is cached;
+residency, leases and every scheduler Call remain independent. Nineteen focused
+controls prove hits, invalidations, saturation and actual eviction/restore;
+complete C8 heads/states/layouts/choices are exact for both Gemmas. The short
+26B same-host factor falls 29.195 ms/1.7661%; 31B latency gain is unestablished
+within spread. No other-family speed, phase or fresh-reference claim. Sixteen
+inline bytes per state are included in pre-probe occupancy; the manual helper
+funds its 192-byte maximum increment inside its existing metadata envelope.
 
 The [immutable Gemma head capacity](experiments/gemma-head-capacity/README.md)
 separates pinned publication from input capacity: serving uses owner slots,

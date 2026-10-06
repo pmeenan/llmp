@@ -13,8 +13,10 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "base/bytes.h"
+#include "engine/live_state.h"
 #include "engine/paged_node.h"
 #include "engine/paged_weights.h"
 #include "expected_error.h"
@@ -35,6 +37,24 @@ struct SchedulerPlacementTestAccess {
 }  // namespace jitllm::scheduler
 
 namespace jitllm::engine {
+struct LiveStatePlacementTestAccess {
+  static void Expected(LiveState& state, catalog::ExtentId extent,
+                       const scheduler::PageSource& source) {
+    state.regions_.resize(1);
+    auto& region = state.regions_.front();
+    region.mapped.name = "state test";
+    region.mapped.extents = {extent};
+    region.sources = {source};
+  }
+  static bool Check(LiveState& state, const scheduler::Scheduler& scheduler, PlaceCheck& check) {
+    return state.CheckPlacesImpl(scheduler, check);
+  }
+  static void MissingSource(LiveState& state) { state.regions_.front().sources.clear(); }
+  static void Reservation(LiveState& state, providers::ReservationId reservation) {
+    state.regions_.front().mapped.reservation = reservation;
+  }
+};
+
 struct PagedWeightsTestAccess {
   static void Expected(PagedWeights& weights, catalog::ExtentId extent,
                        const scheduler::PageSource& source) {
@@ -235,6 +255,154 @@ TEST(WeightsPlacement, FailedOpenReserveReleaseAndReregisterDiscardMemo) {
   EXPECT_TRUE(WeightsAccess::Check(empty, *fixture.scheduled, check));
   ASSERT_TRUE(empty.Register(unopened, 0));
   EXPECT_FALSE(WeightsAccess::Check(empty, *fixture.scheduled, check));
+}
+
+// The same descriptor-only scheduler fixture exercises mutable-state source/pin
+// validation. Contents, residency and request leases are separate checks.
+struct StateFixture : WeightsFixture {
+  engine::LiveState live{"state test"};
+  StateFixture() { engine::LiveStatePlacementTestAccess::Expected(live, extent, source); }
+  bool Check(engine::PlaceCheck& check) {
+    return engine::LiveStatePlacementTestAccess::Check(live, *scheduled, check);
+  }
+};
+
+TEST(StatePlacement, ReusesOnlySuccessfulLocalChecksAndPreservesPriorErrors) {
+  StateFixture fixture;
+  engine::PlaceCheck prior;
+  prior.Missing("another resource");
+  EXPECT_FALSE(fixture.Check(prior));
+  EXPECT_TRUE(fixture.Check(prior));
+  EXPECT_EQ(prior.moved, 1U);
+  EXPECT_EQ(prior.first, "another resource");
+  fixture.scheduled->UnpinPlaces(std::span(&fixture.extent, 1));
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    engine::PlaceCheck failed;
+    EXPECT_FALSE(fixture.Check(failed));
+    EXPECT_EQ(failed.moved, 1U);
+    EXPECT_EQ(failed.first, "extent " + std::to_string(fixture.extent.index()));
+  }
+}
+
+TEST(StatePlacement, SourceAndPinChangesRecheckEvenWhenThePlaceRemainsEqual) {
+  StateFixture fixture;
+  engine::PlaceCheck check;
+  EXPECT_FALSE(fixture.Check(check));
+  EXPECT_TRUE(fixture.Check(check));
+  auto source = fixture.source;
+  source.read.offset = 4096;
+  ASSERT_TRUE(fixture.scheduled->SetSource(fixture.extent, source));
+  EXPECT_FALSE(fixture.Check(check));
+  EXPECT_TRUE(fixture.Check(check));
+  ASSERT_TRUE(fixture.scheduled->PinPlaces(std::span(&fixture.extent, 1)));
+  fixture.scheduled->UnpinPlaces(std::span(&fixture.extent, 1));
+  EXPECT_TRUE(fixture.scheduled->PlacePinned(fixture.extent));
+  EXPECT_FALSE(fixture.Check(check));
+  EXPECT_TRUE(fixture.Check(check));
+  fixture.scheduled->UnpinPlaces(std::span(&fixture.extent, 1));
+  source.read.memory = fixture.bytes.data() + 16;
+  ASSERT_TRUE(fixture.scheduled->SetSource(fixture.extent, source));
+  ASSERT_TRUE(fixture.scheduled->PinPlaces(std::span(&fixture.extent, 1)));
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    engine::PlaceCheck mismatch;
+    EXPECT_FALSE(fixture.Check(mismatch));
+    EXPECT_EQ(mismatch.moved, 1U);
+  }
+}
+
+TEST(StatePlacement, MissingRegionSourcesCannotAuthorizeAMemo) {
+  StateFixture fixture;
+  engine::LiveStatePlacementTestAccess::MissingSource(fixture.live);
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    engine::PlaceCheck check;
+    EXPECT_FALSE(fixture.Check(check));
+    EXPECT_EQ(check.moved, 1U);
+    EXPECT_EQ(check.first, "state test's write-back places");
+  }
+}
+
+TEST(StatePlacement, SchedulerLifetimeAndSaturationCannotReuseAnOldCheck) {
+  StateFixture fixture;
+  engine::PlaceCheck check;
+  EXPECT_FALSE(fixture.Check(check));
+  EXPECT_TRUE(fixture.Check(check));
+  const auto* address = &*fixture.scheduled;
+  const auto instance = fixture.scheduled->placement_stamp().instance;
+  fixture.ReconstructScheduler();
+  EXPECT_EQ(&*fixture.scheduled, address);
+  EXPECT_NE(fixture.scheduled->placement_stamp().instance, instance);
+  EXPECT_FALSE(fixture.Check(check));
+  EXPECT_TRUE(fixture.Check(check));
+  SchedulerAccess::Epoch(*fixture.scheduled, UINT64_MAX - 1);
+  EXPECT_FALSE(fixture.Check(check));
+  EXPECT_TRUE(fixture.Check(check));
+  ASSERT_TRUE(fixture.scheduled->SetSource(fixture.extent, fixture.source));
+  EXPECT_EQ(fixture.scheduled->placement_stamp().epoch, UINT64_MAX);
+  EXPECT_FALSE(fixture.Check(check));
+  EXPECT_FALSE(fixture.Check(check));
+  SchedulerAccess::Epoch(*fixture.scheduled, 0);
+  for (const auto token : {std::uint64_t{0}, std::uint64_t{UINT64_MAX}}) {
+    SchedulerAccess::Instance(*fixture.scheduled, token);
+    EXPECT_FALSE(fixture.Check(check));
+    EXPECT_FALSE(fixture.Check(check));
+  }
+  EXPECT_EQ(check.moved, 0U);
+}
+
+TEST(StatePlacement, RefusedRestoreTrimSpillAndDiscardInvalidateBeforeReturning) {
+  StateFixture fixture;
+  engine::PagedNode unopened(engine::NodeSettings{});
+  const auto seed = [&] {
+    engine::PlaceCheck check;
+    (void)fixture.Check(check);
+    EXPECT_EQ(check.moved, 0U);
+    EXPECT_TRUE(fixture.Check(check));
+  };
+  const auto invalidated = [&] {
+    engine::PlaceCheck check;
+    EXPECT_FALSE(fixture.Check(check));
+    EXPECT_EQ(check.moved, 0U);
+  };
+  const std::array<engine::LiveState::Range, 1> invalid = {
+      engine::LiveState::Range{.region = 1, .bytes = 1}};
+  seed();
+  EXPECT_FALSE(fixture.live.Copy(unopened, {}, 0, nullptr, invalid, false));
+  invalidated();
+  seed();
+  EXPECT_FALSE(fixture.live.Retain(unopened, invalid));
+  invalidated();
+  seed();
+  EXPECT_FALSE(fixture.live.RegisterSpill(
+      unopened,
+      engine::LiveState::SpillPlace{.directory = {}, .dir = 2147483647, .name = "missing"}));
+  invalidated();
+  seed();
+  EXPECT_FALSE(fixture.live.DiscardGrowingState(unopened));
+  invalidated();
+}
+
+TEST(StatePlacement, ReleaseFailureAndSuccessBothDiscardTheMemo) {
+  StateFixture fixture;
+  engine::PlaceCheck check;
+  EXPECT_FALSE(fixture.Check(check));
+  EXPECT_TRUE(fixture.Check(check));
+  fake::FakeDeviceMemory memory(2_MiB, 4_MiB);
+  const auto reservation = memory.Reserve(2_MiB);
+  const auto backing = memory.Create(0, 2_MiB);
+  ASSERT_TRUE(reservation && backing);
+  ASSERT_TRUE(memory.Map(*reservation, 0_MiB, *backing));
+  engine::LiveStatePlacementTestAccess::Reservation(fixture.live, *reservation);
+  std::vector<std::string> problems;
+  fixture.live.Release(memory, problems);
+  EXPECT_EQ(problems.size(), 1U);  // Cannot free a mapped reservation.
+  EXPECT_FALSE(fixture.Check(check));
+  EXPECT_TRUE(fixture.Check(check));
+  ASSERT_TRUE(memory.Unmap(*reservation, 0_MiB, 2_MiB));
+  ASSERT_TRUE(memory.Release(*backing));
+  problems.clear();
+  fixture.live.Release(memory, problems);
+  EXPECT_TRUE(problems.empty());
+  EXPECT_FALSE(fixture.Check(check));
 }
 
 TEST(ReleaseMapped, PartialCreateFailureReleasesCompletedBackingAndReservation) {

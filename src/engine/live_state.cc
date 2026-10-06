@@ -37,6 +37,7 @@ constexpr std::uint64_t kExtent = kPagedExtent;
 
 LiveState::Status LiveState::Add(PagedNode& node, std::string name, std::uint64_t bytes,
                                  int owner) {
+  InvalidatePlaces();
   Region& region = regions_.emplace_back();
   region.bytes = bytes;
   auto mapped =
@@ -48,6 +49,7 @@ LiveState::Status LiveState::Add(PagedNode& node, std::string name, std::uint64_
 
 LiveState::Status LiveState::AddGrowing(PagedNode& node, std::string name, std::uint64_t bytes,
                                         int owner) {
+  InvalidatePlaces();
   Region& region = regions_.emplace_back();
   region.bytes = bytes;
   auto reserved = node.ReserveState(region.mapped, std::move(name), bytes, owner);
@@ -196,6 +198,7 @@ std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const
   if (fresh.empty()) {
     return false;
   }
+  InvalidatePlaces();
   std::vector<ExtentId> loading = extents();
   if (keep != nullptr) {
     for (const auto& [id, generation] : keep->extents) {
@@ -284,6 +287,7 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node,
 }
 
 LiveState::Status LiveState::RegisterSpill(PagedNode& node, const SpillPlace& place) {
+  InvalidatePlaces();
   std::uint64_t file_bytes = 0;
   for (const Region& r : regions_) {
     if (r.mapped.bytes >
@@ -345,6 +349,7 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node, const SpillPlace& pl
 }
 
 LiveState::Status LiveState::Retain(PagedNode& node, std::span<const Range> ranges) {
+  InvalidatePlaces();
   std::vector<std::vector<std::uint8_t>> wanted;
   wanted.reserve(regions_.size());
   for (const Region& r : regions_) {
@@ -441,6 +446,7 @@ LiveState::Status LiveState::Retain(PagedNode& node, std::span<const Range> rang
 LiveState::Status LiveState::Copy(PagedNode& node, const catalog::Closure& fence,
                                   std::uint32_t stream, void* host, std::span<const Range> ranges,
                                   bool to_host, CopyRetirement* retirement) {
+  if (!to_host) InvalidatePlaces();
   if (retirement != nullptr) {
     *retirement = CopyRetirement::kProven;
   }
@@ -501,6 +507,14 @@ LiveState::Status LiveState::Copy(PagedNode& node, const catalog::Closure& fence
 }
 
 void LiveState::CheckPlaces(const sc::Scheduler& scheduler, PlaceCheck& check) const {
+  (void)CheckPlacesImpl(scheduler, check);
+}
+
+bool LiveState::CheckPlacesImpl(const sc::Scheduler& scheduler, PlaceCheck& check) const {
+  const auto stamp = scheduler.placement_stamp();
+  if (stamp.cacheable() && checked_places_ == stamp) return true;
+  InvalidatePlaces();
+  const auto before = check.moved;
   for (const Region& region : regions_) {
     if (region.sources.size() != region.mapped.extents.size()) {
       check.Missing(std::format("{}'s write-back places", region.mapped.name));
@@ -509,9 +523,12 @@ void LiveState::CheckPlaces(const sc::Scheduler& scheduler, PlaceCheck& check) c
       check.Check(scheduler, region.mapped.extents[i], region.sources[i]);
     }
   }
+  if (stamp.cacheable() && check.moved == before) checked_places_ = stamp;
+  return false;
 }
 
 LiveState::Status LiveState::DiscardGrowingState(PagedNode& node) {
+  InvalidatePlaces();
   if (regions_.empty() ||
       !std::ranges::all_of(regions_, [](const Region& r) { return r.growing; })) {
     return Error("discarding requires nonempty growing state");
@@ -586,6 +603,7 @@ LiveState::Status LiveState::DiscardGrowingState(PagedNode& node) {
 
 LiveState::Status LiveState::Clear(PagedNode& node, const catalog::Closure& fence,
                                    std::uint32_t stream, std::string_view what) {
+  InvalidatePlaces();
   if (!regions_.empty() &&
       std::ranges::all_of(regions_, [](const Region& r) { return r.growing; })) {
     // Jobs have completed before this call. End the request's lease before
@@ -803,6 +821,7 @@ LiveState::Status LiveState::Accept(std::uint32_t keep) {
 }
 
 std::expected<void, kg::KernelFailure> LiveState::QueueOwed(kg::LaunchContext& launch) {
+  if (owed()) InvalidatePlaces();
   if (restore_count_ != 0) {
     // Still owed until the copy is queued.
     if (auto r = kg::CopyRanges(launch, restore_, restore_count_); !r) {
@@ -873,6 +892,7 @@ bool LiveState::Settle(bool saved, bool wrote, bool unknown) {
 }
 
 void LiveState::Release(providers::VmmProvider& memory, std::vector<std::string>& problems) {
+  InvalidatePlaces();
   for (Region& r : regions_) {
     if (!ReleaseMapped(memory, r.mapped)) {
       problems.push_back(std::format("{} could not be released", r.mapped.name));

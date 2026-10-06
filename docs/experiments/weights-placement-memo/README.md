@@ -32,8 +32,10 @@ and Release, including refused or partial operations, and caches only its own
 successful scan. Existing errors in the caller's aggregate remain untouched.
 The memo holds a fixed optional two-word stamp; it retains no extent list.
 
-`node.Call` still runs on every wave. Mutable `LiveState` checks remain fresh:
-its expected spill metadata can change before a failed scheduler registration.
+`node.Call` still runs on every wave. This experiment kept mutable `LiveState`
+checks fresh because expected spill metadata can change before a failed
+scheduler registration. The later [state memo](../gemma-state-placement-memo/README.md)
+invalidates before those mutations while retaining fresh failed scans.
 No arithmetic, graph, fusion policy, resource placement or paging work changes.
 The shared weight optimization applies to runner callers; measured speed here
 is limited to the explicit Gemma31 C4 owner-root/plain-norm-on recipe.

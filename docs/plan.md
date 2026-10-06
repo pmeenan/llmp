@@ -468,6 +468,13 @@ family" guide, and its long-context scaling work.
         31B C4 checks fall 23.50→2.92 ms and paid elapsed falls 0.77%, with exact
         heads/states/choices and 17 focused controls; no fresh competitive or
         other-family speed claim. Full regression remains owner-deferred.
+      - [x] [Successful live-state placement memo](experiments/gemma-state-placement-memo/README.md):
+        shared Gemma/Qwen/DeepSeek source/pin checks reuse only successful scans
+        under the scheduler lifetime/epoch, with mutation invalidation and every
+        scheduler Call retained. Nineteen focused controls and exact complete C8
+        head/state/choice controls pass on both Gemmas. The short 26B factor falls
+        29.195 ms/1.7661%; 31B latency gain is unestablished within spread. No
+        residency memo, fresh reference or Qwen/DeepSeek speed claim.
       - [x] [Immutable Gemma head capacity](experiments/gemma-head-capacity/README.md):
         serving pins one head per configured slot while manual callers retain
         their all-row default. Full input/feature envelopes and early over-cap

@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Live-state source/pin checks reuse successful scans until relevant mutations,
+  retaining every scheduler call and independent residency/lease checks. Both
+  Gemmas retain exact C8 heads/state/choices; the short 26B factor improves
+  1.77%, while 31B and Qwen/DeepSeek latency benefits remain unestablished.
+
 - Gemma serving pins head publication storage for configured owner slots rather
   than every input row, with early capacity refusal and preserved manual all-head
   defaults. Both approved profiles retain exact continuation/scoring controls.
