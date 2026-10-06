@@ -1,0 +1,1105 @@
+{
+  "schema": 1,
+  "candidate_default": true,
+  "source15_sha256": "b3e75fd52dbfdafe6f031066bc4fa51d8855d726b155a28d02067f631f9d9063",
+  "pipeline_source_sha256": "75f3ca26dcab11dd03578648752b2df173c27ad58bfe083d1e1e97e46b8960c1",
+  "runtime_source_sha256": "670df1322b852cf87a2b31d1e8b7cb8150cf8c21c671eb8855d88bd96085b4ab",
+  "inputs_sha256": "90bf82fd26b7040c513e7370eca2cd283ac8fd15ce89a2e8d05d6f7e670b5ba2",
+  "reference": "llama.cpp v0.6.0 d812/c604 ARM64",
+  "native_binary_sha256": "4b6809227f847da6f628babae1665181e3f022f9aabad58dc2fefbb04130d8ae",
+  "public_binary_sha256": "3d8e23c9e28e5d7cce595ded44b2b1f8c6e13fd26aa9ee5e6b7ebe3b9c428340",
+  "quality": {
+    "C1-quality": {
+      "source_sha256": "670df1322b852cf87a2b31d1e8b7cb8150cf8c21c671eb8855d88bd96085b4ab",
+      "native_own_sha256": "21616218d83fc646f11b4c7dc77ef6e5315caa116947ee1e1986fef9ae4b6f1a",
+      "reference_own_sha256": "ae8a865748849197731f37881d6f300f25241b5099d46fd8ec2f630103a6c00a",
+      "count": 1,
+      "mode": "quality",
+      "rows": 129,
+      "targets": 128,
+      "strict_positive_margin_differences": 0,
+      "tied_argmax_differences": 0,
+      "argmax_id_differences": 0,
+      "byte_exact_heads": 128,
+      "mean_native_nll": 0.12635292691384004,
+      "mean_reference_nll": 0.12701579997355,
+      "relative_loss": -0.0006626534078997596,
+      "absolute_perplexity": {
+        "native": 1.1346825576380346,
+        "reference": 1.1354349574820586
+      },
+      "loss_scope": "generated-history conditional",
+      "relative_loss_overflow": false,
+      "conditional_gate": true,
+      "exact_greedy_lineage_gate": true,
+      "pass_all": true,
+      "external_record_sha256": "9e4efbfd5a06e789687a595aa566410e1b366d3d304409ae1a6bec1de7fd936e"
+    },
+    "C4-quality": {
+      "source_sha256": "670df1322b852cf87a2b31d1e8b7cb8150cf8c21c671eb8855d88bd96085b4ab",
+      "native_own_sha256": "39bfdb6fa30c52bbeadcdb4684525ea689460682313df3166013760ab8e0a4ac",
+      "reference_own_sha256": "02ec3392c1fe87a2149d7ac8e8e2733ea314e5ce488f979f4a030de683ac3445",
+      "count": 4,
+      "mode": "quality",
+      "rows": 516,
+      "targets": 512,
+      "strict_positive_margin_differences": 0,
+      "tied_argmax_differences": 0,
+      "argmax_id_differences": 0,
+      "byte_exact_heads": 512,
+      "mean_native_nll": 0.022675475723420577,
+      "mean_reference_nll": 0.023014282092085895,
+      "relative_loss": -0.00033874898026896115,
+      "absolute_perplexity": {
+        "native": 1.0229345185910672,
+        "reference": 1.0232811540385263
+      },
+      "loss_scope": "generated-history conditional",
+      "relative_loss_overflow": false,
+      "conditional_gate": true,
+      "exact_greedy_lineage_gate": true,
+      "pass_all": true,
+      "external_record_sha256": "d68c594fd85650094c65effa9a90746f1e87f5ff43cb68bec8bfb16b0834fc4f"
+    },
+    "C1-corpus": {
+      "source_sha256": "670df1322b852cf87a2b31d1e8b7cb8150cf8c21c671eb8855d88bd96085b4ab",
+      "native_own_sha256": "4c72c379170d25ddba1de5680806d88214bb30a4b231eb5ce82aa242f0e25a84",
+      "reference_own_sha256": "346dfd7b67d1a86cd8990207fcbedaab03c4f66bf72c96cf33253928aa86a2c1",
+      "count": 1,
+      "mode": "corpus",
+      "rows": 1024,
+      "targets": 1023,
+      "strict_positive_margin_differences": 0,
+      "tied_argmax_differences": 0,
+      "argmax_id_differences": 0,
+      "byte_exact_heads": 1024,
+      "mean_native_nll": 11.185665277467576,
+      "mean_reference_nll": 11.185665277467576,
+      "relative_loss": 0.0,
+      "absolute_perplexity": {
+        "native": 72089.61504539856,
+        "reference": 72089.61504539856
+      },
+      "loss_scope": "authentic scalar corpus",
+      "relative_loss_overflow": false,
+      "conditional_gate": true,
+      "exact_greedy_lineage_gate": null,
+      "pass_all": true,
+      "external_record_sha256": "9722b67f0f079df7bb4b0f82cd992d2ea2367e75d071dc49d25e26ff80775f26"
+    }
+  },
+  "timing": {
+    "C1": {
+      "source_sha256": "670df1322b852cf87a2b31d1e8b7cb8150cf8c21c671eb8855d88bd96085b4ab",
+      "native_own_sha256": "21616218d83fc646f11b4c7dc77ef6e5315caa116947ee1e1986fef9ae4b6f1a",
+      "reference_own_sha256": "ae8a865748849197731f37881d6f300f25241b5099d46fd8ec2f630103a6c00a",
+      "comparison_sha256": "9e4efbfd5a06e789687a595aa566410e1b366d3d304409ae1a6bec1de7fd936e",
+      "admissions_sha256": "d7e0816ca4084f3cd201a8665c0d385e7ea61b406e182329f2bb243e577184e2",
+      "order": [
+        "reference-first",
+        "native-first",
+        "native-repeat",
+        "reference-repeat"
+      ],
+      "complete_paid_outputs_match_own": true,
+      "cycle_seconds": {
+        "native": [
+          23.950582627,
+          23.905050357
+        ],
+        "reference": [
+          23.1521,
+          23.2432
+        ]
+      },
+      "mean_cycle_seconds": {
+        "native": 23.927816491999998,
+        "reference": 23.197650000000003
+      },
+      "native_relative_elapsed": 0.03147588191045192,
+      "spreads": {
+        "native": 0.04553226999999893,
+        "reference": 0.09110000000000085
+      },
+      "components": {
+        "reference-first": {
+          "cycle": 23.1521,
+          "prefill": 10.7491,
+          "decode": 12.403
+        },
+        "native-first": {
+          "cycle": 23.950582627,
+          "prefill": 11.249079308,
+          "decode": 12.701503319
+        },
+        "native-repeat": {
+          "cycle": 23.905050357,
+          "prefill": 11.188212839,
+          "decode": 12.716837518
+        },
+        "reference-repeat": {
+          "cycle": 23.2432,
+          "prefill": 10.7775,
+          "decode": 12.4657
+        }
+      },
+      "scope": "short whole-serving cycles including prefill/frontend/publication/retirement; no sustained claim",
+      "external_record_sha256": "4e36bfe071ba0082e6d0e7e9c48e06a85d41fa0f70dd796b649a9d35d6f42f71"
+    },
+    "C4": {
+      "source_sha256": "670df1322b852cf87a2b31d1e8b7cb8150cf8c21c671eb8855d88bd96085b4ab",
+      "native_own_sha256": "39bfdb6fa30c52bbeadcdb4684525ea689460682313df3166013760ab8e0a4ac",
+      "reference_own_sha256": "02ec3392c1fe87a2149d7ac8e8e2733ea314e5ce488f979f4a030de683ac3445",
+      "comparison_sha256": "d68c594fd85650094c65effa9a90746f1e87f5ff43cb68bec8bfb16b0834fc4f",
+      "admissions_sha256": "97f66ddb78ee2732de17a58afe087d7e24c6877ba7e9023d0c3db1794f9373ad",
+      "order": [
+        "reference-first",
+        "native-first",
+        "native-repeat",
+        "reference-repeat"
+      ],
+      "complete_paid_outputs_match_own": true,
+      "cycle_seconds": {
+        "native": [
+          61.248326149,
+          61.385118804
+        ],
+        "reference": [
+          59.2123,
+          59.257
+        ]
+      },
+      "mean_cycle_seconds": {
+        "native": 61.316722476500004,
+        "reference": 59.23465
+      },
+      "native_relative_elapsed": 0.03514956999830332,
+      "spreads": {
+        "native": 0.1367926550000007,
+        "reference": 0.04469999999999885
+      },
+      "components": {
+        "reference-first": {
+          "cycle": 59.2123,
+          "prefill": 43.2581,
+          "decode": 15.9543
+        },
+        "native-first": {
+          "cycle": 61.248326149,
+          "prefill": 44.843883823,
+          "decode": 16.404442326
+        },
+        "native-repeat": {
+          "cycle": 61.385118804,
+          "prefill": 44.962768284,
+          "decode": 16.42235052
+        },
+        "reference-repeat": {
+          "cycle": 59.257,
+          "prefill": 43.2925,
+          "decode": 15.9645
+        }
+      },
+      "scope": "short whole-serving cycles including prefill/frontend/publication/retirement; no sustained claim",
+      "external_record_sha256": "0d4cb2a7e5812a7f1d40d61ab0ba0584e586e73f5b70cf53983f74e33d7719bc"
+    }
+  },
+  "official_jobs": [
+    {
+      "job": "m35-gemma31-serving-failure-postauth",
+      "external_directory": "model-actual1/official-failure-postauth",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "426be1e9208a04cf77a22975048209c81da49715135bf191aca1a39d424e22ee",
+        "final.json": "34908c09d181c8e17493c605a0dbc1717fadd03fa9e1a79cb7563568e77a0ba4",
+        "steps.json": "6421995b09fbbbceceaaaa362490c62bb80dad80fde2716e7c93ad444155c6c5",
+        "log": "98900ed91d7940f8d2e0a1013c650b448e348daca96961d4ea73899e2da8cff6"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-anchors-c1",
+      "external_directory": "model-actual2/official-anchors-c1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "faa9102d23cbc4b4fb96d7cc55293dac4db9ddbe8a33e8b3a3cd0c806647ea7d",
+        "final.json": "04cf0bc5609013f7101b409c8f0bd30866633fc921e2dfdbd2224d5c9334eec1",
+        "steps.json": "cb3e9df28faac6f96578978748698db2e13b3500bb0fded352b85de64f2b63af",
+        "log": "5c3b8f7f9d15372b2afed283e2411dc4e3f7085041ffd349260890e326be8ecd"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-anchors-c4",
+      "external_directory": "model-actual2/official-anchors-c4",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "82488c4fbe46603c4bf3dacc578255f2dbaaee3d6b81613ba7f8a2ab4d4b0f63",
+        "final.json": "cf5bed5ee26066db4efb1d6e35a3dd759623741c755e455d9b0d95c982430f5a",
+        "steps.json": "3c56246b615c0178abb2359b5ff01cc58f743626913b537c61e421d9681e3a92",
+        "log": "9d658263cc70410af2d34b3e7b77c661ea1242d043645f082fa3dde5c33e2578"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-compare-c1-corpus",
+      "external_directory": "model-actual2/official-compare-c1-corpus",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "d442834ce4c0395ca00d1f0c2f1b6bc5002b77642a21fbc6e899b0d768d49b72",
+        "final.json": "36bc46181018580789173f3afd29477aceb3349290231344f6b4240ac470ae4f",
+        "steps.json": "3d7f67bb405b6156c5573891d850675718ad862ab258242614a2bbd37c82b0fd",
+        "log": "0f6efc20050c6be461820bd217da25f7734c3674019cbeeb44b703094bc08b5f"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-compare-c1-quality",
+      "external_directory": "model-actual2/official-compare-c1-quality",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "cbbb631ec28120db81b4abd93289808c908a5f117c3ca6be84421223ee01632d",
+        "final.json": "f49e0e8b0de2f679fc9ee5e5bd93df2de5cbe6f3fb5338c51be40e6fbe2778bd",
+        "steps.json": "be6f4131a470ef4d73f2aa28687d9cde992ce0c7ede82907a882c02f3452df41",
+        "log": "178d81ad3ad6f24a1d50ea318044298ac8a19bc03e97ef3ce34cebeb77cf7483"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-compare-c4-quality",
+      "external_directory": "model-actual2/official-compare-c4-quality",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "e7f0a1596f32ba5374576574ac935f9653387b2de949b58b7db5cfa8d36405f5",
+        "final.json": "040c73dca6c544fc35ad21d7b5f103ea36bd4d6cd61fba27af052ee5f63974f4",
+        "steps.json": "d03e22a391631fc8358de6c9355c316806ecb5c6e845fd4ed11b8681e0dc16ce",
+        "log": "265157c7766eeb8ac664c809ede8220ad121b98b9fca0857f08e908411c7ddea"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-native-c1-corpus",
+      "external_directory": "model-actual2/official-native-c1-corpus",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "709a8e6e933a6901b7dc329509313e0b46a8a665e6fef5fbb6d350b31e32765f",
+        "final.json": "774e2ccb34feffe5925fb0c05dd5bd2e56e1da0053330cf23bbc2cf1a4e958d8",
+        "steps.json": "54e1aaefe1800aa8dcbe2ddb9bc64b0c3b88d73f6cccd7998352bd3d95f5b2db",
+        "log": "2d4039731f5042c7d7600c32347b4df37e4d4ed5779096e92f60b7129b7b11a9"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-native-c1-corpus-own",
+      "external_directory": "model-actual2/official-native-c1-corpus-own",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "30fd17bd00d187407993d1c80ba89ce5f5f5831bf55556c44118578e2be401af",
+        "final.json": "6a572850d590191b69b69aac2334a4ee8409703533c9a441264bb832513dccaa",
+        "steps.json": "a7fe3c3533b0d1bc54c953c9b8fd5a687b75e76da8c333c0b60a19a78bfce583",
+        "log": "c759275d4107444d495411993e72f70d25641b154fc6b9a9eae0b13f47199725"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-native-c1-cycle-first",
+      "external_directory": "model-actual2/official-native-c1-cycle-first",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "9fb11dfe02785b22a3193724e1e6a6627330765a8feb81f6a84d315171745d87",
+        "final.json": "99d9c799b9026db9bea498be377d8d31de88f983e853bc8d444d47a63cfaffe3",
+        "steps.json": "ce93052441fd1dcadcdba1e5a78ae591a08e2c358c7d99302ff905cd8cca9c9a",
+        "log": "92b41d8b9f0793bc82f30934b52ec599a1dabe3a0f03de9de4c1ec50057014f4"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-native-c1-cycle-repeat",
+      "external_directory": "model-actual2/official-native-c1-cycle-repeat",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "eb34124d9987e1a19af7f0cf2df26d3f7a13a4b6afb9874fb0845c762c6414b2",
+        "final.json": "c3a901d46a9c417e4bc30fc0e26d3578743c0f6b189d46b29f6863edc3c987d4",
+        "steps.json": "c732e4977eb86ce70e4f877d8d97f9e3caf7771d606c2ab451da5db439d97cb1",
+        "log": "d2a57da43d65c8f8f26d867a1e32f2bf9734dd35207e49781ee09280c023507c"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-native-c1-quality",
+      "external_directory": "model-actual2/official-native-c1-quality",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "bd41f02738143a48604fb618c93b578d993954362a151964363a7d0974a009f5",
+        "final.json": "9d06aa087acc0026e0f380865dc12e3632cb3d540fcd98eaddb972296c9226ea",
+        "steps.json": "527afbb1030f5207b32323dc5986b2de41ea30249e05bcfd924e0d192372d84f",
+        "log": "427b95e08cd35af31c42d3be78cf500994d7a426e500bf54b7b6d5766b9c8431"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-native-c1-quality-own",
+      "external_directory": "model-actual2/official-native-c1-quality-own",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "cb391e817187b0f750aeac6339a3ab0a08b34b80846e074ad2f03a9cb3182828",
+        "final.json": "6a08d07e88c438766f311f0073a42711cfcf727d6b9d9f1b4c44ebeeb83a4243",
+        "steps.json": "170dbebf20a84ef25e2b1acc7fd018e116fed59db6666274a549a5930651f48f",
+        "log": "060e096848ebff11435f89cac0f83ed25902e025d3ac027bba0fe2f2f657f68a"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-native-c4-cycle-first",
+      "external_directory": "model-actual2/official-native-c4-cycle-first",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "372321c46f7c8b7416501f531a93dc0cdcc61d9bf92e4940452b835c7de48aab",
+        "final.json": "91ca8266a5966891532852fb8d415efc183b937fdcfb8f2122931a97eb8bcb53",
+        "steps.json": "e7bd4dfec24f7fc972e54c7baed534ccaec04d802ac6720193b9ff79d48d7bbd",
+        "log": "f7e5357479c8c13dec22dfa9c706da2a52075bdd5c1cfc173e76962f628f6406"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-native-c4-cycle-repeat",
+      "external_directory": "model-actual2/official-native-c4-cycle-repeat",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "0359cabe5d88658a6b139be7b6fb4b5ee8262bd71cad2034699b74f7d226ac92",
+        "final.json": "782d4249adf9f3bc91dbec474f473616709c244dc91bdcec87f130e0ad75f7ac",
+        "steps.json": "d29ab50005a0c398e3e9e4754e33b8b613fedc367185409554f988dd59e2f8e2",
+        "log": "bd4d31848475a4f0df9cfc1e8fc047fadac960a5c4b7c85a89562d72cb6f190b"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-native-c4-quality",
+      "external_directory": "model-actual2/official-native-c4-quality",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "e00a71a13ee1e4dd1f7fb1cf19e8b59991de072146da734c98562df26fa17d2e",
+        "final.json": "4e8cd14528d0a05ca0130df037c34c6eba2b2d857f7edae5724dc6be5ec2f04e",
+        "steps.json": "2a12720449bdd61a40e9ebd52be5e096b0a43da9d7a03f8707c86cac798f27b5",
+        "log": "1b0497a9239a362169a712300454c3cd65c941dabe7ace930bc2dbccaf02dcd9"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-native-c4-quality-own",
+      "external_directory": "model-actual2/official-native-c4-quality-own",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "500406b366a2715ed812de1e34a6d02e6dd7a6a952cfbf253e3a965036a230b7",
+        "final.json": "01914f67bfb64ce781ebfe25fde5f5ca6d9cdb2d55074657220c13a075aa23b8",
+        "steps.json": "5b9444f6852785963a361ced1d5d874c2d13689d3ed955acb54373002b8ee83d",
+        "log": "aed75e3448cc7cfe0c37d105b850cac01eec18bb207035b7acd770680ab33d45"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-postauth-c1-corpus",
+      "external_directory": "model-actual2/official-postauth-c1-corpus",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "75a8504e1c357db3a89797036227b802616b0c1cde74486093ca5915a18257d7",
+        "final.json": "cb888215030f829ff59defa37a3b4aed1fea64a0e41ca5df9e5dd304e601c5e4",
+        "steps.json": "ca5824f462a097fd56e720affd40092b97b13ab295584f1d2f7be22ee25b838c",
+        "log": "55bce02edfe489e3251938b501d37368ef25a70f2c8dd6de1bde63856334cf2f"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-postauth-c1-quality",
+      "external_directory": "model-actual2/official-postauth-c1-quality",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "60f8876d0547bc34f9a0d6b63085582ee11fcff4fc3071a47feb9b47413f6ad4",
+        "final.json": "47f84842acc2a8c0609b08d9b2c4248a87670a732554ca2a834dd8dffcd8a4a8",
+        "steps.json": "78597c1697c9e21382d3ed699420f2550c864683abcd4ff0cbb3006f29796ae3",
+        "log": "339b359787fcc8c9900cb864124c947071fda918afad61454a5048f1acf2e40a"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-postauth-c4-quality",
+      "external_directory": "model-actual2/official-postauth-c4-quality",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "06af8e50781530f7c2917cbef5ec21a569e4c56d974aaf381eb3936aa0b2dcc2",
+        "final.json": "57437f41a45479c0e06ea2353ebb503c35a0335449545586441e7abe440132a1",
+        "steps.json": "d10af57dcc0cccd16496acea0ca43dbca01302de65a983cf69f42d4f8457fba6",
+        "log": "2e3b38a8331a41677fe5456cb887fc59209d81dc429b05d7aef729723c172918"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-reference-c1-corpus",
+      "external_directory": "model-actual2/official-reference-c1-corpus",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "d559e29f6229c374cb21d5c0c536f79aeee6be4f161a9b1c365701eae5ca3b82",
+        "final.json": "40c76058309c2a3dfbb4737435994626ed6c6948c7f0b9c8a26ba076cf5cd69b",
+        "steps.json": "43fb6c463ad122d4adc0903c8ced38b5a851c255e8a0f0aa0d29c25d4f47d52c",
+        "log": "47c721f66c8ea12365e63fe22f85f13872df706d583fd0660e4473f98a287ed3"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-reference-c1-corpus-own",
+      "external_directory": "model-actual2/official-reference-c1-corpus-own",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "8934c716f4ae3c3f17d87fb5a3560f10a60f3e1fe13460999db5b758bb0c5efa",
+        "final.json": "6b0ee777016d120459fd1e704dc9e346bf9826513b0f25077e076b5de02d09f9",
+        "steps.json": "056e386670e9443627c200144e7576b01b1618b6d3b9fe5f77508091be37b06d",
+        "log": "8e9f7d8e51dda2c3a5c41b986048c1e8b72e731df956118a460ff1f4097a19a8"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-reference-c1-cycle-first",
+      "external_directory": "model-actual2/official-reference-c1-cycle-first",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "567f1a0746d3f28a7382d446c3188185a00ae068c3e0c9eaf5134c6cf05ef029",
+        "final.json": "30f2460d211a40626a256ed2146ccdbfd9ece3d2edd8dd498bf194d4cee0089c",
+        "steps.json": "1ce89b85dfd57f7910aef8589c21d17ddad5743e69811765bb3f47520be31e2d",
+        "log": "b3fcbbbcf8353fe93b5c27216720f86f46eebb88fb54e68f75b3387e2601995f"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-reference-c1-cycle-repeat",
+      "external_directory": "model-actual2/official-reference-c1-cycle-repeat",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "374d13eaba28d1fa7e4720efdcf958222f296c399bc2699717012ecc6c3bc5ba",
+        "final.json": "6724f9827fa40c2b3f7fba872eea1a51c7bb9c10de84a97dc5c3ac46a6a3d01d",
+        "steps.json": "1ebf4be7509ab6d069e88b8c9b972ae7bf40b190fa1e576dea43d50c120d86a8",
+        "log": "d24296b6d15bb60411af480e24da2e31a9fb4266d7f02ea59f8962a3deead580"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-reference-c1-quality",
+      "external_directory": "model-actual2/official-reference-c1-quality",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "80ef4ac5a36b3cf4a7a49c0f26889ec4ea368709dc9381d749de9cd40904c0c3",
+        "final.json": "9d53c21433ec64868b6249ca5efc0b515a10882147711b3d82a7d1a5fffdb639",
+        "steps.json": "b2d0c383d9e0ea1c46b8e4760ed7fd3c77970fc49c751a46c87035ecafc99138",
+        "log": "cc07caa121a7960d86bcfdab2c423d568eba0391cb5afb9ae0d0a5482fd2114b"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-reference-c1-quality-own",
+      "external_directory": "model-actual2/official-reference-c1-quality-own",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "0d0bd66f66b15400c974e7f40d5d55be3bb2675a1fbc8eec364f963632a66a6a",
+        "final.json": "dc51bd8eae29870065f05b7f65808decc68ac3a9b3c7996fac5cc092e917e5df",
+        "steps.json": "3babb7722f658062b4a514e79c81998d8cc91d8c8c2a404a45560b3b72be7f54",
+        "log": "308caa497208786d8b2e52a1c82654d8948fd9a7015b27d7693d8ed6374432a2"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-reference-c4-cycle-first",
+      "external_directory": "model-actual2/official-reference-c4-cycle-first",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "9b6aeb4ad12844f5bd746675682ad56061289c0727c636beefc130bb9d157be3",
+        "final.json": "cf85ddab52f15daf9236529dbe1a192c89824b0ee84dd40fbc2bf25970da4d9c",
+        "steps.json": "38f8e15e5a29a729c0e6f79fb05f672834b9b63ed0502c9161d314d7cb6061ec",
+        "log": "50ba98fcffebe765b20b7c6268776dcedf7b3214585366731177aed1d7b487f5"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-reference-c4-cycle-repeat",
+      "external_directory": "model-actual2/official-reference-c4-cycle-repeat",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "38b92ed41cfce3642bfba69185ff16fa543f5a79b0828e4e240207d27d50d640",
+        "final.json": "3e375acd21e74ac2cd34e005c3ae7b7787a60bba62b4cb976beae313bfbe4ad5",
+        "steps.json": "a29c764ff93e334a8385bcc839862280b2049675f4097f15274e858e02ff9b87",
+        "log": "219951f513e30c71294262f4d3e3f3f4f0b09746754e7dbae50639f2206528bf"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-reference-c4-quality",
+      "external_directory": "model-actual2/official-reference-c4-quality",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "b7c4fbd4e0b6a1a1eff56b462e0ec45ea602b4c6eaba592e28b5f3b56fdd1979",
+        "final.json": "ccdabdb768ad9c3105f76ce76b0e6d07437532bd90ce86a00327506d65bdf548",
+        "steps.json": "de1c48e665f56b879629b45d9ad2903843bad0582dfcdab922aff722f1265231",
+        "log": "8ff19f9d6f440b92bf4857f12687b4b4a0a2c8ea00eb7b652120a642f124c2f6"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-reference-c4-quality-own",
+      "external_directory": "model-actual2/official-reference-c4-quality-own",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "bf7d71716da18b5feb3576657fee9f4f4fc4390281a8cd6dbb8bb7335e44d45e",
+        "final.json": "00dbf7cf0ad77228bd72a3d520a4b13217ecd6e1bdb86d48186d37956fa6d72b",
+        "steps.json": "aa3c93ece1e65ef52d85a053025dd0276c04c63923e1aee3a90286aa54797a70",
+        "log": "6198c4eb4b6d9c3cf919a6d0c5c0ee582c4d3554eb732591083b3aa3a218caf9"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-timing-c1-exact",
+      "external_directory": "model-actual2/official-timing-c1-exact",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "0b694d60feff348f6fd2a77a7a19b75f4f65b5e76d9d2e67203f75197d0593c6",
+        "final.json": "fa993e0851143b505eae5beebbdf4bd3cb549cb2a7e99158ebd1c12d5aa712ba",
+        "steps.json": "d6d0de78d152749fbdf4131b0c33a8a370c93c15b1a7e158f7ed12d7e40b2ea0",
+        "log": "8eca1f5d19ac4d839f7b8da24bfe39d10747864aa47bb26c1264241a8b41a8c4"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving2-timing-c4-exact",
+      "external_directory": "model-actual2/official-timing-c4-exact",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "47c5d16dfb94fe14b0faca5e426974f8145399751457ee5181ec2af974e0c081",
+        "final.json": "3d2df402b8cb0554ee216de03f778384a131aa6f13a819dd4165e9368c581f3d",
+        "steps.json": "03910be0020fd20d30250428c640c38d0c91330d5a9d52fc5b6c3648ce2d3300",
+        "log": "338d264a99678e30b8008a0e47749dbbcdc7d4577c2b29f0121ab52773ff6ccf"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-anchor-recovery3",
+      "external_directory": "official-anchor-recovery3",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "9e02c55b04eea7c56ff9a0fcb62421341f3284e1b329643c94dc0609c2a4a5f2",
+        "final.json": "5fc9ca1c3cfb42d9f1fae417ef2b7ce433f5ade291351ed7eb8a3ee819e61bad",
+        "steps.json": "53f92e9fadfc73df56391476961667559e5b6fef6fde61abff8c9312970d8a49",
+        "log": "2ba27d3fbd4ed59595e1ebc775978dc9a9db098d952c1fd735dc644530597db1"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-build2",
+      "external_directory": "official-build2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 5,
+      "successful_steps": 5,
+      "metadata_sha256": {
+        "job.json": "ae65fc229ce27cf3efef0533d82539e9e758df27df8a23a4bcc311a6601b92bd",
+        "final.json": "2808c97ded42c1e612d07e6a012d1e1015f9ff1da9dc78a7d1d9a2cd9a331f73",
+        "steps.json": "8eccabdf31e4b02a736165c121cc332aafbbeab9884b2db7d788ac6ac9c5d926",
+        "log": "1633b1afee48bd39fc8fd8dcc6b09e26ab8f2796c6d2a17c6933d6d2703805c8"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-build3",
+      "external_directory": "official-build3",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 5,
+      "successful_steps": 5,
+      "metadata_sha256": {
+        "job.json": "f92b14451f8642b50328974aea066dab84b6c724bc2b7c7a01acbaa28a314850",
+        "final.json": "28a9de59303e40d2f5b4a407f358104f3c2282cd0b9d395dd6c07b627284f4b6",
+        "steps.json": "05d8174b84efb4cb0ce00138692f0ff838d1d31ac40977b70b80483222b9a785",
+        "log": "d956689a386d27a322945fad1eb91377eb11c6690a2d3d06894422411495e4b2"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-http-build1",
+      "external_directory": "official-http-build1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 5,
+      "successful_steps": 5,
+      "metadata_sha256": {
+        "job.json": "b5eba6f7af3888e0fd9e885b43c9d59effffadbd148c7e19a4637f650db3ccab",
+        "final.json": "1ecf4bec0ae830d4fdc6aeae645959b65a91e28dd9cc2f06c82129426fb97119",
+        "steps.json": "33d1ee11fb56f99cb70157ae8815ea89c13df31586463c51d49d1b1c231e319d",
+        "log": "badfa6f7005c2f0888fa4ca3daa5fcb7329fe768c906154ab25c6243e2458d01"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-http-postauth1",
+      "external_directory": "official-http-postauth1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "40d97e1350c99a72476e5c341e8fdc7b18cf9a3f141fad79da1eaaa5cd2d3b31",
+        "final.json": "673add3e665f6ca805d712e676d854efb934a9c1ffc2364cef317e7519cad23d",
+        "steps.json": "5dfc1b0653557603e19aca758e7085d59aa2e869bd246c393142f77cfb1a14ca",
+        "log": "6666a49776d559d7569f745ad5ac479db365bcb160fd0451a647ec60db1a1880"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-http2",
+      "external_directory": "official-http2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 3,
+      "successful_steps": 3,
+      "metadata_sha256": {
+        "job.json": "d48964c19dcb6d74fbd05385dc13564a9c0fa3fd0d1450351aa2e6d9c04e1b10",
+        "final.json": "dd99a32c14f474dbd9ba8415501c05ad458187e202c6ca1bc1bfe14374589d2e",
+        "steps.json": "297cffe8eb2ec9ef0098cd7a57c037f1097d0883a5f1b6d027879d6a3137e8db",
+        "log": "a7abd443322400452339c8df5adbb7e067349ddf7041064464a1e2a759deac8d"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-input2",
+      "external_directory": "official-input2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "a3fc0cbeeb68cae13baf380346438bb3fdf849e80405796c5bc3de5b7ee8e88d",
+        "final.json": "2e4a59d3ffd30794cd475a14539e0b57bddafdd0b76e3f3743d14eee0c00757f",
+        "steps.json": "a2bd4f66ce16334b6526c49ab6f7365d33bc0034460e75613c41a0ff53d3d768",
+        "log": "d739308835a899e0f98a08f0717503a8bd4fb29f073e942c05188cd42991e283"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-adoption-build2",
+      "external_directory": "official-adoption-build2",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 7,
+      "successful_steps": 7,
+      "metadata_sha256": {
+        "job.json": "6a804bc00a29986dd5a1f4f6a82f3a83e888589449b3b79a99d0df814486938b",
+        "final.json": "06291c42094ed391eb75f67e26f88f86fb15c280d0c8e5f9382404cfe0ff57ff",
+        "steps.json": "7e4a01a0808cd96e6815a4d95fa688badf29ea466ff046cf493235551709bddf",
+        "log": "9f70adcd61e5e007c26c3531e6cadbf2c484ee0ce29277b2c9af3aabb11109d1"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-adoption-smoke1",
+      "external_directory": "official-adoption-smoke1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 3,
+      "successful_steps": 3,
+      "metadata_sha256": {
+        "job.json": "1edb25367d96c480d824a2b8dd56b47cc6a16f516e016fb84185ea1def4ffdbc",
+        "final.json": "041fcbfbd13d06d34e1655ef5461c61db656b06b86ab090f32cf39a6739b1df4",
+        "steps.json": "faaa43b9d32dd33aeee70c8fc25e696a3afe2c82c6b763286735c838d9e5c68e",
+        "log": "9d2d4a1a55e2cea09bf7ef7c3519f0599fa315be427b21584eae02f519fc4b0f"
+      }
+    }
+  ],
+  "preserved_failed_attempts": [
+    {
+      "job": "m35-gemma31-serving-native-c1-quality",
+      "external_directory": "model-actual1/official-native-c1-quality",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 1,
+      "successful_steps": 0,
+      "metadata_sha256": {
+        "job.json": "440778eee27dd6dac090fa3ad3e4d3703e518dee4b834346f324209eebe5b84c",
+        "final.json": "c7b63f82884be1b07396d0539de548365275b34bec276e53c13a85419f1d50ff",
+        "steps.json": "2acf2704a26ea88a403e8c09457a3213ddf9238518029568d4ca69abfc7a88cc",
+        "log": "576dbdda79f4632b12e497d929cef13e6217fa59b8baac06bfe04e72759d020f"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-build1",
+      "external_directory": "official-build1",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 10,
+      "successful_steps": 6,
+      "metadata_sha256": {
+        "job.json": "73647ce6208174c07287da2ff5612490f2bddcbe6acb521f38ad72f6d1aa8603",
+        "final.json": "1823d9260d810b7ce6b9f78dc56270997724f2c1c73f5a8ca7808f48e8683f89",
+        "steps.json": "cc5bcfc3f4f8705cd6d94b1c1b046ce9742b16dd8f9ee26366d9a023d8af5d4c",
+        "log": "a2f3e90ef25c58a71cb788be62f50bc79642beb25c106fb978feb4082100d9ab"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-http1",
+      "external_directory": "official-http1",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 3,
+      "successful_steps": 1,
+      "metadata_sha256": {
+        "job.json": "7245593262017946ea05eb4d52d35128e0ef93a3aa15cf32bd802c40f8604f77",
+        "final.json": "d9c17494740e663f95b8d9fb7742a237a1e4c31b4304412323a40f1410d1810b",
+        "steps.json": "2443c78e1eeac6173230588139dc08f480e6a784c6eac356219e6096892adb02",
+        "log": "cd94d378a1402582f59356f90bf7dae393449967c1eadeae740a734018bfaca4"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-input1",
+      "external_directory": "official-input1",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 1,
+      "successful_steps": 0,
+      "metadata_sha256": {
+        "job.json": "f28e1b731476098bd02f2b38749b3c541ceea536be7ccfcb62f494ff2cb13fda",
+        "final.json": "c6ad797ec26b9a33b344e3880a4734de1195f871fa17e7e17c71399e8f9c797d",
+        "steps.json": "c4bbc9f5aa8a6b29d7354aa321a32c9967bc9c1cbc37e10ad22f0cd510e50808",
+        "log": "3cae8dea81794dd05f15231fe10137d6edb2bb7258c581b676861632c6f7dc63"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-adoption-build1",
+      "external_directory": "official-adoption-build1",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 7,
+      "successful_steps": 0,
+      "metadata_sha256": {
+        "job.json": "008d38ab4d30be67e50e418e68a5297fc788bd1baa66f6c7afa242b7e3de3abe",
+        "final.json": "bd46993428a3f83d0bc40dddfd6e6347cd8ace16716cd2e5b7ec46c885a7b15e",
+        "steps.json": "521fc09e80ab5c6044e03b2035adbe742d4173891ff7d9fc0fdfd706e3f1cbf9",
+        "log": "1babeb8a44be476b9975cb4f7525878df78f55b557010b631be9412a0bef6d41"
+      }
+    },
+    {
+      "job": "m35-gemma31-serving-adoption-postauth1",
+      "external_directory": "official-adoption-postauth1",
+      "state": "failed",
+      "rc": 1,
+      "queued_steps": 1,
+      "successful_steps": 0,
+      "metadata_sha256": {
+        "job.json": "21f292f88960fd6b976ab721356b2a6926ca1052e780060eea1b82925654ad7b",
+        "final.json": "0342a8d7b8ab1b8bbdd213385c07c2ad82a8462ce37dd875472f165d0467cb03",
+        "steps.json": "a5cad03aa9b90394192700edf9bc54c0fedae3ec7bf7afb8530bbacfa5e349c8",
+        "log": "0bf38a7551a5236f0ac93483c720367ac1057dcfba3039679a3bcf6bce6152f2"
+      }
+    }
+  ],
+  "scope": "Approved Gemma31 C1/C4 bounded8K fixed128-wave complete-serving cycles and independent current1024 scalar corpus; naturalHTTP continuation/stop/departed-client peer progress. No sustained/assistant/26/larger envelope qualification.",
+  "producer_observations": {
+    "scope": "existing producer log facts only; last-built policy is construction witness, joined counters count successful runtime groups",
+    "logs": {
+      "native-c1-corpus.log": {
+        "bytes": 4049,
+        "sha256": "d758cae6323ba527a4372f2ecb16b67f61e2209a62f97129dd07b475286342fa",
+        "records": [
+          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":175113216,\"shared_activation_bytes\":104857600,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":12582912,\"plan_floor_bytes\":14265904,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124865646592,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":1719664640,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
+          "SERVING_STATE owner=0 positions=1024 bytes=922746880",
+          "SERVING_CORPUS phase=first owners=1 query_rows=1 rows=1024 targets=1023 cursor=1024 extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":26956,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
+          "SERVING_STATE owner=0 positions=1024 bytes=922746880",
+          "SERVING_CORPUS phase=repeat owners=1 query_rows=1 rows=1024 targets=1023 cursor=1024 extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":26956,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}"
+        ]
+      },
+      "native-c1-cycle-first.log": {
+        "bytes": 4458,
+        "sha256": "3154cf1d31a52e167af3f2340a08ab7e393a860524c6a39e53fd480dbd2e6ef3",
+        "records": [
+          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":175113216,\"shared_activation_bytes\":104857600,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":12582912,\"plan_floor_bytes\":14265904,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124911751168,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":1719664640,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
+          "SERVING_PREFILL phase=warm policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
+          "SERVING_CYCLE phase=warm owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=23.741738723 prefill_seconds=11.033171597 decode_seconds=12.708567126 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
+          "SERVING_CYCLE phase=paid owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=1 cycle_seconds=23.950582627 prefill_seconds=11.249079308 decode_seconds=12.701503319 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
+          "SERVING_STATE owner=0 positions=8191 bytes=1719664640"
+        ]
+      },
+      "native-c1-cycle-repeat.log": {
+        "bytes": 4458,
+        "sha256": "8e1fb1c2f9b60168ea0de21ce0144f01d21771db550962480a1c6b34aeb5465d",
+        "records": [
+          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":175113216,\"shared_activation_bytes\":104857600,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":12582912,\"plan_floor_bytes\":14265904,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124908949504,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":1719664640,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
+          "SERVING_PREFILL phase=warm policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
+          "SERVING_CYCLE phase=warm owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=23.728229892 prefill_seconds=11.012558524 decode_seconds=12.715671368 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
+          "SERVING_CYCLE phase=paid owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=1 cycle_seconds=23.905050357 prefill_seconds=11.188212839 decode_seconds=12.716837518 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
+          "SERVING_STATE owner=0 positions=8191 bytes=1719664640"
+        ]
+      },
+      "native-c1-quality.log": {
+        "bytes": 5231,
+        "sha256": "de24d061c392748a11a7d9f8e97857131fd5cb94cdd49c49d7dc289b9bb7270e",
+        "records": [
+          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":175113216,\"shared_activation_bytes\":104857600,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":12582912,\"plan_floor_bytes\":14265904,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124892680192,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":1719664640,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
+          "SERVING_PREFILL phase=first policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
+          "SERVING_CYCLE phase=first owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=23.774674498 prefill_seconds=11.065573032 decode_seconds=12.709101466 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
+          "SERVING_STATE owner=0 positions=8191 bytes=1719664640",
+          "SERVING_PREFILL phase=repeat policy_basis=last-built rows=1 segments=1 norm_rope=120 norm_add=120 owner=0",
+          "SERVING_CYCLE phase=repeat owners=1 emitted=129 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=24.028251654 prefill_seconds=11.347026629 decode_seconds=12.681225025 rows=1 segments=1 norm_rope=120 norm_add=120 owner=0 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":219535,\"pitch_padding\":0,\"joined_groups\":0,\"joined_units\":0,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":1,\"last_built_segments\":1,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":0}",
+          "SERVING_STATE owner=0 positions=8191 bytes=1719664640"
+        ]
+      },
+      "native-c4-cycle-first.log": {
+        "bytes": 4639,
+        "sha256": "f6ad86197d48102b656bf02d3f68debd62475b4fcbb2ed9c77a5938f11cf41d0",
+        "records": [
+          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":180356096,\"shared_activation_bytes\":106954752,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":44040192,\"plan_floor_bytes\":30875568,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124872749056,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":6878658560,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
+          "SERVING_PREFILL phase=warm policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
+          "SERVING_CYCLE phase=warm owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=60.590852663 prefill_seconds=44.131191187 decode_seconds=16.459661476 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":128,\"joined_units\":512,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
+          "SERVING_CYCLE phase=paid owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=1 cycle_seconds=61.248326149 prefill_seconds=44.843883823 decode_seconds=16.404442326 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":256,\"joined_units\":1024,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
+          "SERVING_STATE owner=0 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=1 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=2 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=3 positions=8191 bytes=1719664640"
+        ]
+      },
+      "native-c4-cycle-repeat.log": {
+        "bytes": 4639,
+        "sha256": "e2b13e8f1581492f9fd52ff0f49915ef716b24dab11e3d5e52c5b70e43db3a64",
+        "records": [
+          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":180356096,\"shared_activation_bytes\":106954752,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":44040192,\"plan_floor_bytes\":30875568,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124886839296,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":6878658560,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
+          "SERVING_PREFILL phase=warm policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
+          "SERVING_CYCLE phase=warm owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=60.552932552 prefill_seconds=44.097822069 decode_seconds=16.455110483 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":128,\"joined_units\":512,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
+          "SERVING_CYCLE phase=paid owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=1 cycle_seconds=61.385118804 prefill_seconds=44.962768284 decode_seconds=16.422350520 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":256,\"joined_units\":1024,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
+          "SERVING_STATE owner=0 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=1 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=2 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=3 positions=8191 bytes=1719664640"
+        ]
+      },
+      "native-c4-quality.log": {
+        "bytes": 5575,
+        "sha256": "f73f1e7690c887d28b1c33dd4991c8d6bcfe10033f93671f738f068dfbf95fb4",
+        "records": [
+          "jitllm-runtime: allocation guard: {\"format\":\"jitllm-wave-startup-guard-v1\",\"fixed_catalog_bytes\":180356096,\"shared_activation_bytes\":106954752,\"shared_scratch_bytes\":14680064,\"largest_weight_extent_bytes\":18895339520,\"host_input_bytes\":44040192,\"plan_floor_bytes\":30875568,\"uncounted_margin_bytes\":6442450944,\"available_after_fixed_bytes\":124896792576,\"available_known\":true,\"guard_passed\":true,\"registered_state_virtual_extent_bytes\":6878658560,\"request_memory_bytes\":268435456,\"native_token_history_bytes\":0}",
+          "SERVING_PREFILL phase=first policy_basis=last-built rows=127 segments=1 norm_rope=120 norm_add=120 owner=0",
+          "SERVING_CYCLE phase=first owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=60.957697318 prefill_seconds=44.364626461 decode_seconds=16.593070857 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":128,\"joined_units\":512,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
+          "SERVING_STATE owner=0 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=1 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=2 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=3 positions=8191 bytes=1719664640",
+          "SERVING_PREFILL phase=repeat policy_basis=last-built rows=4 segments=4 norm_rope=120 norm_add=120 owner=60",
+          "SERVING_CYCLE phase=repeat owners=4 emitted=516 waves=128 cursor=8191 pending_position=8191 timed=0 cycle_seconds=61.775828502 prefill_seconds=45.039445677 decode_seconds=16.736382825 rows=4 segments=4 norm_rope=120 norm_add=120 owner=60 policy_basis=last-built extra={\"architecture\":\"gemma4\",\"dispatch\":\"joined-candidate\",\"optional_optimizations\":true,\"row_invariant\":false,\"profile\":\"gemma-4-31B-it\",\"coverage_tensors\":867115,\"pitch_padding\":0,\"joined_groups\":256,\"joined_units\":1024,\"gemma31_candidate\":true,\"max_rows\":256,\"norm_rope_requested\":true,\"norm_add_requested\":true,\"owner_attention_requested\":true,\"last_built_rows\":4,\"last_built_segments\":4,\"last_built_norm_rope\":120,\"last_built_norm_add\":120,\"last_built_owner_attention\":60}",
+          "SERVING_STATE owner=0 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=1 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=2 positions=8191 bytes=1719664640",
+          "SERVING_STATE owner=3 positions=8191 bytes=1719664640"
+        ]
+      }
+    }
+  },
+  "http": {
+    "schema": 1,
+    "artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "runtime_sha256": "fd7fd61aea07e6bcdf0a2e152ea358273078dd41e7cb2f1accd7af947e1eb387",
+    "inputs_sha256": "90bf82fd26b7040c513e7370eca2cd283ac8fd15ce89a2e8d05d6f7e670b5ba2",
+    "cases": [
+      {
+        "name": "literal-owned-continuation",
+        "passed": true,
+        "detail": {
+          "committed_prefix_tokens": 4,
+          "continuation_tokens": 12,
+          "same_scalar_query_arithmetic": true,
+          "exact_token_continuation": true
+        },
+        "seconds": 5.529664056142792
+      },
+      {
+        "name": "chat-SSE-stop-disconnect",
+        "passed": true,
+        "detail": {
+          "SSE_exact": true,
+          "stop_suppressed": true,
+          "disconnect_followup_exact": true
+        },
+        "seconds": 1.5298915449529886
+      },
+      {
+        "name": "C4-departed-owner-peer-progress",
+        "passed": true,
+        "detail": {
+          "concurrent_requests": 4,
+          "departed_owners": 1,
+          "completed_peers": 3,
+          "followup_healthy": true,
+          "peer_publications_after_disconnect": [
+            127,
+            127,
+            127
+          ],
+          "progress_scope": "client-observed SSE publication and completion",
+          "scalar_batch_equality_claim": false
+        },
+        "seconds": 15.503972748992965
+      }
+    ],
+    "default_adoption": false,
+    "actual_startup_recipe": {
+      "architecture": "gemma4",
+      "dispatch": "joined-candidate",
+      "optional_optimizations": true,
+      "row_invariant": false,
+      "profile": "gemma-4-31B-it",
+      "coverage_tensors": 0,
+      "pitch_padding": 0,
+      "joined_groups": 0,
+      "joined_units": 0,
+      "gemma31_candidate": true,
+      "max_rows": 256,
+      "norm_rope_requested": true,
+      "norm_add_requested": true,
+      "owner_attention_requested": true,
+      "last_built_rows": 0,
+      "last_built_segments": 0,
+      "last_built_norm_rope": 0,
+      "last_built_norm_add": 0,
+      "last_built_owner_attention": 0
+    },
+    "runtime_exit": 0,
+    "actual_final_recipe": {
+      "architecture": "gemma4",
+      "dispatch": "joined-candidate",
+      "optional_optimizations": true,
+      "row_invariant": false,
+      "profile": "gemma-4-31B-it",
+      "coverage_tensors": 161162,
+      "pitch_padding": 0,
+      "joined_groups": 127,
+      "joined_units": 374,
+      "gemma31_candidate": true,
+      "max_rows": 256,
+      "norm_rope_requested": true,
+      "norm_add_requested": true,
+      "owner_attention_requested": true,
+      "last_built_rows": 1,
+      "last_built_segments": 1,
+      "last_built_norm_rope": 120,
+      "last_built_norm_add": 120,
+      "last_built_owner_attention": 0
+    },
+    "external_result_sha256": "79944e90d4a4ac1253acc4e4d671650d0b8ea4659a217e46a3942ad6f9693764",
+    "measurement_binary_delta": "private clone changes only RunService diagnostic boolean; no core/recipe/math change"
+  },
+  "adoption_status": "checked bounded default selected for approved31 context<=8192/slots<=4; all gates passed; final review/commit pending",
+  "final_source_base": "302e0c2bf15a1854bf2b3154cacbf9824f05179b",
+  "adoption_canonical_frame_sha256": "20c41019265e109e8e0606da96286a730d59ce19977f4eaaeefd0afa48fb514e",
+  "adoption_source_ready_sha256": "c25398739436069505be54ccbcd658a3f17c7dc177a80aa529d709198b6cb566",
+  "default_controls": {
+    "settings_pass": 4,
+    "calibration_pass": 3,
+    "skipped": 0,
+    "actual_runtime_sha256": "f85caa1cd3511cb5c21c060fea1aa8d4fdeffed0f7c7ce50d3084f438cf19c7a",
+    "actual_receipt_sha256": "c79bf0b93b3337f2b0264617469d6669723e9541a908191c088aaa79d38e3b9f",
+    "smoke_external_sha256": "561269b048482cc3f060c59c9b862ef9c691208ecef4cee738fa8006f8bf9291",
+    "recipe": {
+      "architecture": "gemma4",
+      "dispatch": "joined-candidate",
+      "optional_optimizations": true,
+      "row_invariant": false,
+      "profile": "gemma-4-31B-it",
+      "coverage_tensors": 20125,
+      "pitch_padding": 0,
+      "joined_groups": 0,
+      "joined_units": 0,
+      "gemma31_candidate": true,
+      "max_rows": 256,
+      "norm_rope_requested": true,
+      "norm_add_requested": true,
+      "owner_attention_requested": true,
+      "last_built_rows": 1,
+      "last_built_segments": 1,
+      "last_built_norm_rope": 120,
+      "last_built_norm_add": 120,
+      "last_built_owner_attention": 0
+    },
+    "prefill_chunk": 256,
+    "generated": 3,
+    "stopped": true,
+    "speculative": false,
+    "explicit_candidate_forcing": false,
+    "explicit_prefill_override": false
+  },
+  "successful_official_jobs": 40,
+  "failed_official_jobs": 6,
+  "final_integration": "MeasuredSOURCE15 exact frozen; current runtime9 has reviewed bounded default delta and preserves current main optionalClear inactive accounting. Benchmark CMake adds only3 lines to current inventory. Private HTTP oneboolean clone is proof-only external.",
+  "funding": {
+    "native_host_envelope_bytes": 67108864,
+    "pinned_streamed_export_bytes": 16777216,
+    "reference_known_vectors_bytes": 1153433600,
+    "native_initialized_owner_8k_bytes": 1719664640,
+    "C4_initialized_total_bytes": 6878658560,
+    "corpus_initialized_bytes": 922746880,
+    "peak_measurement": false
+  },
+  "source_origin": {
+    "measured_serving_SOURCE15_base": "73b89f4d4017a7a78c8533b20db5d0fd21955041",
+    "default_control_compiled_base": "3a0be49",
+    "final_integration_base": "302e0c2bf15a1854bf2b3154cacbf9824f05179b",
+    "default_runtime9_bytes_match_compiled_source": true,
+    "final_parent_transplant": "Owned diff applied onto main302e0c2; preserves third-cycle report/parent changes, optional Clear accounting, Gemma3/operator/EmbeddingGemma changes"
+  }
+}

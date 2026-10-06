@@ -44,6 +44,9 @@
 #include "config/node_config.h"
 #include "tokenizer/tokenizer.h"
 
+namespace jitllm::model {
+struct Gemma4Profile;
+}
 namespace jitllm::runtime {
 
 enum class SettingSource : std::uint8_t { kDerived, kCalibrated, kOverride, kFallback };
@@ -125,6 +128,8 @@ inline constexpr std::string_view kThinkEnd = "</think>";
 // What a model's artifacts say, read before the model is constructed
 // (ReadArtifactFacts). Nothing here is a checkpoint's name or hash.
 struct ArtifactFacts {
+  // Non-null only after the complete approved Gemma binding was checked.
+  const model::Gemma4Profile* gemma_profile = nullptr;
   // The artifact's architecture ("deepseek4", "qwen4exp"); a composition's
   // models are pipelines (composition is true, architecture empty).
   std::string architecture;
@@ -230,6 +235,8 @@ struct ModelSettings {
   std::string architecture;  // empty for a composition
   bool composition = false;
   bool drafter = false;
+  // Internal candidate recipe, keyed separately from ordinary calibration.
+  bool gemma31_production = false;
 
   // Every LLM.
   Setting<std::uint32_t> context;
@@ -292,10 +299,13 @@ struct ModelSettings {
 // allows: a context beyond the checkpoint's ceiling, more drafts than the
 // drafter proposes. The reasoning markers stay unresolved (their fallback,
 // none) until ResolveReasoning.
+// The default enables the qualified ordinary Gemma31 recipe only within its
+// checked context/owner bounds; false preserves internal diagnostic controls.
 std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEntry& entry,
                                                           const ArtifactFacts& facts,
                                                           const Calibration* calibration,
-                                                          bool plain);
+                                                          bool plain,
+                                                          bool gemma31_production = true);
 
 // The reasoning markers once the vocabulary is known (`find`: a token's ID
 // by its exact text): each override, which must be a token of it (empty:

@@ -84,6 +84,20 @@ TEST(Calibration, RoundTripsItsRecord) {
 
 // The settings a measurement depends on are part of the key: another
 // configuration of them is another key.
+TEST(Calibration, Gemma31CandidateHasDistinctCalibrationIdentity) {
+  jitllm::runtime::ModelSettings settings;
+  settings.architecture = "gemma4";
+  const auto ordinary = jitllm::runtime::MeasuredWith(settings);
+  settings.architecture.clear();
+  EXPECT_EQ(ordinary, jitllm::runtime::MeasuredWith(settings));
+  settings.architecture = "gemma4";
+  settings.gemma31_production = true;
+  const auto candidate = jitllm::runtime::MeasuredWith(settings);
+  EXPECT_NE(ordinary, candidate);
+  EXPECT_THAT(ordinary, Not(HasSubstr("gemma31_production=")));
+  EXPECT_THAT(candidate, HasSubstr("gemma31_production=true"));
+}
+
 TEST(Calibration, KeysTheSettingsMeasuredWith) {
   jitllm::runtime::ModelSettings s;
   s.speculation.value = true;

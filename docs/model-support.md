@@ -81,6 +81,18 @@ Both approved artifacts have checked import, segmented graphs, a shared native
 runner and a [bounded scalar serving route](experiments/gemma31-serving/README.md)
 for chat/literal completions, likelihoods and up to twelve independent owners.
 The route disables thinking and refuses generated tools and assistants/speculation.
+The [bounded dense31 production bridge](experiments/gemma31-serving-bridge/README.md)
+selects ordinary joined serving, both norm chains and eligible owner attention for
+approved 31B artifacts with resolved context at most 8,192 and at most four slots.
+Its uncalibrated prefill fallback is 256; smaller explicit overrides remain intact.
+Other profiles and larger configurations retain the prior scalar recipe and 128-row
+cap. Current-pin C1/C4 8K continuations have zero predicted-ID differences and
+128/129 and 512/516 byte-exact complete heads; the 1,024-row corpus has
+complete head parity. Whole serving cycles are 3.15%/3.51%
+slower than the reference. Natural HTTP continuation, stop and departed-client peer
+progress pass. These are bounded controls, not sustained performance, broad semantic
+quality, assistant admission or long-context qualification.
+The following earlier scalar/diagnostic screens retain their historical pins and failures.
 The approved dense 31B artifact executes through the
 same native runner with ordinary 1/2/4-request replay and exact checkpoint/spill
 controls. Its [bounded representative screen](experiments/gemma31-runner/README.md)

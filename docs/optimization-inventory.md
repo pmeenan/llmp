@@ -99,7 +99,12 @@ model supported status follows. Ordinary partial output-row blocks are
 explicitly refused where pinned MMVQ would over-read (RE-045); the own
 row-invariant kernel guards them.
 
-The proposed ordinary Gemma row/attention recipe remains unadopted. Its
+The [bounded dense31 serving bridge](experiments/gemma31-serving-bridge/README.md)
+now selects the checked ordinary recipe only at resolved context<=8192/slots<=4,
+with current-pin quality/corpus and HTTP/default-selection controls. Broader
+contexts/cohorts and Gemma26 preserve their prior recipe; sustained performance
+and broader qualification remain open. The historical SOURCE14 row/attention
+proposal remains unadopted. Its
 [first31 C2 comparison](experiments/gemma31-production-c2/README.md) retains eight
 strict differences, and the [private local-MMA factor](experiments/gemma31-c2-local-mma/README.md)
 retains nine despite passing separate conditional-loss bounds. The
@@ -128,7 +133,7 @@ changes only eligible26B multi-row prefix planning: all160 paid heads now match
 retained FIRST stock, while one strict frontier difference remains. Conditional
 loss is +0.08119% and passes independently. Native prefix route29/decode route30
 is observed; actual stock992 selection is not. This does not select a production
-layer whitelist or adopt defaults. The unadopted default recipe remains excluded.
+layer whitelist or adopt defaults. Gemma26 default adoption remains excluded; the separate bounded dense31 bridge does not inherit this diagnostic layer policy.
 
 The [new-release Gemma31 C2 screen](experiments/gemma-release-c2/README.md)
 independently freezes native before FIRST v0.6.0/d812 stock: zero strict
@@ -618,6 +623,18 @@ complete C8 heads/states/layouts/choices are exact for both Gemmas. The short
 within spread. No other-family speed, phase or fresh-reference claim. Sixteen
 inline bytes per state are included in pre-probe occupancy; the manual helper
 funds its 192-byte maximum increment inside its existing metadata envelope.
+
+The [bounded dense31 production bridge](experiments/gemma31-serving-bridge/README.md)
+selects ordinary joined serving, both norm chains and eligible owner attention for
+approved 31B artifacts with resolved context at most 8,192 and at most four slots.
+Its uncalibrated prefill fallback is 256; smaller explicit overrides remain intact.
+Other profiles and larger configurations retain the prior scalar recipe and 128-row
+cap. Current-pin C1/C4 8K continuations have zero predicted-ID differences and
+128/129 and 512/516 byte-exact complete heads; the 1,024-row corpus has
+complete head parity. Whole serving cycles are 3.15%/3.51%
+slower than the reference. Natural HTTP continuation, stop and departed-client peer
+progress pass. These are bounded controls, not sustained performance, broad semantic
+quality, assistant admission or long-context qualification.
 
 The [immutable Gemma head capacity](experiments/gemma-head-capacity/README.md)
 separates pinned publication from input capacity: serving uses owner slots,

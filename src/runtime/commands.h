@@ -93,6 +93,9 @@ struct ServingOptions {
   // Matched solo controls can use row-invariant sums without joined dispatch.
   bool gemma_joined = false;
   bool gemma_row_invariant = false;
+  // Candidate ordinary Gemma31 serving recipe; internal qualification only.
+  // Production configuration and CLI leave this false.
+  bool gemma31_production = false;
 };
 
 struct ChatOptions {

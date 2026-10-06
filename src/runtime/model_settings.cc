@@ -27,6 +27,7 @@
 #include "model/qwen38.h"
 #include "platform/path_trust.h"
 #include "runtime/calibration.h"
+#include "runtime/gemma_profile.h"
 #include "tokenizer/gguf.h"
 #include "tokenizer/hf.h"
 
@@ -392,6 +393,11 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
                                                           const ja::Artifact* drafter) {
   ArtifactFacts facts;
   facts.architecture = target.model().architecture;
+  if (facts.architecture == "gemma4") {
+    auto profile = ApprovedGemmaProfile(target);
+    if (!profile) return std::unexpected(profile.error());
+    facts.gemma_profile = *profile;
+  }
   // generation_config.json first: GGUF's general.sampling keys are copied
   // from it where a converter kept them.
   if (Keeps(target, "generation_config.json")) {
@@ -546,12 +552,14 @@ std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target
 std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEntry& entry,
                                                           const ArtifactFacts& facts,
                                                           const Calibration* calibration,
-                                                          bool plain) {
+                                                          bool plain, bool gemma31_production) {
   ModelSettings s;
   s.name = entry.name;
   s.architecture = facts.architecture;
   s.composition = facts.composition;
   s.drafter = entry.drafter.has_value();
+  s.gemma31_production = gemma31_production && facts.architecture == "gemma4" &&
+                         facts.gemma_profile == &model::Gemma4_31B();
   const Calibration none;
   const Calibration& cal = calibration != nullptr ? *calibration : none;
   const auto basis = [&](std::string_view key) { return OverrideBasis(entry, key); };
@@ -638,10 +646,19 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
       gemma ? 1U : kDefaultSlots,
       gemma ? "bounded scalar-cohort route; uncalibrated" : "the knee measured on a GB10 (D-104)");
   if (gemma) {
-    const auto cap = std::min(128U, context - 1);
+    // The initial production qualification covers this bounded dense profile.
+    // Larger contexts/cohorts and Gemma26 keep their previous recipe and key.
+    s.gemma31_production = s.gemma31_production && context <= 8192 && s.max_slots.value <= 4;
+    if (s.gemma31_production && s.prefill_chunk.source == SettingSource::kFallback) {
+      s.prefill_chunk.value = 256;
+      s.prefill_chunk.basis = "qualified bounded Gemma31 serving envelope";
+    }
+    const auto cap = std::min(s.gemma31_production ? 256U : 128U, context - 1);
     if (s.prefill_chunk.value > cap) {
       s.prefill_chunk.value = cap;
-      s.prefill_chunk.basis += ", capped by the bounded Gemma serving envelope";
+      s.prefill_chunk.basis += s.gemma31_production
+                                   ? ", capped by the candidate Gemma31 serving envelope"
+                                   : ", capped by the bounded Gemma serving envelope";
     }
     if (s.max_slots.value > 12 || s.max_slots.value > s.prefill_chunk.value)
       return Error("Gemma serving needs at most twelve owners, within its chunk envelope");

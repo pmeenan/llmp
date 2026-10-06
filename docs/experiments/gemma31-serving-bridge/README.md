@@ -1,0 +1,42 @@
+<!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# Gemma31 bounded production bridge
+
+The real serving adapter completed matched C1 and C4 8K continuations against llama.cpp v0.6.0. All 129 predicted token IDs per owner matched. Complete heads are byte-exact on 128/129 C1 rows and 512/516 C4 rows. Whole serving cycles remained 3.15% slower for C1 and 3.51% slower for C4. Current-pin scalar corpus parity also passed with all 1,024 heads byte-exact. Natural HTTP lifecycle controls pass. The ordinary default now selects this recipe only for the approved dense31 artifact at resolved context<=8192 and slots<=4; other configurations retain their prior policy.
+
+This uses the approved dense31 prepared artifact, ordinary arithmetic, both norm chains, owner attention when eligible, prefill cap 256 and input context 8,192. C1 correctly falls back to primitive attention; C4 selected 60 owner-attention steps in its constructed plan. Profile26 and unqualified larger configurations are separate. The immutable preregistration describes pre-run holds; completed status belongs in this report and the aggregate.
+
+Quality uses four authentic separately extracted corpus histories, each 8,192 IDs, with native/public tokenizer identity before execution. Prefix 8,063 plus 128 completed greedy waves leaves cursor 8,191 and the next prediction pending there. The 129th prediction is not counted as another committed token. Ignore-EOG is explicit in this fixed-length screen; this is bounded greedy continuation, not natural chat stop completion. Each native complete own repeat was frozen before FIRST reference exposure. Each engine had independent finite and complete own repeats before comparison.
+
+The aggregate establishes 128/129 and 512/516 complete byte-exact heads for C1/C4 respectively; it does not assign the nonexact vectors to a phase. All predicted IDs still match. Strict positive-margin differences and differing tied argmax IDs are zero. Generated-history conditional loss changes are -0.066265% and -0.033875%, within the preregistered 3% ceiling. These losses score the frozen generated targets, not a fresh teacher-forced corpus. The independent authentic 1,024-position scalar corpus has 1,023 scored targets, NLL 11.1856652775 and absolute perplexity 72,089.615 in both engines. Complete parity does not explain that high absolute value or establish broad semantic quality.
+
+| Complete paid cycle | Native mean | Reference mean | Native elapsed difference |
+| --- | --- | --- | --- |
+| C1 | 23.927816 s | 23.197650 s | +3.147588% |
+| C4 | 61.316722 s | 59.234650 s | +3.514957% |
+
+Each order is reference/native/native/reference in fresh processes with a preceding warm cycle. Paid time includes clear, prefill, frontend selection and sampling, head copy, token publication, completion and request retirement. Load/activation and post-clock initialized-state export/hash are outside. These are two observations per engine, not sustained performance qualification. Each paid run exactly matches its frozen emitted IDs and final head; native complete initialized state, layout and history also match. No unobserved paid intermediate-head archive is claimed.
+
+Native versus reference C1 prefill means are 11.218646/10.763300 s and decode/finish means 12.709170/12.434350 s. C4 means are 44.903326/43.275300 s and 16.413396/15.959400 s. The boundaries are those explicitly timed by each caller; they do not isolate kernel launches, planning or cache growth. Last-built rows/segments/norm/owner counts are construction witnesses, not counts of every executed cached wave. Joined groups/units increment after successful native wave completion and are reported as cumulative runtime counters.
+
+One 8K initialized native owner holds 1,719,664,640 exported bytes; C4 holds 6,878,658,560 bytes across four independent owners. The corpus owner exports 922,746,880 initialized bytes. Existing catalog-backed state and capacity accounting remain separate from the caller's charged 64 MiB host envelope and 16 MiB pinned export buffer. The reference charges its 1,100 MiB known-vector publication envelope before allocation. Exports are bounded slices, not uncharged full-cache host copies. This does not measure or assert unchanged physical peak.
+
+The reference is official v0.6.0 commit d81235049384534c167caea52b85a694f6103d14, ARM64 CUDA image c604ea4f1c2e8d5c8b27d89fef727384d59e23c5b07e369cde5393820e0607db. Actual CUDA initialization/current context/GB10 SM121 and loaded driver identity are admitted before reference clocks. Public compilation uses Clang 22.1.8; NVCC is 13.4.92. Native/public cuBLAS versions are separately recorded, not presented as the compiler version. Historical pins, failed records and payloads remain external and unchanged.
+
+Prerequisite failures were preserved: obsolete public load-parameter fields, vocab-only typed shape checks and a pre-context enrollment anchor. The first HTTP admission later failed before a test request because the candidate service flag alone omitted the requested diagnostic log. Its runtime exited zero and separate postauthentication passed. A five-step private logging-only helper build then passed. The corrected HTTP controls completed in 25 seconds: literal 4+12 token continuation was exact, SSE/stop/disconnect controls passed, and all three remaining peers published 127 further pieces and completed after the coordinated client departure. This witnesses client-observed progress, not a precise simultaneous GPU C4 shape. Runtime teardown exited zero; cumulative joined-group/unit counts were 127/374. No numerical failure was waived or reference reset.
+
+Fresh TensorFold task entry still found no matching CUDA GB10/GGUF dense31 comparator; no TensorFold inference ran. Larger contexts/cohorts, assistants, sustained performance, broader quality and whole shipment tiers remain open. Bounded default selection is limited to approved dense31 resolved context<=8192 and slots<=4; larger envelopes, 26 and explicit diagnostic paths retain their prior recipe and calibration identities. Default context 262144 is not reduced. Four affected settings controls and three calibration controls pass without skips. The ordinary runtime smoke, with no forced candidate flag or prefill override, selected the 256-row fallback and both norm chains, emitted three tokens and stopped naturally. C1 correctly retained primitive owner attention.
+
+The measured SOURCE15 caller/runtime snapshot is retained externally (b3e75fd5),
+with pipeline registration 75f3ca26 and guarded execution source 670df132. The final
+selection source is transplanted onto current main 302e0c2, preserving committed
+Gemma3/operator/EmbeddingGemma work, the third-cycle report and optional Clear accounting (inactive here).
+The selection changes only bounded settings/default forwarding and its affected
+controls; it does not replace any kernel or numerical policy. The private HTTP
+helper's one logging boolean is kept as external proof support, not an extra
+production implementation.
+
+The initial default-check staging omitted tools/build before compilation; its failed admission and separate failed source guard are retained. Copying the exact frozen file allowed the unchanged seven-step retry to pass. In total, 40 successful official jobs and six failed official records are retained externally; the two guard failures are not model-quality failures. The seven affected settings/calibration controls and ordinary default smoke pass. No full suite or package tier ran for this bounded unit.
+
+Reproduction uses the [immutable preregistration](PROTOCOL.md), [native caller](../../../benchmarks/gemma31_production.cc), [public caller](llama_serving.cc), [input preparation](input.py) and [supervised controller](control.py). The [analysis](analyze.py) owns independent finite/full-repeat freezes, generated-ID lineage, strict margin and conditional-loss gates, and complete bookend-output checks. [HTTP controls](http_control.py) retain the coordinated client-departure method. Actual source/runtime/config/input/library receipts and exact supervised queues are retained under /tmp/jitllm-m35-coordination/gemma31-production-bridge-raw; old attempt namespaces remain immutable. Reproduction needs a fresh private namespace and authenticated actual receipts; source15 is preserved externally for the original numerical screen rather than represented as byte-identical to the final bounded-default settings changes.

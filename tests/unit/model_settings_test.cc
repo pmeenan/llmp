@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "config/node_config.h"
+#include "model/gemma4.h"
 
 namespace {
 
@@ -160,6 +161,67 @@ TEST(ModelSettings, GemmaDefaultsAreBoundedAndExplicitlyUncalibrated) {
   entry = Model("gemma");
   entry.overrides["speculation"] = true;
   EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+}
+
+TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
+  auto entry = Model("gemma");
+  entry.overrides["context"] = std::int64_t{8192};
+  entry.overrides["prefill_chunk"] = std::int64_t{1024};
+  entry.overrides["max_slots"] = std::int64_t{4};
+  auto facts = Facts("gemma4");
+  facts.gemma_profile = &jitllm::model::Gemma4_31B();
+  auto ordinary = ResolveSettings(entry, facts, nullptr, true, false);
+  ASSERT_TRUE(ordinary);
+  EXPECT_FALSE(ordinary->gemma31_production);
+  EXPECT_EQ(ordinary->prefill_chunk.value, 128U);
+  auto candidate = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(candidate);
+  EXPECT_TRUE(candidate->gemma31_production);
+  EXPECT_EQ(candidate->prefill_chunk.value, 256U);
+  EXPECT_EQ(candidate->max_slots.value, 4U);
+  EXPECT_FALSE(candidate->speculation.value);
+  entry.overrides["context"] = std::int64_t{8193};
+  auto larger_context = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(larger_context);
+  EXPECT_FALSE(larger_context->gemma31_production);
+  EXPECT_EQ(larger_context->prefill_chunk.value, 128U);
+  entry.overrides["context"] = std::int64_t{8192};
+  entry.overrides["max_slots"] = std::int64_t{5};
+  auto larger_cohort = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(larger_cohort);
+  EXPECT_FALSE(larger_cohort->gemma31_production);
+  EXPECT_EQ(larger_cohort->prefill_chunk.value, 128U);
+  entry.overrides["max_slots"] = std::int64_t{4};
+  facts.gemma_profile = &jitllm::model::Gemma4_26BA4B();
+  auto unchanged26 = ResolveSettings(entry, facts, nullptr, true, true);
+  ASSERT_TRUE(unchanged26);
+  EXPECT_FALSE(unchanged26->gemma31_production);
+  EXPECT_EQ(unchanged26->prefill_chunk.value, 128U);
+  facts.gemma_profile = nullptr;
+  auto unknown = ResolveSettings(entry, facts, nullptr, true, true);
+  ASSERT_TRUE(unknown);
+  EXPECT_FALSE(unknown->gemma31_production);
+  EXPECT_EQ(unknown->prefill_chunk.value, 128U);
+}
+
+TEST(ModelSettings, Gemma31ProductionUses256WithinBoundsAndPreservesSmallerOverride) {
+  auto entry = Model("gemma");
+  auto facts = Facts("gemma4");
+  facts.gemma_profile = &jitllm::model::Gemma4_31B();
+  auto candidate = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(candidate);
+  EXPECT_FALSE(candidate->gemma31_production);
+  EXPECT_EQ(candidate->prefill_chunk.value, 128U);
+  EXPECT_EQ(candidate->max_slots.value, 1U);
+  entry.overrides["context"] = std::int64_t{8192};
+  candidate = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(candidate);
+  EXPECT_TRUE(candidate->gemma31_production);
+  EXPECT_EQ(candidate->prefill_chunk.value, 256U);
+  entry.overrides["prefill_chunk"] = std::int64_t{16};
+  candidate = ResolveSettings(entry, facts, nullptr, true, true);
+  ASSERT_TRUE(candidate);
+  EXPECT_EQ(candidate->prefill_chunk.value, 16U);
 }
 
 // Derived from the artifact: the trained context, the checkpoint's

@@ -17,7 +17,12 @@ file ([M0](m0-record.md), [M1](m1-record.md), [M2](m2-record.md), [M3](m3-record
 
 **Status legend:** `pending` · `in progress` · `done` · `parked`
 
-The ordinary Gemma serving-default candidate remains unadopted. Its original
+The [bounded dense31 serving bridge](experiments/gemma31-serving-bridge/README.md)
+now selects the checked ordinary recipe only at resolved context<=8192/slots<=4,
+with current-pin C1/C4 quality, complete 1K corpus parity, HTTP controls and
+focused default-selection checks. Gemma26 and larger envelopes retain their
+prior recipe; sustained performance and broader qualification remain open.
+The historical SOURCE14 serving/default proposal was not adopted. Its original
 [Gemma31 C2 first screen](experiments/gemma31-production-c2/README.md) retains eight
 positive-margin strict differences; the [private local-MMA factor](experiments/gemma31-c2-local-mma/README.md)
 retains nine. The opt-in [actual two-owner factor](experiments/gemma-small-owner-attention/README.md)
@@ -37,15 +42,17 @@ evidence, without a production layer policy or observed stock992 routing selecto
 C3 transfer, other partial model counts and unequal
 widths remain unqualified. Fresh
 31B timing is +1.47% with a stock spread larger than its mean gap; 26B is −1.064%
-in its short matched bookends. Core opt-in support does not adopt SOURCE14 serving
-recipes/defaults. Actual ordinary HTTP/cancellation/continuation, full corpus,
-depth and sustained qualification remain separate gates.
+in its short matched bookends. Core opt-in controls retain their historical scopes and do not adopt SOURCE14
+serving/default files. The separate current bridge above closes bounded dense31
+HTTP and corpus gates; broader depth/context/cohorts and sustained qualification
+remain open.
 
 The [C1 phase attribution](experiments/gemma-state-phase-attribution/README.md)
 measures paid Clear 57.45 ms, state growth 162.18 ms and required planning 0.286 ms
 with 160 plan hits/no misses, while complete outputs/state match the fixed own
-proof. It changes only optional runner diagnostics; private serving recipes
-remain unadopted. Nested counters and stream wall do not establish a residual
+proof. It changes only optional runner diagnostics. The attribution result itself
+selects no serving policy; bounded dense31 adoption is established by the
+separate production bridge above. Gemma26/larger recipes remain unadopted. Nested counters and stream wall do not establish a residual
 kernel cause or a new reference speed gate.
 
 ## M0 — Plan the plan  `done`
@@ -335,11 +342,19 @@ family" guide, and its long-context scaling work.
       - [x] Checked per-segment Gemma RoPE/cache-store policy with primitive
         fallback and [complete-layer controls](experiments/gemma-rope-store/README.md).
         Mixed paid results keep selection off by default.
+      - [x] Bounded dense31 production recipe at context<=8192/slots<=4:
+        [current serving bridge](experiments/gemma31-serving-bridge/README.md)
+        completes C1/C4 8K quality, exact current-pin 1K corpus, full-cost bookends
+        and HTTP stop/continuation/departed-client peer progress. Default prefill
+        fallback 256, both norm chains and eligible owner attention; short cycles
+        remain 3.15%/3.51% slower than stock. Gemma26/larger settings retain their
+        prior recipe. Broader quality/context, sustained performance and assistants
+        remain open.
       - [x] Bounded approved Gemma26/31 adapter on the shared serving driver,
         with [scalar independent cohorts](experiments/gemma31-serving/README.md),
         target likelihoods, checked checkpoint positions, exact continuation/
         restart and pending cross-profile switch controls. Thinking/tools, assistants,
-        selected optimized joining and full model qualification remain owed.
+        broader optimized joining and full model qualification remain owed.
       - [x] Bounded Gemma26 same-format reference diagnosis: the
         [short resident comparison](experiments/gemma-performance/README.md)
         [representative likelihood screen](experiments/gemma-quality/README.md)

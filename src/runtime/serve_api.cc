@@ -2158,13 +2158,14 @@ std::string HostNames(const api::HostGuard& hosts) {
 }  // namespace
 
 int RunService(const config::NodeConfig& config, const config::RuntimeRoles& roles, std::FILE* log,
-               bool gemma_joined, bool gemma_row_invariant) {
+               bool gemma_joined, bool gemma_row_invariant, bool gemma31_production) {
   // Speculative where there is a drafter; no image prompt; conversations
   // kept across a restart (D-105).
   ServingOptions serving;
   serving.keep_conversations = true;
   serving.gemma_joined = gemma_joined;
   serving.gemma_row_invariant = gemma_row_invariant;
+  serving.gemma31_production = gemma31_production;
   int status = kExitOk;
   // Hang recovery (D-102; hang_ladder.h): one ladder for the chat route's
   // watch and the node's waits, outliving both (the teardown's waits are

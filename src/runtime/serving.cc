@@ -905,7 +905,8 @@ class Dsv4 final : public Llm {
 };
 
 // Approved Gemma26/31 profiles share the serving driver and native slots.
-// Joined completed units are an explicit diagnostic; production stays scalar.
+// Ordinary Gemma31 uses the qualified recipe within its bounded envelope.
+// Other profiles and explicit arithmetic diagnostics retain their own paths.
 class Gemma final : public Llm {
  public:
   Gemma(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
@@ -917,7 +918,8 @@ class Gemma final : public Llm {
         profile_(variant == engine::Gemma4Variant::k26BA4B ? model::Gemma4_26BA4B()
                                                            : model::Gemma4_31B()),
         options_(Options(entry, settings, roles, variant, serving.gemma_row_invariant)),
-        joined_(serving.gemma_joined),
+        joined_(serving.gemma_joined ||
+                (variant == engine::Gemma4Variant::k31B && settings.gemma31_production)),
         runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
     name_ = entry.name;
     settings_ = settings;
@@ -985,11 +987,17 @@ class Gemma final : public Llm {
   }
   std::string violations() const override { return runner_.coverage().first_violation; }
   std::string extra() const override {
+    const auto& selected = runner_.last_built_policy();
     return std::format(
-        R"({{"architecture":"gemma4","dispatch":"{}","optional_optimizations":{},"row_invariant":{},"profile":"{}","coverage_tensors":{},"pitch_padding":{},"joined_groups":{},"joined_units":{}}})",
-        joined_ ? "joined-diagnostic" : "scalar-cohort", joined_ || options_.row_invariant,
-        options_.row_invariant, profile_.name, runner_.coverage().tensors, runner_.pitch_padding(),
-        joined_groups_, joined_units_);
+        R"({{"architecture":"gemma4","dispatch":"{}","optional_optimizations":{},"row_invariant":{},"profile":"{}","coverage_tensors":{},"pitch_padding":{},"joined_groups":{},"joined_units":{},"gemma31_candidate":{},"max_rows":{},"norm_rope_requested":{},"norm_add_requested":{},"owner_attention_requested":{},"last_built_rows":{},"last_built_segments":{},"last_built_norm_rope":{},"last_built_norm_add":{},"last_built_owner_attention":{}}})",
+        settings_.gemma31_production ? "joined-candidate"
+        : joined_                    ? "joined-diagnostic"
+                                     : "scalar-cohort",
+        joined_ || options_.row_invariant, options_.row_invariant, profile_.name,
+        runner_.coverage().tensors, runner_.pitch_padding(), joined_groups_, joined_units_,
+        settings_.gemma31_production, options_.max_rows, options_.fuse_norm_rope,
+        options_.fuse_norm_add, options_.owner_attention, selected.rows, selected.segments,
+        selected.norm_rope, selected.norm_add, selected.owner_attention_steps);
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
   std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
@@ -1255,6 +1263,7 @@ class Gemma final : public Llm {
                                        const ModelSettings& settings,
                                        const config::RuntimeRoles& roles,
                                        engine::Gemma4Variant variant, bool row_invariant) {
+    const bool candidate = variant == engine::Gemma4Variant::k31B && settings.gemma31_production;
     return {.artifact = roles.installed / entry.artifact.value_or(""),
             .out = roles.spill,
             .variant = variant,
@@ -1262,7 +1271,10 @@ class Gemma final : public Llm {
             .max_rows = settings.prefill_chunk.value,
             .slots = settings.max_slots.value,
             .max_head_rows = settings.max_slots.value,
-            .row_invariant = row_invariant};
+            .row_invariant = row_invariant,
+            .fuse_norm_rope = candidate,
+            .fuse_norm_add = candidate,
+            .owner_attention = candidate};
   }
   engine::Gemma4Runner::Slot& NativeSlot(const Branch& branch) const {
     return *slots_[BranchIndex(branch)];
@@ -4507,13 +4519,19 @@ Status Server::Start(bool snapshot) {
     if (!facts) {
       return Error(std::format("model {}: {}", entry.name, facts.error()));
     }
+    if (options_.gemma31_production && options_.gemma_row_invariant &&
+        facts->gemma_profile == &model::Gemma4_31B())
+      return Error("the candidate Gemma31 serving recipe requires ordinary arithmetic");
+    // Explicit internal arithmetic diagnostics retain their existing recipe.
+    const bool gemma31_recipe =
+        options_.gemma31_production || (!options_.gemma_joined && !options_.gemma_row_invariant);
     // Its calibration on this machine, if one is recorded for this device,
     // driver and build (calibration.h); a reading costs a small file.
     Llm::CalibrationRecord record;
     if (!entry.composition) {
       // Keyed by the settings its measurements depend on, as they resolve
       // without calibration.
-      auto uncalibrated = ResolveSettings(entry, *facts, nullptr, options_.plain);
+      auto uncalibrated = ResolveSettings(entry, *facts, nullptr, options_.plain, gemma31_recipe);
       if (!uncalibrated) {
         return Error(std::format("model {}: {}", entry.name, uncalibrated.error()));
       }
@@ -4525,7 +4543,7 @@ Status Server::Start(bool snapshot) {
       }
     }
     auto resolved = ResolveSettings(entry, *facts, record.known.empty() ? nullptr : &record.known,
-                                    options_.plain);
+                                    options_.plain, gemma31_recipe);
     if (!resolved) {
       return Error(std::format("model {}: {}", entry.name, resolved.error()));
     }

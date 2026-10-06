@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Select the checked dense Gemma31 serving recipe at context<=8192 and at most
+  four slots: prefill fallback 256, existing norm chains and eligible owner
+  attention. Gemma26, larger configurations and explicit diagnostics retain
+  their prior policies and calibration identities.
+
 - Update the native GGML kernel dependency to llama.cpp v0.6.0 / GGML
   0.26.0, preserving bounded native dispatch and carried compact/paired
   optimizations. Historical comparisons retain their original pins; new

@@ -46,16 +46,23 @@ stream, evicts every managed extent and checks every backing released.
 Both approved Gemma26 and dense31 artifacts have a bounded native route on
 this same driver. Complete trusted-artifact binding selects the existing
 immutable engine profile before adapter construction and is rechecked at setup.
-It accepts chat and literal completions with target likelihoods and up to
-twelve independent owners executing scalar completed units. Its context ceiling
-is 262,144 and its prefill cap is 128; settings fallbacks are uncalibrated.
-Device masks are the native default, while optional norm, routing/reduction, shared-Q8,
-row-invariant and RoPE/store policies remain off. Plain chat disables thinking;
+It accepts chat and literal completions with target likelihoods. Context is capped
+at 262,144 and settings fallbacks are uncalibrated. Plain chat disables thinking;
 generated tools and assistants/speculation are refused.
-The [two-profile controls](experiments/gemma31-serving/README.md) exercise
-owned continuation, kept restart and pending cross-profile model switches.
-These route controls do not establish qualified model support or optimized
-joined batching; [Gemma's contract](gemma4.md) lists the remaining gates.
+The [bounded dense31 production bridge](experiments/gemma31-serving-bridge/README.md)
+selects ordinary joined serving, both norm chains and eligible owner attention for
+approved 31B artifacts with resolved context at most 8,192 and at most four slots.
+Its uncalibrated prefill fallback is 256; smaller explicit overrides remain intact.
+Other profiles and larger configurations retain the prior scalar recipe and 128-row
+cap. Current-pin C1/C4 8K continuations have zero predicted-ID differences and
+128/129 and 512/516 byte-exact complete heads; the 1,024-row corpus has
+complete head parity. Whole serving cycles are 3.15%/3.51%
+slower than the reference. Natural HTTP continuation, stop and departed-client peer
+progress pass. These are bounded controls, not sustained performance, broad semantic
+quality, assistant admission or long-context qualification.
+The [two-profile route controls](experiments/gemma31-serving/README.md) retain
+owned continuation, kept restart and pending cross-profile switch evidence.
+[Gemma's contract](gemma4.md) lists the remaining gates.
 
 A node names the models it serves in its configuration (D-073's document,
 `schema_version = 2`; the keys are new and compatible):

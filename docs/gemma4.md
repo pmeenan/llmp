@@ -8,7 +8,7 @@ fixed profiles, strict GGML artifact bindings, bounded state layouts,
 initialized read/write footprints and independent request-segment inputs.
 The segmented GGML graph, checked plan adapter and bounded native 26B-A4B/31B
 engine runner described below extend this foundation. Both approved profiles
-have bounded scalar serving routes; assistants remain unavailable. Both
+have bounded serving routes, with a checked dense31 optimized recipe at 8K/four slots; assistants remain unavailable. Both
 checkpoints remain unsupported
 in the [support matrix](model-support.md); the family task remains open.
 
@@ -407,13 +407,20 @@ The existing runtime driver registers both approved 26B-A4B and dense31 artifact
 through one adapter in `runtime/serving.cc`. Its factory opens the trusted artifact
 and requires complete approved tensor binding before selecting the immutable
 engine variant; setup repeats that binding. No configuration schema is added. Chat and literal completions share the native runner,
-state skeleton, settings, continuation and restart machinery. Up to twelve
-independent owners execute scalar completed units; this is continuous cohort
-scheduling, with no selected joined model dispatch. Prefill is capped at 128
-rows, context at 262,144, and the fallback settings are explicitly uncalibrated.
-Optional norm, routing/reduction, shared-Q8, row-invariant and RoPE/store
-policies remain off. Device masks
-remain the native default.
+state skeleton, settings, continuation and restart machinery. Up to twelve independent owners can use the scalar route.
+The [bounded dense31 production bridge](experiments/gemma31-serving-bridge/README.md)
+selects ordinary joined serving, both norm chains and eligible owner attention for
+approved 31B artifacts with resolved context at most 8,192 and at most four slots.
+Its uncalibrated prefill fallback is 256; smaller explicit overrides remain intact.
+Other profiles and larger configurations retain the prior scalar recipe and 128-row
+cap. Current-pin C1/C4 8K continuations have zero predicted-ID differences and
+128/129 and 512/516 byte-exact complete heads; the 1,024-row corpus has
+complete head parity. Whole serving cycles are 3.15%/3.51%
+slower than the reference. Natural HTTP continuation, stop and departed-client peer
+progress pass. These are bounded controls, not sustained performance, broad semantic
+quality, assistant admission or long-context qualification.
+Device masks remain the native default. Routing/reduction, shared-Q8, row-invariant
+and RoPE/store policies remain off for ordinary serving.
 
 Plain chat disables thinking in the actual template. Generated thought and
 tool-call parsing and assistants/speculation are explicitly unavailable in
@@ -433,7 +440,7 @@ every logical range has a proven completed copy. Contradictory kept turn
 checkpoints are omitted before file adoption. Clean pre-copy capacity refusals
 retain the previous completed prefix and peer leases.
 [Serving controls](experiments/gemma-serving/README.md) record the bounded route;
-they do not establish qualified model support or optimized batching.
+they record the earlier scalar route; the production bridge above qualifies only its bounded dense31 envelope.
 
 The [head publication capacity](experiments/gemma-head-capacity/README.md)
 now bounds pinned serving outputs by owner slots, independently of input rows.

@@ -177,10 +177,12 @@ The [Gemma 4 foundation](gemma4.md) supplies checked profiles, strict tensor
 bindings, bounded independent-slot KV layouts and segmented host inputs.
 It also supplies segmented text graphs and a checked plan adapter, with
 complete-layer diagnostic controls. Its bounded native 26B-A4B runner reuses
-the shared skeleton and has complete-model state/replay controls. It has a
-bounded scalar serving adapter, with no qualified model support yet; its
-transfer checklist records the whole-model, optimized-batching and reference
-qualification required by the next slices.
+the shared skeleton and has complete-model state/replay controls. Both profiles have a bounded serving adapter. The
+[dense31 bridge](experiments/gemma31-serving-bridge/README.md) selects ordinary
+joined execution and both norm chains only at context<=8192/slots<=4, with
+current-pin quality/corpus and HTTP controls. Gemma26 and larger configurations
+retain their scalar recipe. Broader quality, context, assistant and sustained
+performance qualification remain open.
 
 Gemma's [immutable head capacity](experiments/gemma-head-capacity/README.md)
 separates maximum input rows from pinned publication rows. Manual callers keep
