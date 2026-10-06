@@ -1,0 +1,327 @@
+{
+  "schema": 1,
+  "status": "Unselected operator-only proof; no production dispatch or whole-model qualification.",
+  "workload": {
+    "source_base": "756ab6e",
+    "platform": "Spark A (spark / spark-c4e2), GB10",
+    "input_origin": "Retained Task20 native dense31 first-local C4 inputs; no new model capture or original-model operand input.",
+    "source_artifact": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "D": 256,
+    "query_heads": 32,
+    "kv_heads": 16,
+    "owners": 4,
+    "query_rows_per_owner": 1,
+    "read_cells": 256,
+    "q": "F32",
+    "kv": "F16",
+    "mask": "F16 [256,32,1,4]",
+    "scale": 1,
+    "query_positions": [
+      67,
+      68,
+      69,
+      70
+    ],
+    "initialized_endpoints": [
+      68,
+      69,
+      70,
+      71
+    ],
+    "inputs": [
+      {
+        "role": "q.bin",
+        "bytes": 131072,
+        "sha256": "73431b56c06ff8abd429ea411acf6f86b38c1e87ba972121fda2f04c0f7ba563"
+      },
+      {
+        "role": "k.bin",
+        "bytes": 8388608,
+        "sha256": "4624d9ae02817cd097ce639fcf8b849a1eb5fdb5873d5b2e3fef28542410fea6"
+      },
+      {
+        "role": "v.bin",
+        "bytes": 8388608,
+        "sha256": "c2a7aa769a47d3f083813159d02c45ed9da9fa2dcee079728e54595b6af84c8f"
+      },
+      {
+        "role": "mask.bin",
+        "bytes": 65536,
+        "sha256": "ade31da7cd580811d43f8b0e7a67974bddba1f45bbd429bb2a2fd17d2218ce29"
+      },
+      {
+        "role": "params.bin",
+        "bytes": 64,
+        "sha256": "c6d0320f7ebd871f3d1ba4f0e5ff3f036646c1022183ff530580a8eb09196541"
+      }
+    ]
+  },
+  "proof": {
+    "output_values": 32768,
+    "output_bytes": 131072,
+    "first_restored_last_paid_sha256": "724ee828a64fe12bd796b7ac5f984ea2f365ea34c7e31bddbfdf6391955d82a5",
+    "fresh_sha256": "9dc7d4243e6fe657be605cd00fea61210f507a6e8923cffb73a5e4c6dd76308b",
+    "fresh_query_factor": -0.5,
+    "whole_output_byte_exact_owners_vs_packed": true,
+    "each_mode_own_repeat_byte_exact": true,
+    "eager_capture_fresh_restore_checks_pass": true,
+    "finite_complete_outputs": true,
+    "complete_input_witnesses": "Q/K/V/mask packed roots and all eight independently addressed K/V roots before, fresh, restored, after paid loop.",
+    "external_cmp_steps": 9,
+    "captured_kernel_nodes": 3,
+    "blocks": 48,
+    "original_blocks_per_sm": 1,
+    "owner_blocks_per_sm": 1,
+    "scratch_bytes": 399616,
+    "device_mapped_bytes": 67108864,
+    "pinned_bytes": 8519680,
+    "known_host_allowance_bytes": 67108864,
+    "actual_teardown": "All four processes returned success after explicit node teardown; official supervisor completed 17/17 steps with rc0.",
+    "prior_original_qualification": "Retained unmodified-query result hash matches Task20 original public-backend result on native-origin inputs. No new original run was needed."
+  },
+  "operator_timing": {
+    "waves_per_process": 32,
+    "completed_owner_units": 128,
+    "mode_order": [
+      "owners-first",
+      "owners-repeat",
+      "packed-first",
+      "packed-repeat"
+    ],
+    "seconds": [
+      0.003130963,
+      0.002994692,
+      0.013006954,
+      0.002807605
+    ],
+    "paid_work": "Graph replay, submission/completion, full output D2H publication, finite scan and four attention-coordinate argmax scans; upload/packing and input byte witnesses outside timer.",
+    "retained_outputs": "First, fresh and last paid complete outputs; all intermediate paid outputs finite-scanned, not retained.",
+    "conclusion": "No speed conclusion. Packed-first timing outlier retained; operands preuploaded in both modes, so KV packing removal is not measured."
+  },
+  "source": {
+    "measured_frame": {
+      "bytes": 2276,
+      "sha256": "ee3838f071477e24bf9369289ff617900069e82a2b742f48c16ca8eb1c969218"
+    },
+    "files": [
+      {
+        "path": "benchmarks/CMakeLists.txt",
+        "bytes": 35915,
+        "sha256": "420e913bc0f2cca8218f270626c6f96b68b7528345063d72852e07d832a42ece"
+      },
+      {
+        "path": "benchmarks/gemma_attention_owner_replay.cc",
+        "bytes": 17850,
+        "sha256": "a6a0dc335fdbeafe876f699fcea29afabe934ef8ab0eba3b8bb087210dabc3f2"
+      },
+      {
+        "path": "benchmarks/gemma_attention_owner_metadata.h",
+        "bytes": 4966,
+        "sha256": "4cc28f4bb2ab87f258ded0784656129262ad4f7b0f36cc6f365cc0479484d2f9"
+      },
+      {
+        "path": "src/kernels/ggml/CMakeLists.txt",
+        "bytes": 15567,
+        "sha256": "15f67c26c624007af74a657f6c4aa9eb4637c5af3a1c73a0c51e34f6e1f6b1e3"
+      },
+      {
+        "path": "src/kernels/ggml/fattn_owner.h",
+        "bytes": 1808,
+        "sha256": "0c70b82815c15f2339c2c8c59cc78abfb19be91909de235d27a3553ab8c31b9f"
+      },
+      {
+        "path": "src/kernels/ggml/fattn_owner.cc",
+        "bytes": 4708,
+        "sha256": "cb2331318216d0429348e7de0ca8d8883856345ab809c6e41e00a6ff499fd66e"
+      },
+      {
+        "path": "src/kernels/ggml/fattn_owner.cu",
+        "bytes": 10185,
+        "sha256": "ea89e22f7aa5d07a0492ea87dfe574e9e6a22c340a1a5be1e77308df06861e75"
+      },
+      {
+        "path": "src/kernels/ggml/fattn_owner_kernel.cuh",
+        "bytes": 11302,
+        "sha256": "8122c0006e5b981ae415ab50df8121fed410a6b27d6330139aa971c43e598fea"
+      },
+      {
+        "path": "third_party/sources.lock.json",
+        "bytes": 41891,
+        "sha256": "5f2749e5d33fdb7584e016a9f887e7a2b6c8ce2848816673df428af973038c30"
+      }
+    ],
+    "outer_port": {
+      "original_path": "/home/pmeenan/src/jitLLM/build/sources/ggml-1ae467d0fced412b/ggml/src/ggml-cuda/fattn-mma-f16.cuh",
+      "original_header_sha256": "b039e12e03dfc6f6edff9da37e11239d78b4e3d2d4592009ecee7d9521a64605",
+      "start_line": 1765,
+      "end_line": 1971,
+      "original_outer_sha256": "eef6483e95c70612c46801eab1f0dbaac3c23c50394df073d1a0b32a64a1ad99",
+      "only_declared_pointer_edits": true
+    },
+    "earlier_frame": {
+      "bytes": 2110,
+      "sha256": "eac4db142460626d6d091a284a1e59767da2e178c2ba709badd176948aeb9b6b"
+    },
+    "v2_delta": "Explicit positive signed-to-unsigned casts in host launch arithmetic and CPU metadata fixture only; outer/tile/grid arithmetic unchanged.",
+    "helper_sha256": "3d1420d8ab5f18e8b03bef31591ce59443b66681ba21bd4bb398424eed95a0f0",
+    "build_receipt": {
+      "bytes": 6751,
+      "sha256": "fbf84c74d44bbefce71c6499d43b9fc9b6844e994d25decce23df3f06c1031c2"
+    },
+    "receipt_version_commit": null,
+    "checkout_qualification": "Explicit isolated base and nine source hashes establish diagnostic source identity; canonical checksum sync omitted .git, so SDK receipt has commit null/origin none.",
+    "sdk": "aarch64-c09daba6ac31edee",
+    "profile": "spark-native RelWithDebInfo, core, official=true",
+    "toolchain": "Declared NVCC 13.4.92 / CUDA toolkit 13.4.2, Clang 22.1.8; actual compile command retained externally, no fresh version probe.",
+    "actual_cuda_flags": [
+      "-O2",
+      "-g",
+      "-DNDEBUG",
+      "-std=c++23",
+      "compute_121a / sm_121a SASS",
+      "-use_fast_math",
+      "-extended-lambda"
+    ],
+    "prepared_ggml_tree": "026f1ac94af98011933e71cee240d0a405ac4220cb208356acf61aa2bcea6207",
+    "license": "MIT AND Apache-2.0 for port/launcher; Apache-2.0 for own checker/helper. Existing packaged GGML MIT notice retained. Source-lock change records scope/obligations; archive, revision, patches and compile policy unchanged."
+  },
+  "task_entry": {
+    "tensorfold_head": "609ca419abecebdc5a059498a613680bd3aa847f",
+    "version": "0.6.5",
+    "observation": {
+      "bytes": 751,
+      "sha256": "a4e89fb82d759a6d973d1bf34ce95205f21fea134be89aeccea73d2dc8293b6b"
+    },
+    "observed_utc": "2026-10-05T23:18:48.797411+00:00",
+    "recipe": "Actual Gemma4 recipe remains MLX26 only; no31 CUDA recipe."
+  },
+  "checks": {
+    "metadata_cases_passed": 27,
+    "metadata_device_open": 0,
+    "metadata_launches": 0,
+    "successful_build_steps": 7,
+    "successful_proof_steps": 17,
+    "official_records": {
+      "build1": {
+        "job": "m35-gemma-owner-root-build1",
+        "records": {
+          "log": {
+            "bytes": 858,
+            "sha256": "3cfcd600386cf9cbd210191fad1e4745abb633cd3802955f350cd139f393b467"
+          },
+          "final.json": {
+            "bytes": 161,
+            "sha256": "f879b27a9c83937f43bd092e7d88b1143aa7001e8d9f7cc15f6a3368454e81e5"
+          },
+          "steps.json": {
+            "bytes": 1625,
+            "sha256": "a5166a310d01706820ee703f7f9a121a5fdf3eaf1d09ed5d941f88f2568d256f"
+          },
+          "job.json": {
+            "bytes": 501,
+            "sha256": "4d77477e60f9f9d284220a0e9cc4f94eb54e1e68c52508c1a5df84ee3dd5639c"
+          }
+        },
+        "completion": {
+          "state": "failed",
+          "rc": 1,
+          "end_utc": "2026-10-05T23:46:30.129000+00:00"
+        }
+      },
+      "build2": {
+        "job": "m35-gemma-owner-root-build2",
+        "records": {
+          "log": {
+            "bytes": 20976,
+            "sha256": "61b1c6cdff42f91dec335caf8c10823d7ec57c75033bdfe3a0368e6abb5e6c17"
+          },
+          "final.json": {
+            "bytes": 155,
+            "sha256": "ae36ccd3023555eea064e172c7367e029460825040b804e2f365821886263489"
+          },
+          "steps.json": {
+            "bytes": 1798,
+            "sha256": "901838757562eea989f11f2254950728e42860bc2b6242542100b1d409691043"
+          },
+          "job.json": {
+            "bytes": 501,
+            "sha256": "15e43d0bc66b5dfcd7f910ec18c9f98fa29642af1cfa2942f36348a9223bc9f3"
+          }
+        },
+        "completion": {
+          "state": "failed",
+          "rc": 1,
+          "end_utc": "2026-10-05T23:47:59.328000+00:00"
+        }
+      },
+      "build3": {
+        "job": "m35-gemma-owner-root-build3",
+        "records": {
+          "log": {
+            "bytes": 5053,
+            "sha256": "1fb4875cdd95f1a0ddbfdce13e6aa8c35cc57c4fed1a5943d9748359418e69f7"
+          },
+          "final.json": {
+            "bytes": 83,
+            "sha256": "142820edc86c3e7a553c4dda34c3801528ad375f9cd8a9a3d898fe1fd4c8e593"
+          },
+          "steps.json": {
+            "bytes": 2047,
+            "sha256": "d2d16c8964b927bec70a5757a172552564fe511324d11a0338cf3980cec148f3"
+          },
+          "job.json": {
+            "bytes": 501,
+            "sha256": "34c7abe857e83df300ca53b453a09ecbc74fdba0b222df7cc0594363a2bf10dc"
+          }
+        },
+        "completion": {
+          "state": "done",
+          "rc": 0,
+          "end_utc": "2026-10-05T23:49:59.283000+00:00"
+        }
+      },
+      "proof1": {
+        "job": "m35-gemma-owner-root-proof1",
+        "records": {
+          "log": {
+            "bytes": 8801,
+            "sha256": "27d13e73a8b6abe56e810ba3ebc9dc10fd73e95e1943d53db27fda194188f60a"
+          },
+          "final.json": {
+            "bytes": 83,
+            "sha256": "1d0094f8b2399088fbb016a8b7f5d5c9531f7b706baa61f7616e1d4a02f9637d"
+          },
+          "steps.json": {
+            "bytes": 5688,
+            "sha256": "a0494f0b8a8cfed6c1e9911142d5c4d350ed97d8a7c5780f8a62859bd07a0e10"
+          },
+          "job.json": {
+            "bytes": 501,
+            "sha256": "a0b68e6af224ba26dd1f9846eedfc5098ce00af3b327c0231cafa2b1af3c9fa8"
+          }
+        },
+        "completion": {
+          "state": "done",
+          "rc": 0,
+          "end_utc": "2026-10-05T23:51:40.862000+00:00"
+        }
+      }
+    },
+    "failed_history": "Build1 missing mise in nonlogin PATH, no compile/launch; build2 sign-conversion warnings rejected compile. Build3 fixed host casts only, succeeded. All raw failures preserved.",
+    "full_suite": "Not run: bounded unselected diagnostic under owner override.",
+    "author_light": {
+      "reuse_headers_files": 1609,
+      "boundaries_files": 398,
+      "problems": 0,
+      "changed_cpp_format": "passed",
+      "diff_check": "passed",
+      "json": "passed"
+    }
+  },
+  "limits": [
+    "Only actual D256/32-head/read256 arithmetic proved; D512 and 16-head eligibility are metadata-only.",
+    "No selected registry implementation, production default, full C4 model heads/state, quality or speed qualification.",
+    "Original grid/reduction partitions preserved; equal measured occupancy does not prove all future shapes resource-fit.",
+    "Gemma26 and assistant transfer require their own actual operands and whole-model controls."
+  ]
+}

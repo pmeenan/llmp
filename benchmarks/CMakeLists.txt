@@ -297,6 +297,12 @@ if(JITLLM_CUDA)
   target_link_options(jitllm_gemma_attention_replay PRIVATE
                       "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  # Explicit owner-root MMA operand proof only; no production selector.
+  add_executable(jitllm_gemma_attention_owner_replay gemma_attention_owner_replay.cc)
+  target_link_libraries(jitllm_gemma_attention_owner_replay PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma_attention_owner_replay PRIVATE
+                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   add_executable(jitllm_gemma_attention_packed
     gemma_attention_packed.cc gemma_attention_packed_wrap.cc)
   target_link_libraries(jitllm_gemma_attention_packed PRIVATE jitllm_engine jitllm_warnings)

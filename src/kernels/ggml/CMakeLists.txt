@@ -34,7 +34,7 @@ target_sources(jitllm_ggml_tensors PRIVATE dsv4_qhead.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_hc_norm.cc)
 target_sources(jitllm_ggml_tensors PRIVATE dsv4_outa.cc)
 target_sources(jitllm_ggml_tensors PRIVATE gemma_norm.cc)
-target_sources(jitllm_ggml_tensors PRIVATE gemma4_assistant_graph.cc)
+target_sources(jitllm_ggml_tensors PRIVATE gemma4_assistant_graph.cc fattn_owner.cc)
 target_link_libraries(jitllm_ggml_tensors PUBLIC jitllm_base jitllm_ggml_base jitllm_execution
                                                  jitllm_model
                                           # cutlass/version.h only (jitllm_ops.cc pins the
@@ -77,7 +77,7 @@ if(JITLLM_CUDA)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_hc_norm.cu)
   target_sources(jitllm_ggml_kernels PRIVATE mul_mat_q_glu.cu)
   target_sources(jitllm_ggml_kernels PRIVATE dsv4_outa.cu)
-  target_sources(jitllm_ggml_kernels PRIVATE gemma_norm.cu)
+  target_sources(jitllm_ggml_kernels PRIVATE gemma_norm.cu fattn_owner.cu)
   target_include_directories(jitllm_ggml_kernels SYSTEM PRIVATE
                              "${JITLLM_SDK}/cuda/targets/${JITLLM_CUDA_TARGET_DIR}/include")
   # CUTLASS's NVFP4 grouped GEMM for the routed experts (moe_cutlass.h) and
@@ -166,7 +166,7 @@ if(JITLLM_CUDA)
                    executor.cc
                    executor.h gemma4_graph.cc gemma4_graph.h fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
-                   fattn_mma_shape.cuh fusion.cc
+                   fattn_mma_shape.cuh fattn_owner.h fattn_owner.cc fattn_owner.cu fattn_owner_kernel.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc
                    implementations.h jitllm_fused.cu jitllm_moe.cu jitllm_ops.cc jitllm_ops.cu
                    jitllm_ops.h launch.cu launch.h
@@ -220,7 +220,7 @@ if(JITLLM_CUDA)
   # the other launchers' wrappers. jitLLM's fusions of GGML nodes
   # (jitllm_fused.cu) build with the same flags, so that their arithmetic
   # compiles as the nodes' does.
-  set_source_files_properties(fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
+  set_source_files_properties(fattn_owner.cu fattn_mma.cu fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu
                               mul_mat_q.cu mul_mat_q_glu.cu mul_mat_q2_d2r.cu mmvq_rows.cu ops_ext.cu jitllm_fused.cu jitllm_moe.cu
                               dsv4_fast.cu dsv4_sparse.cu dsv4_weighted_reduce.cu gemma_moe.cu dsv4_qhead.cu dsv4_outa.cu dsv4_hc_norm.cu PROPERTIES COMPILE_OPTIONS
                               "-use_fast_math;-extended-lambda")

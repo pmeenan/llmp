@@ -431,6 +431,11 @@ family" guide, and its long-context scaling work.
         73.98%/69.29%, with exact prior heads/state and seven focused controls.
         Wall screens favor the change with material candidate spread; no
         sustained speed, corpus quality or reference parity claim is made.
+      - [x] [Independent C4 attention owner roots](experiments/gemma-owner-root-attention/README.md):
+        all 32,768 real D25631 outputs match packed four-stream MMA byte for byte,
+        preserving original grid/reduction partitions and checked independent spans.
+        D512 arithmetic, whole-model copy removal and paid C4 qualification stay open;
+        no production selector or default changes.
       - [x] [Strict Q8_0 Gemma assistant binding](gemma4-assistant.md) for both
         approved target pairs, including kept architecture semantics, complete
         shared-target contracts and native canonical-vocabulary comparison.

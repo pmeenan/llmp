@@ -437,6 +437,14 @@ late-failure, stale-identity and capture controls. Qwen/DeepSeek share this
 executor change; their model speed is unmeasured here. Wall timing favors the
 candidate but has material spread, and competitive/quality gates stay open.
 
+The [independent C4 attention owner-root proof](experiments/gemma-owner-root-attention/README.md)
+reuses the pinned MMA tile/fixup arithmetic with eight checked K/V addresses,
+keeping the packed kernel's grid and reduction partitions. All 32,768 real
+D25631 outputs, fresh/restored controls and captured repeats match byte for byte.
+The operator timer excludes packing, so it establishes no copy-removal gain.
+D512, other read widths, whole-model C4 and Gemma26/assistant transfer need actual
+controls; production selection remains unchanged.
+
 Gemma 4's [foundation transfer checklist](gemma4.md#required-execution-and-optimization-qualification)
 maps these selected techniques to its actual GGUF operand contracts and
 independent request segments. It records the checked Q5_1 primitive controls
