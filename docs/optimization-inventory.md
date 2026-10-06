@@ -85,6 +85,16 @@ model supported status follows. Ordinary partial output-row blocks are
 explicitly refused where pinned MMVQ would over-read (RE-045); the own
 row-invariant kernel guards them.
 
+The proposed ordinary Gemma row/attention recipe is still gated by actual cohort
+quality. Its [first31 C2 comparison](experiments/gemma31-production-c2/README.md)
+retains eight positive-margin strict differences, zero exact full-head rows and
+a passing+0.791% conditional-loss result over64 within-history targets. Actual
+C2 selects independent attention with zero owner steps. The source-backed next
+factor uses the existing D256 MMA fallback instead of the local vector family
+in a private build; no causal result, production policy or borrowed allowance
+is implied. Existing whole-C8/C12 geometry evidence and grouped-store rejection
+retain their separate scopes.
+
 ## Coverage
 
 The [Gemma26 late-prefill common-input controls](experiments/gemma26-late-moe/README.md)

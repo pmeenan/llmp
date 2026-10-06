@@ -1,0 +1,356 @@
+{
+  "all_mismatches_paid": true,
+  "byte_exact_rows": 0,
+  "comparison_sha256": "d910661880c4a9b0c3d91ff87147e2c26179b46b2a3552620b173244feb3134b",
+  "compiled_source": {
+    "base": "774515ed1df47055948106389f3880ca47089d82",
+    "native_helper_sha256": "5ac9f0ed4ebdfe549a26c70a74e81b538c91eaac8283be41276a87f474fe24b5",
+    "public_source_sha256": "b34a8b683173eddb5aa6af6f60c75647d9eb3b6a75fab11b3800331671522926",
+    "reference_helper_sha256": "12b36bed98b3da3da9e809bd8af52f2fab3226b36aa0f8d979fb5116835986ad",
+    "runtime_helper_sha256": "b985b56505d074fb0843d901924ff4a9bf58db9964a93bee2908c4e22df72a8e",
+    "sdk_receipt_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",
+    "source14": {
+      "benchmarks/gemma_joined.cc": {
+        "bytes": 19879,
+        "sha256": "f5c9207868edb8f8736d29224974a11cf05bf89186d8f850c2ea3401ac96b9db"
+      },
+      "docs/experiments/gemma-joined-serving/http_control.py": {
+        "bytes": 14978,
+        "sha256": "21a08fdb7c96068e1cfb839bd4e0e59d8dfa7a6687ffc181a90e340542ce25b5"
+      },
+      "docs/experiments/gemma-joined-serving/llama_joined.cc": {
+        "bytes": 13370,
+        "sha256": "b34a8b683173eddb5aa6af6f60c75647d9eb3b6a75fab11b3800331671522926"
+      },
+      "docs/experiments/gemma-joined-serving/production_analyze.py": {
+        "bytes": 22196,
+        "sha256": "75a7dd91f1532ef007ffb1d00ee164698cc8d53d705c39a2ac1be3c207e1e819"
+      },
+      "src/runtime/commands.h": {
+        "bytes": 6357,
+        "sha256": "6412382b3c04efe91d30b872b76ece8168a4f450d4d7eea45dae152bf7fc96b4"
+      },
+      "src/runtime/model_settings.cc": {
+        "bytes": 43488,
+        "sha256": "e22ec37508414fcdb541b3762b20b0223916a05f5ad91f61fb1b6bbf495ef64f"
+      },
+      "src/runtime/model_settings.h": {
+        "bytes": 16341,
+        "sha256": "28721a7ada4845339a8f9e97ba9535fb25791db12aed575184fd9de44ae9e348"
+      },
+      "src/runtime/serve_api.cc": {
+        "bytes": 108766,
+        "sha256": "a657f5cd230f6f6b69a2e10d4f93eb5dec6ff9c4b5aeb96e8ef4efce79cd2abb"
+      },
+      "src/runtime/serving.cc": {
+        "bytes": 268917,
+        "sha256": "d28ecf157cfc241202769cde35797008353204dcec493ff48e39ed5252187076"
+      },
+      "src/runtime/serving.h": {
+        "bytes": 85989,
+        "sha256": "ec84696966ab0e35745ceb3fd464a66b7ecac36a8bdabec7cd6354a63ef9b705"
+      },
+      "tests/unit/gemma4_runner_gpu_test.cc": {
+        "bytes": 70817,
+        "sha256": "895e6c0c6ba955b96a40e036163a355a49918226890b484a2c8ce10b9c62e7d5"
+      },
+      "tests/unit/gemma4_serving_gpu_test.cc": {
+        "bytes": 43843,
+        "sha256": "cbfd67581abf3c5c97c0d66febb7badb68fd9a1dded4a50156d0b7d8e73ae857"
+      },
+      "tests/unit/gemma_joined_serving_gpu_test.cc": {
+        "bytes": 31643,
+        "sha256": "7f7ef26a4231bd34d23c787dfd9af88588523d774b2dbdb97e695b7c51b00acb"
+      },
+      "tests/unit/model_settings_test.cc": {
+        "bytes": 28980,
+        "sha256": "2dabd729c44196a3a29c247c803ebb3ba5c77442d96e3786bf3fc4260c7efe73"
+      }
+    },
+    "source14_receipt_sha256": "524fe76c8868d20916c3e68aaa19e2e11ab958696be2601a31bff4eb23d188c2"
+  },
+  "complete_rows": 66,
+  "conditional_gate_passed": true,
+  "failed_focused_compile_attempt": {
+    "cause": "Fixture local GenerateOptions variable shadowed its base fixture member; declaration and three uses renamed; other13 source files unchanged.",
+    "final_sha256": "6b78894118b195cc5ecbaff39d34484d30f189768c796dc1411e36b5386b8c4c",
+    "name": "m35-gemma-production-serving-check1",
+    "no_tests_ran": true,
+    "queued": 12,
+    "state": "FAILED",
+    "succeeded": 3
+  },
+  "forced_nll_rows": 64,
+  "limits": [
+    "No default adoption",
+    "No C2 tolerance or C4/C8/C12 calibration transfer",
+    "No full1023-transition corpus claim",
+    "No sustained, depth, swaps or shared-prefix qualification",
+    "No causal attribution of the cross-engine difference from this screen"
+  ],
+  "max_raw_delta": 12.828039169311523,
+  "method_sha256": "3c2de28ead978c77be0dc4068b18004a23368488db9fd190d36cab496677e632",
+  "native_conditional_nll": 10.549001324389186,
+  "native_freeze_sha256": "2dba40d5b34bb3cb243dc4fdd1b4cd4521ad70c8c4e3fe6a7d60cb5716cefb59",
+  "native_own_repeat": {
+    "complete_heads_state_layout_input_exact": true,
+    "files": {
+      "cohort.logits.f32": {
+        "bytes": 69206016,
+        "sha256": "b0ea72dfc0eeb586d55a795703a820b80e7e7718d9b2e3f448e7ae4a174b996e"
+      },
+      "final.layout.txt": {
+        "bytes": 51,
+        "sha256": "85cc9584fd4d71dd7ede6eabdc5254eb2ef08f64be0c188aa02d070d3f70d5a3"
+      },
+      "final.owner0.state.bin": {
+        "bytes": 922746880,
+        "sha256": "d1b6f70387df4041a9fce24783cdfe3a2bf4582a4d8ba665b65d6c3681cb6e61"
+      },
+      "final.owner1.state.bin": {
+        "bytes": 922746880,
+        "sha256": "9fff6853dbba9789368fe1375bcf64c8dbacdab13210a28b9ef6c5043d0dc579"
+      },
+      "frontier.layout.txt": {
+        "bytes": 51,
+        "sha256": "85cc9584fd4d71dd7ede6eabdc5254eb2ef08f64be0c188aa02d070d3f70d5a3"
+      },
+      "frontier.owner0.state.bin": {
+        "bytes": 922746880,
+        "sha256": "c3d6851380b1aa638fcffb37c1257f922e9cae01fdc2e3e17d49fdb28abd276b"
+      },
+      "frontier.owner1.state.bin": {
+        "bytes": 922746880,
+        "sha256": "290f8641ee9ba203dfc216bb27cf2f3809ff9bb4a3dc6f270d2ac0ed6cb402da"
+      },
+      "inputs.i32": {
+        "bytes": 49152,
+        "sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3"
+      }
+    },
+    "whole_heads_finite": true
+  },
+  "native_source": {
+    "analysis_sha256": "75a7dd91f1532ef007ffb1d00ee164698cc8d53d705c39a2ac1be3c207e1e819",
+    "artifact_index_sha256": "9ae365a17ed73528262d7befdb505bf07e6695e03f0fa36f69e69099dbd5f34c",
+    "artifact_manifest_sha256": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "base": "774515ed1df47055948106389f3880ca47089d82",
+    "carrier_manifest_sha256": "f6cf32b29dd980c997915519339cdc1cd2c244e219c473a0331303bbc6e5708c",
+    "complete_head_rows": 66,
+    "conditional_nll_targets": 64,
+    "device_evidence": {
+      "actual": "0, NVIDIA GB10, 580.178.04, 12.1",
+      "engine_architecture_code": 1210,
+      "host": "spark-b",
+      "query": "nvidia-smi --query-gpu=index,name,driver_version,compute_cap --format=csv,noheader",
+      "source_gate": "Setup queries actual MeasuringContext ordinal before sizing; actual selected counts for every first decode group checked after acquisition"
+    },
+    "effective_owner_attention": true,
+    "input_preparation_summary_sha256": "6ea36043fd8ea910f00527cec66b555df684462ae3f0356c94c8c3cd4e9574e8",
+    "input_sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3",
+    "input_text_manifest_sha256": "c30dfd97a19615fcc4eb1831a7cc053f39336e1466fa0744f9c78a1b218153d8",
+    "judge_sha256": "702251d1afc20d75dc7c27b5a7724c4ce2a8a0ce60222b52aab52549264dab71",
+    "native_binary": {
+      "path": "/home/pmeenan/.local/share/jitllm/gemma-production-serving/native1",
+      "sha256": "5ac9f0ed4ebdfe549a26c70a74e81b538c91eaac8283be41276a87f474fe24b5"
+    },
+    "native_sdk_receipt_sha256": "eb7a4ebce352540275e3322c36b862edb24d4cbee53727f4f468ce8872fd2d26",
+    "native_wrapper_sha256": "e78dbdc54199a7202259529f74057e9dc76c7cb13ca42f30116976c36898ae64",
+    "quality_method": {
+      "forced_target_rows": 64,
+      "full_corpus_claim": false,
+      "margin_allowance": 0,
+      "relative_conditional_loss_limit": 0.03
+    },
+    "recipe": {
+      "context": 4096,
+      "forced_steps": 32,
+      "fusion": true,
+      "graphs": true,
+      "history_rows": 1024,
+      "max_head_rows": 2,
+      "max_rows": 256,
+      "moe_route_reduce": false,
+      "native_joined_groups": [
+        2
+      ],
+      "native_policy": "norm",
+      "norm_add": true,
+      "norm_rope": true,
+      "owner_requested": true,
+      "owners": 2,
+      "plain_norm": true,
+      "prefill_rows": 992,
+      "profile": 31,
+      "rope_store": false,
+      "row_products": false,
+      "shared_q8": false
+    },
+    "reference_build": {
+      "final_sha256": "b81aae3ac8a606bb96276928876802b66e35ed089bf614533e594ff440c7dd48",
+      "job": "m35-gemma-production-serving-c2-reference-build1",
+      "owned_retirement_sha256": [
+        "62c8cb0a1cfa3778f1259916560bd101922dfb80a010c8fb236a45a5808c763e",
+        "2120bdd88365d2f177062cdb28f0f4de7cc16f3823af822b32cdde5c82fc1f6a"
+      ],
+      "state": "DONE0",
+      "steps": 7,
+      "steps_sha256": "2cf49fcce0e9d139c13ed49bdea94b736c5329714d68aebe036f70f6661ff373"
+    },
+    "reference_client_sha256": "12b36bed98b3da3da9e809bd8af52f2fab3226b36aa0f8d979fb5116835986ad",
+    "reference_library_frame_sha256": "48fb7d7148fd58227d671e07688d771a524246bd17d635616ba9dce54d0af93f",
+    "reference_public_source_sha256": "b34a8b683173eddb5aa6af6f60c75647d9eb3b6a75fab11b3800331671522926",
+    "schema": 1,
+    "selected_history_manifest_sha256": [
+      "2a13ffd89ebe8da2845dad7016de4ae2830a4a591e7b38dbe7d8ec2dd3f1bfec",
+      "e36d5bdda9c27d8107aa7d4f3079b2a50c1fb70ee4b5f28ff5f90d81d85fd8b7"
+    ],
+    "selected_plan_owner_steps_per_native_group": [
+      0
+    ],
+    "source14_frame_sha256": "ac701a9b47a3b867580109b1f2cc03811cf80d91eba7e894504120e24092e190",
+    "source14_receipt_sha256": "524fe76c8868d20916c3e68aaa19e2e11ab958696be2601a31bff4eb23d188c2",
+    "target_chronology": "row0 predicts992; paid token s validates row(s+1)*2+owner; conditional row0..31 targets992..1023; row32 predicts1024 and is unscored",
+    "template_sha256": "845f1ee48e39fc942fe190da9df6a1c5db229e17a96ea08966ad1c9274e73d1b",
+    "tensorfold_entry_sha256": "149109e79b7be85b1fcc573c767723b50863f209d39a2b3bba0186770c0cdc23",
+    "tokenizer_metadata_sha256": "79c54f13f654d98e93ba1496062c017baea53ddaed59de086fe3fa7cf09d8461"
+  },
+  "no_followup_models": true,
+  "official_jobs": {
+    "compare": {
+      "queued": 3,
+      "rc": 1,
+      "records": {
+        "final.json": "2378aab8331779ace94934d0a028338e4f71d801e9ff4ff337c8fb234ea4cb79",
+        "log": "3bcb7aa14d0cee165b0f0f84ccacfd538effb4483e2eef18671dbda8bd8ffd37",
+        "steps.json": "6c2620b76181a4dd4fa46e46c8986958a27c9a7b51aec0a00d8954429a166069"
+      },
+      "state": "failed",
+      "succeeded": 1
+    },
+    "focused": {
+      "queued": 12,
+      "rc": 0,
+      "records": {
+        "final.json": "6b94f670d7d386a759ff0686b528fb33834983c3b1582ffdf5eede367bbf6c60",
+        "log": "9f10705d65c71803ebda9b7af3c5d36908594daad942c754d7d6a439de88dc16",
+        "steps.json": "fc3d4701f409a3b9de85dafeb031ea15a848827945d84ce10f8d640b400cb43e"
+      },
+      "state": "done",
+      "succeeded": 12
+    },
+    "freeze": {
+      "queued": 3,
+      "rc": 0,
+      "records": {
+        "final.json": "5b5eb6af9cd41ec2e726ee247b8e9be9c77355413f88d9e85c412c7e351b2503",
+        "log": "65a29911bb77e1fedd2114797b87f219b0228447aa96261f4f783c62518cd015",
+        "steps.json": "ae142298e50322c58cc9ff9445b301af1c502787fb04cdbc3dd925677c718cb6"
+      },
+      "state": "done",
+      "succeeded": 3
+    },
+    "native": {
+      "queued": 6,
+      "rc": 0,
+      "records": {
+        "final.json": "3e3fcc9ce63ddee5c07dfeb0d0485692f9a46a73721ff6ad6044ac7065ea1888",
+        "log": "acda553fa5ea9b8cfc3fe010064bd2cb76c264b7c32a257932156cad9d9a385c",
+        "steps.json": "d15117bdb69f5ea2f7711161ab223763ac837d7860c9fff2ec4c008de038bcbc"
+      },
+      "state": "done",
+      "succeeded": 6
+    },
+    "postauth": {
+      "queued": 1,
+      "rc": 0,
+      "records": {
+        "final.json": "4ae77fa54828a3178d888db8bea70f702929d94e74ef6e3ddff39f2910d58107",
+        "log": "d93ef267a293f65b05e66adefd11f265625b8f267dd728b8ead1f9753846daba",
+        "steps.json": "9f42c1d583c15697744a37797f5050bf86dea95b7ad8a084db721c27e9774d78"
+      },
+      "state": "done",
+      "succeeded": 1
+    },
+    "reference_build": {
+      "queued": 7,
+      "rc": 0,
+      "records": {
+        "final.json": "b81aae3ac8a606bb96276928876802b66e35ed089bf614533e594ff440c7dd48",
+        "log": "c29ae71dfd4dd66a63e60cfc50209b813e8d82345daa005644cd90cc0f743d15",
+        "steps.json": "2cf49fcce0e9d139c13ed49bdea94b736c5329714d68aebe036f70f6661ff373"
+      },
+      "state": "done",
+      "succeeded": 7
+    },
+    "stock": {
+      "queued": 6,
+      "rc": 0,
+      "records": {
+        "final.json": "a11de9e2f18260fb0e40d2b2d4bf3e4965078d113cfd84db5ccddb945d271d39",
+        "log": "8878864f5e903c144a61219c0d4e286632bed0bec7506c57772ad392bfb20b0f",
+        "steps.json": "ff47e704f9b3aed814d2f6948c7d1e948fbeac985b2fb72d6bfe446acab1e01d"
+      },
+      "state": "done",
+      "succeeded": 6
+    }
+  },
+  "quality_gate_passed": false,
+  "reference_conditional_nll": 10.541122446482767,
+  "reference_own_repeat": {
+    "cohort.logits.f32": {
+      "bytes": 69206016,
+      "sha256": "b04e891364a5a5d35f9f134a2abc8976611c07939eb59102f061937a34dea4e2"
+    },
+    "inputs.i32": {
+      "bytes": 49152,
+      "sha256": "d584450079145f3d2c93f46ef24a0aabe2b3971279a1cbddbbb29f0a506ac5e3"
+    }
+  },
+  "relative_conditional_loss": 0.00790999794158058,
+  "retirement": {
+    "task71-analysis-c2-31-compare1-container-retired.json": "2f3d8859d366b017b07ac96e0a7192a92ee0189e3fbe33643f6926a7d78869ce",
+    "task71-analysis-c2-31-freeze1-container-retired.json": "45b5e65248ac77e72eae8cb39437a43eb7ea9565e56b7639ded09dcd6e926824",
+    "task71-analysis-c2-31-joined-first-admit-container-retired.json": "048ed7f4cac295aa90cb04c4861a973dc48bbfc364271537d419502480559f37",
+    "task71-analysis-c2-31-joined-repeat-admit-container-retired.json": "1b558116f700a785b142afed8a8957e1325e4aeeb07614753a42ce5868371b55",
+    "task71-c2-client-build1-container-retired.json": "62c8cb0a1cfa3778f1259916560bd101922dfb80a010c8fb236a45a5808c763e",
+    "task71-c2-libraries1-container-retired.json": "2120bdd88365d2f177062cdb28f0f4de7cc16f3823af822b32cdde5c82fc1f6a",
+    "task71-ref31-c2-first-container-retired.json": "7d94cd3ba9686190e68c97cb916e3a6b4e9d6441b71a54d481713537477c9fad",
+    "task71-ref31-c2-repeat-container-retired.json": "018e3f9ca1a21e7a427963f5902f271c7153f98f76287845b1f660df5d74adb5"
+  },
+  "schema": 1,
+  "source_sha256": "988c685274c05e52d443607e99d4f17210666365842993a20bc180f4eaead32b",
+  "status": "Strict C2 first-screen FAIL; production defaults withheld",
+  "strict_difference_aggregate": {
+    "by_owner": {
+      "0": 3,
+      "1": 5
+    },
+    "frontier_rows": 0,
+    "individual_witnesses": "Retained externally in the authenticated raw comparison; no individual samples in Git.",
+    "maximum_positive_margin": 4.115981459617615,
+    "minimum_positive_margin": 0.03738594055175781,
+    "paid_rows": 8,
+    "positive_margin_count": 8,
+    "reference_tie_count": 0
+  },
+  "strict_positive": 8,
+  "tensorfold_entry_sha256": "149109e79b7be85b1fcc573c767723b50863f209d39a2b3bba0186770c0cdc23",
+  "ties": 0,
+  "walls": {
+    "native": [
+      3.30978,
+      3.29089
+    ],
+    "native_mean": 3.300335,
+    "native_spread": 0.01888999999999985,
+    "reference": [
+      3.29867,
+      3.2904
+    ],
+    "reference_mean": 3.2945349999999998,
+    "reference_spread": 0.00827,
+    "relative_native_mean": 0.0017604912377620074,
+    "scope": "Short fixed cohort, no sustained parity claim"
+  }
+}

@@ -17,6 +17,15 @@ file ([M0](m0-record.md), [M1](m1-record.md), [M2](m2-record.md), [M3](m3-record
 
 **Status legend:** `pending` · `in progress` · `done` · `parked`
 
+The ordinary Gemma serving-default candidate remains unadopted after the
+[Gemma31 C2 first screen](experiments/gemma31-production-c2/README.md): 34 focused
+controls pass, but the zero-margin gate fails on eight positive-margin winners
+over 66 heads. The separate 64-target conditional loss increases0.791% and passes
+its3% bound. Native/reference own complete heads repeat exactly. This does not
+transfer C4/C8/C12 allowances or qualify partial cohorts; the strict failure is
+retained while a private existing-local-MMA family factor is evaluated. No new
+HTTP/default, full-corpus or sustained qualification is claimed.
+
 ## M0 — Plan the plan  `done`
 
 Ran 2026-09-20 to 2026-09-23 and exited on the owner's approval of the plan.
