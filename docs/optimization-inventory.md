@@ -209,8 +209,16 @@ retained postnorm features at query64/query4: full heads/features and retired
 acceptance match the same first original byte-for-byte. Plain fused norms alone
 fail strict3, acceptance and conditional loss on that unit. This is a bounded
 recipe transfer; assistant arithmetic is unchanged, and no serving, 26B or
-competitive repeated-unit performance claim follows.
+competitive repeated-unit performance claim follows from that one-unit control.
 
+The [Gemma31 fixed32 all-cost screen](experiments/gemma-assistant-throughput/README.md)
+now measures actual GreedyUnit drafts/target verify/rejection/acceptance and
+completed publication. All 32 committed tokens/pending anchors match both
+plain controls and the pinned original; native assistant elapsed improves 55.24%
+versus native plain (2.2342× rate) and remains 1.25% above original assistant.
+Actual 12 units/46 verify rows/34 drafts retain full heads and paid finite scans.
+This establishes one resident C1/P64 suffix, ignoring EOG; removing full heads,
+26 policy transfer, serving, terminal behavior and sustained gains need evidence.
 
 The [Gemma26 assistant C2 screen](experiments/gemma-assistant-c2/README.md)
 checks ordinary joined products and per-segment attention on distinct frozen
@@ -757,7 +765,6 @@ including supported single-Spark paths in M3.5. M4's
 techniques after their recipes and measured two-Spark behavior are
 re-pinned; TensorFold refreshes per task as well as at entry. Their claimed
 rankings are not local measurements.
-
 
 ### Qwen expert-major group cap — 2026-10-04
 

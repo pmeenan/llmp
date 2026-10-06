@@ -215,8 +215,17 @@ serving and scalar-width quality remain separate.
 One [matched Gemma31 target-plus-assistant transaction](experiments/gemma-assistant-greedy-reference/README.md)
 now also matches full original heads/features and acceptance at C1/P64/depth3
 under the explicit native target norm chains. Its independent normal Wave4/reset
-checks preserve the engine's semantic-prefix oracle; this adds no engine defaults,
-serving admission, scalar-width quality or performance qualification.
+checks preserve the engine's semantic-prefix oracle. That one-unit control adds
+no engine defaults, serving admission or scalar-width quality; the bounded
+repeated performance screen follows below.
+
+A subsequent [Gemma31 repeated assistant screen](experiments/gemma-assistant-throughput/README.md)
+times the actual engine unit, including drafts, verify/rollback/accept and
+retired publication, for 32 identical committed tokens across all four native
+and original plain/assistant arms. Native assistant elapsed is 55.24% below
+native plain and 1.25% above original assistant on this short C1/P64 suffix.
+Own repeat/timed carry checks pass; EOG is ignored, with no terminal/serving,
+other-prefix, sustained or 26 qualification and no engine default change.
 
 What a new family writes, and nothing else:
 

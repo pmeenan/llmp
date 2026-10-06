@@ -76,8 +76,9 @@ raw checkpoint pair and unique owned container. Use [`analyze.py`](analyze.py)
 `compare` with both fixed own-proof hashes. Do not expose original recurrence
 before native own-freeze, replace an existing output, or treat official rc0 as
 numerical qualification. Input and retired identities are reauthenticated after
-freeze. A separately released teacher control and later all-cost repeated-unit
-measurement remain future work.
+freeze. The [bounded fixed32 all-cost follow-up](../gemma-assistant-throughput/README.md)
+now passes its continuation gates; a separately released teacher control and
+wider performance/serving qualification remain future work.
 
 TensorFold was re-pinned at entry to cb2ebf0540f42604e2759b2ddef497861e928248,
 version 0.6.6. Its authenticated MLX recipe supplies no comparable CUDA Q8

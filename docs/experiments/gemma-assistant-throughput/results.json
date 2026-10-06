@@ -1,0 +1,497 @@
+{
+  "schema": 1,
+  "scope": "Short Gemma31 C1/P64 fixed32 all-cost greedy screen; EOG ignored in all arms. No chat-stop, serving, 26B, sampling or sustained performance qualification.",
+  "base_commit": "dc8b5901fe1a5449d5c9b4a25e5fef39a931d000",
+  "parent_docs_seed_commit": "3165b872eb234210d055249d0244c03d321dc007",
+  "source_ready_sha256": "b963b7ddf6e5ac157fb6d672e5ad48bd0c5f72b3915f2b8051200e6a6ccf34a4",
+  "source_bundle_sha256": "8076d3e781ec3abcba0304e76dc616701a28742bd4e9627f6718ef0ca0081dc1",
+  "final_measured_source_files": [
+    {
+      "path": "benchmarks/gemma_greedy_reference.cc",
+      "bytes": 33352,
+      "sha256": "68eb55c33f55040c4a85c9883658cc4ffa13bb9fc45a78572c577dcdd0017c77"
+    },
+    {
+      "path": "docs/experiments/gemma-assistant-greedy-reference/PERFORMANCE.md",
+      "bytes": 6082,
+      "sha256": "007d02de5ddd736ab3c0975a8ba33f270d9c8d9cca3bd26f9e875e1133f7f103"
+    },
+    {
+      "path": "docs/experiments/gemma-assistant-greedy-reference/llama_greedy.cc",
+      "bytes": 35227,
+      "sha256": "fc06fa359225d8b5af1b76dafef06b0c5c7504b7c7bec147b392c3a5cdd805b9"
+    },
+    {
+      "path": "docs/experiments/gemma-assistant-greedy-reference/performance_analyze.py",
+      "bytes": 13585,
+      "sha256": "437fa672c31827e8013104f4fab8df7090c6e7802d52c68d5eaba87cb53ed9f0"
+    },
+    {
+      "path": "docs/experiments/gemma-assistant-greedy-reference/performance_reference.sh",
+      "bytes": 3686,
+      "sha256": "a849e33d6ffff1a0c67d2e7d7e30e037d90cc931450b807cc8a18a8a9e0a091b"
+    },
+    {
+      "path": "docs/experiments/gemma-assistant-greedy-reference/test_performance_analyze.py",
+      "bytes": 1947,
+      "sha256": "dca5309e278d7ec40cddd3487531bffb4884d5e41af0fed93ff79a8f4ac0945c"
+    }
+  ],
+  "recipe": {
+    "profile": "31",
+    "slots": 1,
+    "prefix_rows": 64,
+    "committed_tokens": 32,
+    "endpoint": 96,
+    "max_rows_ubatch": 128,
+    "context": 4096,
+    "cache_type": "F16",
+    "local_cache_cells": 1280,
+    "global_cache_cells": 4096,
+    "native_fuse_norms": true,
+    "native_fuse_norm_rope": true,
+    "native_fuse_norm_add": true,
+    "plain_head_cap": 1,
+    "plain_retained_features": false,
+    "assistant_head_cap": 4,
+    "assistant_max_verify_rows": 4,
+    "assistant_retained_features": true,
+    "assistant_depth": "min(3,remaining-1); final one-row tail uses ordinary Wave1 if needed",
+    "actual_scalar_tail_units_in_assistant_trajectory": 0,
+    "ignore_eog": true,
+    "eos_occurrences_all_arms": 0,
+    "warm_trajectories": 1,
+    "untimed_quality_repeats": 2,
+    "timed_repeats": 2,
+    "paid_boundary": "Completed prefix to completed32-token publication; actual target, drafts, snapshot/verify/rejection/acceptance, retirement, normal workspace copies and finite scans paid.",
+    "outside_paid": "Setup/admission/prefix/reset/reserve, diagnostic trace copies, full finite/archive scans, endpoint state hashing and file writes."
+  },
+  "continuation_gates": {
+    "native_unit_vs_plain": {
+      "sequence_equal": true,
+      "first_common_prefix_divergence": null,
+      "pending_anchor_equal": true,
+      "pending_head": {
+        "strict_positive_difference": false,
+        "exact_tie_difference": false,
+        "max_raw_delta": 3.296084403991699
+      }
+    },
+    "reference_unit_vs_plain": {
+      "sequence_equal": true,
+      "first_common_prefix_divergence": null,
+      "pending_anchor_equal": true,
+      "pending_head": {
+        "strict_positive_difference": false,
+        "exact_tie_difference": false,
+        "max_raw_delta": 3.296084403991699
+      }
+    },
+    "native_plain_vs_reference_plain": {
+      "sequence_equal": true,
+      "first_common_prefix_divergence": null,
+      "pending_anchor_equal": true,
+      "pending_head": {
+        "strict_positive_difference": false,
+        "exact_tie_difference": false,
+        "max_raw_delta": 0.0
+      }
+    },
+    "native_unit_vs_reference_unit": {
+      "sequence_equal": true,
+      "first_common_prefix_divergence": null,
+      "pending_anchor_equal": true,
+      "pending_head": {
+        "strict_positive_difference": false,
+        "exact_tie_difference": false,
+        "max_raw_delta": 0.0
+      }
+    }
+  },
+  "continuation_pass": true,
+  "timing_interpretation_qualified": true,
+  "timed_seconds": {
+    "native_plain": [
+      2.940045,
+      2.93817
+    ],
+    "native_unit": [
+      1.315688,
+      1.315276
+    ],
+    "reference_plain": [
+      2.900468,
+      2.900182
+    ],
+    "reference_unit": [
+      1.300446,
+      1.29814
+    ]
+  },
+  "timed_spread_seconds": {
+    "native_plain": 0.001875000000000071,
+    "native_unit": 0.00041200000000007897,
+    "reference_plain": 0.00028600000000000847,
+    "reference_unit": 0.0023059999999999192
+  },
+  "mean_seconds": {
+    "native_plain": 2.9391075,
+    "native_unit": 1.3154819999999998,
+    "reference_plain": 2.900325,
+    "reference_unit": 1.299293
+  },
+  "mean_tokens_per_second": {
+    "native_plain": 10.887658923669855,
+    "native_unit": 24.325684425936657,
+    "reference_plain": 11.033246274124451,
+    "reference_unit": 24.628778882053545
+  },
+  "unit_relative_to_plain_elapsed": {
+    "native": -0.5524212707429041,
+    "reference": -0.5520181358985631
+  },
+  "native_unit_relative_to_reference_unit_elapsed": 0.012459853166298718,
+  "native_unit_rate_ratio_to_plain": 2.234243798090738,
+  "reference_unit_rate_ratio_to_plain": 2.2322332222216237,
+  "work": {
+    "native_plain": {
+      "committed": 32,
+      "units": 32,
+      "accepted_prefix_distribution": {
+        "1": 32,
+        "2": 0,
+        "3": 0,
+        "4": 0
+      },
+      "draft_rows": 0,
+      "target_query_and_published_head_rows": 32,
+      "scalar_tail_units": 32,
+      "eos_occurrences_ignored": 0
+    },
+    "native_unit": {
+      "committed": 32,
+      "units": 12,
+      "accepted_prefix_distribution": {
+        "1": 4,
+        "2": 2,
+        "3": 0,
+        "4": 6
+      },
+      "draft_rows": 34,
+      "target_query_and_published_head_rows": 46,
+      "scalar_tail_units": 0,
+      "eos_occurrences_ignored": 0
+    },
+    "reference_plain": {
+      "committed": 32,
+      "units": 32,
+      "accepted_prefix_distribution": {
+        "1": 32,
+        "2": 0,
+        "3": 0,
+        "4": 0
+      },
+      "draft_rows": 0,
+      "target_query_and_published_head_rows": 32,
+      "scalar_tail_units": 32,
+      "eos_occurrences_ignored": 0
+    },
+    "reference_unit": {
+      "committed": 32,
+      "units": 12,
+      "accepted_prefix_distribution": {
+        "1": 4,
+        "2": 2,
+        "3": 0,
+        "4": 6
+      },
+      "draft_rows": 34,
+      "target_query_and_published_head_rows": 46,
+      "scalar_tail_units": 0,
+      "eos_occurrences_ignored": 0
+    }
+  },
+  "own_proofs": {
+    "native_plain32": {
+      "sha256": "53c6a9d1e6071cf0906954076c5944357cad0702d9649c0c6b51aeb5b696b9e2",
+      "retained_files": 14,
+      "full_quality_repeat_exact": true,
+      "timed_matches_quality": true,
+      "all_retained_outputs_finite": true,
+      "actual_vector_capacity_bytes": 34603008
+    },
+    "native_unit32": {
+      "sha256": "ac5c34d009aef088d604659061ef9ff3f3a8e091e5d6e4b5c6346930ef758e7a",
+      "retained_files": 26,
+      "full_quality_repeat_exact": true,
+      "timed_matches_quality": true,
+      "all_retained_outputs_finite": true,
+      "actual_vector_capacity_bytes": 211548160
+    },
+    "reference_plain32": {
+      "sha256": "07772f312c4795a85527b86123aef9a33a0994b42c02bf696f19602e58413b33",
+      "retained_files": 18,
+      "full_quality_repeat_exact": true,
+      "timed_matches_quality": true,
+      "all_retained_outputs_finite": true,
+      "actual_vector_capacity_bytes": 34603008
+    },
+    "reference_unit32": {
+      "sha256": "924060a686fc277364634cda7f9ad335bfbff421bad41444e47935ffa07bc793",
+      "retained_files": 30,
+      "full_quality_repeat_exact": true,
+      "timed_matches_quality": true,
+      "all_retained_outputs_finite": true,
+      "actual_vector_capacity_bytes": 210499584
+    }
+  },
+  "comparison_sha256": "9e6becd0dff1a2cc04d534dd6e3fe6dc2e8795a1f117656c11304747629f1909",
+  "funding": {
+    "native_temporary_vocab_admission_bytes": 536870912,
+    "native_caller_envelope_plain_bytes": 67108864,
+    "native_caller_envelope_unit_bytes": 268435456,
+    "native_metadata_headroom_bytes": 1048576,
+    "reference_known_vector_bound_plain_bytes": 201326592,
+    "reference_known_vector_bound_unit_bytes": 402653184,
+    "reference_endpoint_opaque_cap_bytes": 134217728,
+    "reference_endpoint_actual_bytes": 86511304,
+    "reference_metadata_headroom_bytes": 1048576,
+    "endpoint_witness": "Native catalog-funded pinned post-clock semantic initialized-state copy; original opaque snapshot plus logical cell witnesses.",
+    "legacy_P64_snapshot_caps_unchanged": true,
+    "unchanged_peak_claim": false
+  },
+  "verification": {
+    "build_only_old_analyzer_controls": 3,
+    "build_only_new_performance_controls": 3,
+    "pre_context_26_refusal": true,
+    "official_jobs_done0": 10,
+    "failure_history": [],
+    "new_engine_or_kernel_source": false,
+    "full_suite_run": false,
+    "new_completion_fault_injection": false,
+    "heads_scalar_vs_four_byte_equality_assumed": false,
+    "cross_engine_KV_byte_claim": false,
+    "all32_cross_engine_full_heads_byte_claim": false,
+    "no_new_numerical_allowance": true,
+    "earlier_plain_norm_unit_failure_preserved": "04f7dc1c1033f1bd6d7f02a680e25d21d2cd53dee51351d3ed9afc426049c497"
+  },
+  "provenance": {
+    "native_binary_sha256": "9b7bce2a5debb4d75d6c9b9b664cd9812dcbc92e421ed4087d4352878f61d765",
+    "public_binary_sha256": "20938fdf77725221239b15ca98fbcd8c48393330f4636f7d1d47867cda34497e",
+    "SDK_receipt_sha256": "e57a1624e100daa68d136235fe75e9691a7c1fae987dc11aafd237147e4cef09",
+    "reference_source_commit": "b29c606e28a01b1bc8c1351026a0fa6e616bf6c4",
+    "reference_image_digest": "sha256:837fc732fea84b0d795097a3c8c5706bb16774f1722dab0f70bf6093c60aecc7",
+    "canonical_input_sha256": "b2d7aaf6aa2ef06d82591a3794f36640e192f429539ec934fd74bf4d81df1610",
+    "native_owns_before_original": true,
+    "owned_container_retirement_records": [
+      {
+        "path": "throughput31-build1-container-retired.json",
+        "sha256": "61b76887e54af3786a050cc19822b938c0b75ed43df732c8fb273ee8fd1d9691",
+        "record": {
+          "cid": "30d7de4fbdab5e32dd55d70c542f94d4f803c340138967ad7046ed7331ba7238",
+          "container_absent_after_checked_docker_query": true,
+          "name": "jitllm-gemma26-late-moe-throughput31-build1",
+          "owner_label": "gemma26-late-moe"
+        }
+      },
+      {
+        "path": "throughput31-reference-plain32-1-container-retired.json",
+        "sha256": "b432179fe9c34d3ffb536db41112d6cc69a24cfd31e3850ce1b6988e697f3039",
+        "record": {
+          "cid": "a7b74dec544b15b321da81f98ad66435f92e78e296d557269d910a493e062f09",
+          "container_absent_after_checked_docker_query": true,
+          "name": "jitllm-gemma26-late-moe-throughput31-reference-plain32-1",
+          "owner_label": "gemma26-late-moe"
+        }
+      },
+      {
+        "path": "throughput31-reference-unit32-1-container-retired.json",
+        "sha256": "d08a32f02578cfe107932cd41c969fb7c0ee704769f81a2ec584d5ef2a342564",
+        "record": {
+          "cid": "785e1896ec5b9081675773da2c1468cd66b2b59028cb11940031eea84002fa89",
+          "container_absent_after_checked_docker_query": true,
+          "name": "jitllm-gemma26-late-moe-throughput31-reference-unit32-1",
+          "owner_label": "gemma26-late-moe"
+        }
+      }
+    ],
+    "source_identity_sha256": {
+      "native_plain32": "f09fd6c714ebe2ce9be7c1d04a2eb732214fa792c2018b136387f1e3f8f59aee",
+      "native_unit32": "e9c566aac34ee6ee85a24dc08dfb995f4e15572326f824e20cf9bf8b0bf50ac5",
+      "reference_plain32": "87931144079289785a73c12efed9e32cc55f50751fdc9c3d0c42075c1f6a7cb1",
+      "reference_unit32": "879afa840e88458d21f1710a8aa25492f00ce64e4e7b344b79e4ca823a0d5f09"
+    },
+    "prepared_target_manifest_sha256": "32c92e077a6816b54aa988e2dee61a3639c958fd510ea99e25f3621f10b2aa08",
+    "prepared_target_index_sha256": "9ae365a17ed73528262d7befdb505bf07e6695e03f0fa36f69e69099dbd5f34c",
+    "prepared_assistant_manifest_sha256": "447a5c20a0a25632bf35e118d5dde1867a182cd209b9ccd3afe93866c3696120",
+    "prepared_assistant_index_sha256": "a2baf8f6e272b1f2e0a9cea57709a24a33f6f063c7525e245a6e322ccd372f7a",
+    "raw_target_sha256": "9e92cb6236044c6a9870af406029c74a76e0571c157a6f95df724dcc8c7a1575",
+    "raw_assistant_sha256": "5ae8b0117bed601e8924c6305bd5b0585de361d51f0e77091bcb4252cf1f27de",
+    "host": "spark / spark-c4e2"
+  },
+  "official_jobs": [
+    {
+      "job_name": "m35-gemma-assistant-throughput-build1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 8,
+      "successful_steps": 8,
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-build1",
+      "files_sha256": {
+        "job.json": "2dcb46487006bb66866c03b6934b5652f4711f31b5a86aa1fa29f566ea333482",
+        "steps.json": "df86cbe889d7612c571e6d5688f8335fcfd9fad7075f9c676f09a4c8054da624",
+        "final.json": "90cbb049ab306c6c6f8660ea0dc8c9d116d311b87390859868e4c39fab6d7a01",
+        "log": "f4f7660bc73b331ab8d3c23ba3be70530fc33d72c0064748f4d74a5f366f365a"
+      }
+    },
+    {
+      "job_name": "m35-gemma-assistant-throughput-compare31-1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-compare31-1",
+      "files_sha256": {
+        "job.json": "0a1c7dd08fadd6aa038bf2580e2e23f08e583ae6df759bb9112be810371e6fd4",
+        "steps.json": "bda2362b7d4dbed212d7b7843f31ceb3a56ffb108bac1979eced47cd47a7b4a3",
+        "final.json": "ac892f5c0dc9b2b3065d5e7f9a9eb62a3277541c107f76157538464e791d3a0f",
+        "log": "8a086e0e2e39b46aa63b2afa0c9f719eb231a669ea1a59209828dc5aabfa49d6"
+      }
+    },
+    {
+      "job_name": "m35-gemma-assistant-throughput-native-plain32-1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-native-plain32-1",
+      "files_sha256": {
+        "job.json": "f6ef67c920d718afdc050a202544d272d7f4b0819ed095cf79e97cdd88bb8101",
+        "steps.json": "8aef1af1780c804c4c1c6de09b933b7c1bb1c8061a1aaf6f9b8d73f724144a2c",
+        "final.json": "43146d9c47fddf0b0349aea1fe10c219effbf4b0d8ebeda4aadcc7a6c2525963",
+        "log": "bb9a9145e767d7793dc9447fc1a91306661e0edd071af500508750a9011423f6"
+      }
+    },
+    {
+      "job_name": "m35-gemma-assistant-throughput-native-plain32-own1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-native-plain32-own1",
+      "files_sha256": {
+        "job.json": "087bae066797a7f6999620e0f31b269fdbba18cfdf4ac3dca6ea963732c10657",
+        "steps.json": "b767f9b6f291062d82710a4e91a241fb57fffc64312aa0778863d05d71a55fcd",
+        "final.json": "0ca2fb55870a832a63da70984a892e678267961ac851924298c7cb2a8e2f449a",
+        "log": "a4afb67e570afeb73ae594d895f83e6cefc5d684e5bf170ed9008dc98200bf8b"
+      }
+    },
+    {
+      "job_name": "m35-gemma-assistant-throughput-native-unit32-1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-native-unit32-1",
+      "files_sha256": {
+        "job.json": "06829ea1a42ec6b627b6136aac06484ed2e99a32e085f7fdb96967cdeec91b04",
+        "steps.json": "7fe17b3356cb30cdc3ce9a3238d1a48355cc1dd92d29761ca4787aeb4780395a",
+        "final.json": "316b7549242be30fc6cc9a225e2099adfb0bbf99e33a7013f0f6c8d0f3ae74b7",
+        "log": "d385ef9fabec01812e0d4246f18421687237fa36c0fec015a9472021aa7d9a50"
+      }
+    },
+    {
+      "job_name": "m35-gemma-assistant-throughput-native-unit32-own1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-native-unit32-own1",
+      "files_sha256": {
+        "job.json": "28256b027452eafb31c1d647d70f33df8bb6378b5c64a5f523e91414e1dff329",
+        "steps.json": "6b1fc1d4758f402b3d0e9adabbd82b87783a499f2491acebb2648d2ca01ca4e1",
+        "final.json": "77899315d3be05015bdf3b8d3cfe17cd3ea57263dbf6573fdf8a5c267f850064",
+        "log": "b284455cdb598e381683aa1075c3039ce7681deebbdacf4e051d5bfc9faa32ce"
+      }
+    },
+    {
+      "job_name": "m35-gemma-assistant-throughput-reference-plain32-1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-reference-plain32-1",
+      "files_sha256": {
+        "job.json": "f2daa2e5810ff9bf0bccfefc5d9bb131738646190a03f6fbdfa7fb18f36a0e9a",
+        "steps.json": "ebcb2fe5e8f5d8857ca4715bca6fc0b339d4b406c421da033d2761b78ee25b98",
+        "final.json": "e805f8695d374f6e42d3d45269f9c5a8e44abd2b76dd75243169b56860316ae4",
+        "log": "14064562647271e4b06bb97fdfbe4baaaafa04fa803d27e7f2163c3ffb5659cf"
+      }
+    },
+    {
+      "job_name": "m35-gemma-assistant-throughput-reference-plain32-own1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-reference-plain32-own1",
+      "files_sha256": {
+        "job.json": "9f4ebdeb70f36534aea78c6636e7a2ed40ff469ff9b7f77076fd2d69a28421cc",
+        "steps.json": "e6de7940591068534838a2b5ac5f89feccc868c5ee1e5e805f6d0457b6258809",
+        "final.json": "eeff7fb6c69092019fb03b1ae00f8116eb2cef546370178060de282cf325ef09",
+        "log": "f1604d08b958aedde520fe6eaddd854608272e4bf5709fbac7a1379f4012d5da"
+      }
+    },
+    {
+      "job_name": "m35-gemma-assistant-throughput-reference-unit32-1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-reference-unit32-1",
+      "files_sha256": {
+        "job.json": "27db16e2b72a266115f83c2f827f4b8942ad28c7c4254346c69192f9bc1fecd4",
+        "steps.json": "008489fde02bda85a58d4ba3a5e2c1d8b67c50a96c44b77e286767dc8a17b6f6",
+        "final.json": "777c5dc3fe645375657d853cde50047a5c457517261bf03cb7a5009807d46cf3",
+        "log": "6596037ffdd6c252274a887ef6b3ac9c5fc8417b1635184949deefe574c385e2"
+      }
+    },
+    {
+      "job_name": "m35-gemma-assistant-throughput-reference-unit32-own1",
+      "state": "done",
+      "rc": 0,
+      "queued_steps": 1,
+      "successful_steps": 1,
+      "local_external_directory": "/tmp/jitllm-m35-coordination/gemma-assistant-throughput-raw/official-reference-unit32-own1",
+      "files_sha256": {
+        "job.json": "11672b90279b2ae97a1436b84dab38ee9e002235d210dfaea88d3e6799f94064",
+        "steps.json": "92740916c308743b353aac57dc4603b5db4e7d18456e9c3a490e967143777cc5",
+        "final.json": "ecdae69446e188afcfa7eeb0b1809c74edcfad9369bdb3c1f9baab0fb09e76a5",
+        "log": "dfa959481fdecc04a94cd3c9766802a2a6a7384dadeb27e3d9115ecadee338b1"
+      }
+    }
+  ],
+  "tensorfold_entry": {
+    "query_utc": "2026-10-06T14:26:25.732030+00:00",
+    "head": "cb2ebf0540f42604e2759b2ddef497861e928248",
+    "observation": "Primary git ls-remote at this new task entry returns cb2ebf0540f42604e2759b2ddef497861e928248; authenticated same-HEAD source receipts inherited, old observation preserved. No comparable CUDA Q8 assistant result.",
+    "previous_receipt": "/tmp/jitllm-m35-coordination/gemma-assistant-greedy-reference-raw/tensorfold-entry1.json",
+    "README.md": {
+      "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/README.md",
+      "sha256": "8657de67b397f3cd43c62e54ade9a73272f5702cf5d1b3d7e6b80eb310a51bb2"
+    },
+    "pyproject.toml": {
+      "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/pyproject.toml",
+      "sha256": "0ce280060ad521cc2f5baeb4c1c80873a0c78d3f714bce14d36e37facd5bc441"
+    },
+    "docs/recipes/gemma-4.md": {
+      "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/docs/recipes/gemma-4.md",
+      "sha256": "815b813e943f4521e494f5124aaf6a711adb186de777d311eb1bda3a8d40ac11"
+    },
+    "src/tensorfold/__init__.py": {
+      "url": "https://raw.githubusercontent.com/ashhart/TensorFold/cb2ebf0540f42604e2759b2ddef497861e928248/src/tensorfold/__init__.py",
+      "sha256": "fdc3b9c9e54fd20a7aca02113787d82cd8ac28cb10e5142225c718c2d4e6288e"
+    },
+    "version": "0.6.6"
+  }
+}

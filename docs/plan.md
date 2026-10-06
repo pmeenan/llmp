@@ -624,7 +624,14 @@ family" guide, and its long-context scaling work.
         retained features byte-exact under existing target norm chains, matching
         retired acceptance/pending carry and zero conditional loss increase.
         Plain-norm baseline strict3/acceptance/conditional-loss FAIL remains;
-        26B, scalar-width, serving and all-cost repeated-unit performance remain open.
+        26B, scalar-width and serving remain open; bounded repeated performance follows.
+      - [x] [Gemma31 all-cost repeated assistant screen](experiments/gemma-assistant-throughput/README.md),
+        resident C1/P64 fixed32 ignoring EOG: all four native/original plain/assistant
+        continuations and pending anchors agree after independent own-freezes.
+        Native actual GreedyUnit mean 1.315482 s versus plain 2.939108 s (55.24% less
+        elapsed, 2.2342× rate), 1.25% slower than original assistant; 12 units,
+        46 verified/34 drafted rows paid. Short screen only; serving, terminal
+        behavior, other prefixes, sustained performance and 26 transfer remain open.
       - import to a v0 artifact;
       - its runner: plan, state layout and model-specific steps;
       - the native tokenizer and its chat template's rendering (native or

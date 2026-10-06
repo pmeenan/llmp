@@ -201,7 +201,15 @@ prefill and query4 verification, using the target's existing norm/RoPE and norm/
 chains. All complete target/assistant heads and retained features are byte-exact;
 accepted count and pending carry agree. The plain-norm baseline failure remains
 recorded. This adds one original transaction control, without 26B, scalar-width,
-serving or competitive whole-chain performance qualification.
+serving or competitive whole-chain performance qualification from that one unit.
+
+The [Gemma31 repeated all-cost screen](experiments/gemma-assistant-throughput/README.md)
+now commits the same 32 tokens and pending anchor across native/original plain
+and actual assistant unit execution at C1/P64. Native assistant mean 1.315482 s
+versus plain 2.939108 s reduces elapsed 55.24%, with 12 units/46 target rows/34 drafts;
+it remains 1.25% slower than original assistant. Full own-repeat/timed witnesses
+pass before cross read. EOG is ignored consistently; this adds no serving,
+terminal, other-prefix, sustained or 26 qualification.
 
 ## Execution work still owed
 
