@@ -194,6 +194,12 @@ and a 1024-row prefill under the same bounds. Larger configurations retain their
 scalar recipe. Broader quality, context, assistant and sustained
 performance qualification remain open.
 
+Gemma4 [held-cohort selection](experiments/gemma-held-cohort/README.md) keeps
+an unchanged selection's execution closure inside a held stream request. Mask
+validation and frozen borrowed/verify-peer exclusions run first; changed masks,
+growth, Clear and restore still refresh closures. Every submitted step also
+checks that its actual execution closure is held.
+
 Gemma's [immutable head capacity](experiments/gemma-head-capacity/README.md)
 separates maximum input rows from pinned publication rows. Manual callers keep
 `max_head_rows=0` (the existing all-row envelope); serving funds one head per

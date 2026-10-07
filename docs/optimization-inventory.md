@@ -100,6 +100,12 @@ stock's row shape. Their small same-geometry heads are byte-exact and paired
 C1/C4 cost screens preserve all emitted tokens and histories. This requirement
 does not transfer to Gemma3. See the [matched controls](experiments/gemma26-production/README.md#http-lifecycle-screen).
 
+Gemma4 [unchanged held-cohort selection](experiments/gemma-held-cohort/README.md)
+transfers the existing Qwen/DeepSeek scheduler-call guard to the actual HTTP
+per-unit selection path. This changes no graph arithmetic or batching policy.
+Its endpoint A/B is separate from the serving-driver reference below, which
+selects its cohort once per cycle.
+
 The [current corrected Gemma4 reference](experiments/gemma-current-backend-greedy/README.md)
 adds 8K C1/C4 ordinary d812 backend-greedy quality and short paid cycles for
 both profiles. All 1,290 complete heads and natural histories agree exactly.

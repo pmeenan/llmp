@@ -179,6 +179,7 @@ TEST_P(Gemma4VerifyGpu, OrdinaryRepeatDiscardAndActualFeatureCommit) {
       EXPECT_FALSE(runner->ReserveStateThrough(0, 11));
       EXPECT_FALSE(runner->AcceptVerify(0, 0));
       EXPECT_FALSE(runner->AcceptVerify(0, 5));
+      if (auto r = runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}); !r) return r;
       const std::array<std::uint32_t, 1> peer_only{1};
       EXPECT_FALSE(runner->SelectSlots(peer_only));
       if (repeat < 2) {

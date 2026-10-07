@@ -137,6 +137,7 @@ class Gemma4RunnerGpu : public ::testing::Test {
     auto freed = node.FreePinned(*pinned);
     return copied ? freed : copied;
   }
+  void HeldSelectionControl();
   void StateOnlyControl();
   void HeadCapacityControl();
   struct Lifetime {
@@ -851,6 +852,55 @@ TEST_F(Gemma4RunnerGpu, PagedOutWeightsAdmissionRefusesWithoutLosingCompletedPre
   Exact(baseline, resumed);
   ASSERT_TRUE(node.FreePinned(*checkpoint));
 }
+void Gemma4RunnerGpu::HeldSelectionControl() {
+  const std::array<std::uint32_t, 2> both{0, 1};
+  ASSERT_TRUE(runner->SelectSlots(both));
+  ASSERT_FALSE(node.InRequest(0));
+  const auto bytes = std::uint64_t{2} * runner->profile().vocab * sizeof(float);
+  ASSERT_TRUE(node.ChargeHost(bytes, false));
+  struct Grant {
+    en::PagedNode& node;
+    std::uint64_t bytes;
+    ~Grant() { node.UnchargeHost(bytes); }
+  } grant{node, bytes};
+  auto status = Held([&]() -> en::Status {
+    std::vector<float> a, b;
+    if (auto r = Single(0, 0, prompt, a); !r) return r;
+    if (auto r = Single(1, 0, prompt, b); !r) return r;
+    const auto occupancy = node.catalog().OccupancyOf(node.domain()).Total().value();
+    for (unsigned i = 0; i < 32; ++i)
+      if (auto r = runner->SelectSlots(both); !r) return r;
+    EXPECT_FALSE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 0}));
+    EXPECT_FALSE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 4}));
+    EXPECT_EQ(node.catalog().OccupancyOf(node.domain()).Total().value(), occupancy);
+    EXPECT_EQ((*runner->request_slot(0))->completed_positions(), prompt.size());
+    EXPECT_EQ((*runner->request_slot(1))->completed_positions(), prompt.size());
+    // Clear refreshes the held closure; unchanged selection must retain it.
+    if (auto r = runner->Clear(0); !r) return r;
+    if (auto r = runner->SelectSlots(both); !r) return r;
+    if (auto r = Single(0, 0, prompt, a); !r) return r;
+    Exact(a, b);
+    if (auto r = runner->SelectSlots(std::array<std::uint32_t, 1>{1}); !r) return r;
+    a = {17};
+    EXPECT_FALSE(Single(0, 6, std::span(prompt).last(1), a));
+    EXPECT_EQ(a, std::vector<float>{17});
+    if (auto r = runner->SelectSlots(both); !r) return r;
+    if (auto r = Single(0, 6, std::span(prompt).last(1), a); !r) return r;
+    if (auto r = Single(1, 6, std::span(prompt).last(1), b); !r) return r;
+    Exact(a, b);
+    return {};
+  });
+  ASSERT_TRUE(status) << (status ? "" : status.error());
+  // The same selection outside a request must still rebuild its closure.
+  ASSERT_FALSE(node.InRequest(0));
+  ASSERT_TRUE(runner->SelectSlots(both));
+}
+TEST_F(Gemma4RunnerGpu, HeldSelectionPreservesAdmissionAndRefreshesChangedOwners) {
+  HeldSelectionControl();
+}
+TEST_F(Gemma31RunnerGpu, HeldSelectionPreservesAdmissionAndRefreshesChangedOwners) {
+  HeldSelectionControl();
+}
 TEST_F(Gemma4RunnerGpu, ServingRestoreNeedsProvenCompleteCopiesAndProtectsThePeer) {
   const auto source_layout = runner->CheckpointLayoutId();
   ASSERT_TRUE(runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}));
@@ -1293,6 +1343,7 @@ TEST_F(Gemma4FeatureGpu, FrozenFeatureSurvivesPeerProgressPlansAndRejectsSameSlo
     EXPECT_FALSE(runner->ClearIdle(0));
     EXPECT_FALSE(runner->Spill(0));
     EXPECT_FALSE(runner->ReserveStateThrough(0, 3));
+    if (auto r = runner->SelectSlots(std::array<std::uint32_t, 2>{0, 1}); !r) return r;
     EXPECT_FALSE(runner->SelectSlots(std::array<std::uint32_t, 1>{1}));
     const en::Gemma4Runner::Work forbidden{0, 2, std::span(prompt).first(1), &sentinel};
     EXPECT_FALSE(runner->Wave(std::span(&forbidden, 1)));

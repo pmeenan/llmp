@@ -268,6 +268,9 @@ Status Gemma4Runner::SelectSlots(std::span<const std::uint32_t> slots) {
     if (slot && (slot->borrowed || slot->verify_pending) &&
         (*mask & (SlotMask{1} << slot->index)) == 0)
       return Error("Gemma4 selection cannot remove a frozen borrowed peer");
+  // An unchanged selection within a held request keeps its execution closure.
+  // State growth, clear and restore still refresh the affected closures.
+  if (*mask == cohort_.active() && node_.InRequest(stream_)) return {};
   cohort_.Select(*mask);
   return RefreshClosures();
 }

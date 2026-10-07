@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Gemma4 serving reuses an unchanged cohort's execution closure within a held
+  request, avoiding a redundant scheduler call between completed units. Changed
+  selections and state growth, Clear and restore still refresh their closures.
+
 - Add an experimental bounded Gemma2 2B Q8_0 native runner with authenticated
   import, checked state and graph replay. Its representative one-slot control
   matches stock full heads exactly; serving and batching remain open.
