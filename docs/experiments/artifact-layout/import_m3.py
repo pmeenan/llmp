@@ -149,6 +149,55 @@ def pinned_sources(pins_path, model_id, source_paths):
     return expected
 
 
+def check_gemma3_source(src, expected):
+    """Closed preflight for the approved legacy checkpoint, before planning.
+
+    The existing authenticated factual fixture is the one tensor/profile
+    authority. The writer still hashes the whole source and reparses it before
+    publication; this header check does not authenticate weight payloads.
+    Other GGUF architectures retain their existing generic path.
+    """
+    if (src["meta"].get("general.architecture") != "gemma3" and
+            "gemma-3-4b-it-qat-Q4_0.gguf" not in expected):
+        return
+    fixture = HERE.parents[2] / "tests/unit/data/gemma3/gemma3_4b_qat.json"
+    contract = json.loads(fixture.read_text())
+    identity = contract["source"]
+    name = identity["file"]
+    if expected != {name: identity["full_sha256"]} or len(src["parts"]) != 1:
+        raise ValueError("Gemma3 import needs the single approved QAT source pin")
+    part = src["parts"][0]
+    if (part["kind"] != "gguf" or Path(part["path"]).name != name or
+            Path(part["path"]).stat().st_size != identity["full_bytes"]):
+        raise ValueError("Gemma3 import source identity differs")
+    for key, value in contract["metadata"].items():
+        if key == "vocab_count":
+            tokens = src["meta"].get("tokenizer.ggml.tokens")
+            actual = (tokens["array_len"] if type(tokens) is dict and
+                      set(tokens) == {"array_len"} else None)
+        else:
+            actual = src["meta"].get(key)
+        if type(actual) is not type(value) or actual != value:
+            raise ValueError(f"Gemma3 import metadata differs: {key}")
+    tensors = src["tensors"]
+    if len(tensors) != len(contract["tensors"]):
+        raise ValueError("Gemma3 import tensor count differs")
+    by_name = {t["name"]: t for t in tensors}
+    if len(by_name) != len(tensors):
+        raise ValueError("Gemma3 import duplicate tensor")
+    for wanted in contract["tensors"]:
+        tensor = by_name.get(wanted["name"])
+        if (tensor is None or tensor["family"] != "ggml" or
+                tensor["dtype"] != wanted["type"] or tensor["ne"] != wanted["ne"] or
+                tensor["nbytes"] != wanted["bytes"] or
+                tensor["offset"] != contract["data_offset"] + wanted["relative_offset"] or
+                tensor["path"] != part["path"]):
+            raise ValueError(f"Gemma3 import tensor differs: {wanted['name']}")
+    if (part["header_len"] != contract["complete_header_bytes"] or
+            part["header_sha256"] != contract["complete_header_sha256"]):
+        raise ValueError("Gemma3 import authenticated header differs")
+
+
 def pinned_by_path(pins_path, model_id, checkpoint, rels):
     """name -> SHA-256 for files given by path relative to CHECKPOINT, each
     matched to the pin of that exact path. Refused if a path is not pinned,
@@ -427,6 +476,7 @@ def main(argv):
                              "see component for a pipeline's")
         expected = pinned_sources(pins, model_id, paths)
         src = layout.load_sources(paths)
+        check_gemma3_source(src, expected)
         p = layout.plan(src, tie_check=True)
         print(json.dumps(layout.stats(p)), flush=True)
         print(layout.build(p, src, out, paths, (), converter=converter(), expected_sources=expected))

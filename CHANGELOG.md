@@ -46,6 +46,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Prepare the approved Gemma 3 4B QAT Q4_0 checkpoint through the generic
+  artifact importer, with strict source, metadata and tensor preflight. The
+  real artifact passes deep verification; execution and serving remain open.
+
 - Gemma3 QAT text state/input and descriptor planning foundations with checked
   independent slots and primitive operation plans. Runner, model execution,
   serving and numerical/performance qualification remain open.

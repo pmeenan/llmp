@@ -6,8 +6,10 @@
 `src/model/gemma3.h` supplies a separate fixed profile and strict tensor
 binding for the approved Gemma 3 4B QAT Q4_0 text checkpoint. A separate
 bounded state/input contract and descriptor graph/plan adapter are now
-checked by 13 focused CPU/no-launch controls. There is no importer, runner,
-serving route or media adapter. This model remains outside the supported execution matrix; legacy
+checked by 13 focused CPU/no-launch controls. The generic importer now has
+an approved-source
+[preflight, pin recipe and deep-verified artifact](experiments/gemma3-execution/README.md). There is no runner, serving route or media adapter.
+This model remains outside the supported execution matrix; legacy
 execution, linear RoPE, batching, restore, reference quality and performance
 qualification remain open. Existing native SentencePiece and Gemma 3 chat
 rendering are reusable prerequisites, not proof of model execution.
@@ -19,7 +21,9 @@ The approved source is
 `gemma-3-4b-it-qat-Q4_0.gguf`, 2,526,080,992 bytes. The exact-revision
 primary HF API LFS object and HEAD `X-Linked-ETag` report whole-file SHA-256
 `ee91c3e7a4ab95d8c95672f9fcb58bf236b257e9f217966bcf53a5a6df4ab49a`.
-No whole payload was downloaded or locally hashed for this slice.
+The foundation slice used metadata only; the later
+[prepared import](experiments/gemma3-execution/README.md) locally authenticates
+the whole payload on Spark A.
 
 | Metadata fact | Value |
 | --- | ---: |

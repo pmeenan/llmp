@@ -815,8 +815,10 @@ family" guide, and its long-context scaling work.
       actual approved metadata and all 444 tensor descriptors, separate
       profile/binding and refusal controls; three focused CPU controls pass.
       Separate state/input and primitive descriptor graph/plan foundations are
-      checked by 13 focused CPU/no-launch controls. Import/runner/serving, actual
-      linear RoPE execution and model qualification remain open. The deferred and dropped
+      checked by 13 focused CPU/no-launch controls. The approved source now has
+      a [deep-verified prepared artifact](experiments/gemma3-execution/README.md)
+      and seven focused import controls; runner/serving, actual linear RoPE
+      execution and model qualification remain open. The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);

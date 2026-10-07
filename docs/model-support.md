@@ -69,8 +69,10 @@ Gemma 3 4B QAT Q4_0 has a separate checked profile and strict
 GGML tensor binding in `model/gemma3.h`; the [foundation contract](gemma3.md)
 records the approved checkpoint's complete actual descriptor table and
 three passing focused CPU controls. Its separate bounded state/input and
-descriptor graph/plan foundation passes 13 focused CPU/no-launch controls; importer,
-runner, model execution, batching and serving qualification remain open. It is
+descriptor graph/plan foundation passes 13 focused CPU/no-launch controls.
+The approved source has a [deep-verified prepared artifact](experiments/gemma3-execution/README.md)
+and seven focused import controls; runner, model execution, batching and
+serving qualification remain open. It is
 not an execution support entry.
 
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,

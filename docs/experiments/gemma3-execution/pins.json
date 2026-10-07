@@ -1,0 +1,17 @@
+{
+  "models": [
+    {
+      "id": "gemma3-4b-qat-q4_0",
+      "repository": "ggml-org/gemma-3-4b-it-qat-GGUF",
+      "revision": "bbcac0d065076c47042838c0675c602411b0dd4c",
+      "weight_license": "gemma",
+      "files": [
+        {
+          "path": "gemma-3-4b-it-qat-Q4_0.gguf",
+          "bytes": 2526080992,
+          "sha256": "ee91c3e7a4ab95d8c95672f9fcb58bf236b257e9f217966bcf53a5a6df4ab49a"
+        }
+      ]
+    }
+  ]
+}
