@@ -148,6 +148,18 @@ also initializes 131,072 positions without a whole-state snapshot, matching all
 public admission, maximum-depth swap/state retention and retrieval open;
 descriptive native prefill is about 48.7 seconds versus stock's 32.9 seconds.
 
+The [internal grouped H8 foundation](experiments/gemma-h8-wide/README.md) now
+checks actual unequal C4/C8/C12 and partial C5..7/C9..11, with twelve independent
+states, common read width across attention groups, paired-prefill capacity two
+and whole-wave products. One continuous schedule passes 472 heads / 468 targets
+with zero strict differences (276 heads exact), exact native own/GPU/state/peer/
+restore controls, and explicit every-split funding. Public slots remain two.
+The separate C12 short n2 performance gate remains FAIL solely because final
+native/stock heads are not byte-exact; all 384 natural choices/cursors and each
+engine's own final heads are exact. Maximum final delta is 1.90735e-6 with zero
+argmax differences. Descriptive wall is +11.3219% total / +23.5760% decode versus
+stock, without parity, concurrency, memory or ordinary wider-admission closure.
+
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in
 `model/gemma4.h`. The [foundation contract](gemma4.md) records actual pinned

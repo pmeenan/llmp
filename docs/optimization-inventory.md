@@ -116,8 +116,20 @@ launcher with canonical three-root admission and both mixed-padding funding
 splits. Original packed-C3 operands/replays are exact; a pause/catch-up/C4-rejoin
 model schedule retains exact own state and zero stock strict differences
 (147/148 exact heads). This qualifies that internal schedule, with no new timing
-or solo/batch allowance. Public slots remain at two; unequal C3/C4 model reads,
-continuous arrival, C8/C12, cap50 C3/C4 and bounded-root C3/C4 remain open.
+or solo/batch allowance. The [grouped H8 wide transfer](experiments/gemma-h8-wide/README.md)
+now reuses existing whole-C8/C12 and canonical partial C5..7/C9..11 carriers,
+with one common read maximum across groups and unsplit whole-wave products.
+Every padding multiplicity is funded. One unequal/continuous twelve-state
+schedule passes zero strict differences over 472 heads / 468 targets (276 exact),
+with exact own device/state/peer/restore controls. Public slots remain at two;
+cap50 wider cohorts, copy-free wider roots and concurrency/public adoption stay
+open. A separate C12 RNNR preserves exact 384 natural choices/cursors and own
+final-head repeats, but fails its original cross-engine final-head byte gate
+(maximum delta 1.90735e-6, zero argmax differences). Descriptive n2 wall is
++11.3219% total / +23.5760% decode. All 32 paid decode paths replay; capture does
+not explain that gap. Derived short-root materialization is 408 K/V Concat
+outputs / 816 MiB writes per wave, a source-backed causal lead rather than
+measured copy latency. No new floating kernel or retrospective allowance.
 
 Both Gemma4 profiles' [common-read repair](experiments/gemma4-common-width/README.md)
 recovers their unequal-prefix strict failure. The

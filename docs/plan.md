@@ -876,8 +876,18 @@ family" guide, and its long-context scaling work.
       peers, scalar catch-up and C4 rejoin retain exact own state/replay/restore;
       same-schedule stock has zero strict differences over 144 targets and
       147/148 exact heads. No new timing or concurrency allowance is introduced.
-      Ordinary slots remain capped at two; unequal C3/C4 model reads, continuous
-      arrival, cap50 transfer, C8/C12 and public adoption follow separately.
+      The [internal grouped H8 C8/C12 foundation](experiments/gemma-h8-wide/README.md)
+      now checks every partial C5..7/C9..11 and unequal C4 in one continuous
+      pause/catch-up/clear/refill schedule. Whole-wave products and common
+      attention width across groups retain every-split funding; 472 heads /
+      468 targets have zero strict differences (276 exact), with exact own
+      device/state/peer/restore controls. A separate C12 RNNR preserves all
+      384 natural choices/cursors and own final heads, but its original final
+      cross-engine byte gate remains FAIL (maximum delta 1.90735e-6, zero argmax
+      differences). Descriptive n2 wall is +11.3219% total / +23.5760% decode.
+      Ordinary slots remain two; cap50 wider transfer, copy-free wide reads,
+      solo/batch concurrency, corpus/memory/sustained and public adoption remain
+      open. No threshold or prior twelve-flip allowance changes.
       Gemma 3 [profile and tensor foundation](gemma3.md) is checked:
       actual approved metadata and all 444 tensor descriptors, separate
       profile/binding and refusal controls; three focused CPU controls pass.

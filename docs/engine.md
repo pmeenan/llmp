@@ -302,12 +302,18 @@ What a new family writes, and nothing else:
   all participants stay borrowed until completion publication, clean capacity
   refusals omit only that owner, and failed shared work invalidates unpublished
   histories. Per-owner rows/checkpoint layouts stay 128 while total wave
-  funding is 256. The internal H8/no-cap graph now joins canonical C2, C3 or
-  C4 one-row owners, with every proper unequal-padding split measured at Setup.
+  funding is 256. The internal H8/no-cap graph now joins canonical C2..C12
+  one-row owners, grouping only attention into existing four-root carriers and
+  retaining whole-wave products and one common read maximum across groups.
+  Setup measures every proper unequal-padding multiplicity and funds twelve
+  immutable heads. Cap50 and bounded actual roots remain C2-only.
   An [actual C3 pause/catch-up/rejoin control](experiments/gemma-h8-c3/README.md)
   preserves peers' initialized state/cursors and exact own GPU/checkpoint replay;
-  its same-schedule stock gate passes. This adds no ordinary slot admission or
-  solo/batch allowance. Other families retain the default scalar seam. The DeepSeek
+  its same-schedule stock gate passes. The [wide continuous control](experiments/gemma-h8-wide/README.md)
+  adds unequal/partial/departure/refill peers and exact own restore, with zero
+  stock strict differences over 472 heads. Its separate exact-final-head cost
+  gate remains failed despite exact natural choices; ordinary slots remain two,
+  with no solo/batch allowance. Other families retain the default scalar seam. The DeepSeek
   and Qwen3.8 runners are the worked examples: DeepSeek with a host table, a chained draft-and-verify job and
   a snapshot of every written range; Qwen3.8 with rows read on demand and
   gathered between the inputs and the plan, a commit kernel, and two

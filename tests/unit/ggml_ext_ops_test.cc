@@ -5674,6 +5674,320 @@ TEST_F(GgmlExtOpsTest, Gemma2SoftcapOwnersMatchWholePhysicalStreamAndFp64) {
   SmallOwnerControl(50);
 }
 
+TEST_F(GgmlExtOpsTest, Gemma3GroupedWholeAndPartialRootsMatchThePhysicalCohortAndFp64) {
+  if (ComputeCapability() != 1210) GTEST_SKIP() << "Owner implementation is GB10 only";
+  int sms = 0;
+  ASSERT_EQ(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, launch().device()),
+            cudaSuccess);
+  ASSERT_GT(sms, 0);
+  for (const std::int64_t owners : {5, 6, 7, 8, 9, 10, 11, 12})
+    for (const std::int64_t heads : {8})
+      for (const std::int64_t d : {256}) {
+        constexpr std::int64_t cells = 512;
+        const bool partial = kg::detail::PartialOwnerCohort(static_cast<std::uint32_t>(owners));
+        SCOPED_TRACE(std::to_string(heads) + "/" + std::to_string(d) + "/" + std::to_string(cells));
+
+        const auto kvh = heads / (d == 256 ? 2 : 8);
+        const auto n = [](std::int64_t value) { return static_cast<std::size_t>(value); };
+        auto arena = TensorArena::Create(128).value();
+        auto* ctx = arena.context();
+        auto qdata = Normal(12101, n(d * heads * owners), 0.25F);
+        auto* packed_q = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, owners), qdata);
+        auto* q = ggml_permute(ctx, packed_q, 0, 2, 1, 3);
+        TensorArena::Bind(q, reinterpret_cast<std::uintptr_t>(packed_q->data));
+        const auto kdata = Halves(Normal(12102, n(d * kvh * cells * owners), 0.25F));
+        const auto vdata = Halves(Normal(12103, n(d * kvh * cells * owners), 0.25F));
+        auto* packed_k =
+            Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, owners), kdata);
+        auto* packed_v =
+            Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, owners), vdata);
+        auto* k = ggml_permute(ctx, packed_k, 0, 2, 1, 3);
+        auto* v = ggml_permute(ctx, packed_v, 0, 2, 1, 3);
+        TensorArena::Bind(k, reinterpret_cast<std::uintptr_t>(packed_k->data));
+        TensorArena::Bind(v, reinterpret_cast<std::uintptr_t>(packed_v->data));
+        std::vector<float> masks(n(cells * 32 * owners), -std::numeric_limits<float>::infinity());
+        for (std::int64_t owner = 0; owner < owners; ++owner)
+          for (std::int64_t cell = 0; cell < cells - 37 - owner * 3; ++cell)
+            masks[n(owner * cells * 32 + cell)] = 0;
+        auto* mask =
+            Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, cells, 32, 1, owners), Halves(masks));
+        auto* whole = Place(ggml_flash_attn_ext(ctx, q, k, v, mask, 1, 0, 0));
+        ggml_prec_set_acc(whole, GGML_PREC_F32);
+        const auto full_plan = d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
+                                        : kg::PlanFlashAttnMma(launch(), whole);
+        ASSERT_TRUE(full_plan) << jitllm::test_support::Failed(full_plan)->detail;
+
+        EXPECT_EQ(full_plan->columns, d == 256 ? 4 : 1);
+        EXPECT_EQ(full_plan->group, d == 256 ? 2 : 8);
+        EXPECT_FALSE(full_plan->sparse);
+        EXPECT_TRUE(full_plan->mask_prepass);
+        const auto run_whole = [&](LaunchContext& l) {
+          return d == 256 ? kg::FlashAttnMmaGqa2(l, whole) : kg::FlashAttnMma(l, whole);
+        };
+        std::array<kg::FlashAttnOwners, 3> quads;
+        const auto groups = n((owners + 3) / 4);
+        std::array<kg::FlashAttnOwnersPlan, 3> plans;
+        auto scratch = full_plan->scratch;
+        for (std::size_t quad = 0; quad < groups; ++quad) {
+          const auto first = quad * 4;
+          const auto active = std::min(std::size_t{4}, n(owners) - first);
+          const auto view = [&](ggml_tensor* tensor, std::array<std::int64_t, 4> ne) {
+            const auto offset = first * tensor->nb[3];
+            auto* slice = ggml_view_4d(ctx, tensor, ne[0], ne[1], ne[2], ne[3], tensor->nb[1],
+                                       tensor->nb[2], tensor->nb[3], offset);
+            TensorArena::Bind(slice, reinterpret_cast<std::uintptr_t>(tensor->data) + offset);
+            return slice;
+          };
+          auto& in = quads[quad];
+          in.q = view(q, {d, 1, heads, static_cast<std::int64_t>(active)});
+          in.mask = view(mask, {cells, 32, 1, static_cast<std::int64_t>(active)});
+          in.output = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1,
+                                               static_cast<std::int64_t>(active)));
+          in.logical_cohort = static_cast<std::uint32_t>(owners);
+          in.owner_count = static_cast<std::uint32_t>(active);
+          in.owner_offset = partial ? static_cast<std::uint32_t>(first) : 0;
+          for (std::size_t owner = 0; owner < active; ++owner) {
+            const auto part = n(d * kvh * cells);
+            const auto begin = static_cast<std::ptrdiff_t>((first + owner) * part);
+            const auto end = begin + static_cast<std::ptrdiff_t>(part);
+            // Separate allocations authenticate actual roots; their bytes match
+            // the corresponding planes of the contiguous physical-stream control.
+            auto* raw_k =
+                Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, 1),
+                      std::vector<ggml_fp16_t>(kdata.begin() + begin, kdata.begin() + end));
+            auto* raw_v =
+                Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, 1),
+                      std::vector<ggml_fp16_t>(vdata.begin() + begin, vdata.begin() + end));
+            in.k[owner] = ggml_permute(ctx, raw_k, 0, 2, 1, 3);
+            in.v[owner] = ggml_permute(ctx, raw_v, 0, 2, 1, 3);
+            TensorArena::Bind(const_cast<ggml_tensor*>(in.k[owner]),
+                              reinterpret_cast<std::uintptr_t>(raw_k->data));
+            TensorArena::Bind(const_cast<ggml_tensor*>(in.v[owner]),
+                              reinterpret_cast<std::uintptr_t>(raw_v->data));
+          }
+          const auto plan = kg::PlanFlashAttnOwners(launch(), in);
+          ASSERT_TRUE(plan) << jitllm::test_support::Failed(plan)->detail;
+          EXPECT_EQ(plan->effective_cohort, static_cast<std::uint32_t>(owners));
+          EXPECT_EQ(plan->original.head, full_plan->head);
+          EXPECT_EQ(plan->original.columns, full_plan->columns);
+          EXPECT_EQ(plan->original.group, full_plan->group);
+          EXPECT_EQ(plan->original.mask_prepass, full_plan->mask_prepass);
+          EXPECT_FALSE(plan->original.sparse);
+          EXPECT_GT(plan->original_blocks_per_sm, 0);
+          EXPECT_GT(plan->owner_blocks_per_sm, 0);
+          EXPECT_EQ(plan->cohort_blocks, full_plan->blocks);
+          EXPECT_EQ(plan->original.blocks * (partial ? 1 : static_cast<int>(groups)),
+                    full_plan->blocks);
+          const auto quad_tiles = static_cast<int>(kvh * (partial ? owners : 4));
+          EXPECT_EQ(plan->original.blocks % quad_tiles == 0,
+                    (partial ? full_plan->blocks : full_plan->blocks / static_cast<int>(groups)) %
+                            quad_tiles ==
+                        0);
+          // Whole cohorts divide the original grid; partial cohorts filter
+          // canonical global sequence offsets while retaining that whole grid.
+          // Occupancy, KV batch and whole-tile preference can change across pins.
+          const auto fixup = quad_tiles % plan->original.blocks == 0   ? "none"
+                             : plan->original.blocks % quad_tiles == 0 ? "uniform"
+                                                                       : "general";
+          std::cout << "GEMMA3_GROUPED_PLAN owners=" << owners << " active=" << active
+                    << " offset=" << first << " heads=" << heads << " D=" << d << " cells=" << cells
+                    << " sms=" << sms << " original_blocks_per_sm=" << plan->original_blocks_per_sm
+                    << " owner_blocks_per_sm=" << plan->owner_blocks_per_sm
+                    << " full_blocks=" << full_plan->blocks
+                    << " quad_blocks=" << plan->original.blocks
+                    << " effective_cohort=" << plan->effective_cohort
+                    << " scratch=" << plan->original.scratch << " fixup=" << fixup << '\n';
+          auto invalid = in;
+          if (active < 4) {
+            invalid.k[active] = in.k[0];
+            EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+          }
+          invalid = in;
+          invalid.v[active - 1] = nullptr;
+          EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+          for (const auto bad : {0U, 1U, 2U, 3U, 4U, 5U}) {
+            if (bad == active) continue;
+            invalid = in;
+            invalid.owner_count = bad;
+            EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+          }
+          for (const auto bad : {1U, 3U, 5U, UINT32_MAX}) {
+            invalid = in;
+            invalid.owner_offset = bad;
+            EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+          }
+          invalid = in;
+          invalid.logical_cohort = 1;
+          EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+          invalid = in;
+          invalid.logit_softcap = 50;
+          EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+          invalid = in;
+          invalid.bounded_roots = true;
+          EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+          invalid = in;
+          invalid.logical_cohort = 16;
+          EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+          if (active > 1) {
+            invalid = in;
+            invalid.k[1] = invalid.k[0];
+            EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+          }
+          plans[quad] = *plan;
+          scratch = std::max(scratch, plan->original.scratch);
+        }
+        // The original and independent-root calls reuse one explicitly funded
+        // workspace; do not borrow the fixture's larger pool for this proof.
+        const auto workspace = Allocate(scratch);
+        auto context = LaunchContext::Create(launch().device(), *execution_, stream_,
+                                             {.base = workspace, .size = Bytes(scratch)});
+        ASSERT_TRUE(context) << jitllm::test_support::Failed(context)->detail;
+        auto& bounded = **context;
+        EXPECT_EQ(bounded.workspace().size.value(), scratch);
+        EXPECT_TRUE(bounded.UsesStream(*execution_, stream_));
+        const auto submission = execution_->Submission(stream_);
+        ASSERT_TRUE(submission);
+        const auto stream = reinterpret_cast<cudaStream_t>(submission->handle);
+        ASSERT_EQ(cudaMemsetAsync(whole->data, 0xFF, ggml_nbytes(whole), stream), cudaSuccess);
+        for (std::size_t quad = 0; quad < groups; ++quad) {
+          ASSERT_EQ(cudaMemsetAsync(quads[quad].output->data, 0xFF, ggml_nbytes(quads[quad].output),
+                                    stream),
+                    cudaSuccess);
+          ASSERT_EQ(cudaMemsetAsync(reinterpret_cast<void*>(workspace), 0xA5, scratch, stream),
+                    cudaSuccess);
+          bounded.ResetScratchPeak();
+          ASSERT_TRUE(kg::FlashAttnOwnerRoots(bounded, quads[quad]));
+          EXPECT_LE(bounded.scratch_peak().value(), plans[quad].original.scratch);
+        }
+        for (std::size_t group = 0; group < groups; ++group) {
+          const auto bytes = plans[group].original.scratch;
+          ASSERT_GT(bytes, 0U);
+          auto short_context =
+              LaunchContext::Create(launch().device(), *execution_, stream_,
+                                    {.base = Allocate(bytes), .size = Bytes(bytes - 1)});
+          ASSERT_TRUE(short_context);
+          EXPECT_EQ(FailedCode(kg::FlashAttnOwnerRoots(**short_context, quads[group])),
+                    KernelError::kRejected);
+          EXPECT_FALSE((*short_context)->faulted());
+        }
+        bounded.ResetScratchPeak();
+        ASSERT_TRUE(run_whole(bounded));
+        EXPECT_LE(bounded.scratch_peak().value(), full_plan->scratch);
+        auto expected = Download(whole);
+        EXPECT_TRUE(std::ranges::all_of(expected, [](float x) { return std::isfinite(x); }));
+        const auto compare = [&] {
+          for (std::size_t quad = 0; quad < groups; ++quad) {
+            const auto actual = Download(quads[quad].output);
+            const auto offset = quad * 4 * n(d * heads);
+            EXPECT_EQ(
+                std::memcmp(actual.data(), expected.data() + offset, actual.size() * sizeof(float)),
+                0);
+          }
+        };
+        compare();
+        const auto keys = Widen(kdata), values = Widen(vdata);
+        std::vector<double> want(n(d * heads * owners));
+        for (std::int64_t owner = 0; owner < owners; ++owner)
+          for (std::int64_t head = 0; head < heads; ++head) {
+            const auto visible = cells - 37 - owner * 3;
+            std::vector<double> scores(n(visible));
+            for (std::int64_t cell = 0; cell < visible; ++cell)
+              for (std::int64_t col = 0; col < d; ++col)
+                scores[n(cell)] += double(qdata[n((owner * heads + head) * d + col)]) *
+                                   keys[n(((owner * cells + cell) * kvh + head / 2) * d + col)];
+            const auto peak = *std::max_element(scores.begin(), scores.end());
+            double total = 0;
+            for (auto& score : scores) {
+              score = std::exp(score - peak);
+              total += score;
+            }
+            for (std::int64_t col = 0; col < d; ++col)
+              for (std::int64_t cell = 0; cell < visible; ++cell)
+                want[n((owner * heads + head) * d + col)] +=
+                    scores[n(cell)] / total *
+                    values[n(((owner * cells + cell) * kvh + head / 2) * d + col)];
+          }
+        ExpectNmse(expected, want, kFlashAttnNmse,
+                   "H8 grouped physical FP64 C" + std::to_string(owners));
+        for (std::size_t group = 0; group < groups; ++group) {
+          const auto actual = Download(quads[group].output);
+          const auto offset = group * 4 * n(d * heads);
+          std::vector<double> part(
+              want.begin() + static_cast<std::ptrdiff_t>(offset),
+              want.begin() + static_cast<std::ptrdiff_t>(offset + actual.size()));
+          ExpectNmse(actual, part, kFlashAttnNmse, "H8 group FP64 " + std::to_string(group));
+        }
+        bounded.ResetScratchPeak();
+        auto graph = bounded.Capture([&](LaunchContext& l) -> std::expected<void, KernelFailure> {
+          if (auto r = run_whole(l); !r) return r;
+          for (const auto& quad : std::span(quads).first(groups)) {
+            if (cudaMemsetAsync(reinterpret_cast<void*>(workspace), 0xA5, scratch, stream) !=
+                cudaSuccess)
+              return std::unexpected(
+                  KernelFailure{.error = KernelError::kUnknown, .detail = "scratch poison failed"});
+            if (auto r = kg::FlashAttnOwnerRoots(l, quad); !r) return r;
+          }
+          return {};
+        });
+        ASSERT_TRUE(graph) << jitllm::test_support::Failed(graph)->detail;
+        EXPECT_LE(bounded.scratch_peak().value(), scratch);
+        for (int replay = 0; replay < 2; ++replay) {
+          SCOPED_TRACE("capture replay " + std::to_string(replay));
+          ASSERT_EQ(cudaMemsetAsync(whole->data, 0xFF, ggml_nbytes(whole), stream), cudaSuccess);
+          for (const auto& quad : std::span(quads).first(groups))
+            ASSERT_EQ(cudaMemsetAsync(quad.output->data, 0xFF, ggml_nbytes(quad.output), stream),
+                      cudaSuccess);
+          ASSERT_TRUE(bounded.Launch(*graph));
+          EXPECT_EQ(
+              std::memcmp(Download(whole).data(), expected.data(), expected.size() * sizeof(float)),
+              0);
+          compare();
+        }
+        qdata = Normal(12104, qdata.size(), 0.25F);
+        for (std::int64_t owner = 0; owner < owners; ++owner)
+          masks[n(owner * cells * 32 + cells - 38 - owner * 3)] =
+              -std::numeric_limits<float>::infinity();
+        const auto fresh_masks = Halves(masks);
+        ASSERT_EQ(cudaMemcpyAsync(packed_q->data, qdata.data(), qdata.size() * sizeof(float),
+                                  cudaMemcpyHostToDevice, stream),
+                  cudaSuccess);
+        ASSERT_EQ(cudaMemcpyAsync(mask->data, fresh_masks.data(), fresh_masks.size() * 2,
+                                  cudaMemcpyHostToDevice, stream),
+                  cudaSuccess);
+        ASSERT_TRUE(run_whole(bounded));
+        const auto fresh_expected = Download(whole);
+        ASSERT_TRUE(std::ranges::all_of(fresh_expected, [](float x) { return std::isfinite(x); }));
+        EXPECT_NE(
+            std::memcmp(fresh_expected.data(), expected.data(), expected.size() * sizeof(float)),
+            0);
+        expected = fresh_expected;
+        ASSERT_TRUE(bounded.Launch(*graph));
+        EXPECT_EQ(
+            std::memcmp(Download(whole).data(), expected.data(), expected.size() * sizeof(float)),
+            0);
+        compare();
+        EXPECT_EQ(
+            std::memcmp(Download(packed_q).data(), qdata.data(), qdata.size() * sizeof(float)), 0);
+        EXPECT_EQ(Download<ggml_fp16_t>(mask), fresh_masks);
+        EXPECT_EQ(Download<ggml_fp16_t>(packed_k), kdata);
+        EXPECT_EQ(Download<ggml_fp16_t>(packed_v), vdata);
+        for (std::size_t group = 0; group < groups; ++group)
+          for (std::size_t owner = 0; owner < quads[group].owner_count; ++owner) {
+            const auto part = n(d * kvh * cells), first = (group * 4 + owner) * part;
+            EXPECT_EQ(Download<ggml_fp16_t>(quads[group].k[owner]),
+                      std::vector<ggml_fp16_t>(
+                          kdata.begin() + static_cast<std::ptrdiff_t>(first),
+                          kdata.begin() + static_cast<std::ptrdiff_t>(first + part)));
+            EXPECT_EQ(Download<ggml_fp16_t>(quads[group].v[owner]),
+                      std::vector<ggml_fp16_t>(
+                          vdata.begin() + static_cast<std::ptrdiff_t>(first),
+                          vdata.begin() + static_cast<std::ptrdiff_t>(first + part)));
+          }
+        EXPECT_FALSE(bounded.faulted());
+        Finish();
+      }
+}
+
 TEST_F(GgmlExtOpsTest, PartialPhysicalStreamsMatchOffsetFilteredRealRootGroupsExactly) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "Owner implementation is GB10 only";
   int sms = 0;

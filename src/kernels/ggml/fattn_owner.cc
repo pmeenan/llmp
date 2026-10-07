@@ -119,8 +119,9 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
   }
   if (!in.q || !in.mask || !in.output || (in.q->ne[0] != 256 && in.q->ne[0] != 512) ||
       (in.q->ne[2] != 16 && in.q->ne[2] != 32 &&
-       !(in.q->ne[0] == 256 && in.q->ne[2] == 8 && in.owner_count >= 2 && in.owner_count <= 4 &&
-         in.logical_cohort == in.owner_count && in.owner_offset == 0)))
+       !(in.q->ne[0] == 256 && in.q->ne[2] == 8 &&
+         ((in.logical_cohort >= 2 && in.logical_cohort <= 4) || in.logical_cohort == 8 ||
+          in.logical_cohort == 12 || partial))))
     return Rejected("owner MMA requires the closed Gemma head dimensions");
   if (in.logit_softcap != 0 &&
       (in.logit_softcap != 50 || in.q->ne[0] != 256 || in.q->ne[2] != 8 || in.owner_count != 2 ||

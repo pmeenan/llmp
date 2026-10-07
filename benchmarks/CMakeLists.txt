@@ -665,3 +665,13 @@ if(JITLLM_CUDA)
   target_link_libraries(jitllm_gemma2_joint_prefill_probe PRIVATE jitllm_engine jitllm_platform jitllm_warnings)
   target_link_options(jitllm_gemma2_joint_prefill_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 endif()
+
+if(JITLLM_CUDA)
+  add_executable(jitllm_gemma3_wide_cycle gemma3_wide_cycle.cc)
+  target_link_libraries(jitllm_gemma3_wide_cycle PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma3_wide_cycle PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
+  add_executable(jitllm_gemma3_wide_probe gemma3_wide_probe.cc)
+  target_link_libraries(jitllm_gemma3_wide_probe PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma3_wide_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+endif()

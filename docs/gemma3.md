@@ -291,5 +291,19 @@ Eight real C3 waves preserve a paused fourth owner, followed by scalar catch-up
 and sixteen C4 rejoin waves, with exact peer state/cursors, GPU replay and
 checkpoint restoration. Native and same-schedule stock have 147/148 exact heads
 and zero strict differences over 144 targets. This adds no timing or concurrency
-allowance; unequal C3/C4 model reads, continuous arrival, wider cohorts and
-public adoption remain open.
+allowance. The subsequent [grouped wide foundation](experiments/gemma-h8-wide/README.md)
+checks actual unequal C4/C8/C12 and every partial C5..7/C9..11 in one continuous
+pause/catch-up/clear/refill schedule. Native full/device/state/restore repeats
+are exact; original stock has zero strict differences over 472 heads / 468
+targets, with 276 byte-exact heads. Common width is shared across all attention
+groups while products retain whole-wave columns; every padding multiplicity and
+twelve heads have explicit funding. Public slots remain capped at two.
+
+Its separate C12 natural RNNR retains an official failed exact-final-head gate:
+all 384 choices/cursors match and each engine's final heads repeat exactly, but
+no cross-engine final head is byte-exact (maximum delta 1.90735e-6, zero argmax
+differences). Descriptive short n=2 paid latency is +11.3219% versus stock;
+decode is +23.5760%. Paid decode has 32 replays and no captures. No tolerance,
+concurrency allowance or parity claim follows; copy-free wide roots, cap50
+wider batching, sustained/memory/full-corpus and ordinary wider adoption remain
+open.

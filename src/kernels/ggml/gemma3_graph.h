@@ -42,7 +42,7 @@ struct Gemma3GraphOptions {
   // Zero retains the original total-row bound.
   std::uint32_t max_total_rows = 0;
   bool hidden_input = false, head = true, narrow_final = false;
-  // Explicit checked H8/C2 through C4 one-row owner decode; other chunks stay ordinary.
+  // Explicit checked H8/C2 through C12 grouped one-row decode; other chunks stay ordinary.
   bool owner_decode = false;
   // Explicit equal-row/equal-read C2 prefill with real packed K/V backing.
   bool packed_prefill = false;

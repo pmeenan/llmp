@@ -76,8 +76,37 @@ TEST(Gemma3Graph, H8OwnerContractIsClosedToD256AndTwoThroughFourActualRoots) {
       for (const auto cohort : {8U, 12U}) {
         invalid = in;
         invalid.logical_cohort = cohort;
-        EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+        EXPECT_EQ(kg::CheckFlashAttnOwners(invalid).has_value(), owners == 4);
       }
+    }
+  }
+  for (const auto logical : {5U, 6U, 7U, 8U, 9U, 10U, 11U, 12U}) {
+    for (std::uint32_t first = 0; first < logical; first += 4) {
+      SCOPED_TRACE(std::to_string(logical) + "/" + std::to_string(first));
+      auto group_arena = kg::TensorArena::Create(128);
+      ASSERT_TRUE(group_arena);
+      auto in = make(*group_arena, 256, 8, std::min(4U, logical - first));
+      in.logical_cohort = logical;
+      in.owner_offset = logical == 8 || logical == 12 ? 0 : first;
+      ASSERT_TRUE(kg::CheckFlashAttnOwners(in));
+      auto bad = in;
+      bad.logit_softcap = 50;
+      EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
+      bad = in;
+      bad.bounded_roots = true;
+      EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
+      bad = in;
+      bad.owner_offset = 1;
+      EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
+      bad = in;
+      bad.logical_cohort = 16;
+      EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
+      bad = in;
+      bad.owner_count = in.owner_count == 4 ? 3 : 4;
+      EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
+      bad = in;
+      bad.v[in.owner_count - 1] = nullptr;
+      EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
     }
   }
   auto arena = kg::TensorArena::Create(128);

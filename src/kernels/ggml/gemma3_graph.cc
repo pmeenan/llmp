@@ -181,12 +181,12 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
   const auto owners = static_cast<std::uint32_t>(g.segments.size());
   const bool owner_decode =
       o.owner_decode && shape.output_mode == Gemma3OutputMode::kHead && shape.outputs == owners &&
-      (owners >= 2 && owners <= 4) && std::ranges::all_of(g.segments, [](const auto& segment) {
+      (owners >= 2 && owners <= 12) && std::ranges::all_of(g.segments, [](const auto& segment) {
         return segment.shape.rows == 1 && segment.shape.global_n_kv <= 16384 &&
                segment.shape.local_n_kv <= 16384;
       });
-  // Copy-free unequal roots retain their qualified two-owner contract. Four
-  // or three owners use real funded padding until those transfers are qualified.
+  // Copy-free unequal roots retain their qualified two-owner contract. Wider
+  // groups share one cohort-wide read width using real funded padding.
   const bool bounded_decode = owner_decode && o.bounded_roots && owners == 2;
   const bool packed_prefill = o.packed_prefill && g.segments.size() == 2 &&
                               g.segments[0].shape.rows > 1 &&
@@ -221,7 +221,7 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
     expanded.push_back(owner_local_mask);
   }
 
-  std::array<std::array<ggml_tensor*, 2>, 4> owner_zero_tails{};
+  std::array<std::array<ggml_tensor*, 2>, md::kGemma3MaxSlots> owner_zero_tails{};
   if (owner_decode && !bounded_decode) {
     for (std::size_t owner = 0; owner < owners; ++owner) {
       for (std::size_t local = 0; local < 2; ++local) {
@@ -274,7 +274,7 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
     auto* k_rows = ggml_reshape_2d(c, k, kv_width, rows);
     auto* v_rows = ggml_reshape_2d(c, v, kv_width, rows);
     ggml_tensor* joined = nullptr;
-    std::array<ggml_tensor*, 4> owner_keys{}, owner_values{};
+    std::array<ggml_tensor*, md::kGemma3MaxSlots> owner_keys{}, owner_values{};
     std::size_t owner = 0;
     for (auto& segment : g.segments) {
       const auto& s = segment.shape;
@@ -322,7 +322,7 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
       const auto chunk_rows = g.segments.front().shape.rows;
       auto* packed_q =
           ggml_permute(c, ggml_reshape_4d(c, q, d, p.heads, chunk_rows, 2), 0, 2, 1, 3);
-      const auto pack_cache = [&](const std::array<ggml_tensor*, 4>& tensors) {
+      const auto pack_cache = [&](const std::array<ggml_tensor*, md::kGemma3MaxSlots>& tensors) {
         // Copies into a funded contiguous activation, never a fabricated
         // stride across independent VMM roots. Keep the stock cell-major layout.
         auto* a = ggml_permute(c, tensors[0], 0, 2, 1, 3);
@@ -338,16 +338,36 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
       expanded.push_back(joined);
     }
     if (owner_decode) {
-      // Q already contains contiguous scaled/roped rows for every owner.
-      // View that parent; actual cache allocations remain independent.
+      // Every product retains the whole wave's columns. Only attention uses
+      // <=4-root carriers; each sees this same logical cohort and maximum read
+      // width across ALL groups, including unequal actual source roots.
       auto* packed_q = ggml_permute(c, ggml_reshape_4d(c, q, d, p.heads, 1, owners), 0, 2, 1, 3);
       auto* mask = p.local(il) ? owner_local_mask : owner_global_mask;
-      auto* attention =
-          FlashAttnOwnersNode(c, packed_q, mask, owner_keys, owner_values, owners, owners, 0, 0,
-                              bounded_decode && owner_keys[0]->ne[1] != owner_keys[1]->ne[1]);
-      named(prefix + "owner_attention", attention);
-      joined = ggml_reshape_2d(c, attention, std::int64_t{d} * p.heads, owners);
-      expanded.push_back(joined);
+      const bool partial = detail::PartialOwnerCohort(owners);
+      const auto groups = (owners + 3) / 4;
+      for (std::uint32_t group = 0; group < groups; ++group) {
+        const auto first = group * 4, active = std::min(4U, owners - first);
+        const auto slice = [&](ggml_tensor* tensor) {
+          if (groups == 1) return tensor;
+          return ggml_view_4d(c, tensor, tensor->ne[0], tensor->ne[1], tensor->ne[2], active,
+                              tensor->nb[1], tensor->nb[2], tensor->nb[3],
+                              std::size_t{first} * tensor->nb[3]);
+        };
+        std::array<ggml_tensor*, 4> keys{}, values{};
+        for (std::uint32_t i = 0; i < active; ++i) {
+          keys[i] = owner_keys[first + i];
+          values[i] = owner_values[first + i];
+        }
+        auto* attention = FlashAttnOwnersNode(
+            c, slice(packed_q), slice(mask), keys, values, owners, active, partial ? first : 0, 0,
+            bounded_decode && owner_keys[0]->ne[1] != owner_keys[1]->ne[1]);
+        named(group == 0 ? prefix + "owner_attention"
+                         : prefix + std::format("owner_attention.group.{}", group),
+              attention);
+        auto* result = ggml_reshape_2d(c, attention, std::int64_t{d} * p.heads, active);
+        joined = joined == nullptr ? result : ggml_concat(c, joined, result, 1);
+        expanded.push_back(joined);
+      }
     }
     if (!tail) break;
     auto* projected = named(prefix + "attn_projection", product(layer.out, joined));
