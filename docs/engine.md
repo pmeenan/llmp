@@ -183,8 +183,12 @@ C1 full-head stock control is exact. The opt-in
 [C2 decode control](experiments/gemma2-owner2/README.md) selects funded
 true-softcap50 owner attention for equal-width one-row segments, with ordinary
 fallback. Small/ring strict quality and restore-next controls pass; a short
-n=2 cycle retains a 1.49% stock latency gap. Serving, joint prefill and broader
-batching remain open.
+n=2 cycle retains a 1.49% stock latency gap. Its internal
+[checkpoint/adoption foundation](experiments/gemma2-checkpoint/README.md)
+checks complete initialized footprints, copy retirement and kept layout IDs,
+while protecting held peers and refusing incomplete-restore work. Its 19 focused
+controls include exact wrapped-ring fresh-node adoption and peer continuation. Serving,
+joint prefill and broader batching remain open.
 
 The [Gemma 4 foundation](gemma4.md) supplies checked profiles, strict tensor
 bindings, bounded independent-slot KV layouts and segmented host inputs.

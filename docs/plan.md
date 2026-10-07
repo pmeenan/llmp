@@ -830,6 +830,11 @@ family" guide, and its long-context scaling work.
       with exact natural histories/final heads. Compatible joint prefill,
       unequal widths/departures, templates, serving, broader quality/context,
       sustained and model-switch qualification remain separate work.
+      The [checkpoint/adoption foundation](experiments/gemma2-checkpoint/README.md)
+      passes 19 focused checks for initialized extent coverage, pending copy
+      retirement/cancellation, protected peers and wrapped-ring named-file
+      adoption in a fresh node with exact next-head replay. It adds no serving
+      admission or new reference/performance claim.
       Gemma 3 [profile and tensor foundation](gemma3.md) is checked:
       actual approved metadata and all 444 tensor descriptors, separate
       profile/binding and refusal controls; three focused CPU controls pass.

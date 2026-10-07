@@ -105,6 +105,15 @@ Owner selection defaults off and unequal widths retain ordinary attention.
 The C1 control covers final logit softcap30 and width-2304 readable tails;
 compatible joint prefill, departures, broader context/quality, serving,
 sustained and switch qualification remain open.
+The [checkpoint/adoption foundation](experiments/gemma2-checkpoint/README.md)
+adds an internal layout-bound kept-state path: ordered whole extents must fund
+all initialized logical ranges, pending writes block execution and growth, and
+restore completion requires proven contiguous copies of every needed range.
+Selected peers remain held while the destination footprint changes. Adoption
+requires an empty idle healthy slot and an identical layout identifier. All
+19 focused checks pass, including actual wrapped-ring snapshot restoration and
+named-file adoption in a fresh node with an exact live-peer next head; actual
+serving and compatible joint prefill remain separate work.
 The pin's Gemma2 HF-to-GGUF converter already adds one to norm weights;
 approved GGUF import must preserve those norm payloads, with no second +1
 at import or runtime.

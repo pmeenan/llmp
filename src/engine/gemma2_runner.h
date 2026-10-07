@@ -9,10 +9,12 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "engine/gemma2_plan.h"
@@ -23,6 +25,9 @@
 #include "engine/runner_resources.h"
 
 namespace jitllm::engine {
+std::expected<void, std::string> Gemma2CheckpointFootprint(
+    const model::Gemma2Profile& profile, const model::Gemma2StateLayout& layout,
+    std::uint32_t positions, std::span<const LiveState::Range> ranges);
 struct Gemma2Options {
   std::filesystem::path artifact = {}, out = {};
   // One or two independently bounded slots; owner attention is explicit.
@@ -33,6 +38,7 @@ struct Gemma2Options {
   bool owner_decode = false;
   // Explicit numerical comparisons only; ordinary plans use primitives.
   bool fuse_norms = false, fuse_quant_glu = false, fuse_norm_rope = false, fuse_norm_add = false;
+  std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
 };
 class Gemma2Runner final : public PagedModel {
  public:
@@ -42,7 +48,12 @@ class Gemma2Runner final : public PagedModel {
     const std::uint32_t index;
     std::uint32_t completed_positions() const { return positions; }
     std::uint64_t used_state_bytes() const { return live.used_bytes(); }
-    bool state_usable() const { return !live.quarantined(); }
+    bool state_usable() const { return !live.quarantined() && !restoring; }
+    bool kept_whole() const {
+      return on_disk && adopted.empty() && state_usable() && positions != 0;
+    }
+    std::uint64_t spilled_bytes() const { return spilled ? adopted_bytes + live.used_bytes() : 0; }
+    std::uint64_t refused_bytes() const { return live.refused_bytes(); }
     bool is_spilled() const { return spilled; }
     bool refused_state_growth() const { return state_refused; }
     const LiveState& state() const { return live; }
@@ -52,7 +63,12 @@ class Gemma2Runner final : public PagedModel {
     LiveState live{"Gemma2"};
     catalog::Closure fence;
     std::uint32_t positions = 0;
-    bool provisioned = false, spilled = false, state_refused = false;
+    bool provisioned = false, spilled = false, state_refused = false, on_disk = false;
+    std::vector<LiveState::Range> adopted;
+    std::uint64_t adopted_bytes = 0;
+    std::optional<std::uint32_t> restoring;
+    std::vector<LiveState::Range> restore_needed;
+    std::vector<std::uint64_t> restored_bytes;
   };
   struct Work {
     std::uint32_t slot = 0, n_past = 0;
@@ -71,6 +87,9 @@ class Gemma2Runner final : public PagedModel {
   ~Gemma2Runner() override;
   Gemma2Runner(const Gemma2Runner&) = delete;
   Gemma2Runner& operator=(const Gemma2Runner&) = delete;
+  void SetSpillPlaces(const std::function<LiveState::SpillPlace(std::uint32_t)>& place) {
+    o_.spill_place = place;
+  }
   Status Setup();
   Status Register();
   Status Bind();
@@ -97,6 +116,20 @@ class Gemma2Runner final : public PagedModel {
   // output until retirement. An unproven failure requires keeping the buffer.
   Status CopyState(std::uint32_t slot, void* pinned, std::span<const LiveState::Range> ranges,
                    LiveState::CopyRetirement* retirement = nullptr);
+  // Restore writes require PrepareRestore and independently retired full coverage.
+  Status CopyState(std::uint32_t slot, void* pinned, std::span<const LiveState::Range> ranges,
+                   bool to_host, LiveState::CopyRetirement* retirement = nullptr);
+  const std::string& CheckpointLayoutId() const { return checkpoint_layout_id_; }
+  bool cohort_usable() const { return !cohort_.faulted(); }
+  bool Held(std::uint32_t slot) const { return cohort_.IsActive(slot) && node_.InRequest(stream_); }
+  void StateWrittenBack(bool whole);
+  Status ValidateFootprint(std::uint32_t positions, std::span<const LiveState::Range> ranges) const;
+  Status PrepareRestore(std::uint32_t slot, std::uint32_t positions,
+                        std::span<const LiveState::Range> footprint,
+                        std::string_view source_layout);
+  Status CompleteRestore(std::uint32_t slot, std::uint32_t positions);
+  Status Adopt(std::uint32_t slot, std::uint32_t positions,
+               std::span<const LiveState::Range> footprint, std::string_view source_layout);
   Status Chunk(std::uint32_t past, std::span<const std::int32_t> tokens, std::vector<float>& logits,
                bool all_outputs = false);
   Status Wave(std::span<const Work> work, bool all_outputs = false);
@@ -132,6 +165,7 @@ class Gemma2Runner final : public PagedModel {
   std::uint32_t stream_;
   model::Gemma2Profile profile_ = model::Gemma2_2B();
   model::Gemma2Binding binding_;
+  std::string checkpoint_layout_id_;
   model::Gemma2StateLayout layout_;
   RunnerResources resources_;
   PagedWeights weights_;
