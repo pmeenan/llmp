@@ -31,7 +31,7 @@ std::size_t Count(const kg::Gemma3Graph& graph, ggml_op op) {
       std::ranges::count_if(graph.nodes, [op](const auto* t) { return t->op == op; }));
 }
 
-TEST(Gemma3Graph, H8OwnerContractIsClosedToD256AndTwoActualRoots) {
+TEST(Gemma3Graph, H8OwnerContractIsClosedToD256AndTwoOrFourActualRoots) {
   const auto make = [](kg::TensorArena& arena, std::int64_t d, std::int64_t heads,
                        std::uint32_t owners) {
     auto* c = arena.context();
@@ -65,7 +65,20 @@ TEST(Gemma3Graph, H8OwnerContractIsClosedToD256AndTwoActualRoots) {
     auto arena = kg::TensorArena::Create(128);
     ASSERT_TRUE(arena);
     const auto in = make(*arena, 256, 8, owners);
-    EXPECT_EQ(kg::CheckFlashAttnOwners(in).has_value(), owners == 2);
+    EXPECT_EQ(kg::CheckFlashAttnOwners(in).has_value(), owners == 2 || owners == 4);
+    if (owners == 4) {
+      auto invalid = in;
+      invalid.logit_softcap = 50;
+      EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+      invalid = in;
+      invalid.bounded_roots = true;
+      EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+      for (const auto cohort : {8U, 12U}) {
+        invalid = in;
+        invalid.logical_cohort = cohort;
+        EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+      }
+    }
   }
   auto arena = kg::TensorArena::Create(128);
   ASSERT_TRUE(arena);
@@ -163,6 +176,48 @@ TEST(Gemma3Graph, ExplicitC2OwnerDecodeViewsQAndJoinsMasksWithoutJoiningCacheRoo
       kg::BuildGemma3Graph(*ordinary_arena, c.p, c.binding, c.state, c.shape, options);
   ASSERT_TRUE(ordinary);
   EXPECT_EQ(Count(*ordinary, GGML_OP_FLASH_ATTN_EXT), 68);
+}
+
+TEST(Gemma3Graph, FourOwnerDecodeKeepsIndependentRootsAndPairPrefillCapacity) {
+  Case c;
+  c.state = *md::Gemma3State(c.p, 4096, 128);
+  c.shape = {
+      {{0, 1, 259, 512, 512}, {1, 1, 259, 512, 512}, {2, 1, 259, 512, 512}, {3, 1, 259, 512, 512}},
+      4};
+  kg::Gemma3GraphOptions options{.max_total_rows = 256,
+                                 .narrow_final = true,
+                                 .owner_decode = true,
+                                 .packed_prefill = true,
+                                 .bounded_roots = true};
+  auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 4));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+  ASSERT_TRUE(graph) << *jitllm::test_support::Failed(graph, &kg::KernelFailure::detail);
+  EXPECT_EQ(Count(*graph, GGML_OP_FLASH_ATTN_EXT), 0U);
+  EXPECT_EQ(Count(*graph, GGML_OP_SET_ROWS), 272U);
+  std::size_t owners = 0;
+  for (const auto* node : graph->nodes) {
+    if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+    ++owners;
+    EXPECT_EQ(node->src[0]->ne[3], 4);
+    EXPECT_EQ(node->src[1]->ne[3], 4);
+    EXPECT_EQ(kg::JitllmOpInt(node, 0), 4);
+    EXPECT_EQ(kg::JitllmOpInt(node, 1), 0);  // Canonical four-root encoding.
+    EXPECT_EQ(kg::JitllmOpInt(node, 3), 0);
+    EXPECT_EQ(kg::JitllmOpInt(node, 4), 0);  // C4 never requests bounded-root specialization.
+    for (std::size_t i = 0; i < 4; ++i)
+      for (std::size_t j = i + 1; j < 4; ++j) {
+        EXPECT_NE(node->src[2 + i]->view_src, node->src[2 + j]->view_src);
+        EXPECT_NE(node->src[6 + i]->view_src, node->src[6 + j]->view_src);
+      }
+  }
+  EXPECT_EQ(owners, 34U);
+  c.shape.segments[0].rows = 2;
+  auto ragged_arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 4));
+  ASSERT_TRUE(ragged_arena);
+  auto ragged = kg::BuildGemma3Graph(*ragged_arena, c.p, c.binding, c.state, c.shape, options);
+  ASSERT_TRUE(ragged);
+  EXPECT_EQ(Count(*ragged, GGML_OP_FLASH_ATTN_EXT), 136U);
 }
 
 TEST(Gemma3Graph, ActualArithmeticUsesRawVDirectNormAndPerLayerRopeThenQueryScale) {

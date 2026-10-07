@@ -855,6 +855,14 @@ family" guide, and its long-context scaling work.
       retirement/cancellation, protected peers and wrapped-ring named-file
       adoption in a fresh node with exact next-head replay. It adds no serving
       admission or new reference/performance claim.
+      Gemma 3’s [internal H8 C4 foundation](experiments/gemma-h8-c4/README.md) passes
+      original-MMA/FP64/replay and four-state/head funding controls. One equal
+      model screen has zero native/stock strict differences (146/148 exact
+      heads); solo native is 148/148 exact to stock solo. Both engines retain
+      the same 12 positive-margin solo/C4 differences, leaving concurrency
+      open. Short n2 C4 paid latency is +3.29938% with exact natural choices
+      and final heads. Ordinary slots remain capped at two; C3/unequal/arrival
+      model controls, cap50 transfer, C8/C12 and public adoption follow separately.
       Gemma 3 [profile and tensor foundation](gemma3.md) is checked:
       actual approved metadata and all 444 tensor descriptors, separate
       profile/binding and refusal controls; three focused CPU controls pass.

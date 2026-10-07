@@ -248,3 +248,14 @@ sustained or endpoint parity.
 Wider cohorts, broader memory/swap and sustained gates remain open. The serving
 GPU fixture currently requires provisioning on Spark B before its full models
 tier can run there.
+
+The [internal four-root foundation](experiments/gemma-h8-c4/README.md) now
+qualifies H8/no-cap C4 operands and a representative equal-width model screen
+with four independently funded states/heads and paired-prefill capacity two.
+Joined native/stock has zero strict differences over 148 heads / 144 targets;
+146 heads are bitwise exact. Native solo matches all 148 stock solo heads, but
+both engines change the same 12 positive-margin choices across solo/C4 geometry,
+so concurrency qualification remains open. One short n=2 C4 RNNR is +3.29938%
+paid latency against stock with exact natural choices/final heads. This internal
+foundation leaves ordinary admission at two slots; actual C3/unequal/arrival
+geometry, wider cohorts and public adoption require separate proof.

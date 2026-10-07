@@ -158,7 +158,7 @@ void Launched(const std::expected<void, KernelFailure>& result, const std::strin
 
 class GgmlExtOpsTest : public ::testing::Test {
  protected:
-  void SmallOwnerControl(std::uint32_t cap);
+  void SmallOwnerControl(std::uint32_t cap, bool four = false);
   void BoundedOwnerControl(std::uint32_t cap);
   void SetUp() override {
     execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
@@ -4689,18 +4689,21 @@ TEST_F(GgmlExtOpsTest, Gemma4BoundedOwnerRootsMatchBothHeadDimensionsAndThePadde
   EXPECT_GT(empty_fixups_by_specialization[1], 0);
 }
 
-void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap) {
+void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, bool four) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "Owner implementation is GB10 only";
   int sms = 0;
   ASSERT_EQ(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, launch().device()),
             cudaSuccess);
   ASSERT_GT(sms, 0);
   for (const std::int64_t heads : {8, 16, 32})
-    for (const std::int64_t owners : {2, 3})
+    for (const std::int64_t owners : {2, 3, 4})
       for (const std::int64_t d : {256, 512})
         for (const std::int64_t cells : {256, 512, 1024, 4352}) {
+          if (four ? (heads != 8 || owners != 4 || d != 256 || (cells != 256 && cells != 1024))
+                   : owners == 4)
+            continue;
           if (cap != 0 && (heads != 8 || owners != 2 || d != 256)) continue;
-          if (heads == 8 ? (d != 256 || owners != 2) : cells != 1024) continue;
+          if (heads == 8 ? (d != 256 || (!four && owners != 2)) : cells != 1024) continue;
           SCOPED_TRACE(std::to_string(heads) + "/" + std::to_string(d) + "/" +
                        std::to_string(cells));
 
@@ -4799,6 +4802,7 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap) {
             EXPECT_GT(plan->owner_blocks_per_sm, 0);
             EXPECT_EQ(plan->cohort_blocks, full_plan->blocks);
             EXPECT_EQ(plan->original.blocks, full_plan->blocks);
+            if (four) EXPECT_EQ(plan->original.scratch, full_plan->scratch);
             const auto quad_tiles = static_cast<int>(kvh * owners);
             EXPECT_EQ(plan->original.blocks % quad_tiles == 0, full_plan->blocks % quad_tiles == 0);
             std::cout << "OWNER_SMALL_PLAN cap=" << cap << " owners=" << owners
@@ -4810,8 +4814,10 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap) {
                       << " effective_cohort=" << plan->effective_cohort
                       << " scratch=" << plan->original.scratch << '\n';
             auto invalid = in;
-            invalid.k[n(owners)] = in.k[0];
-            EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+            if (owners < 4) {
+              invalid.k[n(owners)] = in.k[0];
+              EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
+            }
             invalid = in;
             invalid.v[n(owners) - 1] = nullptr;
             EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
@@ -4823,7 +4829,7 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap) {
               invalid.owner_count = bad;
               EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
             }
-            if (cap != 0) {
+            if (cap != 0 || four) {
               for (const auto bad : {1U, 25U, 51U, UINT32_MAX}) {
                 invalid = in;
                 invalid.logit_softcap = bad;
@@ -4834,12 +4840,16 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap) {
                 roots_k[owner] = const_cast<ggml_tensor*>(in.k[owner]);
                 roots_v[owner] = const_cast<ggml_tensor*>(in.v[owner]);
               }
-              auto* encoded = Place(kg::FlashAttnOwnersNode(ctx, const_cast<ggml_tensor*>(in.q),
-                                                            const_cast<ggml_tensor*>(in.mask),
-                                                            roots_k, roots_v, 2, 2, 0, cap));
+              auto* encoded = Place(kg::FlashAttnOwnersNode(
+                  ctx, const_cast<ggml_tensor*>(in.q), const_cast<ggml_tensor*>(in.mask), roots_k,
+                  roots_v, static_cast<std::uint32_t>(owners), static_cast<std::uint32_t>(owners),
+                  0, cap));
               auto decoded = kg::FlashAttnOwnersFromNode(encoded);
               ASSERT_TRUE(decoded);
               EXPECT_EQ(decoded->logit_softcap, cap);
+              EXPECT_EQ(decoded->owner_count, static_cast<std::uint32_t>(owners));
+              EXPECT_EQ(decoded->logical_cohort, static_cast<std::uint32_t>(owners));
+              EXPECT_TRUE(kg::CheckFlashAttnOwners(*decoded));
             }
             plans[quad] = *plan;
             scratch = std::max(scratch, plan->original.scratch);
@@ -4850,7 +4860,7 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap) {
                                                {.base = Allocate(scratch), .size = Bytes(scratch)});
           ASSERT_TRUE(context) << jitllm::test_support::Failed(context)->detail;
           auto& bounded = **context;
-          if (cap != 0 && plans[0].original.scratch > 0) {
+          if ((cap != 0 || four) && plans[0].original.scratch > 0) {
             const auto owner_scratch = plans[0].original.scratch;
             auto short_pool = LaunchContext::Create(
                 launch().device(), *execution_, stream_,
@@ -4915,8 +4925,8 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap) {
                         scores[n(cell)] / total *
                         values[n(((owner * cells + cell) * kvh + head / 2) * d + col)];
               }
-            ExpectNmse(expected, want, kFlashAttnNmse, "H8 C2 packed/independent FP64");
-            ExpectNmse(Download(quads[0].output), want, kFlashAttnNmse, "H8 C2 owners FP64");
+            ExpectNmse(expected, want, kFlashAttnNmse, "H8 packed/independent FP64");
+            ExpectNmse(Download(quads[0].output), want, kFlashAttnNmse, "H8 owners FP64");
           }
           compare();
           bounded.ResetScratchPeak();
@@ -5645,6 +5655,10 @@ TEST_F(GgmlExtOpsTest, Gemma2BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
 
 TEST_F(GgmlExtOpsTest, Gemma3BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
   BoundedOwnerControl(0);
+}
+
+TEST_F(GgmlExtOpsTest, Gemma3FourRealRootsMatchWholePhysicalStreamAndFp64) {
+  SmallOwnerControl(0, true);
 }
 
 TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {

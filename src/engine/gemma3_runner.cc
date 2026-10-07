@@ -101,13 +101,18 @@ Status Gemma3Runner::Setup() {
       for (const auto rows :
            {1U, std::min(o_.max_rows, budget / count), std::min(o_.max_rows, budget - count + 1)}) {
         for (const auto past : {0U, o_.context - rows}) {
-          for (const bool mixed : {false, true}) {
-            if (mixed && (count != 2 || past != 0 || !o_.owner_decode)) continue;
+          // Every nonempty proper long-owner count is measured. Padding three
+          // short C4 roots needs three K/V outputs, not the one-short envelope.
+          for (std::uint32_t long_count = 0; long_count < count; ++long_count) {
+            if (long_count && ((count != 2 && count != 4) || past != 0 || !o_.owner_decode))
+              continue;
             std::vector<md::Gemma3Segment> segments;
             for (std::uint32_t i = 0; i < count; ++i) {
               const auto n = rows == budget - count + 1 && i != 0 ? 1U : rows;
-              segments.push_back({i, (past == 0 && (!mixed || i == 0)) ? 0U : o_.context - n,
-                                  std::span(tokens).first(n)});
+              segments.push_back(
+                  {i,
+                   (past == 0 && (long_count == 0 || i < count - long_count)) ? 0U : o_.context - n,
+                   std::span(tokens).first(n)});
             }
             if (rows * count > budget && rows != budget - count + 1) continue;
             auto input = md::Gemma3Chunk(profile_, layout_, segments, true, 256, wave_rows);

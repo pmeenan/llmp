@@ -66,6 +66,68 @@ kg::DeviceChoices Choices() {
   return out;
 }
 
+TEST(Gemma3Plan, FourOwnerHeadsAndSourcesUseTheFundedEnvelope) {
+  Case c;
+  c.state = *md::Gemma3State(c.p, 4096, 128);
+  // Equal roots and all three unequal long-owner counts admitted by Setup.
+  for (std::uint32_t long_count = 0; long_count < 4; ++long_count) {
+    c.shape = {};
+    c.shape.outputs = 4;
+    std::array<md::Gemma3Segment, 4> segments;
+    for (std::uint32_t s = 0; s < 4; ++s) {
+      const bool long_root = long_count != 0 && s >= 4 - long_count;
+      const auto past = long_root ? 4095U : 259U;
+      c.shape.segments.push_back({s, 1, past, long_root ? 4096U : 512U, long_root ? 1280U : 512U});
+      segments[s] = {s, past, c.b};
+    }
+    auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 4));
+    ASSERT_TRUE(arena);
+    auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape,
+                                      {.max_total_rows = 256,
+                                       .narrow_final = true,
+                                       .owner_decode = true,
+                                       .packed_prefill = true,
+                                       .bounded_roots = true});
+    ASSERT_TRUE(graph);
+    auto model = Places(c, *graph);
+    auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
+    ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+    const auto bytes = (*measured)->placement.extent;
+    const auto base = std::uint64_t{1} << 53U;
+    EXPECT_FALSE(en::PlanGemma3Chunk(model, c.shape, Choices(), base, bytes - 1));
+    auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), base, bytes);
+    ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+    auto& g = (*placed)->graph;
+    EXPECT_EQ(g.logits->ne[0], c.p.vocab);
+    EXPECT_EQ(g.logits->ne[1], 4);
+    std::size_t owner_nodes = 0;
+    for (auto* node : g.nodes) {
+      if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+      ++owner_nodes;
+      auto inputs = kg::FlashAttnOwnersFromNode(node);
+      ASSERT_TRUE(inputs);
+      EXPECT_EQ(inputs->owner_count, 4U);
+      EXPECT_FALSE(inputs->bounded_roots);
+      EXPECT_TRUE(kg::CheckFlashAttnOwners(*inputs));
+      if (long_count != 0) {
+        const auto short_count = 4 - long_count;
+        for (std::uint32_t owner = 0; owner < 4; ++owner) {
+          EXPECT_EQ(inputs->k[owner]->src[0]->op == GGML_OP_CONCAT, owner < short_count);
+          EXPECT_EQ(inputs->v[owner]->src[0]->op == GGML_OP_CONCAT, owner < short_count);
+        }
+      }
+    }
+    EXPECT_EQ(owner_nodes, 34U);
+    auto input = md::Gemma3Chunk(c.p, c.state, segments, true, 256, 256);
+    ASSERT_TRUE(input);
+    auto source_bytes = en::Gemma3SourceBytes(g);
+    ASSERT_TRUE(source_bytes);
+    const std::array<std::int32_t, 4> frontier{0, 1, 2, 3};
+    EXPECT_TRUE(en::Gemma3Sources(g, *input, frontier, {}, *source_bytes));
+    EXPECT_FALSE(en::Gemma3Sources(g, *input, frontier, {}, *source_bytes - 1));
+  }
+}
+
 TEST(Gemma3Plan, BoundedOwnerRootsKeepActualViewsAndRecipeIdentity) {
   Case c;
   c.state = *md::Gemma3State(c.p, 4096, 128);

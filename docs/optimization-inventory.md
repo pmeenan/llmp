@@ -103,6 +103,16 @@ HTTP joined-prefill/restart controls pass; a native cold C2 endpoint bookend
 improves 14.03% with exact IDs/usage. The endpoint and runner comparisons
 measure different boundaries.
 
+The [internal H8 C4 foundation](experiments/gemma-h8-c4/README.md) reuses the
+existing four-bank D256/GQA2 owner specialization with a closed no-softcap host
+admission. Packed original-MMA operands and captured replays are bitwise exact;
+four states/heads and every unequal-padding split have explicit funding checks.
+One equal-width model screen has zero native/stock strict differences and
+146/148 exact heads, with native solo 148/148 exact to stock solo. Both engines
+show the same 12 positive solo/C4 choice changes, so concurrency stays open.
+Short C4 RNNR is +3.29938% versus stock (n2). Public slots remain at two; H8 C3,
+C8/C12, cap50 C4 and bounded-root C4 transfers remain separately unqualified.
+
 Both Gemma4 profiles' [common-read repair](experiments/gemma4-common-width/README.md)
 recovers their unequal-prefix strict failure. The
 [bounded-root transfer](experiments/gemma4-bounded-owner-roots/README.md) removes

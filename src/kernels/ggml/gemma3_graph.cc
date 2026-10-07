@@ -178,11 +178,16 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
     return ggml_mul_mat(c, weight(resource), input);
   };
   std::vector<ggml_tensor*> expanded;
+  const auto owners = static_cast<std::uint32_t>(g.segments.size());
   const bool owner_decode =
-      o.owner_decode && shape.output_mode == Gemma3OutputMode::kHead && shape.outputs == 2 &&
-      g.segments.size() == 2 && g.segments[0].shape.rows == 1 && g.segments[1].shape.rows == 1 &&
-      g.segments[0].shape.global_n_kv <= 16384 && g.segments[0].shape.local_n_kv <= 16384 &&
-      g.segments[1].shape.global_n_kv <= 16384 && g.segments[1].shape.local_n_kv <= 16384;
+      o.owner_decode && shape.output_mode == Gemma3OutputMode::kHead && shape.outputs == owners &&
+      (owners == 2 || owners == 4) && std::ranges::all_of(g.segments, [](const auto& segment) {
+        return segment.shape.rows == 1 && segment.shape.global_n_kv <= 16384 &&
+               segment.shape.local_n_kv <= 16384;
+      });
+  // Copy-free unequal roots retain their qualified two-owner contract. Four
+  // owners use real funded padding until that distinct transfer is qualified.
+  const bool bounded_decode = owner_decode && o.bounded_roots && owners == 2;
   const bool packed_prefill = o.packed_prefill && g.segments.size() == 2 &&
                               g.segments[0].shape.rows > 1 &&
                               g.segments[0].shape.rows == g.segments[1].shape.rows &&
@@ -191,8 +196,10 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
   ggml_tensor* owner_global_mask = nullptr;
   ggml_tensor* owner_local_mask = nullptr;
   if (owner_decode || packed_prefill) {
-    const auto join_mask = [&](ggml_tensor* a, ggml_tensor* b) {
-      const auto width = std::max(a->ne[0], b->ne[0]);
+    const auto join_mask = [&](bool local) {
+      std::int64_t width = 0;
+      for (const auto& segment : g.segments)
+        width = std::max(width, (local ? segment.local_mask : segment.global_mask)->ne[0]);
       const auto pad = [&](ggml_tensor* mask) {
         if (mask->ne[0] == width) return mask;
         // Every padded query row stays -Inf, including the mask pre-pass's
@@ -200,28 +207,31 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
         auto* tail = Filled(c, {width - mask->ne[0], mask->ne[1], 1, 1}, -INFINITY);
         return ggml_concat(c, mask, tail, 0);
       };
-      a = pad(a);
-      b = pad(b);
-      return ggml_concat(c, ggml_reshape_4d(c, a, a->ne[0], a->ne[1], 1, 1),
-                         ggml_reshape_4d(c, b, b->ne[0], b->ne[1], 1, 1), 3);
+      ggml_tensor* joined = nullptr;
+      for (const auto& segment : g.segments) {
+        auto* mask = pad(local ? segment.local_mask : segment.global_mask);
+        mask = ggml_reshape_4d(c, mask, mask->ne[0], mask->ne[1], 1, 1);
+        joined = joined ? ggml_concat(c, joined, mask, 3) : mask;
+      }
+      return joined;
     };
-    owner_global_mask =
-        named("owner_global_mask", join_mask(g.segments[0].global_mask, g.segments[1].global_mask));
-    owner_local_mask =
-        named("owner_local_mask", join_mask(g.segments[0].local_mask, g.segments[1].local_mask));
+    owner_global_mask = named("owner_global_mask", join_mask(false));
+    owner_local_mask = named("owner_local_mask", join_mask(true));
     expanded.push_back(owner_global_mask);
     expanded.push_back(owner_local_mask);
   }
 
-  std::array<std::array<ggml_tensor*, 2>, 2> owner_zero_tails{};
-  if (owner_decode && !o.bounded_roots) {
-    for (std::size_t owner = 0; owner < 2; ++owner) {
+  std::array<std::array<ggml_tensor*, 2>, 4> owner_zero_tails{};
+  if (owner_decode && !bounded_decode) {
+    for (std::size_t owner = 0; owner < owners; ++owner) {
       for (std::size_t local = 0; local < 2; ++local) {
         const auto read = [&](std::size_t index) {
           return local != 0 ? g.segments[index].shape.local_n_kv
                             : g.segments[index].shape.global_n_kv;
         };
-        const auto tail = std::max(read(0), read(1)) - read(owner);
+        std::uint32_t maximum = 0;
+        for (std::size_t i = 0; i < owners; ++i) maximum = std::max(maximum, read(i));
+        const auto tail = maximum - read(owner);
         if (tail != 0) {
           auto* zeros = Filled(c, {p.key_dim, p.kv_heads, tail, 1}, 0.0F);
           owner_zero_tails[owner][local] = zeros;
@@ -328,15 +338,15 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
       expanded.push_back(joined);
     }
     if (owner_decode) {
-      // Q already contains contiguous scaled/roped rows for both owners.
-      // View that parent; only masks are joined, never independent K/V roots.
-      auto* packed_q = ggml_permute(c, ggml_reshape_4d(c, q, d, p.heads, 1, 2), 0, 2, 1, 3);
+      // Q already contains contiguous scaled/roped rows for every owner.
+      // View that parent; actual cache allocations remain independent.
+      auto* packed_q = ggml_permute(c, ggml_reshape_4d(c, q, d, p.heads, 1, owners), 0, 2, 1, 3);
       auto* mask = p.local(il) ? owner_local_mask : owner_global_mask;
       auto* attention =
-          FlashAttnOwnersNode(c, packed_q, mask, owner_keys, owner_values, 2, 2, 0, 0,
-                              o.bounded_roots && owner_keys[0]->ne[1] != owner_keys[1]->ne[1]);
+          FlashAttnOwnersNode(c, packed_q, mask, owner_keys, owner_values, owners, owners, 0, 0,
+                              bounded_decode && owner_keys[0]->ne[1] != owner_keys[1]->ne[1]);
       named(prefix + "owner_attention", attention);
-      joined = ggml_reshape_2d(c, attention, std::int64_t{d} * p.heads, 2);
+      joined = ggml_reshape_2d(c, attention, std::int64_t{d} * p.heads, owners);
       expanded.push_back(joined);
     }
     if (!tail) break;
