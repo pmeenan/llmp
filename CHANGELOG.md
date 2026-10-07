@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Avoid temporary KV prefix copies for unequal-length Gemma4 two-slot decode
+  at context<=4096, preserving checked common attention geometry, physical-ring
+  continuations and cached conversation restart on both approved profiles.
+
 - Avoid temporary full-prefix cache copies for unequal-length Gemma3 two-slot
   decode, preserving checked attention geometry and checkpoint replay.
 

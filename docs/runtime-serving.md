@@ -62,8 +62,10 @@ stock's exact tokens, and its
 full final FFN before frontier-head publication, matching stock's ordinary row
 shape. Three small same-geometry heads per profile are byte-identical after
 that correction; its paired C1/C4 cost screens are native versus native.
-Matched Gemma4 stock backend-sampler timing remains open; the recorded
-stock bookends use CPU-head publication.
+Those earlier adoption stock bookends use CPU-head publication. Later
+[bounded-root C2 screens](experiments/gemma4-bounded-owner-roots/README.md) use
+the unchanged current public backend greedy sampler, including full sampled-logit
+host transfers; their limited timing boundary is recorded separately.
 Larger configurations retain the prior scalar recipe and 128-row cap. The recorded earlier dense31 recipe has zero
 predicted-ID differences in current-pin C1/C4 8K continuations and
 128/129 and 512/516 byte-exact complete heads; its 1,024-row corpus has
@@ -76,6 +78,14 @@ quality, assistant admission or long-context qualification.
 The [two-profile route controls](experiments/gemma31-serving/README.md) retain
 owned continuation, kept restart and pending cross-profile switch evidence.
 [Gemma's contract](gemma4.md) lists the remaining gates.
+For context<=4096 with exactly two configured slots, both ordinary Gemma4
+factories now select the [bounded-root common-read recipe](experiments/gemma4-bounded-owner-roots/README.md).
+It preserves each actual initialized cache prefix while matching stock's common
+logical attention width, without temporary K/V copies. Short and physically
+wrapped controls match all 68 stock heads per profile; actual HTTP joined-wave,
+likelihood, cache/SSE/stop/departure and matched cached restart checks pass.
+Other configurations retain their previous policy; wider batching, compatible
+multirow prefill and sustained/context/memory/swap qualification remain open.
 
 The approved Gemma3 4B QAT Q4_0 artifact has a
 [bounded ordinary route](experiments/gemma3-execution/README.md#bounded-serving-unequal-widths-and-wrapped-rings):

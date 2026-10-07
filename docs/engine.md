@@ -209,14 +209,17 @@ and a 1024-row prefill under the same bounds. Larger configurations retain their
 scalar recipe. Broader quality, context, assistant and sustained
 performance qualification remain open.
 
-The [default-off common-read option](experiments/gemma4-common-width/README.md)
-validates both actual C2 cache views and preserves their SET_ROWS dependencies
-while padding short K/V and masks in funded temporary activations. Both approved
-profiles recover their representative unequal-prefix strict failure to exact
-stock heads, with independent prefill/state unchanged. Equal reads keep the
-no-copy graph; wider/partial cohorts and multirow prefill retain their existing
-policies. Ordinary serving does not select this option; paid padding cost and
-bounded public adoption remain open.
+The [common-read repair](experiments/gemma4-common-width/README.md) restores
+both approved profiles' unequal-prefix stock heads. Its subsequent
+[bounded-root transfer](experiments/gemma4-bounded-owner-roots/README.md) preserves
+exact SET_ROWS-derived actual roots and common logical partitions while removing
+temporary K/V padding. Both short and physically wrapped C2 controls match all
+68 stock heads and preserve initialized-state restore/replay. Ordinary serving
+selects this recipe at context<=4096 with exactly two configured slots; equal
+reads retain the previous no-copy path. Same-binary paid latency falls 6.01% /
+5.24% (26B / 31B), within 0.1% of current stock in short n2 runner screens.
+Wider configurations, partial cohorts and compatible multirow prefill remain
+separate qualification work; no sustained or whole-serving parity follows.
 
 Gemma4 [held-cohort selection](experiments/gemma-held-cohort/README.md) keeps
 an unchanged selection's execution closure inside a held stream request. Mask

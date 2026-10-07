@@ -72,6 +72,8 @@ struct Gemma4GraphOptions {
   bool narrow_final = false;
   // Bounded two-owner decode: pad shorter actual reads with graph-owned tails.
   bool common_owner_reads = false;
+  // Closed C2 common-width attention over each actual initialized cache root.
+  bool bounded_owner_roots = false;
   Gemma4AttentionMode attention_mode = Gemma4AttentionMode::kIndependent;
   bool operator==(const Gemma4GraphOptions&) const = default;
 };

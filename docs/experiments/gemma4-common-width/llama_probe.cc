@@ -50,6 +50,7 @@ struct Shapes {
   using Key = std::array<std::int64_t, 12>;
   std::map<Key, std::uint64_t> counts;
   std::array<bool, 2> joined{};
+  std::array<int, 2> expected_kv{};
   static bool Observe(ggml_tensor* node, bool ask, void* opaque) {
     if (!ask || node->op != GGML_OP_FLASH_ATTN_EXT) return false;
     auto& self = *static_cast<Shapes*>(opaque);
@@ -64,7 +65,7 @@ struct Shapes {
       const auto d = index == 0 ? 256 : 512;
       const auto gqa = index == 0 ? 2 : 8;
       self.joined[index] |= key[0] == d && key[1] == 1 && (key[2] == 16 || key[2] == 32) &&
-                            key[3] == 2 && key[4] == d && key[5] == 1024 &&
+                            key[3] == 2 && key[4] == d && key[5] == self.expected_kv[index] &&
                             key[6] == key[2] / gqa && key[7] == 2 && key[8] == key[5] &&
                             key[9] == 1 && key[11] == 2;
     }
@@ -126,6 +127,8 @@ int main(int argc, char** argv) {
         configs[s] = {s, samplers[s].get()};
       }
       Shapes shapes;
+      const int common_kv = (std::max(prefix[0], prefix[1]) + 4 + 255) / 256 * 256;
+      shapes.expected_kv = {std::min(common_kv, 1024 + chunk), common_kv};
       auto cp = llama_context_default_params();
       cp.n_ctx = 8192;
       cp.n_seq_max = 2;

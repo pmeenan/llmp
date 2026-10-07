@@ -48,9 +48,10 @@ std::expected<std::int32_t, std::string> Best(const std::vector<float>& row) {
 int main(int argc, char** argv) {
   if (!jitllm::platform::InstallCrashPolicy("gemma4-common-width-probe") || argc != 8) return 2;
   const std::string profile = argv[5], policy = argv[6];
-  if ((profile != "26" && profile != "31") || (policy != "baseline" && policy != "candidate"))
+  if ((profile != "26" && profile != "31") ||
+      (policy != "baseline" && policy != "candidate" && policy != "bounded"))
     return 2;
-  const bool dense = profile == "31", common = policy == "candidate";
+  const bool dense = profile == "31", common = policy != "baseline";
   const std::uint32_t chunk = dense ? 256U : 1024U;
   const std::string mode = argv[7];
   const bool own = mode == "own", cycle = mode == "cycle";
@@ -97,7 +98,8 @@ int main(int argc, char** argv) {
                         .fuse_gemma_reduce = !dense,
                         .fuse_quant_glu = dense,
                         .owner_attention = true,
-                        .common_owner_reads = common},
+                        .common_owner_reads = common,
+                        .bounded_owner_roots = policy == "bounded"},
       0, 0);
   auto& runner = *life->runner;
   std::array<std::vector<float>, 2> heads;
@@ -156,7 +158,7 @@ int main(int argc, char** argv) {
           return r;
     return {};
   };
-  std::uint32_t owner_steps = 0;
+  std::uint32_t owner_steps = 0, bounded_steps = 0;
   const auto joined = [&](const std::array<std::int32_t, 2>& tokens, bool token) -> en::Status {
     std::array<en::Gemma4Runner::Work, 2> work;
     for (std::uint32_t s = 0; s < 2; ++s)
@@ -164,6 +166,7 @@ int main(int argc, char** argv) {
                  token ? &selected[s] : nullptr};
     if (auto r = runner.Wave(work); !r) return r;
     owner_steps = std::max(owner_steps, runner.last_built_policy().owner_attention_steps);
+    bounded_steps = std::max(bounded_steps, runner.last_built_policy().bounded_owner_steps);
     for (std::uint32_t s = 0; s < 2; ++s) {
       ++past[s];
       if (!token && !Best(heads[s])) return Error("bad joined head");
@@ -200,6 +203,32 @@ int main(int argc, char** argv) {
       if (!node.InRequest(0)) return Error("held direct request required");
       const std::array<std::uint32_t, 2> slots{0, 1};
       if (auto r = runner.SelectSlots(slots); !r) return r;
+      std::array<jitllm::model::Gemma4Segment, 2> frontier;
+      for (std::uint32_t slot = 0; slot < 2; ++slot)
+        frontier[slot] = {slot, prefix[slot] + 3,
+                          std::span(ids[slot]).subspan(prefix[slot] + 3, 1)};
+      auto inputs = jitllm::model::Gemma4Chunk(runner.profile(), runner.layout(), frontier);
+      if (!inputs) return Error(inputs.error());
+      std::uint32_t expected_owners = 0, expected_bounded = 0;
+      for (std::uint32_t layer = 0; layer < runner.profile().layers; ++layer) {
+        const bool local = runner.profile().local(layer);
+        const auto first = local ? inputs->segments[0].local_n_kv : inputs->segments[0].global_n_kv;
+        const auto second =
+            local ? inputs->segments[1].local_n_kv : inputs->segments[1].global_n_kv;
+        expected_owners += common || first == second;
+        expected_bounded += policy == "bounded" && first != second;
+      }
+      for (const auto& segment : inputs->segments) {
+        if (segment.local_cells.size() != 1 ||
+            segment.local_cells[0] != segment.n_past % runner.layout().local_cells)
+          return Error("actual local ring write index differs");
+        std::cout << "GEMMA4_RING_LAYOUT slot=" << segment.slot
+                  << " local_capacity=" << runner.layout().local_cells
+                  << " n_past=" << segment.n_past << " local_write_cell=" << segment.local_cells[0]
+                  << " physically_wrapped=" << (segment.n_past >= runner.layout().local_cells)
+                  << " global_read=" << segment.global_n_kv << " local_read=" << segment.local_n_kv
+                  << '\n';
+      }
       if (cycle) {
         if (auto r = prompt(true); !r) return r;
         if (auto r = warm(true); !r) return r;
@@ -369,7 +398,7 @@ int main(int argc, char** argv) {
       const auto& stats = runner.graph_stats();
       const auto& bound = runner.last_built_policy();
       if (!stats.captured || !stats.replayed || runner.coverage().violations ||
-          owner_steps != (common ? runner.profile().layers : 0U))
+          owner_steps != expected_owners || bounded_steps != expected_bounded)
         return Error("C2 did not select/replay checked implementation families");
       std::cout << "GEMMA4_CONTEXT mode=" << mode << " slots=2 context_per_slot=4096"
                 << " profile=" << profile << " policy=" << policy << " actual_chunk=" << chunk
@@ -380,6 +409,7 @@ int main(int argc, char** argv) {
                 << " prefill_seconds=" << prefill << " decode_seconds=" << decode
                 << " eager=" << stats.eager << " captured=" << stats.captured
                 << " replayed=" << stats.replayed << " selected_owner=" << owner_steps
+                << " selected_bounded_owner=" << bounded_steps
                 << " selected_norm_mul=" << bound.norm_fused
                 << " selected_norm_rope=" << bound.norm_rope
                 << " selected_norm_add=" << bound.norm_add

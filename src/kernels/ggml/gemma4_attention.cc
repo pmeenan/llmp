@@ -246,6 +246,12 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
       for (std::size_t owner = 0; owner < active; ++owner)
         read = std::max(read, p.local(il) ? g.segments[first + owner].shape.local_n_kv
                                           : g.segments[first + owner].shape.global_n_kv);
+      const bool bounded =
+          g.options.bounded_owner_roots && mode == Gemma4AttentionMode::kOwners && active == 2 &&
+          logical_cohort == 2 &&
+          (p.local(il)
+               ? g.segments[first].shape.local_n_kv != g.segments[first + 1].shape.local_n_kv
+               : g.segments[first].shape.global_n_kv != g.segments[first + 1].shape.global_n_kv);
       for (std::size_t owner = 0; owner < active; ++owner) {
         const auto actual = p.local(il) ? g.segments[first + owner].shape.local_n_kv
                                         : g.segments[first + owner].shape.global_n_kv;
@@ -256,7 +262,7 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
                                   kvw * actual * 2, 0);
         l.v[owner] = ggml_view_4d(c, l.writes[owner * 2 + 1], d, kvh, actual, 1, d * 2, kvw * 2,
                                   kvw * actual * 2, 0);
-        if (actual != read) {
+        if (actual != read && !bounded) {
           auto* zeros = Filled(c, {d, kvh, read - actual, 1}, 0.0F);
           l.k[owner] = ggml_concat(c, l.k[owner], zeros, 2);
           l.v[owner] = ggml_concat(c, l.v[owner], zeros, 2);
@@ -283,9 +289,9 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
           l.k[owner] = ggml_permute(c, l.k[owner], 0, 2, 1, 3);
           l.v[owner] = ggml_permute(c, l.v[owner], 0, 2, 1, 3);
         }
-        flash = FlashAttnOwnersNode(c, q, mask, l.k, l.v, logical_cohort,
-                                    static_cast<std::uint32_t>(active),
-                                    whole_partial ? static_cast<std::uint32_t>(first) : 0);
+        flash = FlashAttnOwnersNode(
+            c, q, mask, l.k, l.v, logical_cohort, static_cast<std::uint32_t>(active),
+            whole_partial ? static_cast<std::uint32_t>(first) : 0, 0, bounded);
       } else {
         auto* k = ggml_permute(c, Join(c, l.k, active), 0, 2, 1, 3);
         auto* v = ggml_permute(c, Join(c, l.v, active), 0, 2, 1, 3);

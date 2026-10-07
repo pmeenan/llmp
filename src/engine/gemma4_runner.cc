@@ -403,6 +403,7 @@ Status Gemma4Runner::Setup() {
                                         : kg::Gemma4AttentionMode::kIndependent;
   }
   model_.options.common_owner_reads = o_.common_owner_reads;
+  model_.options.bounded_owner_roots = o_.bounded_owner_roots;
   std::uint64_t activation = 0, scratch = 0, staging = 0, host = 0;
   // All slot counts: padding each segment's query tile can exceed a scalar
   // prefill's mask storage. Measure one shared maximum, not one per slot.
@@ -1086,6 +1087,7 @@ std::expected<Gemma4Runner::Plans::Entry*, std::string> Gemma4Runner::CachePlann
   for (const auto& step : p->plan.steps) {
     if (step.implementation == kg::kFlashAttnOwnersName) {
       ++policy_.owner_attention_steps;
+      policy_.bounded_owner_steps += kg::JitllmOpInt(step.nodes.front(), 4) == 1;
       policy_.requested_cohort8_steps += kg::JitllmOpInt(step.nodes.front(), 0) == 8;
       policy_.requested_cohort12_steps += kg::JitllmOpInt(step.nodes.front(), 0) == 12;
       const auto cohort = kg::JitllmOpInt(step.nodes.front(), 0);

@@ -311,12 +311,13 @@ TEST(Gemma4Graph, CommonOwnerReadsPreserveEqualGraphsAndRejectTheSecondBrokenWri
     c.shape = {};
     for (std::uint32_t i = 0; i < 2; ++i) c.shape.segments.push_back({i, 1, 384 + i, 512, 512});
     c.shape.outputs = 2;
-    std::array<std::size_t, 2> nodes{}, used{};
-    for (std::size_t policy = 0; policy < 2; ++policy) {
+    std::array<std::size_t, 3> nodes{}, used{};
+    for (std::size_t policy = 0; policy < 3; ++policy) {
       kg::Gemma4GraphOptions options;
       options.device_masks = true;
       options.attention_mode = kg::Gemma4AttentionMode::kOwners;
       options.common_owner_reads = policy != 0;
+      options.bounded_owner_roots = policy == 2;
       auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, options));
       ASSERT_TRUE(arena);
       auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
@@ -331,11 +332,14 @@ TEST(Gemma4Graph, CommonOwnerReadsPreserveEqualGraphsAndRejectTheSecondBrokenWri
         });
         auto* out = found == g->nodes.end() ? nullptr : *found;
         ASSERT_NE(out, nullptr);
+        EXPECT_EQ(kg::JitllmOpInt(out, 4), 0);
         for (const auto index : {2, 3, 6, 7}) EXPECT_EQ(out->src[index]->src[0]->op, GGML_OP_VIEW);
       }
     }
     EXPECT_EQ(nodes[0], nodes[1]);
     EXPECT_EQ(used[0], used[1]);
+    EXPECT_EQ(nodes[0], nodes[2]);
+    EXPECT_EQ(used[0], used[2]);
     kg::Gemma4GraphOptions options;
     options.device_masks = true;
     auto estimate = options;
@@ -359,7 +363,8 @@ TEST(Gemma4Graph, CommonOwnerReadsPreserveEqualGraphsAndRejectTheSecondBrokenWri
 TEST(Gemma4Graph, CommonOwnerReadsKeepActualRootsAndPadOnlyBoundedTwoOwnerWaves) {
   for (const auto size : {26U, 31U})
     for (const bool reverse : {false, true})
-      for (const bool common : {false, true}) {
+      for (const std::size_t policy : {0U, 1U, 2U}) {
+        const bool common = policy != 0, bounded = policy == 2;
         Case c(size, 2);
         c.shape = {};
         for (std::uint32_t i = 0; i < 2; ++i) {
@@ -371,6 +376,7 @@ TEST(Gemma4Graph, CommonOwnerReadsKeepActualRootsAndPadOnlyBoundedTwoOwnerWaves)
         options.device_masks = true;
         options.attention_mode = kg::Gemma4AttentionMode::kOwners;
         options.common_owner_reads = common;
+        options.bounded_owner_roots = bounded;
         auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, options));
         ASSERT_TRUE(arena);
         auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
@@ -378,6 +384,7 @@ TEST(Gemma4Graph, CommonOwnerReadsKeepActualRootsAndPadOnlyBoundedTwoOwnerWaves)
         EXPECT_EQ(g->attention_mode, common ? kg::Gemma4AttentionMode::kOwners
                                             : kg::Gemma4AttentionMode::kIndependent);
         if (!common) continue;
+        BindLeaves(*g);
         EXPECT_EQ(Count(*g, GGML_OP_FLASH_ATTN_EXT), 0U);
         for (std::uint32_t layer = 0; layer < c.p.layers; ++layer) {
           const auto name = "packed.blk." + std::to_string(layer) + ".attention";
@@ -387,13 +394,15 @@ TEST(Gemma4Graph, CommonOwnerReadsKeepActualRootsAndPadOnlyBoundedTwoOwnerWaves)
           auto* out = found == g->nodes.end() ? nullptr : *found;
           ASSERT_NE(out, nullptr);
           EXPECT_EQ(kg::JitllmOpOf(out), kg::JitllmOp::kFlashAttnOwners);
+          EXPECT_EQ(kg::JitllmOpInt(out, 4), bounded ? 1 : 0);
+          EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(out));
           EXPECT_EQ(out->src[1]->ne[0], 1024);
           EXPECT_EQ(out->src[1]->ne[1], 32);
           for (std::size_t i = 0; i < 2; ++i)
             for (std::size_t which = 0; which < 2; ++which) {
               const auto read = c.shape.segments[i].global_n_kv;
               auto* raw = out->src[2 + i + which * 4]->src[0];
-              if (read == 512) {
+              if (read == 512 && !bounded) {
                 ASSERT_EQ(raw->op, GGML_OP_CONCAT);
                 EXPECT_EQ(raw->op_params[0], 2);
                 EXPECT_EQ(raw->src[1]->op, GGML_OP_FILL);

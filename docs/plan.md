@@ -42,10 +42,13 @@ removes both paid differences and matches all160 paid full heads, but retains on
 strict frontier difference; conditional loss passes at +0.08119%. This is diagnostic
 evidence, without a production layer policy or observed stock992 routing selector.
 C3 transfer, other partial model counts and unequal widths outside the
-[bounded default-off C2 common-read screen](experiments/gemma4-common-width/README.md)
-remain unqualified. That screen restores all 66 teacher heads plus two initial
-heads exactly for both profiles; paid padding cost and public adoption remain
-open. Fresh
+[bounded C2 common-root recipe](experiments/gemma4-bounded-owner-roots/README.md)
+remain unqualified. That recipe restores all 68 stock heads on both short and
+physically wrapped controls, preserves initialized states and removes temporary
+KV copies. Same-binary paid latency falls 6.01% / 5.24% (26B / 31B), within 0.1%
+of current stock on short n2 screens. Ordinary context<=4096/exactly-two-slot
+HTTP adoption passes; configured-four C2, wider/partial cohorts and compatible
+multirow prefill remain owed. Fresh
 31B timing is +1.47% with a stock spread larger than its mean gap; 26B is −1.064%
 in its short matched bookends. Core opt-in controls retain their historical scopes and do not adopt SOURCE14
 serving/default files. The separate current bridge above closes bounded dense31

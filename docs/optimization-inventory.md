@@ -103,14 +103,20 @@ HTTP joined-prefill/restart controls pass; a native cold C2 endpoint bookend
 improves 14.03% with exact IDs/usage. The endpoint and runner comparisons
 measure different boundaries.
 
-Both Gemma4 profiles now have a [default-off C2 common-read transfer](experiments/gemma4-common-width/README.md).
-It checks every original owner width and exact cache writer, funds real F16 K/V
-zero tails and invisible mask tails, and preserves actual cache bounds/cursors.
-Both representative unequal-prefix controls recover eight positive-margin
-failures to 66/66 byte-exact teacher heads plus two exact predecode heads;
-initialized-state, replay/refusal and restore controls pass. Equal widths keep
-the existing no-copy graph. Temporary padding cost, ordinary serving adoption
-and wider/partial geometry remain open; merely widening views is invalid.
+Both Gemma4 profiles' [common-read repair](experiments/gemma4-common-width/README.md)
+recovers their unequal-prefix strict failure. The
+[bounded-root transfer](experiments/gemma4-bounded-owner-roots/README.md) removes
+temporary K/V zero-tail copies while retaining exact actual writers, common
+logical grid/mask/partition/fixup arithmetic and neutral empty physical
+partitions. Equal widths keep the legacy path. H16/H32 D256/GQA2 and D512/GQA8
+operator controls, exact short/physical-ring stock heads and initialized-state
+restore/replay pass. Same-binary paid latency falls 6.01% / 5.24% (26B / 31B),
+within 0.1% of current stock on short n2 screens. The ordinary factory selects
+context<=4096/exactly-two-slot configurations after checked HTTP joined-wave,
+selected-plan and cached restart controls. Internal flags remain default-off;
+configured-four C2, wider/partial geometry and broader serving performance remain
+open. Transfer to H8/no-cap Gemma3 and H8/cap50 Gemma2 retains each family's
+separate admission/model evidence; merely widening a cache view remains invalid.
 Gemma4 multirow prefill also needs a new transform because the current
 attention transform admits one query and its packed mode requires at least
 four owners. Gemma2 now reuses the shared prompt seam after its distinct cap50

@@ -126,49 +126,61 @@ TEST(Gemma4Plan, StateOnlyPlacesWithoutHiddenOrHeadAndRetainsFreshInputs) {
 
 TEST(Gemma4Plan, CommonOwnerReadPaddingIsPlacedAndKeepsActualSourceWidths) {
   for (const auto size : {26U, 31U})
-    for (const bool device_masks : {false, true}) {
-      Case c(2, 0, size);
-      const std::array<std::int32_t, 1> token{1};
-      const std::array<md::Gemma4Segment, 2> segments{{{0, 384, token}, {1, 896, token}}};
-      auto input = md::Gemma4Chunk(c.p, c.state, segments, !device_masks);
-      ASSERT_TRUE(input);
-      c.input = std::move(*input);
-      c.shape = {};
-      for (const auto& seg : c.input.segments)
-        c.shape.segments.push_back(
-            {seg.slot, seg.rows, seg.n_past, seg.global_n_kv, seg.local_n_kv});
-      c.shape.outputs = 2;
-      c.frontier = {0, 1};
-      kg::Gemma4GraphOptions options;
-      options.device_masks = device_masks;
-      options.attention_mode = kg::Gemma4AttentionMode::kOwners;
-      options.common_owner_reads = true;
-      auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, options));
-      ASSERT_TRUE(arena);
-      auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
-      ASSERT_TRUE(g);
-      auto model = Places(c, *g);
-      kg::DeviceChoices choices;
-      choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
-      choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
-      auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
-      ASSERT_TRUE(measured) << jitllm::test_support::Failed(measured).value_or("");
-      auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
-                                        (*measured)->placement.extent);
-      ASSERT_TRUE(placed) << jitllm::test_support::Failed(placed).value_or("");
-      EXPECT_EQ((*placed)->graph.attention_mode, kg::Gemma4AttentionMode::kOwners);
-      EXPECT_EQ((*placed)->graph.segments[0].global_mask->ne[0], 512);
-      EXPECT_EQ((*placed)->graph.segments[1].global_mask->ne[0], 1024);
-      auto bytes = en::Gemma4SourceBytes((*placed)->graph);
-      ASSERT_TRUE(bytes);
-      EXPECT_TRUE(en::Gemma4Sources((*placed)->graph, c.input, c.frontier, {}, *bytes));
-      EXPECT_FALSE(en::Gemma4Sources((*placed)->graph, c.input, c.frontier, {}, *bytes - 1));
-      for (auto* node : (*placed)->graph.nodes)
-        if (node->op == GGML_OP_FILL) {
-          EXPECT_EQ(node->src[0], nullptr);
-          EXPECT_NE(node->data, nullptr);
+    for (const bool device_masks : {false, true})
+      for (const bool bounded : {false, true}) {
+        Case c(2, 0, size);
+        const std::array<std::int32_t, 1> token{1};
+        const std::array<md::Gemma4Segment, 2> segments{{{0, 384, token}, {1, 896, token}}};
+        auto input = md::Gemma4Chunk(c.p, c.state, segments, !device_masks);
+        ASSERT_TRUE(input);
+        c.input = std::move(*input);
+        c.shape = {};
+        for (const auto& seg : c.input.segments)
+          c.shape.segments.push_back(
+              {seg.slot, seg.rows, seg.n_past, seg.global_n_kv, seg.local_n_kv});
+        c.shape.outputs = 2;
+        c.frontier = {0, 1};
+        kg::Gemma4GraphOptions options;
+        options.device_masks = device_masks;
+        options.attention_mode = kg::Gemma4AttentionMode::kOwners;
+        options.common_owner_reads = true;
+        options.bounded_owner_roots = bounded;
+        auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, options));
+        ASSERT_TRUE(arena);
+        auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+        ASSERT_TRUE(g);
+        auto model = Places(c, *g);
+        kg::DeviceChoices choices;
+        choices.quant = [](const auto*) { return kg::QuantMulMatPath::kTile; };
+        choices.mul_mat = [](const auto*) { return kg::MulMatPath::kCublas; };
+        auto measured = en::PlanGemma4Chunk(model, c.shape, choices, 0, 0);
+        ASSERT_TRUE(measured) << jitllm::test_support::Failed(measured).value_or("");
+        auto placed = en::PlanGemma4Chunk(model, c.shape, choices, std::uint64_t{1} << 53U,
+                                          (*measured)->placement.extent);
+        ASSERT_TRUE(placed) << jitllm::test_support::Failed(placed).value_or("");
+        EXPECT_EQ((*placed)->graph.attention_mode, kg::Gemma4AttentionMode::kOwners);
+        EXPECT_EQ((*placed)->graph.segments[0].global_mask->ne[0], 512);
+        EXPECT_EQ((*placed)->graph.segments[1].global_mask->ne[0], 1024);
+        auto bytes = en::Gemma4SourceBytes((*placed)->graph);
+        ASSERT_TRUE(bytes);
+        EXPECT_TRUE(en::Gemma4Sources((*placed)->graph, c.input, c.frontier, {}, *bytes));
+        EXPECT_FALSE(en::Gemma4Sources((*placed)->graph, c.input, c.frontier, {}, *bytes - 1));
+        for (auto* node : (*placed)->graph.nodes) {
+          if (kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners) {
+            EXPECT_EQ(kg::JitllmOpInt(node, 4), bounded ? 1 : 0);
+            if (bounded) {
+              EXPECT_EQ(node->src[2]->ne[1], 512);
+              EXPECT_EQ(node->src[3]->ne[1], 1024);
+              EXPECT_EQ(node->src[2]->src[0]->op, GGML_OP_VIEW);
+              EXPECT_EQ(node->src[6]->src[0]->op, GGML_OP_VIEW);
+            }
+          }
+          if (node->op == GGML_OP_FILL) {
+            EXPECT_EQ(node->src[0], nullptr);
+            EXPECT_NE(node->data, nullptr);
+          }
         }
-    }
+      }
 }
 
 TEST(Gemma4Plan, OwnerOptInPlacesAllRealRootsAndChargesSizedMetadata) {

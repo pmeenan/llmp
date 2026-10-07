@@ -995,7 +995,7 @@ class Gemma final : public Llm {
   std::string extra() const override {
     const auto& selected = runner_.last_built_policy();
     return std::format(
-        R"({{"architecture":"gemma4","dispatch":"{}","optional_optimizations":{},"row_invariant":{},"profile":"{}","coverage_tensors":{},"pitch_padding":{},"joined_groups":{},"joined_units":{},"gemma31_candidate":{},"gemma26_candidate":{},"max_rows":{},"norm_rope_requested":{},"norm_add_requested":{},"owner_attention_requested":{},"last_built_rows":{},"last_built_segments":{},"last_built_norm_rope":{},"last_built_norm_add":{},"last_built_owner_attention":{}}})",
+        R"({{"architecture":"gemma4","dispatch":"{}","optional_optimizations":{},"row_invariant":{},"profile":"{}","coverage_tensors":{},"pitch_padding":{},"joined_groups":{},"joined_units":{},"gemma31_candidate":{},"gemma26_candidate":{},"max_rows":{},"norm_rope_requested":{},"norm_add_requested":{},"owner_attention_requested":{},"last_built_rows":{},"last_built_segments":{},"last_built_norm_rope":{},"last_built_norm_add":{},"last_built_owner_attention":{},"common_owner_reads_requested":{},"bounded_owner_roots_requested":{},"max_bound_bounded_owner_attention":{}}})",
         settings_.gemma31_production || settings_.gemma26_production ? "joined-candidate"
         : joined_                                                    ? "joined-diagnostic"
                                                                      : "scalar-cohort",
@@ -1003,7 +1003,9 @@ class Gemma final : public Llm {
         runner_.coverage().tensors, runner_.pitch_padding(), joined_groups_, joined_units_,
         settings_.gemma31_production, settings_.gemma26_production, options_.max_rows,
         options_.fuse_norm_rope, options_.fuse_norm_add, options_.owner_attention, selected.rows,
-        selected.segments, selected.norm_rope, selected.norm_add, selected.owner_attention_steps);
+        selected.segments, selected.norm_rope, selected.norm_add, selected.owner_attention_steps,
+        options_.common_owner_reads, options_.bounded_owner_roots,
+        max_bound_bounded_owner_attention_);
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
   std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
@@ -1099,6 +1101,9 @@ class Gemma final : public Llm {
           if (ran) {
             ++joined_groups_;
             joined_units_ += count;
+            max_bound_bounded_owner_attention_ =
+                std::max(max_bound_bounded_owner_attention_,
+                         runner_.last_built_policy().bounded_owner_steps);
           }
           return ran;
         },
@@ -1295,6 +1300,8 @@ class Gemma final : public Llm {
     const bool candidate = variant == engine::Gemma4Variant::k31B && settings.gemma31_production;
     const bool candidate26 =
         variant == engine::Gemma4Variant::k26BA4B && settings.gemma26_production;
+    const bool bounded = (candidate || candidate26) && settings.context.value <= 4096 &&
+                         settings.max_slots.value == 2;
     return {.artifact = roles.installed / entry.artifact.value_or(""),
             .out = roles.spill,
             .variant = variant,
@@ -1311,7 +1318,9 @@ class Gemma final : public Llm {
             .fuse_gemma_route = candidate26,
             .fuse_gemma_reduce = candidate26,
             .fuse_quant_glu = candidate,
-            .owner_attention = candidate || candidate26};
+            .owner_attention = candidate || candidate26,
+            .common_owner_reads = bounded,
+            .bounded_owner_roots = bounded};
   }
   engine::Gemma4Runner::Slot& NativeSlot(const Branch& branch) const {
     return *slots_[BranchIndex(branch)];
@@ -1325,6 +1334,7 @@ class Gemma final : public Llm {
   const bool joined_;
   std::uint64_t joined_groups_ = 0;
   std::uint64_t joined_units_ = 0;
+  std::uint32_t max_bound_bounded_owner_attention_ = 0;
   engine::Gemma4Runner runner_;
   std::array<engine::Gemma4Runner::Slot*, engine::kMaxRequestSlots> slots_{};
 };

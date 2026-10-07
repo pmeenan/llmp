@@ -3,14 +3,15 @@
 
 # Gemma4 common attention reads
 
-The bounded two-owner decode option gives unequal cache prefixes the common
-read width used by stock, while preserving each original cache view, initialized
-state and cursor. Both approved profiles change from eight positive-margin differences each to
-all 66 teacher heads byte-exact. Short candidate cycles remain 6.36% / 5.43%
-slower than the current stock backend-greedy path (26B / 31B). This is a
-correctness repair, with a measured execution-cost gap. The internal
-`common_owner_reads` option defaults false and ordinary serving selection is
-unchanged; bounded public adoption remains separate.
+This first bounded two-owner screen gives unequal cache prefixes stock's common
+read width with real temporary K/V padding. Both approved profiles change from
+eight positive-margin differences to all 66 teacher heads byte-exact, while its
+short candidate cycles remain 6.36% / 5.43% slower than stock (26B / 31B).
+The results below retain that historical correctness repair and padding cost.
+The later [bounded-root transfer](../gemma4-bounded-owner-roots/README.md) removes
+KV copies, preserves exact short and physically wrapped heads/state, and selects
+the checked ordinary context<=4096/exactly-two-slot recipe after HTTP controls.
+Internal flags still default false; wider serving policies remain separate.
 
 The original separate attention calls use each owner's own padded read width.
 Exact upstream `llama-kv-cache.cpp` instead selects one `n_kv` across active

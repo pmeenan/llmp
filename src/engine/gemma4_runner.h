@@ -63,6 +63,8 @@ struct Gemma4Options {
   bool owner_attention = false;
   // Initially bounded to two one-row owners; wider cohorts keep equal reads.
   bool common_owner_reads = false;
+  // Closed C2 common-width attention over each actual initialized cache root.
+  bool bounded_owner_roots = false;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
 };
 class Gemma4Runner final : public PagedModel {
@@ -289,7 +291,7 @@ class Gemma4Runner final : public PagedModel {
     std::uint32_t norm_rope = 0, norm_add = 0;
     std::uint32_t gemma_route = 0, gemma_reduce = 0;
     // Selected plan implementations, not executions or per-replay launches.
-    std::uint32_t owner_attention_steps = 0;
+    std::uint32_t owner_attention_steps = 0, bounded_owner_steps = 0;
     // Requested immutable node geometry; a device plan can fall back to four.
     std::uint32_t requested_cohort8_steps = 0, requested_cohort12_steps = 0;
     std::uint32_t requested_partial_cohort_steps = 0;

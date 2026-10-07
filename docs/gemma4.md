@@ -401,16 +401,21 @@ partial counts, strict 26 C5 qualification, full corpus, depth and sustained
 qualification remain open.
 
 
-The [common-read C2 transfer](experiments/gemma4-common-width/README.md) now adds
-a false-default internal option for unequal padded reads. Each original owner
-width and SET_ROWS writer is checked before a real F16 zero tail is concatenated
-to its K/V activation; every padded mask row receives an invisible tail. Both
-profiles recover eight strict differences to 66/66 exact teacher heads, plus
-2/2 exact initial predecode heads. Independent prefill/state remains byte-identical
-between policies; own state/refusal/Clear/restore controls pass. Equal-width
-operands retain no-copy behavior. This bounded one-query/C2 result does not
-select ordinary serving, wider/partial cohorts or multirow prefill; measured
-padding cost and public adoption remain separate work.
+The [common-read C2 transfer](experiments/gemma4-common-width/README.md)
+recovers both profiles' eight strict differences with temporary physical padding.
+The later [bounded-root recipe](experiments/gemma4-bounded-owner-roots/README.md)
+keeps the common logical width and exact SET_ROWS writer-derived actual views,
+clamps physical reads and emits neutral empty partitions without temporary K/V
+copies. No cursor or cache view is widened. H16/H32, D256/GQA2 and D512/GQA8
+are checked for two actual owners, one query and no softcap; equal widths keep
+the legacy path. Both short 256/768 and physical-ring 2560/3072 controls match all
+68 stock heads with exact padded/bounded initialized states and restore/replay.
+Same-binary short paid latency falls 6.01% / 5.24% for 26B / 31B. Internal flags
+default false; the ordinary factory selects the checked recipe only at
+context<=4096 with exactly two configured slots. Its HTTP lifecycle, successful
+joined-wave/selected-plan evidence and matched cached restart checks pass.
+Configured-four C2, wider/partial cohorts, multirow prefill and sustained/context
+qualification remain open; short runner timing does not establish serving parity.
 
 ## Bounded native serving route
 

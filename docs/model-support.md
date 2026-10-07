@@ -229,13 +229,18 @@ remain unqualified. Short matched timings
 are +1.47%31B with stock spread larger than the mean gap and −1.064%26B; no sustained
 parity or full model-support claim follows.
 
-The [default-off common-read C2 option](experiments/gemma4-common-width/README.md)
-qualifies one-query unequal 256/768-prefix controls for both approved profiles:
-eight baseline positive-margin differences recover to zero, with all 66 later
-and two initial stock heads exact. Original cache/cursor bounds and initialized
-state/restore controls remain intact. Temporary padding has measured cost;
-ordinary serving adoption, other unequal shapes and broader qualification remain
-open.
+The [common-read C2 repair](experiments/gemma4-common-width/README.md) removes
+both profiles' eight unequal-prefix positive-margin differences. Its
+[bounded-root transfer](experiments/gemma4-bounded-owner-roots/README.md) removes
+temporary K/V copies while preserving original cache bounds, common logical
+partitions and exact initialized-state restore/replay. Short 256/768 and physical
+ring 2560/3072 controls match all 68 stock heads per profile. The ordinary factory
+selects this one-query/C2 recipe at context<=4096 and exactly two configured
+slots; internal options remain false by default. Both-profile HTTP joined-wave,
+likelihood, cache/SSE/stop/departure and matched cached restart controls pass.
+Same-binary short paid latency falls 6.01% / 5.24% (26B / 31B), within 0.1% of
+current stock on n2 screens. Wider configured cohorts, compatible multirow
+prefill, broader context/memory/swap and sustained qualification remain open.
 
 The [equal-width partial adapter](experiments/gemma-partial-owner-attention/README.md)
 adds opt-in whole5/6/7/9/10/11 geometry with bounded active roots and original

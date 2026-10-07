@@ -35,7 +35,9 @@ def inputs(root):
     record = json.loads((root / 'inputs.json').read_text())
     assert record['source_sha256'] == '90bf82fd26b7040c513e7370eca2cd283ac8fd15ce89a2e8d05d6f7e670b5ba2'
     result = []
-    for owner, prefix in enumerate((256, 768)):
+    prefixes = tuple(record[str(owner)]['rows'] - 35 for owner in range(2))
+    assert prefixes in ((256, 768), (2560, 3072))
+    for owner, prefix in enumerate(prefixes):
         path = root / f'input{owner}.i32'
         raw = path.read_bytes()
         assert len(raw) == (prefix + 35) * 4 and digest(path) == record[str(owner)]['sha256']
@@ -125,7 +127,7 @@ def quality(root, policy):
             assert digest(arms[0] / name) == digest(root / 'native-baseline-own1' / name), f'flag changed independent prefill {name}'
     positive = sum(m['stock_margin'] > 0 for m in misses)
     relative = math.expm1(math.fsum(deltas) / TARGETS)
-    result = dict(policy=policy, scope='independent256/768 prefill, three scalar warm rows,32 joined C2 steps',
+    result = dict(policy=policy, scope=f'independent{len(ids[0])-35}/{len(ids[1])-35} prefill, three scalar warm rows,32 joined C2 steps',
         rows=ROWS, scored_targets=TARGETS, final_rows_scored=False, initial_predecode=initial,
         exact_head_rows=exact, strict_greedy_differences=len(misses), positive_margin_differences=positive,
         exact_tie_differences=sum(m['stock_margin']==0 for m in misses), misses=misses,
