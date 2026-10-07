@@ -116,12 +116,18 @@ TEST_F(GemmaNormTest, IndexedNormGatesPreserveLocalGatherAndExternalUseRefusals)
   EXPECT_FALSE(kg::GemmaNormAddGatherFusionAt(extended, 0, &after));
 }
 
-TEST_F(GemmaNormTest, BothApprovedResidualWidthsAndOperandOrders) {
-  for (int width : {2816, 5376})
+TEST_F(GemmaNormTest, ApprovedResidualWidthsAndOperandOrders) {
+  for (int width : {2560, 2816, 5376})
     for (bool reverse : {false, true}) {
       const auto t = Add(width, reverse);
       EXPECT_TRUE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
     }
+}
+TEST_F(GemmaNormTest, RejectsUnapprovedResidualWidths) {
+  for (int width : {2559, 2561, 4096}) {
+    const auto t = Add(width);
+    EXPECT_FALSE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
+  }
 }
 TEST_F(GemmaNormTest, D256AndD512FrequencyFactors) {
   for (int dim : {256, 512}) {
@@ -146,15 +152,17 @@ TEST_F(GemmaNormTest, RejectsInvalidRotationMetadataAndStaleFactors) {
   EXPECT_FALSE(kg::CheckGemmaNormRope(t.norm, t.mul, t.out));
 }
 TEST_F(GemmaNormTest, RejectsActualSourceOverlapsAndMalformedResidual) {
-  auto t = Add(5376);
-  auto* original = t.out->data;
-  t.out->data = t.x->data;
-  EXPECT_FALSE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
-  t.out->data = static_cast<char*>(t.x->data) + 4;
-  EXPECT_FALSE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
-  t.out->data = original;
-  t.out->src[1]->nb[0] = 8;
-  EXPECT_FALSE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
+  for (int width : {2560, 5376}) {
+    auto t = Add(width);
+    auto* original = t.out->data;
+    t.out->data = t.x->data;
+    EXPECT_FALSE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
+    t.out->data = static_cast<char*>(t.x->data) + 4;
+    EXPECT_FALSE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
+    t.out->data = original;
+    t.out->src[1]->nb[0] = 8;
+    EXPECT_FALSE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
+  }
 }
 TEST_F(GemmaNormTest, RejectsDependenciesOnUnwrittenIntermediates) {
   auto add = Add(2816);
@@ -229,7 +237,7 @@ TEST_F(GemmaNormTest, UnrelatedCyclicKeepsAndReadersAreRefusedBeforeRootScans) {
   }
 }
 TEST_F(GemmaNormTest, ResidualGatherStaysPaidAndPlacedRawInputLivesUntilDeferredAdd) {
-  for (int width : {2816, 5376}) {
+  for (int width : {2560, 2816, 5376}) {
     auto [t, gather] = AddGather(width);
     auto* leaf = t.x;
     auto* other = Bind(ggml_dup_tensor(c(), leaf));

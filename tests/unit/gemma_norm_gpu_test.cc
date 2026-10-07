@@ -110,30 +110,33 @@ class GemmaNormGpu : public ::testing::Test {
     EXPECT_EQ(copied, cudaSuccess);
     return result;
   }
-  void Operand(bool rope, std::size_t width, bool reversed = false) {
+  void Operand(bool rope, std::size_t width, bool reversed = false, std::size_t heads = 4,
+               std::size_t tokens = 6, float freq_base = 10000.0f, float freq_scale = 1.0f,
+               int original_context = 262144) {
     arenas.push_back(std::make_unique<kg::TensorArena>(kg::TensorArena::Create(16).value()));
     auto* c = arenas.back()->context();
-    constexpr std::size_t heads = 4, tokens = 6;
     const auto dimension = static_cast<std::int64_t>(width);
-    auto* x = Bind(rope ? ggml_new_tensor_3d(c, GGML_TYPE_F32, dimension, heads, tokens)
-                        : ggml_new_tensor_2d(c, GGML_TYPE_F32, dimension, tokens));
+    const auto head_count = static_cast<std::int64_t>(heads);
+    const auto token_count = static_cast<std::int64_t>(tokens);
+    auto* x = Bind(rope ? ggml_new_tensor_3d(c, GGML_TYPE_F32, dimension, head_count, token_count)
+                        : ggml_new_tensor_2d(c, GGML_TYPE_F32, dimension, token_count));
     auto* weight = Bind(ggml_new_tensor_1d(c, GGML_TYPE_F32, dimension));
     auto* norm = Bind(ggml_rms_norm(c, x, 1e-6f));
     auto* mul = Bind(ggml_mul(c, norm, weight));
     ggml_tensor *positions = nullptr, *factors = nullptr, *residual = nullptr, *out = nullptr,
                 *reference_input = nullptr, *reference_rope = nullptr;
     if (rope) {
-      positions = Bind(ggml_new_tensor_1d(c, GGML_TYPE_I32, tokens));
+      positions = Bind(ggml_new_tensor_1d(c, GGML_TYPE_I32, token_count));
       if (width == 512) factors = Bind(ggml_new_tensor_1d(c, GGML_TYPE_F32, dimension / 2));
-      out =
-          Bind(ggml_rope_ext(c, mul, positions, factors, static_cast<int>(width),
-                             GGML_ROPE_TYPE_NEOX, 262144, 10000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f));
+      out = Bind(ggml_rope_ext(c, mul, positions, factors, static_cast<int>(width),
+                               GGML_ROPE_TYPE_NEOX, original_context, freq_base, freq_scale, 0.0f,
+                               1.0f, 32.0f, 1.0f));
       reference_input = Bind(ggml_dup_tensor(c, x));
-      reference_rope =
-          Bind(ggml_rope_ext(c, reference_input, positions, factors, static_cast<int>(width),
-                             GGML_ROPE_TYPE_NEOX, 262144, 10000.0f, 1.0f, 0.0f, 1.0f, 32.0f, 1.0f));
+      reference_rope = Bind(ggml_rope_ext(
+          c, reference_input, positions, factors, static_cast<int>(width), GGML_ROPE_TYPE_NEOX,
+          original_context, freq_base, freq_scale, 0.0f, 1.0f, 32.0f, 1.0f));
     } else {
-      residual = Bind(ggml_new_tensor_2d(c, GGML_TYPE_F32, dimension, tokens));
+      residual = Bind(ggml_new_tensor_2d(c, GGML_TYPE_F32, dimension, token_count));
       out = Bind(reversed ? ggml_add(c, residual, mul) : ggml_add(c, mul, residual));
     }
     std::vector<float> xv(static_cast<std::size_t>(ggml_nelements(x))), wv(width), rv(xv.size()),
@@ -197,10 +200,10 @@ class GemmaNormGpu : public ::testing::Test {
           for (std::size_t r = 0; r < xv.size() / width; ++r)
             for (std::size_t i = 0; i < width; ++i) {
               const auto pair = i % (width / 2);
-              const double angle =
-                  double(pv[r / heads]) *
-                  std::pow(10000.0, -2.0 * static_cast<double>(pair) / static_cast<double>(width)) /
-                  (factors ? fv[pair] : 1.0f);
+              const double angle = double(freq_scale) * double(pv[r / heads]) *
+                                   std::pow(double(freq_base), -2.0 * static_cast<double>(pair) /
+                                                                   static_cast<double>(width)) /
+                                   (factors ? fv[pair] : 1.0f);
               const double a = expected[r * width + pair];
               const double b = expected[r * width + pair + width / 2];
               const double scalar = i < width / 2 ? a * std::cos(angle) - b * std::sin(angle)
@@ -252,6 +255,17 @@ class GemmaNormGpu : public ::testing::Test {
 TEST_F(GemmaNormGpu, D256AndFactorAwareD512RotateAndCaptureFreshPositions) {
   Operand(true, 256);
   Operand(true, 512);
+}
+TEST_F(GemmaNormGpu, Gemma3QueryAndKeyShapesLocalAndLinearGlobalRope) {
+  for (std::size_t heads : {4U, 8U})
+    for (std::size_t rows : {1U, 128U}) {
+      Operand(true, 256, false, heads, rows, 10000.0f, 1.0f, 131072);
+      Operand(true, 256, false, heads, rows, 1000000.0f, 0.125f, 131072);
+    }
+}
+TEST_F(GemmaNormGpu, Gemma3ResidualWidthRowsOrdersAndCaptureFreshInputs) {
+  for (std::size_t rows : {1U, 128U})
+    for (bool reversed : {false, true}) Operand(false, 2560, reversed, 1, rows);
 }
 TEST_F(GemmaNormGpu, ApprovedResidualWidthsOrdersAndCaptureFreshInputs) {
   for (std::size_t width : {2816U, 5376U})

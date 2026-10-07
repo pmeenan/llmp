@@ -108,7 +108,7 @@ These dimensions establish a representative own control, not new supported
 context limits, batching, sustained performance, a serving route or media
 support. Reference quality/performance qualification remains open.
 
-## Current stock first screen: quality remains open
+## Primitive stock first screen
 
 The same Spark runs the original llama.cpp v0.6.0 public API from commit
 `d81235049384534c167caea52b85a694f6103d14`, image
@@ -157,9 +157,73 @@ These cumulative counts describe successfully bound plans, excluding Setup's
 envelope probes; they do not count kernel execution or graph replay. All three
 counter-instrumented teacher runs preserve the frozen primitive head, choice
 and final-head bytes. Both switches remain explicit diagnostics and do not fix
-quality. The source-backed next lead is the eligible D256 norm/Mul/RoPE chain;
-width 2560 norm/Mul/ADD would require a deliberate checked gate extension.
-The supported execution matrix remains unchanged.
+quality. The supported execution matrix remains unchanged.
+
+## Checked norm chains: exact bounded C1 quality
+
+The explicit `normrope` diagnostic transfers the existing D256 norm/Mul/RoPE
+launcher to query H8 and key H4, with local base 10000/scale 1 and global base
+1000000/scale 0.125. Eight operand cases cover one and 128 rows, independent
+FP64 normalization, primitive phase checks, unchanged raw inputs and fresh
+captured positions. All three focused GPU tests pass. Across three runtime
+plans this policy selects 203 norm/RoPE steps. Two teacher repeats are exact,
+but stock comparison still has the same row-23 positive-margin difference;
+`expm1(mean_target_nll_delta)` is +0.440470%, mean total variation 0.02806966.
+The official `m35-gemma3-normrope` queue stops at its quality gate and runs no
+timing. This isolated transfer is insufficient.
+
+The next addition deliberately extends the existing norm/Mul/ADD check from
+widths 2816/5376 to include 2560, using the unchanged upstream launcher. FP64
+GPU controls cover one and 128 rows, both operand orders, raw-input preservation
+and fresh captured inputs. Host controls check both orders, paid residual
+GET_ROWS, malformed strides/overlap and refusal of unapproved widths
+2559/2561/4096. All 19 focused norm host/GPU tests pass on Spark A.
+
+The `normropeadd` diagnostic selects 203 norm/RoPE and 202 norm/ADD steps across
+three runtime plans. Its two finite 33-head files are byte-identical to frozen
+stock: SHA-256 `01aaccb8c1b50538d9499489c385a7005cf2f68a5d3d941c768502fae0c527dd`.
+The `optimized` diagnostic additionally selects 205 generic RMSNorm/Mul and
+35 quantized GeGLU steps; its two teacher files preserve those same stock bytes.
+Both policies have zero greedy differences, target-NLL deltas, total variation
+and raw-logit deltas. Each teacher captures once and replays 33 times. These
+remain cumulative bound-plan selections, excluding Setup probes, rather than
+counts of executed or replayed kernels. All four fusion switches default off.
+
+Only after both quality gates pass, one short stock/native/native/stock cycle
+screen runs the optimized candidate. Each arm warms 256 rows, three supplied
+scalar rows and eight greedy steps, then clears. Paid work is 256 prompt rows
+and 32 greedy decode steps, with the three supplied scalar rows between them
+excluded from timing. All arms publish full heads to the host. This is the
+same 4096-context/C1/F16/128-row topology as the teacher screen.
+
+| RNNR arm | Prefill ms | Decode ms | Paid total ms |
+| --- | ---: | ---: | ---: |
+| Stock 1 | 55.4588 | 403.974 | 459.4328 |
+| Native 1 | 56.5638 | 414.036 | 470.5998 |
+| Native 2 | 57.8917 | 413.652 | 471.5437 |
+| Stock 2 | 55.3528 | 404.610 | 459.9628 |
+
+Mean paid latency is 471.07175 ms native versus 459.6978 ms stock, or +2.474223%.
+Generated tokens per paid second are 67.9302 versus 69.6109. All four 32-ID
+greedy histories match (SHA-256
+`c828ecf66c451fff2aface3ba592b32e77792f7e2848127f59e1132b22e20b7f`), as do
+all four finite final heads (SHA-256
+`a9c7ff3747cafa8224a23f014888bf5ff2229e50f1df72d13d4447682d0d4c34`).
+Native cycles capture three times and replay 44 times, with no refusal or
+coverage violation; native lifetimes and stock containers retire successfully.
+
+The official `m35-gemma3-normropeadd` job completes all 19 steps with exit 0.
+The actual native binary SHA-256 is
+`d6ca09c4e2aed2744352d7f2d51fb601a22787003642ce2772881095b4fb9e06`;
+the native receipt and locked environment remain as above. Exact source/binary
+bindings, own-repeat records, quality results and raw outputs remain external
+under Spark A's `~/.local/share/jitllm/gemma3-execution-20261007/`, in
+`normrope-only`, `normropeadd-only` and `optimized`.
+
+This clears the representative C1 quality screen, without establishing speed
+parity, corpus quality, 8K or maximum context, sustained performance, optimized
+batching or serving support. Device greedy publication and the H8 batching
+recipe remain later qualification work. No default recipe is selected here.
 
 TensorFold's per-task current source was checked on 2026-10-07 at
 [`ed78d6fc204d89d90b045bf033d6551e7714f3a1`](https://github.com/ashhart/TensorFold/blob/ed78d6fc204d89d90b045bf033d6551e7714f3a1/README.md)

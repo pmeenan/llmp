@@ -12,6 +12,7 @@
 #include "base/sha256.h"
 #include "engine/support.h"
 #include "kernels/ggml/executor.h"
+#include "kernels/ggml/gemma_norm.h"
 
 namespace jitllm::engine {
 namespace kg = kernels::ggml;
@@ -35,6 +36,8 @@ kg::DeviceChoices Gemma3Runner::Choices(kg::LaunchContext& launch) const {
   auto choices = kg::DeviceChoicesOf(launch);
   choices.fuse_norms = o_.fuse_norms;
   choices.fuse_quant_glu = o_.fuse_quant_glu;
+  choices.fuse_norm_rope = o_.fuse_norm_rope;
+  choices.fuse_norm_add = o_.fuse_norm_add;
   return choices;
 }
 Status Gemma3Runner::Setup() {
@@ -423,6 +426,8 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::Planned(
   for (const auto& selected : (*p)->plan.steps) {
     plan_selections_.norm_mul += selected.implementation == kg::kRmsNormMulFused;
     plan_selections_.quant_geglu += selected.implementation == kg::kMulMatGeGluQFused;
+    plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;
+    plan_selections_.norm_add += selected.implementation == kg::kGemmaNormAddName;
   }
   const auto bytes = PlannedHostBytes(**p), nodes = PlannedNodes(**p);
   return &plans_.Add(shape, std::move(*p), bytes, nodes,

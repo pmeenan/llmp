@@ -81,7 +81,7 @@ std::expected<void, KernelFailure> CheckGemmaNormAdd(const ggml_tensor* norm,
   if (!OperandChains(add)) return Rejected("invalid residual operand view chain");
   if (add == nullptr || (add->src[0] != mul && add->src[1] != mul) || !IsF32(add))
     return Rejected("norm/residual ADD must consume this product");
-  if (norm->ne[0] != 2816 && norm->ne[0] != 5376)
+  if (norm->ne[0] != 2560 && norm->ne[0] != 2816 && norm->ne[0] != 5376)
     return Rejected("norm/residual is bounded to approved Gemma widths");
   if (auto r = CheckBinary(add, GGML_OP_ADD); !r) return r;
   const auto* residual = add->src[0] == mul ? add->src[1] : add->src[0];

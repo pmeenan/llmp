@@ -28,23 +28,30 @@ adds the independent native request slots, positive private BF16 head-sharing
 factor, rejected shared-worklist/exact16 controls and cross-family boundaries
 on batching and weight reuse. Its priority order follows the current M3 gaps.
 
-The [Gemma3 native runner](gemma3.md) now consumes held-request direct steps,
+The [Gemma3 native runner](gemma3.md) consumes held-request direct steps,
 unchanged-placement checks, Clear backing reuse, graph capture beside eager
 execution and state-only prefill through the shared skeleton. Its bounded C1
-own controls pass; model quality, performance and batching remain unqualified.
-Across three bound runtime plans, the explicit plain-norm diagnostic selects
-610 RMSNorm/Mul steps; quantized GeGLU selects 35 steps in its separate diagnostic.
-Both preserve primitive heads byte for byte and leave the first stock quality
-screen's positive-margin greedy difference unchanged. These are plan-selection
-counts, not replayed launch counts or adopted speed recipes.
+own controls pass. The primitive first stock screen has one positive-margin
+greedy difference; separate plain-norm and quantized-GeGLU diagnostics select
+610 and 35 steps without changing those heads. D256 norm/RoPE alone selects
+203 steps but preserves the miss. These are bound-plan selection counts,
+excluding Setup probes and graph replay.
 
-Existing H16/32 owner attention and width2816/5376 norm-ADD gates exclude
-Gemma3's H8/width2560 shapes. D256 norm/RoPE is structurally eligible but is not
-yet selected or qualified here; device greedy publication and lookahead also
-remain open. No optimization transfers automatically. The exact stock Gemma3
-graph gathers final attention and residual rows before post-norm/FFN, matching
-this native frontier. Gemma26's distinct full-final-FFN requirement does not
-transfer to Gemma3.
+The [checked-chain C1 screen](experiments/gemma3-execution/README.md#checked-norm-chains-exact-bounded-c1-quality)
+extends the norm/ADD approved-width gate to 2560 with FP64, both-order,
+fresh-capture and refusal controls, using the unchanged upstream launcher.
+Combined norm/RoPE and norm/ADD select 203/202 steps and restore all 33 stock
+heads byte for byte. Adding eligible generic norm and quantized GeGLU selects
+205/35 more steps and preserves exact heads. One full-host-head RNNR screen
+has exact generated IDs/final heads and +2.47% native paid latency; all policies
+remain diagnostic and default off. Broader quality, performance and optimized
+batching remain open.
+
+Existing H16/32 owner attention excludes Gemma3's H8 shape. Device greedy
+publication and lookahead remain open. No optimization transfers automatically.
+The exact stock Gemma3 graph gathers final attention and residual rows before
+post-norm/FFN, matching this native frontier. Gemma26's distinct full-final-FFN
+requirement does not transfer to Gemma3.
 
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand
@@ -345,7 +352,7 @@ is selected. Its [transfer audit](experiments/gemma-joined-serving/transfer-audi
 records the eligible Qwen/DeepSeek mechanisms and unselected math contracts.
 
 Gemma's [checked norm chains](experiments/gemma-native-norm/README.md) reuse the
-original D256/D512 F32 norm/NEOX and 2816/5376 residual-add launchers through
+original D256/D512 F32 norm/NEOX and 2560/2816/5376 residual-add launchers through
 separate default-off policies. Kept/view-read intermediates retain primitives;
 final residual GET_ROWS stays paid before a deferred norm/add step. Dense31's
 measured 128-row complete heads match stock, but its paid 8K comparison against

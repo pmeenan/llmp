@@ -30,7 +30,7 @@ struct Gemma3Options {
   std::uint32_t max_head_rows = 0;
   bool graphs = true, frontier_head = true;
   // Explicit numerical comparisons only; ordinary plans use primitives.
-  bool fuse_norms = false, fuse_quant_glu = false;
+  bool fuse_norms = false, fuse_quant_glu = false, fuse_norm_rope = false, fuse_norm_add = false;
 };
 class Gemma3Runner final : public PagedModel {
  public:
@@ -60,7 +60,7 @@ class Gemma3Runner final : public PagedModel {
   // Cumulative selections in successfully bound runtime plans, including
   // plans later reclaimed. Setup's envelope probes are not counted.
   struct PlanSelections {
-    std::uint64_t plans = 0, steps = 0, norm_mul = 0, quant_geglu = 0;
+    std::uint64_t plans = 0, steps = 0, norm_mul = 0, quant_geglu = 0, norm_rope = 0, norm_add = 0;
   };
   Gemma3Runner(PagedNode& node, Gemma3Options options, int owner, std::uint32_t stream);
   ~Gemma3Runner() override;

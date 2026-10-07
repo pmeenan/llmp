@@ -97,7 +97,8 @@ int main(int argc, char** argv) {
   if (argc != 7) return 2;
   const std::string_view mode = argv[4], policy = argv[5], graphs = argv[6];
   if ((mode != "teacher" && mode != "cycle" && mode != "lifetime") ||
-      (policy != "primitive" && policy != "norm" && policy != "quantglu" && policy != "both") ||
+      (policy != "primitive" && policy != "norm" && policy != "quantglu" && policy != "both" &&
+       policy != "normrope" && policy != "normropeadd" && policy != "optimized") ||
       (graphs != "0" && graphs != "1"))
     return 2;
   auto raw = Read(argv[2], kInput * sizeof(std::int32_t));
@@ -119,12 +120,16 @@ int main(int argc, char** argv) {
   auto& node = lifetime->node;
   lifetime->runner = std::make_unique<en::Gemma3Runner>(
       node,
-      en::Gemma3Options{.artifact = argv[1],
-                        .out = out,
-                        .max_head_rows = 1,
-                        .graphs = graphs == "1",
-                        .fuse_norms = policy == "norm" || policy == "both",
-                        .fuse_quant_glu = policy == "quantglu" || policy == "both"},
+      en::Gemma3Options{
+          .artifact = argv[1],
+          .out = out,
+          .max_head_rows = 1,
+          .graphs = graphs == "1",
+          .fuse_norms = policy == "norm" || policy == "both" || policy == "optimized",
+          .fuse_quant_glu = policy == "quantglu" || policy == "both" || policy == "optimized",
+          .fuse_norm_rope =
+              policy == "normrope" || policy == "normropeadd" || policy == "optimized",
+          .fuse_norm_add = policy == "normropeadd" || policy == "optimized"},
       0, 0);
   auto& runner = *lifetime->runner;
   std::vector<float> logits;
@@ -281,6 +286,13 @@ int main(int argc, char** argv) {
       const auto& selections = runner.plan_selections();
       if (graphs == "1" && (stats.captured == 0 || stats.replayed == 0))
         return Error("graph probe did not execute capture and replay");
+      if ((policy == "normrope" || policy == "normropeadd" || policy == "optimized") &&
+          selections.norm_rope == 0)
+        return Error("norm/RoPE probe did not select the requested fusion");
+      if ((policy == "normropeadd" || policy == "optimized") && selections.norm_add == 0)
+        return Error("norm/residual probe did not select the requested fusion");
+      if (policy == "optimized" && (selections.norm_mul == 0 || selections.quant_geglu == 0))
+        return Error("optimized probe did not select all requested fusion families");
       std::cout << "GEMMA3_PROBE mode=" << mode << " policy=" << policy << " context=4096 slots=1"
                 << " chunk=128 prompt_rows=" << kPrompt << " untimed_rows=" << kWarm
                 << " decode_rows=" << kSteps << " past=" << past << " prefill_seconds=" << prefill
@@ -290,6 +302,8 @@ int main(int argc, char** argv) {
                 << " selected_steps=" << selections.steps
                 << " selected_norm_mul=" << selections.norm_mul
                 << " selected_quant_geglu=" << selections.quant_geglu
+                << " selected_norm_rope=" << selections.norm_rope
+                << " selected_norm_add=" << selections.norm_add
                 << " coverage_violations=" << runner.coverage().violations << '\n';
       return {};
     });

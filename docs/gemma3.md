@@ -12,8 +12,10 @@ The generic importer supplies the authenticated
 A bounded C1 screen checks finite, byte-identical eager/captured/replayed heads,
 Clear reuse, malformed-input refusal and initialized-state spill/restore.
 There is no serving route or media adapter. This model remains outside the
-supported execution matrix. The first stock screen retains one positive-margin
-greedy difference; quality/performance, longer contexts and batching remain open.
+supported execution matrix. The primitive stock screen retains one positive-margin
+greedy difference; explicit checked norm chains then match all 33 stock heads
+byte for byte. The optimized C1 first screen is 2.47% slower than stock. Broader
+quality, performance, longer contexts and batching remain open.
 
 ## Actual checkpoint contract
 
@@ -133,15 +135,16 @@ Fresh positions, indices and causal masks are revalidated for cache reuse;
 caller-owned chunk/hidden data must survive staging, and graph backing must
 survive GPU retirement. The adapter does not establish catalog residency.
 
-The 13 passing controls are limited to state, descriptors and no-launch planning.
-No Gemma4 policy is enabled automatically. Existing D256/GQA2 primitive
-attention admits H8 structurally; real operator/model quality remains owed.
-Owner attention currently requires H16/32, and norm-ADD requires width2816 or
-5376, so those optimizations do not apply to this H8/width2560 foundation.
-Generic norm/RoPE/product policies need separate exact-operand and model
-qualification before selection. State bounds are context<=131072,
-max_rows<=8192 and slots<=16; these are host contract bounds, not qualified
-long-context CUDA execution or batching support.
+At the foundation snapshot, the 13 passing controls were limited to state,
+descriptors and no-launch planning. D256/GQA2 primitive attention admitted H8
+structurally; norm-ADD then required width2816 or 5376. The later
+[checked-chain screen](experiments/gemma3-execution/README.md#checked-norm-chains-exact-bounded-c1-quality)
+adds width2560 operand/refusal controls and exact bounded C1 model quality with
+explicit norm/RoPE, norm/ADD, generic norm and quantized-GLU policies. No Gemma4
+policy is enabled automatically. Owner attention still requires H16/32 and
+excludes H8. State bounds are context<=131072, max_rows<=8192 and slots<=16;
+these are host contract bounds, not qualified long-context CUDA execution or
+batching support.
 
 The execution-plan check completed on Spark B on 2026-10-06: all eight
 supervised steps finished with exit 0, and the three targets passed 6 profile/state,
@@ -181,6 +184,7 @@ It emits 33 full vocabulary heads and 32 pre-step greedy choices; the final
 head has no target. These are representative screen dimensions, not newly
 qualified context or support limits. Multiple independent slots are designed
 into the runner but actual batching remains unqualified. The ordinary primitive
-policy is explicit; generic norm and quantized FFN switches are diagnostics,
+policy is explicit; generic norm, quantized FFN, D256 norm/RoPE and width2560
+norm/residual switches are default-off diagnostics,
 with no automatic Gemma4 shape-policy inheritance. Device masks, device greedy
 publication, lookahead and serving integration remain later work.
