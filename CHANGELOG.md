@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Extend the experimental Gemma2 Q8_0 runner to opt-in two-slot softcap50
+  owner decode, with funded attention, wrapped-ring restore/replay and bounded
+  stock quality controls. Ordinary attention remains the default; serving and
+  compatible joint prefill remain open.
+
 - Gemma4 serving reuses an unchanged cohort's execution closure within a held
   request, avoiding a redundant scheduler call between completed units. Changed
   selections and state growth, Clear and restore still refresh their closures.

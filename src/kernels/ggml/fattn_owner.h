@@ -29,6 +29,8 @@ struct FlashAttnOwners {
   std::uint32_t owner_count = 4;
   // Global sequence origin for an equal-width partial cohort. Legacy paths use zero.
   std::uint32_t owner_offset = 0;
+  // Closed Gemma2 H8/C2 specialization; zero preserves every earlier path.
+  std::uint32_t logit_softcap = 0;
 };
 
 // F32 Q [D,1,heads,N], F16 mask [cells,32,1,N], N actual F16 K/V
@@ -40,7 +42,8 @@ struct FlashAttnOwners {
 // D256/GQA2
 // or D512/GQA8 with heads 16 or 32; D256/H8/GQA2 is additionally
 // admitted only for two actual owners/logical cohort2/offset0. Scale is fixed at 1 (Q already
-// normalized/scaled by the caller). No sinks, softcap or sparse gather.
+// normalized/scaled by the caller). Softcap50 is admitted only at D256/H8/C2;
+// all other contracts require zero. No sinks or sparse gather.
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& inputs);
 
 // Graph adapter for the distinct ten-source custom node. These never reinterpret

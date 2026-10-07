@@ -822,8 +822,14 @@ family" guide, and its long-context scaling work.
       its [bounded C1 execution slice](experiments/gemma2-execution/README.md)
       authenticates and deeply imports the full approved source, qualifies
       softcap occupancy/launches and state/graph/runner controls, and reproduces
-      all 33 optimized stock heads exactly. Wider context, batching, templates,
-      serving and model-switch qualification remain separate work.
+      all 33 optimized stock heads exactly. The opt-in
+      [C2 owner decode screen](experiments/gemma2-owner2/README.md) qualifies
+      true-softcap50 attention, own/eager/fallback and wrapped-ring restore-next
+      controls. Small/ring stock gates pass with zero strict differences and
+      65/66 plus 66/66 exact heads; short n=2 paid latency is 1.49% above stock
+      with exact natural histories/final heads. Compatible joint prefill,
+      unequal widths/departures, templates, serving, broader quality/context,
+      sustained and model-switch qualification remain separate work.
       Gemma 3 [profile and tensor foundation](gemma3.md) is checked:
       actual approved metadata and all 444 tensor descriptors, separate
       profile/binding and refusal controls; three focused CPU controls pass.

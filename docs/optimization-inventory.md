@@ -120,7 +120,16 @@ width2304 norm/ADD operand control passes both ADD orders, scalar/128 rows and
 fresh capture inputs. Explicit norm/Mul, quantized GeGLU and norm/ADD selection
 reproduces all 33 bounded stock full heads byte for byte; replay, initialized
 state restore and device-greedy own controls also pass. No Q/K norm/RoPE fusion
-or softcapped owner-attention transfer is assumed; runner fusion defaults remain off.
+is assumed; runner fusion defaults remain off. The separate opt-in
+[Gemma2 C2 owner transfer](experiments/gemma2-owner2/README.md) qualifies
+D256/H8/GQA2 cap50 with actual true-specialization occupancy, original stream-K
+partitions and exact scratch funding. Operand packed/owner results are
+byte-identical; bounded small/ring quality has zero strict differences and
+65/66 plus 66/66 exact heads. Ring restore-next and eager/capture controls
+pass. Short n=2 native paid latency remains 1.49% above original stock, with
+exact natural histories/final heads. Independent prefill, equal-width one-row
+C2 decode only; joint prefill, unequal widths, serving and sustained performance
+remain open.
 
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand

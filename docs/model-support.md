@@ -65,14 +65,18 @@ listing is separate from the supported summary above.
 
 ## Architecture foundations
 
-Gemma 2 2B Q8_0 has a separate [closed profile and bounded C1 runner](gemma2.md)
+Gemma 2 2B Q8_0 has a separate [closed profile and bounded runner](gemma2.md)
 for all 288 actual descriptors, with checked quantized readable tails and
 allocation-free public binding validation. The authenticated source has a
 [deep-verified prepared artifact and representative C1 control](experiments/gemma2-execution/README.md):
 all 33 optimized full heads match stock byte for byte; native graph replay,
 Clear, initialized-state spill/restore and device-greedy own checks pass.
-Broader context, batching, template qualification, serving and model switches
-remain open. This is not an execution support entry.
+The opt-in [two-owner decode control](experiments/gemma2-owner2/README.md)
+adds funded cap50 attention and wrapped-ring restore-next replay, with zero
+strict stock choice differences and 65/66 small plus 66/66 ring exact heads.
+Short n=2 paid C2 latency remains 1.49% above stock. Joint prefill, unequal
+widths/departures, broader quality/context, template qualification, serving,
+sustained and model switches remain open. This is not an execution support entry.
 
 Gemma 3 4B QAT Q4_0 has a separate checked profile and strict
 GGML tensor binding in `model/gemma3.h`; the [foundation contract](gemma3.md)

@@ -157,6 +157,7 @@ void Launched(const std::expected<void, KernelFailure>& result, const std::strin
 
 class GgmlExtOpsTest : public ::testing::Test {
  protected:
+  void SmallOwnerControl(std::uint32_t cap);
   void SetUp() override {
     execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
@@ -3793,7 +3794,7 @@ TEST_F(GgmlExtOpsTest, TheRegistryDeclaresAndBindsEveryNewImplementation) {
   EXPECT_EQ(FailedCode(scale.Check(wrong)), KernelError::kRejected);
 }
 
-TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
+void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "Owner implementation is GB10 only";
   int sms = 0;
   ASSERT_EQ(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, launch().device()),
@@ -3802,7 +3803,8 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
   for (const std::int64_t heads : {8, 16, 32})
     for (const std::int64_t owners : {2, 3})
       for (const std::int64_t d : {256, 512})
-        for (const std::int64_t cells : {256, 512, 1024}) {
+        for (const std::int64_t cells : {256, 512, 1024, 4352}) {
+          if (cap != 0 && (heads != 8 || owners != 2 || d != 256)) continue;
           if (heads == 8 ? (d != 256 || owners != 2) : cells != 1024) continue;
           SCOPED_TRACE(std::to_string(heads) + "/" + std::to_string(d) + "/" +
                        std::to_string(cells));
@@ -3811,12 +3813,13 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
           const auto n = [](std::int64_t value) { return static_cast<std::size_t>(value); };
           auto arena = TensorArena::Create(128).value();
           auto* ctx = arena.context();
-          auto qdata = Normal(12101, n(d * heads * owners), 0.25F);
+          auto qdata = Normal(12101, n(d * heads * owners), cap == 0 ? 0.25F : 8.0F);
           auto* packed_q =
               Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, owners), qdata);
           auto* q = ggml_permute(ctx, packed_q, 0, 2, 1, 3);
           TensorArena::Bind(q, reinterpret_cast<std::uintptr_t>(packed_q->data));
-          const auto kdata = Halves(Normal(12102, n(d * kvh * cells * owners), 0.25F));
+          const auto kdata =
+              Halves(Normal(12102, n(d * kvh * cells * owners), cap == 0 ? 0.25F : 4.0F));
           const auto vdata = Halves(Normal(12103, n(d * kvh * cells * owners), 0.25F));
           auto* packed_k =
               Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, kvh, cells, owners), kdata);
@@ -3832,7 +3835,8 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
               masks[n(owner * cells * 32 + cell)] = 0;
           auto* mask =
               Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, cells, 32, 1, owners), Halves(masks));
-          auto* whole = Place(ggml_flash_attn_ext(ctx, q, k, v, mask, 1, 0, 0));
+          auto* whole =
+              Place(ggml_flash_attn_ext(ctx, q, k, v, mask, 1, 0, static_cast<float>(cap)));
           ggml_prec_set_acc(whole, GGML_PREC_F32);
           const auto full_plan = d == 256 ? kg::PlanFlashAttnMmaGqa2(launch(), whole)
                                           : kg::PlanFlashAttnMma(launch(), whole);
@@ -3861,6 +3865,7 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
             in.q = view(q, {d, 1, heads, owners});
             in.mask = view(mask, {cells, 32, 1, owners});
             in.output = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, owners));
+            in.logit_softcap = cap;
             in.logical_cohort = static_cast<std::uint32_t>(owners);
             in.owner_count = static_cast<std::uint32_t>(owners);
             for (std::size_t owner = 0; owner < n(owners); ++owner) {
@@ -3891,13 +3896,18 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
             EXPECT_EQ(plan->original.mask_prepass, full_plan->mask_prepass);
             EXPECT_FALSE(plan->original.sparse);
             EXPECT_GT(plan->original_blocks_per_sm, 0);
+            if (d == 256) {
+              auto actual_shape = kg::detail::FlashAttnMmaShapeGqa2(4, launch().device(), cap != 0);
+              ASSERT_TRUE(actual_shape);
+              EXPECT_EQ(plan->original_blocks_per_sm, actual_shape->blocks_per_sm);
+            }
             EXPECT_GT(plan->owner_blocks_per_sm, 0);
             EXPECT_EQ(plan->cohort_blocks, full_plan->blocks);
             EXPECT_EQ(plan->original.blocks, full_plan->blocks);
             const auto quad_tiles = static_cast<int>(kvh * owners);
             EXPECT_EQ(plan->original.blocks % quad_tiles == 0, full_plan->blocks % quad_tiles == 0);
-            std::cout << "OWNER_SMALL_PLAN owners=" << owners << " heads=" << heads << " D=" << d
-                      << " cells=" << cells << " sms=" << sms
+            std::cout << "OWNER_SMALL_PLAN cap=" << cap << " owners=" << owners
+                      << " heads=" << heads << " D=" << d << " cells=" << cells << " sms=" << sms
                       << " original_blocks_per_sm=" << plan->original_blocks_per_sm
                       << " owner_blocks_per_sm=" << plan->owner_blocks_per_sm
                       << " full_blocks=" << full_plan->blocks
@@ -3918,6 +3928,24 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
               invalid.owner_count = bad;
               EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
             }
+            if (cap != 0) {
+              for (const auto bad : {1U, 25U, 51U, UINT32_MAX}) {
+                invalid = in;
+                invalid.logit_softcap = bad;
+                EXPECT_FALSE(kg::PlanFlashAttnOwners(launch(), invalid));
+              }
+              std::array<ggml_tensor*, 4> roots_k{}, roots_v{};
+              for (std::size_t owner = 0; owner < n(owners); ++owner) {
+                roots_k[owner] = const_cast<ggml_tensor*>(in.k[owner]);
+                roots_v[owner] = const_cast<ggml_tensor*>(in.v[owner]);
+              }
+              auto* encoded = Place(kg::FlashAttnOwnersNode(ctx, const_cast<ggml_tensor*>(in.q),
+                                                            const_cast<ggml_tensor*>(in.mask),
+                                                            roots_k, roots_v, 2, 2, 0, cap));
+              auto decoded = kg::FlashAttnOwnersFromNode(encoded);
+              ASSERT_TRUE(decoded);
+              EXPECT_EQ(decoded->logit_softcap, cap);
+            }
             plans[quad] = *plan;
             scratch = std::max(scratch, plan->original.scratch);
           }
@@ -3927,6 +3955,16 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
                                                {.base = Allocate(scratch), .size = Bytes(scratch)});
           ASSERT_TRUE(context) << jitllm::test_support::Failed(context)->detail;
           auto& bounded = **context;
+          if (cap != 0 && plans[0].original.scratch > 0) {
+            const auto owner_scratch = plans[0].original.scratch;
+            auto short_pool = LaunchContext::Create(
+                launch().device(), *execution_, stream_,
+                {.base = Allocate(owner_scratch), .size = Bytes(owner_scratch - 1)});
+            ASSERT_TRUE(short_pool);
+            EXPECT_EQ(FailedCode(kg::FlashAttnOwnerRoots(**short_pool, quads[0])),
+                      KernelError::kRejected);
+            EXPECT_FALSE((*short_pool)->faulted());
+          }
           EXPECT_EQ(bounded.workspace().size.value(), scratch);
           EXPECT_TRUE(bounded.UsesStream(*execution_, stream_));
           const auto submission = execution_->Submission(stream_);
@@ -3968,6 +4006,8 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
                   for (std::int64_t col = 0; col < d; ++col)
                     scores[n(cell)] += double(qdata[n((owner * heads + head) * d + col)]) *
                                        keys[n(((owner * cells + cell) * kvh + head / 2) * d + col)];
+                if (cap != 0)
+                  for (auto& score : scores) score = cap * std::tanh(score / cap);
                 const auto peak = *std::max_element(scores.begin(), scores.end());
                 double total = 0;
                 for (auto& score : scores) {
@@ -4007,7 +4047,7 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
           }
           if (heads == 8) {
             // Replay must read fresh Q and masks from the same stable addresses.
-            qdata = Normal(12104, qdata.size(), 0.25F);
+            qdata = Normal(12104, qdata.size(), cap == 0 ? 0.25F : 8.0F);
             for (std::int64_t owner = 0; owner < owners; ++owner)
               masks[n(owner * cells * 32 + cells - 38 - owner * 3)] =
                   -std::numeric_limits<float>::infinity();
@@ -4020,6 +4060,8 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
                       cudaSuccess);
             ASSERT_TRUE(run_whole(bounded));
             const auto fresh_expected = Download(whole);
+            ASSERT_TRUE(
+                std::ranges::all_of(fresh_expected, [](float x) { return std::isfinite(x); }));
             EXPECT_NE(std::memcmp(fresh_expected.data(), expected.data(), expected.size() * 4), 0);
             expected = fresh_expected;
             ASSERT_TRUE(bounded.Launch(*graph));
@@ -4034,6 +4076,14 @@ TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
           EXPECT_FALSE(bounded.faulted());
           Finish();
         }
+}
+
+TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {
+  SmallOwnerControl(0);
+}
+
+TEST_F(GgmlExtOpsTest, Gemma2SoftcapOwnersMatchWholePhysicalStreamAndFp64) {
+  SmallOwnerControl(50);
 }
 
 TEST_F(GgmlExtOpsTest, PartialPhysicalStreamsMatchOffsetFilteredRealRootGroupsExactly) {

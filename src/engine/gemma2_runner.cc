@@ -43,8 +43,8 @@ kg::DeviceChoices Gemma2Runner::Choices(kg::LaunchContext& launch) const {
 Status Gemma2Runner::Setup() {
   if (setup_started_ || released_) return Error("Gemma2 setup is not repeatable");
   setup_started_ = true;
-  if (o_.slots != 1 || o_.slots > o_.max_rows || o_.max_rows >= o_.context)
-    return Error("Gemma2 first runner requires one bounded slot/chunk");
+  if ((o_.slots != 1 && o_.slots != 2) || o_.slots > o_.max_rows || o_.max_rows >= o_.context)
+    return Error("Gemma2 runner requires one or two bounded slots/chunk");
   const auto head_rows = o_.max_head_rows == 0 ? o_.max_rows : o_.max_head_rows;
   if (head_rows < o_.slots || head_rows > o_.max_rows)
     return Error("Gemma2 head capacity must cover slots within max_rows");
@@ -74,6 +74,7 @@ Status Gemma2Runner::Setup() {
   model_.binding = &binding_;
   model_.state = &layout_;
   model_.options.narrow_final = o_.frontier_head;
+  model_.options.owner_decode = o_.owner_decode;
   std::vector<GroupPlace> places(weights_.artifact().groups().size(), GroupPlace::kDevice);
   if (auto r = weights_.Reserve(node_, places, {}); !r) return r;
   model_.resources.resize(weights_.artifact().resources().size());
@@ -222,6 +223,7 @@ Status Gemma2Runner::SelectSlots(std::span<const std::uint32_t> slots) {
   if (!bound_ || released_ || cohort_.faulted()) return Error("Gemma2 cohort unavailable");
   auto mask = cohort_.MaskOf(slots);
   if (!mask) return Error(mask.error());
+  if (*mask == cohort_.active() && node_.InRequest(stream_)) return {};
   cohort_.Select(*mask);
   return RefreshClosures();
 }
@@ -428,6 +430,7 @@ std::expected<Gemma2Runner::Plans::Entry*, std::string> Gemma2Runner::Planned(
     plan_selections_.quant_geglu += selected.implementation == kg::kMulMatGeGluQFused;
     plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;
     plan_selections_.norm_add += selected.implementation == kg::kGemmaNormAddName;
+    plan_selections_.owner_attention += selected.implementation == kg::kFlashAttnOwnersName;
   }
   const auto bytes = PlannedHostBytes(**p), nodes = PlannedNodes(**p);
   return &plans_.Add(shape, std::move(*p), bytes, nodes,

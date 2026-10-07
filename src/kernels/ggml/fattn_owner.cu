@@ -22,7 +22,7 @@ using jitllm_fattn_owner::flash_attn_owner_fixup_uniform;
 using jitllm_fattn_owner::flash_attn_owner_partial_f16;
 using jitllm_fattn_owner::OwnerBases;
 
-template <int D, int Columns, int Group>
+template <int D, int Columns, int Group, bool Softcap = false>
 std::expected<void, KernelFailure> Resources(int device, FlashAttnOwnersPlan& plan) {
   constexpr int cols = Columns * Group;
   const int cc = ggml_cuda_info().devices[device].cc;
@@ -49,7 +49,7 @@ std::expected<void, KernelFailure> Resources(int device, FlashAttnOwnersPlan& pl
   const auto kv = stages <= 1 ? kv1 : kv2;
   plan.shared_bytes = std::max(join, q_in_reg ? std::max(q, kv + mask) : q + kv + mask);
   plan.threads = threads;
-  const auto kernel = flash_attn_owner_f16<D, D, Columns, Group, false, false, false>;
+  const auto kernel = flash_attn_owner_f16<D, D, Columns, Group, Softcap, false, false>;
   auto status = cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                      static_cast<int>(plan.shared_bytes));
   if (status == cudaSuccess)
@@ -102,7 +102,7 @@ std::expected<void, KernelFailure> ResourcesPartial(int device, FlashAttnOwnersP
   return {};
 }
 
-template <int D, int Columns, int Group>
+template <int D, int Columns, int Group, bool Softcap = false>
 void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
            const FlashAttnOwnersPlan& plan) {
   auto stream = ctx.stream();
@@ -141,10 +141,11 @@ void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
   // Match the original case's constants and dimensions exactly. ne13 is a
   // logical stream count only; no contiguous K/V sequence span is accessed.
   ggml_cuda_kernel_launch(
-      flash_attn_owner_f16<D, D, Columns, Group, false, false, false>, main_launch,
+      flash_attn_owner_f16<D, D, Columns, Group, Softcap, false, false>, main_launch,
       static_cast<const char*>(in.q->data), bases, static_cast<const char*>(in.mask->data),
       static_cast<const char*>(nullptr), maximum.ptr, static_cast<float*>(in.output->data),
-      metadata.ptr, 1.0f, 0.0f, 1.0f, 1.0f, static_cast<std::uint32_t>(heads), 0.0f, D,
+      metadata.ptr, Softcap ? 1.0f / static_cast<float>(in.logit_softcap) : 1.0f, 0.0f, 1.0f, 1.0f,
+      static_cast<std::uint32_t>(heads), static_cast<float>(in.logit_softcap), D,
       init_fastdiv_values(query_rows), heads, owners, static_cast<std::int32_t>(in.q->nb[1]),
       static_cast<std::int32_t>(in.q->nb[2]), static_cast<std::int32_t>(in.q->nb[3]), D, cells,
       kvheads, owners, static_cast<std::int32_t>(k->nb[1]), static_cast<std::int32_t>(k->nb[2]),
@@ -257,8 +258,9 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
   const auto& device = ggml_cuda_info().devices[launch.device()];
   if (device.cc != 1210 || device.nsm <= 0) return Rejected("owner MMA diagnostic is GB10 only");
   const int d = static_cast<int>(in.q->ne[0]);
-  auto original = d == 256 ? detail::FlashAttnMmaShapeGqa2(4, launch.device())
-                           : detail::FlashAttnMmaShape512(1, false, launch.device());
+  auto original = d == 256
+                      ? detail::FlashAttnMmaShapeGqa2(4, launch.device(), in.logit_softcap != 0)
+                      : detail::FlashAttnMmaShape512(1, false, launch.device());
   if (!original)
     return std::unexpected(
         KernelFailure{.error = KernelError::kUnknown, .detail = original.error()});
@@ -288,10 +290,11 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
     geometry.scratch = 256 + std::uint64_t(geometry.blocks) * std::uint64_t(geometry.columns) *
                                  std::uint64_t(geometry.group) * std::uint64_t(2 + d / 2) *
                                  sizeof(float2);
-  const auto checked = partial ? (d == 256 ? ResourcesPartial<256, 4, 2>(launch.device(), plan)
-                                           : ResourcesPartial<512, 1, 8>(launch.device(), plan))
-                               : (d == 256 ? Resources<256, 4, 2>(launch.device(), plan)
-                                           : Resources<512, 1, 8>(launch.device(), plan));
+  const auto checked = in.logit_softcap != 0 ? Resources<256, 4, 2, true>(launch.device(), plan)
+                       : partial ? (d == 256 ? ResourcesPartial<256, 4, 2>(launch.device(), plan)
+                                             : ResourcesPartial<512, 1, 8>(launch.device(), plan))
+                                 : (d == 256 ? Resources<256, 4, 2>(launch.device(), plan)
+                                             : Resources<512, 1, 8>(launch.device(), plan));
   if (!checked) return std::unexpected(checked.error());
   return plan;
 }
@@ -306,7 +309,9 @@ std::expected<void, KernelFailure> FlashAttnOwnerRoots(LaunchContext& launch,
         QueuePartial<256, 4, 2>(context, in, *plan);
       else
         QueuePartial<512, 1, 8>(context, in, *plan);
-    } else if (plan->original.head == 256)
+    } else if (in.logit_softcap != 0)
+      Queue<256, 4, 2, true>(context, in, *plan);
+    else if (plan->original.head == 256)
       Queue<256, 4, 2>(context, in, *plan);
     else
       Queue<512, 1, 8>(context, in, *plan);

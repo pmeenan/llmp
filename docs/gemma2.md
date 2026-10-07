@@ -5,7 +5,7 @@
 
 `model/gemma2.h` supplies a closed profile and checked tensor binding for the
 approved Gemma 2 2B Q8_0 checkpoint. The bounded execution source adds checked
-state/inputs, a native graph/plan and a C1 runner over the shared paged engine.
+state/inputs, a native graph/plan and a bounded runner over the shared paged engine.
 The approved source is authenticated and deeply imported; a representative C1
 control reproduces all 33 stock full heads byte for byte. No serving route is
 added. Gemma 2 remains outside the supported execution matrix.
@@ -93,11 +93,18 @@ The [attention-softcap primitive slice](experiments/gemma2-softcap/README.md)
 qualifies actual nonzero-specialization occupancy and funded vector/MMA
 launches at caps 0/50/25, with FP64 operand checks, byte-exact repeats and fresh
 capture replays, exact funding and refusal controls. Both new controls and
-eleven focused legacy controls pass on spark-b. Gemma2 owner batching remains
-separate because owner launchers still select zero softcap. The C1 execution
-control covers final logit softcap 30 and width-2304 readable tails; longer
-context, actual ring-wrap inference, batching, sustained and switch qualification
-remain open.
+eleven focused legacy controls pass on spark-b. The opt-in
+[two-owner decode slice](experiments/gemma2-owner2/README.md) now qualifies
+cap50 D256/H8/GQA2 owner attention with actual true-specialization occupancy
+and funding. Independent-prefill C2 controls cover small and wrapped local-ring
+history, eager/capture identity, refusal atomicity, Clear and restore-next
+replay. Stock comparison has zero strict choice differences, with 65/66 small
+and 66/66 ring full heads byte-identical. Its short n=2 paid C2 cycle is 1.49%
+slower than stock with exact natural histories/final heads; no parity claim.
+Owner selection defaults off and unequal widths retain ordinary attention.
+The C1 control covers final logit softcap30 and width-2304 readable tails;
+compatible joint prefill, departures, broader context/quality, serving,
+sustained and switch qualification remain open.
 The pin's Gemma2 HF-to-GGUF converter already adds one to norm weights;
 approved GGUF import must preserve those norm payloads, with no second +1
 at import or runtime.

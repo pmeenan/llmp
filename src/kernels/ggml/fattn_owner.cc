@@ -122,6 +122,10 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
        !(in.q->ne[0] == 256 && in.q->ne[2] == 8 && in.owner_count == 2 && in.logical_cohort == 2 &&
          in.owner_offset == 0)))
     return Rejected("owner MMA requires the closed Gemma head dimensions");
+  if (in.logit_softcap != 0 &&
+      (in.logit_softcap != 50 || in.q->ne[0] != 256 || in.q->ne[2] != 8 || in.owner_count != 2 ||
+       in.logical_cohort != 2 || in.owner_offset != 0))
+    return Rejected("owner MMA softcap requires the closed Gemma2 D256/H8/C2 cap50 path");
   if (in.mask->ne[0] < 256 || in.mask->ne[0] > 16384 || in.mask->ne[0] % 256 != 0)
     return Rejected("owner MMA requires bounded actual padded cache widths");
   const auto cells = std::size_t(in.mask->ne[0]);
@@ -173,15 +177,18 @@ std::expected<FlashAttnOwners, KernelFailure> FlashAttnOwnersFromNode(ggml_tenso
     return Rejected("owner attention has an unsupported active root count");
   const auto offset = JitllmOpInt(node, 2);
   if (offset < 0) return Rejected("owner attention has a negative group offset");
-  for (int i = 3; i < 8; ++i)
+  for (int i = 4; i < 8; ++i)
     if (JitllmOpInt(node, i) != 0) return Rejected("owner attention has unsupported parameters");
+  const auto cap = JitllmOpInt(node, 3);
+  if (cap != 0 && cap != 50) return Rejected("owner attention has an unsupported softcap");
   FlashAttnOwners in{
       .q = node->src[0],
       .mask = node->src[1],
       .output = node,
       .logical_cohort = static_cast<std::uint32_t>(cohort),
       .owner_count = encoded_count == 0 ? 4U : static_cast<std::uint32_t>(encoded_count),
-      .owner_offset = static_cast<std::uint32_t>(offset)};
+      .owner_offset = static_cast<std::uint32_t>(offset),
+      .logit_softcap = static_cast<std::uint32_t>(cap)};
   for (std::size_t owner = 0; owner < 4; ++owner) {
     in.k[owner] = node->src[2 + owner];
     in.v[owner] = node->src[6 + owner];

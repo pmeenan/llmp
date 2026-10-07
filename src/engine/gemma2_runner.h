@@ -25,11 +25,12 @@
 namespace jitllm::engine {
 struct Gemma2Options {
   std::filesystem::path artifact = {}, out = {};
-  // This first execution slice admits C1 only; state descriptors remain independently bounded.
+  // One or two independently bounded slots; owner attention is explicit.
   std::uint32_t context = 4096, max_rows = 128, slots = 1;
   // Immutable head publication capacity. Zero retains the all-row envelope.
   std::uint32_t max_head_rows = 0;
   bool graphs = true, frontier_head = true;
+  bool owner_decode = false;
   // Explicit numerical comparisons only; ordinary plans use primitives.
   bool fuse_norms = false, fuse_quant_glu = false, fuse_norm_rope = false, fuse_norm_add = false;
 };
@@ -63,7 +64,8 @@ class Gemma2Runner final : public PagedModel {
   // Cumulative selections in successfully bound runtime plans, including
   // plans later reclaimed. Setup's envelope probes are not counted.
   struct PlanSelections {
-    std::uint64_t plans = 0, steps = 0, norm_mul = 0, quant_geglu = 0, norm_rope = 0, norm_add = 0;
+    std::uint64_t plans = 0, steps = 0, norm_mul = 0, quant_geglu = 0, norm_rope = 0, norm_add = 0,
+                  owner_attention = 0;
   };
   Gemma2Runner(PagedNode& node, Gemma2Options options, int owner, std::uint32_t stream);
   ~Gemma2Runner() override;
