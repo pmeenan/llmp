@@ -189,8 +189,8 @@ Clear retains mapped backing for reuse; spill/restore preserves logical
 positions and refreshes the closure. Failed retirement retains the whole
 probe lifetime rather than treating destruction as completion.
 
-The internal `jitllm_gemma3_probe` uses the actual native tokenizer and fixed
-4096-context, C1, F16-cache, 128-row geometry. Its first screen consumes 256
+The internal `jitllm_gemma3_probe` uses the actual native tokenizer. Its historical
+default is 4096-context, C1, F16-cache, 128-row geometry. Its first screen consumes 256
 prompt rows, three supplied scalar warm rows and 32 teacher-forced rows.
 It emits 33 full vocabulary heads and 32 pre-step greedy choices; the final
 head has no target. These are representative screen dimensions, not newly
@@ -207,6 +207,15 @@ control checks 32 choices, exact initialized state and final heads, plus
 two-slot alias/mixed-publication refusals before state mutation. At that C1
 snapshot only one slot executes; the later C2 control executes both slots and
 checks both initialized states. Device masks, lookahead and broader optimized batching remain later work.
+An explicit internal `depth` mode now checks context 8448 with an exact 8192-token
+prefix and 64-token continuation, including initialized-state hashes, graph
+retention through spill/restore, captured continuation replay and a fixed stock
+quality/cost screen.
+[The depth report](experiments/gemma3-execution/README.md#internal-8k-scalar-depth-screen-2026-10-07)
+retains its nonexact stock heads, conservative standalone cache allowance and
+observed memory scope. This does not raise ordinary serving admission above 4096
+or qualify C2 at 8K; public admission and model-switch swap evidence remain separate.
+
 The following bounded route integrates ordinary serving.
 
 ## Bounded ordinary serving

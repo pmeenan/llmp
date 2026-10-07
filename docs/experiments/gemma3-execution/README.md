@@ -855,3 +855,99 @@ own freezes and strict quality. Complete raw inputs, responses, state/head
 payloads, source/binary receipts, official job outcomes and aggregates remain
 external under Spark B `scratch/m35-gemma3-owner-bounded-roots/run1/` and
 `run2/`, with local copies under `/tmp/jitllm-m35-coordination/`.
+
+
+## Internal 8K scalar depth screen (2026-10-07)
+
+The explicit `depth` mode of `jitllm_gemma3_probe` and
+`llama_fair_probe.cc` executes one slot at context 8448, with 8192 actual
+prompt tokens, 128-row chunks and 64 continuation tokens. The approved source,
+artifact, tokenizer, ordinary optimized arithmetic and original d812 image
+above are unchanged. Preparation repeats the authenticated 2276-byte source
+text 32 times, tokenizes it independently in both engines and freezes 8256 IDs
+including BOS. This is one repeated-text depth screen, not broad long-context
+quality qualification. Ordinary serving still admits context <=4096.
+
+Twelve focused host controls pass, including 8448 frontier/read bounds, local
+ring writes, causal padded masks, initialized checkpoint ranges and refusal
+beyond capacity. Two native own traversals repeat all 65 finite heads, 64
+choices and final initialized state exactly. The full-head and device-greedy
+paths agree. Malformed publication and over-context growth leave prefix
+metadata and initialized bytes unchanged. A separate lifetime traversal
+checks state-only versus full-head prefill, Clear reuse, exact 8192-position
+state through spill/restore and exact 64-token continuation. Its local cache
+has 1280 physical cells; the first decode writes cell 512 after multiple wraps.
+It retains 63 captured graphs across spill/restore, finishes with 64 graphs and
+records zero coverage violations and zero host overcharges. Two allocated
+slots fund the own refusal control; only slot 0 executes throughout this screen.
+
+Stock teachers repeat exactly. Native matches 63/65 complete stock heads and
+all 65 greedy choices, with zero positive-margin or tie differences. The 64
+scored targets have mean target-NLL delta −1.81517024e−11 and relative
+conditional-loss delta −1.81517024e−11. Mean/max total variation are
+2.07715415e−11/9.86876055e−10; maximum raw-logit difference is 0.049402714.
+The final 65th row is unscored. Mean target NLL is about 1.47e−6 in both
+engines: these repeated targets are highly predictable. This establishes
+boundary, shape and state evidence; full-corpus and depth-retrieval quality
+remain open. Nonexact heads remain explicit; this is no
+full-perplexity or complete stock-byte-equality claim.
+
+| Paid C1 depth cycle, mean of two processes | Prefill ms | Decode ms / 64 steps | Total ms |
+| --- | --- | --- | --- |
+| Original stock backend greedy | 1550.310 | 854.7165 | 2405.0265 |
+| Native optimized | 1573.010 | 861.7805 | 2434.7905 |
+
+The stock/native/native/stock bookend has two paid observations per engine.
+Native paid latency is 1.2375747% higher: prefill +1.4642233%, decode +0.8264729%.
+Both arms first warm the same full prefix and eight greedy rows, then clear
+logical state off clock while retaining backing/plans. Paid work includes the
+8192-token frontier, 64 greedy steps and the final full head. All four natural
+histories and final heads are byte exact. Stock retains natural state-only
+overlap and its ordinary full sampled-logit host transfers; native publishes
+GPU decisions except the paid final verification head. This bounded cost
+screen establishes no parity, sustained-load or endpoint-performance result.
+
+The standalone probe has no serving plan reclaimer. Its depth-only diagnostic
+cap explicitly funds fixed catalog occupancy, weights, one full registered
+state capacity, host floor, one extent of charge rounding and a conservative
+finite plan/graph allowance. There are at most 67 keys: 32 aligned global-read
+buckets for each of full-head and state-only prefill, one GPU frontier and two
+scalar publication modes. Setup's maximum plan charge bounds node count via
+`kPlanNodeHostBytes`; `kGraphNodeHostBytes` then bounds each captured graph.
+Actual key/graph counts, combined bytes and zero overcharges are checked at
+completion. The C1 lifetime cap is 6,090,039,296 bytes, while its actual retained
+plan/graph charge is 1,079,693,904 bytes and full state layout 432,013,312 bytes.
+This allowance is a synthetic cap, not an allocation or measured physical peak.
+
+Process-lifetime MemAvailable sampling at 20 ms observes native cycle deltas
+4.051–4.159 GB and stock deltas 4.496–4.534 GB. It includes model load, warmup,
+paid execution, output and retirement plus unified host/device/page-cache
+effects. It is neither catalog occupancy nor isolated paid inference peak,
+and excludes a swap-table whole-state snapshot. Cross-model exact-state swap,
+public 8K admission, wider cohorts and maximum-context memory gates remain owed.
+
+The first quality job (at lifetime) and first cycle job are retained as FAIL: their old
+synthetic caps could not fund state restore/growth alongside retained plans.
+An intermediate quality pass retired obsolete plans off clock; that separate
+evidence does not prove graph retention. The final source replaces that
+workaround with the explicit finite allowance, reruns both own traversals and
+the lifetime/stock quality gate, and preserves graphs through restore. No
+production reclaimer or arithmetic changed; historical default probe budgets
+are unchanged. Official final jobs `m35-gemma3-depth-quality3` (13 steps) and
+`m35-gemma3-depth-cycle2` (6 steps) finish DONE0. The unchanged 12 host cases
+were executed in the preserved first quality job; no full suite was run.
+
+The actual native probe SHA-256 is
+`b90a26b3d9646e8c4f6cff22eeb1c477001cca03c043ee031b3563c01c27211e`;
+its build receipt is
+`0296e41b77f3db5f50dfc06b68ebd87906a683d45350ea2d5586f929c8333ecd`.
+The executed fa6defd-based source inventory is bound to those actual bytes.
+Final composition on 21c64d6 preserves its independent internal C4 additions;
+all five owned source files are byte identical to the executed depth source.
+CUDA 13.4 cuBLAS/Lt resolve to the authenticated SDK c09 closure explicitly.
+TensorFold was refreshed at task entry to 041d14a94e951834470fd514ed33e65b8be1059a;
+its documented CUDA recipes provide no matching approved Gemma3 GGUF comparator.
+Raw inputs, heads, state hashes, source/binary receipts, failed and completed
+supervisor jobs and aggregates remain outside Git under Spark A
+`~/.local/share/jitllm/gemma-context-depth{1,2,3}` and local
+`/tmp/jitllm-m35-coordination/gemma-context-depth-result{1,2,3}`.

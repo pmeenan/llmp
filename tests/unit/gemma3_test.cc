@@ -221,6 +221,43 @@ TEST(Gemma3StateTest, RaggedInputsKeepIndependentCausalityAndSplitRingWrites) {
   EXPECT_FALSE(md::Gemma3ChunkWrites(p, *state, 0, 0));
 }
 
+TEST(Gemma3StateTest, DepthChunkPreservesActualGlobalFrontierAndWrappedLocalCells) {
+  const auto& p = md::Gemma3_4BQat();
+  const auto state = md::Gemma3State(p, 8448, 128);
+  ASSERT_TRUE(state);
+  EXPECT_EQ(state->global_cells, 8448U);
+  EXPECT_EQ(state->local_cells, 1280U);
+  const std::array<std::int32_t, 1> token{2};
+  for (const auto past : {8191U, 8192U, 8255U, 8447U}) {
+    const std::array segments{md::Gemma3Segment{0, past, token}};
+    auto input = md::Gemma3Chunk(p, *state, segments, true);
+    auto bytes = md::Gemma3HostInputBytes(p, *state, segments, true);
+    ASSERT_TRUE(input);
+    ASSERT_TRUE(bytes);
+    ASSERT_EQ(input->segments.size(), 1U);
+    const auto& segment = input->segments[0];
+    EXPECT_EQ(segment.global_n_kv, past == 8191U ? 8192U : 8448U);
+    EXPECT_EQ(segment.local_n_kv, 1280U);
+    EXPECT_EQ(segment.global_cells, (std::vector<std::int64_t>{past}));
+    EXPECT_EQ(segment.local_cells, (std::vector<std::int64_t>{past % 1280U}));
+    EXPECT_EQ(segment.global_mask[past], 0U);
+    if (past + 1U < segment.global_n_kv) EXPECT_EQ(segment.global_mask[past + 1U], 0xFC00U);
+    EXPECT_EQ(segment.local_mask[past % 1280U], 0U);
+    EXPECT_GE(*bytes, (segment.global_mask.size() + segment.local_mask.size()) * 2U);
+    auto writes = md::Gemma3ChunkWrites(p, *state, past, 1);
+    auto used = md::Gemma3UsedState(p, *state, past + 1U);
+    ASSERT_TRUE(writes);
+    ASSERT_TRUE(used);
+    ASSERT_EQ(writes->size(), 68U);
+    for (const auto& range : *writes) EXPECT_LE(range.offset + range.bytes, state->bytes);
+    for (const auto& range : *used) EXPECT_LE(range.offset + range.bytes, state->bytes);
+  }
+  const std::array overflow{md::Gemma3Segment{0, 8448, token}};
+  EXPECT_FALSE(md::Gemma3Chunk(p, *state, overflow, true));
+  EXPECT_FALSE(md::Gemma3HostInputBytes(p, *state, overflow, true));
+  EXPECT_FALSE(md::Gemma3ChunkWrites(p, *state, 8448, 1));
+}
+
 TEST(Gemma3FoundationTest, PublicBindingChecksEveryMutableDescriptorAndResourceIdentity) {
   const auto& p = md::Gemma3_4BQat();
   auto binding = md::BindGemma3(p, "gemma3", Resources());

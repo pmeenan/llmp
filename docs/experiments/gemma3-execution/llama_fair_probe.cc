@@ -13,10 +13,12 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // State-only calls retain ordinary public decode overlap; final publication completes work.
@@ -24,7 +26,7 @@
 namespace {
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
-constexpr int kVocab = 262208, kPrompt = 256, kWarm = 3, kSteps = 32, kInput = 291;
+constexpr int kVocab = 262208, kPrompt = 256, kWarm = 3, kSteps = 32;
 void Require(bool good, const char* message) {
   if (!good) throw std::runtime_error(message);
 }
@@ -46,27 +48,61 @@ void Save(const fs::path& path, std::span<const T> values) {
   file.flush();
   Require(bool(file), "exclusive complete output failed");
 }
+struct Shapes {
+  using Key = std::array<std::int64_t, 12>;
+  std::map<Key, std::uint64_t> counts;
+  static bool Observe(ggml_tensor* node, bool ask, void* opaque) {
+    if (!ask || node->op != GGML_OP_FLASH_ATTN_EXT) return false;
+    auto& self = *static_cast<Shapes*>(opaque);
+    Key key{};
+    for (int source = 0; source < 3; ++source) {
+      const auto* t = node->src[source == 2 ? 3 : source];
+      if (!t) return false;
+      std::copy_n(t->ne, 4, key.begin() + source * 4);
+    }
+    ++self.counts[key];
+    return false;  // Metadata only; never download operands.
+  }
+  void CheckDepth() const {
+    bool local = false, global = false;
+    for (const auto& [key, count] : counts) {
+      std::cout << "GEMMA3_DEPTH_FLASH count=" << count;
+      for (const auto value : key) std::cout << ' ' << value;
+      std::cout << '\n';
+      const bool scalar = key[0] == 256 && key[1] == 1 && key[2] == 8 && key[3] == 1 &&
+                          key[4] == 256 && key[6] == 4 && key[7] == 1 && key[8] == key[5] &&
+                          key[9] == 1 && key[10] == 1 && key[11] == 1;
+      local |= scalar && key[5] == 1280;
+      global |= scalar && key[5] == 8448;
+    }
+    Require(local && global, "depth scalar local/global FLASH geometry not observed");
+  }
+};
 double Seconds(Clock::duration value) { return std::chrono::duration<double>(value).count(); }
 }  // namespace
 int main(int argc, char** argv) {
   try {
-    Require(argc == 6,
+    Require(argc == 6 || (argc == 7 && std::string_view(argv[6]) == "depth"),
             "MODEL IDS_I32 PROMPT_TEXT NEW_OUT teacher|cycle|greedy-teacher|greedy-cycle");
+    const bool depth = argc == 7;
+    const int context = depth ? 8448 : 4096, prompt_rows = depth ? 8192 : kPrompt,
+              warm_rows = depth ? 0 : kWarm, steps = depth ? 64 : kSteps;
+    const int input_rows = prompt_rows + warm_rows + steps;
     const std::string mode = argv[5];
     const bool backend_sampling = mode == "greedy-teacher" || mode == "greedy-cycle";
     const bool teacher = mode == "teacher" || mode == "greedy-teacher";
     Require(teacher || mode == "cycle" || mode == "greedy-cycle", "unknown mode");
     Require(!std::getenv("GGML_CUDA_DISABLE_FUSION") && !std::getenv("GGML_CUDA_DISABLE_GRAPHS"),
             "stock fusion/graph override present");
-    const auto raw = Read(argv[2], kInput * sizeof(llama_token));
-    Require(raw.size() == kInput * sizeof(llama_token), "exact 291-ID input required");
-    std::array<llama_token, kInput> ids{};
+    const auto raw = Read(argv[2], input_rows * sizeof(llama_token));
+    Require(raw.size() == input_rows * sizeof(llama_token), "exact recipe input rows required");
+    std::vector<llama_token> ids(static_cast<std::size_t>(input_rows));
     std::copy_n(reinterpret_cast<const char*>(raw.data()), raw.size(),
                 reinterpret_cast<char*>(ids.data()));
     Require(ids.front() == 2 &&
                 std::ranges::all_of(ids, [](auto id) { return id >= 0 && id < kVocab; }),
             "invalid token input");
-    const auto text = Read(argv[3], 65536);
+    const auto text = Read(argv[3], depth ? 131072 : 65536);
     const fs::path out = argv[4];
     Require(fs::create_directory(out), "output must be new");
     llama_backend_init();
@@ -84,15 +120,16 @@ int main(int argc, char** argv) {
       Require(llama_vocab_n_tokens(vocab) == kVocab, "vocabulary differs");
       const auto count = llama_tokenize(vocab, text.data(), static_cast<int>(text.size()), nullptr,
                                         0, true, false);
-      Require(count < 0 && count >= -8192, "bounded token count refused");
+      Require(count < 0 && count >= (depth ? -32768 : -8192), "bounded token count refused");
       std::vector<llama_token> tokenized(static_cast<std::size_t>(-count));
       Require(llama_tokenize(vocab, text.data(), static_cast<int>(text.size()), tokenized.data(),
                              -count, true, false) == -count &&
-                  tokenized.size() >= kInput &&
+                  tokenized.size() >= static_cast<std::size_t>(input_rows) &&
                   std::equal(ids.begin(), ids.end(), tokenized.begin()),
               "native/stock input IDs differ");
+      Shapes shapes;
       auto cp = llama_context_default_params();
-      cp.n_ctx = 4096;
+      cp.n_ctx = static_cast<std::uint32_t>(context);
       cp.n_batch = cp.n_ubatch = 128;
       cp.n_seq_max = 1;
       cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
@@ -100,6 +137,10 @@ int main(int argc, char** argv) {
       cp.swa_full = false;
       cp.kv_unified = false;
       cp.no_perf = false;
+      if (depth && teacher) {
+        cp.cb_eval = Shapes::Observe;
+        cp.cb_eval_user_data = &shapes;
+      }
       std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)> sampler(nullptr,
                                                                             llama_sampler_free);
       llama_sampler_seq_config config{};
@@ -114,7 +155,8 @@ int main(int argc, char** argv) {
       }
       std::unique_ptr<llama_context, decltype(&llama_free)> ctx(
           llama_init_from_model(model.get(), cp), llama_free);
-      Require(ctx && llama_n_ctx_seq(ctx.get()) == 4096 && llama_n_seq_max(ctx.get()) == 1,
+      Require(ctx && llama_n_ctx_seq(ctx.get()) == static_cast<std::uint32_t>(context) &&
+                  llama_n_seq_max(ctx.get()) == 1,
               "context geometry differs");
       struct Batch {
         llama_batch value = llama_batch_init(128, 0, 1);
@@ -172,13 +214,15 @@ int main(int argc, char** argv) {
         past += static_cast<int>(tokens.size());
       };
       const auto prompt = [&]() {
-        decode(std::span(ids).first(128), false);
-        decode(std::span(ids).subspan(128, 128), true);
+        for (int at = 0; at < prompt_rows; at += 128)
+          decode(std::span(ids).subspan(static_cast<std::size_t>(at), 128),
+                 at + 128 == prompt_rows);
       };
       const auto warm = [&]() {
-        for (int i = 0; i < kWarm; ++i) decode(std::span(ids).subspan(kPrompt + i, 1), true);
+        for (int i = 0; i < warm_rows; ++i)
+          decode(std::span(ids).subspan(prompt_rows + i, 1), true);
       };
-      llama_memory_clear(llama_get_memory(ctx.get()), true);
+      llama_memory_clear(llama_get_memory(ctx.get()), !depth);
       if (!teacher) {
         prompt();
         warm();
@@ -186,7 +230,7 @@ int main(int argc, char** argv) {
           const auto token = best();
           decode(std::span(&token, 1), true);
         }
-        llama_memory_clear(llama_get_memory(ctx.get()), true);
+        llama_memory_clear(llama_get_memory(ctx.get()), !depth);
         past = 0;
       }
       const auto start = Clock::now();
@@ -200,13 +244,13 @@ int main(int argc, char** argv) {
         heads.write(reinterpret_cast<const char*>(published.data()), kVocab * sizeof(float));
       }
       const auto before = llama_perf_context(ctx.get());
-      std::array<llama_token, kSteps> chosen{};
+      std::vector<llama_token> chosen(static_cast<std::size_t>(steps));
       const auto decode_start = Clock::now();
-      for (int i = 0; i < kSteps; ++i) {
+      for (int i = 0; i < steps; ++i) {
         const auto next = best();
         chosen[static_cast<std::size_t>(i)] = next;
-        const auto token = !teacher ? next : ids[kPrompt + kWarm + i];
-        final_head = !teacher && i + 1 == kSteps;
+        const auto token = !teacher ? next : ids[prompt_rows + warm_rows + i];
+        final_head = !teacher && i + 1 == steps;
         decode(std::span(&token, 1), true);
         if (teacher)
           heads.write(reinterpret_cast<const char*>(published.data()), kVocab * sizeof(float));
@@ -216,11 +260,13 @@ int main(int argc, char** argv) {
         heads.flush();
         Require(bool(heads), "complete head write failed");
       }
+      if (depth && teacher) shapes.CheckDepth();
       Save<llama_token>(out / "chosen.i32", chosen);
       Save<float>(out / "final.f32", published);
       const auto after = llama_perf_context(ctx.get());
-      std::cout << "GEMMA3_STOCK mode=" << mode << " context=4096 slots=1 chunk=128 prompt_rows=256"
-                << " untimed_rows=3 decode_rows=32 past=" << past << " prefill_seconds=" << prefill
+      std::cout << "GEMMA3_STOCK mode=" << mode << " context=" << context
+                << " slots=1 chunk=128 prompt_rows=" << prompt_rows << " untimed_rows=" << warm_rows
+                << " decode_rows=" << steps << " past=" << past << " prefill_seconds=" << prefill
                 << " decode_seconds=" << elapsed << " reused=" << after.n_reused - before.n_reused
                 << " tokenized_equal=1 fusion=stock graphs=allowed backend_tokens="
                 << backend_tokens << " sampled_logits_min=" << sampled_logits_min

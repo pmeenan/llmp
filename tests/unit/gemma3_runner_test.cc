@@ -25,40 +25,43 @@ TEST(Gemma3Runner, UninitializedLifecycleRefusesWithoutPublishingOrOwningCopies)
 }
 TEST(Gemma3Runner, CheckpointFootprintRequiresOrderedWholeExtentsAtRingAndContextBoundaries) {
   const auto& profile = jitllm::model::Gemma3_4BQat();
-  auto layout = jitllm::model::Gemma3State(profile, 4096, 128);
-  ASSERT_TRUE(layout);
-  for (const auto positions : {1U, 1024U, 1152U, 1281U, 4096U}) {
-    auto needed = jitllm::model::Gemma3UsedState(profile, *layout, positions);
-    ASSERT_TRUE(needed);
-    std::vector<en::LiveState::Range> footprint;
-    for (const auto& range : *needed)
-      for (auto extent = range.offset / en::kPagedExtent;
-           extent <= (range.offset + range.bytes - 1) / en::kPagedExtent; ++extent)
-        footprint.push_back(
-            {0, extent * en::kPagedExtent,
-             std::min(en::kPagedExtent, layout->bytes - extent * en::kPagedExtent)});
-    std::ranges::sort(footprint, {}, &en::LiveState::Range::offset);
-    footprint.erase(std::unique(footprint.begin(), footprint.end(),
-                                [](const auto& a, const auto& b) { return a.offset == b.offset; }),
-                    footprint.end());
-    ASSERT_TRUE(en::Gemma3CheckpointFootprint(profile, *layout, positions, footprint));
-    auto bad = footprint;
-    bad.pop_back();
-    EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, positions, bad));
-    bad = footprint;
-    ++bad[0].offset;
-    EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, positions, bad));
-    bad = footprint;
-    --bad[0].bytes;
-    EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, positions, bad));
-    bad = footprint;
-    bad[0].region = 1;
-    EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, positions, bad));
-    bad = footprint;
-    bad.push_back(bad.back());
-    EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, positions, bad));
-    EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, 0, footprint));
-    EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, 4097, footprint));
+  for (const auto context : {4096U, 8448U}) {
+    auto layout = jitllm::model::Gemma3State(profile, context, 128);
+    ASSERT_TRUE(layout);
+    for (const auto positions : {1U, 1024U, 1152U, 1281U, context - 64U, context}) {
+      auto needed = jitllm::model::Gemma3UsedState(profile, *layout, positions);
+      ASSERT_TRUE(needed);
+      std::vector<en::LiveState::Range> footprint;
+      for (const auto& range : *needed)
+        for (auto extent = range.offset / en::kPagedExtent;
+             extent <= (range.offset + range.bytes - 1) / en::kPagedExtent; ++extent)
+          footprint.push_back(
+              {0, extent * en::kPagedExtent,
+               std::min(en::kPagedExtent, layout->bytes - extent * en::kPagedExtent)});
+      std::ranges::sort(footprint, {}, &en::LiveState::Range::offset);
+      footprint.erase(
+          std::unique(footprint.begin(), footprint.end(),
+                      [](const auto& a, const auto& b) { return a.offset == b.offset; }),
+          footprint.end());
+      ASSERT_TRUE(en::Gemma3CheckpointFootprint(profile, *layout, positions, footprint));
+      auto bad = footprint;
+      bad.pop_back();
+      EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, positions, bad));
+      bad = footprint;
+      ++bad[0].offset;
+      EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, positions, bad));
+      bad = footprint;
+      --bad[0].bytes;
+      EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, positions, bad));
+      bad = footprint;
+      bad[0].region = 1;
+      EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, positions, bad));
+      bad = footprint;
+      bad.push_back(bad.back());
+      EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, positions, bad));
+      EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, 0, footprint));
+      EXPECT_FALSE(en::Gemma3CheckpointFootprint(profile, *layout, context + 1U, footprint));
+    }
+    EXPECT_TRUE(en::Gemma3CheckpointFootprint(profile, *layout, 0, {}));
   }
-  EXPECT_TRUE(en::Gemma3CheckpointFootprint(profile, *layout, 0, {}));
 }
