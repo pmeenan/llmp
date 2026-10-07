@@ -47,6 +47,8 @@ struct Gemma2GraphOptions {
   // Explicit equal-row/equal-read C2 prefill with real packed F16 K/V.
   // Original attention keeps the approved softcap50 specialization.
   bool packed_prefill = false;
+  // Diagnostic C2 cap50 transfer; preserve actual roots at common logical width.
+  bool bounded_roots = false;
   bool operator==(const Gemma2GraphOptions&) const = default;
 };
 struct Gemma2WeightLeaf {

@@ -322,6 +322,7 @@ def main():
         assert result['epochs'][0]['final']['joined_groups'] > 0
         assert result['epochs'][0]['final']['joined_units'] == 2*result['epochs'][0]['final']['joined_groups']
         assert result['epochs'][0]['final']['bound_owner_attention'] > 0
+        assert result['epochs'][0]['final']['bound_bounded_owner_attention'] > 0
         assert result['epochs'][0]['final']['bound_packed_prefill_attention'] > 0
         assert result['epochs'][0]['final']['attention_softcap'] == 50
         assert result['epochs'][0]['final']['bound_norm_rope'] == 0

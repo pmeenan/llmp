@@ -86,6 +86,61 @@ TEST(Gemma2Graph, SoftcapOwnerContractIsClosedToD256H8C2AndCap50) {
   EXPECT_FALSE(kg::CheckFlashAttnOwners(wrong_dim));
 }
 
+TEST(Gemma2Graph, BoundedOwnerRootsRejectMalformedActualViewsAndMetadata) {
+  auto arena = kg::TensorArena::Create(96);
+  ASSERT_TRUE(arena);
+  auto* c = arena->context();
+  std::uintptr_t address = std::uintptr_t{1} << 40U;
+  const auto placed = [&](ggml_tensor* tensor) {
+    kg::TensorArena::Bind(tensor, address);
+    address += 64U << 20U;
+    return tensor;
+  };
+  auto* raw_q = placed(ggml_new_tensor_4d(c, GGML_TYPE_F32, 256, 8, 1, 2));
+  auto* q = ggml_permute(c, raw_q, 0, 2, 1, 3);
+  kg::TensorArena::Bind(q, reinterpret_cast<std::uintptr_t>(raw_q->data));
+  auto* mask = placed(ggml_new_tensor_4d(c, GGML_TYPE_F16, 1024, 32, 1, 2));
+  std::array<ggml_tensor*, 4> k{}, v{};
+  for (std::size_t owner = 0; owner < 2; ++owner)
+    for (auto* target : {&k[owner], &v[owner]}) {
+      auto* raw = placed(ggml_new_tensor_4d(c, GGML_TYPE_F16, 256, 4, owner ? 1024 : 512, 1));
+      *target = ggml_permute(c, raw, 0, 2, 1, 3);
+      kg::TensorArena::Bind(*target, reinterpret_cast<std::uintptr_t>(raw->data));
+    }
+  auto* node = placed(kg::FlashAttnOwnersNode(c, q, mask, k, v, 2, 2, 0, 50, true));
+  auto in = kg::FlashAttnOwnersFromNode(node);
+  ASSERT_TRUE(in);
+  EXPECT_TRUE(in->bounded_roots);
+  const auto check = [&] { return kg::CheckFlashAttnOwnersNode(node).has_value(); };
+  EXPECT_TRUE(check());
+  const auto original = *k[0];
+  k[0]->ne[1] = 511;
+  EXPECT_FALSE(check());
+  *k[0] = original;
+  k[0]->nb[2] *= 2;
+  EXPECT_FALSE(check());
+  *k[0] = original;
+  v[0]->ne[1] = 1024;
+  EXPECT_FALSE(check());
+  v[0]->ne[1] = 512;
+  auto bad = *in;
+  bad.bounded_roots = false;
+  EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
+  bad = *in;
+  bad.logit_softcap = 0;
+  EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
+  bad = *in;
+  bad.k[1] = bad.k[0];
+  bad.v[1] = bad.v[0];
+  EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));  // no real root covers logical1024
+  bad = *in;
+  bad.owner_count = bad.logical_cohort = 3;
+  EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
+  EXPECT_TRUE(check());
+  Case g;
+  EXPECT_FALSE(kg::CheckGemma2Graph(g.p, g.binding, g.state, g.shape, {.bounded_roots = true}));
+}
+
 TEST(Gemma2Graph, ExplicitC2OwnerDecodeViewsQAndJoinsMasksWithoutJoiningCacheRoots) {
   Case c;
   c.shape = {{{3, 1, 259, 512, 512}, {1, 1, 259, 512, 512}}, 2};

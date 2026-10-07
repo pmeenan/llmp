@@ -228,3 +228,122 @@ The source inventory is unchanged from the serving result above. A fresh
 TensorFold task-entry check again returned
 `041d14a94e951834470fd514ed33e65b8be1059a`; the documented applicability remains
 unchanged. No additional model ladder, full suite or profiler grid ran.
+
+
+## Copy-free bounded owner reads, 2026-10-07
+
+The bounded serving recipe now selects actual-root owner reads for unequal
+one-row C2 decode. This closes only Gemma2's D256/H8/GQA2 cap50 case; equal
+widths, scalar work and the existing zero-softcap families retain their original
+paths. Internal options still default false. The checked metadata carries each
+owner's aligned actual cell count while retaining the original logical common
+width, original stream-K partition/grid and query conversion. Nonempty ranges
+clamp before the unchanged upstream tile helper; entirely absent partitions
+publish its neutral max/row-sum and zero numerator into the correct first or
+second metadata bank. The original helper preloads a tile unconditionally, so
+calling it with an empty clamped interval would be unsafe. Actual widths are
+at least 256, aligned to 256, and the largest root must equal the common width;
+malformed roots, strides, caps, masks, offsets and cohorts refuse before launch.
+Sinks and sparse attention remain excluded. The bounded specialization has its
+own occupancy query; original occupancy still determines logical partitioning.
+
+Four operand configurations use actual 512/1024 and 256/1536 cells, swapping
+which owner is short. Absent mask lanes are deliberately visible, parent tails
+contain F16 NaNs, and scratch/output are poisoned before every launch. Both
+empty completion/fixup branches execute (4/8 and 4/16 partitions). All eager
+launches and two captured replays on each of three fresh input sets match the
+original padded physical-stream MMA byte for byte. The worst FP64 NMSE is 1.11118e-6 against the unchanged 5e-4
+bound; bounded occupancy is one block/SM, original grid 48 and scratch 399616
+bytes. Source prefixes, canary tails, query and masks remain unchanged.
+Twenty-two focused controls pass, including the just-landed Gemma4 D256/D512
+common-width operator. The initial compile-only failure from four explicit-size
+conversions in this new test is retained; it ran no operand or model.
+
+The representative 256/768-prefix own controls freeze padded native and two
+bounded native repeats before reading the reference. All initialized states,
+76 complete heads, selected IDs, device/full-head execution, refusal,
+Clear, spill/restore and checkpoint continuation remain byte exact. The retained
+authenticated original stock teachers also match all 76 heads, with zero strict
+choices, target-NLL and total-variation differences. Both softcaps, no Q/K norm,
+128 rows per owner, 256 rows per wave and local ring 4,352 stay unchanged.
+
+One fresh R/B/N/N/B/R sequence compares original stock bookends and same-binary
+padded/bounded native modes. Each process keeps the original warm prefix,
+three supplied rows, eight warm joined steps, paid compatible prefill, three
+off-clock supplied rows, 32 paid joined decode steps and paid final full heads.
+Stock is the unmodified pinned public backend greedy sampler, including its
+full sampled-logit host transfers and ordinary false/false cache/read policy.
+All six natural 64-token histories and two final heads match exactly.
+
+| Mean of two fresh processes | Prefill ms | Decode ms | Paid cycle ms |
+| --- | ---: | ---: | ---: |
+| Original stock | 168.882 | 471.595 | 640.477 |
+| Native padded roots | 176.198 | 500.483 | 676.681 |
+| Native bounded roots | 173.173 | 467.923 | 641.096 |
+
+Bounded reads lower paid native latency by 5.2588%, including 32.560 ms over
+32 decode steps and 3.025 ms prefill. The remaining native/stock difference is
++0.09665% in this n=2 short screen; this is not sustained or endpoint parity.
+This causal policy comparison includes storage, launch and absent-tile effects.
+Its unprofiled savings are not identified with the earlier instrumented
+23.4237-ms copy-kernel sum, and no additional trace or tuning grid ran.
+
+Before serving adoption, one additional actual-tokenized 4,352/4,864-prefix
+case crosses both local rings while keeping global read widths unequal at
+4,608/5,120 after the three supplied rows. The local physical roots stay 4,352.
+Padded native and two bounded native own runs retain byte-exact full heads and
+initialized states, device/full-head choices, protected peers, Clear,
+spill/restore, and checkpoint next-continuation replay. This selects 26 bounded
+global owner plans while equal-width local attention retains the original path;
+these are plan-build counts, excluding Setup and replay. Two original stock
+teachers repeat exactly. Their 2 prefill and 71/74 continuation heads match
+native byte for byte (73/76 total), with zero strict/tie differences,
+relative conditional-loss delta 1.59279e-9 and mean total variation 4.73244e-9.
+The three nonexact stock rows are identical between padded and bounded native
+policies; the new policy introduces no numerical change in this control.
+This representative mixed ring/joint-prefill gate uses the existing quality
+bounds, with no new allowance or larger model ladder.
+
+The adopted runtime passes all five existing HTTP cases and exits cleanly in
+both epochs: actual unequal 256/768 literal requests with finite likelihoods,
+same-geometry literal repeats/bounds, cached chat checkpoint replay/SSE/stops
+and actual system-role refusal, client disconnect/queued peer completion, and
+two kept conversations adopted with exact replay after restart. The first
+completed epoch reports 180 joined groups/360 owner units, seven compatible
+prefill groups and 26 selected bounded owner plans. The counter proves actual
+selection on unequal widths; it is not a per-replay kernel count. Client reads
+may be buffered and do not prove precise backend cancellation. No HTTP timing
+comparison or endpoint parity is claimed. All seven successful installed jobs
+complete with exit zero; the initial compile-only failure remains recorded.
+Four newly run reference containers are checked absent after retirement.
+Broader contexts, additional ring/chunk geometries, memory/swap, wider cohorts
+and sustained qualification remain open.
+
+The durable [bounded-root helper](analyze_bounded_roots.py) reuses the existing
+quality core. Its `prepare`, `inputs`, `own` and `quality` modes take the private
+adoption directory; `prepare` also takes the authenticated first-screen and
+prior owner-control directories. It records exact actual tokenization inputs,
+freezes own heads/state before stock, and writes aggregates outside Git. The
+benchmark's optional final `bounded-roots` argument selects this policy;
+omitting it retains the padded control. The ordinary runtime selects the
+checked bounded policy within its existing 8K/two-owner admission, with no
+configuration, template, artifact or checkpoint-layout change.
+
+The same Spark B/GB10/driver 580.178.04 and locked SDK/source/image above were
+used. The actual native probe SHA-256 is
+`0e1123d421bffc72c4eca881eb99e3af9b6749be475f3fbe9eb32b474f574977`
+for both the first causal screen and adoption. The runtime rebuilt for adoption
+is `158bb9f0d8d22235f4e309364f540fd007474f3af06bf43370fddf6218a2052e`;
+receipt SHA-256 remains
+`874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89`.
+Whole checksum synchronization and empty dryrun preceded both narrow builds;
+the first-screen source inventory is
+`c1eaa83eb34a8087d838f23d615d6004148460eb86d666eb310c4a2f9f13bc17`
+and adoption inventory is
+`bb9378433eddcfcbdcc8649cceb8be501d848a14ae7b43806dc9569da29bce3e`.
+The math/controller and benchmark are unchanged at adoption; only the runtime
+recipe, existing diagnostic counter, HTTP selection gate, option comment and
+analysis helper were added after the causal screen. The latest task-entry
+TensorFold HEAD is again `041d14a94e951834470fd514ed33e65b8be1059a`,
+with unchanged documented Gemma2 applicability. Raw payloads, prompts, logs,
+traces and method queues remain private and external.

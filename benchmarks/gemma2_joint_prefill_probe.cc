@@ -87,8 +87,11 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") || argc != 6) return 2;
+  if (!jitllm::platform::InstallCrashPolicy("gemma2-joint-prefill-probe") ||
+      (argc != 6 && argc != 7))
+    return 2;
   if (std::string_view(argv[1]) == "prepare") {
+    if (argc != 6) return 2;
     std::uint32_t count = 0;
     const std::string_view number = argv[4];
     const auto parsed = std::from_chars(number.data(), number.data() + number.size(), count);
@@ -99,6 +102,8 @@ int main(int argc, char** argv) {
     if (!status) std::cerr << status.error() << '\n';
     return status ? 0 : 1;
   }
+  const bool bounded = argc == 7;
+  if (bounded && std::string_view(argv[6]) != "bounded-roots") return 2;
   const std::string mode = argv[5];
   const bool own = mode == "own", cycle = mode == "cycle";
   if (!own && !cycle) return 2;
@@ -136,6 +141,7 @@ int main(int argc, char** argv) {
                                                                       .max_head_rows = 2,
                                                                       .owner_decode = true,
                                                                       .packed_prefill = true,
+                                                                      .bounded_roots = bounded,
                                                                       .fuse_norms = true,
                                                                       .fuse_quant_glu = true,
                                                                       .fuse_norm_rope = false,
@@ -435,6 +441,8 @@ int main(int argc, char** argv) {
         if (auto r = Save<char>(out / "state.json", record); !r) return r;
         if (runner.greedy_tokens() != 78) return Error("C2 own GPU publication count differs");
       }
+      if (bounded && prefix[0] != prefix[1] && !runner.plan_selections().bounded_owner_attention)
+        return Error("bounded C2 roots were not selected");
       if (cycle && runner.greedy_tokens() != 88)
         return Error("C2 cycle GPU publication count differs");
       if (auto r = Save<std::int32_t>(out / "chosen.i32", choices); !r) return r;
@@ -458,6 +466,8 @@ int main(int argc, char** argv) {
                 << " eager=" << stats.eager << " captured=" << stats.captured
                 << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
                 << " selected_packed_prefill=" << bound.packed_prefill_attention
+                << " bounded_roots=" << bounded
+                << " selected_bounded_owner=" << bound.bounded_owner_attention
                 << " selected_norm_mul=" << bound.norm_mul
                 << " selected_quant_geglu=" << bound.quant_geglu
                 << " selected_norm_rope=" << bound.norm_rope

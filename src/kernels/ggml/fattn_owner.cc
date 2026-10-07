@@ -126,6 +126,9 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
       (in.logit_softcap != 50 || in.q->ne[0] != 256 || in.q->ne[2] != 8 || in.owner_count != 2 ||
        in.logical_cohort != 2 || in.owner_offset != 0))
     return Rejected("owner MMA softcap requires the closed Gemma2 D256/H8/C2 cap50 path");
+  if (in.bounded_roots && (in.logit_softcap != 50 || in.q->ne[0] != 256 || in.q->ne[2] != 8 ||
+                           in.owner_count != 2 || in.logical_cohort != 2 || in.owner_offset != 0))
+    return Rejected("bounded owner roots require the closed Gemma2 cap50/C2 path");
   if (in.mask->ne[0] < 256 || in.mask->ne[0] > 16384 || in.mask->ne[0] % 256 != 0)
     return Rejected("owner MMA requires bounded actual padded cache widths");
   const auto cells = std::size_t(in.mask->ne[0]);
@@ -143,15 +146,27 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
   std::array<const ggml_tensor*, 10> reads{in.q, in.mask};
   for (std::size_t owner = in.owner_count; owner < 4; ++owner)
     if (in.k[owner] || in.v[owner]) return Rejected("owner MMA has extra inactive cache roots");
+  std::size_t largest_actual = 0;
   for (std::size_t owner = 0; owner < in.owner_count; ++owner) {
-    for (const auto* tensor : {in.k[owner], in.v[owner]})
+    const auto* key = in.k[owner];
+    const auto* value = in.v[owner];
+    if (!key || !value || key->ne[1] != value->ne[1])
+      return Rejected("owner MMA requires matching actual K/V widths");
+    if (in.bounded_roots && (key->ne[1] < 256 || key->ne[1] > static_cast<std::int64_t>(cells) ||
+                             key->ne[1] % 256 != 0))
+      return Rejected("bounded owner roots require aligned actual widths within the logical mask");
+    const auto actual = in.bounded_roots ? std::size_t(key->ne[1]) : cells;
+    largest_actual = std::max(largest_actual, actual);
+    for (const auto* tensor : {key, value})
       if (!Shape(tensor, GGML_TYPE_F16,
-                 {std::int64_t(d), std::int64_t(cells), std::int64_t(kvh), 1},
-                 {2, kvrow, d * 2, kvrow * cells}))
+                 {std::int64_t(d), std::int64_t(actual), std::int64_t(kvh), 1},
+                 {2, kvrow, d * 2, kvrow * actual}))
         return Rejected("owner MMA requires actual current cell-major F16 cache views");
     reads[2 + owner] = in.k[owner];
     reads[6 + owner] = in.v[owner];
   }
+  if (in.bounded_roots && largest_actual != cells)
+    return Rejected("bounded owner mask must match the largest actual width");
   for (const auto* input : reads)
     if (input && Overlap(in.output, input))
       return Rejected("owner MMA output overlaps a real operand");
@@ -177,8 +192,11 @@ std::expected<FlashAttnOwners, KernelFailure> FlashAttnOwnersFromNode(ggml_tenso
     return Rejected("owner attention has an unsupported active root count");
   const auto offset = JitllmOpInt(node, 2);
   if (offset < 0) return Rejected("owner attention has a negative group offset");
-  for (int i = 4; i < 8; ++i)
+  for (int i = 5; i < 8; ++i)
     if (JitllmOpInt(node, i) != 0) return Rejected("owner attention has unsupported parameters");
+  const auto bounded = JitllmOpInt(node, 4);
+  if (bounded != 0 && bounded != 1)
+    return Rejected("owner attention has an unsupported root bound");
   const auto cap = JitllmOpInt(node, 3);
   if (cap != 0 && cap != 50) return Rejected("owner attention has an unsupported softcap");
   FlashAttnOwners in{
@@ -188,7 +206,8 @@ std::expected<FlashAttnOwners, KernelFailure> FlashAttnOwnersFromNode(ggml_tenso
       .logical_cohort = static_cast<std::uint32_t>(cohort),
       .owner_count = encoded_count == 0 ? 4U : static_cast<std::uint32_t>(encoded_count),
       .owner_offset = static_cast<std::uint32_t>(offset),
-      .logit_softcap = static_cast<std::uint32_t>(cap)};
+      .logit_softcap = static_cast<std::uint32_t>(cap),
+      .bounded_roots = bounded != 0};
   for (std::size_t owner = 0; owner < 4; ++owner) {
     in.k[owner] = node->src[2 + owner];
     in.v[owner] = node->src[6 + owner];

@@ -61,6 +61,8 @@ std::expected<void, KernelFailure> CheckGemma2Graph(const md::Gemma2Profile& p,
   if ((o.owner_decode || o.packed_prefill) &&
       (o.first_layer != 0 || o.layer_count != 0 || o.hidden_input || !o.head))
     return Rejected("Gemma2 owner attention requires the complete token-input model");
+  if (o.bounded_roots && !o.owner_decode)
+    return Rejected("bounded Gemma2 roots require explicit owner decode");
   const bool state_only = shape.output_mode == Gemma2OutputMode::kStateOnly;
   if ((shape.output_mode != Gemma2OutputMode::kHead && !state_only) ||
       (state_only && (!o.head || o.hidden_input || o.first_layer != 0 ||
@@ -216,7 +218,7 @@ std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(TensorArena& arena,
   }
 
   std::array<std::array<ggml_tensor*, 2>, 2> owner_zero_tails{};
-  if (owner_decode) {
+  if (owner_decode && !o.bounded_roots) {
     for (std::size_t owner = 0; owner < 2; ++owner) {
       for (std::size_t local = 0; local < 2; ++local) {
         const auto read = [&](std::size_t index) {
@@ -335,7 +337,8 @@ std::expected<Gemma2Graph, KernelFailure> BuildGemma2Graph(TensorArena& arena,
       auto* packed_q = ggml_permute(c, ggml_reshape_4d(c, q, d, p.heads, 1, 2), 0, 2, 1, 3);
       auto* mask = p.local(il) ? owner_local_mask : owner_global_mask;
       auto* attention =
-          FlashAttnOwnersNode(c, packed_q, mask, owner_keys, owner_values, 2, 2, 0, 50);
+          FlashAttnOwnersNode(c, packed_q, mask, owner_keys, owner_values, 2, 2, 0, 50,
+                              o.bounded_roots && owner_keys[0]->ne[1] != owner_keys[1]->ne[1]);
       named(prefix + "owner_attention", attention);
       joined = ggml_reshape_2d(c, attention, std::int64_t{d} * p.heads, 2);
       expanded.push_back(joined);

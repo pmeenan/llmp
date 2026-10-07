@@ -162,12 +162,24 @@ with exact natural histories/final heads. One matched node-level timeline
 binds all 32 paid steps by vocabulary projections and graph/eager correlations:
 52 full-cache padding concatenations per native step sum to 23.42 ms over
 32 steps, while stock has none. Native owner attention is faster; equal-count
-product timing differences have no established cause. The next bounded test
-is actual-root reads with zero invalid lanes at unchanged logical common width,
-precision and cap50, followed by operand/model proof and native bookends.
-The trace is attribution, not a new latency ratio or predicted saving. Broader
-ring/joint-prefill, context, cohorts, memory/swap and sustained qualification
-remain open.
+product timing differences have no established cause. The trace is attribution,
+not a new latency ratio or predicted saving. The separate
+[bounded-root causal screen](experiments/gemma2-serving/README.md#copy-free-bounded-owner-reads-2026-10-07)
+now removes full-cache materialization for cap50 D256/H8/C2 while preserving
+logical partitions and original tile arithmetic. Actual aligned widths bound
+nonempty reads; absent partitions publish neutral metadata/numerators without
+preloading a missing tile. Four poisoned operands remain byte exact to padded
+original MMA, with FP64 and fresh replay controls. All 76 small native/stock heads
+are exact; representative wrapped 4,352/4,864 roots preserve exact native state
+and padded/bounded heads, with 73/76 exact stock heads and zero strict choices.
+One same-binary padded/bounded BNNB plus original stock bookends lowers native
+paid latency by 5.2588%, to +0.09665% versus stock (n=2, short C2). The existing
+bounded serving recipe selects it and repeats all five HTTP cases/two clean
+restart epochs with actual bounded selections. Internal defaults and
+zero-softcap/D512 paths retain their original contracts. This includes storage/launch effects,
+not a promise to recover the earlier summed copy duration. Broader context,
+ring/chunk geometries, cohorts, memory/swap and sustained qualification remain
+open; no endpoint timing was made.
 
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand

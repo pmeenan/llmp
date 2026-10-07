@@ -2,11 +2,13 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
-// Only GGML's outer stream-K controller is ported here. Tile processing,
-// query conversion, MMA/softmax/reduction and fixup helpers are included from
-// the pinned fattn-mma-f16.cuh unchanged. Two cache-base expressions select
-// actual independent owner addresses instead of a contiguous sequence pitch.
+// GGML's outer stream-K controller selects independent owner roots. The
+// optional bounded variant clamps aligned nonempty ranges and emits original
+// neutral fixup data for absent partitions. Tile processing, query conversion,
+// MMA/softmax/reduction and fixup helpers remain unchanged pinned inclusions.
 #pragma once
+
+#include <type_traits>
 #pragma clang system_header
 
 namespace jitllm_fattn_owner {
@@ -15,12 +17,76 @@ struct OwnerBases {
   const char* v[4];
 };
 static_assert(sizeof(OwnerBases) == 64);
+struct BoundedOwnerBases : OwnerBases {
+  int cells[4];
+};
+static_assert(sizeof(BoundedOwnerBases) == 80);
+template <bool Bounded>
+using OwnerRootBases = std::conditional_t<Bounded, BoundedOwnerBases, OwnerBases>;
 // clang-format off
-template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, bool V_is_K_view, bool use_sparse>
+// A wholly absent logical partition has the exact original all-masked
+// contribution. Never invoke process_tile: it preloads one tile unconditionally.
+// Layout is the unchanged upstream first/second metadata banks and numerator bank.
+template<int DV, int ncols1, int ncols2, bool needs_fixup, bool is_fixup>
+static __device__ __forceinline__ void empty_owner_tile(
+        float2 * dstk, float2 * meta, const uint3 ne01, int ne02, int gqa_ratio,
+        int jt, int zt_gqa) {
+    constexpr int ncols = ncols1*ncols2;
+    const int tid = threadIdx.y*32 + threadIdx.x;
+    const int threads = blockDim.y*32;
+    if constexpr (needs_fixup || is_fixup) {
+        const int bank = is_fixup ? gridDim.x : 0;
+        for (int col = tid; col < ncols; col += threads) {
+            meta[(bank + blockIdx.x)*ncols + col] = make_float2(-FLT_MAX/2.0f, 0.0f);
+        }
+    }
+    for (int index = tid; index < ncols*(DV/2); index += threads) {
+        const int col = index/(DV/2), k = index%(DV/2);
+        if constexpr (is_fixup) {
+            meta[gridDim.x*(2*ncols) + blockIdx.x*(ncols*(DV/2)) + index] = make_float2(0.0f, 0.0f);
+        } else {
+            const int j = col/ncols2, c = col%ncols2;
+            if (jt*ncols1 + j < int(ne01.z) && zt_gqa*ncols2 + c < gqa_ratio) {
+                dstk[((jt*ncols1 + j)*ne02 + c)*(DV/2) + k] = make_float2(0.0f, 0.0f);
+            }
+        }
+    }
+}
+
+template<int DKQ, int DV, int ncols1, int ncols2, int nwarps,
+         bool use_logit_softcap, bool V_is_K_view, bool use_sparse,
+         bool needs_fixup, bool is_fixup, bool Bounded>
+static __device__ __forceinline__ void process_owner_tile(
+        const float2 * Q, const half2 * K, const half2 * V, const half * mask,
+        const int32_t * indices, const float * sinks, float2 * dst, float2 * meta,
+        float scale, float slope, float softcap, uint3 ne01, int ne02, int gqa_ratio,
+        int ne11, int stride_Q1, int stride_Q2, int stride_K, int stride_V,
+        int stride_mask, int jt, int zt_gqa, int kb0_start, int kb0_stop, int actual_tiles) {
+    if constexpr (Bounded) {
+        static_assert(DKQ == 256 && DV == 256 && ncols1 == 4 && ncols2 == 2 &&
+                      use_logit_softcap && !V_is_K_view && !use_sparse);
+        // Bound only absent physical storage; keep original KV_max/all-invisible
+        // mask behavior when the initial tile is inside the real root.
+        if (kb0_start >= actual_tiles) {
+            empty_owner_tile<DV, ncols1, ncols2, needs_fixup, is_fixup>
+                (dst, meta, ne01, ne02, gqa_ratio, jt, zt_gqa);
+            return;
+        }
+        kb0_stop = min(kb0_stop, actual_tiles);
+    }
+    flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps,
+        use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
+        (Q, K, V, mask, indices, sinks, dst, meta, scale, slope, softcap,
+         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V,
+         stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
+}
+// clang-format on
+// clang-format off
+template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap, bool V_is_K_view, bool use_sparse, bool Bounded = false>
 __launch_bounds__(ggml_cuda_fattn_mma_get_nthreads(DKQ, DV, ncols1*ncols2), ggml_cuda_fattn_mma_get_occupancy(DKQ, DV, ncols1*ncols2))
 static __global__ void flash_attn_owner_f16(
         const char * Q_ptr,
-        const OwnerBases bases,
+        const OwnerRootBases<Bounded> bases,
         const char * mask_ptr,
         const char * sinks_ptr,
         const int  * KV_max_ptr,
@@ -130,6 +196,8 @@ static __global__ void flash_attn_owner_f16(
     while (kbc < kbc_stop && kb0_stop == iter_k) {
         // z_KV == K/V head index, zt_gqa = Q head start index per K/V head, jt = token position start index
         const int sequence =  kbc /(iter_k*iter_j*iter_z_gqa*ne12);
+        int actual_tiles = iter_k;
+        if constexpr (Bounded) actual_tiles = bases.cells[sequence]/nbatch_fa;
         const int z_KV     = (kbc - iter_k*iter_j*iter_z_gqa*ne12 * sequence)/(iter_k*iter_j*iter_z_gqa);
         const int zt_gqa   = (kbc - iter_k*iter_j*iter_z_gqa*ne12 * sequence - iter_k*iter_j*iter_z_gqa * z_KV)/(iter_k*iter_j);
         const int jt       = (kbc - iter_k*iter_j*iter_z_gqa*ne12 * sequence - iter_k*iter_j*iter_z_gqa * z_KV - iter_k*iter_j * zt_gqa) / iter_k;
@@ -156,14 +224,14 @@ static __global__ void flash_attn_owner_f16(
         constexpr bool is_fixup = false; // All but (potentially) the last iterations write their data to dst rather than the fixup buffer.
         if (kb0_start == 0) {
             constexpr bool needs_fixup = false; // CUDA block is working on an entire tile.
-            flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
+            process_owner_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, Bounded>
                 (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
-                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
+                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop, actual_tiles);
         } else {
             constexpr bool needs_fixup = true; // CUDA block is missing the beginning of a tile.
-            flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
+            process_owner_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, Bounded>
                 (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
-                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
+                 ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop, actual_tiles);
         }
 
         kbc += iter_k;
@@ -179,6 +247,8 @@ static __global__ void flash_attn_owner_f16(
 
     // z_KV == K/V head index, zt_gqa = Q head start index per K/V head, jt = token position start index.
     const int sequence =  kbc /(iter_k*iter_j*iter_z_gqa*ne12);
+    int actual_tiles = iter_k;
+    if constexpr (Bounded) actual_tiles = bases.cells[sequence]/nbatch_fa;
     const int z_KV     = (kbc - iter_k*iter_j*iter_z_gqa*ne12 * sequence)/(iter_k*iter_j*iter_z_gqa);
     const int zt_gqa   = (kbc - iter_k*iter_j*iter_z_gqa*ne12 * sequence - iter_k*iter_j*iter_z_gqa * z_KV)/(iter_k*iter_j);
     const int jt       = (kbc - iter_k*iter_j*iter_z_gqa*ne12 * sequence - iter_k*iter_j*iter_z_gqa * z_KV - iter_k*iter_j * zt_gqa) / iter_k;
@@ -205,9 +275,9 @@ static __global__ void flash_attn_owner_f16(
 
     constexpr bool is_fixup = true; // Last index writes its data to fixup buffer to avoid data races with other blocks.
     constexpr bool needs_fixup = false;
-    flash_attn_ext_f16_process_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup>
+    process_owner_tile<DKQ, DV, ncols1, ncols2, nwarps, use_logit_softcap, V_is_K_view, use_sparse, needs_fixup, is_fixup, Bounded>
         (Q_f2, K_h2, V_h2, mask_h, indices, sinks_f, dstk, dst_meta, scale, slope, logit_softcap,
-         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop);
+         ne01, ne02, gqa_ratio, ne11, stride_Q1, stride_Q2, stride_K, stride_V, stride_mask, jt, zt_gqa, kb0_start, kb0_stop, actual_tiles);
 #else
     GGML_UNUSED_VARS(Q_ptr, bases, mask_ptr, sinks_ptr, KV_max_ptr, dst_ptr, dst_meta_ptr, scale,
         max_bias, m0, m1, n_head_log2, logit_softcap,

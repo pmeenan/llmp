@@ -836,8 +836,16 @@ family" guide, and its long-context scaling work.
       retaining per-owner 128/ring 4,352. All 76 representative stock heads are exact;
       all 45 focused and five HTTP cases pass, including actual system refusal,
       joined groups and exact kept restart. Short n=2 C2 latency is 5.78% above
-      stock with exact natural choices/final heads. Broader context/quality,
-      mixed ring/joint-prefill, memory/swap, wider cohorts and sustained
+      stock with exact natural choices/final heads for that padded snapshot.
+      The subsequent copy-free bounded-read policy preserves original cap50
+      partitions with actual root bounds and neutral empty fixup data. All 22
+      focused controls pass; small 76/76 and representative wrapped 73/76 stock
+      heads have zero strict differences, and padded/bounded native state/heads
+      remain byte exact. Same-binary native bookends reduce paid C2 latency
+      5.2588%, to +0.09665% versus original stock (n=2). The bounded runtime
+      recipe selects it and repeats all five HTTP cases/two clean restart
+      epochs with actual bounded selections. Broader context/quality,
+      additional ring/chunk geometries, memory/swap, wider cohorts and sustained
       qualification remain open.
       The [checkpoint/adoption foundation](experiments/gemma2-checkpoint/README.md)
       passes 19 focused checks for initialized extent coverage, pending copy

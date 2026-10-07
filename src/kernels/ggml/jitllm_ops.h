@@ -157,7 +157,8 @@ ggml_tensor* FlashAttnOwnersNode(ggml_context* context, ggml_tensor* q, ggml_ten
                                  const std::array<ggml_tensor*, 4>& k,
                                  const std::array<ggml_tensor*, 4>& v,
                                  std::uint32_t logical_cohort = 4, std::uint32_t owner_count = 4,
-                                 std::uint32_t owner_offset = 0, std::uint32_t logit_softcap = 0);
+                                 std::uint32_t owner_offset = 0, std::uint32_t logit_softcap = 0,
+                                 bool bounded_roots = false);
 
 // F16 [cells, Pad(rows,32)] causal or local-ring mask. Positions is a
 // packed I32 vector; first_row selects the independent segment. window=0

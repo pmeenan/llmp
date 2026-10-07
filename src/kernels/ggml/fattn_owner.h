@@ -31,6 +31,9 @@ struct FlashAttnOwners {
   std::uint32_t owner_offset = 0;
   // Closed Gemma2 H8/C2 specialization; zero preserves every earlier path.
   std::uint32_t logit_softcap = 0;
+  // Opt-in Gemma2 C2: mask width is logical; each aligned K/V view is actual.
+  // No partial cohorts, sinks, sparse gather or non-cell-major layouts.
+  bool bounded_roots = false;
 };
 
 // F32 Q [D,1,heads,N], F16 mask [cells,32,1,N], N actual F16 K/V

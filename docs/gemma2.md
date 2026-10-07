@@ -173,3 +173,31 @@ The short matched C2 RNNR is 5.7824% slower than stock (n=2), with identical
 natural choices/final heads. No performance parity or broader/sustained support
 is claimed; mixed wrapped-ring/joint-prefill, context, memory/swap and wider
 batching gates remain separate.
+
+
+## Copy-free bounded decode
+
+The bounded serving recipe now reads unequal cap50 D256/H8/C2 cache roots
+directly at their actual aligned widths, retaining the common logical width
+and original attention partitioning. Entirely absent partitions emit neutral
+fixup data; nonempty tiles use the unchanged upstream helper. Equal-width,
+scalar and other-family paths retain their existing contracts. Actual state,
+source bounds, 128 rows per owner, 256 rows per wave and local ring 4,352 are unchanged;
+internal runner/graph defaults remain off.
+
+The [causal screen](experiments/gemma2-serving/README.md#copy-free-bounded-owner-reads-2026-10-07)
+passes22 focused controls, exact poisoned physical-stream operands and FP64,
+eager/captured replay and refusal checks. Padded/bounded native heads and state
+are byte exact at 256/768 and wrapped 4,352/4,864 prefixes. Stock heads are 76/76
+and 73/76 exact respectively, with zero strict/tie differences and ring relative
+conditional-loss delta 1.59279e-9. The six-arm same-binary padded/bounded control
+plus original stock bookends improves native paid latency by 5.2588%, to +0.09665%
+versus stock on this short n=2 C2 screen. This is not sustained or endpoint
+parity; broader contexts, ring/chunk geometries, memory/swap and cohorts remain
+separate gates.
+
+The adopted runtime repeats all five HTTP cases and two clean restart epochs,
+including finite likelihoods, actual system-role refusal, cached checkpoint
+replay, SSE/stops and client-observed peer completion after disconnect. The
+first drain reports 26 selected bounded owner plans and 180 joined groups;
+these are actual selection/progress witnesses, not per-replay kernel counts.

@@ -78,9 +78,20 @@ The later [bounded ordinary serving slice](experiments/gemma2-serving/README.md)
 adds compatible prefill and unequal-width one-row decode with preserved cap50,
 per-owner 128/local 4,352 and a separate 256-row wave. Its representative 256/768
 prefixes produce 76/76 exact stock full heads; five HTTP/template/restart cases
-pass with actual joined groups. A short n=2 C2 cycle retains a 5.78% stock latency
-gap. Broader quality/context, mixed ring/joint-prefill, memory/swap, wider cohorts
-and sustained qualification remain open. This is not a full execution support entry.
+pass with actual joined groups. The earlier padded short n=2 C2 cycle retained
+a 5.78% stock latency gap. At that snapshot, mixed ring/joint-prefill and broader
+qualification remained open. This is not a full execution support entry.
+
+The subsequent copy-free bounded cap50 owner policy is selected by this recipe.
+It preserves original logical attention geometry, 128 rows per owner and local
+ring 4,352. Four poisoned operands and 22 focused controls pass; small and
+representative wrapped-prefix stock heads are 76/76 and 73/76 byte exact with
+zero strict choices, while padded/bounded native state/heads remain exact.
+A same-binary n=2 causal screen lowers paid native latency by 5.2588%, to +0.09665%
+versus original stock, with identical natural histories/final heads. All five
+HTTP cases and two clean restart epochs repeat with actual bounded selections.
+This short engine result is not sustained or endpoint parity; broader context,
+ring/chunk geometries, memory/swap and cohorts remain open.
 
 Gemma 3 4B QAT Q4_0 has a separate checked profile and strict
 GGML tensor binding in `model/gemma3.h`; the [foundation contract](gemma3.md)

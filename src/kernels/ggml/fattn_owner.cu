@@ -22,7 +22,7 @@ using jitllm_fattn_owner::flash_attn_owner_fixup_uniform;
 using jitllm_fattn_owner::flash_attn_owner_partial_f16;
 using jitllm_fattn_owner::OwnerBases;
 
-template <int D, int Columns, int Group, bool Softcap = false>
+template <int D, int Columns, int Group, bool Softcap = false, bool Bounded = false>
 std::expected<void, KernelFailure> Resources(int device, FlashAttnOwnersPlan& plan) {
   constexpr int cols = Columns * Group;
   const int cc = ggml_cuda_info().devices[device].cc;
@@ -49,7 +49,7 @@ std::expected<void, KernelFailure> Resources(int device, FlashAttnOwnersPlan& pl
   const auto kv = stages <= 1 ? kv1 : kv2;
   plan.shared_bytes = std::max(join, q_in_reg ? std::max(q, kv + mask) : q + kv + mask);
   plan.threads = threads;
-  const auto kernel = flash_attn_owner_f16<D, D, Columns, Group, Softcap, false, false>;
+  const auto kernel = flash_attn_owner_f16<D, D, Columns, Group, Softcap, false, false, Bounded>;
   auto status = cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
                                      static_cast<int>(plan.shared_bytes));
   if (status == cudaSuccess)
@@ -102,7 +102,7 @@ std::expected<void, KernelFailure> ResourcesPartial(int device, FlashAttnOwnersP
   return {};
 }
 
-template <int D, int Columns, int Group, bool Softcap = false>
+template <int D, int Columns, int Group, bool Softcap = false, bool Bounded = false>
 void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
            const FlashAttnOwnersPlan& plan) {
   auto stream = ctx.stream();
@@ -128,10 +128,11 @@ void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
   CUDA_CHECK(cudaGetLastError());
   if (tiles % plan.original.blocks != 0)
     metadata.alloc(std::size_t(blocks) * Columns * Group * (2 + D / 2));
-  OwnerBases bases{};
+  jitllm_fattn_owner::OwnerRootBases<Bounded> bases{};
   for (std::size_t owner = 0; owner < in.owner_count; ++owner) {
     bases.k[owner] = static_cast<const char*>(in.k[owner]->data);
     bases.v[owner] = static_cast<const char*>(in.v[owner]->data);
+    if constexpr (Bounded) bases.cells[owner] = static_cast<int>(in.k[owner]->ne[1]);
   }
   const auto* k = in.k[0];
   const auto* v = in.v[0];
@@ -141,7 +142,7 @@ void Queue(ggml_backend_cuda_context& ctx, const FlashAttnOwners& in,
   // Match the original case's constants and dimensions exactly. ne13 is a
   // logical stream count only; no contiguous K/V sequence span is accessed.
   ggml_cuda_kernel_launch(
-      flash_attn_owner_f16<D, D, Columns, Group, Softcap, false, false>, main_launch,
+      flash_attn_owner_f16<D, D, Columns, Group, Softcap, false, false, Bounded>, main_launch,
       static_cast<const char*>(in.q->data), bases, static_cast<const char*>(in.mask->data),
       static_cast<const char*>(nullptr), maximum.ptr, static_cast<float*>(in.output->data),
       metadata.ptr, Softcap ? 1.0f / static_cast<float>(in.logit_softcap) : 1.0f, 0.0f, 1.0f, 1.0f,
@@ -290,7 +291,8 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
     geometry.scratch = 256 + std::uint64_t(geometry.blocks) * std::uint64_t(geometry.columns) *
                                  std::uint64_t(geometry.group) * std::uint64_t(2 + d / 2) *
                                  sizeof(float2);
-  const auto checked = in.logit_softcap != 0 ? Resources<256, 4, 2, true>(launch.device(), plan)
+  const auto checked = in.bounded_roots ? Resources<256, 4, 2, true, true>(launch.device(), plan)
+                       : in.logit_softcap != 0 ? Resources<256, 4, 2, true>(launch.device(), plan)
                        : partial ? (d == 256 ? ResourcesPartial<256, 4, 2>(launch.device(), plan)
                                              : ResourcesPartial<512, 1, 8>(launch.device(), plan))
                                  : (d == 256 ? Resources<256, 4, 2>(launch.device(), plan)
@@ -309,7 +311,9 @@ std::expected<void, KernelFailure> FlashAttnOwnerRoots(LaunchContext& launch,
         QueuePartial<256, 4, 2>(context, in, *plan);
       else
         QueuePartial<512, 1, 8>(context, in, *plan);
-    } else if (in.logit_softcap != 0)
+    } else if (in.bounded_roots)
+      Queue<256, 4, 2, true, true>(context, in, *plan);
+    else if (in.logit_softcap != 0)
       Queue<256, 4, 2, true>(context, in, *plan);
     else if (plan->original.head == 256)
       Queue<256, 4, 2>(context, in, *plan);
