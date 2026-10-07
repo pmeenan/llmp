@@ -62,8 +62,8 @@ M2.7 (IQ3_XXS), Laguna S 2.1, Step 3.7 Flash, Ling 3.0 flash, Nemotron 3.5
 Lightning, Cohere North Mini Code and Mistral Medium 3.5
 ([below](#optional-checkpoints)). The four legacy fixtures and both Bonsai
 bitrates are approved ([legacy tier](#legacy-tier-features)).
-Generative media gets its own track:
-MiniMax H3 for video and, owner-named, Ming-Image-0.1-Design as a second
+Generative media gets its own track: MiniMax H3 for text-to-video and
+image-to-video, plus the owner-named Ming-Image-0.1-Design as a second
 image model ([below](#generative-media-video-and-image)).
 
 Excluded: Phi and Granite (stale or weak, nothing unique in wide use),

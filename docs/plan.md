@@ -987,9 +987,9 @@ family" guide, and its long-context scaling work.
         routes. Its components run as one composition (D-089), sharing
         the image phases, VAE and route code with Qwen-Image's rather than
         a second pipeline.
-      - `/v1/videos` asynchronous jobs for MiniMax H3, on D-041's job
-        machinery, with generated media kept only until fetched or
-        expired.
+      - `/v1/videos` asynchronous jobs for MiniMax H3 text-to-video and
+        image-to-video, on D-041's job machinery, with generated media kept
+        only until fetched or expired.
       - `/v1/audio/speech` on two text-to-speech testbeds (owner,
         2026-10-02):
         - **Breeze-TTS-2:** 3.47B in BF16. A T5Gemma2 text encoder (26
@@ -1105,9 +1105,9 @@ TensorFold comparisons report speed, memory and separate quality controls.
   WebUI generates through them unmodified, and through the WebUI routes,
   SillyTavern does too. Open WebUI shows an image returned in a chat
   response. Transcriptions from the audio carrier match its reference
-  output for the same clips. A MiniMax H3 job runs from
-  create to download and cancels cleanly. Through the MCP media server,
-  Claude Code and at least one other coding agent show a generated image
+  output for the same clips. MiniMax H3 text-to-video and image-to-video
+  jobs each run from create to download and cancel cleanly. Through the MCP
+  media server, Claude Code and at least one other coding agent show a generated image
   in a chat turn.
 - The support matrix lists every approved family with its evidence.
 
