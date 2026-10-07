@@ -309,6 +309,12 @@ if(JITLLM_CUDA)
   target_link_libraries(jitllm_gemma_quality PRIVATE jitllm_engine jitllm_warnings)
   target_link_options(jitllm_gemma_quality PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
 
+  add_executable(jitllm_gemma26_continuation
+                   ../docs/experiments/gemma26-production/native_continuation.cc)
+  target_link_libraries(jitllm_gemma26_continuation PRIVATE jitllm_engine jitllm_warnings)
+  target_link_options(jitllm_gemma26_continuation PRIVATE
+                     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   add_executable(jitllm_gemma_runner gemma_runner.cc)
   # Manual native-origin first-local operand capture. Link wrapping adds no
   # graph keep, planner policy or production observer.
@@ -605,6 +611,14 @@ if(JITLLM_CUDA)
   add_executable(jitllm_gemma31_production gemma31_production.cc)
   target_link_libraries(jitllm_gemma31_production PRIVATE jitllm_runtime_serving jitllm_platform jitllm_warnings)
   target_link_options(jitllm_gemma31_production PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
+
+  add_executable(jitllm_gemma26_frontier_control gemma31_production.cc
+                   ../docs/experiments/gemma26-production/frontier_control_wrap.cc)
+  target_link_libraries(jitllm_gemma26_frontier_control PRIVATE
+                        jitllm_runtime_serving jitllm_platform jitllm_warnings)
+  target_link_options(jitllm_gemma26_frontier_control PRIVATE
+      "LINKER:--wrap=_ZN6jitllm6engine12Gemma4RunnerC1ERNS0_9PagedNodeENS0_13Gemma4OptionsEij"
+      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
 endif()
 
 if(JITLLM_CUDA)

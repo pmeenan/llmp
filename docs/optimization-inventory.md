@@ -58,8 +58,11 @@ this is no zero-copy claim. Broader quality/performance and optimized batching
 remain open. Existing H16/32 owner attention excludes Gemma3's H8 shape;
 lookahead remains open. No optimization transfers automatically.
 The exact stock Gemma3 graph gathers final attention and residual rows before
-post-norm/FFN, matching this native frontier. Gemma26's distinct full-final-FFN
-requirement does not transfer to Gemma3.
+post-norm/FFN, matching this native frontier. Both ordinary bounded Gemma4
+profiles instead retain the full final FFN before frontier publication, matching
+stock's row shape. Their small same-geometry heads are byte-exact and paired
+C1/C4 cost screens preserve all emitted tokens and histories. This requirement
+does not transfer to Gemma3. See the [matched controls](experiments/gemma26-production/README.md#http-lifecycle-screen).
 
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand

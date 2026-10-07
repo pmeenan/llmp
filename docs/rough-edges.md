@@ -28,6 +28,27 @@ Environment / Repro or measurement / Observed / Expected / Impact / Links
 
 Newest first. RE-numbers are never reused.
 
+## RE-048: Early final-row gathering changes Gemma4 quantized arithmetic  (2026-10-07, status: worked-around)
+
+Environment: spark-b GB10, driver 580.178.04, NVCC 13.4 SDK, GGML 0.26.0 /
+llama.cpp v0.6.0 at `d812350`, approved Gemma4 26B-A4B and Dense31 artifacts.
+Gathering the final attention/residual row before the last FFN is mathematically
+row-independent, but changes the quantized products' shape and arithmetic.
+Native scalar heads matched stock exactly while same-prefix multirow heads
+differed; Gemma26's fresh 260-row head changed the next token with a positive
+score gap. Disabling route fusion worsened it; a byte-faithful stock controller
+observer selected every route/reduction fusion at all measured layers/shapes.
+
+Ordinary stock Gemma4 gathers after full final-FFN/output normalization. Keeping
+that shape makes all three measured heads byte-identical for each profile.
+Bounded serving selects it without publishing extra heads. Manual diagnostics
+retain their options. Gemma3's stock graph instead explicitly gathers before
+the final FFN; do not transfer this correction from Gemma4 by family name.
+Fresh prefill and scalar continuation can also differ in stock, so compare
+matched execution geometry before diagnosing an owned-state replay failure.
+See the [cause and cost controls](experiments/gemma26-production/README.md#http-lifecycle-screen)
+and [upstream note](upstream/ggml.md#gemma4-final-ffn-row-shape-re-048).
+
 ## RE-047: Parallel full-model GPU tests exhaust Spark memory  (2026-10-04, status: worked-around)
 
 Environment: `spark-b`, GB10, driver 580.178.04, the locked native Spark

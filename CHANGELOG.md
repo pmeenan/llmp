@@ -804,6 +804,12 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Fixed
 
+- Bounded Gemma26 and Gemma31 serving keeps the full final FFN before
+  publishing a frontier head, matching llama.cpp v0.6.0's arithmetic.
+  Gathering the final row earlier changed same-geometry prefill likelihoods
+  and could change the next token. Both small three-head controls now match
+  stock byte for byte; head publication remains bounded by request slots.
+
 - Package purge deletes kept conversations as the service user, so a
   service-owned parent path swapped for a symlink cannot redirect a root
   deletion.

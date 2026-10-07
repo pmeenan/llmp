@@ -415,14 +415,22 @@ Its uncalibrated prefill fallback is 256; smaller explicit overrides remain inta
 The [bounded Gemma26 recipe](experiments/gemma26-production/README.md) selects
 joined serving, both norm chains, MoE route/reduce and owner attention for the
 approved 26B-A4B artifact under the same bounds, with a 1024-row prefill fallback;
-its C1/C4 paid cycles are within 0.6% of stock with stock's exact tokens, and its
-1,024-row corpus heads are byte-identical.
-Larger configurations retain the prior scalar recipe and 128-row cap. The dense31
-current-pin C1/C4 8K continuations have zero predicted-ID differences and
-128/129 and 512/516 byte-exact complete heads; the 1,024-row corpus has
-complete head parity. Whole serving cycles were 3.15%/3.51% slower than the
-reference at adoption and 0.73%/1.36% after [gap closing](experiments/gemma-gap-closing/README.md). Natural HTTP continuation, stop and departed-client peer
-progress pass. These are bounded controls, not sustained performance, broad semantic
+its recorded adoption C1/C4 cycles were within 0.6% of that stock method with
+stock's exact tokens, and its
+1,024-row corpus heads are byte-identical. Both bounded Gemma4 recipes retain the
+full final FFN before frontier-head publication, matching stock's ordinary row
+shape. Three small same-geometry heads per profile are byte-identical after
+that correction; its paired C1/C4 cost screens are native versus native.
+Matched Gemma4 stock backend-sampler timing remains open; the recorded
+stock bookends use CPU-head publication.
+Larger configurations retain the prior scalar recipe and 128-row cap. The recorded earlier dense31 recipe
+has zero predicted-ID differences in current-pin C1/C4 8K continuations and
+128/129 and 512/516 byte-exact complete heads; its 1,024-row corpus has
+complete head parity. The correction adds three small exact heads per profile
+and unchanged 8K tokens/histories, without a new full-head 8K screen. Whole serving cycles were 3.15%/3.51% slower than the
+reference at adoption and 0.73%/1.36% after [gap closing](experiments/gemma-gap-closing/README.md). The corrected ordinary HTTP gate passes same-geometry literal token/score
+repeats and stock top2 IDs, cached chat response replay, stops and
+client-observed departed-client peer completion. These are bounded controls, not sustained performance, broad semantic
 quality, assistant admission or long-context qualification.
 Device masks remain the native default. Routing/reduction is on only in the bounded
 Gemma26 recipe; shared-Q8, row-invariant and RoPE/store policies remain off for
@@ -447,7 +455,9 @@ checkpoints are omitted before file adoption. Clean pre-copy capacity refusals
 retain the previous completed prefix and peer leases.
 [Serving controls](experiments/gemma-serving/README.md) record the earlier scalar
 route. The current production recipes above qualify their bounded 26B/31B
-envelopes separately; Gemma26 HTTP lifecycle qualification remains owed.
+envelopes separately; the [corrected HTTP gate](experiments/gemma26-production/README.md#corrected-ordinary-http-gate)
+passes for both profiles. Broader quality, context and sustained qualification
+remain open.
 
 The [head publication capacity](experiments/gemma-head-capacity/README.md)
 now bounds pinned serving outputs by owner slots, independently of input rows.

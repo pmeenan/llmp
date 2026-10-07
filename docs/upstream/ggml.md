@@ -681,3 +681,24 @@ attention numerics, so the DeepSeek llama.cpp baselines must be re-run.
 the whole pin at the M3→M4 boundary. Superseded by the owner's M3.5 update
 request; new-release quality/performance comparisons use new reference pins,
 while historical comparisons retain their original source and image.
+
+## Gemma4 final-FFN row shape (RE-048)
+
+- **Status:** won't fix: native caller discrepancy, no upstream defect claimed.
+- **Found:** 2026-10-07, llama.cpp v0.6.0 / GGML 0.26.0,
+  `d81235049384534c167caea52b85a694f6103d14`, spark-b GB10.
+- **Problem:** native Gemma4 gathered final attention/residual rows before
+  post-attention normalization and the FFN. Quantized product arithmetic can
+  change with that row shape. The pin's `src/models/gemma4.cpp:277` early gather
+  requires `embeddings_nextn_masked`; ordinary contexts default false and gather
+  after output normalization at line 415, for both Dense31 and MoE26.
+- **jitLLM's correction:** bounded ordinary serving keeps the full final FFN
+  and still publishes one frontier head per owner. Three full heads per
+  profile match the original reference byte for byte with finite own repeats.
+  A controller-only observer preserves the original three 26B heads and finds
+  no route/reduction memory-gate refusal in this case.
+- **Upstream master / action:** not re-audited; no upstream change is requested.
+  Preserve the pinned model graph's row shape when qualifying native products.
+  Gemma3 explicitly gathers before the final FFN and needs its own contract.
+- **Links:** [RE-048](../rough-edges.md),
+  [matched controls](../experiments/gemma26-production/README.md#http-lifecycle-screen).

@@ -1300,6 +1300,9 @@ class Gemma final : public Llm {
             .max_rows = settings.prefill_chunk.value,
             .slots = settings.max_slots.value,
             .max_head_rows = settings.max_slots.value,
+            // Stock Gemma4 gathers after the full final FFN. Narrowing earlier
+            // changes quantized product arithmetic even for one published head.
+            .frontier_head = !(candidate || candidate26),
             .row_invariant = row_invariant,
             .fuse_norm_rope = candidate || candidate26,
             .fuse_norm_add = candidate || candidate26,

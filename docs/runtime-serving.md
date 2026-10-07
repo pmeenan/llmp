@@ -56,13 +56,22 @@ Its uncalibrated prefill fallback is 256; smaller explicit overrides remain inta
 The [bounded Gemma26 recipe](experiments/gemma26-production/README.md) selects
 joined serving, both norm chains, MoE route/reduce and owner attention for the
 approved 26B-A4B artifact under the same bounds, with a 1024-row prefill fallback;
-its C1/C4 paid cycles are within 0.6% of stock with stock's exact tokens, and its
-1,024-row corpus heads are byte-identical.
-Larger configurations retain the prior scalar recipe and 128-row cap. Current-pin C1/C4 8K continuations have zero predicted-ID differences and
-128/129 and 512/516 byte-exact complete heads; the 1,024-row corpus has
-complete head parity. Whole serving cycles were 3.15%/3.51% slower than the
-reference at adoption and 0.73%/1.36% after [gap closing](experiments/gemma-gap-closing/README.md). Natural HTTP continuation, stop and departed-client peer
-progress pass. These are bounded controls, not sustained performance, broad semantic
+its recorded adoption C1/C4 cycles were within 0.6% of that stock method with
+stock's exact tokens, and its
+1,024-row corpus heads are byte-identical. Both bounded Gemma4 recipes retain the
+full final FFN before frontier-head publication, matching stock's ordinary row
+shape. Three small same-geometry heads per profile are byte-identical after
+that correction; its paired C1/C4 cost screens are native versus native.
+Matched Gemma4 stock backend-sampler timing remains open; the recorded
+stock bookends use CPU-head publication.
+Larger configurations retain the prior scalar recipe and 128-row cap. The recorded earlier dense31 recipe has zero
+predicted-ID differences in current-pin C1/C4 8K continuations and
+128/129 and 512/516 byte-exact complete heads; its 1,024-row corpus has
+complete head parity. The correction adds three small exact heads per profile
+and unchanged 8K tokens/histories, without a new full-head 8K screen. Whole serving cycles were 3.15%/3.51% slower than the
+reference at adoption and 0.73%/1.36% after [gap closing](experiments/gemma-gap-closing/README.md). The corrected ordinary HTTP gate passes same-geometry literal token/score
+repeats and stock top2 IDs, cached chat response replay, stops and
+client-observed departed-client peer completion. These are bounded controls, not sustained performance, broad semantic
 quality, assistant admission or long-context qualification.
 The [two-profile route controls](experiments/gemma31-serving/README.md) retain
 owned continuation, kept restart and pending cross-profile switch evidence.
