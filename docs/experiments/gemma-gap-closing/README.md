@@ -114,12 +114,59 @@ either), native's remaining step excess is:
 - `rms_norm_f32`: +0.5 ms.
 
 The norm kernels have identical sm_121a SASS in both builds but run slower
-in native in both decode and prefill. That points at the memory or context
-they read, not code generation; it is not yet located.
+in native in both decode and prefill. Isolated, they time the same from
+`cudaMalloc` and device-VMM memory (2.80 µs at one row, 14.2–14.9 µs at
+256 rows; a temporary ops-test timing loop of 400 launches, not retained), far
+below either engine's in-model times. The difference therefore comes from the
+surrounding work (L2 state, what precedes each launch), not from the memory
+kind or code generation; it is not located further. Kernel sums
+overlap, so they do not add up to the span difference.
+
+## Follow-up: C4 owner-attention data movement
+
+The C4 decode trace showed 12 device-to-device copies per layer: joins of each
+owner's Q and mask built from `ggml_concat`, run serially in an idle hole
+(about 0.7 ms per wave). Three more `concat_cont` kernels per layer rejoined
+the owners' attention outputs. The owner-attention rewrite now does three
+things:
+
+- Each owner's Q is a one-row view of one parent at consecutive rows, so the
+  packed Q is a view of that parent, with no copy.
+- Each distinct set of owner masks is joined once per wave, not once per
+  layer.
+- When one owner node covers every segment, the output projection reads a
+  reshape of the packed output instead of the concat chain.
+
+C4 decode, joins as before against joins removed, bookended in fresh
+processes:
+
+| | second cycle | third cycle |
+| --- | --- | --- |
+| Joins as before | 16.859 / 16.935 s | 16.792 / 16.829 s |
+| Joins removed | 16.684 / 16.645 s | 16.622 / 16.607 s |
+
+That is about 1.5 ms per wave. All four owners' tokens and histories are
+unchanged.
+
+**Rejected: batching the per-request K/V stores.** One kernel for each run
+of independent `set_rows` nodes replaced 480 stores per wave with 62
+launches. It cut their summed kernel time from 1.8 to 0.34 ms, but decode
+showed no consistent change (second cycles 16.641/16.640 s without, 16.665/16.606 s
+with: −0.024/+0.034 s), within noise. The small stores already overlapped
+their neighbours. The
+implementation was removed; the measured
+[method note](../../optimization-inventory.md#finding-a-gap-against-the-reference--method-2026-10-06)
+records why the kernel-time sum overstated the win.
 
 ## Checks
 
-These passed on `spark-b` against the final source:
+For the follow-up, `gemma4_plan_test` (16), `gemma4_graph_test` (27, now pinning
+the viewed Q, joined masks and direct projection input),
+`gemma4_runner_gpu_test` (27), `gemma4_serving_gpu_test` (26) and
+`gemma_joined_serving_gpu_test` (10) passed on `spark-b`, and a C4 three-cycle
+run reproduced every owner's tokens and history.
+
+These passed on `spark-b` against the first change's source:
 
 - GPU tests: `catalog_test` (22), `live_state_test` (24), the fused-GLU
   and quantized-product `ggml_ext_ops_test` cases, `gemma4_runner_gpu_test`

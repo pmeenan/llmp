@@ -138,6 +138,30 @@ bool Inspect(const Gemma4Graph& g, std::uint32_t layer, std::size_t first, std::
 }
 ggml_tensor* Join(ggml_context* c, const std::array<ggml_tensor*, 4>& input, std::size_t count) {
   if (count == 1) return input[0];
+  // One-row views of one contiguous [d, heads, rows] parent at consecutive
+  // rows are already the joined layout: view it, without copying.
+  const auto* first = input[0];
+  auto* parent = first->src[0];
+  bool adjacent = first->op == GGML_OP_VIEW && parent != nullptr && ggml_is_contiguous(parent) &&
+                  first->ne[2] == 1 && first->ne[3] == 1 && parent->ne[3] == 1 &&
+                  first->nb[1] == parent->nb[1] && first->nb[2] == parent->nb[2] &&
+                  first->ne[0] == parent->ne[0] && first->ne[1] == parent->ne[1] &&
+                  first->view_offs >= parent->view_offs;
+  for (std::size_t i = 1; adjacent && i < count; ++i) {
+    const auto* t = input[i];
+    adjacent = t->op == GGML_OP_VIEW && t->src[0] == parent && t->view_src == first->view_src &&
+               t->type == first->type && std::equal(t->ne, t->ne + 4, first->ne) &&
+               std::equal(t->nb, t->nb + 4, first->nb) &&
+               t->view_offs == first->view_offs + i * parent->nb[2];
+  }
+  if (adjacent) {
+    const auto offset = first->view_offs - parent->view_offs;
+    const auto rows = static_cast<std::int64_t>(count);
+    if (offset % parent->nb[2] == 0 &&
+        static_cast<std::int64_t>(offset / parent->nb[2]) + rows <= parent->ne[2])
+      return ggml_view_4d(c, parent, first->ne[0], first->ne[1], 1, rows, parent->nb[1],
+                          parent->nb[2], parent->nb[2], offset);
+  }
   if (count == 2) return ggml_concat(c, input[0], input[1], 3);
   if (count == 3) return ggml_concat(c, ggml_concat(c, input[0], input[1], 3), input[2], 3);
   return ggml_concat(c, ggml_concat(c, input[0], input[1], 3),
@@ -197,6 +221,8 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
   auto* c = arena.context();
   std::vector<ggml_tensor*> removed;
   std::array<std::array<ggml_tensor*, 60>, 3> packed{};
+  // Layers of one kind share their owners' masks: join each set once.
+  std::vector<std::pair<std::array<ggml_tensor*, 4>, ggml_tensor*>> joined_masks;
   for (std::size_t quad = 0; quad < eligible.size(); ++quad) {
     if (!eligible[quad]) continue;
     const auto first = quad * count;
@@ -217,7 +243,13 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
                                   kvw * read * 2, 0);
       }
       auto* q = ggml_permute(c, Join(c, l.q, active), 0, 2, 1, 3);
-      auto* mask = Join(c, l.mask, active);
+      ggml_tensor* mask = nullptr;
+      for (const auto& [masks, joined] : joined_masks)
+        if (masks == l.mask) mask = joined;
+      if (mask == nullptr) {
+        mask = Join(c, l.mask, active);
+        joined_masks.emplace_back(l.mask, mask);
+      }
       ggml_tensor* flash = nullptr;
       if (mode == Gemma4AttentionMode::kOwners) {
         for (std::size_t owner = 0; owner < active; ++owner) {
@@ -250,6 +282,55 @@ std::expected<void, KernelFailure> TransformGemma4Attention(TensorArena& arena, 
           if (tensor == old) tensor = view;
         removed.push_back(old);
       }
+    }
+  }
+  // One owner node covering every segment already holds the projection's
+  // joined input in its layout: read it, instead of concatenating its views.
+  if (quad_count == 1 && eligible[0] && counts[0] == g.segments.size()) {
+    for (std::uint32_t il = 0; il < p.layers; ++il) {
+      auto* projection = g.Named(std::format("blk.{}.attn_projection", il));
+      if (projection == nullptr || projection->op != GGML_OP_MUL_MAT ||
+          projection->src[1] == nullptr || packed[0][il] == nullptr)
+        continue;
+      std::vector<ggml_tensor*> chain;
+      std::vector<ggml_tensor*> leaves;
+      bool ordered = true;
+      const auto walk = [&](auto&& self, ggml_tensor* t) -> void {
+        if (!ordered) return;
+        if (t->op == GGML_OP_CONCAT) {
+          if (t->op_params[0] != 1) {
+            ordered = false;
+            return;
+          }
+          chain.push_back(t);
+          self(self, t->src[0]);
+          self(self, t->src[1]);
+          return;
+        }
+        leaves.push_back(t);
+      };
+      walk(walk, projection->src[1]);
+      if (!ordered || leaves.size() != g.segments.size()) continue;
+      for (std::size_t owner = 0; ordered && owner < leaves.size(); ++owner)
+        ordered = leaves[owner] == g.Named(std::format("blk.{}.slot.{}.attention", il,
+                                                       g.segments[owner].shape.slot));
+      const auto width = std::int64_t{p.head_dim(il)} * p.heads;
+      if (!ordered || projection->src[1]->ne[0] != width ||
+          projection->src[1]->ne[1] != static_cast<std::int64_t>(leaves.size()) ||
+          !ggml_is_contiguous(packed[0][il]) ||
+          ggml_nelements(packed[0][il]) != width * static_cast<std::int64_t>(leaves.size()))
+        continue;
+      // Only the projection reads the chain's root and each link.
+      bool private_chain = true;
+      for (auto* node : g.nodes)
+        for (auto* src : node->src)
+          if (src != nullptr && std::ranges::find(chain, src) != chain.end() &&
+              node != projection && std::ranges::find(chain, node) == chain.end())
+            private_chain = false;
+      if (!private_chain) continue;
+      projection->src[1] =
+          ggml_reshape_2d(c, packed[0][il], width, static_cast<std::int64_t>(leaves.size()));
+      removed.insert(removed.end(), chain.begin(), chain.end());
     }
   }
   std::vector<ggml_tensor*> roots;

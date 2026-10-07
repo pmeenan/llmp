@@ -14,6 +14,7 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/check.h"
@@ -465,6 +466,22 @@ TEST(Gemma4Graph, CompleteQuadsKeepProductsAndIndependentTailsInOriginalOwnerOrd
         }
         EXPECT_EQ(owner_nodes,
                   mode == kg::Gemma4AttentionMode::kOwners ? c.p.layers * (owners / 4) : 0);
+        // Owners' Q rows are viewed, never copied; masks are joined once per
+        // kind and quad; one quad's output feeds the projection directly.
+        std::size_t concats = 0;
+        for (auto* node : graph->nodes) {
+          if (node->op != GGML_OP_CONCAT) continue;
+          ++concats;
+          for (auto* src : {node->src[0], node->src[1]}) {
+            const auto* root = src->view_src != nullptr ? src->view_src : src;
+            EXPECT_EQ(std::string_view(ggml_get_name(root)).find("q_rope"), std::string_view::npos);
+          }
+        }
+        if (owners == 4) {
+          // Packed attention also joins each layer's K and V (copies by design).
+          EXPECT_EQ(concats, mode == kg::Gemma4AttentionMode::kOwners ? 6U : 6U + c.p.layers * 6U);
+          EXPECT_EQ(projection->src[1]->op, GGML_OP_RESHAPE);
+        }
         for (std::uint32_t i = 0; i < owners; ++i) {
           auto* flat = graph->Named("blk.0.slot." + std::to_string(slots[i]) + ".attention");
           ASSERT_NE(flat, nullptr);

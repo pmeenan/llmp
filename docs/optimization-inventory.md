@@ -209,6 +209,7 @@ they have no text-model equivalent.
 | Cluster a small reduction and prefetch the next weights | Qwen3.8's hyper-connection preparation, up to eight tokens | DeepSeek's hyper-connection pre-projection | Source-compatible principle, not the same formula or weight layout. A remaining DeepSeek lead is about 1% of a step; measure only after the larger product gap. sm_86 has no clusters. [TensorFold techniques](experiments/tensorfold-techniques/README.md#limits-and-what-remains) |
 | Reuse a cleared conversation's state backing | Gemma, DeepSeek V4 and Qwen3.8 `Clear` within a request (`LiveState::ZeroForReuse`, kept discarded backing revived by growth) | Idle clears, spilled or partly reclaimed slots, and Qwen-Image (no growing state) still discard | Gemma31 C1 paid cycle −200 ms, C4 −1.0 s; DeepSeek/Qwen3.8 8K swap table exact. [Gap closing](experiments/gemma-gap-closing/README.md) |
 | Capture a graph beside its shape's eager run | Every runner through `GraphRuns::Queue` | Plans with work between inputs and plan (Qwen3.8's n-gram gather) keep capture-first | Gemma31 C1 −180 ms and C4 −0.6 s per paid cycle with first-time prefill captures; replay benefit kept. [Gap closing](experiments/gemma-gap-closing/README.md) |
+| Join owners' operands by view instead of copy | Gemma owner attention: packed Q as a view of the roped Q rows, masks joined once per wave, output read as a reshape | DeepSeek/Qwen per-slot joins, if any use `ggml_concat` on a decode path | Gemma31 C4 decode −1.5 ms per wave, tokens unchanged. Batching the per-request K/V stores was rejected (see the method note). [Gap closing](experiments/gemma-gap-closing/README.md) |
 | Upstream's fused one-column quantized gate/up/GLU (MMVQ) | Bounded dense31 Gemma decode | Gemma26's shared-expert products and other ordinary GGUF families with an unfused one-column FFN; never row-invariant plans | Bit-identical to separate products plus GLU; Gemma31 C1 decode −2.2 ms GPU per token. Four-column waves are not fused upstream either. [Gap closing](experiments/gemma-gap-closing/README.md) |
 | Fuse a small operation chain | Qwen short convolution/history, norm/gate and verify alpha/beta planes; DeepSeek routing/hyper-connections; image residual/next norm; shared RMSNorm/scale | Other phases/shapes and adjacent operations with matching rounding | Qwen fast verify F32 [48, 1..16] replaces four pointwise launches with one while retaining both Linear products, recurrence and commit. GPU chain/save views, full wave heads/states and owed-restore swap remain exact; matched 8K C4 HTTP gains 1.34%. Prefill/exact retain primitives. [Alpha/beta fusion](experiments/qwen38-gdn-gates/README.md) |
 | Fuse per-head normalization and rotation | Qwen `QsaPrep`; DeepSeek fast canonical 512-value Q heads with a normal 64-value tail | Other widths/layouts/rotation types after qualification; EXL3 Qwen2 currently has no matching per-head norm | DeepSeek's corrected 8K screen gains 3.17% with all six full heads byte-identical. Preserve the native RMS reduction, the normalization store's F32 rounding, and actual RoPE FMA operand order; equivalent source expressions contracted differently before correction. Direct input dependencies remove the norm intermediate while preserving lifetime placement. [Q-head study](experiments/dsv4-qhead/README.md) |
@@ -840,6 +841,47 @@ family's single-Spark path in M3.5. M4's
 techniques after their recipes and measured two-Spark behavior are
 re-pinned; TensorFold refreshes at milestone boundaries. Their claimed
 rankings are not local measurements.
+
+### Finding a gap against the reference — method (2026-10-06)
+
+The [Gemma31 gap closing](experiments/gemma-gap-closing/README.md) closed most
+of a 3% whole-serving gap only after the work moved from whole cycles to
+kernels, and every win came from a structural difference visible in a matched
+trace. Apply the same order to any family with a same-format reference:
+
+1. Whole cycles in fresh processes, run more than once. A third cycle
+   separates steady state from first-time costs (graph capture, state
+   growth) that land in a second "paid" cycle.
+2. Each engine's own phase timers (prefill, decode). Do not subtract nested
+   counters to invent a residual.
+3. Back-to-back node-level traces of both engines (`nsys profile -t cuda
+   --cuda-graph-trace=node`, then `nsys export --type sqlite`), compared with
+   [`tools/nsys_steps.py`](../tools/nsys_steps.py). Traces taken hours apart
+   differ by the GPU's clock state: identical kernels drifted 2–5%. To profile
+   llama.cpp's helper, use a diagnostic copy without its LD_PRELOAD refusal,
+   kept outside the repository.
+4. Read the comparison in this order:
+   - **Launch counts per key** (name, first template argument, grid). A
+     reference with fewer launches of the same kernel is applying an
+     upstream fusion we skip (Gemma's gate/up/GeGLU MMVQ). Check
+     `ggml_cuda_try_fuse`'s patterns against the native plan for every family.
+   - **Copies and memsets inside steps.** Graph copy nodes show in no kernel
+     table. Joins built from `ggml_concat` are copies, and a view usually
+     serves. They also leave idle holes, which the tool lists.
+   - **Span and inter-step gap.** Host turnaround is the gap; the device's
+     work is the span.
+   - **Per-kernel time at equal counts.** Before blaming a kernel, check that
+     the SASS is identical (`cuobjdump -sass -fun` against the reference's
+     sm_121a cubin) and time it in isolation; context (lanes, L2) explains
+     what neither does.
+5. Expect less than the kernel-time sum when removing small launch-bound
+   kernels. They overlap their neighbours: batching Gemma C4's 480 per-request
+   K/V stores into 62 launches cut their kernel time from 1.8 to 0.34 ms per
+   wave, but decode showed no consistent change. Copies that sat in idle
+   holes paid off in full. Only a bookended A/B decides.
+6. First-time and lifecycle costs count: freeing and re-materializing state,
+   capture and instantiation, and plan building inside a paid request. Move
+   them off the device's critical path, or reuse instead of rebuilding.
 
 ### Qwen expert-major group cap — 2026-10-04
 

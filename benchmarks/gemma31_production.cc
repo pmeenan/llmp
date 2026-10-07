@@ -291,9 +291,13 @@ int ProofServing(const jitllm::config::NodeConfig& config,
     if (config.models.size() != 1) return Error("proof needs exactly one checked target");
     if (auto r = lifetime->server->Start(false); !r) return r;
     lifetime->model = dynamic_cast<rt::Llm*>(lifetime->server->Find(config.models[0].name));
-    if (!lifetime->model || !lifetime->model->settings().gemma31_production ||
+    // `cycles` also measures other Gemma recipes (Gemma26 at its own prefill
+    // chunk); the proofs keep the closed dense31 recipe.
+    const bool any_recipe = proof->mode == "cycles";
+    if (!lifetime->model ||
+        (!any_recipe && (!lifetime->model->settings().gemma31_production ||
+                         lifetime->model->settings().prefill_chunk.value != 256)) ||
         lifetime->model->settings().context.value != kRows ||
-        lifetime->model->settings().prefill_chunk.value != 256 ||
         lifetime->model->settings().max_slots.value != proof->owners)
       return Error("actual serving recipe differs from the closed proof");
     lifetime->runner = dynamic_cast<en::Gemma4Runner*>(&lifetime->model->paged());
