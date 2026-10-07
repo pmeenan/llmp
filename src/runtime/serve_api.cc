@@ -2411,6 +2411,9 @@ int RunService(const config::NodeConfig& config, const config::RuntimeRoles& rol
       }
     }
     http.reset();
+    for (const auto& model : server.models())
+      if (model->settings().architecture == "gemma3")
+        Say(log, std::format("Gemma3 serving final {}: {}", model->name(), model->extra()));
     if (gemma_joined || gemma_row_invariant)
       for (const auto& model : server.models())
         Say(log, std::format("Gemma diagnostic final {}: {}", model->name(), model->extra()));

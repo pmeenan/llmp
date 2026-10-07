@@ -303,7 +303,7 @@ Source inspection found that each wave calls `Gemma3SourceBytes`, then
 `Gemma3Sources` calls it again. Each validation formerly reconstructed 444
 resource vectors/role strings and rebound the entire model. A host-only
 helper opens the approved artifact metadata and constructs the same immutable
-C1 scalar greedy descriptors at past259/read512, context4096/maxrows128. It
+C1 scalar greedy descriptors at past259/read512, context 4096/maxrows128. It
 performs no placement, device query/allocation or submission. Each span has
 16 warm calls followed by 256 timed successful calls; the five spans are
 nested and must not be added. The pair measures the actual duplicated call
@@ -402,7 +402,7 @@ input; slot1 input/text SHA-256 are
 `7d5ddc0e2abe262ea2eabeefad16c68c7d07e52633f11ca73b059e6e8ce73001`.
 Each slot independently prefills 128 state-only rows then 128 head rows,
 followed by three supplied scalar warm tokens. Joined decode then executes
-32 one-row waves across both owners, with F16 KV and context4096 per slot.
+32 one-row waves across both owners, with F16 KV and context 4096 per slot.
 Joint prefill is outside this screen.
 
 Two native own runs freeze 66 finite teacher heads and 64 pre-step choices,
@@ -425,7 +425,7 @@ padded to32. The callback is absent from both timing arms.
 
 The strict 64-target stock screen has zero greedy differences, zero tie
 differences and relative conditional-loss delta −0.00532347% (mean target NLL
-delta −5.3236115e-5). Of 66 full heads, 64 are byte-identical; rows39 and56
+delta −5.3236115e-5). Of 66 full heads, 64 are byte-identical; rows 39 and 56
 (step19/slot1 and step28/slot0, zero-based) differ. Mean total variation is
 2.5559011e-5 and maximum raw logit delta is 0.0373087. The final two rows are
 finite and checked, but unscored. Stock repeat head SHA-256 is
@@ -464,8 +464,8 @@ including unused final decisions and full 262208-element sampled rows. There
 is no zero-copy or broad parity claim.
 
 Bound-plan selection counts exclude Setup probes and replay. Each own run
-selects owner attention68, plain norm824, quantized GeGLU140, norm/RoPE814 and
-norm/ADD812; each timing cycle selects68/548/70/542/540 respectively. The
+selects owner attention 68, plain norm824, quantized GeGLU140, norm/RoPE814 and
+norm/ADD812; each timing cycle selects 68/548/70/542/540 respectively. The
 quantized fusion remains one-column only and applies to independent chunks,
 not joined two-column decode. All fusion and owner switches remain explicit
 and default off in the runner.
@@ -478,7 +478,145 @@ the original-image caller is
 `301ccb418e723a37414c121a9da6f4bad6ec98df011019041be00f8aaa7cf197`.
 Actual source/binary/receipt bindings, inputs and own/quality/cycle aggregates
 remain external under `gemma3-execution-20261007/c2-build/` and `c2/`.
-This closes a representative optimized two-owner decode slice. Joint prefill,
-wider/partial/ragged cohorts, longer context/ring-state gates, sustained
-performance and the serving adapter remain open. The model stays outside the
-supported execution matrix.
+At this snapshot, joint prefill, wider/partial/ragged cohorts, context/ring-state
+and serving qualification remained open. The following bounded serving unit
+adds actual unequal-width/ring/departure and product lifecycle controls;
+joint prefill, wider cohorts and sustained qualification remain open.
+
+## Bounded serving, unequal widths and wrapped rings
+
+The approved artifact now registers through the ordinary `gemma3` runtime
+route, including Chat Completions and literal Completions. The default is
+context 4096, rows 128 and one slot; an override admits two slots and funds two
+head rows. Larger contexts, more owners and speculation are refused. The
+adapter explicitly selects the checked generic norm, quantized GeGLU,
+norm/RoPE and width 2560 norm/ADD recipe, plus eligible two-owner attention
+and device greedy; the internal runner's diagnostic options still default off.
+This does not inherit other Gemma4 policies.
+
+```toml
+[models.gemma3]
+artifact = "8c7103418a6608022e5eda50a0dcc4b7688a0d59ef239813c9de0984161397fb"
+context = 4096
+prefill_chunk = 128
+max_slots = 2
+```
+
+Each branch owns its cursor, history, state and checkpoints. Checkpoint
+restore funds whole extents but requires every logical initialized range to
+finish copying before publishing the cursor. Pending restore refuses execution,
+growth, spill and the wrong copy direction; Clear can cancel it. Partial
+capacity refusal preserves the old completed ledger and the peer. The shared
+copy-retirement controls retain staging and quarantine uncertain work.
+Adoption checks exact layout, footprint and empty/idle ownership before
+publishing a kept conversation. The GPU fixture requires the approved artifact;
+it was provisioned on Spark A, and its Spark B provisioning remains owed.
+
+[The context probe](../../../benchmarks/gemma3_context_probe.cc) independently
+prefills two different real tokenized inputs in 128-row chunks, supplies three
+scalar warm tokens per owner, evaluates 32 joined teacher steps, then departs
+each owner for four scalar steps. Each run produces 74 full heads and scores 72
+actual targets; the last two heads have no target. Own repeats also prove
+GPU/full-head choices, both initialized states, refusal before mutation, Clear,
+spill/restore, and checkpoint advance 128/restore/repeat on both slots.
+
+| Prefix positions | Actual native decode read cells, global/local | Exact stock heads | Strict greedy differences | Relative target-loss delta | Mean TV | Max raw logit delta |
+| --- | --- | --- | --- | --- | --- | --- |
+| 256 / 768 | 512/512 and 1024/1024 | 2/74 | 0 | −0.250833% | 0.0127580 | 2.04506 |
+| 1280 / 1536 | 1536/1280 and 1792/1280 | 2/74 | 0 | +0.00017135% | 0.0000177987 | 2.35639 |
+| 256 / 256 | 512/512 for both | 72/74 | 0 | −0.00473199% | 0.0000227959 | 0.0373087 |
+
+The unequal/ring shapes use ordinary segmented attention where the joined
+owner adapter requires equal padded widths. These are strict greedy and
+≤3% relative conditional-loss screens, with no new numerical allowance and
+no full-head equality claim. The wrapped case crosses the 1024-token local
+window for both owners. Broader/ragged/wider batching remains unqualified.
+
+The new original-image caller leaves state-only `llama_decode` calls naturally
+ordered without an extra `llama_synchronize`; final head publication completes
+paid prefill. Stock's unmodified backend greedy sampler still exports and
+copies full 262208-element sampled-logit rows to the host, independently of the
+raw-logit-copy guard. Native greedy publishes 4 bytes per choice. A short C2
+runner RNNR retains exact 64 generated IDs and final heads: native 537.158 ms,
+stock 524.775 ms, **+2.35968%** paid latency (n2 per engine). This is an internal
+runner screen, not endpoint latency: its initial frontier is selected on the
+GPU, whereas ordinary serving prefill publishes a full row. Joint prefill is
+still missing, and the earlier C2 measurement attributes most of the total gap
+to its measured prefill span.
+
+## HTTP lifecycle and retained conversations
+
+[The HTTP controller](http_control.py) uses ordinary product configuration,
+with the actual stored template SHA-256
+`7de1c58e208eda46e9c7f86397df37ec49883aeece39fb961e0a6b24088dd3c4`,
+BOS 2/EOS 1 and the existing native Gemma3 renderer/stop rules. The focused
+renderer fixtures pass. Literal requests at 1280 and 1536 positions have exact
+same-geometry response/likelihood and fresh-continuation repeats; context 4097
+refuses and a subsequent valid request succeeds. Chat checkpoint replay,
+SSE, suppressed user stop, client departure, a third request with two slots,
+and subsequent healthy completion all pass.
+
+Final drained runtime metadata counts only successful two-owner generation
+waves: epoch 1 completes 162 groups/324 units and 447 GPU decisions; epoch 2
+completes 26/52 and 90. Both bind 34 owner-attention plans (selection counts,
+not launch counts). Concurrent client reads alone are not execution evidence,
+and the third request's client observations do not identify its precise
+scheduler wait interval.
+
+Two 68-extent kept records validate inode, generation, size, digests, permissions
+and layout, then are adopted by a clean restart. Records remain byte-identical
+before the first replay. Both cached scalar responses and cached parallel
+responses are exact before/after restart, with 21 cached tokens per request;
+same-policy repeats are exact too. Cold and cached/cohort trajectories are
+not invariant: one prompt emits a curly apostrophe in cold/scalar execution
+and an ASCII apostrophe in cached joined execution. That difference occurs
+before restart as well. The original failed cold-versus-cached assertion and
+private response snapshots remain external; correcting the test to compare
+matching replay geometry adds no stock quality allowance and does not claim
+cross-geometry token equality.
+
+Serving selects the cohort before every completed unit. Gemma3 now reuses an
+unchanged selection within an already held request, as DeepSeek/Qwen do;
+bound/released/fault and slot-count/range/duplicate checks still precede this
+fast path. Changed selections and all state mutations still refresh closures.
+The focused GPU control covers held repeats, outside-request selection,
+changed-mask peer protection, malformed selections and pending restore.
+
+[The native HTTP bookend](http_cycle.py) compares the preserved pre-guard
+runtime with the otherwise identical guarded build, old/new/new/old. One cold
+primer is descriptive; two cached warm repeats and the paid request must have
+exact choices/usage and positive cached reuse, within and across all arms.
+Each request generates 32 tokens, with C1 and C2 exercised (n2 per runtime).
+C1 latency falls 437.305→421.496 ms (**−3.61525%**); C2 falls 518.224→501.756 ms
+(**−3.17767%**). This is a native endpoint attribution screen, separate from
+the runner-versus-stock comparison; it is not a stock HTTP or sustained rate
+qualification.
+
+## Current scalar reference refresh and verification
+
+[The fair scalar caller](llama_fair_probe.cc) preserves the historical caller
+and changes only its artificial state-only wait. Native own repeats retain
+exact 32 GPU choices, all 33 full heads, final head and initialized state;
+two new stock teachers match all 33 heads byte for byte. The short RNNR
+is native 449.3537 ms versus stock 445.09905 ms, **+0.955888%** paid latency
+(n2 per engine), with exact generated histories/final heads. The stock helper's
+historical memory-clear(true) warm reset remains off-clock; full sampled-logit
+host transfers remain unchanged. Earlier C1/C2 results retain their original
+methods, and these small screens establish no universal parity.
+
+Spark A official jobs complete the prerequisite six steps, focused HTTP
+build/check five steps, context 33 steps, final HTTP controls, fair-C1 all 17
+steps and the corrected HTTP bookend. Focused final checks pass 30 CTest cases
+plus 3 Gemma3 serving GPU cases, with no skips. The failed input-sizing stage,
+relocated-runtime cuBLAS bootstrap, and cold/cached harness assertions are
+preserved externally. No full suite was run. Relocated diagnostic runtimes
+use the exact authenticated pinned cuBLAS/Lt closure for both arms.
+
+The runtime binary is
+`e133403cabb507cb0c26e9e210f9a60c6d5f8191aafe6719bdf676ee3f0f55b2`;
+actual source/binary/receipt bindings, official logs and own/quality/cycle
+aggregates remain outside Git under `gemma3-execution-20261007/serving-build/`,
+`serving-model2/`, `serving-http/` and `fair-c1/`. The frozen final source merges
+concurrent Gemma2 changes without altering this unit's executed C++ bytes.
+Remaining gates include compatible joint prefill, wider cohorts, broader
+context/memory/reclaim/swap and sustained quality/performance qualification.

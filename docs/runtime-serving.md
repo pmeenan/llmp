@@ -77,6 +77,16 @@ The [two-profile route controls](experiments/gemma31-serving/README.md) retain
 owned continuation, kept restart and pending cross-profile switch evidence.
 [Gemma's contract](gemma4.md) lists the remaining gates.
 
+The approved Gemma3 4B QAT Q4_0 artifact has a
+[bounded ordinary route](experiments/gemma3-execution/README.md#bounded-serving-unequal-widths-and-wrapped-rings):
+context<=4096, prefill chunks<=128 and one or two request slots. Defaults are
+4096/128/1; more owners, larger contexts and speculation refuse. It uses its
+own checked optimized recipe, classic SentencePiece tokenizer and recognized
+Gemma3 template. Chat/literal completions, scoring, device greedy, initialized
+checkpoint/restore and two kept conversations across restart pass focused
+controls. Two-owner decode can join; prefill remains per branch. Broader
+cohorts, joint prefill, memory/swap and sustained qualification remain open.
+
 A node names the models it serves in its configuration (D-073's document,
 `schema_version = 2`; the keys are new and compatible):
 
@@ -121,7 +131,7 @@ setting (below), each taken by an artifact's model, a composition's or
 both, and refused on the other kind; an artifact serves one model. A
 node names as many models as it likes: the
 library may exceed memory (D-102). The runner follows the artifact's architecture
-(`deepseek4`, `qwen4exp`) or the composition's (Qwen-Image); another is
+(`deepseek4`, `qwen4exp`, bounded `gemma4` or `gemma3`) or the composition's (Qwen-Image); another is
 refused at registration. Every
 artifact is opened under the store's trust rules (only root and the
 runtime's user may change it), and the tokenizer and template files the

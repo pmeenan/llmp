@@ -204,5 +204,24 @@ key and funded output; full heads remain available. The bounded device-greedy
 control checks 32 choices, exact initialized state and final heads, plus
 two-slot alias/mixed-publication refusals before state mutation. At that C1
 snapshot only one slot executes; the later C2 control executes both slots and
-checks both initialized states. Device masks, lookahead, broader optimized
-batching and serving integration remain later work.
+checks both initialized states. Device masks, lookahead and broader optimized batching remain later work.
+The following bounded route integrates ordinary serving.
+
+## Bounded ordinary serving
+
+The [checked serving unit](experiments/gemma3-execution/README.md#bounded-serving-unequal-widths-and-wrapped-rings)
+registers this approved artifact through the normal runtime route. Defaults
+are context 4096, rows 128 and one slot; two slots are admitted explicitly,
+with the checked four-fusion/owner/device-greedy recipe and two funded head
+rows. Larger contexts/cohorts and speculation refuse. Host contract bounds
+above remain separate from these product admission bounds.
+
+Actual two-slot unequal padded widths, wrapped local rings, partial departure,
+Clear/spill/checkpoint restore and kept-conversation adoption pass focused
+state/reference/HTTP controls. Cached scalar and cached joined responses
+repeat exactly across restart; cold/cached and scalar/joined token trajectories
+can differ. The current short runner screens are +0.96% C1 and +2.36% C2
+paid latency versus ordinary stock backend greedy, not parity qualifications.
+Joint prefill, wider cohorts, broader memory/swap and sustained gates remain
+open. The serving GPU fixture currently requires provisioning on Spark B
+before its full models tier can run there.

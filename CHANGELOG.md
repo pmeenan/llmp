@@ -50,12 +50,18 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Serve the approved Gemma3 4B QAT artifact through ordinary chat and literal
+  completions at context<=4096 and up to two owners, with checked optimized
+  decode, initialized checkpoint/restore and kept-conversation adoption.
+  Unequal-width/ring/departure and HTTP lifecycle controls pass; joint prefill,
+  wider cohorts and sustained qualification remain open.
+
 - Execute the approved Gemma3 4B QAT Q4_0 artifact through the shared native
   runner, with bounded C1 eager/graph, Clear and spill/restore own controls.
   Explicit optimized C1 and independently-prefilled C2 decode recipes pass
   strict bounded reference screens; C2 preserves exact own states/choices.
-  Broader quality/performance, joint prefill, wider batching and serving remain
-  unqualified.
+  The later bounded serving route adds lifecycle controls; broader quality/
+  performance, joint prefill and wider batching remain unqualified.
 
 - Prepare the approved Gemma 3 4B QAT Q4_0 checkpoint through the generic
   artifact importer, with strict source, metadata and tensor preflight. The

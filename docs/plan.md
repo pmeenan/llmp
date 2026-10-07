@@ -831,12 +831,17 @@ family" guide, and its long-context scaling work.
       [checked norm chains](experiments/gemma3-execution/README.md#checked-norm-chains-exact-bounded-c1-quality)
       resolve it with all 33 complete stock heads byte-identical. Device greedy
       retains exact choices/state; allocation-free public binding validation
-      narrows the latest short C1 screen to 0.56% slower than stock backend
+      narrowed its historical short C1 screen to 0.56% slower than stock backend
       greedy. A [bounded C2 joined-decode screen](experiments/gemma3-execution/README.md#independent-prefill-c2-decode-screen)
       now passes strict quality after independent prefill: zero greedy differences,
       64/66 byte-identical heads, exact own state and +2.08% paid latency versus
-      stock. Broader quality/performance, longer contexts, joint prefill,
-      wider/ragged batching and serving remain open. The deferred and dropped
+      stock. The [bounded serving unit](experiments/gemma3-execution/README.md#bounded-serving-unequal-widths-and-wrapped-rings)
+      now admits context 4096/rows 128/C1-C2 with unequal-width/ring/departure,
+      exact initialized checkpoint/restore, HTTP and restart adoption controls.
+      Current fair runner screens are +0.96% C1/+2.36% C2; a native HTTP
+      old/new bookend improves C1/C2 by 3.62%/3.18% with exact cached responses.
+      Joint prefill, wider cohorts, broader memory/swap/context and sustained
+      quality/performance remain open. The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);

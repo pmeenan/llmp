@@ -262,7 +262,9 @@ What a new family writes, and nothing else:
   the family's steps. Gemma3's bounded runner also composes this skeleton,
   with independent slot roots, paid host masks, separate head-row capacity,
   state-only prefill, explicit kept device-argmax publication and exact
-  Clear/restore controls. The DeepSeek and Qwen3.8
+  Clear/restore controls. Its bounded serving adapter adds completion-aware
+  checkpoint coverage, kept-conversation adoption and unchanged held-cohort
+  reuse, with pending-restore refusal and peer protection. The DeepSeek and Qwen3.8
   runners are the worked examples: DeepSeek with a host table, a chained draft-and-verify job and
   a snapshot of every written range; Qwen3.8 with rows read on demand and
   gathered between the inputs and the plan, a commit kernel, and two

@@ -354,6 +354,14 @@ target_link_libraries(gemma3_graph_test PRIVATE jitllm_ggml_tensors jitllm_artif
 jitllm_gtest(gemma3_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 if(JITLLM_CUDA)
+  add_executable(gemma3_serving_gpu_test gemma3_serving_gpu_test.cc)
+  target_link_libraries(gemma3_serving_gpu_test PRIVATE jitllm_engine)
+  jitllm_gpu_gtest(gemma3_serving_gpu_test MODELS)
+  add_executable(gemma3_runner_test gemma3_runner_test.cc)
+  target_link_libraries(gemma3_runner_test PRIVATE jitllm_engine)
+  file(RELATIVE_PATH runtime "${CMAKE_CURRENT_BINARY_DIR}" "${PROJECT_BINARY_DIR}/cublas")
+  target_link_options(gemma3_runner_test PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/${runtime}")
+  jitllm_gtest(gemma3_runner_test TEST_PREFIX unit. PROPERTIES LABELS unit)
   add_executable(gemma3_plan_test gemma3_plan_test.cc)
   target_link_libraries(gemma3_plan_test PRIVATE jitllm_engine jitllm_json)
   jitllm_gtest(gemma3_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit

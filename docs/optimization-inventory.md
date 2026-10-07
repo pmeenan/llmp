@@ -80,8 +80,19 @@ refusal and spill/restore. The stock screen has zero greedy differences,
 64/66 byte-identical heads and −0.005323% relative conditional-loss delta;
 one short RNNR retains exact histories/final heads at +2.08% paid latency.
 The one-column quantized GeGLU fusion applies to independent prefill/frontiers,
-not the joined two-column decode. Joint prefill, wider/ragged batching, longer
-context, sustained performance and serving remain open; the option defaults off.
+not the joined two-column decode. The option defaults off internally; the
+[bounded serving recipe](experiments/gemma3-execution/README.md#bounded-serving-unequal-widths-and-wrapped-rings)
+selects it explicitly at context<=4096/rows<=128/two owners, with actual
+unequal-width/ring/departure and checkpoint/adoption/HTTP controls. Unequal
+padded widths retain ordinary segmented attention and pass strict greedy/loss
+screens, without full-head equality. Serving now reuses an unchanged held
+cohort after validation, as DeepSeek/Qwen do; a native HTTP old/new bookend
+improves cached C1/C2 latency 3.62%/3.18% with exact responses/usage (n2).
+Current ordinary state-only-overlap runner screens retain +0.96% C1/+2.36% C2
+paid latency versus stock; stock's unchanged sampler copies full sampled-logit
+rows. These are distinct boundaries, not universal parity. Joint compatible
+prefill is the next applicable batching transfer; wider cohorts, device masks,
+lookahead, memory/swap and sustained qualification remain open.
 The exact stock Gemma3 graph gathers final attention and residual rows before
 post-norm/FFN, matching this native frontier. Both ordinary bounded Gemma4
 profiles instead retain the full final FFN before frontier publication, matching

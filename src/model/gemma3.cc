@@ -22,6 +22,7 @@
 #include "artifact/artifact.h"
 #include "artifact/representation.h"
 #include "base/check.h"
+#include "base/sha256.h"
 
 namespace jitllm::model {
 namespace {
@@ -126,6 +127,15 @@ const Gemma3Profile& Gemma3_4BQat() {
   return profile;
 }
 
+std::expected<Gemma3Binding, std::string> BindApprovedGemma3(const artifact::Artifact& artifact) {
+  const auto sources = artifact.sources();
+  if (sources.size() != 1 || sources[0].name != "gemma-3-4b-it-qat-Q4_0.gguf" ||
+      sources[0].bytes.value() != 2526080992ULL ||
+      base::ToHex(sources[0].sha256) !=
+          "ee91c3e7a4ab95d8c95672f9fcb58bf236b257e9f217966bcf53a5a6df4ab49a")
+    return std::unexpected("Gemma3 execution needs the approved prepared QAT source identity");
+  return BindGemma3(Gemma3_4BQat(), artifact);
+}
 std::expected<Gemma3Binding, std::string> BindGemma3(const Gemma3Profile& p,
                                                      std::string_view architecture,
                                                      std::span<const Gemma3Resource> resources) {

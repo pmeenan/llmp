@@ -85,14 +85,19 @@ C1 own control with exact eager/graph heads, Clear and initialized-state restore
 The primitive stock screen retains one positive-margin greedy difference as
 history; explicit checked norm chains then reproduce all 33 bounded stock
 heads exactly. Explicit device greedy preserves 32 choices, final heads and
-initialized state; allocation-free public binding checks narrow the latest
-short matched C1 cycle to 0.56% slower than stock backend greedy. The
+initialized state; the earlier allocation-free public binding screen measured
+a short C1 cycle at 0.56% slower than stock backend greedy. The
 [bounded C2 decode screen](experiments/gemma3-execution/README.md#independent-prefill-c2-decode-screen)
 uses independently-prefilled slots and explicit H8 owner attention: zero strict
-greedy differences, 64/66 byte-identical heads and +2.08% paid latency. Broader
-quality/performance, longer contexts, joint prefill, wider/ragged batching and
-serving qualification remain open.
-It is not an execution support entry.
+greedy differences, 64/66 byte-identical heads and +2.08% paid latency.
+A [bounded ordinary serving route](experiments/gemma3-execution/README.md#bounded-serving-unequal-widths-and-wrapped-rings)
+now admits context<=4096, rows<=128 and at most two owners. Actual unequal
+widths, wrapped rings, partial departure, HTTP/template/cache/stop/SSE and
+two-slot checkpoint/restart adoption controls pass. Matching cached scalar
+and joined replays remain exact; cold/cached or scalar/joined trajectories
+may differ. Current fair short runner screens are +0.96% C1/+2.36% C2 paid
+latency versus stock, without universal parity. Joint prefill, wider cohorts,
+broader memory/context/swap and sustained qualification remain open.
 
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in

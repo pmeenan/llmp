@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Approved Gemma 3 4B QAT profile, checked binding and bounded state/inputs.
-// No media adapter, runner or serving support.
+// Media inputs remain outside this text profile.
 #ifndef JITLLM_MODEL_GEMMA3_H_
 #define JITLLM_MODEL_GEMMA3_H_
 
@@ -62,6 +62,8 @@ std::expected<Gemma3Binding, std::string> BindGemma3(const Gemma3Profile& profil
                                                      std::span<const Gemma3Resource> resources);
 std::expected<Gemma3Binding, std::string> BindGemma3(const Gemma3Profile& profile,
                                                      const artifact::Artifact& artifact);
+// Execution admission additionally authenticates the approved prepared source.
+std::expected<Gemma3Binding, std::string> BindApprovedGemma3(const artifact::Artifact& artifact);
 // Public descriptors are rechecked before any graph or placement.
 std::expected<void, std::string> CheckGemma3Binding(const Gemma3Profile& profile,
                                                     const Gemma3Binding& binding);
