@@ -1028,3 +1028,60 @@ receipts and failures stay outside Git under Spark A
 Maximum context, broader cohorts/model pairs, real-corpus retrieval and sustained
 memory/swap qualification remain open; the repeated-text 8K screen closes none
 of those gates.
+
+## Internal trained-maximum C1 screen (2026-10-07)
+
+One internal scalar screen now initializes Gemma3's trained ceiling of 131,072
+positions. A false-default C++ proof hook admits only the approved trained
+metadata and one resolved slot; configuration, CLI and HTTP cannot enable it.
+Ordinary serving remains default context 4096, with explicit scalar context
+limited to 8448. The screen uses the ordinary Server reclaimer and checked
+fusion recipe, without a whole-state snapshot or a synthetic plan-cache allowance.
+
+The input is the first 131,072 native-tokenized IDs from the retained public-domain
+*War and Peace* text, independently checked by the original stock tokenizer.
+The text SHA-256 is `c7156148ecaa12b6416cf816540d8dede2014982554a835e61076f0dd8bf0c2d`;
+the frozen ID SHA-256 is `6f017cdc33eab4167a82a26bcdaf9f4a75c2dedf142e64f9b60df50708fd7db7`.
+Both engines prefill 131,008 tokens in 128-row chunks (the last has 64 rows),
+then perform 64 scalar teacher writes. All 65 finite full heads are byte-identical
+across two native and two original-reference runs, including the final unscored
+head. All 65 argmax choices agree; conditional target NLL is 2.2076044911 in both
+engines, with zero loss, total-variation or raw-logit difference. This is one
+64-target corpus tail, not full perplexity or retrieval qualification.
+
+The initialized cursor and complete token history reach 131,072; a further
+append refuses without changing that history. No natural tokens are emitted,
+and token-history equality is not a KV-byte snapshot proof. The stock caller
+keeps the original F16 ring/cache policy, 128-row batch, greedy sampler and full
+sampled-logit host exports.
+
+| First traversal | Native 1 | Native 2 | Stock 1 | Stock 2 |
+| --- | ---: | ---: | ---: | ---: |
+| Prefill seconds | 48.806032 | 48.662078 | 32.8192 | 32.9964 |
+| 64 teacher-write seconds | 1.632932 | 1.638302 | 1.59808 | 1.60335 |
+
+These quality-run phase times are descriptive, with no warmed or interleaved
+performance qualification. The large native prefill gap remains open. Each
+native traversal records 514 eager executions, 512 captures and 62 replays;
+normal reclamation admits the complete depth. The larger observed 20 ms sampled
+whole-node MemAvailable decrease is 12,690,153,472 bytes; minimum available is
+112,179,003,392 bytes. These are node samples, not an isolated allocation peak.
+The corresponding execution budget is 117,653,373,184 bytes, fixed accounting
+173,015,296 bytes and funded host inputs 79,694,336 bytes.
+
+Twelve focused settings/state/footprint cases pass, with no skips or full suite.
+The original build's zero-test filter and a first pre-inference enrollment-path
+refusal are preserved; the corrected retry runs all 12 actual cases before the
+first successful forward. Official `m35-gemma3-max-first2` (three steps) and
+`m35-gemma3-max-quality1` (seven steps) finish DONE0. The actual native binary is
+`e347987dac38da2ddbd43a36de9f9a964741da4f1fd1f9713421e73ff8d0376c`,
+bound to source/library receipt `14579088a649bafbfcfea93b3f1ceb347ceb8eeae14ccccdbc41df2779575bb7`;
+the tiny stock caller is `ed03d2d2f316a93a159fe53092fa3525baee686a5773fde9f7678ec6187ca3de`.
+The native source is based on 08dbd940; CUDA 13.4 cuBLAS/Lt use the pinned SDK
+c09 closure and the original v0.6.0 image/library closure is unchanged.
+TensorFold task-entry HEAD is 041d14a94e951834470fd514ed33e65b8be1059a, with no
+matching qualified Gemma3 GGUF CUDA recipe. Raw inputs, outputs, failures and
+receipts remain outside Git under Spark A `~/.local/share/jitllm/gemma3-trained-max*`
+and local `/tmp/jitllm-m35-coordination/gemma3-trained-max*`.
+Public maximum admission, maximum-depth swap/state retention, retrieval and
+sustained quality/performance remain open.

@@ -918,7 +918,13 @@ family" guide, and its long-context scaling work.
       the default 4096/two-owner bounds at 4K. A public 8192-prefix/64-continuation
       HTTP control and one Gemma3/Qwen exact-state model-switch pair check the
       repeated-text boundary; corpus/retrieval, broader cohorts, maximum-context
-      memory/swap and sustained quality/performance remain open. The deferred and dropped
+      memory/swap and sustained quality/performance remain open. An
+      [internal trained-maximum C1 screen](experiments/gemma3-execution/README.md#internal-trained-maximum-c1-screen-2026-10-07)
+      initializes all 131,072 positions with normal reclamation and matches all
+      65 stock heads exactly on one 64-target corpus tail. Public maximum
+      admission, retrieval and performance qualification remain open, including
+      the descriptive 48.7-second native versus 32.9-second stock prefill gap.
+      The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);

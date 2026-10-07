@@ -562,7 +562,8 @@ std::expected<ChatAssets, std::string> ReadChatAssets(const ja::Artifact& target
 std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEntry& entry,
                                                           const ArtifactFacts& facts,
                                                           const Calibration* calibration,
-                                                          bool plain, bool gemma31_production) {
+                                                          bool plain, bool gemma31_production,
+                                                          bool gemma3_trained_max) {
   ModelSettings s;
   s.name = entry.name;
   s.architecture = facts.architecture;
@@ -584,7 +585,11 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     return s;
   }
   const std::string& arch = facts.architecture;
-  const std::uint32_t runner = RunnerContextCeiling(arch);
+  if (gemma3_trained_max && arch == "gemma3" && !facts.trained_context)
+    return Error("Gemma3 maximum-context qualification needs trained-context metadata");
+  const std::uint32_t runner = gemma3_trained_max && arch == "gemma3"
+                                   ? model::Gemma3_4BQat().context
+                                   : RunnerContextCeiling(arch);
   if (runner == 0) {
     return Error(std::format("no runner for architecture {}", arch));
   }

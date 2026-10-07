@@ -142,6 +142,12 @@ Gemma3/Qwen model-switch pair. The input repeats a short text; corpus/retrieval,
 wider cohorts, maximum-context memory/swap and sustained gates remain open,
 without universal parity.
 
+The [internal trained-maximum scalar screen](experiments/gemma3-execution/README.md#internal-trained-maximum-c1-screen-2026-10-07)
+also initializes 131,072 positions without a whole-state snapshot, matching all
+65 original-reference heads exactly on one 64-target corpus tail. This leaves
+public admission, maximum-depth swap/state retention and retrieval open;
+descriptive native prefill is about 48.7 seconds versus stock's 32.9 seconds.
+
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in
 `model/gemma4.h`. The [foundation contract](gemma4.md) records actual pinned

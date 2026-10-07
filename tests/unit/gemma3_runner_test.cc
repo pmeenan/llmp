@@ -25,7 +25,7 @@ TEST(Gemma3Runner, UninitializedLifecycleRefusesWithoutPublishingOrOwningCopies)
 }
 TEST(Gemma3Runner, CheckpointFootprintRequiresOrderedWholeExtentsAtRingAndContextBoundaries) {
   const auto& profile = jitllm::model::Gemma3_4BQat();
-  for (const auto context : {4096U, 8448U}) {
+  for (const auto context : {4096U, 8448U, 131072U}) {
     auto layout = jitllm::model::Gemma3State(profile, context, 128);
     ASSERT_TRUE(layout);
     for (const auto positions : {1U, 1024U, 1152U, 1281U, context - 64U, context}) {

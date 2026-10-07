@@ -304,11 +304,11 @@ struct ModelSettings {
 // none) until ResolveReasoning.
 // The default enables the qualified ordinary Gemma31 recipe only within its
 // checked context/owner bounds; false preserves internal diagnostic controls.
-std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEntry& entry,
-                                                          const ArtifactFacts& facts,
-                                                          const Calibration* calibration,
-                                                          bool plain,
-                                                          bool gemma31_production = true);
+// gemma3_trained_max is an internal qualification hook: only the approved
+// Gemma3 profile may resolve its trained maximum, still with one owner.
+std::expected<ModelSettings, std::string> ResolveSettings(
+    const config::ModelEntry& entry, const ArtifactFacts& facts, const Calibration* calibration,
+    bool plain, bool gemma31_production = true, bool gemma3_trained_max = false);
 
 // The reasoning markers once the vocabulary is known (`find`: a token's ID
 // by its exact text): each override, which must be a token of it (empty:

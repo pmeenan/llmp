@@ -168,6 +168,38 @@ TEST(ModelSettings, Gemma3WiderContextIsExplicitAndScalarAfterCalibrationAndOver
   EXPECT_EQ(settings->max_slots.value, 2U);
 }
 
+TEST(ModelSettings, Gemma3TrainedMaximumHookKeepsOrdinaryAdmissionAndScalarBounds) {
+  auto entry = Model("gemma3");
+  auto facts = Facts("gemma3");
+  facts.trained_context = 131072;
+  facts.trained_context_from = "gemma3.context_length";
+  auto settings = ResolveSettings(entry, facts, nullptr, true, true, true);
+  ASSERT_TRUE(settings);
+  EXPECT_EQ(settings->context.value, 4096U);
+  entry.overrides["context"] = std::int64_t{131072};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true));
+  settings = ResolveSettings(entry, facts, nullptr, true, true, true);
+  ASSERT_TRUE(settings);
+  EXPECT_EQ(settings->context.value, 131072U);
+  EXPECT_EQ(settings->prefill_chunk.value, 128U);
+  EXPECT_EQ(settings->max_slots.value, 1U);
+  Calibration calibration;
+  calibration.max_slots = 2;
+  EXPECT_FALSE(ResolveSettings(entry, facts, &calibration, true, true, true));
+  entry.overrides["max_slots"] = std::int64_t{1};
+  EXPECT_TRUE(ResolveSettings(entry, facts, &calibration, true, true, true));
+  entry.overrides["max_slots"] = std::int64_t{2};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true, true, true));
+  entry.overrides["max_slots"] = std::int64_t{1};
+  entry.overrides["context"] = std::int64_t{131073};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true, true, true));
+  entry.overrides["context"] = std::int64_t{131072};
+  facts.trained_context = 65536;
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true, true, true));
+  facts.trained_context.reset();
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, true, true, true));
+}
+
 TEST(ModelSettings, Gemma2UsesTheBoundedServingEnvelopeAndRejectsUnsupportedOverrides) {
   auto entry = Model("gemma2");
   auto facts = Facts("gemma2");

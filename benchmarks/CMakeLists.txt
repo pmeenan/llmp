@@ -49,6 +49,11 @@ if(JITLLM_CUDA)
                      "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
 
   # Exact long-context swap controls without a second whole-state allocation.
+  add_executable(jitllm_gemma3_max_context gemma3_max_context.cc)
+  target_link_libraries(jitllm_gemma3_max_context PRIVATE jitllm_runtime_serving jitllm_base jitllm_warnings)
+  target_link_options(jitllm_gemma3_max_context PRIVATE
+                     "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../lib/jitllm")
+
   add_executable(jitllm_long_swap long_swap.cc)
   target_link_libraries(jitllm_long_swap PRIVATE jitllm_runtime_serving jitllm_base jitllm_warnings)
   target_link_options(jitllm_long_swap PRIVATE

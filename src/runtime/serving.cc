@@ -5640,7 +5640,8 @@ Status Server::Start(bool snapshot) {
     if (!entry.composition) {
       // Keyed by the settings its measurements depend on, as they resolve
       // without calibration.
-      auto uncalibrated = ResolveSettings(entry, *facts, nullptr, options_.plain, gemma31_recipe);
+      auto uncalibrated = ResolveSettings(entry, *facts, nullptr, options_.plain, gemma31_recipe,
+                                          options_.gemma3_trained_max);
       if (!uncalibrated) {
         return Error(std::format("model {}: {}", entry.name, uncalibrated.error()));
       }
@@ -5652,7 +5653,7 @@ Status Server::Start(bool snapshot) {
       }
     }
     auto resolved = ResolveSettings(entry, *facts, record.known.empty() ? nullptr : &record.known,
-                                    options_.plain, gemma31_recipe);
+                                    options_.plain, gemma31_recipe, options_.gemma3_trained_max);
     if (!resolved) {
       return Error(std::format("model {}: {}", entry.name, resolved.error()));
     }

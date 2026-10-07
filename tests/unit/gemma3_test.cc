@@ -258,6 +258,40 @@ TEST(Gemma3StateTest, DepthChunkPreservesActualGlobalFrontierAndWrappedLocalCell
   EXPECT_FALSE(md::Gemma3ChunkWrites(p, *state, 8448, 1));
 }
 
+TEST(Gemma3StateTest, TrainedMaximumFundsLastChunkAndRejectsOnePositionBeyond) {
+  const auto& p = md::Gemma3_4BQat();
+  const auto state = md::Gemma3State(p, 131072, 128);
+  ASSERT_TRUE(state);
+  EXPECT_EQ(state->global_cells, 131072U);
+  EXPECT_EQ(state->local_cells, 1280U);
+  const std::array<std::int32_t, 128> tokens{};
+  const std::array segments{md::Gemma3Segment{0, 130944, tokens}};
+  const auto bytes = md::Gemma3HostInputBytes(p, *state, segments, true);
+  const auto input = md::Gemma3Chunk(p, *state, segments, true);
+  ASSERT_TRUE(bytes);
+  ASSERT_TRUE(input);
+  ASSERT_EQ(input->segments.size(), 1U);
+  const auto& segment = input->segments.front();
+  EXPECT_EQ(segment.global_n_kv, 131072U);
+  EXPECT_EQ(segment.local_n_kv, 1280U);
+  EXPECT_EQ(segment.global_mask.size(), 128U * 131072U);
+  EXPECT_EQ(segment.global_mask[130944], 0);
+  EXPECT_EQ(segment.global_mask[130945], 0xFC00);
+  EXPECT_EQ(segment.global_mask.back(), 0);
+  EXPECT_EQ(segment.global_cells.back(), 131071);
+  EXPECT_EQ(segment.local_cells.back(), 131071 % 1280);
+  EXPECT_GE(*bytes, segment.global_mask.size() * sizeof(std::uint16_t));
+  const auto writes = md::Gemma3ChunkWrites(p, *state, 130944, 128);
+  ASSERT_TRUE(writes);
+  for (const auto& range : *writes) EXPECT_LE(range.offset + range.bytes, state->bytes);
+  const auto initialized = md::Gemma3UsedState(p, *state, 131072);
+  ASSERT_TRUE(initialized);
+  EXPECT_FALSE(md::Gemma3UsedState(p, *state, 131073));
+  const std::array overflow{md::Gemma3Segment{0, 131072, std::span(tokens).first(1)}};
+  EXPECT_FALSE(md::Gemma3Chunk(p, *state, overflow, true));
+  EXPECT_FALSE(md::Gemma3ChunkWrites(p, *state, 131072, 1));
+}
+
 TEST(Gemma3FoundationTest, PublicBindingChecksEveryMutableDescriptorAndResourceIdentity) {
   const auto& p = md::Gemma3_4BQat();
   auto binding = md::BindGemma3(p, "gemma3", Resources());

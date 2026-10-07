@@ -96,6 +96,8 @@ struct ServingOptions {
   // Candidate ordinary Gemma31 serving recipe; internal qualification only.
   // Production configuration and CLI leave this false.
   bool gemma31_production = false;
+  // Internal maximum-context qualification only; no config/CLI/HTTP route.
+  bool gemma3_trained_max = false;
 };
 
 struct ChatOptions {
