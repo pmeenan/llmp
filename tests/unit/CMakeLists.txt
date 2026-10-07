@@ -314,6 +314,12 @@ foreach(file IN LISTS tokenizer_data_files)
   configure_file("${CMAKE_CURRENT_SOURCE_DIR}/data/${file}" "${tokenizer_data}/${file}" COPYONLY)
 endforeach()
 
+# Approved Gemma2 profile and actual padded-readable tensor binding only.
+add_executable(gemma2_test gemma2_test.cc)
+target_link_libraries(gemma2_test PRIVATE jitllm_model jitllm_artifact jitllm_json)
+jitllm_gtest(gemma2_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+
 # Approved Gemma3 profile, tensor storage, state/input and descriptor foundations.
 add_executable(gemma3_test gemma3_test.cc)
 target_link_libraries(gemma3_test PRIVATE jitllm_model jitllm_artifact jitllm_json)

@@ -811,6 +811,10 @@ family" guide, and its long-context scaling work.
       Their four GGUF fixtures (Gemma 3 4B QAT Q4_0, Gemma 2 2B, Phi-3.5
       mini, Command R7B; about 17.9 GB, llama.cpp as reference) join
       M3.5's set under the same exit criteria.
+      Gemma 2 [profile and tensor foundation](gemma2.md) now recognizes all
+      288 actual descriptors, tied output and width-2304 readable padding;
+      six focused CPU controls pass. Source import, state/graphs, attention
+      softcap launch/occupancy support and execution remain separate work.
       Gemma 3 [profile and tensor foundation](gemma3.md) is checked:
       actual approved metadata and all 444 tensor descriptors, separate
       profile/binding and refusal controls; three focused CPU controls pass.

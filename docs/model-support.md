@@ -65,6 +65,13 @@ listing is separate from the supported summary above.
 
 ## Architecture foundations
 
+Gemma 2 2B Q8_0 has a separate [closed profile and tensor binding](gemma2.md)
+for all 288 actual descriptors, with the existing quantized readable-tail
+contract and allocation-free successful public descriptor checks; six focused
+CPU controls pass. This is
+storage recognition only; source import, state/graphs, execution, template
+qualification and serving remain open. It is not an execution support entry.
+
 Gemma 3 4B QAT Q4_0 has a separate checked profile and strict
 GGML tensor binding in `model/gemma3.h`; the [foundation contract](gemma3.md)
 records the approved checkpoint's complete actual descriptor table and
