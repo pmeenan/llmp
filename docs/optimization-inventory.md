@@ -751,12 +751,34 @@ grows every 256 positions: with 128-row chunks each shape runs exactly twice,
 so D-090's second-run capture never replays. A two-ahead hint lets the runner
 capture a repeated shape on its first run and the next planned shape's graph
 beside a replay (`GraphRuns::CaptureAhead`). Gemma3's trained-maximum first
-traversal falls 9.40% (1.31% above stock) with exact heads. Open transfers:
-Gemma4 (both profiles) has the lookahead but still captures on the second run,
-so its long prefills never replay on a first traversal; Gemma2 ignores the hint.
-Two-request joined prefill waves pass no hints in any family. Qwen3.8 and
-DeepSeek capture only decode/verify shapes and need their own measurement
-before prefill capture.
+traversal falls 9.40% (1.31% above stock) with exact heads. The replay gain is
+a small-model effect: Gemma3's 128-row chunks take about 26–37 ms, so launch
+gaps between eager kernels cost about 7% of device time. On Gemma31 (256-row
+chunks, 8K state-only prefill, plans cached, same binary, temporary harness
+switch) every chunk replayed takes 10.893/11.172 s against 10.926/11.029 s
+eager, with identical heads: replay removes about 8 s of host submission per
+prefill but the device is the bottleneck. Capture ahead is therefore not
+transferred to Gemma4 (measured on Gemma31 only); Gemma2 (2B), which ignores
+the hint, is the remaining plausible candidate, and two-request joined prefill
+waves pass no hints in any family. Qwen3.8 and
+DeepSeek capture only decode/verify shapes.
+
+The remaining host-serial prefill costs are each about 0.5–1.6% of a prefill.
+Timed on Spark A inside the same day's binaries (temporary timers, not
+retained): `BindPlanned` costs 0.66 ms a plan on Gemma3 (337 ms over 514 plans,
+about 1% of a 32 s trained-maximum traversal; scratch sizing 106 ms, registry
+build 121 ms, descriptor checks 86 ms) and 1.5 ms a plan on Gemma31 (52 ms over
+34 plans, about 0.5% of an 8K prefill), down from the earlier 175 ms after the
+per-bind wrapper cache. State growth costs about 1.3–1.6% of a cold prefill on
+both (Gemma3 0.44 s over 1,396 new extents; Gemma31 0.15–0.18 s over 960),
+mostly in acquiring each new 2 MiB extent (0.15–0.3 ms each; on Gemma31 the VMM
+create, map and access calls take about 150 µs of it, against about 90 µs in
+D-033's idle microbenchmark); closure descriptions, rebuilds and holds take about 0.04 s (Gemma31) to 0.12 s (Gemma3). A
+warm conversation reuses its cleared backing (Gemma31 state 0.03 s). Cutting
+cold growth further would need a standing handle pool, larger extents or
+batched driver operations, each a D-033 reopen condition. On Gemma31 cold 8K
+prefill, execution is 97.8% of wall time; its remaining prefill levers are on
+the device.
 
 The [plain norm adoption](experiments/gemma-state-only-norm-policy/README.md)
 now selects existing checked RMSNorm/Mul by default for both approved Gemmas.
