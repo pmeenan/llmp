@@ -46,13 +46,16 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Added
 
+- Execute the approved Gemma3 4B QAT Q4_0 artifact through the shared native
+  runner, with bounded C1 eager/graph, Clear and spill/restore own controls.
+  Reference quality/performance, batching and serving remain unqualified.
+
 - Prepare the approved Gemma 3 4B QAT Q4_0 checkpoint through the generic
   artifact importer, with strict source, metadata and tensor preflight. The
-  real artifact passes deep verification; execution and serving remain open.
+  real artifact passes deep verification.
 
 - Gemma3 QAT text state/input and descriptor planning foundations with checked
-  independent slots and primitive operation plans. Runner, model execution,
-  serving and numerical/performance qualification remain open.
+  independent slots and primitive operation plans.
 
 - Opt-in Gemma equal-width partial owner cohorts retain whole-stream attention
   partitions with bounded independent cache roots. The 31B C5 recovery passes

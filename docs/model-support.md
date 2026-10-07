@@ -71,9 +71,10 @@ records the approved checkpoint's complete actual descriptor table and
 three passing focused CPU controls. Its separate bounded state/input and
 descriptor graph/plan foundation passes 13 focused CPU/no-launch controls.
 The approved source has a [deep-verified prepared artifact](experiments/gemma3-execution/README.md)
-and seven focused import controls; runner, model execution, batching and
-serving qualification remain open. It is
-not an execution support entry.
+and seven focused import controls. Its shared native runner passes a bounded
+C1 own control with exact eager/graph heads, Clear and initialized-state restore.
+The first stock screen retains one positive-margin greedy difference; quality,
+performance, longer contexts, batching and serving qualification remain open. It is not an execution support entry.
 
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in

@@ -234,6 +234,16 @@ TEST(Gemma3Plan, FreshRaggedSourcesAreFundedPaddedAndRevalidatedForReuse) {
   auto fresh = md::Gemma3Chunk(c.p, c.state, advanced, true);
   ASSERT_TRUE(fresh);
   EXPECT_TRUE(en::Gemma3Sources(*graph, *fresh, c.frontier, {}, *bytes));
+  // This family has host masks: unmasked descriptors alone cannot launch,
+  // even though they suffice for placeless shape construction.
+  auto unmasked = md::Gemma3Chunk(c.p, c.state, advanced, false);
+  ASSERT_TRUE(unmasked);
+  EXPECT_FALSE(en::Gemma3Sources(*graph, *unmasked, c.frontier, {}, *bytes));
+  const auto with_masks = md::Gemma3HostInputBytes(c.p, c.state, advanced, true);
+  const auto without_masks = md::Gemma3HostInputBytes(c.p, c.state, advanced, false);
+  ASSERT_TRUE(with_masks);
+  ASSERT_TRUE(without_masks);
+  EXPECT_GT(*with_masks, *without_masks);
   auto malformed = *fresh;
   malformed.positions[0] = 1279;
   EXPECT_FALSE(en::Gemma3Sources(*graph, malformed, c.frontier, {}, *bytes));

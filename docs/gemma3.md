@@ -4,15 +4,16 @@
 # Gemma 3 legacy foundation
 
 `src/model/gemma3.h` supplies a separate fixed profile and strict tensor
-binding for the approved Gemma 3 4B QAT Q4_0 text checkpoint. A separate
-bounded state/input contract and descriptor graph/plan adapter are now
-checked by 13 focused CPU/no-launch controls. The generic importer now has
-an approved-source
-[preflight, pin recipe and deep-verified artifact](experiments/gemma3-execution/README.md). There is no runner, serving route or media adapter.
-This model remains outside the supported execution matrix; legacy
-execution, linear RoPE, batching, restore, reference quality and performance
-qualification remain open. Existing native SentencePiece and Gemma 3 chat
-rendering are reusable prerequisites, not proof of model execution.
+binding for the approved Gemma 3 4B QAT Q4_0 text checkpoint. Its state/input
+and descriptor graph/plan foundation passes 13 focused CPU/no-launch controls.
+The generic importer supplies the authenticated
+[prepared artifact](experiments/gemma3-execution/README.md), and
+`engine/gemma3_runner.*` now executes it through the shared native skeleton.
+A bounded C1 screen checks finite, byte-identical eager/captured/replayed heads,
+Clear reuse, malformed-input refusal and initialized-state spill/restore.
+There is no serving route or media adapter. This model remains outside the
+supported execution matrix. The first stock screen retains one positive-margin
+greedy difference; quality/performance, longer contexts and batching remain open.
 
 ## Actual checkpoint contract
 
@@ -104,8 +105,8 @@ a 2 MiB boundary. Local capacity is `pad(min(context,1024+max_rows),256)` so
 writing the whole chunk preserves every query's sliding window. Initialized
 read ranges and completed write ranges are separate; wraparound writes split.
 Globals can append/truncate; local rings advertise append only and no rollback
-snapshots. A future runner must fund, materialize and initialize every read,
-and retain each write through completion before recording progress.
+snapshots. The runner funds, materializes and initializes every read,
+and retains each write through completion before recording progress.
 
 `kernels/ggml/gemma3_graph.*` ports the text graph and GeGLU build-FFN arithmetic
 from llama.cpp release v0.6.0, exact commit
@@ -159,3 +160,27 @@ SHA-256 is `c79bf0b93b3337f2b0264617469d6669723e9541a908191c088aaa79d38e3b9f`.
 External source manifests, official job records and the three binary identities
 retain exact provenance; none establishes runner residency, real-model
 numerical quality, restore, batching, media or performance support.
+
+## Bounded native runner
+
+`engine/gemma3_runner.*` composes `PagedWeights`, per-slot `LiveState`,
+`RunnerResources`, `RequestCohort`, `PlanCache` and shared `GraphRuns`.
+Weights, state, activations, staging and output copies use the existing
+catalog/VMM and commitment accounting. Held requests use direct steps;
+plans recheck stable places after closure changes. State-only chunks omit an
+intermediate head, while a separate head-row capacity bounds publication.
+Host causal masks and their padded source copies are both funded.
+Clear retains mapped backing for reuse; spill/restore preserves logical
+positions and refreshes the closure. Failed retirement retains the whole
+probe lifetime rather than treating destruction as completion.
+
+The internal `jitllm_gemma3_probe` uses the actual native tokenizer and fixed
+4096-context, C1, F16-cache, 128-row geometry. Its first screen consumes 256
+prompt rows, three supplied scalar warm rows and 32 teacher-forced rows.
+It emits 33 full vocabulary heads and 32 pre-step greedy choices; the final
+head has no target. These are representative screen dimensions, not newly
+qualified context or support limits. Multiple independent slots are designed
+into the runner but actual batching remains unqualified. The ordinary primitive
+policy is explicit; generic norm and quantized FFN switches are diagnostics,
+with no automatic Gemma4 shape-policy inheritance. Device masks, device greedy
+publication, lookahead and serving integration remain later work.

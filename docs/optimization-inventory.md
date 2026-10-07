@@ -28,11 +28,23 @@ adds the independent native request slots, positive private BF16 head-sharing
 factor, rejected shared-worklist/exact16 controls and cross-family boundaries
 on batching and weight reuse. Its priority order follows the current M3 gaps.
 
-The [Gemma3 foundation](gemma3.md) has a separate checked primitive graph
-and independent-slot plan adapter. Existing H16/32 owner attention and
-width2816/5376 norm-ADD gates exclude its H8/width2560 shapes. Generic
-norm/RoPE/quantized-product reuse is a qualification lead; no optimization,
-model execution or batching evidence transfers automatically.
+The [Gemma3 native runner](gemma3.md) now consumes held-request direct steps,
+unchanged-placement checks, Clear backing reuse, graph capture beside eager
+execution and state-only prefill through the shared skeleton. Its bounded C1
+own controls pass; model quality, performance and batching remain unqualified.
+Across three bound runtime plans, the explicit plain-norm diagnostic selects
+610 RMSNorm/Mul steps; quantized GeGLU selects 35 steps in its separate diagnostic.
+Both preserve primitive heads byte for byte and leave the first stock quality
+screen's positive-margin greedy difference unchanged. These are plan-selection
+counts, not replayed launch counts or adopted speed recipes.
+
+Existing H16/32 owner attention and width2816/5376 norm-ADD gates exclude
+Gemma3's H8/width2560 shapes. D256 norm/RoPE is structurally eligible but is not
+yet selected or qualified here; device greedy publication and lookahead also
+remain open. No optimization transfers automatically. The exact stock Gemma3
+graph gathers final attention and residual rows before post-norm/FFN, matching
+this native frontier. Gemma26's distinct full-final-FFN requirement does not
+transfer to Gemma3.
 
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand

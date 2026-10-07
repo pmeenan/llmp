@@ -251,8 +251,10 @@ What a new family writes, and nothing else:
   plans measured at Setup: the memory
   guard sets it apart), its plans' `ReclaimCandidates` and `Reclaim` and its
   slots' `Spill` and `Restore`, with Setup, Register and Bind as above and
-  the family's steps. The DeepSeek and Qwen3.8 runners are the worked
-  examples: DeepSeek with a host table, a chained draft-and-verify job and
+  the family's steps. Gemma3's bounded runner also composes this skeleton,
+  with independent slot roots, paid host masks, separate head-row capacity,
+  state-only prefill and exact Clear/restore controls. The DeepSeek and Qwen3.8
+  runners are the worked examples: DeepSeek with a host table, a chained draft-and-verify job and
   a snapshot of every written range; Qwen3.8 with rows read on demand and
   gathered between the inputs and the plan, a commit kernel, and two
   variants of a verify's plan.
