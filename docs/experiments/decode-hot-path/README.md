@@ -78,8 +78,8 @@ draft-depth cost the first "after" run had just recorded (calibration is in
 force from the next start of the same build), where the others used the
 fallback. That different schedule gave its lower acceptance (0.660 against
 0.720) with the same text. (The second DeepSeek "after" run also started from
-a recorded decode floor, which only admission reads; its rate and acceptance
-match the first.) The one matched pair, the first "after" run
+a recorded decode floor, which only the chat route's watchdog reads, not
+this command; its rate and acceptance match the first.) The one matched pair, the first "after" run
 against both "before" runs, is +1.4%, from a single run.
 
 DeepSeek V4's and Qwen3.8's speculative steps are fewer per token than
