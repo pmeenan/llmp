@@ -2026,9 +2026,9 @@ TEST_F(GgmlExtOpsTest, GemmaLocalAttentionRefusesOverflowingTotalIterationsBefor
 }
 
 TEST_F(GgmlExtOpsTest, GemmaAndLegacyMmaPlansBoundTheLastPaddedKvTile) {
-  // The pinned Ampere+ configurations use KV tiles of 32 at D256/group2
+  // The pinned Ampere+ configurations use KV tiles of 64 at D256/group2
   // with eight query columns, 64 at D256/group8 with one query column,
-  // 32 at D512/group8 with one query column, and 128 at unmasked D128/MHA
+  // 64 at D512/group8 with one query column, and 128 at unmasked D128/MHA
   // with eight query columns. Each case below has
   // a final safe 256-cell block after including the kernel's transient
   // addition of one extra KV tile before modulo. The next padding block
@@ -2036,8 +2036,8 @@ TEST_F(GgmlExtOpsTest, GemmaAndLegacyMmaPlansBoundTheLastPaddedKvTile) {
   struct Shape {
     std::int64_t d, rows, heads, kv_heads, kv_tile;
   };
-  for (const Shape shape : {Shape{256, 8, 128, 64, 32}, Shape{256, 1, 1024, 128, 64},
-                            Shape{512, 1, 512, 64, 32}, Shape{128, 8, 256, 256, 128}}) {
+  for (const Shape shape : {Shape{256, 8, 128, 64, 64}, Shape{256, 1, 1024, 128, 64},
+                            Shape{512, 1, 512, 64, 64}, Shape{128, 8, 256, 256, 128}}) {
     SCOPED_TRACE(
         std::format("D{} rows{} heads{} KV{}", shape.d, shape.rows, shape.heads, shape.kv_heads));
     auto arena = TensorArena::Create(16).value();
@@ -2090,10 +2090,11 @@ TEST_F(GgmlExtOpsTest, GemmaAndLegacyMmaPlansBoundTheLastPaddedKvTile) {
     if (mask != nullptr) mask->ne[0] += 256;
     ASSERT_TRUE(check().has_value());
     EXPECT_EQ(FailedCode(plan()), KernelError::kRejected);
-    // This earlier total-only endpoint is also refused: a last partial
+    // The total-only endpoint is also refused: a last partial
     // partition can overflow kbc+iter_k or kb0_start+kbc_stop before
     // subtraction/modulo, even though total iterations fit signed int.
-    k->ne[1] = v->ne[1] = 1073741568;
+    const std::int64_t total_only_iterations = ((1LL << 31) - 1) / dst_tiles;
+    k->ne[1] = v->ne[1] = (total_only_iterations * shape.kv_tile / 256) * 256;
     if (mask != nullptr) mask->ne[0] = k->ne[1];
     EXPECT_LE((k->ne[1] / shape.kv_tile) * dst_tiles, (1LL << 31) - 1);
     EXPECT_GT((k->ne[1] / shape.kv_tile) * (dst_tiles + 1), 1LL << 31);

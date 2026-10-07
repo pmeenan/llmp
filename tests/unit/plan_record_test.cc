@@ -43,7 +43,7 @@ Event Launch(std::string_view name, std::array<unsigned, 3> grid, std::array<uns
 
 TEST(PlanRecordTest, TheWriterProducesTheSample) {
   constexpr std::string_view kNorm =
-      "_Z12rms_norm_f32ILi256ELb1ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_";
+      "_Z12rms_norm_f32ILi256ELb1ELb0ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_f";
   constexpr std::string_view kMmvf =
       "_Z13mul_mat_vec_fI6__halfS0_Li1ELi224ELb1ELb0EEvPKT_PKfPKi31ggml_cuda_mm_fusion_args_"
       "devicePfi5uint3iiiSA_iiiSA_iiii";

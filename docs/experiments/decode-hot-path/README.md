@@ -196,6 +196,14 @@ These ran on `spark-b`:
   - `GgmlExtOpsTest.GemmaAndLegacyMmaPlansBoundTheLastPaddedKvTile`: a D256,
     8-row, 128-head shape is no longer refused.
 
+The two stale expectations were reconciled on 2026-10-07 without changing
+production code. The current RMSNorm launch signature now matches the recorded
+sample; attention bounds use the refreshed 64-cell tiles while retaining all
+overflow refusals. Focused Spark B checks pass with no skips: 12 GGML ops,
+45 extended ops and 3 recording tests, plus 35 Python comparator controls.
+The frozen P0 signature remains distinct and strictly compared. The full
+1,808-test suite was not repeated; its result above records the original run.
+
 ## Provenance
 
 Native ran on main `ba67d9e` plus this change (spark-b build tree, NVCC 13.4

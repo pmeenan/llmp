@@ -21,7 +21,7 @@
 // cudaLaunchKernelExC. The PDL attribute those carry is not compared, as
 // the FP16 gate allows. The first seven launches of the fused decode step
 // are also written as the recorder's JSON lines and must equal
-// plan_record_sample.txt, which plan_compare.py matches with the record;
+// plan_record_sample.txt with the current pin's kernel names;
 // with JITLLM_TEST_PLAN_RECORD set they are also written to that file.
 
 #include <cuda.h>
@@ -998,8 +998,8 @@ TEST_F(GgmlOpsPlanMatchTest, DecodeProductsLaunchAsRecordedFusedAndNot) {
 // The fused decode step's first seven launches (CF 1 from token 6: the
 // attention norm, Q with its bias, Q's RoPE, K and V with theirs, K's RoPE
 // with its write, V's write), recorded and written as the recorder's JSON
-// lines, equal plan_record_sample.txt, which plan_compare.py matches with
-// the record. Registers and shared memory are the runtime's. The recording
+// lines, equal plan_record_sample.txt with the current pin's kernel names.
+// Registers and shared memory are the runtime's. The recording
 // covers the whole test, the inputs' uploads before the chunk included, so
 // that an nsys trace of this test alone lines up with it (plan_compare.py
 // --nsys).

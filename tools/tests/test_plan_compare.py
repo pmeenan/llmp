@@ -346,8 +346,25 @@ class RecordingsConvert(unittest.TestCase):
         # fp16_plan.py's log parsers (frozen P0 evidence) leave their files to the collector.
         warnings.filterwarnings("ignore", category=ResourceWarning)
 
-    def test_the_sample_matches_the_decode_step(self):
+    def historical_sample(self):
+        # The writer's sample follows the current GGML pin; P0 stays frozen.
+        # Restore only RMSNorm's old signature for the historical fragment tests.
+        current = "_Z12rms_norm_f32ILi256ELb1ELb0ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_f"
+        historical = "_Z12rms_norm_f32ILi256ELb1ELb0EEvPKfPfilllfS1_lll5uint3S3_S3_S3_S1_lllS3_S3_S3_S3_"
+        sample = SAMPLE.read_text()
+        self.assertEqual(sample.count(current), 1)
+        return sample.replace(current, historical).splitlines()
+
+    def test_current_sample_differs_from_the_historical_rmsnorm_signature(self):
         plan = pc.convert(SAMPLE.read_text().splitlines())
+        status, message = pc.compare(self.record, "control-fused", plan, (1, 6))
+        self.assertEqual(status, 1, message)
+        self.assertIn("token 6", message)
+        self.assertIn("rms_norm_f32", message)
+
+    def test_the_historical_sample_matches_the_decode_step(self):
+        lines = self.historical_sample()
+        plan = pc.convert(lines)
         status, message = pc.compare(self.record, "control-fused", plan, (1, 6))
         self.assertEqual(status, 2, message)
         self.assertIn("fragment of sequence 1 from token 6 matched", message)
@@ -355,7 +372,7 @@ class RecordingsConvert(unittest.TestCase):
             self.assertIn(missing, message)
         status, message = pc.compare(self.record, "control-fused", plan, (1, 7))
         self.assertEqual(status, 1, message)
-        lines = SAMPLE.read_text().replace('"grid":[14,1,1]', '"grid":[15,1,1]').splitlines()
+        lines = [line.replace('"grid":[14,1,1]', '"grid":[15,1,1]') for line in lines]
         status, message = pc.compare(self.record, "control-fused", pc.convert(lines), (1, 6))
         self.assertEqual(status, 1)
         self.assertIn("token 8", message)
@@ -404,7 +421,7 @@ class RecordingsConvert(unittest.TestCase):
     def test_a_trace_without_copies_or_memsets(self):
         # nsys leaves out an activity table with no rows; the sample launches
         # kernels only.
-        lines = SAMPLE.read_text().splitlines()
+        lines = self.historical_sample()
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "trace.sqlite"
             db = sqlite3.connect(path)
