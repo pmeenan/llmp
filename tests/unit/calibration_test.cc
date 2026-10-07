@@ -96,6 +96,12 @@ TEST(Calibration, Gemma31CandidateHasDistinctCalibrationIdentity) {
   EXPECT_NE(ordinary, candidate);
   EXPECT_THAT(ordinary, Not(HasSubstr("gemma31_production=")));
   EXPECT_THAT(candidate, HasSubstr("gemma31_production=true"));
+  settings.gemma31_production = false;
+  settings.gemma26_production = true;
+  const auto candidate26 = jitllm::runtime::MeasuredWith(settings);
+  EXPECT_NE(ordinary, candidate26);
+  EXPECT_NE(candidate, candidate26);
+  EXPECT_THAT(candidate26, HasSubstr("gemma26_production=true"));
 }
 
 TEST(Calibration, KeysTheSettingsMeasuredWith) {

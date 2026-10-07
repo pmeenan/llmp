@@ -237,6 +237,9 @@ struct ModelSettings {
   bool drafter = false;
   // Internal candidate recipe, keyed separately from ordinary calibration.
   bool gemma31_production = false;
+  // The bounded Gemma26 production recipe (1024-row prefill, norm chains,
+  // MoE route/reduce, joined owner attention), keyed separately too.
+  bool gemma26_production = false;
 
   // Every LLM.
   Setting<std::uint32_t> context;

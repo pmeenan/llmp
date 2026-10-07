@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Select a bounded Gemma26 serving recipe at context<=8192 and at most four
+  slots: 1024-row prefill fallback, norm chains, MoE route/reduce and joined
+  owner attention. C1/C4 go from 57%/41% to within 0.6% of llama.cpp v0.6.0,
+  with its exact greedy tokens. Larger configurations keep the prior recipe.
+
 - Faster new conversations and repeated prompts on every LLM: clearing a
   conversation zeroes its state in place and reuses the memory for the next
   one, and a CUDA graph is now captured beside its shape's second run instead

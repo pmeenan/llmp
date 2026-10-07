@@ -180,8 +180,10 @@ complete-layer diagnostic controls. Its bounded native 26B-A4B runner reuses
 the shared skeleton and has complete-model state/replay controls. Both profiles have a bounded serving adapter. The
 [dense31 bridge](experiments/gemma31-serving-bridge/README.md) selects ordinary
 joined execution and both norm chains only at context<=8192/slots<=4, with
-current-pin quality/corpus and HTTP controls. Gemma26 and larger configurations
-retain their scalar recipe. Broader quality, context, assistant and sustained
+current-pin quality/corpus and HTTP controls; the
+[Gemma26 recipe](experiments/gemma26-production/README.md) adds MoE route/reduce
+and a 1024-row prefill under the same bounds. Larger configurations retain their
+scalar recipe. Broader quality, context, assistant and sustained
 performance qualification remain open.
 
 Gemma's [immutable head capacity](experiments/gemma-head-capacity/README.md)

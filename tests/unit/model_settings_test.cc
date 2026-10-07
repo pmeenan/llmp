@@ -193,15 +193,60 @@ TEST(ModelSettings, Gemma31ProductionDefaultIsBoundedAndProfileSpecific) {
   EXPECT_EQ(larger_cohort->prefill_chunk.value, 128U);
   entry.overrides["max_slots"] = std::int64_t{4};
   facts.gemma_profile = &jitllm::model::Gemma4_26BA4B();
-  auto unchanged26 = ResolveSettings(entry, facts, nullptr, true, true);
-  ASSERT_TRUE(unchanged26);
-  EXPECT_FALSE(unchanged26->gemma31_production);
-  EXPECT_EQ(unchanged26->prefill_chunk.value, 128U);
+  auto profile26 = ResolveSettings(entry, facts, nullptr, true, true);
+  ASSERT_TRUE(profile26);
+  EXPECT_FALSE(profile26->gemma31_production);
+  EXPECT_TRUE(profile26->gemma26_production);
+  EXPECT_EQ(profile26->prefill_chunk.value, 1024U);
   facts.gemma_profile = nullptr;
   auto unknown = ResolveSettings(entry, facts, nullptr, true, true);
   ASSERT_TRUE(unknown);
   EXPECT_FALSE(unknown->gemma31_production);
   EXPECT_EQ(unknown->prefill_chunk.value, 128U);
+}
+
+TEST(ModelSettings, Gemma26ProductionUses1024WithinBoundsAndPreservesSmallerOverride) {
+  auto entry = Model("gemma");
+  auto facts = Facts("gemma4");
+  facts.gemma_profile = &jitllm::model::Gemma4_26BA4B();
+  auto ordinary = ResolveSettings(entry, facts, nullptr, true, false);
+  ASSERT_TRUE(ordinary);
+  EXPECT_FALSE(ordinary->gemma26_production);
+  // Default context exceeds the bounded envelope: the prior recipe.
+  auto unbounded = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(unbounded);
+  EXPECT_FALSE(unbounded->gemma26_production);
+  EXPECT_EQ(unbounded->prefill_chunk.value, 128U);
+  entry.overrides["context"] = std::int64_t{8192};
+  auto candidate = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(candidate);
+  EXPECT_TRUE(candidate->gemma26_production);
+  EXPECT_FALSE(candidate->gemma31_production);
+  EXPECT_EQ(candidate->prefill_chunk.value, 1024U);
+  entry.overrides["max_slots"] = std::int64_t{4};
+  candidate = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(candidate);
+  EXPECT_TRUE(candidate->gemma26_production);
+  entry.overrides["max_slots"] = std::int64_t{5};
+  auto larger_cohort = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(larger_cohort);
+  EXPECT_FALSE(larger_cohort->gemma26_production);
+  EXPECT_EQ(larger_cohort->prefill_chunk.value, 128U);
+  entry.overrides["max_slots"] = std::int64_t{4};
+  entry.overrides["context"] = std::int64_t{8193};
+  auto larger_context = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(larger_context);
+  EXPECT_FALSE(larger_context->gemma26_production);
+  entry.overrides["context"] = std::int64_t{8192};
+  entry.overrides["prefill_chunk"] = std::int64_t{2048};
+  candidate = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(candidate);
+  EXPECT_EQ(candidate->prefill_chunk.value, 1024U);
+  entry.overrides["prefill_chunk"] = std::int64_t{64};
+  candidate = ResolveSettings(entry, facts, nullptr, true);
+  ASSERT_TRUE(candidate);
+  EXPECT_TRUE(candidate->gemma26_production);
+  EXPECT_EQ(candidate->prefill_chunk.value, 64U);
 }
 
 TEST(ModelSettings, Gemma31ProductionUses256WithinBoundsAndPreservesSmallerOverride) {

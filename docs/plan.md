@@ -20,8 +20,10 @@ file ([M0](m0-record.md), [M1](m1-record.md), [M2](m2-record.md), [M3](m3-record
 The [bounded dense31 serving bridge](experiments/gemma31-serving-bridge/README.md)
 now selects the checked ordinary recipe only at resolved context<=8192/slots<=4,
 with current-pin C1/C4 quality, complete 1K corpus parity, HTTP controls and
-focused default-selection checks. Gemma26 and larger envelopes retain their
-prior recipe; sustained performance and broader qualification remain open.
+focused default-selection checks. The [bounded Gemma26 recipe](experiments/gemma26-production/README.md)
+reaches stock parity with stock's exact tokens under the same bounds; larger
+envelopes retain their prior recipe; sustained performance and broader
+qualification remain open.
 The historical SOURCE14 serving/default proposal was not adopted. Its original
 [Gemma31 C2 first screen](experiments/gemma31-production-c2/README.md) retains eight
 positive-margin strict differences; the [private local-MMA factor](experiments/gemma31-c2-local-mma/README.md)
@@ -52,7 +54,7 @@ measures paid Clear 57.45 ms, state growth 162.18 ms and required planning 0.286
 with 160 plan hits/no misses, while complete outputs/state match the fixed own
 proof. It changes only optional runner diagnostics. The attribution result itself
 selects no serving policy; bounded dense31 adoption is established by the
-separate production bridge above. Gemma26/larger recipes remain unadopted. Nested counters and stream wall do not establish a residual
+separate production bridge above; Gemma26 has its own bounded recipe since. Nested counters and stream wall do not establish a residual
 kernel cause or a new reference speed gate.
 
 ## M0 — Plan the plan  `done`
@@ -200,8 +202,11 @@ stock in fresh bookends. Third cycles match stock within 0.1%, and native
 tokens and histories match the frozen proof. C4's four-owner decode (+3.2%) is
 the remaining gap. State reuse and capture beside also apply to DeepSeek V4 and
 Qwen3.8. The [earlier handoff](experiments/gemma-performance-review/README.md)
-keeps its context. Remaining milestone gates stay open, including Gemma26
-transfer and backward qualification.
+keeps its context. The follow-up removes C4 owner-attention copies (−1.5 ms a
+wave) and adopts a [bounded Gemma26 recipe](experiments/gemma26-production/README.md):
+1024-row prefill, norm chains, MoE route/reduce and joined owner attention take
+Gemma26 C1/C4 from 57%/41% slower to within 0.6% of stock, with stock's exact
+tokens and byte-identical corpus heads. Remaining milestone gates stay open.
 
 Goal (the owner, 2026-09-29): build out the core engine across the major
 open model families, MoE and dense, before the system is built around it
@@ -350,8 +355,12 @@ family" guide, and its long-context scaling work.
         and HTTP stop/continuation/departed-client peer progress. Default prefill
         fallback 256, both norm chains, eligible owner attention and (since
         [gap closing](experiments/gemma-gap-closing/README.md)) the fused decode
-        FFN; short paid cycles are 0.73%/1.36% slower than stock. Gemma26/larger settings retain their
-        prior recipe. Broader quality/context, sustained performance and assistants
+        FFN; short paid cycles are 0.73%/1.36% slower than stock.
+      - [x] [Bounded Gemma26 production recipe](experiments/gemma26-production/README.md)
+        at context<=8192/slots<=4: 1024-row prefill fallback, norm chains, MoE
+        route/reduce and joined owner attention. C1/C4 within 0.6% of stock with
+        stock's exact greedy tokens; corpus heads byte-identical. Larger settings
+        retain their prior recipe. Broader quality/context, sustained performance and assistants
         remain open.
       - [x] Bounded approved Gemma26/31 adapter on the shared serving driver,
         with [scalar independent cohorts](experiments/gemma31-serving/README.md),

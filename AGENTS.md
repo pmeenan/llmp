@@ -257,7 +257,9 @@ the commit gate.
 [Gemma31 gap closing](docs/experiments/gemma-gap-closing/README.md) narrowed the
 bounded serving gap to stock from 3.15%/3.51% (C1/C4) to 0.73%/1.36%. It did
 this with state reuse across Clear, graph capture beside eager execution and
-the fused decode FFN; the remaining gap is mostly C4's four-owner decode.
+the fused decode FFN; the remaining gap is mostly C4's four-owner decode. A
+[bounded Gemma26 recipe](docs/experiments/gemma26-production/README.md) reaches
+stock parity (within 0.6%) with stock's exact tokens.
 The runtime serves Chat Completions and literal Completions with target
 likelihoods on loopback and the tailnet. DeepSeek V4 Flash, Qwen3.8 Flash
 Next (native NVFP4/MXFP8 and checked GGUF) and Qwen-Image-2.1 execute with

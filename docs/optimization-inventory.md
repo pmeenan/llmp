@@ -102,8 +102,9 @@ row-invariant kernel guards them.
 The [bounded dense31 serving bridge](experiments/gemma31-serving-bridge/README.md)
 now selects the checked ordinary recipe only at resolved context<=8192/slots<=4,
 with current-pin quality/corpus and HTTP/default-selection controls. Broader
-contexts/cohorts and Gemma26 preserve their prior recipe; sustained performance
-and broader qualification remain open. The historical SOURCE14 row/attention
+contexts/cohorts preserve their prior recipe, and Gemma26 has its own
+[bounded recipe](experiments/gemma26-production/README.md); sustained
+performance and broader qualification remain open. The historical SOURCE14 row/attention
 proposal remains unadopted. Its
 [first31 C2 comparison](experiments/gemma31-production-c2/README.md) retains eight
 strict differences, and the [private local-MMA factor](experiments/gemma31-c2-local-mma/README.md)
@@ -133,7 +134,10 @@ changes only eligible26B multi-row prefix planning: all160 paid heads now match
 retained FIRST stock, while one strict frontier difference remains. Conditional
 loss is +0.08119% and passes independently. Native prefix route29/decode route30
 is observed; actual stock992 selection is not. This does not select a production
-layer whitelist or adopt defaults. Gemma26 default adoption remains excluded; the separate bounded dense31 bridge does not inherit this diagnostic layer policy.
+layer whitelist or adopt defaults. The later bounded
+[Gemma26 recipe](experiments/gemma26-production/README.md) selects all-layer
+routing at 1024-row prefill, not this diagnostic layer policy; the dense31
+bridge does not inherit it either.
 
 The [new-release Gemma31 C2 screen](experiments/gemma-release-c2/README.md)
 independently freezes native before FIRST v0.6.0/d812 stock: zero strict
@@ -210,6 +214,7 @@ they have no text-model equivalent.
 | Reuse a cleared conversation's state backing | Gemma, DeepSeek V4 and Qwen3.8 `Clear` within a request (`LiveState::ZeroForReuse`, kept discarded backing revived by growth) | Idle clears, spilled or partly reclaimed slots, and Qwen-Image (no growing state) still discard | Gemma31 C1 paid cycle −200 ms, C4 −1.0 s; DeepSeek/Qwen3.8 8K swap table exact. [Gap closing](experiments/gemma-gap-closing/README.md) |
 | Capture a graph beside its shape's eager run | Every runner through `GraphRuns::Queue` | Plans with work between inputs and plan (Qwen3.8's n-gram gather) keep capture-first | Gemma31 C1 −180 ms and C4 −0.6 s per paid cycle with first-time prefill captures; replay benefit kept. [Gap closing](experiments/gemma-gap-closing/README.md) |
 | Join owners' operands by view instead of copy | Gemma owner attention: packed Q as a view of the roped Q rows, masks joined once per wave, output read as a reshape | DeepSeek/Qwen per-slot joins, if any use `ggml_concat` on a decode path | Gemma31 C4 decode −1.5 ms per wave, tokens unchanged. Batching the per-request K/V stores was rejected (see the method note). [Gap closing](experiments/gemma-gap-closing/README.md) |
+| Match the reference's prefill geometry and routing arithmetic | Bounded Gemma26: 1024-row prefill with MoE route/reduce and joined owner attention reproduces stock's greedy tokens and byte-identical corpus heads | Other MoE families against their references; Gemma beyond 8K/4 slots | The 128-row cap alone doubled 8K prefill; without route/reduce or owner attention, tokens diverge from stock's. [Gemma26 recipe](experiments/gemma26-production/README.md) |
 | Upstream's fused one-column quantized gate/up/GLU (MMVQ) | Bounded dense31 Gemma decode | Gemma26's shared-expert products and other ordinary GGUF families with an unfused one-column FFN; never row-invariant plans | Bit-identical to separate products plus GLU; Gemma31 C1 decode −2.2 ms GPU per token. Four-column waves are not fused upstream either. [Gap closing](experiments/gemma-gap-closing/README.md) |
 | Fuse a small operation chain | Qwen short convolution/history, norm/gate and verify alpha/beta planes; DeepSeek routing/hyper-connections; image residual/next norm; shared RMSNorm/scale | Other phases/shapes and adjacent operations with matching rounding | Qwen fast verify F32 [48, 1..16] replaces four pointwise launches with one while retaining both Linear products, recurrence and commit. GPU chain/save views, full wave heads/states and owed-restore swap remain exact; matched 8K C4 HTTP gains 1.34%. Prefill/exact retain primitives. [Alpha/beta fusion](experiments/qwen38-gdn-gates/README.md) |
 | Fuse per-head normalization and rotation | Qwen `QsaPrep`; DeepSeek fast canonical 512-value Q heads with a normal 64-value tail | Other widths/layouts/rotation types after qualification; EXL3 Qwen2 currently has no matching per-head norm | DeepSeek's corrected 8K screen gains 3.17% with all six full heads byte-identical. Preserve the native RMS reduction, the normalization store's F32 rounding, and actual RoPE FMA operand order; equivalent source expressions contracted differently before correction. Direct input dependencies remove the norm intermediate while preserving lifetime placement. [Q-head study](experiments/dsv4-qhead/README.md) |
@@ -632,8 +637,8 @@ The [bounded dense31 production bridge](experiments/gemma31-serving-bridge/READM
 selects ordinary joined serving, both norm chains and eligible owner attention for
 approved 31B artifacts with resolved context at most 8,192 and at most four slots.
 Its uncalibrated prefill fallback is 256; smaller explicit overrides remain intact.
-Other profiles and larger configurations retain the prior scalar recipe and 128-row
-cap. Current-pin C1/C4 8K continuations have zero predicted-ID differences and
+Gemma26 has its own [bounded recipe](experiments/gemma26-production/README.md);
+larger configurations retain the prior scalar recipe and 128-row cap. Current-pin C1/C4 8K continuations have zero predicted-ID differences and
 128/129 and 512/516 byte-exact complete heads; the 1,024-row corpus has
 complete head parity. Whole serving cycles are 3.15%/3.51%
 slower than the reference. Natural HTTP continuation, stop and departed-client peer

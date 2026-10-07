@@ -560,6 +560,8 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
   s.drafter = entry.drafter.has_value();
   s.gemma31_production = gemma31_production && facts.architecture == "gemma4" &&
                          facts.gemma_profile == &model::Gemma4_31B();
+  s.gemma26_production = gemma31_production && facts.architecture == "gemma4" &&
+                         facts.gemma_profile == &model::Gemma4_26BA4B();
   const Calibration none;
   const Calibration& cal = calibration != nullptr ? *calibration : none;
   const auto basis = [&](std::string_view key) { return OverrideBasis(entry, key); };
@@ -646,19 +648,30 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
       gemma ? 1U : kDefaultSlots,
       gemma ? "bounded scalar-cohort route; uncalibrated" : "the knee measured on a GB10 (D-104)");
   if (gemma) {
-    // The initial production qualification covers this bounded dense profile.
-    // Larger contexts/cohorts and Gemma26 keep their previous recipe and key.
+    // Each approved profile has a bounded production recipe and key; larger
+    // contexts/cohorts keep the previous recipe and key.
     s.gemma31_production = s.gemma31_production && context <= 8192 && s.max_slots.value <= 4;
+    s.gemma26_production = s.gemma26_production && context <= 8192 && s.max_slots.value <= 4;
     if (s.gemma31_production && s.prefill_chunk.source == SettingSource::kFallback) {
       s.prefill_chunk.value = 256;
       s.prefill_chunk.basis = "qualified bounded Gemma31 serving envelope";
     }
-    const auto cap = std::min(s.gemma31_production ? 256U : 128U, context - 1);
+    // Gemma26 at stock's matched 1024-row geometry: its MoE arithmetic then
+    // reproduces stock's tokens (docs/experiments/gemma26-production).
+    if (s.gemma26_production && s.prefill_chunk.source == SettingSource::kFallback) {
+      s.prefill_chunk.value = 1024;
+      s.prefill_chunk.basis = "qualified bounded Gemma26 serving envelope";
+    }
+    const auto cap = std::min(s.gemma31_production   ? 256U
+                              : s.gemma26_production ? 1024U
+                                                     : 128U,
+                              context - 1);
     if (s.prefill_chunk.value > cap) {
       s.prefill_chunk.value = cap;
-      s.prefill_chunk.basis += s.gemma31_production
-                                   ? ", capped by the candidate Gemma31 serving envelope"
-                                   : ", capped by the bounded Gemma serving envelope";
+      s.prefill_chunk.basis +=
+          s.gemma31_production   ? ", capped by the candidate Gemma31 serving envelope"
+          : s.gemma26_production ? ", capped by the bounded Gemma26 serving envelope"
+                                 : ", capped by the bounded Gemma serving envelope";
     }
     if (s.max_slots.value > 12 || s.max_slots.value > s.prefill_chunk.value)
       return Error("Gemma serving needs at most twelve owners, within its chunk envelope");
