@@ -57,6 +57,35 @@ so only approximate):
 - **Gemma31 C4:** 59.470 s, against 59.865/59.732 s.
 - **Gemma26 C1:** 4.934 s second cycle, against 5.013/5.023 s.
 
+### DeepSeek V4 and Qwen3.8
+
+These are `jitllm-runtime chat` runs of one prompt (37 tokens on DeepSeek V4,
+85 on Qwen3.8), with 384 greedy tokens, stop ignored and speculation on (the
+swap table's configuration). Each process ran fresh, in the order
+before/after/after/before, with `ba67d9e` as the before build. Every run of a
+model wrote the same text.
+
+| Model | Before (tok/s) | After (tok/s) |
+| --- | --- | --- |
+| DeepSeek V4 | 36.68 / 36.62 | 36.85 / 36.82 |
+| Qwen3.8 | 47.25 / 47.40 | 47.98 / 47.44 |
+
+Neither model regresses. The apparent gains (about +0.5% and +0.8% in the
+means) are within run-to-run noise at two runs each.
+
+The second Qwen3.8 "after" run did not match the others. It started from the
+draft-depth cost the first "after" run had just recorded (calibration is in
+force from the next start of the same build), where the others used the
+fallback. That different schedule gave its lower acceptance (0.660 against
+0.720) with the same text. (The second DeepSeek "after" run also started from
+a recorded decode floor, which only admission reads; its rate and acceptance
+match the first.) The one matched pair, the first "after" run
+against both "before" runs, is +1.4%, from a single run.
+
+DeepSeek V4's and Qwen3.8's speculative steps are fewer per token than
+Gemma's plain steps, so a
+smaller saving is expected; that was not measured separately.
+
 ## Device greedy tokens
 
 A Gemma generation takes its token from the device when it is greedy and
