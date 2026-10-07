@@ -6804,7 +6804,7 @@ raw-device comparison demonstrates a material end-to-end gain worth owning
 allocation, metadata, recovery, and tooling below the filesystem. No raw
 performance advantage or production tail bound is assumed from this spike.
 
-## D-033: Initial 2 MiB independent VMM extents; reuse backing on demand without a standing free pool  (2026-09-21, status: accepted; retained 2026-09-27 after the retained-backing replay, D-085; implements D-006)
+## D-033: Initial 2 MiB independent VMM extents; reuse backing on demand without a standing free pool  (2026-09-21, status: accepted; retained 2026-09-27 after the retained-backing replay, D-085; implements D-006; amended 2026-10-07: handed-off backing parks still mapped)
 
 **Decision.** Start the CUDA provider with one physical allocation handle per
 independently reclaimable extent, using the queried minimum granularity:
@@ -6851,6 +6851,30 @@ and graph/registration survival are not established by this experiment.
 batched driver operations, or a bounded unused-handle cache improve measured
 end-to-end latency enough to justify their occupancy/reclamation cost. Reprobe
 when device, driver, allocation properties, or sharing requirements change.
+
+*Amended 2026-10-07 (owner-directed pager work):* a handoff eviction parks
+its backing **still mapped** at the outgoing extent's place (lazy handoff,
+the node's default). The VMM lane unmaps it there as the first step of the
+load that takes it, beside the reads of the loads ahead of it, or of the
+release of what no load took; a parked extent loading again takes its own
+backing back as it is if no load took it first (the lane takes the newest
+kept backing of the class and size, so an extent nonresident again may
+still have its old backing mapped at its place until its next load or a
+release takes it). Every consumer retired before the eviction began and
+neither an EVICTING nor a nonresident extent admits a lease, so invariant 2
+holds; occupancy and the charge's move are unchanged. Measured on `spark-b` with the production runtime's swap table
+(DeepSeek 0731 + DSpark ↔ Qwen3.8 NVFP4 + MTP, 8K saved context, same binary,
+off/on/on/off): the serial evict phase of 1.31–1.94 s (36–52k cuMemUnmap
+calls at about 34 µs) falls to 0.04–0.15 s, page-in stays at disk speed, and
+swaps fall from 7.89–8.03 to 6.10–6.27 s (to Qwen) and 9.53–9.71 to
+8.24–8.40 s (to DeepSeek), every state and continuation exact. The same
+day's [VMM batching probe](experiments/vmm-batching/README.md) found one-call
+cuMemSetAccess/cuMemUnmap over adjacent 2 MiB mappings no cheaper per extent
+(about 32–34 µs each at 1–1,024 extents), cuMemCreate per byte (55–80 µs a
+2 MiB, also within one large handle) and serialized across threads, and only
+one large handle's access/unmap cheaper (12.5/14.7 µs a 2 MiB at 512 MiB): so
+the 2 MiB extent stays, batching is not adopted, and the remaining create cost
+is reachable only by reuse or by moving it off the critical path.
 
 ## D-032: Validated LLVM 22.1.8 / CUDA 13.4.2 toolchain with C++23 throughout  (2026-09-21, status: accepted; implements D-011/D-012 pins; libstdc++ development files amended by D-059, then replaced by D-060's statically linked GCC 16.2 runtime; the Spark sysroot snapshot replaced by D-070's package-built sysroot)
 

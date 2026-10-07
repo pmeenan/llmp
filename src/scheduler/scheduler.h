@@ -86,6 +86,25 @@
 //     the evictions complete. A load that took kept backing and ends
 //     without mapping it (cancelled, or refused) releases it before the
 //     extent is nonresident again.
+//     With lazy_handoff (SchedulerSettings; the node's default) the park
+//     keeps the backing mapped where it was: no new lease can reach the
+//     EVICTING extent, and every consumer retired before its eviction
+//     began (invariant 2). The VMM lane unmaps it there as the first step
+//     of whatever takes it, a load's map (beside the reads of the loads
+//     ahead of it) or the release of what no load took. The lane takes
+//     the newest kept backing of the class and size, not the one whose
+//     parked eviction the scheduler ended: an extent nonresident again may
+//     still have its old backing mapped at its place (no lease reaches it
+//     either), and the count of kept backing per class and size is what
+//     the catalog charges. A load at a place whose own kept backing is
+//     still there takes it as it is, mapped and accessible (a reuse), or
+//     moves it out first, still kept (a created backing); an eviction
+//     into a reservation an unknown outcome left undetermined is
+//     quarantined at once, as an unmap there would be. A kept backing the
+//     lane cannot unmap from its old place never fails the load taking it:
+//     one refused stays kept behind the others and the next is tried; one
+//     with an unknown outcome is dropped, still charged. A release that
+//     finds none it can take is refused, so its eviction stays charged.
 //   - Write back live mutable contents on eviction (a kPreserve extent
 //     whose source is its write-back place, PageSource::write_back), the
 //     page-in's reverse path through the zone (D-081): the extent is
@@ -373,6 +392,9 @@ struct SchedulerSettings {
   // The execution budget B every load checks. Initialized so callers may
   // designate only the fields they change.
   base::Bytes budget = {};  // NOLINT(readability-redundant-member-init)
+  // Handoff evictions park their backing still mapped (BackingWork::lazy):
+  // the unmap moves into the load that takes it, beside earlier loads' reads.
+  bool lazy_handoff = false;
   // The bound on both durations below, checked when the scheduler is
   // built: the clock compares and waits in nanoseconds, where an unbounded
   // value overflows.

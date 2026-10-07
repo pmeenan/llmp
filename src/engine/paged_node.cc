@@ -905,8 +905,11 @@ Status PagedNode::Start(Bytes budget) {
   for (std::size_t i = 0; i < settings_.slots; ++i) {
     landing.slots.push_back(zone_.base + (i * settings_.slot_bytes));
   }
-  sc::SchedulerSettings scheduling{
-      .tasks = 16, .budget = budget, .landing = landing, .observer = settings_.observer};
+  sc::SchedulerSettings scheduling{.tasks = 16,
+                                   .budget = budget,
+                                   .lazy_handoff = settings_.lazy_handoff,
+                                   .landing = landing,
+                                   .observer = settings_.observer};
   if (settings_.poll_window) {
     scheduling.poll_window = *settings_.poll_window;  // a diagnostic (NodeSettings)
   }

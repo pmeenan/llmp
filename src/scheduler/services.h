@@ -23,6 +23,8 @@
 
 #include <chrono>
 #include <cstddef>
+#include <list>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -47,27 +49,42 @@ struct QueueSettings {
   std::size_t batch = 16;     // commands a turn takes
 };
 
-// Backing unmapped for a handoff and not yet mapped again or released
-// (D-033; BackingWork's `retain`, `reuse` and kRelease): the lane that
-// calls the device-memory provider keeps it, on its own thread. Every
+// Backing kept for a handoff and not yet mapped again or released
+// (D-033; BackingWork's `retain`, `lazy`, `reuse` and kRelease): the lane
+// that calls the device-memory provider keeps it, on its own thread. Every
 // entry is charged in the catalog to an extent the scheduler names
-// (scheduler.h), never an idle pool of its own.
+// (scheduler.h), never an idle pool of its own. A lazy entry is still
+// mapped at the place it was evicted from (`at`) until a load or release
+// takes it, which unmaps it first.
 class HandoffStash {
  public:
-  void Put(std::size_t allocation_class, Bytes size, providers::BackingId backing) {
-    entries_.push_back({.allocation_class = allocation_class, .size = size, .backing = backing});
-  }
+  struct Place {
+    providers::ReservationId reservation;
+    Bytes offset;
+    auto operator<=>(const Place&) const = default;
+  };
+  struct Kept {
+    providers::BackingId backing;
+    std::optional<Place> at;  // still mapped there
+  };
+  // `oldest`: one a provider call refused goes behind every other, so the
+  // takes that follow try those first.
+  void Put(std::size_t allocation_class, Bytes size, Kept kept, bool oldest = false);
   // The most recently kept backing of that class and size, if any.
-  std::optional<providers::BackingId> Take(std::size_t allocation_class, Bytes size);
+  std::optional<Kept> Take(std::size_t allocation_class, Bytes size);
+  // The kept backing still mapped at `place`, if one of that class and
+  // size is, taken (one of another, filed under its own, is left there).
+  std::optional<Kept> TakeAt(const Place& place, std::size_t allocation_class, Bytes size);
   std::size_t size() const { return entries_.size(); }
 
  private:
   struct Entry {
     std::size_t allocation_class = 0;
     Bytes size;
-    providers::BackingId backing;
+    Kept kept;
   };
-  std::vector<Entry> entries_;
+  std::list<Entry> entries_;                            // oldest first
+  std::map<Place, std::list<Entry>::iterator> mapped_;  // the lazy ones, by place
 };
 
 // The storage lane: whole reads (providers::DirectReader) into memory the

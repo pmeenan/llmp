@@ -775,7 +775,9 @@ over catalog extents:
   after every full load.
 
 **The handoff** (`scheduler.h`, D-033). An eviction asked for with a
-handoff unmaps the backing but keeps it on the VMM lane, and parks: the
+handoff keeps the backing on the VMM lane (since 2026-10-07 still mapped
+where it was, the lazy handoff, whose unmap runs in the load that takes it
+or the release of what none took), and parks: the
 extent stays EVICTING and charged, so the catalog counts the kept backing,
 and the evictor is told it is done. A page-in whose managed backing has the
 same class and size takes a parked eviction's backing: in one step the load

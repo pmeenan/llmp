@@ -292,7 +292,9 @@ four-slot numerical control, 1,567-test Spark suite, ARM cross/qemu suite
 and package install/purge fixture pass. Whole shipment tiers remain owed
 before publishing a package.
 
-M3.5 is in progress. Native token histories now have explicit capacity
+M3.5 is in progress. A [lazy handoff](docs/experiments/vmm-batching/README.md)
+(D-033 amended) moves swap unmaps beside page-in reads: the same 32-swap table
+now peaks at 8.53 s LLM-to-LLM, 3.7 s into the image. Native token histories now have explicit capacity
 charges and idle reclaim; both M3 LLMs retain exact 8K continuations.
 Gemma 4 has checked profiles, bindings, bounded independent-slot state and
 bounded serving for both approved profiles. Both select their checked

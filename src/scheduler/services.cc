@@ -71,19 +71,52 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
   const auto unknown = [](const providers::Failure& failure) {
     return failure.error == providers::ProviderError::kUnknown;
   };
+  // A kept backing of the work's class and size, unmapped first from where
+  // it was evicted if it was kept there (lazy). The unmap touches only the
+  // outgoing place, never the work's: one it refuses stays kept, now the
+  // oldest, and the next is tried; one with an unknown outcome is dropped,
+  // never reused and still charged (the last release the scheduler asks
+  // for finds none kept and is refused).
+  const auto take_unmapped = [&]() -> std::optional<providers::BackingId> {
+    std::optional<providers::BackingId> first_refused;
+    while (true) {
+      const std::optional<HandoffStash::Kept> kept = stash.Take(work.allocation_class, work.size);
+      if (!kept) {
+        return std::nullopt;
+      }
+      if (kept->backing == first_refused) {
+        // Every other was tried: refused ones only remain.
+        stash.Put(work.allocation_class, work.size, *kept, /*oldest=*/true);
+        return std::nullopt;
+      }
+      if (!kept->at) {
+        return kept->backing;
+      }
+      const auto unmapped = memory->Unmap(kept->at->reservation, kept->at->offset, work.size);
+      if (unmapped) {
+        return kept->backing;
+      }
+      if (!unknown(unmapped.error())) {
+        stash.Put(work.allocation_class, work.size, *kept, /*oldest=*/true);
+        first_refused = first_refused.value_or(kept->backing);
+      }
+    }
+  };
   if (work.kind == BackingWork::Kind::kRelease) {
     // One handed-off backing of the class and size, released: no longer
     // charged once this succeeds.
-    const std::optional<providers::BackingId> kept = stash.Take(work.allocation_class, work.size);
+    const std::optional<providers::BackingId> kept = take_unmapped();
     if (!kept) {
-      not_started();  // none kept: nothing changed
+      not_started();  // none kept that could be: nothing changed
       return;
     }
     if (const auto released = memory->Release(*kept); !released) {
       if (unknown(released.error())) {
         unproven(Acceptance::kUnknown);
       } else {
-        stash.Put(work.allocation_class, work.size, *kept);  // still there, still kept
+        // Still there, still kept.
+        stash.Put(work.allocation_class, work.size, {.backing = *kept, .at = std::nullopt},
+                  /*oldest=*/true);
         not_started();
       }
       return;
@@ -91,11 +124,48 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
   } else if (work.kind == BackingWork::Kind::kMap) {
     // Handed-off backing goes back to the stash on a known failure, so a
     // refusal still changed nothing: the scheduler releases it later.
+    const HandoffStash::Place place{.reservation = work.reservation, .offset = work.offset};
+    // A lazily kept backing may still hold this place (its extent's
+    // eviction parked it here, or ended while another's was taken).
+    std::optional<HandoffStash::Kept> here = stash.TakeAt(place, work.allocation_class, work.size);
+    if (here && work.reuse) {
+      // Its own backing, still mapped here with its access: nothing to do,
+      // unless an unknown outcome has since left the reservation
+      // undetermined, where a map would be refused (kUndetermined) and the
+      // extent must not be resident again: still kept, nothing changed.
+      if (const auto range = memory->RangeOf(place.reservation); !range) {
+        stash.Put(work.allocation_class, work.size, *here, /*oldest=*/true);
+        not_started();
+        return;
+      }
+      (void)board.Accept(operation, Acceptance::kAccepted);
+      (void)board.Complete(operation, Terminal{.outcome = Outcome::kSucceeded,
+                                               .bytes = work.size.value(),
+                                               .no_further_access = true});
+      return;
+    }
+    if (here) {
+      // A created backing maps here: the kept one leaves the place first
+      // and stays kept, unmapped. Refused (as a map here would be): still
+      // kept there, nothing changed.
+      if (const auto unmapped = memory->Unmap(place.reservation, place.offset, work.size);
+          !unmapped) {
+        if (unknown(unmapped.error())) {
+          unproven(Acceptance::kUnknown);
+        } else {
+          stash.Put(work.allocation_class, work.size, *here, /*oldest=*/true);
+          not_started();
+        }
+        return;
+      }
+      here->at.reset();
+      stash.Put(work.allocation_class, work.size, *here);
+    }
     std::optional<providers::BackingId> backing;
     if (work.reuse) {
-      backing = stash.Take(work.allocation_class, work.size);
+      backing = take_unmapped();
       if (!backing) {
-        not_started();  // none kept: nothing changed
+        not_started();  // none kept that could be: nothing changed
         return;
       }
     } else {
@@ -108,7 +178,7 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
     }
     const auto undo = [&]() -> bool {
       if (work.reuse) {
-        stash.Put(work.allocation_class, work.size, *backing);
+        stash.Put(work.allocation_class, work.size, {.backing = *backing, .at = std::nullopt});
         return true;
       }
       return memory->Release(*backing).has_value();
@@ -141,6 +211,27 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
       not_started();  // nothing is mapped there: nothing changed
       return;
     }
+    if (work.retain && work.lazy) {
+      // Kept where it is: the load or release that takes it unmaps it. A
+      // reservation an earlier unknown outcome left undetermined would
+      // refuse the unmap (below): the extent is quarantined now, as then,
+      // not whatever load would take its backing later.
+      if (const auto range = memory->RangeOf(work.reservation); !range) {
+        range.error().error == providers::ProviderError::kUndetermined
+            ? unproven(Acceptance::kAccepted)
+            : not_started();
+        return;
+      }
+      stash.Put(
+          work.allocation_class, work.size,
+          {.backing = *backing,
+           .at = HandoffStash::Place{.reservation = work.reservation, .offset = work.offset}});
+      (void)board.Accept(operation, Acceptance::kAccepted);
+      (void)board.Complete(operation, Terminal{.outcome = Outcome::kSucceeded,
+                                               .bytes = work.size.value(),
+                                               .no_further_access = true});
+      return;
+    }
     const auto unmapped = memory->Unmap(work.reservation, work.offset, work.size);
     if (!unmapped) {
       if (unknown(unmapped.error())) {
@@ -158,7 +249,7 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
     if (work.retain) {
       // Kept for a handoff: the scheduler keeps it charged until a load
       // maps it or a kRelease releases it.
-      stash.Put(work.allocation_class, work.size, *backing);
+      stash.Put(work.allocation_class, work.size, {.backing = *backing, .at = std::nullopt});
     } else if (const auto released = memory->Release(*backing); !released) {
       // Unmapped, but the backing still exists until it is released: a
       // refusal here leaves it charged.
@@ -174,15 +265,43 @@ void CarryOut(providers::DeviceMemory* memory, HandoffStash& stash, CompletionBo
 
 }  // namespace
 
-std::optional<providers::BackingId> HandoffStash::Take(std::size_t allocation_class, Bytes size) {
+void HandoffStash::Put(std::size_t allocation_class, Bytes size, Kept kept, bool oldest) {
+  // The provider maps one backing at a place at a time: a second entry
+  // there would leave the first's index stale.
+  base::Check(!kept.at || !mapped_.contains(*kept.at), "two kept backings at one place");
+  const Entry entry{.allocation_class = allocation_class, .size = size, .kept = kept};
+  const auto it =
+      oldest ? entries_.insert(entries_.begin(), entry) : entries_.insert(entries_.end(), entry);
+  if (kept.at) {
+    mapped_[*kept.at] = it;
+  }
+}
+
+std::optional<HandoffStash::Kept> HandoffStash::Take(std::size_t allocation_class, Bytes size) {
   for (auto it = entries_.rbegin(); it != entries_.rend(); ++it) {
     if (it->allocation_class == allocation_class && it->size == size) {
-      const providers::BackingId backing = it->backing;
+      const Kept kept = it->kept;
+      if (kept.at) {
+        mapped_.erase(*kept.at);
+      }
       entries_.erase(std::next(it).base());
-      return backing;
+      return kept;
     }
   }
   return std::nullopt;
+}
+
+std::optional<HandoffStash::Kept> HandoffStash::TakeAt(const Place& place,
+                                                       std::size_t allocation_class, Bytes size) {
+  const auto found = mapped_.find(place);
+  if (found == mapped_.end() || found->second->allocation_class != allocation_class ||
+      found->second->size != size) {
+    return std::nullopt;
+  }
+  const Kept kept = found->second->kept;
+  entries_.erase(found->second);
+  mapped_.erase(found);
+  return kept;
 }
 
 StorageService::StorageService(providers::Storage& storage, providers::ReaderSettings reader,

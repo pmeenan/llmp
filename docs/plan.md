@@ -328,6 +328,20 @@ family" guide, and its long-context scaling work.
       and atomic refusal controls. One original input preparation is removed;
       the short mean improves 1.0361% with overlapping timing ranges. No model
       benefit, production path or Gemma26 transfer is selected.
+- [ ] **Pager improvements** (owner, 2026-10-07): the costs every model
+      pays in swaps and cold state growth.
+      - [x] [Lazy handoff](experiments/vmm-batching/README.md) (D-033
+        amended): a swap's evicted backing stays mapped until the incoming
+        loads take it, so the unmaps run beside page-in reads; DeepSeek ↔
+        Qwen3.8 swaps fall from 7.9–9.7 to 6.1–8.4 s, exact. VMM batching
+        and larger extents measured and not adopted.
+      - [ ] Evict only what the incoming model needs (by the reclaim
+        order), leaving the rest of the outgoing model resident at its
+        places so a return re-reads only what went: a D-096 amendment.
+      - [ ] A reserve of 2 MiB handles created off the critical path
+        (D-033's reopen condition) for cold state growth and cold loads.
+      - [ ] Zero-fill new state on the device instead of reading a sparse
+        spill file's hole through the zone.
 - [ ] **Per family**, on the engine skeleton, using the "adding a model
       family" guide, which M3.5 tests and corrects:
       - [x] Gemma 4 26B-A4B and 31B architecture foundation:

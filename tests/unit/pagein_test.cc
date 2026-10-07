@@ -309,6 +309,7 @@ class PageInTest : public ::testing::TestWithParam<bool> {
                                                       .steps_per_turn = 16,
                                                       .waiters = 8,
                                                       .budget = Bytes(budget),
+                                                      .lazy_handoff = lazy_,
                                                       .poll_window = std::chrono::microseconds(200),
                                                       .tick = std::chrono::milliseconds(100),
                                                       .landing = landing});
@@ -516,6 +517,8 @@ class PageInTest : public ::testing::TestWithParam<bool> {
 
   // Declared in dependency order: the scheduler goes first, the providers last.
   FakeDeviceMemory memory_{Bytes(kSize), Bytes(kSize * 64)};
+  bool lazy_ = false;  // SchedulerSettings::lazy_handoff, set before Build
+  void HandoffMoves();
   FakeStorage storage_{8, 4096};
   FakeDeviceExecution execution_;
   jitllm::catalog::Catalog catalog_;
@@ -1924,6 +1927,184 @@ TEST(VmmLaneTest, OtherWorkAndMissingMemoryAreRefused) {
   EXPECT_FALSE(lane.Turn());
 }
 
+// The VMM lane's lazy handoff, step by step: a lazily kept backing stays
+// mapped; a reuse at its own place takes it as it is; a reuse elsewhere
+// unmaps it first; a created backing's map at a place a kept one holds
+// moves that one out (kept, unmapped); a release unmaps before releasing.
+TEST(VmmLaneTest, LazilyKeptBackingIsUnmappedByWhatTakesItsPlaceOrItself) {
+  using jitllm::scheduler::BackingWork;
+  FakeDeviceMemory memory{Bytes(kSize), Bytes(kSize * 8)};
+  const auto place = memory.Reserve(Bytes(kSize * 2)).value();
+  jitllm::base::WakeFlag wake;
+  CompletionBoard board{16, wake};
+  BackingService lane(&memory, board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 8});
+  const auto run = [&](BackingWork::Kind kind, std::uint64_t at, bool retain, bool lazy,
+                       bool reuse) {
+    const auto operation = board.Open();
+    EXPECT_EQ(lane.Submit(
+                  jitllm::scheduler::DeviceCommand{.operation = operation,
+                                                   .work = BackingWork{.kind = kind,
+                                                                       .reservation = place,
+                                                                       .offset = Bytes(at * kSize),
+                                                                       .size = Bytes(kSize),
+                                                                       .allocation_class = 0,
+                                                                       .retain = retain,
+                                                                       .lazy = lazy,
+                                                                       .reuse = reuse}}),
+              PushResult::kAccepted);
+    EXPECT_TRUE(lane.Turn());
+    const auto seen = board.Harvest(4);
+    EXPECT_EQ(seen.size(), 1U);
+    const bool ok = seen.size() == 1 && seen[0].terminal.has_value() &&
+                    seen[0].terminal->outcome == jitllm::scheduler::Outcome::kSucceeded;
+    (void)board.Close(operation);
+    return ok;
+  };
+  const auto mapped = [&](std::uint64_t at) {
+    return memory.MappedAt(place, Bytes(at * kSize)).has_value();
+  };
+  ASSERT_TRUE(run(BackingWork::Kind::kMap, 0, false, false, false));
+  EXPECT_TRUE(mapped(0));
+  // Kept lazily: still mapped, one kept.
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap, 0, true, true, false));
+  EXPECT_TRUE(mapped(0));
+  EXPECT_EQ(lane.stashed(), 1U);
+  // Its own place again: taken as it is.
+  ASSERT_TRUE(run(BackingWork::Kind::kMap, 0, false, false, true));
+  EXPECT_TRUE(mapped(0));
+  EXPECT_EQ(lane.stashed(), 0U);
+  EXPECT_EQ(memory.backings(), 1U);
+  // Kept lazily, then reused elsewhere: unmapped where it was first.
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap, 0, true, true, false));
+  ASSERT_TRUE(run(BackingWork::Kind::kMap, 1, false, false, true));
+  EXPECT_FALSE(mapped(0));
+  EXPECT_TRUE(mapped(1));
+  EXPECT_EQ(memory.backings(), 1U);
+  // Kept lazily at 1; a created backing maps at 1: the kept one moves out.
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap, 1, true, true, false));
+  ASSERT_TRUE(run(BackingWork::Kind::kMap, 1, false, false, false));
+  EXPECT_TRUE(mapped(1));
+  EXPECT_EQ(lane.stashed(), 1U);
+  EXPECT_EQ(memory.backings(), 2U);
+  // Released, kept and unmapped; then lazily kept again and released.
+  ASSERT_TRUE(run(BackingWork::Kind::kRelease, 0, false, false, false));
+  EXPECT_EQ(lane.stashed(), 0U);
+  EXPECT_EQ(memory.backings(), 1U);
+  ASSERT_TRUE(run(BackingWork::Kind::kUnmap, 1, true, true, false));
+  EXPECT_TRUE(mapped(1));
+  ASSERT_TRUE(run(BackingWork::Kind::kRelease, 1, false, false, false));
+  EXPECT_FALSE(mapped(1));
+  EXPECT_EQ(memory.backings(), 0U);
+  EXPECT_EQ(lane.stashed(), 0U);
+  lane.Close();
+  lane.Run();
+  ASSERT_TRUE(memory.Free(place).has_value());
+}
+
+// A kept backing whose unmap from where it was evicted is refused stays
+// kept, behind the others, and the take tries the next; one with an
+// unknown outcome is never reused. Either way the work's own place is
+// untouched. In a reservation an unknown outcome left undetermined, a lazy
+// park is refused as unproven, and a backing already parked there is
+// neither taken as it is nor released.
+TEST(VmmLaneTest, ALazilyKeptBackingThatCannotBeUnmappedIsSetAsideNotTaken) {
+  using jitllm::scheduler::Acceptance;
+  using jitllm::scheduler::BackingWork;
+  using jitllm::scheduler::Outcome;
+  FakeDeviceMemory memory{Bytes(kSize), Bytes(kSize * 8)};
+  const auto out = memory.Reserve(Bytes(kSize * 2)).value();
+  const auto in = memory.Reserve(Bytes(kSize * 2)).value();
+  jitllm::base::WakeFlag wake;
+  CompletionBoard board{16, wake};
+  BackingService lane(&memory, board, QueueSettings{.capacity = 8, .reserved = 1, .batch = 8});
+  enum class Seen : std::uint8_t { kSucceeded, kNotStarted, kUnproven };
+  const auto run = [&](BackingWork::Kind kind, jitllm::providers::ReservationId place,
+                       std::uint64_t at, bool lazy, bool reuse) {
+    const auto operation = board.Open();
+    EXPECT_EQ(lane.Submit(jitllm::scheduler::DeviceCommand{
+                  .operation = operation,
+                  .work = BackingWork{.kind = kind,
+                                      .reservation = place,
+                                      .offset = Bytes(at * kSize),
+                                      .size = Bytes(kSize),
+                                      .allocation_class = 0,
+                                      .retain = kind == BackingWork::Kind::kUnmap,
+                                      .lazy = lazy,
+                                      .reuse = reuse}}),
+              PushResult::kAccepted);
+    EXPECT_TRUE(lane.Turn());
+    const auto seen = board.Harvest(4);
+    EXPECT_EQ(seen.size(), 1U);
+    Seen result = Seen::kUnproven;
+    if (seen.size() == 1 && seen[0].acceptance == Acceptance::kNotStarted) {
+      result = Seen::kNotStarted;
+    } else if (seen.size() == 1 && seen[0].terminal.has_value() &&
+               seen[0].terminal->outcome == Outcome::kSucceeded) {
+      result = Seen::kSucceeded;
+    }
+    (void)board.Close(operation);
+    return result;
+  };
+  const auto mapped = [&](jitllm::providers::ReservationId place, std::uint64_t at) {
+    return memory.MappedAt(place, Bytes(at * kSize)).has_value();
+  };
+  using Kind = BackingWork::Kind;
+  // Two lazily kept at `out`, 1 the newer: its unmap is refused, so 0 maps
+  // at `in` instead, and 1 stays kept, mapped.
+  ASSERT_EQ(run(Kind::kMap, out, 0, false, false), Seen::kSucceeded);
+  ASSERT_EQ(run(Kind::kMap, out, 1, false, false), Seen::kSucceeded);
+  ASSERT_EQ(run(Kind::kUnmap, out, 0, true, false), Seen::kSucceeded);
+  ASSERT_EQ(run(Kind::kUnmap, out, 1, true, false), Seen::kSucceeded);
+  memory.FailNext(jitllm::providers::fake::Operation::kUnmap, ProviderError::kFailed);
+  EXPECT_EQ(run(Kind::kMap, in, 0, false, true), Seen::kSucceeded);
+  EXPECT_TRUE(mapped(in, 0));
+  EXPECT_FALSE(mapped(out, 0));
+  EXPECT_TRUE(mapped(out, 1));
+  EXPECT_EQ(lane.stashed(), 1U);
+  // Only a refused one left: a release is refused, and it stays kept.
+  memory.FailNext(jitllm::providers::fake::Operation::kUnmap, ProviderError::kFailed);
+  EXPECT_EQ(run(Kind::kRelease, out, 0, false, false), Seen::kNotStarted);
+  EXPECT_TRUE(mapped(out, 1));
+  EXPECT_EQ(lane.stashed(), 1U);
+  EXPECT_EQ(run(Kind::kRelease, out, 0, false, false), Seen::kSucceeded);
+  EXPECT_FALSE(mapped(out, 1));
+  EXPECT_EQ(lane.stashed(), 0U);
+  EXPECT_EQ(memory.backings(), 1U);
+  // Unknown: that one is dropped, still existing, and its reservation is
+  // undetermined (so is every other kept there); the map at `in` takes one
+  // kept elsewhere.
+  const auto other = memory.Reserve(Bytes(kSize * 2)).value();
+  ASSERT_EQ(run(Kind::kMap, out, 0, false, false), Seen::kSucceeded);
+  ASSERT_EQ(run(Kind::kMap, other, 0, false, false), Seen::kSucceeded);
+  ASSERT_EQ(run(Kind::kUnmap, out, 0, true, false), Seen::kSucceeded);
+  ASSERT_EQ(run(Kind::kUnmap, other, 0, true, false), Seen::kSucceeded);
+  memory.FailNext(jitllm::providers::fake::Operation::kUnmap, ProviderError::kUnknown);
+  EXPECT_EQ(run(Kind::kMap, in, 1, false, true), Seen::kSucceeded);
+  EXPECT_TRUE(mapped(in, 1));
+  EXPECT_FALSE(mapped(out, 0));
+  EXPECT_TRUE(memory.Undetermined(other));
+  EXPECT_FALSE(memory.Undetermined(out));
+  EXPECT_EQ(lane.stashed(), 0U);
+  EXPECT_EQ(memory.backings(), 3U);
+  // Nothing kept for the charge the unknown one leaves: refused.
+  EXPECT_EQ(run(Kind::kRelease, out, 0, false, false), Seen::kNotStarted);
+  // One parked lazily, then an unknown outcome beside it leaves its
+  // reservation undetermined: a lazy park there is unproven.
+  const auto broken = memory.Reserve(Bytes(kSize * 2)).value();
+  ASSERT_EQ(run(Kind::kMap, broken, 0, false, false), Seen::kSucceeded);
+  ASSERT_EQ(run(Kind::kUnmap, broken, 0, true, false), Seen::kSucceeded);
+  memory.FailNext(jitllm::providers::fake::Operation::kSetAccess, ProviderError::kUnknown);
+  ASSERT_EQ(run(Kind::kMap, broken, 1, false, false), Seen::kUnproven);
+  ASSERT_TRUE(memory.Undetermined(broken));
+  EXPECT_EQ(run(Kind::kUnmap, broken, 1, true, false), Seen::kUnproven);
+  // Its parked backing is neither taken as it is nor released.
+  EXPECT_EQ(run(Kind::kMap, broken, 0, false, true), Seen::kNotStarted);
+  EXPECT_EQ(run(Kind::kRelease, broken, 0, false, false), Seen::kNotStarted);
+  EXPECT_EQ(lane.stashed(), 1U);
+  lane.Close();
+  lane.Run();
+}
+
 // A submission lane polling its queue (DeviceSettings::poll_window) still
 // takes every command and returns once closed, however long its window.
 TEST(DeviceLanePollTest, APollingSubmissionLaneTakesEveryCommandAndStopsOnClose) {
@@ -2320,8 +2501,12 @@ class HandoffProgram final : public TaskProgram {
     bool loaded = false;
   };
   HandoffProgram(Report& report, std::vector<ExtentId> out, Closure in,
-                 const std::atomic<bool>* hold = nullptr)
-      : report_(report), out_(std::move(out)), in_(std::move(in)), hold_(hold) {}
+                 const std::atomic<bool>* hold = nullptr, std::optional<Closure> then = {})
+      : report_(report),
+        out_(std::move(out)),
+        in_(std::move(in)),
+        hold_(hold),
+        then_(std::move(then)) {}
 
   Step Advance(TaskContext& context) override {
     if (context.TakeFailure()) {
@@ -2353,6 +2538,18 @@ class HandoffProgram final : public TaskProgram {
       }
       report_.loaded = true;
     }
+    if (then_) {
+      // A second closure, materialized once the first is resident.
+      const auto ready = context.Materialize(*then_);
+      if (!ready) {
+        report_.error = ready.error();
+        return Step::Finish(TaskOutcome::kFailed);
+      }
+      if (*ready == Readiness::kWaiting) {
+        return Step::Wait();
+      }
+      then_.reset();
+    }
     if (hold_ != nullptr && hold_->load()) {
       return Step::Yield();
     }
@@ -2366,6 +2563,7 @@ class HandoffProgram final : public TaskProgram {
   std::vector<ExtentId> out_;
   Closure in_;
   const std::atomic<bool>* hold_;
+  std::optional<Closure> then_;
   bool evicted_ = false;
 };
 
@@ -2373,7 +2571,17 @@ class HandoffProgram final : public TaskProgram {
 // others load into it: no backing is created or released, the catalog
 // counts the kept backing throughout and never exceeds B (exactly the
 // three extents' bytes), and every byte loaded is the file's.
-TEST_P(PageInTest, AHandoffMovesEvictedBackingToTheLoadsThatFollow) {
+TEST_P(PageInTest, AHandoffMovesEvictedBackingToTheLoadsThatFollow) { HandoffMoves(); }
+TEST_P(PageInTest, ALazyHandoffMovesEvictedBackingToTheLoadsThatFollow) {
+  lazy_ = true;
+  HandoffMoves();
+  // Each load unmapped the place its backing was parked at.
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_FALSE(memory_.MappedAt(weights_, Bytes(i * kSize)).has_value()) << i;
+    EXPECT_TRUE(memory_.MappedAt(weights_, Bytes((i + 3) * kSize)).has_value()) << i + 3;
+  }
+}
+void PageInTest::HandoffMoves() {
   Build(kSlots, 32, kSize * 3);
   LoadProgram::Report first;
   ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0, 1, 2}))).has_value());
@@ -2409,6 +2617,90 @@ TEST_P(PageInTest, AHandoffMovesEvictedBackingToTheLoadsThatFollow) {
   EXPECT_EQ(scheduler_->evictions(), 0U);
   EXPECT_EQ(scheduler_->parked(), 0U);
   EXPECT_EQ(Occupied().Total(), Bytes(kSize * 3));
+}
+
+// Lazily parked backing no load took is unmapped and released when its
+// evictor finishes, leaving no mapping at the outgoing places.
+TEST_P(PageInTest, ALazyHandoffReleasesWhatNoLoadTookUnmapped) {
+  lazy_ = true;
+  Build(kSlots, 32, kSize * 3);
+  LoadProgram::Report first;
+  ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0, 1, 2}))).has_value());
+  Settle();
+  ASSERT_EQ(first.outcome, TaskOutcome::kSucceeded);
+  HandoffProgram::Report report;
+  ASSERT_TRUE(
+      scheduler_
+          ->Start(
+              2, std::make_unique<HandoffProgram>(
+                     report, std::vector<ExtentId>{extents_[0], extents_[1], extents_[2]}, Of({3})))
+          .has_value());
+  Settle();
+  EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(Loaded(3, weights_));
+  EXPECT_EQ(scheduler_->stats().handed_off, 1U);
+  EXPECT_EQ(scheduler_->stats().released_unused, 2U);
+  EXPECT_EQ(scheduler_->parked(), 0U);
+  EXPECT_EQ(memory_.backings(), baseline_ + 1);
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(View(extents_[i]).state, ExtentState::kNonresident) << i;
+    EXPECT_FALSE(memory_.MappedAt(weights_, Bytes(i * kSize)).has_value()) << i;
+  }
+  EXPECT_EQ(Occupied().Total(), Bytes(kSize));
+}
+
+// A lazily parked extent materialized again takes its own backing back,
+// still mapped at its place; and an extent whose parked eviction ended
+// while another's backing went to a load reloads at its place, which its
+// own kept backing still holds. Contents are always the file's.
+TEST_P(PageInTest, ALazyHandoffReturnsBackingStillMappedAtItsPlace) {
+  lazy_ = true;
+  Build(kSlots, 32, kSize * 3);
+  LoadProgram::Report first;
+  ASSERT_TRUE(scheduler_->Start(1, Load(first, Of({0, 1, 2}))).has_value());
+  Settle();
+  ASSERT_EQ(first.outcome, TaskOutcome::kSucceeded);
+  // Out 0, 1, 2 (parked mapped). 3 takes the oldest parked eviction's
+  // charge (0's), while the lane hands it the newest kept backing (2's);
+  // then 0 reloads (taking 1's charge) at its place, which 0's own kept
+  // backing still holds, and 1 reloads as its own parked extent.
+  HandoffProgram::Report report;
+  ASSERT_TRUE(
+      scheduler_
+          ->Start(2, std::make_unique<HandoffProgram>(
+                         report, std::vector<ExtentId>{extents_[0], extents_[1], extents_[2]},
+                         Of({3}), nullptr, Of({0})))
+          .has_value());
+  std::size_t most_backings = 0;
+  for (int i = 0; i < 2000 && Round(); ++i) {
+    most_backings = std::max(most_backings, memory_.backings());
+  }
+  EXPECT_EQ(report.outcome, TaskOutcome::kSucceeded);
+  EXPECT_FALSE(report.error.has_value());
+  EXPECT_EQ(most_backings, baseline_ + 3);  // nothing created
+  EXPECT_TRUE(Loaded(3, weights_));
+  EXPECT_TRUE(Loaded(0, weights_));
+  EXPECT_EQ(View(extents_[0]).state, ExtentState::kResident);
+  EXPECT_EQ(View(extents_[3]).state, ExtentState::kResident);
+  EXPECT_EQ(View(extents_[1]).state, ExtentState::kNonresident);
+  EXPECT_EQ(View(extents_[2]).state, ExtentState::kNonresident);
+  EXPECT_FALSE(memory_.MappedAt(weights_, Bytes(kSize)).has_value());
+  EXPECT_FALSE(memory_.MappedAt(weights_, Bytes(2 * kSize)).has_value());
+  EXPECT_EQ(memory_.backings(), baseline_ + 2);
+  EXPECT_EQ(scheduler_->parked(), 0U);
+  EXPECT_EQ(scheduler_->evictions(), 0U);
+  EXPECT_EQ(Occupied().Total(), Bytes(kSize * 2));
+
+  // A parked extent's own load, in the same task as its eviction.
+  HandoffProgram::Report own;
+  ASSERT_TRUE(scheduler_
+                  ->Start(3, std::make_unique<HandoffProgram>(
+                                 own, std::vector<ExtentId>{extents_[0]}, Of({0})))
+                  .has_value());
+  Settle();
+  EXPECT_EQ(own.outcome, TaskOutcome::kSucceeded);
+  EXPECT_TRUE(Loaded(0, weights_));
+  EXPECT_EQ(memory_.backings(), baseline_ + 2);
 }
 
 // B is each domain's: backing parked in one domain is never handed to a

@@ -776,12 +776,13 @@ requires it → commit recoverable state / invalidate discarded entries → unma
 and release or recycle → update occupancy and generation. The unmap and
 release run on the VMM lane while the extent is EVICTING (D-033: the
 backing is released, not pooled). An eviction asked for with a handoff
-(M3's full swap) unmaps the backing but keeps it, and parks, still
-EVICTING and charged; a page-in in the same domain whose backing has the
-same class and size takes it, and the parked eviction completes in the
-same step, so the
+(M3's full swap) keeps the backing and parks, still EVICTING and charged;
+by default it stays mapped where it was (D-033's lazy handoff, 2026-10-07).
+A page-in in the same domain whose backing has the same class and size
+takes it, and the parked eviction completes in the same step, so the
 charge moves from one extent to the other and occupancy never exceeds B.
-The VMM lane then maps the kept backing with no create or release.
+The VMM lane then unmaps the kept backing from its old place (with the
+lazy handoff) and maps it at the new one with no create or release.
 Backing no load took is released when the task that asked for the
 eviction finishes: never an idle pool. Live mutable state is written back
 first, by the reverse path through the zone: the extent is copied into a

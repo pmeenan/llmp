@@ -13,6 +13,11 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Keep a swapped-out model's backing mapped until the incoming model's
+  loads take it, moving each unmap beside a page-in read: LLM swaps no
+  longer wait 1.3–1.9 s for eviction (DeepSeek ↔ Qwen3.8 6.1–8.4 s from
+  7.9–9.7 s).
+
 - Plan Gemma3's upcoming prefill shapes beside the current chunk's device run
   and capture their graphs ahead of their first run, so long prompts replay
   nearly every chunk; trained-maximum first-traversal prefill falls about 9%.

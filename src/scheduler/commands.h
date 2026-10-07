@@ -78,7 +78,10 @@ struct DeviceWork {
 // them. The scheduler keeps each such backing charged to an extent
 // throughout (scheduler.h), so the lane never holds one the catalog does
 // not count. A reuse or release that finds none of that class and size
-// changes nothing and is refused as not started.
+// changes nothing and is refused as not started. A `lazy` retain leaves
+// the backing mapped at its place: the reuse or release that takes it
+// unmaps it there first, and a kMap at a place a kept backing still holds
+// takes that one (reuse) or unmaps it first (a created backing's map).
 struct BackingWork {
   enum class Kind : std::uint8_t { kMap, kUnmap, kRelease };
   Kind kind = Kind::kMap;
@@ -87,7 +90,10 @@ struct BackingWork {
   Bytes size;
   std::size_t allocation_class = 0;
   bool retain = false;  // kUnmap: keep the backing for a handoff
-  bool reuse = false;   // kMap: map a handed-off backing
+  // kUnmap with `retain`: keep it mapped where it is until a load or a
+  // release takes it (the unmap then runs as that work's first step).
+  bool lazy = false;
+  bool reuse = false;  // kMap: map a handed-off backing
 };
 
 // Device submission lane: a job that queues kernel work on one of the

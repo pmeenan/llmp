@@ -192,6 +192,9 @@ struct NodeSettings {
   // the copy stream, so a model's long job never holds them up; otherwise
   // on the device lane, as in M2.
   bool copy_lane = true;
+  // Handoff evictions keep their backing mapped until a load takes it
+  // (scheduler::SchedulerSettings::lazy_handoff).
+  bool lazy_handoff = true;
   // Each slot's bytes (and the reader's largest request): 2 MiB, or more
   // for reads longer than their extent (a DeepSeek expert slab's pages,
   // paged_weights.h kSlabSlotBytes). A multiple of 4 KiB.

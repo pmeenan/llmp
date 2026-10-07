@@ -928,6 +928,8 @@ bool Scheduler::OpenEvictStage(catalog::ExtentId extent, Eviction& eviction) {
               .size = backing.size,
               .allocation_class = backing.allocation_class,
               .retain = eviction.stage == EvictStage::kUnmapping && eviction.handoff,
+              .lazy = eviction.stage == EvictStage::kUnmapping && eviction.handoff &&
+                      settings_.lazy_handoff,
               .reuse = false}};
       break;
     }

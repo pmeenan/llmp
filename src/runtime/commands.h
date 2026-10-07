@@ -98,6 +98,10 @@ struct ServingOptions {
   bool gemma31_production = false;
   // Internal maximum-context qualification only; no config/CLI/HTTP route.
   bool gemma3_trained_max = false;
+  // Swaps' handoff evictions keep backing mapped until a load takes it
+  // (engine::NodeSettings::lazy_handoff); off is an internal override for
+  // matched controls only.
+  bool lazy_handoff = true;
   // Ordinary graph-owned masks; internal host-reference override only.
   bool gemma3_device_masks = true;
   // Ordinary prefill lookahead and first-run capture of a repeated shape;

@@ -5507,6 +5507,7 @@ Server::Server(const config::NodeConfig& config, const config::RuntimeRoles& rol
              .inline_lanes = false,
              .coalesce = false,
              .copy_lane = true,
+             .lazy_handoff = options.lazy_handoff,
              .slot_bytes = engine::kSlabSlotBytes,
              .observer = &times_,
              .poll_window = std::nullopt,
