@@ -305,6 +305,121 @@ TEST(Gemma4Graph, OwnerOptInPreservesUnsupportedGraphsAndRejectsBrokenWriterEdge
   EXPECT_FALSE(kg::TransformGemma4Attention(*arena, *g, kg::Gemma4AttentionMode::kPacked));
 }
 
+TEST(Gemma4Graph, CommonOwnerReadsPreserveEqualGraphsAndRejectTheSecondBrokenWriter) {
+  for (const auto size : {26U, 31U}) {
+    Case c(size, 2);
+    c.shape = {};
+    for (std::uint32_t i = 0; i < 2; ++i) c.shape.segments.push_back({i, 1, 384 + i, 512, 512});
+    c.shape.outputs = 2;
+    std::array<std::size_t, 2> nodes{}, used{};
+    for (std::size_t policy = 0; policy < 2; ++policy) {
+      kg::Gemma4GraphOptions options;
+      options.device_masks = true;
+      options.attention_mode = kg::Gemma4AttentionMode::kOwners;
+      options.common_owner_reads = policy != 0;
+      auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, options));
+      ASSERT_TRUE(arena);
+      auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+      ASSERT_TRUE(g);
+      nodes[policy] = g->nodes.size();
+      used[policy] = arena->used();
+      EXPECT_EQ(Count(*g, GGML_OP_FILL), 0U);
+      for (std::uint32_t layer = 0; layer < c.p.layers; ++layer) {
+        const auto name = "packed.blk." + std::to_string(layer) + ".attention";
+        const auto found = std::ranges::find_if(g->nodes, [&](const auto* node) {
+          return std::string_view(ggml_get_name(node)) == name;
+        });
+        auto* out = found == g->nodes.end() ? nullptr : *found;
+        ASSERT_NE(out, nullptr);
+        for (const auto index : {2, 3, 6, 7}) EXPECT_EQ(out->src[index]->src[0]->op, GGML_OP_VIEW);
+      }
+    }
+    EXPECT_EQ(nodes[0], nodes[1]);
+    EXPECT_EQ(used[0], used[1]);
+    kg::Gemma4GraphOptions options;
+    options.device_masks = true;
+    auto estimate = options;
+    estimate.attention_mode = kg::Gemma4AttentionMode::kOwners;
+    auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, estimate));
+    ASSERT_TRUE(arena);
+    auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+    ASSERT_TRUE(g);
+    g->options = estimate;
+    g->options.common_owner_reads = true;
+    for (auto* node : g->nodes)
+      if (node->op == GGML_OP_SET_ROWS && node->src[2] == g->segments[1].caches[0].first)
+        node->src[1] = g->segments[0].local_cells;
+    const auto before = arena->used();
+    EXPECT_FALSE(kg::TransformGemma4Attention(*arena, *g, kg::Gemma4AttentionMode::kOwners));
+    EXPECT_EQ(arena->used(), before);
+    EXPECT_EQ(g->attention_mode, kg::Gemma4AttentionMode::kIndependent);
+  }
+}
+
+TEST(Gemma4Graph, CommonOwnerReadsKeepActualRootsAndPadOnlyBoundedTwoOwnerWaves) {
+  for (const auto size : {26U, 31U})
+    for (const bool reverse : {false, true})
+      for (const bool common : {false, true}) {
+        Case c(size, 2);
+        c.shape = {};
+        for (std::uint32_t i = 0; i < 2; ++i) {
+          const auto read = (i == 0) != reverse ? 512U : 1024U;
+          c.shape.segments.push_back({i, 1, read - 128, read, read});
+        }
+        c.shape.outputs = 2;
+        kg::Gemma4GraphOptions options;
+        options.device_masks = true;
+        options.attention_mode = kg::Gemma4AttentionMode::kOwners;
+        options.common_owner_reads = common;
+        auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2, options));
+        ASSERT_TRUE(arena);
+        auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+        ASSERT_TRUE(g) << jitllm::test_support::Failed(g, &kg::KernelFailure::detail).value_or("");
+        EXPECT_EQ(g->attention_mode, common ? kg::Gemma4AttentionMode::kOwners
+                                            : kg::Gemma4AttentionMode::kIndependent);
+        if (!common) continue;
+        EXPECT_EQ(Count(*g, GGML_OP_FLASH_ATTN_EXT), 0U);
+        for (std::uint32_t layer = 0; layer < c.p.layers; ++layer) {
+          const auto name = "packed.blk." + std::to_string(layer) + ".attention";
+          const auto found = std::ranges::find_if(g->nodes, [&](const auto* node) {
+            return std::string_view(ggml_get_name(node)) == name;
+          });
+          auto* out = found == g->nodes.end() ? nullptr : *found;
+          ASSERT_NE(out, nullptr);
+          EXPECT_EQ(kg::JitllmOpOf(out), kg::JitllmOp::kFlashAttnOwners);
+          EXPECT_EQ(out->src[1]->ne[0], 1024);
+          EXPECT_EQ(out->src[1]->ne[1], 32);
+          for (std::size_t i = 0; i < 2; ++i)
+            for (std::size_t which = 0; which < 2; ++which) {
+              const auto read = c.shape.segments[i].global_n_kv;
+              auto* raw = out->src[2 + i + which * 4]->src[0];
+              if (read == 512) {
+                ASSERT_EQ(raw->op, GGML_OP_CONCAT);
+                EXPECT_EQ(raw->op_params[0], 2);
+                EXPECT_EQ(raw->src[1]->op, GGML_OP_FILL);
+                EXPECT_EQ(raw->src[1]->src[0], nullptr);
+                EXPECT_EQ(raw->src[1]->op_params[0], 0);
+                raw = raw->src[0];
+              }
+              ASSERT_EQ(raw->op, GGML_OP_VIEW);
+              EXPECT_EQ(raw->ne[2], read);
+              ASSERT_EQ(raw->src[0]->op, GGML_OP_SET_ROWS);
+              const auto& caches = g->segments[i].caches[layer];
+              EXPECT_EQ(raw->view_src, which == 0 ? caches.first : caches.second);
+            }
+        }
+        // Wider cohorts retain the original unequal-width refusal/fallback.
+        auto wider = c.shape;
+        wider.segments.push_back({2, 1, 384, 512, 512});
+        wider.outputs = 3;
+        auto other = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 3, options));
+        ASSERT_TRUE(other);
+        auto independent = kg::BuildGemma4Graph(*other, c.p, c.binding, c.state, wider, options);
+        ASSERT_TRUE(independent);
+        EXPECT_EQ(independent->attention_mode, kg::Gemma4AttentionMode::kIndependent);
+      }
+}
+
 TEST(Gemma4Graph, VariableOwnerAttentionKeepsSlotOrderWritersAndFundedMetadata) {
   for (const auto size : {26U, 31U})
     for (const auto max_rows : {128U, 256U, 1024U, 8192U})

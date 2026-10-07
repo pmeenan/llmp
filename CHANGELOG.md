@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Add an experimental Gemma4 two-owner common-read option for unequal cache
+  prefixes. Real temporary K/V and mask padding preserve original cache bounds
+  and restore exact bounded stock heads; ordinary serving selection is unchanged.
+
 - Join compatible Gemma3 plain prefill chunks across two owners, with a funded
   256-row wave and unchanged 128-row per-owner state. Packed prefill attention
   and real temporary padding for unequal decode reads preserve bounded stock

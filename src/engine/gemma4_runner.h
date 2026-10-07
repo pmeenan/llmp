@@ -59,10 +59,10 @@ struct Gemma4Options {
   // decode arithmetic); never in row-invariant plans.
   bool fuse_quant_glu = false;
   bool prefill_lookahead = true;
-  // Explicit complete-quad attention opt-in; C1/C2/multirow/features
-  // and unequal widths within a quad retain independent attention. Immutable for this runner's plan
-  // cache.
+  // Explicit independent-root attention policy, immutable for this runner.
   bool owner_attention = false;
+  // Initially bounded to two one-row owners; wider cohorts keep equal reads.
+  bool common_owner_reads = false;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
 };
 class Gemma4Runner final : public PagedModel {

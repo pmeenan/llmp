@@ -41,8 +41,11 @@ operator controls pass. The [private prefix-only keep factor](experiments/gemma2
 removes both paid differences and matches all160 paid full heads, but retains one
 strict frontier difference; conditional loss passes at +0.08119%. This is diagnostic
 evidence, without a production layer policy or observed stock992 routing selector.
-C3 transfer, other partial model counts and unequal
-widths remain unqualified. Fresh
+C3 transfer, other partial model counts and unequal widths outside the
+[bounded default-off C2 common-read screen](experiments/gemma4-common-width/README.md)
+remain unqualified. That screen restores all 66 teacher heads plus two initial
+heads exactly for both profiles; paid padding cost and public adoption remain
+open. Fresh
 31B timing is +1.47% with a stock spread larger than its mean gap; 26B is −1.064%
 in its short matched bookends. Core opt-in controls retain their historical scopes and do not adopt SOURCE14
 serving/default files. The separate current bridge above closes bounded dense31

@@ -401,6 +401,17 @@ partial counts, strict 26 C5 qualification, full corpus, depth and sustained
 qualification remain open.
 
 
+The [common-read C2 transfer](experiments/gemma4-common-width/README.md) now adds
+a false-default internal option for unequal padded reads. Each original owner
+width and SET_ROWS writer is checked before a real F16 zero tail is concatenated
+to its K/V activation; every padded mask row receives an invisible tail. Both
+profiles recover eight strict differences to 66/66 exact teacher heads, plus
+2/2 exact initial predecode heads. Independent prefill/state remains byte-identical
+between policies; own state/refusal/Clear/restore controls pass. Equal-width
+operands retain no-copy behavior. This bounded one-query/C2 result does not
+select ordinary serving, wider/partial cohorts or multirow prefill; measured
+padding cost and public adoption remain separate work.
+
 ## Bounded native serving route
 
 The existing runtime driver registers both approved 26B-A4B and dense31 artifacts
@@ -421,8 +432,10 @@ stock's exact tokens, and its
 full final FFN before frontier-head publication, matching stock's ordinary row
 shape. Three small same-geometry heads per profile are byte-identical after
 that correction; its paired C1/C4 cost screens are native versus native.
-Matched Gemma4 stock backend-sampler timing remains open; the recorded
-stock bookends use CPU-head publication.
+Those adoption stock bookends used CPU-head publication; the later
+[current backend-greedy comparison](experiments/gemma-current-backend-greedy/README.md)
+and [unequal C2 screen](experiments/gemma4-common-width/README.md) retain their
+own paid boundaries and residual gaps.
 Larger configurations retain the prior scalar recipe and 128-row cap. The recorded earlier dense31 recipe
 has zero predicted-ID differences in current-pin C1/C4 8K continuations and
 128/129 and 512/516 byte-exact complete heads; its 1,024-row corpus has

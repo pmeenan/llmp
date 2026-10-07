@@ -103,10 +103,14 @@ HTTP joined-prefill/restart controls pass; a native cold C2 endpoint bookend
 improves 14.03% with exact IDs/usage. The endpoint and runner comparisons
 measure different boundaries.
 
-Applicable follow-ons are explicit: both Gemma4 profiles currently reject
-unequal reads in `QuadShape` and fall back to independent attention. A transfer
-must validate every original owner width, fund real activation/mask padding
-and retain the equal-width no-copy path; merely widening views is invalid.
+Both Gemma4 profiles now have a [default-off C2 common-read transfer](experiments/gemma4-common-width/README.md).
+It checks every original owner width and exact cache writer, funds real F16 K/V
+zero tails and invisible mask tails, and preserves actual cache bounds/cursors.
+Both representative unequal-prefix controls recover eight positive-margin
+failures to 66/66 byte-exact teacher heads plus two exact predecode heads;
+initialized-state, replay/refusal and restore controls pass. Equal widths keep
+the existing no-copy graph. Temporary padding cost, ordinary serving adoption
+and wider/partial geometry remain open; merely widening views is invalid.
 Gemma4 multirow prefill also needs a new transform because the current
 attention transform admits one query and its packed mode requires at least
 four owners. Gemma2 now reuses the shared prompt seam after its distinct cap50

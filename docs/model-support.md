@@ -211,6 +211,14 @@ remain unqualified. Short matched timings
 are +1.47%31B with stock spread larger than the mean gap and −1.064%26B; no sustained
 parity or full model-support claim follows.
 
+The [default-off common-read C2 option](experiments/gemma4-common-width/README.md)
+qualifies one-query unequal 256/768-prefix controls for both approved profiles:
+eight baseline positive-margin differences recover to zero, with all 66 later
+and two initial stock heads exact. Original cache/cursor bounds and initialized
+state/restore controls remain intact. Temporary padding has measured cost;
+ordinary serving adoption, other unequal shapes and broader qualification remain
+open.
+
 The [equal-width partial adapter](experiments/gemma-partial-owner-attention/README.md)
 adds opt-in whole5/6/7/9/10/11 geometry with bounded active roots and original
 whole-grid fixups. N5/N6 primitive controls pass heads16/32 across all three

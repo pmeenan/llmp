@@ -70,6 +70,8 @@ struct Gemma4GraphOptions {
   // Narrow after final attention, before its sandwich norm, as the pinned
   // reference's masked frontier. false retains every final hidden row.
   bool narrow_final = false;
+  // Bounded two-owner decode: pad shorter actual reads with graph-owned tails.
+  bool common_owner_reads = false;
   Gemma4AttentionMode attention_mode = Gemma4AttentionMode::kIndependent;
   bool operator==(const Gemma4GraphOptions&) const = default;
 };

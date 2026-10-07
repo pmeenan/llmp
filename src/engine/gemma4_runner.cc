@@ -402,6 +402,7 @@ Status Gemma4Runner::Setup() {
                                         ? kg::Gemma4AttentionMode::kOwners
                                         : kg::Gemma4AttentionMode::kIndependent;
   }
+  model_.options.common_owner_reads = o_.common_owner_reads;
   std::uint64_t activation = 0, scratch = 0, staging = 0, host = 0;
   // All slot counts: padding each segment's query tile can exceed a scalar
   // prefill's mask storage. Measure one shared maximum, not one per slot.
@@ -412,11 +413,28 @@ Status Gemma4Runner::Setup() {
   for (const auto row_budget : {o_.max_rows, head_rows}) {
     for (std::uint32_t count = 1; count <= o_.slots; ++count) {
       for (const auto rows : {1U, row_budget / count, row_budget - count + 1}) {
-        for (const auto past : {0U, o_.context - rows}) {
+        // Mixed endpoints fund real short-root padding without changing the
+        // per-slot state layout or the equal-width no-copy path.
+        const bool mixed = o_.common_owner_reads && count == 2 && rows == 1;
+        for (const auto endpoint : {0U, 1U, 2U, 3U}) {
+          if (endpoint >= 2 && !mixed) continue;
           std::vector<md::Gemma4Segment> segments;
           for (std::uint32_t i = 0; i < count; ++i) {
             const auto segment_rows = rows == row_budget - count + 1 && i != 0 ? 1U : rows;
-            const auto segment_past = past == 0 ? 0U : o_.context - segment_rows;
+            const bool high =
+                endpoint == 1 || (endpoint == 2 && i == 1) || (endpoint == 3 && i == 0);
+            auto segment_past = high ? o_.context - segment_rows : 0U;
+            if (high && endpoint >= 2) {
+              constexpr std::uint64_t operand_limit = 64ULL << 20U;
+              const auto local_limit = operand_limit / (std::uint64_t{profile_.local_head_dim} *
+                                                        profile_.local_kv_heads * 2);
+              auto common_limit = std::min(
+                  std::uint64_t{16384}, operand_limit / (std::uint64_t{profile_.global_head_dim} *
+                                                         profile_.global_kv_heads * 2));
+              if (layout_.local_cells > local_limit)
+                common_limit = std::min(common_limit, local_limit);
+              segment_past = std::min(segment_past, static_cast<std::uint32_t>(common_limit - 1));
+            }
             segments.push_back({i, segment_past, std::span(tokens).first(segment_rows)});
           }
           auto in = md::Gemma4Chunk(profile_, layout_, segments, false);
