@@ -257,7 +257,12 @@ selection, not observed kernel-launch counts. Two `greedy-teacher` arms each
 report 36 backend samples and reproduce all 33 frozen stock heads, choices and
 final head byte for byte. The public sampled-logits count is 262208 at every
 observed row: stock retains and copies full sampled rows internally. This is
-not a zero-copy stock comparison.
+not a zero-copy stock comparison. In exact d812, the greedy sampler leaves
+`data.logits` intact; the graph exports it as `t_sampled_logits`, which the
+context copies independently of the separate `needs_raw_logits` guard.
+The recorded C1 helper uses `llama_memory_clear(...,true)`; its measured timings
+retain that reset configuration, rather than the logical-only reset used by
+the subsequent ordinary Gemma4 reference screen.
 
 After both own/reference controls pass, one RNNR compares native device
 publication against that stock backend sampler. The same 4096-context/C1/F16/

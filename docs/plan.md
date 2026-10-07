@@ -369,6 +369,12 @@ family" guide, and its long-context scaling work.
         stock's exact greedy tokens; corpus heads byte-identical. Larger settings
         retain their prior recipe. Broader quality/context, sustained performance and assistants
         remain open.
+      - [x] [Current corrected Gemma4 reference](experiments/gemma-current-backend-greedy/README.md):
+        ordinary 8K C1/C4 recipes versus original d812 backend greedy with normal
+        cache/reset policy; all 1,290 complete heads byte-exact and natural
+        histories exact. Quality precedes short n=2 paid token-path bookends;
+        stock sampled-logit transfers remain explicit. Sustained performance,
+        peak memory and actual HTTP per-unit overhead remain separate gates.
       - [x] Bounded approved Gemma26/31 adapter on the shared serving driver,
         with [scalar independent cohorts](experiments/gemma31-serving/README.md),
         target likelihoods, checked checkpoint positions, exact continuation/
@@ -1016,10 +1022,10 @@ engine (owner, 2026-10-04). The final comparison covers the production solo
 and optimized batched paths and gates supported status under the criteria
 below.
 
-Use TensorFold as an additional competitive performance target, its pin
-refreshed at milestone boundaries and frozen under
-[reference comparisons](reference-comparisons.md) (owner, 2026-10-04;
-milestone-boundary cadence 2026-10-06). Same-format correctness oracles remain required; cross-format
+Use TensorFold as an additional competitive performance target, checking its
+current upstream revision for each comparison or optimization task and freezing it under
+[reference comparisons](reference-comparisons.md) (owner, 2026-10-04).
+Same-format correctness oracles remain required; cross-format
 TensorFold comparisons report speed, memory and separate quality controls.
 
 - **Correctness:** greedy tokens match the same-format oracle except

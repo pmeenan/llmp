@@ -5,8 +5,8 @@
 
 This assessment retains historical source reviews and measurements. New
 comparisons use the TensorFold pin under [reference comparisons](reference-comparisons.md),
-which refreshes at milestone boundaries and records current coverage
-observations separately.
+which checks current upstream coverage for each comparison or optimization task and freezes
+that revision for matched runs. Historical pins below retain their dates.
 
 The owner asked, on 2026-09-26, that [TensorFold](https://github.com/ashhart/TensorFold)
 be considered as a benchmark target and as a source of optimization ideas.

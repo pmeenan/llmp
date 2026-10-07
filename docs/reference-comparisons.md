@@ -22,21 +22,30 @@ cohorts, context depth or sustained parity. The separately frozen
 strict/conditional gates, with native elapsed 2.153583% slower in short
 bookends; broader production qualification remains open.
 
-## TensorFold refreshes at milestone boundaries
+The [current Gemma4 C1/C4 reference](experiments/gemma-current-backend-greedy/README.md)
+compares both corrected bounded 8K recipes against ordinary d812 backend
+greedy sampling with common CLI/server cache settings. It separately freezes
+129/516 complete quality heads per profile before token-path RNNR timing.
+Stock's unmodified sampler copies full sampled-logit rows; the sampled-token
+API alone is not proof of token-only host traffic. These short engine/serving
+driver screens leave sustained performance and actual HTTP per-unit overhead
+separate.
+
+## TensorFold check for each task
 
 Use [TensorFold](https://github.com/ashhart/TensorFold) as a competitive
 performance target wherever it supports the model, execution backend and
-topology (owner, 2026-10-04). **Refresh its pin at milestone boundaries
-only** (owner, 2026-10-06; it was per task before): at a milestone's entry
-and before its exit gate, resolve upstream's default-branch HEAD and inspect
-that revision's recipes, formats and batching support. Record the full
-commit, package version and observation date with the milestone's
-comparisons. Tasks within the milestone use that pin and do not recheck.
+topology (owner, 2026-10-04). At each comparison or optimization task,
+resolve upstream's current default-branch HEAD and inspect that revision's
+recipes, formats and batching support. Record the full commit, package
+version and observation date with that task's comparisons. Milestone pins and
+coverage observations remain historical evidence, rather than substituting
+for this per-task current-source check.
 
 Freeze that revision for matched runs. Do not mix versions in bookends or
 replace a historical result's provenance.
 
-The milestone pin for M3.5 is v0.6.6/cb2ebf0540f42604e2759b2ddef497861e928248
+The previously recorded M3.5 milestone pin is v0.6.6/cb2ebf0540f42604e2759b2ddef497861e928248
 (still upstream HEAD on 2026-10-06), with no matching dense Gemma 4 31B CUDA
 GB10/GGUF recipe.
 

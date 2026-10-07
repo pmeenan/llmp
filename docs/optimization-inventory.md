@@ -100,6 +100,14 @@ stock's row shape. Their small same-geometry heads are byte-exact and paired
 C1/C4 cost screens preserve all emitted tokens and histories. This requirement
 does not transfer to Gemma3. See the [matched controls](experiments/gemma26-production/README.md#http-lifecycle-screen).
 
+The [current corrected Gemma4 reference](experiments/gemma-current-backend-greedy/README.md)
+adds 8K C1/C4 ordinary d812 backend-greedy quality and short paid cycles for
+both profiles. All 1,290 complete heads and natural histories agree exactly.
+The native timing path chooses device tokens; ordinary stock greedy retains
+full sampled-logit transfers. This closes those representative quality screens,
+without treating the token API as proof of stock token-only host traffic or
+engine-cycle results as actual HTTP per-unit cost.
+
 The [Gemma2 C1 slice](experiments/gemma2-execution/README.md) reuses the
 held-request runner, ring state, retained Clear and graph machinery. Its
 width2304 norm/ADD operand control passes both ADD orders, scalar/128 rows and
@@ -919,12 +927,12 @@ batching (2026-10-04). Each bring-up records which techniques apply, where
 its plan selects them, any shape or format limits, and its solo and batched
 correctness, speed and memory evidence. A supported status includes that
 batching qualification; a serial bring-up is an intermediate control.
-Use TensorFold, pinned at milestone boundaries under
+Use TensorFold, checked at current upstream HEAD for each comparison or optimization task under
 [reference comparisons](reference-comparisons.md), wherever it supports a
 family's single-Spark path in M3.5. M4's
 [Kindling and TensorFold references](m4-references.md) add multi-node
 techniques after their recipes and measured two-Spark behavior are
-re-pinned; TensorFold refreshes at milestone boundaries. Their claimed
+re-pinned; TensorFold applicability is rechecked for each task. Their claimed
 rankings are not local measurements.
 
 ### Finding a gap against the reference — method (2026-10-06)

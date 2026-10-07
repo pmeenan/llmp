@@ -69,8 +69,9 @@ ADD orders, rows 1/128 and captured fresh inputs; neighboring widths stay refuse
 The tiny public caller uses the retained original v0.6.0 CUDA image and public
 API, with the same context/chunk/KV geometry and independently checked 291-ID
 lineage. Two stock own repeats precede comparisons. Teacher heads are complete
-finite F32 rows; backend-sampler greedy timing keeps token-only publication
-and a paid final head, matching the established Gemma3 method. Original stock
+finite F32 rows. Timing compares native device-token publication against the
+original backend greedy sampler, with a paid final verification head. Stock
+also exports full sampled-logit rows internally, as in the Gemma3 method. Original stock
 fusion/graphs remain enabled; all containers must retire before interpretation.
 No new numerical allowance is introduced: strict greedy differences and
 likelihood deltas remain separate, and any failure is retained before timing.
@@ -120,13 +121,16 @@ for an optimized teacher process are 157 norm/Mul, 27 quantized GeGLU and
 A single R/N/N/R uses two fresh processes per engine and the same input,
 context4096/C1/F16KV/128-row recipe. Each warms 256 prompt + three supplied rows
 + eight greedy transitions, clears state, pays the two-chunk 256-row prefill,
-runs three supplied rows untimed, then pays 32 greedy transitions. Only tokens
-are published during the paid greedy path, except the paid final full head.
-Stock uses its current backend greedy sampler and sampled-token API, with
-original fusion and graphs enabled. Startup, import, warm-up, Clear and the
+runs three supplied rows untimed, then pays 32 greedy transitions. Native publishes tokens during the paid greedy path, except the paid final
+full head. Stock uses its original backend greedy sampler and sampled-token API,
+with original fusion and graphs enabled; d812 also transfers full sampled
+logits at each output. Skipping the separate raw-logit copy does not suppress
+that sampled-logit transfer. Startup, import, warm-up, Clear and the
 three supplied rows are excluded from paid time. The native warm-up retains
 three off-clock full-head publications from the established caller recipe;
-the paid boundaries match. `performance.py` requires finite positive timings,
+the paid boundaries match. The recorded stock caller clears memory with
+`data=true`, unlike the logical-only reset in the subsequent Gemma4 screen;
+these measurements retain that configuration. `performance.py` requires finite positive timings,
 exact same-policy repeats, matching natural histories/final heads and retired
 containers before accepting the screen.
 

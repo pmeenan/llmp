@@ -38,8 +38,8 @@ the same two-node workload ourselves before making performance claims.
 ## TensorFold on two Sparks
 
 TensorFold is an M3.5 and M4 competitive target wherever it supports the
-configuration. Refresh its revision **at milestone boundaries** (M4's entry
-re-pins it), then freeze it for matched runs, under
+configuration. Check its current upstream revision and applicable recipes for
+each comparison or optimization task, then freeze it for matched runs, under
 [reference comparisons](reference-comparisons.md).
 That document records the 2026-10-04 coverage observation, including
 experimental CUDA EXL3/TR3 for GLM; confirm layout compatibility with M4's
