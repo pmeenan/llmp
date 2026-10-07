@@ -223,8 +223,9 @@ under Spark A's `~/.local/share/jitllm/gemma3-execution-20261007/`, in
 This clears the representative C1 quality screen, without establishing speed
 parity, corpus quality, 8K or maximum context, sustained performance, optimized
 batching or serving support. The later device-greedy screen below preserves
-these bounded quality results; H8 batching remains open. No default recipe is
-selected here.
+these bounded quality results. At this C1 snapshot H8 batching remains open;
+the later independent-prefill C2 screen closes only two-owner joined decode.
+No default recipe is selected here.
 
 ## Device greedy: exact choices and backend-sampler comparison
 
@@ -346,8 +347,8 @@ native cycles retain four captures/42 replays/44 device publications, and
 stock reports 48 backend samples with full 262208-element sampled rows.
 This narrows the measured short C1 gap from the preceding 2.46% screen.
 These are sequential bookended screens, not an interleaved old/new A/B.
-Broader quality, sustained performance, context, batching and serving gates
-remain open. Host timing identifies a contributor, without attributing every
+At this C1 snapshot broader quality, sustained performance, context, batching
+and serving gates remain open. Host timing identifies a contributor, without attributing every
 whole-cycle difference to that span.
 
 Official `m35-gemma3-source-cost` completes its two host-diagnostic steps;
@@ -368,3 +369,116 @@ TensorFold's per-task current source was checked on 2026-10-07 at
 matching documented Gemma3 CUDA/GGUF recipe for this screen. This makes that
 comparator ineligible here, without claiming that all Gemma3 execution is
 unsupported by TensorFold.
+
+## Independent-prefill C2 decode screen
+
+The explicit `owner_decode` option reuses the existing independent-root
+attention contract and unchanged upstream kernel for D256/H8/GQA2, only with
+two actual owners, logical cohort2 and offset0. Existing H16/32 domains are
+unchanged; H8/D512 and H8 cohorts3/4 refuse. The Gemma3 graph views its already
+contiguous scaled/roped Q rows, joins the two padded host masks once per wave,
+and preserves each slot's K/V root and writes. Only two one-row segments with
+equal bounded read widths select this path; other chunks retain ordinary
+attention. Setup measures both output forms through the same planner and
+funds the joined masks, custom output and workspace. The option defaults off.
+
+Twenty focused foundation/state/graph/plan controls pass. The existing
+parameterized GPU owner test retains its H16/32 cases and adds H8/C2 at
+cells256/512/1024: ordinary packed MMA and actual separate roots are
+byte-identical, FP64 NMSE is 1.148e-7/1.258e-7/1.588e-7 against the existing
+5e-4 bound, and fresh-Q/mask capture replay preserves source bytes. On the
+48-SM GB10, both original and owner occupancy are one block/SM; grids are
+32/48/48 and funded scratch is 266496/399616/399616 bytes. Unsupported shape,
+overlap, incomplete root and bounded plan/source refusals remain checked.
+The first prerequisite run caught a test-only F16 download being interpreted
+as F32 in three preservation assertions; the failed receipt is retained.
+Correct typed raw-byte checks pass without changing production arithmetic.
+
+`jitllm_gemma3_c2_probe` executes two initialized slots. Each receives its own
+actual native-tokenized 291-ID prose input, authenticated before either model
+runs and independently checked by stock tokenization. Slot0 retains the C1
+input; slot1 input/text SHA-256 are
+`405cfff4be661ddd6949f0a3882d760e1edaefc262a8226b662804ef4a0408f7` /
+`7d5ddc0e2abe262ea2eabeefad16c68c7d07e52633f11ca73b059e6e8ce73001`.
+Each slot independently prefills 128 state-only rows then 128 head rows,
+followed by three supplied scalar warm tokens. Joined decode then executes
+32 one-row waves across both owners, with F16 KV and context4096 per slot.
+Joint prefill is outside this screen.
+
+Two native own runs freeze 66 finite teacher heads and 64 pre-step choices,
+then compare device publication against those choices and both final heads
+and initialized states after Clear. Actual two-slot alias/mixed/wrong-prefix
+refusals preserve both prefix metadata and initialized bytes. Both slots also
+spill and restore their exact initialized states. Each own run publishes
+70 GPU tokens and records eight captures/64 replays. Teacher/full-head SHA-256
+is `f3b355b5038d0338deb331ecc3030521c9c883e0e5d1b82a7b0ff144118cb030`;
+choice/final hashes are `78420433…73d62` / `c6a66e3c…de1e`.
+
+Only after own controls pass, the tiny public-API caller runs twice in the
+unchanged original v0.6.0 image, with an independent official greedy chain for
+each sequence. Its teacher-only metadata callback observes ordinary FLASH
+Q `[256,1,8,2]`, K `[256,512,4,2]` and logical mask `[512,1,1,2]` for all
+1088 joined layer/step observations. Exact pinned source dispatches this
+ordinary multistream geometry through MMA; the callback does not observe
+kernel launch counts. Native global/local reads are both512, with mask rows
+padded to32. The callback is absent from both timing arms.
+
+The strict 64-target stock screen has zero greedy differences, zero tie
+differences and relative conditional-loss delta −0.00532347% (mean target NLL
+delta −5.3236115e-5). Of 66 full heads, 64 are byte-identical; rows39 and56
+(step19/slot1 and step28/slot0, zero-based) differ. Mean total variation is
+2.5559011e-5 and maximum raw logit delta is 0.0373087. The final two rows are
+finite and checked, but unscored. Stock repeat head SHA-256 is
+`1e9108a7681e4671e3db972af008718a7077ed984a94909caa7337ee4edb7743`.
+This passes the zero-positive-margin/≤3% conditional-loss first screen,
+without claiming exact whole-head parity.
+
+One subsequent short RNNR pays both slots' 256-row prompt and 32 generated
+steps, excludes the six supplied warm tokens, and pays both final full heads
+in each arm. Warm-up uses eight joined generated steps before Clear. Native
+uses GPU publication for the first five warm decode waves, then three full
+head waves to exercise that distinct shape's eager/capture/replay lifecycle;
+stock retains its official backend sampler throughout. The new C2 stock
+caller leaves state-only prefill asynchronous, allowing the next public
+decode and final head to establish normal ordering/completion. Historical C1
+caller/results above remain unchanged; no timing magnitude is attributed to
+that source-derived overlap difference.
+
+| C2 RNNR arm | Prefill ms | Decode ms | Paid total ms |
+| --- | ---: | ---: | ---: |
+| Stock 1 | 103.303 | 423.598 | 526.901 |
+| Native 1 | 110.181 | 425.192 | 535.373 |
+| Native 2 | 112.689 | 425.633 | 538.322 |
+| Stock 2 | 101.688 | 423.205 | 524.893 |
+
+Mean paid latency is 536.8475 ms native versus 525.897 ms stock, or
++2.0822518%; generated tokens per paid second are 119.2145 versus 121.6968.
+Mean independent prefill is 111.435 versus 102.4955 ms, and decode is
+425.4125 versus 423.4015 ms (+0.475%). Of the 10.9505 ms paid gap,
+8.9395 ms lies in the measured independent-prefill span and 2.011 ms in
+decode. These are phase boundaries, not a causal kernel attribution.
+All four 64-token histories and finite two-row final heads are byte-identical:
+SHA-256 `92556d0c…752f` / `21192b80…3136`. Native cycles record eight
+captures/44 replays and 88 GPU publications; stock records 96 backend samples
+including unused final decisions and full 262208-element sampled rows. There
+is no zero-copy or broad parity claim.
+
+Bound-plan selection counts exclude Setup probes and replay. Each own run
+selects owner attention68, plain norm824, quantized GeGLU140, norm/RoPE814 and
+norm/ADD812; each timing cycle selects68/548/70/542/540 respectively. The
+quantized fusion remains one-column only and applies to independent chunks,
+not joined two-column decode. All fusion and owner switches remain explicit
+and default off in the runner.
+
+Official `m35-gemma3-c2-build2` completes four prerequisite steps and
+`m35-gemma3-c2` completes all 17 build/own/reference/quality/timing steps,
+both exit0. Native binary SHA-256 is
+`9b48244d3188dabc792fa8066abd81d32d52ffa675721ad88b3985e407007698`;
+the original-image caller is
+`301ccb418e723a37414c121a9da6f4bad6ec98df011019041be00f8aaa7cf197`.
+Actual source/binary/receipt bindings, inputs and own/quality/cycle aggregates
+remain external under `gemma3-execution-20261007/c2-build/` and `c2/`.
+This closes a representative optimized two-owner decode slice. Joint prefill,
+wider/partial/ragged cohorts, longer context/ring-state gates, sustained
+performance and the serving adapter remain open. The model stays outside the
+supported execution matrix.

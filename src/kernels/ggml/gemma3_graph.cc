@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "artifact/representation.h"
+#include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/fusion.h"
 #include "kernels/ggml/jitllm_ops.h"
 
@@ -45,6 +46,8 @@ std::expected<void, KernelFailure> CheckGemma3Graph(const md::Gemma3Profile& p,
   if (auto checked = md::CheckGemma3Binding(p, binding); !checked) return Rejected(checked.error());
   if (!state.Representations(p)) return Rejected("invalid Gemma3 state layout");
   const bool state_only = shape.output_mode == Gemma3OutputMode::kStateOnly;
+  if (o.owner_decode && (o.first_layer != 0 || o.layer_count != 0 || o.hidden_input || !o.head))
+    return Rejected("Gemma3 owner decode requires the complete token-input model");
   if ((shape.output_mode != Gemma3OutputMode::kHead && !state_only) ||
       (state_only && (!o.head || o.hidden_input || o.first_layer != 0 ||
                       (o.layer_count != 0 && o.layer_count != p.layers) || shape.outputs != 0)))
@@ -161,6 +164,27 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
     return ggml_mul_mat(c, weight(resource), input);
   };
   std::vector<ggml_tensor*> expanded;
+  const bool owner_decode =
+      o.owner_decode && shape.output_mode == Gemma3OutputMode::kHead && shape.outputs == 2 &&
+      g.segments.size() == 2 && g.segments[0].shape.rows == 1 && g.segments[1].shape.rows == 1 &&
+      g.segments[0].shape.global_n_kv == g.segments[1].shape.global_n_kv &&
+      g.segments[0].shape.local_n_kv == g.segments[1].shape.local_n_kv &&
+      g.segments[0].shape.global_n_kv <= 16384 && g.segments[0].shape.local_n_kv <= 16384;
+  ggml_tensor* owner_global_mask = nullptr;
+  ggml_tensor* owner_local_mask = nullptr;
+  if (owner_decode) {
+    const auto join_mask = [&](ggml_tensor* a, ggml_tensor* b) {
+      return ggml_concat(c, ggml_reshape_4d(c, a, a->ne[0], 32, 1, 1),
+                         ggml_reshape_4d(c, b, b->ne[0], 32, 1, 1), 3);
+    };
+    owner_global_mask =
+        named("owner_global_mask", join_mask(g.segments[0].global_mask, g.segments[1].global_mask));
+    owner_local_mask =
+        named("owner_local_mask", join_mask(g.segments[0].local_mask, g.segments[1].local_mask));
+    expanded.push_back(owner_global_mask);
+    expanded.push_back(owner_local_mask);
+  }
+
   auto* input = o.hidden_input
                     ? g.input_hidden
                     : ggml_scale(c, ggml_get_rows(c, weight(binding.token_embd), g.tokens),
@@ -194,6 +218,8 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
     auto* k_rows = ggml_reshape_2d(c, k, kv_width, rows);
     auto* v_rows = ggml_reshape_2d(c, v, kv_width, rows);
     ggml_tensor* joined = nullptr;
+    std::array<ggml_tensor*, 4> owner_keys{}, owner_values{};
+    std::size_t owner = 0;
     for (auto& segment : g.segments) {
       const auto& s = segment.shape;
       const auto cells = p.local(il) ? state.local_cells : state.global_cells;
@@ -216,6 +242,12 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
                                          std::size_t{kv_width} * 2, 0),
                             0, 2, 1, 3);
       };
+      if (owner_decode) {
+        owner_keys[owner] = cache_view(cache_k);
+        owner_values[owner] = cache_view(cache_v);
+        ++owner;
+        continue;
+      }
       auto* queries = ggml_view_3d(c, q, d, p.heads, s.rows, q->nb[1], q->nb[2],
                                    std::size_t{segment.first_row} * q->nb[2]);
       queries = ggml_permute(c, queries, 0, 2, 1, 3);
@@ -226,6 +258,16 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
       named(prefix + std::format("slot.{}.attention", s.slot), attention);
       expanded.push_back(attention);
       joined = joined == nullptr ? attention : ggml_concat(c, joined, attention, 1);
+    }
+    if (owner_decode) {
+      // Q already contains contiguous scaled/roped rows for both owners.
+      // View that parent; only masks are joined, never independent K/V roots.
+      auto* packed_q = ggml_permute(c, ggml_reshape_4d(c, q, d, p.heads, 1, 2), 0, 2, 1, 3);
+      auto* mask = p.local(il) ? owner_local_mask : owner_global_mask;
+      auto* attention = FlashAttnOwnersNode(c, packed_q, mask, owner_keys, owner_values, 2, 2);
+      named(prefix + "owner_attention", attention);
+      joined = ggml_reshape_2d(c, attention, std::int64_t{d} * p.heads, 2);
+      expanded.push_back(joined);
     }
     if (!tail) break;
     auto* projected = named(prefix + "attn_projection", product(layer.out, joined));

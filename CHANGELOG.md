@@ -48,7 +48,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 - Execute the approved Gemma3 4B QAT Q4_0 artifact through the shared native
   runner, with bounded C1 eager/graph, Clear and spill/restore own controls.
-  Reference quality/performance, batching and serving remain unqualified.
+  Explicit optimized C1 and independently-prefilled C2 decode recipes pass
+  strict bounded reference screens; C2 preserves exact own states/choices.
+  Broader quality/performance, joint prefill, wider batching and serving remain
+  unqualified.
 
 - Prepare the approved Gemma 3 4B QAT Q4_0 checkpoint through the generic
   artifact importer, with strict source, metadata and tensor preflight. The

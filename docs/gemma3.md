@@ -17,7 +17,10 @@ greedy difference; explicit checked norm chains then match all 33 stock heads
 byte for byte. Explicit device greedy preserves exact choices/state. Allocation-free public
 binding validation narrows the latest short C1 screen to 0.56% slower than
 stock backend greedy. Broader quality, performance, longer contexts and
-batching remain open.
+batching remain open. An explicit [C2 decode screen](experiments/gemma3-execution/README.md#independent-prefill-c2-decode-screen)
+now checks two independently-prefilled slots: zero strict greedy differences,
+64/66 byte-identical heads and +2.08% paid latency versus stock. Joint prefill,
+wider/ragged cohorts, longer context and serving remain unqualified.
 
 ## Actual checkpoint contract
 
@@ -143,8 +146,11 @@ structurally; norm-ADD then required width2816 or 5376. The later
 [checked-chain screen](experiments/gemma3-execution/README.md#checked-norm-chains-exact-bounded-c1-quality)
 adds width2560 operand/refusal controls and exact bounded C1 model quality with
 explicit norm/RoPE, norm/ADD, generic norm and quantized-GLU policies. No Gemma4
-policy is enabled automatically. Owner attention still requires H16/32 and
-excludes H8. State bounds are context<=131072, max_rows<=8192 and slots<=16;
+policy is enabled automatically. The explicit C2 screen additionally admits
+D256/H8/GQA2 owner attention only for two actual owners, logical cohort2 and
+offset0, with operand, occupancy, replay and model controls. H8/D512 and wider
+H8 cohorts remain excluded; existing H16/32 domains are unchanged. State bounds
+are context<=131072, max_rows<=8192 and slots<=16;
 these are host contract bounds, not qualified long-context CUDA execution or
 batching support.
 
@@ -187,14 +193,16 @@ The internal `jitllm_gemma3_probe` uses the actual native tokenizer and fixed
 prompt rows, three supplied scalar warm rows and 32 teacher-forced rows.
 It emits 33 full vocabulary heads and 32 pre-step greedy choices; the final
 head has no target. These are representative screen dimensions, not newly
-qualified context or support limits. Multiple independent slots are designed
-into the runner but actual batching remains unqualified. The ordinary primitive
+qualified context or support limits. The later explicit C2 probe executes
+two independently-prefilled slots with joined decode; joint prefill and broader
+batching remain unqualified. The ordinary primitive
 policy is explicit; generic norm, quantized FFN, D256 norm/RoPE and width2560
 norm/residual switches are default-off diagnostics,
 with no automatic Gemma4 shape-policy inheritance. Explicit `Work::token`
 publication uses the existing kept device argmax with a separate graph/cache
 key and funded output; full heads remain available. The bounded device-greedy
 control checks 32 choices, exact initialized state and final heads, plus
-two-slot alias/mixed-publication refusals before state mutation. Only one slot
-executes. Device masks, lookahead, optimized batching and serving integration
-remain later work.
+two-slot alias/mixed-publication refusals before state mutation. At that C1
+snapshot only one slot executes; the later C2 control executes both slots and
+checks both initialized states. Device masks, lookahead, broader optimized
+batching and serving integration remain later work.

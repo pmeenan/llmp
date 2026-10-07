@@ -84,8 +84,12 @@ The primitive stock screen retains one positive-margin greedy difference as
 history; explicit checked norm chains then reproduce all 33 bounded stock
 heads exactly. Explicit device greedy preserves 32 choices, final heads and
 initialized state; allocation-free public binding checks narrow the latest
-short matched cycle to 0.56% slower than stock backend greedy. Broader quality,
-performance, longer contexts, batching and serving qualification remain open.
+short matched C1 cycle to 0.56% slower than stock backend greedy. The
+[bounded C2 decode screen](experiments/gemma3-execution/README.md#independent-prefill-c2-decode-screen)
+uses independently-prefilled slots and explicit H8 owner attention: zero strict
+greedy differences, 64/66 byte-identical heads and +2.08% paid latency. Broader
+quality/performance, longer contexts, joint prefill, wider/ragged batching and
+serving qualification remain open.
 It is not an execution support entry.
 
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,

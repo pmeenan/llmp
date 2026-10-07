@@ -75,6 +75,7 @@ Status Gemma3Runner::Setup() {
   model_.binding = &binding_;
   model_.state = &layout_;
   model_.options.narrow_final = o_.frontier_head;
+  model_.options.owner_decode = o_.owner_decode;
   std::vector<GroupPlace> places(weights_.artifact().groups().size(), GroupPlace::kDevice);
   if (auto r = weights_.Reserve(node_, places, {}); !r) return r;
   model_.resources.resize(weights_.artifact().resources().size());
@@ -429,6 +430,7 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::Planned(
     plan_selections_.quant_geglu += selected.implementation == kg::kMulMatGeGluQFused;
     plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;
     plan_selections_.norm_add += selected.implementation == kg::kGemmaNormAddName;
+    plan_selections_.owner_attention += selected.implementation == kg::kFlashAttnOwnersName;
   }
   const auto bytes = PlannedHostBytes(**p), nodes = PlannedNodes(**p);
   return &plans_.Add(shape, std::move(*p), bytes, nodes,

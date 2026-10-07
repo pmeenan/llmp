@@ -39,6 +39,8 @@ struct Gemma3GraphOptions {
   // Explicit diagnostics; ordinary complete chunks use these defaults.
   std::uint32_t first_layer = 0, layer_count = 0;
   bool hidden_input = false, head = true, narrow_final = false;
+  // Explicit checked H8/C2 one-row owner decode; other chunks stay ordinary.
+  bool owner_decode = false;
   bool operator==(const Gemma3GraphOptions&) const = default;
 };
 struct Gemma3WeightLeaf {

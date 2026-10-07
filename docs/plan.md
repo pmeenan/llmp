@@ -829,8 +829,11 @@ family" guide, and its long-context scaling work.
       resolve it with all 33 complete stock heads byte-identical. Device greedy
       retains exact choices/state; allocation-free public binding validation
       narrows the latest short C1 screen to 0.56% slower than stock backend
-      greedy. Broader quality/performance, longer contexts, batching and serving
-      remain open. The deferred and dropped
+      greedy. A [bounded C2 joined-decode screen](experiments/gemma3-execution/README.md#independent-prefill-c2-decode-screen)
+      now passes strict quality after independent prefill: zero greedy differences,
+      64/66 byte-identical heads, exact own state and +2.08% paid latency versus
+      stock. Broader quality/performance, longer contexts, joint prefill,
+      wider/ragged batching and serving remain open. The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);

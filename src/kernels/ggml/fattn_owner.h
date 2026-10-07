@@ -38,7 +38,8 @@ struct FlashAttnOwners {
 // Full backing parents may fit 1 GiB, with checked address/view containment;
 // this does not broaden the readable prefix or the shader index domain.
 // D256/GQA2
-// or D512/GQA8 only; heads 16 or 32. Scale is fixed at 1 (Q already
+// or D512/GQA8 with heads 16 or 32; D256/H8/GQA2 is additionally
+// admitted only for two actual owners/logical cohort2/offset0. Scale is fixed at 1 (Q already
 // normalized/scaled by the caller). No sinks, softcap or sparse gather.
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& inputs);
 

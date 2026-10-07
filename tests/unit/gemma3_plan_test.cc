@@ -65,6 +65,41 @@ kg::DeviceChoices Choices() {
   return out;
 }
 
+TEST(Gemma3Plan, ExplicitC2OwnerPlanFundsMasksAndValidatesIndependentRoots) {
+  Case c;
+  c.shape = {{{3, 1, 259, 512, 512}, {1, 1, 259, 512, 512}}, 2};
+  auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape,
+                                    {.narrow_final = true, .owner_decode = true});
+  ASSERT_TRUE(graph);
+  const auto model = Places(c, *graph);
+  auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
+  ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+  auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
+                                    (*measured)->placement.extent);
+  ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+  std::size_t owners = 0;
+  for (const auto& step : (*placed)->plan.steps) {
+    if (step.implementation != kg::kFlashAttnOwnersName) continue;
+    ++owners;
+    ASSERT_EQ(step.nodes.size(), 1);
+    EXPECT_TRUE(kg::CheckFlashAttnOwnersNode(step.nodes[0]));
+  }
+  EXPECT_EQ(owners, 34);
+  const std::array<md::Gemma3Segment, 2> segments{{{3, 259, c.b}, {1, 259, c.b}}};
+  const auto input = md::Gemma3Chunk(c.p, c.state, segments, true);
+  ASSERT_TRUE(input);
+  const std::array<std::int32_t, 2> frontier{0, 1};
+  const auto bytes = en::Gemma3SourceBytes((*placed)->graph);
+  ASSERT_TRUE(bytes);
+  EXPECT_TRUE(en::Gemma3Sources((*placed)->graph, *input, frontier, {}, *bytes));
+  EXPECT_FALSE(en::Gemma3Sources((*placed)->graph, *input, frontier, {}, *bytes - 1));
+  auto alias = model;
+  alias.slots[3] = alias.slots[1];
+  EXPECT_FALSE(en::BindGemma3Weights(alias, (*placed)->graph));
+}
+
 TEST(Gemma3Plan, GreedyPlanRetainsArgmaxOutputAcrossPlacementAndRejectsDetachedOutput) {
   Case c;
   c.shape.greedy = true;

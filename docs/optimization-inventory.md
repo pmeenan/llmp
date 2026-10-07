@@ -55,8 +55,9 @@ refusal before mutation, while only one executes. A short RNNR against stock's
 original public backend greedy sampler retains exact histories/final heads
 and +2.46% native paid latency. Stock reports full 262208-element sampled rows;
 this is no zero-copy claim. Broader quality/performance and optimized batching
-remain open. Existing H16/32 owner attention excludes Gemma3's H8 shape;
-lookahead remains open. No optimization transfers automatically.
+remain open. At this C1 snapshot, the H16/32 owner-attention gate excluded
+Gemma3's H8 shape; the explicit C2 transfer below closes only its two-owner
+D256 case. Lookahead remains open. No optimization transfers automatically.
 The [measured public-binding check](experiments/gemma3-execution/README.md#allocation-free-binding-validation-measured-host-cost)
 now validates all 444 fixed typed descriptors and distinct resource indices
 without reconstructing role/resource vectors or rebinding the model. Public
@@ -64,8 +65,23 @@ mutable graph/source checks remain per call. The duplicated source-validation
 pair falls from 213.776 to 16.5198 µs at scalar259/read512; the same bounded
 backend-greedy RNNR retains exact heads/choices/state and narrows native paid
 latency to +0.56%. All 17 focused tests pass, including mutations of every
-binding descriptor. Wider contexts, batching and sustained qualification
-remain open.
+binding descriptor. Wider contexts, broader batching and sustained
+qualification remain open.
+The [independent-prefill C2 screen](experiments/gemma3-execution/README.md#independent-prefill-c2-decode-screen)
+reuses owner attention for D256/H8/GQA2 only with two actual owners, logical
+cohort2 and offset0. Packed Q is a view, masks join once per wave and K/V keep
+independent roots. Existing H16/32 gates and the upstream kernel are unchanged.
+Packed/owner byte identity, FP64, actual occupancy/grid/workspace and fresh
+replay pass at cells256/512/1024, with H8/D512 and wider-cohort refusal controls.
+The explicit model recipe selects 68 owner steps across its full-head and
+greedy plans; these are bound-plan counts, excluding replay and Setup probes.
+Its own initialized states/64 choices/final heads remain exact through Clear,
+refusal and spill/restore. The stock screen has zero greedy differences,
+64/66 byte-identical heads and −0.005323% relative conditional-loss delta;
+one short RNNR retains exact histories/final heads at +2.08% paid latency.
+The one-column quantized GeGLU fusion applies to independent prefill/frontiers,
+not the joined two-column decode. Joint prefill, wider/ragged batching, longer
+context, sustained performance and serving remain open; the option defaults off.
 The exact stock Gemma3 graph gathers final attention and residual rows before
 post-norm/FFN, matching this native frontier. Both ordinary bounded Gemma4
 profiles instead retain the full final FFN before frontier publication, matching

@@ -13,6 +13,7 @@
 
 #include "expected_error.h"
 #include "gemma3_fixture.h"
+#include "kernels/ggml/fattn_owner.h"
 #include "kernels/ggml/jitllm_ops.h"
 
 namespace {
@@ -28,6 +29,85 @@ struct Case {
 std::size_t Count(const kg::Gemma3Graph& graph, ggml_op op) {
   return static_cast<std::size_t>(
       std::ranges::count_if(graph.nodes, [op](const auto* t) { return t->op == op; }));
+}
+
+TEST(Gemma3Graph, H8OwnerContractIsClosedToD256AndTwoActualRoots) {
+  const auto make = [](kg::TensorArena& arena, std::int64_t d, std::int64_t heads,
+                       std::uint32_t owners) {
+    auto* c = arena.context();
+    std::uintptr_t address = std::uintptr_t{1} << 40U;
+    const auto placed = [&](ggml_tensor* tensor) {
+      kg::TensorArena::Bind(tensor, address);
+      address += 64U << 20U;
+      return tensor;
+    };
+    auto* raw_q = placed(ggml_new_tensor_4d(c, GGML_TYPE_F32, d, heads, 1, owners));
+    auto* q = ggml_permute(c, raw_q, 0, 2, 1, 3);
+    kg::TensorArena::Bind(q, reinterpret_cast<std::uintptr_t>(raw_q->data));
+    kg::FlashAttnOwners in{
+        .q = q,
+        .mask = placed(ggml_new_tensor_4d(c, GGML_TYPE_F16, 512, 32, 1, owners)),
+        .output = placed(ggml_new_tensor_4d(c, GGML_TYPE_F32, d, heads, 1, owners)),
+        .logical_cohort = owners,
+        .owner_count = owners};
+    for (std::uint32_t i = 0; i < owners; ++i) {
+      for (auto* destination : {&in.k[i], &in.v[i]}) {
+        auto* raw =
+            placed(ggml_new_tensor_4d(c, GGML_TYPE_F16, d, heads / (d == 256 ? 2 : 8), 512, 1));
+        auto* view = ggml_permute(c, raw, 0, 2, 1, 3);
+        kg::TensorArena::Bind(view, reinterpret_cast<std::uintptr_t>(raw->data));
+        *destination = view;
+      }
+    }
+    return in;
+  };
+  for (const auto owners : {2U, 3U, 4U}) {
+    auto arena = kg::TensorArena::Create(128);
+    ASSERT_TRUE(arena);
+    const auto in = make(*arena, 256, 8, owners);
+    EXPECT_EQ(kg::CheckFlashAttnOwners(in).has_value(), owners == 2);
+  }
+  auto arena = kg::TensorArena::Create(128);
+  ASSERT_TRUE(arena);
+  EXPECT_FALSE(kg::CheckFlashAttnOwners(make(*arena, 512, 8, 2)));
+  EXPECT_TRUE(kg::CheckFlashAttnOwners(make(*arena, 256, 16, 2)));
+}
+
+TEST(Gemma3Graph, ExplicitC2OwnerDecodeViewsQAndJoinsMasksWithoutJoiningCacheRoots) {
+  Case c;
+  c.shape = {{{3, 1, 259, 512, 512}, {1, 1, 259, 512, 512}}, 2};
+  kg::Gemma3GraphOptions options{.narrow_final = true, .owner_decode = true};
+  auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto graph = kg::BuildGemma3Graph(*arena, c.p, c.binding, c.state, c.shape, options);
+  ASSERT_TRUE(graph) << *jitllm::test_support::Failed(graph, &kg::KernelFailure::detail);
+  EXPECT_EQ(Count(*graph, GGML_OP_FLASH_ATTN_EXT), 0);
+  EXPECT_EQ(Count(*graph, GGML_OP_SET_ROWS), 136);
+  std::size_t owners = 0;
+  for (const auto* node : graph->nodes) {
+    if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+    ++owners;
+    EXPECT_EQ(node->src[0]->op, GGML_OP_PERMUTE);
+    EXPECT_EQ(node->src[0]->ne[0], 256);
+    EXPECT_EQ(node->src[0]->ne[2], 8);
+    EXPECT_EQ(node->src[0]->ne[3], 2);
+    EXPECT_EQ(node->src[1]->op, GGML_OP_CONCAT);
+    EXPECT_NE(node->src[2]->view_src, node->src[3]->view_src);
+    EXPECT_NE(node->src[6]->view_src, node->src[7]->view_src);
+    EXPECT_EQ(kg::JitllmOpInt(node, 0), 2);
+    EXPECT_EQ(kg::JitllmOpInt(node, 1), 2);
+  }
+  EXPECT_EQ(owners, 34);
+  options.first_layer = 1;
+  EXPECT_FALSE(kg::CheckGemma3Graph(c.p, c.binding, c.state, c.shape, options));
+  options.first_layer = 0;
+  c.shape.segments[0].rows = 2;
+  auto ordinary_arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
+  ASSERT_TRUE(ordinary_arena);
+  const auto ordinary =
+      kg::BuildGemma3Graph(*ordinary_arena, c.p, c.binding, c.state, c.shape, options);
+  ASSERT_TRUE(ordinary);
+  EXPECT_EQ(Count(*ordinary, GGML_OP_FLASH_ATTN_EXT), 68);
 }
 
 TEST(Gemma3Graph, ActualArithmeticUsesRawVDirectNormAndPerLayerRopeThenQueryScale) {

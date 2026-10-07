@@ -118,7 +118,9 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
     return Rejected("owner MMA requires actual roots2/3 or four-root cohort4/8/12");
   }
   if (!in.q || !in.mask || !in.output || (in.q->ne[0] != 256 && in.q->ne[0] != 512) ||
-      (in.q->ne[2] != 16 && in.q->ne[2] != 32))
+      (in.q->ne[2] != 16 && in.q->ne[2] != 32 &&
+       !(in.q->ne[0] == 256 && in.q->ne[2] == 8 && in.owner_count == 2 && in.logical_cohort == 2 &&
+         in.owner_offset == 0)))
     return Rejected("owner MMA requires the closed Gemma head dimensions");
   if (in.mask->ne[0] < 256 || in.mask->ne[0] > 16384 || in.mask->ne[0] % 256 != 0)
     return Rejected("owner MMA requires bounded actual padded cache widths");
