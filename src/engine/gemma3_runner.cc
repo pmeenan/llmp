@@ -588,23 +588,29 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::Planned(
   auto p = PlanGemma3Chunk(model_, shape, Choices(resources_.launch()), node_.activations().base,
                            node_.activations().bytes);
   if (!p) return Error(p.error());
-  if (auto r = BindPlanned(**p, resources_.launch(), resources_.registry(), "Gemma3 chunk"); !r)
+  return CachePlanned(shape, std::move(*p), Seconds(std::chrono::steady_clock::now() - started));
+}
+std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::CachePlanned(
+    const kg::Gemma3ChunkShape& shape, std::unique_ptr<Gemma3Planned> p, double seconds,
+    const std::function<void()>& transfer_charge) {
+  const auto started = std::chrono::steady_clock::now();
+  if (auto r = BindPlanned(*p, resources_.launch(), resources_.registry(), "Gemma3 chunk"); !r)
     return Error(r.error());
   std::vector<const ggml_tensor*> state_tensors;
-  for (const auto& segment : (*p)->graph.segments)
+  for (const auto& segment : p->graph.segments)
     for (const auto& [k, v] : segment.caches) {
       state_tensors.push_back(k);
       state_tensors.push_back(v);
     }
   Coverage checked;
-  CheckCoverage(node_, owner_, (*p)->graph.nodes,
-                {.state = state_tensors, .inputs = (*p)->graph.inputs}, checked);
+  CheckCoverage(node_, owner_, p->graph.nodes, {.state = state_tensors, .inputs = p->graph.inputs},
+                checked);
   if (checked.violations != 0)
     return Error(std::format("Gemma3 catalog coverage: {}", checked.first_violation));
   coverage_.tensors += checked.tensors;
   ++plan_selections_.plans;
-  plan_selections_.steps += (*p)->plan.steps.size();
-  for (const auto& selected : (*p)->plan.steps) {
+  plan_selections_.steps += p->plan.steps.size();
+  for (const auto& selected : p->plan.steps) {
     plan_selections_.norm_mul += selected.implementation == kg::kRmsNormMulFused;
     plan_selections_.quant_geglu += selected.implementation == kg::kMulMatGeGluQFused;
     plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;
@@ -619,9 +625,10 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::Planned(
           std::string_view(ggml_get_name(node)).ends_with("packed_prefill_attention");
     }
   }
-  const auto bytes = PlannedHostBytes(**p), nodes = PlannedNodes(**p);
-  return &plans_.Add(shape, std::move(*p), bytes, nodes,
-                     Seconds(std::chrono::steady_clock::now() - started));
+  const auto bytes = PlannedHostBytes(*p), nodes = PlannedNodes(*p);
+  if (transfer_charge) transfer_charge();
+  return &plans_.Add(shape, std::move(p), bytes, nodes,
+                     seconds + Seconds(std::chrono::steady_clock::now() - started));
 }
 Status Gemma3Runner::Chunk(std::uint32_t past, std::span<const std::int32_t> tokens,
                            std::vector<float>& logits, bool all_outputs) {
@@ -631,7 +638,9 @@ Status Gemma3Runner::Chunk(std::uint32_t past, std::span<const std::int32_t> tok
 Status Gemma3Runner::Wave(std::span<const Work> work, bool all_outputs) {
   return WaveWithMode(work, all_outputs, kg::Gemma3OutputMode::kHead);
 }
-Status Gemma3Runner::WavePrefill(std::span<const Work> work, bool want_head) {
+Status Gemma3Runner::WavePrefill(std::span<const Work> work, bool want_head,
+                                 std::span<const PrefillNext> next, bool next_want_head,
+                                 bool after_want_head) {
   if (o_.packed_prefill && work.size() > 1) {
     if (work.size() != 2 || work[0].tokens.size() < 2 ||
         work[0].tokens.size() != work[1].tokens.size())
@@ -647,10 +656,12 @@ Status Gemma3Runner::WavePrefill(std::span<const Work> work, bool want_head) {
         return Error("Gemma3 packed prefill needs equal initialized read widths");
   }
   return WaveWithMode(work, false,
-                      want_head ? kg::Gemma3OutputMode::kHead : kg::Gemma3OutputMode::kStateOnly);
+                      want_head ? kg::Gemma3OutputMode::kHead : kg::Gemma3OutputMode::kStateOnly,
+                      next, next_want_head, after_want_head);
 }
 Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
-                                  kg::Gemma3OutputMode mode) {
+                                  kg::Gemma3OutputMode mode, std::span<const PrefillNext> next,
+                                  bool next_want_head, bool after_want_head) {
   const PlanStep step;
   if (!bound_ || released_ || work.empty() || work.size() > o_.slots)
     return Error("Gemma3 wave is unavailable or unbounded");
@@ -733,8 +744,126 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
   if (!host) return Error(host.error());
   auto copies = runs_.Stage(host->sources, 0);
   if (!copies) return Error(copies.error());
-  bool capture = entry.runs[0].CaptureDue(runs_.graphs());
+  // Upcoming shapes, when the caller hints them: the same wave's slots
+  // continuing from this wave's end with the hint's rows (ahead[0]), then
+  // with the rows after those (ahead[1]). A hint is never work: a wrong one
+  // costs only an unused plan or graph.
+  std::array<kg::Gemma3ChunkShape, 2> ahead;
+  std::array<bool, 2> known{};
+  if (!next.empty() && next.size() <= work.size() && !greedy && !all_outputs &&
+      (o_.prefill_lookahead || o_.capture_ahead)) {
+    for (std::size_t k = 0; k < ahead.size(); ++k) {
+      bool valid = true;
+      std::uint32_t predicted_rows = 0;
+      for (std::size_t i = 0; valid && i < next.size(); ++i) {
+        const auto& hint = next[i];
+        const auto rows_k = k == 0 ? hint.rows : hint.after;
+        const auto from = std::ranges::find(work, hint.slot, &Work::slot);
+        // The first prediction bounds hint.rows, so the second's past fits.
+        const auto past = from == work.end()
+                              ? 0U
+                              : from->n_past + static_cast<std::uint32_t>(from->tokens.size()) +
+                                    (k == 0 ? 0U : hint.rows);
+        valid = from != work.end() &&
+                std::ranges::none_of(ahead[k].segments,
+                                     [&](const auto& s) { return s.slot == hint.slot; }) &&
+                rows_k != 0 && rows_k <= o_.max_rows && rows_k <= wave_rows - predicted_rows &&
+                past <= layout_.context && rows_k <= layout_.context - past;
+        if (!valid) break;
+        predicted_rows += rows_k;
+        const auto cells = Round(std::uint64_t{past} + rows_k, 256);
+        ahead[k].segments.push_back(
+            {hint.slot, rows_k, past,
+             static_cast<std::uint32_t>(std::min<std::uint64_t>(cells, layout_.global_cells)),
+             static_cast<std::uint32_t>(std::min<std::uint64_t>(cells, layout_.local_cells))});
+      }
+      if (!valid) break;
+      const bool head = k == 0 ? next_want_head : after_want_head;
+      ahead[k].output_mode = head ? kg::Gemma3OutputMode::kHead : kg::Gemma3OutputMode::kStateOnly;
+      ahead[k].outputs = head ? static_cast<std::uint32_t>(next.size()) : 0U;
+      known[k] = true;
+    }
+  }
+  auto& runs = entry.runs[0];
+  // A graph captured ahead holds the layout its plan's inputs predicted;
+  // one that differs from what was staged is dropped (Settle returns its
+  // charge) and this run goes launch by launch instead. The check covers
+  // every graph (any other differing layout, which Queue would refuse,
+  // counts here too).
+  if (runs_.graphs() && runs.graph.has_value() && *copies != runs.copies) {
+    runs.DropGraph();
+    ++lookahead_.dropped_ahead;
+  }
+  // Prefill grows its read width every 256 positions, so with 128-row
+  // chunks every shape runs exactly twice: D-090's second-run capture would
+  // never replay. A shape the next chunk repeats is captured on this, its
+  // first, run instead, unless a graph was captured ahead for it.
+  const bool repeats = known[0] && ahead[0] == shape;
+  bool capture =
+      runs.CaptureDue(runs_.graphs()) || (o_.capture_ahead && repeats && runs_.graphs() &&
+                                          !runs.graph.has_value() && !runs.uncapturable);
   if (capture && !plans_.ChargeGraph(entry)) capture = false;
+  const bool capture_first = capture && runs.eager_runs == 0;
+  // The next chunk's planned shape, when it differs from this one: its
+  // graph captured beside this run (which replays, leaving the host idle),
+  // so its first run replays too. Its inputs' layout is its plan's.
+  Plans::Entry* upcoming = nullptr;
+  Copies upcoming_copies;
+  std::array<RunCopy, 1> upcoming_output{};
+  if (o_.capture_ahead && known[0] && !repeats && runs_.graphs()) {
+    upcoming = plans_.Find(ahead[0]);
+    const Gemma3Planned* u = upcoming == nullptr ? nullptr : upcoming->planned.get();
+    auto layout =
+        u == nullptr ? std::expected<Copies, std::string>{} : runs_.Layout(u->graph.inputs, 0);
+    if (u == nullptr || upcoming->runs[0].graph.has_value() || upcoming->runs[0].uncapturable ||
+        upcoming->runs[0].ahead_refused || !layout || !plans_.ChargeGraph(*upcoming)) {
+      upcoming = nullptr;
+    } else {
+      upcoming_copies = std::move(*layout);
+      if (ahead[0].output_mode == kg::Gemma3OutputMode::kHead)
+        upcoming_output[0] = {Address(logits_), Address(u->graph.logits->data),
+                              std::uint64_t{ahead[0].outputs} * profile_.vocab * sizeof(float)};
+    }
+  }
+  // The first upcoming shape not yet planned: its descriptors built beside
+  // this chunk's device run (CPU only: BindPlanned's scratch queries call
+  // CUDA, so binding, coverage and caching wait for the job's completion),
+  // with the largest plan's host bytes funded before any of its allocations.
+  struct HostGrant {
+    PagedNode& node;
+    std::uint64_t bytes;
+    ~HostGrant() { node.UnchargeHost(bytes); }
+  };
+  const kg::Gemma3ChunkShape* build = nullptr;
+  if (o_.prefill_lookahead && node_.threaded())
+    for (std::size_t k = 0; k < ahead.size() && build == nullptr; ++k)
+      // Find examines capture state: before the job can change it.
+      if (known[k] && !(ahead[k] == shape) && plans_.Find(ahead[k]) == nullptr) build = &ahead[k];
+  std::optional<HostGrant> lookahead_grant;
+  std::unique_ptr<Gemma3Planned> built_ahead;
+  double ahead_seconds = 0;
+  if (build != nullptr) {
+    ++lookahead_.attempted;
+    if (node_.ChargeHost(plan_floor_bytes_, false)) {
+      lookahead_grant.emplace(node_, plan_floor_bytes_);
+    } else {
+      ++lookahead_.refused;
+      build = nullptr;
+    }
+  }
+  const auto choices = build != nullptr ? Choices(resources_.launch()) : kg::DeviceChoices{};
+  const std::function<void()> meanwhile = build != nullptr ? std::function<void()>([&] {
+    const auto started = std::chrono::steady_clock::now();
+    auto planned = PlanGemma3Chunk(model_, *build, choices, node_.activations().base,
+                                   node_.activations().bytes);
+    ahead_seconds = Seconds(std::chrono::steady_clock::now() - started);
+    lookahead_.build_seconds += ahead_seconds;
+    if (planned && PlannedHostBytes(**planned) <= plan_floor_bytes_) {
+      built_ahead = std::move(*planned);
+      ++lookahead_.built;
+    }
+  })
+                                                           : std::function<void()>{};
   std::array<RunCopy, 1> output{};
   if (greedy)
     output[0] = {Address(logits_), Address(p.graph.greedy->data),
@@ -748,8 +877,8 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
   const auto posted = node_.Job(
       execution_,
       [&](providers::NativeStream native) {
-        const auto result = runs_.Queue(entry.runs[0], *copies, {}, *p.bound, output_copies,
-                                        capture, graph_stats_, native);
+        const auto result =
+            runs_.Queue(runs, *copies, {}, *p.bound, output_copies, capture, graph_stats_, native);
         wrote = result.before || result.result.has_value();
         path = result.path;
         if (!result.result) {
@@ -759,9 +888,24 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
                  : result.before ? sc::JobResult::kFailed
                                  : sc::JobResult::kNotStarted;
         }
+        if (upcoming != nullptr) {
+          const auto ahead_outputs =
+              std::span(upcoming_output)
+                  .first(ahead[0].output_mode == kg::Gemma3OutputMode::kHead ? 1U : 0U);
+          auto captured =
+              runs_.CaptureAhead(upcoming->runs[0], upcoming_copies, *upcoming->planned->bound,
+                                 ahead_outputs, graph_stats_, native);
+          if (!captured) {
+            // This run's work is queued; the capture's fault is the context's.
+            queued = Error(captured.error().detail);
+            unknown = true;
+            return sc::JobResult::kUnknown;
+          }
+          lookahead_.captured_ahead += *captured;
+        }
         return sc::JobResult::kQueued;
       },
-      "Gemma3 chunk/wave", stream_);
+      "Gemma3 chunk/wave", stream_, meanwhile);
   if (!posted || !queued || resources_.launch().faulted()) {
     auto states = States();
     cohort_.CheckFailedJob(node_, stream_, execution_, states);
@@ -771,6 +915,15 @@ Status Gemma3Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
     if (!queued) return queued;
     return !posted ? posted : Error("Gemma3 launch context faulted");
   }
+  if (built_ahead) {
+    // The node has one driver and the job is gone. Transfer the temporary
+    // allowance immediately before the cache's own charge; a speculative
+    // failure does not undo the completed chunk.
+    if (CachePlanned(*build, std::move(built_ahead), ahead_seconds,
+                     [&] { lookahead_grant.reset(); }))
+      ++lookahead_.cached;
+  }
+  lookahead_.captured_first += capture_first && path == RunPath::kCaptured;
   Count(graph_stats_, path);
   if (greedy)
     for (std::size_t i = 0; i < work.size(); ++i) {

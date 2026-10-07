@@ -105,7 +105,25 @@ rt::Status Run(std::span<const std::string_view> args) {
   rt::ServingOptions options;
   options.plain = true;
   options.gemma3_trained_max = true;
-  options.gemma3_device_masks = args.size() == 6;
+  // Optional words after the input and output: device-masks; legacy (no
+  // prefill lookahead or first-run capture) or lookahead-only; repeat (one
+  // earlier timed traversal of the same prefix, then Clear: the measured
+  // pass runs on its plans and graphs).
+  bool repeat = false;
+  options.gemma3_device_masks = false;
+  for (const auto word : args.subspan(5)) {
+    if (word == "device-masks") {
+      options.gemma3_device_masks = true;
+    } else if (word == "legacy") {
+      options.gemma3_prefill_lookahead = options.gemma3_capture_ahead = false;
+    } else if (word == "lookahead-only") {
+      options.gemma3_capture_ahead = false;
+    } else if (word == "repeat") {
+      repeat = true;
+    } else {
+      return Error("unknown run option");
+    }
+  }
   rt::Server server(*config, *roles, options, stderr);
   if (auto started = server.Start(false); !started) return started;
   auto* target = server.Find(args[2]);
@@ -122,7 +140,7 @@ rt::Status Run(std::span<const std::string_view> args) {
   std::array<std::int32_t, kSteps> choices{};
   std::vector<float> row;
   rt::PrefillRun run;
-  double prefill_seconds = 0, teacher_seconds = 0;
+  double prefill_seconds = 0, teacher_seconds = 0, first_prefill_seconds = 0;
   const auto started = rt::Clock::now();
   const auto seconds = [](auto elapsed) { return std::chrono::duration<double>(elapsed).count(); };
   const auto publish = [&]() -> rt::Status {
@@ -132,6 +150,18 @@ rt::Status Run(std::span<const std::string_view> args) {
     return heads ? rt::Status{} : Error("head stream failed");
   };
   auto request = server.InRequest(llm, [&]() -> rt::Status {
+    if (repeat) {
+      if (auto cleared = llm.Clear(); !cleared) return cleared;
+      rt::PrefillRun first;
+      const auto first_start = rt::Clock::now();
+      if (auto pref =
+              llm.Prefill(std::span<const std::int32_t>(ids).first(kPrefix), row, {}, &first);
+          !pref)
+        return pref;
+      first_prefill_seconds = seconds(rt::Clock::now() - first_start);
+      if (first.end != kPrefix || first.chunks != 1024 || first.stopped)
+        return Error("first traversal geometry differs");
+    }
     if (auto cleared = llm.Clear(); !cleared) return cleared;
     std::uint32_t scheduled = 0, chunks = 0;
     const auto progress = [&](std::uint32_t rows) {
@@ -185,10 +215,10 @@ rt::Status Run(std::span<const std::string_view> args) {
   if (auto finished = server.FinishSwap(load); !finished) return finished;
   const auto graphs = llm.graphs();
   const std::string result = std::format(
-      R"({{"context":{},"prefix":{},"teacher_writes":{},"full_heads":65,"scored_transitions":64,"initialized_positions":{},"natural_emitted_tokens":0,"initialized_history_sha256":"{}","prefill_chunks":{},"prefill_seconds":{:.6f},"teacher_seconds":{:.6f},"longest_prefill_chunk_seconds":{:.6f},"budget_bytes":{},"fixed_bytes":{},"host_input_bytes":{},"sampled_memavailable_decrease_bytes":{},"minimum_available_bytes":{},"graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{},"kept":{}}},"model":{}}})",
+      R"({{"context":{},"prefix":{},"teacher_writes":{},"full_heads":65,"scored_transitions":64,"initialized_positions":{},"natural_emitted_tokens":0,"initialized_history_sha256":"{}","prefill_chunks":{},"first_prefill_seconds":{:.6f},"prefill_seconds":{:.6f},"teacher_seconds":{:.6f},"longest_prefill_chunk_seconds":{:.6f},"budget_bytes":{},"fixed_bytes":{},"host_input_bytes":{},"sampled_memavailable_decrease_bytes":{},"minimum_available_bytes":{},"graphs":{{"eager":{},"captured":{},"replayed":{},"refused":{},"kept":{}}},"model":{}}})",
       kContext, kPrefix, kSteps, llm.history().size(),
-      Hash(std::span<const std::int32_t>(llm.history())), run.chunks, prefill_seconds,
-      teacher_seconds, run.longest, server.budget(), server.fixed_bytes(),
+      Hash(std::span<const std::int32_t>(llm.history())), run.chunks, first_prefill_seconds,
+      prefill_seconds, teacher_seconds, run.longest, server.budget(), server.fixed_bytes(),
       server.host_input_bytes(), server.memory().peak(), server.memory().all(), graphs.eager,
       graphs.captured, graphs.replayed, graphs.refused, graphs.kept, llm.extra());
   if (auto written = Write(out / "result.json", std::span<const char>(result)); !written)
@@ -206,9 +236,7 @@ int main(int argc, char** argv) {
     if (!result) (void)std::fprintf(stderr, "%s\n", result.error().c_str());
     return result ? 0 : 1;
   }
-  if ((argc != 7 && argc != 8) || std::string_view(argv[1]) != "run" ||
-      (argc == 8 && std::string_view(argv[7]) != "device-masks"))
-    return 2;
+  if (argc < 7 || argc > 10 || std::string_view(argv[1]) != "run") return 2;
   const auto result = Run(args);
   if (!result) (void)std::fprintf(stderr, "%s\n", result.error().c_str());
   return result ? 0 : 1;

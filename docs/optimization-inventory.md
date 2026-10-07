@@ -745,6 +745,19 @@ from the earlier runners without changing future KV ownership. Previous-family
 default prompt hooks ignore the hint; no additional Qwen/DeepSeek speed claim
 is made. Scoring, features and final prompt heads retain their full paths.
 
+[Gemma3's lookahead and graphs captured ahead](experiments/gemma3-execution/README.md#prefill-lookahead-and-graphs-captured-ahead-2026-10-07)
+transfer that lookahead and add a capture policy for prefill whose read width
+grows every 256 positions: with 128-row chunks each shape runs exactly twice,
+so D-090's second-run capture never replays. A two-ahead hint lets the runner
+capture a repeated shape on its first run and the next planned shape's graph
+beside a replay (`GraphRuns::CaptureAhead`). Gemma3's trained-maximum first
+traversal falls 9.40% (1.31% above stock) with exact heads. Open transfers:
+Gemma4 (both profiles) has the lookahead but still captures on the second run,
+so its long prefills never replay on a first traversal; Gemma2 ignores the hint.
+Two-request joined prefill waves pass no hints in any family. Qwen3.8 and
+DeepSeek capture only decode/verify shapes and need their own measurement
+before prefill capture.
+
 The [plain norm adoption](experiments/gemma-state-only-norm-policy/README.md)
 now selects existing checked RMSNorm/Mul by default for both approved Gemmas.
 Ordinary off/on controls preserve complete heads, initialized state and choices;

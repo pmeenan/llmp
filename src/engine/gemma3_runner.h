@@ -45,6 +45,11 @@ struct Gemma3Options {
   bool device_masks = false;
   // Explicit numerical comparisons only; ordinary plans use primitives.
   bool fuse_norms = false, fuse_quant_glu = false, fuse_norm_rope = false, fuse_norm_add = false;
+  // A prefill chunk's hints of its next two chunks (WavePrefill's next): an
+  // upcoming shape's descriptors built on the host beside this chunk's
+  // device run, and an upcoming shape's graph captured before its first
+  // run (or, without that, on its first run when the next chunk repeats it).
+  bool prefill_lookahead = true, capture_ahead = true;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
 };
 class Gemma3Runner final : public PagedModel {
@@ -140,7 +145,23 @@ class Gemma3Runner final : public PagedModel {
   Status Chunk(std::uint32_t past, std::span<const std::int32_t> tokens, std::vector<float>& logits,
                bool all_outputs = false);
   Status Wave(std::span<const Work> work, bool all_outputs = false);
-  Status WavePrefill(std::span<const Work> work, bool want_head = true);
+  // A slot's next chunk's rows and, if known, the rows of the one after it.
+  struct PrefillNext {
+    std::uint32_t slot = 0, rows = 0, after = 0;
+  };
+  // A bounded shape prediction only: no future tokens, state or work is posted.
+  // Next slots must belong to this wave; their past is its completed end.
+  Status WavePrefill(std::span<const Work> work, bool want_head = true,
+                     std::span<const PrefillNext> next = {}, bool next_want_head = true,
+                     bool after_want_head = true);
+  struct LookaheadStats {
+    std::uint64_t attempted = 0, built = 0, cached = 0, refused = 0;
+    std::uint64_t captured_first = 0;  // shapes captured on their first run
+    std::uint64_t captured_ahead = 0;  // graphs captured before their plan's first run
+    std::uint64_t dropped_ahead = 0;   // of those, dropped as their staging differed
+    double build_seconds = 0;
+  };
+  const LookaheadStats& lookahead_stats() const { return lookahead_; }
   std::uint64_t weight_read_bytes() const { return weights_.read_bytes(); }
   std::uint64_t graph_measured_bytes() const { return plans_.graph_measured_bytes(); }
   std::uint64_t graph_count() const { return plans_.graphs(); }
@@ -162,13 +183,19 @@ class Gemma3Runner final : public PagedModel {
 
  private:
   Status WaveWithMode(std::span<const Work> work, bool all_outputs,
-                      kernels::ggml::Gemma3OutputMode mode);
+                      kernels::ggml::Gemma3OutputMode mode, std::span<const PrefillNext> next = {},
+                      bool next_want_head = true, bool after_want_head = true);
   Status RefreshClosures(SlotMask protect);
   Status RefreshClosures() { return RefreshClosures(cohort_.active()); }
   std::array<LiveState*, kMaxRequestSlots> States();
   Status CheckActive(const Slot& slot) const;
   kernels::ggml::DeviceChoices Choices(kernels::ggml::LaunchContext& launch) const;
   std::expected<Plans::Entry*, std::string> Planned(const kernels::ggml::Gemma3ChunkShape& shape);
+  // Binds, checks and caches built descriptors; `transfer_charge` runs just
+  // before the cache's own charge (a lookahead's temporary host allowance).
+  std::expected<Plans::Entry*, std::string> CachePlanned(
+      const kernels::ggml::Gemma3ChunkShape& shape, std::unique_ptr<Gemma3Planned> p,
+      double seconds, const std::function<void()>& transfer_charge = {});
   PagedNode& node_;
   Gemma3Options o_;
   int owner_;
@@ -188,6 +215,7 @@ class Gemma3Runner final : public PagedModel {
   GraphRuns runs_;
   GraphStats graph_stats_;
   PlanSelections plan_selections_;
+  LookaheadStats lookahead_;
   Coverage coverage_;
   std::optional<std::uint64_t> places_clean_;
   void* logits_ = nullptr;

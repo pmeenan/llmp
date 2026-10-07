@@ -44,10 +44,14 @@ inline constexpr std::uint32_t kPrefillTiledFrom = 1024;
 std::uint32_t PrefillChunkRows(std::uint32_t context, std::optional<std::uint32_t> configured,
                                std::uint32_t preferred, std::uint32_t most);
 
-// Optional prediction for CPU planning only; zero rows means none.
+// Optional prediction for CPU planning and capture policy only; zero rows
+// means none. A wrong one costs an unused plan or graph, never work.
 struct PrefillHint {
   std::uint32_t rows = 0;
   bool want_head = true;
+  // The chunk after that one, likewise (zero rows: none or unknown).
+  std::uint32_t after_rows = 0;
+  bool after_want_head = true;
 };
 // The ordinary tiled chunk geometry, without consuming any input.
 std::uint32_t PrefillRows(std::uint32_t remaining, std::uint32_t maximum);

@@ -100,6 +100,9 @@ struct ServingOptions {
   bool gemma3_trained_max = false;
   // Ordinary graph-owned masks; internal host-reference override only.
   bool gemma3_device_masks = true;
+  // Ordinary prefill lookahead and first-run capture of a repeated shape;
+  // internal overrides for matched controls only.
+  bool gemma3_prefill_lookahead = true, gemma3_capture_ahead = true;
 };
 
 struct ChatOptions {

@@ -1439,7 +1439,7 @@ top-k on a patched path without it (licensing.md).
 **Reopen if.** A license admitted as permissive turns out to carry an
 obligation or restriction above, or the owner narrows the rule.
 
-## D-090: Decode steps replay as captured CUDA graphs at pinned places; a swap brings every address a graph names back  (2026-09-28, status: accepted by the M3 decode-graphs slice under the owner's overnight delegation, for review with it; pinned places confirmed by the owner, 2026-09-28, graphs' worth re-measured with a lease per request the same day and kept (below); answers D-086's graph-capture reopen condition and amends its contract with graphs; establishes what D-033 left open, graph survival across unmap and remap; amended 2026-10-03: a graph may record the launch context's lanes)
+## D-090: Decode steps replay as captured CUDA graphs at pinned places; a swap brings every address a graph names back  (2026-09-28, status: accepted by the M3 decode-graphs slice under the owner's overnight delegation, for review with it; pinned places confirmed by the owner, 2026-09-28, graphs' worth re-measured with a lease per request the same day and kept (below); answers D-086's graph-capture reopen condition and amends its contract with graphs; establishes what D-033 left open, graph survival across unmap and remap; amended 2026-10-03: a graph may record the launch context's lanes; amended 2026-10-07: hinted prefill shapes may be captured on or before their first run)
 
 **Decision.**
 - **What a graph holds.** A graph is captured per model, plan and chunk
@@ -1489,6 +1489,15 @@ obligation or restriction above, or the owner narrows the rule.
   graphs survive the swap in the process; "first use" drops them. Graph
   memory is the driver's, outside the catalog, so a model keeps a bounded
   number of graphs (the DeepSeek runner: 8, the oldest destroyed first).
+  *Amended 2026-10-07:* runners also capture prefill shapes on this rule
+  (plans and graphs are since charged to the node's budget and reclaimed
+  through its order). A runner given the caller's next-chunk hints may
+  capture a shape beside its first run when the next chunk repeats it, or
+  record a planned shape's graph ahead of its first run, beside the current
+  chunk's run (`GraphRuns::CaptureAhead`; Gemma3 prefill, whose shapes each
+  run twice). Pinned places and the replay's staging check are unchanged; a
+  graph whose staged layout differs is dropped and that run goes launch by
+  launch, and a refused ahead capture stops only further ahead attempts.
 
 **Why.** The alternative, re-pointing graphs after a swap with executable
 graph updates, needs every kernel node's parameters decoded per kernel

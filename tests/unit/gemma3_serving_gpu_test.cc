@@ -5,8 +5,11 @@
 
 #include <array>
 #include <cstring>
+#include <expected>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -69,6 +72,31 @@ class Gemma3ServingGpu : public ::testing::Test {
   }
   en::Status Held(const std::function<en::Status()>& body) {
     return node.WithRequest(0, runner->closure(), "Gemma3 serving lifecycle", body);
+  }
+  std::expected<jitllm::base::Sha256Digest, std::string> StateHash(std::uint32_t id) {
+    const auto slot = runner->request_slot(id);
+    if (!slot) return en::support::Error(slot.error());
+    std::vector<jitllm::catalog::ExtentId> staging;
+    auto buffer = node.Pinned(1U << 20U, 0, staging);
+    if (!buffer) return en::support::Error(buffer.error());
+    jitllm::base::Sha256 hash;
+    for (const auto& range : (*slot)->state().used_ranges()) {
+      for (std::uint64_t at = 0; at < range.bytes; at += 1U << 20U) {
+        const en::LiveState::Range part{range.region, range.offset + at,
+                                        std::min<std::uint64_t>(1U << 20U, range.bytes - at)};
+        en::LiveState::CopyRetirement retirement = en::LiveState::CopyRetirement::kUnproven;
+        const auto copied = runner->CopyState(id, *buffer, std::span(&part, 1), &retirement);
+        if (retirement == en::LiveState::CopyRetirement::kUnproven) node.KeepPinned(*buffer);
+        if (!copied) {
+          if (retirement == en::LiveState::CopyRetirement::kProven) (void)node.FreePinned(*buffer);
+          return en::support::Error(copied.error());
+        }
+        hash.Update(std::span(static_cast<const std::byte*>(*buffer), part.bytes));
+      }
+    }
+    if (auto released = node.FreePinned(*buffer); !released)
+      return en::support::Error(released.error());
+    return hash.Finish();
   }
   void Exact(std::span<const float> a, std::span<const float> b) {
     ASSERT_EQ(a.size(), b.size());
@@ -244,33 +272,6 @@ TEST_F(Gemma3ServingGpu, JointPrefillFundsTwoFullChunksAndReplaysFreshIndependen
   std::array<std::vector<float>, 2> saved_heads[2];
   std::array<jitllm::base::Sha256Digest, 2> saved_states[2];
   const auto status = Held([&]() -> en::Status {
-    const auto state_hash =
-        [&](std::uint32_t id) -> std::expected<jitllm::base::Sha256Digest, std::string> {
-      const auto slot = runner->request_slot(id);
-      if (!slot) return en::support::Error(slot.error());
-      std::vector<jitllm::catalog::ExtentId> staging;
-      auto buffer = node.Pinned(1U << 20U, 0, staging);
-      if (!buffer) return en::support::Error(buffer.error());
-      jitllm::base::Sha256 hash;
-      for (const auto& range : (*slot)->state().used_ranges()) {
-        for (std::uint64_t at = 0; at < range.bytes; at += 1U << 20U) {
-          const en::LiveState::Range part{range.region, range.offset + at,
-                                          std::min<std::uint64_t>(1U << 20U, range.bytes - at)};
-          en::LiveState::CopyRetirement retirement = en::LiveState::CopyRetirement::kUnproven;
-          const auto copied = runner->CopyState(id, *buffer, std::span(&part, 1), &retirement);
-          if (retirement == en::LiveState::CopyRetirement::kUnproven) node.KeepPinned(*buffer);
-          if (!copied) {
-            if (retirement == en::LiveState::CopyRetirement::kProven)
-              (void)node.FreePinned(*buffer);
-            return en::support::Error(copied.error());
-          }
-          hash.Update(std::span(static_cast<const std::byte*>(*buffer), part.bytes));
-        }
-      }
-      if (auto released = node.FreePinned(*buffer); !released)
-        return en::support::Error(released.error());
-      return hash.Finish();
-    };
     for (std::uint32_t pass = 0; pass < 4; ++pass) {
       for (std::uint32_t id = 0; id < 2; ++id)
         if (auto cleared = runner->Clear(id); !cleared) return cleared;
@@ -298,7 +299,7 @@ TEST_F(Gemma3ServingGpu, JointPrefillFundsTwoFullChunksAndReplaysFreshIndependen
       std::array<jitllm::base::Sha256Digest, 2> states;
       for (std::uint32_t id = 0; id < 2; ++id) {
         EXPECT_EQ((*runner->request_slot(id))->completed_positions(), 259U);
-        auto hash = state_hash(id);
+        auto hash = StateHash(id);
         if (!hash) return en::support::Error(hash.error());
         states[id] = *hash;
       }
@@ -322,7 +323,7 @@ TEST_F(Gemma3ServingGpu, JointPrefillFundsTwoFullChunksAndReplaysFreshIndependen
       EXPECT_FALSE(runner->WavePrefill(work, true));
       for (std::uint32_t id = 0; id < 2; ++id) {
         EXPECT_EQ((*runner->request_slot(id))->completed_positions(), 259U);
-        auto hash = state_hash(id);
+        auto hash = StateHash(id);
         if (!hash) return en::support::Error(hash.error());
         EXPECT_EQ(*hash, states[id]);
       }
@@ -336,7 +337,7 @@ TEST_F(Gemma3ServingGpu, JointPrefillFundsTwoFullChunksAndReplaysFreshIndependen
     if (auto ran = Single(1, 387, continuation, heads[1]); !ran) return ran;
     std::array<jitllm::base::Sha256Digest, 2> before;
     for (std::uint32_t id = 0; id < 2; ++id) {
-      auto hash = state_hash(id);
+      auto hash = StateHash(id);
       if (!hash) return en::support::Error(hash.error());
       before[id] = *hash;
     }
@@ -348,12 +349,72 @@ TEST_F(Gemma3ServingGpu, JointPrefillFundsTwoFullChunksAndReplaysFreshIndependen
     EXPECT_EQ((*runner->request_slot(0))->completed_positions(), 259U);
     EXPECT_EQ((*runner->request_slot(1))->completed_positions(), 515U);
     for (std::uint32_t id = 0; id < 2; ++id) {
-      auto hash = state_hash(id);
+      auto hash = StateHash(id);
       if (!hash) return en::support::Error(hash.error());
       EXPECT_EQ(*hash, before[id]);
     }
     EXPECT_GT(runner->plan_selections().packed_prefill_attention, 0U);
     EXPECT_GT(runner->graph_stats().replayed, 0U);
+    return {};
+  });
+  ASSERT_TRUE(status) << (status ? "" : status.error());
+}
+TEST_F(Gemma3ServingGpu, PrefillHintsBuildAndCaptureAheadWithoutChangingStateOrHeads) {
+  // Six 128-row chunks: read widths 256, 256, 512, 512, 768, 768, the last
+  // with a head. Unhinted, hinted, wrongly hinted and warm runs must leave
+  // byte-identical state and heads; correct hints replay every chunk after
+  // the first (the first run of each later width included).
+  constexpr std::uint32_t kRows = 128, kChunks = 6;
+  std::vector<std::int32_t> tokens(kRows * kChunks);
+  for (std::size_t i = 0; i < tokens.size(); ++i)
+    tokens[i] = prompt[(i * 7 + i / 5) % prompt.size()];
+  const auto status = Held([&]() -> en::Status {
+    std::vector<float> reference_head;
+    jitllm::base::Sha256Digest reference_state{};
+    // 0: no hints; 1: hints; 2: hints whose second chunk is wrong; 3: hints, warm.
+    for (std::uint32_t pass = 0; pass < 4; ++pass) {
+      if (auto cleared = runner->Clear(0); !cleared) return cleared;
+      if (pass < 3) runner->DropPlans();
+      const auto before = runner->graph_stats();
+      const auto ahead_before = runner->lookahead_stats();
+      std::vector<float> head;
+      for (std::uint32_t chunk = 0; chunk < kChunks; ++chunk) {
+        const en::Gemma3Runner::Work work{0, chunk * kRows,
+                                          std::span(tokens).subspan(chunk * kRows, kRows), &head};
+        const bool last = chunk + 1 == kChunks;
+        en::Gemma3Runner::PrefillNext hint{0, last ? 0U : kRows, chunk + 2 < kChunks ? kRows : 0U};
+        if (pass == 2 && hint.after != 0) hint.after = 64;
+        const bool hinted = pass != 0 && !last;
+        if (auto ran =
+                runner->WavePrefill(std::span(&work, 1), last, std::span(&hint, hinted ? 1U : 0U),
+                                    chunk + 2 == kChunks, chunk + 3 == kChunks);
+            !ran)
+          return ran;
+        EXPECT_EQ(head.empty(), !last);
+      }
+      auto state = StateHash(0);
+      if (!state) return en::support::Error(state.error());
+      if (pass == 0) {
+        reference_head = head;
+        reference_state = *state;
+      } else {
+        Exact(head, reference_head);
+        EXPECT_EQ(*state, reference_state) << pass;
+      }
+      const auto& after = runner->graph_stats();
+      const auto& ahead = runner->lookahead_stats();
+      const auto replayed = after.replayed - before.replayed;
+      if (pass == 1) {
+        EXPECT_EQ(replayed, kChunks - 1);
+        EXPECT_EQ(ahead.captured_first - ahead_before.captured_first, 1U);
+        EXPECT_EQ(ahead.captured_ahead - ahead_before.captured_ahead, 3U);
+        EXPECT_GT(ahead.cached, ahead_before.cached);
+        EXPECT_EQ(ahead.built, ahead.cached);
+      }
+      if (pass == 3) EXPECT_EQ(replayed, kChunks);
+      EXPECT_EQ(ahead.dropped_ahead, 0U);
+      EXPECT_EQ(after.refused, 0U);
+    }
     return {};
   });
   ASSERT_TRUE(status) << (status ? "" : status.error());

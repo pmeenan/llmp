@@ -948,6 +948,10 @@ family" guide, and its long-context scaling work.
       native prefill from 43.401 to 35.304 seconds in one first-traversal
       bookend; ordinary bounded serving uses the checked device producer,
       without qualifying public maximum depth or sustained performance.
+      [Prefill lookahead and graphs captured ahead](experiments/gemma3-execution/README.md#prefill-lookahead-and-graphs-captured-ahead-2026-10-07)
+      replay 1,085 of 1,088 runs on a first traversal and cut it from 35.520 to
+      32.180 seconds, 1.31% above an interleaved stock control (31.820), with
+      every frozen head exact and warm repeats unchanged.
       The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:

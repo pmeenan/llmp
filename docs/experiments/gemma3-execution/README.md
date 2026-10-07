@@ -1237,3 +1237,82 @@ Raw final controls/binding stay outside Git under Spark A
 `/tmp/jitllm-m35-coordination/gemma3-device-masks-adopt-result2`.
 Public maximum context, corpus/retrieval, maximum-depth state/swap and
 sustained gates remain open.
+
+## Prefill lookahead and graphs captured ahead (2026-10-07)
+
+A per-chunk attribution of the GPU-mask trained-maximum traversal (temporary
+timers, not retained) found the device busy for 32.7 of 34.9 seconds. About
+2.05 seconds was host work serial to each chunk: 1.42 seconds planning 512 new
+shapes (2.8 ms each: 0.92 ms descriptor build, 0.57 ms binding, 0.20 ms
+coverage) and about 0.6 ms a chunk of input and state preparation. Capture cost
+another 0.5 seconds of wall time, yet no prefill graph replayed: the global read
+width grows every 256 positions, so with 128-row chunks every shape runs exactly
+twice, and D-090 captures on the second run. A warm repeat traversal, in which
+every chunk replays, takes 30.36 seconds against 32.45 seconds eager (same
+binary, capture disabled): replayed 128-row chunks are about 7% faster on the
+device, so disabling prefill capture would cost repeated prompts.
+
+Gemma3 now takes the runtime's prefill hints, extended to the chunk after next.
+It builds the first unplanned upcoming shape's descriptors beside the current
+chunk's device run, ported from Gemma4's bounded lookahead (funded before
+submission; binding, coverage and caching after proven completion). A shape the
+next chunk repeats is captured beside its first run; and when the next chunk's
+shape differs and is already planned, its graph is captured ahead, without
+running, beside the current replay, from the input layout its plan predicts
+(`GraphRuns::CaptureAhead`, `Layout`). A graph whose predicted layout differs
+from what is later staged is dropped (the check covers every Gemma3 graph) and
+that run goes launch by launch; a refused ahead capture leaves capture beside a
+later run available. A wrong hint costs only an unused plan or graph, and a
+prompt's one-off tail shape now gets a graph (charged and reclaimable) that it
+replays once. The policy is ordinary-serving default;
+internal `ServingOptions` and benchmark words (`legacy`, `lookahead-only`,
+`repeat`) keep matched controls. Two-request joined prefill waves receive no
+hints and keep the previous policy.
+
+| Fresh-Server first traversal | Legacy 1 | New 1 | New 2 | Legacy 2 |
+| --- | ---: | ---: | ---: | ---: |
+| Prefill seconds | 35.532757 | 32.278522 | 32.082054 | 35.506342 |
+| 64 teacher-write seconds | 1.608847 | 1.603348 | 1.606375 | 1.615792 |
+
+Mean prefill falls from 35.519550 to 32.180288 seconds (9.40%). New arms run
+1 eager, 2 captured and 1,085 replayed of 1,088 runs (legacy: 514/512/62), with
+512 graphs captured ahead, none dropped and 512 plans built ahead. An earlier
+same-day build of the one-ahead form (lookahead plus first-run capture, no
+capture ahead; not selectable in the final benchmark) measured 33.207/33.480
+seconds against legacy 34.845/35.759, and lookahead alone 34.451. A repeat traversal after one unmeasured pass takes 30.799 seconds with
+the new policy, against 30.675/30.776 legacy in the earlier repeat bookend: warm
+repeats keep every replay.
+
+| Interleaved reference control | Stock 1 | New 1 | New 2 | Stock 2 |
+| --- | ---: | ---: | ---: | ---: |
+| Prefill seconds | 31.7985 | 32.165479 | 32.310036 | 31.8405 |
+| 64 teacher-write seconds | 1.60536 | 1.608754 | 1.611058 | 1.61304 |
+
+The stock caller is the original v0.6.0 trained-maximum caller with one change:
+its flash-attention shape callback (`cb_eval`) is off, which runs about 1 second
+faster than the earlier quality-run caller (31.92 versus 32.90 seconds in one
+same-day pair), plus progress lines. Mean native prefill is 1.31% above stock
+(32.237758 versus 31.8195 seconds); teacher writes are level. The residual is
+mostly serial state growth and new-plan binding/coverage on the host; reserving
+state ahead would change live-state ownership and is not attempted. This is one
+first-traversal shape on one host, not a sustained or public-maximum claim.
+
+Every native and stock arm in these bookends matches all 65 heads, 64 choices
+and the final head byte for byte against the frozen oracle. Focused controls
+pass on Spark A: the new hinted/unhinted/wrong-hint/warm GPU control (exact
+initialized state and heads; correct hints replay every chunk after the first),
+the four existing Gemma3 serving controls, `GraphRuns` layout/staging agreement,
+15 plan and 2 runner cases, and eight Gemma4 state-only/lookahead capture
+controls over the refactored `GraphRuns`. The five-case ordinary HTTP control
+passes over two epochs with generated IDs identical to the previous runtime's
+(16 plans built ahead, 18 graphs captured ahead, none dropped); a Gemma3/Qwen3.8
+8K switch table repeats all six earlier rows' outputs with exact state; four
+Gemma2 checkpoint GPU controls and the DeepSeek fast and CUDA graph cases pass.
+No full suite ran (owner override, 2026-10-05). The measured benchmark ELF is
+`d59dc8681deeeb00c746a191cd2c0c2d4fd1cd4eadf8e828404d2c8ce58e6d88`, with the
+pinned SDK c09 CUDA 13.4 cuBLAS closure, driver 580.178.04 and the approved
+artifact; the stock caller is
+`58620960fecf643f817aced7d1930c26b566bc80b266c93f0223ec222d40688f` in the
+unchanged v0.6.0 image. Raw outputs stay outside Git under Spark A
+`~/.local/share/jitllm/g3gap-*`. TensorFold is unchanged at 5a73b85289b58c0998d7754822145466687a551b, without a
+matching qualified Gemma3 GGUF CUDA recipe.

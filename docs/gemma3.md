@@ -206,7 +206,9 @@ key and funded output; full heads remain available. The bounded device-greedy
 control checks 32 choices, exact initialized state and final heads, plus
 two-slot alias/mixed-publication refusals before state mutation. At that C1
 snapshot only one slot executes; the later C2 control executes both slots and
-checks both initialized states. Device masks, lookahead and broader optimized batching remain later work.
+checks both initialized states. Device masks and prefill lookahead with graphs captured ahead have since landed
+([report](experiments/gemma3-execution/README.md#prefill-lookahead-and-graphs-captured-ahead-2026-10-07));
+broader optimized batching remains later work.
 An explicit internal `depth` mode now checks context 8448 with an exact 8192-token
 prefix and 64-token continuation, including initialized-state hashes, graph
 retention through spill/restore, captured continuation replay and a fixed stock

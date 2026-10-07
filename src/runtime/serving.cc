@@ -1776,12 +1776,12 @@ class Gemma2 final : public Llm {
 class Gemma3 final : public Llm {
  public:
   Gemma3(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-         const config::RuntimeRoles& roles, int index, bool device_masks)
+         const config::RuntimeRoles& roles, int index, const ServingOptions& serving)
       : entry_(entry),
         artifact_id_(entry.artifact.value_or("")),
         store_(roles.installed),
         profile_(model::Gemma3_4BQat()),
-        options_(Options(entry, settings, roles, device_masks)),
+        options_(Options(entry, settings, roles, serving)),
         runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
     name_ = entry.name;
     settings_ = settings;
@@ -1847,13 +1847,16 @@ class Gemma3 final : public Llm {
   std::string violations() const override { return runner_.coverage().first_violation; }
   std::string extra() const override {
     const auto& selected = runner_.plan_selections();
+    const auto& ahead = runner_.lookahead_stats();
     return std::format(
-        R"({{"architecture":"gemma3","recipe":"bounded-serving","context":{},"configured_slots":{},"max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{}}})",
+        R"({{"architecture":"gemma3","recipe":"bounded-serving","context":{},"configured_slots":{},"max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{},"prefill_lookahead":{},"capture_ahead":{},"lookahead_built":{},"lookahead_cached":{},"lookahead_refused":{},"captured_first":{},"captured_ahead":{},"dropped_ahead":{}}})",
         options_.context, options_.slots, options_.max_rows, options_.max_wave_rows,
         joined_prefill_groups_, joined_prefill_rows_, joined_groups_, joined_units_,
         selected.owner_attention, selected.packed_prefill_attention,
         selected.bounded_owner_attention, options_.device_masks, selected.device_masks,
-        selected.norm_rope, selected.norm_add, runner_.greedy_tokens());
+        selected.norm_rope, selected.norm_add, runner_.greedy_tokens(), options_.prefill_lookahead,
+        options_.capture_ahead, ahead.built, ahead.cached, ahead.refused, ahead.captured_first,
+        ahead.captured_ahead, ahead.dropped_ahead);
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
   std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
@@ -1984,8 +1987,10 @@ class Gemma3 final : public Llm {
                             PrefillHint next) override {
     if (inject || past >= all.size()) return Error("Gemma needs a plain nonempty prefill chunk");
     const engine::Gemma3Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
-    (void)next;
-    return runner_.WavePrefill(std::span(&work, 1), want_head);
+    const engine::Gemma3Runner::PrefillNext hint{work.slot, next.rows, next.after_rows};
+    return runner_.WavePrefill(std::span(&work, 1), want_head,
+                               std::span(&hint, next.rows == 0 ? 0U : 1U), next.want_head,
+                               next.after_want_head);
   }
   Status PreparePrefillStateFor(Branch& branch, std::uint32_t past, std::uint32_t rows) override {
     if (past != NativeSlot(branch).completed_positions() || rows == 0 || rows > options_.max_rows ||
@@ -2176,7 +2181,8 @@ class Gemma3 final : public Llm {
  private:
   static engine::Gemma3Options Options(const config::ModelEntry& entry,
                                        const ModelSettings& settings,
-                                       const config::RuntimeRoles& roles, bool device_masks) {
+                                       const config::RuntimeRoles& roles,
+                                       const ServingOptions& serving) {
     return {.artifact = roles.installed / entry.artifact.value_or(""),
             .out = roles.spill,
             .context = settings.context.value,
@@ -2187,11 +2193,13 @@ class Gemma3 final : public Llm {
             .owner_decode = true,
             .packed_prefill = true,
             .bounded_roots = true,
-            .device_masks = device_masks,
+            .device_masks = serving.gemma3_device_masks,
             .fuse_norms = true,
             .fuse_quant_glu = true,
             .fuse_norm_rope = true,
-            .fuse_norm_add = true};
+            .fuse_norm_add = true,
+            .prefill_lookahead = serving.gemma3_prefill_lookahead,
+            .capture_ahead = serving.gemma3_capture_ahead};
   }
   engine::Gemma3Runner::Slot& NativeSlot(const Branch& branch) const {
     return *slots_[BranchIndex(branch)];
@@ -4678,6 +4686,10 @@ Status Llm::PromptSession::Advance(const PrefillGoOn& go_on, bool defer_capacity
     if (end < boundary) {
       hint.rows = scoring_ ? 1U : PrefillRows(boundary - end, model_.max_rows_);
       hint.want_head = scoring_ || end + hint.rows == tokens_.size();
+      if (const auto after = end + hint.rows; after < boundary) {
+        hint.after_rows = scoring_ ? 1U : PrefillRows(boundary - after, model_.max_rows_);
+        hint.after_want_head = scoring_ || after + hint.after_rows == tokens_.size();
+      }
     }
     const auto started = Clock::now();
     const StateKeeper::Quiet quiet(model_.kept_.keeper);  // records' hashing waits
@@ -4771,7 +4783,9 @@ Status Llm::Prefill(Branch& branch, std::span<const std::int32_t> tokens, std::v
       [&](std::uint32_t at, std::uint32_t n) {
         const auto remaining = static_cast<std::uint32_t>(all.size()) - at - n;
         const auto next_rows = PrefillRows(remaining, max_rows_);
-        const PrefillHint hint{next_rows, next_rows == remaining};
+        const auto after_rows = PrefillRows(remaining - next_rows, max_rows_);
+        const PrefillHint hint{next_rows, next_rows == remaining, after_rows,
+                               after_rows == remaining - next_rows};
         auto started = Clock::now();
         auto chunk = RunPrefillChunkFor(branch, std::span(all).first(at + n), at, speculate_,
                                         at + n == all.size(), last, hint);
@@ -5543,8 +5557,7 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
   } else if (settings.architecture == "gemma2") {
     models_.push_back(std::make_unique<Gemma2>(node_, entry, settings, roles_, index));
   } else if (settings.architecture == "gemma3") {
-    models_.push_back(std::make_unique<Gemma3>(node_, entry, settings, roles_, index,
-                                               options_.gemma3_device_masks));
+    models_.push_back(std::make_unique<Gemma3>(node_, entry, settings, roles_, index, options_));
   } else if (settings.architecture == "qwen4exp") {
     models_.push_back(std::make_unique<Qwen38>(node_, entry, settings, roles_, index));
   } else {

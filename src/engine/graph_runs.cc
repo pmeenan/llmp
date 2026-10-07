@@ -58,34 +58,115 @@ std::expected<Copies, std::string> GraphRuns::Stage(
   return copies;
 }
 
+std::expected<Copies, std::string> GraphRuns::Layout(std::span<ggml_tensor* const> inputs,
+                                                     std::uint64_t base) const {
+  Copies copies;
+  copies.reserve(inputs.size());
+  std::uint64_t staged = base;
+  for (auto* tensor : inputs) {
+    const std::uint64_t bytes = ggml_nbytes(tensor);
+    if (staged + bytes > staging_bytes_) {
+      return Error("the inputs exceed their staging");
+    }
+    copies.push_back({Address(tensor->data), bytes, staged});
+    staged += Round(bytes, 256);
+  }
+  return copies;
+}
+
+std::expected<void, kg::KernelFailure> GraphRuns::Record(
+    kg::LaunchContext& launch, const Copies& inputs,
+    const std::function<bool(void* stream)>& between, kg::BoundGraph& bound,
+    std::span<const RunCopy> outputs, providers::NativeStream native) const {
+  for (const auto& [to, bytes, at] : inputs) {
+    if (const providers::DeviceStatus copied = providers::CopyAsync(
+            native, Pointer(to), staging_ + at, bytes, providers::CopyKind::kHostToDevice);
+        !copied.ok()) {
+      return std::unexpected(Unknown(std::format("an input copy: {}", copied.text())));
+    }
+  }
+  if (between && !between(native.handle)) {
+    return std::unexpected(Unknown("the work queued between the inputs and the plan"));
+  }
+  if (auto r = bound.Run(launch); !r) {
+    return r;
+  }
+  for (const auto& [to, from, bytes] : outputs) {
+    if (const providers::DeviceStatus copied = providers::CopyAsync(
+            native, Pointer(to), Pointer(from), bytes, providers::CopyKind::kDeviceToHost);
+        !copied.ok()) {
+      return std::unexpected(Unknown(std::format("an output's copy: {}", copied.text())));
+    }
+  }
+  return {};
+}
+
+std::expected<bool, kg::KernelFailure> GraphRuns::CaptureInto(
+    PlanRuns& runs, const Copies& inputs, const std::function<bool(void* stream)>& between,
+    kg::BoundGraph& bound, std::span<const RunCopy> outputs, GraphStats& stats,
+    providers::NativeStream native) const {
+  const std::size_t free_before =
+      providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
+  // A capture and its instantiation run on the CPU, seconds for a large
+  // plan. In the service they run inside a device job: on the lane
+  // thread, which has no pulse, or within a request on the driver itself
+  // (a direct step, D-106), whose pulse these beats reach; either way a
+  // capture is also covered by its unit's allowance (D-102).
+  (void)base::Pulse();
+  auto captured = launch_->Capture([&](kg::LaunchContext& launch) {
+    return Record(launch, inputs, between, bound, outputs, native);
+  });
+  (void)base::Pulse();
+  const std::size_t free_after =
+      providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
+  (void)providers::TakeLastError();
+  if (captured) {
+    stats.capture_seconds += captured->capture_seconds();
+    stats.instantiate_seconds += captured->instantiate_seconds();
+    stats.nodes += captured->nodes();
+    stats.memory_bytes +=
+        static_cast<std::int64_t>(free_before) - static_cast<std::int64_t>(free_after);
+    runs.seconds = captured->capture_seconds() + captured->instantiate_seconds();
+    runs.measured_bytes = free_before > free_after ? free_before - free_after : 0;
+    runs.graph.emplace(std::move(*captured));
+    runs.copies = inputs;
+    return true;
+  }
+  if (captured.error().error == kg::KernelError::kUnknown) {
+    return std::unexpected(captured.error());
+  }
+  // Refused, with nothing captured queued: this plan runs launch by launch.
+  runs.uncapturable = true;
+  if (stats.refused++ == 0) {
+    stats.first_refusal = captured.error().detail;
+  }
+  return false;
+}
+
+std::expected<bool, kg::KernelFailure> GraphRuns::CaptureAhead(
+    PlanRuns& runs, const Copies& inputs, kg::BoundGraph& bound, std::span<const RunCopy> outputs,
+    GraphStats& stats, providers::NativeStream native) const {
+  if (!graphs_ || runs.graph.has_value() || runs.uncapturable || runs.ahead_refused) {
+    return false;
+  }
+  auto captured = CaptureInto(runs, inputs, {}, bound, outputs, stats, native);
+  if (captured && !*captured) {
+    // A plan never yet run may refuse what a capture beside its run would
+    // not: leave that path open.
+    runs.uncapturable = false;
+    runs.ahead_refused = true;
+  }
+  return captured;
+}
+
 Queued GraphRuns::Queue(PlanRuns& runs, const Copies& inputs,
                         const std::function<bool(void* stream)>& between, kg::BoundGraph& bound,
                         std::span<const RunCopy> outputs, bool capture, GraphStats& stats,
                         providers::NativeStream native) const {
   // The input copies, `between`, the plan and the outputs' copies, as one
   // run queues them and a capture records them.
-  const auto queue = [&](kg::LaunchContext& launch) -> std::expected<void, kg::KernelFailure> {
-    for (const auto& [to, bytes, at] : inputs) {
-      if (const providers::DeviceStatus copied = providers::CopyAsync(
-              native, Pointer(to), staging_ + at, bytes, providers::CopyKind::kHostToDevice);
-          !copied.ok()) {
-        return std::unexpected(Unknown(std::format("an input copy: {}", copied.text())));
-      }
-    }
-    if (between && !between(native.handle)) {
-      return std::unexpected(Unknown("the work queued between the inputs and the plan"));
-    }
-    if (auto r = bound.Run(launch); !r) {
-      return r;
-    }
-    for (const auto& [to, from, bytes] : outputs) {
-      if (const providers::DeviceStatus copied = providers::CopyAsync(
-              native, Pointer(to), Pointer(from), bytes, providers::CopyKind::kDeviceToHost);
-          !copied.ok()) {
-        return std::unexpected(Unknown(std::format("an output's copy: {}", copied.text())));
-      }
-    }
-    return {};
+  const auto queue = [&](kg::LaunchContext& launch) {
+    return Record(launch, inputs, between, bound, outputs, native);
   };
   Queued q;
   if (graphs_ && runs.graph.has_value()) {
@@ -115,44 +196,18 @@ Queued GraphRuns::Queue(PlanRuns& runs, const Copies& inputs,
     }
   }
   if (capture) {
-    const std::size_t free_before =
-        providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
-    // A capture and its instantiation run on the CPU, seconds for a large
-    // plan. In the service they run inside a device job: on the lane
-    // thread, which has no pulse, or within a request on the driver itself
-    // (a direct step, D-106), whose pulse these beats reach; either way a
-    // capture is also covered by its unit's allowance (D-102).
-    (void)base::Pulse();
-    auto captured = launch_->Capture(queue);
-    (void)base::Pulse();
-    const std::size_t free_after =
-        providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
-    (void)providers::TakeLastError();
-    if (captured) {
-      stats.capture_seconds += captured->capture_seconds();
-      stats.instantiate_seconds += captured->instantiate_seconds();
-      stats.nodes += captured->nodes();
-      stats.memory_bytes +=
-          static_cast<std::int64_t>(free_before) - static_cast<std::int64_t>(free_after);
-      runs.seconds = captured->capture_seconds() + captured->instantiate_seconds();
-      runs.measured_bytes = free_before > free_after ? free_before - free_after : 0;
-      runs.graph.emplace(std::move(*captured));
-      runs.copies = inputs;
+    auto captured = CaptureInto(runs, inputs, between, bound, outputs, stats, native);
+    if (!captured) {
+      q.result = std::unexpected(captured.error());
+      return q;
+    }
+    if (*captured) {
       q.path = RunPath::kCaptured;
       q.before = true;  // the upload
       if (!beside) {
         q.result = launch_->Launch(*runs.graph);
       }
       return q;
-    }
-    if (captured.error().error == kg::KernelError::kUnknown) {
-      q.result = std::unexpected(captured.error());
-      return q;
-    }
-    // Refused, with nothing captured queued: this plan runs launch by launch.
-    runs.uncapturable = true;
-    if (stats.refused++ == 0) {
-      stats.first_refusal = captured.error().detail;
     }
     if (beside) {
       return q;  // it ran already

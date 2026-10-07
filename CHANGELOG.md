@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Plan Gemma3's upcoming prefill shapes beside the current chunk's device run
+  and capture their graphs ahead of their first run, so long prompts replay
+  nearly every chunk; trained-maximum first-traversal prefill falls about 9%.
+
 - Build Gemma3 causal and ring masks on the GPU from checked positions,
   avoiding host mask construction, scanning and staging in ordinary serving.
 

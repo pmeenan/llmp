@@ -5,9 +5,10 @@
 // staged by the host into the model's pinned staging, then queued in a
 // device job as the input copies, anything the model queues between them
 // and the plan (Qwen3.8's n-gram row gather), the plan's steps and the
-// outputs' copies; and for a shape that has run once launch by launch, that
-// whole sequence captured as one graph through the K-C launch context and
-// replayed as one launch from then on.
+// outputs' copies; and for a shape that has run once launch by launch (or
+// earlier when its runner asks: beside its first run, or ahead of it with
+// CaptureAhead), that whole sequence captured as one graph through the K-C
+// launch context and replayed as one launch from then on.
 //
 // A graph keeps every address it was captured with, so whatever varies
 // between runs of a shape is data the graph copies in from the staging at
@@ -76,6 +77,9 @@ using Copies = std::vector<RunCopy>;
 struct PlanRuns {
   std::uint32_t eager_runs = 0;
   bool uncapturable = false;  // a capture was refused
+  // A capture ahead of the plan's first run was refused: not asked again
+  // ahead, while a capture beside a run (which may succeed) still may be.
+  bool ahead_refused = false;
   std::optional<kernels::ggml::CapturedGraph> graph;
   Copies copies;
   double seconds = 0;  // its graph's capture and instantiation: what capturing it again costs
@@ -126,6 +130,10 @@ class GraphRuns {
   // the job queues anything that reads the staging.
   std::expected<Copies, std::string> Stage(
       std::span<const std::pair<ggml_tensor*, const void*>> sources, std::uint64_t base) const;
+  // The input copies Stage would return for `inputs` in this order, without
+  // staging anything: what a graph captured ahead of its run copies in.
+  std::expected<Copies, std::string> Layout(std::span<ggml_tensor* const> inputs,
+                                            std::uint64_t base) const;
 
   // Queues a run of `bound` on `native`, the launch context's stream: the
   // input copies, `between` (if set; false is a failure of unknown
@@ -140,8 +148,28 @@ class GraphRuns {
                const std::function<bool(void* stream)>& between, kernels::ggml::BoundGraph& bound,
                std::span<const RunCopy> outputs, bool capture, GraphStats& stats,
                providers::NativeStream native) const;
+  // Captures `runs`' graph of `bound` without running it, beside work
+  // already queued on `native` (a graph records, it queues nothing): the
+  // plan's next run replays it. A refusal (false) sets ahead_refused only;
+  // only a fault (kUnknown) is an error. Not counted as a run.
+  std::expected<bool, kernels::ggml::KernelFailure> CaptureAhead(
+      PlanRuns& runs, const Copies& inputs, kernels::ggml::BoundGraph& bound,
+      std::span<const RunCopy> outputs, GraphStats& stats, providers::NativeStream native) const;
 
  private:
+  // Queues (or, inside a capture, records) the input copies, `between`, the
+  // plan's steps and the outputs' copies.
+  std::expected<void, kernels::ggml::KernelFailure> Record(
+      kernels::ggml::LaunchContext& launch, const Copies& inputs,
+      const std::function<bool(void* stream)>& between, kernels::ggml::BoundGraph& bound,
+      std::span<const RunCopy> outputs, providers::NativeStream native) const;
+  // Captures what Record queues as `runs`' graph, with its costs in
+  // `stats`; refused captures mark the plan uncapturable.
+  std::expected<bool, kernels::ggml::KernelFailure> CaptureInto(
+      PlanRuns& runs, const Copies& inputs, const std::function<bool(void* stream)>& between,
+      kernels::ggml::BoundGraph& bound, std::span<const RunCopy> outputs, GraphStats& stats,
+      providers::NativeStream native) const;
+
   bool graphs_ = true;
   std::byte* staging_ = nullptr;
   std::uint64_t staging_bytes_ = 0;
