@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 jitLLM contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Native Gemma2 runner over the shared paged engine. No serving adapter.
+// Native Gemma2 runner over the shared paged engine.
 #ifndef JITLLM_ENGINE_GEMMA2_RUNNER_H_
 #define JITLLM_ENGINE_GEMMA2_RUNNER_H_
 
@@ -139,6 +139,9 @@ class Gemma2Runner final : public PagedModel {
   std::uint64_t host_input_bytes() const { return host_input_bytes_; }
   std::uint64_t plan_floor_bytes() const { return plan_floor_bytes_; }
   std::uint64_t plans_bytes() const { return account_.bytes(); }
+  std::uint64_t weight_read_bytes() const { return weights_.read_bytes(); }
+  std::uint64_t graph_measured_bytes() const { return plans_.graph_measured_bytes(); }
+  std::uint64_t graph_count() const { return plans_.graphs(); }
   const model::Gemma2Profile& profile() const { return profile_; }
   const model::Gemma2StateLayout& layout() const { return layout_; }
   const GraphStats& graph_stats() const { return graph_stats_; }

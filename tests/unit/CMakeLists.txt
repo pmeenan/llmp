@@ -469,6 +469,12 @@ add_executable(chat_template_test chat_template_test.cc)
 target_link_libraries(chat_template_test PRIVATE jitllm_chat jitllm_json jitllm_base)
 jitllm_gtest(chat_template_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+# The actual approved Gemma2 template remains interpreted, including its
+# system refusal and the end-of-turn stop from the kept GGUF metadata.
+add_executable(gemma2_chat_assets_test gemma2_chat_assets_test.cc)
+target_link_libraries(gemma2_chat_assets_test PRIVATE jitllm_runtime jitllm_chat jitllm_model jitllm_base)
+jitllm_gtest(gemma2_chat_assets_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models")
+
 add_executable(chat_corpus_test chat_corpus_test.cc)
 target_link_libraries(chat_corpus_test PRIVATE jitllm_chat jitllm_json jitllm_base)
 jitllm_gtest(chat_corpus_test TEST_PREFIX unit. PROPERTIES LABELS "unit\\;models"

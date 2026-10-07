@@ -128,6 +128,39 @@ TEST(ModelSettings, Gemma3UsesTheBoundedServingEnvelopeAndRejectsUnsupportedOver
   EXPECT_FALSE(ResolveSettings(Model("gemma3"), facts, &calibration, false));
 }
 
+TEST(ModelSettings, Gemma2UsesTheBoundedServingEnvelopeAndRejectsUnsupportedOverrides) {
+  auto entry = Model("gemma2");
+  auto facts = Facts("gemma2");
+  facts.trained_context = 8192;
+  facts.trained_context_from = "gemma2.context_length";
+  auto settings = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(settings);
+  EXPECT_EQ(settings->context.value, 8192U);
+  EXPECT_EQ(settings->prefill_chunk.value, 128U);
+  EXPECT_EQ(settings->max_slots.value, 1U);
+  EXPECT_FALSE(settings->speculation.value);
+  entry.overrides["max_slots"] = std::int64_t{2};
+  settings = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(settings);
+  EXPECT_EQ(settings->max_slots.value, 2U);
+  entry.overrides["max_slots"] = std::int64_t{3};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  entry = Model("gemma2");
+  entry.overrides["context"] = std::int64_t{8193};
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  entry = Model("gemma2");
+  entry.overrides["prefill_chunk"] = std::int64_t{256};
+  settings = ResolveSettings(entry, facts, nullptr, false);
+  ASSERT_TRUE(settings);
+  EXPECT_EQ(settings->prefill_chunk.value, 128U);
+  entry.overrides["speculation"] = true;
+  EXPECT_FALSE(ResolveSettings(entry, facts, nullptr, false));
+  EXPECT_FALSE(ResolveSettings(Model("gemma2", true), facts, nullptr, false));
+  Calibration calibration;
+  calibration.max_slots = 4;
+  EXPECT_FALSE(ResolveSettings(Model("gemma2"), facts, &calibration, false));
+}
+
 TEST(ModelSettings, ReportsTheSelectedDraftHeadsPhysicalLimit) {
   ArtifactFacts facts = Facts("qwen4exp", "qwen4exp-mtp");
   facts.drafter_selected_rows = 47172;

@@ -117,6 +117,31 @@ serving and compatible joint prefill remain separate work.
 The pin's Gemma2 HF-to-GGUF converter already adds one to norm weights;
 approved GGUF import must preserve those norm payloads, with no second +1
 at import or runtime.
-The existing SentencePiece fixture covers tokenizer behavior. Exact Gemma2
-chat-template behavior/refusals remain a separate check before serving; this
-binding foundation does not select a renderer or claim template compatibility.
+The existing SentencePiece fixture covers tokenizer behavior. The serving
+admission foundation below separately checks the actual chat template and its
+refusals through the existing interpreter; runtime serving remains open.
+
+## Serving admission foundation
+
+The settings reader recognizes the approved Q8_0 artifact with its exact source
+name, length and SHA-256 and rechecks all fixed-profile tensor bindings. Its
+serving envelope is at most 8,192 tokens, 128 rows per owner and two owners;
+the uncalibrated default remains one owner. Speculation and drafters are
+refused. This settings admission does not install a runtime serving factory;
+the adapter, HTTP lifecycle and compatible prefill qualification remain open.
+
+The kept 591-byte template has SHA-256
+`ecd6ae513fe103f0eb62e8ab5bfa8d0fe45c1074fa398b089c93a7e70c15cfd6`.
+It uses the existing native C++ Jinja interpreter, rather than Gemma3's renderer:
+the actual template refuses an initial system message and requires alternating
+user/assistant turns. It trims content, emits `model` for assistant turns and
+optionally appends the generation prefix. Its end-of-turn token is 107;
+tokenizer EOS 1 is a separate runtime stop. Focused actual-artifact tests cover
+these behaviors and preserve control-token provenance inside message content.
+
+Validated on Spark B on 2026-10-07: six focused settings controls, eight binding
+controls, two checkpoint-footprint controls and three actual-artifact template
+controls pass. The final diagnostic-only test rebuild repeats all three template
+controls. No model inference or HTTP serving is claimed by this foundation.
+The new task's latest TensorFold check still resolves to
+`041d14a94e951834470fd514ed33e65b8be1059a`, with no documented Gemma2 CUDA/GGUF path.

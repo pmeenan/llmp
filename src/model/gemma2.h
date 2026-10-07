@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Approved Gemma 2 2B Q8_0 profile, checked binding and bounded state/inputs.
-// No media adapter or serving support.
+// No media adapter.
 #ifndef JITLLM_MODEL_GEMMA2_H_
 #define JITLLM_MODEL_GEMMA2_H_
 
@@ -55,6 +55,8 @@ struct Gemma2Binding {
   std::vector<Gemma2Layer> layers;
   bool operator==(const Gemma2Binding&) const = default;
 };
+// Bind the approved prepared Q8_0 source identity before model admission.
+std::expected<Gemma2Binding, std::string> BindApprovedGemma2(const artifact::Artifact& artifact);
 // Closed to the approved profile and actual F32/Q8_0 tensor contract.
 // This recognizes storage, not executable kernel or importer support.
 std::expected<Gemma2Binding, std::string> BindGemma2(const Gemma2Profile& profile,

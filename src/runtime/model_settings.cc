@@ -23,6 +23,7 @@
 #include "base/json.h"
 #include "base/report.h"
 #include "model/dsv4.h"
+#include "model/gemma2.h"
 #include "model/gemma3.h"
 #include "model/gemma4.h"
 #include "model/qwen38.h"
@@ -257,6 +258,7 @@ std::uint32_t RunnerContextCeiling(std::string_view architecture) {
   }
   if (architecture == "gemma4") return model::kGemma4Context;
   if (architecture == "gemma3") return 4096;
+  if (architecture == "gemma2") return model::kGemma2Context;
   return 0;
 }
 
@@ -399,6 +401,9 @@ std::expected<ArtifactFacts, std::string> ArtifactFactsOf(const ja::Artifact& ta
     auto profile = ApprovedGemmaProfile(target);
     if (!profile) return std::unexpected(profile.error());
     facts.gemma_profile = *profile;
+  }
+  if (facts.architecture == "gemma2") {
+    if (auto binding = model::BindApprovedGemma2(target); !binding) return Error(binding.error());
   }
   if (facts.architecture == "gemma3") {
     if (auto binding = model::BindApprovedGemma3(target); !binding) return Error(binding.error());
@@ -630,13 +635,13 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     s.speculation = {true, SettingSource::kDerived,
                      std::format("the drafter ({})", facts.drafter_architecture)};
   }
-  if ((arch == "gemma4" || arch == "gemma3") &&
+  if ((arch == "gemma4" || arch == "gemma3" || arch == "gemma2") &&
       (entry.drafter || entry.Bool("speculation").value_or(false)))
     return Error("Gemma serving has no qualified assistant or speculative path");
   const bool speculative = s.speculation.value;
 
   // Speed trades: calibrated on the machine, else M3's measured constants.
-  const bool gemma = arch == "gemma4" || arch == "gemma3";
+  const bool gemma = arch == "gemma4" || arch == "gemma3" || arch == "gemma2";
   const bool dsv4 = arch == "deepseek4";
   const bool deep = dsv4 && context > kDsv4WidePrefillContext;
   std::uint32_t rows = gemma ? 128U : kQwen38PrefillRows;
@@ -679,6 +684,8 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
           : s.gemma26_production ? ", capped by the bounded Gemma26 serving envelope"
                                  : ", capped by the bounded Gemma serving envelope";
     }
+    if (arch == "gemma2" && s.max_slots.value > 2)
+      return Error("Gemma2 serving needs at most two conversation owners");
     if (arch == "gemma3" && s.max_slots.value > 2)
       return Error("Gemma3 serving needs at most two conversation owners");
     if (s.max_slots.value > 12 || s.max_slots.value > s.prefill_chunk.value)

@@ -15,6 +15,7 @@
 #include "artifact/artifact.h"
 #include "artifact/representation.h"
 #include "base/check.h"
+#include "base/sha256.h"
 
 namespace jitllm::model {
 namespace {
@@ -124,6 +125,15 @@ const Gemma2Profile& Gemma2_2B() {
   return profile;
 }
 
+std::expected<Gemma2Binding, std::string> BindApprovedGemma2(const artifact::Artifact& artifact) {
+  const auto sources = artifact.sources();
+  if (sources.size() != 1 || sources[0].name != "gemma-2-2b-it-Q8_0.gguf" ||
+      sources[0].bytes.value() != 2784495456ULL ||
+      base::ToHex(sources[0].sha256) !=
+          "2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe")
+    return std::unexpected("Gemma2 execution needs the approved prepared Q8_0 source identity");
+  return BindGemma2(Gemma2_2B(), artifact);
+}
 std::expected<Gemma2Binding, std::string> BindGemma2(const Gemma2Profile& p,
                                                      std::string_view architecture,
                                                      std::span<const Gemma2Resource> resources) {

@@ -9,7 +9,6 @@
 #include <string>
 #include <utility>
 
-#include "base/sha256.h"
 #include "engine/support.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/gemma_norm.h"
@@ -54,13 +53,7 @@ Status Gemma2Runner::Setup() {
   checkpoint_layout_id_ = std::format("gemma2-2b-f16-kv-device-v1:{}:{}:{}:{}", o_.context,
                                       o_.max_rows, layout_.global_cells, layout_.local_cells);
   if (auto r = weights_.Open(o_.artifact); !r) return r;
-  const auto sources = weights_.artifact().sources();
-  if (sources.size() != 1 || sources[0].name != "gemma-2-2b-it-Q8_0.gguf" ||
-      sources[0].bytes.value() != 2784495456ULL ||
-      base::ToHex(sources[0].sha256) !=
-          "2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe")
-    return Error("Gemma2 runner needs the approved prepared Q8_0 source identity");
-  auto binding = md::BindGemma2(profile_, weights_.artifact());
+  auto binding = md::BindApprovedGemma2(weights_.artifact());
   if (!binding) return Error(binding.error());
   binding_ = std::move(*binding);
   cohort_.set_slots(o_.slots);
