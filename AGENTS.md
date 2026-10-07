@@ -259,7 +259,11 @@ bounded serving gap to stock from 3.15%/3.51% (C1/C4) to 0.73%/1.36%. It did
 this with state reuse across Clear, graph capture beside eager execution and
 the fused decode FFN; the remaining gap is mostly C4's four-owner decode. A
 [bounded Gemma26 recipe](docs/experiments/gemma26-production/README.md) reaches
-stock parity (within 0.6%) with stock's exact tokens.
+stock parity (within 0.6%) with stock's exact tokens. The
+[decode hot path](docs/experiments/decode-hot-path/README.md) then runs request
+steps on the driver (D-106) with no scheduler call per step, and greedy Gemma
+picks tokens on the GPU: decode step round trips fall to 6–11 µs (Gemma
+controls; every model takes the path).
 The runtime serves Chat Completions and literal Completions with target
 likelihoods on loopback and the tailnet. DeepSeek V4 Flash, Qwen3.8 Flash
 Next (native NVFP4/MXFP8 and checked GGUF) and Qwen-Image-2.1 execute with

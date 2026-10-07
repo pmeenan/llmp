@@ -1612,7 +1612,13 @@ job (a wide prefill chunk) is allowed its expected time at the floors.
    only the request's interest: a read still queued is cancelled, but one
    the drive (or a hung mount) holds is not (io_uring's cancellation is
    best effort), and the wait returns without it. Until that read
-   completes, nothing the work touched is freed or reused.
+   completes, nothing the work touched is freed or reused. A request's
+   direct step (D-106) is the one wait that does not return on its
+   cancellation: its request ends, but the driver goes on watching the
+   step's fence, since the step's memory stays leased until it is seen.
+   A step that completes then drains rung 1 as any wait does; a device
+   that truly hangs never lets the driver move, and the grace leads to
+   rung 3.
 2. **Reset the model in place**, only once the cancellation drained. The
    requests that needed the work fail (a 503 `backend_hung` to retry; a
    cohort's members all), and once they retire the model's stream is

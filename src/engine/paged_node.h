@@ -56,6 +56,17 @@
 // swap would otherwise wait for their release), and TearDown ends every
 // one. Every Job's time is noted per stream (StepTimes).
 //
+// Direct steps (NodeSettings::direct_steps, the default): the driver
+// queues a request's step on its stream itself, records the step's fence
+// and waits for it, under the lease the request's task holds: no thread
+// lies between a step's call and its end, and the scheduler and the lanes
+// may sleep through a decode. The task's lease counts the steps in flight
+// (RequestChannel::external), so it is never released under one, even if
+// the request is cancelled meanwhile (a hang's rung 1): the driver goes on
+// watching the fence, and a step whose end can never be proven keeps the
+// lease for good (unproven, as a quarantined operation's). The step is the
+// request's only work on its stream, so nothing else orders around it.
+//
 // Memory is registered as spans for BP-A1's in-process check: each has an
 // owner (a model's index, or kShared for the zone and the workspace), and
 // Covered accepts a model's own spans and the shared ones.
@@ -208,6 +219,12 @@ struct NodeSettings {
   // how long a wait may see nothing move before its request is cancelled
   // (D-102: no progress, not a time limit).
   std::chrono::milliseconds quiet{std::chrono::minutes(10)};
+  // A request's steps run on the driver itself (the header's Requests):
+  // submitted on its stream under the request's lease and their fence
+  // awaited there, with no other thread between a step's call and its end.
+  // Off, each step goes through the request's task and the device lane, as
+  // before (a comparison).
+  bool direct_steps = true;
   // A test hook only (CountingStorage): while set, reads are held, and
   // with hold_cancellable a held read completes as cancelled when the lane
   // cancels it (otherwise, as a drive's, it does not).
@@ -542,7 +559,9 @@ class PagedNode {
   // completed. The node has one driver: a swap or eviction cannot be
   // asked for while a step is in flight.
   // Optional host-only work runs on the driver after submission, before the
-  // normal completed-job wait. It may not call the node, inspect run state,
+  // normal completed-job wait: beside the job's host part on the device
+  // lane, or, for a direct step, once that has queued the work, beside the
+  // device's run of it. It may not call the node, inspect run state,
   // dispatch GPU work or change the closure. Inline lanes skip it.
   Status Job(const catalog::Closure& closure, scheduler::DeviceJob job, std::string_view what,
              std::uint32_t stream, const std::function<void()>& meanwhile = {});
@@ -563,6 +582,10 @@ class PagedNode {
                      const std::function<Status()>& body);
   // The stream's StepTimes since the last call, which resets them.
   StepTimes TakeTimes(std::uint32_t stream);
+  // Whether a request's steps run directly (NodeSettings::direct_steps), and
+  // how many have so far.
+  bool direct() const { return settings_.direct_steps; }
+  std::uint64_t direct_steps() const { return direct_steps_; }
   // The scheduler's wake flag and the device lane, for tests of the
   // runtime wake (whether they are told to poll ahead of a step's end).
   const base::WakeFlag& wake() const { return wake_; }
@@ -596,6 +619,10 @@ class PagedNode {
     scheduler::ProgramDone done;
     scheduler::RequestChannel channel;
     base::Expectation walls;  // its steps' walls, for the driver's wait (Step)
+    // Direct steps: the request was cancelled (its task ends; no step may
+    // follow), or a step's end can never be proven (its lease kept).
+    bool cancelled = false;
+    bool unproven = false;
   };
   // A job's times on the device lane's thread, read once it has retired.
   struct Timing {
@@ -618,6 +645,12 @@ class PagedNode {
   Status Step(std::uint32_t stream, OpenRequest& open, const catalog::Closure& closure,
               scheduler::DeviceJob job, std::string_view what,
               const std::function<void()>& meanwhile);
+  // Step's direct form (NodeSettings::direct_steps).
+  Status DirectStep(std::uint32_t stream, OpenRequest& open, scheduler::DeviceJob job,
+                    std::string_view what, const std::function<void()>& meanwhile);
+  // A request that can take no further step: awaited and erased, with the
+  // error `why`.
+  Status Ended(std::uint32_t stream, std::string_view what, std::string_view why);
   void Signal(std::uint64_t request);
   // Ends every open request holding any of `extents`; how many.
   std::expected<std::uint64_t, std::string> EndRequestsOver(
@@ -693,6 +726,7 @@ class PagedNode {
   bool torn_down_ = false;
   bool hang_cancelled_ = false;   // TakeHangCancelled
   std::vector<StepTimes> times_;  // by compute stream
+  std::uint64_t direct_steps_ = 0;
   // By compute stream: the marks before and after its job.
   std::vector<std::pair<providers::TimingMark, providers::TimingMark>> events_;
 };

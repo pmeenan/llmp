@@ -60,6 +60,8 @@ std::expected<void, KernelFailure> Check(const md::Gemma4Profile& p, const md::G
                       (o.layer_count != 0 && o.layer_count != p.layers) || shape.outputs != 0 ||
                       shape.feature_outputs != 0)))
     return Rejected("Gemma4 state-only chunks require all token-input layers and no outputs");
+  if (shape.greedy && (state_only || !o.head || shape.outputs == 0 || shape.feature_outputs != 0))
+    return Rejected("Gemma4 greedy chunks publish chosen tokens of head outputs only");
   if (shape.segments.empty() || shape.segments.size() > md::kGemma4MaxSlots ||
       o.first_layer >= p.layers || (o.first_layer != 0 && !o.hidden_input) ||
       o.layer_count > p.layers - o.first_layer ||
@@ -445,6 +447,10 @@ std::expected<Gemma4Graph, KernelFailure> BuildGemma4Graph(TensorArena& arena,
     logits = ggml_tanh(c, logits);
     g.logits = named("logits", ggml_scale(c, logits, p.final_softcap));
     expanded.push_back(g.logits);
+    if (shape.greedy) {
+      g.greedy = named("greedy", Argmax(c, g.logits));
+      expanded.push_back(g.greedy);
+    }
   } else if (g.hidden != nullptr)
     expanded.push_back(g.hidden);
   auto ordered = GraphOrder(expanded, arena);

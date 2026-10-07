@@ -39,6 +39,10 @@ struct Gemma4ChunkShape {
   // Zero preserves the existing graph. Retention disables final-layer narrowing.
   std::uint32_t feature_outputs = 0;
   Gemma4OutputMode output_mode = Gemma4OutputMode::kHead;
+  // Head mode only: each output row's greedy token is chosen on the device
+  // (jitllm.argmax: the lowest ID among equal maxima, as the host's greedy
+  // choice), and only those I32 tokens are published, not the rows.
+  bool greedy = false;
   bool operator==(const Gemma4ChunkShape&) const = default;
 };
 // Packed is an explicit comparison mode; owners is a separately enabled
@@ -105,6 +109,7 @@ struct Gemma4Graph {
   ggml_tensor* normalized_features = nullptr;
   ggml_tensor* hidden = nullptr;
   ggml_tensor* logits = nullptr;
+  ggml_tensor* greedy = nullptr;  // I32 [outputs], with a greedy shape
   std::vector<Gemma4WeightLeaf> weights;
   std::vector<Gemma4SegmentTensors> segments;
   std::vector<ggml_tensor*> inputs, nodes;

@@ -10,6 +10,7 @@
 #include <expected>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -145,6 +146,9 @@ class Gemma4Runner final : public PagedModel {
     std::span<const std::int32_t> tokens;
     // Either this segment's frontier or every row, according to all_outputs.
     std::vector<float>* logits = nullptr;
+    // Instead of `logits` (every segment of a wave alike): the frontier's
+    // greedy token, chosen on the device; the row is not published.
+    std::int32_t* token = nullptr;
   };
   // Caller keeps this slot's request held until synchronous Accept/Discard
   // retires. These completed rows are judge inputs, not a published prefix.
@@ -247,6 +251,8 @@ class Gemma4Runner final : public PagedModel {
                          std::vector<memory::ReclaimCandidate>& out);
   std::uint64_t Reclaim(memory::ReclaimKind kind, std::uint64_t id);
   const GraphStats& graph_stats() const { return graph_stats_; }
+  // Tokens published by greedy waves (Work::token) so far.
+  std::uint64_t greedy_tokens() const { return greedy_tokens_; }
   const Coverage& coverage() const { return coverage_; }
   // Manual diagnostic only; off by default, no per-call logging.
   enum class Phase : std::uint8_t {
@@ -332,6 +338,10 @@ class Gemma4Runner final : public PagedModel {
   Plans plans_;
   GraphRuns runs_;
   GraphStats graph_stats_;
+  std::uint64_t greedy_tokens_ = 0;
+  // The scheduler's placement changes at the last clean CheckPlaces, until
+  // the states it checks change (RefreshClosures).
+  std::optional<std::uint64_t> places_clean_;
   Coverage coverage_;
   PolicyCounts policy_;
   PhaseAccounting phases_;

@@ -118,10 +118,10 @@ Queued GraphRuns::Queue(PlanRuns& runs, const Copies& inputs,
     const std::size_t free_before =
         providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
     // A capture and its instantiation run on the CPU, seconds for a large
-    // plan. In the service they run inside a device job on the lane thread,
-    // which has no pulse, so these beats only reach a caller on the driver
-    // thread; there a capture is covered by its unit's allowance instead
-    // (D-102).
+    // plan. In the service they run inside a device job: on the lane
+    // thread, which has no pulse, or within a request on the driver itself
+    // (a direct step, D-106), whose pulse these beats reach; either way a
+    // capture is also covered by its unit's allowance (D-102).
     (void)base::Pulse();
     auto captured = launch_->Capture(queue);
     (void)base::Pulse();

@@ -71,6 +71,31 @@ struct ServingProof {
   std::vector<jitllm::catalog::ExtentId> staging;
   std::uint32_t owners = 0;
   bool publication_failed = false;
+  // JITLLM_BENCH_PHASES: each cycle's runner phases and node step times,
+  // split at the end of prefill.
+  bool phases = false;
+  void PrintPhases(std::string_view phase, const char* part) {
+    if (!phases) return;
+    const auto p = runner->TakePhaseAccounting();
+    std::fprintf(stdout,
+                 "SERVING_PHASES phase=%.*s part=%s checks=%.6f inputs=%.6f state=%.6f "
+                 "planning=%.6f staging=%.6f execution=%.6f publication=%.6f clear=%.6f\n",
+                 static_cast<int>(phase.size()), phase.data(), part, p.seconds[0], p.seconds[1],
+                 p.seconds[2], p.seconds[3], p.seconds[4], p.seconds[5], p.seconds[6],
+                 p.clear_seconds);
+    // The node's step times on the runner's stream: wall - device is the
+    // threads' round trip.
+    const auto t = server->node().TakeTimes(runner->stream());
+    const auto per = [&](double s) {
+      return t.steps ? s / static_cast<double>(t.steps) * 1e6 : 0.0;
+    };
+    std::fprintf(stdout,
+                 "SERVING_STEPS phase=%.*s part=%s steps=%llu wall_us=%.1f dispatch_us=%.1f "
+                 "job_us=%.1f after_us=%.1f device_us=%.1f round_trip_us=%.1f\n",
+                 static_cast<int>(phase.size()), phase.data(), part,
+                 static_cast<unsigned long long>(t.steps), per(t.wall), per(t.dispatch), per(t.job),
+                 per(t.after), per(t.device), per(t.wall - t.device));
+  }
 
   rt::Status Export(const fs::path& directory, std::uint32_t positions) {
     auto ranges = runner->CheckpointRanges(positions);
@@ -179,6 +204,9 @@ struct ServingProof {
                           std::ios::binary | std::ios::noreplace);
         if (!heads[owner]) return Error("exclusive head proof refused");
       }
+      // Untraced, untimed cycles take tokens only, as chat does (no rows: a
+      // greedy model may then choose on the device).
+      if (!trace && !timed) continue;
       generation[owner].on_logits = [this, owner, trace](std::int32_t, std::span<const float> row) {
         if (row.size() != kVocab || (trace && !std::ranges::all_of(row, [](float value) {
                                        return std::isfinite(value);
@@ -200,6 +228,7 @@ struct ServingProof {
       };
     }
     const auto prefilled = rt::Clock::now();
+    PrintPhases(phase, "prefill");
     const auto& prefill_policy = runner->last_built_policy();
     if (!timed)
       std::fprintf(stdout,
@@ -224,6 +253,7 @@ struct ServingProof {
       if (auto r = sessions[owner]->Finish(); !r) return r;
       sessions[owner].reset();
     }
+    PrintPhases(phase, "decode");
     const auto completed = server->RetireRequestBranches(*model, true);
     if (!completed.result) return completed.result;
     if (!completed.references_retired) return Error("serving cycle retirement unproven");
@@ -240,7 +270,8 @@ struct ServingProof {
         decode_policy.norm_rope, decode_policy.norm_add, decode_policy.owner_attention_steps,
         model->extra().c_str());
     for (std::uint32_t owner = 0; owner < owners; ++owner) {
-      if (output[owner].tokens.capacity() > 2 * kOutputs || rows[owner] != kOutputs ||
+      if (output[owner].tokens.capacity() > 2 * kOutputs ||
+          ((trace || timed) && rows[owner] != kOutputs) ||
           output[owner].tokens.size() != kOutputs || output[owner].stopped ||
           output[owner].cancelled || output[owner].steps != 128 ||
           branches[owner]->history().size() != 8191 ||
@@ -347,6 +378,13 @@ int ProofServing(const jitllm::config::NodeConfig& config,
       if (auto r = phase("first", true, false); !r) return r;
       if (auto r = phase("repeat", true, false); !r) return r;
     } else if (proof->mode == "cycles") {
+      // JITLLM_BENCH_PHASES: the runner's per-phase seconds for each cycle.
+      lifetime->phases = std::getenv("JITLLM_BENCH_PHASES") != nullptr;
+      if (lifetime->phases) {
+        lifetime->runner->EnablePhaseAccounting();
+        (void)lifetime->runner->TakePhaseAccounting();
+        (void)lifetime->server->node().TakeTimes(lifetime->runner->stream());
+      }
       for (const char* name : {"warm", "second", "third"}) {
         const auto before = lifetime->runner->graph_stats();
         if (auto r = phase(name, false, false); !r) return r;

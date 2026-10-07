@@ -489,8 +489,9 @@ std::expected<OperationId, WorkError> Scheduler::Submit(TaskId task,
 
 // Requests' leases --------------------------------------------------------------------
 
-std::expected<catalog::LeaseId, WorkError> Scheduler::HoldLease(TaskId task,
-                                                                const catalog::Closure& closure) {
+std::expected<catalog::LeaseId, WorkError> Scheduler::HoldLease(
+    TaskId task, const catalog::Closure& closure,
+    std::shared_ptr<const std::atomic<std::uint32_t>> external) {
   const TaskRecord* record = Record(task);
   const std::optional<TaskView> view = tasks_.Describe(task);
   if (record == nullptr || record->finished || !view || view->cancelled) {
@@ -507,7 +508,12 @@ std::expected<catalog::LeaseId, WorkError> Scheduler::HoldLease(TaskId task,
     return std::unexpected(ErrorOf(lease.error()));
   }
   base::Check(catalog_.RecordUse(*lease, turn_).has_value(), "recording a fresh lease's use");
-  Held held{.task = task, .extents = {}, .operations = 0, .ending = false, .waiters = {}};
+  Held held{.task = task,
+            .extents = {},
+            .operations = 0,
+            .external = std::move(external),
+            .ending = false,
+            .waiters = {}};
   held.extents.reserve(closure.extents.size());
   for (const auto& [extent, generation] : closure.extents) {
     held.extents.push_back(extent);
@@ -530,11 +536,15 @@ std::expected<Readiness, WorkError> Scheduler::EndLease(TaskId task, catalog::Le
   }
   Held& held = found->second;
   held.ending = true;  // no new operation under it
-  if (held.operations == 0) {
+  if (held.Drained()) {
     ReleaseHeld(found);
     return Readiness::kReady;
   }
-  // Released once the last operation's fence is seen: the holder waits.
+  if (held.operations == 0) {
+    ReleaseWhenDrained(found);  // external work only
+  }
+  // Released once the last operation's fence is seen (or the external
+  // work's end): the holder waits.
   if (!record->finished && std::ranges::find(held.waiters, task) == held.waiters.end()) {
     held.waiters.push_back(task);  // room for the holder beyond the waiter bound
     ++record->waiting;
@@ -590,8 +600,35 @@ void Scheduler::ConcludeHeld(catalog::LeaseId lease) {
               "an operation under a request's lease that is not counted");
   --found->second.operations;
   if (found->second.ending && found->second.operations == 0) {
-    ReleaseHeld(found);
+    ReleaseWhenDrained(found);
   }
+}
+
+void Scheduler::ReleaseWhenDrained(std::map<catalog::LeaseId, Held>::iterator held) {
+  if (held->second.Drained()) {
+    ReleaseHeld(held);
+  } else if (std::ranges::find(external_ending_, held->first) == external_ending_.end()) {
+    external_ending_.push_back(held->first);
+  }
+}
+
+bool Scheduler::ReleaseExternal() {
+  bool progress = false;
+  for (auto it = external_ending_.begin(); it != external_ending_.end();) {
+    const auto held = held_.find(*it);
+    if (held == held_.end()) {
+      it = external_ending_.erase(it);
+      continue;
+    }
+    if (!held->second.Drained()) {
+      ++it;
+      continue;
+    }
+    it = external_ending_.erase(it);
+    ReleaseHeld(held);
+    progress = true;
+  }
+  return progress;
 }
 
 void Scheduler::NoteFollow() {
@@ -812,7 +849,7 @@ void Scheduler::Withdraw(TaskId task) {
     }
   }
   for (const catalog::LeaseId lease : ended) {
-    ReleaseHeld(held_.find(lease));
+    ReleaseWhenDrained(held_.find(lease));
   }
   // Backing this task kept for a handoff that no load took: released now,
   // never an idle pool (D-033).
@@ -949,6 +986,9 @@ bool Scheduler::Turn() {
     progress = true;
   }
   progress = Flush() || progress;
+  if (!external_ending_.empty()) {
+    progress = ReleaseExternal() || progress;
+  }
   for (std::size_t i = 0; i < settings_.steps_per_turn; ++i) {
     const std::optional<TaskId> task = tasks_.NextReady();
     if (!task) {
@@ -967,9 +1007,13 @@ std::optional<std::expected<void, Fault>> Scheduler::Stopped() const {
   }
   // Every task finished at the stop; what remains is held by quarantined
   // work, whose capacity is not reclaimed (a request's lease with such an
-  // operation under it included).
+  // operation under it included), or by external work never seen to end,
+  // which is unproven alike.
   if (fault_) {
     return std::unexpected(*fault_);
+  }
+  if (!external_ending_.empty()) {
+    return std::unexpected(Fault::kUnproven);
   }
   base::Check(tasks_.size() == 0, "a task outlived its operations after the stop");
   base::Check(held_.empty(), "a request's lease outlived its task after the stop");

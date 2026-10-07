@@ -220,11 +220,25 @@ TEST_P(Gemma4ServingGpu, OwnedSnapshotTurnRollbackSpillAndRestartContinueExactly
   rt::GenerateOptions gen;
   gen.max_tokens = 4;
   gen.stop = false;
+  // With rows, the host chooses each greedy token; without (from here on),
+  // the device does (Llm::DeviceGreedy), to the same tokens.
+  HostCopies copies(server->node(), 4ULL * 262144 * sizeof(float));
+  ASSERT_TRUE(copies.funded);
+  auto rows = gen;
+  rows.keep_logits = true;
   rt::Generation expected, restored;
-  ASSERT_TRUE(Branch(0).Generate(first, gen, expected));
+  ASSERT_TRUE(Branch(0).Generate(first, rows, expected));
+  ASSERT_EQ(expected.logits.size(), 4U);
+  for (std::size_t i = 0; i < 4; ++i) {
+    const auto& row = expected.logits[i];
+    EXPECT_EQ(expected.tokens[i], std::max_element(row.begin(), row.end()) - row.begin());
+  }
   ASSERT_TRUE(server->RestoreSnapshot(*model));
+  const auto& runner = dynamic_cast<const en::Gemma4Runner&>(model->paged());
+  const std::uint64_t greedy_before = runner.greedy_tokens();
   ASSERT_TRUE(Branch(0).Generate(first, gen, restored));
   EXPECT_EQ(expected.tokens, restored.tokens);
+  EXPECT_EQ(runner.greedy_tokens() - greedy_before, 3U);  // the first is the prompt row's
   // Peer state survives destination rollback.
   rt::Generation peer_out;
   ASSERT_TRUE(Branch(1).Generate(peer, gen, peer_out));

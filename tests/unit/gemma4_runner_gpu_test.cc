@@ -438,10 +438,11 @@ TEST_F(Gemma31RunnerGpu, LookaheadRefusalAndAbandonedPredictionKeepTheCompletedP
     // Seed the required plan and padded state. Pressure affects only optional
     // capture/lookahead, with no new state backing needed by the next row.
     if (auto r = runner->WavePrefill(std::span(&work, 1), false); !r) return r;
+    // The budget full: a wave's host inputs lie beside it, uncharged.
     auto free = node.FreeBytes();
-    if (!free || *free <= runner->host_input_bytes())
+    if (!free || *free == 0)
       return en::support::Error("lookahead control cannot fund input-only pressure");
-    const auto fill = *free - runner->host_input_bytes();
+    const auto fill = *free;
     if (!node.ChargeHost(fill, false))
       return en::support::Error("lookahead control cannot take its pressure charge");
     {
@@ -652,6 +653,42 @@ TEST_P(Gemma4RunnerPolicy, SoloTwoFourJoinedDecodeHasStrictGreediesAndExactSameP
         if (auto r = runner->Wave(std::span(work).first(count)); !r) return r;
         for (std::uint32_t slot = 0; slot < count; ++slot)
           Exact(joined_baseline[slot][step], joined[slot]);
+      }
+      for (std::uint32_t slot = 0; slot < count; ++slot) {
+        std::vector<std::byte> actual;
+        if (auto r = StateBytes(slot, static_cast<std::uint32_t>(prompts[slot].size()) + 3, actual);
+            !r)
+          return r;
+        EXPECT_EQ(actual, state[slot]);
+      }
+      // Greedy waves, fresh state: the device's tokens are the rows' host
+      // greedy choices, and the KV bytes are unchanged. Mixed outputs refuse.
+      for (std::uint32_t slot = 0; slot < count; ++slot) {
+        if (auto r = runner->Clear(slot); !r) return r;
+        std::vector<float> ignored;
+        if (auto r = Single(slot, 0, prompts[slot], ignored); !r) return r;
+      }
+      if (count > 1) {
+        std::int32_t chosen = -1;
+        const std::array<en::Gemma4Runner::Work, 2> mixed{
+            en::Gemma4Runner::Work{0, static_cast<std::uint32_t>(prompts[0].size()),
+                                   std::span(&anchors[0], 1), &joined[0]},
+            en::Gemma4Runner::Work{1, static_cast<std::uint32_t>(prompts[1].size()),
+                                   std::span(&anchors[1], 1), nullptr, &chosen}};
+        if (runner->Wave(mixed)) return std::unexpected(std::string("a mixed wave ran"));
+      }
+      for (std::uint32_t step = 0; step < 3; ++step) {
+        std::array<std::int32_t, 4> tokens{-1, -1, -1, -1};
+        std::array<en::Gemma4Runner::Work, 4> work{};
+        for (std::uint32_t slot = 0; slot < count; ++slot)
+          work[slot] = {slot, static_cast<std::uint32_t>(prompts[slot].size()) + step,
+                        std::span(&anchors[slot], 1), nullptr, &tokens[slot]};
+        if (auto r = runner->Wave(std::span(work).first(count)); !r) return r;
+        for (std::uint32_t slot = 0; slot < count; ++slot) {
+          const auto& row = joined_baseline[slot][step];
+          EXPECT_EQ(tokens[slot], std::max_element(row.begin(), row.end()) - row.begin())
+              << "count " << count << " slot " << slot << " step " << step;
+        }
       }
       for (std::uint32_t slot = 0; slot < count; ++slot) {
         std::vector<std::byte> actual;

@@ -428,8 +428,16 @@ TEST(CudaPagedNodeTest, TearDownFencesASwappedOutModelsStreamWithoutPagingItIn) 
 // swap asked for between a request's steps ends the request first, then
 // swaps, and the incoming model reads back whole under a request of its
 // own.
-TEST(CudaPagedNodeTest, ARequestLeasesOnceAndItsStepsRunUnderIt) {
-  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
+// Both step paths: the driver's direct steps (the default), and steps
+// through the request's task and the device lane.
+class CudaPagedNodeRequest : public ::testing::TestWithParam<bool> {};
+TEST_P(CudaPagedNodeRequest, ARequestLeasesOnceAndItsStepsRunUnderIt) {
+  const bool direct = GetParam();
+  ts::PagedNode node({.compute_streams = 2,
+                      .slots = 4,
+                      .inline_lanes = false,
+                      .coalesce = false,
+                      .direct_steps = direct});
   Model first(node, 0);
   Model second(node, 1);
   const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
@@ -461,6 +469,7 @@ TEST(CudaPagedNodeTest, ARequestLeasesOnceAndItsStepsRunUnderIt) {
   EXPECT_TRUE(node.InRequest(0));
   auto before = node.Stats();
   ASSERT_TRUE(before.has_value());
+  const std::uint64_t direct_before = node.direct_steps();
   (void)node.TakeTimes(0);
   for (int step = 0; step < 4; ++step) {
     ran = first.ReadBack();
@@ -474,7 +483,9 @@ TEST(CudaPagedNodeTest, ARequestLeasesOnceAndItsStepsRunUnderIt) {
   }
   auto after = node.Stats();
   ASSERT_TRUE(after.has_value());
-  EXPECT_EQ(after->held_operations - before->held_operations, 4U);
+  // Each step one operation under the lease, or one of the driver's own.
+  EXPECT_EQ(after->held_operations - before->held_operations, direct ? 0U : 4U);
+  EXPECT_EQ(node.direct_steps() - direct_before, direct ? 4U : 0U);
   EXPECT_EQ(after->leases_held - before->leases_held, 0U);  // none per step
   const ts::StepTimes times = node.TakeTimes(0);
   EXPECT_EQ(times.steps, 4U);
@@ -522,6 +533,7 @@ TEST(CudaPagedNodeTest, ARequestLeasesOnceAndItsStepsRunUnderIt) {
   const ts::Status finished = node.TearDown(teardown);
   EXPECT_TRUE(finished.has_value()) << finished.error();
 }
+INSTANTIATE_TEST_SUITE_P(StepPaths, CudaPagedNodeRequest, ::testing::Values(true, false));
 
 TEST(CudaPagedNodeTest, HostLookaheadCompletesInsideHeldAndStandaloneJobsAndSkipsInline) {
   for (const bool inline_lanes : {false, true}) {
@@ -534,8 +546,12 @@ TEST(CudaPagedNodeTest, HostLookaheadCompletesInsideHeldAndStandaloneJobsAndSkip
     for (const bool held : {false, true}) {
       const jitllm::catalog::Closure closure;
       if (held) ASSERT_TRUE(node.BeginRequest(0, closure, "host-only lookahead control"));
+      // A direct step (a held request's, by default) runs the job's host
+      // part on the driver first: the lookahead then overlaps its device
+      // work only.
+      const bool sequential = held && node.direct();
       for (const bool reject : {false, true}) {
-        std::atomic<bool> entered{false}, release{inline_lanes}, finished{false};
+        std::atomic<bool> entered{false}, release{inline_lanes || sequential}, finished{false};
         bool called = false;
         const auto ran = node.Job(
             closure,
@@ -554,7 +570,7 @@ TEST(CudaPagedNodeTest, HostLookaheadCompletesInsideHeldAndStandaloneJobsAndSkip
               while (!entered.load() && std::chrono::steady_clock::now() < deadline)
                 std::this_thread::yield();
               EXPECT_TRUE(entered.load());
-              EXPECT_FALSE(finished.load());
+              EXPECT_EQ(finished.load(), sequential);
               release.store(true);
             });
         EXPECT_EQ(bool(ran), !reject);
@@ -681,8 +697,16 @@ double ProcessCpu() {
 // poll ahead of it (the relay), after the completion lane slept through
 // most of it; stepping costs well under a core, where polling threads
 // took two, and nothing spins once the request has ended.
-TEST(CudaPagedNodeTest, RequestStepsSleepBetweenAndLoseNoCompletion) {
-  ts::PagedNode node({.compute_streams = 2, .slots = 4, .inline_lanes = false, .coalesce = false});
+class CudaPagedNodeSleep : public ::testing::TestWithParam<bool> {};
+TEST_P(CudaPagedNodeSleep, RequestStepsSleepBetweenAndLoseNoCompletion) {
+  // Direct steps tell no lane to poll (none is between a step and its
+  // driver), so the relay is looked for only through the task.
+  const bool direct = GetParam();
+  ts::PagedNode node({.compute_streams = 2,
+                      .slots = 4,
+                      .inline_lanes = false,
+                      .coalesce = false,
+                      .direct_steps = direct});
   Model first(node, 0);
   Model second(node, 1);
   const std::array<ts::PagedModel*, 2> teardown = {&first, &second};
@@ -720,7 +744,9 @@ TEST(CudaPagedNodeTest, RequestStepsSleepBetweenAndLoseNoCompletion) {
         std::this_thread::sleep_for(std::chrono::microseconds(50));
       }
       const auto at = std::chrono::steady_clock::now();
-      if (kDelays.at(s) < 0) {
+      if (kDelays.at(s) < 0 && direct) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      } else if (kDelays.at(s) < 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
         const auto give_up = at + std::chrono::seconds(5);
         while (!(node.wake().Anticipating(std::chrono::steady_clock::now()) &&
@@ -740,6 +766,8 @@ TEST(CudaPagedNodeTest, RequestStepsSleepBetweenAndLoseNoCompletion) {
     }
   });
   const std::uint64_t workspace = node.activations().base;
+  std::vector<double> lags;  // ms from each direct step's end to its return
+  (void)node.TakeTimes(0);
   const double cpu = ProcessCpu();
   const auto start = std::chrono::steady_clock::now();
   for (std::uint32_t s = 0; s < kDelays.size(); ++s) {
@@ -759,6 +787,15 @@ TEST(CudaPagedNodeTest, RequestStepsSleepBetweenAndLoseNoCompletion) {
         },
         "a gated step", 0);
     ASSERT_TRUE(ran.has_value()) << "step " << s << ": " << ran.error();
+    // A direct step's driver sleeps toward the step's likely end, from the
+    // device's own spans: it sees the end soon after it, whether the gate
+    // opens on time, early, late or at once (a step's device span includes
+    // its wait on the gate). The first has nothing to go by.
+    const ts::StepTimes times = node.TakeTimes(0);
+    if (direct && s > 0) {
+      lags.push_back((times.wall - times.device) * 1e3);
+      EXPECT_LT(lags.back(), 3.0) << "step " << s << " seen late";
+    }
   }
   const double stepping =
       (ProcessCpu() - cpu) /
@@ -778,11 +815,13 @@ TEST(CudaPagedNodeTest, RequestStepsSleepBetweenAndLoseNoCompletion) {
       (ProcessCpu() - idle_cpu) /
       std::chrono::duration<double>(std::chrono::steady_clock::now() - idle_start).count();
   EXPECT_LT(idle, 0.2) << "cores busy with nothing to do";
-  std::println("gated steps: {:.2f} cores stepping, {:.3f} idle", stepping, idle);
+  std::println("gated steps: {:.2f} cores stepping, {:.3f} idle; direct lags (ms): {}", stepping,
+               idle, lags);
   const ts::Status finished = node.TearDown(teardown);
   EXPECT_TRUE(finished.has_value()) << finished.error();
   (void)cudaFreeHost(flag);
 }
+INSTANTIATE_TEST_SUITE_P(StepPaths, CudaPagedNodeSleep, ::testing::Values(true, false));
 
 // A model's own ring whose read never completed (Qwen3.8's n-gram rows
 // after a stall), retired at the model's end: the ring and the pinned

@@ -206,7 +206,14 @@ keeps its context. The follow-up removes C4 owner-attention copies (−1.5 ms a
 wave) and adopts a [bounded Gemma26 recipe](experiments/gemma26-production/README.md):
 1024-row prefill, norm chains, MoE route/reduce and joined owner attention take
 Gemma26 C1/C4 from 57%/41% slower to within 0.6% of stock, with stock's exact
-tokens and byte-identical corpus heads. Remaining milestone gates stay open.
+tokens and byte-identical corpus heads. The [decode hot path](experiments/decode-hot-path/README.md)
+then removes the host's share of each step (every model takes the path; Gemma
+measured): request steps run
+on the driver (D-106), the runners make no scheduler call per step, and greedy
+Gemma steps choose their token on the GPU. The round trip falls from
+85–188 µs to 6–11 µs, and Gemma26/31 C1 and Gemma31 C4 decode gain
+2.8%/0.6%/1.1% with identical tokens; Gemma31 and Gemma26 now run level with
+or ahead of stock's recorded cycles. Remaining milestone gates stay open.
 
 Goal (the owner, 2026-09-29): build out the core engine across the major
 open model families, MoE and dense, before the system is built around it

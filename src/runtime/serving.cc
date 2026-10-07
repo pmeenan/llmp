@@ -1055,7 +1055,22 @@ class Gemma final : public Llm {
   void RetireSamplingScratchFor(Branch& branch) override { DropBranchSamplingScratch(branch); }
   bool GenerationCohortUsable() const override { return runner_.cohort_usable(); }
   Status RunPreparedGenerationWave(std::span<PreparedGeneration> units) override {
-    if (!joined_ || units.size() == 1) return RunScalarGenerationUnits(units);
+    // Greedy waves take their tokens from the device: no 1 MiB row back, no
+    // host scan. A wave is all one kind (the runner publishes one or the other).
+    const bool greedy =
+        !units.empty() && std::ranges::all_of(units, [](const auto& u) { return DeviceGreedy(u); });
+    if (greedy)
+      for (auto& unit : units) unit.chosen = 0;
+    if (!joined_ || units.size() == 1) {
+      if (!greedy) return RunScalarGenerationUnits(units);
+      for (auto& unit : units) {
+        unit.result =
+            *RunGreedyChunkFor(*unit.branch, unit.step.all, unit.step.position, *unit.chosen);
+        if (!unit.result && !GenerationCohortUsable()) return unit.result;
+        if (!unit.result) unit.failed_prefix_valid = StateUsableFor(*unit.branch);
+      }
+      return {};
+    }
     if (units.empty() || units.size() > options_.slots)
       return Error("Gemma joined generation exceeds its funded owner envelope");
     std::array<engine::Gemma4Runner::Work, engine::kMaxRequestSlots> work{};
@@ -1070,7 +1085,8 @@ class Gemma final : public Llm {
           NativeSlot(*unit.branch).completed_positions() != unit.step.position)
         return Error("Gemma joined generation needs distinct current native cursors");
       seen[id] = true;
-      work[i] = {id, unit.step.position, unit.step.all.last(1), &units[i].row};
+      work[i] = {id, unit.step.position, unit.step.all.last(1), greedy ? nullptr : &units[i].row,
+                 greedy ? &*units[i].chosen : nullptr};
     }
     // Checked one-row sums keep their eight-column limit. Ordinary products
     // execute the complete admitted cohort without duplicate model passes.
@@ -1096,6 +1112,13 @@ class Gemma final : public Llm {
                      bool inject, std::vector<float>& logits) override {
     if (inject || past >= all.size()) return Error("Gemma needs a plain nonempty chunk");
     const engine::Gemma4Runner::Work work{BranchIndex(branch), past, all.subspan(past), &logits};
+    return runner_.Wave(std::span(&work, 1));
+  }
+  std::optional<Status> RunGreedyChunkFor(Branch& branch, std::span<const std::int32_t> all,
+                                          std::uint32_t past, std::int32_t& token) override {
+    if (past >= all.size()) return Error("Gemma needs a plain nonempty chunk");
+    const engine::Gemma4Runner::Work work{BranchIndex(branch), past, all.subspan(past), nullptr,
+                                          &token};
     return runner_.Wave(std::span(&work, 1));
   }
   Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all, std::uint32_t past,
@@ -3986,6 +4009,17 @@ Status Llm::GenerationSession::FailAfterAnchor(std::string error) {
   return ran_;
 }
 
+bool Llm::DeviceGreedy(const PreparedGeneration& unit) {
+  return unit.branch != nullptr && unit.session != nullptr && !unit.step.speculative &&
+         !unit.step.need_logits && !unit.branch->sampling_.has_value();
+}
+
+Status Llm::GenerationSession::ApplyChosen(std::int32_t token) {
+  base::Check(prepared_ && !model_.speculate_, "applying an unprepared ordinary generation step");
+  prepared_ = false;
+  return ApplyTokens({token}, {});
+}
+
 Status Llm::GenerationSession::ApplyPlain(std::vector<float> row) {
   base::Check(prepared_ && !model_.speculate_, "applying an unprepared ordinary generation step");
   prepared_ = false;
@@ -4097,6 +4131,16 @@ Status Llm::GenerationSession::RunScalarStep(bool defer_capacity) {
     // SpecStep already updated the legacy counter, including partial failures.
     return ApplySpeculative(std::move(kept), std::move(logits), 0);
   }
+  if (!step->need_logits && !branch_.sampling_) {
+    std::int32_t token = 0;
+    if (auto ran = model_.RunGreedyChunkFor(branch_, step->all, step->position, token)) {
+      if (!*ran) {
+        return FailStep(ran->error());
+      }
+      model_.calibration_samples_.DecodeStep(step->position, 1.0, Seconds(Clock::now() - started));
+      return ApplyChosen(token);
+    }
+  }
   std::vector<float> row;
   if (auto ran = model_.RunChunkFor(branch_, step->all, step->position, false, row); !ran) {
     return FailStep(ran.error());
@@ -4182,7 +4226,8 @@ Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions, bool
                         .drafted = 0,
                         .result = {},
                         .failed_prefix_valid = false,
-                        .anchor_processed = false});
+                        .anchor_processed = false,
+                        .chosen = std::nullopt});
   }
   if (prepared.empty()) {
     return {};  // every session retains its own preparation error
@@ -4224,6 +4269,7 @@ Status Llm::RunGenerationWave(std::span<GenerationSession* const> sessions, bool
       // Completed peers still receive their results in branch order.
       (void)(unit.step.speculative ? unit.session->ApplySpeculative(
                                          std::move(unit.kept), std::move(unit.logits), unit.drafted)
+             : unit.chosen         ? unit.session->ApplyChosen(*unit.chosen)
                                    : unit.session->ApplyPlain(std::move(unit.row)));
     }
     if (!GenerationCohortUsable()) {

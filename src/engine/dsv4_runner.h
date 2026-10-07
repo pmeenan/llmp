@@ -700,6 +700,9 @@ class Dsv4Runner final : public PagedModel {
   Status DraftVerifyWave(std::span<const WaveWork> work);
 
  private:
+  // The scheduler's placement changes at the last clean CheckPlaces, until
+  // the states it checks change (RefreshClosures).
+  std::optional<std::uint64_t> places_clean_;
   // The wave plans' key: each slot's chunk shape in order, and each its
   // slot index and injected rows, and whether it verifies.
   struct WaveKey {

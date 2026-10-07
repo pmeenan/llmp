@@ -178,8 +178,12 @@ TEST_P(GemmaJoinedGpu, BoundedUnequalOwnersMatchSoloCompleteHeadsAndInitializedS
       ASSERT_EQ(expected[i].logits.size(), 4U);
       ASSERT_TRUE(StateBytes(ids[i], static_cast<std::uint32_t>(prompts[i].size()) + 3, states[i]));
     }
-    for (const auto repeat : {0U, 1U}) {
+    // The third pass keeps no rows: greedy tokens come from the device.
+    for (const auto repeat : {0U, 1U, 2U}) {
+      auto options = generate;
+      options.keep_logits = repeat < 2;
       std::array<rt::Generation, 12> output;
+      const std::uint64_t greedy_before = Runner().greedy_tokens();
       std::array<std::unique_ptr<rt::Llm::GenerationSession>, 12> sessions;
       std::array<rt::Llm::GenerationSession*, 12> work{};
       auto exercised = [&]() -> rt::Status {
@@ -187,7 +191,7 @@ TEST_P(GemmaJoinedGpu, BoundedUnequalOwnersMatchSoloCompleteHeadsAndInitializedS
           if (auto r = Branch(ids[i]).Clear(); !r) return r;
           std::vector<float> last;
           if (auto r = Branch(ids[i]).Prefill(prompts[i], last); !r) return r;
-          auto began = Branch(ids[i]).BeginGeneration(last, generate, output[i]);
+          auto began = Branch(ids[i]).BeginGeneration(last, options, output[i]);
           if (!began) return std::unexpected(began.error());
           sessions[i] = std::move(*began);
           work[i] = sessions[i].get();
@@ -200,6 +204,8 @@ TEST_P(GemmaJoinedGpu, BoundedUnequalOwnersMatchSoloCompleteHeadsAndInitializedS
         }
         return {};
       }();
+      // Only the pass without rows takes its tokens from the device.
+      EXPECT_EQ(Runner().greedy_tokens() - greedy_before, repeat < 2 ? 0U : 3 * count);
       for (std::size_t i = 0; i < count; ++i) {
         if (!sessions[i]) continue;
         sessions[i]->Cancel();
@@ -207,7 +213,7 @@ TEST_P(GemmaJoinedGpu, BoundedUnequalOwnersMatchSoloCompleteHeadsAndInitializedS
         sessions[i].reset();
         EXPECT_EQ(output[i].tokens, expected[i].tokens)
             << "owner=" << ids[i] << " repeat=" << repeat;
-        ASSERT_EQ(output[i].logits.size(), expected[i].logits.size());
+        ASSERT_EQ(output[i].logits.size(), repeat < 2 ? expected[i].logits.size() : 0U);
         for (std::size_t row = 0; row < output[i].logits.size(); ++row) {
           ASSERT_EQ(output[i].logits[row].size(), expected[i].logits[row].size());
           EXPECT_EQ(std::memcmp(output[i].logits[row].data(), expected[i].logits[row].data(),

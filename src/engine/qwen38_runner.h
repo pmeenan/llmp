@@ -81,6 +81,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -837,6 +838,9 @@ class Qwen38Runner final : public PagedModel {
   model::Qwen38StateLayout layout_;
   model::Qwen38PleHash hash_;
   bool hash_checked_ = false;
+  // The scheduler's placement changes at the last clean CheckPlaces, until
+  // the states it checks change (RefreshClosures).
+  std::optional<std::uint64_t> places_clean_;
   Qwen38Model& model_ = default_request_.model;
 
   // The n-gram rows: the table in its shard, the slots (device), the

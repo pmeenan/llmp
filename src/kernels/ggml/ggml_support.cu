@@ -37,7 +37,8 @@
 namespace {
 
 // The first CUDA failure a launcher recorded on this thread and not yet
-// taken. Launches run on the device submission lane alone (D-048).
+// taken. Launches run on the thread that runs their job: the device
+// submission lane (D-048), or a driver's direct step (engine/paged_node.h).
 thread_local std::optional<std::string> recorded_error;
 
 ggml_cuda_device_info DeviceInfo() {

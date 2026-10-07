@@ -46,6 +46,17 @@ using support::Joined;
 // until this long after it (the device lanes' defaults, DeviceSettings).
 constexpr auto kSpinAhead = std::chrono::microseconds(1000);
 constexpr auto kSpinPast = std::chrono::microseconds(1000);
+// A direct step that has outlasted every recent one: how long the driver
+// sleeps between looks.
+constexpr auto kLateSleep = std::chrono::microseconds(200);
+// The longest a direct step's driver sleeps at once: nothing wakes it at
+// the step's end, so a likely end predicted too late costs at most this
+// (and a wake, RE-017).
+constexpr auto kDirectNap = std::chrono::microseconds(1000);
+// A fence query or release refused this many times in a row (a pending
+// result in between resets the count) is given up:
+// its work's end unproven (the device lane's DeviceSettings::refusals).
+constexpr std::uint32_t kFenceRefusals = 8;
 
 // Each device-type lane's completion handoff; a lane holds at most twice
 // that many fences unreleased (queued for its completion lane, and
@@ -1271,6 +1282,9 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
       })) {
     return Error(std::format("{}: its closure is not within {}'s", what, open.what));
   }
+  if (settings_.direct_steps) {
+    return DirectStep(stream, open, std::move(job), what, meanwhile);
+  }
   Timing timing;
   open.channel.job = Timed(std::move(job), stream, timing);
   open.channel.stream = stream;
@@ -1347,12 +1361,181 @@ Status PagedNode::Step(std::uint32_t stream, OpenRequest& open, const catalog::C
   return {};
 }
 
+Status PagedNode::Ended(std::uint32_t stream, std::string_view what, std::string_view why) {
+  const auto found = requests_.find(stream);
+  OpenRequest& open = *found->second;
+  auto ended = Await(open.done, open.what, open.request);
+  requests_.erase(found);  // `open` is gone from here on
+  return Error(std::format("{}: {}{}", what, why, ended ? "" : ": " + ended.error()));
+}
+
+Status PagedNode::DirectStep(std::uint32_t stream, OpenRequest& open, sc::DeviceJob job,
+                             std::string_view what, const std::function<void()>& meanwhile) {
+  if (open.unproven || open.cancelled || open.done.gone.load()) {
+    // Its task is ending or gone (cancelled, failed), or a step's end is
+    // unproven: nothing more runs under its lease.
+    return Ended(
+        stream, what,
+        open.unproven ? "a step of its request never proved its end" : "the request ended");
+  }
+  Timing timing;
+  const auto called = std::chrono::steady_clock::now();
+  // Counted before anything is queued, so its lease outlasts the step
+  // whatever ends the request meanwhile (RequestChannel::external).
+  open.channel.external->fetch_add(1, std::memory_order_acq_rel);
+  ++direct_steps_;
+  // The wait begins before the launch: a launch that blocks on a full
+  // stream (RE-029) is the driver's wait too, which the runtime's hang
+  // ladder watches from its other thread (it can only reach rung 3).
+  std::optional<Waiter> wait;
+  wait.emplace(*this, what);
+  const providers::StreamId id = streams_[stream];
+  sc::JobResult result = sc::JobResult::kNotStarted;
+  {
+    auto timed = Timed(std::move(job), stream, timing);
+    const auto native = execution_->Submission(id);
+    if (native) {
+      result = timed(*native);
+    } else if (native.error().error == providers::ProviderError::kUnknown) {
+      result = sc::JobResult::kUnknown;
+    }
+  }
+  // Recorded even when nothing started, as the device lane does: the
+  // provider counts an attempted launch as queued work, and only a fence
+  // seen complete balances it.
+  const auto fence = execution_->Record(id);
+  const bool queued = result != sc::JobResult::kNotStarted;
+  if (!fence && queued) {
+    // Nothing can show when the queued work ends: its lease is kept.
+    open.unproven = true;
+    return Error(
+        std::format("{}: its step's fence could not be recorded: {}", what, fence.error().detail));
+  }
+  if (meanwhile && fence && threaded()) meanwhile();
+  // The step's result is the next step's input, and a sleeping thread
+  // wakes slowly on the Spark (RE-017): asleep through most of the step,
+  // spinning around its likely ends (the last few steps' walls), as the
+  // lanes do (docs/experiments/runtime-wake/).
+  const auto spin_ahead = settings_.spin_ahead.value_or(kSpinAhead);
+  bool seen = !fence;  // nothing to watch: nothing was queued
+  bool cancelled = false;
+  if (!fence) {
+    wait.reset();
+  } else {
+    std::uint32_t refusals = 0;
+    while (true) {
+      const auto state = execution_->Query(*fence);
+      if (state && *state == providers::FenceState::kComplete) {
+        seen = true;
+        break;
+      }
+      if (state) {
+        refusals = 0;
+      } else if (state.error().error == providers::ProviderError::kUnknown ||
+                 ++refusals >= kFenceRefusals) {
+        break;  // a device fault, or a refusal that persists: unproven
+      }
+      const auto now = std::chrono::steady_clock::now();
+      switch (wait->Poll(now)) {
+        case WaitVerdict::kCancel:
+          // A hang's rung 1: the request ends, but its lease stays until
+          // this step's fence is seen (or for good).
+          cancelled = true;
+          Cancel(open.request);
+          break;
+        case WaitVerdict::kGiveUp:
+          GiveUp(what);
+        case WaitVerdict::kWait:
+          break;
+      }
+      const auto next = open.walls.Next(now - called, kSpinPast);
+      if (threads_.empty()) {
+        Round();
+      } else if (next && now < called + *next - spin_ahead) {
+        std::this_thread::sleep_until(std::min(called + *next - spin_ahead, now + kDirectNap));
+      } else if (open.walls.known() && !next) {
+        std::this_thread::sleep_for(kLateSleep);  // longer than any known: late
+      } else {
+        std::this_thread::yield();  // around a likely end, or none known yet
+      }
+    }
+  }
+  wait.reset();  // seen, or given up as unproven
+  if (!seen) {
+    open.unproven = true;  // its lease is kept: the step may still touch it
+    open.cancelled = open.cancelled || cancelled;
+    if (cancelled) {
+      hang_cancelled_ = true;
+      ++hang_cancels_;
+    }
+    return Error(std::format("{}: its step's end could not be proven", what));
+  }
+  if (fence) {
+    for (std::uint32_t tries = 0; tries < kFenceRefusals; ++tries) {
+      const auto released = execution_->Release(*fence);
+      if (released || released.error().error != providers::ProviderError::kFailed) {
+        break;  // released, or undetermined: never touched again
+      }
+    }
+  }
+  open.channel.external->fetch_sub(1, std::memory_order_acq_rel);
+  // The step's likely end, for the next: when it began on the device plus
+  // its span there, rather than when it was seen (a sleep may overshoot,
+  // and nothing else wakes the driver).
+  std::chrono::steady_clock::duration ended = std::chrono::steady_clock::now() - called;
+  if (timing.ran && stream < events_.size()) {
+    if (const auto ms =
+            providers::ElapsedMilliseconds(events_[stream].first, events_[stream].second);
+        ms) {
+      ended = std::min(ended, (timing.started - called) +
+                                  std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                      std::chrono::duration<double, std::milli>(*ms)));
+    }
+    (void)providers::TakeLastError();
+  }
+  open.walls.Add(ended);
+  if (cancelled) {
+    // The step completed after all; the request it belonged to is
+    // cancelled (its lease released now: the scheduler is told), and its
+    // next step ends.
+    open.cancelled = true;
+    wake_.Signal();
+    hang_cancelled_ = true;
+    ++hang_cancels_;
+  }
+  Note(stream, called, timing);
+  switch (result) {
+    case sc::JobResult::kQueued:
+      return {};
+    case sc::JobResult::kNotStarted:
+      return Error(std::format("{} failed: not started", what));
+    case sc::JobResult::kFailed:
+      return Error(std::format("{} failed", what));
+    case sc::JobResult::kUnknown:
+      // Its fence was seen, so its work ended; what it did is unknown.
+      return Error(std::format("{} failed: its outcome is unknown", what));
+  }
+  return Error(std::format("{} failed", what));
+}
+
 Status PagedNode::EndRequest(std::uint32_t stream) {
   const auto found = requests_.find(stream);
   if (found == requests_.end()) {
     return Error(std::format("no request is open on stream {}", stream));
   }
   OpenRequest& open = *found->second;
+  if (open.unproven || open.cancelled) {
+    // Its task ends (or has) without the driver's end: cancelled, so the
+    // wait cannot be for a signal; a lease under unproven work stays held.
+    Cancel(open.request);
+    auto ended = Await(open.done, open.what, open.request);
+    const bool unproven = open.unproven;
+    requests_.erase(found);
+    if (unproven) {
+      return Error("the request's step never proved its end; its lease is kept");
+    }
+    return ended;
+  }
   open.channel.end = true;
   Signal(open.request);
   auto ended = Await(open.done, open.what, open.request);

@@ -827,6 +827,8 @@ class Llm : public Served {
     // Apply only after the named native step completed. A speculative result
     // already includes per-model selection/Accept; drafted is an increment.
     Status ApplyPlain(std::vector<float> row);
+    // A plain step's token chosen by the model on the device (greedy).
+    Status ApplyChosen(std::int32_t token);
     Status ApplySpeculative(std::vector<std::int32_t> kept, std::vector<std::vector<float>> logits,
                             std::uint64_t drafted);
     // A failed submitted step: prefix_valid requires an independently proven
@@ -922,7 +924,14 @@ class Llm : public Served {
     // through the anchor is kept, as an ordinary plain step's choice failing
     // keeps it (GenerationSession::FailAfterAnchor).
     bool anchor_processed = false;
+    // A greedy plain step whose token the model chose on the device: no row
+    // was published (DeviceGreedy).
+    std::optional<std::int32_t> chosen;
   };
+  // Whether a prepared unit may take its token from the device's greedy
+  // choice instead of a published row: plain, greedy (no sampling), and
+  // no caller of its rows (on_logits, keep_logits).
+  static bool DeviceGreedy(const PreparedGeneration& unit);
   // Success means the native unit completed. Each independent judgement
   // supplies its own result. A shared error supplies no result to apply.
   virtual Status RunPreparedGenerationWave(std::span<PreparedGeneration> prepared);
@@ -990,6 +999,15 @@ class Llm : public Served {
   // a family with independent native slots overrides this set together.
   virtual Status RunChunkFor(Branch& branch, std::span<const std::int32_t> all,
                              std::uint32_t n_past, bool inject, std::vector<float>& logits);
+  // RunChunkFor for a plain greedy step with no caller of its row
+  // (DeviceGreedy): its token chosen on the device, the row not published.
+  // Nullopt for a family without that path (the row is then published).
+  virtual std::optional<Status> RunGreedyChunkFor(Branch& /*branch*/,
+                                                  std::span<const std::int32_t> /*all*/,
+                                                  std::uint32_t /*n_past*/,
+                                                  std::int32_t& /*token*/) {
+    return std::nullopt;
+  }
   // Non-final, non-scoring prompt chunks may omit their unused head. Families
   // without an explicit state-only graph retain their complete chunk path.
   virtual Status RunPrefillChunkFor(Branch& branch, std::span<const std::int32_t> all,

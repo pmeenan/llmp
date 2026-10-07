@@ -287,7 +287,9 @@ with those tests ([M2 record](m2-record.md), task lanes). Choices they settle:
   device lane do the same. An anticipation is only a hint about when to
   poll: every publication, command and fence handed over still signals
   its owner's flag, and only a query that sees a fence complete proves it.
-  No host function or blocking-sync event is on the step path.
+  No host function or blocking-sync event is on the step path. That was
+  the step path through the task (below); a request's direct steps (D-106)
+  cross no thread at all.
 - A request may hold one lease for all its steps (M3: a full-swap model's
   closure is the whole model). The lease is the task's; each step is an
   operation under it, with its own mailbox, lifetime hold and fence, but
@@ -302,6 +304,22 @@ with those tests ([M2 record](m2-record.md), task lanes). Choices they settle:
   ordinary control in the bounded control queue: a full queue refuses
   it), which is kept if it comes first, so no wakeup is lost; signals do
   not count, so the client hands over one step at a time.
+- Direct steps (D-106, the paged node's default): within a held lease, the
+  driver queues a step on the request's stream itself, records its fence
+  and waits for it, with no thread between the call and the step's end.
+  The step is not an operation of the task's: the lease counts the
+  driver's steps in flight instead (`RequestChannel::external`, an atomic
+  the driver raises before queueing and lowers once it saw the fence), and
+  an ending lease (ended, its task finished or cancelled) is released only
+  once that count is zero, which a scheduler turn checks; a count that
+  never falls (a step whose end is unproven) keeps the lease for good, and
+  faults the stop as unproven work does. The driver sleeps toward the
+  step's likely end, predicted from the device's own spans of recent
+  steps (never more than 1 ms at a time, since nothing wakes it), and
+  spins on a non-blocking fence query around it. The scheduler and the
+  lanes take no part, so they sleep through a decode. A wait that sees no
+  progress still cancels its request (a hang's rung 1); the step's lease
+  outlives the cancellation until its fence is seen.
 M4, M6a and M8 add transport registration, lost-node and collective-order validation.
 Shutdown must stop admission, cancel queued work, drain accepted operations
 and registrations, then release backing; unreconciled work faults shutdown

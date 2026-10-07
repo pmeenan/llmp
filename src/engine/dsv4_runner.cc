@@ -872,6 +872,11 @@ Status Dsv4Runner::Register() {
 }
 
 Status Dsv4Runner::CheckPlaces() {
+  // Nothing placed since the last clean check: every place is as it was, so
+  // no turn of the scheduler's is needed (each object's own stamp would
+  // skip it all).
+  const std::uint64_t changes = node_.scheduler().placement_changes();
+  if (places_clean_ == changes) return {};
   PlaceCheck check;
   auto checked = node_.Call(
       [&]() -> Status {
@@ -895,10 +900,12 @@ Status Dsv4Runner::CheckPlaces() {
                     "graph was dropped",
                     check.moved, check.first));
   }
+  places_clean_ = changes;
   return {};
 }
 
 Status Dsv4Runner::RefreshClosures(SlotMask protected_mask) {
+  places_clean_.reset();  // the states checked may change
   auto refreshed = node_.Call(
       [&]() -> Status {
         auto& catalog = node_.catalog();

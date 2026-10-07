@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <expected>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -314,6 +315,11 @@ struct RequestChannel {
   std::atomic<bool> step_failed{false};  // the last step's outcome, set before `steps`
   std::atomic<int> step_error{-1};       // a WorkError that refused it, else -1
   base::WakeFlag reported;               // signalled after each `steps`, for a driver asleep
+  // Steps the driver runs under the lease itself (PagedNode's direct
+  // steps), not yet seen to end: the lease outlasts them (HoldLease), which
+  // shares the count, so it may outlive the channel.
+  std::shared_ptr<std::atomic<std::uint32_t>> external =
+      std::make_shared<std::atomic<std::uint32_t>>(0);
 };
 
 // A request's task: materializes `closure` and holds a lease on it
@@ -348,7 +354,7 @@ class RequestProgram final : public ReportingProgram {
           }
           // In the same step as the materialization: nothing can have
           // begun evicting it since.
-          const auto held = context.HoldLease(closure_);
+          const auto held = context.HoldLease(closure_, channel_.external);
           if (!held) {
             if (held.error() == scheduler::WorkError::kBusy) {
               return scheduler::Step::Yield();

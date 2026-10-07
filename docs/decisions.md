@@ -39,6 +39,66 @@ one Spark and on two.
 
 ---
 
+## D-106: A request's steps run on its driver, under a lease that counts them  (2026-10-06, status: accepted under the owner's direction of 2026-10-06 to remove the hot path's thread handoffs; amends D-048's thread roles and D-094's step path for a held request's steps; the device-execution provider's calls are also made by the driver for its own stream)
+
+**Decision.** Within a request that holds its lease (M3's lease per
+request), the paged node's driver runs each step itself: it queues the
+job on the request's stream, records the step's fence through the
+provider, and waits for that fence, sleeping toward the step's likely
+end and spinning around it. No other thread is on a step's path. The
+request's task still materializes and holds the lease, and still ends it;
+the lease counts the driver's steps in flight
+(`RequestChannel::external`, shared by the channel and the lease so either
+may go first; raised before anything is queued, lowered once the fence is
+seen complete) and is never released while that count is not zero,
+whatever ends it (the driver's end, the task finishing, a cancellation,
+shutdown). Only the driver ends a request's task between its steps (its
+end, its wait's cancellation, its teardown); a step checks that the task
+has not ended before it runs, so anything else that ended one would have
+to stop the driver's next step first. A step whose end cannot be proven (its fence
+not recorded, a query that fails as unknown or keeps refusing) keeps the
+lease for good, and the stop reports it unproven (`Fault::kUnproven`), as
+a quarantined operation's does. `NodeSettings::direct_steps` (default on)
+keeps the task-and-lane path for comparison. Steps outside a request,
+page-ins, evictions and swaps are unchanged.
+
+**Context.** A step through the task crossed four threads (driver →
+scheduler → device submission lane; device completion lane → scheduler →
+driver) and on the Spark a sleeping thread takes hundreds of microseconds
+to wake (RE-017), which D-094's anticipation hid only partly: a decode
+step's round trip was 85–188 µs on the Gemma controls. The lease, not the
+per-step operation, is what keeps a step's memory resident and
+unevictable, so a count of the driver's own steps under it preserves
+D-048's rule that nothing is released before its completion is proven.
+The provider's tables are locked and its calls touch distinct streams and
+fences, so the driver may call it concurrently with the lanes. A blocking
+wait or a host-function signal at the fence would put a thread wake back
+on every step, so the driver predicts the end instead: from when the step
+began plus the device's own measured span (never from when it noticed the
+end, which would carry an oversleep forward), the last eight steps each a
+likely end, and at most 1 ms asleep at a time.
+
+**Consequences.** On `spark-b`, the round trip fell to 6–11 µs; with the
+per-wave scheduler calls removed from the Gemma runner (its double-counted
+host-input charge, and the place check now skipped while the scheduler's
+placement change count is unchanged, in every LLM runner), Gemma26 C1
+decode went from 2.665 s to 2.590 s with identical tokens
+([decode hot path](experiments/decode-hot-path/README.md)). The scheduler
+and the lanes now sleep through a decode. A job's host part runs on the
+driver, so host-only lookahead (`meanwhile`) overlaps only the device's
+run. The step's wait begins before its launch, so a launch that blocks on
+a full stream (RE-029) blocks the driver inside a wait the hang ladder
+watches from its other thread; it cannot be cancelled there, so such a
+hang reaches only D-102's rung 3. A cancelled step's wait does not return
+until its fence is seen: a device that truly hangs goes to rung 3 after
+the grace. Scheduler statistics no longer count a direct step as an
+operation under the lease.
+
+**Reopen if** a model's step must interleave with other work on its
+stream from another thread, the provider's calls stop being safe from two
+threads, or a measured case shows the prediction leaving the device idle
+for more than a few microseconds a step.
+
 ## D-105: Conversations kept across a restart: named owner-only spill files, a hashed record per request slot, adopted only when everything validates  (2026-10-03, status: accepted at the owner's direction of 2026-10-03 (D-102, "a genuine hang should be recovered … minimizing data loss"); amends D-055's "spill files stay unnamed, private and deleted at startup" and its "no durable spill format"; a durable on-disk format, a D-016 public surface, so it is versioned and refuses what it does not read)
 
 **Decision.**
@@ -1138,7 +1198,7 @@ per-step routed experts (a lease and a wake per step), steps of a few
 milliseconds or less, or a path with many sleeping hops per token; then
 rebuild it from the design above and re-measure on that workload.
 
-## D-094: The runtime wakes by anticipation: a device lane sleeps through most of a fence's expected length, spins around its end, and has the scheduler and the next submission poll ahead of it  (2026-09-28, status: accepted by the M3 runtime-wake slice at the owner's request, for review with it; settles, for the device path, D-048's "polling policy require[s] implementation measurements"; the paged harness's 100 ms poll window (D-093's note) becomes a labelled diagnostic; its "Reopen if" PM QoS request was tried on 2026-09-28 and not adopted, D-095; this wake and its margins stay)
+## D-094: The runtime wakes by anticipation: a device lane sleeps through most of a fence's expected length, spins around its end, and has the scheduler and the next submission poll ahead of it  (2026-09-28, status: accepted by the M3 runtime-wake slice at the owner's request, for review with it; settles, for the device path, D-048's "polling policy require[s] implementation measurements"; the paged harness's 100 ms poll window (D-093's note) becomes a labelled diagnostic; its "Reopen if" PM QoS request was tried on 2026-09-28 and not adopted, D-095; this wake and its margins stay; a held request's steps bypass it, D-106)
 
 **Decision.** The scheduler's and the device lanes' default way to wait
 ([runtime-wake](experiments/runtime-wake/README.md)):
@@ -5821,7 +5881,7 @@ mark that implementation complete or change installed runtime packaging.
 version-pinned system packages or a container-only setup. Preserve exact tool
 selection, explicit native/cross targets and reproducible provisioning.
 
-## D-048: Explicit native task states, a single catalog writer and completion-owned lifetimes  (2026-09-22, status: accepted; resolves open question 3; reservation policy follows in D-050)
+## D-048: Explicit native task states, a single catalog writer and completion-owned lifetimes  (2026-09-22, status: accepted; resolves open question 3; reservation policy follows in D-050; a held request's steps run on its driver, D-106)
 
 **Decision.** Start with explicit resumable C++23 task state machines and a
 single scheduler/catalog writer per node. Bounded storage, device submission,

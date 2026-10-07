@@ -871,6 +871,38 @@ TEST(Gemma4Graph, FrontierNarrowingPreservesAllTargetCacheWrites) {
   EXPECT_EQ(g->Named("blk.29.expert_activation")->ne[2], 2);
   EXPECT_EQ(Count(*g, GGML_OP_SET_ROWS), 120U);
 }
+TEST(Gemma4Graph, GreedyShapesAddOnlyTheFrontierArgmaxAfterTheHead) {
+  Case c(26, 2);
+  auto arena = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2));
+  ASSERT_TRUE(arena);
+  auto shape = c.shape;
+  shape.greedy = true;
+  auto g = kg::BuildGemma4Graph(*arena, c.p, c.binding, c.state, shape);
+  ASSERT_TRUE(g);
+  ASSERT_NE(g->greedy, nullptr);
+  EXPECT_EQ(g->greedy->type, GGML_TYPE_I32);
+  EXPECT_EQ(g->greedy->ne[0], g->logits->ne[1]);
+  EXPECT_EQ(g->greedy->src[0], g->logits);
+  EXPECT_EQ(g->nodes.back(), g->greedy);
+  auto plain = kg::TensorArena::Create(kg::Gemma4GraphTensors(c.p, 2));
+  ASSERT_TRUE(plain);
+  auto ungreedy = kg::BuildGemma4Graph(*plain, c.p, c.binding, c.state, c.shape);
+  ASSERT_TRUE(ungreedy);
+  EXPECT_EQ(ungreedy->greedy, nullptr);
+  EXPECT_EQ(g->nodes.size(), ungreedy->nodes.size() + 1);
+  // Greedy needs head outputs: refused before any allocation otherwise.
+  auto refused = kg::TensorArena::Create(1);
+  ASSERT_TRUE(refused);
+  const auto used = refused->used();
+  shape.output_mode = kg::Gemma4OutputMode::kStateOnly;
+  shape.outputs = 0;
+  EXPECT_FALSE(kg::BuildGemma4Graph(*refused, c.p, c.binding, c.state, shape));
+  shape = c.shape;
+  shape.greedy = true;
+  shape.feature_outputs = 1;
+  EXPECT_FALSE(kg::BuildGemma4Graph(*refused, c.p, c.binding, c.state, shape));
+  EXPECT_EQ(refused->used(), used);
+}
 TEST(Gemma4Graph, PublicShapeAndBindingRefusalsPrecedeEveryGgmlAllocation) {
   Case c;
   auto arena = kg::TensorArena::Create(1);

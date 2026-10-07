@@ -140,6 +140,7 @@ std::expected<std::unique_ptr<Gemma4Planned>, std::string> PlanGemma4Chunk(
   if (auto bound = BindGemma4Weights(m, g); !bound) return std::unexpected(bound.error());
   std::vector<ggml_tensor*> kept;
   if (g.logits != nullptr) kept.push_back(g.logits);
+  if (g.greedy != nullptr) kept.push_back(g.greedy);
   if (g.normalized_features != nullptr) kept.push_back(g.normalized_features);
   if (g.hidden != nullptr) kept.push_back(g.hidden);
   for (const auto& name : keep) {

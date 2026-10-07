@@ -542,6 +542,12 @@ class Scheduler {
   void UnpinPlaces(std::span<const catalog::ExtentId> extents);
   bool PlacePinned(catalog::ExtentId extent) const { return pinned_.contains(extent); }
   PlacementStamp placement_stamp() const { return placement_stamp_; }
+  // Any thread: a count that moves whenever a place may have changed (every
+  // change of the stamp's epoch). Unchanged since a clean check of every
+  // place, none moved, with no turn of this thread's (a driver's step).
+  std::uint64_t placement_changes() const {
+    return placement_changes_.load(std::memory_order_acquire);
+  }
   // Requests' leases held now (HoldLease), including ones ending once
   // their operations drain, and the operations under `lease` in flight.
   std::size_t held() const { return held_.size(); }
@@ -683,8 +689,17 @@ class Scheduler {
     TaskId task;                             // the holder
     std::vector<catalog::ExtentId> extents;  // sorted, unique: what it holds
     std::uint32_t operations = 0;            // submitted under it, not yet concluded
-    bool ending = false;                     // released once `operations` is 0
-    std::vector<TaskId> waiters;             // tasks woken when it is released
+    // Work its holder's client runs under it itself (a driver's direct
+    // steps, HoldLease), not yet seen to end: shared with the client, so it
+    // outlives either.
+    std::shared_ptr<const std::atomic<std::uint32_t>> external;
+    bool ending = false;          // released once drained
+    std::vector<TaskId> waiters;  // tasks woken when it is released
+    // No operation under it, nor external work, may still touch it.
+    bool Drained() const {
+      return operations == 0 &&
+             (external == nullptr || external->load(std::memory_order_acquire) == 0);
+    }
   };
 
   struct Operation {
@@ -737,8 +752,9 @@ class Scheduler {
   std::expected<Readiness, WorkError> Evict(TaskId task, catalog::ExtentId extent,
                                             EvictOptions options);
   // Requests' leases.
-  std::expected<catalog::LeaseId, WorkError> HoldLease(TaskId task,
-                                                       const catalog::Closure& closure);
+  std::expected<catalog::LeaseId, WorkError> HoldLease(
+      TaskId task, const catalog::Closure& closure,
+      std::shared_ptr<const std::atomic<std::uint32_t>> external = nullptr);
   std::expected<Readiness, WorkError> EndLease(TaskId task, catalog::LeaseId lease);
   std::expected<Readiness, WorkError> AwaitRelease(TaskId task,
                                                    std::span<const catalog::ExtentId> extents);
@@ -747,6 +763,12 @@ class Scheduler {
   // An operation under a request's lease concluded: the lease is released
   // if it is ending and that was the last.
   void ConcludeHeld(catalog::LeaseId lease);
+  // An ending lease with no operation left under it: released now if its
+  // external work has drained too, else once a turn sees it has
+  // (ReleaseExternal). Its holder, if it waits, is woken then.
+  void ReleaseWhenDrained(std::map<catalog::LeaseId, Held>::iterator held);
+  // Each turn: the ending leases whose external work has drained since.
+  bool ReleaseExternal();
   // Releases the lease (RecordUse, then the catalog's release) and wakes
   // its waiters.
   void ReleaseHeld(std::map<catalog::LeaseId, Held>::iterator held);
@@ -851,10 +873,14 @@ class Scheduler {
   static std::uint64_t TakePlacementInstance(std::atomic<std::uint64_t>& next);
   void PlacementChanged() {
     if (placement_stamp_.epoch != UINT64_MAX) ++placement_stamp_.epoch;
+    placement_changes_.fetch_add(1, std::memory_order_acq_rel);
   }
   PlacementStamp placement_stamp_;
+  std::atomic<std::uint64_t> placement_changes_{0};
   // Requests' leases, at most `tasks` at once.
   std::map<catalog::LeaseId, Held> held_;
+  // Ending leases kept only by external work still under way.
+  std::vector<catalog::LeaseId> external_ending_;
   // The landing zone's slots, and the loads waiting: to start (kQueued),
   // for a slot (kSlot), or for a mailbox to open their next stage.
   std::vector<SlotState> slots_;
@@ -927,8 +953,16 @@ class TaskContext {
   // it or finishes: kNotResident, kStale or kBusy (an eviction begun) if
   // it is not all resident at those contents; kBusy if as many leases as
   // the task bound are held.
-  std::expected<catalog::LeaseId, WorkError> HoldLease(const catalog::Closure& closure) {
-    return scheduler_.HoldLease(task_, closure);
+  // `external`, if given, counts work the request's client runs under the
+  // lease itself (PagedNode's direct steps): the lease is never released
+  // while it is not zero. The count is shared, so whichever of the lease
+  // and the client goes last frees it; the client wakes the scheduler when
+  // it drops to zero on an ending lease, and a count that never drops
+  // keeps the lease for good (unproven work, as a quarantined operation's).
+  std::expected<catalog::LeaseId, WorkError> HoldLease(
+      const catalog::Closure& closure,
+      std::shared_ptr<const std::atomic<std::uint32_t>> external = nullptr) {
+    return scheduler_.HoldLease(task_, closure, std::move(external));
   }
   // Device work under this task's lease `held`: nothing is leased or
   // walked per operation, and the lease cannot be released before the

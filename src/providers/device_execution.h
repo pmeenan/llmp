@@ -17,8 +17,12 @@
 //
 // Calls run on the device submission lane; Query may run concurrently on
 // the device completion lane, independent of a blocking submission
-// (D-048), and implementations are safe for that pair of callers. This
-// header holds no vendor types.
+// (D-048), and implementations are safe for that pair of callers. A
+// driver's direct steps (engine/paged_node.h) also call Submission,
+// Record, Query and Release, for their own stream and fences alone,
+// concurrently with both lanes: implementations are safe for calls on
+// distinct streams and fences from any threads. This header holds no
+// vendor types.
 
 #ifndef JITLLM_PROVIDERS_DEVICE_EXECUTION_H_
 #define JITLLM_PROVIDERS_DEVICE_EXECUTION_H_
@@ -69,7 +73,7 @@ class DeviceExecution {
   // work on it (D-053). Like Copy, it notes that work is being queued, so
   // the stream needs a fence recorded after that work, seen complete and
   // released, before it can be destroyed. The handle is valid until the
-  // stream is destroyed and is used on the submission lane only. The CUDA
+  // stream is destroyed and is used on the calling thread only. The CUDA
   // provider also makes its context current on the calling thread, which
   // is the context runtime-API launches bind to.
   virtual std::expected<NativeStream, Failure> Submission(StreamId stream) = 0;

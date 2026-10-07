@@ -369,7 +369,12 @@ the scheduler polls after a step for about as long as its client takes to
 ask for the next. That removed the 0.26–0.65 ms a step the sleeping lanes
 cost, at about a tenth of a core while stepping and none while idle, where
 polling through every step (the paged harness's old 100 ms window) took
-four cores. Durations use monotonic clocks.
+four cores. A request's direct steps (D-106) bypass all of it: the driver
+queues each step and waits on its fence itself, sleeping toward the end
+the device's recent spans predict and spinning around it, so a step's
+round trip fell from 85–188 µs to 6–11 µs on the Gemma decode controls
+([decode hot path](experiments/decode-hot-path/README.md)) and the lanes
+sleep through a decode. Durations use monotonic clocks.
 
 ## Request path
 

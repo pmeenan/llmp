@@ -771,6 +771,86 @@ TEST_F(HeldLeaseTest, AnUnprovenStepKeepsTheLeaseForGood) {
   EXPECT_EQ(scheduler_->held(), 1U);
 }
 
+// Steps the driver runs under the lease itself (PagedNode's direct steps,
+// RequestChannel::external): ending the request with one in flight waits
+// for it, as for a step of the task's own; so does cancelling it, which
+// finishes the task but keeps the lease until the count drains.
+TEST_F(HeldLeaseTest, ExternalStepsKeepAnEndingLeaseUntilTheyDrain) {
+  Build(2 * kPerModel);
+  for (const bool cancel : {false, true}) {
+    Request request;
+    Open(request, 0);
+    request.channel.external->store(1);  // a direct step in flight
+    if (cancel) {
+      ASSERT_TRUE(scheduler_->Cancel(request.tag));
+      Settle();
+      EXPECT_EQ(request.done.outcome.load(), static_cast<int>(sc::TaskOutcome::kCancelled));
+    } else {
+      End(request);
+      EXPECT_FALSE(request.done.outcome.load() >= 0);  // its holder waits for the release
+    }
+    EXPECT_EQ(Leases(0), kPerModel) << cancel;
+    EXPECT_EQ(scheduler_->held(), 1U) << cancel;
+    EXPECT_EQ(Failed(TryEvict(weights_[0][0])), sc::WorkError::kBusy) << cancel;
+    EXPECT_FALSE(scheduler_->Stopped().has_value());
+
+    request.channel.external->store(0);  // its fence seen
+    Settle();
+    EXPECT_TRUE(request.done.gone.load()) << cancel;
+    EXPECT_EQ(request.done.outcome.load(),
+              static_cast<int>(cancel ? sc::TaskOutcome::kCancelled : sc::TaskOutcome::kSucceeded));
+    EXPECT_EQ(Leases(0), 0U) << cancel;
+    EXPECT_EQ(Resident(0), kPerModel) << cancel;
+    EXPECT_EQ(scheduler_->held(), 0U) << cancel;
+    EXPECT_EQ(scheduler_->tasks().size(), 0U) << cancel;
+  }
+  EXPECT_EQ(scheduler_->stats().leases_released, 2U);
+}
+
+// The count is shared: a lease whose request's driver is gone (its channel
+// freed once the task retired) is released once the count it shared drops.
+TEST_F(HeldLeaseTest, AnExternalCountOutlivesItsChannel) {
+  Build(2 * kPerModel);
+  std::shared_ptr<std::atomic<std::uint32_t>> count;
+  {
+    Request request;
+    Open(request, 0);
+    count = request.channel.external;
+    count->store(1);
+    ASSERT_TRUE(scheduler_->Cancel(request.tag));
+    Settle();
+    ASSERT_TRUE(request.done.gone.load());
+  }  // the channel is gone; the lease still counts the step
+  EXPECT_EQ(Leases(0), kPerModel);
+  EXPECT_EQ(scheduler_->held(), 1U);
+  count->store(0);
+  Settle();
+  EXPECT_EQ(Leases(0), 0U);
+  EXPECT_EQ(scheduler_->held(), 0U);
+  EXPECT_EQ(count.use_count(), 1);  // the lease let go of it
+}
+
+// External work never seen to end keeps the lease for good, and the stop
+// reports it unproven.
+TEST_F(HeldLeaseTest, AnUnprovenExternalStepKeepsTheLeaseForGood) {
+  Build(2 * kPerModel);
+  Request request;
+  Open(request, 0);
+  request.channel.external->store(1);
+  ASSERT_TRUE(scheduler_->Cancel(request.tag));
+  Settle();
+  // The task retires (its driver's wait ends); its lease stays.
+  EXPECT_TRUE(request.done.gone.load());
+  EXPECT_EQ(Leases(0), kPerModel);
+  EXPECT_EQ(scheduler_->held(), 1U);
+  scheduler_->RequestShutdown();
+  Settle();
+  const auto stopped = scheduler_->Stopped();
+  ASSERT_TRUE(stopped.has_value());
+  EXPECT_EQ(Failed(stopped.value_or(std::expected<void, sc::Fault>())), sc::Fault::kUnproven);
+  EXPECT_EQ(scheduler_->held(), 1U);
+}
+
 // Every lane, the scheduler and the fake device on threads of their own,
 // the driver on the test's: each of many steps is handed over through the
 // channel and a signal, runs once on the device lane's thread, and is seen

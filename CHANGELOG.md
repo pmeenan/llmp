@@ -13,6 +13,15 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Less host time between decode steps, for every model. A request's steps
+  run on the driver thread, which waits on each step's fence itself, so no
+  other thread is on a step's path (D-106). The LLM runners no longer call
+  the scheduler before each step. Greedy Gemma steps without logprobs also
+  choose the token on the GPU and copy back only the token. A decode step's
+  host round trip falls from 85–188 µs to 6–11 µs on the Gemma controls;
+  Gemma26/Gemma31 C1 and
+  Gemma31 C4 decode are 2.8%/0.6%/1.1% faster, with identical tokens.
+
 - Select a bounded Gemma26 serving recipe at context<=8192 and at most four
   slots: 1024-row prefill fallback, norm chains, MoE route/reduce and joined
   owner attention. C1/C4 go from 57%/41% to within 0.6% of llama.cpp v0.6.0,

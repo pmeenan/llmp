@@ -421,16 +421,18 @@ Status Gemma4Runner::Setup() {
           auto input_bytes =
               md::Gemma4HostInputBytes(profile_, layout_, segments, o_.reference_masks);
           if (!input_bytes) return Error(input_bytes.error());
-          for (const auto output : {0U, 1U, 2U}) {
+          for (const auto output : {0U, 1U, 2U, 3U}) {
             const bool all = output == 1;
             const bool state_only = output == 2;
+            const bool greedy = output == 3;  // frontier tokens chosen on the device
             if (all ? row_budget != head_rows : row_budget != o_.max_rows) continue;
-            if (state_only && o_.retain_features) continue;
+            if ((state_only || greedy) && o_.retain_features) continue;
             kg::Gemma4ChunkShape shape;
             for (const auto& s : in->segments)
               shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
             shape.output_mode =
                 state_only ? kg::Gemma4OutputMode::kStateOnly : kg::Gemma4OutputMode::kHead;
+            shape.greedy = greedy;
             shape.outputs = state_only ? 0U
                             : all      ? static_cast<std::uint32_t>(in->tokens.size())
                                        : count;
@@ -548,6 +550,7 @@ Status Gemma4Runner::Register() {
   return {};
 }
 Status Gemma4Runner::RefreshClosures(SlotMask protect) {
+  places_clean_.reset();  // the states checked may change
   auto refreshed = node_.Call(
       [&]() -> Status {
         std::vector<ExtentId> shared = weights();
@@ -638,6 +641,11 @@ Status Gemma4Runner::CheckFactors() {
   return {};
 }
 Status Gemma4Runner::CheckPlaces() {
+  // Nothing placed since the last clean check: every place is as it was, so
+  // no turn of the scheduler's is needed (each object's own stamp would
+  // skip it all).
+  const std::uint64_t changes = node_.scheduler().placement_changes();
+  if (places_clean_ == changes) return {};
   PlaceCheck check;
   auto r = node_.Call(
       [&]() -> Status {
@@ -653,6 +661,7 @@ Status Gemma4Runner::CheckPlaces() {
     DropPlans();
     return Error(std::format("Gemma4 {} places moved: {}", check.moved, check.first));
   }
+  places_clean_ = changes;
   return {};
 }
 std::vector<ExtentId> Gemma4Runner::state() const {
@@ -1209,16 +1218,24 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   std::array<md::Gemma4Segment, kMaxRequestSlots> segments{};
   std::array<bool, kMaxRequestSlots> seen{};
   std::uint32_t rows = 0;
+  // Greedy tokens instead of rows: every segment alike, frontier heads only.
+  const bool greedy = work.front().token != nullptr;
+  if (greedy && (mode != kg::Gemma4OutputMode::kHead || all_outputs || all_features || verify ||
+                 o_.retain_features))
+    return Error("Gemma4 greedy waves publish one frontier token per segment");
   for (std::size_t i = 0; i < work.size(); ++i) {
     const auto& w = work[i];
-    if (w.slot >= o_.slots || seen[w.slot] || w.logits == nullptr || w.tokens.empty() ||
+    if ((w.token != nullptr) != greedy || (w.logits == nullptr) == (w.token == nullptr))
+      return Error("Gemma4 wave outputs must be all rows or all greedy tokens");
+    if (w.slot >= o_.slots || seen[w.slot] || w.tokens.empty() ||
         w.tokens.size() > o_.max_rows - rows || w.n_past != slots_[w.slot]->positions ||
         slots_[w.slot]->restoring || slots_[w.slot]->borrowed || slots_[w.slot]->verify_pending ||
         (all_features && !o_.retain_features))
       return Error("Gemma4 wave needs distinct slots, bounded rows and exact continuations");
     if (auto r = CheckActive(*slots_[w.slot]); !r) return r;
     for (std::size_t j = 0; j < i; ++j)
-      if (work[j].logits == w.logits) return Error("Gemma4 output vectors must be independent");
+      if (greedy ? work[j].token == w.token : work[j].logits == w.logits)
+        return Error("Gemma4 output vectors must be independent");
     rows += static_cast<std::uint32_t>(w.tokens.size());
     seen[w.slot] = true;
     segments[i] = {w.slot, w.n_past, w.tokens};
@@ -1237,15 +1254,16 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   timer.reset();
   timer.emplace(phase(Phase::kInputs));
   const double state_before = phases_.seconds[static_cast<std::size_t>(Phase::kState)];
-  // Fund host descriptors and masks before their allocation. The caller's
-  // floor covers the measured maximum; optional charging can refuse cleanly.
+  // Host descriptors and masks are the node's memory beside its budget: the
+  // runtime's start sets apart the largest chunk's (host_input_bytes, the
+  // Server's host inputs), and one model runs a chunk at a time, so a wave
+  // charges nothing for them. (A charge past the host floor would go through
+  // the scheduler's thread twice a wave.)
   struct HostGrant {
     PagedNode& node;
     std::uint64_t bytes;
     ~HostGrant() { node.UnchargeHost(bytes); }
   };
-  if (!node_.ChargeHost(host_input_bytes_, false)) return Error("Gemma4 host inputs do not fit");
-  const HostGrant grant{node_, host_input_bytes_};
   auto in = md::Gemma4Chunk(profile_, layout_, selected, o_.reference_masks);
   if (!in) return Error(in.error());
   kg::Gemma4ChunkShape shape;
@@ -1272,6 +1290,7 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
     if (auto r = ReserveStateThrough(s.slot, s.n_past + s.rows); !r) return r;
   }
   shape.output_mode = mode;
+  shape.greedy = greedy;
   shape.outputs = static_cast<std::uint32_t>(frontier.size());
   shape.feature_outputs = static_cast<std::uint32_t>(feature_ids.size());
   timer.reset();
@@ -1292,7 +1311,9 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
         p.graph.logits->ne[0] != profile_.vocab || p.graph.logits->ne[1] != shape.outputs ||
         p.graph.logits->ne[2] != 1 || p.graph.logits->ne[3] != 1 ||
         !ggml_is_contiguous(p.graph.logits) || ggml_nbytes(p.graph.logits) != output_bytes)) ||
-      (mode == kg::Gemma4OutputMode::kStateOnly && p.graph.logits != nullptr))
+      (mode == kg::Gemma4OutputMode::kStateOnly && p.graph.logits != nullptr) ||
+      (greedy && (p.graph.greedy == nullptr || p.graph.greedy->type != GGML_TYPE_I32 ||
+                  p.graph.greedy->ne[0] != shape.outputs || !ggml_is_contiguous(p.graph.greedy))))
     return Error("Gemma4 planned head publication exceeds its envelope");
   auto source_bytes = Gemma4SourceBytes(p.graph);
   if (!source_bytes || *bytes > host_input_bytes_ || *source_bytes > host_input_bytes_ - *bytes)
@@ -1304,7 +1325,10 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   bool capture = entry.runs[0].CaptureDue(runs_.graphs());
   if (capture && !plans_.ChargeGraph(entry)) capture = false;
   std::array<RunCopy, 1> output_copy{};
-  if (mode == kg::Gemma4OutputMode::kHead)
+  if (greedy)
+    output_copy[0] = {Address(logits_), Address(p.graph.greedy->data),
+                      std::uint64_t{shape.outputs} * sizeof(std::int32_t)};
+  else if (mode == kg::Gemma4OutputMode::kHead)
     output_copy[0] = {Address(logits_), Address(p.graph.logits->data), output_bytes};
   const auto outputs = std::span(output_copy).first(mode == kg::Gemma4OutputMode::kHead ? 1U : 0U);
   // Validate a shape prediction against this complete wave before borrowing
@@ -1496,17 +1520,23 @@ Status Gemma4Runner::WaveWithMode(std::span<const Work> work, bool all_outputs, 
   }
   Count(graph_stats_, path);
   std::size_t at = 0;
-  for (const auto& w : work) {
-    const auto count = mode == kg::Gemma4OutputMode::kStateOnly ? 0U
-                       : all_outputs                            ? w.tokens.size()
-                                                                : 1U;
-    const auto n = count * profile_.vocab;
-    const auto* values = static_cast<const float*>(logits_) + at;
-    if (mode == kg::Gemma4OutputMode::kStateOnly)
-      w.logits->clear();
-    else
-      w.logits->assign(values, values + n);
-    at += n;
+  for (std::size_t i = 0; i < work.size(); ++i) {
+    const auto& w = work[i];
+    if (greedy) {
+      *w.token = static_cast<const std::int32_t*>(logits_)[i];
+      ++greedy_tokens_;
+    } else {
+      const auto count = mode == kg::Gemma4OutputMode::kStateOnly ? 0U
+                         : all_outputs                            ? w.tokens.size()
+                                                                  : 1U;
+      const auto n = count * profile_.vocab;
+      const auto* values = static_cast<const float*>(logits_) + at;
+      if (mode == kg::Gemma4OutputMode::kStateOnly)
+        w.logits->clear();
+      else
+        w.logits->assign(values, values + n);
+      at += n;
+    }
     if (verify) continue;
     slots_[w.slot]->positions += static_cast<std::uint32_t>(w.tokens.size());
     InvalidateFeatures(*slots_[w.slot]);
