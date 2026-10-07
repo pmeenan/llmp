@@ -117,7 +117,7 @@ TEST_F(GemmaNormTest, IndexedNormGatesPreserveLocalGatherAndExternalUseRefusals)
 }
 
 TEST_F(GemmaNormTest, ApprovedResidualWidthsAndOperandOrders) {
-  for (int width : {2560, 2816, 5376})
+  for (int width : {2304, 2560, 2816, 5376})
     for (bool reverse : {false, true}) {
       const auto t = Add(width, reverse);
       EXPECT_TRUE(kg::CheckGemmaNormAdd(t.norm, t.mul, t.out));
@@ -152,7 +152,7 @@ TEST_F(GemmaNormTest, RejectsInvalidRotationMetadataAndStaleFactors) {
   EXPECT_FALSE(kg::CheckGemmaNormRope(t.norm, t.mul, t.out));
 }
 TEST_F(GemmaNormTest, RejectsActualSourceOverlapsAndMalformedResidual) {
-  for (int width : {2560, 5376}) {
+  for (int width : {2304, 2560, 5376}) {
     auto t = Add(width);
     auto* original = t.out->data;
     t.out->data = t.x->data;
@@ -237,7 +237,7 @@ TEST_F(GemmaNormTest, UnrelatedCyclicKeepsAndReadersAreRefusedBeforeRootScans) {
   }
 }
 TEST_F(GemmaNormTest, ResidualGatherStaysPaidAndPlacedRawInputLivesUntilDeferredAdd) {
-  for (int width : {2560, 2816, 5376}) {
+  for (int width : {2304, 2560, 2816, 5376}) {
     auto [t, gather] = AddGather(width);
     auto* leaf = t.x;
     auto* other = Bind(ggml_dup_tensor(c(), leaf));

@@ -622,6 +622,10 @@ if(JITLLM_CUDA)
 endif()
 
 if(JITLLM_CUDA)
+  add_executable(jitllm_gemma2_probe gemma2_probe.cc)
+  target_link_libraries(jitllm_gemma2_probe PRIVATE jitllm_engine jitllm_platform jitllm_warnings)
+  target_link_options(jitllm_gemma2_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")
+
   add_executable(jitllm_gemma3_probe gemma3_probe.cc)
   target_link_libraries(jitllm_gemma3_probe PRIVATE jitllm_engine jitllm_platform jitllm_warnings)
   target_link_options(jitllm_gemma3_probe PRIVATE "LINKER:--enable-new-dtags,-rpath,$ORIGIN/../cublas")

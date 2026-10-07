@@ -813,8 +813,11 @@ family" guide, and its long-context scaling work.
       M3.5's set under the same exit criteria.
       Gemma 2 [profile and tensor foundation](gemma2.md) now recognizes all
       288 actual descriptors, tied output and width-2304 readable padding;
-      six focused CPU controls pass. Source import, state/graphs, attention
-      softcap launch/occupancy support and execution remain separate work.
+      its [bounded C1 execution slice](experiments/gemma2-execution/README.md)
+      authenticates and deeply imports the full approved source, qualifies
+      softcap occupancy/launches and state/graph/runner controls, and reproduces
+      all 33 optimized stock heads exactly. Wider context, batching, templates,
+      serving and model-switch qualification remain separate work.
       Gemma 3 [profile and tensor foundation](gemma3.md) is checked:
       actual approved metadata and all 444 tensor descriptors, separate
       profile/binding and refusal controls; three focused CPU controls pass.

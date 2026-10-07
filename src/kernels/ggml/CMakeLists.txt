@@ -24,7 +24,7 @@
 #                        (ops_ext.h: ops_ext.cu, mul_mat_q.cu, mmvq_rows.cu,
 #                        fattn_mma*.cu)
 #                        to jitllm_ggml_kernels.
-add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc gemma3_graph.cc gemma4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
+add_library(jitllm_ggml_tensors STATIC dsv4_graph.cc gemma2_graph.cc gemma3_graph.cc gemma4_graph.cc fusion.cc graph_plan.cc jitllm_ops.cc
                                        qwen2_graph.cc qwen38_graph.cc tensors.cc validate.cc
                                        validate_ext.cc)
 target_include_directories(jitllm_ggml_tensors PUBLIC "${PROJECT_SOURCE_DIR}/src")
@@ -164,7 +164,7 @@ if(JITLLM_CUDA)
                    dsv4_ds4_product_source.json dsv4_ds4_product_source.json.license
                    dsv4_graph.h dsv4_hca_tokentile.cu
                    executor.cc
-                   executor.h gemma3_graph.h gemma3_graph.cc gemma4_graph.cc gemma4_graph.h gemma4_attention.cc fattn.cu fattn_mma.cu
+                   executor.h gemma2_graph.h gemma2_graph.cc gemma3_graph.h gemma3_graph.cc gemma4_graph.cc gemma4_graph.h gemma4_attention.cc fattn.cu fattn_mma.cu
                    fattn_mma.h fattn_mma_d128.cu fattn_mma_d256_gqa2.cu fattn_mma_d256.cu fattn_mma_d512.cu fattn_mma_d512_q16.cu fattn_mma_q16.cuh
                    fattn_mma_shape.cuh fattn_owner.h fattn_owner.cc fattn_owner.cu fattn_owner_kernel.cuh fattn_owner_partial_kernel.cuh fusion.cc
                    fusion.h ggml_support.cu ggml_support.h graph_plan.cc graph_plan.h implementations.cc

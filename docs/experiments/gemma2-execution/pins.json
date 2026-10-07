@@ -1,0 +1,17 @@
+{
+  "models": [
+    {
+      "id": "gemma2-2b-q8_0",
+      "repository": "bartowski/gemma-2-2b-it-GGUF",
+      "revision": "855f67caed130e1befc571b52bd181be2e858883",
+      "weight_license": "gemma",
+      "files": [
+        {
+          "path": "gemma-2-2b-it-Q8_0.gguf",
+          "bytes": 2784495456,
+          "sha256": "2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe"
+        }
+      ]
+    }
+  ]
+}

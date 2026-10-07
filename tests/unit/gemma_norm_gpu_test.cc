@@ -267,6 +267,10 @@ TEST_F(GemmaNormGpu, Gemma3ResidualWidthRowsOrdersAndCaptureFreshInputs) {
   for (std::size_t rows : {1U, 128U})
     for (bool reversed : {false, true}) Operand(false, 2560, reversed, 1, rows);
 }
+TEST_F(GemmaNormGpu, Gemma2ResidualWidthRowsOrdersAndCaptureFreshInputs) {
+  for (std::size_t rows : {1U, 128U})
+    for (bool reversed : {false, true}) Operand(false, 2304, reversed, 1, rows);
+}
 TEST_F(GemmaNormGpu, ApprovedResidualWidthsOrdersAndCaptureFreshInputs) {
   for (std::size_t width : {2816U, 5376U})
     for (bool reversed : {false, true}) Operand(false, width, reversed);

@@ -173,6 +173,14 @@ operations alone ([report](experiments/deepseek-batching/README.md)).
 
 ## Adding a model family
 
+The [Gemma2 C1 runner](gemma2.md) reuses held requests, charged outputs and
+capture ownership, retained Clear and initialized-state spill/restore. It
+admits only the approved 2B Q8_0 artifact with one slot, separate F16 KV and
+primitive softcapped attention; checked state descriptors retain alternating
+local rings/global caches. Explicit optimized probes select norm/Mul,
+quantized GeGLU and width-2304 norm/ADD, with primitive fallback. The bounded
+full-head stock control is exact; serving and broader batching remain open.
+
 The [Gemma 4 foundation](gemma4.md) supplies checked profiles, strict tensor
 bindings, bounded independent-slot KV layouts and segmented host inputs.
 It also supplies segmented text graphs and a checked plan adapter, with

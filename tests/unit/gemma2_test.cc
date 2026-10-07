@@ -191,4 +191,103 @@ TEST(Gemma2FoundationTest, AlternatingLocalGlobalScheduleHasNoGemma3Pattern) {
   EXPECT_EQ(local, 13);
   EXPECT_FALSE(p.local(25));
 }
+TEST(Gemma2StateTest, ScheduleRepresentationsAndInitializedFootprintsAreChecked) {
+  const auto& p = md::Gemma2_2B();
+  const std::vector<std::uint32_t> globals{1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25};
+  auto state = md::Gemma2State(p, 8192, 16);
+  ASSERT_TRUE(state) << *jitllm::test_support::Failed(state);
+  EXPECT_EQ(state->global_cells, 8192);
+  EXPECT_EQ(state->local_cells, 4352);
+  ASSERT_EQ(state->tensors.size(), 52);
+  auto representations = state->Representations(p);
+  ASSERT_TRUE(representations);
+  std::uint64_t allowance = 0;
+  for (std::uint32_t il = 0; il < p.layers; ++il) {
+    EXPECT_EQ(!p.local(il), std::ranges::contains(globals, il));
+    for (std::uint32_t value = 0; value < 2; ++value) {
+      const auto index = std::size_t{il} * 2 + value;
+      const auto& tensor = state->tensors[index];
+      const auto& representation = (*representations)[index];
+      EXPECT_EQ(tensor.width, 1024);
+      EXPECT_EQ(tensor.local, p.local(il));
+      EXPECT_EQ(tensor.offset % (2U << 20U), 0);
+      EXPECT_TRUE(md::IsValid(representation));
+      EXPECT_TRUE(representation.Can(md::StateCapability::kAppend));
+      EXPECT_EQ(representation.CanTruncate(), !p.local(il));
+      EXPECT_EQ(representation.max_snapshots, 0);
+      allowance += representation.block_bytes.value();
+    }
+  }
+  EXPECT_EQ(allowance, state->bytes);
+  EXPECT_TRUE(p.local(24));
+  auto empty = md::Gemma2UsedState(p, *state, 0);
+  ASSERT_TRUE(empty);
+  EXPECT_TRUE(empty->empty());
+  auto initialized = md::Gemma2UsedState(p, *state, 4353);
+  ASSERT_TRUE(initialized);
+  ASSERT_EQ(initialized->size(), 52);
+  for (std::size_t i = 0; i < initialized->size(); ++i) {
+    EXPECT_EQ((*initialized)[i].offset, state->tensors[i].offset);
+    EXPECT_EQ((*initialized)[i].bytes,
+              std::uint64_t{p.local(static_cast<std::uint32_t>(i / 2)) ? 4352U : 4608U} * 2048);
+    EXPECT_LE((*initialized)[i].bytes, state->tensors[i].bytes);
+  }
+  auto malformed = *state;
+  ++malformed.tensors[0].offset;
+  EXPECT_FALSE(malformed.Representations(p));
+  EXPECT_FALSE(md::Gemma2UsedState(p, malformed, 1));
+  EXPECT_FALSE(md::Gemma2State(p, 0, 1));
+  EXPECT_FALSE(md::Gemma2State(p, p.context + 1, 1));
+  EXPECT_FALSE(md::Gemma2State(p, 16, 17));
+  EXPECT_FALSE(md::Gemma2UsedState(p, *state, 8193));
+  EXPECT_FALSE(md::Gemma2UsedState(p, *state, 1, 255));
+}
+
+TEST(Gemma2StateTest, RaggedInputsKeepIndependentCausalityAndSplitRingWrites) {
+  const auto& p = md::Gemma2_2B();
+  auto state = md::Gemma2State(p, 8192, 16);
+  ASSERT_TRUE(state);
+  const std::vector<std::int32_t> a{1, 2, 3}, b{4};
+  const std::vector<md::Gemma2Segment> segments{{3, 4351, a}, {1, 7, b}};
+  auto envelope = md::Gemma2HostInputBytes(p, *state, segments, true);
+  auto input = md::Gemma2Chunk(p, *state, segments, true);
+  ASSERT_TRUE(envelope);
+  ASSERT_TRUE(input) << *jitllm::test_support::Failed(input);
+  EXPECT_EQ(input->positions, (std::vector<std::int32_t>{4351, 4352, 4353, 7}));
+  EXPECT_EQ(input->out_ids, (std::vector<std::int32_t>{0, 1, 2, 3}));
+  ASSERT_EQ(input->segments.size(), 2);
+  const auto& first = input->segments[0];
+  EXPECT_EQ(first.local_cells, (std::vector<std::int64_t>{4351, 0, 1}));
+  EXPECT_EQ(first.global_cells, (std::vector<std::int64_t>{4351, 4352, 4353}));
+  EXPECT_EQ(input->segments[1].first_row, 3);
+  // Writing all rows first must not expose future wrapped rows to query0.
+  EXPECT_EQ(first.local_mask[0], 0xFC00);
+  EXPECT_EQ(first.local_mask[4351], 0);
+  EXPECT_EQ(first.local_mask[255], 0xFC00);
+  EXPECT_EQ(first.local_mask[256], 0);
+  EXPECT_EQ(first.local_mask[4352], 0);
+  EXPECT_EQ(first.global_mask[4352], 0xFC00);
+  EXPECT_EQ(input->segments[1].global_mask[7], 0);
+  EXPECT_EQ(input->segments[1].global_mask[8], 0xFC00);
+  auto writes = md::Gemma2ChunkWrites(p, *state, 4351, 3);
+  ASSERT_TRUE(writes);
+  EXPECT_EQ(writes->size(), 78);  // 26 local planes split; 26 globals append.
+  EXPECT_EQ((*writes)[0].offset, state->tensors[0].offset + 4351 * 2048);
+  EXPECT_EQ((*writes)[0].bytes, 2048);
+  EXPECT_EQ((*writes)[1].offset, state->tensors[0].offset);
+  EXPECT_EQ((*writes)[1].bytes, 4096);
+  for (const auto& range : *writes) EXPECT_LE(range.offset + range.bytes, state->bytes);
+  auto duplicate = segments;
+  duplicate[1].slot = duplicate[0].slot;
+  EXPECT_FALSE(md::Gemma2Chunk(p, *state, duplicate));
+  auto edited = segments;
+  edited[0].n_past = 8191;
+  EXPECT_FALSE(md::Gemma2HostInputBytes(p, *state, edited));
+  const std::vector<std::int32_t> invalid{-1};
+  edited[0] = {0, 0, invalid};
+  EXPECT_FALSE(md::Gemma2Chunk(p, *state, edited));
+  EXPECT_FALSE(md::Gemma2ChunkWrites(p, *state, 8191, 2));
+  EXPECT_FALSE(md::Gemma2ChunkWrites(p, *state, 0, 0));
+}
+
 }  // namespace

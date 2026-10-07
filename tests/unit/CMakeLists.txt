@@ -338,6 +338,17 @@ target_link_libraries(gemma_profile_test PRIVATE jitllm_runtime jitllm_model jit
 jitllm_gtest(gemma_profile_test TEST_PREFIX unit. PROPERTIES LABELS unit
              ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
 
+add_executable(gemma2_graph_test gemma2_graph_test.cc)
+target_link_libraries(gemma2_graph_test PRIVATE jitllm_ggml_tensors jitllm_artifact jitllm_json)
+jitllm_gtest(gemma2_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit
+             ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+if(JITLLM_CUDA)
+  add_executable(gemma2_plan_test gemma2_plan_test.cc)
+  target_link_libraries(gemma2_plan_test PRIVATE jitllm_engine jitllm_json)
+  jitllm_gtest(gemma2_plan_test TEST_PREFIX unit. PROPERTIES LABELS unit
+               ENVIRONMENT "JITLLM_TEST_DATA=${tokenizer_data}")
+endif()
+
 add_executable(gemma3_graph_test gemma3_graph_test.cc)
 target_link_libraries(gemma3_graph_test PRIVATE jitllm_ggml_tensors jitllm_artifact jitllm_json)
 jitllm_gtest(gemma3_graph_test TEST_PREFIX unit. PROPERTIES LABELS unit

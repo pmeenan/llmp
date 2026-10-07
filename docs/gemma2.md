@@ -1,12 +1,14 @@
 <!-- SPDX-FileCopyrightText: 2026 jitLLM contributors -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Gemma 2 legacy foundation
+# Gemma 2 bounded execution
 
 `model/gemma2.h` supplies a closed profile and checked tensor binding for the
-approved Gemma 2 2B Q8_0 checkpoint. This slice recognizes its actual storage
-contract; it adds no importer admission, state layout, graph, runner or serving
-route. Gemma 2 remains outside the supported execution matrix.
+approved Gemma 2 2B Q8_0 checkpoint. The bounded execution source adds checked
+state/inputs, a native graph/plan and a C1 runner over the shared paged engine.
+The approved source is authenticated and deeply imported; a representative C1
+control reproduces all 33 stock full heads byte for byte. No serving route is
+added. Gemma 2 remains outside the supported execution matrix.
 
 ## Actual checkpoint contract
 
@@ -15,7 +17,8 @@ The approved source is
 `gemma-2-2b-it-Q8_0.gguf`, 2,784,495,456 bytes. The retained exact-revision
 primary HF API LFS identity is
 `2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe`;
-this foundation has not downloaded or authenticated the full payload.
+the execution slice locally authenticated the complete file against that SHA-256
+and exact length. The earlier foundation used metadata ranges only.
 
 | Metadata or descriptor fact | Value |
 | --- | ---: |
@@ -52,15 +55,15 @@ of Q8_0's 32 elements but not GGML's 512-element row padding. The existing
 artifact representation contract requires 272 extra readable bytes at the
 end of each affected tensor, not per row. There are 131 such tensors: the
 embedding and five matrices per layer. Their source payload sizes remain
-unchanged; future prepared import must fund and initialize the tail using the
-existing artifact mechanism. Binding raw stored bytes as readable is refused.
+unchanged; prepared import funds and initializes the tail using the existing
+artifact mechanism. Binding raw stored bytes as readable is refused.
 
 The network-free [fixture generator](../tests/unit/data/gemma2/generate.py)
 checks the retained metadata prefix and a 65,536-byte range, parses all 288
 descriptors with the existing GGUF helper/native type table, checks unique names,
 rank/type/block geometry, aligned nonoverlapping file ranges and the final
 file boundary, and emits only aggregate metadata and tensor descriptors.
-The range response was exactly HTTP 206,
+The foundation range response was exactly HTTP 206,
 `bytes 6029343-6094878/2784495456`, with the checked content length.
 The tensor table ends at byte 6,046,552; data starts at 6,046,560.
 Raw prefixes/ranges stay outside Git. Fixture provenance includes their hashes
@@ -75,18 +78,26 @@ GPU operation ran. Whole-source checksum synchronization, an empty itemized
 dry run and the checked source inventory bind the successful build. Local
 fixture regeneration, format, license/header and portability checks also pass.
 
-## Next bounded slices
+## Bounded execution and remaining gates
 
-Authenticate and prepare the approved source while adding bounded state/inputs
-and graph/runner controls against the same-format reference.
+The [bounded C1 execution slice](experiments/gemma2-execution/README.md)
+adds the deep-verified artifact, checked alternating local/global state and
+inputs, native graph/plan and C1 runner. Its seven own controls preserve eager
+and captured heads, retained Clear, refusal atomicity, initialized-state
+spill/restore and device-greedy choices/state. The optimized norm/Mul, quantized
+GeGLU and width-2304 norm/ADD recipe reproduces all 33 stock heads exactly at
+context4096, two 128-row prompt chunks and 32 teacher-forced transitions.
+All 17 focused model/graph/plan tests, 15 norm CPU checks, one width-2304 GPU
+operand control and 26 shared importer controls pass on spark-b.
 The [attention-softcap primitive slice](experiments/gemma2-softcap/README.md)
 qualifies actual nonzero-specialization occupancy and funded vector/MMA
 launches at caps 0/50/25, with FP64 operand checks, byte-exact repeats and fresh
 capture replays, exact funding and refusal controls. Both new controls and
 eleven focused legacy controls pass on spark-b. Gemma2 owner batching remains
-separate because owner kernels still instantiate zero softcap. This profile
-foundation itself admits no model execution. Final logit softcap 30 and
-width-2,304 padding also need execution proof.
+separate because owner launchers still select zero softcap. The C1 execution
+control covers final logit softcap 30 and width-2304 readable tails; longer
+context, actual ring-wrap inference, batching, sustained and switch qualification
+remain open.
 The pin's Gemma2 HF-to-GGUF converter already adds one to norm weights;
 approved GGUF import must preserve those norm payloads, with no second +1
 at import or runtime.

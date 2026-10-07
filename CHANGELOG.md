@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Add an experimental bounded Gemma2 2B Q8_0 native runner with authenticated
+  import, checked state and graph replay. Its representative one-slot control
+  matches stock full heads exactly; serving and batching remain open.
+
 - Less host time between decode steps, for every model. A request's steps
   run on the driver thread, which waits on each step's fence itself, so no
   other thread is on a step's path (D-106). The LLM runners no longer call

@@ -89,6 +89,14 @@ stock's row shape. Their small same-geometry heads are byte-exact and paired
 C1/C4 cost screens preserve all emitted tokens and histories. This requirement
 does not transfer to Gemma3. See the [matched controls](experiments/gemma26-production/README.md#http-lifecycle-screen).
 
+The [Gemma2 C1 slice](experiments/gemma2-execution/README.md) reuses the
+held-request runner, ring state, retained Clear and graph machinery. Its
+width2304 norm/ADD operand control passes both ADD orders, scalar/128 rows and
+fresh capture inputs. Explicit norm/Mul, quantized GeGLU and norm/ADD selection
+reproduces all 33 bounded stock full heads byte for byte; replay, initialized
+state restore and device-greedy own controls also pass. No Q/K norm/RoPE fusion
+or softcapped owner-attention transfer is assumed; runner fusion defaults remain off.
+
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand
 types and strides, shapes, arithmetic, scratch accounting and lifetime.

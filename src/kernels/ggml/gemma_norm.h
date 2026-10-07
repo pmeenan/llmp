@@ -17,7 +17,7 @@ inline constexpr std::string_view kGemmaNormAddName = "ggml.rms_norm_mul_add.fus
 // The norm/product intermediates must be nonviews and are not written.
 // Actual inputs cannot depend on either elided tensor. A planner must preserve
 // every external reader/keep of those tensors by selecting primitives.
-// F32 full D256/D512 NEOX or residual widths2560/2816/5376 only; scratch0.
+// F32 full D256/D512 NEOX or residual widths2304/2560/2816/5376 only; scratch0.
 // The caller funds/protects operands through completion and every replay.
 // Finite payloads and positive frequency-factor values are caller obligations.
 std::expected<void, KernelFailure> CheckGemmaNormRope(const ggml_tensor* norm,

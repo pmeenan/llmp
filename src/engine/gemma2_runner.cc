@@ -1,0 +1,621 @@
+// SPDX-FileCopyrightText: 2026 jitLLM contributors
+// SPDX-License-Identifier: Apache-2.0
+
+#include "engine/gemma2_runner.h"
+
+#include <algorithm>
+#include <chrono>
+#include <format>
+#include <string>
+#include <utility>
+
+#include "base/sha256.h"
+#include "engine/support.h"
+#include "kernels/ggml/executor.h"
+#include "kernels/ggml/gemma_norm.h"
+
+namespace jitllm::engine {
+namespace kg = kernels::ggml;
+namespace md = model;
+namespace sc = scheduler;
+using catalog::ExtentId;
+using support::Address;
+using support::Error;
+using support::Round;
+using support::Seconds;
+
+Gemma2Runner::Gemma2Runner(PagedNode& node, Gemma2Options options, int owner, std::uint32_t stream)
+    : node_(node),
+      o_(std::move(options)),
+      owner_(owner),
+      stream_(stream),
+      resources_(node, owner, stream),
+      runs_(o_.graphs) {}
+Gemma2Runner::~Gemma2Runner() = default;
+kg::DeviceChoices Gemma2Runner::Choices(kg::LaunchContext& launch) const {
+  auto choices = kg::DeviceChoicesOf(launch);
+  choices.fuse_norms = o_.fuse_norms;
+  choices.fuse_quant_glu = o_.fuse_quant_glu;
+  choices.fuse_norm_rope = o_.fuse_norm_rope;
+  choices.fuse_norm_add = o_.fuse_norm_add;
+  return choices;
+}
+Status Gemma2Runner::Setup() {
+  if (setup_started_ || released_) return Error("Gemma2 setup is not repeatable");
+  setup_started_ = true;
+  if (o_.slots != 1 || o_.slots > o_.max_rows || o_.max_rows >= o_.context)
+    return Error("Gemma2 first runner requires one bounded slot/chunk");
+  const auto head_rows = o_.max_head_rows == 0 ? o_.max_rows : o_.max_head_rows;
+  if (head_rows < o_.slots || head_rows > o_.max_rows)
+    return Error("Gemma2 head capacity must cover slots within max_rows");
+  auto layout = md::Gemma2State(profile_, o_.context, o_.max_rows);
+  if (!layout) return Error(layout.error());
+  layout_ = std::move(*layout);
+  if (auto r = weights_.Open(o_.artifact); !r) return r;
+  const auto sources = weights_.artifact().sources();
+  if (sources.size() != 1 || sources[0].name != "gemma-2-2b-it-Q8_0.gguf" ||
+      sources[0].bytes.value() != 2784495456ULL ||
+      base::ToHex(sources[0].sha256) !=
+          "2d448a9aab894b8e8e18168cf3f490cb9f65632222f29f93514ac9ecc754debe")
+    return Error("Gemma2 runner needs the approved prepared Q8_0 source identity");
+  auto binding = md::BindGemma2(profile_, weights_.artifact());
+  if (!binding) return Error(binding.error());
+  binding_ = std::move(*binding);
+  cohort_.set_slots(o_.slots);
+  for (std::uint32_t i = 0; i < o_.slots; ++i) {
+    slots_[i] = std::make_unique<Slot>(i);
+    if (auto r = slots_[i]->live.AddGrowing(node_, std::format("Gemma2 state slot {}", i),
+                                            layout_.bytes, owner_);
+        !r)
+      return r;
+    slots_[i]->provisioned = true;
+  }
+  model_.profile = &profile_;
+  model_.binding = &binding_;
+  model_.state = &layout_;
+  model_.options.narrow_final = o_.frontier_head;
+  std::vector<GroupPlace> places(weights_.artifact().groups().size(), GroupPlace::kDevice);
+  if (auto r = weights_.Reserve(node_, places, {}); !r) return r;
+  model_.resources.resize(weights_.artifact().resources().size());
+  for (std::uint32_t i = 0; i < model_.resources.size(); ++i)
+    model_.resources[i] = {weights_.resource_address(i),
+                           weights_.artifact().resources()[i].readable.value()};
+  model_.slots.resize(o_.slots);
+  for (std::uint32_t i = 0; i < o_.slots; ++i)
+    model_.slots[i] = {slots_[i]->live.base(0), layout_.bytes};
+  if (auto r = resources_.OpenCublas("Gemma2 cuBLAS workspace"); !r) return r;
+  auto measuring = resources_.MeasuringContext();
+  if (!measuring) return Error(measuring.error());
+  std::uint64_t activation = 0, scratch = 0, staging = 0, host = 0;
+  std::vector<std::int32_t> tokens(o_.max_rows, 1);
+  // Scalar chunks and equal/ragged waves at both context endpoints. Head
+  // publication has its own immutable capacity; products still share columns.
+  for (const auto budget : {o_.max_rows, head_rows}) {
+    for (std::uint32_t count = 1; count <= o_.slots; ++count) {
+      for (const auto rows : {1U, budget / count, budget - count + 1}) {
+        for (const auto past : {0U, o_.context - rows}) {
+          std::vector<md::Gemma2Segment> segments;
+          for (std::uint32_t i = 0; i < count; ++i) {
+            const auto n = rows == budget - count + 1 && i != 0 ? 1U : rows;
+            segments.push_back({i, past == 0 ? 0U : o_.context - n, std::span(tokens).first(n)});
+          }
+          auto input = md::Gemma2Chunk(profile_, layout_, segments, true);
+          auto input_bytes = md::Gemma2HostInputBytes(profile_, layout_, segments, true);
+          if (!input || !input_bytes) return Error("Gemma2 measuring input contract");
+          for (const auto output : {0U, 1U, 2U, 3U}) {
+            const bool all = output == 1, state_only = output == 2, greedy = output == 3;
+            if (all ? budget != head_rows : budget != o_.max_rows) continue;
+            kg::Gemma2ChunkShape shape;
+            for (const auto& s : input->segments)
+              shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
+            shape.output_mode =
+                state_only ? kg::Gemma2OutputMode::kStateOnly : kg::Gemma2OutputMode::kHead;
+            shape.greedy = greedy;
+            shape.outputs = state_only ? 0U
+                            : all      ? static_cast<std::uint32_t>(input->tokens.size())
+                                       : count;
+            auto p = PlanGemma2Chunk(model_, shape, Choices(**measuring), 0, 0);
+            if (!p) return Error(std::format("measuring Gemma2: {}", p.error()));
+            auto needed = kg::PlanScratch(**measuring, (*p)->plan);
+            if (!needed) return Error(needed.error().detail);
+            activation = std::max(activation, (*p)->placement.extent);
+            scratch = std::max(scratch, *needed);
+            staging = std::max(staging, (*p)->inputs_bytes);
+            auto source_bytes = Gemma2SourceBytes((*p)->graph);
+            if (!source_bytes) return Error(source_bytes.error());
+            host = std::max(host, *input_bytes + *source_bytes);
+            plan_floor_bytes_ = std::max(plan_floor_bytes_, PlannedHostBytes(**p));
+          }
+        }
+      }
+    }
+    if (head_rows == o_.max_rows) break;
+  }
+  activation_bytes_ = Round(activation + activation / 4, kPagedExtent);
+  scratch_bytes_ = Round(scratch + scratch / 4 + (1U << 20U), kPagedExtent);
+  host_input_bytes_ = Round(host + (1U << 20U), kPagedExtent);
+  const auto staging_bytes = Round(staging + staging / 4 + (1U << 20U), kPagedExtent);
+  auto staging_host = resources_.Pinned(staging_bytes);
+  auto logits = resources_.Pinned(std::uint64_t{head_rows} * profile_.vocab * sizeof(float));
+  if (!staging_host || !logits) return Error("Gemma2 pinned inputs/outputs");
+  runs_.SetStaging(*staging_host, staging_bytes);
+  logits_ = *logits;
+  setup_ = true;
+  return {};
+}
+Status Gemma2Runner::Register() {
+  if (!setup_ || registered_ || bound_ || released_) return Error("Gemma2 registration order");
+  if (auto r = weights_.Register(node_, owner_); !r) return r;
+  std::vector<ExtentId> pinned = weights();
+  for (auto& slot : slots_) {
+    if (!slot) continue;
+    if (auto r = slot->live.RegisterSpill(
+            node_, {.directory = o_.out, .dir = -1, .name = {}, .keep = false});
+        !r)
+      return r;
+    const auto reserved = slot->live.reserved_extents();
+    pinned.insert(pinned.end(), reserved.begin(), reserved.end());
+  }
+  if (auto r = node_.scheduler().PinPlaces(pinned); !r)
+    return Error(std::format("Gemma2 pin places: {}", sc::ToString(r.error())));
+  registered_ = true;
+  return {};
+}
+std::array<LiveState*, kMaxRequestSlots> Gemma2Runner::States() {
+  std::array<LiveState*, kMaxRequestSlots> states{};
+  for (std::size_t i = 0; i < slots_.size(); ++i)
+    if (slots_[i] && slots_[i]->provisioned) states[i] = &slots_[i]->live;
+  return states;
+}
+Status Gemma2Runner::RefreshClosures(SlotMask protect) {
+  places_clean_.reset();
+  auto refreshed = node_.Call(
+      [&]() -> Status {
+        std::vector<ExtentId> shared = weights();
+        for (const auto* mapped : {&node_.activations(), &node_.pool()})
+          shared.insert(shared.end(), mapped->extents.begin(), mapped->extents.end());
+        const auto own = resources_.extents();
+        shared.insert(shared.end(), own.begin(), own.end());
+        std::array<const LiveState*, kMaxRequestSlots> states{};
+        for (const auto& slot : slots_)
+          if (slot && !slot->spilled) states[slot->index] = &slot->live;
+        auto c = cohort_.Build(node_.catalog(), shared, states, protect);
+        if (!c) return Error(c.error());
+        everything_ = std::move(c->everything);
+        fence_ = std::move(c->fence);
+        execution_ = std::move(c->execution);
+        for (auto& slot : slots_)
+          if (slot) slot->fence = std::move(c->slot_fences[slot->index]);
+        return {};
+      },
+      "Gemma2 refresh closures");
+  auto states = States();
+  if (!refreshed) {
+    cohort_.Fault(states);
+    return refreshed;
+  }
+  return cohort_.Hold(node_, stream_, execution_, states);
+}
+Status Gemma2Runner::Bind() {
+  if (!registered_ || bound_ || released_) return Error("Gemma2 bind order");
+  if (auto r = resources_.BindLaunch(scratch_bytes_); !r) return r;
+  runs_.SetLaunch(&resources_.launch());
+  account_.Bind(
+      [this](std::uint64_t bytes, bool required) { return node_.ChargeHost(bytes, required); },
+      [this](std::uint64_t bytes) { node_.UnchargeHost(bytes); });
+  plans_.set_account(&account_);
+  if (auto r = RefreshClosures(); !r) return r;
+  bound_ = true;
+  return {};
+}
+std::expected<Gemma2Runner::Slot*, std::string> Gemma2Runner::request_slot(std::uint32_t index) {
+  if (released_ || index >= o_.slots || !slots_[index]) return Error("Gemma2 slot unavailable");
+  return slots_[index].get();
+}
+Status Gemma2Runner::CheckActive(const Slot& slot) const {
+  if (!bound_ || released_ || !slot.provisioned || slot.spilled)
+    return Error("Gemma2 slot is not ready");
+  if (auto active = cohort_.Check(node_, stream_, slot.index); !active) return active;
+  return slot.live.Usable();
+}
+Status Gemma2Runner::SelectSlots(std::span<const std::uint32_t> slots) {
+  if (!bound_ || released_ || cohort_.faulted()) return Error("Gemma2 cohort unavailable");
+  auto mask = cohort_.MaskOf(slots);
+  if (!mask) return Error(mask.error());
+  cohort_.Select(*mask);
+  return RefreshClosures();
+}
+Status Gemma2Runner::CheckPlaces() {
+  const auto changes = node_.scheduler().placement_changes();
+  if (places_clean_ == changes) return {};
+  PlaceCheck check;
+  auto r = node_.Call(
+      [&]() -> Status {
+        weights_.CheckPlaces(node_.scheduler(), check);
+        for (const auto& slot : slots_)
+          if (slot) slot->live.CheckPlaces(node_.scheduler(), check);
+        return {};
+      },
+      "Gemma2 check pinned places");
+  if (!r) return r;
+  if (check.moved != 0) {
+    DropPlans();
+    return Error(std::format("Gemma2 {} places moved: {}", check.moved, check.first));
+  }
+  places_clean_ = changes;
+  return {};
+}
+std::vector<ExtentId> Gemma2Runner::weights() const { return weights_.extents(); }
+std::vector<ExtentId> Gemma2Runner::state() const {
+  std::vector<ExtentId> result;
+  for (const auto& slot : slots_) {
+    if (!slot) continue;
+    const auto extents = slot->live.extents();
+    result.insert(result.end(), extents.begin(), extents.end());
+  }
+  return result;
+}
+std::vector<ExtentId> Gemma2Runner::kept_state() const {
+  std::vector<ExtentId> result;
+  for (const auto& slot : slots_) {
+    if (!slot) continue;
+    const auto extents = slot->live.kept_extents();
+    result.insert(result.end(), extents.begin(), extents.end());
+  }
+  return result;
+}
+std::vector<ExtentId> Gemma2Runner::managed_extents() const {
+  auto result = weights();
+  for (const auto& extents : {state(), kept_state()})
+    result.insert(result.end(), extents.begin(), extents.end());
+  return result;
+}
+std::expected<std::vector<LiveState::Range>, std::string> Gemma2Runner::CheckpointRanges(
+    std::uint32_t positions) const {
+  auto needed = md::Gemma2UsedState(profile_, layout_, positions);
+  if (!needed) return Error(needed.error());
+  std::vector<LiveState::Range> result;
+  for (const auto& range : *needed) result.push_back({0, range.offset, range.bytes});
+  return result;
+}
+Status Gemma2Runner::ReserveStateThrough(std::uint32_t index, std::uint32_t positions) {
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  auto& slot = **request;
+  slot.state_refused = false;
+  if (auto active = CheckActive(slot); !active) return active;
+  auto ranges = CheckpointRanges(positions);
+  if (!ranges) return Error(ranges.error());
+  bool over_budget = false;
+  auto used = slot.live.Use(node_, *ranges, &execution_, &over_budget);
+  // A clean partial refusal may still have initialized new extents.
+  if (!used || *used)
+    if (auto r = RefreshClosures(); !r) return r;
+  if (!used) {
+    slot.state_refused = over_budget && !cohort_.faulted() && !slot.live.quarantined();
+    return Error(used.error());
+  }
+  return {};
+}
+Status Gemma2Runner::Clear(std::uint32_t index) {
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  auto& slot = **request;
+  if (!bound_ || cohort_.faulted()) return Error("Gemma2 retirement required");
+  if (auto r = cohort_.Check(node_, stream_, index); !r) return r;
+  bool keep = false;
+  if (!slot.spilled) {
+    auto zeroed = slot.live.ZeroForReuse(node_, slot.fence, stream_);
+    if (!zeroed) {
+      auto states = States();
+      cohort_.CheckFailedJob(node_, stream_, execution_, states);
+      return Error(zeroed.error());
+    }
+    keep = *zeroed;
+  }
+  if (auto r = RefreshClosures(cohort_.active() & ~(SlotMask{1} << index)); !r) return r;
+  const auto cleared = slot.live.DiscardGrowingState(node_, keep);
+  if (cleared) {
+    slot.spilled = false;
+    slot.positions = 0;
+    slot.state_refused = false;
+  }
+  if (auto r = RefreshClosures(); !r) return r;
+  return cleared;
+}
+Status Gemma2Runner::ClearIdle(std::uint32_t index) {
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  if (!bound_ || cohort_.faulted() || (cohort_.IsActive(index) && node_.InRequest(stream_)))
+    return Error("Gemma2 idle clear requires an idle healthy slot");
+  auto& slot = **request;
+  const auto cleared = slot.live.DiscardGrowingState(node_);
+  if (cleared) {
+    slot.spilled = false;
+    slot.positions = 0;
+    slot.state_refused = false;
+  }
+  if (auto r = RefreshClosures(); !r) return r;
+  return cleared;
+}
+Status Gemma2Runner::Spill(std::uint32_t index) {
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  auto& slot = **request;
+  if (!bound_ || cohort_.faulted()) return Error("Gemma2 retirement required");
+  if (slot.spilled) return {};
+  if (auto r = slot.live.Usable(); !r) return r;
+  const auto extents = slot.live.extents();
+  if (extents.empty()) return {};
+  slot.spilled = true;
+  if (auto r = RefreshClosures(); !r) {
+    slot.spilled = false;
+    return r;
+  }
+  return node_.Evict(extents);
+}
+Status Gemma2Runner::Restore(std::uint32_t index) {
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  auto& slot = **request;
+  slot.state_refused = false;
+  if (!bound_ || cohort_.faulted()) return Error("Gemma2 retirement required");
+  if (!slot.spilled) return {};
+  catalog::Closure restore;
+  const auto extents = slot.live.extents();
+  if (auto r = node_.Call(
+          [&]() -> Status {
+            auto c = node_.catalog().ClosureOfExtents(extents);
+            if (!c) return Error("Gemma2 spilled state not cataloged");
+            restore = std::move(*c);
+            return {};
+          },
+          "Gemma2 describe restore");
+      !r)
+    return r;
+  sc::AcquireReport report;
+  bool over_budget = false;
+  if (auto r = node_.Acquire(restore, report, "Gemma2 restore", &over_budget); !r) {
+    slot.state_refused = over_budget && !cohort_.faulted();
+    return r;
+  }
+  slot.spilled = false;
+  return RefreshClosures();
+}
+Status Gemma2Runner::CopyState(std::uint32_t index, void* pinned,
+                               std::span<const LiveState::Range> ranges,
+                               LiveState::CopyRetirement* retirement) {
+  if (retirement) *retirement = LiveState::CopyRetirement::kProven;
+  auto request = request_slot(index);
+  if (!request) return Error(request.error());
+  if (auto active = CheckActive(**request); !active) return active;
+  LiveState::CopyRetirement completed;
+  auto copied =
+      (*request)->live.Copy(node_, (*request)->fence, stream_, pinned, ranges, true, &completed);
+  if (retirement) *retirement = completed;
+  if (!copied) {
+    auto states = States();
+    cohort_.CheckFailedJob(node_, stream_, execution_, states);
+    if (completed == LiveState::CopyRetirement::kUnproven) cohort_.Fault(states);
+  }
+  return copied;
+}
+std::expected<Gemma2Runner::Plans::Entry*, std::string> Gemma2Runner::Planned(
+    const kg::Gemma2ChunkShape& shape) {
+  if (auto* found = plans_.Find(shape)) return found;
+  const auto started = std::chrono::steady_clock::now();
+  auto p = PlanGemma2Chunk(model_, shape, Choices(resources_.launch()), node_.activations().base,
+                           node_.activations().bytes);
+  if (!p) return Error(p.error());
+  if (auto r = BindPlanned(**p, resources_.launch(), resources_.registry(), "Gemma2 chunk"); !r)
+    return Error(r.error());
+  std::vector<const ggml_tensor*> state_tensors;
+  for (const auto& segment : (*p)->graph.segments)
+    for (const auto& [k, v] : segment.caches) {
+      state_tensors.push_back(k);
+      state_tensors.push_back(v);
+    }
+  Coverage checked;
+  CheckCoverage(node_, owner_, (*p)->graph.nodes,
+                {.state = state_tensors, .inputs = (*p)->graph.inputs}, checked);
+  if (checked.violations != 0)
+    return Error(std::format("Gemma2 catalog coverage: {}", checked.first_violation));
+  coverage_.tensors += checked.tensors;
+  ++plan_selections_.plans;
+  plan_selections_.steps += (*p)->plan.steps.size();
+  for (const auto& selected : (*p)->plan.steps) {
+    plan_selections_.norm_mul += selected.implementation == kg::kRmsNormMulFused;
+    plan_selections_.quant_geglu += selected.implementation == kg::kMulMatGeGluQFused;
+    plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;
+    plan_selections_.norm_add += selected.implementation == kg::kGemmaNormAddName;
+  }
+  const auto bytes = PlannedHostBytes(**p), nodes = PlannedNodes(**p);
+  return &plans_.Add(shape, std::move(*p), bytes, nodes,
+                     Seconds(std::chrono::steady_clock::now() - started));
+}
+Status Gemma2Runner::Chunk(std::uint32_t past, std::span<const std::int32_t> tokens,
+                           std::vector<float>& logits, bool all_outputs) {
+  const Work work{0, past, tokens, &logits};
+  return Wave(std::span(&work, 1), all_outputs);
+}
+Status Gemma2Runner::Wave(std::span<const Work> work, bool all_outputs) {
+  return WaveWithMode(work, all_outputs, kg::Gemma2OutputMode::kHead);
+}
+Status Gemma2Runner::WavePrefill(std::span<const Work> work, bool want_head) {
+  return WaveWithMode(work, false,
+                      want_head ? kg::Gemma2OutputMode::kHead : kg::Gemma2OutputMode::kStateOnly);
+}
+Status Gemma2Runner::WaveWithMode(std::span<const Work> work, bool all_outputs,
+                                  kg::Gemma2OutputMode mode) {
+  const PlanStep step;
+  if (!bound_ || released_ || work.empty() || work.size() > o_.slots)
+    return Error("Gemma2 wave is unavailable or unbounded");
+  std::array<md::Gemma2Segment, kMaxRequestSlots> segments{};
+  std::array<bool, kMaxRequestSlots> seen{};
+  std::uint32_t rows = 0;
+  const bool greedy = work.front().token != nullptr;
+  if (greedy && (mode != kg::Gemma2OutputMode::kHead || all_outputs))
+    return Error("Gemma2 greedy waves publish one frontier token per segment");
+  for (std::size_t i = 0; i < work.size(); ++i) {
+    const auto& w = work[i];
+    if ((w.token != nullptr) != greedy || (w.logits == nullptr) == (w.token == nullptr))
+      return Error("Gemma2 wave outputs must be all rows or all greedy tokens");
+    if (w.slot >= o_.slots || seen[w.slot] || w.tokens.empty() ||
+        w.tokens.size() > o_.max_rows - rows || w.n_past != slots_[w.slot]->positions)
+      return Error("Gemma2 wave needs distinct slots, bounded rows and exact continuations");
+    if (auto r = CheckActive(*slots_[w.slot]); !r) return r;
+    for (std::size_t j = 0; j < i; ++j)
+      if (greedy ? work[j].token == w.token : work[j].logits == w.logits)
+        return Error("Gemma2 outputs must be independent");
+    rows += static_cast<std::uint32_t>(w.tokens.size());
+    seen[w.slot] = true;
+    segments[i] = {w.slot, w.n_past, w.tokens};
+  }
+  const auto head_rows = o_.max_head_rows == 0 ? o_.max_rows : o_.max_head_rows;
+  const auto outputs = mode == kg::Gemma2OutputMode::kStateOnly ? 0U
+                       : all_outputs ? rows
+                                     : static_cast<std::uint32_t>(work.size());
+  if (outputs > head_rows) return Error("Gemma2 wave exceeds head publication capacity");
+  const auto selected = std::span(segments).first(work.size());
+  auto bytes = md::Gemma2HostInputBytes(profile_, layout_, selected, true);
+  if (!bytes) return Error(bytes.error());
+  if (*bytes > host_input_bytes_) return Error("Gemma2 host descriptor envelope exceeded");
+  if (auto r = CheckPlaces(); !r) return r;
+  // The caller funds host_input_bytes()+plan_floor_bytes() in the node's
+  // startup host floor, as for the shared runners. One driver stages a wave.
+  auto input = md::Gemma2Chunk(profile_, layout_, selected, true);
+  if (!input) return Error(input.error());
+  kg::Gemma2ChunkShape shape;
+  shape.output_mode = mode;
+  shape.outputs = outputs;
+  shape.greedy = greedy;
+  std::vector<std::int32_t> frontier;
+  frontier.reserve(outputs);
+  for (const auto& s : input->segments) {
+    shape.segments.push_back({s.slot, s.rows, s.n_past, s.global_n_kv, s.local_n_kv});
+    if (mode == kg::Gemma2OutputMode::kHead) {
+      if (all_outputs)
+        for (std::uint32_t i = 0; i < s.rows; ++i)
+          frontier.push_back(static_cast<std::int32_t>(s.first_row + i));
+      else
+        frontier.push_back(static_cast<std::int32_t>(s.first_row + s.rows - 1));
+    }
+    if (auto r = ReserveStateThrough(s.slot, s.n_past + s.rows); !r) return r;
+  }
+  auto entry_of = Planned(shape);
+  if (!entry_of) return Error(entry_of.error());
+  auto& entry = **entry_of;
+  auto& p = *entry.planned;
+  const auto output_bytes = std::uint64_t{outputs} * profile_.vocab * sizeof(float);
+  if ((mode == kg::Gemma2OutputMode::kHead &&
+       (p.graph.logits == nullptr || p.graph.logits->type != GGML_TYPE_F32 ||
+        p.graph.logits->ne[0] != profile_.vocab || p.graph.logits->ne[1] != outputs ||
+        p.graph.logits->ne[2] != 1 || p.graph.logits->ne[3] != 1 ||
+        !ggml_is_contiguous(p.graph.logits) || ggml_nbytes(p.graph.logits) != output_bytes)) ||
+      (mode == kg::Gemma2OutputMode::kStateOnly && p.graph.logits != nullptr) ||
+      (greedy && (p.graph.greedy == nullptr || p.graph.greedy->type != GGML_TYPE_I32 ||
+                  p.graph.greedy->ne[0] != outputs || p.graph.greedy->ne[1] != 1 ||
+                  p.graph.greedy->ne[2] != 1 || p.graph.greedy->ne[3] != 1 ||
+                  !ggml_is_contiguous(p.graph.greedy) ||
+                  ggml_nbytes(p.graph.greedy) != std::uint64_t{outputs} * sizeof(std::int32_t))))
+    return Error("Gemma2 planned head publication exceeds its envelope");
+  auto source_bytes = Gemma2SourceBytes(p.graph);
+  if (!source_bytes || *source_bytes > host_input_bytes_ - *bytes)
+    return Error("Gemma2 host input envelope exceeded");
+  auto host = Gemma2Sources(p.graph, *input, frontier, {}, host_input_bytes_ - *bytes);
+  if (!host) return Error(host.error());
+  auto copies = runs_.Stage(host->sources, 0);
+  if (!copies) return Error(copies.error());
+  bool capture = entry.runs[0].CaptureDue(runs_.graphs());
+  if (capture && !plans_.ChargeGraph(entry)) capture = false;
+  std::array<RunCopy, 1> output{};
+  if (greedy)
+    output[0] = {Address(logits_), Address(p.graph.greedy->data),
+                 std::uint64_t{outputs} * sizeof(std::int32_t)};
+  else if (mode == kg::Gemma2OutputMode::kHead)
+    output[0] = {Address(logits_), Address(p.graph.logits->data), output_bytes};
+  const auto output_copies = std::span(output).first(mode == kg::Gemma2OutputMode::kHead ? 1U : 0U);
+  bool wrote = false, unknown = false;
+  Status queued;
+  RunPath path = RunPath::kEager;
+  const auto posted = node_.Job(
+      execution_,
+      [&](providers::NativeStream native) {
+        const auto result = runs_.Queue(entry.runs[0], *copies, {}, *p.bound, output_copies,
+                                        capture, graph_stats_, native);
+        wrote = result.before || result.result.has_value();
+        path = result.path;
+        if (!result.result) {
+          queued = Error(result.result.error().detail);
+          unknown = result.result.error().error == kg::KernelError::kUnknown;
+          return unknown         ? sc::JobResult::kUnknown
+                 : result.before ? sc::JobResult::kFailed
+                                 : sc::JobResult::kNotStarted;
+        }
+        return sc::JobResult::kQueued;
+      },
+      "Gemma2 chunk/wave", stream_);
+  if (!posted || !queued || resources_.launch().faulted()) {
+    auto states = States();
+    cohort_.CheckFailedJob(node_, stream_, execution_, states);
+    for (const auto& w : work)
+      if (wrote || unknown) slots_[w.slot]->live.Quarantine();
+    if (resources_.launch().faulted()) cohort_.Fault(states);
+    if (!queued) return queued;
+    return !posted ? posted : Error("Gemma2 launch context faulted");
+  }
+  Count(graph_stats_, path);
+  if (greedy)
+    for (std::size_t i = 0; i < work.size(); ++i) {
+      const auto token = static_cast<const std::int32_t*>(logits_)[i];
+      if (token < 0 || std::cmp_greater_equal(token, profile_.vocab)) {
+        for (const auto& w : work) slots_[w.slot]->live.Quarantine();
+        return Error("Gemma2 device choice is outside its vocabulary; state quarantined");
+      }
+    }
+  std::size_t at = 0;
+  for (std::size_t i = 0; i < work.size(); ++i) {
+    const auto& w = work[i];
+    if (greedy) {
+      *w.token = static_cast<const std::int32_t*>(logits_)[i];
+      ++greedy_tokens_;
+    } else {
+      const auto count = mode == kg::Gemma2OutputMode::kStateOnly ? 0U
+                         : all_outputs                            ? w.tokens.size()
+                                                                  : 1U;
+      const auto n = count * profile_.vocab;
+      const auto* values = static_cast<const float*>(logits_) + at;
+      if (mode == kg::Gemma2OutputMode::kStateOnly)
+        w.logits->clear();
+      else
+        w.logits->assign(values, values + n);
+      at += n;
+    }
+    slots_[w.slot]->positions += static_cast<std::uint32_t>(w.tokens.size());
+  }
+  return {};
+}
+void Gemma2Runner::DropPlans() { plans_.Clear(); }
+void Gemma2Runner::ReclaimCandidates(std::uint32_t owner, bool running,
+                                     std::vector<memory::ReclaimCandidate>& out) {
+  if (released_ || cohort_.faulted()) return;
+  std::array<PlanCacheBase*, 1> caches{&plans_};
+  CollectPlans(caches, owner, running, out);
+}
+std::uint64_t Gemma2Runner::Reclaim(memory::ReclaimKind kind, std::uint64_t id) {
+  if (released_ || cohort_.faulted()) return 0;
+  std::array<PlanCacheBase*, 1> caches{&plans_};
+  return ReclaimPlan(caches, kind, id);
+}
+Status Gemma2Runner::Release() {
+  if (released_) return {};
+  released_ = true;
+  DropPlans();
+  std::vector<std::string> problems;
+  resources_.Release(problems);
+  for (auto& slot : slots_)
+    if (slot) slot->live.Release(node_.memory(), problems);
+  if (auto r = weights_.Release(node_.memory()); !r) problems.push_back(r.error());
+  return support::Joined(problems);
+}
+}  // namespace jitllm::engine
