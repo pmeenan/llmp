@@ -2716,6 +2716,223 @@ TEST_F(GgmlExtOpsTest, GemmaLocalAttentionPreservesIndependentRingMasksAndPlansS
   }
 }
 
+// Gemma2 operator qualification only: these cases do not admit a model or
+// owner-attention adapter. Scale is the actual 2B 1/sqrt(D256) contract.
+TEST_F(GgmlExtOpsTest, Gemma2SoftcapUsesFundedSpecializationsAndMatchesFp64) {
+  constexpr std::int64_t d = 256, heads = 8, kv_heads = 4, cells = 512;
+  constexpr float scale = 0.0625F;
+  struct Case {
+    bool vector;
+    std::int64_t rows;
+    std::int64_t sequences = 1;
+  };
+  int underfunded_vector = 0, underfunded_mma = 0;
+  std::vector<std::vector<float>> uncapped;
+  for (const float cap : {0.0F, 50.0F, 25.0F}) {
+    std::size_t case_index = 0;
+    for (const auto shape : {Case{true, 1}, Case{true, 3}, Case{false, 1}, Case{false, 5},
+                             Case{false, 9}, Case{false, 17}, Case{false, 5, 2}}) {
+      SCOPED_TRACE(std::format("softcap={} vector={} rows={}", cap, shape.vector, shape.rows));
+      auto arena = TensorArena::Create(32).value();
+      auto* ctx = arena.context();
+      const auto n = [](std::int64_t x) { return static_cast<std::size_t>(x); };
+      const auto rows = shape.rows;
+      const auto sequences = shape.sequences;
+      const auto q = Normal(471, n(d * rows * heads * sequences), 8.0F);
+      const auto k = Halves(Normal(472, n(d * cells * kv_heads * sequences), 4.0F));
+      const auto v = Halves(Normal(473, n(d * cells * kv_heads * sequences)));
+      const auto columns = rows <= 4 ? 4 : rows <= 8 ? 8 : rows <= 16 ? 16 : 32;
+      const auto mask_rows = (rows + columns - 1) / columns * columns;
+      std::vector<float> mask(n(cells * mask_rows * sequences),
+                              -std::numeric_limits<float>::infinity());
+      for (std::int64_t seq = 0; seq < sequences; ++seq)
+        for (std::int64_t r = 0; r < rows; ++r)
+          for (std::int64_t cell = 224 + r; cell <= 351 + r; ++cell)
+            mask[n((seq * mask_rows + r) * cells + cell)] = 0;
+      auto* tq = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, rows, heads, sequences), q);
+      auto* tk = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, cells, kv_heads, sequences), k);
+      auto* tv = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, d, cells, kv_heads, sequences), v);
+      auto* tm = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F16, cells, mask_rows, 1, sequences),
+                       Halves(mask));
+      auto* node = Place(ggml_flash_attn_ext(ctx, tq, tk, tv, tm, scale, 0, cap));
+      ggml_prec_set_acc(node, GGML_PREC_F32);
+      if (sequences == 1) ASSERT_TRUE(kg::CheckFlashAttnVec256(node));
+      ASSERT_TRUE(kg::CheckFlashAttnMmaGqa2(node));
+      EXPECT_EQ(kg::FlashAttnVec256Selected(launch(), node), rows == 1 && sequences == 1);
+      const std::array<ggml_tensor*, 1> nodes{node};
+      auto selected_graph = kg::PlanGraph(nodes, false, kg::DeviceChoicesOf(launch()));
+      ASSERT_TRUE(selected_graph);
+      EXPECT_EQ(selected_graph->steps.front().implementation,
+                rows == 1 && sequences == 1 ? kg::kFlashAttnVec256Name : kg::kFlashAttnMmaGqa2Name);
+      EXPECT_TRUE(kg::PlanScratch(launch(), *selected_graph));
+      const auto run = [&](LaunchContext& l) {
+        return shape.vector ? kg::FlashAttnVec256(l, node) : kg::FlashAttnMmaGqa2(l, node);
+      };
+      std::uint64_t scratch = 0;
+      if (shape.vector) {
+        auto plan = kg::PlanFlashAttnVec256(launch(), node);
+        ASSERT_TRUE(plan) << plan.error().detail;
+        EXPECT_EQ(plan->columns_per_block, rows == 1 ? 1 : 2);
+        scratch = plan->scratch;
+        std::cout << "SOFTCAP_VECTOR cap=" << cap << " rows=" << rows
+                  << " parallel=" << plan->parallel_blocks << " scratch=" << scratch << '\n';
+      } else {
+        auto plan = kg::PlanFlashAttnMmaGqa2(launch(), node);
+        ASSERT_TRUE(plan) << plan.error().detail;
+        auto selected = kg::detail::FlashAttnMmaShapeGqa2(columns, launch().device(), cap != 0);
+        ASSERT_TRUE(selected) << selected.error();
+        ASSERT_GT(selected->blocks_per_sm, 0);
+        EXPECT_EQ(plan->columns, columns);
+        EXPECT_EQ(plan->group, 2);
+        EXPECT_EQ(plan->mask_prepass, sequences > 1);
+        scratch = plan->scratch;
+        // Existing owner and zero-softcap callers omit the new argument.
+        auto default_zero = kg::detail::FlashAttnMmaShapeGqa2(columns, launch().device());
+        auto explicit_zero = kg::detail::FlashAttnMmaShapeGqa2(columns, launch().device(), false);
+        ASSERT_TRUE(default_zero);
+        ASSERT_TRUE(explicit_zero);
+        EXPECT_EQ(default_zero->kv_batch, explicit_zero->kv_batch);
+        EXPECT_EQ(default_zero->blocks_per_sm, explicit_zero->blocks_per_sm);
+        EXPECT_EQ(default_zero->async_kv_preload, explicit_zero->async_kv_preload);
+        std::cout << "SOFTCAP_MMA cap=" << cap << " rows=" << rows
+                  << " per_sm=" << selected->blocks_per_sm << " kv_batch=" << selected->kv_batch
+                  << " blocks=" << plan->blocks << " scratch=" << scratch << '\n';
+      }
+      auto paid = LaunchContext::Create(0, *execution_, stream_,
+                                        {.base = Allocate(scratch), .size = Bytes(scratch)});
+      ASSERT_TRUE(paid) << paid.error().detail;
+      if (scratch > 0) {
+        auto short_pool = LaunchContext::Create(
+            0, *execution_, stream_, {.base = Allocate(scratch), .size = Bytes(scratch - 1)});
+        ASSERT_TRUE(short_pool);
+        EXPECT_EQ(FailedCode(run(**short_pool)), KernelError::kRejected);
+        EXPECT_FALSE((*short_pool)->faulted());
+        (shape.vector ? underfunded_vector : underfunded_mma)++;
+      }
+      ASSERT_TRUE(run(**paid));
+      EXPECT_LE((*paid)->scratch_peak().value(), scratch);
+      const auto got = Download(node);
+      if (cap == 0)
+        uncapped.push_back(got);
+      else
+        EXPECT_NE(got, uncapped.at(case_index));
+      ++case_index;
+      ASSERT_TRUE(std::ranges::all_of(got, [](float x) { return std::isfinite(x); }));
+      const auto expect_bits = [&] {
+        const auto actual = Download(node);
+        ASSERT_EQ(got.size(), actual.size());
+        EXPECT_EQ(std::memcmp(got.data(), actual.data(), got.size() * sizeof(float)), 0);
+      };
+      // The separately invoked pinned case consumes the same actual paid
+      // workspace; equality catches occupancy-dependent reduction changes.
+      if (!shape.vector) {
+        ASSERT_TRUE((*paid)->Run(Bytes(scratch), [=](ggml_backend_cuda_context& context) {
+          kg::detail::FlashAttnMmaCaseGqa2(static_cast<int>(columns))(context, node);
+        }));
+        expect_bits();
+      }
+      std::vector<double> want(got.size());
+      std::vector<double> logits(n(cells));
+      for (std::int64_t seq = 0; seq < sequences; ++seq)
+        for (std::int64_t h = 0; h < heads; ++h) {
+          for (std::int64_t r = 0; r < rows; ++r) {
+            double maximum = -std::numeric_limits<double>::infinity();
+            for (std::int64_t cell = 0; cell < cells; ++cell) {
+              if (!std::isfinite(mask[n((seq * mask_rows + r) * cells + cell)])) {
+                logits[n(cell)] = -std::numeric_limits<double>::infinity();
+                continue;
+              }
+              double dot = 0;
+              for (std::int64_t i = 0; i < d; ++i)
+                dot += static_cast<double>(q[n(((seq * heads + h) * rows + r) * d + i)]) *
+                       ggml_fp16_to_fp32(k[n(((seq * kv_heads + h / 2) * cells + cell) * d + i)]);
+              dot *= scale;
+              logits[n(cell)] = cap == 0 ? dot : cap * std::tanh(dot / cap);
+              maximum = std::max(maximum, logits[n(cell)]);
+            }
+            double sum = 0;
+            for (const double l : logits)
+              if (std::isfinite(l)) sum += std::exp(l - maximum);
+            for (std::int64_t cell = 0; cell < cells; ++cell) {
+              if (!std::isfinite(logits[n(cell)])) continue;
+              const double probability = std::exp(logits[n(cell)] - maximum) / sum;
+              for (std::int64_t i = 0; i < d; ++i)
+                want[n(((seq * rows + r) * heads + h) * d + i)] +=
+                    probability *
+                    ggml_fp16_to_fp32(v[n(((seq * kv_heads + h / 2) * cells + cell) * d + i)]);
+            }
+          }
+        }
+      ExpectNmse(got, want, kFlashAttnNmse, "softcap independent FP64 reference");
+      ASSERT_TRUE(run(**paid));
+      expect_bits();
+      for (int fresh = 0; fresh < 2; ++fresh) {
+        auto graph = (*paid)->Capture([&](LaunchContext& l) { return run(l); });
+        ASSERT_TRUE(graph) << graph.error().detail;
+        for (int replay = 0; replay < 2; ++replay) {
+          ASSERT_TRUE((*paid)->Launch(*graph));
+          expect_bits();
+          EXPECT_LE((*paid)->scratch_peak().value(), scratch);
+        }
+      }
+      if (sequences > 1) {
+        tm->ne[1] = rows;
+        EXPECT_EQ(FailedCode(kg::PlanFlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
+        tm->ne[1] = mask_rows;
+        tm->ne[3] = 1;
+        EXPECT_EQ(FailedCode(kg::PlanFlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
+        tm->ne[3] = sequences;
+        EXPECT_FALSE(launch().faulted());
+      }
+    }
+  }
+  EXPECT_GT(underfunded_vector, 0);
+  EXPECT_GT(underfunded_mma, 0);
+}
+
+TEST_F(GgmlExtOpsTest, Gemma2SoftcapRejectsInvalidParametersAndOtherAttentionContracts) {
+  const auto build = [&](std::int64_t d, std::int64_t h, std::int64_t kv) {
+    auto* q = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F32, d, 1, h));
+    auto* k = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F16, d, 256, kv));
+    auto* v = Place(ggml_new_tensor_3d(c(), GGML_TYPE_F16, d, 256, kv));
+    auto* m = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F16, 256, 4));
+    auto* node = Place(ggml_flash_attn_ext(c(), q, k, v, m, 0.0625F, 0, 50));
+    ggml_prec_set_acc(node, GGML_PREC_F32);
+    return node;
+  };
+  auto* node = build(256, 8, 4);
+  for (const float bad :
+       {-1.0F, std::numeric_limits<float>::denorm_min(), std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::quiet_NaN()}) {
+    std::memcpy(node->op_params + 2, &bad, sizeof(bad));
+    EXPECT_EQ(FailedCode(kg::PlanFlashAttnVec256(launch(), node)), KernelError::kRejected);
+    EXPECT_EQ(FailedCode(kg::FlashAttnVec256(launch(), node)), KernelError::kRejected);
+    EXPECT_EQ(FailedCode(kg::PlanFlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
+    EXPECT_EQ(FailedCode(kg::FlashAttnMmaGqa2(launch(), node)), KernelError::kRejected);
+    EXPECT_FALSE(launch().faulted());
+  }
+  const float cap = 50;
+  std::memcpy(node->op_params + 2, &cap, sizeof(cap));
+  for (const float bad : {0.0F, -1.0F, std::numeric_limits<float>::infinity(),
+                          std::numeric_limits<float>::quiet_NaN()}) {
+    std::memcpy(node->op_params, &bad, sizeof(bad));
+    EXPECT_FALSE(kg::CheckFlashAttnVec256(node));
+    EXPECT_FALSE(kg::CheckFlashAttnMmaGqa2(node));
+  }
+  const float scale = 0.0625F;
+  std::memcpy(node->op_params, &scale, sizeof(scale));
+  const float bias = 1;
+  std::memcpy(node->op_params + 1, &bias, sizeof(bias));
+  EXPECT_FALSE(kg::CheckFlashAttnVec256(node));
+  EXPECT_FALSE(kg::CheckFlashAttnMmaGqa2(node));
+  EXPECT_FALSE(kg::CheckFlashAttnVec(build(64, 8, 4)));
+  EXPECT_FALSE(kg::CheckFlashAttnMma(build(256, 24, 2)));
+  EXPECT_FALSE(kg::CheckFlashAttnMma(build(512, 64, 1)));
+  EXPECT_FALSE(kg::CheckFlashAttnMma128(build(128, 4, 4)));
+  EXPECT_FALSE(kg::CheckFlashAttnVec256(build(256, 8, 2)));
+  EXPECT_FALSE(kg::CheckFlashAttnMmaGqa2(build(256, 8, 2)));
+}
+
 struct Attention {
   std::int64_t head{};
   std::int64_t heads{};

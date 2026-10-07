@@ -35,6 +35,7 @@
 #include "kernels/ggml/jitllm_ops.h"
 #include "kernels/ggml/ops_ext.h"
 #include "kernels/ggml/validate_ext.h"
+#include "kernels/ggml/validate_util.h"
 
 // ---- From GGML's fattn.cu (MIT) ----
 
@@ -249,7 +250,8 @@ static std::expected<FlashAttnMmaPlan, KernelFailure> PlanFlashAttnMmaGroup(
   } else {
     plan.columns = 8;
   }
-  auto shape = group2 ? detail::FlashAttnMmaShapeGqa2(plan.columns, launch.device())
+  auto shape = group2 ? detail::FlashAttnMmaShapeGqa2(plan.columns, launch.device(),
+                                                      detail::ParamF32(node, 2) != 0.0f)
                : plan.head == 512
                    ? detail::FlashAttnMmaShape512(plan.columns, plan.sparse, launch.device())
                    : detail::FlashAttnMmaShape256(plan.columns, plan.sparse, launch.device());

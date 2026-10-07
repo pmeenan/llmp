@@ -16,19 +16,24 @@ DECL_FATTN_MMA_F16_CASE(256, 256, 16, 2);
 DECL_FATTN_MMA_F16_CASE(256, 256, 32, 2);
 
 namespace jitllm::kernels::ggml::detail {
-std::expected<MmaKernelShape, std::string> FlashAttnMmaShapeGqa2(int columns, int device) {
+template <bool kSoftcap>
+static std::expected<MmaKernelShape, std::string> Gqa2Shape(int columns, int device) {
   switch (columns) {
     case 4:
-      return MmaShape<256, 4, false, 2>(device);
+      return MmaShape<256, 4, false, 2, kSoftcap>(device);
     case 8:
-      return MmaShape<256, 8, false, 2>(device);
+      return MmaShape<256, 8, false, 2, kSoftcap>(device);
     case 16:
-      return MmaShape<256, 16, false, 2>(device);
+      return MmaShape<256, 16, false, 2, kSoftcap>(device);
     case 32:
-      return MmaShape<256, 32, false, 2>(device);
+      return MmaShape<256, 32, false, 2, kSoftcap>(device);
     default:
       return std::unexpected(std::string("no D256/group2 MMA query tile"));
   }
+}
+std::expected<MmaKernelShape, std::string> FlashAttnMmaShapeGqa2(int columns, int device,
+                                                                 bool softcap) {
+  return softcap ? Gqa2Shape<true>(columns, device) : Gqa2Shape<false>(columns, device);
 }
 MmaCase FlashAttnMmaCaseGqa2(int columns) {
   switch (columns) {

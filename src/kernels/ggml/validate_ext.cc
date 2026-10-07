@@ -1237,8 +1237,15 @@ static std::expected<void, KernelFailure> CheckFlashAttnMmaGroup(const ggml_tens
   }
   // op_params: scale, max_bias, logit_softcap, precision, n_kv_max
   // (ggml.c:5534-5575).
-  if (ParamF32(node, 1) != 0.0f || ParamF32(node, 2) != 0.0f || node->op_params[4] < 0) {
-    return Rejected("no ALiBi and no logit soft-capping");
+  const float softcap = ParamF32(node, 2);
+  const float scale = ParamF32(node, 0);
+  const bool cap_valid =
+      softcap == 0.0f ||
+      (group2 && softcap > 0.0f && softcap < std::numeric_limits<float>::infinity() &&
+       scale > 0.0f && scale < std::numeric_limits<float>::infinity() &&
+       scale / softcap < std::numeric_limits<float>::infinity());
+  if (ParamF32(node, 1) != 0.0f || !cap_valid || node->op_params[4] < 0) {
+    return Rejected("no ALiBi; finite positive softcap only on D256/GQA2");
   }
   const std::int64_t d = q->ne[0];
   if ((d != 256 && d != 512) || k->ne[0] != d || v->ne[0] != d) {

@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <climits>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <string>
 #include <utility>
@@ -62,14 +63,25 @@ static std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVecHead(const La
   // memory (fattn-vec.cuh:532-541).
   const int threads = ggml_cuda_fattn_vec_get_nthreads_host(device.cc);
   int per_sm = 0;
-  const cudaError_t occupancy =
-      plan.columns_per_block == 1
-          ? cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-                &per_sm, flash_attn_ext_vec<kHead, 1, GGML_TYPE_F16, GGML_TYPE_F16, false>, threads,
-                0)
-          : cudaOccupancyMaxActiveBlocksPerMultiprocessor(
-                &per_sm, flash_attn_ext_vec<kHead, 2, GGML_TYPE_F16, GGML_TYPE_F16, false>, threads,
-                0);
+  // Query the same specialization the upstream case will launch.
+  const auto query = [&]<bool kSoftcap>() {
+    return plan.columns_per_block == 1
+               ? cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                     &per_sm, flash_attn_ext_vec<kHead, 1, GGML_TYPE_F16, GGML_TYPE_F16, kSoftcap>,
+                     threads, 0)
+               : cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+                     &per_sm, flash_attn_ext_vec<kHead, 2, GGML_TYPE_F16, GGML_TYPE_F16, kSoftcap>,
+                     threads, 0);
+  };
+  cudaError_t occupancy;
+  if constexpr (kHead == 256) {
+    float softcap = 0;
+    std::memcpy(&softcap, node->op_params + 2, sizeof(softcap));
+    occupancy =
+        softcap != 0.0f ? query.template operator()<true>() : query.template operator()<false>();
+  } else {
+    occupancy = query.template operator()<false>();
+  }
   if (occupancy != cudaSuccess || per_sm <= 0) {
     return std::unexpected(
         KernelFailure{.error = KernelError::kUnknown,

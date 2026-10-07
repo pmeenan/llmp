@@ -1101,13 +1101,20 @@ static std::expected<void, KernelFailure> CheckFlashAttnVecHead(const ggml_tenso
   if (q->ne[1] >= 1024 && mask->ne[1] < q->ne[1] + (q->ne[1] % 2)) {
     return Rejected("attention from 1,024 odd query rows without the mask row the pre-pass reads");
   }
-  // Upstream's parameters: a finite positive scale, no ALiBi, no soft cap;
+  // Positive finite scale; D256/GQA2 also admits finite positive softcap.
+  // The D64 EXL3 path keeps its zero-softcap contract; no ALiBi;
   // the precision llama.cpp sets (no CUDA kernel reads it).
   const float scale = ParamF32(node, 0);
+  const float softcap = ParamF32(node, 2);
+  const bool cap_valid =
+      softcap == 0.0f ||
+      (head == 256 && softcap > 0.0f && softcap < std::numeric_limits<float>::infinity() &&
+       scale > 0.0f && scale < std::numeric_limits<float>::infinity() &&
+       scale / softcap < std::numeric_limits<float>::infinity());
   if (!(scale > 0.0f) || !(scale < std::numeric_limits<float>::infinity()) ||
-      ParamF32(node, 1) != 0.0f || ParamF32(node, 2) != 0.0f ||
-      node->op_params[3] != GGML_PREC_F32) {
-    return Rejected("attention with a positive scale, no ALiBi or soft cap, F32 precision");
+      ParamF32(node, 1) != 0.0f || !cap_valid || node->op_params[3] != GGML_PREC_F32) {
+    return Rejected(
+        "attention requires positive finite scale, valid softcap, no ALiBi, F32 precision");
   }
   // Element-contiguous rows, 16-byte aligned bases and row strides (the
   // kernel's vector loads), and 32-bit indexing.

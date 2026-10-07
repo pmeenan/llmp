@@ -77,12 +77,16 @@ fixture regeneration, format, license/header and portability checks also pass.
 
 ## Next bounded slices
 
-Authenticate and prepare the approved source separately, then add bounded
-state/inputs, attention-softcap kernels and graph/runner controls against the
-same-format reference. Both vector and MMA occupancy planners currently query
-no-softcap specializations; softcap admission must query and fund the actual
-nonzero-softcap specialization while preserving zero-softcap arithmetic and
-launch geometry. No such admission is added here. Final logit softcap 30 and width-2,304 padding also need execution proof.
+Authenticate and prepare the approved source while adding bounded state/inputs
+and graph/runner controls against the same-format reference.
+The [attention-softcap primitive slice](experiments/gemma2-softcap/README.md)
+qualifies actual nonzero-specialization occupancy and funded vector/MMA
+launches at caps 0/50/25, with FP64 operand checks, byte-exact repeats and fresh
+capture replays, exact funding and refusal controls. Both new controls and
+eleven focused legacy controls pass on spark-b. Gemma2 owner batching remains
+separate because owner kernels still instantiate zero softcap. This profile
+foundation itself admits no model execution. Final logit softcap 30 and
+width-2,304 padding also need execution proof.
 The pin's Gemma2 HF-to-GGUF converter already adds one to norm weights;
 approved GGUF import must preserve those norm payloads, with no second +1
 at import or runtime.

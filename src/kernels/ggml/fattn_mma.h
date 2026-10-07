@@ -39,8 +39,10 @@ std::expected<MmaKernelShape, std::string> FlashAttnMmaShape512(int columns, boo
 // The instantiated case for columns 1, 2, 4 or 8, or null.
 using MmaCase = void (*)(ggml_backend_cuda_context& context, ggml_tensor* node);
 MmaCase FlashAttnMmaCase256(int columns);
-// Exact GQA2 D256 cases, query tiles4/8/16/32.
-std::expected<MmaKernelShape, std::string> FlashAttnMmaShapeGqa2(int columns, int device);
+// Exact GQA2 D256 cases, query tiles4/8/16/32. Query the specialization
+// selected by the node; omitted softcap preserves existing zero-only callers.
+std::expected<MmaKernelShape, std::string> FlashAttnMmaShapeGqa2(int columns, int device,
+                                                                 bool softcap = false);
 MmaCase FlashAttnMmaCaseGqa2(int columns);
 MmaCase FlashAttnMmaCase512(int columns);
 // Experimental: the same cases reading F16 Q (fattn_mma_q16.cuh).

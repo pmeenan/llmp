@@ -138,7 +138,8 @@ std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVec(const LaunchContext
 // flash_attn_combine_results over the parallel blocks), drawing
 // PlanFlashAttnVec's scratch from the context's pool.
 std::expected<void, KernelFailure> FlashAttnVec(LaunchContext& launch, ggml_tensor* node);
-// D256 F16 KV vector primitive, exact GQA2 and one sequence. The pinned
+// D256 F16 KV vector primitive, exact GQA2 and one sequence. Zero or
+// positive finite softcap, with finite scale/cap normalization. The pinned
 // overall selector chooses it for one query on Ada+; other rows use MMA.
 std::expected<FlashAttnPlan, KernelFailure> PlanFlashAttnVec256(const LaunchContext& launch,
                                                                 const ggml_tensor* node);
