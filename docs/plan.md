@@ -305,6 +305,15 @@ family" guide, and its long-context scaling work.
       actual initialized CUDA/driver/cache admission, zero strict choices/ties
       and 64-target conditional-loss PASS. Short native elapsed is 1.71513% slower;
       scalar, other cohorts, 26B transfer, context and sustained parity remain open.
+- [x] **Representative near-8K Gemma model switches**
+      ([checks](experiments/gemma-near8k-swaps/README.md)): Gemma2 and both Gemma4
+      profiles save 8063 tokens at context 8192 and repeat 64 continuation heads/tokens
+      exactly after Qwen3.8 switches. All six actual saved-state return snapshots
+      match SHA-256, and prepared returns retain/replay graphs. Worst prepared
+      handoffs are 5.911946/6.200046/6.294532 s for Gemma2/26/31. Snapshot budget and
+      sampled whole-node MemAvailable decreases remain distinct. These are
+      near-8K repeated-text boundary controls, not corpus/retrieval or maximum-context
+      qualification; broader pairs/cohorts and sustained gates remain open.
 - [x] **Fresh v0.6.0 Gemma26 C2 representative transfer**:
       [native-own before FIRST stock and full bookend identity controls](experiments/gemma-release-c2-26/README.md),
       zero strict choices/ties and 64-target conditional-loss PASS with the

@@ -554,6 +554,15 @@ For these actual GGUF files the next slices owe:
 | Assistant and draft policy | Checked Q-only bindings, native components, target verification and bounded greedy transactions exist, distinct from Qwen MTP or DSpark recurrence. Assistant serving, sampled acceptance, broader prefixes/owners and sustained qualification remain open. Qualify shared target-cache ownership, canonical head IDs and overwritten-ring rollback before transferring adaptive depth or selected-head optimizations. |
 | EXL3 / other formats | Separate representation binding, packed products, codebook/rate and expert grouping qualification are owed. GGML recognition in this slice establishes no EXL3, NVFP4 or MXFP8 support. |
 
+The [near-8K scalar swap control](experiments/gemma-near8k-swaps/README.md)
+now saves 8063 tokens at context 8192 on both approved profiles. Each of two
+returns from Qwen3.8 matches the initialized-state SHA-256 and all 64 continuation
+tokens/full heads exactly; the prepared return keeps one graph and replays 63
+times. Worst prepared handoffs are 6.200046 s for 26B-A4B and 6.294532 s for 31B.
+Charged snapshot budget and sampled whole-node MemAvailable decreases are
+reported separately. This repeated-text boundary does not qualify exact 8192
+saved tokens, real-corpus/retrieval quality, maximum context or sustained memory.
+
 For every adopted execution path, record actual registry/plan selection,
 precision/layout and shape limits, isolated and whole-model timing, solo and
 batched quality/exact-state controls and peak memory. The bounded production

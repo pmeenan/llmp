@@ -91,7 +91,12 @@ A same-binary n=2 causal screen lowers paid native latency by 5.2588%, to +0.096
 versus original stock, with identical natural histories/final heads. All five
 HTTP cases and two clean restart epochs repeat with actual bounded selections.
 This short engine result is not sustained or endpoint parity; broader context,
-ring/chunk geometries, memory/swap and cohorts remain open.
+ring/chunk geometries, memory/swap and cohorts remain open. A later
+[near-8K scalar swap](experiments/gemma-near8k-swaps/README.md) checks 8063 saved
+tokens and 64 continuation rows at context 8192: both initialized snapshots and
+all continuation heads/tokens are exact after returns from Qwen3.8, with retained
+graph replay and a worst prepared handoff of 5.911946 s. The repetitive fixture
+establishes boundary/state evidence only.
 
 Gemma 3 4B QAT Q4_0 has a separate checked profile and strict
 GGML tensor binding in `model/gemma3.h`; the [foundation contract](gemma3.md)
@@ -161,6 +166,12 @@ complete head parity. Whole serving cycles were 3.15%/3.51% slower than the
 reference at adoption and 0.73%/1.36% after [gap closing](experiments/gemma-gap-closing/README.md). Natural HTTP continuation, stop and departed-client peer
 progress pass. These are bounded controls, not sustained performance, broad semantic
 quality, assistant admission or long-context qualification.
+Both profiles also pass [near-8K scalar model-switch controls](experiments/gemma-near8k-swaps/README.md):
+8063 saved tokens at context 8192, exact initialized snapshot SHA-256 and all 64
+continuation heads/tokens after each return from Qwen3.8, with retained graph
+replay. Worst prepared handoffs are 6.200046 s / 6.294532 s for 26B-A4B / 31B.
+This repeated-text boundary establishes no maximum-context or corpus/retrieval
+quality result.
 The following earlier scalar/diagnostic screens retain their historical pins and failures.
 The approved dense 31B artifact executes through the
 same native runner with ordinary 1/2/4-request replay and exact checkpoint/spill

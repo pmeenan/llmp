@@ -201,3 +201,14 @@ including finite likelihoods, actual system-role refusal, cached checkpoint
 replay, SSE/stops and client-observed peer completion after disconnect. The
 first drain reports 26 selected bounded owner plans and 180 joined groups;
 these are actual selection/progress witnesses, not per-replay kernel counts.
+
+## Near-8K model-switch state
+
+The [scalar near-8K swap control](experiments/gemma-near8k-swaps/README.md)
+saves 8063 tokens at context 8192 and checks 64 continuation tokens/full heads
+against unswapped execution after switching to Qwen3.8 and back. Both saved-state
+returns are SHA-256 exact over initialized bytes; the prepared return keeps 32
+graphs and replays 63 times. The worst prepared handoff is 5.911946 s, with the
+diagnostic snapshot charged separately from sampled MemAvailable reporting.
+This repeated-text boundary is near-8K, not an exact 8192 saved state or a
+real-corpus/retrieval, maximum-context or sustained-memory qualification.
