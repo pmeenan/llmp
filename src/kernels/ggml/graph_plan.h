@@ -93,6 +93,12 @@ struct DeviceChoices {
   // Explicit RoPE/direct-view/cache-store fusion without enabling upstream's
   // other fusion gates. Full operand checks and diagnostic keep apply.
   bool fuse_rope_store = false;
+  // Upstream's quantized gate/up/GLU MMVQ fusion without enabling its other
+  // fusion gates: where quant_glu_fusible (ops_ext.h MulMatVecQGluFusible)
+  // holds and only the GLU reads the products. Default off.
+  bool fuse_quant_glu = false;
+  std::function<bool(const ggml_tensor*, const ggml_tensor*, const ggml_tensor*)>
+      quant_glu_fusible = nullptr;
   // And float products of at most kRowInvariantColumns columns run GGML's
   // vector kernel (MMVF) whatever upstream would route them to (MMF past
   // one BF16 column): a verify's router and head mixes.
@@ -269,6 +275,8 @@ inline constexpr std::string_view kMulMatAddFused = "ggml.mul_mat_add.mmvf_fused
 inline constexpr std::string_view kMulMatGluFused = "ggml.mul_mat_glu.mmvf_fused";
 // M3's (ops_ext.h), planned with fusion off only.
 inline constexpr std::string_view kMulMatVecQ = "ggml.mul_mat.mmvq";
+inline constexpr std::string_view kMulMatGluQFused = "ggml.mul_mat_glu.mmvq_fused";
+inline constexpr std::string_view kMulMatGeGluQFused = "ggml.mul_mat_geglu.mmvq_fused";
 inline constexpr std::string_view kMulMatQ = "ggml.mul_mat.mmq";
 inline constexpr std::string_view kMulMatQPairDense = "jitllm.mul_mat.mmq_pair_dense";
 inline constexpr std::string_view kMulMatHadamard = "ggml.mul_mat.fwht";

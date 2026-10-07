@@ -44,7 +44,7 @@ namespace jitllm::engine {
 // How a run went (D-090).
 enum class RunPath : std::uint8_t {
   kEager,     // launch by launch
-  kCaptured,  // captured, then replayed once
+  kCaptured,  // captured: beside a launch-by-launch run, or then replayed once
   kReplayed,  // one launch of a graph captured earlier
 };
 
@@ -130,9 +130,12 @@ class GraphRuns {
   // Queues a run of `bound` on `native`, the launch context's stream: the
   // input copies, `between` (if set; false is a failure of unknown
   // effect), the plan's steps and the outputs' copies. `runs`' graph
-  // replayed if it has one and graphs are on; else captured if `capture`
-  // (a refusal leaves the plan launch by launch, counted in `stats`); else
-  // launch by launch. The caller counts the path once its job has run.
+  // replayed if it has one and graphs are on; else, if `capture`, run
+  // launch by launch with its graph captured beside the run (then
+  // instantiated and uploaded while the device works), or with `between`
+  // captured first and replayed once (a refusal leaves the plan launch by
+  // launch, counted in `stats`); else launch by launch. The caller counts
+  // the path once its job has run.
   Queued Queue(PlanRuns& runs, const Copies& inputs,
                const std::function<bool(void* stream)>& between, kernels::ggml::BoundGraph& bound,
                std::span<const RunCopy> outputs, bool capture, GraphStats& stats,

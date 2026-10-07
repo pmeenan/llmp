@@ -469,6 +469,9 @@ std::expected<RegistrationId, CatalogError> Catalog::AddRegistration(ExtentId ex
   if (record->view.state != ExtentState::kResident) {
     return std::unexpected(CatalogError::kNotResident);
   }
+  if (record->view.discarded) {
+    return std::unexpected(CatalogError::kStaleContent);  // nothing may write discarded contents
+  }
   const RegistrationId registration = registrations_.Insert(Registration{.extent = extent});
   if (!registration.valid()) {
     return std::unexpected(CatalogError::kExhausted);
@@ -527,6 +530,24 @@ std::expected<void, CatalogError> Catalog::ForgetPreserved(ExtentId extent) {
   }
   Advance(view.content_generation);
   view.preserved = false;
+  view.discarded = false;
+  return {};
+}
+
+std::expected<void, CatalogError> Catalog::ReviveDiscarded(ExtentId extent) {
+  ExtentRecord* record = Extent(extent);
+  if (record == nullptr) {
+    return std::unexpected(CatalogError::kUnknownId);
+  }
+  ExtentView& view = record->view;
+  if (view.state != ExtentState::kResident || view.descriptor.recovery != Recovery::kPreserve ||
+      !view.discarded) {
+    return std::unexpected(CatalogError::kWrongState);
+  }
+  if (view.leases != 0 || view.registrations != 0) {
+    return std::unexpected(CatalogError::kHeld);
+  }
+  Advance(view.content_generation);
   view.discarded = false;
   return {};
 }

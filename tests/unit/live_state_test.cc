@@ -127,6 +127,59 @@ class LiveStateTest : public ::testing::Test {
     return hit;
   }
 
+  jitllm::catalog::ExtentView Describe(jitllm::catalog::ExtentId id) {
+    jitllm::catalog::ExtentView view;
+    auto read = node_.Call(
+        [&]() -> en::Status {
+          view = node_.catalog().Describe(id).value();
+          return {};
+        },
+        "test extent view");
+    EXPECT_TRUE(read) << jitllm::test_support::Failed(read).value_or("");
+    return view;
+  }
+
+  // Every one of `ids` nonresident: its backing released.
+  bool Released(const std::vector<jitllm::catalog::ExtentId>& ids) {
+    return std::ranges::all_of(ids, [&](auto id) {
+      return Describe(id).state == jitllm::catalog::ExtentState::kNonresident;
+    });
+  }
+
+  // Every used extent filled with `value` (a job over the state's fence).
+  en::Status Pattern(std::uint8_t value) {
+    std::vector<std::uint64_t> bases;
+    for (const auto& range : model_.live.used_ranges())
+      bases.push_back(model_.live.base(range.region) + range.offset);
+    return node_.Job(
+        model_.fence_closure(),
+        [bases, value](pr::NativeStream native) {
+          for (const auto base : bases)
+            if (!pr::FillAsync(native, en::support::Pointer(base), value, kExtent).ok())
+              return jitllm::scheduler::JobResult::kUnknown;
+          return jitllm::scheduler::JobResult::kQueued;
+        },
+        "test pattern", 0);
+  }
+
+  // The used state's bytes, packed.
+  std::vector<std::byte> Read() {
+    std::vector<std::byte> copy;
+    std::array<std::vector<std::byte>*, 1> output = {&copy};
+    auto read = model_.live.Read(node_, model_.fence_closure(), 0, "test read", output);
+    EXPECT_TRUE(read) << jitllm::test_support::Failed(read).value_or("");
+    return copy;
+  }
+  std::byte Contents(std::size_t at) {
+    const auto copy = Read();
+    return at < copy.size() ? copy[at] : std::byte{0xFF};
+  }
+  bool AllZero() {
+    const auto copy = Read();
+    return !copy.empty() &&
+           std::ranges::all_of(copy, [](std::byte b) { return b == std::byte{0}; });
+  }
+
   std::uint64_t Occupancy() {
     std::uint64_t bytes = 0;
     auto read = node_.Call(
@@ -321,6 +374,108 @@ TEST_F(LiveStateTest, ClearReleasesResidentAndSavedPagesAndRegrowthStartsWithZer
   std::array<std::vector<std::byte>*, 1> output = {&copy};
   ASSERT_TRUE(model_.live.Read(node_, model_.fence_closure(), 0, "cleared state", output));
   EXPECT_TRUE(std::ranges::all_of(copy, [](std::byte b) { return b == std::byte{0}; }));
+}
+
+// A clear zeroed for reuse keeps resident backing out of the state: the
+// slot holds nothing, earlier closures and the saved copy cannot return,
+// and growth takes the same backing back with no load.
+TEST_F(LiveStateTest, ZeroedClearKeepsBackingOutsideTheStateAndGrowthTakesItBack) {
+  const std::array<en::LiveState::Range, 2> both = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 1},
+      en::LiveState::Range{.region = 0, .offset = 4 * kExtent, .bytes = 1}};
+  ASSERT_TRUE(model_.live.Use(node_, both));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(Pattern(0x5A));
+  // Written back and restored: the place saved these contents.
+  ASSERT_TRUE(node_.Evict(model_.live.extents()));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_EQ(Contents(0), std::byte{0x5A});
+  const auto ids = model_.live.extents();
+  const jitllm::catalog::Closure stale = model_.fence_closure();
+  const std::uint64_t backing = Describe(ids.front()).backing_generation;
+  const std::uint64_t occupied = Occupancy();
+  auto zeroed = model_.live.ZeroForReuse(node_, model_.fence_closure(), 0);
+  ASSERT_TRUE(zeroed) << jitllm::test_support::Failed(zeroed).value_or("");
+  EXPECT_TRUE(*zeroed);
+  ASSERT_TRUE(model_.live.DiscardGrowingState(node_, true));
+  EXPECT_TRUE(model_.live.extents().empty());
+  EXPECT_EQ(model_.live.used_bytes(), 0U);
+  EXPECT_EQ(model_.live.kept_extents(), ids);
+  EXPECT_EQ(Occupancy(), occupied);
+  EXPECT_TRUE(Describe(ids.front()).discarded);
+  EXPECT_FALSE(node_.Job(
+      stale, [](pr::NativeStream) { return jitllm::scheduler::JobResult::kQueued; },
+      "stale closure", 0));
+  ASSERT_TRUE(model_.live.Use(node_, both));
+  EXPECT_EQ(model_.live.extents(), ids);
+  EXPECT_TRUE(model_.live.kept_extents().empty());
+  EXPECT_EQ(Describe(ids.front()).backing_generation, backing);
+  EXPECT_FALSE(Describe(ids.front()).discarded);
+  EXPECT_EQ(Occupancy(), occupied);
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_TRUE(AllZero());
+  // The saved copy is gone and the generation moved: an "unchanged"
+  // eviction writes, and the restore is still zero.
+  ASSERT_TRUE(node_.Evict(model_.live.extents(), {.unchanged = true}));
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_TRUE(AllZero());
+}
+
+// Kept backing is a free victim; reclaimed, growth loads zeros as before.
+// Anything changing the state between the zeroing and the discard cancels
+// the keep, and a discard not zeroed for reuse releases kept backing too.
+TEST_F(LiveStateTest, KeptBackingIsReclaimableAndOnlyAnUnchangedZeroingKeepsIt) {
+  const std::array<en::LiveState::Range, 2> both = {
+      en::LiveState::Range{.region = 0, .offset = 0, .bytes = 1},
+      en::LiveState::Range{.region = 0, .offset = 4 * kExtent, .bytes = 1}};
+  ASSERT_TRUE(model_.live.Use(node_, both));
+  ASSERT_TRUE(model_.Refresh());
+  const auto ids = model_.live.extents();
+  ASSERT_TRUE(Pattern(0x5A));
+  ASSERT_TRUE(model_.live.ZeroForReuse(node_, model_.fence_closure(), 0).value_or(false));
+  ASSERT_TRUE(model_.live.DiscardGrowingState(node_, true));
+  ASSERT_TRUE(node_.Evict(model_.live.kept_extents()));  // as the reclaim order would
+  EXPECT_TRUE(Released(ids));
+  ASSERT_TRUE(model_.live.Use(node_, both));
+  EXPECT_TRUE(model_.live.kept_extents().empty());
+  ASSERT_TRUE(model_.Refresh());
+  EXPECT_TRUE(AllZero());
+  // Grown after the zeroing: the discard evicts everything.
+  ASSERT_TRUE(Pattern(0x5A));
+  ASSERT_TRUE(model_.live.ZeroForReuse(node_, model_.fence_closure(), 0).value_or(false));
+  const std::array<en::LiveState::Range, 1> third = {
+      en::LiveState::Range{.region = 0, .offset = 6 * kExtent, .bytes = 1}};
+  ASSERT_TRUE(model_.live.Use(node_, third));
+  ASSERT_TRUE(model_.live.DiscardGrowingState(node_, true));
+  EXPECT_TRUE(model_.live.kept_extents().empty());
+  EXPECT_TRUE(Released(model_.live.reserved_extents()));
+  // A nonresident extent: no zeroing, the discard evicts as before.
+  ASSERT_TRUE(model_.live.Use(node_, both));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(node_.Evict({model_.live.extents().front()}));
+  auto declined = model_.live.ZeroForReuse(node_, model_.fence_closure(), 0);
+  ASSERT_TRUE(declined);
+  EXPECT_FALSE(*declined);
+  ASSERT_TRUE(model_.live.DiscardGrowingState(node_, true));
+  EXPECT_TRUE(model_.live.kept_extents().empty());
+  EXPECT_TRUE(Released(model_.live.reserved_extents()));
+  // Zeroed, but the discard does not ask to keep: released.
+  ASSERT_TRUE(model_.live.Use(node_, both));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(model_.live.ZeroForReuse(node_, model_.fence_closure(), 0).value_or(false));
+  ASSERT_TRUE(model_.live.DiscardGrowingState(node_));
+  EXPECT_TRUE(model_.live.kept_extents().empty());
+  EXPECT_TRUE(Released(model_.live.reserved_extents()));
+  // Kept, half taken back, then discarded plainly: all released.
+  ASSERT_TRUE(model_.live.Use(node_, both));
+  ASSERT_TRUE(model_.Refresh());
+  ASSERT_TRUE(model_.live.ZeroForReuse(node_, model_.fence_closure(), 0).value_or(false));
+  ASSERT_TRUE(model_.live.DiscardGrowingState(node_, true));
+  ASSERT_TRUE(model_.live.Use(node_, std::span(both).first(1)));
+  EXPECT_EQ(model_.live.kept_extents().size(), 1);
+  ASSERT_TRUE(model_.live.DiscardGrowingState(node_));
+  EXPECT_TRUE(model_.live.kept_extents().empty());
+  EXPECT_TRUE(Released(model_.live.reserved_extents()));
 }
 
 TEST_F(LiveStateTest, TrimDiscardsSavedTailAndRegrowthCannotRestoreItsOldContents) {

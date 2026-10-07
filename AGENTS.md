@@ -254,10 +254,10 @@ the commit gate.
 ## Current status
 
 **M0 through M3 are complete; M3.5 is in progress.**
-The owner requested a new handoff pause on 2026-10-06 after the checked bounded
-Gemma31 serving adoption. Both Sparks are free; no capture-policy experiment
-started. The [Gemma implementation handoff](docs/experiments/gemma-performance-review/README.md)
-records current comparisons, measured capture/state costs and next work for Opus.
+[Gemma31 gap closing](docs/experiments/gemma-gap-closing/README.md) narrowed the
+bounded serving gap to stock from 3.15%/3.51% (C1/C4) to 0.73%/1.36%. It did
+this with state reuse across Clear, graph capture beside eager execution and
+the fused decode FFN; the remaining gap is mostly C4's four-owner decode.
 The runtime serves Chat Completions and literal Completions with target
 likelihoods on loopback and the tailnet. DeepSeek V4 Flash, Qwen3.8 Flash
 Next (native NVFP4/MXFP8 and checked GGUF) and Qwen-Image-2.1 execute with

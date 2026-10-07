@@ -352,6 +352,8 @@ class Qwen38Runner final : public PagedModel {
   // (the target's, then the drafter's).
   std::vector<catalog::ExtentId> weights() const;
   std::vector<catalog::ExtentId> state() const;
+  // Zeroed backing its clears kept out of the state (LiveState::ZeroForReuse).
+  std::vector<catalog::ExtentId> kept_state() const;
   // A swap's incremental write-back (Dsv4Runner's).
   std::vector<catalog::ExtentId> unchanged_state() const;
   void StateWrittenBack(bool whole);

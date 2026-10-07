@@ -338,6 +338,7 @@ class Dsv4 final : public Llm {
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
   std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
+  std::vector<catalog::ExtentId> kept_state() const override { return runner_.kept_state(); }
   std::vector<catalog::ExtentId> unchanged_state() const override {
     return runner_.unchanged_state();
   }
@@ -967,6 +968,7 @@ class Gemma final : public Llm {
   std::uint64_t graph_measured_bytes() const override { return runner_.graph_measured_bytes(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
   std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
+  std::vector<catalog::ExtentId> kept_state() const override { return runner_.kept_state(); }
   void StateWrittenBack(bool whole) override { runner_.StateWrittenBack(whole); }
   const catalog::Closure& everything() const override { return runner_.everything(); }
   const catalog::Closure& request_closure() const override { return runner_.closure(); }
@@ -1274,6 +1276,7 @@ class Gemma final : public Llm {
             .row_invariant = row_invariant,
             .fuse_norm_rope = candidate,
             .fuse_norm_add = candidate,
+            .fuse_quant_glu = candidate,
             .owner_attention = candidate};
   }
   engine::Gemma4Runner::Slot& NativeSlot(const Branch& branch) const {
@@ -1424,6 +1427,7 @@ class Qwen38 final : public Llm {
   Status Bind() override { return runner_.Bind(); }
   std::vector<catalog::ExtentId> weights() const override { return runner_.weights(); }
   std::vector<catalog::ExtentId> state() const override { return runner_.state(); }
+  std::vector<catalog::ExtentId> kept_state() const override { return runner_.kept_state(); }
   std::vector<catalog::ExtentId> unchanged_state() const override {
     return runner_.unchanged_state();
   }
@@ -5510,6 +5514,13 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
   if (running == nullptr) {
     running = resident_;
   }
+  // Kept zeroed state backing holds nothing: it goes first, before the
+  // order prices anything (other models' before the running one's).
+  const std::uint64_t kept = ReleaseKept(needed, running);
+  if (kept >= needed) {
+    reclaiming_ = false;
+    return kept;
+  }
   // Idle state's cost at the rates measured so far (once a GiB has moved).
   double spill_rate = kSpillBytesPerSecond;
   double restore_rate = kRestoreBytesPerSecond;
@@ -5706,8 +5717,8 @@ std::uint64_t Server::Reclaim(std::uint64_t needed, bool states, std::string_vie
   // another round, without it, only when a victim gave back less than its
   // count (held, or gone meanwhile), and what the rounds before took then
   // stays taken even when the rest cannot be covered.
-  const memory::ReclaimRun run = memory::RunReclaim(needed, partial, gather, take);
-  const std::uint64_t freed = run.freed;
+  const memory::ReclaimRun run = memory::RunReclaim(needed - kept, partial, gather, take);
+  const std::uint64_t freed = run.freed + kept;
   if (freed == 0 && run.short_of_need) {
     ++reclaims_short_;
   } else if (!partial && freed != 0 && freed < needed) {
@@ -5797,13 +5808,55 @@ bool Server::NodeHealthy() {
   return checked.has_value();
 }
 
+std::uint64_t Server::ReleaseKept(std::uint64_t needed, const Served* last) {
+  std::vector<catalog::ExtentId> kept;
+  for (const bool running : {false, true}) {
+    for (const auto& m : models_) {
+      if ((m.get() == last) != running) {
+        continue;
+      }
+      const std::vector<catalog::ExtentId> own = m->kept_state();
+      kept.insert(kept.end(), own.begin(), own.end());
+    }
+  }
+  if (kept.empty()) {
+    return 0;
+  }
+  std::vector<catalog::ExtentId> resident;
+  std::uint64_t bytes = 0;
+  auto listed = node_.Call(
+      [&]() -> Status {
+        const catalog::Catalog& catalog = node_.catalog();
+        for (const catalog::ExtentId extent : kept) {
+          if (bytes >= needed) {
+            break;
+          }
+          if (const auto view = catalog.Describe(extent);
+              view && view->state == catalog::ExtentState::kResident && view->discarded &&
+              view->leases == 0 && view->registrations == 0) {
+            resident.push_back(extent);
+            bytes += view->descriptor.size.value();
+          }
+        }
+        return {};
+      },
+      "listing kept state backing");
+  if (!listed || resident.empty() || !node_.Evict(resident)) {
+    return 0;
+  }
+  return bytes;
+}
+
 Status Server::EvictPaged(Served& m) {
   // Only what a swap moves: its weights and its conversation state (the
   // shared workspace and its own pinned runtime memory stay where they
-  // are). State is written back to its places.
+  // are), with the zeroed backing its clears kept. State is written back
+  // to its places.
   std::vector<catalog::ExtentId> own = m.weights();
   const std::vector<catalog::ExtentId> state = m.state();
   own.insert(own.end(), state.begin(), state.end());
+  const std::vector<catalog::ExtentId> kept = m.kept_state();
+  own.insert(own.end(), kept.begin(), kept.end());
   std::vector<catalog::ExtentId> resident;
   auto listed = node_.Call(
       [&]() -> Status {
@@ -6106,9 +6159,11 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
     // writes, and whether the budget deletes some of it, does not change
     // what the swap frees; the reclaim order spills no idle state here).
     const std::vector<catalog::ExtentId> weights = out.weights();
+    const std::vector<catalog::ExtentId> kept = out.kept_state();
     const std::uint64_t graphs_before = out.graphs().kept + m.graphs().kept;
     {
       std::vector<catalog::ExtentId> going = weights;
+      going.insert(going.end(), kept.begin(), kept.end());
       if (parts.with_state) {
         const std::vector<catalog::ExtentId> state = out.state();
         going.insert(going.end(), state.begin(), state.end());
@@ -6147,6 +6202,7 @@ Status Server::Activate(Served& m, SwapParts& parts, std::optional<bool> spill_s
         }
       }
     }
+    extents.insert(extents.end(), kept.begin(), kept.end());
     extents.insert(extents.end(), weights.begin(), weights.end());
     const std::uint64_t graphs_after = out.graphs().kept + m.graphs().kept;
     parts.dropped_graphs = graphs_before > graphs_after ? graphs_before - graphs_after : 0;

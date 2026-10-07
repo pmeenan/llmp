@@ -349,10 +349,21 @@ void Dsv4Runner::StateWrittenBack(bool whole) {
   }
 }
 
+std::vector<ExtentId> Dsv4Runner::kept_state() const {
+  std::vector<ExtentId> all;
+  for (const RequestState* request : Requests()) {
+    const std::vector<ExtentId> kept = request->live.kept_extents();
+    all.insert(all.end(), kept.begin(), kept.end());
+  }
+  return all;
+}
+
 std::vector<ExtentId> Dsv4Runner::managed_extents() const {
   std::vector<ExtentId> all = weights();
   const std::vector<ExtentId> live = state();
   all.insert(all.end(), live.begin(), live.end());
+  const std::vector<ExtentId> kept = kept_state();
+  all.insert(all.end(), kept.begin(), kept.end());
   return all;
 }
 
@@ -1010,13 +1021,25 @@ Status Dsv4Runner::Clear(RequestState& request) {
   if (auto active = CheckActive(request); !active) {
     return active;
   }
+  // Zeroed in place, the discard keeps the resident backing for the next
+  // conversation's growth (LiveState::ZeroForReuse).
+  bool keep = false;
+  if (!request.spilled) {
+    auto zeroed = request.live.ZeroForReuse(node_, request.fence, stream_);
+    if (!zeroed) {
+      request.track.Lost();
+      cohort_.CheckFailedJob(node_, stream_, execution_, States());
+      return Error(zeroed.error());
+    }
+    keep = *zeroed;
+  }
   // Remove only this slot's state from the held request; the shared
   // extents and every other active slot's state stay protected.
   const SlotMask others = cohort_.active() & ~(SlotMask{1} << request.slot);
   if (auto protected_others = RefreshClosures(others); !protected_others) {
     return protected_others;
   }
-  const Status cleared = request.live.DiscardGrowingState(node_);
+  const Status cleared = request.live.DiscardGrowingState(node_, keep);
   request.track.Lost();
   if (cleared) {
     request.spilled = false;  // nothing left in its spill file either

@@ -4,9 +4,9 @@
 # TensorFold assessment
 
 This assessment retains historical source reviews and measurements. New
-tasks use the latest TensorFold under [reference comparisons](reference-comparisons.md),
-which refreshes its pin for each applicable task and records current
-coverage observations separately.
+comparisons use the TensorFold pin under [reference comparisons](reference-comparisons.md),
+which refreshes at milestone boundaries and records current coverage
+observations separately.
 
 The owner asked, on 2026-09-26, that [TensorFold](https://github.com/ashhart/TensorFold)
 be considered as a benchmark target and as a source of optimization ideas.

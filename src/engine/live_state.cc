@@ -44,6 +44,7 @@ LiveState::Status LiveState::Add(PagedNode& node, std::string name, std::uint64_
       node.MapResident(region.mapped, std::move(name), bytes, providers::BackingKind::kDevice,
                        catalog::MemoryClass::kLiveState, catalog::Recovery::kPreserve, owner);
   region.used.assign(region.mapped.extents.size(), 1);
+  region.kept.assign(region.mapped.extents.size(), 0);
   return mapped;
 }
 
@@ -55,6 +56,7 @@ LiveState::Status LiveState::AddGrowing(PagedNode& node, std::string name, std::
   auto reserved = node.ReserveState(region.mapped, std::move(name), bytes, owner);
   region.growing = true;
   region.used.assign(region.mapped.extents.size(), 0);
+  region.kept.assign(region.mapped.extents.size(), 0);
   return reserved;
 }
 
@@ -102,6 +104,18 @@ void LiveState::SplitExtents(std::span<const Range> changed, std::vector<ExtentI
       (touched ? written : unchanged).push_back(r.mapped.extents[i]);
     }
   }
+}
+
+std::vector<ExtentId> LiveState::kept_extents() const {
+  std::vector<ExtentId> all;
+  for (const Region& r : regions_) {
+    for (std::size_t i = 0; i < r.mapped.extents.size(); ++i) {
+      if (r.kept[i] != 0) {
+        all.push_back(r.mapped.extents[i]);
+      }
+    }
+  }
+  return all;
 }
 
 std::vector<ExtentId> LiveState::reserved_extents() const {
@@ -199,6 +213,47 @@ std::expected<bool, std::string> LiveState::Use(PagedNode& node, std::span<const
     return false;
   }
   InvalidatePlaces();
+  zeroed_ = false;
+  // Kept zeroed backing still resident is taken back as it is: nothing can
+  // have written a discarded extent (no lease or registration takes one).
+  // One reclaimed meanwhile grows from the zero source like any other (its
+  // eviction cleared it and its source). One still being evicted would
+  // leave the closure below stale and refuse this growth cleanly; the
+  // driver's evictions all complete before it grows state again.
+  if (std::ranges::any_of(fresh, [&](const auto& f) { return regions_[f.first].kept[f.second]; })) {
+    auto took = node.Call(
+        [&]() -> Status {
+          for (const auto& [ri, i] : fresh) {
+            Region& r = regions_[ri];
+            if (r.kept[i] == 0) {
+              continue;
+            }
+            r.kept[i] = 0;
+            const ExtentId id = r.mapped.extents[i];
+            const auto view = node.catalog().Describe(id);
+            if (!view || view->state != catalog::ExtentState::kResident || !view->discarded ||
+                !node.catalog().ReviveDiscarded(id)) {
+              continue;
+            }
+            r.used[i] = 1;
+            r.sources[i].write_back = true;
+            if (auto set = node.scheduler().SetSource(id, r.sources[i]); !set) {
+              return Error(std::format("a state's initialized write-back place: {}",
+                                       sc::ToString(set.error())));
+            }
+          }
+          return {};
+        },
+        "taking back kept conversation state");
+    if (!took) {
+      Quarantine();
+      return std::unexpected(took.error());
+    }
+    std::erase_if(fresh, [&](const auto& f) { return regions_[f.first].used[f.second] != 0; });
+    if (fresh.empty()) {
+      return true;
+    }
+  }
   std::vector<ExtentId> loading = extents();
   if (keep != nullptr) {
     for (const auto& [id, generation] : keep->extents) {
@@ -350,6 +405,7 @@ LiveState::Status LiveState::RegisterSpill(PagedNode& node, const SpillPlace& pl
 
 LiveState::Status LiveState::Retain(PagedNode& node, std::span<const Range> ranges) {
   InvalidatePlaces();
+  zeroed_ = false;
   std::vector<std::vector<std::uint8_t>> wanted;
   wanted.reserve(regions_.size());
   for (const Region& r : regions_) {
@@ -446,7 +502,10 @@ LiveState::Status LiveState::Retain(PagedNode& node, std::span<const Range> rang
 LiveState::Status LiveState::Copy(PagedNode& node, const catalog::Closure& fence,
                                   std::uint32_t stream, void* host, std::span<const Range> ranges,
                                   bool to_host, CopyRetirement* retirement) {
-  if (!to_host) InvalidatePlaces();
+  if (!to_host) {
+    InvalidatePlaces();
+    zeroed_ = false;
+  }
   if (retirement != nullptr) {
     *retirement = CopyRetirement::kProven;
   }
@@ -527,14 +586,25 @@ bool LiveState::CheckPlacesImpl(const sc::Scheduler& scheduler, PlaceCheck& chec
   return false;
 }
 
-LiveState::Status LiveState::DiscardGrowingState(PagedNode& node) {
+LiveState::Status LiveState::DiscardGrowingState(PagedNode& node, bool keep_zeroed) {
   InvalidatePlaces();
   if (regions_.empty() ||
       !std::ranges::all_of(regions_, [](const Region& r) { return r.growing; })) {
     return Error("discarding requires nonempty growing state");
   }
+  // Asked for, and zeroed for reuse just before with nothing changed since
+  // (ZeroForReuse): resident extents keep their backing, invalidated.
+  // Otherwise backing kept by an earlier clear is released with the rest.
+  const bool keep = keep_zeroed && zeroed_;
+  zeroed_ = false;
   quarantined_ = true;
   const auto used = extents();
+  std::vector<ExtentId> release = used;
+  if (!keep) {
+    const auto kept = kept_extents();
+    release.insert(release.end(), kept.begin(), kept.end());
+  }
+  std::vector<std::uint8_t> resident(used.size(), 0);
   auto discarded = node.Call(
       [&]() -> Status {
         for (const ExtentId id : used) {
@@ -545,10 +615,12 @@ LiveState::Status LiveState::DiscardGrowingState(PagedNode& node) {
             return Error("a state being cleared is held or has an operation in flight");
           }
         }
-        for (const ExtentId id : used) {
-          if (node.catalog().Describe(id)->state == catalog::ExtentState::kResident &&
-              !node.catalog().InvalidateContents(id)) {
-            return Error("invalidating a conversation state");
+        for (std::size_t k = 0; k < used.size(); ++k) {
+          if (node.catalog().Describe(used[k])->state == catalog::ExtentState::kResident) {
+            resident[k] = 1;
+            if (!node.catalog().InvalidateContents(used[k])) {
+              return Error("invalidating a conversation state");
+            }
           }
         }
         return {};
@@ -557,13 +629,19 @@ LiveState::Status LiveState::DiscardGrowingState(PagedNode& node) {
   if (!discarded) {
     return discarded;
   }
-  if (auto evicted = node.Evict(used); !evicted) {
+  if (keep) {
+    std::erase_if(release, [&](ExtentId id) {
+      const auto at = std::ranges::find(used, id);
+      return at != used.end() && resident[static_cast<std::size_t>(at - used.begin())] != 0;
+    });
+  }
+  if (auto evicted = node.Evict(release); !evicted) {
     return evicted;
   }
   auto forgotten = node.Call(
       [&]() -> Status {
-        for (const ExtentId id : used) {
-          if (!node.catalog().ForgetPreserved(id)) {
+        for (std::size_t k = 0; k < used.size(); ++k) {
+          if ((!keep || resident[k] == 0) && !node.catalog().ForgetPreserved(used[k])) {
             return Error("forgetting a conversation state's saved contents");
           }
         }
@@ -590,7 +668,15 @@ LiveState::Status LiveState::DiscardGrowingState(PagedNode& node) {
     return Error("clearing the sparse conversation spill file");
   }
   for (Region& r : regions_) {
-    std::ranges::fill(r.used, 0);
+    for (std::size_t i = 0; i < r.used.size(); ++i) {
+      if (!keep) {
+        r.kept[i] = 0;
+      } else if (r.used[i] != 0) {
+        const auto at = std::ranges::find(used, r.mapped.extents[i]);
+        r.kept[i] = resident[static_cast<std::size_t>(at - used.begin())];
+      }
+      r.used[i] = 0;
+    }
   }
   restore_count_ = 0;
   commit_keep_ = 0;
@@ -601,9 +687,73 @@ LiveState::Status LiveState::DiscardGrowingState(PagedNode& node) {
   return {};
 }
 
+std::expected<bool, std::string> LiveState::ZeroForReuse(PagedNode& node,
+                                                         const catalog::Closure& fence,
+                                                         std::uint32_t stream) {
+  InvalidatePlaces();
+  zeroed_ = false;
+  if (regions_.empty() ||
+      !std::ranges::all_of(regions_, [](const Region& r) { return r.growing; })) {
+    return Error("zeroing for reuse requires nonempty growing state");
+  }
+  if (quarantined_) {
+    return false;
+  }
+  const auto used = extents();
+  bool covered = true;
+  auto checked = node.Call(
+      [&]() -> Status {
+        for (const ExtentId id : used) {
+          const auto view = node.catalog().Describe(id);
+          const auto held = std::ranges::lower_bound(fence.extents, id, {},
+                                                     [](const auto& e) { return e.first; });
+          if (!view || view->state != catalog::ExtentState::kResident || view->discarded ||
+              held == fence.extents.end() || held->first != id ||
+              held->second != view->content_generation) {
+            covered = false;
+            return {};
+          }
+        }
+        return {};
+      },
+      "checking conversation state for reuse");
+  if (!checked) {
+    return std::unexpected(checked.error());
+  }
+  if (!covered) {
+    return false;
+  }
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> zeroed;
+  for (const Range& range : used_ranges()) {
+    zeroed.emplace_back(base(range.region) + range.offset, range.bytes);
+  }
+  if (!zeroed.empty()) {
+    // Unusable until zeroed; a failure keeps the quarantine.
+    quarantined_ = true;
+    auto cleared = node.Job(
+        fence,
+        [zeroed](providers::NativeStream native) {
+          for (const auto& [base, bytes] : zeroed) {
+            if (!providers::FillAsync(native, Pointer(base), 0, bytes).ok()) {
+              return sc::JobResult::kUnknown;
+            }
+          }
+          return sc::JobResult::kQueued;
+        },
+        "zeroing conversation state for reuse", stream);
+    if (!cleared) {
+      return std::unexpected(cleared.error());
+    }
+    quarantined_ = false;
+  }
+  zeroed_ = true;
+  return true;
+}
+
 LiveState::Status LiveState::Clear(PagedNode& node, const catalog::Closure& fence,
                                    std::uint32_t stream, std::string_view what) {
   InvalidatePlaces();
+  zeroed_ = false;
   if (!regions_.empty() &&
       std::ranges::all_of(regions_, [](const Region& r) { return r.growing; })) {
     // Jobs have completed before this call. End the request's lease before

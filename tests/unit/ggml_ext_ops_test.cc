@@ -546,6 +546,56 @@ TEST_F(GgmlExtOpsTest, QuantizedProductsMatchTheReferenceAsUpstreamRoutesThem) {
   }
 }
 
+// Upstream's fused one-column gate/up/GLU MMVQ (stock's decode FFN) writes
+// what the two products and the split GLU write, bit for bit, for Gemma's
+// GeGLU and SwiGLU; it is refused where upstream does not fuse.
+TEST_F(GgmlExtOpsTest, FusedQuantizedGluEqualsItsProductsAndGlu) {
+  constexpr std::int64_t kK = 5376;
+  constexpr std::int64_t kOut = 512;
+  for (const ggml_type type : {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q8_0}) {
+    const Quantized gate_w = Quantize(type, kK, kOut, 21);
+    const Quantized up_w = Quantize(type, kK, kOut, 22);
+    for (const bool geglu : {true, false}) {
+      const std::string what = std::string(ggml_type_name(type)) + (geglu ? " GeGLU" : " SwiGLU");
+      ggml_tensor* wg = Place(ggml_new_tensor_2d(c(), type, kK, kOut), gate_w.bytes);
+      ggml_tensor* wu = Place(ggml_new_tensor_2d(c(), type, kK, kOut), up_w.bytes);
+      kg::MarkRowPaddingReadable(wg);
+      kg::MarkRowPaddingReadable(wu);
+      for (const std::int64_t columns : {1, 4}) {
+        ggml_tensor* x = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kK, columns),
+                               Normal(23, static_cast<std::size_t>(kK * columns)));
+        ggml_tensor* gate = Place(ggml_mul_mat(c(), wg, x));
+        ggml_tensor* up = Place(ggml_mul_mat(c(), wu, x));
+        ggml_tensor* glu =
+            Place(geglu ? ggml_geglu_split(c(), gate, up) : ggml_swiglu_split(c(), gate, up));
+        if (columns != 1) {
+          EXPECT_FALSE(kg::MulMatVecQGluFusible(launch(), gate, up, glu)) << what;
+          EXPECT_EQ(FailedCode(kg::MulMatVecQGlu(launch(), gate, up, glu)), KernelError::kRejected)
+              << what;
+          continue;
+        }
+        ASSERT_TRUE(kg::MulMatVecQGluFusible(launch(), gate, up, glu)) << what;
+        Launched(kg::MulMatVecQ(launch(), gate), what + " gate");
+        Launched(kg::MulMatVecQ(launch(), up), what + " up");
+        Launched(geglu ? kg::GeGlu(launch(), glu) : kg::SwiGlu(launch(), glu), what + " GLU");
+        const auto separate = Download(glu);
+        Launched(kg::MulMatVecQGlu(launch(), gate, up, glu), what + " fused");
+        const auto fused = Download(glu);
+        ASSERT_EQ(fused.size(), separate.size());
+        EXPECT_EQ(std::memcmp(fused.data(), separate.data(), fused.size() * sizeof(float)), 0)
+            << what;
+        // A different gate input is not the up product's: no fusion.
+        ggml_tensor* other = Place(ggml_new_tensor_2d(c(), GGML_TYPE_F32, kK, 1),
+                                   Normal(24, static_cast<std::size_t>(kK)));
+        ggml_tensor* gate2 = Place(ggml_mul_mat(c(), wg, other));
+        ggml_tensor* glu2 = Place(ggml_geglu_split(c(), gate2, up));
+        EXPECT_FALSE(kg::MulMatVecQGluFusible(launch(), gate2, up, glu2)) << what;
+      }
+    }
+  }
+  EXPECT_FALSE(launch().faulted());
+}
+
 TEST_F(GgmlExtOpsTest, ExpertProductsMatchTheReferenceAsUpstreamRoutesThem) {
   const int cc = ComputeCapability();
   // DeepSeek V4's MoE at small scale: 16 experts of 64 rows, 6 selected per

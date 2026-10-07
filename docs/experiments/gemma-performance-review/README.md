@@ -3,6 +3,11 @@
 
 # Gemma implementation handoff — 2026-10-06
 
+**Superseded in part:** the follow-up [gap closing](../gemma-gap-closing/README.md)
+ran the first experiment below and found prefill capture on/off a wash. It then
+closed most of the gap with state reuse, capture beside eager execution and the
+fused decode FFN. The text below is the handoff as written.
+
 The owner requested a stopping point for Opus to close the remaining gaps.
 The tested bounded Gemma31 serving recipe is committed as `ee6beb1`; M3.5
 implementation and measurement are paused at this handoff. Both `spark` and
@@ -155,8 +160,8 @@ operator screen over a measured whole-engine cost.
 ## Operating instructions and scope still owed
 
 Start from main at `ee6beb1` plus this handoff commit. Current source/reference
-pins are documented above and in the bridge aggregate; recheck latest
-TensorFold at each new task entry. The previous task-entry snapshot was
+pins are documented above and in the bridge aggregate; TensorFold is
+rechecked only at milestone boundaries (owner, 2026-10-06). The previous task-entry snapshot was
 0.6.6/cb2ebf0540f42604e2759b2ddef497861e928248, with no matching dense31
 CUDA GB10/GGUF comparator found. This is recipe eligibility, not a claim about
 all TensorFold model support. Prefer it where a model/format/platform matches.

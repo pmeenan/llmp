@@ -174,7 +174,23 @@ class LiveState {
   // destination extent to be unleased and have no operation in flight.
   // Refused for nongrowing/empty state; a failed discard keeps this state
   // quarantined once invalidation was attempted.
-  Status DiscardGrowingState(PagedNode& node);
+  Status DiscardGrowingState(PagedNode& node, bool keep_zeroed = false);
+  // Zeroes this growing state's used extents in place, all resident and
+  // covered by `fence` at their current contents (a job over it on
+  // `stream`), so that the DiscardGrowingState(node, true) that follows
+  // keeps their backing instead of evicting it: kept extents are invalidated in the
+  // catalog, leave the state (a cleared slot still holds none) and are the
+  // reclaim order's first, free victims, and growth takes those still
+  // resident back with no zero load (Use). False, with nothing changed,
+  // when an extent is not resident or not covered: the discard evicts as
+  // before. Anything else between the two that changes the state
+  // (Use, Copy, Retain, Clear) cancels the keep. A failed fill leaves the
+  // state quarantined.
+  std::expected<bool, std::string> ZeroForReuse(PagedNode& node, const catalog::Closure& fence,
+                                                std::uint32_t stream);
+  // Kept zeroed backing (ZeroForReuse) not in the state: what teardown
+  // must evict besides extents().
+  std::vector<catalog::ExtentId> kept_extents() const;
   // Every region read to the host (a job), one output per region (empty
   // for a region not added).
   Status Read(PagedNode& node, const catalog::Closure& fence, std::uint32_t stream,
@@ -276,11 +292,17 @@ class LiveState {
     std::uint64_t bytes = 0;                     // the layout's
     std::vector<scheduler::PageSource> sources;  // registered, by extent
     std::vector<std::uint8_t> used;
+    // Resident zeroed backing a clear kept, invalidated in the catalog and
+    // not part of the state (never also used).
+    std::vector<std::uint8_t> kept;
   };
 
   std::string model_;
   std::vector<Region> regions_;
   int spill_fd_ = -1;
+  // ZeroForReuse zeroed every used extent and nothing has changed since:
+  // the next DiscardGrowingState keeps their resident backing.
+  bool zeroed_ = false;
   std::optional<platform::FileIdentity> spill_identity_;
   void* host_copy_ = nullptr;
   PagedNode* host_node_ = nullptr;

@@ -13,6 +13,13 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Faster new conversations and repeated prompts on every LLM: clearing a
+  conversation zeroes its state in place and reuses the memory for the next
+  one, and a CUDA graph is now captured beside its shape's second run instead
+  of stalling the device. The bounded Gemma31 recipe also uses llama.cpp's
+  fused quantized gate/up/GeGLU product for decode. Gemma31 C1/C4 paid cycles
+  go from 3.15%/3.51% to 0.73%/1.36% behind llama.cpp v0.6.0.
+
 - Select the checked dense Gemma31 serving recipe at context<=8192 and at most
   four slots: prefill fallback 256, existing norm chains and eligible owner
   attention. Gemma26, larger configurations and explicit diagnostics retain

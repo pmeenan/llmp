@@ -305,6 +305,52 @@ TEST_F(CatalogTest, MutableStateMustBeInvalidatedBeforeEviction) {
   EXPECT_EQ(Failed(catalog_.BeginEvict(state)), CatalogError::kNotEvictable);
 }
 
+// An owner may take back resident state it zeroed and then invalidated
+// (a cleared conversation's backing kept for reuse): only unheld, only
+// discarded, and at a new generation that no earlier closure can lease.
+TEST_F(CatalogTest, DiscardedStateIsRevivedOnlyByItsUnheldOwnerAtANewGeneration) {
+  const auto state = catalog_
+                         .AddExtent({.domain = domain_,
+                                     .memory_class = MemoryClass::kLiveState,
+                                     .recovery = Recovery::kPreserve,
+                                     .size = 2_MiB,
+                                     .content = {}})
+                         .value();
+  Load(state);
+  EXPECT_EQ(Failed(catalog_.ReviveDiscarded(state)), CatalogError::kWrongState);  // live
+  ASSERT_TRUE(catalog_.InvalidateContents(state).has_value());
+  const Closure discarded = Of({state});
+  const auto before = catalog_.Describe(state).value().content_generation;
+  ASSERT_TRUE(catalog_.ReviveDiscarded(state).has_value());
+  EXPECT_FALSE(catalog_.Describe(state).value().discarded);
+  EXPECT_EQ(catalog_.Describe(state).value().content_generation, before + 1);
+  EXPECT_EQ(Failed(catalog_.AcquireLease(discarded)), CatalogError::kStaleContent);
+  // Live again: preserved, so not evictable until invalidated.
+  EXPECT_EQ(Failed(catalog_.BeginEvict(state)), CatalogError::kNotEvictable);
+  EXPECT_EQ(Failed(catalog_.ReviveDiscarded(state)), CatalogError::kWrongState);
+  const auto lease = catalog_.AcquireLease(Of({state})).value();
+  ASSERT_TRUE(catalog_.ReleaseLease(lease).has_value());
+  // Registered: not revivable. Discarded: not registrable.
+  const auto registration = catalog_.AddRegistration(state).value();
+  EXPECT_EQ(Failed(catalog_.InvalidateContents(state)), CatalogError::kHeld);
+  ASSERT_TRUE(catalog_.RetireRegistration(registration).has_value());
+  ASSERT_TRUE(catalog_.InvalidateContents(state).has_value());
+  EXPECT_EQ(Failed(catalog_.AddRegistration(state)), CatalogError::kStaleContent);
+  // Reclaimed meanwhile: nothing resident to take back.
+  auto evict = catalog_.BeginEvict(state).value();
+  ASSERT_TRUE(catalog_.CompleteEvict(evict).has_value());
+  EXPECT_EQ(Failed(catalog_.ReviveDiscarded(state)), CatalogError::kWrongState);
+  const auto weights = catalog_
+                           .AddExtent({.domain = domain_,
+                                       .memory_class = MemoryClass::kWeights,
+                                       .recovery = Recovery::kFromArtifact,
+                                       .size = 2_MiB,
+                                       .content = {}})
+                           .value();
+  Load(weights);
+  EXPECT_EQ(Failed(catalog_.ReviveDiscarded(weights)), CatalogError::kWrongState);
+}
+
 // Write-back (invariant 4): live mutable contents may be evicted only by
 // an eviction that writes them back. A completed one keeps the content
 // generation and marks the contents preserved, so a closure taken before

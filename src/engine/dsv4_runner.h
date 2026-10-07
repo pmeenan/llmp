@@ -485,6 +485,8 @@ class Dsv4Runner final : public PagedModel {
   // then the drafter's ring).
   std::vector<catalog::ExtentId> weights() const;
   std::vector<catalog::ExtentId> state() const;
+  // Zeroed backing its clears kept out of the state (LiveState::ZeroForReuse).
+  std::vector<catalog::ExtentId> kept_state() const;
   // A swap's incremental write-back: the resident state's extents nothing
   // wrote since their slots' spill files last held them (SpillTrack), which
   // a write-back may release without writing (EvictOptions::unchanged);

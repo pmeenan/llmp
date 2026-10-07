@@ -69,6 +69,10 @@ DeviceChoices DeviceChoicesOf(const LaunchContext& launch) {
       .pair_glu_fits =
           [&launch](const ggml_tensor* up, const ggml_tensor* gate) {
             return MulMatIdQPairGluSupported(launch, up, gate);
+          },
+      .quant_glu_fusible =
+          [&launch](const ggml_tensor* gate, const ggml_tensor* up, const ggml_tensor* glu) {
+            return MulMatVecQGluFusible(launch, gate, up, glu);
           }};
 }
 
@@ -98,6 +102,9 @@ std::expected<std::uint64_t, KernelFailure> PlanScratchOn(const LaunchContext& l
       planned = cublas->scratch;
     } else if (step.implementation == kMulMatVecQ || step.implementation == kMulMatIdVecQ) {
       planned = PlanMulMatVecQ(launch, step.nodes.front());
+    } else if (step.implementation == kMulMatGluQFused ||
+               step.implementation == kMulMatGeGluQFused) {
+      planned = PlanMulMatVecQGlu(launch, step.nodes[0], step.nodes[1], step.nodes[2]);
     } else if (step.implementation == kMulMatVecQRows || step.implementation == kMulMatIdVecQRows) {
       planned = PlanMulMatVecQRows(launch, step.nodes.front());
     } else if (step.implementation == kMulMatQ || step.implementation == kMulMatIdQ) {

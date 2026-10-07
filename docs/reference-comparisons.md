@@ -22,22 +22,23 @@ cohorts, context depth or sustained parity. The separately frozen
 strict/conditional gates, with native elapsed 2.153583% slower in short
 bookends; broader production qualification remains open.
 
-## TensorFold refreshes at each task
+## TensorFold refreshes at milestone boundaries
 
-Use the latest [TensorFold](https://github.com/ashhart/TensorFold) as a
-competitive performance target wherever it supports the model, execution
-backend and topology (owner, 2026-10-04). **Refresh at the start of each
-applicable model, quantization or optimization task**, not just at milestone
-entry. Resolve upstream's default-branch HEAD and inspect that revision's
-recipes, formats and batching support. Record the full commit, package
-version and observation date in the task's comparison report. An older
-observation in this document is never the next task's default pin.
+Use [TensorFold](https://github.com/ashhart/TensorFold) as a competitive
+performance target wherever it supports the model, execution backend and
+topology (owner, 2026-10-04). **Refresh its pin at milestone boundaries
+only** (owner, 2026-10-06; it was per task before): at a milestone's entry
+and before its exit gate, resolve upstream's default-branch HEAD and inspect
+that revision's recipes, formats and batching support. Record the full
+commit, package version and observation date with the milestone's
+comparisons. Tasks within the milestone use that pin and do not recheck.
 
-Freeze that revision for the task's matched runs. An upstream update during
-a comparison requires a separate comparison with its own pin; do not mix
-versions in bookends or replace a historical result's provenance. If work
-resumes after a substantial delay, check upstream again before starting a
-new comparison batch and name which pin that batch evaluates.
+Freeze that revision for matched runs. Do not mix versions in bookends or
+replace a historical result's provenance.
+
+The milestone pin for M3.5 is v0.6.6/cb2ebf0540f42604e2759b2ddef497861e928248
+(still upstream HEAD on 2026-10-06), with no matching dense Gemma 4 31B CUDA
+GB10/GGUF recipe.
 
 Keep the same-format correctness oracle. TensorFold can fill that role
 when the checkpoint representation and execution semantics match. A

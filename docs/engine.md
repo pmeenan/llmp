@@ -38,7 +38,7 @@ them; nothing in them is virtual, and nothing runs per kernel.
 | Weights | `paged_weights.h` | Opens an artifact and its shards for direct reads; reserves and catalogs, in file order, a 2 MiB-aligned device region per dense group, a slab per layer of routed experts (`LayOutSlab`, `ExpertSlab`) and host regions for groups the CPU reads; registers every page source and span; checks the places still pinned; the resource and expert-array addresses a plan binds | Which group goes where (`GroupPlace`), the slabs and their alignment |
 | Live state | `live_state.h` | Stable virtual regions registered before the weights, physical backing only for used extents; successful source/pin checks reused under scheduler lifetime/epoch with mutation invalidation (not residency or leases); sparse unnamed direct-I/O spill files, clear, packed copies, pinned places and quarantine; a verify's snapshot, accept, owed restore and commit, rollback, and undoing a failed verify | The state layout and each step's used ranges; which ranges a verify writes; a commit kernel if kept rows need one |
 | Planned shapes | `planned.h` | `PlannedGraph<Graph>`, `SizedArena` (a plan's arena holds what its graph uses), `PlaceAndPlan` (placeless plan, activation placement, the same plan again), `BindPlanned` (pool scratch checked, implementations bound, D-053), `PlanCache` (per key, variants, no fixed number, each plan's host bytes and planning time kept: `PlannedHostBytes`), `PlanAccount` (what the plans and graphs hold, charged to the node: a plan as it is added, a graph before its capture, D-090 as amended), `PlanStep` (a step's plans spared by any reclaim while it runs), `CollectPlans` and `ReclaimPlan` (the plans and graphs as candidates for the node's reclaim order, and one's reclaim), `CheckCoverage` (BP-A1) | The graph builder and its binding (`*_plan.h`), the cache key, the tensor classes for the coverage check |
-| Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts) and what it copies out |
+| Runs and graphs | `graph_runs.h` | `GraphRuns`: stages a run's inputs in the pinned staging, queues copies, work between inputs and plan, the plan and the outputs; captures a shape on its second run, beside that run's launch-by-launch execution (so capture and instantiation overlap the device's work) unless work is queued between inputs and plan, replays its graph from then on with the staging checked, falls back to launch by launch on a refused capture; `GraphStats`, `RunPath` | When a run may be captured (decode steps, verifies, drafts) and what it copies out |
 | Resources | `runner_resources.h` | The runner's own device memory (pinned), pinned staging, cuBLAS and its workspace, a measuring launch context, the launch context over the pool and the registry, and their completion-aware release (AGENTS.md rule 6) | Sizes and names |
 | Request cohort | `request_cohort.h` | Several request slots of one model: the active set selected between completed units (several only under one held stream request), the closures (everything, the state fence, the execution closure, each slot's fence) and the held request's refresh, and the cohort's fault (every slot quarantined until retirement) | Its slots' live states and the shared extents |
 
@@ -323,7 +323,14 @@ rather than works around:
   virtual addresses; `Use` materializes named ranges before dispatch.
   Sources and graph address pins are registered once, with sparse zeros
   for unused extents. Initialized extents gain write-back; `Retain` drops
-  discarded tail pages and their saved bytes. Model footprint functions
+  discarded tail pages and their saved bytes. A clear within the slot's
+  request first zeroes its resident used extents (`ZeroForReuse`), so the
+  discard keeps their backing outside the state: invalidated in the
+  catalog (neither leasable nor registrable), taken back by the next
+  growth with no zero load (`Catalog::ReviveDiscarded`). Every runtime
+  reclaim releases all kept backing before pricing anything else, and so
+  do materialization's victims, a model's eviction, a swap, teardown and
+  a discard that does not keep. Model footprint functions
   cover padded attention reads, dummy cells and fixed rings. Packed
   snapshots carry only used pages. A clean capacity refusal preserves the
   completed prefix; uncertain completion quarantines it.

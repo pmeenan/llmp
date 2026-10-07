@@ -54,6 +54,9 @@ struct Gemma4Options {
   bool shared_q8 = false, fuse_norms = true, row_invariant = false, rope_store = false;
   bool fuse_norm_rope = false, fuse_norm_add = false;
   bool fuse_gemma_route = false, fuse_gemma_reduce = false;
+  // Upstream's quantized one-column gate/up/GeGLU MMVQ fusion (stock's
+  // decode arithmetic); never in row-invariant plans.
+  bool fuse_quant_glu = false;
   bool prefill_lookahead = true;
   // Explicit complete-quad attention opt-in; C1/C2/multirow/features
   // and unequal widths within a quad retain independent attention. Immutable for this runner's plan
@@ -198,6 +201,8 @@ class Gemma4Runner final : public PagedModel {
                std::span<const LiveState::Range> footprint, std::string_view source_layout);
   std::vector<catalog::ExtentId> weights() const;
   std::vector<catalog::ExtentId> state() const;
+  // Zeroed backing its clears kept out of the state (LiveState::ZeroForReuse).
+  std::vector<catalog::ExtentId> kept_state() const;
   std::uint32_t stream() const override { return stream_; }
   const catalog::Closure& fence_closure() const override { return fence_; }
   std::vector<catalog::ExtentId> managed_extents() const override;

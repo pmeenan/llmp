@@ -193,13 +193,15 @@ checks pass; whole shipment tiers remain owed before publishing a package.
 
 ## M3.5 — Model families  `in progress`
 
-**Owner handoff pause, 2026-10-06:** the checked bounded Gemma31 serving recipe
-is committed. Current whole-serving C1/C4 comparisons remain 3.15%/3.51% slower
-than stock. Paid phase controls have no plan misses and measure Clear/state
-growth; the third-cycle control confirms prefill capture acquisition in the
-second paid cycle. The proposed capture-policy comparison has not started.
-Both Sparks are free; [current state and implementation handoff for Opus](experiments/gemma-performance-review/README.md).
-Remaining milestone gates stay open, including Gemma26 backward qualification.
+**Gemma31 gap closing, 2026-10-06:** [state reuse across Clear, capture beside
+eager execution and the fused decode FFN](experiments/gemma-gap-closing/README.md)
+take the bounded C1/C4 paid cycles from 3.15%/3.51% to 0.73%/1.36% slower than
+stock in fresh bookends. Third cycles match stock within 0.1%, and native
+tokens and histories match the frozen proof. C4's four-owner decode (+3.2%) is
+the remaining gap. State reuse and capture beside also apply to DeepSeek V4 and
+Qwen3.8. The [earlier handoff](experiments/gemma-performance-review/README.md)
+keeps its context. Remaining milestone gates stay open, including Gemma26
+transfer and backward qualification.
 
 Goal (the owner, 2026-09-29): build out the core engine across the major
 open model families, MoE and dense, before the system is built around it
@@ -346,8 +348,9 @@ family" guide, and its long-context scaling work.
         [current serving bridge](experiments/gemma31-serving-bridge/README.md)
         completes C1/C4 8K quality, exact current-pin 1K corpus, full-cost bookends
         and HTTP stop/continuation/departed-client peer progress. Default prefill
-        fallback 256, both norm chains and eligible owner attention; short cycles
-        remain 3.15%/3.51% slower than stock. Gemma26/larger settings retain their
+        fallback 256, both norm chains, eligible owner attention and (since
+        [gap closing](experiments/gemma-gap-closing/README.md)) the fused decode
+        FFN; short paid cycles are 0.73%/1.36% slower than stock. Gemma26/larger settings retain their
         prior recipe. Broader quality/context, sustained performance and assistants
         remain open.
       - [x] Bounded approved Gemma26/31 adapter on the shared serving driver,
@@ -972,10 +975,10 @@ engine (owner, 2026-10-04). The final comparison covers the production solo
 and optimized batched paths and gates supported status under the criteria
 below.
 
-Use the latest TensorFold at the time of each applicable task as an
-additional competitive performance target, refreshing and then freezing
-its pin under [reference comparisons](reference-comparisons.md) (owner,
-2026-10-04). Same-format correctness oracles remain required; cross-format
+Use TensorFold as an additional competitive performance target, its pin
+refreshed at milestone boundaries and frozen under
+[reference comparisons](reference-comparisons.md) (owner, 2026-10-04;
+milestone-boundary cadence 2026-10-06). Same-format correctness oracles remain required; cross-format
 TensorFold comparisons report speed, memory and separate quality controls.
 
 - **Correctness:** greedy tokens match the same-format oracle except

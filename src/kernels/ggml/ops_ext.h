@@ -58,6 +58,23 @@ std::expected<std::uint64_t, KernelFailure> PlanMulMatQ(const LaunchContext& lau
 std::expected<void, KernelFailure> MulMatVecQ(LaunchContext& launch, ggml_tensor* node);
 std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* node);
 
+// Upstream's fused quantized gate/up product (ggml-cuda.cu:3950-3975,
+// ggml_cuda_should_fuse_mul_mat_vec_q at 1794-1820): one
+// ggml_cuda_mul_mat_vec_q over the up product's weights and activations,
+// with the gate's weights and the GLU fused, writing the GLU. Only where
+// upstream fuses: fusion.h MulMatGluFusionAt's structure, MMVQ selected for
+// the up product, one output column, F32 activations and output, and a
+// device newer than Pascal. The pool scratch is the up product's Q8_1
+// activations, prepared once for both products.
+bool MulMatVecQGluFusible(const LaunchContext& launch, const ggml_tensor* gate,
+                          const ggml_tensor* up, const ggml_tensor* glu);
+std::expected<std::uint64_t, KernelFailure> PlanMulMatVecQGlu(const LaunchContext& launch,
+                                                              const ggml_tensor* gate,
+                                                              const ggml_tensor* up,
+                                                              const ggml_tensor* glu);
+std::expected<void, KernelFailure> MulMatVecQGlu(LaunchContext& launch, ggml_tensor* gate,
+                                                 ggml_tensor* up, ggml_tensor* glu);
+
 // The same raw MMQ inner product and preparation, with device-built
 // expert-major tiles for sufficiently large non-FP4 expert products.
 // Other supported shapes retain the ordinary MMQ launch.

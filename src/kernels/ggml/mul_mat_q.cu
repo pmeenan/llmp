@@ -420,6 +420,59 @@ std::expected<void, KernelFailure> MulMatQ(LaunchContext& launch, ggml_tensor* n
   });
 }
 
+bool MulMatVecQGluFusible(const LaunchContext& launch, const ggml_tensor* gate,
+                          const ggml_tensor* up, const ggml_tensor* glu) {
+  if (gate == nullptr || up == nullptr || glu == nullptr || up->op != GGML_OP_MUL_MAT ||
+      gate->op != GGML_OP_MUL_MAT || glu->op != GGML_OP_GLU || glu->src[0] != gate ||
+      glu->src[1] != up || glu->op_params[1] != 0 || !ggml_is_quantized(up->src[0]->type) ||
+      up->src[0]->type != gate->src[0]->type || !ggml_are_same_shape(up->src[0], gate->src[0]) ||
+      !ggml_are_same_stride(up->src[0], gate->src[0]) || up->src[1] != gate->src[1] ||
+      up->src[1]->type != GGML_TYPE_F32 || up->type != GGML_TYPE_F32 ||
+      glu->type != GGML_TYPE_F32 || up->ne[1] != 1 || !ggml_are_same_shape(up, glu) ||
+      !ggml_is_contiguous(glu)) {
+    return false;
+  }
+  switch (ggml_get_glu_op(glu)) {
+    case GGML_GLU_OP_SWIGLU:
+    case GGML_GLU_OP_GEGLU:
+    case GGML_GLU_OP_SWIGLU_OAI:
+    case GGML_GLU_OP_SWIGLU_CLAMP:
+      break;
+    default:
+      return false;
+  }
+  if (Device(launch).cc <= GGML_CUDA_CC_PASCAL || !CheckMulMatQ(gate) || !CheckMulMatQ(up)) {
+    return false;
+  }
+  auto path = SelectMulMatQ(launch, up);
+  return path && *path == QuantMulMatPath::kVector && up->src[1]->ne[1] <= MMVQ_MAX_BATCH_SIZE;
+}
+
+std::expected<std::uint64_t, KernelFailure> PlanMulMatVecQGlu(const LaunchContext& launch,
+                                                              const ggml_tensor* gate,
+                                                              const ggml_tensor* up,
+                                                              const ggml_tensor* glu) {
+  if (!MulMatVecQGluFusible(launch, gate, up, glu)) {
+    return Rejected("upstream does not fuse these gate/up products and GLU in MMVQ");
+  }
+  return PlanMulMatVecQ(launch, up);
+}
+
+std::expected<void, KernelFailure> MulMatVecQGlu(LaunchContext& launch, ggml_tensor* gate,
+                                                 ggml_tensor* up, ggml_tensor* glu) {
+  auto scratch = PlanMulMatVecQGlu(launch, gate, up, glu);
+  if (!scratch) {
+    return std::unexpected(scratch.error());
+  }
+  return launch.Run(base::Bytes(*scratch), [gate, up, glu](ggml_backend_cuda_context& context) {
+    ggml_cuda_mm_fusion_args_host fusion{};
+    fusion.gate = gate->src[0];
+    fusion.glu_op = ggml_get_glu_op(glu);
+    fusion.glu_limit = ggml_get_op_params_f32(glu, 3);
+    ggml_cuda_mul_mat_vec_q(context, up->src[0], up->src[1], nullptr, glu, &fusion);
+  });
+}
+
 std::expected<std::uint64_t, KernelFailure> PlanMulMatIdQPair(const LaunchContext& launch,
                                                               const ggml_tensor* first,
                                                               const ggml_tensor* second,

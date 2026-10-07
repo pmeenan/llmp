@@ -342,6 +342,21 @@ int ProofServing(const jitllm::config::NodeConfig& config,
     } else if (proof->mode == "quality") {
       if (auto r = phase("first", true, false); !r) return r;
       if (auto r = phase("repeat", true, false); !r) return r;
+    } else if (proof->mode == "cycles") {
+      for (const char* name : {"warm", "second", "third"}) {
+        const auto before = lifetime->runner->graph_stats();
+        if (auto r = phase(name, false, false); !r) return r;
+        const auto& after = lifetime->runner->graph_stats();
+        std::fprintf(
+            stdout,
+            "SERVING_GRAPHS phase=%s eager=%llu captured=%llu replayed=%llu capture_s=%.6f "
+            "instantiate_s=%.6f\n",
+            name, static_cast<unsigned long long>(after.eager - before.eager),
+            static_cast<unsigned long long>(after.captured - before.captured),
+            static_cast<unsigned long long>(after.replayed - before.replayed),
+            after.capture_seconds - before.capture_seconds,
+            after.instantiate_seconds - before.instantiate_seconds);
+      }
     } else {
       if (auto r = phase("warm", false, false); !r) return r;
       if (auto r = phase("paid", false, true); !r) return r;
@@ -432,7 +447,7 @@ int main(int argc, char** argv) {
     if (error != std::errc{} || last != supplied.data() + supplied.size() ||
         (owners != 1 && owners != 4) ||
         (std::string_view(argv[2]) != "quality" && std::string_view(argv[2]) != "cycle" &&
-         std::string_view(argv[2]) != "corpus") ||
+         std::string_view(argv[2]) != "corpus" && std::string_view(argv[2]) != "cycles") ||
         (std::string_view(argv[2]) == "corpus" && owners != 1))
       return rt::kExitUsage;
     proof = std::make_unique<Proof>(Proof{argv[2], owners, argv[4], argv[5]});

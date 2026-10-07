@@ -279,6 +279,7 @@ kg::DeviceChoices Gemma4Runner::Choices(kg::LaunchContext& launch, std::uint32_t
   choices.fuse_gemma_route = o_.fuse_gemma_route;
   choices.fuse_gemma_reduce = o_.fuse_gemma_reduce;
   choices.fuse_rope_store = o_.rope_store;
+  choices.fuse_quant_glu = o_.fuse_quant_glu;
   // The existing one-row sums contract is bounded to kRowInvariantColumns;
   // wider prefills retain the ordinary primitive product policy.
   choices.row_invariant = o_.row_invariant && rows <= kg::kRowInvariantColumns;
@@ -663,6 +664,15 @@ std::vector<ExtentId> Gemma4Runner::state() const {
   }
   return all;
 }
+std::vector<ExtentId> Gemma4Runner::kept_state() const {
+  std::vector<ExtentId> all;
+  for (const auto& slot : slots_) {
+    if (!slot) continue;
+    const auto kept = slot->live.kept_extents();
+    all.insert(all.end(), kept.begin(), kept.end());
+  }
+  return all;
+}
 std::vector<ExtentId> Gemma4Runner::weights() const {
   auto all = weights_.extents();
   if (assistant_) {
@@ -675,6 +685,8 @@ std::vector<ExtentId> Gemma4Runner::managed_extents() const {
   auto all = weights();
   const auto live = state();
   all.insert(all.end(), live.begin(), live.end());
+  const auto kept = kept_state();
+  all.insert(all.end(), kept.begin(), kept.end());
   return all;
 }
 std::expected<std::vector<LiveState::Range>, std::string> Gemma4Runner::CheckpointRanges(
@@ -721,8 +733,20 @@ Status Gemma4Runner::Clear(std::uint32_t index) {
   if (!bound_ || cohort_.faulted()) return Error("Gemma4 retirement required");
   if (auto r = cohort_.Check(node_, stream_, index); !r) return r;
   InvalidateFeatures(slot);
+  // Zeroed in place, the discard keeps the resident backing for the next
+  // conversation's growth (LiveState::ZeroForReuse).
+  bool keep = false;
+  if (!slot.spilled) {
+    auto zeroed = slot.live.ZeroForReuse(node_, slot.fence, stream_);
+    if (!zeroed) {
+      auto states = States();
+      cohort_.CheckFailedJob(node_, stream_, execution_, states);
+      return Error(zeroed.error());
+    }
+    keep = *zeroed;
+  }
   if (auto r = RefreshClosures(cohort_.active() & ~(SlotMask{1} << index)); !r) return r;
-  const auto cleared = slot.live.DiscardGrowingState(node_);
+  const auto cleared = slot.live.DiscardGrowingState(node_, keep);
   if (cleared) {
     slot.spilled = false;
     slot.positions = 0;

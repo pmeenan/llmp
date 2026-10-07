@@ -214,6 +214,9 @@ class Served {
   virtual Status Bind() = 0;
   virtual std::vector<catalog::ExtentId> weights() const = 0;
   virtual std::vector<catalog::ExtentId> state() const { return {}; }
+  // Zeroed backing its clears kept outside the state: no contents, freed
+  // with the model on a swap and the reclaim order's first victims.
+  virtual std::vector<catalog::ExtentId> kept_state() const { return {}; }
   // A swap's incremental write-back: the state extents nothing wrote since
   // their spill files last held them (released without writing,
   // scheduler::EvictOptions::unchanged); and, after the swap's write-back,
@@ -1349,6 +1352,9 @@ class Server {
   // completed units (or from a charge inside a step, which it spares); the
   // freed heap returned to the system. Returns what it freed; `why` names
   // the occasion in its log line (counts and bytes only, D-014).
+  // Kept zeroed state backing (ReleaseKept) goes first, up to `needed`,
+  // and stays released even when the rest cannot be covered (the return
+  // is then short of `needed`, which every caller re-checks).
   // `running`: the model about to run (the resident one by default),
   // whose in-use floor is never taken (memory::ProtectFloor: its most
   // recently used plans up to its plan_floor_bytes, with their graphs) and
@@ -1401,6 +1407,10 @@ class Server {
   // Evicts a model's resident weights and conversation state (state
   // written back), never the shared workspace or its own pinned memory.
   Status EvictPaged(Served& m);
+  // Evicts resident kept zeroed state backing (Model::kept_state) until
+  // `needed` bytes are freed, other models' before `last`'s: no contents,
+  // so the cheapest of reclaims. The bytes it freed.
+  std::uint64_t ReleaseKept(std::uint64_t needed, const Served* last);
   // D-102's hang recovery. FenceModel: the model's stream fenced, any
   // request still open on it ended first: proof that nothing it queued
   // still runs (a fence that never completes is the hang ladder's to

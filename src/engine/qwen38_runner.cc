@@ -325,10 +325,21 @@ std::vector<ExtentId> Qwen38Runner::weights() const {
   return all;
 }
 
+std::vector<ExtentId> Qwen38Runner::kept_state() const {
+  std::vector<ExtentId> all;
+  for (const RequestState* request : Requests()) {
+    const std::vector<ExtentId> kept = request->live.kept_extents();
+    all.insert(all.end(), kept.begin(), kept.end());
+  }
+  return all;
+}
+
 std::vector<ExtentId> Qwen38Runner::managed_extents() const {
   std::vector<ExtentId> all = weights();
   const std::vector<ExtentId> live = state();
   all.insert(all.end(), live.begin(), live.end());
+  const std::vector<ExtentId> kept = kept_state();
+  all.insert(all.end(), kept.begin(), kept.end());
   return all;
 }
 
@@ -1329,13 +1340,25 @@ Status Qwen38Runner::Clear(RequestState& request) {
   }
   request.pending_rows = 0;
   request.verify_restores_streams = false;
+  // Zeroed in place, the discard keeps the resident backing for the next
+  // conversation's growth (LiveState::ZeroForReuse).
+  bool keep = false;
+  if (!request.spilled) {
+    auto zeroed = request.live.ZeroForReuse(node_, request.fence, stream_);
+    if (!zeroed) {
+      request.track.Lost();
+      CheckFailedJob();
+      return Error(zeroed.error());
+    }
+    keep = *zeroed;
+  }
   // Remove only this destination's state from the completed stream lease.
   // Shared storage and all other active initialized states remain protected.
   const SlotMask others = active_mask_ & ~(SlotMask{1} << request.slot);
   if (auto protected_others = RefreshClosures(others); !protected_others) {
     return protected_others;
   }
-  const Status cleared = request.live.DiscardGrowingState(node_);
+  const Status cleared = request.live.DiscardGrowingState(node_, keep);
   request.track.Lost();
   if (cleared) {
     request.spilled = false;  // nothing left in its spill file either

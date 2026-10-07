@@ -103,7 +103,7 @@ std::unexpected<KernelFailure> InvalidGemmaChain() {
   return std::unexpected(
       KernelFailure{.error = KernelError::kRejected, .detail = "invalid checked Gemma MoE chain"});
 }
-constexpr std::array<Kernel::Entry, 122> kKernels = {{
+constexpr std::array<Kernel::Entry, 124> kKernels = {{
     {.name = kGemmaRouteName,
      .operation = execution::Operation::kGemmaRoute,
      .variant = "original ggml_cuda_op_topk_moe; Gemma128/top8/clamp2^-14; "
@@ -349,6 +349,28 @@ constexpr std::array<Kernel::Entry, 122> kKernels = {{
      .check = [](ConstNodes n) { return CheckMulMatVecGeGlu(n[0], n[1], n[2]); },
      .run = [](LaunchContext& launch,
                Nodes n) { return MulMatVecGeGlu(launch, n[0], n[1], n[2]); }},
+    {.name = "ggml.mul_mat_glu.mmvq_fused",
+     .operation = execution::Operation::kMulMatGlu,
+     .variant = "ggml_cuda_mul_mat_vec_q with gate and GLU, writing the GLU: one Q8_1 "
+                "preparation, mul_mat_vec_q<type, 1, has_fusion>; upstream launch configuration",
+     .arity = 3,
+     .check =
+         [](ConstNodes n) {
+           if (auto gate = CheckMulMatQ(n[0]); !gate) return gate;
+           return CheckMulMatQ(n[1]);
+         },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatVecQGlu(launch, n[0], n[1], n[2]); }},
+    {.name = "ggml.mul_mat_geglu.mmvq_fused",
+     .operation = execution::Operation::kMulMatGeGlu,
+     .variant = "ggml_cuda_mul_mat_vec_q with gate and GELU-tanh GLU, writing the GLU: one Q8_1 "
+                "preparation, mul_mat_vec_q<type, 1, has_fusion>; upstream launch configuration",
+     .arity = 3,
+     .check =
+         [](ConstNodes n) {
+           if (auto gate = CheckMulMatQ(n[0]); !gate) return gate;
+           return CheckMulMatQ(n[1]);
+         },
+     .run = [](LaunchContext& launch, Nodes n) { return MulMatVecQGlu(launch, n[0], n[1], n[2]); }},
     // DeepSeek V4 Flash and Qwen3.8 Flash (ops_ext.h).
     {.name = "ggml.mul_mat.mmvq",
      .operation = execution::Operation::kMatMul,

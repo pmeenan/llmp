@@ -114,7 +114,8 @@ bool LaunchesNothing(const ggml_tensor* node) {
 
 bool NeedsGraphReadIndex(bool fusion, const DeviceChoices& device) {
   return fusion || device.fuse_norms || device.fuse_norm_rope || device.fuse_norm_add ||
-         device.fuse_gemma_route || device.fuse_gemma_reduce || device.pair_glu;
+         device.fuse_gemma_route || device.fuse_gemma_reduce || device.pair_glu ||
+         device.fuse_quant_glu;
 }
 
 std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
@@ -127,7 +128,7 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
     return Rejected("a row-invariant plan is planned without fusion");
   }
   if (device.fuse_norm_rope || device.fuse_norm_add || device.fuse_gemma_route ||
-      device.fuse_gemma_reduce) {
+      device.fuse_gemma_reduce || device.fuse_quant_glu) {
     // OnlyReader examines every graph/keep storage root, including tensors
     // outside a prospective chain. Bound those traversals before selection.
     for (const auto* node : graph) {
@@ -210,6 +211,23 @@ std::expected<GraphPlan, KernelFailure> PlanGraph(GraphNodes graph, bool fusion,
           f && reads->OnlyReader(f->norm, f->mul) && reads->OnlyReader(f->mul, f->out)) {
         taken[i] = taken[i + 1] = true;
         deferred_norm_add.emplace(i + 3, *f);
+        continue;
+      }
+    }
+    if (!fusion && !device.row_invariant && device.fuse_quant_glu && device.quant_glu_fusible &&
+        node->op == GGML_OP_MUL_MAT && reads) {
+      if (const auto f = MulMatGluFusionAt(graph, i, &*reads);
+          f && device.quant_glu_fusible(f->gate, f->up, f->glu) &&
+          reads->OnlyReader(f->gate, f->glu) && reads->OnlyReader(f->up, f->glu) &&
+          std::ranges::none_of(keep, [&](const auto* kept) {
+            return kept != nullptr && (Storage(kept) == f->gate || Storage(kept) == f->up);
+          })) {
+        // The products are elided: only the GLU reads them.
+        if (ggml_get_glu_op(f->glu) == GGML_GLU_OP_GEGLU) {
+          add(Operation::kMulMatGeGlu, kMulMatGeGluQFused, i, {f->gate, f->up, f->glu}, 3);
+        } else {
+          add(Operation::kMulMatGlu, kMulMatGluQFused, i, {f->gate, f->up, f->glu}, 3);
+        }
         continue;
       }
     }

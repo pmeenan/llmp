@@ -16,6 +16,8 @@
 //   LOADING, EVICTING -> QUARANTINED (completion unknown; stays charged)
 //   EVICTING -> RESIDENT (a cancelled eviction)
 //   RESIDENT (pinned, unheld) -> NONRESIDENT (its owner released it)
+//   RESIDENT (discarded, unheld) -> RESIDENT (its owner's initial contents
+//     taken back with no load: ReviveDiscarded)
 //
 // A lease protects a closure of resident extents at the content
 // generations the closure recorded, while consumers run; releasing it makes
@@ -268,6 +270,7 @@ class Catalog {
   // Records an actual use of every extent a lease covers, at tick.
   std::expected<void, CatalogError> RecordUse(LeaseId lease, std::uint64_t tick);
 
+  // Refused for discarded contents (kStaleContent): nothing may write them.
   std::expected<RegistrationId, CatalogError> AddRegistration(ExtentId extent);
   // Called only once the registration's retirement is confirmed.
   std::expected<void, CatalogError> RetireRegistration(RegistrationId registration);
@@ -281,6 +284,13 @@ class Catalog {
   // Its next materialization starts a new content generation. An owner
   // replaces its external source before making it readable again.
   std::expected<void, CatalogError> ForgetPreserved(ExtentId extent);
+  // Its owner takes back an unheld RESIDENT kPreserve extent it invalidated
+  // after filling it with its initial contents (a cleared conversation's
+  // zeroed state, kept for reuse): since a discarded extent can be neither
+  // leased nor registered, nothing has written it since. The contents become current
+  // again at a new content generation, so no closure taken before can
+  // lease them.
+  std::expected<void, CatalogError> ReviveDiscarded(ExtentId extent);
   // A writer, holding the sole lease and with no registrations live,
   // replaced a kPreserve extent's contents in place: the content generation
   // advances, so closures taken before cannot lease the new contents. The

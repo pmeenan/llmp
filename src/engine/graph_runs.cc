@@ -100,6 +100,20 @@ Queued GraphRuns::Queue(PlanRuns& runs, const Copies& inputs,
     q.result = launch_->Launch(*runs.graph);
     return q;
   }
+  // With nothing queued between the inputs and the plan, a capture runs
+  // the plan launch by launch first and is recorded beside it: the capture
+  // and instantiation take host time the run's device work covers, rather
+  // than leaving the device idle before a first replay. What `between`
+  // queues is captured before anything runs, as it always was.
+  const bool beside = capture && !between;
+  if (beside) {
+    ++runs.eager_runs;
+    q.before = true;  // any input copy before a refusal
+    q.result = queue(*launch_);
+    if (!q.result) {
+      return q;
+    }
+  }
   if (capture) {
     const std::size_t free_before =
         providers::QueryDeviceMemory().value_or(providers::DeviceMemoryInfo{}).free;
@@ -126,17 +140,22 @@ Queued GraphRuns::Queue(PlanRuns& runs, const Copies& inputs,
       runs.copies = inputs;
       q.path = RunPath::kCaptured;
       q.before = true;  // the upload
-      q.result = launch_->Launch(*runs.graph);
+      if (!beside) {
+        q.result = launch_->Launch(*runs.graph);
+      }
       return q;
     }
     if (captured.error().error == kg::KernelError::kUnknown) {
       q.result = std::unexpected(captured.error());
       return q;
     }
-    // Refused, with nothing queued: this plan runs launch by launch.
+    // Refused, with nothing captured queued: this plan runs launch by launch.
     runs.uncapturable = true;
     if (stats.refused++ == 0) {
       stats.first_refusal = captured.error().detail;
+    }
+    if (beside) {
+      return q;  // it ran already
     }
   }
   ++runs.eager_runs;
