@@ -1776,12 +1776,12 @@ class Gemma2 final : public Llm {
 class Gemma3 final : public Llm {
  public:
   Gemma3(engine::PagedNode& node, const config::ModelEntry& entry, const ModelSettings& settings,
-         const config::RuntimeRoles& roles, int index)
+         const config::RuntimeRoles& roles, int index, bool device_masks)
       : entry_(entry),
         artifact_id_(entry.artifact.value_or("")),
         store_(roles.installed),
         profile_(model::Gemma3_4BQat()),
-        options_(Options(entry, settings, roles)),
+        options_(Options(entry, settings, roles, device_masks)),
         runner_(node, options_, index, static_cast<std::uint32_t>(index)) {
     name_ = entry.name;
     settings_ = settings;
@@ -1848,12 +1848,12 @@ class Gemma3 final : public Llm {
   std::string extra() const override {
     const auto& selected = runner_.plan_selections();
     return std::format(
-        R"({{"architecture":"gemma3","recipe":"bounded-serving","context":{},"configured_slots":{},"max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_bounded_owner_attention":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{}}})",
+        R"({{"architecture":"gemma3","recipe":"bounded-serving","context":{},"configured_slots":{},"max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_bounded_owner_attention":{},"device_masks":{},"bound_device_masks":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{}}})",
         options_.context, options_.slots, options_.max_rows, options_.max_wave_rows,
         joined_prefill_groups_, joined_prefill_rows_, joined_groups_, joined_units_,
         selected.owner_attention, selected.packed_prefill_attention,
-        selected.bounded_owner_attention, selected.norm_rope, selected.norm_add,
-        runner_.greedy_tokens());
+        selected.bounded_owner_attention, options_.device_masks, selected.device_masks,
+        selected.norm_rope, selected.norm_add, runner_.greedy_tokens());
   }
   std::string slots_report() const override { return SlotsReport(settings_); }
   std::string KeptLayout() const override { return runner_.CheckpointLayoutId(); }
@@ -2176,7 +2176,7 @@ class Gemma3 final : public Llm {
  private:
   static engine::Gemma3Options Options(const config::ModelEntry& entry,
                                        const ModelSettings& settings,
-                                       const config::RuntimeRoles& roles) {
+                                       const config::RuntimeRoles& roles, bool device_masks) {
     return {.artifact = roles.installed / entry.artifact.value_or(""),
             .out = roles.spill,
             .context = settings.context.value,
@@ -2187,6 +2187,7 @@ class Gemma3 final : public Llm {
             .owner_decode = true,
             .packed_prefill = true,
             .bounded_roots = true,
+            .device_masks = device_masks,
             .fuse_norms = true,
             .fuse_quant_glu = true,
             .fuse_norm_rope = true,
@@ -5542,7 +5543,8 @@ Status Server::Make(const config::ModelEntry& entry, const ModelSettings& settin
   } else if (settings.architecture == "gemma2") {
     models_.push_back(std::make_unique<Gemma2>(node_, entry, settings, roles_, index));
   } else if (settings.architecture == "gemma3") {
-    models_.push_back(std::make_unique<Gemma3>(node_, entry, settings, roles_, index));
+    models_.push_back(std::make_unique<Gemma3>(node_, entry, settings, roles_, index,
+                                               options_.gemma3_device_masks));
   } else if (settings.architecture == "qwen4exp") {
     models_.push_back(std::make_unique<Qwen38>(node_, entry, settings, roles_, index));
   } else {

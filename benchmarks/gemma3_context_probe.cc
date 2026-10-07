@@ -87,8 +87,12 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma3-context-probe") || argc != 6) return 2;
+  if (!jitllm::platform::InstallCrashPolicy("gemma3-context-probe") || (argc != 6 && argc != 7))
+    return 2;
+  const bool device_masks = argc == 7 && std::string_view(argv[6]) == "device-masks";
+  if (argc == 7 && !device_masks) return 2;
   if (std::string_view(argv[1]) == "prepare") {
+    if (argc != 6) return 2;
     std::uint32_t count = 0;
     const std::string_view number = argv[4];
     const auto parsed = std::from_chars(number.data(), number.data() + number.size(), count);
@@ -133,6 +137,7 @@ int main(int argc, char** argv) {
                                                                       .slots = 2,
                                                                       .max_head_rows = 2,
                                                                       .owner_decode = true,
+                                                                      .device_masks = device_masks,
                                                                       .fuse_norms = true,
                                                                       .fuse_quant_glu = true,
                                                                       .fuse_norm_rope = true,
@@ -419,6 +424,8 @@ int main(int argc, char** argv) {
                 << " prefill_seconds=" << prefill << " decode_seconds=" << decode
                 << " eager=" << stats.eager << " captured=" << stats.captured
                 << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
+                << " device_masks=" << device_masks
+                << " selected_device_masks=" << bound.device_masks
                 << " selected_norm_mul=" << bound.norm_mul
                 << " selected_quant_geglu=" << bound.quant_geglu
                 << " selected_norm_rope=" << bound.norm_rope

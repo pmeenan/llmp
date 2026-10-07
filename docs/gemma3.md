@@ -135,7 +135,7 @@ full final-layer attention before selecting final residual/FFN rows.
 `engine/gemma3_plan.*` uses sized descriptor arenas and the existing two-pass
 placement check. It preflights weight/state/activation spans and aliases
 and complete consumer/leaf correspondence before pre-placement binding, and
-budgets copied sources and move-only owned padded host masks. Relocating roots
+budgets copied sources and move-only owned padded masks in the host-reference path. Relocating roots
 requires new placement/view bindings and invalidates old launches/captures.
 Fresh positions, indices and causal masks are revalidated for cache reuse;
 caller-owned chunk/hidden data must survive staging, and graph backing must
@@ -278,7 +278,12 @@ checks every supplied mask value while reducing the measured native first-traver
 prefill mean from 49.056 to 43.818 seconds in one baseline/candidate/candidate/baseline
 bookend, with all 65 heads unchanged. Stock parity, sustained performance and
 public maximum admission remain open. Ordinary default context 4096 and explicit
-scalar ceiling 8448 are unchanged.
+scalar ceiling 8448 are unchanged. The later [GPU-mask transfer](experiments/gemma3-execution/README.md#graph-owned-gpu-masks-2026-10-07) reuses the existing
+causal/ring producer with exact fresh-position checks and full-buffer host-oracle
+controls. A native max-shape bookend reduces prefill from 43.401 to 35.304 seconds
+(18.66%), retaining all 65 frozen heads. Ordinary serving now uses device masks;
+the host reference remains available. This does not qualify public maximum
+context, sustained performance or the internal whole-C12/device-mask combination.
 
 The [internal four-root foundation](experiments/gemma-h8-c4/README.md) now
 qualifies H8/no-cap C4 operands and a representative equal-width model screen

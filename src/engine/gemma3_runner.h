@@ -41,6 +41,8 @@ struct Gemma3Options {
   bool bounded_roots = false;
   // Internal whole-C12 factor; retain cohort-wide masks/grid with actual roots.
   bool bounded_whole12 = false;
+  // Explicit graph-owned causal/ring mask policy; host reference is the default.
+  bool device_masks = false;
   // Explicit numerical comparisons only; ordinary plans use primitives.
   bool fuse_norms = false, fuse_quant_glu = false, fuse_norm_rope = false, fuse_norm_add = false;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
@@ -86,7 +88,8 @@ class Gemma3Runner final : public PagedModel {
   // plans later reclaimed. Setup's envelope probes are not counted.
   struct PlanSelections {
     std::uint64_t plans = 0, steps = 0, norm_mul = 0, quant_geglu = 0, norm_rope = 0, norm_add = 0,
-                  owner_attention = 0, packed_prefill_attention = 0, bounded_owner_attention = 0;
+                  owner_attention = 0, packed_prefill_attention = 0, bounded_owner_attention = 0,
+                  device_masks = 0;
   };
   Gemma3Runner(PagedNode& node, Gemma3Options options, int owner, std::uint32_t stream);
   ~Gemma3Runner() override;

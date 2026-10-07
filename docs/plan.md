@@ -943,7 +943,11 @@ family" guide, and its long-context scaling work.
       The [global host-mask factor](experiments/gemma3-execution/README.md#global-host-mask-factor-2026-10-07)
       retains all exact mask checks and 65 frozen heads, reducing one native
       first-traversal prefill bookend mean from 49.056 to 43.818 seconds; this is
-      not a new stock-parity or sustained-performance result.
+      not a new stock-parity or sustained-performance result. The subsequent
+      [GPU-mask transfer](experiments/gemma3-execution/README.md#graph-owned-gpu-masks-2026-10-07) preserves every frozen head and reduces
+      native prefill from 43.401 to 35.304 seconds in one first-traversal
+      bookend; ordinary bounded serving uses the checked device producer,
+      without qualifying public maximum depth or sustained performance.
       The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:

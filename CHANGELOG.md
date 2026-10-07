@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Build Gemma3 causal and ring masks on the GPU from checked positions,
+  avoiding host mask construction, scanning and staging in ordinary serving.
+
 - Reduce Gemma3 causal-mask construction and validation work on the host,
   retaining exact checks of every supplied mask value.
 

@@ -1147,5 +1147,93 @@ and local `/tmp/jitllm-m35-coordination/gemma3-mask-{host,model}-result1`.
 TensorFold task-entry HEAD is 5a73b85289b58c0998d7754822145466687a551b;
 its current README documents no matching qualified Gemma3 GGUF CUDA recipe.
 Public default/admission, retrieval, maximum-depth swaps and sustained gates
-remain unchanged. The existing graph-owned device-mask producer is a separate
-applicable transfer; this factor still constructs, validates and stages host masks.
+remain unchanged. At this factor snapshot the graph-owned device-mask producer
+remained a separate applicable transfer; this factor constructs, validates and
+stages host masks. The following unit qualifies that transfer.
+
+## Graph-owned GPU masks (2026-10-07)
+
+Gemma3 reuses the existing checked Gemma causal/ring mask producer. Fresh device
+positions generate one global/local F16 mask pair per segment, reused across
+layers, including every padded query/cell byte. Tokens, positions and cache
+indices remain validated on the host; device mode refuses supplied host mask
+vectors and altered producer origins/parameters. It avoids host construction,
+full mask scans and staging, while funding the complete device mask outputs.
+The local-ring equivalence uses capacity 1280 >= window 1024 + each segment's
+128-row limit; the two-owner total-wave limit 256 does not replace that bound.
+The funded host-mask path remains the diagnostic reference.
+
+Twenty-five focused host cases and one GPU operator control pass. The latter
+compares every padded mask byte against the unchanged host oracle at physical
+ring wrap, nonzero segment offsets, rows 1/128 and the 131,072-position endpoint,
+including fresh-position eager/captured replay. Same-binary C1/C2 controls at
+1280/1536 prefixes match all 74 heads, 72 choices, final head and initialized
+state records exactly across host/device masks, including partial departure,
+Clear, checkpoint/spill/restore and refusal preservation. Actual device-mask
+selection is 50 in the control; host selection is zero.
+
+| Native first traversal | Host N1 | Device C1 | Device C2 | Host N2 |
+| --- | ---: | ---: | ---: | ---: |
+| Prefill seconds | 43.276825 | 35.222280 | 35.385179 | 43.524482 |
+| 64 teacher-write seconds | 1.639669 | 1.610823 | 1.608604 | 1.643570 |
+
+Mean prefill falls from 43.400654 to 35.303730 seconds (18.6562%); paid prefill
+plus teacher writes falls from 45.042273 to 36.913443 seconds (18.0471%). These
+are two paid observations per policy in one fresh-Server host/device/device/host
+bookend, using the retained post-host-factor ELF. Every arm matches all 65
+finite full heads, 64 choices and final head byte for byte against the frozen
+original-stock oracle. The schedule remains 131,008 prefix IDs in 128-row
+chunks plus 64 scalar teacher writes: initialized cursor/history 131,072,
+zero natural emissions and no maximum-depth KV snapshot. Each arm uses
+514 eager executions, 512 captures, 62 replays and zero capture refusals;
+device arms select 1028 mask producers. No stock performance rerun or warmed,
+sustained, retrieval or public-maximum claim follows.
+
+Funded host-input bytes fall from 79,694,336 to 12,585,472; fixed accounting
+falls from 173,015,296 to 131,072,256. Device mask outputs remain allocated.
+The capture-time allocation measurements increase from 2071.9/2120.4 MiB in
+host arms to 5451.1/5497.6 MiB in device arms; accounted graph bytes are instead
+7480.4 versus 7496.4 MiB. The largest 20ms-sampled whole-node MemAvailable
+decreases are 12,513,042,432/12,747,771,904 versus
+12,455,178,240/12,534,562,816 bytes. These node samples and capture measurements
+are distinct from accounting and establish no overall-memory reduction.
+
+The measured source is based on cba9ec0. Retained host ELF
+`7ad51bdd739bd65de8896d3a9cef731bb6665f5c6dbe7023472900f58c4c42c5`
+and device ELF
+`96d28d9dfea11778aac255ffbd243943d0eb61e96df55a21f23b968207c1e9f0`
+use the identical pinned CUDA 13.4 cuBLAS/Lt closure; actual device build binding
+is `caad97e22729228a0f23b5288e044a172330f53fda9ca8d65574f78b8b283d9b`.
+Official `m35-gemma3-device-masks3` completes all 12 steps DONE0. Two preceding
+compile-only failures are preserved, corrected by a direct operator-header
+include and an explicit test-index cast. Raw outputs/receipts stay outside Git
+under Spark A `~/.local/share/jitllm/gemma3-device-masks3` and local
+`/tmp/jitllm-m35-coordination/gemma3-device-masks-result3`.
+TensorFold task-entry HEAD remains 5a73b85289b58c0998d7754822145466687a551b,
+with no matching qualified Gemma3 GGUF CUDA recipe.
+
+Ordinary bounded Gemma3 serving now selects device masks; low-level graph/runner
+and benchmark host-reference defaults remain available. Final source composition
+on 84c2d88 preserves the independent whole-C12 copy factor. It rebuilds only
+the ordinary runtime and checks five HTTP cases across two clean epochs:
+actual joined prefill, literal ring continuations/bounds, chat/template/cache/
+SSE/stop, queued third request/partial departure, and exact cached restart.
+Completed joined-prefill groups/rows are 15/2410 and 2/12; bound mask selections
+are 104 and 16, with both runtime exits zero. The measured mask factor itself
+used cba9ec0 C1/C2; the combined internal `bounded_whole12`/device-mask path has
+no performance or continuous-model qualification. Ordinary admission remains
+context 4096/two slots, or explicit context<=8448/one slot.
+
+Actual composed runtime ELF is
+`147e4aadc1f4df6c783451014ea462320b54cedc56798d984ddcf4ba762d05a6`.
+The three build/preservation/binding steps of `m35-gemma3-device-masks-adopt1`
+pass; its HTTP helper fails before runtime startup because `http.py` shadows
+Python's standard library. An unchanged controller renamed in a new method
+directory lets `m35-gemma3-device-masks-adopt2` finish both HTTP/aggregate steps
+DONE0 without rebuilding. That failure and both earlier compile failures remain
+preserved. Final test formatting only wraps the explicit index cast.
+Raw final controls/binding stay outside Git under Spark A
+`~/.local/share/jitllm/gemma3-device-masks-adopt1` and local
+`/tmp/jitllm-m35-coordination/gemma3-device-masks-adopt-result2`.
+Public maximum context, corpus/retrieval, maximum-depth state/swap and
+sustained gates remain open.

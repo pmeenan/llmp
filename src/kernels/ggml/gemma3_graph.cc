@@ -146,14 +146,26 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
     first_row += segment.rows;
     tensors.global_cells = ggml_new_tensor_1d(c, GGML_TYPE_I64, segment.rows);
     tensors.local_cells = ggml_new_tensor_1d(c, GGML_TYPE_I64, segment.rows);
-    tensors.global_mask = ggml_new_tensor_2d(c, GGML_TYPE_F16, segment.global_n_kv,
-                                             static_cast<std::int64_t>(Pad(segment.rows, 32)));
-    tensors.local_mask = ggml_new_tensor_2d(c, GGML_TYPE_F16, segment.local_n_kv,
-                                            static_cast<std::int64_t>(Pad(segment.rows, 32)));
+    g.inputs.push_back(tensors.global_cells);
+    g.inputs.push_back(tensors.local_cells);
+    if (o.device_masks) {
+      tensors.global_mask = Gemma4Mask(
+          c, g.positions, segment.global_n_kv, static_cast<std::int32_t>(tensors.first_row),
+          static_cast<std::int32_t>(segment.rows), static_cast<std::int32_t>(state.global_cells), 0,
+          static_cast<std::int32_t>(state.context));
+      tensors.local_mask = Gemma4Mask(
+          c, g.positions, segment.local_n_kv, static_cast<std::int32_t>(tensors.first_row),
+          static_cast<std::int32_t>(segment.rows), static_cast<std::int32_t>(state.local_cells),
+          static_cast<std::int32_t>(p.window), static_cast<std::int32_t>(state.context));
+    } else {
+      tensors.global_mask = ggml_new_tensor_2d(c, GGML_TYPE_F16, segment.global_n_kv,
+                                               static_cast<std::int64_t>(Pad(segment.rows, 32)));
+      tensors.local_mask = ggml_new_tensor_2d(c, GGML_TYPE_F16, segment.local_n_kv,
+                                              static_cast<std::int64_t>(Pad(segment.rows, 32)));
+      g.inputs.push_back(tensors.global_mask);
+      g.inputs.push_back(tensors.local_mask);
+    }
     tensors.caches.resize(p.layers);
-    for (auto* input :
-         {tensors.global_cells, tensors.local_cells, tensors.global_mask, tensors.local_mask})
-      g.inputs.push_back(input);
     g.segments.push_back(std::move(tensors));
   }
   const auto weight = [&](const md::Gemma3Tensor& resource) {
@@ -178,6 +190,11 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
     return ggml_mul_mat(c, weight(resource), input);
   };
   std::vector<ggml_tensor*> expanded;
+  // Produce both masks once even for partial diagnostic layers. Padding is
+  // initialized on device and reused by every corresponding attention layer.
+  if (o.device_masks)
+    for (const auto& segment : g.segments)
+      for (auto* mask : {segment.global_mask, segment.local_mask}) expanded.push_back(mask);
   const auto owners = static_cast<std::uint32_t>(g.segments.size());
   const bool owner_decode =
       o.owner_decode && shape.output_mode == Gemma3OutputMode::kHead && shape.outputs == owners &&

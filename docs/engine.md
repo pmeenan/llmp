@@ -293,7 +293,8 @@ What a new family writes, and nothing else:
   guard sets it apart), its plans' `ReclaimCandidates` and `Reclaim` and its
   slots' `Spill` and `Restore`, with Setup, Register and Bind as above and
   the family's steps. Gemma3's bounded runner also composes this skeleton,
-  with independent slot roots, paid host masks, separate head-row capacity,
+  with independent slot roots, graph-owned device masks with a funded host
+  reference path, separate head-row capacity,
   state-only prefill, explicit kept device-argmax publication and exact
   Clear/restore controls. Its bounded serving adapter adds completion-aware
   checkpoint coverage, kept-conversation adoption and unchanged held-cohort

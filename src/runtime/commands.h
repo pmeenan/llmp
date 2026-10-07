@@ -98,6 +98,8 @@ struct ServingOptions {
   bool gemma31_production = false;
   // Internal maximum-context qualification only; no config/CLI/HTTP route.
   bool gemma3_trained_max = false;
+  // Ordinary graph-owned masks; internal host-reference override only.
+  bool gemma3_device_masks = true;
 };
 
 struct ChatOptions {

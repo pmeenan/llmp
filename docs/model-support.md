@@ -149,7 +149,10 @@ public admission, maximum-depth swap/state retention and retrieval open;
 initial descriptive native prefill was about 48.7 seconds versus stock's
 32.9 seconds. The later [host-mask factor](experiments/gemma3-execution/README.md#global-host-mask-factor-2026-10-07)
 reduces a native bookend mean from 49.056 to 43.818 seconds with all 65 heads
-unchanged; a fresh reference parity comparison remains open.
+unchanged. The later [GPU-mask transfer](experiments/gemma3-execution/README.md#graph-owned-gpu-masks-2026-10-07) reduces one native bookend
+mean from 43.401 to 35.304 seconds, with all 65 frozen heads exact; ordinary
+bounded serving uses device masks. A fresh reference parity comparison, public
+maximum admission and sustained gates remain open.
 
 The [internal grouped H8 foundation](experiments/gemma-h8-wide/README.md) now
 checks actual unequal C4/C8/C12 and partial C5..7/C9..11, with twelve independent

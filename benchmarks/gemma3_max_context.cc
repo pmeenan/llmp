@@ -105,6 +105,7 @@ rt::Status Run(std::span<const std::string_view> args) {
   rt::ServingOptions options;
   options.plain = true;
   options.gemma3_trained_max = true;
+  options.gemma3_device_masks = args.size() == 6;
   rt::Server server(*config, *roles, options, stderr);
   if (auto started = server.Start(false); !started) return started;
   auto* target = server.Find(args[2]);
@@ -205,7 +206,9 @@ int main(int argc, char** argv) {
     if (!result) (void)std::fprintf(stderr, "%s\n", result.error().c_str());
     return result ? 0 : 1;
   }
-  if (argc != 7 || std::string_view(argv[1]) != "run") return 2;
+  if ((argc != 7 && argc != 8) || std::string_view(argv[1]) != "run" ||
+      (argc == 8 && std::string_view(argv[7]) != "device-masks"))
+    return 2;
   const auto result = Run(args);
   if (!result) (void)std::fprintf(stderr, "%s\n", result.error().c_str());
   return result ? 0 : 1;

@@ -50,6 +50,8 @@ struct Gemma3GraphOptions {
   bool bounded_roots = false;
   // Internal whole-C12 factor; retain cohort-wide masks/grid with actual roots.
   bool bounded_whole12 = false;
+  // Fresh causal/ring masks derived from device positions; explicit opt-in.
+  bool device_masks = false;
   bool operator==(const Gemma3GraphOptions&) const = default;
 };
 struct Gemma3WeightLeaf {
