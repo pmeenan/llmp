@@ -220,6 +220,62 @@ TEST(Gemma3StateTest, RaggedInputsKeepIndependentCausalityAndSplitRingWrites) {
   EXPECT_FALSE(md::Gemma3ChunkWrites(p, *state, 0, 0));
 }
 
+TEST(Gemma3FoundationTest, PublicBindingChecksEveryMutableDescriptorAndResourceIdentity) {
+  const auto& p = md::Gemma3_4BQat();
+  auto binding = md::BindGemma3(p, "gemma3", Resources());
+  ASSERT_TRUE(binding);
+  std::vector<md::Gemma3Tensor*> tensors{&binding->token_embd, &binding->output_norm};
+  for (auto& layer : binding->layers)
+    for (auto* tensor : {&layer.attn_norm, &layer.q, &layer.k, &layer.v, &layer.out, &layer.q_norm,
+                         &layer.k_norm, &layer.attn_post_norm, &layer.ffn_norm, &layer.gate,
+                         &layer.up, &layer.down, &layer.ffn_post_norm})
+      tensors.push_back(tensor);
+  ASSERT_EQ(tensors.size(), 444);
+  for (std::size_t i = 0; i < tensors.size(); ++i) {
+    SCOPED_TRACE(i);
+    auto& tensor = *tensors[i];
+    const auto original = tensor;
+    const auto refuses = [&] {
+      // Also test embedding mutations past the tied-head equality guard.
+      binding->output = binding->token_embd;
+      EXPECT_FALSE(md::CheckGemma3Binding(p, *binding));
+      tensor = original;
+      binding->output = binding->token_embd;
+    };
+    tensor.type = "F16";
+    refuses();
+    tensor.type = "unrecognized";
+    refuses();
+    tensor.ne[0] = std::numeric_limits<std::uint64_t>::max();
+    refuses();
+    tensor.ne.push_back(1);
+    refuses();
+    --tensor.readable;
+    refuses();
+    tensor.index = 444;
+    refuses();
+    tensor.index = i == 0 ? binding->output_norm.index : binding->token_embd.index;
+    refuses();
+  }
+  EXPECT_TRUE(md::CheckGemma3Binding(p, *binding));
+}
+
+TEST(Gemma3FoundationTest, PublicBindingAllowsPermutedIndicesAndExcessReadableStorage) {
+  const auto& p = md::Gemma3_4BQat();
+  auto resources = Resources();
+  std::ranges::reverse(resources);
+  for (auto& resource : resources) resource.readable += 4096;
+  const auto binding = md::BindGemma3(p, "gemma3", resources);
+  ASSERT_TRUE(binding);
+  EXPECT_TRUE(md::CheckGemma3Binding(p, *binding));
+  auto changed_profile = p;
+  --changed_profile.vocab;
+  EXPECT_FALSE(md::CheckGemma3Binding(changed_profile, *binding));
+  auto changed = *binding;
+  --changed.output.readable;
+  EXPECT_FALSE(md::CheckGemma3Binding(p, changed));
+}
+
 TEST(Gemma3StateTest, PublicBindingIdentityIsRecheckedBeforeGraphUse) {
   const auto& p = md::Gemma3_4BQat();
   auto binding = md::BindGemma3(p, "gemma3", Resources());

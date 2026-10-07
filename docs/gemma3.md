@@ -14,9 +14,10 @@ Clear reuse, malformed-input refusal and initialized-state spill/restore.
 There is no serving route or media adapter. This model remains outside the
 supported execution matrix. The primitive stock screen retains one positive-margin
 greedy difference; explicit checked norm chains then match all 33 stock heads
-byte for byte. The full-host-head C1 screen is 2.47% slower than stock; explicit device
-greedy preserves exact choices/state and is 2.46% slower against stock backend
-greedy. Broader quality, performance, longer contexts and batching remain open.
+byte for byte. Explicit device greedy preserves exact choices/state. Allocation-free public
+binding validation narrows the latest short C1 screen to 0.56% slower than
+stock backend greedy. Broader quality, performance, longer contexts and
+batching remain open.
 
 ## Actual checkpoint contract
 
@@ -173,7 +174,10 @@ Weights, state, activations, staging and output copies use the existing
 catalog/VMM and commitment accounting. Held requests use direct steps;
 plans recheck stable places after closure changes. State-only chunks omit an
 intermediate head, while a separate head-row capacity bounds publication.
-Host causal masks and their padded source copies are both funded.
+Host causal masks and their padded source copies are both funded. Public
+binding checks validate all 444 fixed typed descriptors and unique indices
+directly, with a shared shape/byte helper; fresh mutable source checks remain
+per wave, without reconstructing resource vectors and role maps.
 Clear retains mapped backing for reuse; spill/restore preserves logical
 positions and refreshes the closure. Failed retirement retains the whole
 probe lifetime rather than treating destruction as completion.

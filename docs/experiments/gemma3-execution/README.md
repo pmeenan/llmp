@@ -296,6 +296,72 @@ remain default off, and token publication is explicitly requested per work.
 Optimized batching, wider context/quality, sustained performance and serving
 qualification remain open.
 
+## Allocation-free binding validation: measured host cost
+
+Source inspection found that each wave calls `Gemma3SourceBytes`, then
+`Gemma3Sources` calls it again. Each validation formerly reconstructed 444
+resource vectors/role strings and rebound the entire model. A host-only
+helper opens the approved artifact metadata and constructs the same immutable
+C1 scalar greedy descriptors at past259/read512, context4096/maxrows128. It
+performs no placement, device query/allocation or submission. Each span has
+16 warm calls followed by 256 timed successful calls; the five spans are
+nested and must not be added. The pair measures the actual duplicated call
+sequence, including fresh source checks and padded-mask allocation.
+
+| Host span | Before µs/call | After µs/call |
+| --- | ---: | ---: |
+| Public binding check | 102.121 | 3.25623 |
+| Graph check | 105.565 | 7.12240 |
+| Source-byte check | 105.976 | 7.65384 |
+| Source construction | 107.528 | 8.94070 |
+| Wave's source-byte + source pair | 213.776 | 16.5198 |
+
+The pair falls 92.272%. The replacement checks each fixed role's type, rank,
+shape and minimum readable bytes directly, plus the tied output and all 444
+bounded distinct resource indices. The binder and checker share the same
+shape-before-byte-arithmetic helper. Successful checks allocate no resources,
+role strings or replacement binding. Public mutable graph and fresh host
+position/cell/mask checks still run on every call; there is no trusted-handle
+bypass. Focused controls mutate every descriptor's type, dimensions, rank,
+readable size and identity, and also accept reordered resource indices and
+excess readable storage. All 17 foundation/state/graph/plan tests pass.
+
+Two native own controls preserve all frozen 33 heads, 32 choices, final head
+and initialized state bytes above, including refusal and Clear controls. The
+unchanged strict fixed-stock quality screen remains exact. Only then, one
+short RNNR uses the unchanged original-image backend greedy caller and the
+same paid geometry and final full-head boundary as the preceding screen.
+
+| Validated-binding RNNR arm | Prefill ms | Decode ms | Paid total ms |
+| --- | ---: | ---: | ---: |
+| Stock 1 | 57.3012 | 390.060 | 447.3612 |
+| Native 1 | 55.9064 | 392.319 | 448.2254 |
+| Native 2 | 55.3291 | 395.327 | 450.6561 |
+| Stock 2 | 55.7526 | 390.734 | 446.4866 |
+
+Mean paid latency is 449.44075 ms native versus 446.9239 ms stock, or
++0.5631496%. Generated tokens per paid second are 71.1996 versus 71.6006.
+All four paid histories and finite final heads preserve the prior hashes;
+native cycles retain four captures/42 replays/44 device publications, and
+stock reports 48 backend samples with full 262208-element sampled rows.
+This narrows the measured short C1 gap from the preceding 2.46% screen.
+These are sequential bookended screens, not an interleaved old/new A/B.
+Broader quality, sustained performance, context, batching and serving gates
+remain open. Host timing identifies a contributor, without attributing every
+whole-cycle difference to that span.
+
+Official `m35-gemma3-source-cost` completes its two host-diagnostic steps;
+`m35-gemma3-validation` completes all 15 build/control/quality/timing steps,
+both with exit0. The final native binary SHA-256 is
+`e72bbf9d7663a409f1ec899b6a12586ac95802891752b9234ea56beff627d127`.
+The unchanged diagnostic source SHA-256 is
+`714844b5dfe777465dafb51005b0637123b053d0f5ebcbac688c26c6052959e2`;
+its before/after binaries are `cc30ddd3…ada8eb7`/`b2ccc021…4ab2ad1`.
+Exact source/binary/recipe bindings, host spans and own/quality/cycle aggregates
+remain external under `gemma3-execution-20261007/source-cost/` and
+`source-validation/`. Artifact, environment, sampler and false-default fusion
+policies are unchanged.
+
 TensorFold's per-task current source was checked on 2026-10-07 at
 [`ed78d6fc204d89d90b045bf033d6551e7714f3a1`](https://github.com/ashhart/TensorFold/blob/ed78d6fc204d89d90b045bf033d6551e7714f3a1/README.md)
 (release 0.6.6). Its documented model table lists Gemma 4 through MLX; there is no

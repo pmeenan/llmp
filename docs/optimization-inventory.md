@@ -57,6 +57,15 @@ and +2.46% native paid latency. Stock reports full 262208-element sampled rows;
 this is no zero-copy claim. Broader quality/performance and optimized batching
 remain open. Existing H16/32 owner attention excludes Gemma3's H8 shape;
 lookahead remains open. No optimization transfers automatically.
+The [measured public-binding check](experiments/gemma3-execution/README.md#allocation-free-binding-validation-measured-host-cost)
+now validates all 444 fixed typed descriptors and distinct resource indices
+without reconstructing role/resource vectors or rebinding the model. Public
+mutable graph/source checks remain per call. The duplicated source-validation
+pair falls from 213.776 to 16.5198 µs at scalar259/read512; the same bounded
+backend-greedy RNNR retains exact heads/choices/state and narrows native paid
+latency to +0.56%. All 17 focused tests pass, including mutations of every
+binding descriptor. Wider contexts, batching and sustained qualification
+remain open.
 The exact stock Gemma3 graph gathers final attention and residual rows before
 post-norm/FFN, matching this native frontier. Both ordinary bounded Gemma4
 profiles instead retain the full final FFN before frontier publication, matching

@@ -75,9 +75,9 @@ and seven focused import controls. Its shared native runner passes a bounded
 C1 own control with exact eager/graph heads, Clear and initialized-state restore.
 The primitive stock screen retains one positive-margin greedy difference as
 history; explicit checked norm chains then reproduce all 33 bounded stock
-heads exactly. The full-head C1 cycle is 2.47% slower than stock. Explicit
-device greedy preserves 32 choices, final heads and initialized state; a short
-matched cycle is 2.46% slower than stock backend greedy. Broader quality,
+heads exactly. Explicit device greedy preserves 32 choices, final heads and
+initialized state; allocation-free public binding checks narrow the latest
+short matched cycle to 0.56% slower than stock backend greedy. Broader quality,
 performance, longer contexts, batching and serving qualification remain open.
 It is not an execution support entry.
 

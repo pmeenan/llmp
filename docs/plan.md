@@ -822,9 +822,11 @@ family" guide, and its long-context scaling work.
       heads, Clear and initialized-state restore. The primitive first stock screen
       retains one positive-margin greedy difference; the
       [checked norm chains](experiments/gemma3-execution/README.md#checked-norm-chains-exact-bounded-c1-quality)
-      resolve it with all 33 complete stock heads byte-identical. The optimized C1
-      screen is 2.47% slower than stock; broader quality/performance, longer
-      contexts, batching and serving remain open. The deferred and dropped
+      resolve it with all 33 complete stock heads byte-identical. Device greedy
+      retains exact choices/state; allocation-free public binding validation
+      narrows the latest short C1 screen to 0.56% slower than stock backend
+      greedy. Broader quality/performance, longer contexts, batching and serving
+      remain open. The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);

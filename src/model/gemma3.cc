@@ -11,6 +11,7 @@
 #include <format>
 #include <initializer_list>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -33,6 +34,20 @@ std::uint64_t Pad(std::uint64_t bytes, std::uint64_t align) {
   return ((bytes + align - 1) / align) * align;
 }
 bool ProfileValid(const Gemma3Profile& p) { return p == Gemma3_4BQat(); }
+// Used only with this fixed profile's expected shapes. Equality precedes
+// multiplication, so untrusted dimensions never enter the byte calculation.
+std::optional<std::uint64_t> TensorBytes(std::string_view type,
+                                         std::span<const std::uint64_t> dimensions,
+                                         std::string_view expected,
+                                         std::initializer_list<std::uint64_t> shape) {
+  const auto* traits = artifact::FindGgmlType(expected);
+  if (traits == nullptr || type != expected || !std::ranges::equal(dimensions, shape) ||
+      shape.size() == 0 || dimensions[0] % traits->block_elements != 0)
+    return std::nullopt;
+  auto bytes = dimensions[0] / traits->block_elements * traits->block_bytes;
+  for (std::size_t dim = 1; dim < dimensions.size(); ++dim) bytes *= dimensions[dim];
+  return bytes;
+}
 bool AlignValid(std::uint32_t align) { return align >= 256 && align <= 8192 && align % 256 == 0; }
 std::uint32_t ReadCells(std::uint32_t positions, std::uint32_t cells, std::uint32_t align) {
   return static_cast<std::uint32_t>(std::min<std::uint64_t>(cells, Pad(positions, align)));
@@ -138,20 +153,13 @@ std::expected<Gemma3Binding, std::string> BindGemma3(const Gemma3Profile& p,
     }
     const auto index = found->second;
     const auto& resource = resources[index];
-    const std::vector<std::uint64_t> ne(shape);
-    const auto* traits = artifact::FindGgmlType(type);
-    if (traits == nullptr || resource.type != type || resource.ne != ne ||
-        ne[0] % traits->block_elements != 0) {
+    const auto bytes = TensorBytes(resource.type, resource.ne, type, shape);
+    if (!bytes) {
       return std::unexpected("wrong Gemma3 type or shape: " + role);
     }
-    // Multiplication follows exact bounded profile shapes, after equality
-    // above. Every approved quantized row is a multiple of the GGML 512-row
-    // padding, so its canonical readable bytes equal its stored bytes.
-    auto bytes = ne[0] / traits->block_elements * traits->block_bytes;
-    for (std::size_t dim = 1; dim < ne.size(); ++dim) {
-      bytes *= ne[dim];
-    }
-    if (resource.readable < bytes) {
+    // Every approved row needs no additional GGML row padding; readable
+    // storage may exceed its canonical bytes without changing identity.
+    if (resource.readable < *bytes) {
       return std::unexpected("short Gemma3 readable storage: " + role);
     }
     roles.erase(found);
@@ -242,50 +250,36 @@ std::expected<void, std::string> CheckGemma3Binding(const Gemma3Profile& p,
       binding.output != binding.token_embd) {
     return Refused("invalid Gemma3 profile, layer count or tied head");
   }
-  std::vector<Gemma3Resource> resources(444);
-  std::array<const Gemma3Tensor*, 444> identities{};
-  bool valid = true;
-  const auto add = [&](const Gemma3Tensor& tensor, std::string role) {
-    if (!valid || tensor.index >= resources.size() || tensor.ne.empty() || tensor.ne.size() > 2 ||
-        artifact::FindGgmlType(tensor.type) == nullptr) {
-      valid = false;
-      return;
-    }
-    const auto* previous = identities[tensor.index];
-    if (previous != nullptr && *previous != tensor) {
-      valid = false;
-      return;
-    }
-    auto& resource = resources[tensor.index];
-    if (previous == nullptr) {
-      identities[tensor.index] = &tensor;
-      resource.type = tensor.type;
-      resource.ne = tensor.ne;
-      resource.readable = tensor.readable;
-    }
-    resource.roles.push_back(std::move(role));
+  // Every non-head role owns one of exactly 444 resource identities. The
+  // tied output was checked above; no other alias is valid. Direct fixed-shape
+  // checks preserve public mutation refusal without rebuilding role strings,
+  // resource vectors, a role map and a second binding on every source check.
+  std::array<bool, 444> seen{};
+  const auto check = [&](const Gemma3Tensor& tensor, std::string_view type,
+                         std::initializer_list<std::uint64_t> shape) {
+    if (tensor.index >= seen.size() || seen[tensor.index]) return false;
+    const auto bytes = TensorBytes(tensor.type, tensor.ne, type, shape);
+    if (!bytes || tensor.readable < *bytes) return false;
+    seen[tensor.index] = true;
+    return true;
   };
-  add(binding.token_embd, "token_embd.weight");
-  add(binding.output_norm, "output_norm.weight");
-  for (std::uint32_t il = 0; il < p.layers; ++il) {
-    const auto& layer = binding.layers[il];
-    const auto prefix = "blk." + std::to_string(il) + '.';
-    for (const auto& [tensor, role] :
-         {std::pair{&layer.attn_norm, "attn_norm.weight"}, std::pair{&layer.q, "attn_q.weight"},
-          std::pair{&layer.k, "attn_k.weight"}, std::pair{&layer.v, "attn_v.weight"},
-          std::pair{&layer.out, "attn_output.weight"},
-          std::pair{&layer.q_norm, "attn_q_norm.weight"},
-          std::pair{&layer.k_norm, "attn_k_norm.weight"},
-          std::pair{&layer.attn_post_norm, "post_attention_norm.weight"},
-          std::pair{&layer.ffn_norm, "ffn_norm.weight"}, std::pair{&layer.gate, "ffn_gate.weight"},
-          std::pair{&layer.up, "ffn_up.weight"}, std::pair{&layer.down, "ffn_down.weight"},
-          std::pair{&layer.ffn_post_norm, "post_ffw_norm.weight"}}) {
-      add(*tensor, prefix + role);
-    }
+  if (!check(binding.token_embd, "Q8_0", {p.width, p.vocab}) ||
+      !check(binding.output_norm, "F32", {p.width}))
+    return Refused("invalid Gemma3 embedding or output norm descriptor");
+  for (const auto& layer : binding.layers) {
+    if (!check(layer.attn_norm, "F32", {p.width}) ||
+        !check(layer.q, "Q4_0", {p.width, p.heads * p.key_dim}) ||
+        !check(layer.k, "Q4_0", {p.width, p.kv_heads * p.key_dim}) ||
+        !check(layer.v, "Q4_0", {p.width, p.kv_heads * p.value_dim}) ||
+        !check(layer.out, "Q4_0", {p.heads * p.value_dim, p.width}) ||
+        !check(layer.q_norm, "F32", {p.key_dim}) || !check(layer.k_norm, "F32", {p.key_dim}) ||
+        !check(layer.attn_post_norm, "F32", {p.width}) ||
+        !check(layer.ffn_norm, "F32", {p.width}) || !check(layer.gate, "Q4_0", {p.width, p.ffn}) ||
+        !check(layer.up, "Q4_0", {p.width, p.ffn}) ||
+        !check(layer.down, "Q4_0", {p.ffn, p.width}) ||
+        !check(layer.ffn_post_norm, "F32", {p.width}))
+      return Refused("invalid Gemma3 layer descriptor or repeated resource identity");
   }
-  if (!valid) return Refused("Gemma3 public resource descriptors disagree or exceed their domain");
-  auto checked = BindGemma3(p, "gemma3", resources);
-  if (!checked) return std::unexpected(checked.error());
   return {};
 }
 
