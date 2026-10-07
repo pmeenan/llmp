@@ -819,8 +819,12 @@ family" guide, and its long-context scaling work.
       a [deep-verified prepared artifact](experiments/gemma3-execution/README.md)
       and seven focused import controls. The shared native runner now passes a
       bounded C1 own control, including actual local/global RoPE, eager/graph
-      heads, Clear and initialized-state restore. The first stock screen retains one positive-margin greedy difference;
-      quality/performance, longer contexts, batching and serving remain open. The deferred and dropped
+      heads, Clear and initialized-state restore. The primitive first stock screen
+      retains one positive-margin greedy difference; the
+      [checked norm chains](experiments/gemma3-execution/README.md#checked-norm-chains-exact-bounded-c1-quality)
+      resolve it with all 33 complete stock heads byte-identical. The optimized C1
+      screen is 2.47% slower than stock; broader quality/performance, longer
+      contexts, batching and serving remain open. The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);
