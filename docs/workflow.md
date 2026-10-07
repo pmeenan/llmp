@@ -160,6 +160,24 @@ downgrade a heavy-path change to the light loop on their own.
   older source timestamp can leave a newer object from the previous tree
   in place even though its contents differ.
 - **Scratch files stay out of the tree.**
+- **Clean up when a milestone closes** (owner, 2026-10-07). Once a
+  milestone's exit is accepted, delete its work files on every host that
+  was used (the workstation and both Sparks): raw experiment outputs,
+  logs, traces and snapshots under `~/.local/share/jitllm`, scratch
+  directories (`~/scratch`, `/tmp` work trees, session scratchpads),
+  Spark source and build copies, finished git worktrees, and finished job
+  records (`spark-job gc`). Raw outputs need no archive; the committed
+  aggregates are the record, and reports' paths to deleted outputs stay
+  as history. Keep what later work uses: prepared artifacts, pinned
+  source checkpoints and references, frozen oracles, captured replay
+  inputs, test inputs, the SDK and the other standing stores under
+  `~/.local/share/jitllm` (`sdk/`, `models/`, `references/`,
+  `reference-models/`, `ucd/`, `chat-templates/`), and the next
+  milestone's work. When unsure, list the file for the owner. Model
+  checkpoints no longer needed locally go to the NAS (`/mnt/llm`) rather
+  than being deleted. A worktree with uncommitted or unmerged work is
+  listed for the owner, or its changes saved as a patch, never silently
+  dropped.
 - **Notes stay out of the docs.** Handoff and review notes live in the final
   message and the commit, not in the documents they describe. Process detail
   in a design doc costs every future reader and goes stale on commit.

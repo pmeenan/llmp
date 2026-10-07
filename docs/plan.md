@@ -117,6 +117,9 @@ How to read the milestones below:
   Every result names the check tiers and hosts that produced it (D-061,
   [workflow.md](workflow.md)). No performance gate is met by giving up
   correctness.
+- **Clean up at close.** Closing a milestone includes deleting its work files
+  on every host used ([workflow.md](workflow.md), "Clean up when a milestone
+  closes").
 - **Heavy path.** Work in a [blast-radius area](workflow.md#blast-radius-changes-get-the-heavy-path-by-default)
   passes its adversarial challenge before the milestone exits.
 - **Support is earned per checkpoint.** From M3 the

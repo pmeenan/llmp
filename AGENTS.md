@@ -249,7 +249,8 @@ the commit gate.
 8. **Scratch files stay out of the tree.** Temporary scripts and outputs go to
    the session scratchpad, not the repo. Delete throw-away diagnostics before
    concluding. Keep aggregate experiment results, analysis, and provenance in
-   Git; raw samples, logs, traces, and telemetry stay outside the repository.
+   Git; raw samples, logs, traces, and telemetry stay outside the repository,
+   and are deleted on every host when their milestone closes (docs/workflow.md).
 
 ## Current status
 
