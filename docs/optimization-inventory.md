@@ -154,8 +154,16 @@ stream/FP64/fresh capture controls. It preserves per-owner 128/local 4,352 and
 funds total wave 256. All 76 representative 256/768-prefix stock heads are exact;
 five ordinary HTTP cases include actual joined groups, system-role refusal and
 kept restart replay. The short C2 RNNR retains a 5.78% native latency gap (n=2)
-with exact natural histories/final heads. Broader ring/joint-prefill, context,
-cohorts, memory/swap and sustained qualification remain open.
+with exact natural histories/final heads. One matched node-level timeline
+binds all 32 paid steps by vocabulary projections and graph/eager correlations:
+52 full-cache padding concatenations per native step sum to 23.42 ms over
+32 steps, while stock has none. Native owner attention is faster; equal-count
+product timing differences have no established cause. The next bounded test
+is actual-root reads with zero invalid lanes at unchanged logical common width,
+precision and cap50, followed by operand/model proof and native bookends.
+The trace is attribution, not a new latency ratio or predicted saving. Broader
+ring/joint-prefill, context, cohorts, memory/swap and sustained qualification
+remain open.
 
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand

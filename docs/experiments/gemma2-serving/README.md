@@ -151,3 +151,80 @@ long-context, wider-batch, memory-pressure, model-switch or sustained-serving
 workload. The earlier ring/checkpoint controls remain separate evidence for
 their original independent-prefill geometry. The full regression suite was
 not repeated for this focused slice.
+
+
+## Matched short-C2 timeline, 2026-10-07
+
+One back-to-back native/stock capture used the exact binaries and inputs from
+that successful screen, with no rebuild or production change. Nsight Systems
+2025.3.2.474 captured CUDA graph nodes (`--trace=cuda
+--cuda-graph-trace=node --sample=none --cpuctxsw=none`) and exported SQLite.
+Both processes retain the original warm prefix, three supplied rows and eight
+joined warm steps, followed by paid prefill, three off-clock supplied rows per
+owner and 32 paid joined steps. Both reproduce the recorded 64 natural choices
+and two finite final heads byte for byte. The stock container is proven absent.
+The installed supervised retry completes all four steps with exit zero; the
+initial preparation failure (an exporter directory treated as a file) is retained
+and ran neither model. Mounting the complete installed Nsight directory read-only
+preserves its sibling report-conversion libraries inside the reference image.
+
+Paid decode boundaries come from actual output geometry and correlations,
+not the default 250-us gap heuristic. Each trace has exactly 40 two-row Q8_0
+vocabulary projections (grid 128,000): eight warm and 32 paid. Every selected
+paid unit has 26 true-softcap D256/GQA2 attention launches at grid 48 and a
+complete output/sampling tail. All 32 native units correlate to graph launches.
+Stock's first paid unit executes eagerly; its boundary follows the preceding
+scalar head's terminal argmax and ends at its own two sampling argmaxes. The
+remaining 31 stock units correlate to graph launches. Selecting only the last
+32 stock graph calls would incorrectly include a scalar unit. Native publishes
+31 intermediate two-token results and the last full head; stock retains its
+ordinary full sampled-logit transfers. Later native state-spill traffic is
+excluded from decode: only the final paid graph's 2,048,000-byte head copy belongs
+to final publication, not the subsequent 104 two-MiB teardown copies.
+
+| Paid 32-step work | Native launches / summed ms | Stock launches / summed ms |
+| --- | ---: | ---: |
+| Full padded K/V `concat_cont`, grid4096 | 1,664 / 23.4237 | 0 / 0 |
+| KV `k_set_rows` (native grid4, stock grid8) | 3,328 / 5.4363 | 1,664 / 2.1359 |
+| Core attention (owner versus original MMA) | 832 / 18.8605 | 832 / 32.7814 |
+| Q8_0 gate/up products, grid4608 | 1,664 / 197.6462 | 1,664 / 176.7273 |
+| Q8_0 vocabulary projection, grid128000 | 32 / 92.1183 | 32 / 89.2648 |
+
+The 52 full-cache concatenations per step write 104 MiB of activation storage
+at this 512/1,024 geometry, or 3.25 GiB over 32 steps. This is output-volume
+arithmetic from the authenticated F16 descriptors, not a bandwidth counter.
+Two additional small mask joins per step sum to 0.1002 ms. Native has 823 kernels
+per intermediate step and 822 on the final step, versus stock's 713. The Q8_0
+product template families and counts match; this trace shows no missing product
+fusion. Slower equal-count gate/up products may involve cache or clock state;
+this one pair does not establish their cause. Native's early graph spans and
+head products are slower than its later steady steps, so startup/clock effects
+also limit duration attribution.
+
+Across all 32 paid units, first-to-last GPU kernel spans are 530.6336 ms native
+and 481.9028 ms stock; kernel unions are 510.3674/465.1778 ms and overlapping
+kernel sums are 531.3104/494.8054 ms. Kernel-free gaps can contain copies and
+host work; they do not measure idle CPU. Seven paid prefill waves span
+175.2622/171.7994 ms, with kernel unions 163.0241/165.7208 ms. Five state-only
+waves omit native final-layer attention, yielding 177 versus stock's 182
+attention calls. These instrumented GPU bounds omit first-input and final
+publication host work. They neither replace the unprofiled 7.1255/29.856-ms
+phase differences nor establish a new performance ratio or removable latency.
+
+The structural copy cost supports one next causal test: retain logical common
+width 1,024, query precision, cap50 and stream-K partitions while reading the
+actual 512/1,024 roots with invalid lanes zeroed, instead of physically joining
+the full short prefix. That candidate needs exact physical-stream operand,
+FP64, fresh replay and real-model quality checks before a bookended comparison.
+No copy-free implementation is selected by this report.
+
+The [read-only analyzer](analyze_timeline.py) authenticates the SQLite hashes
+against the external capture-fidelity receipt and writes a new aggregate;
+run it with the private capture directory as its sole argument. Raw traces,
+heads, prompts, logs and per-step records remain external. Native probe SHA-256
+is `f842361c2f4a73b0fffbb82ed3bc73796a1492967ad0ce8935c444b7181dee7c`;
+stock helper is `49961825ca4b2e1c9ee0f5a2073aee1646cdd961cf9b8f594dc202d883780def`.
+The source inventory is unchanged from the serving result above. A fresh
+TensorFold task-entry check again returned
+`041d14a94e951834470fd514ed33e65b8be1059a`; the documented applicability remains
+unchanged. No additional model ladder, full suite or profiler grid ran.
