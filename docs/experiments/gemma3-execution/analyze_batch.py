@@ -177,6 +177,77 @@ def quality(root):
     assert result['passed'], 'strict C4 quality gate failed; timing must not run'
 
 
+def departure_own(root, log_path):
+    inputs(root)
+    arms = ('native-departure1', 'native-departure2')
+    hashes = {}
+    for name in ('heads.f32', 'chosen.i32', 'final.f32', 'state.json'):
+        a, b = [root / arm / name for arm in arms]
+        assert digest(a) == digest(b), f'departure repeat changed {name}'
+        hashes[name] = digest(a)
+    states = []
+    for arm in arms:
+        f = footer(log_path.read_text(), arm)
+        expected = dict(slots='4', context_per_slot='4096', chunk='128', input_identities='2',
+                        compatible_prefill='1', max_wave_rows='256', prompt_rows0='256', prompt_rows1='256',
+                        gpu_tokens='156', policy='departure', graphs='1', selected_bounded_owner='0',
+                        departure_steps='4', decode_steps='32', c3_waves='16', catchup_rows='16',
+                        rejoined_waves='32', departure_passes='2', joined_prefill_groups='8',
+                        joined_prefill_rows='2048')
+        expected.update({f'past{s}': '295' for s in range(OWNERS)})
+        for k, v in expected.items(): assert f[k] == v, (arm, k, f[k], v)
+        assert all(int(f[k]) > 0 for k in ('selected_owner', 'selected_packed_prefill', 'captured', 'replayed'))
+        assert int(f['c3_selected_owner']) >= 68 and int(f['c3_selected_owner']) % 34 == 0
+        state = validate(root / arm, state=True)
+        assert all(state[k] is True for k in ('paused_peer_equal', 'catchup_peers_equal', 'rejoin_equal'))
+        states.append(state)
+    save(root, 'own-control.json', dict(scope='four real roots, two input identities; actual C4-to-C3 departure, private scalar catchup and C4 rejoin',
+                                      hashes=hashes, rows=ROWS, choices_checked=STEPS, state=states[0],
+                                      schedule=dict(initial_c4=8, actual_c3=8, paused_owner=3, catchup_rows=8,
+                                                    rejoined_c4=16, scalar_tail_per_owner=4),
+                                      concurrency_acceptance=False, passed=True))
+
+
+def departure_quality(root, log_path):
+    own_record = json.loads((root / 'own-control.json').read_text())
+    assert own_record['passed'] and own_record['concurrency_acceptance'] is False
+    for name, sha in own_record['hashes'].items():
+        assert digest(root / 'native-departure1' / name) == sha
+    arms = ('stock-departure1', 'stock-departure2')
+    text = log_path.read_text()
+    for name in ('heads.f32', 'chosen.i32', 'final.f32'):
+        assert digest(root / arms[0] / name) == digest(root / arms[1] / name), f'stock departure repeat changed {name}'
+    for arm in arms:
+        validate(root / arm)
+        assert json.loads((root / f'{arm}-container-retired.json').read_text())['container_absent_after_checked_docker_query']
+        f = footer(text, arm, stock=True, mode='departure')
+        expected = dict(slots='4', context_per_slot='4096', chunk='128', input_identities='2',
+                        compatible_prefill='1', max_wave_rows='256', prompt_rows0='256', prompt_rows1='256',
+                        backend_tokens='160', observer='1', sampled_logits_min=str(VOCAB),
+                        sampled_logits_max=str(VOCAB), final_head_paid='0', tokenized_equal='4',
+                        departure_steps='4', decode_steps='32', c3_waves='8', catchup_rows='8',
+                        rejoined_waves='16', joined_prefill_groups='4', joined_prefill_rows='1024')
+        expected.update({f'past{s}': '295' for s in range(OWNERS)})
+        for k, v in expected.items(): assert f[k] == v, (arm, k, f[k], v)
+        sections = re.split(r'^\[spark-job [^\n]+\] step \d+/\d+ start: ', text, flags=re.M)
+        section, = [part for part in sections[1:] if arm in part.split('\n', 1)[0]]
+        shapes = re.findall(r'GEMMA3_C4_BATCH_STOCK_FLASH count=(\d+) ([^\n]+)', section)
+        observed = set()
+        for count, raw in shapes:
+            key = tuple(map(int, raw.split()))
+            assert len(key) == 12 and int(count) > 0
+            if (key[0:3] == (256, 1, 8) and key[4] == 256 and key[5] >= 256 and
+                    key[6] == 4 and key[8] == key[5] and key[3] == key[7] == key[11]):
+                observed.add(key[3])
+        assert {3, 4} <= observed, (arm, observed)
+    joined = compare(root, 'native-departure1', 'stock-departure1')
+    result = dict(scope='same-schedule C4/C3/catchup/C4 reference screen; four real roots, two input identities',
+                  joined=joined, paused_native_state_exact=True, native_gpu_replay_exact=True,
+                  concurrency_acceptance=False, passed=joined['passed'])
+    save(root, 'quality.json', result)
+    assert result['passed'], 'strict same-schedule departure quality failed'
+
+
 def cycle(root, log_path):
     inputs(root)
     assert json.loads((root / 'quality.json').read_text())['passed']
@@ -231,5 +302,7 @@ if __name__ == '__main__':
     if sys.argv[1] == 'inputs': inputs(root)
     elif sys.argv[1] == 'own': own(root, Path(sys.argv[3]))
     elif sys.argv[1] == 'quality': quality(root)
+    elif sys.argv[1] == 'departure-own': departure_own(root, Path(sys.argv[3]))
+    elif sys.argv[1] == 'departure-quality': departure_quality(root, Path(sys.argv[3]))
     elif sys.argv[1] == 'cycle': cycle(root, Path(sys.argv[3]))
     else: raise ValueError('unknown analysis mode')

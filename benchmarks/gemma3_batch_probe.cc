@@ -103,11 +103,11 @@ int main(int argc, char** argv) {
     return status ? 0 : 1;
   }
   const std::string_view policy = argc == 7 ? argv[6] : "joined";
-  const bool solo = policy == "solo", eager = policy == "eager";
-  if (policy != "joined" && !solo && !eager) return 2;
+  const bool solo = policy == "solo", eager = policy == "eager", departure = policy == "departure";
+  if (policy != "joined" && !solo && !eager && !departure) return 2;
   const std::string mode = argv[5];
   const bool own = mode == "own", cycle = mode == "cycle";
-  if ((!own && !cycle) || (cycle && (solo || eager))) return 2;
+  if ((!own && !cycle) || (cycle && (solo || eager || departure))) return 2;
   std::array<std::vector<std::int32_t>, kOwners> ids;
   std::array<std::uint32_t, kOwners> prefix{};
   for (std::size_t s = 0; s < kOwners; ++s) {
@@ -189,6 +189,8 @@ int main(int argc, char** argv) {
     return {};
   };
   std::uint64_t prefill_groups = 0, prefill_rows = 0;
+  std::uint32_t c3_waves = 0, catchup_rows = 0, rejoined_waves = 0, departure_passes = 0;
+  std::uint64_t c3_selected_owner = 0;
   const auto prompt = [&](bool token) -> en::Status {
     // Preserve the qualified paired-prefill capacity and 256-row wave. Four
     // decode owners never imply four 128-row chunks in one prompt wave.
@@ -223,8 +225,8 @@ int main(int argc, char** argv) {
           return r;
     return {};
   };
-  const auto joined = [&](const std::array<std::int32_t, kOwners>& tokens,
-                          bool token) -> en::Status {
+  const auto joined = [&](const std::array<std::int32_t, kOwners>& tokens, bool token,
+                          std::uint32_t count = kOwners) -> en::Status {
     std::array<en::Gemma3Runner::Work, kOwners> work;
     for (std::uint32_t s = 0; s < kOwners; ++s)
       work[s] = {s, past[s], std::span(&tokens[s], 1), token ? nullptr : &heads[s],
@@ -232,10 +234,10 @@ int main(int argc, char** argv) {
     if (solo) {
       for (const auto& unit : work)
         if (auto r = runner.Wave(std::span(&unit, 1)); !r) return r;
-    } else if (auto r = runner.Wave(work); !r) {
+    } else if (auto r = runner.Wave(std::span(work).first(count)); !r) {
       return r;
     }
-    for (std::uint32_t s = 0; s < kOwners; ++s) {
+    for (std::uint32_t s = 0; s < count; ++s) {
       ++past[s];
       if (!token && !Best(heads[s])) return Error("bad joined head");
     }
@@ -291,22 +293,127 @@ int main(int argc, char** argv) {
         for (const auto& head : heads)
           rows.write(reinterpret_cast<const char*>(head.data()), kVocab * 4);
       };
+      std::array<bool, (kSteps + kTail + 1) * kOwners> written{};
+      const auto write_head = [&](std::uint32_t index, std::uint32_t slot) -> en::Status {
+        if (index >= written.size() || slot >= kOwners || written[index] || !Best(heads[slot]))
+          return Error("departure row publication is duplicate, out of bounds or nonfinite");
+        rows.seekp(static_cast<std::streamoff>(std::uint64_t(index) * kVocab * sizeof(float)));
+        rows.write(reinterpret_cast<const char*>(heads[slot].data()), kVocab * 4);
+        if (!rows) return Error("departure row publication failed");
+        written[index] = true;
+        return {};
+      };
       if (own) {
         rows.open(out / "heads.f32", std::ios::binary | std::ios::noreplace);
         if (!rows) return Error("teacher rows must be new");
-        write_rows();
+        if (departure) {
+          for (std::uint32_t s = 0; s < kOwners; ++s)
+            if (auto r = write_head(s, s); !r) return r;
+        } else
+          write_rows();
       }
       std::vector<std::int32_t> choices((kSteps + (own ? kTail : 0U)) * kOwners);
       const auto decode_begin = std::chrono::steady_clock::now();
-      for (std::uint32_t i = 0; i < kSteps; ++i) {
-        std::array<std::int32_t, kOwners> tokens;
-        for (std::uint32_t s = 0; s < kOwners; ++s) {
-          choices[i * kOwners + s] = cycle ? selected[s] : *Best(heads[s]);
-          tokens[s] = cycle ? choices[i * kOwners + s] : ids[s][prefix[s] + 3 + i];
+      const auto departure_steps = [&](bool device) -> en::Status {
+        const std::array<std::uint32_t, 3> active{0, 1, 2};
+        const std::uint32_t returning = 3;
+        std::array<std::string, kOwners> paused_state;
+        std::uint64_t before_c3_selection = 0;
+        const auto refuse_inactive = [&](std::uint32_t slot) -> en::Status {
+          const auto saved = selected;
+          const en::Gemma3Runner::Work bad{slot, past[slot],
+                                           std::span(ids[slot]).subspan(past[slot], 1), nullptr,
+                                           &selected[slot]};
+          if (runner.Wave(std::span(&bad, 1)) || selected != saved ||
+              (*runner.request_slot(slot))->completed_positions() != past[slot])
+            return Error("inactive owner mutation or publication accepted");
+          return {};
+        };
+        for (std::uint32_t i = 0; i < kSteps; ++i) {
+          if (i == 8) {
+            const auto state = snapshot();
+            if (!state) return Error(state.error());
+            paused_state = *state;
+            before_c3_selection = runner.plan_selections().owner_attention;
+            if (auto r = runner.SelectSlots(active); !r) return r;
+            if (auto r = refuse_inactive(returning); !r) return r;
+          }
+          if (i == 16) {
+            const auto selected_c3 = runner.plan_selections().owner_attention - before_c3_selection;
+            if (selected_c3 < 34 || selected_c3 % 34)
+              return Error("actual three-owner phase did not select every layer's owner plan");
+            c3_selected_owner += selected_c3;
+            if (auto r = runner.SelectSlots(slots); !r) return r;
+            const auto state = snapshot();
+            if (!state || (*state)[returning] != paused_state[returning] ||
+                past[returning] != 267 ||
+                (*runner.request_slot(returning))->completed_positions() != 267)
+              return Error("C3 wave changed paused owner's initialized state or cursor");
+            if (auto r = runner.SelectSlots(std::span(&returning, 1)); !r) return r;
+            if (auto r = refuse_inactive(0); !r) return r;
+            for (std::uint32_t j = 8; j < 16; ++j) {
+              const auto choice = device ? selected[returning] : *Best(heads[returning]);
+              if (device) {
+                if (choice != choices[j * kOwners + returning])
+                  return Error("returning owner GPU/full-head choice differs");
+              } else
+                choices[j * kOwners + returning] = choice;
+              if (auto r =
+                      independent(returning, std::span(ids[returning]).subspan(past[returning], 1),
+                                  true, device);
+                  !r)
+                return r;
+              if (!device)
+                if (auto r = write_head((j + 1) * kOwners + returning, returning); !r) return r;
+              ++catchup_rows;
+            }
+            if (auto r = runner.SelectSlots(slots); !r) return r;
+            const auto caught = snapshot();
+            if (!caught) return Error(caught.error());
+            for (std::uint32_t s = 0; s < returning; ++s)
+              if ((*caught)[s] != (*state)[s] || past[s] != 275 ||
+                  (*runner.request_slot(s))->completed_positions() != 275)
+                return Error("catchup changed paused peers' initialized state or cursors");
+            if (past[returning] != 275) return Error("catchup frontier differs");
+            std::cout << "GEMMA3_C3_STATE pass=" << departure_passes
+                      << " paused_past=267 paused_owner3_sha256=" << paused_state[returning]
+                      << " catchup_past=275 peer0_sha256=" << (*state)[0]
+                      << " peer1_sha256=" << (*state)[1] << " peer2_sha256=" << (*state)[2]
+                      << " selected_c3_owner_plans=" << selected_c3 << '\n';
+          }
+          const std::uint32_t count = i >= 8 && i < 16 ? 3 : kOwners;
+          std::array<std::int32_t, kOwners> tokens{};
+          for (std::uint32_t s = 0; s < count; ++s) {
+            const auto choice = device ? selected[s] : *Best(heads[s]);
+            if (device) {
+              if (choice != choices[i * kOwners + s])
+                return Error("departure GPU/full-head choice differs");
+            } else
+              choices[i * kOwners + s] = choice;
+            tokens[s] = ids[s][prefix[s] + 3 + i];
+          }
+          if (auto r = joined(tokens, device, count); !r) return r;
+          if (!device)
+            for (std::uint32_t s = 0; s < count; ++s)
+              if (auto r = write_head((i + 1) * kOwners + s, s); !r) return r;
+          if (count == 3) ++c3_waves;
+          if (i >= 16) ++rejoined_waves;
         }
-        if (auto r = joined(tokens, cycle && i + 1 != kSteps); !r) return r;
-        if (own) write_rows();
-      }
+        ++departure_passes;
+        return {};
+      };
+      if (departure) {
+        if (auto r = departure_steps(false); !r) return r;
+      } else
+        for (std::uint32_t i = 0; i < kSteps; ++i) {
+          std::array<std::int32_t, kOwners> tokens;
+          for (std::uint32_t s = 0; s < kOwners; ++s) {
+            choices[i * kOwners + s] = cycle ? selected[s] : *Best(heads[s]);
+            tokens[s] = cycle ? choices[i * kOwners + s] : ids[s][prefix[s] + 3 + i];
+          }
+          if (auto r = joined(tokens, cycle && i + 1 != kSteps); !r) return r;
+          if (own) write_rows();
+        }
       if (own) {
         // One owner leaves the joined cohort; the peer's prefix remains untouched.
         for (std::uint32_t s = 0; s < kOwners; ++s) {
@@ -315,7 +422,10 @@ int main(int argc, char** argv) {
             choices[kSteps * kOwners + s * kTail + i] = *Best(heads[s]);
             if (auto r = independent(s, std::span(ids[s]).subspan(past[s], 1), true, false); !r)
               return r;
-            rows.write(reinterpret_cast<const char*>(heads[s].data()), kVocab * 4);
+            if (departure) {
+              if (auto r = write_head((kSteps + 1) * kOwners + s * kTail + i, s); !r) return r;
+            } else
+              rows.write(reinterpret_cast<const char*>(heads[s].data()), kVocab * 4);
           }
           for (std::uint32_t peer = 0; peer < kOwners; ++peer)
             if (peer != s &&
@@ -326,6 +436,8 @@ int main(int argc, char** argv) {
       }
       const auto decode = en::support::Seconds(std::chrono::steady_clock::now() - decode_begin);
       if (own) {
+        if (departure && !std::ranges::all_of(written, [](bool value) { return value; }))
+          return Error("departure canonical row coverage incomplete");
         rows.flush();
         if (!rows) return Error("complete teacher rows failed");
         const auto full_heads = heads;
@@ -360,15 +472,18 @@ int main(int argc, char** argv) {
             return Error("C4 refusal changed prefix metadata");
         const auto after = snapshot();
         if (!after || *after != *before) return Error("C4 refusal changed initialized state");
-        for (std::uint32_t i = 0; i < kSteps; ++i) {
-          std::array<std::int32_t, kOwners> tokens;
-          for (std::uint32_t s = 0; s < kOwners; ++s) {
-            if (selected[s] != choices[i * kOwners + s])
-              return Error("C4 GPU/full-head choices differ");
-            tokens[s] = ids[s][prefix[s] + 3 + i];
+        if (departure) {
+          if (auto r = departure_steps(true); !r) return r;
+        } else
+          for (std::uint32_t i = 0; i < kSteps; ++i) {
+            std::array<std::int32_t, kOwners> tokens;
+            for (std::uint32_t s = 0; s < kOwners; ++s) {
+              if (selected[s] != choices[i * kOwners + s])
+                return Error("C4 GPU/full-head choices differ");
+              tokens[s] = ids[s][prefix[s] + 3 + i];
+            }
+            if (auto r = joined(tokens, true); !r) return r;
           }
-          if (auto r = joined(tokens, true); !r) return r;
-        }
         for (std::uint32_t s = 0; s < kOwners; ++s)
           for (std::uint32_t i = 0; i < kTail; ++i) {
             if (selected[s] != choices[kSteps * kOwners + s * kTail + i])
@@ -438,7 +553,11 @@ int main(int argc, char** argv) {
                     (*full_state)[s] + "\"";
         record += ",\"gpu_equal\":true,\"restore_equal\":true,\"refusals_unchanged\":true," +
                   std::string("\"joined_prefill_groups\":") + std::to_string(prefill_groups) +
-                  ",\"joined_prefill_rows\":" + std::to_string(prefill_rows) + "}\n";
+                  ",\"joined_prefill_rows\":" + std::to_string(prefill_rows);
+        if (departure)
+          record +=
+              ",\"paused_peer_equal\":true,\"catchup_peers_equal\":true,\"rejoin_equal\":true";
+        record += "}\n";
         if (auto r = Save<char>(out / "state.json", record); !r) return r;
         if (runner.greedy_tokens() != 39 * kOwners)
           return Error("C4 own GPU publication count differs");
@@ -477,6 +596,9 @@ int main(int argc, char** argv) {
                 << " selected_norm_add=" << bound.norm_add
                 << " joined_prefill_groups=" << prefill_groups
                 << " joined_prefill_rows=" << prefill_rows
+                << " c3_selected_owner=" << c3_selected_owner << " c3_waves=" << c3_waves
+                << " catchup_rows=" << catchup_rows << " rejoined_waves=" << rejoined_waves
+                << " departure_passes=" << departure_passes
                 << " gpu_tokens=" << runner.greedy_tokens() << '\n';
       return {};
     });

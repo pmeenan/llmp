@@ -110,8 +110,14 @@ four states/heads and every unequal-padding split have explicit funding checks.
 One equal-width model screen has zero native/stock strict differences and
 146/148 exact heads, with native solo 148/148 exact to stock solo. Both engines
 show the same 12 positive solo/C4 choice changes, so concurrency stays open.
-Short C4 RNNR is +3.29938% versus stock (n2). Public slots remain at two; H8 C3,
-C8/C12, cap50 C4 and bounded-root C4 transfers remain separately unqualified.
+Short C4 RNNR is +3.29938% versus stock (n2). The
+[actual H8 C3 transfer](experiments/gemma-h8-c3/README.md) now reuses that same
+launcher with canonical three-root admission and both mixed-padding funding
+splits. Original packed-C3 operands/replays are exact; a pause/catch-up/C4-rejoin
+model schedule retains exact own state and zero stock strict differences
+(147/148 exact heads). This qualifies that internal schedule, with no new timing
+or solo/batch allowance. Public slots remain at two; unequal C3/C4 model reads,
+continuous arrival, C8/C12, cap50 C3/C4 and bounded-root C3/C4 remain open.
 
 Both Gemma4 profiles' [common-read repair](experiments/gemma4-common-width/README.md)
 recovers their unequal-prefix strict failure. The

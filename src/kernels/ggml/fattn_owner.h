@@ -45,7 +45,7 @@ struct FlashAttnOwners {
 // this does not broaden the readable prefix or the shader index domain.
 // D256/GQA2
 // or D512/GQA8 with heads 16 or 32; D256/H8/GQA2 is additionally
-// admitted only for actual/logical C2 or C4 at offset zero (C4 requires zero softcap).
+// admitted only for actual/logical C2, C3 or C4 at offset zero (C3/C4 require zero softcap).
 // Scale is fixed at 1 (Q already
 // normalized/scaled by the caller). Softcap50 is admitted only at D256/H8/C2;
 // all other contracts require zero. Bounded roots require actual/logical C2

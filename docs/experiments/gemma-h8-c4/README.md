@@ -14,7 +14,9 @@ both change 12 positive-margin choices between solo and joined C4 geometry on
 these supplied histories. A short n=2 C4 timing screen is 3.29938% slower than
 stock. Actual C3 arrival/departure waves, wider cohorts, public adoption, broader
 quality, context, memory, swap and sustained performance remain open. No new
-numerical allowance is introduced.
+numerical allowance is introduced. A subsequent
+[actual C3 departure/rejoin control](../gemma-h8-c3/README.md) passes its separate
+operand and same-schedule model gates; the other limitations above remain open.
 
 ## Checked implementation and funding
 

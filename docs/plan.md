@@ -861,8 +861,14 @@ family" guide, and its long-context scaling work.
       heads); solo native is 148/148 exact to stock solo. Both engines retain
       the same 12 positive-margin solo/C4 differences, leaving concurrency
       open. Short n2 C4 paid latency is +3.29938% with exact natural choices
-      and final heads. Ordinary slots remain capped at two; C3/unequal/arrival
-      model controls, cap50 transfer, C8/C12 and public adoption follow separately.
+      and final heads. Its subsequent
+      [actual C3 departure/rejoin control](experiments/gemma-h8-c3/README.md)
+      passes packed-MMA/FP64/replay and mixed-padding funding controls. Paused
+      peers, scalar catch-up and C4 rejoin retain exact own state/replay/restore;
+      same-schedule stock has zero strict differences over 144 targets and
+      147/148 exact heads. No new timing or concurrency allowance is introduced.
+      Ordinary slots remain capped at two; unequal C3/C4 model reads, continuous
+      arrival, cap50 transfer, C8/C12 and public adoption follow separately.
       Gemma 3 [profile and tensor foundation](gemma3.md) is checked:
       actual approved metadata and all 444 tensor descriptors, separate
       profile/binding and refusal controls; three focused CPU controls pass.

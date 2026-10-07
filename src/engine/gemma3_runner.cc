@@ -104,8 +104,7 @@ Status Gemma3Runner::Setup() {
           // Every nonempty proper long-owner count is measured. Padding three
           // short C4 roots needs three K/V outputs, not the one-short envelope.
           for (std::uint32_t long_count = 0; long_count < count; ++long_count) {
-            if (long_count && ((count != 2 && count != 4) || past != 0 || !o_.owner_decode))
-              continue;
+            if (long_count && ((count < 2 || count > 4) || past != 0 || !o_.owner_decode)) continue;
             std::vector<md::Gemma3Segment> segments;
             for (std::uint32_t i = 0; i < count; ++i) {
               const auto n = rows == budget - count + 1 && i != 0 ? 1U : rows;

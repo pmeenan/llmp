@@ -158,7 +158,7 @@ void Launched(const std::expected<void, KernelFailure>& result, const std::strin
 
 class GgmlExtOpsTest : public ::testing::Test {
  protected:
-  void SmallOwnerControl(std::uint32_t cap, bool four = false);
+  void SmallOwnerControl(std::uint32_t cap, std::uint32_t small_owners = 0);
   void BoundedOwnerControl(std::uint32_t cap);
   void SetUp() override {
     execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
@@ -4689,7 +4689,7 @@ TEST_F(GgmlExtOpsTest, Gemma4BoundedOwnerRootsMatchBothHeadDimensionsAndThePadde
   EXPECT_GT(empty_fixups_by_specialization[1], 0);
 }
 
-void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, bool four) {
+void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, std::uint32_t small_owners) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "Owner implementation is GB10 only";
   int sms = 0;
   ASSERT_EQ(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, launch().device()),
@@ -4699,11 +4699,12 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, bool four) {
     for (const std::int64_t owners : {2, 3, 4})
       for (const std::int64_t d : {256, 512})
         for (const std::int64_t cells : {256, 512, 1024, 4352}) {
-          if (four ? (heads != 8 || owners != 4 || d != 256 || (cells != 256 && cells != 1024))
-                   : owners == 4)
+          if (small_owners ? (heads != 8 || owners != small_owners || d != 256 ||
+                              (cells != 256 && cells != 1024))
+                           : owners == 4)
             continue;
           if (cap != 0 && (heads != 8 || owners != 2 || d != 256)) continue;
-          if (heads == 8 ? (d != 256 || (!four && owners != 2)) : cells != 1024) continue;
+          if (heads == 8 ? (d != 256 || (!small_owners && owners != 2)) : cells != 1024) continue;
           SCOPED_TRACE(std::to_string(heads) + "/" + std::to_string(d) + "/" +
                        std::to_string(cells));
 
@@ -4802,7 +4803,7 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, bool four) {
             EXPECT_GT(plan->owner_blocks_per_sm, 0);
             EXPECT_EQ(plan->cohort_blocks, full_plan->blocks);
             EXPECT_EQ(plan->original.blocks, full_plan->blocks);
-            if (four) EXPECT_EQ(plan->original.scratch, full_plan->scratch);
+            if (small_owners) EXPECT_EQ(plan->original.scratch, full_plan->scratch);
             const auto quad_tiles = static_cast<int>(kvh * owners);
             EXPECT_EQ(plan->original.blocks % quad_tiles == 0, full_plan->blocks % quad_tiles == 0);
             std::cout << "OWNER_SMALL_PLAN cap=" << cap << " owners=" << owners
@@ -4829,7 +4830,7 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, bool four) {
               invalid.owner_count = bad;
               EXPECT_FALSE(kg::CheckFlashAttnOwners(invalid));
             }
-            if (cap != 0 || four) {
+            if (cap != 0 || small_owners != 0) {
               for (const auto bad : {1U, 25U, 51U, UINT32_MAX}) {
                 invalid = in;
                 invalid.logit_softcap = bad;
@@ -4860,7 +4861,7 @@ void GgmlExtOpsTest::SmallOwnerControl(std::uint32_t cap, bool four) {
                                                {.base = Allocate(scratch), .size = Bytes(scratch)});
           ASSERT_TRUE(context) << jitllm::test_support::Failed(context)->detail;
           auto& bounded = **context;
-          if ((cap != 0 || four) && plans[0].original.scratch > 0) {
+          if ((cap != 0 || small_owners != 0) && plans[0].original.scratch > 0) {
             const auto owner_scratch = plans[0].original.scratch;
             auto short_pool = LaunchContext::Create(
                 launch().device(), *execution_, stream_,
@@ -5657,8 +5658,12 @@ TEST_F(GgmlExtOpsTest, Gemma3BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
   BoundedOwnerControl(0);
 }
 
+TEST_F(GgmlExtOpsTest, Gemma3ThreeRealRootsMatchWholePhysicalStreamAndFp64) {
+  SmallOwnerControl(0, 3);
+}
+
 TEST_F(GgmlExtOpsTest, Gemma3FourRealRootsMatchWholePhysicalStreamAndFp64) {
-  SmallOwnerControl(0, true);
+  SmallOwnerControl(0, 4);
 }
 
 TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {

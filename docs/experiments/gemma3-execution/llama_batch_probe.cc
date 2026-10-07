@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Original-image public API: paired prefill and four-owner/solo decode controls.
-// MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT teacher|cycle|solo
+// MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT teacher|cycle|solo|departure
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -49,7 +49,7 @@ void Save(const fs::path& path, std::span<const T> values) {
 struct Shapes {
   using Key = std::array<std::int64_t, 12>;
   std::map<Key, std::uint64_t> counts;
-  bool joined = false, joined_prefill = false;
+  bool joined = false, joined_three = false, joined_prefill = false;
   static bool Observe(ggml_tensor* node, bool ask, void* opaque) {
     if (!ask || node->op != GGML_OP_FLASH_ATTN_EXT) return false;
     auto& self = *static_cast<Shapes*>(opaque);
@@ -63,6 +63,9 @@ struct Shapes {
     self.joined |= key[0] == 256 && key[1] == 1 && key[2] == 8 && key[3] == kOwners &&
                    key[4] == 256 && key[5] >= 256 && key[6] == 4 && key[7] == kOwners &&
                    key[8] == key[5] && key[11] == kOwners;
+    self.joined_three |= key[0] == 256 && key[1] == 1 && key[2] == 8 && key[3] == 3 &&
+                         key[4] == 256 && key[5] >= 256 && key[6] == 4 && key[7] == 3 &&
+                         key[8] == key[5] && key[11] == 3;
     self.joined_prefill |= key[0] == 256 && key[1] == 128 && key[2] == 8 && key[3] == 2 &&
                            key[4] == 256 && key[6] == 4 && key[7] == 2;
     return false;  // Metadata only: never request operand download.
@@ -72,9 +75,10 @@ double Seconds(Clock::duration value) { return std::chrono::duration<double>(val
 }  // namespace
 int main(int argc, char** argv) {
   try {
-    Require(argc == 8, "MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT teacher|cycle|solo");
+    Require(argc == 8, "MODEL IDS0 TEXT0 IDS1 TEXT1 NEW_OUT teacher|cycle|solo|departure");
     const std::string mode = argv[7];
-    const bool solo = mode == "solo", teacher = mode == "teacher" || solo;
+    const bool solo = mode == "solo", departure = mode == "departure",
+               teacher = mode == "teacher" || solo || departure;
     Require(teacher || mode == "cycle", "unknown mode");
     Require(!std::getenv("GGML_CUDA_DISABLE_FUSION") && !std::getenv("GGML_CUDA_DISABLE_GRAPHS"),
             "stock overrides present");
@@ -208,20 +212,21 @@ int main(int argc, char** argv) {
         }
         past[slot] += static_cast<int>(tokens.size());
       };
-      const auto joined = [&](const std::array<llama_token, kOwners>& tokens) {
+      const auto joined = [&](const std::array<llama_token, kOwners>& tokens, int count = kOwners) {
         if (solo) {
           for (int s = 0; s < kOwners; ++s) independent(s, std::span(&tokens[s], 1), true);
           return;
         }
-        batch.value.n_tokens = kOwners;
-        for (int s = 0; s < kOwners; ++s) add(s, s, tokens[s], past[s], true);
+        batch.value.n_tokens = count;
+        for (int s = 0; s < count; ++s) add(s, s, tokens[s], past[s], true);
         Require(llama_decode(ctx.get(), batch.value) == 0, "joined decode failed");
-        for (int s = 0; s < kOwners; ++s) {
+        for (int s = 0; s < count; ++s) {
           publish(s, s);
           ++past[s];
         }
       };
       std::uint64_t prefill_groups = 0, prefill_rows = 0;
+      int c3_waves = 0, catchup_rows = 0, rejoined_waves = 0;
       const auto prompt = [&] {
         for (int first = 0; first < kOwners; first += 2) {
           while (past[first] < prefix[first]) {
@@ -275,33 +280,72 @@ int main(int argc, char** argv) {
         for (const auto& row : published)
           rows.write(reinterpret_cast<const char*>(row.data()), kVocab * 4);
       };
+      std::array<bool, (kSteps + kTail + 1) * kOwners> written{};
+      const auto write_head = [&](int index, int slot) {
+        Require(index >= 0 && index < static_cast<int>(written.size()) && slot >= 0 &&
+                    slot < kOwners && !written[index] && published[slot].size() == kVocab,
+                "departure row publication invalid or duplicate");
+        Require(std::ranges::all_of(published[slot], [](float x) { return std::isfinite(x); }),
+                "departure row is nonfinite");
+        rows.seekp(static_cast<std::streamoff>(std::uint64_t(index) * kVocab * sizeof(float)));
+        rows.write(reinterpret_cast<const char*>(published[slot].data()), kVocab * 4);
+        Require(bool(rows), "departure row publication failed");
+        written[index] = true;
+      };
       if (teacher) {
         rows.open(out / "heads.f32", std::ios::binary | std::ios::noreplace);
         Require(bool(rows), "teacher rows must be new");
-        write_rows();
+        if (departure) {
+          for (int s = 0; s < kOwners; ++s) write_head(s, s);
+        } else
+          write_rows();
       }
       std::vector<llama_token> choices((kSteps + (teacher ? kTail : 0)) * kOwners);
       const auto decode_begin = Clock::now();
       for (int i = 0; i < kSteps; ++i) {
-        std::array<llama_token, kOwners> tokens;
-        for (int s = 0; s < kOwners; ++s) {
+        if (departure && i == 16) {
+          Require(past[3] == 267, "paused stock cursor differs");
+          for (int j = 8; j < 16; ++j) {
+            choices[j * kOwners + 3] = selected[3];
+            independent(3, std::span(ids[3]).subspan(past[3], 1), true);
+            write_head((j + 1) * kOwners + 3, 3);
+            ++catchup_rows;
+          }
+          Require(std::ranges::all_of(past, [](int n) { return n == 275; }),
+                  "stock catchup/rejoin cursors differ");
+        }
+        const int count = departure && i >= 8 && i < 16 ? 3 : kOwners;
+        std::array<llama_token, kOwners> tokens{};
+        for (int s = 0; s < count; ++s) {
           choices[static_cast<std::size_t>(i * kOwners + s)] = selected[s];
           tokens[s] = teacher ? ids[s][prefix[s] + 3 + i] : selected[s];
         }
         final_head = !teacher && i + 1 == kSteps;
-        joined(tokens);
-        if (teacher) write_rows();
+        joined(tokens, count);
+        if (teacher) {
+          if (departure) {
+            for (int s = 0; s < count; ++s) write_head((i + 1) * kOwners + s, s);
+          } else
+            write_rows();
+        }
+        if (departure && count == 3) ++c3_waves;
+        if (departure && i >= 16) ++rejoined_waves;
       }
       if (teacher) {
         for (int s = 0; s < kOwners; ++s)
           for (int i = 0; i < kTail; ++i) {
             choices[kSteps * kOwners + s * kTail + i] = selected[s];
             independent(s, std::span(ids[s]).subspan(past[s], 1), true);
-            rows.write(reinterpret_cast<const char*>(published[s].data()), kVocab * 4);
+            if (departure)
+              write_head((kSteps + 1) * kOwners + s * kTail + i, s);
+            else
+              rows.write(reinterpret_cast<const char*>(published[s].data()), kVocab * 4);
           }
       }
       const auto decode = Seconds(Clock::now() - decode_begin);
       if (teacher) {
+        Require(!departure || std::ranges::all_of(written, [](bool n) { return n; }),
+                "departure canonical row coverage incomplete");
         rows.flush();
         Require(bool(rows), "complete teacher rows failed");
       }
@@ -311,8 +355,9 @@ int main(int argc, char** argv) {
       Save<float>(out / "final.f32", final);
       Require(backend_tokens == (teacher ? 40U : 48U) * kOwners, "backend sample count differs");
       if (teacher) {
-        Require((solo || shapes.joined) && shapes.joined_prefill,
-                "ordinary stock C4 FLASH geometry not observed");
+        Require(
+            (solo || shapes.joined) && (!departure || shapes.joined_three) && shapes.joined_prefill,
+            "ordinary stock C4 FLASH geometry not observed");
         for (const auto& [key, count] : shapes.counts) {
           std::cout << "GEMMA3_C4_BATCH_STOCK_FLASH count=" << count;
           for (auto value : key) std::cout << ' ' << value;
@@ -329,8 +374,9 @@ int main(int argc, char** argv) {
                 << " decode_seconds=" << decode << " joined_prefill_groups=" << prefill_groups
                 << " joined_prefill_rows=" << prefill_rows << " backend_tokens=" << backend_tokens
                 << " sampled_logits_min=" << sampled_min << " sampled_logits_max=" << sampled_max
-                << " observer=" << teacher << " tokenized_equal=4 final_head_paid=" << !teacher
-                << '\n';
+                << " c3_waves=" << c3_waves << " catchup_rows=" << catchup_rows
+                << " rejoined_waves=" << rejoined_waves << " observer=" << teacher
+                << " tokenized_equal=4 final_head_paid=" << !teacher << '\n';
     }
     llama_backend_free();
     std::cout << "GEMMA3_C4_BATCH_STOCK_RETIRED\n";

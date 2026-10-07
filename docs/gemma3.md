@@ -266,5 +266,12 @@ Joined native/stock has zero strict differences over 148 heads / 144 targets;
 both engines change the same 12 positive-margin choices across solo/C4 geometry,
 so concurrency qualification remains open. One short n=2 C4 RNNR is +3.29938%
 paid latency against stock with exact natural choices/final heads. This internal
-foundation leaves ordinary admission at two slots; actual C3/unequal/arrival
-geometry, wider cohorts and public adoption require separate proof.
+foundation leaves ordinary admission at two slots. The subsequent
+[actual C3 departure/rejoin control](experiments/gemma-h8-c3/README.md) passes
+original packed-MMA/FP64/replay and explicit mixed-padding funding checks.
+Eight real C3 waves preserve a paused fourth owner, followed by scalar catch-up
+and sixteen C4 rejoin waves, with exact peer state/cursors, GPU replay and
+checkpoint restoration. Native and same-schedule stock have 147/148 exact heads
+and zero strict differences over 144 targets. This adds no timing or concurrency
+allowance; unequal C3/C4 model reads, continuous arrival, wider cohorts and
+public adoption remain open.

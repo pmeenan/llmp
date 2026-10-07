@@ -181,12 +181,12 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
   const auto owners = static_cast<std::uint32_t>(g.segments.size());
   const bool owner_decode =
       o.owner_decode && shape.output_mode == Gemma3OutputMode::kHead && shape.outputs == owners &&
-      (owners == 2 || owners == 4) && std::ranges::all_of(g.segments, [](const auto& segment) {
+      (owners >= 2 && owners <= 4) && std::ranges::all_of(g.segments, [](const auto& segment) {
         return segment.shape.rows == 1 && segment.shape.global_n_kv <= 16384 &&
                segment.shape.local_n_kv <= 16384;
       });
   // Copy-free unequal roots retain their qualified two-owner contract. Four
-  // owners use real funded padding until that distinct transfer is qualified.
+  // or three owners use real funded padding until those transfers are qualified.
   const bool bounded_decode = owner_decode && o.bounded_roots && owners == 2;
   const bool packed_prefill = o.packed_prefill && g.segments.size() == 2 &&
                               g.segments[0].shape.rows > 1 &&
