@@ -35,6 +35,8 @@ def main():
     parser.add_argument('--binding', type=Path, required=True)
     parser.add_argument('--context-root', type=Path, required=True)
     parser.add_argument('--library-path', type=Path, required=True)
+    parser.add_argument('--bounded-roots', action='store_true',
+                        help='Require fresh unequal/ring copy-free gates and actual bounded plans')
     args = parser.parse_args()
     binding = json.loads(args.binding.read_text())
     runtime_sha = binding['paths']['build/spark-native/src/runtime/jitllm-runtime']['sha256']
@@ -43,8 +45,10 @@ def main():
     for name in ('libcublas.so.13', 'libcublasLt.so.13'):
         assert sha(args.library_path / name) == binding['paths']['build/spark-native/lib/jitllm/' + name]['sha256']
     environment = {**os.environ, 'LD_LIBRARY_PATH': str(args.library_path.resolve())}
-    # All three actual context/refusal/reference screens must finish first.
-    for scenario in ('unequal', 'ring', 'short'):
+    # The original screen keeps all three gates; adoption requires its two fresh
+    # same-policy own/reference gates and an actual unequal-root selection below.
+    scenarios = ('unequal', 'ring') if args.bounded_roots else ('unequal', 'ring', 'short')
+    for scenario in scenarios:
         assert json.loads((args.context_root / scenario / 'quality.json').read_text())['passed']
         assert json.loads((args.context_root / scenario / 'own-control.json').read_text())['state']['restore_equal']
     record = json.loads((args.context_root / 'ring/inputs.json').read_text())
@@ -78,7 +82,7 @@ def main():
     result = dict(schema=1, runtime_sha256=runtime_sha, binding_sha256=sha(args.binding),
                   harness_sha256=sha(Path(__file__)), artifact=ARTIFACT,
                   template_sha256=TEMPLATE, context=4096, max_slots=2, prefill_chunk=128,
-                  ordinary_production=True, cases=[], epochs=[],
+                  ordinary_production=True, bounded_roots=args.bounded_roots, cases=[], epochs=[],
                   scope='HTTP lifecycle and actual successful two-owner groups; no endpoint throughput claim')
     process = None
     log = None
@@ -221,7 +225,31 @@ def main():
                 assert 400 <= error.code < 500
                 error.read()
             choice(post('/v1/completions', literal(ring[0],1)),1)
-            return dict(owners=details, over_context_refused=True, followup_healthy=True,
+            unequal = []
+            if args.bounded_roots:
+                # The serial ring checks above cannot witness unequal joined
+                # attention. Start two actual literal owners in different KV
+                # buckets; the drained bound-plan counter below proves selection.
+                barrier = threading.Barrier(2)
+                def joined(slot):
+                    ids = ring[slot][:256 if slot == 0 else 768]
+                    barrier.wait(timeout=60)
+                    response = post('/v1/completions', literal(ids,32))
+                    row = choice(response,32)
+                    scores = row['logprobs']
+                    tokens = [int(n.removeprefix('token_id:')) for n in scores['tokens']]
+                    assert response['usage']['prompt_tokens'] == len(ids)
+                    assert len(tokens) == 32 and all(0 <= n < 262208 for n in tokens)
+                    assert len(scores['token_logprobs']) == len(scores['top_logprobs']) == 32
+                    assert all(math.isfinite(n) for n in scores['token_logprobs'])
+                    assert all(len(d) == 2 and all(math.isfinite(n) for n in d.values())
+                               for d in scores['top_logprobs'])
+                    return dict(slot=slot, prompt_rows=len(ids), generated_tokens=len(tokens),
+                                likelihoods_finite=True)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    unequal = list(pool.map(joined,range(2)))
+            return dict(owners=details, unequal_joined_requests=unequal,
+                        over_context_refused=True, followup_healthy=True,
                         cross_geometry_scope='descriptive; separate fresh prefill geometry')
         case('literal-ring-continuations-and-bounds', literals)
 
@@ -288,6 +316,8 @@ def main():
         assert result['epochs'][0]['final']['joined_groups'] > 0
         assert result['epochs'][0]['final']['joined_units'] == 2*result['epochs'][0]['final']['joined_groups']
         assert result['epochs'][0]['final']['bound_owner_attention'] > 0
+        if args.bounded_roots:
+            assert result['epochs'][0]['final']['bound_bounded_owner_attention'] > 0
         records = sorted((args.output/'spill/conversations'/ARTIFACT).glob('slot-*.record'))
         assert len(records) == 2
         kept = []

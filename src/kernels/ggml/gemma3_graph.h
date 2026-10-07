@@ -46,6 +46,8 @@ struct Gemma3GraphOptions {
   bool owner_decode = false;
   // Explicit equal-row/equal-read C2 prefill with real packed K/V backing.
   bool packed_prefill = false;
+  // Explicit C2 transfer: actual cache roots at the common logical width.
+  bool bounded_roots = false;
   bool operator==(const Gemma3GraphOptions&) const = default;
 };
 struct Gemma3WeightLeaf {

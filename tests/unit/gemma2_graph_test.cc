@@ -127,7 +127,7 @@ TEST(Gemma2Graph, BoundedOwnerRootsRejectMalformedActualViewsAndMetadata) {
   bad.bounded_roots = false;
   EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
   bad = *in;
-  bad.logit_softcap = 0;
+  bad.logit_softcap = 25;
   EXPECT_FALSE(kg::CheckFlashAttnOwners(bad));
   bad = *in;
   bad.k[1] = bad.k[0];

@@ -37,6 +37,8 @@ struct Gemma3Options {
   std::uint32_t max_head_rows = 0;
   bool graphs = true, frontier_head = true;
   bool owner_decode = false, packed_prefill = false;
+  // Opt-in copy-free C2 attention; state layout and publication are unchanged.
+  bool bounded_roots = false;
   // Explicit numerical comparisons only; ordinary plans use primitives.
   bool fuse_norms = false, fuse_quant_glu = false, fuse_norm_rope = false, fuse_norm_add = false;
   std::function<LiveState::SpillPlace(std::uint32_t)> spill_place = {};
@@ -82,7 +84,7 @@ class Gemma3Runner final : public PagedModel {
   // plans later reclaimed. Setup's envelope probes are not counted.
   struct PlanSelections {
     std::uint64_t plans = 0, steps = 0, norm_mul = 0, quant_geglu = 0, norm_rope = 0, norm_add = 0,
-                  owner_attention = 0, packed_prefill_attention = 0;
+                  owner_attention = 0, packed_prefill_attention = 0, bounded_owner_attention = 0;
   };
   Gemma3Runner(PagedNode& node, Gemma3Options options, int owner, std::uint32_t stream);
   ~Gemma3Runner() override;

@@ -66,6 +66,63 @@ kg::DeviceChoices Choices() {
   return out;
 }
 
+TEST(Gemma3Plan, BoundedOwnerRootsKeepActualViewsAndRecipeIdentity) {
+  Case c;
+  c.state = *md::Gemma3State(c.p, 4096, 128);
+  c.shape = {{{0, 1, 259, 512, 512}, {1, 1, 771, 1024, 1024}}, 2};
+  std::array<std::uint64_t, 2> extents{}, source_bytes{};
+  for (const bool bounded : {false, true}) {
+    auto arena = kg::TensorArena::Create(kg::Gemma3GraphTensors(c.p, 2));
+    ASSERT_TRUE(arena);
+    auto graph = kg::BuildGemma3Graph(
+        *arena, c.p, c.binding, c.state, c.shape,
+        {.narrow_final = true, .owner_decode = true, .bounded_roots = bounded});
+    ASSERT_TRUE(graph);
+    auto model = Places(c, *graph);
+    auto measured = en::PlanGemma3Chunk(model, c.shape, Choices(), 0, 0);
+    ASSERT_TRUE(measured) << *jitllm::test_support::Failed(measured);
+    extents[bounded] = (*measured)->placement.extent;
+    auto placed = en::PlanGemma3Chunk(model, c.shape, Choices(), std::uint64_t{1} << 53U,
+                                      (*measured)->placement.extent);
+    ASSERT_TRUE(placed) << *jitllm::test_support::Failed(placed);
+    auto& g = (*placed)->graph;
+    std::size_t owners = 0, cache_copies = 0;
+    for (const auto* node : g.nodes) {
+      cache_copies += node->op == GGML_OP_CONCAT && node->ne[0] == 256 && node->ne[1] == 4;
+      if (kg::JitllmOpOf(node) != kg::JitllmOp::kFlashAttnOwners) continue;
+      ++owners;
+      auto inputs = kg::FlashAttnOwnersFromNode(const_cast<ggml_tensor*>(node));
+      ASSERT_TRUE(inputs);
+      EXPECT_EQ(inputs->bounded_roots, bounded);
+      EXPECT_EQ(inputs->mask->ne[0], 1024);
+      EXPECT_EQ(inputs->k[0]->ne[1], bounded ? 512 : 1024);
+      EXPECT_EQ(inputs->v[0]->ne[1], bounded ? 512 : 1024);
+      EXPECT_EQ(inputs->k[1]->ne[1], 1024);
+      if (bounded) EXPECT_NE(inputs->k[0]->view_src, nullptr);
+    }
+    EXPECT_EQ(owners, 34U);
+    EXPECT_EQ(cache_copies, bounded ? 0U : 68U);
+    EXPECT_EQ(g.segments[0].global_mask->ne[0], 512);
+    EXPECT_EQ(g.segments[1].global_mask->ne[0], 1024);
+    EXPECT_TRUE(en::BindGemma3Weights(model, g));
+    g.options.bounded_roots = !bounded;
+    EXPECT_FALSE(en::BindGemma3Weights(model, g));
+    g.options.bounded_roots = bounded;
+    EXPECT_TRUE(en::BindGemma3Weights(model, g));
+    const std::array<md::Gemma3Segment, 2> segments{{{0, 259, c.b}, {1, 771, c.b}}};
+    const auto input = md::Gemma3Chunk(c.p, c.state, segments, true);
+    ASSERT_TRUE(input);
+    const auto bytes = en::Gemma3SourceBytes(g);
+    ASSERT_TRUE(bytes);
+    source_bytes[bounded] = *bytes;
+    const std::array<std::int32_t, 2> frontier{0, 1};
+    EXPECT_TRUE(en::Gemma3Sources(g, *input, frontier, {}, *bytes));
+    EXPECT_FALSE(en::Gemma3Sources(g, *input, frontier, {}, *bytes - 1));
+  }
+  EXPECT_LT(extents[1], extents[0]);
+  EXPECT_EQ(source_bytes[0], source_bytes[1]);
+}
+
 TEST(Gemma3Plan, JoinedPrefillFundsTotalRowsWithoutChangingSlotLayout) {
   Case c;
   c.state = *md::Gemma3State(c.p, 4096, 128);

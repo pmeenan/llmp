@@ -881,8 +881,15 @@ family" guide, and its long-context scaling work.
       transitions, with 73/74, 70/74 and 74/74 exact heads. One matched short
       C2 cycle is 1.49% above stock. Actual joined-prefill HTTP/restart gates
       pass; a cold native C2 endpoint bookend improves 14.03% with exact
-      generated IDs/usage at that separate boundary. Wider cohorts, broader
-      memory/swap/context and sustained quality/performance remain open. The deferred and dropped
+      generated IDs/usage at that separate boundary. The subsequent
+      [copy-free bounded-read transfer](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads-2026-10-07)
+      preserves exact padded/bounded native heads/state; fresh small/ring stock
+      screens have 73/74 and 70/74 exact heads and zero strict differences.
+      A same-binary short n=2 screen lowers native paid latency 5.77372%, to
+      −0.29466% versus original stock, with identical histories/final heads.
+      Four HTTP aggregate cases/two clean epochs pass with actual bounded plans
+      and exact matched cached replay. Wider cohorts, broader memory/swap/context
+      and sustained quality/performance remain open. The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);

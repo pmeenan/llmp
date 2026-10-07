@@ -126,9 +126,12 @@ std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& i
       (in.logit_softcap != 50 || in.q->ne[0] != 256 || in.q->ne[2] != 8 || in.owner_count != 2 ||
        in.logical_cohort != 2 || in.owner_offset != 0))
     return Rejected("owner MMA softcap requires the closed Gemma2 D256/H8/C2 cap50 path");
-  if (in.bounded_roots && (in.logit_softcap != 50 || in.q->ne[0] != 256 || in.q->ne[2] != 8 ||
-                           in.owner_count != 2 || in.logical_cohort != 2 || in.owner_offset != 0))
-    return Rejected("bounded owner roots require the closed Gemma2 cap50/C2 path");
+  const bool bounded_shape = (in.logit_softcap == 50 && in.q->ne[0] == 256 && in.q->ne[2] == 8) ||
+                             (in.logit_softcap == 0 && ((in.q->ne[0] == 256 && in.q->ne[2] == 8) ||
+                                                        in.q->ne[2] == 16 || in.q->ne[2] == 32));
+  if (in.bounded_roots &&
+      (!bounded_shape || in.owner_count != 2 || in.logical_cohort != 2 || in.owner_offset != 0))
+    return Rejected("bounded owner roots require the closed Gemma2/Gemma3/Gemma4 C2 paths");
   if (in.mask->ne[0] < 256 || in.mask->ne[0] > 16384 || in.mask->ne[0] % 256 != 0)
     return Rejected("owner MMA requires bounded actual padded cache widths");
   const auto cells = std::size_t(in.mask->ne[0]);

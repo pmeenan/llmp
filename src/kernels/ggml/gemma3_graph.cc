@@ -53,6 +53,8 @@ std::expected<void, KernelFailure> CheckGemma3Graph(const md::Gemma3Profile& p,
                                                     const Gemma3GraphOptions& o) {
   if (auto checked = md::CheckGemma3Binding(p, binding); !checked) return Rejected(checked.error());
   if (!state.Representations(p)) return Rejected("invalid Gemma3 state layout");
+  if (o.bounded_roots && !o.owner_decode)
+    return Rejected("Gemma3 bounded roots require explicit owner decode");
   const bool state_only = shape.output_mode == Gemma3OutputMode::kStateOnly;
   const auto limit = o.max_total_rows == 0 ? state.max_rows : o.max_total_rows;
   if (limit < state.max_rows || limit > md::kGemma3MaxRows ||
@@ -212,7 +214,7 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
   }
 
   std::array<std::array<ggml_tensor*, 2>, 2> owner_zero_tails{};
-  if (owner_decode) {
+  if (owner_decode && !o.bounded_roots) {
     for (std::size_t owner = 0; owner < 2; ++owner) {
       for (std::size_t local = 0; local < 2; ++local) {
         const auto read = [&](std::size_t index) {
@@ -330,7 +332,9 @@ std::expected<Gemma3Graph, KernelFailure> BuildGemma3Graph(TensorArena& arena,
       // View that parent; only masks are joined, never independent K/V roots.
       auto* packed_q = ggml_permute(c, ggml_reshape_4d(c, q, d, p.heads, 1, 2), 0, 2, 1, 3);
       auto* mask = p.local(il) ? owner_local_mask : owner_global_mask;
-      auto* attention = FlashAttnOwnersNode(c, packed_q, mask, owner_keys, owner_values, 2, 2);
+      auto* attention =
+          FlashAttnOwnersNode(c, packed_q, mask, owner_keys, owner_values, 2, 2, 0, 0,
+                              o.bounded_roots && owner_keys[0]->ne[1] != owner_keys[1]->ne[1]);
       named(prefix + "owner_attention", attention);
       joined = ggml_reshape_2d(c, attention, std::int64_t{d} * p.heads, 2);
       expanded.push_back(joined);

@@ -159,6 +159,7 @@ void Launched(const std::expected<void, KernelFailure>& result, const std::strin
 class GgmlExtOpsTest : public ::testing::Test {
  protected:
   void SmallOwnerControl(std::uint32_t cap);
+  void BoundedOwnerControl(std::uint32_t cap);
   void SetUp() override {
     execution_ = std::move(jitllm::providers::cuda::OpenDeviceExecution(0).value());
     stream_ = execution_->CreateStream().value();
@@ -5066,7 +5067,7 @@ TEST_F(GgmlExtOpsTest, Gemma2UnequalOwnerPaddingMatchesTheSoftcappedCommonStream
   }
 }
 
-TEST_F(GgmlExtOpsTest, Gemma2BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
+void GgmlExtOpsTest::BoundedOwnerControl(std::uint32_t cap) {
   if (ComputeCapability() != 1210) GTEST_SKIP() << "GB10 two-owner control";
   constexpr std::int64_t d = 256, heads = 8, kvh = 4;
   for (const auto widths : {std::array<std::int64_t, 2>{512, 1024}, {256, 1536}})
@@ -5119,7 +5120,7 @@ TEST_F(GgmlExtOpsTest, Gemma2BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
       in.mask = owner_mask;
       in.output = Place(ggml_new_tensor_4d(ctx, GGML_TYPE_F32, d, heads, 1, 2));
       in.owner_count = in.logical_cohort = 2;
-      in.logit_softcap = 50;
+      in.logit_softcap = cap;
       in.bounded_roots = true;
       for (std::size_t owner = 0; owner < 2; ++owner) {
         auto* key = raw_k[owner];
@@ -5138,7 +5139,8 @@ TEST_F(GgmlExtOpsTest, Gemma2BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
       auto* v = ggml_permute(ctx, physical_v, 0, 2, 1, 3);
       TensorArena::Bind(k, reinterpret_cast<std::uintptr_t>(physical_k->data));
       TensorArena::Bind(v, reinterpret_cast<std::uintptr_t>(physical_v->data));
-      auto* whole = Place(ggml_flash_attn_ext(ctx, q, k, v, physical_mask, 1, 0, 50));
+      auto* whole =
+          Place(ggml_flash_attn_ext(ctx, q, k, v, physical_mask, 1, 0, static_cast<float>(cap)));
       ggml_prec_set_acc(whole, GGML_PREC_F32);
       auto plan = kg::PlanFlashAttnMmaGqa2(launch(), whole);
       auto owners = kg::PlanFlashAttnOwners(launch(), in);
@@ -5149,7 +5151,7 @@ TEST_F(GgmlExtOpsTest, Gemma2BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
       EXPECT_EQ(owners->cohort_blocks, plan->blocks);
       EXPECT_EQ(owners->original.mask_prepass, plan->mask_prepass);
       EXPECT_TRUE(plan->mask_prepass);
-      const auto shape = kg::detail::FlashAttnMmaShapeGqa2(4, launch().device(), true);
+      const auto shape = kg::detail::FlashAttnMmaShapeGqa2(4, launch().device(), cap != 0);
       ASSERT_TRUE(shape);
       EXPECT_EQ(owners->original_blocks_per_sm, shape->blocks_per_sm);
       EXPECT_GT(owners->owner_blocks_per_sm, 0);
@@ -5272,7 +5274,7 @@ TEST_F(GgmlExtOpsTest, Gemma2BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
               for (std::int64_t i = 0; i < d; ++i)
                 dot += static_cast<double>(qdata[n((owner * heads + head) * d + i)]) *
                        ggml_fp16_to_fp32(pk[n(((owner * cells + cell) * kvh + head / 2) * d + i)]);
-              scores[n(cell)] = 50.0 * std::tanh(dot / 50.0);
+              scores[n(cell)] = cap == 0 ? dot : double(cap) * std::tanh(dot / double(cap));
               largest = std::max(largest, scores[n(cell)]);
             }
             double sum = 0;
@@ -5283,7 +5285,7 @@ TEST_F(GgmlExtOpsTest, Gemma2BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
                     std::exp(scores[n(cell)] - largest) / sum *
                     ggml_fp16_to_fp32(pv[n(((owner * cells + cell) * kvh + head / 2) * d + i)]);
           }
-        ExpectNmse(eager, want, kFlashAttnNmse, "softcap50 bounded actual owner FP64");
+        ExpectNmse(eager, want, kFlashAttnNmse, "bounded actual owner FP64");
         if (pass != 0) EXPECT_NE(eager, prior);
         if (!graph) {
           auto captured = (*paid)->Capture(run);
@@ -5316,15 +5318,24 @@ TEST_F(GgmlExtOpsTest, Gemma2BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
                                     [](ggml_fp16_t x) { return x == ggml_fp32_to_fp16(NAN); }));
           }
         }
-        std::cout << "GEMMA2_BOUNDED_ROOTS pass=" << pass << " actual0=" << actual_cells(0)
-                  << " actual1=" << actual_cells(1) << " common_cells=" << cells
-                  << " empty_completion=" << empty_completion << " empty_fixup=" << empty_fixup
+        std::cout << "GEMMA_BOUNDED_ROOTS cap=" << cap << " pass=" << pass
+                  << " actual0=" << actual_cells(0) << " actual1=" << actual_cells(1)
+                  << " common_cells=" << cells << " empty_completion=" << empty_completion
+                  << " empty_fixup=" << empty_fixup
                   << " bounded_occupancy=" << owners->owner_blocks_per_sm
                   << " columns=" << plan->columns << " blocks=" << plan->blocks
                   << " scan=" << plan->mask_prepass << " scratch=" << scratch << '\n';
         prior = eager;
       }
     }
+}
+
+TEST_F(GgmlExtOpsTest, Gemma2BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
+  BoundedOwnerControl(50);
+}
+
+TEST_F(GgmlExtOpsTest, Gemma3BoundedOwnerRootsMatchThePaddedOracleAndFp64) {
+  BoundedOwnerControl(0);
 }
 
 TEST_F(GgmlExtOpsTest, TwoAndThreeRealRootsMatchWholePhysicalStreamMmaExactly) {

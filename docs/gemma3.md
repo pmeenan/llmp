@@ -227,14 +227,24 @@ and +2.36% C2 paid latency versus ordinary stock backend greedy, not parity qual
 The [compatible-prefill screen](experiments/gemma3-execution/README.md#compatible-joint-prefill-and-common-attention-reads)
 adds equal 2–128-row plain chunks, with a separately funded 256-row wave and
 unchanged 128-row per-owner/checkpoint layout. Real K/V activation packing
-matches stock multirow attention; shorter decode reads receive funded zero
-K/V and invisible mask tails before common-width owner attention. Actual cache
+matches stock multirow attention; the earlier recipe gave shorter decode reads
+funded zero K/V and invisible mask tails before common-width owner attention. Actual cache
 widths, initialized footprints and cursors remain independent. Unequal, wrapped
 ring and short screens have zero strict differences over 216 targets, with
 73/74, 70/74 and 74/74 exact heads. One matched short C2 cycle is 1.49% above
 stock. Actual joined-prefill HTTP counters and matched cached restart controls
 pass; the cold native C2 endpoint bookend improves 14.03% with exact generated
 IDs/usage. That endpoint boundary is distinct from the runner comparison.
+The [copy-free transfer](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads-2026-10-07)
+now selects bounded actual-root reads for unequal D256/H8/C2 decode, preserving
+logical common partitions and unchanged tile arithmetic. Padded and bounded
+native heads/state are exact at representative small and wrapped-ring shapes;
+stock screens retain 73/74 and 70/74 exact heads with zero strict differences.
+A same-binary short n=2 screen reduces native paid latency by 5.77372%, to
+−0.29466% against the current original stock comparator, with identical natural
+choices/final heads. Four HTTP aggregate cases and two clean restart epochs
+pass with actual bounded selections and exact matched cached replay. This establishes no
+sustained or endpoint parity.
 Wider cohorts, broader memory/swap and sustained gates remain open. The serving
 GPU fixture currently requires provisioning on Spark B before its full models
 tier can run there.

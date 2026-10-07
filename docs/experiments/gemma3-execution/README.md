@@ -291,7 +291,7 @@ All four histories and finite final heads preserve the preceding full-head
 cycle hashes. This short comparison retains a latency gap; it does not
 establish parity or isolate the speed effect relative to the earlier run.
 
-On Spark A, official `m35-gemma3-greedy` completes all 18 steps with exit0,
+On Spark A, official `m35-gemma3-greedy` completes all 18 steps with exit 0,
 including nine focused graph/plan tests and explicit native/container
 retirement. The actual native binary SHA-256 is
 `aaa95401e41cb30db27c29e54356d2e23d58356927ecdd37317b2b1ea1d0ce09`;
@@ -358,7 +358,7 @@ whole-cycle difference to that span.
 
 Official `m35-gemma3-source-cost` completes its two host-diagnostic steps;
 `m35-gemma3-validation` completes all 15 build/control/quality/timing steps,
-both with exit0. The final native binary SHA-256 is
+both with exit 0. The final native binary SHA-256 is
 `e72bbf9d7663a409f1ec899b6a12586ac95802891752b9234ea56beff627d127`.
 The unchanged diagnostic source SHA-256 is
 `714844b5dfe777465dafb51005b0637123b053d0f5ebcbac688c26c6052959e2`;
@@ -477,7 +477,7 @@ and default off in the runner.
 
 Official `m35-gemma3-c2-build2` completes four prerequisite steps and
 `m35-gemma3-c2` completes all 17 build/own/reference/quality/timing steps,
-both exit0. Native binary SHA-256 is
+both exit 0. Native binary SHA-256 is
 `9b48244d3188dabc792fa8066abd81d32d52ffa675721ad88b3985e407007698`;
 the original-image caller is
 `301ccb418e723a37414c121a9da6f4bad6ec98df011019041be00f8aaa7cf197`.
@@ -748,3 +748,110 @@ At this optimization's entry, TensorFold HEAD was rechecked as
 Its native Zig recipes document no matching Gemma3 CUDA/GGUF target, so it is
 ineligible for this comparator screen. Earlier pinned observations above
 remain historical.
+
+## Copy-free bounded owner reads — 2026-10-07
+
+The bounded two-owner recipe now reads independent cache roots without
+materializing the shorter full K/V prefix. One short same-binary causal screen
+reduces native paid latency from 692.1795 to 652.215 ms (−5.77372%, n=2),
+against 654.1425 ms for the current original stock comparator (−0.29466%).
+All six arms retain identical 64 natural choices and both final full heads.
+This is representative short C2 evidence at context 4096, not sustained,
+endpoint, wider-cohort or maximum-context qualification.
+
+The checked transfer admits no-softcap D256/H8/C2, with aligned independent
+actual roots and the original common logical width, stream-K partition,
+query precision and floating tile/reduction arithmetic. Nonempty partitions
+stop at each actual cache bound; wholly absent partitions publish neutral
+metadata and zero numerators without preloading absent tiles. Sinks, sparse
+inputs and unsupported layouts refuse. The exact bounded specialization has
+its own occupancy query while the original specialization determines logical
+grid and scratch. Equal-width/legacy paths and internal false defaults remain;
+the existing bounded serving factory explicitly selects the policy. Multirow
+packed prefill, state descriptors and checkpoint layout are unchanged.
+
+Four cap0 operand configurations cover 512/1024 and 256/1536 roots in both
+owner orders, poisoned invisible tails and scratch, both empty-partition
+metadata banks, FP64 error and fresh captured replays. They are byte exact to
+the padded original MMA oracle; maximum NMSE is 6.11982e−7 against the existing
+5e−4 bound. The representative grid retains columns4, 48 blocks, mask prepass
+and 399616 scratch bytes, with bounded occupancy1. The focused Spark B check
+passes all 22 cases, including cap50, legacy no-cap and D256/D512 controls.
+
+Native padded/bounded own runs freeze identical full heads, choices, final
+heads and both initialized states before stock is read. Device/full-head
+choices, eager/capture, Clear, spill/restore, refusal before mutation and
+partial departure remain exact. The first representative model screen uses
+256/768 prefixes; the separate adoption screen wraps the 1280-cell local ring
+with 1280/1536 prefixes. Its three supplied warm writes use local indices 0–2
+and 256–258; global read widths differ while both local widths remain 1280.
+The state cursors finish at 1319/1575 after joined and departure controls.
+
+| Prefix positions | Exact stock heads / 74 | Strict differences / 72 targets | Relative target-loss delta | Mean TV |
+| --- | --- | --- | --- | --- |
+| 256 / 768 | 73 | 0 | +8.8776068e−10 | 1.0353239e−9 |
+| 1280 / 1536, wrapped local rings | 70 | 0 | −6.2739432e−9 | 7.6641055e−9 |
+
+Both stock teachers repeat exactly. These unmatched raw heads remain explicit;
+this is not complete stock byte equality at every geometry. Padded and bounded
+native policies remain byte exact in both screens. Bound-plan counts in the
+wrapped own control include 10 bounded-owner and 165 packed-prefill nodes,
+separate from 18 successful joined-prefill groups/4608 processed rows.
+
+| Short paid C2 cycle, mean of two processes | Prefill ms | Decode ms / 32 steps | Total ms |
+| --- | --- | --- | --- |
+| Original stock backend greedy | 190.825 | 463.3175 | 654.1425 |
+| Native padded roots | 200.4145 | 491.765 | 692.1795 |
+| Native bounded roots | 200.5645 | 451.6505 | 652.2150 |
+
+The order is stock/padded/bounded/bounded/padded/stock, with one frozen native
+binary and only the explicit policy argument changed. Warm work is the same
+prefix plus three supplied rows and eight greedy rows, followed by logical
+Clear off clock. Paid work includes compatible prefill, 32 joined decode steps
+and final full-head publication on both engines; three supplied warm rows are
+off clock. Stock retains ordinary state-only overlap and its original full
+sampled-logit host transfers. Its two bookends are 649.278/659.007 ms, so this
+small screen carries clock/startup uncertainty. The causal policy saving
+includes copy, launch and storage effects; it is not a subtraction of the
+instrumented copy-kernel sum from an earlier Gemma2 trace. No new trace or
+performance grid was run. The public stock caller now uses ordinary logical
+resetfalse; historical true-reset comparisons above are preserved, and both
+reset variants are off clock.
+
+The adopted runtime passes four HTTP aggregate cases: literal ring/repeat/
+likelihood/bounds plus simultaneous unequal 256/768×32 requests, chat/cache/
+SSE/stops, queued peer completion after disconnect, and kept checkpoint/restart
+replay. Both epochs exit 0; matched cached scalar and joined responses remain
+exact. The first drained epoch records 34 bounded-owner plan selections,
+196 successful joined decode groups/392 units and 7 joined-prefill groups/
+362 processed rows. These are bound/completed counters, not inferred kernel
+replay counts. Client reads may be buffered; no precise backend cancellation
+or endpoint timing claim follows. The first HTTP attempt is retained as FAIL:
+its unequal literal requests were serial and concurrent short requests stayed
+in equal cache buckets, so the required bounded counter was 0. A separately
+hashed helper-only retry added the actual simultaneous unequal pair; the
+runtime and all compiled sources stayed unchanged. Four focused adoption jobs
+pass after the earlier build/operator, model and timing jobs; the failed
+HTTP attempt remains additional preserved evidence. No full suite was run.
+
+The actual native probe SHA-256 is
+`3078e9d8eadc8330139504dfc4f17932140eef337c8bf1c3b333434d45a1961a`;
+the adopted runtime is
+`5868d608f59bb6076027d1e3ce74a70e8d7fb949a3fba7d86fe7615e0d202067`.
+The build receipt is
+`874aaf7a5967cfbe91054e0d8fc1a0630f952e0e8eb54b831d09719f1e08ce89`;
+a complete checksum source inventory binds the actual build independently of
+its unknown Git version. Original source/artifact, SDK and d812 image pins
+above are unchanged. The approved source and prepared payload are fully
+hashed and deep verified before inference. TensorFold was rechecked for this
+task at 041d14a94e951834470fd514ed33e65b8be1059a: its documented CUDA recipes
+still offer no matching Gemma3 GGUF comparator.
+
+Reproduce own/teacher/cycle with `jitllm_gemma3_joint_prefill_probe` and
+`llama_joint_prefill_probe.cc` at the supplied input geometry; the native
+optional `bounded-roots` argument selects the candidate. The durable
+`analyze_bounded_roots.py` prepares authenticated ring inputs and gates native
+own freezes and strict quality. Complete raw inputs, responses, state/head
+payloads, source/binary receipts, official job outcomes and aggregates remain
+external under Spark B `scratch/m35-gemma3-owner-bounded-roots/run1/` and
+`run2/`, with local copies under `/tmp/jitllm-m35-coordination/`.

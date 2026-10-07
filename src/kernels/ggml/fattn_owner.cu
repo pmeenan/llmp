@@ -291,12 +291,17 @@ std::expected<FlashAttnOwnersPlan, KernelFailure> PlanFlashAttnOwners(const Laun
     geometry.scratch = 256 + std::uint64_t(geometry.blocks) * std::uint64_t(geometry.columns) *
                                  std::uint64_t(geometry.group) * std::uint64_t(2 + d / 2) *
                                  sizeof(float2);
-  const auto checked = in.bounded_roots ? Resources<256, 4, 2, true, true>(launch.device(), plan)
-                       : in.logit_softcap != 0 ? Resources<256, 4, 2, true>(launch.device(), plan)
-                       : partial ? (d == 256 ? ResourcesPartial<256, 4, 2>(launch.device(), plan)
-                                             : ResourcesPartial<512, 1, 8>(launch.device(), plan))
-                                 : (d == 256 ? Resources<256, 4, 2>(launch.device(), plan)
-                                             : Resources<512, 1, 8>(launch.device(), plan));
+  const auto checked =
+      in.bounded_roots
+          ? (in.logit_softcap != 0
+                 ? Resources<256, 4, 2, true, true>(launch.device(), plan)
+                 : (d == 256 ? Resources<256, 4, 2, false, true>(launch.device(), plan)
+                             : Resources<512, 1, 8, false, true>(launch.device(), plan)))
+      : in.logit_softcap != 0 ? Resources<256, 4, 2, true>(launch.device(), plan)
+      : partial               ? (d == 256 ? ResourcesPartial<256, 4, 2>(launch.device(), plan)
+                                          : ResourcesPartial<512, 1, 8>(launch.device(), plan))
+                              : (d == 256 ? Resources<256, 4, 2>(launch.device(), plan)
+                                          : Resources<512, 1, 8>(launch.device(), plan));
   if (!checked) return std::unexpected(checked.error());
   return plan;
 }
@@ -311,9 +316,14 @@ std::expected<void, KernelFailure> FlashAttnOwnerRoots(LaunchContext& launch,
         QueuePartial<256, 4, 2>(context, in, *plan);
       else
         QueuePartial<512, 1, 8>(context, in, *plan);
-    } else if (in.bounded_roots)
-      Queue<256, 4, 2, true, true>(context, in, *plan);
-    else if (in.logit_softcap != 0)
+    } else if (in.bounded_roots) {
+      if (in.logit_softcap != 0)
+        Queue<256, 4, 2, true, true>(context, in, *plan);
+      else if (plan->original.head == 256)
+        Queue<256, 4, 2, false, true>(context, in, *plan);
+      else
+        Queue<512, 1, 8, false, true>(context, in, *plan);
+    } else if (in.logit_softcap != 0)
       Queue<256, 4, 2, true>(context, in, *plan);
     else if (plan->original.head == 256)
       Queue<256, 4, 2>(context, in, *plan);

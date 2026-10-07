@@ -31,8 +31,9 @@ struct FlashAttnOwners {
   std::uint32_t owner_offset = 0;
   // Closed Gemma2 H8/C2 specialization; zero preserves every earlier path.
   std::uint32_t logit_softcap = 0;
-  // Opt-in Gemma2 C2: mask width is logical; each aligned K/V view is actual.
-  // No partial cohorts, sinks, sparse gather or non-cell-major layouts.
+  // Opt-in Gemma2 cap50/H8 or no-cap Gemma3 H8/Gemma4 H16/H32 C2.
+  // Mask width is logical; each aligned K/V
+  // view is actual. No partial cohorts, sinks, sparse gather or non-cell-major layouts.
   bool bounded_roots = false;
 };
 
@@ -46,7 +47,10 @@ struct FlashAttnOwners {
 // or D512/GQA8 with heads 16 or 32; D256/H8/GQA2 is additionally
 // admitted only for two actual owners/logical cohort2/offset0. Scale is fixed at 1 (Q already
 // normalized/scaled by the caller). Softcap50 is admitted only at D256/H8/C2;
-// all other contracts require zero. No sinks or sparse gather.
+// all other contracts require zero. Bounded roots require actual/logical C2
+// at offset zero: cap50/H8/D256, no-cap/H8/D256 or no-cap/H16/H32 at D256/D512. Each
+// actual width is aligned to256 and the common mask equals their maximum.
+// No sinks or sparse gather.
 std::expected<void, KernelFailure> CheckFlashAttnOwners(const FlashAttnOwners& inputs);
 
 // Graph adapter for the distinct ten-source custom node. These never reinterpret

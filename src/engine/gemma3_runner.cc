@@ -13,6 +13,7 @@
 #include "engine/support.h"
 #include "kernels/ggml/executor.h"
 #include "kernels/ggml/gemma_norm.h"
+#include "kernels/ggml/jitllm_ops.h"
 
 namespace jitllm::engine {
 namespace kg = kernels::ggml;
@@ -77,6 +78,7 @@ Status Gemma3Runner::Setup() {
   model_.options.narrow_final = o_.frontier_head;
   model_.options.owner_decode = o_.owner_decode;
   model_.options.packed_prefill = o_.packed_prefill;
+  model_.options.bounded_roots = o_.bounded_roots;
   model_.options.max_total_rows = wave_rows;
   std::vector<GroupPlace> places(weights_.artifact().groups().size(), GroupPlace::kDevice);
   if (auto r = weights_.Reserve(node_, places, {}); !r) return r;
@@ -600,10 +602,13 @@ std::expected<Gemma3Runner::Plans::Entry*, std::string> Gemma3Runner::Planned(
     plan_selections_.norm_rope += selected.implementation == kg::kGemmaNormRopeName;
     plan_selections_.norm_add += selected.implementation == kg::kGemmaNormAddName;
     plan_selections_.owner_attention += selected.implementation == kg::kFlashAttnOwnersName;
-    for (const auto* node : selected.nodes)
+    for (const auto* node : selected.nodes) {
+      plan_selections_.bounded_owner_attention +=
+          kg::JitllmOpOf(node) == kg::JitllmOp::kFlashAttnOwners && kg::JitllmOpInt(node, 4) == 1;
       plan_selections_.packed_prefill_attention +=
           selected.implementation == kg::kFlashAttnMmaGqa2Name &&
           std::string_view(ggml_get_name(node)).ends_with("packed_prefill_attention");
+    }
   }
   const auto bytes = PlannedHostBytes(**p), nodes = PlannedNodes(**p);
   return &plans_.Add(shape, std::move(*p), bytes, nodes,

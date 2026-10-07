@@ -257,12 +257,12 @@ int main(int argc, char** argv) {
           for (int i = 0; i < 3; ++i)
             independent(s, std::span(ids[s]).subspan(prefix[s] + i, 1), true);
       };
-      llama_memory_clear(llama_get_memory(ctx.get()), true);
+      llama_memory_clear(llama_get_memory(ctx.get()), false);
       if (!teacher) {
         prompt();
         warm();
         for (int i = 0; i < 8; ++i) joined(selected);
-        llama_memory_clear(llama_get_memory(ctx.get()), true);
+        llama_memory_clear(llama_get_memory(ctx.get()), false);
         past = {};
       }
       const auto begin = Clock::now();

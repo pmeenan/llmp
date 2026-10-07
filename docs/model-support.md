@@ -123,8 +123,15 @@ controls pass all 216 strict target transitions with 73/74, 70/74 and 74/74
 exact heads; one same-geometry short C2 cycle remains 1.49% above stock.
 Actual HTTP joined-prefill/restart controls pass; cold native C2 endpoint
 latency improves 14.03% with exact IDs/usage at a separate measured boundary.
-Wider cohorts, broader memory/context/swap and sustained qualification remain
-open, without universal parity.
+The subsequent [copy-free owner policy](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads-2026-10-07)
+uses bounded actual roots at the same logical width. Small/wrapped native
+padded/bounded heads and state are exact; fresh stock screens retain 73/74 and
+70/74 exact heads with zero strict differences. One short same-binary n=2
+screen lowers native paid latency 5.77372%, to −0.29466% versus current original
+stock, with identical natural histories/final heads. Four HTTP aggregate cases
+and two clean restart epochs pass with actual bounded selections. Wider
+cohorts, broader memory/context/swap and sustained qualification remain open, without universal
+parity.
 
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in

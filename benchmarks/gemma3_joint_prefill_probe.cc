@@ -87,8 +87,11 @@ en::Status Prepare(const char* metadata_path, const char* text_path, const char*
 }
 }  // namespace
 int main(int argc, char** argv) {
-  if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") || argc != 6) return 2;
+  if (!jitllm::platform::InstallCrashPolicy("gemma3-joint-prefill-probe") ||
+      (argc != 6 && argc != 7))
+    return 2;
   if (std::string_view(argv[1]) == "prepare") {
+    if (argc != 6) return 2;
     std::uint32_t count = 0;
     const std::string_view number = argv[4];
     const auto parsed = std::from_chars(number.data(), number.data() + number.size(), count);
@@ -99,6 +102,8 @@ int main(int argc, char** argv) {
     if (!status) std::cerr << status.error() << '\n';
     return status ? 0 : 1;
   }
+  const bool bounded = argc == 7;
+  if (bounded && std::string_view(argv[6]) != "bounded-roots") return 2;
   const std::string mode = argv[5];
   const bool own = mode == "own", cycle = mode == "cycle";
   if (!own && !cycle) return 2;
@@ -135,6 +140,7 @@ int main(int argc, char** argv) {
                                                                       .max_head_rows = 2,
                                                                       .owner_decode = true,
                                                                       .packed_prefill = true,
+                                                                      .bounded_roots = bounded,
                                                                       .fuse_norms = true,
                                                                       .fuse_quant_glu = true,
                                                                       .fuse_norm_rope = true,
@@ -438,6 +444,8 @@ int main(int argc, char** argv) {
           !stats.captured || !stats.replayed || !bound.norm_rope || !bound.norm_add ||
           runner.coverage().violations)
         return Error("C2 did not select/replay checked implementation families");
+      if (bounded && prefix[0] != prefix[1] && !bound.bounded_owner_attention)
+        return Error("bounded roots did not select actual unequal owner attention");
       std::cout << "GEMMA3_JOINT_PREFILL mode=" << mode
                 << " slots=2 context_per_slot=4096 chunk=128"
                 << " compatible_prefill=1 max_wave_rows=256 prompt_rows0=" << prefix[0]
@@ -448,6 +456,8 @@ int main(int argc, char** argv) {
                 << " eager=" << stats.eager << " captured=" << stats.captured
                 << " replayed=" << stats.replayed << " selected_owner=" << bound.owner_attention
                 << " selected_packed_prefill=" << bound.packed_prefill_attention
+                << " bounded_roots=" << bounded
+                << " selected_bounded_owner=" << bound.bounded_owner_attention
                 << " selected_norm_mul=" << bound.norm_mul
                 << " selected_quant_geglu=" << bound.quant_geglu
                 << " selected_norm_rope=" << bound.norm_rope

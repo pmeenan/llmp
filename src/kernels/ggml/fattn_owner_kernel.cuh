@@ -63,8 +63,9 @@ static __device__ __forceinline__ void process_owner_tile(
         int ne11, int stride_Q1, int stride_Q2, int stride_K, int stride_V,
         int stride_mask, int jt, int zt_gqa, int kb0_start, int kb0_stop, int actual_tiles) {
     if constexpr (Bounded) {
-        static_assert(DKQ == 256 && DV == 256 && ncols1 == 4 && ncols2 == 2 &&
-                      use_logit_softcap && !V_is_K_view && !use_sparse);
+        static_assert(((DKQ == 256 && DV == 256 && ncols1 == 4 && ncols2 == 2) ||
+                       (DKQ == 512 && DV == 512 && ncols1 == 1 && ncols2 == 8 && !use_logit_softcap)) &&
+                      !V_is_K_view && !use_sparse);
         // Bound only absent physical storage; keep original KV_max/all-invisible
         // mask behavior when the initial tile is inside the real root.
         if (kb0_start >= actual_tiles) {

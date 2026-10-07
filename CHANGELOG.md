@@ -13,6 +13,9 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Avoid temporary full-prefix cache copies for unequal-length Gemma3 two-slot
+  decode, preserving checked attention geometry and checkpoint replay.
+
 - Avoid temporary full-prefix cache copies for unequal-length Gemma2 two-slot
   decode, preserving checked attention geometry and checkpoint replay.
 

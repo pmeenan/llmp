@@ -181,6 +181,22 @@ not a promise to recover the earlier summed copy duration. Broader context,
 ring/chunk geometries, cohorts, memory/swap and sustained qualification remain
 open; no endpoint timing was made.
 
+The [Gemma3 copy-free transfer](experiments/gemma3-execution/README.md#copy-free-bounded-owner-reads-2026-10-07)
+admits no-softcap D256/H8/C2 under the same checked actual-root, mask, stride
+and common logical partition contract. Exact bounded occupancy is queried;
+legacy/equal-width paths and internal defaults remain unchanged. Four poisoned
+operand configurations match the padded original MMA byte for byte, with FP64
+and fresh replay controls. Native small/wrapped ring policies retain exact
+heads/state; stock has 73/74 and 70/74 exact heads and zero strict differences.
+One same-binary n=2 native bookend lowers short paid latency by 5.77372%, to
+−0.29466% versus original stock, with identical natural choices/final heads.
+The existing bounded serving recipe selects the policy; four HTTP aggregate
+cases/two clean epochs pass with actual bounded selections. No per-family
+floating kernel arithmetic or quantized storage format changes; broader cohorts,
+context/memory/swap and sustained gates remain open. These wall measurements
+include policy storage/launch effects and do not convert an earlier summed
+copy-kernel duration into predicted latency savings.
+
 An available implementation is not necessarily selected by a model's plan.
 Transfer a technique only after checking its actual call sites, operand
 types and strides, shapes, arithmetic, scratch accounting and lifetime.
