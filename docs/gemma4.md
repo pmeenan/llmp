@@ -417,7 +417,8 @@ joined serving, both norm chains, MoE route/reduce and owner attention for the
 approved 26B-A4B artifact under the same bounds, with a 1024-row prefill fallback;
 its C1/C4 paid cycles are within 0.6% of stock with stock's exact tokens, and its
 1,024-row corpus heads are byte-identical.
-Larger configurations retain the prior scalar recipe and 128-row cap. Current-pin C1/C4 8K continuations have zero predicted-ID differences and
+Larger configurations retain the prior scalar recipe and 128-row cap. The dense31
+current-pin C1/C4 8K continuations have zero predicted-ID differences and
 128/129 and 512/516 byte-exact complete heads; the 1,024-row corpus has
 complete head parity. Whole serving cycles were 3.15%/3.51% slower than the
 reference at adoption and 0.73%/1.36% after [gap closing](experiments/gemma-gap-closing/README.md). Natural HTTP continuation, stop and departed-client peer
@@ -444,8 +445,9 @@ cannot establish a logical position. A prepared restore blocks execution until
 every logical range has a proven completed copy. Contradictory kept turn
 checkpoints are omitted before file adoption. Clean pre-copy capacity refusals
 retain the previous completed prefix and peer leases.
-[Serving controls](experiments/gemma-serving/README.md) record the bounded route;
-they record the earlier scalar route; the production bridge above qualifies only its bounded dense31 envelope.
+[Serving controls](experiments/gemma-serving/README.md) record the earlier scalar
+route. The current production recipes above qualify their bounded 26B/31B
+envelopes separately; Gemma26 HTTP lifecycle qualification remains owed.
 
 The [head publication capacity](experiments/gemma-head-capacity/README.md)
 now bounds pinned serving outputs by owner slots, independently of input rows.
@@ -462,12 +464,13 @@ ARGSORT root; its tail remains unwritten. The default-off dispatch below
 provides checked graph integration and primitive fallback for readable keeps;
 whole-model quality/performance selection remains owed.
 
-The [default-off native MoE dispatch](experiments/gemma-native-moe/README.md)
-now uses checked routing and scaled ordered reduction with complete-root
+The historical [default-off native MoE dispatch](experiments/gemma-native-moe/README.md)
+uses checked routing and scaled ordered reduction with complete-root
 funding and kept-value primitive fallback. Its graph-order-only ordinary
 output remains byte exact; compound norm/MoE still has nine representative
 argmax differences outside the frozen allowance. The short native-only gain
-keeps production selection and all full-model/batching gates open.
+did not select a production policy. The later bounded Gemma26 recipe above
+qualifies its own matched geometry and MoE policy; broader gates remain open.
 
 The [two-profile scalar serving controls](experiments/gemma31-serving/README.md)
 cover complete own frontier rows, likelihood alignment, refusal with peer
@@ -481,8 +484,8 @@ reuse the existing runner with independent completed units and ordered groups
 of at most eight owners (its C12 is8+4). Whole same-policy solo/joined heads and state
 agree; actual HTTP selects the diagnostic only through its dedicated binary.
 Natural-prefix quality fails against real multi-sequence stock batches, and
-the C12 reference speed gap remains open. Production keeps scalar dispatch;
-no optimized-batching or model-support qualification follows.
+the C12 reference speed gap remains open. This historical diagnostic did not
+select production joining; the current bounded recipes are separate evidence.
 
 The [ordinary whole-C12 factor](experiments/gemma-c12-single-wave/README.md)
 now supports twelve shared product columns and three funded real-root attention
@@ -490,8 +493,9 @@ quads. D-092 row-invariant products keep eight. All 384 paid 31B heads match
 retained stock exactly; 26B retains three strict differences inside its unchanged
 prior bound. Both 384-target conditional-loss gates pass. Twelve prefill frontier
 heads remain nonexact on each profile, and the original 8+4 failures stay recorded.
-Serving owner attention/joining remain off; no full batching or model-support
-qualification follows from this short fixed-history factor.
+This short fixed-history factor did not select serving owner attention/joining.
+Current defaults cover at most four slots; broader batching and model-support
+qualification remain open.
 
 The [state-only intermediate prefill path](experiments/gemma-state-only-prefill/README.md)
 uses a distinct plan-cache output mode. Non-final, non-scoring prompt chunks
@@ -511,24 +515,25 @@ For these actual GGUF files the next slices owe:
 
 | Transfer or contract | Eligibility and required qualification |
 | --- | --- |
-| Primitive completeness | Split F32 GeGLU and packed F32 GELU-tanh fallbacks are checked. The graph integrates these primitives, preserving RMSNorm/scale, V norm, sandwich order, softcap/tanh and full-width proportional RoPE. Floating MMVF fusion and the explicit quantized GeGLU writer stay off in model selection; actual-width primitive controls do not establish model quality or speed. |
+| Primitive completeness | Split F32 GeGLU and packed F32 GELU-tanh fallbacks are checked. The graph integrates these primitives, preserving RMSNorm/scale, V norm, sandwich order, softcap/tanh and full-width proportional RoPE. Bounded dense31 now selects upstream's fused one-column quantized gate/up/GeGLU, with primitive fallback and no row-invariant selection; the floating MMVF and standalone quantized activation writers remain separate opt-ins. Actual-width primitive controls alone do not establish model quality or speed. |
 | Q5_1 expert down | [Legacy primitive controls](experiments/m35-legacy-quants/README.md) cover ordinary/routed products, row-preserving and joined columns at K704/N2816/top-eight routes. Synthetic overlap measurements retain ordinary MMVQ where faster; model routing, selected dispatch, prefill and the last-layer Q8_0 execution remain to be qualified. Do not select a Q2_K or IQ2 kernel by analogy. |
 | Shared input preparation | Reuse eligible Q8_1 preparation across ordinary Q8/K-quant products and fused gate/up reads, retaining maps/strides and Gemma's router and GeGLU arithmetic. DeepSeek's SwiGLU activation writer cannot transfer unchanged. |
 | Routed prefill scheduling | Check compact expert-major tiles and full-K arithmetic for Q4_K fused gate/up and Q5_1 down at actual shapes/chunk sizes; keep only qualified speed/memory winners. Raw expert groups must remain authoritative for later paging. |
-| Attention and device masks | The graph keeps checked local D256/GQA2 vector/MMA and global D512/GQA8 attention separate. Local primitives have ring-mask, shape-selection and scratch controls. Checked per-segment device mask production preserves fresh positions and independent caches; complete model dispatch remains to be qualified. Preserve independent caches and scale1.0; never invent sparse global attention. |
+| Attention and device masks | The graph keeps checked local D256/GQA2 vector/MMA and global D512/GQA8 attention separate. Local primitives have ring-mask, shape-selection and scratch controls. Checked per-segment device mask production preserves fresh positions and independent caches. Bounded production recipes qualify their C1/C4 model dispatch; broader shapes and contexts remain open. Preserve independent caches and scale1.0; never invent sparse global attention. |
 | Join products across requests | Apply Qwen/DeepSeek joined dense/routed/head products when operand/quant contracts fit. Preserve per-segment outputs, original one-token sums, stable route pair order and separate attention/state. Qualify scalar versus joined logits/state and departed/cancelled slots. |
 | Lanes, graphs and lifetimes | Reuse request cohorts, completion-aware leases, stable-address graphs, charged per-lane scratch and hazard ordering. Shape/read-alignment choices must back padded cells and preserve exact continuation across capture/replay, spill/restore and time-slicing. |
 | Bounded state and staging | Use initialized read/write footprints, growing extents, bounded host inputs, shared maximum workspace and separately owned slot state; measure peak memory for solo and batched envelopes at context boundaries. |
-| Assistant and draft policy | The checked Q-only assistant binding is available; execution remains a later slice, distinct from Qwen MTP or DSpark recurrence. Qualify shared target-cache ownership, canonical head IDs, overwritten-ring rollback and greedy/sampled acceptance before transferring adaptive depth or selected-head optimizations. |
+| Assistant and draft policy | Checked Q-only bindings, native components, target verification and bounded greedy transactions exist, distinct from Qwen MTP or DSpark recurrence. Assistant serving, sampled acceptance, broader prefixes/owners and sustained qualification remain open. Qualify shared target-cache ownership, canonical head IDs and overwritten-ring rollback before transferring adaptive depth or selected-head optimizations. |
 | EXL3 / other formats | Separate representation binding, packed products, codebook/rate and expert grouping qualification are owed. GGML recognition in this slice establishes no EXL3, NVFP4 or MXFP8 support. |
 
 For every adopted execution path, record actual registry/plan selection,
 precision/layout and shape limits, isolated and whole-model timing, solo and
-batched quality/exact-state controls and peak memory. No speed or optimized
-batching result is claimed here.
+batched quality/exact-state controls and peak memory. The bounded production
+results above do not close the broader context, concurrency or memory gates.
 
-The [Q8_0 assistant binding foundation](gemma4-assistant.md) now validates both
+The [Q8_0 assistant binding foundation](gemma4-assistant.md) validates both
 closed companion profiles, shared target-layer semantics and actual paired
-canonical vocabularies. It adds no assistant execution or speculation route;
-feature lifetimes, target ring rollback and model/batching qualification remain
-open.
+canonical vocabularies. That foundation itself added no execution route;
+later component and greedy transaction controls are recorded in the
+[plan](plan.md). Assistant serving and full model/batching qualification
+remain open.

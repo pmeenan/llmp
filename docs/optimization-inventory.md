@@ -640,10 +640,14 @@ selects ordinary joined serving, both norm chains and eligible owner attention f
 approved 31B artifacts with resolved context at most 8,192 and at most four slots.
 Its uncalibrated prefill fallback is 256; smaller explicit overrides remain intact.
 Gemma26 has its own [bounded recipe](experiments/gemma26-production/README.md);
-larger configurations retain the prior scalar recipe and 128-row cap. Current-pin C1/C4 8K continuations have zero predicted-ID differences and
+larger configurations retain the prior scalar recipe and 128-row cap. Dense31's
+current-pin C1/C4 8K continuations have zero predicted-ID differences and
 128/129 and 512/516 byte-exact complete heads; the 1,024-row corpus has
-complete head parity. Whole serving cycles are 3.15%/3.51%
-slower than the reference. Natural HTTP continuation, stop and departed-client peer
+complete head parity. Its original serving bridge measured cycles 3.15%/3.51%
+slower than the reference; later [gap closing](experiments/gemma-gap-closing/README.md)
+reduced those matched gaps to 0.73%/1.36%. The
+[direct-step follow-up](experiments/decode-hot-path/README.md) compares recorded
+reference cycles, not fresh bookends. Natural HTTP continuation, stop and departed-client peer
 progress pass. These are bounded controls, not sustained performance, broad semantic
 quality, assistant admission or long-context qualification.
 

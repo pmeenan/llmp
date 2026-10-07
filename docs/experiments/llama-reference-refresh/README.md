@@ -6,6 +6,8 @@
 New comparisons use official **v0.6.0**, source
 [`d81235049384534c167caea52b85a694f6103d14`](https://github.com/ggml-org/llama.cpp/tree/d81235049384534c167caea52b85a694f6103d14),
 with the matching ARM64 CUDA image recorded in [pins.json](pins.json).
+The official latest-stable release API was rechecked on 2026-10-07 and still
+reports v0.6.0; newer daily prereleases do not change this frozen reference.
 The release's `full-cuda13-b11429` image has that exact source revision in its
 registry configuration. The moving `full-cuda13` tag was already newer at
 entry; the `full-cuda13-v0.6.0` alias was absent. Freeze the recorded digest,

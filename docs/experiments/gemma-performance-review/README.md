@@ -3,6 +3,14 @@
 
 # Gemma implementation handoff — 2026-10-06
 
+Implementation resumed on 2026-10-07 after Opus's
+[gap closing](../gemma-gap-closing/README.md),
+[Gemma26 production adoption](../gemma26-production/README.md) and
+[decode hot-path work](../decode-hot-path/README.md). The handoff below records
+the earlier stopping point; its proposed experiments and remaining tasks
+are historical, not the current work queue. Use the [plan](../../plan.md)
+for remaining M3.5 qualification and model work.
+
 **Superseded in part:** the follow-up [gap closing](../gemma-gap-closing/README.md)
 ran the first experiment below and found prefill capture on/off a wash. It then
 closed most of the gap with state reuse, capture beside eager execution and the
