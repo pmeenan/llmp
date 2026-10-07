@@ -257,7 +257,7 @@ std::uint32_t RunnerContextCeiling(std::string_view architecture) {
     return model::kQwen38FlashContext;
   }
   if (architecture == "gemma4") return model::kGemma4Context;
-  if (architecture == "gemma3") return 4096;
+  if (architecture == "gemma3") return 8448;
   if (architecture == "gemma2") return model::kGemma2Context;
   return 0;
 }
@@ -613,6 +613,10 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
                                arch, config::kMinContext, ceiling, ceiling_from));
     }
     s.context = {static_cast<std::uint32_t>(*context), SettingSource::kOverride, basis("context")};
+  } else if (arch == "gemma3" && ceiling >= 4096) {
+    // The wider scalar envelope is explicit opt-in; retain the checked default.
+    s.context = {4096, SettingSource::kDerived,
+                 "bounded Gemma3 default; wider scalar context opt-in"};
   } else if (ceiling < config::kDefaultContext) {
     s.context = {ceiling, SettingSource::kDerived, ceiling_from};
   } else {
@@ -686,6 +690,8 @@ std::expected<ModelSettings, std::string> ResolveSettings(const config::ModelEnt
     }
     if (arch == "gemma2" && s.max_slots.value > 2)
       return Error("Gemma2 serving needs at most two conversation owners");
+    if (arch == "gemma3" && context > 4096 && s.max_slots.value != 1)
+      return Error("Gemma3 context above 4096 needs exactly one conversation owner");
     if (arch == "gemma3" && s.max_slots.value > 2)
       return Error("Gemma3 serving needs at most two conversation owners");
     if (s.max_slots.value > 12 || s.max_slots.value > s.prefill_chunk.value)

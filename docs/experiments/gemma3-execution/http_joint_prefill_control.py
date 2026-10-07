@@ -126,7 +126,8 @@ def main():
         rows = re.findall(r'Gemma3 serving final gemma3: (\{[^\n]*\})', text)
         assert len(rows) == 1, 'completed HTTP-drain metadata missing'
         extra = json.loads(rows[0])
-        assert extra['architecture'] == 'gemma3' and extra['recipe'] == 'bounded-4096-two-owner'
+        assert extra['architecture'] == 'gemma3' and extra['recipe'] == 'bounded-serving'
+        assert extra['context'] == 4096 and extra['configured_slots'] == 2
         assert extra['max_rows'] == 128 and extra['max_wave_rows'] == 256
         result['epochs'].append(dict(epoch=epoch, exit=rc, final=extra, log_sha256=sha(args.output/f'runtime{epoch}.log')))
 

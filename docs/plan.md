@@ -905,8 +905,11 @@ family" guide, and its long-context scaling work.
       A same-binary short n=2 screen lowers native paid latency 5.77372%, to
       −0.29466% versus original stock, with identical histories/final heads.
       Four HTTP aggregate cases/two clean epochs pass with actual bounded plans
-      and exact matched cached replay. Wider cohorts, broader memory/swap/context
-      and sustained quality/performance remain open. The deferred and dropped
+      and exact matched cached replay. Explicit scalar context 8448 now retains
+      the default 4096/two-owner bounds at 4K. A public 8192-prefix/64-continuation
+      HTTP control and one Gemma3/Qwen exact-state model-switch pair check the
+      repeated-text boundary; corpus/retrieval, broader cohorts, maximum-context
+      memory/swap and sustained quality/performance remain open. The deferred and dropped
       features stay as recorded. *Owner, 2026-09-29:* PrismML's Bonsai
       join too, both 1-bit and 2-bit, because they are hugely popular:
       - Bonsai-27B Q1_0 (with its Q4_1 drafter);

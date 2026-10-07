@@ -866,7 +866,8 @@ artifact, tokenizer, ordinary optimized arithmetic and original d812 image
 above are unchanged. Preparation repeats the authenticated 2276-byte source
 text 32 times, tokenizes it independently in both engines and freezes 8256 IDs
 including BOS. This is one repeated-text depth screen, not broad long-context
-quality qualification. Ordinary serving still admits context <=4096.
+quality qualification. At that internal-screen snapshot, ordinary serving
+still admitted context <=4096; the later public scalar gate is below.
 
 Twelve focused host controls pass, including 8448 frontier/read bounds, local
 ring writes, causal padded masks, initialized checkpoint ranges and refusal
@@ -951,3 +952,79 @@ Raw inputs, heads, state hashes, source/binary receipts, failed and completed
 supervisor jobs and aggregates remain outside Git under Spark A
 `~/.local/share/jitllm/gemma-context-depth{1,2,3}` and local
 `/tmp/jitllm-m35-coordination/gemma-context-depth-result{1,2,3}`.
+
+
+## Public scalar 8K and one model-switch pair (2026-10-07)
+
+Ordinary Gemma3 serving now accepts an explicit context up to 8448 with one
+resolved request slot. The default stays 4096/128/1; two slots remain admitted
+only at context<=4096. The scalar restriction is checked after calibration and
+explicit overrides, including an override that replaces a calibrated slot
+count. No model arithmetic, artifact format or public schema changes.
+
+Four focused settings cases pass, including the new default/calibration/override
+control (the filter also selects two existing Gemma31 cases). The actual HTTP
+runtime executes the same authenticated repeated-text 8192-token prefix and 64
+natural tokens as the prior depth cycle. All choices, finite target scores,
+complete top-logprob rows and usage repeat exactly in three literal requests;
+`cached_tokens` is zero, so each request pays full prefill. An over-context
+request refuses and a healthy request then succeeds. Both HTTP cases and clean
+runtime retirement pass at context 8448/slots1. These are boundary controls,
+not corpus/retrieval quality or endpoint-performance measurements.
+
+One existing `swap-table` pair switches Gemma3 to the approved Qwen3.8 NVFP4
+artifact and back, with 8192 saved Gemma3 tokens and 64 continuation tokens,
+two cycles and zero-context controls. Both saved-context returns compare the
+initialized-state snapshot SHA-256 and every continuation token/full head to
+the unswapped reference exactly. The prepared return keeps 32 graphs and
+replays 63 times. The other rows' default state flags are not additional
+saved-state proofs.
+
+| Handoff to first output | First use, saved 8192 | Prepared, saved 8192 | Prepared, zero context |
+| --- | ---: | ---: | ---: |
+| Gemma3 → Qwen3.8 | 10.007763 s | 5.977315 s | 5.958623 s |
+| Qwen3.8 → Gemma3 | 1.598893 s | 1.589650 s | 1.640332 s |
+
+These six totals exclude diagnostic state hashing and end at the first output;
+all 64 continuation rows are checked separately. They are one pair's completed
+observations, not a sustained swap ladder or a new throughput result. The worst
+prepared handoff is 5.977315 s against the existing 20 s bound. Qwen uses the
+existing approved external tokenizer/template files explicitly; no runtime
+metadata-discovery fallback was added.
+
+The shared execution budget is 117,514,120,988 bytes, with 2,122,526,492 fixed;
+the diagnostic whole-state snapshot is charged within that budget. The largest
+row `peak_bytes` is the 20 ms sampled whole-node MemAvailable decrease from the
+process-start baseline: 81,822,568,448 bytes, exactly the difference between
+124,897,492,992 at start and 43,074,924,544 at the lowest sample. It is neither
+catalog occupancy nor an isolated process/inference allocation peak, and does
+not isolate the snapshot's cost. Only the approved 2,526,350,862-byte prepared Gemma3 directory is
+copied into the existing M3 artifact store; the approximately 104 GB Qwen
+artifact remains in place. The streamed copy authenticates all four payloads,
+uses the runtime's private-group/no-ACL path policy, exclusive private files,
+held directory FDs and atomic no-replace publication. Originals remain intact.
+
+The actual runtime SHA-256 is
+`72ede5c8ab239c7b8b3378fb95fd92ffe41fc517ed94902b3ce79e84e7fbdd46`;
+its executed source/library binding is
+`00cecae3912d55d7705e5caa01a58c9980ee4b595ea59333003b35db040c9f95`.
+The source was built on the 20e0990-based public tree; final composition on
+af71732 preserves the independent internal C3 changes and all six executed
+public source files byte for byte. CUDA 13.4 cuBLAS/Lt resolve to the same
+pinned SDK c09 closure. TensorFold task-entry HEAD remains
+041d14a94e951834470fd514ed33e65b8be1059a, with no documented matching approved
+Gemma3 GGUF CUDA recipe.
+
+The first supervisor failure refused group-writable artifact ancestors before
+copying. The second passed copy/build/settings/HTTP but stopped Table bootstrap
+because Qwen metadata paths were omitted. Both are retained; neither produced
+swap inference. The final Table-only retry adds approved explicit paths and
+reuses the successful runtime/HTTP evidence. Official jobs
+`m35-gemma3-public-8k-swap2` (steps 1–6 PASS, step7 bootstrap FAIL) and
+`m35-gemma3-public-8k-swap3` (3 steps DONE0) retain the actual checks. Raw data,
+receipts and failures stay outside Git under Spark A
+`~/.local/share/jitllm/gemma3-public-8k-swap{1,2,3}` and local
+`/tmp/jitllm-m35-coordination/gemma3-public-8k-result{1,2,3}`.
+Maximum context, broader cohorts/model pairs, real-corpus retrieval and sustained
+memory/swap qualification remain open; the repeated-text 8K screen closes none
+of those gates.

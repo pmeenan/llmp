@@ -110,7 +110,8 @@ a short C1 cycle at 0.56% slower than stock backend greedy. The
 uses independently-prefilled slots and explicit H8 owner attention: zero strict
 greedy differences, 64/66 byte-identical heads and +2.08% paid latency.
 A [bounded ordinary serving route](experiments/gemma3-execution/README.md#bounded-serving-unequal-widths-and-wrapped-rings)
-now admits context<=4096, rows<=128 and at most two owners. Actual unequal
+now admits rows<=128 and at most two owners at context<=4096, with an explicit
+scalar context limit of 8448 and unchanged default 4096. Actual unequal
 widths, wrapped rings, partial departure, HTTP/template/cache/stop/SSE and
 two-slot checkpoint/restart adoption controls pass. Matching cached scalar
 and joined replays remain exact; cold/cached or scalar/joined trajectories
@@ -129,9 +130,12 @@ padded/bounded heads and state are exact; fresh stock screens retain 73/74 and
 70/74 exact heads with zero strict differences. One short same-binary n=2
 screen lowers native paid latency 5.77372%, to −0.29466% versus current original
 stock, with identical natural histories/final heads. Four HTTP aggregate cases
-and two clean restart epochs pass with actual bounded selections. Wider
-cohorts, broader memory/context/swap and sustained qualification remain open, without universal
-parity.
+and two clean restart epochs pass with actual bounded selections. The
+[public scalar 8K boundary](experiments/gemma3-execution/README.md#public-scalar-8k-and-one-model-switch-pair-2026-10-07)
+checks an 8192-token literal prefix and 64-token continuation plus one
+Gemma3/Qwen model-switch pair. The input repeats a short text; corpus/retrieval,
+wider cohorts, maximum-context memory/swap and sustained gates remain open,
+without universal parity.
 
 Gemma 4 26B-A4B and 31B have checked profiles, strict GGML tensor bindings,
 bounded independent-slot state and segmented host-input descriptions in

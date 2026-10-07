@@ -9,8 +9,8 @@ and descriptor graph/plan foundation passes 13 focused CPU/no-launch controls.
 The generic importer supplies the authenticated
 [prepared artifact](experiments/gemma3-execution/README.md), and the shared
 native runner executes it through a [bounded ordinary serving route](#bounded-ordinary-serving):
-context<=4096, per-owner rows<=128 and at most two slots, with a separately
-funded 256-row compatible-prefill wave. Chat/literal completions, likelihoods,
+per-owner rows<=128, at most two slots at context<=4096 and explicit scalar
+context<=8448, with a separately funded 256-row compatible-prefill wave. Chat/literal completions, likelihoods,
 device greedy, initialized-state checkpoint/restore and matched cached restart
 replay pass focused controls. There is no media adapter.
 
@@ -213,8 +213,9 @@ retention through spill/restore, captured continuation replay and a fixed stock
 quality/cost screen.
 [The depth report](experiments/gemma3-execution/README.md#internal-8k-scalar-depth-screen-2026-10-07)
 retains its nonexact stock heads, conservative standalone cache allowance and
-observed memory scope. This does not raise ordinary serving admission above 4096
-or qualify C2 at 8K; public admission and model-switch swap evidence remain separate.
+observed memory scope. That internal screen alone establishes no public
+admission or C2 qualification at 8K; the later scalar serving/swap gate is
+[separate](experiments/gemma3-execution/README.md#public-scalar-8k-and-one-model-switch-pair-2026-10-07).
 
 The following bounded route integrates ordinary serving.
 
@@ -224,7 +225,9 @@ The [checked serving unit](experiments/gemma3-execution/README.md#bounded-servin
 registers this approved artifact through the normal runtime route. Defaults
 are context 4096, rows 128 and one slot; two slots are admitted explicitly,
 with the checked four-fusion/owner/device-greedy recipe and two funded head
-rows. Larger contexts/cohorts and speculation refuse. Host contract bounds
+rows. Explicit context up to 8448 is now admitted only with one resolved slot,
+including after calibration and overrides; 4096 remains the default. Larger
+contexts/cohorts and speculation refuse. Host contract bounds
 above remain separate from these product admission bounds.
 
 Actual two-slot unequal padded widths, wrapped local rings, partial departure,
@@ -254,7 +257,13 @@ A same-binary short n=2 screen reduces native paid latency by 5.77372%, to
 choices/final heads. Four HTTP aggregate cases and two clean restart epochs
 pass with actual bounded selections and exact matched cached replay. This establishes no
 sustained or endpoint parity.
-Wider cohorts, broader memory/swap and sustained gates remain open. The serving
+The [public scalar boundary and one model-switch pair](experiments/gemma3-execution/README.md#public-scalar-8k-and-one-model-switch-pair-2026-10-07)
+now check an 8192-token literal prefix and 64-token continuation at context 8448,
+with exact initialized-state snapshots and continuation heads after Gemma3/Qwen
+switches. The prepared return retains 32 graphs and replays 63 times; the worst
+prepared handoff is 5.977315 s. The repeated short text establishes boundary/state
+evidence, not corpus/retrieval quality. Wider cohorts, maximum-context memory/swap
+and sustained gates remain open. The serving
 GPU fixture currently requires provisioning on Spark B before its full models
 tier can run there.
 

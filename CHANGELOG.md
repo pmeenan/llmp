@@ -13,6 +13,10 @@ stays at 0.x, where a minor release may break compatibility, until 1.0
 
 ### Changed
 
+- Admit explicit Gemma3 context up to 8448 with one request slot, preserving
+  the 4096 default and two-slot bound at 4K. Checked 8K literal continuation
+  and model-switch state restore use the ordinary native runtime.
+
 - Avoid temporary KV prefix copies for unequal-length Gemma4 two-slot decode
   at context<=4096, preserving checked common attention geometry, physical-ring
   continuations and cached conversation restart on both approved profiles.

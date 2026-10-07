@@ -89,9 +89,10 @@ multirow prefill and sustained/context/memory/swap qualification remain open.
 
 The approved Gemma3 4B QAT Q4_0 artifact has a
 [bounded ordinary route](experiments/gemma3-execution/README.md#bounded-serving-unequal-widths-and-wrapped-rings):
-context<=4096, prefill chunks<=128 and one or two request slots. Defaults are
-4096/128/1; more owners, larger contexts and speculation refuse. It uses its
-own checked optimized recipe, classic SentencePiece tokenizer and recognized
+prefill chunks<=128 and one or two request slots at context<=4096. Defaults
+remain 4096/128/1. Explicit context up to 8448 is admitted only when the final
+calibrated/overridden slot count is one; larger contexts, more owners and
+speculation refuse. It uses its own checked optimized recipe, classic SentencePiece tokenizer and recognized
 Gemma3 template. Chat/literal completions, scoring, device greedy, initialized
 checkpoint/restore and two kept conversations across restart pass focused
 controls. Two-owner decode can join.
@@ -104,7 +105,11 @@ roots or cursors. Actual successful joined groups, ring likelihoods, queued
 third requests and exact matched cached restart replay pass HTTP controls.
 A short cold C2 endpoint bookend improves native latency 14.03% with exact
 generated IDs/usage; this is distinct from the +1.49% matched runner gap to
-stock. Broader cohorts, memory/swap and sustained qualification remain open.
+stock. The [public scalar 8K gate](experiments/gemma3-execution/README.md#public-scalar-8k-and-one-model-switch-pair-2026-10-07)
+adds exact full-prefill literal repeats/refusal recovery and one Gemma3/Qwen
+8192-state/64-continuation swap pair with retained graphs. This repeated-text
+boundary does not qualify corpus/retrieval quality, maximum context, broader
+cohorts or sustained memory/swap behavior.
 
 The approved Gemma2 2B Q8_0 artifact has a
 [bounded ordinary route](experiments/gemma2-serving/README.md): context<=8192,

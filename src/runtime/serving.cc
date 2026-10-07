@@ -1848,9 +1848,10 @@ class Gemma3 final : public Llm {
   std::string extra() const override {
     const auto& selected = runner_.plan_selections();
     return std::format(
-        R"({{"architecture":"gemma3","recipe":"bounded-4096-two-owner","max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_bounded_owner_attention":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{}}})",
-        options_.max_rows, options_.max_wave_rows, joined_prefill_groups_, joined_prefill_rows_,
-        joined_groups_, joined_units_, selected.owner_attention, selected.packed_prefill_attention,
+        R"({{"architecture":"gemma3","recipe":"bounded-serving","context":{},"configured_slots":{},"max_rows":{},"max_wave_rows":{},"joined_prefill_groups":{},"joined_prefill_rows":{},"joined_groups":{},"joined_units":{},"bound_owner_attention":{},"bound_packed_prefill_attention":{},"bound_bounded_owner_attention":{},"bound_norm_rope":{},"bound_norm_add":{},"gpu_greedy_tokens":{}}})",
+        options_.context, options_.slots, options_.max_rows, options_.max_wave_rows,
+        joined_prefill_groups_, joined_prefill_rows_, joined_groups_, joined_units_,
+        selected.owner_attention, selected.packed_prefill_attention,
         selected.bounded_owner_attention, selected.norm_rope, selected.norm_add,
         runner_.greedy_tokens());
   }
